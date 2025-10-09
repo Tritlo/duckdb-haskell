@@ -181,7 +181,7 @@ foreign import ccall unsafe "duckdb_table_function_get_client_context"
 -- * @info@: The table function's bind info.
 -- * @name@: The column name.
 -- * @type@: The logical column type.
-foreign import ccall unsafe "duckdb_bind_add_result_column"
+foreign import ccall safe "duckdb_bind_add_result_column"
   c_duckdb_bind_add_result_column :: DuckDBBindInfo -> CString -> DuckDBLogicalType -> IO ()
 
 -- | Retrieves the number of regular (non-named) parameters to the function.
@@ -190,7 +190,7 @@ foreign import ccall unsafe "duckdb_bind_add_result_column"
 -- * @info@: The info object
 --
 -- Returns The number of parameters
-foreign import ccall unsafe "duckdb_bind_get_parameter_count"
+foreign import ccall safe "duckdb_bind_get_parameter_count"
   c_duckdb_bind_get_parameter_count :: DuckDBBindInfo -> IO DuckDBIdx
 
 -- | Retrieves the parameter at the given index.
@@ -203,7 +203,7 @@ foreign import ccall unsafe "duckdb_bind_get_parameter_count"
 --
 -- Returns The value of the parameter. Must be destroyed with
 -- @duckdb_destroy_value@.
-foreign import ccall unsafe "duckdb_bind_get_parameter"
+foreign import ccall safe "duckdb_bind_get_parameter"
   c_duckdb_bind_get_parameter :: DuckDBBindInfo -> DuckDBIdx -> IO DuckDBValue
 
 -- | Retrieves a named parameter with the given name.
@@ -216,7 +216,7 @@ foreign import ccall unsafe "duckdb_bind_get_parameter"
 --
 -- Returns The value of the parameter. Must be destroyed with
 -- @duckdb_destroy_value@.
-foreign import ccall unsafe "duckdb_bind_get_named_parameter"
+foreign import ccall safe "duckdb_bind_get_named_parameter"
   c_duckdb_bind_get_named_parameter :: DuckDBBindInfo -> CString -> IO DuckDBValue
 
 -- | Sets the user-provided bind data in the bind object of the table function.
@@ -226,7 +226,7 @@ foreign import ccall unsafe "duckdb_bind_get_named_parameter"
 -- * @info@: The bind info of the table function.
 -- * @bind_data@: The bind data object.
 -- * @destroy@: The callback to destroy the bind data (if any).
-foreign import ccall unsafe "duckdb_bind_set_bind_data"
+foreign import ccall safe "duckdb_bind_set_bind_data"
   c_duckdb_bind_set_bind_data :: DuckDBBindInfo -> Ptr () -> DuckDBDeleteCallback -> IO ()
 
 -- | Sets the cardinality estimate for the table function, used for optimization.
@@ -235,7 +235,7 @@ foreign import ccall unsafe "duckdb_bind_set_bind_data"
 -- * @info@: The bind data object.
 -- * @is_exact@: Whether or not the cardinality estimate is exact, or an
 --   approximation
-foreign import ccall unsafe "duckdb_bind_set_cardinality"
+foreign import ccall safe "duckdb_bind_set_cardinality"
   c_duckdb_bind_set_cardinality :: DuckDBBindInfo -> DuckDBIdx -> CBool -> IO ()
 
 -- | Report that an error has occurred while calling bind on a table function.
@@ -243,7 +243,7 @@ foreign import ccall unsafe "duckdb_bind_set_cardinality"
 -- Parameters:
 -- * @info@: The info object
 -- * @error@: The error message
-foreign import ccall unsafe "duckdb_bind_set_error"
+foreign import ccall safe "duckdb_bind_set_error"
   c_duckdb_bind_set_error :: DuckDBBindInfo -> CString -> IO ()
 
 -- | Retrieves the extra info of the function as set in
@@ -265,7 +265,7 @@ foreign import ccall unsafe "duckdb_init_get_extra_info"
 -- * @info@: The info object
 --
 -- Returns The bind data object
-foreign import ccall unsafe "duckdb_init_get_bind_data"
+foreign import ccall safe "duckdb_init_get_bind_data"
   c_duckdb_init_get_bind_data :: DuckDBInitInfo -> IO (Ptr ())
 
 -- | Sets the user-provided init data in the init object. This object can be
@@ -276,7 +276,7 @@ foreign import ccall unsafe "duckdb_init_get_bind_data"
 -- * @init_data@: The init data object.
 -- * @destroy@: The callback that will be called to destroy the init data (if
 --   any)
-foreign import ccall unsafe "duckdb_init_set_init_data"
+foreign import ccall safe "duckdb_init_set_init_data"
   c_duckdb_init_set_init_data :: DuckDBInitInfo -> Ptr () -> DuckDBDeleteCallback -> IO ()
 
 -- | Returns the number of projected columns.
@@ -311,7 +311,7 @@ foreign import ccall unsafe "duckdb_init_get_column_index"
 -- * @info@: The info object
 -- * @max_threads@: The maximum amount of threads that can process this table
 --   function
-foreign import ccall unsafe "duckdb_init_set_max_threads"
+foreign import ccall safe "duckdb_init_set_max_threads"
   c_duckdb_init_set_max_threads :: DuckDBInitInfo -> DuckDBIdx -> IO ()
 
 -- | Report that an error has occurred while calling init.
@@ -319,7 +319,7 @@ foreign import ccall unsafe "duckdb_init_set_max_threads"
 -- Parameters:
 -- * @info@: The info object
 -- * @error@: The error message
-foreign import ccall unsafe "duckdb_init_set_error"
+foreign import ccall safe "duckdb_init_set_error"
   c_duckdb_init_set_error :: DuckDBInitInfo -> CString -> IO ()
 
 -- | Retrieves the extra info of the function as set in
@@ -350,7 +350,7 @@ foreign import ccall unsafe "duckdb_function_get_bind_data"
 -- * @info@: The info object
 --
 -- Returns The init data object
-foreign import ccall unsafe "duckdb_function_get_init_data"
+foreign import ccall safe "duckdb_function_get_init_data"
   c_duckdb_function_get_init_data :: DuckDBFunctionInfo -> IO (Ptr ())
 
 -- | Gets the thread-local init data set by @duckdb_init_set_init_data@ during the
@@ -368,5 +368,5 @@ foreign import ccall unsafe "duckdb_function_get_local_init_data"
 -- Parameters:
 -- * @info@: The info object
 -- * @error@: The error message
-foreign import ccall unsafe "duckdb_function_set_error"
+foreign import ccall safe "duckdb_function_set_error"
   c_duckdb_function_set_error :: DuckDBFunctionInfo -> CString -> IO ()

@@ -117,7 +117,7 @@ foreign import ccall unsafe "duckdb_aggregate_function_set_extra_info"
 -- * @info@: The info object
 --
 -- Returns The extra info
-foreign import ccall unsafe "duckdb_aggregate_function_get_extra_info"
+foreign import ccall safe "duckdb_aggregate_function_get_extra_info"
   c_duckdb_aggregate_function_get_extra_info :: DuckDBFunctionInfo -> IO (Ptr ())
 
 -- | Report that an error has occurred while executing the aggregate function.
@@ -125,7 +125,7 @@ foreign import ccall unsafe "duckdb_aggregate_function_get_extra_info"
 -- Parameters:
 -- * @info@: The info object
 -- * @error@: The error message
-foreign import ccall unsafe "duckdb_aggregate_function_set_error"
+foreign import ccall safe "duckdb_aggregate_function_set_error"
   c_duckdb_aggregate_function_set_error :: DuckDBFunctionInfo -> CString -> IO ()
 
 -- | Creates a new empty aggregate function set.

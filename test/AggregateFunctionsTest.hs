@@ -103,7 +103,7 @@ aggregateErrorPropagation =
 
                   withCString "SELECT no_negatives(v) FROM (VALUES (1), (-5)) t(v)" \sql ->
                     alloca \resPtr -> do
-                      errState <- c_duckdb_query_safe conn sql resPtr
+                      errState <- c_duckdb_query conn sql resPtr
                       errState @?= DuckDBError
 
                       msgPtr <- c_duckdb_result_error resPtr
@@ -201,7 +201,7 @@ peekAggregateConfig ptr = do
 
 configFromInfo :: DuckDBFunctionInfo -> IO AggregateConfig
 configFromInfo info = do
-  raw <- c_duckdb_aggregate_function_get_extra_info_safe info
+  raw <- c_duckdb_aggregate_function_get_extra_info info
   if raw == nullPtr
     then pure defaultAggregateConfig
     else peekAggregateConfig (castPtr raw)
@@ -276,17 +276,17 @@ stateSizeFun _ = pure (fromIntegral (sizeOf (nullPtr :: Ptr ())))
 
 initCallback :: DuckDBFunctionInfo -> DuckDBAggregateState -> IO ()
 initCallback _ state = do
-  raw <- c_duckdb_malloc_safe (fromIntegral sumStateSize)
+  raw <- c_duckdb_malloc (fromIntegral sumStateSize)
   let storage = castPtr raw :: SumStatePtr
   writeSumState storage initialSumState
   writeStateValuePtr state storage
 
 updateCallback :: DuckDBFunctionInfo -> DuckDBDataChunk -> Ptr DuckDBAggregateState -> IO ()
 updateCallback info chunk stateArrayPtr = do
-  rowCount <- c_duckdb_data_chunk_get_size_safe chunk
-  vec <- c_duckdb_data_chunk_get_vector_safe chunk 0
+  rowCount <- c_duckdb_data_chunk_get_size chunk
+  vec <- c_duckdb_data_chunk_get_vector chunk 0
   dataPtr <- vectorDataPtr vec
-  validity <- c_duckdb_vector_get_validity_safe vec
+  validity <- c_duckdb_vector_get_validity vec
   config <- configFromInfo info
 
   let rowCountInt = fromIntegral rowCount
@@ -305,7 +305,7 @@ updateCallback info chunk stateArrayPtr = do
         if shouldFailOnNegative config && value < 0
           then do
             withCString "negatives not allowed" \errMsg ->
-              c_duckdb_aggregate_function_set_error_safe info errMsg
+              c_duckdb_aggregate_function_set_error info errMsg
             writeSumState storage current{ssSeen = seen'}
           else
             let total' = ssTotal current + value + cfgBonus config
@@ -342,9 +342,9 @@ finalizeCallback info stateArrayPtr outVec _ offset = do
 
   let allInvalid = seen > 0 && seen == nulls
   when (shouldMarkNullWhenAllInvalid config && allInvalid) do
-    c_duckdb_vector_ensure_validity_writable_safe outVec
-    validity <- c_duckdb_vector_get_validity_safe outVec
-    c_duckdb_validity_set_row_invalid_safe validity offset
+    c_duckdb_vector_ensure_validity_writable outVec
+    validity <- c_duckdb_vector_get_validity outVec
+    c_duckdb_validity_set_row_invalid validity offset
 
 destroyCallback :: Ptr DuckDBAggregateState -> DuckDBIdx -> IO ()
 destroyCallback states count =
@@ -352,7 +352,7 @@ destroyCallback states count =
     state <- peekElemOff states i
     storage <- readStateValuePtr state
     when (storage /= nullPtr) $
-      c_duckdb_free_safe (castPtr storage)
+      c_duckdb_free (castPtr storage)
 
 -- Helper pointer accessors --------------------------------------------------
 
@@ -366,12 +366,12 @@ readStateValuePtr state = do
   pure (castPtr raw)
 
 vectorDataPtr :: DuckDBVector -> IO (Ptr Int32)
-vectorDataPtr vec = castPtr <$> c_duckdb_vector_get_data_safe vec
+vectorDataPtr vec = castPtr <$> c_duckdb_vector_get_data vec
 
 rowIsValid :: Ptr Word64 -> DuckDBIdx -> IO Bool
 rowIsValid validity idx
   | validity == nullPtr = pure True
-  | otherwise = cbToBool <$> c_duckdb_validity_row_is_valid_safe validity idx
+  | otherwise = cbToBool <$> c_duckdb_validity_row_is_valid validity idx
 
 cbToBool :: CBool -> Bool
 cbToBool (CBool v) = v /= 0
@@ -433,45 +433,7 @@ withAggregateFunctionSet name action = bracket acquire release action
 withResult :: DuckDBConnection -> CString -> (Ptr DuckDBResult -> IO a) -> IO a
 withResult conn sql action =
   alloca \resPtr -> do
-    c_duckdb_query_safe conn sql resPtr >>= (@?= DuckDBSuccess)
+    c_duckdb_query conn sql resPtr >>= (@?= DuckDBSuccess)
     result <- action resPtr
     c_duckdb_destroy_result resPtr
     pure result
-
--- Safe wrappers -------------------------------------------------------------
-
-foreign import ccall safe "duckdb_data_chunk_get_size"
-  c_duckdb_data_chunk_get_size_safe :: DuckDBDataChunk -> IO DuckDBIdx
-
-foreign import ccall safe "duckdb_data_chunk_get_vector"
-  c_duckdb_data_chunk_get_vector_safe :: DuckDBDataChunk -> DuckDBIdx -> IO DuckDBVector
-
-foreign import ccall safe "duckdb_vector_get_data"
-  c_duckdb_vector_get_data_safe :: DuckDBVector -> IO (Ptr ())
-
-foreign import ccall safe "duckdb_vector_get_validity"
-  c_duckdb_vector_get_validity_safe :: DuckDBVector -> IO (Ptr Word64)
-
-foreign import ccall safe "duckdb_vector_ensure_validity_writable"
-  c_duckdb_vector_ensure_validity_writable_safe :: DuckDBVector -> IO ()
-
-foreign import ccall safe "duckdb_query"
-  c_duckdb_query_safe :: DuckDBConnection -> CString -> Ptr DuckDBResult -> IO DuckDBState
-
-foreign import ccall safe "duckdb_malloc"
-  c_duckdb_malloc_safe :: CSize -> IO (Ptr ())
-
-foreign import ccall safe "duckdb_free"
-  c_duckdb_free_safe :: Ptr () -> IO ()
-
-foreign import ccall safe "duckdb_aggregate_function_get_extra_info"
-  c_duckdb_aggregate_function_get_extra_info_safe :: DuckDBFunctionInfo -> IO (Ptr ())
-
-foreign import ccall safe "duckdb_aggregate_function_set_error"
-  c_duckdb_aggregate_function_set_error_safe :: DuckDBFunctionInfo -> CString -> IO ()
-
-foreign import ccall safe "duckdb_validity_row_is_valid"
-  c_duckdb_validity_row_is_valid_safe :: Ptr Word64 -> DuckDBIdx -> IO CBool
-
-foreign import ccall safe "duckdb_validity_set_row_invalid"
-  c_duckdb_validity_set_row_invalid_safe :: Ptr Word64 -> DuckDBIdx -> IO ()

@@ -19,7 +19,7 @@ import Foreign.Ptr (Ptr)
 -- * @row@: The row index
 --
 -- Returns true if the row is valid, false otherwise
-foreign import ccall unsafe "duckdb_validity_row_is_valid"
+foreign import ccall safe "duckdb_validity_row_is_valid"
   c_duckdb_validity_row_is_valid :: Ptr Word64 -> DuckDBIdx -> IO CBool
 
 -- | In a validity mask, sets a specific row to either valid or invalid.
@@ -43,7 +43,7 @@ foreign import ccall unsafe "duckdb_validity_set_row_validity"
 -- Parameters:
 -- * @validity@: The validity mask
 -- * @row@: The row index
-foreign import ccall unsafe "duckdb_validity_set_row_invalid"
+foreign import ccall safe "duckdb_validity_set_row_invalid"
   c_duckdb_validity_set_row_invalid :: Ptr Word64 -> DuckDBIdx -> IO ()
 
 -- | In a validity mask, sets a specific row to valid.

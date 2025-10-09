@@ -41,15 +41,15 @@ tableFunctionRoundtrip =
 
                 withCString "SELECT value FROM haskell_numbers(4)" \sql ->
                   withResult conn sql \resPtr -> do
-                    c_duckdb_row_count_safe resPtr >>= (@?= 4)
+                    c_duckdb_row_count resPtr >>= (@?= 4)
                     forM_ [0 .. 3] \idx ->
-                      c_duckdb_value_int64_safe resPtr 0 idx >>= (@?= fromIntegral idx)
+                      c_duckdb_value_int64 resPtr 0 idx >>= (@?= fromIntegral idx)
 
                 withCString "SELECT value FROM haskell_numbers(3, start => 5)" \sql ->
                   withResult conn sql \resPtr -> do
                     expected <- pure [5, 6, 7]
                     forM_ (zip [0 ..] expected) \(idx, val) ->
-                      c_duckdb_value_int64_safe resPtr 0 idx >>= (@?= val)
+                      c_duckdb_value_int64 resPtr 0 idx >>= (@?= val)
 
 tableFunctionBindErrors :: TestTree
 tableFunctionBindErrors =
@@ -65,7 +65,7 @@ tableFunctionBindErrors =
 
                 alloca \resPtr ->
                   withCString "SELECT * FROM haskell_numbers(0)" \sql -> do
-                    state <- c_duckdb_query_safe conn sql resPtr
+                    state <- c_duckdb_query conn sql resPtr
                     state @?= DuckDBError
                     errPtr <- c_duckdb_result_error resPtr
                     errMsg <- peekCString errPtr
@@ -86,7 +86,7 @@ tableFunctionExecutionErrors =
 
                 alloca \resPtr ->
                   withCString "SELECT * FROM haskell_numbers(5, fail_at => 3)" \sql -> do
-                    state <- c_duckdb_query_safe conn sql resPtr
+                    state <- c_duckdb_query conn sql resPtr
                     state @?= DuckDBError
                     errPtr <- c_duckdb_result_error resPtr
                     errMsg <- peekCString errPtr
@@ -158,33 +158,33 @@ setupTableFunction fun TableCallbacks{tcBind = bindFun, tcInit = initFun, tcExec
 
 numbersBind :: DuckDBDeleteCallback -> DuckDBLogicalType -> DuckDBBindInfo -> IO ()
 numbersBind freeCallback columnType info = do
-  paramCount <- c_duckdb_bind_get_parameter_count_safe info
+  paramCount <- c_duckdb_bind_get_parameter_count info
   if paramCount /= 1
-    then withCString "exactly one parameter required" \msg -> c_duckdb_bind_set_error_safe info msg
+    then withCString "exactly one parameter required" \msg -> c_duckdb_bind_set_error info msg
     else do
-      countValue <- withValue (c_duckdb_bind_get_parameter_safe info 0) c_duckdb_get_int64_safe
+      countValue <- withValue (c_duckdb_bind_get_parameter info 0) c_duckdb_get_int64
       if countValue <= 0
-        then withCString "count must be positive" \msg -> c_duckdb_bind_set_error_safe info msg
+        then withCString "count must be positive" \msg -> c_duckdb_bind_set_error info msg
         else do
           startValue <-
             withCString "start" \name ->
-              withOptionalValue (c_duckdb_bind_get_named_parameter_safe info name) c_duckdb_get_int64_safe
+              withOptionalValue (c_duckdb_bind_get_named_parameter info name) c_duckdb_get_int64
           failAtValue <-
             withCString "fail_at" \name ->
-              withOptionalValue (c_duckdb_bind_get_named_parameter_safe info name) c_duckdb_get_int64_safe
+              withOptionalValue (c_duckdb_bind_get_named_parameter info name) c_duckdb_get_int64
           bindPtr <- mallocBytes bindConfigSize
           pokeElemOff bindPtr 0 (maybe 0 id startValue)
           pokeElemOff bindPtr 1 countValue
           pokeElemOff bindPtr 2 (maybe (-1) id failAtValue)
-          c_duckdb_bind_set_bind_data_safe info (castPtr bindPtr) freeCallback
-          withCString "value" \col -> c_duckdb_bind_add_result_column_safe info col columnType
-          c_duckdb_bind_set_cardinality_safe info (fromIntegral countValue) (toCBool True)
+          c_duckdb_bind_set_bind_data info (castPtr bindPtr) freeCallback
+          withCString "value" \col -> c_duckdb_bind_add_result_column info col columnType
+          c_duckdb_bind_set_cardinality info (fromIntegral countValue) (toCBool True)
 
 numbersInit :: DuckDBDeleteCallback -> DuckDBInitInfo -> IO ()
 numbersInit freeCallback info = do
-  bindRaw <- c_duckdb_init_get_bind_data_safe info
+  bindRaw <- c_duckdb_init_get_bind_data info
   if bindRaw == nullPtr
-    then withCString "missing bind data" \msg -> c_duckdb_init_set_error_safe info msg
+    then withCString "missing bind data" \msg -> c_duckdb_init_set_error info msg
     else do
       let bindPtr = castPtr bindRaw :: Ptr Int64
       startValue <- peekElemOff bindPtr 0
@@ -194,39 +194,39 @@ numbersInit freeCallback info = do
       pokeElemOff statePtr 0 startValue
       pokeElemOff statePtr 1 (startValue + countValue)
       pokeElemOff statePtr 2 failAtValue
-      c_duckdb_init_set_init_data_safe info (castPtr statePtr) freeCallback
-      c_duckdb_init_set_max_threads_safe info 1
+      c_duckdb_init_set_init_data info (castPtr statePtr) freeCallback
+      c_duckdb_init_set_max_threads info 1
 
 numbersExecute :: DuckDBFunctionInfo -> DuckDBDataChunk -> IO ()
 numbersExecute info chunk = do
-  stateRaw <- c_duckdb_function_get_init_data_safe info
+  stateRaw <- c_duckdb_function_get_init_data info
   if stateRaw == nullPtr
     then do
-      withCString "missing init data" \msg -> c_duckdb_function_set_error_safe info msg
-      c_duckdb_data_chunk_set_size_safe chunk 0
+      withCString "missing init data" \msg -> c_duckdb_function_set_error info msg
+      c_duckdb_data_chunk_set_size chunk 0
     else do
       let statePtr = castPtr stateRaw :: Ptr Int64
       nextValue <- peekElemOff statePtr 0
       endValue <- peekElemOff statePtr 1
       failAtValue <- peekElemOff statePtr 2
       if nextValue >= endValue
-        then c_duckdb_data_chunk_set_size_safe chunk 0
+        then c_duckdb_data_chunk_set_size chunk 0
         else do
           let remaining = endValue - nextValue
               rowsThisChunk = min remaining 1024
               chunkEnd = nextValue + rowsThisChunk
           if failAtValue >= nextValue && failAtValue < chunkEnd && failAtValue >= 0
             then do
-              withCString "execution aborted by table function" \msg -> c_duckdb_function_set_error_safe info msg
-              c_duckdb_data_chunk_set_size_safe chunk 0
+              withCString "execution aborted by table function" \msg -> c_duckdb_function_set_error info msg
+              c_duckdb_data_chunk_set_size chunk 0
               pokeElemOff statePtr 0 chunkEnd
             else do
-              vec <- c_duckdb_data_chunk_get_vector_safe chunk 0
+              vec <- c_duckdb_data_chunk_get_vector chunk 0
               dataPtr <- vectorDataPtr vec
               forM_ [0 .. rowsThisChunk - 1] \offset -> do
                 let value = nextValue + offset
                 pokeElemOff dataPtr (fromIntegral offset) value
-              c_duckdb_data_chunk_set_size_safe chunk (fromIntegral rowsThisChunk)
+              c_duckdb_data_chunk_set_size chunk (fromIntegral rowsThisChunk)
               pokeElemOff statePtr 0 chunkEnd
 
 -- Helpers ------------------------------------------------------------------
@@ -260,7 +260,7 @@ withTableFunction action = bracket c_duckdb_create_table_function destroy action
 withResult :: DuckDBConnection -> CString -> (Ptr DuckDBResult -> IO a) -> IO a
 withResult conn sql action =
   alloca \resPtr -> do
-    c_duckdb_query_safe conn sql resPtr >>= (@?= DuckDBSuccess)
+    c_duckdb_query conn sql resPtr >>= (@?= DuckDBSuccess)
     result <- action resPtr
     c_duckdb_destroy_result resPtr
     pure result
@@ -268,7 +268,7 @@ withResult conn sql action =
 withValue :: IO DuckDBValue -> (DuckDBValue -> IO a) -> IO a
 withValue acquire action = bracket acquire destroy action
   where
-    destroy value = alloca \ptr -> poke ptr value >> c_duckdb_destroy_value_safe ptr
+    destroy value = alloca \ptr -> poke ptr value >> c_duckdb_destroy_value ptr
 
 withOptionalValue :: IO DuckDBValue -> (DuckDBValue -> IO a) -> IO (Maybe a)
 withOptionalValue acquire action = do
@@ -277,11 +277,11 @@ withOptionalValue acquire action = do
     then pure Nothing
     else do
       result <- action value
-      alloca \ptr -> poke ptr value >> c_duckdb_destroy_value_safe ptr
+      alloca \ptr -> poke ptr value >> c_duckdb_destroy_value ptr
       pure (Just result)
 
 vectorDataPtr :: DuckDBVector -> IO (Ptr Int64)
-vectorDataPtr vec = castPtr <$> c_duckdb_vector_get_data_safe vec
+vectorDataPtr vec = castPtr <$> c_duckdb_vector_get_data vec
 
 contains :: String -> String -> Bool
 contains needle haystack = needle `isInfixOf` haystack
@@ -303,68 +303,3 @@ foreign import ccall safe "wrapper"
 
 foreign import ccall safe "wrapper"
   mkDeleteCallback :: (Ptr () -> IO ()) -> IO DuckDBDeleteCallback
-
--- Safe wrappers -------------------------------------------------------------
-
-foreign import ccall safe "duckdb_query"
-  c_duckdb_query_safe :: DuckDBConnection -> CString -> Ptr DuckDBResult -> IO DuckDBState
-
-foreign import ccall safe "duckdb_bind_get_parameter_count"
-  c_duckdb_bind_get_parameter_count_safe :: DuckDBBindInfo -> IO DuckDBIdx
-
-foreign import ccall safe "duckdb_bind_get_parameter"
-  c_duckdb_bind_get_parameter_safe :: DuckDBBindInfo -> DuckDBIdx -> IO DuckDBValue
-
-foreign import ccall safe "duckdb_bind_get_named_parameter"
-  c_duckdb_bind_get_named_parameter_safe :: DuckDBBindInfo -> CString -> IO DuckDBValue
-
-foreign import ccall safe "duckdb_bind_add_result_column"
-  c_duckdb_bind_add_result_column_safe :: DuckDBBindInfo -> CString -> DuckDBLogicalType -> IO ()
-
-foreign import ccall safe "duckdb_bind_set_bind_data"
-  c_duckdb_bind_set_bind_data_safe :: DuckDBBindInfo -> Ptr () -> DuckDBDeleteCallback -> IO ()
-
-foreign import ccall safe "duckdb_bind_set_cardinality"
-  c_duckdb_bind_set_cardinality_safe :: DuckDBBindInfo -> DuckDBIdx -> CBool -> IO ()
-
-foreign import ccall safe "duckdb_bind_set_error"
-  c_duckdb_bind_set_error_safe :: DuckDBBindInfo -> CString -> IO ()
-
-foreign import ccall safe "duckdb_init_get_bind_data"
-  c_duckdb_init_get_bind_data_safe :: DuckDBInitInfo -> IO (Ptr ())
-
-foreign import ccall safe "duckdb_init_set_init_data"
-  c_duckdb_init_set_init_data_safe :: DuckDBInitInfo -> Ptr () -> DuckDBDeleteCallback -> IO ()
-
-foreign import ccall safe "duckdb_init_set_max_threads"
-  c_duckdb_init_set_max_threads_safe :: DuckDBInitInfo -> DuckDBIdx -> IO ()
-
-foreign import ccall safe "duckdb_init_set_error"
-  c_duckdb_init_set_error_safe :: DuckDBInitInfo -> CString -> IO ()
-
-foreign import ccall safe "duckdb_function_get_init_data"
-  c_duckdb_function_get_init_data_safe :: DuckDBFunctionInfo -> IO (Ptr ())
-
-foreign import ccall safe "duckdb_function_set_error"
-  c_duckdb_function_set_error_safe :: DuckDBFunctionInfo -> CString -> IO ()
-
-foreign import ccall safe "duckdb_data_chunk_get_vector"
-  c_duckdb_data_chunk_get_vector_safe :: DuckDBDataChunk -> DuckDBIdx -> IO DuckDBVector
-
-foreign import ccall safe "duckdb_data_chunk_set_size"
-  c_duckdb_data_chunk_set_size_safe :: DuckDBDataChunk -> DuckDBIdx -> IO ()
-
-foreign import ccall safe "duckdb_vector_get_data"
-  c_duckdb_vector_get_data_safe :: DuckDBVector -> IO (Ptr ())
-
-foreign import ccall safe "duckdb_get_int64"
-  c_duckdb_get_int64_safe :: DuckDBValue -> IO Int64
-
-foreign import ccall safe "duckdb_value_int64"
-  c_duckdb_value_int64_safe :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO Int64
-
-foreign import ccall safe "duckdb_row_count"
-  c_duckdb_row_count_safe :: Ptr DuckDBResult -> IO DuckDBIdx
-
-foreign import ccall safe "duckdb_destroy_value"
-  c_duckdb_destroy_value_safe :: Ptr DuckDBValue -> IO ()

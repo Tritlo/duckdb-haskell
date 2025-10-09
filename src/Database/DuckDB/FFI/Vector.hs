@@ -62,7 +62,7 @@ foreign import ccall unsafe "duckdb_vector_get_column_type"
 -- * @vector@: The vector to get the data from
 --
 -- Returns The data pointer
-foreign import ccall unsafe "duckdb_vector_get_data"
+foreign import ccall safe "duckdb_vector_get_data"
   c_duckdb_vector_get_data :: DuckDBVector -> IO (Ptr ())
 
 -- | Retrieves the validity mask pointer of the specified vector.
@@ -86,7 +86,7 @@ foreign import ccall unsafe "duckdb_vector_get_data"
 --
 -- Returns The pointer to the validity mask, or NULL if no validity mask is
 -- present
-foreign import ccall unsafe "duckdb_vector_get_validity"
+foreign import ccall safe "duckdb_vector_get_validity"
   c_duckdb_vector_get_validity :: DuckDBVector -> IO (Ptr Word64)
 
 -- | Ensures the validity mask is writable by allocating it.
@@ -97,7 +97,7 @@ foreign import ccall unsafe "duckdb_vector_get_validity"
 --
 -- Parameters:
 -- * @vector@: The vector to alter
-foreign import ccall unsafe "duckdb_vector_ensure_validity_writable"
+foreign import ccall safe "duckdb_vector_ensure_validity_writable"
   c_duckdb_vector_ensure_validity_writable :: DuckDBVector -> IO ()
 
 -- | Assigns a string element in the vector at the specified location.

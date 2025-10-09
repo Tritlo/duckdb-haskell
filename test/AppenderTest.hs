@@ -69,17 +69,17 @@ appenderRowwiseLifecycle =
 
           withCString "SELECT id, name, active FROM appender_demo ORDER BY id" \sql ->
             withResult conn sql \resPtr -> do
-              c_duckdb_row_count_safe resPtr >>= (@?= 3)
+              c_duckdb_row_count resPtr >>= (@?= 3)
 
-              c_duckdb_value_int32_safe resPtr 0 0 >>= (@?= 1)
+              c_duckdb_value_int32 resPtr 0 0 >>= (@?= 1)
               fetchString resPtr 1 0 >>= (@?= "alice")
               fetchBool resPtr 2 0 >>= (@?= True)
 
-              c_duckdb_value_int32_safe resPtr 0 1 >>= (@?= 2)
-              c_duckdb_value_is_null_safe resPtr 1 1 >>= (@?= CBool 1)
+              c_duckdb_value_int32 resPtr 0 1 >>= (@?= 2)
+              c_duckdb_value_is_null resPtr 1 1 >>= (@?= CBool 1)
               fetchBool resPtr 2 1 >>= (@?= False)
 
-              c_duckdb_value_int32_safe resPtr 0 2 >>= (@?= 3)
+              c_duckdb_value_int32 resPtr 0 2 >>= (@?= 3)
               fetchString resPtr 1 2 >>= (@?= "via_value")
               fetchBool resPtr 2 2 >>= (@?= True)
 
@@ -120,16 +120,16 @@ appenderColumnSubset =
 
           withCString "SELECT id, name, note, active FROM subset_demo ORDER BY rowid" \sql ->
             withResult conn sql \resPtr -> do
-              c_duckdb_row_count_safe resPtr >>= (@?= 2)
+              c_duckdb_row_count resPtr >>= (@?= 2)
 
-              c_duckdb_value_int32_safe resPtr 0 0 >>= (@?= 100)
+              c_duckdb_value_int32 resPtr 0 0 >>= (@?= 100)
               fetchString resPtr 1 0 >>= (@?= "subset-one")
               fetchString resPtr 2 0 >>= (@?= "note one")
               fetchBool resPtr 3 0 >>= (@?= False)
 
-              c_duckdb_value_int32_safe resPtr 0 1 >>= (@?= 100)
+              c_duckdb_value_int32 resPtr 0 1 >>= (@?= 100)
               fetchString resPtr 1 1 >>= (@?= "subset-two")
-              c_duckdb_value_is_null_safe resPtr 2 1 >>= (@?= CBool 1)
+              c_duckdb_value_is_null resPtr 2 1 >>= (@?= CBool 1)
               fetchBool resPtr 3 1 >>= (@?= False)
 
 appenderDataChunkInsert :: TestTree
@@ -160,10 +160,10 @@ appenderDataChunkInsert =
 
           withCString "SELECT id, label FROM chunk_demo ORDER BY id" \sql ->
             withResult conn sql \resPtr -> do
-              c_duckdb_row_count_safe resPtr >>= (@?= 2)
-              c_duckdb_value_int32_safe resPtr 0 0 >>= (@?= 10)
+              c_duckdb_row_count resPtr >>= (@?= 2)
+              c_duckdb_value_int32 resPtr 0 0 >>= (@?= 10)
               fetchString resPtr 1 0 >>= (@?= "ten")
-              c_duckdb_value_int32_safe resPtr 0 1 >>= (@?= 11)
+              c_duckdb_value_int32 resPtr 0 1 >>= (@?= 11)
               fetchString resPtr 1 1 >>= (@?= "eleven")
 
 appenderQueryAppender :: TestTree
@@ -196,10 +196,10 @@ appenderQueryAppender =
 
             withCString "SELECT id, label FROM query_target ORDER BY id" \sql ->
               withResult conn sql \resPtr -> do
-                c_duckdb_row_count_safe resPtr >>= (@?= 2)
-                c_duckdb_value_int32_safe resPtr 0 0 >>= (@?= 21)
+                c_duckdb_row_count resPtr >>= (@?= 2)
+                c_duckdb_value_int32 resPtr 0 0 >>= (@?= 21)
                 fetchString resPtr 1 0 >>= (@?= "twenty-one")
-                c_duckdb_value_int32_safe resPtr 0 1 >>= (@?= 22)
+                c_duckdb_value_int32 resPtr 0 1 >>= (@?= 22)
                 fetchString resPtr 1 1 >>= (@?= "twenty-two")
 
 -- Helpers -------------------------------------------------------------------
@@ -244,7 +244,7 @@ runStatement conn sql =
 withResult :: DuckDBConnection -> CString -> (Ptr DuckDBResult -> IO a) -> IO a
 withResult conn sql action =
   alloca \resPtr -> do
-    c_duckdb_query_safe conn sql resPtr >>= (@?= DuckDBSuccess)
+    c_duckdb_query conn sql resPtr >>= (@?= DuckDBSuccess)
     result <- action resPtr
     c_duckdb_destroy_result resPtr
     pure result
@@ -329,35 +329,12 @@ checkColumnType app idx expected =
 
 fetchString :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO String
 fetchString resPtr col row = do
-  strPtr <- c_duckdb_value_varchar_safe resPtr col row
+  strPtr <- c_duckdb_value_varchar resPtr col row
   text <- peekCString strPtr
-  c_duckdb_free_safe (castPtr strPtr)
+  c_duckdb_free (castPtr strPtr)
   pure text
 
 fetchBool :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO Bool
 fetchBool resPtr col row = do
-  CBool val <- c_duckdb_value_boolean_safe resPtr col row
+  CBool val <- c_duckdb_value_boolean resPtr col row
   pure (val /= 0)
-
--- Safe wrappers -------------------------------------------------------------
-
-foreign import ccall safe "duckdb_query"
-  c_duckdb_query_safe :: DuckDBConnection -> CString -> Ptr DuckDBResult -> IO DuckDBState
-
-foreign import ccall safe "duckdb_row_count"
-  c_duckdb_row_count_safe :: Ptr DuckDBResult -> IO DuckDBIdx
-
-foreign import ccall safe "duckdb_value_int32"
-  c_duckdb_value_int32_safe :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO Int32
-
-foreign import ccall safe "duckdb_value_boolean"
-  c_duckdb_value_boolean_safe :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO CBool
-
-foreign import ccall safe "duckdb_value_varchar"
-  c_duckdb_value_varchar_safe :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO CString
-
-foreign import ccall safe "duckdb_value_is_null"
-  c_duckdb_value_is_null_safe :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO CBool
-
-foreign import ccall safe "duckdb_free"
-  c_duckdb_free_safe :: Ptr () -> IO ()

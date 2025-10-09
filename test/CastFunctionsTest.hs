@@ -70,7 +70,7 @@ castFunctionTryMode =
         withTestCast conn \CastHarness{chLastMode, chExtraSeen} -> do
           withResult conn "SELECT TRY_CAST(v AS VARCHAR) FROM (VALUES (2), (-3)) AS t(v)" \resPtr -> do
             fetchString resPtr 0 0 >>= (@?= "value: 2")
-            c_duckdb_value_is_null_safe resPtr 0 1 >>= (@?= CBool 1)
+            c_duckdb_value_is_null resPtr 0 1 >>= (@?= CBool 1)
             errPtr <- c_duckdb_result_error resPtr
             errPtr @?= nullPtr
           chLastMode >>= (@?= DuckDBCastTry)
@@ -177,7 +177,7 @@ withResult :: DuckDBConnection -> String -> (Ptr DuckDBResult -> IO a) -> IO a
 withResult conn sql action =
   withCString sql \sqlPtr ->
     alloca \resPtr -> do
-      state <- c_duckdb_query_safe conn sqlPtr resPtr
+      state <- c_duckdb_query conn sqlPtr resPtr
       state @?= DuckDBSuccess
       result <- action resPtr
       c_duckdb_destroy_result resPtr
@@ -187,7 +187,7 @@ withErrorResult :: DuckDBConnection -> String -> (Ptr DuckDBResult -> IO a) -> I
 withErrorResult conn sql action =
   withCString sql \sqlPtr ->
     alloca \resPtr -> do
-      state <- c_duckdb_query_safe conn sqlPtr resPtr
+      state <- c_duckdb_query conn sqlPtr resPtr
       state @?= DuckDBError
       result <- action resPtr
       c_duckdb_destroy_result resPtr
@@ -195,9 +195,9 @@ withErrorResult conn sql action =
 
 fetchString :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO String
 fetchString resPtr col row = do
-  cStr <- c_duckdb_value_varchar_safe resPtr col row
+  cStr <- c_duckdb_value_varchar resPtr col row
   value <- peekCString cStr
-  c_duckdb_free_safe (castPtr cStr)
+  c_duckdb_free (castPtr cStr)
   pure value
 
 -- Wrapper constructors ------------------------------------------------------
@@ -207,17 +207,3 @@ foreign import ccall "wrapper"
 
 foreign import ccall "wrapper"
   mkDeleteCallback :: (Ptr () -> IO ()) -> IO DuckDBDeleteCallback
-
--- Safe wrappers -------------------------------------------------------------
-
-foreign import ccall safe "duckdb_query"
-  c_duckdb_query_safe :: DuckDBConnection -> CString -> Ptr DuckDBResult -> IO DuckDBState
-
-foreign import ccall safe "duckdb_value_varchar"
-  c_duckdb_value_varchar_safe :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO CString
-
-foreign import ccall safe "duckdb_value_is_null"
-  c_duckdb_value_is_null_safe :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO CBool
-
-foreign import ccall safe "duckdb_free"
-  c_duckdb_free_safe :: Ptr () -> IO ()

@@ -196,7 +196,7 @@ withResult :: DuckDBConnection -> String -> (Ptr DuckDBResult -> IO a) -> IO a
 withResult conn sql action =
   withCString sql \sqlPtr ->
     alloca \resPtr -> do
-      state <- c_duckdb_query_safe conn sqlPtr resPtr
+      state <- c_duckdb_query conn sqlPtr resPtr
       state @?= DuckDBSuccess
       result <- action resPtr
       c_duckdb_destroy_result resPtr
@@ -209,8 +209,3 @@ foreign import ccall "wrapper"
 
 foreign import ccall "wrapper"
   mkScalarExecFun :: (DuckDBFunctionInfo -> DuckDBDataChunk -> DuckDBVector -> IO ()) -> IO DuckDBScalarFunctionFun
-
--- Safe wrappers -------------------------------------------------------------
-
-foreign import ccall safe "duckdb_query"
-  c_duckdb_query_safe :: DuckDBConnection -> CString -> Ptr DuckDBResult -> IO DuckDBState

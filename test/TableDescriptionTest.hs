@@ -151,7 +151,7 @@ getColumnName desc idx = do
   namePtr <- c_duckdb_table_description_get_column_name desc idx
   assertBool "column name pointer should not be null" (namePtr /= nullPtr)
   name <- peekCString namePtr
-  c_duckdb_free_safe (castPtr namePtr)
+  c_duckdb_free (castPtr namePtr)
   pure name
 
 columnHasDefault :: DuckDBTableDescription -> DuckDBIdx -> IO Bool
@@ -161,8 +161,3 @@ columnHasDefault desc idx =
     state @?= DuckDBSuccess
     CBool val <- peek outPtr
     pure (val /= 0)
-
--- Safe wrappers -------------------------------------------------------------
-
-foreign import ccall safe "duckdb_free"
-  c_duckdb_free_safe :: Ptr () -> IO ()

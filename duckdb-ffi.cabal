@@ -1,0 +1,127 @@
+cabal-version:      2.2
+name:               duckdb-ffi
+version:            0.1.4.0
+license:            LicenseRef-AllRightsReserved
+author:             Matthias Pall Gissurarson
+maintainer:         matti@dpella.io,
+                    lobo@dpella.io
+category:           Database
+build-type:         Custom
+
+custom-setup
+  setup-depends: base, Cabal, directory, filepath, process
+
+library
+  default-language:
+    Haskell2010
+  default-extensions:
+        AllowAmbiguousTypes
+      , DataKinds
+      , GADTs
+      , GeneralizedNewtypeDeriving
+      , ImportQualifiedPost
+      , LambdaCase
+      , MultiParamTypeClasses
+      , OverloadedStrings
+      , RankNTypes
+      , TypeApplications
+      , ScopedTypeVariables
+  hs-source-dirs:
+    src
+  exposed-modules:
+    Database.DuckDB.FFI
+  other-modules:
+    Database.DuckDB.FFI.AggregateFunctions
+    Database.DuckDB.FFI.Appender
+    Database.DuckDB.FFI.Arrow
+    Database.DuckDB.FFI.BindValues
+    Database.DuckDB.FFI.CastFunctions
+    Database.DuckDB.FFI.Configuration
+    Database.DuckDB.FFI.DataChunk
+    Database.DuckDB.FFI.ErrorData
+    Database.DuckDB.FFI.ExecutePrepared
+    Database.DuckDB.FFI.Expression
+    Database.DuckDB.FFI.ExtractStatements
+    Database.DuckDB.FFI.Helpers
+    Database.DuckDB.FFI.LogicalTypes
+    Database.DuckDB.FFI.OpenConnect
+    Database.DuckDB.FFI.PendingResult
+    Database.DuckDB.FFI.PreparedStatements
+    Database.DuckDB.FFI.ProfilingInfo
+    Database.DuckDB.FFI.QueryExecution
+    Database.DuckDB.FFI.ReplacementScans
+    Database.DuckDB.FFI.ResultFunctions
+    Database.DuckDB.FFI.SafeFetch
+    Database.DuckDB.FFI.ScalarFunctions
+    Database.DuckDB.FFI.SelectionVector
+    Database.DuckDB.FFI.StreamingResult
+    Database.DuckDB.FFI.TableDescription
+    Database.DuckDB.FFI.TableFunctions
+    Database.DuckDB.FFI.Threading
+    Database.DuckDB.FFI.Types
+    Database.DuckDB.FFI.Validity
+    Database.DuckDB.FFI.ValueInterface
+    Database.DuckDB.FFI.Vector
+  include-dirs: cbits/
+  install-includes: duckdb.h
+  extra-libraries: duckdb
+  extra-bundled-libraries: duckdb
+
+  c-sources: cbits/duckdb_stub.c
+  build-depends:
+      base >=4.18 && <4.19
+    , bytestring
+    , containers
+    , exceptions
+    , mtl
+    , text
+    , time
+    , transformers
+  if os(linux)
+    ghc-options:    -optl-Wl,-rpath,'$ORIGIN/../cbits/duckdb'
+    ld-options:       -Wl,-rpath,'$ORIGIN/../cbits/duckdb'
+
+test-suite duckdb-ffi-tests
+  type:                exitcode-stdio-1.0
+  hs-source-dirs:      test
+  main-is:             Main.hs
+  other-modules:
+    ConfigurationTest
+    ErrorDataTest
+    OpenConnectTest
+    PreparedStatementsTest
+    BindValuesTest
+    ExecutePreparedStatementsTest
+    ExtractStatementsTest
+    LogicalTypesTest
+    DataChunkTest
+    VectorTest
+    ValidityMaskTest
+    ScalarFunctionsTest
+    TableFunctionsTest
+    SelectionVectorTest
+    AggregateFunctionsTest
+    PendingResultTest
+    ValueInterfaceTest
+    QueryExecutionTest
+    ResultFunctionsTest
+    SafeFetchTest
+    HelpersTest
+    TableDescriptionTest
+    AppenderTest
+    ProfilingInfoTest
+    CastFunctionsTest
+    ExpressionTest
+    ReplacementScansTest
+    ArrowInterfaceTest
+    StreamingResultTest
+    ThreadingTest
+  ghc-options:        -threaded
+  default-language:    Haskell2010
+  build-depends:
+      base >=4.18 && <4.19
+    , duckdb-ffi
+    , tasty
+    , tasty-hunit
+    , text
+    , time

@@ -1,0 +1,363 @@
+{-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE PatternSynonyms #-}
+
+module AppenderTest (tests) where
+
+import Control.Exception (bracket, finally)
+import Control.Monad (forM_, when)
+import Data.Int (Int32)
+import Database.DuckDB.FFI
+import Foreign.C.String (CString, peekCString, withCString)
+import Foreign.C.Types (CBool (..), CInt (..))
+import Foreign.Marshal.Alloc (alloca)
+import Foreign.Marshal.Array (withArray)
+import Foreign.Ptr (Ptr, castPtr, nullPtr)
+import Foreign.Storable (peek, poke, pokeElemOff)
+import Test.Tasty (TestTree, testGroup)
+import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
+
+tests :: TestTree
+tests =
+  testGroup
+    "Appender"
+    [ appenderRowwiseLifecycle
+    , appenderColumnSubset
+    , appenderDataChunkInsert
+    , appenderQueryAppender
+    ]
+
+appenderRowwiseLifecycle :: TestTree
+appenderRowwiseLifecycle =
+  testCase "append rows using scalar APIs and inspect results" $
+    withDatabase \db ->
+      withConnection db \conn -> do
+        runStatement conn "CREATE TABLE appender_demo(id INTEGER, name VARCHAR, active BOOLEAN DEFAULT TRUE)"
+
+        withTableAppender conn "appender_demo" \app -> do
+          c_duckdb_appender_column_count app >>= (@?= 3)
+          checkColumnType app 0 DuckDBTypeInteger
+          checkColumnType app 1 DuckDBTypeVarchar
+          checkColumnType app 2 DuckDBTypeBoolean
+
+          c_duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
+          c_duckdb_append_int32 app 1 >>= (@?= DuckDBSuccess)
+          withCString "alice" \name ->
+            c_duckdb_append_varchar app name >>= (@?= DuckDBSuccess)
+          c_duckdb_append_bool app (CBool 1) >>= (@?= DuckDBSuccess)
+          c_duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
+
+          c_duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
+          c_duckdb_append_int32 app 2 >>= (@?= DuckDBSuccess)
+          c_duckdb_append_null app >>= (@?= DuckDBSuccess)
+          c_duckdb_append_bool app (CBool 0) >>= (@?= DuckDBSuccess)
+          c_duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
+
+          c_duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
+          c_duckdb_append_int32 app 3 >>= (@?= DuckDBSuccess)
+          withDuckValue (withCString "via_value" c_duckdb_create_varchar) \val ->
+            c_duckdb_append_value app val >>= (@?= DuckDBSuccess)
+          c_duckdb_append_default app >>= (@?= DuckDBSuccess)
+          c_duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
+
+          errPtr0 <- c_duckdb_appender_error app
+          when (errPtr0 /= nullPtr) $ do
+            msg <- peekCString errPtr0
+            msg @?= ""
+
+          c_duckdb_appender_flush app >>= (@?= DuckDBSuccess)
+          c_duckdb_appender_close app >>= (@?= DuckDBSuccess)
+
+          withCString "SELECT id, name, active FROM appender_demo ORDER BY id" \sql ->
+            withResult conn sql \resPtr -> do
+              c_duckdb_row_count_safe resPtr >>= (@?= 3)
+
+              c_duckdb_value_int32_safe resPtr 0 0 >>= (@?= 1)
+              fetchString resPtr 1 0 >>= (@?= "alice")
+              fetchBool resPtr 2 0 >>= (@?= True)
+
+              c_duckdb_value_int32_safe resPtr 0 1 >>= (@?= 2)
+              c_duckdb_value_is_null_safe resPtr 1 1 >>= (@?= CBool 1)
+              fetchBool resPtr 2 1 >>= (@?= False)
+
+              c_duckdb_value_int32_safe resPtr 0 2 >>= (@?= 3)
+              fetchString resPtr 1 2 >>= (@?= "via_value")
+              fetchBool resPtr 2 2 >>= (@?= True)
+
+
+appenderColumnSubset :: TestTree
+appenderColumnSubset =
+  testCase "restrict active columns and rely on table defaults" $
+    withDatabase \db ->
+      withConnection db \conn -> do
+        runStatement
+          conn
+          "CREATE TABLE subset_demo(id INTEGER DEFAULT 100, name VARCHAR, note VARCHAR, active BOOLEAN DEFAULT FALSE)"
+
+        withTableAppender conn "subset_demo" \app -> do
+          c_duckdb_appender_clear_columns app >>= (@?= DuckDBSuccess)
+          withCString "name" \col ->
+            c_duckdb_appender_add_column app col >>= (@?= DuckDBSuccess)
+          withCString "note" \col ->
+            c_duckdb_appender_add_column app col >>= (@?= DuckDBSuccess)
+
+          c_duckdb_appender_column_count app >>= (@?= 2)
+
+          c_duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
+          withCString "subset-one" \name ->
+            c_duckdb_append_varchar app name >>= (@?= DuckDBSuccess)
+          withCString "note one" \note ->
+            c_duckdb_append_varchar app note >>= (@?= DuckDBSuccess)
+          c_duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
+
+          c_duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
+          withCString "subset-two" \name ->
+            c_duckdb_append_varchar app name >>= (@?= DuckDBSuccess)
+          c_duckdb_append_null app >>= (@?= DuckDBSuccess)
+          c_duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
+
+          c_duckdb_appender_flush app >>= (@?= DuckDBSuccess)
+          c_duckdb_appender_close app >>= (@?= DuckDBSuccess)
+
+          withCString "SELECT id, name, note, active FROM subset_demo ORDER BY rowid" \sql ->
+            withResult conn sql \resPtr -> do
+              c_duckdb_row_count_safe resPtr >>= (@?= 2)
+
+              c_duckdb_value_int32_safe resPtr 0 0 >>= (@?= 100)
+              fetchString resPtr 1 0 >>= (@?= "subset-one")
+              fetchString resPtr 2 0 >>= (@?= "note one")
+              fetchBool resPtr 3 0 >>= (@?= False)
+
+              c_duckdb_value_int32_safe resPtr 0 1 >>= (@?= 100)
+              fetchString resPtr 1 1 >>= (@?= "subset-two")
+              c_duckdb_value_is_null_safe resPtr 2 1 >>= (@?= CBool 1)
+              fetchBool resPtr 3 1 >>= (@?= False)
+
+appenderDataChunkInsert :: TestTree
+appenderDataChunkInsert =
+  testCase "append via data chunk using extended constructor" $
+    withDatabase \db ->
+      withConnection db \conn -> do
+        runStatement conn "CREATE TABLE chunk_demo(id INTEGER, label VARCHAR)"
+
+        withTableAppenderExt conn "chunk_demo" \app -> do
+          c_duckdb_appender_column_count app >>= (@?= 2)
+
+          withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \intType ->
+            withLogicalType (c_duckdb_create_logical_type DuckDBTypeVarchar) \textType ->
+              withArray [intType, textType] \typeArray ->
+                withDataChunk (c_duckdb_create_data_chunk typeArray 2) \chunk -> do
+                  intVec <- c_duckdb_data_chunk_get_vector chunk 0
+                  fillIntVector intVec [10, 11]
+
+                  textVec <- c_duckdb_data_chunk_get_vector chunk 1
+                  assignStrings textVec ["ten", "eleven"]
+
+                  c_duckdb_data_chunk_set_size chunk 2
+                  c_duckdb_append_data_chunk app chunk >>= (@?= DuckDBSuccess)
+
+          c_duckdb_appender_flush app >>= (@?= DuckDBSuccess)
+          c_duckdb_appender_close app >>= (@?= DuckDBSuccess)
+
+          withCString "SELECT id, label FROM chunk_demo ORDER BY id" \sql ->
+            withResult conn sql \resPtr -> do
+              c_duckdb_row_count_safe resPtr >>= (@?= 2)
+              c_duckdb_value_int32_safe resPtr 0 0 >>= (@?= 10)
+              fetchString resPtr 1 0 >>= (@?= "ten")
+              c_duckdb_value_int32_safe resPtr 0 1 >>= (@?= 11)
+              fetchString resPtr 1 1 >>= (@?= "eleven")
+
+appenderQueryAppender :: TestTree
+appenderQueryAppender =
+  testCase "append rows through query-based appender" $
+    withDatabase \db ->
+      withConnection db \conn -> do
+        runStatement conn "CREATE TABLE query_target(id INTEGER, label VARCHAR)"
+
+        withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \intType ->
+          withLogicalType (c_duckdb_create_logical_type DuckDBTypeVarchar) \textType -> do
+            let types = [intType, textType]
+            withQueryAppender conn "INSERT INTO query_target SELECT * FROM appended_data" types \app -> do
+              c_duckdb_appender_column_count app >>= (@?= 2)
+
+              c_duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
+              c_duckdb_append_int32 app 21 >>= (@?= DuckDBSuccess)
+              withCString "twenty-one" \label ->
+                c_duckdb_append_varchar app label >>= (@?= DuckDBSuccess)
+              c_duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
+
+              c_duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
+              c_duckdb_append_int32 app 22 >>= (@?= DuckDBSuccess)
+              withCString "twenty-two" \label ->
+                c_duckdb_append_varchar app label >>= (@?= DuckDBSuccess)
+              c_duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
+
+              c_duckdb_appender_flush app >>= (@?= DuckDBSuccess)
+              c_duckdb_appender_close app >>= (@?= DuckDBSuccess)
+
+            withCString "SELECT id, label FROM query_target ORDER BY id" \sql ->
+              withResult conn sql \resPtr -> do
+                c_duckdb_row_count_safe resPtr >>= (@?= 2)
+                c_duckdb_value_int32_safe resPtr 0 0 >>= (@?= 21)
+                fetchString resPtr 1 0 >>= (@?= "twenty-one")
+                c_duckdb_value_int32_safe resPtr 0 1 >>= (@?= 22)
+                fetchString resPtr 1 1 >>= (@?= "twenty-two")
+
+-- Helpers -------------------------------------------------------------------
+
+withDatabase :: (DuckDBDatabase -> IO a) -> IO a
+withDatabase action =
+  withCString ":memory:" \path ->
+    alloca \dbPtr -> do
+      state <- c_duckdb_open path dbPtr
+      state @?= DuckDBSuccess
+      db <- peek dbPtr
+      result <- action db
+      c_duckdb_close dbPtr
+      pure result
+
+withConnection :: DuckDBDatabase -> (DuckDBConnection -> IO a) -> IO a
+withConnection db action =
+  alloca \connPtr -> do
+    state <- c_duckdb_connect db connPtr
+    state @?= DuckDBSuccess
+    conn <- peek connPtr
+    result <- action conn
+    c_duckdb_disconnect connPtr
+    pure result
+
+runStatement :: DuckDBConnection -> String -> IO ()
+runStatement conn sql =
+  withCString sql \sqlPtr ->
+    alloca \resPtr -> do
+      state <- c_duckdb_query conn sqlPtr resPtr
+      if state == DuckDBSuccess
+        then c_duckdb_destroy_result resPtr
+        else do
+          errPtr <- c_duckdb_result_error resPtr
+          errMsg <-
+            if errPtr == nullPtr
+              then pure "unknown error"
+              else peekCString errPtr
+          c_duckdb_destroy_result resPtr
+          assertFailure ("duckdb_query failed: " <> errMsg)
+
+withResult :: DuckDBConnection -> CString -> (Ptr DuckDBResult -> IO a) -> IO a
+withResult conn sql action =
+  alloca \resPtr -> do
+    c_duckdb_query_safe conn sql resPtr >>= (@?= DuckDBSuccess)
+    result <- action resPtr
+    c_duckdb_destroy_result resPtr
+    pure result
+
+withTableAppender :: DuckDBConnection -> String -> (DuckDBAppender -> IO a) -> IO a
+withTableAppender conn tableName action =
+  withCString tableName \tablePtr ->
+    withAppenderAcquire
+      (\appPtr -> c_duckdb_appender_create conn nullPtr tablePtr appPtr)
+      action
+
+withTableAppenderExt :: DuckDBConnection -> String -> (DuckDBAppender -> IO a) -> IO a
+withTableAppenderExt conn tableName action =
+  withCString tableName \tablePtr ->
+    withAppenderAcquire
+      (\appPtr -> c_duckdb_appender_create_ext conn nullPtr nullPtr tablePtr appPtr)
+      action
+
+withQueryAppender :: DuckDBConnection -> String -> [DuckDBLogicalType] -> (DuckDBAppender -> IO a) -> IO a
+withQueryAppender conn query types action =
+  withCString query \queryPtr ->
+    withArray types \typeArray ->
+      withAppenderAcquire
+        (\appPtr -> c_duckdb_appender_create_query conn queryPtr (fromIntegral (length types)) typeArray nullPtr nullPtr appPtr)
+        action
+
+withAppenderAcquire :: (Ptr DuckDBAppender -> IO DuckDBState) -> (DuckDBAppender -> IO a) -> IO a
+withAppenderAcquire acquire action =
+  alloca \appPtr -> do
+    state <- acquire appPtr
+    state @?= DuckDBSuccess
+    app <- peek appPtr
+    let release = do
+          destroyState <- c_duckdb_appender_destroy appPtr
+          assertBool "destroy returns success or error" (destroyState == DuckDBSuccess || destroyState == DuckDBError)
+    action app `finally` release
+
+withLogicalType :: IO DuckDBLogicalType -> (DuckDBLogicalType -> IO a) -> IO a
+withLogicalType acquire action =
+  bracket acquire destroyLogicalType action
+
+destroyLogicalType :: DuckDBLogicalType -> IO ()
+destroyLogicalType lt =
+  alloca \ptr -> poke ptr lt >> c_duckdb_destroy_logical_type ptr
+
+withDataChunk :: IO DuckDBDataChunk -> (DuckDBDataChunk -> IO a) -> IO a
+withDataChunk acquire action =
+  bracket acquire destroyChunk action
+  where
+    destroyChunk chunk = alloca \ptr -> poke ptr chunk >> c_duckdb_destroy_data_chunk ptr
+
+withDuckValue :: IO DuckDBValue -> (DuckDBValue -> IO a) -> IO a
+withDuckValue acquire action =
+  bracket acquire destroyDuckValue action
+
+destroyDuckValue :: DuckDBValue -> IO ()
+destroyDuckValue val =
+  alloca \ptr -> poke ptr val >> c_duckdb_destroy_value ptr
+
+destroyErrorData :: DuckDBErrorData -> IO ()
+destroyErrorData errData =
+  alloca \ptr -> poke ptr errData >> c_duckdb_destroy_error_data ptr
+
+fillIntVector :: DuckDBVector -> [Int32] -> IO ()
+fillIntVector vec values = do
+  dataPtrRaw <- c_duckdb_vector_get_data vec
+  let dataPtr = castPtr dataPtrRaw :: Ptr Int32
+  forM_ (zip [0 ..] values) \(idx, val) ->
+    pokeElemOff dataPtr idx val
+
+assignStrings :: DuckDBVector -> [String] -> IO ()
+assignStrings vec values =
+  forM_ (zip [0 ..] values) \(idx, val) ->
+    withCString val \str ->
+      c_duckdb_vector_assign_string_element vec (fromIntegral idx) str
+
+checkColumnType :: DuckDBAppender -> DuckDBIdx -> DuckDBType -> IO ()
+checkColumnType app idx expected =
+  do
+    logicalType <- c_duckdb_appender_column_type app idx
+    withLogicalType (pure logicalType) \lt -> c_duckdb_get_type_id lt >>= (@?= expected)
+
+fetchString :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO String
+fetchString resPtr col row = do
+  strPtr <- c_duckdb_value_varchar_safe resPtr col row
+  text <- peekCString strPtr
+  c_duckdb_free_safe (castPtr strPtr)
+  pure text
+
+fetchBool :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO Bool
+fetchBool resPtr col row = do
+  CBool val <- c_duckdb_value_boolean_safe resPtr col row
+  pure (val /= 0)
+
+-- Safe wrappers -------------------------------------------------------------
+
+foreign import ccall safe "duckdb_query"
+  c_duckdb_query_safe :: DuckDBConnection -> CString -> Ptr DuckDBResult -> IO DuckDBState
+
+foreign import ccall safe "duckdb_row_count"
+  c_duckdb_row_count_safe :: Ptr DuckDBResult -> IO DuckDBIdx
+
+foreign import ccall safe "duckdb_value_int32"
+  c_duckdb_value_int32_safe :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO Int32
+
+foreign import ccall safe "duckdb_value_boolean"
+  c_duckdb_value_boolean_safe :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO CBool
+
+foreign import ccall safe "duckdb_value_varchar"
+  c_duckdb_value_varchar_safe :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO CString
+
+foreign import ccall safe "duckdb_value_is_null"
+  c_duckdb_value_is_null_safe :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO CBool
+
+foreign import ccall safe "duckdb_free"
+  c_duckdb_free_safe :: Ptr () -> IO ()

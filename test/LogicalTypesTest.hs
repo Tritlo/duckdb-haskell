@@ -12,7 +12,7 @@ import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Array (withArray)
 import Foreign.Marshal.Utils (withMany)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
-import Foreign.Storable (poke)
+import Foreign.Storable (peek, poke)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
@@ -25,6 +25,7 @@ tests =
     , enumLogicalType
     , compositeLogicalTypes
     , aliasRoundtrip
+    , registerLogicalType
     ]
 
 primitiveLogicalTypes :: TestTree
@@ -153,6 +154,27 @@ aliasRoundtrip =
       peekCString aliasAfter >>= (@?= "custom_alias")
       c_duckdb_free (castPtr aliasAfter)
 
+registerLogicalType :: TestTree
+registerLogicalType =
+  testCase "registered logical type alias is accepted in SQL" $
+    withDatabase \db ->
+      withConnection db \conn ->
+        withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \lt -> do
+          let aliasName = "custom_int_alias"
+          withCString aliasName \aliasPtr ->
+            c_duckdb_logical_type_set_alias lt aliasPtr
+          c_duckdb_register_logical_type conn lt nullPtr >>= (@?= DuckDBSuccess)
+
+          let createSql = "CREATE TABLE logical_type_demo (val " ++ aliasName ++ ")"
+          execQuery conn createSql
+
+          withQueryResult conn "PRAGMA table_info('logical_type_demo')" \resPtr -> do
+            c_duckdb_row_count resPtr >>= (@?= 1)
+            typePtr <- c_duckdb_value_varchar resPtr 2 0
+            typeName <- peekCString typePtr
+            c_duckdb_free (castPtr typePtr)
+            typeName @?= aliasName
+
 -- Utilities
 
 withLogicalType :: IO DuckDBLogicalType -> (DuckDBLogicalType -> IO a) -> IO a
@@ -164,3 +186,42 @@ destroyLogicalType lt =
   alloca \ptr -> do
     poke ptr lt
     c_duckdb_destroy_logical_type ptr
+
+withDatabase :: (DuckDBDatabase -> IO a) -> IO a
+withDatabase action =
+  withCString ":memory:" \path ->
+    alloca \dbPtr -> do
+      state <- c_duckdb_open path dbPtr
+      state @?= DuckDBSuccess
+      db <- peek dbPtr
+      result <- action db
+      c_duckdb_close dbPtr
+      pure result
+
+withConnection :: DuckDBDatabase -> (DuckDBConnection -> IO a) -> IO a
+withConnection db action =
+  alloca \connPtr -> do
+    state <- c_duckdb_connect db connPtr
+    state @?= DuckDBSuccess
+    conn <- peek connPtr
+    result <- action conn
+    c_duckdb_disconnect connPtr
+    pure result
+
+execQuery :: DuckDBConnection -> String -> IO ()
+execQuery conn sql =
+  withCString sql \sqlPtr ->
+    alloca \resPtr -> do
+      state <- c_duckdb_query conn sqlPtr resPtr
+      state @?= DuckDBSuccess
+      c_duckdb_destroy_result resPtr
+
+withQueryResult :: DuckDBConnection -> String -> (Ptr DuckDBResult -> IO a) -> IO a
+withQueryResult conn sql action =
+  withCString sql \sqlPtr ->
+    alloca \resPtr -> do
+      state <- c_duckdb_query conn sqlPtr resPtr
+      state @?= DuckDBSuccess
+      result <- action resPtr
+      c_duckdb_destroy_result resPtr
+      pure result

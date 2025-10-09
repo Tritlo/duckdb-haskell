@@ -23,6 +23,7 @@ tests =
   testGroup
     "Value Interface"
     [ scalarCreatesRoundTrip
+    , valueTypeReportsLogicalType
     , collectionValuesRoundTrip
     ]
 
@@ -187,6 +188,29 @@ scalarCreatesRoundTrip =
       strPtr <- c_duckdb_value_to_string val
       peekCString strPtr >>= (@?= "NULL")
       c_duckdb_free (castPtr strPtr)
+
+valueTypeReportsLogicalType :: TestTree
+valueTypeReportsLogicalType =
+  testCase "value type identifiers track constructors" $ do
+    withDuckValue (c_duckdb_create_int32 42) \intVal -> do
+      intType <- c_duckdb_get_value_type intVal
+      c_duckdb_get_type_id intType >>= (@?= DuckDBTypeInteger)
+
+    withDuckValue (withCString "duckdb" c_duckdb_create_varchar) \strVal -> do
+      strType <- c_duckdb_get_value_type strVal
+      c_duckdb_get_type_id strType >>= (@?= DuckDBTypeVarchar)
+
+    listChild <- c_duckdb_create_logical_type DuckDBTypeInteger
+    listLogical <- c_duckdb_create_list_type listChild
+    elemVal <- c_duckdb_create_int32 7
+    withArray [elemVal] \valuesArray -> do
+      let count = fromIntegral (1 :: Int)
+      withDuckValue (c_duckdb_create_list_value listChild valuesArray count) \listVal -> do
+        listType <- c_duckdb_get_value_type listVal
+        c_duckdb_get_type_id listType >>= (@?= DuckDBTypeList)
+    destroyDuckValue elemVal
+    destroyLogicalType listLogical
+    destroyLogicalType listChild
 
 collectionValuesRoundTrip :: TestTree
 collectionValuesRoundTrip =

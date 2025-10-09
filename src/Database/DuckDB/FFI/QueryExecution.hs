@@ -132,7 +132,7 @@ foreign import ccall unsafe "duckdb_column_count"
 -- * @result@: The result object.
 --
 -- Returns The number of rows present in the result object.
-foreign import ccall safe "duckdb_row_count"
+foreign import ccall unsafe "duckdb_row_count"
   c_duckdb_row_count :: Ptr DuckDBResult -> IO DuckDBIdx
 
 -- | Returns the number of rows changed by the query stored in the result. This is

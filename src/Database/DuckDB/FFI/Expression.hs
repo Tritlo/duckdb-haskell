@@ -43,5 +43,5 @@ foreign import ccall unsafe "duckdb_expression_is_foldable"
 --   with @duckdb_destroy_value@.
 --
 -- Returns The error data. Must be destroyed with @duckdb_destroy_error_data@.
-foreign import ccall unsafe "duckdb_expression_fold"
+foreign import ccall safe "duckdb_expression_fold"
   c_duckdb_expression_fold :: DuckDBClientContext -> DuckDBExpression -> Ptr DuckDBValue -> IO DuckDBErrorData

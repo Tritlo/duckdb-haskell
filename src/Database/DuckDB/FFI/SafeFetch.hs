@@ -37,7 +37,7 @@ import Foreign.Ptr (Ptr)
 --
 -- Returns The boolean value at the specified location, or false if the value
 -- cannot be converted.
-foreign import ccall safe "duckdb_value_boolean"
+foreign import ccall unsafe "duckdb_value_boolean"
   c_duckdb_value_boolean :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO CBool
 
 -- | > Warning Deprecation notice. This method is scheduled for removal in a future
@@ -61,7 +61,7 @@ foreign import ccall unsafe "duckdb_value_int16"
 --
 -- Returns The int32_t value at the specified location, or 0 if the value cannot
 -- be converted.
-foreign import ccall safe "duckdb_value_int32"
+foreign import ccall unsafe "duckdb_value_int32"
   c_duckdb_value_int32 :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO Int32
 
 -- | > Warning Deprecation notice. This method is scheduled for removal in a future
@@ -69,7 +69,7 @@ foreign import ccall safe "duckdb_value_int32"
 --
 -- Returns The int64_t value at the specified location, or 0 if the value cannot
 -- be converted.
-foreign import ccall safe "duckdb_value_int64"
+foreign import ccall unsafe "duckdb_value_int64"
   c_duckdb_value_int64 :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO Int64
 
 -- | > Warning Deprecation notice. This method is scheduled for removal in a future
@@ -194,7 +194,7 @@ foreign import ccall unsafe "wrapped_duckdb_value_interval"
 -- Returns The text value at the specified location as a null-terminated string,
 -- or nullptr if the value cannot be converted. The result must be freed with
 -- @duckdb_free@.
-foreign import ccall safe "duckdb_value_varchar"
+foreign import ccall unsafe "duckdb_value_varchar"
   c_duckdb_value_varchar :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO CString
 
 -- | > Warning Deprecation notice. This method is scheduled for removal in a future
@@ -252,5 +252,5 @@ foreign import ccall unsafe "wrapped_duckdb_value_blob"
 --
 -- Returns Returns true if the value at the specified index is NULL, and false
 -- otherwise.
-foreign import ccall safe "duckdb_value_is_null"
+foreign import ccall unsafe "duckdb_value_is_null"
   c_duckdb_value_is_null :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO CBool

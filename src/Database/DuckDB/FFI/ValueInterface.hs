@@ -89,7 +89,7 @@ import Foreign.Ptr (Ptr)
 --
 -- Parameters:
 -- * @value@: The value to destroy.
-foreign import ccall safe "duckdb_destroy_value"
+foreign import ccall unsafe "duckdb_destroy_value"
   c_duckdb_destroy_value :: Ptr DuckDBValue -> IO ()
 
 -- | Creates a value from a null-terminated string
@@ -452,7 +452,7 @@ foreign import ccall unsafe "duckdb_get_uint32"
 -- * @val@: A duckdb_value containing a bigint
 --
 -- Returns A int64_t, or MinValue if the value cannot be converted
-foreign import ccall safe "duckdb_get_int64"
+foreign import ccall unsafe "duckdb_get_int64"
   c_duckdb_get_int64 :: DuckDBValue -> IO Int64
 
 -- | Returns the uint64_t value of the given value.

@@ -20,7 +20,7 @@ import Foreign.C.Types (CBool (..))
 -- Parameters:
 -- * @database@: The database object to execute tasks for
 -- * @max_tasks@: The maximum amount of tasks to execute
-foreign import ccall unsafe "duckdb_execute_tasks"
+foreign import ccall safe "duckdb_execute_tasks"
   c_duckdb_execute_tasks :: DuckDBDatabase -> DuckDBIdx -> IO ()
 
 -- | Creates a task state that can be used with duckdb_execute_tasks_state to
@@ -42,7 +42,7 @@ foreign import ccall unsafe "duckdb_create_task_state"
 --
 -- Parameters:
 -- * @state@: The task state of the executor
-foreign import ccall unsafe "duckdb_execute_tasks_state"
+foreign import ccall safe "duckdb_execute_tasks_state"
   c_duckdb_execute_tasks_state :: DuckDBTaskState -> IO ()
 
 -- | Execute DuckDB tasks on this thread.
@@ -58,7 +58,7 @@ foreign import ccall unsafe "duckdb_execute_tasks_state"
 -- * @max_tasks@: The maximum amount of tasks to execute
 --
 -- Returns The amount of tasks that have actually been executed
-foreign import ccall unsafe "duckdb_execute_n_tasks_state"
+foreign import ccall safe "duckdb_execute_n_tasks_state"
   c_duckdb_execute_n_tasks_state :: DuckDBTaskState -> DuckDBIdx -> IO DuckDBIdx
 
 -- | Finish execution on a specific task.

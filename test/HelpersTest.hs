@@ -3,13 +3,16 @@
 
 module HelpersTest (tests) where
 
+import Control.Exception (bracket)
 import Data.Int (Int64)
 import Data.Time.Calendar (diffDays, fromGregorian)
 import Database.DuckDB.FFI
-import Foreign.C.Types (CDouble (..), CSize (..))
+import Foreign.C.String (peekCString, withCString)
+import Foreign.C.Types (CBool (..), CDouble (..), CSize (..))
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (Ptr, nullPtr)
-import Foreign.Storable (peek, poke)
+import Foreign.Marshal.Array (allocaArray)
+import Foreign.Ptr (Ptr, castPtr, nullPtr)
+import Foreign.Storable (peek, poke, pokeElemOff)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
 
@@ -20,6 +23,7 @@ tests =
     [ testMallocFree
     , testVectorSize
     , testDateTimeHelpers
+    , testStringHelpers
     , testHugeIntHelpers
     , testDecimalHelpers
     ]
@@ -52,7 +56,7 @@ testDateTimeHelpers =
       roundTrippedDay <- c_duckdb_to_date dateStructPtr
       roundTrippedDay @?= duckDay
 
-    c_duckdb_is_finite_date duckDay >>= (@?= 1)
+    c_duckdb_is_finite_date duckDay >>= (@?= CBool 1)
 
     let microsPerSecond = 1000000
         timeMicros = ((12 * 60 + 34) * 60 + 56) * microsPerSecond
@@ -83,7 +87,37 @@ testDateTimeHelpers =
       roundTrippedTs <- c_duckdb_to_timestamp tsStructPtr
       roundTrippedTs @?= duckTimestamp
 
-    c_duckdb_is_finite_timestamp duckTimestamp >>= (@?= 1)
+    c_duckdb_is_finite_timestamp duckTimestamp >>= (@?= CBool 1)
+    c_duckdb_is_finite_timestamp_s (DuckDBTimestampS (tsMicros `div` 1000000)) >>= (@?= CBool 1)
+    c_duckdb_is_finite_timestamp_ms (DuckDBTimestampMs (tsMicros `div` 1000)) >>= (@?= CBool 1)
+    c_duckdb_is_finite_timestamp_ns (DuckDBTimestampNs (tsMicros * 1000)) >>= (@?= CBool 1)
+
+testStringHelpers :: TestTree
+testStringHelpers =
+  testCase "string_t helpers inspect inline and heap strings" $ do
+    inspectString "short" True
+    inspectString (replicate 32 'x') False
+  where
+    inspectString text expectInline =
+      withLogicalType (c_duckdb_create_logical_type DuckDBTypeVarchar) \varcharType ->
+        allocaArray 1 \typesPtr -> do
+          pokeElemOff typesPtr 0 varcharType
+          bracket
+            (c_duckdb_create_data_chunk typesPtr 1)
+            destroyDataChunk
+            \chunk -> do
+              vec <- c_duckdb_data_chunk_get_vector chunk 0
+              withCString text \cStr ->
+                c_duckdb_vector_assign_string_element vec 0 cStr
+              c_duckdb_data_chunk_set_size chunk 1
+              dataPtr <- c_duckdb_vector_get_data vec
+              let stringPtr = castPtr dataPtr :: Ptr DuckDBStringT
+              inlineFlag <- c_duckdb_string_is_inlined stringPtr
+              inlineFlag @?= if expectInline then CBool 1 else CBool 0
+              len <- c_duckdb_string_t_length stringPtr
+              len @?= fromIntegral (length text)
+              textPtr <- c_duckdb_string_t_data stringPtr
+              peekCString textPtr >>= (@?= text)
 
 testHugeIntHelpers :: TestTree
 testHugeIntHelpers =
@@ -116,3 +150,21 @@ testDecimalHelpers =
       (width, scale) @?= (18, 2)
       result <- c_duckdb_decimal_to_double decimalPtr
       result @?= input
+
+-- Utilities ----------------------------------------------------------------
+
+withLogicalType :: IO DuckDBLogicalType -> (DuckDBLogicalType -> IO a) -> IO a
+withLogicalType acquire =
+  bracket acquire destroyLogicalType
+
+destroyLogicalType :: DuckDBLogicalType -> IO ()
+destroyLogicalType lt =
+  alloca \ptr -> do
+    poke ptr lt
+    c_duckdb_destroy_logical_type ptr
+
+destroyDataChunk :: DuckDBDataChunk -> IO ()
+destroyDataChunk chunk =
+  alloca \ptr -> do
+    poke ptr chunk
+    c_duckdb_destroy_data_chunk ptr

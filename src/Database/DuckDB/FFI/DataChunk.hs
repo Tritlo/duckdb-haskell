@@ -58,7 +58,7 @@ foreign import ccall unsafe "duckdb_data_chunk_get_column_count"
 -- * @chunk@: The data chunk to get the data from
 --
 -- Returns The vector
-foreign import ccall safe "duckdb_data_chunk_get_vector"
+foreign import ccall unsafe "duckdb_data_chunk_get_vector"
   c_duckdb_data_chunk_get_vector :: DuckDBDataChunk -> DuckDBIdx -> IO DuckDBVector
 
 -- | Retrieves the current number of tuples in a data chunk.
@@ -67,7 +67,7 @@ foreign import ccall safe "duckdb_data_chunk_get_vector"
 -- * @chunk@: The data chunk to get the data from
 --
 -- Returns The number of tuples in the data chunk
-foreign import ccall safe "duckdb_data_chunk_get_size"
+foreign import ccall unsafe "duckdb_data_chunk_get_size"
   c_duckdb_data_chunk_get_size :: DuckDBDataChunk -> IO DuckDBIdx
 
 -- | Sets the current number of tuples in a data chunk.
@@ -75,5 +75,5 @@ foreign import ccall safe "duckdb_data_chunk_get_size"
 -- Parameters:
 -- * @chunk@: The data chunk to set the size in
 -- * @size@: The number of tuples in the data chunk
-foreign import ccall safe "duckdb_data_chunk_set_size"
+foreign import ccall unsafe "duckdb_data_chunk_set_size"
   c_duckdb_data_chunk_set_size :: DuckDBDataChunk -> DuckDBIdx -> IO ()

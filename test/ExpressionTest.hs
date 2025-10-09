@@ -103,37 +103,40 @@ expressionBind ExpressionState{esFoldable, esReturnType, esFoldValue, esFoldErro
   argCount <- c_duckdb_scalar_function_bind_get_argument_count info
   argCount @?= 1
   exprHandle <- c_duckdb_scalar_function_bind_get_argument info 0
-  foldableFlag <- c_duckdb_expression_is_foldable exprHandle
-  let isFoldable = foldableFlag /= 0
-  writeIORef esFoldable (Just isFoldable)
-  retType <- c_duckdb_expression_return_type exprHandle
-  typeId <- c_duckdb_get_type_id retType
-  destroyLogicalType retType
-  writeIORef esReturnType (Just typeId)
-  alloca \ctxPtr -> do
-    c_duckdb_scalar_function_get_client_context info ctxPtr
-    ctx <- peek ctxPtr
-    alloca \valuePtr -> do
-      poke valuePtr nullPtr
-      errData <- c_duckdb_expression_fold ctx exprHandle valuePtr
-      if errData == nullPtr
-        then do
-          valueHandle <- peek valuePtr
-          if valueHandle == nullPtr
+  finally
+    (do
+      foldableFlag <- c_duckdb_expression_is_foldable exprHandle
+      let isFoldable = foldableFlag /= 0
+      writeIORef esFoldable (Just isFoldable)
+      retType <- c_duckdb_expression_return_type exprHandle
+      typeId <- c_duckdb_get_type_id retType
+      destroyLogicalType retType
+      writeIORef esReturnType (Just typeId)
+      alloca \ctxPtr -> do
+        c_duckdb_scalar_function_get_client_context info ctxPtr
+        ctx <- peek ctxPtr
+        alloca \valuePtr -> do
+          poke valuePtr nullPtr
+          errData <- c_duckdb_expression_fold ctx exprHandle valuePtr
+          if errData == nullPtr
             then do
-              writeIORef esFoldValue Nothing
-              writeIORef esFoldError (Just "fold produced null value")
+              valueHandle <- peek valuePtr
+              if valueHandle == nullPtr
+                then do
+                  writeIORef esFoldValue Nothing
+                  writeIORef esFoldError (Just "fold produced null value")
+                else do
+                  rendered <- duckValueToString valueHandle
+                  writeIORef esFoldValue (Just rendered)
+                  writeIORef esFoldError Nothing
+                  destroyDuckValue valueHandle
             else do
-              rendered <- duckValueToString valueHandle
-              writeIORef esFoldValue (Just rendered)
-              writeIORef esFoldError Nothing
-              destroyDuckValue valueHandle
-        else do
-          msgPtr <- c_duckdb_error_data_message errData
-          msg <- peekCString msgPtr
-          writeIORef esFoldValue Nothing
-          writeIORef esFoldError (Just msg)
-          destroyErrorData errData
+              msgPtr <- c_duckdb_error_data_message errData
+              msg <- peekCString msgPtr
+              writeIORef esFoldValue Nothing
+              writeIORef esFoldError (Just msg)
+              destroyErrorData errData)
+    (alloca \exprPtr -> poke exprPtr exprHandle >> c_duckdb_destroy_expression exprPtr)
 
 expressionExec :: DuckDBFunctionInfo -> DuckDBDataChunk -> DuckDBVector -> IO ()
 expressionExec _ chunk outVec = do

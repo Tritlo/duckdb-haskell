@@ -53,3 +53,14 @@ us understand past decisions and avoid repeating mistakes.
   be rejected.
 - Queries with genuine named placeholders still surface their textual name,
   so the validation logic can differentiate between the two cases.
+
+## 2024-10-11 — Phase 5 observations
+
+- `bindNamed` still requires callers to supply every placeholder explicitly; consider accepting sparse bindings once DuckDB exposes richer metadata.
+- Error reporting for mixed positional/named parameters still relies on DuckDB’s runtime error message; revisit if the FFI exposes better introspection.
+
+## 2024-10-11 — Phase 5.5 (RowParser) observations
+
+- Swapping the direct `[Field] -> Either ResultError` conversion for a RowParser/Ok pipeline significantly improves diagnostics and unlocks generic `FromRow` instances. The conversion glue now needs to translate parser failures back into meaningful `ResultError` values; make sure new parser combinators surface the column index so the resulting `SQLError` stays actionable.
+- DuckDB does not surface column metadata about unused trailing fields, so when the parser advances past the expected column count we synthesise `ColumnCountMismatch`. Keep an eye on this once streaming APIs arrive—chunked decoding must maintain the same invariant.
+- The test suite now depends on `transformers`; ensure downstream projects importing duckdb-simple bring that dependency in if they rely on the new RowParser combinators directly.

@@ -12,9 +12,13 @@ module Database.DuckDB.Simple.Types (
     Statement,
     Query (..),
     SQLError (..),
+    FormatError (..),
     Null (..),
     Only (..),
 ) where
+
+import Control.Exception (Exception)
+import Data.Text (Text)
 
 import Database.DuckDB.Simple.Internal (
     Connection,
@@ -30,3 +34,13 @@ data Null = Null
 -- | Wrapper used for single-column rows.
 newtype Only a = Only {fromOnly :: a}
     deriving (Eq, Ord, Show, Read)
+
+-- | Raised when parameter formatting fails before a statement is executed.
+data FormatError = FormatError
+    { formatErrorMessage :: !Text
+    , formatErrorQuery :: !Query
+    , formatErrorParams :: ![String]
+    }
+    deriving (Eq, Show)
+
+instance Exception FormatError

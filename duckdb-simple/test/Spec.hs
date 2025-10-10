@@ -1,4 +1,8 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
@@ -6,11 +10,61 @@
 -- | Tasty-based test suite for duckdb-simple.
 module Main (main) where
 
+import Control.Applicative ((<|>))
 import Control.Exception (ErrorCall, Exception, try)
+import Control.Monad (replicateM)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple
+import Database.DuckDB.Simple.FromField (Field (..))
+import GHC.Generics (Generic)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit
+
+data Person = Person
+    { personId :: Int
+    , personName :: Text.Text
+    }
+    deriving stock (Eq, Show, Generic)
+    deriving anyclass (FromRow)
+
+data WithRemaining = WithRemaining Int Int
+    deriving (Eq, Show)
+
+instance FromRow WithRemaining where
+    fromRow = do
+        firstVal <- field
+        remaining <- numFieldsRemaining
+        _ <- replicateM remaining (fieldWith (const (Right ())))
+        pure (WithRemaining firstVal remaining)
+
+newtype YesNo = YesNo Bool
+    deriving (Eq, Show)
+
+instance FromRow YesNo where
+    fromRow = parseYes <|> parseNo
+      where
+        parseYes = YesNo True <$ fieldWith (match (Text.pack "yes"))
+        parseNo = YesNo False <$ fieldWith (match (Text.pack "no"))
+
+        match expected fld@Field{fieldIndex} =
+            case fromField fld :: Either ResultError Text.Text of
+                Left err -> Left err
+                Right txt ->
+                    let normalized = Text.toLower txt
+                     in if normalized == expected
+                            then Right ()
+                            else
+                                Left
+                                    ConversionError
+                                        { resultErrorColumn = fieldIndex
+                                        , resultErrorMessage =
+                                            Text.concat
+                                                [ "duckdb-simple: expected "
+                                                , expected
+                                                , Text.pack " but found "
+                                                , normalized
+                                                ]
+                                        }
 
 main :: IO ()
 main = defaultMain tests
@@ -115,6 +169,18 @@ statementTests =
                 assertEqual "rows affected" 1 count
                 rows <- queryNamed conn "SELECT a FROM named_params WHERE b = $label" ["$label" := ("named" :: String)]
                 assertEqual "named query" [Only (1 :: Int)] rows
+        , testCase "rejects incorrect positional argument counts" $
+            withConnection ":memory:" \conn -> do
+                _ <- execute_ conn "CREATE TABLE param_count (a INTEGER, b INTEGER)"
+                assertThrowsFormatError
+                    (execute conn "INSERT INTO param_count VALUES (?, ?)" (Only (1 :: Int)))
+                    (Text.isInfixOf "parameter(s)" . formatErrorMessage)
+        , testCase "rejects positional bindings on named statements" $
+            withConnection ":memory:" \conn -> do
+                _ <- execute_ conn "CREATE TABLE mixed_mode (a INTEGER)"
+                assertThrowsFormatError
+                    (execute conn "INSERT INTO mixed_mode VALUES ($a)" (Only (1 :: Int)))
+                    (Text.isInfixOf "named parameters" . formatErrorMessage)
         , testCase "reports error when mixing positional and named parameters" $
             withConnection ":memory:" \conn -> do
                 _ <- execute_ conn "CREATE TABLE mixed_params (a INTEGER, b TEXT)"
@@ -125,7 +191,15 @@ statementTests =
                         _ <- executeStatement stmt
                         pure ()
                     )
-                    (\err -> Text.isInfixOf "Mixing named and positional parameters" (sqlErrorMessage err))
+                    ( \(err :: SQLError) ->
+                        Text.isInfixOf "Mixing named and positional parameters" (sqlErrorMessage err)
+                    )
+        , testCase "generic FromRow derivation works" $
+            withConnection ":memory:" \conn -> do
+                _ <- execute_ conn "CREATE TABLE person (id INTEGER, name TEXT)"
+                _ <- executeMany conn "INSERT INTO person VALUES (?, ?)" [(1 :: Int, "Alice" :: String), (2 :: Int, "Bob" :: String)]
+                people <- query_ conn "SELECT id, name FROM person ORDER BY id" :: IO [Person]
+                assertEqual "person rows" [Person 1 (Text.pack "Alice"), Person 2 (Text.pack "Bob")] people
         , testCase "query_ fetches rows" $
             withConnection ":memory:" \conn -> do
                 _ <- execute_ conn "CREATE TABLE query_rows (a INTEGER, b TEXT)"
@@ -145,6 +219,13 @@ statementTests =
                 _ <- executeMany conn "INSERT INTO query_params VALUES (?, ?)" [(1 :: Int, "x" :: String), (2 :: Int, "y" :: String)]
                 rows <- query conn "SELECT a FROM query_params WHERE b = ?" (Only ("y" :: String))
                 assertEqual "query result" [Only (2 :: Int)] rows
+        , testCase "column mismatch surfaces as SQLError" $
+            withConnection ":memory:" \conn -> do
+                _ <- execute_ conn "CREATE TABLE mismatch (a INTEGER, b INTEGER)"
+                _ <- execute_ conn "INSERT INTO mismatch VALUES (1, 2)"
+                assertThrows
+                    (query_ conn "SELECT a, b FROM mismatch" :: IO [Only Int])
+                    (Text.isInfixOf "expected 1 columns" . sqlErrorMessage)
         , testCase "clears statement bindings without error" $
             withConnection ":memory:" \conn -> do
                 stmt <- openStatement conn "SELECT ?"
@@ -162,6 +243,32 @@ statementTests =
                 none <- namedParameterIndex stmt "missing"
                 assertEqual "missing parameter index" Nothing none
                 closeStatement stmt
+        , testCase "bindNamed rejects statements without named placeholders" $
+            withConnection ":memory:" \conn -> do
+                stmt <- openStatement conn "SELECT ?"
+                assertThrowsFormatError
+                    (bindNamed stmt [":value" := (1 :: Int)])
+                    (Text.isInfixOf "does not define named parameters" . formatErrorMessage)
+                closeStatement stmt
+        , testCase "bindNamed rejects unknown parameters" $
+            withConnection ":memory:" \conn -> do
+                stmt <- openStatement conn "SELECT $known"
+                assertThrowsFormatError
+                    (bindNamed stmt ["$missing" := (1 :: Int)])
+                    (Text.isInfixOf "unknown named parameter" . formatErrorMessage)
+                closeStatement stmt
+        , testCase "numFieldsRemaining reports remaining columns" $
+            withConnection ":memory:" \conn -> do
+                _ <- execute_ conn "CREATE TABLE remaining (a INTEGER, b INTEGER, c INTEGER)"
+                _ <- execute conn "INSERT INTO remaining VALUES (?, ?, ?)" (1 :: Int, 2 :: Int, 3 :: Int)
+                rows <- query_ conn "SELECT a, b, c FROM remaining" :: IO [WithRemaining]
+                assertEqual "remaining count" [WithRemaining 1 2] rows
+        , testCase "RowParser alternatives fall back" $
+            withConnection ":memory:" \conn -> do
+                _ <- execute_ conn "CREATE TABLE yesno (answer TEXT)"
+                _ <- executeMany conn "INSERT INTO yesno VALUES (?)" [Only ("yes" :: String), Only ("no" :: String)]
+                rows <- query_ conn "SELECT answer FROM yesno ORDER BY answer" :: IO [YesNo]
+                assertEqual "yes/no parsing" [YesNo False, YesNo True] rows
         ]
 
 transactionTests :: TestTree
@@ -225,3 +332,7 @@ assertThrowsSQLError action =
 assertThrowsErrorCall :: IO a -> Assertion
 assertThrowsErrorCall action =
     assertThrows action (const True :: ErrorCall -> Bool)
+
+assertThrowsFormatError :: IO a -> (FormatError -> Bool) -> Assertion
+assertThrowsFormatError action predicate =
+    assertThrows action predicate

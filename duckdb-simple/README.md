@@ -73,6 +73,36 @@ the same SQL statement; the library preserves DuckDB’s error message in that
 situation. Savepoints are also unavailable in DuckDB at the moment, so
 `withSavepoint` throws an `SQLError` detailing the limitation.
 
+If the number of supplied parameters does not match the statement’s declared
+placeholders—or if you attempt to bind named arguments to a positional-only
+statement—`duckdb-simple` raises a `FormatError` before executing the query.
+
+### Decoding rows
+
+`FromRow` is powered by a `RowParser`, which means instances can be written in a
+monadic/Applicative style and even derived generically for product types:
+
+```haskell
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
+
+import Database.DuckDB.Simple
+import GHC.Generics (Generic)
+
+data Person = Person
+  { personId :: Int
+  , personName :: Text
+  }
+  deriving stock (Show, Generic)
+  deriving anyclass (FromRow)
+
+fetchPeople :: Connection -> IO [Person]
+fetchPeople conn = query_ conn "SELECT id, name FROM person ORDER BY id"
+```
+
+Helper combinators such as `field`, `fieldWith`, and `numFieldsRemaining` are
+available when a custom instance needs fine-grained control.
+
 ## Tests
 
 The test suite is built with [tasty](https://hackage.haskell.org/package/tasty)

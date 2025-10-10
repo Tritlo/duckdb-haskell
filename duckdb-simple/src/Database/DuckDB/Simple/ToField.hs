@@ -19,6 +19,7 @@ module Database.DuckDB.Simple.ToField (
     ToField (..),
     NamedParam (..),
     bindFieldBinding,
+    renderFieldBinding,
 ) where
 
 import Control.Exception (bracket, throwIO)
@@ -62,83 +63,130 @@ data NamedParam where
 
 infixr 3 :=
 
--- | Encapsulates the action required to bind a single positional parameter.
-newtype FieldBinding = FieldBinding (Statement -> DuckDBIdx -> IO ())
+-- | Encapsulates the action required to bind a single positional parameter, together with a textual description used in diagnostics.
+data FieldBinding = FieldBinding
+    { fieldBindingAction :: !(Statement -> DuckDBIdx -> IO ())
+    , fieldBindingDisplay :: !String
+    }
 
 -- | Apply a 'FieldBinding' to the given statement/index.
 bindFieldBinding :: Statement -> DuckDBIdx -> FieldBinding -> IO ()
-bindFieldBinding stmt idx (FieldBinding action) = action stmt idx
+bindFieldBinding stmt idx FieldBinding{fieldBindingAction} = fieldBindingAction stmt idx
+
+-- | Render a bound parameter for error reporting.
+renderFieldBinding :: FieldBinding -> String
+renderFieldBinding FieldBinding{fieldBindingDisplay} = fieldBindingDisplay
+
+mkFieldBinding :: String -> (Statement -> DuckDBIdx -> IO ()) -> FieldBinding
+mkFieldBinding display action =
+    FieldBinding
+        { fieldBindingAction = action
+        , fieldBindingDisplay = display
+        }
 
 -- | Types that can be used as positional parameters.
 class ToField a where
     toField :: a -> FieldBinding
 
 instance ToField Null where
-    toField Null = nullBinding
+    toField Null = nullBinding "NULL"
 
 instance ToField Bool where
     toField value =
-        FieldBinding \stmt idx ->
-            bindDuckValue stmt idx (c_duckdb_create_bool (if value then 1 else 0))
+        mkFieldBinding
+            (show value)
+            \stmt idx ->
+                bindDuckValue stmt idx (c_duckdb_create_bool (if value then 1 else 0))
 
 instance ToField Int where
-    toField = toField . (fromIntegral :: Int -> Int64)
+    toField = intBinding . (fromIntegral :: Int -> Int64)
 
 instance ToField Int16 where
-    toField = toField . (fromIntegral :: Int16 -> Int64)
+    toField = intBinding . (fromIntegral :: Int16 -> Int64)
 
 instance ToField Int32 where
-    toField = toField . (fromIntegral :: Int32 -> Int64)
+    toField = intBinding . (fromIntegral :: Int32 -> Int64)
 
 instance ToField Int64 where
     toField value =
-        FieldBinding \stmt idx ->
-            bindDuckValue stmt idx (c_duckdb_create_int64 value)
+        intBinding value
 
 instance ToField Word where
-    toField = toField . (fromIntegral :: Word -> Int64)
+    toField value = intBinding (fromIntegral value :: Int64)
 
 instance ToField Word16 where
-    toField = toField . (fromIntegral :: Word16 -> Int64)
+    toField value = intBinding (fromIntegral value :: Int64)
 
 instance ToField Word32 where
-    toField = toField . (fromIntegral :: Word32 -> Int64)
+    toField value = intBinding (fromIntegral value :: Int64)
 
 instance ToField Word64 where
-    toField = toField . (fromIntegral :: Word64 -> Int64)
+    toField value =
+        mkFieldBinding
+            (show value)
+            \stmt idx ->
+                bindDuckValue stmt idx (c_duckdb_create_int64 (fromIntegral value))
 
 instance ToField Double where
     toField value =
-        FieldBinding \stmt idx ->
-            bindDuckValue stmt idx (c_duckdb_create_double (CDouble value))
+        mkFieldBinding
+            (show value)
+            \stmt idx ->
+                bindDuckValue stmt idx (c_duckdb_create_double (CDouble value))
 
 instance ToField Float where
-    toField value = toField (realToFrac value :: Double)
+    toField value =
+        mkFieldBinding
+            (show value)
+            \stmt idx ->
+                bindDuckValue stmt idx (c_duckdb_create_double (CDouble (realToFrac value)))
 
 instance ToField Text where
     toField txt =
-        FieldBinding \stmt idx ->
-            TextForeign.withCString txt \cstr ->
-                bindDuckValue stmt idx (c_duckdb_create_varchar cstr)
+        mkFieldBinding
+            (show txt)
+            \stmt idx ->
+                TextForeign.withCString txt \cstr ->
+                    bindDuckValue stmt idx (c_duckdb_create_varchar cstr)
 
 instance ToField String where
-    toField = toField . Text.pack
+    toField str =
+        mkFieldBinding
+            (show str)
+            \stmt idx ->
+                TextForeign.withCString (Text.pack str) \cstr ->
+                    bindDuckValue stmt idx (c_duckdb_create_varchar cstr)
 
 instance ToField BS.ByteString where
     toField bs =
-        FieldBinding \stmt idx ->
-            BS.useAsCStringLen bs \(ptr, len) ->
-                bindDuckValue stmt idx (c_duckdb_create_blob (castPtr ptr :: Ptr Word8) (fromIntegral len))
+        mkFieldBinding
+            ("<blob length=" <> show (BS.length bs) <> ">")
+            \stmt idx ->
+                BS.useAsCStringLen bs \(ptr, len) ->
+                    bindDuckValue stmt idx (c_duckdb_create_blob (castPtr ptr :: Ptr Word8) (fromIntegral len))
 
 instance (ToField a) => ToField (Maybe a) where
-    toField Nothing = nullBinding
-    toField (Just value) = toField value
+    toField Nothing = nullBinding "Nothing"
+    toField (Just value) =
+        let binding = toField value
+         in binding
+                { fieldBindingDisplay = "Just " <> renderFieldBinding binding
+                }
 
 -- | Helper for binding 'Null' values.
-nullBinding :: FieldBinding
-nullBinding =
-    FieldBinding \stmt idx ->
-        bindDuckValue stmt idx c_duckdb_create_null_value
+nullBinding :: String -> FieldBinding
+nullBinding repr =
+    mkFieldBinding
+        repr
+        \stmt idx ->
+            bindDuckValue stmt idx c_duckdb_create_null_value
+
+intBinding :: Int64 -> FieldBinding
+intBinding value =
+    mkFieldBinding
+        (show value)
+        \stmt idx ->
+            bindDuckValue stmt idx (c_duckdb_create_int64 value)
 
 bindDuckValue :: Statement -> DuckDBIdx -> IO DuckDBValue -> IO ()
 bindDuckValue stmt idx makeValue =

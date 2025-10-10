@@ -16,6 +16,7 @@ module Database.DuckDB.Simple.FromField (
     FromField (..),
 ) where
 
+import Control.Exception (Exception)
 import Data.Int (Int16, Int32, Int64)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -59,6 +60,8 @@ data ResultError
         , resultErrorMessage :: !Text
         }
     deriving (Eq, Show)
+
+instance Exception ResultError
 
 -- | Types that can be constructed from a DuckDB column.
 class FromField a where

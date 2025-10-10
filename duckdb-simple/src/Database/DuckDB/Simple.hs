@@ -43,9 +43,14 @@ module Database.DuckDB.Simple (
 
     -- * Errors and conversions
     SQLError (..),
+    FormatError (..),
     ResultError (..),
     FromField (..),
     FromRow (..),
+    RowParser,
+    field,
+    fieldWith,
+    numFieldsRemaining,
     -- Re-export parameter helper types.
     ToField (..),
     ToRow (..),
@@ -56,8 +61,9 @@ module Database.DuckDB.Simple (
 ) where
 
 import Control.Exception (bracket, mask, onException, throwIO, try)
-import Control.Monad (void, when, zipWithM_)
+import Control.Monad (forM, void, when, zipWithM_)
 import Data.IORef (atomicModifyIORef', mkWeakIORef, newIORef)
+import Data.Maybe (isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
@@ -68,7 +74,15 @@ import Database.DuckDB.Simple.FromField (
     FromField (..),
     ResultError (..),
  )
-import Database.DuckDB.Simple.FromRow (FromRow (..), resultErrorToSqlError)
+import Database.DuckDB.Simple.FromRow (
+    FromRow (..),
+    RowParser,
+    field,
+    fieldWith,
+    numFieldsRemaining,
+    parseRow,
+    resultErrorToSqlError,
+ )
 import Database.DuckDB.Simple.Internal (
     Connection (..),
     ConnectionState (..),
@@ -80,9 +94,9 @@ import Database.DuckDB.Simple.Internal (
     withQueryCString,
     withStatementHandle,
  )
-import Database.DuckDB.Simple.ToField (FieldBinding, NamedParam (..), ToField (..), bindFieldBinding)
+import Database.DuckDB.Simple.ToField (FieldBinding, NamedParam (..), ToField (..), bindFieldBinding, renderFieldBinding)
 import Database.DuckDB.Simple.ToRow (ToRow (..))
-import Database.DuckDB.Simple.Types (Null (..), Only (..))
+import Database.DuckDB.Simple.Types (FormatError (..), Null (..), Only (..))
 import Foreign.C.String (CString, peekCString, withCString)
 import Foreign.C.Types (CBool (..), CDouble (..))
 import Foreign.Marshal.Alloc (alloca)
@@ -153,22 +167,75 @@ withStatement conn sql = bracket (openStatement conn sql) closeStatement
 -- | Bind positional parameters to a prepared statement, replacing any previous bindings.
 bind :: Statement -> [FieldBinding] -> IO ()
 bind stmt fields = do
+    withStatementHandle stmt \handle -> do
+        let actual = length fields
+        expected <- fmap fromIntegral (c_duckdb_nparams handle)
+        when (actual /= expected) $
+            throwFormatErrorBindings stmt (parameterCountMessage expected actual) fields
+        parameterNames <- fetchParameterNames handle expected
+        when (any isJust parameterNames) $
+            throwFormatErrorBindings stmt (Text.pack "duckdb-simple: statement defines named parameters; use executeNamed or bindNamed") fields
     clearStatementBindings stmt
     zipWithM_ apply [1 ..] fields
   where
+    parameterCountMessage expected actual =
+        Text.pack $
+            "duckdb-simple: SQL query contains "
+                <> show expected
+                <> " parameter(s), but "
+                <> show actual
+                <> " argument(s) were supplied"
+
     apply :: Int -> FieldBinding -> IO ()
     apply idx field = bindFieldBinding stmt (fromIntegral idx :: DuckDBIdx) field
 
 -- | Bind named parameters to a prepared statement, preserving any positional bindings.
 bindNamed :: Statement -> [NamedParam] -> IO ()
-bindNamed stmt params = do
-    mapM_ apply params
-  where
-    apply (name := value) = do
-        mIdx <- namedParameterIndex stmt name
-        case mIdx of
-            Nothing -> throwIO (namedParameterError stmt name)
-            Just idx -> bindFieldBinding stmt (fromIntegral idx :: DuckDBIdx) (toField value)
+bindNamed stmt params =
+    let bindings = fmap (\(name := value) -> (name, toField value)) params
+        parameterCountMessage expected actual =
+            Text.pack $
+                "duckdb-simple: SQL query contains "
+                    <> show expected
+                    <> " named parameter(s), but "
+                    <> show actual
+                    <> " argument(s) were supplied"
+        unknownNameMessage name =
+            Text.concat
+                [ Text.pack "duckdb-simple: unknown named parameter "
+                , name
+                ]
+        apply (name, binding) = do
+            mIdx <- namedParameterIndex stmt name
+            case mIdx of
+                Nothing ->
+                    throwFormatErrorNamed stmt (unknownNameMessage name) bindings
+                Just idx -> bindFieldBinding stmt (fromIntegral idx :: DuckDBIdx) binding
+     in do
+            withStatementHandle stmt \handle -> do
+                let actual = length bindings
+                expected <- fmap fromIntegral (c_duckdb_nparams handle)
+                when (actual /= expected) $
+                    throwFormatErrorNamed stmt (parameterCountMessage expected actual) bindings
+                parameterNames <- fetchParameterNames handle expected
+                when (all isNothing parameterNames && expected > 0) $
+                    throwFormatErrorNamed stmt (Text.pack "duckdb-simple: statement does not define named parameters; use positional bindings or adjust the SQL") bindings
+            clearStatementBindings stmt
+            mapM_ apply bindings
+
+fetchParameterNames :: DuckDBPreparedStatement -> Int -> IO [Maybe Text]
+fetchParameterNames handle count =
+    forM [1 .. count] \idx -> do
+        namePtr <- c_duckdb_parameter_name handle (fromIntegral idx)
+        if namePtr == nullPtr
+            then pure Nothing
+            else do
+                name <- Text.pack <$> peekCString namePtr
+                c_duckdb_free (castPtr namePtr)
+                let normalized = normalizeName name
+                if normalized == Text.pack (show idx)
+                    then pure Nothing
+                    else pure (Just name)
 
 -- | Remove all parameter bindings associated with a prepared statement.
 clearStatementBindings :: Statement -> IO ()
@@ -207,9 +274,9 @@ executeStatement stmt =
                     c_duckdb_destroy_result resPtr
                     pure changed
                 else do
-                    err <- fetchResultError resPtr
+                    (errMsg, _) <- fetchResultError resPtr
                     c_duckdb_destroy_result resPtr
-                    throwIO $ mkPrepareError (statementQuery stmt) err
+                    throwIO $ mkPrepareError (statementQuery stmt) errMsg
 
 -- | Execute a query with positional parameters and return the affected row count.
 execute :: (ToRow q) => Connection -> Query -> q -> IO Int
@@ -238,9 +305,9 @@ execute_ conn queryText =
                         c_duckdb_destroy_result resPtr
                         pure changed
                     else do
-                        err <- fetchResultError resPtr
+                        (errMsg, errType) <- fetchResultError resPtr
                         c_duckdb_destroy_result resPtr
-                        throwIO $ mkExecuteError queryText err
+                        throwIO $ mkExecuteError queryText errMsg errType
 
 -- | Execute a query that uses named parameters.
 executeNamed :: Connection -> Query -> [NamedParam] -> IO Int
@@ -263,9 +330,9 @@ query conn queryText params =
                         c_duckdb_destroy_result resPtr
                         convertRows queryText rows
                     else do
-                        err <- fetchResultError resPtr
+                        (errMsg, errType) <- fetchResultError resPtr
                         c_duckdb_destroy_result resPtr
-                        throwIO $ mkPrepareError queryText err
+                        throwIO $ mkExecuteError queryText errMsg errType
 
 -- | Run a query that uses named parameters and decode all rows eagerly.
 queryNamed :: (FromRow r) => Connection -> Query -> [NamedParam] -> IO [r]
@@ -281,9 +348,9 @@ queryNamed conn queryText params =
                         c_duckdb_destroy_result resPtr
                         convertRows queryText rows
                     else do
-                        err <- fetchResultError resPtr
+                        (errMsg, errType) <- fetchResultError resPtr
                         c_duckdb_destroy_result resPtr
-                        throwIO $ mkPrepareError queryText err
+                        throwIO $ mkExecuteError queryText errMsg errType
 
 -- | Run a query without supplying parameters and decode all rows eagerly.
 query_ :: (FromRow r) => Connection -> Query -> IO [r]
@@ -298,9 +365,9 @@ query_ conn queryText =
                         c_duckdb_destroy_result resPtr
                         convertRows queryText rows
                     else do
-                        err <- fetchResultError resPtr
+                        (errMsg, errType) <- fetchResultError resPtr
                         c_duckdb_destroy_result resPtr
-                        throwIO $ mkExecuteError queryText err
+                        throwIO $ mkExecuteError queryText errMsg errType
 
 -- | Run an action inside a deferred transaction.
 withTransaction :: Connection -> IO a -> IO a
@@ -439,12 +506,19 @@ fetchPrepareError stmt = do
         then pure (Text.pack "duckdb-simple: prepare failed")
         else Text.pack <$> peekCString msgPtr
 
-fetchResultError :: Ptr DuckDBResult -> IO Text
+fetchResultError :: Ptr DuckDBResult -> IO (Text, Maybe DuckDBErrorType)
 fetchResultError resultPtr = do
     msgPtr <- c_duckdb_result_error resultPtr
-    if msgPtr == nullPtr
-        then pure (Text.pack "duckdb-simple: query failed")
-        else Text.pack <$> peekCString msgPtr
+    msg <-
+        if msgPtr == nullPtr
+            then pure (Text.pack "duckdb-simple: query failed")
+            else Text.pack <$> peekCString msgPtr
+    errType <- c_duckdb_result_error_type resultPtr
+    let classified =
+            if errType == DuckDBErrorInvalid
+                then Nothing
+                else Just errType
+    pure (msg, classified)
 
 mkOpenError :: Text -> SQLError
 mkOpenError msg =
@@ -470,21 +544,33 @@ mkPrepareError query msg =
         , sqlErrorQuery = Just query
         }
 
-mkExecuteError :: Query -> Text -> SQLError
-mkExecuteError query msg =
+mkExecuteError :: Query -> Text -> Maybe DuckDBErrorType -> SQLError
+mkExecuteError query msg errType =
     SQLError
         { sqlErrorMessage = msg
-        , sqlErrorType = Nothing
+        , sqlErrorType = errType
         , sqlErrorQuery = Just query
         }
 
-namedParameterError :: Statement -> Text -> SQLError
-namedParameterError Statement{statementQuery} name =
-    SQLError
-        { sqlErrorMessage = Text.concat [Text.pack "duckdb-simple: unknown named parameter ", name]
-        , sqlErrorType = Nothing
-        , sqlErrorQuery = Just statementQuery
-        }
+throwFormatError :: Statement -> Text -> [String] -> IO a
+throwFormatError Statement{statementQuery} message params =
+    throwIO
+        FormatError
+            { formatErrorMessage = message
+            , formatErrorQuery = statementQuery
+            , formatErrorParams = params
+            }
+
+throwFormatErrorBindings :: Statement -> Text -> [FieldBinding] -> IO a
+throwFormatErrorBindings stmt message bindings =
+    throwFormatError stmt message (map renderFieldBinding bindings)
+
+throwFormatErrorNamed :: Statement -> Text -> [(Text, FieldBinding)] -> IO a
+throwFormatErrorNamed stmt message bindings =
+    throwFormatError stmt message (map renderNamed bindings)
+  where
+    renderNamed (name, binding) =
+        Text.unpack name <> " := " <> renderFieldBinding binding
 
 isSavepointUnsupported :: SQLError -> Bool
 isSavepointUnsupported SQLError{sqlErrorMessage} =
@@ -510,7 +596,7 @@ rowsChanged resPtr = fromIntegral <$> c_duckdb_rows_changed resPtr
 
 convertRows :: (FromRow r) => Query -> [[Field]] -> IO [r]
 convertRows queryText rows =
-    case traverse fromRow rows of
+    case traverse (parseRow fromRow) rows of
         Left err -> throwIO (resultErrorToSqlError queryText err)
         Right ok -> pure ok
 

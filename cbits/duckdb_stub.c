@@ -148,10 +148,38 @@ uint32_t wrapped_duckdb_string_t_length(const duckdb_string_t *string) {
 // duckdb_result_arrow_array modifies the arrow array; we add NULL checks so FFI
 // callers can omit either pointer without crashing the process.
 void wrapped_duckdb_result_arrow_array(const duckdb_result *result, duckdb_data_chunk chunk, duckdb_arrow_array *out_array) {
-  if (!result || !out_array) {
+  if (!result || !chunk || !out_array) {
     return;
   }
   duckdb_result_arrow_array(*result, chunk, out_array);
+}
+
+void *wrapped_duckdb_arrow_schema_internal_ptr(duckdb_arrow_schema schema) {
+  if (!schema) {
+    return NULL;
+  }
+  return schema->internal_ptr;
+}
+
+void wrapped_duckdb_arrow_schema_clear_internal_ptr(duckdb_arrow_schema schema) {
+  if (!schema) {
+    return;
+  }
+  schema->internal_ptr = NULL;
+}
+
+void *wrapped_duckdb_arrow_array_internal_ptr(duckdb_arrow_array array) {
+  if (!array) {
+    return NULL;
+  }
+  return array->internal_ptr;
+}
+
+void wrapped_duckdb_arrow_array_clear_internal_ptr(duckdb_arrow_array array) {
+  if (!array) {
+    return;
+  }
+  array->internal_ptr = NULL;
 }
 
 // duckdb_stream_fetch_chunk takes duckdb_result by value; provide a pointer form

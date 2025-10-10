@@ -20,13 +20,17 @@ module Database.DuckDB.FFI.Arrow (
   c_duckdb_execute_prepared_arrow,
   c_duckdb_arrow_scan,
   c_duckdb_arrow_array_scan,
+  duckdbArrowSchemaInternal,
+  duckdbArrowSchemaClear,
+  duckdbArrowArrayInternal,
+  duckdbArrowArrayClear,
 ) where
 
 import Data.Int (Int64)
 import Database.DuckDB.FFI.Types
 import Foreign.C.String (CString)
 import Foreign.C.Types (CInt (..))
-import Foreign.Ptr (FunPtr, Ptr, nullPtr)
+import Foreign.Ptr (FunPtr, Ptr, castPtr, nullPtr)
 import Foreign.Storable (Storable (..), peekByteOff, pokeByteOff, sizeOf)
 
 -- | Transforms a DuckDB Schema into an Arrow Schema
@@ -299,3 +303,37 @@ foreign import ccall safe "duckdb_arrow_scan"
 -- Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
 foreign import ccall safe "duckdb_arrow_array_scan"
   c_duckdb_arrow_array_scan :: DuckDBConnection -> CString -> DuckDBArrowSchema -> DuckDBArrowArray -> Ptr DuckDBArrowStream -> IO DuckDBState
+
+foreign import ccall unsafe "wrapped_duckdb_arrow_schema_internal_ptr"
+  c_duckdb_arrow_schema_internal_ptr :: DuckDBArrowSchema -> IO (Ptr ())
+
+foreign import ccall unsafe "wrapped_duckdb_arrow_schema_clear_internal_ptr"
+  c_duckdb_arrow_schema_clear_internal_ptr :: DuckDBArrowSchema -> IO ()
+
+foreign import ccall unsafe "wrapped_duckdb_arrow_array_internal_ptr"
+  c_duckdb_arrow_array_internal_ptr :: DuckDBArrowArray -> IO (Ptr ())
+
+foreign import ccall unsafe "wrapped_duckdb_arrow_array_clear_internal_ptr"
+  c_duckdb_arrow_array_clear_internal_ptr :: DuckDBArrowArray -> IO ()
+
+duckdbArrowSchemaInternal :: DuckDBArrowSchema -> IO (Maybe ArrowSchemaPtr)
+duckdbArrowSchemaInternal schema = do
+  raw <- c_duckdb_arrow_schema_internal_ptr schema
+  pure $
+    if raw == nullPtr
+      then Nothing
+      else Just (ArrowSchemaPtr (castPtr raw))
+
+duckdbArrowSchemaClear :: DuckDBArrowSchema -> IO ()
+duckdbArrowSchemaClear = c_duckdb_arrow_schema_clear_internal_ptr
+
+duckdbArrowArrayInternal :: DuckDBArrowArray -> IO (Maybe ArrowArrayPtr)
+duckdbArrowArrayInternal array = do
+  raw <- c_duckdb_arrow_array_internal_ptr array
+  pure $
+    if raw == nullPtr
+      then Nothing
+      else Just (ArrowArrayPtr (castPtr raw))
+
+duckdbArrowArrayClear :: DuckDBArrowArray -> IO ()
+duckdbArrowArrayClear = c_duckdb_arrow_array_clear_internal_ptr

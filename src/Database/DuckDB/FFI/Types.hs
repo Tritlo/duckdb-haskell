@@ -177,6 +177,8 @@ module Database.DuckDB.FFI.Types (
   DuckDBArrow,
   DuckDBArrowSchema,
   DuckDBArrowArray,
+  ArrowSchemaPtr (..),
+  ArrowArrayPtr (..),
   DuckDBArrowConvertedSchema,
   DuckDBArrowStream,
   DuckDBPreparedStatement,
@@ -267,7 +269,7 @@ import Data.Int (Int32, Int64, Int8)
 import Data.Word (Word32, Word64, Word8)
 import Foreign.C.String (CString)
 import Foreign.C.Types
-import Foreign.Ptr (FunPtr, Ptr, nullPtr)
+import Foreign.Ptr (FunPtr, Ptr, castPtr, nullPtr)
 import Foreign.Storable (Storable (..), peekByteOff, pokeByteOff)
 
 -- | Unsigned index type used by DuckDB (mirrors @idx_t@).
@@ -1120,23 +1122,56 @@ data DuckDBArrowOptionsStruct
 type DuckDBArrowOptions = Ptr DuckDBArrowOptionsStruct
 
 -- | Tag type backing @duckdb_arrow@ pointers.
-data DuckDBArrowStruct
+data DuckDBArrowStruct = DuckDBArrowStruct
+  { duckdbArrowInternalPtr :: Ptr ()
+  }
 
 -- | Handle to an Arrow query result.
 type DuckDBArrow = Ptr DuckDBArrowStruct
 
 -- | Tag type backing @duckdb_arrow_schema@ pointers.
-data DuckDBArrowSchemaStruct
+data DuckDBArrowSchemaStruct = DuckDBArrowSchemaStruct
+  { duckdbArrowSchemaInternalPtr :: Ptr ()
+  }
 
 -- | Handle to an Arrow schema.
 type DuckDBArrowSchema = Ptr DuckDBArrowSchemaStruct
 
 
 -- | Tag type backing @duckdb_arrow_array@ pointers.
-data DuckDBArrowArrayStruct
+data DuckDBArrowArrayStruct = DuckDBArrowArrayStruct
+  { duckdbArrowArrayInternalPtr :: Ptr ()
+  }
 
 -- | Handle to an Arrow array.
 type DuckDBArrowArray = Ptr DuckDBArrowArrayStruct
+
+instance Storable DuckDBArrowStruct where
+  sizeOf _ = pointerSize
+  alignment _ = alignment (nullPtr :: Ptr ())
+  peek ptr =
+    DuckDBArrowStruct
+      <$> peekByteOff (castPtr ptr) 0
+  poke ptr DuckDBArrowStruct{..} =
+    pokeByteOff (castPtr ptr) 0 duckdbArrowInternalPtr
+
+instance Storable DuckDBArrowSchemaStruct where
+  sizeOf _ = pointerSize
+  alignment _ = alignment (nullPtr :: Ptr ())
+  peek ptr =
+    DuckDBArrowSchemaStruct
+      <$> peekByteOff (castPtr ptr) 0
+  poke ptr DuckDBArrowSchemaStruct{..} =
+    pokeByteOff (castPtr ptr) 0 duckdbArrowSchemaInternalPtr
+
+instance Storable DuckDBArrowArrayStruct where
+  sizeOf _ = pointerSize
+  alignment _ = alignment (nullPtr :: Ptr ())
+  peek ptr =
+    DuckDBArrowArrayStruct
+      <$> peekByteOff (castPtr ptr) 0
+  poke ptr DuckDBArrowArrayStruct{..} =
+    pokeByteOff (castPtr ptr) 0 duckdbArrowArrayInternalPtr
 
 
 -- | Tag type backing @duckdb_arrow_converted_schema@ pointers.
@@ -1442,6 +1477,12 @@ instance Storable ArrowArray where
     pokeByteOff ptr (intFieldSize * 5 + pointerSize * 2) arrowArrayDictionary
     pokeByteOff ptr (intFieldSize * 5 + pointerSize * 3) arrowArrayRelease
     pokeByteOff ptr (intFieldSize * 5 + pointerSize * 4) arrowArrayPrivateData
+
+newtype ArrowSchemaPtr = ArrowSchemaPtr {unArrowSchemaPtr :: Ptr ArrowSchema}
+  deriving (Eq)
+
+newtype ArrowArrayPtr = ArrowArrayPtr {unArrowArrayPtr :: Ptr ArrowArray}
+  deriving (Eq)
 
 pointerSize :: Int
 pointerSize = sizeOf (nullPtr :: Ptr ())

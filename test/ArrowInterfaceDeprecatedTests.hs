@@ -5,16 +5,16 @@
 module ArrowInterfaceDeprecatedTests (tests) where
 
 import Control.Exception (bracket)
-import Control.Monad (when)
-import Data.Int (Int32)
+import Control.Monad (unless, when)
+import Data.Int (Int32, Int64)
 import Data.List (isInfixOf)
 import Database.DuckDB.FFI
-import Foreign.C.String (peekCString, withCString)
+import Foreign.C.String (peekCString, peekCStringLen, withCString)
+import Foreign.C.Types (CChar)
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (FunPtr, Ptr, castPtr, nullFunPtr, nullPtr)
-import Foreign.Storable (peek, poke)
+import Foreign.Ptr (FunPtr, Ptr, castPtr, nullFunPtr, nullPtr, plusPtr)
+import Foreign.Storable (peek, peekElemOff, poke)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.ExpectedFailure (expectFailBecause)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 import Utils (withConnection, withDatabase, withResult)
 
@@ -120,9 +120,37 @@ executePreparedArrowProducesRows =
 
 resultArrowArrayMirrorsChunk :: TestTree
 resultArrowArrayMirrorsChunk =
-  expectFailBecause "duckdb_result_arrow_array crashes in DuckDB 1.4 when invoked from FFI (see upstream issue)" $
-    testCase "result_arrow_array converts materialised chunks to Arrow arrays" $
-      assertFailure "Pending upstream fix for duckdb_result_arrow_array"
+  testCase "result_arrow_array converts materialised chunks to Arrow arrays" $
+    withDatabase \db ->
+      withConnection db \conn -> do
+        execStatement conn "CREATE TABLE arrow_chunks(id BIGINT, label VARCHAR);"
+        execStatement conn "INSERT INTO arrow_chunks VALUES (10, 'ten'), (11, 'eleven');"
+
+        withResult conn "SELECT id, label FROM arrow_chunks ORDER BY id" \resPtr -> do
+          chunk <- c_duckdb_result_get_chunk resPtr 0
+          assertBool "fetch_chunk returned a null chunk" (chunk /= nullPtr)
+          chunkSize <- c_duckdb_data_chunk_get_size chunk
+          chunkCols <- c_duckdb_data_chunk_get_column_count chunk
+
+          alloca \arrowArrayPtr -> do
+            poke arrowArrayPtr zeroArrowArray
+            let duckArray :: DuckDBArrowArray
+                duckArray = castPtr arrowArrayPtr
+
+            alloca \arrayOut -> do
+              poke arrayOut duckArray
+              c_duckdb_result_arrow_array resPtr chunk arrayOut
+
+              array <- peek arrowArrayPtr
+
+              arrowArrayLength array @?= fromIntegral chunkSize
+              arrowArrayChildCount array @?= fromIntegral chunkCols
+
+              validateChunkChildren array
+
+              releaseArrowArray arrowArrayPtr
+
+          destroyChunk chunk
 
 -- rows changed --------------------------------------------------------------
 
@@ -144,9 +172,154 @@ arrowRowsChangedReflectsMutations =
 
 arrowArrayScanRegistersView :: TestTree
 arrowArrayScanRegistersView =
-  expectFailBecause "duckdb_query_arrow_schema currently crashes in DuckDB 1.4 when used via FFI" $
-    testCase "arrow_array_scan registers a view and yields a release stream" $
-      assertFailure "Pending upstream fix for duckdb_query_arrow_schema"
+  testCase "arrow_array_scan registers a view and yields a release stream" $
+    withDatabase \db ->
+      withConnection db \conn -> do
+        execStatement conn "CREATE TABLE arrow_scan_source(i BIGINT, label VARCHAR);"
+        execStatement conn "INSERT INTO arrow_scan_source VALUES (5, 'five'), (6, 'six');"
+
+        withSuccessfulArrow conn "SELECT i, label FROM arrow_scan_source ORDER BY i" \arrow -> do
+          alloca \schemaStorage -> do
+            poke schemaStorage zeroArrowSchema
+            let schemaHandle = castPtr schemaStorage :: DuckDBArrowSchema
+            alloca \schemaOut -> do
+              poke schemaOut schemaHandle
+              schemaState <- c_duckdb_query_arrow_schema arrow schemaOut
+              schemaState @?= DuckDBSuccess
+
+              alloca \arrayStorage -> do
+                poke arrayStorage zeroArrowArray
+                let arrayHandle = castPtr arrayStorage :: DuckDBArrowArray
+                alloca \arrayOut -> do
+                  poke arrayOut arrayHandle
+                  arrayState <- c_duckdb_query_arrow_array arrow arrayOut
+                  arrayState @?= DuckDBSuccess
+
+                  withCString "arrow_array_view" \viewName ->
+                    alloca \streamOut -> do
+                      poke streamOut nullPtr
+                      scanState <- c_duckdb_arrow_array_scan conn viewName schemaHandle arrayHandle streamOut
+                      scanState @?= DuckDBSuccess
+
+                      streamWrapper <- peek streamOut
+                      assertBool "arrow_array_scan returned a null stream handle" (streamWrapper /= nullPtr)
+
+                      withResult conn "SELECT COUNT(*) FROM arrow_array_view" \resPtr -> do
+                        count <- c_duckdb_value_int64 resPtr 0 0
+                        count @?= 2
+
+                      c_duckdb_destroy_arrow_stream streamOut
+                  releaseArrowArray arrayStorage
+            releaseArrowSchema schemaStorage
+
+zeroArrowArray :: ArrowArray
+zeroArrowArray =
+  ArrowArray
+    { arrowArrayLength = 0
+    , arrowArrayNullCount = 0
+    , arrowArrayOffset = 0
+    , arrowArrayBufferCount = 0
+    , arrowArrayChildCount = 0
+    , arrowArrayBuffers = nullPtr
+    , arrowArrayChildren = nullPtr
+    , arrowArrayDictionary = nullPtr
+    , arrowArrayRelease = nullFunPtr
+    , arrowArrayPrivateData = nullPtr
+    }
+
+zeroArrowSchema :: ArrowSchema
+zeroArrowSchema =
+  ArrowSchema
+    { arrowSchemaFormat = nullPtr
+    , arrowSchemaName = nullPtr
+    , arrowSchemaMetadata = nullPtr
+    , arrowSchemaFlags = 0
+    , arrowSchemaChildCount = 0
+    , arrowSchemaChildren = nullPtr
+    , arrowSchemaDictionary = nullPtr
+    , arrowSchemaRelease = nullFunPtr
+    , arrowSchemaPrivateData = nullPtr
+    }
+
+validateChunkChildren :: ArrowArray -> IO ()
+validateChunkChildren array = do
+  let expectedIds = [10, 11] :: [Int64]
+      expectedLabels = ["ten", "eleven"]
+      childCount = fromIntegral (arrowArrayChildCount array) :: Int
+      rowCount = fromIntegral (arrowArrayLength array) :: Int
+  childCount @?= 2
+  rowCount @?= length expectedIds
+
+  let childrenPtr = arrowArrayChildren array
+  assertBool "Arrow array did not expose child arrays" (childrenPtr /= nullPtr)
+
+  let ensurePtr name ptrPred =
+        unless ptrPred $
+          assertFailure ("Arrow array " ++ name ++ " pointer is null")
+
+  intChildPtr <- peekElemOff childrenPtr 0
+  ensurePtr "integer child" (intChildPtr /= nullPtr)
+  intChild <- peek intChildPtr
+  arrowArrayNullCount intChild @?= 0
+  let intBufferCount = fromIntegral (arrowArrayBufferCount intChild) :: Int
+  assertBool "Integer child did not expose the expected buffers" (intBufferCount >= 2)
+
+  let intBuffers = arrowArrayBuffers intChild
+  ensurePtr "integer buffers" (intBuffers /= nullPtr)
+  valueBufferRaw <- peekElemOff intBuffers 1
+  ensurePtr "integer value buffer" (valueBufferRaw /= nullPtr)
+  let valueBuffer = castPtr valueBufferRaw :: Ptr Int64
+  values <- mapM (peekElemOff valueBuffer) [0 .. rowCount - 1]
+  values @?= expectedIds
+
+  strChildPtr <- peekElemOff childrenPtr 1
+  ensurePtr "varchar child" (strChildPtr /= nullPtr)
+  strChild <- peek strChildPtr
+  arrowArrayNullCount strChild @?= 0
+  let strBufferCount = fromIntegral (arrowArrayBufferCount strChild) :: Int
+  assertBool "Varchar child did not expose the expected buffers" (strBufferCount >= 3)
+
+  let strBuffers = arrowArrayBuffers strChild
+  ensurePtr "varchar buffers" (strBuffers /= nullPtr)
+  offsetsRaw <- peekElemOff strBuffers 1
+  dataRaw <- peekElemOff strBuffers 2
+  ensurePtr "varchar offsets buffer" (offsetsRaw /= nullPtr)
+  ensurePtr "varchar data buffer" (dataRaw /= nullPtr)
+
+  let offsetsPtr = castPtr offsetsRaw :: Ptr Int32
+      dataPtr = castPtr dataRaw :: Ptr CChar
+  labels <-
+    mapM
+      ( \idx -> do
+          start <- fromIntegral <$> peekElemOff offsetsPtr idx
+          end <- fromIntegral <$> peekElemOff offsetsPtr (idx + 1)
+          peekCStringLen (dataPtr `plusPtr` start, end - start)
+      )
+      [0 .. rowCount - 1]
+  labels @?= expectedLabels
+
+releaseArrowArray :: Ptr ArrowArray -> IO ()
+releaseArrowArray arrayPtr = do
+  array <- peek arrayPtr
+  let releaseFun = arrowArrayRelease array
+  when (releaseFun /= nullFunPtr) $ do
+    let release = mkArrowArrayRelease releaseFun
+    release arrayPtr
+
+releaseArrowSchema :: Ptr ArrowSchema -> IO ()
+releaseArrowSchema schemaPtr = do
+  schema <- peek schemaPtr
+  let releaseFun = arrowSchemaRelease schema
+  when (releaseFun /= nullFunPtr) $ do
+    let release = mkArrowSchemaRelease releaseFun
+    release schemaPtr
+
+foreign import ccall "dynamic"
+  mkArrowArrayRelease :: FunPtr (Ptr ArrowArray -> IO ()) -> Ptr ArrowArray -> IO ()
+
+foreign import ccall "dynamic"
+  mkArrowSchemaRelease :: FunPtr (Ptr ArrowSchema -> IO ()) -> Ptr ArrowSchema -> IO ()
+
 withSuccessfulArrow :: DuckDBConnection -> String -> (DuckDBArrow -> IO a) -> IO a
 withSuccessfulArrow conn sql action =
   withCString sql \sqlPtr ->

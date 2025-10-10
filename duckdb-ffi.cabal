@@ -116,6 +116,7 @@ test-suite duckdb-ffi-tests
     ArrowInterfaceTest
     StreamingResultTest
     ThreadingTest
+    Utils
   ghc-options:        -threaded
   default-language:    Haskell2010
   build-depends:

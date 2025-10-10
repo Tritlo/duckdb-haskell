@@ -19,6 +19,7 @@ import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deR
 import Foreign.Storable (peek, peekElemOff, poke)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
+import Utils (withConnection, withDatabase, withResult)
 
 data CastHarness = CastHarness
   { chLastMode :: IO DuckDBCastMode
@@ -142,27 +143,6 @@ castCallback modeRef extraSeenRef prefixStable info count inputVec outputVec = d
 
 -- Helpers ------------------------------------------------------------------
 
-withDatabase :: (DuckDBDatabase -> IO a) -> IO a
-withDatabase action =
-  withCString ":memory:" \path ->
-    alloca \dbPtr -> do
-      state <- c_duckdb_open path dbPtr
-      state @?= DuckDBSuccess
-      db <- peek dbPtr
-      result <- action db
-      c_duckdb_close dbPtr
-      pure result
-
-withConnection :: DuckDBDatabase -> (DuckDBConnection -> IO a) -> IO a
-withConnection db action =
-  alloca \connPtr -> do
-    state <- c_duckdb_connect db connPtr
-    state @?= DuckDBSuccess
-    conn <- peek connPtr
-    result <- action conn
-    c_duckdb_disconnect connPtr
-    pure result
-
 withCastFunction :: (DuckDBCastFunction -> IO a) -> IO a
 withCastFunction action = bracket c_duckdb_create_cast_function destroy action
   where
@@ -172,16 +152,6 @@ withLogicalType :: IO DuckDBLogicalType -> (DuckDBLogicalType -> IO a) -> IO a
 withLogicalType create action = bracket create destroy action
   where
     destroy lt = alloca \ptr -> poke ptr lt >> c_duckdb_destroy_logical_type ptr
-
-withResult :: DuckDBConnection -> String -> (Ptr DuckDBResult -> IO a) -> IO a
-withResult conn sql action =
-  withCString sql \sqlPtr ->
-    alloca \resPtr -> do
-      state <- c_duckdb_query conn sqlPtr resPtr
-      state @?= DuckDBSuccess
-      result <- action resPtr
-      c_duckdb_destroy_result resPtr
-      pure result
 
 withErrorResult :: DuckDBConnection -> String -> (Ptr DuckDBResult -> IO a) -> IO a
 withErrorResult conn sql action =

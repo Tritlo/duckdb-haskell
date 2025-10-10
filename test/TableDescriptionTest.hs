@@ -13,6 +13,7 @@ import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (peek)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
+import Utils (withConnection, withDatabase)
 
 tests :: TestTree
 tests =
@@ -73,27 +74,6 @@ tableDescriptionErrorHandling =
             action `finally` cleanup
 
 -- Helpers -------------------------------------------------------------------
-
-withDatabase :: (DuckDBDatabase -> IO a) -> IO a
-withDatabase action =
-  withCString ":memory:" \path ->
-    alloca \dbPtr -> do
-      state <- c_duckdb_open path dbPtr
-      state @?= DuckDBSuccess
-      db <- peek dbPtr
-      result <- action db
-      c_duckdb_close dbPtr
-      pure result
-
-withConnection :: DuckDBDatabase -> (DuckDBConnection -> IO a) -> IO a
-withConnection db action =
-  alloca \connPtr -> do
-    state <- c_duckdb_connect db connPtr
-    state @?= DuckDBSuccess
-    conn <- peek connPtr
-    result <- action conn
-    c_duckdb_disconnect connPtr
-    pure result
 
 runStatement :: DuckDBConnection -> String -> IO ()
 runStatement conn sql =

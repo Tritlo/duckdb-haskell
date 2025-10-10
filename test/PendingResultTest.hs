@@ -14,6 +14,7 @@ import Foreign.Ptr (Ptr, nullPtr)
 import Foreign.Storable (peek, poke)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
+import Utils (withConnection, withDatabase)
 
 tests :: TestTree
 tests =
@@ -23,27 +24,6 @@ tests =
     , pendingPreparedStreamingRoundtrip
     , pendingPreparedReportsError
     ]
-
-withDatabase :: (DuckDBDatabase -> IO a) -> IO a
-withDatabase action =
-  withCString ":memory:" \path ->
-    alloca \dbPtr -> do
-      st <- c_duckdb_open path dbPtr
-      st @?= DuckDBSuccess
-      db <- peek dbPtr
-      result <- action db
-      c_duckdb_close dbPtr
-      pure result
-
-withConnection :: DuckDBDatabase -> (DuckDBConnection -> IO a) -> IO a
-withConnection db action =
-  alloca \connPtr -> do
-    st <- c_duckdb_connect db connPtr
-    st @?= DuckDBSuccess
-    conn <- peek connPtr
-    result <- action conn
-    c_duckdb_disconnect connPtr
-    pure result
 
 withChunk :: DuckDBDataChunk -> (Ptr DuckDBDataChunk -> IO ()) -> IO ()
 withChunk chunk action =

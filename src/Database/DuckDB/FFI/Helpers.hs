@@ -40,7 +40,7 @@ import Foreign.Ptr (Ptr)
 -- * @size@: The number of bytes to allocate.
 --
 -- Returns A pointer to the allocated memory region.
-foreign import ccall unsafe "duckdb_malloc"
+foreign import ccall safe "duckdb_malloc"
   c_duckdb_malloc :: CSize -> IO (Ptr ())
 
 -- | Free a value returned from @duckdb_malloc@, @duckdb_value_varchar@,
@@ -48,7 +48,7 @@ foreign import ccall unsafe "duckdb_malloc"
 --
 -- Parameters:
 -- * @ptr@: The memory region to de-allocate.
-foreign import ccall unsafe "duckdb_free"
+foreign import ccall safe "duckdb_free"
   c_duckdb_free :: Ptr () -> IO ()
 
 -- | The internal vector size used by DuckDB. This is the amount of tuples that

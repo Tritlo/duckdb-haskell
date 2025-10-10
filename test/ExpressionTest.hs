@@ -19,6 +19,7 @@ import Foreign.Ptr (FunPtr, Ptr, castPtr, freeHaskellFunPtr, nullFunPtr, nullPtr
 import Foreign.Storable (peek, peekElemOff, poke)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
+import Utils (withConnection, withDatabase, withResult)
 
 data ExpressionHarness = ExpressionHarness
   { ehFoldable :: IO (Maybe Bool)
@@ -145,27 +146,6 @@ expressionExec _ chunk outVec = do
 
 -- Helpers ------------------------------------------------------------------
 
-withDatabase :: (DuckDBDatabase -> IO a) -> IO a
-withDatabase action =
-  withCString ":memory:" \path ->
-    alloca \dbPtr -> do
-      state <- c_duckdb_open path dbPtr
-      state @?= DuckDBSuccess
-      db <- peek dbPtr
-      result <- action db
-      c_duckdb_close dbPtr
-      pure result
-
-withConnection :: DuckDBDatabase -> (DuckDBConnection -> IO a) -> IO a
-withConnection db action =
-  alloca \connPtr -> do
-    state <- c_duckdb_connect db connPtr
-    state @?= DuckDBSuccess
-    conn <- peek connPtr
-    result <- action conn
-    c_duckdb_disconnect connPtr
-    pure result
-
 withScalarFunction :: (DuckDBScalarFunction -> IO a) -> IO a
 withScalarFunction action = bracket c_duckdb_create_scalar_function destroy action
   where
@@ -194,16 +174,6 @@ destroyErrorData errData =
 destroyLogicalType :: DuckDBLogicalType -> IO ()
 destroyLogicalType lt =
   alloca \ptr -> poke ptr lt >> c_duckdb_destroy_logical_type ptr
-
-withResult :: DuckDBConnection -> String -> (Ptr DuckDBResult -> IO a) -> IO a
-withResult conn sql action =
-  withCString sql \sqlPtr ->
-    alloca \resPtr -> do
-      state <- c_duckdb_query conn sqlPtr resPtr
-      state @?= DuckDBSuccess
-      result <- action resPtr
-      c_duckdb_destroy_result resPtr
-      pure result
 
 -- Wrapper constructors -----------------------------------------------------
 

@@ -13,9 +13,10 @@ import Database.DuckDB.FFI
 import Foreign.C.String (CString, peekCString, withCString)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (FunPtr, Ptr, freeHaskellFunPtr, nullFunPtr, nullPtr)
-import Foreign.Storable (peek, poke)
+import Foreign.Storable (peek)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
+import Utils (withConnection, withDatabase, withResult, withValue)
 
 tests :: TestTree
 tests =
@@ -101,45 +102,6 @@ assertReplacementError conn =
       errMsg <- peekCString errPtr
       assertBool "replacement error message should surface" ("rejected" `isInfixOf` errMsg)
       c_duckdb_destroy_result resPtr
-
-withDatabase :: (DuckDBDatabase -> IO a) -> IO a
-withDatabase action =
-  withCString ":memory:" \path ->
-    alloca \dbPtr -> do
-      st <- c_duckdb_open path dbPtr
-      st @?= DuckDBSuccess
-      db <- peek dbPtr
-      result <- action db
-      c_duckdb_close dbPtr
-      pure result
-
-withConnection :: DuckDBDatabase -> (DuckDBConnection -> IO a) -> IO a
-withConnection db action =
-  alloca \connPtr -> do
-    st <- c_duckdb_connect db connPtr
-    st @?= DuckDBSuccess
-    conn <- peek connPtr
-    result <- action conn
-    c_duckdb_disconnect connPtr
-    pure result
-
-withResult :: DuckDBConnection -> String -> (Ptr DuckDBResult -> IO a) -> IO a
-withResult conn sql action =
-  withCString sql \sqlPtr ->
-    alloca \resPtr -> do
-      st <- c_duckdb_query conn sqlPtr resPtr
-      st @?= DuckDBSuccess
-      result <- action resPtr
-      c_duckdb_destroy_result resPtr
-      pure result
-
-withValue :: IO DuckDBValue -> (DuckDBValue -> IO a) -> IO a
-withValue acquire action = bracket acquire destroy action
-  where
-    destroy value =
-      alloca \ptr -> do
-        poke ptr value
-        c_duckdb_destroy_value ptr
 
 foreign import ccall safe "wrapper"
   mkReplacementCallback ::

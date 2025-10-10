@@ -18,6 +18,7 @@ import Foreign.Ptr (FunPtr, Ptr, castPtr, freeHaskellFunPtr, nullFunPtr, nullPtr
 import Foreign.Storable (peek, peekElemOff, poke, pokeElemOff, sizeOf)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
+import Utils (withConnection, withDatabase, withResultCString)
 
 tests :: TestTree
 tests =
@@ -44,7 +45,7 @@ sumAggregate =
                 setupAggregateFunction aggFun cbs intType "haskell_sum"
                 c_duckdb_register_aggregate_function conn aggFun >>= (@?= DuckDBSuccess)
                 withCString "SELECT haskell_sum(v) FROM (VALUES (1), (2), (3)) t(v)" \sql ->
-                  withResult conn sql \resPtr ->
+                  withResultCString conn sql \resPtr ->
                     c_duckdb_value_int32 resPtr 0 0 >>= (@?= 6)
 
 extraInfoAggregate :: TestTree
@@ -64,7 +65,7 @@ extraInfoAggregate =
                   c_duckdb_register_aggregate_function conn aggFun >>= (@?= DuckDBSuccess)
 
                   withCString "SELECT haskell_bonus_sum(v) FROM (VALUES (1), (2), (3)) t(v)" \sql ->
-                    withResult conn sql \resPtr ->
+                    withResultCString conn sql \resPtr ->
                       c_duckdb_value_int32 resPtr 0 0 >>= (@?= 12)
 
 aggregateFunctionSet :: TestTree
@@ -83,7 +84,7 @@ aggregateFunctionSet =
                     c_duckdb_register_aggregate_function_set conn set >>= (@?= DuckDBSuccess)
 
                     withCString "SELECT haskell_sum_set(v) FROM (VALUES (4), (5), (6)) t(v)" \sql ->
-                      withResult conn sql \resPtr ->
+                      withResultCString conn sql \resPtr ->
                         c_duckdb_value_int32 resPtr 0 0 >>= (@?= 15)
 
 aggregateErrorPropagation :: TestTree
@@ -129,7 +130,7 @@ specialHandlingNulls =
                   c_duckdb_register_aggregate_function conn aggFun >>= (@?= DuckDBSuccess)
 
                   withCString "SELECT nullable_sum(v) FROM (VALUES (CAST(NULL AS INTEGER))) t(v)" \sql ->
-                    withResult conn sql \resPtr -> do
+                    withResultCString conn sql \resPtr -> do
                       isNull <- c_duckdb_value_is_null resPtr 0 0
                       cbToBool isNull @?= True
 
@@ -398,22 +399,6 @@ foreign import ccall safe "wrapper"
 
 -- Resource helpers ----------------------------------------------------------
 
-withDatabase :: (DuckDBDatabase -> IO a) -> IO a
-withDatabase action =
-  withCString ":memory:" \path ->
-    alloca \dbPtr -> do
-      c_duckdb_open path dbPtr >>= (@?= DuckDBSuccess)
-      db <- peek dbPtr
-      result <- action db
-      c_duckdb_close dbPtr
-      pure result
-
-withConnection :: DuckDBDatabase -> (DuckDBConnection -> IO a) -> IO a
-withConnection db action = bracket acquire release action
-  where
-    acquire = alloca \ptr -> c_duckdb_connect db ptr >>= (@?= DuckDBSuccess) >> peek ptr
-    release conn = alloca \ptr -> poke ptr conn >> c_duckdb_disconnect ptr
-
 withLogicalType :: IO DuckDBLogicalType -> (DuckDBLogicalType -> IO a) -> IO a
 withLogicalType acquire action = bracket acquire destroyLogicalType action
   where
@@ -429,11 +414,3 @@ withAggregateFunctionSet name action = bracket acquire release action
   where
     acquire = c_duckdb_create_aggregate_function_set name
     release set = alloca \ptr -> poke ptr set >> c_duckdb_destroy_aggregate_function_set ptr
-
-withResult :: DuckDBConnection -> CString -> (Ptr DuckDBResult -> IO a) -> IO a
-withResult conn sql action =
-  alloca \resPtr -> do
-    c_duckdb_query conn sql resPtr >>= (@?= DuckDBSuccess)
-    result <- action resPtr
-    c_duckdb_destroy_result resPtr
-    pure result

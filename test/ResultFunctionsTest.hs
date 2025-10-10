@@ -9,9 +9,9 @@ import Foreign.C.String (withCString)
 import Foreign.C.Types (CBool (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (nullPtr)
-import Foreign.Storable (peek, poke)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
+import Utils (withConnection, withDatabase)
 
 tests :: TestTree
 tests =
@@ -19,27 +19,6 @@ tests =
     "Result Functions"
     [ chunkIntrospection
     ]
-
-withDatabase :: (DuckDBDatabase -> IO a) -> IO a
-withDatabase f =
-  withCString ":memory:" \path ->
-    alloca \dbPtr -> do
-      state <- c_duckdb_open path dbPtr
-      state @?= DuckDBSuccess
-      db <- peek dbPtr
-      result <- f db
-      c_duckdb_close dbPtr
-      pure result
-
-withConnection :: DuckDBDatabase -> (DuckDBConnection -> IO a) -> IO a
-withConnection db f =
-  alloca \connPtr -> do
-    st <- c_duckdb_connect db connPtr
-    st @?= DuckDBSuccess
-    conn <- peek connPtr
-    result <- f conn
-    c_duckdb_disconnect connPtr
-    pure result
 
 chunkIntrospection :: TestTree
 chunkIntrospection =

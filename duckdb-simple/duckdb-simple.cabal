@@ -1,0 +1,42 @@
+cabal-version:      2.4
+name:               duckdb-simple
+version:            0.1.0.0
+synopsis:           High-level DuckDB interface inspired by sqlite-simple
+description:        Please see the README for usage examples once the initial phases are complete.
+homepage:           https://github.com/duckdb/duckdb
+bug-reports:        https://github.com/duckdb/duckdb/issues
+license:            BSD-3-Clause
+license-file:       LICENSE
+author:             DuckDB Contributors
+maintainer:         duckdb@duckdb.org
+category:           Database
+build-type:         Simple
+
+library
+  exposed-modules:
+      Database.DuckDB.Simple
+      Database.DuckDB.Simple.FromField
+      Database.DuckDB.Simple.FromRow
+      Database.DuckDB.Simple.Internal
+      Database.DuckDB.Simple.Ok
+      Database.DuckDB.Simple.ToField
+      Database.DuckDB.Simple.ToRow
+      Database.DuckDB.Simple.Types
+  hs-source-dirs:   src
+  default-language: Haskell2010
+  build-depends:
+      base >=4.14 && <5
+    , bytestring
+    , duckdb-ffi
+    , text
+
+test-suite duckdb-simple-test
+  type:             exitcode-stdio-1.0
+  hs-source-dirs:   test
+  main-is:          Spec.hs
+  default-language: Haskell2010
+  build-depends:
+      base >=4.14 && <5
+    , duckdb-simple
+    , tasty >=1.4 && <1.6
+    , tasty-hunit >=0.10 && <0.12

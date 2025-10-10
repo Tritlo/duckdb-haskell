@@ -1,6 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
 
-
 module ValueInterfaceTest (tests) where
 
 import Control.Monad (when, (>=>))
@@ -32,25 +31,37 @@ scalarCreatesRoundTrip =
     testCase "scalar value constructors and accessors" $ do
         withDuckValue (c_duckdb_create_bool (CBool 1)) (c_duckdb_get_bool >=> (@?= CBool 1))
 
-        withDuckValue (c_duckdb_create_int8 (-8)) (c_duckdb_get_int8 >=> (@?= (- 8 :: Int8)))
+        withDuckValue (c_duckdb_create_int8 (-8)) (c_duckdb_get_int8 >=> (@?= (-8 :: Int8)))
 
         withDuckValue (c_duckdb_create_uint8 250) (c_duckdb_get_uint8 >=> (@?= (250 :: Word8)))
 
-        withDuckValue (c_duckdb_create_int16 (-32000)) (c_duckdb_get_int16 >=> (@?= (- 32000 :: Int16)))
+        withDuckValue (c_duckdb_create_int16 (-32000)) (c_duckdb_get_int16 >=> (@?= (-32000 :: Int16)))
 
         withDuckValue (c_duckdb_create_uint16 65000) (c_duckdb_get_uint16 >=> (@?= (65000 :: Word16)))
 
-        withDuckValue (c_duckdb_create_int32 (-2000000000)) (c_duckdb_get_int32
-           >=> (@?= (- 2000000000 :: Int32)))
+        withDuckValue
+            (c_duckdb_create_int32 (-2000000000))
+            ( c_duckdb_get_int32
+                >=> (@?= (-2000000000 :: Int32))
+            )
 
-        withDuckValue (c_duckdb_create_uint32 4000000000) (c_duckdb_get_uint32
-           >=> (@?= (4000000000 :: Word32)))
+        withDuckValue
+            (c_duckdb_create_uint32 4000000000)
+            ( c_duckdb_get_uint32
+                >=> (@?= (4000000000 :: Word32))
+            )
 
-        withDuckValue (c_duckdb_create_int64 (-9000000000000000000)) (c_duckdb_get_int64
-           >=> (@?= (- 9000000000000000000 :: Int64)))
+        withDuckValue
+            (c_duckdb_create_int64 (-9000000000000000000))
+            ( c_duckdb_get_int64
+                >=> (@?= (-9000000000000000000 :: Int64))
+            )
 
-        withDuckValue (c_duckdb_create_uint64 10000000000000000000) (c_duckdb_get_uint64
-           >=> (@?= (10000000000000000000 :: Word64)))
+        withDuckValue
+            (c_duckdb_create_uint64 10000000000000000000)
+            ( c_duckdb_get_uint64
+                >=> (@?= (10000000000000000000 :: Word64))
+            )
 
         alloca \hugePtr -> do
             poke hugePtr DuckDBHugeInt{duckDBHugeIntLower = 123, duckDBHugeIntUpper = -1}

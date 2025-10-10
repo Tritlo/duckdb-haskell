@@ -7,6 +7,7 @@ module TableFunctionsTest (tests) where
 import Control.Concurrent (runInBoundThread)
 import Control.Exception (bracket)
 import Control.Monad (forM_, when)
+import Data.Char (isAsciiUpper)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int64)
 import Data.List (isInfixOf)
@@ -20,7 +21,6 @@ import Foreign.Storable (peek, peekElemOff, poke, pokeElemOff, sizeOf)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 import Utils (withConnection, withDatabase, withLogicalType, withResultCString, withValue)
-import Data.Char (isAsciiUpper)
 
 tests :: TestTree
 tests =

@@ -1,6 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
 
-
 module LogicalTypesTest (tests) where
 
 import Control.Monad (forM_, when, (>=>))

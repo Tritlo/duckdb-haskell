@@ -2,7 +2,7 @@
 
 module ExecutePreparedStatementsTest (tests) where
 
-import Control.Monad (forM_,)
+import Control.Monad (forM_)
 import Database.DuckDB.FFI
 import Foreign.C.String (peekCString, withCString)
 import Foreign.C.Types (CBool (..))

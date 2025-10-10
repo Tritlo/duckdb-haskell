@@ -1,9 +1,8 @@
 {-# LANGUAGE BlockArguments #-}
 
-
 module VectorTest (tests) where
 
-import Control.Monad ( forM_, void, (>=>) )
+import Control.Monad (forM_, void, (>=>))
 import Data.Bits (setBit)
 import Data.Int (Int32)
 import Data.Word (Word64)

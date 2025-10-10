@@ -1,0 +1,4 @@
+dist-newstyle/
+reference/
+*.so*
+duckdb-simple/

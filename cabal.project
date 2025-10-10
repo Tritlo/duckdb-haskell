@@ -1,5 +1,4 @@
-packages: duckdb-ffi/*.cabal
-          duckdb-simple/*.cabal
+packages: duckdb-*/*.cabal
 
 -- GHC version
 with-compiler: ghc-9.6.6

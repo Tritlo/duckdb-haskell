@@ -270,7 +270,7 @@ import Data.Int (Int32, Int64, Int8)
 import Data.Word (Word32, Word64, Word8)
 import Foreign.C.String (CString)
 import Foreign.C.Types
-import Foreign.Ptr (FunPtr, Ptr, castPtr, nullPtr)
+import Foreign.Ptr (FunPtr, Ptr, nullPtr)
 import Foreign.Storable (Storable (..), peekByteOff, pokeByteOff)
 
 -- | Unsigned index type used by DuckDB (mirrors @idx_t@).
@@ -1490,12 +1490,21 @@ instance Storable ArrowArray where
     pokeByteOff ptr (intFieldSize * 5 + pointerSize * 3) arrowArrayRelease
     pokeByteOff ptr (intFieldSize * 5 + pointerSize * 4) arrowArrayPrivateData
 
+-- | Pointer wrapper for the deprecated Arrow schema handle exposed by DuckDB.
+-- The underlying memory is managed by DuckDB and must only be accessed through
+-- the deprecated Arrow helper functions.
 newtype ArrowSchemaPtr = ArrowSchemaPtr {unArrowSchemaPtr :: Ptr ArrowSchema}
   deriving (Eq)
 
+-- | Pointer wrapper for the deprecated Arrow array handle exposed by DuckDB.
+-- DuckDB assumes exclusive ownership and coordinates buffer lifetimes via the
+-- release callback stored in the referenced @ArrowArray@ struct.
 newtype ArrowArrayPtr = ArrowArrayPtr {unArrowArrayPtr :: Ptr ArrowArray}
   deriving (Eq)
 
+-- | Pointer wrapper for the deprecated Arrow stream handle returned by DuckDB.
+-- DuckDB owns the referenced stream; call 'c_duckdb_destroy_arrow_stream' after
+-- invoking @duckdb_arrow_scan@.
 newtype ArrowStreamPtr = ArrowStreamPtr {unArrowStreamPtr :: Ptr ()}
   deriving (Eq)
 

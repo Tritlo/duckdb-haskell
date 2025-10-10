@@ -26,12 +26,10 @@ module Database.DuckDB.FFI.Arrow (
   duckdbArrowStreamClear,
 ) where
 
-import Data.Int (Int64)
 import Database.DuckDB.FFI.Types
 import Foreign.C.String (CString)
 import Foreign.C.Types (CInt (..))
-import Foreign.Ptr (FunPtr, Ptr, castPtr, nullPtr)
-import Foreign.Storable (Storable (..), peekByteOff, pokeByteOff, sizeOf)
+import Foreign.Ptr (Ptr, castPtr, nullPtr)
 
 -- | Transforms a DuckDB Schema into an Arrow Schema
 --
@@ -322,6 +320,9 @@ foreign import ccall unsafe "wrapped_duckdb_arrow_stream_internal_ptr"
 foreign import ccall unsafe "wrapped_duckdb_arrow_stream_clear_internal_ptr"
   c_duckdb_arrow_stream_clear_internal_ptr :: DuckDBArrowStream -> IO ()
 
+-- | Read the @internal_ptr@ field of a deprecated Arrow schema wrapper.
+-- Returns 'Nothing' when the wrapper is null or DuckDB has already cleared the
+-- pointer.
 duckdbArrowSchemaInternal :: DuckDBArrowSchema -> IO (Maybe ArrowSchemaPtr)
 duckdbArrowSchemaInternal schema = do
   raw <- c_duckdb_arrow_schema_internal_ptr schema
@@ -330,9 +331,14 @@ duckdbArrowSchemaInternal schema = do
       then Nothing
       else Just (ArrowSchemaPtr (castPtr raw))
 
+-- | Clear the @internal_ptr@ field on a deprecated Arrow schema wrapper.
+-- Useful after copying the schema to application-managed storage.
 duckdbArrowSchemaClear :: DuckDBArrowSchema -> IO ()
 duckdbArrowSchemaClear = c_duckdb_arrow_schema_clear_internal_ptr
 
+-- | Read the @internal_ptr@ field of a deprecated Arrow array wrapper.
+-- Returns 'Nothing' when the wrapper is null or the internal pointer has been
+-- cleared by DuckDB.
 duckdbArrowArrayInternal :: DuckDBArrowArray -> IO (Maybe ArrowArrayPtr)
 duckdbArrowArrayInternal array = do
   raw <- c_duckdb_arrow_array_internal_ptr array
@@ -341,9 +347,14 @@ duckdbArrowArrayInternal array = do
       then Nothing
       else Just (ArrowArrayPtr (castPtr raw))
 
+-- | Clear the @internal_ptr@ field on a deprecated Arrow array wrapper.
+-- After this call DuckDB treats the wrapper as null.
 duckdbArrowArrayClear :: DuckDBArrowArray -> IO ()
 duckdbArrowArrayClear = c_duckdb_arrow_array_clear_internal_ptr
 
+-- | Read the @internal_ptr@ field of a deprecated Arrow stream wrapper.
+-- Returns 'Nothing' when the wrapper is null or the stream has already been
+-- released.
 duckdbArrowStreamInternal :: DuckDBArrowStream -> IO (Maybe ArrowStreamPtr)
 duckdbArrowStreamInternal stream = do
   raw <- c_duckdb_arrow_stream_internal_ptr stream
@@ -352,5 +363,8 @@ duckdbArrowStreamInternal stream = do
       then Nothing
       else Just (ArrowStreamPtr raw)
 
+-- | Clear the @internal_ptr@ field on a deprecated Arrow stream wrapper.
+-- Use this after consuming the stream via @duckdb_arrow_scan@ to avoid stale
+-- pointers on the DuckDB side.
 duckdbArrowStreamClear :: DuckDBArrowStream -> IO ()
 duckdbArrowStreamClear = c_duckdb_arrow_stream_clear_internal_ptr

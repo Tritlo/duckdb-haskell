@@ -65,7 +65,6 @@ library
   include-dirs: cbits/
   install-includes: duckdb.h
   extra-libraries: duckdb
-  extra-bundled-libraries: duckdb
 
   c-sources: cbits/duckdb_stub.c
   build-depends:

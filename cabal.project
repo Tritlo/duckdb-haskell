@@ -1,0 +1,16 @@
+packages: duckdb-ffi.cabal
+
+-- GHC version
+with-compiler: ghc-9.6.6
+-- Build tests, benchmarks, and documentation by default
+tests:      True
+benchmarks: True
+documentation: True
+
+-- Global compiler options
+program-options
+
+  -- Default warning flags
+  ghc-options:
+    -Wall
+    -Werror

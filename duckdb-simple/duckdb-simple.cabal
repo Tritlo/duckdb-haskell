@@ -2,7 +2,7 @@ cabal-version:      2.4
 name:               duckdb-simple
 version:            0.1.0.0
 synopsis:           High-level DuckDB interface inspired by sqlite-simple
-description:        Please see the README for usage examples once the initial phases are complete.
+description:        High-level DuckDB interface inspired by sqlite-simple, providing connection management, parameter binding, and typed query results. See README.md for details.
 homepage:           https://github.com/duckdb/duckdb
 bug-reports:        https://github.com/duckdb/duckdb/issues
 license:            MPL-2.0
@@ -13,6 +13,7 @@ maintainer:         matti@dpella.io,
                     lobo@dpella.io
 category:           Database
 build-type:         Simple
+extra-doc-files: README.md
 
 library
   exposed-modules:
@@ -28,7 +29,9 @@ library
   default-language: Haskell2010
   build-depends:
       base >=4.14 && <5
-      , duckdb-ffi
+    , bytestring
+    , duckdb-ffi
+    , text
 
 test-suite duckdb-simple-test
   type:             exitcode-stdio-1.0
@@ -38,4 +41,5 @@ test-suite duckdb-simple-test
   build-depends:
       base >=4.14 && <5
     , duckdb-simple
-    , hspec >=2.10 && <3
+    , tasty >=1.4 && <1.6
+    , tasty-hunit >=0.10 && <0.12

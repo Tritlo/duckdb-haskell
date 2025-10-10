@@ -7,9 +7,9 @@
 Module      : Database.DuckDB.Simple
 Description : High-level DuckDB API in the duckdb-simple style.
 
-The API implemented here mirrors the ergonomics of @sqlite-simple@ while being
-backed by the DuckDB C API.  Phase 1 focuses on connection management and
-prepared statement lifecycles.
+The API mirrors the ergonomics of @sqlite-simple@ while being backed by the
+DuckDB C API. It supports connection management, parameter binding, execution,
+and typed result decoding. See 'README.md' for usage examples.
 -}
 module Database.DuckDB.Simple (
     -- * Connections
@@ -142,7 +142,9 @@ closeStatement Statement{statementState} =
 withStatement :: Connection -> Query -> (Statement -> IO a) -> IO a
 withStatement conn sql = bracket (openStatement conn sql) closeStatement
 
--- | Bind positional parameters to a prepared statement.
+{- | Bind positional parameters to a prepared statement.
+| Bind positional parameters to a prepared statement.
+-}
 bind :: Statement -> [FieldBinding] -> IO ()
 bind stmt fields = do
     clearStatementBindings stmt
@@ -152,7 +154,9 @@ bind stmt fields = do
     apply idx field =
         bindFieldBinding stmt (fromIntegral idx :: DuckDBIdx) field
 
--- | Remove all parameter bindings associated with a prepared statement.
+{- | Remove all parameter bindings associated with a prepared statement.
+| Remove all parameter bindings associated with a prepared statement.
+-}
 clearStatementBindings :: Statement -> IO ()
 clearStatementBindings stmt =
     withStatementHandle stmt \handle -> do
@@ -165,6 +169,8 @@ clearStatementBindings stmt =
 
 Returns 'Nothing' when the name is not present in the statement.
 -}
+
+-- | Look up the 1-based index of a named placeholder.
 namedParameterIndex :: Statement -> Text -> IO (Maybe Int)
 namedParameterIndex stmt name =
     withStatementHandle stmt \handle ->
@@ -179,7 +185,9 @@ namedParameterIndex stmt name =
                             else pure (Just (fromIntegral idx))
                     else pure Nothing
 
--- | Execute a prepared statement and discard the materialised result.
+{- | Execute a prepared statement and discard the materialised result.
+| Execute a prepared statement and discard the materialised result.
+-}
 executeStatement :: Statement -> IO ()
 executeStatement stmt =
     withStatementHandle stmt \handle ->
@@ -192,20 +200,26 @@ executeStatement stmt =
                     c_duckdb_destroy_result resPtr
                     throwIO $ mkPrepareError (statementQuery stmt) err
 
--- | Execute a query with positional parameters supplied via 'ToRow'.
-execute :: ToRow q => Connection -> Query -> q -> IO ()
+{- | Execute a query with positional parameters supplied via 'ToRow'.
+| Execute a query with positional parameters supplied via the `ToRow` class.
+-}
+execute :: (ToRow q) => Connection -> Query -> q -> IO ()
 execute conn query params =
     withStatement conn query \stmt -> do
         bind stmt (toRow params)
         executeStatement stmt
 
--- | Execute a query multiple times with different parameters.
-executeMany :: ToRow q => Connection -> Query -> [q] -> IO ()
+{- | Execute a query multiple times with different parameters.
+| Execute the same query multiple times with different parameter sets.
+-}
+executeMany :: (ToRow q) => Connection -> Query -> [q] -> IO ()
 executeMany conn query rows =
     withStatement conn query \stmt ->
         mapM_ (\row -> bind stmt (toRow row) >> executeStatement stmt) rows
 
--- | Execute an ad-hoc query without parameters.
+{- | Execute an ad-hoc query without parameters.
+| Execute an ad-hoc query that does not require parameters.
+-}
 execute_ :: Connection -> Query -> IO ()
 execute_ conn query =
     withConnectionHandle conn \connPtr ->
@@ -219,7 +233,9 @@ execute_ conn query =
                         c_duckdb_destroy_result resPtr
                         throwIO $ mkExecuteError query err
 
--- | Run a query with positional parameters and return all rows.
+{- | Run a query with positional parameters and return all rows.
+| Run a parameterised query and decode all rows eagerly.
+-}
 query :: (ToRow q, FromRow r) => Connection -> Query -> q -> IO [r]
 query conn queryText params =
     withStatement conn queryText \stmt -> do
@@ -237,7 +253,9 @@ query conn queryText params =
                         c_duckdb_destroy_result resPtr
                         throwIO $ mkPrepareError queryText err
 
--- | Run a query without supplying parameters.
+{- | Run a query without supplying parameters.
+| Run a query without supplying parameters and decode all rows eagerly.
+-}
 query_ :: (FromRow r) => Connection -> Query -> IO [r]
 query_ conn queryText =
     withConnectionHandle conn \connPtr ->

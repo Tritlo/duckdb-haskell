@@ -109,6 +109,13 @@ statementTests =
                 executeMany conn "INSERT INTO query_rows VALUES (?, ?)" [(1 :: Int, "x" :: String), (2 :: Int, "y" :: String)]
                 rows <- query_ conn "SELECT a, b FROM query_rows ORDER BY a"
                 assertEqual "query rows" [(1 :: Int, "x" :: String), (2 :: Int, "y" :: String)] rows
+        , testCase "query decodes NULL as Maybe" $
+            withConnection ":memory:" \conn -> do
+                execute_ conn "CREATE TABLE maybe_vals (a TEXT)"
+                execute conn "INSERT INTO maybe_vals VALUES (?)" (Only (Just ("present" :: String)))
+                execute conn "INSERT INTO maybe_vals VALUES (?)" (Only (Nothing :: Maybe String))
+                rows <- query_ conn "SELECT a FROM maybe_vals ORDER BY a IS NULL, a"
+                assertEqual "maybe decoding" [Only (Just ("present" :: String)), Only Nothing] rows
         , testCase "query fetches rows with parameters" $
             withConnection ":memory:" \conn -> do
                 execute_ conn "CREATE TABLE query_params (a INTEGER, b TEXT)"

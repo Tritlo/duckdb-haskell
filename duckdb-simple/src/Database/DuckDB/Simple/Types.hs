@@ -23,10 +23,14 @@ import Database.DuckDB.Simple.Internal (
     Statement,
  )
 
--- | Placeholder representing SQL @NULL@.
+{- | Placeholder representing SQL @NULL@.
+| Placeholder representing SQL @NULL@.
+-}
 data Null = Null
     deriving (Eq, Ord, Show, Read)
 
--- | Wrapper used for single-field rows.
+{- | Wrapper used for single-field rows.
+| Wrapper used for single-column rows.
+-}
 newtype Only a = Only {fromOnly :: a}
     deriving (Eq, Ord, Show, Read)

@@ -28,6 +28,7 @@ import qualified CastFunctionsTest
 import qualified ExpressionTest
 import qualified ReplacementScansTest
 import qualified ArrowInterfaceTest
+import qualified ArrowInterfaceDeprecatedTests
 import qualified StreamingResultTest
 import qualified ThreadingTest
 import Test.Tasty (defaultMain, testGroup)
@@ -64,6 +65,7 @@ main =
       , CastFunctionsTest.tests
       , ExpressionTest.tests
       , ReplacementScansTest.tests
+      , ArrowInterfaceDeprecatedTests.tests
       , ArrowInterfaceTest.tests
       , StreamingResultTest.tests
       , ThreadingTest.tests

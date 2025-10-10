@@ -113,6 +113,7 @@ test-suite duckdb-ffi-tests
     CastFunctionsTest
     ExpressionTest
     ReplacementScansTest
+    ArrowInterfaceDeprecatedTests
     ArrowInterfaceTest
     StreamingResultTest
     ThreadingTest
@@ -124,5 +125,6 @@ test-suite duckdb-ffi-tests
     , duckdb-ffi
     , tasty
     , tasty-hunit
+    , tasty-expected-failure
     , text
     , time

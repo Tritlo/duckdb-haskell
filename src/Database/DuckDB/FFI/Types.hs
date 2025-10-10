@@ -1,5 +1,8 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE StrictData #-}
 
 module Database.DuckDB.FFI.Types (
   -- * Enumerations
@@ -203,8 +206,8 @@ module Database.DuckDB.FFI.Types (
   DuckDBProfilingInfo,
   DuckDBReplacementScanInfo,
   DuckDBTaskState,
-  ArrowArray,
-  ArrowSchema,
+  ArrowArray (..),
+  ArrowSchema (..),
 
   -- * Opaque Struct Tags
   DuckDBDatabaseStruct,
@@ -223,8 +226,6 @@ module Database.DuckDB.FFI.Types (
   DuckDBSelectionVectorStruct,
   DuckDBArrowOptionsStruct,
   DuckDBArrowStruct,
-  DuckDBArrowSchemaStruct,
-  DuckDBArrowArrayStruct,
   DuckDBArrowConvertedSchemaStruct,
   DuckDBArrowStreamStruct,
   DuckDBExpressionStruct,
@@ -266,7 +267,7 @@ import Data.Int (Int32, Int64, Int8)
 import Data.Word (Word32, Word64, Word8)
 import Foreign.C.String (CString)
 import Foreign.C.Types
-import Foreign.Ptr (FunPtr, Ptr)
+import Foreign.Ptr (FunPtr, Ptr, nullPtr)
 import Foreign.Storable (Storable (..), peekByteOff, pokeByteOff)
 
 -- | Unsigned index type used by DuckDB (mirrors @idx_t@).
@@ -1130,8 +1131,6 @@ data DuckDBArrowSchemaStruct
 -- | Handle to an Arrow schema.
 type DuckDBArrowSchema = Ptr DuckDBArrowSchemaStruct
 
--- | Opaque Arrow array from the C Data Interface.
-data ArrowArray
 
 -- | Tag type backing @duckdb_arrow_array@ pointers.
 data DuckDBArrowArrayStruct
@@ -1139,8 +1138,6 @@ data DuckDBArrowArrayStruct
 -- | Handle to an Arrow array.
 type DuckDBArrowArray = Ptr DuckDBArrowArrayStruct
 
--- | Opaque Arrow schema from the C Data Interface.
-data ArrowSchema
 
 -- | Tag type backing @duckdb_arrow_converted_schema@ pointers.
 data DuckDBArrowConvertedSchemaStruct
@@ -1315,3 +1312,139 @@ type DuckDBTableFunctionFun = FunPtr (DuckDBFunctionInfo -> DuckDBDataChunk -> I
 -- | Function pointer for replacement scan callbacks.
 type DuckDBReplacementCallback =
   FunPtr (DuckDBReplacementScanInfo -> CString -> Ptr () -> IO ())
+
+
+-- The full Arrow C Data Interface definitions are not included here to avoid
+-- introducing a dependency on the Arrow C headers. Instead, we define only the
+-- parts we need for testing DuckDB's Arrow integration.
+-- See https://arrow.apache.org/docs/format/CDataInterface.html for the full
+-- specification.
+-- #ifndef ARROW_C_DATA_INTERFACE
+-- #define ARROW_C_DATA_INTERFACE
+
+-- #define ARROW_FLAG_DICTIONARY_ORDERED 1
+-- #define ARROW_FLAG_NULLABLE 2
+-- #define ARROW_FLAG_MAP_KEYS_SORTED 4
+
+-- struct ArrowSchema {
+--   // Array type description
+--   const char* format;
+--   const char* name;
+--   const char* metadata;
+--   int64_t flags;
+--   int64_t n_children;
+--   struct ArrowSchema** children;
+--   struct ArrowSchema* dictionary;
+
+--   // Release callback
+--   void (*release)(struct ArrowSchema*);
+--   // Opaque producer-specific data
+--   void* private_data;
+-- };
+
+-- struct ArrowArray {
+--   // Array data description
+--   int64_t length;
+--   int64_t null_count;
+--   int64_t offset;
+--   int64_t n_buffers;
+--   int64_t n_children;
+--   const void** buffers;
+--   struct ArrowArray** children;
+--   struct ArrowArray* dictionary;
+
+--   // Release callback
+--   void (*release)(struct ArrowArray*);
+--   // Opaque producer-specific data
+--   void* private_data;
+-- };
+
+-- #endif  // ARROW_C_DATA_INTERFACE
+
+
+-- | Partial Arrow schema view used for tests that require inspecting DuckDB's
+-- Arrow wrappers without depending on the full Arrow C Data Interface
+-- definitions.
+data ArrowSchema = ArrowSchema
+  { arrowSchemaFormat :: CString
+  , arrowSchemaName :: CString
+  , arrowSchemaMetadata :: CString
+  , arrowSchemaFlags :: Int64
+  , arrowSchemaChildCount :: Int64
+  , arrowSchemaChildren :: Ptr (Ptr ArrowSchema)
+  , arrowSchemaDictionary :: Ptr ArrowSchema
+  , arrowSchemaRelease :: FunPtr (Ptr ArrowSchema -> IO ())
+  , arrowSchemaPrivateData :: Ptr ()
+  }
+
+instance Storable ArrowSchema where
+  sizeOf _ = pointerSize * 9
+  alignment _ = alignment (nullPtr :: Ptr ())
+  peek ptr =
+    ArrowSchema
+      <$> peekByteOff ptr 0
+      <*> peekByteOff ptr pointerSize
+      <*> peekByteOff ptr (pointerSize * 2)
+      <*> peekByteOff ptr (pointerSize * 3)
+      <*> peekByteOff ptr (pointerSize * 4)
+      <*> peekByteOff ptr (pointerSize * 5)
+      <*> peekByteOff ptr (pointerSize * 6)
+      <*> peekByteOff ptr (pointerSize * 7)
+      <*> peekByteOff ptr (pointerSize * 8)
+  poke ptr ArrowSchema{..} = do
+    pokeByteOff ptr 0 arrowSchemaFormat
+    pokeByteOff ptr pointerSize arrowSchemaName
+    pokeByteOff ptr (pointerSize * 2) arrowSchemaMetadata
+    pokeByteOff ptr (pointerSize * 3) arrowSchemaFlags
+    pokeByteOff ptr (pointerSize * 4) arrowSchemaChildCount
+    pokeByteOff ptr (pointerSize * 5) arrowSchemaChildren
+    pokeByteOff ptr (pointerSize * 6) arrowSchemaDictionary
+    pokeByteOff ptr (pointerSize * 7) arrowSchemaRelease
+    pokeByteOff ptr (pointerSize * 8) arrowSchemaPrivateData
+
+-- | Partial Arrow array view mirroring the DuckDB C API layout.
+data ArrowArray = ArrowArray
+  { arrowArrayLength :: Int64
+  , arrowArrayNullCount :: Int64
+  , arrowArrayOffset :: Int64
+  , arrowArrayBufferCount :: Int64
+  , arrowArrayChildCount :: Int64
+  , arrowArrayBuffers :: Ptr (Ptr ())
+  , arrowArrayChildren :: Ptr (Ptr ArrowArray)
+  , arrowArrayDictionary :: Ptr ArrowArray
+  , arrowArrayRelease :: FunPtr (Ptr ArrowArray -> IO ())
+  , arrowArrayPrivateData :: Ptr ()
+  }
+
+instance Storable ArrowArray where
+  sizeOf _ = pointerSize * 5 + intFieldSize * 5
+  alignment _ = alignment (nullPtr :: Ptr ())
+  peek ptr =
+    ArrowArray
+      <$> peekByteOff ptr 0
+      <*> peekByteOff ptr intFieldSize
+      <*> peekByteOff ptr (intFieldSize * 2)
+      <*> peekByteOff ptr (intFieldSize * 3)
+      <*> peekByteOff ptr (intFieldSize * 4)
+      <*> peekByteOff ptr (intFieldSize * 5)
+      <*> peekByteOff ptr (intFieldSize * 5 + pointerSize)
+      <*> peekByteOff ptr (intFieldSize * 5 + pointerSize * 2)
+      <*> peekByteOff ptr (intFieldSize * 5 + pointerSize * 3)
+      <*> peekByteOff ptr (intFieldSize * 5 + pointerSize * 4)
+  poke ptr ArrowArray{..} = do
+    pokeByteOff ptr 0 arrowArrayLength
+    pokeByteOff ptr intFieldSize arrowArrayNullCount
+    pokeByteOff ptr (intFieldSize * 2) arrowArrayOffset
+    pokeByteOff ptr (intFieldSize * 3) arrowArrayBufferCount
+    pokeByteOff ptr (intFieldSize * 4) arrowArrayChildCount
+    pokeByteOff ptr (intFieldSize * 5) arrowArrayBuffers
+    pokeByteOff ptr (intFieldSize * 5 + pointerSize) arrowArrayChildren
+    pokeByteOff ptr (intFieldSize * 5 + pointerSize * 2) arrowArrayDictionary
+    pokeByteOff ptr (intFieldSize * 5 + pointerSize * 3) arrowArrayRelease
+    pokeByteOff ptr (intFieldSize * 5 + pointerSize * 4) arrowArrayPrivateData
+
+pointerSize :: Int
+pointerSize = sizeOf (nullPtr :: Ptr ())
+
+intFieldSize :: Int
+intFieldSize = sizeOf (0 :: Int64)

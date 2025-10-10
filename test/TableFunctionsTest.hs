@@ -26,9 +26,9 @@ tests =
   testGroup
     "Table Functions"
     [
-      --  tableFunctionRoundtrip,
-      --  tableFunctionBindErrors,
-      --  tableFunctionExecutionErrors
+    --    tableFunctionRoundtrip
+    -- ,  tableFunctionBindErrors
+    -- ,  tableFunctionExecutionErrors
     ]
 
 tableFunctionRoundtrip :: TestTree

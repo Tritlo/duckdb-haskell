@@ -20,8 +20,6 @@ module Database.DuckDB.FFI.Arrow (
   c_duckdb_execute_prepared_arrow,
   c_duckdb_arrow_scan,
   c_duckdb_arrow_array_scan,
-  ArrowSchemaStruct (..),
-  ArrowArrayStruct (..)
 ) where
 
 import Data.Int (Int64)
@@ -301,90 +299,3 @@ foreign import ccall safe "duckdb_arrow_scan"
 -- Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
 foreign import ccall safe "duckdb_arrow_array_scan"
   c_duckdb_arrow_array_scan :: DuckDBConnection -> CString -> DuckDBArrowSchema -> DuckDBArrowArray -> Ptr DuckDBArrowStream -> IO DuckDBState
-
--- | Partial Arrow schema view used for tests that require inspecting DuckDB's
--- Arrow wrappers without depending on the full Arrow C Data Interface
--- definitions.
-data ArrowSchemaStruct = ArrowSchemaStruct
-  { arrowSchemaFormat :: CString
-  , arrowSchemaName :: CString
-  , arrowSchemaMetadata :: CString
-  , arrowSchemaFlags :: Int64
-  , arrowSchemaChildCount :: Int64
-  , arrowSchemaChildren :: Ptr (Ptr ArrowSchemaStruct)
-  , arrowSchemaDictionary :: Ptr ArrowSchemaStruct
-  , arrowSchemaRelease :: FunPtr (Ptr ArrowSchemaStruct -> IO ())
-  , arrowSchemaPrivateData :: Ptr ()
-  }
-
-instance Storable ArrowSchemaStruct where
-  sizeOf _ = pointerSize * 9
-  alignment _ = alignment (nullPtr :: Ptr ())
-  peek ptr =
-    ArrowSchemaStruct
-      <$> peekByteOff ptr 0
-      <*> peekByteOff ptr pointerSize
-      <*> peekByteOff ptr (pointerSize * 2)
-      <*> peekByteOff ptr (pointerSize * 3)
-      <*> peekByteOff ptr (pointerSize * 4)
-      <*> peekByteOff ptr (pointerSize * 5)
-      <*> peekByteOff ptr (pointerSize * 6)
-      <*> peekByteOff ptr (pointerSize * 7)
-      <*> peekByteOff ptr (pointerSize * 8)
-  poke ptr ArrowSchemaStruct{..} = do
-    pokeByteOff ptr 0 arrowSchemaFormat
-    pokeByteOff ptr pointerSize arrowSchemaName
-    pokeByteOff ptr (pointerSize * 2) arrowSchemaMetadata
-    pokeByteOff ptr (pointerSize * 3) arrowSchemaFlags
-    pokeByteOff ptr (pointerSize * 4) arrowSchemaChildCount
-    pokeByteOff ptr (pointerSize * 5) arrowSchemaChildren
-    pokeByteOff ptr (pointerSize * 6) arrowSchemaDictionary
-    pokeByteOff ptr (pointerSize * 7) arrowSchemaRelease
-    pokeByteOff ptr (pointerSize * 8) arrowSchemaPrivateData
-
--- | Partial Arrow array view mirroring the DuckDB C API layout.
-data ArrowArrayStruct = ArrowArrayStruct
-  { arrowArrayLength :: Int64
-  , arrowArrayNullCount :: Int64
-  , arrowArrayOffset :: Int64
-  , arrowArrayBufferCount :: Int64
-  , arrowArrayChildCount :: Int64
-  , arrowArrayBuffers :: Ptr (Ptr ())
-  , arrowArrayChildren :: Ptr (Ptr ArrowArrayStruct)
-  , arrowArrayDictionary :: Ptr ArrowArrayStruct
-  , arrowArrayRelease :: FunPtr (Ptr ArrowArrayStruct -> IO ())
-  , arrowArrayPrivateData :: Ptr ()
-  }
-
-instance Storable ArrowArrayStruct where
-  sizeOf _ = pointerSize * 5 + intFieldSize * 5
-  alignment _ = alignment (nullPtr :: Ptr ())
-  peek ptr =
-    ArrowArrayStruct
-      <$> peekByteOff ptr 0
-      <*> peekByteOff ptr intFieldSize
-      <*> peekByteOff ptr (intFieldSize * 2)
-      <*> peekByteOff ptr (intFieldSize * 3)
-      <*> peekByteOff ptr (intFieldSize * 4)
-      <*> peekByteOff ptr (intFieldSize * 5)
-      <*> peekByteOff ptr (intFieldSize * 5 + pointerSize)
-      <*> peekByteOff ptr (intFieldSize * 5 + pointerSize * 2)
-      <*> peekByteOff ptr (intFieldSize * 5 + pointerSize * 3)
-      <*> peekByteOff ptr (intFieldSize * 5 + pointerSize * 4)
-  poke ptr ArrowArrayStruct{..} = do
-    pokeByteOff ptr 0 arrowArrayLength
-    pokeByteOff ptr intFieldSize arrowArrayNullCount
-    pokeByteOff ptr (intFieldSize * 2) arrowArrayOffset
-    pokeByteOff ptr (intFieldSize * 3) arrowArrayBufferCount
-    pokeByteOff ptr (intFieldSize * 4) arrowArrayChildCount
-    pokeByteOff ptr (intFieldSize * 5) arrowArrayBuffers
-    pokeByteOff ptr (intFieldSize * 5 + pointerSize) arrowArrayChildren
-    pokeByteOff ptr (intFieldSize * 5 + pointerSize * 2) arrowArrayDictionary
-    pokeByteOff ptr (intFieldSize * 5 + pointerSize * 3) arrowArrayRelease
-    pokeByteOff ptr (intFieldSize * 5 + pointerSize * 4) arrowArrayPrivateData
-
-pointerSize :: Int
-pointerSize = sizeOf (nullPtr :: Ptr ())
-
-intFieldSize :: Int
-intFieldSize = sizeOf (0 :: Int64)

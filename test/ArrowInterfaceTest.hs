@@ -29,12 +29,12 @@ tests =
     "Arrow Interface"
     [ arrowQueryMetadata
     , arrowErrorHandling
-    -- , arrowQuerySchemaAccess
-    -- , arrowResultArrayConversion
-    -- , arrowPreparedArrowExecution
-    -- , arrowScanFromArrowData
     , arrowSchemaRoundtrip
     , arrowChunkRoundtrip
+    , arrowPreparedArrowExecution
+    , arrowResultArrayConversion
+    , arrowQuerySchemaAccess
+    , arrowScanFromArrowData
     ]
 
 arrowQueryMetadata :: TestTree
@@ -257,7 +257,7 @@ arrowSchemaRoundtrip =
           withLogicalTypes [DuckDBTypeInteger, DuckDBTypeVarchar] \logicalTypes ->
             withArray logicalTypes \logicalArray ->
               withColumnNames ["id", "label"] \nameArray ->
-                withArrowSchemaStruct \schemaPtr -> do
+                withArrowSchema \schemaPtr -> do
                   errData <- c_duckdb_to_arrow_schema arrowOpts logicalArray nameArray (fromIntegral (length logicalTypes)) (castPtr schemaPtr)
                   assertNoError errData
 
@@ -290,7 +290,7 @@ arrowChunkRoundtrip =
           withLogicalTypes [DuckDBTypeInteger] \logicalTypes ->
             withArray logicalTypes \logicalArray ->
               withColumnNames ["val"] \nameArray ->
-                withArrowSchemaStruct \schemaPtr -> do
+                withArrowSchema \schemaPtr -> do
                   errSchema <- c_duckdb_to_arrow_schema arrowOpts logicalArray nameArray 1 (castPtr schemaPtr)
                   assertNoError errSchema
 
@@ -313,7 +313,7 @@ arrowChunkRoundtrip =
                         c_duckdb_validity_set_row_valid maskPtr 0
                         c_duckdb_validity_set_row_invalid maskPtr 1
 
-                        withArrowArrayStruct \arrayPtr ->
+                        withArrowArray \arrayPtr ->
                           do
                           errArray <- c_duckdb_data_chunk_to_arrow arrowOpts ownedChunk (castPtr arrayPtr)
                           assertNoError errArray
@@ -400,11 +400,11 @@ withColumnNames :: [String] -> (Ptr CString -> IO a) -> IO a
 withColumnNames names action =
   withMany withCString names \cNames -> withArray cNames action
 
-withArrowSchemaStruct :: (Ptr ArrowSchemaStruct -> IO a) -> IO a
-withArrowSchemaStruct = withStruct zeroArrowSchema
+withArrowSchema :: (Ptr ArrowSchema -> IO a) -> IO a
+withArrowSchema = withStruct zeroArrowSchema
 
-withArrowArrayStruct :: (Ptr ArrowArrayStruct -> IO a) -> IO a
-withArrowArrayStruct action =
+withArrowArray :: (Ptr ArrowArray -> IO a) -> IO a
+withArrowArray action =
   withStruct zeroArrowArray \ptr -> do
     result <- action ptr
     releaseArrowArray ptr
@@ -419,7 +419,7 @@ withStruct initial action =
 withOwnedChunk :: DuckDBDataChunk -> (DuckDBDataChunk -> IO a) -> IO a
 withOwnedChunk chunk = bracket (pure chunk) destroyChunk
 
-withConvertedSchema :: DuckDBConnection -> Ptr ArrowSchemaStruct -> (DuckDBArrowConvertedSchema -> IO a) -> IO a
+withConvertedSchema :: DuckDBConnection -> Ptr ArrowSchema -> (DuckDBArrowConvertedSchema -> IO a) -> IO a
 withConvertedSchema conn schemaPtr action =
   alloca \convertedPtr -> do
     poke convertedPtr nullPtr
@@ -461,7 +461,7 @@ assertNoError err =
     destroyErrorData err
     assertFailure ("DuckDB reported error: " <> msg)
 
-releaseArrowSchema :: Ptr ArrowSchemaStruct -> IO ()
+releaseArrowSchema :: Ptr ArrowSchema -> IO ()
 releaseArrowSchema schemaPtr = do
   schema <- peek schemaPtr
   let releaseFun = arrowSchemaRelease schema
@@ -469,7 +469,7 @@ releaseArrowSchema schemaPtr = do
     let release = mkArrowSchemaRelease releaseFun
     release schemaPtr
 
-releaseArrowArray :: Ptr ArrowArrayStruct -> IO ()
+releaseArrowArray :: Ptr ArrowArray -> IO ()
 releaseArrowArray arrayPtr = do
   array <- peek arrayPtr
   let releaseFun = arrowArrayRelease array
@@ -477,27 +477,27 @@ releaseArrowArray arrayPtr = do
     let release = mkArrowArrayRelease releaseFun
     release arrayPtr
 
-arrowSchemaStructPtr :: DuckDBArrowSchema -> IO (Ptr ArrowSchemaStruct)
+arrowSchemaStructPtr :: DuckDBArrowSchema -> IO (Ptr ArrowSchema)
 arrowSchemaStructPtr handle
   | handle == nullPtr = pure nullPtr
-  | otherwise = peek (castPtr handle :: Ptr (Ptr ArrowSchemaStruct))
+  | otherwise = peek (castPtr handle :: Ptr (Ptr ArrowSchema))
 
-arrowArrayStructPtr :: DuckDBArrowArray -> IO (Ptr ArrowArrayStruct)
+arrowArrayStructPtr :: DuckDBArrowArray -> IO (Ptr ArrowArray)
 arrowArrayStructPtr handle
   | handle == nullPtr = pure nullPtr
-  | otherwise = peek (castPtr handle :: Ptr (Ptr ArrowArrayStruct))
+  | otherwise = peek (castPtr handle :: Ptr (Ptr ArrowArray))
 
 clearArrowSchemaHandle :: DuckDBArrowSchema -> IO ()
 clearArrowSchemaHandle handle
   | handle == nullPtr = pure ()
-  | otherwise = poke (castPtr handle :: Ptr (Ptr ArrowSchemaStruct)) nullPtr
+  | otherwise = poke (castPtr handle :: Ptr (Ptr ArrowSchema)) nullPtr
 
 clearArrowArrayHandle :: DuckDBArrowArray -> IO ()
 clearArrowArrayHandle handle
   | handle == nullPtr = pure ()
-  | otherwise = poke (castPtr handle :: Ptr (Ptr ArrowArrayStruct)) nullPtr
+  | otherwise = poke (castPtr handle :: Ptr (Ptr ArrowArray)) nullPtr
 zeroArrowSchema =
-  ArrowSchemaStruct
+  ArrowSchema
     { arrowSchemaFormat = nullPtr
     , arrowSchemaName = nullPtr
     , arrowSchemaMetadata = nullPtr
@@ -509,9 +509,9 @@ zeroArrowSchema =
     , arrowSchemaPrivateData = nullPtr
     }
 
-zeroArrowArray :: ArrowArrayStruct
+zeroArrowArray :: ArrowArray
 zeroArrowArray =
-  ArrowArrayStruct
+  ArrowArray
     { arrowArrayLength = 0
     , arrowArrayNullCount = 0
     , arrowArrayOffset = 0
@@ -525,7 +525,7 @@ zeroArrowArray =
     }
 
 foreign import ccall "dynamic"
-  mkArrowSchemaRelease :: FunPtr (Ptr ArrowSchemaStruct -> IO ()) -> Ptr ArrowSchemaStruct -> IO ()
+  mkArrowSchemaRelease :: FunPtr (Ptr ArrowSchema -> IO ()) -> Ptr ArrowSchema -> IO ()
 
 foreign import ccall "dynamic"
-  mkArrowArrayRelease :: FunPtr (Ptr ArrowArrayStruct -> IO ()) -> Ptr ArrowArrayStruct -> IO ()
+  mkArrowArrayRelease :: FunPtr (Ptr ArrowArray -> IO ()) -> Ptr ArrowArray -> IO ()

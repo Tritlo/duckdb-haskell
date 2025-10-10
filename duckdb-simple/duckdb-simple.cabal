@@ -5,10 +5,12 @@ synopsis:           High-level DuckDB interface inspired by sqlite-simple
 description:        Please see the README for usage examples once the initial phases are complete.
 homepage:           https://github.com/duckdb/duckdb
 bug-reports:        https://github.com/duckdb/duckdb/issues
-license:            BSD-3-Clause
+license:            MPL-2.0
 license-file:       LICENSE
-author:             DuckDB Contributors
-maintainer:         duckdb@duckdb.org
+author:             Matthias Pall Gissurarson, DPella AB
+maintainer:         matti@dpella.io,
+                    mpg@mpg.is,
+                    lobo@dpella.io
 category:           Database
 build-type:         Simple
 
@@ -26,9 +28,7 @@ library
   default-language: Haskell2010
   build-depends:
       base >=4.14 && <5
-    , bytestring
-    , duckdb-ffi
-    , text
+      , duckdb-ffi
 
 test-suite duckdb-simple-test
   type:             exitcode-stdio-1.0
@@ -38,5 +38,4 @@ test-suite duckdb-simple-test
   build-depends:
       base >=4.14 && <5
     , duckdb-simple
-    , tasty >=1.4 && <1.6
-    , tasty-hunit >=0.10 && <0.12
+    , hspec >=2.10 && <3

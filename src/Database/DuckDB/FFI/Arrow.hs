@@ -1,5 +1,3 @@
-{-# LANGUAGE RecordWildCards #-}
-
 module Database.DuckDB.FFI.Arrow (
   c_duckdb_to_arrow_schema,
   c_duckdb_data_chunk_to_arrow,

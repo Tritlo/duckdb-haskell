@@ -1122,7 +1122,7 @@ data DuckDBArrowOptionsStruct
 type DuckDBArrowOptions = Ptr DuckDBArrowOptionsStruct
 
 -- | Tag type backing @duckdb_arrow@ pointers.
-data DuckDBArrowStruct = DuckDBArrowStruct
+newtype DuckDBArrowStruct = DuckDBArrowStruct
   { duckdbArrowInternalPtr :: Ptr ()
   }
 
@@ -1130,7 +1130,7 @@ data DuckDBArrowStruct = DuckDBArrowStruct
 type DuckDBArrow = Ptr DuckDBArrowStruct
 
 -- | Tag type backing @duckdb_arrow_schema@ pointers.
-data DuckDBArrowSchemaStruct = DuckDBArrowSchemaStruct
+newtype DuckDBArrowSchemaStruct = DuckDBArrowSchemaStruct
   { duckdbArrowSchemaInternalPtr :: Ptr ()
   }
 
@@ -1139,7 +1139,7 @@ type DuckDBArrowSchema = Ptr DuckDBArrowSchemaStruct
 
 
 -- | Tag type backing @duckdb_arrow_array@ pointers.
-data DuckDBArrowArrayStruct = DuckDBArrowArrayStruct
+newtype DuckDBArrowArrayStruct = DuckDBArrowArrayStruct
   { duckdbArrowArrayInternalPtr :: Ptr ()
   }
 
@@ -1151,27 +1151,27 @@ instance Storable DuckDBArrowStruct where
   alignment _ = alignment (nullPtr :: Ptr ())
   peek ptr =
     DuckDBArrowStruct
-      <$> peekByteOff (castPtr ptr) 0
+      <$> peekByteOff ptr 0
   poke ptr DuckDBArrowStruct{..} =
-    pokeByteOff (castPtr ptr) 0 duckdbArrowInternalPtr
+    pokeByteOff ptr 0 duckdbArrowInternalPtr
 
 instance Storable DuckDBArrowSchemaStruct where
   sizeOf _ = pointerSize
   alignment _ = alignment (nullPtr :: Ptr ())
   peek ptr =
     DuckDBArrowSchemaStruct
-      <$> peekByteOff (castPtr ptr) 0
+      <$> peekByteOff ptr 0
   poke ptr DuckDBArrowSchemaStruct{..} =
-    pokeByteOff (castPtr ptr) 0 duckdbArrowSchemaInternalPtr
+    pokeByteOff ptr 0 duckdbArrowSchemaInternalPtr
 
 instance Storable DuckDBArrowArrayStruct where
   sizeOf _ = pointerSize
   alignment _ = alignment (nullPtr :: Ptr ())
   peek ptr =
     DuckDBArrowArrayStruct
-      <$> peekByteOff (castPtr ptr) 0
+      <$> peekByteOff ptr 0
   poke ptr DuckDBArrowArrayStruct{..} =
-    pokeByteOff (castPtr ptr) 0 duckdbArrowArrayInternalPtr
+    pokeByteOff ptr 0 duckdbArrowArrayInternalPtr
 
 
 -- | Tag type backing @duckdb_arrow_converted_schema@ pointers.

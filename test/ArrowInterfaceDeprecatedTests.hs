@@ -1,10 +1,11 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE PatternSynonyms #-}
 
 module ArrowInterfaceDeprecatedTests (tests) where
 
-import Control.Exception (bracket)
+import Control.Exception (bracket, finally)
 import Control.Monad (unless, when)
 import Data.Int (Int32, Int64)
 import Data.List (isInfixOf)
@@ -15,6 +16,7 @@ import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (FunPtr, Ptr, castPtr, nullFunPtr, nullPtr, plusPtr)
 import Foreign.Storable (peek, peekElemOff, poke)
 import Test.Tasty (TestTree, testGroup)
+import Test.Tasty.ExpectedFailure (expectFailBecause)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 import Utils (withConnection, withDatabase, withResult)
 
@@ -29,6 +31,8 @@ tests =
     , resultArrowArrayMirrorsChunk
     , arrowRowsChangedReflectsMutations
     , arrowArrayScanRegistersView
+    , arrowStreamScanRegistersView
+    , arrowPointerHelpersClearInternalState
     ]
 
 -- basic query ---------------------------------------------------------------
@@ -212,6 +216,84 @@ arrowArrayScanRegistersView =
                   releaseArrowArray arrayStorage
             releaseArrowSchema schemaStorage
 
+arrowStreamScanRegistersView :: TestTree
+arrowStreamScanRegistersView =
+  expectFailBecause "duckdb_arrow_scan currently returns DuckDBError even with a populated stream" $
+    testCase "arrow_scan registers a view from an Arrow stream" $
+      withDatabase \db ->
+        withConnection db \conn -> do
+          execStatement conn "CREATE TABLE arrow_stream_source(i BIGINT, label VARCHAR);"
+          execStatement conn "INSERT INTO arrow_stream_source VALUES (7, 'seven'), (8, 'eight');"
+
+          withSuccessfulArrow conn "SELECT i, label FROM arrow_stream_source ORDER BY i" \arrow -> do
+            alloca \schemaStorage ->
+              finally
+                (do
+                  poke schemaStorage zeroArrowSchema
+                  let schemaHandle = castPtr schemaStorage :: DuckDBArrowSchema
+                  alloca \schemaOut -> do
+                    poke schemaOut schemaHandle
+                    schemaState <- c_duckdb_query_arrow_schema arrow schemaOut
+                    schemaState @?= DuckDBSuccess
+
+                    alloca \arrayStorage ->
+                      finally
+                        (do
+                          poke arrayStorage zeroArrowArray
+                          let arrayHandle = castPtr arrayStorage :: DuckDBArrowArray
+                          alloca \arrayOut -> do
+                            poke arrayOut arrayHandle
+                            arrayState <- c_duckdb_query_arrow_array arrow arrayOut
+                            arrayState @?= DuckDBSuccess
+
+                            withCString "arrow_stream_source" \sourceView ->
+                              alloca \streamOut -> do
+                                poke streamOut nullPtr
+                                arrayScanState <- c_duckdb_arrow_array_scan conn sourceView schemaHandle arrayHandle streamOut
+                                arrayScanState @?= DuckDBSuccess
+
+                                streamHandle <- peek streamOut
+                                assertBool "arrow_array_scan returned a null stream" (streamHandle /= nullPtr)
+
+                                withCString "arrow_stream_view" \streamView -> do
+                                  streamScanState <- c_duckdb_arrow_scan conn streamView streamHandle
+                                  streamScanState @?= DuckDBSuccess
+
+                                withResult conn "SELECT COUNT(*) FROM arrow_stream_view" \resPtr -> do
+                                  count <- c_duckdb_value_int64 resPtr 0 0
+                                  count @?= 2
+
+                                c_duckdb_destroy_arrow_stream streamOut
+                        )
+                        (releaseArrowArray arrayStorage)
+                )
+                (releaseArrowSchema schemaStorage)
+
+arrowPointerHelpersClearInternalState :: TestTree
+arrowPointerHelpersClearInternalState =
+  testCase "arrow pointer helper functions read and clear internal_ptr fields" $
+    alloca \schemaPtrPtr ->
+      alloca \arrayPtrPtr -> do
+        let schemaSentinel = castPtr schemaPtrPtr :: Ptr ()
+            schemaHandle = castPtr schemaPtrPtr :: DuckDBArrowSchema
+        poke schemaPtrPtr schemaSentinel
+        schemaPtr <- c_duckdb_arrow_schema_internal_ptr schemaHandle
+        schemaPtr @?= schemaSentinel
+
+        c_duckdb_arrow_schema_clear_internal_ptr schemaHandle
+        schemaCleared <- c_duckdb_arrow_schema_internal_ptr schemaHandle
+        schemaCleared @?= nullPtr
+
+        let arraySentinel = castPtr arrayPtrPtr :: Ptr ()
+            arrayHandle = castPtr arrayPtrPtr :: DuckDBArrowArray
+        poke arrayPtrPtr arraySentinel
+        arrayPtr <- c_duckdb_arrow_array_internal_ptr arrayHandle
+        arrayPtr @?= arraySentinel
+
+        c_duckdb_arrow_array_clear_internal_ptr arrayHandle
+        arrayCleared <- c_duckdb_arrow_array_internal_ptr arrayHandle
+        arrayCleared @?= nullPtr
+
 zeroArrowArray :: ArrowArray
 zeroArrowArray =
   ArrowArray
@@ -319,6 +401,18 @@ foreign import ccall "dynamic"
 
 foreign import ccall "dynamic"
   mkArrowSchemaRelease :: FunPtr (Ptr ArrowSchema -> IO ()) -> Ptr ArrowSchema -> IO ()
+
+foreign import ccall unsafe "wrapped_duckdb_arrow_schema_internal_ptr"
+  c_duckdb_arrow_schema_internal_ptr :: DuckDBArrowSchema -> IO (Ptr ())
+
+foreign import ccall unsafe "wrapped_duckdb_arrow_schema_clear_internal_ptr"
+  c_duckdb_arrow_schema_clear_internal_ptr :: DuckDBArrowSchema -> IO ()
+
+foreign import ccall unsafe "wrapped_duckdb_arrow_array_internal_ptr"
+  c_duckdb_arrow_array_internal_ptr :: DuckDBArrowArray -> IO (Ptr ())
+
+foreign import ccall unsafe "wrapped_duckdb_arrow_array_clear_internal_ptr"
+  c_duckdb_arrow_array_clear_internal_ptr :: DuckDBArrowArray -> IO ()
 
 withSuccessfulArrow :: DuckDBConnection -> String -> (DuckDBArrow -> IO a) -> IO a
 withSuccessfulArrow conn sql action =

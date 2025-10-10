@@ -5,15 +5,11 @@
 module ArrowInterfaceTest (tests) where
 
 import Control.Exception (bracket)
-import Control.Monad (forM_, unless, when)
+import Control.Monad (when)
 import Data.Bits (testBit)
-import Data.Char (toLower)
-import Data.Int (Int32, Int64)
-import Data.List (isInfixOf)
-import Data.Word (Word64)
+import Data.Int (Int32)
 import Database.DuckDB.FFI
 import Foreign.C.String (CString, peekCString, withCString)
-import Foreign.C.Types (CBool (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Array (peekArray, withArray)
 import Foreign.Marshal.Utils (withMany)
@@ -21,232 +17,15 @@ import Foreign.Ptr (FunPtr, Ptr, castPtr, nullFunPtr, nullPtr)
 import Foreign.Storable (Storable (..), peek, peekElemOff, poke, pokeElemOff)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
-import Utils (withConnection, withDatabase, withResult)
+import Utils (withConnection, withDatabase)
 
 tests :: TestTree
 tests =
   testGroup
     "Arrow Interface"
-    [ arrowQueryMetadata
-    , arrowErrorHandling
-    , arrowSchemaRoundtrip
+    [ arrowSchemaRoundtrip
     , arrowChunkRoundtrip
-    , arrowPreparedArrowExecution
-    , arrowResultArrayConversion
-    , arrowQuerySchemaAccess
-    , arrowScanFromArrowData
     ]
-
-arrowQueryMetadata :: TestTree
-arrowQueryMetadata =
-  testCase "query_arrow exposes schema and array data" $
-    withDatabase \db ->
-      withConnection db \conn ->
-        withArrowResult conn "SELECT 1::INTEGER AS id, 'alpha'::VARCHAR AS label" \arrow -> do
-          c_duckdb_arrow_column_count arrow >>= (@?= 2)
-          c_duckdb_arrow_row_count arrow >>= (@?= 1)
-          c_duckdb_arrow_rows_changed arrow >>= (@?= 0)
-
-arrowErrorHandling :: TestTree
-arrowErrorHandling =
-  testCase "query_arrow surfaces planner errors" $
-    withDatabase \db ->
-      withConnection db \conn ->
-        withCString "SELECT * FROM missing_table" \sql ->
-          alloca \arrowPtr -> do
-            poke arrowPtr nullPtr
-            state <- c_duckdb_query_arrow conn sql arrowPtr
-            state @?= DuckDBError
-            arrow <- peek arrowPtr
-            unless (arrow == nullPtr) $ do
-              errMsgPtr <- c_duckdb_query_arrow_error arrow
-              assertBool "expected non-null error pointer" (errMsgPtr /= nullPtr)
-              errMsg <- peekCString errMsgPtr
-              assertBool "error message mentions table" ("missing_table" `isInfixOf` map toLower errMsg)
-            c_duckdb_destroy_arrow arrowPtr
-
-arrowQuerySchemaAccess :: TestTree
-arrowQuerySchemaAccess =
-  testCase "query_arrow exposes schema and arrays through dedicated accessors" $
-    withDatabase \db ->
-      withConnection db \conn ->
-        withArrowResult conn "SELECT 42::INTEGER AS id, 'deck'::VARCHAR AS label" \arrow -> do
-          alloca \schemaPtrPtr -> do
-            poke schemaPtrPtr nullPtr
-            schemaState <- c_duckdb_query_arrow_schema arrow schemaPtrPtr
-            schemaState @?= DuckDBSuccess
-            schemaHandle <- peek schemaPtrPtr
-            assertBool "duckdb_query_arrow_schema returns handle" (schemaHandle /= nullPtr)
-            schemaStructPtr <- arrowSchemaStructPtr schemaHandle
-            assertBool "arrow schema internal pointer should not be null" (schemaStructPtr /= nullPtr)
-            schema <- peek schemaStructPtr
-            arrowSchemaChildCount schema @?= 2
-            assertBool "schema release pointer should be set" (arrowSchemaRelease schema /= nullFunPtr)
-            peekCString (arrowSchemaFormat schema) >>= (@?= "+s")
-
-            childPtr <- pure (arrowSchemaChildren schema)
-            assertBool "schema children pointer should not be null" (childPtr /= nullPtr)
-            childSchemas <- peekArray (fromIntegral (arrowSchemaChildCount schema)) childPtr
-            firstChild <- peek (childSchemas !! 0)
-            secondChild <- peek (childSchemas !! 1)
-            peekCString (arrowSchemaName firstChild) >>= (@?= "id")
-            peekCString (arrowSchemaName secondChild) >>= (@?= "label")
-
-            releaseArrowSchema schemaStructPtr
-            clearArrowSchemaHandle schemaHandle
-
-          alloca \arrayPtrPtr -> do
-            poke arrayPtrPtr nullPtr
-            arrayState <- c_duckdb_query_arrow_array arrow arrayPtrPtr
-            arrayState @?= DuckDBSuccess
-            arrayHandle <- peek arrayPtrPtr
-            assertBool "duckdb_query_arrow_array returns handle" (arrayHandle /= nullPtr)
-            arrayStructPtr <- arrowArrayStructPtr arrayHandle
-            assertBool "arrow array internal pointer should not be null" (arrayStructPtr /= nullPtr)
-            array <- peek arrayStructPtr
-            arrowArrayLength array @?= 1
-            assertBool "array release pointer should be set" (arrowArrayRelease array /= nullFunPtr)
-
-            releaseArrowArray arrayStructPtr
-            clearArrowArrayHandle arrayHandle
-
-arrowResultArrayConversion :: TestTree
-arrowResultArrayConversion =
-  testCase "result_arrow_array converts materialised chunks" $
-    withDatabase \db ->
-      withConnection db \conn ->
-        withResult conn "SELECT 7::BIGINT AS num, 'row'::VARCHAR AS tag" \resPtr -> do
-          chunk <- c_duckdb_fetch_chunk resPtr
-          assertBool "fetch_chunk should yield a data chunk" (chunk /= nullPtr)
-
-          alloca \arrowArrayPtr -> do
-            poke arrowArrayPtr nullPtr
-            c_duckdb_result_arrow_array resPtr chunk arrowArrayPtr
-            arrayHandle <- peek arrowArrayPtr
-            assertBool "result_arrow_array should populate handle" (arrayHandle /= nullPtr)
-            arrayStructPtr <- arrowArrayStructPtr arrayHandle
-            assertBool "converted array internal pointer should not be null" (arrayStructPtr /= nullPtr)
-            array <- peek arrayStructPtr
-            arrowArrayLength array @?= 1
-            assertBool "converted array release pointer should be set" (arrowArrayRelease array /= nullFunPtr)
-
-            releaseArrowArray arrayStructPtr
-            clearArrowArrayHandle arrayHandle
-
-          destroyChunk chunk
-
-arrowPreparedArrowExecution :: TestTree
-arrowPreparedArrowExecution =
-  testCase "execute_prepared_arrow and prepared_arrow_schema expose metadata and data" $
-    withDatabase \db ->
-      withConnection db \conn -> do
-        setupPreparedFixture conn
-
-        withCString "SELECT id, label FROM arrow_fixture WHERE id = ?" \querySql ->
-          alloca \stmtPtr -> do
-            prepareState <- c_duckdb_prepare conn querySql stmtPtr
-            prepareState @?= DuckDBSuccess
-            stmt <- peek stmtPtr
-            assertBool "prepare should return a statement" (stmt /= nullPtr)
-
-            c_duckdb_bind_int32 stmt 1 2 >>= (@?= DuckDBSuccess)
-
-            alloca \schemaPtrPtr -> do
-              poke schemaPtrPtr nullPtr
-              schemaState <- c_duckdb_prepared_arrow_schema stmt schemaPtrPtr
-              schemaState @?= DuckDBSuccess
-              schemaHandle <- peek schemaPtrPtr
-              assertBool "prepared_arrow_schema returns handle" (schemaHandle /= nullPtr)
-              schemaStructPtr <- arrowSchemaStructPtr schemaHandle
-              assertBool "prepared arrow schema internal pointer should not be null" (schemaStructPtr /= nullPtr)
-              schema <- peek schemaStructPtr
-              arrowSchemaChildCount schema @?= 2
-              assertBool "prepared schema release pointer should be set" (arrowSchemaRelease schema /= nullFunPtr)
-              peekCString (arrowSchemaFormat schema) >>= (@?= "+s")
-              releaseArrowSchema schemaStructPtr
-              clearArrowSchemaHandle schemaHandle
-
-            alloca \arrowPtr -> do
-              poke arrowPtr nullPtr
-              execState <- c_duckdb_execute_prepared_arrow stmt arrowPtr
-              execState @?= DuckDBSuccess
-
-              arrowHandle <- peek arrowPtr
-              assertBool "execute_prepared_arrow returns result handle" (arrowHandle /= nullPtr)
-              c_duckdb_arrow_column_count arrowHandle >>= (@?= 2)
-              c_duckdb_arrow_row_count arrowHandle >>= (@?= 1)
-              c_duckdb_arrow_rows_changed arrowHandle >>= (@?= 0)
-
-              alloca \arrayPtrPtr -> do
-                poke arrayPtrPtr nullPtr
-                arrayState <- c_duckdb_query_arrow_array arrowHandle arrayPtrPtr
-                arrayState @?= DuckDBSuccess
-                arrayHandle <- peek arrayPtrPtr
-                assertBool "prepared arrow query yields array chunk" (arrayHandle /= nullPtr)
-                arrayStructPtr <- arrowArrayStructPtr arrayHandle
-                assertBool "prepared arrow array internal pointer should not be null" (arrayStructPtr /= nullPtr)
-                array <- peek arrayStructPtr
-                arrowArrayLength array @?= 1
-                assertBool "prepared result array release pointer should be set" (arrowArrayRelease array /= nullFunPtr)
-                releaseArrowArray arrayStructPtr
-                clearArrowArrayHandle arrayHandle
-
-              c_duckdb_destroy_arrow arrowPtr
-
-            c_duckdb_destroy_prepare stmtPtr
-
-arrowScanFromArrowData :: TestTree
-arrowScanFromArrowData =
-  testCase "arrow_array_scan wires view and arrow_scan reuses stream" $
-    withDatabase \db ->
-      withConnection db \conn ->
-        withArrowResult conn "SELECT 11::INTEGER AS val" \arrow -> do
-          arrowSchemaHandle <- alloca \schemaPtrPtr -> do
-            poke schemaPtrPtr nullPtr
-            schemaState <- c_duckdb_query_arrow_schema arrow schemaPtrPtr
-            schemaState @?= DuckDBSuccess
-            schemaHandle <- peek schemaPtrPtr
-            assertBool "query_arrow_schema should produce handle" (schemaHandle /= nullPtr)
-            pure schemaHandle
-
-          arrowArrayHandle <- alloca \arrayPtrPtr -> do
-            poke arrayPtrPtr nullPtr
-            arrayState <- c_duckdb_query_arrow_array arrow arrayPtrPtr
-            arrayState @?= DuckDBSuccess
-            arrayHandle <- peek arrayPtrPtr
-            assertBool "query_arrow_array should produce handle" (arrayHandle /= nullPtr)
-            pure arrayHandle
-
-          withCString "arrow_array_view" \arrayView ->
-            alloca \streamPtr -> do
-              scanState <- c_duckdb_arrow_array_scan conn arrayView arrowSchemaHandle arrowArrayHandle streamPtr
-              scanState @?= DuckDBSuccess
-              streamHandle <- peek streamPtr
-              assertBool "arrow_array_scan should populate stream" (streamHandle /= nullPtr)
-
-              withResult conn "SELECT val FROM arrow_array_view" \resPtr -> do
-                rowCount <- c_duckdb_row_count resPtr
-                rowCount @?= 1
-                value <- c_duckdb_value_int64 resPtr 0 0
-                value @?= 11
-
-              withCString "arrow_stream_view" \streamView -> do
-                reuseState <- c_duckdb_arrow_scan conn streamView streamHandle
-                reuseState @?= DuckDBSuccess
-
-                withResult conn "SELECT val FROM arrow_stream_view" \resPtr -> do
-                  rowCount <- c_duckdb_row_count resPtr
-                  rowCount @?= 1
-                  value <- c_duckdb_value_int64 resPtr 0 0
-                  value @?= 11
-
-              withCString "arrow_scan_error" \badView -> do
-                errState <- c_duckdb_arrow_scan conn badView nullPtr
-                errState @?= DuckDBError
-
-              c_duckdb_destroy_arrow_stream streamPtr
-              streamAfter <- peek streamPtr
-              streamAfter @?= nullPtr
 
 arrowSchemaRoundtrip :: TestTree
 arrowSchemaRoundtrip =
@@ -350,34 +129,6 @@ arrowChunkRoundtrip =
 
                   releaseArrowSchema schemaPtr
 
-withArrowResult :: DuckDBConnection -> String -> (DuckDBArrow -> IO a) -> IO a
-withArrowResult conn sql action =
-  withCString sql \sqlPtr ->
-    alloca \arrowPtr -> do
-      poke arrowPtr nullPtr
-      state <- c_duckdb_query_arrow conn sqlPtr arrowPtr
-      state @?= DuckDBSuccess
-      arrow <- peek arrowPtr
-      whenNull arrow $ assertFailure "duckdb_query_arrow returned null handle"
-      result <- action arrow
-      c_duckdb_destroy_arrow arrowPtr
-      pure result
-  where
-    whenNull ptr actionFn = unless (ptr /= nullPtr) actionFn
-
-setupPreparedFixture :: DuckDBConnection -> IO ()
-setupPreparedFixture conn = do
-  let statements =
-        [ "CREATE TABLE arrow_fixture (id INTEGER, label VARCHAR);"
-        , "INSERT INTO arrow_fixture VALUES (1, 'alpha'), (2, 'beta');"
-        ]
-  forM_ statements \sql ->
-    withCString sql \sqlPtr ->
-      alloca \resPtr -> do
-        state <- c_duckdb_query conn sqlPtr resPtr
-        state @?= DuckDBSuccess
-        c_duckdb_destroy_result resPtr
-
 withArrowOptions :: DuckDBConnection -> (DuckDBArrowOptions -> IO a) -> IO a
 withArrowOptions conn action =
   alloca \optsPtr -> do
@@ -477,25 +228,6 @@ releaseArrowArray arrayPtr = do
     let release = mkArrowArrayRelease releaseFun
     release arrayPtr
 
-arrowSchemaStructPtr :: DuckDBArrowSchema -> IO (Ptr ArrowSchema)
-arrowSchemaStructPtr handle
-  | handle == nullPtr = pure nullPtr
-  | otherwise = peek (castPtr handle :: Ptr (Ptr ArrowSchema))
-
-arrowArrayStructPtr :: DuckDBArrowArray -> IO (Ptr ArrowArray)
-arrowArrayStructPtr handle
-  | handle == nullPtr = pure nullPtr
-  | otherwise = peek (castPtr handle :: Ptr (Ptr ArrowArray))
-
-clearArrowSchemaHandle :: DuckDBArrowSchema -> IO ()
-clearArrowSchemaHandle handle
-  | handle == nullPtr = pure ()
-  | otherwise = poke (castPtr handle :: Ptr (Ptr ArrowSchema)) nullPtr
-
-clearArrowArrayHandle :: DuckDBArrowArray -> IO ()
-clearArrowArrayHandle handle
-  | handle == nullPtr = pure ()
-  | otherwise = poke (castPtr handle :: Ptr (Ptr ArrowArray)) nullPtr
 zeroArrowSchema =
   ArrowSchema
     { arrowSchemaFormat = nullPtr

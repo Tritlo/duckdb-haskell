@@ -1,5 +1,4 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE PatternSynonyms #-}
 
 module ExtractStatementsTest (tests) where
 

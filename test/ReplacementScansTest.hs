@@ -1,5 +1,4 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE PatternSynonyms #-}
 
 module ReplacementScansTest (tests) where
 
@@ -70,14 +69,14 @@ replacementCallback seenTablesRef startValue endValue info tableName _extra = do
     modifyIORef' seenTablesRef (name :)
     case name of
         "haskell_magic" -> do
-            withCString "range" \fn ->
+            withCString "range" $ \fn ->
                 c_duckdb_replacement_scan_set_function_name info fn
-            withValue (c_duckdb_create_int64 startValue) \startVal ->
+            withValue (c_duckdb_create_int64 startValue) $ \startVal ->
                 c_duckdb_replacement_scan_add_parameter info startVal
-            withValue (c_duckdb_create_int64 endValue) \endVal ->
+            withValue (c_duckdb_create_int64 endValue) $ \endVal ->
                 c_duckdb_replacement_scan_add_parameter info endVal
         "failing_magic" ->
-            withCString "replacement rejected by test callback" \msg ->
+            withCString "replacement rejected by test callback" $ \msg ->
                 c_duckdb_replacement_scan_set_error info msg
         _ ->
             pure ()

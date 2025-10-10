@@ -1,5 +1,4 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE PatternSynonyms #-}
 
 module ThreadingTest (tests) where
 
@@ -91,9 +90,9 @@ taskStateControlsExecutionLifecycle =
 
 setupAggTable :: DuckDBConnection -> IO ()
 setupAggTable conn = do
-    withCString "CREATE TABLE threading_numbers(val INTEGER);" \createSql ->
+    withCString "CREATE TABLE threading_numbers(val INTEGER);" $ \createSql ->
         execStatement conn createSql
-    withCString "INSERT INTO threading_numbers VALUES (1), (2), (3), (4), (5);" \insertSql ->
+    withCString "INSERT INTO threading_numbers VALUES (1), (2), (3), (4), (5);" $ \insertSql ->
         execStatement conn insertSql
 
 driveTasks :: DuckDBDatabase -> DuckDBConnection -> IO ()

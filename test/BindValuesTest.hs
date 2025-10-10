@@ -1,5 +1,4 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE PatternSynonyms #-}
 
 module BindValuesTest (tests) where
 
@@ -212,7 +211,7 @@ bindValuesRoundtrip =
                         assertBool "named statement" (stmt /= nullPtr)
 
                         alloca \idxPtr -> do
-                            stIdx <- withCString "named_param" \name -> c_duckdb_bind_parameter_index stmt idxPtr name
+                            stIdx <- withCString "named_param" $ \name -> c_duckdb_bind_parameter_index stmt idxPtr name
                             when (stIdx /= DuckDBSuccess) $ do
                                 errPtr <- c_duckdb_prepare_error stmt
                                 msg <- if errPtr == nullPtr then pure "bind_parameter_index failed" else peekCString errPtr

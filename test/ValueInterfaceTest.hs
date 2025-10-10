@@ -1,9 +1,9 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE PatternSynonyms #-}
+
 
 module ValueInterfaceTest (tests) where
 
-import Control.Monad (when)
+import Control.Monad (when, (>=>))
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.FFI
@@ -30,32 +30,27 @@ tests =
 scalarCreatesRoundTrip :: TestTree
 scalarCreatesRoundTrip =
     testCase "scalar value constructors and accessors" $ do
-        withDuckValue (c_duckdb_create_bool (CBool 1)) \val ->
-            c_duckdb_get_bool val >>= (@?= CBool 1)
+        withDuckValue (c_duckdb_create_bool (CBool 1)) (c_duckdb_get_bool >=> (@?= CBool 1))
 
-        withDuckValue (c_duckdb_create_int8 (-8)) \val ->
-            c_duckdb_get_int8 val >>= (@?= (-8 :: Int8))
+        withDuckValue (c_duckdb_create_int8 (-8)) (c_duckdb_get_int8 >=> (@?= (- 8 :: Int8)))
 
-        withDuckValue (c_duckdb_create_uint8 250) \val ->
-            c_duckdb_get_uint8 val >>= (@?= (250 :: Word8))
+        withDuckValue (c_duckdb_create_uint8 250) (c_duckdb_get_uint8 >=> (@?= (250 :: Word8)))
 
-        withDuckValue (c_duckdb_create_int16 (-32000)) \val ->
-            c_duckdb_get_int16 val >>= (@?= (-32000 :: Int16))
+        withDuckValue (c_duckdb_create_int16 (-32000)) (c_duckdb_get_int16 >=> (@?= (- 32000 :: Int16)))
 
-        withDuckValue (c_duckdb_create_uint16 65000) \val ->
-            c_duckdb_get_uint16 val >>= (@?= (65000 :: Word16))
+        withDuckValue (c_duckdb_create_uint16 65000) (c_duckdb_get_uint16 >=> (@?= (65000 :: Word16)))
 
-        withDuckValue (c_duckdb_create_int32 (-2000000000)) \val ->
-            c_duckdb_get_int32 val >>= (@?= (-2000000000 :: Int32))
+        withDuckValue (c_duckdb_create_int32 (-2000000000)) (c_duckdb_get_int32
+           >=> (@?= (- 2000000000 :: Int32)))
 
-        withDuckValue (c_duckdb_create_uint32 4000000000) \val ->
-            c_duckdb_get_uint32 val >>= (@?= (4000000000 :: Word32))
+        withDuckValue (c_duckdb_create_uint32 4000000000) (c_duckdb_get_uint32
+           >=> (@?= (4000000000 :: Word32)))
 
-        withDuckValue (c_duckdb_create_int64 (-9000000000000000000)) \val ->
-            c_duckdb_get_int64 val >>= (@?= (-9000000000000000000 :: Int64))
+        withDuckValue (c_duckdb_create_int64 (-9000000000000000000)) (c_duckdb_get_int64
+           >=> (@?= (- 9000000000000000000 :: Int64)))
 
-        withDuckValue (c_duckdb_create_uint64 10000000000000000000) \val ->
-            c_duckdb_get_uint64 val >>= (@?= (10000000000000000000 :: Word64))
+        withDuckValue (c_duckdb_create_uint64 10000000000000000000) (c_duckdb_get_uint64
+           >=> (@?= (10000000000000000000 :: Word64)))
 
         alloca \hugePtr -> do
             poke hugePtr DuckDBHugeInt{duckDBHugeIntLower = 123, duckDBHugeIntUpper = -1}
@@ -92,46 +87,35 @@ scalarCreatesRoundTrip =
                     DuckDBDecimal{duckDBDecimalWidth = w, duckDBDecimalScale = s, duckDBDecimalValue = v} <- peek out
                     (w, s, v) @?= (10, 2, hugeValue)
 
-        withDuckValue (c_duckdb_create_float (CFloat 1.25)) \val ->
-            c_duckdb_get_float val >>= (@?= CFloat 1.25)
+        withDuckValue (c_duckdb_create_float (CFloat 1.25)) (c_duckdb_get_float >=> (@?= CFloat 1.25))
 
-        withDuckValue (c_duckdb_create_double (CDouble 2.75)) \val ->
-            c_duckdb_get_double val >>= (@?= CDouble 2.75)
+        withDuckValue (c_duckdb_create_double (CDouble 2.75)) (c_duckdb_get_double >=> (@?= CDouble 2.75))
 
         let sampleDate = DuckDBDate 12345
-        withDuckValue (c_duckdb_create_date sampleDate) \val ->
-            c_duckdb_get_date val >>= (@?= sampleDate)
+        withDuckValue (c_duckdb_create_date sampleDate) (c_duckdb_get_date >=> (@?= sampleDate))
 
         let sampleTime = DuckDBTime 987654321
-        withDuckValue (c_duckdb_create_time sampleTime) \val ->
-            c_duckdb_get_time val >>= (@?= sampleTime)
+        withDuckValue (c_duckdb_create_time sampleTime) (c_duckdb_get_time >=> (@?= sampleTime))
 
         let sampleTimeNs = DuckDBTimeNs 876543210
-        withDuckValue (c_duckdb_create_time_ns sampleTimeNs) \val ->
-            c_duckdb_get_time_ns val >>= (@?= sampleTimeNs)
+        withDuckValue (c_duckdb_create_time_ns sampleTimeNs) (c_duckdb_get_time_ns >=> (@?= sampleTimeNs))
 
         let sampleTimeTz = DuckDBTimeTz 5555
-        withDuckValue (c_duckdb_create_time_tz_value sampleTimeTz) \val ->
-            c_duckdb_get_time_tz val >>= (@?= sampleTimeTz)
+        withDuckValue (c_duckdb_create_time_tz_value sampleTimeTz) (c_duckdb_get_time_tz >=> (@?= sampleTimeTz))
 
         let sampleTimestamp = DuckDBTimestamp 444444
-        withDuckValue (c_duckdb_create_timestamp sampleTimestamp) \val ->
-            c_duckdb_get_timestamp val >>= (@?= sampleTimestamp)
+        withDuckValue (c_duckdb_create_timestamp sampleTimestamp) (c_duckdb_get_timestamp >=> (@?= sampleTimestamp))
 
-        withDuckValue (c_duckdb_create_timestamp_tz sampleTimestamp) \val ->
-            c_duckdb_get_timestamp_tz val >>= (@?= sampleTimestamp)
+        withDuckValue (c_duckdb_create_timestamp_tz sampleTimestamp) (c_duckdb_get_timestamp_tz >=> (@?= sampleTimestamp))
 
         let tsSeconds = DuckDBTimestampS 12
-        withDuckValue (c_duckdb_create_timestamp_s tsSeconds) \val ->
-            c_duckdb_get_timestamp_s val >>= (@?= tsSeconds)
+        withDuckValue (c_duckdb_create_timestamp_s tsSeconds) (c_duckdb_get_timestamp_s >=> (@?= tsSeconds))
 
         let tsMillis = DuckDBTimestampMs 12000
-        withDuckValue (c_duckdb_create_timestamp_ms tsMillis) \val ->
-            c_duckdb_get_timestamp_ms val >>= (@?= tsMillis)
+        withDuckValue (c_duckdb_create_timestamp_ms tsMillis) (c_duckdb_get_timestamp_ms >=> (@?= tsMillis))
 
         let tsNanos = DuckDBTimestampNs 12000000
-        withDuckValue (c_duckdb_create_timestamp_ns tsNanos) \val ->
-            c_duckdb_get_timestamp_ns val >>= (@?= tsNanos)
+        withDuckValue (c_duckdb_create_timestamp_ns tsNanos) (c_duckdb_get_timestamp_ns >=> (@?= tsNanos))
 
         let intervalVal = DuckDBInterval{duckDBIntervalMonths = 1, duckDBIntervalDays = 2, duckDBIntervalMicros = 3000}
         with intervalVal \intervalPtr ->
@@ -304,10 +288,8 @@ collectionValuesRoundTrip =
         -- Enum value
         enumLogical <-
             withMany withCString ["Red", "Green", "Blue"] \namePtrs ->
-                withArray namePtrs \nameArray ->
-                    c_duckdb_create_enum_type nameArray 3
-        withDuckValue (c_duckdb_create_enum_value enumLogical 1) \enumVal ->
-            c_duckdb_get_enum_value enumVal >>= (@?= 1)
+                withArray namePtrs (`c_duckdb_create_enum_type` 3)
+        withDuckValue (c_duckdb_create_enum_value enumLogical 1) (c_duckdb_get_enum_value >=> (@?= 1))
         destroyLogicalType enumLogical
 
         -- Union value

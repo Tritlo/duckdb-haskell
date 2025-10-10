@@ -1,5 +1,4 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE TypeApplications #-}
 
 module HelpersTest (tests) where
@@ -109,7 +108,7 @@ testStringHelpers =
                     destroyDataChunk
                     \chunk -> do
                         vec <- c_duckdb_data_chunk_get_vector chunk 0
-                        withCString text \cStr ->
+                        withCString text $ \cStr ->
                             c_duckdb_vector_assign_string_element vec 0 cStr
                         c_duckdb_data_chunk_set_size chunk 1
                         dataPtr <- c_duckdb_vector_get_data vec

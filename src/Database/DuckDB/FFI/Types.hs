@@ -1502,7 +1502,7 @@ newtype ArrowArrayPtr = ArrowArrayPtr {unArrowArrayPtr :: Ptr ArrowArray}
     deriving (Eq)
 
 {- | Pointer wrapper for the deprecated Arrow stream handle returned by DuckDB.
-DuckDB owns the referenced stream; call 'c_duckdb_destroy_arrow_stream' after
+DuckDB owns the referenced stream; call @c_duckdb_destroy_arrow_stream@ after
 invoking @duckdb_arrow_scan@.
 -}
 newtype ArrowStreamPtr = ArrowStreamPtr {unArrowStreamPtr :: Ptr ()}

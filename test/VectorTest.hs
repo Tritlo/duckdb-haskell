@@ -1,9 +1,9 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE PatternSynonyms #-}
+
 
 module VectorTest (tests) where
 
-import Control.Monad (forM_, void)
+import Control.Monad ( forM_, void, (>=>) )
 import Data.Bits (setBit)
 import Data.Int (Int32)
 import Data.Word (Word64)
@@ -37,7 +37,7 @@ vectorDataAccess =
         withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \intType ->
             withVectorOfType intType 4 \vec -> do
                 colType <- c_duckdb_vector_get_column_type vec
-                withLogicalType (pure colType) \lt -> c_duckdb_get_type_id lt >>= (@?= DuckDBTypeInteger)
+                withLogicalType (pure colType) (c_duckdb_get_type_id >=> (@?= DuckDBTypeInteger))
 
                 rawPtr <- c_duckdb_vector_get_data vec
                 let dataPtr = castPtr rawPtr :: Ptr Int32
@@ -92,7 +92,7 @@ listVectorChildManagement =
                     childRaw <- c_duckdb_vector_get_data childVec
                     let childInts = castPtr childRaw :: Ptr Int32
                         payload = [11, 12, 13, 21, 22 :: Int32]
-                    forM_ (zip [0 ..] payload) \(idx, val) -> pokeElemOff childInts idx val
+                    forM_ (zip [0 ..] payload) (uncurry (pokeElemOff childInts))
                     fetched <- mapM (peekElemOff childInts) [0 .. length payload - 1]
                     fetched @?= payload
 
@@ -108,12 +108,12 @@ arrayVectorChildAccess =
                 withVectorOfType arrayType 2 \arrayVec -> do
                     childVec <- c_duckdb_array_vector_get_child arrayVec
                     childType <- c_duckdb_vector_get_column_type childVec
-                    withLogicalType (pure childType) \ct -> c_duckdb_get_type_id ct >>= (@?= DuckDBTypeInteger)
+                    withLogicalType (pure childType) (c_duckdb_get_type_id >=> (@?= DuckDBTypeInteger))
 
                     childRaw <- c_duckdb_vector_get_data childVec
                     let childInts = castPtr childRaw :: Ptr Int32
                         payload = [1, 2, 3, 4, 5, 6 :: Int32]
-                    forM_ (zip [0 ..] payload) \(idx, val) -> pokeElemOff childInts idx val
+                    forM_ (zip [0 ..] payload) (uncurry (pokeElemOff childInts))
                     mapM (peekElemOff childInts) [0 .. length payload - 1] >>= (@?= payload)
 
 -- | Slice a vector with a selection vector and materialize the dictionary.
@@ -124,7 +124,7 @@ vectorSliceWithSelection =
             withVectorOfType intType 4 \vec -> do
                 dataRaw <- c_duckdb_vector_get_data vec
                 let vecData = castPtr dataRaw :: Ptr Int32
-                forM_ (zip [0 ..] [10, 20, 30, 40 :: Int32]) \(idx, val) -> pokeElemOff vecData idx val
+                forM_ (zip [0 ..] [10, 20, 30, 40 :: Int32]) (uncurry (pokeElemOff vecData))
 
                 withSelectionVector 2 \sel -> do
                     selPtr <- c_duckdb_selection_vector_get_data_ptr sel
@@ -160,9 +160,9 @@ structVectorChildAccess =
                                         dblChild <- c_duckdb_struct_vector_get_child structVec 1
 
                                         intChildType <- c_duckdb_vector_get_column_type intChild
-                                        withLogicalType (pure intChildType) \lt -> c_duckdb_get_type_id lt >>= (@?= DuckDBTypeInteger)
+                                        withLogicalType (pure intChildType) (c_duckdb_get_type_id >=> (@?= DuckDBTypeInteger))
                                         dblChildType <- c_duckdb_vector_get_column_type dblChild
-                                        withLogicalType (pure dblChildType) \lt -> c_duckdb_get_type_id lt >>= (@?= DuckDBTypeDouble)
+                                        withLogicalType (pure dblChildType) (c_duckdb_get_type_id >=> (@?= DuckDBTypeDouble))
 
                                         intRaw <- c_duckdb_vector_get_data intChild
                                         dblRaw <- c_duckdb_vector_get_data dblChild

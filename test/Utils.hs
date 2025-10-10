@@ -42,8 +42,7 @@ withDatabase action =
             pure result
 
 withConnection :: DuckDBDatabase -> (DuckDBConnection -> IO a) -> IO a
-withConnection db action =
-    bracket acquire release action
+withConnection db = bracket acquire release
   where
     acquire =
         alloca \connPtr -> do
@@ -77,33 +76,29 @@ destroyDuckValue value =
     alloca \ptr -> poke ptr value >> c_duckdb_destroy_value ptr
 
 withLogicalType :: IO DuckDBLogicalType -> (DuckDBLogicalType -> IO a) -> IO a
-withLogicalType acquire action = bracket acquire destroyLogicalType action
+withLogicalType acquire = bracket acquire destroyLogicalType
 
 destroyLogicalType :: DuckDBLogicalType -> IO ()
 destroyLogicalType lt =
     alloca \ptr -> poke ptr lt >> c_duckdb_destroy_logical_type ptr
 
 withSelectionVector :: DuckDBIdx -> (DuckDBSelectionVector -> IO a) -> IO a
-withSelectionVector n action =
-    bracket (c_duckdb_create_selection_vector n) c_duckdb_destroy_selection_vector action
+withSelectionVector n = bracket (c_duckdb_create_selection_vector n) c_duckdb_destroy_selection_vector
 
 withScalarFunction :: (DuckDBScalarFunction -> IO a) -> IO a
-withScalarFunction action =
-    bracket c_duckdb_create_scalar_function destroy action
+withScalarFunction = bracket c_duckdb_create_scalar_function destroy
   where
     destroy fun =
         alloca \ptr -> poke ptr fun >> c_duckdb_destroy_scalar_function ptr
 
 withVector :: IO DuckDBVector -> (DuckDBVector -> IO a) -> IO a
-withVector acquire action =
-    bracket acquire destroyVector action
+withVector acquire = bracket acquire destroyVector
   where
     destroyVector vec =
         alloca \ptr -> poke ptr vec >> c_duckdb_destroy_vector ptr
 
 withVectorOfType :: DuckDBLogicalType -> DuckDBIdx -> (DuckDBVector -> IO a) -> IO a
-withVectorOfType lt capacity action =
-    withVector (c_duckdb_create_vector lt capacity) action
+withVectorOfType lt capacity = withVector (c_duckdb_create_vector lt capacity)
 
 setAllValid :: Ptr Word64 -> Int -> IO ()
 setAllValid mask count =

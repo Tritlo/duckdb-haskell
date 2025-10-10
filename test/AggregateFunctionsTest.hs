@@ -1,6 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
-{-# LANGUAGE PatternSynonyms #-}
 
 module AggregateFunctionsTest (tests) where
 
@@ -216,7 +215,7 @@ withAggregateConfig cfg action =
         ptr <- mallocBytes aggregateConfigSize :: IO AggregateConfigPtr
         writeAggregateConfig ptr cfg
         pure ptr
-    freeConfig ptr = free ptr
+    freeConfig = free
 
 shouldFailOnNegative :: AggregateConfig -> Bool
 shouldFailOnNegative AggregateConfig{cfgFailOnNegative = flag} = flag /= 0
@@ -239,8 +238,7 @@ data Callbacks = Callbacks
     }
 
 withCallbacks :: (Callbacks -> IO a) -> IO a
-withCallbacks action =
-    bracket acquire release action
+withCallbacks = bracket acquire release
   where
     acquire = do
         sizeFun <- mkStateSizeFun stateSizeFun
@@ -268,7 +266,7 @@ withCallbacks action =
 
 setupAggregateFunction :: DuckDBAggregateFunction -> Callbacks -> DuckDBLogicalType -> String -> IO ()
 setupAggregateFunction aggFun Callbacks{cbStateSize = sizeFun, cbInit = initFun, cbUpdate = updateFun, cbCombine = combineFun, cbFinalize = finalizeFun, cbDestroy = destroyFun} intType name = do
-    withCString name \cname -> c_duckdb_aggregate_function_set_name aggFun cname
+    withCString name $ \cname -> c_duckdb_aggregate_function_set_name aggFun cname
     c_duckdb_aggregate_function_add_parameter aggFun intType
     c_duckdb_aggregate_function_set_return_type aggFun intType
     c_duckdb_aggregate_function_set_functions aggFun sizeFun initFun updateFun combineFun finalizeFun
@@ -307,7 +305,7 @@ updateCallback info chunk stateArrayPtr = do
                 value <- peekElemOff dataPtr i
                 if shouldFailOnNegative config && value < 0
                     then do
-                        withCString "negatives not allowed" \errMsg ->
+                        withCString "negatives not allowed" $ \errMsg ->
                             c_duckdb_aggregate_function_set_error info errMsg
                         writeSumState storage current{ssSeen = seen'}
                     else
@@ -402,12 +400,12 @@ foreign import ccall safe "wrapper"
 -- Resource helpers ----------------------------------------------------------
 
 withAggregateFunction :: (DuckDBAggregateFunction -> IO a) -> IO a
-withAggregateFunction action = bracket c_duckdb_create_aggregate_function destroy action
+withAggregateFunction = bracket c_duckdb_create_aggregate_function destroy
   where
     destroy fun = alloca \ptr -> poke ptr fun >> c_duckdb_destroy_aggregate_function ptr
 
 withAggregateFunctionSet :: CString -> (DuckDBAggregateFunctionSet -> IO a) -> IO a
-withAggregateFunctionSet name action = bracket acquire release action
+withAggregateFunctionSet name = bracket acquire release
   where
     acquire = c_duckdb_create_aggregate_function_set name
     release set = alloca \ptr -> poke ptr set >> c_duckdb_destroy_aggregate_function_set ptr

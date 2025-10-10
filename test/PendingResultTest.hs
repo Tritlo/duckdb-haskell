@@ -1,11 +1,10 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE PatternSynonyms #-}
 
 module PendingResultTest (tests) where
 
 import Control.Monad (forM_, when)
 import Data.Int (Int32, Int64)
-import Data.Maybe (isJust)
+import Data.Maybe (isNothing)
 import Database.DuckDB.FFI
 import Foreign.C.String (peekCString, withCString)
 import Foreign.C.Types (CBool (..))
@@ -99,7 +98,7 @@ pendingPreparedRoundtrip =
                                 c_duckdb_destroy_result resPtr
 
                             errMsg <- pendingErrorMessage pending
-                            assertBool "no error expected for successful pending execution" (not (isJust errMsg))
+                            assertBool "no error expected for successful pending execution" (isNothing errMsg)
 
                             c_duckdb_destroy_pending pendingPtr
 
@@ -159,7 +158,7 @@ pendingPreparedStreamingRoundtrip =
                                 c_duckdb_destroy_result resPtr
 
                             errMsg <- pendingErrorMessage pending
-                            assertBool "no error expected for successful streaming execution" (not (isJust errMsg))
+                            assertBool "no error expected for successful streaming execution" (isNothing errMsg)
 
                             c_duckdb_destroy_pending pendingPtr
 

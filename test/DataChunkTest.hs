@@ -1,10 +1,9 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE PatternSynonyms #-}
 
 module DataChunkTest (tests) where
 
 import Control.Exception (bracket)
-import Control.Monad (forM_, void, when)
+import Control.Monad (forM_, void, when, (>=>))
 import Data.Int (Int32)
 import Database.DuckDB.FFI
 import Foreign.Marshal.Alloc (alloca)
@@ -63,20 +62,20 @@ withIntegerLogicalType :: (DuckDBLogicalType -> IO a) -> IO a
 withIntegerLogicalType = withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger)
 
 withDataChunk :: IO DuckDBDataChunk -> (DuckDBDataChunk -> IO a) -> IO a
-withDataChunk acquire action = bracket acquire destroyChunk action
+withDataChunk acquire = bracket acquire destroyChunk
   where
     destroyChunk chunk = alloca \ptr -> poke ptr chunk >> c_duckdb_destroy_data_chunk ptr
 
 fillVectorWithSequence :: DuckDBVector -> [Int32] -> IO ()
 fillVectorWithSequence vec values = do
     colType <- c_duckdb_vector_get_column_type vec
-    withLogicalType (pure colType) \inner -> c_duckdb_get_type_id inner >>= (@?= DuckDBTypeInteger)
+    withLogicalType (pure colType) (c_duckdb_get_type_id >=> (@?= DuckDBTypeInteger))
     void (c_duckdb_vector_ensure_validity_writable vec)
     dataPtrRaw <- c_duckdb_vector_get_data vec
     let dataPtr = castPtr dataPtrRaw :: Ptr Int32
     validity <- c_duckdb_vector_get_validity vec
     when (validity /= nullPtr) $ setAllValid validity (length values)
-    forM_ (zip [0 ..] values) \(idx, val) -> pokeElem dataPtr idx val
+    forM_ (zip [0 ..] values) (uncurry (pokeElem dataPtr))
 
 verifyChunkContents :: DuckDBDataChunk -> [Int32] -> IO ()
 verifyChunkContents chunk expected = do
@@ -92,7 +91,7 @@ verifyChunkContents chunk expected = do
 -- pointer utilities ---------------------------------------------------------
 
 pokeElem :: Ptr Int32 -> Int -> Int32 -> IO ()
-pokeElem base idx val = poke (base `plusElem` idx) val
+pokeElem base idx = poke (base `plusElem` idx)
 
 peekElem :: Ptr Int32 -> Int -> IO Int32
 peekElem base idx = peek (base `plusElem` idx)

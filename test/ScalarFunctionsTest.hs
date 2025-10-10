@@ -1,6 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
-{-# LANGUAGE PatternSynonyms #-}
 
 module ScalarFunctionsTest (tests) where
 
@@ -35,15 +34,15 @@ scalarFunctionRoundtrip =
                 withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \intType -> do
                     funPtr <- mkScalarFun negateCallback
                     withScalarFunction \fun -> do
-                        withCString "negate_int" \name -> c_duckdb_scalar_function_set_name fun name
+                        withCString "negate_int" $ \name -> c_duckdb_scalar_function_set_name fun name
                         c_duckdb_scalar_function_add_parameter fun intType
                         c_duckdb_scalar_function_set_return_type fun intType
                         c_duckdb_scalar_function_set_function fun funPtr
 
                         c_duckdb_register_scalar_function conn fun >>= (@?= DuckDBSuccess)
 
-                        withCString "SELECT negate_int(5)" \sql ->
-                            withResultCString conn sql \resPtr ->
+                        withCString "SELECT negate_int(5)" $ \sql ->
+                            withResultCString conn sql $ \resPtr ->
                                 c_duckdb_value_int32 resPtr 0 0 >>= (@?= (-5))
 
 -- Callback ------------------------------------------------------------------
@@ -75,7 +74,7 @@ varargBind extraPtr deleteBindCb copyCb bindDataSize info = do
             c_duckdb_destroy_client_context ctxPtr
 
     if argCount == 0
-        then withCString "at least one argument required" \msg ->
+        then withCString "at least one argument required" $ \msg ->
             c_duckdb_scalar_function_bind_set_error info msg
         else do
             expr <- c_duckdb_scalar_function_bind_get_argument info 0
@@ -106,11 +105,11 @@ varargExec extraPtr _ info chunk outVec = do
     let loop idx
             | idx >= rowCount = pure False
             | otherwise = do
-                values <- mapM (\ptr -> peekElemOff ptr idx) dataPtrs
+                values <- mapM (`peekElemOff` idx) dataPtrs
                 let total = sum values
                 if total < 0
                     then do
-                        withCString "negative sum not allowed" \msg ->
+                        withCString "negative sum not allowed" $ \msg ->
                             c_duckdb_scalar_function_set_error info msg
                         c_duckdb_data_chunk_set_size chunk 0
                         pure True
@@ -153,7 +152,7 @@ scalarFunctionSetFeatures =
                     let functionName = "haskell_vararg"
 
                     withScalarFunction \fun -> do
-                        withCString functionName \cName ->
+                        withCString functionName $ \cName ->
                             c_duckdb_scalar_function_set_name fun cName
                         c_duckdb_scalar_function_set_return_type fun intType
                         c_duckdb_scalar_function_set_varargs fun intType
@@ -193,13 +192,13 @@ foreign import ccall "wrapper"
 -- Resource helpers ----------------------------------------------------------
 
 withLogicalType :: IO DuckDBLogicalType -> (DuckDBLogicalType -> IO a) -> IO a
-withLogicalType acquire action = bracket acquire destroyLogicalType action
+withLogicalType acquire = bracket acquire destroyLogicalType
 
 destroyLogicalType :: DuckDBLogicalType -> IO ()
 destroyLogicalType lt = alloca \ptr -> poke ptr lt >> c_duckdb_destroy_logical_type ptr
 
 withScalarFunction :: (DuckDBScalarFunction -> IO a) -> IO a
-withScalarFunction action = bracket c_duckdb_create_scalar_function destroy action
+withScalarFunction = bracket c_duckdb_create_scalar_function destroy
   where
     destroy fun = alloca \ptr -> poke ptr fun >> c_duckdb_destroy_scalar_function ptr
 

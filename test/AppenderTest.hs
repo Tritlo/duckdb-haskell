@@ -1,11 +1,10 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE TypeApplications #-}
 
 module AppenderTest (tests) where
 
 import Control.Exception (bracket, finally)
-import Control.Monad (forM_, when)
+import Control.Monad (forM_, when, (>=>))
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.List (isInfixOf)
 import Data.Word (Word16, Word32, Word64, Word8)
@@ -58,8 +57,7 @@ appenderRowwiseLifecycle =
 
                     c_duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
                     c_duckdb_append_int32 app 1 >>= (@?= DuckDBSuccess)
-                    withCString "alice" \name ->
-                        c_duckdb_append_varchar app name >>= (@?= DuckDBSuccess)
+                    withCString "alice" (c_duckdb_append_varchar app >=> (@?= DuckDBSuccess))
                     c_duckdb_append_bool app (CBool 1) >>= (@?= DuckDBSuccess)
                     c_duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
 
@@ -71,8 +69,7 @@ appenderRowwiseLifecycle =
 
                     c_duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
                     c_duckdb_append_int32 app 3 >>= (@?= DuckDBSuccess)
-                    withDuckValue (withCString "via_value" c_duckdb_create_varchar) \val ->
-                        c_duckdb_append_value app val >>= (@?= DuckDBSuccess)
+                    withDuckValue (withCString "via_value" c_duckdb_create_varchar) (c_duckdb_append_value app >=> (@?= DuckDBSuccess))
                     c_duckdb_append_default app >>= (@?= DuckDBSuccess)
                     c_duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
 
@@ -111,23 +108,18 @@ appenderColumnSubset =
 
                 withTableAppender conn "subset_demo" \app -> do
                     c_duckdb_appender_clear_columns app >>= (@?= DuckDBSuccess)
-                    withCString "name" \col ->
-                        c_duckdb_appender_add_column app col >>= (@?= DuckDBSuccess)
-                    withCString "note" \col ->
-                        c_duckdb_appender_add_column app col >>= (@?= DuckDBSuccess)
+                    withCString "name" (c_duckdb_appender_add_column app >=> (@?= DuckDBSuccess))
+                    withCString "note" (c_duckdb_appender_add_column app >=> (@?= DuckDBSuccess))
 
                     c_duckdb_appender_column_count app >>= (@?= 2)
 
                     c_duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
-                    withCString "subset-one" \name ->
-                        c_duckdb_append_varchar app name >>= (@?= DuckDBSuccess)
-                    withCString "note one" \note ->
-                        c_duckdb_append_varchar app note >>= (@?= DuckDBSuccess)
+                    withCString "subset-one" (c_duckdb_append_varchar app >=> (@?= DuckDBSuccess))
+                    withCString "note one" (c_duckdb_append_varchar app >=> (@?= DuckDBSuccess))
                     c_duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
 
                     c_duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
-                    withCString "subset-two" \name ->
-                        c_duckdb_append_varchar app name >>= (@?= DuckDBSuccess)
+                    withCString "subset-two" (c_duckdb_append_varchar app >=> (@?= DuckDBSuccess))
                     c_duckdb_append_null app >>= (@?= DuckDBSuccess)
                     c_duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
 
@@ -197,14 +189,12 @@ appenderQueryAppender =
 
                             c_duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
                             c_duckdb_append_int32 app 21 >>= (@?= DuckDBSuccess)
-                            withCString "twenty-one" \label ->
-                                c_duckdb_append_varchar app label >>= (@?= DuckDBSuccess)
+                            withCString "twenty-one" (c_duckdb_append_varchar app >=> (@?= DuckDBSuccess))
                             c_duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
 
                             c_duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
                             c_duckdb_append_int32 app 22 >>= (@?= DuckDBSuccess)
-                            withCString "twenty-two" \label ->
-                                c_duckdb_append_varchar app label >>= (@?= DuckDBSuccess)
+                            withCString "twenty-two" (c_duckdb_append_varchar app >=> (@?= DuckDBSuccess))
                             c_duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
 
                             c_duckdb_appender_flush app >>= (@?= DuckDBSuccess)
@@ -259,14 +249,12 @@ appenderNumericAndFloatScalars =
                     c_duckdb_append_int8 app int8Val >>= (@?= DuckDBSuccess)
                     c_duckdb_append_int16 app int16Val >>= (@?= DuckDBSuccess)
                     c_duckdb_append_int64 app int64Val >>= (@?= DuckDBSuccess)
-                    with hugeVal \ptr ->
-                        c_duckdb_append_hugeint app ptr >>= (@?= DuckDBSuccess)
+                    with hugeVal (c_duckdb_append_hugeint app >=> (@?= DuckDBSuccess))
                     c_duckdb_append_uint8 app uint8Val >>= (@?= DuckDBSuccess)
                     c_duckdb_append_uint16 app uint16Val >>= (@?= DuckDBSuccess)
                     c_duckdb_append_uint32 app uint32Val >>= (@?= DuckDBSuccess)
                     c_duckdb_append_uint64 app uint64Val >>= (@?= DuckDBSuccess)
-                    with uhugeVal \ptr ->
-                        c_duckdb_append_uhugeint app ptr >>= (@?= DuckDBSuccess)
+                    with uhugeVal (c_duckdb_append_uhugeint app >=> (@?= DuckDBSuccess))
                     c_duckdb_append_float app (realToFrac floatVal) >>= (@?= DuckDBSuccess)
                     c_duckdb_append_double app (realToFrac doubleVal) >>= (@?= DuckDBSuccess)
                     c_duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
@@ -335,8 +323,7 @@ appenderTemporalTypes =
                     c_duckdb_append_date app dateVal >>= (@?= DuckDBSuccess)
                     c_duckdb_append_time app timeVal >>= (@?= DuckDBSuccess)
                     c_duckdb_append_timestamp app timestampVal >>= (@?= DuckDBSuccess)
-                    with intervalVal \ptr ->
-                        c_duckdb_append_interval app ptr >>= (@?= DuckDBSuccess)
+                    with intervalVal (c_duckdb_append_interval app >=> (@?= DuckDBSuccess))
                     c_duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
 
                     c_duckdb_appender_flush app >>= (@?= DuckDBSuccess)
@@ -489,14 +476,14 @@ withTableAppender :: DuckDBConnection -> String -> (DuckDBAppender -> IO a) -> I
 withTableAppender conn tableName action =
     withCString tableName \tablePtr ->
         withAppenderAcquire
-            (\appPtr -> c_duckdb_appender_create conn nullPtr tablePtr appPtr)
+            (c_duckdb_appender_create conn nullPtr tablePtr)
             action
 
 withTableAppenderExt :: DuckDBConnection -> String -> (DuckDBAppender -> IO a) -> IO a
 withTableAppenderExt conn tableName action =
     withCString tableName \tablePtr ->
         withAppenderAcquire
-            (\appPtr -> c_duckdb_appender_create_ext conn nullPtr nullPtr tablePtr appPtr)
+            (c_duckdb_appender_create_ext conn nullPtr nullPtr tablePtr)
             action
 
 withQueryAppender :: DuckDBConnection -> String -> [DuckDBLogicalType] -> (DuckDBAppender -> IO a) -> IO a
@@ -504,7 +491,7 @@ withQueryAppender conn query types action =
     withCString query \queryPtr ->
         withArray types \typeArray ->
             withAppenderAcquire
-                (\appPtr -> c_duckdb_appender_create_query conn queryPtr (fromIntegral (length types)) typeArray nullPtr nullPtr appPtr)
+                (c_duckdb_appender_create_query conn queryPtr (fromIntegral (length types)) typeArray nullPtr nullPtr)
                 action
 
 withAppenderAcquire :: (Ptr DuckDBAppender -> IO DuckDBState) -> (DuckDBAppender -> IO a) -> IO a
@@ -519,8 +506,7 @@ withAppenderAcquire acquire action =
         action app `finally` release
 
 withDataChunk :: IO DuckDBDataChunk -> (DuckDBDataChunk -> IO a) -> IO a
-withDataChunk acquire action =
-    bracket acquire destroyChunk action
+withDataChunk acquire = bracket acquire destroyChunk
   where
     destroyChunk chunk = alloca \ptr -> poke ptr chunk >> c_duckdb_destroy_data_chunk ptr
 
@@ -528,20 +514,19 @@ fillIntVector :: DuckDBVector -> [Int32] -> IO ()
 fillIntVector vec values = do
     dataPtrRaw <- c_duckdb_vector_get_data vec
     let dataPtr = castPtr dataPtrRaw :: Ptr Int32
-    forM_ (zip [0 ..] values) \(idx, val) ->
-        pokeElemOff dataPtr idx val
+    forM_ (zip [0 ..] values) (uncurry (pokeElemOff dataPtr))
 
 assignStrings :: DuckDBVector -> [String] -> IO ()
 assignStrings vec values =
     forM_ (zip [0 ..] values) \(idx, val) ->
-        withCString val \str ->
+        withCString val $ \str ->
             c_duckdb_vector_assign_string_element vec (fromIntegral @Integer idx) str
 
 checkColumnType :: DuckDBAppender -> DuckDBIdx -> DuckDBType -> IO ()
 checkColumnType app idx expected =
     do
         logicalType <- c_duckdb_appender_column_type app idx
-        withLogicalType (pure logicalType) \lt -> c_duckdb_get_type_id lt >>= (@?= expected)
+        withLogicalType (pure logicalType) (c_duckdb_get_type_id >=> (@?= expected))
 
 fetchString :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO String
 fetchString resPtr col row = do

@@ -20,6 +20,7 @@ import Foreign.Storable (peek, peekElemOff, poke, pokeElemOff, sizeOf)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 import Utils (withConnection, withDatabase, withLogicalType, withResultCString, withValue)
+import Data.Char (isAsciiUpper)
 
 tests :: TestTree
 tests =
@@ -178,8 +179,8 @@ withHarness columnType action = do
     modeRef <- newIORef ModeUnset
     countHistory <- newIORef []
 
-    let takeInt64 ptr idx = peekElemOff (castPtr ptr :: Ptr Int64) idx
-        putInt64 ptr idx val = pokeElemOff (castPtr ptr :: Ptr Int64) idx val
+    let takeInt64 ptr = peekElemOff (castPtr ptr :: Ptr Int64)
+        putInt64 ptr = pokeElemOff (castPtr ptr :: Ptr Int64)
 
     extraDelete <-
         mkDeleteCallback \ptr -> do
@@ -240,7 +241,7 @@ withHarness columnType action = do
                 countValue <- c_duckdb_get_int64 value
                 modifyIORef' countHistory (<> [countValue])
                 if countValue <= 0
-                    then withCString "count must be positive" \msg -> c_duckdb_bind_set_error info msg
+                    then withCString "count must be positive" $ \msg -> c_duckdb_bind_set_error info msg
                     else do
                         startValue <-
                             withCString "start" \name ->
@@ -281,7 +282,7 @@ withHarness columnType action = do
                 ModeInitError -> do
                     bindRaw <- c_duckdb_init_get_bind_data info
                     bindRaw @?= nullPtr
-                    withCString "init rejected missing bind data" \msg -> c_duckdb_init_set_error info msg
+                    withCString "init rejected missing bind data" $ \msg -> c_duckdb_init_set_error info msg
                 ModeNormal -> do
                     bindRaw <- c_duckdb_init_get_bind_data info
                     stored <- readIORef bindPtrRef
@@ -324,7 +325,7 @@ withHarness columnType action = do
                     poke (castPtr localPtr :: Ptr Int64) localInitSentinel
                     c_duckdb_init_set_init_data info (castPtr localPtr) localDelete
                     writeIORef localPtrRef (Just (castPtr localPtr))
-                ModeInitError -> withCString "local init skipped after init error" \msg -> c_duckdb_init_set_error info msg
+                ModeInitError -> withCString "local init skipped after init error" $ \msg -> c_duckdb_init_set_error info msg
                 _ -> pure ()
 
         executeCallback info chunk = do
@@ -374,7 +375,7 @@ withHarness columnType action = do
                                 chunkEnd = nextVal + batch
                             if failAtValue >= nextVal && failAtValue < chunkEnd && failAtValue >= 0
                                 then do
-                                    withCString "execution aborted by table function" \msg -> c_duckdb_function_set_error info msg
+                                    withCString "execution aborted by table function" $ \msg -> c_duckdb_function_set_error info msg
                                     c_duckdb_data_chunk_set_size chunk 0
                                     putInt64 initRaw 0 chunkEnd
                                 else do
@@ -392,13 +393,13 @@ withHarness columnType action = do
                                     c_duckdb_data_chunk_set_size chunk (fromIntegral batch)
                                     putInt64 initRaw 0 chunkEnd
                 ModeInitError -> do
-                    withCString "execution blocked by init error" \msg -> c_duckdb_function_set_error info msg
+                    withCString "execution blocked by init error" $ \msg -> c_duckdb_function_set_error info msg
                     c_duckdb_data_chunk_set_size chunk 0
                 ModeRejected -> do
-                    withCString "execution not expected after bind error" \msg -> c_duckdb_function_set_error info msg
+                    withCString "execution not expected after bind error" $ \msg -> c_duckdb_function_set_error info msg
                     c_duckdb_data_chunk_set_size chunk 0
                 ModeUnset -> do
-                    withCString "execution invoked without prior bind" \msg -> c_duckdb_function_set_error info msg
+                    withCString "execution invoked without prior bind" $ \msg -> c_duckdb_function_set_error info msg
                     c_duckdb_data_chunk_set_size chunk 0
 
     bindFun <- mkBindFun bindCallback
@@ -453,14 +454,13 @@ withHarness columnType action = do
     pure result
 
 withTableFunction :: (DuckDBTableFunction -> IO a) -> IO a
-withTableFunction action =
-    bracket c_duckdb_create_table_function destroy action
+withTableFunction = bracket c_duckdb_create_table_function destroy
   where
     destroy fun = alloca \ptr -> poke ptr fun >> c_duckdb_destroy_table_function ptr
 
 configureTableFunction :: DuckDBTableFunction -> TableHarness -> IO ()
 configureTableFunction fun TableHarness{..} = do
-    withCString "haskell_numbers" \name -> c_duckdb_table_function_set_name fun name
+    withCString "haskell_numbers" $ \name -> c_duckdb_table_function_set_name fun name
     c_duckdb_table_function_add_parameter fun thColumnType
     withCString "start" \n -> c_duckdb_table_function_add_named_parameter fun n thColumnType
     withCString "fail_at" \n -> c_duckdb_table_function_add_named_parameter fun n thColumnType
@@ -520,7 +520,7 @@ contains needle haystack = mapLower needle `isInfixOf` mapLower haystack
   where
     mapLower = map toLowerAscii
     toLowerAscii c
-        | 'A' <= c && c <= 'Z' = toEnum (fromEnum c + 32)
+        | isAsciiUpper c = toEnum (fromEnum c + 32)
         | otherwise = c
 
 toCBool :: Bool -> CBool

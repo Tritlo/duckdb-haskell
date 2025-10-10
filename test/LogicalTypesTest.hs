@@ -1,9 +1,9 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE PatternSynonyms #-}
+
 
 module LogicalTypesTest (tests) where
 
-import Control.Monad (forM_, when)
+import Control.Monad (forM_, when, (>=>))
 import Data.Word (Word32, Word8)
 import Database.DuckDB.FFI
 import Foreign.C.String (peekCString, withCString)
@@ -59,8 +59,7 @@ enumLogicalType =
     testCase "enum logical type exposes dictionary" $ do
         enumType <-
             withMany withCString ["Small", "Medium", "Large"] \namePtrs ->
-                withArray namePtrs \namesArray ->
-                    c_duckdb_create_enum_type namesArray 3
+                withArray namePtrs (`c_duckdb_create_enum_type` 3)
         withLogicalType (pure enumType) \lt -> do
             c_duckdb_get_type_id lt >>= (@?= DuckDBTypeEnum)
             c_duckdb_enum_internal_type lt >>= (@?= DuckDBTypeUTinyInt)
@@ -78,8 +77,7 @@ compositeLogicalTypes =
             withLogicalType (pure listType) \lt -> do
                 c_duckdb_get_type_id lt >>= (@?= DuckDBTypeList)
                 listChild <- c_duckdb_list_type_child_type lt
-                withLogicalType (pure listChild) \c2 ->
-                    c_duckdb_get_type_id c2 >>= (@?= DuckDBTypeInteger)
+                withLogicalType (pure listChild) (c_duckdb_get_type_id >=> (@?= DuckDBTypeInteger))
 
         -- Array type
         withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \arrayChild -> do
@@ -87,8 +85,7 @@ compositeLogicalTypes =
             withLogicalType (pure arrayType) \lt -> do
                 c_duckdb_get_type_id lt >>= (@?= DuckDBTypeArray)
                 arrayChildType <- c_duckdb_array_type_child_type lt
-                withLogicalType (pure arrayChildType) \c2 ->
-                    c_duckdb_get_type_id c2 >>= (@?= DuckDBTypeInteger)
+                withLogicalType (pure arrayChildType) (c_duckdb_get_type_id >=> (@?= DuckDBTypeInteger))
                 c_duckdb_array_type_array_size lt >>= (@?= 5)
 
         -- Map type
@@ -98,45 +95,41 @@ compositeLogicalTypes =
                 withLogicalType (pure mapType) \lt -> do
                     c_duckdb_get_type_id lt >>= (@?= DuckDBTypeMap)
                     mapKey <- c_duckdb_map_type_key_type lt
-                    withLogicalType (pure mapKey) \kt -> c_duckdb_get_type_id kt >>= (@?= DuckDBTypeVarchar)
+                    withLogicalType (pure mapKey) (c_duckdb_get_type_id >=> (@?= DuckDBTypeVarchar))
                     mapVal <- c_duckdb_map_type_value_type lt
-                    withLogicalType (pure mapVal) \vt -> c_duckdb_get_type_id vt >>= (@?= DuckDBTypeInteger)
+                    withLogicalType (pure mapVal) (c_duckdb_get_type_id >=> (@?= DuckDBTypeInteger))
 
         -- Struct type
-        withMany withCString ["id", "name"] \fieldNames -> do
-            withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \idType ->
-                withLogicalType (c_duckdb_create_logical_type DuckDBTypeVarchar) \nameType ->
-                    withArray [idType, nameType] \childArray ->
-                        withArray fieldNames \namesArray -> do
-                            structType <- c_duckdb_create_struct_type childArray namesArray 2
-                            withLogicalType (pure structType) \lt -> do
-                                c_duckdb_get_type_id lt >>= (@?= DuckDBTypeStruct)
-                                childCount <- c_duckdb_struct_type_child_count lt
-                                childCount @?= 2
-                                childName0 <- c_duckdb_struct_type_child_name lt 0
-                                peekCString childName0 >>= (@?= "id")
-                                c_duckdb_free (castPtr childName0)
-                                structChild1 <- c_duckdb_struct_type_child_type lt 1
-                                withLogicalType (pure structChild1) \ct ->
-                                    c_duckdb_get_type_id ct >>= (@?= DuckDBTypeVarchar)
+        withMany withCString ["id", "name"] \fieldNames -> withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \idType ->
+            withLogicalType (c_duckdb_create_logical_type DuckDBTypeVarchar) \nameType ->
+                withArray [idType, nameType] \childArray ->
+                    withArray fieldNames \namesArray -> do
+                        structType <- c_duckdb_create_struct_type childArray namesArray 2
+                        withLogicalType (pure structType) \lt -> do
+                            c_duckdb_get_type_id lt >>= (@?= DuckDBTypeStruct)
+                            childCount <- c_duckdb_struct_type_child_count lt
+                            childCount @?= 2
+                            childName0 <- c_duckdb_struct_type_child_name lt 0
+                            peekCString childName0 >>= (@?= "id")
+                            c_duckdb_free (castPtr childName0)
+                            structChild1 <- c_duckdb_struct_type_child_type lt 1
+                            withLogicalType (pure structChild1) (c_duckdb_get_type_id >=> (@?= DuckDBTypeVarchar))
 
         -- Union type
-        withMany withCString ["int_member", "text_member"] \memberNames -> do
-            withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \intMember ->
-                withLogicalType (c_duckdb_create_logical_type DuckDBTypeVarchar) \textMember ->
-                    withArray [intMember, textMember] \memberArray ->
-                        withArray memberNames \nameArray -> do
-                            unionType <- c_duckdb_create_union_type memberArray nameArray 2
-                            withLogicalType (pure unionType) \lt -> do
-                                c_duckdb_get_type_id lt >>= (@?= DuckDBTypeUnion)
-                                memberCount <- c_duckdb_union_type_member_count lt
-                                memberCount @?= 2
-                                memberName0 <- c_duckdb_union_type_member_name lt 0
-                                peekCString memberName0 >>= (@?= "int_member")
-                                c_duckdb_free (castPtr memberName0)
-                                memberChild <- c_duckdb_union_type_member_type lt 1
-                                withLogicalType (pure memberChild) \ct ->
-                                    c_duckdb_get_type_id ct >>= (@?= DuckDBTypeVarchar)
+        withMany withCString ["int_member", "text_member"] \memberNames -> withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \intMember ->
+            withLogicalType (c_duckdb_create_logical_type DuckDBTypeVarchar) \textMember ->
+                withArray [intMember, textMember] \memberArray ->
+                    withArray memberNames \nameArray -> do
+                        unionType <- c_duckdb_create_union_type memberArray nameArray 2
+                        withLogicalType (pure unionType) \lt -> do
+                            c_duckdb_get_type_id lt >>= (@?= DuckDBTypeUnion)
+                            memberCount <- c_duckdb_union_type_member_count lt
+                            memberCount @?= 2
+                            memberName0 <- c_duckdb_union_type_member_name lt 0
+                            peekCString memberName0 >>= (@?= "int_member")
+                            c_duckdb_free (castPtr memberName0)
+                            memberChild <- c_duckdb_union_type_member_type lt 1
+                            withLogicalType (pure memberChild) (c_duckdb_get_type_id >=> (@?= DuckDBTypeVarchar))
 
 aliasRoundtrip :: TestTree
 aliasRoundtrip =
@@ -144,7 +137,7 @@ aliasRoundtrip =
         withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \lt -> do
             aliasBefore <- c_duckdb_logical_type_get_alias lt
             aliasBefore @?= nullPtr
-            withCString "custom_alias" \alias -> c_duckdb_logical_type_set_alias lt alias
+            withCString "custom_alias" $ \alias -> c_duckdb_logical_type_set_alias lt alias
             aliasAfter <- c_duckdb_logical_type_get_alias lt
             assertBool "alias pointer should not be null" (aliasAfter /= nullPtr)
             when (aliasAfter == nullPtr) $
@@ -159,7 +152,7 @@ registerLogicalType =
             withConnection db \conn ->
                 withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \lt -> do
                     let aliasName = "custom_int_alias"
-                    withCString aliasName \aliasPtr ->
+                    withCString aliasName $ \aliasPtr ->
                         c_duckdb_logical_type_set_alias lt aliasPtr
                     c_duckdb_register_logical_type conn lt nullPtr >>= (@?= DuckDBSuccess)
 

@@ -1,5 +1,4 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE PatternSynonyms #-}
 
 module StreamingResultTest (tests) where
 
@@ -96,11 +95,11 @@ consumeStreamingChunks resPtr acc = do
 
 setupTable :: DuckDBConnection -> String -> Int -> IO ()
 setupTable conn tableName totalRows = do
-    withCString ("CREATE TABLE " <> tableName <> " (id INTEGER);") \createSql ->
+    withCString ("CREATE TABLE " <> tableName <> " (id INTEGER);") $ \createSql ->
         execStatement conn createSql
     let values = intercalate ", " ["(" <> show i <> ")" | i <- [1 .. totalRows]]
         insertSql = "INSERT INTO " <> tableName <> " VALUES " <> values <> ";"
-    withCString insertSql \insertCStr ->
+    withCString insertSql $ \insertCStr ->
         execStatement conn insertCStr
 
 execStatement :: DuckDBConnection -> CString -> IO ()

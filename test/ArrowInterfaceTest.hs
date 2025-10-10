@@ -1,6 +1,4 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE PatternSynonyms #-}
-{-# LANGUAGE RecordWildCards #-}
 
 module ArrowInterfaceTest (tests) where
 
@@ -46,10 +44,9 @@ arrowSchemaRoundtrip =
                                     arrowSchemaChildCount schema @?= fromIntegral (length logicalTypes)
 
                                     let childCount = fromIntegral (arrowSchemaChildCount schema)
-                                    childArrayPtr <- pure (arrowSchemaChildren schema)
+                                    let childArrayPtr = arrowSchemaChildren schema
                                     assertBool "children pointer should not be null" (childArrayPtr /= nullPtr)
                                     childPtrs <- peekArray childCount childArrayPtr
-
                                     firstChild <- peek (childPtrs !! 0)
                                     secondChild <- peek (childPtrs !! 1)
                                     peekCString (arrowSchemaName firstChild) >>= (@?= "id")

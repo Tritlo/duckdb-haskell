@@ -1,7 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE PatternSynonyms #-}
 
 module ExpressionTest (tests) where
 
@@ -85,9 +84,9 @@ withExpressionFunction conn funcName action = do
     bindPtr <- mkScalarBindFun (expressionBind state)
     execPtr <- mkScalarExecFun expressionExec
     result <-
-        withScalarFunction \scalarFun -> do
-            withCString funcName \name -> c_duckdb_scalar_function_set_name scalarFun name
-            withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \intType -> do
+        withScalarFunction $ \scalarFun -> do
+            withCString funcName $ \name -> c_duckdb_scalar_function_set_name scalarFun name
+            withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) $ \intType -> do
                 c_duckdb_scalar_function_add_parameter scalarFun intType
                 c_duckdb_scalar_function_set_return_type scalarFun intType
                 c_duckdb_scalar_function_set_bind scalarFun bindPtr

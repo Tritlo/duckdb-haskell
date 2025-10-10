@@ -1,7 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
-{-# LANGUAGE PatternSynonyms #-}
-{-# LANGUAGE RecordWildCards #-}
 
 module ArrowInterfaceDeprecatedTests (tests) where
 

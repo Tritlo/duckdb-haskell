@@ -1,5 +1,4 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE PatternSynonyms #-}
 
 module SelectionVectorTest (tests) where
 
@@ -27,7 +26,7 @@ selectionVectorPointerWritable =
         withSelectionVector 4 \selVec -> do
             dataPtr <- c_duckdb_selection_vector_get_data_ptr selVec
             assertBool "data pointer should be non-null" (dataPtr /= nullPtr)
-            forM_ (zip [0 ..] [0, 2, 4, 6 :: Word32]) \(idx, val) -> pokeElemOff dataPtr idx val
+            forM_ (zip [0 ..] [0, 2, 4, 6 :: Word32]) (uncurry (pokeElemOff dataPtr))
             fetched <- mapM (peekElemOff dataPtr) [0 .. 3]
             fetched @?= [0, 2, 4, 6]
 
@@ -37,7 +36,7 @@ selectionVectorCopySelection =
         withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \intType -> do
             withVector (c_duckdb_create_vector intType 4) \srcVec -> do
                 srcPtr <- vectorDataPtr srcVec
-                forM_ (zip [0 ..] [10, 20, 30, 40 :: Int32]) \(idx, val) -> pokeElemOff srcPtr idx val
+                forM_ (zip [0 ..] [10, 20, 30, 40 :: Int32]) (uncurry (pokeElemOff srcPtr))
 
                 withSelectionVector 2 \selVec -> do
                     selPtr <- c_duckdb_selection_vector_get_data_ptr selVec

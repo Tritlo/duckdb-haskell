@@ -1,5 +1,4 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE PatternSynonyms #-}
 
 module ConfigurationTest (tests) where
 
@@ -40,7 +39,7 @@ configurationLifecycle =
 
             setState <-
                 withCString "access_mode" \flag ->
-                    withCString "READ_WRITE" \value ->
+                    withCString "READ_WRITE" $ \value ->
                         c_duckdb_set_config config flag value
             setState @?= DuckDBSuccess
 

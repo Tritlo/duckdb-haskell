@@ -1,7 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE PatternSynonyms #-}
 
 module CastFunctionsTest (tests) where
 
@@ -144,7 +143,7 @@ castCallback modeRef extraSeenRef prefixStable info count inputVec outputVec = d
 -- Helpers ------------------------------------------------------------------
 
 withCastFunction :: (DuckDBCastFunction -> IO a) -> IO a
-withCastFunction action = bracket c_duckdb_create_cast_function destroy action
+withCastFunction = bracket c_duckdb_create_cast_function destroy
   where
     destroy cf = alloca \ptr -> poke ptr cf >> c_duckdb_destroy_cast_function ptr
 

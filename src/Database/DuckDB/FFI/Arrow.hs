@@ -22,6 +22,8 @@ module Database.DuckDB.FFI.Arrow (
   duckdbArrowSchemaClear,
   duckdbArrowArrayInternal,
   duckdbArrowArrayClear,
+  duckdbArrowStreamInternal,
+  duckdbArrowStreamClear,
 ) where
 
 import Data.Int (Int64)
@@ -314,6 +316,12 @@ foreign import ccall unsafe "wrapped_duckdb_arrow_array_internal_ptr"
 foreign import ccall unsafe "wrapped_duckdb_arrow_array_clear_internal_ptr"
   c_duckdb_arrow_array_clear_internal_ptr :: DuckDBArrowArray -> IO ()
 
+foreign import ccall unsafe "wrapped_duckdb_arrow_stream_internal_ptr"
+  c_duckdb_arrow_stream_internal_ptr :: DuckDBArrowStream -> IO (Ptr ())
+
+foreign import ccall unsafe "wrapped_duckdb_arrow_stream_clear_internal_ptr"
+  c_duckdb_arrow_stream_clear_internal_ptr :: DuckDBArrowStream -> IO ()
+
 duckdbArrowSchemaInternal :: DuckDBArrowSchema -> IO (Maybe ArrowSchemaPtr)
 duckdbArrowSchemaInternal schema = do
   raw <- c_duckdb_arrow_schema_internal_ptr schema
@@ -335,3 +343,14 @@ duckdbArrowArrayInternal array = do
 
 duckdbArrowArrayClear :: DuckDBArrowArray -> IO ()
 duckdbArrowArrayClear = c_duckdb_arrow_array_clear_internal_ptr
+
+duckdbArrowStreamInternal :: DuckDBArrowStream -> IO (Maybe ArrowStreamPtr)
+duckdbArrowStreamInternal stream = do
+  raw <- c_duckdb_arrow_stream_internal_ptr stream
+  pure $
+    if raw == nullPtr
+      then Nothing
+      else Just (ArrowStreamPtr raw)
+
+duckdbArrowStreamClear :: DuckDBArrowStream -> IO ()
+duckdbArrowStreamClear = c_duckdb_arrow_stream_clear_internal_ptr

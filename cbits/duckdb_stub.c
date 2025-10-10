@@ -182,6 +182,20 @@ void wrapped_duckdb_arrow_array_clear_internal_ptr(duckdb_arrow_array array) {
   array->internal_ptr = NULL;
 }
 
+void *wrapped_duckdb_arrow_stream_internal_ptr(duckdb_arrow_stream stream) {
+  if (!stream) {
+    return NULL;
+  }
+  return stream->internal_ptr;
+}
+
+void wrapped_duckdb_arrow_stream_clear_internal_ptr(duckdb_arrow_stream stream) {
+  if (!stream) {
+    return;
+  }
+  stream->internal_ptr = NULL;
+}
+
 // duckdb_stream_fetch_chunk takes duckdb_result by value; provide a pointer form
 // so we can handle NULLs and avoid struct copies in the FFI.
 duckdb_data_chunk wrapped_duckdb_stream_fetch_chunk(const duckdb_result *result) {

@@ -179,6 +179,7 @@ module Database.DuckDB.FFI.Types (
   DuckDBArrowArray,
   ArrowSchemaPtr (..),
   ArrowArrayPtr (..),
+  ArrowStreamPtr (..),
   DuckDBArrowConvertedSchema,
   DuckDBArrowStream,
   DuckDBPreparedStatement,
@@ -1181,10 +1182,21 @@ data DuckDBArrowConvertedSchemaStruct
 type DuckDBArrowConvertedSchema = Ptr DuckDBArrowConvertedSchemaStruct
 
 -- | Tag type backing @duckdb_arrow_stream@ pointers.
-data DuckDBArrowStreamStruct
+newtype DuckDBArrowStreamStruct = DuckDBArrowStreamStruct
+  { duckdbArrowStreamInternalPtr :: Ptr ()
+  }
 
 -- | Handle to an Arrow stream.
 type DuckDBArrowStream = Ptr DuckDBArrowStreamStruct
+
+instance Storable DuckDBArrowStreamStruct where
+  sizeOf _ = pointerSize
+  alignment _ = alignment (nullPtr :: Ptr ())
+  peek ptr =
+    DuckDBArrowStreamStruct
+      <$> peekByteOff ptr 0
+  poke ptr DuckDBArrowStreamStruct{..} =
+    pokeByteOff ptr 0 duckdbArrowStreamInternalPtr
 
 -- | Tag type backing @duckdb_expression@ pointers.
 data DuckDBExpressionStruct
@@ -1482,6 +1494,9 @@ newtype ArrowSchemaPtr = ArrowSchemaPtr {unArrowSchemaPtr :: Ptr ArrowSchema}
   deriving (Eq)
 
 newtype ArrowArrayPtr = ArrowArrayPtr {unArrowArrayPtr :: Ptr ArrowArray}
+  deriving (Eq)
+
+newtype ArrowStreamPtr = ArrowStreamPtr {unArrowStreamPtr :: Ptr ()}
   deriving (Eq)
 
 pointerSize :: Int

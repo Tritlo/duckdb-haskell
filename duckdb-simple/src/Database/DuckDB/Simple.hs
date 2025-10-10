@@ -58,6 +58,10 @@ module Database.DuckDB.Simple (
     NamedParam (..),
     Null (..),
     Only (..),
+    -- * User-defined scalar functions
+    Function,
+    createFunction,
+    deleteFunction,
 ) where
 
 import Control.Exception (bracket, mask, onException, throwIO, try)
@@ -83,6 +87,7 @@ import Database.DuckDB.Simple.FromRow (
     parseRow,
     resultErrorToSqlError,
  )
+import Database.DuckDB.Simple.Function (Function, createFunction, deleteFunction)
 import Database.DuckDB.Simple.Internal (
     Connection (..),
     ConnectionState (..),

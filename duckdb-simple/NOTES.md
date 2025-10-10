@@ -64,3 +64,13 @@ us understand past decisions and avoid repeating mistakes.
 - Swapping the direct `[Field] -> Either ResultError` conversion for a RowParser/Ok pipeline significantly improves diagnostics and unlocks generic `FromRow` instances. The conversion glue now needs to translate parser failures back into meaningful `ResultError` values; make sure new parser combinators surface the column index so the resulting `SQLError` stays actionable.
 - DuckDB does not surface column metadata about unused trailing fields, so when the parser advances past the expected column count we synthesise `ColumnCountMismatch`. Keep an eye on this once streaming APIs arrive—chunked decoding must maintain the same invariant.
 - The test suite now depends on `transformers`; ensure downstream projects importing duckdb-simple bring that dependency in if they rely on the new RowParser combinators directly.
+
+## 2025-10-11  Functions
+
+- Added `Database.DuckDB.Simple.Function` to expose DuckDB scalar function registration with a `sqlite-simple`-style `Function` typeclass and `createFunction`/`deleteFunction` helpers.
+- Callback implementation decodes argument vectors into existing `FromField` values and materialises results back into DuckDB vectors for `BOOL`, `INTEGER`, `DOUBLE`, and `VARCHAR` (including `Maybe` support and zero-argument functions).
+- Registration stores Haskell callbacks via DuckDB extra-info with lifetime handling; errors propagate as `SQLError` instances and are surfaced inside DuckDB through `duckdb_scalar_function_set_error`.
+- Added integration tests covering pure, nullable, and `IO`-based functions plus the `deleteFunction` helper; README now documents the new module alongside example usage.
+- `deleteFunction` attempts a `DROP FUNCTION IF EXISTS`; DuckDB flags C API
+  registrations as internal, so the operation reports an `SQLError` explaining
+  the limitation instead of removing the function.

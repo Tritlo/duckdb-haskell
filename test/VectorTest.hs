@@ -9,7 +9,6 @@ import Data.Int (Int32)
 import Data.Word (Word64)
 import Database.DuckDB.FFI
 import Foreign.C.String (withCString)
-import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Array (allocaArray, withArray)
 import Foreign.Ptr (Ptr, castPtr, plusPtr, nullPtr)
 import Foreign.Storable (peek, peekElemOff, poke, pokeElemOff, sizeOf)

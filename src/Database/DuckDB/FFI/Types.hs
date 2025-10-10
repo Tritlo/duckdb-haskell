@@ -1,269 +1,269 @@
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE PatternSynonyms #-}
-{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE StrictData #-}
 
 module Database.DuckDB.FFI.Types (
-  -- * Enumerations
-  DuckDBState (..),
-  pattern DuckDBSuccess,
-  pattern DuckDBError,
-  DuckDBType (..),
-  pattern DuckDBTypeInvalid,
-  pattern DuckDBTypeBoolean,
-  pattern DuckDBTypeTinyInt,
-  pattern DuckDBTypeSmallInt,
-  pattern DuckDBTypeInteger,
-  pattern DuckDBTypeBigInt,
-  pattern DuckDBTypeUTinyInt,
-  pattern DuckDBTypeUSmallInt,
-  pattern DuckDBTypeUInteger,
-  pattern DuckDBTypeUBigInt,
-  pattern DuckDBTypeFloat,
-  pattern DuckDBTypeDouble,
-  pattern DuckDBTypeTimestamp,
-  pattern DuckDBTypeDate,
-  pattern DuckDBTypeTime,
-  pattern DuckDBTypeInterval,
-  pattern DuckDBTypeHugeInt,
-  pattern DuckDBTypeUHugeInt,
-  pattern DuckDBTypeVarchar,
-  pattern DuckDBTypeBlob,
-  pattern DuckDBTypeDecimal,
-  pattern DuckDBTypeTimestampS,
-  pattern DuckDBTypeTimestampMs,
-  pattern DuckDBTypeTimestampNs,
-  pattern DuckDBTypeEnum,
-  pattern DuckDBTypeList,
-  pattern DuckDBTypeStruct,
-  pattern DuckDBTypeMap,
-  pattern DuckDBTypeArray,
-  pattern DuckDBTypeUUID,
-  pattern DuckDBTypeUnion,
-  pattern DuckDBTypeBit,
-  pattern DuckDBTypeTimeTz,
-  pattern DuckDBTypeTimestampTz,
-  pattern DuckDBTypeAny,
-  pattern DuckDBTypeBigNum,
-  pattern DuckDBTypeSQLNull,
-  pattern DuckDBTypeStringLiteral,
-  pattern DuckDBTypeIntegerLiteral,
-  pattern DuckDBTypeTimeNs,
-  DuckDBPendingState (..),
-  pattern DuckDBPendingResultReady,
-  pattern DuckDBPendingResultNotReady,
-  pattern DuckDBPendingError,
-  pattern DuckDBPendingNoTasksAvailable,
-  DuckDBResultType (..),
-  pattern DuckDBResultTypeInvalid,
-  pattern DuckDBResultTypeChangedRows,
-  pattern DuckDBResultTypeNothing,
-  pattern DuckDBResultTypeQueryResult,
-  DuckDBStatementType (..),
-  pattern DuckDBStatementTypeInvalid,
-  pattern DuckDBStatementTypeSelect,
-  pattern DuckDBStatementTypeInsert,
-  pattern DuckDBStatementTypeUpdate,
-  pattern DuckDBStatementTypeExplain,
-  pattern DuckDBStatementTypeDelete,
-  pattern DuckDBStatementTypePrepare,
-  pattern DuckDBStatementTypeCreate,
-  pattern DuckDBStatementTypeExecute,
-  pattern DuckDBStatementTypeAlter,
-  pattern DuckDBStatementTypeTransaction,
-  pattern DuckDBStatementTypeCopy,
-  pattern DuckDBStatementTypeAnalyze,
-  pattern DuckDBStatementTypeVariableSet,
-  pattern DuckDBStatementTypeCreateFunc,
-  pattern DuckDBStatementTypeDrop,
-  pattern DuckDBStatementTypeExport,
-  pattern DuckDBStatementTypePragma,
-  pattern DuckDBStatementTypeVacuum,
-  pattern DuckDBStatementTypeCall,
-  pattern DuckDBStatementTypeSet,
-  pattern DuckDBStatementTypeLoad,
-  pattern DuckDBStatementTypeRelation,
-  pattern DuckDBStatementTypeExtension,
-  pattern DuckDBStatementTypeLogicalPlan,
-  pattern DuckDBStatementTypeAttach,
-  pattern DuckDBStatementTypeDetach,
-  pattern DuckDBStatementTypeMulti,
-  DuckDBErrorType (..),
-  pattern DuckDBErrorInvalid,
-  pattern DuckDBErrorOutOfRange,
-  pattern DuckDBErrorConversion,
-  pattern DuckDBErrorUnknownType,
-  pattern DuckDBErrorDecimal,
-  pattern DuckDBErrorMismatchType,
-  pattern DuckDBErrorDivideByZero,
-  pattern DuckDBErrorObjectSize,
-  pattern DuckDBErrorInvalidType,
-  pattern DuckDBErrorSerialization,
-  pattern DuckDBErrorTransaction,
-  pattern DuckDBErrorNotImplemented,
-  pattern DuckDBErrorExpression,
-  pattern DuckDBErrorCatalog,
-  pattern DuckDBErrorParser,
-  pattern DuckDBErrorPlanner,
-  pattern DuckDBErrorScheduler,
-  pattern DuckDBErrorExecutor,
-  pattern DuckDBErrorConstraint,
-  pattern DuckDBErrorIndex,
-  pattern DuckDBErrorStat,
-  pattern DuckDBErrorConnection,
-  pattern DuckDBErrorSyntax,
-  pattern DuckDBErrorSettings,
-  pattern DuckDBErrorBinder,
-  pattern DuckDBErrorNetwork,
-  pattern DuckDBErrorOptimizer,
-  pattern DuckDBErrorNullPointer,
-  pattern DuckDBErrorIO,
-  pattern DuckDBErrorInterrupt,
-  pattern DuckDBErrorFatal,
-  pattern DuckDBErrorInternal,
-  pattern DuckDBErrorInvalidInput,
-  pattern DuckDBErrorOutOfMemory,
-  pattern DuckDBErrorPermission,
-  pattern DuckDBErrorParameterNotResolved,
-  pattern DuckDBErrorParameterNotAllowed,
-  pattern DuckDBErrorDependency,
-  pattern DuckDBErrorHTTP,
-  pattern DuckDBErrorMissingExtension,
-  pattern DuckDBErrorAutoload,
-  pattern DuckDBErrorSequence,
-  pattern DuckDBInvalidConfiguration,
-  pattern DuckDBErrorInvalidConfiguration,
-  DuckDBCastMode (..),
-  pattern DuckDBCastNormal,
-  pattern DuckDBCastTry,
+    -- * Enumerations
+    DuckDBState (..),
+    pattern DuckDBSuccess,
+    pattern DuckDBError,
+    DuckDBType (..),
+    pattern DuckDBTypeInvalid,
+    pattern DuckDBTypeBoolean,
+    pattern DuckDBTypeTinyInt,
+    pattern DuckDBTypeSmallInt,
+    pattern DuckDBTypeInteger,
+    pattern DuckDBTypeBigInt,
+    pattern DuckDBTypeUTinyInt,
+    pattern DuckDBTypeUSmallInt,
+    pattern DuckDBTypeUInteger,
+    pattern DuckDBTypeUBigInt,
+    pattern DuckDBTypeFloat,
+    pattern DuckDBTypeDouble,
+    pattern DuckDBTypeTimestamp,
+    pattern DuckDBTypeDate,
+    pattern DuckDBTypeTime,
+    pattern DuckDBTypeInterval,
+    pattern DuckDBTypeHugeInt,
+    pattern DuckDBTypeUHugeInt,
+    pattern DuckDBTypeVarchar,
+    pattern DuckDBTypeBlob,
+    pattern DuckDBTypeDecimal,
+    pattern DuckDBTypeTimestampS,
+    pattern DuckDBTypeTimestampMs,
+    pattern DuckDBTypeTimestampNs,
+    pattern DuckDBTypeEnum,
+    pattern DuckDBTypeList,
+    pattern DuckDBTypeStruct,
+    pattern DuckDBTypeMap,
+    pattern DuckDBTypeArray,
+    pattern DuckDBTypeUUID,
+    pattern DuckDBTypeUnion,
+    pattern DuckDBTypeBit,
+    pattern DuckDBTypeTimeTz,
+    pattern DuckDBTypeTimestampTz,
+    pattern DuckDBTypeAny,
+    pattern DuckDBTypeBigNum,
+    pattern DuckDBTypeSQLNull,
+    pattern DuckDBTypeStringLiteral,
+    pattern DuckDBTypeIntegerLiteral,
+    pattern DuckDBTypeTimeNs,
+    DuckDBPendingState (..),
+    pattern DuckDBPendingResultReady,
+    pattern DuckDBPendingResultNotReady,
+    pattern DuckDBPendingError,
+    pattern DuckDBPendingNoTasksAvailable,
+    DuckDBResultType (..),
+    pattern DuckDBResultTypeInvalid,
+    pattern DuckDBResultTypeChangedRows,
+    pattern DuckDBResultTypeNothing,
+    pattern DuckDBResultTypeQueryResult,
+    DuckDBStatementType (..),
+    pattern DuckDBStatementTypeInvalid,
+    pattern DuckDBStatementTypeSelect,
+    pattern DuckDBStatementTypeInsert,
+    pattern DuckDBStatementTypeUpdate,
+    pattern DuckDBStatementTypeExplain,
+    pattern DuckDBStatementTypeDelete,
+    pattern DuckDBStatementTypePrepare,
+    pattern DuckDBStatementTypeCreate,
+    pattern DuckDBStatementTypeExecute,
+    pattern DuckDBStatementTypeAlter,
+    pattern DuckDBStatementTypeTransaction,
+    pattern DuckDBStatementTypeCopy,
+    pattern DuckDBStatementTypeAnalyze,
+    pattern DuckDBStatementTypeVariableSet,
+    pattern DuckDBStatementTypeCreateFunc,
+    pattern DuckDBStatementTypeDrop,
+    pattern DuckDBStatementTypeExport,
+    pattern DuckDBStatementTypePragma,
+    pattern DuckDBStatementTypeVacuum,
+    pattern DuckDBStatementTypeCall,
+    pattern DuckDBStatementTypeSet,
+    pattern DuckDBStatementTypeLoad,
+    pattern DuckDBStatementTypeRelation,
+    pattern DuckDBStatementTypeExtension,
+    pattern DuckDBStatementTypeLogicalPlan,
+    pattern DuckDBStatementTypeAttach,
+    pattern DuckDBStatementTypeDetach,
+    pattern DuckDBStatementTypeMulti,
+    DuckDBErrorType (..),
+    pattern DuckDBErrorInvalid,
+    pattern DuckDBErrorOutOfRange,
+    pattern DuckDBErrorConversion,
+    pattern DuckDBErrorUnknownType,
+    pattern DuckDBErrorDecimal,
+    pattern DuckDBErrorMismatchType,
+    pattern DuckDBErrorDivideByZero,
+    pattern DuckDBErrorObjectSize,
+    pattern DuckDBErrorInvalidType,
+    pattern DuckDBErrorSerialization,
+    pattern DuckDBErrorTransaction,
+    pattern DuckDBErrorNotImplemented,
+    pattern DuckDBErrorExpression,
+    pattern DuckDBErrorCatalog,
+    pattern DuckDBErrorParser,
+    pattern DuckDBErrorPlanner,
+    pattern DuckDBErrorScheduler,
+    pattern DuckDBErrorExecutor,
+    pattern DuckDBErrorConstraint,
+    pattern DuckDBErrorIndex,
+    pattern DuckDBErrorStat,
+    pattern DuckDBErrorConnection,
+    pattern DuckDBErrorSyntax,
+    pattern DuckDBErrorSettings,
+    pattern DuckDBErrorBinder,
+    pattern DuckDBErrorNetwork,
+    pattern DuckDBErrorOptimizer,
+    pattern DuckDBErrorNullPointer,
+    pattern DuckDBErrorIO,
+    pattern DuckDBErrorInterrupt,
+    pattern DuckDBErrorFatal,
+    pattern DuckDBErrorInternal,
+    pattern DuckDBErrorInvalidInput,
+    pattern DuckDBErrorOutOfMemory,
+    pattern DuckDBErrorPermission,
+    pattern DuckDBErrorParameterNotResolved,
+    pattern DuckDBErrorParameterNotAllowed,
+    pattern DuckDBErrorDependency,
+    pattern DuckDBErrorHTTP,
+    pattern DuckDBErrorMissingExtension,
+    pattern DuckDBErrorAutoload,
+    pattern DuckDBErrorSequence,
+    pattern DuckDBInvalidConfiguration,
+    pattern DuckDBErrorInvalidConfiguration,
+    DuckDBCastMode (..),
+    pattern DuckDBCastNormal,
+    pattern DuckDBCastTry,
 
-  -- * Scalar Types
-  DuckDBIdx,
-  DuckDBSel,
-  DuckDBDate (..),
-  DuckDBDateStruct (..),
-  DuckDBTime (..),
-  DuckDBTimeStruct (..),
-  DuckDBTimeNs (..),
-  DuckDBTimeTz (..),
-  DuckDBTimeTzStruct (..),
-  DuckDBTimestamp (..),
-  DuckDBTimestampStruct (..),
-  DuckDBTimestampS (..),
-  DuckDBTimestampMs (..),
-  DuckDBTimestampNs (..),
-  DuckDBInterval (..),
-  DuckDBHugeInt (..),
-  DuckDBUHugeInt (..),
-  DuckDBDecimal (..),
-  DuckDBBlob (..),
-  DuckDBString (..),
-  DuckDBStringT,
-  DuckDBBit (..),
-  DuckDBBignum (..),
-  DuckDBQueryProgress (..),
+    -- * Scalar Types
+    DuckDBIdx,
+    DuckDBSel,
+    DuckDBDate (..),
+    DuckDBDateStruct (..),
+    DuckDBTime (..),
+    DuckDBTimeStruct (..),
+    DuckDBTimeNs (..),
+    DuckDBTimeTz (..),
+    DuckDBTimeTzStruct (..),
+    DuckDBTimestamp (..),
+    DuckDBTimestampStruct (..),
+    DuckDBTimestampS (..),
+    DuckDBTimestampMs (..),
+    DuckDBTimestampNs (..),
+    DuckDBInterval (..),
+    DuckDBHugeInt (..),
+    DuckDBUHugeInt (..),
+    DuckDBDecimal (..),
+    DuckDBBlob (..),
+    DuckDBString (..),
+    DuckDBStringT,
+    DuckDBBit (..),
+    DuckDBBignum (..),
+    DuckDBQueryProgress (..),
 
-  -- * Result Structures
-  DuckDBResult (..),
-  DuckDBColumn,
+    -- * Result Structures
+    DuckDBResult (..),
+    DuckDBColumn,
 
-  -- * Opaque Pointer Types
-  DuckDBDatabase,
-  DuckDBConnection,
-  DuckDBConfig,
-  DuckDBInstanceCache,
-  DuckDBArrowOptions,
-  DuckDBArrow,
-  DuckDBArrowSchema,
-  DuckDBArrowArray,
-  ArrowSchemaPtr (..),
-  ArrowArrayPtr (..),
-  ArrowStreamPtr (..),
-  DuckDBArrowConvertedSchema,
-  DuckDBArrowStream,
-  DuckDBPreparedStatement,
-  DuckDBPendingResult,
-  DuckDBExtractedStatements,
-  DuckDBLogicalType,
-  DuckDBCreateTypeInfo,
-  DuckDBVector,
-  DuckDBDataChunk,
-  DuckDBSelectionVector,
-  DuckDBFunctionInfo,
-  DuckDBBindInfo,
-  DuckDBInitInfo,
-  DuckDBScalarFunction,
-  DuckDBScalarFunctionSet,
-  DuckDBAggregateFunction,
-  DuckDBAggregateFunctionSet,
-  DuckDBAggregateState,
-  DuckDBCastFunction,
-  DuckDBExpression,
-  DuckDBClientContext,
-  DuckDBTableFunction,
-  DuckDBValue,
-  DuckDBErrorData,
-  DuckDBAppender,
-  DuckDBTableDescription,
-  DuckDBProfilingInfo,
-  DuckDBReplacementScanInfo,
-  DuckDBTaskState,
-  ArrowArray (..),
-  ArrowSchema (..),
+    -- * Opaque Pointer Types
+    DuckDBDatabase,
+    DuckDBConnection,
+    DuckDBConfig,
+    DuckDBInstanceCache,
+    DuckDBArrowOptions,
+    DuckDBArrow,
+    DuckDBArrowSchema,
+    DuckDBArrowArray,
+    ArrowSchemaPtr (..),
+    ArrowArrayPtr (..),
+    ArrowStreamPtr (..),
+    DuckDBArrowConvertedSchema,
+    DuckDBArrowStream,
+    DuckDBPreparedStatement,
+    DuckDBPendingResult,
+    DuckDBExtractedStatements,
+    DuckDBLogicalType,
+    DuckDBCreateTypeInfo,
+    DuckDBVector,
+    DuckDBDataChunk,
+    DuckDBSelectionVector,
+    DuckDBFunctionInfo,
+    DuckDBBindInfo,
+    DuckDBInitInfo,
+    DuckDBScalarFunction,
+    DuckDBScalarFunctionSet,
+    DuckDBAggregateFunction,
+    DuckDBAggregateFunctionSet,
+    DuckDBAggregateState,
+    DuckDBCastFunction,
+    DuckDBExpression,
+    DuckDBClientContext,
+    DuckDBTableFunction,
+    DuckDBValue,
+    DuckDBErrorData,
+    DuckDBAppender,
+    DuckDBTableDescription,
+    DuckDBProfilingInfo,
+    DuckDBReplacementScanInfo,
+    DuckDBTaskState,
+    ArrowArray (..),
+    ArrowSchema (..),
 
-  -- * Opaque Struct Tags
-  DuckDBDatabaseStruct,
-  DuckDBConnectionStruct,
-  DuckDBConfigStruct,
-  DuckDBInstanceCacheStruct,
-  DuckDBExtractedStatementsStruct,
-  DuckDBFunctionInfoStruct,
-  DuckDBBindInfoStruct,
-  DuckDBScalarFunctionStruct,
-  DuckDBScalarFunctionSetStruct,
-  DuckDBAggregateFunctionStruct,
-  DuckDBAggregateFunctionSetStruct,
-  DuckDBVectorStruct,
-  DuckDBDataChunkStruct,
-  DuckDBSelectionVectorStruct,
-  DuckDBArrowOptionsStruct,
-  DuckDBArrowStruct,
-  DuckDBArrowConvertedSchemaStruct,
-  DuckDBArrowStreamStruct,
-  DuckDBExpressionStruct,
-  DuckDBClientContextStruct,
-  DuckDBPreparedStatementStruct,
-  DuckDBValueStruct,
-  DuckDBPendingResultStruct,
-  DuckDBLogicalTypeStruct,
-  DuckDBCreateTypeInfoStruct,
-  DuckDBErrorDataStruct,
-  DuckDBInitInfoStruct,
-  DuckDBCastFunctionStruct,
-  DuckDBTableFunctionStruct,
-  DuckDBAppenderStruct,
-  DuckDBTableDescriptionStruct,
-  DuckDBProfilingInfoStruct,
-  DuckDBReplacementScanInfoStruct,
-  DuckDBAggregateStateStruct,
+    -- * Opaque Struct Tags
+    DuckDBDatabaseStruct,
+    DuckDBConnectionStruct,
+    DuckDBConfigStruct,
+    DuckDBInstanceCacheStruct,
+    DuckDBExtractedStatementsStruct,
+    DuckDBFunctionInfoStruct,
+    DuckDBBindInfoStruct,
+    DuckDBScalarFunctionStruct,
+    DuckDBScalarFunctionSetStruct,
+    DuckDBAggregateFunctionStruct,
+    DuckDBAggregateFunctionSetStruct,
+    DuckDBVectorStruct,
+    DuckDBDataChunkStruct,
+    DuckDBSelectionVectorStruct,
+    DuckDBArrowOptionsStruct,
+    DuckDBArrowStruct,
+    DuckDBArrowConvertedSchemaStruct,
+    DuckDBArrowStreamStruct,
+    DuckDBExpressionStruct,
+    DuckDBClientContextStruct,
+    DuckDBPreparedStatementStruct,
+    DuckDBValueStruct,
+    DuckDBPendingResultStruct,
+    DuckDBLogicalTypeStruct,
+    DuckDBCreateTypeInfoStruct,
+    DuckDBErrorDataStruct,
+    DuckDBInitInfoStruct,
+    DuckDBCastFunctionStruct,
+    DuckDBTableFunctionStruct,
+    DuckDBAppenderStruct,
+    DuckDBTableDescriptionStruct,
+    DuckDBProfilingInfoStruct,
+    DuckDBReplacementScanInfoStruct,
+    DuckDBAggregateStateStruct,
 
-  -- * Function Pointer Types
-  DuckDBScalarFunctionFun,
-  DuckDBScalarFunctionBindFun,
-  DuckDBDeleteCallback,
-  DuckDBCopyCallback,
-  DuckDBCastFunctionFun,
-  DuckDBAggregateStateSizeFun,
-  DuckDBAggregateInitFun,
-  DuckDBAggregateDestroyFun,
-  DuckDBAggregateUpdateFun,
-  DuckDBAggregateCombineFun,
-  DuckDBAggregateFinalizeFun,
-  DuckDBTableFunctionBindFun,
-  DuckDBTableFunctionInitFun,
-  DuckDBTableFunctionFun,
-  DuckDBReplacementCallback,
+    -- * Function Pointer Types
+    DuckDBScalarFunctionFun,
+    DuckDBScalarFunctionBindFun,
+    DuckDBDeleteCallback,
+    DuckDBCopyCallback,
+    DuckDBCastFunctionFun,
+    DuckDBAggregateStateSizeFun,
+    DuckDBAggregateInitFun,
+    DuckDBAggregateDestroyFun,
+    DuckDBAggregateUpdateFun,
+    DuckDBAggregateCombineFun,
+    DuckDBAggregateFinalizeFun,
+    DuckDBTableFunctionBindFun,
+    DuckDBTableFunctionInitFun,
+    DuckDBTableFunctionFun,
+    DuckDBReplacementCallback,
 ) where
 
 import Data.Int (Int32, Int64, Int8)
@@ -281,7 +281,7 @@ type DuckDBSel = Word32
 
 -- | Result state returned by most DuckDB C API calls.
 newtype DuckDBState = DuckDBState {unDuckDBState :: CInt}
-  deriving (Eq, Ord, Show, Storable)
+    deriving (Eq, Ord, Show, Storable)
 
 -- | Pattern synonyms for @duckdb_state@ constants.
 pattern DuckDBSuccess, DuckDBError :: DuckDBState
@@ -292,51 +292,51 @@ pattern DuckDBError = DuckDBState 1
 
 -- | DuckDB primitive physical type identifiers (mirrors @duckdb_type@).
 newtype DuckDBType = DuckDBType {unDuckDBType :: CInt}
-  deriving (Eq, Ord, Show, Storable)
+    deriving (Eq, Ord, Show, Storable)
 
 -- | Pattern synonyms for DuckDB's physical value type tags.
 pattern
-  DuckDBTypeInvalid
-  , DuckDBTypeBoolean
-  , DuckDBTypeTinyInt
-  , DuckDBTypeSmallInt
-  , DuckDBTypeInteger
-  , DuckDBTypeBigInt
-  , DuckDBTypeUTinyInt
-  , DuckDBTypeUSmallInt
-  , DuckDBTypeUInteger
-  , DuckDBTypeUBigInt
-  , DuckDBTypeFloat
-  , DuckDBTypeDouble
-  , DuckDBTypeTimestamp
-  , DuckDBTypeDate
-  , DuckDBTypeTime
-  , DuckDBTypeInterval
-  , DuckDBTypeHugeInt
-  , DuckDBTypeUHugeInt
-  , DuckDBTypeVarchar
-  , DuckDBTypeBlob
-  , DuckDBTypeDecimal
-  , DuckDBTypeTimestampS
-  , DuckDBTypeTimestampMs
-  , DuckDBTypeTimestampNs
-  , DuckDBTypeEnum
-  , DuckDBTypeList
-  , DuckDBTypeStruct
-  , DuckDBTypeMap
-  , DuckDBTypeArray
-  , DuckDBTypeUUID
-  , DuckDBTypeUnion
-  , DuckDBTypeBit
-  , DuckDBTypeTimeTz
-  , DuckDBTypeTimestampTz
-  , DuckDBTypeAny
-  , DuckDBTypeBigNum
-  , DuckDBTypeSQLNull
-  , DuckDBTypeStringLiteral
-  , DuckDBTypeIntegerLiteral
-  , DuckDBTypeTimeNs
-    :: DuckDBType
+    DuckDBTypeInvalid
+    , DuckDBTypeBoolean
+    , DuckDBTypeTinyInt
+    , DuckDBTypeSmallInt
+    , DuckDBTypeInteger
+    , DuckDBTypeBigInt
+    , DuckDBTypeUTinyInt
+    , DuckDBTypeUSmallInt
+    , DuckDBTypeUInteger
+    , DuckDBTypeUBigInt
+    , DuckDBTypeFloat
+    , DuckDBTypeDouble
+    , DuckDBTypeTimestamp
+    , DuckDBTypeDate
+    , DuckDBTypeTime
+    , DuckDBTypeInterval
+    , DuckDBTypeHugeInt
+    , DuckDBTypeUHugeInt
+    , DuckDBTypeVarchar
+    , DuckDBTypeBlob
+    , DuckDBTypeDecimal
+    , DuckDBTypeTimestampS
+    , DuckDBTypeTimestampMs
+    , DuckDBTypeTimestampNs
+    , DuckDBTypeEnum
+    , DuckDBTypeList
+    , DuckDBTypeStruct
+    , DuckDBTypeMap
+    , DuckDBTypeArray
+    , DuckDBTypeUUID
+    , DuckDBTypeUnion
+    , DuckDBTypeBit
+    , DuckDBTypeTimeTz
+    , DuckDBTypeTimestampTz
+    , DuckDBTypeAny
+    , DuckDBTypeBigNum
+    , DuckDBTypeSQLNull
+    , DuckDBTypeStringLiteral
+    , DuckDBTypeIntegerLiteral
+    , DuckDBTypeTimeNs ::
+        DuckDBType
 pattern DuckDBTypeInvalid = DuckDBType 0
 pattern DuckDBTypeBoolean = DuckDBType 1
 pattern DuckDBTypeTinyInt = DuckDBType 2
@@ -380,85 +380,85 @@ pattern DuckDBTypeTimeNs = DuckDBType 39
 
 -- | Pending result state returned from @duckdb_pending_*@ APIs.
 newtype DuckDBPendingState = DuckDBPendingState {unDuckDBPendingState :: CInt}
-  deriving (Eq, Ord, Show, Storable)
+    deriving (Eq, Ord, Show, Storable)
 
 -- | Pattern synonyms for @duckdb_pending_state@ constants.
 pattern
-  DuckDBPendingResultReady
-  , DuckDBPendingResultNotReady
-  , DuckDBPendingError
-  , DuckDBPendingNoTasksAvailable
-    :: DuckDBPendingState
+    DuckDBPendingResultReady
+    , DuckDBPendingResultNotReady
+    , DuckDBPendingError
+    , DuckDBPendingNoTasksAvailable ::
+        DuckDBPendingState
 pattern DuckDBPendingResultReady = DuckDBPendingState 0
 pattern DuckDBPendingResultNotReady = DuckDBPendingState 1
 pattern DuckDBPendingError = DuckDBPendingState 2
 pattern DuckDBPendingNoTasksAvailable = DuckDBPendingState 3
 
 {-# COMPLETE
-  DuckDBPendingResultReady
-  , DuckDBPendingResultNotReady
-  , DuckDBPendingError
-  , DuckDBPendingNoTasksAvailable
-  #-}
+    DuckDBPendingResultReady
+    , DuckDBPendingResultNotReady
+    , DuckDBPendingError
+    , DuckDBPendingNoTasksAvailable
+    #-}
 
 -- | Result payload type returned by DuckDB queries (@duckdb_result_type@).
 newtype DuckDBResultType = DuckDBResultType {unDuckDBResultType :: CInt}
-  deriving (Eq, Ord, Show, Storable)
+    deriving (Eq, Ord, Show, Storable)
 
 -- | Pattern synonyms for @duckdb_result_type@ constants.
 pattern
-  DuckDBResultTypeInvalid
-  , DuckDBResultTypeChangedRows
-  , DuckDBResultTypeNothing
-  , DuckDBResultTypeQueryResult
-    :: DuckDBResultType
+    DuckDBResultTypeInvalid
+    , DuckDBResultTypeChangedRows
+    , DuckDBResultTypeNothing
+    , DuckDBResultTypeQueryResult ::
+        DuckDBResultType
 pattern DuckDBResultTypeInvalid = DuckDBResultType 0
 pattern DuckDBResultTypeChangedRows = DuckDBResultType 1
 pattern DuckDBResultTypeNothing = DuckDBResultType 2
 pattern DuckDBResultTypeQueryResult = DuckDBResultType 3
 
 {-# COMPLETE
-  DuckDBResultTypeInvalid
-  , DuckDBResultTypeChangedRows
-  , DuckDBResultTypeNothing
-  , DuckDBResultTypeQueryResult
-  #-}
+    DuckDBResultTypeInvalid
+    , DuckDBResultTypeChangedRows
+    , DuckDBResultTypeNothing
+    , DuckDBResultTypeQueryResult
+    #-}
 
 -- | Classifies the SQL statement executed (@duckdb_statement_type@).
 newtype DuckDBStatementType = DuckDBStatementType {unDuckDBStatementType :: CInt}
-  deriving (Eq, Ord, Show, Storable)
+    deriving (Eq, Ord, Show, Storable)
 
 -- | Pattern synonyms for @duckdb_statement_type@ constants.
 pattern
-  DuckDBStatementTypeInvalid
-  , DuckDBStatementTypeSelect
-  , DuckDBStatementTypeInsert
-  , DuckDBStatementTypeUpdate
-  , DuckDBStatementTypeExplain
-  , DuckDBStatementTypeDelete
-  , DuckDBStatementTypePrepare
-  , DuckDBStatementTypeCreate
-  , DuckDBStatementTypeExecute
-  , DuckDBStatementTypeAlter
-  , DuckDBStatementTypeTransaction
-  , DuckDBStatementTypeCopy
-  , DuckDBStatementTypeAnalyze
-  , DuckDBStatementTypeVariableSet
-  , DuckDBStatementTypeCreateFunc
-  , DuckDBStatementTypeDrop
-  , DuckDBStatementTypeExport
-  , DuckDBStatementTypePragma
-  , DuckDBStatementTypeVacuum
-  , DuckDBStatementTypeCall
-  , DuckDBStatementTypeSet
-  , DuckDBStatementTypeLoad
-  , DuckDBStatementTypeRelation
-  , DuckDBStatementTypeExtension
-  , DuckDBStatementTypeLogicalPlan
-  , DuckDBStatementTypeAttach
-  , DuckDBStatementTypeDetach
-  , DuckDBStatementTypeMulti
-    :: DuckDBStatementType
+    DuckDBStatementTypeInvalid
+    , DuckDBStatementTypeSelect
+    , DuckDBStatementTypeInsert
+    , DuckDBStatementTypeUpdate
+    , DuckDBStatementTypeExplain
+    , DuckDBStatementTypeDelete
+    , DuckDBStatementTypePrepare
+    , DuckDBStatementTypeCreate
+    , DuckDBStatementTypeExecute
+    , DuckDBStatementTypeAlter
+    , DuckDBStatementTypeTransaction
+    , DuckDBStatementTypeCopy
+    , DuckDBStatementTypeAnalyze
+    , DuckDBStatementTypeVariableSet
+    , DuckDBStatementTypeCreateFunc
+    , DuckDBStatementTypeDrop
+    , DuckDBStatementTypeExport
+    , DuckDBStatementTypePragma
+    , DuckDBStatementTypeVacuum
+    , DuckDBStatementTypeCall
+    , DuckDBStatementTypeSet
+    , DuckDBStatementTypeLoad
+    , DuckDBStatementTypeRelation
+    , DuckDBStatementTypeExtension
+    , DuckDBStatementTypeLogicalPlan
+    , DuckDBStatementTypeAttach
+    , DuckDBStatementTypeDetach
+    , DuckDBStatementTypeMulti ::
+        DuckDBStatementType
 pattern DuckDBStatementTypeInvalid = DuckDBStatementType 0
 pattern DuckDBStatementTypeSelect = DuckDBStatementType 1
 pattern DuckDBStatementTypeInsert = DuckDBStatementType 2
@@ -489,86 +489,86 @@ pattern DuckDBStatementTypeDetach = DuckDBStatementType 26
 pattern DuckDBStatementTypeMulti = DuckDBStatementType 27
 
 {-# COMPLETE
-  DuckDBStatementTypeInvalid
-  , DuckDBStatementTypeSelect
-  , DuckDBStatementTypeInsert
-  , DuckDBStatementTypeUpdate
-  , DuckDBStatementTypeExplain
-  , DuckDBStatementTypeDelete
-  , DuckDBStatementTypePrepare
-  , DuckDBStatementTypeCreate
-  , DuckDBStatementTypeExecute
-  , DuckDBStatementTypeAlter
-  , DuckDBStatementTypeTransaction
-  , DuckDBStatementTypeCopy
-  , DuckDBStatementTypeAnalyze
-  , DuckDBStatementTypeVariableSet
-  , DuckDBStatementTypeCreateFunc
-  , DuckDBStatementTypeDrop
-  , DuckDBStatementTypeExport
-  , DuckDBStatementTypePragma
-  , DuckDBStatementTypeVacuum
-  , DuckDBStatementTypeCall
-  , DuckDBStatementTypeSet
-  , DuckDBStatementTypeLoad
-  , DuckDBStatementTypeRelation
-  , DuckDBStatementTypeExtension
-  , DuckDBStatementTypeLogicalPlan
-  , DuckDBStatementTypeAttach
-  , DuckDBStatementTypeDetach
-  , DuckDBStatementTypeMulti
-  #-}
+    DuckDBStatementTypeInvalid
+    , DuckDBStatementTypeSelect
+    , DuckDBStatementTypeInsert
+    , DuckDBStatementTypeUpdate
+    , DuckDBStatementTypeExplain
+    , DuckDBStatementTypeDelete
+    , DuckDBStatementTypePrepare
+    , DuckDBStatementTypeCreate
+    , DuckDBStatementTypeExecute
+    , DuckDBStatementTypeAlter
+    , DuckDBStatementTypeTransaction
+    , DuckDBStatementTypeCopy
+    , DuckDBStatementTypeAnalyze
+    , DuckDBStatementTypeVariableSet
+    , DuckDBStatementTypeCreateFunc
+    , DuckDBStatementTypeDrop
+    , DuckDBStatementTypeExport
+    , DuckDBStatementTypePragma
+    , DuckDBStatementTypeVacuum
+    , DuckDBStatementTypeCall
+    , DuckDBStatementTypeSet
+    , DuckDBStatementTypeLoad
+    , DuckDBStatementTypeRelation
+    , DuckDBStatementTypeExtension
+    , DuckDBStatementTypeLogicalPlan
+    , DuckDBStatementTypeAttach
+    , DuckDBStatementTypeDetach
+    , DuckDBStatementTypeMulti
+    #-}
 
 -- | DuckDB error classification codes.
 newtype DuckDBErrorType = DuckDBErrorType {unDuckDBErrorType :: CInt}
-  deriving (Eq, Ord, Show, Storable)
+    deriving (Eq, Ord, Show, Storable)
 
 -- | Pattern synonyms mirroring @duckdb_error_type@ values.
 pattern
-  DuckDBErrorInvalid
-  , DuckDBErrorOutOfRange
-  , DuckDBErrorConversion
-  , DuckDBErrorUnknownType
-  , DuckDBErrorDecimal
-  , DuckDBErrorMismatchType
-  , DuckDBErrorDivideByZero
-  , DuckDBErrorObjectSize
-  , DuckDBErrorInvalidType
-  , DuckDBErrorSerialization
-  , DuckDBErrorTransaction
-  , DuckDBErrorNotImplemented
-  , DuckDBErrorExpression
-  , DuckDBErrorCatalog
-  , DuckDBErrorParser
-  , DuckDBErrorPlanner
-  , DuckDBErrorScheduler
-  , DuckDBErrorExecutor
-  , DuckDBErrorConstraint
-  , DuckDBErrorIndex
-  , DuckDBErrorStat
-  , DuckDBErrorConnection
-  , DuckDBErrorSyntax
-  , DuckDBErrorSettings
-  , DuckDBErrorBinder
-  , DuckDBErrorNetwork
-  , DuckDBErrorOptimizer
-  , DuckDBErrorNullPointer
-  , DuckDBErrorIO
-  , DuckDBErrorInterrupt
-  , DuckDBErrorFatal
-  , DuckDBErrorInternal
-  , DuckDBErrorInvalidInput
-  , DuckDBErrorOutOfMemory
-  , DuckDBErrorPermission
-  , DuckDBErrorParameterNotResolved
-  , DuckDBErrorParameterNotAllowed
-  , DuckDBErrorDependency
-  , DuckDBErrorHTTP
-  , DuckDBErrorMissingExtension
-  , DuckDBErrorAutoload
-  , DuckDBErrorSequence
-  , DuckDBInvalidConfiguration
-    :: DuckDBErrorType
+    DuckDBErrorInvalid
+    , DuckDBErrorOutOfRange
+    , DuckDBErrorConversion
+    , DuckDBErrorUnknownType
+    , DuckDBErrorDecimal
+    , DuckDBErrorMismatchType
+    , DuckDBErrorDivideByZero
+    , DuckDBErrorObjectSize
+    , DuckDBErrorInvalidType
+    , DuckDBErrorSerialization
+    , DuckDBErrorTransaction
+    , DuckDBErrorNotImplemented
+    , DuckDBErrorExpression
+    , DuckDBErrorCatalog
+    , DuckDBErrorParser
+    , DuckDBErrorPlanner
+    , DuckDBErrorScheduler
+    , DuckDBErrorExecutor
+    , DuckDBErrorConstraint
+    , DuckDBErrorIndex
+    , DuckDBErrorStat
+    , DuckDBErrorConnection
+    , DuckDBErrorSyntax
+    , DuckDBErrorSettings
+    , DuckDBErrorBinder
+    , DuckDBErrorNetwork
+    , DuckDBErrorOptimizer
+    , DuckDBErrorNullPointer
+    , DuckDBErrorIO
+    , DuckDBErrorInterrupt
+    , DuckDBErrorFatal
+    , DuckDBErrorInternal
+    , DuckDBErrorInvalidInput
+    , DuckDBErrorOutOfMemory
+    , DuckDBErrorPermission
+    , DuckDBErrorParameterNotResolved
+    , DuckDBErrorParameterNotAllowed
+    , DuckDBErrorDependency
+    , DuckDBErrorHTTP
+    , DuckDBErrorMissingExtension
+    , DuckDBErrorAutoload
+    , DuckDBErrorSequence
+    , DuckDBInvalidConfiguration ::
+        DuckDBErrorType
 pattern DuckDBErrorInvalid = DuckDBErrorType 0
 pattern DuckDBErrorOutOfRange = DuckDBErrorType 1
 pattern DuckDBErrorConversion = DuckDBErrorType 2
@@ -619,54 +619,54 @@ pattern DuckDBErrorInvalidConfiguration :: DuckDBErrorType
 pattern DuckDBErrorInvalidConfiguration = DuckDBInvalidConfiguration
 
 {-# COMPLETE
-  DuckDBErrorInvalid
-  , DuckDBErrorOutOfRange
-  , DuckDBErrorConversion
-  , DuckDBErrorUnknownType
-  , DuckDBErrorDecimal
-  , DuckDBErrorMismatchType
-  , DuckDBErrorDivideByZero
-  , DuckDBErrorObjectSize
-  , DuckDBErrorInvalidType
-  , DuckDBErrorSerialization
-  , DuckDBErrorTransaction
-  , DuckDBErrorNotImplemented
-  , DuckDBErrorExpression
-  , DuckDBErrorCatalog
-  , DuckDBErrorParser
-  , DuckDBErrorPlanner
-  , DuckDBErrorScheduler
-  , DuckDBErrorExecutor
-  , DuckDBErrorConstraint
-  , DuckDBErrorIndex
-  , DuckDBErrorStat
-  , DuckDBErrorConnection
-  , DuckDBErrorSyntax
-  , DuckDBErrorSettings
-  , DuckDBErrorBinder
-  , DuckDBErrorNetwork
-  , DuckDBErrorOptimizer
-  , DuckDBErrorNullPointer
-  , DuckDBErrorIO
-  , DuckDBErrorInterrupt
-  , DuckDBErrorFatal
-  , DuckDBErrorInternal
-  , DuckDBErrorInvalidInput
-  , DuckDBErrorOutOfMemory
-  , DuckDBErrorPermission
-  , DuckDBErrorParameterNotResolved
-  , DuckDBErrorParameterNotAllowed
-  , DuckDBErrorDependency
-  , DuckDBErrorHTTP
-  , DuckDBErrorMissingExtension
-  , DuckDBErrorAutoload
-  , DuckDBErrorSequence
-  , DuckDBInvalidConfiguration
-  #-}
+    DuckDBErrorInvalid
+    , DuckDBErrorOutOfRange
+    , DuckDBErrorConversion
+    , DuckDBErrorUnknownType
+    , DuckDBErrorDecimal
+    , DuckDBErrorMismatchType
+    , DuckDBErrorDivideByZero
+    , DuckDBErrorObjectSize
+    , DuckDBErrorInvalidType
+    , DuckDBErrorSerialization
+    , DuckDBErrorTransaction
+    , DuckDBErrorNotImplemented
+    , DuckDBErrorExpression
+    , DuckDBErrorCatalog
+    , DuckDBErrorParser
+    , DuckDBErrorPlanner
+    , DuckDBErrorScheduler
+    , DuckDBErrorExecutor
+    , DuckDBErrorConstraint
+    , DuckDBErrorIndex
+    , DuckDBErrorStat
+    , DuckDBErrorConnection
+    , DuckDBErrorSyntax
+    , DuckDBErrorSettings
+    , DuckDBErrorBinder
+    , DuckDBErrorNetwork
+    , DuckDBErrorOptimizer
+    , DuckDBErrorNullPointer
+    , DuckDBErrorIO
+    , DuckDBErrorInterrupt
+    , DuckDBErrorFatal
+    , DuckDBErrorInternal
+    , DuckDBErrorInvalidInput
+    , DuckDBErrorOutOfMemory
+    , DuckDBErrorPermission
+    , DuckDBErrorParameterNotResolved
+    , DuckDBErrorParameterNotAllowed
+    , DuckDBErrorDependency
+    , DuckDBErrorHTTP
+    , DuckDBErrorMissingExtension
+    , DuckDBErrorAutoload
+    , DuckDBErrorSequence
+    , DuckDBInvalidConfiguration
+    #-}
 
 -- | Behaviour of DuckDB's casting functions (@duckdb_cast_mode@).
 newtype DuckDBCastMode = DuckDBCastMode {unDuckDBCastMode :: CInt}
-  deriving (Eq, Ord, Show, Storable)
+    deriving (Eq, Ord, Show, Storable)
 
 -- | Pattern synonyms for @duckdb_cast_mode@ values.
 pattern DuckDBCastNormal, DuckDBCastTry :: DuckDBCastMode
@@ -677,360 +677,360 @@ pattern DuckDBCastTry = DuckDBCastMode 1
 
 -- | Represents DuckDB's @duckdb_date@.
 newtype DuckDBDate = DuckDBDate {unDuckDBDate :: Int32}
-  deriving (Eq, Ord, Show, Storable)
+    deriving (Eq, Ord, Show, Storable)
 
 -- | Decomposed representation of a @duckdb_date@.
 data DuckDBDateStruct = DuckDBDateStruct
-  { duckDBDateStructYear :: !Int32
-  , duckDBDateStructMonth :: !Int8
-  , duckDBDateStructDay :: !Int8
-  }
-  deriving (Eq, Show)
+    { duckDBDateStructYear :: !Int32
+    , duckDBDateStructMonth :: !Int8
+    , duckDBDateStructDay :: !Int8
+    }
+    deriving (Eq, Show)
 
 instance Storable DuckDBDateStruct where
-  sizeOf _ = alignedSize
-    where
-      rawSize = sizeOf (undefined :: Int32) + 2 * sizeOf (undefined :: Int8)
-      align = alignment (undefined :: Int32)
-      alignedSize = ((rawSize + align - 1) `div` align) * align
-  alignment _ = alignment (undefined :: Int32)
-  peek ptr = do
-    year <- peekByteOff ptr 0
-    month <- peekByteOff ptr (sizeOf (undefined :: Int32))
-    day <- peekByteOff ptr (sizeOf (undefined :: Int32) + sizeOf (undefined :: Int8))
-    pure (DuckDBDateStruct year month day)
-  poke ptr DuckDBDateStruct{duckDBDateStructYear = year, duckDBDateStructMonth = month, duckDBDateStructDay = day} = do
-    pokeByteOff ptr 0 year
-    pokeByteOff ptr (sizeOf (undefined :: Int32)) month
-    pokeByteOff ptr (sizeOf (undefined :: Int32) + sizeOf (undefined :: Int8)) day
+    sizeOf _ = alignedSize
+      where
+        rawSize = sizeOf (undefined :: Int32) + 2 * sizeOf (undefined :: Int8)
+        align = alignment (undefined :: Int32)
+        alignedSize = ((rawSize + align - 1) `div` align) * align
+    alignment _ = alignment (undefined :: Int32)
+    peek ptr = do
+        year <- peekByteOff ptr 0
+        month <- peekByteOff ptr (sizeOf (undefined :: Int32))
+        day <- peekByteOff ptr (sizeOf (undefined :: Int32) + sizeOf (undefined :: Int8))
+        pure (DuckDBDateStruct year month day)
+    poke ptr DuckDBDateStruct{duckDBDateStructYear = year, duckDBDateStructMonth = month, duckDBDateStructDay = day} = do
+        pokeByteOff ptr 0 year
+        pokeByteOff ptr (sizeOf (undefined :: Int32)) month
+        pokeByteOff ptr (sizeOf (undefined :: Int32) + sizeOf (undefined :: Int8)) day
 
 -- | Represents DuckDB's @duckdb_time@.
 newtype DuckDBTime = DuckDBTime {unDuckDBTime :: Int64}
-  deriving (Eq, Ord, Show, Storable)
+    deriving (Eq, Ord, Show, Storable)
 
 -- | Decomposed representation of a @duckdb_time@.
 data DuckDBTimeStruct = DuckDBTimeStruct
-  { duckDBTimeStructHour :: !Int8
-  , duckDBTimeStructMinute :: !Int8
-  , duckDBTimeStructSecond :: !Int8
-  , duckDBTimeStructMicros :: !Int32
-  }
-  deriving (Eq, Show)
+    { duckDBTimeStructHour :: !Int8
+    , duckDBTimeStructMinute :: !Int8
+    , duckDBTimeStructSecond :: !Int8
+    , duckDBTimeStructMicros :: !Int32
+    }
+    deriving (Eq, Show)
 
 instance Storable DuckDBTimeStruct where
-  sizeOf _ = 2 * alignment (undefined :: Int32)
-  alignment _ = alignment (undefined :: Int32)
-  peek ptr = do
-    hour <- peekByteOff ptr 0
-    minute <- peekByteOff ptr 1
-    second <- peekByteOff ptr 2
-    micros <- peekByteOff ptr 4
-    pure (DuckDBTimeStruct hour minute second micros)
-  poke ptr DuckDBTimeStruct{duckDBTimeStructHour = hour, duckDBTimeStructMinute = minute, duckDBTimeStructSecond = second, duckDBTimeStructMicros = micros} = do
-    pokeByteOff ptr 0 hour
-    pokeByteOff ptr 1 minute
-    pokeByteOff ptr 2 second
-    pokeByteOff ptr 4 micros
+    sizeOf _ = 2 * alignment (undefined :: Int32)
+    alignment _ = alignment (undefined :: Int32)
+    peek ptr = do
+        hour <- peekByteOff ptr 0
+        minute <- peekByteOff ptr 1
+        second <- peekByteOff ptr 2
+        micros <- peekByteOff ptr 4
+        pure (DuckDBTimeStruct hour minute second micros)
+    poke ptr DuckDBTimeStruct{duckDBTimeStructHour = hour, duckDBTimeStructMinute = minute, duckDBTimeStructSecond = second, duckDBTimeStructMicros = micros} = do
+        pokeByteOff ptr 0 hour
+        pokeByteOff ptr 1 minute
+        pokeByteOff ptr 2 second
+        pokeByteOff ptr 4 micros
 
 -- | Represents DuckDB's @duckdb_time_ns@.
 newtype DuckDBTimeNs = DuckDBTimeNs {unDuckDBTimeNs :: Int64}
-  deriving (Eq, Ord, Show, Storable)
+    deriving (Eq, Ord, Show, Storable)
 
 -- | Represents DuckDB's @duckdb_time_tz@.
 newtype DuckDBTimeTz = DuckDBTimeTz {unDuckDBTimeTz :: Word64}
-  deriving (Eq, Ord, Show, Storable)
+    deriving (Eq, Ord, Show, Storable)
 
 -- | Decomposed representation of a @duckdb_time_tz@.
 data DuckDBTimeTzStruct = DuckDBTimeTzStruct
-  { duckDBTimeTzStructTime :: !DuckDBTimeStruct
-  , duckDBTimeTzStructOffset :: !Int32
-  }
-  deriving (Eq, Show)
+    { duckDBTimeTzStructTime :: !DuckDBTimeStruct
+    , duckDBTimeTzStructOffset :: !Int32
+    }
+    deriving (Eq, Show)
 
 instance Storable DuckDBTimeTzStruct where
-  sizeOf _ = sizeOf (undefined :: DuckDBTimeStruct) + sizeOf (undefined :: Int32)
-  alignment _ = alignment (undefined :: Int32)
-  peek ptr = do
-    time <- peekByteOff ptr 0
-    offset <- peekByteOff ptr (sizeOf (undefined :: DuckDBTimeStruct))
-    pure (DuckDBTimeTzStruct time offset)
-  poke ptr DuckDBTimeTzStruct{duckDBTimeTzStructTime = time, duckDBTimeTzStructOffset = offset} = do
-    pokeByteOff ptr 0 time
-    pokeByteOff ptr (sizeOf (undefined :: DuckDBTimeStruct)) offset
+    sizeOf _ = sizeOf (undefined :: DuckDBTimeStruct) + sizeOf (undefined :: Int32)
+    alignment _ = alignment (undefined :: Int32)
+    peek ptr = do
+        time <- peekByteOff ptr 0
+        offset <- peekByteOff ptr (sizeOf (undefined :: DuckDBTimeStruct))
+        pure (DuckDBTimeTzStruct time offset)
+    poke ptr DuckDBTimeTzStruct{duckDBTimeTzStructTime = time, duckDBTimeTzStructOffset = offset} = do
+        pokeByteOff ptr 0 time
+        pokeByteOff ptr (sizeOf (undefined :: DuckDBTimeStruct)) offset
 
 -- | Represents DuckDB's @duckdb_timestamp@.
 newtype DuckDBTimestamp = DuckDBTimestamp {unDuckDBTimestamp :: Int64}
-  deriving (Eq, Ord, Show, Storable)
+    deriving (Eq, Ord, Show, Storable)
 
 -- | Decomposed representation of a @duckdb_timestamp@.
 data DuckDBTimestampStruct = DuckDBTimestampStruct
-  { duckDBTimestampStructDate :: !DuckDBDateStruct
-  , duckDBTimestampStructTime :: !DuckDBTimeStruct
-  }
-  deriving (Eq, Show)
+    { duckDBTimestampStructDate :: !DuckDBDateStruct
+    , duckDBTimestampStructTime :: !DuckDBTimeStruct
+    }
+    deriving (Eq, Show)
 
 instance Storable DuckDBTimestampStruct where
-  sizeOf _ = sizeOf (undefined :: DuckDBDateStruct) + sizeOf (undefined :: DuckDBTimeStruct)
-  alignment _ = alignment (undefined :: DuckDBTimeStruct)
-  peek ptr = do
-    date <- peekByteOff ptr 0
-    time <- peekByteOff ptr (sizeOf (undefined :: DuckDBDateStruct))
-    pure (DuckDBTimestampStruct date time)
-  poke ptr DuckDBTimestampStruct{duckDBTimestampStructDate = date, duckDBTimestampStructTime = time} = do
-    pokeByteOff ptr 0 date
-    pokeByteOff ptr (sizeOf (undefined :: DuckDBDateStruct)) time
+    sizeOf _ = sizeOf (undefined :: DuckDBDateStruct) + sizeOf (undefined :: DuckDBTimeStruct)
+    alignment _ = alignment (undefined :: DuckDBTimeStruct)
+    peek ptr = do
+        date <- peekByteOff ptr 0
+        time <- peekByteOff ptr (sizeOf (undefined :: DuckDBDateStruct))
+        pure (DuckDBTimestampStruct date time)
+    poke ptr DuckDBTimestampStruct{duckDBTimestampStructDate = date, duckDBTimestampStructTime = time} = do
+        pokeByteOff ptr 0 date
+        pokeByteOff ptr (sizeOf (undefined :: DuckDBDateStruct)) time
 
 -- | Represents DuckDB's @duckdb_timestamp_s@.
 newtype DuckDBTimestampS = DuckDBTimestampS {unDuckDBTimestampS :: Int64}
-  deriving (Eq, Ord, Show, Storable)
+    deriving (Eq, Ord, Show, Storable)
 
 -- | Represents DuckDB's @duckdb_timestamp_ms@.
 newtype DuckDBTimestampMs = DuckDBTimestampMs {unDuckDBTimestampMs :: Int64}
-  deriving (Eq, Ord, Show, Storable)
+    deriving (Eq, Ord, Show, Storable)
 
 -- | Represents DuckDB's @duckdb_timestamp_ns@.
 newtype DuckDBTimestampNs = DuckDBTimestampNs {unDuckDBTimestampNs :: Int64}
-  deriving (Eq, Ord, Show, Storable)
+    deriving (Eq, Ord, Show, Storable)
 
 -- | Represents DuckDB's @duckdb_interval@.
 data DuckDBInterval = DuckDBInterval
-  { duckDBIntervalMonths :: !Int32
-  , duckDBIntervalDays :: !Int32
-  , duckDBIntervalMicros :: !Int64
-  }
-  deriving (Eq, Show)
+    { duckDBIntervalMonths :: !Int32
+    , duckDBIntervalDays :: !Int32
+    , duckDBIntervalMicros :: !Int64
+    }
+    deriving (Eq, Show)
 
 instance Storable DuckDBInterval where
-  sizeOf _ = 2 * sizeOf (undefined :: Int32) + sizeOf (undefined :: Int64)
-  alignment _ = alignment (undefined :: Int64)
-  peek ptr = do
-    months <- peekByteOff ptr 0
-    days <- peekByteOff ptr (sizeOf (undefined :: Int32))
-    micros <- peekByteOff ptr (2 * sizeOf (undefined :: Int32))
-    pure (DuckDBInterval months days micros)
-  poke ptr (DuckDBInterval months days micros) = do
-    pokeByteOff ptr 0 months
-    pokeByteOff ptr (sizeOf (undefined :: Int32)) days
-    pokeByteOff ptr (2 * sizeOf (undefined :: Int32)) micros
+    sizeOf _ = 2 * sizeOf (undefined :: Int32) + sizeOf (undefined :: Int64)
+    alignment _ = alignment (undefined :: Int64)
+    peek ptr = do
+        months <- peekByteOff ptr 0
+        days <- peekByteOff ptr (sizeOf (undefined :: Int32))
+        micros <- peekByteOff ptr (2 * sizeOf (undefined :: Int32))
+        pure (DuckDBInterval months days micros)
+    poke ptr (DuckDBInterval months days micros) = do
+        pokeByteOff ptr 0 months
+        pokeByteOff ptr (sizeOf (undefined :: Int32)) days
+        pokeByteOff ptr (2 * sizeOf (undefined :: Int32)) micros
 
 -- | Represents DuckDB's @duckdb_hugeint@.
 data DuckDBHugeInt = DuckDBHugeInt
-  { duckDBHugeIntLower :: !Word64
-  , duckDBHugeIntUpper :: !Int64
-  }
-  deriving (Eq, Show)
+    { duckDBHugeIntLower :: !Word64
+    , duckDBHugeIntUpper :: !Int64
+    }
+    deriving (Eq, Show)
 
 instance Storable DuckDBHugeInt where
-  sizeOf _ = sizeOf (undefined :: Word64) + sizeOf (undefined :: Int64)
-  alignment _ = alignment (undefined :: Word64)
-  peek ptr = do
-    lower <- peekByteOff ptr 0
-    upper <- peekByteOff ptr (sizeOf (undefined :: Word64))
-    pure (DuckDBHugeInt lower upper)
-  poke ptr (DuckDBHugeInt lower upper) = do
-    pokeByteOff ptr 0 lower
-    pokeByteOff ptr (sizeOf (undefined :: Word64)) upper
+    sizeOf _ = sizeOf (undefined :: Word64) + sizeOf (undefined :: Int64)
+    alignment _ = alignment (undefined :: Word64)
+    peek ptr = do
+        lower <- peekByteOff ptr 0
+        upper <- peekByteOff ptr (sizeOf (undefined :: Word64))
+        pure (DuckDBHugeInt lower upper)
+    poke ptr (DuckDBHugeInt lower upper) = do
+        pokeByteOff ptr 0 lower
+        pokeByteOff ptr (sizeOf (undefined :: Word64)) upper
 
 -- | Represents DuckDB's @duckdb_uhugeint@.
 data DuckDBUHugeInt = DuckDBUHugeInt
-  { duckDBUHugeIntLower :: !Word64
-  , duckDBUHugeIntUpper :: !Word64
-  }
-  deriving (Eq, Show)
+    { duckDBUHugeIntLower :: !Word64
+    , duckDBUHugeIntUpper :: !Word64
+    }
+    deriving (Eq, Show)
 
 instance Storable DuckDBUHugeInt where
-  sizeOf _ = 2 * sizeOf (undefined :: Word64)
-  alignment _ = alignment (undefined :: Word64)
-  peek ptr = do
-    lower <- peekByteOff ptr 0
-    upper <- peekByteOff ptr (sizeOf (undefined :: Word64))
-    pure (DuckDBUHugeInt lower upper)
-  poke ptr (DuckDBUHugeInt lower upper) = do
-    pokeByteOff ptr 0 lower
-    pokeByteOff ptr (sizeOf (undefined :: Word64)) upper
+    sizeOf _ = 2 * sizeOf (undefined :: Word64)
+    alignment _ = alignment (undefined :: Word64)
+    peek ptr = do
+        lower <- peekByteOff ptr 0
+        upper <- peekByteOff ptr (sizeOf (undefined :: Word64))
+        pure (DuckDBUHugeInt lower upper)
+    poke ptr (DuckDBUHugeInt lower upper) = do
+        pokeByteOff ptr 0 lower
+        pokeByteOff ptr (sizeOf (undefined :: Word64)) upper
 
 -- | Represents DuckDB's @duckdb_decimal@.
 data DuckDBDecimal = DuckDBDecimal
-  { duckDBDecimalWidth :: !Word8
-  , duckDBDecimalScale :: !Word8
-  , duckDBDecimalValue :: !DuckDBHugeInt
-  }
-  deriving (Eq, Show)
+    { duckDBDecimalWidth :: !Word8
+    , duckDBDecimalScale :: !Word8
+    , duckDBDecimalValue :: !DuckDBHugeInt
+    }
+    deriving (Eq, Show)
 
 instance Storable DuckDBDecimal where
-  sizeOf _ = valueOffset + sizeOf (undefined :: DuckDBHugeInt)
-    where
-      alignHuge = alignment (undefined :: DuckDBHugeInt)
-      valueOffset = ((2 + alignHuge - 1) `div` alignHuge) * alignHuge
-  alignment _ = alignment (undefined :: DuckDBHugeInt)
-  peek ptr = do
-    width <- peekByteOff ptr 0
-    scale <- peekByteOff ptr 1
-    let alignHuge = alignment (undefined :: DuckDBHugeInt)
+    sizeOf _ = valueOffset + sizeOf (undefined :: DuckDBHugeInt)
+      where
+        alignHuge = alignment (undefined :: DuckDBHugeInt)
         valueOffset = ((2 + alignHuge - 1) `div` alignHuge) * alignHuge
-    value <- peekByteOff ptr valueOffset
-    pure (DuckDBDecimal width scale value)
-  poke ptr (DuckDBDecimal width scale value) = do
-    pokeByteOff ptr 0 width
-    pokeByteOff ptr 1 scale
-    let alignHuge = alignment (undefined :: DuckDBHugeInt)
-        valueOffset = ((2 + alignHuge - 1) `div` alignHuge) * alignHuge
-    pokeByteOff ptr valueOffset value
+    alignment _ = alignment (undefined :: DuckDBHugeInt)
+    peek ptr = do
+        width <- peekByteOff ptr 0
+        scale <- peekByteOff ptr 1
+        let alignHuge = alignment (undefined :: DuckDBHugeInt)
+            valueOffset = ((2 + alignHuge - 1) `div` alignHuge) * alignHuge
+        value <- peekByteOff ptr valueOffset
+        pure (DuckDBDecimal width scale value)
+    poke ptr (DuckDBDecimal width scale value) = do
+        pokeByteOff ptr 0 width
+        pokeByteOff ptr 1 scale
+        let alignHuge = alignment (undefined :: DuckDBHugeInt)
+            valueOffset = ((2 + alignHuge - 1) `div` alignHuge) * alignHuge
+        pokeByteOff ptr valueOffset value
 
 -- | Represents DuckDB's @duckdb_blob@.
 data DuckDBBlob = DuckDBBlob
-  { duckDBBlobData :: !(Ptr ())
-  , duckDBBlobSize :: !DuckDBIdx
-  }
-  deriving (Eq, Show)
+    { duckDBBlobData :: !(Ptr ())
+    , duckDBBlobSize :: !DuckDBIdx
+    }
+    deriving (Eq, Show)
 
 instance Storable DuckDBBlob where
-  sizeOf _ = sizeOf (undefined :: Ptr ()) + sizeOf (undefined :: DuckDBIdx)
-  alignment _ = alignment (undefined :: Ptr ())
-  peek ptr = do
-    dat <- peekByteOff ptr 0
-    len <- peekByteOff ptr (sizeOf (undefined :: Ptr ()))
-    pure (DuckDBBlob dat len)
-  poke ptr (DuckDBBlob dat len) = do
-    pokeByteOff ptr 0 dat
-    pokeByteOff ptr (sizeOf (undefined :: Ptr ())) len
+    sizeOf _ = sizeOf (undefined :: Ptr ()) + sizeOf (undefined :: DuckDBIdx)
+    alignment _ = alignment (undefined :: Ptr ())
+    peek ptr = do
+        dat <- peekByteOff ptr 0
+        len <- peekByteOff ptr (sizeOf (undefined :: Ptr ()))
+        pure (DuckDBBlob dat len)
+    poke ptr (DuckDBBlob dat len) = do
+        pokeByteOff ptr 0 dat
+        pokeByteOff ptr (sizeOf (undefined :: Ptr ())) len
 
 -- | Represents DuckDB's @duckdb_string@.
 data DuckDBString = DuckDBString
-  { duckDBStringData :: !(Ptr CChar)
-  , duckDBStringSize :: !DuckDBIdx
-  }
-  deriving (Eq, Show)
+    { duckDBStringData :: !(Ptr CChar)
+    , duckDBStringSize :: !DuckDBIdx
+    }
+    deriving (Eq, Show)
 
 instance Storable DuckDBString where
-  sizeOf _ = sizeOf (undefined :: Ptr CChar) + sizeOf (undefined :: DuckDBIdx)
-  alignment _ = alignment (undefined :: Ptr CChar)
-  peek ptr = do
-    dat <- peekByteOff ptr 0
-    len <- peekByteOff ptr (sizeOf (undefined :: Ptr CChar))
-    pure (DuckDBString dat len)
-  poke ptr (DuckDBString dat len) = do
-    pokeByteOff ptr 0 dat
-    pokeByteOff ptr (sizeOf (undefined :: Ptr CChar)) len
+    sizeOf _ = sizeOf (undefined :: Ptr CChar) + sizeOf (undefined :: DuckDBIdx)
+    alignment _ = alignment (undefined :: Ptr CChar)
+    peek ptr = do
+        dat <- peekByteOff ptr 0
+        len <- peekByteOff ptr (sizeOf (undefined :: Ptr CChar))
+        pure (DuckDBString dat len)
+    poke ptr (DuckDBString dat len) = do
+        pokeByteOff ptr 0 dat
+        pokeByteOff ptr (sizeOf (undefined :: Ptr CChar)) len
 
 -- | Represents DuckDB's @duckdb_string_t@.
 data DuckDBStringT
 
 -- | Represents DuckDB's @duckdb_bit@.
 data DuckDBBit = DuckDBBit
-  { duckDBBitData :: !(Ptr Word8)
-  , duckDBBitSize :: !DuckDBIdx
-  }
-  deriving (Eq, Show)
+    { duckDBBitData :: !(Ptr Word8)
+    , duckDBBitSize :: !DuckDBIdx
+    }
+    deriving (Eq, Show)
 
 instance Storable DuckDBBit where
-  sizeOf _ = sizeOf (undefined :: Ptr Word8) + sizeOf (undefined :: DuckDBIdx)
-  alignment _ = alignment (undefined :: Ptr Word8)
-  peek ptr = do
-    dat <- peekByteOff ptr 0
-    len <- peekByteOff ptr (sizeOf (undefined :: Ptr Word8))
-    pure (DuckDBBit dat len)
-  poke ptr (DuckDBBit dat len) = do
-    pokeByteOff ptr 0 dat
-    pokeByteOff ptr (sizeOf (undefined :: Ptr Word8)) len
+    sizeOf _ = sizeOf (undefined :: Ptr Word8) + sizeOf (undefined :: DuckDBIdx)
+    alignment _ = alignment (undefined :: Ptr Word8)
+    peek ptr = do
+        dat <- peekByteOff ptr 0
+        len <- peekByteOff ptr (sizeOf (undefined :: Ptr Word8))
+        pure (DuckDBBit dat len)
+    poke ptr (DuckDBBit dat len) = do
+        pokeByteOff ptr 0 dat
+        pokeByteOff ptr (sizeOf (undefined :: Ptr Word8)) len
 
 -- | Represents DuckDB's @duckdb_bignum@.
 data DuckDBBignum = DuckDBBignum
-  { duckDBBignumData :: !(Ptr Word8)
-  , duckDBBignumSize :: !DuckDBIdx
-  , duckDBBignumIsNegative :: !CBool
-  }
-  deriving (Eq, Show)
+    { duckDBBignumData :: !(Ptr Word8)
+    , duckDBBignumSize :: !DuckDBIdx
+    , duckDBBignumIsNegative :: !CBool
+    }
+    deriving (Eq, Show)
 
 instance Storable DuckDBBignum where
-  sizeOf _ = alignedSize
-    where
-      baseSize = sizeOf (undefined :: Ptr Word8) + sizeOf (undefined :: DuckDBIdx) + sizeOf (undefined :: CBool)
-      align = alignment (undefined :: Ptr Word8)
-      alignedSize = ((baseSize + align - 1) `div` align) * align
-  alignment _ = alignment (undefined :: Ptr Word8)
-  peek ptr = do
-    dat <- peekByteOff ptr 0
-    len <- peekByteOff ptr (sizeOf (undefined :: Ptr Word8))
-    isNeg <- peekByteOff ptr (sizeOf (undefined :: Ptr Word8) + sizeOf (undefined :: DuckDBIdx))
-    pure (DuckDBBignum dat len isNeg)
-  poke ptr (DuckDBBignum dat len isNeg) = do
-    pokeByteOff ptr 0 dat
-    pokeByteOff ptr (sizeOf (undefined :: Ptr Word8)) len
-    pokeByteOff ptr (sizeOf (undefined :: Ptr Word8) + sizeOf (undefined :: DuckDBIdx)) isNeg
+    sizeOf _ = alignedSize
+      where
+        baseSize = sizeOf (undefined :: Ptr Word8) + sizeOf (undefined :: DuckDBIdx) + sizeOf (undefined :: CBool)
+        align = alignment (undefined :: Ptr Word8)
+        alignedSize = ((baseSize + align - 1) `div` align) * align
+    alignment _ = alignment (undefined :: Ptr Word8)
+    peek ptr = do
+        dat <- peekByteOff ptr 0
+        len <- peekByteOff ptr (sizeOf (undefined :: Ptr Word8))
+        isNeg <- peekByteOff ptr (sizeOf (undefined :: Ptr Word8) + sizeOf (undefined :: DuckDBIdx))
+        pure (DuckDBBignum dat len isNeg)
+    poke ptr (DuckDBBignum dat len isNeg) = do
+        pokeByteOff ptr 0 dat
+        pokeByteOff ptr (sizeOf (undefined :: Ptr Word8)) len
+        pokeByteOff ptr (sizeOf (undefined :: Ptr Word8) + sizeOf (undefined :: DuckDBIdx)) isNeg
 
 -- | Represents DuckDB's @duckdb_query_progress_type@.
 data DuckDBQueryProgress = DuckDBQueryProgress
-  { duckDBQueryProgressPercentage :: !Double
-  , duckDBQueryProgressRowsProcessed :: !Word64
-  , duckDBQueryProgressTotalRows :: !Word64
-  }
-  deriving (Eq, Show)
+    { duckDBQueryProgressPercentage :: !Double
+    , duckDBQueryProgressRowsProcessed :: !Word64
+    , duckDBQueryProgressTotalRows :: !Word64
+    }
+    deriving (Eq, Show)
 
 instance Storable DuckDBQueryProgress where
-  sizeOf _ = sizeOf (undefined :: CDouble) + 2 * sizeOf (undefined :: Word64)
-  alignment _ = alignment (undefined :: CDouble)
-  peek ptr = do
-    percentage <- realToFrac <$> (peekByteOff ptr 0 :: IO CDouble)
-    let offset1 = sizeOf (undefined :: CDouble)
-        offset2 = offset1 + sizeOf (undefined :: Word64)
-    processed <- peekByteOff ptr offset1
-    total <- peekByteOff ptr offset2
-    pure (DuckDBQueryProgress percentage processed total)
-  poke ptr (DuckDBQueryProgress percentage processed total) = do
-    pokeByteOff ptr 0 (realToFrac percentage :: CDouble)
-    let offset1 = sizeOf (undefined :: CDouble)
-        offset2 = offset1 + sizeOf (undefined :: Word64)
-    pokeByteOff ptr offset1 processed
-    pokeByteOff ptr offset2 total
+    sizeOf _ = sizeOf (undefined :: CDouble) + 2 * sizeOf (undefined :: Word64)
+    alignment _ = alignment (undefined :: CDouble)
+    peek ptr = do
+        percentage <- realToFrac <$> (peekByteOff ptr 0 :: IO CDouble)
+        let offset1 = sizeOf (undefined :: CDouble)
+            offset2 = offset1 + sizeOf (undefined :: Word64)
+        processed <- peekByteOff ptr offset1
+        total <- peekByteOff ptr offset2
+        pure (DuckDBQueryProgress percentage processed total)
+    poke ptr (DuckDBQueryProgress percentage processed total) = do
+        pokeByteOff ptr 0 (realToFrac percentage :: CDouble)
+        let offset1 = sizeOf (undefined :: CDouble)
+            offset2 = offset1 + sizeOf (undefined :: Word64)
+        pokeByteOff ptr offset1 processed
+        pokeByteOff ptr offset2 total
 
 -- | Opaque DuckDB column handle.
 data DuckDBColumn
 
 -- | DuckDB result structure (opaque to callers, but required for FFI marshalling).
 data DuckDBResult = DuckDBResult
-  { duckDBResultDeprecatedColumnCount :: !DuckDBIdx
-  , duckDBResultDeprecatedRowCount :: !DuckDBIdx
-  , duckDBResultDeprecatedRowsChanged :: !DuckDBIdx
-  , duckDBResultDeprecatedColumns :: !(Ptr DuckDBColumn)
-  , duckDBResultDeprecatedErrorMessage :: !CString
-  , duckDBResultInternalData :: !(Ptr ())
-  }
+    { duckDBResultDeprecatedColumnCount :: !DuckDBIdx
+    , duckDBResultDeprecatedRowCount :: !DuckDBIdx
+    , duckDBResultDeprecatedRowsChanged :: !DuckDBIdx
+    , duckDBResultDeprecatedColumns :: !(Ptr DuckDBColumn)
+    , duckDBResultDeprecatedErrorMessage :: !CString
+    , duckDBResultInternalData :: !(Ptr ())
+    }
 
 instance Storable DuckDBResult where
-  sizeOf _ = 3 * sizeOf (undefined :: DuckDBIdx) + 3 * sizeOf (undefined :: Ptr ())
-  alignment _ = alignment (undefined :: DuckDBIdx)
-  peek ptr = do
-    colCount <- peekByteOff ptr 0
-    rowCount <- peekByteOff ptr (sizeOf (undefined :: DuckDBIdx))
-    rowsChanged <- peekByteOff ptr (2 * sizeOf (undefined :: DuckDBIdx))
-    let basePtr = 3 * sizeOf (undefined :: DuckDBIdx)
-    columns <- peekByteOff ptr basePtr
-    errMsg <- peekByteOff ptr (basePtr + sizeOf (undefined :: Ptr ()))
-    internal <- peekByteOff ptr (basePtr + 2 * sizeOf (undefined :: Ptr ()))
-    pure
-      DuckDBResult
-        { duckDBResultDeprecatedColumnCount = colCount
-        , duckDBResultDeprecatedRowCount = rowCount
-        , duckDBResultDeprecatedRowsChanged = rowsChanged
-        , duckDBResultDeprecatedColumns = columns
-        , duckDBResultDeprecatedErrorMessage = errMsg
-        , duckDBResultInternalData = internal
-        }
-  poke ptr result = do
-    let columnCount = duckDBResultDeprecatedColumnCount result
-        rowCount = duckDBResultDeprecatedRowCount result
-        rowsChanged = duckDBResultDeprecatedRowsChanged result
-        columns = duckDBResultDeprecatedColumns result
-        errorMessage = duckDBResultDeprecatedErrorMessage result
-        internalData = duckDBResultInternalData result
-        basePtr = 3 * sizeOf (undefined :: DuckDBIdx)
-    pokeByteOff ptr 0 columnCount
-    pokeByteOff ptr (sizeOf (undefined :: DuckDBIdx)) rowCount
-    pokeByteOff ptr (2 * sizeOf (undefined :: DuckDBIdx)) rowsChanged
-    pokeByteOff ptr basePtr columns
-    pokeByteOff ptr (basePtr + sizeOf (undefined :: Ptr ())) errorMessage
-    pokeByteOff ptr (basePtr + 2 * sizeOf (undefined :: Ptr ())) internalData
+    sizeOf _ = 3 * sizeOf (undefined :: DuckDBIdx) + 3 * sizeOf (undefined :: Ptr ())
+    alignment _ = alignment (undefined :: DuckDBIdx)
+    peek ptr = do
+        colCount <- peekByteOff ptr 0
+        rowCount <- peekByteOff ptr (sizeOf (undefined :: DuckDBIdx))
+        rowsChanged <- peekByteOff ptr (2 * sizeOf (undefined :: DuckDBIdx))
+        let basePtr = 3 * sizeOf (undefined :: DuckDBIdx)
+        columns <- peekByteOff ptr basePtr
+        errMsg <- peekByteOff ptr (basePtr + sizeOf (undefined :: Ptr ()))
+        internal <- peekByteOff ptr (basePtr + 2 * sizeOf (undefined :: Ptr ()))
+        pure
+            DuckDBResult
+                { duckDBResultDeprecatedColumnCount = colCount
+                , duckDBResultDeprecatedRowCount = rowCount
+                , duckDBResultDeprecatedRowsChanged = rowsChanged
+                , duckDBResultDeprecatedColumns = columns
+                , duckDBResultDeprecatedErrorMessage = errMsg
+                , duckDBResultInternalData = internal
+                }
+    poke ptr result = do
+        let columnCount = duckDBResultDeprecatedColumnCount result
+            rowCount = duckDBResultDeprecatedRowCount result
+            rowsChanged = duckDBResultDeprecatedRowsChanged result
+            columns = duckDBResultDeprecatedColumns result
+            errorMessage = duckDBResultDeprecatedErrorMessage result
+            internalData = duckDBResultInternalData result
+            basePtr = 3 * sizeOf (undefined :: DuckDBIdx)
+        pokeByteOff ptr 0 columnCount
+        pokeByteOff ptr (sizeOf (undefined :: DuckDBIdx)) rowCount
+        pokeByteOff ptr (2 * sizeOf (undefined :: DuckDBIdx)) rowsChanged
+        pokeByteOff ptr basePtr columns
+        pokeByteOff ptr (basePtr + sizeOf (undefined :: Ptr ())) errorMessage
+        pokeByteOff ptr (basePtr + 2 * sizeOf (undefined :: Ptr ())) internalData
 
 -- | Tag type backing @duckdb_database@ pointers.
 data DuckDBDatabaseStruct
@@ -1124,56 +1124,54 @@ type DuckDBArrowOptions = Ptr DuckDBArrowOptionsStruct
 
 -- | Tag type backing @duckdb_arrow@ pointers.
 newtype DuckDBArrowStruct = DuckDBArrowStruct
-  { duckdbArrowInternalPtr :: Ptr ()
-  }
+    { duckdbArrowInternalPtr :: Ptr ()
+    }
 
 -- | Handle to an Arrow query result.
 type DuckDBArrow = Ptr DuckDBArrowStruct
 
 -- | Tag type backing @duckdb_arrow_schema@ pointers.
 newtype DuckDBArrowSchemaStruct = DuckDBArrowSchemaStruct
-  { duckdbArrowSchemaInternalPtr :: Ptr ()
-  }
+    { duckdbArrowSchemaInternalPtr :: Ptr ()
+    }
 
 -- | Handle to an Arrow schema.
 type DuckDBArrowSchema = Ptr DuckDBArrowSchemaStruct
 
-
 -- | Tag type backing @duckdb_arrow_array@ pointers.
 newtype DuckDBArrowArrayStruct = DuckDBArrowArrayStruct
-  { duckdbArrowArrayInternalPtr :: Ptr ()
-  }
+    { duckdbArrowArrayInternalPtr :: Ptr ()
+    }
 
 -- | Handle to an Arrow array.
 type DuckDBArrowArray = Ptr DuckDBArrowArrayStruct
 
 instance Storable DuckDBArrowStruct where
-  sizeOf _ = pointerSize
-  alignment _ = alignment (nullPtr :: Ptr ())
-  peek ptr =
-    DuckDBArrowStruct
-      <$> peekByteOff ptr 0
-  poke ptr DuckDBArrowStruct{..} =
-    pokeByteOff ptr 0 duckdbArrowInternalPtr
+    sizeOf _ = pointerSize
+    alignment _ = alignment (nullPtr :: Ptr ())
+    peek ptr =
+        DuckDBArrowStruct
+            <$> peekByteOff ptr 0
+    poke ptr DuckDBArrowStruct{..} =
+        pokeByteOff ptr 0 duckdbArrowInternalPtr
 
 instance Storable DuckDBArrowSchemaStruct where
-  sizeOf _ = pointerSize
-  alignment _ = alignment (nullPtr :: Ptr ())
-  peek ptr =
-    DuckDBArrowSchemaStruct
-      <$> peekByteOff ptr 0
-  poke ptr DuckDBArrowSchemaStruct{..} =
-    pokeByteOff ptr 0 duckdbArrowSchemaInternalPtr
+    sizeOf _ = pointerSize
+    alignment _ = alignment (nullPtr :: Ptr ())
+    peek ptr =
+        DuckDBArrowSchemaStruct
+            <$> peekByteOff ptr 0
+    poke ptr DuckDBArrowSchemaStruct{..} =
+        pokeByteOff ptr 0 duckdbArrowSchemaInternalPtr
 
 instance Storable DuckDBArrowArrayStruct where
-  sizeOf _ = pointerSize
-  alignment _ = alignment (nullPtr :: Ptr ())
-  peek ptr =
-    DuckDBArrowArrayStruct
-      <$> peekByteOff ptr 0
-  poke ptr DuckDBArrowArrayStruct{..} =
-    pokeByteOff ptr 0 duckdbArrowArrayInternalPtr
-
+    sizeOf _ = pointerSize
+    alignment _ = alignment (nullPtr :: Ptr ())
+    peek ptr =
+        DuckDBArrowArrayStruct
+            <$> peekByteOff ptr 0
+    poke ptr DuckDBArrowArrayStruct{..} =
+        pokeByteOff ptr 0 duckdbArrowArrayInternalPtr
 
 -- | Tag type backing @duckdb_arrow_converted_schema@ pointers.
 data DuckDBArrowConvertedSchemaStruct
@@ -1183,20 +1181,20 @@ type DuckDBArrowConvertedSchema = Ptr DuckDBArrowConvertedSchemaStruct
 
 -- | Tag type backing @duckdb_arrow_stream@ pointers.
 newtype DuckDBArrowStreamStruct = DuckDBArrowStreamStruct
-  { duckdbArrowStreamInternalPtr :: Ptr ()
-  }
+    { duckdbArrowStreamInternalPtr :: Ptr ()
+    }
 
 -- | Handle to an Arrow stream.
 type DuckDBArrowStream = Ptr DuckDBArrowStreamStruct
 
 instance Storable DuckDBArrowStreamStruct where
-  sizeOf _ = pointerSize
-  alignment _ = alignment (nullPtr :: Ptr ())
-  peek ptr =
-    DuckDBArrowStreamStruct
-      <$> peekByteOff ptr 0
-  poke ptr DuckDBArrowStreamStruct{..} =
-    pokeByteOff ptr 0 duckdbArrowStreamInternalPtr
+    sizeOf _ = pointerSize
+    alignment _ = alignment (nullPtr :: Ptr ())
+    peek ptr =
+        DuckDBArrowStreamStruct
+            <$> peekByteOff ptr 0
+    poke ptr DuckDBArrowStreamStruct{..} =
+        pokeByteOff ptr 0 duckdbArrowStreamInternalPtr
 
 -- | Tag type backing @duckdb_expression@ pointers.
 data DuckDBExpressionStruct
@@ -1311,7 +1309,7 @@ type DuckDBCopyCallback = FunPtr (Ptr () -> IO (Ptr ()))
 
 -- | Function pointer implementing cast functions.
 type DuckDBCastFunctionFun =
-  FunPtr (DuckDBFunctionInfo -> DuckDBIdx -> DuckDBVector -> DuckDBVector -> IO CBool)
+    FunPtr (DuckDBFunctionInfo -> DuckDBIdx -> DuckDBVector -> DuckDBVector -> IO CBool)
 
 -- | Function pointer returning aggregate state size.
 type DuckDBAggregateStateSizeFun = FunPtr (DuckDBFunctionInfo -> IO DuckDBIdx)
@@ -1324,28 +1322,28 @@ type DuckDBAggregateDestroyFun = FunPtr (Ptr DuckDBAggregateState -> DuckDBIdx -
 
 -- | Function pointer updating aggregate states.
 type DuckDBAggregateUpdateFun =
-  FunPtr (DuckDBFunctionInfo -> DuckDBDataChunk -> Ptr DuckDBAggregateState -> IO ())
+    FunPtr (DuckDBFunctionInfo -> DuckDBDataChunk -> Ptr DuckDBAggregateState -> IO ())
 
 -- | Function pointer combining aggregate states.
 type DuckDBAggregateCombineFun =
-  FunPtr
-    ( DuckDBFunctionInfo ->
-      Ptr DuckDBAggregateState ->
-      Ptr DuckDBAggregateState ->
-      DuckDBIdx ->
-      IO ()
-    )
+    FunPtr
+        ( DuckDBFunctionInfo ->
+          Ptr DuckDBAggregateState ->
+          Ptr DuckDBAggregateState ->
+          DuckDBIdx ->
+          IO ()
+        )
 
 -- | Function pointer finalising aggregate states.
 type DuckDBAggregateFinalizeFun =
-  FunPtr
-    ( DuckDBFunctionInfo ->
-      Ptr DuckDBAggregateState ->
-      DuckDBVector ->
-      DuckDBIdx ->
-      DuckDBIdx ->
-      IO ()
-    )
+    FunPtr
+        ( DuckDBFunctionInfo ->
+          Ptr DuckDBAggregateState ->
+          DuckDBVector ->
+          DuckDBIdx ->
+          DuckDBIdx ->
+          IO ()
+        )
 
 -- | Function pointer for table function bind callbacks.
 type DuckDBTableFunctionBindFun = FunPtr (DuckDBBindInfo -> IO ())
@@ -1358,8 +1356,7 @@ type DuckDBTableFunctionFun = FunPtr (DuckDBFunctionInfo -> DuckDBDataChunk -> I
 
 -- | Function pointer for replacement scan callbacks.
 type DuckDBReplacementCallback =
-  FunPtr (DuckDBReplacementScanInfo -> CString -> Ptr () -> IO ())
-
+    FunPtr (DuckDBReplacementScanInfo -> CString -> Ptr () -> IO ())
 
 -- The full Arrow C Data Interface definitions are not included here to avoid
 -- introducing a dependency on the Arrow C headers. Instead, we define only the
@@ -1408,105 +1405,108 @@ type DuckDBReplacementCallback =
 
 -- #endif  // ARROW_C_DATA_INTERFACE
 
-
--- | Partial Arrow schema view used for tests that require inspecting DuckDB's
--- Arrow wrappers without depending on the full Arrow C Data Interface
--- definitions.
+{- | Partial Arrow schema view used for tests that require inspecting DuckDB's
+Arrow wrappers without depending on the full Arrow C Data Interface
+definitions.
+-}
 data ArrowSchema = ArrowSchema
-  { arrowSchemaFormat :: CString
-  , arrowSchemaName :: CString
-  , arrowSchemaMetadata :: CString
-  , arrowSchemaFlags :: Int64
-  , arrowSchemaChildCount :: Int64
-  , arrowSchemaChildren :: Ptr (Ptr ArrowSchema)
-  , arrowSchemaDictionary :: Ptr ArrowSchema
-  , arrowSchemaRelease :: FunPtr (Ptr ArrowSchema -> IO ())
-  , arrowSchemaPrivateData :: Ptr ()
-  }
+    { arrowSchemaFormat :: CString
+    , arrowSchemaName :: CString
+    , arrowSchemaMetadata :: CString
+    , arrowSchemaFlags :: Int64
+    , arrowSchemaChildCount :: Int64
+    , arrowSchemaChildren :: Ptr (Ptr ArrowSchema)
+    , arrowSchemaDictionary :: Ptr ArrowSchema
+    , arrowSchemaRelease :: FunPtr (Ptr ArrowSchema -> IO ())
+    , arrowSchemaPrivateData :: Ptr ()
+    }
 
 instance Storable ArrowSchema where
-  sizeOf _ = pointerSize * 9
-  alignment _ = alignment (nullPtr :: Ptr ())
-  peek ptr =
-    ArrowSchema
-      <$> peekByteOff ptr 0
-      <*> peekByteOff ptr pointerSize
-      <*> peekByteOff ptr (pointerSize * 2)
-      <*> peekByteOff ptr (pointerSize * 3)
-      <*> peekByteOff ptr (pointerSize * 4)
-      <*> peekByteOff ptr (pointerSize * 5)
-      <*> peekByteOff ptr (pointerSize * 6)
-      <*> peekByteOff ptr (pointerSize * 7)
-      <*> peekByteOff ptr (pointerSize * 8)
-  poke ptr ArrowSchema{..} = do
-    pokeByteOff ptr 0 arrowSchemaFormat
-    pokeByteOff ptr pointerSize arrowSchemaName
-    pokeByteOff ptr (pointerSize * 2) arrowSchemaMetadata
-    pokeByteOff ptr (pointerSize * 3) arrowSchemaFlags
-    pokeByteOff ptr (pointerSize * 4) arrowSchemaChildCount
-    pokeByteOff ptr (pointerSize * 5) arrowSchemaChildren
-    pokeByteOff ptr (pointerSize * 6) arrowSchemaDictionary
-    pokeByteOff ptr (pointerSize * 7) arrowSchemaRelease
-    pokeByteOff ptr (pointerSize * 8) arrowSchemaPrivateData
+    sizeOf _ = pointerSize * 9
+    alignment _ = alignment (nullPtr :: Ptr ())
+    peek ptr =
+        ArrowSchema
+            <$> peekByteOff ptr 0
+            <*> peekByteOff ptr pointerSize
+            <*> peekByteOff ptr (pointerSize * 2)
+            <*> peekByteOff ptr (pointerSize * 3)
+            <*> peekByteOff ptr (pointerSize * 4)
+            <*> peekByteOff ptr (pointerSize * 5)
+            <*> peekByteOff ptr (pointerSize * 6)
+            <*> peekByteOff ptr (pointerSize * 7)
+            <*> peekByteOff ptr (pointerSize * 8)
+    poke ptr ArrowSchema{..} = do
+        pokeByteOff ptr 0 arrowSchemaFormat
+        pokeByteOff ptr pointerSize arrowSchemaName
+        pokeByteOff ptr (pointerSize * 2) arrowSchemaMetadata
+        pokeByteOff ptr (pointerSize * 3) arrowSchemaFlags
+        pokeByteOff ptr (pointerSize * 4) arrowSchemaChildCount
+        pokeByteOff ptr (pointerSize * 5) arrowSchemaChildren
+        pokeByteOff ptr (pointerSize * 6) arrowSchemaDictionary
+        pokeByteOff ptr (pointerSize * 7) arrowSchemaRelease
+        pokeByteOff ptr (pointerSize * 8) arrowSchemaPrivateData
 
 -- | Partial Arrow array view mirroring the DuckDB C API layout.
 data ArrowArray = ArrowArray
-  { arrowArrayLength :: Int64
-  , arrowArrayNullCount :: Int64
-  , arrowArrayOffset :: Int64
-  , arrowArrayBufferCount :: Int64
-  , arrowArrayChildCount :: Int64
-  , arrowArrayBuffers :: Ptr (Ptr ())
-  , arrowArrayChildren :: Ptr (Ptr ArrowArray)
-  , arrowArrayDictionary :: Ptr ArrowArray
-  , arrowArrayRelease :: FunPtr (Ptr ArrowArray -> IO ())
-  , arrowArrayPrivateData :: Ptr ()
-  }
+    { arrowArrayLength :: Int64
+    , arrowArrayNullCount :: Int64
+    , arrowArrayOffset :: Int64
+    , arrowArrayBufferCount :: Int64
+    , arrowArrayChildCount :: Int64
+    , arrowArrayBuffers :: Ptr (Ptr ())
+    , arrowArrayChildren :: Ptr (Ptr ArrowArray)
+    , arrowArrayDictionary :: Ptr ArrowArray
+    , arrowArrayRelease :: FunPtr (Ptr ArrowArray -> IO ())
+    , arrowArrayPrivateData :: Ptr ()
+    }
 
 instance Storable ArrowArray where
-  sizeOf _ = pointerSize * 5 + intFieldSize * 5
-  alignment _ = alignment (nullPtr :: Ptr ())
-  peek ptr =
-    ArrowArray
-      <$> peekByteOff ptr 0
-      <*> peekByteOff ptr intFieldSize
-      <*> peekByteOff ptr (intFieldSize * 2)
-      <*> peekByteOff ptr (intFieldSize * 3)
-      <*> peekByteOff ptr (intFieldSize * 4)
-      <*> peekByteOff ptr (intFieldSize * 5)
-      <*> peekByteOff ptr (intFieldSize * 5 + pointerSize)
-      <*> peekByteOff ptr (intFieldSize * 5 + pointerSize * 2)
-      <*> peekByteOff ptr (intFieldSize * 5 + pointerSize * 3)
-      <*> peekByteOff ptr (intFieldSize * 5 + pointerSize * 4)
-  poke ptr ArrowArray{..} = do
-    pokeByteOff ptr 0 arrowArrayLength
-    pokeByteOff ptr intFieldSize arrowArrayNullCount
-    pokeByteOff ptr (intFieldSize * 2) arrowArrayOffset
-    pokeByteOff ptr (intFieldSize * 3) arrowArrayBufferCount
-    pokeByteOff ptr (intFieldSize * 4) arrowArrayChildCount
-    pokeByteOff ptr (intFieldSize * 5) arrowArrayBuffers
-    pokeByteOff ptr (intFieldSize * 5 + pointerSize) arrowArrayChildren
-    pokeByteOff ptr (intFieldSize * 5 + pointerSize * 2) arrowArrayDictionary
-    pokeByteOff ptr (intFieldSize * 5 + pointerSize * 3) arrowArrayRelease
-    pokeByteOff ptr (intFieldSize * 5 + pointerSize * 4) arrowArrayPrivateData
+    sizeOf _ = pointerSize * 5 + intFieldSize * 5
+    alignment _ = alignment (nullPtr :: Ptr ())
+    peek ptr =
+        ArrowArray
+            <$> peekByteOff ptr 0
+            <*> peekByteOff ptr intFieldSize
+            <*> peekByteOff ptr (intFieldSize * 2)
+            <*> peekByteOff ptr (intFieldSize * 3)
+            <*> peekByteOff ptr (intFieldSize * 4)
+            <*> peekByteOff ptr (intFieldSize * 5)
+            <*> peekByteOff ptr (intFieldSize * 5 + pointerSize)
+            <*> peekByteOff ptr (intFieldSize * 5 + pointerSize * 2)
+            <*> peekByteOff ptr (intFieldSize * 5 + pointerSize * 3)
+            <*> peekByteOff ptr (intFieldSize * 5 + pointerSize * 4)
+    poke ptr ArrowArray{..} = do
+        pokeByteOff ptr 0 arrowArrayLength
+        pokeByteOff ptr intFieldSize arrowArrayNullCount
+        pokeByteOff ptr (intFieldSize * 2) arrowArrayOffset
+        pokeByteOff ptr (intFieldSize * 3) arrowArrayBufferCount
+        pokeByteOff ptr (intFieldSize * 4) arrowArrayChildCount
+        pokeByteOff ptr (intFieldSize * 5) arrowArrayBuffers
+        pokeByteOff ptr (intFieldSize * 5 + pointerSize) arrowArrayChildren
+        pokeByteOff ptr (intFieldSize * 5 + pointerSize * 2) arrowArrayDictionary
+        pokeByteOff ptr (intFieldSize * 5 + pointerSize * 3) arrowArrayRelease
+        pokeByteOff ptr (intFieldSize * 5 + pointerSize * 4) arrowArrayPrivateData
 
--- | Pointer wrapper for the deprecated Arrow schema handle exposed by DuckDB.
--- The underlying memory is managed by DuckDB and must only be accessed through
--- the deprecated Arrow helper functions.
+{- | Pointer wrapper for the deprecated Arrow schema handle exposed by DuckDB.
+The underlying memory is managed by DuckDB and must only be accessed through
+the deprecated Arrow helper functions.
+-}
 newtype ArrowSchemaPtr = ArrowSchemaPtr {unArrowSchemaPtr :: Ptr ArrowSchema}
-  deriving (Eq)
+    deriving (Eq)
 
--- | Pointer wrapper for the deprecated Arrow array handle exposed by DuckDB.
--- DuckDB assumes exclusive ownership and coordinates buffer lifetimes via the
--- release callback stored in the referenced @ArrowArray@ struct.
+{- | Pointer wrapper for the deprecated Arrow array handle exposed by DuckDB.
+DuckDB assumes exclusive ownership and coordinates buffer lifetimes via the
+release callback stored in the referenced @ArrowArray@ struct.
+-}
 newtype ArrowArrayPtr = ArrowArrayPtr {unArrowArrayPtr :: Ptr ArrowArray}
-  deriving (Eq)
+    deriving (Eq)
 
--- | Pointer wrapper for the deprecated Arrow stream handle returned by DuckDB.
--- DuckDB owns the referenced stream; call 'c_duckdb_destroy_arrow_stream' after
--- invoking @duckdb_arrow_scan@.
+{- | Pointer wrapper for the deprecated Arrow stream handle returned by DuckDB.
+DuckDB owns the referenced stream; call 'c_duckdb_destroy_arrow_stream' after
+invoking @duckdb_arrow_scan@.
+-}
 newtype ArrowStreamPtr = ArrowStreamPtr {unArrowStreamPtr :: Ptr ()}
-  deriving (Eq)
+    deriving (Eq)
 
 pointerSize :: Int
 pointerSize = sizeOf (nullPtr :: Ptr ())

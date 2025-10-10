@@ -18,6 +18,7 @@ extra-doc-files: README.md
 library
   exposed-modules:
       Database.DuckDB.Simple
+      Database.DuckDB.Simple.Function
       Database.DuckDB.Simple.FromField
       Database.DuckDB.Simple.FromRow
       Database.DuckDB.Simple.Internal

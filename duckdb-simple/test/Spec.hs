@@ -7,6 +7,8 @@
 module Main (main) where
 
 import Control.Exception (ErrorCall, Exception, try)
+import Data.IORef (atomicModifyIORef', newIORef)
+import Data.Int (Int64)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple
 import Test.Tasty (TestTree, defaultMain, testGroup)
@@ -22,6 +24,7 @@ tests =
         [ connectionTests
         , withConnectionTests
         , statementTests
+        , functionsTests
         , transactionTests
         ]
 
@@ -162,6 +165,47 @@ statementTests =
                 none <- namedParameterIndex stmt "missing"
                 assertEqual "missing parameter index" Nothing none
                 closeStatement stmt
+        ]
+
+functionsTests :: TestTree
+functionsTests =
+    testGroup
+        "user-defined functions"
+        [ testCase "registers pure scalar function" $
+            withConnection ":memory:" \conn -> do
+                createFunction conn "hs_times_two" (\(x :: Int64) -> x * 2)
+                result <- query_ conn "SELECT hs_times_two(21)" :: IO [Only Int64]
+                assertEqual "times_two result" [Only 42] result
+        , testCase "handles nullable arguments and results" $
+            withConnection ":memory:" \conn -> do
+                createFunction conn "hs_optional" (\(mx :: Maybe Int64) -> fmap (+ 1) mx)
+                rows <-
+                    query_ conn "SELECT hs_optional(x) FROM (VALUES (NULL), (41)) AS t(x)"
+                        :: IO [Only (Maybe Int64)]
+                assertEqual "optional results" [Only Nothing, Only (Just 42)] rows
+        , testCase "supports IO-based functions" $
+            withConnection ":memory:" \conn -> do
+                ref <- newIORef (0 :: Int)
+                createFunction conn "hs_counter" $ do
+                    atomicModifyIORef' ref \n ->
+                        let next = n + 1
+                         in (next, next)
+                first <- query_ conn "SELECT hs_counter()" :: IO [Only Int]
+                second <- query_ conn "SELECT hs_counter()" :: IO [Only Int]
+                assertEqual "first counter call" [Only 1] first
+                assertEqual "second counter call" [Only 2] second
+        , testCase "deleteFunction reports unsupported drop" $
+            withConnection ":memory:" \conn -> do
+                createFunction conn "hs_temp" (\(x :: Int64) -> x + 1)
+                _ <- query_ conn "SELECT hs_temp(1)" :: IO [Only Int64]
+                result <- try (deleteFunction conn "hs_temp")
+                case result of
+                    Left err ->
+                        assertBool
+                            "expected unsupported drop message"
+                            (Text.isInfixOf "DuckDB does not allow dropping scalar functions" (sqlErrorMessage err))
+                    Right () ->
+                        assertFailure "expected deleteFunction to report unsupported operation"
         ]
 
 transactionTests :: TestTree

@@ -33,6 +33,8 @@ main =
   query results returned by `query`/`query_`.
 - `Database.DuckDB.Simple.Types` – common utility types (`Query`, `Null`,
   `Only`, `SQLError`).
+- `Database.DuckDB.Simple.Function` – register scalar Haskell functions that
+  can be invoked directly from SQL.
 
 ## Querying Data
 
@@ -72,6 +74,34 @@ DuckDB currently does not allow mixing positional and named placeholders within
 the same SQL statement; the library preserves DuckDB’s error message in that
 situation. Savepoints are also unavailable in DuckDB at the moment, so
 `withSavepoint` throws an `SQLError` detailing the limitation.
+
+## User-Defined Functions
+
+Scalar Haskell functions can be registered with DuckDB connections and used in
+SQL expressions. Argument and result types reuse the existing `FromField` and
+`FunctionResult` machinery, so `Maybe` values and `IO` actions work out of the
+box.
+
+```haskell
+import Data.Int (Int64)
+import Database.DuckDB.Simple
+import Database.DuckDB.Simple.Function (createFunction, deleteFunction)
+import Database.DuckDB.Simple.Types (Only (..))
+
+registerAndUse :: Connection -> IO [Only Int64]
+registerAndUse conn = do
+  createFunction conn "hs_times_two" (\(x :: Int64) -> x * 2)
+  result <- query_ conn "SELECT hs_times_two(21)" :: IO [Only Int64]
+  deleteFunction conn "hs_times_two"
+  pure result
+```
+
+Exceptions raised while the function executes are propagated back to DuckDB as
+`SQLError` values, and `deleteFunction` issues a `DROP FUNCTION IF EXISTS`
+statement to remove the registration. Current DuckDB releases mark C API
+registrations as internal, so the drop operation reports an error instead of
+removing the function; duckdb-simple surfaces that limitation as an
+`SQLError`.
 
 ## Tests
 

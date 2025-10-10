@@ -1,8 +1,10 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE TypeSynonymInstances #-}
 
 {- |
@@ -15,6 +17,7 @@ delegating to the DuckDB C API under the hood.
 module Database.DuckDB.Simple.ToField (
     FieldBinding,
     ToField (..),
+    NamedParam (..),
     bindFieldBinding,
 ) where
 
@@ -52,6 +55,12 @@ import Foreign.C.Types (CDouble (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (poke)
+
+-- | Represents a named parameter binding using the @:=@ operator.
+data NamedParam where
+    (:=) :: (ToField a) => Text -> a -> NamedParam
+
+infixr 3 :=
 
 -- | Encapsulates the action required to bind a single positional parameter.
 newtype FieldBinding = FieldBinding (Statement -> DuckDBIdx -> IO ())

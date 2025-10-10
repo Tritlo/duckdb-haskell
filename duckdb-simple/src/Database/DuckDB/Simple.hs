@@ -31,6 +31,13 @@ module Database.DuckDB.Simple (
     executeMany,
     execute_,
     bind,
+    bindNamed,
+    executeNamed,
+    queryNamed,
+    withTransaction,
+    withImmediateTransaction,
+    withExclusiveTransaction,
+    withSavepoint,
     query,
     query_,
 
@@ -43,11 +50,12 @@ module Database.DuckDB.Simple (
     ToField (..),
     ToRow (..),
     FieldBinding,
+    NamedParam (..),
     Null (..),
     Only (..),
 ) where
 
-import Control.Exception (bracket, mask, onException, throwIO)
+import Control.Exception (bracket, mask, onException, throwIO, try)
 import Control.Monad (void, when, zipWithM_)
 import Data.IORef (atomicModifyIORef', mkWeakIORef, newIORef)
 import Data.Text (Text)
@@ -72,11 +80,11 @@ import Database.DuckDB.Simple.Internal (
     withQueryCString,
     withStatementHandle,
  )
-import Database.DuckDB.Simple.ToField (FieldBinding, ToField (..), bindFieldBinding)
+import Database.DuckDB.Simple.ToField (FieldBinding, NamedParam (..), ToField (..), bindFieldBinding)
 import Database.DuckDB.Simple.ToRow (ToRow (..))
 import Database.DuckDB.Simple.Types (Null (..), Only (..))
 import Foreign.C.String (CString, peekCString, withCString)
-import Foreign.C.Types (CBool (..))
+import Foreign.C.Types (CBool (..), CDouble (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (peek, poke)
@@ -142,21 +150,27 @@ closeStatement Statement{statementState} =
 withStatement :: Connection -> Query -> (Statement -> IO a) -> IO a
 withStatement conn sql = bracket (openStatement conn sql) closeStatement
 
-{- | Bind positional parameters to a prepared statement.
-| Bind positional parameters to a prepared statement.
--}
+-- | Bind positional parameters to a prepared statement, replacing any previous bindings.
 bind :: Statement -> [FieldBinding] -> IO ()
 bind stmt fields = do
     clearStatementBindings stmt
     zipWithM_ apply [1 ..] fields
   where
     apply :: Int -> FieldBinding -> IO ()
-    apply idx field =
-        bindFieldBinding stmt (fromIntegral idx :: DuckDBIdx) field
+    apply idx field = bindFieldBinding stmt (fromIntegral idx :: DuckDBIdx) field
 
-{- | Remove all parameter bindings associated with a prepared statement.
-| Remove all parameter bindings associated with a prepared statement.
--}
+-- | Bind named parameters to a prepared statement, preserving any positional bindings.
+bindNamed :: Statement -> [NamedParam] -> IO ()
+bindNamed stmt params = do
+    mapM_ apply params
+  where
+    apply (name := value) = do
+        mIdx <- namedParameterIndex stmt name
+        case mIdx of
+            Nothing -> throwIO (namedParameterError stmt name)
+            Just idx -> bindFieldBinding stmt (fromIntegral idx :: DuckDBIdx) (toField value)
+
+-- | Remove all parameter bindings associated with a prepared statement.
 clearStatementBindings :: Statement -> IO ()
 clearStatementBindings stmt =
     withStatementHandle stmt \handle -> do
@@ -165,77 +179,77 @@ clearStatementBindings stmt =
             err <- fetchPrepareError handle
             throwIO $ mkPrepareError (statementQuery stmt) err
 
-{- | Look up the 1-based index of a named placeholder.
-
-Returns 'Nothing' when the name is not present in the statement.
--}
-
 -- | Look up the 1-based index of a named placeholder.
 namedParameterIndex :: Statement -> Text -> IO (Maybe Int)
 namedParameterIndex stmt name =
     withStatementHandle stmt \handle ->
-        TextForeign.withCString name \cName ->
-            alloca \idxPtr -> do
-                rc <- c_duckdb_bind_parameter_index handle idxPtr cName
-                if rc == DuckDBSuccess
-                    then do
-                        idx <- peek idxPtr
-                        if idx == 0
-                            then pure Nothing
-                            else pure (Just (fromIntegral idx))
-                    else pure Nothing
+        let normalized = normalizeName name
+         in TextForeign.withCString normalized \cName ->
+                alloca \idxPtr -> do
+                    rc <- c_duckdb_bind_parameter_index handle idxPtr cName
+                    if rc == DuckDBSuccess
+                        then do
+                            idx <- peek idxPtr
+                            if idx == 0
+                                then pure Nothing
+                                else pure (Just (fromIntegral idx))
+                        else pure Nothing
 
-{- | Execute a prepared statement and discard the materialised result.
-| Execute a prepared statement and discard the materialised result.
--}
-executeStatement :: Statement -> IO ()
+-- | Execute a prepared statement and return the number of affected rows.
+executeStatement :: Statement -> IO Int
 executeStatement stmt =
     withStatementHandle stmt \handle ->
         alloca \resPtr -> do
             rc <- c_duckdb_execute_prepared handle resPtr
             if rc == DuckDBSuccess
-                then c_duckdb_destroy_result resPtr
+                then do
+                    changed <- rowsChanged resPtr
+                    c_duckdb_destroy_result resPtr
+                    pure changed
                 else do
                     err <- fetchResultError resPtr
                     c_duckdb_destroy_result resPtr
                     throwIO $ mkPrepareError (statementQuery stmt) err
 
-{- | Execute a query with positional parameters supplied via 'ToRow'.
-| Execute a query with positional parameters supplied via the `ToRow` class.
--}
-execute :: (ToRow q) => Connection -> Query -> q -> IO ()
-execute conn query params =
-    withStatement conn query \stmt -> do
+-- | Execute a query with positional parameters and return the affected row count.
+execute :: (ToRow q) => Connection -> Query -> q -> IO Int
+execute conn queryText params =
+    withStatement conn queryText \stmt -> do
         bind stmt (toRow params)
         executeStatement stmt
 
-{- | Execute a query multiple times with different parameters.
-| Execute the same query multiple times with different parameter sets.
--}
-executeMany :: (ToRow q) => Connection -> Query -> [q] -> IO ()
-executeMany conn query rows =
-    withStatement conn query \stmt ->
-        mapM_ (\row -> bind stmt (toRow row) >> executeStatement stmt) rows
+-- | Execute the same query multiple times with different parameter sets.
+executeMany :: (ToRow q) => Connection -> Query -> [q] -> IO Int
+executeMany conn queryText rows =
+    withStatement conn queryText \stmt -> do
+        changes <- mapM (\row -> bind stmt (toRow row) >> executeStatement stmt) rows
+        pure (sum changes)
 
-{- | Execute an ad-hoc query without parameters.
-| Execute an ad-hoc query that does not require parameters.
--}
-execute_ :: Connection -> Query -> IO ()
-execute_ conn query =
+-- | Execute an ad-hoc query without parameters and return the affected row count.
+execute_ :: Connection -> Query -> IO Int
+execute_ conn queryText =
     withConnectionHandle conn \connPtr ->
-        withQueryCString query \sql ->
+        withQueryCString queryText \sql ->
             alloca \resPtr -> do
                 rc <- c_duckdb_query connPtr sql resPtr
                 if rc == DuckDBSuccess
-                    then c_duckdb_destroy_result resPtr
+                    then do
+                        changed <- rowsChanged resPtr
+                        c_duckdb_destroy_result resPtr
+                        pure changed
                     else do
                         err <- fetchResultError resPtr
                         c_duckdb_destroy_result resPtr
-                        throwIO $ mkExecuteError query err
+                        throwIO $ mkExecuteError queryText err
 
-{- | Run a query with positional parameters and return all rows.
-| Run a parameterised query and decode all rows eagerly.
--}
+-- | Execute a query that uses named parameters.
+executeNamed :: Connection -> Query -> [NamedParam] -> IO Int
+executeNamed conn queryText params =
+    withStatement conn queryText \stmt -> do
+        bindNamed stmt params
+        executeStatement stmt
+
+-- | Run a parameterised query and decode all rows eagerly.
 query :: (ToRow q, FromRow r) => Connection -> Query -> q -> IO [r]
 query conn queryText params =
     withStatement conn queryText \stmt -> do
@@ -253,9 +267,25 @@ query conn queryText params =
                         c_duckdb_destroy_result resPtr
                         throwIO $ mkPrepareError queryText err
 
-{- | Run a query without supplying parameters.
-| Run a query without supplying parameters and decode all rows eagerly.
--}
+-- | Run a query that uses named parameters and decode all rows eagerly.
+queryNamed :: (FromRow r) => Connection -> Query -> [NamedParam] -> IO [r]
+queryNamed conn queryText params =
+    withStatement conn queryText \stmt -> do
+        bindNamed stmt params
+        withStatementHandle stmt \handle ->
+            alloca \resPtr -> do
+                rc <- c_duckdb_execute_prepared handle resPtr
+                if rc == DuckDBSuccess
+                    then do
+                        rows <- collectRows resPtr
+                        c_duckdb_destroy_result resPtr
+                        convertRows queryText rows
+                    else do
+                        err <- fetchResultError resPtr
+                        c_duckdb_destroy_result resPtr
+                        throwIO $ mkPrepareError queryText err
+
+-- | Run a query without supplying parameters and decode all rows eagerly.
 query_ :: (FromRow r) => Connection -> Query -> IO [r]
 query_ conn queryText =
     withConnectionHandle conn \connPtr ->
@@ -271,6 +301,62 @@ query_ conn queryText =
                         err <- fetchResultError resPtr
                         c_duckdb_destroy_result resPtr
                         throwIO $ mkExecuteError queryText err
+
+-- | Run an action inside a deferred transaction.
+withTransaction :: Connection -> IO a -> IO a
+withTransaction =
+    withTransactionMode
+        (Query (Text.pack "BEGIN TRANSACTION"))
+        (Query (Text.pack "COMMIT"))
+        (Query (Text.pack "ROLLBACK"))
+
+-- | Run an action inside an immediate transaction.
+withImmediateTransaction :: Connection -> IO a -> IO a
+withImmediateTransaction =
+    withTransactionMode
+        (Query (Text.pack "BEGIN TRANSACTION"))
+        (Query (Text.pack "COMMIT"))
+        (Query (Text.pack "ROLLBACK"))
+
+-- | Run an action inside an exclusive transaction.
+withExclusiveTransaction :: Connection -> IO a -> IO a
+withExclusiveTransaction =
+    withTransactionMode
+        (Query (Text.pack "BEGIN TRANSACTION"))
+        (Query (Text.pack "COMMIT"))
+        (Query (Text.pack "ROLLBACK"))
+
+{- | Run an action within a named savepoint.
+  Throws an 'SQLError' when the underlying DuckDB build does not support savepoints.
+-}
+withSavepoint :: Connection -> Text -> IO a -> IO a
+withSavepoint conn label action =
+    mask \restore -> do
+        let begin = Query (Text.concat [Text.pack "SAVEPOINT ", label])
+        beginResult <- try (execute_ conn begin)
+        case beginResult of
+            Left err
+                | isSavepointUnsupported err -> throwIO (savepointUnsupportedError begin)
+                | otherwise -> throwIO err
+            Right _ -> do
+                let commit = Query (Text.concat [Text.pack "RELEASE ", label])
+                    rollback = Query (Text.concat [Text.pack "ROLLBACK TO ", label])
+                    rollbackAction = executeIgnore conn rollback
+                result <- restore action `onException` rollbackAction
+                void (execute_ conn commit)
+                pure result
+
+withTransactionMode :: Query -> Query -> Query -> Connection -> IO a -> IO a
+withTransactionMode begin commit rollback conn action =
+    mask \restore -> do
+        void (execute_ conn begin)
+        let rollbackAction = executeIgnore conn rollback
+        result <- restore action `onException` rollbackAction
+        void (execute_ conn commit)
+        pure result
+
+executeIgnore :: Connection -> Query -> IO ()
+executeIgnore conn q = void (execute_ conn q)
 
 -- Internal helpers -----------------------------------------------------------
 
@@ -392,6 +478,36 @@ mkExecuteError query msg =
         , sqlErrorQuery = Just query
         }
 
+namedParameterError :: Statement -> Text -> SQLError
+namedParameterError Statement{statementQuery} name =
+    SQLError
+        { sqlErrorMessage = Text.concat [Text.pack "duckdb-simple: unknown named parameter ", name]
+        , sqlErrorType = Nothing
+        , sqlErrorQuery = Just statementQuery
+        }
+
+isSavepointUnsupported :: SQLError -> Bool
+isSavepointUnsupported SQLError{sqlErrorMessage} =
+    Text.isInfixOf (Text.pack "SAVEPOINT") sqlErrorMessage
+
+savepointUnsupportedError :: Query -> SQLError
+savepointUnsupportedError query =
+    SQLError
+        { sqlErrorMessage = Text.pack "duckdb-simple: savepoints are not supported by this DuckDB build"
+        , sqlErrorType = Nothing
+        , sqlErrorQuery = Just query
+        }
+
+normalizeName :: Text -> Text
+normalizeName name =
+    case Text.uncons name of
+        Just (prefix, rest)
+            | prefix == ':' || prefix == '$' || prefix == '@' -> rest
+        _ -> name
+
+rowsChanged :: Ptr DuckDBResult -> IO Int
+rowsChanged resPtr = fromIntegral <$> c_duckdb_rows_changed resPtr
+
 convertRows :: (FromRow r) => Query -> [[Field]] -> IO [r]
 convertRows queryText rows =
     case traverse fromRow rows of
@@ -444,8 +560,12 @@ fetchFieldValue resPtr dtype columnIndex rowIndex = do
             DuckDBTypeUSmallInt -> FieldInt <$> c_duckdb_value_int64 resPtr duckCol duckRow
             DuckDBTypeUInteger -> FieldInt <$> c_duckdb_value_int64 resPtr duckCol duckRow
             DuckDBTypeUBigInt -> FieldInt <$> c_duckdb_value_int64 resPtr duckCol duckRow
-            DuckDBTypeFloat -> FieldDouble . realToFrac <$> c_duckdb_value_double resPtr duckCol duckRow
-            DuckDBTypeDouble -> FieldDouble . realToFrac <$> c_duckdb_value_double resPtr duckCol duckRow
+            DuckDBTypeFloat -> do
+                CDouble d <- c_duckdb_value_double resPtr duckCol duckRow
+                pure (FieldDouble (realToFrac d))
+            DuckDBTypeDouble -> do
+                CDouble d <- c_duckdb_value_double resPtr duckCol duckRow
+                pure (FieldDouble (realToFrac d))
             DuckDBTypeVarchar -> FieldText <$> fetchTextValue resPtr duckCol duckRow
             _ -> FieldText <$> fetchTextValue resPtr duckCol duckRow
 

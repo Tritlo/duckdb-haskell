@@ -12,7 +12,6 @@ import Data.Int (Int64)
 import Data.List (isInfixOf)
 import Data.Maybe (fromMaybe)
 import Database.DuckDB.FFI
-import Debug.Trace (traceM)
 import Foreign.C.String (CString, peekCString, withCString)
 import Foreign.C.Types (CBool (..))
 import Foreign.Marshal.Alloc (alloca, free, mallocBytes)
@@ -34,7 +33,7 @@ tableFunctionLifecycle =
     runInBoundThread do
       withDatabase \db ->
         withLogicalType (c_duckdb_create_logical_type DuckDBTypeBigInt) \bigint ->
-          withHarness bigint \harness -> do
+          withHarness bigint \harness@TableHarness {..} -> do
             (bindError, execError, initError) <-
               withConnection db \conn ->
                 withTableFunction \tableFun -> do
@@ -81,18 +80,15 @@ tableFunctionLifecycle =
                         msg <- peekCStringMaybe errPtr
                         c_duckdb_destroy_result resPtr
                         pure (state, msg)
-                  c_duckdb_table_function_set_extra_info tableFun nullPtr (dcExtra (thDeletes harness))
+
                   pure (bindError, execError, initError)
 
             stats <- snapshotStats harness
-            traceM ("stats=" <> show stats)
-            let showState (st, msg) = (unDuckDBState st, msg)
-            traceM ("errors=" <> show (map showState [bindError, execError, initError]))
-            hsCounts stats @?= [5, 3, 0, 5, 2]
             hsBindFreed stats @?= 3
             hsInitFreed stats @?= 3
             hsLocalFreed stats @?= 3
             assertBool "client context seen" (hsClientContextSeen stats)
+            hsCounts stats @?= [5, 3, 0, 5, 2]
             hsProjectionHistory stats
               @?=
                 [ ProjectionSnapshot 2 [0, 1]
@@ -106,7 +102,7 @@ tableFunctionLifecycle =
             fst initError @?= DuckDBError
             assertBool "init error mentions initialization" ("init" `contains` snd initError)
 
--- Test harness ----------------------------------------------------------------
+-- Harness --------------------------------------------------------------------
 
 data ProjectionSnapshot = ProjectionSnapshot
   { psCount :: !Int
@@ -163,11 +159,12 @@ data HarnessStats = HarnessStats
   , hsProjectionHistory :: ![ProjectionSnapshot]
   , hsCounts :: ![Int64]
   }
-  deriving (Show)
+  deriving (Eq, Show)
 
 withHarness :: DuckDBLogicalType -> (TableHarness -> IO a) -> IO a
 withHarness columnType action = do
-  extraBuffer <- mallocBytes sizeOfInt64
+  rawExtraBuffer <- mallocBytes sizeOfInt64
+  let extraBuffer = castPtr rawExtraBuffer :: Ptr ()
   poke (castPtr extraBuffer :: Ptr Int64) extraInfoSentinel
   extraCount <- newIORef 0
   bindCount <- newIORef 0
@@ -208,9 +205,10 @@ withHarness columnType action = do
       writeIORef localPtrRef Nothing
       when (ptr /= nullPtr) (free ptr)
 
-  let resetForBind = do
+  let resetLifecycle = do
         writeIORef projectionCurrent Nothing
-        writeIORef modeRef ModeRejected
+        writeIORef modeRef ModeUnset
+        writeIORef bindPtrRef Nothing
         writeIORef initPtrRef Nothing
         writeIORef localPtrRef Nothing
 
@@ -219,7 +217,8 @@ withHarness columnType action = do
         modifyIORef' projectionHistory (<> [snapshot])
 
       bindCallback info = do
-        resetForBind
+        resetLifecycle
+        writeIORef modeRef ModeRejected
         extraPtr <- c_duckdb_bind_get_extra_info info
         extraPtr @?= extraBuffer
         sentinel <- peek (castPtr extraPtr :: Ptr Int64)
@@ -229,9 +228,9 @@ withHarness columnType action = do
           poke ctxPtr nullPtr
           c_duckdb_table_function_get_client_context info ctxPtr
           ctx <- peek ctxPtr
-          assertBool "client context is not null" (ctx /= nullPtr)
+          assertBool "client context should not be null" (ctx /= nullPtr)
           cid <- c_duckdb_client_context_get_connection_id ctx
-          assertBool "connection id non-negative" (cid >= 0)
+          assertBool "connection id should be non-negative" (cid >= 0)
           c_duckdb_destroy_client_context ctxPtr
           writeIORef clientContextSeen True
 
@@ -242,52 +241,42 @@ withHarness columnType action = do
           countValue <- c_duckdb_get_int64 value
           modifyIORef' countHistory (<> [countValue])
           if countValue <= 0
-            then do
-              withCString "count must be positive" \msg -> c_duckdb_bind_set_error info msg
-              writeIORef modeRef ModeRejected
-              writeIORef bindPtrRef Nothing
+            then withCString "count must be positive" \msg -> c_duckdb_bind_set_error info msg
             else do
               startValue <-
                 withCString "start" \name ->
                   fmap (fromMaybe 0) (withOptionalValue (c_duckdb_bind_get_named_parameter info name) c_duckdb_get_int64)
               failAtValue <-
                 withCString "fail_at" \name ->
-                  fmap
-                    (fromMaybe (-1))
-                    (withOptionalValue (c_duckdb_bind_get_named_parameter info name) c_duckdb_get_int64)
-              absentCheck <-
+                  fmap (fromMaybe (-1)) (withOptionalValue (c_duckdb_bind_get_named_parameter info name) c_duckdb_get_int64)
+              initErrValue <-
+                withCString "force_init_error" \name ->
+                  fmap (fromMaybe 0) (withOptionalValue (c_duckdb_bind_get_named_parameter info name) c_duckdb_get_int64)
+              absentValue <-
                 withCString "missing" \name ->
                   withOptionalValue (c_duckdb_bind_get_named_parameter info name) c_duckdb_get_int64
-              absentCheck @?= Nothing
-              initErrorFlag <-
-                withCString "force_init_error" \name ->
-                  fmap
-                    (fromMaybe 0)
-                    (withOptionalValue (c_duckdb_bind_get_named_parameter info name) c_duckdb_get_int64)
+              absentValue @?= Nothing
 
               withCString "value" \col -> c_duckdb_bind_add_result_column info col columnType
               withCString "double_value" \col -> c_duckdb_bind_add_result_column info col columnType
               c_duckdb_bind_set_cardinality info (fromIntegral countValue) (toCBool True)
 
-              if initErrorFlag /= 0
+              if initErrValue /= 0
                 then do
                   writeIORef modeRef ModeInitError
                   writeIORef bindPtrRef Nothing
                 else do
-                  configPtr <- mallocBytes (3 * sizeOfInt64)
-                  putInt64 configPtr 0 startValue
-                  putInt64 configPtr 1 countValue
-                  putInt64 configPtr 2 failAtValue
-                  c_duckdb_bind_set_bind_data info (castPtr configPtr) bindDelete
-                  writeIORef bindPtrRef (Just (castPtr configPtr))
+                  cfgPtr <- mallocBytes (3 * sizeOfInt64)
+                  putInt64 cfgPtr 0 startValue
+                  putInt64 cfgPtr 1 countValue
+                  putInt64 cfgPtr 2 failAtValue
+                  c_duckdb_bind_set_bind_data info (castPtr cfgPtr) bindDelete
+                  writeIORef bindPtrRef (Just (castPtr cfgPtr))
                   writeIORef modeRef ModeNormal
 
       initCallback info = do
         extraPtr <- c_duckdb_init_get_extra_info info
         extraPtr @?= extraBuffer
-        sentinel <- peek (castPtr extraPtr :: Ptr Int64)
-        sentinel @?= extraInfoSentinel
-
         mode <- readIORef modeRef
         case mode of
           ModeInitError -> do
@@ -298,7 +287,7 @@ withHarness columnType action = do
             bindRaw <- c_duckdb_init_get_bind_data info
             stored <- readIORef bindPtrRef
             case stored of
-              Nothing -> assertFailure "bind data pointer expected during init"
+              Nothing -> assertFailure "bind data expected during init"
               Just expected -> bindRaw @?= expected
 
             startValue <- takeInt64 bindRaw 0
@@ -336,13 +325,13 @@ withHarness columnType action = do
             poke (castPtr localPtr :: Ptr Int64) localInitSentinel
             c_duckdb_init_set_init_data info (castPtr localPtr) localDelete
             writeIORef localPtrRef (Just (castPtr localPtr))
-          ModeInitError -> do
-            withCString "local init should not run after init error" \msg -> c_duckdb_init_set_error info msg
+          ModeInitError -> withCString "local init skipped after init error" \msg -> c_duckdb_init_set_error info msg
           _ -> pure ()
 
       executeCallback info chunk = do
         extraPtr <- c_duckdb_function_get_extra_info info
         extraPtr @?= extraBuffer
+
         mode <- readIORef modeRef
         case mode of
           ModeNormal -> do
@@ -355,34 +344,36 @@ withHarness columnType action = do
             initRaw <- c_duckdb_function_get_init_data info
             storedInit <- readIORef initPtrRef
             case storedInit of
-              Nothing -> assertFailure "init data should be present during execution"
+              Nothing -> assertFailure "init data should exist during execution"
               Just expected -> initRaw @?= expected
 
             localRaw <- c_duckdb_function_get_local_init_data info
             storedLocal <- readIORef localPtrRef
             case storedLocal of
-              Nothing -> assertFailure "local init data should be present during execution"
+              Nothing -> assertFailure "local init data should exist during execution"
               Just expected -> localRaw @?= expected
-            localSentinel <- peek (castPtr localRaw :: Ptr Int64)
-            localSentinel @?= localInitSentinel
+            sentinel <- peek (castPtr localRaw :: Ptr Int64)
+            sentinel @?= localInitSentinel
 
             snapshot <- readIORef projectionCurrent
             ProjectionSnapshot {..} <-
               case snapshot of
-                Nothing -> assertFailure "projection snapshot missing during execution"
+                Nothing -> do
+                  assertFailure "projection snapshot missing during execution"
+                  pure (ProjectionSnapshot 0 [])
                 Just snap -> pure snap
             assertBool "projection slots match indices" (length psIndices == psCount)
 
-            nextValue <- takeInt64 initRaw 0
-            endValue <- takeInt64 initRaw 1
+            nextVal <- takeInt64 initRaw 0
+            endVal <- takeInt64 initRaw 1
             failAtValue <- takeInt64 initRaw 2
-            if nextValue >= endValue
+            if nextVal >= endVal
               then c_duckdb_data_chunk_set_size chunk 0
               else do
-                let remaining = endValue - nextValue
+                let remaining = endVal - nextVal
                     batch = min remaining 1024
-                    chunkEnd = nextValue + batch
-                if failAtValue >= nextValue && failAtValue < chunkEnd && failAtValue >= 0
+                    chunkEnd = nextVal + batch
+                if failAtValue >= nextVal && failAtValue < chunkEnd && failAtValue >= 0
                   then do
                     withCString "execution aborted by table function" \msg -> c_duckdb_function_set_error info msg
                     c_duckdb_data_chunk_set_size chunk 0
@@ -392,7 +383,7 @@ withHarness columnType action = do
                       vec <- c_duckdb_data_chunk_get_vector chunk (fromIntegral slot)
                       dataPtr <- vectorDataPtr vec
                       forM_ [0 .. fromIntegral batch - 1] \offset -> do
-                        let base = nextValue + fromIntegral offset
+                        let base = nextVal + fromIntegral offset
                             val =
                               case schemaIdx of
                                 0 -> base
@@ -402,7 +393,7 @@ withHarness columnType action = do
                     c_duckdb_data_chunk_set_size chunk (fromIntegral batch)
                     putInt64 initRaw 0 chunkEnd
           ModeInitError -> do
-            withCString "execution blocked by init failure" \msg -> c_duckdb_function_set_error info msg
+            withCString "execution blocked by init error" \msg -> c_duckdb_function_set_error info msg
             c_duckdb_data_chunk_set_size chunk 0
           ModeRejected -> do
             withCString "execution not expected after bind error" \msg -> c_duckdb_function_set_error info msg
@@ -430,7 +421,8 @@ withHarness columnType action = do
           , dcInit = initDelete
           , dcLocal = localDelete
           }
-      harness =
+
+  let harness =
         TableHarness
           { thColumnType = columnType
           , thExtraBuffer = extraBuffer
@@ -452,14 +444,12 @@ withHarness columnType action = do
 
   result <- action harness
 
-  freeHaskellFunPtr (tcBind callbacks)
-  freeHaskellFunPtr (tcInit callbacks)
-  freeHaskellFunPtr (tcLocalInit callbacks)
-  freeHaskellFunPtr (tcExecute callbacks)
-  freeHaskellFunPtr (dcExtra deletes)
-  freeHaskellFunPtr (dcBind deletes)
-  freeHaskellFunPtr (dcInit deletes)
-  freeHaskellFunPtr (dcLocal deletes)
+  freeHaskellFunPtr bindFun
+  freeHaskellFunPtr initFun
+  freeHaskellFunPtr localInitFun
+  freeHaskellFunPtr execFun
+  -- DuckDB may still invoke delete callbacks while the table function tears down.
+  -- Rely on process teardown to reclaim them to avoid racing with finalizers.
 
   pure result
 
@@ -476,6 +466,8 @@ configureTableFunction fun TableHarness {..} = do
   withCString "start" \n -> c_duckdb_table_function_add_named_parameter fun n thColumnType
   withCString "fail_at" \n -> c_duckdb_table_function_add_named_parameter fun n thColumnType
   withCString "force_init_error" \n -> c_duckdb_table_function_add_named_parameter fun n thColumnType
+  -- NOTE: DuckDB expects the extra-info pointer to be populated alongside the other callbacks;
+  -- leaving it unset would skip the destructor and break the lifetime assertions below.
   c_duckdb_table_function_set_extra_info fun thExtraBuffer (dcExtra thDeletes)
   c_duckdb_table_function_set_bind fun (tcBind thCallbacks)
   c_duckdb_table_function_set_init fun (tcInit thCallbacks)
@@ -498,7 +490,7 @@ snapshotStats TableHarness {..} = do
       , ..
       }
 
--- Helpers ---------------------------------------------------------------------
+-- Helpers --------------------------------------------------------------------
 
 extraInfoSentinel :: Int64
 extraInfoSentinel = 0xdeadbeef42
@@ -541,7 +533,7 @@ peekCStringMaybe ptr
   | ptr == nullPtr = pure ""
   | otherwise = peekCString ptr
 
--- Wrapper builders -----------------------------------------------------------
+-- Wrappers -------------------------------------------------------------------
 
 foreign import ccall safe "wrapper"
   mkBindFun :: (DuckDBBindInfo -> IO ()) -> IO DuckDBTableFunctionBindFun

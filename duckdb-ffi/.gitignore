@@ -5,3 +5,5 @@ reference
 
 api.md
 **/venv
+cbits/*.zip
+cbits/duckdb/

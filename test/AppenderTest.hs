@@ -18,7 +18,14 @@ import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (peek, poke, pokeElemOff)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
-import Utils (withConnection, withDatabase, withResultCString)
+import Utils
+  ( destroyErrorData
+  , withConnection
+  , withDatabase
+  , withDuckValue
+  , withLogicalType
+  , withResultCString
+  )
 
 tests :: TestTree
 tests =
@@ -513,31 +520,11 @@ withAppenderAcquire acquire action =
           assertBool "destroy returns success or error" (destroyState == DuckDBSuccess || destroyState == DuckDBError)
     action app `finally` release
 
-withLogicalType :: IO DuckDBLogicalType -> (DuckDBLogicalType -> IO a) -> IO a
-withLogicalType acquire action =
-  bracket acquire destroyLogicalType action
-
-destroyLogicalType :: DuckDBLogicalType -> IO ()
-destroyLogicalType lt =
-  alloca \ptr -> poke ptr lt >> c_duckdb_destroy_logical_type ptr
-
 withDataChunk :: IO DuckDBDataChunk -> (DuckDBDataChunk -> IO a) -> IO a
 withDataChunk acquire action =
   bracket acquire destroyChunk action
   where
     destroyChunk chunk = alloca \ptr -> poke ptr chunk >> c_duckdb_destroy_data_chunk ptr
-
-withDuckValue :: IO DuckDBValue -> (DuckDBValue -> IO a) -> IO a
-withDuckValue acquire action =
-  bracket acquire destroyDuckValue action
-
-destroyDuckValue :: DuckDBValue -> IO ()
-destroyDuckValue val =
-  alloca \ptr -> poke ptr val >> c_duckdb_destroy_value ptr
-
-destroyErrorData :: DuckDBErrorData -> IO ()
-destroyErrorData errData =
-  alloca \ptr -> poke ptr errData >> c_duckdb_destroy_error_data ptr
 
 fillIntVector :: DuckDBVector -> [Int32] -> IO ()
 fillIntVector vec values = do

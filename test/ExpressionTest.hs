@@ -5,7 +5,7 @@
 
 module ExpressionTest (tests) where
 
-import Control.Exception (bracket, finally)
+import Control.Exception (finally)
 import Control.Monad (unless, when)
 import Data.Char (toLower)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
@@ -19,7 +19,16 @@ import Foreign.Ptr (FunPtr, Ptr, castPtr, freeHaskellFunPtr, nullFunPtr, nullPtr
 import Foreign.Storable (peek, peekElemOff, poke)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
-import Utils (withConnection, withDatabase, withResult)
+import Utils
+  ( destroyDuckValue
+  , destroyErrorData
+  , destroyLogicalType
+  , withConnection
+  , withDatabase
+  , withLogicalType
+  , withResult
+  , withScalarFunction
+  )
 
 data ExpressionHarness = ExpressionHarness
   { ehFoldable :: IO (Maybe Bool)
@@ -146,34 +155,12 @@ expressionExec _ chunk outVec = do
 
 -- Helpers ------------------------------------------------------------------
 
-withScalarFunction :: (DuckDBScalarFunction -> IO a) -> IO a
-withScalarFunction action = bracket c_duckdb_create_scalar_function destroy action
-  where
-    destroy fun = alloca \ptr -> poke ptr fun >> c_duckdb_destroy_scalar_function ptr
-
-withLogicalType :: IO DuckDBLogicalType -> (DuckDBLogicalType -> IO a) -> IO a
-withLogicalType acquire action = bracket acquire destroy action
-  where
-    destroy lt = alloca \ptr -> poke ptr lt >> c_duckdb_destroy_logical_type ptr
-
 duckValueToString :: DuckDBValue -> IO String
 duckValueToString value = do
   strPtr <- c_duckdb_value_to_string value
   text <- peekCString strPtr
   c_duckdb_free (castPtr strPtr)
   pure text
-
-destroyDuckValue :: DuckDBValue -> IO ()
-destroyDuckValue value =
-  alloca \ptr -> poke ptr value >> c_duckdb_destroy_value ptr
-
-destroyErrorData :: DuckDBErrorData -> IO ()
-destroyErrorData errData =
-  alloca \ptr -> poke ptr errData >> c_duckdb_destroy_error_data ptr
-
-destroyLogicalType :: DuckDBLogicalType -> IO ()
-destroyLogicalType lt =
-  alloca \ptr -> poke ptr lt >> c_duckdb_destroy_logical_type ptr
 
 -- Wrapper constructors -----------------------------------------------------
 

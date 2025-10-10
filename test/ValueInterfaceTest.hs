@@ -3,7 +3,6 @@
 
 module ValueInterfaceTest (tests) where
 
-import Control.Exception (bracket)
 import Control.Monad (when)
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.Word (Word16, Word32, Word64, Word8)
@@ -17,6 +16,7 @@ import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (peek, poke)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (testCase, (@?=))
+import Utils (destroyDuckValue, destroyLogicalType, withDuckValue)
 
 tests :: TestTree
 tests =
@@ -327,16 +327,3 @@ collectionValuesRoundTrip =
     destroyLogicalType unionInt
     destroyLogicalType unionText
 
-
--- Helpers
-
-destroyDuckValue :: DuckDBValue -> IO ()
-destroyDuckValue val =
-  alloca \ptr -> poke ptr val >> c_duckdb_destroy_value ptr
-
-withDuckValue :: IO DuckDBValue -> (DuckDBValue -> IO a) -> IO a
-withDuckValue mk action = bracket mk destroyDuckValue action
-
-destroyLogicalType :: DuckDBLogicalType -> IO ()
-destroyLogicalType lt =
-  alloca \ptr -> poke ptr lt >> c_duckdb_destroy_logical_type ptr

@@ -5,9 +5,7 @@ module DataChunkTest (tests) where
 
 import Control.Exception (bracket)
 import Control.Monad (forM_, void, when)
-import Data.Bits (complement)
 import Data.Int (Int32)
-import Data.Word (Word64)
 import Database.DuckDB.FFI
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Array (withArray)
@@ -15,6 +13,7 @@ import Foreign.Ptr (Ptr, castPtr, plusPtr, nullPtr)
 import Foreign.Storable (peek, poke, sizeOf)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (testCase, (@?=))
+import Utils (setAllValid, withLogicalType)
 
 -- | Entry point for the Data Chunk focused tests.
 tests :: TestTree
@@ -63,16 +62,10 @@ dataChunkReset =
 withIntegerLogicalType :: (DuckDBLogicalType -> IO a) -> IO a
 withIntegerLogicalType = withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger)
 
-withLogicalType :: IO DuckDBLogicalType -> (DuckDBLogicalType -> IO a) -> IO a
-withLogicalType acquire action = bracket acquire destroyLogicalType action
-
 withDataChunk :: IO DuckDBDataChunk -> (DuckDBDataChunk -> IO a) -> IO a
 withDataChunk acquire action = bracket acquire destroyChunk action
   where
     destroyChunk chunk = alloca \ptr -> poke ptr chunk >> c_duckdb_destroy_data_chunk ptr
-
-destroyLogicalType :: DuckDBLogicalType -> IO ()
-destroyLogicalType lt = alloca \ptr -> poke ptr lt >> c_duckdb_destroy_logical_type ptr
 
 fillVectorWithSequence :: DuckDBVector -> [Int32] -> IO ()
 fillVectorWithSequence vec values = do
@@ -96,13 +89,6 @@ verifyChunkContents chunk expected = do
 
 -- validity helpers ----------------------------------------------------------
 
-setAllValid :: Ptr Word64 -> Int -> IO ()
-setAllValid mask count =
-  let wordsNeeded = (count + 63) `div` 64
-   in forM_ [0 .. wordsNeeded - 1] \wordIdx -> do
-        let ptr = mask `plusWord` wordIdx
-        poke ptr (complement 0)
-
 -- pointer utilities ---------------------------------------------------------
 
 pokeElem :: Ptr Int32 -> Int -> Int32 -> IO ()
@@ -113,6 +99,3 @@ peekElem base idx = peek (base `plusElem` idx)
 
 plusElem :: Ptr a -> Int -> Ptr a
 plusElem base idx = base `plusPtr` (idx * sizeOf (undefined :: Int32))
-
-plusWord :: Ptr Word64 -> Int -> Ptr Word64
-plusWord base idx = base `plusPtr` (idx * sizeOf (undefined :: Word64))

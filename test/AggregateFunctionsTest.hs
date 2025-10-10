@@ -18,7 +18,7 @@ import Foreign.Ptr (FunPtr, Ptr, castPtr, freeHaskellFunPtr, nullFunPtr, nullPtr
 import Foreign.Storable (peek, peekElemOff, poke, pokeElemOff, sizeOf)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
-import Utils (withConnection, withDatabase, withResultCString)
+import Utils (withConnection, withDatabase, withLogicalType, withResultCString)
 
 tests :: TestTree
 tests =
@@ -398,11 +398,6 @@ foreign import ccall safe "wrapper"
   mkDestroyFun :: (Ptr DuckDBAggregateState -> DuckDBIdx -> IO ()) -> IO DuckDBAggregateDestroyFun
 
 -- Resource helpers ----------------------------------------------------------
-
-withLogicalType :: IO DuckDBLogicalType -> (DuckDBLogicalType -> IO a) -> IO a
-withLogicalType acquire action = bracket acquire destroyLogicalType action
-  where
-    destroyLogicalType lt = alloca \ptr -> poke ptr lt >> c_duckdb_destroy_logical_type ptr
 
 withAggregateFunction :: (DuckDBAggregateFunction -> IO a) -> IO a
 withAggregateFunction action = bracket c_duckdb_create_aggregate_function destroy action

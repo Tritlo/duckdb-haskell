@@ -95,7 +95,7 @@ foreign import ccall safe "duckdb_open_ext"
 --
 -- Parameters:
 -- * @database@: The database object to shut down.
-foreign import ccall unsafe "duckdb_close"
+foreign import ccall safe "duckdb_close"
   c_duckdb_close :: Ptr DuckDBDatabase -> IO ()
 
 -- | Opens a connection to a database. Connections are required to query the
@@ -134,7 +134,7 @@ foreign import ccall unsafe "wrapped_duckdb_query_progress"
 --
 -- Parameters:
 -- * @connection@: The connection to close.
-foreign import ccall unsafe "duckdb_disconnect"
+foreign import ccall safe "duckdb_disconnect"
   c_duckdb_disconnect :: Ptr DuckDBConnection -> IO ()
 
 -- | Retrieves the client context of the connection.

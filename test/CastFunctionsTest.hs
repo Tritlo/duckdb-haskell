@@ -19,7 +19,7 @@ import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deR
 import Foreign.Storable (peek, peekElemOff, poke)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
-import Utils (withConnection, withDatabase, withResult)
+import Utils (withConnection, withDatabase, withLogicalType, withResult)
 
 data CastHarness = CastHarness
   { chLastMode :: IO DuckDBCastMode
@@ -147,11 +147,6 @@ withCastFunction :: (DuckDBCastFunction -> IO a) -> IO a
 withCastFunction action = bracket c_duckdb_create_cast_function destroy action
   where
     destroy cf = alloca \ptr -> poke ptr cf >> c_duckdb_destroy_cast_function ptr
-
-withLogicalType :: IO DuckDBLogicalType -> (DuckDBLogicalType -> IO a) -> IO a
-withLogicalType create action = bracket create destroy action
-  where
-    destroy lt = alloca \ptr -> poke ptr lt >> c_duckdb_destroy_logical_type ptr
 
 withErrorResult :: DuckDBConnection -> String -> (Ptr DuckDBResult -> IO a) -> IO a
 withErrorResult conn sql action =

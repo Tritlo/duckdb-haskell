@@ -15,6 +15,7 @@ import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (peek, poke, pokeElemOff)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
+import Utils (withLogicalType)
 
 tests :: TestTree
 tests =
@@ -152,16 +153,6 @@ testDecimalHelpers =
       result @?= input
 
 -- Utilities ----------------------------------------------------------------
-
-withLogicalType :: IO DuckDBLogicalType -> (DuckDBLogicalType -> IO a) -> IO a
-withLogicalType acquire =
-  bracket acquire destroyLogicalType
-
-destroyLogicalType :: DuckDBLogicalType -> IO ()
-destroyLogicalType lt =
-  alloca \ptr -> do
-    poke ptr lt
-    c_duckdb_destroy_logical_type ptr
 
 destroyDataChunk :: DuckDBDataChunk -> IO ()
 destroyDataChunk chunk =

@@ -3,9 +3,8 @@
 
 module VectorTest (tests) where
 
-import Control.Exception (bracket)
 import Control.Monad (forM_, void)
-import Data.Bits (clearBit, complement, setBit)
+import Data.Bits (setBit)
 import Data.Int (Int32)
 import Data.Word (Word64)
 import Database.DuckDB.FFI
@@ -16,6 +15,7 @@ import Foreign.Ptr (Ptr, castPtr, plusPtr, nullPtr)
 import Foreign.Storable (peek, peekElemOff, poke, pokeElemOff, sizeOf)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
+import Utils (clearValidityBit, setAllValid, withLogicalType, withSelectionVector, withValue, withVectorOfType)
 
 -- | Entry point for vector-centric tests.
 tests :: TestTree
@@ -36,7 +36,7 @@ vectorDataAccess :: TestTree
 vectorDataAccess =
   testCase "write and read integer vector data" $ do
     withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \intType ->
-      withVector intType 4 \vec -> do
+      withVectorOfType intType 4 \vec -> do
         colType <- c_duckdb_vector_get_column_type vec
         withLogicalType (pure colType) \lt -> c_duckdb_get_type_id lt >>= (@?= DuckDBTypeInteger)
 
@@ -51,7 +51,7 @@ vectorValidityMask :: TestTree
 vectorValidityMask =
   testCase "ensure validity mask and clear single entry" $ do
     withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \intType ->
-      withVector intType 4 \vec -> do
+      withVectorOfType intType 4 \vec -> do
         void (c_duckdb_vector_ensure_validity_writable vec)
         validity <- c_duckdb_vector_get_validity vec
         assertBool "validity mask should exist" (validity /= nullPtr)
@@ -69,7 +69,7 @@ listVectorChildManagement =
   testCase "list vector reserves space and reports size" $ do
     withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \intType ->
       withLogicalType (c_duckdb_create_list_type intType) \listType ->
-        withVector listType 2 \listVec -> do
+        withVectorOfType listType 2 \listVec -> do
           childVec0 <- c_duckdb_list_vector_get_child listVec
           assertBool "list child vector should be non-null" (childVec0 /= nullPtr)
           initialSize <- c_duckdb_list_vector_get_size listVec
@@ -106,7 +106,7 @@ arrayVectorChildAccess =
   testCase "array vector child flattens elements" $ do
     withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \intType ->
       withLogicalType (c_duckdb_create_array_type intType 3) \arrayType ->
-        withVector arrayType 2 \arrayVec -> do
+        withVectorOfType arrayType 2 \arrayVec -> do
           childVec <- c_duckdb_array_vector_get_child arrayVec
           childType <- c_duckdb_vector_get_column_type childVec
           withLogicalType (pure childType) \ct -> c_duckdb_get_type_id ct >>= (@?= DuckDBTypeInteger)
@@ -122,7 +122,7 @@ vectorSliceWithSelection :: TestTree
 vectorSliceWithSelection =
   testCase "slice vector materializes dictionary order" $ do
     withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \intType ->
-      withVector intType 4 \vec -> do
+      withVectorOfType intType 4 \vec -> do
         dataRaw <- c_duckdb_vector_get_data vec
         let vecData = castPtr dataRaw :: Ptr Int32
         forM_ (zip [0 ..] [10, 20, 30, 40 :: Int32]) \(idx, val) -> pokeElemOff vecData idx val
@@ -133,7 +133,7 @@ vectorSliceWithSelection =
           pokeElemOff selPtr 1 (fromIntegral (1 :: Int))
           c_duckdb_slice_vector vec sel 2
 
-          withVector intType 2 \materialized ->
+          withVectorOfType intType 2 \materialized ->
             withSelectionVector 2 \copySel -> do
               copyPtr <- c_duckdb_selection_vector_get_data_ptr copySel
               pokeElemOff copyPtr 0 0
@@ -156,7 +156,7 @@ structVectorChildAccess =
             withCString "doubles" \name1 ->
               withArray [name0, name1] \namesPtr ->
                 withLogicalType (c_duckdb_create_struct_type typesPtr namesPtr 2) \structType ->
-                  withVector structType 1 \structVec -> do
+                  withVectorOfType structType 1 \structVec -> do
                     intChild <- c_duckdb_struct_vector_get_child structVec 0
                     dblChild <- c_duckdb_struct_vector_get_child structVec 1
 
@@ -179,7 +179,7 @@ vectorReferenceValue :: TestTree
 vectorReferenceValue =
   testCase "vector_reference_value writes scalar contents" $ do
     withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \intType ->
-      withVector intType 1 \vec ->
+      withVectorOfType intType 1 \vec ->
         withValue (c_duckdb_create_int32 123) \value -> do
           c_duckdb_vector_reference_value vec value
           raw <- c_duckdb_vector_get_data vec
@@ -188,44 +188,5 @@ vectorReferenceValue =
 
 -- helpers -------------------------------------------------------------------
 
-withVector :: DuckDBLogicalType -> DuckDBIdx -> (DuckDBVector -> IO a) -> IO a
-withVector lt capacity action = bracket (c_duckdb_create_vector lt capacity) destroy action
-  where
-    destroy vec = alloca \ptr -> poke ptr vec >> c_duckdb_destroy_vector ptr
-
-withLogicalType :: IO DuckDBLogicalType -> (DuckDBLogicalType -> IO a) -> IO a
-withLogicalType acquire action = bracket acquire destroyLogicalType action
-
-destroyLogicalType :: DuckDBLogicalType -> IO ()
-destroyLogicalType lt = alloca \ptr -> poke ptr lt >> c_duckdb_destroy_logical_type ptr
-
-withSelectionVector :: DuckDBIdx -> (DuckDBSelectionVector -> IO a) -> IO a
-withSelectionVector n action = bracket (c_duckdb_create_selection_vector n) c_duckdb_destroy_selection_vector action
-
-withValue :: IO DuckDBValue -> (DuckDBValue -> IO a) -> IO a
-withValue acquire action = bracket acquire destroyValue action
-  where
-    destroyValue value = alloca \ptr -> poke ptr value >> c_duckdb_destroy_value ptr
-
 plusElem :: Ptr Int32 -> Int -> Ptr Int32
 plusElem base idx = base `plusPtr` (idx * sizeOf (undefined :: Int32))
-
-setAllValid :: Ptr Word64 -> Int -> IO ()
-setAllValid mask count =
-  let totalWords = max 1 ((count + 63) `div` 64)
-   in forM_ [0 .. totalWords - 1] \wordIdx -> do
-        let start = wordIdx * 64
-            end = min count (start + 64)
-            bits = foldl setBit 0 [0 .. end - start - 1]
-        poke (mask `plusWord` wordIdx) bits
-
-clearValidityBit :: Ptr Word64 -> Int -> IO ()
-clearValidityBit mask idx = do
-  let wordIdx = idx `div` 64
-      bitIdx = idx `mod` 64
-      entryPtr = mask `plusWord` wordIdx
-  current <- peek entryPtr
-  poke entryPtr (clearBit current bitIdx)
-
-plusWord :: Ptr Word64 -> Int -> Ptr Word64
-plusWord base idx = base `plusPtr` (idx * sizeOf (undefined :: Word64))

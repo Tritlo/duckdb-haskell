@@ -19,7 +19,7 @@ import Foreign.Ptr (FunPtr, Ptr, castPtr, freeHaskellFunPtr, nullPtr)
 import Foreign.Storable (peek, peekElemOff, pokeElemOff, poke, sizeOf)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
-import Utils (withConnection, withDatabase, withResultCString, withValue)
+import Utils (withConnection, withDatabase, withLogicalType, withResultCString, withValue)
 
 tests :: TestTree
 tests =
@@ -493,11 +493,6 @@ numbersExecute env info chunk = do
               pokeElemOff statePtr 0 chunkEnd
 
 -- Helpers ------------------------------------------------------------------
-
-withLogicalType :: IO DuckDBLogicalType -> (DuckDBLogicalType -> IO a) -> IO a
-withLogicalType acquire action = bracket acquire destroy action
-  where
-    destroy lt = alloca \ptr -> poke ptr lt >> c_duckdb_destroy_logical_type ptr
 
 withTableFunction :: (DuckDBTableFunction -> IO a) -> IO a
 withTableFunction action = bracket c_duckdb_create_table_function destroy action

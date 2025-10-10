@@ -11,7 +11,7 @@ import Foreign.Ptr (castPtr, nullPtr)
 import Foreign.Storable (poke)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
-import Utils (withConnection, withDatabase)
+import Utils (destroyDuckValue, withConnection, withDatabase)
 
 tests :: TestTree
 tests =
@@ -113,7 +113,3 @@ duckValueToString valHandle = do
   text <- peekCString strPtr
   c_duckdb_free (castPtr strPtr)
   pure text
-
-destroyDuckValue :: DuckDBValue -> IO ()
-destroyDuckValue val =
-  alloca \ptr -> poke ptr val >> c_duckdb_destroy_value ptr

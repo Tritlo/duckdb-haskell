@@ -24,7 +24,7 @@ tests =
   testGroup
     "Scalar Functions"
     [ scalarFunctionRoundtrip
-    -- , scalarFunctionSetFeatures
+    , scalarFunctionSetFeatures
     ]
 
 scalarFunctionRoundtrip :: TestTree

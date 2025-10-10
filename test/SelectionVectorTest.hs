@@ -3,16 +3,15 @@
 
 module SelectionVectorTest (tests) where
 
-import Control.Exception (bracket)
 import Control.Monad (forM_)
 import Data.Int (Int32)
 import Data.Word (Word32)
 import Database.DuckDB.FFI
-import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (poke, peekElemOff, pokeElemOff)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
+import Utils (withLogicalType, withSelectionVector, withVector)
 
 tests :: TestTree
 tests =
@@ -54,19 +53,6 @@ selectionVectorCopySelection =
             val1 @?= 40
 
 -- Helpers -------------------------------------------------------------------
-
-withSelectionVector :: DuckDBIdx -> (DuckDBSelectionVector -> IO a) -> IO a
-withSelectionVector n action = bracket (c_duckdb_create_selection_vector n) c_duckdb_destroy_selection_vector action
-
-withLogicalType :: IO DuckDBLogicalType -> (DuckDBLogicalType -> IO a) -> IO a
-withLogicalType acquire action = bracket acquire destroyLogicalType action
-  where
-destroyLogicalType lt = alloca \ptr -> poke ptr lt >> c_duckdb_destroy_logical_type ptr
-
-withVector :: IO DuckDBVector -> (DuckDBVector -> IO a) -> IO a
-withVector acquire action = bracket acquire destroy action
-  where
-destroy vec = alloca \ptr -> poke ptr vec >> c_duckdb_destroy_vector ptr
 
 vectorDataPtr :: DuckDBVector -> IO (Ptr Int32)
 vectorDataPtr vec = do

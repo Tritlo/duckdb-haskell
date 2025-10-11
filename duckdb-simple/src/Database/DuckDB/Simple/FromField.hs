@@ -4,6 +4,7 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE StrictData #-}
 
 {- |
 Module      : Database.DuckDB.Simple.FromField
@@ -32,26 +33,26 @@ import Database.DuckDB.Simple.Types (Null (..))
 -- | Internal representation of a column value.
 data FieldValue
     = FieldNull
-    | FieldInt8 !Int8
-    | FieldInt16 !Int16
-    | FieldInt32 !Int32
-    | FieldInt64 !Int64
-    | FieldWord8 !Word8
-    | FieldWord16 !Word16
-    | FieldWord32 !Word32
-    | FieldWord64 !Word64
-    | FieldFloat !Float
-    | FieldDouble !Double
-    | FieldText !Text
-    | FieldBool !Bool
-    | FieldBlob !BS.ByteString
-    | FieldDate !Day
-    | FieldTime !TimeOfDay
-    | FieldTimestamp !LocalTime
+    | FieldInt8 Int8
+    | FieldInt16 Int16
+    | FieldInt32 Int32
+    | FieldInt64 Int64
+    | FieldWord8 Word8
+    | FieldWord16 Word16
+    | FieldWord32 Word32
+    | FieldWord64 Word64
+    | FieldFloat Float
+    | FieldDouble Double
+    | FieldText Text
+    | FieldBool Bool
+    | FieldBlob BS.ByteString
+    | FieldDate Day
+    | FieldTime TimeOfDay
+    | FieldTimestamp LocalTime
     -- TODO: HugeInt and UHugeInt support
 
-    deriving (-- | FieldInteger !Integer
-              -- | FieldNatural !Natural
+    deriving (-- | FieldInteger Integer
+              -- | FieldNatural Natural
               Eq, Show)
 
 -- | Pattern synonym to make it easier to match on any integral type.
@@ -82,30 +83,30 @@ fieldValueToWord _ = Nothing
 
 -- | Metadata for a single column in a row.
 data Field = Field
-    { fieldName :: !Text
-    , fieldIndex :: !Int
-    , fieldValue :: !FieldValue
+    { fieldName :: Text
+    , fieldIndex :: Int
+    , fieldValue :: FieldValue
     }
     deriving (Eq, Show)
 
 -- | Detailed information about row conversion failures.
 data ResultError
     = IncompatibleType
-        { resultErrorColumn :: !Int
-        , resultErrorExpected :: !String
-        , resultErrorActual :: !String
+        { resultErrorColumn :: Int
+        , resultErrorExpected :: String
+        , resultErrorActual :: String
         }
     | UnexpectedNull
-        { resultErrorColumn :: !Int
-        , resultErrorExpected :: !String
+        { resultErrorColumn :: Int
+        , resultErrorExpected :: String
         }
     | ColumnCountMismatch
-        { resultErrorExpectedCols :: !Int
-        , resultErrorActualCols :: !Int
+        { resultErrorExpectedCols :: Int
+        , resultErrorActualCols :: Int
         }
     | ConversionError
-        { resultErrorColumn :: !Int
-        , resultErrorMessage :: !Text
+        { resultErrorColumn :: Int
+        , resultErrorMessage :: Text
         }
     deriving (Eq, Show)
 

@@ -448,30 +448,6 @@ transactionTests =
                         error "boom"
                 rows <- query_ conn "SELECT COUNT(*) FROM tx_rollback" :: IO [Only Int]
                 assertEqual "rollback" [Only 0] rows
-        , testCase "withImmediateTransaction behaves like deferred" $
-            withConnection ":memory:" \conn -> do
-                _ <- execute_ conn "CREATE TABLE tx_immediate (x INTEGER)"
-                withImmediateTransaction conn $ do
-                    _ <- execute conn "INSERT INTO tx_immediate VALUES (?)" (Only (1 :: Int))
-                    pure ()
-                rows <- query_ conn "SELECT COUNT(*) FROM tx_immediate" :: IO [Only Int]
-                assertEqual "immediate" [Only 1] rows
-        , testCase "withExclusiveTransaction commits work" $
-            withConnection ":memory:" \conn -> do
-                _ <- execute_ conn "CREATE TABLE tx_exclusive (x INTEGER)"
-                withExclusiveTransaction conn $ do
-                    _ <- execute conn "INSERT INTO tx_exclusive VALUES (?)" (Only (1 :: Int))
-                    pure ()
-                rows <- query_ conn "SELECT COUNT(*) FROM tx_exclusive" :: IO [Only Int]
-                assertEqual "exclusive" [Only 1] rows
-        , testCase "withSavepoint reports unsupported feature" $
-            withConnection ":memory:" \conn -> do
-                _ <- execute_ conn "CREATE TABLE tx_savepoint (x INTEGER)"
-                assertThrows
-                    (withSavepoint conn "sp1" $ pure ())
-                    (\err -> Text.isInfixOf "savepoints are not supported" (sqlErrorMessage err))
-                rows <- query_ conn "SELECT COUNT(*) FROM tx_savepoint" :: IO [Only Int]
-                assertEqual "savepoint fallback leaves table untouched" [Only 0] rows
         ]
 
 assertThrows :: forall e a. (Exception e) => IO a -> (e -> Bool) -> Assertion

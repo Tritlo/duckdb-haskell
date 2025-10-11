@@ -40,9 +40,6 @@ module Database.DuckDB.Simple (
     fold_,
     foldNamed,
     withTransaction,
-    withImmediateTransaction,
-    withExclusiveTransaction,
-    withSavepoint,
     query,
     queryWith,
     query_,
@@ -781,58 +778,20 @@ streamingUnsupportedTypeError query StatementStreamColumn{statementStreamColumnN
         , sqlErrorQuery = Just query
         }
 
--- | Run an action inside a deferred transaction.
+-- | Run an action inside a transaction.
 withTransaction :: Connection -> IO a -> IO a
-withTransaction =
-    withTransactionMode
-        (Query (Text.pack "BEGIN TRANSACTION"))
-        (Query (Text.pack "COMMIT"))
-        (Query (Text.pack "ROLLBACK"))
-
--- | Run an action inside an immediate transaction.
-withImmediateTransaction :: Connection -> IO a -> IO a
-withImmediateTransaction =
-    withTransactionMode
-        (Query (Text.pack "BEGIN TRANSACTION"))
-        (Query (Text.pack "COMMIT"))
-        (Query (Text.pack "ROLLBACK"))
-
--- | Run an action inside an exclusive transaction.
-withExclusiveTransaction :: Connection -> IO a -> IO a
-withExclusiveTransaction =
-    withTransactionMode
-        (Query (Text.pack "BEGIN TRANSACTION"))
-        (Query (Text.pack "COMMIT"))
-        (Query (Text.pack "ROLLBACK"))
-
-{- | Run an action within a named savepoint.
-  Throws an 'SQLError' when the underlying DuckDB build does not support savepoints.
--}
-withSavepoint :: Connection -> Text -> IO a -> IO a
-withSavepoint conn label action =
-    mask \restore -> do
-        let begin = Query (Text.concat [Text.pack "SAVEPOINT ", label])
-        beginResult <- try (execute_ conn begin)
-        case beginResult of
-            Left err
-                | isSavepointUnsupported err -> throwIO (savepointUnsupportedError begin)
-                | otherwise -> throwIO err
-            Right _ -> do
-                let commit = Query (Text.concat [Text.pack "RELEASE ", label])
-                    rollback = Query (Text.concat [Text.pack "ROLLBACK TO ", label])
-                    rollbackAction = executeIgnore conn rollback
-                result <- restore action `onException` rollbackAction
-                void (execute_ conn commit)
-                pure result
-
-withTransactionMode :: Query -> Query -> Query -> Connection -> IO a -> IO a
-withTransactionMode begin commit rollback conn action =
+withTransaction conn action =
     mask \restore -> do
         void (execute_ conn begin)
         let rollbackAction = executeIgnore conn rollback
         result <- restore action `onException` rollbackAction
         void (execute_ conn commit)
         pure result
+
+  where begin = Query (Text.pack "BEGIN TRANSACTION")
+        commit = Query (Text.pack "COMMIT")
+        rollback = Query (Text.pack "ROLLBACK")
+
 
 executeIgnore :: Connection -> Query -> IO ()
 executeIgnore conn q = void (execute_ conn q)
@@ -1035,17 +994,6 @@ columnNameUnavailableError stmt idx =
         , sqlErrorQuery = Just (statementQuery stmt)
         }
 
-isSavepointUnsupported :: SQLError -> Bool
-isSavepointUnsupported SQLError{sqlErrorMessage} =
-    Text.isInfixOf (Text.pack "SAVEPOINT") sqlErrorMessage
-
-savepointUnsupportedError :: Query -> SQLError
-savepointUnsupportedError query =
-    SQLError
-        { sqlErrorMessage = Text.pack "duckdb-simple: savepoints are not supported by this DuckDB build"
-        , sqlErrorType = Nothing
-        , sqlErrorQuery = Just query
-        }
 
 normalizeName :: Text -> Text
 normalizeName name =

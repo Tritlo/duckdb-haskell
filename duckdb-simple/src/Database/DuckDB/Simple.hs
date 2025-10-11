@@ -123,7 +123,7 @@ import Database.DuckDB.Simple.ToField (FieldBinding, NamedParam (..), ToField (.
 import Database.DuckDB.Simple.ToRow (ToRow (..))
 import Database.DuckDB.Simple.Types (FormatError (..), Null (..), Only (..), (:.) (..))
 import Foreign.C.String (CString, peekCString, withCString)
-import Foreign.C.Types (CBool (..), CDouble (..), CChar)
+import Foreign.C.Types (CBool (..), CDouble (..), CChar, CFloat(..))
 import Foreign.Marshal.Alloc (alloca, free, malloc)
 import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.Storable (peek, peekElemOff, poke)
@@ -136,12 +136,10 @@ open path =
         conn <-
             restore (connectDatabase db)
                 `onException` closeDatabaseHandle db
-        connection <-
-            createConnection db conn
-                `onException` do
-                    closeConnectionHandle conn
-                    closeDatabaseHandle db
-        pure connection
+        createConnection db conn
+            `onException` do
+                closeConnectionHandle conn
+                closeDatabaseHandle db
 
 -- | Close a connection.  The operation is idempotent.
 close :: Connection -> IO ()
@@ -214,7 +212,7 @@ bind stmt fields = do
                 <> " argument(s) were supplied"
 
     apply :: Int -> FieldBinding -> IO ()
-    apply idx field = bindFieldBinding stmt (fromIntegral idx :: DuckDBIdx) field
+    apply idx = bindFieldBinding stmt (fromIntegral idx :: DuckDBIdx)
 
 -- | Bind named parameters to a prepared statement, preserving any positional bindings.
 bindNamed :: Statement -> [NamedParam] -> IO ()
@@ -293,7 +291,7 @@ namedParameterIndex stmt name =
 -- | Retrieve the number of columns produced by the supplied prepared statement.
 columnCount :: Statement -> IO Int
 columnCount stmt =
-    withStatementHandle stmt \handle ->
+    withStatementHandle stmt $ \handle ->
         fmap fromIntegral (c_duckdb_prepared_statement_column_count handle)
 
 -- | Look up the zero-based column name exposed by a prepared statement result.
@@ -625,34 +623,28 @@ buildField query rowIdx column StatementStreamChunkVector{statementStreamChunkVe
                     pure (FieldBool (raw /= 0))
                 DuckDBTypeTinyInt -> do
                     raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr Int8) rowIdx
-                    pure (FieldInt (fromIntegral raw))
+                    pure (FieldInt8 (fromIntegral raw))
                 DuckDBTypeSmallInt -> do
                     raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr Int16) rowIdx
-                    pure (FieldInt (fromIntegral raw))
+                    pure (FieldInt16 (fromIntegral raw))
                 DuckDBTypeInteger -> do
                     raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr Int32) rowIdx
-                    pure (FieldInt (fromIntegral raw))
+                    pure (FieldInt32 (fromIntegral raw))
                 DuckDBTypeBigInt -> do
                     raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr Int64) rowIdx
-                    pure (FieldInt raw)
-                DuckDBTypeHugeInt -> do
-                    raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr Int64) rowIdx
-                    pure (FieldInt raw)
+                    pure (FieldInt64 raw)
                 DuckDBTypeUTinyInt -> do
                     raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr Word8) rowIdx
-                    pure (FieldInt (fromIntegral raw))
+                    pure (FieldWord8 (fromIntegral raw))
                 DuckDBTypeUSmallInt -> do
                     raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr Word16) rowIdx
-                    pure (FieldInt (fromIntegral raw))
+                    pure (FieldWord16 (fromIntegral raw))
                 DuckDBTypeUInteger -> do
                     raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr Word32) rowIdx
-                    pure (FieldInt (fromIntegral raw))
+                    pure (FieldWord32 (fromIntegral raw))
                 DuckDBTypeUBigInt -> do
                     raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr Word64) rowIdx
-                    pure (FieldInt (fromIntegral raw))
-                DuckDBTypeUHugeInt -> do
-                    raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr Word64) rowIdx
-                    pure (FieldInt (fromIntegral raw))
+                    pure (FieldWord64 (fromIntegral raw))
                 DuckDBTypeBlob -> do
                     blob <- chunkDecodeBlob statementStreamChunkVectorData duckIdx
                     pure (FieldBlob blob)
@@ -675,6 +667,8 @@ buildField query rowIdx column StatementStreamChunkVector{statementStreamChunkVe
                     raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr Double) rowIdx
                     pure (FieldDouble raw)
                 DuckDBTypeVarchar -> FieldText <$> chunkDecodeText statementStreamChunkVectorData duckIdx
+                DuckDBTypeHugeInt -> error "duckdb-simple: HUGEINT is not supported"
+                DuckDBTypeUHugeInt -> error "duckdb-simple: HUGEINT is not supported"
                 _ ->
                     throwIO (streamingUnsupportedTypeError query column)
     pure
@@ -1022,18 +1016,22 @@ fetchFieldValue resPtr dtype columnIndex rowIndex = do
             DuckDBTypeBoolean -> do
                 CBool b <- c_duckdb_value_boolean resPtr duckCol duckRow
                 pure (FieldBool (b /= 0))
-            DuckDBTypeTinyInt -> FieldInt <$> c_duckdb_value_int64 resPtr duckCol duckRow
-            DuckDBTypeSmallInt -> FieldInt <$> c_duckdb_value_int64 resPtr duckCol duckRow
-            DuckDBTypeInteger -> FieldInt <$> c_duckdb_value_int64 resPtr duckCol duckRow
-            DuckDBTypeBigInt -> FieldInt <$> c_duckdb_value_int64 resPtr duckCol duckRow
-            DuckDBTypeHugeInt -> FieldInt <$> c_duckdb_value_int64 resPtr duckCol duckRow
-            DuckDBTypeUTinyInt -> FieldInt <$> c_duckdb_value_int64 resPtr duckCol duckRow
-            DuckDBTypeUSmallInt -> FieldInt <$> c_duckdb_value_int64 resPtr duckCol duckRow
-            DuckDBTypeUInteger -> FieldInt <$> c_duckdb_value_int64 resPtr duckCol duckRow
-            DuckDBTypeUBigInt -> FieldInt <$> c_duckdb_value_int64 resPtr duckCol duckRow
+            DuckDBTypeTinyInt  -> FieldInt8  <$> c_duckdb_value_int8 resPtr duckCol duckRow
+            DuckDBTypeSmallInt -> FieldInt16 <$> c_duckdb_value_int16 resPtr duckCol duckRow
+            DuckDBTypeInteger  -> FieldInt32 <$> c_duckdb_value_int32 resPtr duckCol duckRow
+            DuckDBTypeBigInt   -> FieldInt64 <$> c_duckdb_value_int64 resPtr duckCol duckRow
+            DuckDBTypeUTinyInt  -> FieldWord8  <$> c_duckdb_value_uint8 resPtr duckCol duckRow
+            DuckDBTypeUSmallInt -> FieldWord16 <$> c_duckdb_value_uint16 resPtr duckCol duckRow
+            DuckDBTypeUInteger  -> FieldWord32 <$> c_duckdb_value_uint32 resPtr duckCol duckRow
+            DuckDBTypeUBigInt   -> FieldWord64 <$> c_duckdb_value_uint64 resPtr duckCol duckRow
+            -- TODO: support HugeInt types
+            DuckDBTypeHugeInt -> error "HugeInt type not supported"
+                -- FieldInteger <$> c_duckdb_value_hugeint resPtr duckCol duckRow
+            DuckDBTypeUHugeInt -> error "UHugeInt type not supported"
+                -- FieldNatural <$> c_duckdb_value_uhugeint resPtr duckCol duckRow
             DuckDBTypeFloat -> do
-                CDouble d <- c_duckdb_value_double resPtr duckCol duckRow
-                pure (FieldDouble (realToFrac d))
+                CFloat d <- c_duckdb_value_float resPtr duckCol duckRow
+                pure (FieldFloat (realToFrac d))
             DuckDBTypeDouble -> do
                 CDouble d <- c_duckdb_value_double resPtr duckCol duckRow
                 pure (FieldDouble (realToFrac d))

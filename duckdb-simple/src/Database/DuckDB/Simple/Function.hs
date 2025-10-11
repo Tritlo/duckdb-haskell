@@ -398,28 +398,28 @@ fetchValue dtype dataPtr rowIdx
         pure (FieldBool (value /= 0))
     | dtype == DuckDBTypeTinyInt = do
         value <- peekElemOff (castPtr dataPtr :: Ptr Int8) (fromIntegral rowIdx)
-        pure (FieldInt (fromIntegral value))
+        pure (FieldInt8 (fromIntegral value))
     | dtype == DuckDBTypeSmallInt = do
         value <- peekElemOff (castPtr dataPtr :: Ptr Int16) (fromIntegral rowIdx)
-        pure (FieldInt (fromIntegral value))
+        pure (FieldInt16 (fromIntegral value))
     | dtype == DuckDBTypeInteger = do
         value <- peekElemOff (castPtr dataPtr :: Ptr Int32) (fromIntegral rowIdx)
-        pure (FieldInt (fromIntegral value))
+        pure (FieldInt32 (fromIntegral value))
     | dtype == DuckDBTypeBigInt || dtype == DuckDBTypeHugeInt = do
         value <- peekElemOff (castPtr dataPtr :: Ptr Int64) (fromIntegral rowIdx)
-        pure (FieldInt value)
+        pure (FieldInt64 value)
     | dtype == DuckDBTypeUTinyInt = do
         value <- peekElemOff (castPtr dataPtr :: Ptr Word8) (fromIntegral rowIdx)
-        pure (FieldInt (fromIntegral value))
+        pure (FieldWord8 (fromIntegral value))
     | dtype == DuckDBTypeUSmallInt = do
         value <- peekElemOff (castPtr dataPtr :: Ptr Word16) (fromIntegral rowIdx)
-        pure (FieldInt (fromIntegral value))
+        pure (FieldWord16 (fromIntegral value))
     | dtype == DuckDBTypeUInteger = do
         value <- peekElemOff (castPtr dataPtr :: Ptr Word32) (fromIntegral rowIdx)
-        pure (FieldInt (fromIntegral value))
+        pure (FieldWord32 (fromIntegral value))
     | dtype == DuckDBTypeUBigInt || dtype == DuckDBTypeUHugeInt = do
         value <- peekElemOff (castPtr dataPtr :: Ptr Word64) (fromIntegral rowIdx)
-        pure (FieldInt (fromIntegral value))
+        pure (FieldWord64 (fromIntegral value))
     | dtype == DuckDBTypeFloat = do
         value <- peekElemOff (castPtr dataPtr :: Ptr Float) (fromIntegral rowIdx)
         pure (FieldDouble (realToFrac value))

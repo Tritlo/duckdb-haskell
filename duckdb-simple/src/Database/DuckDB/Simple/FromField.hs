@@ -4,6 +4,8 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE ViewPatterns #-}
 
 {- |
 Module      : Database.DuckDB.Simple.FromField
@@ -18,20 +20,28 @@ module Database.DuckDB.Simple.FromField (
 
 import Control.Exception (Exception)
 import qualified Data.ByteString as BS
-import Data.Int (Int16, Int32, Int64)
+import Data.Int (Int16, Int32, Int64, Int8)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Time.Calendar (Day)
 import Data.Time.Clock (UTCTime (..))
 import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), localTimeToUTC, utc)
-import Data.Word (Word16, Word32, Word64)
+import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.Simple.Types (Null (..))
 
 -- | Internal representation of a column value.
 data FieldValue
     = FieldNull
-    | FieldInt !Int64
+    | FieldInt8 !Int8
+    | FieldInt16 !Int16
+    | FieldInt32 !Int32
+    | FieldInt64 !Int64
+    | FieldWord8 !Word8
+    | FieldWord16 !Word16
+    | FieldWord32 !Word32
+    | FieldWord64 !Word64
+    | FieldFloat !Float
     | FieldDouble !Double
     | FieldText !Text
     | FieldBool !Bool
@@ -39,7 +49,38 @@ data FieldValue
     | FieldDate !Day
     | FieldTime !TimeOfDay
     | FieldTimestamp !LocalTime
+    -- TODO: HugeInt and UHugeInt support
+    -- | FieldInteger !Integer
+    -- | FieldNatural !Natural
     deriving (Eq, Show)
+
+-- | Pattern synonym to make it easier to match on any integral type.
+pattern FieldInt :: Int -> FieldValue
+pattern FieldInt i <- (fieldValueToInt -> Just i)
+    where
+        FieldInt i = FieldInt64 (fromIntegral i)
+
+fieldValueToInt :: FieldValue -> Maybe Int
+fieldValueToInt (FieldInt8 i) = Just (fromIntegral i)
+fieldValueToInt (FieldInt16 i) = Just (fromIntegral i)
+fieldValueToInt (FieldInt32 i) = Just (fromIntegral i)
+fieldValueToInt (FieldInt64 i) = Just (fromIntegral i)
+fieldValueToInt _ = Nothing
+
+-- | Pattern synonym to make it easier to match on any word size
+pattern FieldWord :: Word -> FieldValue
+pattern FieldWord i <- (fieldValueToWord -> Just i)
+    where
+        FieldWord i = FieldWord64 (fromIntegral i)
+
+fieldValueToWord :: FieldValue -> Maybe Word
+fieldValueToWord (FieldWord8 i) = Just  (fromIntegral i)
+fieldValueToWord (FieldWord16 i) = Just (fromIntegral i)
+fieldValueToWord (FieldWord32 i) = Just (fromIntegral i)
+fieldValueToWord (FieldWord64 i) = Just (fromIntegral i)
+fieldValueToWord _ = Nothing
+
+
 
 -- | Metadata for a single column in a row.
 data Field = Field
@@ -92,10 +133,16 @@ instance FromField Bool where
             FieldInt i -> Right (i /= 0)
             other -> Left (IncompatibleType fieldIndex "BOOL" (fieldValueTypeName other))
 
+instance FromField Int8 where
+    fromField Field{fieldIndex, fieldValue} =
+        case fieldValue of
+            FieldInt i -> Right (fromIntegral i)
+            other -> Left (IncompatibleType fieldIndex "INTEGER" (fieldValueTypeName other))
+
 instance FromField Int64 where
     fromField Field{fieldIndex, fieldValue} =
         case fieldValue of
-            FieldInt i -> Right i
+            FieldInt i -> Right (fromIntegral i)
             other -> Left (IncompatibleType fieldIndex "INTEGER" (fieldValueTypeName other))
 
 instance FromField Int32 where
@@ -127,6 +174,7 @@ instance FromField Word64 where
                             { resultErrorColumn = fieldIndex field
                             , resultErrorMessage = Text.pack "negative value cannot be converted to unsigned integer"
                             }
+            FieldWord w -> Right (fromIntegral w)
             other -> Left (IncompatibleType (fieldIndex field) "UNSIGNED" (fieldValueTypeName other))
 
 instance FromField Word32 where
@@ -140,6 +188,7 @@ instance FromField Word32 where
                             { resultErrorColumn = fieldIndex field
                             , resultErrorMessage = Text.pack "negative value cannot be converted to unsigned integer"
                             }
+            FieldWord w -> Right (fromIntegral w)
             other -> Left (IncompatibleType (fieldIndex field) "UNSIGNED" (fieldValueTypeName other))
 
 instance FromField Word16 where
@@ -153,6 +202,21 @@ instance FromField Word16 where
                             { resultErrorColumn = fieldIndex field
                             , resultErrorMessage = Text.pack "negative value cannot be converted to unsigned integer"
                             }
+            FieldWord w -> Right (fromIntegral w)
+            other -> Left (IncompatibleType (fieldIndex field) "UNSIGNED" (fieldValueTypeName other))
+
+instance FromField Word8 where
+    fromField field@Field{fieldValue} =
+        case fieldValue of
+            FieldInt i
+                | i >= 0 -> boundedIntegral field i
+                | otherwise ->
+                    Left $
+                        ConversionError
+                            { resultErrorColumn = fieldIndex field
+                            , resultErrorMessage = Text.pack "negative value cannot be converted to unsigned integer"
+                            }
+            FieldWord w -> Right (fromIntegral w)
             other -> Left (IncompatibleType (fieldIndex field) "UNSIGNED" (fieldValueTypeName other))
 
 instance FromField Double where
@@ -233,7 +297,7 @@ instance (FromField a) => FromField (Maybe a) where
     fromField field = Just <$> fromField field
 
 -- | Helper for bounded integral conversions.
-boundedIntegral :: forall a. (Integral a, Bounded a) => Field -> Int64 -> Either ResultError a
+boundedIntegral :: forall a. (Integral a, Bounded a) => Field -> Int -> Either ResultError a
 boundedIntegral Field{fieldIndex} i
     | toInteger i < toInteger (minBound :: a) =
         Left $
@@ -252,7 +316,15 @@ boundedIntegral Field{fieldIndex} i
 fieldValueTypeName :: FieldValue -> String
 fieldValueTypeName = \case
     FieldNull -> "NULL"
-    FieldInt{} -> "INTEGER"
+    FieldInt8{} -> "INT1"
+    FieldInt16{} -> "INT2"
+    FieldInt32{} -> "INT4"
+    FieldInt64{} -> "INT8"
+    FieldWord8{} -> "UTINYINT"
+    FieldWord16{} -> "USMALLINT"
+    FieldWord32{} -> "UINTEGER"
+    FieldWord64{} -> "UBIGINT"
+    FieldFloat{} -> "FLOAT"
     FieldDouble{} -> "DOUBLE"
     FieldText{} -> "TEXT"
     FieldBool{} -> "BOOLEAN"
@@ -260,3 +332,6 @@ fieldValueTypeName = \case
     FieldDate{} -> "DATE"
     FieldTime{} -> "TIME"
     FieldTimestamp{} -> "TIMESTAMP"
+    -- TODO: Not supported yet
+    -- FieldInteger{} -> "HUGEINT"
+    -- FieldNatural{} -> "UHUGEINT"

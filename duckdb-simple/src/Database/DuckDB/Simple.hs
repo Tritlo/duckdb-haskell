@@ -47,9 +47,6 @@ module Database.DuckDB.Simple (
     nextRow,
     nextRowWith,
 
-    -- * Metadata
-    rowsChanged,
-
     -- * Errors and conversions
     SQLError (..),
     FormatError (..),
@@ -293,17 +290,6 @@ namedParameterIndex stmt name =
                                 else pure (Just (fromIntegral idx))
                         else pure Nothing
 
-{- | Return the number of rows affected by the most recent data-changing statement
-executed on the supplied connection.
-
-The counter updates when functions such as 'execute', 'executeMany',
-'executeNamed', and 'execute_' complete successfully. DuckDB does not expose a
-stable @last_insert_rowid@ equivalent; prefer SQL @RETURNING@ clauses when you
-need to capture generated identifiers.
--}
-rowsChanged :: Connection -> IO Int
-rowsChanged Connection{connectionRowsChanged} = readIORef connectionRowsChanged
-
 -- | Retrieve the number of columns produced by the supplied prepared statement.
 columnCount :: Statement -> IO Int
 columnCount stmt =
@@ -328,7 +314,7 @@ columnName stmt columnIndex
                     pure name
 
 executeStatement :: Statement -> IO Int
-executeStatement stmt@Statement{statementConnection} =
+executeStatement stmt =
     withStatementHandle stmt \handle -> do
         resetStatementStream stmt
         alloca \resPtr -> do
@@ -337,7 +323,6 @@ executeStatement stmt@Statement{statementConnection} =
                 then do
                     changed <- resultRowsChanged resPtr
                     c_duckdb_destroy_result resPtr
-                    recordRowsChanged statementConnection changed
                     pure changed
                 else do
                     (errMsg, _) <- fetchResultError resPtr
@@ -355,10 +340,7 @@ execute conn queryText params =
 executeMany :: (ToRow q) => Connection -> Query -> [q] -> IO Int
 executeMany conn queryText rows =
     withStatement conn queryText \stmt -> do
-        changes <- mapM (\row -> bind stmt (toRow row) >> executeStatement stmt) rows
-        let total = sum changes
-        recordRowsChanged conn total
-        pure total
+        sum <$> mapM (\row -> bind stmt (toRow row) >> executeStatement stmt) rows
 
 -- | Execute an ad-hoc query without parameters and return the affected row count.
 execute_ :: Connection -> Query -> IO Int
@@ -371,7 +353,6 @@ execute_ conn queryText =
                     then do
                         changed <- resultRowsChanged resPtr
                         c_duckdb_destroy_result resPtr
-                        recordRowsChanged conn changed
                         pure changed
                     else do
                         (errMsg, errType) <- fetchResultError resPtr
@@ -783,7 +764,7 @@ withTransaction :: Connection -> IO a -> IO a
 withTransaction conn action =
     mask \restore -> do
         void (execute_ conn begin)
-        let rollbackAction = executeIgnore conn rollback
+        let rollbackAction = void (execute_ conn rollback)
         result <- restore action `onException` rollbackAction
         void (execute_ conn commit)
         pure result
@@ -793,21 +774,11 @@ withTransaction conn action =
         rollback = Query (Text.pack "ROLLBACK")
 
 
-executeIgnore :: Connection -> Query -> IO ()
-executeIgnore conn q = void (execute_ conn q)
-
-recordRowsChanged :: Connection -> Int -> IO ()
-recordRowsChanged Connection{connectionRowsChanged} value =
-    atomicModifyIORef'
-        connectionRowsChanged
-        (const (value, ()))
-
 -- Internal helpers -----------------------------------------------------------
 
 createConnection :: DuckDBDatabase -> DuckDBConnection -> IO Connection
 createConnection db conn = do
     ref <- newIORef (ConnectionOpen db conn)
-    rowsChangedRef <- newIORef 0
     _ <-
         mkWeakIORef ref $
             void $
@@ -815,7 +786,7 @@ createConnection db conn = do
                     ConnectionClosed -> (ConnectionClosed, pure ())
                     openState@(ConnectionOpen{}) ->
                         (ConnectionClosed, closeHandles openState)
-    pure Connection{connectionState = ref, connectionRowsChanged = rowsChangedRef}
+    pure Connection{connectionState = ref}
 
 createStatement :: Connection -> DuckDBPreparedStatement -> Query -> IO Statement
 createStatement parent handle query = do

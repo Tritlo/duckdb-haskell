@@ -100,10 +100,6 @@ connectionTests =
             conn <- open ":memory:"
             close conn
             close conn
-        , testCase "rowsChanged defaults to zero" $
-            withConnection ":memory:" \conn -> do
-                count <- rowsChanged conn
-                assertEqual "initial rowsChanged" 0 count
         ]
 
 withConnectionTests :: TestTree
@@ -155,8 +151,6 @@ statementTests =
                 _ <- execute_ conn "CREATE TABLE test_exec (x INTEGER)"
                 count <- execute conn "INSERT INTO test_exec VALUES (?)" (Only (1 :: Int))
                 assertEqual "rows affected" 1 count
-                tracked <- rowsChanged conn
-                assertEqual "rowsChanged tracks execute" 1 tracked
         , testCase "execute runs with positional parameters" $
             withConnection ":memory:" \conn -> do
                 _ <- execute_ conn "CREATE TABLE exec_params (a INTEGER, b TEXT)"
@@ -178,8 +172,6 @@ statementTests =
                 _ <- execute_ conn "CREATE TABLE params_many (a INTEGER, b TEXT)"
                 total <- executeMany conn "INSERT INTO params_many VALUES (?, ?)" [(1 :: Int, "x" :: String), (2 :: Int, "y" :: String)]
                 assertEqual "rows affected" 2 total
-                tracked <- rowsChanged conn
-                assertEqual "rowsChanged tracks executeMany" 2 tracked
         , testCase "executeNamed binds named parameters" $
             withConnection ":memory:" \conn -> do
                 _ <- execute_ conn "CREATE TABLE named_params (a INTEGER, b TEXT)"

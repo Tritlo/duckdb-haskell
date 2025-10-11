@@ -164,7 +164,7 @@ findDuckDBHeader = do
 findDuckDBLibrary :: IO (Maybe FilePath)
 findDuckDBLibrary = do
   paths <- librarySearchPaths
-  pure . listToMaybe . catMaybes =<< mapM (findFile paths) systemLibraryCandidates
+  listToMaybe . catMaybes <$> mapM (findFile paths) systemLibraryCandidates
 
 headerSearchPaths :: IO [FilePath]
 headerSearchPaths = do

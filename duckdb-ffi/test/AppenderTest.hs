@@ -295,8 +295,10 @@ appenderNumericAndFloatScalars =
                         alloca \ptr -> do
                             c_duckdb_value_uhugeint resPtr 8 0 ptr
                             peek ptr >>= (@?= uhugeVal)
-                        (realToFrac <$> c_duckdb_value_float resPtr 9 0) >>= (@?= floatVal)
-                        (realToFrac <$> c_duckdb_value_double resPtr 10 0) >>= (@?= doubleVal)
+                        fv <- c_duckdb_value_float resPtr 9 0
+                        realToFrac fv @?= floatVal
+                        dv <- c_duckdb_value_double resPtr 10 0
+                        realToFrac dv @?= doubleVal
 
 appenderTemporalTypes :: TestTree
 appenderTemporalTypes =

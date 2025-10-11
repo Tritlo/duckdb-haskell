@@ -46,11 +46,9 @@ arrowSchemaRoundtrip =
                                     let childCount = fromIntegral (arrowSchemaChildCount schema)
                                     let childArrayPtr = arrowSchemaChildren schema
                                     assertBool "children pointer should not be null" (childArrayPtr /= nullPtr)
-                                    childPtrs <- peekArray childCount childArrayPtr
-                                    firstChild <- peek (childPtrs !! 0)
-                                    secondChild <- peek (childPtrs !! 1)
-                                    peekCString (arrowSchemaName firstChild) >>= (@?= "id")
-                                    peekCString (arrowSchemaName secondChild) >>= (@?= "label")
+                                    [fc, sc] <- peekArray childCount childArrayPtr >>= mapM peek
+                                    peekCString (arrowSchemaName fc) >>= (@?= "id")
+                                    peekCString (arrowSchemaName sc) >>= (@?= "label")
                                     assertBool "schema release pointer should be set" (arrowSchemaRelease schema /= nullFunPtr)
 
                                     withConvertedSchema conn schemaPtr (const (pure ()))
@@ -146,7 +144,7 @@ withLogicalTypes (t : ts) action =
 
 withColumnNames :: [String] -> (Ptr CString -> IO a) -> IO a
 withColumnNames names action =
-    withMany withCString names \cNames -> withArray cNames action
+    withMany withCString names $ \cNames -> withArray cNames action
 
 withArrowSchema :: (Ptr ArrowSchema -> IO a) -> IO a
 withArrowSchema = withStruct zeroArrowSchema

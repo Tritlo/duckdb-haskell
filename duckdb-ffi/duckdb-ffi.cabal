@@ -1,12 +1,13 @@
 cabal-version:      2.2
 name:               duckdb-ffi
 version:            0.1.4.0
-license:            LicenseRef-AllRightsReserved
-author:             Matthias Pall Gissurarson
+author:             Matthias Pall Gissurarson, DPella AB
 maintainer:         matti@dpella.io,
                     lobo@dpella.io
 category:           Database
 build-type:         Custom
+license:            MPL-2.0
+license-file:       LICENSE
 
 custom-setup
   setup-depends: base, Cabal, directory, filepath, process

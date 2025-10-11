@@ -1,3 +1,5 @@
+{-# LANGUAGE TypeOperators #-}
+
 {- |
 Module      : Database.DuckDB.Simple.Types
 Description : Shared data types for the duckdb-simple public surface.
@@ -15,6 +17,7 @@ module Database.DuckDB.Simple.Types (
     FormatError (..),
     Null (..),
     Only (..),
+    (:.) (..),
 ) where
 
 import Control.Exception (Exception)
@@ -34,6 +37,12 @@ data Null = Null
 -- | Wrapper used for single-column rows.
 newtype Only a = Only {fromOnly :: a}
     deriving (Eq, Ord, Show, Read)
+
+-- | Convenience product type for combining 'FromRow'/'ToRow' instances.
+data h :. t = h :. t
+    deriving (Eq, Ord, Show, Read)
+
+infixr 3 :.
 
 -- | Raised when parameter formatting fails before a statement is executed.
 data FormatError = FormatError

@@ -32,7 +32,7 @@ main =
 - `Database.DuckDB.Simple.FromField` / `FromRow` – typeclasses for decoding
   query results returned by `query`/`query_`.
 - `Database.DuckDB.Simple.Types` – common utility types (`Query`, `Null`,
-  `Only`, `SQLError`).
+  `Only`, `(:.)`, `SQLError`).
 - `Database.DuckDB.Simple.Function` – register scalar Haskell functions that
   can be invoked directly from SQL.
 
@@ -115,6 +115,14 @@ available when a custom instance needs fine-grained control.
 - `execute`/`query` variants reset statement bindings each run so prepared
   statements can be reused safely.
 
+### Metadata helpers
+
+- `columnCount` and `columnName` expose prepared-statement metadata so you can
+  inspect result shapes before executing a query.
+- `rowsChanged` tracks the number of rows affected by the most recent mutation
+  on a connection. DuckDB does not offer a `lastInsertRowId`; prefer SQL
+  `RETURNING` clauses when you need generated identifiers.
+
 ### Feature Coverage & Roadmap
 
 Included today:
@@ -123,12 +131,13 @@ Included today:
 - High-level execution (`execute*`) and eager queries (`query*`, `queryNamed`).
 - Row decoding via `FromField`/`FromRow`, including generic deriving support.
 - Basic transaction helpers (`withTransaction`, `withSavepoint` fallback).
+- Metadata helpers: `columnCount`, `columnName`, and connection-level
+  `rowsChanged`.
 
 Planned for a future release:
 
 - Streaming/folding APIs built on DuckDB result chunks.
 - Broader type coverage (temporal, structured, and vector types).
-- Metadata helpers such as `columnName`/`columnCount`.
 - Native savepoints once DuckDB exposes the required support.
 
 ## User-Defined Functions

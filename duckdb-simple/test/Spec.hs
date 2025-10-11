@@ -6,6 +6,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeOperators #-}
 
 -- | Tasty-based test suite for duckdb-simple.
 module Main (main) where
@@ -93,6 +94,10 @@ connectionTests =
             conn <- open ":memory:"
             close conn
             close conn
+        , testCase "rowsChanged defaults to zero" $
+            withConnection ":memory:" \conn -> do
+                count <- rowsChanged conn
+                assertEqual "initial rowsChanged" 0 count
         ]
 
 withConnectionTests :: TestTree
@@ -144,6 +149,8 @@ statementTests =
                 _ <- execute_ conn "CREATE TABLE test_exec (x INTEGER)"
                 count <- execute conn "INSERT INTO test_exec VALUES (?)" (Only (1 :: Int))
                 assertEqual "rows affected" 1 count
+                tracked <- rowsChanged conn
+                assertEqual "rowsChanged tracks execute" 1 tracked
         , testCase "execute runs with positional parameters" $
             withConnection ":memory:" \conn -> do
                 _ <- execute_ conn "CREATE TABLE exec_params (a INTEGER, b TEXT)"
@@ -165,6 +172,8 @@ statementTests =
                 _ <- execute_ conn "CREATE TABLE params_many (a INTEGER, b TEXT)"
                 total <- executeMany conn "INSERT INTO params_many VALUES (?, ?)" [(1 :: Int, "x" :: String), (2 :: Int, "y" :: String)]
                 assertEqual "rows affected" 2 total
+                tracked <- rowsChanged conn
+                assertEqual "rowsChanged tracks executeMany" 2 tracked
         , testCase "executeNamed binds named parameters" $
             withConnection ":memory:" \conn -> do
                 _ <- execute_ conn "CREATE TABLE named_params (a INTEGER, b TEXT)"
@@ -203,6 +212,18 @@ statementTests =
                 _ <- executeMany conn "INSERT INTO person VALUES (?, ?)" [(1 :: Int, "Alice" :: String), (2 :: Int, "Bob" :: String)]
                 people <- query_ conn "SELECT id, name FROM person ORDER BY id" :: IO [Person]
                 assertEqual "person rows" [Person 1 (Text.pack "Alice"), Person 2 (Text.pack "Bob")] people
+        , testCase "(:.) composes row parsing and parameter encoding" $
+            withConnection ":memory:" \conn -> do
+                _ <- execute_ conn "CREATE TABLE dot_pair (a INTEGER, b INTEGER, label TEXT)"
+                let payload = Only (7 :: Int) :. (8 :: Int, Text.pack "hi")
+                _ <- execute conn "INSERT INTO dot_pair VALUES (?, ?, ?)" payload
+                rows <- query_ conn "SELECT a, b, label FROM dot_pair" :: IO [Only Int :. (Int, Text.Text)]
+                case rows of
+                    [Only a :. (b, label)] -> do
+                        assertEqual "(:.) first" 7 a
+                        assertEqual "(:.) second" 8 b
+                        assertEqual "(:.) label" (Text.pack "hi") label
+                    other -> assertFailure ("unexpected (:.) rows: " <> show other)
         , testCase "query_ fetches rows" $
             withConnection ":memory:" \conn -> do
                 _ <- execute_ conn "CREATE TABLE query_rows (a INTEGER, b TEXT)"
@@ -246,6 +267,18 @@ statementTests =
                 none <- namedParameterIndex stmt "missing"
                 assertEqual "missing parameter index" Nothing none
                 closeStatement stmt
+        , testCase "reports column metadata for statements" $
+            withConnection ":memory:" \conn -> do
+                stmt <- openStatement conn "SELECT 1 AS a, 2 AS b"
+                count <- columnCount stmt
+                assertEqual "column count" 2 count
+                name0 <- columnName stmt 0
+                name1 <- columnName stmt 1
+                assertEqual "column names" [Text.pack "a", Text.pack "b"] [name0, name1]
+                assertThrows
+                    (columnName stmt 2)
+                    (Text.isInfixOf "out of bounds" . sqlErrorMessage)
+                closeStatement stmt
         , testCase "bindNamed rejects statements without named placeholders" $
             withConnection ":memory:" \conn -> do
                 stmt <- openStatement conn "SELECT ?"
@@ -287,8 +320,8 @@ functionsTests =
             withConnection ":memory:" \conn -> do
                 createFunction conn "hs_optional" (\(mx :: Maybe Int64) -> fmap (+ 1) mx)
                 rows <-
-                    query_ conn "SELECT hs_optional(x) FROM (VALUES (NULL), (41)) AS t(x)"
-                        :: IO [Only (Maybe Int64)]
+                    query_ conn "SELECT hs_optional(x) FROM (VALUES (NULL), (41)) AS t(x)" ::
+                        IO [Only (Maybe Int64)]
                 assertEqual "optional results" [Only Nothing, Only (Just 42)] rows
         , testCase "supports IO-based functions" $
             withConnection ":memory:" \conn -> do

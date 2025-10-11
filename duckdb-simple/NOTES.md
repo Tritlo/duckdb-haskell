@@ -83,3 +83,17 @@ us understand past decisions and avoid repeating mistakes.
 - Verified that every newly exported helper (`RowParser`, `field`, `fieldWith`,
   `numFieldsRemaining`) carries Haddock documentation to keep the public API
   discoverable.
+
+## 2024-10-12 — Phase 7 metadata & ergonomics
+
+- DuckDB exposes column metadata through both prepared-statement and result
+  APIs; `columnCount`/`columnName` now wrap the prepared-statement path, but
+  callers should expect zero-based indexing and `SQLError` when requesting an
+  out-of-bounds column (DuckDB returns a null pointer rather than an error
+  code).
+- The new connection-level `rowsChanged` helper tracks the most recent mutation
+  by persisting counts in an `IORef`. DuckDB still lacks a portable
+  `last_insert_rowid`, so the README points users to SQL `RETURNING` instead.
+- Reintroducing the `(:.)` combinator required enabling `TypeOperators` across
+  `Types`, `FromRow`, and `ToRow`; remember to pull that language pragma into
+  any future modules that reference the operator directly.

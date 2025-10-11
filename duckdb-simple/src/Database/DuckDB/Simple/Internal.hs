@@ -53,6 +53,7 @@ instance IsString Query where
 -- | Tracks the lifetime of a DuckDB database and connection pair.
 data Connection = Connection
     { connectionState :: !(IORef ConnectionState)
+    , connectionRowsChanged :: !(IORef Int)
     }
 
 -- | Internal connection lifecycle state.

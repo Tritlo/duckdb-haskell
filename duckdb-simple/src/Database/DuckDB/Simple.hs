@@ -26,6 +26,8 @@ module Database.DuckDB.Simple (
     withStatement,
     clearStatementBindings,
     namedParameterIndex,
+    columnCount,
+    columnName,
     executeStatement,
     execute,
     executeMany,
@@ -40,6 +42,9 @@ module Database.DuckDB.Simple (
     withSavepoint,
     query,
     query_,
+
+    -- * Metadata
+    rowsChanged,
 
     -- * Errors and conversions
     SQLError (..),
@@ -58,6 +63,8 @@ module Database.DuckDB.Simple (
     NamedParam (..),
     Null (..),
     Only (..),
+    (:.) (..),
+
     -- * User-defined scalar functions
     Function,
     createFunction,
@@ -66,7 +73,7 @@ module Database.DuckDB.Simple (
 
 import Control.Exception (bracket, mask, onException, throwIO, try)
 import Control.Monad (forM, void, when, zipWithM_)
-import Data.IORef (atomicModifyIORef', mkWeakIORef, newIORef)
+import Data.IORef (atomicModifyIORef', mkWeakIORef, newIORef, readIORef)
 import Data.Maybe (isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -101,7 +108,7 @@ import Database.DuckDB.Simple.Internal (
  )
 import Database.DuckDB.Simple.ToField (FieldBinding, NamedParam (..), ToField (..), bindFieldBinding, renderFieldBinding)
 import Database.DuckDB.Simple.ToRow (ToRow (..))
-import Database.DuckDB.Simple.Types (FormatError (..), Null (..), Only (..))
+import Database.DuckDB.Simple.Types (FormatError (..), Null (..), Only (..), (:.) (..))
 import Foreign.C.String (CString, peekCString, withCString)
 import Foreign.C.Types (CBool (..), CDouble (..))
 import Foreign.Marshal.Alloc (alloca)
@@ -267,16 +274,50 @@ namedParameterIndex stmt name =
                                 else pure (Just (fromIntegral idx))
                         else pure Nothing
 
--- | Execute a prepared statement and return the number of affected rows.
+{- | Return the number of rows affected by the most recent data-changing statement
+executed on the supplied connection.
+
+The counter updates when functions such as 'execute', 'executeMany',
+'executeNamed', and 'execute_' complete successfully. DuckDB does not expose a
+stable @last_insert_rowid@ equivalent; prefer SQL @RETURNING@ clauses when you
+need to capture generated identifiers.
+-}
+rowsChanged :: Connection -> IO Int
+rowsChanged Connection{connectionRowsChanged} = readIORef connectionRowsChanged
+
+-- | Retrieve the number of columns produced by the supplied prepared statement.
+columnCount :: Statement -> IO Int
+columnCount stmt =
+    withStatementHandle stmt \handle ->
+        fmap fromIntegral (c_duckdb_prepared_statement_column_count handle)
+
+-- | Look up the zero-based column name exposed by a prepared statement result.
+columnName :: Statement -> Int -> IO Text
+columnName stmt columnIndex
+    | columnIndex < 0 = throwIO (columnIndexError stmt columnIndex Nothing)
+    | otherwise =
+        withStatementHandle stmt \handle -> do
+            total <- fmap fromIntegral (c_duckdb_prepared_statement_column_count handle)
+            when (columnIndex >= total) $
+                throwIO (columnIndexError stmt columnIndex (Just total))
+            namePtr <- c_duckdb_prepared_statement_column_name handle (fromIntegral columnIndex)
+            if namePtr == nullPtr
+                then throwIO (columnNameUnavailableError stmt columnIndex)
+                else do
+                    name <- Text.pack <$> peekCString namePtr
+                    c_duckdb_free (castPtr namePtr)
+                    pure name
+
 executeStatement :: Statement -> IO Int
-executeStatement stmt =
+executeStatement stmt@Statement{statementConnection} =
     withStatementHandle stmt \handle ->
         alloca \resPtr -> do
             rc <- c_duckdb_execute_prepared handle resPtr
             if rc == DuckDBSuccess
                 then do
-                    changed <- rowsChanged resPtr
+                    changed <- resultRowsChanged resPtr
                     c_duckdb_destroy_result resPtr
+                    recordRowsChanged statementConnection changed
                     pure changed
                 else do
                     (errMsg, _) <- fetchResultError resPtr
@@ -295,7 +336,9 @@ executeMany :: (ToRow q) => Connection -> Query -> [q] -> IO Int
 executeMany conn queryText rows =
     withStatement conn queryText \stmt -> do
         changes <- mapM (\row -> bind stmt (toRow row) >> executeStatement stmt) rows
-        pure (sum changes)
+        let total = sum changes
+        recordRowsChanged conn total
+        pure total
 
 -- | Execute an ad-hoc query without parameters and return the affected row count.
 execute_ :: Connection -> Query -> IO Int
@@ -306,8 +349,9 @@ execute_ conn queryText =
                 rc <- c_duckdb_query connPtr sql resPtr
                 if rc == DuckDBSuccess
                     then do
-                        changed <- rowsChanged resPtr
+                        changed <- resultRowsChanged resPtr
                         c_duckdb_destroy_result resPtr
+                        recordRowsChanged conn changed
                         pure changed
                     else do
                         (errMsg, errType) <- fetchResultError resPtr
@@ -430,11 +474,18 @@ withTransactionMode begin commit rollback conn action =
 executeIgnore :: Connection -> Query -> IO ()
 executeIgnore conn q = void (execute_ conn q)
 
+recordRowsChanged :: Connection -> Int -> IO ()
+recordRowsChanged Connection{connectionRowsChanged} value =
+    atomicModifyIORef'
+        connectionRowsChanged
+        (const (value, ()))
+
 -- Internal helpers -----------------------------------------------------------
 
 createConnection :: DuckDBDatabase -> DuckDBConnection -> IO Connection
 createConnection db conn = do
     ref <- newIORef (ConnectionOpen db conn)
+    rowsChangedRef <- newIORef 0
     _ <-
         mkWeakIORef ref $
             void $
@@ -442,7 +493,7 @@ createConnection db conn = do
                     ConnectionClosed -> (ConnectionClosed, pure ())
                     openState@(ConnectionOpen{}) ->
                         (ConnectionClosed, closeHandles openState)
-    pure Connection{connectionState = ref}
+    pure Connection{connectionState = ref, connectionRowsChanged = rowsChangedRef}
 
 createStatement :: Connection -> DuckDBPreparedStatement -> Query -> IO Statement
 createStatement parent handle query = do
@@ -577,6 +628,42 @@ throwFormatErrorNamed stmt message bindings =
     renderNamed (name, binding) =
         Text.unpack name <> " := " <> renderFieldBinding binding
 
+columnIndexError :: Statement -> Int -> Maybe Int -> SQLError
+columnIndexError stmt idx total =
+    let base =
+            Text.concat
+                [ Text.pack "duckdb-simple: column index "
+                , Text.pack (show idx)
+                , Text.pack " out of bounds"
+                ]
+        message =
+            case total of
+                Nothing -> base
+                Just count ->
+                    Text.concat
+                        [ base
+                        , Text.pack " (column count: "
+                        , Text.pack (show count)
+                        , Text.pack ")"
+                        ]
+     in SQLError
+            { sqlErrorMessage = message
+            , sqlErrorType = Nothing
+            , sqlErrorQuery = Just (statementQuery stmt)
+            }
+
+columnNameUnavailableError :: Statement -> Int -> SQLError
+columnNameUnavailableError stmt idx =
+    SQLError
+        { sqlErrorMessage =
+            Text.concat
+                [ Text.pack "duckdb-simple: column name unavailable for index "
+                , Text.pack (show idx)
+                ]
+        , sqlErrorType = Nothing
+        , sqlErrorQuery = Just (statementQuery stmt)
+        }
+
 isSavepointUnsupported :: SQLError -> Bool
 isSavepointUnsupported SQLError{sqlErrorMessage} =
     Text.isInfixOf (Text.pack "SAVEPOINT") sqlErrorMessage
@@ -596,8 +683,8 @@ normalizeName name =
             | prefix == ':' || prefix == '$' || prefix == '@' -> rest
         _ -> name
 
-rowsChanged :: Ptr DuckDBResult -> IO Int
-rowsChanged resPtr = fromIntegral <$> c_duckdb_rows_changed resPtr
+resultRowsChanged :: Ptr DuckDBResult -> IO Int
+resultRowsChanged resPtr = fromIntegral <$> c_duckdb_rows_changed resPtr
 
 convertRows :: (FromRow r) => Query -> [[Field]] -> IO [r]
 convertRows queryText rows =

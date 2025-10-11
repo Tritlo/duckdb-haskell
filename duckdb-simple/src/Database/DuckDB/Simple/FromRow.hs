@@ -41,7 +41,7 @@ import GHC.Generics
 import Database.DuckDB.Simple.FromField
 import Database.DuckDB.Simple.Internal (SQLError (..))
 import Database.DuckDB.Simple.Ok (Ok (..))
-import Database.DuckDB.Simple.Types (Only (..), Query)
+import Database.DuckDB.Simple.Types (Only (..), Query, (:.) (..))
 
 -- | Row parsing environment (read-only data available to the parser).
 newtype RowParseRO = RowParseRO
@@ -149,6 +149,9 @@ instance FromRow () where
 
 instance (FromField a) => FromRow (Only a) where
     fromRow = Only <$> field
+
+instance (FromRow a, FromRow b) => FromRow (a :. b) where
+    fromRow = (:.) <$> fromRow <*> fromRow
 
 instance (FromField a, FromField b) => FromRow (a, b) where
     fromRow = (,) <$> field <*> field

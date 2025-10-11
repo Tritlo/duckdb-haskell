@@ -16,7 +16,7 @@ module Database.DuckDB.Simple.ToRow (
 ) where
 
 import Database.DuckDB.Simple.ToField (FieldBinding, ToField (..))
-import Database.DuckDB.Simple.Types (Only (..))
+import Database.DuckDB.Simple.Types (Only (..), (:.) (..))
 import GHC.Generics
 
 -- | Types that can be transformed into parameter bindings.
@@ -61,3 +61,6 @@ instance (ToField a, ToField b, ToField c, ToField d, ToField e) => ToRow (a, b,
 
 instance (ToField a) => ToRow [a] where
     toRow = fmap toField
+
+instance (ToRow a, ToRow b) => ToRow (a :. b) where
+    toRow (a :. b) = toRow a ++ toRow b

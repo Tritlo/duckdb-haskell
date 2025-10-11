@@ -13,6 +13,7 @@ module Database.DuckDB.Simple.FromField (
     Field (..),
     FieldValue (..),
     ResultError (..),
+    FieldParser,
     FromField (..),
 ) where
 
@@ -110,9 +111,16 @@ data ResultError
 
 instance Exception ResultError
 
+-- | Parser used by 'FromField' instances and utilities such as
+-- 'Database.DuckDB.Simple.FromRow.fieldWith'. The supplied 'Field' contains
+-- column metadata and an already-decoded 'FieldValue'; callers should return
+-- either a successfully converted value or a 'ResultError' describing the
+-- failure.
+type FieldParser a = Field -> Either ResultError a
+
 -- | Types that can be constructed from a DuckDB column.
 class FromField a where
-    fromField :: Field -> Either ResultError a
+    fromField :: FieldParser a
 
 instance FromField FieldValue where
     fromField Field{fieldValue} = Right fieldValue

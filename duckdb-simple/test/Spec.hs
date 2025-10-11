@@ -71,7 +71,25 @@ instance FromRow YesNo where
                                                 , normalized
                                                 ]
                                         }
+                                        
+newtype NonEmptyText = NonEmptyText Text.Text
+    deriving (Eq, Show)
 
+nonEmptyTextParser :: FieldParser NonEmptyText
+nonEmptyTextParser field@Field{fieldIndex} =
+    case fromField field :: Either ResultError Text.Text of
+        Left err -> Left err
+        Right txt
+            | Text.null txt ->
+                Left
+                    ConversionError
+                        { resultErrorColumn = fieldIndex
+                        , resultErrorMessage = Text.pack "NonEmptyText requires a non-empty string"
+                        }
+            | otherwise -> Right (NonEmptyText txt)
+
+instance FromField NonEmptyText where
+    fromField = nonEmptyTextParser
 main :: IO ()
 main = defaultMain tests
 
@@ -328,6 +346,16 @@ typeTests =
                 _ <- execute conn "INSERT INTO blobs VALUES (?)" (Only payload)
                 [Only blobOut] <- query_ conn "SELECT payload FROM blobs"
                 assertEqual "blob round-trip" payload blobOut
+        , testCase "custom FieldParser enforces invariants" $
+            withConnection ":memory:" \conn -> do
+                _ <- execute_ conn "CREATE TABLE nonempty (name TEXT)"
+                _ <- execute conn "INSERT INTO nonempty VALUES (?)" (Only (Text.pack "okay"))
+                rows <- query_ conn "SELECT name FROM nonempty" :: IO [Only NonEmptyText]
+                assertEqual "non-empty success" [Only (NonEmptyText (Text.pack "okay"))] rows
+                _ <- execute conn "INSERT INTO nonempty VALUES (?)" (Only (Text.pack ""))
+                assertThrows
+                    (query_ conn "SELECT name FROM nonempty" :: IO [Only NonEmptyText])
+                    (Text.isInfixOf "NonEmptyText requires a non-empty string" . sqlErrorMessage)
         ]
 
 streamingTests :: TestTree

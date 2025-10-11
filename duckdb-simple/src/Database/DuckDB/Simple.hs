@@ -51,6 +51,7 @@ module Database.DuckDB.Simple (
     SQLError (..),
     FormatError (..),
     ResultError (..),
+    FieldParser,
     FromField (..),
     FromRow (..),
     RowParser,
@@ -90,6 +91,7 @@ import Database.DuckDB.FFI
 import Database.DuckDB.Simple.FromField (
     Field (..),
     FieldValue (..),
+    FieldParser,
     FromField (..),
     ResultError (..),
  )

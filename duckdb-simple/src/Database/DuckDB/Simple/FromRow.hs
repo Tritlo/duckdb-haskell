@@ -83,8 +83,8 @@ class FromRow a where
     default fromRow :: (Generic a, GFromRow (Rep a)) => RowParser a
     fromRow = to <$> gFromRow
 
--- | Pull the next field using the provided conversion function.
-fieldWith :: (Field -> Either ResultError a) -> RowParser a
+-- | Pull the next field using the provided 'FieldParser'.
+fieldWith :: FieldParser a -> RowParser a
 fieldWith fieldParser = RowParser $ do
     RowParseRO{rowParseColumnCount} <- ask
     (columnIndex, remaining) <- lift get

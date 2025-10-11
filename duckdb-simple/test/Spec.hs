@@ -14,9 +14,13 @@ module Main (main) where
 import Control.Applicative ((<|>))
 import Control.Exception (ErrorCall, Exception, try)
 import Control.Monad (replicateM)
+import qualified Data.ByteString as BS
 import Data.IORef (atomicModifyIORef', newIORef)
 import Data.Int (Int64)
 import qualified Data.Text as Text
+import Data.Time.Calendar (fromGregorian)
+import Data.Time.Clock (UTCTime)
+import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), localTimeToUTC, utc)
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (Field (..))
 import GHC.Generics (Generic)
@@ -79,6 +83,7 @@ tests =
         [ connectionTests
         , withConnectionTests
         , statementTests
+        , typeTests
         , streamingTests
         , functionsTests
         , transactionTests
@@ -306,6 +311,32 @@ statementTests =
                 _ <- executeMany conn "INSERT INTO yesno VALUES (?)" [Only ("yes" :: String), Only ("no" :: String)]
                 rows <- query_ conn "SELECT answer FROM yesno ORDER BY answer" :: IO [YesNo]
                 assertEqual "yes/no parsing" [YesNo False, YesNo True] rows
+        ]
+
+typeTests :: TestTree
+typeTests =
+    testGroup
+        "types"
+        [ testCase "round-trips date/time/timestamp" $
+            withConnection ":memory:" \conn -> do
+                _ <- execute_ conn "CREATE TABLE temporals (d DATE, t TIME, ts TIMESTAMP)"
+                let dayVal = fromGregorian 2024 10 12
+                    timeVal = TimeOfDay 14 30 15.123456
+                    tsVal = LocalTime dayVal timeVal
+                _ <- execute conn "INSERT INTO temporals VALUES (?, ?, ?)" (dayVal, timeVal, tsVal)
+                [(dRes, tRes, tsRes)] <- query_ conn "SELECT d, t, ts FROM temporals"
+                assertEqual "date round-trip" dayVal dRes
+                assertEqual "time round-trip" timeVal tRes
+                assertEqual "timestamp round-trip" tsVal tsRes
+                [Only utcRes] <- query_ conn "SELECT ts FROM temporals" :: IO [Only UTCTime]
+                assertEqual "timestamp as UTC" (localTimeToUTC utc tsVal) utcRes
+        , testCase "round-trips blob payloads" $
+            withConnection ":memory:" \conn -> do
+                _ <- execute_ conn "CREATE TABLE blobs (payload BLOB)"
+                let payload = BS.pack [0, 1, 2, 3, 255]
+                _ <- execute conn "INSERT INTO blobs VALUES (?)" (Only payload)
+                [Only blobOut] <- query_ conn "SELECT payload FROM blobs"
+                assertEqual "blob round-trip" payload blobOut
         ]
 
 streamingTests :: TestTree

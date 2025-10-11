@@ -108,13 +108,26 @@ us understand past decisions and avoid repeating mistakes.
 - Streaming chunks expose raw vectors rather than column metadata names. We now
   capture column descriptors up-front via the prepared-statement metadata so
   streamed `Field` values mirror the eager query path (names, indices, types).
-- Only primitive scalar types (bool/ints/floats/varchar) are decoded so far;
-  encountering a column with an unsupported DuckDB type raises a descriptive
-  `SQLError`. Temporal/list/struct coverage is deferred to the “Extended Type
-  Coverage” phase.
+- Streaming chunk decoders now cover bool/int/float/text as well as the new
+  temporal/blob cases. List/struct/vector families still fall back to a
+  descriptive `SQLError` until Phase 9 follow-up work lands.
 - `nextRow` shares the streaming cursor with the new `fold*` helpers. Resetting
   the prepared statement bindings or closing the statement tears down the
   stream so eager queries can run afterwards without seeing the stale result.
 - Added regression tests that fold thousands of rows, exercise parameterised
   folds, and iterate with `nextRow` to guard against future refactors breaking
   the chunk lifecycle.
+
+## 2024-10-12 — Extended type coverage
+
+- Added `FieldValue` constructors and `FromField`/`ToField` instances for DuckDB
+  temporal types (`DATE`, `TIME`, `TIMESTAMP`). Values map to `Day`,
+  `TimeOfDay`, `LocalTime`, and `UTCTime` so application code can lean on the
+  standard `Data.Time` APIs.
+- Binary columns now surface as strict `ByteString` both eagerly and through
+  streaming folds. The BLOB helpers copy out the underlying buffer and release
+  the DuckDB allocation immediately to avoid lifetime pitfalls.
+- Dedicated UUID round-tripping remains on the backlog; for now UUID columns
+  surface as text so callers can opt into parsing once the mapping stabilises.
+- Updated the README to document the new mappings and tightened the tests with
+  round-trip coverage for temporals and blobs to catch future regressions.

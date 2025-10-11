@@ -140,6 +140,14 @@ sumValues conn =
 For manual cursor-style iteration, use `nextRow`/`nextRowWith` on an open
 `Statement` to pull rows one at a time and decide when to stop.
 
+### Temporal & Binary Types
+
+`duckdb-simple` now maps DuckDB temporal columns directly onto familiar
+`Data.Time` types (`DATE` → `Day`, `TIME` → `TimeOfDay`, `TIMESTAMP` →
+`LocalTime`/`UTCTime`). Binary blobs surface as strict `ByteString` values. Casting
+logic plugs into the existing `ToField`/`FromField` classes, so round-tripping values
+through prepared statements works just like the numeric and text helpers shown earlier.
+
 ### Feature Coverage & Roadmap
 
 Included today:
@@ -147,6 +155,8 @@ Included today:
 - Connections, prepared statements, positional/named parameter binding.
 - High-level execution (`execute*`) and eager queries (`query*`, `queryNamed`).
 - Streaming/folding helpers (`fold`, `foldNamed`, `fold_`, `nextRow`).
+- Temporal (`Day`, `TimeOfDay`, `LocalTime`, `UTCTime`) and blob (`ByteString`)
+  round-trips via `FromField`/`ToField` instances.
 - Row decoding via `FromField`/`FromRow`, including generic deriving support.
 - Basic transaction helpers (`withTransaction`, `withSavepoint` fallback).
 - Metadata helpers: `columnCount`, `columnName`, and connection-level
@@ -154,7 +164,7 @@ Included today:
 
 Planned for a future release:
 
-- Broader type coverage (temporal, structured, and vector types).
+- Broader type coverage for structured/list/decimal families, including UUID-friendly APIs.
 - Native savepoints once DuckDB exposes the required support.
 
 ## User-Defined Functions

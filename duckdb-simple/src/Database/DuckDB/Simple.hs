@@ -86,7 +86,10 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
 import qualified Data.Text.Encoding as TextEncoding
+import Data.Time.Calendar (Day, fromGregorian)
+import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..))
 import Data.Word (Word16, Word32, Word64, Word8)
+import Data.Ratio ((%))
 import Database.DuckDB.FFI
 import Database.DuckDB.Simple.FromField (
     Field (..),
@@ -124,7 +127,7 @@ import Database.DuckDB.Simple.ToField (FieldBinding, NamedParam (..), ToField (.
 import Database.DuckDB.Simple.ToRow (ToRow (..))
 import Database.DuckDB.Simple.Types (FormatError (..), Null (..), Only (..), (:.) (..))
 import Foreign.C.String (CString, peekCString, withCString)
-import Foreign.C.Types (CBool (..), CDouble (..))
+import Foreign.C.Types (CBool (..), CDouble (..), CChar)
 import Foreign.Marshal.Alloc (alloca, free, malloc)
 import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.Storable (peek, peekElemOff, poke)
@@ -663,6 +666,21 @@ buildField query rowIdx column StatementStreamChunkVector{statementStreamChunkVe
                 DuckDBTypeUHugeInt -> do
                     raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr Word64) rowIdx
                     pure (FieldInt (fromIntegral raw))
+                DuckDBTypeBlob -> do
+                    blob <- chunkDecodeBlob statementStreamChunkVectorData duckIdx
+                    pure (FieldBlob blob)
+                DuckDBTypeDate -> do
+                    raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr Int32) rowIdx
+                    day <- decodeDuckDBDate (DuckDBDate raw)
+                    pure (FieldDate day)
+                DuckDBTypeTime -> do
+                    raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr DuckDBTime) rowIdx
+                    tod <- decodeDuckDBTime raw
+                    pure (FieldTime tod)
+                DuckDBTypeTimestamp -> do
+                    raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr DuckDBTimestamp) rowIdx
+                    ts <- decodeDuckDBTimestamp raw
+                    pure (FieldTimestamp ts)
                 DuckDBTypeFloat -> do
                     raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr Float) rowIdx
                     pure (FieldDouble (realToFrac raw))
@@ -698,6 +716,18 @@ chunkDecodeText dataPtr rowIdx = do
             cstr <- c_duckdb_string_t_data stringPtr
             bytes <- BS.packCStringLen (cstr, fromIntegral len)
             pure (TextEncoding.decodeUtf8 bytes)
+
+chunkDecodeBlob :: Ptr () -> DuckDBIdx -> IO BS.ByteString
+chunkDecodeBlob dataPtr rowIdx = do
+    let base = castPtr dataPtr :: Ptr Word8
+        offset = fromIntegral rowIdx * duckdbStringTSize
+        stringPtr = castPtr (base `plusPtr` offset) :: Ptr DuckDBStringT
+    len <- c_duckdb_string_t_length stringPtr
+    if len == 0
+        then pure BS.empty
+        else do
+            ptr <- c_duckdb_string_t_data stringPtr
+            BS.packCStringLen (ptr, fromIntegral len)
 
 duckdbStringTSize :: Int
 duckdbStringTSize = 16
@@ -1077,6 +1107,11 @@ fetchFieldValue resPtr dtype columnIndex rowIndex = do
                 CDouble d <- c_duckdb_value_double resPtr duckCol duckRow
                 pure (FieldDouble (realToFrac d))
             DuckDBTypeVarchar -> FieldText <$> fetchTextValue resPtr duckCol duckRow
+            DuckDBTypeBlob -> FieldBlob <$> fetchBlobValue resPtr duckCol duckRow
+            DuckDBTypeDate -> FieldDate <$> fetchDateValue resPtr duckCol duckRow
+            DuckDBTypeTime -> FieldTime <$> fetchTimeValue resPtr duckCol duckRow
+            DuckDBTypeTimestamp -> FieldTimestamp <$> fetchTimestampValue resPtr duckCol duckRow
+            DuckDBTypeUUID -> FieldText <$> fetchTextValue resPtr duckCol duckRow
             _ -> FieldText <$> fetchTextValue resPtr duckCol duckRow
 
 fetchTextValue :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO Text
@@ -1088,6 +1123,73 @@ fetchTextValue resPtr columnIndex rowIndex = do
             value <- peekCString strPtr
             c_duckdb_free (castPtr strPtr)
             pure (Text.pack value)
+
+fetchBlobValue :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO BS.ByteString
+fetchBlobValue resPtr columnIndex rowIndex = do
+    alloca \ptr -> do
+        c_duckdb_value_blob resPtr columnIndex rowIndex ptr
+        DuckDBBlob{duckDBBlobData = dat, duckDBBlobSize = len} <- peek ptr
+        if dat == nullPtr
+            then pure BS.empty
+            else do
+                bs <- BS.packCStringLen (castPtr dat :: Ptr CChar, fromIntegral len)
+                c_duckdb_free dat
+                pure bs
+
+fetchDateValue :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO Day
+fetchDateValue resPtr columnIndex rowIndex = do
+    raw <- c_duckdb_value_date resPtr columnIndex rowIndex
+    decodeDuckDBDate raw
+
+fetchTimeValue :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO TimeOfDay
+fetchTimeValue resPtr columnIndex rowIndex = do
+    raw <- c_duckdb_value_time resPtr columnIndex rowIndex
+    decodeDuckDBTime raw
+
+fetchTimestampValue :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO LocalTime
+fetchTimestampValue resPtr columnIndex rowIndex = do
+    raw <- c_duckdb_value_timestamp resPtr columnIndex rowIndex
+    decodeDuckDBTimestamp raw
+
+decodeDuckDBDate :: DuckDBDate -> IO Day
+decodeDuckDBDate raw =
+    alloca \ptr -> do
+        c_duckdb_from_date raw ptr
+        dateStruct <- peek ptr
+        pure (dateStructToDay dateStruct)
+
+decodeDuckDBTime :: DuckDBTime -> IO TimeOfDay
+decodeDuckDBTime raw =
+    alloca \ptr -> do
+        c_duckdb_from_time raw ptr
+        timeStruct <- peek ptr
+        pure (timeStructToTimeOfDay timeStruct)
+
+decodeDuckDBTimestamp :: DuckDBTimestamp -> IO LocalTime
+decodeDuckDBTimestamp raw =
+    alloca \ptr -> do
+        c_duckdb_from_timestamp raw ptr
+        DuckDBTimestampStruct{duckDBTimestampStructDate = dateStruct, duckDBTimestampStructTime = timeStruct} <- peek ptr
+        pure
+            LocalTime
+                { localDay = dateStructToDay dateStruct
+                , localTimeOfDay = timeStructToTimeOfDay timeStruct
+                }
+
+dateStructToDay :: DuckDBDateStruct -> Day
+dateStructToDay DuckDBDateStruct{duckDBDateStructYear, duckDBDateStructMonth, duckDBDateStructDay} =
+    fromGregorian (fromIntegral duckDBDateStructYear) (fromIntegral duckDBDateStructMonth) (fromIntegral duckDBDateStructDay)
+
+timeStructToTimeOfDay :: DuckDBTimeStruct -> TimeOfDay
+timeStructToTimeOfDay DuckDBTimeStruct{duckDBTimeStructHour, duckDBTimeStructMinute, duckDBTimeStructSecond, duckDBTimeStructMicros} =
+    let secondsInt = fromIntegral duckDBTimeStructSecond :: Integer
+        micros = fromIntegral duckDBTimeStructMicros :: Integer
+        fractional = fromRational (micros % 1000000)
+        totalSeconds = fromInteger secondsInt + fractional
+     in TimeOfDay
+            (fromIntegral duckDBTimeStructHour)
+            (fromIntegral duckDBTimeStructMinute)
+            totalSeconds
 
 peekError :: Ptr CString -> IO Text
 peekError ptr = do

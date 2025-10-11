@@ -29,22 +29,11 @@ import Data.Int (Int16, Int32, Int64)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
+import Data.Time.Calendar (Day, toGregorian)
+import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds)
+import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), timeOfDayToTime, utcToLocalTime, utc)
 import Data.Word (Word16, Word32, Word64, Word8)
-import Database.DuckDB.FFI (
-    DuckDBIdx,
-    DuckDBPreparedStatement,
-    DuckDBValue,
-    c_duckdb_bind_value,
-    c_duckdb_create_blob,
-    c_duckdb_create_bool,
-    c_duckdb_create_double,
-    c_duckdb_create_int64,
-    c_duckdb_create_null_value,
-    c_duckdb_create_varchar,
-    c_duckdb_destroy_value,
-    c_duckdb_prepare_error,
-    pattern DuckDBSuccess,
- )
+import Database.DuckDB.FFI
 import Database.DuckDB.Simple.Internal (
     SQLError (..),
     Statement (..),
@@ -165,6 +154,41 @@ instance ToField BS.ByteString where
                 BS.useAsCStringLen bs \(ptr, len) ->
                     bindDuckValue stmt idx (c_duckdb_create_blob (castPtr ptr :: Ptr Word8) (fromIntegral len))
 
+instance ToField Day where
+    toField day =
+        mkFieldBinding
+            (show day)
+            \stmt idx ->
+                bindDuckValue stmt idx $ do
+                    duckDate <- encodeDay day
+                    c_duckdb_create_date duckDate
+
+instance ToField TimeOfDay where
+    toField tod =
+        mkFieldBinding
+            (show tod)
+            \stmt idx ->
+                bindDuckValue stmt idx $ do
+                    duckTime <- encodeTimeOfDay tod
+                    c_duckdb_create_time duckTime
+
+instance ToField LocalTime where
+    toField ts =
+        mkFieldBinding
+            (show ts)
+            \stmt idx ->
+                bindDuckValue stmt idx $ do
+                    duckTimestamp <- encodeLocalTime ts
+                    c_duckdb_create_timestamp duckTimestamp
+
+instance ToField UTCTime where
+    toField utcTime =
+        let FieldBinding{fieldBindingAction = action} = toField (utcToLocalTime utc utcTime)
+         in FieldBinding
+                { fieldBindingAction = action
+                , fieldBindingDisplay = show utcTime
+                }
+
 instance (ToField a) => ToField (Maybe a) where
     toField Nothing = nullBinding "Nothing"
     toField (Just value) =
@@ -187,6 +211,51 @@ intBinding value =
         (show value)
         \stmt idx ->
             bindDuckValue stmt idx (c_duckdb_create_int64 value)
+
+encodeDay :: Day -> IO DuckDBDate
+encodeDay day =
+    alloca \ptr -> do
+        poke ptr (dayToDateStruct day)
+        c_duckdb_to_date ptr
+
+encodeTimeOfDay :: TimeOfDay -> IO DuckDBTime
+encodeTimeOfDay tod =
+    alloca \ptr -> do
+        poke ptr (timeOfDayToStruct tod)
+        c_duckdb_to_time ptr
+
+encodeLocalTime :: LocalTime -> IO DuckDBTimestamp
+encodeLocalTime LocalTime{localDay, localTimeOfDay} =
+    alloca \ptr -> do
+        poke ptr
+            DuckDBTimestampStruct
+                { duckDBTimestampStructDate = dayToDateStruct localDay
+                , duckDBTimestampStructTime = timeOfDayToStruct localTimeOfDay
+                }
+        c_duckdb_to_timestamp ptr
+
+dayToDateStruct :: Day -> DuckDBDateStruct
+dayToDateStruct day =
+    let (year, month, dayOfMonth) = toGregorian day
+     in DuckDBDateStruct
+            { duckDBDateStructYear = fromIntegral year
+            , duckDBDateStructMonth = fromIntegral month
+            , duckDBDateStructDay = fromIntegral dayOfMonth
+            }
+
+timeOfDayToStruct :: TimeOfDay -> DuckDBTimeStruct
+timeOfDayToStruct tod =
+    let totalPicoseconds = diffTimeToPicoseconds (timeOfDayToTime tod)
+        totalMicros = totalPicoseconds `div` 1000000
+        (hours, remHour) = totalMicros `divMod` (60 * 60 * 1000000)
+        (minutes, remMinute) = remHour `divMod` (60 * 1000000)
+        (seconds, micros) = remMinute `divMod` 1000000
+     in DuckDBTimeStruct
+            { duckDBTimeStructHour = fromIntegral hours
+            , duckDBTimeStructMinute = fromIntegral minutes
+            , duckDBTimeStructSecond = fromIntegral seconds
+            , duckDBTimeStructMicros = fromIntegral micros
+            }
 
 bindDuckValue :: Statement -> DuckDBIdx -> IO DuckDBValue -> IO ()
 bindDuckValue stmt idx makeValue =

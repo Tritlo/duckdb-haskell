@@ -17,9 +17,14 @@ module Database.DuckDB.Simple.FromField (
 ) where
 
 import Control.Exception (Exception)
+import qualified Data.ByteString as BS
 import Data.Int (Int16, Int32, Int64)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
+import Data.Time.Calendar (Day)
+import Data.Time.Clock (UTCTime (..))
+import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), localTimeToUTC, utc)
 import Data.Word (Word16, Word32, Word64)
 import Database.DuckDB.Simple.Types (Null (..))
 
@@ -30,6 +35,10 @@ data FieldValue
     | FieldDouble !Double
     | FieldText !Text
     | FieldBool !Bool
+    | FieldBlob !BS.ByteString
+    | FieldDate !Day
+    | FieldTime !TimeOfDay
+    | FieldTimestamp !LocalTime
     deriving (Eq, Show)
 
 -- | Metadata for a single column in a row.
@@ -172,9 +181,52 @@ instance FromField Text where
                         { resultErrorColumn = fieldIndex
                         , resultErrorExpected = "TEXT"
                         }
+            other -> Left (IncompatibleType fieldIndex "TEXT" (fieldValueTypeName other))
 
 instance FromField String where
     fromField field = Text.unpack <$> fromField field
+
+instance FromField BS.ByteString where
+    fromField Field{fieldIndex, fieldValue} =
+        case fieldValue of
+            FieldBlob bs -> Right bs
+            FieldText t -> Right (TextEncoding.encodeUtf8 t)
+            FieldNull ->
+                Left
+                    UnexpectedNull
+                        { resultErrorColumn = fieldIndex
+                        , resultErrorExpected = "BLOB"
+                        }
+            other -> Left (IncompatibleType fieldIndex "BLOB" (fieldValueTypeName other))
+
+instance FromField Day where
+    fromField Field{fieldIndex, fieldValue} =
+        case fieldValue of
+            FieldDate day -> Right day
+            FieldTimestamp LocalTime{localDay} -> Right localDay
+            other -> Left (IncompatibleType fieldIndex "DATE" (fieldValueTypeName other))
+
+instance FromField TimeOfDay where
+    fromField Field{fieldIndex, fieldValue} =
+        case fieldValue of
+            FieldTime tod -> Right tod
+            FieldTimestamp LocalTime{localTimeOfDay} -> Right localTimeOfDay
+            other -> Left (IncompatibleType fieldIndex "TIME" (fieldValueTypeName other))
+
+instance FromField LocalTime where
+    fromField Field{fieldIndex, fieldValue} =
+        case fieldValue of
+            FieldTimestamp ts -> Right ts
+            FieldDate day -> Right (LocalTime day midnight)
+            other -> Left (IncompatibleType fieldIndex "TIMESTAMP" (fieldValueTypeName other))
+      where
+        midnight = TimeOfDay 0 0 0
+
+instance FromField UTCTime where
+    fromField field =
+        case fromField field of
+            Right (timestamp :: LocalTime) -> Right (localTimeToUTC utc timestamp)
+            Left err -> Left err
 
 instance (FromField a) => FromField (Maybe a) where
     fromField Field{fieldValue = FieldNull} = Right Nothing
@@ -204,3 +256,7 @@ fieldValueTypeName = \case
     FieldDouble{} -> "DOUBLE"
     FieldText{} -> "TEXT"
     FieldBool{} -> "BOOLEAN"
+    FieldBlob{} -> "BLOB"
+    FieldDate{} -> "DATE"
+    FieldTime{} -> "TIME"
+    FieldTimestamp{} -> "TIMESTAMP"

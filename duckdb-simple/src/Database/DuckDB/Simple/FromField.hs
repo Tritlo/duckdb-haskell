@@ -1,10 +1,8 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE ViewPatterns #-}
 
 {- |
@@ -50,9 +48,10 @@ data FieldValue
     | FieldTime !TimeOfDay
     | FieldTimestamp !LocalTime
     -- TODO: HugeInt and UHugeInt support
-    -- | FieldInteger !Integer
-    -- | FieldNatural !Natural
-    deriving (Eq, Show)
+
+    deriving (-- | FieldInteger !Integer
+              -- | FieldNatural !Natural
+              Eq, Show)
 
 -- | Pattern synonym to make it easier to match on any integral type.
 pattern FieldInt :: Int -> FieldValue
@@ -74,13 +73,11 @@ pattern FieldWord i <- (fieldValueToWord -> Just i)
         FieldWord i = FieldWord64 (fromIntegral i)
 
 fieldValueToWord :: FieldValue -> Maybe Word
-fieldValueToWord (FieldWord8 i) = Just  (fromIntegral i)
+fieldValueToWord (FieldWord8 i) = Just (fromIntegral i)
 fieldValueToWord (FieldWord16 i) = Just (fromIntegral i)
 fieldValueToWord (FieldWord32 i) = Just (fromIntegral i)
 fieldValueToWord (FieldWord64 i) = Just (fromIntegral i)
 fieldValueToWord _ = Nothing
-
-
 
 -- | Metadata for a single column in a row.
 data Field = Field
@@ -332,6 +329,7 @@ fieldValueTypeName = \case
     FieldDate{} -> "DATE"
     FieldTime{} -> "TIME"
     FieldTimestamp{} -> "TIMESTAMP"
-    -- TODO: Not supported yet
-    -- FieldInteger{} -> "HUGEINT"
-    -- FieldNatural{} -> "UHUGEINT"
+
+-- TODO: Not supported yet
+-- FieldInteger{} -> "HUGEINT"
+-- FieldNatural{} -> "UHUGEINT"

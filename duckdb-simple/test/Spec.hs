@@ -5,7 +5,6 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 
 -- | Tasty-based test suite for duckdb-simple.
@@ -13,7 +12,7 @@ module Main (main) where
 
 import Control.Applicative ((<|>))
 import Control.Exception (ErrorCall, Exception, try)
-import Control.Monad (replicateM)
+import Control.Monad (replicateM_)
 import qualified Data.ByteString as BS
 import Data.IORef (atomicModifyIORef', newIORef)
 import Data.Int (Int64)
@@ -41,7 +40,7 @@ instance FromRow WithRemaining where
     fromRow = do
         firstVal <- field
         remaining <- numFieldsRemaining
-        _ <- replicateM remaining (fieldWith (const (Right ())))
+        replicateM_ remaining (fieldWith (const (Right ())))
         pure (WithRemaining firstVal remaining)
 
 newtype YesNo = YesNo Bool
@@ -340,10 +339,7 @@ streamingTests =
                 _ <- execute_ conn "CREATE TABLE stream_fold (n INTEGER)"
                 let rows = fmap Only [1 .. 1000 :: Int]
                 _ <- executeMany conn "INSERT INTO stream_fold VALUES (?)" rows
-                total <-
-                    ( fold_ conn "SELECT n FROM stream_fold ORDER BY n" 0 \acc (Only n) -> pure (acc + n)
-                        :: IO Int
-                    )
+                total <- fold_ conn "SELECT n FROM stream_fold ORDER BY n" 0 \acc (Only n) -> pure (acc + n)
                 assertEqual "folded sum" (sum ([1 .. 1000] :: [Int])) total
         , testCase "fold and foldNamed respect parameters" $
             withConnection ":memory:" \conn -> do
@@ -351,18 +347,14 @@ streamingTests =
                 let values = fmap Only [1 .. 50 :: Int]
                 _ <- executeMany conn "INSERT INTO stream_filter VALUES (?)" values
                 gtTotal <-
-                    ( fold conn "SELECT n FROM stream_filter WHERE n > ?" (Only (40 :: Int)) 0 \acc (Only n) ->
-                        pure (acc + n)
-                    :: IO Int
-                    )
+                    fold conn "SELECT n FROM stream_filter WHERE n > ?" (Only (40 :: Int)) 0 $
+                        \acc (Only n) -> pure (acc + n)
                 let expected = sum ([41 .. 50] :: [Int])
                 assertEqual "filtered fold sum" expected gtTotal
                 leCount <-
-                    ( foldNamed conn "SELECT n FROM stream_filter WHERE n <= $limit" ["$limit" := (10 :: Int)] 0 \acc (Only (_ :: Int)) ->
-                        pure (acc + 1)
-                    :: IO Int
-                    )
-                assertEqual "foldNamed count" 10 leCount
+                    foldNamed conn "SELECT n FROM stream_filter WHERE n <= $limit" ["$limit" := (10 :: Int)] 0 $
+                        \acc (Only (_ :: Int)) -> pure (acc + 1)
+                assertEqual "foldNamed count" (10 :: Int) leCount
         , testCase "nextRow streams rows sequentially" $
             withConnection ":memory:" \conn -> do
                 _ <- execute_ conn "CREATE TABLE stream_cursor (n INTEGER)"
@@ -458,5 +450,4 @@ assertThrowsErrorCall action =
     assertThrows action (const True :: ErrorCall -> Bool)
 
 assertThrowsFormatError :: IO a -> (FormatError -> Bool) -> Assertion
-assertThrowsFormatError action predicate =
-    assertThrows action predicate
+assertThrowsFormatError = assertThrows

@@ -1,10 +1,8 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE MultiWayIf #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE UndecidableInstances #-}
 
 {- |
@@ -225,12 +223,12 @@ createFunction conn name fn = do
     let release = destroyFunctionResources funPtr funPtrStable destroyCb
     bracket c_duckdb_create_scalar_function cleanupScalarFunction \scalarFun ->
         (`onException` release) $ do
-            TextForeign.withCString name \cName ->
+            TextForeign.withCString name $ \cName ->
                 c_duckdb_scalar_function_set_name scalarFun cName
             forM_ (argumentTypes (Proxy :: Proxy f)) \dtype ->
-                withLogicalType dtype \logical ->
+                withLogicalType dtype $ \logical ->
                     c_duckdb_scalar_function_add_parameter scalarFun logical
-            withLogicalType (duckTypeForScalar (returnType (Proxy :: Proxy f))) \logical ->
+            withLogicalType (duckTypeForScalar (returnType (Proxy :: Proxy f))) $ \logical ->
                 c_duckdb_scalar_function_set_return_type scalarFun logical
             when (isVolatile (Proxy :: Proxy f)) $
                 c_duckdb_scalar_function_set_volatile scalarFun
@@ -301,9 +299,9 @@ releaseFunctionPtr rawPtr =
         freeStablePtr stablePtr
 
 withLogicalType :: DuckDBType -> (DuckDBLogicalType -> IO a) -> IO a
-withLogicalType dtype action =
+withLogicalType dtype =
     bracket
-        (do
+        ( do
             logical <- c_duckdb_create_logical_type dtype
             when (logical == nullPtr) $
                 throwIO $
@@ -311,7 +309,6 @@ withLogicalType dtype action =
             pure logical
         )
         destroyLogicalType
-        action
 
 destroyLogicalType :: DuckDBLogicalType -> IO ()
 destroyLogicalType logicalType =
@@ -349,14 +346,14 @@ scalarFunctionHandler fn info chunk outVec = do
                 forM [0 .. rowCount - 1] \row ->
                     forM readers \reader ->
                         reader (fromIntegral row)
-            results <- mapM (\fields -> applyFunction fields fn) rows
+            results <- mapM (`applyFunction` fn) rows
             writeResults (returnType (Proxy :: Proxy f)) results outVec
             c_duckdb_data_chunk_set_size chunk (fromIntegral rowCount)
     case result of
         Left (err :: SomeException) -> do
             c_duckdb_data_chunk_set_size chunk 0
             let message = Text.pack (displayException err)
-            TextForeign.withCString message \cMsg ->
+            TextForeign.withCString message $ \cMsg ->
                 c_duckdb_scalar_function_set_error info cMsg
         Right () -> pure ()
 

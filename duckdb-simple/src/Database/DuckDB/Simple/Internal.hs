@@ -1,5 +1,6 @@
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE StrictData #-}
 
 {- |
 Module      : Database.DuckDB.Simple.Internal
@@ -62,31 +63,29 @@ instance IsString Query where
     fromString = Query . Text.pack
 
 -- | Tracks the lifetime of a DuckDB database and connection pair.
-data Connection = Connection
-    { connectionState :: !(IORef ConnectionState)
-    }
+newtype Connection = Connection { connectionState :: IORef ConnectionState }
 
 -- | Internal connection lifecycle state.
 data ConnectionState
     = ConnectionClosed
     | ConnectionOpen
-        { connectionDatabase :: !DuckDBDatabase
-        , connectionHandle :: !DuckDBConnection
+        { connectionDatabase :: DuckDBDatabase
+        , connectionHandle :: DuckDBConnection
         }
 
 -- | Tracks the lifetime of a prepared statement.
 data Statement = Statement
-    { statementState :: !(IORef StatementState)
-    , statementConnection :: !Connection
-    , statementQuery :: !Query
-    , statementStream :: !(IORef StatementStreamState)
+    { statementState :: IORef StatementState
+    , statementConnection :: Connection
+    , statementQuery :: Query
+    , statementStream :: IORef StatementStreamState
     }
 
 -- | Internal statement lifecycle state.
 data StatementState
     = StatementClosed
     | StatementOpen
-        { statementHandle :: !DuckDBPreparedStatement
+        { statementHandle :: DuckDBPreparedStatement
         }
 
 -- | Streaming execution state for prepared statements.
@@ -96,38 +95,38 @@ data StatementStreamState
 
 -- | Streaming cursor backing an active result set.
 data StatementStream = StatementStream
-    { statementStreamResult :: !(Ptr DuckDBResult)
-    , statementStreamColumns :: ![StatementStreamColumn]
-    , statementStreamChunk :: !(Maybe StatementStreamChunk)
+    { statementStreamResult :: Ptr DuckDBResult
+    , statementStreamColumns :: [StatementStreamColumn]
+    , statementStreamChunk :: Maybe StatementStreamChunk
     }
 
 -- | Metadata describing a result column surfaced through streaming.
 data StatementStreamColumn = StatementStreamColumn
-    { statementStreamColumnIndex :: !Int
-    , statementStreamColumnName :: !Text
-    , statementStreamColumnType :: !DuckDBType
+    { statementStreamColumnIndex :: Int
+    , statementStreamColumnName :: Text
+    , statementStreamColumnType :: DuckDBType
     }
 
 -- | Currently loaded data chunk plus iteration cursor.
 data StatementStreamChunk = StatementStreamChunk
-    { statementStreamChunkPtr :: !DuckDBDataChunk
-    , statementStreamChunkSize :: !Int
-    , statementStreamChunkIndex :: !Int
-    , statementStreamChunkVectors :: ![StatementStreamChunkVector]
+    { statementStreamChunkPtr :: DuckDBDataChunk
+    , statementStreamChunkSize :: Int
+    , statementStreamChunkIndex :: Int
+    , statementStreamChunkVectors :: [StatementStreamChunkVector]
     }
 
 -- | Raw vector pointers backing a chunk column.
 data StatementStreamChunkVector = StatementStreamChunkVector
-    { statementStreamChunkVectorHandle :: !DuckDBVector
-    , statementStreamChunkVectorData :: !(Ptr ())
-    , statementStreamChunkVectorValidity :: !(Ptr Word64)
+    { statementStreamChunkVectorHandle :: DuckDBVector
+    , statementStreamChunkVectorData :: Ptr ()
+    , statementStreamChunkVectorValidity :: Ptr Word64
     }
 
 -- | Represents an error reported by DuckDB or by duckdb-simple itself.
 data SQLError = SQLError
-    { sqlErrorMessage :: !Text
-    , sqlErrorType :: !(Maybe DuckDBErrorType)
-    , sqlErrorQuery :: !(Maybe Query)
+    { sqlErrorMessage :: Text
+    , sqlErrorType :: Maybe DuckDBErrorType
+    , sqlErrorQuery :: Maybe Query
     }
     deriving stock (Eq, Show)
 

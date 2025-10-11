@@ -1,7 +1,7 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE TupleSections #-}
 
 {- |
 Module      : Database.DuckDB.Simple
@@ -72,7 +72,7 @@ module Database.DuckDB.Simple (
     deleteFunction,
 ) where
 
-import Control.Monad (forM, void, when, zipWithM, zipWithM_)
+import Control.Monad (forM, void, when, zipWithM, zipWithM_, join)
 import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, newIORef, readIORef, writeIORef)
 import Control.Exception (SomeException, bracket, finally, mask, onException, throwIO, try)
 import qualified Data.ByteString as BS
@@ -311,6 +311,9 @@ columnName stmt columnIndex
                     c_duckdb_free (castPtr namePtr)
                     pure name
 
+-- | Execute a prepared statement and return the number of affected rows.
+--   Resets any active result stream before running and raises a 'SqlError'
+--   if DuckDB reports a failure.
 executeStatement :: Statement -> IO Int
 executeStatement stmt =
     withStatementHandle stmt \handle -> do
@@ -364,6 +367,7 @@ executeNamed conn queryText params =
         bindNamed stmt params
         executeStatement stmt
 
+-- | Run a parameterised query and decode every resulting row eagerly.
 query :: (ToRow q, FromRow r) => Connection -> Query -> q -> IO [r]
 query = queryWith fromRow
 
@@ -426,6 +430,9 @@ queryWith_ parser conn queryText =
 
 -- Streaming folds -----------------------------------------------------------
 
+-- | Stream a parameterised query through an accumulator without loading all rows.
+--   Bind the supplied parameters, start a streaming result, and apply the step
+--   function row by row to produce a final accumulator value.
 fold :: (FromRow row, ToRow params) => Connection -> Query -> params -> a -> (a -> row -> IO a) -> IO a
 fold conn queryText params initial step =
     withStatement conn queryText \stmt -> do
@@ -433,12 +440,14 @@ fold conn queryText params initial step =
         bind stmt (toRow params)
         foldStatementWith fromRow stmt initial step
 
+-- | Stream a parameterless query through an accumulator without loading all rows.
 fold_ :: (FromRow row) => Connection -> Query -> a -> (a -> row -> IO a) -> IO a
 fold_ conn queryText initial step =
     withStatement conn queryText \stmt -> do
         resetStatementStream stmt
         foldStatementWith fromRow stmt initial step
 
+-- | Stream a query that uses named parameters through an accumulator.
 foldNamed :: (FromRow row) => Connection -> Query -> [NamedParam] -> a -> (a -> row -> IO a) -> IO a
 foldNamed conn queryText params initial step =
     withStatement conn queryText \stmt -> do
@@ -457,9 +466,11 @@ foldStatementWith parser stmt initial step =
                     acc' `seq` loop acc'
      in loop initial `finally` resetStatementStream stmt
 
+-- | Fetch the next row from a streaming statement, stopping when no rows remain.
 nextRow :: (FromRow r) => Statement -> IO (Maybe r)
 nextRow = nextRowWith fromRow
 
+-- | Fetch the next row using a custom parser, returning 'Nothing' once exhausted.
 nextRowWith :: RowParser r -> Statement -> IO (Maybe r)
 nextRowWith parser stmt@Statement{statementStream} =
     mask \restore -> do
@@ -715,7 +726,7 @@ duckdbStringTSize = 16
 
 cleanupStatementStreamRef :: IORef StatementStreamState -> IO ()
 cleanupStatementStreamRef ref = do
-    state <- atomicModifyIORef' ref \current -> (StatementStreamIdle, current)
+    state <- atomicModifyIORef' ref (StatementStreamIdle,)
     finalizeStreamState state
 
 finalizeStreamState :: StatementStreamState -> IO ()
@@ -788,9 +799,8 @@ createStatement parent handle query = do
     streamRef <- newIORef StatementStreamIdle
     _ <-
         mkWeakIORef ref $
-            do
-                finalizer <-
-                    atomicModifyIORef' ref \case
+          do join $
+               atomicModifyIORef' ref $ \case
                         StatementClosed -> (StatementClosed, pure ())
                         StatementOpen{statementHandle} ->
                             ( StatementClosed
@@ -798,7 +808,6 @@ createStatement parent handle query = do
                                 cleanupStatementStreamRef streamRef
                                 destroyPrepared statementHandle
                             )
-                finalizer
     pure
         Statement
             { statementState = ref

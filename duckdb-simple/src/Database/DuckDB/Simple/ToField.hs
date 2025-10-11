@@ -3,9 +3,6 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE PatternSynonyms #-}
-{-# LANGUAGE TypeOperators #-}
-{-# LANGUAGE TypeSynonymInstances #-}
 
 {- |
 Module      : Database.DuckDB.Simple.ToField
@@ -31,7 +28,7 @@ import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
 import Data.Time.Calendar (Day, toGregorian)
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds)
-import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), timeOfDayToTime, utcToLocalTime, utc)
+import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), timeOfDayToTime, utc, utcToLocalTime)
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.FFI
 import Database.DuckDB.Simple.Internal (
@@ -82,10 +79,8 @@ instance ToField Null where
 
 instance ToField Bool where
     toField value =
-        mkFieldBinding
-            (show value)
-            \stmt idx ->
-                bindDuckValue stmt idx (c_duckdb_create_bool (if value then 1 else 0))
+        mkFieldBinding (show value) $ \stmt idx ->
+            bindDuckValue stmt idx (c_duckdb_create_bool (if value then 1 else 0))
 
 instance ToField Int where
     toField = intBinding . (fromIntegral :: Int -> Int64)
@@ -97,8 +92,7 @@ instance ToField Int32 where
     toField = intBinding . (fromIntegral :: Int32 -> Int64)
 
 instance ToField Int64 where
-    toField value =
-        intBinding value
+    toField = intBinding
 
 instance ToField Word where
     toField value = intBinding (fromIntegral value :: Int64)
@@ -135,7 +129,7 @@ instance ToField Text where
         mkFieldBinding
             (show txt)
             \stmt idx ->
-                TextForeign.withCString txt \cstr ->
+                TextForeign.withCString txt $ \cstr ->
                     bindDuckValue stmt idx (c_duckdb_create_varchar cstr)
 
 instance ToField String where
@@ -143,7 +137,7 @@ instance ToField String where
         mkFieldBinding
             (show str)
             \stmt idx ->
-                TextForeign.withCString (Text.pack str) \cstr ->
+                TextForeign.withCString (Text.pack str) $ \cstr ->
                     bindDuckValue stmt idx (c_duckdb_create_varchar cstr)
 
 instance ToField BS.ByteString where
@@ -227,7 +221,8 @@ encodeTimeOfDay tod =
 encodeLocalTime :: LocalTime -> IO DuckDBTimestamp
 encodeLocalTime LocalTime{localDay, localTimeOfDay} =
     alloca \ptr -> do
-        poke ptr
+        poke
+            ptr
             DuckDBTimestampStruct
                 { duckDBTimestampStructDate = dayToDateStruct localDay
                 , duckDBTimestampStructTime = timeOfDayToStruct localTimeOfDay

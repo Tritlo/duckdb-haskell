@@ -111,9 +111,27 @@ available when a custom instance needs fine-grained control.
   against exceptions; use them whenever possible to avoid leaking C handles.
 - All intermediate DuckDB objects (results, prepared statements, values) are
   released immediately after use. Long queries still materialise their result
-  sets in memory for now—streaming APIs are planned.
+  sets when using the eager helpers; reach for `fold`/`fold_`/`foldNamed` (or
+  the lower-level `nextRow`) to stream results in constant space.
 - `execute`/`query` variants reset statement bindings each run so prepared
   statements can be reused safely.
+
+### Streaming Results
+
+`fold`, `fold_`, and `foldNamed` expose DuckDB’s chunked result API, letting you
+aggregate or stream rows without materialising the entire result set:
+
+```haskell
+import Database.DuckDB.Simple.Types (Only (..))
+
+sumValues :: Connection -> IO Int
+sumValues conn =
+  fold_ conn "SELECT n FROM stream_fold ORDER BY n" 0 $ \acc (Only n) ->
+    pure (acc + n)
+```
+
+For manual cursor-style iteration, use `nextRow`/`nextRowWith` on an open
+`Statement` to pull rows one at a time and decide when to stop.
 
 ### Feature Coverage & Roadmap
 
@@ -121,12 +139,12 @@ Included today:
 
 - Connections, prepared statements, positional/named parameter binding.
 - High-level execution (`execute*`) and eager queries (`query*`, `queryNamed`).
+- Streaming/folding helpers (`fold`, `foldNamed`, `fold_`, `nextRow`).
 - Row decoding via `FromField`/`FromRow`, including generic deriving support.
 - Basic transaction helpers (`withTransaction`, `withSavepoint` fallback).
 
 Planned for a future release:
 
-- Streaming/folding APIs built on DuckDB result chunks.
 - Broader type coverage (temporal, structured, and vector types).
 - Metadata helpers such as `columnName`/`columnCount`.
 - Native savepoints once DuckDB exposes the required support.

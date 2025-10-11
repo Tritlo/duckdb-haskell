@@ -83,3 +83,25 @@ us understand past decisions and avoid repeating mistakes.
 - Verified that every newly exported helper (`RowParser`, `field`, `fieldWith`,
   `numFieldsRemaining`) carries Haddock documentation to keep the public API
   discoverable.
+
+## 2024-10-12 — Streaming result integration learnings
+
+- DuckDB’s streaming API (`duckdb_execute_prepared_streaming` +
+  `duckdb_stream_fetch_chunk`) returns chunk pointers that must be destroyed
+  with `duckdb_destroy_data_chunk` once exhausted. Forgetting to free the last
+  chunk leaked memory in early experiments; the final implementation always
+  releases the active chunk before fetching the next one and ensures statement
+  teardown resets any lingering stream.
+- Streaming chunks expose raw vectors rather than column metadata names. We now
+  capture column descriptors up-front via the prepared-statement metadata so
+  streamed `Field` values mirror the eager query path (names, indices, types).
+- Only primitive scalar types (bool/ints/floats/varchar) are decoded so far;
+  encountering a column with an unsupported DuckDB type raises a descriptive
+  `SQLError`. Temporal/list/struct coverage is deferred to the “Extended Type
+  Coverage” phase.
+- `nextRow` shares the streaming cursor with the new `fold*` helpers. Resetting
+  the prepared statement bindings or closing the statement tears down the
+  stream so eager queries can run afterwards without seeing the stale result.
+- Added regression tests that fold thousands of rows, exercise parameterised
+  folds, and iterate with `nextRow` to guard against future refactors breaking
+  the chunk lifecycle.

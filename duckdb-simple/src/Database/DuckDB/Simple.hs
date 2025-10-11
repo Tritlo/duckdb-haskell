@@ -44,7 +44,9 @@ module Database.DuckDB.Simple (
     withExclusiveTransaction,
     withSavepoint,
     query,
+    queryWith,
     query_,
+    queryWith_,
     nextRow,
     nextRowWith,
 
@@ -386,9 +388,12 @@ executeNamed conn queryText params =
         bindNamed stmt params
         executeStatement stmt
 
--- | Run a parameterised query and decode all rows eagerly.
 query :: (ToRow q, FromRow r) => Connection -> Query -> q -> IO [r]
-query conn queryText params =
+query = queryWith fromRow
+
+-- | Run a parameterised query with a custom row parser.
+queryWith :: (ToRow q) => RowParser r -> Connection -> Query -> q -> IO [r]
+queryWith parser conn queryText params =
     withStatement conn queryText \stmt -> do
         bind stmt (toRow params)
         withStatementHandle stmt \handle ->
@@ -398,7 +403,7 @@ query conn queryText params =
                     then do
                         rows <- collectRows resPtr
                         c_duckdb_destroy_result resPtr
-                        convertRows queryText rows
+                        convertRowsWith parser queryText rows
                     else do
                         (errMsg, errType) <- fetchResultError resPtr
                         c_duckdb_destroy_result resPtr
@@ -424,7 +429,11 @@ queryNamed conn queryText params =
 
 -- | Run a query without supplying parameters and decode all rows eagerly.
 query_ :: (FromRow r) => Connection -> Query -> IO [r]
-query_ conn queryText =
+query_ = queryWith_ fromRow
+
+-- | Run a query without parameters using a custom row parser.
+queryWith_ :: RowParser r -> Connection -> Query -> IO [r]
+queryWith_ parser conn queryText =
     withConnectionHandle conn \connPtr ->
         withQueryCString queryText \sql ->
             alloca \resPtr -> do
@@ -433,7 +442,7 @@ query_ conn queryText =
                     then do
                         rows <- collectRows resPtr
                         c_duckdb_destroy_result resPtr
-                        convertRows queryText rows
+                        convertRowsWith parser queryText rows
                     else do
                         (errMsg, errType) <- fetchResultError resPtr
                         c_duckdb_destroy_result resPtr
@@ -1049,8 +1058,11 @@ resultRowsChanged :: Ptr DuckDBResult -> IO Int
 resultRowsChanged resPtr = fromIntegral <$> c_duckdb_rows_changed resPtr
 
 convertRows :: (FromRow r) => Query -> [[Field]] -> IO [r]
-convertRows queryText rows =
-    case traverse (parseRow fromRow) rows of
+convertRows = convertRowsWith fromRow
+
+convertRowsWith :: RowParser r -> Query -> [[Field]] -> IO [r]
+convertRowsWith parser queryText rows =
+    case traverse (parseRow parser) rows of
         Left err -> throwIO (resultErrorToSqlError queryText err)
         Right ok -> pure ok
 

@@ -79,6 +79,7 @@ tests =
         [ connectionTests
         , withConnectionTests
         , statementTests
+        , streamingTests
         , functionsTests
         , transactionTests
         ]
@@ -305,6 +306,53 @@ statementTests =
                 _ <- executeMany conn "INSERT INTO yesno VALUES (?)" [Only ("yes" :: String), Only ("no" :: String)]
                 rows <- query_ conn "SELECT answer FROM yesno ORDER BY answer" :: IO [YesNo]
                 assertEqual "yes/no parsing" [YesNo False, YesNo True] rows
+        ]
+
+streamingTests :: TestTree
+streamingTests =
+    testGroup
+        "streaming"
+        [ testCase "fold_ accumulates large result sets" $
+            withConnection ":memory:" \conn -> do
+                _ <- execute_ conn "CREATE TABLE stream_fold (n INTEGER)"
+                let rows = fmap Only [1 .. 1000 :: Int]
+                _ <- executeMany conn "INSERT INTO stream_fold VALUES (?)" rows
+                total <-
+                    ( fold_ conn "SELECT n FROM stream_fold ORDER BY n" 0 \acc (Only n) -> pure (acc + n)
+                        :: IO Int
+                    )
+                assertEqual "folded sum" (sum ([1 .. 1000] :: [Int])) total
+        , testCase "fold and foldNamed respect parameters" $
+            withConnection ":memory:" \conn -> do
+                _ <- execute_ conn "CREATE TABLE stream_filter (n INTEGER)"
+                let values = fmap Only [1 .. 50 :: Int]
+                _ <- executeMany conn "INSERT INTO stream_filter VALUES (?)" values
+                gtTotal <-
+                    ( fold conn "SELECT n FROM stream_filter WHERE n > ?" (Only (40 :: Int)) 0 \acc (Only n) ->
+                        pure (acc + n)
+                    :: IO Int
+                    )
+                let expected = sum ([41 .. 50] :: [Int])
+                assertEqual "filtered fold sum" expected gtTotal
+                leCount <-
+                    ( foldNamed conn "SELECT n FROM stream_filter WHERE n <= $limit" ["$limit" := (10 :: Int)] 0 \acc (Only (_ :: Int)) ->
+                        pure (acc + 1)
+                    :: IO Int
+                    )
+                assertEqual "foldNamed count" 10 leCount
+        , testCase "nextRow streams rows sequentially" $
+            withConnection ":memory:" \conn -> do
+                _ <- execute_ conn "CREATE TABLE stream_cursor (n INTEGER)"
+                _ <- executeMany conn "INSERT INTO stream_cursor VALUES (?)" (fmap Only [1 .. 3 :: Int])
+                withStatement conn "SELECT n FROM stream_cursor ORDER BY n" \stmt -> do
+                    first <- nextRow stmt
+                    second <- nextRow stmt
+                    third <- nextRow stmt
+                    done <- nextRow stmt
+                    assertEqual
+                        "cursor iteration"
+                        [Just (Only (1 :: Int)), Just (Only 2), Just (Only 3), Nothing]
+                        [first, second, third, done]
         ]
 
 functionsTests :: TestTree

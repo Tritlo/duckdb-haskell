@@ -16,6 +16,11 @@ module Database.DuckDB.Simple.Internal (
     ConnectionState (..),
     Statement (..),
     StatementState (..),
+    StatementStreamState (..),
+    StatementStream (..),
+    StatementStreamColumn (..),
+    StatementStreamChunk (..),
+    StatementStreamChunkVector (..),
     SQLError (..),
 
     -- * Helpers
@@ -32,13 +37,19 @@ import Data.String (IsString (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
+import Data.Word (Word64)
 import Database.DuckDB.FFI (
+    DuckDBDataChunk,
     DuckDBConnection,
     DuckDBDatabase,
     DuckDBErrorType,
     DuckDBPreparedStatement,
+    DuckDBResult,
+    DuckDBType,
+    DuckDBVector,
  )
 import Foreign.C.String (CString)
+import Foreign.Ptr (Ptr)
 
 -- | Represents a textual SQL query with UTF-8 encoding semantics.
 newtype Query = Query
@@ -69,6 +80,7 @@ data Statement = Statement
     { statementState :: !(IORef StatementState)
     , statementConnection :: !Connection
     , statementQuery :: !Query
+    , statementStream :: !(IORef StatementStreamState)
     }
 
 -- | Internal statement lifecycle state.
@@ -77,6 +89,40 @@ data StatementState
     | StatementOpen
         { statementHandle :: !DuckDBPreparedStatement
         }
+
+-- | Streaming execution state for prepared statements.
+data StatementStreamState
+    = StatementStreamIdle
+    | StatementStreamActive !StatementStream
+
+-- | Streaming cursor backing an active result set.
+data StatementStream = StatementStream
+    { statementStreamResult :: !(Ptr DuckDBResult)
+    , statementStreamColumns :: ![StatementStreamColumn]
+    , statementStreamChunk :: !(Maybe StatementStreamChunk)
+    }
+
+-- | Metadata describing a result column surfaced through streaming.
+data StatementStreamColumn = StatementStreamColumn
+    { statementStreamColumnIndex :: !Int
+    , statementStreamColumnName :: !Text
+    , statementStreamColumnType :: !DuckDBType
+    }
+
+-- | Currently loaded data chunk plus iteration cursor.
+data StatementStreamChunk = StatementStreamChunk
+    { statementStreamChunkPtr :: !DuckDBDataChunk
+    , statementStreamChunkSize :: !Int
+    , statementStreamChunkIndex :: !Int
+    , statementStreamChunkVectors :: ![StatementStreamChunkVector]
+    }
+
+-- | Raw vector pointers backing a chunk column.
+data StatementStreamChunkVector = StatementStreamChunkVector
+    { statementStreamChunkVectorHandle :: !DuckDBVector
+    , statementStreamChunkVectorData :: !(Ptr ())
+    , statementStreamChunkVectorValidity :: !(Ptr Word64)
+    }
 
 -- | Represents an error reported by DuckDB or by duckdb-simple itself.
 data SQLError = SQLError

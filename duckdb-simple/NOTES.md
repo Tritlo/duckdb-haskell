@@ -59,6 +59,7 @@ us understand past decisions and avoid repeating mistakes.
 - `bindNamed` still requires callers to supply every placeholder explicitly; consider accepting sparse bindings once DuckDB exposes richer metadata.
 - Error reporting for mixed positional/named parameters still relies on DuckDB’s runtime error message; revisit if the FFI exposes better introspection.
 
+
 ## 2024-10-11 — Phase 5.5 (RowParser) observations
 
 - Swapping the direct `[Field] -> Either ResultError` conversion for a RowParser/Ok pipeline significantly improves diagnostics and unlocks generic `FromRow` instances. The conversion glue now needs to translate parser failures back into meaningful `ResultError` values; make sure new parser combinators surface the column index so the resulting `SQLError` stays actionable.
@@ -74,3 +75,11 @@ us understand past decisions and avoid repeating mistakes.
 - `deleteFunction` attempts a `DROP FUNCTION IF EXISTS`; DuckDB flags C API
   registrations as internal, so the operation reports an `SQLError` explaining
   the limitation instead of removing the function.
+
+## 2024-10-11 — Phase 6 documentation notes
+
+- Expanded the README with resource-management guidance, RowParser usage, and a
+  roadmap so new adopters understand current scope vs. future work.
+- Verified that every newly exported helper (`RowParser`, `field`, `fieldWith`,
+  `numFieldsRemaining`) carries Haddock documentation to keep the public API
+  discoverable.

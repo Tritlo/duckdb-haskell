@@ -104,6 +104,33 @@ fetchPeople conn = query_ conn "SELECT id, name FROM person ORDER BY id"
 
 Helper combinators such as `field`, `fieldWith`, and `numFieldsRemaining` are
 available when a custom instance needs fine-grained control.
+
+### Resource Management
+
+- `withConnection` and `withStatement` wrap the open/close lifecycle and guard
+  against exceptions; use them whenever possible to avoid leaking C handles.
+- All intermediate DuckDB objects (results, prepared statements, values) are
+  released immediately after use. Long queries still materialise their result
+  sets in memory for now—streaming APIs are planned.
+- `execute`/`query` variants reset statement bindings each run so prepared
+  statements can be reused safely.
+
+### Feature Coverage & Roadmap
+
+Included today:
+
+- Connections, prepared statements, positional/named parameter binding.
+- High-level execution (`execute*`) and eager queries (`query*`, `queryNamed`).
+- Row decoding via `FromField`/`FromRow`, including generic deriving support.
+- Basic transaction helpers (`withTransaction`, `withSavepoint` fallback).
+
+Planned for a future release:
+
+- Streaming/folding APIs built on DuckDB result chunks.
+- Broader type coverage (temporal, structured, and vector types).
+- Metadata helpers such as `columnName`/`columnCount`.
+- Native savepoints once DuckDB exposes the required support.
+
 ## User-Defined Functions
 
 Scalar Haskell functions can be registered with DuckDB connections and used in

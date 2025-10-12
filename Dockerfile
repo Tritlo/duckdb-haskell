@@ -52,6 +52,14 @@ RUN groupadd -g "$GID" -o "$USER_NAME" && \
     useradd -l -m -u "$UID" -g "$GID" -G sudo -o -s /bin/bash -d /home/$USER_NAME "$USER_NAME" && \
     echo '%sudo ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
 
+WORKDIR /tmp
+RUN curl -L -o /tmp/libduckdb.zip https://github.com/duckdb/duckdb/releases/download/v1.4.1/libduckdb-linux-amd64.zip && \
+    unzip libduckdb.zip && \
+    mv libduckdb.so /usr/lib/libduckdb.so && \
+    mv duckdb.h /usr/include/ && \
+    ldconfig && \
+    rm libduckdb.zip
+
 # Switch to the new user
 USER ${UID}:${GID}
 WORKDIR /home/$USER_NAME
@@ -87,27 +95,15 @@ RUN cabal update && \
 
 COPY --link --parents --chown=${UID}:${GID}  duckdb-* /app/
 
+
+
 WORKDIR /app
-
-
 # Build all the packages
 RUN cabal build all --project-file=cabal.project --project-dir=/app
 
-USER root
-
-# Install libduckdb
-RUN  curl -L -o /tmp/libduckdb.zip https://github.com/duckdb/duckdb/releases/download/v1.4.1/libduckdb-linux-amd64.zip && \
-    cd /tmp && \
-    unzip libduckdb.zip && \
-    mv libduckdb.so /usr/lib/libduckdb.so.1.4.0 && \
-    ln -s libduckdb.so.1.4.0 /usr/lib/libduckdb.so.1.4 && \
-    ln -s libduckdb.so.1.4 /usr/lib/libduckdb.so && \
-    mv duckdb.h duckdb.hpp /usr/include/ && \
-    ldconfig && \
-    rm libduckdb.zip
 
 
-USER ${UID}:${GID}
+
 
 # Test the packages
 RUN cabal test all --project-file=cabal.project --project-dir=/app --test-show-details=streaming

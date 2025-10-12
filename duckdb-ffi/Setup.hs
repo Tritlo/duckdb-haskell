@@ -43,10 +43,10 @@ main =
 systemLibraryCandidates :: [FilePath]
 systemLibraryCandidates =
   [ "libduckdb.so"
-  , "libduckdb.so.0"
   , "libduckdb.so.1"
   , "libduckdb.so.1.4"
   , "libduckdb.so.1.4.0"
+  , "libduckdb.so.1.4.1"
   ]
 
 

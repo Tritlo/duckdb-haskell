@@ -43,7 +43,6 @@ import Database.DuckDB.Simple.FromField (
     Field (..),
     FieldValue (..),
     FromField (..),
-    ResultError (..),
  )
 import Database.DuckDB.Simple.Internal (
     Connection,
@@ -58,6 +57,7 @@ import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, castPtr, freeHaskellFunPtr, nullPtr, plusPtr)
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deRefStablePtr, freeStablePtr, newStablePtr)
 import Foreign.Storable (peekElemOff, poke, pokeElemOff)
+import Database.DuckDB.Simple.Ok (Ok(..))
 
 -- | Tag DuckDB logical types we support for scalar return values.
 data ScalarType
@@ -211,8 +211,8 @@ instance {-# OVERLAPPABLE #-} (FromField a, FunctionArg a, Function r) => Functi
         throwIO (functionInvocationError (Text.pack "insufficient arguments supplied"))
     applyFunction (field : rest) fn =
         case fromField field of
-            Left err -> throwIO (argumentConversionError (fieldIndex field) err)
-            Right value -> applyFunction rest (fn value)
+            Errors err -> throwIO (argumentConversionError (fieldIndex field) err)
+            Ok value -> applyFunction rest (fn value)
 
 -- | Register a Haskell function under the supplied name.
 createFunction :: forall f. (Function f) => Connection -> Text -> f -> IO ()
@@ -494,7 +494,7 @@ isNullValue = \case
     ScalarNull -> True
     _ -> False
 
-argumentConversionError :: Int -> ResultError -> SQLError
+argumentConversionError :: Int -> [SomeException] -> SQLError
 argumentConversionError idx err =
     let message =
             Text.concat

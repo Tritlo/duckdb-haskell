@@ -6,6 +6,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 {- |
 Module      : Database.DuckDB.Simple.FromRow
@@ -28,12 +29,11 @@ module Database.DuckDB.Simple.FromRow (
 ) where
 
 import Control.Applicative (Alternative (..))
-import Control.Exception (Exception, SomeException, fromException, toException)
+import Control.Exception (Exception, toException)
 import Control.Monad (MonadPlus, replicateM)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Reader (ReaderT, ask, runReaderT)
 import Control.Monad.Trans.State.Strict (StateT, get, put, runStateT)
-import Data.Maybe (listToMaybe, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import GHC.Generics
@@ -97,8 +97,8 @@ fieldWith fieldParser = RowParser $ do
             if columnIndex >= rowParseColumnCount
                 then lift (lift (Errors [toException (ColumnOutOfBounds (columnIndex + 1))]))
                 else case fieldParser f of
-                    Left err -> lift (lift (Errors [toException err]))
-                    Right value -> pure value
+                    Errors err -> lift $ lift $ Errors err
+                    Ok value -> pure value
 
 -- | Pull the next field and parse it using its 'FromField' instance.
 field :: (FromField a) => RowParser a
@@ -112,37 +112,15 @@ numFieldsRemaining = RowParser $ do
     pure (rowParseColumnCount - columnIndex)
 
 -- | Execute a 'RowParser' against the provided row.
-parseRow :: RowParser a -> [Field] -> Either ResultError a
+parseRow :: RowParser a -> [Field] -> Ok a
 parseRow parser fields =
     let context = RowParseRO (length fields)
         initialState = (0, fields)
      in case runStateT (runReaderT (runRowParser parser) context) initialState of
             Ok (value, (columnCount, _))
-                | columnCount == length fields -> Right value
-                | otherwise ->
-                    Left
-                        ColumnCountMismatch
-                            { resultErrorExpectedCols = columnCount
-                            , resultErrorActualCols = length fields
-                            }
-            Errors errs -> Left (resolveErrors (length fields) errs)
-
-resolveErrors :: Int -> [SomeException] -> ResultError
-resolveErrors totalCols errs =
-    case listToMaybe (mapMaybe (fromException :: SomeException -> Maybe ResultError) errs) of
-        Just err -> err
-        Nothing ->
-            case listToMaybe (mapMaybe (fromException :: SomeException -> Maybe ColumnOutOfBounds) errs) of
-                Just (ColumnOutOfBounds idx) ->
-                    ColumnCountMismatch
-                        { resultErrorExpectedCols = idx - 1
-                        , resultErrorActualCols = totalCols
-                        }
-                Nothing ->
-                    ConversionError
-                        { resultErrorColumn = 0
-                        , resultErrorMessage = Text.pack "duckdb-simple: row parsing failed for an unknown reason"
-                        }
+                | columnCount == length fields -> Ok value
+                | otherwise -> left (ColumnOutOfBounds (columnCount + 1))
+            Errors errs ->  Errors errs
 
 instance FromRow () where
     fromRow = pure ()
@@ -248,39 +226,19 @@ resultErrorToSqlError query err =
 
 renderError :: ResultError -> Text
 renderError = \case
-    IncompatibleType{resultErrorColumn, resultErrorExpected, resultErrorActual} ->
-        Text.pack $
-            concat
+    Incompatible{errSQLType, errHaskellType} ->
+            Text.concat
                 [ "duckdb-simple: column "
-                , show (humanIndex resultErrorColumn)
                 , " has type "
-                , resultErrorActual
+                , errSQLType
                 , " but expected "
-                , resultErrorExpected
+                , errHaskellType
                 ]
-    UnexpectedNull{resultErrorColumn, resultErrorExpected} ->
-        Text.pack $
-            concat
+    UnexpectedNull{errSQLType} ->
+            Text.concat
                 [ "duckdb-simple: column "
-                , show (humanIndex resultErrorColumn)
                 , " is NULL but expected "
-                , resultErrorExpected
+                , errSQLType
                 ]
-    ColumnCountMismatch{resultErrorExpectedCols, resultErrorActualCols} ->
-        Text.pack $
-            concat
-                [ "duckdb-simple: expected "
-                , show resultErrorExpectedCols
-                , " columns but query returned "
-                , show resultErrorActualCols
-                ]
-    ConversionError{resultErrorColumn, resultErrorMessage} ->
-        Text.concat
-            [ Text.pack "duckdb-simple: column "
-            , Text.pack (show (humanIndex resultErrorColumn))
-            , Text.pack ": "
-            , resultErrorMessage
-            ]
-
-humanIndex :: Int -> Int
-humanIndex = (+ 1)
+    ConversionFailed{errMessage} ->
+        errMessage

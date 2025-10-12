@@ -23,6 +23,7 @@ module Database.DuckDB.Simple.Internal (
     StatementStreamChunk (..),
     StatementStreamChunkVector (..),
     SQLError (..),
+    toSQLError,
 
     -- * Helpers
     connectionClosedError,
@@ -131,6 +132,13 @@ data SQLError = SQLError
     deriving stock (Eq, Show)
 
 instance Exception SQLError
+
+toSQLError :: Exception e => e -> SQLError
+toSQLError ex = SQLError
+    { sqlErrorMessage = Text.pack (show ex)
+    , sqlErrorType = Nothing
+    , sqlErrorQuery = Nothing
+    }
 
 -- | Shared error value used when an operation targets a closed connection.
 connectionClosedError :: SQLError

@@ -102,7 +102,6 @@ import Database.DuckDB.Simple.FromRow (
     fieldWith,
     numFieldsRemaining,
     parseRow,
-    resultErrorToSqlError,
  )
 import Database.DuckDB.Simple.Function (Function, createFunction, deleteFunction)
 import Database.DuckDB.Simple.Internal (
@@ -119,7 +118,7 @@ import Database.DuckDB.Simple.Internal (
     StatementStreamState (..),
     withConnectionHandle,
     withQueryCString,
-    withStatementHandle,
+    withStatementHandle, toSQLError,
  )
 import Database.DuckDB.Simple.ToField (FieldBinding, NamedParam (..), ToField (..), bindFieldBinding, renderFieldBinding)
 import Database.DuckDB.Simple.ToRow (ToRow (..))
@@ -129,6 +128,7 @@ import Foreign.C.Types (CBool (..), CDouble (..), CChar, CFloat(..))
 import Foreign.Marshal.Alloc (alloca, free, malloc)
 import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.Storable (peek, peekElemOff, poke)
+import Database.DuckDB.Simple.Ok (Ok(..), ManyErrors (..))
 
 -- | Open a DuckDB database located at the supplied path.
 open :: FilePath -> IO Connection
@@ -509,11 +509,11 @@ consumeStream streamRef parser stmt stream = do
                     pure Nothing
                 Just fields ->
                     case parseRow parser fields of
-                        Left rowErr -> do
+                        Errors rowErr -> do
                             finalizeStream updatedStream
                             writeIORef streamRef StatementStreamIdle
-                            throwIO (resultErrorToSqlError (statementQuery stmt) rowErr)
-                        Right value -> do
+                            throwIO $ toSQLError $ ManyErrors rowErr
+                        Ok value -> do
                             writeIORef streamRef (StatementStreamActive updatedStream)
                             pure (Just value)
 
@@ -985,10 +985,10 @@ convertRows :: (FromRow r) => Query -> [[Field]] -> IO [r]
 convertRows = convertRowsWith fromRow
 
 convertRowsWith :: RowParser r -> Query -> [[Field]] -> IO [r]
-convertRowsWith parser queryText rows =
+convertRowsWith parser _queryText rows =
     case traverse (parseRow parser) rows of
-        Left err -> throwIO (resultErrorToSqlError queryText err)
-        Right ok -> pure ok
+        Errors err -> throwIO $ toSQLError (ManyErrors err)
+        Ok ok -> pure ok
 
 collectRows :: Ptr DuckDBResult -> IO [[Field]]
 collectRows resPtr = do

@@ -21,10 +21,11 @@ import Data.Time.Calendar (fromGregorian)
 import Data.Time.Clock (UTCTime)
 import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), localTimeToUTC, utc)
 import Database.DuckDB.Simple
-import Database.DuckDB.Simple.FromField (Field (..))
+import Database.DuckDB.Simple.FromField (Field (..), left)
 import GHC.Generics (Generic)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit
+import Database.DuckDB.Simple.Ok (Ok(..))
 
 data Person = Person
     { personId :: Int
@@ -40,7 +41,7 @@ instance FromRow WithRemaining where
     fromRow = do
         firstVal <- field
         remaining <- numFieldsRemaining
-        replicateM_ remaining (fieldWith (const (Right ())))
+        replicateM_ remaining (fieldWith (const (Ok ())))
         pure (WithRemaining firstVal remaining)
 
 newtype YesNo = YesNo Bool
@@ -52,41 +53,27 @@ instance FromRow YesNo where
         parseYes = YesNo True <$ fieldWith (match (Text.pack "yes"))
         parseNo = YesNo False <$ fieldWith (match (Text.pack "no"))
 
-        match expected fld@Field{fieldIndex} =
-            case fromField fld :: Either ResultError Text.Text of
-                Left err -> Left err
-                Right txt ->
+        match expected fld@Field{} =
+            case fromField fld :: Ok Text.Text of
+                Errors err -> Errors err
+                Ok txt ->
                     let normalized = Text.toLower txt
                      in if normalized == expected
-                            then Right ()
-                            else
-                                Left
-                                    ConversionError
-                                        { resultErrorColumn = fieldIndex
-                                        , resultErrorMessage =
-                                            Text.concat
-                                                [ "duckdb-simple: expected "
-                                                , expected
-                                                , Text.pack " but found "
-                                                , normalized
-                                                ]
-                                        }
-                                        
+                            then Ok ()
+                            else left $ ConversionFailed expected normalized "failed to match exact string"
+
 newtype NonEmptyText = NonEmptyText Text.Text
     deriving (Eq, Show)
 
 nonEmptyTextParser :: FieldParser NonEmptyText
-nonEmptyTextParser field@Field{fieldIndex} =
-    case fromField field :: Either ResultError Text.Text of
-        Left err -> Left err
-        Right txt
+nonEmptyTextParser field@Field{} =
+    case fromField field  of
+        Errors err -> Errors err
+        Ok txt
             | Text.null txt ->
-                Left
-                    ConversionError
-                        { resultErrorColumn = fieldIndex
-                        , resultErrorMessage = Text.pack "NonEmptyText requires a non-empty string"
-                        }
-            | otherwise -> Right (NonEmptyText txt)
+                left $
+                    ConversionFailed "" "" $ Text.pack "NonEmptyText requires a non-empty string"
+            | otherwise -> Ok (NonEmptyText txt)
 
 instance FromField NonEmptyText where
     fromField = nonEmptyTextParser
@@ -264,7 +251,7 @@ statementTests =
                 _ <- execute_ conn "INSERT INTO mismatch VALUES (1, 2)"
                 assertThrows
                     (query_ conn "SELECT a, b FROM mismatch" :: IO [Only Int])
-                    (Text.isInfixOf "expected 1 columns" . sqlErrorMessage)
+                    (Text.isInfixOf "columnOutOfBounds" . sqlErrorMessage)
         , testCase "clears statement bindings without error" $
             withConnection ":memory:" \conn -> do
                 stmt <- openStatement conn "SELECT ?"

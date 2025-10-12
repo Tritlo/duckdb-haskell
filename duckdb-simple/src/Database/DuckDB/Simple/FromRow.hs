@@ -247,7 +247,7 @@ rowErrorsToSqlError query errs =
                 Nothing ->
                     SQLError
                         { sqlErrorMessage =
-                            Text.pack "duckdb-simple: row parsing failed for an unknown reason"
+                            Text.pack $ "duckdb-simple: row-parsing failed:" <> show errs
                         , sqlErrorType = Nothing
                         , sqlErrorQuery = Just query
                         }

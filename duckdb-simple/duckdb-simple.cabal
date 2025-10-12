@@ -1,19 +1,30 @@
-cabal-version:      2.4
+cabal-version:      3.4
 name:               duckdb-simple
 version:            0.1.0.0
-synopsis:           High-level DuckDB interface inspired by sqlite-simple
-description:        High-level DuckDB interface inspired by sqlite-simple, providing connection management, parameter binding, and typed query results. See README.md for details.
-homepage:           https://github.com/duckdb/duckdb
-bug-reports:        https://github.com/duckdb/duckdb/issues
 license:            MPL-2.0
 license-file:       LICENSE
-author:             Matthias Pall Gissurarson, DPella AB
-maintainer:         matti@dpella.io,
-                    mpg@mpg.is,
-                    lobo@dpella.io
+author:             Matthias Pall Gissurarson
+maintainer:        mpg@mpg.is
 category:           Database
 build-type:         Simple
 extra-doc-files: README.md
+homepage:       https://github.com/Tritlo/duckdb-haskell
+bug-reports:    https://github.com/Tritlo/duckdb-haskell/issues
+synopsis:           Haskell FFI bindings for DuckDB
+description:
+    This library provides a mid-level interface for interacting with DuckDB,
+    in the style of other "simple" libraries such as sqlite-simple and
+    postgresql-simple.
+    .
+    Tested with DuckDB version 1.4.0, and 1.4.0.
+extra-doc-files:    CHANGELOG.md, README.md
+
+source-repository head
+  type:     git
+  location: https://github.com/Tritlo/duckdb-haskell.git
+  subdir:  duckdb-simple
+
+
 
 library
   exposed-modules:
@@ -30,11 +41,11 @@ library
   default-language: Haskell2010
   build-depends:
       base >=4.14 && <5
-    , bytestring
-    , duckdb-ffi
-    , text
-    , transformers
-    , time
+    , bytestring >= 0.11 && <0.12
+    , duckdb-ffi >= 0.1.4 && <0.1.5
+    , text >= 2.0 && <2.1
+    , transformers >= 0.6 && <0.7
+    , time >= 1.12 && <1.13
 
 test-suite duckdb-simple-test
   type:             exitcode-stdio-1.0

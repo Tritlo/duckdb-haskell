@@ -1,6 +1,7 @@
 # duckdb-haskell
 ## duckdb-ffi
 
+Available on [Hackage](https://hackage.haskell.org/package/duckdb-ffi)
 This library provides an FFI for the [DuckDB](https://duckdb.org)
 [C API](https://duckdb.org/docs/api/c/overview).
 
@@ -15,5 +16,7 @@ https://duckdb.org/install/?platform=linux&environment=c&architecture=x86_64.
 Note that installing `duckdb` itself is not enough.
 
 ## duckdb-simple
+Available on [Hackage](https://hackage.haskell.org/package/duckdb-simple)
+
 A library in the style of `sqlite-simple` and `postgresql-simple`, including `FieldParser`, `RowParser` etc.
 Also allows registering Haskell functions as scalar functions in `duckdb`, similar to `sqlite-simple`.

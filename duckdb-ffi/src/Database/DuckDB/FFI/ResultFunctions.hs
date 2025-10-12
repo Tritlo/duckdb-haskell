@@ -39,7 +39,7 @@ These bindings call the wrapper symbol
 @wrapped_duckdb_result_get_chunk@ but mirror the DuckDB C API semantics of
 @duckdb_result_get_chunk@.
 -}
-foreign import ccall safe "wrapped_duckdb_result_get_chunk"
+foreign import ccall unsafe "wrapped_duckdb_result_get_chunk"
     c_duckdb_result_get_chunk :: Ptr DuckDBResult -> DuckDBIdx -> IO DuckDBDataChunk
 
 {- | > Warning Deprecation notice. This method is scheduled for removal in a future
@@ -56,7 +56,7 @@ These bindings call the wrapper symbol
 @wrapped_duckdb_result_is_streaming@ but mirror the DuckDB C API semantics of
 @duckdb_result_is_streaming@.
 -}
-foreign import ccall safe "wrapped_duckdb_result_is_streaming"
+foreign import ccall unsafe "wrapped_duckdb_result_is_streaming"
     c_duckdb_result_is_streaming :: Ptr DuckDBResult -> IO CBool
 
 {- | > Warning Deprecation notice. This method is scheduled for removal in a future
@@ -73,7 +73,7 @@ These bindings call the wrapper symbol
 @wrapped_duckdb_result_chunk_count@ but mirror the DuckDB C API semantics of
 @duckdb_result_chunk_count@.
 -}
-foreign import ccall safe "wrapped_duckdb_result_chunk_count"
+foreign import ccall unsafe "wrapped_duckdb_result_chunk_count"
     c_duckdb_result_chunk_count :: Ptr DuckDBResult -> IO DuckDBIdx
 
 {- | Returns the return_type of the given result, or DUCKDB_RETURN_TYPE_INVALID on
@@ -88,5 +88,5 @@ These bindings call the wrapper symbol
 @wrapped_duckdb_result_return_type@ but mirror the DuckDB C API semantics of
 @duckdb_result_return_type@.
 -}
-foreign import ccall safe "wrapped_duckdb_result_return_type"
+foreign import ccall unsafe "wrapped_duckdb_result_return_type"
     c_duckdb_result_return_type :: Ptr DuckDBResult -> IO DuckDBResultType

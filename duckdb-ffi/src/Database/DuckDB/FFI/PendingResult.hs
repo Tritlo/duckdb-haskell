@@ -59,7 +59,7 @@ result.
 Parameters:
 * @pending_result@: The pending result to destroy.
 -}
-foreign import ccall safe "duckdb_destroy_pending"
+foreign import ccall unsafe "duckdb_destroy_pending"
     c_duckdb_destroy_pending :: Ptr DuckDBPendingResult -> IO ()
 
 {- | Returns the error message contained within the pending result.
@@ -72,7 +72,7 @@ Parameters:
 
 Returns The error of the pending result.
 -}
-foreign import ccall safe "duckdb_pending_error"
+foreign import ccall unsafe "duckdb_pending_error"
     c_duckdb_pending_error :: DuckDBPendingResult -> IO CString
 
 {- | Executes a single task within the query, returning whether or not the query is
@@ -109,7 +109,7 @@ Parameters:
 
 Returns The state of the pending result.
 -}
-foreign import ccall safe "duckdb_pending_execute_check_state"
+foreign import ccall unsafe "duckdb_pending_execute_check_state"
     c_duckdb_pending_execute_check_state :: DuckDBPendingResult -> IO DuckDBPendingState
 
 {- | Fully execute a pending query result, returning the final query result.
@@ -139,5 +139,5 @@ Parameters:
 
 Returns Boolean indicating pending execution should be considered finished.
 -}
-foreign import ccall safe "duckdb_pending_execution_is_finished"
+foreign import ccall unsafe "duckdb_pending_execution_is_finished"
     c_duckdb_pending_execution_is_finished :: DuckDBPendingState -> IO CBool

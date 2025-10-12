@@ -55,7 +55,7 @@ Parameters:
 
 Returns The error of the extracted statements.
 -}
-foreign import ccall safe "duckdb_extract_statements_error"
+foreign import ccall unsafe "duckdb_extract_statements_error"
     c_duckdb_extract_statements_error :: DuckDBExtractedStatements -> IO CString
 
 {- | De-allocates all memory allocated for the extracted statements.
@@ -63,5 +63,5 @@ foreign import ccall safe "duckdb_extract_statements_error"
 Parameters:
 * @extracted_statements@: The extracted statements to destroy.
 -}
-foreign import ccall safe "duckdb_destroy_extracted"
+foreign import ccall unsafe "duckdb_destroy_extracted"
     c_duckdb_destroy_extracted :: Ptr DuckDBExtractedStatements -> IO ()

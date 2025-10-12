@@ -25,7 +25,7 @@ Parameters:
 
 Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
 -}
-foreign import ccall safe "duckdb_create_config"
+foreign import ccall unsafe "duckdb_create_config"
     c_duckdb_create_config :: Ptr DuckDBConfig -> IO DuckDBState
 
 {- | This returns the total amount of configuration options available for usage
@@ -36,7 +36,7 @@ options.
 
 Returns The amount of config options available.
 -}
-foreign import ccall safe "duckdb_config_count"
+foreign import ccall unsafe "duckdb_config_count"
     c_duckdb_config_count :: IO CSize
 
 {- | Obtains a human-readable name and description of a specific configuration
@@ -53,7 +53,7 @@ Parameters:
 
 Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
 -}
-foreign import ccall safe "duckdb_get_config_flag"
+foreign import ccall unsafe "duckdb_get_config_flag"
     c_duckdb_get_config_flag :: CSize -> Ptr CString -> Ptr CString -> IO DuckDBState
 
 {- | Sets the specified option for the specified configuration. The configuration
@@ -72,7 +72,7 @@ Parameters:
 
 Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
 -}
-foreign import ccall safe "duckdb_set_config"
+foreign import ccall unsafe "duckdb_set_config"
     c_duckdb_set_config :: DuckDBConfig -> CString -> CString -> IO DuckDBState
 
 {- | Destroys the specified configuration object and de-allocates all memory
@@ -81,5 +81,5 @@ allocated for the object.
 Parameters:
 * @config@: The configuration object to destroy.
 -}
-foreign import ccall safe "duckdb_destroy_config"
+foreign import ccall unsafe "duckdb_destroy_config"
     c_duckdb_destroy_config :: Ptr DuckDBConfig -> IO ()

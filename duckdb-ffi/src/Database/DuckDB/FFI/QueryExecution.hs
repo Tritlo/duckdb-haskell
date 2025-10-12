@@ -44,7 +44,7 @@ foreign import ccall safe "duckdb_query"
 Parameters:
 * @result@: The result to destroy.
 -}
-foreign import ccall safe "duckdb_destroy_result"
+foreign import ccall unsafe "duckdb_destroy_result"
     c_duckdb_destroy_result :: Ptr DuckDBResult -> IO ()
 
 {- | Returns the column name of the specified column. The result should not need to
@@ -59,7 +59,7 @@ Parameters:
 
 Returns The column name of the specified column.
 -}
-foreign import ccall safe "duckdb_column_name"
+foreign import ccall unsafe "duckdb_column_name"
     c_duckdb_column_name :: Ptr DuckDBResult -> DuckDBIdx -> IO CString
 
 {- | Returns the column type of the specified column.
@@ -72,7 +72,7 @@ Parameters:
 
 Returns The column type of the specified column.
 -}
-foreign import ccall safe "duckdb_column_type"
+foreign import ccall unsafe "duckdb_column_type"
     c_duckdb_column_type :: Ptr DuckDBResult -> DuckDBIdx -> IO DuckDBType
 
 {- | Returns the statement type of the statement that was executed
@@ -86,7 +86,7 @@ These bindings call the wrapper symbol
 @wrapped_duckdb_result_statement_type@ but mirror the DuckDB C API semantics of
 @duckdb_result_statement_type@.
 -}
-foreign import ccall safe "wrapped_duckdb_result_statement_type"
+foreign import ccall unsafe "wrapped_duckdb_result_statement_type"
     c_duckdb_result_statement_type :: Ptr DuckDBResult -> IO DuckDBStatementType
 
 {- | Returns the logical column type of the specified column.
@@ -102,7 +102,7 @@ Parameters:
 
 Returns The logical column type of the specified column.
 -}
-foreign import ccall safe "duckdb_column_logical_type"
+foreign import ccall unsafe "duckdb_column_logical_type"
     c_duckdb_column_logical_type :: Ptr DuckDBResult -> DuckDBIdx -> IO DuckDBLogicalType
 
 {- | Returns the arrow options associated with the given result. These options are
@@ -118,7 +118,7 @@ These bindings call the wrapper symbol
 @wrapped_duckdb_result_get_arrow_options@ but mirror the DuckDB C API semantics
 of @duckdb_result_get_arrow_options@.
 -}
-foreign import ccall safe "wrapped_duckdb_result_get_arrow_options"
+foreign import ccall unsafe "wrapped_duckdb_result_get_arrow_options"
     c_duckdb_result_get_arrow_options :: Ptr DuckDBResult -> IO DuckDBArrowOptions
 
 {- | Returns the number of columns present in a the result object.
@@ -128,7 +128,7 @@ Parameters:
 
 Returns The number of columns present in the result object.
 -}
-foreign import ccall safe "duckdb_column_count"
+foreign import ccall unsafe "duckdb_column_count"
     c_duckdb_column_count :: Ptr DuckDBResult -> IO DuckDBIdx
 
 {- | > Warning Deprecation notice. This method is scheduled for removal in a future
@@ -141,7 +141,7 @@ Parameters:
 
 Returns The number of rows present in the result object.
 -}
-foreign import ccall safe "duckdb_row_count"
+foreign import ccall unsafe "duckdb_row_count"
     c_duckdb_row_count :: Ptr DuckDBResult -> IO DuckDBIdx
 
 {- | Returns the number of rows changed by the query stored in the result. This is
@@ -153,7 +153,7 @@ Parameters:
 
 Returns The number of rows changed.
 -}
-foreign import ccall safe "duckdb_rows_changed"
+foreign import ccall unsafe "duckdb_rows_changed"
     c_duckdb_rows_changed :: Ptr DuckDBResult -> IO DuckDBIdx
 
 {- | > Deprecated This method has been deprecated. Prefer using
@@ -178,7 +178,7 @@ Parameters:
 
 Returns The column data of the specified column.
 -}
-foreign import ccall safe "duckdb_column_data"
+foreign import ccall unsafe "duckdb_column_data"
     c_duckdb_column_data :: Ptr DuckDBResult -> DuckDBIdx -> IO (Ptr ())
 
 {- | > Deprecated This method has been deprecated. Prefer using
@@ -200,7 +200,7 @@ Parameters:
 
 Returns The nullmask of the specified column.
 -}
-foreign import ccall safe "duckdb_nullmask_data"
+foreign import ccall unsafe "duckdb_nullmask_data"
     c_duckdb_nullmask_data :: Ptr DuckDBResult -> DuckDBIdx -> IO (Ptr CBool)
 
 {- | Returns the error message contained within the result. The error is only set
@@ -214,7 +214,7 @@ Parameters:
 
 Returns The error of the result.
 -}
-foreign import ccall safe "duckdb_result_error"
+foreign import ccall unsafe "duckdb_result_error"
     c_duckdb_result_error :: Ptr DuckDBResult -> IO CString
 
 {- | Returns the result error type contained within the result. The error is only
@@ -225,5 +225,5 @@ Parameters:
 
 Returns The error type of the result.
 -}
-foreign import ccall safe "duckdb_result_error_type"
+foreign import ccall unsafe "duckdb_result_error_type"
     c_duckdb_result_error_type :: Ptr DuckDBResult -> IO DuckDBErrorType

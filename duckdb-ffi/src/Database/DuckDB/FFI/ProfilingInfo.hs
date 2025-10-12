@@ -17,7 +17,7 @@ Parameters:
 
 Returns A profiling information object.
 -}
-foreign import ccall safe "duckdb_get_profiling_info"
+foreign import ccall unsafe "duckdb_get_profiling_info"
     c_duckdb_get_profiling_info :: DuckDBConnection -> IO DuckDBProfilingInfo
 
 {- | Returns the value of the metric of the current profiling info node. Returns
@@ -31,7 +31,7 @@ Parameters:
 
 Returns The value of the metric. Must be freed with @duckdb_destroy_value@
 -}
-foreign import ccall safe "duckdb_profiling_info_get_value"
+foreign import ccall unsafe "duckdb_profiling_info_get_value"
     c_duckdb_profiling_info_get_value :: DuckDBProfilingInfo -> CString -> IO DuckDBValue
 
 {- | Returns the key-value metric map of this profiling node as a MAP duckdb_value.
@@ -42,7 +42,7 @@ Parameters:
 
 Returns The key-value metric map as a MAP duckdb_value.
 -}
-foreign import ccall safe "duckdb_profiling_info_get_metrics"
+foreign import ccall unsafe "duckdb_profiling_info_get_metrics"
     c_duckdb_profiling_info_get_metrics :: DuckDBProfilingInfo -> IO DuckDBValue
 
 {- | Returns the number of children in the current profiling info node.
@@ -52,7 +52,7 @@ Parameters:
 
 Returns The number of children in the current node.
 -}
-foreign import ccall safe "duckdb_profiling_info_get_child_count"
+foreign import ccall unsafe "duckdb_profiling_info_get_child_count"
     c_duckdb_profiling_info_get_child_count :: DuckDBProfilingInfo -> IO DuckDBIdx
 
 {- | Returns the child node at the specified index.
@@ -63,5 +63,5 @@ Parameters:
 
 Returns The child node at the specified index.
 -}
-foreign import ccall safe "duckdb_profiling_info_get_child"
+foreign import ccall unsafe "duckdb_profiling_info_get_child"
     c_duckdb_profiling_info_get_child :: DuckDBProfilingInfo -> DuckDBIdx -> IO DuckDBProfilingInfo

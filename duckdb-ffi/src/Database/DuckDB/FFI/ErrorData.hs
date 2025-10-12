@@ -19,7 +19,7 @@ Parameters:
 
 Returns The error data.
 -}
-foreign import ccall unsafe "duckdb_create_error_data"
+foreign import ccall safe "duckdb_create_error_data"
     c_duckdb_create_error_data :: DuckDBErrorType -> CString -> IO DuckDBErrorData
 
 {- | Destroys the error data and deallocates its memory.
@@ -27,7 +27,7 @@ foreign import ccall unsafe "duckdb_create_error_data"
 Parameters:
 * @error_data@: The error data to destroy.
 -}
-foreign import ccall unsafe "duckdb_destroy_error_data"
+foreign import ccall safe "duckdb_destroy_error_data"
     c_duckdb_destroy_error_data :: Ptr DuckDBErrorData -> IO ()
 
 {- | Returns the duckdb_error_type of the error data.
@@ -37,7 +37,7 @@ Parameters:
 
 Returns The error type.
 -}
-foreign import ccall unsafe "duckdb_error_data_error_type"
+foreign import ccall safe "duckdb_error_data_error_type"
     c_duckdb_error_data_error_type :: DuckDBErrorData -> IO DuckDBErrorType
 
 {- | Returns the error message of the error data. Must not be freed.
@@ -47,7 +47,7 @@ Parameters:
 
 Returns The error message.
 -}
-foreign import ccall unsafe "duckdb_error_data_message"
+foreign import ccall safe "duckdb_error_data_message"
     c_duckdb_error_data_message :: DuckDBErrorData -> IO CString
 
 {- | Returns whether the error data contains an error or not.
@@ -57,5 +57,5 @@ Parameters:
 
 Returns True, if the error data contains an exception, else false.
 -}
-foreign import ccall unsafe "duckdb_error_data_has_error"
+foreign import ccall safe "duckdb_error_data_has_error"
     c_duckdb_error_data_has_error :: DuckDBErrorData -> IO CBool

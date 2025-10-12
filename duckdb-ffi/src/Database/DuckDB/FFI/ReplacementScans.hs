@@ -17,7 +17,7 @@ Parameters:
 * @extra_data@: Extra data that is passed back into the specified callback
 * @delete_callback@: The delete callback to call on the extra data, if any
 -}
-foreign import ccall unsafe "duckdb_add_replacement_scan"
+foreign import ccall safe "duckdb_add_replacement_scan"
     c_duckdb_add_replacement_scan :: DuckDBDatabase -> DuckDBReplacementCallback -> Ptr () -> DuckDBDeleteCallback -> IO ()
 
 {- | Sets the replacement function name. If this function is called in the
@@ -28,7 +28,7 @@ Parameters:
 * @info@: The info object
 * @function_name@: The function name to substitute.
 -}
-foreign import ccall unsafe "duckdb_replacement_scan_set_function_name"
+foreign import ccall safe "duckdb_replacement_scan_set_function_name"
     c_duckdb_replacement_scan_set_function_name :: DuckDBReplacementScanInfo -> CString -> IO ()
 
 {- | Adds a parameter to the replacement scan function.
@@ -37,7 +37,7 @@ Parameters:
 * @info@: The info object
 * @parameter@: The parameter to add.
 -}
-foreign import ccall unsafe "duckdb_replacement_scan_add_parameter"
+foreign import ccall safe "duckdb_replacement_scan_add_parameter"
     c_duckdb_replacement_scan_add_parameter :: DuckDBReplacementScanInfo -> DuckDBValue -> IO ()
 
 {- | Report that an error has occurred while executing the replacement scan.
@@ -46,5 +46,5 @@ Parameters:
 * @info@: The info object
 * @error@: The error message
 -}
-foreign import ccall unsafe "duckdb_replacement_scan_set_error"
+foreign import ccall safe "duckdb_replacement_scan_set_error"
     c_duckdb_replacement_scan_set_error :: DuckDBReplacementScanInfo -> CString -> IO ()

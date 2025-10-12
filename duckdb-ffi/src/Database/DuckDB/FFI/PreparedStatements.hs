@@ -43,7 +43,7 @@ statement.
 Parameters:
 * @prepared_statement@: The prepared statement to destroy.
 -}
-foreign import ccall unsafe "duckdb_destroy_prepare"
+foreign import ccall safe "duckdb_destroy_prepare"
     c_duckdb_destroy_prepare :: Ptr DuckDBPreparedStatement -> IO ()
 
 {- | Returns the error message associated with the given prepared statement. If the
@@ -57,7 +57,7 @@ Parameters:
 
 Returns The error message, or @nullptr@ if there is none.
 -}
-foreign import ccall unsafe "duckdb_prepare_error"
+foreign import ccall safe "duckdb_prepare_error"
     c_duckdb_prepare_error :: DuckDBPreparedStatement -> IO CString
 
 {- | Returns the number of parameters that can be provided to the given prepared
@@ -69,7 +69,7 @@ Parameters:
 * @prepared_statement@: The prepared statement to obtain the number of
   parameters for.
 -}
-foreign import ccall unsafe "duckdb_nparams"
+foreign import ccall safe "duckdb_nparams"
     c_duckdb_nparams :: DuckDBPreparedStatement -> IO DuckDBIdx
 
 {- | Returns the name used to identify the parameter The returned string should be
@@ -81,7 +81,7 @@ Parameters:
 * @prepared_statement@: The prepared statement for which to get the parameter
   name from.
 -}
-foreign import ccall unsafe "duckdb_parameter_name"
+foreign import ccall safe "duckdb_parameter_name"
     c_duckdb_parameter_name :: DuckDBPreparedStatement -> DuckDBIdx -> IO CString
 
 {- | Returns the parameter type for the parameter at the given index.
@@ -95,7 +95,7 @@ Parameters:
 
 Returns The parameter type
 -}
-foreign import ccall unsafe "duckdb_param_type"
+foreign import ccall safe "duckdb_param_type"
     c_duckdb_param_type :: DuckDBPreparedStatement -> DuckDBIdx -> IO DuckDBType
 
 {- | Returns the logical type for the parameter at the given index.
@@ -112,11 +112,11 @@ Parameters:
 
 Returns The logical type of the parameter
 -}
-foreign import ccall unsafe "duckdb_param_logical_type"
+foreign import ccall safe "duckdb_param_logical_type"
     c_duckdb_param_logical_type :: DuckDBPreparedStatement -> DuckDBIdx -> IO DuckDBLogicalType
 
 -- | Clear the params bind to the prepared statement.
-foreign import ccall unsafe "duckdb_clear_bindings"
+foreign import ccall safe "duckdb_clear_bindings"
     c_duckdb_clear_bindings :: DuckDBPreparedStatement -> IO DuckDBState
 
 {- | Returns the statement type of the statement to be executed
@@ -126,7 +126,7 @@ Parameters:
 
 Returns duckdb_statement_type value or DUCKDB_STATEMENT_TYPE_INVALID
 -}
-foreign import ccall unsafe "duckdb_prepared_statement_type"
+foreign import ccall safe "duckdb_prepared_statement_type"
     c_duckdb_prepared_statement_type :: DuckDBPreparedStatement -> IO DuckDBStatementType
 
 {- | Returns the number of columns present in a the result of the prepared
@@ -137,7 +137,7 @@ Parameters:
 
 Returns The number of columns present in the result of the prepared statement.
 -}
-foreign import ccall unsafe "duckdb_prepared_statement_column_count"
+foreign import ccall safe "duckdb_prepared_statement_column_count"
     c_duckdb_prepared_statement_column_count :: DuckDBPreparedStatement -> IO DuckDBIdx
 
 {- | Returns the name of the specified column of the result of the
@@ -151,7 +151,7 @@ Parameters:
 
 Returns The column name of the specified column.
 -}
-foreign import ccall unsafe "duckdb_prepared_statement_column_name"
+foreign import ccall safe "duckdb_prepared_statement_column_name"
     c_duckdb_prepared_statement_column_name :: DuckDBPreparedStatement -> DuckDBIdx -> IO CString
 
 {- | Returns the column type of the specified column of the result of the
@@ -166,7 +166,7 @@ Parameters:
 
 Returns The logical type of the specified column.
 -}
-foreign import ccall unsafe "duckdb_prepared_statement_column_logical_type"
+foreign import ccall safe "duckdb_prepared_statement_column_logical_type"
     c_duckdb_prepared_statement_column_logical_type :: DuckDBPreparedStatement -> DuckDBIdx -> IO DuckDBLogicalType
 
 {- | Returns the column type of the specified column of the result of the
@@ -180,5 +180,5 @@ Parameters:
 
 Returns The type of the specified column.
 -}
-foreign import ccall unsafe "duckdb_prepared_statement_column_type"
+foreign import ccall safe "duckdb_prepared_statement_column_type"
     c_duckdb_prepared_statement_column_type :: DuckDBPreparedStatement -> DuckDBIdx -> IO DuckDBType

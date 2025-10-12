@@ -73,7 +73,7 @@ module Database.DuckDB.Simple (
     deleteFunction,
 ) where
 
-import Control.Monad (forM, void, when, zipWithM, zipWithM_, join)
+import Control.Monad (forM, foldM, join, void, when, zipWithM, zipWithM_)
 import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, newIORef, readIORef, writeIORef)
 import Control.Exception (SomeException, bracket, finally, mask, onException, throwIO, try)
 import qualified Data.ByteString as BS
@@ -125,7 +125,7 @@ import Database.DuckDB.Simple.ToField (FieldBinding, NamedParam (..), ToField (.
 import Database.DuckDB.Simple.ToRow (ToRow (..))
 import Database.DuckDB.Simple.Types (FormatError (..), Null (..), Only (..), (:.) (..))
 import Foreign.C.String (CString, peekCString, withCString)
-import Foreign.C.Types (CBool (..), CDouble (..), CChar, CFloat(..))
+import Foreign.C.Types (CBool (..), CDouble (..))
 import Foreign.Marshal.Alloc (alloca, free, malloc)
 import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.Storable (peek, peekElemOff, poke)
@@ -993,104 +993,183 @@ convertRowsWith parser queryText rows =
 
 collectRows :: Ptr DuckDBResult -> IO [[Field]]
 collectRows resPtr = do
-    columnCount <- fromIntegral <$> c_duckdb_column_count resPtr
-    rowCount <- fromIntegral <$> c_duckdb_row_count resPtr
-    mapM (collectRow resPtr columnCount) [0 .. rowCount - 1]
+    columns <- collectResultColumns resPtr
+    chunkCount <- (fromIntegral <$> c_duckdb_result_chunk_count resPtr) :: IO Int
+    if null columns || chunkCount <= 0
+        then pure []
+        else do
+            (_, chunks) <-
+                foldM
+                    (\(rowBase, acc) chunkIdx -> do
+                        (nextBase, chunkRows) <- collectChunkRows resPtr columns chunkIdx rowBase
+                        pure (nextBase, chunkRows : acc)
+                    )
+                    (0, [])
+                    [0 .. chunkCount - 1]
+            pure (concat (reverse chunks))
 
-collectRow :: Ptr DuckDBResult -> Int -> Int -> IO [Field]
-collectRow resPtr columnCount rowIndex =
-    mapM (collectField resPtr rowIndex) [0 .. columnCount - 1]
+collectResultColumns :: Ptr DuckDBResult -> IO [StatementStreamColumn]
+collectResultColumns resPtr = do
+    rawCount <- c_duckdb_column_count resPtr
+    let columnCount = fromIntegral rawCount :: Int
+    forM [0 .. columnCount - 1] \columnIndex -> do
+        namePtr <- c_duckdb_column_name resPtr (fromIntegral columnIndex)
+        name <-
+            if namePtr == nullPtr
+                then pure (Text.pack ("column" <> show columnIndex))
+                else Text.pack <$> peekCString namePtr
+        dtype <- c_duckdb_column_type resPtr (fromIntegral columnIndex)
+        pure
+            StatementStreamColumn
+                { statementStreamColumnIndex = columnIndex
+                , statementStreamColumnName = name
+                , statementStreamColumnType = dtype
+                }
 
-collectField :: Ptr DuckDBResult -> Int -> Int -> IO Field
-collectField resPtr rowIndex columnIndex = do
-    namePtr <- c_duckdb_column_name resPtr (fromIntegral columnIndex)
-    name <-
-        if namePtr == nullPtr
-            then pure (Text.pack ("column" <> show columnIndex))
-            else Text.pack <$> peekCString namePtr
-    dtype <- c_duckdb_column_type resPtr (fromIntegral columnIndex)
-    value <- fetchFieldValue resPtr dtype columnIndex rowIndex
+collectChunkRows :: Ptr DuckDBResult -> [StatementStreamColumn] -> Int -> Int -> IO (Int, [[Field]])
+collectChunkRows resPtr columns chunkIndex rowBase = do
+    chunk <- c_duckdb_result_get_chunk resPtr (fromIntegral chunkIndex)
+    if chunk == nullPtr
+        then pure (rowBase, [])
+        else
+            finally
+                (do
+                    rawSize <- c_duckdb_data_chunk_get_size chunk
+                    let rowCount = fromIntegral rawSize :: Int
+                    when (rowCount > 0 && not (null columns)) $
+                        void $
+                            fetchFieldValue
+                                resPtr
+                                (statementStreamColumnType (head columns))
+                                (statementStreamColumnIndex (head columns))
+                                rowBase
+                    if rowCount <= 0
+                        then pure (rowBase, [])
+                        else do
+                            vectors <- prepareChunkVectors chunk columns
+                            rows <- mapM (buildMaterializedRow columns vectors) [0 .. rowCount - 1]
+                            pure (rowBase + rowCount, rows)
+                )
+                (destroyDataChunk chunk)
+
+buildMaterializedRow :: [StatementStreamColumn] -> [StatementStreamChunkVector] -> Int -> IO [Field]
+buildMaterializedRow columns vectors rowIdx =
+    zipWithM (buildMaterializedField rowIdx) columns vectors
+
+buildMaterializedField :: Int -> StatementStreamColumn -> StatementStreamChunkVector -> IO Field
+buildMaterializedField rowIdx column StatementStreamChunkVector{statementStreamChunkVectorData, statementStreamChunkVectorValidity} = do
+    value <-
+        materializedValueFromPointers
+            (statementStreamColumnType column)
+            statementStreamChunkVectorData
+            statementStreamChunkVectorValidity
+            rowIdx
     pure
         Field
-            { fieldName = name
-            , fieldIndex = columnIndex
+            { fieldName = statementStreamColumnName column
+            , fieldIndex = statementStreamColumnIndex column
             , fieldValue = value
             }
 
 fetchFieldValue :: Ptr DuckDBResult -> DuckDBType -> Int -> Int -> IO FieldValue
-fetchFieldValue resPtr dtype columnIndex rowIndex = do
-    let duckCol = fromIntegral columnIndex
-        duckRow = fromIntegral rowIndex
-    isNull <- c_duckdb_value_is_null resPtr duckCol duckRow
-    if isNull /= CBool 0
+fetchFieldValue resPtr dtype columnIndex rowIndex =
+    withChunkForRow resPtr rowIndex \chunk localRow -> do
+        vector <- c_duckdb_data_chunk_get_vector chunk (fromIntegral columnIndex)
+        dataPtr <- c_duckdb_vector_get_data vector
+        validity <- c_duckdb_vector_get_validity vector
+        materializedValueFromPointers dtype dataPtr validity localRow
+
+withChunkForRow :: Ptr DuckDBResult -> Int -> (DuckDBDataChunk -> Int -> IO a) -> IO a
+withChunkForRow resPtr targetRow action = do
+    chunkCount <- (fromIntegral <$> c_duckdb_result_chunk_count resPtr) :: IO Int
+    let seek chunkIdx remaining
+            | chunkIdx >= chunkCount =
+                throwIO (userError "duckdb-simple: row index out of bounds while materialising result")
+            | otherwise = do
+                chunk <- c_duckdb_result_get_chunk resPtr (fromIntegral chunkIdx)
+                if chunk == nullPtr
+                    then seek (chunkIdx + 1) remaining
+                    else do
+                        rawSize <- c_duckdb_data_chunk_get_size chunk
+                        let rowCount = fromIntegral rawSize :: Int
+                        if rowCount <= 0
+                            then do
+                                destroyDataChunk chunk
+                                seek (chunkIdx + 1) remaining
+                            else if remaining < rowCount
+                                then
+                                    finally
+                                        (action chunk remaining)
+                                        (destroyDataChunk chunk)
+                                else do
+                                    destroyDataChunk chunk
+                                    seek (chunkIdx + 1) (remaining - rowCount)
+    seek 0 targetRow
+
+materializedValueFromPointers :: DuckDBType -> Ptr () -> Ptr Word64 -> Int -> IO FieldValue
+materializedValueFromPointers dtype dataPtr validity rowIdx = do
+    let duckIdx = fromIntegral rowIdx :: DuckDBIdx
+    valid <- chunkIsRowValid validity duckIdx
+    if not valid
         then pure FieldNull
         else case dtype of
             DuckDBTypeBoolean -> do
-                CBool b <- c_duckdb_value_boolean resPtr duckCol duckRow
-                pure (FieldBool (b /= 0))
-            DuckDBTypeTinyInt  -> FieldInt8  <$> c_duckdb_value_int8 resPtr duckCol duckRow
-            DuckDBTypeSmallInt -> FieldInt16 <$> c_duckdb_value_int16 resPtr duckCol duckRow
-            DuckDBTypeInteger  -> FieldInt32 <$> c_duckdb_value_int32 resPtr duckCol duckRow
-            DuckDBTypeBigInt   -> FieldInt64 <$> c_duckdb_value_int64 resPtr duckCol duckRow
-            DuckDBTypeUTinyInt  -> FieldWord8  <$> c_duckdb_value_uint8 resPtr duckCol duckRow
-            DuckDBTypeUSmallInt -> FieldWord16 <$> c_duckdb_value_uint16 resPtr duckCol duckRow
-            DuckDBTypeUInteger  -> FieldWord32 <$> c_duckdb_value_uint32 resPtr duckCol duckRow
-            DuckDBTypeUBigInt   -> FieldWord64 <$> c_duckdb_value_uint64 resPtr duckCol duckRow
-            -- TODO: support HugeInt types
-            DuckDBTypeHugeInt -> error "HugeInt type not supported"
-                -- FieldInteger <$> c_duckdb_value_hugeint resPtr duckCol duckRow
-            DuckDBTypeUHugeInt -> error "UHugeInt type not supported"
-                -- FieldNatural <$> c_duckdb_value_uhugeint resPtr duckCol duckRow
+                raw <- peekElemOff (castPtr dataPtr :: Ptr Word8) rowIdx
+                pure (FieldBool (raw /= 0))
+            DuckDBTypeTinyInt -> do
+                raw <- peekElemOff (castPtr dataPtr :: Ptr Int8) rowIdx
+                pure (FieldInt8 raw)
+            DuckDBTypeSmallInt -> do
+                raw <- peekElemOff (castPtr dataPtr :: Ptr Int16) rowIdx
+                pure (FieldInt16 raw)
+            DuckDBTypeInteger -> do
+                raw <- peekElemOff (castPtr dataPtr :: Ptr Int32) rowIdx
+                pure (FieldInt32 raw)
+            DuckDBTypeBigInt -> do
+                raw <- peekElemOff (castPtr dataPtr :: Ptr Int64) rowIdx
+                pure (FieldInt64 raw)
+            DuckDBTypeUTinyInt -> do
+                raw <- peekElemOff (castPtr dataPtr :: Ptr Word8) rowIdx
+                pure (FieldWord8 raw)
+            DuckDBTypeUSmallInt -> do
+                raw <- peekElemOff (castPtr dataPtr :: Ptr Word16) rowIdx
+                pure (FieldWord16 raw)
+            DuckDBTypeUInteger -> do
+                raw <- peekElemOff (castPtr dataPtr :: Ptr Word32) rowIdx
+                pure (FieldWord32 raw)
+            DuckDBTypeUBigInt -> do
+                raw <- peekElemOff (castPtr dataPtr :: Ptr Word64) rowIdx
+                pure (FieldWord64 raw)
             DuckDBTypeFloat -> do
-                CFloat d <- c_duckdb_value_float resPtr duckCol duckRow
-                pure (FieldFloat (realToFrac d))
+                raw <- peekElemOff (castPtr dataPtr :: Ptr Float) rowIdx
+                pure (FieldFloat raw)
             DuckDBTypeDouble -> do
-                CDouble d <- c_duckdb_value_double resPtr duckCol duckRow
-                pure (FieldDouble (realToFrac d))
-            DuckDBTypeVarchar -> FieldText <$> fetchTextValue resPtr duckCol duckRow
-            DuckDBTypeBlob -> FieldBlob <$> fetchBlobValue resPtr duckCol duckRow
-            DuckDBTypeDate -> FieldDate <$> fetchDateValue resPtr duckCol duckRow
-            DuckDBTypeTime -> FieldTime <$> fetchTimeValue resPtr duckCol duckRow
-            DuckDBTypeTimestamp -> FieldTimestamp <$> fetchTimestampValue resPtr duckCol duckRow
-            DuckDBTypeUUID -> FieldText <$> fetchTextValue resPtr duckCol duckRow
-            _ -> FieldText <$> fetchTextValue resPtr duckCol duckRow
-
-fetchTextValue :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO Text
-fetchTextValue resPtr columnIndex rowIndex = do
-    strPtr <- c_duckdb_value_varchar resPtr columnIndex rowIndex
-    if strPtr == nullPtr
-        then pure Text.empty
-        else do
-            value <- peekCString strPtr
-            c_duckdb_free (castPtr strPtr)
-            pure (Text.pack value)
-
-fetchBlobValue :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO BS.ByteString
-fetchBlobValue resPtr columnIndex rowIndex = do
-    alloca \ptr -> do
-        c_duckdb_value_blob resPtr columnIndex rowIndex ptr
-        DuckDBBlob{duckDBBlobData = dat, duckDBBlobSize = len} <- peek ptr
-        if dat == nullPtr
-            then pure BS.empty
-            else do
-                bs <- BS.packCStringLen (castPtr dat :: Ptr CChar, fromIntegral len)
-                c_duckdb_free dat
-                pure bs
-
-fetchDateValue :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO Day
-fetchDateValue resPtr columnIndex rowIndex = do
-    raw <- c_duckdb_value_date resPtr columnIndex rowIndex
-    decodeDuckDBDate raw
-
-fetchTimeValue :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO TimeOfDay
-fetchTimeValue resPtr columnIndex rowIndex = do
-    raw <- c_duckdb_value_time resPtr columnIndex rowIndex
-    decodeDuckDBTime raw
-
-fetchTimestampValue :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO LocalTime
-fetchTimestampValue resPtr columnIndex rowIndex = do
-    raw <- c_duckdb_value_timestamp resPtr columnIndex rowIndex
-    decodeDuckDBTimestamp raw
+                raw <- peekElemOff (castPtr dataPtr :: Ptr Double) rowIdx
+                pure (FieldDouble raw)
+            DuckDBTypeVarchar -> FieldText <$> chunkDecodeText dataPtr duckIdx
+            DuckDBTypeUUID -> FieldText <$> chunkDecodeText dataPtr duckIdx
+            DuckDBTypeBlob -> FieldBlob <$> chunkDecodeBlob dataPtr duckIdx
+            DuckDBTypeDate -> do
+                raw <- peekElemOff (castPtr dataPtr :: Ptr Int32) rowIdx
+                FieldDate <$> decodeDuckDBDate (DuckDBDate raw)
+            DuckDBTypeTime -> do
+                raw <- peekElemOff (castPtr dataPtr :: Ptr DuckDBTime) rowIdx
+                FieldTime <$> decodeDuckDBTime raw
+            DuckDBTypeTimestamp -> do
+                raw <- peekElemOff (castPtr dataPtr :: Ptr DuckDBTimestamp) rowIdx
+                FieldTimestamp <$> decodeDuckDBTimestamp raw
+            DuckDBTypeDecimal -> do
+                decimal <- peekElemOff (castPtr dataPtr :: Ptr DuckDBDecimal) rowIdx
+                alloca \ptr -> do
+                    poke ptr decimal
+                    CDouble value <- c_duckdb_decimal_to_double ptr
+                    pure (FieldDouble (realToFrac value))
+            DuckDBTypeHugeInt ->
+                error "duckdb-simple: HugeInt type not supported"
+            DuckDBTypeUHugeInt ->
+                error "duckdb-simple: UHugeInt type not supported"
+            other ->
+                error ("duckdb-simple: unsupported DuckDB type in eager result: " <> show other)
 
 decodeDuckDBDate :: DuckDBDate -> IO Day
 decodeDuckDBDate raw =

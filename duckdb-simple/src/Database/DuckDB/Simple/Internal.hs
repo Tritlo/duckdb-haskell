@@ -60,6 +60,9 @@ newtype Query = Query
     }
     deriving stock (Eq, Ord, Show)
 
+instance Semigroup Query where
+    Query a <> Query b = Query (a <> b)
+
 instance IsString Query where
     fromString = Query . Text.pack
 

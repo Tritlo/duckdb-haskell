@@ -270,12 +270,10 @@ deleteFunction conn name =
         case outcome of
             Right () -> pure ()
             Left err
-                | Text.isInfixOf (Text.pack "Cannot drop internal catalog entry") (sqlErrorMessage err) ->
-                    throwIO
-                        err
-                            { sqlErrorMessage =
-                                Text.pack "duckdb-simple: DuckDB does not allow dropping scalar functions registered via the C API in this build."
-                            }
+                -- DuckDB does not allow dropping scalar functions registered via the C API,
+                -- so we ignore that specific error here.
+                -- TODO: Update this when DuckDB adds support for dropping such functions.
+                | Text.isInfixOf (Text.pack "Cannot drop internal catalog entry") (sqlErrorMessage err) -> return ()
                 | otherwise -> throwIO err
 
 cleanupScalarFunction :: DuckDBScalarFunction -> IO ()

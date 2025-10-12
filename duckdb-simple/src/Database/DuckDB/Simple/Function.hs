@@ -533,8 +533,8 @@ quoteIdent ident =
         , Text.pack "\""
         ]
 
-foreign import ccall safe "wrapper"
+foreign import ccall "wrapper"
     mkScalarFun :: (DuckDBFunctionInfo -> DuckDBDataChunk -> DuckDBVector -> IO ()) -> IO DuckDBScalarFunctionFun
 
-foreign import ccall safe "wrapper"
+foreign import ccall "wrapper"
     mkDeleteCallback :: (Ptr () -> IO ()) -> IO DuckDBDeleteCallback

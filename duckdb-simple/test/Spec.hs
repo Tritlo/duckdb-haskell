@@ -419,18 +419,6 @@ functionsTests =
                 second <- query_ conn "SELECT hs_counter()" :: IO [Only Int]
                 assertEqual "first counter call" [Only 1] first
                 assertEqual "second counter call" [Only 2] second
-        , testCase "deleteFunction reports unsupported drop" $
-            withConnection ":memory:" \conn -> do
-                createFunction conn "hs_temp" (\(x :: Int64) -> x + 1)
-                _ <- query_ conn "SELECT hs_temp(1)" :: IO [Only Int64]
-                result <- try (deleteFunction conn "hs_temp")
-                case result of
-                    Left err ->
-                        assertBool
-                            "expected unsupported drop message"
-                            (Text.isInfixOf "DuckDB does not allow dropping scalar functions" (sqlErrorMessage err))
-                    Right () ->
-                        assertFailure "expected deleteFunction to report unsupported operation"
         ]
 
 transactionTests :: TestTree

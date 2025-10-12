@@ -36,125 +36,33 @@ main =
   defaultMainWithHooks
     simpleUserHooks
       { preConf = \args flags -> do
-          installVendoredDuckDB (fromFlag (configVerbosity flags))
+          ensureDuckDBAvailable (fromFlag (configVerbosity flags))
           preConf simpleUserHooks args flags
-      , confHook = \a f -> do
-          lbi <- confHook simpleUserHooks a f
-          updateExtraLibDirs lbi
       }
-
-dUCKDBVERSION :: String
-dUCKDBVERSION = "v1.4.1"
-
-dUCKDBURL :: String
-dUCKDBURL = "https://github.com/duckdb/duckdb/releases/download/" <> dUCKDBVERSION <> "/libduckdb-linux-amd64.zip"
-
-vendoredSharedLibraryCandidates :: [FilePath]
-vendoredSharedLibraryCandidates =
-  [ "libduckdb.so"
-  , "libduckdb.so.1.4"
-  , "libduckdb.so.1.4.0"
-  ]
-
-vendoredLibraryFiles :: [FilePath]
-vendoredLibraryFiles = vendoredSharedLibraryCandidates ++ ["libduckdb.a"]
 
 systemLibraryCandidates :: [FilePath]
 systemLibraryCandidates =
   [ "libduckdb.so"
   , "libduckdb.so.0"
   , "libduckdb.so.1"
-  , "libduckdb.so.2"
   , "libduckdb.so.1.4"
   , "libduckdb.so.1.4.0"
-  , "libduckdb.dylib"
-  , "duckdb.dll"
-  , "duckdb.lib"
-  , "libduckdb.a"
   ]
 
-updateExtraLibDirs :: LocalBuildInfo -> IO LocalBuildInfo
-updateExtraLibDirs localBuildInfo = do
-  let packageDescription = localPkgDescr localBuildInfo
-      Just lib = library packageDescription
-      libBuild = libBuildInfo lib
-  dir <- getCurrentDirectory
-  let vendorLibDir = dir </> "cbits" </> "duckdb"
-  hasVendored <- vendoredDuckDBPresentAt vendorLibDir
-  if not hasVendored
-    then pure localBuildInfo
-    else
-      return
-        localBuildInfo
-          { localPkgDescr =
-              packageDescription
-                { library =
-                    Just $
-                      lib
-                        { libBuildInfo =
-                            libBuild
-                              { extraLibDirs = vendorLibDir : nub (extraLibDirs libBuild)
-                              }
-                        }
-                }
-          }
 
-installVendoredDuckDB :: Verbosity -> IO ()
-installVendoredDuckDB verb = do
+ensureDuckDBAvailable :: Verbosity -> IO ()
+ensureDuckDBAvailable verb = do
   available <- systemDuckDBAvailable
   if available
-    then info verb "System libduckdb and duckdb.h found; skipping vendored DuckDB install."
-    else do
-      vendored <- vendoredDuckDBPresent
-      if vendored
-        then info verb "Vendored DuckDB already present; skipping download."
-        else installVendoredDuckDB' verb
+    then info verb "libduckdb found"
+    else error "libduckdb not found, please install libduckdb (available at https://duckdb.org/install/)"
 
-installVendoredDuckDB' :: Verbosity -> IO ()
-installVendoredDuckDB' verb = do
-  let target = "cbits" </> "duckdb"
-
-  tmpDir <- getTemporaryDirectory
-  bracket
-    (createTempDirectory tmpDir "duckdb")
-    removeDirectoryRecursive
-    $ \temp -> do
-      let zipPath = temp </> "libduckdb.zip"
-      info verb $ "Downloading DuckDB from " ++ dUCKDBURL
-      callProcess "curl" ["-fsSL", "-o", zipPath, dUCKDBURL]
-      info verb $ "Extracting to " ++ temp
-      callProcess "unzip" [zipPath, "-d", temp]
-      let srcDir' = temp
-      existing <- filterM (doesFileExist . (srcDir' </>)) vendoredSharedLibraryCandidates
-      case existing of
-        [] -> info verb "duckdb-ffi: no libduckdb.so* found after extraction"
-        xs -> do
-          createDirectoryIfMissingVerbose verb True target
-          forM_ xs $ \f -> do
-            let src = srcDir' </> f
-                out = target </> f
-            copyFileVerbose verb src out
-          copyFileVerbose verb (srcDir' </> "libduckdb_static.a") (target </> "libduckdb.a")
-      return ()
 
 systemDuckDBAvailable :: IO Bool
 systemDuckDBAvailable = do
   header <- findDuckDBHeader
   lib <- findDuckDBLibrary
   pure (isJust header && isJust lib)
-
-vendoredDuckDBPresent :: IO Bool
-vendoredDuckDBPresent = do
-  dir <- getCurrentDirectory
-  let vendorLibDir = dir </> "cbits" </> "duckdb"
-  vendoredDuckDBPresentAt vendorLibDir
-
-vendoredDuckDBPresentAt :: FilePath -> IO Bool
-vendoredDuckDBPresentAt vendorLibDir = do
-  exists <- doesDirectoryExist vendorLibDir
-  if not exists
-    then pure False
-    else or <$> mapM (doesFileExist . (vendorLibDir </>)) vendoredLibraryFiles
 
 findDuckDBHeader :: IO (Maybe FilePath)
 findDuckDBHeader = do

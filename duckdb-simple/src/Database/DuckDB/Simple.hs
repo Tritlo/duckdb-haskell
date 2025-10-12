@@ -159,12 +159,12 @@ withConnection path = bracket (open path) close
 
 -- | Prepare a SQL statement for execution.
 openStatement :: Connection -> Query -> IO Statement
-openStatement conn query =
+openStatement conn queryText =
     mask \restore -> do
         handle <-
             restore $
                 withConnectionHandle conn \connPtr ->
-                    withQueryCString query \sql ->
+                    withQueryCString queryText \sql ->
                         alloca \stmtPtr -> do
                             rc <- c_duckdb_prepare connPtr sql stmtPtr
                             stmt <- peek stmtPtr
@@ -173,8 +173,8 @@ openStatement conn query =
                                 else do
                                     errMsg <- fetchPrepareError stmt
                                     c_duckdb_destroy_prepare stmtPtr
-                                    throwIO $ mkPrepareError query errMsg
-        createStatement conn handle query
+                                    throwIO $ mkPrepareError queryText errMsg
+        createStatement conn handle queryText
             `onException` destroyPrepared handle
 
 -- | Finalise a prepared statement.  The operation is idempotent.
@@ -542,8 +542,8 @@ startStatementStream stmt =
 collectStreamColumns :: DuckDBPreparedStatement -> IO [StatementStreamColumn]
 collectStreamColumns handle = do
     rawCount <- c_duckdb_prepared_statement_column_count handle
-    let columnCount = fromIntegral rawCount :: Int
-    forM [0 .. columnCount - 1] \idx -> do
+    let cc = fromIntegral rawCount :: Int
+    forM [0 .. cc - 1] \idx -> do
         namePtr <- c_duckdb_prepared_statement_column_name handle (fromIntegral idx)
         name <-
             if namePtr == nullPtr
@@ -558,13 +558,13 @@ collectStreamColumns handle = do
                 }
 
 streamNextRow :: Query -> StatementStream -> IO (Maybe [Field], StatementStream)
-streamNextRow query stream@StatementStream{statementStreamChunk = Nothing} = do
+streamNextRow queryText stream@StatementStream{statementStreamChunk = Nothing} = do
     refreshed <- fetchChunk stream
     case statementStreamChunk refreshed of
         Nothing -> pure (Nothing, refreshed)
-        Just chunk -> emitRow query refreshed chunk
-streamNextRow query stream@StatementStream{statementStreamChunk = Just chunk} =
-    emitRow query stream chunk
+        Just chunk -> emitRow queryText refreshed chunk
+streamNextRow queryText stream@StatementStream{statementStreamChunk = Just chunk} =
+    emitRow queryText stream chunk
 
 fetchChunk :: StatementStream -> IO StatementStream
 fetchChunk stream@StatementStream{statementStreamResult} = do
@@ -603,10 +603,10 @@ prepareChunkVectors chunk columns =
                 }
 
 emitRow :: Query -> StatementStream -> StatementStreamChunk -> IO (Maybe [Field], StatementStream)
-emitRow query stream chunk@StatementStreamChunk{statementStreamChunkIndex, statementStreamChunkSize} = do
+emitRow queryText stream chunk@StatementStreamChunk{statementStreamChunkIndex, statementStreamChunkSize} = do
     fields <-
         buildRow
-            query
+            queryText
             (statementStreamColumns stream)
             (statementStreamChunkVectors chunk)
             statementStreamChunkIndex
@@ -620,11 +620,11 @@ emitRow query stream chunk@StatementStreamChunk{statementStreamChunkIndex, state
             pure (Just fields, stream{statementStreamChunk = Nothing})
 
 buildRow :: Query -> [StatementStreamColumn] -> [StatementStreamChunkVector] -> Int -> IO [Field]
-buildRow query columns vectors rowIdx =
-    zipWithM (buildField query rowIdx) columns vectors
+buildRow queryText columns vectors rowIdx =
+    zipWithM (buildField queryText rowIdx) columns vectors
 
 buildField :: Query -> Int -> StatementStreamColumn -> StatementStreamChunkVector -> IO Field
-buildField query rowIdx column StatementStreamChunkVector{statementStreamChunkVectorData, statementStreamChunkVectorValidity} = do
+buildField queryText rowIdx column StatementStreamChunkVector{statementStreamChunkVectorData, statementStreamChunkVectorValidity} = do
     let duckIdx = fromIntegral rowIdx
         dtype = statementStreamColumnType column
     valid <- chunkIsRowValid statementStreamChunkVectorValidity duckIdx
@@ -684,7 +684,7 @@ buildField query rowIdx column StatementStreamChunkVector{statementStreamChunkVe
                 DuckDBTypeHugeInt -> error "duckdb-simple: HUGEINT is not supported"
                 DuckDBTypeUHugeInt -> error "duckdb-simple: HUGEINT is not supported"
                 _ ->
-                    throwIO (streamingUnsupportedTypeError query column)
+                    throwIO (streamingUnsupportedTypeError queryText column)
     pure
         Field
             { fieldName = statementStreamColumnName column
@@ -754,7 +754,7 @@ destroyDataChunk chunk =
         c_duckdb_destroy_data_chunk ptr
 
 streamingUnsupportedTypeError :: Query -> StatementStreamColumn -> SQLError
-streamingUnsupportedTypeError query StatementStreamColumn{statementStreamColumnName, statementStreamColumnType} =
+streamingUnsupportedTypeError queryText StatementStreamColumn{statementStreamColumnName, statementStreamColumnType} =
     SQLError
         { sqlErrorMessage =
             Text.concat
@@ -764,7 +764,7 @@ streamingUnsupportedTypeError query StatementStreamColumn{statementStreamColumnN
                 , Text.pack (show statementStreamColumnType)
                 ]
         , sqlErrorType = Nothing
-        , sqlErrorQuery = Just query
+        , sqlErrorQuery = Just queryText
         }
 
 -- | Run an action inside a transaction.
@@ -797,7 +797,7 @@ createConnection db conn = do
     pure Connection{connectionState = ref}
 
 createStatement :: Connection -> DuckDBPreparedStatement -> Query -> IO Statement
-createStatement parent handle query = do
+createStatement parent handle queryText = do
     ref <- newIORef (StatementOpen handle)
     streamRef <- newIORef StatementStreamIdle
     _ <-
@@ -815,7 +815,7 @@ createStatement parent handle query = do
         Statement
             { statementState = ref
             , statementConnection = parent
-            , statementQuery = query
+            , statementQuery = queryText
             , statementStream = streamRef
             }
 
@@ -900,19 +900,19 @@ mkConnectError =
         }
 
 mkPrepareError :: Query -> Text -> SQLError
-mkPrepareError query msg =
+mkPrepareError queryText msg =
     SQLError
         { sqlErrorMessage = msg
         , sqlErrorType = Nothing
-        , sqlErrorQuery = Just query
+        , sqlErrorQuery = Just queryText
         }
 
 mkExecuteError :: Query -> Text -> Maybe DuckDBErrorType -> SQLError
-mkExecuteError query msg errType =
+mkExecuteError queryText msg errType =
     SQLError
         { sqlErrorMessage = msg
         , sqlErrorType = errType
-        , sqlErrorQuery = Just query
+        , sqlErrorQuery = Just queryText
         }
 
 throwFormatError :: Statement -> Text -> [String] -> IO a
@@ -1011,8 +1011,8 @@ collectRows resPtr = do
 collectResultColumns :: Ptr DuckDBResult -> IO [StatementStreamColumn]
 collectResultColumns resPtr = do
     rawCount <- c_duckdb_column_count resPtr
-    let columnCount = fromIntegral rawCount :: Int
-    forM [0 .. columnCount - 1] \columnIndex -> do
+    let cc = fromIntegral rawCount :: Int
+    forM [0 .. cc - 1] \columnIndex -> do
         namePtr <- c_duckdb_column_name resPtr (fromIntegral columnIndex)
         name <-
             if namePtr == nullPtr

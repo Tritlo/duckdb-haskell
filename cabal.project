@@ -14,4 +14,3 @@ program-options
   ghc-options:
     -Wall
     -Werror
-    -Wno-name-shadowing

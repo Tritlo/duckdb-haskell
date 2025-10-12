@@ -70,8 +70,8 @@ newtype NonEmptyText = NonEmptyText Text.Text
     deriving (Eq, Show)
 
 nonEmptyTextParser :: FieldParser NonEmptyText
-nonEmptyTextParser field@Field{} =
-    case fromField field  of
+nonEmptyTextParser f@Field{} =
+    case fromField f  of
         Errors err -> Errors err
         Ok txt
             | Text.null txt ->

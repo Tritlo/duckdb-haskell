@@ -123,8 +123,8 @@ left = Errors . (:[]) . SomeException
 -- | Parser used by 'FromField' instances and utilities such as
 -- 'Database.DuckDB.Simple.FromRow.fieldWith'. The supplied 'Field' contains
 -- column metadata and an already-decoded 'FieldValue'; callers should return
--- either a successfully converted value or a 'ResultError' describing the
--- failure.
+-- 'Ok' on success or 'Errors' (typically wrapping a 'ResultError') when the
+-- conversion fails.
 type FieldParser a = Field -> Ok a
 
 -- | Types that can be constructed from a DuckDB column.
@@ -138,44 +138,44 @@ instance FromField Null where
     fromField Field{fieldValue} =
         case fieldValue of
             FieldNull -> Ok Null
-            other -> left (Incompatible "NULL" (fieldValueTypeName other) "expected NULL")
+            other -> left (Incompatible (fieldValueTypeName other) "Null" "expected NULL")
 
 instance FromField Bool where
     fromField Field{fieldValue} =
         case fieldValue of
             FieldBool b -> Ok b
             FieldInt i -> Ok (i /= 0)
-            other -> left (Incompatible "BOOL" (fieldValueTypeName other) "invalid type for boolean")
+            other -> left (Incompatible (fieldValueTypeName other) "Bool" "invalid type for boolean")
 
 instance FromField Int8 where
     fromField Field{fieldValue} =
         case fieldValue of
             FieldInt i -> Ok (fromIntegral i)
-            other -> left (Incompatible "INT1" (fieldValueTypeName other) "invalid type for Int8")
+            other -> left (Incompatible (fieldValueTypeName other) "Int8" "invalid type for Int8")
 
 instance FromField Int64 where
     fromField Field{fieldValue} =
         case fieldValue of
             FieldInt i -> Ok (fromIntegral i)
-            other -> left (Incompatible "INT8" (fieldValueTypeName other) "invalid type for Int64")
+            other -> left (Incompatible (fieldValueTypeName other) "Int64" "invalid type for Int64")
 
 instance FromField Int32 where
     fromField field@Field{fieldValue} =
         case fieldValue of
             FieldInt i -> boundedIntegral field i
-            other -> left (Incompatible "INT4" (fieldValueTypeName other) "invalid type for integer")
+            other -> left (Incompatible (fieldValueTypeName other) "Int32" "invalid type for integer")
 
 instance FromField Int16 where
     fromField field@Field{fieldValue} =
         case fieldValue of
             FieldInt i -> boundedIntegral field i
-            other -> left (Incompatible "INT2" (fieldValueTypeName other) "invalid type for integer")
+            other -> left (Incompatible (fieldValueTypeName other) "Int16" "invalid type for integer")
 
 instance FromField Int where
     fromField field@Field{fieldValue} =
         case fieldValue of
             FieldInt i -> boundedIntegral field i
-            other -> left (Incompatible "INT4" (fieldValueTypeName other) "invalid type for integer")
+            other -> left (Incompatible (fieldValueTypeName other) "Int" "invalid type for integer")
 
 instance FromField Word64 where
     fromField Field{fieldValue} =
@@ -184,10 +184,10 @@ instance FromField Word64 where
                 | i >= 0 -> Ok (fromIntegral i)
                 | otherwise ->
                     left $
-                        ConversionFailed "Word32" (fieldValueTypeName fieldValue) $
+                        ConversionFailed (fieldValueTypeName fieldValue) "Word64" $
                                  Text.pack "negative value cannot be converted to unsigned integer"
             FieldWord w -> Ok (fromIntegral w)
-            other -> left (Incompatible "Word64" (fieldValueTypeName other) "invalid type for Word64")
+            other -> left (Incompatible (fieldValueTypeName other) "Word64" "invalid type for Word64")
 
 instance FromField Word32 where
     fromField field@Field{fieldValue} =
@@ -196,10 +196,10 @@ instance FromField Word32 where
                 | i >= 0 -> boundedIntegral field i
                 | otherwise ->
                     left $
-                        ConversionFailed "Word32" (fieldValueTypeName fieldValue) $
+                        ConversionFailed (fieldValueTypeName fieldValue) "Word32" $
                                  Text.pack "negative value cannot be converted to unsigned integer"
             FieldWord w -> Ok (fromIntegral w)
-            other -> left (Incompatible "Word32" (fieldValueTypeName other) "invalid type for Word32")
+            other -> left (Incompatible (fieldValueTypeName other) "Word32" "invalid type for Word32")
 
 instance FromField Word16 where
     fromField field@Field{fieldValue} =
@@ -208,10 +208,10 @@ instance FromField Word16 where
                 | i >= 0 -> boundedIntegral field i
                 | otherwise ->
                     left $
-                        ConversionFailed "Word16" (fieldValueTypeName fieldValue) $
+                        ConversionFailed (fieldValueTypeName fieldValue) "Word16" $
                                  Text.pack "negative value cannot be converted to unsigned integer"
             FieldWord w -> Ok (fromIntegral w)
-            other -> left (Incompatible "Word16" (fieldValueTypeName other) "invalid type for Word16")
+            other -> left (Incompatible (fieldValueTypeName other) "Word16" "invalid type for Word16")
 
 instance FromField Word8 where
     fromField field@Field{fieldValue} =
@@ -220,17 +220,17 @@ instance FromField Word8 where
                 | i >= 0 -> boundedIntegral field i
                 | otherwise ->
                     left $
-                        ConversionFailed "Word8" (fieldValueTypeName fieldValue) $
+                        ConversionFailed (fieldValueTypeName fieldValue) "Word8" $
                                  Text.pack "negative value cannot be converted to unsigned integer"
             FieldWord w -> Ok (fromIntegral w)
-            other -> left (Incompatible "Word8" (fieldValueTypeName other) "invalid type for Word8")
+            other -> left (Incompatible (fieldValueTypeName other) "Word8" "invalid type for Word8")
 
 instance FromField Double where
     fromField Field{fieldValue} =
         case fieldValue of
             FieldDouble d -> Ok d
             FieldInt i -> Ok (fromIntegral i)
-            other -> left (Incompatible "DOUBLE" (fieldValueTypeName other) "invalid type for double")
+            other -> left (Incompatible (fieldValueTypeName other) "Double" "invalid type for double")
 
 instance FromField Float where
     fromField field =
@@ -246,8 +246,8 @@ instance FromField Text where
             FieldDouble d -> Ok (Text.pack (show d))
             FieldBool b -> Ok (if b then Text.pack "1" else Text.pack "0")
             FieldNull ->
-                left $ UnexpectedNull "TEXT" (fieldValueTypeName fieldValue) $ Text.pack "unexpected null value"
-            other -> left (Incompatible "TEXT" (fieldValueTypeName other) "invalid type for text")
+                left $ UnexpectedNull (fieldValueTypeName fieldValue) "Text" $ Text.pack "unexpected null value"
+            other -> left (Incompatible (fieldValueTypeName other) "Text" "invalid type for text")
 
 instance FromField String where
     fromField field = Text.unpack <$> fromField field
@@ -258,29 +258,29 @@ instance FromField BS.ByteString where
             FieldBlob bs -> Ok bs
             FieldText t -> Ok (TextEncoding.encodeUtf8 t)
             FieldNull ->
-                left $ UnexpectedNull "BLOB" (fieldValueTypeName fieldValue) $ Text.pack "unexpected null value"
-            other -> left (Incompatible "BLOB" (fieldValueTypeName other) "invalid type for blob")
+                left $ UnexpectedNull (fieldValueTypeName fieldValue) "ByteString" $ Text.pack "unexpected null value"
+            other -> left (Incompatible (fieldValueTypeName other) "ByteString" "invalid type for blob")
 
 instance FromField Day where
     fromField Field{fieldValue} =
         case fieldValue of
             FieldDate day -> Ok day
             FieldTimestamp LocalTime{localDay} -> Ok localDay
-            other -> left (Incompatible "DATE" (fieldValueTypeName other) "invalid type for date")
+            other -> left (Incompatible (fieldValueTypeName other) "Day" "invalid type for date")
 
 instance FromField TimeOfDay where
     fromField Field{fieldValue} =
         case fieldValue of
             FieldTime tod -> Ok tod
             FieldTimestamp LocalTime{localTimeOfDay} -> Ok localTimeOfDay
-            other -> left (Incompatible "TIME" (fieldValueTypeName other) "invalid type for time")
+            other -> left (Incompatible (fieldValueTypeName other) "TimeOfDay" "invalid type for time")
 
 instance FromField LocalTime where
     fromField Field{ fieldValue} =
         case fieldValue of
             FieldTimestamp ts -> Ok ts
             FieldDate day -> Ok (LocalTime day midnight)
-            other -> left (Incompatible "TIMESTAMP" (fieldValueTypeName other) "invalid type for timestamp")
+            other -> left (Incompatible (fieldValueTypeName other) "LocalTime" "invalid type for timestamp")
       where
         midnight = TimeOfDay 0 0 0
 

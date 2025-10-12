@@ -26,14 +26,16 @@ module Database.DuckDB.Simple.FromRow (
 
     -- * Error conversion
     resultErrorToSqlError,
+    rowErrorsToSqlError,
 ) where
 
 import Control.Applicative (Alternative (..))
-import Control.Exception (Exception, toException)
+import Control.Exception (Exception, SomeException, fromException, toException)
 import Control.Monad (MonadPlus, replicateM)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Reader (ReaderT, ask, runReaderT)
 import Control.Monad.Trans.State.Strict (StateT, get, put, runStateT)
+import Data.Maybe (listToMaybe, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import GHC.Generics
@@ -223,6 +225,32 @@ resultErrorToSqlError query err =
         , sqlErrorType = Nothing
         , sqlErrorQuery = Just query
         }
+
+-- | Collapse parser failure diagnostics into an 'SQLError' while preserving the query.
+rowErrorsToSqlError :: Query -> [SomeException] -> SQLError
+rowErrorsToSqlError query errs =
+    case listToMaybe (mapMaybe (fromException :: SomeException -> Maybe ResultError) errs) of
+        Just resultErr -> resultErrorToSqlError query resultErr
+        Nothing ->
+            case listToMaybe (mapMaybe (fromException :: SomeException -> Maybe ColumnOutOfBounds) errs) of
+                Just (ColumnOutOfBounds idx) ->
+                    SQLError
+                        { sqlErrorMessage =
+                            Text.concat
+                                [ "duckdb-simple: column index "
+                                , Text.pack (show idx)
+                                , " out of bounds"
+                                ]
+                        , sqlErrorType = Nothing
+                        , sqlErrorQuery = Just query
+                        }
+                Nothing ->
+                    SQLError
+                        { sqlErrorMessage =
+                            Text.pack "duckdb-simple: row parsing failed for an unknown reason"
+                        , sqlErrorType = Nothing
+                        , sqlErrorQuery = Just query
+                        }
 
 renderError :: ResultError -> Text
 renderError = \case

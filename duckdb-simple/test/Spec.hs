@@ -60,7 +60,11 @@ instance FromRow YesNo where
                     let normalized = Text.toLower txt
                      in if normalized == expected
                             then Ok ()
-                            else left $ ConversionFailed expected normalized "failed to match exact string"
+                            else left $
+                                ConversionFailed
+                                    (Text.pack "TEXT")
+                                    (Text.pack "YesNo")
+                                    "failed to match exact string"
 
 newtype NonEmptyText = NonEmptyText Text.Text
     deriving (Eq, Show)
@@ -72,7 +76,10 @@ nonEmptyTextParser field@Field{} =
         Ok txt
             | Text.null txt ->
                 left $
-                    ConversionFailed "" "" $ Text.pack "NonEmptyText requires a non-empty string"
+                    ConversionFailed
+                        (Text.pack "TEXT")
+                        (Text.pack "NonEmptyText")
+                        (Text.pack "NonEmptyText requires a non-empty string")
             | otherwise -> Ok (NonEmptyText txt)
 
 instance FromField NonEmptyText where
@@ -251,7 +258,7 @@ statementTests =
                 _ <- execute_ conn "INSERT INTO mismatch VALUES (1, 2)"
                 assertThrows
                     (query_ conn "SELECT a, b FROM mismatch" :: IO [Only Int])
-                    (Text.isInfixOf "columnOutOfBounds" . sqlErrorMessage)
+                    (Text.isInfixOf "column index" . sqlErrorMessage)
         , testCase "clears statement bindings without error" $
             withConnection ":memory:" \conn -> do
                 stmt <- openStatement conn "SELECT ?"

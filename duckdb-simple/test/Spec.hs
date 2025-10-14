@@ -21,7 +21,7 @@ import Data.Time.Calendar (fromGregorian)
 import Data.Time.Clock (UTCTime)
 import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), localTimeToUTC, utc)
 import Database.DuckDB.Simple
-import Database.DuckDB.Simple.FromField (Field (..), left)
+import Database.DuckDB.Simple.FromField (Field (..), returnError)
 import GHC.Generics (Generic)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit
@@ -60,11 +60,7 @@ instance FromRow YesNo where
                     let normalized = Text.toLower txt
                      in if normalized == expected
                             then Ok ()
-                            else left $
-                                ConversionFailed
-                                    (Text.pack "TEXT")
-                                    (Text.pack "YesNo")
-                                    "failed to match exact string"
+                            else returnError  ConversionFailed fld "failed to match exact string"
 
 newtype NonEmptyText = NonEmptyText Text.Text
     deriving (Eq, Show)
@@ -75,11 +71,7 @@ nonEmptyTextParser f@Field{} =
         Errors err -> Errors err
         Ok txt
             | Text.null txt ->
-                left $
-                    ConversionFailed
-                        (Text.pack "TEXT")
-                        (Text.pack "NonEmptyText")
-                        (Text.pack "NonEmptyText requires a non-empty string")
+                returnError  ConversionFailed f "NonEmptyText requires a non-empty string"
             | otherwise -> Ok (NonEmptyText txt)
 
 instance FromField NonEmptyText where

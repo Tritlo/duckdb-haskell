@@ -17,7 +17,7 @@ module Database.DuckDB.Simple.FromField (
     ResultError (..),
     FieldParser,
     FromField (..),
-    left
+    returnError
 ) where
 
 import Control.Exception (Exception, SomeException (..))
@@ -96,15 +96,18 @@ data Field = Field
 -- | Exception thrown if conversion from a SQL value to a Haskell
 -- value fails.
 data ResultError = Incompatible { errSQLType :: Text
+                                , errSQLField :: Text
                                 , errHaskellType :: Text
                                 , errMessage :: Text }
                  -- ^ The SQL and Haskell types are not compatible.
                  | UnexpectedNull { errSQLType :: Text
+                                  , errSQLField :: Text
                                   , errHaskellType :: Text
                                   , errMessage :: Text }
                  -- ^ A SQL @NULL@ was encountered when the Haskell
                  -- type did not permit it.
                  | ConversionFailed { errSQLType :: Text
+                                    , errSQLField :: Text
                                     , errHaskellType :: Text
                                     , errMessage :: Text }
                  -- ^ The SQL value could not be parsed, or could not
@@ -115,9 +118,6 @@ data ResultError = Incompatible { errSQLType :: Text
 
 instance Exception ResultError
 
--- From sqlite-simple:
-left :: Exception a => a -> Ok b
-left = Errors . (:[]) . SomeException
 
 
 -- | Parser used by 'FromField' instances and utilities such as
@@ -135,113 +135,105 @@ instance FromField FieldValue where
     fromField Field{fieldValue} = Ok fieldValue
 
 instance FromField Null where
-    fromField Field{fieldValue} =
+    fromField f@Field{fieldValue} =
         case fieldValue of
             FieldNull -> Ok Null
-            other -> left (Incompatible (fieldValueTypeName other) "Null" "expected NULL")
+            _ ->  returnError Incompatible f "expected NULL"
 
 instance FromField Bool where
-    fromField Field{fieldValue} =
+    fromField f@Field{fieldValue} =
         case fieldValue of
             FieldBool b -> Ok b
             FieldInt i -> Ok (i /= 0)
-            FieldNull -> left $ UnexpectedNull (fieldValueTypeName fieldValue) "Bool" ""
-            other -> left (Incompatible (fieldValueTypeName other) "Bool" "")
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
 
 instance FromField Int8 where
-    fromField Field{fieldValue} =
+    fromField f@Field{fieldValue} =
         case fieldValue of
             FieldInt i -> Ok (fromIntegral i)
-            FieldNull -> left $ UnexpectedNull (fieldValueTypeName fieldValue) "Int8" ""
-            other -> left (Incompatible (fieldValueTypeName other) "Int8" "")
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
 
 instance FromField Int64 where
-    fromField Field{fieldValue} =
+    fromField f@Field{fieldValue} =
         case fieldValue of
             FieldInt i -> Ok (fromIntegral i)
-            FieldNull -> left $ UnexpectedNull (fieldValueTypeName fieldValue) "Int64" ""
-            other -> left (Incompatible (fieldValueTypeName other) "Int64" "")
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
 
 instance FromField Int32 where
-    fromField field@Field{fieldValue} =
+    fromField f@Field{fieldValue} =
         case fieldValue of
-            FieldInt i -> boundedIntegral field i
-            FieldNull -> left $ UnexpectedNull (fieldValueTypeName fieldValue) "Int32" ""
-            other -> left (Incompatible (fieldValueTypeName other) "Int32" "")
+            FieldInt i -> boundedIntegral f i
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
 
 instance FromField Int16 where
-    fromField field@Field{fieldValue} =
+    fromField f@Field{fieldValue} =
         case fieldValue of
-            FieldInt i -> boundedIntegral field i
-            FieldNull -> left $ UnexpectedNull (fieldValueTypeName fieldValue) "Int16" ""
-            other -> left (Incompatible (fieldValueTypeName other) "Int16" "")
+            FieldInt i -> boundedIntegral f i
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
 
 instance FromField Int where
-    fromField field@Field{fieldValue} =
+    fromField f@Field{fieldValue} =
         case fieldValue of
-            FieldInt i -> boundedIntegral field i
-            FieldNull -> left $ UnexpectedNull (fieldValueTypeName fieldValue) "Int" ""
-            other -> left (Incompatible (fieldValueTypeName other) "Int" "")
+            FieldInt i -> boundedIntegral f i
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
 
 instance FromField Word64 where
-    fromField Field{fieldValue} =
+    fromField f@Field{fieldValue} =
         case fieldValue of
             FieldInt i
                 | i >= 0 -> Ok (fromIntegral i)
                 | otherwise ->
-                    left $
-                        ConversionFailed (fieldValueTypeName fieldValue) "Word64" $
-                                 Text.pack "negative value cannot be converted to unsigned integer"
+                     returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
             FieldWord w -> Ok (fromIntegral w)
-            FieldNull -> left $ UnexpectedNull (fieldValueTypeName fieldValue) "Word64" ""
-            other -> left (Incompatible (fieldValueTypeName other) "Word64" "")
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
 
 instance FromField Word32 where
-    fromField field@Field{fieldValue} =
+    fromField f@Field{fieldValue} =
         case fieldValue of
             FieldInt i
-                | i >= 0 -> boundedIntegral field i
+                | i >= 0 -> boundedIntegral f i
                 | otherwise ->
-                    left $
-                        ConversionFailed (fieldValueTypeName fieldValue) "Word32" $
-                                 Text.pack "negative value cannot be converted to unsigned integer"
+                    returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
             FieldWord w -> Ok (fromIntegral w)
-            FieldNull -> left $ UnexpectedNull (fieldValueTypeName fieldValue) "Word32" ""
-            other -> left (Incompatible (fieldValueTypeName other) "Word32" "")
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
 
 instance FromField Word16 where
-    fromField field@Field{fieldValue} =
+    fromField f@Field{fieldValue} =
         case fieldValue of
             FieldInt i
-                | i >= 0 -> boundedIntegral field i
+                | i >= 0 -> boundedIntegral f i
                 | otherwise ->
-                    left $
-                        ConversionFailed (fieldValueTypeName fieldValue) "Word16" $
-                                 Text.pack "negative value cannot be converted to unsigned integer"
+                    returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
             FieldWord w -> Ok (fromIntegral w)
-            FieldNull -> left $ UnexpectedNull (fieldValueTypeName fieldValue) "Word16" ""
-            other -> left (Incompatible (fieldValueTypeName other) "Word16" "")
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
 
 instance FromField Word8 where
-    fromField field@Field{fieldValue} =
+    fromField f@Field{fieldValue} =
         case fieldValue of
             FieldInt i
-                | i >= 0 -> boundedIntegral field i
+                | i >= 0 -> boundedIntegral f i
                 | otherwise ->
-                    left $
-                        ConversionFailed (fieldValueTypeName fieldValue) "Word8" $
-                                 Text.pack "negative value cannot be converted to unsigned integer"
+                    returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
             FieldWord w -> Ok (fromIntegral w)
-            FieldNull -> left $ UnexpectedNull (fieldValueTypeName fieldValue) "Word8" ""
-            other -> left (Incompatible (fieldValueTypeName other) "Word8" "")
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
 
 instance FromField Double where
-    fromField Field{fieldValue} =
+    fromField f@Field{fieldValue} =
         case fieldValue of
             FieldDouble d -> Ok d
             FieldInt i -> Ok (fromIntegral i)
-            FieldNull -> left $ UnexpectedNull (fieldValueTypeName fieldValue) "Double" ""
-            other -> left (Incompatible (fieldValueTypeName other) "Double" "")
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
 
 instance FromField Float where
     fromField field =
@@ -250,49 +242,49 @@ instance FromField Float where
             Ok d -> Ok (realToFrac d)
 
 instance FromField Text where
-    fromField Field{fieldValue} =
+    fromField f@Field{fieldValue} =
         case fieldValue of
             FieldText t -> Ok t
             FieldInt i -> Ok (Text.pack (show i))
             FieldDouble d -> Ok (Text.pack (show d))
             FieldBool b -> Ok (if b then Text.pack "1" else Text.pack "0")
-            FieldNull -> left $ UnexpectedNull (fieldValueTypeName fieldValue) "Text" ""
-            other -> left (Incompatible (fieldValueTypeName other) "Text" "")
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
 
 instance FromField String where
     fromField field = Text.unpack <$> fromField field
 
 instance FromField BS.ByteString where
-    fromField Field{fieldValue} =
+    fromField f@Field{fieldValue} =
         case fieldValue of
             FieldBlob bs -> Ok bs
             FieldText t -> Ok (TextEncoding.encodeUtf8 t)
-            FieldNull -> left $ UnexpectedNull (fieldValueTypeName fieldValue) "ByteString" ""
-            other -> left (Incompatible (fieldValueTypeName other) "ByteString" "")
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
 
 instance FromField Day where
-    fromField Field{fieldValue} =
+    fromField f@Field{fieldValue} =
         case fieldValue of
             FieldDate day -> Ok day
             FieldTimestamp LocalTime{localDay} -> Ok localDay
-            FieldNull -> left $ UnexpectedNull (fieldValueTypeName fieldValue) "Day" ""
-            other -> left (Incompatible (fieldValueTypeName other) "Day" "")
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
 
 instance FromField TimeOfDay where
-    fromField Field{fieldValue} =
+    fromField f@Field{fieldValue} =
         case fieldValue of
             FieldTime tod -> Ok tod
             FieldTimestamp LocalTime{localTimeOfDay} -> Ok localTimeOfDay
-            FieldNull -> left $ UnexpectedNull (fieldValueTypeName fieldValue) "TimeOfDay" ""
-            other -> left (Incompatible (fieldValueTypeName other) "TimeOfDay" "")
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
 
 instance FromField LocalTime where
-    fromField Field{ fieldValue} =
+    fromField f@Field{ fieldValue} =
         case fieldValue of
             FieldTimestamp ts -> Ok ts
             FieldDate day -> Ok (LocalTime day midnight)
-            FieldNull -> left $ UnexpectedNull (fieldValueTypeName fieldValue) "LocalTime" ""
-            other -> left (Incompatible (fieldValueTypeName other) "LocalTime" "")
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
       where
         midnight = TimeOfDay 0 0 0
 
@@ -308,12 +300,22 @@ instance (FromField a) => FromField (Maybe a) where
 
 -- | Helper for bounded integral conversions.
 boundedIntegral :: forall a. (Integral a, Bounded a, Typeable a) => Field -> Int -> Ok a
-boundedIntegral Field{fieldValue} i
+boundedIntegral f@Field{} i
     | toInteger i < toInteger (minBound :: a) =
-        left $ ConversionFailed (fieldValueTypeName fieldValue) (Text.pack $ show (typeRep (Proxy :: Proxy a))) $ Text.pack "integer value out of bounds"
+        returnError ConversionFailed f "integer value out of bounds"
     | toInteger i > toInteger (maxBound :: a) =
-        left $ ConversionFailed (fieldValueTypeName fieldValue) (Text.pack $ show (typeRep (Proxy :: Proxy a))) $ Text.pack "integer value out of bounds"
+        returnError ConversionFailed f "integer value out of bounds"
     | otherwise = Ok (fromIntegral i)
+
+-- | Helper to construct a ResultError with field context.
+-- based on postgresql-simple's implementation
+returnError :: forall b. (Typeable b) => (Text -> Text -> Text -> Text -> ResultError) -> Field -> Text -> Ok b
+returnError mkError Field{fieldValue, fieldName} msg =
+    Errors [SomeException $ mkError (fieldValueTypeName fieldValue)
+                                    fieldName
+                                    (Text.pack $ show (typeRep (Proxy :: Proxy b)))
+                                    msg]
+
 
 fieldValueTypeName :: FieldValue -> Text
 fieldValueTypeName = \case

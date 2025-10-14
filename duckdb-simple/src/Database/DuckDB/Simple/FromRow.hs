@@ -30,7 +30,7 @@ module Database.DuckDB.Simple.FromRow (
 ) where
 
 import Control.Applicative (Alternative (..))
-import Control.Exception (Exception, SomeException, fromException, toException)
+import Control.Exception (Exception, SomeException (SomeException), fromException, toException)
 import Control.Monad (MonadPlus, replicateM)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Reader (ReaderT, ask, runReaderT)
@@ -121,7 +121,7 @@ parseRow parser fields =
      in case runStateT (runReaderT (runRowParser parser) context) initialState of
             Ok (value, (columnCount, _))
                 | columnCount == length fields -> Ok value
-                | otherwise -> left (ColumnOutOfBounds (columnCount + 1))
+                | otherwise -> Errors [SomeException $ ColumnOutOfBounds (columnCount + 1)]
             Errors errs ->  Errors errs
 
 instance FromRow () where

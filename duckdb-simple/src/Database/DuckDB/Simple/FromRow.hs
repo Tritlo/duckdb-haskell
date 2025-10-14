@@ -254,18 +254,27 @@ rowErrorsToSqlError query errs =
 
 renderError :: ResultError -> Text
 renderError = \case
-    Incompatible{errSQLType, errHaskellType} ->
+    Incompatible{errSQLType, errSQLField, errHaskellType, errMessage} ->
             Text.concat
-                [ "duckdb-simple: column has type "
+                [ "duckdb-simple: column "
+                , errSQLField
+                , " has type "
                 , errSQLType
                 , " but expected "
                 , errHaskellType
+                , if Text.null errMessage
+                  then ""
+                  else ": " <> errMessage
                 ]
-    UnexpectedNull{errSQLType} ->
+    UnexpectedNull{errHaskellType, errSQLField, errMessage} ->
             Text.concat
                 [ "duckdb-simple: column "
-                , "is NULL but expected "
-                , errSQLType
+                , errSQLField
+                , " is NULL but expected "
+                , errHaskellType
+                , if Text.null errMessage
+                  then ""
+                  else ": " <> errMessage
                 ]
     ConversionFailed{errMessage} ->
         errMessage

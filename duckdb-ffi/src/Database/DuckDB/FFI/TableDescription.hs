@@ -24,7 +24,7 @@ Parameters:
 
 Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
 -}
-foreign import ccall safe "duckdb_table_description_create"
+foreign import ccall "duckdb_table_description_create"
     c_duckdb_table_description_create :: DuckDBConnection -> CString -> CString -> Ptr DuckDBTableDescription -> IO DuckDBState
 
 {- | Creates a table description object. Note that
@@ -41,7 +41,7 @@ Parameters:
 
 Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
 -}
-foreign import ccall safe "duckdb_table_description_create_ext"
+foreign import ccall "duckdb_table_description_create_ext"
     c_duckdb_table_description_create_ext :: DuckDBConnection -> CString -> CString -> CString -> Ptr DuckDBTableDescription -> IO DuckDBState
 
 {- | Destroy the TableDescription object.
@@ -49,7 +49,7 @@ foreign import ccall safe "duckdb_table_description_create_ext"
 Parameters:
 * @table_description@: The table_description to destroy.
 -}
-foreign import ccall unsafe "duckdb_table_description_destroy"
+foreign import ccall safe "duckdb_table_description_destroy"
     c_duckdb_table_description_destroy :: Ptr DuckDBTableDescription -> IO ()
 
 {- | Returns the error message associated with the given table_description. If the
@@ -62,7 +62,7 @@ Parameters:
 
 Returns The error message, or @nullptr@ if there is none.
 -}
-foreign import ccall unsafe "duckdb_table_description_error"
+foreign import ccall safe "duckdb_table_description_error"
     c_duckdb_table_description_error :: DuckDBTableDescription -> IO CString
 
 {- | Check if the column at @index@ index of the table has a DEFAULT expression.
@@ -74,7 +74,7 @@ Parameters:
 
 Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
 -}
-foreign import ccall unsafe "duckdb_column_has_default"
+foreign import ccall safe "duckdb_column_has_default"
     c_duckdb_column_has_default :: DuckDBTableDescription -> DuckDBIdx -> Ptr CBool -> IO DuckDBState
 
 {- | Obtain the column name at @index@. The out result must be destroyed with
@@ -86,5 +86,5 @@ Parameters:
 
 Returns The column name.
 -}
-foreign import ccall unsafe "duckdb_table_description_get_column_name"
+foreign import ccall safe "duckdb_table_description_get_column_name"
     c_duckdb_table_description_get_column_name :: DuckDBTableDescription -> DuckDBIdx -> IO CString

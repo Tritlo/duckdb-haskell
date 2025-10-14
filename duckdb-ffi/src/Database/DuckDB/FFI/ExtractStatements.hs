@@ -25,7 +25,7 @@ Parameters:
 
 Returns The number of extracted statements or 0 on failure.
 -}
-foreign import ccall safe "duckdb_extract_statements"
+foreign import ccall "duckdb_extract_statements"
     c_duckdb_extract_statements :: DuckDBConnection -> CString -> Ptr DuckDBExtractedStatements -> IO DuckDBIdx
 
 {- | Prepare an extracted statement. Note that after calling
@@ -43,7 +43,7 @@ Parameters:
 
 Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
 -}
-foreign import ccall safe "duckdb_prepare_extracted_statement"
+foreign import ccall "duckdb_prepare_extracted_statement"
     c_duckdb_prepare_extracted_statement :: DuckDBConnection -> DuckDBExtractedStatements -> DuckDBIdx -> Ptr DuckDBPreparedStatement -> IO DuckDBState
 
 {- | Returns the error message contained within the extracted statements. The
@@ -55,7 +55,7 @@ Parameters:
 
 Returns The error of the extracted statements.
 -}
-foreign import ccall unsafe "duckdb_extract_statements_error"
+foreign import ccall safe "duckdb_extract_statements_error"
     c_duckdb_extract_statements_error :: DuckDBExtractedStatements -> IO CString
 
 {- | De-allocates all memory allocated for the extracted statements.
@@ -63,5 +63,5 @@ foreign import ccall unsafe "duckdb_extract_statements_error"
 Parameters:
 * @extracted_statements@: The extracted statements to destroy.
 -}
-foreign import ccall unsafe "duckdb_destroy_extracted"
+foreign import ccall safe "duckdb_destroy_extracted"
     c_duckdb_destroy_extracted :: Ptr DuckDBExtractedStatements -> IO ()

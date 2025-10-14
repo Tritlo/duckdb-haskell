@@ -49,7 +49,7 @@ The return value should be destroyed with @duckdb_destroy_table_function@.
 
 Returns The table function object.
 -}
-foreign import ccall unsafe "duckdb_create_table_function"
+foreign import ccall safe "duckdb_create_table_function"
     c_duckdb_create_table_function :: IO DuckDBTableFunction
 
 {- | Destroys the given table function object.
@@ -57,7 +57,7 @@ foreign import ccall unsafe "duckdb_create_table_function"
 Parameters:
 * @table_function@: The table function to destroy
 -}
-foreign import ccall unsafe "duckdb_destroy_table_function"
+foreign import ccall safe "duckdb_destroy_table_function"
     c_duckdb_destroy_table_function :: Ptr DuckDBTableFunction -> IO ()
 
 {- | Sets the name of the given table function.
@@ -66,7 +66,7 @@ Parameters:
 * @table_function@: The table function
 * @name@: The name of the table function
 -}
-foreign import ccall unsafe "duckdb_table_function_set_name"
+foreign import ccall safe "duckdb_table_function_set_name"
     c_duckdb_table_function_set_name :: DuckDBTableFunction -> CString -> IO ()
 
 {- | Adds a parameter to the table function.
@@ -75,7 +75,7 @@ Parameters:
 * @table_function@: The table function.
 * @type@: The parameter type. Cannot contain INVALID.
 -}
-foreign import ccall unsafe "duckdb_table_function_add_parameter"
+foreign import ccall safe "duckdb_table_function_add_parameter"
     c_duckdb_table_function_add_parameter :: DuckDBTableFunction -> DuckDBLogicalType -> IO ()
 
 {- | Adds a named parameter to the table function.
@@ -85,7 +85,7 @@ Parameters:
 * @name@: The parameter name.
 * @type@: The parameter type. Cannot contain INVALID.
 -}
-foreign import ccall unsafe "duckdb_table_function_add_named_parameter"
+foreign import ccall safe "duckdb_table_function_add_named_parameter"
     c_duckdb_table_function_add_named_parameter :: DuckDBTableFunction -> CString -> DuckDBLogicalType -> IO ()
 
 {- | Assigns extra information to the table function that can be fetched during
@@ -97,7 +97,7 @@ Parameters:
 * @destroy@: The callback that will be called to destroy the extra information
   (if any)
 -}
-foreign import ccall unsafe "duckdb_table_function_set_extra_info"
+foreign import ccall safe "duckdb_table_function_set_extra_info"
     c_duckdb_table_function_set_extra_info :: DuckDBTableFunction -> Ptr () -> DuckDBDeleteCallback -> IO ()
 
 {- | Sets the bind function of the table function.
@@ -106,7 +106,7 @@ Parameters:
 * @table_function@: The table function
 * @bind@: The bind function
 -}
-foreign import ccall unsafe "duckdb_table_function_set_bind"
+foreign import ccall safe "duckdb_table_function_set_bind"
     c_duckdb_table_function_set_bind :: DuckDBTableFunction -> DuckDBTableFunctionBindFun -> IO ()
 
 {- | Sets the init function of the table function.
@@ -115,7 +115,7 @@ Parameters:
 * @table_function@: The table function
 * @init@: The init function
 -}
-foreign import ccall unsafe "duckdb_table_function_set_init"
+foreign import ccall safe "duckdb_table_function_set_init"
     c_duckdb_table_function_set_init :: DuckDBTableFunction -> DuckDBTableFunctionInitFun -> IO ()
 
 {- | Sets the thread-local init function of the table function.
@@ -124,7 +124,7 @@ Parameters:
 * @table_function@: The table function
 * @init@: The init function
 -}
-foreign import ccall unsafe "duckdb_table_function_set_local_init"
+foreign import ccall safe "duckdb_table_function_set_local_init"
     c_duckdb_table_function_set_local_init :: DuckDBTableFunction -> DuckDBTableFunctionInitFun -> IO ()
 
 {- | Sets the main function of the table function.
@@ -133,7 +133,7 @@ Parameters:
 * @table_function@: The table function
 * @function@: The function
 -}
-foreign import ccall unsafe "duckdb_table_function_set_function"
+foreign import ccall safe "duckdb_table_function_set_function"
     c_duckdb_table_function_set_function :: DuckDBTableFunction -> DuckDBTableFunctionFun -> IO ()
 
 {- | Sets whether or not the given table function supports projection pushdown.
@@ -148,7 +148,7 @@ Parameters:
 * @pushdown@: True if the table function supports projection pushdown, false
   otherwise.
 -}
-foreign import ccall unsafe "duckdb_table_function_supports_projection_pushdown"
+foreign import ccall safe "duckdb_table_function_supports_projection_pushdown"
     c_duckdb_table_function_supports_projection_pushdown :: DuckDBTableFunction -> CBool -> IO ()
 
 {- | Register the table function object within the given connection.
@@ -165,7 +165,7 @@ Parameters:
 
 Returns Whether or not the registration was successful.
 -}
-foreign import ccall unsafe "duckdb_register_table_function"
+foreign import ccall safe "duckdb_register_table_function"
     c_duckdb_register_table_function :: DuckDBConnection -> DuckDBTableFunction -> IO DuckDBState
 
 {- | Retrieves the extra info of the function as set in
@@ -176,7 +176,7 @@ Parameters:
 
 Returns The extra info
 -}
-foreign import ccall unsafe "duckdb_bind_get_extra_info"
+foreign import ccall safe "duckdb_bind_get_extra_info"
     c_duckdb_bind_get_extra_info :: DuckDBBindInfo -> IO (Ptr ())
 
 {- | Retrieves the client context of the bind info of a table function.
@@ -186,7 +186,7 @@ Parameters:
 * @out_context@: The client context of the bind info. Must be destroyed with
   @duckdb_destroy_client_context@.
 -}
-foreign import ccall unsafe "duckdb_table_function_get_client_context"
+foreign import ccall safe "duckdb_table_function_get_client_context"
     c_duckdb_table_function_get_client_context :: DuckDBBindInfo -> Ptr DuckDBClientContext -> IO ()
 
 {- | Adds a result column to the output of the table function.
@@ -196,7 +196,7 @@ Parameters:
 * @name@: The column name.
 * @type@: The logical column type.
 -}
-foreign import ccall unsafe "duckdb_bind_add_result_column"
+foreign import ccall safe "duckdb_bind_add_result_column"
     c_duckdb_bind_add_result_column :: DuckDBBindInfo -> CString -> DuckDBLogicalType -> IO ()
 
 {- | Retrieves the number of regular (non-named) parameters to the function.
@@ -206,7 +206,7 @@ Parameters:
 
 Returns The number of parameters
 -}
-foreign import ccall unsafe "duckdb_bind_get_parameter_count"
+foreign import ccall safe "duckdb_bind_get_parameter_count"
     c_duckdb_bind_get_parameter_count :: DuckDBBindInfo -> IO DuckDBIdx
 
 {- | Retrieves the parameter at the given index.
@@ -220,7 +220,7 @@ Parameters:
 Returns The value of the parameter. Must be destroyed with
 @duckdb_destroy_value@.
 -}
-foreign import ccall unsafe "duckdb_bind_get_parameter"
+foreign import ccall safe "duckdb_bind_get_parameter"
     c_duckdb_bind_get_parameter :: DuckDBBindInfo -> DuckDBIdx -> IO DuckDBValue
 
 {- | Retrieves a named parameter with the given name.
@@ -234,7 +234,7 @@ Parameters:
 Returns The value of the parameter. Must be destroyed with
 @duckdb_destroy_value@.
 -}
-foreign import ccall unsafe "duckdb_bind_get_named_parameter"
+foreign import ccall safe "duckdb_bind_get_named_parameter"
     c_duckdb_bind_get_named_parameter :: DuckDBBindInfo -> CString -> IO DuckDBValue
 
 {- | Sets the user-provided bind data in the bind object of the table function.
@@ -245,7 +245,7 @@ Parameters:
 * @bind_data@: The bind data object.
 * @destroy@: The callback to destroy the bind data (if any).
 -}
-foreign import ccall unsafe "duckdb_bind_set_bind_data"
+foreign import ccall safe "duckdb_bind_set_bind_data"
     c_duckdb_bind_set_bind_data :: DuckDBBindInfo -> Ptr () -> DuckDBDeleteCallback -> IO ()
 
 {- | Sets the cardinality estimate for the table function, used for optimization.
@@ -255,7 +255,7 @@ Parameters:
 * @is_exact@: Whether or not the cardinality estimate is exact, or an
   approximation
 -}
-foreign import ccall unsafe "duckdb_bind_set_cardinality"
+foreign import ccall safe "duckdb_bind_set_cardinality"
     c_duckdb_bind_set_cardinality :: DuckDBBindInfo -> DuckDBIdx -> CBool -> IO ()
 
 {- | Report that an error has occurred while calling bind on a table function.
@@ -264,7 +264,7 @@ Parameters:
 * @info@: The info object
 * @error@: The error message
 -}
-foreign import ccall unsafe "duckdb_bind_set_error"
+foreign import ccall safe "duckdb_bind_set_error"
     c_duckdb_bind_set_error :: DuckDBBindInfo -> CString -> IO ()
 
 {- | Retrieves the extra info of the function as set in
@@ -275,7 +275,7 @@ Parameters:
 
 Returns The extra info
 -}
-foreign import ccall unsafe "duckdb_init_get_extra_info"
+foreign import ccall safe "duckdb_init_get_extra_info"
     c_duckdb_init_get_extra_info :: DuckDBInitInfo -> IO (Ptr ())
 
 {- | Gets the bind data set by @duckdb_bind_set_bind_data@ during the bind.
@@ -288,7 +288,7 @@ Parameters:
 
 Returns The bind data object
 -}
-foreign import ccall unsafe "duckdb_init_get_bind_data"
+foreign import ccall safe "duckdb_init_get_bind_data"
     c_duckdb_init_get_bind_data :: DuckDBInitInfo -> IO (Ptr ())
 
 {- | Sets the user-provided init data in the init object. This object can be
@@ -300,7 +300,7 @@ Parameters:
 * @destroy@: The callback that will be called to destroy the init data (if
   any)
 -}
-foreign import ccall unsafe "duckdb_init_set_init_data"
+foreign import ccall safe "duckdb_init_set_init_data"
     c_duckdb_init_set_init_data :: DuckDBInitInfo -> Ptr () -> DuckDBDeleteCallback -> IO ()
 
 {- | Returns the number of projected columns.
@@ -313,7 +313,7 @@ Parameters:
 
 Returns The number of projected columns.
 -}
-foreign import ccall unsafe "duckdb_init_get_column_count"
+foreign import ccall safe "duckdb_init_get_column_count"
     c_duckdb_init_get_column_count :: DuckDBInitInfo -> IO DuckDBIdx
 
 {- | Returns the column index of the projected column at the specified position.
@@ -328,7 +328,7 @@ Parameters:
 
 Returns The column index of the projected column.
 -}
-foreign import ccall unsafe "duckdb_init_get_column_index"
+foreign import ccall safe "duckdb_init_get_column_index"
     c_duckdb_init_get_column_index :: DuckDBInitInfo -> DuckDBIdx -> IO DuckDBIdx
 
 {- | Sets how many threads can process this table function in parallel (default: 1)
@@ -338,7 +338,7 @@ Parameters:
 * @max_threads@: The maximum amount of threads that can process this table
   function
 -}
-foreign import ccall unsafe "duckdb_init_set_max_threads"
+foreign import ccall safe "duckdb_init_set_max_threads"
     c_duckdb_init_set_max_threads :: DuckDBInitInfo -> DuckDBIdx -> IO ()
 
 {- | Report that an error has occurred while calling init.
@@ -347,7 +347,7 @@ Parameters:
 * @info@: The info object
 * @error@: The error message
 -}
-foreign import ccall unsafe "duckdb_init_set_error"
+foreign import ccall safe "duckdb_init_set_error"
     c_duckdb_init_set_error :: DuckDBInitInfo -> CString -> IO ()
 
 {- | Retrieves the extra info of the function as set in
@@ -358,7 +358,7 @@ Parameters:
 
 Returns The extra info
 -}
-foreign import ccall unsafe "duckdb_function_get_extra_info"
+foreign import ccall safe "duckdb_function_get_extra_info"
     c_duckdb_function_get_extra_info :: DuckDBFunctionInfo -> IO (Ptr ())
 
 {- | Gets the table function's bind data set by @duckdb_bind_set_bind_data@.
@@ -371,7 +371,7 @@ Parameters:
 
 Returns The bind data object.
 -}
-foreign import ccall unsafe "duckdb_function_get_bind_data"
+foreign import ccall safe "duckdb_function_get_bind_data"
     c_duckdb_function_get_bind_data :: DuckDBFunctionInfo -> IO (Ptr ())
 
 {- | Gets the init data set by @duckdb_init_set_init_data@ during the init.
@@ -381,7 +381,7 @@ Parameters:
 
 Returns The init data object
 -}
-foreign import ccall unsafe "duckdb_function_get_init_data"
+foreign import ccall safe "duckdb_function_get_init_data"
     c_duckdb_function_get_init_data :: DuckDBFunctionInfo -> IO (Ptr ())
 
 {- | Gets the thread-local init data set by @duckdb_init_set_init_data@ during the
@@ -392,7 +392,7 @@ Parameters:
 
 Returns The init data object
 -}
-foreign import ccall unsafe "duckdb_function_get_local_init_data"
+foreign import ccall safe "duckdb_function_get_local_init_data"
     c_duckdb_function_get_local_init_data :: DuckDBFunctionInfo -> IO (Ptr ())
 
 {- | Report that an error has occurred while executing the function.
@@ -401,5 +401,5 @@ Parameters:
 * @info@: The info object
 * @error@: The error message
 -}
-foreign import ccall unsafe "duckdb_function_set_error"
+foreign import ccall safe "duckdb_function_set_error"
     c_duckdb_function_set_error :: DuckDBFunctionInfo -> CString -> IO ()

@@ -29,7 +29,7 @@ process. Must be destroyed with @duckdb_destroy_instance_cache@.
 
 Returns The database instance cache.
 -}
-foreign import ccall unsafe "duckdb_create_instance_cache"
+foreign import ccall safe "duckdb_create_instance_cache"
     c_duckdb_create_instance_cache :: IO DuckDBInstanceCache
 
 {- | Creates a new database instance in the instance cache, or retrieves an
@@ -48,7 +48,7 @@ Parameters:
 
 Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
 -}
-foreign import ccall safe "duckdb_get_or_create_from_cache"
+foreign import ccall "duckdb_get_or_create_from_cache"
     c_duckdb_get_or_create_from_cache :: DuckDBInstanceCache -> CString -> Ptr DuckDBDatabase -> DuckDBConfig -> Ptr CString -> IO DuckDBState
 
 {- | Destroys an existing database instance cache and de-allocates its memory.
@@ -56,7 +56,7 @@ foreign import ccall safe "duckdb_get_or_create_from_cache"
 Parameters:
 * @instance_cache@: The instance cache to destroy.
 -}
-foreign import ccall unsafe "duckdb_destroy_instance_cache"
+foreign import ccall safe "duckdb_destroy_instance_cache"
     c_duckdb_destroy_instance_cache :: Ptr DuckDBInstanceCache -> IO ()
 
 {- | Creates a new database or opens an existing database file stored at the given
@@ -70,7 +70,7 @@ Parameters:
 
 Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
 -}
-foreign import ccall safe "duckdb_open"
+foreign import ccall "duckdb_open"
     c_duckdb_open :: CString -> Ptr DuckDBDatabase -> IO DuckDBState
 
 {- | Extended version of duckdb_open. Creates a new database or opens an existing
@@ -88,7 +88,7 @@ Parameters:
 
 Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
 -}
-foreign import ccall safe "duckdb_open_ext"
+foreign import ccall "duckdb_open_ext"
     c_duckdb_open_ext :: CString -> Ptr DuckDBDatabase -> DuckDBConfig -> Ptr CString -> IO DuckDBState
 
 {- | Closes the specified database and de-allocates all memory allocated for that
@@ -101,7 +101,7 @@ object after you are done with it.
 Parameters:
 * @database@: The database object to shut down.
 -}
-foreign import ccall safe "duckdb_close"
+foreign import ccall "duckdb_close"
     c_duckdb_close :: Ptr DuckDBDatabase -> IO ()
 
 {- | Opens a connection to a database. Connections are required to query the
@@ -114,7 +114,7 @@ Parameters:
 
 Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
 -}
-foreign import ccall safe "duckdb_connect"
+foreign import ccall "duckdb_connect"
     c_duckdb_connect :: DuckDBDatabase -> Ptr DuckDBConnection -> IO DuckDBState
 
 {- | Interrupt running query
@@ -122,7 +122,7 @@ foreign import ccall safe "duckdb_connect"
 Parameters:
 * @connection@: The connection to interrupt
 -}
-foreign import ccall unsafe "duckdb_interrupt"
+foreign import ccall safe "duckdb_interrupt"
     c_duckdb_interrupt :: DuckDBConnection -> IO ()
 
 {- | Get progress of the running query
@@ -135,7 +135,7 @@ Returns -1 if no progress or a percentage of the progress
 These bindings call the wrapper symbol @wrapped_duckdb_query_progress@
 but mirror the DuckDB C API semantics of @duckdb_query_progress@.
 -}
-foreign import ccall unsafe "wrapped_duckdb_query_progress"
+foreign import ccall safe "wrapped_duckdb_query_progress"
     c_duckdb_query_progress :: DuckDBConnection -> Ptr DuckDBQueryProgress -> IO ()
 
 {- | Closes the specified connection and de-allocates all memory allocated for that
@@ -144,7 +144,7 @@ connection.
 Parameters:
 * @connection@: The connection to close.
 -}
-foreign import ccall safe "duckdb_disconnect"
+foreign import ccall "duckdb_disconnect"
     c_duckdb_disconnect :: Ptr DuckDBConnection -> IO ()
 
 {- | Retrieves the client context of the connection.
@@ -154,7 +154,7 @@ Parameters:
 * @out_context@: The client context of the connection. Must be destroyed with
   @duckdb_destroy_client_context@.
 -}
-foreign import ccall unsafe "duckdb_connection_get_client_context"
+foreign import ccall safe "duckdb_connection_get_client_context"
     c_duckdb_connection_get_client_context :: DuckDBConnection -> Ptr DuckDBClientContext -> IO ()
 
 {- | Retrieves the arrow options of the connection.
@@ -162,7 +162,7 @@ foreign import ccall unsafe "duckdb_connection_get_client_context"
 Parameters:
 * @connection@: The connection.
 -}
-foreign import ccall unsafe "duckdb_connection_get_arrow_options"
+foreign import ccall safe "duckdb_connection_get_arrow_options"
     c_duckdb_connection_get_arrow_options :: DuckDBConnection -> Ptr DuckDBArrowOptions -> IO ()
 
 {- | Returns the connection id of the client context.
@@ -172,7 +172,7 @@ Parameters:
 
 Returns The connection id of the client context.
 -}
-foreign import ccall unsafe "duckdb_client_context_get_connection_id"
+foreign import ccall safe "duckdb_client_context_get_connection_id"
     c_duckdb_client_context_get_connection_id :: DuckDBClientContext -> IO DuckDBIdx
 
 {- | Destroys the client context and deallocates its memory.
@@ -180,7 +180,7 @@ foreign import ccall unsafe "duckdb_client_context_get_connection_id"
 Parameters:
 * @context@: The client context to destroy.
 -}
-foreign import ccall unsafe "duckdb_destroy_client_context"
+foreign import ccall safe "duckdb_destroy_client_context"
     c_duckdb_destroy_client_context :: Ptr DuckDBClientContext -> IO ()
 
 {- | Destroys the arrow options and deallocates its memory.
@@ -188,7 +188,7 @@ foreign import ccall unsafe "duckdb_destroy_client_context"
 Parameters:
 * @arrow_options@: The arrow options to destroy.
 -}
-foreign import ccall unsafe "duckdb_destroy_arrow_options"
+foreign import ccall safe "duckdb_destroy_arrow_options"
     c_duckdb_destroy_arrow_options :: Ptr DuckDBArrowOptions -> IO ()
 
 {- | Returns the version of the linked DuckDB, with a version postfix for dev
@@ -197,7 +197,7 @@ versions
 Usually used for developing C extensions that must return this for a
 compatibility check.
 -}
-foreign import ccall unsafe "duckdb_library_version"
+foreign import ccall safe "duckdb_library_version"
     c_duckdb_library_version :: IO CString
 
 {- | Get the list of (fully qualified) table names of the query.
@@ -211,5 +211,5 @@ Parameters:
 Returns A duckdb_value of type VARCHAR[] containing the (fully qualified)
 table names of the query. Must be destroyed with duckdb_destroy_value.
 -}
-foreign import ccall safe "duckdb_get_table_names"
+foreign import ccall "duckdb_get_table_names"
     c_duckdb_get_table_names :: DuckDBConnection -> CString -> CBool -> IO DuckDBValue

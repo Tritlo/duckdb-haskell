@@ -29,7 +29,7 @@ Parameters:
 
 Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
 -}
-foreign import ccall safe "duckdb_pending_prepared"
+foreign import ccall "duckdb_pending_prepared"
     c_duckdb_pending_prepared :: DuckDBPreparedStatement -> Ptr DuckDBPendingResult -> IO DuckDBState
 
 {- | > Warning Deprecation notice. This method is scheduled for removal in a future
@@ -50,7 +50,7 @@ Parameters:
 
 Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
 -}
-foreign import ccall safe "duckdb_pending_prepared_streaming"
+foreign import ccall "duckdb_pending_prepared_streaming"
     c_duckdb_pending_prepared_streaming :: DuckDBPreparedStatement -> Ptr DuckDBPendingResult -> IO DuckDBState
 
 {- | Closes the pending result and de-allocates all memory allocated for the
@@ -59,7 +59,7 @@ result.
 Parameters:
 * @pending_result@: The pending result to destroy.
 -}
-foreign import ccall unsafe "duckdb_destroy_pending"
+foreign import ccall safe "duckdb_destroy_pending"
     c_duckdb_destroy_pending :: Ptr DuckDBPendingResult -> IO ()
 
 {- | Returns the error message contained within the pending result.
@@ -72,7 +72,7 @@ Parameters:
 
 Returns The error of the pending result.
 -}
-foreign import ccall unsafe "duckdb_pending_error"
+foreign import ccall safe "duckdb_pending_error"
     c_duckdb_pending_error :: DuckDBPendingResult -> IO CString
 
 {- | Executes a single task within the query, returning whether or not the query is
@@ -92,7 +92,7 @@ Parameters:
 
 Returns The state of the pending result after the execution.
 -}
-foreign import ccall safe "duckdb_pending_execute_task"
+foreign import ccall "duckdb_pending_execute_task"
     c_duckdb_pending_execute_task :: DuckDBPendingResult -> IO DuckDBPendingState
 
 {- | If this returns DUCKDB_PENDING_RESULT_READY, the duckdb_execute_pending
@@ -109,7 +109,7 @@ Parameters:
 
 Returns The state of the pending result.
 -}
-foreign import ccall unsafe "duckdb_pending_execute_check_state"
+foreign import ccall safe "duckdb_pending_execute_check_state"
     c_duckdb_pending_execute_check_state :: DuckDBPendingResult -> IO DuckDBPendingState
 
 {- | Fully execute a pending query result, returning the final query result.
@@ -126,7 +126,7 @@ Parameters:
 
 Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
 -}
-foreign import ccall safe "duckdb_execute_pending"
+foreign import ccall "duckdb_execute_pending"
     c_duckdb_execute_pending :: DuckDBPendingResult -> Ptr DuckDBResult -> IO DuckDBState
 
 {- | Returns whether a duckdb_pending_state is finished executing. For example if
@@ -139,5 +139,5 @@ Parameters:
 
 Returns Boolean indicating pending execution should be considered finished.
 -}
-foreign import ccall unsafe "duckdb_pending_execution_is_finished"
+foreign import ccall safe "duckdb_pending_execution_is_finished"
     c_duckdb_pending_execution_is_finished :: DuckDBPendingState -> IO CBool

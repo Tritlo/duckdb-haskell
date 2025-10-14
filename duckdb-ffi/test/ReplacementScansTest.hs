@@ -101,7 +101,7 @@ assertReplacementError conn =
             assertBool "replacement error message should surface" ("rejected" `isInfixOf` errMsg)
             c_duckdb_destroy_result resPtr
 
-foreign import ccall safe "wrapper"
+foreign import ccall "wrapper"
     mkReplacementCallback ::
         (DuckDBReplacementScanInfo -> CString -> Ptr () -> IO ()) ->
         IO DuckDBReplacementCallback

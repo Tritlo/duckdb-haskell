@@ -14,7 +14,7 @@ import Foreign.Ptr (Ptr)
 Parameters:
 * @expr@: A pointer to the expression.
 -}
-foreign import ccall unsafe "duckdb_destroy_expression"
+foreign import ccall safe "duckdb_destroy_expression"
     c_duckdb_destroy_expression :: Ptr DuckDBExpression -> IO ()
 
 {- | Returns the return type of an expression.
@@ -24,7 +24,7 @@ Parameters:
 
 Returns The return type. Must be destroyed with @duckdb_destroy_logical_type@.
 -}
-foreign import ccall unsafe "duckdb_expression_return_type"
+foreign import ccall safe "duckdb_expression_return_type"
     c_duckdb_expression_return_type :: DuckDBExpression -> IO DuckDBLogicalType
 
 {- | Returns whether the expression is foldable into a value or not.
@@ -34,7 +34,7 @@ Parameters:
 
 Returns True, if the expression is foldable, else false.
 -}
-foreign import ccall unsafe "duckdb_expression_is_foldable"
+foreign import ccall safe "duckdb_expression_is_foldable"
     c_duckdb_expression_is_foldable :: DuckDBExpression -> IO CBool
 
 {- | Folds an expression creating a folded value.
@@ -47,5 +47,5 @@ Parameters:
 
 Returns The error data. Must be destroyed with @duckdb_destroy_error_data@.
 -}
-foreign import ccall safe "duckdb_expression_fold"
+foreign import ccall "duckdb_expression_fold"
     c_duckdb_expression_fold :: DuckDBClientContext -> DuckDBExpression -> Ptr DuckDBValue -> IO DuckDBErrorData

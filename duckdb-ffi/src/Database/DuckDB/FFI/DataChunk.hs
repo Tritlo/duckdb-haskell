@@ -21,7 +21,7 @@ Parameters:
 
 Returns The data chunk.
 -}
-foreign import ccall unsafe "duckdb_create_data_chunk"
+foreign import ccall safe "duckdb_create_data_chunk"
     c_duckdb_create_data_chunk :: Ptr DuckDBLogicalType -> DuckDBIdx -> IO DuckDBDataChunk
 
 {- | Destroys the data chunk and de-allocates all memory allocated for that chunk.
@@ -29,7 +29,7 @@ foreign import ccall unsafe "duckdb_create_data_chunk"
 Parameters:
 * @chunk@: The data chunk to destroy.
 -}
-foreign import ccall unsafe "duckdb_destroy_data_chunk"
+foreign import ccall safe "duckdb_destroy_data_chunk"
     c_duckdb_destroy_data_chunk :: Ptr DuckDBDataChunk -> IO ()
 
 {- | Resets a data chunk, clearing the validity masks and setting the cardinality
@@ -40,7 +40,7 @@ data and validity pointers
 Parameters:
 * @chunk@: The data chunk to reset.
 -}
-foreign import ccall unsafe "duckdb_data_chunk_reset"
+foreign import ccall safe "duckdb_data_chunk_reset"
     c_duckdb_data_chunk_reset :: DuckDBDataChunk -> IO ()
 
 {- | Retrieves the number of columns in a data chunk.
@@ -50,7 +50,7 @@ Parameters:
 
 Returns The number of columns in the data chunk
 -}
-foreign import ccall unsafe "duckdb_data_chunk_get_column_count"
+foreign import ccall safe "duckdb_data_chunk_get_column_count"
     c_duckdb_data_chunk_get_column_count :: DuckDBDataChunk -> IO DuckDBIdx
 
 {- | Retrieves the vector at the specified column index in the data chunk.
@@ -63,7 +63,7 @@ Parameters:
 
 Returns The vector
 -}
-foreign import ccall unsafe "duckdb_data_chunk_get_vector"
+foreign import ccall safe "duckdb_data_chunk_get_vector"
     c_duckdb_data_chunk_get_vector :: DuckDBDataChunk -> DuckDBIdx -> IO DuckDBVector
 
 {- | Retrieves the current number of tuples in a data chunk.
@@ -73,7 +73,7 @@ Parameters:
 
 Returns The number of tuples in the data chunk
 -}
-foreign import ccall unsafe "duckdb_data_chunk_get_size"
+foreign import ccall safe "duckdb_data_chunk_get_size"
     c_duckdb_data_chunk_get_size :: DuckDBDataChunk -> IO DuckDBIdx
 
 {- | Sets the current number of tuples in a data chunk.
@@ -82,5 +82,5 @@ Parameters:
 * @chunk@: The data chunk to set the size in
 * @size@: The number of tuples in the data chunk
 -}
-foreign import ccall unsafe "duckdb_data_chunk_set_size"
+foreign import ccall safe "duckdb_data_chunk_set_size"
     c_duckdb_data_chunk_set_size :: DuckDBDataChunk -> DuckDBIdx -> IO ()

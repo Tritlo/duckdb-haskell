@@ -21,7 +21,7 @@ Parameters:
 
 Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
 -}
-foreign import ccall safe "duckdb_execute_prepared"
+foreign import ccall "duckdb_execute_prepared"
     c_duckdb_execute_prepared :: DuckDBPreparedStatement -> Ptr DuckDBResult -> IO DuckDBState
 
 {- | > Warning Deprecation notice. This method is scheduled for removal in a future
@@ -42,5 +42,5 @@ Parameters:
 
 Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
 -}
-foreign import ccall safe "duckdb_execute_prepared_streaming"
+foreign import ccall "duckdb_execute_prepared_streaming"
     c_duckdb_execute_prepared_streaming :: DuckDBPreparedStatement -> Ptr DuckDBResult -> IO DuckDBState

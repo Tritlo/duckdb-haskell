@@ -43,7 +43,7 @@ Parameters:
 
 Returns The error data. Must be destroyed with @duckdb_destroy_error_data@.
 -}
-foreign import ccall unsafe "duckdb_to_arrow_schema"
+foreign import ccall safe "duckdb_to_arrow_schema"
     c_duckdb_to_arrow_schema :: DuckDBArrowOptions -> Ptr DuckDBLogicalType -> Ptr CString -> DuckDBIdx -> Ptr ArrowSchema -> IO DuckDBErrorData
 
 {- | Transforms a DuckDB data chunk into an Arrow array.
@@ -56,7 +56,7 @@ Parameters:
 
 Returns The error data. Must be destroyed with @duckdb_destroy_error_data@.
 -}
-foreign import ccall unsafe "duckdb_data_chunk_to_arrow"
+foreign import ccall safe "duckdb_data_chunk_to_arrow"
     c_duckdb_data_chunk_to_arrow :: DuckDBArrowOptions -> DuckDBDataChunk -> Ptr ArrowArray -> IO DuckDBErrorData
 
 {- | Transforms an Arrow Schema into a DuckDB Schema.
@@ -70,7 +70,7 @@ Parameters:
 
 Returns The error data. Must be destroyed with @duckdb_destroy_error_data@.
 -}
-foreign import ccall unsafe "duckdb_schema_from_arrow"
+foreign import ccall safe "duckdb_schema_from_arrow"
     c_duckdb_schema_from_arrow :: DuckDBConnection -> Ptr ArrowSchema -> Ptr DuckDBArrowConvertedSchema -> IO DuckDBErrorData
 
 {- | Transforms an Arrow array into a DuckDB data chunk. The data chunk will retain
@@ -88,7 +88,7 @@ Parameters:
 
 Returns The error data. Must be destroyed with @duckdb_destroy_error_data@.
 -}
-foreign import ccall unsafe "duckdb_data_chunk_from_arrow"
+foreign import ccall safe "duckdb_data_chunk_from_arrow"
     c_duckdb_data_chunk_from_arrow :: DuckDBConnection -> Ptr ArrowArray -> DuckDBArrowConvertedSchema -> Ptr DuckDBDataChunk -> IO DuckDBErrorData
 
 {- | Destroys the arrow converted schema and de-allocates all memory allocated for
@@ -97,7 +97,7 @@ that arrow converted schema.
 Parameters:
 * @arrow_converted_schema@: The arrow converted schema to destroy.
 -}
-foreign import ccall unsafe "duckdb_destroy_arrow_converted_schema"
+foreign import ccall safe "duckdb_destroy_arrow_converted_schema"
     c_duckdb_destroy_arrow_converted_schema :: Ptr DuckDBArrowConvertedSchema -> IO ()
 
 {- | > Warning Deprecation notice. This method is scheduled for removal in a future
@@ -119,7 +119,7 @@ Parameters:
 
 Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
 -}
-foreign import ccall safe "duckdb_query_arrow"
+foreign import ccall "duckdb_query_arrow"
     c_duckdb_query_arrow :: DuckDBConnection -> CString -> Ptr DuckDBArrow -> IO DuckDBState
 
 {- | > Warning Deprecation notice. This method is scheduled for removal in a future
@@ -134,7 +134,7 @@ Parameters:
 
 Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
 -}
-foreign import ccall unsafe "duckdb_query_arrow_schema"
+foreign import ccall safe "duckdb_query_arrow_schema"
     c_duckdb_query_arrow_schema :: DuckDBArrow -> Ptr DuckDBArrowSchema -> IO DuckDBState
 
 {- | > Warning Deprecation notice. This method is scheduled for removal in a future
@@ -149,7 +149,7 @@ Parameters:
 
 Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
 -}
-foreign import ccall unsafe "duckdb_prepared_arrow_schema"
+foreign import ccall safe "duckdb_prepared_arrow_schema"
     c_duckdb_prepared_arrow_schema :: DuckDBPreparedStatement -> Ptr DuckDBArrowSchema -> IO DuckDBState
 
 {- | > Warning Deprecation notice. This method is scheduled for removal in a future
@@ -167,7 +167,7 @@ These bindings call the wrapper symbol
 @wrapped_duckdb_result_arrow_array@ but mirror the DuckDB C API semantics of
 @duckdb_result_arrow_array@.
 -}
-foreign import ccall unsafe "wrapped_duckdb_result_arrow_array"
+foreign import ccall safe "wrapped_duckdb_result_arrow_array"
     c_duckdb_result_arrow_array :: Ptr DuckDBResult -> DuckDBDataChunk -> Ptr DuckDBArrowArray -> IO ()
 
 {- | > Warning Deprecation notice. This method is scheduled for removal in a future
@@ -186,7 +186,7 @@ Parameters:
 
 Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
 -}
-foreign import ccall safe "duckdb_query_arrow_array"
+foreign import ccall "duckdb_query_arrow_array"
     c_duckdb_query_arrow_array :: DuckDBArrow -> Ptr DuckDBArrowArray -> IO DuckDBState
 
 {- | > Warning Deprecation notice. This method is scheduled for removal in a future
@@ -199,7 +199,7 @@ Parameters:
 
 Returns The number of columns present in the result object.
 -}
-foreign import ccall unsafe "duckdb_arrow_column_count"
+foreign import ccall safe "duckdb_arrow_column_count"
     c_duckdb_arrow_column_count :: DuckDBArrow -> IO DuckDBIdx
 
 {- | > Warning Deprecation notice. This method is scheduled for removal in a future
@@ -212,7 +212,7 @@ Parameters:
 
 Returns The number of rows present in the result object.
 -}
-foreign import ccall unsafe "duckdb_arrow_row_count"
+foreign import ccall safe "duckdb_arrow_row_count"
     c_duckdb_arrow_row_count :: DuckDBArrow -> IO DuckDBIdx
 
 {- | > Warning Deprecation notice. This method is scheduled for removal in a future
@@ -227,7 +227,7 @@ Parameters:
 
 Returns The number of rows changed.
 -}
-foreign import ccall unsafe "duckdb_arrow_rows_changed"
+foreign import ccall safe "duckdb_arrow_rows_changed"
     c_duckdb_arrow_rows_changed :: DuckDBArrow -> IO DuckDBIdx
 
 {- | > Warning Deprecation notice. This method is scheduled for removal in a future
@@ -244,7 +244,7 @@ Parameters:
 
 Returns The error of the result.
 -}
-foreign import ccall unsafe "duckdb_query_arrow_error"
+foreign import ccall safe "duckdb_query_arrow_error"
     c_duckdb_query_arrow_error :: DuckDBArrow -> IO CString
 
 {- | > Warning Deprecation notice. This method is scheduled for removal in a future
@@ -255,7 +255,7 @@ Closes the result and de-allocates all memory allocated for the arrow result.
 Parameters:
 * @result@: The result to destroy.
 -}
-foreign import ccall unsafe "duckdb_destroy_arrow"
+foreign import ccall safe "duckdb_destroy_arrow"
     c_duckdb_destroy_arrow :: Ptr DuckDBArrow -> IO ()
 
 {- | > Warning Deprecation notice. This method is scheduled for removal in a future
@@ -266,7 +266,7 @@ Releases the arrow array stream and de-allocates its memory.
 Parameters:
 * @stream_p@: The arrow array stream to destroy.
 -}
-foreign import ccall unsafe "duckdb_destroy_arrow_stream"
+foreign import ccall safe "duckdb_destroy_arrow_stream"
     c_duckdb_destroy_arrow_stream :: Ptr DuckDBArrowStream -> IO ()
 
 {- | > Warning Deprecation notice. This method is scheduled for removal in a future
@@ -283,7 +283,7 @@ Parameters:
 
 Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
 -}
-foreign import ccall safe "duckdb_execute_prepared_arrow"
+foreign import ccall "duckdb_execute_prepared_arrow"
     c_duckdb_execute_prepared_arrow :: DuckDBPreparedStatement -> Ptr DuckDBArrow -> IO DuckDBState
 
 {- | > Warning Deprecation notice. This method is scheduled for removal in a future
@@ -298,7 +298,7 @@ Parameters:
 
 Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
 -}
-foreign import ccall safe "duckdb_arrow_scan"
+foreign import ccall "duckdb_arrow_scan"
     c_duckdb_arrow_scan :: DuckDBConnection -> CString -> DuckDBArrowStream -> IO DuckDBState
 
 {- | > Warning Deprecation notice. This method is scheduled for removal in a future
@@ -318,25 +318,25 @@ Parameters:
 
 Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
 -}
-foreign import ccall safe "duckdb_arrow_array_scan"
+foreign import ccall "duckdb_arrow_array_scan"
     c_duckdb_arrow_array_scan :: DuckDBConnection -> CString -> DuckDBArrowSchema -> DuckDBArrowArray -> Ptr DuckDBArrowStream -> IO DuckDBState
 
-foreign import ccall unsafe "wrapped_duckdb_arrow_schema_internal_ptr"
+foreign import ccall safe "wrapped_duckdb_arrow_schema_internal_ptr"
     c_duckdb_arrow_schema_internal_ptr :: DuckDBArrowSchema -> IO (Ptr ())
 
-foreign import ccall unsafe "wrapped_duckdb_arrow_schema_clear_internal_ptr"
+foreign import ccall safe "wrapped_duckdb_arrow_schema_clear_internal_ptr"
     c_duckdb_arrow_schema_clear_internal_ptr :: DuckDBArrowSchema -> IO ()
 
-foreign import ccall unsafe "wrapped_duckdb_arrow_array_internal_ptr"
+foreign import ccall safe "wrapped_duckdb_arrow_array_internal_ptr"
     c_duckdb_arrow_array_internal_ptr :: DuckDBArrowArray -> IO (Ptr ())
 
-foreign import ccall unsafe "wrapped_duckdb_arrow_array_clear_internal_ptr"
+foreign import ccall safe "wrapped_duckdb_arrow_array_clear_internal_ptr"
     c_duckdb_arrow_array_clear_internal_ptr :: DuckDBArrowArray -> IO ()
 
-foreign import ccall unsafe "wrapped_duckdb_arrow_stream_internal_ptr"
+foreign import ccall safe "wrapped_duckdb_arrow_stream_internal_ptr"
     c_duckdb_arrow_stream_internal_ptr :: DuckDBArrowStream -> IO (Ptr ())
 
-foreign import ccall unsafe "wrapped_duckdb_arrow_stream_clear_internal_ptr"
+foreign import ccall safe "wrapped_duckdb_arrow_stream_clear_internal_ptr"
     c_duckdb_arrow_stream_clear_internal_ptr :: DuckDBArrowStream -> IO ()
 
 {- | Read the @internal_ptr@ field of a deprecated Arrow schema wrapper.

@@ -379,22 +379,22 @@ cbToBool (CBool v) = v /= 0
 
 -- Wrapper builders ----------------------------------------------------------
 
-foreign import ccall safe "wrapper"
+foreign import ccall "wrapper"
     mkStateSizeFun :: (DuckDBFunctionInfo -> IO DuckDBIdx) -> IO DuckDBAggregateStateSizeFun
 
-foreign import ccall safe "wrapper"
+foreign import ccall "wrapper"
     mkInitFun :: (DuckDBFunctionInfo -> DuckDBAggregateState -> IO ()) -> IO DuckDBAggregateInitFun
 
-foreign import ccall safe "wrapper"
+foreign import ccall "wrapper"
     mkUpdateFun :: (DuckDBFunctionInfo -> DuckDBDataChunk -> Ptr DuckDBAggregateState -> IO ()) -> IO DuckDBAggregateUpdateFun
 
-foreign import ccall safe "wrapper"
+foreign import ccall "wrapper"
     mkCombineFun :: (DuckDBFunctionInfo -> Ptr DuckDBAggregateState -> Ptr DuckDBAggregateState -> DuckDBIdx -> IO ()) -> IO DuckDBAggregateCombineFun
 
-foreign import ccall safe "wrapper"
+foreign import ccall "wrapper"
     mkFinalizeFun :: (DuckDBFunctionInfo -> Ptr DuckDBAggregateState -> DuckDBVector -> DuckDBIdx -> DuckDBIdx -> IO ()) -> IO DuckDBAggregateFinalizeFun
 
-foreign import ccall safe "wrapper"
+foreign import ccall "wrapper"
     mkDestroyFun :: (Ptr DuckDBAggregateState -> DuckDBIdx -> IO ()) -> IO DuckDBAggregateDestroyFun
 
 -- Resource helpers ----------------------------------------------------------

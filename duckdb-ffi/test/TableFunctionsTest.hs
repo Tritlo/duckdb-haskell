@@ -534,14 +534,14 @@ peekCStringMaybe ptr
 
 -- Wrappers -------------------------------------------------------------------
 
-foreign import ccall safe "wrapper"
+foreign import ccall "wrapper"
     mkBindFun :: (DuckDBBindInfo -> IO ()) -> IO DuckDBTableFunctionBindFun
 
-foreign import ccall safe "wrapper"
+foreign import ccall "wrapper"
     mkInitFun :: (DuckDBInitInfo -> IO ()) -> IO DuckDBTableFunctionInitFun
 
-foreign import ccall safe "wrapper"
+foreign import ccall "wrapper"
     mkFunctionFun :: (DuckDBFunctionInfo -> DuckDBDataChunk -> IO ()) -> IO DuckDBTableFunctionFun
 
-foreign import ccall safe "wrapper"
+foreign import ccall "wrapper"
     mkDeleteCallback :: (Ptr () -> IO ()) -> IO DuckDBDeleteCallback

@@ -145,37 +145,43 @@ instance FromField Bool where
         case fieldValue of
             FieldBool b -> Ok b
             FieldInt i -> Ok (i /= 0)
-            other -> left (Incompatible (fieldValueTypeName other) "Bool" "invalid type for boolean")
+            FieldNull -> left $ UnexpectedNull (fieldValueTypeName fieldValue) "Bool" ""
+            other -> left (Incompatible (fieldValueTypeName other) "Bool" "")
 
 instance FromField Int8 where
     fromField Field{fieldValue} =
         case fieldValue of
             FieldInt i -> Ok (fromIntegral i)
-            other -> left (Incompatible (fieldValueTypeName other) "Int8" "invalid type for Int8")
+            FieldNull -> left $ UnexpectedNull (fieldValueTypeName fieldValue) "Int8" ""
+            other -> left (Incompatible (fieldValueTypeName other) "Int8" "")
 
 instance FromField Int64 where
     fromField Field{fieldValue} =
         case fieldValue of
             FieldInt i -> Ok (fromIntegral i)
-            other -> left (Incompatible (fieldValueTypeName other) "Int64" "invalid type for Int64")
+            FieldNull -> left $ UnexpectedNull (fieldValueTypeName fieldValue) "Int64" ""
+            other -> left (Incompatible (fieldValueTypeName other) "Int64" "")
 
 instance FromField Int32 where
     fromField field@Field{fieldValue} =
         case fieldValue of
             FieldInt i -> boundedIntegral field i
-            other -> left (Incompatible (fieldValueTypeName other) "Int32" "invalid type for integer")
+            FieldNull -> left $ UnexpectedNull (fieldValueTypeName fieldValue) "Int32" ""
+            other -> left (Incompatible (fieldValueTypeName other) "Int32" "")
 
 instance FromField Int16 where
     fromField field@Field{fieldValue} =
         case fieldValue of
             FieldInt i -> boundedIntegral field i
-            other -> left (Incompatible (fieldValueTypeName other) "Int16" "invalid type for integer")
+            FieldNull -> left $ UnexpectedNull (fieldValueTypeName fieldValue) "Int16" ""
+            other -> left (Incompatible (fieldValueTypeName other) "Int16" "")
 
 instance FromField Int where
     fromField field@Field{fieldValue} =
         case fieldValue of
             FieldInt i -> boundedIntegral field i
-            other -> left (Incompatible (fieldValueTypeName other) "Int" "invalid type for integer")
+            FieldNull -> left $ UnexpectedNull (fieldValueTypeName fieldValue) "Int" ""
+            other -> left (Incompatible (fieldValueTypeName other) "Int" "")
 
 instance FromField Word64 where
     fromField Field{fieldValue} =
@@ -187,7 +193,8 @@ instance FromField Word64 where
                         ConversionFailed (fieldValueTypeName fieldValue) "Word64" $
                                  Text.pack "negative value cannot be converted to unsigned integer"
             FieldWord w -> Ok (fromIntegral w)
-            other -> left (Incompatible (fieldValueTypeName other) "Word64" "invalid type for Word64")
+            FieldNull -> left $ UnexpectedNull (fieldValueTypeName fieldValue) "Word64" ""
+            other -> left (Incompatible (fieldValueTypeName other) "Word64" "")
 
 instance FromField Word32 where
     fromField field@Field{fieldValue} =
@@ -199,7 +206,8 @@ instance FromField Word32 where
                         ConversionFailed (fieldValueTypeName fieldValue) "Word32" $
                                  Text.pack "negative value cannot be converted to unsigned integer"
             FieldWord w -> Ok (fromIntegral w)
-            other -> left (Incompatible (fieldValueTypeName other) "Word32" "invalid type for Word32")
+            FieldNull -> left $ UnexpectedNull (fieldValueTypeName fieldValue) "Word32" ""
+            other -> left (Incompatible (fieldValueTypeName other) "Word32" "")
 
 instance FromField Word16 where
     fromField field@Field{fieldValue} =
@@ -211,7 +219,8 @@ instance FromField Word16 where
                         ConversionFailed (fieldValueTypeName fieldValue) "Word16" $
                                  Text.pack "negative value cannot be converted to unsigned integer"
             FieldWord w -> Ok (fromIntegral w)
-            other -> left (Incompatible (fieldValueTypeName other) "Word16" "invalid type for Word16")
+            FieldNull -> left $ UnexpectedNull (fieldValueTypeName fieldValue) "Word16" ""
+            other -> left (Incompatible (fieldValueTypeName other) "Word16" "")
 
 instance FromField Word8 where
     fromField field@Field{fieldValue} =
@@ -223,14 +232,16 @@ instance FromField Word8 where
                         ConversionFailed (fieldValueTypeName fieldValue) "Word8" $
                                  Text.pack "negative value cannot be converted to unsigned integer"
             FieldWord w -> Ok (fromIntegral w)
-            other -> left (Incompatible (fieldValueTypeName other) "Word8" "invalid type for Word8")
+            FieldNull -> left $ UnexpectedNull (fieldValueTypeName fieldValue) "Word8" ""
+            other -> left (Incompatible (fieldValueTypeName other) "Word8" "")
 
 instance FromField Double where
     fromField Field{fieldValue} =
         case fieldValue of
             FieldDouble d -> Ok d
             FieldInt i -> Ok (fromIntegral i)
-            other -> left (Incompatible (fieldValueTypeName other) "Double" "invalid type for double")
+            FieldNull -> left $ UnexpectedNull (fieldValueTypeName fieldValue) "Double" ""
+            other -> left (Incompatible (fieldValueTypeName other) "Double" "")
 
 instance FromField Float where
     fromField field =
@@ -245,9 +256,8 @@ instance FromField Text where
             FieldInt i -> Ok (Text.pack (show i))
             FieldDouble d -> Ok (Text.pack (show d))
             FieldBool b -> Ok (if b then Text.pack "1" else Text.pack "0")
-            FieldNull ->
-                left $ UnexpectedNull (fieldValueTypeName fieldValue) "Text" $ Text.pack "unexpected null value"
-            other -> left (Incompatible (fieldValueTypeName other) "Text" "invalid type for text")
+            FieldNull -> left $ UnexpectedNull (fieldValueTypeName fieldValue) "Text" ""
+            other -> left (Incompatible (fieldValueTypeName other) "Text" "")
 
 instance FromField String where
     fromField field = Text.unpack <$> fromField field
@@ -257,30 +267,32 @@ instance FromField BS.ByteString where
         case fieldValue of
             FieldBlob bs -> Ok bs
             FieldText t -> Ok (TextEncoding.encodeUtf8 t)
-            FieldNull ->
-                left $ UnexpectedNull (fieldValueTypeName fieldValue) "ByteString" $ Text.pack "unexpected null value"
-            other -> left (Incompatible (fieldValueTypeName other) "ByteString" "invalid type for blob")
+            FieldNull -> left $ UnexpectedNull (fieldValueTypeName fieldValue) "ByteString" ""
+            other -> left (Incompatible (fieldValueTypeName other) "ByteString" "")
 
 instance FromField Day where
     fromField Field{fieldValue} =
         case fieldValue of
             FieldDate day -> Ok day
             FieldTimestamp LocalTime{localDay} -> Ok localDay
-            other -> left (Incompatible (fieldValueTypeName other) "Day" "invalid type for date")
+            FieldNull -> left $ UnexpectedNull (fieldValueTypeName fieldValue) "Day" ""
+            other -> left (Incompatible (fieldValueTypeName other) "Day" "")
 
 instance FromField TimeOfDay where
     fromField Field{fieldValue} =
         case fieldValue of
             FieldTime tod -> Ok tod
             FieldTimestamp LocalTime{localTimeOfDay} -> Ok localTimeOfDay
-            other -> left (Incompatible (fieldValueTypeName other) "TimeOfDay" "invalid type for time")
+            FieldNull -> left $ UnexpectedNull (fieldValueTypeName fieldValue) "TimeOfDay" ""
+            other -> left (Incompatible (fieldValueTypeName other) "TimeOfDay" "")
 
 instance FromField LocalTime where
     fromField Field{ fieldValue} =
         case fieldValue of
             FieldTimestamp ts -> Ok ts
             FieldDate day -> Ok (LocalTime day midnight)
-            other -> left (Incompatible (fieldValueTypeName other) "LocalTime" "invalid type for timestamp")
+            FieldNull -> left $ UnexpectedNull (fieldValueTypeName fieldValue) "LocalTime" ""
+            other -> left (Incompatible (fieldValueTypeName other) "LocalTime" "")
       where
         midnight = TimeOfDay 0 0 0
 

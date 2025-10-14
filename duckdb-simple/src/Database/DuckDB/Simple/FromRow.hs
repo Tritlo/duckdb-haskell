@@ -256,8 +256,7 @@ renderError :: ResultError -> Text
 renderError = \case
     Incompatible{errSQLType, errHaskellType} ->
             Text.concat
-                [ "duckdb-simple: column "
-                , " has type "
+                [ "duckdb-simple: column has type "
                 , errSQLType
                 , " but expected "
                 , errHaskellType
@@ -265,7 +264,7 @@ renderError = \case
     UnexpectedNull{errSQLType} ->
             Text.concat
                 [ "duckdb-simple: column "
-                , " is NULL but expected "
+                , "is NULL but expected "
                 , errSQLType
                 ]
     ConversionFailed{errMessage} ->

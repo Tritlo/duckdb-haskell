@@ -1,6 +1,6 @@
 cabal-version:      3.4
 name:               duckdb-simple
-version:            0.1.0.0
+version:            0.1.1.0
 license:            MPL-2.0
 license-file:       LICENSE
 author:             Matthias Pall Gissurarson
@@ -42,7 +42,7 @@ library
   build-depends:
       base >=4.14 && <5
     , bytestring >= 0.11 && <0.12
-    , duckdb-ffi >= 0.1.4 && <0.1.5
+    , duckdb-ffi >= 1.4 && <1.5
     , text >= 2.0 && <2.1
     , transformers >= 0.6 && <0.7
     , time >= 1.12 && <1.13

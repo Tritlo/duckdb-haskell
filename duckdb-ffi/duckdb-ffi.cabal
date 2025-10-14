@@ -1,6 +1,6 @@
 cabal-version:      3.4
 name:               duckdb-ffi
-version:            0.1.4.1
+version:            1.4.1.1
 author:             Matthias Pall Gissurarson
 maintainer:         mpg@mpg.is
 category:           Database

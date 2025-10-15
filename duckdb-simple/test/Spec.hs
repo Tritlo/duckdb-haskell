@@ -14,6 +14,7 @@ import Control.Applicative ((<|>))
 import Control.Exception (ErrorCall, Exception, try)
 import Control.Monad (replicateM_)
 import qualified Data.ByteString as BS
+import qualified Data.Map.Strict as Map
 import Data.IORef (atomicModifyIORef', newIORef)
 import Data.Int (Int64)
 import qualified Data.Text as Text
@@ -390,6 +391,17 @@ typeTests =
                     expectedZone = minutesToTimeZone 150
                 assertEqual "timetz time" expectedTime (timeWithZoneTime tzVal)
                 assertEqual "timetz zone" expectedZone (timeWithZoneZone tzVal)
+        , testCase "decodes list columns into Haskell lists" $
+            withConnection ":memory:" \conn -> do
+                [Only (listOut :: [Int])] <-
+                    query_ conn "SELECT LIST_VALUE(1, 2, 3)::INTEGER[]"
+                assertEqual "list decode" [1, 2, 3] listOut
+        , testCase "decodes map columns into strict Map" $
+            withConnection ":memory:" \conn -> do
+                [Only (mapOut :: Map.Map Text.Text Int)] <-
+                    query_ conn "SELECT MAP(['a', 'b']::TEXT[], [1, 2]::INTEGER[])"
+                let expected = Map.fromList [(Text.pack "a", 1), (Text.pack "b", 2)]
+                assertEqual "map decode" expected mapOut
         , testCase "decodes timestamp with time zone as UTC" $
             withConnection ":memory:" \conn -> do
                 [Only utcVal] <-

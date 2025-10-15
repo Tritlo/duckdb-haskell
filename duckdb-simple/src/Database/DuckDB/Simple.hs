@@ -105,8 +105,8 @@ import Database.DuckDB.Simple.FromField
     , FieldValue (..)
     , FieldParser
     , FromField (..)
-    , ResultError (..)
     , IntervalValue (..)
+    , ResultError (..)
     , TimeWithZone (..)
     )
 import Database.DuckDB.Simple.FromRow
@@ -142,7 +142,7 @@ import Foreign.C.String (CString, peekCString, withCString)
 import Foreign.C.Types (CBool (..), CDouble (..))
 import Foreign.Marshal.Alloc (alloca, free, malloc)
 import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
-import Foreign.Storable (peek, peekElemOff, poke)
+import Foreign.Storable (Storable (..), peekElemOff, peekByteOff, pokeByteOff)
 import Database.DuckDB.Simple.Ok (Ok(..))
 
 -- | Open a DuckDB database located at the supplied path.
@@ -638,7 +638,7 @@ buildRow queryText columns vectors rowIdx =
     zipWithM (buildField queryText rowIdx) columns vectors
 
 buildField :: Query -> Int -> StatementStreamColumn -> StatementStreamChunkVector -> IO Field
-buildField queryText rowIdx column StatementStreamChunkVector{statementStreamChunkVectorData, statementStreamChunkVectorValidity} = do
+buildField queryText rowIdx column StatementStreamChunkVector{statementStreamChunkVectorHandle, statementStreamChunkVectorData, statementStreamChunkVectorValidity} = do
     let duckIdx = fromIntegral rowIdx
         dtype = statementStreamColumnType column
     valid <- chunkIsRowValid statementStreamChunkVectorValidity duckIdx
@@ -695,6 +695,10 @@ buildField queryText rowIdx column StatementStreamChunkVector{statementStreamChu
                     raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr Double) rowIdx
                     pure (FieldDouble raw)
                 DuckDBTypeVarchar -> FieldText <$> chunkDecodeText statementStreamChunkVectorData duckIdx
+                DuckDBTypeList -> FieldList <$> decodeListElements statementStreamChunkVectorHandle statementStreamChunkVectorData rowIdx
+                DuckDBTypeMap -> FieldMap <$> decodeMapPairs statementStreamChunkVectorHandle statementStreamChunkVectorData rowIdx
+                DuckDBTypeStruct -> error "duckdb-simple: STRUCT columns are not supported"
+                DuckDBTypeUnion -> error "duckdb-simple: UNION columns are not supported"
                 DuckDBTypeHugeInt -> error "duckdb-simple: HUGEINT is not supported"
                 DuckDBTypeUHugeInt -> error "duckdb-simple: HUGEINT is not supported"
                 _ ->
@@ -1127,6 +1131,87 @@ withChunkForRow resPtr targetRow action = do
                                     seek (chunkIdx + 1) (remaining - rowCount)
     seek 0 targetRow
 
+data DuckDBListEntry = DuckDBListEntry
+    { duckDBListEntryOffset :: !Word64
+    , duckDBListEntryLength :: !Word64
+    }
+    deriving (Eq, Show)
+
+instance Storable DuckDBListEntry where
+    sizeOf _ = listEntryWordSize * 2
+    alignment _ = alignment (0 :: Word64)
+    peek ptr = do
+        offset <- peekByteOff ptr 0
+        len <- peekByteOff ptr listEntryWordSize
+        pure DuckDBListEntry{duckDBListEntryOffset = offset, duckDBListEntryLength = len}
+    poke ptr DuckDBListEntry{duckDBListEntryOffset, duckDBListEntryLength} = do
+        pokeByteOff ptr 0 duckDBListEntryOffset
+        pokeByteOff ptr listEntryWordSize duckDBListEntryLength
+
+listEntryWordSize :: Int
+listEntryWordSize = sizeOf (0 :: Word64)
+
+decodeListElements :: DuckDBVector -> Ptr () -> Int -> IO [FieldValue]
+decodeListElements vector dataPtr rowIdx = do
+    entry <- peekElemOff (castPtr dataPtr :: Ptr DuckDBListEntry) rowIdx
+    (baseIdx, len) <- listEntryBounds (Text.pack "list") entry
+    childVec <- c_duckdb_list_vector_get_child vector
+    when (childVec == nullPtr) $
+        throwIO (userError "duckdb-simple: list child vector is null")
+    childType <- vectorElementType childVec
+    childData <- c_duckdb_vector_get_data childVec
+    childValidity <- c_duckdb_vector_get_validity childVec
+    forM [0 .. len - 1] \delta ->
+        materializedValueFromPointers childType childVec childData childValidity (baseIdx + delta)
+
+decodeMapPairs :: DuckDBVector -> Ptr () -> Int -> IO [(FieldValue, FieldValue)]
+decodeMapPairs vector dataPtr rowIdx = do
+    entry <- peekElemOff (castPtr dataPtr :: Ptr DuckDBListEntry) rowIdx
+    (baseIdx, len) <- listEntryBounds (Text.pack "map") entry
+    structVec <- c_duckdb_list_vector_get_child vector
+    when (structVec == nullPtr) $
+        throwIO (userError "duckdb-simple: map struct vector is null")
+    keyVec <- c_duckdb_struct_vector_get_child structVec 0
+    valueVec <- c_duckdb_struct_vector_get_child structVec 1
+    when (keyVec == nullPtr || valueVec == nullPtr) $
+        throwIO (userError "duckdb-simple: map child vectors are null")
+    keyType <- vectorElementType keyVec
+    valueType <- vectorElementType valueVec
+    keyData <- c_duckdb_vector_get_data keyVec
+    valueData <- c_duckdb_vector_get_data valueVec
+    keyValidity <- c_duckdb_vector_get_validity keyVec
+    valueValidity <- c_duckdb_vector_get_validity valueVec
+    forM [0 .. len - 1] \delta -> do
+        let childIdx = baseIdx + delta
+        keyValue <- materializedValueFromPointers keyType keyVec keyData keyValidity childIdx
+        valueValue <- materializedValueFromPointers valueType valueVec valueData valueValidity childIdx
+        pure (keyValue, valueValue)
+
+vectorElementType :: DuckDBVector -> IO DuckDBType
+vectorElementType vec = do
+    logical <- c_duckdb_vector_get_column_type vec
+    dtype <- c_duckdb_get_type_id logical
+    destroyLogicalType logical
+    pure dtype
+
+listEntryBounds :: Text -> DuckDBListEntry -> IO (Int, Int)
+listEntryBounds context DuckDBListEntry{duckDBListEntryOffset, duckDBListEntryLength} = do
+    base <- ensureWithinIntRange (context <> Text.pack " offset") duckDBListEntryOffset
+    len <- ensureWithinIntRange (context <> Text.pack " length") duckDBListEntryLength
+    let maxInt = toInteger (maxBound :: Int)
+        upperBound = toInteger base + toInteger len - 1
+    when (len > 0 && upperBound > maxInt) $
+        throwIO (userError ("duckdb-simple: " <> Text.unpack context <> " bounds exceed Int range"))
+    pure (base, len)
+
+ensureWithinIntRange :: Text -> Word64 -> IO Int
+ensureWithinIntRange context value =
+    let actual = toInteger value
+        limit = toInteger (maxBound :: Int)
+     in if actual <= limit
+            then pure (fromInteger actual)
+            else throwIO (userError ("duckdb-simple: " <> Text.unpack context <> " exceeds Int range"))
+
 materializedValueFromPointers :: DuckDBType -> DuckDBVector -> Ptr () -> Ptr Word64 -> Int -> IO FieldValue
 materializedValueFromPointers dtype vector dataPtr validity rowIdx = do
     let duckIdx = fromIntegral rowIdx :: DuckDBIdx
@@ -1238,6 +1323,10 @@ materializedValueFromPointers dtype vector dataPtr validity rowIdx = do
                 DuckDBTypeBigNum -> do
                     raw <- peekElemOff (castPtr dataPtr :: Ptr DuckDBBignum) rowIdx
                     FieldBigNum <$> decodeDuckDBBigNum raw
+                DuckDBTypeList -> FieldList <$> decodeListElements vector dataPtr rowIdx
+                DuckDBTypeMap -> FieldMap <$> decodeMapPairs vector dataPtr rowIdx
+                DuckDBTypeStruct -> error "duckdb-simple: STRUCT columns are not supported"
+                DuckDBTypeUnion -> error "duckdb-simple: UNION columns are not supported"
                 DuckDBTypeEnum -> do
                     case enumInternal of
                         Just DuckDBTypeUTinyInt -> do

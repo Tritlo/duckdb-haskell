@@ -28,6 +28,8 @@ module Database.DuckDB.Simple.FromField (
 import Control.Exception (Exception, SomeException (..))
 import qualified Data.ByteString as BS
 import Data.Int (Int16, Int32, Int64, Int8)
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
@@ -44,7 +46,8 @@ import Data.Time.LocalTime
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.Simple.Types (Null (..))
 import Database.DuckDB.Simple.Ok
-import Data.Data (Typeable, Proxy (..), typeRep)
+import Data.Data (Typeable, typeRep)
+import Data.Proxy (Proxy (..))
 
 -- | Internal representation of a column value.
 data FieldValue
@@ -74,6 +77,8 @@ data FieldValue
     | FieldBit BitString
     | FieldBigNum BigNum
     | FieldEnum Word32
+    | FieldList [FieldValue]
+    | FieldMap [(FieldValue, FieldValue)]
     deriving (Eq, Show)
 
 data DecimalValue = DecimalValue
@@ -394,6 +399,53 @@ instance FromField BigNum where
             FieldNull -> returnError UnexpectedNull f ""
             _ -> returnError Incompatible f ""
 
+instance {-# OVERLAPPABLE #-} (Typeable a, FromField a) => FromField [a] where
+    fromField f@Field{fieldValue} =
+        case fieldValue of
+            FieldList entries ->
+                traverse (uncurry parseElement) (zip [0 :: Int ..] entries)
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
+      where
+        parseElement idx value =
+            fromField
+                Field
+                    { fieldName = fieldNameWithIndex idx
+                    , fieldIndex = fieldIndex f
+                    , fieldValue = value
+                    }
+        fieldNameWithIndex idx =
+            let base = fieldName f
+                idxText = Text.pack (show idx)
+             in base <> Text.pack "[" <> idxText <> Text.pack "]"
+
+instance (Ord k, Typeable k, Typeable v, FromField k, FromField v) => FromField (Map k v) where
+    fromField f@Field{fieldValue} =
+        case fieldValue of
+            FieldMap pairs -> Map.fromList <$> traverse (uncurry parsePair) (zip [0 :: Int ..] pairs)
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
+      where
+        parsePair idx (keyValue, valValue) = do
+            key <-
+                fromField
+                    Field
+                        { fieldName = fieldName f <> suffix idx ".key"
+                        , fieldIndex = fieldIndex f
+                        , fieldValue = keyValue
+                        }
+            value <-
+                fromField
+                    Field
+                        { fieldName = fieldName f <> suffix idx ".value"
+                        , fieldIndex = fieldIndex f
+                        , fieldValue = valValue
+                        }
+            pure (key, value)
+        suffix idx label =
+            let idxText = Text.pack (show idx)
+             in Text.pack "[" <> idxText <> Text.pack "]" <> Text.pack label
+
 instance FromField DecimalValue where
     fromField f@Field{fieldValue} =
         case fieldValue of
@@ -512,3 +564,5 @@ fieldValueTypeName = \case
     FieldBit{} -> "BIT"
     FieldBigNum{} -> "BIGNUM"
     FieldEnum{} -> "ENUM"
+    FieldList{} -> "LIST"
+    FieldMap{} -> "MAP"

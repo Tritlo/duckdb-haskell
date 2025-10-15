@@ -3,8 +3,10 @@
 `duckdb-simple` provides a high-level Haskell interface to DuckDB inspired by
 the ergonomics of [`sqlite-simple`](https://hackage.haskell.org/package/sqlite-simple).
 It builds on the low-level bindings exposed by [`duckdb-ffi`](../duckdb-ffi) and
-provides a small, focused API for opening connections, running queries, binding
-parameters, and decoding typed results.
+provides a focused API for opening connections, running queries, binding
+parameters, and decoding typed results—including the full set of DuckDB scalar
+types (signed/unsigned integers, decimals, hugeints, intervals, precise and
+timezone-aware temporals, blobs, enums, bit strings, and bignums).
 
 ## Getting Started
 
@@ -25,14 +27,14 @@ main =
 
 ### Key Modules
 
-- `Database.DuckDB.Simple` – primary API: connections, statements, execution,
-  queries, and error handling.
-- `Database.DuckDB.Simple.ToField` / `ToRow` – typeclasses for preparing
-  parameters that can be passed to `execute`/`query`.
+- `Database.DuckDB.Simple` – connections, prepared statements, execution,
+  queries, metadata, and error handling.
+- `Database.DuckDB.Simple.ToField` / `ToRow` – typeclasses and helpers for
+  preparing positional or named parameters.
 - `Database.DuckDB.Simple.FromField` / `FromRow` – typeclasses for decoding
-  query results returned by `query`/`query_`.
-- `Database.DuckDB.Simple.Types` – common utility types (`Query`, `Null`,
-  `Only`, `(:.)`, `SQLError`).
+  query results, with generic deriving support for product types.
+- `Database.DuckDB.Simple.Types` – shared types (`Query`, `Null`, `Only`,
+  `(:.)`, `SQLError`).
 - `Database.DuckDB.Simple.Function` – register scalar Haskell functions that
   can be invoked directly from SQL.
 
@@ -70,10 +72,10 @@ insertNamed conn =
     ["$kind" := ("metric" :: String), "$payload" := ("ok" :: String)]
 ```
 
-DuckDB currently does not allow mixing positional and named placeholders within
-the same SQL statement; the library preserves DuckDB’s error message in that
-situation. Savepoints are also unavailable in DuckDB at the moment, so
-`withSavepoint` throws an `SQLError` detailing the limitation.
+DuckDB does not allow mixing positional and named placeholders within the same
+SQL statement; the library preserves DuckDB’s error message in that situation.
+Savepoints are currently rejected by DuckDB, so `withSavepoint` raises an
+`SQLError` describing the limitation.
 
 If the number of supplied parameters does not match the statement’s declared
 placeholders—or if you attempt to bind named arguments to a positional-only
@@ -140,32 +142,19 @@ sumValues conn =
 For manual cursor-style iteration, use `nextRow`/`nextRowWith` on an open
 `Statement` to pull rows one at a time and decide when to stop.
 
-### Temporal & Binary Types
-
-`duckdb-simple` now maps DuckDB temporal columns directly onto familiar
-`Data.Time` types (`DATE` → `Day`, `TIME` → `TimeOfDay`, `TIMESTAMP` →
-`LocalTime`/`UTCTime`). Binary blobs surface as strict `ByteString` values. Casting
-logic plugs into the existing `ToField`/`FromField` classes, so round-tripping values
-through prepared statements works just like the numeric and text helpers shown earlier.
-
-### Feature Coverage & Roadmap
-
-Included today:
+### Feature Coverage
 
 - Connections, prepared statements, positional/named parameter binding.
 - High-level execution (`execute*`) and eager queries (`query*`, `queryNamed`).
-- Streaming/folding helpers (`fold`, `foldNamed`, `fold_`, `nextRow`).
-- Temporal (`Day`, `TimeOfDay`, `LocalTime`, `UTCTime`) and blob (`ByteString`)
-  round-trips via `FromField`/`ToField` instances.
-- Row decoding via `FromField`/`FromRow`, including generic deriving support.
-- Basic transaction helpers (`withTransaction`, `withSavepoint` fallback).
-- Metadata helpers: `columnCount`, `columnName`, and connection-level
-  `rowsChanged`.
-
-Planned for a future release:
-
-- Broader type coverage for structured/list/decimal families, including UUID-friendly APIs.
-- Native savepoints once DuckDB exposes the required support.
+- Streaming helpers (`fold`, `foldNamed`, `fold_`, `nextRow`) for constant-space
+  result processing.
+- Comprehensive scalar type support: signed/unsigned integers, HUGEINT/UHUGEINT,
+  decimals (with width/scale), intervals, precise and timezone-aware temporals,
+  enums, bit strings, blobs, and bignums.
+- Row decoding via `FromField`/`FromRow`, with generic deriving for product types.
+- User-defined scalar functions backed by Haskell functions.
+- Transaction helpers (`withTransaction`, `withSavepoint` fallback) and metadata
+  accessors (`columnCount`, `columnName`, `rowsChanged`).
 
 ## User-Defined Functions
 
@@ -190,10 +179,9 @@ registerAndUse conn = do
 
 Exceptions raised while the function executes are propagated back to DuckDB as
 `SQLError` values, and `deleteFunction` issues a `DROP FUNCTION IF EXISTS`
-statement to remove the registration. Current DuckDB releases mark C API
-registrations as internal, so the drop operation reports an error instead of
-removing the function; duckdb-simple surfaces that limitation as an
-`SQLError`.
+statement to remove the registration. DuckDB registers C API scalar functions
+as internal entries; attempting to drop them this way will yield an error, which
+the library surfaces as an `SQLError`.
 
 ## Tests
 

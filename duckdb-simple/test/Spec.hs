@@ -14,10 +14,11 @@ import Control.Applicative ((<|>))
 import Control.Exception (ErrorCall, Exception, try)
 import Control.Monad (replicateM_)
 import qualified Data.ByteString as BS
-import qualified Data.Map.Strict as Map
 import Data.IORef (atomicModifyIORef', newIORef)
 import Data.Int (Int64)
 import qualified Data.Text as Text
+import Numeric.Natural (Natural)
+import qualified Data.Map.Strict as Map
 import Data.Time.Calendar (fromGregorian)
 import Data.Time.Clock (UTCTime (..))
 import Data.Time.LocalTime (
@@ -367,6 +368,18 @@ typeTests =
                 [Only (hugeOut :: Integer)] <-
                     query_ conn "SELECT 170141183460469231731687303715884105727::HUGEINT"
                 assertEqual "hugeint" hugeValue hugeOut
+        , testCase "decodes huge integers as Natural" $
+            withConnection ":memory:" \conn -> do
+                let hugeValue = 170141183460469231731687303715884105727 :: Natural
+                [Only (naturalOut :: Natural)] <-
+                    query_ conn "SELECT 170141183460469231731687303715884105727::HUGEINT"
+                assertEqual "hugeint natural" hugeValue naturalOut
+        , testCase "decodes unsigned huge integers as Natural" $
+            withConnection ":memory:" \conn -> do
+                let uhValue = 170141183460469231731687303715884105727 :: Natural
+                [Only (naturalOut :: Natural)] <-
+                    query_ conn "SELECT 170141183460469231731687303715884105727::UHUGEINT"
+                assertEqual "uhugeint natural" uhValue naturalOut
         , testCase "decodes interval components" $
             withConnection ":memory:" \conn -> do
                 [Only intervalVal] <-

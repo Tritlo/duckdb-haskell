@@ -699,8 +699,12 @@ buildField queryText rowIdx column StatementStreamChunkVector{statementStreamChu
                 DuckDBTypeMap -> FieldMap <$> decodeMapPairs statementStreamChunkVectorHandle statementStreamChunkVectorData rowIdx
                 DuckDBTypeStruct -> error "duckdb-simple: STRUCT columns are not supported"
                 DuckDBTypeUnion -> error "duckdb-simple: UNION columns are not supported"
-                DuckDBTypeHugeInt -> error "duckdb-simple: HUGEINT is not supported"
-                DuckDBTypeUHugeInt -> error "duckdb-simple: HUGEINT is not supported"
+                DuckDBTypeHugeInt -> do
+                    raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr DuckDBHugeInt) rowIdx
+                    pure (FieldHugeInt (duckDBHugeIntToInteger raw))
+                DuckDBTypeUHugeInt -> do
+                    raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr DuckDBUHugeInt) rowIdx
+                    pure (FieldUHugeInt (duckDBUHugeIntToInteger raw))
                 _ ->
                     throwIO (streamingUnsupportedTypeError queryText column)
     pure

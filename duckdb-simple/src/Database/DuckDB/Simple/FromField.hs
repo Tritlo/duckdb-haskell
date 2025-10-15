@@ -48,6 +48,7 @@ import Database.DuckDB.Simple.Types (Null (..))
 import Database.DuckDB.Simple.Ok
 import Data.Data (Typeable, typeRep)
 import Data.Proxy (Proxy (..))
+import Numeric.Natural (Natural)
 
 -- | Internal representation of a column value.
 data FieldValue
@@ -260,6 +261,23 @@ instance FromField Integer where
             FieldWord w -> Ok (fromIntegral w)
             FieldHugeInt value -> Ok value
             FieldUHugeInt value -> Ok value
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
+
+instance FromField Natural where
+    fromField f@Field{fieldValue} =
+        case fieldValue of
+            FieldInt i
+                | i >= 0 -> Ok (fromIntegral i)
+                | otherwise ->
+                    returnError ConversionFailed f "negative value cannot be converted to Natural"
+            FieldWord w -> Ok (fromIntegral w)
+            FieldHugeInt value
+                | value >= 0 -> Ok (fromIntegral value)
+                | otherwise ->
+                    returnError ConversionFailed f "negative value cannot be converted to Natural"
+            FieldUHugeInt value -> Ok (fromIntegral value)
+            FieldEnum value -> Ok (fromIntegral value)
             FieldNull -> returnError UnexpectedNull f ""
             _ -> returnError Incompatible f ""
 

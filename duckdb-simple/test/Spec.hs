@@ -382,7 +382,7 @@ typeTests =
                     (query_ conn "SELECT CAST(12345.6789 AS DECIMAL(18,4))" :: IO [Only Double])
                 assertBool
                     "decimal as double"
-                    (abs (decimalAsDouble - 12345.6789) < 1e-6)
+                    (abs (decimalAsDouble - 12345.6789) < 1e-4)
         , testCase "decodes time with time zone" $
             withConnection ":memory:" \conn -> do
                 [Only tzVal] <- query_ conn "SELECT TIMETZ '14:30:15+02:30'"

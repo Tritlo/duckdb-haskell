@@ -5,6 +5,3 @@ reference
 
 api.md
 **/venv
-
-duckdb-ffi/*.md
-duckdb-simple/*.md

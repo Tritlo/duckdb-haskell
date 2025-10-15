@@ -33,6 +33,10 @@ import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (
     Field (..),
+    FieldValue (..),
+    BigNum (..),
+    bigNumToInteger,
+    integerToBigNum,
     IntervalValue (..),
     TimeWithZone (..),
     returnError,
@@ -380,6 +384,39 @@ typeTests =
                 [Only (naturalOut :: Natural)] <-
                     query_ conn "SELECT 170141183460469231731687303715884105727::UHUGEINT"
                 assertEqual "uhugeint natural" uhValue naturalOut
+        , testCase "FromField Integer consumes FieldBigNum" $ do
+            let original = 1234567899876543210123456789 :: Integer
+                bigValue = integerToBigNum original
+                bigField =
+                    Field
+                        { fieldName = "big"
+                        , fieldIndex = 0
+                        , fieldValue = FieldBigNum bigValue
+                        }
+            case (fromField bigField :: Ok Integer) of
+                Ok result -> assertEqual "FieldBigNum Integer" original result
+                Errors err -> assertFailure ("unexpected parse failure: " <> show err)
+        , testCase "FromField Natural rejects negative FieldBigNum" $ do
+            let bigValue = integerToBigNum (-5)
+                bigField =
+                    Field
+                        { fieldName = "big"
+                        , fieldIndex = 0
+                        , fieldValue = FieldBigNum bigValue
+                        }
+            case (fromField bigField :: Ok Natural) of
+                Errors _ -> pure ()
+                Ok result -> assertFailure ("expected failure, got " <> show result)
+        , testCase "BigNum conversions round-trip Integer" $ do
+            let original = (2 ^ (200 :: Int)) + 8675309 :: Integer
+                converted = integerToBigNum original
+            assertBool "positive integral BigNum retains sign" (not (bigNumIsNegative converted))
+            assertEqual "round-trip Integer" original (bigNumToInteger converted)
+        , testCase "BigNum conversions preserve negativity" $ do
+            let original = negate ((2 ^ (180 :: Int)) + 12345) :: Integer
+                converted = integerToBigNum original
+            assertBool "negative flag" (bigNumIsNegative converted)
+            assertEqual "round-trip negative Integer" original (bigNumToInteger converted)
         , testCase "decodes interval components" $
             withConnection ":memory:" \conn -> do
                 [Only intervalVal] <-
@@ -394,9 +431,10 @@ typeTests =
             withConnection ":memory:" \conn -> do
                 [Only decimalAsDouble] <-
                     (query_ conn "SELECT CAST(12345.6789 AS DECIMAL(18,4))" :: IO [Only Double])
+                let diff = abs (decimalAsDouble - 12345.6789)
                 assertBool
-                    "decimal as double"
-                    (abs (decimalAsDouble - 12345.6789) < 1e-4)
+                    ("decimal as double: " <> show diff)
+                    (diff < 1e-4)
         , testCase "decodes time with time zone" $
             withConnection ":memory:" \conn -> do
                 [Only tzVal] <- query_ conn "SELECT TIMETZ '14:30:15+02:30'"

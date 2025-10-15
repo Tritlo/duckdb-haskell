@@ -30,16 +30,19 @@ import Data.Time.Calendar (Day, toGregorian)
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds)
 import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), timeOfDayToTime, utc, utcToLocalTime)
 import Data.Word (Word16, Word32, Word64, Word8)
+import Numeric.Natural (Natural)
 import Database.DuckDB.FFI
 import Database.DuckDB.Simple.Internal (
     SQLError (..),
     Statement (..),
     withStatementHandle,
  )
+import Database.DuckDB.Simple.FromField (BigNum (..), bigNumToInteger, integerToBigNum)
 import Database.DuckDB.Simple.Types (Null (..))
 import Foreign.C.String (peekCString)
-import Foreign.C.Types (CDouble (..))
+import Foreign.C.Types (CBool (..), CDouble (..))
 import Foreign.Marshal.Alloc (alloca)
+import Foreign.Marshal.Utils (toBool)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (poke)
 
@@ -93,6 +96,15 @@ instance ToField Int32 where
 
 instance ToField Int64 where
     toField = intBinding
+
+instance ToField BigNum where
+    toField = bignumBinding
+
+instance ToField Integer where
+    toField = toField . integerToBigNum
+
+instance ToField Natural where
+    toField = toField . integerToBigNum . toInteger
 
 instance ToField Word where
     toField value = uint64Binding (fromIntegral value)
@@ -232,6 +244,39 @@ uint8Binding value =
         (show value)
         \stmt idx ->
             bindDuckValue stmt idx (c_duckdb_create_uint8 value)
+
+bignumBinding :: BigNum -> FieldBinding
+bignumBinding big@BigNum{bigNumIsNegative, bigNumMagnitude} =
+    mkFieldBinding
+        (show (bigNumToInteger big))
+        \stmt idx ->
+            bindDuckValue stmt idx $
+                let normalized =
+                        let cIsNegative =
+                                if bigNumIsNegative then 1 else 0 :: CBool
+                         in if toBool cIsNegative then 1 else 0 :: CBool
+                 in if BS.null bigNumMagnitude
+                        then
+                            alloca \ptr -> do
+                                poke
+                                    ptr
+                                    DuckDBBignum
+                                        { duckDBBignumData = nullPtr
+                                        , duckDBBignumSize = 0
+                                        , duckDBBignumIsNegative = normalized
+                                        }
+                                c_duckdb_create_bignum ptr
+                        else
+                            BS.useAsCStringLen bigNumMagnitude \(rawPtr, len) ->
+                                alloca \ptr -> do
+                                    poke
+                                        ptr
+                                        DuckDBBignum
+                                            { duckDBBignumData = castPtr rawPtr
+                                            , duckDBBignumSize = fromIntegral len
+                                            , duckDBBignumIsNegative = normalized
+                                            }
+                                    c_duckdb_create_bignum ptr
 
 encodeDay :: Day -> IO DuckDBDate
 encodeDay day =

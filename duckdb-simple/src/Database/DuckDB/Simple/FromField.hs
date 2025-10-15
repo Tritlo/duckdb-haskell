@@ -16,6 +16,8 @@ module Database.DuckDB.Simple.FromField (
     FieldValue (..),
     BitString (..),
     BigNum (..),
+    bigNumToInteger,
+    integerToBigNum,
     DecimalValue (..),
     IntervalValue (..),
     TimeWithZone (..),
@@ -108,6 +110,31 @@ data BigNum = BigNum
     , bigNumMagnitude :: !BS.ByteString
     }
     deriving (Eq, Show)
+
+bigNumToInteger :: BigNum -> Integer
+bigNumToInteger BigNum{bigNumIsNegative, bigNumMagnitude} =
+    let magnitude = fst (BS.foldl' step (0, 1) bigNumMagnitude)
+     in if bigNumIsNegative then negate magnitude else magnitude
+  where
+    step (acc, place) byte =
+        (acc + fromIntegral byte * place, place * 256)
+
+integerToBigNum :: Integer -> BigNum
+integerToBigNum value =
+    BigNum
+        { bigNumIsNegative = value < 0
+        , bigNumMagnitude = integerMagnitudeToBytes (abs value)
+        }
+
+integerMagnitudeToBytes :: Integer -> BS.ByteString
+integerMagnitudeToBytes 0 = BS.empty
+integerMagnitudeToBytes magnitude =
+    BS.pack (go magnitude)
+  where
+    go 0 = []
+    go n =
+        let (q, r) = quotRem n 256
+         in fromIntegral r : go q
 
 data TimeWithZone = TimeWithZone
     { timeWithZoneTime :: !TimeOfDay
@@ -259,6 +286,7 @@ instance FromField Integer where
         case fieldValue of
             FieldInt i -> Ok (fromIntegral i)
             FieldWord w -> Ok (fromIntegral w)
+            FieldBigNum big -> Ok (bigNumToInteger big)
             FieldHugeInt value -> Ok value
             FieldUHugeInt value -> Ok value
             FieldNull -> returnError UnexpectedNull f ""
@@ -277,6 +305,11 @@ instance FromField Natural where
                 | otherwise ->
                     returnError ConversionFailed f "negative value cannot be converted to Natural"
             FieldUHugeInt value -> Ok (fromIntegral value)
+            FieldBigNum big ->
+                let magnitude = bigNumToInteger big
+                 in if magnitude >= 0
+                        then Ok (fromIntegral magnitude)
+                        else returnError ConversionFailed f "negative value cannot be converted to Natural"
             FieldEnum value -> Ok (fromIntegral value)
             FieldNull -> returnError UnexpectedNull f ""
             _ -> returnError Incompatible f ""

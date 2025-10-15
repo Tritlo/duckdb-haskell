@@ -18,10 +18,23 @@ import Data.IORef (atomicModifyIORef', newIORef)
 import Data.Int (Int64)
 import qualified Data.Text as Text
 import Data.Time.Calendar (fromGregorian)
-import Data.Time.Clock (UTCTime)
-import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), localTimeToUTC, utc)
+import Data.Time.Clock (UTCTime (..))
+import Data.Time.LocalTime (
+    LocalTime (..),
+    TimeOfDay (..),
+    localTimeToUTC,
+    minutesToTimeZone,
+    timeOfDayToTime,
+    utc,
+ )
+import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.Simple
-import Database.DuckDB.Simple.FromField (Field (..), returnError)
+import Database.DuckDB.Simple.FromField (
+    Field (..),
+    IntervalValue (..),
+    TimeWithZone (..),
+    returnError,
+ )
 import GHC.Generics (Generic)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit
@@ -332,6 +345,60 @@ typeTests =
                 _ <- execute conn "INSERT INTO blobs VALUES (?)" (Only payload)
                 [Only blobOut] <- query_ conn "SELECT payload FROM blobs"
                 assertEqual "blob round-trip" payload blobOut
+        , testCase "round-trips unsigned integers" $
+            withConnection ":memory:" \conn -> do
+                _ <- execute_ conn "CREATE TABLE unsigneds (u8 UTINYINT, u16 USMALLINT, u32 UINTEGER, u64 UBIGINT)"
+                let w8 = 200 :: Word8
+                    w16 = 60000 :: Word16
+                    w32 = 4000000000 :: Word32
+                    w64 = maxBound :: Word64
+                _ <- execute conn "INSERT INTO unsigneds VALUES (?, ?, ?, ?)" (w8, w16, w32, w64)
+                [(r8, r16, r32, r64)] <- query_ conn "SELECT u8, u16, u32, u64 FROM unsigneds"
+                assertEqual "Word8 round-trip" w8 r8
+                assertEqual "Word16 round-trip" w16 r16
+                assertEqual "Word32 round-trip" w32 r32
+                assertEqual "Word64 round-trip" w64 r64
+                [Only (asWord :: Word)] <- query_ conn "SELECT u64 FROM unsigneds"
+                assertEqual "Word from UBIGINT" (fromIntegral w64) asWord
+        , testCase "decodes huge integers as Integer" $
+            withConnection ":memory:" \conn -> do
+                let hugeValue = 170141183460469231731687303715884105727 :: Integer
+                [Only (hugeOut :: Integer)] <-
+                    query_ conn "SELECT 170141183460469231731687303715884105727::HUGEINT"
+                assertEqual "hugeint" hugeValue hugeOut
+        , testCase "decodes interval components" $
+            withConnection ":memory:" \conn -> do
+                [Only intervalVal] <-
+                    query_ conn "SELECT INTERVAL '2 months 3 days 04:05:06.007008'"
+                let IntervalValue{intervalMonths, intervalDays, intervalMicros} = intervalVal
+                    expectedMicros =
+                        (((4 * 60 + 5) * 60) + 6) * 1000000 + 7008
+                assertEqual "interval months" 2 intervalMonths
+                assertEqual "interval days" 3 intervalDays
+                assertEqual "interval micros" expectedMicros intervalMicros
+        , testCase "decodes decimals via Double conversion" $
+            withConnection ":memory:" \conn -> do
+                [Only decimalAsDouble] <-
+                    (query_ conn "SELECT CAST(12345.6789 AS DECIMAL(18,4))" :: IO [Only Double])
+                assertBool
+                    "decimal as double"
+                    (abs (decimalAsDouble - 12345.6789) < 1e-6)
+        , testCase "decodes time with time zone" $
+            withConnection ":memory:" \conn -> do
+                [Only tzVal] <- query_ conn "SELECT TIMETZ '14:30:15+02:30'"
+                let expectedTime = TimeOfDay 14 30 15
+                    expectedZone = minutesToTimeZone 150
+                assertEqual "timetz time" expectedTime (timeWithZoneTime tzVal)
+                assertEqual "timetz zone" expectedZone (timeWithZoneZone tzVal)
+        , testCase "decodes timestamp with time zone as UTC" $
+            withConnection ":memory:" \conn -> do
+                [Only utcVal] <-
+                    (query_ conn "SELECT TIMESTAMPTZ '2024-10-12 14:30:15+02:30'" :: IO [Only UTCTime])
+                let expected =
+                        UTCTime
+                            (fromGregorian 2024 10 12)
+                            (timeOfDayToTime (TimeOfDay 12 0 15))
+                assertEqual "timestamptz utc" expected utcVal
         , testCase "custom FieldParser enforces invariants" $
             withConnection ":memory:" \conn -> do
                 _ <- execute_ conn "CREATE TABLE nonempty (name TEXT)"

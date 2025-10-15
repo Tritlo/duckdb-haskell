@@ -14,6 +14,11 @@ Description : Conversion from DuckDB column values to Haskell types.
 module Database.DuckDB.Simple.FromField (
     Field (..),
     FieldValue (..),
+    BitString (..),
+    BigNum (..),
+    DecimalValue (..),
+    IntervalValue (..),
+    TimeWithZone (..),
     ResultError (..),
     FieldParser,
     FromField (..),
@@ -28,7 +33,14 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Time.Calendar (Day)
 import Data.Time.Clock (UTCTime (..))
-import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), localTimeToUTC, utc)
+import Data.Time.LocalTime
+    ( LocalTime (..)
+    , TimeOfDay (..)
+    , TimeZone (..)
+    , localTimeToUTC
+    , utc
+    , utcToLocalTime
+    )
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.Simple.Types (Null (..))
 import Database.DuckDB.Simple.Ok
@@ -53,11 +65,49 @@ data FieldValue
     | FieldDate Day
     | FieldTime TimeOfDay
     | FieldTimestamp LocalTime
-    -- TODO: HugeInt and UHugeInt support
+    | FieldInterval IntervalValue
+    | FieldHugeInt Integer
+    | FieldUHugeInt Integer
+    | FieldDecimal DecimalValue
+    | FieldTimestampTZ UTCTime
+    | FieldTimeTZ TimeWithZone
+    | FieldBit BitString
+    | FieldBigNum BigNum
+    | FieldEnum Word32
+    deriving (Eq, Show)
 
-    deriving (-- | FieldInteger Integer
-              -- | FieldNatural Natural
-              Eq, Show)
+data DecimalValue = DecimalValue
+    { decimalWidth :: !Word8
+    , decimalScale :: !Word8
+    , decimalInteger :: !Integer
+    , decimalApproximate :: !Double
+    }
+    deriving (Eq, Show)
+
+data IntervalValue = IntervalValue
+    { intervalMonths :: !Int32
+    , intervalDays :: !Int32
+    , intervalMicros :: !Int64
+    }
+    deriving (Eq, Show)
+
+data BitString = BitString
+    { bitStringLength :: !Word64
+    , bitStringBytes :: !BS.ByteString
+    }
+    deriving (Eq, Show)
+
+data BigNum = BigNum
+    { bigNumIsNegative :: !Bool
+    , bigNumMagnitude :: !BS.ByteString
+    }
+    deriving (Eq, Show)
+
+data TimeWithZone = TimeWithZone
+    { timeWithZoneTime :: !TimeOfDay
+    , timeWithZoneZone :: !TimeZone
+    }
+    deriving (Eq, Show)
 
 -- | Pattern synonym to make it easier to match on any integral type.
 pattern FieldInt :: Int -> FieldValue
@@ -152,6 +202,9 @@ instance FromField Int8 where
     fromField f@Field{fieldValue} =
         case fieldValue of
             FieldInt i -> Ok (fromIntegral i)
+            FieldHugeInt value -> boundedFromInteger f value
+            FieldUHugeInt value -> boundedFromInteger f value
+            FieldEnum value -> boundedFromInteger f (fromIntegral value)
             FieldNull -> returnError UnexpectedNull f ""
             _ -> returnError Incompatible f ""
 
@@ -159,6 +212,9 @@ instance FromField Int64 where
     fromField f@Field{fieldValue} =
         case fieldValue of
             FieldInt i -> Ok (fromIntegral i)
+            FieldHugeInt value -> boundedFromInteger f value
+            FieldUHugeInt value -> boundedFromInteger f value
+            FieldEnum value -> Ok (fromIntegral value)
             FieldNull -> returnError UnexpectedNull f ""
             _ -> returnError Incompatible f ""
 
@@ -166,6 +222,9 @@ instance FromField Int32 where
     fromField f@Field{fieldValue} =
         case fieldValue of
             FieldInt i -> boundedIntegral f i
+            FieldHugeInt value -> boundedFromInteger f value
+            FieldUHugeInt value -> boundedFromInteger f value
+            FieldEnum value -> boundedFromInteger f (fromIntegral value)
             FieldNull -> returnError UnexpectedNull f ""
             _ -> returnError Incompatible f ""
 
@@ -173,6 +232,9 @@ instance FromField Int16 where
     fromField f@Field{fieldValue} =
         case fieldValue of
             FieldInt i -> boundedIntegral f i
+            FieldHugeInt value -> boundedFromInteger f value
+            FieldUHugeInt value -> boundedFromInteger f value
+            FieldEnum value -> boundedFromInteger f (fromIntegral value)
             FieldNull -> returnError UnexpectedNull f ""
             _ -> returnError Incompatible f ""
 
@@ -180,6 +242,19 @@ instance FromField Int where
     fromField f@Field{fieldValue} =
         case fieldValue of
             FieldInt i -> boundedIntegral f i
+            FieldHugeInt value -> boundedFromInteger f value
+            FieldUHugeInt value -> boundedFromInteger f value
+            FieldEnum value -> boundedFromInteger f (fromIntegral value)
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
+
+instance FromField Integer where
+    fromField f@Field{fieldValue} =
+        case fieldValue of
+            FieldInt i -> Ok (fromIntegral i)
+            FieldWord w -> Ok (fromIntegral w)
+            FieldHugeInt value -> Ok value
+            FieldUHugeInt value -> Ok value
             FieldNull -> returnError UnexpectedNull f ""
             _ -> returnError Incompatible f ""
 
@@ -191,6 +266,12 @@ instance FromField Word64 where
                 | otherwise ->
                      returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
             FieldWord w -> Ok (fromIntegral w)
+            FieldHugeInt value
+                | value >= 0 -> boundedFromInteger f value
+                | otherwise ->
+                    returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
+            FieldUHugeInt value -> boundedFromInteger f value
+            FieldEnum value -> Ok (fromIntegral value)
             FieldNull -> returnError UnexpectedNull f ""
             _ -> returnError Incompatible f ""
 
@@ -202,6 +283,12 @@ instance FromField Word32 where
                 | otherwise ->
                     returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
             FieldWord w -> Ok (fromIntegral w)
+            FieldHugeInt value
+                | value >= 0 -> boundedFromInteger f value
+                | otherwise ->
+                    returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
+            FieldUHugeInt value -> boundedFromInteger f value
+            FieldEnum value -> Ok value
             FieldNull -> returnError UnexpectedNull f ""
             _ -> returnError Incompatible f ""
 
@@ -213,6 +300,12 @@ instance FromField Word16 where
                 | otherwise ->
                     returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
             FieldWord w -> Ok (fromIntegral w)
+            FieldHugeInt value
+                | value >= 0 -> boundedFromInteger f value
+                | otherwise ->
+                    returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
+            FieldUHugeInt value -> boundedFromInteger f value
+            FieldEnum value -> boundedFromInteger f (fromIntegral value)
             FieldNull -> returnError UnexpectedNull f ""
             _ -> returnError Incompatible f ""
 
@@ -224,6 +317,29 @@ instance FromField Word8 where
                 | otherwise ->
                     returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
             FieldWord w -> Ok (fromIntegral w)
+            FieldHugeInt value
+                | value >= 0 -> boundedFromInteger f value
+                | otherwise ->
+                    returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
+            FieldUHugeInt value -> boundedFromInteger f value
+            FieldEnum value -> boundedFromInteger f (fromIntegral value)
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
+
+instance FromField Word where
+    fromField f@Field{fieldValue} =
+        case fieldValue of
+            FieldInt i
+                | i >= 0 -> boundedFromInteger f (fromIntegral i)
+                | otherwise ->
+                    returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
+            FieldWord w -> Ok w
+            FieldHugeInt value
+                | value >= 0 -> boundedFromInteger f value
+                | otherwise ->
+                    returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
+            FieldUHugeInt value -> boundedFromInteger f value
+            FieldEnum value -> boundedFromInteger f (fromIntegral value)
             FieldNull -> returnError UnexpectedNull f ""
             _ -> returnError Incompatible f ""
 
@@ -232,6 +348,7 @@ instance FromField Double where
         case fieldValue of
             FieldDouble d -> Ok d
             FieldInt i -> Ok (fromIntegral i)
+            FieldDecimal DecimalValue{decimalApproximate} -> Ok decimalApproximate
             FieldNull -> returnError UnexpectedNull f ""
             _ -> returnError Incompatible f ""
 
@@ -259,6 +376,28 @@ instance FromField BS.ByteString where
         case fieldValue of
             FieldBlob bs -> Ok bs
             FieldText t -> Ok (TextEncoding.encodeUtf8 t)
+            FieldBit bit -> Ok (bitStringBytes bit)
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
+
+instance FromField BitString where
+    fromField f@Field{fieldValue} =
+        case fieldValue of
+            FieldBit bit -> Ok bit
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
+
+instance FromField BigNum where
+    fromField f@Field{fieldValue} =
+        case fieldValue of
+            FieldBigNum big -> Ok big
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
+
+instance FromField DecimalValue where
+    fromField f@Field{fieldValue} =
+        case fieldValue of
+            FieldDecimal dec -> Ok dec
             FieldNull -> returnError UnexpectedNull f ""
             _ -> returnError Incompatible f ""
 
@@ -278,21 +417,41 @@ instance FromField TimeOfDay where
             FieldNull -> returnError UnexpectedNull f ""
             _ -> returnError Incompatible f ""
 
+instance FromField TimeWithZone where
+    fromField f@Field{fieldValue} =
+        case fieldValue of
+            FieldTimeTZ tz -> Ok tz
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
+
 instance FromField LocalTime where
     fromField f@Field{ fieldValue} =
         case fieldValue of
             FieldTimestamp ts -> Ok ts
             FieldDate day -> Ok (LocalTime day midnight)
+            FieldTimestampTZ utcTime -> Ok (utcToLocalTime utc utcTime)
             FieldNull -> returnError UnexpectedNull f ""
             _ -> returnError Incompatible f ""
       where
         midnight = TimeOfDay 0 0 0
 
+instance FromField IntervalValue where
+    fromField f@Field{fieldValue} =
+        case fieldValue of
+            FieldInterval interval -> Ok interval
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
+
 instance FromField UTCTime where
-    fromField field =
-        case fromField field of
-            Ok (timestamp :: LocalTime) -> Ok (localTimeToUTC utc timestamp)
-            Errors errs -> Errors errs
+    fromField f@Field{fieldValue} =
+        case fieldValue of
+            FieldTimestamp ts -> Ok (localTimeToUTC utc ts)
+            FieldTimestampTZ utcTime -> Ok utcTime
+            FieldDate day -> Ok (localTimeToUTC utc (LocalTime day midnight))
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
+      where
+        midnight = TimeOfDay 0 0 0
 
 instance (FromField a) => FromField (Maybe a) where
     fromField Field{fieldValue = FieldNull} = Ok Nothing
@@ -306,6 +465,14 @@ boundedIntegral f@Field{} i
     | toInteger i > toInteger (maxBound :: a) =
         returnError ConversionFailed f "integer value out of bounds"
     | otherwise = Ok (fromIntegral i)
+
+boundedFromInteger :: forall a. (Integral a, Bounded a, Typeable a) => Field -> Integer -> Ok a
+boundedFromInteger f@Field{} value
+    | value < toInteger (minBound :: a) =
+        returnError ConversionFailed f "integer value out of bounds"
+    | value > toInteger (maxBound :: a) =
+        returnError ConversionFailed f "integer value out of bounds"
+    | otherwise = Ok (fromInteger value)
 
 -- | Helper to construct a ResultError with field context.
 -- based on postgresql-simple's implementation
@@ -336,7 +503,12 @@ fieldValueTypeName = \case
     FieldDate{} -> "DATE"
     FieldTime{} -> "TIME"
     FieldTimestamp{} -> "TIMESTAMP"
-
--- TODO: Not supported yet
--- FieldInteger{} -> "HUGEINT"
--- FieldNatural{} -> "UHUGEINT"
+    FieldInterval{} -> "INTERVAL"
+    FieldHugeInt{} -> "HUGEINT"
+    FieldUHugeInt{} -> "UHUGEINT"
+    FieldDecimal{} -> "DECIMAL"
+    FieldTimestampTZ{} -> "TIMESTAMP_TZ"
+    FieldTimeTZ{} -> "TIME_TZ"
+    FieldBit{} -> "BIT"
+    FieldBigNum{} -> "BIGNUM"
+    FieldEnum{} -> "ENUM"

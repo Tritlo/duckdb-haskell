@@ -95,20 +95,19 @@ instance ToField Int64 where
     toField = intBinding
 
 instance ToField Word where
-    toField value = intBinding (fromIntegral value :: Int64)
+    toField value = uint64Binding (fromIntegral value)
 
 instance ToField Word16 where
-    toField value = intBinding (fromIntegral value :: Int64)
+    toField value = uint16Binding value
 
 instance ToField Word32 where
-    toField value = intBinding (fromIntegral value :: Int64)
+    toField value = uint32Binding value
 
 instance ToField Word64 where
-    toField value =
-        mkFieldBinding
-            (show value)
-            \stmt idx ->
-                bindDuckValue stmt idx (c_duckdb_create_int64 (fromIntegral value))
+    toField value = uint64Binding value
+
+instance ToField Word8 where
+    toField value = uint8Binding value
 
 instance ToField Double where
     toField value =
@@ -205,6 +204,34 @@ intBinding value =
         (show value)
         \stmt idx ->
             bindDuckValue stmt idx (c_duckdb_create_int64 value)
+
+uint64Binding :: Word64 -> FieldBinding
+uint64Binding value =
+    mkFieldBinding
+        (show value)
+        \stmt idx ->
+            bindDuckValue stmt idx (c_duckdb_create_uint64 value)
+
+uint32Binding :: Word32 -> FieldBinding
+uint32Binding value =
+    mkFieldBinding
+        (show value)
+        \stmt idx ->
+            bindDuckValue stmt idx (c_duckdb_create_uint32 value)
+
+uint16Binding :: Word16 -> FieldBinding
+uint16Binding value =
+    mkFieldBinding
+        (show value)
+        \stmt idx ->
+            bindDuckValue stmt idx (c_duckdb_create_uint16 value)
+
+uint8Binding :: Word8 -> FieldBinding
+uint8Binding value =
+    mkFieldBinding
+        (show value)
+        \stmt idx ->
+            bindDuckValue stmt idx (c_duckdb_create_uint8 value)
 
 encodeDay :: Day -> IO DuckDBDate
 encodeDay day =

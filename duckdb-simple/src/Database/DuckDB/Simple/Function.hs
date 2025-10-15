@@ -1,6 +1,7 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE UndecidableInstances #-}
@@ -31,32 +32,49 @@ import Control.Exception (
  )
 import Control.Monad (forM, forM_, when)
 import qualified Data.ByteString as BS
+import Data.Bits ((.|.), shiftL)
 import Data.Int (Int16, Int32, Int64, Int8)
+import Data.Ratio ((%))
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Foreign as TextForeign
 import Data.Word (Word16, Word32, Word64, Word8)
+import Data.Time.Calendar (Day, fromGregorian)
+import Data.Time.Clock (UTCTime (..))
+import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
+import Data.Time.LocalTime
+    ( LocalTime (..)
+    , TimeOfDay (..)
+    , minutesToTimeZone
+    , utc
+    , utcToLocalTime
+    )
 import Database.DuckDB.FFI
-import Database.DuckDB.Simple.FromField (
-    Field (..),
-    FieldValue (..),
-    FromField (..),
- )
-import Database.DuckDB.Simple.Internal (
-    Connection,
-    Query (..),
-    SQLError (..),
-    withConnectionHandle,
-    withQueryCString,
- )
+import Database.DuckDB.Simple.FromField
+    ( BigNum (..)
+    , BitString (..)
+    , DecimalValue (..)
+    , Field (..)
+    , FieldValue (..)
+    , FromField (..)
+    , IntervalValue (..)
+    , TimeWithZone (..)
+    )
+import Database.DuckDB.Simple.Internal
+    ( Connection
+    , Query (..)
+    , SQLError (..)
+    , withConnectionHandle
+    , withQueryCString
+    )
 import Foreign.C.String (peekCString)
-import Foreign.C.Types (CBool (..))
+import Foreign.C.Types (CBool (..), CDouble (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, castPtr, freeHaskellFunPtr, nullPtr, plusPtr)
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deRefStablePtr, freeStablePtr, newStablePtr)
-import Foreign.Storable (peekElemOff, poke, pokeElemOff)
+import Foreign.Storable (peek, peekElemOff, poke, pokeElemOff)
 import Database.DuckDB.Simple.Ok (Ok(..))
 
 -- | Tag DuckDB logical types we support for scalar return values.
@@ -362,6 +380,17 @@ makeColumnReader chunk columnIndex = do
     vector <- c_duckdb_data_chunk_get_vector chunk (fromIntegral columnIndex)
     logical <- c_duckdb_vector_get_column_type vector
     dtype <- c_duckdb_get_type_id logical
+    decimalInfo <-
+        if dtype == DuckDBTypeDecimal
+            then do
+                width <- c_duckdb_decimal_width logical
+                scale <- c_duckdb_decimal_scale logical
+                pure (Just (width, scale))
+            else pure Nothing
+    enumInternal <-
+        if dtype == DuckDBTypeEnum
+            then Just <$> c_duckdb_enum_internal_type logical
+            else pure Nothing
     destroyLogicalType logical
     dataPtr <- c_duckdb_vector_get_data vector
     validity <- c_duckdb_vector_get_validity vector
@@ -370,7 +399,7 @@ makeColumnReader chunk columnIndex = do
         valid <- isRowValid validity rowIdx
         value <-
             if valid
-                then fetchValue dtype dataPtr rowIdx
+                then fetchValue dtype decimalInfo enumInternal dataPtr rowIdx
                 else pure FieldNull
         pure
             Field
@@ -386,51 +415,126 @@ isRowValid validity rowIdx
         CBool flag <- c_duckdb_validity_row_is_valid validity rowIdx
         pure (flag /= 0)
 
-fetchValue :: DuckDBType -> Ptr () -> DuckDBIdx -> IO FieldValue
-fetchValue dtype dataPtr rowIdx
-    | dtype == DuckDBTypeBoolean = do
-        value <- peekElemOff (castPtr dataPtr :: Ptr Word8) (fromIntegral rowIdx)
-        pure (FieldBool (value /= 0))
-    | dtype == DuckDBTypeTinyInt = do
-        value <- peekElemOff (castPtr dataPtr :: Ptr Int8) (fromIntegral rowIdx)
-        pure (FieldInt8 (fromIntegral value))
-    | dtype == DuckDBTypeSmallInt = do
-        value <- peekElemOff (castPtr dataPtr :: Ptr Int16) (fromIntegral rowIdx)
-        pure (FieldInt16 (fromIntegral value))
-    | dtype == DuckDBTypeInteger = do
-        value <- peekElemOff (castPtr dataPtr :: Ptr Int32) (fromIntegral rowIdx)
-        pure (FieldInt32 (fromIntegral value))
-    | dtype == DuckDBTypeBigInt || dtype == DuckDBTypeHugeInt = do
-        value <- peekElemOff (castPtr dataPtr :: Ptr Int64) (fromIntegral rowIdx)
-        pure (FieldInt64 value)
-    | dtype == DuckDBTypeUTinyInt = do
-        value <- peekElemOff (castPtr dataPtr :: Ptr Word8) (fromIntegral rowIdx)
-        pure (FieldWord8 (fromIntegral value))
-    | dtype == DuckDBTypeUSmallInt = do
-        value <- peekElemOff (castPtr dataPtr :: Ptr Word16) (fromIntegral rowIdx)
-        pure (FieldWord16 (fromIntegral value))
-    | dtype == DuckDBTypeUInteger = do
-        value <- peekElemOff (castPtr dataPtr :: Ptr Word32) (fromIntegral rowIdx)
-        pure (FieldWord32 (fromIntegral value))
-    | dtype == DuckDBTypeUBigInt || dtype == DuckDBTypeUHugeInt = do
-        value <- peekElemOff (castPtr dataPtr :: Ptr Word64) (fromIntegral rowIdx)
-        pure (FieldWord64 (fromIntegral value))
-    | dtype == DuckDBTypeFloat = do
-        value <- peekElemOff (castPtr dataPtr :: Ptr Float) (fromIntegral rowIdx)
-        pure (FieldDouble (realToFrac value))
-    | dtype == DuckDBTypeDouble = do
-        value <- peekElemOff (castPtr dataPtr :: Ptr Double) (fromIntegral rowIdx)
-        pure (FieldDouble value)
-    | dtype == DuckDBTypeVarchar = do
-        textValue <- decodeDuckText dataPtr rowIdx
-        pure (FieldText textValue)
-    | otherwise =
-        throwIO $
-            functionInvocationError $
-                Text.concat
-                    [ Text.pack "duckdb-simple: unsupported argument type "
-                    , Text.pack (show dtype)
-                    ]
+fetchValue :: DuckDBType -> Maybe (Word8, Word8) -> Maybe DuckDBType -> Ptr () -> DuckDBIdx -> IO FieldValue
+fetchValue dtype decimalInfo enumInternal dataPtr rowIdx =
+    let idx = fromIntegral rowIdx
+     in case dtype of
+            DuckDBTypeBoolean -> do
+                value <- peekElemOff (castPtr dataPtr :: Ptr Word8) idx
+                pure (FieldBool (value /= 0))
+            DuckDBTypeTinyInt -> do
+                value <- peekElemOff (castPtr dataPtr :: Ptr Int8) idx
+                pure (FieldInt8 value)
+            DuckDBTypeSmallInt -> do
+                value <- peekElemOff (castPtr dataPtr :: Ptr Int16) idx
+                pure (FieldInt16 value)
+            DuckDBTypeInteger -> do
+                value <- peekElemOff (castPtr dataPtr :: Ptr Int32) idx
+                pure (FieldInt32 value)
+            DuckDBTypeBigInt -> do
+                value <- peekElemOff (castPtr dataPtr :: Ptr Int64) idx
+                pure (FieldInt64 value)
+            DuckDBTypeHugeInt -> do
+                value <- peekElemOff (castPtr dataPtr :: Ptr DuckDBHugeInt) idx
+                pure (FieldHugeInt (duckDBHugeIntToInteger value))
+            DuckDBTypeUTinyInt -> do
+                value <- peekElemOff (castPtr dataPtr :: Ptr Word8) idx
+                pure (FieldWord8 value)
+            DuckDBTypeUSmallInt -> do
+                value <- peekElemOff (castPtr dataPtr :: Ptr Word16) idx
+                pure (FieldWord16 value)
+            DuckDBTypeUInteger -> do
+                value <- peekElemOff (castPtr dataPtr :: Ptr Word32) idx
+                pure (FieldWord32 value)
+            DuckDBTypeUBigInt -> do
+                value <- peekElemOff (castPtr dataPtr :: Ptr Word64) idx
+                pure (FieldWord64 value)
+            DuckDBTypeUHugeInt -> do
+                value <- peekElemOff (castPtr dataPtr :: Ptr DuckDBUHugeInt) idx
+                pure (FieldUHugeInt (duckDBUHugeIntToInteger value))
+            DuckDBTypeFloat -> do
+                value <- peekElemOff (castPtr dataPtr :: Ptr Float) idx
+                pure (FieldFloat value)
+            DuckDBTypeDouble -> do
+                value <- peekElemOff (castPtr dataPtr :: Ptr Double) idx
+                pure (FieldDouble value)
+            DuckDBTypeVarchar -> FieldText <$> decodeDuckText dataPtr rowIdx
+            DuckDBTypeUUID -> FieldText <$> decodeDuckText dataPtr rowIdx
+            DuckDBTypeBlob -> FieldBlob <$> decodeDuckBlob dataPtr rowIdx
+            DuckDBTypeDate -> do
+                value <- peekElemOff (castPtr dataPtr :: Ptr DuckDBDate) idx
+                FieldDate <$> decodeDuckDBDate value
+            DuckDBTypeTime -> do
+                value <- peekElemOff (castPtr dataPtr :: Ptr DuckDBTime) idx
+                FieldTime <$> decodeDuckDBTime value
+            DuckDBTypeTimeNs -> do
+                value <- peekElemOff (castPtr dataPtr :: Ptr DuckDBTimeNs) idx
+                pure (FieldTime (decodeDuckDBTimeNs value))
+            DuckDBTypeTimeTz -> do
+                value <- peekElemOff (castPtr dataPtr :: Ptr DuckDBTimeTz) idx
+                FieldTimeTZ <$> decodeDuckDBTimeTz value
+            DuckDBTypeTimestamp -> do
+                value <- peekElemOff (castPtr dataPtr :: Ptr DuckDBTimestamp) idx
+                FieldTimestamp <$> decodeDuckDBTimestamp value
+            DuckDBTypeTimestampS -> do
+                value <- peekElemOff (castPtr dataPtr :: Ptr DuckDBTimestampS) idx
+                FieldTimestamp <$> decodeDuckDBTimestampSeconds value
+            DuckDBTypeTimestampMs -> do
+                value <- peekElemOff (castPtr dataPtr :: Ptr DuckDBTimestampMs) idx
+                FieldTimestamp <$> decodeDuckDBTimestampMilliseconds value
+            DuckDBTypeTimestampNs -> do
+                value <- peekElemOff (castPtr dataPtr :: Ptr DuckDBTimestampNs) idx
+                FieldTimestamp <$> decodeDuckDBTimestampNanoseconds value
+            DuckDBTypeTimestampTz -> do
+                value <- peekElemOff (castPtr dataPtr :: Ptr DuckDBTimestamp) idx
+                FieldTimestampTZ <$> decodeDuckDBTimestampUTCTime value
+            DuckDBTypeInterval -> do
+                value <- peekElemOff (castPtr dataPtr :: Ptr DuckDBInterval) idx
+                pure (FieldInterval (intervalValueFromDuckDB value))
+            DuckDBTypeDecimal -> do
+                value <- peekElemOff (castPtr dataPtr :: Ptr DuckDBDecimal) idx
+                case decimalInfo of
+                    Just (width, scale) -> do
+                        decimal <- decimalValueFromDuckDB width scale value
+                        pure (FieldDecimal decimal)
+                    Nothing ->
+                        throwIO $
+                            functionInvocationError $
+                                Text.pack "duckdb-simple: missing decimal metadata for scalar function argument"
+            DuckDBTypeBit -> do
+                value <- peekElemOff (castPtr dataPtr :: Ptr DuckDBBit) idx
+                FieldBit <$> decodeDuckDBBit value
+            DuckDBTypeBigNum -> do
+                value <- peekElemOff (castPtr dataPtr :: Ptr DuckDBBignum) idx
+                FieldBigNum <$> decodeDuckDBBigNum value
+            DuckDBTypeEnum -> do
+                case enumInternal of
+                    Just DuckDBTypeUTinyInt -> do
+                        value <- peekElemOff (castPtr dataPtr :: Ptr Word8) idx
+                        pure (FieldEnum (fromIntegral value))
+                    Just DuckDBTypeUSmallInt -> do
+                        value <- peekElemOff (castPtr dataPtr :: Ptr Word16) idx
+                        pure (FieldEnum (fromIntegral value))
+                    Just DuckDBTypeUInteger -> do
+                        value <- peekElemOff (castPtr dataPtr :: Ptr Word32) idx
+                        pure (FieldEnum value)
+                    _ ->
+                        throwIO $
+                            functionInvocationError $
+                                Text.pack "duckdb-simple: unsupported enum internal storage type for scalar function argument"
+            DuckDBTypeSQLNull ->
+                pure FieldNull
+            DuckDBTypeStringLiteral -> FieldText <$> decodeDuckText dataPtr rowIdx
+            DuckDBTypeIntegerLiteral -> do
+                value <- peekElemOff (castPtr dataPtr :: Ptr Int64) idx
+                pure (FieldInt64 value)
+            other ->
+                throwIO $
+                    functionInvocationError $
+                        Text.concat
+                            [ Text.pack "duckdb-simple: unsupported argument type "
+                            , Text.pack (show other)
+                            ]
 
 decodeDuckText :: Ptr () -> DuckDBIdx -> IO Text
 decodeDuckText dataPtr rowIdx = do
@@ -445,8 +549,148 @@ decodeDuckText dataPtr rowIdx = do
             bytes <- BS.packCStringLen (cstr, fromIntegral len)
             pure (TE.decodeUtf8 bytes)
 
+decodeDuckBlob :: Ptr () -> DuckDBIdx -> IO BS.ByteString
+decodeDuckBlob dataPtr rowIdx = do
+    let bytePtr = castPtr dataPtr :: Ptr Word8
+        offset = fromIntegral rowIdx * duckdbStringTSize
+        stringPtr = castPtr (bytePtr `plusPtr` offset) :: Ptr DuckDBStringT
+    len <- c_duckdb_string_t_length stringPtr
+    if len == 0
+        then pure BS.empty
+        else do
+            ptr <- c_duckdb_string_t_data stringPtr
+            BS.packCStringLen (ptr, fromIntegral len)
+
 duckdbStringTSize :: Int
 duckdbStringTSize = 16
+
+decodeDuckDBDate :: DuckDBDate -> IO Day
+decodeDuckDBDate raw =
+    alloca \ptr -> do
+        c_duckdb_from_date raw ptr
+        dateStruct <- peek ptr
+        pure (dateStructToDay dateStruct)
+
+decodeDuckDBTime :: DuckDBTime -> IO TimeOfDay
+decodeDuckDBTime raw =
+    alloca \ptr -> do
+        c_duckdb_from_time raw ptr
+        timeStruct <- peek ptr
+        pure (timeStructToTimeOfDay timeStruct)
+
+decodeDuckDBTimestamp :: DuckDBTimestamp -> IO LocalTime
+decodeDuckDBTimestamp raw =
+    alloca \ptr -> do
+        c_duckdb_from_timestamp raw ptr
+        DuckDBTimestampStruct{duckDBTimestampStructDate = dateStruct, duckDBTimestampStructTime = timeStruct} <- peek ptr
+        pure
+            LocalTime
+                { localDay = dateStructToDay dateStruct
+                , localTimeOfDay = timeStructToTimeOfDay timeStruct
+                }
+
+dateStructToDay :: DuckDBDateStruct -> Day
+dateStructToDay DuckDBDateStruct{duckDBDateStructYear, duckDBDateStructMonth, duckDBDateStructDay} =
+    fromGregorian (fromIntegral duckDBDateStructYear) (fromIntegral duckDBDateStructMonth) (fromIntegral duckDBDateStructDay)
+
+timeStructToTimeOfDay :: DuckDBTimeStruct -> TimeOfDay
+timeStructToTimeOfDay DuckDBTimeStruct{duckDBTimeStructHour, duckDBTimeStructMinute, duckDBTimeStructSecond, duckDBTimeStructMicros} =
+    let secondsInt = fromIntegral duckDBTimeStructSecond :: Integer
+        micros = fromIntegral duckDBTimeStructMicros :: Integer
+        fractional = fromRational (micros % 1000000)
+        totalSeconds = fromInteger secondsInt + fractional
+     in TimeOfDay
+            (fromIntegral duckDBTimeStructHour)
+            (fromIntegral duckDBTimeStructMinute)
+            totalSeconds
+
+decodeDuckDBTimeNs :: DuckDBTimeNs -> TimeOfDay
+decodeDuckDBTimeNs (DuckDBTimeNs nanos) =
+    let (hours, remainderHours) = nanos `divMod` (60 * 60 * 1000000000)
+        (minutes, remainderMinutes) = remainderHours `divMod` (60 * 1000000000)
+        (seconds, fractionalNanos) = remainderMinutes `divMod` 1000000000
+        fractional = fromRational (toInteger fractionalNanos % 1000000000)
+        totalSeconds = fromIntegral seconds + fractional
+     in TimeOfDay
+            (fromIntegral hours)
+            (fromIntegral minutes)
+            totalSeconds
+
+decodeDuckDBTimeTz :: DuckDBTimeTz -> IO TimeWithZone
+decodeDuckDBTimeTz raw =
+    alloca \ptr -> do
+        c_duckdb_from_time_tz raw ptr
+        DuckDBTimeTzStruct{duckDBTimeTzStructTime = timeStruct, duckDBTimeTzStructOffset = offset} <- peek ptr
+        let timeOfDay = timeStructToTimeOfDay timeStruct
+            minutes = fromIntegral offset `div` 60
+            zone = minutesToTimeZone minutes
+        pure TimeWithZone{timeWithZoneTime = timeOfDay, timeWithZoneZone = zone}
+
+decodeDuckDBTimestampSeconds :: DuckDBTimestampS -> IO LocalTime
+decodeDuckDBTimestampSeconds (DuckDBTimestampS seconds) =
+    decodeDuckDBTimestamp (DuckDBTimestamp (seconds * 1000000))
+
+decodeDuckDBTimestampMilliseconds :: DuckDBTimestampMs -> IO LocalTime
+decodeDuckDBTimestampMilliseconds (DuckDBTimestampMs millis) =
+    decodeDuckDBTimestamp (DuckDBTimestamp (millis * 1000))
+
+decodeDuckDBTimestampNanoseconds :: DuckDBTimestampNs -> IO LocalTime
+decodeDuckDBTimestampNanoseconds (DuckDBTimestampNs nanos) = do
+    let utcTime = posixSecondsToUTCTime (fromRational (toInteger nanos % 1000000000))
+    pure (utcToLocalTime utc utcTime)
+
+decodeDuckDBTimestampUTCTime :: DuckDBTimestamp -> IO UTCTime
+decodeDuckDBTimestampUTCTime (DuckDBTimestamp micros) =
+    pure (posixSecondsToUTCTime (fromRational (toInteger micros % 1000000)))
+
+intervalValueFromDuckDB :: DuckDBInterval -> IntervalValue
+intervalValueFromDuckDB DuckDBInterval{duckDBIntervalMonths, duckDBIntervalDays, duckDBIntervalMicros} =
+    IntervalValue
+        { intervalMonths = duckDBIntervalMonths
+        , intervalDays = duckDBIntervalDays
+        , intervalMicros = duckDBIntervalMicros
+        }
+
+decimalValueFromDuckDB :: Word8 -> Word8 -> DuckDBDecimal -> IO DecimalValue
+decimalValueFromDuckDB width scale rawDecimal =
+    alloca \ptr -> do
+        let decimal = rawDecimal{duckDBDecimalWidth = width, duckDBDecimalScale = scale}
+        poke ptr decimal
+        CDouble approx <- c_duckdb_decimal_to_double ptr
+        pure
+            DecimalValue
+                { decimalWidth = width
+                , decimalScale = scale
+                , decimalInteger = duckDBHugeIntToInteger (duckDBDecimalValue decimal)
+                , decimalApproximate = realToFrac approx
+                }
+
+duckDBHugeIntToInteger :: DuckDBHugeInt -> Integer
+duckDBHugeIntToInteger DuckDBHugeInt{duckDBHugeIntLower, duckDBHugeIntUpper} =
+    (fromIntegral duckDBHugeIntUpper `shiftL` 64) .|. fromIntegral duckDBHugeIntLower
+
+duckDBUHugeIntToInteger :: DuckDBUHugeInt -> Integer
+duckDBUHugeIntToInteger DuckDBUHugeInt{duckDBUHugeIntLower, duckDBUHugeIntUpper} =
+    (fromIntegral duckDBUHugeIntUpper `shiftL` 64) .|. fromIntegral duckDBUHugeIntLower
+
+decodeDuckDBBit :: DuckDBBit -> IO BitString
+decodeDuckDBBit DuckDBBit{duckDBBitData, duckDBBitSize}
+    | duckDBBitData == nullPtr || duckDBBitSize == 0 =
+        pure BitString{bitStringLength = 0, bitStringBytes = BS.empty}
+    | otherwise = do
+        let bitLength = duckDBBitSize
+            byteLength = fromIntegral ((bitLength + 7) `div` 8) :: Int
+        bytes <- BS.packCStringLen (castPtr duckDBBitData, byteLength)
+        pure BitString{bitStringLength = bitLength, bitStringBytes = bytes}
+
+decodeDuckDBBigNum :: DuckDBBignum -> IO BigNum
+decodeDuckDBBigNum DuckDBBignum{duckDBBignumData, duckDBBignumSize, duckDBBignumIsNegative}
+    | duckDBBignumData == nullPtr || duckDBBignumSize == 0 =
+        pure BigNum{bigNumIsNegative = duckDBBignumIsNegative /= 0, bigNumMagnitude = BS.empty}
+    | otherwise = do
+        let byteLength = fromIntegral duckDBBignumSize :: Int
+        bytes <- BS.packCStringLen (castPtr duckDBBignumData, byteLength)
+        pure BigNum{bigNumIsNegative = duckDBBignumIsNegative /= 0, bigNumMagnitude = bytes}
 
 writeResults :: ScalarType -> [ScalarValue] -> DuckDBVector -> IO ()
 writeResults resultType values outVec = do

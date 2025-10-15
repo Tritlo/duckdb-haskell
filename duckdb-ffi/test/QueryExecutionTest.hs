@@ -4,6 +4,7 @@ module QueryExecutionTest (tests) where
 
 import Control.Monad (forM_, when)
 import Database.DuckDB.FFI
+import Database.DuckDB.FFI.Deprecated
 import Foreign.C.String (peekCString, withCString)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (nullPtr)

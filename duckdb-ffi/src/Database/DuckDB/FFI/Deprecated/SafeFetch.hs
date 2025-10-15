@@ -1,4 +1,4 @@
-module Database.DuckDB.FFI.SafeFetch (
+module Database.DuckDB.FFI.Deprecated.SafeFetch (
     c_duckdb_value_boolean,
     c_duckdb_value_int8,
     c_duckdb_value_int16,
@@ -17,12 +17,12 @@ module Database.DuckDB.FFI.SafeFetch (
     c_duckdb_value_time,
     c_duckdb_value_timestamp,
     c_duckdb_value_interval,
-    c_duckdb_value_varchar,
     c_duckdb_value_string,
-    c_duckdb_value_varchar_internal,
-    c_duckdb_value_string_internal,
     c_duckdb_value_blob,
     c_duckdb_value_is_null,
+    c_duckdb_value_varchar,
+    c_duckdb_value_varchar_internal,
+    c_duckdb_value_string_internal,
 ) where
 
 import Data.Int (Int16, Int32, Int64, Int8)
@@ -206,21 +206,11 @@ but mirror the DuckDB C API semantics of @duckdb_value_interval@.
 foreign import ccall safe "wrapped_duckdb_value_interval"
     c_duckdb_value_interval :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> Ptr DuckDBInterval -> IO ()
 
-{- | > Deprecated This method has been deprecated. Use duckdb_value_string instead.
-This function does not work correctly if the string contains null bytes.
-
-Returns The text value at the specified location as a null-terminated string,
-or nullptr if the value cannot be converted. The result must be freed with
-@duckdb_free@.
--}
-foreign import ccall safe "duckdb_value_varchar"
-    c_duckdb_value_varchar :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO CString
-
 {- | > Warning Deprecation notice. This method is scheduled for removal in a future
 release.
 
 No support for nested types, and for other complex types. The resulting field
-"string.data" must be freed with @duckdb_free.@
+"string.data" must be freed with @duckdb_free.@ 
 
 Returns The string value at the specified location. Attempts to cast the
 result value to string.
@@ -230,6 +220,38 @@ but mirror the DuckDB C API semantics of @duckdb_value_string@.
 -}
 foreign import ccall safe "wrapped_duckdb_value_string"
     c_duckdb_value_string :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> Ptr DuckDBString -> IO ()
+
+{- | > Warning Deprecation notice. This method is scheduled for removal in a future
+release.
+
+Returns The duckdb_blob value at the specified location. Returns a blob with
+blob.data set to nullptr if the value cannot be converted. The resulting field
+"blob.data" must be freed with @duckdb_free.@
+
+These bindings call the wrapper symbol @wrapped_duckdb_value_blob@ but
+mirror the DuckDB C API semantics of @duckdb_value_blob@.
+-}
+foreign import ccall safe "wrapped_duckdb_value_blob"
+    c_duckdb_value_blob :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> Ptr DuckDBBlob -> IO ()
+
+{- | > Warning Deprecation notice. This method is scheduled for removal in a future
+release.
+
+Returns Returns true if the value at the specified index is NULL, and false
+otherwise.
+-}
+foreign import ccall safe "duckdb_value_is_null"
+    c_duckdb_value_is_null :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO CBool
+
+{- | > Deprecated This method has been deprecated. Use duckdb_value_string instead.
+This function does not work correctly if the string contains null bytes.
+
+Returns The text value at the specified location as a null-terminated string,
+or nullptr if the value cannot be converted. The result must be freed with
+@duckdb_free@.
+-}
+foreign import ccall safe "duckdb_value_varchar"
+    c_duckdb_value_varchar :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO CString
 
 {- | > Deprecated This method has been deprecated. Use duckdb_value_string_internal
 instead. This function does not work correctly if the string contains null
@@ -256,25 +278,3 @@ These bindings call the wrapper symbol
 -}
 foreign import ccall safe "wrapped_duckdb_value_string_internal"
     c_duckdb_value_string_internal :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> Ptr DuckDBString -> IO ()
-
-{- | > Warning Deprecation notice. This method is scheduled for removal in a future
-release.
-
-Returns The duckdb_blob value at the specified location. Returns a blob with
-blob.data set to nullptr if the value cannot be converted. The resulting field
-"blob.data" must be freed with @duckdb_free.@
-
-These bindings call the wrapper symbol @wrapped_duckdb_value_blob@ but
-mirror the DuckDB C API semantics of @duckdb_value_blob@.
--}
-foreign import ccall safe "wrapped_duckdb_value_blob"
-    c_duckdb_value_blob :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> Ptr DuckDBBlob -> IO ()
-
-{- | > Warning Deprecation notice. This method is scheduled for removal in a future
-release.
-
-Returns Returns true if the value at the specified index is NULL, and false
-otherwise.
--}
-foreign import ccall safe "duckdb_value_is_null"
-    c_duckdb_value_is_null :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO CBool

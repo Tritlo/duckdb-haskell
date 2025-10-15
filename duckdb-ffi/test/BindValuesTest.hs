@@ -8,6 +8,7 @@ import Data.List (intercalate)
 import Data.Time.Calendar (diffDays, fromGregorian)
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.FFI
+import Database.DuckDB.FFI.Deprecated
 import Foreign.C.String (peekCString, peekCStringLen, withCString)
 import Foreign.C.Types (CBool (..), CDouble (..), CFloat (..))
 import Foreign.Marshal.Alloc (alloca)

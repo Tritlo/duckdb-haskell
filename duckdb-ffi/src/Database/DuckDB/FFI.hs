@@ -13,7 +13,6 @@ module Database.DuckDB.FFI (
     module Database.DuckDB.FFI.ErrorData,
     module Database.DuckDB.FFI.QueryExecution,
     module Database.DuckDB.FFI.ResultFunctions,
-    module Database.DuckDB.FFI.SafeFetch,
     module Database.DuckDB.FFI.Helpers,
     module Database.DuckDB.FFI.PreparedStatements,
     module Database.DuckDB.FFI.BindValues,
@@ -60,7 +59,6 @@ import Database.DuckDB.FFI.ProfilingInfo
 import Database.DuckDB.FFI.QueryExecution
 import Database.DuckDB.FFI.ReplacementScans
 import Database.DuckDB.FFI.ResultFunctions
-import Database.DuckDB.FFI.SafeFetch
 import Database.DuckDB.FFI.ScalarFunctions
 import Database.DuckDB.FFI.SelectionVector
 import Database.DuckDB.FFI.StreamingResult

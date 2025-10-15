@@ -7,17 +7,14 @@ module Database.DuckDB.FFI.QueryExecution (
     c_duckdb_column_logical_type,
     c_duckdb_result_get_arrow_options,
     c_duckdb_column_count,
-    c_duckdb_row_count,
     c_duckdb_rows_changed,
-    c_duckdb_column_data,
-    c_duckdb_nullmask_data,
     c_duckdb_result_error,
     c_duckdb_result_error_type,
 ) where
 
 import Database.DuckDB.FFI.Types
 import Foreign.C.String (CString)
-import Foreign.C.Types (CBool (..), CInt (..))
+import Foreign.C.Types (CInt (..))
 import Foreign.Ptr (Ptr)
 
 {- | Executes a SQL query within a connection and stores the full (materialized)
@@ -131,19 +128,6 @@ Returns The number of columns present in the result object.
 foreign import ccall safe "duckdb_column_count"
     c_duckdb_column_count :: Ptr DuckDBResult -> IO DuckDBIdx
 
-{- | > Warning Deprecation notice. This method is scheduled for removal in a future
-release.
-
-Returns the number of rows present in the result object.
-
-Parameters:
-* @result@: The result object.
-
-Returns The number of rows present in the result object.
--}
-foreign import ccall safe "duckdb_row_count"
-    c_duckdb_row_count :: Ptr DuckDBResult -> IO DuckDBIdx
-
 {- | Returns the number of rows changed by the query stored in the result. This is
 relevant only for INSERT/UPDATE/DELETE queries. For other queries the
 rows_changed will be 0.
@@ -155,53 +139,6 @@ Returns The number of rows changed.
 -}
 foreign import ccall safe "duckdb_rows_changed"
     c_duckdb_rows_changed :: Ptr DuckDBResult -> IO DuckDBIdx
-
-{- | > Deprecated This method has been deprecated. Prefer using
-@duckdb_result_get_chunk@ instead.
-
-Returns the data of a specific column of a result in columnar format.
-
-The function returns a dense array which contains the result data. The exact
-type stored in the array depends on the corresponding duckdb_type (as provided
-by @duckdb_column_type@). For the exact type by which the data should be
-accessed, see the comments in [the types section](types) or the @DUCKDB_TYPE@
-enum.
-
-For example, for a column of type @DUCKDB_TYPE_INTEGER@, rows can be accessed
-in the following manner: ``@c int32_t *data = (int32_t *)
-duckdb_column_data(&result, 0); printf("Data for row %d: %d\n", row,
-data[row]); @``
-
-Parameters:
-* @result@: The result object to fetch the column data from.
-* @col@: The column index.
-
-Returns The column data of the specified column.
--}
-foreign import ccall safe "duckdb_column_data"
-    c_duckdb_column_data :: Ptr DuckDBResult -> DuckDBIdx -> IO (Ptr ())
-
-{- | > Deprecated This method has been deprecated. Prefer using
-@duckdb_result_get_chunk@ instead.
-
-Returns the nullmask of a specific column of a result in columnar format. The
-nullmask indicates for every row whether or not the corresponding row is
-@NULL@. If a row is @NULL@, the values present in the array provided by
-@duckdb_column_data@ are undefined.
-
-``@c int32_t *data = (int32_t *) duckdb_column_data(&result, 0); bool
-*nullmask = duckdb_nullmask_data(&result, 0); if (nullmask[row]) {
-printf("Data for row %d: NULL\n", row); } else { printf("Data for row %d:
-%d\n", row, data[row]); } @``
-
-Parameters:
-* @result@: The result object to fetch the nullmask from.
-* @col@: The column index.
-
-Returns The nullmask of the specified column.
--}
-foreign import ccall safe "duckdb_nullmask_data"
-    c_duckdb_nullmask_data :: Ptr DuckDBResult -> DuckDBIdx -> IO (Ptr CBool)
 
 {- | Returns the error message contained within the result. The error is only set
 if @duckdb_query@ returns @DuckDBError@.

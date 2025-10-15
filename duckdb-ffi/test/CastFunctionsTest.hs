@@ -10,6 +10,7 @@ import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Int (Int32)
 import Data.List (isInfixOf)
 import Database.DuckDB.FFI
+import Database.DuckDB.FFI.Deprecated
 import Foreign.C.String (peekCString, withCString, withCStringLen)
 import Foreign.C.Types (CBool (..))
 import Foreign.Marshal.Alloc (alloca)

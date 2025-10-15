@@ -5,6 +5,7 @@ module ThreadingTest (tests) where
 import Control.Concurrent (forkFinally, newEmptyMVar, putMVar, takeMVar)
 import Data.Int (Int64)
 import Database.DuckDB.FFI
+import Database.DuckDB.FFI.Deprecated
 import Foreign.C.String (CString, withCString)
 import Foreign.C.Types (CBool (..))
 import Foreign.Marshal.Alloc (alloca)

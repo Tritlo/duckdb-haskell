@@ -49,6 +49,7 @@ library
     src
   exposed-modules:
     Database.DuckDB.FFI
+    Database.DuckDB.FFI.Deprecated
   other-modules:
     Database.DuckDB.FFI.AggregateFunctions
     Database.DuckDB.FFI.Appender
@@ -57,6 +58,14 @@ library
     Database.DuckDB.FFI.CastFunctions
     Database.DuckDB.FFI.Configuration
     Database.DuckDB.FFI.DataChunk
+    Database.DuckDB.FFI.Deprecated.Appender
+    Database.DuckDB.FFI.Deprecated.Arrow
+    Database.DuckDB.FFI.Deprecated.ExecutePrepared
+    Database.DuckDB.FFI.Deprecated.PendingResult
+    Database.DuckDB.FFI.Deprecated.QueryExecution
+    Database.DuckDB.FFI.Deprecated.ResultFunctions
+    Database.DuckDB.FFI.Deprecated.SafeFetch
+    Database.DuckDB.FFI.Deprecated.StreamingResult
     Database.DuckDB.FFI.ErrorData
     Database.DuckDB.FFI.ExecutePrepared
     Database.DuckDB.FFI.Expression
@@ -70,7 +79,6 @@ library
     Database.DuckDB.FFI.QueryExecution
     Database.DuckDB.FFI.ReplacementScans
     Database.DuckDB.FFI.ResultFunctions
-    Database.DuckDB.FFI.SafeFetch
     Database.DuckDB.FFI.ScalarFunctions
     Database.DuckDB.FFI.SelectionVector
     Database.DuckDB.FFI.StreamingResult

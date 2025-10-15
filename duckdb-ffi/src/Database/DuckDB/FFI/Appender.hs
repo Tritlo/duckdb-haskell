@@ -4,7 +4,6 @@ module Database.DuckDB.FFI.Appender (
     c_duckdb_appender_create_query,
     c_duckdb_appender_column_count,
     c_duckdb_appender_column_type,
-    c_duckdb_appender_error,
     c_duckdb_appender_error_data,
     c_duckdb_appender_flush,
     c_duckdb_appender_close,
@@ -128,23 +127,6 @@ Returns The @duckdb_logical_type@ of the column.
 -}
 foreign import ccall "duckdb_appender_column_type"
     c_duckdb_appender_column_type :: DuckDBAppender -> DuckDBIdx -> IO DuckDBLogicalType
-
-{- | > Warning Deprecation notice. This method is scheduled for removal in a future
-release. Use duckdb_appender_error_data instead.
-
-Returns the error message associated with the appender. If the appender has no
-error message, this returns @nullptr@ instead.
-
-The error message should not be freed. It will be de-allocated when
-@duckdb_appender_destroy@ is called.
-
-Parameters:
-* @appender@: The appender to get the error from.
-
-Returns The error message, or @nullptr@ if there is none.
--}
-foreign import ccall "duckdb_appender_error"
-    c_duckdb_appender_error :: DuckDBAppender -> IO CString
 
 {- | Returns the error data associated with the appender. Must be destroyed with
 duckdb_destroy_error_data.

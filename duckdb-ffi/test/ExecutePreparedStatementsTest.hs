@@ -4,6 +4,7 @@ module ExecutePreparedStatementsTest (tests) where
 
 import Control.Monad (forM_)
 import Database.DuckDB.FFI
+import Database.DuckDB.FFI.Deprecated
 import Foreign.C.String (peekCString, withCString)
 import Foreign.C.Types (CBool (..))
 import Foreign.Marshal.Alloc (alloca)

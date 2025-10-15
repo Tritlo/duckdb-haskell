@@ -9,6 +9,7 @@ import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (isInfixOf)
 import Database.DuckDB.FFI
+import Database.DuckDB.FFI.Deprecated
 import Foreign.C.String (CString, peekCString, withCString)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, freeHaskellFunPtr, nullFunPtr, nullPtr)

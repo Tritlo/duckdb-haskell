@@ -6,6 +6,7 @@ import Control.Monad (forM_, when)
 import Data.Int (Int32, Int64)
 import Data.Maybe (isNothing)
 import Database.DuckDB.FFI
+import Database.DuckDB.FFI.Deprecated
 import Foreign.C.String (peekCString, withCString)
 import Foreign.C.Types (CBool (..))
 import Foreign.Marshal.Alloc (alloca)

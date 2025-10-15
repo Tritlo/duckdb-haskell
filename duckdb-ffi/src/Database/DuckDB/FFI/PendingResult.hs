@@ -1,6 +1,5 @@
 module Database.DuckDB.FFI.PendingResult (
     c_duckdb_pending_prepared,
-    c_duckdb_pending_prepared_streaming,
     c_duckdb_destroy_pending,
     c_duckdb_pending_error,
     c_duckdb_pending_execute_task,
@@ -31,27 +30,6 @@ Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
 -}
 foreign import ccall "duckdb_pending_prepared"
     c_duckdb_pending_prepared :: DuckDBPreparedStatement -> Ptr DuckDBPendingResult -> IO DuckDBState
-
-{- | > Warning Deprecation notice. This method is scheduled for removal in a future
-release.
-
-Executes the prepared statement with the given bound parameters, and returns a
-pending result. This pending result will create a streaming duckdb_result when
-executed. The pending result represents an intermediate structure for a query
-that is not yet fully executed.
-
-Note that after calling @duckdb_pending_prepared_streaming@, the pending
-result should always be destroyed using @duckdb_destroy_pending@, even if this
-function returns DuckDBError.
-
-Parameters:
-* @prepared_statement@: The prepared statement to execute.
-* @out_result@: The pending query result.
-
-Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
--}
-foreign import ccall "duckdb_pending_prepared_streaming"
-    c_duckdb_pending_prepared_streaming :: DuckDBPreparedStatement -> Ptr DuckDBPendingResult -> IO DuckDBState
 
 {- | Closes the pending result and de-allocates all memory allocated for the
 result.

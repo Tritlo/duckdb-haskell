@@ -97,6 +97,7 @@ import Data.Time.LocalTime
 import Data.Word (Word16, Word32, Word64, Word8)
 import Data.Ratio ((%))
 import Database.DuckDB.FFI
+import Database.DuckDB.FFI.Deprecated
 import Database.DuckDB.Simple.FromField
     ( BigNum (..)
     , BitString (..)

@@ -13,6 +13,7 @@ import Data.Int (Int64)
 import Data.List (isInfixOf)
 import Data.Maybe (fromMaybe)
 import Database.DuckDB.FFI
+import Database.DuckDB.FFI.Deprecated
 import Foreign.C.String (CString, peekCString, withCString)
 import Foreign.C.Types (CBool (..))
 import Foreign.Marshal.Alloc (alloca, free, mallocBytes)

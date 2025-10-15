@@ -5,6 +5,7 @@ module LogicalTypesTest (tests) where
 import Control.Monad (forM_, when, (>=>))
 import Data.Word (Word32, Word8)
 import Database.DuckDB.FFI
+import Database.DuckDB.FFI.Deprecated
 import Foreign.C.String (peekCString, withCString)
 import Foreign.Marshal.Array (withArray)
 import Foreign.Marshal.Utils (withMany)

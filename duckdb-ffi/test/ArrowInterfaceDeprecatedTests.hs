@@ -9,6 +9,7 @@ import Data.Int (Int32, Int64)
 import Data.List (isInfixOf)
 import Data.Maybe (isNothing)
 import Database.DuckDB.FFI
+import Database.DuckDB.FFI.Deprecated
 import Foreign.C.String (peekCString, peekCStringLen, withCString)
 import Foreign.C.Types (CChar)
 import Foreign.Marshal.Alloc (alloca)

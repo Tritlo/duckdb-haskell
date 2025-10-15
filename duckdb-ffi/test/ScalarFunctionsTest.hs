@@ -9,6 +9,7 @@ import Data.Char (toLower)
 import Data.Int (Int32)
 import Data.List (isInfixOf)
 import Database.DuckDB.FFI
+import Database.DuckDB.FFI.Deprecated
 import Foreign.C.String (peekCString, withCString)
 import Foreign.Marshal.Alloc (alloca, free, mallocBytes)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)

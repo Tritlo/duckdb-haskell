@@ -4,6 +4,7 @@ module ResultFunctionsTest (tests) where
 
 import Control.Monad (forM_, when)
 import Database.DuckDB.FFI
+import Database.DuckDB.FFI.Deprecated
 import Foreign.C.String (withCString)
 import Foreign.C.Types (CBool (..))
 import Foreign.Marshal.Alloc (alloca)

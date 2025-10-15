@@ -139,7 +139,7 @@ import Database.DuckDB.Simple.ToField (FieldBinding, NamedParam (..), ToField (.
 import Database.DuckDB.Simple.ToRow (ToRow (..))
 import Database.DuckDB.Simple.Types (FormatError (..), Null (..), Only (..), (:.) (..))
 import Foreign.C.String (CString, peekCString, withCString)
-import Foreign.C.Types (CBool (..), CDouble (..))
+import Foreign.C.Types (CBool (..))
 import Foreign.Marshal.Alloc (alloca, free, malloc)
 import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.Storable (Storable (..), peekElemOff, peekByteOff, pokeByteOff)
@@ -1175,23 +1175,6 @@ materializedValueFromPointers dtype vector dataPtr validity rowIdx = do
     if not valid
         then pure FieldNull
         else do
-            (decimalInfo, enumInternal) <-
-                if dtype == DuckDBTypeDecimal || dtype == DuckDBTypeEnum
-                    then do
-                        logical <- c_duckdb_vector_get_column_type vector
-                        info <-
-                            case dtype of
-                                DuckDBTypeDecimal -> do
-                                    width <- c_duckdb_decimal_width logical
-                                    scale <- c_duckdb_decimal_scale logical
-                                    pure (Just (width, scale), Nothing)
-                                DuckDBTypeEnum -> do
-                                    internal <- c_duckdb_enum_internal_type logical
-                                    pure (Nothing, Just internal)
-                                _ -> pure (Nothing, Nothing)
-                        destroyLogicalType logical
-                        pure info
-                    else pure (Nothing, Nothing)
             case dtype of
                 DuckDBTypeBoolean -> do
                     raw <- peekElemOff (castPtr dataPtr :: Ptr Word8) rowIdx
@@ -1260,13 +1243,24 @@ materializedValueFromPointers dtype vector dataPtr validity rowIdx = do
                     raw <- peekElemOff (castPtr dataPtr :: Ptr DuckDBInterval) rowIdx
                     pure (FieldInterval (intervalValueFromDuckDB raw))
                 DuckDBTypeDecimal -> do
-                    raw <- peekElemOff (castPtr dataPtr :: Ptr DuckDBDecimal) rowIdx
-                    case decimalInfo of
-                        Just (width, scale) -> do
-                            decimal <- decimalValueFromDuckDB width scale raw
-                            pure (FieldDecimal decimal)
-                        Nothing ->
-                            error "duckdb-simple: missing decimal metadata for result vector"
+                    bracket (c_duckdb_vector_get_column_type vector)
+                            (\lty -> alloca $ \ptr -> poke ptr lty >> c_duckdb_destroy_logical_type ptr) $
+                              \logical -> do
+                                 width <- c_duckdb_decimal_width logical
+                                 scale <- c_duckdb_decimal_scale logical
+                                 internal_ty <- c_duckdb_decimal_internal_type logical
+                                 raw <- case internal_ty of
+                                     DuckDBTypeSmallInt ->
+                                         toInteger <$> peekElemOff (castPtr dataPtr :: Ptr Int16) rowIdx
+                                     DuckDBTypeInteger ->
+                                         toInteger <$> peekElemOff (castPtr dataPtr :: Ptr Int32) rowIdx
+                                     DuckDBTypeBigInt ->
+                                         toInteger <$> peekElemOff (castPtr dataPtr :: Ptr Int64) rowIdx
+                                     DuckDBTypeHugeInt ->
+                                         toInteger . duckDBHugeIntToInteger <$>
+                                            peekElemOff (castPtr dataPtr :: Ptr DuckDBHugeInt) rowIdx
+                                     _ -> error "duckdb-simple: unsupported decimal internal storage type"
+                                 pure (FieldDecimal (DecimalValue width scale raw))
                 DuckDBTypeHugeInt -> do
                     raw <- peekElemOff (castPtr dataPtr :: Ptr DuckDBHugeInt) rowIdx
                     pure (FieldHugeInt (duckDBHugeIntToInteger raw))
@@ -1284,18 +1278,19 @@ materializedValueFromPointers dtype vector dataPtr validity rowIdx = do
                 DuckDBTypeStruct -> error "duckdb-simple: STRUCT columns are not supported"
                 DuckDBTypeUnion -> error "duckdb-simple: UNION columns are not supported"
                 DuckDBTypeEnum -> do
-                    case enumInternal of
-                        Just DuckDBTypeUTinyInt -> do
-                            raw <- peekElemOff (castPtr dataPtr :: Ptr Word8) rowIdx
-                            pure (FieldEnum (fromIntegral raw))
-                        Just DuckDBTypeUSmallInt -> do
-                            raw <- peekElemOff (castPtr dataPtr :: Ptr Word16) rowIdx
-                            pure (FieldEnum (fromIntegral raw))
-                        Just DuckDBTypeUInteger -> do
-                            raw <- peekElemOff (castPtr dataPtr :: Ptr Word32) rowIdx
-                            pure (FieldEnum raw)
-                        _ ->
-                            error "duckdb-simple: unsupported enum internal storage type"
+                    bracket (c_duckdb_vector_get_column_type vector)
+                            (\lty -> alloca $ \ptr -> poke ptr lty >> c_duckdb_destroy_logical_type ptr) $
+                            \logical -> do
+                              enumInternal <- c_duckdb_enum_internal_type logical
+                              FieldEnum <$>
+                                case enumInternal of
+                                    DuckDBTypeUTinyInt -> do
+                                        fromIntegral <$> peekElemOff (castPtr dataPtr :: Ptr Word8) rowIdx
+                                    DuckDBTypeUSmallInt -> do
+                                        fromIntegral <$> peekElemOff (castPtr dataPtr :: Ptr Word16) rowIdx
+                                    DuckDBTypeUInteger -> do
+                                        fromIntegral <$> peekElemOff (castPtr dataPtr :: Ptr Word32) rowIdx
+                                    _ -> error "duckdb-simple: unsupported enum internal storage type"
                 DuckDBTypeSQLNull ->
                     pure FieldNull
                 DuckDBTypeStringLiteral -> FieldText <$> chunkDecodeText dataPtr duckIdx
@@ -1392,19 +1387,6 @@ intervalValueFromDuckDB DuckDBInterval{duckDBIntervalMonths, duckDBIntervalDays,
         , intervalMicros = duckDBIntervalMicros
         }
 
-decimalValueFromDuckDB :: Word8 -> Word8 -> DuckDBDecimal -> IO DecimalValue
-decimalValueFromDuckDB width scale rawDecimal =
-    alloca \ptr -> do
-        let decimal = rawDecimal{duckDBDecimalWidth = width, duckDBDecimalScale = scale}
-        poke ptr decimal
-        CDouble approx <- c_duckdb_decimal_to_double ptr
-        pure
-            DecimalValue
-                { decimalWidth = width
-                , decimalScale = scale
-                , decimalInteger = duckDBHugeIntToInteger (duckDBDecimalValue decimal)
-                , decimalApproximate = realToFrac approx
-                }
 
 duckDBHugeIntToInteger :: DuckDBHugeInt -> Integer
 duckDBHugeIntToInteger DuckDBHugeInt{duckDBHugeIntLower, duckDBHugeIntUpper} =

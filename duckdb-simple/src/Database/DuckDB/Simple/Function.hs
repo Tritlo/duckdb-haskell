@@ -70,7 +70,7 @@ import Database.DuckDB.Simple.Internal
     , withQueryCString
     )
 import Foreign.C.String (peekCString)
-import Foreign.C.Types (CBool (..), CDouble (..))
+import Foreign.C.Types (CBool (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, castPtr, freeHaskellFunPtr, nullPtr, plusPtr)
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deRefStablePtr, freeStablePtr, newStablePtr)
@@ -652,18 +652,14 @@ intervalValueFromDuckDB DuckDBInterval{duckDBIntervalMonths, duckDBIntervalDays,
         }
 
 decimalValueFromDuckDB :: Word8 -> Word8 -> DuckDBDecimal -> IO DecimalValue
-decimalValueFromDuckDB width scale rawDecimal =
-    alloca \ptr -> do
-        let decimal = rawDecimal{duckDBDecimalWidth = width, duckDBDecimalScale = scale}
-        poke ptr decimal
-        CDouble approx <- c_duckdb_decimal_to_double ptr
-        pure
-            DecimalValue
-                { decimalWidth = width
-                , decimalScale = scale
-                , decimalInteger = duckDBHugeIntToInteger (duckDBDecimalValue decimal)
-                , decimalApproximate = realToFrac approx
-                }
+decimalValueFromDuckDB width scale rawDecimal = do
+    let decimal = rawDecimal{duckDBDecimalWidth = width, duckDBDecimalScale = scale}
+    pure
+        DecimalValue
+            { decimalWidth = width
+            , decimalScale = scale
+            , decimalInteger = duckDBHugeIntToInteger (duckDBDecimalValue decimal)
+            }
 
 duckDBHugeIntToInteger :: DuckDBHugeInt -> Integer
 duckDBHugeIntToInteger DuckDBHugeInt{duckDBHugeIntLower, duckDBHugeIntUpper} =

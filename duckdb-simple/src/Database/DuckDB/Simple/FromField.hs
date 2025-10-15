@@ -88,7 +88,6 @@ data DecimalValue = DecimalValue
     { decimalWidth :: !Word8
     , decimalScale :: !Word8
     , decimalInteger :: !Integer
-    , decimalApproximate :: !Double
     }
     deriving (Eq, Show)
 
@@ -404,7 +403,8 @@ instance FromField Double where
         case fieldValue of
             FieldDouble d -> Ok d
             FieldInt i -> Ok (fromIntegral i)
-            FieldDecimal DecimalValue{decimalApproximate} -> Ok decimalApproximate
+            FieldDecimal DecimalValue{decimalInteger, decimalScale} ->
+                Ok (realToFrac decimalInteger / 10 ^ decimalScale)
             FieldNull -> returnError UnexpectedNull f ""
             _ -> returnError Incompatible f ""
 

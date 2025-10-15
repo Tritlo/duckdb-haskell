@@ -73,7 +73,7 @@ module Database.DuckDB.Simple (
     deleteFunction,
 ) where
 
-import Control.Monad (forM, foldM, join, void, when, zipWithM, zipWithM_)
+import Control.Monad (forM, join, void, when, zipWithM, zipWithM_)
 import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, newIORef, readIORef, writeIORef)
 import Control.Exception (SomeException, bracket, finally, mask, onException, throwIO, try)
 import qualified Data.ByteString as BS
@@ -97,7 +97,6 @@ import Data.Time.LocalTime
 import Data.Word (Word16, Word32, Word64, Word8)
 import Data.Ratio ((%))
 import Database.DuckDB.FFI
-import Database.DuckDB.FFI.Deprecated
 import Database.DuckDB.Simple.FromField
     ( BigNum (..)
     , BitString (..)
@@ -538,7 +537,7 @@ startStatementStream stmt =
     withStatementHandle stmt \handle -> do
         columns <- collectStreamColumns handle
         resultPtr <- malloc
-        rc <- c_duckdb_execute_prepared_streaming handle resultPtr
+        rc <- c_duckdb_execute_prepared handle resultPtr
         if rc /= DuckDBSuccess
             then do
                 (errMsg, errType) <- fetchResultError resultPtr
@@ -583,7 +582,7 @@ streamNextRow queryText stream@StatementStream{statementStreamChunk = Just chunk
 
 fetchChunk :: StatementStream -> IO StatementStream
 fetchChunk stream@StatementStream{statementStreamResult} = do
-    chunk <- c_duckdb_stream_fetch_chunk statementStreamResult
+    chunk <- c_duckdb_fetch_chunk statementStreamResult
     if chunk == nullPtr
         then pure stream
         else do
@@ -1023,19 +1022,32 @@ convertRowsWith parser queryText rows =
 collectRows :: Ptr DuckDBResult -> IO [[Field]]
 collectRows resPtr = do
     columns <- collectResultColumns resPtr
-    chunkCount <- (fromIntegral <$> c_duckdb_result_chunk_count resPtr) :: IO Int
-    if null columns || chunkCount <= 0
-        then pure []
-        else do
-            (_, chunks) <-
-                foldM
-                    (\(rowBase, acc) chunkIdx -> do
-                        (nextBase, chunkRows) <- collectChunkRows resPtr columns chunkIdx rowBase
-                        pure (nextBase, chunkRows : acc)
-                    )
-                    (0, [])
-                    [0 .. chunkCount - 1]
-            pure (concat (reverse chunks))
+    collectChunks columns []
+  where
+    collectChunks columns acc = do
+        chunk <- c_duckdb_fetch_chunk resPtr
+        if chunk == nullPtr
+            then pure (concat (reverse acc))
+            else do
+                rows <-
+                    finally
+                        (decodeChunk columns chunk)
+                        (destroyDataChunk chunk)
+                let acc' = maybe acc (: acc) rows
+                collectChunks columns acc'
+
+    decodeChunk columns chunk = do
+        rawSize <- c_duckdb_data_chunk_get_size chunk
+        let rowCount = fromIntegral rawSize :: Int
+        if rowCount <= 0
+            then pure Nothing
+            else
+                if null columns
+                    then pure (Just (replicate rowCount []))
+                    else do
+                        vectors <- prepareChunkVectors chunk columns
+                        rows <- mapM (buildMaterializedRow columns vectors) [0 .. rowCount - 1]
+                        pure (Just rows)
 
 collectResultColumns :: Ptr DuckDBResult -> IO [StatementStreamColumn]
 collectResultColumns resPtr = do
@@ -1054,32 +1066,6 @@ collectResultColumns resPtr = do
                 , statementStreamColumnName = name
                 , statementStreamColumnType = dtype
                 }
-
-collectChunkRows :: Ptr DuckDBResult -> [StatementStreamColumn] -> Int -> Int -> IO (Int, [[Field]])
-collectChunkRows resPtr columns chunkIndex rowBase = do
-    chunk <- c_duckdb_result_get_chunk resPtr (fromIntegral chunkIndex)
-    if chunk == nullPtr
-        then pure (rowBase, [])
-        else
-            finally
-                (do
-                    rawSize <- c_duckdb_data_chunk_get_size chunk
-                    let rowCount = fromIntegral rawSize :: Int
-                    when (rowCount > 0 && not (null columns)) $
-                        void $
-                            fetchFieldValue
-                                resPtr
-                                (statementStreamColumnType (head columns))
-                                (statementStreamColumnIndex (head columns))
-                                rowBase
-                    if rowCount <= 0
-                        then pure (rowBase, [])
-                        else do
-                            vectors <- prepareChunkVectors chunk columns
-                            rows <- mapM (buildMaterializedRow columns vectors) [0 .. rowCount - 1]
-                            pure (rowBase + rowCount, rows)
-                )
-                (destroyDataChunk chunk)
 
 buildMaterializedRow :: [StatementStreamColumn] -> [StatementStreamChunkVector] -> Int -> IO [Field]
 buildMaterializedRow columns vectors rowIdx =
@@ -1100,41 +1086,6 @@ buildMaterializedField rowIdx column StatementStreamChunkVector{statementStreamC
             , fieldIndex = statementStreamColumnIndex column
             , fieldValue = value
             }
-
-fetchFieldValue :: Ptr DuckDBResult -> DuckDBType -> Int -> Int -> IO FieldValue
-fetchFieldValue resPtr dtype columnIndex rowIndex =
-    withChunkForRow resPtr rowIndex \chunk localRow -> do
-        vector <- c_duckdb_data_chunk_get_vector chunk (fromIntegral columnIndex)
-        dataPtr <- c_duckdb_vector_get_data vector
-        validity <- c_duckdb_vector_get_validity vector
-        materializedValueFromPointers dtype vector dataPtr validity localRow
-
-withChunkForRow :: Ptr DuckDBResult -> Int -> (DuckDBDataChunk -> Int -> IO a) -> IO a
-withChunkForRow resPtr targetRow action = do
-    chunkCount <- (fromIntegral <$> c_duckdb_result_chunk_count resPtr) :: IO Int
-    let seek chunkIdx remaining
-            | chunkIdx >= chunkCount =
-                throwIO (userError "duckdb-simple: row index out of bounds while materialising result")
-            | otherwise = do
-                chunk <- c_duckdb_result_get_chunk resPtr (fromIntegral chunkIdx)
-                if chunk == nullPtr
-                    then seek (chunkIdx + 1) remaining
-                    else do
-                        rawSize <- c_duckdb_data_chunk_get_size chunk
-                        let rowCount = fromIntegral rawSize :: Int
-                        if rowCount <= 0
-                            then do
-                                destroyDataChunk chunk
-                                seek (chunkIdx + 1) remaining
-                            else if remaining < rowCount
-                                then
-                                    finally
-                                        (action chunk remaining)
-                                        (destroyDataChunk chunk)
-                                else do
-                                    destroyDataChunk chunk
-                                    seek (chunkIdx + 1) (remaining - rowCount)
-    seek 0 targetRow
 
 data DuckDBListEntry = DuckDBListEntry
     { duckDBListEntryOffset :: !Word64

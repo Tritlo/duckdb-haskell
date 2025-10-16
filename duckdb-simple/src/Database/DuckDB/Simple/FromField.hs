@@ -17,6 +17,7 @@ module Database.DuckDB.Simple.FromField (
     Field (..),
     FieldValue (..),
     BigNum (..),
+    BitString(..),
     fromBigNumBytes,
     toBigNumBytes,
     DecimalValue (..),
@@ -82,7 +83,7 @@ data FieldValue
     | FieldDecimal DecimalValue
     | FieldTimestampTZ UTCTime
     | FieldTimeTZ TimeWithZone
-    | FieldBit BS.ByteString
+    | FieldBit BitString
     | FieldBigNum BigNum
     | FieldEnum Word32
     | FieldList [FieldValue]
@@ -160,6 +161,17 @@ toBigNumBytes value =
             ]
         payloadBytes = if isNeg then map complement payloadBE else payloadBE
      in headerBytes <> payloadBytes
+
+data BitString = BitString { padding :: !Word8
+                           , bits :: !BS.ByteString}
+    deriving stock (Eq)
+
+instance Show BitString where
+    show (BitString padding bits) =
+        drop (fromIntegral padding) $ concatMap word8ToString $ BS.unpack bits
+      where
+        word8ToString :: Word8 -> String
+        word8ToString w = map (\n -> if testBit w n then '1' else '0') [7, 6 .. 0]
 
 data TimeWithZone = TimeWithZone
     { timeWithZoneTime :: !TimeOfDay
@@ -475,6 +487,13 @@ instance FromField BS.ByteString where
         case fieldValue of
             FieldBlob bs -> Ok bs
             FieldText t -> Ok (TextEncoding.encodeUtf8 t)
+            FieldBit (BitString _ bits) -> Ok bits
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
+
+instance FromField BitString where
+    fromField f@Field{fieldValue} =
+        case fieldValue of
             FieldBit b -> Ok b
             FieldNull -> returnError UnexpectedNull f ""
             _ -> returnError Incompatible f ""

@@ -171,6 +171,7 @@ instance ToField String where
                 TextForeign.withCString (Text.pack str) $ \cstr ->
                     bindDuckValue stmt idx (c_duckdb_create_varchar cstr)
 
+
 instance ToField BS.ByteString where
     toField bs =
         mkFieldBinding

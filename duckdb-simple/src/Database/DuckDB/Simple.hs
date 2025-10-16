@@ -101,6 +101,7 @@ import Data.Ratio ((%))
 import Database.DuckDB.FFI
 import Database.DuckDB.Simple.FromField
     ( BigNum (..)
+    , BitString (..)
     , DecimalValue (..)
     , Field (..)
     , FieldValue (..)
@@ -1284,11 +1285,12 @@ materializedValueFromPointers dtype vector dataPtr validity rowIdx = do
                     ptr <- c_duckdb_string_t_data stringPtr
                     bs <- BS.unpack <$> BS.packCStringLen (ptr, fromIntegral len)
                     case bs of
-                       [] -> return $ FieldBit BS.empty
-                       [_] -> return $ FieldBit BS.empty
-                       (padding:b:bits) ->
-                           let cleared = foldl clearBit b [0..fromIntegral padding -1]
-                           in return $ FieldBit $ BS.pack (cleared:bits)
+                       [] -> return $ FieldBit (BitString 0 BS.empty)
+                       [padding] -> return $ FieldBit (BitString padding BS.empty)
+                       (padding:b:bits) -> do
+                           let tc = [(8-fromIntegral padding)..7]
+                               cleared = foldl clearBit b tc
+                           return $ FieldBit $ BitString padding (BS.pack (cleared:bits))
                 DuckDBTypeBigNum -> do
                     -- Here we have to get messy, because DuckDB returns a pointer
                     -- to a bignum_t and not a duckdb_bignum.

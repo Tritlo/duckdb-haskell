@@ -54,6 +54,7 @@ import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.FFI
 import Database.DuckDB.Simple.FromField (
     BigNum (..),
+    BitString (..),
     DecimalValue (..),
     Field (..),
     FieldValue (..),
@@ -511,11 +512,11 @@ fetchValue dtype decimalInfo enumInternal dataPtr rowIdx =
                 ptr <- c_duckdb_string_t_data stringPtr
                 bs <- BS.unpack <$> BS.packCStringLen (ptr, fromIntegral len)
                 case bs of
-                    [] -> return $ FieldBit BS.empty
-                    [_] -> return $ FieldBit BS.empty
+                    [] -> return $ FieldBit (BitString 0 BS.empty)
+                    [padding] -> return $ FieldBit (BitString padding BS.empty)
                     (padding:b:bits) ->
                         let cleared = foldl clearBit b [0..fromIntegral padding -1]
-                        in return $ FieldBit $ BS.pack (cleared:bits)
+                        in return $ FieldBit $ BitString padding (BS.pack (cleared:bits))
             DuckDBTypeBigNum -> do
                 let base = castPtr dataPtr :: Ptr Word8
                     -- luckily, the underlying data has only one field, which is a string_t

@@ -36,6 +36,7 @@ import Data.Ratio ((%))
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (
     BigNum (..),
+    BitString (..),
     DecimalValue (..),
     Field (..),
     FieldValue (..),
@@ -54,7 +55,6 @@ import Test.Tasty.QuickCheck (testProperty, (===))
 import Test.Tasty.ExpectedFailure (expectFailBecause)
 import qualified Data.UUID as UUID
 import Data.Maybe (fromJust)
-import Data.Bits (testBit)
 
 data Person = Person
     { personId :: Int
@@ -434,8 +434,7 @@ duckdbCastCases =
     , successCase "TIMESTAMPTZ" (quoted "2024-01-02 03:04:05+02:30") "TIMESTAMP WITH TIME ZONE" (ExpectEquals (FieldTimestampTZ timestampTzUtc))
     , successCase "BIGNUM" (quoted bigNumLiteralText) "BIGNUM" (ExpectEquals (FieldBigNum (BigNum bigNumLiteral)))
     , successCase "UUID" (quoted $ UUID.toText uuid) "UUID" (ExpectEquals (FieldUUID uuid))
-    -- not working
-    , failCaseOK "BIT" (quoted $ Text.pack $ concatMap word8ToString bits) "BIT" (expectBitField (BS.pack bits))
+    , successCase "BIT" (quoted $ Text.pack $ show bits) "BIT" (ExpectEquals (FieldBit bits))
      -- This one is broken upstream, instead of a DuckDBTypeTimeNs, we get a DuckDBType 0
      , failCaseWith "TIME_NS" (quoted "03:04:05.123456789") "TIME_NS" "TIME_NS decoding unsupported" (expectErrorCallContaining "unsupported DuckDB type")
       -- not implemented yet
@@ -450,10 +449,7 @@ duckdbCastCases =
     , failCaseOK "SQLNULL" "NULL" "SQLNULL" (expectSQLErrorContaining "SQLNULL")
     ]
   where
-    bits = [124, 235, 210, 8, 17, 39]
-    word8ToString :: Word8 -> String
-    word8ToString w = map (\n -> if testBit w n then '1' else '0') [7, 6 .. 0]
-
+    bits = BitString 7 $ BS.pack [1, 255]
     quoted t = Text.concat ["'", t, "'"]
     quotedValue v = quoted (valueText v)
     valueText :: (Show a) => a -> Text.Text
@@ -496,14 +492,6 @@ duckdbCastCases =
                      in assertEqual "map entries" (normalize expectedPairs) (normalize actualPairs)
                 other ->
                     assertFailure ("expected FieldMap, but saw " <> show other)
-    expectBitField :: BS.ByteString -> DuckDBExpectation
-    expectBitField bs =
-        ExpectSatisfies $ \fieldValue ->
-            case fieldValue of
-                FieldBit bv -> do
-                    assertEqual "bit value" bs bv
-                other ->
-                    assertFailure ("expected FieldBit, but saw " <> show other)
     expectSQLErrorContaining :: Text.Text -> DuckDBExpectation
     expectSQLErrorContaining needle =
         ExpectException $ \err ->

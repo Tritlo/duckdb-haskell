@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DefaultSignatures #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE InstanceSigs #-}
@@ -27,7 +28,8 @@ import Control.Exception (bracket, throwIO)
 import Control.Monad (when)
 import Data.Bits (complement)
 import qualified Data.ByteString as BS
-import Data.Int (Int16, Int32, Int64)
+import Data.Array (Array, elems)
+import Data.Int (Int8, Int16, Int32, Int64)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -37,7 +39,7 @@ import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds)
 import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), timeOfDayToTime, utc, utcToLocalTime)
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.FFI
-import Database.DuckDB.Simple.FromField (BigNum (..), toBigNumBytes, BitString(..))
+import Database.DuckDB.Simple.FromField (BigNum (..), BitString (..), toBigNumBytes)
 import Database.DuckDB.Simple.Internal (
     SQLError (..),
     Statement (..),
@@ -48,6 +50,7 @@ import Foreign.C.String (peekCString)
 import Foreign.C.Types (CDouble (..))
 import Foreign.Marshal (fromBool)
 import Foreign.Marshal.Alloc (alloca)
+import Foreign.Marshal.Array (withArray)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (poke)
 import Numeric.Natural (Natural)
@@ -64,6 +67,14 @@ data FieldBinding = FieldBinding
     { fieldBindingAction :: !(Statement -> DuckDBIdx -> IO ())
     , fieldBindingDisplay :: !String
     }
+
+class ToDuckValue a where
+    toDuckValue :: a -> IO DuckDBValue
+
+valueBinding :: String -> IO DuckDBValue -> FieldBinding
+valueBinding display mkValue =
+    mkFieldBinding display $ \stmt idx ->
+        bindDuckValue stmt idx mkValue
 
 -- | Types that map to a concrete DuckDB column type when used with 'ToField'.
 class DuckDBColumnType a where
@@ -91,134 +102,53 @@ mkFieldBinding display action =
 -- | Types that can be used as positional parameters.
 class (DuckDBColumnType a) => ToField a where
     toField :: a -> FieldBinding
+    default toField :: (Show a, ToDuckValue a) => a -> FieldBinding
+    toField value = valueBinding (show value) (toDuckValue value)
 
 instance ToField Null where
     toField Null = nullBinding "NULL"
 
-
-instance ToField Bool where
-    toField value =
-        mkFieldBinding (show value) $ \stmt idx ->
-            bindDuckValue stmt idx (c_duckdb_create_bool (if value then 1 else 0))
-
-instance ToField Int where
-    toField = intBinding . (fromIntegral :: Int -> Int64)
-
-instance ToField Int16 where
-    toField = intBinding . (fromIntegral :: Int16 -> Int64)
-
-instance ToField Int32 where
-    toField = intBinding . (fromIntegral :: Int32 -> Int64)
-
-instance ToField Int64 where
-    toField = intBinding
+instance ToField Bool
+instance ToField Int
+instance ToField Int8
+instance ToField Int16
+instance ToField Int32
+instance ToField Int64
+instance ToField Integer
+instance ToField Natural
+instance ToField UUID.UUID
+instance ToField Word
+instance ToField Word8
+instance ToField Word16
+instance ToField Word32
+instance ToField Word64
+instance ToField Double
+instance ToField Float
+instance ToField Text
+instance ToField String
+instance ToField BitString
+instance ToField Day
+instance ToField TimeOfDay
+instance ToField LocalTime
+instance ToField UTCTime
 
 instance ToField BigNum where
-    toField = bignumBinding
-
-instance ToField UUID.UUID where
-    toField = uuidBinding
-
-instance ToField Integer where
-    toField :: Integer -> FieldBinding
-    toField = toField . BigNum
-
-instance ToField Natural where
-    toField = toField . BigNum . toInteger
-
-instance ToField Word where
-    toField value = uint64Binding (fromIntegral value)
-
-instance ToField Word16 where
-    toField = uint16Binding
-
-instance ToField Word32 where
-    toField = uint32Binding
-
-instance ToField Word64 where
-    toField = uint64Binding
-
-instance ToField Word8 where
-    toField = uint8Binding
-
-instance ToField Double where
-    toField value =
-        mkFieldBinding
-            (show value)
-            \stmt idx ->
-                bindDuckValue stmt idx (c_duckdb_create_double (CDouble value))
-
-instance ToField Float where
-    toField value =
-        mkFieldBinding
-            (show value)
-            \stmt idx ->
-                bindDuckValue stmt idx (c_duckdb_create_double (CDouble (realToFrac value)))
-
-instance ToField Text where
-    toField txt =
-        mkFieldBinding
-            (show txt)
-            \stmt idx ->
-                TextForeign.withCString txt $ \cstr ->
-                    bindDuckValue stmt idx (c_duckdb_create_varchar cstr)
-
-instance ToField String where
-    toField str =
-        mkFieldBinding
-            (show str)
-            \stmt idx ->
-                TextForeign.withCString (Text.pack str) $ \cstr ->
-                    bindDuckValue stmt idx (c_duckdb_create_varchar cstr)
+    toField big@(BigNum n) = valueBinding (show n) (bigNumDuckValue big)
 
 instance DuckDBColumnType BitString where
     duckdbColumnTypeFor _ = "BIT"
 
-instance ToField BitString where
-    toField = bitBinding
-
 instance ToField BS.ByteString where
     toField bs =
-        mkFieldBinding
+        valueBinding
             ("<blob length=" <> show (BS.length bs) <> ">")
-            \stmt idx ->
-                BS.useAsCStringLen bs \(ptr, len) ->
-                    bindDuckValue stmt idx (c_duckdb_create_blob (castPtr ptr :: Ptr Word8) (fromIntegral len))
+            (toDuckValue bs)
 
-instance ToField Day where
-    toField day =
-        mkFieldBinding
-            (show day)
-            \stmt idx ->
-                bindDuckValue stmt idx $ do
-                    duckDate <- encodeDay day
-                    c_duckdb_create_date duckDate
-
-instance ToField TimeOfDay where
-    toField tod =
-        mkFieldBinding
-            (show tod)
-            \stmt idx ->
-                bindDuckValue stmt idx $ do
-                    duckTime <- encodeTimeOfDay tod
-                    c_duckdb_create_time duckTime
-
-instance ToField LocalTime where
-    toField ts =
-        mkFieldBinding
-            (show ts)
-            \stmt idx ->
-                bindDuckValue stmt idx $ do
-                    duckTimestamp <- encodeLocalTime ts
-                    c_duckdb_create_timestamp duckTimestamp
-
-instance ToField UTCTime where
-    toField utcTime =
-        let FieldBinding{fieldBindingAction = action} = toField (utcToLocalTime utc utcTime)
-         in FieldBinding
-                { fieldBindingAction = action
-                , fieldBindingDisplay = show utcTime
-                }
+instance (DuckDBColumnType a, ToDuckValue a) => ToField (Array Int a) where
+    toField arr =
+        valueBinding
+            ("<array length=" <> show (length (elems arr)) <> ">")
+            (arrayDuckValue arr)
 
 instance (ToField a) => ToField (Maybe a) where
     toField Nothing = nullBinding "Nothing"
@@ -236,6 +166,10 @@ instance DuckDBColumnType Bool where
 
 instance DuckDBColumnType Int where
     duckdbColumnTypeFor _ = "BIGINT"
+
+instance DuckDBColumnType Int8 where
+    duckdbColumnTypeFor _ = "TINYINT"
+
 
 instance DuckDBColumnType Int16 where
     duckdbColumnTypeFor _ = "SMALLINT"
@@ -303,81 +237,86 @@ instance DuckDBColumnType UTCTime where
 instance (DuckDBColumnType a) => DuckDBColumnType (Maybe a) where
     duckdbColumnTypeFor _ = duckdbColumnTypeFor (Proxy :: Proxy a)
 
--- | Helper for binding 'Null' values.
+instance (DuckDBColumnType a) => DuckDBColumnType (Array Int a) where
+    duckdbColumnTypeFor _ = duckdbColumnTypeFor (Proxy :: Proxy a) <> Text.pack "[]"
+
 nullBinding :: String -> FieldBinding
-nullBinding repr =
-    mkFieldBinding
-        repr
-        \stmt idx ->
-            bindDuckValue stmt idx c_duckdb_create_null_value
+nullBinding repr = valueBinding repr nullDuckValue
 
-intBinding :: Int64 -> FieldBinding
-intBinding value =
-    mkFieldBinding
-        (show value)
-        \stmt idx ->
-            bindDuckValue stmt idx (c_duckdb_create_int64 value)
+nullDuckValue :: IO DuckDBValue
+nullDuckValue = c_duckdb_create_null_value
 
-uint64Binding :: Word64 -> FieldBinding
-uint64Binding value =
-    mkFieldBinding
-        (show value)
-        \stmt idx ->
-            bindDuckValue stmt idx (c_duckdb_create_uint64 value)
+boolDuckValue :: Bool -> IO DuckDBValue
+boolDuckValue value = c_duckdb_create_bool (if value then 1 else 0)
 
-uint32Binding :: Word32 -> FieldBinding
-uint32Binding value =
-    mkFieldBinding
-        (show value)
-        \stmt idx ->
-            bindDuckValue stmt idx (c_duckdb_create_uint32 value)
+int8DuckValue :: Int8 -> IO DuckDBValue
+int8DuckValue = c_duckdb_create_int8
 
-uint16Binding :: Word16 -> FieldBinding
-uint16Binding value =
-    mkFieldBinding
-        (show value)
-        \stmt idx ->
-            bindDuckValue stmt idx (c_duckdb_create_uint16 value)
+int16DuckValue :: Int16 -> IO DuckDBValue
+int16DuckValue = c_duckdb_create_int16
 
-uint8Binding :: Word8 -> FieldBinding
-uint8Binding value =
-    mkFieldBinding
-        (show value)
-        \stmt idx ->
-            bindDuckValue stmt idx (c_duckdb_create_uint8 value)
+int32DuckValue :: Int32 -> IO DuckDBValue
+int32DuckValue = c_duckdb_create_int32
 
-uuidBinding :: UUID.UUID -> FieldBinding
-uuidBinding uuid =
-    mkFieldBinding
-        (show uuid)
-        \stmt idx ->
-            bindDuckValue stmt idx $
-              alloca $ \ptr -> do
-                let (upper, lower) = UUID.toWords64 uuid
-                poke ptr DuckDBUHugeInt
-                    { duckDBUHugeIntLower = lower
-                    , duckDBUHugeIntUpper = upper
-                    }
-                c_duckdb_create_uuid ptr
+int64DuckValue :: Int64 -> IO DuckDBValue
+int64DuckValue = c_duckdb_create_int64
 
-bitBinding :: BitString -> FieldBinding
-bitBinding (BitString padding bits) =
-    mkFieldBinding
-        (show (BitString padding bits))
-        \stmt idx ->
-            let w_padding = (fromIntegral padding :: Word8):BS.unpack bits
-            in bindDuckValue stmt idx $
-                  if BS.null bits
-                        then alloca \ptr -> do
-                            poke
-                                ptr
-                                DuckDBBit
-                                    { duckDBBitData = nullPtr
-                                    , duckDBBitSize = 0
-                                    }
-                            c_duckdb_create_bit ptr
-                        else
-                            BS.useAsCStringLen (BS.pack w_padding) \(rawPtr, len) ->
+uint64DuckValue :: Word64 -> IO DuckDBValue
+uint64DuckValue = c_duckdb_create_uint64
+
+uint32DuckValue :: Word32 -> IO DuckDBValue
+uint32DuckValue = c_duckdb_create_uint32
+
+uint16DuckValue :: Word16 -> IO DuckDBValue
+uint16DuckValue = c_duckdb_create_uint16
+
+uint8DuckValue :: Word8 -> IO DuckDBValue
+uint8DuckValue = c_duckdb_create_uint8
+
+doubleDuckValue :: Double -> IO DuckDBValue
+doubleDuckValue = c_duckdb_create_double . CDouble
+
+floatDuckValue :: Float -> IO DuckDBValue
+floatDuckValue = c_duckdb_create_double . CDouble . realToFrac
+
+textDuckValue :: Text -> IO DuckDBValue
+textDuckValue txt =
+    TextForeign.withCString txt c_duckdb_create_varchar
+
+stringDuckValue :: String -> IO DuckDBValue
+stringDuckValue = textDuckValue . Text.pack
+
+blobDuckValue :: BS.ByteString -> IO DuckDBValue
+blobDuckValue bs =
+    BS.useAsCStringLen bs \(ptr, len) ->
+        c_duckdb_create_blob (castPtr ptr :: Ptr Word8) (fromIntegral len)
+
+uuidDuckValue :: UUID.UUID -> IO DuckDBValue
+uuidDuckValue uuid =
+    alloca $ \ptr -> do
+        let (upper, lower) = UUID.toWords64 uuid
+        poke ptr
+            DuckDBUHugeInt
+                { duckDBUHugeIntLower = lower
+                , duckDBUHugeIntUpper = upper
+                }
+        c_duckdb_create_uuid ptr
+
+bitDuckValue :: BitString -> IO DuckDBValue
+bitDuckValue (BitString padding bits) =
+    let withPacked action =
+            if BS.null bits
+                then alloca \ptr -> do
+                    poke
+                        ptr
+                        DuckDBBit
+                            { duckDBBitData = nullPtr
+                            , duckDBBitSize = 0
+                            }
+                    action ptr
+                else
+                    let payload = BS.pack ((fromIntegral padding :: Word8) : BS.unpack bits)
+                     in BS.useAsCStringLen payload \(rawPtr, len) ->
                             alloca \ptr -> do
                                 poke
                                     ptr
@@ -385,40 +324,211 @@ bitBinding (BitString padding bits) =
                                         { duckDBBitData = castPtr rawPtr
                                         , duckDBBitSize = fromIntegral len
                                         }
-                                c_duckdb_create_bit ptr
+                                action ptr
+     in withPacked c_duckdb_create_bit
 
-bignumBinding :: BigNum -> FieldBinding
-bignumBinding (BigNum big) =
-    mkFieldBinding
-        (show big)
-        \stmt idx ->
-            bindDuckValue stmt idx $
-                let neg = fromBool (big < 0)
-                    big_num_bytes =
-                        BS.pack $
-                            if big < 0
-                                then map complement (drop 3 $ toBigNumBytes big)
-                                else drop 3 $ toBigNumBytes big
-                 in if BS.null big_num_bytes
-                        then alloca \ptr -> do
-                            poke
-                                ptr
-                                DuckDBBignum
-                                    { duckDBBignumData = nullPtr
-                                    , duckDBBignumSize = 0
-                                    , duckDBBignumIsNegative = neg
-                                    }
-                            c_duckdb_create_bignum ptr
-                        else BS.useAsCStringLen big_num_bytes \(rawPtr, len) ->
-                            alloca \ptr -> do
-                                poke
-                                    ptr
-                                    DuckDBBignum
-                                        { duckDBBignumData = castPtr rawPtr
-                                        , duckDBBignumSize = fromIntegral len
-                                        , duckDBBignumIsNegative = neg
-                                        }
-                                c_duckdb_create_bignum ptr
+bigNumDuckValue :: BigNum -> IO DuckDBValue
+bigNumDuckValue (BigNum big) =
+    let neg = fromBool (big < 0)
+        payload =
+            BS.pack $
+                if big < 0
+                    then map complement (drop 3 $ toBigNumBytes big)
+                    else drop 3 $ toBigNumBytes big
+        withPayload action =
+            if BS.null payload
+                then alloca \ptr -> do
+                    poke
+                        ptr
+                        DuckDBBignum
+                            { duckDBBignumData = nullPtr
+                            , duckDBBignumSize = 0
+                            , duckDBBignumIsNegative = neg
+                            }
+                    action ptr
+                else BS.useAsCStringLen payload \(rawPtr, len) ->
+                    alloca \ptr -> do
+                        poke
+                            ptr
+                            DuckDBBignum
+                                { duckDBBignumData = castPtr rawPtr
+                                , duckDBBignumSize = fromIntegral len
+                                , duckDBBignumIsNegative = neg
+                                }
+                        action ptr
+     in withPayload c_duckdb_create_bignum
+
+dayDuckValue :: Day -> IO DuckDBValue
+dayDuckValue day = do
+    duckDate <- encodeDay day
+    c_duckdb_create_date duckDate
+
+timeOfDayDuckValue :: TimeOfDay -> IO DuckDBValue
+timeOfDayDuckValue tod = do
+    duckTime <- encodeTimeOfDay tod
+    c_duckdb_create_time duckTime
+
+localTimeDuckValue :: LocalTime -> IO DuckDBValue
+localTimeDuckValue ts = do
+    duckTimestamp <- encodeLocalTime ts
+    c_duckdb_create_timestamp duckTimestamp
+
+utcTimeDuckValue :: UTCTime -> IO DuckDBValue
+utcTimeDuckValue utcTime =
+    let local = utcToLocalTime utc utcTime
+     in localTimeDuckValue local
+
+arrayDuckValue ::
+    forall a.
+    (DuckDBColumnType a, ToDuckValue a) =>
+    Array Int a ->
+    IO DuckDBValue
+arrayDuckValue arr =
+    bracket (createElementLogicalType (Proxy :: Proxy a)) destroyLogicalType \elementType -> do
+        let elemsList = elems arr
+            count = length elemsList
+        if count == 0
+            then c_duckdb_create_array_value elementType nullPtr 0
+            else do
+                values <- mapM toDuckValue elemsList
+                result <-
+                    withArray values \ptr ->
+                        c_duckdb_create_array_value elementType ptr (fromIntegral count)
+                mapM_ destroyValue values
+                pure result
+
+createElementLogicalType :: forall a. (DuckDBColumnType a) => Proxy a -> IO DuckDBLogicalType
+createElementLogicalType proxy =
+    let typeName = duckdbColumnType proxy
+     in case duckDBTypeFromName typeName of
+            Just dtype -> c_duckdb_create_logical_type dtype
+            Nothing ->
+                throwIO
+                    ( SQLError
+                        { sqlErrorMessage =
+                            Text.concat
+                                [ "duckdb-simple: unsupported array element type "
+                                , typeName
+                                ]
+                        , sqlErrorType = Nothing
+                        , sqlErrorQuery = Nothing
+                        }
+                    )
+
+duckDBTypeFromName :: Text -> Maybe DuckDBType
+duckDBTypeFromName name =
+    case name of
+        "BOOLEAN" -> Just DuckDBTypeBoolean
+        "TINYINT" -> Just DuckDBTypeTinyInt
+        "SMALLINT" -> Just DuckDBTypeSmallInt
+        "INTEGER" -> Just DuckDBTypeInteger
+        "BIGINT" -> Just DuckDBTypeBigInt
+        "UTINYINT" -> Just DuckDBTypeUTinyInt
+        "USMALLINT" -> Just DuckDBTypeUSmallInt
+        "UINTEGER" -> Just DuckDBTypeUInteger
+        "UBIGINT" -> Just DuckDBTypeUBigInt
+        "FLOAT" -> Just DuckDBTypeFloat
+        "DOUBLE" -> Just DuckDBTypeDouble
+        "DATE" -> Just DuckDBTypeDate
+        "TIME" -> Just DuckDBTypeTime
+        "TIMESTAMP" -> Just DuckDBTypeTimestamp
+        "TIMESTAMPTZ" -> Just DuckDBTypeTimestampTz
+        "TEXT" -> Just DuckDBTypeVarchar
+        "BLOB" -> Just DuckDBTypeBlob
+        "UUID" -> Just DuckDBTypeUUID
+        "BIT" -> Just DuckDBTypeBit
+        "BIGNUM" -> Just DuckDBTypeBigNum
+        -- treat NULL as SQLNULL to provide element type for Maybe values without data
+        "NULL" -> Just DuckDBTypeSQLNull
+        _ -> Nothing
+
+destroyLogicalType :: DuckDBLogicalType -> IO ()
+destroyLogicalType logical =
+    alloca $ \ptr -> do
+        poke ptr logical
+        c_duckdb_destroy_logical_type ptr
+
+instance ToDuckValue Null where
+    toDuckValue _ = nullDuckValue
+
+instance ToDuckValue Bool where
+    toDuckValue = boolDuckValue
+
+instance ToDuckValue Int where
+    toDuckValue = int64DuckValue . fromIntegral
+
+instance ToDuckValue Int8 where
+    toDuckValue = int8DuckValue
+
+instance ToDuckValue Int16 where
+    toDuckValue = int16DuckValue
+
+instance ToDuckValue Int32 where
+    toDuckValue = int32DuckValue
+
+instance ToDuckValue Int64 where
+    toDuckValue = int64DuckValue
+
+instance ToDuckValue BigNum where
+    toDuckValue = bigNumDuckValue
+
+instance ToDuckValue UUID.UUID where
+    toDuckValue = uuidDuckValue
+
+instance ToDuckValue Integer where
+    toDuckValue = bigNumDuckValue . BigNum
+
+instance ToDuckValue Natural where
+    toDuckValue = bigNumDuckValue . BigNum . toInteger
+
+instance ToDuckValue Word where
+    toDuckValue = uint64DuckValue . fromIntegral
+
+instance ToDuckValue Word16 where
+    toDuckValue = uint16DuckValue
+
+instance ToDuckValue Word32 where
+    toDuckValue = uint32DuckValue
+
+instance ToDuckValue Word64 where
+    toDuckValue = uint64DuckValue
+
+instance ToDuckValue Word8 where
+    toDuckValue = uint8DuckValue
+
+instance ToDuckValue Double where
+    toDuckValue = doubleDuckValue
+
+instance ToDuckValue Float where
+    toDuckValue = floatDuckValue
+
+instance ToDuckValue Text where
+    toDuckValue = textDuckValue
+
+instance ToDuckValue String where
+    toDuckValue = stringDuckValue
+
+instance ToDuckValue BS.ByteString where
+    toDuckValue = blobDuckValue
+
+instance ToDuckValue BitString where
+    toDuckValue = bitDuckValue
+
+instance ToDuckValue Day where
+    toDuckValue = dayDuckValue
+
+instance ToDuckValue TimeOfDay where
+    toDuckValue = timeOfDayDuckValue
+
+instance ToDuckValue LocalTime where
+    toDuckValue = localTimeDuckValue
+
+instance ToDuckValue UTCTime where
+    toDuckValue = utcTimeDuckValue
+
+instance (ToDuckValue a) => ToDuckValue (Maybe a) where
+    toDuckValue Nothing = nullDuckValue
+    toDuckValue (Just value) = toDuckValue value
 
 encodeDay :: Day -> IO DuckDBDate
 encodeDay day =

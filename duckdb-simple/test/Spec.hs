@@ -628,12 +628,14 @@ typeTests =
         , testCase "round-trips fixed-length arrays" $
             withConnection ":memory:" \conn -> do
                 _ <- execute_ conn "CREATE TABLE arrays (vals INTEGER[3])"
-                _ <- execute_ conn "INSERT INTO arrays VALUES ([1,2,3]), ([4,5,6])"
+                let inputs =
+                        [ listArray (0, 2) [1, 2, 3]
+                        , listArray (0, 2) [4, 5, 6]
+                        ]
+                _ <- executeMany conn "INSERT INTO arrays VALUES (?)" (Only <$> inputs)
                 rows <- query_ conn "SELECT vals FROM arrays ORDER BY rowid" :: IO [Only (Array Int Int)]
                 let expected =
-                        [ Only (listArray (0, 2) [1, 2, 3])
-                        , Only (listArray (0, 2) [4, 5, 6])
-                        ]
+                        fmap Only inputs
                 assertEqual "array round-trip" expected rows
         , testCase "decodes huge integers as Integer" $
             withConnection ":memory:" \conn -> do

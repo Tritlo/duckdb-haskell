@@ -147,6 +147,7 @@ import Foreign.Marshal.Alloc (alloca, free, malloc)
 import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.Storable (Storable (..), peekElemOff, peekByteOff, pokeByteOff)
 import Database.DuckDB.Simple.Ok (Ok(..))
+import qualified Data.UUID as UUID
 
 -- | Open a DuckDB database located at the supplied path.
 open :: FilePath -> IO Connection
@@ -1213,7 +1214,9 @@ materializedValueFromPointers dtype vector dataPtr validity rowIdx = do
                     raw <- peekElemOff (castPtr dataPtr :: Ptr Double) rowIdx
                     pure (FieldDouble raw)
                 DuckDBTypeVarchar -> FieldText <$> chunkDecodeText dataPtr duckIdx
-                DuckDBTypeUUID -> FieldText <$> chunkDecodeText dataPtr duckIdx
+                DuckDBTypeUUID -> do
+                    DuckDBUHugeInt upper lower <- peekElemOff (castPtr dataPtr :: Ptr DuckDBUHugeInt) rowIdx
+                    return $ FieldText $ UUID.toText $ UUID.fromWords64 lower upper
                 DuckDBTypeBlob -> FieldBlob <$> chunkDecodeBlob dataPtr duckIdx
                 DuckDBTypeDate -> do
                     raw <- peekElemOff (castPtr dataPtr :: Ptr Int32) rowIdx

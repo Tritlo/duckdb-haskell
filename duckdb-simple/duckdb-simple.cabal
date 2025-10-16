@@ -46,6 +46,7 @@ library
     , duckdb-ffi >= 1.4 && <1.5
     , text >= 2.0 && <2.1
     , transformers >= 0.6 && <0.7
+    , uuid >=1.3 && <1.4
     , time >= 1.12 && <1.13
 
 test-suite duckdb-simple-test
@@ -62,5 +63,6 @@ test-suite duckdb-simple-test
     , tasty >=1.4 && <1.6
     , tasty-hunit >=0.10 && <0.12
     , tasty-quickcheck >=0.10 && <0.11
+    , tasty-expected-failure >=0.12 && <0.13
     , QuickCheck >=2.14 && <2.15
     , time

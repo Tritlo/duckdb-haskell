@@ -11,17 +11,18 @@
 module Main (main) where
 
 import Control.Applicative ((<|>))
-import Control.Exception (ErrorCall, Exception, try)
+import Control.Exception (ErrorCall, Exception, SomeException, displayException, fromException, try)
 import Control.Monad (replicateM_)
 import qualified Data.ByteString as BS
 import Data.IORef (atomicModifyIORef', newIORef)
-import Data.Int (Int64)
+import Data.Int (Int16, Int32, Int64, Int8)
+import Data.List (sortOn)
 import qualified Data.Map.Strict as Map
 import Data.Proxy (Proxy (..))
 import Data.String (fromString)
 import qualified Data.Text as Text
 import Data.Time.Calendar (fromGregorian)
-import Data.Time.Clock (UTCTime (..))
+import Data.Time.Clock (UTCTime (..), secondsToDiffTime)
 import Data.Time.LocalTime (
     LocalTime (..),
     TimeOfDay (..),
@@ -31,9 +32,12 @@ import Data.Time.LocalTime (
     utc,
  )
 import Data.Word (Word16, Word32, Word64, Word8)
+import Data.Ratio ((%))
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (
     BigNum (..),
+    BitString (..),
+    DecimalValue (..),
     Field (..),
     FieldValue (..),
     IntervalValue (..),
@@ -48,6 +52,7 @@ import Numeric.Natural (Natural)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck (testProperty, (===))
+import Test.Tasty.ExpectedFailure (expectFailBecause)
 
 data Person = Person
     { personId :: Int
@@ -330,11 +335,262 @@ statementTests =
                 assertEqual "yes/no parsing" [YesNo False, YesNo True] rows
         ]
 
+data DuckDBExpectation
+    = ExpectEquals FieldValue
+    | ExpectSatisfies (FieldValue -> Assertion)
+    | ExpectException (SomeException -> Assertion)
+
+data DuckDBExpression
+    = CastExpression Text.Text Text.Text
+    | DirectExpression Text.Text
+
+data DuckDBCastCase = DuckDBCastCase
+    { castLabel :: String
+    , castExpression :: DuckDBExpression
+    , castExpectation :: DuckDBExpectation
+    , castExpectFailureReason :: Maybe String
+    }
+
+duckdbTypeCastTests :: TestTree
+duckdbTypeCastTests =
+    testGroup
+        "duckdb type casts"
+        (map buildCase duckdbCastCases)
+  where
+    buildCase DuckDBCastCase{castLabel, castExpression, castExpectation, castExpectFailureReason} =
+        let base =
+                testCase castLabel $
+                    withConnection ":memory:" \conn -> do
+                        let sql =
+                                Query
+                                    (case castExpression of
+                                        CastExpression expressionValue expressionType ->
+                                            Text.concat ["SELECT CAST(", expressionValue, " AS ", expressionType, ")"]
+                                        DirectExpression expressionSQL ->
+                                            Text.concat ["SELECT ", expressionSQL]
+                                    )
+                        result <- try (query_ conn sql) :: IO (Either SomeException [Only FieldValue])
+                        runExpectation castLabel castExpectation result
+                        maybe (pure ()) assertFailure castExpectFailureReason
+         in maybe base (\reason -> expectFailBecause reason base) castExpectFailureReason
+
+runExpectation :: String -> DuckDBExpectation -> Either SomeException [Only FieldValue] -> Assertion
+runExpectation label expectation outcome =
+    case expectation of
+        ExpectEquals expected ->
+            case outcome of
+                Right [Only fieldValue] ->
+                    assertEqual (label <> " result mismatch") expected fieldValue
+                Right other ->
+                    assertFailure (label <> " expected single row, got " <> show other)
+                Left err ->
+                    assertFailure (label <> " expected success, but query failed: " <> displayException err)
+        ExpectSatisfies predicate ->
+            case outcome of
+                Right [Only fieldValue] ->
+                    predicate fieldValue
+                Right other ->
+                    assertFailure (label <> " expected single row, got " <> show other)
+                Left err ->
+                    assertFailure (label <> " expected success, but query failed: " <> displayException err)
+        ExpectException predicate ->
+            case outcome of
+                Left err ->
+                    predicate err
+                Right rows ->
+                    assertFailure (label <> " expected failure, but query succeeded with " <> show rows)
+
+duckdbCastCases :: [DuckDBCastCase]
+duckdbCastCases =
+    [ failCase "INVALID" "0" "INVALID"
+    , successCase "BOOLEAN" (quoted "true") "BOOLEAN" (ExpectEquals (FieldBool True))
+    , successCase "TINYINT" (quotedValue tinyIntValue) "TINYINT" (ExpectEquals (FieldInt8 tinyIntValue))
+    , successCase "SMALLINT" (quotedValue smallIntValue) "SMALLINT" (ExpectEquals (FieldInt16 smallIntValue))
+    , successCase "INTEGER" (quotedValue intValue) "INTEGER" (ExpectEquals (FieldInt32 intValue))
+    , successCase "BIGINT" (quotedValue bigIntValue) "BIGINT" (ExpectEquals (FieldInt64 bigIntValue))
+    , successCase "UTINYINT" (quotedValue uTinyValue) "UTINYINT" (ExpectEquals (FieldWord8 uTinyValue))
+    , successCase "USMALLINT" (quotedValue uSmallValue) "USMALLINT" (ExpectEquals (FieldWord16 uSmallValue))
+    , successCase "UINTEGER" (quotedValue uIntValue) "UINTEGER" (ExpectEquals (FieldWord32 uIntValue))
+    , successCase "UBIGINT" (quotedValue uBigValue) "UBIGINT" (ExpectEquals (FieldWord64 uBigValue))
+    , successCase "FLOAT" (quoted "3.25") "FLOAT" (ExpectEquals (FieldFloat floatValue))
+    , successCase "DOUBLE" (quoted "2.5") "DOUBLE" (ExpectEquals (FieldDouble doubleValue))
+    , successCase "TIMESTAMP" (quoted "2024-01-02 03:04:05.123456") "TIMESTAMP" (ExpectEquals (FieldTimestamp timestampLocalTimeMicros))
+    , successCase "DATE" (quoted "2024-10-12") "DATE" (ExpectEquals (FieldDate dateValue))
+    , successCase "TIME" (quoted "14:30:15.123456") "TIME" (ExpectEquals (FieldTime timeValue))
+    , successCase "INTERVAL" (quoted "1 day") "INTERVAL" (ExpectEquals (FieldInterval intervalValue))
+    , successCase "HUGEINT" (quotedValue hugeIntLiteral) "HUGEINT" (ExpectEquals (FieldHugeInt hugeIntLiteral))
+    , successCase "UHUGEINT" (quotedValue uHugeIntLiteral) "UHUGEINT" (ExpectEquals (FieldUHugeInt uHugeIntLiteral))
+    , successCase "VARCHAR" (quoted varcharText) "VARCHAR" (ExpectEquals (FieldText varcharText))
+    , successCase "BLOB" (quoted "duckdb") "BLOB" (ExpectEquals (FieldBlob blobValue))
+    , successCase "DECIMAL" (quoted "12345.6789") "DECIMAL(18,4)" (ExpectEquals (FieldDecimal decimalValue))
+    , successCase "TIMESTAMP_S" (quoted "2024-01-02 03:04:05") "TIMESTAMP_S" (ExpectEquals (FieldTimestamp timestampLocalTimeSeconds))
+    , successCase "TIMESTAMP_MS" (quoted "2024-01-02 03:04:05.123") "TIMESTAMP_MS" (ExpectEquals (FieldTimestamp timestampLocalTimeMillis))
+    , successCase "TIMESTAMP_NS" (quoted "2024-01-02 03:04:05.123456789") "TIMESTAMP_NS" (ExpectEquals (FieldTimestamp timestampLocalTimeNanos))
+    , successCase "ENUM" (quoted "beta") "ENUM('alpha','beta')" (ExpectEquals (FieldEnum 1))
+    , successCase "LIST" (quoted "[1,2,3]") "INTEGER[]" (ExpectEquals (FieldList listElements))
+    , failCaseWith "STRUCT" (quoted "{\"a\":1,\"b\":2}") "STRUCT(a INTEGER, b INTEGER)" "STRUCT decoding unsupported" (expectErrorCallContaining "STRUCT columns are not supported")
+    , successDirect "MAP" "MAP(['a','b'], [1,2])" (expectMapEntries mapPairs)
+    , failCaseWith "ARRAY" (quoted "[1,2,3]") "INTEGER[3]" "ARRAY decoding unsupported" (expectErrorCallContaining "unsupported DuckDB type")
+    , failCaseWith "UNION" (quoted "1") "UNION(\"value\" INTEGER)" "UNION casts unsupported" (expectSQLErrorContaining "UNION")
+    , expectedFailureCase "BIT" (quoted "1") "BIT" "BIT decoding not implemented" expectBitField
+    , successCase "TIMETZ" (quoted "03:04:05+02:30") "TIME WITH TIME ZONE" (ExpectEquals (FieldTimeTZ timeWithZoneValue))
+    , successCase "TIMESTAMPTZ" (quoted "2024-01-02 03:04:05+02:30") "TIMESTAMP WITH TIME ZONE" (ExpectEquals (FieldTimestampTZ timestampTzUtc))
+    , failCase "ANY" (quoted "1") "ANY"
+    , successCase "BIGNUM" (quoted bigNumLiteralText) "BIGNUM" (ExpectEquals (FieldBigNum (BigNum bigNumLiteral)))
+    , failCase "SQLNULL" "NULL" "SQLNULL"
+    , failCase "STRING_LITERAL" (quoted literalText) "STRING_LITERAL"
+    , failCase "INTEGER_LITERAL" (quoted "123") "INTEGER_LITERAL"
+    , failCaseWith "TIME_NS" (quoted "03:04:05.123456789") "TIME_NS" "TIME_NS decoding unsupported" (expectErrorCallContaining "unsupported DuckDB type")
+    , expectedFailureCase "UUID" (quoted uuidText) "UUID" "UUID decoding uses incorrect byte order" (ExpectEquals (FieldText uuidText))
+    ]
+  where
+    quoted t = Text.concat ["'", t, "'"]
+    quotedValue v = quoted (valueText v)
+    valueText :: (Show a) => a -> Text.Text
+    valueText = Text.pack . show
+    successCase label value ty expectation =
+        DuckDBCastCase
+            { castLabel = label
+            , castExpression = CastExpression value ty
+            , castExpectation = expectation
+            , castExpectFailureReason = Nothing
+            }
+    successDirect label expr expectation =
+        DuckDBCastCase
+            { castLabel = label
+            , castExpression = DirectExpression expr
+            , castExpectation = expectation
+            , castExpectFailureReason = Nothing
+            }
+    failCase label value ty =
+        failCaseWith label value ty (Text.unpack ty <> " casts are unsupported") (expectSQLErrorContaining ty)
+    failCaseWith label value ty reason expectation =
+        DuckDBCastCase
+            { castLabel = label
+            , castExpression = CastExpression value ty
+            , castExpectation = expectation
+            , castExpectFailureReason = Just reason
+            }
+    expectedFailureCase label value ty reason expectation =
+        DuckDBCastCase
+            { castLabel = label
+            , castExpression = CastExpression value ty
+            , castExpectation = expectation
+            , castExpectFailureReason = Just reason
+            }
+    expectMapEntries expectedPairs =
+        ExpectSatisfies $ \fieldValue ->
+            case fieldValue of
+                FieldMap actualPairs ->
+                    let normalize pairs = sortOn (mapKey . fst) pairs
+                        mapKey (FieldText txt) = txt
+                        mapKey other = Text.pack (show other)
+                     in assertEqual "map entries" (normalize expectedPairs) (normalize actualPairs)
+                other ->
+                    assertFailure ("expected FieldMap, but saw " <> show other)
+    expectBitField :: DuckDBExpectation
+    expectBitField =
+        ExpectSatisfies $ \fieldValue ->
+            case fieldValue of
+                FieldBit bitValue -> do
+                    assertEqual "bit length" 1 (bitStringLength bitValue)
+                    assertBool "bit payload not empty" (not (BS.null (bitStringBytes bitValue)))
+                other ->
+                    assertFailure ("expected FieldBit, but saw " <> show other)
+    expectSQLErrorContaining :: Text.Text -> DuckDBExpectation
+    expectSQLErrorContaining needle =
+        ExpectException $ \err ->
+            case fromException err :: Maybe SQLError of
+                Just sqlErr ->
+                    let message = sqlErrorMessage sqlErr
+                        in assertBool
+                            ("expected SQLError containing " <> Text.unpack needle <> ", but saw: " <> Text.unpack message)
+                            (Text.isInfixOf needle message)
+                Nothing ->
+                    assertFailure ("expected SQLError, but saw " <> displayException err)
+    expectErrorCallContaining :: Text.Text -> DuckDBExpectation
+    expectErrorCallContaining needle =
+        ExpectException $ \err ->
+            case fromException err :: Maybe ErrorCall of
+                Just callErr ->
+                    let message = Text.pack (displayException callErr)
+                        in assertBool
+                            ("expected ErrorCall containing " <> Text.unpack needle <> ", but saw: " <> Text.unpack message)
+                            (Text.isInfixOf needle message)
+                Nothing ->
+                    assertFailure ("expected ErrorCall, but saw " <> displayException err)
+    bsFromString :: String -> BS.ByteString
+    bsFromString = BS.pack . map (fromIntegral . fromEnum)
+    secondsWithFraction :: Integer -> Integer -> Integer -> Rational
+    secondsWithFraction whole numerator denominator =
+        fromIntegral whole + numerator % denominator
+    tinyIntValue :: Int8
+    tinyIntValue = 42
+    smallIntValue :: Int16
+    smallIntValue = 32000
+    intValue :: Int32
+    intValue = 2147483647
+    bigIntValue :: Int64
+    bigIntValue = 9223372036854775807
+    uTinyValue :: Word8
+    uTinyValue = 200
+    uSmallValue :: Word16
+    uSmallValue = 60000
+    uIntValue :: Word32
+    uIntValue = maxBound
+    uBigValue :: Word64
+    uBigValue = maxBound
+    floatValue :: Float
+    floatValue = 3.25
+    doubleValue :: Double
+    doubleValue = 2.5
+    timestampDay = fromGregorian 2024 1 2
+    timestampLocalTimeMicros =
+        LocalTime timestampDay (TimeOfDay 3 4 (fromRational (secondsWithFraction 5 123456 1000000)))
+    timestampLocalTimeSeconds =
+        LocalTime timestampDay (TimeOfDay 3 4 5)
+    timestampLocalTimeMillis =
+        LocalTime timestampDay (TimeOfDay 3 4 (fromRational (secondsWithFraction 5 123 1000)))
+    timestampLocalTimeNanos =
+        LocalTime timestampDay (TimeOfDay 3 4 (fromRational (secondsWithFraction 5 123456789 1000000000)))
+    dateValue = fromGregorian 2024 10 12
+    timeValue =
+        TimeOfDay 14 30 (fromRational (secondsWithFraction 15 123456 1000000))
+    intervalValue =
+        IntervalValue{intervalMonths = 0, intervalDays = 1, intervalMicros = 0}
+    decimalValue =
+        DecimalValue{decimalWidth = 18, decimalScale = 4, decimalInteger = 123456789}
+    listElements =
+        [FieldInt32 1, FieldInt32 2, FieldInt32 3]
+    mapPairs =
+        [ (FieldText (Text.pack "a"), FieldInt32 1)
+        , (FieldText (Text.pack "b"), FieldInt32 2)
+        ]
+    uuidText :: Text.Text
+    uuidText = "123e4567-e89b-12d3-a456-426614174000"
+    timeWithZoneValue =
+        TimeWithZone{timeWithZoneTime = TimeOfDay 3 4 5, timeWithZoneZone = minutesToTimeZone 150}
+    timestampTzUtc =
+        UTCTime timestampDay (secondsToDiffTime 2045)
+    bigNumLiteral :: Integer
+    bigNumLiteral = 1234567890123456789012345678901234567890
+    bigNumLiteralText = valueText bigNumLiteral
+    varcharText :: Text.Text
+    varcharText = "Hello, DuckDB"
+    blobValue = bsFromString "duckdb"
+    hugeIntLiteral :: Integer
+    hugeIntLiteral = (2 ^ (120 :: Int)) + 123456789
+    uHugeIntLiteral :: Integer
+    uHugeIntLiteral = (2 ^ (128 :: Int)) - 1
+    literalText :: Text.Text
+    literalText = "literal"
+
 typeTests :: TestTree
 typeTests =
     testGroup
         "types"
-        [ testCase "round-trips date/time/timestamp" $
+        [ duckdbTypeCastTests
+        , testCase "round-trips date/time/timestamp" $
             withConnection ":memory:" \conn -> do
                 _ <- execute_ conn "CREATE TABLE temporals (d DATE, t TIME, ts TIMESTAMP)"
                 let dayVal = fromGregorian 2024 10 12

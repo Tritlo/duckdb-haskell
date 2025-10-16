@@ -15,7 +15,7 @@ import Control.Applicative ((<|>))
 import Control.Exception (ErrorCall, Exception, SomeException, displayException, fromException, try)
 import Control.Monad (replicateM_)
 import qualified Data.ByteString as BS
-import Data.Array (Array, listArray)
+import Data.Array (Array, elems, listArray)
 import Data.IORef (atomicModifyIORef', newIORef)
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.List (sortOn)
@@ -43,6 +43,9 @@ import Database.DuckDB.Simple.FromField (
     DecimalValue (..),
     Field (..),
     FieldValue (..),
+    StructField (..),
+    StructValue (..),
+    UnionValue (..),
     IntervalValue (..),
     TimeWithZone (..),
     fromBigNumBytes,
@@ -440,10 +443,9 @@ duckdbCastCases =
     , successCase "BIT" (quoted $ Text.pack $ show bits) "BIT" (ExpectEquals (FieldBit bits))
     , successCase "ARRAY" (quoted "[1,2,3]") "INTEGER[3]" (ExpectEquals (FieldArray arrayElements))
      -- This one is broken upstream, instead of a DuckDBTypeTimeNs, we get a DuckDBType 0
-     , failCaseWith "TIME_NS" (quoted "03:04:05.123456789") "TIME_NS" "TIME_NS decoding unsupported" (expectErrorCallContaining "INVALID")
-      -- not implemented yet
-    , failCaseWith "STRUCT" (quoted "{\"a\":1,\"b\":2}") "STRUCT(a INTEGER, b INTEGER)" "STRUCT decoding unsupported" (expectErrorCallContaining "STRUCT columns are not supported")
-    , failCaseWith "UNION" (quoted "1") "UNION(\"value\" INTEGER)" "UNION casts unsupported" (expectSQLErrorContaining "UNION")
+    , failCaseWith "TIME_NS" (quoted "03:04:05.123456789") "TIME_NS" "TIME_NS decoding unsupported" (expectErrorCallContaining "INVALID")
+    , successDirect "STRUCT" "{'a': 1, 'b': 2}" (expectStruct structFields)
+    , successDirect "UNION" "CAST(union_value(a := 42) AS UNION(a INTEGER, b VARCHAR))" (expectUnion 0 (Text.pack "a") (FieldInt32 42))
     -- These can never surface from a query, only internally.
     , failCaseOK "ANY" (quoted "1") "ANY" (expectSQLErrorContaining "ANY")
     , failCaseOK "STRING_LITERAL" (quoted literalText) "STRING_LITERAL" (expectSQLErrorContaining "STRING_LITERAL")
@@ -495,6 +497,30 @@ duckdbCastCases =
                   in assertEqual "map entries" (normalize expectedPairs) (normalize actualPairs)
              other ->
                  assertFailure ("expected FieldMap, but saw " <> show other)
+    structFields =
+        [ StructField{structFieldName = Text.pack "a", structFieldValue = FieldInt32 1}
+        , StructField{structFieldName = Text.pack "b", structFieldValue = FieldInt32 2}
+        ]
+    expectStruct expectedFields =
+        ExpectSatisfies $
+            \case
+                FieldStruct StructValue{structValueFields, structValueIndex} -> do
+                    let actualFields = elems structValueFields
+                        expectedIndex = Map.fromList (zip (map structFieldName expectedFields) [0 ..])
+                    assertEqual "struct field names" (map structFieldName expectedFields) (map structFieldName actualFields)
+                    assertEqual "struct field values" (map structFieldValue expectedFields) (map structFieldValue actualFields)
+                    assertEqual "struct index map" expectedIndex structValueIndex
+                other ->
+                    assertFailure ("expected FieldStruct, but saw " <> show other)
+    expectUnion expectedIndex expectedLabel expectedPayload =
+        ExpectSatisfies $
+            \case
+                FieldUnion UnionValue{unionValueIndex, unionValueLabel, unionValuePayload} -> do
+                    assertEqual "union tag index" expectedIndex unionValueIndex
+                    assertEqual "union tag label" expectedLabel unionValueLabel
+                    assertEqual "union payload" expectedPayload unionValuePayload
+                other ->
+                    assertFailure ("expected FieldUnion, but saw " <> show other)
     expectSQLErrorContaining :: Text.Text -> DuckDBExpectation
     expectSQLErrorContaining needle =
         ExpectException $ \err ->

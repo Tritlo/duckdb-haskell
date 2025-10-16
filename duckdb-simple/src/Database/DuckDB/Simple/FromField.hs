@@ -15,6 +15,9 @@ Description : Conversion from DuckDB column values to Haskell types.
 module Database.DuckDB.Simple.FromField (
     Field (..),
     FieldValue (..),
+    StructField (..),
+    StructValue (..),
+    UnionValue (..),
     BitString(..),
     bsFromBool,
     BigNum (..),
@@ -58,6 +61,25 @@ import GHC.Num.Integer (integerFromWordList)
 import Numeric.Natural (Natural)
 import qualified Data.UUID as UUID
 
+data StructField a = StructField
+    { structFieldName :: !Text
+    , structFieldValue :: !a
+    }
+    deriving (Eq, Show)
+
+data StructValue a = StructValue
+    { structValueFields :: !(Array Int (StructField a))
+    , structValueIndex :: !(Map Text Int)
+    }
+    deriving (Eq, Show)
+
+data UnionValue = UnionValue
+    { unionValueIndex :: !Word16
+    , unionValueLabel :: !Text
+    , unionValuePayload :: !FieldValue
+    }
+    deriving (Eq, Show)
+
 -- | Internal representation of a column value.
 data FieldValue
     = FieldNull
@@ -90,6 +112,8 @@ data FieldValue
     | FieldArray (Array Int FieldValue)
     | FieldList [FieldValue]
     | FieldMap [(FieldValue, FieldValue)]
+    | FieldStruct (StructValue FieldValue)
+    | FieldUnion UnionValue
     deriving (Eq, Show)
 
 data DecimalValue = DecimalValue
@@ -279,6 +303,20 @@ class FromField a where
 
 instance FromField FieldValue where
     fromField Field{fieldValue} = Ok fieldValue
+
+instance FromField (StructValue FieldValue) where
+    fromField f@Field{fieldValue} =
+        case fieldValue of
+            FieldStruct structVal -> Ok structVal
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f "expected STRUCT"
+
+instance FromField UnionValue where
+    fromField f@Field{fieldValue} =
+        case fieldValue of
+            FieldUnion unionVal -> Ok unionVal
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f "expected UNION"
 
 instance FromField Null where
     fromField f@Field{fieldValue} =
@@ -719,3 +757,5 @@ fieldValueTypeName = \case
     FieldList{} -> "LIST"
     FieldMap{} -> "MAP"
     FieldUUID{} -> "UUID"
+    FieldStruct{} -> "STRUCT"
+    FieldUnion{} -> "UNION"

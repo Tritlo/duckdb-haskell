@@ -1,9 +1,9 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 {- |
@@ -25,6 +25,7 @@ module Database.DuckDB.Simple.ToField (
 
 import Control.Exception (bracket, throwIO)
 import Control.Monad (when)
+import Data.Bits (complement)
 import qualified Data.ByteString as BS
 import Data.Int (Int16, Int32, Int64)
 import Data.Proxy (Proxy (..))
@@ -35,22 +36,21 @@ import Data.Time.Calendar (Day, toGregorian)
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds)
 import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), timeOfDayToTime, utc, utcToLocalTime)
 import Data.Word (Word16, Word32, Word64, Word8)
-import Numeric.Natural (Natural)
 import Database.DuckDB.FFI
+import Database.DuckDB.Simple.FromField (BigNum (..), toBigNumBytes)
 import Database.DuckDB.Simple.Internal (
     SQLError (..),
     Statement (..),
     withStatementHandle,
  )
-import Database.DuckDB.Simple.FromField (BigNum (..), toBigNumBytes)
 import Database.DuckDB.Simple.Types (Null (..))
 import Foreign.C.String (peekCString)
 import Foreign.C.Types (CDouble (..))
+import Foreign.Marshal (fromBool)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (poke)
-import Foreign.Marshal (fromBool)
-import Data.Bits (complement)
+import Numeric.Natural (Natural)
 
 -- | Represents a named parameter binding using the @:=@ operator.
 data NamedParam where
@@ -339,33 +339,31 @@ bignumBinding (BigNum big) =
         \stmt idx ->
             bindDuckValue stmt idx $
                 let neg = fromBool (big < 0)
-                    big_num_bytes = BS.pack $
-                        if big < 0
-                            then map complement (drop 3 $ toBigNumBytes big)
-                            else drop 3 $ toBigNumBytes big
+                    big_num_bytes =
+                        BS.pack $
+                            if big < 0
+                                then map complement (drop 3 $ toBigNumBytes big)
+                                else drop 3 $ toBigNumBytes big
                  in if BS.null big_num_bytes
-                        then
+                        then alloca \ptr -> do
+                            poke
+                                ptr
+                                DuckDBBignum
+                                    { duckDBBignumData = nullPtr
+                                    , duckDBBignumSize = 0
+                                    , duckDBBignumIsNegative = neg
+                                    }
+                            c_duckdb_create_bignum ptr
+                        else BS.useAsCStringLen big_num_bytes \(rawPtr, len) ->
                             alloca \ptr -> do
                                 poke
                                     ptr
                                     DuckDBBignum
-                                        { duckDBBignumData = nullPtr
-                                        , duckDBBignumSize = 0
+                                        { duckDBBignumData = castPtr rawPtr
+                                        , duckDBBignumSize = fromIntegral len
                                         , duckDBBignumIsNegative = neg
                                         }
                                 c_duckdb_create_bignum ptr
-                        else
-                            BS.useAsCStringLen big_num_bytes \(rawPtr, len) ->
-                                alloca \ptr -> do
-                                    poke
-                                        ptr
-                                        DuckDBBignum
-                                            { duckDBBignumData = castPtr rawPtr
-                                            , duckDBBignumSize = fromIntegral len
-                                            , duckDBBignumIsNegative = neg
-                                            }
-                                    c_duckdb_create_bignum ptr
-
 
 encodeDay :: Day -> IO DuckDBDate
 encodeDay day =

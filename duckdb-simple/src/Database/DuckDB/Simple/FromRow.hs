@@ -5,8 +5,8 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeOperators #-}
 
 {- |
 Module      : Database.DuckDB.Simple.FromRow
@@ -122,7 +122,7 @@ parseRow parser fields =
             Ok (value, (columnCount, _))
                 | columnCount == length fields -> Ok value
                 | otherwise -> Errors [SomeException $ ColumnOutOfBounds (columnCount + 1)]
-            Errors errs ->  Errors errs
+            Errors errs -> Errors errs
 
 instance FromRow () where
     fromRow = pure ()
@@ -255,26 +255,26 @@ rowErrorsToSqlError query errs =
 renderError :: ResultError -> Text
 renderError = \case
     Incompatible{errSQLType, errSQLField, errHaskellType, errMessage} ->
-            Text.concat
-                [ "duckdb-simple: column "
-                , errSQLField
-                , " has type "
-                , errSQLType
-                , " but expected "
-                , errHaskellType
-                , if Text.null errMessage
-                  then ""
-                  else ": " <> errMessage
-                ]
+        Text.concat
+            [ "duckdb-simple: column "
+            , errSQLField
+            , " has type "
+            , errSQLType
+            , " but expected "
+            , errHaskellType
+            , if Text.null errMessage
+                then ""
+                else ": " <> errMessage
+            ]
     UnexpectedNull{errHaskellType, errSQLField, errMessage} ->
-            Text.concat
-                [ "duckdb-simple: column "
-                , errSQLField
-                , " is NULL but expected "
-                , errHaskellType
-                , if Text.null errMessage
-                  then ""
-                  else ": " <> errMessage
-                ]
+        Text.concat
+            [ "duckdb-simple: column "
+            , errSQLField
+            , " is NULL but expected "
+            , errHaskellType
+            , if Text.null errMessage
+                then ""
+                else ": " <> errMessage
+            ]
     ConversionFailed{errMessage} ->
         errMessage

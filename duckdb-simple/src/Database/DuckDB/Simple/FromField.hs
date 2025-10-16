@@ -1,13 +1,13 @@
+{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE StrictData #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE DerivingStrategies #-}
-{-# LANGUAGE DerivingVia #-}
+{-# LANGUAGE ViewPatterns #-}
 
 {- |
 Module      : Database.DuckDB.Simple.FromField
@@ -26,35 +26,35 @@ module Database.DuckDB.Simple.FromField (
     ResultError (..),
     FieldParser,
     FromField (..),
-    returnError
+    returnError,
 ) where
 
 import Control.Exception (Exception, SomeException (..))
+import Data.Bits (Bits (..), finiteBitSize)
 import qualified Data.ByteString as BS
+import Data.Data (Typeable, typeRep)
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Time.Calendar (Day)
 import Data.Time.Clock (UTCTime (..))
-import Data.Time.LocalTime
-    ( LocalTime (..)
-    , TimeOfDay (..)
-    , TimeZone (..)
-    , localTimeToUTC
-    , utc
-    , utcToLocalTime
-    )
+import Data.Time.LocalTime (
+    LocalTime (..),
+    TimeOfDay (..),
+    TimeZone (..),
+    localTimeToUTC,
+    utc,
+    utcToLocalTime,
+ )
 import Data.Word (Word16, Word32, Word64, Word8)
-import Database.DuckDB.Simple.Types (Null (..))
 import Database.DuckDB.Simple.Ok
-import Data.Data (Typeable, typeRep)
-import Data.Proxy (Proxy (..))
-import Numeric.Natural (Natural)
-import Data.Bits (Bits(..), finiteBitSize)
+import Database.DuckDB.Simple.Types (Null (..))
 import GHC.Num.Integer (integerFromWordList)
+import Numeric.Natural (Natural)
 
 -- | Internal representation of a column value.
 data FieldValue
@@ -109,42 +109,43 @@ data BitString = BitString
     deriving (Eq, Show)
 
 newtype BigNum = BigNum Integer
- deriving stock (Eq, Show)
- deriving Num via Integer
+    deriving stock (Eq, Show)
+    deriving (Num) via Integer
 
-
--- | Decode DuckDB’s BIGNUM blob (3-byte header + big-endian payload where negative magnitudes are
--- bitwise complemented) back into a Haskell 'Integer'. We undo the complement when needed, then chunk
--- the remaining bytes into machine-word limbs (MSB chunk first) for 'integerFromWordList'.
+{- | Decode DuckDB’s BIGNUM blob (3-byte header + big-endian payload where negative magnitudes are
+bitwise complemented) back into a Haskell 'Integer'. We undo the complement when needed, then chunk
+the remaining bytes into machine-word limbs (MSB chunk first) for 'integerFromWordList'.
+-}
 fromBigNumBytes :: [Word8] -> Integer
 fromBigNumBytes bytes =
-  let header      = take 3 bytes
-      payloadRaw  = drop 3 bytes
-      isNeg       = head header .&. 0x80 == 0
-      payload     = if isNeg then map complement payloadRaw else payloadRaw
-      bytesPerWord = finiteBitSize (0 :: Word) `div` 8    -- 8 on 64-bit, 4 on 32-bit
-      len          = length payload
-      (firstChunk, rest) = splitAt (len `mod` bytesPerWord) payload
+    let header = take 3 bytes
+        payloadRaw = drop 3 bytes
+        isNeg = head header .&. 0x80 == 0
+        payload = if isNeg then map complement payloadRaw else payloadRaw
+        bytesPerWord = finiteBitSize (0 :: Word) `div` 8 -- 8 on 64-bit, 4 on 32-bit
+        len = length payload
+        (firstChunk, rest) = splitAt (len `mod` bytesPerWord) payload
 
-      chunkWords [] = []
-      chunkWords xs =
-        let (chunk, remainder) = splitAt bytesPerWord xs
-         in chunk : chunkWords remainder
+        chunkWords [] = []
+        chunkWords xs =
+            let (chunk, remainder) = splitAt bytesPerWord xs
+             in chunk : chunkWords remainder
 
-      toWord = foldl (\acc b -> (acc `shiftL` 8) .|. fromIntegral b) 0
-      limbs  = (if null firstChunk then id else (firstChunk :)) (chunkWords rest)
-    in integerFromWordList isNeg (map toWord limbs)
+        toWord = foldl (\acc b -> (acc `shiftL` 8) .|. fromIntegral b) 0
+        limbs = (if null firstChunk then id else (firstChunk :)) (chunkWords rest)
+     in integerFromWordList isNeg (map toWord limbs)
 
--- | Encode an 'Integer' into DuckDB’s BIGNUM blob layout: emit the 3-byte header
---   (sign bit plus payload length) followed by the magnitude bytes in the same
---   big-endian / complemented-on-negative form that DuckDB stores internally.
+{- | Encode an 'Integer' into DuckDB’s BIGNUM blob layout: emit the 3-byte header
+  (sign bit plus payload length) followed by the magnitude bytes in the same
+  big-endian / complemented-on-negative form that DuckDB stores internally.
+-}
 toBigNumBytes :: Integer -> [Word8]
 toBigNumBytes value =
-    let isNeg     = value < 0
+    let isNeg = value < 0
         magnitude = if isNeg then negate value else value
         payloadBE
             | magnitude == 0 = [0]
-            | otherwise      = go magnitude []
+            | otherwise = go magnitude []
           where
             go 0 acc = acc
             go n acc =
@@ -158,11 +159,11 @@ toBigNumBytes value =
         headerMasked = headerVal .&. 0x00FFFFFF
         headerBytes =
             [ fromIntegral ((headerMasked `shiftR` 16) .&. 0xFF)
-            , fromIntegral ((headerMasked `shiftR` 8)  .&. 0xFF)
-            , fromIntegral ( headerMasked              .&. 0xFF)
+            , fromIntegral ((headerMasked `shiftR` 8) .&. 0xFF)
+            , fromIntegral (headerMasked .&. 0xFF)
             ]
         payloadBytes = if isNeg then map complement payloadBE else payloadBE
-    in headerBytes <> payloadBytes
+     in headerBytes <> payloadBytes
 
 data TimeWithZone = TimeWithZone
     { timeWithZoneTime :: !TimeOfDay
@@ -204,38 +205,45 @@ data Field = Field
     }
     deriving (Eq, Show)
 
--- | Exception thrown if conversion from a SQL value to a Haskell
--- value fails.
-data ResultError = Incompatible { errSQLType :: Text
-                                , errSQLField :: Text
-                                , errHaskellType :: Text
-                                , errMessage :: Text }
-                 -- ^ The SQL and Haskell types are not compatible.
-                 | UnexpectedNull { errSQLType :: Text
-                                  , errSQLField :: Text
-                                  , errHaskellType :: Text
-                                  , errMessage :: Text }
-                 -- ^ A SQL @NULL@ was encountered when the Haskell
-                 -- type did not permit it.
-                 | ConversionFailed { errSQLType :: Text
-                                    , errSQLField :: Text
-                                    , errHaskellType :: Text
-                                    , errMessage :: Text }
-                 -- ^ The SQL value could not be parsed, or could not
-                 -- be represented as a valid Haskell value, or an
-                 -- unexpected low-level error occurred (e.g. mismatch
-                 -- between metadata and actual data in a row).
-                   deriving (Eq, Show, Typeable)
+{- | Exception thrown if conversion from a SQL value to a Haskell
+value fails.
+-}
+data ResultError
+    = -- | The SQL and Haskell types are not compatible.
+      Incompatible
+        { errSQLType :: Text
+        , errSQLField :: Text
+        , errHaskellType :: Text
+        , errMessage :: Text
+        }
+    | -- | A SQL @NULL@ was encountered when the Haskell
+      -- type did not permit it.
+      UnexpectedNull
+        { errSQLType :: Text
+        , errSQLField :: Text
+        , errHaskellType :: Text
+        , errMessage :: Text
+        }
+    | -- | The SQL value could not be parsed, or could not
+      -- be represented as a valid Haskell value, or an
+      -- unexpected low-level error occurred (e.g. mismatch
+      -- between metadata and actual data in a row).
+      ConversionFailed
+        { errSQLType :: Text
+        , errSQLField :: Text
+        , errHaskellType :: Text
+        , errMessage :: Text
+        }
+    deriving (Eq, Show, Typeable)
 
 instance Exception ResultError
 
-
-
--- | Parser used by 'FromField' instances and utilities such as
--- 'Database.DuckDB.Simple.FromRow.fieldWith'. The supplied 'Field' contains
--- column metadata and an already-decoded 'FieldValue'; callers should return
--- 'Ok' on success or 'Errors' (typically wrapping a 'ResultError') when the
--- conversion fails.
+{- | Parser used by 'FromField' instances and utilities such as
+'Database.DuckDB.Simple.FromRow.fieldWith'. The supplied 'Field' contains
+column metadata and an already-decoded 'FieldValue'; callers should return
+'Ok' on success or 'Errors' (typically wrapping a 'ResultError') when the
+conversion fails.
+-}
 type FieldParser a = Field -> Ok a
 
 -- | Types that can be constructed from a DuckDB column.
@@ -249,7 +257,7 @@ instance FromField Null where
     fromField f@Field{fieldValue} =
         case fieldValue of
             FieldNull -> Ok Null
-            _ ->  returnError Incompatible f "expected NULL"
+            _ -> returnError Incompatible f "expected NULL"
 
 instance FromField Bool where
     fromField f@Field{fieldValue} =
@@ -334,8 +342,8 @@ instance FromField Natural where
                     returnError ConversionFailed f "negative value cannot be converted to Natural"
             FieldUHugeInt value -> Ok (fromIntegral value)
             FieldBigNum (BigNum big) ->
-                 if big >= 0
-                    then Ok  $ fromIntegral big
+                if big >= 0
+                    then Ok $ fromIntegral big
                     else returnError ConversionFailed f "negative value cannot be converted to Natural"
             FieldEnum value -> Ok (fromIntegral value)
             FieldNull -> returnError UnexpectedNull f ""
@@ -347,7 +355,7 @@ instance FromField Word64 where
             FieldInt i
                 | i >= 0 -> Ok (fromIntegral i)
                 | otherwise ->
-                     returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
+                    returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
             FieldWord w -> Ok (fromIntegral w)
             FieldHugeInt value
                 | value >= 0 -> boundedFromInteger f value
@@ -556,7 +564,7 @@ instance FromField TimeWithZone where
             _ -> returnError Incompatible f ""
 
 instance FromField LocalTime where
-    fromField f@Field{ fieldValue} =
+    fromField f@Field{fieldValue} =
         case fieldValue of
             FieldTimestamp ts -> Ok ts
             FieldDate day -> Ok (LocalTime day midnight)
@@ -605,15 +613,19 @@ boundedFromInteger f@Field{} value
         returnError ConversionFailed f "integer value out of bounds"
     | otherwise = Ok (fromInteger value)
 
--- | Helper to construct a ResultError with field context.
--- based on postgresql-simple's implementation
+{- | Helper to construct a ResultError with field context.
+based on postgresql-simple's implementation
+-}
 returnError :: forall b. (Typeable b) => (Text -> Text -> Text -> Text -> ResultError) -> Field -> Text -> Ok b
 returnError mkError Field{fieldValue, fieldName} msg =
-    Errors [SomeException $ mkError (fieldValueTypeName fieldValue)
-                                    fieldName
-                                    (Text.pack $ show (typeRep (Proxy :: Proxy b)))
-                                    msg]
-
+    Errors
+        [ SomeException $
+            mkError
+                (fieldValueTypeName fieldValue)
+                fieldName
+                (Text.pack $ show (typeRep (Proxy :: Proxy b)))
+                msg
+        ]
 
 fieldValueTypeName :: FieldValue -> Text
 fieldValueTypeName = \case

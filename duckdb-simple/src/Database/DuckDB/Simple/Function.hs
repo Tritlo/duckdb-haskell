@@ -31,52 +31,52 @@ import Control.Exception (
     try,
  )
 import Control.Monad (forM, forM_, when)
+import Data.Bits (shiftL, (.|.))
 import qualified Data.ByteString as BS
-import Data.Bits ((.|.), shiftL)
 import Data.Int (Int16, Int32, Int64, Int8)
-import Data.Ratio ((%))
 import Data.Proxy (Proxy (..))
+import Data.Ratio ((%))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Foreign as TextForeign
-import Data.Word (Word16, Word32, Word64, Word8)
 import Data.Time.Calendar (Day, fromGregorian)
 import Data.Time.Clock (UTCTime (..))
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
-import Data.Time.LocalTime
-    ( LocalTime (..)
-    , TimeOfDay (..)
-    , minutesToTimeZone
-    , utc
-    , utcToLocalTime
-    )
+import Data.Time.LocalTime (
+    LocalTime (..),
+    TimeOfDay (..),
+    minutesToTimeZone,
+    utc,
+    utcToLocalTime,
+ )
+import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.FFI
-import Database.DuckDB.Simple.FromField
-    ( BitString (..)
-    , DecimalValue (..)
-    , Field (..)
-    , FieldValue (..)
-    , FromField (..)
-    , IntervalValue (..)
-    , TimeWithZone (..)
-    , BigNum (..)
-    , fromBigNumBytes
-    )
-import Database.DuckDB.Simple.Internal
-    ( Connection
-    , Query (..)
-    , SQLError (..)
-    , withConnectionHandle
-    , withQueryCString
-    )
+import Database.DuckDB.Simple.FromField (
+    BigNum (..),
+    BitString (..),
+    DecimalValue (..),
+    Field (..),
+    FieldValue (..),
+    FromField (..),
+    IntervalValue (..),
+    TimeWithZone (..),
+    fromBigNumBytes,
+ )
+import Database.DuckDB.Simple.Internal (
+    Connection,
+    Query (..),
+    SQLError (..),
+    withConnectionHandle,
+    withQueryCString,
+ )
+import Database.DuckDB.Simple.Ok (Ok (..))
 import Foreign.C.String (peekCString)
 import Foreign.C.Types (CBool (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, castPtr, freeHaskellFunPtr, nullPtr, plusPtr)
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deRefStablePtr, freeStablePtr, newStablePtr)
 import Foreign.Storable (peek, peekElemOff, poke, pokeElemOff)
-import Database.DuckDB.Simple.Ok (Ok(..))
 
 -- | Tag DuckDB logical types we support for scalar return values.
 data ScalarType
@@ -512,8 +512,9 @@ fetchValue dtype decimalInfo enumInternal dataPtr rowIdx =
                     stringPtr = castPtr (base `plusPtr` offset) :: Ptr DuckDBStringT
                 len <- c_duckdb_string_t_length stringPtr
                 if len < 3
-                then return $ FieldBigNum (BigNum 0)
-                else do ptr <- c_duckdb_string_t_data stringPtr
+                    then return $ FieldBigNum (BigNum 0)
+                    else do
+                        ptr <- c_duckdb_string_t_data stringPtr
                         bs <- BS.unpack <$> BS.packCStringLen (ptr, fromIntegral len)
                         return $ FieldBigNum $ BigNum (fromBigNumBytes bs)
             DuckDBTypeEnum -> do

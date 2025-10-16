@@ -16,3 +16,8 @@ We try to stick to the ghc naming convention: values are in `snake_case`, functi
 
 ## Native Dependencies & Configuration
 Ensure a compatible `libduckdb` shared library is present before building or running tests; the bindings target DuckDB 1.4-series.
+
+## Documentation
+
+All exported functions and datatypes should have Haddock comments. Ensure that `cabal haddock all`
+shows full coverage.

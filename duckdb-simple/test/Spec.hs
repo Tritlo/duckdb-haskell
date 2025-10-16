@@ -16,10 +16,10 @@ import Control.Monad (replicateM_)
 import qualified Data.ByteString as BS
 import Data.IORef (atomicModifyIORef', newIORef)
 import Data.Int (Int64)
-import qualified Data.Text as Text
-import Data.Proxy (Proxy (..))
-import Numeric.Natural (Natural)
 import qualified Data.Map.Strict as Map
+import Data.Proxy (Proxy (..))
+import Data.String (fromString)
+import qualified Data.Text as Text
 import Data.Time.Calendar (fromGregorian)
 import Data.Time.Clock (UTCTime (..))
 import Data.Time.LocalTime (
@@ -33,21 +33,21 @@ import Data.Time.LocalTime (
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (
+    BigNum (..),
     Field (..),
     FieldValue (..),
-    BigNum (..),
     IntervalValue (..),
     TimeWithZone (..),
+    fromBigNumBytes,
     returnError,
     toBigNumBytes,
-    fromBigNumBytes
  )
+import Database.DuckDB.Simple.Ok (Ok (..))
 import GHC.Generics (Generic)
+import Numeric.Natural (Natural)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck (testProperty, (===))
-import Database.DuckDB.Simple.Ok (Ok(..))
-import Data.String (fromString)
 
 data Person = Person
     { personId :: Int
@@ -82,18 +82,18 @@ instance FromRow YesNo where
                     let normalized = Text.toLower txt
                      in if normalized == expected
                             then Ok ()
-                            else returnError  ConversionFailed fld "failed to match exact string"
+                            else returnError ConversionFailed fld "failed to match exact string"
 
 newtype NonEmptyText = NonEmptyText Text.Text
     deriving (Eq, Show)
 
 nonEmptyTextParser :: FieldParser NonEmptyText
 nonEmptyTextParser f@Field{} =
-    case fromField f  of
+    case fromField f of
         Errors err -> Errors err
         Ok txt
             | Text.null txt ->
-                returnError  ConversionFailed f "NonEmptyText requires a non-empty string"
+                returnError ConversionFailed f "NonEmptyText requires a non-empty string"
             | otherwise -> Ok (NonEmptyText txt)
 
 instance FromField NonEmptyText where
@@ -413,7 +413,7 @@ typeTests =
             let original = (2 ^ (200 :: Int)) + 8675309 :: Integer
                 converted = toBigNumBytes original
             assertEqual "round-trip Integer" original (fromBigNumBytes converted)
-        , testProperty "fromBigNumBytes . toBigNumBytes is identity" \ (n :: Integer) ->
+        , testProperty "fromBigNumBytes . toBigNumBytes is identity" \(n :: Integer) ->
             fromBigNumBytes (toBigNumBytes n) === n
         , testCase "selects BIGNUM values as BigNum" $
             withConnection ":memory:" \conn -> do
@@ -424,7 +424,7 @@ typeTests =
                         , 0
                         , negate ((2 ^ (180 :: Int)) + 12345)
                         ]
-                rows <- concat <$> mapM (\bv -> query_ conn  $ fromString $ "SELECT CAST('" <> show bv <> "' AS BIGNUM)") bigValues
+                rows <- concat <$> mapM (\bv -> query_ conn $ fromString $ "SELECT CAST('" <> show bv <> "' AS BIGNUM)") bigValues
                 --  query_ conn "SELECT val FROM bignums ORDER BY rowid" :: IO [Only BigNum]
                 assertEqual "BIGNUM results" (fmap (Only . BigNum) bigValues) rows
         , testCase "round-trips BIGNUM values through the database" $

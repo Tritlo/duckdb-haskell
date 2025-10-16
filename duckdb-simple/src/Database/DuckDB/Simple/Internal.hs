@@ -41,8 +41,8 @@ import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
 import Data.Word (Word64)
 import Database.DuckDB.FFI (
-    DuckDBDataChunk,
     DuckDBConnection,
+    DuckDBDataChunk,
     DuckDBDatabase,
     DuckDBErrorType,
     DuckDBPreparedStatement,
@@ -67,7 +67,7 @@ instance IsString Query where
     fromString = Query . Text.pack
 
 -- | Tracks the lifetime of a DuckDB database and connection pair.
-newtype Connection = Connection { connectionState :: IORef ConnectionState }
+newtype Connection = Connection {connectionState :: IORef ConnectionState}
 
 -- | Internal connection lifecycle state.
 data ConnectionState
@@ -136,12 +136,13 @@ data SQLError = SQLError
 
 instance Exception SQLError
 
-toSQLError :: Exception e => e -> SQLError
-toSQLError ex = SQLError
-    { sqlErrorMessage = Text.pack (show ex)
-    , sqlErrorType = Nothing
-    , sqlErrorQuery = Nothing
-    }
+toSQLError :: (Exception e) => e -> SQLError
+toSQLError ex =
+    SQLError
+        { sqlErrorMessage = Text.pack (show ex)
+        , sqlErrorType = Nothing
+        , sqlErrorQuery = Nothing
+        }
 
 -- | Shared error value used when an operation targets a closed connection.
 connectionClosedError :: SQLError

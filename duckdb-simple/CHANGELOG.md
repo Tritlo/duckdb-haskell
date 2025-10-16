@@ -1,7 +1,8 @@
 # Changelog
 
 ## Unreleased
-- Add support for reading and writing arrays
+- Add support for reading and writing arrays.
+- Support decoding and binding STRUCT and UNION values via new `StructValue`/`UnionValue` helpers and corresponding `FromField`/`ToField` instances.
 
 ## 0.1.2.0
 - Added LIST/MAP coverage note: LIST columns decode into Haskell lists and MAP columns into strict `Map k v`, with matching parameter bindings via `ToField`.

@@ -14,7 +14,7 @@ import Data.Ratio ((%))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import Data.Array (Array, listArray)
+import Data.Array (Array, elems, listArray)
 import qualified Data.Map.Strict as Map
 import Data.Time.Calendar (Day, fromGregorian)
 import Data.Time.Clock (UTCTime (..))
@@ -36,14 +36,18 @@ import Database.DuckDB.Simple.FromField
     , FieldValue (..)
     , IntervalValue (..)
     , TimeWithZone (..)
+    , fromBigNumBytes
+    )
+import Database.DuckDB.Simple.LogicalRep
+    ( LogicalTypeRep (..)
     , StructField (..)
     , StructValue (..)
+    , UnionMemberType (..)
     , UnionValue (..)
-    , fromBigNumBytes
+    , logicalTypeToRep
     )
 import Foreign.C.Types (CBool (..))
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.C.String (peekCString)
 import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.Storable (Storable (..), peekByteOff, peekElemOff, pokeByteOff)
 
@@ -332,40 +336,61 @@ decodeStructValue vector rowIdx =
         (c_duckdb_vector_get_column_type vector)
         (\logical -> alloca $ \ptr -> poke ptr logical >> c_duckdb_destroy_logical_type ptr)
         \logical -> do
-            childCountRaw <- c_duckdb_struct_type_child_count logical
-            childCount <- ensureWithinIntRange (Text.pack "struct child count") childCountRaw
-            fields <-
-                forM [0 .. childCount - 1] \childIdx -> do
+            structTypeRep <- logicalTypeToRep logical
+            structFields <-
+                case structTypeRep of
+                    LogicalTypeStruct typeArray -> pure typeArray
+                    other ->
+                        throwIO
+                            ( userError
+                                ( "duckdb-simple: expected STRUCT logical type, but saw "
+                                    <> show other
+                                )
+                            )
+            let typeList = elems structFields
+                count = length typeList
+            valueFields <-
+                forM (zip [0 .. count - 1] typeList) \(childIdx, StructField{structFieldName}) -> do
                     childVec <- c_duckdb_struct_vector_get_child vector (fromIntegral childIdx)
                     when (childVec == nullPtr) $
                         throwIO (userError "duckdb-simple: struct child vector is null")
-                    namePtr <- c_duckdb_struct_type_child_name logical (fromIntegral childIdx)
-                    when (namePtr == nullPtr) $
-                        throwIO (userError "duckdb-simple: struct child name is null")
-                    nameStr <- peekCString namePtr
-                    c_duckdb_free (castPtr namePtr)
-                    let fieldName = Text.pack nameStr
                     childType <- vectorElementType childVec
                     childData <- c_duckdb_vector_get_data childVec
                     childValidity <- c_duckdb_vector_get_validity childVec
                     value <- materializeValue childType childVec childData childValidity rowIdx
-                    pure StructField{structFieldName = fieldName, structFieldValue = value}
+                    pure StructField{structFieldName, structFieldValue = value}
             let fieldArray =
-                    if childCount <= 0
+                    if count <= 0
                         then listArray (0, -1) []
-                        else listArray (0, childCount - 1) fields
-                fieldIndex =
-                    Map.fromList (zip (map structFieldName fields) [0 ..])
-            pure StructValue{structValueFields = fieldArray, structValueIndex = fieldIndex}
+                        else listArray (0, count - 1) valueFields
+                indexMap =
+                    Map.fromList (zip (map structFieldName typeList) [0 ..])
+            pure
+                StructValue
+                    { structValueFields = fieldArray
+                    , structValueTypes = structFields
+                    , structValueIndex = indexMap
+                    }
 
-decodeUnionValue :: DuckDBVector -> Ptr () -> Int -> IO UnionValue
+decodeUnionValue :: DuckDBVector -> Ptr () -> Int -> IO (UnionValue FieldValue)
 decodeUnionValue vector _dataPtr rowIdx =
     bracket
         (c_duckdb_vector_get_column_type vector)
         (\logical -> alloca $ \ptr -> poke ptr logical >> c_duckdb_destroy_logical_type ptr)
         \logical -> do
-            memberCountRaw <- c_duckdb_union_type_member_count logical
-            memberCount <- ensureWithinIntRange (Text.pack "union member count") memberCountRaw
+            unionTypeRep <- logicalTypeToRep logical
+            membersArray <-
+                case unionTypeRep of
+                    LogicalTypeUnion members -> pure members
+                    other ->
+                        throwIO
+                            ( userError
+                                ( "duckdb-simple: expected UNION logical type, but saw "
+                                    <> show other
+                                )
+                            )
+            let membersList = elems membersArray
+                memberCount = length membersList
             tagVec <- c_duckdb_struct_vector_get_child vector 0
             when (tagVec == nullPtr) $
                 throwIO (userError "duckdb-simple: union tag vector is null")
@@ -410,11 +435,8 @@ decodeUnionValue vector _dataPtr rowIdx =
                             )
             when (memberIdx < 0 || memberIdx >= memberCount) $
                 throwIO (userError "duckdb-simple: union tag out of range")
-            namePtr <- c_duckdb_union_type_member_name logical (fromIntegral memberIdx)
-            when (namePtr == nullPtr) $
-                throwIO (userError "duckdb-simple: union member name is null")
-            nameStr <- peekCString namePtr
-            c_duckdb_free (castPtr namePtr)
+            let selectedMember = membersList !! memberIdx
+                memberLabel = unionMemberName selectedMember
             memberVec <- c_duckdb_struct_vector_get_child vector (fromIntegral (memberIdx + 1))
             when (memberVec == nullPtr) $
                 throwIO (userError "duckdb-simple: union member vector is null")
@@ -425,8 +447,9 @@ decodeUnionValue vector _dataPtr rowIdx =
             pure
                 UnionValue
                     { unionValueIndex = fromIntegral memberIdx
-                    , unionValueLabel = Text.pack nameStr
+                    , unionValueLabel = memberLabel
                     , unionValuePayload = payload
+                    , unionValueMembers = membersArray
                     }
 
 vectorElementType :: DuckDBVector -> IO DuckDBType

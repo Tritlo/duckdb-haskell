@@ -17,7 +17,9 @@ module Database.DuckDB.Simple.FromField (
     FieldValue (..),
     StructField (..),
     StructValue (..),
+    UnionMemberType (..),
     UnionValue (..),
+    LogicalTypeRep (..),
     BitString(..),
     bsFromBool,
     BigNum (..),
@@ -60,25 +62,13 @@ import Database.DuckDB.Simple.Types (Null (..))
 import GHC.Num.Integer (integerFromWordList)
 import Numeric.Natural (Natural)
 import qualified Data.UUID as UUID
-
-data StructField a = StructField
-    { structFieldName :: !Text
-    , structFieldValue :: !a
-    }
-    deriving (Eq, Show)
-
-data StructValue a = StructValue
-    { structValueFields :: !(Array Int (StructField a))
-    , structValueIndex :: !(Map Text Int)
-    }
-    deriving (Eq, Show)
-
-data UnionValue = UnionValue
-    { unionValueIndex :: !Word16
-    , unionValueLabel :: !Text
-    , unionValuePayload :: !FieldValue
-    }
-    deriving (Eq, Show)
+import Database.DuckDB.Simple.LogicalRep (
+    LogicalTypeRep (..),
+    StructField (..),
+    StructValue (..),
+    UnionMemberType (..),
+    UnionValue (..)
+ )
 
 -- | Internal representation of a column value.
 data FieldValue
@@ -113,7 +103,7 @@ data FieldValue
     | FieldList [FieldValue]
     | FieldMap [(FieldValue, FieldValue)]
     | FieldStruct (StructValue FieldValue)
-    | FieldUnion UnionValue
+    | FieldUnion (UnionValue FieldValue)
     deriving (Eq, Show)
 
 data DecimalValue = DecimalValue
@@ -311,7 +301,7 @@ instance FromField (StructValue FieldValue) where
             FieldNull -> returnError UnexpectedNull f ""
             _ -> returnError Incompatible f "expected STRUCT"
 
-instance FromField UnionValue where
+instance FromField (UnionValue FieldValue) where
     fromField f@Field{fieldValue} =
         case fieldValue of
             FieldUnion unionVal -> Ok unionVal

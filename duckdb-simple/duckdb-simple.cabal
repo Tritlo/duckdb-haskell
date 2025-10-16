@@ -33,6 +33,7 @@ library
       Database.DuckDB.Simple.FromField
       Database.DuckDB.Simple.FromRow
       Database.DuckDB.Simple.Internal
+      Database.DuckDB.Simple.LogicalRep
       Database.DuckDB.Simple.Ok
       Database.DuckDB.Simple.ToField
       Database.DuckDB.Simple.ToRow
@@ -71,3 +72,4 @@ test-suite duckdb-simple-test
     , uuid >=1.3 && <1.4
     , time
     , array >= 0.5 && <0.6
+    , duckdb-ffi >= 1.4.1.2 && <1.5

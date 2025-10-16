@@ -43,14 +43,17 @@ import Database.DuckDB.Simple.FromField (
     DecimalValue (..),
     Field (..),
     FieldValue (..),
-    StructField (..),
-    StructValue (..),
-    UnionValue (..),
     IntervalValue (..),
     TimeWithZone (..),
     fromBigNumBytes,
     returnError,
     toBigNumBytes,
+ )
+import Database.DuckDB.Simple.LogicalRep (
+    StructField (..),
+    StructValue (..),
+    UnionMemberType (..),
+    UnionValue (..)
  )
 import Database.DuckDB.Simple.Ok (Ok (..))
 import GHC.Generics (Generic)
@@ -504,21 +507,27 @@ duckdbCastCases =
     expectStruct expectedFields =
         ExpectSatisfies $
             \case
-                FieldStruct StructValue{structValueFields, structValueIndex} -> do
+                FieldStruct StructValue{structValueFields, structValueTypes, structValueIndex} -> do
                     let actualFields = elems structValueFields
+                        actualTypes = elems structValueTypes
                         expectedIndex = Map.fromList (zip (map structFieldName expectedFields) [0 ..])
+                        typeNames = map structFieldName actualTypes
                     assertEqual "struct field names" (map structFieldName expectedFields) (map structFieldName actualFields)
                     assertEqual "struct field values" (map structFieldValue expectedFields) (map structFieldValue actualFields)
+                    assertEqual "struct type field names" (map structFieldName expectedFields) typeNames
                     assertEqual "struct index map" expectedIndex structValueIndex
                 other ->
                     assertFailure ("expected FieldStruct, but saw " <> show other)
     expectUnion expectedIndex expectedLabel expectedPayload =
         ExpectSatisfies $
             \case
-                FieldUnion UnionValue{unionValueIndex, unionValueLabel, unionValuePayload} -> do
+                FieldUnion UnionValue{unionValueIndex, unionValueLabel, unionValuePayload, unionValueMembers} -> do
                     assertEqual "union tag index" expectedIndex unionValueIndex
                     assertEqual "union tag label" expectedLabel unionValueLabel
                     assertEqual "union payload" expectedPayload unionValuePayload
+                    let actualMembers = elems unionValueMembers
+                        expectedMembers = [Text.pack "a", Text.pack "b"]
+                    assertEqual "union member names" expectedMembers (map unionMemberName actualMembers)
                 other ->
                     assertFailure ("expected FieldUnion, but saw " <> show other)
     expectSQLErrorContaining :: Text.Text -> DuckDBExpectation
@@ -825,6 +834,14 @@ typeTests =
                 _ <- executeMany conn "INSERT INTO bits VALUES (?)" (fmap Only bitValues)
                 rows <- query_ conn "SELECT bit FROM bits ORDER BY rowid" :: IO [Only BitString]
                 assertEqual "bit round-trip" (fmap Only bitValues) rows
+        , testCase "round-trips struct and union parameters" $
+            withConnection ":memory:" \conn -> do
+                _ <- execute_ conn "CREATE TABLE struct_union (s STRUCT(a INT, b INT), u UNION(a INT, b VARCHAR))"
+                [(structVal, unionVal)] <-
+                    query_ conn "SELECT {'a': 1, 'b': 2}, CAST(union_value(a := 42) AS UNION(a INTEGER, b VARCHAR))" :: IO [(StructValue FieldValue, UnionValue FieldValue)]
+                _ <- execute conn "INSERT INTO struct_union VALUES (?, ?)" (structVal, unionVal)
+                rows <- query_ conn "SELECT s, u FROM struct_union" :: IO [(StructValue FieldValue, UnionValue FieldValue)]
+                assertEqual "struct/union round-trip" [(structVal, unionVal)] rows
         ]
 
 streamingTests :: TestTree

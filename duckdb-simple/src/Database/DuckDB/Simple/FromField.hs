@@ -55,6 +55,7 @@ import Database.DuckDB.Simple.Ok
 import Database.DuckDB.Simple.Types (Null (..))
 import GHC.Num.Integer (integerFromWordList)
 import Numeric.Natural (Natural)
+import qualified Data.UUID as UUID
 
 -- | Internal representation of a column value.
 data FieldValue
@@ -67,6 +68,7 @@ data FieldValue
     | FieldWord16 Word16
     | FieldWord32 Word32
     | FieldWord64 Word64
+    | FieldUUID UUID.UUID
     | FieldFloat Float
     | FieldDouble Double
     | FieldText Text
@@ -258,6 +260,17 @@ instance FromField Null where
         case fieldValue of
             FieldNull -> Ok Null
             _ -> returnError Incompatible f "expected NULL"
+
+instance FromField UUID.UUID where
+    fromField f@Field{fieldValue} =
+        case fieldValue of
+            FieldText t ->
+                case UUID.fromText t of
+                    Just uuid -> Ok uuid
+                    Nothing -> returnError ConversionFailed f "invalid UUID format"
+            FieldUUID uuid -> Ok uuid
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
 
 instance FromField Bool where
     fromField f@Field{fieldValue} =
@@ -657,3 +670,4 @@ fieldValueTypeName = \case
     FieldEnum{} -> "ENUM"
     FieldList{} -> "LIST"
     FieldMap{} -> "MAP"
+    FieldUUID{} -> "UUID"

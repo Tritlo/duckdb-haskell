@@ -51,6 +51,7 @@ import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (poke)
 import Numeric.Natural (Natural)
+import qualified Data.UUID as UUID
 
 -- | Represents a named parameter binding using the @:=@ operator.
 data NamedParam where
@@ -94,6 +95,7 @@ class ToField a where
 instance ToField Null where
     toField Null = nullBinding "NULL"
 
+
 instance ToField Bool where
     toField value =
         mkFieldBinding (show value) $ \stmt idx ->
@@ -113,6 +115,9 @@ instance ToField Int64 where
 
 instance ToField BigNum where
     toField = bignumBinding
+
+instance ToField UUID.UUID where
+    toField = uuidBinding
 
 instance ToField Integer where
     toField :: Integer -> FieldBinding
@@ -331,6 +336,20 @@ uint8Binding value =
         (show value)
         \stmt idx ->
             bindDuckValue stmt idx (c_duckdb_create_uint8 value)
+
+uuidBinding :: UUID.UUID -> FieldBinding
+uuidBinding uuid =
+    mkFieldBinding
+        (show uuid)
+        \stmt idx ->
+            bindDuckValue stmt idx $
+              alloca $ \ptr -> do
+                let (upper, lower) = UUID.toWords64 uuid
+                poke ptr DuckDBUHugeInt
+                    { duckDBUHugeIntLower = lower
+                    , duckDBUHugeIntUpper = upper
+                    }
+                c_duckdb_create_uuid ptr
 
 bignumBinding :: BigNum -> FieldBinding
 bignumBinding (BigNum big) =

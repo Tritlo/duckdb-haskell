@@ -53,6 +53,8 @@ import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck (testProperty, (===))
 import Test.Tasty.ExpectedFailure (expectFailBecause)
+import qualified Data.UUID as UUID
+import Data.Maybe (fromJust)
 
 data Person = Person
     { personId :: Int
@@ -431,15 +433,16 @@ duckdbCastCases =
     , successCase "TIMETZ" (quoted "03:04:05+02:30") "TIME WITH TIME ZONE" (ExpectEquals (FieldTimeTZ timeWithZoneValue))
     , successCase "TIMESTAMPTZ" (quoted "2024-01-02 03:04:05+02:30") "TIMESTAMP WITH TIME ZONE" (ExpectEquals (FieldTimestampTZ timestampTzUtc))
     , successCase "BIGNUM" (quoted bigNumLiteralText) "BIGNUM" (ExpectEquals (FieldBigNum (BigNum bigNumLiteral)))
-    , successCase "UUID" (quoted uuidText) "UUID" (ExpectEquals (FieldText uuidText))
+    , successCase "UUID" (quoted $ UUID.toText uuid) "UUID" (ExpectEquals (FieldUUID uuid))
     -- not working
-    , expectedFailureCase "BIT" (quoted "1") "BIT" "BIT decoding not implemented" expectBitField
+    , failCaseOK "BIT" (quoted "1") "BIT" expectBitField
+     -- This one is broken upstream, instead of a DuckDBTypeTimeNs, we get a DuckDBType 0
+     , failCaseWith "TIME_NS" (quoted "03:04:05.123456789") "TIME_NS" "TIME_NS decoding unsupported" (expectErrorCallContaining "unsupported DuckDB type")
       -- not implemented yet
     , failCaseWith "STRUCT" (quoted "{\"a\":1,\"b\":2}") "STRUCT(a INTEGER, b INTEGER)" "STRUCT decoding unsupported" (expectErrorCallContaining "STRUCT columns are not supported")
     , failCaseWith "ARRAY" (quoted "[1,2,3]") "INTEGER[3]" "ARRAY decoding unsupported" (expectErrorCallContaining "unsupported DuckDB type")
     , failCaseWith "UNION" (quoted "1") "UNION(\"value\" INTEGER)" "UNION casts unsupported" (expectSQLErrorContaining "UNION")
-    , failCaseWith "TIME_NS" (quoted "03:04:05.123456789") "TIME_NS" "TIME_NS decoding unsupported" (expectErrorCallContaining "unsupported DuckDB type")
-    -- These will never come out of a query
+    -- These can never surface from a query, only internally.
     , failCaseOK "ANY" (quoted "1") "ANY" (expectSQLErrorContaining "ANY")
     , failCaseOK "STRING_LITERAL" (quoted literalText) "STRING_LITERAL" (expectSQLErrorContaining "STRING_LITERAL")
     , failCaseOK "INTEGER_LITERAL" (quoted "123") "INTEGER_LITERAL" (expectSQLErrorContaining "INTEGER_LITERAL")
@@ -479,7 +482,7 @@ duckdbCastCases =
             , castExpectation = expectation
             , castExpectFailureReason = Nothing
             }
-    expectedFailureCase label value ty reason expectation =
+    _expectedFailureCase label value ty reason expectation =
         DuckDBCastCase
             { castLabel = label
             , castExpression = CastExpression value ty
@@ -574,8 +577,8 @@ duckdbCastCases =
         [ (FieldText (Text.pack "a"), FieldInt32 1)
         , (FieldText (Text.pack "b"), FieldInt32 2)
         ]
-    uuidText :: Text.Text
-    uuidText = "123e4567-e89b-12d3-a456-426614174000"
+    uuid :: UUID.UUID
+    uuid = fromJust $ UUID.fromText "123e4567-e89b-12d3-a456-426614174000"
     timeWithZoneValue =
         TimeWithZone{timeWithZoneTime = TimeOfDay 3 4 5, timeWithZoneZone = minutesToTimeZone 150}
     timestampTzUtc =
@@ -767,6 +770,22 @@ typeTests =
                 assertThrows
                     (query_ conn "SELECT name FROM nonempty" :: IO [Only NonEmptyText])
                     (Text.isInfixOf "NonEmptyText requires a non-empty string" . sqlErrorMessage)
+        , testCase "round-trips uuid payloads" $
+            withConnection ":memory:" \conn -> do
+                _ <- execute_ conn "CREATE TABLE uuids (uuid UUID)"
+                let uuidTexts =
+                        [ "123e4567-e89b-12d3-a456-426614174000"
+                        , "923e4567-e89b-12d3-a456-426614174000"
+                        , "ffffffff-ffff-ffff-ffff-ffffffffffff"
+                        ]
+                    maybeUUIDs = traverse UUID.fromText uuidTexts
+                uuids <-
+                    case maybeUUIDs of
+                        Nothing -> assertFailure "invalid UUID literal in test data" >> pure []
+                        Just parsed -> pure parsed
+                _ <- executeMany conn "INSERT INTO uuids VALUES (?)" (fmap Only uuids)
+                rows <- query_ conn "SELECT uuid FROM uuids ORDER BY rowid" :: IO [Only UUID.UUID]
+                assertEqual "uuid round-trip" (fmap Only uuids) rows
         ]
 
 streamingTests :: TestTree

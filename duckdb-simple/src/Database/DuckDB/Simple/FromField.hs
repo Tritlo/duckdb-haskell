@@ -16,8 +16,9 @@ Description : Conversion from DuckDB column values to Haskell types.
 module Database.DuckDB.Simple.FromField (
     Field (..),
     FieldValue (..),
-    BigNum (..),
     BitString(..),
+    bsFromBool,
+    BigNum (..),
     fromBigNumBytes,
     toBigNumBytes,
     DecimalValue (..),
@@ -172,6 +173,23 @@ instance Show BitString where
       where
         word8ToString :: Word8 -> String
         word8ToString w = map (\n -> if testBit w n then '1' else '0') [7, 6 .. 0]
+
+-- | Construct a 'BitString' from a list of 'Bool's, where the first element
+bsFromBool :: [Bool] -> BitString
+bsFromBool bits =
+    let totalBits = length bits
+        padding = (8 - (totalBits `mod` 8)) `mod` 8
+        paddedBits = replicate padding False ++ bits
+        byteChunks = chunk 8 paddedBits
+        byteValues = map bitsToWord8 byteChunks
+     in BitString (fromIntegral padding) (BS.pack byteValues)
+  where
+    chunk _ [] = []
+    chunk n xs = take n xs : chunk n (drop n xs)
+
+    bitsToWord8 :: [Bool] -> Word8
+    bitsToWord8 bs = foldl (\acc (b, i) -> if b then setBit acc i else acc) 0 (zip bs [7, 6 .. 0])
+
 
 data TimeWithZone = TimeWithZone
     { timeWithZoneTime :: !TimeOfDay

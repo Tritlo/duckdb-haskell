@@ -37,7 +37,7 @@ import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds)
 import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), timeOfDayToTime, utc, utcToLocalTime)
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.FFI
-import Database.DuckDB.Simple.FromField (BigNum (..), toBigNumBytes)
+import Database.DuckDB.Simple.FromField (BigNum (..), toBigNumBytes, BitString(..))
 import Database.DuckDB.Simple.Internal (
     SQLError (..),
     Statement (..),
@@ -171,6 +171,11 @@ instance ToField String where
                 TextForeign.withCString (Text.pack str) $ \cstr ->
                     bindDuckValue stmt idx (c_duckdb_create_varchar cstr)
 
+instance DuckDBColumnType BitString where
+    duckdbColumnTypeFor _ = "BIT"
+
+instance ToField BitString where
+    toField = bitBinding
 
 instance ToField BS.ByteString where
     toField bs =
@@ -354,6 +359,33 @@ uuidBinding uuid =
                     , duckDBUHugeIntUpper = upper
                     }
                 c_duckdb_create_uuid ptr
+
+bitBinding :: BitString -> FieldBinding
+bitBinding (BitString padding bits) =
+    mkFieldBinding
+        (show (BitString padding bits))
+        \stmt idx ->
+            let w_padding = (fromIntegral padding :: Word8):BS.unpack bits
+            in bindDuckValue stmt idx $
+                  if BS.null bits
+                        then alloca \ptr -> do
+                            poke
+                                ptr
+                                DuckDBBit
+                                    { duckDBBitData = nullPtr
+                                    , duckDBBitSize = 0
+                                    }
+                            c_duckdb_create_bit ptr
+                        else
+                            BS.useAsCStringLen (BS.pack w_padding) \(rawPtr, len) ->
+                            alloca \ptr -> do
+                                poke
+                                    ptr
+                                    DuckDBBit
+                                        { duckDBBitData = castPtr rawPtr
+                                        , duckDBBitSize = fromIntegral len
+                                        }
+                                c_duckdb_create_bit ptr
 
 bignumBinding :: BigNum -> FieldBinding
 bignumBinding (BigNum big) =

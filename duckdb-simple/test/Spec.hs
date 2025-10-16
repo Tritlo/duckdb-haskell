@@ -37,6 +37,7 @@ import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (
     BigNum (..),
     BitString (..),
+    bsFromBool,
     DecimalValue (..),
     Field (..),
     FieldValue (..),
@@ -770,6 +771,18 @@ typeTests =
                 _ <- executeMany conn "INSERT INTO uuids VALUES (?)" (fmap Only uuids)
                 rows <- query_ conn "SELECT uuid FROM uuids ORDER BY rowid" :: IO [Only UUID.UUID]
                 assertEqual "uuid round-trip" (fmap Only uuids) rows
+        , testCase "round-trips bitstring payloads" $
+            withConnection ":memory:" \conn -> do
+                _ <- execute_ conn "CREATE TABLE bits (bit BIT)"
+                let bitValues =
+                        [ bsFromBool [True]
+                        , bsFromBool [False, False, False, True, True, True, False, True, False]
+                        , bsFromBool [False, False, False, False, True, True, True, False, True, False]
+                        , bsFromBool [True, False, False, False, True, True, True, False, True, False]
+                        ]
+                _ <- executeMany conn "INSERT INTO bits VALUES (?)" (fmap Only bitValues)
+                rows <- query_ conn "SELECT bit FROM bits ORDER BY rowid" :: IO [Only BitString]
+                assertEqual "bit round-trip" (fmap Only bitValues) rows
         ]
 
 streamingTests :: TestTree

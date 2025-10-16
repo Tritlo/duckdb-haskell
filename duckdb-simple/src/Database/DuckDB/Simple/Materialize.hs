@@ -14,6 +14,7 @@ import Data.Ratio ((%))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
+import Data.Array (Array, listArray)
 import Data.Time.Calendar (Day, fromGregorian)
 import Data.Time.Clock (UTCTime (..))
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
@@ -224,6 +225,7 @@ materializeValue dtype vector dataPtr validity rowIdx = do
                         ptr <- c_duckdb_string_t_data stringPtr
                         bytes <- BS.unpack <$> BS.packCStringLen (ptr, fromIntegral len)
                         pure (FieldBigNum (BigNum (fromBigNumBytes bytes)))
+            DuckDBTypeArray -> FieldArray <$> decodeArrayElements vector rowIdx
             DuckDBTypeList -> FieldList <$> decodeListElements vector dataPtr rowIdx
             DuckDBTypeMap -> FieldMap <$> decodeMapPairs vector dataPtr rowIdx
             DuckDBTypeStruct ->
@@ -251,8 +253,37 @@ materializeValue dtype vector dataPtr validity rowIdx = do
             DuckDBTypeIntegerLiteral -> do
                 raw <- peekElemOff (castPtr dataPtr :: Ptr Int64) rowIdx
                 pure (FieldInt64 raw)
+            DuckDBTypeInvalid ->
+                error "duckdb-simple: INVALID type in eager result"
+            DuckDBTypeAny ->
+                error "duckdb-simple: ANY columns should not appear in results"
             other ->
-                error ("duckdb-simple: unsupported DuckDB type in eager result: " <> show other)
+                error ("duckdb-simple: UNKNOWN type in eager result: " <> show other)
+
+decodeArrayElements :: DuckDBVector -> Int -> IO (Array Int FieldValue)
+decodeArrayElements vector rowIdx = do
+    arraySize <-
+        bracket
+            (c_duckdb_vector_get_column_type vector)
+            (\logical -> alloca $ \ptr -> poke ptr logical >> c_duckdb_destroy_logical_type ptr)
+            \logical -> do
+                sizeRaw <- c_duckdb_array_type_array_size logical
+                let sizeWord = fromIntegral sizeRaw :: Word64
+                ensureWithinIntRange (Text.pack "array size") sizeWord
+    childVec <- c_duckdb_array_vector_get_child vector
+    when (childVec == nullPtr) $
+        throwIO (userError "duckdb-simple: array child vector is null")
+    childType <- vectorElementType childVec
+    childData <- c_duckdb_vector_get_data childVec
+    childValidity <- c_duckdb_vector_get_validity childVec
+    let baseIdx = rowIdx * arraySize
+    values <-
+        forM [0 .. arraySize - 1] \delta ->
+            materializeValue childType childVec childData childValidity (baseIdx + delta)
+    pure $
+        if arraySize <= 0
+            then listArray (0, -1) []
+            else listArray (0, arraySize - 1) values
 
 decodeListElements :: DuckDBVector -> Ptr () -> Int -> IO [FieldValue]
 decodeListElements vector dataPtr rowIdx = do

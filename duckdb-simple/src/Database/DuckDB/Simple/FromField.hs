@@ -32,6 +32,7 @@ module Database.DuckDB.Simple.FromField (
 import Control.Exception (Exception, SomeException (..))
 import Data.Bits (Bits (..), finiteBitSize)
 import qualified Data.ByteString as BS
+import Data.Array (Array, (!), bounds, listArray, range, assocs)
 import Data.Data (Typeable, typeRep)
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.Map.Strict (Map)
@@ -86,6 +87,7 @@ data FieldValue
     | FieldBit BitString
     | FieldBigNum BigNum
     | FieldEnum Word32
+    | FieldArray (Array Int FieldValue)
     | FieldList [FieldValue]
     | FieldMap [(FieldValue, FieldValue)]
     deriving (Eq, Show)
@@ -527,6 +529,8 @@ instance {-# OVERLAPPABLE #-} (Typeable a, FromField a) => FromField [a] where
         case fieldValue of
             FieldList entries ->
                 traverse (uncurry parseElement) (zip [0 :: Int ..] entries)
+            FieldArray arr ->
+                traverse (uncurry parseElement) (assocs arr)
             FieldNull -> returnError UnexpectedNull f ""
             _ -> returnError Incompatible f ""
       where
@@ -541,6 +545,26 @@ instance {-# OVERLAPPABLE #-} (Typeable a, FromField a) => FromField [a] where
             let base = fieldName f
                 idxText = Text.pack (show idx)
              in base <> Text.pack "[" <> idxText <> Text.pack "]"
+
+instance (Typeable a, FromField a) => FromField (Array Int a) where
+    fromField f@Field{fieldValue} =
+        case fieldValue of
+            FieldArray arr -> do
+                converted <- traverse (traverseElement arr) (range (bounds arr))
+                pure (listArray (bounds arr) converted)
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
+      where
+        traverseElement arr idx =
+            fromField
+                Field
+                    { fieldName = fieldNameWithIndex idx
+                    , fieldIndex = fieldIndex f
+                    , fieldValue = arr ! idx
+                    }
+        fieldNameWithIndex idx =
+            let idxText = Text.pack (show idx)
+             in fieldName f <> Text.pack "[" <> idxText <> Text.pack "]"
 
 instance (Ord k, Typeable k, Typeable v, FromField k, FromField v) => FromField (Map k v) where
     fromField f@Field{fieldValue} =
@@ -691,6 +715,7 @@ fieldValueTypeName = \case
     FieldBit{} -> "BIT"
     FieldBigNum{} -> "BIGNUM"
     FieldEnum{} -> "ENUM"
+    FieldArray{} -> "ARRAY"
     FieldList{} -> "LIST"
     FieldMap{} -> "MAP"
     FieldUUID{} -> "UUID"

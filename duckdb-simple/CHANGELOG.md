@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased
+- Add support for reading arrays
+
 ## 0.1.2.0
 - Added LIST/MAP coverage note: LIST columns decode into Haskell lists and MAP columns into strict `Map k v`, with matching parameter bindings via `ToField`.
 - Taught `FromField` to interpret `FieldBigNum` as `Integer`/`Natural` and added matching `ToField` instances for `BigNum`, `Integer`, and `Natural` so BIGNUM parameters round-trip without truncation.

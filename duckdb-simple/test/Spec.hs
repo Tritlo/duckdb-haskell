@@ -15,6 +15,7 @@ import Control.Applicative ((<|>))
 import Control.Exception (ErrorCall, Exception, SomeException, displayException, fromException, try)
 import Control.Monad (replicateM_)
 import qualified Data.ByteString as BS
+import Data.Array (Array, listArray)
 import Data.IORef (atomicModifyIORef', newIORef)
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.List (sortOn)
@@ -437,11 +438,11 @@ duckdbCastCases =
     , successCase "BIGNUM" (quoted bigNumLiteralText) "BIGNUM" (ExpectEquals (FieldBigNum (BigNum bigNumLiteral)))
     , successCase "UUID" (quoted $ UUID.toText uuid) "UUID" (ExpectEquals (FieldUUID uuid))
     , successCase "BIT" (quoted $ Text.pack $ show bits) "BIT" (ExpectEquals (FieldBit bits))
+    , successCase "ARRAY" (quoted "[1,2,3]") "INTEGER[3]" (ExpectEquals (FieldArray arrayElements))
      -- This one is broken upstream, instead of a DuckDBTypeTimeNs, we get a DuckDBType 0
-     , failCaseWith "TIME_NS" (quoted "03:04:05.123456789") "TIME_NS" "TIME_NS decoding unsupported" (expectErrorCallContaining "unsupported DuckDB type")
+     , failCaseWith "TIME_NS" (quoted "03:04:05.123456789") "TIME_NS" "TIME_NS decoding unsupported" (expectErrorCallContaining "INVALID")
       -- not implemented yet
     , failCaseWith "STRUCT" (quoted "{\"a\":1,\"b\":2}") "STRUCT(a INTEGER, b INTEGER)" "STRUCT decoding unsupported" (expectErrorCallContaining "STRUCT columns are not supported")
-    , failCaseWith "ARRAY" (quoted "[1,2,3]") "INTEGER[3]" "ARRAY decoding unsupported" (expectErrorCallContaining "unsupported DuckDB type")
     , failCaseWith "UNION" (quoted "1") "UNION(\"value\" INTEGER)" "UNION casts unsupported" (expectSQLErrorContaining "UNION")
     -- These can never surface from a query, only internally.
     , failCaseOK "ANY" (quoted "1") "ANY" (expectSQLErrorContaining "ANY")
@@ -559,6 +560,8 @@ duckdbCastCases =
         DecimalValue{decimalWidth = 18, decimalScale = 4, decimalInteger = 123456789}
     listElements =
         [FieldInt32 1, FieldInt32 2, FieldInt32 3]
+    arrayElements =
+        listArray (0, 2) listElements
     mapPairs =
         [ (FieldText (Text.pack "a"), FieldInt32 1)
         , (FieldText (Text.pack "b"), FieldInt32 2)
@@ -622,6 +625,16 @@ typeTests =
                 assertEqual "Word64 round-trip" w64 r64
                 [Only (asWord :: Word)] <- query_ conn "SELECT u64 FROM unsigneds"
                 assertEqual "Word from UBIGINT" (fromIntegral w64) asWord
+        , testCase "round-trips fixed-length arrays" $
+            withConnection ":memory:" \conn -> do
+                _ <- execute_ conn "CREATE TABLE arrays (vals INTEGER[3])"
+                _ <- execute_ conn "INSERT INTO arrays VALUES ([1,2,3]), ([4,5,6])"
+                rows <- query_ conn "SELECT vals FROM arrays ORDER BY rowid" :: IO [Only (Array Int Int)]
+                let expected =
+                        [ Only (listArray (0, 2) [1, 2, 3])
+                        , Only (listArray (0, 2) [4, 5, 6])
+                        ]
+                assertEqual "array round-trip" expected rows
         , testCase "decodes huge integers as Integer" $
             withConnection ":memory:" \conn -> do
                 let hugeValue = 170141183460469231731687303715884105727 :: Integer

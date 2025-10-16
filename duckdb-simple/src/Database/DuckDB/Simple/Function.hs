@@ -31,7 +31,7 @@ import Control.Exception (
     try,
  )
 import Control.Monad (forM, forM_, when)
-import Data.Bits (shiftL, (.|.))
+import Data.Bits (shiftL, (.|.), clearBit)
 import qualified Data.ByteString as BS
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.Proxy (Proxy (..))
@@ -54,7 +54,6 @@ import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.FFI
 import Database.DuckDB.Simple.FromField (
     BigNum (..),
-    BitString (..),
     DecimalValue (..),
     Field (..),
     FieldValue (..),
@@ -503,8 +502,20 @@ fetchValue dtype decimalInfo enumInternal dataPtr rowIdx =
                             functionInvocationError $
                                 Text.pack "duckdb-simple: missing decimal metadata for scalar function argument"
             DuckDBTypeBit -> do
-                value <- peekElemOff (castPtr dataPtr :: Ptr DuckDBBit) idx
-                FieldBit <$> decodeDuckDBBit value
+                -- Same deal as with bignum, we need to manually decode the string_t
+                let base = castPtr dataPtr :: Ptr Word8
+                    -- luckily, the underlying data has only one field, which is a string_t
+                    offset = fromIntegral rowIdx * duckdbStringTSize
+                    stringPtr = castPtr (base `plusPtr` offset) :: Ptr DuckDBStringT
+                len <- c_duckdb_string_t_length stringPtr
+                ptr <- c_duckdb_string_t_data stringPtr
+                bs <- BS.unpack <$> BS.packCStringLen (ptr, fromIntegral len)
+                case bs of
+                    [] -> return $ FieldBit BS.empty
+                    [_] -> return $ FieldBit BS.empty
+                    (padding:b:bits) ->
+                        let cleared = foldl clearBit b [0..fromIntegral padding -1]
+                        in return $ FieldBit $ BS.pack (cleared:bits)
             DuckDBTypeBigNum -> do
                 let base = castPtr dataPtr :: Ptr Word8
                     -- luckily, the underlying data has only one field, which is a string_t
@@ -678,16 +689,6 @@ duckDBHugeIntToInteger DuckDBHugeInt{duckDBHugeIntLower, duckDBHugeIntUpper} =
 duckDBUHugeIntToInteger :: DuckDBUHugeInt -> Integer
 duckDBUHugeIntToInteger DuckDBUHugeInt{duckDBUHugeIntLower, duckDBUHugeIntUpper} =
     (fromIntegral duckDBUHugeIntUpper `shiftL` 64) .|. fromIntegral duckDBUHugeIntLower
-
-decodeDuckDBBit :: DuckDBBit -> IO BitString
-decodeDuckDBBit DuckDBBit{duckDBBitData, duckDBBitSize}
-    | duckDBBitData == nullPtr || duckDBBitSize == 0 =
-        pure BitString{bitStringLength = 0, bitStringBytes = BS.empty}
-    | otherwise = do
-        let bitLength = duckDBBitSize
-            byteLength = fromIntegral ((bitLength + 7) `div` 8) :: Int
-        bytes <- BS.packCStringLen (castPtr duckDBBitData, byteLength)
-        pure BitString{bitStringLength = bitLength, bitStringBytes = bytes}
 
 writeResults :: ScalarType -> [ScalarValue] -> DuckDBVector -> IO ()
 writeResults resultType values outVec = do

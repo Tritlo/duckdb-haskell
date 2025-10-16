@@ -101,7 +101,6 @@ import Data.Ratio ((%))
 import Database.DuckDB.FFI
 import Database.DuckDB.Simple.FromField
     ( BigNum (..)
-    , BitString (..)
     , DecimalValue (..)
     , Field (..)
     , FieldValue (..)
@@ -1276,8 +1275,20 @@ materializedValueFromPointers dtype vector dataPtr validity rowIdx = do
                     raw <- peekElemOff (castPtr dataPtr :: Ptr DuckDBUHugeInt) rowIdx
                     pure (FieldUHugeInt (duckDBUHugeIntToInteger raw))
                 DuckDBTypeBit -> do
-                    raw <- peekElemOff (castPtr dataPtr :: Ptr DuckDBBit) rowIdx
-                    FieldBit <$> decodeDuckDBBit raw
+                    -- Same deal as with bignum, we need to manually decode the string_t
+                    let base = castPtr dataPtr :: Ptr Word8
+                        -- luckily, the underlying data has only one field, which is a string_t
+                        offset = fromIntegral rowIdx * duckdbStringTSize
+                        stringPtr = castPtr (base `plusPtr` offset) :: Ptr DuckDBStringT
+                    len <- c_duckdb_string_t_length stringPtr
+                    ptr <- c_duckdb_string_t_data stringPtr
+                    bs <- BS.unpack <$> BS.packCStringLen (ptr, fromIntegral len)
+                    case bs of
+                       [] -> return $ FieldBit BS.empty
+                       [_] -> return $ FieldBit BS.empty
+                       (padding:b:bits) ->
+                           let cleared = foldl clearBit b [0..fromIntegral padding -1]
+                           in return $ FieldBit $ BS.pack (cleared:bits)
                 DuckDBTypeBigNum -> do
                     -- Here we have to get messy, because DuckDB returns a pointer
                     -- to a bignum_t and not a duckdb_bignum.
@@ -1413,16 +1424,6 @@ duckDBHugeIntToInteger DuckDBHugeInt{duckDBHugeIntLower, duckDBHugeIntUpper} =
 duckDBUHugeIntToInteger :: DuckDBUHugeInt -> Integer
 duckDBUHugeIntToInteger DuckDBUHugeInt{duckDBUHugeIntLower, duckDBUHugeIntUpper} =
     (fromIntegral duckDBUHugeIntUpper `shiftL` 64) .|. fromIntegral duckDBUHugeIntLower
-
-decodeDuckDBBit :: DuckDBBit -> IO BitString
-decodeDuckDBBit DuckDBBit{duckDBBitData, duckDBBitSize}
-    | duckDBBitData == nullPtr || duckDBBitSize == 0 =
-        pure BitString{bitStringLength = 0, bitStringBytes = BS.empty}
-    | otherwise = do
-        let bitLength = duckDBBitSize
-            byteLength = fromIntegral ((bitLength + 7) `div` 8) :: Int
-        bytes <- BS.packCStringLen (castPtr duckDBBitData, byteLength)
-        pure BitString{bitStringLength = bitLength, bitStringBytes = bytes}
 
 peekError :: Ptr CString -> IO Text
 peekError ptr = do

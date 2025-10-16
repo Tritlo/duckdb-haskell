@@ -16,7 +16,6 @@ Description : Conversion from DuckDB column values to Haskell types.
 module Database.DuckDB.Simple.FromField (
     Field (..),
     FieldValue (..),
-    BitString (..),
     BigNum (..),
     fromBigNumBytes,
     toBigNumBytes,
@@ -83,7 +82,7 @@ data FieldValue
     | FieldDecimal DecimalValue
     | FieldTimestampTZ UTCTime
     | FieldTimeTZ TimeWithZone
-    | FieldBit BitString
+    | FieldBit BS.ByteString
     | FieldBigNum BigNum
     | FieldEnum Word32
     | FieldList [FieldValue]
@@ -104,11 +103,6 @@ data IntervalValue = IntervalValue
     }
     deriving (Eq, Show)
 
-data BitString = BitString
-    { bitStringLength :: !Word64
-    , bitStringBytes :: !BS.ByteString
-    }
-    deriving (Eq, Show)
 
 newtype BigNum = BigNum Integer
     deriving stock (Eq, Show)
@@ -481,13 +475,6 @@ instance FromField BS.ByteString where
         case fieldValue of
             FieldBlob bs -> Ok bs
             FieldText t -> Ok (TextEncoding.encodeUtf8 t)
-            FieldBit b -> Ok (bitStringBytes b)
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f ""
-
-instance FromField BitString where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
             FieldBit b -> Ok b
             FieldNull -> returnError UnexpectedNull f ""
             _ -> returnError Incompatible f ""

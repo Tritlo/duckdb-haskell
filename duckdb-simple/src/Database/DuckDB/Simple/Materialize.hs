@@ -3,24 +3,6 @@
 
 module Database.DuckDB.Simple.Materialize (
     materializeValue,
-    decodeListElements,
-    decodeMapPairs,
-    chunkIsRowValid,
-    chunkDecodeText,
-    chunkDecodeBlob,
-    duckdbStringTSize,
-    decodeDuckDBDate,
-    decodeDuckDBTime,
-    decodeDuckDBTimeNs,
-    decodeDuckDBTimeTz,
-    decodeDuckDBTimestamp,
-    decodeDuckDBTimestampSeconds,
-    decodeDuckDBTimestampMilliseconds,
-    decodeDuckDBTimestampNanoseconds,
-    decodeDuckDBTimestampUTCTime,
-    intervalValueFromDuckDB,
-    duckDBHugeIntToInteger,
-    duckDBUHugeIntToInteger
 ) where
 
 import Control.Exception (bracket, throwIO)

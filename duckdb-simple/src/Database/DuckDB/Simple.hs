@@ -78,16 +78,13 @@ module Database.DuckDB.Simple (
 import Control.Monad (forM, join, void, when, zipWithM, zipWithM_)
 import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, newIORef, readIORef, writeIORef)
 import Control.Exception (SomeException, bracket, finally, mask, onException, throwIO, try)
-import Data.Int (Int16, Int32, Int64, Int8)
 import Data.Maybe (isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
-import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.FFI
 import Database.DuckDB.Simple.FromField
     ( Field (..)
-    , FieldValue (..)
     , FieldParser
     , FromField (..)
     , ResultError (..)
@@ -103,18 +100,7 @@ import Database.DuckDB.Simple.FromRow
     )
 import Database.DuckDB.Simple.Function (Function, createFunction, deleteFunction)
 import Database.DuckDB.Simple.Materialize
-    ( chunkDecodeBlob
-    , chunkDecodeText
-    , chunkIsRowValid
-    , decodeListElements
-    , decodeMapPairs
-    , decodeDuckDBDate
-    , decodeDuckDBTime
-    , decodeDuckDBTimestamp
-    , duckDBHugeIntToInteger
-    , duckDBUHugeIntToInteger
-    , materializeValue
-    )
+    ( materializeValue )
 import Database.DuckDB.Simple.Internal
     ( Connection (..)
     , ConnectionState (..)
@@ -137,7 +123,7 @@ import Database.DuckDB.Simple.Types (FormatError (..), Null (..), Only (..), (:.
 import Foreign.C.String (CString, peekCString, withCString)
 import Foreign.Marshal.Alloc (alloca, free, malloc)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
-import Foreign.Storable (Storable (..), peekElemOff)
+import Foreign.Storable (peek, poke)
 import Database.DuckDB.Simple.Ok (Ok(..))
 
 -- | Open a DuckDB database located at the supplied path.
@@ -634,74 +620,20 @@ buildRow queryText columns vectors rowIdx =
 
 buildField :: Query -> Int -> StatementStreamColumn -> StatementStreamChunkVector -> IO Field
 buildField queryText rowIdx column StatementStreamChunkVector{statementStreamChunkVectorHandle, statementStreamChunkVectorData, statementStreamChunkVectorValidity} = do
-    let duckIdx = fromIntegral rowIdx
-        dtype = statementStreamColumnType column
-    valid <- chunkIsRowValid statementStreamChunkVectorValidity duckIdx
+    let dtype = statementStreamColumnType column
     value <-
-        if not valid
-            then pure FieldNull
-            else case dtype of
-                DuckDBTypeBoolean -> do
-                    raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr Word8) rowIdx
-                    pure (FieldBool (raw /= 0))
-                DuckDBTypeTinyInt -> do
-                    raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr Int8) rowIdx
-                    pure (FieldInt8 (fromIntegral raw))
-                DuckDBTypeSmallInt -> do
-                    raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr Int16) rowIdx
-                    pure (FieldInt16 (fromIntegral raw))
-                DuckDBTypeInteger -> do
-                    raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr Int32) rowIdx
-                    pure (FieldInt32 (fromIntegral raw))
-                DuckDBTypeBigInt -> do
-                    raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr Int64) rowIdx
-                    pure (FieldInt64 raw)
-                DuckDBTypeUTinyInt -> do
-                    raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr Word8) rowIdx
-                    pure (FieldWord8 (fromIntegral raw))
-                DuckDBTypeUSmallInt -> do
-                    raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr Word16) rowIdx
-                    pure (FieldWord16 (fromIntegral raw))
-                DuckDBTypeUInteger -> do
-                    raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr Word32) rowIdx
-                    pure (FieldWord32 (fromIntegral raw))
-                DuckDBTypeUBigInt -> do
-                    raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr Word64) rowIdx
-                    pure (FieldWord64 (fromIntegral raw))
-                DuckDBTypeBlob -> do
-                    blob <- chunkDecodeBlob statementStreamChunkVectorData duckIdx
-                    pure (FieldBlob blob)
-                DuckDBTypeDate -> do
-                    raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr Int32) rowIdx
-                    day <- decodeDuckDBDate (DuckDBDate raw)
-                    pure (FieldDate day)
-                DuckDBTypeTime -> do
-                    raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr DuckDBTime) rowIdx
-                    tod <- decodeDuckDBTime raw
-                    pure (FieldTime tod)
-                DuckDBTypeTimestamp -> do
-                    raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr DuckDBTimestamp) rowIdx
-                    ts <- decodeDuckDBTimestamp raw
-                    pure (FieldTimestamp ts)
-                DuckDBTypeFloat -> do
-                    raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr Float) rowIdx
-                    pure (FieldDouble (realToFrac raw))
-                DuckDBTypeDouble -> do
-                    raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr Double) rowIdx
-                    pure (FieldDouble raw)
-                DuckDBTypeVarchar -> FieldText <$> chunkDecodeText statementStreamChunkVectorData duckIdx
-                DuckDBTypeList -> FieldList <$> decodeListElements statementStreamChunkVectorHandle statementStreamChunkVectorData rowIdx
-                DuckDBTypeMap -> FieldMap <$> decodeMapPairs statementStreamChunkVectorHandle statementStreamChunkVectorData rowIdx
-                DuckDBTypeStruct -> error "duckdb-simple: STRUCT columns are not supported"
-                DuckDBTypeUnion -> error "duckdb-simple: UNION columns are not supported"
-                DuckDBTypeHugeInt -> do
-                    raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr DuckDBHugeInt) rowIdx
-                    pure (FieldHugeInt (duckDBHugeIntToInteger raw))
-                DuckDBTypeUHugeInt -> do
-                    raw <- peekElemOff (castPtr statementStreamChunkVectorData :: Ptr DuckDBUHugeInt) rowIdx
-                    pure (FieldUHugeInt (duckDBUHugeIntToInteger raw))
-                _ ->
-                    throwIO (streamingUnsupportedTypeError queryText column)
+        case dtype of
+            DuckDBTypeStruct ->
+                throwIO (streamingUnsupportedTypeError queryText column)
+            DuckDBTypeUnion ->
+                throwIO (streamingUnsupportedTypeError queryText column)
+            _ ->
+                materializeValue
+                    dtype
+                    statementStreamChunkVectorHandle
+                    statementStreamChunkVectorData
+                    statementStreamChunkVectorValidity
+                    rowIdx
     pure
         Field
             { fieldName = statementStreamColumnName column

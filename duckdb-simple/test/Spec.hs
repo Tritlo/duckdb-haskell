@@ -6,6 +6,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE LambdaCase #-}
 
 -- | Tasty-based test suite for duckdb-simple.
 module Main (main) where
@@ -375,7 +376,7 @@ duckdbTypeCastTests =
                         result <- try (query_ conn sql) :: IO (Either SomeException [Only FieldValue])
                         runExpectation castLabel castExpectation result
                         maybe (pure ()) assertFailure castExpectFailureReason
-         in maybe base (\reason -> expectFailBecause reason base) castExpectFailureReason
+         in maybe base (`expectFailBecause` base) castExpectFailureReason
 
 runExpectation :: String -> DuckDBExpectation -> Either SomeException [Only FieldValue] -> Assertion
 runExpectation label expectation outcome =
@@ -484,15 +485,15 @@ duckdbCastCases =
             , castExpectFailureReason = Nothing
             }
     expectMapEntries expectedPairs =
-        ExpectSatisfies $ \fieldValue ->
-            case fieldValue of
-                FieldMap actualPairs ->
-                    let normalize pairs = sortOn (mapKey . fst) pairs
-                        mapKey (FieldText txt) = txt
-                        mapKey other = Text.pack (show other)
-                     in assertEqual "map entries" (normalize expectedPairs) (normalize actualPairs)
-                other ->
-                    assertFailure ("expected FieldMap, but saw " <> show other)
+        ExpectSatisfies $
+           \case
+             FieldMap actualPairs ->
+                 let normalize = sortOn (mapKey . fst)
+                     mapKey (FieldText txt) = txt
+                     mapKey other = Text.pack (show other)
+                  in assertEqual "map entries" (normalize expectedPairs) (normalize actualPairs)
+             other ->
+                 assertFailure ("expected FieldMap, but saw " <> show other)
     expectSQLErrorContaining :: Text.Text -> DuckDBExpectation
     expectSQLErrorContaining needle =
         ExpectException $ \err ->

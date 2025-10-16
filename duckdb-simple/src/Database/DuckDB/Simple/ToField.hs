@@ -4,6 +4,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 {- |
 Module      : Database.DuckDB.Simple.ToField
@@ -15,7 +16,9 @@ delegating to the DuckDB C API under the hood.
 module Database.DuckDB.Simple.ToField (
     FieldBinding,
     ToField (..),
+    DuckDBColumnType (..),
     NamedParam (..),
+    duckdbColumnType,
     bindFieldBinding,
     renderFieldBinding,
 ) where
@@ -24,6 +27,7 @@ import Control.Exception (bracket, throwIO)
 import Control.Monad (when)
 import qualified Data.ByteString as BS
 import Data.Int (Int16, Int32, Int64)
+import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
@@ -59,6 +63,14 @@ data FieldBinding = FieldBinding
     { fieldBindingAction :: !(Statement -> DuckDBIdx -> IO ())
     , fieldBindingDisplay :: !String
     }
+
+-- | Types that map to a concrete DuckDB column type when used with 'ToField'.
+class (ToField a) => DuckDBColumnType a where
+    duckdbColumnTypeFor :: Proxy a -> Text
+
+-- | Report the DuckDB column type that best matches a given 'ToField' instance.
+duckdbColumnType :: forall a. (DuckDBColumnType a) => Proxy a -> Text
+duckdbColumnType = duckdbColumnTypeFor
 
 -- | Apply a 'FieldBinding' to the given statement/index.
 bindFieldBinding :: Statement -> DuckDBIdx -> FieldBinding -> IO ()
@@ -205,6 +217,78 @@ instance (ToField a) => ToField (Maybe a) where
                 { fieldBindingDisplay = "Just " <> renderFieldBinding binding
                 }
 
+instance DuckDBColumnType Null where
+    duckdbColumnTypeFor _ = "NULL"
+
+instance DuckDBColumnType Bool where
+    duckdbColumnTypeFor _ = "BOOLEAN"
+
+instance DuckDBColumnType Int where
+    duckdbColumnTypeFor _ = "BIGINT"
+
+instance DuckDBColumnType Int16 where
+    duckdbColumnTypeFor _ = "SMALLINT"
+
+instance DuckDBColumnType Int32 where
+    duckdbColumnTypeFor _ = "INTEGER"
+
+instance DuckDBColumnType Int64 where
+    duckdbColumnTypeFor _ = "BIGINT"
+
+instance DuckDBColumnType BigNum where
+    duckdbColumnTypeFor _ = "BIGNUM"
+
+instance DuckDBColumnType Integer where
+    duckdbColumnTypeFor _ = "BIGNUM"
+
+instance DuckDBColumnType Natural where
+    duckdbColumnTypeFor _ = "BIGNUM"
+
+instance DuckDBColumnType Word where
+    duckdbColumnTypeFor _ = "UBIGINT"
+
+instance DuckDBColumnType Word8 where
+    duckdbColumnTypeFor _ = "UTINYINT"
+
+instance DuckDBColumnType Word16 where
+    duckdbColumnTypeFor _ = "USMALLINT"
+
+instance DuckDBColumnType Word32 where
+    duckdbColumnTypeFor _ = "UINTEGER"
+
+instance DuckDBColumnType Word64 where
+    duckdbColumnTypeFor _ = "UBIGINT"
+
+instance DuckDBColumnType Double where
+    duckdbColumnTypeFor _ = "DOUBLE"
+
+instance DuckDBColumnType Float where
+    duckdbColumnTypeFor _ = "FLOAT"
+
+instance DuckDBColumnType Text where
+    duckdbColumnTypeFor _ = "TEXT"
+
+instance DuckDBColumnType String where
+    duckdbColumnTypeFor _ = "TEXT"
+
+instance DuckDBColumnType BS.ByteString where
+    duckdbColumnTypeFor _ = "BLOB"
+
+instance DuckDBColumnType Day where
+    duckdbColumnTypeFor _ = "DATE"
+
+instance DuckDBColumnType TimeOfDay where
+    duckdbColumnTypeFor _ = "TIME"
+
+instance DuckDBColumnType LocalTime where
+    duckdbColumnTypeFor _ = "TIMESTAMP"
+
+instance DuckDBColumnType UTCTime where
+    duckdbColumnTypeFor _ = "TIMESTAMPTZ"
+
+instance (DuckDBColumnType a) => DuckDBColumnType (Maybe a) where
+    duckdbColumnTypeFor _ = duckdbColumnTypeFor (Proxy :: Proxy a)
+
 -- | Helper for binding 'Null' values.
 nullBinding :: String -> FieldBinding
 nullBinding repr =
@@ -256,9 +340,9 @@ bignumBinding (BigNum big) =
             bindDuckValue stmt idx $
                 let neg = fromBool (big < 0)
                     big_num_bytes = BS.pack $
-                      if big < 0
-                      then map complement (drop 3 $ toBigNumBytes big)
-                      else drop 3 $ toBigNumBytes big
+                        if big < 0
+                            then map complement (drop 3 $ toBigNumBytes big)
+                            else drop 3 $ toBigNumBytes big
                  in if BS.null big_num_bytes
                         then
                             alloca \ptr -> do
@@ -271,7 +355,7 @@ bignumBinding (BigNum big) =
                                         }
                                 c_duckdb_create_bignum ptr
                         else
-                            BS.useAsCStringLen big_num_bytes \(rawPtr, len) -> do
+                            BS.useAsCStringLen big_num_bytes \(rawPtr, len) ->
                                 alloca \ptr -> do
                                     poke
                                         ptr

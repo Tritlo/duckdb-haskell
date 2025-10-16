@@ -17,6 +17,7 @@ import qualified Data.ByteString as BS
 import Data.IORef (atomicModifyIORef', newIORef)
 import Data.Int (Int64)
 import qualified Data.Text as Text
+import Data.Proxy (Proxy (..))
 import Numeric.Natural (Natural)
 import qualified Data.Map.Strict as Map
 import Data.Time.Calendar (fromGregorian)
@@ -437,6 +438,16 @@ typeTests =
                 _ <- executeMany conn "INSERT INTO bignum_roundtrip VALUES (?)" (fmap (Only . BigNum) ints)
                 rows <- query_ conn "SELECT val FROM bignum_roundtrip ORDER BY rowid" :: IO [Only Integer]
                 assertEqual "BIGNUM round-trip" (fmap Only ints) rows
+        , testCase "duckdbColumnType reports BIGNUM for Integer" $
+            assertEqual
+                "duckdbColumnType Integer"
+                (Text.pack "BIGNUM")
+                (duckdbColumnType (Proxy :: Proxy Integer))
+        , testCase "duckdbColumnType preserves Maybe parameter" $
+            assertEqual
+                "duckdbColumnType Maybe Word16"
+                (Text.pack "USMALLINT")
+                (duckdbColumnType (Proxy :: Proxy (Maybe Word16)))
         , testCase "decodes interval components" $
             withConnection ":memory:" \conn -> do
                 [Only intervalVal] <-

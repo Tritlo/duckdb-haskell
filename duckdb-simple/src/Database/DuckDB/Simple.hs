@@ -63,6 +63,8 @@ module Database.DuckDB.Simple (
     ToRow (..),
     FieldBinding,
     NamedParam (..),
+    DuckDBColumnType (..),
+    duckdbColumnType,
     Null (..),
     Only (..),
     (:.) (..),
@@ -136,7 +138,7 @@ import Database.DuckDB.Simple.Internal
     , withQueryCString
     , withStatementHandle
     )
-import Database.DuckDB.Simple.ToField (FieldBinding, NamedParam (..), ToField (..), bindFieldBinding, renderFieldBinding)
+import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), FieldBinding, NamedParam (..), ToField (..), bindFieldBinding, duckdbColumnType, renderFieldBinding)
 import Database.DuckDB.Simple.ToRow (ToRow (..))
 import Database.DuckDB.Simple.Types (FormatError (..), Null (..), Only (..), (:.) (..))
 import Foreign.C.String (CString, peekCString, withCString)

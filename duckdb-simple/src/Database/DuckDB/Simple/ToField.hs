@@ -3,6 +3,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE InstanceSigs #-}
 
 {- |
 Module      : Database.DuckDB.Simple.ToField
@@ -37,14 +38,15 @@ import Database.DuckDB.Simple.Internal (
     Statement (..),
     withStatementHandle,
  )
-import Database.DuckDB.Simple.FromField (BigNum (..), bigNumToInteger, integerToBigNum)
+import Database.DuckDB.Simple.FromField (BigNum (..), toBigNumBytes)
 import Database.DuckDB.Simple.Types (Null (..))
 import Foreign.C.String (peekCString)
-import Foreign.C.Types (CBool (..), CDouble (..))
+import Foreign.C.Types (CDouble (..))
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Marshal.Utils (toBool)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (poke)
+import Foreign.Marshal (fromBool)
+import Data.Bits (complement)
 
 -- | Represents a named parameter binding using the @:=@ operator.
 data NamedParam where
@@ -101,10 +103,11 @@ instance ToField BigNum where
     toField = bignumBinding
 
 instance ToField Integer where
-    toField = toField . integerToBigNum
+    toField :: Integer -> FieldBinding
+    toField = toField . BigNum
 
 instance ToField Natural where
-    toField = toField . integerToBigNum . toInteger
+    toField = toField . BigNum . toInteger
 
 instance ToField Word where
     toField value = uint64Binding (fromIntegral value)
@@ -246,16 +249,17 @@ uint8Binding value =
             bindDuckValue stmt idx (c_duckdb_create_uint8 value)
 
 bignumBinding :: BigNum -> FieldBinding
-bignumBinding big@BigNum{bigNumIsNegative, bigNumMagnitude} =
+bignumBinding (BigNum big) =
     mkFieldBinding
-        (show (bigNumToInteger big))
+        (show big)
         \stmt idx ->
             bindDuckValue stmt idx $
-                let normalized =
-                        let cIsNegative =
-                                if bigNumIsNegative then 1 else 0 :: CBool
-                         in if toBool cIsNegative then 1 else 0 :: CBool
-                 in if BS.null bigNumMagnitude
+                let neg = fromBool (big < 0)
+                    big_num_bytes = BS.pack $
+                      if big < 0
+                      then map complement (drop 3 $ toBigNumBytes big)
+                      else drop 3 $ toBigNumBytes big
+                 in if BS.null big_num_bytes
                         then
                             alloca \ptr -> do
                                 poke
@@ -263,20 +267,21 @@ bignumBinding big@BigNum{bigNumIsNegative, bigNumMagnitude} =
                                     DuckDBBignum
                                         { duckDBBignumData = nullPtr
                                         , duckDBBignumSize = 0
-                                        , duckDBBignumIsNegative = normalized
+                                        , duckDBBignumIsNegative = neg
                                         }
                                 c_duckdb_create_bignum ptr
                         else
-                            BS.useAsCStringLen bigNumMagnitude \(rawPtr, len) ->
+                            BS.useAsCStringLen big_num_bytes \(rawPtr, len) -> do
                                 alloca \ptr -> do
                                     poke
                                         ptr
                                         DuckDBBignum
                                             { duckDBBignumData = castPtr rawPtr
                                             , duckDBBignumSize = fromIntegral len
-                                            , duckDBBignumIsNegative = normalized
+                                            , duckDBBignumIsNegative = neg
                                             }
                                     c_duckdb_create_bignum ptr
+
 
 encodeDay :: Day -> IO DuckDBDate
 encodeDay day =

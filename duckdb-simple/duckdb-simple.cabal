@@ -61,4 +61,6 @@ test-suite duckdb-simple-test
     , text
     , tasty >=1.4 && <1.6
     , tasty-hunit >=0.10 && <0.12
+    , tasty-quickcheck >=0.10 && <0.11
+    , QuickCheck >=2.14 && <2.15
     , time

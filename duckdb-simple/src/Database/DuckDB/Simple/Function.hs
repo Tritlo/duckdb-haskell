@@ -53,14 +53,15 @@ import Data.Time.LocalTime
     )
 import Database.DuckDB.FFI
 import Database.DuckDB.Simple.FromField
-    ( BigNum (..)
-    , BitString (..)
+    ( BitString (..)
     , DecimalValue (..)
     , Field (..)
     , FieldValue (..)
     , FromField (..)
     , IntervalValue (..)
     , TimeWithZone (..)
+    , BigNum (..)
+    , fromBigNumBytes
     )
 import Database.DuckDB.Simple.Internal
     ( Connection
@@ -505,8 +506,16 @@ fetchValue dtype decimalInfo enumInternal dataPtr rowIdx =
                 value <- peekElemOff (castPtr dataPtr :: Ptr DuckDBBit) idx
                 FieldBit <$> decodeDuckDBBit value
             DuckDBTypeBigNum -> do
-                value <- peekElemOff (castPtr dataPtr :: Ptr DuckDBBignum) idx
-                FieldBigNum <$> decodeDuckDBBigNum value
+                let base = castPtr dataPtr :: Ptr Word8
+                    -- luckily, the underlying data has only one field, which is a string_t
+                    offset = fromIntegral rowIdx * duckdbStringTSize
+                    stringPtr = castPtr (base `plusPtr` offset) :: Ptr DuckDBStringT
+                len <- c_duckdb_string_t_length stringPtr
+                if len < 3
+                then return $ FieldBigNum (BigNum 0)
+                else do ptr <- c_duckdb_string_t_data stringPtr
+                        bs <- BS.unpack <$> BS.packCStringLen (ptr, fromIntegral len)
+                        return $ FieldBigNum $ BigNum (fromBigNumBytes bs)
             DuckDBTypeEnum -> do
                 case enumInternal of
                     Just DuckDBTypeUTinyInt -> do
@@ -678,15 +687,6 @@ decodeDuckDBBit DuckDBBit{duckDBBitData, duckDBBitSize}
             byteLength = fromIntegral ((bitLength + 7) `div` 8) :: Int
         bytes <- BS.packCStringLen (castPtr duckDBBitData, byteLength)
         pure BitString{bitStringLength = bitLength, bitStringBytes = bytes}
-
-decodeDuckDBBigNum :: DuckDBBignum -> IO BigNum
-decodeDuckDBBigNum DuckDBBignum{duckDBBignumData, duckDBBignumSize, duckDBBignumIsNegative}
-    | duckDBBignumData == nullPtr || duckDBBignumSize == 0 =
-        pure BigNum{bigNumIsNegative = duckDBBignumIsNegative /= 0, bigNumMagnitude = BS.empty}
-    | otherwise = do
-        let byteLength = fromIntegral duckDBBignumSize :: Int
-        bytes <- BS.packCStringLen (castPtr duckDBBignumData, byteLength)
-        pure BigNum{bigNumIsNegative = duckDBBignumIsNegative /= 0, bigNumMagnitude = bytes}
 
 writeResults :: ScalarType -> [ScalarValue] -> DuckDBVector -> IO ()
 writeResults resultType values outVec = do

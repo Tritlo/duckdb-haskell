@@ -35,16 +35,18 @@ import Database.DuckDB.Simple.FromField (
     Field (..),
     FieldValue (..),
     BigNum (..),
-    bigNumToInteger,
-    integerToBigNum,
     IntervalValue (..),
     TimeWithZone (..),
     returnError,
+    toBigNumBytes,
+    fromBigNumBytes
  )
 import GHC.Generics (Generic)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit
+import Test.Tasty.QuickCheck (testProperty, (===))
 import Database.DuckDB.Simple.Ok (Ok(..))
+import Data.String (fromString)
 
 data Person = Person
     { personId :: Int
@@ -386,18 +388,17 @@ typeTests =
                 assertEqual "uhugeint natural" uhValue naturalOut
         , testCase "FromField Integer consumes FieldBigNum" $ do
             let original = 1234567899876543210123456789 :: Integer
-                bigValue = integerToBigNum original
                 bigField =
                     Field
                         { fieldName = "big"
                         , fieldIndex = 0
-                        , fieldValue = FieldBigNum bigValue
+                        , fieldValue = FieldBigNum (BigNum original)
                         }
             case (fromField bigField :: Ok Integer) of
                 Ok result -> assertEqual "FieldBigNum Integer" original result
                 Errors err -> assertFailure ("unexpected parse failure: " <> show err)
         , testCase "FromField Natural rejects negative FieldBigNum" $ do
-            let bigValue = integerToBigNum (-5)
+            let bigValue = BigNum (-5)
                 bigField =
                     Field
                         { fieldName = "big"
@@ -409,14 +410,33 @@ typeTests =
                 Ok result -> assertFailure ("expected failure, got " <> show result)
         , testCase "BigNum conversions round-trip Integer" $ do
             let original = (2 ^ (200 :: Int)) + 8675309 :: Integer
-                converted = integerToBigNum original
-            assertBool "positive integral BigNum retains sign" (not (bigNumIsNegative converted))
-            assertEqual "round-trip Integer" original (bigNumToInteger converted)
-        , testCase "BigNum conversions preserve negativity" $ do
-            let original = negate ((2 ^ (180 :: Int)) + 12345) :: Integer
-                converted = integerToBigNum original
-            assertBool "negative flag" (bigNumIsNegative converted)
-            assertEqual "round-trip negative Integer" original (bigNumToInteger converted)
+                converted = toBigNumBytes original
+            assertEqual "round-trip Integer" original (fromBigNumBytes converted)
+        , testProperty "fromBigNumBytes . toBigNumBytes is identity" \ (n :: Integer) ->
+            fromBigNumBytes (toBigNumBytes n) === n
+        , testCase "selects BIGNUM values as BigNum" $
+            withConnection ":memory:" \conn -> do
+                _ <- execute_ conn "CREATE TABLE bignums (val BIGNUM)"
+                let bigValues :: [Integer]
+                    bigValues =
+                        [ (2 ^ (200 :: Int)) + 8675309
+                        , 0
+                        , negate ((2 ^ (180 :: Int)) + 12345)
+                        ]
+                rows <- concat <$> mapM (\bv -> query_ conn  $ fromString $ "SELECT CAST('" <> show bv <> "' AS BIGNUM)") bigValues
+                --  query_ conn "SELECT val FROM bignums ORDER BY rowid" :: IO [Only BigNum]
+                assertEqual "BIGNUM results" (fmap (Only . BigNum) bigValues) rows
+        , testCase "round-trips BIGNUM values through the database" $
+            withConnection ":memory:" \conn -> do
+                _ <- execute_ conn "CREATE TABLE bignum_roundtrip (val BIGNUM)"
+                let ints =
+                        [ (2 ^ (200 :: Int)) + 8675309
+                        , 0
+                        , negate ((2 ^ (180 :: Int)) + 12345)
+                        ]
+                _ <- executeMany conn "INSERT INTO bignum_roundtrip VALUES (?)" (fmap (Only . BigNum) ints)
+                rows <- query_ conn "SELECT val FROM bignum_roundtrip ORDER BY rowid" :: IO [Only Integer]
+                assertEqual "BIGNUM round-trip" (fmap Only ints) rows
         , testCase "decodes interval components" $
             withConnection ":memory:" \conn -> do
                 [Only intervalVal] <-

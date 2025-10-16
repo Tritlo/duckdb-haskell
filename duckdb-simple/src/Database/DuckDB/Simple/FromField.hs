@@ -6,6 +6,8 @@
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE StrictData #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE DerivingVia #-}
 
 {- |
 Module      : Database.DuckDB.Simple.FromField
@@ -16,8 +18,8 @@ module Database.DuckDB.Simple.FromField (
     FieldValue (..),
     BitString (..),
     BigNum (..),
-    bigNumToInteger,
-    integerToBigNum,
+    fromBigNumBytes,
+    toBigNumBytes,
     DecimalValue (..),
     IntervalValue (..),
     TimeWithZone (..),
@@ -51,6 +53,8 @@ import Database.DuckDB.Simple.Ok
 import Data.Data (Typeable, typeRep)
 import Data.Proxy (Proxy (..))
 import Numeric.Natural (Natural)
+import Data.Bits (Bits(..), finiteBitSize)
+import GHC.Num.Integer (integerFromWordList)
 
 -- | Internal representation of a column value.
 data FieldValue
@@ -104,36 +108,61 @@ data BitString = BitString
     }
     deriving (Eq, Show)
 
-data BigNum = BigNum
-    { bigNumIsNegative :: !Bool
-    , bigNumMagnitude :: !BS.ByteString
-    }
-    deriving (Eq, Show)
+newtype BigNum = BigNum Integer
+ deriving stock (Eq, Show)
+ deriving Num via Integer
 
-bigNumToInteger :: BigNum -> Integer
-bigNumToInteger BigNum{bigNumIsNegative, bigNumMagnitude} =
-    let magnitude = fst (BS.foldl' step (0, 1) bigNumMagnitude)
-     in if bigNumIsNegative then negate magnitude else magnitude
-  where
-    step (acc, place) byte =
-        (acc + fromIntegral byte * place, place * 256)
 
-integerToBigNum :: Integer -> BigNum
-integerToBigNum value =
-    BigNum
-        { bigNumIsNegative = value < 0
-        , bigNumMagnitude = integerMagnitudeToBytes (abs value)
-        }
+-- | Decode DuckDB’s BIGNUM blob (3-byte header + big-endian payload where negative magnitudes are
+-- bitwise complemented) back into a Haskell 'Integer'. We undo the complement when needed, then chunk
+-- the remaining bytes into machine-word limbs (MSB chunk first) for 'integerFromWordList'.
+fromBigNumBytes :: [Word8] -> Integer
+fromBigNumBytes bytes =
+  let header      = take 3 bytes
+      payloadRaw  = drop 3 bytes
+      isNeg       = head header .&. 0x80 == 0
+      payload     = if isNeg then map complement payloadRaw else payloadRaw
+      bytesPerWord = finiteBitSize (0 :: Word) `div` 8    -- 8 on 64-bit, 4 on 32-bit
+      len          = length payload
+      (firstChunk, rest) = splitAt (len `mod` bytesPerWord) payload
 
-integerMagnitudeToBytes :: Integer -> BS.ByteString
-integerMagnitudeToBytes 0 = BS.empty
-integerMagnitudeToBytes magnitude =
-    BS.pack (go magnitude)
-  where
-    go 0 = []
-    go n =
-        let (q, r) = quotRem n 256
-         in fromIntegral r : go q
+      chunkWords [] = []
+      chunkWords xs =
+        let (chunk, remainder) = splitAt bytesPerWord xs
+         in chunk : chunkWords remainder
+
+      toWord = foldl (\acc b -> (acc `shiftL` 8) .|. fromIntegral b) 0
+      limbs  = (if null firstChunk then id else (firstChunk :)) (chunkWords rest)
+    in integerFromWordList isNeg (map toWord limbs)
+
+-- | Encode an 'Integer' into DuckDB’s BIGNUM blob layout: emit the 3-byte header
+--   (sign bit plus payload length) followed by the magnitude bytes in the same
+--   big-endian / complemented-on-negative form that DuckDB stores internally.
+toBigNumBytes :: Integer -> [Word8]
+toBigNumBytes value =
+    let isNeg     = value < 0
+        magnitude = if isNeg then negate value else value
+        payloadBE
+            | magnitude == 0 = [0]
+            | otherwise      = go magnitude []
+          where
+            go 0 acc = acc
+            go n acc =
+                let (q, r) = quotRem n 256
+                 in go q (fromIntegral r : acc)
+
+        headerBase :: Word32
+        headerBase = (fromIntegral (length payloadBE) .|. 0x00800000)
+        headerVal :: Word32
+        headerVal = if isNeg then complement headerBase else headerBase
+        headerMasked = headerVal .&. 0x00FFFFFF
+        headerBytes =
+            [ fromIntegral ((headerMasked `shiftR` 16) .&. 0xFF)
+            , fromIntegral ((headerMasked `shiftR` 8)  .&. 0xFF)
+            , fromIntegral ( headerMasked              .&. 0xFF)
+            ]
+        payloadBytes = if isNeg then map complement payloadBE else payloadBE
+    in headerBytes <> payloadBytes
 
 data TimeWithZone = TimeWithZone
     { timeWithZoneTime :: !TimeOfDay
@@ -285,7 +314,7 @@ instance FromField Integer where
         case fieldValue of
             FieldInt i -> Ok (fromIntegral i)
             FieldWord w -> Ok (fromIntegral w)
-            FieldBigNum big -> Ok (bigNumToInteger big)
+            FieldBigNum (BigNum big) -> Ok big
             FieldHugeInt value -> Ok value
             FieldUHugeInt value -> Ok value
             FieldNull -> returnError UnexpectedNull f ""
@@ -304,11 +333,10 @@ instance FromField Natural where
                 | otherwise ->
                     returnError ConversionFailed f "negative value cannot be converted to Natural"
             FieldUHugeInt value -> Ok (fromIntegral value)
-            FieldBigNum big ->
-                let magnitude = bigNumToInteger big
-                 in if magnitude >= 0
-                        then Ok (fromIntegral magnitude)
-                        else returnError ConversionFailed f "negative value cannot be converted to Natural"
+            FieldBigNum (BigNum big) ->
+                 if big >= 0
+                    then Ok  $ fromIntegral big
+                    else returnError ConversionFailed f "negative value cannot be converted to Natural"
             FieldEnum value -> Ok (fromIntegral value)
             FieldNull -> returnError UnexpectedNull f ""
             _ -> returnError Incompatible f ""
@@ -432,14 +460,14 @@ instance FromField BS.ByteString where
         case fieldValue of
             FieldBlob bs -> Ok bs
             FieldText t -> Ok (TextEncoding.encodeUtf8 t)
-            FieldBit bit -> Ok (bitStringBytes bit)
+            FieldBit b -> Ok (bitStringBytes b)
             FieldNull -> returnError UnexpectedNull f ""
             _ -> returnError Incompatible f ""
 
 instance FromField BitString where
     fromField f@Field{fieldValue} =
         case fieldValue of
-            FieldBit bit -> Ok bit
+            FieldBit b -> Ok b
             FieldNull -> returnError UnexpectedNull f ""
             _ -> returnError Incompatible f ""
 

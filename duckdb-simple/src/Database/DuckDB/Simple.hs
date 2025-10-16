@@ -77,7 +77,7 @@ import Control.Monad (forM, join, void, when, zipWithM, zipWithM_)
 import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, newIORef, readIORef, writeIORef)
 import Control.Exception (SomeException, bracket, finally, mask, onException, throwIO, try)
 import qualified Data.ByteString as BS
-import Data.Bits ((.|.), shiftL)
+import Data.Bits ((.|.), shiftL, Bits (..))
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.Maybe (isJust, isNothing)
 import Data.Text (Text)
@@ -108,6 +108,7 @@ import Database.DuckDB.Simple.FromField
     , IntervalValue (..)
     , ResultError (..)
     , TimeWithZone (..)
+    , fromBigNumBytes
     )
 import Database.DuckDB.Simple.FromRow
     ( FromRow (..)
@@ -1271,8 +1272,18 @@ materializedValueFromPointers dtype vector dataPtr validity rowIdx = do
                     raw <- peekElemOff (castPtr dataPtr :: Ptr DuckDBBit) rowIdx
                     FieldBit <$> decodeDuckDBBit raw
                 DuckDBTypeBigNum -> do
-                    raw <- peekElemOff (castPtr dataPtr :: Ptr DuckDBBignum) rowIdx
-                    FieldBigNum <$> decodeDuckDBBigNum raw
+                    -- Here we have to get messy, because DuckDB returns a pointer
+                    -- to a bignum_t and not a duckdb_bignum.
+                    let base = castPtr dataPtr :: Ptr Word8
+                        -- luckily, the underlying data has only one field, which is a string_t
+                        offset = fromIntegral rowIdx * duckdbStringTSize
+                        stringPtr = castPtr (base `plusPtr` offset) :: Ptr DuckDBStringT
+                    len <- c_duckdb_string_t_length stringPtr
+                    if len < 3
+                    then return $ FieldBigNum (BigNum 0)
+                    else do ptr <- c_duckdb_string_t_data stringPtr
+                            bs <- BS.unpack <$> BS.packCStringLen (ptr, fromIntegral len)
+                            return $ FieldBigNum $ BigNum (fromBigNumBytes bs)
                 DuckDBTypeList -> FieldList <$> decodeListElements vector dataPtr rowIdx
                 DuckDBTypeMap -> FieldMap <$> decodeMapPairs vector dataPtr rowIdx
                 DuckDBTypeStruct -> error "duckdb-simple: STRUCT columns are not supported"
@@ -1405,15 +1416,6 @@ decodeDuckDBBit DuckDBBit{duckDBBitData, duckDBBitSize}
             byteLength = fromIntegral ((bitLength + 7) `div` 8) :: Int
         bytes <- BS.packCStringLen (castPtr duckDBBitData, byteLength)
         pure BitString{bitStringLength = bitLength, bitStringBytes = bytes}
-
-decodeDuckDBBigNum :: DuckDBBignum -> IO BigNum
-decodeDuckDBBigNum DuckDBBignum{duckDBBignumData, duckDBBignumSize, duckDBBignumIsNegative}
-    | duckDBBignumData == nullPtr || duckDBBignumSize == 0 =
-        pure BigNum{bigNumIsNegative = duckDBBignumIsNegative /= 0, bigNumMagnitude = BS.empty}
-    | otherwise = do
-        let byteLength = fromIntegral duckDBBignumSize :: Int
-        bytes <- BS.packCStringLen (castPtr duckDBBignumData, byteLength)
-        pure BigNum{bigNumIsNegative = duckDBBignumIsNegative /= 0, bigNumMagnitude = bytes}
 
 peekError :: Ptr CString -> IO Text
 peekError ptr = do

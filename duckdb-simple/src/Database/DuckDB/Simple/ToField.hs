@@ -66,7 +66,7 @@ data FieldBinding = FieldBinding
     }
 
 -- | Types that map to a concrete DuckDB column type when used with 'ToField'.
-class (ToField a) => DuckDBColumnType a where
+class DuckDBColumnType a where
     duckdbColumnTypeFor :: Proxy a -> Text
 
 -- | Report the DuckDB column type that best matches a given 'ToField' instance.
@@ -89,7 +89,7 @@ mkFieldBinding display action =
         }
 
 -- | Types that can be used as positional parameters.
-class ToField a where
+class (DuckDBColumnType a) => ToField a where
     toField :: a -> FieldBinding
 
 instance ToField Null where
@@ -242,6 +242,9 @@ instance DuckDBColumnType Int64 where
 
 instance DuckDBColumnType BigNum where
     duckdbColumnTypeFor _ = "BIGNUM"
+
+instance DuckDBColumnType UUID.UUID where
+    duckdbColumnTypeFor _ = "UUID"
 
 instance DuckDBColumnType Integer where
     duckdbColumnTypeFor _ = "BIGNUM"

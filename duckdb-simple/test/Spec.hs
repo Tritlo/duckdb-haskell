@@ -402,8 +402,7 @@ runExpectation label expectation outcome =
 
 duckdbCastCases :: [DuckDBCastCase]
 duckdbCastCases =
-    [ failCase "INVALID" "0" "INVALID"
-    , successCase "BOOLEAN" (quoted "true") "BOOLEAN" (ExpectEquals (FieldBool True))
+    [ successCase "BOOLEAN" (quoted "true") "BOOLEAN" (ExpectEquals (FieldBool True))
     , successCase "TINYINT" (quotedValue tinyIntValue) "TINYINT" (ExpectEquals (FieldInt8 tinyIntValue))
     , successCase "SMALLINT" (quotedValue smallIntValue) "SMALLINT" (ExpectEquals (FieldInt16 smallIntValue))
     , successCase "INTEGER" (quotedValue intValue) "INTEGER" (ExpectEquals (FieldInt32 intValue))
@@ -428,20 +427,24 @@ duckdbCastCases =
     , successCase "TIMESTAMP_NS" (quoted "2024-01-02 03:04:05.123456789") "TIMESTAMP_NS" (ExpectEquals (FieldTimestamp timestampLocalTimeNanos))
     , successCase "ENUM" (quoted "beta") "ENUM('alpha','beta')" (ExpectEquals (FieldEnum 1))
     , successCase "LIST" (quoted "[1,2,3]") "INTEGER[]" (ExpectEquals (FieldList listElements))
-    , failCaseWith "STRUCT" (quoted "{\"a\":1,\"b\":2}") "STRUCT(a INTEGER, b INTEGER)" "STRUCT decoding unsupported" (expectErrorCallContaining "STRUCT columns are not supported")
     , successDirect "MAP" "MAP(['a','b'], [1,2])" (expectMapEntries mapPairs)
-    , failCaseWith "ARRAY" (quoted "[1,2,3]") "INTEGER[3]" "ARRAY decoding unsupported" (expectErrorCallContaining "unsupported DuckDB type")
-    , failCaseWith "UNION" (quoted "1") "UNION(\"value\" INTEGER)" "UNION casts unsupported" (expectSQLErrorContaining "UNION")
-    , expectedFailureCase "BIT" (quoted "1") "BIT" "BIT decoding not implemented" expectBitField
     , successCase "TIMETZ" (quoted "03:04:05+02:30") "TIME WITH TIME ZONE" (ExpectEquals (FieldTimeTZ timeWithZoneValue))
     , successCase "TIMESTAMPTZ" (quoted "2024-01-02 03:04:05+02:30") "TIMESTAMP WITH TIME ZONE" (ExpectEquals (FieldTimestampTZ timestampTzUtc))
-    , failCase "ANY" (quoted "1") "ANY"
     , successCase "BIGNUM" (quoted bigNumLiteralText) "BIGNUM" (ExpectEquals (FieldBigNum (BigNum bigNumLiteral)))
-    , failCase "SQLNULL" "NULL" "SQLNULL"
-    , failCase "STRING_LITERAL" (quoted literalText) "STRING_LITERAL"
-    , failCase "INTEGER_LITERAL" (quoted "123") "INTEGER_LITERAL"
+    , successCase "UUID" (quoted uuidText) "UUID" (ExpectEquals (FieldText uuidText))
+    -- not working
+    , expectedFailureCase "BIT" (quoted "1") "BIT" "BIT decoding not implemented" expectBitField
+      -- not implemented yet
+    , failCaseWith "STRUCT" (quoted "{\"a\":1,\"b\":2}") "STRUCT(a INTEGER, b INTEGER)" "STRUCT decoding unsupported" (expectErrorCallContaining "STRUCT columns are not supported")
+    , failCaseWith "ARRAY" (quoted "[1,2,3]") "INTEGER[3]" "ARRAY decoding unsupported" (expectErrorCallContaining "unsupported DuckDB type")
+    , failCaseWith "UNION" (quoted "1") "UNION(\"value\" INTEGER)" "UNION casts unsupported" (expectSQLErrorContaining "UNION")
     , failCaseWith "TIME_NS" (quoted "03:04:05.123456789") "TIME_NS" "TIME_NS decoding unsupported" (expectErrorCallContaining "unsupported DuckDB type")
-    , expectedFailureCase "UUID" (quoted uuidText) "UUID" "UUID decoding uses incorrect byte order" (ExpectEquals (FieldText uuidText))
+    -- These will never come out of a query
+    , failCaseOK "ANY" (quoted "1") "ANY" (expectSQLErrorContaining "ANY")
+    , failCaseOK "STRING_LITERAL" (quoted literalText) "STRING_LITERAL" (expectSQLErrorContaining "STRING_LITERAL")
+    , failCaseOK "INTEGER_LITERAL" (quoted "123") "INTEGER_LITERAL" (expectSQLErrorContaining "INTEGER_LITERAL")
+    , failCaseOK "INVALID" "0" "INVALID" (expectSQLErrorContaining "INVALID")
+    , failCaseOK "SQLNULL" "NULL" "SQLNULL" (expectSQLErrorContaining "SQLNULL")
     ]
   where
     quoted t = Text.concat ["'", t, "'"]
@@ -462,14 +465,19 @@ duckdbCastCases =
             , castExpectation = expectation
             , castExpectFailureReason = Nothing
             }
-    failCase label value ty =
-        failCaseWith label value ty (Text.unpack ty <> " casts are unsupported") (expectSQLErrorContaining ty)
     failCaseWith label value ty reason expectation =
         DuckDBCastCase
             { castLabel = label
             , castExpression = CastExpression value ty
             , castExpectation = expectation
             , castExpectFailureReason = Just reason
+            }
+    failCaseOK label value ty expectation =
+        DuckDBCastCase
+            { castLabel = label
+            , castExpression = CastExpression value ty
+            , castExpectation = expectation
+            , castExpectFailureReason = Nothing
             }
     expectedFailureCase label value ty reason expectation =
         DuckDBCastCase

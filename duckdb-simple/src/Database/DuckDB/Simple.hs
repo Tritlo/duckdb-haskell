@@ -1215,8 +1215,10 @@ materializedValueFromPointers dtype vector dataPtr validity rowIdx = do
                     pure (FieldDouble raw)
                 DuckDBTypeVarchar -> FieldText <$> chunkDecodeText dataPtr duckIdx
                 DuckDBTypeUUID -> do
-                    DuckDBUHugeInt upper lower <- peekElemOff (castPtr dataPtr :: Ptr DuckDBUHugeInt) rowIdx
-                    return $ FieldText $ UUID.toText $ UUID.fromWords64 lower upper
+                    DuckDBUHugeInt lower upper_biased <-
+                      peekElemOff (castPtr dataPtr :: Ptr DuckDBUHugeInt) rowIdx
+                    let upper = upper_biased `xor` (0x8000000000000000 :: Word64)
+                    return $ FieldText $ UUID.toText $ UUID.fromWords64 (fromIntegral upper) lower
                 DuckDBTypeBlob -> FieldBlob <$> chunkDecodeBlob dataPtr duckIdx
                 DuckDBTypeDate -> do
                     raw <- peekElemOff (castPtr dataPtr :: Ptr Int32) rowIdx

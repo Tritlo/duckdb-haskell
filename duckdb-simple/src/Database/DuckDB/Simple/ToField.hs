@@ -130,16 +130,16 @@ instance ToField Word where
     toField value = uint64Binding (fromIntegral value)
 
 instance ToField Word16 where
-    toField value = uint16Binding value
+    toField = uint16Binding
 
 instance ToField Word32 where
-    toField value = uint32Binding value
+    toField = uint32Binding
 
 instance ToField Word64 where
-    toField value = uint64Binding value
+    toField = uint64Binding
 
 instance ToField Word8 where
-    toField value = uint8Binding value
+    toField = uint8Binding
 
 instance ToField Double where
     toField value =

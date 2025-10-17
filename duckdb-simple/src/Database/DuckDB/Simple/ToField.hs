@@ -2,7 +2,6 @@
 {-# LANGUAGE DefaultSignatures #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -441,8 +440,7 @@ structValueDuckValue StructValue{structValueFields, structValueTypes, structValu
             valueFields
     structLogical <- logicalTypeFromRep (LogicalTypeStruct structValueTypes)
     result <-
-        withDuckValues childValues \ptr ->
-            c_duckdb_create_struct_value structLogical ptr
+        withDuckValues childValues $ c_duckdb_create_struct_value structLogical
     mapM_ destroyValue childValues
     destroyLogicalType structLogical
     pure result

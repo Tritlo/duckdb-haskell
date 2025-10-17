@@ -2,6 +2,9 @@
 
 ## Unreleased
 - Add support for reading and writing arrays.
+- Added `Database.DuckDB.Simple.Generic` with GHC generics helpers (`GToField`/`GFromField`) for encoding records as DuckDB STRUCTs and sum types as UNIONs, plus a `ViaDuckDB` newtype for convenient @DerivingVia@ support.
+- Added `DuckValue` instances for `[]`, `Array Int a`, and `Map k v` to enable lists, arrays, and maps as fields within generically-encoded structs and unions.
+- Documented struct/union generic support; added richer tests covering database round-trips and deriving-via examples.
 - Support decoding and binding STRUCT and UNION values via new `StructValue`/`UnionValue` helpers and corresponding `FromField`/`ToField` instances.
 
 ## 0.1.2.0

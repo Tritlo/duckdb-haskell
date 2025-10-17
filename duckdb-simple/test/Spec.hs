@@ -1,7 +1,7 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -13,7 +13,7 @@ module Main (main) where
 
 import Control.Applicative ((<|>))
 import Control.Exception (ErrorCall, Exception, SomeException, displayException, fromException, try)
-import Control.Monad (replicateM_)
+import Control.Monad (forM_, replicateM_)
 import qualified Data.ByteString as BS
 import Data.Array (Array, elems, listArray)
 import Data.IORef (atomicModifyIORef', newIORef)
@@ -36,25 +36,31 @@ import Data.Time.LocalTime (
 import Data.Word (Word16, Word32, Word64, Word8)
 import Data.Ratio ((%))
 import Database.DuckDB.Simple
-import Database.DuckDB.Simple.FromField (
-    BigNum (..),
-    BitString (..),
-    bsFromBool,
-    DecimalValue (..),
-    Field (..),
-    FieldValue (..),
-    IntervalValue (..),
-    TimeWithZone (..),
-    fromBigNumBytes,
-    returnError,
-    toBigNumBytes,
- )
-import Database.DuckDB.Simple.LogicalRep (
-    StructField (..),
-    StructValue (..),
-    UnionMemberType (..),
-    UnionValue (..)
- )
+import Database.DuckDB.Simple.FromField
+    ( BigNum (..)
+    , BitString (..)
+    , bsFromBool
+    , DecimalValue (..)
+    , Field (..)
+    , FieldValue (..)
+    , IntervalValue (..)
+    , TimeWithZone (..)
+    , fromBigNumBytes
+    , returnError
+    , toBigNumBytes
+    )
+import Database.DuckDB.Simple.LogicalRep
+    ( StructField (..)
+    , StructValue (..)
+    , UnionMemberType (..)
+    , UnionValue (..)
+    )
+import Database.DuckDB.Simple.Generic
+    ( genericFromFieldValue
+    , genericToFieldValue
+    , genericToStructValue
+    , ViaDuckDB (..)
+    )
 import Database.DuckDB.Simple.Ok (Ok (..))
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
@@ -74,6 +80,60 @@ data Person = Person
 
 data WithRemaining = WithRemaining Int Int
     deriving (Eq, Show)
+
+data GenericRecord = GenericRecord
+    { grId :: Int
+    , grName :: Text.Text
+    }
+    deriving stock (Eq, Show, Generic)
+
+data GenericSum
+    = SumInt Int
+    | SumBool Bool
+    | SumPair Int Text.Text
+    deriving stock (Eq, Show, Generic)
+
+data GenericEnum
+    = EnumRed
+    | EnumBlue
+    deriving stock (Eq, Show, Generic)
+
+data ViaUser = ViaUser
+    { vuId :: Int64
+    , vuName :: Text.Text
+    }
+    deriving stock (Eq, Show, Generic)
+    deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB ViaUser)
+
+data ViaShape
+    = ViaCircle Double
+    | ViaSquare Double
+    deriving stock (Eq, Show, Generic)
+    deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB ViaShape)
+
+-- Edge case test types
+data TwoFieldStruct = TwoFieldStruct Int Text.Text
+    deriving stock (Eq, Show, Generic)
+
+data LargeSumType
+    = LargeC1 Int
+    | LargeC2 Int
+    | LargeC3 Int
+    | LargeC4 Int
+    | LargeC5 Int
+    deriving stock (Eq, Show, Generic)
+    deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB LargeSumType)
+
+data EmptyStruct = EmptyStruct
+    deriving stock (Eq, Show, Generic)
+    deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB EmptyStruct)
+
+data OptionalFields = OptionalFields
+    { ofInt :: Maybe Int
+    , ofText :: Maybe Text.Text
+    }
+    deriving stock (Eq, Show, Generic)
+    deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB OptionalFields)
 
 instance FromRow WithRemaining where
     fromRow = do
@@ -842,6 +902,138 @@ typeTests =
                 _ <- execute conn "INSERT INTO struct_union VALUES (?, ?)" (structVal, unionVal)
                 rows <- query_ conn "SELECT s, u FROM struct_union" :: IO [(StructValue FieldValue, UnionValue FieldValue)]
                 assertEqual "struct/union round-trip" [(structVal, unionVal)] rows
+        , testCase "generic struct into database" $
+            withConnection ":memory:" \conn -> do
+                _ <- execute_ conn "CREATE TABLE generic_struct (payload STRUCT(grId INT, grName TEXT))"
+                let records = [GenericRecord 1 (Text.pack "alpha"), GenericRecord 2 (Text.pack "beta")]
+                    structParams = traverse genericToStructValue records
+                case structParams of
+                    Nothing -> assertFailure "expected struct encoding"
+                    Just structs -> do
+                        _ <- executeMany conn "INSERT INTO generic_struct VALUES (?)" (map Only structs)
+                        rows <- query_ conn "SELECT payload FROM generic_struct ORDER BY payload.grId" :: IO [Only (StructValue FieldValue)]
+                        let unwrap (Only s) = s
+                            roundTripped = traverse (genericFromFieldValue . FieldStruct . unwrap) rows
+                        roundTripped @?= Right records
+        , testCase "generic struct encode/decode" $ do
+            let rec = GenericRecord 42 (Text.pack "duck")
+            case genericToStructValue rec of
+                Just structVal -> do
+                    map structFieldName (elems (structValueFields structVal)) @?= [Text.pack "grId", Text.pack "grName"]
+                    map structFieldValue (elems (structValueFields structVal)) @?= [FieldInt64 42, FieldText (Text.pack "duck")]
+                    genericFromFieldValue (FieldStruct structVal) @?= Right rec
+                Nothing -> assertFailure "expected struct encoding"
+        , testCase "generic union encode/decode" $ do
+            let sumVal = SumBool True
+            case genericToFieldValue sumVal of
+                FieldUnion uv -> do
+                    map unionMemberName (elems (unionValueMembers uv)) @?=
+                        [ Text.pack "SumInt"
+                        , Text.pack "SumBool"
+                        , Text.pack "SumPair"
+                        ]
+                    unionValueLabel uv @?= Text.pack "SumBool"
+                    genericFromFieldValue (FieldUnion uv) @?= Right sumVal
+                other -> assertFailure ("expected FieldUnion, got " <> show other)
+        , testCase "generic union complex constructor" $ do
+            let sumVal = SumPair 7 (Text.pack "duck")
+            case genericToFieldValue sumVal of
+                FieldUnion uv -> do
+                    unionValueLabel uv @?= Text.pack "SumPair"
+                    case unionValuePayload uv of
+                        FieldStruct StructValue{structValueFields} -> do
+                            map structFieldName (elems structValueFields) @?= [Text.pack "field1", Text.pack "field2"]
+                            map structFieldValue (elems structValueFields) @?=
+                                [FieldInt64 7, FieldText (Text.pack "duck")]
+                        other -> assertFailure ("expected struct payload, got " <> show other)
+                    genericFromFieldValue (FieldUnion uv) @?= Right sumVal
+                other -> assertFailure ("expected FieldUnion, got " <> show other)
+        , testCase "deriving via generic struct round-trip" $
+            withConnection ":memory:" \conn -> do
+                _ <- execute_ conn "CREATE TABLE via_users (payload STRUCT(vuId BIGINT, vuName TEXT))"
+                let users = [ViaUser 10 (Text.pack "alice"), ViaUser 11 (Text.pack "bob")]
+                _ <- executeMany conn "INSERT INTO via_users VALUES (?)" (map Only users)
+                rows <- query_ conn "SELECT payload FROM via_users ORDER BY payload.vuId" :: IO [Only ViaUser]
+                rows @?= map Only users
+        , testCase "deriving via generic union round-trip" $
+            withConnection ":memory:" \conn -> do
+                _ <- execute_ conn "CREATE TABLE via_shapes (shape UNION(ViaCircle STRUCT(field1 DOUBLE), ViaSquare STRUCT(field1 DOUBLE)))"
+                let shapes = [ViaCircle 1.5, ViaSquare 3.0]
+                _ <- executeMany conn "INSERT INTO via_shapes VALUES (?)" (map Only shapes)
+                rows <- query_ conn "SELECT shape FROM via_shapes ORDER BY rowid" :: IO [Only ViaShape]
+                rows @?= map Only shapes
+        , testCase "generic enum null payload" $ do
+            case genericToFieldValue EnumRed of
+                FieldUnion uv -> do
+                    unionValuePayload uv @?= FieldNull
+                    genericFromFieldValue (FieldUnion uv) @?= Right EnumRed
+                other -> assertFailure ("expected FieldUnion, got " <> show other)
+        -- Edge case tests
+        , testCase "struct with multiple basic fields" $ do
+            -- Test a struct with multiple fields
+            let twoField = TwoFieldStruct 42 (Text.pack "text")
+            case genericToFieldValue twoField of
+                FieldStruct sv -> do
+                    genericFromFieldValue (FieldStruct sv) @?= Right twoField
+                other -> assertFailure ("expected FieldStruct for TwoFieldStruct, got " <> show other)
+        , testCase "large sum type with many constructors" $ do
+            let constructors = [LargeC1 1, LargeC2 2, LargeC3 3, LargeC4 4, LargeC5 5]
+            forM_ constructors $ \val -> do
+                case genericToFieldValue val of
+                    FieldUnion uv -> do
+                        genericFromFieldValue (FieldUnion uv) @?= Right val
+                    other -> assertFailure ("expected FieldUnion, got " <> show other)
+        , testCase "empty struct encodes as null" $ do
+            case genericToFieldValue EmptyStruct of
+                FieldNull -> pure ()
+                other -> assertFailure ("expected FieldNull for empty struct, got " <> show other)
+        , testCase "struct with Maybe fields" $ do
+            let withJust = OptionalFields (Just 42) (Just (Text.pack "text"))
+                withNothing = OptionalFields Nothing Nothing
+            case (genericToFieldValue withJust, genericToFieldValue withNothing) of
+                (FieldStruct sv1, FieldStruct sv2) -> do
+                    genericFromFieldValue (FieldStruct sv1) @?= Right withJust
+                    genericFromFieldValue (FieldStruct sv2) @?= Right withNothing
+                (other1, other2) -> assertFailure ("expected FieldStruct, got " <> show (other1, other2))
+        -- Error case tests
+        , testCase "decode wrong field type fails" $ do
+            let wrongType = FieldInt32 42  -- Trying to decode as GenericRecord
+            case genericFromFieldValue wrongType :: Either String GenericRecord of
+                Left err -> assertBool "error mentions STRUCT" (Text.pack "STRUCT" `Text.isInfixOf` Text.pack err)
+                Right _ -> assertFailure "expected decode error for wrong type"
+        , testCase "decode union as struct fails" $ do
+            case genericToFieldValue (SumInt 42) of
+                FieldUnion uv -> do
+                    case genericFromFieldValue (FieldUnion uv) :: Either String GenericRecord of
+                        Left err -> assertBool "error mentions product type" (Text.pack "product type" `Text.isInfixOf` Text.pack err)
+                        Right _ -> assertFailure "expected decode error"
+                other -> assertFailure ("expected FieldUnion, got " <> show other)
+        , testCase "decode struct as union fails" $ do
+            case genericToFieldValue (GenericRecord 1 (Text.pack "test")) of
+                FieldStruct sv -> do
+                    case genericFromFieldValue (FieldStruct sv) :: Either String GenericSum of
+                        Left err -> assertBool "error mentions sum type" (Text.pack "sum type" `Text.isInfixOf` Text.pack err)
+                        Right _ -> assertFailure "expected decode error"
+                other -> assertFailure ("expected FieldStruct, got " <> show other)
+        , testCase "decode struct with wrong field count fails" $
+            withConnection ":memory:" \conn -> do
+                -- Get a real struct with 3 fields from the database
+                _ <- execute_ conn "CREATE TABLE three_field (s STRUCT(a INT, b TEXT, c INT))"
+                [(Only threeField)] <- query_ conn "SELECT {'a': 1, 'b': 'test', 'c': 99}" :: IO [Only (StructValue FieldValue)]
+                -- Try to decode it as GenericRecord which only has 2 fields
+                case genericFromFieldValue (FieldStruct threeField) :: Either String GenericRecord of
+                    Left err -> assertBool "error mentions extra fields" (Text.pack "extra" `Text.isInfixOf` Text.pack err)
+                    Right _ -> assertFailure "expected decode error for extra fields"
+        , testCase "decode union with wrong tag fails" $
+            withConnection ":memory:" \conn -> do
+                -- Get a real union from the database
+                [(Only unionVal)] <-
+                    query_ conn "SELECT CAST(union_value(x := 42) AS UNION(x INT, y VARCHAR))" :: IO [Only (UnionValue FieldValue)]
+                -- Manually create a modified version with an out-of-range tag
+                let wrongTag = unionVal{unionValueIndex = 99, unionValueLabel = Text.pack "Invalid"}
+                case genericFromFieldValue (FieldUnion wrongTag) :: Either String GenericSum of
+                    Left err -> assertBool "error mentions tag or index" (Text.pack "tag" `Text.isInfixOf` Text.pack err || Text.pack "99" `Text.isInfixOf` Text.pack err)
+                    Right _ -> assertFailure "expected decode error for wrong tag"
         ]
 
 streamingTests :: TestTree

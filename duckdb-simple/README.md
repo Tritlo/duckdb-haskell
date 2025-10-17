@@ -33,6 +33,11 @@ main =
   preparing positional or named parameters.
 - `Database.DuckDB.Simple.FromField` / `FromRow` – typeclasses for decoding
   query results, with generic deriving support for product types.
+- `Database.DuckDB.Simple.Generic` – automatic encoding/decoding of Haskell
+  ADTs as DuckDB STRUCTs and UNIONs via GHC generics and the `ViaDuckDB`
+  deriving-via helper.
+- `Database.DuckDB.Simple.LogicalRep` – structured value types (`StructValue`,
+  `UnionValue`) for working with DuckDB's composite types.
 - `Database.DuckDB.Simple.Types` – shared types (`Query`, `Null`, `Only`,
   `(:.)`, `SQLError`).
 - `Database.DuckDB.Simple.Function` – register scalar Haskell functions that
@@ -63,7 +68,7 @@ parameters are bound with the `(:=)` helper exported from
 
 ```haskell
 import Database.DuckDB.Simple
-import Database.DuckDB.Simple (NamedParam ((:=)))
+import Database.DuckDB.Simple.ToField (NamedParam ((:=)))
 
 insertNamed :: Connection -> IO Int
 insertNamed conn =
@@ -106,6 +111,109 @@ fetchPeople conn = query_ conn "SELECT id, name FROM person ORDER BY id"
 
 Helper combinators such as `field`, `fieldWith`, and `numFieldsRemaining` are
 available when a custom instance needs fine-grained control.
+
+## Generic Encoding with ViaDuckDB
+
+The `Database.DuckDB.Simple.Generic` module provides automatic encoding and
+decoding of Haskell algebraic data types as DuckDB STRUCTs and UNIONs via
+GHC generics.
+
+### Product Types as STRUCTs
+
+Product types (records) are automatically encoded as DuckDB STRUCT values:
+
+```haskell
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DerivingVia #-}
+
+import Data.Int (Int64)
+import Data.Text (Text)
+import Database.DuckDB.Simple
+import Database.DuckDB.Simple.Generic (ViaDuckDB (..))
+import GHC.Generics (Generic)
+
+data User = User
+  { userId :: Int64
+  , userName :: Text
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB User)
+
+-- Round-trip through the database
+storeAndFetchUser :: Connection -> User -> IO [User]
+storeAndFetchUser conn user = do
+  _ <- execute_ conn "CREATE TABLE users (data STRUCT(userId BIGINT, userName TEXT))"
+  _ <- execute conn "INSERT INTO users VALUES (?)" (Only user)
+  fmap fromOnly <$> query_ conn "SELECT data FROM users"
+```
+
+### Sum Types as UNIONs
+
+Sum types are encoded as DuckDB UNION values, with each constructor becoming a
+union member:
+
+```haskell
+data Shape
+  = Circle Double
+  | Rectangle Double Double
+  | Point
+  deriving stock (Eq, Show, Generic)
+  deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB Shape)
+
+-- Store and retrieve shape data
+storeShape :: Connection -> Shape -> IO [Shape]
+storeShape conn shape = do
+  _ <- execute_ conn
+    "CREATE TABLE shapes (s UNION(Circle STRUCT(field1 DOUBLE), \
+    \Rectangle STRUCT(field1 DOUBLE, field2 DOUBLE), Point STRUCT()))"
+  _ <- execute conn "INSERT INTO shapes VALUES (?)" (Only shape)
+  fmap fromOnly <$> query_ conn "SELECT s FROM shapes"
+```
+
+Nullary constructors (like `Point`) are encoded with a null payload.
+Non-record constructors use positional field names (`field1`, `field2`, etc.).
+
+### Arrays and Lists
+
+DuckDB arrays (fixed-length) and lists (variable-length) are also supported:
+
+```haskell
+import Data.Array (Array, listArray)
+
+storeArray :: Connection -> IO [Array Int Int]
+storeArray conn = do
+  _ <- execute_ conn "CREATE TABLE arrays (vals INTEGER[3])"
+  let arr = listArray (0, 2) [1, 2, 3]
+  _ <- execute conn "INSERT INTO arrays VALUES (?)" (Only arr)
+  fmap fromOnly <$> query_ conn "SELECT vals FROM arrays"
+
+storeList :: Connection -> IO [[Int]]
+storeList conn = do
+  _ <- execute_ conn "CREATE TABLE lists (vals INTEGER[])"
+  _ <- execute conn "INSERT INTO lists VALUES (?)" (Only [1, 2, 3])
+  fmap fromOnly <$> query_ conn "SELECT vals FROM lists"
+```
+
+### Manual STRUCT and UNION Handling
+
+For more control, you can work directly with `StructValue` and `UnionValue`
+from `Database.DuckDB.Simple.LogicalRep`:
+
+```haskell
+import Database.DuckDB.Simple.LogicalRep (StructValue (..), UnionValue (..))
+import Database.DuckDB.Simple.FromField (FieldValue (..))
+
+manualStruct :: Connection -> IO [(StructValue FieldValue, UnionValue FieldValue)]
+manualStruct conn = do
+  _ <- execute_ conn
+    "CREATE TABLE composite (s STRUCT(a INT, b INT), \
+    \u UNION(x INT, y VARCHAR))"
+  [(s, u)] <- query_ conn
+    "SELECT {'a': 1, 'b': 2}, \
+    \CAST(union_value(x := 42) AS UNION(x INT, y VARCHAR))"
+  _ <- execute conn "INSERT INTO composite VALUES (?, ?)" (s, u)
+  query_ conn "SELECT s, u FROM composite"
+```
 
 ### Resource Management
 
@@ -150,11 +258,16 @@ For manual cursor-style iteration, use `nextRow`/`nextRowWith` on an open
   result processing.
 - Comprehensive scalar type support: signed/unsigned integers, HUGEINT/UHUGEINT,
   decimals (with width/scale), intervals, precise and timezone-aware temporals,
-  enums, bit strings, blobs, and bignums.
+  enums, bit strings, blobs, bignums, and UUIDs.
+- Composite types: STRUCTs, UNIONs, LISTs, fixed-length ARRAYs, and MAPs with
+  full encoding/decoding support.
+- Generic encoding/decoding: automatic STRUCT/UNION mapping for Haskell ADTs via
+  GHC generics and the `ViaDuckDB` deriving-via helper.
 - Row decoding via `FromField`/`FromRow`, with generic deriving for product types.
-- User-defined scalar functions backed by Haskell functions.
-- Transaction helpers (`withTransaction`, `withSavepoint` fallback) and metadata
-  accessors (`columnCount`, `columnName`, `rowsChanged`).
+- User-defined scalar functions backed by Haskell functions (including IO and
+  nullable arguments).
+- Transaction helpers (`withTransaction`) and metadata accessors (`columnCount`,
+  `columnName`, `rowsChanged`).
 
 ## User-Defined Functions
 

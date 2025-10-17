@@ -2,6 +2,7 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -36,30 +37,31 @@ import Data.Time.LocalTime (
 import Data.Word (Word16, Word32, Word64, Word8)
 import Data.Ratio ((%))
 import Database.DuckDB.Simple
-import Database.DuckDB.Simple.FromField (
-    BigNum (..),
-    BitString (..),
-    bsFromBool,
-    DecimalValue (..),
-    Field (..),
-    FieldValue (..),
-    IntervalValue (..),
-    TimeWithZone (..),
-    fromBigNumBytes,
-    returnError,
-    toBigNumBytes,
- )
-import Database.DuckDB.Simple.LogicalRep (
-    StructField (..),
-    StructValue (..),
-    UnionMemberType (..),
-    UnionValue (..)
- )
-import Database.DuckDB.Simple.Generic (
-    genericFromFieldValue,
-    genericToFieldValue,
-    genericToStructValue,
- )
+import Database.DuckDB.Simple.FromField
+    ( BigNum (..)
+    , BitString (..)
+    , bsFromBool
+    , DecimalValue (..)
+    , Field (..)
+    , FieldValue (..)
+    , IntervalValue (..)
+    , TimeWithZone (..)
+    , fromBigNumBytes
+    , returnError
+    , toBigNumBytes
+    )
+import Database.DuckDB.Simple.LogicalRep
+    ( StructField (..)
+    , StructValue (..)
+    , UnionMemberType (..)
+    , UnionValue (..)
+    )
+import Database.DuckDB.Simple.Generic
+    ( genericFromFieldValue
+    , genericToFieldValue
+    , genericToStructValue
+    , ViaDuckDB (..)
+    )
 import Database.DuckDB.Simple.Ok (Ok (..))
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
@@ -89,12 +91,26 @@ data GenericRecord = GenericRecord
 data GenericSum
     = SumInt Int
     | SumBool Bool
+    | SumPair Int Text.Text
     deriving stock (Eq, Show, Generic)
 
 data GenericEnum
     = EnumRed
     | EnumBlue
     deriving stock (Eq, Show, Generic)
+
+data ViaUser = ViaUser
+    { vuId :: Int64
+    , vuName :: Text.Text
+    }
+    deriving stock (Eq, Show, Generic)
+    deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB ViaUser)
+
+data ViaShape
+    = ViaCircle Double
+    | ViaSquare Double
+    deriving stock (Eq, Show, Generic)
+    deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB ViaShape)
 
 instance FromRow WithRemaining where
     fromRow = do
@@ -865,16 +881,17 @@ typeTests =
                 assertEqual "struct/union round-trip" [(structVal, unionVal)] rows
         , testCase "generic struct into database" $
             withConnection ":memory:" \conn -> do
-                _ <- execute_ conn "CREATE TABLE generic_struct (grId INT, grName TEXT)"
+                _ <- execute_ conn "CREATE TABLE generic_struct (payload STRUCT(grId INT, grName TEXT))"
                 let records = [GenericRecord 1 (Text.pack "alpha"), GenericRecord 2 (Text.pack "beta")]
-                _ <-
-                    executeMany
-                        conn
-                        "INSERT INTO generic_struct VALUES (?, ?)"
-                        (map (\r -> (grId r, grName r)) records)
-                rows <- query_ conn "SELECT grId, grName FROM generic_struct ORDER BY grId" :: IO [(Int, Text.Text)]
-                let decoded = map (uncurry GenericRecord) rows
-                decoded @?= records
+                    structParams = traverse genericToStructValue records
+                case structParams of
+                    Nothing -> assertFailure "expected struct encoding"
+                    Just structs -> do
+                        _ <- executeMany conn "INSERT INTO generic_struct VALUES (?)" (map Only structs)
+                        rows <- query_ conn "SELECT payload FROM generic_struct ORDER BY payload.grId" :: IO [Only (StructValue FieldValue)]
+                        let unwrap (Only s) = s
+                            roundTripped = traverse (genericFromFieldValue . FieldStruct . unwrap) rows
+                        roundTripped @?= Right records
         , testCase "generic struct encode/decode" $ do
             let rec = GenericRecord 42 (Text.pack "duck")
             case genericToStructValue rec of
@@ -887,10 +904,41 @@ typeTests =
             let sumVal = SumBool True
             case genericToFieldValue sumVal of
                 FieldUnion uv -> do
-                    map unionMemberName (elems (unionValueMembers uv)) @?= [Text.pack "SumInt", Text.pack "SumBool"]
+                    map unionMemberName (elems (unionValueMembers uv)) @?=
+                        [ Text.pack "SumInt"
+                        , Text.pack "SumBool"
+                        , Text.pack "SumPair"
+                        ]
                     unionValueLabel uv @?= Text.pack "SumBool"
                     genericFromFieldValue (FieldUnion uv) @?= Right sumVal
                 other -> assertFailure ("expected FieldUnion, got " <> show other)
+        , testCase "generic union complex constructor" $ do
+            let sumVal = SumPair 7 (Text.pack "duck")
+            case genericToFieldValue sumVal of
+                FieldUnion uv -> do
+                    unionValueLabel uv @?= Text.pack "SumPair"
+                    case unionValuePayload uv of
+                        FieldStruct StructValue{structValueFields} -> do
+                            map structFieldName (elems structValueFields) @?= [Text.pack "field1", Text.pack "field2"]
+                            map structFieldValue (elems structValueFields) @?=
+                                [FieldInt64 7, FieldText (Text.pack "duck")]
+                        other -> assertFailure ("expected struct payload, got " <> show other)
+                    genericFromFieldValue (FieldUnion uv) @?= Right sumVal
+                other -> assertFailure ("expected FieldUnion, got " <> show other)
+        , testCase "deriving via generic struct round-trip" $
+            withConnection ":memory:" \conn -> do
+                _ <- execute_ conn "CREATE TABLE via_users (payload STRUCT(vuId BIGINT, vuName TEXT))"
+                let users = [ViaUser 10 (Text.pack "alice"), ViaUser 11 (Text.pack "bob")]
+                _ <- executeMany conn "INSERT INTO via_users VALUES (?)" (map Only users)
+                rows <- query_ conn "SELECT payload FROM via_users ORDER BY payload.vuId" :: IO [Only ViaUser]
+                rows @?= map Only users
+        , testCase "deriving via generic union round-trip" $
+            withConnection ":memory:" \conn -> do
+                _ <- execute_ conn "CREATE TABLE via_shapes (shape UNION(ViaCircle STRUCT(field1 DOUBLE), ViaSquare STRUCT(field1 DOUBLE)))"
+                let shapes = [ViaCircle 1.5, ViaSquare 3.0]
+                _ <- executeMany conn "INSERT INTO via_shapes VALUES (?)" (map Only shapes)
+                rows <- query_ conn "SELECT shape FROM via_shapes ORDER BY rowid" :: IO [Only ViaShape]
+                rows @?= map Only shapes
         , testCase "generic enum null payload" $ do
             case genericToFieldValue EnumRed of
                 FieldUnion uv -> do

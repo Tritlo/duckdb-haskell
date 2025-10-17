@@ -262,6 +262,50 @@ instance (DuckValue a) => DuckValue (Maybe a) where
     duckFromField FieldNull = Right Nothing
     duckFromField other = Just <$> duckFromField other
 
+-- | List values encode as DuckDB LIST (variable-length).
+instance (DuckValue a) => DuckValue [a] where
+    duckToField xs = FieldList (map duckToField xs)
+    duckLogicalType _ = LogicalTypeList (duckLogicalType (Proxy :: Proxy a))
+    duckFromField (FieldList fvs) = traverse duckFromField fvs
+    duckFromField other = Left ("duckdb-simple: expected LIST, got " <> show other)
+
+-- | Array values encode as DuckDB ARRAY (fixed-length).
+-- Note: Arrays must have consistent bounds to work correctly with DuckDB.
+instance (DuckValue a) => DuckValue (Array Int a) where
+    duckToField arr =
+        let values = elems arr
+            (low, high) = (0, length values - 1)
+         in FieldArray (listArray (low, high) (map duckToField values))
+    duckLogicalType _ =
+        -- We can't determine array size at the type level, so this is approximate.
+        -- The actual size will be determined at runtime from the array bounds.
+        LogicalTypeArray (duckLogicalType (Proxy :: Proxy a)) 0
+    duckFromField (FieldArray arr) = do
+        let values = elems arr
+        decoded <- traverse duckFromField values
+        let (low, high) = (0, length decoded - 1)
+        pure (listArray (low, high) decoded)
+    duckFromField other = Left ("duckdb-simple: expected ARRAY, got " <> show other)
+
+-- | Map values encode as DuckDB MAP.
+instance (Ord k, DuckValue k, DuckValue v) => DuckValue (Map.Map k v) where
+    duckToField m =
+        let pairs = Map.toList m
+         in FieldMap [(duckToField k, duckToField v) | (k, v) <- pairs]
+    duckLogicalType _ =
+        LogicalTypeMap
+            (duckLogicalType (Proxy :: Proxy k))
+            (duckLogicalType (Proxy :: Proxy v))
+    duckFromField (FieldMap pairs) = do
+        decodedPairs <- traverse decodePair pairs
+        pure (Map.fromList decodedPairs)
+      where
+        decodePair (kfv, vfv) = do
+            k <- duckFromField kfv
+            v <- duckFromField vfv
+            pure (k, v)
+    duckFromField other = Left ("duckdb-simple: expected MAP, got " <> show other)
+
 --------------------------------------------------------------------------------
 -- Generic machinery
 
@@ -515,6 +559,10 @@ instance (Constructor c, GStruct f, GStructDecode f) => GSum (M1 C c f) where
 -- | Inverse of 'GStruct': decode struct payloads back into a generic product.
 class GStructDecode f where
     gStructDecodeStruct :: Proxy (f p) -> StructValue FieldValue -> Either String (f p)
+    -- | Construct a null/empty value for a struct type.
+    -- This is only valid for U1 (empty structs) and their compositions.
+    -- For selectors with actual values, this should never be called in practice
+    -- as nullary constructors are represented as U1.
     gStructNull :: Proxy (f p) -> f p
     -- | Consume a prefix of fields from left to right while decoding, returning
     -- the reconstructed value and any remaining fields.
@@ -548,7 +596,15 @@ instance (Selector s, DuckValue a) => GStructDecode (M1 S s (K1 i a)) where
             [fv] -> M1 . K1 <$> duckFromField fv
             [] -> Left "duckdb-simple: missing struct field (expected 1, got 0)"
             xs -> Left ("duckdb-simple: expected single field struct, but got " <> show (length xs) <> " fields")
-    gStructNull _ = error "duckdb-simple: cannot derive null struct for selector"
+    -- IMPOSSIBLE: This should never be called in practice because nullary constructors
+    -- are represented as U1, not as selectors with actual field values. A selector (M1 S)
+    -- represents a record field that must contain a value, so there's no sensible way to
+    -- construct a "null" instance. This method is only needed to satisfy the GStructDecode
+    -- typeclass constraint, but in the actual decoding path (gSumDecode), nullary constructors
+    -- always take the FieldNull case which constructs U1 directly, never calling gStructNull
+    -- on a selector. If this error is ever reached, it indicates a bug in the generic
+    -- traversal logic.
+    gStructNull _ = error "duckdb-simple: impossible - gStructNull called on selector"
     gStructDecodeList _ [] = Left "duckdb-simple: missing struct field (expected field but list is empty)"
     gStructDecodeList _ (fv : rest) = do
         val <- duckFromField fv

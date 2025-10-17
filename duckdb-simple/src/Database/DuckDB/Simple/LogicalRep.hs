@@ -173,12 +173,12 @@ logicalTypeFromRep = \case
     LogicalTypeList elemRep ->
         bracket (logicalTypeFromRep elemRep) destroyLogicalType c_duckdb_create_list_type
     LogicalTypeArray elemRep size ->
-        bracket (logicalTypeFromRep elemRep) destroyLogicalType \child ->
-            c_duckdb_create_array_type child size
+        bracket (logicalTypeFromRep elemRep) destroyLogicalType $
+            flip c_duckdb_create_array_type size
     LogicalTypeMap keyRep valueRep ->
         bracket (logicalTypeFromRep keyRep) destroyLogicalType \keyType ->
-            bracket (logicalTypeFromRep valueRep) destroyLogicalType \valueType ->
-                c_duckdb_create_map_type keyType valueType
+            bracket (logicalTypeFromRep valueRep) destroyLogicalType $
+                        c_duckdb_create_map_type keyType
     LogicalTypeStruct fieldArray -> do
         let fields = elems fieldArray
             count = length fields

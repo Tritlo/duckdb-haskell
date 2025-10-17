@@ -7,9 +7,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
@@ -72,7 +70,7 @@ The rest of this file is organised so that each building block is reusable:
 * 'GToField' and friends walk the generic representation to assemble structs or
   unions and carry around the logical type information we later need when
   binding parameters.
-* 'Generically' wires everything together for deriving via.
+* 'ViaDuckDB' wires everything together for deriving via.
 
 When adding new features, mimic the structure used here (and document new
 classes the way the existing ones are documented) so other backends can take
@@ -107,7 +105,7 @@ import Data.Time (UTCTime)
 import Data.Word (Word16, Word32, Word64, Word8)
 import qualified Data.ByteString as BS
 import qualified Data.UUID as UUID
-import GHC.Generics hiding (ViaDuckDB)
+import GHC.Generics
 import Numeric.Natural (Natural)
 import Data.Typeable (Typeable)
 

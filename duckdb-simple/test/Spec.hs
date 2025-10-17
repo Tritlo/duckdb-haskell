@@ -13,7 +13,7 @@ module Main (main) where
 
 import Control.Applicative ((<|>))
 import Control.Exception (ErrorCall, Exception, SomeException, displayException, fromException, try)
-import Control.Monad (replicateM_)
+import Control.Monad (forM_, replicateM_)
 import qualified Data.ByteString as BS
 import Data.Array (Array, elems, listArray)
 import Data.IORef (atomicModifyIORef', newIORef)
@@ -110,6 +110,30 @@ data ViaShape
     | ViaSquare Double
     deriving stock (Eq, Show, Generic)
     deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB ViaShape)
+
+-- Edge case test types
+data TwoFieldStruct = TwoFieldStruct Int Text.Text
+    deriving stock (Eq, Show, Generic)
+
+data LargeSumType
+    = LargeC1 Int
+    | LargeC2 Int
+    | LargeC3 Int
+    | LargeC4 Int
+    | LargeC5 Int
+    deriving stock (Eq, Show, Generic)
+    deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB LargeSumType)
+
+data EmptyStruct = EmptyStruct
+    deriving stock (Eq, Show, Generic)
+    deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB EmptyStruct)
+
+data OptionalFields = OptionalFields
+    { ofInt :: Maybe Int
+    , ofText :: Maybe Text.Text
+    }
+    deriving stock (Eq, Show, Generic)
+    deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB OptionalFields)
 
 instance FromRow WithRemaining where
     fromRow = do
@@ -944,6 +968,72 @@ typeTests =
                     unionValuePayload uv @?= FieldNull
                     genericFromFieldValue (FieldUnion uv) @?= Right EnumRed
                 other -> assertFailure ("expected FieldUnion, got " <> show other)
+        -- Edge case tests
+        , testCase "struct with multiple basic fields" $ do
+            -- Test a struct with multiple fields
+            let twoField = TwoFieldStruct 42 (Text.pack "text")
+            case genericToFieldValue twoField of
+                FieldStruct sv -> do
+                    genericFromFieldValue (FieldStruct sv) @?= Right twoField
+                other -> assertFailure ("expected FieldStruct for TwoFieldStruct, got " <> show other)
+        , testCase "large sum type with many constructors" $ do
+            let constructors = [LargeC1 1, LargeC2 2, LargeC3 3, LargeC4 4, LargeC5 5]
+            forM_ constructors $ \val -> do
+                case genericToFieldValue val of
+                    FieldUnion uv -> do
+                        genericFromFieldValue (FieldUnion uv) @?= Right val
+                    other -> assertFailure ("expected FieldUnion, got " <> show other)
+        , testCase "empty struct encodes as null" $ do
+            case genericToFieldValue EmptyStruct of
+                FieldNull -> pure ()
+                other -> assertFailure ("expected FieldNull for empty struct, got " <> show other)
+        , testCase "struct with Maybe fields" $ do
+            let withJust = OptionalFields (Just 42) (Just (Text.pack "text"))
+                withNothing = OptionalFields Nothing Nothing
+            case (genericToFieldValue withJust, genericToFieldValue withNothing) of
+                (FieldStruct sv1, FieldStruct sv2) -> do
+                    genericFromFieldValue (FieldStruct sv1) @?= Right withJust
+                    genericFromFieldValue (FieldStruct sv2) @?= Right withNothing
+                (other1, other2) -> assertFailure ("expected FieldStruct, got " <> show (other1, other2))
+        -- Error case tests
+        , testCase "decode wrong field type fails" $ do
+            let wrongType = FieldInt32 42  -- Trying to decode as GenericRecord
+            case genericFromFieldValue wrongType :: Either String GenericRecord of
+                Left err -> assertBool "error mentions STRUCT" (Text.pack "STRUCT" `Text.isInfixOf` Text.pack err)
+                Right _ -> assertFailure "expected decode error for wrong type"
+        , testCase "decode union as struct fails" $ do
+            case genericToFieldValue (SumInt 42) of
+                FieldUnion uv -> do
+                    case genericFromFieldValue (FieldUnion uv) :: Either String GenericRecord of
+                        Left err -> assertBool "error mentions product type" (Text.pack "product type" `Text.isInfixOf` Text.pack err)
+                        Right _ -> assertFailure "expected decode error"
+                other -> assertFailure ("expected FieldUnion, got " <> show other)
+        , testCase "decode struct as union fails" $ do
+            case genericToFieldValue (GenericRecord 1 (Text.pack "test")) of
+                FieldStruct sv -> do
+                    case genericFromFieldValue (FieldStruct sv) :: Either String GenericSum of
+                        Left err -> assertBool "error mentions sum type" (Text.pack "sum type" `Text.isInfixOf` Text.pack err)
+                        Right _ -> assertFailure "expected decode error"
+                other -> assertFailure ("expected FieldStruct, got " <> show other)
+        , testCase "decode struct with wrong field count fails" $
+            withConnection ":memory:" \conn -> do
+                -- Get a real struct with 3 fields from the database
+                _ <- execute_ conn "CREATE TABLE three_field (s STRUCT(a INT, b TEXT, c INT))"
+                [(Only threeField)] <- query_ conn "SELECT {'a': 1, 'b': 'test', 'c': 99}" :: IO [Only (StructValue FieldValue)]
+                -- Try to decode it as GenericRecord which only has 2 fields
+                case genericFromFieldValue (FieldStruct threeField) :: Either String GenericRecord of
+                    Left err -> assertBool "error mentions extra fields" (Text.pack "extra" `Text.isInfixOf` Text.pack err)
+                    Right _ -> assertFailure "expected decode error for extra fields"
+        , testCase "decode union with wrong tag fails" $
+            withConnection ":memory:" \conn -> do
+                -- Get a real union from the database
+                [(Only unionVal)] <-
+                    query_ conn "SELECT CAST(union_value(x := 42) AS UNION(x INT, y VARCHAR))" :: IO [Only (UnionValue FieldValue)]
+                -- Manually create a modified version with an out-of-range tag
+                let wrongTag = unionVal{unionValueIndex = 99, unionValueLabel = Text.pack "Invalid"}
+                case genericFromFieldValue (FieldUnion wrongTag) :: Either String GenericSum of
+                    Left err -> assertBool "error mentions tag or index" (Text.pack "tag" `Text.isInfixOf` Text.pack err || Text.pack "99" `Text.isInfixOf` Text.pack err)
+                    Right _ -> assertFailure "expected decode error for wrong tag"
         ]
 
 streamingTests :: TestTree

@@ -55,6 +55,11 @@ import Database.DuckDB.Simple.LogicalRep (
     UnionMemberType (..),
     UnionValue (..)
  )
+import Database.DuckDB.Simple.Generic (
+    genericFromFieldValue,
+    genericToFieldValue,
+    genericToStructValue,
+ )
 import Database.DuckDB.Simple.Ok (Ok (..))
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
@@ -74,6 +79,22 @@ data Person = Person
 
 data WithRemaining = WithRemaining Int Int
     deriving (Eq, Show)
+
+data GenericRecord = GenericRecord
+    { grId :: Int
+    , grName :: Text.Text
+    }
+    deriving stock (Eq, Show, Generic)
+
+data GenericSum
+    = SumInt Int
+    | SumBool Bool
+    deriving stock (Eq, Show, Generic)
+
+data GenericEnum
+    = EnumRed
+    | EnumBlue
+    deriving stock (Eq, Show, Generic)
 
 instance FromRow WithRemaining where
     fromRow = do
@@ -842,6 +863,40 @@ typeTests =
                 _ <- execute conn "INSERT INTO struct_union VALUES (?, ?)" (structVal, unionVal)
                 rows <- query_ conn "SELECT s, u FROM struct_union" :: IO [(StructValue FieldValue, UnionValue FieldValue)]
                 assertEqual "struct/union round-trip" [(structVal, unionVal)] rows
+        , testCase "generic struct into database" $
+            withConnection ":memory:" \conn -> do
+                _ <- execute_ conn "CREATE TABLE generic_struct (grId INT, grName TEXT)"
+                let records = [GenericRecord 1 (Text.pack "alpha"), GenericRecord 2 (Text.pack "beta")]
+                _ <-
+                    executeMany
+                        conn
+                        "INSERT INTO generic_struct VALUES (?, ?)"
+                        (map (\r -> (grId r, grName r)) records)
+                rows <- query_ conn "SELECT grId, grName FROM generic_struct ORDER BY grId" :: IO [(Int, Text.Text)]
+                let decoded = map (uncurry GenericRecord) rows
+                decoded @?= records
+        , testCase "generic struct encode/decode" $ do
+            let rec = GenericRecord 42 (Text.pack "duck")
+            case genericToStructValue rec of
+                Just structVal -> do
+                    map structFieldName (elems (structValueFields structVal)) @?= [Text.pack "grId", Text.pack "grName"]
+                    map structFieldValue (elems (structValueFields structVal)) @?= [FieldInt64 42, FieldText (Text.pack "duck")]
+                    genericFromFieldValue (FieldStruct structVal) @?= Right rec
+                Nothing -> assertFailure "expected struct encoding"
+        , testCase "generic union encode/decode" $ do
+            let sumVal = SumBool True
+            case genericToFieldValue sumVal of
+                FieldUnion uv -> do
+                    map unionMemberName (elems (unionValueMembers uv)) @?= [Text.pack "SumInt", Text.pack "SumBool"]
+                    unionValueLabel uv @?= Text.pack "SumBool"
+                    genericFromFieldValue (FieldUnion uv) @?= Right sumVal
+                other -> assertFailure ("expected FieldUnion, got " <> show other)
+        , testCase "generic enum null payload" $ do
+            case genericToFieldValue EnumRed of
+                FieldUnion uv -> do
+                    unionValuePayload uv @?= FieldNull
+                    genericFromFieldValue (FieldUnion uv) @?= Right EnumRed
+                other -> assertFailure ("expected FieldUnion, got " <> show other)
         ]
 
 streamingTests :: TestTree

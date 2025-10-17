@@ -2,6 +2,7 @@
 
 ## Unreleased
 - Add support for reading and writing arrays.
+- Added `Database.DuckDB.Simple.Generic` with GHC generics helpers (`GToField`/`GFromField`) for encoding records as DuckDB STRUCTs and sum types as UNIONs.
 - Support decoding and binding STRUCT and UNION values via new `StructValue`/`UnionValue` helpers and corresponding `FromField`/`ToField` instances.
 
 ## 0.1.2.0

@@ -34,6 +34,7 @@ library
       Database.DuckDB.Simple.FromRow
       Database.DuckDB.Simple.Internal
       Database.DuckDB.Simple.LogicalRep
+      Database.DuckDB.Simple.Generic
       Database.DuckDB.Simple.Ok
       Database.DuckDB.Simple.ToField
       Database.DuckDB.Simple.ToRow

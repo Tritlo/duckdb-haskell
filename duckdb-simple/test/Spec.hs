@@ -62,6 +62,7 @@ import Database.DuckDB.Simple.Generic
     , ViaDuckDB (..)
     )
 import Database.DuckDB.Simple.Ok (Ok (..))
+import Properties (roundTripTests)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import Test.Tasty (TestTree, defaultMain, testGroup)
@@ -184,6 +185,7 @@ tests =
         [ connectionTests
         , withConnectionTests
         , statementTests
+        , roundTripTests
         , typeTests
         , streamingTests
         , functionsTests

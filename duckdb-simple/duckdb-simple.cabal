@@ -58,6 +58,7 @@ test-suite duckdb-simple-test
   type:             exitcode-stdio-1.0
   hs-source-dirs:   test
   main-is:          Spec.hs
+  other-modules:    Properties
   default-language: Haskell2010
   build-depends:
       base >=4.14 && <5

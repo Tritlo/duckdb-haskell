@@ -183,7 +183,11 @@ logicalTypeFromRep = \case
         let fields = elems fieldArray
             count = length fields
         if count == 0
-            then c_duckdb_create_struct_type nullPtr nullPtr 0
+            then
+                withMany withCString [] \namePtrs ->
+                    withArray namePtrs \nameArray ->
+                        withArray [] \typeArray ->
+                            c_duckdb_create_struct_type typeArray nameArray 0
             else do
                 childTypes <- mapM (logicalTypeFromRep . structFieldValue) fields
                 let names = map (Text.unpack . structFieldName) fields
@@ -198,7 +202,11 @@ logicalTypeFromRep = \case
         let members = elems memberArray
             count = length members
         if count == 0
-            then c_duckdb_create_union_type nullPtr nullPtr 0
+            then
+                withMany withCString [] \namePtrs ->
+                    withArray namePtrs \nameArray ->
+                        withArray [] \memberPtr ->
+                            c_duckdb_create_union_type memberPtr nameArray 0
             else do
                 memberTypes <- mapM (logicalTypeFromRep . unionMemberType) members
                 let names = map (Text.unpack . unionMemberName) members

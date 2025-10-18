@@ -411,15 +411,12 @@ arrayDuckValue arr =
     bracket (createElementLogicalType (Proxy :: Proxy a)) destroyLogicalType \elementType -> do
         let elemsList = elems arr
             count = length elemsList
-        if count == 0
-            then c_duckdb_create_array_value elementType nullPtr 0
-            else do
-                values <- mapM toDuckValue elemsList
-                result <-
-                    withArray values \ptr ->
-                        c_duckdb_create_array_value elementType ptr (fromIntegral count)
-                mapM_ destroyValue values
-                pure result
+        values <- mapM toDuckValue elemsList
+        result <-
+            withArray values \ptr ->
+                c_duckdb_create_array_value elementType ptr (fromIntegral count)
+        mapM_ destroyValue values
+        pure result
 
 structValueDuckValue :: StructValue FieldValue -> IO DuckDBValue
 structValueDuckValue StructValue{structValueFields, structValueTypes, structValueIndex = _} = do
@@ -643,7 +640,6 @@ integerToUHugeInt value = do
     pure DuckDBUHugeInt{duckDBUHugeIntLower = lower, duckDBUHugeIntUpper = upper}
 
 withDuckValues :: [DuckDBValue] -> (Ptr DuckDBValue -> IO a) -> IO a
-withDuckValues [] action = action nullPtr
 withDuckValues xs action = withArray xs action
 
 typeMismatch :: String -> FieldValue -> IO a

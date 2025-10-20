@@ -77,7 +77,7 @@ data FieldBinding = FieldBinding
     , fieldBindingDisplay :: !String
     }
 
-class ToDuckValue a where
+class DuckDBColumnType a => ToDuckValue a where
     toDuckValue :: a -> IO DuckDBValue
 
 valueBinding :: String -> IO DuckDBValue -> FieldBinding
@@ -109,7 +109,7 @@ mkFieldBinding display action =
         }
 
 -- | Types that can be used as positional parameters.
-class (DuckDBColumnType a) => ToField a where
+class ToField a where
     toField :: a -> FieldBinding
     default toField :: (Show a, ToDuckValue a) => a -> FieldBinding
     toField value = valueBinding (show value) (toDuckValue value)

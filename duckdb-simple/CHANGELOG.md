@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.1.2.3
+- Move DuckDBColumnType requirement for ToField to DuckValue
+
 ## 0.1.2.2
 - Add support for reading and writing arrays.
 - Added `Database.DuckDB.Simple.Generic` with GHC generics helpers (`GToField`/`GFromField`) for encoding records as DuckDB STRUCTs and sum types as UNIONs, plus a `ViaDuckDB` newtype for convenient @DerivingVia@ support.

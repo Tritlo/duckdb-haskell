@@ -108,6 +108,12 @@ RUN cabal build all --project-file=cabal.project --project-dir=/app
 # Test the packages
 RUN cabal test all --project-file=cabal.project --project-dir=/app --test-show-details=streaming
 
+# Build the benchmarks
+RUN cabal build all --project-file=cabal.project --project-dir=/app --enable-benchmarks
+
+# Run the benchmarks (with quick mode to avoid long execution times in CI)
+RUN cabal bench duckdb-simple:bench:duckdb-simple-bench --project-file=cabal.project --project-dir=/app --benchmark-options='--quick'
+
 # Generate Haddocks for all packages
 RUN cabal haddock all --project-file=cabal.project --project-dir=/app --haddock-for-hackage --enable-documentation
 

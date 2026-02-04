@@ -1,13 +1,17 @@
 packages: duckdb-*/*.cabal
 
 -- GHC version
-with-compiler: ghc-9.6.6
+with-compiler: ghc-9.12.2
 -- Build tests, benchmarks, and documentation by default
 tests:      True
 benchmarks: True
 documentation: True
 
 -- Global compiler options
+-- uuid-types has an overly tight upper bound on template-haskell,
+-- which prevents building with GHC 9.14+ (template-haskell-2.24).
+allow-newer: uuid-types:template-haskell
+
 program-options
 
   -- Default warning flags

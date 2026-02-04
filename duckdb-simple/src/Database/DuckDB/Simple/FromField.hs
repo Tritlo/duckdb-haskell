@@ -133,7 +133,9 @@ fromBigNumBytes :: [Word8] -> Integer
 fromBigNumBytes bytes =
     let header = take 3 bytes
         payloadRaw = drop 3 bytes
-        isNeg = head header .&. 0x80 == 0
+        isNeg = case header of
+            (h:_) -> h .&. 0x80 == 0
+            []    -> False
         payload = if isNeg then map complement payloadRaw else payloadRaw
         bytesPerWord = finiteBitSize (0 :: Word) `div` 8 -- 8 on 64-bit, 4 on 32-bit
         len = length payload
@@ -275,7 +277,7 @@ data ResultError
         , errHaskellType :: Text
         , errMessage :: Text
         }
-    deriving (Eq, Show, Typeable)
+    deriving (Eq, Show)
 
 instance Exception ResultError
 

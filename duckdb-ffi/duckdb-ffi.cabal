@@ -1,10 +1,11 @@
 cabal-version:      3.4
 name:               duckdb-ffi
-version:            1.4.1.4
+version:            1.4.1.5
 author:             Matthias Pall Gissurarson
 maintainer:         mpg@mpg.is
 category:           Database
 build-type:         Simple
+tested-with:        GHC == 9.6.*, GHC == 9.8.*, GHC == 9.10.*, GHC == 9.12.*, GHC == 9.14.*
 license:            MPL-2.0
 license-file:       LICENSE
 synopsis:           Haskell FFI bindings for DuckDB
@@ -90,14 +91,14 @@ library
 
   c-sources: cbits/duckdb_stub.c
   build-depends:
-      base >=4.18 && <4.19
-    , bytestring >= 0.11 && <0.12
-    , containers >= 0.6 && <0.7
+      base >=4.18 && <4.23
+    , bytestring >= 0.11 && <0.13
+    , containers >= 0.6 && <0.9
     , exceptions >= 0.10 && <0.11
     , mtl >= 2.3 && <2.4
-    , text >= 2.0 && <2.1
+    , text >= 2.0 && <2.2
     , transformers >= 0.6 && <0.7
-    , time >= 1.12 && <1.13
+    , time >= 1.12 && <1.16
   if os(linux)
     ghc-options:    -optl-Wl,-rpath,'$ORIGIN/../cbits/duckdb'
     ld-options:       -Wl,-rpath,'$ORIGIN/../cbits/duckdb'
@@ -142,10 +143,10 @@ test-suite duckdb-ffi-tests
   ghc-options:        -threaded
   default-language:    Haskell2010
   build-depends:
-      base >=4.18 && <4.19
+      base >=4.18 && <4.23
     , duckdb-ffi
     , tasty >=1.5 && <1.6
     , tasty-hunit >=0.10 && <0.11
     , tasty-expected-failure >= 0.12 && < 0.13
-    , text >= 2.0 && <2.1
-    , time >= 1.12 && <1.13
+    , text >= 2.0 && <2.2
+    , time >= 1.12 && <1.16

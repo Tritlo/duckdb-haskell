@@ -7,7 +7,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Args
 ARG USER_NAME=haskeller
-ARG GHC_VERSION=9.6.6
+ARG GHC_VERSION=9.12.2
 ARG CABAL_VERSION=3.16.0.0
 ARG UID=1001
 ARG GID=1001
@@ -87,6 +87,7 @@ RUN curl -fsSL https://get-ghcup.haskell.org -o /tmp/get-ghcup.sh && \
 # rebuilding the dependencies all the time.
 COPY --parents --chown=${UID}:${GID} duckdb-*/*.cabal /app/
 COPY --chown=${UID}:${GID} cabal.project /app/cabal.project
+RUN sed -i "s/with-compiler: ghc-.*/with-compiler: ghc-${GHC_VERSION}/" /app/cabal.project
 
 WORKDIR /app
 # Using the cabal files, we can build the dependencies

@@ -6,7 +6,7 @@
 Module      : Database.DuckDB.Simple.ToRow
 Description : Rendering Haskell collections into parameter rows.
 
-The 'ToRow' class converts Haskell values into lists of 'FieldBinding's that
+The `ToRow` class converts Haskell values into lists of `FieldBinding`s that
 can be consumed by statement binding functions.
 -}
 module Database.DuckDB.Simple.ToRow (
@@ -24,7 +24,7 @@ class ToRow a where
     default toRow :: (Generic a, GToRow (Rep a)) => a -> [FieldBinding]
     toRow = gtoRow . from
 
--- | Generic helper for deriving 'ToRow'.
+-- | Generic helper for deriving `ToRow`.
 class GToRow f where
     gtoRow :: f p -> [FieldBinding]
 

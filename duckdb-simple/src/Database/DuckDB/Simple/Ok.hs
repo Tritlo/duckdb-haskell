@@ -5,10 +5,10 @@
 Module      : Database.DuckDB.Simple.Ok
 Description : Lightweight error accumulation for row parsing.
 
-The 'Ok' type mirrors the helper used by @sqlite-simple@: it behaves like an
-`Either [SomeException]` with sensible 'Alternative' semantics that accumulate
-failure reasons instead of discarding them. This underpins the RowParser
-machinery in 'Database.DuckDB.Simple.FromRow'.
+The @Ok@ type mirrors the helper used by @sqlite-simple@: it behaves like an
+@Either [SomeException]@ with sensible @Alternative@ semantics that accumulate
+failure reasons instead of discarding them. This underpins the row parser
+machinery in @Database.DuckDB.Simple.FromRow@.
 -}
 module Database.DuckDB.Simple.Ok (
     Ok (..),

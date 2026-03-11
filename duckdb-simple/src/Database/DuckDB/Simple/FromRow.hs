@@ -10,11 +10,11 @@
 
 {- |
 Module      : Database.DuckDB.Simple.FromRow
-Description : Convert rows of 'Field's into Haskell values using a parser-style interface.
+Description : Convert rows of @Field@s into Haskell values using a parser-style interface.
 -}
 module Database.DuckDB.Simple.FromRow (
     -- * Row parsing
-    RowParser (..),
+    RowParser,
     field,
     fieldWith,
     numFieldsRemaining,
@@ -56,7 +56,7 @@ newtype ColumnOutOfBounds = ColumnOutOfBounds {columnOutOfBoundsIndex :: Int}
 
 instance Exception ColumnOutOfBounds
 
--- | Parser used by 'FromRow' implementations.
+-- | Parser used by @FromRow@ implementations.
 newtype RowParser a = RowParser
     { runRowParser :: ReaderT RowParseRO (StateT (Int, [Field]) Ok) a
     }
@@ -85,7 +85,7 @@ class FromRow a where
     default fromRow :: (Generic a, GFromRow (Rep a)) => RowParser a
     fromRow = to <$> gFromRow
 
--- | Pull the next field using the provided 'FieldParser'.
+-- | Pull the next field using the provided @FieldParser@.
 fieldWith :: FieldParser a -> RowParser a
 fieldWith fieldParser = RowParser $ do
     RowParseRO{rowParseColumnCount} <- ask
@@ -102,7 +102,7 @@ fieldWith fieldParser = RowParser $ do
                     Errors err -> lift $ lift $ Errors err
                     Ok value -> pure value
 
--- | Pull the next field and parse it using its 'FromField' instance.
+-- | Pull the next field and parse it using its @FromField@ instance.
 field :: (FromField a) => RowParser a
 field = fieldWith fromField
 
@@ -113,7 +113,7 @@ numFieldsRemaining = RowParser $ do
     (columnIndex, _) <- lift get
     pure (rowParseColumnCount - columnIndex)
 
--- | Execute a 'RowParser' against the provided row.
+-- | Execute a @RowParser@ against the provided row.
 parseRow :: RowParser a -> [Field] -> Ok a
 parseRow parser fields =
     let context = RowParseRO (length fields)
@@ -217,7 +217,7 @@ instance (FromField a) => FromRow [a] where
         remaining <- numFieldsRemaining
         replicateM remaining field
 
--- | Convert a 'ResultError' into a user-facing 'SQLError'.
+-- | Convert a @ResultError@ into a user-facing @SQLError@.
 resultErrorToSqlError :: Query -> ResultError -> SQLError
 resultErrorToSqlError query err =
     SQLError
@@ -226,7 +226,7 @@ resultErrorToSqlError query err =
         , sqlErrorQuery = Just query
         }
 
--- | Collapse parser failure diagnostics into an 'SQLError' while preserving the query.
+-- | Collapse parser failure diagnostics into an @SQLError@ while preserving the query.
 rowErrorsToSqlError :: Query -> [SomeException] -> SQLError
 rowErrorsToSqlError query errs =
     case listToMaybe (mapMaybe (fromException :: SomeException -> Maybe ResultError) errs) of

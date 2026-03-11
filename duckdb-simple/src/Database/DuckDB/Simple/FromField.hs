@@ -106,6 +106,7 @@ data FieldValue
     | FieldUnion (UnionValue FieldValue)
     deriving (Eq, Show)
 
+-- | Exact-width decimal payload plus its declared width and scale.
 data DecimalValue = DecimalValue
     { decimalWidth :: !Word8
     , decimalScale :: !Word8
@@ -113,6 +114,7 @@ data DecimalValue = DecimalValue
     }
     deriving (Eq, Show)
 
+-- | DuckDB interval payload split into months, days, and microseconds.
 data IntervalValue = IntervalValue
     { intervalMonths :: !Int32
     , intervalDays :: !Int32
@@ -120,13 +122,14 @@ data IntervalValue = IntervalValue
     }
     deriving (Eq, Show)
 
+-- | Arbitrary-precision integer wrapper used for DuckDB's BIGNUM type.
 newtype BigNum = BigNum Integer
     deriving stock (Eq, Show)
     deriving (Num) via Integer
 
 {- | Decode DuckDB’s BIGNUM blob (3-byte header + big-endian payload where negative magnitudes are
-bitwise complemented) back into a Haskell 'Integer'. We undo the complement when needed, then chunk
-the remaining bytes into machine-word limbs (MSB chunk first) for 'integerFromWordList'.
+bitwise complemented) back into a Haskell @Integer@. We undo the complement when needed, then chunk
+the remaining bytes into machine-word limbs (MSB chunk first) for @integerFromWordList@.
 -}
 fromBigNumBytes :: [Word8] -> Integer
 fromBigNumBytes bytes =
@@ -149,7 +152,7 @@ fromBigNumBytes bytes =
         limbs = (if null firstChunk then id else (firstChunk :)) (chunkWords rest)
      in integerFromWordList isNeg (map toWord limbs)
 
-{- | Encode an 'Integer' into DuckDB’s BIGNUM blob layout: emit the 3-byte header
+{- | Encode an @Integer@ into DuckDB’s BIGNUM blob layout: emit the 3-byte header
   (sign bit plus payload length) followed by the magnitude bytes in the same
   big-endian / complemented-on-negative form that DuckDB stores internally.
 -}
@@ -179,6 +182,7 @@ toBigNumBytes value =
         payloadBytes = if isNeg then map complement payloadBE else payloadBE
      in headerBytes <> payloadBytes
 
+-- | DuckDB BIT value represented as raw bytes plus left-padding bit count.
 data BitString = BitString
     { padding :: !Word8
     , bits :: !BS.ByteString
@@ -192,7 +196,7 @@ instance Show BitString where
         word8ToString :: Word8 -> String
         word8ToString w = map (\n -> if testBit w n then '1' else '0') [7, 6 .. 0]
 
--- | Construct a 'BitString' from a list of 'Bool's, where the first element
+-- | Construct a @BitString@ from a list of @Bool@s, where the first element
 bsFromBool :: [Bool] -> BitString
 bsFromBool bits =
     let totalBits = length bits
@@ -208,6 +212,7 @@ bsFromBool bits =
     bitsToWord8 :: [Bool] -> Word8
     bitsToWord8 bs = foldl (\acc (b, i) -> if b then setBit acc i else acc) 0 (zip bs [7, 6 .. 0])
 
+-- | Time-of-day paired with its associated timezone offset.
 data TimeWithZone = TimeWithZone
     { timeWithZoneTime :: !TimeOfDay
     , timeWithZoneZone :: !TimeZone
@@ -283,10 +288,10 @@ data ResultError
 
 instance Exception ResultError
 
-{- | Parser used by 'FromField' instances and utilities such as
-'Database.DuckDB.Simple.FromRow.fieldWith'. The supplied 'Field' contains
-column metadata and an already-decoded 'FieldValue'; callers should return
-'Ok' on success or 'Errors' (typically wrapping a 'ResultError') when the
+{- | Parser used by @FromField@ instances and utilities such as
+@Database.DuckDB.Simple.FromRow.fieldWith@. The supplied @Field@ contains
+column metadata and an already-decoded @FieldValue@; callers should return
+@Ok@ on success or @Errors@ (typically wrapping a @ResultError@) when the
 conversion fails.
 -}
 type FieldParser a = Field -> Ok a

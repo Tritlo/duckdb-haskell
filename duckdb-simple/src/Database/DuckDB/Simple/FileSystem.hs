@@ -1,5 +1,9 @@
 {-# LANGUAGE BlockArguments #-}
 
+{- |
+Module      : Database.DuckDB.Simple.FileSystem
+Description : High-level wrappers around DuckDB's file-system API.
+-}
 module Database.DuckDB.Simple.FileSystem (
     withFileHandle,
     readFileHandleChunk,
@@ -22,6 +26,7 @@ import Foreign.Marshal.Alloc (alloca, free, mallocBytes)
 import Foreign.Ptr (castPtr, nullPtr)
 import Foreign.Storable (peek, poke)
 
+-- | Open a file through DuckDB's file-system layer for the duration of an action.
 withFileHandle :: Connection -> FilePath -> [DuckDBFileFlag] -> (DuckDBFileHandle -> IO a) -> IO a
 withFileHandle conn path flags action =
     withFileSystem conn \fs ->
@@ -39,6 +44,7 @@ withFileHandle conn path flags action =
                                 handle <- peek filePtr
                                 bracket (pure handle) destroyFileHandle action
 
+-- | Read up to the requested number of bytes from a file handle.
 readFileHandleChunk :: DuckDBFileHandle -> Int64 -> IO BS.ByteString
 readFileHandleChunk handle requested
     | requested <= 0 = pure BS.empty
@@ -52,6 +58,7 @@ readFileHandleChunk handle requested
                 free raw
                 pure bs
 
+-- | Write an entire bytestring to a file handle.
 writeFileHandleBytes :: DuckDBFileHandle -> BS.ByteString -> IO Int64
 writeFileHandleBytes handle bytes =
     BS.useAsCStringLen bytes \(ptr, len) -> do
@@ -60,16 +67,19 @@ writeFileHandleBytes handle bytes =
             then throwFileHandleError handle (Text.pack "write failed")
             else pure written
 
+-- | Return the current file position.
 fileHandleTell :: DuckDBFileHandle -> IO Int64
 fileHandleTell handle = do
     pos <- c_duckdb_file_handle_tell handle
     if pos < 0 then throwFileHandleError handle (Text.pack "tell failed") else pure pos
 
+-- | Return the current file size in bytes.
 fileHandleSize :: DuckDBFileHandle -> IO Int64
 fileHandleSize handle = do
     size <- c_duckdb_file_handle_size handle
     if size < 0 then throwFileHandleError handle (Text.pack "size failed") else pure size
 
+-- | Seek to an absolute byte offset.
 fileHandleSeek :: DuckDBFileHandle -> Int64 -> IO ()
 fileHandleSeek handle pos = do
     rc <- c_duckdb_file_handle_seek handle pos
@@ -77,6 +87,7 @@ fileHandleSeek handle pos = do
         then pure ()
         else throwFileHandleError handle (Text.pack "seek failed")
 
+-- | Flush file-handle writes to stable storage.
 fileHandleSync :: DuckDBFileHandle -> IO ()
 fileHandleSync handle = do
     rc <- c_duckdb_file_handle_sync handle

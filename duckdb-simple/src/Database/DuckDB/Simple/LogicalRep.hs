@@ -2,6 +2,10 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
+{- |
+Module      : Database.DuckDB.Simple.LogicalRep
+Description : Structured logical-type and value representations for DuckDB.
+-}
 module Database.DuckDB.Simple.LogicalRep (
     -- * Structured value helpers
     StructField (..),
@@ -31,6 +35,7 @@ import Foreign.Marshal.Utils (withMany)
 import Foreign.Ptr (castPtr, nullPtr)
 import Foreign.Storable (poke)
 
+-- | A Haskell description of a DuckDB logical type tree.
 data LogicalTypeRep
     = LogicalTypeScalar DuckDBType
     | LogicalTypeDecimal !Word8 !Word8
@@ -42,12 +47,14 @@ data LogicalTypeRep
     | LogicalTypeEnum !(Array Int Text)
     deriving (Eq, Show)
 
+-- | A named field within a STRUCT-like value or type.
 data StructField a = StructField
     { structFieldName :: !Text
     , structFieldValue :: !a
     }
     deriving (Eq, Show)
 
+-- | A fully materialized STRUCT value together with its type metadata.
 data StructValue a = StructValue
     { structValueFields :: !(Array Int (StructField a))
     , structValueTypes :: !(Array Int (StructField LogicalTypeRep))
@@ -55,12 +62,14 @@ data StructValue a = StructValue
     }
     deriving (Eq, Show)
 
+-- | A named member within a UNION type.
 data UnionMemberType = UnionMemberType
     { unionMemberName :: !Text
     , unionMemberType :: !LogicalTypeRep
     }
     deriving (Eq, Show)
 
+-- | A fully materialized UNION value together with its member metadata.
 data UnionValue a = UnionValue
     { unionValueIndex :: !Word16
     , unionValueLabel :: !Text
@@ -69,18 +78,22 @@ data UnionValue a = UnionValue
     }
     deriving (Eq, Show)
 
+-- | Recover the logical STRUCT type corresponding to a @StructValue@.
 structValueTypeRep :: StructValue a -> LogicalTypeRep
 structValueTypeRep StructValue{structValueTypes} = LogicalTypeStruct structValueTypes
 
+-- | Recover the logical UNION type corresponding to a @UnionValue@.
 unionValueTypeRep :: UnionValue a -> LogicalTypeRep
 unionValueTypeRep UnionValue{unionValueMembers} = LogicalTypeUnion unionValueMembers
 
+-- | Destroy a logical type handle obtained from DuckDB.
 destroyLogicalType :: DuckDBLogicalType -> IO ()
 destroyLogicalType logical =
     alloca \ptr -> do
         poke ptr logical
         c_duckdb_destroy_logical_type ptr
 
+-- | Convert a DuckDB logical type handle into the pure @LogicalTypeRep@ tree.
 logicalTypeToRep :: DuckDBLogicalType -> IO LogicalTypeRep
 logicalTypeToRep logical = do
     dtype <- c_duckdb_get_type_id logical
@@ -164,6 +177,7 @@ logicalTypeToRep logical = do
         _ ->
             pure (LogicalTypeScalar dtype)
 
+-- | Materialize a DuckDB logical type handle from a @LogicalTypeRep@ tree.
 logicalTypeFromRep :: LogicalTypeRep -> IO DuckDBLogicalType
 logicalTypeFromRep = \case
     LogicalTypeScalar dtype ->

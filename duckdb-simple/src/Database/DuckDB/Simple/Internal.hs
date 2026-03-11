@@ -8,7 +8,7 @@ Description : Internal machinery backing the duckdb-simple API surface.
 
 This module provides access to the opaque data constructors and helper
 utilities required by the high-level API.  It is not part of the supported
-public interface; consumers should depend on 'Database.DuckDB.Simple' instead.
+public interface; consumers should depend on @Database.DuckDB.Simple@ instead.
 -}
 module Database.DuckDB.Simple.Internal (
     -- * Data constructors (internal use only)
@@ -156,6 +156,7 @@ data SQLError = SQLError
 
 instance Exception SQLError
 
+-- | Convert an arbitrary exception into an untyped @SQLError@.
 toSQLError :: (Exception e) => e -> SQLError
 toSQLError ex =
     SQLError

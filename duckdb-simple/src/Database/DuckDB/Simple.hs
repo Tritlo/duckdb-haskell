@@ -9,7 +9,7 @@ Description : High-level DuckDB API in the duckdb-simple style.
 
 The API mirrors the ergonomics of @sqlite-simple@ while being backed by the
 DuckDB C API. It supports connection management, parameter binding, execution,
-and typed result decoding. See 'README.md' for usage examples.
+and typed result decoding. See @README.md@ for usage examples.
 -}
 module Database.DuckDB.Simple (
     -- * Connections
@@ -72,7 +72,7 @@ module Database.DuckDB.Simple (
     (:.) (..),
 
     -- * User-defined scalar functions
-    Function,
+    Function (..),
     createFunction,
     createFunctionWithState,
     deleteFunction,
@@ -322,7 +322,7 @@ columnName stmt columnIndex
                     pure name
 
 {- | Execute a prepared statement and return the number of affected rows.
-  Resets any active result stream before running and raises a 'SqlError'
+  Resets any active result stream before running and raises an @SQLError@
   if DuckDB reports a failure.
 -}
 executeStatement :: Statement -> IO Int
@@ -482,7 +482,7 @@ foldStatementWith parser stmt initial step =
 nextRow :: (FromRow r) => Statement -> IO (Maybe r)
 nextRow = nextRowWith fromRow
 
--- | Fetch the next row using a custom parser, returning 'Nothing' once exhausted.
+-- | Fetch the next row using a custom parser, returning @Nothing@ once exhausted.
 nextRowWith :: RowParser r -> Statement -> IO (Maybe r)
 nextRowWith parser stmt@Statement{statementStream} =
     mask \restore -> do

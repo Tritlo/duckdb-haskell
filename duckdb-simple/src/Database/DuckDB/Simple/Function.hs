@@ -13,11 +13,15 @@ Description : Register scalar Haskell functions with DuckDB connections.
 This module mirrors the high-level API provided by @sqlite-simple@ for user
 defined functions, adapted to DuckDB's chunked execution model.  It allows
 pure and 'IO'-based Haskell functions to be exposed to SQL while reusing the
-existing 'FromField' and 'ToField'-style typeclass machinery for argument
-decoding and result marshalling.
+existing field-decoding and result-marshalling machinery for arguments and
+return values.
 -}
 module Database.DuckDB.Simple.Function (
-    Function,
+    ScalarType,
+    ScalarValue,
+    FunctionArg (),
+    FunctionResult (),
+    Function (..),
     createFunction,
     createFunctionWithState,
     deleteFunction,

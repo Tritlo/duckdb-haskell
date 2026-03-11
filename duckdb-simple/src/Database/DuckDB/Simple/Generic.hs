@@ -16,18 +16,18 @@
 Module      : Database.DuckDB.Simple.Generic
 Description : Generic helpers for encoding Haskell ADTs as DuckDB structs/unions.
 
-This module provides the glue needed to reuse the existing 'ToField'/'FromField'
+This module provides the glue needed to reuse the existing @ToField@/@FromField@
 machinery with algebraic data types via GHC generics.  The supported mapping is
 currently intentionally conservative:
 
-* /Product types/ (records or tuples) whose fields already satisfy 'DuckValue'
+* /Product types/ (records or tuples) whose fields already satisfy @DuckValue@
   are encoded as STRUCT values.  Record fields retain their selector name;
   positional products fall back to @field1@, @field2@, …
 * /Sum types/ (:+:) become UNION values.  Each constructor becomes a union
   member; payloads are encoded as structs (or @NULL@ for nullary constructors).
 
 Recursive types are supported as long as every payload is itself encodable
-through 'DuckValue'.  Note that sum types must have constructor fields that are
+through @DuckValue@. Note that sum types must have constructor fields that are
 structural products (i.e. we do not yet expose mixed union/record nesting for
 non-record constructors).
 
@@ -53,7 +53,7 @@ For sum types:
 Constructors are turned into a union with members @Circle{radius}@,
 @Rectangle{width,height}@, and @Origin@ (null payload).
 
-You can also lean on @DerivingVia@ using the exported 'ViaDuckDB' newtype:
+You can also lean on @DerivingVia@ using the exported @ViaDuckDB@ newtype:
 
 > data User = User { userId :: Int64, userName :: Text }
 >   deriving stock (Generic)
@@ -65,12 +65,12 @@ The derived instances automatically encode/decode via STRUCT/UNION representatio
 
 The rest of this file is organised so that each building block is reusable:
 
-* 'DuckValue' covers leaf-level conversions between Haskell values, DuckDB
-  'FieldValue's, and logical type metadata.
-* 'GToField' and friends walk the generic representation to assemble structs or
+* @DuckValue@ covers leaf-level conversions between Haskell values, DuckDB
+  @FieldValue@s, and logical type metadata.
+* @GToField@ and friends walk the generic representation to assemble structs or
   unions and carry around the logical type information we later need when
   binding parameters.
-* 'ViaDuckDB' wires everything together for deriving via.
+* @ViaDuckDB@ wires everything together for deriving via.
 
 When adding new features, mimic the structure used here (and document new
 classes the way the existing ones are documented) so other backends can take
@@ -79,6 +79,8 @@ inspiration from this implementation.
 module Database.DuckDB.Simple.Generic (
     -- * Field-level primitives
     DuckValue (..),
+    GToField (),
+    GFromField (),
 
     -- * Generic encoding/decoding for ADTs
     genericToFieldValue,
@@ -134,15 +136,15 @@ import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToField (..))
 
 {- | Types that can appear inside generated structs/unions.
 
-A 'DuckValue' instance must provide:
+A @DuckValue@ instance must provide:
 
-* encoding to 'FieldValue'
-* logical type metadata ('duckLogicalType')
-* decoding from 'FieldValue'
+* encoding to @FieldValue@
+* logical type metadata (@duckLogicalType@)
+* decoding from @FieldValue@
 
 The primitive instances below are the canonical source for how scalar types
 should be represented; both the generic implementation and the manual
-'ToField'/'FromField' instances rely on them.
+`ToField`/`FromField` instances rely on them.
 -}
 class DuckValue a where
     duckToField :: a -> FieldValue
@@ -313,8 +315,8 @@ instance (Ord k, DuckValue k, DuckValue v) => DuckValue (Map.Map k v) where
 
 {- | Internal representation used while traversing the generic structure.  We
 keep both the encoded value and its logical type so we can re-use the same
-traversal when generating metadata ('genericLogicalType') and when producing
-concrete values ('genericToFieldValue').
+traversal when generating metadata (@genericLogicalType@) and when producing
+concrete values (@genericToFieldValue@).
 -}
 data Encoded
     = EncodedStruct (StructValue FieldValue) (Array Int (StructField LogicalTypeRep))
@@ -327,7 +329,7 @@ encodedValue = \case
     EncodedUnion uv -> FieldUnion uv
     EncodedNull -> FieldNull
 
--- | Convert a Haskell value (using its generic representation) into a DuckDB 'FieldValue'.
+-- | Convert a Haskell value (using its generic representation) into a DuckDB @FieldValue@.
 genericToFieldValue :: forall a. (Generic a, GToField (Rep a)) => a -> FieldValue
 genericToFieldValue = encodedValue . gToField . from
 
@@ -335,7 +337,7 @@ genericToFieldValue = encodedValue . gToField . from
 genericLogicalType :: forall a. (Generic a, GToField (Rep a)) => Proxy a -> LogicalTypeRep
 genericLogicalType _ = gLogicalType (Proxy :: Proxy (Rep a ()))
 
--- | Decode a DuckDB 'FieldValue' back into a Haskell value using its generic representation.
+-- | Decode a DuckDB @FieldValue@ back into a Haskell value using its generic representation.
 genericFromFieldValue :: forall a. (Generic a, GFromField (Rep a)) => FieldValue -> Either String a
 genericFromFieldValue fv = to <$> gFromField fv
 
@@ -354,6 +356,7 @@ genericToStructValue value =
             , structValueIndex = Map.empty
             }
 
+-- | Extract a UNION-shaped generic encoding directly when one is produced.
 genericToUnionValue :: forall a. (Generic a, GToField (Rep a)) => a -> Maybe (UnionValue FieldValue)
 genericToUnionValue value =
     case gToField (from value) of
@@ -367,7 +370,7 @@ newtype ViaDuckDB a = ViaDuckDB {getViaDuckDB :: a}
 
 -- Type family to decide whether a representation is a sum.
 
-{- | Type family evaluating to 'True for sum-of-constructors generic
+{- | Type family evaluating to @'True@ for sum-of-constructors generic
 representations.  We use this to select the appropriate encoding strategy.
 -}
 type family IsSum f :: Bool where
@@ -376,7 +379,7 @@ type family IsSum f :: Bool where
     IsSum (M1 C _ f) = IsSum f
     IsSum _ = 'False
 
-{- | Generic encoding to the intermediate 'Encoded' representation.  Every
+{- | Generic encoding to the intermediate @Encoded@ representation. Every
 instance must also supply the corresponding logical type description.
 -}
 class GToField f where
@@ -387,8 +390,8 @@ instance (GToField' (IsSum f) f) => GToField f where
     gToField = gToField' (Proxy :: Proxy (IsSum f))
     gLogicalType _ = gLogicalType' (Proxy :: Proxy (IsSum f)) (Proxy :: Proxy f)
 
-{- | Helper class that splits the product and sum handling using the 'IsSum'
-type family.  We specialise on products ('False) and sums ('True) to keep
+{- | Helper class that splits the product and sum handling using the @IsSum@
+type family. We specialise on products (@'False@) and sums (@'True@) to keep
 the core logic small and easy to reason about.
 -}
 class GToField' (isSum :: Bool) f where
@@ -470,7 +473,7 @@ resolveNames =
     pick (_, Just n) = n
     pick (idx, Nothing) = Text.pack ("field" <> show (idx + 1))
 
-{- | Helper that builds an 'Array' of struct fields from parallel lists of names
+{- | Helper that builds an @Array@ of struct fields from parallel lists of names
 and payloads.
 -}
 listArrayFrom :: [Text] -> [b] -> Array Int (StructField b)
@@ -518,9 +521,9 @@ toMaybe name
 --------------------------------------------------------------------------------
 -- Sums (unions)
 
-{- | Sum type encoding.  We gather the metadata ('gSumMembers'), convert a value
-to its discriminant and payload ('gSumEncode'), and provide the inverse
-('gSumDecode').
+{- | Sum type encoding. We gather the metadata (@gSumMembers@), convert a value
+to its discriminant and payload (@gSumEncode@), and provide the inverse
+(@gSumDecode@).
 -}
 class GSum f where
     gSumMembers :: Proxy (f p) -> [UnionMemberType]
@@ -571,7 +574,7 @@ instance (Constructor c, GStruct f, GStructDecode f) => GSum (M1 C c f) where
 --------------------------------------------------------------------------------
 -- GStructDecode: inverse of GStruct for decoding
 
--- | Inverse of 'GStruct': decode struct payloads back into a generic product.
+-- | Inverse of @GStruct@: decode struct payloads back into a generic product.
 class GStructDecode f where
     gStructDecodeStruct :: Proxy (f p) -> StructValue FieldValue -> Either String (f p)
 
@@ -640,8 +643,8 @@ instance (GStructDecode f) => GStructDecode (M1 C c f) where
 --------------------------------------------------------------------------------
 -- GFromField (inverse generic)
 
-{- | Generic decoding entry point mirroring 'GToField'.  This is used both by
-@genericFromFieldValue@ and the 'Generically' deriving helper.
+{- | Generic decoding entry point mirroring @GToField@. This is used both by
+@genericFromFieldValue@ and the @Generically@ deriving helper.
 -}
 class GFromField f where
     gFromField :: FieldValue -> Either String (f p)
@@ -669,7 +672,7 @@ instance GFromField' 'False (M1 D meta U1) where
 --------------------------------------------------------------------------------
 -- ViaDuckDB instances
 
-{- | The deriving-via version of 'DuckDBColumnType'.  We look at the generic
+{- | The deriving-via version of @DuckDBColumnType@. We look at the generic
 logical type and map it back to a textual name.  The textual names are only
 used for diagnostics (errors and column metadata).
 -}
@@ -685,9 +688,9 @@ instance (Generic a, GToField (Rep a)) => DuckDBColumnType (ViaDuckDB a) where
             LogicalTypeDecimal{} -> Text.pack "DECIMAL"
             LogicalTypeEnum{} -> Text.pack "ENUM"
 
-{- | Deriving-via 'ToField' instance.  We reuse the helpers above to decide
+{- | Deriving-via @ToField@ instance. We reuse the helpers above to decide
 whether the top-level representation is a union, struct, or scalar and then
-delegate to the existing 'ToField' instances for those composite types.
+delegate to the existing @ToField@ instances for those composite types.
 -}
 instance (Generic a, GToField (Rep a)) => ToField (ViaDuckDB a) where
     toField (ViaDuckDB x) =
@@ -703,8 +706,8 @@ instance (Generic a, GToField (Rep a)) => ToField (ViaDuckDB a) where
                             FieldNull -> toField (Nothing :: Maybe Int)
                             other -> error ("duckdb-simple: unsupported generic encoding " <> show other)
 
-{- | Deriving-via 'FromField' instance.  Errors are rewrapped using the existing
-'returnError' helper so callers receive a proper 'ResultError'.
+{- | Deriving-via @FromField@ instance. Errors are rewrapped using the existing
+@returnError@ helper so callers receive a proper @ResultError@.
 -}
 instance (Generic a, GFromField (Rep a), Typeable a) => FromField (ViaDuckDB a) where
     fromField f@Field{fieldValue} =
@@ -715,7 +718,7 @@ instance (Generic a, GFromField (Rep a), Typeable a) => FromField (ViaDuckDB a) 
 
 duckdbTypeToName :: DuckDBType -> Text
 
-{- | Translate a 'DuckDBType' into a textual label for diagnostics and
+{- | Translate a @DuckDBType@ into a textual label for diagnostics and
 documentation.  This mirrors the naming used in "Database.DuckDB.Simple.ToField".
 -}
 duckdbTypeToName dtype

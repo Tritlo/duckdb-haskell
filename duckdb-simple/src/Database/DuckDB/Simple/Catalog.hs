@@ -1,5 +1,9 @@
 {-# LANGUAGE BlockArguments #-}
 
+{- |
+Module      : Database.DuckDB.Simple.Catalog
+Description : High-level helpers for DuckDB catalog inspection.
+-}
 module Database.DuckDB.Simple.Catalog (
     CatalogEntry (..),
     catalogTypeName,
@@ -17,12 +21,14 @@ import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (nullPtr)
 import Foreign.Storable (poke)
 
+-- | A simplified view of a catalog entry returned by DuckDB.
 data CatalogEntry = CatalogEntry
     { catalogEntryName :: !Text
     , catalogEntryType :: !DuckDBCatalogEntryType
     }
     deriving (Eq, Show)
 
+-- | Look up the backend type name of a named catalog.
 catalogTypeName :: Connection -> Text -> IO (Maybe Text)
 catalogTypeName conn catalogName =
     withClientContext conn \ctx ->
@@ -33,6 +39,7 @@ catalogTypeName conn catalogName =
                     then pure Nothing
                     else Just . Text.pack <$> peekCString namePtr
 
+-- | Look up a catalog entry by catalog, schema, name, and expected entry kind.
 lookupCatalogEntry :: Connection -> Text -> Text -> Text -> DuckDBCatalogEntryType -> IO (Maybe CatalogEntry)
 lookupCatalogEntry conn catalogName schemaName entryName entryType =
     withClientContext conn \ctx ->

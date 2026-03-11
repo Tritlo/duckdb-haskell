@@ -10,11 +10,12 @@
 Module      : Database.DuckDB.Simple.ToField
 Description : Convert Haskell parameters into DuckDB bindable values.
 
-The 'ToField' class mirrors the interface provided by @sqlite-simple@ while
+The @ToField@ class mirrors the interface provided by @sqlite-simple@ while
 delegating to the DuckDB C API under the hood.
 -}
 module Database.DuckDB.Simple.ToField (
     FieldBinding,
+    ToDuckValue (..),
     ToField (..),
     DuckDBColumnType (..),
     NamedParam (..),
@@ -77,7 +78,9 @@ data FieldBinding = FieldBinding
     , fieldBindingDisplay :: !String
     }
 
+-- | Low-level class for values that can be marshalled directly into `DuckDBValue`s.
 class (DuckDBColumnType a) => ToDuckValue a where
+    -- | Convert a Haskell value into an owned DuckDB boxed value.
     toDuckValue :: a -> IO DuckDBValue
 
 valueBinding :: String -> IO DuckDBValue -> FieldBinding
@@ -85,15 +88,15 @@ valueBinding display mkValue =
     mkFieldBinding display $ \stmt idx ->
         bindDuckValue stmt idx mkValue
 
--- | Types that map to a concrete DuckDB column type when used with 'ToField'.
+-- | Types that map to a concrete DuckDB column type when used with @ToField@.
 class DuckDBColumnType a where
     duckdbColumnTypeFor :: Proxy a -> Text
 
--- | Report the DuckDB column type that best matches a given 'ToField' instance.
+-- | Report the DuckDB column type that best matches a given @ToField@ instance.
 duckdbColumnType :: forall a. (DuckDBColumnType a) => Proxy a -> Text
 duckdbColumnType = duckdbColumnTypeFor
 
--- | Apply a 'FieldBinding' to the given statement/index.
+-- | Apply a @FieldBinding@ to the given statement/index.
 bindFieldBinding :: Statement -> DuckDBIdx -> FieldBinding -> IO ()
 bindFieldBinding stmt idx FieldBinding{fieldBindingAction} = fieldBindingAction stmt idx
 

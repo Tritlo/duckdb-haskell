@@ -2,6 +2,10 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
+{- |
+Module      : Database.DuckDB.Simple.Copy
+Description : High-level wrappers for DuckDB custom COPY functions.
+-}
 module Database.DuckDB.Simple.Copy (
     CopyBindInfo (..),
     CopyInitInfo (..),
@@ -25,21 +29,25 @@ import Foreign.Ptr (Ptr, freeHaskellFunPtr, nullPtr)
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deRefStablePtr, freeStablePtr, newStablePtr)
 import Foreign.Storable (poke)
 
+-- | Bind-phase metadata for a custom `COPY ... TO` function.
 data CopyBindInfo = CopyBindInfo
     { copyBindColumnTypes :: ![DuckDBType]
     }
     deriving (Eq, Show)
 
+-- | Init-phase inputs for a custom `COPY ... TO` function.
 data CopyInitInfo bindState = CopyInitInfo
     { copyInitBindState :: !bindState
     , copyInitFilePath :: !FilePath
     }
 
+-- | Sink-phase inputs for a custom `COPY ... TO` function.
 data CopySinkInfo bindState globalState = CopySinkInfo
     { copySinkBindState :: !bindState
     , copySinkGlobalState :: !globalState
     }
 
+-- | Finalize-phase inputs for a custom `COPY ... TO` function.
 data CopyFinalizeInfo bindState globalState = CopyFinalizeInfo
     { copyFinalizeBindState :: !bindState
     , copyFinalizeGlobalState :: !globalState
@@ -53,6 +61,7 @@ data CopyFunctionResources = CopyFunctionResources
     , copyStateDestroyPtr :: !DuckDBDeleteCallback
     }
 
+-- | Register a custom `COPY ... TO` implementation backed by Haskell callbacks.
 registerCopyToFunction ::
     forall bindState globalState.
     Connection ->

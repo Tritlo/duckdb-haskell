@@ -1,5 +1,9 @@
 {-# LANGUAGE BlockArguments #-}
 
+{- |
+Module      : Database.DuckDB.Simple.Config
+Description : High-level helpers for DuckDB 1.5 configuration inspection.
+-}
 module Database.DuckDB.Simple.Config (
     ConfigFlag (..),
     ConfigValue (..),
@@ -18,18 +22,21 @@ import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (castPtr, nullPtr)
 import Foreign.Storable (peek, poke)
 
+-- | Static metadata describing a known DuckDB configuration flag.
 data ConfigFlag = ConfigFlag
     { configFlagName :: !Text
     , configFlagDescription :: !Text
     }
     deriving (Eq, Show)
 
+-- | The current value of a configuration option plus its scope, when available.
 data ConfigValue = ConfigValue
     { configValueText :: !Text
     , configValueScope :: !(Maybe DuckDBConfigOptionScope)
     }
     deriving (Eq, Show)
 
+-- | List all configuration flags known to the linked DuckDB runtime.
 listConfigFlags :: IO [ConfigFlag]
 listConfigFlags = do
     count <- c_duckdb_config_count
@@ -47,6 +54,7 @@ listConfigFlags = do
                         description <- peek descPtr >>= peekCString
                         pure ConfigFlag{configFlagName = Text.pack name, configFlagDescription = Text.pack description}
 
+-- | Read a configuration option from a live connection's client context.
 getConfigOption :: Connection -> Text -> IO (Maybe ConfigValue)
 getConfigOption conn name =
     withClientContext conn \ctx ->

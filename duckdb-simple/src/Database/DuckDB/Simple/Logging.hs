@@ -1,6 +1,10 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
+{- |
+Module      : Database.DuckDB.Simple.Logging
+Description : High-level wrappers for DuckDB custom log storage.
+-}
 module Database.DuckDB.Simple.Logging (
     LogEntry (..),
     registerLogStorage,
@@ -21,6 +25,7 @@ import Foreign.Ptr (Ptr, freeHaskellFunPtr, nullPtr)
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deRefStablePtr, freeStablePtr, newStablePtr)
 import Foreign.Storable (peek, poke)
 
+-- | A single log event delivered through DuckDB's log-storage callback.
 data LogEntry = LogEntry
     { logEntryTimestamp :: !(Maybe UTCTime)
     , logEntryLevel :: !Text
@@ -29,6 +34,7 @@ data LogEntry = LogEntry
     }
     deriving (Eq, Show)
 
+-- | Register a custom log storage callback on the database behind a connection.
 registerLogStorage :: Connection -> Text -> (LogEntry -> IO ()) -> IO ()
 registerLogStorage conn name callback = do
     writeCb <- mkWriteLogEntryCallback (logStorageHandler callback)

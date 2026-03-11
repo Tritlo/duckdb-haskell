@@ -7,7 +7,7 @@ Description : Shared data types for the duckdb-simple public surface.
 The datatypes in this module are intentionally kept lightweight.  The main
 `Database.DuckDB.Simple` module exposes the types without their constructors so
 that callers interact with them through the high-level API.  The actual
-definitions live in 'Database.DuckDB.Simple.Internal'.
+definitions live in @Database.DuckDB.Simple.Internal@.
 -}
 module Database.DuckDB.Simple.Types (
     Connection,
@@ -38,7 +38,7 @@ data Null = Null
 newtype Only a = Only {fromOnly :: a}
     deriving (Eq, Ord, Show, Read)
 
--- | Convenience product type for combining 'FromRow'/'ToRow' instances.
+-- | Convenience product type for combining @FromRow@ and @ToRow@ instances.
 data h :. t = h :. t
     deriving (Eq, Ord, Show, Read)
 

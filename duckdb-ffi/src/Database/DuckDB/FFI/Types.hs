@@ -270,6 +270,8 @@ module Database.DuckDB.FFI.Types (
     DuckDBSelectionVectorStruct,
     DuckDBArrowOptionsStruct,
     DuckDBArrowStruct,
+    DuckDBArrowSchemaStruct,
+    DuckDBArrowArrayStruct,
     DuckDBArrowConvertedSchemaStruct,
     DuckDBArrowStreamStruct,
     DuckDBExpressionStruct,
@@ -732,19 +734,23 @@ pattern DuckDBCastTry = DuckDBCastMode 1
 newtype DuckDBFileFlag = DuckDBFileFlag {unDuckDBFileFlag :: CInt}
     deriving (Eq, Ord, Show, Storable)
 
-pattern
-    DuckDBFileFlagInvalid
-    , DuckDBFileFlagRead
-    , DuckDBFileFlagWrite
-    , DuckDBFileFlagCreate
-    , DuckDBFileFlagCreateNew
-    , DuckDBFileFlagAppend ::
-        DuckDBFileFlag
+-- | Invalid or unspecified file access mode.
+pattern DuckDBFileFlagInvalid :: DuckDBFileFlag
 pattern DuckDBFileFlagInvalid = DuckDBFileFlag 0
+-- | Open the file for reading.
+pattern DuckDBFileFlagRead :: DuckDBFileFlag
 pattern DuckDBFileFlagRead = DuckDBFileFlag 1
+-- | Open the file for writing.
+pattern DuckDBFileFlagWrite :: DuckDBFileFlag
 pattern DuckDBFileFlagWrite = DuckDBFileFlag 2
+-- | Create the file if it does not already exist.
+pattern DuckDBFileFlagCreate :: DuckDBFileFlag
 pattern DuckDBFileFlagCreate = DuckDBFileFlag 3
+-- | Create a new file and fail if it already exists.
+pattern DuckDBFileFlagCreateNew :: DuckDBFileFlag
 pattern DuckDBFileFlagCreateNew = DuckDBFileFlag 4
+-- | Append all writes to the end of the file.
+pattern DuckDBFileFlagAppend :: DuckDBFileFlag
 pattern DuckDBFileFlagAppend = DuckDBFileFlag 5
 
 {-# COMPLETE
@@ -760,15 +766,17 @@ pattern DuckDBFileFlagAppend = DuckDBFileFlag 5
 newtype DuckDBConfigOptionScope = DuckDBConfigOptionScope {unDuckDBConfigOptionScope :: CInt}
     deriving (Eq, Ord, Show, Storable)
 
-pattern
-    DuckDBConfigOptionScopeInvalid
-    , DuckDBConfigOptionScopeLocal
-    , DuckDBConfigOptionScopeSession
-    , DuckDBConfigOptionScopeGlobal ::
-        DuckDBConfigOptionScope
+-- | Invalid or unknown configuration scope.
+pattern DuckDBConfigOptionScopeInvalid :: DuckDBConfigOptionScope
 pattern DuckDBConfigOptionScopeInvalid = DuckDBConfigOptionScope 0
+-- | Scope limited to the current local operation.
+pattern DuckDBConfigOptionScopeLocal :: DuckDBConfigOptionScope
 pattern DuckDBConfigOptionScopeLocal = DuckDBConfigOptionScope 1
+-- | Scope lasting for the current client session.
+pattern DuckDBConfigOptionScopeSession :: DuckDBConfigOptionScope
 pattern DuckDBConfigOptionScopeSession = DuckDBConfigOptionScope 2
+-- | Scope affecting the full database or process-global setting.
+pattern DuckDBConfigOptionScopeGlobal :: DuckDBConfigOptionScope
 pattern DuckDBConfigOptionScopeGlobal = DuckDBConfigOptionScope 3
 
 {-# COMPLETE
@@ -782,27 +790,35 @@ pattern DuckDBConfigOptionScopeGlobal = DuckDBConfigOptionScope 3
 newtype DuckDBCatalogEntryType = DuckDBCatalogEntryType {unDuckDBCatalogEntryType :: CInt}
     deriving (Eq, Ord, Show, Storable)
 
-pattern
-    DuckDBCatalogEntryTypeInvalid
-    , DuckDBCatalogEntryTypeTable
-    , DuckDBCatalogEntryTypeSchema
-    , DuckDBCatalogEntryTypeView
-    , DuckDBCatalogEntryTypeIndex
-    , DuckDBCatalogEntryTypePreparedStatement
-    , DuckDBCatalogEntryTypeSequence
-    , DuckDBCatalogEntryTypeCollation
-    , DuckDBCatalogEntryTypeType
-    , DuckDBCatalogEntryTypeDatabase ::
-        DuckDBCatalogEntryType
+-- | Invalid catalog entry type.
+pattern DuckDBCatalogEntryTypeInvalid :: DuckDBCatalogEntryType
 pattern DuckDBCatalogEntryTypeInvalid = DuckDBCatalogEntryType 0
+-- | Table catalog entry.
+pattern DuckDBCatalogEntryTypeTable :: DuckDBCatalogEntryType
 pattern DuckDBCatalogEntryTypeTable = DuckDBCatalogEntryType 1
+-- | Schema catalog entry.
+pattern DuckDBCatalogEntryTypeSchema :: DuckDBCatalogEntryType
 pattern DuckDBCatalogEntryTypeSchema = DuckDBCatalogEntryType 2
+-- | View catalog entry.
+pattern DuckDBCatalogEntryTypeView :: DuckDBCatalogEntryType
 pattern DuckDBCatalogEntryTypeView = DuckDBCatalogEntryType 3
+-- | Index catalog entry.
+pattern DuckDBCatalogEntryTypeIndex :: DuckDBCatalogEntryType
 pattern DuckDBCatalogEntryTypeIndex = DuckDBCatalogEntryType 4
+-- | Prepared statement catalog entry.
+pattern DuckDBCatalogEntryTypePreparedStatement :: DuckDBCatalogEntryType
 pattern DuckDBCatalogEntryTypePreparedStatement = DuckDBCatalogEntryType 5
+-- | Sequence catalog entry.
+pattern DuckDBCatalogEntryTypeSequence :: DuckDBCatalogEntryType
 pattern DuckDBCatalogEntryTypeSequence = DuckDBCatalogEntryType 6
+-- | Collation catalog entry.
+pattern DuckDBCatalogEntryTypeCollation :: DuckDBCatalogEntryType
 pattern DuckDBCatalogEntryTypeCollation = DuckDBCatalogEntryType 7
+-- | User-defined type catalog entry.
+pattern DuckDBCatalogEntryTypeType :: DuckDBCatalogEntryType
 pattern DuckDBCatalogEntryTypeType = DuckDBCatalogEntryType 8
+-- | Attached database catalog entry.
+pattern DuckDBCatalogEntryTypeDatabase :: DuckDBCatalogEntryType
 pattern DuckDBCatalogEntryTypeDatabase = DuckDBCatalogEntryType 9
 
 {-# COMPLETE

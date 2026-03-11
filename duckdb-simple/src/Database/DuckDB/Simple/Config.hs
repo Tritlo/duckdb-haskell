@@ -12,7 +12,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
 import Database.DuckDB.FFI
-import Database.DuckDB.Simple.Internal (Connection, withConnectionHandle)
+import Database.DuckDB.Simple.Internal (Connection, destroyValue, withClientContext)
 import Foreign.C.String (peekCString)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (castPtr, nullPtr)
@@ -78,19 +78,3 @@ getConfigOption conn name =
                                                 then Nothing
                                                 else Just scope
                                         }
-
-withClientContext :: Connection -> (DuckDBClientContext -> IO a) -> IO a
-withClientContext conn action =
-    withConnectionHandle conn \connPtr ->
-        alloca \ctxPtr -> do
-            c_duckdb_connection_get_client_context connPtr ctxPtr
-            ctx <- peek ctxPtr
-            bracket (pure ctx) destroyClientContext action
-
-destroyClientContext :: DuckDBClientContext -> IO ()
-destroyClientContext ctx =
-    alloca \ptr -> poke ptr ctx >> c_duckdb_destroy_client_context ptr
-
-destroyValue :: DuckDBValue -> IO ()
-destroyValue value =
-    alloca \ptr -> poke ptr value >> c_duckdb_destroy_value ptr

@@ -6,7 +6,7 @@ module Database.DuckDB.Simple.Logging (
     registerLogStorage,
 ) where
 
-import Control.Exception (bracket, onException, throwIO)
+import Control.Exception (bracket, onException)
 import Data.Ratio ((%))
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -14,7 +14,7 @@ import qualified Data.Text.Foreign as TextForeign
 import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Database.DuckDB.FFI
-import Database.DuckDB.Simple.Internal (Connection, SQLError (..), withDatabaseHandle)
+import Database.DuckDB.Simple.Internal (Connection, mkDeleteCallback, throwRegistrationError, withDatabaseHandle)
 import Foreign.C.String (CString, peekCString)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, freeHaskellFunPtr, nullPtr)
@@ -90,19 +90,7 @@ destroyLogStorage :: DuckDBLogStorage -> IO ()
 destroyLogStorage storage =
     alloca \ptr -> poke ptr storage >> c_duckdb_destroy_log_storage ptr
 
-throwRegistrationError :: String -> IO a
-throwRegistrationError label =
-    throwIO
-        SQLError
-            { sqlErrorMessage = Text.pack ("duckdb-simple: " <> label <> " failed")
-            , sqlErrorType = Nothing
-            , sqlErrorQuery = Nothing
-            }
-
 foreign import ccall "wrapper"
     mkWriteLogEntryCallback ::
         (Ptr () -> Ptr DuckDBTimestamp -> CString -> CString -> CString -> IO ()) ->
         IO DuckDBLoggerWriteLogEntryFun
-
-foreign import ccall "wrapper"
-    mkDeleteCallback :: (Ptr () -> IO ()) -> IO DuckDBDeleteCallback

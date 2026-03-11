@@ -11,11 +11,11 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
 import Database.DuckDB.FFI
-import Database.DuckDB.Simple.Internal (Connection, withConnectionHandle)
+import Database.DuckDB.Simple.Internal (Connection, withClientContext)
 import Foreign.C.String (CString, peekCString)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (nullPtr)
-import Foreign.Storable (peek, poke)
+import Foreign.Storable (poke)
 
 data CatalogEntry = CatalogEntry
     { catalogEntryName :: !Text
@@ -48,18 +48,6 @@ lookupCatalogEntry conn catalogName schemaName entryName entryType =
                                 else do
                                     name <- Text.pack <$> peekCString namePtr
                                     pure (Just CatalogEntry{catalogEntryName = name, catalogEntryType = typ})
-
-withClientContext :: Connection -> (DuckDBClientContext -> IO a) -> IO a
-withClientContext conn action =
-    withConnectionHandle conn \connPtr ->
-        alloca \ctxPtr -> do
-            c_duckdb_connection_get_client_context connPtr ctxPtr
-            ctx <- peek ctxPtr
-            bracket (pure ctx) destroyClientContext action
-
-destroyClientContext :: DuckDBClientContext -> IO ()
-destroyClientContext ctx =
-    alloca \ptr -> poke ptr ctx >> c_duckdb_destroy_client_context ptr
 
 destroyCatalog :: DuckDBCatalog -> IO ()
 destroyCatalog catalog =

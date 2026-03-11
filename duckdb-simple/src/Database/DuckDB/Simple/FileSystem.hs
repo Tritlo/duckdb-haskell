@@ -16,7 +16,7 @@ import Data.Int (Int64)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.FFI
-import Database.DuckDB.Simple.Internal (Connection, SQLError (..), withConnectionHandle)
+import Database.DuckDB.Simple.Internal (Connection, SQLError (..), withClientContext)
 import Foreign.C.String (peekCString, withCString)
 import Foreign.Marshal.Alloc (alloca, free, mallocBytes)
 import Foreign.Ptr (castPtr, nullPtr)
@@ -91,18 +91,6 @@ withFileSystem conn action =
             (c_duckdb_client_context_get_file_system ctx)
             destroyFileSystem
             action
-
-withClientContext :: Connection -> (DuckDBClientContext -> IO a) -> IO a
-withClientContext conn action =
-    withConnectionHandle conn \connPtr ->
-        alloca \ctxPtr -> do
-            c_duckdb_connection_get_client_context connPtr ctxPtr
-            ctx <- peek ctxPtr
-            bracket (pure ctx) destroyClientContext action
-
-destroyClientContext :: DuckDBClientContext -> IO ()
-destroyClientContext ctx =
-    alloca \ptr -> poke ptr ctx >> c_duckdb_destroy_client_context ptr
 
 destroyFileSystem :: DuckDBFileSystem -> IO ()
 destroyFileSystem fs =

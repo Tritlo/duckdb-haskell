@@ -47,6 +47,9 @@ import Database.DuckDB.Simple.Internal (
     Connection,
     Query (..),
     SQLError (..),
+    destroyLogicalType,
+    mkDeleteCallback,
+    releaseStablePtrData,
     withConnectionHandle,
     withQueryCString,
  )
@@ -341,11 +344,6 @@ releaseFunctionResources rawPtr =
         forM_ scalarFunctionInitPtr freeHaskellFunPtr
         freeStablePtr stablePtr
 
-releaseStablePtrData :: Ptr () -> IO ()
-releaseStablePtrData rawPtr =
-    when (rawPtr /= nullPtr) $
-        freeStablePtr (castPtrToStablePtr rawPtr :: StablePtr ())
-
 withLogicalType :: DuckDBType -> (DuckDBLogicalType -> IO a) -> IO a
 withLogicalType dtype =
     bracket
@@ -357,12 +355,6 @@ withLogicalType dtype =
             pure logical
         )
         destroyLogicalType
-
-destroyLogicalType :: DuckDBLogicalType -> IO ()
-destroyLogicalType logicalType =
-    alloca \ptr -> do
-        poke ptr logicalType
-        c_duckdb_destroy_logical_type ptr
 
 duckTypeForScalar :: ScalarType -> DuckDBType
 duckTypeForScalar = \case
@@ -534,6 +526,3 @@ foreign import ccall "wrapper"
 
 foreign import ccall "wrapper"
     mkScalarInitFun :: (DuckDBInitInfo -> IO ()) -> IO DuckDBScalarFunctionInitFun
-
-foreign import ccall "wrapper"
-    mkDeleteCallback :: (Ptr () -> IO ()) -> IO DuckDBDeleteCallback

@@ -10,14 +10,14 @@ module Database.DuckDB.Simple.Copy (
     registerCopyToFunction,
 ) where
 
-import Control.Exception (SomeException, bracket, displayException, onException, throwIO, try)
+import Control.Exception (SomeException, bracket, displayException, onException, try)
 import Control.Monad (forM, when)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
 import Database.DuckDB.FFI
 import Database.DuckDB.Simple.FromField (Field (..))
-import Database.DuckDB.Simple.Internal (Connection, SQLError (..), withConnectionHandle)
+import Database.DuckDB.Simple.Internal (Connection, destroyLogicalType, mkDeleteCallback, releaseStablePtrData, throwRegistrationError, withConnectionHandle)
 import Database.DuckDB.Simple.Materialize (materializeValue)
 import Foreign.C.String (CString, peekCString)
 import Foreign.Marshal.Alloc (alloca)
@@ -224,27 +224,9 @@ releaseCopyResources rawPtr =
         freeHaskellFunPtr copyStateDestroyPtr
         freeStablePtr stablePtr
 
-releaseStablePtrData :: Ptr () -> IO ()
-releaseStablePtrData rawPtr =
-    when (rawPtr /= nullPtr) $
-        freeStablePtr (castPtrToStablePtr rawPtr :: StablePtr ())
-
 destroyCopyFunction :: DuckDBCopyFunction -> IO ()
 destroyCopyFunction copyFun =
     alloca \ptr -> poke ptr copyFun >> c_duckdb_destroy_copy_function ptr
-
-destroyLogicalType :: DuckDBLogicalType -> IO ()
-destroyLogicalType logicalType =
-    alloca \ptr -> poke ptr logicalType >> c_duckdb_destroy_logical_type ptr
-
-throwRegistrationError :: String -> IO a
-throwRegistrationError label =
-    throwIO
-        SQLError
-            { sqlErrorMessage = Text.pack ("duckdb-simple: " <> label <> " failed")
-            , sqlErrorType = Nothing
-            , sqlErrorQuery = Nothing
-            }
 
 foreign import ccall "wrapper"
     mkCopyBindFun :: (DuckDBCopyFunctionBindInfo -> IO ()) -> IO DuckDBCopyFunctionBindFun
@@ -257,6 +239,3 @@ foreign import ccall "wrapper"
 
 foreign import ccall "wrapper"
     mkCopyFinalizeFun :: (DuckDBCopyFunctionFinalizeInfo -> IO ()) -> IO DuckDBCopyFunctionFinalizeFun
-
-foreign import ccall "wrapper"
-    mkDeleteCallback :: (Ptr () -> IO ()) -> IO DuckDBDeleteCallback

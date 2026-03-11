@@ -24,7 +24,7 @@ If you use `duckdb-ffi` directly:
 
 If you use `duckdb-simple`:
 
-- Rebuild against `duckdb-simple-0.1.3.0` and DuckDB `1.5.0+`.
+- Rebuild against `duckdb-simple-0.1.5.0` and DuckDB `1.5.0+`.
 - Existing query/statement code should continue to work unchanged.
 - New 1.5 helpers are available from dedicated modules instead of being folded
   into the core query API.
@@ -39,7 +39,7 @@ Before:
 
 Now:
 
-- `duckdb-ffi-1.5.0.0` and `duckdb-simple-0.1.3.0` require a DuckDB 1.5
+- `duckdb-ffi-1.5.0.0` and `duckdb-simple-0.1.5.0` require a DuckDB 1.5
   shared library at runtime.
 
 If your executable still finds a 1.4 shared library first, you will see symbol
@@ -260,7 +260,7 @@ using `duckdb_string_t_length`.
 
 1. Upgrade the Haskell packages to:
    - `duckdb-ffi-1.5.0.0`
-   - `duckdb-simple-0.1.3.0`
+   - `duckdb-simple-0.1.5.0`
 2. Upgrade the native DuckDB shared library to `1.5.0+`.
 3. Run your test suite with the 1.5 shared library explicitly selected.
 4. Update any tests that expected old 1.4 behavior, especially around

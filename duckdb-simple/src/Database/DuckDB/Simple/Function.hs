@@ -48,8 +48,8 @@ import Database.DuckDB.Simple.Internal (
     Query (..),
     SQLError (..),
     withConnectionHandle,
-    withQueryCString
-    )
+    withQueryCString,
+ )
 import Database.DuckDB.Simple.Materialize (materializeValue)
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Foreign.C.String (peekCString)

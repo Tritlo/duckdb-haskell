@@ -151,9 +151,10 @@ expectState label action = do
     rc <- action
     if rc == DuckDBSuccess
         then pure ()
-        else throwIO $
-            SQLError
-                { sqlErrorMessage = Text.pack ("duckdb-simple: " <> label <> " failed")
-                , sqlErrorType = Nothing
-                , sqlErrorQuery = Nothing
-                }
+        else
+            throwIO $
+                SQLError
+                    { sqlErrorMessage = Text.pack ("duckdb-simple: " <> label <> " failed")
+                    , sqlErrorType = Nothing
+                    , sqlErrorQuery = Nothing
+                    }

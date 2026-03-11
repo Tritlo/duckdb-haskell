@@ -7,45 +7,45 @@ module Database.DuckDB.Simple.Materialize (
 
 import Control.Exception (bracket, throwIO)
 import Control.Monad (forM, when)
-import qualified Data.ByteString as BS
+import Data.Array (Array, elems, listArray)
 import Data.Bits (clearBit, shiftL, xor, (.|.))
+import qualified Data.ByteString as BS
 import Data.Int (Int16, Int32, Int64, Int8)
+import qualified Data.Map.Strict as Map
 import Data.Ratio ((%))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import Data.Array (Array, elems, listArray)
-import qualified Data.Map.Strict as Map
 import Data.Time.Calendar (Day, fromGregorian)
 import Data.Time.Clock (UTCTime (..))
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
-import Data.Time.LocalTime
-    ( LocalTime (..)
-    , TimeOfDay (..)
-    , minutesToTimeZone
-    , utc
-    , utcToLocalTime
-    )
+import Data.Time.LocalTime (
+    LocalTime (..),
+    TimeOfDay (..),
+    minutesToTimeZone,
+    utc,
+    utcToLocalTime,
+ )
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.FFI
-import Database.DuckDB.Simple.FromField
-    ( BigNum (..)
-    , BitString (..)
-    , DecimalValue (..)
-    , FieldValue (..)
-    , IntervalValue (..)
-    , TimeWithZone (..)
-    , fromBigNumBytes
-    )
-import Database.DuckDB.Simple.LogicalRep
-    ( LogicalTypeRep (..)
-    , StructField (..)
-    , StructValue (..)
-    , UnionMemberType (..)
-    , UnionValue (..)
-    , logicalTypeToRep
-    )
+import Database.DuckDB.Simple.FromField (
+    BigNum (..),
+    BitString (..),
+    DecimalValue (..),
+    FieldValue (..),
+    IntervalValue (..),
+    TimeWithZone (..),
+    fromBigNumBytes,
+ )
+import Database.DuckDB.Simple.LogicalRep (
+    LogicalTypeRep (..),
+    StructField (..),
+    StructValue (..),
+    UnionMemberType (..),
+    UnionValue (..),
+    logicalTypeToRep,
+ )
 import Foreign.C.Types (CBool (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)

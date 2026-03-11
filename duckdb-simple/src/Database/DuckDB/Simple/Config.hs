@@ -56,29 +56,28 @@ getConfigOption conn name =
                 value <- c_duckdb_client_context_get_config_option ctx cName scopePtr
                 if value == nullPtr
                     then pure Nothing
-                    else
-                        bracket
-                            (pure value)
-                            destroyValue
-                            \duckValue -> do
-                                strPtr <- c_duckdb_get_varchar duckValue
-                                rendered <-
-                                    if strPtr == nullPtr
-                                        then pure Text.empty
-                                        else do
-                                            txt <- Text.pack <$> peekCString strPtr
-                                            c_duckdb_free (castPtr strPtr)
-                                            pure txt
-                                scope <- peek scopePtr
-                                pure $
-                                    Just
-                                        ConfigValue
-                                            { configValueText = rendered
-                                            , configValueScope =
-                                                if scope == DuckDBConfigOptionScopeInvalid
-                                                    then Nothing
-                                                    else Just scope
-                                            }
+                    else bracket
+                        (pure value)
+                        destroyValue
+                        \duckValue -> do
+                            strPtr <- c_duckdb_get_varchar duckValue
+                            rendered <-
+                                if strPtr == nullPtr
+                                    then pure Text.empty
+                                    else do
+                                        txt <- Text.pack <$> peekCString strPtr
+                                        c_duckdb_free (castPtr strPtr)
+                                        pure txt
+                            scope <- peek scopePtr
+                            pure $
+                                Just
+                                    ConfigValue
+                                        { configValueText = rendered
+                                        , configValueScope =
+                                            if scope == DuckDBConfigOptionScopeInvalid
+                                                then Nothing
+                                                else Just scope
+                                        }
 
 withClientContext :: Connection -> (DuckDBClientContext -> IO a) -> IO a
 withClientContext conn action =

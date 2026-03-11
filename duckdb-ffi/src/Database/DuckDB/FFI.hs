@@ -48,15 +48,15 @@ import Database.DuckDB.FFI.Appender
 import Database.DuckDB.FFI.Arrow
 import Database.DuckDB.FFI.BindValues
 import Database.DuckDB.FFI.CastFunctions
+import Database.DuckDB.FFI.Catalog
 import Database.DuckDB.FFI.Configuration
 import Database.DuckDB.FFI.CopyFunctions
 import Database.DuckDB.FFI.DataChunk
 import Database.DuckDB.FFI.ErrorData
 import Database.DuckDB.FFI.ExecutePrepared
 import Database.DuckDB.FFI.Expression
-import Database.DuckDB.FFI.FileSystem
-import Database.DuckDB.FFI.Catalog
 import Database.DuckDB.FFI.ExtractStatements
+import Database.DuckDB.FFI.FileSystem
 import Database.DuckDB.FFI.Helpers
 import Database.DuckDB.FFI.Logging
 import Database.DuckDB.FFI.LogicalTypes

@@ -48,8 +48,8 @@ profilingMetricsRoundtrip =
 
                 assertBool "metrics map should contain entries" (not (null entries))
                 let (firstKey, firstValue) = case entries of
-                      (e:_) -> e
-                      []    -> error "unreachable: entries is non-empty"
+                        (e : _) -> e
+                        [] -> error "unreachable: entries is non-empty"
 
                 withCString firstKey \keyPtr -> do
                     valueHandle <- c_duckdb_profiling_info_get_value infoPtr keyPtr

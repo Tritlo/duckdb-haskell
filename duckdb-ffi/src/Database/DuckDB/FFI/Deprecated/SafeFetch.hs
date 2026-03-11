@@ -210,7 +210,7 @@ foreign import ccall safe "wrapped_duckdb_value_interval"
 release.
 
 No support for nested types, and for other complex types. The resulting field
-"string.data" must be freed with @duckdb_free.@ 
+"string.data" must be freed with @duckdb_free.@
 
 Returns The string value at the specified location. Attempts to cast the
 result value to string.

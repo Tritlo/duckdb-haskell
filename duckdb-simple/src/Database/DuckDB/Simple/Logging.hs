@@ -7,12 +7,12 @@ module Database.DuckDB.Simple.Logging (
 ) where
 
 import Control.Exception (bracket, onException, throwIO)
+import Data.Ratio ((%))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
 import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
-import Data.Ratio ((%))
 import Database.DuckDB.FFI
 import Database.DuckDB.Simple.Internal (Connection, SQLError (..), withDatabaseHandle)
 import Foreign.C.String (CString, peekCString)

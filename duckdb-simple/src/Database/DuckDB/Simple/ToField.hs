@@ -25,10 +25,10 @@ module Database.DuckDB.Simple.ToField (
 
 import Control.Exception (bracket, throwIO)
 import Control.Monad (when, zipWithM)
-import Data.Bits (complement, (.&.), shiftL, shiftR)
-import qualified Data.ByteString as BS
 import Data.Array (Array, elems)
-import Data.Int (Int8, Int16, Int32, Int64)
+import Data.Bits (complement, shiftL, shiftR, (.&.))
+import qualified Data.ByteString as BS
+import Data.Int (Int16, Int32, Int64, Int8)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -36,9 +36,15 @@ import qualified Data.Text.Foreign as TextForeign
 import Data.Time.Calendar (Day, toGregorian)
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds)
 import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), TimeZone (..), timeOfDayToTime, timeZoneMinutes, utc, utcToLocalTime)
+import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.FFI
 import Database.DuckDB.Simple.FromField (BigNum (..), BitString (..), DecimalValue (..), FieldValue (..), IntervalValue (..), TimeWithZone (..), toBigNumBytes)
+import Database.DuckDB.Simple.Internal (
+    SQLError (..),
+    Statement (..),
+    withStatementHandle,
+ )
 import Database.DuckDB.Simple.LogicalRep (
     LogicalTypeRep (..),
     StructField (..),
@@ -47,12 +53,7 @@ import Database.DuckDB.Simple.LogicalRep (
     UnionValue (..),
     logicalTypeFromRep,
     structValueTypeRep,
-    unionValueTypeRep
- )
-import Database.DuckDB.Simple.Internal (
-    SQLError (..),
-    Statement (..),
-    withStatementHandle,
+    unionValueTypeRep,
  )
 import Database.DuckDB.Simple.Types (Null (..))
 import Foreign.C.String (peekCString)
@@ -63,7 +64,6 @@ import Foreign.Marshal.Array (withArray)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (poke)
 import Numeric.Natural (Natural)
-import qualified Data.UUID as UUID
 
 -- | Represents a named parameter binding using the @:=@ operator.
 data NamedParam where
@@ -77,7 +77,7 @@ data FieldBinding = FieldBinding
     , fieldBindingDisplay :: !String
     }
 
-class DuckDBColumnType a => ToDuckValue a where
+class (DuckDBColumnType a) => ToDuckValue a where
     toDuckValue :: a -> IO DuckDBValue
 
 valueBinding :: String -> IO DuckDBValue -> FieldBinding
@@ -187,7 +187,6 @@ instance DuckDBColumnType Int where
 
 instance DuckDBColumnType Int8 where
     duckdbColumnTypeFor _ = "TINYINT"
-
 
 instance DuckDBColumnType Int16 where
     duckdbColumnTypeFor _ = "SMALLINT"
@@ -319,7 +318,8 @@ uuidDuckValue :: UUID.UUID -> IO DuckDBValue
 uuidDuckValue uuid =
     alloca $ \ptr -> do
         let (upper, lower) = UUID.toWords64 uuid
-        poke ptr
+        poke
+            ptr
             DuckDBUHugeInt
                 { duckDBUHugeIntLower = lower
                 , duckDBUHugeIntUpper = upper
@@ -430,7 +430,7 @@ structValueDuckValue StructValue{structValueFields, structValueTypes, structValu
         throwIO (userError "duckdb-simple: struct value/type field names mismatch")
     childValues <-
         zipWithM
-            (\StructField{structFieldValue = typeRep} StructField{structFieldValue = fieldVal} ->
+            ( \StructField{structFieldValue = typeRep} StructField{structFieldValue = fieldVal} ->
                 fieldValueWithTypeDuckValue typeRep fieldVal
             )
             typeFields

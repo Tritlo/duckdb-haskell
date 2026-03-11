@@ -20,7 +20,7 @@ module Database.DuckDB.Simple.FromField (
     UnionMemberType (..),
     UnionValue (..),
     LogicalTypeRep (..),
-    BitString(..),
+    BitString (..),
     bsFromBool,
     BigNum (..),
     fromBigNumBytes,
@@ -35,9 +35,9 @@ module Database.DuckDB.Simple.FromField (
 ) where
 
 import Control.Exception (Exception, SomeException (..))
+import Data.Array (Array, assocs, bounds, listArray, range, (!))
 import Data.Bits (Bits (..), finiteBitSize)
 import qualified Data.ByteString as BS
-import Data.Array (Array, (!), bounds, listArray, range, assocs)
 import Data.Data (Typeable, typeRep)
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.Map.Strict (Map)
@@ -56,19 +56,19 @@ import Data.Time.LocalTime (
     utc,
     utcToLocalTime,
  )
-import Data.Word (Word16, Word32, Word64, Word8)
-import Database.DuckDB.Simple.Ok
-import Database.DuckDB.Simple.Types (Null (..))
-import GHC.Num.Integer (integerFromWordList)
-import Numeric.Natural (Natural)
 import qualified Data.UUID as UUID
+import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.Simple.LogicalRep (
     LogicalTypeRep (..),
     StructField (..),
     StructValue (..),
     UnionMemberType (..),
-    UnionValue (..)
+    UnionValue (..),
  )
+import Database.DuckDB.Simple.Ok
+import Database.DuckDB.Simple.Types (Null (..))
+import GHC.Num.Integer (integerFromWordList)
+import Numeric.Natural (Natural)
 
 -- | Internal representation of a column value.
 data FieldValue
@@ -120,7 +120,6 @@ data IntervalValue = IntervalValue
     }
     deriving (Eq, Show)
 
-
 newtype BigNum = BigNum Integer
     deriving stock (Eq, Show)
     deriving (Num) via Integer
@@ -134,8 +133,8 @@ fromBigNumBytes bytes =
     let header = take 3 bytes
         payloadRaw = drop 3 bytes
         isNeg = case header of
-            (h:_) -> h .&. 0x80 == 0
-            []    -> False
+            (h : _) -> h .&. 0x80 == 0
+            [] -> False
         payload = if isNeg then map complement payloadRaw else payloadRaw
         bytesPerWord = finiteBitSize (0 :: Word) `div` 8 -- 8 on 64-bit, 4 on 32-bit
         len = length payload
@@ -180,8 +179,10 @@ toBigNumBytes value =
         payloadBytes = if isNeg then map complement payloadBE else payloadBE
      in headerBytes <> payloadBytes
 
-data BitString = BitString { padding :: !Word8
-                           , bits :: !BS.ByteString}
+data BitString = BitString
+    { padding :: !Word8
+    , bits :: !BS.ByteString
+    }
     deriving stock (Eq)
 
 instance Show BitString where
@@ -206,7 +207,6 @@ bsFromBool bits =
 
     bitsToWord8 :: [Bool] -> Word8
     bitsToWord8 bs = foldl (\acc (b, i) -> if b then setBit acc i else acc) 0 (zip bs [7, 6 .. 0])
-
 
 data TimeWithZone = TimeWithZone
     { timeWithZoneTime :: !TimeOfDay
@@ -259,18 +259,20 @@ data ResultError
         , errHaskellType :: Text
         , errMessage :: Text
         }
-    | -- | A SQL @NULL@ was encountered when the Haskell
-      -- type did not permit it.
+    | {- | A SQL @NULL@ was encountered when the Haskell
+      type did not permit it.
+      -}
       UnexpectedNull
         { errSQLType :: Text
         , errSQLField :: Text
         , errHaskellType :: Text
         , errMessage :: Text
         }
-    | -- | The SQL value could not be parsed, or could not
-      -- be represented as a valid Haskell value, or an
-      -- unexpected low-level error occurred (e.g. mismatch
-      -- between metadata and actual data in a row).
+    | {- | The SQL value could not be parsed, or could not
+      be represented as a valid Haskell value, or an
+      unexpected low-level error occurred (e.g. mismatch
+      between metadata and actual data in a row).
+      -}
       ConversionFailed
         { errSQLType :: Text
         , errSQLField :: Text

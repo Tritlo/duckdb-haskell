@@ -15,8 +15,10 @@ module Database.DuckDB.Simple (
     -- * Connections
     Connection,
     open,
+    openWithConfig,
     close,
     withConnection,
+    withConnectionWithConfig,
 
     -- * Queries and statements
     Query (..),
@@ -72,10 +74,11 @@ module Database.DuckDB.Simple (
     -- * User-defined scalar functions
     Function,
     createFunction,
+    createFunctionWithState,
     deleteFunction,
 ) where
 
-import Control.Monad (forM, join, void, when, zipWithM, zipWithM_)
+import Control.Monad (forM, forM_, join, void, when, zipWithM, zipWithM_)
 import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, newIORef, readIORef, writeIORef)
 import Control.Exception (SomeException, bracket, finally, mask, onException, throwIO, try)
 import Data.Maybe (isJust, isNothing)
@@ -98,7 +101,7 @@ import Database.DuckDB.Simple.FromRow
     , parseRow
     , rowErrorsToSqlError
     )
-import Database.DuckDB.Simple.Function (Function, createFunction, deleteFunction)
+import Database.DuckDB.Simple.Function (Function, createFunction, createFunctionWithState, deleteFunction)
 import Database.DuckDB.Simple.Materialize
     ( materializeValue )
 import Database.DuckDB.Simple.Internal
@@ -128,9 +131,13 @@ import Database.DuckDB.Simple.Ok (Ok(..))
 
 -- | Open a DuckDB database located at the supplied path.
 open :: FilePath -> IO Connection
-open path =
+open path = openWithConfig path []
+
+-- | Open a DuckDB database with configuration flags applied before startup.
+openWithConfig :: FilePath -> [(Text, Text)] -> IO Connection
+openWithConfig path settings =
     mask \restore -> do
-        db <- restore (openDatabase path)
+        db <- restore (openDatabaseWithConfig path settings)
         conn <-
             restore (connectDatabase db)
                 `onException` closeDatabaseHandle db
@@ -151,6 +158,10 @@ close Connection{connectionState} =
 -- | Run an action with a freshly opened connection, closing it afterwards.
 withConnection :: FilePath -> (Connection -> IO a) -> IO a
 withConnection path = bracket (open path) close
+
+-- | Run an action with a freshly opened configured connection, closing it afterwards.
+withConnectionWithConfig :: FilePath -> [(Text, Text)] -> (Connection -> IO a) -> IO a
+withConnectionWithConfig path settings = bracket (openWithConfig path settings) close
 
 -- | Prepare a SQL statement for execution.
 openStatement :: Connection -> Query -> IO Statement
@@ -733,22 +744,43 @@ createStatement parent handle queryText = do
             , statementStream = streamRef
             }
 
-openDatabase :: FilePath -> IO DuckDBDatabase
-openDatabase path =
+openDatabaseWithConfig :: FilePath -> [(Text, Text)] -> IO DuckDBDatabase
+openDatabaseWithConfig path settings =
     alloca \dbPtr ->
+        alloca \configPtr ->
         alloca \errPtr -> do
+            rcConfig <- c_duckdb_create_config configPtr
+            when (rcConfig /= DuckDBSuccess) $
+                throwIO (mkOpenError (Text.pack "duckdb-simple: failed to allocate DuckDB config"))
+            config <- peek configPtr
             poke errPtr nullPtr
-            withCString path \cPath -> do
-                rc <- c_duckdb_open_ext cPath dbPtr nullPtr errPtr
-                if rc == DuckDBSuccess
-                    then do
-                        db <- peek dbPtr
-                        maybeFreeErr errPtr
-                        pure db
-                    else do
-                        errMsg <- peekError errPtr
-                        maybeFreeErr errPtr
-                        throwIO $ mkOpenError errMsg
+            let destroyConfig =
+                    when (config /= nullPtr) $
+                        alloca \cfgPtr -> poke cfgPtr config >> c_duckdb_destroy_config cfgPtr
+            flip finally destroyConfig $
+                do
+                    forM_ settings \(name, value) ->
+                        TextForeign.withCString name \cName ->
+                            TextForeign.withCString value \cValue -> do
+                                rcSet <- c_duckdb_set_config config cName cValue
+                                when (rcSet /= DuckDBSuccess) $
+                                    throwIO $
+                                        mkOpenError $
+                                            Text.concat
+                                                [ Text.pack "duckdb-simple: failed to set config option "
+                                                , name
+                                                ]
+                    withCString path \cPath -> do
+                        rc <- c_duckdb_open_ext cPath dbPtr config errPtr
+                        if rc == DuckDBSuccess
+                            then do
+                                db <- peek dbPtr
+                                maybeFreeErr errPtr
+                                pure db
+                            else do
+                                errMsg <- peekError errPtr
+                                maybeFreeErr errPtr
+                                throwIO $ mkOpenError errMsg
 
 connectDatabase :: DuckDBDatabase -> IO DuckDBConnection
 connectDatabase db =

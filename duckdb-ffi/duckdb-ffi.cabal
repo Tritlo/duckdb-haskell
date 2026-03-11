@@ -1,6 +1,6 @@
 cabal-version:      3.4
 name:               duckdb-ffi
-version:            1.4.1.5
+version:            1.5.0.0
 author:             Matthias Pall Gissurarson
 maintainer:         mpg@mpg.is
 category:           Database
@@ -13,7 +13,7 @@ homepage:       https://github.com/Tritlo/duckdb-haskell
 bug-reports:    https://github.com/Tritlo/duckdb-haskell/issues
 description:
     This library provides low-level FFI bindings to DuckDB.
-    Tested with DuckDB version 1.4.0 and 1.4.1.
+    Tested with DuckDB version 1.5.0.
     Exposes the full DuckDB C API.
     .
     Requires libduckdb to be installed on the system.
@@ -52,7 +52,9 @@ library
     Database.DuckDB.FFI.Arrow
     Database.DuckDB.FFI.BindValues
     Database.DuckDB.FFI.CastFunctions
+    Database.DuckDB.FFI.Catalog
     Database.DuckDB.FFI.Configuration
+    Database.DuckDB.FFI.CopyFunctions
     Database.DuckDB.FFI.DataChunk
     Database.DuckDB.FFI.Deprecated.Appender
     Database.DuckDB.FFI.Deprecated.Arrow
@@ -65,8 +67,10 @@ library
     Database.DuckDB.FFI.ErrorData
     Database.DuckDB.FFI.ExecutePrepared
     Database.DuckDB.FFI.Expression
+    Database.DuckDB.FFI.FileSystem
     Database.DuckDB.FFI.ExtractStatements
     Database.DuckDB.FFI.Helpers
+    Database.DuckDB.FFI.Logging
     Database.DuckDB.FFI.LogicalTypes
     Database.DuckDB.FFI.OpenConnect
     Database.DuckDB.FFI.PendingResult

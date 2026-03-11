@@ -53,7 +53,7 @@ RUN groupadd -g "$GID" -o "$USER_NAME" && \
     echo '%sudo ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
 
 WORKDIR /tmp
-RUN curl -L -o /tmp/libduckdb.zip https://github.com/duckdb/duckdb/releases/download/v1.4.1/libduckdb-linux-amd64.zip && \
+RUN curl -L -o /tmp/libduckdb.zip https://github.com/duckdb/duckdb/releases/download/v1.5.0/libduckdb-linux-amd64.zip && \
     unzip libduckdb.zip && \
     mv libduckdb.so /usr/lib/libduckdb.so && \
     mv duckdb.h /usr/include/ && \

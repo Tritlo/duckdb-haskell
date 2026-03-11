@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.3.0
+- Raise the supported DuckDB runtime baseline to `1.5.0+` via the `duckdb-ffi-1.5` dependency line.
+- Add DuckDB 1.5 high-level wrappers for startup config inspection and connection setup, catalog lookup, file-system handles, copy-function registration, and custom log storage registration.
+- Extend scalar-function support with `createFunctionWithState`, allowing thread-local per-worker execution state backed by the new DuckDB 1.5 scalar init API.
+- Update the test suite for DuckDB 1.5 behavior, including `TIME_NS` decoding and new wrapper coverage for copy/logging/config/catalog/file-system helpers.
+
 ## 0.1.2.3
 - Move DuckDBColumnType requirement for ToField to DuckValue
 

@@ -15,7 +15,7 @@ Code should be formatted with `fourmolu` before being committed.
 We try to stick to the ghc naming convention: values are in `snake_case`, functions in `camelCase`.
 
 ## Native Dependencies & Configuration
-Ensure a compatible `libduckdb` shared library is present before building or running tests; the bindings target DuckDB 1.4-series.
+Ensure a compatible `libduckdb` shared library is present before building or running tests; the bindings target DuckDB 1.5.0+.
 
 ## Documentation
 

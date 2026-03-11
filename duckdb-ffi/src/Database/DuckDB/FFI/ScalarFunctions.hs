@@ -13,12 +13,19 @@ module Database.DuckDB.FFI.ScalarFunctions (
     c_duckdb_scalar_function_set_bind_data_copy,
     c_duckdb_scalar_function_bind_set_error,
     c_duckdb_scalar_function_set_function,
+    c_duckdb_scalar_function_set_init,
     c_duckdb_register_scalar_function,
     c_duckdb_scalar_function_get_extra_info,
     c_duckdb_scalar_function_bind_get_extra_info,
     c_duckdb_scalar_function_get_bind_data,
+    c_duckdb_scalar_function_get_state,
     c_duckdb_scalar_function_get_client_context,
     c_duckdb_scalar_function_set_error,
+    c_duckdb_scalar_function_init_set_error,
+    c_duckdb_scalar_function_init_set_state,
+    c_duckdb_scalar_function_init_get_client_context,
+    c_duckdb_scalar_function_init_get_bind_data,
+    c_duckdb_scalar_function_init_get_extra_info,
     c_duckdb_create_scalar_function_set,
     c_duckdb_destroy_scalar_function_set,
     c_duckdb_add_scalar_function_to_set,
@@ -168,6 +175,11 @@ Parameters:
 foreign import ccall safe "duckdb_scalar_function_set_function"
     c_duckdb_scalar_function_set_function :: DuckDBScalarFunction -> DuckDBScalarFunctionFun -> IO ()
 
+{- | Sets the thread-local init function of the scalar function.
+-}
+foreign import ccall safe "duckdb_scalar_function_set_init"
+    c_duckdb_scalar_function_set_init :: DuckDBScalarFunction -> DuckDBScalarFunctionInitFun -> IO ()
+
 {- | Register the scalar function object within the given connection.
 
 The function requires at least a name, a function and a return type.
@@ -216,6 +228,11 @@ Returns The bind data object.
 foreign import ccall safe "duckdb_scalar_function_get_bind_data"
     c_duckdb_scalar_function_get_bind_data :: DuckDBFunctionInfo -> IO (Ptr ())
 
+{- | Gets the scalar function's execution state set during init.
+-}
+foreign import ccall safe "duckdb_scalar_function_get_state"
+    c_duckdb_scalar_function_get_state :: DuckDBFunctionInfo -> IO (Ptr ())
+
 {- | Retrieves the client context of the bind info of a scalar function.
 
 Parameters:
@@ -234,6 +251,31 @@ Parameters:
 -}
 foreign import ccall safe "duckdb_scalar_function_set_error"
     c_duckdb_scalar_function_set_error :: DuckDBFunctionInfo -> CString -> IO ()
+
+{- | Report that an error occurred while initializing the scalar function.
+-}
+foreign import ccall safe "duckdb_scalar_function_init_set_error"
+    c_duckdb_scalar_function_init_set_error :: DuckDBInitInfo -> CString -> IO ()
+
+{- | Installs thread-local execution state for a scalar function.
+-}
+foreign import ccall safe "duckdb_scalar_function_init_set_state"
+    c_duckdb_scalar_function_init_set_state :: DuckDBInitInfo -> Ptr () -> DuckDBDeleteCallback -> IO ()
+
+{- | Retrieves the client context during scalar-function initialization.
+-}
+foreign import ccall safe "duckdb_scalar_function_init_get_client_context"
+    c_duckdb_scalar_function_init_get_client_context :: DuckDBInitInfo -> Ptr DuckDBClientContext -> IO ()
+
+{- | Retrieves bind data during scalar-function initialization.
+-}
+foreign import ccall safe "duckdb_scalar_function_init_get_bind_data"
+    c_duckdb_scalar_function_init_get_bind_data :: DuckDBInitInfo -> IO (Ptr ())
+
+{- | Retrieves extra info during scalar-function initialization.
+-}
+foreign import ccall safe "duckdb_scalar_function_init_get_extra_info"
+    c_duckdb_scalar_function_init_get_extra_info :: DuckDBInitInfo -> IO (Ptr ())
 
 {- | Creates a new empty scalar function set.
 

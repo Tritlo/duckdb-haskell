@@ -7,6 +7,7 @@ module Database.DuckDB.FFI.Vector (
     c_duckdb_vector_ensure_validity_writable,
     c_duckdb_vector_assign_string_element,
     c_duckdb_vector_assign_string_element_len,
+    c_duckdb_unsafe_vector_assign_string_element_len,
     c_duckdb_list_vector_get_child,
     c_duckdb_list_vector_get_size,
     c_duckdb_list_vector_set_size,
@@ -127,6 +128,13 @@ Parameters:
 -}
 foreign import ccall safe "duckdb_vector_assign_string_element_len"
     c_duckdb_vector_assign_string_element_len :: DuckDBVector -> DuckDBIdx -> CString -> DuckDBIdx -> IO ()
+
+{- | Assigns string bytes without validating UTF-8 first.
+
+Use @duckdb_valid_utf8_check@ if validation is required before calling this.
+-}
+foreign import ccall safe "duckdb_unsafe_vector_assign_string_element_len"
+    c_duckdb_unsafe_vector_assign_string_element_len :: DuckDBVector -> DuckDBIdx -> CString -> DuckDBIdx -> IO ()
 
 {- | Retrieves the child vector of a list vector.
 

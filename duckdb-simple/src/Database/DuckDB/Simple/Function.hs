@@ -1,6 +1,7 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE UndecidableInstances #-}
@@ -18,6 +19,7 @@ decoding and result marshalling.
 module Database.DuckDB.Simple.Function (
     Function,
     createFunction,
+    createFunctionWithState,
     deleteFunction,
 ) where
 
@@ -55,6 +57,11 @@ import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, castPtr, freeHaskellFunPtr, nullPtr)
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deRefStablePtr, freeStablePtr, newStablePtr)
 import Foreign.Storable (poke, pokeElemOff)
+
+data ScalarFunctionResources = ScalarFunctionResources
+    { scalarFunctionExecPtr :: !DuckDBScalarFunctionFun
+    , scalarFunctionInitPtr :: !(Maybe DuckDBScalarFunctionInitFun)
+    }
 
 -- | Tag DuckDB logical types we support for scalar return values.
 data ScalarType
@@ -215,9 +222,9 @@ instance {-# OVERLAPPABLE #-} (FromField a, FunctionArg a, Function r) => Functi
 createFunction :: forall f. (Function f) => Connection -> Text -> f -> IO ()
 createFunction conn name fn = do
     funPtr <- mkScalarFun (scalarFunctionHandler fn)
-    funPtrStable <- newStablePtr funPtr
-    destroyCb <- mkDeleteCallback releaseFunctionPtr
-    let release = destroyFunctionResources funPtr funPtrStable destroyCb
+    resources <- newStablePtr ScalarFunctionResources{scalarFunctionExecPtr = funPtr, scalarFunctionInitPtr = Nothing}
+    destroyCb <- mkDeleteCallback releaseFunctionResources
+    let release = destroyRegistrationResources funPtr Nothing resources destroyCb
     bracket c_duckdb_create_scalar_function cleanupScalarFunction \scalarFun ->
         (`onException` release) $ do
             TextForeign.withCString name $ \cName ->
@@ -230,7 +237,41 @@ createFunction conn name fn = do
             when (isVolatile (Proxy :: Proxy f)) $
                 c_duckdb_scalar_function_set_volatile scalarFun
             c_duckdb_scalar_function_set_function scalarFun funPtr
-            c_duckdb_scalar_function_set_extra_info scalarFun (castStablePtrToPtr funPtrStable) destroyCb
+            c_duckdb_scalar_function_set_extra_info scalarFun (castStablePtrToPtr resources) destroyCb
+            withConnectionHandle conn \connPtr -> do
+                rc <- c_duckdb_register_scalar_function connPtr scalarFun
+                if rc == DuckDBSuccess
+                    then pure ()
+                    else throwIO (functionInvocationError (Text.pack "duckdb-simple: registering function failed"))
+
+-- | Register a scalar function with per-worker thread-local state.
+createFunctionWithState :: forall s f. (Function f) => Connection -> Text -> IO s -> (s -> f) -> IO ()
+createFunctionWithState conn name initState mkFn = do
+    stateDestroyCb <- mkDeleteCallback releaseStablePtrData
+    execPtr <- mkScalarFun (scalarFunctionHandlerWithState mkFn)
+    initPtr <- mkScalarInitFun (scalarFunctionInitHandler stateDestroyCb initState)
+    resources <-
+        newStablePtr
+            ScalarFunctionResources
+                { scalarFunctionExecPtr = execPtr
+                , scalarFunctionInitPtr = Just initPtr
+                }
+    destroyCb <- mkDeleteCallback releaseFunctionResources
+    let release = destroyRegistrationResources execPtr (Just initPtr) resources destroyCb >> freeHaskellFunPtr stateDestroyCb
+    bracket c_duckdb_create_scalar_function cleanupScalarFunction \scalarFun ->
+        (`onException` release) $ do
+            TextForeign.withCString name $ \cName ->
+                c_duckdb_scalar_function_set_name scalarFun cName
+            forM_ (argumentTypes (Proxy :: Proxy f)) \dtype ->
+                withLogicalType dtype $ \logical ->
+                    c_duckdb_scalar_function_add_parameter scalarFun logical
+            withLogicalType (duckTypeForScalar (returnType (Proxy :: Proxy f))) $ \logical ->
+                c_duckdb_scalar_function_set_return_type scalarFun logical
+            when (isVolatile (Proxy :: Proxy f)) $
+                c_duckdb_scalar_function_set_volatile scalarFun
+            c_duckdb_scalar_function_set_function scalarFun execPtr
+            c_duckdb_scalar_function_set_init scalarFun initPtr
+            c_duckdb_scalar_function_set_extra_info scalarFun (castStablePtrToPtr resources) destroyCb
             withConnectionHandle conn \connPtr -> do
                 rc <- c_duckdb_register_scalar_function connPtr scalarFun
                 if rc == DuckDBSuccess
@@ -279,19 +320,31 @@ cleanupScalarFunction scalarFun =
         poke ptr scalarFun
         c_duckdb_destroy_scalar_function ptr
 
-destroyFunctionResources :: DuckDBScalarFunctionFun -> StablePtr DuckDBScalarFunctionFun -> DuckDBDeleteCallback -> IO ()
-destroyFunctionResources funPtr funPtrStable destroyCb = do
+destroyRegistrationResources ::
+    DuckDBScalarFunctionFun ->
+    Maybe DuckDBScalarFunctionInitFun ->
+    StablePtr ScalarFunctionResources ->
+    DuckDBDeleteCallback ->
+    IO ()
+destroyRegistrationResources funPtr mInitPtr resources destroyCb = do
     freeHaskellFunPtr funPtr
-    freeStablePtr funPtrStable
+    forM_ mInitPtr freeHaskellFunPtr
+    freeStablePtr resources
     freeHaskellFunPtr destroyCb
 
-releaseFunctionPtr :: Ptr () -> IO ()
-releaseFunctionPtr rawPtr =
+releaseFunctionResources :: Ptr () -> IO ()
+releaseFunctionResources rawPtr =
     when (rawPtr /= nullPtr) $ do
-        let stablePtr = castPtrToStablePtr rawPtr :: StablePtr DuckDBScalarFunctionFun
-        funPtr <- deRefStablePtr stablePtr
-        freeHaskellFunPtr funPtr
+        let stablePtr = castPtrToStablePtr rawPtr :: StablePtr ScalarFunctionResources
+        ScalarFunctionResources{scalarFunctionExecPtr, scalarFunctionInitPtr} <- deRefStablePtr stablePtr
+        freeHaskellFunPtr scalarFunctionExecPtr
+        forM_ scalarFunctionInitPtr freeHaskellFunPtr
         freeStablePtr stablePtr
+
+releaseStablePtrData :: Ptr () -> IO ()
+releaseStablePtrData rawPtr =
+    when (rawPtr /= nullPtr) $
+        freeStablePtr (castPtrToStablePtr rawPtr :: StablePtr ())
 
 withLogicalType :: DuckDBType -> (DuckDBLogicalType -> IO a) -> IO a
 withLogicalType dtype =
@@ -351,6 +404,28 @@ scalarFunctionHandler fn info chunk outVec = do
             TextForeign.withCString message $ \cMsg ->
                 c_duckdb_scalar_function_set_error info cMsg
         Right () -> pure ()
+
+scalarFunctionHandlerWithState :: forall s f. (Function f) => (s -> f) -> DuckDBFunctionInfo -> DuckDBDataChunk -> DuckDBVector -> IO ()
+scalarFunctionHandlerWithState mkFn info chunk outVec = do
+    statePtr <- c_duckdb_scalar_function_get_state info
+    if statePtr == nullPtr
+        then
+            TextForeign.withCString (Text.pack "duckdb-simple: scalar function state was not initialised") $
+                c_duckdb_scalar_function_set_error info
+        else do
+            state <- deRefStablePtr (castPtrToStablePtr statePtr :: StablePtr s)
+            scalarFunctionHandler (mkFn state) info chunk outVec
+
+scalarFunctionInitHandler :: forall s. DuckDBDeleteCallback -> IO s -> DuckDBInitInfo -> IO ()
+scalarFunctionInitHandler destroyCb initState info = do
+    outcome <- try initState
+    case outcome of
+        Left (err :: SomeException) ->
+            TextForeign.withCString (Text.pack (displayException err)) $
+                c_duckdb_scalar_function_init_set_error info
+        Right state -> do
+            stable <- newStablePtr state
+            c_duckdb_scalar_function_init_set_state info (castStablePtrToPtr stable) destroyCb
 
 type ColumnReader = DuckDBIdx -> IO Field
 
@@ -456,6 +531,9 @@ quoteIdent ident =
 
 foreign import ccall "wrapper"
     mkScalarFun :: (DuckDBFunctionInfo -> DuckDBDataChunk -> DuckDBVector -> IO ()) -> IO DuckDBScalarFunctionFun
+
+foreign import ccall "wrapper"
+    mkScalarInitFun :: (DuckDBInitInfo -> IO ()) -> IO DuckDBScalarFunctionInitFun
 
 foreign import ccall "wrapper"
     mkDeleteCallback :: (Ptr () -> IO ()) -> IO DuckDBDeleteCallback

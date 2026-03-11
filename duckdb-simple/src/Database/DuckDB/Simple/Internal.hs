@@ -28,6 +28,7 @@ module Database.DuckDB.Simple.Internal (
     -- * Helpers
     connectionClosedError,
     statementClosedError,
+    withDatabaseHandle,
     withConnectionHandle,
     withStatementHandle,
     withQueryCString,
@@ -181,3 +182,11 @@ withConnectionHandle Connection{connectionState} action = do
     case state of
         ConnectionClosed -> throwIO connectionClosedError
         ConnectionOpen{connectionHandle} -> action connectionHandle
+
+-- | Internal helper for safely accessing the underlying database handle.
+withDatabaseHandle :: Connection -> (DuckDBDatabase -> IO a) -> IO a
+withDatabaseHandle Connection{connectionState} action = do
+    state <- readIORef connectionState
+    case state of
+        ConnectionClosed -> throwIO connectionClosedError
+        ConnectionOpen{connectionDatabase} -> action connectionDatabase

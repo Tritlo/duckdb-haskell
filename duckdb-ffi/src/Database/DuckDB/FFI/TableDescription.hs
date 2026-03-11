@@ -4,7 +4,9 @@ module Database.DuckDB.FFI.TableDescription (
     c_duckdb_table_description_destroy,
     c_duckdb_table_description_error,
     c_duckdb_column_has_default,
+    c_duckdb_table_description_get_column_count,
     c_duckdb_table_description_get_column_name,
+    c_duckdb_table_description_get_column_type,
 ) where
 
 import Database.DuckDB.FFI.Types
@@ -77,6 +79,10 @@ Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
 foreign import ccall safe "duckdb_column_has_default"
     c_duckdb_column_has_default :: DuckDBTableDescription -> DuckDBIdx -> Ptr CBool -> IO DuckDBState
 
+-- | Returns the number of columns in the described table.
+foreign import ccall safe "duckdb_table_description_get_column_count"
+    c_duckdb_table_description_get_column_count :: DuckDBTableDescription -> IO DuckDBIdx
+
 {- | Obtain the column name at @index@. The out result must be destroyed with
 @duckdb_free@.
 
@@ -88,3 +94,7 @@ Returns The column name.
 -}
 foreign import ccall safe "duckdb_table_description_get_column_name"
     c_duckdb_table_description_get_column_name :: DuckDBTableDescription -> DuckDBIdx -> IO CString
+
+-- | Obtain the logical type of the column at @index@.
+foreign import ccall safe "duckdb_table_description_get_column_type"
+    c_duckdb_table_description_get_column_type :: DuckDBTableDescription -> DuckDBIdx -> IO DuckDBLogicalType

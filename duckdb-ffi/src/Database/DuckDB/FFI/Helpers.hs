@@ -2,6 +2,7 @@ module Database.DuckDB.FFI.Helpers (
     c_duckdb_malloc,
     c_duckdb_free,
     c_duckdb_vector_size,
+    c_duckdb_valid_utf8_check,
     c_duckdb_string_is_inlined,
     c_duckdb_string_t_length,
     c_duckdb_string_t_data,
@@ -60,6 +61,14 @@ Returns The vector size.
 -}
 foreign import ccall safe "duckdb_vector_size"
     c_duckdb_vector_size :: IO DuckDBIdx
+
+{- | Validates that the provided byte sequence is valid UTF-8.
+
+Returns structured error data that must be destroyed with
+@duckdb_destroy_error_data@.
+-}
+foreign import ccall safe "duckdb_valid_utf8_check"
+    c_duckdb_valid_utf8_check :: CString -> DuckDBIdx -> IO DuckDBErrorData
 
 {- | Whether or not the duckdb_string_t value is inlined. This means that the data
 of the string does not have a separate allocation.

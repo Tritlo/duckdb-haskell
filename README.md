@@ -14,7 +14,7 @@ by generating FFI shims directly from the official `duckdb.h` header.
   so you can pick between granular or aggregate re-exports.
 - Ships with an exhaustive test suite that exercises every binding to catch
   signature drift when DuckDB evolves.
-- Validated against DuckDB 1.4-series releases. Ensure the native
+- Validated against DuckDB 1.5.0+ releases. Ensure the native
   `libduckdb` shared library is installed on your system (for example via
   https://duckdb.org/install/?platform=linux&environment=c&architecture=x86_64)
   before linking a Haskell application against the bindings.
@@ -22,6 +22,9 @@ by generating FFI shims directly from the official `duckdb.h` header.
 `duckdb-ffi` is ideal when you need precise control over DuckDB’s C API, want to
 interoperate with other native components, or plan to build higher-level
 abstractions.
+
+For upgrading notes from DuckDB 1.4-based releases to the new 1.5 line, see
+[MIGRATION.md](MIGRATION.md).
 
 ## duckdb-simple
 

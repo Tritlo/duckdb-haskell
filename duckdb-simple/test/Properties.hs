@@ -39,7 +39,7 @@ import Database.DuckDB.Simple.FromField (
     StructField (..),
     StructValue (..),
     UnionMemberType (..),
-    UnionValue (..)
+    UnionValue (..),
  )
 import Database.DuckDB.Simple.ToField (ToField)
 import Database.DuckDB.Simple.Types (Null (..), Only (..))
@@ -53,8 +53,8 @@ import Test.QuickCheck (
     chooseInteger,
     counterexample,
     elements,
-    frequency,
     forAllShrink,
+    frequency,
     ioProperty,
     scale,
     shrink,
@@ -69,7 +69,7 @@ import Test.Tasty.QuickCheck (testProperty)
 
 data SomeRoundTrip
     = forall a.
-      (Eq a, Show a, ToField a, FromField a) =>
+        (Eq a, Show a, ToField a, FromField a) =>
       SomeRoundTrip String (Proxy a) (Gen a) (a -> [a])
 
 roundTripTests :: TestTree
@@ -84,8 +84,8 @@ roundTripTests =
 
 mkRoundTripTest :: IO Connection -> SomeRoundTrip -> TestTree
 mkRoundTripTest getConn (SomeRoundTrip label proxy gen shrinker) =
-            testProperty label $
-                forAllShrink gen shrinker (roundTripProperty getConn proxy)
+    testProperty label $
+        forAllShrink gen shrinker (roundTripProperty getConn proxy)
 
 roundTripProperty ::
     forall a.

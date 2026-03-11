@@ -4,6 +4,15 @@ module Database.DuckDB.FFI.Configuration (
     c_duckdb_get_config_flag,
     c_duckdb_set_config,
     c_duckdb_destroy_config,
+    c_duckdb_create_config_option,
+    c_duckdb_destroy_config_option,
+    c_duckdb_config_option_set_name,
+    c_duckdb_config_option_set_type,
+    c_duckdb_config_option_set_default_value,
+    c_duckdb_config_option_set_default_scope,
+    c_duckdb_config_option_set_description,
+    c_duckdb_register_config_option,
+    c_duckdb_client_context_get_config_option,
 ) where
 
 import Database.DuckDB.FFI.Types
@@ -83,3 +92,39 @@ Parameters:
 -}
 foreign import ccall safe "duckdb_destroy_config"
     c_duckdb_destroy_config :: Ptr DuckDBConfig -> IO ()
+
+-- | Creates a configuration option descriptor.
+foreign import ccall safe "duckdb_create_config_option"
+    c_duckdb_create_config_option :: IO DuckDBConfigOption
+
+-- | Destroys a configuration option descriptor.
+foreign import ccall safe "duckdb_destroy_config_option"
+    c_duckdb_destroy_config_option :: Ptr DuckDBConfigOption -> IO ()
+
+-- | Sets the option name.
+foreign import ccall safe "duckdb_config_option_set_name"
+    c_duckdb_config_option_set_name :: DuckDBConfigOption -> CString -> IO ()
+
+-- | Sets the logical type of the option.
+foreign import ccall safe "duckdb_config_option_set_type"
+    c_duckdb_config_option_set_type :: DuckDBConfigOption -> DuckDBLogicalType -> IO ()
+
+-- | Sets the default value of the option.
+foreign import ccall safe "duckdb_config_option_set_default_value"
+    c_duckdb_config_option_set_default_value :: DuckDBConfigOption -> DuckDBValue -> IO ()
+
+-- | Sets the default scope of the option.
+foreign import ccall safe "duckdb_config_option_set_default_scope"
+    c_duckdb_config_option_set_default_scope :: DuckDBConfigOption -> DuckDBConfigOptionScope -> IO ()
+
+-- | Sets the option description.
+foreign import ccall safe "duckdb_config_option_set_description"
+    c_duckdb_config_option_set_description :: DuckDBConfigOption -> CString -> IO ()
+
+-- | Registers a custom configuration option.
+foreign import ccall safe "duckdb_register_config_option"
+    c_duckdb_register_config_option :: DuckDBConnection -> DuckDBConfigOption -> IO DuckDBState
+
+-- | Retrieves the current value and scope of a configuration option.
+foreign import ccall safe "duckdb_client_context_get_config_option"
+    c_duckdb_client_context_get_config_option :: DuckDBClientContext -> CString -> Ptr DuckDBConfigOptionScope -> IO DuckDBValue

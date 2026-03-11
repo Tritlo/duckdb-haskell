@@ -1,7 +1,7 @@
 # DuckDB library fetch and install
-DUCKDB_VERSION = 1.4.0
+DUCKDB_VERSION = 1.5.0
 DUCKDB_URL = https://github.com/duckdb/duckdb/releases/download/v$(DUCKDB_VERSION)/libduckdb-linux-amd64.zip
-EXPECTED_SHA256 = 3e7a902ee6cddf7d55035903cf26f14a9a45302bed6fbd379cf34e1c9cc9983f
+EXPECTED_SHA256 = e9b2adb9dc5348da57eee9562782e0e7f543e74ff26d634bc7c208a5b6c59a1c
 ARCHIVE = libduckdb.zip
 EXTRACT_DIR = duckdb
 INSTALL_DIR = /usr/lib
@@ -31,9 +31,9 @@ $(EXTRACT_DIR)/libduckdb.so: $(ARCHIVE)
 
 install: $(EXTRACT_DIR)/libduckdb.so
 	@echo "Installing DuckDB libraries to $(INSTALL_DIR)..."
-	sudo cp $(EXTRACT_DIR)/libduckdb.so.1.4.0 $(INSTALL_DIR)/
-	sudo ln -sf libduckdb.so.1.4.0 $(INSTALL_DIR)/libduckdb.so.1.4
-	sudo ln -sf libduckdb.so.1.4 $(INSTALL_DIR)/libduckdb.so
+	sudo cp $(EXTRACT_DIR)/libduckdb.so.1.5.0 $(INSTALL_DIR)/
+	sudo ln -sf libduckdb.so.1.5.0 $(INSTALL_DIR)/libduckdb.so.1.5
+	sudo ln -sf libduckdb.so.1.5 $(INSTALL_DIR)/libduckdb.so
 	sudo ldconfig
 	@echo "DuckDB libraries installed successfully."
 

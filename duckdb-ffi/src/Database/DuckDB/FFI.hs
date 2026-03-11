@@ -10,6 +10,7 @@ module Database.DuckDB.FFI (
     module Database.DuckDB.FFI.Types,
     module Database.DuckDB.FFI.OpenConnect,
     module Database.DuckDB.FFI.Configuration,
+    module Database.DuckDB.FFI.CopyFunctions,
     module Database.DuckDB.FFI.ErrorData,
     module Database.DuckDB.FFI.QueryExecution,
     module Database.DuckDB.FFI.ResultFunctions,
@@ -37,6 +38,9 @@ module Database.DuckDB.FFI (
     module Database.DuckDB.FFI.StreamingResult,
     module Database.DuckDB.FFI.CastFunctions,
     module Database.DuckDB.FFI.Expression,
+    module Database.DuckDB.FFI.FileSystem,
+    module Database.DuckDB.FFI.Catalog,
+    module Database.DuckDB.FFI.Logging,
 ) where
 
 import Database.DuckDB.FFI.AggregateFunctions
@@ -44,13 +48,17 @@ import Database.DuckDB.FFI.Appender
 import Database.DuckDB.FFI.Arrow
 import Database.DuckDB.FFI.BindValues
 import Database.DuckDB.FFI.CastFunctions
+import Database.DuckDB.FFI.Catalog
 import Database.DuckDB.FFI.Configuration
+import Database.DuckDB.FFI.CopyFunctions
 import Database.DuckDB.FFI.DataChunk
 import Database.DuckDB.FFI.ErrorData
 import Database.DuckDB.FFI.ExecutePrepared
 import Database.DuckDB.FFI.Expression
 import Database.DuckDB.FFI.ExtractStatements
+import Database.DuckDB.FFI.FileSystem
 import Database.DuckDB.FFI.Helpers
+import Database.DuckDB.FFI.Logging
 import Database.DuckDB.FFI.LogicalTypes
 import Database.DuckDB.FFI.OpenConnect
 import Database.DuckDB.FFI.PendingResult

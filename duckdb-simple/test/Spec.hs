@@ -2,25 +2,28 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingVia #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeOperators #-}
-{-# LANGUAGE LambdaCase #-}
 
 -- | Tasty-based test suite for duckdb-simple.
 module Main (main) where
 
 import Control.Applicative ((<|>))
 import Control.Exception (ErrorCall, Exception, SomeException, displayException, fromException, try)
-import Control.Monad (forM_, replicateM_)
-import qualified Data.ByteString as BS
+import Control.Monad (forM_, replicateM_, when)
 import Data.Array (Array, elems, listArray)
-import Data.IORef (atomicModifyIORef', newIORef)
+import qualified Data.ByteString as BS
+import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.List (sortOn)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (fromJust)
 import Data.Proxy (Proxy (..))
+import Data.Ratio ((%))
 import Data.String (fromString)
 import qualified Data.Text as Text
 import Data.Time.Calendar (fromGregorian)
@@ -33,44 +36,54 @@ import Data.Time.LocalTime (
     timeOfDayToTime,
     utc,
  )
+import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
-import Data.Ratio ((%))
+import Database.DuckDB.FFI (
+    pattern DuckDBCatalogEntryTypeTable,
+    pattern DuckDBFileFlagCreate,
+    pattern DuckDBFileFlagRead,
+    pattern DuckDBFileFlagWrite,
+ )
 import Database.DuckDB.Simple
-import Database.DuckDB.Simple.FromField
-    ( BigNum (..)
-    , BitString (..)
-    , bsFromBool
-    , DecimalValue (..)
-    , Field (..)
-    , FieldValue (..)
-    , IntervalValue (..)
-    , TimeWithZone (..)
-    , fromBigNumBytes
-    , returnError
-    , toBigNumBytes
-    )
-import Database.DuckDB.Simple.LogicalRep
-    ( StructField (..)
-    , StructValue (..)
-    , UnionMemberType (..)
-    , UnionValue (..)
-    )
-import Database.DuckDB.Simple.Generic
-    ( genericFromFieldValue
-    , genericToFieldValue
-    , genericToStructValue
-    , ViaDuckDB (..)
-    )
+import qualified Database.DuckDB.Simple.Catalog as Catalog
+import qualified Database.DuckDB.Simple.Config as Config
+import qualified Database.DuckDB.Simple.Copy as Copy
+import qualified Database.DuckDB.Simple.FileSystem as FileSystem
+import Database.DuckDB.Simple.FromField (
+    BigNum (..),
+    BitString (..),
+    DecimalValue (..),
+    Field (..),
+    FieldValue (..),
+    IntervalValue (..),
+    TimeWithZone (..),
+    bsFromBool,
+    fromBigNumBytes,
+    returnError,
+    toBigNumBytes,
+ )
+import Database.DuckDB.Simple.Generic (
+    ViaDuckDB (..),
+    genericFromFieldValue,
+    genericToFieldValue,
+    genericToStructValue,
+ )
+import qualified Database.DuckDB.Simple.Logging as Logging
+import Database.DuckDB.Simple.LogicalRep (
+    StructField (..),
+    StructValue (..),
+    UnionMemberType (..),
+    UnionValue (..),
+ )
 import Database.DuckDB.Simple.Ok (Ok (..))
-import Properties (roundTripTests)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
+import Properties (roundTripTests)
+import System.Directory (doesFileExist, removeFile)
 import Test.Tasty (TestTree, defaultMain, testGroup)
+import Test.Tasty.ExpectedFailure (expectFailBecause)
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck (testProperty, (===))
-import Test.Tasty.ExpectedFailure (expectFailBecause)
-import qualified Data.UUID as UUID
-import Data.Maybe (fromJust)
 
 data Person = Person
     { personId :: Int
@@ -189,6 +202,7 @@ tests =
         , typeTests
         , streamingTests
         , functionsTests
+        , v15Tests
         , transactionTests
         ]
 
@@ -203,7 +217,92 @@ connectionTests =
             conn <- open ":memory:"
             close conn
             close conn
+        , testCase "opens with startup config" $ do
+            conn <- openWithConfig ":memory:" [("threads", "1")]
+            mValue <- Config.getConfigOption conn "threads"
+            close conn
+            case mValue of
+                Nothing -> assertFailure "expected threads config value"
+                Just value -> Config.configValueText value @?= "1"
         ]
+
+v15Tests :: TestTree
+v15Tests =
+    testGroup
+        "DuckDB 1.5 wrappers"
+        [ testCase "lists config flags" $ do
+            flags <- Config.listConfigFlags
+            assertBool "expected at least one config flag" (not (null flags))
+            assertBool "expected threads flag" (any ((== "threads") . Config.configFlagName) flags)
+        , testCase "catalog lookup works inside a transaction" $
+            withConnection ":memory:" \conn -> do
+                _ <- execute_ conn "CREATE TABLE catalog_probe(id INTEGER)"
+                withTransaction conn $ do
+                    mType <- Catalog.catalogTypeName conn "memory"
+                    assertBool "expected catalog type name" (mType /= Nothing)
+                    mEntry <- Catalog.lookupCatalogEntry conn "memory" "main" "catalog_probe" DuckDBCatalogEntryTypeTable
+                    case mEntry of
+                        Nothing -> assertFailure "expected catalog entry"
+                        Just entry -> Catalog.catalogEntryName entry @?= "catalog_probe"
+        , testCase "file system wrappers round-trip bytes" $ do
+            let path = "/tmp/duckdb-simple-filesystem.bin"
+                payload = BS.pack [0, 1, 2, 3, 255]
+            exists <- doesFileExist path
+            when exists (removeFile path)
+            withConnection ":memory:" \conn -> do
+                FileSystem.withFileHandle conn path [DuckDBFileFlagCreate, DuckDBFileFlagWrite] \handle -> do
+                    written <- FileSystem.writeFileHandleBytes handle payload
+                    written @?= fromIntegral (BS.length payload)
+                    FileSystem.fileHandleSync handle
+                FileSystem.withFileHandle conn path [DuckDBFileFlagRead] \handle -> do
+                    size <- FileSystem.fileHandleSize handle
+                    size @?= fromIntegral (BS.length payload)
+                    bytes <- FileSystem.readFileHandleChunk handle 32
+                    bytes @?= payload
+            removeFile path
+        , testCase "copy wrappers receive COPY TO rows" $
+            withConnection ":memory:" \conn -> do
+                capturedRef <- newIORef ([] :: [Int])
+                pathRef <- newIORef Nothing
+                Copy.registerCopyToFunction
+                    conn
+                    "hs_capture"
+                    (\bindInfo -> pure (length (Copy.copyBindColumnTypes bindInfo)))
+                    ( \initInfo -> do
+                        atomicModifyIORef' pathRef \_ -> (Just (Copy.copyInitFilePath initInfo), ())
+                        pure (Copy.copyInitBindState initInfo)
+                    )
+                    ( \sinkInfo rows -> do
+                        Copy.copySinkBindState sinkInfo @?= 1
+                        Copy.copySinkGlobalState sinkInfo @?= 1
+                        values <- mapM fieldInt rows
+                        atomicModifyIORef' capturedRef \existing -> (existing <> values, ())
+                    )
+                    ( \finalizeInfo -> do
+                        Copy.copyFinalizeBindState finalizeInfo @?= 1
+                        Copy.copyFinalizeGlobalState finalizeInfo @?= 1
+                    )
+                _ <- execute_ conn "COPY (SELECT * FROM (VALUES (1), (2), (3)) AS t(x)) TO '/tmp/duckdb-simple-copy.out' (FORMAT hs_capture)"
+                captured <- readIORef capturedRef
+                filePath <- readIORef pathRef
+                captured @?= [1, 2, 3]
+                filePath @?= Just "/tmp/duckdb-simple-copy.out"
+        , testCase "logging wrapper registers a log sink" $
+            withConnection ":memory:" \conn -> do
+                entriesRef <- newIORef ([] :: [Logging.LogEntry])
+                Logging.registerLogStorage conn "hs_log_capture" \entry ->
+                    atomicModifyIORef' entriesRef \entries -> (entry : entries, ())
+                _ <- execute_ conn "SELECT write_log('duckdb-simple logging wrapper', level := 'INFO', scope := 'connection')"
+                _ <- readIORef entriesRef
+                pure ()
+        ]
+
+fieldInt :: [Field] -> IO Int
+fieldInt [fld] =
+    case fromField fld of
+        Errors err -> assertFailure (show err) >> pure 0
+        Ok value -> pure value
+fieldInt fields = assertFailure ("expected one field, got " <> show (length fields)) >> pure 0
 
 withConnectionTests :: TestTree
 withConnectionTests =
@@ -436,7 +535,7 @@ duckdbTypeCastTests =
                     withConnection ":memory:" \conn -> do
                         let sql =
                                 Query
-                                    (case castExpression of
+                                    ( case castExpression of
                                         CastExpression expressionValue expressionType ->
                                             Text.concat ["SELECT CAST(", expressionValue, " AS ", expressionType, ")"]
                                         DirectExpression expressionSQL ->
@@ -507,12 +606,12 @@ duckdbCastCases =
     , successCase "UUID" (quoted $ UUID.toText uuid) "UUID" (ExpectEquals (FieldUUID uuid))
     , successCase "BIT" (quoted $ Text.pack $ show bits) "BIT" (ExpectEquals (FieldBit bits))
     , successCase "ARRAY" (quoted "[1,2,3]") "INTEGER[3]" (ExpectEquals (FieldArray arrayElements))
-     -- This one is broken upstream, instead of a DuckDBTypeTimeNs, we get a DuckDBType 0
-    , failCaseWith "TIME_NS" (quoted "03:04:05.123456789") "TIME_NS" "TIME_NS decoding unsupported" (expectErrorCallContaining "INVALID")
+    , -- This one is broken upstream, instead of a DuckDBTypeTimeNs, we get a DuckDBType 0
+      successCase "TIME_NS" (quoted "03:04:05.123456789") "TIME_NS" (ExpectEquals (FieldTime (TimeOfDay 3 4 5.123456789)))
     , successDirect "STRUCT" "{'a': 1, 'b': 2}" (expectStruct structFields)
     , successDirect "UNION" "CAST(union_value(a := 42) AS UNION(a INTEGER, b VARCHAR))" (expectUnion 0 (Text.pack "a") (FieldInt32 42))
-    -- These can never surface from a query, only internally.
-    , failCaseOK "ANY" (quoted "1") "ANY" (expectSQLErrorContaining "ANY")
+    , -- These can never surface from a query, only internally.
+      failCaseOK "ANY" (quoted "1") "ANY" (expectSQLErrorContaining "ANY")
     , failCaseOK "STRING_LITERAL" (quoted literalText) "STRING_LITERAL" (expectSQLErrorContaining "STRING_LITERAL")
     , failCaseOK "INTEGER_LITERAL" (quoted "123") "INTEGER_LITERAL" (expectSQLErrorContaining "INTEGER_LITERAL")
     , failCaseOK "INVALID" "0" "INVALID" (expectSQLErrorContaining "INVALID")
@@ -538,13 +637,6 @@ duckdbCastCases =
             , castExpectation = expectation
             , castExpectFailureReason = Nothing
             }
-    failCaseWith label value ty reason expectation =
-        DuckDBCastCase
-            { castLabel = label
-            , castExpression = CastExpression value ty
-            , castExpectation = expectation
-            , castExpectFailureReason = Just reason
-            }
     failCaseOK label value ty expectation =
         DuckDBCastCase
             { castLabel = label
@@ -554,14 +646,14 @@ duckdbCastCases =
             }
     expectMapEntries expectedPairs =
         ExpectSatisfies $
-           \case
-             FieldMap actualPairs ->
-                 let normalize = sortOn (mapKey . fst)
-                     mapKey (FieldText txt) = txt
-                     mapKey other = Text.pack (show other)
-                  in assertEqual "map entries" (normalize expectedPairs) (normalize actualPairs)
-             other ->
-                 assertFailure ("expected FieldMap, but saw " <> show other)
+            \case
+                FieldMap actualPairs ->
+                    let normalize = sortOn (mapKey . fst)
+                        mapKey (FieldText txt) = txt
+                        mapKey other = Text.pack (show other)
+                     in assertEqual "map entries" (normalize expectedPairs) (normalize actualPairs)
+                other ->
+                    assertFailure ("expected FieldMap, but saw " <> show other)
     structFields =
         [ StructField{structFieldName = Text.pack "a", structFieldValue = FieldInt32 1}
         , StructField{structFieldName = Text.pack "b", structFieldValue = FieldInt32 2}
@@ -598,22 +690,11 @@ duckdbCastCases =
             case fromException err :: Maybe SQLError of
                 Just sqlErr ->
                     let message = sqlErrorMessage sqlErr
-                        in assertBool
+                     in assertBool
                             ("expected SQLError containing " <> Text.unpack needle <> ", but saw: " <> Text.unpack message)
                             (Text.isInfixOf needle message)
                 Nothing ->
                     assertFailure ("expected SQLError, but saw " <> displayException err)
-    expectErrorCallContaining :: Text.Text -> DuckDBExpectation
-    expectErrorCallContaining needle =
-        ExpectException $ \err ->
-            case fromException err :: Maybe ErrorCall of
-                Just callErr ->
-                    let message = Text.pack (displayException callErr)
-                        in assertBool
-                            ("expected ErrorCall containing " <> Text.unpack needle <> ", but saw: " <> Text.unpack message)
-                            (Text.isInfixOf needle message)
-                Nothing ->
-                    assertFailure ("expected ErrorCall, but saw " <> displayException err)
     bsFromString :: String -> BS.ByteString
     bsFromString = BS.pack . map (fromIntegral . fromEnum)
     secondsWithFraction :: Integer -> Integer -> Integer -> Rational
@@ -929,11 +1010,11 @@ typeTests =
             let sumVal = SumBool True
             case genericToFieldValue sumVal of
                 FieldUnion uv -> do
-                    map unionMemberName (elems (unionValueMembers uv)) @?=
-                        [ Text.pack "SumInt"
-                        , Text.pack "SumBool"
-                        , Text.pack "SumPair"
-                        ]
+                    map unionMemberName (elems (unionValueMembers uv))
+                        @?= [ Text.pack "SumInt"
+                            , Text.pack "SumBool"
+                            , Text.pack "SumPair"
+                            ]
                     unionValueLabel uv @?= Text.pack "SumBool"
                     genericFromFieldValue (FieldUnion uv) @?= Right sumVal
                 other -> assertFailure ("expected FieldUnion, got " <> show other)
@@ -945,8 +1026,8 @@ typeTests =
                     case unionValuePayload uv of
                         FieldStruct StructValue{structValueFields} -> do
                             map structFieldName (elems structValueFields) @?= [Text.pack "field1", Text.pack "field2"]
-                            map structFieldValue (elems structValueFields) @?=
-                                [FieldInt64 7, FieldText (Text.pack "duck")]
+                            map structFieldValue (elems structValueFields)
+                                @?= [FieldInt64 7, FieldText (Text.pack "duck")]
                         other -> assertFailure ("expected struct payload, got " <> show other)
                     genericFromFieldValue (FieldUnion uv) @?= Right sumVal
                 other -> assertFailure ("expected FieldUnion, got " <> show other)
@@ -970,8 +1051,8 @@ typeTests =
                     unionValuePayload uv @?= FieldNull
                     genericFromFieldValue (FieldUnion uv) @?= Right EnumRed
                 other -> assertFailure ("expected FieldUnion, got " <> show other)
-        -- Edge case tests
-        , testCase "struct with multiple basic fields" $ do
+        , -- Edge case tests
+          testCase "struct with multiple basic fields" $ do
             -- Test a struct with multiple fields
             let twoField = TwoFieldStruct 42 (Text.pack "text")
             case genericToFieldValue twoField of
@@ -997,9 +1078,9 @@ typeTests =
                     genericFromFieldValue (FieldStruct sv1) @?= Right withJust
                     genericFromFieldValue (FieldStruct sv2) @?= Right withNothing
                 (other1, other2) -> assertFailure ("expected FieldStruct, got " <> show (other1, other2))
-        -- Error case tests
-        , testCase "decode wrong field type fails" $ do
-            let wrongType = FieldInt32 42  -- Trying to decode as GenericRecord
+        , -- Error case tests
+          testCase "decode wrong field type fails" $ do
+            let wrongType = FieldInt32 42 -- Trying to decode as GenericRecord
             case genericFromFieldValue wrongType :: Either String GenericRecord of
                 Left err -> assertBool "error mentions STRUCT" (Text.pack "STRUCT" `Text.isInfixOf` Text.pack err)
                 Right _ -> assertFailure "expected decode error for wrong type"
@@ -1105,6 +1186,15 @@ functionsTests =
                 second <- query_ conn "SELECT hs_counter()" :: IO [Only Int]
                 assertEqual "first counter call" [Only 1] first
                 assertEqual "second counter call" [Only 2] second
+        , testCase "supports thread-local function state" $ do
+            conn <- openWithConfig ":memory:" [("threads", "1")]
+            createFunctionWithState conn "hs_stateful_counter" (newIORef (0 :: Int)) \ref -> do
+                atomicModifyIORef' ref \n ->
+                    let next = n + 1
+                     in (next, next)
+            rows <- query_ conn "SELECT hs_stateful_counter() FROM range(3)" :: IO [Only Int]
+            close conn
+            assertEqual "stateful rows" [Only 1, Only 2, Only 3] rows
         ]
 
 transactionTests :: TestTree

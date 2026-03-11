@@ -15,8 +15,10 @@ module Database.DuckDB.Simple (
     -- * Connections
     Connection,
     open,
+    openWithConfig,
     close,
     withConnection,
+    withConnectionWithConfig,
 
     -- * Queries and statements
     Query (..),
@@ -72,51 +74,54 @@ module Database.DuckDB.Simple (
     -- * User-defined scalar functions
     Function,
     createFunction,
+    createFunctionWithState,
     deleteFunction,
 ) where
 
-import Control.Monad (forM, join, void, when, zipWithM, zipWithM_)
-import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, newIORef, readIORef, writeIORef)
 import Control.Exception (SomeException, bracket, finally, mask, onException, throwIO, try)
+import Control.Monad (forM, forM_, join, void, when, zipWithM, zipWithM_)
+import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, newIORef, readIORef, writeIORef)
 import Data.Maybe (isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
 import Database.DuckDB.FFI
-import Database.DuckDB.Simple.FromField
-    ( Field (..)
-    , FieldParser
-    , FromField (..)
-    , ResultError (..)
-    )
-import Database.DuckDB.Simple.FromRow
-    ( FromRow (..)
-    , RowParser
-    , field
-    , fieldWith
-    , numFieldsRemaining
-    , parseRow
-    , rowErrorsToSqlError
-    )
-import Database.DuckDB.Simple.Function (Function, createFunction, deleteFunction)
-import Database.DuckDB.Simple.Materialize
-    ( materializeValue )
-import Database.DuckDB.Simple.Internal
-    ( Connection (..)
-    , ConnectionState (..)
-    , Query (..)
-    , SQLError (..)
-    , Statement (..)
-    , StatementState (..)
-    , StatementStream (..)
-    , StatementStreamChunk (..)
-    , StatementStreamChunkVector (..)
-    , StatementStreamColumn (..)
-    , StatementStreamState (..)
-    , withConnectionHandle
-    , withQueryCString
-    , withStatementHandle
-    )
+import Database.DuckDB.Simple.FromField (
+    Field (..),
+    FieldParser,
+    FromField (..),
+    ResultError (..),
+ )
+import Database.DuckDB.Simple.FromRow (
+    FromRow (..),
+    RowParser,
+    field,
+    fieldWith,
+    numFieldsRemaining,
+    parseRow,
+    rowErrorsToSqlError,
+ )
+import Database.DuckDB.Simple.Function (Function, createFunction, createFunctionWithState, deleteFunction)
+import Database.DuckDB.Simple.Internal (
+    Connection (..),
+    ConnectionState (..),
+    Query (..),
+    SQLError (..),
+    Statement (..),
+    StatementState (..),
+    StatementStream (..),
+    StatementStreamChunk (..),
+    StatementStreamChunkVector (..),
+    StatementStreamColumn (..),
+    StatementStreamState (..),
+    withConnectionHandle,
+    withQueryCString,
+    withStatementHandle,
+ )
+import Database.DuckDB.Simple.Materialize (
+    materializeValue,
+ )
+import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), FieldBinding, NamedParam (..), ToField (..), bindFieldBinding, duckdbColumnType, renderFieldBinding)
 import Database.DuckDB.Simple.ToRow (ToRow (..))
 import Database.DuckDB.Simple.Types (FormatError (..), Null (..), Only (..), (:.) (..))
@@ -124,13 +129,16 @@ import Foreign.C.String (CString, peekCString, withCString)
 import Foreign.Marshal.Alloc (alloca, free, malloc)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (peek, poke)
-import Database.DuckDB.Simple.Ok (Ok(..))
 
 -- | Open a DuckDB database located at the supplied path.
 open :: FilePath -> IO Connection
-open path =
+open path = openWithConfig path []
+
+-- | Open a DuckDB database with configuration flags applied before startup.
+openWithConfig :: FilePath -> [(Text, Text)] -> IO Connection
+openWithConfig path settings =
     mask \restore -> do
-        db <- restore (openDatabase path)
+        db <- restore (openDatabaseWithConfig path settings)
         conn <-
             restore (connectDatabase db)
                 `onException` closeDatabaseHandle db
@@ -151,6 +159,10 @@ close Connection{connectionState} =
 -- | Run an action with a freshly opened connection, closing it afterwards.
 withConnection :: FilePath -> (Connection -> IO a) -> IO a
 withConnection path = bracket (open path) close
+
+-- | Run an action with a freshly opened configured connection, closing it afterwards.
+withConnectionWithConfig :: FilePath -> [(Text, Text)] -> (Connection -> IO a) -> IO a
+withConnectionWithConfig path settings = bracket (openWithConfig path settings) close
 
 -- | Prepare a SQL statement for execution.
 openStatement :: Connection -> Query -> IO Statement
@@ -309,9 +321,10 @@ columnName stmt columnIndex
                     c_duckdb_free (castPtr namePtr)
                     pure name
 
--- | Execute a prepared statement and return the number of affected rows.
---   Resets any active result stream before running and raises a 'SqlError'
---   if DuckDB reports a failure.
+{- | Execute a prepared statement and return the number of affected rows.
+  Resets any active result stream before running and raises a 'SqlError'
+  if DuckDB reports a failure.
+-}
 executeStatement :: Statement -> IO Int
 executeStatement stmt =
     withStatementHandle stmt \handle -> do
@@ -428,9 +441,10 @@ queryWith_ parser conn queryText =
 
 -- Streaming folds -----------------------------------------------------------
 
--- | Stream a parameterised query through an accumulator without loading all rows.
---   Bind the supplied parameters, start a streaming result, and apply the step
---   function row by row to produce a final accumulator value.
+{- | Stream a parameterised query through an accumulator without loading all rows.
+  Bind the supplied parameters, start a streaming result, and apply the step
+  function row by row to produce a final accumulator value.
+-}
 fold :: (FromRow row, ToRow params) => Connection -> Query -> params -> a -> (a -> row -> IO a) -> IO a
 fold conn queryText params initial step =
     withStatement conn queryText \stmt -> do
@@ -489,8 +503,8 @@ resetStatementStream Statement{statementStream} =
 consumeStream :: IORef StatementStreamState -> RowParser r -> Statement -> StatementStream -> IO (Maybe r)
 consumeStream streamRef parser stmt stream = do
     result <-
-        ( try (streamNextRow (statementQuery stmt) stream)
-            :: IO (Either SomeException (Maybe [Field], StatementStream))
+        ( try (streamNextRow (statementQuery stmt) stream) ::
+            IO (Either SomeException (Maybe [Field], StatementStream))
         )
     case result of
         Left err -> do
@@ -690,11 +704,10 @@ withTransaction conn action =
         result <- restore action `onException` rollbackAction
         void (execute_ conn commit)
         pure result
-
-  where begin = Query (Text.pack "BEGIN TRANSACTION")
-        commit = Query (Text.pack "COMMIT")
-        rollback = Query (Text.pack "ROLLBACK")
-
+  where
+    begin = Query (Text.pack "BEGIN TRANSACTION")
+    commit = Query (Text.pack "COMMIT")
+    rollback = Query (Text.pack "ROLLBACK")
 
 -- Internal helpers -----------------------------------------------------------
 
@@ -716,8 +729,9 @@ createStatement parent handle queryText = do
     streamRef <- newIORef StatementStreamIdle
     _ <-
         mkWeakIORef ref $
-          do join $
-               atomicModifyIORef' ref $ \case
+            do
+                join $
+                    atomicModifyIORef' ref $ \case
                         StatementClosed -> (StatementClosed, pure ())
                         StatementOpen{statementHandle} ->
                             ( StatementClosed
@@ -733,22 +747,43 @@ createStatement parent handle queryText = do
             , statementStream = streamRef
             }
 
-openDatabase :: FilePath -> IO DuckDBDatabase
-openDatabase path =
+openDatabaseWithConfig :: FilePath -> [(Text, Text)] -> IO DuckDBDatabase
+openDatabaseWithConfig path settings =
     alloca \dbPtr ->
-        alloca \errPtr -> do
-            poke errPtr nullPtr
-            withCString path \cPath -> do
-                rc <- c_duckdb_open_ext cPath dbPtr nullPtr errPtr
-                if rc == DuckDBSuccess
-                    then do
-                        db <- peek dbPtr
-                        maybeFreeErr errPtr
-                        pure db
-                    else do
-                        errMsg <- peekError errPtr
-                        maybeFreeErr errPtr
-                        throwIO $ mkOpenError errMsg
+        alloca \configPtr ->
+            alloca \errPtr -> do
+                rcConfig <- c_duckdb_create_config configPtr
+                when (rcConfig /= DuckDBSuccess) $
+                    throwIO (mkOpenError (Text.pack "duckdb-simple: failed to allocate DuckDB config"))
+                config <- peek configPtr
+                poke errPtr nullPtr
+                let destroyConfig =
+                        when (config /= nullPtr) $
+                            alloca \cfgPtr -> poke cfgPtr config >> c_duckdb_destroy_config cfgPtr
+                flip finally destroyConfig $
+                    do
+                        forM_ settings \(name, value) ->
+                            TextForeign.withCString name \cName ->
+                                TextForeign.withCString value \cValue -> do
+                                    rcSet <- c_duckdb_set_config config cName cValue
+                                    when (rcSet /= DuckDBSuccess) $
+                                        throwIO $
+                                            mkOpenError $
+                                                Text.concat
+                                                    [ Text.pack "duckdb-simple: failed to set config option "
+                                                    , name
+                                                    ]
+                        withCString path \cPath -> do
+                            rc <- c_duckdb_open_ext cPath dbPtr config errPtr
+                            if rc == DuckDBSuccess
+                                then do
+                                    db <- peek dbPtr
+                                    maybeFreeErr errPtr
+                                    pure db
+                                else do
+                                    errMsg <- peekError errPtr
+                                    maybeFreeErr errPtr
+                                    throwIO $ mkOpenError errMsg
 
 connectDatabase :: DuckDBDatabase -> IO DuckDBConnection
 connectDatabase db =
@@ -775,7 +810,6 @@ closeDatabaseHandle db =
 destroyPrepared :: DuckDBPreparedStatement -> IO ()
 destroyPrepared stmt =
     alloca \ptr -> poke ptr stmt >> c_duckdb_destroy_prepare ptr
-
 
 fetchPrepareError :: DuckDBPreparedStatement -> IO Text
 fetchPrepareError stmt = do
@@ -885,7 +919,6 @@ columnNameUnavailableError stmt idx =
         , sqlErrorType = Nothing
         , sqlErrorQuery = Just (statementQuery stmt)
         }
-
 
 normalizeName :: Text -> Text
 normalizeName name =

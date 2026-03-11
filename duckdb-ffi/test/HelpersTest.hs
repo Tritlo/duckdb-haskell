@@ -7,7 +7,7 @@ import Control.Exception (bracket)
 import Data.Int (Int64)
 import Data.Time.Calendar (diffDays, fromGregorian)
 import Database.DuckDB.FFI
-import Foreign.C.String (peekCString, withCString)
+import Foreign.C.String (peekCStringLen, withCString)
 import Foreign.C.Types (CBool (..), CDouble (..), CSize (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Array (allocaArray)
@@ -118,7 +118,7 @@ testStringHelpers =
                         len <- c_duckdb_string_t_length stringPtr
                         len @?= fromIntegral (length text)
                         textPtr <- c_duckdb_string_t_data stringPtr
-                        peekCString textPtr >>= (@?= text)
+                        peekCStringLen (textPtr, fromIntegral len) >>= (@?= text)
 
 testHugeIntHelpers :: TestTree
 testHugeIntHelpers =

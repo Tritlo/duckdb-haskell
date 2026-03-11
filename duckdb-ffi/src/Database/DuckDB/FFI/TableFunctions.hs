@@ -19,6 +19,9 @@ module Database.DuckDB.FFI.TableFunctions (
     c_duckdb_bind_get_parameter_count,
     c_duckdb_bind_get_parameter,
     c_duckdb_bind_get_named_parameter,
+    c_duckdb_table_function_bind_get_result_column_count,
+    c_duckdb_table_function_bind_get_result_column_name,
+    c_duckdb_table_function_bind_get_result_column_type,
     c_duckdb_bind_set_bind_data,
     c_duckdb_bind_set_cardinality,
     c_duckdb_bind_set_error,
@@ -236,6 +239,18 @@ Returns The value of the parameter. Must be destroyed with
 -}
 foreign import ccall safe "duckdb_bind_get_named_parameter"
     c_duckdb_bind_get_named_parameter :: DuckDBBindInfo -> CString -> IO DuckDBValue
+
+-- | Returns the number of result columns already defined on the table function.
+foreign import ccall safe "duckdb_table_function_bind_get_result_column_count"
+    c_duckdb_table_function_bind_get_result_column_count :: DuckDBBindInfo -> IO DuckDBIdx
+
+-- | Returns the name of a previously defined result column.
+foreign import ccall safe "duckdb_table_function_bind_get_result_column_name"
+    c_duckdb_table_function_bind_get_result_column_name :: DuckDBBindInfo -> DuckDBIdx -> IO CString
+
+-- | Returns the logical type of a previously defined result column.
+foreign import ccall safe "duckdb_table_function_bind_get_result_column_type"
+    c_duckdb_table_function_bind_get_result_column_type :: DuckDBBindInfo -> DuckDBIdx -> IO DuckDBLogicalType
 
 {- | Sets the user-provided bind data in the bind object of the table function.
 This object can be retrieved again during execution.

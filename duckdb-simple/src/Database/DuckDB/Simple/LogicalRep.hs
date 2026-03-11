@@ -178,16 +178,15 @@ logicalTypeFromRep = \case
     LogicalTypeMap keyRep valueRep ->
         bracket (logicalTypeFromRep keyRep) destroyLogicalType \keyType ->
             bracket (logicalTypeFromRep valueRep) destroyLogicalType $
-                        c_duckdb_create_map_type keyType
+                c_duckdb_create_map_type keyType
     LogicalTypeStruct fieldArray -> do
         let fields = elems fieldArray
             count = length fields
         if count == 0
-            then
-                withMany withCString [] \namePtrs ->
-                    withArray namePtrs \nameArray ->
-                        withArray [] \typeArray ->
-                            c_duckdb_create_struct_type typeArray nameArray 0
+            then withMany withCString [] \namePtrs ->
+                withArray namePtrs \nameArray ->
+                    withArray [] \typeArray ->
+                        c_duckdb_create_struct_type typeArray nameArray 0
             else do
                 childTypes <- mapM (logicalTypeFromRep . structFieldValue) fields
                 let names = map (Text.unpack . structFieldName) fields
@@ -202,11 +201,10 @@ logicalTypeFromRep = \case
         let members = elems memberArray
             count = length members
         if count == 0
-            then
-                withMany withCString [] \namePtrs ->
-                    withArray namePtrs \nameArray ->
-                        withArray [] \memberPtr ->
-                            c_duckdb_create_union_type memberPtr nameArray 0
+            then withMany withCString [] \namePtrs ->
+                withArray namePtrs \nameArray ->
+                    withArray [] \memberPtr ->
+                        c_duckdb_create_union_type memberPtr nameArray 0
             else do
                 memberTypes <- mapM (logicalTypeFromRep . unionMemberType) members
                 let names = map (Text.unpack . unionMemberName) members
@@ -222,10 +220,9 @@ logicalTypeFromRep = \case
             count = length entries
         if count == 0
             then c_duckdb_create_enum_type nullPtr 0
-            else
-                withMany withCString (map Text.unpack entries) \namePtrs ->
-                    withArray namePtrs \nameArray ->
-                        c_duckdb_create_enum_type nameArray (fromIntegral count)
+            else withMany withCString (map Text.unpack entries) \namePtrs ->
+                withArray namePtrs \nameArray ->
+                    c_duckdb_create_enum_type nameArray (fromIntegral count)
 
 word64ToInt :: Text -> Word64 -> IO Int
 word64ToInt label value =

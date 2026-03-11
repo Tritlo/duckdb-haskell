@@ -137,6 +137,29 @@ module Database.DuckDB.FFI.Types (
     DuckDBCastMode (..),
     pattern DuckDBCastNormal,
     pattern DuckDBCastTry,
+    DuckDBFileFlag (..),
+    pattern DuckDBFileFlagInvalid,
+    pattern DuckDBFileFlagRead,
+    pattern DuckDBFileFlagWrite,
+    pattern DuckDBFileFlagCreate,
+    pattern DuckDBFileFlagCreateNew,
+    pattern DuckDBFileFlagAppend,
+    DuckDBConfigOptionScope (..),
+    pattern DuckDBConfigOptionScopeInvalid,
+    pattern DuckDBConfigOptionScopeLocal,
+    pattern DuckDBConfigOptionScopeSession,
+    pattern DuckDBConfigOptionScopeGlobal,
+    DuckDBCatalogEntryType (..),
+    pattern DuckDBCatalogEntryTypeInvalid,
+    pattern DuckDBCatalogEntryTypeTable,
+    pattern DuckDBCatalogEntryTypeSchema,
+    pattern DuckDBCatalogEntryTypeView,
+    pattern DuckDBCatalogEntryTypeIndex,
+    pattern DuckDBCatalogEntryTypePreparedStatement,
+    pattern DuckDBCatalogEntryTypeSequence,
+    pattern DuckDBCatalogEntryTypeCollation,
+    pattern DuckDBCatalogEntryTypeType,
+    pattern DuckDBCatalogEntryTypeDatabase,
 
     -- * Scalar Types
     DuckDBIdx,
@@ -172,6 +195,7 @@ module Database.DuckDB.FFI.Types (
     DuckDBDatabase,
     DuckDBConnection,
     DuckDBConfig,
+    DuckDBConfigOption,
     DuckDBInstanceCache,
     DuckDBArrowOptions,
     DuckDBArrow,
@@ -195,6 +219,11 @@ module Database.DuckDB.FFI.Types (
     DuckDBInitInfo,
     DuckDBScalarFunction,
     DuckDBScalarFunctionSet,
+    DuckDBCopyFunction,
+    DuckDBCopyFunctionBindInfo,
+    DuckDBCopyFunctionGlobalInitInfo,
+    DuckDBCopyFunctionSinkInfo,
+    DuckDBCopyFunctionFinalizeInfo,
     DuckDBAggregateFunction,
     DuckDBAggregateFunctionSet,
     DuckDBAggregateState,
@@ -202,6 +231,12 @@ module Database.DuckDB.FFI.Types (
     DuckDBExpression,
     DuckDBClientContext,
     DuckDBTableFunction,
+    DuckDBFileOpenOptions,
+    DuckDBFileSystem,
+    DuckDBFileHandle,
+    DuckDBCatalog,
+    DuckDBCatalogEntry,
+    DuckDBLogStorage,
     DuckDBValue,
     DuckDBErrorData,
     DuckDBAppender,
@@ -216,12 +251,18 @@ module Database.DuckDB.FFI.Types (
     DuckDBDatabaseStruct,
     DuckDBConnectionStruct,
     DuckDBConfigStruct,
+    DuckDBConfigOptionStruct,
     DuckDBInstanceCacheStruct,
     DuckDBExtractedStatementsStruct,
     DuckDBFunctionInfoStruct,
     DuckDBBindInfoStruct,
     DuckDBScalarFunctionStruct,
     DuckDBScalarFunctionSetStruct,
+    DuckDBCopyFunctionStruct,
+    DuckDBCopyFunctionBindInfoStruct,
+    DuckDBCopyFunctionGlobalInitInfoStruct,
+    DuckDBCopyFunctionSinkInfoStruct,
+    DuckDBCopyFunctionFinalizeInfoStruct,
     DuckDBAggregateFunctionStruct,
     DuckDBAggregateFunctionSetStruct,
     DuckDBVectorStruct,
@@ -233,6 +274,12 @@ module Database.DuckDB.FFI.Types (
     DuckDBArrowStreamStruct,
     DuckDBExpressionStruct,
     DuckDBClientContextStruct,
+    DuckDBFileOpenOptionsStruct,
+    DuckDBFileSystemStruct,
+    DuckDBFileHandleStruct,
+    DuckDBCatalogStruct,
+    DuckDBCatalogEntryStruct,
+    DuckDBLogStorageStruct,
     DuckDBPreparedStatementStruct,
     DuckDBValueStruct,
     DuckDBPendingResultStruct,
@@ -251,8 +298,13 @@ module Database.DuckDB.FFI.Types (
     -- * Function Pointer Types
     DuckDBScalarFunctionFun,
     DuckDBScalarFunctionBindFun,
+    DuckDBScalarFunctionInitFun,
     DuckDBDeleteCallback,
     DuckDBCopyCallback,
+    DuckDBCopyFunctionBindFun,
+    DuckDBCopyFunctionGlobalInitFun,
+    DuckDBCopyFunctionSinkFun,
+    DuckDBCopyFunctionFinalizeFun,
     DuckDBCastFunctionFun,
     DuckDBAggregateStateSizeFun,
     DuckDBAggregateInitFun,
@@ -263,6 +315,7 @@ module Database.DuckDB.FFI.Types (
     DuckDBTableFunctionBindFun,
     DuckDBTableFunctionInitFun,
     DuckDBTableFunctionFun,
+    DuckDBLoggerWriteLogEntryFun,
     DuckDBReplacementCallback,
 ) where
 
@@ -675,6 +728,96 @@ pattern DuckDBCastTry = DuckDBCastMode 1
 
 {-# COMPLETE DuckDBCastNormal, DuckDBCastTry #-}
 
+-- | File access flags used by DuckDB's VFS layer.
+newtype DuckDBFileFlag = DuckDBFileFlag {unDuckDBFileFlag :: CInt}
+    deriving (Eq, Ord, Show, Storable)
+
+pattern
+    DuckDBFileFlagInvalid
+    , DuckDBFileFlagRead
+    , DuckDBFileFlagWrite
+    , DuckDBFileFlagCreate
+    , DuckDBFileFlagCreateNew
+    , DuckDBFileFlagAppend ::
+        DuckDBFileFlag
+pattern DuckDBFileFlagInvalid = DuckDBFileFlag 0
+pattern DuckDBFileFlagRead = DuckDBFileFlag 1
+pattern DuckDBFileFlagWrite = DuckDBFileFlag 2
+pattern DuckDBFileFlagCreate = DuckDBFileFlag 3
+pattern DuckDBFileFlagCreateNew = DuckDBFileFlag 4
+pattern DuckDBFileFlagAppend = DuckDBFileFlag 5
+
+{-# COMPLETE
+    DuckDBFileFlagInvalid
+    , DuckDBFileFlagRead
+    , DuckDBFileFlagWrite
+    , DuckDBFileFlagCreate
+    , DuckDBFileFlagCreateNew
+    , DuckDBFileFlagAppend
+    #-}
+
+-- | Scope for configuration options.
+newtype DuckDBConfigOptionScope = DuckDBConfigOptionScope {unDuckDBConfigOptionScope :: CInt}
+    deriving (Eq, Ord, Show, Storable)
+
+pattern
+    DuckDBConfigOptionScopeInvalid
+    , DuckDBConfigOptionScopeLocal
+    , DuckDBConfigOptionScopeSession
+    , DuckDBConfigOptionScopeGlobal ::
+        DuckDBConfigOptionScope
+pattern DuckDBConfigOptionScopeInvalid = DuckDBConfigOptionScope 0
+pattern DuckDBConfigOptionScopeLocal = DuckDBConfigOptionScope 1
+pattern DuckDBConfigOptionScopeSession = DuckDBConfigOptionScope 2
+pattern DuckDBConfigOptionScopeGlobal = DuckDBConfigOptionScope 3
+
+{-# COMPLETE
+    DuckDBConfigOptionScopeInvalid
+    , DuckDBConfigOptionScopeLocal
+    , DuckDBConfigOptionScopeSession
+    , DuckDBConfigOptionScopeGlobal
+    #-}
+
+-- | Catalog entry kinds surfaced through the catalog API.
+newtype DuckDBCatalogEntryType = DuckDBCatalogEntryType {unDuckDBCatalogEntryType :: CInt}
+    deriving (Eq, Ord, Show, Storable)
+
+pattern
+    DuckDBCatalogEntryTypeInvalid
+    , DuckDBCatalogEntryTypeTable
+    , DuckDBCatalogEntryTypeSchema
+    , DuckDBCatalogEntryTypeView
+    , DuckDBCatalogEntryTypeIndex
+    , DuckDBCatalogEntryTypePreparedStatement
+    , DuckDBCatalogEntryTypeSequence
+    , DuckDBCatalogEntryTypeCollation
+    , DuckDBCatalogEntryTypeType
+    , DuckDBCatalogEntryTypeDatabase ::
+        DuckDBCatalogEntryType
+pattern DuckDBCatalogEntryTypeInvalid = DuckDBCatalogEntryType 0
+pattern DuckDBCatalogEntryTypeTable = DuckDBCatalogEntryType 1
+pattern DuckDBCatalogEntryTypeSchema = DuckDBCatalogEntryType 2
+pattern DuckDBCatalogEntryTypeView = DuckDBCatalogEntryType 3
+pattern DuckDBCatalogEntryTypeIndex = DuckDBCatalogEntryType 4
+pattern DuckDBCatalogEntryTypePreparedStatement = DuckDBCatalogEntryType 5
+pattern DuckDBCatalogEntryTypeSequence = DuckDBCatalogEntryType 6
+pattern DuckDBCatalogEntryTypeCollation = DuckDBCatalogEntryType 7
+pattern DuckDBCatalogEntryTypeType = DuckDBCatalogEntryType 8
+pattern DuckDBCatalogEntryTypeDatabase = DuckDBCatalogEntryType 9
+
+{-# COMPLETE
+    DuckDBCatalogEntryTypeInvalid
+    , DuckDBCatalogEntryTypeTable
+    , DuckDBCatalogEntryTypeSchema
+    , DuckDBCatalogEntryTypeView
+    , DuckDBCatalogEntryTypeIndex
+    , DuckDBCatalogEntryTypePreparedStatement
+    , DuckDBCatalogEntryTypeSequence
+    , DuckDBCatalogEntryTypeCollation
+    , DuckDBCatalogEntryTypeType
+    , DuckDBCatalogEntryTypeDatabase
+    #-}
+
 -- | Represents DuckDB's @duckdb_date@.
 newtype DuckDBDate = DuckDBDate {unDuckDBDate :: Int32}
     deriving (Eq, Ord, Show, Storable)
@@ -1050,6 +1193,12 @@ data DuckDBConfigStruct
 -- | Handle to a DuckDB configuration object.
 type DuckDBConfig = Ptr DuckDBConfigStruct
 
+-- | Tag type backing @duckdb_config_option@ pointers.
+data DuckDBConfigOptionStruct
+
+-- | Handle to a registerable configuration option.
+type DuckDBConfigOption = Ptr DuckDBConfigOptionStruct
+
 -- | Tag type backing @duckdb_instance_cache@ pointers.
 data DuckDBInstanceCacheStruct
 
@@ -1085,6 +1234,36 @@ data DuckDBScalarFunctionSetStruct
 
 -- | Handle to a set of scalar function overloads.
 type DuckDBScalarFunctionSet = Ptr DuckDBScalarFunctionSetStruct
+
+-- | Tag type backing @duckdb_copy_function@ pointers.
+data DuckDBCopyFunctionStruct
+
+-- | Handle to a COPY function definition.
+type DuckDBCopyFunction = Ptr DuckDBCopyFunctionStruct
+
+-- | Tag type backing @duckdb_copy_function_bind_info@ pointers.
+data DuckDBCopyFunctionBindInfoStruct
+
+-- | Handle to COPY bind state.
+type DuckDBCopyFunctionBindInfo = Ptr DuckDBCopyFunctionBindInfoStruct
+
+-- | Tag type backing @duckdb_copy_function_global_init_info@ pointers.
+data DuckDBCopyFunctionGlobalInitInfoStruct
+
+-- | Handle to COPY global-init state.
+type DuckDBCopyFunctionGlobalInitInfo = Ptr DuckDBCopyFunctionGlobalInitInfoStruct
+
+-- | Tag type backing @duckdb_copy_function_sink_info@ pointers.
+data DuckDBCopyFunctionSinkInfoStruct
+
+-- | Handle to COPY sink state.
+type DuckDBCopyFunctionSinkInfo = Ptr DuckDBCopyFunctionSinkInfoStruct
+
+-- | Tag type backing @duckdb_copy_function_finalize_info@ pointers.
+data DuckDBCopyFunctionFinalizeInfoStruct
+
+-- | Handle to COPY finalize state.
+type DuckDBCopyFunctionFinalizeInfo = Ptr DuckDBCopyFunctionFinalizeInfoStruct
 
 -- | Tag type backing @duckdb_aggregate_function@ pointers.
 data DuckDBAggregateFunctionStruct
@@ -1208,6 +1387,42 @@ data DuckDBClientContextStruct
 -- | Handle to a DuckDB client context.
 type DuckDBClientContext = Ptr DuckDBClientContextStruct
 
+-- | Tag type backing @duckdb_file_open_options@ pointers.
+data DuckDBFileOpenOptionsStruct
+
+-- | Handle to file-open options.
+type DuckDBFileOpenOptions = Ptr DuckDBFileOpenOptionsStruct
+
+-- | Tag type backing @duckdb_file_system@ pointers.
+data DuckDBFileSystemStruct
+
+-- | Handle to a DuckDB file system.
+type DuckDBFileSystem = Ptr DuckDBFileSystemStruct
+
+-- | Tag type backing @duckdb_file_handle@ pointers.
+data DuckDBFileHandleStruct
+
+-- | Handle to an open DuckDB file.
+type DuckDBFileHandle = Ptr DuckDBFileHandleStruct
+
+-- | Tag type backing @duckdb_catalog@ pointers.
+data DuckDBCatalogStruct
+
+-- | Handle to a DuckDB catalog.
+type DuckDBCatalog = Ptr DuckDBCatalogStruct
+
+-- | Tag type backing @duckdb_catalog_entry@ pointers.
+data DuckDBCatalogEntryStruct
+
+-- | Handle to a DuckDB catalog entry.
+type DuckDBCatalogEntry = Ptr DuckDBCatalogEntryStruct
+
+-- | Tag type backing @duckdb_log_storage@ pointers.
+data DuckDBLogStorageStruct
+
+-- | Handle to DuckDB log storage.
+type DuckDBLogStorage = Ptr DuckDBLogStorageStruct
+
 -- | Tag type backing @duckdb_prepared_statement@ pointers.
 data DuckDBPreparedStatementStruct
 
@@ -1301,11 +1516,26 @@ type DuckDBScalarFunctionFun = FunPtr (DuckDBFunctionInfo -> DuckDBDataChunk -> 
 -- | Function pointer used to represent scalar function bind callbacks.
 type DuckDBScalarFunctionBindFun = FunPtr (DuckDBBindInfo -> IO ())
 
+-- | Function pointer used to represent scalar function init callbacks.
+type DuckDBScalarFunctionInitFun = FunPtr (DuckDBInitInfo -> IO ())
+
 -- | Function pointer used to destroy user-provided data blobs.
 type DuckDBDeleteCallback = FunPtr (Ptr () -> IO ())
 
 -- | Function pointer used to copy user-provided data blobs.
 type DuckDBCopyCallback = FunPtr (Ptr () -> IO (Ptr ()))
+
+-- | Function pointer for COPY bind callbacks.
+type DuckDBCopyFunctionBindFun = FunPtr (DuckDBCopyFunctionBindInfo -> IO ())
+
+-- | Function pointer for COPY global-init callbacks.
+type DuckDBCopyFunctionGlobalInitFun = FunPtr (DuckDBCopyFunctionGlobalInitInfo -> IO ())
+
+-- | Function pointer for COPY sink callbacks.
+type DuckDBCopyFunctionSinkFun = FunPtr (DuckDBCopyFunctionSinkInfo -> DuckDBDataChunk -> IO ())
+
+-- | Function pointer for COPY finalize callbacks.
+type DuckDBCopyFunctionFinalizeFun = FunPtr (DuckDBCopyFunctionFinalizeInfo -> IO ())
 
 -- | Function pointer implementing cast functions.
 type DuckDBCastFunctionFun =
@@ -1353,6 +1583,10 @@ type DuckDBTableFunctionInitFun = FunPtr (DuckDBInitInfo -> IO ())
 
 -- | Function pointer for table function execution callbacks.
 type DuckDBTableFunctionFun = FunPtr (DuckDBFunctionInfo -> DuckDBDataChunk -> IO ())
+
+-- | Function pointer for log-storage write callbacks.
+type DuckDBLoggerWriteLogEntryFun =
+    FunPtr (Ptr () -> Ptr DuckDBTimestamp -> CString -> CString -> CString -> IO ())
 
 -- | Function pointer for replacement scan callbacks.
 type DuckDBReplacementCallback =

@@ -28,12 +28,21 @@ module Database.DuckDB.Simple.Internal (
     -- * Helpers
     connectionClosedError,
     statementClosedError,
+    withDatabaseHandle,
     withConnectionHandle,
     withStatementHandle,
     withQueryCString,
+    withClientContext,
+    destroyClientContext,
+    destroyValue,
+    destroyLogicalType,
+    throwRegistrationError,
+    releaseStablePtrData,
+    mkDeleteCallback,
 ) where
 
-import Control.Exception (Exception, throwIO)
+import Control.Exception (Exception, bracket, throwIO)
+import Control.Monad (when)
 import Data.IORef (IORef, readIORef)
 import Data.String (IsString (..))
 import Data.Text (Text)
@@ -41,17 +50,28 @@ import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
 import Data.Word (Word64)
 import Database.DuckDB.FFI (
+    DuckDBClientContext,
     DuckDBConnection,
     DuckDBDataChunk,
     DuckDBDatabase,
+    DuckDBDeleteCallback,
     DuckDBErrorType,
+    DuckDBLogicalType,
     DuckDBPreparedStatement,
     DuckDBResult,
     DuckDBType,
+    DuckDBValue,
     DuckDBVector,
+    c_duckdb_connection_get_client_context,
+    c_duckdb_destroy_client_context,
+    c_duckdb_destroy_logical_type,
+    c_duckdb_destroy_value,
  )
 import Foreign.C.String (CString)
-import Foreign.Ptr (Ptr)
+import Foreign.Marshal.Alloc (alloca)
+import Foreign.Ptr (Ptr, nullPtr)
+import Foreign.StablePtr (StablePtr, castPtrToStablePtr, freeStablePtr)
+import Foreign.Storable (peek, poke)
 
 -- | Represents a textual SQL query with UTF-8 encoding semantics.
 newtype Query = Query
@@ -181,3 +201,55 @@ withConnectionHandle Connection{connectionState} action = do
     case state of
         ConnectionClosed -> throwIO connectionClosedError
         ConnectionOpen{connectionHandle} -> action connectionHandle
+
+-- | Internal helper for safely accessing the underlying database handle.
+withDatabaseHandle :: Connection -> (DuckDBDatabase -> IO a) -> IO a
+withDatabaseHandle Connection{connectionState} action = do
+    state <- readIORef connectionState
+    case state of
+        ConnectionClosed -> throwIO connectionClosedError
+        ConnectionOpen{connectionDatabase} -> action connectionDatabase
+
+-- | Acquire the client context for the connection, destroying it after the action.
+withClientContext :: Connection -> (DuckDBClientContext -> IO a) -> IO a
+withClientContext conn action =
+    withConnectionHandle conn $ \connPtr ->
+        alloca $ \ctxPtr -> do
+            c_duckdb_connection_get_client_context connPtr ctxPtr
+            ctx <- peek ctxPtr
+            bracket (pure ctx) destroyClientContext action
+
+-- | Destroy a client context handle.
+destroyClientContext :: DuckDBClientContext -> IO ()
+destroyClientContext ctx =
+    alloca $ \ptr -> poke ptr ctx >> c_duckdb_destroy_client_context ptr
+
+-- | Destroy a value handle.
+destroyValue :: DuckDBValue -> IO ()
+destroyValue value =
+    alloca $ \ptr -> poke ptr value >> c_duckdb_destroy_value ptr
+
+-- | Destroy a logical type handle.
+destroyLogicalType :: DuckDBLogicalType -> IO ()
+destroyLogicalType logicalType =
+    alloca $ \ptr -> poke ptr logicalType >> c_duckdb_destroy_logical_type ptr
+
+-- | Throw a standardised registration error.
+throwRegistrationError :: String -> IO a
+throwRegistrationError label =
+    throwIO
+        SQLError
+            { sqlErrorMessage = Text.pack ("duckdb-simple: " <> label <> " failed")
+            , sqlErrorType = Nothing
+            , sqlErrorQuery = Nothing
+            }
+
+-- | Free a stable pointer stored behind a raw @Ptr ()@.
+releaseStablePtrData :: Ptr () -> IO ()
+releaseStablePtrData rawPtr =
+    when (rawPtr /= nullPtr) $
+        freeStablePtr (castPtrToStablePtr rawPtr :: StablePtr ())
+
+-- | Create a DuckDB delete callback from a Haskell function.
+foreign import ccall "wrapper"
+    mkDeleteCallback :: (Ptr () -> IO ()) -> IO DuckDBDeleteCallback

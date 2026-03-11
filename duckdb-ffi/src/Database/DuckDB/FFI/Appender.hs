@@ -5,6 +5,7 @@ module Database.DuckDB.FFI.Appender (
     c_duckdb_appender_column_count,
     c_duckdb_appender_column_type,
     c_duckdb_appender_error_data,
+    c_duckdb_appender_clear,
     c_duckdb_appender_flush,
     c_duckdb_appender_close,
     c_duckdb_appender_destroy,
@@ -138,6 +139,13 @@ Returns The error data.
 -}
 foreign import ccall "duckdb_appender_error_data"
     c_duckdb_appender_error_data :: DuckDBAppender -> IO DuckDBErrorData
+
+{- | Clears the appender's buffered state without destroying it.
+
+Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
+-}
+foreign import ccall "duckdb_appender_clear"
+    c_duckdb_appender_clear :: DuckDBAppender -> IO DuckDBState
 
 {- | Flush the appender to the table, forcing the cache of the appender to be
 cleared. If flushing the data triggers a constraint violation or any other

@@ -6,6 +6,7 @@ import Control.Monad (when)
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.List (intercalate)
 import Data.Time.Calendar (diffDays, fromGregorian)
+import Data.Time.LocalTime (getCurrentTimeZone, timeZoneMinutes)
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.FFI
 import Database.DuckDB.FFI.Deprecated
@@ -167,8 +168,10 @@ bindValuesRoundtrip =
                         fetchedTs @?= duckDBTimestampMicros timestampValue
 
                         DuckDBTimestamp fetchedTsTz <- c_duckdb_value_timestamp resPtr 17 0
-                        let tzDifference = fetchedTsTz - duckDBTimestampMicros timestampValue
-                        tzDifference @?= 7200000000
+                        tz <- getCurrentTimeZone
+                        let tzOffsetMicros = fromIntegral (timeZoneMinutes tz) * 60 * 1000000
+                            tzDifference = fetchedTsTz - duckDBTimestampMicros timestampValue
+                        tzDifference @?= tzOffsetMicros
 
                         alloca \intervalPtr -> do
                             c_duckdb_value_interval resPtr 18 0 intervalPtr

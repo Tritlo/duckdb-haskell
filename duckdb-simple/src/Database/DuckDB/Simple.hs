@@ -101,7 +101,7 @@ import Database.DuckDB.Simple.FromRow (
     parseRow,
     rowErrorsToSqlError,
  )
-import Database.DuckDB.Simple.Function (Function, createFunction, createFunctionWithState, deleteFunction)
+import Database.DuckDB.Simple.Function (Function (..), createFunction, createFunctionWithState, deleteFunction)
 import Database.DuckDB.Simple.Internal (
     Connection (..),
     ConnectionState (..),

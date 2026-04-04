@@ -51,13 +51,21 @@ import Data.Time.Clock (UTCTime (..))
 import Data.Time.LocalTime (
     LocalTime (..),
     TimeOfDay (..),
-    TimeZone (..),
     localTimeToUTC,
     utc,
     utcToLocalTime,
  )
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
+import Database.DuckDB.Simple.Internal (
+  BigNum (..),
+  BitString (..),
+  DecimalValue (..),
+  Field (..),
+  FieldValue (..),
+  IntervalValue (..),
+  TimeWithZone (..),
+ )
 import Database.DuckDB.Simple.LogicalRep (
     LogicalTypeRep (..),
     StructField (..),
@@ -69,63 +77,6 @@ import Database.DuckDB.Simple.Ok
 import Database.DuckDB.Simple.Types (Null (..))
 import GHC.Num.Integer (integerFromWordList)
 import Numeric.Natural (Natural)
-
--- | Internal representation of a column value.
-data FieldValue
-    = FieldNull
-    | FieldInt8 Int8
-    | FieldInt16 Int16
-    | FieldInt32 Int32
-    | FieldInt64 Int64
-    | FieldWord8 Word8
-    | FieldWord16 Word16
-    | FieldWord32 Word32
-    | FieldWord64 Word64
-    | FieldUUID UUID.UUID
-    | FieldFloat Float
-    | FieldDouble Double
-    | FieldText Text
-    | FieldBool Bool
-    | FieldBlob BS.ByteString
-    | FieldDate Day
-    | FieldTime TimeOfDay
-    | FieldTimestamp LocalTime
-    | FieldInterval IntervalValue
-    | FieldHugeInt Integer
-    | FieldUHugeInt Integer
-    | FieldDecimal DecimalValue
-    | FieldTimestampTZ UTCTime
-    | FieldTimeTZ TimeWithZone
-    | FieldBit BitString
-    | FieldBigNum BigNum
-    | FieldEnum Word32
-    | FieldArray (Array Int FieldValue)
-    | FieldList [FieldValue]
-    | FieldMap [(FieldValue, FieldValue)]
-    | FieldStruct (StructValue FieldValue)
-    | FieldUnion (UnionValue FieldValue)
-    deriving (Eq, Show)
-
--- | Exact-width decimal payload plus its declared width and scale.
-data DecimalValue = DecimalValue
-    { decimalWidth :: !Word8
-    , decimalScale :: !Word8
-    , decimalInteger :: !Integer
-    }
-    deriving (Eq, Show)
-
--- | DuckDB interval payload split into months, days, and microseconds.
-data IntervalValue = IntervalValue
-    { intervalMonths :: !Int32
-    , intervalDays :: !Int32
-    , intervalMicros :: !Int64
-    }
-    deriving (Eq, Show)
-
--- | Arbitrary-precision integer wrapper used for DuckDB's BIGNUM type.
-newtype BigNum = BigNum Integer
-    deriving stock (Eq, Show)
-    deriving (Num) via Integer
 
 {- | Decode DuckDB’s BIGNUM blob (3-byte header + big-endian payload where negative magnitudes are
 bitwise complemented) back into a Haskell @Integer@. We undo the complement when needed, then chunk
@@ -182,20 +133,6 @@ toBigNumBytes value =
         payloadBytes = if isNeg then map complement payloadBE else payloadBE
      in headerBytes <> payloadBytes
 
--- | DuckDB BIT value represented as raw bytes plus left-padding bit count.
-data BitString = BitString
-    { padding :: !Word8
-    , bits :: !BS.ByteString
-    }
-    deriving stock (Eq)
-
-instance Show BitString where
-    show (BitString padding bits) =
-        drop (fromIntegral padding) $ concatMap word8ToString $ BS.unpack bits
-      where
-        word8ToString :: Word8 -> String
-        word8ToString w = map (\n -> if testBit w n then '1' else '0') [7, 6 .. 0]
-
 -- | Construct a @BitString@ from a list of @Bool@s, where the first element
 bsFromBool :: [Bool] -> BitString
 bsFromBool bits =
@@ -211,13 +148,6 @@ bsFromBool bits =
 
     bitsToWord8 :: [Bool] -> Word8
     bitsToWord8 bs = foldl (\acc (b, i) -> if b then setBit acc i else acc) 0 (zip bs [7, 6 .. 0])
-
--- | Time-of-day paired with its associated timezone offset.
-data TimeWithZone = TimeWithZone
-    { timeWithZoneTime :: !TimeOfDay
-    , timeWithZoneZone :: !TimeZone
-    }
-    deriving (Eq, Show)
 
 -- | Pattern synonym to make it easier to match on any integral type.
 pattern FieldInt :: Int -> FieldValue
@@ -244,14 +174,6 @@ fieldValueToWord (FieldWord16 i) = Just (fromIntegral i)
 fieldValueToWord (FieldWord32 i) = Just (fromIntegral i)
 fieldValueToWord (FieldWord64 i) = Just (fromIntegral i)
 fieldValueToWord _ = Nothing
-
--- | Metadata for a single column in a row.
-data Field = Field
-    { fieldName :: Text
-    , fieldIndex :: Int
-    , fieldValue :: FieldValue
-    }
-    deriving (Eq, Show)
 
 {- | Exception thrown if conversion from a SQL value to a Haskell
 value fails.

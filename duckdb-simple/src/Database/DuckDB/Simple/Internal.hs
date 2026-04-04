@@ -1,4 +1,5 @@
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE StrictData #-}
 
@@ -11,6 +12,19 @@ utilities required by the high-level API.  It is not part of the supported
 public interface; consumers should depend on @Database.DuckDB.Simple@ instead.
 -}
 module Database.DuckDB.Simple.Internal (
+    -- * Field value (to be used by FromField)
+    Field (..),
+    FieldValue (..),
+    StructField (..),
+    StructValue (..),
+    UnionMemberType (..),
+    UnionValue (..),
+    LogicalTypeRep (..),
+    BitString (..),
+    BigNum (..),
+    DecimalValue (..),
+    IntervalValue (..),
+    TimeWithZone (..),
     -- * Data constructors (internal use only)
     Query (..),
     Connection (..),
@@ -43,12 +57,24 @@ module Database.DuckDB.Simple.Internal (
 
 import Control.Exception (Exception, bracket, throwIO)
 import Control.Monad (when)
+import Data.Array (Array)
+import Data.Bits (Bits (..))
+import qualified Data.ByteString as BS
+import Data.Int (Int16, Int32, Int64, Int8)
 import Data.IORef (IORef, readIORef)
 import Data.String (IsString (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
-import Data.Word (Word64)
+import Data.Time.Calendar (Day)
+import Data.Time.Clock (UTCTime (..))
+import Data.Time.LocalTime (
+    LocalTime (..),
+    TimeOfDay (..),
+    TimeZone (..),
+ )
+import qualified Data.UUID as UUID
+import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.FFI (
     DuckDBClientContext,
     DuckDBConnection,
@@ -67,11 +93,104 @@ import Database.DuckDB.FFI (
     c_duckdb_destroy_logical_type,
     c_duckdb_destroy_value,
  )
+import Database.DuckDB.Simple.LogicalRep (
+    LogicalTypeRep (..),
+    StructField (..),
+    StructValue (..),
+    UnionMemberType (..),
+    UnionValue (..),
+ )
 import Foreign.C.String (CString)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, nullPtr)
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, freeStablePtr)
 import Foreign.Storable (peek, poke)
+
+-- | Internal representation of a column value.
+data FieldValue
+    = FieldNull
+    | FieldInt8 Int8
+    | FieldInt16 Int16
+    | FieldInt32 Int32
+    | FieldInt64 Int64
+    | FieldWord8 Word8
+    | FieldWord16 Word16
+    | FieldWord32 Word32
+    | FieldWord64 Word64
+    | FieldUUID UUID.UUID
+    | FieldFloat Float
+    | FieldDouble Double
+    | FieldText Text
+    | FieldBool Bool
+    | FieldBlob BS.ByteString
+    | FieldDate Day
+    | FieldTime TimeOfDay
+    | FieldTimestamp LocalTime
+    | FieldInterval IntervalValue
+    | FieldHugeInt Integer
+    | FieldUHugeInt Integer
+    | FieldDecimal DecimalValue
+    | FieldTimestampTZ UTCTime
+    | FieldTimeTZ TimeWithZone
+    | FieldBit BitString
+    | FieldBigNum BigNum
+    | FieldEnum Word32
+    | FieldArray (Array Int FieldValue)
+    | FieldList [FieldValue]
+    | FieldMap [(FieldValue, FieldValue)]
+    | FieldStruct (StructValue FieldValue)
+    | FieldUnion (UnionValue FieldValue)
+    deriving (Eq, Show)
+
+-- | Exact-width decimal payload plus its declared width and scale.
+data DecimalValue = DecimalValue
+    { decimalWidth :: !Word8
+    , decimalScale :: !Word8
+    , decimalInteger :: !Integer
+    }
+    deriving (Eq, Show)
+
+-- | DuckDB interval payload split into months, days, and microseconds.
+data IntervalValue = IntervalValue
+    { intervalMonths :: !Int32
+    , intervalDays :: !Int32
+    , intervalMicros :: !Int64
+    }
+    deriving (Eq, Show)
+
+-- | Arbitrary-precision integer wrapper used for DuckDB's BIGNUM type.
+newtype BigNum = BigNum Integer
+    deriving stock (Eq, Show)
+    deriving (Num) via Integer
+
+-- | Time-of-day paired with its associated timezone offset.
+data TimeWithZone = TimeWithZone
+    { timeWithZoneTime :: !TimeOfDay
+    , timeWithZoneZone :: !TimeZone
+    }
+    deriving (Eq, Show)
+
+-- | DuckDB BIT value represented as raw bytes plus left-padding bit count.
+data BitString = BitString
+    { padding :: !Word8
+    , bits :: !BS.ByteString
+    }
+    deriving stock (Eq)
+
+instance Show BitString where
+    show (BitString padding bits) =
+        drop (fromIntegral padding) $ concatMap word8ToString $ BS.unpack bits
+      where
+        word8ToString :: Word8 -> String
+        word8ToString w = map (\n -> if testBit w n then '1' else '0') [7, 6 .. 0]
+
+-- | Metadata for a single column in a row.
+data Field = Field
+    { fieldName :: Text
+    , fieldIndex :: Int
+    , fieldValue :: FieldValue
+    }
+    deriving (Eq, Show)
 
 -- | Represents a textual SQL query with UTF-8 encoding semantics.
 newtype Query = Query

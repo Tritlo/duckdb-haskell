@@ -1,5 +1,7 @@
+{-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DerivingVia #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE StrictData #-}
 
@@ -29,6 +31,8 @@ module Database.DuckDB.Simple.Internal (
     Query (..),
     Connection (..),
     ConnectionState (..),
+    RowParser (..),
+    RowParseRO (..),
     Statement (..),
     StatementState (..),
     StatementStreamState (..),
@@ -55,8 +59,11 @@ module Database.DuckDB.Simple.Internal (
     mkDeleteCallback,
 ) where
 
+import Control.Applicative (Alternative)
 import Control.Exception (Exception, bracket, throwIO)
-import Control.Monad (when)
+import Control.Monad (MonadPlus, when)
+import Control.Monad.Trans.Reader (ReaderT)
+import Control.Monad.Trans.State.Strict (StateT)
 import Data.Array (Array)
 import Data.Bits (Bits (..))
 import qualified Data.ByteString as BS
@@ -100,6 +107,7 @@ import Database.DuckDB.Simple.LogicalRep (
     UnionMemberType (..),
     UnionValue (..),
  )
+import Database.DuckDB.Simple.Ok (Ok)
 import Foreign.C.String (CString)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, nullPtr)
@@ -191,6 +199,18 @@ data Field = Field
     , fieldValue :: FieldValue
     }
     deriving (Eq, Show)
+
+-- | Parser used by @FromRow@ implementations.
+newtype RowParser a = RowParser
+    { runRowParser :: ReaderT RowParseRO (StateT (Int, [Field]) Ok) a
+    }
+    deriving stock (Functor)
+    deriving newtype (Applicative, Alternative, Monad, MonadPlus)
+
+-- | Row parsing environment (read-only data available to the parser).
+newtype RowParseRO = RowParseRO
+    { rowParseColumnCount :: Int
+    }
 
 -- | Represents a textual SQL query with UTF-8 encoding semantics.
 newtype Query = Query

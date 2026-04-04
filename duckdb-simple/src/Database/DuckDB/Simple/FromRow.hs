@@ -29,39 +29,26 @@ module Database.DuckDB.Simple.FromRow (
     rowErrorsToSqlError,
 ) where
 
-import Control.Applicative (Alternative (..))
 import Control.Exception (Exception, SomeException (SomeException), fromException, toException)
-import Control.Monad (MonadPlus, replicateM)
+import Control.Monad (replicateM)
 import Control.Monad.Trans.Class (lift)
-import Control.Monad.Trans.Reader (ReaderT, ask, runReaderT)
-import Control.Monad.Trans.State.Strict (StateT, get, put, runStateT)
+import Control.Monad.Trans.Reader (ask, runReaderT)
+import Control.Monad.Trans.State.Strict (get, put, runStateT)
 import Data.Maybe (listToMaybe, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import GHC.Generics
 
 import Database.DuckDB.Simple.FromField
-import Database.DuckDB.Simple.Internal (SQLError (..))
+import Database.DuckDB.Simple.Internal (RowParser (..), RowParseRO (..), SQLError (..))
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.Types (Only (..), Query, (:.) (..))
-
--- | Row parsing environment (read-only data available to the parser).
-newtype RowParseRO = RowParseRO
-    { rowParseColumnCount :: Int
-    }
 
 -- | Column-out-of-bounds sentinel used internally to map parser failures.
 newtype ColumnOutOfBounds = ColumnOutOfBounds {columnOutOfBoundsIndex :: Int}
     deriving stock (Eq, Show)
 
 instance Exception ColumnOutOfBounds
-
--- | Parser used by @FromRow@ implementations.
-newtype RowParser a = RowParser
-    { runRowParser :: ReaderT RowParseRO (StateT (Int, [Field]) Ok) a
-    }
-    deriving stock (Functor)
-    deriving newtype (Applicative, Alternative, Monad, MonadPlus)
 
 -- | Generic derivation helper mirroring @sqlite-simple@.
 class GFromRow f where

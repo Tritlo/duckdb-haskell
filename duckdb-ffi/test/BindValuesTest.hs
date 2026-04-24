@@ -23,13 +23,24 @@ tests :: TestTree
 tests =
     testGroup
         "Bind Values"
-        [bindValuesRoundtrip]
+        [bindValuesRoundtrip, bindTimestampTzAcrossSessions]
+
+-- | Pin the session timezone so the tstz readback offset below is stable
+-- regardless of the host OS timezone (see issue #8).
+setSessionTimeZoneSQL :: String
+setSessionTimeZoneSQL = "SET TimeZone='UTC+02:00'"
 
 bindValuesRoundtrip :: TestTree
 bindValuesRoundtrip =
     testCase "bind every supported value type" $
         withDatabase \db ->
             withConnection db \conn -> do
+                withCString setSessionTimeZoneSQL \tzSQL ->
+                    alloca \resPtr -> do
+                        st <- c_duckdb_query conn tzSQL resPtr
+                        st @?= DuckDBSuccess
+                        c_duckdb_destroy_result resPtr
+
                 withCString createSQL \ddl ->
                     alloca \resPtr -> do
                         st <- c_duckdb_query conn ddl resPtr
@@ -255,7 +266,7 @@ bindValuesRoundtrip =
             <> "date_col DATE,"
             <> "time_col TIME,"
             <> "ts_col TIMESTAMP,"
-            <> "tstz_col TIMESTAMP,"
+            <> "tstz_col TIMESTAMPTZ,"
             <> "interval_col INTERVAL,"
             <> "decimal_col DECIMAL(18,2),"
             <> "varchar_col VARCHAR,"
@@ -269,8 +280,72 @@ bindValuesRoundtrip =
             <> intercalate ", " (replicate 24 "?")
             <> ")"
 
-    selectSQL = "SELECT * FROM bind_values"
+    -- Cast tstz_col back to TIMESTAMP so the deprecated safe-fetch
+    -- 'c_duckdb_value_timestamp' can read it; the cast uses the pinned
+    -- session TimeZone above, yielding bound + 02:00.
+    selectSQL = "SELECT * REPLACE (tstz_col::TIMESTAMP AS tstz_col) FROM bind_values"
 
     duckDBDateDays (DuckDBDate d) = d
     duckDBTimeMicros (DuckDBTime t) = t
     duckDBTimestampMicros (DuckDBTimestamp t) = t
+
+-- | Regression test for issue #8: reading a TIMESTAMPTZ column via
+-- 'c_duckdb_value_timestamp' converts to the session's TimeZone, so the
+-- offset between the bound UTC instant and the readback must track the
+-- session's TimeZone setting — not the host OS timezone.
+bindTimestampTzAcrossSessions :: TestTree
+bindTimestampTzAcrossSessions =
+    testCase "bind_timestamp_tz readback tracks session TimeZone" $
+        withDatabase \db ->
+            withConnection db \conn -> do
+                withCString "CREATE TABLE tstz_only (ts TIMESTAMPTZ)" \ddl ->
+                    alloca \resPtr -> do
+                        c_duckdb_query conn ddl resPtr >>= (@?= DuckDBSuccess)
+                        c_duckdb_destroy_result resPtr
+
+                -- A fixed UTC instant: 2021-07-20 12:34:56 UTC
+                let boundMicros :: Int64
+                    boundMicros =
+                        fromIntegral (diffDays (fromGregorian 2021 7 20) (fromGregorian 1970 1 1))
+                            * 86400000000
+                            + ((12 * 60 + 34) * 60 + 56) * 1000000
+                    bound = DuckDBTimestamp boundMicros
+
+                withCString "INSERT INTO tstz_only VALUES (?)" \cInsert ->
+                    alloca \stmtPtr -> do
+                        c_duckdb_prepare conn cInsert stmtPtr >>= (@?= DuckDBSuccess)
+                        stmt <- peek stmtPtr
+                        c_duckdb_bind_timestamp_tz stmt 1 bound >>= (@?= DuckDBSuccess)
+                        alloca \execResPtr -> do
+                            c_duckdb_execute_prepared stmt execResPtr >>= (@?= DuckDBSuccess)
+                            c_duckdb_destroy_result execResPtr
+                        c_duckdb_destroy_prepare stmtPtr
+
+                -- For each session TimeZone, the readback wall-clock should be
+                -- bound + offset, independent of the host OS TZ.
+                let cases :: [(String, Int64)]
+                    cases =
+                        [ ("UTC", 0)
+                        , ("UTC+02:00", 2 * 3600 * 1000000)
+                        , ("UTC-05:00", (-5) * 3600 * 1000000)
+                        , ("Etc/GMT-2", 2 * 3600 * 1000000)
+                        ]
+
+                mapM_ (assertTimeZoneOffset conn boundMicros) cases
+  where
+    assertTimeZoneOffset conn boundMicros (tz, expected) = do
+        withCString ("SET TimeZone='" <> tz <> "'") \setTzSQL ->
+            alloca \resPtr -> do
+                c_duckdb_query conn setTzSQL resPtr >>= (@?= DuckDBSuccess)
+                c_duckdb_destroy_result resPtr
+
+        -- Cast TIMESTAMPTZ → TIMESTAMP in-query; the cast uses the
+        -- session TimeZone just set, so the wall-clock readback carries
+        -- the expected offset.
+        withCString "SELECT ts::TIMESTAMP FROM tstz_only" \cSelect ->
+            alloca \resPtr -> do
+                c_duckdb_query conn cSelect resPtr >>= (@?= DuckDBSuccess)
+                DuckDBTimestamp fetched <- c_duckdb_value_timestamp resPtr 0 0
+                let msg = "TimeZone=" <> tz <> ": expected offset " <> show expected
+                assertBool msg (fetched - boundMicros == expected)
+                c_duckdb_destroy_result resPtr

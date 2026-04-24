@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.1.5.1
+- Re-export the `RowParser` data constructor from `Database.DuckDB.Simple.FromRow`, restoring the API that `0.1.5.0` unintentionally broke (see #6). Downstream packages such as `beam-duckdb` rely on this constructor. (Sorry!)
+
 ## 0.1.5.0
 - Raise the supported DuckDB runtime baseline to `1.5.0+` via the `duckdb-ffi-1.5` dependency line.
 - Add DuckDB 1.5 high-level wrappers for startup config inspection and connection setup, catalog lookup, file-system handles, copy-function registration, and custom log storage registration.

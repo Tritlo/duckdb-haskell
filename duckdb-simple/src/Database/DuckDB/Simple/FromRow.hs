@@ -14,7 +14,7 @@ Description : Convert rows of @Field@s into Haskell values using a parser-style 
 -}
 module Database.DuckDB.Simple.FromRow (
     -- * Row parsing
-    RowParser,
+    RowParser (..),
     field,
     fieldWith,
     numFieldsRemaining,

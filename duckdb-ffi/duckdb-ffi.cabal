@@ -4,7 +4,7 @@ version: 1.5.0.0
 author: Matthias Pall Gissurarson
 maintainer: mpg@mpg.is
 category: Database
-build-type: Simple
+build-type: Custom
 tested-with:
   ghc ==9.6.*
   ghc ==9.8.*
@@ -31,6 +31,17 @@ source-repository head
   type: git
   location: https://github.com/Tritlo/duckdb-haskell.git
   subdir: duckdb-ffi
+
+custom-setup
+  setup-depends:
+    base,
+    Cabal >= 3.4,
+    bytestring,
+    directory,
+    filepath,
+    http-conduit,
+    temporary,
+    zip-archive,
 
 library
   default-language:
@@ -113,10 +124,6 @@ library
     text >=2.0 && <2.2,
     time >=1.12 && <1.16,
     transformers >=0.6 && <0.7,
-
-  if os(linux)
-    ghc-options: "-optl-Wl,-rpath,'$ORIGIN/../cbits/duckdb'"
-    ld-options: "-Wl,-rpath,'$ORIGIN/../cbits/duckdb'"
 
 test-suite duckdb-ffi-tests
   type: exitcode-stdio-1.0

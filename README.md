@@ -14,10 +14,22 @@ by generating FFI shims directly from the official `duckdb.h` header.
   so you can pick between granular or aggregate re-exports.
 - Ships with an exhaustive test suite that exercises every binding to catch
   signature drift when DuckDB evolves.
-- Validated against DuckDB 1.5.0+ releases. Ensure the native
-  `libduckdb` shared library is installed on your system (for example via
-  https://duckdb.org/install/?platform=linux&environment=c&architecture=x86_64)
-  before linking a Haskell application against the bindings.
+- Validated against DuckDB 1.5.0+ releases.
+
+### Installation
+
+`cabal build` automatically downloads the platform-specific `libduckdb` shared
+library from the [DuckDB GitHub releases](https://github.com/duckdb/duckdb/releases)
+and caches it under `~/.cache/duckdb/<version>/<platform>/` (XDG cache).
+No manual installation is required on Linux (x86_64) or macOS.
+
+The following environment variables customise this behaviour:
+
+* `DUCKDB_VERSION`: (default `1.5.0`) DuckDB release to download
+* `DUCKDB_HOME`: (`~/.cache/duckdb`) Override the cache root directory
+* `DUCKDB_SKIP_DOWNLOAD`: (default *(unset)*) Set to any value to skip the download and link against a system-installed `libduckdb` instead.
+
+NB: Nix builds are detected via a heuristic `NIX_BUILD_TOP` and the download is skipped; `libduckdb` must be provided by the Nix environment in that case (the current flake does not do this).
 
 `duckdb-ffi` is ideal when you need precise control over DuckDB’s C API, want to
 interoperate with other native components, or plan to build higher-level

@@ -95,4 +95,4 @@ createTableQuery :: AppendTableRow a => Text -> Proxy a -> Query
 createTableQuery nme pxy = Query $ "CREATE TABLE \"" <> nme <> "\" (" <> tableSchema pxy <> ")" -- FIXME: unsafe
 
 tableSchema :: (AppendTableRow a) => Proxy a -> Text
-tableSchema pxy = Text.intercalate ", \n" ["\"" <> structFieldName <> "\" " <> renderDuckTypeName structFieldValue | (structFieldName, structFieldValue) <- appendDuckRowSchema pxy]
+tableSchema pxy = Text.intercalate ", \n" ["\"" <> nme <> "\" " <> renderDuckTypeName tpe | (nme, tpe) <- appendDuckRowSchema pxy]

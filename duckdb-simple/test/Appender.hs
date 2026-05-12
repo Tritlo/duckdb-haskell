@@ -47,7 +47,7 @@ data Nested = Nested { foo :: Text, bar :: Int }
 
 
 data Severity = Error | Warning | Info
-  deriving stock (Generic)
+  deriving stock (Generic, Show, Enum)
   deriving AppenderDuckValue via (ViaDuckEnum Severity)
 
 data SimpleUnion = Foo Int | Bar Text | Baz UTCTime
@@ -67,7 +67,7 @@ data SimpleStruct = SimpleStruct { a :: Int, b :: Bool, c :: UTCTime}
   deriving AppenderDuckValue via (ViaDuckStruct SimpleStruct)
 
 data SimpleEnum = A | B | C | D | Other
-  deriving stock (Generic)
+  deriving stock (Generic, Show, Enum)
   deriving AppenderDuckValue via (ViaDuckEnum SimpleEnum)
 
 

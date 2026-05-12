@@ -34,7 +34,8 @@ module Database.DuckDB.Simple.Appender.Generic (
     duckStructTypeName,
     duckStructValue,
     Allocated(..),
-    DuckDBValue
+    DuckDBValue,
+    Uncached (..)
 ) where
 
 import Control.Monad (join, (>=>))
@@ -59,7 +60,7 @@ import qualified Data.Text as Text
 import qualified Data.Text.Foreign as Text
 import qualified Data.Text.Foreign as TextForeign
 import qualified Data.Text.Lazy as T
-import Data.Time (LocalTime (..), UTCTime, utc, utcToLocalTime)
+import Data.Time (LocalTime (..), UTCTime, utc, utcToLocalTime, NominalDiffTime, nominalDiffTimeToSeconds)
 import Data.Time.Calendar (Day)
 import Data.Time.LocalTime (TimeOfDay)
 import Data.Typeable (TypeRep, Typeable, typeRep)
@@ -76,6 +77,7 @@ import Database.DuckDB.FFI
 import Database.DuckDB.Simple.FromField (BigNum (..), IntervalValue (..), TimeWithZone (..))
 import Database.DuckDB.Simple.Internal
 import Database.DuckDB.Simple.Internal.ValueHelpers
+import Debug.Trace (trace, traceIO)
 
 newtype Allocated a = Allocated {allocate :: IO a}
 
@@ -262,7 +264,14 @@ instance AppenderDuckValue UUID.UUID where
     appenderLogicalTypeUncached _ = primitiveType DuckDBTypeUUID
     appenderTypeName _ = "UUID"
 
-instance AppenderDuckValue IntervalValue where -- TODO: Make it nominal diff time!
+instance AppenderDuckValue NominalDiffTime where
+  appenderDuckValue v = appenderDuckValue $ IntervalValue{intervalMonths = 0, intervalDays = 0, intervalMicros = truncate $ nominalDiffTimeToSeconds v * 1e6}
+  appendDuckValue app v = appendDuckValue app $ IntervalValue{intervalMonths = 0, intervalDays = 0, intervalMicros = truncate $ nominalDiffTimeToSeconds v * 1e6}
+  appenderLogicalTypeUncached _ = appenderLogicalTypeUncached (Proxy @IntervalValue)
+  appenderTypeName _ = appenderTypeName (Proxy @IntervalValue)
+
+
+instance AppenderDuckValue IntervalValue where
     appenderDuckValue = Allocated . intervalDuckValue
     appenderLogicalTypeUncached _ = primitiveType DuckDBTypeInterval
     appendDuckValue app IntervalValue{intervalMonths, intervalDays, intervalMicros} =
@@ -452,11 +461,10 @@ instance (GDuckUnion a) => GDuckUnion (M1 D c a) where
 
 newtype ViaDuckEnum a = ViaDuckEnum a
 
-instance (GDuckEnum (Rep a), Generic a, Typeable a) => AppenderDuckValue (ViaDuckEnum a) where
+instance (GDuckEnum (Rep a), Generic a, Typeable a, Show a, Enum a) => AppenderDuckValue (ViaDuckEnum a) where
     appenderDuckValue (ViaDuckEnum v) = Allocated $ do
         unionType <- cacheAppenderLogicalType (typeRep $ Proxy @a) (genumLogicalType $ genumType (Proxy @(Rep a)))
-        let ix = genumValue 0 $ from v
-        c_duckdb_create_enum_value unionType (fromIntegral ix)
+        c_duckdb_create_enum_value unionType (fromIntegral $ fromEnum v)
     appenderLogicalTypeUncached _ = genumLogicalType $ genumType (Proxy @(Rep a))
     appenderTypeName _ = DuckTypeName $ "ENUM(" <> Text.intercalate ", " ["\'" <> ctor <> "\'" | ctor <- genumType $ Proxy @(Rep a)] <> ")"
 

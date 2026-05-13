@@ -95,7 +95,7 @@ appenderTests =
                   "ENUM('A', 'B', 'C', 'D', 'Other')" @=? renderDuckTypeName (appenderTypeName $ Proxy @SimpleEnum)
         , testCase "withTableAppender appends" $
             withConnection ":memory:" \conn -> do
-                _ <- execute_ conn $ createTableQuery "logs" (Proxy @LogLine)
+                _ <- execute_ conn (createTableQuery "logs" (Proxy @LogLine))
                 withTableAppender conn "logs" $ \app -> do
                   mapM_ (appendTableRow app)
                     [ LogLine sometime "message A" Error (PayloadJSON $ A.object ["foo" A..= A.Null, "bar" A..= (123 :: Int)])
@@ -104,5 +104,5 @@ appenderTests =
                     , LogLine sometime "message D" Warning NoPayload
                     ]
                 rows <- query_ conn "SELECT COUNT(*) FROM logs" :: IO [Only Int]
-                assertEqual "rows" [Only 3] rows
+                [Only 4] @=? rows
         ]

@@ -77,7 +77,7 @@ import Database.DuckDB.FFI
 import Database.DuckDB.Simple.FromField (BigNum (..), IntervalValue (..), TimeWithZone (..))
 import Database.DuckDB.Simple.Internal
 import Database.DuckDB.Simple.Internal.ValueHelpers
-import Debug.Trace (trace, traceIO)
+import Data.Scientific (Scientific)
 
 newtype Allocated a = Allocated {allocate :: IO a}
 
@@ -220,6 +220,12 @@ instance AppenderDuckValue Double where
     appenderDuckValue = Allocated . doubleDuckValue
     appenderLogicalTypeUncached _ = primitiveType DuckDBTypeDouble
     appendDuckValue app = c_duckdb_append_double app . CDouble
+    appenderTypeName _ = "DOUBLE"
+
+instance AppenderDuckValue Scientific where
+    appenderDuckValue = Allocated . doubleDuckValue . realToFrac
+    appenderLogicalTypeUncached _ = primitiveType DuckDBTypeDouble
+    appendDuckValue app = c_duckdb_append_double app . CDouble . realToFrac
     appenderTypeName _ = "DOUBLE"
 
 instance AppenderDuckValue Text where

@@ -1,5 +1,4 @@
 {-# LANGUAGE PatternSynonyms #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -22,7 +21,7 @@ module Database.DuckDB.Simple.Appender
   )
   where
 
-import Database.DuckDB.FFI    (c_duckdb_appender_error_data, c_duckdb_error_data_message, DuckDBAppender,      DuckDBLogicalType,      DuckDBState,      pattern DuckDBSuccess,      pattern DuckDBError,      c_duckdb_appender_create,      c_duckdb_appender_create_ext,      c_duckdb_appender_create_query,      c_duckdb_appender_destroy, c_duckdb_appender_begin_row, c_duckdb_appender_end_row, c_duckdb_appender_flush, c_duckdb_appender_close )
+import Database.DuckDB.FFI    (DuckDBAppender,      DuckDBLogicalType,      DuckDBState,      pattern DuckDBSuccess,      pattern DuckDBError,      c_duckdb_appender_create,      c_duckdb_appender_create_ext,      c_duckdb_appender_create_query,      c_duckdb_appender_destroy, c_duckdb_appender_begin_row, c_duckdb_appender_end_row, c_duckdb_appender_flush, c_duckdb_appender_close )
 import Data.Text.Foreign (withCString)
 import Data.Text (Text)
 import Foreign (Ptr, nullPtr, Storable (peek))
@@ -30,12 +29,11 @@ import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Array (withArray)
 import Control.Exception (finally, throwIO)
 import Control.Monad (when)
-import Database.DuckDB.Simple.Internal (withConnectionHandle, Connection, SQLError(..), Query(..))
+import Database.DuckDB.Simple.Internal (withConnectionHandle, Connection, Query(..))
 import GHC.Stack (HasCallStack)
 import Data.Data (Proxy)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.Appender.Generic
-import Foreign.C (peekCString)
 
 type TableName = Text
 
@@ -80,16 +78,8 @@ withAppenderAcquire acquire action =
 appendTableRow :: (HasCallStack, AppendTableRow a) => DuckDBAppender -> a -> IO ()
 appendTableRow app row = do
     assertSuccess app $ c_duckdb_appender_begin_row app
-    assertSuccess app $ appendDuckRow app row
+    appendDuckRow app row
     assertSuccess app $ c_duckdb_appender_end_row app
-
-assertSuccess :: (HasCallStack) => DuckDBAppender -> IO DuckDBState -> IO ()
-assertSuccess app f = f >>= \case
-  DuckDBSuccess -> pure ()
-  _errorStatus -> do
-        err <- c_duckdb_appender_error_data app >>= c_duckdb_error_data_message >>= peekCString
-        throwIO $ SQLError("duckdb-simple: appender error" <> Text.pack err) Nothing Nothing -- FIXME: proper error handling
-{-# INLINE assertSuccess #-}
 
 createTableQuery :: AppendTableRow a => Text -> Proxy a -> Query
 createTableQuery nme pxy = Query $ "CREATE TABLE \"" <> nme <> "\" (" <> tableSchema pxy <> ")" -- FIXME: unsafe

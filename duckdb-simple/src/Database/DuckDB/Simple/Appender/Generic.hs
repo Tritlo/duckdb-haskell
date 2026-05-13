@@ -2,7 +2,6 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DefaultSignatures #-}
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
@@ -17,6 +16,7 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# OPTIONS_GHC -Wno-orphans #-}
+{-# LANGUAGE LambdaCase #-}
 
 module Database.DuckDB.Simple.Appender.Generic (
     AppenderDuckValue (..),
@@ -35,7 +35,9 @@ module Database.DuckDB.Simple.Appender.Generic (
     duckStructValue,
     Allocated(..),
     DuckDBValue,
-    Uncached (..)
+    Uncached (..),
+    assertSuccess,
+    GDuckUnion(..)
 ) where
 
 import Control.Monad (join, (>=>))
@@ -59,7 +61,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Foreign as Text
 import qualified Data.Text.Foreign as TextForeign
-import qualified Data.Text.Lazy as T
+import qualified Data.Text.Lazy as LText
 import Data.Time (LocalTime (..), UTCTime, utc, utcToLocalTime, NominalDiffTime, nominalDiffTimeToSeconds)
 import Data.Time.Calendar (Day)
 import Data.Time.LocalTime (TimeOfDay)
@@ -70,7 +72,7 @@ import Foreign (Ptr, Storable (poke), alloca, castPtr, withMany)
 import Foreign.C.Types (CDouble (..), CFloat (CFloat))
 import Foreign.Marshal.Array (withArray)
 import GHC.Generics
-import GHC.IO (unsafePerformIO)
+import GHC.IO (unsafePerformIO, throwIO)
 import GHC.IORef (atomicModifyIORef'_)
 import GHC.TypeLits (KnownSymbol, Symbol, symbolVal)
 import Database.DuckDB.FFI
@@ -78,6 +80,10 @@ import Database.DuckDB.Simple.FromField (BigNum (..), IntervalValue (..), TimeWi
 import Database.DuckDB.Simple.Internal
 import Database.DuckDB.Simple.Internal.ValueHelpers
 import Data.Scientific (Scientific)
+import GHC.Stack (HasCallStack)
+import Foreign.C (peekCString)
+import Data.Bifunctor (first)
+import Debug.Trace (traceShowWith)
 
 newtype Allocated a = Allocated {allocate :: IO a}
 
@@ -298,7 +304,6 @@ instance (AppenderDuckValue a) => AppenderDuckValue (Maybe a) where
     appendDuckValue app = maybe (c_duckdb_append_null app) (appendDuckValue app)
     appenderTypeName _ = appenderTypeName (Proxy @a)
 
--- | List values encode as DuckDB LIST (variable-length).
 instance (AppenderDuckValue a, Typeable a) => AppenderDuckValue [a] where
     appenderDuckValue = arrayDuckValue
     appenderLogicalTypeUncached _ = Uncached $ appenderLogicalType (Proxy @a) >>= c_duckdb_create_list_type
@@ -335,9 +340,9 @@ instance (AppenderDuckValue a, Ord a, Typeable a) => AppenderDuckValue (Set a) w
     appenderTypeName _ = appenderTypeName (Proxy @a) <> "[]"
 
 instance AppenderDuckValue Aeson.Value where
-    appenderDuckValue = Allocated . textDuckValue . T.toStrict . Aeson.encodeToLazyText
+    appenderDuckValue = Allocated . textDuckValue . LText.toStrict . Aeson.encodeToLazyText
     appenderLogicalTypeUncached _ = primitiveType DuckDBTypeVarchar
-    appendDuckValue app = appendDuckValue app . T.toStrict . Aeson.encodeToLazyText
+    appendDuckValue app = appendDuckValue app . LText.toStrict . Aeson.encodeToLazyText
     appenderTypeName _ = "JSON"
 
 instance (Ord k, AppenderDuckValue k, AppenderDuckValue v, Typeable k, Typeable v) => AppenderDuckValue (Map.Map k v) where
@@ -381,12 +386,12 @@ duckStructLogicalType flds = Uncached $ do
                 c_duckdb_create_struct_type typeArray nameArray (fromIntegral $ length flds)
 
 gunionTypeLogical :: [DuckStructField] -> Uncached DuckDBLogicalType
-gunionTypeLogical flds = Uncached $ do
-    evaluatedTypes <- mapM structLogicalType flds
-    withMany Text.withCString (structFieldName <$> flds) $ \namePtrs ->
+gunionTypeLogical ctors = Uncached $ do
+    evaluatedTypes <- mapM structLogicalType ctors
+    withMany Text.withCString (structFieldName <$> ctors) $ \namePtrs ->
         withArray namePtrs $ \nameArray ->
             withArray evaluatedTypes $ \typeArray ->
-                c_duckdb_create_union_type typeArray nameArray (fromIntegral $ length flds)
+                c_duckdb_create_union_type typeArray nameArray (fromIntegral $ length ctors)
 
 duckStructTypeName :: [DuckStructField] -> DuckTypeName
 duckStructTypeName = gstructTypeName "STRUCT"
@@ -418,42 +423,36 @@ instance (GDuckStruct a) => GDuckStruct (M1 D c a) where
 
 newtype ViaDuckUnion a = ViaDuckUnion a
 
-
-data SimpleUnion = Foo Int | Bar Text | Baz UTCTime
-  deriving stock (Generic)
-  deriving AppenderDuckValue via (ViaDuckUnion SimpleUnion)
-
-
 instance (Typeable a, GDuckUnion (Rep a), Generic a) => AppenderDuckValue (ViaDuckUnion a) where
     appenderDuckValue (ViaDuckUnion v) = Allocated $ do
         unionType <- cacheAppenderLogicalType (typeRep $ Proxy @a) (gunionTypeLogical $ gunionType (Proxy @a) (Proxy @(Rep a)))
-        let (ix, valueIO) = gunionValue (Proxy @a) 0 $ from v
-        withAllocated valueIO $ c_duckdb_create_union_value unionType (fromIntegral ix)
+        let (ix, valueIO) = traceShowWith fst $ gunionValue (Proxy @a) $ from v
+        withAllocated valueIO $ c_duckdb_create_union_value unionType ix
     appenderLogicalTypeUncached _ = gunionTypeLogical $ gunionType (Proxy @a) $ Proxy @(Rep a)
 
     appenderTypeName _ = gstructTypeName "UNION" $ gunionType (Proxy @a) $ Proxy @(Rep a)
 
 class GDuckUnion (f :: Type -> Type) where
-    gunionValue :: (Typeable root) => Proxy root -> Word -> f b -> (Word, Allocated DuckDBValue)
+    gunionValue :: (Typeable root) => Proxy root -> f b -> (Word64, Allocated DuckDBValue)
     gunionType :: (Typeable root) => Proxy root -> Proxy f -> [DuckStructField]
 
 data Tople (a :: Type) (b :: Symbol)
 
-instance (GDuckUnion a, GDuckUnion b) => GDuckUnion (a :+: b) where
-    gunionValue root ix (L1 l) = gunionValue root ix l
-    gunionValue root ix (R1 r) = gunionValue root (succ ix) r
+instance (GDuckUnion a, GDuckUnion b, GConstructorCount a) => GDuckUnion (a :+: b) where
+    gunionValue root (L1 l) = gunionValue root l
+    gunionValue root (R1 r) = first (+ gconstructorCount  (Proxy @a)) $ gunionValue root r
     gunionType root _ = gunionType root (Proxy @a) <> gunionType root (Proxy @b)
 
 instance {-# OVERLAPPABLE #-} (KnownSymbol conName) => GDuckUnion (C1 ('MetaCons conName foo bar) U1) where
-    gunionValue (_ :: Proxy root) ix (M1 _) = (ix, Allocated nullDuckValue)
+    gunionValue (_ :: Proxy root) (M1 _) = (0, Allocated $ int8DuckValue 0)
     gunionType _root _ = [DuckStructField (Text.pack $ symbolVal (Proxy @conName)) "TINYINT" (appenderLogicalType (Proxy @Int8))]
 
 instance {-# OVERLAPPABLE #-} (KnownSymbol conName, Typeable a, AppenderDuckValue a) => GDuckUnion (C1 ('MetaCons conName foo bar) (S1 ms (Rec0 a))) where
-    gunionValue (_ :: Proxy root) ix (M1 _) = (ix, Allocated nullDuckValue)
+    gunionValue (_ :: Proxy root) (M1 (M1 (K1 v))) = (0,  appenderDuckValue v)
     gunionType _root _ = [DuckStructField (Text.pack $ symbolVal (Proxy @conName)) (appenderTypeName (Proxy @a)) (appenderLogicalType (Proxy @a))]
 
 instance {-# OVERLAPS #-} (GDuckStruct a, KnownSymbol conName) => GDuckUnion (C1 ('MetaCons conName foo bar) a) where
-    gunionValue (_ :: Proxy root) ix (M1 v) = (ix,) $ Allocated $ do
+    gunionValue (_ :: Proxy root) (M1 v) = (0,) $ Allocated $ do
         structType <- cacheAppenderLogicalType (typeRep $ Proxy @(Tople root conName)) (duckStructLogicalType $ gstructType $ Proxy @a)
         withManyAllocated (gstructValue v) $ \childValues ->
             withArray childValues $ c_duckdb_create_struct_value structType
@@ -462,8 +461,17 @@ instance {-# OVERLAPS #-} (GDuckStruct a, KnownSymbol conName) => GDuckUnion (C1
         t = gstructType $ Proxy @a
 
 instance (GDuckUnion a) => GDuckUnion (M1 D c a) where
-    gunionValue root ix (M1 v) = gunionValue root ix v
+    gunionValue root (M1 v) = gunionValue root v
     gunionType root _ = gunionType root (Proxy @a)
+
+class GConstructorCount (f :: Type -> Type) where
+  gconstructorCount :: Proxy f -> Word64
+
+instance (GConstructorCount a, GConstructorCount b) => GConstructorCount (a :+: b) where
+  gconstructorCount _ = gconstructorCount (Proxy @a) + gconstructorCount (Proxy @b)
+
+instance GConstructorCount (C1 c f) where
+  gconstructorCount _ = 1
 
 newtype ViaDuckEnum a = ViaDuckEnum a
 
@@ -518,8 +526,8 @@ instance (Show a) => AppenderDuckValue (ViaShow a) where
 ---
 
 class AppendTableRow (a :: Type) where
-    appendDuckRow :: DuckDBAppender -> a -> IO DuckDBState
-    default appendDuckRow :: (Generic a, GAppendTableRow (Rep a)) => DuckDBAppender -> a -> IO DuckDBState
+    appendDuckRow :: DuckDBAppender -> a -> IO ()
+    default appendDuckRow :: (Generic a, GAppendTableRow (Rep a)) => DuckDBAppender -> a -> IO ()
     appendDuckRow app = gappendDuckRow app . from
 
     appendDuckRowSchema :: Proxy a -> [(Text, DuckTypeName)]
@@ -527,12 +535,12 @@ class AppendTableRow (a :: Type) where
     appendDuckRowSchema _ = gappendDuckRowSchema (Proxy @(Rep a))
 
 class GAppendTableRow (f :: Type -> Type) where
-    gappendDuckRow :: DuckDBAppender -> f b -> IO DuckDBState
+    gappendDuckRow :: DuckDBAppender -> f b -> IO ()
     gappendDuckRowSchema :: Proxy f -> [(Text, DuckTypeName)]
 
 instance (AppenderDuckValue a, KnownSymbol selectorName) => GAppendTableRow (S1 ('MetaSel ('Just selectorName) q w e) (K1 i a)) where
     gappendDuckRowSchema _ = [(Text.pack $ symbolVal (Proxy @selectorName), appenderTypeName (Proxy @a))]
-    gappendDuckRow app (M1 (K1 v)) = appendDuckValue app v
+    gappendDuckRow app (M1 (K1 v)) = assertSuccess app $ appendDuckValue app v
 
 instance (GAppendTableRow a, GAppendTableRow b) => GAppendTableRow (a :*: b) where
     gappendDuckRowSchema _ = gappendDuckRowSchema (Proxy @a) <> gappendDuckRowSchema (Proxy @b)
@@ -545,3 +553,11 @@ instance (GAppendTableRow a) => GAppendTableRow (M1 C c a) where
 instance (GAppendTableRow a) => GAppendTableRow (M1 D c a) where
     gappendDuckRowSchema _ = gappendDuckRowSchema (Proxy @a)
     gappendDuckRow app (M1 v) = gappendDuckRow app v
+
+assertSuccess :: (HasCallStack) => DuckDBAppender -> IO DuckDBState -> IO ()
+assertSuccess app f = f >>= \case
+  DuckDBSuccess -> pure ()
+  _errorStatus -> do
+        err <- c_duckdb_appender_error_data app >>= c_duckdb_error_data_message >>= peekCString
+        throwIO $ SQLError ("duckdb-simple: appender error" <> Text.pack err) Nothing Nothing -- FIXME: proper error handling
+{-# INLINE assertSuccess #-}

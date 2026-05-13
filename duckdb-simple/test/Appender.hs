@@ -15,12 +15,13 @@ import Data.Time.Clock (UTCTime (..))
 import Database.DuckDB.Simple
 import GHC.Generics (Generic)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit
+import Test.Tasty.HUnit ( testCase, (@=?) )
 import Data.Text (Text)
 import Database.DuckDB.Simple.Appender
 import Data.Aeson (Value)
-import Data.ByteString (ByteString)
 import qualified Data.Aeson as A
+import Data.Map ( Map )
+import qualified Data.Map as Map
 
 data LogLine =
   LogLine
@@ -29,20 +30,21 @@ data LogLine =
   , severity :: Severity
   , payload :: Payload
   }
-  deriving stock (Generic)
+  deriving stock (Generic, Show)
   deriving anyclass (AppendTableRow)
   deriving (AppenderDuckValue) via (ViaDuckStruct LogLine)
 
 data Payload =
   PayloadJSON { json :: Value }
-  | PayloadBinary { summary :: Text, bytes :: ByteString }
-  | PayloadNested { summary :: Text, nested :: Nested }
+  | PayloadBinary { summary :: Text, bytes :: Text }
+  | PayloadNested { info :: Maybe Text, nested :: Nested }
   | NoPayload
-  deriving stock (Generic)
+  | PayloadList { list :: [Text], map :: Map Text Int}
+  deriving stock (Generic, Show)
   deriving AppenderDuckValue via (ViaDuckUnion Payload)
 
 data Nested = Nested { foo :: Text, bar :: Int }
-  deriving stock (Generic)
+  deriving stock (Generic, Show)
   deriving AppenderDuckValue via (ViaDuckStruct Nested)
 
 
@@ -80,7 +82,7 @@ appenderTests =
         "appender"
         [
         testCase "generates a proper table schema" $
-                  "CREATE TABLE \"logs\" (\"timestamp\" TIMESTAMPTZ, \n\"message\" VARCHAR, \n\"severity\" ENUM('Error', 'Warning', 'Info'), \n\"payload\" UNION(\"PayloadJSON\" JSON, \"PayloadBinary\" STRUCT(\"summary\" VARCHAR, \"bytes\" BLOB), \"PayloadNested\" STRUCT(\"summary\" VARCHAR, \"nested\" STRUCT(\"foo\" VARCHAR, \"bar\" BIGINT)), \"NoPayload\" TINYINT))"
+                  "CREATE TABLE \"logs\" (\"timestamp\" TIMESTAMPTZ, \n\"message\" VARCHAR, \n\"severity\" ENUM('Error', 'Warning', 'Info'), \n\"payload\" UNION(\"PayloadJSON\" JSON, \"PayloadBinary\" STRUCT(\"summary\" VARCHAR, \"bytes\" VARCHAR), \"PayloadNested\" STRUCT(\"info\" VARCHAR, \"nested\" STRUCT(\"foo\" VARCHAR, \"bar\" BIGINT)), \"NoPayload\" TINYINT, \"PayloadList\" STRUCT(\"list\" VARCHAR[], \"map\" MAP(VARCHAR, BIGINT))))"
                   @=?
                   createTableQuery "logs" (Proxy @LogLine)
         , testCase "schema: union unnamed" $
@@ -95,14 +97,15 @@ appenderTests =
                   "ENUM('A', 'B', 'C', 'D', 'Other')" @=? renderDuckTypeName (appenderTypeName $ Proxy @SimpleEnum)
         , testCase "withTableAppender appends" $
             withConnection ":memory:" \conn -> do
-                _ <- execute_ conn (createTableQuery "logs" (Proxy @LogLine))
+                _ <- execute_ conn $ createTableQuery "logs" (Proxy @LogLine)
                 withTableAppender conn "logs" $ \app -> do
                   mapM_ (appendTableRow app)
-                    [ LogLine sometime "message A" Error (PayloadJSON $ A.object ["foo" A..= A.Null, "bar" A..= (123 :: Int)])
+                    [ LogLine sometime "message A" Error  (PayloadJSON $ A.object ["foo" A..= A.Null, "bar" A..= (123 :: Int)])
                     , LogLine sometime "message B" Info (PayloadBinary "descr" "bytes")
-                    , LogLine sometime "message C" Warning (PayloadNested "descr" (Nested "foo" 123))
+                    , LogLine sometime "message C" Warning (PayloadNested Nothing (Nested "foo" 123))
                     , LogLine sometime "message D" Warning NoPayload
+                    , LogLine sometime "message E" Warning (PayloadList ["foo", "bar", "baz"] (Map.fromList [("foo", 2), ("bar", 3)]))
                     ]
                 rows <- query_ conn "SELECT COUNT(*) FROM logs" :: IO [Only Int]
-                [Only 4] @=? rows
+                [Only 5] @=? rows
         ]

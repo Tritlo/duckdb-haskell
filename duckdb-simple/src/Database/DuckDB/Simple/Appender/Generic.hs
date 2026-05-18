@@ -83,7 +83,10 @@ import Data.Scientific (Scientific)
 import GHC.Stack (HasCallStack)
 import Foreign.C (peekCString)
 import Data.Bifunctor (first)
-import Debug.Trace (traceShowWith)
+import qualified Data.Vector.Mutable as VM
+import Data.Bits (unsafeShiftR)
+import qualified Data.Vector as V
+import Control.Monad.ST
 
 newtype Allocated a = Allocated {allocate :: IO a}
 
@@ -300,12 +303,14 @@ instance AppenderDuckValue TimeWithZone where
 instance (AppenderDuckValue a) => AppenderDuckValue (Maybe a) where
     appenderDuckValue (Just x) = appenderDuckValue x
     appenderDuckValue Nothing = Allocated nullDuckValue
+    {-# INLINE appenderDuckValue #-}
     appenderLogicalTypeUncached _ = appenderLogicalTypeUncached (Proxy :: Proxy a)
     appendDuckValue app = maybe (c_duckdb_append_null app) (appendDuckValue app)
     appenderTypeName _ = appenderTypeName (Proxy @a)
 
 instance (AppenderDuckValue a, Typeable a) => AppenderDuckValue [a] where
     appenderDuckValue = arrayDuckValue
+    {-# INLINE appenderDuckValue #-}
     appenderLogicalTypeUncached _ = Uncached $ appenderLogicalType (Proxy @a) >>= c_duckdb_create_list_type
     appenderTypeName _ = appenderTypeName (Proxy @a) <> "[]"
 
@@ -348,10 +353,9 @@ instance AppenderDuckValue Aeson.Value where
 instance (Ord k, AppenderDuckValue k, AppenderDuckValue v, Typeable k, Typeable v) => AppenderDuckValue (Map.Map k v) where
     appenderDuckValue m = Allocated $ do
         mapType <- appenderLogicalType (Proxy @(Map k v))
-        let elemsList = Map.toList m
-            count = length elemsList
-        withManyAllocated (appenderDuckValue . fst <$> elemsList) $ \keys ->
-            withManyAllocated (appenderDuckValue . snd <$> elemsList) $ \values ->
+        let count = Map.size m
+        withManyAllocated (appenderDuckValue <$> Map.keys m) $ \keys ->
+            withManyAllocated (appenderDuckValue <$> Map.elems m) $ \values ->
                 withArray keys \ptrK ->
                     withArray values \ptrV -> c_duckdb_create_map_value mapType ptrK ptrV (fromIntegral count)
 
@@ -362,7 +366,7 @@ instance (Ord k, AppenderDuckValue k, AppenderDuckValue v, Typeable k, Typeable 
 
 newtype ViaDuckStruct a = ViaDuckStruct a
 
-instance (Typeable a, GDuckStruct (Rep a), Generic a) => AppenderDuckValue (ViaDuckStruct a) where
+instance (Typeable a, GDuckStruct (Rep a), Generic a, GDuckStructType (Rep a)) => AppenderDuckValue (ViaDuckStruct a) where
     appenderDuckValue (ViaDuckStruct v) = duckStructValue (cacheAppenderLogicalType (typeRep $ Proxy @a) (duckStructLogicalType $ gstructType $ Proxy @(Rep a))) (gstructValue $ from v)
 
     appenderLogicalTypeUncached _ = duckStructLogicalType $ gstructType $ Proxy @(Rep a)
@@ -371,11 +375,11 @@ instance (Typeable a, GDuckStruct (Rep a), Generic a) => AppenderDuckValue (ViaD
 
 data DuckStructField = DuckStructField {structFieldName :: Text, structFieldType :: DuckTypeName, structLogicalType :: IO DuckDBLogicalType}
 
-duckStructValue :: IO DuckDBLogicalType -> [Allocated DuckDBValue] -> Allocated DuckDBValue
+duckStructValue :: IO DuckDBLogicalType -> V.Vector (Allocated DuckDBValue) -> Allocated DuckDBValue
 duckStructValue getType vals = Allocated $ do
     structType <- getType
     withManyAllocated vals $ \childValues ->
-        withArray childValues $ c_duckdb_create_struct_value structType
+        withArray (V.toList childValues) $ c_duckdb_create_struct_value structType
 
 duckStructLogicalType :: [DuckStructField] -> Uncached DuckDBLogicalType
 duckStructLogicalType flds = Uncached $ do
@@ -400,23 +404,68 @@ gstructTypeName :: Text -> [DuckStructField] -> DuckTypeName
 gstructTypeName pfx flds = DuckTypeName $ pfx <> "(" <> Text.intercalate ", " ["\"" <> nme <> "\" " <> renderDuckTypeName tpeNme | DuckStructField nme tpeNme _ <- flds] <> ")"
 
 class GDuckStruct (f :: Type -> Type) where
-    gstructValue :: f b -> [Allocated DuckDBValue]
-    gstructType :: Proxy f -> [DuckStructField]
+    gstructValue :: f b -> V.Vector (Allocated DuckDBValue)
 
 instance (AppenderDuckValue a, KnownSymbol selectorName, Typeable a) => GDuckStruct (S1 ('MetaSel ('Just selectorName) q w e) (K1 i a)) where
-    gstructValue (M1 (K1 v)) = pure $ appenderDuckValue v
-    gstructType _ = pure $ DuckStructField (Text.pack $ symbolVal (Proxy @selectorName)) (appenderTypeName (Proxy @a)) (appenderLogicalType (Proxy @a))
+    gstructValue (M1 (K1 v)) = V.singleton $ appenderDuckValue v
+    {-# INLINE gstructValue #-}
 
-instance (GDuckStruct a, GDuckStruct b) => GDuckStruct (a :*: b) where
-    gstructValue (a :*: b) = gstructValue a <> gstructValue b
-    gstructType _ = gstructType (Proxy @a) <> gstructType (Proxy @b)
+instance (WriteProduct a, WriteProduct b, ProductSize a, ProductSize b) => GDuckStruct (a :*: b) where
+    gstructValue p =
+         V.create $ do
+          mv <- VM.unsafeNew lenProduct
+          writeProduct mv 0 lenProduct p
+          pure mv
+        where
+          lenProduct = productSize (Proxy @(a :*: b))
+    {-# INLINE gstructValue #-}
 
 instance (GDuckStruct a) => GDuckStruct (M1 C c a) where
     gstructValue (M1 v) = gstructValue v
-    gstructType _ = gstructType (Proxy @a)
+    {-# INLINE gstructValue #-}
 
 instance (GDuckStruct a) => GDuckStruct (M1 D c a) where
     gstructValue (M1 v) = gstructValue v
+
+class ProductSize (f :: Type -> Type) where
+    productSize :: Proxy f -> Int
+
+instance (ProductSize a, ProductSize b) => ProductSize (a :*: b) where
+    productSize _ = productSize (Proxy @a) + productSize (Proxy @b)
+
+instance ProductSize (S1 s a) where
+    productSize _ = 1
+
+class WriteProduct f where
+    writeProduct :: VM.MVector s (Allocated DuckDBValue) -> Int -> Int -> f a -> ST s ()
+
+instance (WriteProduct a, WriteProduct b) => WriteProduct (a :*: b) where
+    writeProduct  mv ix len (a :*: b) = do
+      writeProduct  mv ix  lenL a
+      writeProduct  mv ixR lenR b
+        where
+          lenL = len `unsafeShiftR` 1
+          lenR = len - lenL
+          ixR  = ix  + lenL
+    {-# INLINE writeProduct #-}
+
+instance (AppenderDuckValue a) => WriteProduct (S1 meta (K1 i a)) where
+    writeProduct mv ix _ (M1 (K1 val)) = VM.unsafeWrite mv ix (appenderDuckValue val)
+    {-# INLINE writeProduct #-}
+
+class GDuckStructType (f :: Type -> Type) where
+    gstructType :: Proxy f -> [DuckStructField]
+
+instance (AppenderDuckValue a, KnownSymbol selectorName, Typeable a) => GDuckStructType (S1 ('MetaSel ('Just selectorName) q w e) (K1 i a)) where
+    gstructType _ = pure $ DuckStructField (Text.pack $ symbolVal (Proxy @selectorName)) (appenderTypeName (Proxy @a)) (appenderLogicalType (Proxy @a))
+
+instance (GDuckStructType a, GDuckStructType b) => GDuckStructType (a :*: b) where
+    gstructType _ = gstructType (Proxy @a) <> gstructType (Proxy @b)
+
+instance (GDuckStructType a) => GDuckStructType (M1 C c a) where
+    gstructType _ = gstructType (Proxy @a)
+
+instance (GDuckStructType a) => GDuckStructType (M1 D c a) where
     gstructType _ = gstructType (Proxy @a)
 
 --
@@ -426,7 +475,7 @@ newtype ViaDuckUnion a = ViaDuckUnion a
 instance (Typeable a, GDuckUnion (Rep a), Generic a) => AppenderDuckValue (ViaDuckUnion a) where
     appenderDuckValue (ViaDuckUnion v) = Allocated $ do
         unionType <- cacheAppenderLogicalType (typeRep $ Proxy @a) (gunionTypeLogical $ gunionType (Proxy @a) (Proxy @(Rep a)))
-        let (ix, valueIO) = traceShowWith fst $ gunionValue (Proxy @a) $ from v
+        let (ix, valueIO) = gunionValue (Proxy @a) $ from v
         withAllocated valueIO $ c_duckdb_create_union_value unionType ix
     appenderLogicalTypeUncached _ = gunionTypeLogical $ gunionType (Proxy @a) $ Proxy @(Rep a)
 
@@ -441,27 +490,32 @@ data Tople (a :: Type) (b :: Symbol)
 instance (GDuckUnion a, GDuckUnion b, GConstructorCount a) => GDuckUnion (a :+: b) where
     gunionValue root (L1 l) = gunionValue root l
     gunionValue root (R1 r) = first (+ gconstructorCount  (Proxy @a)) $ gunionValue root r
+    {-# INLINE gunionValue #-}
     gunionType root _ = gunionType root (Proxy @a) <> gunionType root (Proxy @b)
 
 instance {-# OVERLAPPABLE #-} (KnownSymbol conName) => GDuckUnion (C1 ('MetaCons conName foo bar) U1) where
     gunionValue (_ :: Proxy root) (M1 _) = (0, Allocated $ int8DuckValue 0)
+    {-# INLINE gunionValue #-}
     gunionType _root _ = [DuckStructField (Text.pack $ symbolVal (Proxy @conName)) "TINYINT" (appenderLogicalType (Proxy @Int8))]
 
 instance {-# OVERLAPPABLE #-} (KnownSymbol conName, Typeable a, AppenderDuckValue a) => GDuckUnion (C1 ('MetaCons conName foo bar) (S1 ms (Rec0 a))) where
     gunionValue (_ :: Proxy root) (M1 (M1 (K1 v))) = (0,  appenderDuckValue v)
+    {-# INLINE gunionValue #-}
     gunionType _root _ = [DuckStructField (Text.pack $ symbolVal (Proxy @conName)) (appenderTypeName (Proxy @a)) (appenderLogicalType (Proxy @a))]
 
-instance {-# OVERLAPS #-} (GDuckStruct a, KnownSymbol conName) => GDuckUnion (C1 ('MetaCons conName foo bar) a) where
+instance {-# OVERLAPS #-} (GDuckStructType a, GDuckStruct a, KnownSymbol conName) => GDuckUnion (C1 ('MetaCons conName foo bar) a) where
     gunionValue (_ :: Proxy root) (M1 v) = (0,) $ Allocated $ do
         structType <- cacheAppenderLogicalType (typeRep $ Proxy @(Tople root conName)) (duckStructLogicalType $ gstructType $ Proxy @a)
         withManyAllocated (gstructValue v) $ \childValues ->
-            withArray childValues $ c_duckdb_create_struct_value structType
+            withArray (V.toList childValues) $ c_duckdb_create_struct_value structType
+    {-# INLINE gunionValue #-}
     gunionType (_ :: Proxy root) _ = [DuckStructField (Text.pack $ symbolVal (Proxy @conName)) (gstructTypeName "STRUCT" t) (cacheAppenderLogicalType (typeRep $ Proxy @(Tople root conName)) $ duckStructLogicalType t)]
       where
         t = gstructType $ Proxy @a
 
 instance (GDuckUnion a) => GDuckUnion (M1 D c a) where
     gunionValue root (M1 v) = gunionValue root v
+    {-# INLINE gunionValue #-}
     gunionType root _ = gunionType root (Proxy @a)
 
 class GConstructorCount (f :: Type -> Type) where
@@ -469,9 +523,10 @@ class GConstructorCount (f :: Type -> Type) where
 
 instance (GConstructorCount a, GConstructorCount b) => GConstructorCount (a :+: b) where
   gconstructorCount _ = gconstructorCount (Proxy @a) + gconstructorCount (Proxy @b)
-
+  {-# INLINE gconstructorCount #-}
 instance GConstructorCount (C1 c f) where
   gconstructorCount _ = 1
+  {-# INLINE gconstructorCount #-}
 
 newtype ViaDuckEnum a = ViaDuckEnum a
 

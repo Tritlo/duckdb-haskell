@@ -24,54 +24,68 @@ import Foreign.Ptr (nullPtr)
 import Control.Monad (when)
 import Control.Exception (throwIO)
 import Data.Bits
-
 nullDuckValue :: IO DuckDBValue
 nullDuckValue = c_duckdb_create_null_value
+{-# INLINE nullDuckValue #-}
 
 boolDuckValue :: Bool -> IO DuckDBValue
 boolDuckValue value = c_duckdb_create_bool (if value then 1 else 0)
+{-# INLINE boolDuckValue #-}
 
 int8DuckValue :: Int8 -> IO DuckDBValue
 int8DuckValue = c_duckdb_create_int8
+{-# INLINE int8DuckValue #-}
 
 int16DuckValue :: Int16 -> IO DuckDBValue
 int16DuckValue = c_duckdb_create_int16
+{-# INLINE int16DuckValue #-}
 
 int32DuckValue :: Int32 -> IO DuckDBValue
 int32DuckValue = c_duckdb_create_int32
+{-# INLINE int32DuckValue #-}
 
 int64DuckValue :: Int64 -> IO DuckDBValue
 int64DuckValue = c_duckdb_create_int64
+{-# INLINE int64DuckValue #-}
 
 uint64DuckValue :: Word64 -> IO DuckDBValue
 uint64DuckValue = c_duckdb_create_uint64
+{-# INLINE uint64DuckValue #-}
 
 uint32DuckValue :: Word32 -> IO DuckDBValue
 uint32DuckValue = c_duckdb_create_uint32
+{-# INLINE uint32DuckValue #-}
 
 uint16DuckValue :: Word16 -> IO DuckDBValue
 uint16DuckValue = c_duckdb_create_uint16
+{-# INLINE uint16DuckValue #-}
 
 uint8DuckValue :: Word8 -> IO DuckDBValue
 uint8DuckValue = c_duckdb_create_uint8
+{-# INLINE uint8DuckValue #-}
 
 doubleDuckValue :: Double -> IO DuckDBValue
 doubleDuckValue = c_duckdb_create_double . CDouble
+{-# INLINE doubleDuckValue #-}
 
 floatDuckValue :: Float -> IO DuckDBValue
 floatDuckValue = c_duckdb_create_double . CDouble . realToFrac
+{-# INLINE floatDuckValue #-}
 
 textDuckValue :: Text -> IO DuckDBValue
-textDuckValue txt =
-    TextForeign.withCString txt c_duckdb_create_varchar
+textDuckValue txt = TextForeign.withCString txt c_duckdb_create_varchar
+{-# INLINE textDuckValue #-}
 
 stringDuckValue :: String -> IO DuckDBValue
 stringDuckValue = textDuckValue . Text.pack
+{-# INLINE stringDuckValue #-}
 
 blobDuckValue :: BS.ByteString -> IO DuckDBValue
 blobDuckValue bs =
     BS.useAsCStringLen bs \(ptr, len) ->
         c_duckdb_create_blob (castPtr ptr :: Ptr Word8) (fromIntegral len)
+{-# INLINE blobDuckValue #-}
+
 
 uuidDuckValue :: UUID.UUID -> IO DuckDBValue
 uuidDuckValue uuid =

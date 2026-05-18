@@ -75,6 +75,7 @@ library
     unordered-containers >= 0.2 && < 0.3,
     hashable >= 1.5 && < 1.6,
     scientific >= 0.3.8 && < 0.3.9,
+    vector
 
 test-suite duckdb-simple-test
   type: exitcode-stdio-1.0

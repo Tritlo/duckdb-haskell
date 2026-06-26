@@ -28,6 +28,7 @@ module Database.DuckDB.Simple.Internal (
     -- * Helpers
     connectionClosedError,
     statementClosedError,
+    appenderError,
     withDatabaseHandle,
     withConnectionHandle,
     withStatementHandle,
@@ -72,6 +73,7 @@ import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, nullPtr)
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, freeStablePtr)
 import Foreign.Storable (peek, poke)
+import GHC.Stack (CallStack, callStack, HasCallStack)
 
 -- | Represents a textual SQL query with UTF-8 encoding semantics.
 newtype Query = Query
@@ -151,18 +153,20 @@ data SQLError = SQLError
     { sqlErrorMessage :: Text
     , sqlErrorType :: Maybe DuckDBErrorType
     , sqlErrorQuery :: Maybe Query
+    , sqlErrorCallStack :: CallStack
     }
-    deriving stock (Eq, Show)
+    deriving stock (Show)
 
 instance Exception SQLError
 
 -- | Convert an arbitrary exception into an untyped @SQLError@.
-toSQLError :: (Exception e) => e -> SQLError
+toSQLError :: (Exception e, HasCallStack) => e -> SQLError
 toSQLError ex =
     SQLError
         { sqlErrorMessage = Text.pack (show ex)
         , sqlErrorType = Nothing
         , sqlErrorQuery = Nothing
+        , sqlErrorCallStack = callStack
         }
 
 -- | Shared error value used when an operation targets a closed connection.
@@ -172,6 +176,7 @@ connectionClosedError =
         { sqlErrorMessage = Text.pack "duckdb-simple: connection is closed"
         , sqlErrorType = Nothing
         , sqlErrorQuery = Nothing
+        , sqlErrorCallStack = callStack
         }
 
 -- | Shared error value used when an operation targets a closed statement.
@@ -181,6 +186,16 @@ statementClosedError Statement{statementQuery} =
         { sqlErrorMessage = Text.pack "duckdb-simple: statement is closed"
         , sqlErrorType = Nothing
         , sqlErrorQuery = Just statementQuery
+        , sqlErrorCallStack = callStack
+        }
+
+appenderError :: Text -> SQLError
+appenderError msg =
+    SQLError
+        { sqlErrorMessage = Text.pack "duckdb-simple: appenderError: " <> msg
+        , sqlErrorType = Nothing
+        , sqlErrorQuery = Nothing
+        , sqlErrorCallStack = callStack
         }
 
 -- | Provide a UTF-8 encoded C string view of the query text.
@@ -236,13 +251,14 @@ destroyLogicalType logicalType =
     alloca $ \ptr -> poke ptr logicalType >> c_duckdb_destroy_logical_type ptr
 
 -- | Throw a standardised registration error.
-throwRegistrationError :: String -> IO a
+throwRegistrationError :: HasCallStack => String -> IO a
 throwRegistrationError label =
     throwIO
         SQLError
             { sqlErrorMessage = Text.pack ("duckdb-simple: " <> label <> " failed")
             , sqlErrorType = Nothing
             , sqlErrorQuery = Nothing
+            , sqlErrorCallStack = callStack
             }
 
 -- | Free a stable pointer stored behind a raw @Ptr ()@.

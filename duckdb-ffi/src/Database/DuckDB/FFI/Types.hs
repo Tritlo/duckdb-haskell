@@ -3,6 +3,7 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE StrictData #-}
+{-# LANGUAGE DerivingStrategies #-}
 
 module Database.DuckDB.FFI.Types (
     -- * Enumerations
@@ -327,7 +328,7 @@ import Foreign.C.String (CString)
 import Foreign.C.Types
 import Foreign.Ptr (FunPtr, Ptr, nullPtr)
 import Foreign.Storable (Storable (..), peekByteOff, pokeByteOff)
-
+import Data.Hashable
 -- | Unsigned index type used by DuckDB (mirrors @idx_t@).
 type DuckDBIdx = Word64
 
@@ -348,6 +349,8 @@ pattern DuckDBError = DuckDBState 1
 -- | DuckDB primitive physical type identifiers (mirrors @duckdb_type@).
 newtype DuckDBType = DuckDBType {unDuckDBType :: CInt}
     deriving (Eq, Ord, Show, Storable)
+instance Hashable DuckDBType where
+    hashWithSalt s (DuckDBType v) = hashWithSalt s (fromIntegral @_ @Int v)
 
 -- | Pattern synonyms for DuckDB's physical value type tags.
 pattern

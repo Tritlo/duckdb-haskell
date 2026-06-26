@@ -113,6 +113,7 @@ library
     text >=2.0 && <2.2,
     time >=1.12 && <1.16,
     transformers >=0.6 && <0.7,
+    hashable >= 1.5 && < 1.6,
 
   if os(linux)
     ghc-options: "-optl-Wl,-rpath,'$ORIGIN/../cbits/duckdb'"

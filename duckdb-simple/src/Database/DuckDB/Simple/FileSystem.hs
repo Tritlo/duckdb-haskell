@@ -25,6 +25,7 @@ import Foreign.C.String (peekCString, withCString)
 import Foreign.Marshal.Alloc (alloca, free, mallocBytes)
 import Foreign.Ptr (castPtr, nullPtr)
 import Foreign.Storable (peek, poke)
+import GHC.Stack (HasCallStack, callStack)
 
 -- | Open a file through DuckDB's file-system layer for the duration of an action.
 withFileHandle :: Connection -> FilePath -> [DuckDBFileFlag] -> (DuckDBFileHandle -> IO a) -> IO a
@@ -125,7 +126,7 @@ throwFileHandleError handle fallback = do
     err <- c_duckdb_file_handle_error_data handle
     throwErrorData err fallback
 
-throwErrorData :: DuckDBErrorData -> Text -> IO a
+throwErrorData :: HasCallStack => DuckDBErrorData -> Text -> IO a
 throwErrorData err fallback =
     bracket (pure err) destroyErrorData \errData -> do
         msgPtr <- c_duckdb_error_data_message errData
@@ -139,13 +140,14 @@ throwErrorData err fallback =
                 { sqlErrorMessage = message
                 , sqlErrorType = Just errType
                 , sqlErrorQuery = Nothing
+                , sqlErrorCallStack = callStack
                 }
 
 destroyErrorData :: DuckDBErrorData -> IO ()
 destroyErrorData err =
     alloca \ptr -> poke ptr err >> c_duckdb_destroy_error_data ptr
 
-expectState :: String -> IO DuckDBState -> IO ()
+expectState :: HasCallStack => String -> IO DuckDBState -> IO ()
 expectState label action = do
     rc <- action
     if rc == DuckDBSuccess
@@ -156,4 +158,5 @@ expectState label action = do
                     { sqlErrorMessage = Text.pack ("duckdb-simple: " <> label <> " failed")
                     , sqlErrorType = Nothing
                     , sqlErrorQuery = Nothing
+                , sqlErrorCallStack = callStack
                     }

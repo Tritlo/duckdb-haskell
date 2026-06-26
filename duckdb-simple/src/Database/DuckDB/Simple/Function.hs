@@ -64,6 +64,8 @@ import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, castPtr, freeHaskellFunPtr, nullPtr)
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deRefStablePtr, freeStablePtr, newStablePtr)
 import Foreign.Storable (poke, pokeElemOff)
+import Data.Vector.Internal.Check (HasCallStack)
+import GHC.Stack (callStack)
 
 data ScalarFunctionResources = ScalarFunctionResources
     { scalarFunctionExecPtr :: !DuckDBScalarFunctionFun
@@ -286,7 +288,7 @@ createFunctionWithState conn name initState mkFn = do
                     else throwIO (functionInvocationError (Text.pack "duckdb-simple: registering function failed"))
 
 -- | Drop a previously registered scalar function by issuing a DROP FUNCTION statement.
-deleteFunction :: Connection -> Text -> IO ()
+deleteFunction :: HasCallStack => Connection -> Text -> IO ()
 deleteFunction conn name =
     do
         outcome <-
@@ -311,6 +313,7 @@ deleteFunction conn name =
                                             { sqlErrorMessage = errMsg
                                             , sqlErrorType = Nothing
                                             , sqlErrorQuery = Just dropQuery
+                                            , sqlErrorCallStack = callStack
                                             }
         case outcome of
             Right () -> pure ()
@@ -497,12 +500,13 @@ argumentConversionError idx err =
                 ]
      in functionInvocationError message
 
-functionInvocationError :: Text -> SQLError
+functionInvocationError :: HasCallStack => Text -> SQLError
 functionInvocationError message =
     SQLError
         { sqlErrorMessage = message
         , sqlErrorType = Nothing
         , sqlErrorQuery = Nothing
+        , sqlErrorCallStack = callStack
         }
 
 fetchResultError :: Ptr DuckDBResult -> IO Text

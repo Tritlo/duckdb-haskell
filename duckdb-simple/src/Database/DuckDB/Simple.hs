@@ -188,11 +188,11 @@ openStatement conn queryText =
 closeStatement :: Statement -> IO ()
 closeStatement stmt@Statement{statementState} = do
     resetStatementStream stmt
-    void $
-        atomicModifyIORef' statementState \case
-            StatementClosed -> (StatementClosed, pure ())
-            StatementOpen{statementHandle} ->
-                (StatementClosed, destroyPrepared statementHandle)
+    finish <- atomicModifyIORef' statementState \case
+        StatementClosed -> (StatementClosed, pure ())
+        StatementOpen{statementHandle} ->
+            (StatementClosed, destroyPrepared statementHandle)
+    finish
 
 -- | Run an action with a prepared statement, closing it afterwards.
 withStatement :: Connection -> Query -> (Statement -> IO a) -> IO a

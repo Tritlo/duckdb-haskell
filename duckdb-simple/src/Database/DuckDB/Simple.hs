@@ -149,12 +149,12 @@ openWithConfig path settings =
 
 -- | Close a connection.  The operation is idempotent.
 close :: Connection -> IO ()
-close Connection{connectionState} =
-    void $
-        atomicModifyIORef' connectionState \case
-            ConnectionClosed -> (ConnectionClosed, pure ())
-            openState@(ConnectionOpen{}) ->
-                (ConnectionClosed, closeHandles openState)
+close Connection{connectionState} = do
+    finish <- atomicModifyIORef' connectionState \case
+        ConnectionClosed -> (ConnectionClosed, pure ())
+        openState@(ConnectionOpen{}) ->
+            (ConnectionClosed, closeHandles openState)
+    finish
 
 -- | Run an action with a freshly opened connection, closing it afterwards.
 withConnection :: FilePath -> (Connection -> IO a) -> IO a
@@ -715,12 +715,12 @@ createConnection :: DuckDBDatabase -> DuckDBConnection -> IO Connection
 createConnection db conn = do
     ref <- newIORef (ConnectionOpen db conn)
     _ <-
-        mkWeakIORef ref $
-            void $
-                atomicModifyIORef' ref \case
-                    ConnectionClosed -> (ConnectionClosed, pure ())
-                    openState@(ConnectionOpen{}) ->
-                        (ConnectionClosed, closeHandles openState)
+        mkWeakIORef ref $ do
+            finish <- atomicModifyIORef' ref \case
+                ConnectionClosed -> (ConnectionClosed, pure ())
+                openState@(ConnectionOpen{}) ->
+                    (ConnectionClosed, closeHandles openState)
+            finish
     pure Connection{connectionState = ref}
 
 createStatement :: Connection -> DuckDBPreparedStatement -> Query -> IO Statement

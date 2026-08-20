@@ -135,6 +135,7 @@ open :: FilePath -> IO Connection
 open path = openWithConfig path []
 
 -- | Open a DuckDB database with configuration flags applied before startup.
+-- Use 'Database.DuckDB.Simple.Config.listConfigFlags' to get a list of known configuration flags.
 openWithConfig :: FilePath -> [(Text, Text)] -> IO Connection
 openWithConfig path settings =
     mask \restore -> do
@@ -161,6 +162,7 @@ withConnection :: FilePath -> (Connection -> IO a) -> IO a
 withConnection path = bracket (open path) close
 
 -- | Run an action with a freshly opened configured connection, closing it afterwards.
+-- Use 'Database.DuckDB.Simple.Config.listConfigFlags' to get a list of known configuration flags.
 withConnectionWithConfig :: FilePath -> [(Text, Text)] -> (Connection -> IO a) -> IO a
 withConnectionWithConfig path settings = bracket (openWithConfig path settings) close
 

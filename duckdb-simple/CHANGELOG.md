@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.5.2
+- Fix a connection leak: `close` and the connection finalizer built the close action but then discarded it, so the DuckDB connection and database handles stayed open. Every leaked database instance also kept its own DuckDB thread pool alive. (Reported by @winitzki, see #15.)
+- Fix the same defect in `closeStatement`, which discarded the action that destroys the prepared statement. (Fixed by @bgamari in #15.)
+
 ## 0.1.5.1
 - Re-export the `RowParser` data constructor from `Database.DuckDB.Simple.FromRow`, restoring the API that `0.1.5.0` unintentionally broke (see #6). Downstream packages such as `beam-duckdb` rely on this constructor. (Sorry!)
 

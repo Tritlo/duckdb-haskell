@@ -150,7 +150,7 @@ openWithConfig path settings =
 -- | Close a connection.  The operation is idempotent.
 close :: Connection -> IO ()
 close Connection{connectionState} =
-    void $
+    join $
         atomicModifyIORef' connectionState \case
             ConnectionClosed -> (ConnectionClosed, pure ())
             openState@(ConnectionOpen{}) ->
@@ -716,7 +716,7 @@ createConnection db conn = do
     ref <- newIORef (ConnectionOpen db conn)
     _ <-
         mkWeakIORef ref $
-            void $
+            join $
                 atomicModifyIORef' ref \case
                     ConnectionClosed -> (ConnectionClosed, pure ())
                     openState@(ConnectionOpen{}) ->

@@ -7,7 +7,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Args
 ARG USER_NAME=haskeller
-ARG GHC_VERSION=9.12.2
+ARG GHC_VERSION=9.12.4
 ARG CABAL_VERSION=3.16.0.0
 ARG UID=1001
 ARG GID=1001

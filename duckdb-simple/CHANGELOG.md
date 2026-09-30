@@ -3,7 +3,8 @@
 ## Unreleased
 
 - Use DuckDB 1.5.6 by default. Test native versions 1.5.3 through 1.5.6.
-- Decode GEOMETRY as WKB bytes. Require a SQL cast before decoding VARIANT.
+- Add typed VARIANT parameters and results, including nested values and exact scalar payloads.
+- Add GEOMETRY parameters and results with WKB and CRS metadata. Keep ByteString result decoding available.
 
 ## 0.2.0.0
 

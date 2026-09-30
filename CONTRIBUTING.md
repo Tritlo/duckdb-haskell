@@ -22,15 +22,17 @@ cabal test all --test-show-details=direct
 cabal run duckdb-simple-leak-test -- all 100
 ```
 
-The last command checks 10,000 query cycles, 10,000 callback cycles, and 5,000
-cancellations. Each phase keeps one connection open. The normal leak test uses
-one tenth of those counts. Native RSS and thread checks require Linux `/proc`.
-Callback collection and functional checks also run on other systems.
+The last command checks 10,000 query cycles, 10,000 callback cycles, 10,000
+VARIANT/GEOMETRY cycles, and 7,000 cancellations. Each phase keeps one connection
+open. The normal leak test uses one tenth of those counts. Native RSS and thread
+checks require Linux `/proc`. Callback collection and functional checks also run
+on other systems.
 
-The Linux CI job with GHC 9.12.4 also runs the callback, cancellation, and
-DataFrame checks under Valgrind. Definite and indirect native leaks fail the
-job. That job sets `DUCKDB_LEAK_RSS_CHECK=0` because Valgrind changes process
-RSS. The ordinary leak test keeps the RSS assertion enabled.
+The Linux CI job with GHC 9.12.4 also runs the callback, cancellation,
+VARIANT/GEOMETRY, and DataFrame checks under Valgrind. Definite and indirect
+native leaks fail the job. That job sets `DUCKDB_LEAK_RSS_CHECK=0` because
+Valgrind changes process RSS. The ordinary leak test keeps the RSS assertion
+enabled.
 
 Use `--with-compiler=ghc-VERSION` to select a supported compiler.
 For benchmarks, build both versions with the same compiler and DuckDB library.

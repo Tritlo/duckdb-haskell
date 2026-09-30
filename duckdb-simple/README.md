@@ -298,8 +298,8 @@ For manual cursor-style iteration, use `nextRow`/`nextRowWith` on an open
 `Statement` to pull rows one at a time and decide when to stop.
 
 Cursors support the same column types as eager queries, including STRUCT
-and UNION values with nested collections and NULLs. VARIANT values must be
-cast to a concrete SQL type. GEOMETRY values decode to WKB bytes.
+and UNION values with nested collections and NULLs. VARIANT and GEOMETRY
+work with eager queries, cursors, and folds.
 
 #### Optional native streaming
 
@@ -365,6 +365,52 @@ Arrow export uses DuckDB's schema and chunk conversion API. DuckDB materializes
 the native result before callbacks start, so its memory use depends on the
 result size. The older Arrow query and scan bindings remain available through
 `Database.DuckDB.FFI.Deprecated` and emit deprecation warnings.
+
+### VARIANT and GEOMETRY
+
+Import `Variant` from `Database.DuckDB.Simple.Variant`. Its constructors retain
+each scalar's native type, including integer widths, decimal scale, and temporal
+units. Temporal constructors use raw days or ticks so they can also represent
+DuckDB's infinity values. `VariantArray` contains heterogeneous values.
+`VariantObject` uses case-sensitive text keys. `VariantNull` represents SQL NULL
+at the root and a null value inside a container.
+
+`Variant` has `ToField`, `FromField`, and generic `DuckValue` instances. Bind it
+with `SELECT ?`; a SQL cast is not required. Object parameters reject duplicate
+keys and keys that contain NUL. Text and blob payloads can contain NUL.
+For objects with names such as `Case` and `case`, give the result column an
+explicit alias, such as `SELECT ? AS value`. DuckDB 1.5 cannot derive an unnamed
+column name from those objects.
+
+DuckDB 1.5 has no C API for reading VARIANT values. The decoder checks the
+native version and physical schema before reading the internal representation.
+It checks payload bounds and rejects unknown tags. This format dependency is
+limited to the supported DuckDB 1.5 line.
+
+Persistent VARIANT columns require storage format `v1.5.0` or later. For a new
+database, pass `[("storage_compatibility_version", "v1.5.0")]` to
+`openWithConfig` or `withConnectionWithConfig`. The library does not change an
+existing database's storage compatibility setting.
+
+Import `Geometry` from `Database.DuckDB.Simple.Geometry`. It contains ISO WKB
+bytes and an optional CRS in `geometryWKB` and `geometryCRS`. Its `ToField` and
+`FromField` instances retain both values. Existing `ByteString` result decoding
+still returns the WKB bytes. Geometry arrays require a common CRS; mixed CRS
+parameters fail before binding.
+
+Geometry binding checks the WKB and converts it to WKT because DuckDB 1.5 has
+no WKB value constructor in its C API. It supports the seven standard geometry
+families, both byte orders, and XY, XYZ, XYM and XYZM coordinates. It preserves
+finite coordinates and empty points. Other non-finite coordinates are rejected.
+DuckDB must also accept the resulting WKT; it rejects mixed-dimension
+collections and empty polygon rings. Geometry nesting is limited to 16 levels.
+
+GEOMETRY inside VARIANT carries WKB only. DuckDB discards its CRS during the
+cast to VARIANT. Store the CRS in a separate object member if it is needed.
+
+Normal parameter binding uses the statement's connection to construct native
+type metadata. Standalone `toDuckValue` and `logicalTypeFromRep` calls use a
+temporary connection when the C API cannot construct the type directly.
 
 ### Feature Coverage
 

@@ -17,8 +17,14 @@ The short version is:
 The default download is DuckDB 1.5.6. Native versions >= 1.5.3 and < 1.6
 remain supported. duckdb-simple uses a separate API version.
 
-GEOMETRY values decode to WKB bytes. Cast VARIANT to a concrete SQL type
-before decoding it.
+Use `Variant` for VARIANT parameters and results. Its constructors retain native
+scalar types and temporal units. No SQL cast is needed. Object parameters
+reject duplicate keys and keys that contain NUL.
+
+Use `Geometry` to retain WKB and CRS metadata. `ByteString` result decoding
+still returns WKB bytes. DuckDB drops CRS metadata when it casts GEOMETRY to
+VARIANT. See [the type support notes](duckdb-simple/README.md#variant-and-geometry)
+for the native format dependency and geometry input limits.
 
 ## Binding fixes
 

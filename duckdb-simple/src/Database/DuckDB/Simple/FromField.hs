@@ -15,6 +15,8 @@ Description : Conversion from DuckDB column values to Haskell types.
 module Database.DuckDB.Simple.FromField (
     Field (..),
     FieldValue (..),
+    Geometry (..),
+    Variant (..),
     StructField (..),
     StructValue (..),
     UnionMemberType (..),
@@ -58,6 +60,7 @@ import Data.Time.LocalTime (
  )
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
+import Database.DuckDB.Simple.Geometry (Geometry (..))
 import Database.DuckDB.Simple.LogicalRep (
     LogicalTypeRep (..),
     StructField (..),
@@ -68,6 +71,7 @@ import Database.DuckDB.Simple.LogicalRep (
 import Database.DuckDB.Simple.Ok
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
 import Database.DuckDB.Simple.Types (Null (..))
+import Database.DuckDB.Simple.Variant (Variant (..))
 import GHC.Float (double2Float, float2Double)
 import GHC.Num.Integer (integerFromWordList)
 import Numeric.Natural (Natural)
@@ -89,6 +93,8 @@ data FieldValue
     | FieldText Text
     | FieldBool Bool
     | FieldBlob BS.ByteString
+    | FieldGeometry Geometry
+    | FieldVariant Variant
     | FieldDate Date
     | FieldTime TimeOfDay
     | FieldTimestamp LocalTimestamp
@@ -304,6 +310,20 @@ class FromField a where
 
 instance FromField FieldValue where
     fromField Field{fieldValue} = Ok fieldValue
+
+instance FromField Geometry where
+    fromField f@Field{fieldValue} =
+        case fieldValue of
+            FieldGeometry value -> Ok value
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f "expected GEOMETRY"
+
+instance FromField Variant where
+    fromField f@Field{fieldValue} =
+        case fieldValue of
+            FieldVariant value -> Ok value
+            FieldNull -> Ok VariantNull
+            _ -> returnError Incompatible f "expected VARIANT"
 
 instance FromField (StructValue FieldValue) where
     fromField f@Field{fieldValue} =
@@ -549,6 +569,7 @@ instance FromField BS.ByteString where
     fromField f@Field{fieldValue} =
         case fieldValue of
             FieldBlob bs -> Ok bs
+            FieldGeometry Geometry{geometryWKB} -> Ok geometryWKB
             FieldText t -> Ok (TextEncoding.encodeUtf8 t)
             FieldBit (BitString _ bits) -> Ok bits
             FieldNull -> returnError UnexpectedNull f ""
@@ -777,6 +798,8 @@ fieldValueTypeName = \case
     FieldText{} -> "TEXT"
     FieldBool{} -> "BOOLEAN"
     FieldBlob{} -> "BLOB"
+    FieldGeometry{} -> "GEOMETRY"
+    FieldVariant{} -> "VARIANT"
     FieldDate{} -> "DATE"
     FieldTime{} -> "TIME"
     FieldTimestamp{} -> "TIMESTAMP"

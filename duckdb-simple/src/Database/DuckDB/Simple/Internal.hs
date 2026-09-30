@@ -1,4 +1,5 @@
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE MagicHash #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE StrictData #-}
 
@@ -28,25 +29,26 @@ module Database.DuckDB.Simple.Internal (
     -- * Helpers
     connectionClosedError,
     statementClosedError,
+    keepAlive,
     withDatabaseHandle,
     withConnectionHandle,
     withStatementHandle,
     withQueryCString,
+    peekUtf8CString,
     withClientContext,
     destroyClientContext,
     destroyValue,
     destroyLogicalType,
     throwRegistrationError,
-    releaseStablePtrData,
-    mkDeleteCallback,
 ) where
 
 import Control.Exception (Exception, bracket, throwIO)
-import Control.Monad (when)
+import qualified Data.ByteString as BS
 import Data.IORef (IORef, readIORef)
 import Data.String (IsString (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.Foreign as TextForeign
 import Data.Word (Word64)
 import Database.DuckDB.FFI (
@@ -54,7 +56,6 @@ import Database.DuckDB.FFI (
     DuckDBConnection,
     DuckDBDataChunk,
     DuckDBDatabase,
-    DuckDBDeleteCallback,
     DuckDBErrorType,
     DuckDBLogicalType,
     DuckDBPreparedStatement,
@@ -69,9 +70,10 @@ import Database.DuckDB.FFI (
  )
 import Foreign.C.String (CString)
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (Ptr, nullPtr)
-import Foreign.StablePtr (StablePtr, castPtrToStablePtr, freeStablePtr)
+import Foreign.Ptr (Ptr)
 import Foreign.Storable (peek, poke)
+import GHC.Exts (keepAlive#)
+import GHC.IO (IO (..))
 
 -- | Represents a textual SQL query with UTF-8 encoding semantics.
 newtype Query = Query
@@ -115,6 +117,7 @@ data StatementState
 -- | Streaming execution state for prepared statements.
 data StatementStreamState
     = StatementStreamIdle
+    | StatementStreamExhausted
     | StatementStreamActive !StatementStream
 
 -- | Streaming cursor backing an active result set.
@@ -185,40 +188,55 @@ statementClosedError Statement{statementQuery} =
 
 -- | Provide a UTF-8 encoded C string view of the query text.
 withQueryCString :: Query -> (CString -> IO a) -> IO a
-withQueryCString (Query txt) = TextForeign.withCString txt
+withQueryCString query@(Query txt) action
+    | Text.any (== '\0') txt =
+        throwIO (SQLError (Text.pack "duckdb-simple: SQL contains NUL") Nothing (Just query))
+    | otherwise = TextForeign.withCString txt action
+
+-- | Copy a NUL-terminated UTF-8 string from DuckDB.
+peekUtf8CString :: CString -> IO Text
+peekUtf8CString ptr = TextEncoding.decodeUtf8 <$> BS.packCString ptr
+
+-- | Keep the weak-finalizer owner alive until the native operation returns.
+keepAlive :: a -> IO b -> IO b
+keepAlive owner (IO action) = IO (\state -> keepAlive# owner state action)
 
 -- | Internal helper for safely accessing the underlying prepared statement.
 withStatementHandle :: Statement -> (DuckDBPreparedStatement -> IO a) -> IO a
-withStatementHandle stmt@Statement{statementState} action = do
-    state <- readIORef statementState
-    case state of
-        StatementClosed -> throwIO (statementClosedError stmt)
-        StatementOpen{statementHandle} -> action statementHandle
+withStatementHandle stmt@Statement{statementState, statementConnection} action =
+    keepAlive stmt $
+        withConnectionHandle statementConnection $ \_ -> do
+            state <- readIORef statementState
+            case state of
+                StatementClosed -> throwIO (statementClosedError stmt)
+                StatementOpen{statementHandle} -> action statementHandle
 
 -- | Internal helper for safely accessing the underlying connection handle.
 withConnectionHandle :: Connection -> (DuckDBConnection -> IO a) -> IO a
-withConnectionHandle Connection{connectionState} action = do
-    state <- readIORef connectionState
-    case state of
-        ConnectionClosed -> throwIO connectionClosedError
-        ConnectionOpen{connectionHandle} -> action connectionHandle
+withConnectionHandle conn@Connection{connectionState} action =
+    keepAlive conn $ do
+        state <- readIORef connectionState
+        case state of
+            ConnectionClosed -> throwIO connectionClosedError
+            ConnectionOpen{connectionHandle} -> action connectionHandle
 
 -- | Internal helper for safely accessing the underlying database handle.
 withDatabaseHandle :: Connection -> (DuckDBDatabase -> IO a) -> IO a
-withDatabaseHandle Connection{connectionState} action = do
-    state <- readIORef connectionState
-    case state of
-        ConnectionClosed -> throwIO connectionClosedError
-        ConnectionOpen{connectionDatabase} -> action connectionDatabase
+withDatabaseHandle conn@Connection{connectionState} action =
+    keepAlive conn $ do
+        state <- readIORef connectionState
+        case state of
+            ConnectionClosed -> throwIO connectionClosedError
+            ConnectionOpen{connectionDatabase} -> action connectionDatabase
 
 -- | Acquire the client context for the connection, destroying it after the action.
 withClientContext :: Connection -> (DuckDBClientContext -> IO a) -> IO a
 withClientContext conn action =
     withConnectionHandle conn $ \connPtr ->
-        alloca $ \ctxPtr -> do
-            c_duckdb_connection_get_client_context connPtr ctxPtr
-            ctx <- peek ctxPtr
-            bracket (pure ctx) destroyClientContext action
+        bracket
+            (alloca $ \ctxPtr -> c_duckdb_connection_get_client_context connPtr ctxPtr >> peek ctxPtr)
+            destroyClientContext
+            action
 
 -- | Destroy a client context handle.
 destroyClientContext :: DuckDBClientContext -> IO ()
@@ -244,13 +262,3 @@ throwRegistrationError label =
             , sqlErrorType = Nothing
             , sqlErrorQuery = Nothing
             }
-
--- | Free a stable pointer stored behind a raw @Ptr ()@.
-releaseStablePtrData :: Ptr () -> IO ()
-releaseStablePtrData rawPtr =
-    when (rawPtr /= nullPtr) $
-        freeStablePtr (castPtrToStablePtr rawPtr :: StablePtr ())
-
--- | Create a DuckDB delete callback from a Haskell function.
-foreign import ccall "wrapper"
-    mkDeleteCallback :: (Ptr () -> IO ()) -> IO DuckDBDeleteCallback

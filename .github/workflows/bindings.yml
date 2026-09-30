@@ -94,3 +94,19 @@ jobs:
             printf '%s: %s\n' "$way" "$version"
             test "$version" = "v$DUCKDB_TEST_VERSION"
           done
+      - name: Check native allocation cleanup
+        if: matrix.os == 'ubuntu-latest' && matrix.ghc == '9.12.4'
+        env:
+          # Valgrind changes process RSS. The ordinary leak test checks RSS.
+          DUCKDB_LEAK_RSS_CHECK: '0'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y valgrind
+          leak_test=$(cabal list-bin duckdb-simple-leak-test --with-compiler=ghc --disable-documentation)
+          for mode in callbacks cancel; do
+            valgrind --vgdb=no --leak-check=full \
+              --show-leak-kinds=definite,indirect,possible \
+              --errors-for-leak-kinds=definite,indirect \
+              --error-exitcode=97 --undef-value-errors=no --num-callers=30 \
+              "$leak_test" "$mode" 1
+          done

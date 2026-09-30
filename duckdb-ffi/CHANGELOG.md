@@ -1,7 +1,9 @@
 # Changelog
 
-## Unreleased
+## 1.5.3.0
 
+- Correct struct arguments and return values with C adapters. Preserve the Haskell signatures.
+- Correct Arrow object addresses. Clear release callbacks after moving Arrow objects.
 - Download the native library to the user cache and verify the archive's SHA256 checksum.
 - Use an existing native library when the user or Nix supplies it.
 - Track native library selection through the `systemlib` flag, `extra-lib-dirs`, and the `--duckdb-install-dir` configure option.

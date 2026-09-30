@@ -81,12 +81,10 @@ listVectorChildManagement =
 
                     childVec <- c_duckdb_list_vector_get_child listVec
                     metaRaw <- c_duckdb_vector_get_data listVec
-                    let metaWords = castPtr metaRaw :: Ptr Word64
+                    let metaEntries = castPtr metaRaw :: Ptr DuckDBListEntry
                     -- row 0 -> offset 0 length 3, row 1 -> offset 3 length 2
-                    pokeElemOff metaWords 0 0
-                    pokeElemOff metaWords 1 3
-                    pokeElemOff metaWords 2 3
-                    pokeElemOff metaWords 3 2
+                    pokeElemOff metaEntries 0 (DuckDBListEntry 0 3)
+                    pokeElemOff metaEntries 1 (DuckDBListEntry 3 2)
 
                     childRaw <- c_duckdb_vector_get_data childVec
                     let childInts = castPtr childRaw :: Ptr Int32
@@ -95,8 +93,8 @@ listVectorChildManagement =
                     fetched <- mapM (peekElemOff childInts) [0 .. length payload - 1]
                     fetched @?= payload
 
-                    peekElemOff metaWords 1 >>= (@?= 3)
-                    peekElemOff metaWords 3 >>= (@?= 2)
+                    peekElemOff metaEntries 0 >>= (@?= DuckDBListEntry 0 3)
+                    peekElemOff metaEntries 1 >>= (@?= DuckDBListEntry 3 2)
 
 -- | Verify array child vector exposes a flat buffer sized by row * array length.
 arrayVectorChildAccess :: TestTree

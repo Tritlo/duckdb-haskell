@@ -15,6 +15,7 @@ module Main (main) where
 import Control.Applicative ((<|>))
 import Control.Exception (ErrorCall, Exception, SomeException, displayException, fromException, try)
 import Control.Monad (forM_, replicateM_, when)
+import qualified CoreRegressionTests
 import Data.Array (Array, elems, listArray)
 import qualified Data.ByteString as BS
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
@@ -76,6 +77,7 @@ import Database.DuckDB.Simple.LogicalRep (
     UnionValue (..),
  )
 import Database.DuckDB.Simple.Ok (Ok (..))
+import ExtensionRegressionTests (extensionRegressionTests)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import Properties (roundTripTests)
@@ -84,6 +86,7 @@ import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.ExpectedFailure (expectFailBecause)
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck (testProperty, (===))
+import ValueRegressionTests (valueRegressionTests)
 
 data Person = Person
     { personId :: Int
@@ -196,6 +199,9 @@ tests =
     testGroup
         "duckdb-simple"
         [ connectionTests
+        , CoreRegressionTests.tests
+        , extensionRegressionTests
+        , valueRegressionTests
         , withConnectionTests
         , statementTests
         , roundTripTests
@@ -311,9 +317,9 @@ withConnectionTests =
         [ testCase "returns the action result" $ do
             result <- withConnection ":memory:" \_ -> pure (21 :: Int)
             assertEqual "action result" 21 result
-        , testCase "propagates exceptions from the action" $
-            assertThrowsErrorCall $
-                withConnection ":memory:" (\_ -> error "boom" :: IO ())
+        , testCase "propagates exceptions from the action"
+            $ assertThrowsErrorCall
+            $ withConnection ":memory:" (\_ -> error "boom" :: IO ())
         ]
 
 statementTests :: TestTree

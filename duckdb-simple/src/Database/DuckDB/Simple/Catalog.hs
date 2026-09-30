@@ -15,8 +15,8 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
 import Database.DuckDB.FFI
-import Database.DuckDB.Simple.Internal (Connection, withClientContext)
-import Foreign.C.String (CString, peekCString)
+import Database.DuckDB.Simple.Internal (Connection, peekUtf8CString, throwRegistrationError, withClientContext)
+import Foreign.C.String (CString)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (nullPtr)
 import Foreign.Storable (poke)
@@ -30,31 +30,37 @@ data CatalogEntry = CatalogEntry
 
 -- | Look up the backend type name of a named catalog.
 catalogTypeName :: Connection -> Text -> IO (Maybe Text)
-catalogTypeName conn catalogName =
-    withClientContext conn \ctx ->
-        TextForeign.withCString catalogName \cName ->
-            withMaybeCatalog ctx cName \catalog -> do
-                namePtr <- c_duckdb_catalog_get_type_name catalog
-                if namePtr == nullPtr
-                    then pure Nothing
-                    else Just . Text.pack <$> peekCString namePtr
+catalogTypeName conn catalogName
+    | Text.any (== '\0') catalogName = throwRegistrationError "catalog name contains NUL"
+    | otherwise =
+        withClientContext conn \ctx ->
+            TextForeign.withCString catalogName \cName ->
+                withMaybeCatalog ctx cName \catalog -> do
+                    namePtr <- c_duckdb_catalog_get_type_name catalog
+                    if namePtr == nullPtr
+                        then pure Nothing
+                        else Just <$> peekUtf8CString namePtr
 
 -- | Look up a catalog entry by catalog, schema, name, and expected entry kind.
 lookupCatalogEntry :: Connection -> Text -> Text -> Text -> DuckDBCatalogEntryType -> IO (Maybe CatalogEntry)
-lookupCatalogEntry conn catalogName schemaName entryName entryType =
-    withClientContext conn \ctx ->
-        TextForeign.withCString catalogName \cCatalog ->
-            TextForeign.withCString schemaName \cSchema ->
-                TextForeign.withCString entryName \cEntry ->
-                    withMaybeCatalog ctx cCatalog \catalog ->
-                        withMaybeCatalogEntry catalog ctx entryType cSchema cEntry \entry -> do
-                            typ <- c_duckdb_catalog_entry_get_type entry
-                            namePtr <- c_duckdb_catalog_entry_get_name entry
-                            if namePtr == nullPtr
-                                then pure Nothing
-                                else do
-                                    name <- Text.pack <$> peekCString namePtr
-                                    pure (Just CatalogEntry{catalogEntryName = name, catalogEntryType = typ})
+lookupCatalogEntry conn catalogName schemaName entryName entryType
+    | any (Text.any (== '\0')) [catalogName, schemaName, entryName] = throwRegistrationError "catalog lookup name contains NUL"
+    | entryType `notElem` [DuckDBCatalogEntryTypeTable, DuckDBCatalogEntryTypeView, DuckDBCatalogEntryTypeIndex, DuckDBCatalogEntryTypeSequence, DuckDBCatalogEntryTypeCollation, DuckDBCatalogEntryTypeType] =
+        throwRegistrationError "unsupported catalog entry type"
+    | otherwise =
+        withClientContext conn \ctx ->
+            TextForeign.withCString catalogName \cCatalog ->
+                TextForeign.withCString schemaName \cSchema ->
+                    TextForeign.withCString entryName \cEntry ->
+                        withMaybeCatalog ctx cCatalog \catalog ->
+                            withMaybeCatalogEntry catalog ctx entryType cSchema cEntry \entry -> do
+                                typ <- c_duckdb_catalog_entry_get_type entry
+                                namePtr <- c_duckdb_catalog_entry_get_name entry
+                                if namePtr == nullPtr
+                                    then pure Nothing
+                                    else do
+                                        name <- peekUtf8CString namePtr
+                                        pure (Just CatalogEntry{catalogEntryName = name, catalogEntryType = typ})
 
 destroyCatalog :: DuckDBCatalog -> IO ()
 destroyCatalog catalog =
@@ -65,11 +71,9 @@ destroyCatalogEntry entry =
     alloca \ptr -> poke ptr entry >> c_duckdb_destroy_catalog_entry ptr
 
 withMaybeCatalog :: DuckDBClientContext -> CString -> (DuckDBCatalog -> IO (Maybe a)) -> IO (Maybe a)
-withMaybeCatalog ctx name action = do
-    catalog <- c_duckdb_client_context_get_catalog ctx name
-    if catalog == nullPtr
-        then pure Nothing
-        else bracket (pure catalog) destroyCatalog action
+withMaybeCatalog ctx name action =
+    bracket (c_duckdb_client_context_get_catalog ctx name) destroyCatalog \catalog ->
+        if catalog == nullPtr then pure Nothing else action catalog
 
 withMaybeCatalogEntry ::
     DuckDBCatalog ->
@@ -79,8 +83,6 @@ withMaybeCatalogEntry ::
     CString ->
     (DuckDBCatalogEntry -> IO (Maybe a)) ->
     IO (Maybe a)
-withMaybeCatalogEntry catalog ctx entryType schemaName entryName action = do
-    entry <- c_duckdb_catalog_get_entry catalog ctx entryType schemaName entryName
-    if entry == nullPtr
-        then pure Nothing
-        else bracket (pure entry) destroyCatalogEntry action
+withMaybeCatalogEntry catalog ctx entryType schemaName entryName action =
+    bracket (c_duckdb_catalog_get_entry catalog ctx entryType schemaName entryName) destroyCatalogEntry \entry ->
+        if entry == nullPtr then pure Nothing else action entry

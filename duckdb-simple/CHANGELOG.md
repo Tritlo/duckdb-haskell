@@ -1,7 +1,18 @@
 # Changelog
 
-## Unreleased
+## 0.2.0.0
 
+- Fix streaming metadata after binding and schema changes. Use native streaming execution. Keep cursors exhausted after EOF until reset.
+- Release query results on decode failures. Keep native handle owners alive during FFI calls. Release nested type allocations when exceptions occur.
+- Correct callback ownership on registration failure and replacement. Release query state and contain callback exceptions.
+- Reject temporal infinity and out-of-range input with Haskell exceptions. Preserve timestamp units and bind UTCTime as TIMESTAMPTZ.
+- Rebind composite values containing TIMESTAMP_S, TIMESTAMP_MS, TIMESTAMP_NS, and TIME_NS. Preserve their units, precision, and NULL values.
+- Preserve REAL values, unsigned scalar results, integer bounds, embedded NUL in text, and exact DECIMAL values.
+- Preserve Float callback NaN, infinity, and negative zero without optimization. Test plain and stateful callbacks.
+- Correct BIT padding, generic field/member lookup, and typed NULL union payloads. Validate malformed composite inputs before native calls.
+- Reject NUL in SQL, identifiers, paths, and configuration. Preserve UTF-8 names and errors.
+- Preserve the original transaction exception when rollback also fails.
+- Add crash reproductions, sustained connection and callback release checks, cancellation checks, and repeatable benchmarks.
 - Raise the minimum native DuckDB version to 1.5.3.
 - Use GHC 9.14.1 by default. Test the latest stable patch release in each GHC series from 9.6 to 9.14.
 

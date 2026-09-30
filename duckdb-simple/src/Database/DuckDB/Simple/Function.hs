@@ -3,6 +3,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE UndecidableInstances #-}
 
@@ -30,8 +31,6 @@ module Database.DuckDB.Simple.Function (
 import Control.Exception (
     SomeException,
     bracket,
-    displayException,
-    onException,
     throwIO,
     try,
  )
@@ -43,6 +42,7 @@ import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.FFI
+import Database.DuckDB.Simple.Callback (runCallback, transferCallbackState, withCallbackResources)
 import Database.DuckDB.Simple.FromField (
     Field (..),
     FromField (..),
@@ -52,18 +52,17 @@ import Database.DuckDB.Simple.Internal (
     Query (..),
     SQLError (..),
     destroyLogicalType,
-    mkDeleteCallback,
-    releaseStablePtrData,
+    peekUtf8CString,
     withConnectionHandle,
     withQueryCString,
  )
 import Database.DuckDB.Simple.Materialize (materializeValue)
 import Database.DuckDB.Simple.Ok (Ok (..))
-import Foreign.C.String (peekCString)
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (Ptr, castPtr, freeHaskellFunPtr, nullPtr)
-import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deRefStablePtr, freeStablePtr, newStablePtr)
+import Foreign.Ptr (FunPtr, Ptr, castPtr, nullPtr)
+import Foreign.StablePtr (StablePtr, castPtrToStablePtr, deRefStablePtr)
 import Foreign.Storable (poke, pokeElemOff)
+import GHC.Float (float2Double)
 
 data ScalarFunctionResources = ScalarFunctionResources
     { scalarFunctionExecPtr :: !DuckDBScalarFunctionFun
@@ -74,6 +73,7 @@ data ScalarFunctionResources = ScalarFunctionResources
 data ScalarType
     = ScalarTypeBoolean
     | ScalarTypeBigInt
+    | ScalarTypeUBigInt
     | ScalarTypeDouble
     | ScalarTypeVarchar
 
@@ -82,6 +82,7 @@ data ScalarValue
     = ScalarNull
     | ScalarBoolean !Bool
     | ScalarInteger !Int64
+    | ScalarUnsigned !Word64
     | ScalarDouble !Double
     | ScalarText !Text
 
@@ -107,8 +108,8 @@ instance FunctionResult Int64 where
     toScalarValue value = pure (ScalarInteger value)
 
 instance FunctionResult Word where
-    scalarReturnType _ = ScalarTypeBigInt
-    toScalarValue value = pure (ScalarInteger (fromIntegral value))
+    scalarReturnType _ = ScalarTypeUBigInt
+    toScalarValue value = pure (ScalarUnsigned (fromIntegral value))
 
 instance FunctionResult Word16 where
     scalarReturnType _ = ScalarTypeBigInt
@@ -119,8 +120,8 @@ instance FunctionResult Word32 where
     toScalarValue value = pure (ScalarInteger (fromIntegral value))
 
 instance FunctionResult Word64 where
-    scalarReturnType _ = ScalarTypeBigInt
-    toScalarValue value = pure (ScalarInteger (fromIntegral value))
+    scalarReturnType _ = ScalarTypeUBigInt
+    toScalarValue value = pure (ScalarUnsigned (fromIntegral value))
 
 instance FunctionResult Double where
     scalarReturnType _ = ScalarTypeDouble
@@ -128,7 +129,7 @@ instance FunctionResult Double where
 
 instance FunctionResult Float where
     scalarReturnType _ = ScalarTypeDouble
-    toScalarValue value = pure (ScalarDouble (realToFrac value))
+    toScalarValue value = pure (ScalarDouble (float2Double value))
 
 instance FunctionResult Bool where
     scalarReturnType _ = ScalarTypeBoolean
@@ -227,63 +228,43 @@ instance {-# OVERLAPPABLE #-} (FromField a, FunctionArg a, Function r) => Functi
 
 -- | Register a Haskell function under the supplied name.
 createFunction :: forall f. (Function f) => Connection -> Text -> f -> IO ()
-createFunction conn name fn = do
-    funPtr <- mkScalarFun (scalarFunctionHandler fn)
-    resources <- newStablePtr ScalarFunctionResources{scalarFunctionExecPtr = funPtr, scalarFunctionInitPtr = Nothing}
-    destroyCb <- mkDeleteCallback releaseFunctionResources
-    let release = destroyRegistrationResources funPtr Nothing resources destroyCb
-    bracket c_duckdb_create_scalar_function cleanupScalarFunction \scalarFun ->
-        (`onException` release) $ do
-            TextForeign.withCString name $ \cName ->
-                c_duckdb_scalar_function_set_name scalarFun cName
-            forM_ (argumentTypes (Proxy :: Proxy f)) \dtype ->
-                withLogicalType dtype $ \logical ->
-                    c_duckdb_scalar_function_add_parameter scalarFun logical
-            withLogicalType (duckTypeForScalar (returnType (Proxy :: Proxy f))) $ \logical ->
-                c_duckdb_scalar_function_set_return_type scalarFun logical
-            when (isVolatile (Proxy :: Proxy f)) $
-                c_duckdb_scalar_function_set_volatile scalarFun
-            c_duckdb_scalar_function_set_function scalarFun funPtr
-            c_duckdb_scalar_function_set_extra_info scalarFun (castStablePtrToPtr resources) destroyCb
-            withConnectionHandle conn \connPtr -> do
-                rc <- c_duckdb_register_scalar_function connPtr scalarFun
-                if rc == DuckDBSuccess
-                    then pure ()
-                    else throwIO (functionInvocationError (Text.pack "duckdb-simple: registering function failed"))
+createFunction conn name fn =
+    registerScalarFunction conn name (Proxy :: Proxy f) \allocate -> do
+        scalarFunctionExecPtr <- allocate (mkScalarFun (scalarFunctionHandler fn))
+        pure ScalarFunctionResources{scalarFunctionExecPtr, scalarFunctionInitPtr = Nothing}
 
 -- | Register a scalar function with per-worker thread-local state.
 createFunctionWithState :: forall s f. (Function f) => Connection -> Text -> IO s -> (s -> f) -> IO ()
-createFunctionWithState conn name initState mkFn = do
-    stateDestroyCb <- mkDeleteCallback releaseStablePtrData
-    execPtr <- mkScalarFun (scalarFunctionHandlerWithState mkFn)
-    initPtr <- mkScalarInitFun (scalarFunctionInitHandler stateDestroyCb initState)
-    resources <-
-        newStablePtr
-            ScalarFunctionResources
-                { scalarFunctionExecPtr = execPtr
-                , scalarFunctionInitPtr = Just initPtr
-                }
-    destroyCb <- mkDeleteCallback releaseFunctionResources
-    let release = destroyRegistrationResources execPtr (Just initPtr) resources destroyCb >> freeHaskellFunPtr stateDestroyCb
-    bracket c_duckdb_create_scalar_function cleanupScalarFunction \scalarFun ->
-        (`onException` release) $ do
-            TextForeign.withCString name $ \cName ->
-                c_duckdb_scalar_function_set_name scalarFun cName
-            forM_ (argumentTypes (Proxy :: Proxy f)) \dtype ->
-                withLogicalType dtype $ \logical ->
-                    c_duckdb_scalar_function_add_parameter scalarFun logical
-            withLogicalType (duckTypeForScalar (returnType (Proxy :: Proxy f))) $ \logical ->
-                c_duckdb_scalar_function_set_return_type scalarFun logical
-            when (isVolatile (Proxy :: Proxy f)) $
-                c_duckdb_scalar_function_set_volatile scalarFun
-            c_duckdb_scalar_function_set_function scalarFun execPtr
-            c_duckdb_scalar_function_set_init scalarFun initPtr
-            c_duckdb_scalar_function_set_extra_info scalarFun (castStablePtrToPtr resources) destroyCb
-            withConnectionHandle conn \connPtr -> do
-                rc <- c_duckdb_register_scalar_function connPtr scalarFun
-                if rc == DuckDBSuccess
-                    then pure ()
-                    else throwIO (functionInvocationError (Text.pack "duckdb-simple: registering function failed"))
+createFunctionWithState conn name initState mkFn =
+    registerScalarFunction conn name (Proxy :: Proxy f) \allocate -> do
+        scalarFunctionExecPtr <- allocate (mkScalarFun (scalarFunctionHandlerWithState mkFn))
+        initPtr <- allocate (mkScalarInitFun (scalarFunctionInitHandler initState))
+        pure ScalarFunctionResources{scalarFunctionExecPtr, scalarFunctionInitPtr = Just initPtr}
+
+-- | Configure a scalar function and transfer its callbacks to DuckDB.
+registerScalarFunction :: (Function f) => Connection -> Text -> Proxy f -> ((forall a. IO (FunPtr a) -> IO (FunPtr a)) -> IO ScalarFunctionResources) -> IO ()
+registerScalarFunction conn name proxy acquire = do
+    when (Text.null name || Text.any (== '\0') name) $
+        throwIO (functionInvocationError "duckdb-simple: invalid scalar function name")
+    bracket c_duckdb_create_scalar_function cleanupScalarFunction \scalarFun -> do
+        when (scalarFun == nullPtr) $
+            throwIO (functionInvocationError "duckdb-simple: failed to allocate scalar function")
+        withCallbackResources
+            acquire
+            (c_duckdb_scalar_function_set_extra_info scalarFun)
+            \ScalarFunctionResources{scalarFunctionExecPtr, scalarFunctionInitPtr} -> do
+                TextForeign.withCString name $ c_duckdb_scalar_function_set_name scalarFun
+                forM_ (argumentTypes proxy) \dtype ->
+                    withLogicalType dtype $ c_duckdb_scalar_function_add_parameter scalarFun
+                withLogicalType (duckTypeForScalar (returnType proxy)) $ c_duckdb_scalar_function_set_return_type scalarFun
+                when (isVolatile proxy) $ c_duckdb_scalar_function_set_volatile scalarFun
+                c_duckdb_scalar_function_set_special_handling scalarFun
+                c_duckdb_scalar_function_set_function scalarFun scalarFunctionExecPtr
+                forM_ scalarFunctionInitPtr $ c_duckdb_scalar_function_set_init scalarFun
+                withConnectionHandle conn \connPtr -> do
+                    rc <- c_duckdb_register_scalar_function connPtr scalarFun
+                    when (rc /= DuckDBSuccess) $
+                        throwIO (functionInvocationError "duckdb-simple: registering function failed")
 
 -- | Drop a previously registered scalar function by issuing a DROP FUNCTION statement.
 deleteFunction :: Connection -> Text -> IO ()
@@ -300,18 +281,18 @@ deleteFunction conn name =
                                     ]
                     withQueryCString dropQuery \sql ->
                         alloca \resPtr -> do
-                            rc <- c_duckdb_query connPtr sql resPtr
-                            if rc == DuckDBSuccess
-                                then c_duckdb_destroy_result resPtr
-                                else do
-                                    errMsg <- fetchResultError resPtr
-                                    c_duckdb_destroy_result resPtr
-                                    throwIO
-                                        SQLError
-                                            { sqlErrorMessage = errMsg
-                                            , sqlErrorType = Nothing
-                                            , sqlErrorQuery = Just dropQuery
-                                            }
+                            bracket
+                                (c_duckdb_query connPtr sql resPtr)
+                                (const (c_duckdb_destroy_result resPtr))
+                                \rc ->
+                                    when (rc /= DuckDBSuccess) do
+                                        errMsg <- fetchResultError resPtr
+                                        throwIO
+                                            SQLError
+                                                { sqlErrorMessage = errMsg
+                                                , sqlErrorType = Nothing
+                                                , sqlErrorQuery = Just dropQuery
+                                                }
         case outcome of
             Right () -> pure ()
             Left err
@@ -327,35 +308,14 @@ cleanupScalarFunction scalarFun =
         poke ptr scalarFun
         c_duckdb_destroy_scalar_function ptr
 
-destroyRegistrationResources ::
-    DuckDBScalarFunctionFun ->
-    Maybe DuckDBScalarFunctionInitFun ->
-    StablePtr ScalarFunctionResources ->
-    DuckDBDeleteCallback ->
-    IO ()
-destroyRegistrationResources funPtr mInitPtr resources destroyCb = do
-    freeHaskellFunPtr funPtr
-    forM_ mInitPtr freeHaskellFunPtr
-    freeStablePtr resources
-    freeHaskellFunPtr destroyCb
-
-releaseFunctionResources :: Ptr () -> IO ()
-releaseFunctionResources rawPtr =
-    when (rawPtr /= nullPtr) $ do
-        let stablePtr = castPtrToStablePtr rawPtr :: StablePtr ScalarFunctionResources
-        ScalarFunctionResources{scalarFunctionExecPtr, scalarFunctionInitPtr} <- deRefStablePtr stablePtr
-        freeHaskellFunPtr scalarFunctionExecPtr
-        forM_ scalarFunctionInitPtr freeHaskellFunPtr
-        freeStablePtr stablePtr
-
 withLogicalType :: DuckDBType -> (DuckDBLogicalType -> IO a) -> IO a
 withLogicalType dtype =
     bracket
         ( do
             logical <- c_duckdb_create_logical_type dtype
-            when (logical == nullPtr) $
-                throwIO $
-                    functionInvocationError (Text.pack "duckdb-simple: failed to allocate logical type")
+            when (logical == nullPtr)
+                $ throwIO
+                $ functionInvocationError (Text.pack "duckdb-simple: failed to allocate logical type")
             pure logical
         )
         destroyLogicalType
@@ -364,73 +324,56 @@ duckTypeForScalar :: ScalarType -> DuckDBType
 duckTypeForScalar = \case
     ScalarTypeBoolean -> DuckDBTypeBoolean
     ScalarTypeBigInt -> DuckDBTypeBigInt
+    ScalarTypeUBigInt -> DuckDBTypeUBigInt
     ScalarTypeDouble -> DuckDBTypeDouble
     ScalarTypeVarchar -> DuckDBTypeVarchar
 
 scalarFunctionHandler :: forall f. (Function f) => f -> DuckDBFunctionInfo -> DuckDBDataChunk -> DuckDBVector -> IO ()
-scalarFunctionHandler fn info chunk outVec = do
-    result <-
-        try do
-            rawColumnCount <- c_duckdb_data_chunk_get_column_count chunk
-            let columnCount = fromIntegral rawColumnCount :: Int
-                expected = length (argumentTypes (Proxy :: Proxy f))
-            when (columnCount /= expected) $
-                throwIO $
-                    functionInvocationError $
-                        Text.concat
-                            [ Text.pack "duckdb-simple: function expected "
-                            , Text.pack (show expected)
-                            , Text.pack " arguments but received "
-                            , Text.pack (show columnCount)
-                            ]
-            rawRowCount <- c_duckdb_data_chunk_get_size chunk
-            let rowCount = fromIntegral rawRowCount :: Int
-            readers <- mapM (makeColumnReader chunk) [0 .. expected - 1]
-            rows <-
-                forM [0 .. rowCount - 1] \row ->
-                    forM readers \reader ->
-                        reader (fromIntegral row)
-            results <- mapM (`applyFunction` fn) rows
-            writeResults (returnType (Proxy :: Proxy f)) results outVec
-            c_duckdb_data_chunk_set_size chunk (fromIntegral rowCount)
-    case result of
-        Left (err :: SomeException) -> do
-            c_duckdb_data_chunk_set_size chunk 0
-            let message = Text.pack (displayException err)
-            TextForeign.withCString message $ \cMsg ->
-                c_duckdb_scalar_function_set_error info cMsg
-        Right () -> pure ()
+scalarFunctionHandler fn info chunk outVec =
+    runCallback (c_duckdb_scalar_function_set_error info) do
+        rawColumnCount <- c_duckdb_data_chunk_get_column_count chunk
+        let columnCount = fromIntegral rawColumnCount :: Int
+            expected = length (argumentTypes (Proxy :: Proxy f))
+        when (columnCount /= expected)
+            $ throwIO
+            $ functionInvocationError
+            $ Text.concat
+                [ Text.pack "duckdb-simple: function expected "
+                , Text.pack (show expected)
+                , Text.pack " arguments but received "
+                , Text.pack (show columnCount)
+                ]
+        rawRowCount <- c_duckdb_data_chunk_get_size chunk
+        let rowCount = fromIntegral rawRowCount :: Int
+        readers <- mapM (makeColumnReader chunk) [0 .. expected - 1]
+        rows <-
+            forM [0 .. rowCount - 1] \row ->
+                forM readers \reader ->
+                    reader (fromIntegral row)
+        results <- mapM (`applyFunction` fn) rows
+        writeResults (returnType (Proxy :: Proxy f)) results outVec
 
 scalarFunctionHandlerWithState :: forall s f. (Function f) => (s -> f) -> DuckDBFunctionInfo -> DuckDBDataChunk -> DuckDBVector -> IO ()
-scalarFunctionHandlerWithState mkFn info chunk outVec = do
-    statePtr <- c_duckdb_scalar_function_get_state info
-    if statePtr == nullPtr
-        then
-            TextForeign.withCString (Text.pack "duckdb-simple: scalar function state was not initialised") $
-                c_duckdb_scalar_function_set_error info
-        else do
-            state <- deRefStablePtr (castPtrToStablePtr statePtr :: StablePtr s)
-            scalarFunctionHandler (mkFn state) info chunk outVec
+scalarFunctionHandlerWithState mkFn info chunk outVec =
+    runCallback (c_duckdb_scalar_function_set_error info) do
+        statePtr <- c_duckdb_scalar_function_get_state info
+        when (statePtr == nullPtr) $
+            throwIO (functionInvocationError "duckdb-simple: scalar function state was not initialised")
+        state <- deRefStablePtr (castPtrToStablePtr statePtr :: StablePtr s)
+        scalarFunctionHandler (mkFn state) info chunk outVec
 
-scalarFunctionInitHandler :: forall s. DuckDBDeleteCallback -> IO s -> DuckDBInitInfo -> IO ()
-scalarFunctionInitHandler destroyCb initState info = do
-    outcome <- try initState
-    case outcome of
-        Left (err :: SomeException) ->
-            TextForeign.withCString (Text.pack (displayException err)) $
-                c_duckdb_scalar_function_init_set_error info
-        Right state -> do
-            stable <- newStablePtr state
-            c_duckdb_scalar_function_init_set_state info (castStablePtrToPtr stable) destroyCb
+scalarFunctionInitHandler :: IO s -> DuckDBInitInfo -> IO ()
+scalarFunctionInitHandler initState info =
+    runCallback (c_duckdb_scalar_function_init_set_error info) do
+        state <- initState
+        transferCallbackState (c_duckdb_scalar_function_init_set_state info) state
 
 type ColumnReader = DuckDBIdx -> IO Field
 
 makeColumnReader :: DuckDBDataChunk -> Int -> IO ColumnReader
 makeColumnReader chunk columnIndex = do
     vector <- c_duckdb_data_chunk_get_vector chunk (fromIntegral columnIndex)
-    logical <- c_duckdb_vector_get_column_type vector
-    dtype <- c_duckdb_get_type_id logical
-    destroyLogicalType logical
+    dtype <- bracket (c_duckdb_vector_get_column_type vector) destroyLogicalType c_duckdb_get_type_id
     dataPtr <- c_duckdb_vector_get_data vector
     validity <- c_duckdb_vector_get_validity vector
     let name = Text.pack ("arg" <> show columnIndex)
@@ -459,6 +402,9 @@ writeResults resultType values outVec = do
             (ScalarTypeBigInt, ScalarInteger intval) -> do
                 markValid validityPtr idx
                 pokeElemOff (castPtr dataPtr :: Ptr Int64) idx intval
+            (ScalarTypeUBigInt, ScalarUnsigned intval) -> do
+                markValid validityPtr idx
+                pokeElemOff (castPtr dataPtr :: Ptr Word64) idx intval
             (ScalarTypeDouble, ScalarDouble dbl) -> do
                 markValid validityPtr idx
                 pokeElemOff (castPtr dataPtr :: Ptr Double) idx dbl
@@ -467,9 +413,9 @@ writeResults resultType values outVec = do
                 TextForeign.withCStringLen txt \(ptr, len) ->
                     c_duckdb_vector_assign_string_element_len outVec (fromIntegral idx) ptr (fromIntegral len)
             _ ->
-                throwIO $
-                    functionInvocationError $
-                        Text.pack "duckdb-simple: result type mismatch when materialising scalar function output"
+                throwIO
+                    $ functionInvocationError
+                    $ Text.pack "duckdb-simple: result type mismatch when materialising scalar function output"
 
 markInvalid :: Ptr Word64 -> Int -> IO ()
 markInvalid validity idx
@@ -510,7 +456,7 @@ fetchResultError resPtr = do
     msgPtr <- c_duckdb_result_error resPtr
     if msgPtr == nullPtr
         then pure (Text.pack "duckdb-simple: DROP FUNCTION failed")
-        else Text.pack <$> peekCString msgPtr
+        else peekUtf8CString msgPtr
 
 qualifyIdentifier :: Text -> Text
 qualifyIdentifier rawName =

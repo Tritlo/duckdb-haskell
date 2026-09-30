@@ -1,7 +1,7 @@
 # duckdb-simple
 
 `duckdb-simple` provides a high-level Haskell interface to DuckDB inspired by
-the ergonomics of [`sqlite-simple`](https://hackage.haskell.org/package/sqlite-simple).
+the API of [`postgresql-simple`](https://hackage.haskell.org/package/postgresql-simple).
 It builds on the low-level bindings exposed by [`duckdb-ffi`](../duckdb-ffi) and
 provides a focused API for opening connections, running queries, binding
 parameters, and decoding typed results—including the full set of DuckDB scalar
@@ -79,8 +79,7 @@ insertNamed conn =
 
 DuckDB does not allow mixing positional and named placeholders within the same
 SQL statement; the library preserves DuckDB’s error message in that situation.
-Savepoints are currently rejected by DuckDB, so `withSavepoint` raises an
-`SQLError` describing the limitation.
+DuckDB does not support savepoints. This library does not provide `withSavepoint`.
 
 If the number of supplied parameters does not match the statement’s declared
 placeholders—or if you attempt to bind named arguments to a positional-only
@@ -196,6 +195,11 @@ storeList conn = do
 
 ### Manual STRUCT and UNION Handling
 
+Temporal fields retain their SQL units when composite values are rebound.
+For TIMESTAMP_S or TIMESTAMP_MS values outside the TIMESTAMP range, use an
+explicit parameter cast, such as `SELECT ?::STRUCT(value TIMESTAMP_S)`.
+DuckDB otherwise attempts to convert these parameters to microseconds.
+
 For more control, you can work directly with `StructValue` and `UnionValue`
 from `Database.DuckDB.Simple.LogicalRep`:
 
@@ -226,13 +230,23 @@ manualStruct conn = do
 - `execute`/`query` variants reset statement bindings each run so prepared
   statements can be reused safely.
 
+Use one connection per worker. If workers share a connection, serialize the
+whole transaction or cursor lifetime, including `close`. Statements and
+connections do not provide concurrent access control. A callback must not
+execute another query on its active connection.
+
+Keep at most one active streaming result per connection. Close or reset an
+abandoned statement before you execute another query. DuckDB can retain a
+query plan, buffers, and callback state until the active result is destroyed.
+Use `withStatement` for manual iteration. `fold` releases the result after
+success or an exception. The accumulator determines Haskell memory use.
+
 ### Metadata helpers
 
 - `columnCount` and `columnName` expose prepared-statement metadata so you can
   inspect result shapes before executing a query.
-- `rowsChanged` tracks the number of rows affected by the most recent mutation
-  on a connection. DuckDB does not offer a `lastInsertRowId`; prefer SQL
-  `RETURNING` clauses when you need generated identifiers.
+- `execute` returns the number of affected rows. Use SQL `RETURNING` clauses
+  when you need generated identifiers.
 ### Streaming Results
 
 `fold`, `fold_`, and `foldNamed` expose DuckDB’s chunked result API, letting you
@@ -249,6 +263,9 @@ sumValues conn =
 
 For manual cursor-style iteration, use `nextRow`/`nextRowWith` on an open
 `Statement` to pull rows one at a time and decide when to stop.
+
+Streaming currently rejects STRUCT and UNION columns. Use the eager query
+helpers for those types.
 
 ### Feature Coverage
 
@@ -267,7 +284,7 @@ For manual cursor-style iteration, use `nextRow`/`nextRowWith` on an open
 - User-defined scalar functions backed by Haskell functions (including IO and
   nullable arguments).
 - Transaction helpers (`withTransaction`) and metadata accessors (`columnCount`,
-  `columnName`, `rowsChanged`).
+  `columnName`).
 
 ## User-Defined Functions
 

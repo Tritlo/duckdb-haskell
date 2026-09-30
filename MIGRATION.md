@@ -12,6 +12,24 @@ The short version is:
 - New 1.5 functionality is exposed through additive modules and helpers; no
   wholesale rewrite is required.
 
+## Binding fixes
+
+- `UTCTime` parameters have SQL type TIMESTAMPTZ. Use `LocalTime` for TIMESTAMP.
+- `Float` parameters have SQL type FLOAT. REAL values decode to Float or Double.
+- Word and Word64 scalar function results have SQL type UBIGINT.
+- Scalar callbacks receive NULL arguments. Use `Maybe` to accept NULL.
+  A non-nullable Haskell argument produces a conversion error for NULL.
+- Temporal infinities and out-of-range inputs fail with a Haskell exception.
+  Cast infinity to VARCHAR if the application needs its textual representation.
+- Text and String values preserve embedded NUL. SQL text and native names
+  reject NUL because the C API requires terminated strings.
+- After EOF, the cursor remains exhausted until bindings are reset. An
+  additional `nextRow` does not execute the statement again.
+- Generic records and sums match SQL field and member names. An incompatible
+  schema fails instead of decoding values by position.
+- Rebuild applications that use the FFI directly. The corrected C adapters
+  preserve Haskell types.
+
 ## Who Needs to Change What
 
 If you use `duckdb-ffi` directly:
@@ -24,8 +42,9 @@ If you use `duckdb-ffi` directly:
 
 If you use `duckdb-simple`:
 
-- Rebuild against `duckdb-simple-0.1.5.2` and DuckDB `1.5.3`.
-- Existing query/statement code should continue to work unchanged.
+- Rebuild against `duckdb-simple-0.2.0.0` and DuckDB `1.5.3`.
+- Review the binding changes above for SQL parameter types, NULL handling,
+  and generic decoding.
 - New 1.5 helpers are available from dedicated modules instead of being folded
   into the core query API.
 
@@ -39,7 +58,7 @@ Before:
 
 Now:
 
-- `duckdb-ffi-1.5.0.0` and `duckdb-simple-0.1.5.2` require a DuckDB 1.5
+- `duckdb-ffi-1.5.3.0` and `duckdb-simple-0.2.0.0` require a DuckDB 1.5
   shared library >= 1.5.3 and < 1.6 at runtime.
 
 If your executable still finds a 1.4 shared library first, you will see symbol
@@ -259,8 +278,8 @@ using `duckdb_string_t_length`.
 ## Suggested Upgrade Steps
 
 1. Upgrade the Haskell packages to:
-   - `duckdb-ffi-1.5.0.0`
-   - `duckdb-simple-0.1.5.2`
+   - `duckdb-ffi-1.5.3.0`
+   - `duckdb-simple-0.2.0.0`
 2. Upgrade the native DuckDB shared library to `1.5.3`.
 3. Run your test suite with the 1.5 shared library explicitly selected.
 4. Update any tests that expected old 1.4 behavior, especially around

@@ -186,6 +186,7 @@ module Database.DuckDB.FFI.Types (
     DuckDBBit (..),
     DuckDBBignum (..),
     DuckDBQueryProgress (..),
+    DuckDBListEntry (..),
 
     -- * Result Structures
     DuckDBResult (..),
@@ -246,6 +247,7 @@ module Database.DuckDB.FFI.Types (
     DuckDBTaskState,
     ArrowArray (..),
     ArrowSchema (..),
+    ArrowArrayStream (..),
 
     -- * Opaque Struct Tags
     DuckDBDatabaseStruct,
@@ -737,18 +739,23 @@ newtype DuckDBFileFlag = DuckDBFileFlag {unDuckDBFileFlag :: CInt}
 -- | Invalid or unspecified file access mode.
 pattern DuckDBFileFlagInvalid :: DuckDBFileFlag
 pattern DuckDBFileFlagInvalid = DuckDBFileFlag 0
+
 -- | Open the file for reading.
 pattern DuckDBFileFlagRead :: DuckDBFileFlag
 pattern DuckDBFileFlagRead = DuckDBFileFlag 1
+
 -- | Open the file for writing.
 pattern DuckDBFileFlagWrite :: DuckDBFileFlag
 pattern DuckDBFileFlagWrite = DuckDBFileFlag 2
+
 -- | Create the file if it does not already exist.
 pattern DuckDBFileFlagCreate :: DuckDBFileFlag
 pattern DuckDBFileFlagCreate = DuckDBFileFlag 3
+
 -- | Create a new file and fail if it already exists.
 pattern DuckDBFileFlagCreateNew :: DuckDBFileFlag
 pattern DuckDBFileFlagCreateNew = DuckDBFileFlag 4
+
 -- | Append all writes to the end of the file.
 pattern DuckDBFileFlagAppend :: DuckDBFileFlag
 pattern DuckDBFileFlagAppend = DuckDBFileFlag 5
@@ -769,12 +776,15 @@ newtype DuckDBConfigOptionScope = DuckDBConfigOptionScope {unDuckDBConfigOptionS
 -- | Invalid or unknown configuration scope.
 pattern DuckDBConfigOptionScopeInvalid :: DuckDBConfigOptionScope
 pattern DuckDBConfigOptionScopeInvalid = DuckDBConfigOptionScope 0
--- | Scope limited to the current local operation.
+
+-- | Scope limited to the current transaction. DuckDB does not implement this scope.
 pattern DuckDBConfigOptionScopeLocal :: DuckDBConfigOptionScope
 pattern DuckDBConfigOptionScopeLocal = DuckDBConfigOptionScope 1
+
 -- | Scope lasting for the current client session.
 pattern DuckDBConfigOptionScopeSession :: DuckDBConfigOptionScope
 pattern DuckDBConfigOptionScopeSession = DuckDBConfigOptionScope 2
+
 -- | Scope affecting the full database or process-global setting.
 pattern DuckDBConfigOptionScopeGlobal :: DuckDBConfigOptionScope
 pattern DuckDBConfigOptionScopeGlobal = DuckDBConfigOptionScope 3
@@ -793,30 +803,39 @@ newtype DuckDBCatalogEntryType = DuckDBCatalogEntryType {unDuckDBCatalogEntryTyp
 -- | Invalid catalog entry type.
 pattern DuckDBCatalogEntryTypeInvalid :: DuckDBCatalogEntryType
 pattern DuckDBCatalogEntryTypeInvalid = DuckDBCatalogEntryType 0
+
 -- | Table catalog entry.
 pattern DuckDBCatalogEntryTypeTable :: DuckDBCatalogEntryType
 pattern DuckDBCatalogEntryTypeTable = DuckDBCatalogEntryType 1
+
 -- | Schema catalog entry.
 pattern DuckDBCatalogEntryTypeSchema :: DuckDBCatalogEntryType
 pattern DuckDBCatalogEntryTypeSchema = DuckDBCatalogEntryType 2
+
 -- | View catalog entry.
 pattern DuckDBCatalogEntryTypeView :: DuckDBCatalogEntryType
 pattern DuckDBCatalogEntryTypeView = DuckDBCatalogEntryType 3
+
 -- | Index catalog entry.
 pattern DuckDBCatalogEntryTypeIndex :: DuckDBCatalogEntryType
 pattern DuckDBCatalogEntryTypeIndex = DuckDBCatalogEntryType 4
+
 -- | Prepared statement catalog entry.
 pattern DuckDBCatalogEntryTypePreparedStatement :: DuckDBCatalogEntryType
 pattern DuckDBCatalogEntryTypePreparedStatement = DuckDBCatalogEntryType 5
+
 -- | Sequence catalog entry.
 pattern DuckDBCatalogEntryTypeSequence :: DuckDBCatalogEntryType
 pattern DuckDBCatalogEntryTypeSequence = DuckDBCatalogEntryType 6
+
 -- | Collation catalog entry.
 pattern DuckDBCatalogEntryTypeCollation :: DuckDBCatalogEntryType
 pattern DuckDBCatalogEntryTypeCollation = DuckDBCatalogEntryType 7
+
 -- | User-defined type catalog entry.
 pattern DuckDBCatalogEntryTypeType :: DuckDBCatalogEntryType
 pattern DuckDBCatalogEntryTypeType = DuckDBCatalogEntryType 8
+
 -- | Attached database catalog entry.
 pattern DuckDBCatalogEntryTypeDatabase :: DuckDBCatalogEntryType
 pattern DuckDBCatalogEntryTypeDatabase = DuckDBCatalogEntryType 9
@@ -1093,7 +1112,12 @@ instance Storable DuckDBBit where
         pokeByteOff ptr 0 dat
         pokeByteOff ptr (sizeOf (undefined :: Ptr Word8)) len
 
--- | Represents DuckDB's @duckdb_bignum@.
+{- | Represents DuckDB's @duckdb_bignum@.
+
+@duckDBBignumData@ holds the absolute value of the number in big-endian byte
+order. Free it with @duckdb_free@. The DuckDB header said little-endian until
+DuckDB 1.5.4 corrected it. The byte order itself did not change.
+-}
 data DuckDBBignum = DuckDBBignum
     { duckDBBignumData :: !(Ptr Word8)
     , duckDBBignumSize :: !DuckDBIdx
@@ -1142,6 +1166,21 @@ instance Storable DuckDBQueryProgress where
             offset2 = offset1 + sizeOf (undefined :: Word64)
         pokeByteOff ptr offset1 processed
         pokeByteOff ptr offset2 total
+
+-- | Offset and length of a row in a DuckDB list vector.
+data DuckDBListEntry = DuckDBListEntry
+    { duckDBListEntryOffset :: !Word64
+    , duckDBListEntryLength :: !Word64
+    }
+    deriving (Eq, Show)
+
+instance Storable DuckDBListEntry where
+    sizeOf _ = 2 * sizeOf (undefined :: Word64)
+    alignment _ = alignment (undefined :: Word64)
+    peek ptr = DuckDBListEntry <$> peekByteOff ptr 0 <*> peekByteOff ptr (sizeOf (undefined :: Word64))
+    poke ptr (DuckDBListEntry offset len) = do
+        pokeByteOff ptr 0 offset
+        pokeByteOff ptr (sizeOf (undefined :: Word64)) len
 
 -- | Opaque DuckDB column handle.
 data DuckDBColumn
@@ -1608,9 +1647,7 @@ type DuckDBLoggerWriteLogEntryFun =
 type DuckDBReplacementCallback =
     FunPtr (DuckDBReplacementScanInfo -> CString -> Ptr () -> IO ())
 
--- The full Arrow C Data Interface definitions are not included here to avoid
--- introducing a dependency on the Arrow C headers. Instead, we define only the
--- parts we need for testing DuckDB's Arrow integration.
+-- These structures follow the Arrow C Data Interface and C Stream Interface.
 -- See https://arrow.apache.org/docs/format/CDataInterface.html for the full
 -- specification.
 -- #ifndef ARROW_C_DATA_INTERFACE
@@ -1655,10 +1692,7 @@ type DuckDBReplacementCallback =
 
 -- #endif  // ARROW_C_DATA_INTERFACE
 
-{- | Partial Arrow schema view used for tests that require inspecting DuckDB's
-Arrow wrappers without depending on the full Arrow C Data Interface
-definitions.
--}
+-- | Arrow schema structure from the Arrow C Data Interface.
 data ArrowSchema = ArrowSchema
     { arrowSchemaFormat :: CString
     , arrowSchemaName :: CString
@@ -1696,7 +1730,7 @@ instance Storable ArrowSchema where
         pokeByteOff ptr (pointerSize * 7) arrowSchemaRelease
         pokeByteOff ptr (pointerSize * 8) arrowSchemaPrivateData
 
--- | Partial Arrow array view mirroring the DuckDB C API layout.
+-- | Arrow array structure from the Arrow C Data Interface.
 data ArrowArray = ArrowArray
     { arrowArrayLength :: Int64
     , arrowArrayNullCount :: Int64
@@ -1737,16 +1771,40 @@ instance Storable ArrowArray where
         pokeByteOff ptr (intFieldSize * 5 + pointerSize * 3) arrowArrayRelease
         pokeByteOff ptr (intFieldSize * 5 + pointerSize * 4) arrowArrayPrivateData
 
-{- | Pointer wrapper for the deprecated Arrow schema handle exposed by DuckDB.
-The underlying memory is managed by DuckDB and must only be accessed through
-the deprecated Arrow helper functions.
+-- | Arrow stream structure from the Arrow C Stream Interface.
+data ArrowArrayStream = ArrowArrayStream
+    { arrowStreamGetSchema :: FunPtr (Ptr ArrowArrayStream -> Ptr ArrowSchema -> IO CInt)
+    , arrowStreamGetNext :: FunPtr (Ptr ArrowArrayStream -> Ptr ArrowArray -> IO CInt)
+    , arrowStreamGetLastError :: FunPtr (Ptr ArrowArrayStream -> IO CString)
+    , arrowStreamRelease :: FunPtr (Ptr ArrowArrayStream -> IO ())
+    , arrowStreamPrivateData :: Ptr ()
+    }
+
+instance Storable ArrowArrayStream where
+    sizeOf _ = pointerSize * 5
+    alignment _ = alignment (nullPtr :: Ptr ())
+    peek ptr =
+        ArrowArrayStream
+            <$> peekByteOff ptr 0
+            <*> peekByteOff ptr pointerSize
+            <*> peekByteOff ptr (pointerSize * 2)
+            <*> peekByteOff ptr (pointerSize * 3)
+            <*> peekByteOff ptr (pointerSize * 4)
+    poke ptr ArrowArrayStream{..} = do
+        pokeByteOff ptr 0 arrowStreamGetSchema
+        pokeByteOff ptr pointerSize arrowStreamGetNext
+        pokeByteOff ptr (pointerSize * 2) arrowStreamGetLastError
+        pokeByteOff ptr (pointerSize * 3) arrowStreamRelease
+        pokeByteOff ptr (pointerSize * 4) arrowStreamPrivateData
+
+{- | Pointer to an Arrow schema used by the deprecated DuckDB API.
+Release the schema through its release callback. The caller owns its storage.
 -}
 newtype ArrowSchemaPtr = ArrowSchemaPtr {unArrowSchemaPtr :: Ptr ArrowSchema}
     deriving (Eq)
 
-{- | Pointer wrapper for the deprecated Arrow array handle exposed by DuckDB.
-DuckDB assumes exclusive ownership and coordinates buffer lifetimes via the
-release callback stored in the referenced @ArrowArray@ struct.
+{- | Pointer to an Arrow array used by the deprecated DuckDB API.
+Release the array through its release callback. The caller owns its storage.
 -}
 newtype ArrowArrayPtr = ArrowArrayPtr {unArrowArrayPtr :: Ptr ArrowArray}
     deriving (Eq)

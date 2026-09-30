@@ -1,6 +1,6 @@
 cabal-version: 3.4
 name: duckdb-ffi
-version: 1.5.0.0
+version: 1.5.3.0
 author: Matthias Pall Gissurarson
 maintainer: mpg@mpg.is
 category: Database
@@ -14,18 +14,18 @@ tested-with:
 
 license: MPL-2.0
 license-file: LICENSE
-synopsis: Haskell FFI bindings for DuckDB
+synopsis: Low-level bindings to the DuckDB C API
 homepage: https://github.com/Tritlo/duckdb-haskell
 bug-reports: https://github.com/Tritlo/duckdb-haskell/issues
 description:
-  This library provides low-level FFI bindings to DuckDB.
-  Supports DuckDB >= 1.5.3 and < 1.6. Tested with version 1.5.3.
-  Exposes the full DuckDB C API.
+  Haskell FFI bindings to the DuckDB C API.
+  Supports native DuckDB >= 1.5.3 and < 1.6. Tested with version 1.5.3.
   .
   Downloads a verified native library to the user cache on Linux and macOS.
   Uses an existing library when the user or Nix supplies it.
 
 extra-doc-files: CHANGELOG.md
+extra-source-files: cbits/duckdb_arrow.h
 
 source-repository head
   type: git

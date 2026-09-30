@@ -320,15 +320,15 @@ foreign import ccall "duckdb_append_double"
     c_duckdb_append_double :: DuckDBAppender -> CDouble -> IO DuckDBState
 
 -- | Append a duckdb_date value to the appender.
-foreign import ccall "duckdb_append_date"
+foreign import ccall "wrapped_duckdb_append_date"
     c_duckdb_append_date :: DuckDBAppender -> DuckDBDate -> IO DuckDBState
 
 -- | Append a duckdb_time value to the appender.
-foreign import ccall "duckdb_append_time"
+foreign import ccall "wrapped_duckdb_append_time"
     c_duckdb_append_time :: DuckDBAppender -> DuckDBTime -> IO DuckDBState
 
 -- | Append a duckdb_timestamp value to the appender.
-foreign import ccall "duckdb_append_timestamp"
+foreign import ccall "wrapped_duckdb_append_timestamp"
     c_duckdb_append_timestamp :: DuckDBAppender -> DuckDBTimestamp -> IO DuckDBState
 
 {- | Append a duckdb_interval value to the appender.

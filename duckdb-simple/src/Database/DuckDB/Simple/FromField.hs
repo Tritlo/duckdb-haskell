@@ -67,6 +67,7 @@ import Database.DuckDB.Simple.LogicalRep (
  )
 import Database.DuckDB.Simple.Ok
 import Database.DuckDB.Simple.Types (Null (..))
+import GHC.Float (double2Float, float2Double)
 import GHC.Num.Integer (integerFromWordList)
 import Numeric.Natural (Natural)
 
@@ -219,30 +220,30 @@ data TimeWithZone = TimeWithZone
     }
     deriving (Eq, Show)
 
--- | Pattern synonym to make it easier to match on any integral type.
-pattern FieldInt :: Int -> FieldValue
+-- | Match signed values without narrowing to the machine word size.
+pattern FieldInt :: Int64 -> FieldValue
 pattern FieldInt i <- (fieldValueToInt -> Just i)
-    where
-        FieldInt i = FieldInt64 (fromIntegral i)
+  where
+    FieldInt i = FieldInt64 i
 
-fieldValueToInt :: FieldValue -> Maybe Int
+fieldValueToInt :: FieldValue -> Maybe Int64
 fieldValueToInt (FieldInt8 i) = Just (fromIntegral i)
 fieldValueToInt (FieldInt16 i) = Just (fromIntegral i)
 fieldValueToInt (FieldInt32 i) = Just (fromIntegral i)
-fieldValueToInt (FieldInt64 i) = Just (fromIntegral i)
+fieldValueToInt (FieldInt64 i) = Just i
 fieldValueToInt _ = Nothing
 
--- | Pattern synonym to make it easier to match on any word size
-pattern FieldWord :: Word -> FieldValue
+-- | Match unsigned values without narrowing to the machine word size.
+pattern FieldWord :: Word64 -> FieldValue
 pattern FieldWord i <- (fieldValueToWord -> Just i)
-    where
-        FieldWord i = FieldWord64 (fromIntegral i)
+  where
+    FieldWord i = FieldWord64 i
 
-fieldValueToWord :: FieldValue -> Maybe Word
+fieldValueToWord :: FieldValue -> Maybe Word64
 fieldValueToWord (FieldWord8 i) = Just (fromIntegral i)
 fieldValueToWord (FieldWord16 i) = Just (fromIntegral i)
 fieldValueToWord (FieldWord32 i) = Just (fromIntegral i)
-fieldValueToWord (FieldWord64 i) = Just (fromIntegral i)
+fieldValueToWord (FieldWord64 i) = Just i
 fieldValueToWord _ = Nothing
 
 -- | Metadata for a single column in a row.
@@ -345,7 +346,7 @@ instance FromField Bool where
 instance FromField Int8 where
     fromField f@Field{fieldValue} =
         case fieldValue of
-            FieldInt i -> Ok (fromIntegral i)
+            FieldInt i -> boundedIntegral f i
             FieldHugeInt value -> boundedFromInteger f value
             FieldUHugeInt value -> boundedFromInteger f value
             FieldEnum value -> boundedFromInteger f (fromIntegral value)
@@ -355,7 +356,7 @@ instance FromField Int8 where
 instance FromField Int64 where
     fromField f@Field{fieldValue} =
         case fieldValue of
-            FieldInt i -> Ok (fromIntegral i)
+            FieldInt i -> Ok i
             FieldHugeInt value -> boundedFromInteger f value
             FieldUHugeInt value -> boundedFromInteger f value
             FieldEnum value -> Ok (fromIntegral value)
@@ -431,7 +432,7 @@ instance FromField Word64 where
                 | i >= 0 -> Ok (fromIntegral i)
                 | otherwise ->
                     returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
-            FieldWord w -> Ok (fromIntegral w)
+            FieldWord w -> Ok w
             FieldHugeInt value
                 | value >= 0 -> boundedFromInteger f value
                 | otherwise ->
@@ -448,7 +449,7 @@ instance FromField Word32 where
                 | i >= 0 -> boundedIntegral f i
                 | otherwise ->
                     returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
-            FieldWord w -> Ok (fromIntegral w)
+            FieldWord w -> boundedFromInteger f (toInteger w)
             FieldHugeInt value
                 | value >= 0 -> boundedFromInteger f value
                 | otherwise ->
@@ -465,7 +466,7 @@ instance FromField Word16 where
                 | i >= 0 -> boundedIntegral f i
                 | otherwise ->
                     returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
-            FieldWord w -> Ok (fromIntegral w)
+            FieldWord w -> boundedFromInteger f (toInteger w)
             FieldHugeInt value
                 | value >= 0 -> boundedFromInteger f value
                 | otherwise ->
@@ -482,7 +483,7 @@ instance FromField Word8 where
                 | i >= 0 -> boundedIntegral f i
                 | otherwise ->
                     returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
-            FieldWord w -> Ok (fromIntegral w)
+            FieldWord w -> boundedFromInteger f (toInteger w)
             FieldHugeInt value
                 | value >= 0 -> boundedFromInteger f value
                 | otherwise ->
@@ -499,7 +500,7 @@ instance FromField Word where
                 | i >= 0 -> boundedFromInteger f (fromIntegral i)
                 | otherwise ->
                     returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
-            FieldWord w -> Ok w
+            FieldWord w -> boundedFromInteger f (toInteger w)
             FieldHugeInt value
                 | value >= 0 -> boundedFromInteger f value
                 | otherwise ->
@@ -513,6 +514,7 @@ instance FromField Double where
     fromField f@Field{fieldValue} =
         case fieldValue of
             FieldDouble d -> Ok d
+            FieldFloat value -> Ok (float2Double value)
             FieldInt i -> Ok (fromIntegral i)
             FieldDecimal DecimalValue{decimalInteger, decimalScale} ->
                 Ok (realToFrac decimalInteger / 10 ^ decimalScale)
@@ -523,13 +525,17 @@ instance FromField Float where
     fromField field =
         case (fromField field :: Ok Double) of
             Errors err -> Errors err
-            Ok d -> Ok (realToFrac d)
+            Ok d
+                | not (isInfinite d || isNaN d) && isInfinite (double2Float d) ->
+                    returnError ConversionFailed field "floating-point value out of bounds"
+                | otherwise -> Ok (double2Float d)
 
 instance FromField Text where
     fromField f@Field{fieldValue} =
         case fieldValue of
             FieldText t -> Ok t
             FieldInt i -> Ok (Text.pack (show i))
+            FieldFloat value -> Ok (Text.pack (show value))
             FieldDouble d -> Ok (Text.pack (show d))
             FieldBool b -> Ok (if b then Text.pack "1" else Text.pack "0")
             FieldNull -> returnError UnexpectedNull f ""
@@ -694,13 +700,8 @@ instance (FromField a) => FromField (Maybe a) where
     fromField field = Just <$> fromField field
 
 -- | Helper for bounded integral conversions.
-boundedIntegral :: forall a. (Integral a, Bounded a, Typeable a) => Field -> Int -> Ok a
-boundedIntegral f@Field{} i
-    | toInteger i < toInteger (minBound :: a) =
-        returnError ConversionFailed f "integer value out of bounds"
-    | toInteger i > toInteger (maxBound :: a) =
-        returnError ConversionFailed f "integer value out of bounds"
-    | otherwise = Ok (fromIntegral i)
+boundedIntegral :: forall a. (Integral a, Bounded a, Typeable a) => Field -> Int64 -> Ok a
+boundedIntegral f = boundedFromInteger f . toInteger
 
 boundedFromInteger :: forall a. (Integral a, Bounded a, Typeable a) => Field -> Integer -> Ok a
 boundedFromInteger f@Field{} value

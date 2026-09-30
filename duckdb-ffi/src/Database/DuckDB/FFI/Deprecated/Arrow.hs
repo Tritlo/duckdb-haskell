@@ -45,7 +45,7 @@ Parameters:
 
 Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
 -}
-foreign import ccall "duckdb_query_arrow"
+foreign import ccall safe "duckdb_query_arrow"
     c_duckdb_query_arrow :: DuckDBConnection -> CString -> Ptr DuckDBArrow -> IO DuckDBState
 
 {- | > Warning Deprecation notice. This method is scheduled for removal in a future
@@ -112,7 +112,7 @@ Parameters:
 
 Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
 -}
-foreign import ccall "duckdb_query_arrow_array"
+foreign import ccall safe "duckdb_query_arrow_array"
     c_duckdb_query_arrow_array :: DuckDBArrow -> Ptr DuckDBArrowArray -> IO DuckDBState
 
 {- | > Warning Deprecation notice. This method is scheduled for removal in a future
@@ -209,7 +209,7 @@ Parameters:
 
 Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
 -}
-foreign import ccall "duckdb_execute_prepared_arrow"
+foreign import ccall safe "duckdb_execute_prepared_arrow"
     c_duckdb_execute_prepared_arrow :: DuckDBPreparedStatement -> Ptr DuckDBArrow -> IO DuckDBState
 
 {- | > Warning Deprecation notice. This method is scheduled for removal in a future
@@ -224,7 +224,7 @@ Parameters:
 
 Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
 -}
-foreign import ccall "duckdb_arrow_scan"
+foreign import ccall safe "duckdb_arrow_scan"
     c_duckdb_arrow_scan :: DuckDBConnection -> CString -> DuckDBArrowStream -> IO DuckDBState
 
 {- | > Warning Deprecation notice. This method is scheduled for removal in a future
@@ -244,7 +244,7 @@ Parameters:
 
 Returns @DuckDBSuccess@ on success or @DuckDBError@ on failure.
 -}
-foreign import ccall "duckdb_arrow_array_scan"
+foreign import ccall safe "duckdb_arrow_array_scan"
     c_duckdb_arrow_array_scan :: DuckDBConnection -> CString -> DuckDBArrowSchema -> DuckDBArrowArray -> Ptr DuckDBArrowStream -> IO DuckDBState
 
 foreign import ccall safe "wrapped_duckdb_arrow_schema_internal_ptr"
@@ -265,9 +265,8 @@ foreign import ccall safe "wrapped_duckdb_arrow_stream_internal_ptr"
 foreign import ccall safe "wrapped_duckdb_arrow_stream_clear_internal_ptr"
     c_duckdb_arrow_stream_clear_internal_ptr :: DuckDBArrowStream -> IO ()
 
-{- | Read the @internal_ptr@ field of a deprecated Arrow schema wrapper.
-Returns 'Nothing' when the wrapper is null or DuckDB has already cleared the
-pointer.
+{- | Return the Arrow schema address for a deprecated DuckDB handle.
+Returns 'Nothing' when the handle is null or its release callback is null.
 -}
 duckdbArrowSchemaInternal :: DuckDBArrowSchema -> IO (Maybe ArrowSchemaPtr)
 duckdbArrowSchemaInternal schema = do
@@ -277,15 +276,15 @@ duckdbArrowSchemaInternal schema = do
             then Nothing
             else Just (ArrowSchemaPtr (castPtr raw))
 
-{- | Clear the @internal_ptr@ field on a deprecated Arrow schema wrapper.
-Useful after copying the schema to application-managed storage.
+{- | Set the Arrow schema release callback to null after a shallow copy.
+The destination owns the buffers and must call its release callback.
+This function does not release buffers or change other fields.
 -}
 duckdbArrowSchemaClear :: DuckDBArrowSchema -> IO ()
 duckdbArrowSchemaClear = c_duckdb_arrow_schema_clear_internal_ptr
 
-{- | Read the @internal_ptr@ field of a deprecated Arrow array wrapper.
-Returns 'Nothing' when the wrapper is null or the internal pointer has been
-cleared by DuckDB.
+{- | Return the Arrow array address for a deprecated DuckDB handle.
+Returns 'Nothing' when the handle is null or its release callback is null.
 -}
 duckdbArrowArrayInternal :: DuckDBArrowArray -> IO (Maybe ArrowArrayPtr)
 duckdbArrowArrayInternal array = do
@@ -295,15 +294,15 @@ duckdbArrowArrayInternal array = do
             then Nothing
             else Just (ArrowArrayPtr (castPtr raw))
 
-{- | Clear the @internal_ptr@ field on a deprecated Arrow array wrapper.
-After this call DuckDB treats the wrapper as null.
+{- | Set the Arrow array release callback to null after a shallow copy.
+The destination owns the buffers and must call its release callback.
+This function does not release buffers or change other fields.
 -}
 duckdbArrowArrayClear :: DuckDBArrowArray -> IO ()
 duckdbArrowArrayClear = c_duckdb_arrow_array_clear_internal_ptr
 
-{- | Read the @internal_ptr@ field of a deprecated Arrow stream wrapper.
-Returns 'Nothing' when the wrapper is null or the stream has already been
-released.
+{- | Return the Arrow stream address for a deprecated DuckDB handle.
+Returns 'Nothing' when the handle is null or its release callback is null.
 -}
 duckdbArrowStreamInternal :: DuckDBArrowStream -> IO (Maybe ArrowStreamPtr)
 duckdbArrowStreamInternal stream = do
@@ -313,9 +312,9 @@ duckdbArrowStreamInternal stream = do
             then Nothing
             else Just (ArrowStreamPtr raw)
 
-{- | Clear the @internal_ptr@ field on a deprecated Arrow stream wrapper.
-Use this after consuming the stream via @duckdb_arrow_scan@ to avoid stale
-pointers on the DuckDB side.
+{- | Set the Arrow stream release callback to null after a shallow copy.
+The destination owns the buffers and must call its release callback.
+This function does not release buffers or change other fields.
 -}
 duckdbArrowStreamClear :: DuckDBArrowStream -> IO ()
 duckdbArrowStreamClear = c_duckdb_arrow_stream_clear_internal_ptr

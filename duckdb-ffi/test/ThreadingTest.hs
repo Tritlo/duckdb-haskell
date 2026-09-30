@@ -13,7 +13,7 @@ import Foreign.Ptr (nullPtr)
 import Foreign.Storable (peek)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
-import Utils (withConnection, withDatabase)
+import Utils (withConnection)
 
 tests :: TestTree
 tests =
@@ -88,7 +88,7 @@ executeTasksCompletesPendingQuery =
 taskStateControlsExecutionLifecycle :: TestTree
 taskStateControlsExecutionLifecycle =
     testCase "task state executes batches and finishes on request" $
-        withDatabase \db ->
+        withSingleThreadedDatabase \db ->
             withConnection db \conn -> do
                 setupAggTable conn
 

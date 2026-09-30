@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Download the native library to the user cache and verify the archive's SHA256 checksum.
+- Use an existing native library when the user or Nix supplies it.
+- Track native library selection through the `systemlib` flag, `extra-lib-dirs`, and the `--duckdb-install-dir` configure option.
+- Raise the minimum native DuckDB version to 1.5.3.
+- Use GHC 9.14.1 by default. Test the latest stable patch release in each GHC series from 9.6 to 9.14.
+
 ## 1.5.0.0
 - Upgrade the vendored DuckDB C header and build metadata to DuckDB 1.5.0, making `duckdb-ffi` a DuckDB `1.5.0+` binding set.
 - Add raw FFI coverage for new DuckDB 1.5 API areas including custom config options, scalar function init/state hooks, copy functions, file-system handles, catalog inspection, logging, and new helper/appender/vector APIs.

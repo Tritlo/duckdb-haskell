@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Use DuckDB 1.5.6 by default. Test native versions 1.5.3 through 1.5.6.
+- Decode GEOMETRY as WKB bytes. Require a SQL cast before decoding VARIANT.
+
 ## 0.2.0.0
 
 ### Query execution and resource lifetime

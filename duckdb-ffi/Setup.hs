@@ -72,18 +72,18 @@ nativeLibraryDirs flags = do
 The Haskell package version can differ from the native library version.
 -}
 nativeVersion :: String
-nativeVersion = "1.5.3"
+nativeVersion = "1.5.6"
 
 -- | Select an official archive and its release checksum.
 nativeArchive :: IO (String, String, FilePath)
 nativeArchive = case (os, arch) of
-    ("linux", "x86_64") -> pure ("linux-amd64", "0a926eba5bce0abc0010f4b9109133e4440cb74e97bd10fd2d0fc2a721621b05", "libduckdb.so")
-    ("linux", "aarch64") -> pure ("linux-arm64", "162806d591c0431d031d9bdf43dbecc5f00755da01a2064df68f9a69a6f50a10", "libduckdb.so")
+    ("linux", "x86_64") -> pure ("linux-amd64", "b845005f5132a7d8180057c35e14a7626632258782f871a90861b19c1c03841b", "libduckdb.so")
+    ("linux", "aarch64") -> pure ("linux-arm64", "b72ed9f05003f5e9d2015f7ceada6416b377d9dd33169cdde3c9e33897856eee", "libduckdb.so")
     ("darwin", "x86_64") -> mac
     ("darwin", "aarch64") -> mac
     _ -> fail "Automatic DuckDB installation supports glibc Linux and macOS. Supply DuckDB >= 1.5.3 and < 1.6 with -fsystemlib and --extra-lib-dirs."
   where
-    mac = pure ("osx-universal", "386f8e8b3b4bc8d128762327121e22065ce45f2ee55ef1b1f412ce11e0e6c51f", "libduckdb.dylib")
+    mac = pure ("osx-universal", "e0bc007d9b0094c0970ac1847a8601d10aad07cbd2910ce586ec810f77b638d6", "libduckdb.dylib")
 
 -- | Download into a temporary directory. Publish the verified library atomically.
 installNativeLibrary :: ConfigFlags -> IO FilePath

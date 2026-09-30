@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5.6.0
+
+- Use the official DuckDB 1.5.6 C header and native download.
+- Add GEOMETRY and VARIANT type tags, statement tags, and the geometry CRS accessor.
+
 ## 1.5.3.0
 
 - Export invokers for Arrow schema/array release and all four stream callbacks.

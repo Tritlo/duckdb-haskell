@@ -298,7 +298,8 @@ For manual cursor-style iteration, use `nextRow`/`nextRowWith` on an open
 `Statement` to pull rows one at a time and decide when to stop.
 
 Cursors support the same column types as eager queries, including STRUCT
-and UNION values with nested collections and NULLs.
+and UNION values with nested collections and NULLs. VARIANT values must be
+cast to a concrete SQL type. GEOMETRY values decode to WKB bytes.
 
 #### Optional native streaming
 

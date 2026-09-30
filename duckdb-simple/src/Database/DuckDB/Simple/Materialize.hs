@@ -131,6 +131,9 @@ materializeValue dtype vector dataPtr validity rowIdx = do
                 let upper = upperBiased `xor` (0x8000000000000000 :: Word64)
                 pure (FieldUUID (UUID.fromWords64 (fromIntegral upper) lower))
             DuckDBTypeBlob -> FieldBlob <$> chunkDecodeBlob dataPtr duckIdx
+            DuckDBTypeGeometry -> FieldBlob <$> chunkDecodeBlob dataPtr duckIdx
+            DuckDBTypeVariant ->
+                throwIO (userError "duckdb-simple: cast VARIANT to a concrete SQL type before decoding")
             DuckDBTypeDate -> do
                 raw <- peekElemOff (castPtr dataPtr :: Ptr Int32) rowIdx
                 FieldDate <$> decodeDuckDBDate (DuckDBDate raw)

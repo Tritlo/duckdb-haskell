@@ -25,6 +25,7 @@ tests =
         , compositeLogicalTypes
         , aliasRoundtrip
         , registerLogicalType
+        , geometryTypeCrs
         ]
 
 primitiveLogicalTypes :: TestTree
@@ -40,6 +41,7 @@ primitiveLogicalTypes =
         , (DuckDBTypeInteger, DuckDBTypeInteger)
         , (DuckDBTypeVarchar, DuckDBTypeVarchar)
         , (DuckDBTypeBlob, DuckDBTypeBlob)
+        , (DuckDBTypeVariant, DuckDBTypeVariant)
         ]
 
 decimalLogicalType :: TestTree
@@ -166,3 +168,22 @@ registerLogicalType =
                         typeName <- peekCString typePtr
                         c_duckdb_free (castPtr typePtr)
                         typeName @?= aliasName
+
+geometryTypeCrs :: TestTree
+geometryTypeCrs =
+    testCase "geometry CRS is null without a coordinate reference system" $
+        withDatabase \db ->
+            withConnection db \conn -> do
+                -- A GEOMETRY column reports the GEOMETRY type id, and carries no
+                -- CRS unless the data supplies one.
+                withResult conn "SELECT 'POINT(1 2)'::GEOMETRY" \resPtr -> do
+                    columnType <- c_duckdb_column_logical_type resPtr 0
+                    withLogicalType (pure columnType) \lt -> do
+                        c_duckdb_get_type_id lt >>= (@?= DuckDBTypeGeometry)
+                        crs <- c_duckdb_geometry_type_get_crs lt
+                        assertBool "plain GEOMETRY has no CRS" (crs == nullPtr)
+
+                -- Types other than GEOMETRY never have a CRS.
+                withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \lt -> do
+                    crs <- c_duckdb_geometry_type_get_crs lt
+                    assertBool "INTEGER has no CRS" (crs == nullPtr)

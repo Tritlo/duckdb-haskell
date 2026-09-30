@@ -86,6 +86,13 @@ valueRegressionTests =
             let members = listArray (0, 1) [UnionMemberType "number" (LogicalTypeScalar DuckDBTypeBigInt), UnionMemberType "text" (LogicalTypeScalar DuckDBTypeVarchar)]
                 original = UnionValue 0 "number" FieldNull members
             (query conn "SELECT ?" (Only original) :: IO [Only (UnionValue FieldValue)]) >>= (@?= [Only original])
+        , testCase "GEOMETRY decodes as well-known binary" $ withConnection ":memory:" \conn -> do
+            [Only bytes] <- query_ conn "SELECT 'POINT(1 2)'::GEOMETRY" :: IO [Only BS.ByteString]
+            BS.length bytes @?= 21
+            (query conn "SELECT ST_AsText(ST_GeomFromWKB(?))" (Only bytes) :: IO [Only Text]) >>= (@?= [Only "POINT (1 2)"])
+        , testCase "VARIANT has a controlled cast requirement" $ withConnection ":memory:" \conn -> do
+            assertIOError (query_ conn "SELECT {'a': 1}::VARIANT" :: IO [Only FieldValue])
+            (query_ conn "SELECT ({'a': 1}::VARIANT)::JSON" :: IO [Only Text]) >>= (@?= [Only "{\"a\":1}"])
         , testCase "Float parameter retains FLOAT type" $ withConnection ":memory:" \conn -> do
             (query conn "SELECT typeof(?), ?" (1.25 :: Float, 1.25 :: Float) :: IO [(Text, Float)]) >>= (@?= [("FLOAT", 1.25)])
         , testCase "Float special values survive decoding" $ withConnection ":memory:" \conn -> do

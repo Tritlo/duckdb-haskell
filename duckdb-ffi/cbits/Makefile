@@ -1,7 +1,7 @@
 # DuckDB library fetch and install
-DUCKDB_VERSION = 1.5.3
+DUCKDB_VERSION = 1.5.6
 DUCKDB_URL = https://github.com/duckdb/duckdb/releases/download/v$(DUCKDB_VERSION)/libduckdb-linux-amd64.zip
-EXPECTED_SHA256 = 0a926eba5bce0abc0010f4b9109133e4440cb74e97bd10fd2d0fc2a721621b05
+EXPECTED_SHA256 = b845005f5132a7d8180057c35e14a7626632258782f871a90861b19c1c03841b
 ARCHIVE = libduckdb-$(DUCKDB_VERSION)-linux-amd64.zip
 EXTRACT_DIR = duckdb/$(DUCKDB_VERSION)/linux-amd64
 INSTALL_DIR ?= $(HOME)/.local/lib

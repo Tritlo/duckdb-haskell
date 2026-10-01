@@ -14,9 +14,12 @@ The short version is:
 
 ## Binding fixes
 
-- Cursors and folds use DuckDB's supported materialized execution API. They
+- Default cursors and folds use DuckDB's supported materialized execution API. They
   decode one Haskell row at a time, but native result memory depends on the
-  result size. The deprecated native streaming API remains in duckdb-ffi.
+  result size. To request native streaming, import
+  `Database.DuckDB.Simple.Deprecated.Streaming` qualified. Its row and Arrow
+  folds emit a deprecation warning because they use DuckDB's deprecated
+  streaming execution entry point. The raw bindings remain in duckdb-ffi.
 
 - `UTCTime` parameters have SQL type TIMESTAMPTZ. Use `LocalTime` for TIMESTAMP.
 - `Float` parameters have SQL type FLOAT. REAL values decode to Float or Double.

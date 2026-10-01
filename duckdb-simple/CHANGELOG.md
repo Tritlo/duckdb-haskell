@@ -4,6 +4,11 @@
 
 ### Query execution and resource lifetime
 
+- Add `Database.DuckDB.Simple.Deprecated.Streaming` for callers that need native
+  streaming. It provides row folds, cursors, and Arrow folds with a deprecation
+  warning. Both execution modes share decoding and resource cleanup. Native
+  chunk fetching is interruptible, including cleanup of a chunk fetched just
+  before cancellation. Default APIs continue to use materialized execution.
 - Previously, a long native query could defer Ctrl-C until execution finished.
   Query preparation and execution now run in a worker so the caller can receive
   asynchronous exceptions. Cancellation interrupts DuckDB and waits for the

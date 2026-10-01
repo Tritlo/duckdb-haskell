@@ -1,6 +1,7 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# OPTIONS_GHC -Wno-deprecations #-}
 
 -- | Integration tests for scoped Arrow batches and their native ownership.
 module ArrowTests (arrowTests) where
@@ -15,7 +16,8 @@ import qualified Data.Text as Text
 import Data.Word (Word8)
 import Database.DuckDB.FFI
 import Database.DuckDB.Simple
-import Database.DuckDB.Simple.Arrow
+import qualified Database.DuckDB.Simple.Arrow as Arrow
+import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
 import Database.DuckDB.Simple.Internal (peekUtf8CString)
 import Foreign.C.String (peekCString)
 import Foreign.Ptr (FunPtr, Ptr, castPtr, freeHaskellFunPtr, nullPtr)
@@ -26,8 +28,13 @@ import Test.Tasty.HUnit
 -- | Exercise native results and count their Arrow release callbacks.
 arrowTests :: TestTree
 arrowTests =
+    testGroup "Arrow batches" [arrowModeTests False, arrowModeTests True]
+
+-- | Run the same ownership checks for both public Arrow interfaces.
+arrowModeTests :: Bool -> TestTree
+arrowModeTests streaming =
     testGroup
-        "Arrow batches"
+        (if streaming then "deprecated streaming" else "materialized")
         [ testCase "parameters, Unicode names, NULLs and multiple batches" $
             withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
                 (batches, chunks) <-
@@ -115,6 +122,12 @@ arrowTests =
                     readIORef schemaReleases >>= (@?= 1)
                     readIORef arrayReleases >>= (@?= 1)
         ]
+  where
+    foldArrow :: (ToRow q) => Connection -> Query -> q -> a -> (a -> Ptr ArrowSchema -> Ptr ArrowArray -> IO a) -> IO a
+    foldArrow = if streaming then Streaming.foldArrow else Arrow.foldArrow
+
+    foldArrow_ :: Connection -> Query -> a -> (a -> Ptr ArrowSchema -> Ptr ArrowArray -> IO a) -> IO a
+    foldArrow_ = if streaming then Streaming.foldArrow_ else Arrow.foldArrow_
 
 -- | Copy a BIGINT Arrow column, including its validity bitmap.
 readInt64Batch :: Ptr ArrowArray -> IO [Maybe Int64]

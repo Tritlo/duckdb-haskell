@@ -283,7 +283,7 @@ success or an exception. The accumulator determines Haskell memory use.
 chunks. DuckDB 1.5 materializes the native result before the first row is
 returned. These functions avoid a complete Haskell row list, but native memory
 use still depends on the result size. The native API for starting a streaming
-result is deprecated; duckdb-simple uses the supported execution API.
+result is deprecated; the default interface uses the supported execution API.
 
 ```haskell
 import Database.DuckDB.Simple.Types (Only (..))
@@ -299,6 +299,35 @@ For manual cursor-style iteration, use `nextRow`/`nextRowWith` on an open
 
 Cursors support the same column types as eager queries, including STRUCT
 and UNION values with nested collections and NULLs.
+
+#### Optional native streaming
+
+`Database.DuckDB.Simple.Deprecated.Streaming` provides `fold`, `fold_`,
+`foldNamed`, `nextRow`, and `nextRowWith` with native streaming enabled.
+Import it qualified:
+
+```haskell
+import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
+
+streamSum :: Connection -> IO Int
+streamSum conn =
+  Streaming.fold_ conn "SELECT i FROM range(1000000) t(i)" 0 $ \acc (Only n) ->
+    pure (acc + n)
+```
+
+The import emits a deprecation warning because DuckDB has deprecated the
+execution entry point. DuckDB can still materialize some queries. Streaming
+does not bound the memory used by query operators.
+
+The first cursor fetch selects the execution mode until an explicit reset.
+Switching between default and streaming `nextRow` calls retains that mode.
+Keep the connection dedicated to the active stream; another query on that
+connection can invalidate it. Cancellation interrupts native chunk fetching
+as well as execution.
+
+This module also provides `foldArrow` and `foldArrow_` for streaming Arrow
+batches. They use the same supported Arrow conversion and scoped ownership
+as `Database.DuckDB.Simple.Arrow`.
 
 ### Arrow batches
 

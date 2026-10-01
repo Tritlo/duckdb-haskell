@@ -1,6 +1,7 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# OPTIONS_GHC -Wno-deprecations #-}
 
 {- | Regression check for leaked DuckDB handles.
 
@@ -19,12 +20,13 @@ module Main (main) where
 import Control.Concurrent (forkFinally, killThread, newEmptyMVar, putMVar, takeMVar, threadDelay, tryPutMVar)
 import Control.Exception (AsyncException (ThreadKilled), IOException, SomeException, evaluate, fromException, try)
 import Control.Monad (forM_, replicateM, unless, void, when)
-import Data.IORef (atomicModifyIORef', mkWeakIORef, newIORef, readIORef)
+import Data.IORef (atomicModifyIORef', atomicWriteIORef, mkWeakIORef, newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (isPrefixOf)
 import Data.Maybe (catMaybes, listToMaybe)
 import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Copy as Copy
+import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
 import Database.DuckDB.Simple.FromField (FieldValue)
 import qualified Database.DuckDB.Simple.Logging as Logging
 import System.Environment (getArgs, lookupEnv)
@@ -224,6 +226,7 @@ expectFailure action = do
 checkCancellation :: Int -> IO ()
 checkCancellation batches =
     withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
+        void (execute_ conn "SET streaming_buffer_size = '64KB'")
         let cancel action = do
                 started <- newEmptyMVar
                 done <- newEmptyMVar
@@ -257,6 +260,17 @@ checkCancellation batches =
                     blocked <- newEmptyMVar
                     -- Keep the first chunk live until the worker is cancelled.
                     void (fold_ conn "SELECT {'x': i, 'values': [i, NULL]} FROM range(100000) t(i)" (0 :: Int64) (\n (Only (_ :: FieldValue)) -> signal >> takeMVar blocked >> pure (n + 1)))
+                forM_ [False, True] \arrow -> cancel \signal -> do
+                    filtering <- newIORef False
+                    createFunction conn "leak_stream_filter" \(_ :: Int64) -> do
+                        active <- readIORef filtering
+                        when active signal
+                        pure active
+                    let sql = "SELECT i FROM range(1000000000000) t(i) WHERE NOT leak_stream_filter(i)"
+                        delivered = atomicWriteIORef filtering True
+                    if arrow
+                        then Streaming.foldArrow_ conn sql () (\() _ _ -> delivered)
+                        else Streaming.fold_ conn sql () (\() (Only (_ :: Int64)) -> delivered)
         batch
         performMajorGC
         before <- readUsage
@@ -264,7 +278,7 @@ checkCancellation batches =
             batch
             performMajorGC
             after <- readUsage
-            reportOptional ("open connection, " <> show (n * 30) <> " cancellations") before after
+            reportOptional ("open connection, " <> show (n * 50) <> " cancellations") before after
 
 -- | Report native counters when the operating system provides them.
 reportOptional :: String -> Maybe Usage -> Maybe Usage -> IO ()

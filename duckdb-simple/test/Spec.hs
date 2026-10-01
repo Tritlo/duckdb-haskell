@@ -84,6 +84,7 @@ import ExtensionRegressionTests (extensionRegressionTests)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import Properties (roundTripTests)
+import StreamingTests (nativeStreamingTests)
 import System.Directory (doesFileExist, removeFile)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.ExpectedFailure (expectFailBecause)
@@ -206,6 +207,7 @@ tests =
         , coreRegressionTests
         , arrowTests
         , cancellationTests
+        , nativeStreamingTests
         , extensionRegressionTests
         , valueRegressionTests
         , timeTests

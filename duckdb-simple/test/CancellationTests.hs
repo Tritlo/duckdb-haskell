@@ -2,6 +2,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# OPTIONS_GHC -Wno-deprecations #-}
 
 -- | Cancellation during native execution must finish before handles are released.
 module CancellationTests (cancellationTests) where
@@ -9,10 +10,12 @@ module CancellationTests (cancellationTests) where
 import Control.Concurrent (MVar, ThreadId, forkIOWithUnmask, newEmptyMVar, putMVar, readMVar, rtsSupportsBoundThreads, threadDelay, throwTo, tryPutMVar, tryReadMVar)
 import Control.Exception (AsyncException (..), SomeException, bracket, fromException, mask_, try)
 import Control.Monad (unless, void)
+import Data.IORef (atomicWriteIORef, newIORef, readIORef)
 import Data.Int (Int64)
 import Database.DuckDB.FFI (c_duckdb_interrupt, c_duckdb_query)
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.Arrow (foldArrow_)
+import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
 import Database.DuckDB.Simple.Internal (withConnectionHandle, withQueryCString, withResult)
 import GHC.Conc (BlockReason (..), ThreadStatus (..), threadStatus)
 import System.Timeout (timeout)
@@ -44,6 +47,36 @@ cancellationTests =
             , ("Arrow fold", \conn sql -> foldArrow_ conn sql () (\() _ _ -> pure ()))
             ]
         ]
+            <> [ testCase name $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
+                    void (execute_ conn "SET streaming_buffer_size = '64KB'")
+                    filtering <- newIORef False
+                    entered <- newEmptyMVar
+                    createFunction conn "discard_remaining" \(_ :: Int64) -> do
+                        active <- readIORef filtering
+                        if active then signal entered >> pure True else pure False
+                    let sql = "SELECT i FROM range(1000000000000) t(i) WHERE NOT discard_remaining(i)"
+                    withCaller conn (pure ()) (run conn sql (atomicWriteIORef filtering True)) \caller done -> do
+                        await "fetch did not start after the first delivered batch" (readMVar entered)
+                        (_, sent) <- startCaller (throwTo caller UserInterrupt)
+                        await "streaming fetch did not cancel" (readMVar done) >>= assertAsync [UserInterrupt]
+                        await "interrupt sender did not finish" (readMVar sent) >>= assertSucceeded
+                    assertReusable conn
+               | (name, run) <-
+                    [ ("cancel a native row fetch", \conn sql delivered -> Streaming.fold_ conn sql () (\() (Only (_ :: Int64)) -> delivered))
+                    , ("cancel a native Arrow fetch", \conn sql delivered -> Streaming.foldArrow_ conn sql () (\() _ _ -> delivered))
+                    ,
+                        ( "mixed cursor entry points retain interruptible fetching"
+                        , \conn sql delivered -> withStatement conn sql \stmt -> do
+                            Streaming.nextRow stmt >>= (@?= Just (Only (0 :: Int64)))
+                            delivered
+                            let consume =
+                                    nextRow stmt >>= \case
+                                        Nothing -> pure ()
+                                        Just (Only (_ :: Int64)) -> consume
+                            consume
+                        )
+                    ]
+               ]
             <> [ testCase "cancellation before native entry is not cleared by startup" $
                     withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
                         queued <- newEmptyMVar

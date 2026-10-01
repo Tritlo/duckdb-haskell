@@ -1,7 +1,7 @@
-{-# OPTIONS_GHC -Wno-deprecations #-}
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# OPTIONS_GHC -Wno-deprecations #-}
 
 module CastFunctionsTest (tests) where
 

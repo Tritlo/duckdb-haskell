@@ -1,6 +1,6 @@
-{-# OPTIONS_GHC -Wno-deprecations #-}
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE TypeApplications #-}
+{-# OPTIONS_GHC -Wno-deprecations #-}
 
 module AppenderTest (tests) where
 

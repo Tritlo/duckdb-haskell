@@ -1,5 +1,5 @@
-{-# OPTIONS_GHC -Wno-deprecations #-}
 {-# LANGUAGE BlockArguments #-}
+{-# OPTIONS_GHC -Wno-deprecations #-}
 
 module BindValuesTest (tests) where
 
@@ -26,8 +26,9 @@ tests =
         "Bind Values"
         [bindValuesRoundtrip, bindTimestampTzAcrossSessions]
 
--- | Pin the session timezone so the tstz readback offset below is stable
--- regardless of the host OS timezone (see issue #8).
+{- | Pin the session timezone so the tstz readback offset below is stable
+regardless of the host OS timezone (see issue #8).
+-}
 setSessionTimeZoneSQL :: String
 setSessionTimeZoneSQL = "SET TimeZone='UTC+02:00'"
 
@@ -290,10 +291,11 @@ bindValuesRoundtrip =
     duckDBTimeMicros (DuckDBTime t) = t
     duckDBTimestampMicros (DuckDBTimestamp t) = t
 
--- | Regression test for issue #8: reading a TIMESTAMPTZ column via
--- 'c_duckdb_value_timestamp' converts to the session's TimeZone, so the
--- offset between the bound UTC instant and the readback must track the
--- session's TimeZone setting — not the host OS timezone.
+{- | Regression test for issue #8: reading a TIMESTAMPTZ column via
+'c_duckdb_value_timestamp' converts to the session's TimeZone, so the
+offset between the bound UTC instant and the readback must track the
+session's TimeZone setting — not the host OS timezone.
+-}
 bindTimestampTzAcrossSessions :: TestTree
 bindTimestampTzAcrossSessions =
     testCase "bind_timestamp_tz readback tracks session TimeZone" $

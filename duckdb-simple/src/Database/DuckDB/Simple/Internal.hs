@@ -38,6 +38,7 @@ module Database.DuckDB.Simple.Internal (
     peekUtf8CString,
     withResult,
     fetchResultError,
+    throwResultError,
     mkExecuteError,
     withClientContext,
     destroyClientContext,
@@ -237,6 +238,14 @@ mkExecuteError queryText message errorType =
         , sqlErrorType = errorType
         , sqlErrorQuery = Just queryText
         }
+
+-- | Report a fetch failure before treating a null chunk as end of input.
+throwResultError :: Query -> Ptr DuckDBResult -> IO ()
+throwResultError queryText resPtr = do
+    errorPtr <- c_duckdb_result_error resPtr
+    when (errorPtr /= nullPtr) $ do
+        (message, errorType) <- fetchResultError resPtr
+        throwIO (mkExecuteError queryText message errorType)
 
 -- | Keep the weak-finalizer owner alive until the native operation returns.
 keepAlive :: a -> IO b -> IO b

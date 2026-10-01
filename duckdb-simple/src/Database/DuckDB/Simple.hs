@@ -119,6 +119,7 @@ import Database.DuckDB.Simple.Internal (
     keepAlive,
     mkExecuteError,
     peekUtf8CString,
+    throwResultError,
     withConnectionHandle,
     withQueryCString,
     withResult,
@@ -792,14 +793,6 @@ normalizeName name =
 
 resultRowsChanged :: Ptr DuckDBResult -> IO Int
 resultRowsChanged resPtr = fromIntegral <$> c_duckdb_rows_changed resPtr
-
--- | Report a fetch failure before treating a null chunk as end of input.
-throwResultError :: Query -> Ptr DuckDBResult -> IO ()
-throwResultError queryText resPtr = do
-    errorPtr <- c_duckdb_result_error resPtr
-    when (errorPtr /= nullPtr) do
-        (message, errorType) <- fetchResultError resPtr
-        throwIO (mkExecuteError queryText message errorType)
 
 convertRows :: (FromRow r) => Query -> [[Field]] -> IO [r]
 convertRows = convertRowsWith fromRow

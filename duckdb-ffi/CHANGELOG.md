@@ -2,6 +2,10 @@
 
 ## 1.5.3.0
 
+- Export invokers for Arrow schema/array release and all four stream callbacks.
+  Applications can now call the function pointers exposed by the Arrow types
+  without repeating foreign declarations from the test suite.
+
 - Deprecated native modules now emit a Haskell deprecation warning. The bindings
   remain available for applications that need the legacy API.
 

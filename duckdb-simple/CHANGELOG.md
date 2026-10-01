@@ -4,6 +4,11 @@
 
 ### Query execution and resource lifetime
 
+- Add scoped Arrow batch export through `foldArrow` and `foldArrow_`. The
+  callback borrows each array and its schema; the fold releases them on every
+  exit path. This uses the supported schema/chunk conversion API and retains
+  a materialized native result while the fold runs.
+
 - Previously, cursors decoded rows with prepare-time column types. Parameter
   binding or schema rebinding could change those types and cause truncated
   values or invalid memory access. Cursors now read types from the executed

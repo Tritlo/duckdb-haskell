@@ -12,9 +12,9 @@ import Data.Maybe (isNothing)
 import Database.DuckDB.FFI
 import Database.DuckDB.FFI.Deprecated
 import Foreign.C.String (peekCString, peekCStringLen, withCString)
-import Foreign.C.Types (CChar, CInt (..))
+import Foreign.C.Types (CChar)
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (FunPtr, Ptr, castPtr, nullFunPtr, nullPtr, plusPtr)
+import Foreign.Ptr (Ptr, castPtr, nullFunPtr, nullPtr, plusPtr)
 import Foreign.Storable (peek, peekElemOff, poke)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -322,6 +322,15 @@ arrowPointerHelpersClearInternalState =
                                             schema <- peek movedSchema
                                             peekCString (arrowSchemaFormat schema) >>= (@?= "+s")
                                             releaseArrowSchema movedSchema
+                                        alloca \movedArray -> do
+                                            poke movedArray zeroArrowArray
+                                            mkArrowStreamGetNext (arrowStreamGetNext original) movedStream movedArray >>= (@?= 0)
+                                            batch <- peek movedArray
+                                            arrowArrayLength batch @?= 1
+                                            releaseArrowArray movedArray
+                                            mkArrowStreamGetNext (arrowStreamGetNext original) movedStream movedArray >>= (@?= 0)
+                                            exhausted <- peek movedArray
+                                            arrowArrayRelease exhausted @?= nullFunPtr
                                         mkArrowStreamRelease (arrowStreamRelease original) movedStream
                                         moved <- peek movedStream
                                         arrowStreamRelease moved @?= nullFunPtr
@@ -363,12 +372,6 @@ arrowPointerHelpersClearInternalState =
         duckdbArrowSchemaInternal nullPtr >>= assertBool "null schema" . isNothing
         duckdbArrowArrayInternal nullPtr >>= assertBool "null array" . isNothing
         duckdbArrowStreamInternal nullPtr >>= assertBool "null stream" . isNothing
-
-foreign import ccall safe "dynamic"
-    mkArrowStreamGetSchema :: FunPtr (Ptr ArrowArrayStream -> Ptr ArrowSchema -> IO CInt) -> Ptr ArrowArrayStream -> Ptr ArrowSchema -> IO CInt
-
-foreign import ccall safe "dynamic"
-    mkArrowStreamRelease :: FunPtr (Ptr ArrowArrayStream -> IO ()) -> Ptr ArrowArrayStream -> IO ()
 
 zeroArrowArray :: ArrowArray
 zeroArrowArray =
@@ -471,12 +474,6 @@ releaseArrowSchema schemaPtr = do
     when (releaseFun /= nullFunPtr) $ do
         let release = mkArrowSchemaRelease releaseFun
         release schemaPtr
-
-foreign import ccall "dynamic"
-    mkArrowArrayRelease :: FunPtr (Ptr ArrowArray -> IO ()) -> Ptr ArrowArray -> IO ()
-
-foreign import ccall "dynamic"
-    mkArrowSchemaRelease :: FunPtr (Ptr ArrowSchema -> IO ()) -> Ptr ArrowSchema -> IO ()
 
 withSuccessfulArrow :: DuckDBConnection -> String -> (DuckDBArrow -> IO a) -> IO a
 withSuccessfulArrow conn sql action =

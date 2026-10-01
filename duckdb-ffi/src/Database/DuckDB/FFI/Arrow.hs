@@ -4,11 +4,18 @@ module Database.DuckDB.FFI.Arrow (
     c_duckdb_schema_from_arrow,
     c_duckdb_data_chunk_from_arrow,
     c_duckdb_destroy_arrow_converted_schema,
+    mkArrowSchemaRelease,
+    mkArrowArrayRelease,
+    mkArrowStreamGetSchema,
+    mkArrowStreamGetNext,
+    mkArrowStreamGetLastError,
+    mkArrowStreamRelease,
 ) where
 
 import Database.DuckDB.FFI.Types
 import Foreign.C.String (CString)
-import Foreign.Ptr (Ptr)
+import Foreign.C.Types (CInt (..))
+import Foreign.Ptr (FunPtr, Ptr)
 
 {- | Transforms a DuckDB Schema into an Arrow Schema
 
@@ -78,3 +85,27 @@ Parameters:
 -}
 foreign import ccall safe "duckdb_destroy_arrow_converted_schema"
     c_duckdb_destroy_arrow_converted_schema :: Ptr DuckDBArrowConvertedSchema -> IO ()
+
+-- | Invoke a non-null Arrow schema release callback.
+foreign import ccall safe "dynamic"
+    mkArrowSchemaRelease :: FunPtr (Ptr ArrowSchema -> IO ()) -> Ptr ArrowSchema -> IO ()
+
+-- | Invoke a non-null Arrow array release callback.
+foreign import ccall safe "dynamic"
+    mkArrowArrayRelease :: FunPtr (Ptr ArrowArray -> IO ()) -> Ptr ArrowArray -> IO ()
+
+-- | Invoke the schema callback of an unreleased Arrow stream.
+foreign import ccall safe "dynamic"
+    mkArrowStreamGetSchema :: FunPtr (Ptr ArrowArrayStream -> Ptr ArrowSchema -> IO CInt) -> Ptr ArrowArrayStream -> Ptr ArrowSchema -> IO CInt
+
+-- | Invoke the next-array callback of an unreleased Arrow stream.
+foreign import ccall safe "dynamic"
+    mkArrowStreamGetNext :: FunPtr (Ptr ArrowArrayStream -> Ptr ArrowArray -> IO CInt) -> Ptr ArrowArrayStream -> Ptr ArrowArray -> IO CInt
+
+-- | Read a stream error after a failed callback. Copy it before the next callback.
+foreign import ccall safe "dynamic"
+    mkArrowStreamGetLastError :: FunPtr (Ptr ArrowArrayStream -> IO CString) -> Ptr ArrowArrayStream -> IO CString
+
+-- | Invoke a non-null Arrow stream release callback.
+foreign import ccall safe "dynamic"
+    mkArrowStreamRelease :: FunPtr (Ptr ArrowArrayStream -> IO ()) -> Ptr ArrowArrayStream -> IO ()

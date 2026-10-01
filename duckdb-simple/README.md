@@ -273,6 +273,19 @@ For manual cursor-style iteration, use `nextRow`/`nextRowWith` on an open
 Cursors support the same column types as eager queries, including STRUCT
 and UNION values with nested collections and NULLs.
 
+### Arrow batches
+
+`Database.DuckDB.Simple.Arrow` provides `foldArrow` and `foldArrow_` for clients
+that consume the Arrow C Data Interface. Each callback borrows a schema and
+one array batch. Read them during the callback only. Copy any data that must
+outlive it; do not retain, release, modify, or transfer the pointers. The fold
+releases each batch and the schema on success, failure, or cancellation.
+
+Arrow export uses DuckDB's schema and chunk conversion API. DuckDB materializes
+the native result before callbacks start, so its memory use depends on the
+result size. The older Arrow query and scan bindings remain available through
+`Database.DuckDB.FFI.Deprecated` and emit deprecation warnings.
+
 ### Feature Coverage
 
 - Connections, prepared statements, positional/named parameter binding.

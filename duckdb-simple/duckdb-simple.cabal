@@ -36,6 +36,7 @@ source-repository head
 library
   exposed-modules:
     Database.DuckDB.Simple
+    Database.DuckDB.Simple.Arrow
     Database.DuckDB.Simple.Catalog
     Database.DuckDB.Simple.Config
     Database.DuckDB.Simple.Copy
@@ -74,6 +75,7 @@ test-suite duckdb-simple-test
   hs-source-dirs: test
   main-is: Spec.hs
   other-modules:
+    ArrowTests
     CoreRegressionTests
     ExtensionRegressionTests
     Properties

@@ -12,6 +12,7 @@
 -- | Tasty-based test suite for duckdb-simple.
 module Main (main) where
 
+import ArrowTests (arrowTests)
 import Control.Applicative ((<|>))
 import Control.Exception (ErrorCall, Exception, SomeException, displayException, fromException, try)
 import Control.Monad (forM_, replicateM_, when)
@@ -200,6 +201,7 @@ tests =
         "duckdb-simple"
         [ connectionTests
         , coreRegressionTests
+        , arrowTests
         , extensionRegressionTests
         , valueRegressionTests
         , withConnectionTests

@@ -8,10 +8,11 @@ import Data.Bits (testBit)
 import Data.Int (Int32)
 import Database.DuckDB.FFI
 import Foreign.C.String (CString, peekCString, withCString)
+import Foreign.C.Types (CInt (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Array (peekArray, withArray)
 import Foreign.Marshal.Utils (withMany)
-import Foreign.Ptr (FunPtr, Ptr, castPtr, nullFunPtr, nullPtr)
+import Foreign.Ptr (FunPtr, Ptr, castPtr, freeHaskellFunPtr, nullFunPtr, nullPtr)
 import Foreign.Storable (Storable (..), peek, peekElemOff, poke, pokeElemOff)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -23,7 +24,44 @@ tests =
         "Arrow Interface"
         [ arrowSchemaRoundtrip
         , arrowChunkRoundtrip
+        , arrowStreamErrorCallbacks
         ]
+
+-- | Invoke a producer's error callback after its next-array callback fails.
+arrowStreamErrorCallbacks :: TestTree
+arrowStreamErrorCallbacks =
+    testCase "stream callbacks report a producer error" $
+        withCString "Arrow producer failed" \message ->
+            bracket (wrapArrowStreamNext (\_ _ -> pure 5)) freeHaskellFunPtr \next ->
+                bracket (wrapArrowStreamError (const (pure message))) freeHaskellFunPtr \lastError ->
+                    bracket
+                        ( wrapArrowStreamRelease \stream -> do
+                            value <- peek stream
+                            poke stream value{arrowStreamRelease = nullFunPtr}
+                        )
+                        freeHaskellFunPtr
+                        \release ->
+                            alloca \stream -> do
+                                poke stream (ArrowArrayStream nullFunPtr next lastError release nullPtr)
+                                alloca \array -> do
+                                    poke array zeroArrowArray
+                                    mkArrowStreamGetNext next stream array >>= (@?= 5)
+                                    mkArrowStreamGetLastError lastError stream >>= peekCString >>= (@?= "Arrow producer failed")
+                                mkArrowStreamRelease release stream
+                                value <- peek stream
+                                arrowStreamRelease value @?= nullFunPtr
+
+-- | Export a test producer's next-array callback.
+foreign import ccall "wrapper"
+    wrapArrowStreamNext :: (Ptr ArrowArrayStream -> Ptr ArrowArray -> IO CInt) -> IO (FunPtr (Ptr ArrowArrayStream -> Ptr ArrowArray -> IO CInt))
+
+-- | Export a test producer's last-error callback.
+foreign import ccall "wrapper"
+    wrapArrowStreamError :: (Ptr ArrowArrayStream -> IO CString) -> IO (FunPtr (Ptr ArrowArrayStream -> IO CString))
+
+-- | Export a test producer's release callback.
+foreign import ccall "wrapper"
+    wrapArrowStreamRelease :: (Ptr ArrowArrayStream -> IO ()) -> IO (FunPtr (Ptr ArrowArrayStream -> IO ()))
 
 arrowSchemaRoundtrip :: TestTree
 arrowSchemaRoundtrip =
@@ -251,9 +289,3 @@ zeroArrowArray =
         , arrowArrayRelease = nullFunPtr
         , arrowArrayPrivateData = nullPtr
         }
-
-foreign import ccall "dynamic"
-    mkArrowSchemaRelease :: FunPtr (Ptr ArrowSchema -> IO ()) -> Ptr ArrowSchema -> IO ()
-
-foreign import ccall "dynamic"
-    mkArrowArrayRelease :: FunPtr (Ptr ArrowArray -> IO ()) -> Ptr ArrowArray -> IO ()

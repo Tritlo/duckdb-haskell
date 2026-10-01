@@ -2,8 +2,15 @@
 
 ## 1.5.3.0
 
-- Correct struct arguments and return values with C adapters. Preserve the Haskell signatures.
-- Correct Arrow object addresses. Clear release callbacks after moving Arrow objects.
+- Previously, temporal foreign imports treated single-field C structs as scalar
+  arguments and return values. C adapters now perform those conversions with
+  the native calling convention. The typed Haskell signatures retain every
+  native field, including DATE days and packed TIME_TZ bits.
+- Previously, deprecated Arrow handles were treated as wrappers containing an
+  internal pointer. The helpers now use the actual Arrow object address and
+  clear only its release callback after a move. This prevents corruption of
+  schema fields, array metadata, and stream callbacks. Tests use real DuckDB
+  objects and verify that moved buffers remain valid.
 - Download the native library to the user cache and verify the archive's SHA256 checksum.
 - Use an existing native library when the user or Nix supplies it.
 - Track native library selection through the `systemlib` flag, `extra-lib-dirs`, and the `--duckdb-install-dir` configure option.

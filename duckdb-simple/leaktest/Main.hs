@@ -1,5 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 {- | Regression check for leaked DuckDB handles.
 
@@ -245,7 +246,7 @@ checkCancellation batches =
                 cancel \signal -> do
                     blocked <- newEmptyMVar
                     -- Keep the first chunk live until the worker is cancelled.
-                    void (fold_ conn "SELECT i FROM range(100000) t(i)" (0 :: Int64) (\n (Only x) -> signal >> takeMVar blocked >> pure (n + x)))
+                    void (fold_ conn "SELECT {'x': i, 'values': [i, NULL]} FROM range(100000) t(i)" (0 :: Int64) (\n (Only (_ :: FieldValue)) -> signal >> takeMVar blocked >> pure (n + 1)))
         batch
         performMajorGC
         before <- readUsage

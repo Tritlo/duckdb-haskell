@@ -1,6 +1,7 @@
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE MagicHash #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE StrictData #-}
 
 {- |
@@ -35,6 +36,9 @@ module Database.DuckDB.Simple.Internal (
     withStatementHandle,
     withQueryCString,
     peekUtf8CString,
+    withResult,
+    fetchResultError,
+    mkExecuteError,
     withClientContext,
     destroyClientContext,
     destroyValue,
@@ -43,6 +47,7 @@ module Database.DuckDB.Simple.Internal (
 ) where
 
 import Control.Exception (Exception, bracket, throwIO)
+import Control.Monad (when)
 import qualified Data.ByteString as BS
 import Data.IORef (IORef, readIORef)
 import Data.String (IsString (..))
@@ -60,17 +65,23 @@ import Database.DuckDB.FFI (
     DuckDBLogicalType,
     DuckDBPreparedStatement,
     DuckDBResult,
+    DuckDBState,
     DuckDBType,
     DuckDBValue,
     DuckDBVector,
     c_duckdb_connection_get_client_context,
     c_duckdb_destroy_client_context,
     c_duckdb_destroy_logical_type,
+    c_duckdb_destroy_result,
     c_duckdb_destroy_value,
+    c_duckdb_result_error,
+    c_duckdb_result_error_type,
+    pattern DuckDBErrorInvalid,
+    pattern DuckDBSuccess,
  )
 import Foreign.C.String (CString)
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (Ptr)
+import Foreign.Ptr (Ptr, nullPtr)
 import Foreign.Storable (peek, poke)
 import GHC.Exts (keepAlive#)
 import GHC.IO (IO (..))
@@ -196,6 +207,36 @@ withQueryCString query@(Query txt) action
 -- | Copy a NUL-terminated UTF-8 string from DuckDB.
 peekUtf8CString :: CString -> IO Text
 peekUtf8CString ptr = TextEncoding.decodeUtf8 <$> BS.packCString ptr
+
+-- | Execute a query and destroy its result after success or failure.
+withResult :: Query -> (Ptr DuckDBResult -> IO DuckDBState) -> (Ptr DuckDBResult -> IO a) -> IO a
+withResult queryText executeResult action =
+    alloca $ \resPtr ->
+        bracket (executeResult resPtr) (const (c_duckdb_destroy_result resPtr)) $ \rc -> do
+            when (rc /= DuckDBSuccess) $ do
+                (message, errorType) <- fetchResultError resPtr
+                throwIO (mkExecuteError queryText message errorType)
+            action resPtr
+
+-- | Copy a result error while its native result remains alive.
+fetchResultError :: Ptr DuckDBResult -> IO (Text, Maybe DuckDBErrorType)
+fetchResultError resultPtr = do
+    msgPtr <- c_duckdb_result_error resultPtr
+    message <-
+        if msgPtr == nullPtr
+            then pure (Text.pack "duckdb-simple: query failed")
+            else peekUtf8CString msgPtr
+    errorType <- c_duckdb_result_error_type resultPtr
+    pure (message, if errorType == DuckDBErrorInvalid then Nothing else Just errorType)
+
+-- | Attach the query and native error category to an execution error.
+mkExecuteError :: Query -> Text -> Maybe DuckDBErrorType -> SQLError
+mkExecuteError queryText message errorType =
+    SQLError
+        { sqlErrorMessage = message
+        , sqlErrorType = errorType
+        , sqlErrorQuery = Just queryText
+        }
 
 -- | Keep the weak-finalizer owner alive until the native operation returns.
 keepAlive :: a -> IO b -> IO b

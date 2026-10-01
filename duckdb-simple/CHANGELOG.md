@@ -2,19 +2,103 @@
 
 ## 0.2.0.0
 
-- Fix streaming metadata after binding and schema changes. Use native streaming execution. Keep cursors exhausted after EOF until reset.
-- Release query results on decode failures. Keep native handle owners alive during FFI calls. Release nested type allocations when exceptions occur.
-- Correct callback ownership on registration failure and replacement. Release query state and contain callback exceptions.
-- Reject temporal infinity and out-of-range input with Haskell exceptions. Preserve timestamp units and bind UTCTime as TIMESTAMPTZ.
-- Rebind composite values containing TIMESTAMP_S, TIMESTAMP_MS, TIMESTAMP_NS, and TIME_NS. Preserve their units, precision, and NULL values.
-- Preserve REAL values, unsigned scalar results, integer bounds, embedded NUL in text, and exact DECIMAL values.
-- Preserve Float callback NaN, infinity, and negative zero without optimization. Test plain and stateful callbacks.
-- Correct BIT padding, generic field/member lookup, and typed NULL union payloads. Validate malformed composite inputs before native calls.
-- Reject NUL in SQL, identifiers, paths, and configuration. Preserve UTF-8 names and errors.
-- Preserve the original transaction exception when rollback also fails.
-- Add crash reproductions, sustained connection and callback release checks, cancellation checks, and repeatable benchmarks.
+### Query execution and resource lifetime
+
+- Previously, cursors decoded rows with prepare-time column types. Parameter
+  binding or schema rebinding could change those types and cause truncated
+  values or invalid memory access. Cursors now read types from the executed
+  result. This addresses the streaming failures in #18.
+- Previously, the cursor API consumed a materialized native result. It now
+  requests native streaming execution and reports fetch failures as SQL errors.
+  A failed fetch was previously indistinguishable from end of input.
+- Previously, reading past EOF could execute the statement again, including
+  INSERT statements. Cursors now remain exhausted until an explicit reset.
+  Clearing bindings also destroys any active result.
+- Previously, exceptions during result decoding could skip native destruction.
+  Results, chunks, and nested logical types now have exception-safe cleanup.
+  Cursor state records chunk ownership before decoding and clears it before
+  destruction, so cancellation cannot cause a leak or a second destruction.
+- Previously, GC could finalize a connection or statement during its last
+  native call. The binding now keeps the Haskell owner alive until the call
+  returns. Reads through a closed parent connection fail before native access.
+- Previously, streaming rejected STRUCT and UNION columns even though the
+  shared decoder supported them. Eager queries and cursors now use the same
+  row decoder, including nested collections and NULLs.
+- Previously, a rollback failure could replace the exception from the user's
+  transaction. The original exception is now preserved. A failed commit also
+  attempts rollback.
+
+### Callbacks and native helpers
+
+- Previously, failed scalar, COPY, or logging registration could free callback
+  resources twice. Registration now transfers ownership once and releases
+  resources acquired before a failure. Static destructors avoid allocating
+  a separate destructor callback for each registration.
+- Previously, callback closures or query state could remain live on a long-lived
+  connection after replacement or execution. Cleanup now releases scalar
+  worker state, COPY state, and replaced closures before connection close.
+- Previously, exceptions during callback initialization or error formatting
+  could escape into native code. Scalar and COPY callbacks now report SQL
+  errors. Logging callbacks contain exceptions because their API has no error
+  channel. This includes asynchronous exceptions raised inside a callback.
+- Previously, DuckDB could skip a scalar callback when an argument was NULL.
+  Callbacks now receive those arguments. Use `Maybe` to accept NULL; a
+  non-nullable Haskell argument produces a conversion error.
+- Previously, Word and Word64 scalar results used signed BIGINT storage and
+  could overflow. They now use UBIGINT. Float callbacks preserve NaN, infinity,
+  and negative zero without depending on compiler optimization rules.
+- Catalog, configuration, and filesystem helpers now bracket native allocations
+  on failure paths. File reads reject sizes that cannot fit a Haskell buffer.
+  Unsupported catalog entry kinds fail before the native lookup.
+
+### Value conversion
+
+- Previously, decoding temporal infinity or binding dates outside native
+  storage limits could produce an incorrect value or abort in C++. Finite
+  date/time conversions now use checked epoch arithmetic. Inputs that cannot
+  be represented by the requested Haskell type fail with a Haskell exception.
+- Previously, TIMESTAMP_S and TIMESTAMP_MS decoding multiplied Int64 values
+  into microseconds and could overflow. Each timestamp family now retains its
+  own units. Composite TIMESTAMP_S/MS/NS and TIME_NS values can be rebound
+  without losing units, nanoseconds, or typed NULLs.
+- Previously, UTCTime parameters had SQL type TIMESTAMP and could change their
+  meaning under a non-UTC session timezone. They now have type TIMESTAMPTZ.
+- Previously, Float parameters used DOUBLE, which hid a missing REAL decoder.
+  Float parameters now use FLOAT, and REAL results decode to Float or Double.
+  NaN, infinity, and negative zero remain supported. Narrowing a finite Double
+  that exceeds Float's range now fails instead of producing infinity.
+- Previously, Int8 and unsigned narrowing conversions could wrap out-of-range
+  values. They now report conversion errors. Intermediate signed and unsigned
+  values remain 64-bit until the target bounds have been checked.
+- Previously, text parameters were terminated at an embedded NUL. Text and
+  String parameters now pass their UTF-8 byte length and preserve NULs. SQL,
+  native names, paths, and configuration strings reject NUL to prevent silent
+  truncation. Native names and error messages are decoded as UTF-8.
+- DECIMAL values retain their exact integer representation. Invalid width,
+  scale, or magnitude now fails before native construction. Invalid ENUM
+  indexes, UNION tags, and composite constructors also produce controlled errors.
+- Previously, BIT padding could give incorrect SQL bit counts. Padding now
+  follows DuckDB's representation; unsupported empty or malformed inputs fail
+  before native use.
+- Previously, generic records and sums decoded by position. They now match
+  field and member names and reject incompatible schemas. NULL non-nullable
+  products report a conversion failure instead of reaching a partial `error`.
+- Previously, a NULL UNION payload could lose its declared member type. Typed
+  NULL payloads now retain that type through native construction.
+- TIMETZ offsets containing seconds now fail when decoding to Haskell's
+  minute-based TimeZone. Invalid clock components and offsets fail before
+  binding instead of being rounded or narrowed silently.
+
+### Testing and compatibility
+
+- Add crash reproductions for #18, real native ownership tests, and sustained
+  checks for long-lived connections, callback release, and cancellation.
+  Property tests now include embedded NUL rather than filtering it out.
+- Add repeatable benchmarks with checked results. Linux CI checks callback
+  and cancellation workloads under Valgrind.
 - Raise the minimum native DuckDB version to 1.5.3.
-- Use GHC 9.14.1 by default. Test the latest stable patch release in each GHC series from 9.6 to 9.14.
+- Use GHC 9.14.1 by default. Test the latest stable patch release in each GHC
+  series from 9.6 to 9.14.
 
 ## 0.1.5.2
 - Fix a connection leak: `close` and the connection finalizer built the close action but then discarded it, so the DuckDB connection and database handles stayed open. Every leaked database instance also kept its own DuckDB thread pool alive. (Reported by @winitzki, see #15.)

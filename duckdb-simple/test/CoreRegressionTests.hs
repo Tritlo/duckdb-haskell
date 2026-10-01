@@ -2,24 +2,25 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 -- | Regression tests for result metadata, cursor state, and handle lifetime.
-module CoreRegressionTests (tests) where
+module CoreRegressionTests (coreRegressionTests) where
 
 import Control.Exception (SomeException, throwIO, try)
-import Control.Monad (replicateM_, void)
+import Control.Monad (forM_, replicateM_, void)
 import Data.IORef (readIORef)
 import Data.Int (Int64)
 import Data.List (isInfixOf)
 import Data.Text (Text)
 import Database.DuckDB.FFI.Deprecated (c_duckdb_result_is_streaming)
 import Database.DuckDB.Simple
+import Database.DuckDB.Simple.FromField (FieldValue)
 import Database.DuckDB.Simple.Internal (Statement (statementStream), StatementStream (statementStreamResult), StatementStreamState (..))
 import System.Mem (performMajorGC)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
 
 -- | Exercise public operations against an in-memory database.
-tests :: TestTree
-tests =
+coreRegressionTests :: TestTree
+coreRegressionTests =
     testGroup
         "core regressions"
         [ testCase "stream metadata follows parameter types" $
@@ -81,6 +82,24 @@ tests =
         , testCase "fetch errors are not EOF" $
             withConnectionWithConfig ":memory:" [("threads", "1")] $ \conn ->
                 assertThrows (fold_ conn "SELECT CASE WHEN i = 5000 THEN error('late failure') ELSE i END FROM range(10000) t(i)" (0 :: Int64) (\acc (Only n) -> pure (acc + n)))
+        , testCase "composite cursors preserve values after chunk cleanup" $
+            withConnectionWithConfig ":memory:" [("threads", "1")] $ \conn ->
+                forM_
+                    [ "SELECT {'n': i, 'text': 'λ' || i::VARCHAR} FROM range(5000) t(i)"
+                    , "SELECT CASE WHEN i % 2 = 0 THEN union_value(n := i)::UNION(n BIGINT, text VARCHAR) ELSE union_value(text := i::VARCHAR)::UNION(n BIGINT, text VARCHAR) END FROM range(5000) t(i)"
+                    , "SELECT CASE WHEN i % 3 = 0 THEN NULL ELSE {'n': i, 'list': [i, NULL], 'union': union_value(v := i)} END FROM range(5000) t(i)"
+                    ]
+                    $ \sql -> do
+                        eager <- query_ conn sql :: IO [Only FieldValue]
+                        streamed <- reverse <$> fold_ conn sql [] (\acc row -> pure (row : acc))
+                        streamed @?= eager
+        , testCase "composite cursor failures release the result" $
+            withConnectionWithConfig ":memory:" [("threads", "1")] $ \conn -> do
+                let sql = "SELECT {'n': i, 'values': [i, NULL]} FROM range(5000) t(i)"
+                assertThrows (fold_ conn sql () (\() (Only (_ :: Int64)) -> pure ()))
+                assertThrows $ fold_ conn sql (0 :: Int) $ \n (Only (_ :: FieldValue)) ->
+                    if n == 2050 then throwIO (userError "composite fold failure") else pure (n + 1)
+                query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
         , testCase "closed connection rejects active cursor reads" $ do
             conn <- open ":memory:"
             stmt <- openStatement conn "SELECT i FROM range(3) t(i)"

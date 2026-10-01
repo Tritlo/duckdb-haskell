@@ -116,10 +116,13 @@ import Database.DuckDB.Simple.Internal (
     StatementStreamChunkVector (..),
     StatementStreamColumn (..),
     StatementStreamState (..),
+    fetchResultError,
     keepAlive,
+    mkExecuteError,
     peekUtf8CString,
     withConnectionHandle,
     withQueryCString,
+    withResult,
     withStatementHandle,
  )
 import Database.DuckDB.Simple.Materialize (
@@ -473,7 +476,7 @@ consumeStream streamRef parser stmt stream = mask \restore -> do
     case statementStreamChunk loaded of
         Nothing -> exhaustStatementStream streamRef >> pure Nothing
         Just chunk -> do
-            fields <- restore $ buildRow (statementQuery stmt) (statementStreamColumns loaded) (statementStreamChunkVectors chunk) (statementStreamChunkIndex chunk)
+            fields <- restore $ buildMaterializedRow (statementStreamColumns loaded) (statementStreamChunkVectors chunk) (statementStreamChunkIndex chunk)
             parsed <- restore (evaluate (parseRow parser fields))
             case parsed of
                 Errors rowErr -> throwIO $ rowErrorsToSqlError (statementQuery stmt) rowErr
@@ -549,33 +552,6 @@ prepareChunkVectors chunk columns =
                 , statementStreamChunkVectorValidity = validity
                 }
 
-buildRow :: Query -> [StatementStreamColumn] -> [StatementStreamChunkVector] -> Int -> IO [Field]
-buildRow queryText columns vectors rowIdx =
-    zipWithM (buildField queryText rowIdx) columns vectors
-
-buildField :: Query -> Int -> StatementStreamColumn -> StatementStreamChunkVector -> IO Field
-buildField queryText rowIdx column StatementStreamChunkVector{statementStreamChunkVectorHandle, statementStreamChunkVectorData, statementStreamChunkVectorValidity} = do
-    let dtype = statementStreamColumnType column
-    value <-
-        case dtype of
-            DuckDBTypeStruct ->
-                throwIO (streamingUnsupportedTypeError queryText column)
-            DuckDBTypeUnion ->
-                throwIO (streamingUnsupportedTypeError queryText column)
-            _ ->
-                materializeValue
-                    dtype
-                    statementStreamChunkVectorHandle
-                    statementStreamChunkVectorData
-                    statementStreamChunkVectorValidity
-                    rowIdx
-    pure
-        Field
-            { fieldName = statementStreamColumnName column
-            , fieldIndex = statementStreamColumnIndex column
-            , fieldValue = value
-            }
-
 cleanupStatementStreamRef :: IORef StatementStreamState -> IO ()
 cleanupStatementStreamRef ref = mask_ do
     state <- atomicModifyIORef' ref (StatementStreamIdle,)
@@ -602,20 +578,6 @@ destroyDataChunk chunk =
     alloca \ptr -> do
         poke ptr chunk
         c_duckdb_destroy_data_chunk ptr
-
-streamingUnsupportedTypeError :: Query -> StatementStreamColumn -> SQLError
-streamingUnsupportedTypeError queryText StatementStreamColumn{statementStreamColumnName, statementStreamColumnType} =
-    SQLError
-        { sqlErrorMessage =
-            Text.concat
-                [ Text.pack "duckdb-simple: streaming does not yet support column "
-                , statementStreamColumnName
-                , Text.pack " with DuckDB type "
-                , Text.pack (show statementStreamColumnType)
-                ]
-        , sqlErrorType = Nothing
-        , sqlErrorQuery = Just queryText
-        }
 
 -- | Run an action inside a transaction.
 withTransaction :: Connection -> IO a -> IO a
@@ -742,20 +704,6 @@ fetchPrepareError stmt = do
         then pure (Text.pack "duckdb-simple: prepare failed")
         else peekUtf8CString msgPtr
 
-fetchResultError :: Ptr DuckDBResult -> IO (Text, Maybe DuckDBErrorType)
-fetchResultError resultPtr = do
-    msgPtr <- c_duckdb_result_error resultPtr
-    msg <-
-        if msgPtr == nullPtr
-            then pure (Text.pack "duckdb-simple: query failed")
-            else peekUtf8CString msgPtr
-    errType <- c_duckdb_result_error_type resultPtr
-    let classified =
-            if errType == DuckDBErrorInvalid
-                then Nothing
-                else Just errType
-    pure (msg, classified)
-
 mkOpenError :: Text -> SQLError
 mkOpenError msg =
     SQLError
@@ -777,14 +725,6 @@ mkPrepareError queryText msg =
     SQLError
         { sqlErrorMessage = msg
         , sqlErrorType = Nothing
-        , sqlErrorQuery = Just queryText
-        }
-
-mkExecuteError :: Query -> Text -> Maybe DuckDBErrorType -> SQLError
-mkExecuteError queryText msg errType =
-    SQLError
-        { sqlErrorMessage = msg
-        , sqlErrorType = errType
         , sqlErrorQuery = Just queryText
         }
 
@@ -853,16 +793,6 @@ normalizeName name =
 
 resultRowsChanged :: Ptr DuckDBResult -> IO Int
 resultRowsChanged resPtr = fromIntegral <$> c_duckdb_rows_changed resPtr
-
--- | Execute a query and destroy its result after success or failure.
-withResult :: Query -> (Ptr DuckDBResult -> IO DuckDBState) -> (Ptr DuckDBResult -> IO a) -> IO a
-withResult queryText executeResult action =
-    alloca \resPtr ->
-        bracket (executeResult resPtr) (const (c_duckdb_destroy_result resPtr)) \rc -> do
-            when (rc /= DuckDBSuccess) do
-                (message, errorType) <- fetchResultError resPtr
-                throwIO (mkExecuteError queryText message errorType)
-            action resPtr
 
 -- | Report a fetch failure before treating a null chunk as end of input.
 throwResultError :: Query -> Ptr DuckDBResult -> IO ()

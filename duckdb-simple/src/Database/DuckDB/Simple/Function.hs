@@ -52,9 +52,9 @@ import Database.DuckDB.Simple.Internal (
     Query (..),
     SQLError (..),
     destroyLogicalType,
-    peekUtf8CString,
     withConnectionHandle,
     withQueryCString,
+    withResult,
  )
 import Database.DuckDB.Simple.Materialize (materializeValue)
 import Database.DuckDB.Simple.Ok (Ok (..))
@@ -280,19 +280,7 @@ deleteFunction conn name =
                                     , qualifyIdentifier name
                                     ]
                     withQueryCString dropQuery \sql ->
-                        alloca \resPtr -> do
-                            bracket
-                                (c_duckdb_query connPtr sql resPtr)
-                                (const (c_duckdb_destroy_result resPtr))
-                                \rc ->
-                                    when (rc /= DuckDBSuccess) do
-                                        errMsg <- fetchResultError resPtr
-                                        throwIO
-                                            SQLError
-                                                { sqlErrorMessage = errMsg
-                                                , sqlErrorType = Nothing
-                                                , sqlErrorQuery = Just dropQuery
-                                                }
+                        withResult dropQuery (c_duckdb_query connPtr sql) (const (pure ()))
         case outcome of
             Right () -> pure ()
             Left err
@@ -450,13 +438,6 @@ functionInvocationError message =
         , sqlErrorType = Nothing
         , sqlErrorQuery = Nothing
         }
-
-fetchResultError :: Ptr DuckDBResult -> IO Text
-fetchResultError resPtr = do
-    msgPtr <- c_duckdb_result_error resPtr
-    if msgPtr == nullPtr
-        then pure (Text.pack "duckdb-simple: DROP FUNCTION failed")
-        else peekUtf8CString msgPtr
 
 qualifyIdentifier :: Text -> Text
 qualifyIdentifier rawName =

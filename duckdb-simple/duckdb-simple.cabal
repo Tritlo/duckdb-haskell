@@ -16,11 +16,11 @@ tested-with:
 
 homepage: https://github.com/Tritlo/duckdb-haskell
 bug-reports: https://github.com/Tritlo/duckdb-haskell/issues
-synopsis: High-level DuckDB interface inspired by postgresql-simple
+synopsis: High-level DuckDB interface inspired by sqlite-simple and postgresql-simple
 description:
   A high-level DuckDB interface with typed parameters and results,
   prepared statements, streaming folds, transactions, and Haskell scalar
-  functions. The API follows the style of postgresql-simple.
+  functions. The API follows the style of sqlite-simple and postgresql-simple.
   .
   Supports native DuckDB >= 1.5.3 and < 1.6. Tested with version 1.5.3.
 

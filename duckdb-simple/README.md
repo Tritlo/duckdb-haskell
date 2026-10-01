@@ -1,7 +1,8 @@
 # duckdb-simple
 
 `duckdb-simple` provides a high-level Haskell interface to DuckDB inspired by
-the API of [`postgresql-simple`](https://hackage.haskell.org/package/postgresql-simple).
+the APIs of [`sqlite-simple`](https://hackage.haskell.org/package/sqlite-simple) and
+[`postgresql-simple`](https://hackage.haskell.org/package/postgresql-simple).
 It builds on the low-level bindings exposed by [`duckdb-ffi`](../duckdb-ffi) and
 provides a focused API for opening connections, running queries, binding
 parameters, and decoding typed results—including the full set of DuckDB scalar
@@ -230,9 +231,12 @@ manualStruct conn = do
 - `execute`/`query` variants reset statement bindings each run so prepared
   statements can be reused safely.
 
-Use one connection per worker. If workers share a connection, serialize the
-whole transaction or cursor lifetime, including `close`. Statements and
-connections do not provide concurrent access control. A callback must not
+For concurrent workers, use a separate connection per worker. A connection
+can move between threads or be shared when the application serializes access.
+Hold that lock for the whole transaction or cursor lifetime, including `close`.
+DuckDB serializes native query calls, but this does not protect the Haskell
+handle state or prevent another call from interfering with an active cursor.
+Statements and connections do not provide their own lock. A callback must not
 execute another query on its active connection.
 
 Keep at most one active streaming result per connection. Close or reset an
@@ -264,8 +268,8 @@ sumValues conn =
 For manual cursor-style iteration, use `nextRow`/`nextRowWith` on an open
 `Statement` to pull rows one at a time and decide when to stop.
 
-Streaming currently rejects STRUCT and UNION columns. Use the eager query
-helpers for those types.
+Streaming supports the same column types as eager queries, including STRUCT
+and UNION values with nested collections and NULLs.
 
 ### Feature Coverage
 

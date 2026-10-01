@@ -15,7 +15,7 @@ module Main (main) where
 import Control.Applicative ((<|>))
 import Control.Exception (ErrorCall, Exception, SomeException, displayException, fromException, try)
 import Control.Monad (forM_, replicateM_, when)
-import qualified CoreRegressionTests
+import CoreRegressionTests (coreRegressionTests)
 import Data.Array (Array, elems, listArray)
 import qualified Data.ByteString as BS
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
@@ -199,7 +199,7 @@ tests =
     testGroup
         "duckdb-simple"
         [ connectionTests
-        , CoreRegressionTests.tests
+        , coreRegressionTests
         , extensionRegressionTests
         , valueRegressionTests
         , withConnectionTests

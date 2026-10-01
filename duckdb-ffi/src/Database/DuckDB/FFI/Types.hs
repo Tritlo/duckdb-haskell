@@ -853,7 +853,7 @@ pattern DuckDBCatalogEntryTypeDatabase = DuckDBCatalogEntryType 9
     , DuckDBCatalogEntryTypeDatabase
     #-}
 
--- | Represents DuckDB's @duckdb_date@.
+-- | DuckDB DATE as a signed count of days since 1970-01-01.
 newtype DuckDBDate = DuckDBDate {unDuckDBDate :: Int32}
     deriving (Eq, Ord, Show, Storable)
 

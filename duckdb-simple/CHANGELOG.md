@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Raise the minimum native DuckDB version to 1.5.3.
+- Use GHC 9.14.1 by default. Test the latest stable patch release in each GHC series from 9.6 to 9.14.
+
 ## 0.1.5.2
 - Fix a connection leak: `close` and the connection finalizer built the close action but then discarded it, so the DuckDB connection and database handles stayed open. Every leaked database instance also kept its own DuckDB thread pool alive. (Reported by @winitzki, see #15.)
 - Fix the same defect in `closeStatement`, which discarded the action that destroys the prepared statement. (Fixed by @bgamari in #15.)

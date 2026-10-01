@@ -1,7 +1,7 @@
 packages: duckdb-*/*.cabal
 
 -- GHC version
-with-compiler: ghc-9.12.2
+with-compiler: ghc-9.14.1
 -- Build tests, benchmarks, and documentation by default
 tests:      True
 benchmarks: True

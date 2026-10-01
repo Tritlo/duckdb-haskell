@@ -1,58 +1,111 @@
 # duckdb-haskell
+
 ## duckdb-ffi
 
 Available on [Hackage](https://hackage.haskell.org/package/duckdb-ffi).
-`duckdb-ffi` exposes comprehensive Haskell bindings to the
-[DuckDB](https://duckdb.org) [C API](https://duckdb.org/docs/api/c/overview)
-by generating FFI shims directly from the official `duckdb.h` header.
+`duckdb-ffi` provides low-level Haskell bindings to the
+[DuckDB](https://duckdb.org) [C API](https://duckdb.org/docs/api/c/overview).
+The package includes the official `duckdb.h` header and C wrappers for the
+Haskell FFI.
 
 ### Highlights
 
-- Mirrors the public C API surface, covering connections, prepared statements,
-  result sets, vectors, logical types, appenders, Arrow integration, and more.
-- Provides both raw imports and curated modules under `Database.DuckDB.FFI.*`
-  so you can pick between granular or aggregate re-exports.
-- Ships with an exhaustive test suite that exercises every binding to catch
-  signature drift when DuckDB evolves.
-- Validated against DuckDB 1.5.0+ releases. Ensure the native
-  `libduckdb` shared library is installed on your system (for example via
-  https://duckdb.org/install/?platform=linux&environment=c&architecture=x86_64)
-  before linking a Haskell application against the bindings.
+- Covers connections, prepared statements, result sets, vectors, logical types,
+  appenders, and Arrow integration.
+- Groups bindings into modules under `Database.DuckDB.FFI.*`.
+- Includes integration tests for the native bindings.
+- Supports DuckDB >= 1.5.3 and < 1.6.
 
-`duckdb-ffi` is ideal when you need precise control over DuckDB’s C API, want to
-interoperate with other native components, or plan to build higher-level
-abstractions.
+### Native library installation
 
-For upgrading notes from DuckDB 1.4-based releases to the new 1.5 line, see
+On glibc Linux (x86_64 and aarch64) and macOS, `cabal build all` downloads
+DuckDB 1.5.3 into `$XDG_CACHE_HOME/duckdb-haskell/1.5.3` (usually
+`~/.cache/duckdb-haskell/1.5.3`). Setup verifies the archive's SHA256
+checksum before extraction. It requires `curl`, `unzip`, and `sha256sum` (`shasum` on
+macOS). Installation does not require root access. Keep this directory available
+while applications linked to it run.
+
+The download version and checksums are pinned together in `Setup.hs`.
+The Haskell package version can differ from the native library version.
+
+As in [Hasktorch](https://github.com/hasktorch/hasktorch/blob/master/libtorch-ffi/Setup.hs), you can choose the installation directory:
+
+```sh
+cabal build all --configure-option="--duckdb-install-dir=$PWD/.duckdb"
+```
+
+Setup appends the version and platform, for example `.duckdb/1.5.3/linux-amd64`.
+Use an absolute path. Cabal tracks this option and reconfigures the package
+when it changes. You can also set it in `cabal.project.local`:
+
+```cabal
+package duckdb-ffi
+  configure-options: --duckdb-install-dir=/absolute/path/to/native-libraries
+```
+
+This option applies to automatic installation. Supplied libraries take precedence.
+
+To use an existing library, configure `duckdb-ffi` in `cabal.project`:
+
+```cabal
+package duckdb-ffi
+  flags: +systemlib
+  extra-lib-dirs: /absolute/path/to/duckdb
+```
+
+Omit `extra-lib-dirs` if the linker can already find the system library.
+Use absolute paths for supplied directories. Cabal tracks the flag and paths
+when deciding whether to reuse an installed package. Setup records supplied
+directories in the runtime library search path on Linux and macOS.
+
+When building this repository, you can also pass `-fsystemlib` and
+`--extra-lib-dirs=/absolute/path/to/duckdb` on the command line.
+Supplying `extra-lib-dirs` also skips the download without the flag.
+
+The supplied library must be DuckDB >= 1.5.3 and < 1.6. In Nix builds and
+shells, Setup skips the download and leaves library discovery to Cabal and
+the Nix build environment. Cross builds, musl Linux, and other platforms must
+supply the target library explicitly.
+
+For upgrading notes from DuckDB 1.4 to 1.5, see
 [MIGRATION.md](MIGRATION.md).
 
 ## duckdb-simple
 
 Available on [Hackage](https://hackage.haskell.org/package/duckdb-simple).
-`duckdb-simple` builds on `duckdb-ffi` to provide a high-level interface in the
-style of `sqlite-simple`/`postgresql-simple`, combining ergonomic helpers with
-typeclass-driven parameter binding and row decoding.
+`duckdb-simple` builds on `duckdb-ffi` to provide an interface in the style of
+`sqlite-simple` and `postgresql-simple`. It uses `ToField` for parameter binding
+and `FromField` for result conversion.
 
 ### Highlights
 
-- Connection and statement helpers (`withConnection`, `withStatement`,
-  `execute`, `query`, etc.) plus streaming primitives (`fold`, `foldNamed`,
-  `fold_`, `nextRow`) that expose DuckDB’s chunked result processing without
-  materialising entire result sets.
-- Comprehensive scalar type coverage out of the box: signed/unsigned integers,
-  HUGEINT/UHUGEINT, decimals (with correct width/scale), intervals, precise and
-  timezone-aware temporals, enums, bit strings, blobs, and bignums. Standard
-  `ToField`/`FromField` instances make round-trips seamless.
+- Manage connections and statements with `withConnection` and `withStatement`.
+  Run SQL with `execute` and `query`, or process rows with `fold`, `foldNamed`,
+  `fold_`, and `nextRow`.
+- Decode signed and unsigned integers, HUGEINT/UHUGEINT, decimals, intervals,
+  date and time values, enums, bit strings, blobs, and bignums.
 - Support for positional (`?`) and named (`$name`) parameters, with detailed
   diagnostics when placeholders and bindings disagree.
-- `FromRow`/`ToRow` combinators—complete with generic deriving—for mapping
-  product types to query results or parameter lists.
+- Map product types to query results and parameter lists with `FromRow` and
+  `ToRow`, including generic deriving.
 - Scalar function registration via `Database.DuckDB.Simple.Function`, allowing
   Haskell code (including `Maybe`-returning and `IO` actions) to be invoked
   directly from SQL expressions.
-- Transaction helpers (`withTransaction`, `withSavepoint`) and metadata
-  utilities (`columnCount`, `columnName`, `rowsChanged`).
+- Transaction helper `withTransaction` and statement metadata utilities
+  `columnCount` and `columnName`.
 
 See [duckdb-simple/README.md](duckdb-simple/README.md) for a step-by-step guide,
 extended examples, and notes on streaming behaviour and user-defined
 functions.
+
+## Supported compilers
+
+CI tests these GHC releases:
+9.6.7, 9.8.4, 9.10.3, 9.12.4, and 9.14.1.
+The project and Docker use GHC 9.14.1 by default.
+Use `cabal build all --with-compiler=ghc-VERSION` to select another compiler.
+
+CI tests the default DuckDB 1.5.3 download on Linux and macOS ARM64. It also
+builds and tests both packages with Nix's DuckDB library and in Docker.
+The tests check the loaded native version. With GHC 9.14.1, CI also installs
+`duckdb-ffi` and runs a separate program with normal and dynamic Haskell linking.

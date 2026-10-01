@@ -3,15 +3,18 @@
 
 module OpenConnectTest (tests) where
 
-import Control.Monad (when)
+import Control.Monad (forM_, when)
+import Data.Version (Version (..), parseVersion)
 import Database.DuckDB.FFI
 import Foreign.C.String (peekCString, withCString)
 import Foreign.C.Types (CBool (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (castPtr, nullPtr)
 import Foreign.Storable (peek, poke)
+import System.Environment (lookupEnv)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertBool, testCase, (@?=))
+import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
+import Text.ParserCombinators.ReadP (char, eof, readP_to_S)
 
 tests :: TestTree
 tests =
@@ -25,10 +28,15 @@ tests =
 
 testLibraryVersion :: TestTree
 testLibraryVersion =
-    testCase "duckdb_library_version returns a non-empty string" $ do
+    testCase "loads a supported DuckDB runtime" $ do
         versionPtr <- c_duckdb_library_version
         version <- peekCString versionPtr
-        assertBool "library version should not be empty" (not (null version))
+        let unsupported = "Expected DuckDB >= 1.5.3 and < 1.6; loaded " <> version
+        case readP_to_S (char 'v' *> parseVersion <* eof) version of
+            [(Version [1, 5, patch] [], "")] -> assertBool unsupported (patch >= 3)
+            _ -> assertFailure unsupported
+        expected <- lookupEnv "DUCKDB_TEST_VERSION"
+        forM_ expected $ \wanted -> version @?= ('v' : wanted)
 
 testOpenAndConnect :: TestTree
 testOpenAndConnect =

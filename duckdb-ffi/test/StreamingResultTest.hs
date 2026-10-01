@@ -1,3 +1,4 @@
+{-# OPTIONS_GHC -Wno-deprecations #-}
 {-# LANGUAGE BlockArguments #-}
 
 module StreamingResultTest (tests) where

@@ -1,4 +1,5 @@
-module Database.DuckDB.FFI.Deprecated.Arrow (
+module Database.DuckDB.FFI.Deprecated.Arrow
+    {-# DEPRECATED "These DuckDB C APIs are deprecated upstream. Prefer Database.DuckDB.FFI and its nondeprecated modules." #-} (
     c_duckdb_query_arrow,
     c_duckdb_query_arrow_schema,
     c_duckdb_prepared_arrow_schema,

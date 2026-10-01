@@ -1,5 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# OPTIONS_GHC -Wno-deprecations #-}
 
 -- | Regression tests for result metadata, cursor state, and handle lifetime.
 module CoreRegressionTests (coreRegressionTests) where
@@ -27,7 +28,7 @@ coreRegressionTests =
             withConnection ":memory:" $ \conn -> do
                 rows <- fold conn "SELECT ?" (Only (42 :: Int64)) [] collect
                 rows @?= [Only (42 :: Int64)]
-        , testCase "cursor requests a native streaming result" $
+        , testCase "cursor uses the supported materialized execution API" $
             withConnection ":memory:" $ \conn ->
                 withStatement conn "SELECT i FROM range(10000) t(i)" $ \stmt -> do
                     void (nextRow stmt :: IO (Maybe (Only Int64)))
@@ -35,7 +36,7 @@ coreRegressionTests =
                     case state of
                         StatementStreamActive stream -> do
                             streaming <- c_duckdb_result_is_streaming (statementStreamResult stream)
-                            assertBool "expected native streaming execution" (streaming /= 0)
+                            assertBool "expected a materialized native result" (streaming == 0)
                         _ -> assertFailure "expected an active cursor"
         , testCase "stream metadata preserves 64-bit values" $
             withConnection ":memory:" $ \conn -> do

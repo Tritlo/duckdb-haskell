@@ -14,6 +14,10 @@ The short version is:
 
 ## Binding fixes
 
+- Cursors and folds use DuckDB's supported materialized execution API. They
+  decode one Haskell row at a time, but native result memory depends on the
+  result size. The deprecated native streaming API remains in duckdb-ffi.
+
 - `UTCTime` parameters have SQL type TIMESTAMPTZ. Use `LocalTime` for TIMESTAMP.
 - `Float` parameters have SQL type FLOAT. REAL values decode to Float or Double.
 - Word and Word64 scalar function results have SQL type UBIGINT.

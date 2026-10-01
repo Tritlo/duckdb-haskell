@@ -87,7 +87,6 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
 import Database.DuckDB.FFI
-import Database.DuckDB.FFI.Deprecated (c_duckdb_execute_prepared_streaming)
 import Database.DuckDB.Simple.FromField (
     Field (..),
     FieldParser,
@@ -401,11 +400,11 @@ queryWith_ parser conn queryText =
             withResult queryText (c_duckdb_query connPtr sql) \resPtr ->
                 collectRows queryText resPtr >>= convertRowsWith parser queryText
 
--- Streaming folds -----------------------------------------------------------
+-- Cursors and folds ---------------------------------------------------------
 
-{- | Stream a parameterised query through an accumulator without loading all rows.
-  Bind the supplied parameters, start a streaming result, and apply the step
-  function row by row to produce a final accumulator value.
+{- | Fold a parameterised result without constructing a complete Haskell row list.
+  DuckDB materializes the native result before decoding starts. Native memory
+  use depends on the result size; the step function controls Haskell memory use.
 -}
 fold :: (FromRow row, ToRow params) => Connection -> Query -> params -> a -> (a -> row -> IO a) -> IO a
 fold conn queryText params initial step =
@@ -414,14 +413,14 @@ fold conn queryText params initial step =
         bind stmt (toRow params)
         foldStatementWith fromRow stmt initial step
 
--- | Stream a parameterless query through an accumulator without loading all rows.
+-- | Fold a parameterless result. Native materialization follows 'fold'.
 fold_ :: (FromRow row) => Connection -> Query -> a -> (a -> row -> IO a) -> IO a
 fold_ conn queryText initial step =
     withStatement conn queryText \stmt -> do
         resetStatementStream stmt
         foldStatementWith fromRow stmt initial step
 
--- | Stream a query that uses named parameters through an accumulator.
+-- | Fold a result with named parameters. Native materialization follows 'fold'.
 foldNamed :: (FromRow row) => Connection -> Query -> [NamedParam] -> a -> (a -> row -> IO a) -> IO a
 foldNamed conn queryText params initial step =
     withStatement conn queryText \stmt -> do
@@ -440,7 +439,7 @@ foldStatementWith parser stmt initial step =
                     acc' `seq` loop acc'
      in loop initial `finally` resetStatementStream stmt
 
--- | Fetch the next row from a streaming statement, stopping when no rows remain.
+-- | Fetch the next row. The first call materializes the native result.
 nextRow :: (FromRow r) => Statement -> IO (Maybe r)
 nextRow = nextRowWith fromRow
 
@@ -501,7 +500,7 @@ startStatementStream stmt =
         resultPtr <- malloc
         let release = c_duckdb_destroy_result resultPtr `finally` free resultPtr
         flip onException release do
-            rc <- c_duckdb_execute_prepared_streaming handle resultPtr
+            rc <- c_duckdb_execute_prepared handle resultPtr
             when (rc /= DuckDBSuccess) do
                 (errMsg, errType) <- fetchResultError resultPtr
                 throwIO $ mkExecuteError (statementQuery stmt) errMsg errType

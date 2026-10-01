@@ -1,4 +1,5 @@
-module Database.DuckDB.FFI.Deprecated.PendingResult (
+module Database.DuckDB.FFI.Deprecated.PendingResult
+    {-# DEPRECATED "These DuckDB C APIs are deprecated upstream. Prefer Database.DuckDB.FFI and its nondeprecated modules." #-} (
     c_duckdb_pending_prepared_streaming,
 ) where
 

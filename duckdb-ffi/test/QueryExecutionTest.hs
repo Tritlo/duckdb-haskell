@@ -1,3 +1,4 @@
+{-# OPTIONS_GHC -Wno-deprecations #-}
 {-# LANGUAGE BlockArguments #-}
 
 module QueryExecutionTest (tests) where

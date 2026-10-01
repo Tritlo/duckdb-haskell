@@ -2,6 +2,9 @@
 
 ## 1.5.3.0
 
+- Deprecated native modules now emit a Haskell deprecation warning. The bindings
+  remain available for applications that need the legacy API.
+
 - Previously, temporal foreign imports treated single-field C structs as scalar
   arguments and return values. C adapters now perform those conversions with
   the native calling convention. The typed Haskell signatures retain every

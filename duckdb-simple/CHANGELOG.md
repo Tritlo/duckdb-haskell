@@ -8,9 +8,11 @@
   binding or schema rebinding could change those types and cause truncated
   values or invalid memory access. Cursors now read types from the executed
   result. This addresses the streaming failures in #18.
-- Previously, the cursor API consumed a materialized native result. It now
-  requests native streaming execution and reports fetch failures as SQL errors.
-  A failed fetch was previously indistinguishable from end of input.
+- Cursors use the supported materialized execution API. DuckDB 1.5 provides
+  native streaming only through deprecated entry points, which the default
+  interface does not use. Folds decode one row at a time, but native result
+  memory still depends on the result size. Fetch failures now produce SQL
+  errors; previously, they were indistinguishable from end of input.
 - Previously, reading past EOF could execute the statement again, including
   INSERT statements. Cursors now remain exhausted until an explicit reset.
   Clearing bindings also destroys any active result.

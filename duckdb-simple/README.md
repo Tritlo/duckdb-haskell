@@ -225,9 +225,9 @@ manualStruct conn = do
 - `withConnection` and `withStatement` wrap the open/close lifecycle and guard
   against exceptions; use them whenever possible to avoid leaking C handles.
 - All intermediate DuckDB objects (results, prepared statements, values) are
-  released immediately after use. Long queries still materialise their result
-  sets when using the eager helpers; reach for `fold`/`fold_`/`foldNamed` (or
-  the lower-level `nextRow`) to stream results in constant space.
+  released immediately after use. Query helpers return a Haskell list of all
+  rows. Folds and cursors decode rows incrementally, while DuckDB retains the
+  materialized native result until it is exhausted, reset, or closed.
 - `execute`/`query` variants reset statement bindings each run so prepared
   statements can be reused safely.
 
@@ -239,9 +239,8 @@ handle state or prevent another call from interfering with an active cursor.
 Statements and connections do not provide their own lock. A callback must not
 execute another query on its active connection.
 
-Keep at most one active streaming result per connection. Close or reset an
-abandoned statement before you execute another query. DuckDB can retain a
-query plan, buffers, and callback state until the active result is destroyed.
+Close or reset an abandoned statement to release its result. DuckDB can retain
+native result buffers until that result is destroyed.
 Use `withStatement` for manual iteration. `fold` releases the result after
 success or an exception. The accumulator determines Haskell memory use.
 
@@ -251,10 +250,13 @@ success or an exception. The accumulator determines Haskell memory use.
   inspect result shapes before executing a query.
 - `execute` returns the number of affected rows. Use SQL `RETURNING` clauses
   when you need generated identifiers.
-### Streaming Results
+### Cursors and folds
 
-`fold`, `fold_`, and `foldNamed` expose DuckDB’s chunked result API, letting you
-aggregate or stream rows without materialising the entire result set:
+`fold`, `fold_`, and `foldNamed` decode one row at a time from DuckDB's result
+chunks. DuckDB 1.5 materializes the native result before the first row is
+returned. These functions avoid a complete Haskell row list, but native memory
+use still depends on the result size. The native API for starting a streaming
+result is deprecated; duckdb-simple uses the supported execution API.
 
 ```haskell
 import Database.DuckDB.Simple.Types (Only (..))
@@ -268,15 +270,15 @@ sumValues conn =
 For manual cursor-style iteration, use `nextRow`/`nextRowWith` on an open
 `Statement` to pull rows one at a time and decide when to stop.
 
-Streaming supports the same column types as eager queries, including STRUCT
+Cursors support the same column types as eager queries, including STRUCT
 and UNION values with nested collections and NULLs.
 
 ### Feature Coverage
 
 - Connections, prepared statements, positional/named parameter binding.
 - High-level execution (`execute*`) and eager queries (`query*`, `queryNamed`).
-- Streaming helpers (`fold`, `foldNamed`, `fold_`, `nextRow`) for constant-space
-  result processing.
+- Cursor and fold helpers (`fold`, `foldNamed`, `fold_`, `nextRow`) that decode
+  native result chunks one row at a time.
 - Comprehensive scalar type support: signed/unsigned integers, HUGEINT/UHUGEINT,
   decimals (with width/scale), intervals, precise and timezone-aware temporals,
   enums, bit strings, blobs, bignums, and UUIDs.

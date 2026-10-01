@@ -1,4 +1,5 @@
-module Database.DuckDB.FFI.Deprecated.Appender (
+module Database.DuckDB.FFI.Deprecated.Appender
+    {-# DEPRECATED "These DuckDB C APIs are deprecated upstream. Prefer Database.DuckDB.FFI and its nondeprecated modules." #-} (
     c_duckdb_appender_error,
 ) where
 

@@ -1,4 +1,5 @@
-module Database.DuckDB.FFI.Deprecated.SafeFetch (
+module Database.DuckDB.FFI.Deprecated.SafeFetch
+    {-# DEPRECATED "These DuckDB C APIs are deprecated upstream. Prefer Database.DuckDB.FFI and its nondeprecated modules." #-} (
     c_duckdb_value_boolean,
     c_duckdb_value_int8,
     c_duckdb_value_int16,

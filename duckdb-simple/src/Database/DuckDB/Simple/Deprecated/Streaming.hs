@@ -70,15 +70,18 @@ nextRow = nextRowWith fromRow
 nextRowWith :: RowParser r -> Statement -> IO (Maybe r)
 nextRowWith = Result.nextRowWith StreamingResult
 
-{- | Fold borrowed Arrow batches, requesting native streaming.
-  Schema and array pointers are read-only and valid during the callback only.
-  Copy data that must outlive the callback. Do not retain or release the pointers.
+{- | Fold Arrow batches, requesting native streaming.
+  Each batch has a separate schema and array. The callback may read, release,
+  or move them under the Arrow C Data Interface. The pointers themselves are
+  valid during the callback only. See @Database.DuckDB.Simple.Arrow@ for the
+  ownership rules.
   Arrow conversion uses the supported API; query execution uses the deprecated
-  streaming entry point. The fold releases all resources on exit.
+  streaming entry point. The fold releases contents that the consumer has not
+  released or moved. The consumer owns any moved contents.
 -}
 foldArrow :: (ToRow params) => Connection -> Query -> params -> a -> (a -> Ptr ArrowSchema -> Ptr ArrowArray -> IO a) -> IO a
 foldArrow = Arrow.foldArrowWith StreamingResult
 
--- | Fold borrowed Arrow batches from a query without parameters.
+-- | Fold Arrow batches from a query without parameters.
 foldArrow_ :: Connection -> Query -> a -> (a -> Ptr ArrowSchema -> Ptr ArrowArray -> IO a) -> IO a
 foldArrow_ conn sql = foldArrow conn sql ()

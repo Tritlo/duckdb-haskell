@@ -10,7 +10,9 @@ documentation: True
 -- Global compiler options
 -- uuid-types has an overly tight upper bound on template-haskell,
 -- which prevents building with GHC 9.14+ (template-haskell-2.24).
-allow-newer: uuid-types:template-haskell
+-- The optional DataFrame test uses bytestring-lexing. Its base bound excludes
+-- GHC 9.14, but the package builds with base-4.22 without source changes.
+allow-newer: uuid-types:template-haskell, bytestring-lexing:base
 
 program-options
 

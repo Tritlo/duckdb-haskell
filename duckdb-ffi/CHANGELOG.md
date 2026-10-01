@@ -5,6 +5,11 @@
 - Export invokers for Arrow schema/array release and all four stream callbacks.
   Applications can now call the function pointers exposed by the Arrow types
   without repeating foreign declarations from the test suite.
+- Export the corresponding `wrapArrow...` constructors for Haskell callbacks.
+  Add `releaseArrowSchema`, `releaseArrowArray`, and `releaseArrowStream` to
+  release initialized objects only when their release callback is non-null.
+  These helpers mask asynchronous exceptions during release. Callers still
+  own the outer struct storage and any callback pointers they allocate.
 
 - Deprecated native modules now emit a Haskell deprecation warning. The bindings
   remain available for applications that need the legacy API.

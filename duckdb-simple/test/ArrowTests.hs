@@ -7,8 +7,8 @@
 module ArrowTests (arrowTests) where
 
 import Control.Concurrent (forkIO, killThread, newEmptyMVar, putMVar, takeMVar)
-import Control.Exception (AsyncException (ThreadKilled), IOException, SomeException, bracket, fromException, throwIO, try)
-import Control.Monad (forM, when)
+import Control.Exception (AsyncException (ThreadKilled), IOException, SomeException, bracket, bracket_, fromException, mask_, throwIO, try)
+import Control.Monad (forM, forM_, when)
 import Data.Bits (testBit)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
@@ -20,8 +20,10 @@ import qualified Database.DuckDB.Simple.Arrow as Arrow
 import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
 import Database.DuckDB.Simple.Internal (peekUtf8CString)
 import Foreign.C.String (peekCString)
-import Foreign.Ptr (FunPtr, Ptr, castPtr, freeHaskellFunPtr, nullPtr)
-import Foreign.Storable (peek, peekElemOff, poke)
+import Foreign.Marshal.Alloc (alloca)
+import Foreign.Marshal.Utils (fillBytes)
+import Foreign.Ptr (Ptr, castPtr, freeHaskellFunPtr, nullFunPtr, nullPtr)
+import Foreign.Storable (peek, peekElemOff, poke, sizeOf)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
 
@@ -64,9 +66,63 @@ arrowModeTests streaming =
                     batches <- foldArrow_ conn "SELECT i FROM range(5000) t(i)" (0 :: Int) \count schema array -> do
                         observe schema array
                         pure (count + 1)
-                    readIORef schemaReleases >>= (@?= 1)
+                    readIORef schemaReleases >>= (@?= batches)
                     readIORef arrayReleases >>= (@?= batches)
                     assertConnectionUsable conn
+        , testCase "consumers can release each schema and batch" $
+            withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
+                withReleaseCounters \schemaReleases arrayReleases observe -> do
+                    batches <- foldArrow_ conn "SELECT i FROM range(5000) t(i)" (0 :: Int) \count schema array -> do
+                        observe schema array
+                        releaseArrowArray array
+                        releaseArrowSchema schema
+                        pure (count + 1)
+                    assertBool "more than one native batch" (batches > 1)
+                    readIORef schemaReleases >>= (@?= batches)
+                    readIORef arrayReleases >>= (@?= batches)
+                    assertConnectionUsable conn
+        , testCase "moved objects survive query and connection close" $
+            withReleaseCounters \schemaReleases arrayReleases observe -> do
+                alloca \savedSchema -> alloca \savedArray ->
+                    bracket_
+                        ( do
+                            fillBytes savedSchema 0 (sizeOf (undefined :: ArrowSchema))
+                            fillBytes savedArray 0 (sizeOf (undefined :: ArrowArray))
+                        )
+                        (releaseArrowArray savedArray >> releaseArrowSchema savedSchema)
+                        do
+                            withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
+                                foldArrow_ conn "SELECT 42::BIGINT AS id" () \() schemaPtr arrayPtr -> mask_ do
+                                    observe schemaPtr arrayPtr
+                                    schema <- peek schemaPtr
+                                    array <- peek arrayPtr
+                                    poke savedSchema schema
+                                    poke schemaPtr schema{arrowSchemaRelease = nullFunPtr}
+                                    poke savedArray array
+                                    poke arrayPtr array{arrowArrayRelease = nullFunPtr}
+                            readIORef schemaReleases >>= (@?= 0)
+                            readIORef arrayReleases >>= (@?= 0)
+                            schema <- peek savedSchema
+                            child <- peekElemOff (arrowSchemaChildren schema) 0 >>= peek
+                            peekCString (arrowSchemaName child) >>= (@?= "id")
+                            readInt64Batch savedArray >>= (@?= [Just 42])
+                readIORef schemaReleases >>= (@?= 1)
+                readIORef arrayReleases >>= (@?= 1)
+        , testCase "exceptions during consumption release each object once" $
+            forM_ [False, True] \consumeSchema ->
+                withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
+                    withReleaseCounters \schemaReleases arrayReleases observe -> do
+                        result <- try $ foldArrow_ conn "SELECT 42::BIGINT" () \() schema array -> do
+                            observe schema array
+                            releaseArrowArray array
+                            when consumeSchema (releaseArrowSchema schema)
+                            throwIO (userError "consumer failed after release")
+                        case result of
+                            Left (err :: IOException) -> assertBool "consumer exception" ("consumer failed" `Text.isInfixOf` Text.pack (show err))
+                            Right () -> assertFailure "expected consumer exception"
+                        readIORef schemaReleases >>= (@?= 1)
+                        readIORef arrayReleases >>= (@?= 1)
+                        assertConnectionUsable conn
         , testCase "callback exceptions release the active batch and schema" $
             withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
                 withReleaseCounters \schemaReleases arrayReleases observe -> do
@@ -154,7 +210,7 @@ withReleaseCounters action = do
     originalSchema <- newIORef Nothing
     originalArray <- newIORef Nothing
     bracket
-        ( wrapSchemaRelease \ptr -> do
+        ( wrapArrowSchemaRelease \ptr -> do
             modifyIORef' schemaReleases (+ 1)
             callback <- readIORef originalSchema
             maybe (assertFailure "missing schema release") (\release -> mkArrowSchemaRelease release ptr) callback
@@ -162,7 +218,7 @@ withReleaseCounters action = do
         freeHaskellFunPtr
         \schemaCallback ->
             bracket
-                ( wrapArrayRelease \ptr -> do
+                ( wrapArrowArrayRelease \ptr -> do
                     modifyIORef' arrayReleases (+ 1)
                     callback <- readIORef originalArray
                     maybe (assertFailure "missing array release") (\release -> mkArrowArrayRelease release ptr) callback
@@ -171,6 +227,7 @@ withReleaseCounters action = do
                 \arrayCallback -> do
                     let observe schemaPtr arrayPtr = do
                             schema <- peek schemaPtr
+                            assertBool "schema must not have been released" (arrowSchemaRelease schema /= nullFunPtr)
                             when (arrowSchemaRelease schema /= schemaCallback) do
                                 modifyIORef' originalSchema (const (Just (arrowSchemaRelease schema)))
                                 poke schemaPtr schema{arrowSchemaRelease = schemaCallback}
@@ -182,11 +239,3 @@ withReleaseCounters action = do
 -- | Check that no failed Arrow operation leaves the connection busy.
 assertConnectionUsable :: Connection -> Assertion
 assertConnectionUsable conn = (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
-
--- | Observe schema cleanup through a native callback.
-foreign import ccall "wrapper"
-    wrapSchemaRelease :: (Ptr ArrowSchema -> IO ()) -> IO (FunPtr (Ptr ArrowSchema -> IO ()))
-
--- | Observe array cleanup through a native callback.
-foreign import ccall "wrapper"
-    wrapArrayRelease :: (Ptr ArrowArray -> IO ()) -> IO (FunPtr (Ptr ArrowArray -> IO ()))

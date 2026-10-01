@@ -2,17 +2,16 @@
 
 module ArrowInterfaceTest (tests) where
 
-import Control.Exception (bracket)
+import Control.Exception (bracket, finally)
 import Control.Monad (when)
 import Data.Bits (testBit)
 import Data.Int (Int32)
 import Database.DuckDB.FFI
 import Foreign.C.String (CString, peekCString, withCString)
-import Foreign.C.Types (CInt (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Array (peekArray, withArray)
 import Foreign.Marshal.Utils (withMany)
-import Foreign.Ptr (FunPtr, Ptr, castPtr, freeHaskellFunPtr, nullFunPtr, nullPtr)
+import Foreign.Ptr (Ptr, castPtr, freeHaskellFunPtr, nullFunPtr, nullPtr)
 import Foreign.Storable (Storable (..), peek, peekElemOff, poke, pokeElemOff)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -32,8 +31,8 @@ arrowStreamErrorCallbacks :: TestTree
 arrowStreamErrorCallbacks =
     testCase "stream callbacks report a producer error" $
         withCString "Arrow producer failed" \message ->
-            bracket (wrapArrowStreamNext (\_ _ -> pure 5)) freeHaskellFunPtr \next ->
-                bracket (wrapArrowStreamError (const (pure message))) freeHaskellFunPtr \lastError ->
+            bracket (wrapArrowStreamGetNext (\_ _ -> pure 5)) freeHaskellFunPtr \next ->
+                bracket (wrapArrowStreamGetLastError (const (pure message))) freeHaskellFunPtr \lastError ->
                     bracket
                         ( wrapArrowStreamRelease \stream -> do
                             value <- peek stream
@@ -47,21 +46,10 @@ arrowStreamErrorCallbacks =
                                     poke array zeroArrowArray
                                     mkArrowStreamGetNext next stream array >>= (@?= 5)
                                     mkArrowStreamGetLastError lastError stream >>= peekCString >>= (@?= "Arrow producer failed")
-                                mkArrowStreamRelease release stream
+                                releaseArrowStream stream
                                 value <- peek stream
                                 arrowStreamRelease value @?= nullFunPtr
-
--- | Export a test producer's next-array callback.
-foreign import ccall "wrapper"
-    wrapArrowStreamNext :: (Ptr ArrowArrayStream -> Ptr ArrowArray -> IO CInt) -> IO (FunPtr (Ptr ArrowArrayStream -> Ptr ArrowArray -> IO CInt))
-
--- | Export a test producer's last-error callback.
-foreign import ccall "wrapper"
-    wrapArrowStreamError :: (Ptr ArrowArrayStream -> IO CString) -> IO (FunPtr (Ptr ArrowArrayStream -> IO CString))
-
--- | Export a test producer's release callback.
-foreign import ccall "wrapper"
-    wrapArrowStreamRelease :: (Ptr ArrowArrayStream -> IO ()) -> IO (FunPtr (Ptr ArrowArrayStream -> IO ()))
+                                releaseArrowStream stream
 
 arrowSchemaRoundtrip :: TestTree
 arrowSchemaRoundtrip =
@@ -90,8 +78,6 @@ arrowSchemaRoundtrip =
                                     assertBool "schema release pointer should be set" (arrowSchemaRelease schema /= nullFunPtr)
 
                                     withConvertedSchema conn schemaPtr (const (pure ()))
-
-                                    releaseArrowSchema schemaPtr
 
 arrowChunkRoundtrip :: TestTree
 arrowChunkRoundtrip =
@@ -160,8 +146,6 @@ arrowChunkRoundtrip =
                                                             arrayAfter <- peek arrayPtr
                                                             arrowArrayRelease arrayAfter @?= nullFunPtr
 
-                                    releaseArrowSchema schemaPtr
-
 withArrowOptions :: DuckDBConnection -> (DuckDBArrowOptions -> IO a) -> IO a
 withArrowOptions conn action =
     alloca \optsPtr -> do
@@ -185,14 +169,12 @@ withColumnNames names action =
     withMany withCString names $ \cNames -> withArray cNames action
 
 withArrowSchema :: (Ptr ArrowSchema -> IO a) -> IO a
-withArrowSchema = withStruct zeroArrowSchema
+withArrowSchema action =
+    withStruct zeroArrowSchema \ptr -> action ptr `finally` releaseArrowSchema ptr
 
 withArrowArray :: (Ptr ArrowArray -> IO a) -> IO a
 withArrowArray action =
-    withStruct zeroArrowArray \ptr -> do
-        result <- action ptr
-        releaseArrowArray ptr
-        pure result
+    withStruct zeroArrowArray \ptr -> action ptr `finally` releaseArrowArray ptr
 
 withStruct :: (Storable a) => a -> (Ptr a -> IO b) -> IO b
 withStruct initial action =
@@ -244,22 +226,6 @@ assertNoError err =
         msg <- peekCString msgPtr
         destroyErrorData err
         assertFailure ("DuckDB reported error: " <> msg)
-
-releaseArrowSchema :: Ptr ArrowSchema -> IO ()
-releaseArrowSchema schemaPtr = do
-    schema <- peek schemaPtr
-    let releaseFun = arrowSchemaRelease schema
-    when (releaseFun /= nullFunPtr) $ do
-        let release = mkArrowSchemaRelease releaseFun
-        release schemaPtr
-
-releaseArrowArray :: Ptr ArrowArray -> IO ()
-releaseArrowArray arrayPtr = do
-    array <- peek arrayPtr
-    let releaseFun = arrowArrayRelease array
-    when (releaseFun /= nullFunPtr) $ do
-        let release = mkArrowArrayRelease releaseFun
-        release arrayPtr
 
 zeroArrowSchema :: ArrowSchema
 zeroArrowSchema =

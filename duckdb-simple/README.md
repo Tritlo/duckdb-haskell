@@ -332,10 +332,33 @@ as `Database.DuckDB.Simple.Arrow`.
 ### Arrow batches
 
 `Database.DuckDB.Simple.Arrow` provides `foldArrow` and `foldArrow_` for clients
-that consume the Arrow C Data Interface. Each callback borrows a schema and
-one array batch. Read them during the callback only. Copy any data that must
-outlive it; do not retain, release, modify, or transfer the pointers. The fold
-releases each batch and the schema on success, failure, or cancellation.
+that consume the Arrow C Data Interface. Each callback receives a separate
+schema and array batch. It can read them or pass them to an Arrow consumer
+that releases or moves them. The fold releases any remaining contents on
+success, failure, or cancellation. The consumer owns any contents it moves.
+
+The original pointers are valid only during the callback. To retain contents,
+a consumer must move the root structs into its own storage and set the source
+release fields to NULL. Moved contents remain valid after the query and
+connection close. Empty results do not produce a callback.
+
+For example, the `dataframe-arrow-bridge` package can copy each batch into a
+Haskell `DataFrame` and release the Arrow objects:
+
+```haskell
+import qualified DataFrame.IO.Arrow as DataFrame
+import qualified Database.DuckDB.Simple.Arrow as Arrow
+import Foreign.Ptr (castPtr)
+
+frames <- Arrow.foldArrow_ conn "SELECT id::BIGINT, name::VARCHAR FROM people" [] $ \acc schema array -> do
+  frame <- DataFrame.arrowToDataframe (castPtr schema) (castPtr array)
+  pure (frame : acc)
+-- Reverse frames to recover the query's batch order.
+```
+
+The bridge currently imports signed 32-bit and 64-bit integers, Float, Double,
+and text columns. It is a test dependency of this repository; applications
+that use it must declare their own dependency on `dataframe-arrow-bridge`.
 
 Arrow export uses DuckDB's schema and chunk conversion API. DuckDB materializes
 the native result before callbacks start, so its memory use depends on the

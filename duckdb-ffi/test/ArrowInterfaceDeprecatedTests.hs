@@ -459,22 +459,6 @@ validateChunkChildren array = do
             [0 .. rowCount - 1]
     labels @?= expectedLabels
 
-releaseArrowArray :: Ptr ArrowArray -> IO ()
-releaseArrowArray arrayPtr = do
-    array <- peek arrayPtr
-    let releaseFun = arrowArrayRelease array
-    when (releaseFun /= nullFunPtr) $ do
-        let release = mkArrowArrayRelease releaseFun
-        release arrayPtr
-
-releaseArrowSchema :: Ptr ArrowSchema -> IO ()
-releaseArrowSchema schemaPtr = do
-    schema <- peek schemaPtr
-    let releaseFun = arrowSchemaRelease schema
-    when (releaseFun /= nullFunPtr) $ do
-        let release = mkArrowSchemaRelease releaseFun
-        release schemaPtr
-
 withSuccessfulArrow :: DuckDBConnection -> String -> (DuckDBArrow -> IO a) -> IO a
 withSuccessfulArrow conn sql action =
     withCString sql \sqlPtr ->

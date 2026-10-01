@@ -27,10 +27,10 @@ cancellations. Each phase keeps one connection open. The normal leak test uses
 one tenth of those counts. Native RSS and thread checks require Linux `/proc`.
 Callback collection and functional checks also run on other systems.
 
-The Linux CI job with GHC 9.12.4 also runs the callback and cancellation checks
-under Valgrind. Definite and indirect native leaks fail the job. That job sets
-`DUCKDB_LEAK_RSS_CHECK=0` because Valgrind changes process RSS. The ordinary
-leak test keeps the RSS assertion enabled.
+The Linux CI job with GHC 9.12.4 also runs the callback, cancellation, and
+DataFrame checks under Valgrind. Definite and indirect native leaks fail the
+job. That job sets `DUCKDB_LEAK_RSS_CHECK=0` because Valgrind changes process
+RSS. The ordinary leak test keeps the RSS assertion enabled.
 
 Use `--with-compiler=ghc-VERSION` to select a supported compiler.
 For benchmarks, build both versions with the same compiler and DuckDB library.
@@ -42,6 +42,19 @@ cabal bench duckdb-simple-bench --benchmark-options='fold 100000'
 
 Nix CI builds and tests both packages with GHC 9.14.1 and Nix's DuckDB library.
 Run the same build locally with `nix-build dev/nix/ci.nix --no-out-link`.
+
+The separate DataFrame integration suite checks Arrow export with
+`dataframe-arrow-bridge`. It runs in the optimized Cabal CI jobs on Linux and
+macOS. Enable it locally with:
+
+```sh
+cabal build duckdb-simple-dataframe-test -fdataframe-tests
+cabal test duckdb-simple-dataframe-test -fdataframe-tests --test-show-details=direct
+```
+
+The flag defaults to off because the bridge also depends on DataFrame's
+file-format packages. These packages are absent from the pinned Nix package
+set. The ordinary suite checks Arrow ownership without those dependencies.
 
 ## Code style
 

@@ -16,9 +16,15 @@
   threaded RTS. Native code and Haskell callbacks must return before cleanup
   can finish.
 - Add scoped Arrow batch export through `foldArrow` and `foldArrow_`. The
-  callback borrows each array and its schema; the fold releases them on every
-  exit path. This uses the supported schema/chunk conversion API and retains
-  a materialized native result while the fold runs.
+  callback receives a separate schema and array for each batch. Consumers may
+  release or move them under the Arrow C Data Interface. The fold releases
+  remaining contents on every exit path. This uses the supported schema/chunk
+  conversion API and retains a materialized native result while the fold runs.
+- The initial Arrow fold shared one borrowed schema across callbacks. Consumers
+  such as `dataframe-arrow-bridge` release that schema when they import a batch,
+  which made subsequent batches unusable. Each batch now has its own schema.
+  Moved root objects remain usable after query and connection close; their
+  consumer must release them.
 
 - Previously, cursors decoded rows with prepare-time column types. Parameter
   binding or schema rebinding could change those types and cause truncated
@@ -117,6 +123,11 @@
 
 ### Testing and compatibility
 
+- Add an optional DataFrame integration suite with `-fdataframe-tests`. It
+  imports several Arrow batches through `dataframe-arrow-bridge` and checks
+  values, NULLs, column order, consumer failures, and use after connection close.
+  CI runs it on Linux and macOS. The ordinary suite also checks consumption,
+  ownership transfer, and cleanup after a consumer has released its objects.
 - Add crash reproductions for #18, real native ownership tests, and sustained
   checks for long-lived connections, callback release, and cancellation.
   Property tests now include embedded NUL rather than filtering it out.

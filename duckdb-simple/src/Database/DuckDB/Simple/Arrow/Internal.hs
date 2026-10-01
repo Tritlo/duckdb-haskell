@@ -18,10 +18,10 @@ import Database.DuckDB.Simple.ToRow (ToRow (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Array (withArray)
 import Foreign.Marshal.Utils (fillBytes, withMany)
-import Foreign.Ptr (Ptr, nullFunPtr, nullPtr)
-import Foreign.Storable (Storable (sizeOf), peek, poke)
+import Foreign.Ptr (Ptr, nullPtr)
+import Foreign.Storable (Storable (sizeOf), poke)
 
--- | Fold over borrowed Arrow batches with the selected native execution mode.
+-- | Fold over Arrow batches with the selected native execution mode.
 foldArrowWith :: (ToRow q) => ResultMode -> Connection -> Query -> q -> a -> (a -> Ptr ArrowSchema -> Ptr ArrowArray -> IO a) -> IO a
 foldArrowWith mode conn queryText params initial step =
     withStatement conn queryText \stmt -> do
@@ -29,10 +29,9 @@ foldArrowWith mode conn queryText params initial step =
         withStatementHandle stmt \handle ->
             withResult conn queryText (executePreparedResult mode handle) \result ->
                 bracket (c_duckdb_result_get_arrow_options result) destroyArrowOptions \options ->
-                    withResultSchema queryText result options \schema ->
-                        loop result options schema initial
+                    loop result options initial
   where
-    loop result options schema acc = do
+    loop result options acc = do
         next <- bracket (fetchResultChunk mode conn result) destroyDataChunk \chunk ->
             if chunk == nullPtr
                 then do
@@ -42,13 +41,14 @@ foldArrowWith mode conn queryText params initial step =
                     rowCount <- c_duckdb_data_chunk_get_size chunk
                     if rowCount == 0
                         then pure (Just acc)
-                        else withArrowArray \array -> do
-                            checkArrowError queryText (c_duckdb_data_chunk_to_arrow options chunk array)
-                            nextAcc <- step acc schema array
-                            nextAcc `seq` pure (Just nextAcc)
+                        else withResultSchema queryText result options \schema ->
+                            withArrowArray \array -> do
+                                checkArrowError queryText (c_duckdb_data_chunk_to_arrow options chunk array)
+                                nextAcc <- step acc schema array
+                                nextAcc `seq` pure (Just nextAcc)
         case next of
             Nothing -> pure acc
-            Just nextAcc -> loop result options schema nextAcc
+            Just nextAcc -> loop result options nextAcc
 
 -- | Convert the executed result's schema and release it after the action.
 withResultSchema :: Query -> Ptr DuckDBResult -> DuckDBArrowOptions -> (Ptr ArrowSchema -> IO a) -> IO a
@@ -60,7 +60,7 @@ withResultSchema queryText result options action = do
         withArray types \typeArray ->
             withArray names \nameArray ->
                 alloca \schema ->
-                    bracket_ (fillBytes schema 0 (sizeOf (undefined :: ArrowSchema))) (releaseSchema schema) do
+                    bracket_ (fillBytes schema 0 (sizeOf (undefined :: ArrowSchema))) (releaseArrowSchema schema) do
                         checkArrowError queryText (c_duckdb_to_arrow_schema options typeArray nameArray count schema)
                         action schema
 
@@ -68,7 +68,7 @@ withResultSchema queryText result options action = do
 withArrowArray :: (Ptr ArrowArray -> IO a) -> IO a
 withArrowArray action =
     alloca \array ->
-        bracket_ (fillBytes array 0 (sizeOf (undefined :: ArrowArray))) (releaseArray array) (action array)
+        bracket_ (fillBytes array 0 (sizeOf (undefined :: ArrowArray))) (releaseArrowArray array) (action array)
 
 -- | Convert and release an owned Arrow conversion error.
 checkArrowError :: Query -> IO DuckDBErrorData -> IO ()
@@ -81,18 +81,6 @@ checkArrowError queryText makeError =
                 message <- if messagePtr == nullPtr then pure "DuckDB Arrow conversion failed" else peekUtf8CString messagePtr
                 errorType <- c_duckdb_error_data_error_type err
                 throwIO (SQLError message (Just errorType) (Just queryText))
-
--- | Release an Arrow schema if its producer still owns buffers.
-releaseSchema :: Ptr ArrowSchema -> IO ()
-releaseSchema ptr = do
-    schema <- peek ptr
-    when (arrowSchemaRelease schema /= nullFunPtr) (mkArrowSchemaRelease (arrowSchemaRelease schema) ptr)
-
--- | Release an Arrow array if its producer still owns buffers.
-releaseArray :: Ptr ArrowArray -> IO ()
-releaseArray ptr = do
-    array <- peek ptr
-    when (arrowArrayRelease array /= nullFunPtr) (mkArrowArrayRelease (arrowArrayRelease array) ptr)
 
 -- | Destroy the result's Arrow conversion options.
 destroyArrowOptions :: DuckDBArrowOptions -> IO ()

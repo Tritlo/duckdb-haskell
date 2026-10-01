@@ -119,6 +119,7 @@ import Database.DuckDB.Simple.Internal (
     keepAlive,
     mkExecuteError,
     peekUtf8CString,
+    runInterruptibleQuery,
     throwResultError,
     withConnectionHandle,
     withQueryCString,
@@ -134,8 +135,9 @@ import Database.DuckDB.Simple.ToRow (ToRow (..))
 import Database.DuckDB.Simple.Types (FormatError (..), Null (..), Only (..), (:.) (..))
 import Foreign.C.String (CString)
 import Foreign.Marshal.Alloc (alloca, free, malloc)
+import Foreign.Marshal.Utils (fillBytes)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
-import Foreign.Storable (peek, poke)
+import Foreign.Storable (peek, poke, sizeOf)
 
 -- | Open a DuckDB database located at the supplied path.
 open :: FilePath -> IO Connection
@@ -180,14 +182,15 @@ openStatement conn queryText =
             withConnectionHandle conn \connPtr ->
                 withQueryCString queryText \sql ->
                     alloca \stmtPtr -> do
-                        rc <- c_duckdb_prepare connPtr sql stmtPtr
-                        stmt <- peek stmtPtr
-                        if rc == DuckDBSuccess
-                            then pure stmt
-                            else do
-                                errMsg <- fetchPrepareError stmt
-                                c_duckdb_destroy_prepare stmtPtr
-                                throwIO $ mkPrepareError queryText errMsg
+                        poke stmtPtr nullPtr
+                        flip onException (c_duckdb_destroy_prepare stmtPtr) do
+                            rc <- runInterruptibleQuery conn (c_duckdb_prepare connPtr sql stmtPtr)
+                            stmt <- peek stmtPtr
+                            if rc == DuckDBSuccess
+                                then pure stmt
+                                else do
+                                    errMsg <- fetchPrepareError stmt
+                                    throwIO $ mkPrepareError queryText errMsg
         createStatement conn handle queryText
             `onException` destroyPrepared handle
 
@@ -338,7 +341,7 @@ executeStatement :: Statement -> IO Int
 executeStatement stmt =
     withStatementHandle stmt \handle -> do
         resetStatementStream stmt
-        withResult (statementQuery stmt) (c_duckdb_execute_prepared handle) resultRowsChanged
+        withResult (statementConnection stmt) (statementQuery stmt) (c_duckdb_execute_prepared handle) resultRowsChanged
 
 -- | Execute a query with positional parameters and return the affected row count.
 execute :: (ToRow q) => Connection -> Query -> q -> IO Int
@@ -358,7 +361,7 @@ execute_ :: Connection -> Query -> IO Int
 execute_ conn queryText =
     withConnectionHandle conn \connPtr ->
         withQueryCString queryText \sql ->
-            withResult queryText (c_duckdb_query connPtr sql) resultRowsChanged
+            withResult conn queryText (c_duckdb_query connPtr sql) resultRowsChanged
 
 -- | Execute a query that uses named parameters.
 executeNamed :: Connection -> Query -> [NamedParam] -> IO Int
@@ -377,7 +380,7 @@ queryWith parser conn queryText params =
     withStatement conn queryText \stmt -> do
         bind stmt (toRow params)
         withStatementHandle stmt \handle ->
-            withResult queryText (c_duckdb_execute_prepared handle) \resPtr ->
+            withResult conn queryText (c_duckdb_execute_prepared handle) \resPtr ->
                 collectRows queryText resPtr >>= convertRowsWith parser queryText
 
 -- | Run a query that uses named parameters and decode all rows eagerly.
@@ -386,7 +389,7 @@ queryNamed conn queryText params =
     withStatement conn queryText \stmt -> do
         bindNamed stmt params
         withStatementHandle stmt \handle ->
-            withResult queryText (c_duckdb_execute_prepared handle) \resPtr ->
+            withResult conn queryText (c_duckdb_execute_prepared handle) \resPtr ->
                 collectRows queryText resPtr >>= convertRows queryText
 
 -- | Run a query without supplying parameters and decode all rows eagerly.
@@ -398,7 +401,7 @@ queryWith_ :: RowParser r -> Connection -> Query -> IO [r]
 queryWith_ parser conn queryText =
     withConnectionHandle conn \connPtr ->
         withQueryCString queryText \sql ->
-            withResult queryText (c_duckdb_query connPtr sql) \resPtr ->
+            withResult conn queryText (c_duckdb_query connPtr sql) \resPtr ->
                 collectRows queryText resPtr >>= convertRowsWith parser queryText
 
 -- Cursors and folds ---------------------------------------------------------
@@ -499,9 +502,10 @@ startStatementStream :: Statement -> IO (Maybe StatementStream)
 startStatementStream stmt =
     withStatementHandle stmt \handle -> do
         resultPtr <- malloc
+        fillBytes resultPtr 0 (sizeOf (undefined :: DuckDBResult))
         let release = c_duckdb_destroy_result resultPtr `finally` free resultPtr
         flip onException release do
-            rc <- c_duckdb_execute_prepared handle resultPtr
+            rc <- runInterruptibleQuery (statementConnection stmt) (c_duckdb_execute_prepared handle resultPtr)
             when (rc /= DuckDBSuccess) do
                 (errMsg, errType) <- fetchResultError resultPtr
                 throwIO $ mkExecuteError (statementQuery stmt) errMsg errType

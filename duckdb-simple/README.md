@@ -258,7 +258,13 @@ Hold that lock for the whole transaction or cursor lifetime, including `close`.
 DuckDB serializes native query calls, but this does not protect the Haskell
 handle state or prevent another call from interfering with an active cursor.
 Statements and connections do not provide their own lock. A callback must not
-execute another query on its active connection.
+execute another query on its active connection or close that connection.
+
+Link your executable with `ghc-options: -threaded` to allow prompt cancellation
+of native queries, including Ctrl-C. On cancellation, the library interrupts
+DuckDB and waits for the native call to return before it releases resources
+and propagates the exception. Cancellation is cooperative: native code and
+Haskell callbacks must return before cleanup can finish.
 
 Close or reset an abandoned statement to release its result. DuckDB can retain
 native result buffers until that result is destroyed.

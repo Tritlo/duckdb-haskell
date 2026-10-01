@@ -220,7 +220,7 @@ expectFailure action = do
         Left _ -> pure ()
         Right () -> fail "expected operation to fail"
 
--- | Reuse a connection after cancelling eager and streaming decoders.
+-- | Reuse a connection after cancelling native execution and row decoding.
 checkCancellation :: Int -> IO ()
 checkCancellation batches =
     withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
@@ -241,6 +241,16 @@ checkCancellation batches =
                 unless (rows == [Only (42 :: Int64)]) (fail "connection failed after cancellation")
             batch = forM_ [1 .. 10 :: Int] \_ -> do
                 cancel \signal -> do
+                    createFunction conn "leak_cancel_started" (signal >> pure (1 :: Int64))
+                    void
+                        ( query_
+                            conn
+                            "WITH started AS MATERIALIZED (SELECT leak_cancel_started() AS seed) \
+                            \SELECT sum(sin((a.i + b.j + started.seed)::DOUBLE)) \
+                            \FROM started, range(1000000) a(i), range(1000000) b(j)" ::
+                            IO [Only Double]
+                        )
+                cancel \signal -> do
                     signal
                     void (query_ conn "SELECT {'x': i, 'values': [i, i + 1]} FROM range(100000) t(i)" :: IO [Only FieldValue])
                 cancel \signal -> do
@@ -254,7 +264,7 @@ checkCancellation batches =
             batch
             performMajorGC
             after <- readUsage
-            reportOptional ("open connection, " <> show (n * 20) <> " cancellations") before after
+            reportOptional ("open connection, " <> show (n * 30) <> " cancellations") before after
 
 -- | Report native counters when the operating system provides them.
 reportOptional :: String -> Maybe Usage -> Maybe Usage -> IO ()

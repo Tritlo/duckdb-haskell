@@ -280,7 +280,7 @@ deleteFunction conn name =
                                     , qualifyIdentifier name
                                     ]
                     withQueryCString dropQuery \sql ->
-                        withResult dropQuery (c_duckdb_query connPtr sql) (const (pure ()))
+                        withResult conn dropQuery (c_duckdb_query connPtr sql) (const (pure ()))
         case outcome of
             Right () -> pure ()
             Left err

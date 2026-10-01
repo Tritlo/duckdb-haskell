@@ -48,7 +48,7 @@ foldArrow conn queryText params initial step =
     withStatement conn queryText \stmt -> do
         bind stmt (toRow params)
         withStatementHandle stmt \handle ->
-            withResult queryText (c_duckdb_execute_prepared handle) \result ->
+            withResult conn queryText (c_duckdb_execute_prepared handle) \result ->
                 bracket (c_duckdb_result_get_arrow_options result) destroyArrowOptions \options ->
                     withResultSchema queryText result options \schema ->
                         loop result options schema initial

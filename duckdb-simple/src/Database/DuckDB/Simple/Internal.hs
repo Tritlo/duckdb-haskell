@@ -37,6 +37,7 @@ module Database.DuckDB.Simple.Internal (
     withQueryCString,
     peekUtf8CString,
     withResult,
+    runInterruptibleQuery,
     fetchResultError,
     throwResultError,
     mkExecuteError,
@@ -47,7 +48,8 @@ module Database.DuckDB.Simple.Internal (
     throwRegistrationError,
 ) where
 
-import Control.Exception (Exception, bracket, throwIO)
+import Control.Concurrent (forkIO, newEmptyMVar, putMVar, readMVar, threadDelay, tryReadMVar)
+import Control.Exception (Exception, SomeException, bracket, bracket_, mask, onException, throwIO, try, uninterruptibleMask_)
 import Control.Monad (when)
 import qualified Data.ByteString as BS
 import Data.IORef (IORef, readIORef)
@@ -75,6 +77,7 @@ import Database.DuckDB.FFI (
     c_duckdb_destroy_logical_type,
     c_duckdb_destroy_result,
     c_duckdb_destroy_value,
+    c_duckdb_interrupt,
     c_duckdb_result_error,
     c_duckdb_result_error_type,
     pattern DuckDBErrorInvalid,
@@ -82,8 +85,9 @@ import Database.DuckDB.FFI (
  )
 import Foreign.C.String (CString)
 import Foreign.Marshal.Alloc (alloca)
+import Foreign.Marshal.Utils (fillBytes)
 import Foreign.Ptr (Ptr, nullPtr)
-import Foreign.Storable (peek, poke)
+import Foreign.Storable (peek, poke, sizeOf)
 import GHC.Exts (keepAlive#)
 import GHC.IO (IO (..))
 
@@ -210,14 +214,45 @@ peekUtf8CString :: CString -> IO Text
 peekUtf8CString ptr = TextEncoding.decodeUtf8 <$> BS.packCString ptr
 
 -- | Execute a query and destroy its result after success or failure.
-withResult :: Query -> (Ptr DuckDBResult -> IO DuckDBState) -> (Ptr DuckDBResult -> IO a) -> IO a
-withResult queryText executeResult action =
+withResult :: Connection -> Query -> (Ptr DuckDBResult -> IO DuckDBState) -> (Ptr DuckDBResult -> IO a) -> IO a
+withResult conn queryText executeResult action =
     alloca $ \resPtr ->
-        bracket (executeResult resPtr) (const (c_duckdb_destroy_result resPtr)) $ \rc -> do
-            when (rc /= DuckDBSuccess) $ do
-                (message, errorType) <- fetchResultError resPtr
-                throwIO (mkExecuteError queryText message errorType)
-            action resPtr
+        bracket_
+            (fillBytes resPtr 0 (sizeOf (undefined :: DuckDBResult)))
+            (c_duckdb_destroy_result resPtr)
+            $ do
+                rc <- runInterruptibleQuery conn (executeResult resPtr)
+                when (rc /= DuckDBSuccess) $ do
+                    (message, errorType) <- fetchResultError resPtr
+                    throwIO (mkExecuteError queryText message errorType)
+                action resPtr
+
+{- | Run a native query while the caller can receive asynchronous exceptions.
+  Prompt cancellation requires the threaded RTS. Cleanup interrupts DuckDB and
+  waits for the worker before the caller can release native storage.
+-}
+runInterruptibleQuery :: Connection -> IO DuckDBState -> IO DuckDBState
+runInterruptibleQuery conn action =
+    withConnectionHandle conn $ \handle ->
+        mask $ \restore -> do
+            done <- newEmptyMVar
+            _ <- forkIO $ do
+                outcome <- try action :: IO (Either SomeException DuckDBState)
+                putMVar done outcome
+            let cancelAndWait = do
+                    finished <- tryReadMVar done
+                    case finished of
+                        Just _ -> pure ()
+                        Nothing -> do
+                            -- DuckDB clears the interrupt flag at query entry.
+                            -- Repeat the interrupt to cover cancellation before entry.
+                            c_duckdb_interrupt handle
+                            threadDelay 10000
+                            cancelAndWait
+            -- A second exception must not release storage still used by the worker.
+            -- Native code and Haskell callbacks must return before cleanup can finish.
+            outcome <- restore (readMVar done) `onException` uninterruptibleMask_ cancelAndWait
+            either throwIO pure outcome
 
 -- | Copy a result error while its native result remains alive.
 fetchResultError :: Ptr DuckDBResult -> IO (Text, Maybe DuckDBErrorType)

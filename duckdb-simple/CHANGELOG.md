@@ -4,6 +4,12 @@
 
 ### Query execution and resource lifetime
 
+- Previously, a long native query could defer Ctrl-C until execution finished.
+  Query preparation and execution now run in a worker so the caller can receive
+  asynchronous exceptions. Cancellation interrupts DuckDB and waits for the
+  worker before releasing its resources. Prompt cancellation requires the
+  threaded RTS. Native code and Haskell callbacks must return before cleanup
+  can finish.
 - Add scoped Arrow batch export through `foldArrow` and `foldArrow_`. The
   callback borrows each array and its schema; the fold releases them on every
   exit path. This uses the supported schema/chunk conversion API and retains

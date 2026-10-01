@@ -13,6 +13,7 @@
 module Main (main) where
 
 import ArrowTests (arrowTests)
+import CancellationTests (cancellationTests)
 import Control.Applicative ((<|>))
 import Control.Exception (ErrorCall, Exception, SomeException, displayException, fromException, try)
 import Control.Monad (forM_, replicateM_, when)
@@ -204,6 +205,7 @@ tests =
         [ connectionTests
         , coreRegressionTests
         , arrowTests
+        , cancellationTests
         , extensionRegressionTests
         , valueRegressionTests
         , timeTests

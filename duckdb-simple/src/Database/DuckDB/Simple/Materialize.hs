@@ -16,11 +16,9 @@ import Data.Ratio ((%))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import Data.Time.Calendar (Day, addDays, fromGregorian)
-import Data.Time.Clock (UTCTime (..))
+import Data.Time.Calendar (addDays, fromGregorian)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Data.Time.LocalTime (
-    LocalTime (..),
     TimeOfDay (..),
     minutesToTimeZone,
     utc,
@@ -46,6 +44,7 @@ import Database.DuckDB.Simple.LogicalRep (
     UnionValue (..),
     logicalTypeToRep,
  )
+import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
 import Foreign.C.Types (CBool (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
@@ -454,11 +453,10 @@ ensureWithinIntRange context value =
             then pure (fromInteger actual)
             else throwIO (userError ("duckdb-simple: " <> Text.unpack context <> " exceeds Int range"))
 
--- | Decode finite dates with exact epoch arithmetic.
-decodeDuckDBDate :: DuckDBDate -> IO Day
-decodeDuckDBDate (DuckDBDate days) = do
-    rejectInfinity "DATE" days
-    pure (addDays (toInteger days) (fromGregorian 1970 1 1))
+-- | Decode dates with exact epoch arithmetic and preserve infinity.
+decodeDuckDBDate :: DuckDBDate -> IO Date
+decodeDuckDBDate (DuckDBDate days) =
+    pure (decodeUnbounded (\value -> addDays (toInteger value) (fromGregorian 1970 1 1)) days)
 
 decodeDuckDBTime :: DuckDBTime -> IO TimeOfDay
 decodeDuckDBTime raw =
@@ -467,20 +465,20 @@ decodeDuckDBTime raw =
         timeStruct <- peek ptr
         pure (timeStructToTimeOfDay timeStruct)
 
-decodeDuckDBTimestamp :: DuckDBTimestamp -> IO LocalTime
+decodeDuckDBTimestamp :: DuckDBTimestamp -> IO LocalTimestamp
 decodeDuckDBTimestamp (DuckDBTimestamp micros) = decodeTimestampUnits 1000000 micros
 
--- | Reject infinity before converting a native date or timestamp.
-rejectInfinity :: (Integral a, Bounded a) => String -> a -> IO ()
-rejectInfinity label value =
-    when (value == maxBound || value == negate maxBound) $
-        throwIO (userError ("duckdb-simple: cannot decode " <> label <> " infinity"))
+-- | Interpret native infinity sentinels before converting a finite payload.
+decodeUnbounded :: (Integral a, Bounded a) => (a -> b) -> a -> Unbounded b
+decodeUnbounded decode value
+    | value == maxBound = PosInfinity
+    | value == negate maxBound = NegInfinity
+    | otherwise = Finite (decode value)
 
 -- | Decode timestamp units without overflowing an intermediate Int64.
-decodeTimestampUnits :: Integer -> Int64 -> IO LocalTime
-decodeTimestampUnits units value = do
-    rejectInfinity "TIMESTAMP" value
-    pure (utcToLocalTime utc (posixSecondsToUTCTime (fromRational (toInteger value % units))))
+decodeTimestampUnits :: Integer -> Int64 -> IO LocalTimestamp
+decodeTimestampUnits units =
+    pure . decodeUnbounded (utcToLocalTime utc . posixSecondsToUTCTime . fromRational . (% units) . toInteger)
 
 decodeDuckDBTimeNs :: DuckDBTimeNs -> TimeOfDay
 decodeDuckDBTimeNs (DuckDBTimeNs nanos) =
@@ -506,21 +504,20 @@ decodeDuckDBTimeTz raw =
             zone = minutesToTimeZone minutes
         pure TimeWithZone{timeWithZoneTime = timeOfDay, timeWithZoneZone = zone}
 
-decodeDuckDBTimestampSeconds :: DuckDBTimestampS -> IO LocalTime
+decodeDuckDBTimestampSeconds :: DuckDBTimestampS -> IO LocalTimestamp
 decodeDuckDBTimestampSeconds (DuckDBTimestampS seconds) =
     decodeTimestampUnits 1 seconds
 
-decodeDuckDBTimestampMilliseconds :: DuckDBTimestampMs -> IO LocalTime
+decodeDuckDBTimestampMilliseconds :: DuckDBTimestampMs -> IO LocalTimestamp
 decodeDuckDBTimestampMilliseconds (DuckDBTimestampMs millis) =
     decodeTimestampUnits 1000 millis
 
-decodeDuckDBTimestampNanoseconds :: DuckDBTimestampNs -> IO LocalTime
+decodeDuckDBTimestampNanoseconds :: DuckDBTimestampNs -> IO LocalTimestamp
 decodeDuckDBTimestampNanoseconds (DuckDBTimestampNs nanos) = decodeTimestampUnits 1000000000 nanos
 
-decodeDuckDBTimestampUTCTime :: DuckDBTimestamp -> IO UTCTime
-decodeDuckDBTimestampUTCTime (DuckDBTimestamp micros) = do
-    rejectInfinity "TIMESTAMPTZ" micros
-    pure (posixSecondsToUTCTime (fromRational (toInteger micros % 1000000)))
+decodeDuckDBTimestampUTCTime :: DuckDBTimestamp -> IO UTCTimestamp
+decodeDuckDBTimestampUTCTime (DuckDBTimestamp micros) =
+    pure (decodeUnbounded (posixSecondsToUTCTime . fromRational . (% 1000000) . toInteger) micros)
 
 intervalValueFromDuckDB :: DuckDBInterval -> IntervalValue
 intervalValueFromDuckDB DuckDBInterval{duckDBIntervalMonths, duckDBIntervalDays, duckDBIntervalMicros} =

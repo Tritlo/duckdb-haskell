@@ -129,6 +129,7 @@ import Database.DuckDB.Simple.LogicalRep (
     UnionValue (..),
  )
 import Database.DuckDB.Simple.Ok (Ok (..))
+import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToField (..))
 
 --------------------------------------------------------------------------------
@@ -231,7 +232,7 @@ instance DuckValue BS.ByteString where
     duckLogicalType _ = LogicalTypeScalar DuckDBTypeBlob
 
 instance DuckValue Day where
-    duckToField = FieldDate
+    duckToField = FieldDate . Finite
     duckLogicalType _ = LogicalTypeScalar DuckDBTypeDate
 
 instance DuckValue TimeOfDay where
@@ -239,10 +240,22 @@ instance DuckValue TimeOfDay where
     duckLogicalType _ = LogicalTypeScalar DuckDBTypeTime
 
 instance DuckValue LocalTime where
-    duckToField = FieldTimestamp
+    duckToField = FieldTimestamp . Finite
     duckLogicalType _ = LogicalTypeScalar DuckDBTypeTimestamp
 
 instance DuckValue UTCTime where
+    duckToField = FieldTimestampTZ . Finite
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeTimestampTz
+
+instance DuckValue (Unbounded Day) where
+    duckToField = FieldDate
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeDate
+
+instance DuckValue (Unbounded LocalTime) where
+    duckToField = FieldTimestamp
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeTimestamp
+
+instance DuckValue (Unbounded UTCTime) where
     duckToField = FieldTimestampTZ
     duckLogicalType _ = LogicalTypeScalar DuckDBTypeTimestampTz
 

@@ -49,6 +49,7 @@ library
     Database.DuckDB.Simple.Logging
     Database.DuckDB.Simple.LogicalRep
     Database.DuckDB.Simple.Ok
+    Database.DuckDB.Simple.Time
     Database.DuckDB.Simple.ToField
     Database.DuckDB.Simple.ToRow
     Database.DuckDB.Simple.Types
@@ -79,6 +80,7 @@ test-suite duckdb-simple-test
     CoreRegressionTests
     ExtensionRegressionTests
     Properties
+    TimeTests
     ValueRegressionTests
 
   default-language: Haskell2010

@@ -194,9 +194,30 @@ storeList conn = do
   fmap fromOnly <$> query_ conn "SELECT vals FROM lists"
 ```
 
+### Infinite dates and timestamps
+
+Use `Database.DuckDB.Simple.Time` when a column can contain temporal infinity.
+Its `Date`, `LocalTimestamp`, and `UTCTimestamp` types wrap `Day`, `LocalTime`,
+and `UTCTime` in `Unbounded`: `NegInfinity`, `Finite value`, or `PosInfinity`.
+These types support parameters, results, and fields in generic composites.
+`UTCTimestamp` binds as TIMESTAMPTZ.
+
+```haskell
+import Database.DuckDB.Simple.Time
+
+infiniteDates :: Connection -> IO [Only Date]
+infiniteDates conn = query conn "SELECT ?::DATE" (Only (PosInfinity :: Date))
+```
+
+The ordinary `Day`, `LocalTime`, and `UTCTime` instances reject infinity with
+a conversion error. Use `Maybe Date` to distinguish SQL NULL from infinity.
+Floating-point NaN and infinities remain valid `Float` and `Double` values.
+
 ### Manual STRUCT and UNION Handling
 
 Temporal fields retain their SQL units when composite values are rebound.
+The `FieldDate`, `FieldTimestamp`, and `FieldTimestampTZ` constructors hold
+`Unbounded` values. Wrap finite payloads in `Finite` when constructing them.
 For TIMESTAMP_S or TIMESTAMP_MS values outside the TIMESTAMP range, use an
 explicit parameter cast, such as `SELECT ?::STRUCT(value TIMESTAMP_S)`.
 DuckDB otherwise attempts to convert these parameters to microseconds.

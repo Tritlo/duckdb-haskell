@@ -66,6 +66,7 @@ import Database.DuckDB.Simple.LogicalRep (
     UnionValue (..),
  )
 import Database.DuckDB.Simple.Ok
+import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
 import Database.DuckDB.Simple.Types (Null (..))
 import GHC.Float (double2Float, float2Double)
 import GHC.Num.Integer (integerFromWordList)
@@ -88,14 +89,14 @@ data FieldValue
     | FieldText Text
     | FieldBool Bool
     | FieldBlob BS.ByteString
-    | FieldDate Day
+    | FieldDate Date
     | FieldTime TimeOfDay
-    | FieldTimestamp LocalTime
+    | FieldTimestamp LocalTimestamp
     | FieldInterval IntervalValue
     | FieldHugeInt Integer
     | FieldUHugeInt Integer
     | FieldDecimal DecimalValue
-    | FieldTimestampTZ UTCTime
+    | FieldTimestampTZ UTCTimestamp
     | FieldTimeTZ TimeWithZone
     | FieldBit BitString
     | FieldBigNum BigNum
@@ -646,8 +647,16 @@ instance FromField DecimalValue where
 instance FromField Day where
     fromField f@Field{fieldValue} =
         case fieldValue of
+            FieldDate day -> finiteField f day
+            FieldTimestamp timestamp -> finiteField f (localDay <$> timestamp)
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
+
+instance FromField (Unbounded Day) where
+    fromField f@Field{fieldValue} =
+        case fieldValue of
             FieldDate day -> Ok day
-            FieldTimestamp LocalTime{localDay} -> Ok localDay
+            FieldTimestamp timestamp -> Ok (localDay <$> timestamp)
             FieldNull -> returnError UnexpectedNull f ""
             _ -> returnError Incompatible f ""
 
@@ -655,7 +664,7 @@ instance FromField TimeOfDay where
     fromField f@Field{fieldValue} =
         case fieldValue of
             FieldTime tod -> Ok tod
-            FieldTimestamp LocalTime{localTimeOfDay} -> Ok localTimeOfDay
+            FieldTimestamp timestamp -> finiteField f (localTimeOfDay <$> timestamp)
             FieldNull -> returnError UnexpectedNull f ""
             _ -> returnError Incompatible f ""
 
@@ -669,9 +678,20 @@ instance FromField TimeWithZone where
 instance FromField LocalTime where
     fromField f@Field{fieldValue} =
         case fieldValue of
+            FieldTimestamp ts -> finiteField f ts
+            FieldDate day -> finiteField f ((\value -> LocalTime value midnight) <$> day)
+            FieldTimestampTZ utcTime -> finiteField f (utcToLocalTime utc <$> utcTime)
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
+      where
+        midnight = TimeOfDay 0 0 0
+
+instance FromField (Unbounded LocalTime) where
+    fromField f@Field{fieldValue} =
+        case fieldValue of
             FieldTimestamp ts -> Ok ts
-            FieldDate day -> Ok (LocalTime day midnight)
-            FieldTimestampTZ utcTime -> Ok (utcToLocalTime utc utcTime)
+            FieldDate day -> Ok ((\value -> LocalTime value midnight) <$> day)
+            FieldTimestampTZ utcTime -> Ok (utcToLocalTime utc <$> utcTime)
             FieldNull -> returnError UnexpectedNull f ""
             _ -> returnError Incompatible f ""
       where
@@ -687,13 +707,29 @@ instance FromField IntervalValue where
 instance FromField UTCTime where
     fromField f@Field{fieldValue} =
         case fieldValue of
-            FieldTimestamp ts -> Ok (localTimeToUTC utc ts)
-            FieldTimestampTZ utcTime -> Ok utcTime
-            FieldDate day -> Ok (localTimeToUTC utc (LocalTime day midnight))
+            FieldTimestamp ts -> finiteField f (localTimeToUTC utc <$> ts)
+            FieldTimestampTZ utcTime -> finiteField f utcTime
+            FieldDate day -> finiteField f ((\value -> localTimeToUTC utc (LocalTime value midnight)) <$> day)
             FieldNull -> returnError UnexpectedNull f ""
             _ -> returnError Incompatible f ""
       where
         midnight = TimeOfDay 0 0 0
+
+instance FromField (Unbounded UTCTime) where
+    fromField f@Field{fieldValue} =
+        case fieldValue of
+            FieldTimestamp ts -> Ok (localTimeToUTC utc <$> ts)
+            FieldTimestampTZ utcTime -> Ok utcTime
+            FieldDate day -> Ok ((\value -> localTimeToUTC utc (LocalTime value midnight)) <$> day)
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
+      where
+        midnight = TimeOfDay 0 0 0
+
+-- | Reject infinity when the requested Haskell type holds only finite values.
+finiteField :: (Typeable a) => Field -> Unbounded a -> Ok a
+finiteField _ (Finite value) = Ok value
+finiteField field _ = returnError ConversionFailed field "infinity requires an Unbounded date or timestamp"
 
 instance (FromField a) => FromField (Maybe a) where
     fromField Field{fieldValue = FieldNull} = Ok Nothing

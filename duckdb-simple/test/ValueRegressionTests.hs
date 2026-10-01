@@ -28,6 +28,7 @@ import Database.DuckDB.Simple.FromField (BitString (..), DecimalValue (..), Fiel
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..), genericFromFieldValue, genericToStructValue)
 import Database.DuckDB.Simple.Internal (withConnectionHandle)
 import Database.DuckDB.Simple.LogicalRep
+import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
 import Foreign.C.String (withCString)
 import Foreign.Marshal.Alloc (alloca)
@@ -120,13 +121,13 @@ valueRegressionTests =
             forM_ [(DuckDBTypeTimestampS, 1), (DuckDBTypeTimestampMs, 1000), (DuckDBTypeTimestamp, 1000000), (DuckDBTypeTimestampNs, 1000000000)] \(dtype, units) ->
                 forM_ [toInteger (minBound :: Int64) - 1, negate (toInteger (maxBound :: Int64)), toInteger (maxBound :: Int64), toInteger (maxBound :: Int64) + 1] \value -> do
                     let timestamp = utcToLocalTime utc (posixSecondsToUTCTime (fromRational (value % units)))
-                        struct = singleField (LogicalTypeScalar dtype) (FieldTimestamp timestamp)
+                        struct = singleField (LogicalTypeScalar dtype) (FieldTimestamp (Finite timestamp))
                     assertIOError (query conn "SELECT ?" (Only struct) :: IO [Only FieldValue])
         , testCase "composite timestamps floor fractional units before the epoch" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
             forM_ [(DuckDBTypeTimestampS, 1), (DuckDBTypeTimestampMs, 1000), (DuckDBTypeTimestamp, 1000000), (DuckDBTypeTimestampNs, 1000000000)] \(dtype, units) -> do
                 let timestamp = utcToLocalTime utc (posixSecondsToUTCTime (fromRational ((-1) % (2 * units))))
                     expected = utcToLocalTime utc (posixSecondsToUTCTime (fromRational ((-1) % units)))
-                    struct = singleField (LogicalTypeScalar dtype) (FieldTimestamp timestamp)
+                    struct = singleField (LogicalTypeScalar dtype) (FieldTimestamp (Finite timestamp))
                 (query conn "SELECT (?).value" (Only struct) :: IO [Only LocalTime]) >>= (@?= [Only expected])
         , testCase "composite TIME_NS rejects invalid clock components" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
             forM_ [TimeOfDay (-1) 0 0, TimeOfDay 25 0 0, TimeOfDay 0 60 0, TimeOfDay 0 0 (-1), TimeOfDay 24 0 0.000000001, TimeOfDay 23 59 60.000000001] \value ->
@@ -226,11 +227,12 @@ valueRegressionTests =
                     forM_ ("NULL" : map (\value -> "'" <> value <> "'") values) \value ->
                         assertTemporalRoundTrip conn dtype (value <> "::" <> dtype)
                | (dtype, values) <-
-                    [(dtype, ["1969-12-31 23:59:59.123456789", "2000-01-01 12:34:56.123456789"]) | dtype <- ["TIMESTAMP_S", "TIMESTAMP_MS", "TIMESTAMP_NS"]]
+                    [(dtype, ["-infinity", "infinity", "1969-12-31 23:59:59.123456789", "2000-01-01 12:34:56.123456789"]) | dtype <- ["TIMESTAMP", "TIMESTAMP_S", "TIMESTAMP_MS", "TIMESTAMP_NS", "TIMESTAMPTZ"]]
+                        <> [("DATE", ["-infinity", "infinity", "1969-12-31", "2000-01-01"])]
                         <> [("TIME_NS", ["00:00:00", "12:34:56.123456789", "23:59:59.999999999", "24:00:00"])]
                ]
-            <> [ testCase (dtype <> " " <> value <> " fails without abort") $ withConnection ":memory:" \conn ->
-                    assertIOError (query_ conn (fromString ("SELECT '" <> value <> "'::" <> dtype)) :: IO [Only FieldValue])
+            <> [ testCase (dtype <> " " <> value <> " rejects a finite result type") $ withConnection ":memory:" \conn ->
+                    assertConversionError (query_ conn (fromString ("SELECT '" <> value <> "'::" <> dtype)) :: IO [Only LocalTime])
                | dtype <- ["DATE", "TIMESTAMP", "TIMESTAMP_S", "TIMESTAMP_MS", "TIMESTAMP_NS", "TIMESTAMPTZ"]
                , value <- ["infinity", "-infinity"]
                ]

@@ -56,6 +56,7 @@ import Database.DuckDB.Simple.LogicalRep (
     structValueTypeRep,
     unionValueTypeRep,
  )
+import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
 import Database.DuckDB.Simple.Types (Null (..))
 import Foreign.C.String (peekCString)
 import Foreign.C.Types (CDouble (..), CFloat (..))
@@ -144,6 +145,9 @@ instance ToField Day
 instance ToField TimeOfDay
 instance ToField LocalTime
 instance ToField UTCTime
+instance ToField (Unbounded Day)
+instance ToField (Unbounded LocalTime)
+instance ToField (Unbounded UTCTime)
 
 instance ToField BigNum where
     toField big@(BigNum n) = valueBinding (show n) (bigNumDuckValue big)
@@ -253,6 +257,15 @@ instance DuckDBColumnType LocalTime where
     duckdbColumnTypeFor _ = "TIMESTAMP"
 
 instance DuckDBColumnType UTCTime where
+    duckdbColumnTypeFor _ = "TIMESTAMPTZ"
+
+instance DuckDBColumnType (Unbounded Day) where
+    duckdbColumnTypeFor _ = "DATE"
+
+instance DuckDBColumnType (Unbounded LocalTime) where
+    duckdbColumnTypeFor _ = "TIMESTAMP"
+
+instance DuckDBColumnType (Unbounded UTCTime) where
     duckdbColumnTypeFor _ = "TIMESTAMPTZ"
 
 instance DuckDBColumnType (StructValue FieldValue) where
@@ -392,6 +405,21 @@ utcTimeDuckValue :: UTCTime -> IO DuckDBValue
 utcTimeDuckValue utcTime =
     encodeLocalTime (utcToLocalTime utc utcTime) >>= c_duckdb_create_timestamp_tz
 
+-- | Bind a date, including either infinity sentinel.
+dateDuckValue :: Date -> IO DuckDBValue
+dateDuckValue value =
+    encodeUnbounded (fmap unDuckDBDate . encodeDay) value >>= c_duckdb_create_date . DuckDBDate
+
+-- | Bind a timestamp without a time zone, including infinity.
+localTimestampDuckValue :: LocalTimestamp -> IO DuckDBValue
+localTimestampDuckValue value =
+    encodeUnbounded (encodeTimestampUnits 1000000) value >>= c_duckdb_create_timestamp . DuckDBTimestamp
+
+-- | Bind a timestamp with a time zone, including infinity.
+utcTimestampDuckValue :: UTCTimestamp -> IO DuckDBValue
+utcTimestampDuckValue value =
+    encodeUnbounded (encodeTimestampUnits 1000000 . utcToLocalTime utc) value >>= c_duckdb_create_timestamp_tz . DuckDBTimestamp
+
 arrayDuckValue ::
     forall a.
     (DuckDBColumnType a, ToDuckValue a) =>
@@ -520,19 +548,19 @@ scalarFieldValueDuckValue dtype value =
         (DuckDBTypeBlob, FieldBlob b) -> blobDuckValue b
         (DuckDBTypeUUID, FieldUUID u) -> uuidDuckValue u
         (DuckDBTypeBit, FieldBit bits) -> bitDuckValue bits
-        (DuckDBTypeDate, FieldDate d) -> dayDuckValue d
+        (DuckDBTypeDate, FieldDate d) -> dateDuckValue d
         (DuckDBTypeTime, FieldTime t) -> timeOfDayDuckValue t
         (DuckDBTypeTimeNs, FieldTime t) ->
             timeOfDayUnits 1000000000 t >>= c_duckdb_create_time_ns . DuckDBTimeNs . fromInteger
         (DuckDBTypeTimeTz, FieldTimeTZ tz) -> timeWithZoneDuckValue tz
-        (DuckDBTypeTimestamp, FieldTimestamp ts) -> localTimeDuckValue ts
+        (DuckDBTypeTimestamp, FieldTimestamp ts) -> localTimestampDuckValue ts
         (DuckDBTypeTimestampS, FieldTimestamp ts) ->
-            encodeTimestampUnits 1 ts >>= c_duckdb_create_timestamp_s . DuckDBTimestampS
+            encodeUnbounded (encodeTimestampUnits 1) ts >>= c_duckdb_create_timestamp_s . DuckDBTimestampS
         (DuckDBTypeTimestampMs, FieldTimestamp ts) ->
-            encodeTimestampUnits 1000 ts >>= c_duckdb_create_timestamp_ms . DuckDBTimestampMs
+            encodeUnbounded (encodeTimestampUnits 1000) ts >>= c_duckdb_create_timestamp_ms . DuckDBTimestampMs
         (DuckDBTypeTimestampNs, FieldTimestamp ts) ->
-            encodeTimestampUnits 1000000000 ts >>= c_duckdb_create_timestamp_ns . DuckDBTimestampNs
-        (DuckDBTypeTimestampTz, FieldTimestampTZ ts) -> utcTimeDuckValue ts
+            encodeUnbounded (encodeTimestampUnits 1000000000) ts >>= c_duckdb_create_timestamp_ns . DuckDBTimestampNs
+        (DuckDBTypeTimestampTz, FieldTimestampTZ ts) -> utcTimestampDuckValue ts
         (DuckDBTypeInterval, FieldInterval iv) -> intervalDuckValue iv
         (DuckDBTypeHugeInt, FieldHugeInt i) -> hugeIntDuckValue i
         (DuckDBTypeUHugeInt, FieldUHugeInt i) -> uhugeIntDuckValue i
@@ -781,6 +809,15 @@ instance ToDuckValue LocalTime where
 instance ToDuckValue UTCTime where
     toDuckValue = utcTimeDuckValue
 
+instance ToDuckValue (Unbounded Day) where
+    toDuckValue = dateDuckValue
+
+instance ToDuckValue (Unbounded LocalTime) where
+    toDuckValue = localTimestampDuckValue
+
+instance ToDuckValue (Unbounded UTCTime) where
+    toDuckValue = utcTimestampDuckValue
+
 instance ToDuckValue (StructValue FieldValue) where
     toDuckValue = structValueDuckValue
 
@@ -790,6 +827,12 @@ instance ToDuckValue (UnionValue FieldValue) where
 instance (ToDuckValue a) => ToDuckValue (Maybe a) where
     toDuckValue Nothing = nullDuckValue
     toDuckValue (Just value) = toDuckValue value
+
+-- | Preserve infinity sentinels and validate finite values before narrowing.
+encodeUnbounded :: (Integral b, Bounded b) => (a -> IO b) -> Unbounded a -> IO b
+encodeUnbounded _ NegInfinity = pure (negate maxBound)
+encodeUnbounded _ PosInfinity = pure maxBound
+encodeUnbounded encode (Finite value) = encode value
 
 -- | Encode finite dates as days from the Unix epoch.
 encodeDay :: Day -> IO DuckDBDate

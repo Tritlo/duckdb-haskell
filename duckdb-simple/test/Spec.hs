@@ -78,6 +78,7 @@ import Database.DuckDB.Simple.LogicalRep (
     UnionValue (..),
  )
 import Database.DuckDB.Simple.Ok (Ok (..))
+import Database.DuckDB.Simple.Time (Unbounded (..))
 import ExtensionRegressionTests (extensionRegressionTests)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
@@ -87,6 +88,7 @@ import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.ExpectedFailure (expectFailBecause)
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck (testProperty, (===))
+import TimeTests (timeTests)
 import ValueRegressionTests (valueRegressionTests)
 
 data Person = Person
@@ -204,6 +206,7 @@ tests =
         , arrowTests
         , extensionRegressionTests
         , valueRegressionTests
+        , timeTests
         , withConnectionTests
         , statementTests
         , roundTripTests
@@ -593,8 +596,8 @@ duckdbCastCases =
     , successCase "UBIGINT" (quotedValue uBigValue) "UBIGINT" (ExpectEquals (FieldWord64 uBigValue))
     , successCase "FLOAT" (quoted "3.25") "FLOAT" (ExpectEquals (FieldFloat floatValue))
     , successCase "DOUBLE" (quoted "2.5") "DOUBLE" (ExpectEquals (FieldDouble doubleValue))
-    , successCase "TIMESTAMP" (quoted "2024-01-02 03:04:05.123456") "TIMESTAMP" (ExpectEquals (FieldTimestamp timestampLocalTimeMicros))
-    , successCase "DATE" (quoted "2024-10-12") "DATE" (ExpectEquals (FieldDate dateValue))
+    , successCase "TIMESTAMP" (quoted "2024-01-02 03:04:05.123456") "TIMESTAMP" (ExpectEquals (FieldTimestamp (Finite timestampLocalTimeMicros)))
+    , successCase "DATE" (quoted "2024-10-12") "DATE" (ExpectEquals (FieldDate (Finite dateValue)))
     , successCase "TIME" (quoted "14:30:15.123456") "TIME" (ExpectEquals (FieldTime timeValue))
     , successCase "INTERVAL" (quoted "1 day") "INTERVAL" (ExpectEquals (FieldInterval intervalValue))
     , successCase "HUGEINT" (quotedValue hugeIntLiteral) "HUGEINT" (ExpectEquals (FieldHugeInt hugeIntLiteral))
@@ -602,14 +605,14 @@ duckdbCastCases =
     , successCase "VARCHAR" (quoted varcharText) "VARCHAR" (ExpectEquals (FieldText varcharText))
     , successCase "BLOB" (quoted "duckdb") "BLOB" (ExpectEquals (FieldBlob blobValue))
     , successCase "DECIMAL" (quoted "12345.6789") "DECIMAL(18,4)" (ExpectEquals (FieldDecimal decimalValue))
-    , successCase "TIMESTAMP_S" (quoted "2024-01-02 03:04:05") "TIMESTAMP_S" (ExpectEquals (FieldTimestamp timestampLocalTimeSeconds))
-    , successCase "TIMESTAMP_MS" (quoted "2024-01-02 03:04:05.123") "TIMESTAMP_MS" (ExpectEquals (FieldTimestamp timestampLocalTimeMillis))
-    , successCase "TIMESTAMP_NS" (quoted "2024-01-02 03:04:05.123456789") "TIMESTAMP_NS" (ExpectEquals (FieldTimestamp timestampLocalTimeNanos))
+    , successCase "TIMESTAMP_S" (quoted "2024-01-02 03:04:05") "TIMESTAMP_S" (ExpectEquals (FieldTimestamp (Finite timestampLocalTimeSeconds)))
+    , successCase "TIMESTAMP_MS" (quoted "2024-01-02 03:04:05.123") "TIMESTAMP_MS" (ExpectEquals (FieldTimestamp (Finite timestampLocalTimeMillis)))
+    , successCase "TIMESTAMP_NS" (quoted "2024-01-02 03:04:05.123456789") "TIMESTAMP_NS" (ExpectEquals (FieldTimestamp (Finite timestampLocalTimeNanos)))
     , successCase "ENUM" (quoted "beta") "ENUM('alpha','beta')" (ExpectEquals (FieldEnum 1))
     , successCase "LIST" (quoted "[1,2,3]") "INTEGER[]" (ExpectEquals (FieldList listElements))
     , successDirect "MAP" "MAP(['a','b'], [1,2])" (expectMapEntries mapPairs)
     , successCase "TIMETZ" (quoted "03:04:05+02:30") "TIME WITH TIME ZONE" (ExpectEquals (FieldTimeTZ timeWithZoneValue))
-    , successCase "TIMESTAMPTZ" (quoted "2024-01-02 03:04:05+02:30") "TIMESTAMP WITH TIME ZONE" (ExpectEquals (FieldTimestampTZ timestampTzUtc))
+    , successCase "TIMESTAMPTZ" (quoted "2024-01-02 03:04:05+02:30") "TIMESTAMP WITH TIME ZONE" (ExpectEquals (FieldTimestampTZ (Finite timestampTzUtc)))
     , successCase "BIGNUM" (quoted bigNumLiteralText) "BIGNUM" (ExpectEquals (FieldBigNum (BigNum bigNumLiteral)))
     , successCase "UUID" (quoted $ UUID.toText uuid) "UUID" (ExpectEquals (FieldUUID uuid))
     , successCase "BIT" (quoted $ Text.pack $ show bits) "BIT" (ExpectEquals (FieldBit bits))

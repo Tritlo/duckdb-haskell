@@ -60,10 +60,18 @@
 
 ### Value conversion
 
-- Previously, decoding temporal infinity or binding dates outside native
-  storage limits could produce an incorrect value or abort in C++. Finite
-  date/time conversions now use checked epoch arithmetic. Inputs that cannot
-  be represented by the requested Haskell type fail with a Haskell exception.
+- Previously, temporal infinity could abort the process or decode as an
+  unrelated finite value. `Database.DuckDB.Simple.Time` now provides `Unbounded`,
+  `Date`, `LocalTimestamp`, and `UTCTimestamp` to read and bind both infinities.
+  Ordinary `Day`, `LocalTime`, and `UTCTime` report a conversion error for
+  infinity. Floating-point NaN and infinities remain supported.
+- `FieldDate`, `FieldTimestamp`, and `FieldTimestampTZ` now hold `Unbounded`
+  payloads. Wrap existing finite payloads in `Finite`. Custom `FromField`
+  instances can inspect infinity before conversion. Generic composites and
+  nested collections preserve infinity and NULL separately.
+- Previously, binding dates outside native storage limits could abort in C++.
+  Finite date/time conversions now use checked epoch arithmetic and reject
+  out-of-range inputs with Haskell exceptions.
 - Previously, TIMESTAMP_S and TIMESTAMP_MS decoding multiplied Int64 values
   into microseconds and could overflow. Each timestamp family now retains its
   own units. Composite TIMESTAMP_S/MS/NS and TIME_NS values can be rebound

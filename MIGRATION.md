@@ -23,8 +23,14 @@ The short version is:
 - Word and Word64 scalar function results have SQL type UBIGINT.
 - Scalar callbacks receive NULL arguments. Use `Maybe` to accept NULL.
   A non-nullable Haskell argument produces a conversion error for NULL.
-- Temporal infinities and out-of-range inputs fail with a Haskell exception.
-  Cast infinity to VARCHAR if the application needs its textual representation.
+- Use `Date`, `LocalTimestamp`, or `UTCTimestamp` from
+  `Database.DuckDB.Simple.Time` for columns that contain temporal infinity.
+  These types use `NegInfinity`, `Finite value`, and `PosInfinity`.
+  Ordinary `Day`, `LocalTime`, and `UTCTime` reject infinity with a conversion
+  error. Finite inputs outside DuckDB's storage range still fail.
+- `FieldDate`, `FieldTimestamp`, and `FieldTimestampTZ` now hold `Unbounded`
+  payloads. For example, change `FieldDate day` to `FieldDate (Finite day)`.
+  Custom decoders receive infinity directly in these constructors.
 - Text and String values preserve embedded NUL. SQL text and native names
   reject NUL because the C API requires terminated strings.
 - After EOF, the cursor remains exhausted until bindings are reset. An

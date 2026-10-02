@@ -53,8 +53,8 @@ RUN groupadd -g "$GID" -o "$USER_NAME" && \
     echo '%sudo ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
 
 WORKDIR /tmp
-RUN curl --fail --location --proto '=https' --proto-redir '=https' -o /tmp/libduckdb.zip https://github.com/duckdb/duckdb/releases/download/v1.5.3/libduckdb-linux-amd64.zip && \
-    echo '0a926eba5bce0abc0010f4b9109133e4440cb74e97bd10fd2d0fc2a721621b05  /tmp/libduckdb.zip' | sha256sum -c - && \
+RUN curl --fail --location --proto '=https' --proto-redir '=https' -o /tmp/libduckdb.zip https://github.com/duckdb/duckdb/releases/download/v1.5.6/libduckdb-linux-amd64.zip && \
+    echo 'b845005f5132a7d8180057c35e14a7626632258782f871a90861b19c1c03841b  /tmp/libduckdb.zip' | sha256sum -c - && \
     unzip libduckdb.zip && \
     mv libduckdb.so /usr/lib/libduckdb.so && \
     mv duckdb.h /usr/include/ && \
@@ -109,7 +109,7 @@ RUN cabal build all --project-file=cabal.project --project-dir=/app
 
 
 # Test the packages
-RUN DUCKDB_TEST_VERSION=1.5.3 cabal test all --project-file=cabal.project --project-dir=/app --test-show-details=streaming
+RUN DUCKDB_TEST_VERSION=1.5.6 cabal test all --project-file=cabal.project --project-dir=/app --test-show-details=streaming
 
 # Generate Haddocks for all packages
 RUN cabal haddock all --project-file=cabal.project --project-dir=/app --haddock-for-hackage --enable-documentation

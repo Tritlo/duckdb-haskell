@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.5.6.0
+
+- Use the official DuckDB 1.5.6 C header and native download.
+- Add GEOMETRY and VARIANT type tags, statement tags, and the geometry CRS accessor.
+- Keep native support for DuckDB >= 1.5.3 and < 1.6. The CRS accessor is stable
+  in 1.5.6 and was already available in the supported earlier versions.
+- Document native constructor limits: invalid DECIMAL metadata can terminate
+  DuckDB 1.5.3, and the primitive VARIANT constructor lacks child metadata.
+  Obtain a complete VARIANT descriptor from a query result.
+
 ## 1.5.3.0
 
 - Export invokers for Arrow schema/array release and all four stream callbacks.

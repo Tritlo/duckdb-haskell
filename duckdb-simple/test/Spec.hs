@@ -82,6 +82,8 @@ import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.Time (Unbounded (..))
 import ExtensionRegressionTests (extensionRegressionTests)
 import GHC.Generics (Generic)
+import qualified GeometryRegressionTests
+import qualified GeometryTests
 import Numeric.Natural (Natural)
 import Properties (roundTripTests)
 import StreamingTests (nativeStreamingTests)
@@ -92,6 +94,7 @@ import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck (testProperty, (===))
 import TimeTests (timeTests)
 import ValueRegressionTests (valueRegressionTests)
+import qualified VariantRegressionTests
 
 data Person = Person
     { personId :: Int
@@ -209,6 +212,9 @@ tests =
         , cancellationTests
         , nativeStreamingTests
         , extensionRegressionTests
+        , GeometryTests.tests
+        , GeometryRegressionTests.tests
+        , VariantRegressionTests.tests
         , valueRegressionTests
         , timeTests
         , withConnectionTests

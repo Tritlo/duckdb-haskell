@@ -22,15 +22,17 @@ cabal test all --test-show-details=direct
 cabal run duckdb-simple-leak-test -- all 100
 ```
 
-The last command checks 10,000 query cycles, 10,000 callback cycles, and 5,000
-cancellations. Each phase keeps one connection open. The normal leak test uses
-one tenth of those counts. Native RSS and thread checks require Linux `/proc`.
-Callback collection and functional checks also run on other systems.
+The last command checks 10,000 query cycles, 10,000 callback cycles, 10,000
+VARIANT/GEOMETRY cycles, and 7,000 cancellations. Each phase keeps one connection
+open. The normal leak test uses one tenth of those counts. Native RSS and thread
+checks require Linux `/proc`. Callback collection and functional checks also run
+on other systems.
 
-The Linux CI job with GHC 9.12.4 also runs the callback, cancellation, and
-DataFrame checks under Valgrind. Definite and indirect native leaks fail the
-job. That job sets `DUCKDB_LEAK_RSS_CHECK=0` because Valgrind changes process
-RSS. The ordinary leak test keeps the RSS assertion enabled.
+The Linux CI job with GHC 9.12.4 also runs the callback, cancellation,
+VARIANT/GEOMETRY, and DataFrame checks under Valgrind. Definite and indirect
+native leaks fail the job. That job sets `DUCKDB_LEAK_RSS_CHECK=0` because
+Valgrind changes process RSS. The ordinary leak test keeps the RSS assertion
+enabled.
 
 Use `--with-compiler=ghc-VERSION` to select a supported compiler.
 For benchmarks, build both versions with the same compiler and DuckDB library.
@@ -64,7 +66,7 @@ module.
 
 ## Native library configuration
 
-The bindings support DuckDB >= 1.5.3 and < 1.6. Cabal downloads DuckDB 1.5.3
+The bindings support DuckDB >= 1.5.3 and < 1.6. Cabal downloads DuckDB 1.5.6
 to the user cache on glibc Linux and macOS. Set
 `--configure-option=--duckdb-install-dir=/absolute/path` to select another
 installation directory. Enable the `systemlib` Cabal flag to use the system
@@ -72,8 +74,9 @@ library. Set `extra-lib-dirs` to an absolute path to select
 a library in another directory. See the `cabal.project` example in the README.
 Nix builds use the library supplied by Nix and do not download it.
 
-CI tests DuckDB 1.5.3 with all supported compilers on Linux and GHC 9.14.1
-on macOS. The FFI suite rejects runtimes outside the supported range. Set
+CI tests 1.5.3, 1.5.4, and 1.5.5 with GHC 9.14.1 on Linux. It tests 1.5.6
+with all supported compilers on Linux and GHC 9.14.1 on macOS. The FFI suite
+rejects runtimes outside the supported range. Set
 `DUCKDB_TEST_VERSION` to the exact expected version, such as `1.5.3`, to detect
 loader configuration errors. Run the full suite on each supported native
 version. Do not skip feature tests that pass on the minimum version.

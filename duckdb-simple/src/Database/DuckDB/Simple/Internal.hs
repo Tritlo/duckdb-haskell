@@ -92,6 +92,8 @@ import Database.DuckDB.FFI (
     pattern DuckDBSuccess,
  )
 import Database.DuckDB.FFI.Deprecated (c_duckdb_execute_prepared_streaming)
+import Database.DuckDB.Simple.Geometry (Geometry)
+import Database.DuckDB.Simple.Variant (Variant)
 import Foreign.C.String (CString)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Utils (fillBytes)
@@ -176,6 +178,8 @@ data StatementStreamChunkVector = StatementStreamChunkVector
     { statementStreamChunkVectorHandle :: DuckDBVector
     , statementStreamChunkVectorData :: Ptr ()
     , statementStreamChunkVectorValidity :: Ptr Word64
+    , statementStreamChunkVectorVariant :: Maybe (Int -> IO Variant)
+    , statementStreamChunkVectorGeometry :: Maybe (Int -> IO (Maybe Geometry))
     }
 
 -- | Represents an error reported by DuckDB or by duckdb-simple itself.

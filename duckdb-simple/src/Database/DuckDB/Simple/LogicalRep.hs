@@ -17,6 +17,7 @@ module Database.DuckDB.Simple.LogicalRep (
     unionValueTypeRep,
     logicalTypeToRep,
     logicalTypeFromRep,
+    logicalTypeFromRepOn,
     destroyLogicalType,
 ) where
 
@@ -30,6 +31,7 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word16, Word64, Word8)
 import Database.DuckDB.FFI
+import Database.DuckDB.Simple.TypeContext (queryLogicalType, withTypeConnection)
 import Foreign.C.String (CString)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Array (withArray)
@@ -41,6 +43,7 @@ import Foreign.Storable (poke)
 data LogicalTypeRep
     = LogicalTypeScalar DuckDBType
     | LogicalTypeDecimal !Word8 !Word8
+    | LogicalTypeGeometry !(Maybe Text)
     | LogicalTypeList LogicalTypeRep
     | LogicalTypeArray LogicalTypeRep !Word64
     | LogicalTypeMap LogicalTypeRep LogicalTypeRep
@@ -100,6 +103,9 @@ logicalTypeToRep :: DuckDBLogicalType -> IO LogicalTypeRep
 logicalTypeToRep logical = do
     dtype <- c_duckdb_get_type_id logical
     case dtype of
+        DuckDBTypeGeometry ->
+            bracket (c_duckdb_geometry_type_get_crs logical) (c_duckdb_free . castPtr) \ptr ->
+                LogicalTypeGeometry <$> if ptr == nullPtr then pure Nothing else Just . TextEncoding.decodeUtf8 <$> BS.packCString ptr
         DuckDBTypeStruct -> do
             childCountRaw <- c_duckdb_struct_type_child_count logical
             childCount <- word64ToInt (Text.pack "struct child count") childCountRaw
@@ -172,37 +178,52 @@ logicalTypeToRep logical = do
 
 -- | Materialize a DuckDB logical type handle from a @LogicalTypeRep@ tree.
 logicalTypeFromRep :: LogicalTypeRep -> IO DuckDBLogicalType
-logicalTypeFromRep rep = do
+logicalTypeFromRep = logicalTypeFromRepOn Nothing
+
+-- | Construct a logical type with the caller's connection when SQL metadata is needed.
+logicalTypeFromRepOn :: Maybe DuckDBConnection -> LogicalTypeRep -> IO DuckDBLogicalType
+logicalTypeFromRepOn connection rep = do
     logical <- create rep
     when (logical == nullPtr) $
         throwIO (userError "duckdb-simple: DuckDB logical type construction failed")
     pure logical
   where
     create = \case
+        LogicalTypeScalar DuckDBTypeVariant ->
+            withTypeConnection connection \conn ->
+                queryLogicalType conn (Text.pack "SELECT NULL::VARIANT") Nothing
         LogicalTypeScalar dtype -> c_duckdb_create_logical_type dtype
+        LogicalTypeGeometry Nothing -> c_duckdb_create_logical_type DuckDBTypeGeometry
+        LogicalTypeGeometry (Just crs) -> do
+            when (Text.null crs) $
+                throwIO (userError "duckdb-simple: GEOMETRY CRS is empty; use Nothing for no CRS")
+            when (Text.any (== '\0') crs) $
+                throwIO (userError "duckdb-simple: GEOMETRY CRS contains NUL")
+            withTypeConnection connection \conn ->
+                queryLogicalType conn (Text.pack "SELECT ST_SetCRS('POINT EMPTY'::GEOMETRY, ?)") (Just crs)
         LogicalTypeDecimal width scale -> do
             when (width < 1 || width > 38 || scale > width) $
                 throwIO (userError "duckdb-simple: invalid DECIMAL width or scale")
             c_duckdb_create_decimal_type width scale
         LogicalTypeList elemRep ->
-            bracket (logicalTypeFromRep elemRep) destroyLogicalType c_duckdb_create_list_type
+            bracket (logicalTypeFromRepOn connection elemRep) destroyLogicalType c_duckdb_create_list_type
         LogicalTypeArray elemRep size ->
-            bracket (logicalTypeFromRep elemRep) destroyLogicalType $
+            bracket (logicalTypeFromRepOn connection elemRep) destroyLogicalType $
                 flip c_duckdb_create_array_type size
         LogicalTypeMap keyRep valueRep ->
-            bracket (logicalTypeFromRep keyRep) destroyLogicalType \keyType ->
-                bracket (logicalTypeFromRep valueRep) destroyLogicalType $
+            bracket (logicalTypeFromRepOn connection keyRep) destroyLogicalType \keyType ->
+                bracket (logicalTypeFromRepOn connection valueRep) destroyLogicalType $
                     c_duckdb_create_map_type keyType
         LogicalTypeStruct fieldArray -> do
             let fields = elems fieldArray
-            withMany (\field -> bracket (logicalTypeFromRep (structFieldValue field)) destroyLogicalType) fields \childTypes ->
+            withMany (\field -> bracket (logicalTypeFromRepOn connection (structFieldValue field)) destroyLogicalType) fields \childTypes ->
                 withMany withTypeName (map structFieldName fields) \names ->
                     withArray names \nameArray ->
                         withArray childTypes \typeArray ->
                             c_duckdb_create_struct_type typeArray nameArray (fromIntegral (length fields))
         LogicalTypeUnion memberArray -> do
             let members = elems memberArray
-            withMany (\member -> bracket (logicalTypeFromRep (unionMemberType member)) destroyLogicalType) members \memberTypes ->
+            withMany (\member -> bracket (logicalTypeFromRepOn connection (unionMemberType member)) destroyLogicalType) members \memberTypes ->
                 withMany withTypeName (map unionMemberName members) \names ->
                     withArray names \nameArray ->
                         withArray memberTypes \typeArray ->

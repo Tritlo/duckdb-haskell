@@ -131,6 +131,7 @@ import Database.DuckDB.Simple.LogicalRep (
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToField (..))
+import Database.DuckDB.Simple.Variant (Variant)
 
 --------------------------------------------------------------------------------
 -- DuckValue: bridge between Haskell scalars and FieldValue/LogicalTypeRep
@@ -157,6 +158,10 @@ class DuckValue a where
         case fromField Field{fieldName = Text.empty, fieldIndex = 0, fieldValue = fv} of
             Ok x -> Right x
             Errors errs -> Left (unlines (map displayException errs))
+
+instance DuckValue Variant where
+    duckToField = FieldVariant
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeVariant
 
 instance DuckValue Bool where
     duckToField = FieldBool
@@ -710,6 +715,7 @@ instance (Generic a, GToField (Rep a)) => DuckDBColumnType (ViaDuckDB a) where
             LogicalTypeScalar dtype -> duckdbTypeToName dtype
             LogicalTypeDecimal{} -> Text.pack "DECIMAL"
             LogicalTypeEnum{} -> Text.pack "ENUM"
+            LogicalTypeGeometry{} -> Text.pack "GEOMETRY"
 
 {- | Deriving-via @ToField@ instance. We reuse the helpers above to decide
 whether the top-level representation is a union, struct, or scalar and then

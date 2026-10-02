@@ -3,6 +3,8 @@
 
 module Database.DuckDB.Simple.Materialize (
     materializeValue,
+    prepareValueReader,
+    prepareGeometryDecoder,
 ) where
 
 import Control.Exception (bracket, throwIO)
@@ -32,6 +34,7 @@ import Database.DuckDB.Simple.FromField (
     BitString (..),
     DecimalValue (..),
     FieldValue (..),
+    Geometry (..),
     IntervalValue (..),
     TimeWithZone (..),
     fromBigNumBytes,
@@ -45,6 +48,8 @@ import Database.DuckDB.Simple.LogicalRep (
     logicalTypeToRep,
  )
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
+import Database.DuckDB.Simple.Variant (Variant (..))
+import Database.DuckDB.Simple.VariantCodec (decodeVariant, prepareVariantDecoder)
 import Foreign.C.Types (CBool (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
@@ -84,6 +89,36 @@ chunkDecodeBlob dataPtr rowIdx = do
 
 duckdbStringTSize :: Int
 duckdbStringTSize = 16
+
+-- | Prepare metadata once for a vector. The reader must not outlive its chunk.
+prepareValueReader :: DuckDBType -> DuckDBVector -> Ptr () -> Ptr Word64 -> IO (Int -> IO FieldValue)
+prepareValueReader dtype vector dataPtr validity = case dtype of
+    DuckDBTypeVariant -> do
+        decode <- prepareVariantDecoder vector
+        pure \row -> do
+            value <- decode row
+            pure (if value == VariantNull then FieldNull else FieldVariant value)
+    DuckDBTypeGeometry -> do
+        decode <- prepareGeometryDecoder vector dataPtr validity
+        pure (fmap (maybe FieldNull FieldGeometry) . decode)
+    _ -> pure (materializeValue dtype vector dataPtr validity)
+
+-- | Copy CRS metadata once and WKB bytes per row while the chunk remains alive.
+prepareGeometryDecoder :: DuckDBVector -> Ptr () -> Ptr Word64 -> IO (Int -> IO (Maybe Geometry))
+prepareGeometryDecoder vector dataPtr validity = do
+    crs <- bracket
+        (c_duckdb_vector_get_column_type vector)
+        (\logical -> alloca \ptr -> poke ptr logical >> c_duckdb_destroy_logical_type ptr)
+        \logical -> do
+            rep <- logicalTypeToRep logical
+            case rep of
+                LogicalTypeGeometry value -> pure value
+                _ -> throwIO (userError "duckdb-simple: invalid GEOMETRY type")
+    pure \row -> do
+        valid <- chunkIsRowValid validity (fromIntegral row)
+        if valid
+            then Just . (`Geometry` crs) <$> chunkDecodeBlob dataPtr (fromIntegral row)
+            else pure Nothing
 
 materializeValue :: DuckDBType -> DuckDBVector -> Ptr () -> Ptr Word64 -> Int -> IO FieldValue
 materializeValue dtype vector dataPtr validity rowIdx = do
@@ -131,6 +166,10 @@ materializeValue dtype vector dataPtr validity rowIdx = do
                 let upper = upperBiased `xor` (0x8000000000000000 :: Word64)
                 pure (FieldUUID (UUID.fromWords64 (fromIntegral upper) lower))
             DuckDBTypeBlob -> FieldBlob <$> chunkDecodeBlob dataPtr duckIdx
+            DuckDBTypeGeometry -> do
+                decode <- prepareGeometryDecoder vector dataPtr validity
+                maybe FieldNull FieldGeometry <$> decode rowIdx
+            DuckDBTypeVariant -> FieldVariant <$> decodeVariant vector rowIdx
             DuckDBTypeDate -> do
                 raw <- peekElemOff (castPtr dataPtr :: Ptr Int32) rowIdx
                 FieldDate <$> decodeDuckDBDate (DuckDBDate raw)
@@ -264,10 +303,11 @@ decodeArrayElements vector rowIdx = do
     childType <- vectorElementType childVec
     childData <- c_duckdb_vector_get_data childVec
     childValidity <- c_duckdb_vector_get_validity childVec
+    readChild <- prepareValueReader childType childVec childData childValidity
     let baseIdx = rowIdx * arraySize
     values <-
         forM [0 .. arraySize - 1] \delta ->
-            materializeValue childType childVec childData childValidity (baseIdx + delta)
+            readChild (baseIdx + delta)
     pure $
         if arraySize <= 0
             then listArray (0, -1) []
@@ -283,8 +323,9 @@ decodeListElements vector dataPtr rowIdx = do
     childType <- vectorElementType childVec
     childData <- c_duckdb_vector_get_data childVec
     childValidity <- c_duckdb_vector_get_validity childVec
+    readChild <- prepareValueReader childType childVec childData childValidity
     forM [0 .. len - 1] \delta ->
-        materializeValue childType childVec childData childValidity (baseIdx + delta)
+        readChild (baseIdx + delta)
 
 decodeMapPairs :: DuckDBVector -> Ptr () -> Int -> IO [(FieldValue, FieldValue)]
 decodeMapPairs vector dataPtr rowIdx = do
@@ -303,10 +344,12 @@ decodeMapPairs vector dataPtr rowIdx = do
     valueData <- c_duckdb_vector_get_data valueVec
     keyValidity <- c_duckdb_vector_get_validity keyVec
     valueValidity <- c_duckdb_vector_get_validity valueVec
+    readKey <- prepareValueReader keyType keyVec keyData keyValidity
+    readValue <- prepareValueReader valueType valueVec valueData valueValidity
     forM [0 .. len - 1] \delta -> do
         let childIdx = baseIdx + delta
-        keyValue <- materializeValue keyType keyVec keyData keyValidity childIdx
-        valueValue <- materializeValue valueType valueVec valueData valueValidity childIdx
+        keyValue <- readKey childIdx
+        valueValue <- readValue childIdx
         pure (keyValue, valueValue)
 
 decodeStructValue :: DuckDBVector -> Int -> IO (StructValue FieldValue)

@@ -17,6 +17,10 @@ The short version is:
 The default download is DuckDB 1.5.6. Native versions >= 1.5.3 and < 1.6
 remain supported. duckdb-simple uses a separate API version.
 
+`duckdb-simple-0.3.0.0` adds `FieldVariant` and `FieldGeometry` to `FieldValue`
+and `LogicalTypeGeometry` to `LogicalTypeRep`. Update exhaustive matches on
+these types when upgrading from 0.2.0.0.
+
 Use `Variant` for VARIANT parameters and results. Its constructors retain native
 scalar types and temporal units. No SQL cast is needed. Object parameters
 reject duplicate keys, empty keys, and keys that contain NUL.
@@ -69,7 +73,7 @@ If you use `duckdb-ffi` directly:
 
 If you use `duckdb-simple`:
 
-- Rebuild against `duckdb-simple-0.2.0.0` and DuckDB `1.5.6`.
+- Rebuild against `duckdb-simple-0.3.0.0` and DuckDB `1.5.6`.
 - Review the binding changes above for SQL parameter types, NULL handling,
   and generic decoding.
 - New 1.5 helpers are available from dedicated modules instead of being folded
@@ -85,7 +89,7 @@ Before:
 
 Now:
 
-- `duckdb-ffi-1.5.6.0` and `duckdb-simple-0.2.0.0` require a DuckDB 1.5
+- `duckdb-ffi-1.5.6.0` and `duckdb-simple-0.3.0.0` require a DuckDB 1.5
   shared library >= 1.5.3 and < 1.6 at runtime.
 
 If your executable still finds a 1.4 shared library first, you will see symbol
@@ -306,7 +310,7 @@ using `duckdb_string_t_length`.
 
 1. Upgrade the Haskell packages to:
    - `duckdb-ffi-1.5.6.0`
-   - `duckdb-simple-0.2.0.0`
+   - `duckdb-simple-0.3.0.0`
 2. Upgrade the native DuckDB shared library to `1.5.6`.
 3. Run your test suite with the 1.5 shared library explicitly selected.
 4. Update any tests that expected old 1.4 behavior, especially around

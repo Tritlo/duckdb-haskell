@@ -1,10 +1,26 @@
 # Changelog
 
-## Unreleased
+## 0.3.0.0
 
 - Use DuckDB 1.5.6 by default. Test native versions 1.5.3 through 1.5.6.
-- Add typed VARIANT parameters and results, including nested values and exact scalar payloads.
-- Add GEOMETRY parameters and results with WKB and CRS metadata. Keep ByteString result decoding available.
+- Add `Variant` parameters and results. Preserve scalar types, integer widths,
+  decimal scale, temporal units, nested values, and object entry order. The
+  decoder checks DuckDB's private 1.5 format, payload bounds, and nesting depth.
+  Object parameters reject duplicate, empty, and NUL-containing keys because
+  the native constructors cannot represent all of these names reliably.
+- Add `Geometry` parameters and results with WKB and CRS metadata. Keep
+  `ByteString` result decoding available. Binding validates WKB and converts
+  it to WKT through the native cast. Empty CRS strings are rejected because
+  DuckDB would discard them; use `Nothing` for no CRS.
+- Add `FieldVariant` and `FieldGeometry` to `FieldValue`, and
+  `LogicalTypeGeometry` to `LogicalTypeRep`. Update exhaustive matches on these
+  public types. These additions require the API version bump from 0.2 to 0.3.
+- Add `toDuckValueOn` and `logicalTypeFromRepOn` for constructors that need
+  the caller's connection. Existing `ToDuckValue` instances keep their default
+  behavior. Standalone constructors use a temporary connection when needed.
+- Initialize metadata-query results before native execution. A native error
+  that leaves the result untouched now raises an exception instead of allowing
+  cleanup to read uninitialized memory.
 
 ## 0.2.0.0
 

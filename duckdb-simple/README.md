@@ -1,7 +1,8 @@
 # duckdb-simple
 
 `duckdb-simple` provides a high-level Haskell interface to DuckDB inspired by
-the ergonomics of [`sqlite-simple`](https://hackage.haskell.org/package/sqlite-simple).
+the APIs of [`sqlite-simple`](https://hackage.haskell.org/package/sqlite-simple) and
+[`postgresql-simple`](https://hackage.haskell.org/package/postgresql-simple).
 It builds on the low-level bindings exposed by [`duckdb-ffi`](../duckdb-ffi) and
 provides a focused API for opening connections, running queries, binding
 parameters, and decoding typed results—including the full set of DuckDB scalar
@@ -79,8 +80,7 @@ insertNamed conn =
 
 DuckDB does not allow mixing positional and named placeholders within the same
 SQL statement; the library preserves DuckDB’s error message in that situation.
-Savepoints are currently rejected by DuckDB, so `withSavepoint` raises an
-`SQLError` describing the limitation.
+DuckDB does not support savepoints. This library does not provide `withSavepoint`.
 
 If the number of supplied parameters does not match the statement’s declared
 placeholders—or if you attempt to bind named arguments to a positional-only
@@ -194,7 +194,33 @@ storeList conn = do
   fmap fromOnly <$> query_ conn "SELECT vals FROM lists"
 ```
 
+### Infinite dates and timestamps
+
+Use `Database.DuckDB.Simple.Time` when a column can contain temporal infinity.
+Its `Date`, `LocalTimestamp`, and `UTCTimestamp` types wrap `Day`, `LocalTime`,
+and `UTCTime` in `Unbounded`: `NegInfinity`, `Finite value`, or `PosInfinity`.
+These types support parameters, results, and fields in generic composites.
+`UTCTimestamp` binds as TIMESTAMPTZ.
+
+```haskell
+import Database.DuckDB.Simple.Time
+
+infiniteDates :: Connection -> IO [Only Date]
+infiniteDates conn = query conn "SELECT ?::DATE" (Only (PosInfinity :: Date))
+```
+
+The ordinary `Day`, `LocalTime`, and `UTCTime` instances reject infinity with
+a conversion error. Use `Maybe Date` to distinguish SQL NULL from infinity.
+Floating-point NaN and infinities remain valid `Float` and `Double` values.
+
 ### Manual STRUCT and UNION Handling
+
+Temporal fields retain their SQL units when composite values are rebound.
+The `FieldDate`, `FieldTimestamp`, and `FieldTimestampTZ` constructors hold
+`Unbounded` values. Wrap finite payloads in `Finite` when constructing them.
+For TIMESTAMP_S or TIMESTAMP_MS values outside the TIMESTAMP range, use an
+explicit parameter cast, such as `SELECT ?::STRUCT(value TIMESTAMP_S)`.
+DuckDB otherwise attempts to convert these parameters to microseconds.
 
 For more control, you can work directly with `StructValue` and `UnionValue`
 from `Database.DuckDB.Simple.LogicalRep`:
@@ -220,23 +246,44 @@ manualStruct conn = do
 - `withConnection` and `withStatement` wrap the open/close lifecycle and guard
   against exceptions; use them whenever possible to avoid leaking C handles.
 - All intermediate DuckDB objects (results, prepared statements, values) are
-  released immediately after use. Long queries still materialise their result
-  sets when using the eager helpers; reach for `fold`/`fold_`/`foldNamed` (or
-  the lower-level `nextRow`) to stream results in constant space.
+  released immediately after use. Query helpers return a Haskell list of all
+  rows. Folds and cursors decode rows incrementally, while DuckDB retains the
+  materialized native result until it is exhausted, reset, or closed.
 - `execute`/`query` variants reset statement bindings each run so prepared
   statements can be reused safely.
+
+For concurrent workers, use a separate connection per worker. A connection
+can move between threads or be shared when the application serializes access.
+Hold that lock for the whole transaction or cursor lifetime, including `close`.
+DuckDB serializes native query calls, but this does not protect the Haskell
+handle state or prevent another call from interfering with an active cursor.
+Statements and connections do not provide their own lock. A callback must not
+execute another query on its active connection or close that connection.
+
+Link your executable with `ghc-options: -threaded` to allow prompt cancellation
+of native queries, including Ctrl-C. On cancellation, the library interrupts
+DuckDB and waits for the native call to return before it releases resources
+and propagates the exception. Cancellation is cooperative: native code and
+Haskell callbacks must return before cleanup can finish.
+
+Close or reset an abandoned statement to release its result. DuckDB can retain
+native result buffers until that result is destroyed.
+Use `withStatement` for manual iteration. `fold` releases the result after
+success or an exception. The accumulator determines Haskell memory use.
 
 ### Metadata helpers
 
 - `columnCount` and `columnName` expose prepared-statement metadata so you can
   inspect result shapes before executing a query.
-- `rowsChanged` tracks the number of rows affected by the most recent mutation
-  on a connection. DuckDB does not offer a `lastInsertRowId`; prefer SQL
-  `RETURNING` clauses when you need generated identifiers.
-### Streaming Results
+- `execute` returns the number of affected rows. Use SQL `RETURNING` clauses
+  when you need generated identifiers.
+### Cursors and folds
 
-`fold`, `fold_`, and `foldNamed` expose DuckDB’s chunked result API, letting you
-aggregate or stream rows without materialising the entire result set:
+`fold`, `fold_`, and `foldNamed` decode one row at a time from DuckDB's result
+chunks. DuckDB 1.5 materializes the native result before the first row is
+returned. These functions avoid a complete Haskell row list, but native memory
+use still depends on the result size. The native API for starting a streaming
+result is deprecated; the default interface uses the supported execution API.
 
 ```haskell
 import Database.DuckDB.Simple.Types (Only (..))
@@ -250,12 +297,80 @@ sumValues conn =
 For manual cursor-style iteration, use `nextRow`/`nextRowWith` on an open
 `Statement` to pull rows one at a time and decide when to stop.
 
+Cursors support the same column types as eager queries, including STRUCT
+and UNION values with nested collections and NULLs.
+
+#### Optional native streaming
+
+`Database.DuckDB.Simple.Deprecated.Streaming` provides `fold`, `fold_`,
+`foldNamed`, `nextRow`, and `nextRowWith` with native streaming enabled.
+Import it qualified:
+
+```haskell
+import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
+
+streamSum :: Connection -> IO Int
+streamSum conn =
+  Streaming.fold_ conn "SELECT i FROM range(1000000) t(i)" 0 $ \acc (Only n) ->
+    pure (acc + n)
+```
+
+The import emits a deprecation warning because DuckDB has deprecated the
+execution entry point. DuckDB can still materialize some queries. Streaming
+does not bound the memory used by query operators.
+
+The first cursor fetch selects the execution mode until an explicit reset.
+Switching between default and streaming `nextRow` calls retains that mode.
+Keep the connection dedicated to the active stream; another query on that
+connection can invalidate it. Cancellation interrupts native chunk fetching
+as well as execution.
+
+This module also provides `foldArrow` and `foldArrow_` for streaming Arrow
+batches. They use the same supported Arrow conversion and scoped ownership
+as `Database.DuckDB.Simple.Arrow`.
+
+### Arrow batches
+
+`Database.DuckDB.Simple.Arrow` provides `foldArrow` and `foldArrow_` for clients
+that consume the Arrow C Data Interface. Each callback receives a separate
+schema and array batch. It can read them or pass them to an Arrow consumer
+that releases or moves them. The fold releases any remaining contents on
+success, failure, or cancellation. The consumer owns any contents it moves.
+
+The original pointers are valid only during the callback. To retain contents,
+a consumer must move the root structs into its own storage and set the source
+release fields to NULL. Moved contents remain valid after the query and
+connection close. Empty results do not produce a callback.
+
+For example, the `dataframe-arrow-bridge` package can copy each batch into a
+Haskell `DataFrame` and release the Arrow objects:
+
+```haskell
+import qualified DataFrame.IO.Arrow as DataFrame
+import qualified Database.DuckDB.Simple.Arrow as Arrow
+import Foreign.Ptr (castPtr)
+
+frames <- Arrow.foldArrow_ conn "SELECT id::BIGINT, name::VARCHAR FROM people" [] $ \acc schema array -> do
+  frame <- DataFrame.arrowToDataframe (castPtr schema) (castPtr array)
+  pure (frame : acc)
+-- Reverse frames to recover the query's batch order.
+```
+
+The bridge currently imports signed 32-bit and 64-bit integers, Float, Double,
+and text columns. It is a test dependency of this repository; applications
+that use it must declare their own dependency on `dataframe-arrow-bridge`.
+
+Arrow export uses DuckDB's schema and chunk conversion API. DuckDB materializes
+the native result before callbacks start, so its memory use depends on the
+result size. The older Arrow query and scan bindings remain available through
+`Database.DuckDB.FFI.Deprecated` and emit deprecation warnings.
+
 ### Feature Coverage
 
 - Connections, prepared statements, positional/named parameter binding.
 - High-level execution (`execute*`) and eager queries (`query*`, `queryNamed`).
-- Streaming helpers (`fold`, `foldNamed`, `fold_`, `nextRow`) for constant-space
-  result processing.
+- Cursor and fold helpers (`fold`, `foldNamed`, `fold_`, `nextRow`) that decode
+  native result chunks one row at a time.
 - Comprehensive scalar type support: signed/unsigned integers, HUGEINT/UHUGEINT,
   decimals (with width/scale), intervals, precise and timezone-aware temporals,
   enums, bit strings, blobs, bignums, and UUIDs.
@@ -267,7 +382,7 @@ For manual cursor-style iteration, use `nextRow`/`nextRowWith` on an open
 - User-defined scalar functions backed by Haskell functions (including IO and
   nullable arguments).
 - Transaction helpers (`withTransaction`) and metadata accessors (`columnCount`,
-  `columnName`, `rowsChanged`).
+  `columnName`).
 
 ## User-Defined Functions
 

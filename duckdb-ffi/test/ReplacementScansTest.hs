@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# OPTIONS_GHC -Wno-deprecations #-}
 
 module ReplacementScansTest (tests) where
 

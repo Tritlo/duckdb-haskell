@@ -1,10 +1,11 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
+{-# OPTIONS_GHC -Wno-deprecations #-}
 
 module ArrowInterfaceDeprecatedTests (tests) where
 
 import Control.Exception (bracket, finally)
-import Control.Monad (unless, when)
+import Control.Monad (unless, when, (>=>))
 import Data.Int (Int32, Int64)
 import Data.List (isInfixOf)
 import Data.Maybe (isNothing)
@@ -13,7 +14,7 @@ import Database.DuckDB.FFI.Deprecated
 import Foreign.C.String (peekCString, peekCStringLen, withCString)
 import Foreign.C.Types (CChar)
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (FunPtr, Ptr, castPtr, nullFunPtr, nullPtr, plusPtr)
+import Foreign.Ptr (Ptr, castPtr, nullFunPtr, nullPtr, plusPtr)
 import Foreign.Storable (peek, peekElemOff, poke)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -85,24 +86,21 @@ queryArrowReportsErrors =
 
 preparedArrowSchemaMatchesStatement :: TestTree
 preparedArrowSchemaMatchesStatement =
-    testCase "prepared_arrow_schema reflects projected columns" $
+    testCase "prepared_arrow_schema describes statement parameters" $
         withDatabase \db ->
             withConnection db \conn ->
-                withPrepared conn "SELECT id, label FROM (VALUES (1, 'a')) AS t(id, label)" \stmt -> do
-                    alloca \schemaOut -> do
-                        poke schemaOut nullPtr
-                        stSchema <- c_duckdb_prepared_arrow_schema stmt schemaOut
-                        case stSchema of
-                            DuckDBSuccess -> do
-                                schemaWrapper <- peek schemaOut
-                                assertBool "prepared arrow schema pointer should not be null" (schemaWrapper /= nullPtr)
-                            DuckDBError -> do
-                                schemaWrapper <- peek schemaOut
-                                schemaWrapper @?= nullPtr
-                                errPtr <- c_duckdb_prepare_error stmt
-                                when (errPtr /= nullPtr) $ do
-                                    errMsg <- peekCString errPtr
-                                    errMsg @?= ""
+                withPrepared conn "SELECT ?::INTEGER, ?::VARCHAR" \stmt ->
+                    alloca \schemaStorage -> do
+                        poke schemaStorage zeroArrowSchema
+                        alloca \schemaOut -> do
+                            poke schemaOut (castPtr schemaStorage)
+                            c_duckdb_prepared_arrow_schema stmt schemaOut >>= (@?= DuckDBSuccess)
+                            schema <- peek schemaStorage
+                            arrowSchemaChildCount schema @?= 2
+                            children <- mapM (peekElemOff (arrowSchemaChildren schema) >=> peek) [0, 1]
+                            mapM (peekCString . arrowSchemaName) children >>= (@?= ["0", "1"])
+                            mapM (peekCString . arrowSchemaFormat) children >>= (@?= ["n", "n"])
+                            releaseArrowSchema schemaStorage
 
 executePreparedArrowProducesRows :: TestTree
 executePreparedArrowProducesRows =
@@ -281,47 +279,99 @@ arrowStreamScanRegistersView =
 
 arrowPointerHelpersClearInternalState :: TestTree
 arrowPointerHelpersClearInternalState =
-    -- NOTE: The deprecated Arrow handles are thin wrappers whose
-    -- internal_ptr fields can be inspected/reset via the exported
-    -- duckdbArrow{Schema,Array,Stream}{Internal,Clear} helpers. We avoid
-    -- direct foreign imports here so future changes to the shims only
-    -- require updates in the Arrow module.
-    testCase "arrow pointer helper functions read and clear internal_ptr fields" $
-        alloca \schemaFieldPtr ->
-            alloca \arrayFieldPtr ->
-                alloca \streamFieldPtr -> do
-                    let schemaField = schemaFieldPtr :: Ptr (Ptr ())
-                        schemaHandle = castPtr schemaField :: DuckDBArrowSchema
-                        schemaSentinel = ArrowSchemaPtr (castPtr schemaField)
-                    poke schemaField (castPtr (unArrowSchemaPtr schemaSentinel))
-                    schemaPtr <- duckdbArrowSchemaInternal schemaHandle
-                    fmap unArrowSchemaPtr schemaPtr @?= Just (unArrowSchemaPtr schemaSentinel)
+    testCase "Arrow helpers move real DuckDB structures without releasing buffers" $ do
+        withDatabase \db ->
+            withConnection db \conn ->
+                withSuccessfulArrow conn "SELECT 42::BIGINT AS id, 'duck' AS label" \arrow ->
+                    alloca \schemaStorage -> do
+                        poke schemaStorage zeroArrowSchema
+                        let schemaHandle = castPtr schemaStorage :: DuckDBArrowSchema
+                        alloca \schemaOut -> do
+                            poke schemaOut schemaHandle
+                            c_duckdb_query_arrow_schema arrow schemaOut >>= (@?= DuckDBSuccess)
+                        schemaPtr <- duckdbArrowSchemaInternal schemaHandle
+                        fmap unArrowSchemaPtr schemaPtr @?= Just schemaStorage
 
-                    duckdbArrowSchemaClear schemaHandle
-                    schemaCleared <- duckdbArrowSchemaInternal schemaHandle
-                    assertBool "schema internal_ptr should be cleared" (isNothing schemaCleared)
+                        alloca \arrayStorage -> do
+                            poke arrayStorage zeroArrowArray
+                            let arrayHandle = castPtr arrayStorage :: DuckDBArrowArray
+                            alloca \arrayOut -> do
+                                poke arrayOut arrayHandle
+                                c_duckdb_query_arrow_array arrow arrayOut >>= (@?= DuckDBSuccess)
+                            arrayPtr <- duckdbArrowArrayInternal arrayHandle
+                            fmap unArrowArrayPtr arrayPtr @?= Just arrayStorage
 
-                    let arrayField = arrayFieldPtr :: Ptr (Ptr ())
-                        arrayHandle = castPtr arrayField :: DuckDBArrowArray
-                        arraySentinel = ArrowArrayPtr (castPtr arrayField)
-                    poke arrayField (castPtr (unArrowArrayPtr arraySentinel))
-                    arrayPtr <- duckdbArrowArrayInternal arrayHandle
-                    fmap unArrowArrayPtr arrayPtr @?= Just (unArrowArrayPtr arraySentinel)
+                            withCString "arrow_helper_view" \viewName ->
+                                alloca \streamOut -> do
+                                    poke streamOut nullPtr
+                                    c_duckdb_arrow_array_scan conn viewName schemaHandle arrayHandle streamOut >>= (@?= DuckDBSuccess)
+                                    stream <- peek streamOut
+                                    streamPtr <- duckdbArrowStreamInternal stream
+                                    fmap unArrowStreamPtr streamPtr @?= Just (castPtr stream)
+                                    original <- peek (castPtr stream :: Ptr ArrowArrayStream)
+                                    alloca \movedStream -> do
+                                        poke movedStream original
+                                        duckdbArrowStreamClear stream
+                                        source <- peek (castPtr stream :: Ptr ArrowArrayStream)
+                                        arrowStreamRelease source @?= nullFunPtr
+                                        arrowStreamGetSchema source @?= arrowStreamGetSchema original
+                                        duckdbArrowStreamInternal stream >>= assertBool "detached stream" . isNothing
+                                        alloca \movedSchema -> do
+                                            poke movedSchema zeroArrowSchema
+                                            mkArrowStreamGetSchema (arrowStreamGetSchema original) movedStream movedSchema >>= (@?= 0)
+                                            schema <- peek movedSchema
+                                            peekCString (arrowSchemaFormat schema) >>= (@?= "+s")
+                                            releaseArrowSchema movedSchema
+                                        alloca \movedArray -> do
+                                            poke movedArray zeroArrowArray
+                                            mkArrowStreamGetNext (arrowStreamGetNext original) movedStream movedArray >>= (@?= 0)
+                                            batch <- peek movedArray
+                                            arrowArrayLength batch @?= 1
+                                            releaseArrowArray movedArray
+                                            mkArrowStreamGetNext (arrowStreamGetNext original) movedStream movedArray >>= (@?= 0)
+                                            exhausted <- peek movedArray
+                                            arrowArrayRelease exhausted @?= nullFunPtr
+                                        mkArrowStreamRelease (arrowStreamRelease original) movedStream
+                                        moved <- peek movedStream
+                                        arrowStreamRelease moved @?= nullFunPtr
+                                    c_duckdb_destroy_arrow_stream streamOut
+                                    peek streamOut >>= (@?= nullPtr)
 
-                    duckdbArrowArrayClear arrayHandle
-                    arrayCleared <- duckdbArrowArrayInternal arrayHandle
-                    assertBool "array internal_ptr should be cleared" (isNothing arrayCleared)
+                            originalArray <- peek arrayStorage
+                            alloca \movedArray -> do
+                                poke movedArray originalArray
+                                duckdbArrowArrayClear arrayHandle
+                                source <- peek arrayStorage
+                                arrowArrayLength source @?= arrowArrayLength originalArray
+                                arrowArrayBuffers source @?= arrowArrayBuffers originalArray
+                                arrowArrayRelease source @?= nullFunPtr
+                                duckdbArrowArrayInternal arrayHandle >>= assertBool "detached array" . isNothing
+                                moved <- peek movedArray
+                                arrowArrayLength moved @?= 1
+                                child <- peekElemOff (arrowArrayChildren moved) 0 >>= peek
+                                buffer <- peekElemOff (arrowArrayBuffers child) 1
+                                peek (castPtr buffer :: Ptr Int64) >>= (@?= 42)
+                                releaseArrowArray movedArray
+                                duckdbArrowArrayClear arrayHandle
 
-                    let streamField = streamFieldPtr :: Ptr (Ptr ())
-                        streamHandle = castPtr streamField :: DuckDBArrowStream
-                        streamSentinel = ArrowStreamPtr (castPtr streamField)
-                    poke streamField (castPtr (unArrowStreamPtr streamSentinel))
-                    streamPtr <- duckdbArrowStreamInternal streamHandle
-                    fmap unArrowStreamPtr streamPtr @?= Just (unArrowStreamPtr streamSentinel)
+                        originalSchema <- peek schemaStorage
+                        alloca \movedSchema -> do
+                            poke movedSchema originalSchema
+                            duckdbArrowSchemaClear schemaHandle
+                            source <- peek schemaStorage
+                            arrowSchemaFormat source @?= arrowSchemaFormat originalSchema
+                            arrowSchemaRelease source @?= nullFunPtr
+                            duckdbArrowSchemaInternal schemaHandle >>= assertBool "detached schema" . isNothing
+                            moved <- peek movedSchema
+                            peekCString (arrowSchemaFormat moved) >>= (@?= "+s")
+                            child <- peekElemOff (arrowSchemaChildren moved) 0 >>= peek
+                            peekCString (arrowSchemaName child) >>= (@?= "id")
+                            releaseArrowSchema movedSchema
+                            duckdbArrowSchemaClear schemaHandle
 
-                    duckdbArrowStreamClear streamHandle
-                    streamCleared <- duckdbArrowStreamInternal streamHandle
-                    assertBool "stream internal_ptr should be cleared" (isNothing streamCleared)
+        duckdbArrowSchemaInternal nullPtr >>= assertBool "null schema" . isNothing
+        duckdbArrowArrayInternal nullPtr >>= assertBool "null array" . isNothing
+        duckdbArrowStreamInternal nullPtr >>= assertBool "null stream" . isNothing
 
 zeroArrowArray :: ArrowArray
 zeroArrowArray =
@@ -408,28 +458,6 @@ validateChunkChildren array = do
             )
             [0 .. rowCount - 1]
     labels @?= expectedLabels
-
-releaseArrowArray :: Ptr ArrowArray -> IO ()
-releaseArrowArray arrayPtr = do
-    array <- peek arrayPtr
-    let releaseFun = arrowArrayRelease array
-    when (releaseFun /= nullFunPtr) $ do
-        let release = mkArrowArrayRelease releaseFun
-        release arrayPtr
-
-releaseArrowSchema :: Ptr ArrowSchema -> IO ()
-releaseArrowSchema schemaPtr = do
-    schema <- peek schemaPtr
-    let releaseFun = arrowSchemaRelease schema
-    when (releaseFun /= nullFunPtr) $ do
-        let release = mkArrowSchemaRelease releaseFun
-        release schemaPtr
-
-foreign import ccall "dynamic"
-    mkArrowArrayRelease :: FunPtr (Ptr ArrowArray -> IO ()) -> Ptr ArrowArray -> IO ()
-
-foreign import ccall "dynamic"
-    mkArrowSchemaRelease :: FunPtr (Ptr ArrowSchema -> IO ()) -> Ptr ArrowSchema -> IO ()
 
 withSuccessfulArrow :: DuckDBConnection -> String -> (DuckDBArrow -> IO a) -> IO a
 withSuccessfulArrow conn sql action =

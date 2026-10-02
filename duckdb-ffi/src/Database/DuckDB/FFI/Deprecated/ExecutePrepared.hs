@@ -1,4 +1,5 @@
-module Database.DuckDB.FFI.Deprecated.ExecutePrepared (
+module Database.DuckDB.FFI.Deprecated.ExecutePrepared
+    {-# DEPRECATED "These DuckDB C APIs are deprecated upstream. Prefer Database.DuckDB.FFI and its nondeprecated modules." #-} (
     c_duckdb_execute_prepared_streaming,
 ) where
 

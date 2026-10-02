@@ -1,4 +1,5 @@
-module Database.DuckDB.FFI.Deprecated.QueryExecution (
+module Database.DuckDB.FFI.Deprecated.QueryExecution
+    {-# DEPRECATED "These DuckDB C APIs are deprecated upstream. Prefer Database.DuckDB.FFI and its nondeprecated modules." #-} (
     c_duckdb_column_data,
     c_duckdb_nullmask_data,
     c_duckdb_row_count,

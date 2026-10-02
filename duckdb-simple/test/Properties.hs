@@ -128,8 +128,8 @@ specs =
     , SomeRoundTrip "Word64" (Proxy :: Proxy Word64) (arbitrary :: Gen Word64) shrink
     , SomeRoundTrip "Float" (Proxy :: Proxy Float) genFiniteFloat shrink
     , SomeRoundTrip "Double" (Proxy :: Proxy Double) genFiniteDouble shrink
-    , SomeRoundTrip "String" (Proxy :: Proxy String) genStringNoNul shrinkStringNoNul
-    , SomeRoundTrip "Text" (Proxy :: Proxy Text.Text) genTextNoNul shrinkTextNoNul
+    , SomeRoundTrip "String" (Proxy :: Proxy String) genString shrinkString
+    , SomeRoundTrip "Text" (Proxy :: Proxy Text.Text) genText shrinkText
     , SomeRoundTrip "ByteString" (Proxy :: Proxy BS.ByteString) genByteString shrinkByteString
     , SomeRoundTrip "BitString" (Proxy :: Proxy BitString) genBitString shrinkBitString
     , SomeRoundTrip "UUID" (Proxy :: Proxy UUID) genUUID shrinkNone
@@ -168,25 +168,24 @@ genFiniteDouble =
     (arbitrary :: Gen Double)
         `suchThat` \x -> not (isNaN x || isInfinite x)
 
-genStringNoNul :: Gen String
-genStringNoNul =
+genString :: Gen String
+genString =
     sized \n -> do
         len <- chooseInt (0, max 0 (min n 32))
-        vectorOf len genCharNoNul
+        vectorOf len genChar
 
-shrinkStringNoNul :: String -> [String]
-shrinkStringNoNul =
-    filter (all (/= '\0')) . shrink
+shrinkString :: String -> [String]
+shrinkString = shrink
 
-genCharNoNul :: Gen Char
-genCharNoNul =
-    (arbitrary :: Gen Char) `suchThat` (/= '\0')
+genChar :: Gen Char
+genChar =
+    frequency [(1, pure '\0'), (9, arbitrary)]
 
-genTextNoNul :: Gen Text.Text
-genTextNoNul = Text.pack <$> genStringNoNul
+genText :: Gen Text.Text
+genText = Text.pack <$> genString
 
-shrinkTextNoNul :: Text.Text -> [Text.Text]
-shrinkTextNoNul txt = Text.pack <$> shrinkStringNoNul (Text.unpack txt)
+shrinkText :: Text.Text -> [Text.Text]
+shrinkText txt = Text.pack <$> shrinkString (Text.unpack txt)
 
 genByteString :: Gen BS.ByteString
 genByteString =
@@ -392,7 +391,7 @@ simpleTypeValue = \case
     SimpleBool -> FieldBool <$> (arbitrary :: Gen Bool)
     SimpleInt32 -> FieldInt32 <$> (arbitrary :: Gen Int32)
     SimpleDouble -> FieldDouble <$> genFiniteDouble
-    SimpleText -> FieldText <$> genTextNoNul
+    SimpleText -> FieldText <$> genText
     SimpleBlob -> FieldBlob <$> genByteString
 
 timeOfDayToMicroseconds :: TimeOfDay -> Integer

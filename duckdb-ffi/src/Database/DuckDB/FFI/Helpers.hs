@@ -137,7 +137,7 @@ Parameters:
 
 Returns True if the date is finite, false if it is ±infinity.
 -}
-foreign import ccall safe "duckdb_is_finite_date"
+foreign import ccall safe "wrapped_duckdb_is_finite_date"
     c_duckdb_is_finite_date :: DuckDBDate -> IO CBool
 
 {- | Decompose a @duckdb_time@ object into hour, minute, second and microsecond
@@ -162,7 +162,7 @@ Parameters:
 
 Returns The @duckdb_time_tz@ element.
 -}
-foreign import ccall safe "duckdb_create_time_tz"
+foreign import ccall safe "wrapped_duckdb_create_time_tz"
     c_duckdb_create_time_tz :: Int64 -> Int32 -> IO DuckDBTimeTz
 
 {- | Decompose a TIME_TZ objects into micros and a timezone offset.
@@ -227,7 +227,7 @@ Parameters:
 
 Returns True if the timestamp is finite, false if it is ±infinity.
 -}
-foreign import ccall safe "duckdb_is_finite_timestamp"
+foreign import ccall safe "wrapped_duckdb_is_finite_timestamp"
     c_duckdb_is_finite_timestamp :: DuckDBTimestamp -> IO CBool
 
 {- | Test a @duckdb_timestamp_s@ to see if it is a finite value.
@@ -238,7 +238,7 @@ Parameters:
 
 Returns True if the timestamp is finite, false if it is ±infinity.
 -}
-foreign import ccall safe "duckdb_is_finite_timestamp_s"
+foreign import ccall safe "wrapped_duckdb_is_finite_timestamp_s"
     c_duckdb_is_finite_timestamp_s :: DuckDBTimestampS -> IO CBool
 
 {- | Test a @duckdb_timestamp_ms@ to see if it is a finite value.
@@ -249,7 +249,7 @@ Parameters:
 
 Returns True if the timestamp is finite, false if it is ±infinity.
 -}
-foreign import ccall safe "duckdb_is_finite_timestamp_ms"
+foreign import ccall safe "wrapped_duckdb_is_finite_timestamp_ms"
     c_duckdb_is_finite_timestamp_ms :: DuckDBTimestampMs -> IO CBool
 
 {- | Test a @duckdb_timestamp_ns@ to see if it is a finite value.
@@ -260,7 +260,7 @@ Parameters:
 
 Returns True if the timestamp is finite, false if it is ±infinity.
 -}
-foreign import ccall safe "duckdb_is_finite_timestamp_ns"
+foreign import ccall safe "wrapped_duckdb_is_finite_timestamp_ns"
     c_duckdb_is_finite_timestamp_ns :: DuckDBTimestampNs -> IO CBool
 
 {- | Converts a duckdb_hugeint object (as obtained from a @DUCKDB_TYPE_HUGEINT@

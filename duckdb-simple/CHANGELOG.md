@@ -1,9 +1,141 @@
 # Changelog
 
-## Unreleased
+## 0.2.0.0
 
+### Query execution and resource lifetime
+
+- Add `Database.DuckDB.Simple.Deprecated.Streaming` for callers that need native
+  streaming. It provides row folds, cursors, and Arrow folds with a deprecation
+  warning. Both execution modes share decoding and resource cleanup. Native
+  chunk fetching is interruptible, including cleanup of a chunk fetched just
+  before cancellation. Default APIs continue to use materialized execution.
+- Previously, a long native query could defer Ctrl-C until execution finished.
+  Query preparation and execution now run in a worker so the caller can receive
+  asynchronous exceptions. Cancellation interrupts DuckDB and waits for the
+  worker before releasing its resources. Prompt cancellation requires the
+  threaded RTS. Native code and Haskell callbacks must return before cleanup
+  can finish.
+- Add scoped Arrow batch export through `foldArrow` and `foldArrow_`. The
+  callback receives a separate schema and array for each batch. Consumers may
+  release or move them under the Arrow C Data Interface. The fold releases
+  remaining contents on every exit path. This uses the supported schema/chunk
+  conversion API and retains a materialized native result while the fold runs.
+- The initial Arrow fold shared one borrowed schema across callbacks. Consumers
+  such as `dataframe-arrow-bridge` release that schema when they import a batch,
+  which made subsequent batches unusable. Each batch now has its own schema.
+  Moved root objects remain usable after query and connection close; their
+  consumer must release them.
+
+- Previously, cursors decoded rows with prepare-time column types. Parameter
+  binding or schema rebinding could change those types and cause truncated
+  values or invalid memory access. Cursors now read types from the executed
+  result. This addresses the streaming failures in #18.
+- Cursors use the supported materialized execution API. DuckDB 1.5 provides
+  native streaming only through deprecated entry points, which the default
+  interface does not use. Folds decode one row at a time, but native result
+  memory still depends on the result size. Fetch failures now produce SQL
+  errors; previously, they were indistinguishable from end of input.
+- Previously, reading past EOF could execute the statement again, including
+  INSERT statements. Cursors now remain exhausted until an explicit reset.
+  Clearing bindings also destroys any active result.
+- Previously, exceptions during result decoding could skip native destruction.
+  Results, chunks, and nested logical types now have exception-safe cleanup.
+  Cursor state records chunk ownership before decoding and clears it before
+  destruction, so cancellation cannot cause a leak or a second destruction.
+- Previously, GC could finalize a connection or statement during its last
+  native call. The binding now keeps the Haskell owner alive until the call
+  returns. Reads through a closed parent connection fail before native access.
+- Previously, streaming rejected STRUCT and UNION columns even though the
+  shared decoder supported them. Eager queries and cursors now use the same
+  row decoder, including nested collections and NULLs.
+- Previously, a rollback failure could replace the exception from the user's
+  transaction. The original exception is now preserved. A failed commit also
+  attempts rollback.
+
+### Callbacks and native helpers
+
+- Previously, failed scalar, COPY, or logging registration could free callback
+  resources twice. Registration now transfers ownership once and releases
+  resources acquired before a failure. Static destructors avoid allocating
+  a separate destructor callback for each registration.
+- Previously, callback closures or query state could remain live on a long-lived
+  connection after replacement or execution. Cleanup now releases scalar
+  worker state, COPY state, and replaced closures before connection close.
+- Previously, exceptions during callback initialization or error formatting
+  could escape into native code. Scalar and COPY callbacks now report SQL
+  errors. Logging callbacks contain exceptions because their API has no error
+  channel. This includes asynchronous exceptions raised inside a callback.
+- Previously, DuckDB could skip a scalar callback when an argument was NULL.
+  Callbacks now receive those arguments. Use `Maybe` to accept NULL; a
+  non-nullable Haskell argument produces a conversion error.
+- Previously, Word and Word64 scalar results used signed BIGINT storage and
+  could overflow. They now use UBIGINT. Float callbacks preserve NaN, infinity,
+  and negative zero without depending on compiler optimization rules.
+- Catalog, configuration, and filesystem helpers now bracket native allocations
+  on failure paths. File reads reject sizes that cannot fit a Haskell buffer.
+  Unsupported catalog entry kinds fail before the native lookup.
+
+### Value conversion
+
+- Previously, temporal infinity could abort the process or decode as an
+  unrelated finite value. `Database.DuckDB.Simple.Time` now provides `Unbounded`,
+  `Date`, `LocalTimestamp`, and `UTCTimestamp` to read and bind both infinities.
+  Ordinary `Day`, `LocalTime`, and `UTCTime` report a conversion error for
+  infinity. Floating-point NaN and infinities remain supported.
+- `FieldDate`, `FieldTimestamp`, and `FieldTimestampTZ` now hold `Unbounded`
+  payloads. Wrap existing finite payloads in `Finite`. Custom `FromField`
+  instances can inspect infinity before conversion. Generic composites and
+  nested collections preserve infinity and NULL separately.
+- Previously, binding dates outside native storage limits could abort in C++.
+  Finite date/time conversions now use checked epoch arithmetic and reject
+  out-of-range inputs with Haskell exceptions.
+- Previously, TIMESTAMP_S and TIMESTAMP_MS decoding multiplied Int64 values
+  into microseconds and could overflow. Each timestamp family now retains its
+  own units. Composite TIMESTAMP_S/MS/NS and TIME_NS values can be rebound
+  without losing units, nanoseconds, or typed NULLs.
+- Previously, UTCTime parameters had SQL type TIMESTAMP and could change their
+  meaning under a non-UTC session timezone. They now have type TIMESTAMPTZ.
+- Previously, Float parameters used DOUBLE, which hid a missing REAL decoder.
+  Float parameters now use FLOAT, and REAL results decode to Float or Double.
+  NaN, infinity, and negative zero remain supported. Narrowing a finite Double
+  that exceeds Float's range now fails instead of producing infinity.
+- Previously, Int8 and unsigned narrowing conversions could wrap out-of-range
+  values. They now report conversion errors. Intermediate signed and unsigned
+  values remain 64-bit until the target bounds have been checked.
+- Previously, text parameters were terminated at an embedded NUL. Text and
+  String parameters now pass their UTF-8 byte length and preserve NULs. SQL,
+  native names, paths, and configuration strings reject NUL to prevent silent
+  truncation. Native names and error messages are decoded as UTF-8.
+- DECIMAL values retain their exact integer representation. Invalid width,
+  scale, or magnitude now fails before native construction. Invalid ENUM
+  indexes, UNION tags, and composite constructors also produce controlled errors.
+- Previously, BIT padding could give incorrect SQL bit counts. Padding now
+  follows DuckDB's representation; unsupported empty or malformed inputs fail
+  before native use.
+- Previously, generic records and sums decoded by position. They now match
+  field and member names and reject incompatible schemas. NULL non-nullable
+  products report a conversion failure instead of reaching a partial `error`.
+- Previously, a NULL UNION payload could lose its declared member type. Typed
+  NULL payloads now retain that type through native construction.
+- TIMETZ offsets containing seconds now fail when decoding to Haskell's
+  minute-based TimeZone. Invalid clock components and offsets fail before
+  binding instead of being rounded or narrowed silently.
+
+### Testing and compatibility
+
+- Add an optional DataFrame integration suite with `-fdataframe-tests`. It
+  imports several Arrow batches through `dataframe-arrow-bridge` and checks
+  values, NULLs, column order, consumer failures, and use after connection close.
+  CI runs it on Linux and macOS. The ordinary suite also checks consumption,
+  ownership transfer, and cleanup after a consumer has released its objects.
+- Add crash reproductions for #18, real native ownership tests, and sustained
+  checks for long-lived connections, callback release, and cancellation.
+  Property tests now include embedded NUL rather than filtering it out.
+- Add repeatable benchmarks with checked results. Linux CI checks callback
+  and cancellation workloads under Valgrind.
 - Raise the minimum native DuckDB version to 1.5.3.
-- Use GHC 9.14.1 by default. Test the latest stable patch release in each GHC series from 9.6 to 9.14.
+- Use GHC 9.14.1 by default. Test the latest stable patch release in each GHC
+  series from 9.6 to 9.14.
 
 ## 0.1.5.2
 - Fix a connection leak: `close` and the connection finalizer built the close action but then discarded it, so the DuckDB connection and database handles stayed open. Every leaked database instance also kept its own DuckDB thread pool alive. (Reported by @winitzki, see #15.)

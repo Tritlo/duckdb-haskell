@@ -76,6 +76,11 @@ jobs:
         env:
           LD_BIND_NOW: '1'
         run: cabal test all --with-compiler=ghc --disable-documentation --enable-optimization=${{ matrix.optimization }} --test-show-details=direct
+      - name: Test Arrow export with DataFrame
+        if: matrix.optimization == '1'
+        run: |
+          cabal build duckdb-simple-dataframe-test -fdataframe-tests --with-compiler=ghc --disable-documentation
+          cabal test duckdb-simple-dataframe-test -fdataframe-tests --with-compiler=ghc --disable-documentation --test-show-details=direct
       - name: Build and run an installed consumer
         if: matrix.ghc == '9.14.1' && matrix.optimization == '1'
         run: |
@@ -94,3 +99,25 @@ jobs:
             printf '%s: %s\n' "$way" "$version"
             test "$version" = "v$DUCKDB_TEST_VERSION"
           done
+      - name: Check native allocation cleanup
+        if: matrix.os == 'ubuntu-latest' && matrix.ghc == '9.12.4'
+        env:
+          # Valgrind changes process RSS. The ordinary leak test checks RSS.
+          DUCKDB_LEAK_RSS_CHECK: '0'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y valgrind
+          leak_test=$(cabal list-bin duckdb-simple-leak-test --with-compiler=ghc --disable-documentation)
+          for mode in callbacks cancel; do
+            valgrind --vgdb=no --leak-check=full \
+              --show-leak-kinds=definite,indirect,possible \
+              --errors-for-leak-kinds=definite,indirect \
+              --error-exitcode=97 --undef-value-errors=no --num-callers=30 \
+              "$leak_test" "$mode" 1
+          done
+          dataframe_test=$(cabal list-bin duckdb-simple-dataframe-test -fdataframe-tests --with-compiler=ghc --disable-documentation)
+          valgrind --vgdb=no --leak-check=full \
+            --show-leak-kinds=definite,indirect,possible \
+            --errors-for-leak-kinds=definite,indirect \
+            --error-exitcode=97 --undef-value-errors=no --num-callers=30 \
+            "$dataframe_test" --num-threads=1 +RTS -N1 -RTS

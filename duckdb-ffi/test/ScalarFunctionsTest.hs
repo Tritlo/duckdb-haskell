@@ -1,5 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
+{-# OPTIONS_GHC -Wno-deprecations #-}
 
 module ScalarFunctionsTest (tests) where
 

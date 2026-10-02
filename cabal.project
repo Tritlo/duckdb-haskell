@@ -20,3 +20,19 @@ program-options
   ghc-options:
     -Wall
     -Werror
+
+-- These private names occur in generated signatures and instance declarations.
+-- They have no public documentation link. Keep warnings for all other names.
+package duckdb-simple
+  haddock-options:
+    "--ignore-link-symbol=Database.DuckDB.Simple.Generic.GFromField'"
+    "--ignore-link-symbol=Database.DuckDB.Simple.Generic.gFromField"
+    "--ignore-link-symbol=Database.DuckDB.Simple.Generic.GToField'"
+    "--ignore-link-symbol=Database.DuckDB.Simple.Generic.gToField"
+    "--ignore-link-symbol=Database.DuckDB.Simple.Generic.gLogicalType"
+    "--ignore-link-symbol=Database.DuckDB.Simple.Generic.IsSum"
+    "--ignore-link-symbol=Database.DuckDB.Simple.Generic.Encoded"
+    "--ignore-link-symbol=Database.DuckDB.Simple.Function.argumentType"
+    "--ignore-link-symbol=Database.DuckDB.Simple.Function.scalarReturnType"
+    "--ignore-link-symbol=Database.DuckDB.Simple.Function.toScalarValue"
+    "--ignore-link-symbol=Database.DuckDB.Simple.FromRow.RowParseRO"

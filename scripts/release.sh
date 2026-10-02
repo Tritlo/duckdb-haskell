@@ -51,6 +51,12 @@ upload_package() {
   echo "=== Done: $name ==="
 }
 
+# Cabal looks for dependency interfaces in the ordinary documentation directory.
+# The Hackage build writes to a separate directory with the package version.
+if [ "$package" = "duckdb-simple" ] || [ "$package" = "all" ]; then
+  cabal haddock duckdb-ffi
+fi
+
 case "$package" in
   duckdb-ffi)
     upload_package duckdb-ffi

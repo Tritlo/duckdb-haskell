@@ -3,7 +3,9 @@
 
 module LogicalTypesTest (tests) where
 
+import Control.Exception (bracket)
 import Control.Monad (forM_, when, (>=>))
+import Data.List (stripPrefix)
 import Data.Word (Word32, Word8)
 import Database.DuckDB.FFI
 import Database.DuckDB.FFI.Deprecated
@@ -13,6 +15,7 @@ import Foreign.Marshal.Utils (withMany)
 import Foreign.Ptr (castPtr, nullPtr)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
+import Text.Read (readMaybe)
 import Utils (withConnection, withDatabase, withLogicalType, withResult)
 
 tests :: TestTree
@@ -21,11 +24,14 @@ tests =
         "Logical Type Interface"
         [ primitiveLogicalTypes
         , decimalLogicalType
+        , invalidDecimalLogicalType
+        , variantLogicalType
         , enumLogicalType
         , compositeLogicalTypes
         , aliasRoundtrip
         , registerLogicalType
         , geometryTypeCrs
+        , geometryTypeCrsOwnership
         ]
 
 primitiveLogicalTypes :: TestTree
@@ -41,8 +47,29 @@ primitiveLogicalTypes =
         , (DuckDBTypeInteger, DuckDBTypeInteger)
         , (DuckDBTypeVarchar, DuckDBTypeVarchar)
         , (DuckDBTypeBlob, DuckDBTypeBlob)
-        , (DuckDBTypeVariant, DuckDBTypeVariant)
         ]
+
+-- | VARIANT needs the complete descriptor from an executed query.
+variantLogicalType :: TestTree
+variantLogicalType =
+    testCase "query-derived VARIANT exposes its physical children" $
+        withDatabase \db ->
+            withConnection db \conn ->
+                withResult conn "SELECT NULL::VARIANT" \result ->
+                    withLogicalType (c_duckdb_column_logical_type result 0) \logical -> do
+                        c_duckdb_get_type_id logical >>= (@?= DuckDBTypeVariant)
+                        c_duckdb_struct_type_child_count logical >>= (@?= 4)
+
+-- | Invalid decimal metadata became safe to pass to the C API in 1.5.4.
+invalidDecimalLogicalType :: TestTree
+invalidDecimalLogicalType =
+    testCase "invalid decimal types return NULL on DuckDB 1.5.4 and later" $ do
+        version <- c_duckdb_library_version >>= peekCString
+        case stripPrefix "v1.5." version >>= readMaybe of
+            Just patch | patch >= (4 :: Int) ->
+                forM_ [(0, 0), (39, 0), (2, 3), (255, 0)] \(width, scale) ->
+                    withLogicalType (c_duckdb_create_decimal_type width scale) (@?= nullPtr)
+            _ -> pure ()
 
 decimalLogicalType :: TestTree
 decimalLogicalType =
@@ -187,3 +214,18 @@ geometryTypeCrs =
                 withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \lt -> do
                     crs <- c_duckdb_geometry_type_get_crs lt
                     assertBool "INTEGER has no CRS" (crs == nullPtr)
+
+-- | The caller owns the returned CRS independently of the type and result.
+geometryTypeCrsOwnership :: TestTree
+geometryTypeCrsOwnership =
+    testCase "geometry CRS outlives its type and result" $
+        bracket
+            ( withDatabase \db ->
+                withConnection db \conn ->
+                    withResult conn "SELECT ST_SetCRS('POINT(1 2)'::GEOMETRY, 'duckdb-haskell-test-crs')" \result ->
+                        withLogicalType (c_duckdb_column_logical_type result 0) c_duckdb_geometry_type_get_crs
+            )
+            (c_duckdb_free . castPtr)
+            \crs -> do
+                assertBool "expected an owned CRS string" (crs /= nullPtr)
+                peekCString crs >>= (@?= "duckdb-haskell-test-crs")

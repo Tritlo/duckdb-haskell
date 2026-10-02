@@ -149,6 +149,8 @@ tests =
                 , VariantBit 8 (BS.singleton 0)
                 , VariantGeometry BS.empty
                 , VariantObject [("same", VariantNull), ("same", VariantBool True)]
+                , VariantObject [("", VariantBool True)]
+                , VariantObject [("first", VariantBool False), ("", VariantBool True)]
                 , VariantObject [("before\0after", VariantNull)]
                 ]
                 \value -> do

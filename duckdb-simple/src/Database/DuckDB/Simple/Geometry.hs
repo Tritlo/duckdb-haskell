@@ -14,7 +14,9 @@ import qualified Data.Text as Text
 import Data.Word (Word64)
 import GHC.Float (castWord64ToDouble)
 
--- | ISO WKB bytes and optional coordinate reference system metadata.
+{- | ISO WKB bytes and optional coordinate reference system metadata.
+Use 'Nothing' for no CRS. Binding rejects empty CRS strings and embedded NUL.
+-}
 data Geometry = Geometry
     { geometryWKB :: !ByteString
     , geometryCRS :: !(Maybe Text)

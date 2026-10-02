@@ -377,7 +377,9 @@ at the root and a null value inside a container.
 
 `Variant` has `ToField`, `FromField`, and generic `DuckValue` instances. Bind it
 with `SELECT ?`; a SQL cast is not required. Object parameters reject duplicate
-keys and keys that contain NUL. Text and blob payloads can contain NUL.
+keys, empty keys, and keys that contain NUL. DuckDB's C constructor cannot
+encode an object whose first key is empty. Results can still contain empty or
+NUL keys. Text and blob payloads can contain NUL.
 For objects with names such as `Case` and `case`, give the result column an
 explicit alias, such as `SELECT ? AS value`. DuckDB 1.5 cannot derive an unnamed
 column name from those objects.
@@ -397,6 +399,7 @@ bytes and an optional CRS in `geometryWKB` and `geometryCRS`. Its `ToField` and
 `FromField` instances retain both values. Existing `ByteString` result decoding
 still returns the WKB bytes. Geometry arrays require a common CRS; mixed CRS
 parameters fail before binding.
+Use `Nothing` for no CRS. Binding rejects empty CRS strings and embedded NUL.
 
 Geometry binding checks the WKB and converts it to WKT because DuckDB 1.5 has
 no WKB value constructor in its C API. It supports the seven standard geometry

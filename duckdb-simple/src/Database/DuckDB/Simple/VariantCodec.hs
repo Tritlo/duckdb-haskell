@@ -514,6 +514,7 @@ validateVariant depth value
         VariantArray items -> mapM_ (validateVariant (depth + 1)) items
         VariantObject entries -> do
             let keys = map fst entries
+            when (any Text.null keys) (Left "object keys cannot be empty")
             when (any (Text.any (== '\0')) keys) (Left "object keys cannot contain NUL")
             unless (Set.size (Set.fromList keys) == length keys) (Left "duplicate object key")
             mapM_ (validateVariant (depth + 1) . snd) entries

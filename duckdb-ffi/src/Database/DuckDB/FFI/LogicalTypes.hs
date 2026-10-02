@@ -46,6 +46,11 @@ Returns an invalid logical type, if type is: @DUCKDB_TYPE_INVALID@,
 @DUCKDB_TYPE_STRUCT@, @DUCKDB_TYPE_MAP@, @DUCKDB_TYPE_ARRAY@, or
 @DUCKDB_TYPE_UNION@.
 
+For @DUCKDB_TYPE_VARIANT@, DuckDB 1.5 returns an incomplete descriptor.
+Obtain a complete descriptor from a query result with
+@duckdb_column_logical_type@. Inspecting the incomplete descriptor's children
+can terminate the process.
+
 Parameters:
 * @type@: The primitive type to create.
 
@@ -155,7 +160,8 @@ Parameters:
 * @scale@: The scale of the decimal type. Must not exceed the width.
 
 Returns the logical type. If the width or scale is out of range, DuckDB 1.5.4
-and later return @nullptr@. Earlier versions do not return @nullptr@ for this case.
+and later return @nullptr@. Invalid input can terminate the process on DuckDB
+1.5.3. Validate the width and scale before calling this function on that version.
 -}
 foreign import ccall safe "duckdb_create_decimal_type"
     c_duckdb_create_decimal_type :: Word8 -> Word8 -> IO DuckDBLogicalType
@@ -372,10 +378,10 @@ Free the result with @duckdb_free@.
 Parameters:
 * @type@: The GEOMETRY type.
 
-Returns The CRS of the GEOMETRY type, or @nullptr@ if the type is not a
-GEOMETRY type.
+Returns the CRS, or @nullptr@ if the type is not GEOMETRY or has no CRS.
+The returned string remains valid after the logical type is destroyed.
 
-Requires DuckDB 1.5.2 or later.
+Available since DuckDB 1.5.2. The C API marks this function stable since 1.5.6.
 -}
 foreign import ccall safe "duckdb_geometry_type_get_crs"
     c_duckdb_geometry_type_get_crs :: DuckDBLogicalType -> IO CString

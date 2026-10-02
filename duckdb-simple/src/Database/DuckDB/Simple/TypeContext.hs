@@ -16,8 +16,9 @@ import qualified Data.Text.Encoding as Text
 import Database.DuckDB.FFI
 import Database.DuckDB.Simple.Internal (destroyValue, peekUtf8CString)
 import Foreign.Marshal.Alloc (alloca)
+import Foreign.Marshal.Utils (fillBytes)
 import Foreign.Ptr (nullPtr)
-import Foreign.Storable (peek, poke)
+import Foreign.Storable (peek, poke, sizeOf)
 
 {- | Use the caller's connection when one is available. Standalone value and
 type constructors use a temporary database and connection. These temporary
@@ -67,7 +68,7 @@ queryLogicalType connection sql parameter =
                                     when (bound /= DuckDBSuccess) (throwIO (userError "duckdb-simple: cannot bind type query parameter"))
                     alloca \result ->
                         bracket
-                            (c_duckdb_execute_prepared statement result)
+                            (fillBytes result 0 (sizeOf (undefined :: DuckDBResult)) >> c_duckdb_execute_prepared statement result)
                             (const (c_duckdb_destroy_result result))
                             \executed -> do
                                 when (executed /= DuckDBSuccess) do

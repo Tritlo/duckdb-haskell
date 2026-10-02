@@ -195,6 +195,8 @@ logicalTypeFromRepOn connection rep = do
         LogicalTypeScalar dtype -> c_duckdb_create_logical_type dtype
         LogicalTypeGeometry Nothing -> c_duckdb_create_logical_type DuckDBTypeGeometry
         LogicalTypeGeometry (Just crs) -> do
+            when (Text.null crs) $
+                throwIO (userError "duckdb-simple: GEOMETRY CRS is empty; use Nothing for no CRS")
             when (Text.any (== '\0') crs) $
                 throwIO (userError "duckdb-simple: GEOMETRY CRS contains NUL")
             withTypeConnection connection \conn ->

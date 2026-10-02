@@ -77,10 +77,11 @@ tests =
                     count @?= 5000
             | (mode, foldRows) <- [("materialized", fold_), ("deprecated streaming", Streaming.fold_)]
             ]
-        , testCase "invalid WKB and NUL CRS fail without poisoning the connection" $
+        , testCase "invalid WKB, empty CRS and NUL CRS fail without poisoning the connection" $
             withConnection ":memory:" \conn -> do
                 assertFailureIO (query conn "SELECT ?" (Only (Geometry BS.empty Nothing)) :: IO [Only Geometry])
                 [Only geometry] <- query_ conn "SELECT 'POINT (1 2)'::GEOMETRY" :: IO [Only Geometry]
+                assertFailureIO (query conn "SELECT ?" (Only geometry{geometryCRS = Just ""}) :: IO [Only Geometry])
                 assertFailureIO (query conn "SELECT ?" (Only geometry{geometryCRS = Just "OGC:CRS84\0bad"}) :: IO [Only Geometry])
                 (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
         ]

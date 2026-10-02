@@ -18,7 +18,8 @@ Decimals contain precision, scale, and the signed unscaled integer.
 BIT contains a left-padding count and data bytes without the native header.
 The unused high bits in its first data byte are zero.
 GEOMETRY contains WKB bytes. Native VARIANT does not retain CRS metadata.
-Object keys are case-sensitive. Binding rejects duplicate keys and NUL keys.
+Object keys are case-sensitive. Binding rejects duplicate keys, empty keys,
+and keys that contain NUL. Result decoding preserves empty keys and NUL keys.
 Root 'VariantNull' is SQL NULL. Nested 'VariantNull' is a null container entry.
 The codec supports at most 128 value levels, including the root.
 Derived equality uses Float and Double equality. NaN does not equal itself.

@@ -1,4 +1,5 @@
-module Database.DuckDB.FFI.Deprecated.StreamingResult (
+module Database.DuckDB.FFI.Deprecated.StreamingResult
+    {-# DEPRECATED "These DuckDB C APIs are deprecated upstream. Prefer Database.DuckDB.FFI and its nondeprecated modules." #-} (
     c_duckdb_stream_fetch_chunk,
 ) where
 

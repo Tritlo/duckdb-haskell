@@ -1,0 +1,123 @@
+name: Binding validation
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  nix:
+    name: Nix / GHC 9.14.1
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      - name: Build and test both packages with Nix
+        run: >-
+          nix-build dev/nix/ci.nix --no-out-link
+          --option sandbox true --option sandbox-fallback false
+          --max-jobs 2 --cores 2
+
+  bindings:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            ghc: '9.6.7'
+            optimization: '1'
+            duckdb: '1.5.3'
+          - os: ubuntu-latest
+            ghc: '9.8.4'
+            optimization: '1'
+            duckdb: '1.5.3'
+          - os: ubuntu-latest
+            ghc: '9.10.3'
+            optimization: '1'
+            duckdb: '1.5.3'
+          - os: ubuntu-latest
+            ghc: '9.12.4'
+            optimization: '1'
+            duckdb: '1.5.3'
+          - os: ubuntu-latest
+            ghc: '9.14.1'
+            optimization: '1'
+            duckdb: '1.5.3'
+          - os: macos-latest
+            ghc: '9.14.1'
+            optimization: '1'
+            duckdb: '1.5.3'
+          - os: ubuntu-latest
+            ghc: '9.14.1'
+            optimization: '0'
+            duckdb: '1.5.3'
+    name: ${{ matrix.os }} / GHC ${{ matrix.ghc }} / DuckDB ${{ matrix.duckdb }} / -O${{ matrix.optimization }}
+    runs-on: ${{ matrix.os }}
+    env:
+      DUCKDB_TEST_VERSION: ${{ matrix.duckdb }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: haskell-actions/setup@0f8e8c99d88aeb3fbfd523f1ef2c6f762d10d64d
+        with:
+          ghc-version: ${{ matrix.ghc }}
+          cabal-version: '3.18.1.0'
+      - run: cabal update
+      - name: Configure the native installation directory
+        if: matrix.ghc == '9.14.1' && matrix.optimization == '1'
+        run: |
+          printf 'package duckdb-ffi\n  configure-options: "--duckdb-install-dir=%s"\n' \
+            "$RUNNER_TEMP/duckdb native" > cabal.project.local
+      - name: Build bindings and tests
+        run: cabal build all --with-compiler=ghc --disable-documentation --enable-optimization=${{ matrix.optimization }}
+      - name: Run integration and leak tests
+        env:
+          LD_BIND_NOW: '1'
+        run: cabal test all --with-compiler=ghc --disable-documentation --enable-optimization=${{ matrix.optimization }} --test-show-details=direct
+      - name: Test Arrow export with DataFrame
+        if: matrix.optimization == '1'
+        run: |
+          cabal build duckdb-simple-dataframe-test -fdataframe-tests --with-compiler=ghc --disable-documentation
+          cabal test duckdb-simple-dataframe-test -fdataframe-tests --with-compiler=ghc --disable-documentation --test-show-details=direct
+      - name: Build and run an installed consumer
+        if: matrix.ghc == '9.14.1' && matrix.optimization == '1'
+        run: |
+          test -s "$RUNNER_TEMP/duckdb native/$DUCKDB_TEST_VERSION/"*/libduckdb.*
+          consumer="$RUNNER_TEMP/duckdb-consumer"
+          mkdir "$consumer"
+          cabal install --lib duckdb-ffi --with-compiler=ghc --disable-documentation --package-env="$consumer/environment"
+          printf '%s\n' \
+            'import Database.DuckDB.FFI (c_duckdb_library_version)' \
+            'import Foreign.C.String (peekCString)' \
+            'main = c_duckdb_library_version >>= peekCString >>= putStrLn' > "$consumer/Main.hs"
+          unset LD_LIBRARY_PATH DYLD_LIBRARY_PATH DYLD_FALLBACK_LIBRARY_PATH
+          for way in -static -dynamic; do
+            ghc "$way" -fforce-recomp -package-env "$consumer/environment" "$consumer/Main.hs" -o "$consumer/check"
+            version=$("$consumer/check")
+            printf '%s: %s\n' "$way" "$version"
+            test "$version" = "v$DUCKDB_TEST_VERSION"
+          done
+      - name: Check native allocation cleanup
+        if: matrix.os == 'ubuntu-latest' && matrix.ghc == '9.12.4'
+        env:
+          # Valgrind changes process RSS. The ordinary leak test checks RSS.
+          DUCKDB_LEAK_RSS_CHECK: '0'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y valgrind
+          leak_test=$(cabal list-bin duckdb-simple-leak-test --with-compiler=ghc --disable-documentation)
+          for mode in callbacks cancel; do
+            valgrind --vgdb=no --leak-check=full \
+              --show-leak-kinds=definite,indirect,possible \
+              --errors-for-leak-kinds=definite,indirect \
+              --error-exitcode=97 --undef-value-errors=no --num-callers=30 \
+              "$leak_test" "$mode" 1
+          done
+          dataframe_test=$(cabal list-bin duckdb-simple-dataframe-test -fdataframe-tests --with-compiler=ghc --disable-documentation)
+          valgrind --vgdb=no --leak-check=full \
+            --show-leak-kinds=definite,indirect,possible \
+            --errors-for-leak-kinds=definite,indirect \
+            --error-exitcode=97 --undef-value-errors=no --num-callers=30 \
+            "$dataframe_test" --num-threads=1 +RTS -N1 -RTS

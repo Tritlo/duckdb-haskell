@@ -129,6 +129,7 @@ import Database.DuckDB.Simple.LogicalRep (
     UnionValue (..),
  )
 import Database.DuckDB.Simple.Ok (Ok (..))
+import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToField (..))
 
 --------------------------------------------------------------------------------
@@ -231,7 +232,7 @@ instance DuckValue BS.ByteString where
     duckLogicalType _ = LogicalTypeScalar DuckDBTypeBlob
 
 instance DuckValue Day where
-    duckToField = FieldDate
+    duckToField = FieldDate . Finite
     duckLogicalType _ = LogicalTypeScalar DuckDBTypeDate
 
 instance DuckValue TimeOfDay where
@@ -239,10 +240,22 @@ instance DuckValue TimeOfDay where
     duckLogicalType _ = LogicalTypeScalar DuckDBTypeTime
 
 instance DuckValue LocalTime where
-    duckToField = FieldTimestamp
+    duckToField = FieldTimestamp . Finite
     duckLogicalType _ = LogicalTypeScalar DuckDBTypeTimestamp
 
 instance DuckValue UTCTime where
+    duckToField = FieldTimestampTZ . Finite
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeTimestampTz
+
+instance DuckValue (Unbounded Day) where
+    duckToField = FieldDate
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeDate
+
+instance DuckValue (Unbounded LocalTime) where
+    duckToField = FieldTimestamp
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeTimestamp
+
+instance DuckValue (Unbounded UTCTime) where
     duckToField = FieldTimestampTZ
     duckLogicalType _ = LogicalTypeScalar DuckDBTypeTimestampTz
 
@@ -567,9 +580,24 @@ instance (Constructor c, GStruct f, GStructDecode f) => GSum (M1 C c f) where
         | idx /= 0 = Left ("duckdb-simple: union tag mismatch (expected 0, got " <> show idx <> ")")
         | otherwise =
             case payload of
-                FieldNull -> pure (M1 (gStructNull (Proxy :: Proxy (f p))))
-                FieldStruct structVal -> M1 <$> gStructDecodeStruct (Proxy :: Proxy (f p)) structVal
+                FieldNull -> M1 . fst <$> gStructDecodeList (Proxy :: Proxy (f p)) []
+                FieldStruct structVal -> do
+                    ordered <- orderStructFields (gStructTypes (Proxy :: Proxy (f p))) structVal
+                    M1 <$> gStructDecodeStruct (Proxy :: Proxy (f p)) ordered
                 other -> Left ("duckdb-simple: expected STRUCT payload for union member, got " <> show other)
+
+-- | Match decoded fields to their selector names before product decoding.
+orderStructFields :: [FieldComponent LogicalTypeRep] -> StructValue FieldValue -> Either String (StructValue FieldValue)
+orderStructFields components sv = do
+    let names = resolveNames (zip [0 ..] (map fcName components))
+        fields = elems (structValueFields sv)
+        byName = Map.fromList [(structFieldName field, field) | field <- fields]
+    unless (length fields <= length names) $
+        Left "duckdb-simple: extra fields when decoding struct"
+    unless (length fields == length names && Map.size byName == length names) $
+        Left "duckdb-simple: struct field names or count mismatch"
+    ordered <- traverse (\name -> maybe (Left ("duckdb-simple: missing struct field " <> Text.unpack name)) Right (Map.lookup name byName)) names
+    pure sv{structValueFields = listArray (0, length ordered - 1) ordered}
 
 --------------------------------------------------------------------------------
 -- GStructDecode: inverse of GStruct for decoding
@@ -577,13 +605,6 @@ instance (Constructor c, GStruct f, GStructDecode f) => GSum (M1 C c f) where
 -- | Inverse of @GStruct@: decode struct payloads back into a generic product.
 class GStructDecode f where
     gStructDecodeStruct :: Proxy (f p) -> StructValue FieldValue -> Either String (f p)
-
-    {- | Construct a null/empty value for a struct type.
-    This is only valid for U1 (empty structs) and their compositions.
-    For selectors with actual values, this should never be called in practice
-    as nullary constructors are represented as U1.
-    -}
-    gStructNull :: Proxy (f p) -> f p
 
     {- | Consume a prefix of fields from left to right while decoding, returning
     the reconstructed value and any remaining fields.
@@ -595,7 +616,6 @@ instance GStructDecode U1 where
         if null (elems (structValueFields structVal))
             then Right U1
             else Left ("duckdb-simple: expected empty struct, but got " <> show (length (elems (structValueFields structVal))) <> " field(s)")
-    gStructNull _ = U1
     gStructDecodeList _ xs = Right (U1, xs)
 
 instance (GStructDecode a, GStructDecode b) => GStructDecode (a :*: b) where
@@ -606,7 +626,6 @@ instance (GStructDecode a, GStructDecode b) => GStructDecode (a :*: b) where
         unless (null rest') $
             Left ("duckdb-simple: extra " <> show (length rest') <> " field(s) when decoding struct (too many fields provided)")
         pure (leftVal :*: rightVal)
-    gStructNull _ = gStructNull (Proxy :: Proxy (a p)) :*: gStructNull (Proxy :: Proxy (b p))
     gStructDecodeList _ xs = do
         (leftVal, rest) <- gStructDecodeList (Proxy :: Proxy (a p)) xs
         (rightVal, rest') <- gStructDecodeList (Proxy :: Proxy (b p)) rest
@@ -619,15 +638,6 @@ instance (Selector s, DuckValue a) => GStructDecode (M1 S s (K1 i a)) where
             [] -> Left "duckdb-simple: missing struct field (expected 1, got 0)"
             xs -> Left ("duckdb-simple: expected single field struct, but got " <> show (length xs) <> " fields")
 
-    -- IMPOSSIBLE: This should never be called in practice because nullary constructors
-    -- are represented as U1, not as selectors with actual field values. A selector (M1 S)
-    -- represents a record field that must contain a value, so there's no sensible way to
-    -- construct a "null" instance. This method is only needed to satisfy the GStructDecode
-    -- typeclass constraint, but in the actual decoding path (gSumDecode), nullary constructors
-    -- always take the FieldNull case which constructs U1 directly, never calling gStructNull
-    -- on a selector. If this error is ever reached, it indicates a bug in the generic
-    -- traversal logic.
-    gStructNull _ = error "duckdb-simple: impossible - gStructNull called on selector"
     gStructDecodeList _ [] = Left "duckdb-simple: missing struct field (expected field but list is empty)"
     gStructDecodeList _ (fv : rest) = do
         val <- duckFromField fv
@@ -635,7 +645,6 @@ instance (Selector s, DuckValue a) => GStructDecode (M1 S s (K1 i a)) where
 
 instance (GStructDecode f) => GStructDecode (M1 C c f) where
     gStructDecodeStruct _ structVal = M1 <$> gStructDecodeStruct (Proxy :: Proxy (f p)) structVal
-    gStructNull _ = M1 (gStructNull (Proxy :: Proxy (f p)))
     gStructDecodeList _ values = do
         (inner, rest) <- gStructDecodeList (Proxy :: Proxy (f p)) values
         pure (M1 inner, rest)
@@ -657,13 +666,27 @@ class GFromField' (isSum :: Bool) f where
 
 instance (GStruct f, GStructDecode f) => GFromField' 'False (M1 D meta (M1 C c f)) where
     gFromField' _ = \case
-        FieldNull -> pure (M1 (M1 (gStructNull (Proxy :: Proxy (f p)))))
-        FieldStruct sv -> M1 . M1 <$> gStructDecodeStruct (Proxy :: Proxy (f p)) sv
+        FieldNull -> M1 . M1 . fst <$> gStructDecodeList (Proxy :: Proxy (f p)) []
+        FieldStruct sv -> do
+            ordered <- orderStructFields (gStructTypes (Proxy :: Proxy (f p))) sv
+            M1 . M1 <$> gStructDecodeStruct (Proxy :: Proxy (f p)) ordered
         other -> Left ("duckdb-simple: expected STRUCT value for product type, got " <> show other)
 
 instance (GSum f) => GFromField' 'True (M1 D meta f) where
     gFromField' _ = \case
-        FieldUnion uv -> M1 <$> gSumDecode (fromIntegral (unionValueIndex uv)) (unionValuePayload uv)
+        FieldUnion uv -> do
+            let actualMembers = elems (unionValueMembers uv)
+                actualIndex = fromIntegral (unionValueIndex uv)
+            unless (actualIndex < length actualMembers) $
+                Left "duckdb-simple: union tag out of range"
+            unless (unionMemberName (actualMembers !! actualIndex) == unionValueLabel uv) $
+                Left "duckdb-simple: union tag and member name mismatch"
+            let members = gSumMembers (Proxy :: Proxy (f p))
+                indexed = zip [0 ..] members
+                matching = [idx | (idx, member) <- indexed, unionMemberName member == unionValueLabel uv]
+            case matching of
+                [idx] -> M1 <$> gSumDecode idx (unionValuePayload uv)
+                _ -> Left "duckdb-simple: unknown union member name"
         other -> Left ("duckdb-simple: expected UNION value for sum type, got " <> show other)
 
 instance GFromField' 'False (M1 D meta U1) where

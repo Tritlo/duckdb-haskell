@@ -280,7 +280,7 @@ Parameters:
 
 Returns The value. This must be destroyed with @duckdb_destroy_value@.
 -}
-foreign import ccall safe "duckdb_create_date"
+foreign import ccall safe "wrapped_duckdb_create_date"
     c_duckdb_create_date :: DuckDBDate -> IO DuckDBValue
 
 {- | Creates a value from a time
@@ -290,7 +290,7 @@ Parameters:
 
 Returns The value. This must be destroyed with @duckdb_destroy_value@.
 -}
-foreign import ccall safe "duckdb_create_time"
+foreign import ccall safe "wrapped_duckdb_create_time"
     c_duckdb_create_time :: DuckDBTime -> IO DuckDBValue
 
 {- | Creates a value from a time_ns
@@ -300,7 +300,7 @@ Parameters:
 
 Returns The value. This must be destroyed with @duckdb_destroy_value@.
 -}
-foreign import ccall safe "duckdb_create_time_ns"
+foreign import ccall safe "wrapped_duckdb_create_time_ns"
     c_duckdb_create_time_ns :: DuckDBTimeNs -> IO DuckDBValue
 
 {- | Creates a value from a time_tz. Not to be confused with
@@ -311,7 +311,7 @@ Parameters:
 
 Returns The value. This must be destroyed with @duckdb_destroy_value@.
 -}
-foreign import ccall safe "duckdb_create_time_tz_value"
+foreign import ccall safe "wrapped_duckdb_create_time_tz_value"
     c_duckdb_create_time_tz_value :: DuckDBTimeTz -> IO DuckDBValue
 
 {- | Creates a TIMESTAMP value from a duckdb_timestamp
@@ -321,7 +321,7 @@ Parameters:
 
 Returns The value. This must be destroyed with @duckdb_destroy_value@.
 -}
-foreign import ccall safe "duckdb_create_timestamp"
+foreign import ccall safe "wrapped_duckdb_create_timestamp"
     c_duckdb_create_timestamp :: DuckDBTimestamp -> IO DuckDBValue
 
 {- | Creates a TIMESTAMP_TZ value from a duckdb_timestamp
@@ -331,7 +331,7 @@ Parameters:
 
 Returns The value. This must be destroyed with @duckdb_destroy_value@.
 -}
-foreign import ccall safe "duckdb_create_timestamp_tz"
+foreign import ccall safe "wrapped_duckdb_create_timestamp_tz"
     c_duckdb_create_timestamp_tz :: DuckDBTimestamp -> IO DuckDBValue
 
 {- | Creates a TIMESTAMP_S value from a duckdb_timestamp_s
@@ -341,7 +341,7 @@ Parameters:
 
 Returns The value. This must be destroyed with @duckdb_destroy_value@.
 -}
-foreign import ccall safe "duckdb_create_timestamp_s"
+foreign import ccall safe "wrapped_duckdb_create_timestamp_s"
     c_duckdb_create_timestamp_s :: DuckDBTimestampS -> IO DuckDBValue
 
 {- | Creates a TIMESTAMP_MS value from a duckdb_timestamp_ms
@@ -351,7 +351,7 @@ Parameters:
 
 Returns The value. This must be destroyed with @duckdb_destroy_value@.
 -}
-foreign import ccall safe "duckdb_create_timestamp_ms"
+foreign import ccall safe "wrapped_duckdb_create_timestamp_ms"
     c_duckdb_create_timestamp_ms :: DuckDBTimestampMs -> IO DuckDBValue
 
 {- | Creates a TIMESTAMP_NS value from a duckdb_timestamp_ns
@@ -361,7 +361,7 @@ Parameters:
 
 Returns The value. This must be destroyed with @duckdb_destroy_value@.
 -}
-foreign import ccall safe "duckdb_create_timestamp_ns"
+foreign import ccall safe "wrapped_duckdb_create_timestamp_ns"
     c_duckdb_create_timestamp_ns :: DuckDBTimestampNs -> IO DuckDBValue
 
 {- | Creates a value from an interval
@@ -585,7 +585,7 @@ Parameters:
 
 Returns A duckdb_date, or MinValue if the value cannot be converted
 -}
-foreign import ccall safe "duckdb_get_date"
+foreign import ccall safe "wrapped_duckdb_get_date"
     c_duckdb_get_date :: DuckDBValue -> IO DuckDBDate
 
 {- | Returns the time value of the given value.
@@ -595,7 +595,7 @@ Parameters:
 
 Returns A duckdb_time, or MinValue if the value cannot be converted
 -}
-foreign import ccall safe "duckdb_get_time"
+foreign import ccall safe "wrapped_duckdb_get_time"
     c_duckdb_get_time :: DuckDBValue -> IO DuckDBTime
 
 {- | Returns the time_ns value of the given value.
@@ -605,7 +605,7 @@ Parameters:
 
 Returns A duckdb_time_ns, or MinValue if the value cannot be converted
 -}
-foreign import ccall safe "duckdb_get_time_ns"
+foreign import ccall safe "wrapped_duckdb_get_time_ns"
     c_duckdb_get_time_ns :: DuckDBValue -> IO DuckDBTimeNs
 
 {- | Returns the time_tz value of the given value.
@@ -615,7 +615,7 @@ Parameters:
 
 Returns A duckdb_time_tz, or MinValue if the value cannot be converted
 -}
-foreign import ccall safe "duckdb_get_time_tz"
+foreign import ccall safe "wrapped_duckdb_get_time_tz"
     c_duckdb_get_time_tz :: DuckDBValue -> IO DuckDBTimeTz
 
 {- | Returns the TIMESTAMP value of the given value.
@@ -625,7 +625,7 @@ Parameters:
 
 Returns A duckdb_timestamp, or MinValue if the value cannot be converted
 -}
-foreign import ccall safe "duckdb_get_timestamp"
+foreign import ccall safe "wrapped_duckdb_get_timestamp"
     c_duckdb_get_timestamp :: DuckDBValue -> IO DuckDBTimestamp
 
 {- | Returns the TIMESTAMP_TZ value of the given value.
@@ -635,7 +635,7 @@ Parameters:
 
 Returns A duckdb_timestamp, or MinValue if the value cannot be converted
 -}
-foreign import ccall safe "duckdb_get_timestamp_tz"
+foreign import ccall safe "wrapped_duckdb_get_timestamp_tz"
     c_duckdb_get_timestamp_tz :: DuckDBValue -> IO DuckDBTimestamp
 
 {- | Returns the duckdb_timestamp_s value of the given value.
@@ -645,7 +645,7 @@ Parameters:
 
 Returns A duckdb_timestamp_s, or MinValue if the value cannot be converted
 -}
-foreign import ccall safe "duckdb_get_timestamp_s"
+foreign import ccall safe "wrapped_duckdb_get_timestamp_s"
     c_duckdb_get_timestamp_s :: DuckDBValue -> IO DuckDBTimestampS
 
 {- | Returns the duckdb_timestamp_ms value of the given value.
@@ -655,7 +655,7 @@ Parameters:
 
 Returns A duckdb_timestamp_ms, or MinValue if the value cannot be converted
 -}
-foreign import ccall safe "duckdb_get_timestamp_ms"
+foreign import ccall safe "wrapped_duckdb_get_timestamp_ms"
     c_duckdb_get_timestamp_ms :: DuckDBValue -> IO DuckDBTimestampMs
 
 {- | Returns the duckdb_timestamp_ns value of the given value.
@@ -665,7 +665,7 @@ Parameters:
 
 Returns A duckdb_timestamp_ns, or MinValue if the value cannot be converted
 -}
-foreign import ccall safe "duckdb_get_timestamp_ns"
+foreign import ccall safe "wrapped_duckdb_get_timestamp_ns"
     c_duckdb_get_timestamp_ns :: DuckDBValue -> IO DuckDBTimestampNs
 
 {- | Returns the interval value of the given value.

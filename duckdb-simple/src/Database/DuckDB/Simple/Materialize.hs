@@ -16,11 +16,9 @@ import Data.Ratio ((%))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import Data.Time.Calendar (Day, fromGregorian)
-import Data.Time.Clock (UTCTime (..))
+import Data.Time.Calendar (addDays, fromGregorian)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Data.Time.LocalTime (
-    LocalTime (..),
     TimeOfDay (..),
     minutesToTimeZone,
     utc,
@@ -46,30 +44,11 @@ import Database.DuckDB.Simple.LogicalRep (
     UnionValue (..),
     logicalTypeToRep,
  )
+import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
 import Foreign.C.Types (CBool (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
-import Foreign.Storable (Storable (..), peekByteOff, peekElemOff, pokeByteOff)
-
-data DuckDBListEntry = DuckDBListEntry
-    { duckDBListEntryOffset :: !Word64
-    , duckDBListEntryLength :: !Word64
-    }
-    deriving (Eq, Show)
-
-instance Storable DuckDBListEntry where
-    sizeOf _ = listEntryWordSize * 2
-    alignment _ = alignment (0 :: Word64)
-    peek ptr = do
-        offset <- peekByteOff ptr 0
-        len <- peekByteOff ptr listEntryWordSize
-        pure DuckDBListEntry{duckDBListEntryOffset = offset, duckDBListEntryLength = len}
-    poke ptr DuckDBListEntry{duckDBListEntryOffset, duckDBListEntryLength} = do
-        pokeByteOff ptr 0 duckDBListEntryOffset
-        pokeByteOff ptr listEntryWordSize duckDBListEntryLength
-
-listEntryWordSize :: Int
-listEntryWordSize = sizeOf (0 :: Word64)
+import Foreign.Storable (Storable (..), peekElemOff)
 
 chunkIsRowValid :: Ptr Word64 -> DuckDBIdx -> IO Bool
 chunkIsRowValid validity rowIdx
@@ -453,11 +432,8 @@ decodeUnionValue vector _dataPtr rowIdx =
                     }
 
 vectorElementType :: DuckDBVector -> IO DuckDBType
-vectorElementType vec = do
-    logical <- c_duckdb_vector_get_column_type vec
-    dtype <- c_duckdb_get_type_id logical
-    destroyLogicalType logical
-    pure dtype
+vectorElementType vec =
+    bracket (c_duckdb_vector_get_column_type vec) destroyLogicalType c_duckdb_get_type_id
 
 listEntryBounds :: Text -> DuckDBListEntry -> IO (Int, Int)
 listEntryBounds context DuckDBListEntry{duckDBListEntryOffset, duckDBListEntryLength} = do
@@ -477,12 +453,10 @@ ensureWithinIntRange context value =
             then pure (fromInteger actual)
             else throwIO (userError ("duckdb-simple: " <> Text.unpack context <> " exceeds Int range"))
 
-decodeDuckDBDate :: DuckDBDate -> IO Day
-decodeDuckDBDate raw =
-    alloca $ \ptr -> do
-        c_duckdb_from_date raw ptr
-        dateStruct <- peek ptr
-        pure (dateStructToDay dateStruct)
+-- | Decode dates with exact epoch arithmetic and preserve infinity.
+decodeDuckDBDate :: DuckDBDate -> IO Date
+decodeDuckDBDate (DuckDBDate days) =
+    pure (decodeUnbounded (\value -> addDays (toInteger value) (fromGregorian 1970 1 1)) days)
 
 decodeDuckDBTime :: DuckDBTime -> IO TimeOfDay
 decodeDuckDBTime raw =
@@ -491,16 +465,20 @@ decodeDuckDBTime raw =
         timeStruct <- peek ptr
         pure (timeStructToTimeOfDay timeStruct)
 
-decodeDuckDBTimestamp :: DuckDBTimestamp -> IO LocalTime
-decodeDuckDBTimestamp raw =
-    alloca $ \ptr -> do
-        c_duckdb_from_timestamp raw ptr
-        DuckDBTimestampStruct{duckDBTimestampStructDate = dateStruct, duckDBTimestampStructTime = timeStruct} <- peek ptr
-        pure
-            LocalTime
-                { localDay = dateStructToDay dateStruct
-                , localTimeOfDay = timeStructToTimeOfDay timeStruct
-                }
+decodeDuckDBTimestamp :: DuckDBTimestamp -> IO LocalTimestamp
+decodeDuckDBTimestamp (DuckDBTimestamp micros) = decodeTimestampUnits 1000000 micros
+
+-- | Interpret native infinity sentinels before converting a finite payload.
+decodeUnbounded :: (Integral a, Bounded a) => (a -> b) -> a -> Unbounded b
+decodeUnbounded decode value
+    | value == maxBound = PosInfinity
+    | value == negate maxBound = NegInfinity
+    | otherwise = Finite (decode value)
+
+-- | Decode timestamp units without overflowing an intermediate Int64.
+decodeTimestampUnits :: Integer -> Int64 -> IO LocalTimestamp
+decodeTimestampUnits units =
+    pure . decodeUnbounded (utcToLocalTime utc . posixSecondsToUTCTime . fromRational . (% units) . toInteger)
 
 decodeDuckDBTimeNs :: DuckDBTimeNs -> TimeOfDay
 decodeDuckDBTimeNs (DuckDBTimeNs nanos) =
@@ -519,27 +497,27 @@ decodeDuckDBTimeTz raw =
     alloca $ \ptr -> do
         c_duckdb_from_time_tz raw ptr
         DuckDBTimeTzStruct{duckDBTimeTzStructTime = timeStruct, duckDBTimeTzStructOffset = offset} <- peek ptr
+        when (offset `rem` 60 /= 0) $
+            throwIO (userError "duckdb-simple: TIMETZ offset cannot be represented in whole minutes")
         let timeOfDay = timeStructToTimeOfDay timeStruct
             minutes = fromIntegral offset `div` 60
             zone = minutesToTimeZone minutes
         pure TimeWithZone{timeWithZoneTime = timeOfDay, timeWithZoneZone = zone}
 
-decodeDuckDBTimestampSeconds :: DuckDBTimestampS -> IO LocalTime
+decodeDuckDBTimestampSeconds :: DuckDBTimestampS -> IO LocalTimestamp
 decodeDuckDBTimestampSeconds (DuckDBTimestampS seconds) =
-    decodeDuckDBTimestamp (DuckDBTimestamp (seconds * 1000000))
+    decodeTimestampUnits 1 seconds
 
-decodeDuckDBTimestampMilliseconds :: DuckDBTimestampMs -> IO LocalTime
+decodeDuckDBTimestampMilliseconds :: DuckDBTimestampMs -> IO LocalTimestamp
 decodeDuckDBTimestampMilliseconds (DuckDBTimestampMs millis) =
-    decodeDuckDBTimestamp (DuckDBTimestamp (millis * 1000))
+    decodeTimestampUnits 1000 millis
 
-decodeDuckDBTimestampNanoseconds :: DuckDBTimestampNs -> IO LocalTime
-decodeDuckDBTimestampNanoseconds (DuckDBTimestampNs nanos) = do
-    let utcTime = posixSecondsToUTCTime (fromRational (toInteger nanos % 1000000000))
-    pure (utcToLocalTime utc utcTime)
+decodeDuckDBTimestampNanoseconds :: DuckDBTimestampNs -> IO LocalTimestamp
+decodeDuckDBTimestampNanoseconds (DuckDBTimestampNs nanos) = decodeTimestampUnits 1000000000 nanos
 
-decodeDuckDBTimestampUTCTime :: DuckDBTimestamp -> IO UTCTime
+decodeDuckDBTimestampUTCTime :: DuckDBTimestamp -> IO UTCTimestamp
 decodeDuckDBTimestampUTCTime (DuckDBTimestamp micros) =
-    pure (posixSecondsToUTCTime (fromRational (toInteger micros % 1000000)))
+    pure (decodeUnbounded (posixSecondsToUTCTime . fromRational . (% 1000000) . toInteger) micros)
 
 intervalValueFromDuckDB :: DuckDBInterval -> IntervalValue
 intervalValueFromDuckDB DuckDBInterval{duckDBIntervalMonths, duckDBIntervalDays, duckDBIntervalMicros} =
@@ -562,13 +540,6 @@ destroyLogicalType logicalType =
     alloca $ \ptr -> do
         poke ptr logicalType
         c_duckdb_destroy_logical_type ptr
-
-dateStructToDay :: DuckDBDateStruct -> Day
-dateStructToDay DuckDBDateStruct{duckDBDateStructYear, duckDBDateStructMonth, duckDBDateStructDay} =
-    fromGregorian
-        (fromIntegral duckDBDateStructYear)
-        (fromIntegral duckDBDateStructMonth)
-        (fromIntegral duckDBDateStructDay)
 
 timeStructToTimeOfDay :: DuckDBTimeStruct -> TimeOfDay
 timeStructToTimeOfDay DuckDBTimeStruct{duckDBTimeStructHour, duckDBTimeStructMinute, duckDBTimeStructSecond, duckDBTimeStructMicros} =

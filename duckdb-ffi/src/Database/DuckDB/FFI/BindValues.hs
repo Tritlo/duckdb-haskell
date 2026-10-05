@@ -113,23 +113,23 @@ foreign import ccall safe "duckdb_bind_double"
     c_duckdb_bind_double :: DuckDBPreparedStatement -> DuckDBIdx -> CDouble -> IO DuckDBState
 
 -- | Binds a duckdb_date value to the prepared statement at the specified index.
-foreign import ccall safe "duckdb_bind_date"
+foreign import ccall safe "wrapped_duckdb_bind_date"
     c_duckdb_bind_date :: DuckDBPreparedStatement -> DuckDBIdx -> DuckDBDate -> IO DuckDBState
 
 -- | Binds a duckdb_time value to the prepared statement at the specified index.
-foreign import ccall safe "duckdb_bind_time"
+foreign import ccall safe "wrapped_duckdb_bind_time"
     c_duckdb_bind_time :: DuckDBPreparedStatement -> DuckDBIdx -> DuckDBTime -> IO DuckDBState
 
 {- | Binds a duckdb_timestamp value to the prepared statement at the specified
 index.
 -}
-foreign import ccall safe "duckdb_bind_timestamp"
+foreign import ccall safe "wrapped_duckdb_bind_timestamp"
     c_duckdb_bind_timestamp :: DuckDBPreparedStatement -> DuckDBIdx -> DuckDBTimestamp -> IO DuckDBState
 
 {- | Binds a duckdb_timestamp value to the prepared statement at the specified
 index.
 -}
-foreign import ccall safe "duckdb_bind_timestamp_tz"
+foreign import ccall safe "wrapped_duckdb_bind_timestamp_tz"
     c_duckdb_bind_timestamp_tz :: DuckDBPreparedStatement -> DuckDBIdx -> DuckDBTimestamp -> IO DuckDBState
 
 {- | Binds a duckdb_interval value to the prepared statement at the specified

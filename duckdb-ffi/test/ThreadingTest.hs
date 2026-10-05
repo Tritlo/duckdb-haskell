@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# OPTIONS_GHC -Wno-deprecations #-}
 
 module ThreadingTest (tests) where
 
@@ -13,7 +14,7 @@ import Foreign.Ptr (nullPtr)
 import Foreign.Storable (peek)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
-import Utils (withConnection, withDatabase)
+import Utils (withConnection)
 
 tests :: TestTree
 tests =
@@ -23,10 +24,33 @@ tests =
         , taskStateControlsExecutionLifecycle
         ]
 
+{- | Open a database that has no worker threads. Without this, the
+worker threads of DuckDB start a pending query immediately, and the
+test races them. With one thread, only 'c_duckdb_execute_tasks' can
+make progress, so the checks are deterministic.
+-}
+withSingleThreadedDatabase :: (DuckDBDatabase -> IO a) -> IO a
+withSingleThreadedDatabase action =
+    withCString ":memory:" \path ->
+        alloca \configPtr -> do
+            c_duckdb_create_config configPtr >>= (@?= DuckDBSuccess)
+            config <- peek configPtr
+            withCString "threads" \flag ->
+                withCString "1" \value ->
+                    c_duckdb_set_config config flag value >>= (@?= DuckDBSuccess)
+            alloca \dbPtr -> do
+                st <- c_duckdb_open_ext path dbPtr config nullPtr
+                c_duckdb_destroy_config configPtr
+                st @?= DuckDBSuccess
+                db <- peek dbPtr
+                result <- action db
+                c_duckdb_close dbPtr
+                pure result
+
 executeTasksCompletesPendingQuery :: TestTree
 executeTasksCompletesPendingQuery =
     testCase "execute_tasks drives pending query to completion" $
-        withDatabase \db ->
+        withSingleThreadedDatabase \db ->
             withConnection db \conn -> do
                 setupAggTable conn
 
@@ -65,7 +89,7 @@ executeTasksCompletesPendingQuery =
 taskStateControlsExecutionLifecycle :: TestTree
 taskStateControlsExecutionLifecycle =
     testCase "task state executes batches and finishes on request" $
-        withDatabase \db ->
+        withSingleThreadedDatabase \db ->
             withConnection db \conn -> do
                 setupAggTable conn
 

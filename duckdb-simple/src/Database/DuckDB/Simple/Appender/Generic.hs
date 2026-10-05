@@ -253,7 +253,7 @@ instance AppenderDuckValue BS.ByteString where
 instance AppenderDuckValue Day where
     appenderDuckValue = Allocated . dayDuckValue
     appenderLogicalTypeUncached _ = primitiveType DuckDBTypeDate
-    appendDuckValue app = encodeDay >=> maybe (c_duckdb_append_null app) (c_duckdb_append_date app)
+    appendDuckValue app = encodeDay >=> c_duckdb_append_date app
     appenderTypeName _ = "DATE"
 
 instance AppenderDuckValue TimeOfDay where
@@ -265,13 +265,13 @@ instance AppenderDuckValue TimeOfDay where
 instance AppenderDuckValue LocalTime where
     appenderDuckValue = Allocated . localTimeDuckValue
     appenderLogicalTypeUncached _ = primitiveType DuckDBTypeTimestamp
-    appendDuckValue app = encodeLocalTime >=> maybe (c_duckdb_append_null app) (c_duckdb_append_timestamp app)
+    appendDuckValue app = encodeLocalTime >=> c_duckdb_append_timestamp app
     appenderTypeName _ = "TIMESTAMP"
 
 instance AppenderDuckValue UTCTime where
     appenderDuckValue = Allocated . utcTimeDuckValue
     appenderLogicalTypeUncached _ = primitiveType DuckDBTypeTimestampTz
-    appendDuckValue app = encodeLocalTime . utcToLocalTime utc >=> maybe (c_duckdb_append_null app) (c_duckdb_append_timestamp app)
+    appendDuckValue app = encodeLocalTime . utcToLocalTime utc >=> c_duckdb_append_timestamp app
     appenderTypeName _ = "TIMESTAMPTZ"
 
 instance AppenderDuckValue UUID.UUID where

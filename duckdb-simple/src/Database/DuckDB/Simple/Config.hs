@@ -16,8 +16,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
 import Database.DuckDB.FFI
-import Database.DuckDB.Simple.Internal (Connection, destroyValue, withClientContext)
-import Foreign.C.String (peekCString)
+import Database.DuckDB.Simple.Internal (Connection, destroyValue, peekUtf8CString, throwRegistrationError, withClientContext)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (castPtr, nullPtr)
 import Foreign.Storable (peek, poke)
@@ -50,39 +49,41 @@ listConfigFlags = do
                 if rc /= DuckDBSuccess
                     then pure ConfigFlag{configFlagName = Text.pack (show idx), configFlagDescription = Text.pack ""}
                     else do
-                        name <- peek namePtr >>= peekCString
-                        description <- peek descPtr >>= peekCString
-                        pure ConfigFlag{configFlagName = Text.pack name, configFlagDescription = Text.pack description}
+                        name <- peek namePtr >>= peekUtf8CString
+                        description <- peek descPtr >>= peekUtf8CString
+                        pure ConfigFlag{configFlagName = name, configFlagDescription = description}
 
 -- | Read a configuration option from a live connection's client context.
 getConfigOption :: Connection -> Text -> IO (Maybe ConfigValue)
-getConfigOption conn name =
-    withClientContext conn \ctx ->
-        TextForeign.withCString name \cName ->
-            alloca \scopePtr -> do
-                poke scopePtr DuckDBConfigOptionScopeInvalid
-                value <- c_duckdb_client_context_get_config_option ctx cName scopePtr
-                if value == nullPtr
-                    then pure Nothing
-                    else bracket
-                        (pure value)
+getConfigOption conn name
+    | Text.any (== '\0') name = throwRegistrationError "config option name contains NUL"
+    | otherwise =
+        withClientContext conn \ctx ->
+            TextForeign.withCString name \cName ->
+                alloca \scopePtr -> do
+                    poke scopePtr DuckDBConfigOptionScopeInvalid
+                    bracket
+                        (c_duckdb_client_context_get_config_option ctx cName scopePtr)
                         destroyValue
-                        \duckValue -> do
-                            strPtr <- c_duckdb_get_varchar duckValue
-                            rendered <-
-                                if strPtr == nullPtr
-                                    then pure Text.empty
-                                    else do
-                                        txt <- Text.pack <$> peekCString strPtr
-                                        c_duckdb_free (castPtr strPtr)
-                                        pure txt
-                            scope <- peek scopePtr
-                            pure $
-                                Just
-                                    ConfigValue
-                                        { configValueText = rendered
-                                        , configValueScope =
-                                            if scope == DuckDBConfigOptionScopeInvalid
-                                                then Nothing
-                                                else Just scope
-                                        }
+                        \duckValue ->
+                            if duckValue == nullPtr
+                                then pure Nothing
+                                else do
+                                    rendered <-
+                                        bracket
+                                            (c_duckdb_get_varchar duckValue)
+                                            (c_duckdb_free . castPtr)
+                                            \strPtr ->
+                                                if strPtr == nullPtr
+                                                    then pure Text.empty
+                                                    else peekUtf8CString strPtr
+                                    scope <- peek scopePtr
+                                    pure $
+                                        Just
+                                            ConfigValue
+                                                { configValueText = rendered
+                                                , configValueScope =
+                                                    if scope == DuckDBConfigOptionScopeInvalid
+                                                        then Nothing
+                                                        else Just scope
+                                                }

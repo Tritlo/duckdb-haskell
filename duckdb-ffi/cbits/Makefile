@@ -1,10 +1,10 @@
 # DuckDB library fetch and install
-DUCKDB_VERSION = 1.5.0
+DUCKDB_VERSION = 1.5.3
 DUCKDB_URL = https://github.com/duckdb/duckdb/releases/download/v$(DUCKDB_VERSION)/libduckdb-linux-amd64.zip
-EXPECTED_SHA256 = e9b2adb9dc5348da57eee9562782e0e7f543e74ff26d634bc7c208a5b6c59a1c
-ARCHIVE = libduckdb.zip
-EXTRACT_DIR = duckdb
-INSTALL_DIR = /usr/lib
+EXPECTED_SHA256 = 0a926eba5bce0abc0010f4b9109133e4440cb74e97bd10fd2d0fc2a721621b05
+ARCHIVE = libduckdb-$(DUCKDB_VERSION)-linux-amd64.zip
+EXTRACT_DIR = duckdb/$(DUCKDB_VERSION)/linux-amd64
+INSTALL_DIR ?= $(HOME)/.local/lib
 
 .PHONY: all fetch install clean distclean
 
@@ -14,7 +14,8 @@ fetch: $(EXTRACT_DIR)/libduckdb.so
 
 $(ARCHIVE):
 	@echo "Downloading libduckdb-linux-amd64.zip..."
-	curl -fsSL -o $(ARCHIVE) "$(DUCKDB_URL)"
+	curl --proto '=https' --proto-redir '=https' -fsSL -o $(ARCHIVE).tmp "$(DUCKDB_URL)"
+	mv $(ARCHIVE).tmp $(ARCHIVE)
 
 $(EXTRACT_DIR)/libduckdb.so: $(ARCHIVE)
 	@echo "Verifying SHA256 checksum..."
@@ -26,15 +27,16 @@ $(EXTRACT_DIR)/libduckdb.so: $(ARCHIVE)
 		exit 1; \
 	fi
 	@echo "Extracting archive..."
-	unzip $(ARCHIVE) -d $(EXTRACT_DIR)/
+	mkdir -p $(EXTRACT_DIR)
+	unzip -o $(ARCHIVE) -d $(EXTRACT_DIR)/
 	@touch $(EXTRACT_DIR)/libduckdb.so
 
 install: $(EXTRACT_DIR)/libduckdb.so
 	@echo "Installing DuckDB libraries to $(INSTALL_DIR)..."
-	sudo cp $(EXTRACT_DIR)/libduckdb.so.1.5.0 $(INSTALL_DIR)/
-	sudo ln -sf libduckdb.so.1.5.0 $(INSTALL_DIR)/libduckdb.so.1.5
-	sudo ln -sf libduckdb.so.1.5 $(INSTALL_DIR)/libduckdb.so
-	sudo ldconfig
+	mkdir -p $(INSTALL_DIR)
+	install -m 755 $(EXTRACT_DIR)/libduckdb.so $(INSTALL_DIR)/libduckdb.so.$(DUCKDB_VERSION)
+	ln -sf libduckdb.so.$(DUCKDB_VERSION) $(INSTALL_DIR)/libduckdb.so.1.5
+	ln -sf libduckdb.so.1.5 $(INSTALL_DIR)/libduckdb.so
 	@echo "DuckDB libraries installed successfully."
 
 clean:

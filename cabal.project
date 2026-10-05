@@ -1,7 +1,7 @@
 packages: duckdb-*/*.cabal
 
 -- GHC version
-with-compiler: ghc-9.12.2
+with-compiler: ghc-9.14.1
 -- Build tests, benchmarks, and documentation by default
 tests:      True
 benchmarks: True
@@ -10,7 +10,9 @@ documentation: True
 -- Global compiler options
 -- uuid-types has an overly tight upper bound on template-haskell,
 -- which prevents building with GHC 9.14+ (template-haskell-2.24).
-allow-newer: uuid-types:template-haskell
+-- The optional DataFrame test uses bytestring-lexing. Its base bound excludes
+-- GHC 9.14, but the package builds with base-4.22 without source changes.
+allow-newer: uuid-types:template-haskell, bytestring-lexing:base
 
 program-options
 
@@ -18,3 +20,19 @@ program-options
   ghc-options:
     -Wall
     -Werror
+
+-- These private names occur in generated signatures and instance declarations.
+-- They have no public documentation link. Keep warnings for all other names.
+package duckdb-simple
+  haddock-options:
+    "--ignore-link-symbol=Database.DuckDB.Simple.Generic.GFromField'"
+    "--ignore-link-symbol=Database.DuckDB.Simple.Generic.gFromField"
+    "--ignore-link-symbol=Database.DuckDB.Simple.Generic.GToField'"
+    "--ignore-link-symbol=Database.DuckDB.Simple.Generic.gToField"
+    "--ignore-link-symbol=Database.DuckDB.Simple.Generic.gLogicalType"
+    "--ignore-link-symbol=Database.DuckDB.Simple.Generic.IsSum"
+    "--ignore-link-symbol=Database.DuckDB.Simple.Generic.Encoded"
+    "--ignore-link-symbol=Database.DuckDB.Simple.Function.argumentType"
+    "--ignore-link-symbol=Database.DuckDB.Simple.Function.scalarReturnType"
+    "--ignore-link-symbol=Database.DuckDB.Simple.Function.toScalarValue"
+    "--ignore-link-symbol=Database.DuckDB.Simple.FromRow.RowParseRO"

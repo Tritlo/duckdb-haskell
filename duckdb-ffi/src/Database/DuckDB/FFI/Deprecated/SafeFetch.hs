@@ -1,4 +1,5 @@
-module Database.DuckDB.FFI.Deprecated.SafeFetch (
+module Database.DuckDB.FFI.Deprecated.SafeFetch
+    {-# DEPRECATED "These DuckDB C APIs are deprecated upstream. Prefer Database.DuckDB.FFI and its nondeprecated modules." #-} (
     c_duckdb_value_boolean,
     c_duckdb_value_int8,
     c_duckdb_value_int16,
@@ -173,7 +174,7 @@ release.
 Returns The duckdb_date value at the specified location, or 0 if the value
 cannot be converted.
 -}
-foreign import ccall safe "duckdb_value_date"
+foreign import ccall safe "wrapped_duckdb_value_date"
     c_duckdb_value_date :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO DuckDBDate
 
 {- | > Warning Deprecation notice. This method is scheduled for removal in a future
@@ -182,7 +183,7 @@ release.
 Returns The duckdb_time value at the specified location, or 0 if the value
 cannot be converted.
 -}
-foreign import ccall safe "duckdb_value_time"
+foreign import ccall safe "wrapped_duckdb_value_time"
     c_duckdb_value_time :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO DuckDBTime
 
 {- | > Warning Deprecation notice. This method is scheduled for removal in a future
@@ -191,7 +192,7 @@ release.
 Returns The duckdb_timestamp value at the specified location, or 0 if the
 value cannot be converted.
 -}
-foreign import ccall safe "duckdb_value_timestamp"
+foreign import ccall safe "wrapped_duckdb_value_timestamp"
     c_duckdb_value_timestamp :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO DuckDBTimestamp
 
 {- | > Warning Deprecation notice. This method is scheduled for removal in a future

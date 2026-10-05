@@ -1,4 +1,5 @@
 #include "duckdb.h"
+#include "duckdb_arrow.h"
 #include <stdint.h>
 
 // duckdb_query_progress returns a struct by value; expose a pointer-based version
@@ -154,46 +155,43 @@ void wrapped_duckdb_result_arrow_array(const duckdb_result *result, duckdb_data_
   duckdb_result_arrow_array(*result, chunk, out_array);
 }
 
-void *wrapped_duckdb_arrow_schema_internal_ptr(duckdb_arrow_schema schema) {
-  if (!schema) {
-    return NULL;
-  }
-  return schema->internal_ptr;
+// Deprecated Arrow handles point directly to Arrow C Data Interface structures.
+void *wrapped_duckdb_arrow_schema_internal_ptr(duckdb_arrow_schema handle) {
+  struct ArrowSchema *value = (struct ArrowSchema *)handle;
+  return value && value->release ? value : NULL;
 }
 
-void wrapped_duckdb_arrow_schema_clear_internal_ptr(duckdb_arrow_schema schema) {
-  if (!schema) {
-    return;
+void wrapped_duckdb_arrow_schema_clear_internal_ptr(duckdb_arrow_schema handle) {
+  struct ArrowSchema *value = (struct ArrowSchema *)handle;
+  if (value) {
+    value->release = NULL;
   }
-  schema->internal_ptr = NULL;
 }
 
-void *wrapped_duckdb_arrow_array_internal_ptr(duckdb_arrow_array array) {
-  if (!array) {
-    return NULL;
-  }
-  return array->internal_ptr;
+// Deprecated Arrow handles point directly to Arrow C Data Interface structures.
+void *wrapped_duckdb_arrow_array_internal_ptr(duckdb_arrow_array handle) {
+  struct ArrowArray *value = (struct ArrowArray *)handle;
+  return value && value->release ? value : NULL;
 }
 
-void wrapped_duckdb_arrow_array_clear_internal_ptr(duckdb_arrow_array array) {
-  if (!array) {
-    return;
+void wrapped_duckdb_arrow_array_clear_internal_ptr(duckdb_arrow_array handle) {
+  struct ArrowArray *value = (struct ArrowArray *)handle;
+  if (value) {
+    value->release = NULL;
   }
-  array->internal_ptr = NULL;
 }
 
-void *wrapped_duckdb_arrow_stream_internal_ptr(duckdb_arrow_stream stream) {
-  if (!stream) {
-    return NULL;
-  }
-  return stream->internal_ptr;
+// Deprecated Arrow handles point directly to Arrow C Data Interface structures.
+void *wrapped_duckdb_arrow_stream_internal_ptr(duckdb_arrow_stream handle) {
+  struct ArrowArrayStream *value = (struct ArrowArrayStream *)handle;
+  return value && value->release ? value : NULL;
 }
 
-void wrapped_duckdb_arrow_stream_clear_internal_ptr(duckdb_arrow_stream stream) {
-  if (!stream) {
-    return;
+void wrapped_duckdb_arrow_stream_clear_internal_ptr(duckdb_arrow_stream handle) {
+  struct ArrowArrayStream *value = (struct ArrowArrayStream *)handle;
+  if (value) {
+    value->release = NULL;
   }
-  stream->internal_ptr = NULL;
 }
 
 // duckdb_stream_fetch_chunk takes duckdb_result by value; provide a pointer form
@@ -466,64 +464,64 @@ double wrapped_duckdb_decimal_to_double(const duckdb_decimal *value) {
 
 // duckdb_from_date returns a struct by value; emit the result through an
 // out-parameter to avoid struct-return plumbing on the Haskell side.
-void wrapped_duckdb_from_date(duckdb_date date, duckdb_date_struct *out_value) {
+void wrapped_duckdb_from_date(int32_t date, duckdb_date_struct *out_value) {
   if (!out_value) {
     return;
   }
-  *out_value = duckdb_from_date(date);
+  *out_value = duckdb_from_date((duckdb_date){date});
 }
 
 // duckdb_to_date expects a struct by value; copy from pointer so NULL can be passed
 // and so the ABI stays simple.
-duckdb_date wrapped_duckdb_to_date(const duckdb_date_struct *input) {
+int32_t wrapped_duckdb_to_date(const duckdb_date_struct *input) {
   duckdb_date_struct tmp = {0};
   if (input) {
     tmp = *input;
   }
-  return duckdb_to_date(tmp);
+  return duckdb_to_date(tmp).days;
 }
 
 // duckdb_from_time returns a struct by value; wrap to emit via an out pointer.
-void wrapped_duckdb_from_time(duckdb_time time, duckdb_time_struct *out_value) {
+void wrapped_duckdb_from_time(int64_t time, duckdb_time_struct *out_value) {
   if (!out_value) {
     return;
   }
-  *out_value = duckdb_from_time(time);
+  *out_value = duckdb_from_time((duckdb_time){time});
 }
 
 // duckdb_from_time_tz returns a struct by value; provide pointer-based output.
-void wrapped_duckdb_from_time_tz(duckdb_time_tz micros, duckdb_time_tz_struct *out_value) {
+void wrapped_duckdb_from_time_tz(uint64_t micros, duckdb_time_tz_struct *out_value) {
   if (!out_value) {
     return;
   }
-  *out_value = duckdb_from_time_tz(micros);
+  *out_value = duckdb_from_time_tz((duckdb_time_tz){micros});
 }
 
 // duckdb_to_time expects a struct by value; copy from pointer for the bindings.
-duckdb_time wrapped_duckdb_to_time(const duckdb_time_struct *input) {
+int64_t wrapped_duckdb_to_time(const duckdb_time_struct *input) {
   duckdb_time_struct tmp = {0};
   if (input) {
     tmp = *input;
   }
-  return duckdb_to_time(tmp);
+  return duckdb_to_time(tmp).micros;
 }
 
 // duckdb_from_timestamp returns a struct by value; write into caller-provided
 // storage instead.
-void wrapped_duckdb_from_timestamp(duckdb_timestamp ts, duckdb_timestamp_struct *out_value) {
+void wrapped_duckdb_from_timestamp(int64_t ts, duckdb_timestamp_struct *out_value) {
   if (!out_value) {
     return;
   }
-  *out_value = duckdb_from_timestamp(ts);
+  *out_value = duckdb_from_timestamp((duckdb_timestamp){ts});
 }
 
 // duckdb_to_timestamp expects a struct by value; copy from pointer before calling.
-duckdb_timestamp wrapped_duckdb_to_timestamp(const duckdb_timestamp_struct *input) {
+int64_t wrapped_duckdb_to_timestamp(const duckdb_timestamp_struct *input) {
   duckdb_timestamp_struct tmp = {0};
   if (input) {
     tmp = *input;
   }
-  return duckdb_to_timestamp(tmp);
+  return duckdb_to_timestamp(tmp).micros;
 }
 
 // duckdb_uhugeint_to_double consumes its argument by value; copy from pointer to
@@ -543,4 +541,174 @@ void wrapped_duckdb_double_to_uhugeint(double input, duckdb_uhugeint *out_value)
     return;
   }
   *out_value = duckdb_double_to_uhugeint(input);
+}
+
+// Convert scalar fields at the C ABI boundary.
+bool wrapped_duckdb_is_finite_date(int32_t date) {
+  return duckdb_is_finite_date((duckdb_date){date});
+}
+
+// Convert scalar fields at the C ABI boundary.
+uint64_t wrapped_duckdb_create_time_tz(int64_t micros, int32_t offset) {
+  return duckdb_create_time_tz(micros, offset).bits;
+}
+
+// Convert scalar fields at the C ABI boundary.
+bool wrapped_duckdb_is_finite_timestamp(int64_t ts) {
+  return duckdb_is_finite_timestamp((duckdb_timestamp){ts});
+}
+
+// Convert scalar fields at the C ABI boundary.
+bool wrapped_duckdb_is_finite_timestamp_s(int64_t ts) {
+  return duckdb_is_finite_timestamp_s((duckdb_timestamp_s){ts});
+}
+
+// Convert scalar fields at the C ABI boundary.
+bool wrapped_duckdb_is_finite_timestamp_ms(int64_t ts) {
+  return duckdb_is_finite_timestamp_ms((duckdb_timestamp_ms){ts});
+}
+
+// Convert scalar fields at the C ABI boundary.
+bool wrapped_duckdb_is_finite_timestamp_ns(int64_t ts) {
+  return duckdb_is_finite_timestamp_ns((duckdb_timestamp_ns){ts});
+}
+
+// Convert scalar fields at the C ABI boundary.
+duckdb_state wrapped_duckdb_bind_date(duckdb_prepared_statement prepared_statement, idx_t param_idx, int32_t val) {
+  return duckdb_bind_date(prepared_statement, param_idx, (duckdb_date){val});
+}
+
+// Convert scalar fields at the C ABI boundary.
+duckdb_state wrapped_duckdb_bind_time(duckdb_prepared_statement prepared_statement, idx_t param_idx, int64_t val) {
+  return duckdb_bind_time(prepared_statement, param_idx, (duckdb_time){val});
+}
+
+// Convert scalar fields at the C ABI boundary.
+duckdb_state wrapped_duckdb_bind_timestamp(duckdb_prepared_statement prepared_statement, idx_t param_idx, int64_t val) {
+  return duckdb_bind_timestamp(prepared_statement, param_idx, (duckdb_timestamp){val});
+}
+
+// Convert scalar fields at the C ABI boundary.
+duckdb_state wrapped_duckdb_bind_timestamp_tz(duckdb_prepared_statement prepared_statement, idx_t param_idx, int64_t val) {
+  return duckdb_bind_timestamp_tz(prepared_statement, param_idx, (duckdb_timestamp){val});
+}
+
+// Convert scalar fields at the C ABI boundary.
+duckdb_value wrapped_duckdb_create_date(int32_t input) {
+  return duckdb_create_date((duckdb_date){input});
+}
+
+// Convert scalar fields at the C ABI boundary.
+duckdb_value wrapped_duckdb_create_time(int64_t input) {
+  return duckdb_create_time((duckdb_time){input});
+}
+
+// Convert scalar fields at the C ABI boundary.
+duckdb_value wrapped_duckdb_create_time_ns(int64_t input) {
+  return duckdb_create_time_ns((duckdb_time_ns){input});
+}
+
+// Convert scalar fields at the C ABI boundary.
+duckdb_value wrapped_duckdb_create_time_tz_value(uint64_t value) {
+  return duckdb_create_time_tz_value((duckdb_time_tz){value});
+}
+
+// Convert scalar fields at the C ABI boundary.
+duckdb_value wrapped_duckdb_create_timestamp(int64_t input) {
+  return duckdb_create_timestamp((duckdb_timestamp){input});
+}
+
+// Convert scalar fields at the C ABI boundary.
+duckdb_value wrapped_duckdb_create_timestamp_tz(int64_t input) {
+  return duckdb_create_timestamp_tz((duckdb_timestamp){input});
+}
+
+// Convert scalar fields at the C ABI boundary.
+duckdb_value wrapped_duckdb_create_timestamp_s(int64_t input) {
+  return duckdb_create_timestamp_s((duckdb_timestamp_s){input});
+}
+
+// Convert scalar fields at the C ABI boundary.
+duckdb_value wrapped_duckdb_create_timestamp_ms(int64_t input) {
+  return duckdb_create_timestamp_ms((duckdb_timestamp_ms){input});
+}
+
+// Convert scalar fields at the C ABI boundary.
+duckdb_value wrapped_duckdb_create_timestamp_ns(int64_t input) {
+  return duckdb_create_timestamp_ns((duckdb_timestamp_ns){input});
+}
+
+// Convert scalar fields at the C ABI boundary.
+int32_t wrapped_duckdb_get_date(duckdb_value val) {
+  return duckdb_get_date(val).days;
+}
+
+// Convert scalar fields at the C ABI boundary.
+int64_t wrapped_duckdb_get_time(duckdb_value val) {
+  return duckdb_get_time(val).micros;
+}
+
+// Convert scalar fields at the C ABI boundary.
+int64_t wrapped_duckdb_get_time_ns(duckdb_value val) {
+  return duckdb_get_time_ns(val).nanos;
+}
+
+// Convert scalar fields at the C ABI boundary.
+uint64_t wrapped_duckdb_get_time_tz(duckdb_value val) {
+  return duckdb_get_time_tz(val).bits;
+}
+
+// Convert scalar fields at the C ABI boundary.
+int64_t wrapped_duckdb_get_timestamp(duckdb_value val) {
+  return duckdb_get_timestamp(val).micros;
+}
+
+// Convert scalar fields at the C ABI boundary.
+int64_t wrapped_duckdb_get_timestamp_tz(duckdb_value val) {
+  return duckdb_get_timestamp_tz(val).micros;
+}
+
+// Convert scalar fields at the C ABI boundary.
+int64_t wrapped_duckdb_get_timestamp_s(duckdb_value val) {
+  return duckdb_get_timestamp_s(val).seconds;
+}
+
+// Convert scalar fields at the C ABI boundary.
+int64_t wrapped_duckdb_get_timestamp_ms(duckdb_value val) {
+  return duckdb_get_timestamp_ms(val).millis;
+}
+
+// Convert scalar fields at the C ABI boundary.
+int64_t wrapped_duckdb_get_timestamp_ns(duckdb_value val) {
+  return duckdb_get_timestamp_ns(val).nanos;
+}
+
+// Convert scalar fields at the C ABI boundary.
+duckdb_state wrapped_duckdb_append_date(duckdb_appender appender, int32_t value) {
+  return duckdb_append_date(appender, (duckdb_date){value});
+}
+
+// Convert scalar fields at the C ABI boundary.
+duckdb_state wrapped_duckdb_append_time(duckdb_appender appender, int64_t value) {
+  return duckdb_append_time(appender, (duckdb_time){value});
+}
+
+// Convert scalar fields at the C ABI boundary.
+duckdb_state wrapped_duckdb_append_timestamp(duckdb_appender appender, int64_t value) {
+  return duckdb_append_timestamp(appender, (duckdb_timestamp){value});
+}
+
+// Convert scalar fields at the C ABI boundary.
+int32_t wrapped_duckdb_value_date(duckdb_result *result, idx_t col, idx_t row) {
+  return duckdb_value_date(result, col, row).days;
+}
+
+// Convert scalar fields at the C ABI boundary.
+int64_t wrapped_duckdb_value_time(duckdb_result *result, idx_t col, idx_t row) {
+  return duckdb_value_time(result, col, row).micros;
+}
+
+// Convert scalar fields at the C ABI boundary.
+int64_t wrapped_duckdb_value_timestamp(duckdb_result *result, idx_t col, idx_t row) {
+  return duckdb_value_timestamp(result, col, row).micros;
 }

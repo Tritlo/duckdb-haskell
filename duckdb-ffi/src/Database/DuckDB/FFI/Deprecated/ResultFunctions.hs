@@ -1,4 +1,5 @@
-module Database.DuckDB.FFI.Deprecated.ResultFunctions (
+module Database.DuckDB.FFI.Deprecated.ResultFunctions
+    {-# DEPRECATED "These DuckDB C APIs are deprecated upstream. Prefer Database.DuckDB.FFI and its nondeprecated modules." #-} (
     c_duckdb_result_get_chunk,
     c_duckdb_result_is_streaming,
     c_duckdb_result_chunk_count,

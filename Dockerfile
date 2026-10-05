@@ -7,8 +7,8 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Args
 ARG USER_NAME=haskeller
-ARG GHC_VERSION=9.12.2
-ARG CABAL_VERSION=3.16.0.0
+ARG GHC_VERSION=9.14.1
+ARG CABAL_VERSION=3.18.1.0
 ARG UID=1001
 ARG GID=1001
 
@@ -53,7 +53,8 @@ RUN groupadd -g "$GID" -o "$USER_NAME" && \
     echo '%sudo ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
 
 WORKDIR /tmp
-RUN curl -L -o /tmp/libduckdb.zip https://github.com/duckdb/duckdb/releases/download/v1.5.0/libduckdb-linux-amd64.zip && \
+RUN curl --fail --location --proto '=https' --proto-redir '=https' -o /tmp/libduckdb.zip https://github.com/duckdb/duckdb/releases/download/v1.5.3/libduckdb-linux-amd64.zip && \
+    echo '0a926eba5bce0abc0010f4b9109133e4440cb74e97bd10fd2d0fc2a721621b05  /tmp/libduckdb.zip' | sha256sum -c - && \
     unzip libduckdb.zip && \
     mv libduckdb.so /usr/lib/libduckdb.so && \
     mv duckdb.h /usr/include/ && \
@@ -91,6 +92,7 @@ RUN sed -i "s/with-compiler: ghc-.*/with-compiler: ghc-${GHC_VERSION}/" /app/cab
 
 WORKDIR /app
 # Using the cabal files, we can build the dependencies
+RUN printf 'package duckdb-ffi\n  flags: +systemlib\n' > cabal.project.local
 RUN cabal update && \
     cabal build all --only-dependencies --project-file=cabal.project --project-dir=/app
 
@@ -107,7 +109,7 @@ RUN cabal build all --project-file=cabal.project --project-dir=/app
 
 
 # Test the packages
-RUN cabal test all --project-file=cabal.project --project-dir=/app --test-show-details=streaming
+RUN DUCKDB_TEST_VERSION=1.5.3 cabal test all --project-file=cabal.project --project-dir=/app --test-show-details=streaming
 
 # Generate Haddocks for all packages
 RUN cabal haddock all --project-file=cabal.project --project-dir=/app --haddock-for-hackage --enable-documentation

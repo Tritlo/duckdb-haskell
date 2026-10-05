@@ -20,6 +20,7 @@ import Foreign.Marshal.Array (withArray)
 import Foreign.Marshal.Utils (fillBytes, withMany)
 import Foreign.Ptr (Ptr, nullPtr)
 import Foreign.Storable (Storable (sizeOf), poke)
+import GHC.Stack (HasCallStack, callStack)
 
 -- | Fold over Arrow batches with the selected native execution mode.
 foldArrowWith :: (ToRow q) => ResultMode -> Connection -> Query -> q -> a -> (a -> Ptr ArrowSchema -> Ptr ArrowArray -> IO a) -> IO a
@@ -71,7 +72,7 @@ withArrowArray action =
         bracket_ (fillBytes array 0 (sizeOf (undefined :: ArrowArray))) (releaseArrowArray array) (action array)
 
 -- | Convert and release an owned Arrow conversion error.
-checkArrowError :: Query -> IO DuckDBErrorData -> IO ()
+checkArrowError :: HasCallStack => Query -> IO DuckDBErrorData -> IO ()
 checkArrowError queryText makeError =
     bracket makeError destroyError \err ->
         when (err /= nullPtr) do
@@ -80,7 +81,7 @@ checkArrowError queryText makeError =
                 messagePtr <- c_duckdb_error_data_message err
                 message <- if messagePtr == nullPtr then pure "DuckDB Arrow conversion failed" else peekUtf8CString messagePtr
                 errorType <- c_duckdb_error_data_error_type err
-                throwIO (SQLError message (Just errorType) (Just queryText))
+                throwIO (SQLError message (Just errorType) (Just queryText) callStack)
 
 -- | Destroy the result's Arrow conversion options.
 destroyArrowOptions :: DuckDBArrowOptions -> IO ()

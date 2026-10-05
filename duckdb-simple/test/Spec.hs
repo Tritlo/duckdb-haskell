@@ -90,6 +90,7 @@ import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.ExpectedFailure (expectFailBecause)
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck (testProperty, (===))
+import Appender (appenderTests)
 import TimeTests (timeTests)
 import ValueRegressionTests (valueRegressionTests)
 
@@ -196,6 +197,7 @@ nonEmptyTextParser f@Field{} =
 
 instance FromField NonEmptyText where
     fromField = nonEmptyTextParser
+
 main :: IO ()
 main = defaultMain tests
 
@@ -219,6 +221,7 @@ tests =
         , functionsTests
         , v15Tests
         , transactionTests
+        , appenderTests
         ]
 
 connectionTests :: TestTree

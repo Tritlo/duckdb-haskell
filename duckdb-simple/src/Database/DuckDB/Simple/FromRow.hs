@@ -44,6 +44,7 @@ import Database.DuckDB.Simple.FromField
 import Database.DuckDB.Simple.Internal (SQLError (..))
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.Types (Only (..), Query, (:.) (..))
+import GHC.Stack (HasCallStack, callStack)
 
 -- | Row parsing environment (read-only data available to the parser).
 newtype RowParseRO = RowParseRO
@@ -218,16 +219,17 @@ instance (FromField a) => FromRow [a] where
         replicateM remaining field
 
 -- | Convert a @ResultError@ into a user-facing @SQLError@.
-resultErrorToSqlError :: Query -> ResultError -> SQLError
+resultErrorToSqlError :: HasCallStack => Query -> ResultError -> SQLError
 resultErrorToSqlError query err =
     SQLError
         { sqlErrorMessage = renderError err
         , sqlErrorType = Nothing
         , sqlErrorQuery = Just query
+        , sqlErrorCallStack = callStack
         }
 
 -- | Collapse parser failure diagnostics into an @SQLError@ while preserving the query.
-rowErrorsToSqlError :: Query -> [SomeException] -> SQLError
+rowErrorsToSqlError :: HasCallStack => Query -> [SomeException] -> SQLError
 rowErrorsToSqlError query errs =
     case listToMaybe (mapMaybe (fromException :: SomeException -> Maybe ResultError) errs) of
         Just resultErr -> resultErrorToSqlError query resultErr
@@ -243,6 +245,7 @@ rowErrorsToSqlError query errs =
                                 ]
                         , sqlErrorType = Nothing
                         , sqlErrorQuery = Just query
+                        , sqlErrorCallStack = callStack
                         }
                 Nothing ->
                     SQLError
@@ -250,6 +253,7 @@ rowErrorsToSqlError query errs =
                             Text.pack $ "duckdb-simple: row-parsing failed:" <> show errs
                         , sqlErrorType = Nothing
                         , sqlErrorQuery = Just query
+                        , sqlErrorCallStack = callStack
                         }
 
 renderError :: ResultError -> Text

@@ -19,6 +19,7 @@ module Database.DuckDB.Simple (
     close,
     withConnection,
     withConnectionWithConfig,
+    DuckDBDatabase,
 
     -- * Queries and statements
     Query (..),
@@ -76,6 +77,8 @@ module Database.DuckDB.Simple (
     createFunction,
     createFunctionWithState,
     deleteFunction,
+    withDatabase,
+    withDatabaseConnection,
 ) where
 
 import Control.Exception (SomeException, bracket, finally, mask, mask_, onException, throwIO, try)
@@ -130,6 +133,7 @@ import Foreign.C.String (CString)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (peek, poke)
+import GHC.Stack (HasCallStack, callStack)
 
 -- | Open a DuckDB database located at the supplied path.
 open :: FilePath -> IO Connection
@@ -158,9 +162,24 @@ close Connection{connectionState} =
                 openState@(ConnectionOpen{}) ->
                     (ConnectionClosed, closeHandles openState)
 
+closeConnection :: Connection -> IO ()
+closeConnection Connection{connectionState} =
+    void $
+        atomicModifyIORef' connectionState \case
+            ConnectionClosed -> (ConnectionClosed, pure ())
+            ConnectionOpen{connectionHandle} ->
+                (ConnectionClosed, closeConnectionHandle connectionHandle)
+
+
 -- | Run an action with a freshly opened connection, closing it afterwards.
 withConnection :: FilePath -> (Connection -> IO a) -> IO a
 withConnection path = bracket (open path) close
+
+withDatabase :: FilePath -> [(Text, Text)] -> (DuckDBDatabase -> IO a) -> IO a
+withDatabase path opts = bracket (openDatabaseWithConfig path opts) closeDatabaseHandle
+
+withDatabaseConnection :: DuckDBDatabase -> (Connection -> IO a) -> IO a
+withDatabaseConnection db = bracket (connectDatabase db >>= createConnection db) closeConnection
 
 -- | Run an action with a freshly opened configured connection, closing it afterwards.
 withConnectionWithConfig :: FilePath -> [(Text, Text)] -> (Connection -> IO a) -> IO a
@@ -557,28 +576,31 @@ fetchPrepareError stmt = do
         then pure (Text.pack "duckdb-simple: prepare failed")
         else peekUtf8CString msgPtr
 
-mkOpenError :: Text -> SQLError
+mkOpenError :: HasCallStack => Text -> SQLError
 mkOpenError msg =
     SQLError
         { sqlErrorMessage = msg
         , sqlErrorType = Nothing
         , sqlErrorQuery = Nothing
+        , sqlErrorCallStack = callStack
         }
 
-mkConnectError :: SQLError
+mkConnectError :: HasCallStack => SQLError
 mkConnectError =
     SQLError
         { sqlErrorMessage = Text.pack "duckdb-simple: failed to create connection handle"
         , sqlErrorType = Nothing
         , sqlErrorQuery = Nothing
+        , sqlErrorCallStack = callStack
         }
 
-mkPrepareError :: Query -> Text -> SQLError
+mkPrepareError :: HasCallStack => Query -> Text -> SQLError
 mkPrepareError queryText msg =
     SQLError
         { sqlErrorMessage = msg
         , sqlErrorType = Nothing
         , sqlErrorQuery = Just queryText
+        , sqlErrorCallStack = callStack
         }
 
 throwFormatError :: Statement -> Text -> [String] -> IO a
@@ -623,6 +645,7 @@ columnIndexError stmt idx total =
             { sqlErrorMessage = message
             , sqlErrorType = Nothing
             , sqlErrorQuery = Just (statementQuery stmt)
+            , sqlErrorCallStack = callStack
             }
 
 columnNameUnavailableError :: Statement -> Int -> SQLError
@@ -635,6 +658,7 @@ columnNameUnavailableError stmt idx =
                 ]
         , sqlErrorType = Nothing
         , sqlErrorQuery = Just (statementQuery stmt)
+        , sqlErrorCallStack = callStack
         }
 
 normalizeName :: Text -> Text

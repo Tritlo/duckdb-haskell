@@ -62,6 +62,8 @@ import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (FunPtr, Ptr, castPtr, nullPtr)
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, deRefStablePtr)
 import Foreign.Storable (poke, pokeElemOff)
+import Data.Vector.Internal.Check (HasCallStack)
+import GHC.Stack (callStack)
 import GHC.Float (float2Double)
 
 data ScalarFunctionResources = ScalarFunctionResources
@@ -267,7 +269,7 @@ registerScalarFunction conn name proxy acquire = do
                         throwIO (functionInvocationError "duckdb-simple: registering function failed")
 
 -- | Drop a previously registered scalar function by issuing a DROP FUNCTION statement.
-deleteFunction :: Connection -> Text -> IO ()
+deleteFunction :: HasCallStack => Connection -> Text -> IO ()
 deleteFunction conn name =
     do
         outcome <-
@@ -431,12 +433,13 @@ argumentConversionError idx err =
                 ]
      in functionInvocationError message
 
-functionInvocationError :: Text -> SQLError
+functionInvocationError :: HasCallStack => Text -> SQLError
 functionInvocationError message =
     SQLError
         { sqlErrorMessage = message
         , sqlErrorType = Nothing
         , sqlErrorQuery = Nothing
+        , sqlErrorCallStack = callStack
         }
 
 qualifyIdentifier :: Text -> Text

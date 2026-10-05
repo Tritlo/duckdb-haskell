@@ -25,11 +25,12 @@ import Database.DuckDB.Simple.Internal (Connection, SQLError (..), peekUtf8CStri
 import Foreign.Marshal.Alloc (alloca, free, mallocBytes)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (peek, poke)
+import GHC.Stack (HasCallStack, callStack)
 
 -- | Open a file through DuckDB's file-system layer for the duration of an action.
-withFileHandle :: Connection -> FilePath -> [DuckDBFileFlag] -> (DuckDBFileHandle -> IO a) -> IO a
+withFileHandle :: HasCallStack => Connection -> FilePath -> [DuckDBFileFlag] -> (DuckDBFileHandle -> IO a) -> IO a
 withFileHandle conn path flags action
-    | '\0' `elem` path = throwIO (SQLError (Text.pack "duckdb-simple: file path contains NUL") Nothing Nothing)
+    | '\0' `elem` path = throwIO (SQLError (Text.pack "duckdb-simple: file path contains NUL") Nothing Nothing callStack)
     | otherwise =
         withFileSystem conn \fs ->
             bracket
@@ -54,11 +55,11 @@ withFileHandle conn path flags action
                             action
 
 -- | Read up to the requested number of bytes from a file handle.
-readFileHandleChunk :: DuckDBFileHandle -> Int64 -> IO BS.ByteString
+readFileHandleChunk :: HasCallStack => DuckDBFileHandle -> Int64 -> IO BS.ByteString
 readFileHandleChunk handle requested
     | requested <= 0 = pure BS.empty
     | toInteger requested > toInteger (maxBound :: Int) =
-        throwIO (SQLError (Text.pack "duckdb-simple: file read size exceeds Int range") Nothing Nothing)
+        throwIO (SQLError (Text.pack "duckdb-simple: file read size exceeds Int range") Nothing Nothing callStack)
     | otherwise =
         bracket (mallocBytes (fromIntegral requested)) free \raw -> do
             bytesRead <- c_duckdb_file_handle_read handle raw requested
@@ -136,7 +137,7 @@ throwFileHandleError handle fallback = mask_ do
     err <- c_duckdb_file_handle_error_data handle
     throwErrorData err fallback
 
-throwErrorData :: DuckDBErrorData -> Text -> IO a
+throwErrorData :: HasCallStack => DuckDBErrorData -> Text -> IO a
 throwErrorData err fallback =
     bracket (pure err) destroyErrorData \errData -> do
         msgPtr <- c_duckdb_error_data_message errData
@@ -150,13 +151,14 @@ throwErrorData err fallback =
                 { sqlErrorMessage = message
                 , sqlErrorType = Just errType
                 , sqlErrorQuery = Nothing
+                , sqlErrorCallStack = callStack
                 }
 
 destroyErrorData :: DuckDBErrorData -> IO ()
 destroyErrorData err =
     alloca \ptr -> poke ptr err >> c_duckdb_destroy_error_data ptr
 
-expectState :: String -> IO DuckDBState -> IO ()
+expectState :: HasCallStack => String -> IO DuckDBState -> IO ()
 expectState label action = do
     rc <- action
     if rc == DuckDBSuccess
@@ -167,6 +169,7 @@ expectState label action = do
                     { sqlErrorMessage = Text.pack ("duckdb-simple: " <> label <> " failed")
                     , sqlErrorType = Nothing
                     , sqlErrorQuery = Nothing
+                , sqlErrorCallStack = callStack
                     }
 
 -- | Reject a null file-system handle before use.

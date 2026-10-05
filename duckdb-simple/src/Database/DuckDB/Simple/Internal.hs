@@ -32,6 +32,7 @@ module Database.DuckDB.Simple.Internal (
     -- * Helpers
     connectionClosedError,
     statementClosedError,
+    appenderError,
     keepAlive,
     withDatabaseHandle,
     withConnectionHandle,
@@ -96,6 +97,7 @@ import Foreign.C.String (CString)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Utils (fillBytes)
 import Foreign.Ptr (Ptr, nullPtr)
+import GHC.Stack (CallStack, callStack, HasCallStack)
 import Foreign.Storable (peek, poke, sizeOf)
 import GHC.Exts (keepAlive#)
 import GHC.IO (IO (..))
@@ -183,18 +185,20 @@ data SQLError = SQLError
     { sqlErrorMessage :: Text
     , sqlErrorType :: Maybe DuckDBErrorType
     , sqlErrorQuery :: Maybe Query
+    , sqlErrorCallStack :: CallStack
     }
-    deriving stock (Eq, Show)
+    deriving stock (Show)
 
 instance Exception SQLError
 
 -- | Convert an arbitrary exception into an untyped @SQLError@.
-toSQLError :: (Exception e) => e -> SQLError
+toSQLError :: (Exception e, HasCallStack) => e -> SQLError
 toSQLError ex =
     SQLError
         { sqlErrorMessage = Text.pack (show ex)
         , sqlErrorType = Nothing
         , sqlErrorQuery = Nothing
+        , sqlErrorCallStack = callStack
         }
 
 -- | Shared error value used when an operation targets a closed connection.
@@ -204,6 +208,7 @@ connectionClosedError =
         { sqlErrorMessage = Text.pack "duckdb-simple: connection is closed"
         , sqlErrorType = Nothing
         , sqlErrorQuery = Nothing
+        , sqlErrorCallStack = callStack
         }
 
 -- | Shared error value used when an operation targets a closed statement.
@@ -213,13 +218,23 @@ statementClosedError Statement{statementQuery} =
         { sqlErrorMessage = Text.pack "duckdb-simple: statement is closed"
         , sqlErrorType = Nothing
         , sqlErrorQuery = Just statementQuery
+        , sqlErrorCallStack = callStack
+        }
+
+appenderError :: HasCallStack => Text -> SQLError
+appenderError msg =
+    SQLError
+        { sqlErrorMessage = Text.pack "duckdb-simple: appenderError: " <> msg
+        , sqlErrorType = Nothing
+        , sqlErrorQuery = Nothing
+        , sqlErrorCallStack = callStack
         }
 
 -- | Provide a UTF-8 encoded C string view of the query text.
-withQueryCString :: Query -> (CString -> IO a) -> IO a
+withQueryCString :: HasCallStack => Query -> (CString -> IO a) -> IO a
 withQueryCString query@(Query txt) action
     | Text.any (== '\0') txt =
-        throwIO (SQLError (Text.pack "duckdb-simple: SQL contains NUL") Nothing (Just query))
+        throwIO (SQLError (Text.pack "duckdb-simple: SQL contains NUL") Nothing (Just query) callStack)
     | otherwise = TextForeign.withCString txt action
 
 -- | Copy a NUL-terminated UTF-8 string from DuckDB.
@@ -312,12 +327,13 @@ fetchResultError resultPtr = do
     pure (message, if errorType == DuckDBErrorInvalid then Nothing else Just errorType)
 
 -- | Attach the query and native error category to an execution error.
-mkExecuteError :: Query -> Text -> Maybe DuckDBErrorType -> SQLError
+mkExecuteError :: HasCallStack => Query -> Text -> Maybe DuckDBErrorType -> SQLError
 mkExecuteError queryText message errorType =
     SQLError
         { sqlErrorMessage = message
         , sqlErrorType = errorType
         , sqlErrorQuery = Just queryText
+        , sqlErrorCallStack = callStack
         }
 
 -- | Report a fetch failure before treating a null chunk as end of input.
@@ -385,11 +401,12 @@ destroyLogicalType logicalType =
     alloca $ \ptr -> poke ptr logicalType >> c_duckdb_destroy_logical_type ptr
 
 -- | Throw a standardised registration error.
-throwRegistrationError :: String -> IO a
+throwRegistrationError :: HasCallStack => String -> IO a
 throwRegistrationError label =
     throwIO
         SQLError
             { sqlErrorMessage = Text.pack ("duckdb-simple: " <> label <> " failed")
             , sqlErrorType = Nothing
             , sqlErrorQuery = Nothing
+            , sqlErrorCallStack = callStack
             }

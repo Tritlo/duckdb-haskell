@@ -221,7 +221,7 @@ statementClosedError Statement{statementQuery} =
         , sqlErrorCallStack = callStack
         }
 
-appenderError :: Text -> SQLError
+appenderError :: HasCallStack => Text -> SQLError
 appenderError msg =
     SQLError
         { sqlErrorMessage = Text.pack "duckdb-simple: appenderError: " <> msg

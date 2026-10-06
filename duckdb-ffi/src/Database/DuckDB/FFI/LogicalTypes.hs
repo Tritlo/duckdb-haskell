@@ -27,6 +27,7 @@ module Database.DuckDB.FFI.LogicalTypes (
     c_duckdb_union_type_member_count,
     c_duckdb_union_type_member_name,
     c_duckdb_union_type_member_type,
+    c_duckdb_geometry_type_get_crs,
     c_duckdb_destroy_logical_type,
     c_duckdb_register_logical_type,
 ) where
@@ -44,6 +45,11 @@ Returns an invalid logical type, if type is: @DUCKDB_TYPE_INVALID@,
 @DUCKDB_TYPE_DECIMAL@, @DUCKDB_TYPE_ENUM@, @DUCKDB_TYPE_LIST@,
 @DUCKDB_TYPE_STRUCT@, @DUCKDB_TYPE_MAP@, @DUCKDB_TYPE_ARRAY@, or
 @DUCKDB_TYPE_UNION@.
+
+For @DUCKDB_TYPE_VARIANT@, DuckDB 1.5 returns an incomplete descriptor.
+Obtain a complete descriptor from a query result with
+@duckdb_column_logical_type@. Inspecting the incomplete descriptor's children
+can terminate the process.
 
 Parameters:
 * @type@: The primitive type to create.
@@ -150,10 +156,12 @@ foreign import ccall safe "duckdb_create_enum_type"
 should be destroyed with @duckdb_destroy_logical_type@.
 
 Parameters:
-* @width@: The width of the decimal type
-* @scale@: The scale of the decimal type
+* @width@: The width of the decimal type. Must be between 1 and 38.
+* @scale@: The scale of the decimal type. Must not exceed the width.
 
-Returns The logical type.
+Returns the logical type. If the width or scale is out of range, DuckDB 1.5.4
+and later return @nullptr@. Invalid input can terminate the process on DuckDB
+1.5.3. Validate the width and scale before calling this function on that version.
 -}
 foreign import ccall safe "duckdb_create_decimal_type"
     c_duckdb_create_decimal_type :: Word8 -> Word8 -> IO DuckDBLogicalType
@@ -363,6 +371,20 @@ Returns The child type of the union member. Must be destroyed with
 -}
 foreign import ccall safe "duckdb_union_type_member_type"
     c_duckdb_union_type_member_type :: DuckDBLogicalType -> DuckDBIdx -> IO DuckDBLogicalType
+
+{- | Return the CRS (Coordinate Reference System) of a GEOMETRY type.
+Free the result with @duckdb_free@.
+
+Parameters:
+* @type@: The GEOMETRY type.
+
+Returns the CRS, or @nullptr@ if the type is not GEOMETRY or has no CRS.
+The returned string remains valid after the logical type is destroyed.
+
+Available since DuckDB 1.5.2. The C API marks this function stable since 1.5.6.
+-}
+foreign import ccall safe "duckdb_geometry_type_get_crs"
+    c_duckdb_geometry_type_get_crs :: DuckDBLogicalType -> IO CString
 
 {- | Destroys the logical type and de-allocates all memory allocated for that type.
 

@@ -50,6 +50,8 @@ module Database.DuckDB.FFI.Types (
     pattern DuckDBTypeStringLiteral,
     pattern DuckDBTypeIntegerLiteral,
     pattern DuckDBTypeTimeNs,
+    pattern DuckDBTypeGeometry,
+    pattern DuckDBTypeVariant,
     DuckDBPendingState (..),
     pattern DuckDBPendingResultReady,
     pattern DuckDBPendingResultNotReady,
@@ -89,6 +91,9 @@ module Database.DuckDB.FFI.Types (
     pattern DuckDBStatementTypeAttach,
     pattern DuckDBStatementTypeDetach,
     pattern DuckDBStatementTypeMulti,
+    pattern DuckDBStatementTypeCopyDatabase,
+    pattern DuckDBStatementTypeUpdateExtensions,
+    pattern DuckDBStatementTypeMergeInto,
     DuckDBErrorType (..),
     pattern DuckDBErrorInvalid,
     pattern DuckDBErrorOutOfRange,
@@ -392,7 +397,9 @@ pattern
     , DuckDBTypeSQLNull
     , DuckDBTypeStringLiteral
     , DuckDBTypeIntegerLiteral
-    , DuckDBTypeTimeNs ::
+    , DuckDBTypeTimeNs
+    , DuckDBTypeGeometry
+    , DuckDBTypeVariant ::
         DuckDBType
 pattern DuckDBTypeInvalid = DuckDBType 0
 pattern DuckDBTypeBoolean = DuckDBType 1
@@ -434,6 +441,8 @@ pattern DuckDBTypeSQLNull = DuckDBType 36
 pattern DuckDBTypeStringLiteral = DuckDBType 37
 pattern DuckDBTypeIntegerLiteral = DuckDBType 38
 pattern DuckDBTypeTimeNs = DuckDBType 39
+pattern DuckDBTypeGeometry = DuckDBType 40
+pattern DuckDBTypeVariant = DuckDBType 41
 
 -- | Pending result state returned from @duckdb_pending_*@ APIs.
 newtype DuckDBPendingState = DuckDBPendingState {unDuckDBPendingState :: CInt}
@@ -514,7 +523,10 @@ pattern
     , DuckDBStatementTypeLogicalPlan
     , DuckDBStatementTypeAttach
     , DuckDBStatementTypeDetach
-    , DuckDBStatementTypeMulti ::
+    , DuckDBStatementTypeMulti
+    , DuckDBStatementTypeCopyDatabase
+    , DuckDBStatementTypeUpdateExtensions
+    , DuckDBStatementTypeMergeInto ::
         DuckDBStatementType
 pattern DuckDBStatementTypeInvalid = DuckDBStatementType 0
 pattern DuckDBStatementTypeSelect = DuckDBStatementType 1
@@ -544,6 +556,9 @@ pattern DuckDBStatementTypeLogicalPlan = DuckDBStatementType 24
 pattern DuckDBStatementTypeAttach = DuckDBStatementType 25
 pattern DuckDBStatementTypeDetach = DuckDBStatementType 26
 pattern DuckDBStatementTypeMulti = DuckDBStatementType 27
+pattern DuckDBStatementTypeCopyDatabase = DuckDBStatementType 28
+pattern DuckDBStatementTypeUpdateExtensions = DuckDBStatementType 29
+pattern DuckDBStatementTypeMergeInto = DuckDBStatementType 30
 
 {-# COMPLETE
     DuckDBStatementTypeInvalid
@@ -574,6 +589,9 @@ pattern DuckDBStatementTypeMulti = DuckDBStatementType 27
     , DuckDBStatementTypeAttach
     , DuckDBStatementTypeDetach
     , DuckDBStatementTypeMulti
+    , DuckDBStatementTypeCopyDatabase
+    , DuckDBStatementTypeUpdateExtensions
+    , DuckDBStatementTypeMergeInto
     #-}
 
 -- | DuckDB error classification codes.

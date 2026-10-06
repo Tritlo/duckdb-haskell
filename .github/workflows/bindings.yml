@@ -29,31 +29,47 @@ jobs:
           - os: ubuntu-latest
             ghc: '9.6.7'
             optimization: '1'
-            duckdb: '1.5.3'
+            duckdb: '1.5.6'
           - os: ubuntu-latest
             ghc: '9.8.4'
             optimization: '1'
-            duckdb: '1.5.3'
+            duckdb: '1.5.6'
           - os: ubuntu-latest
             ghc: '9.10.3'
             optimization: '1'
-            duckdb: '1.5.3'
+            duckdb: '1.5.6'
           - os: ubuntu-latest
             ghc: '9.12.4'
             optimization: '1'
-            duckdb: '1.5.3'
+            duckdb: '1.5.6'
+          - os: ubuntu-latest
+            ghc: '9.14.1'
+            optimization: '1'
+            duckdb: '1.5.6'
+          - os: macos-latest
+            ghc: '9.14.1'
+            optimization: '1'
+            duckdb: '1.5.6'
           - os: ubuntu-latest
             ghc: '9.14.1'
             optimization: '1'
             duckdb: '1.5.3'
-          - os: macos-latest
+            sha256: '0a926eba5bce0abc0010f4b9109133e4440cb74e97bd10fd2d0fc2a721621b05'
+          - os: ubuntu-latest
             ghc: '9.14.1'
             optimization: '1'
-            duckdb: '1.5.3'
+            duckdb: '1.5.4'
+            sha256: '838d98a85e697bab9935010c88a8c67d3312ccedcab4cb4a0ba01da65113bb70'
+          - os: ubuntu-latest
+            ghc: '9.14.1'
+            optimization: '1'
+            duckdb: '1.5.5'
+            sha256: '1fb8ce388157d84a25abe685a8a2520bf00c00321821968e4bb398fd766e7abb'
           - os: ubuntu-latest
             ghc: '9.14.1'
             optimization: '0'
             duckdb: '1.5.3'
+            sha256: '0a926eba5bce0abc0010f4b9109133e4440cb74e97bd10fd2d0fc2a721621b05'
     name: ${{ matrix.os }} / GHC ${{ matrix.ghc }} / DuckDB ${{ matrix.duckdb }} / -O${{ matrix.optimization }}
     runs-on: ${{ matrix.os }}
     env:
@@ -64,9 +80,21 @@ jobs:
         with:
           ghc-version: ${{ matrix.ghc }}
           cabal-version: '3.18.1.0'
+      - name: Install an older supported native library
+        if: matrix.duckdb != '1.5.6'
+        env:
+          DUCKDB_SHA256: ${{ matrix.sha256 }}
+        run: |
+          native_dir="$RUNNER_TEMP/duckdb-$DUCKDB_TEST_VERSION"
+          archive="$RUNNER_TEMP/libduckdb.zip"
+          curl --fail --location --proto '=https' --proto-redir '=https' \
+            -o "$archive" "https://github.com/duckdb/duckdb/releases/download/v$DUCKDB_TEST_VERSION/libduckdb-linux-amd64.zip"
+          printf '%s  %s\n' "$DUCKDB_SHA256" "$archive" | sha256sum -c -
+          unzip -q "$archive" libduckdb.so -d "$native_dir"
+          printf 'package duckdb-ffi\n  flags: +systemlib\n  extra-lib-dirs: %s\n' "$native_dir" > cabal.project.local
       - run: cabal update
       - name: Configure the native installation directory
-        if: matrix.ghc == '9.14.1' && matrix.optimization == '1'
+        if: matrix.ghc == '9.14.1' && matrix.optimization == '1' && matrix.duckdb == '1.5.6'
         run: |
           printf 'package duckdb-ffi\n  configure-options: "--duckdb-install-dir=%s"\n' \
             "$RUNNER_TEMP/duckdb native" > cabal.project.local
@@ -84,7 +112,9 @@ jobs:
       - name: Build and run an installed consumer
         if: matrix.ghc == '9.14.1' && matrix.optimization == '1'
         run: |
-          test -s "$RUNNER_TEMP/duckdb native/$DUCKDB_TEST_VERSION/"*/libduckdb.*
+          if [ "$DUCKDB_TEST_VERSION" = "1.5.6" ]; then
+            test -s "$RUNNER_TEMP/duckdb native/$DUCKDB_TEST_VERSION/"*/libduckdb.*
+          fi
           consumer="$RUNNER_TEMP/duckdb-consumer"
           mkdir "$consumer"
           cabal install --lib duckdb-ffi --with-compiler=ghc --disable-documentation --package-env="$consumer/environment"

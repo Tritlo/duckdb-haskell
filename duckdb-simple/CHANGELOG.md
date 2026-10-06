@@ -31,6 +31,10 @@ These changes target the 0.3.0.0 release. Do not release review branches separat
   creates `GEOMETRY` with no CRS, so composite parameters bind their geometry
   members without a CRS. Insert the value into a column with a CRS, or cast it
   in SQL, to apply the CRS.
+- Read STRUCT and UNION type metadata once for each result vector instead of
+  once for each row. Prepare their direct child readers at the same time.
+  A local benchmark with a CRS-tagged GEOMETRY field ran about ten times faster.
+  LIST, ARRAY, and MAP decoders can still read child metadata for each parent row.
 
 ## 0.2.0.0
 

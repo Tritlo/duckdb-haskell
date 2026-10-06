@@ -17,10 +17,10 @@ import Control.Monad (forM, when, zipWithM)
 import Data.IORef (IORef, atomicModifyIORef', readIORef, writeIORef)
 import qualified Data.Text as Text
 import Database.DuckDB.FFI
-import Database.DuckDB.Simple.FromField (Field (..))
+import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..))
 import Database.DuckDB.Simple.FromRow (RowParser, parseRow, rowErrorsToSqlError)
 import Database.DuckDB.Simple.Internal
-import Database.DuckDB.Simple.Materialize (materializeValue)
+import Database.DuckDB.Simple.Materialize (materializeValue, prepareGeometryDecoder)
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Foreign.Marshal.Alloc (free, malloc)
 import Foreign.Marshal.Utils (fillBytes)
@@ -138,16 +138,25 @@ fetchChunk conn queryText stream@StatementStream{statementStreamResult} = do
 
 prepareChunkVectors :: DuckDBDataChunk -> [StatementStreamColumn] -> IO [StatementStreamChunkVector]
 prepareChunkVectors chunk columns =
-    forM columns \StatementStreamColumn{statementStreamColumnIndex} -> do
+    forM columns \StatementStreamColumn{statementStreamColumnIndex, statementStreamColumnType} -> do
         vector <- c_duckdb_data_chunk_get_vector chunk (fromIntegral statementStreamColumnIndex)
         dataPtr <- c_duckdb_vector_get_data vector
         validity <- c_duckdb_vector_get_validity vector
+        geometry <- if statementStreamColumnType == DuckDBTypeGeometry then Just <$> prepareGeometryDecoder vector dataPtr validity else pure Nothing
         pure
             StatementStreamChunkVector
                 { statementStreamChunkVectorHandle = vector
                 , statementStreamChunkVectorData = dataPtr
                 , statementStreamChunkVectorValidity = validity
+                , statementStreamChunkVectorGeometry = geometry
                 }
+
+-- | Use readers whose borrowed buffers have the same lifetime as this chunk.
+materializeChunkValue :: DuckDBType -> StatementStreamChunkVector -> Int -> IO FieldValue
+materializeChunkValue dtype vector row =
+    case statementStreamChunkVectorGeometry vector of
+        Just decode -> maybe FieldNull FieldGeometry <$> decode row
+        Nothing -> materializeValue dtype (statementStreamChunkVectorHandle vector) (statementStreamChunkVectorData vector) (statementStreamChunkVectorValidity vector) row
 
 -- | Clear cursor ownership before releasing native resources.
 cleanupStatementStreamRef :: IORef StatementStreamState -> IO ()
@@ -224,14 +233,8 @@ buildMaterializedRow columns vectors rowIdx =
     zipWithM (buildMaterializedField rowIdx) columns vectors
 
 buildMaterializedField :: Int -> StatementStreamColumn -> StatementStreamChunkVector -> IO Field
-buildMaterializedField rowIdx column StatementStreamChunkVector{statementStreamChunkVectorHandle, statementStreamChunkVectorData, statementStreamChunkVectorValidity} = do
-    value <-
-        materializeValue
-            (statementStreamColumnType column)
-            statementStreamChunkVectorHandle
-            statementStreamChunkVectorData
-            statementStreamChunkVectorValidity
-            rowIdx
+buildMaterializedField rowIdx column vector = do
+    value <- materializeChunkValue (statementStreamColumnType column) vector rowIdx
     pure
         Field
             { fieldName = statementStreamColumnName column

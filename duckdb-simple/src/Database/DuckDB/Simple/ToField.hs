@@ -25,10 +25,13 @@ module Database.DuckDB.Simple.ToField (
 ) where
 
 import Control.Exception (bracket, throwIO)
-import Control.Monad (when)
+import Control.Monad (filterM, when, (>=>))
 import Data.Array (Array, elems)
 import Data.Bits (complement, shiftL, shiftR, (.&.), (.|.))
 import qualified Data.ByteString as BS
+import qualified Data.Geometry as G
+import qualified Data.Geometry.WKB as WKB
+import qualified Data.Geometry.WKT as WKT
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
@@ -41,9 +44,11 @@ import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.FFI
 import Database.DuckDB.Simple.FromField (BigNum (..), BitString (..), DecimalValue (..), FieldValue (..), IntervalValue (..), TimeWithZone (..), toBigNumBytes)
+import Database.DuckDB.Simple.Geometry (RawGeometry (..))
 import Database.DuckDB.Simple.Internal (
     SQLError (..),
     Statement (..),
+    withConnectionHandle,
     withStatementHandle,
  )
 import Database.DuckDB.Simple.LogicalRep (
@@ -53,10 +58,13 @@ import Database.DuckDB.Simple.LogicalRep (
     UnionMemberType (..),
     UnionValue (..),
     logicalTypeFromRep,
+    logicalTypeFromRepOn,
+    logicalTypeToRep,
     structValueTypeRep,
     unionValueTypeRep,
  )
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
+import Database.DuckDB.Simple.TypeContext (queryGeometryText, withTypeConnection)
 import Database.DuckDB.Simple.Types (Null (..))
 import Foreign.C.String (peekCString)
 import Foreign.C.Types (CDouble (..), CFloat (..))
@@ -85,10 +93,23 @@ class (DuckDBColumnType a) => ToDuckValue a where
     -- | Convert a Haskell value into an owned DuckDB boxed value.
     toDuckValue :: a -> IO DuckDBValue
 
+    {- | Use a borrowed connection to construct types that need SQL metadata.
+    Existing instances can use the connection-free default.
+    -}
+    toDuckValueOn :: Maybe DuckDBConnection -> a -> IO DuckDBValue
+    toDuckValueOn _ = toDuckValue
+
 valueBinding :: String -> IO DuckDBValue -> FieldBinding
 valueBinding display mkValue =
     mkFieldBinding display $ \stmt idx ->
         bindDuckValue stmt idx mkValue
+
+-- | Bind a value while its connection remains alive.
+contextValueBinding :: String -> (Maybe DuckDBConnection -> IO DuckDBValue) -> FieldBinding
+contextValueBinding display makeValue =
+    mkFieldBinding display \stmt idx ->
+        withConnectionHandle (statementConnection stmt) \connection ->
+            bindDuckValue stmt idx (makeValue (Just connection))
 
 -- | Types that map to a concrete DuckDB column type when used with @ToField@.
 class DuckDBColumnType a where
@@ -117,7 +138,7 @@ mkFieldBinding display action =
 class ToField a where
     toField :: a -> FieldBinding
     default toField :: (Show a, ToDuckValue a) => a -> FieldBinding
-    toField value = valueBinding (show value) (toDuckValue value)
+    toField value = contextValueBinding (show value) (`toDuckValueOn` value)
 
 instance ToField Null where
     toField Null = nullBinding "NULL"
@@ -144,6 +165,11 @@ instance ToField BitString
 instance ToField Day
 instance ToField TimeOfDay
 instance ToField LocalTime
+instance ToField RawGeometry
+
+-- | Bind the shape as @GEOMETRY@ with no CRS.
+instance ToField G.Geometry
+
 instance ToField UTCTime
 instance ToField (Unbounded Day)
 instance ToField (Unbounded LocalTime)
@@ -154,12 +180,12 @@ instance ToField BigNum where
 
 instance ToField (StructValue FieldValue) where
     toField structVal =
-        valueBinding "<struct>" (structValueDuckValue structVal)
+        contextValueBinding "<struct>" (`structValueDuckValue` structVal)
 
 instance ToField (UnionValue FieldValue) where
     toField unionVal =
         let label = Text.unpack (unionValueLabel unionVal)
-         in valueBinding ("<union " <> label <> ">") (unionValueDuckValue unionVal)
+         in contextValueBinding ("<union " <> label <> ">") (`unionValueDuckValue` unionVal)
 
 instance DuckDBColumnType BitString where
     duckdbColumnTypeFor _ = "BIT"
@@ -172,9 +198,9 @@ instance ToField BS.ByteString where
 
 instance (DuckDBColumnType a, ToDuckValue a) => ToField (Array Int a) where
     toField arr =
-        valueBinding
+        contextValueBinding
             ("<array length=" <> show (length (elems arr)) <> ">")
-            (arrayDuckValue arr)
+            (`arrayDuckValue` arr)
 
 instance (ToField a) => ToField (Maybe a) where
     toField Nothing = nullBinding "Nothing"
@@ -183,6 +209,12 @@ instance (ToField a) => ToField (Maybe a) where
          in binding
                 { fieldBindingDisplay = "Just " <> renderFieldBinding binding
                 }
+
+instance DuckDBColumnType RawGeometry where
+    duckdbColumnTypeFor _ = "GEOMETRY"
+
+instance DuckDBColumnType G.Geometry where
+    duckdbColumnTypeFor _ = "GEOMETRY"
 
 instance DuckDBColumnType Null where
     duckdbColumnTypeFor _ = "NULL"
@@ -423,16 +455,35 @@ utcTimestampDuckValue value =
 arrayDuckValue ::
     forall a.
     (DuckDBColumnType a, ToDuckValue a) =>
+    Maybe DuckDBConnection ->
     Array Int a ->
     IO DuckDBValue
-arrayDuckValue arr =
-    bracket (createElementLogicalType (Proxy :: Proxy a)) destroyLogicalType \elementType ->
-        withCreatedValues (map toDuckValue (elems arr)) \values ->
+arrayDuckValue connection arr =
+    withCreatedValues (map (toDuckValueOn connection) (elems arr)) \values ->
+        withArrayElementType connection (Proxy :: Proxy a) values \elementType ->
             withDuckValues values \ptr ->
                 checkedValue (c_duckdb_create_array_value elementType ptr (fromIntegral (length values)))
 
-structValueDuckValue :: StructValue FieldValue -> IO DuckDBValue
-structValueDuckValue StructValue{structValueFields, structValueTypes, structValueIndex = _} = do
+-- | Keep a GEOMETRY array's common CRS. Reject mixed CRS values before casting.
+withArrayElementType :: (DuckDBColumnType a) => Maybe DuckDBConnection -> Proxy a -> [DuckDBValue] -> (DuckDBLogicalType -> IO b) -> IO b
+withArrayElementType connection proxy values action
+    | duckdbColumnType proxy == "GEOMETRY" = do
+        present <- filterM (fmap (== 0) . c_duckdb_is_null_value) values
+        case present of
+            [] -> fallback
+            first : rest -> do
+                logical <- c_duckdb_get_value_type first
+                expected <- logicalTypeToRep logical
+                actual <- mapM (c_duckdb_get_value_type >=> logicalTypeToRep) rest
+                when (any (/= expected) actual) $
+                    throwIO (userError "duckdb-simple: GEOMETRY array elements have different CRS metadata")
+                action logical
+    | otherwise = fallback
+  where
+    fallback = bracket (createElementLogicalType connection proxy) destroyLogicalType action
+
+structValueDuckValue :: Maybe DuckDBConnection -> StructValue FieldValue -> IO DuckDBValue
+structValueDuckValue connection StructValue{structValueFields, structValueTypes, structValueIndex = _} = do
     let valueFields = elems structValueFields
         typeFields = elems structValueTypes
         typeNames = map structFieldName typeFields
@@ -444,17 +495,17 @@ structValueDuckValue StructValue{structValueFields, structValueTypes, structValu
     let actions =
             zipWith
                 ( \StructField{structFieldValue = typeRep} StructField{structFieldValue = fieldVal} ->
-                    fieldValueWithTypeDuckValue typeRep fieldVal
+                    fieldValueWithTypeDuckValue connection typeRep fieldVal
                 )
                 typeFields
                 valueFields
-    bracket (logicalTypeFromRep (LogicalTypeStruct structValueTypes)) destroyLogicalType \structLogical ->
+    bracket (logicalTypeFromRepOn connection (LogicalTypeStruct structValueTypes)) destroyLogicalType \structLogical ->
         withCreatedValues actions \childValues ->
             withDuckValues childValues $ \ptr ->
                 checkedValue (c_duckdb_create_struct_value structLogical ptr)
 
-unionValueDuckValue :: UnionValue FieldValue -> IO DuckDBValue
-unionValueDuckValue UnionValue{unionValueIndex, unionValueLabel, unionValuePayload, unionValueMembers} = do
+unionValueDuckValue :: Maybe DuckDBConnection -> UnionValue FieldValue -> IO DuckDBValue
+unionValueDuckValue connection UnionValue{unionValueIndex, unionValueLabel, unionValuePayload, unionValueMembers} = do
     let membersList = elems unionValueMembers
         idx = fromIntegral unionValueIndex :: Int
         memberCount = length membersList
@@ -463,20 +514,26 @@ unionValueDuckValue UnionValue{unionValueIndex, unionValueLabel, unionValuePaylo
     let UnionMemberType{unionMemberName, unionMemberType = memberType} = membersList !! idx
     when (unionValueLabel /= unionMemberName) $
         throwIO (userError "duckdb-simple: union tag and member name mismatch")
-    bracket (logicalTypeFromRep (LogicalTypeUnion unionValueMembers)) destroyLogicalType \unionLogical ->
-        bracket (checkedValue (fieldValueWithTypeDuckValue memberType unionValuePayload)) destroyValue \payloadValue ->
+    bracket (logicalTypeFromRepOn connection (LogicalTypeUnion unionValueMembers)) destroyLogicalType \unionLogical ->
+        bracket (checkedValue (fieldValueWithTypeDuckValue connection memberType unionValuePayload)) destroyValue \payloadValue ->
             checkedValue (c_duckdb_create_union_value unionLogical (fromIntegral unionValueIndex) payloadValue)
 
-fieldValueWithTypeDuckValue :: LogicalTypeRep -> FieldValue -> IO DuckDBValue
-fieldValueWithTypeDuckValue typeRep FieldNull =
-    bracket (logicalTypeFromRep typeRep) destroyLogicalType \logical ->
+fieldValueWithTypeDuckValue :: Maybe DuckDBConnection -> LogicalTypeRep -> FieldValue -> IO DuckDBValue
+fieldValueWithTypeDuckValue connection typeRep FieldNull =
+    bracket (logicalTypeFromRepOn connection typeRep) destroyLogicalType \logical ->
         withCreatedValues [nullDuckValue] \values ->
             withDuckValues values \ptr ->
                 bracket (checkedValue (c_duckdb_create_list_value logical ptr 1)) destroyValue \list ->
                     checkedValue (c_duckdb_get_list_child list 0)
-fieldValueWithTypeDuckValue rep value =
+fieldValueWithTypeDuckValue connection rep value =
     case rep of
-        LogicalTypeScalar dtype -> scalarFieldValueDuckValue dtype value
+        LogicalTypeScalar dtype -> scalarFieldValueDuckValue connection dtype value
+        LogicalTypeGeometry crs ->
+            case value of
+                FieldGeometry geometry
+                    | rawGeometryCRS geometry == crs -> geometryDuckValue connection geometry
+                    | otherwise -> throwIO (userError "duckdb-simple: GEOMETRY CRS does not match its declared type")
+                other -> typeMismatch "GEOMETRY" other
         LogicalTypeDecimal width scale ->
             case value of
                 FieldDecimal decVal@DecimalValue{decimalWidth, decimalScale}
@@ -486,8 +543,8 @@ fieldValueWithTypeDuckValue rep value =
         LogicalTypeList elemRep ->
             case value of
                 FieldList elemsList ->
-                    bracket (logicalTypeFromRep elemRep) destroyLogicalType \childLogical ->
-                        withCreatedValues (map (fieldValueWithTypeDuckValue elemRep) elemsList) \values ->
+                    bracket (logicalTypeFromRepOn connection elemRep) destroyLogicalType \childLogical ->
+                        withCreatedValues (map (fieldValueWithTypeDuckValue connection elemRep) elemsList) \values ->
                             withDuckValues values \ptr ->
                                 checkedValue (c_duckdb_create_list_value childLogical ptr (fromIntegral (length values)))
                 other -> typeMismatch "LIST" other
@@ -498,17 +555,17 @@ fieldValueWithTypeDuckValue rep value =
                         actualCount = length elemsList
                     when (fromIntegral actualCount /= size) $
                         throwIO (userError "duckdb-simple: array length mismatch")
-                    bracket (logicalTypeFromRep elemRep) destroyLogicalType \childLogical ->
-                        withCreatedValues (map (fieldValueWithTypeDuckValue elemRep) elemsList) \values ->
+                    bracket (logicalTypeFromRepOn connection elemRep) destroyLogicalType \childLogical ->
+                        withCreatedValues (map (fieldValueWithTypeDuckValue connection elemRep) elemsList) \values ->
                             withDuckValues values \ptr ->
                                 checkedValue (c_duckdb_create_array_value childLogical ptr (fromIntegral actualCount))
                 other -> typeMismatch "ARRAY" other
         LogicalTypeMap keyRep valueRep ->
             case value of
                 FieldMap pairs ->
-                    bracket (logicalTypeFromRep (LogicalTypeMap keyRep valueRep)) destroyLogicalType \mapLogical ->
-                        withCreatedValues (map (fieldValueWithTypeDuckValue keyRep . fst) pairs) \keyValues ->
-                            withCreatedValues (map (fieldValueWithTypeDuckValue valueRep . snd) pairs) \valValues ->
+                    bracket (logicalTypeFromRepOn connection (LogicalTypeMap keyRep valueRep)) destroyLogicalType \mapLogical ->
+                        withCreatedValues (map (fieldValueWithTypeDuckValue connection keyRep . fst) pairs) \keyValues ->
+                            withCreatedValues (map (fieldValueWithTypeDuckValue connection valueRep . snd) pairs) \valValues ->
                                 withDuckValues keyValues \keyPtr ->
                                     withDuckValues valValues \valPtr ->
                                         checkedValue (c_duckdb_create_map_value mapLogical keyPtr valPtr (fromIntegral (length pairs)))
@@ -516,13 +573,13 @@ fieldValueWithTypeDuckValue rep value =
         LogicalTypeStruct structRep ->
             case value of
                 FieldStruct structVal
-                    | structValueTypeRep structVal == LogicalTypeStruct structRep -> structValueDuckValue structVal
+                    | structValueTypeRep structVal == LogicalTypeStruct structRep -> structValueDuckValue connection structVal
                     | otherwise -> throwIO (userError "duckdb-simple: struct value type mismatch")
                 other -> typeMismatch "STRUCT" other
         LogicalTypeUnion unionRep ->
             case value of
                 FieldUnion unionVal
-                    | unionValueTypeRep unionVal == LogicalTypeUnion unionRep -> unionValueDuckValue unionVal
+                    | unionValueTypeRep unionVal == LogicalTypeUnion unionRep -> unionValueDuckValue connection unionVal
                     | otherwise -> throwIO (userError "duckdb-simple: union value type mismatch")
                 other -> typeMismatch "UNION" other
         LogicalTypeEnum dict ->
@@ -530,8 +587,8 @@ fieldValueWithTypeDuckValue rep value =
                 FieldEnum enumIdx -> enumDuckValue dict enumIdx
                 other -> typeMismatch "ENUM" other
 
-scalarFieldValueDuckValue :: DuckDBType -> FieldValue -> IO DuckDBValue
-scalarFieldValueDuckValue dtype value =
+scalarFieldValueDuckValue :: Maybe DuckDBConnection -> DuckDBType -> FieldValue -> IO DuckDBValue
+scalarFieldValueDuckValue connection dtype value =
     case (dtype, value) of
         (DuckDBTypeBoolean, FieldBool b) -> boolDuckValue b
         (DuckDBTypeTinyInt, FieldInt8 i) -> int8DuckValue i
@@ -546,6 +603,9 @@ scalarFieldValueDuckValue dtype value =
         (DuckDBTypeDouble, FieldDouble d) -> doubleDuckValue d
         (DuckDBTypeVarchar, FieldText t) -> textDuckValue t
         (DuckDBTypeBlob, FieldBlob b) -> blobDuckValue b
+        (DuckDBTypeGeometry, FieldGeometry geometry)
+            | rawGeometryCRS geometry == Nothing -> geometryDuckValue connection geometry
+            | otherwise -> throwIO (userError "duckdb-simple: GEOMETRY CRS needs LogicalTypeGeometry metadata")
         (DuckDBTypeUUID, FieldUUID u) -> uuidDuckValue u
         (DuckDBTypeBit, FieldBit bits) -> bitDuckValue bits
         (DuckDBTypeDate, FieldDate d) -> dateDuckValue d
@@ -680,11 +740,11 @@ typeMismatch expected actual =
             )
         )
 
-createElementLogicalType :: forall a. (DuckDBColumnType a) => Proxy a -> IO DuckDBLogicalType
-createElementLogicalType proxy =
+createElementLogicalType :: forall a. (DuckDBColumnType a) => Maybe DuckDBConnection -> Proxy a -> IO DuckDBLogicalType
+createElementLogicalType connection proxy =
     let typeName = duckdbColumnType proxy
      in case duckDBTypeFromName typeName of
-            Just dtype -> c_duckdb_create_logical_type dtype
+            Just dtype -> logicalTypeFromRepOn connection (LogicalTypeScalar dtype)
             Nothing ->
                 throwIO
                     ( SQLError
@@ -718,6 +778,7 @@ duckDBTypeFromName name =
         "TIMESTAMPTZ" -> Just DuckDBTypeTimestampTz
         "TEXT" -> Just DuckDBTypeVarchar
         "BLOB" -> Just DuckDBTypeBlob
+        "GEOMETRY" -> Just DuckDBTypeGeometry
         "UUID" -> Just DuckDBTypeUUID
         "BIT" -> Just DuckDBTypeBit
         "BIGNUM" -> Just DuckDBTypeBigNum
@@ -730,6 +791,33 @@ destroyLogicalType logical =
     alloca $ \ptr -> do
         poke ptr logical
         c_duckdb_destroy_logical_type ptr
+
+-- | Construct a GEOMETRY parameter without dropping its CRS.
+geometryDuckValue :: Maybe DuckDBConnection -> RawGeometry -> IO DuckDBValue
+geometryDuckValue connection geometry = do
+    either (throwIO . userError) pure (WKB.validateWKB (rawGeometryWKB geometry))
+    withTypeConnection connection \conn -> do
+        wkt <- queryGeometryText conn (rawGeometryWKB geometry)
+        geometryTextDuckValue (Just conn) (rawGeometryCRS geometry) wkt
+
+-- | Cast checked WKT to an owned native geometry with its CRS metadata.
+geometryTextDuckValue :: Maybe DuckDBConnection -> Maybe Text -> Text -> IO DuckDBValue
+geometryTextDuckValue connection crs wkt =
+    bracket (logicalTypeFromRepOn connection (LogicalTypeGeometry crs)) destroyLogicalType \logical ->
+        withCreatedValues [textDuckValue wkt] \values ->
+            withDuckValues values \ptr ->
+                bracket (checkedValue (c_duckdb_create_list_value logical ptr 1)) destroyValue \list ->
+                    checkedValue (c_duckdb_get_list_child list 0)
+
+instance ToDuckValue RawGeometry where
+    toDuckValue = geometryDuckValue Nothing
+    toDuckValueOn = geometryDuckValue
+
+instance ToDuckValue G.Geometry where
+    toDuckValue = toDuckValueOn Nothing
+    toDuckValueOn connection geometry = do
+        wkt <- either (throwIO . userError) pure (WKT.encodeWKT geometry)
+        geometryTextDuckValue connection Nothing wkt
 
 instance ToDuckValue Null where
     toDuckValue _ = nullDuckValue
@@ -819,14 +907,18 @@ instance ToDuckValue (Unbounded UTCTime) where
     toDuckValue = utcTimestampDuckValue
 
 instance ToDuckValue (StructValue FieldValue) where
-    toDuckValue = structValueDuckValue
+    toDuckValue = structValueDuckValue Nothing
+    toDuckValueOn = structValueDuckValue
 
 instance ToDuckValue (UnionValue FieldValue) where
-    toDuckValue = unionValueDuckValue
+    toDuckValue = unionValueDuckValue Nothing
+    toDuckValueOn = unionValueDuckValue
 
 instance (ToDuckValue a) => ToDuckValue (Maybe a) where
     toDuckValue Nothing = nullDuckValue
     toDuckValue (Just value) = toDuckValue value
+    toDuckValueOn _ Nothing = nullDuckValue
+    toDuckValueOn connection (Just value) = toDuckValueOn connection value
 
 -- | Preserve infinity sentinels and validate finite values before narrowing.
 encodeUnbounded :: (Integral b, Bounded b) => (a -> IO b) -> Unbounded a -> IO b

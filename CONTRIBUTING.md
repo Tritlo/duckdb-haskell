@@ -7,6 +7,9 @@
 `duckdb-simple/src` contains the higher-level API. Its integration and property
 tests are in `duckdb-simple/test`, and its leak test is in `duckdb-simple/leaktest`.
 
+The pure geometry types and codecs are maintained in
+[geometry-simple](https://github.com/Tritlo/geometry-simple).
+
 ## Testing guidelines
 
 Test new behavior through the database where possible. Add regressions for
@@ -22,13 +25,14 @@ cabal test all --test-show-details=direct
 cabal run duckdb-simple-leak-test -- all 100
 ```
 
-The last command checks 10,000 query cycles, 10,000 callback cycles, and 5,000
-cancellations. Each phase keeps one connection open. The normal leak test uses
-one tenth of those counts. Native RSS and thread checks require Linux `/proc`.
+The last command checks 10,000 query cycles, 10,000 callback cycles, 10,000
+geometry cycles, and 6,000 cancellations. Each phase keeps one connection open.
+The normal leak test uses one tenth of those counts. Native RSS and thread
+checks require Linux `/proc`.
 Callback collection and functional checks also run on other systems.
 
-The Linux CI job with GHC 9.12.4 also runs the callback, cancellation, and
-DataFrame checks under Valgrind. Definite and indirect native leaks fail the
+The Linux CI job with GHC 9.12.4 also runs the callback, cancellation, geometry,
+and DataFrame checks under Valgrind. Definite and indirect native leaks fail the
 job. That job sets `DUCKDB_LEAK_RSS_CHECK=0` because Valgrind changes process
 RSS. The ordinary leak test keeps the RSS assertion enabled.
 

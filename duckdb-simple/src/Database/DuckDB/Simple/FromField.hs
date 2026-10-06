@@ -15,6 +15,7 @@ Description : Conversion from DuckDB column values to Haskell types.
 module Database.DuckDB.Simple.FromField (
     Field (..),
     FieldValue (..),
+    RawGeometry (..),
     StructField (..),
     StructValue (..),
     UnionMemberType (..),
@@ -39,6 +40,7 @@ import Data.Array (Array, assocs, bounds, listArray, range, (!))
 import Data.Bits (Bits (..), finiteBitSize)
 import qualified Data.ByteString as BS
 import Data.Data (Typeable, typeRep)
+import qualified Data.Geometry as G
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -58,6 +60,7 @@ import Data.Time.LocalTime (
  )
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
+import Database.DuckDB.Simple.Geometry (RawGeometry (..), fromRawGeometry)
 import Database.DuckDB.Simple.LogicalRep (
     LogicalTypeRep (..),
     StructField (..),
@@ -89,6 +92,7 @@ data FieldValue
     | FieldText Text
     | FieldBool Bool
     | FieldBlob BS.ByteString
+    | FieldGeometry RawGeometry
     | FieldDate Date
     | FieldTime TimeOfDay
     | FieldTimestamp LocalTimestamp
@@ -304,6 +308,20 @@ class FromField a where
 
 instance FromField FieldValue where
     fromField Field{fieldValue} = Ok fieldValue
+
+instance FromField RawGeometry where
+    fromField f@Field{fieldValue} =
+        case fieldValue of
+            FieldGeometry value -> Ok value
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f "expected GEOMETRY"
+
+-- | Decode the shape without CRS metadata. Use t'RawGeometry' to retain the CRS.
+instance FromField G.Geometry where
+    fromField f@Field{fieldValue} = case fieldValue of
+        FieldGeometry raw -> either (returnError ConversionFailed f . Text.pack) pure (fromRawGeometry raw)
+        FieldNull -> returnError UnexpectedNull f ""
+        _ -> returnError Incompatible f "expected GEOMETRY"
 
 instance FromField (StructValue FieldValue) where
     fromField f@Field{fieldValue} =
@@ -549,6 +567,7 @@ instance FromField BS.ByteString where
     fromField f@Field{fieldValue} =
         case fieldValue of
             FieldBlob bs -> Ok bs
+            FieldGeometry RawGeometry{rawGeometryWKB} -> Ok rawGeometryWKB
             FieldText t -> Ok (TextEncoding.encodeUtf8 t)
             FieldBit (BitString _ bits) -> Ok bits
             FieldNull -> returnError UnexpectedNull f ""
@@ -777,6 +796,7 @@ fieldValueTypeName = \case
     FieldText{} -> "TEXT"
     FieldBool{} -> "BOOLEAN"
     FieldBlob{} -> "BLOB"
+    FieldGeometry{} -> "GEOMETRY"
     FieldDate{} -> "DATE"
     FieldTime{} -> "TIME"
     FieldTimestamp{} -> "TIMESTAMP"

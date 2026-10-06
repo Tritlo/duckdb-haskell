@@ -298,7 +298,8 @@ For manual cursor-style iteration, use `nextRow`/`nextRowWith` on an open
 `Statement` to pull rows one at a time and decide when to stop.
 
 Cursors support the same column types as eager queries, including STRUCT
-and UNION values with nested collections and NULLs.
+and UNION values with nested collections and NULLs. GEOMETRY works with eager
+queries, cursors, and folds.
 
 #### Optional native streaming
 
@@ -364,6 +365,73 @@ Arrow export uses DuckDB's schema and chunk conversion API. DuckDB materializes
 the native result before callbacks start, so its memory use depends on the
 result size. The older Arrow query and scan bindings remain available through
 `Database.DuckDB.FFI.Deprecated` and emit deprecation warnings.
+
+### GEOMETRY
+
+Use `Geometry` from `Data.Geometry` directly for decoded shapes. The released
+`geometry-simple` package provides the type and unboxed coordinate vectors.
+`duckdb-simple` supplies the parameter and result instances:
+
+```haskell
+import qualified Data.Geometry as G
+import qualified Data.Vector.Unboxed as U
+import Database.DuckDB.Simple
+
+let line = G.LineString (G.CoordinatesXY (U.fromList [G.XY 0 0, G.XY 1 2, G.XY 3 4]))
+rows <- query conn "SELECT ?" (Only line) :: IO [Only G.Geometry]
+```
+
+Each point and coordinate sequence stores its XY, XYZ, XYM, or XYZM layout.
+For example, `G.PointXY (G.XY 1 2)` is a point and `G.EmptyPoint G.DimXYZ`
+is an empty XYZ point. Use `Maybe G.Geometry` for SQL NULL.
+
+`G.Geometry` stores the shape without CRS metadata. Reading this type returns
+the coordinates without their CRS label. Binding it creates a `GEOMETRY` with
+no CRS. Use `RawGeometry` when you need to retain or supply the label.
+
+Use `decodeWKT` from `Data.Geometry.WKT` to parse WKT text without a database
+connection. This includes bare multipoint coordinates mixed with `EMPTY`,
+which DuckDB can emit through `ST_AsText`.
+
+Use `RawGeometry` when you need WKB without coordinate decoding. Its
+`rawGeometryWKB` and `rawGeometryCRS` fields retain the bytes and CRS. Existing
+`ByteString` result decoding still returns WKB bytes. `fromRawGeometry` decodes
+the shape without its CRS. `toRawGeometry` encodes a shape with
+`rawGeometryCRS = Nothing`. Set `rawGeometryCRS` on that result to supply a CRS.
+These helpers are in `Database.DuckDB.Simple.Geometry`. Both forms own their
+memory and remain usable after the connection closes.
+
+Arrays of `RawGeometry` require a common CRS. Use `Nothing` for no CRS. Binding
+rejects empty CRS strings and embedded NUL. A CRS labels the coordinates;
+changing the label does not transform them.
+
+The pure codec supports the seven geometry families, both WKB byte orders,
+and all four coordinate layouts. It checks encoding structure, line lengths,
+and ring closure. It accepts NaN and infinity. These checks do not validate
+topology. Decoding follows `geometry-simple` conventions: a point with NaN in
+both X and Y becomes an empty point, and empty multi-geometries and collections
+have no stored layout tag. Keep `RawGeometry` when these details must survive.
+
+DuckDB 1.5 has no WKB value constructor in its C API. Decoded parameters render
+to WKT for the native cast. Raw parameters are checked with `validateWKB`
+without allocating coordinate buffers, then converted with
+DuckDB's `ST_AsText(ST_GeomFromWKB(?))` to retain empty layout tags and native
+point semantics. This adds a native query to raw parameter binding.
+Native conversion can normalize WKB byte order and NaN bit patterns.
+
+When decoded multi-geometries or polygon rings have different layouts, the WKT
+writer uses their combined layout and fills absent Z or M ordinates with NaN.
+
+DuckDB's WKT parser limits geometry nesting to 16 levels and rejects empty
+polygon rings and collections with mixed coordinate layouts. To use its WKB
+reader directly, bind a `ByteString` with `SELECT ST_GeomFromWKB(?)`; this can
+read mixed-layout collections even when `ST_AsText` rejects them. See
+[geometry-simple](https://github.com/Tritlo/geometry-simple) for its representation
+and codec contracts.
+
+Normal parameter binding uses the statement's connection to construct native
+type metadata. Standalone `toDuckValue` and `logicalTypeFromRep` calls use a
+temporary connection when the C API cannot construct the type directly.
 
 ### Feature Coverage
 

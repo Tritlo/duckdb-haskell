@@ -98,6 +98,15 @@ See [duckdb-simple/README.md](duckdb-simple/README.md) for a step-by-step guide,
 extended examples, and notes on streaming behaviour and user-defined
 functions.
 
+## geometry-simple
+
+`geometry-simple` provides pure geometry types and checked WKB/WKT codecs. It
+uses unboxed coordinate vectors and supports XY, XYZ, XYM, XYZM, empty points,
+and collections. It needs no DuckDB or other native library. `duckdb-simple`
+provides parameter and result instances for its `Geometry` type. Use
+`RawGeometry` for WKB bytes with CRS metadata. See
+[geometry-simple](https://github.com/Tritlo/geometry-simple) for its API and examples.
+
 ## Supported compilers
 
 CI tests these GHC releases:

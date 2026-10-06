@@ -8,6 +8,30 @@ These changes target the 0.3.0.0 release. Do not release review branches separat
   and < 1.6. Test native versions 1.5.3 through 1.5.6.
 - Require `duckdb-ffi >= 1.5.6.0` for the updated native bindings.
 
+- Add parameter and result instances for `Data.Geometry.Geometry` from
+  `geometry-simple`. It provides decoded shapes, unboxed coordinate vectors,
+  and runtime coordinate layouts. This type does not store CRS metadata.
+  `RawGeometry` retains WKB and CRS without decoding coordinates. Existing
+  `ByteString` results still return WKB. Empty points remain distinct from SQL NULL.
+- Use published `geometry-simple >= 0.1.1.0` for pure types and WKB/WKT codecs.
+  Decoded parameters render to WKT for DuckDB's native cast. Raw parameters use
+  DuckDB's WKB reader and WKT writer to retain empty layout tags and native NaN
+  point details. Native conversion can normalize byte order and NaN bit patterns.
+  The WKB validator checks raw inputs without allocating coordinate buffers.
+- Add `FieldGeometry` and `LogicalTypeGeometry` to the public value and type
+  representations. Update exhaustive matches when upgrading to the next release.
+- Preserve CRS metadata in raw parameters and nested values. Reject empty CRS
+  strings and embedded NUL. Use `Nothing` for no CRS. Both geometry forms own
+  their memory and remain usable after the connection closes.
+- Resolve geometry conversion and CRS functions in DuckDB's system catalog.
+  User macros cannot replace those functions during parameter construction.
+- Add `toDuckValueOn` and `logicalTypeFromRepOn` to reuse the caller's connection
+  during native construction. Existing `ToDuckValue` instances keep their
+  default behavior. Standalone constructors close their temporary connection.
+- Initialize metadata-query results before native execution. A native error
+  that leaves the result untouched now raises an exception instead of allowing
+  cleanup to read uninitialized memory.
+
 ## 0.2.0.0
 
 ### Query execution and resource lifetime

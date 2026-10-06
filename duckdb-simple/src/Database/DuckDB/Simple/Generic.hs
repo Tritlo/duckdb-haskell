@@ -710,6 +710,7 @@ instance (Generic a, GToField (Rep a)) => DuckDBColumnType (ViaDuckDB a) where
             LogicalTypeScalar dtype -> duckdbTypeToName dtype
             LogicalTypeDecimal{} -> Text.pack "DECIMAL"
             LogicalTypeEnum{} -> Text.pack "ENUM"
+            LogicalTypeGeometry{} -> Text.pack "GEOMETRY"
 
 {- | Deriving-via @ToField@ instance. We reuse the helpers above to decide
 whether the top-level representation is a union, struct, or scalar and then

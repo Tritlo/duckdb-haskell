@@ -368,9 +368,9 @@ result size. The older Arrow query and scan bindings remain available through
 
 ### GEOMETRY
 
-Use `Geometry` from `Data.Geometry` directly for decoded shapes. The released
-`geometry-simple` package provides the type and unboxed coordinate vectors.
-`duckdb-simple` supplies the parameter and result instances:
+Use `Geometry` from `Data.Geometry` for decoded shapes. The `geometry-simple`
+package supplies the type and unboxed coordinate vectors. `duckdb-simple`
+supplies its parameter and result instances:
 
 ```haskell
 import qualified Data.Geometry as G
@@ -381,57 +381,68 @@ let line = G.LineString (G.CoordinatesXY (U.fromList [G.XY 0 0, G.XY 1 2, G.XY 3
 rows <- query conn "SELECT ?" (Only line) :: IO [Only G.Geometry]
 ```
 
-Each point and coordinate sequence stores its XY, XYZ, XYM, or XYZM layout.
-For example, `G.PointXY (G.XY 1 2)` is a point and `G.EmptyPoint G.DimXYZ`
-is an empty XYZ point. Use `Maybe G.Geometry` for SQL NULL.
+Points and coordinate sequences store their XY, XYZ, XYM, or XYZM layout.
+`G.EmptyPoint G.DimXYZ` is an empty XYZ point. Use `Maybe G.Geometry` for SQL NULL.
+Use `decodeWKT` from `Data.Geometry.WKT` to parse text without a database.
 
-`G.Geometry` stores the shape without CRS metadata. Reading this type returns
-the coordinates without their CRS label. Binding it creates a `GEOMETRY` with
-no CRS. Use `RawGeometry` when you need to retain or supply the label.
+`G.Geometry` has no CRS metadata. Reading it returns the coordinates without
+their CRS label. Binding it creates a `GEOMETRY` with no CRS. To attach a label,
+use `ST_SetCRS(?, ?)` with a shape and CRS text. This does not transform coordinates.
 
-Use `decodeWKT` from `Data.Geometry.WKT` to parse WKT text without a database
-connection. This includes bare multipoint coordinates mixed with `EMPTY`,
-which DuckDB can emit through `ST_AsText`.
+Use `RawGeometry` from `Database.DuckDB.Simple.Geometry` to read WKB and CRS
+without decoding coordinates. Its `rawGeometryWKB` and `rawGeometryCRS` fields
+own their data. They remain usable after the connection closes. Existing
+`ByteString` result decoding also returns WKB.
 
-Use `RawGeometry` when you need WKB without coordinate decoding. Its
-`rawGeometryWKB` and `rawGeometryCRS` fields retain the bytes and CRS. Existing
-`ByteString` result decoding still returns WKB bytes. `fromRawGeometry` decodes
-the shape without its CRS. `toRawGeometry` encodes a shape with
-`rawGeometryCRS = Nothing`. Set `rawGeometryCRS` on that result to supply a CRS.
-These helpers are in `Database.DuckDB.Simple.Geometry`. Both forms own their
-memory and remain usable after the connection closes.
+`RawGeometry` has no `ToField` instance. Import its bytes explicitly:
 
-Arrays of `RawGeometry` require a common CRS. Use `Nothing` for no CRS. Binding
-rejects empty CRS strings and embedded NUL. A CRS labels the coordinates;
-changing the label does not transform them.
+```haskell
+import Database.DuckDB.Simple.Geometry
 
-The pure codec supports the seven geometry families, both WKB byte orders,
-and all four coordinate layouts. It checks encoding structure, line lengths,
-and ring closure. It accepts NaN and infinity. These checks do not validate
-topology. Decoding follows `geometry-simple` conventions: a point with NaN in
-both X and Y becomes an empty point, and empty multi-geometries and collections
-have no stored layout tag. Keep `RawGeometry` when these details must survive.
+[Only raw] <- query_ conn "SELECT 'POINT Z (1 2 3)'::GEOMETRY('OGC:CRS84')"
+rows <- (case rawGeometryCRS raw of
+    Nothing -> query conn
+        "SELECT system.main.ST_GeomFromWKB(?)"
+        (Only (rawGeometryWKB raw))
+    Just crs -> query conn
+        "SELECT system.main.ST_SetCRS(system.main.ST_GeomFromWKB(?), ?)"
+        (rawGeometryWKB raw, crs)
+    ) :: IO [Only RawGeometry]
+```
 
-DuckDB 1.5 has no WKB value constructor in its C API. Decoded parameters render
-to WKT for the native cast. Raw parameters are checked with `validateWKB`
-without allocating coordinate buffers, then converted with
-DuckDB's `ST_AsText(ST_GeomFromWKB(?))` to retain empty layout tags and native
-point semantics. This adds a native query to raw parameter binding.
-Native conversion can normalize WKB byte order and NaN bit patterns.
+Use `Nothing` for no CRS and omit `ST_SetCRS` in that case. Passing SQL NULL
+to `ST_SetCRS` returns a NULL geometry. CRS text can contain `OGC:CRS84`,
+a custom name, or a full WKT2/PROJJSON definition. DuckDB can reduce a known
+CRS definition to its registered identifier. It can also normalize WKB byte
+order. The qualified function names select DuckDB's built-ins even if a user
+macro has the same name.
 
-When decoded multi-geometries or polygon rings have different layouts, the WKT
-writer uses their combined layout and fills absent Z or M ordinates with NaN.
+`fromRawGeometry` decodes the shape and drops CRS metadata. `toRawGeometry`
+encodes a shape with no CRS. These helpers follow the geometry-simple contracts.
+NaN in both WKB point X and Y denotes an empty point. Empty multi-geometries
+and collections have no stored layout tag in the decoded representation.
+Keep the raw bytes when these details must survive.
 
-DuckDB's WKT parser limits geometry nesting to 16 levels and rejects empty
-polygon rings and collections with mixed coordinate layouts. To use its WKB
-reader directly, bind a `ByteString` with `SELECT ST_GeomFromWKB(?)`; this can
-read mixed-layout collections even when `ST_AsText` rejects them. See
-[geometry-simple](https://github.com/Tritlo/geometry-simple) for its representation
-and codec contracts.
+Structured parameters use `encodeWKT` and DuckDB's native cast. DuckDB 1.5
+has no WKB value constructor in its C API. The WKT writer combines layouts
+in multi-geometries and polygon rings. It fills absent Z or M with NaN.
+DuckDB's WKT parser limits nesting to 16 levels and rejects empty polygon rings
+and mixed collection layouts. Explicit WKB import preserves mixed member
+layouts and native NaN payload bits that WKT cannot retain.
 
-Normal parameter binding uses the statement's connection to construct native
-type metadata. Standalone `toDuckValue` and `logicalTypeFromRep` calls use a
-temporary connection when the C API cannot construct the type directly.
+`FieldGeometry` contains a raw result. Generic STRUCT and UNION parameters
+that contain non-NULL raw geometry raise an error. Construct those values in
+SQL with explicit WKB import. Their result decoding retains WKB and CRS,
+including inside LIST, ARRAY, MAP, STRUCT, and UNION values.
+
+`LogicalTypeGeometry` describes CRS metadata. Constructing a type with a CRS
+uses the caller's connection through `logicalTypeFromRepOn`. The standalone
+`logicalTypeFromRep` function closes its temporary connection before returning.
+Type construction rejects empty CRS text and embedded NUL. Structured geometry
+parameters need no metadata query.
+
+See [geometry-simple](https://github.com/Tritlo/geometry-simple) for the seven
+supported families, construction checks, and codec normalization rules.
 
 ### Feature Coverage
 
@@ -443,7 +454,7 @@ temporary connection when the C API cannot construct the type directly.
   decimals (with width/scale), intervals, precise and timezone-aware temporals,
   enums, bit strings, blobs, bignums, and UUIDs.
 - Composite types: STRUCTs, UNIONs, LISTs, fixed-length ARRAYs, and MAPs with
-  full encoding/decoding support.
+  typed parameters and results.
 - Generic encoding/decoding: automatic STRUCT/UNION mapping for Haskell ADTs via
   GHC generics and the `ViaDuckDB` deriving-via helper.
 - Row decoding via `FromField`/`FromRow`, with generic deriving for product types.

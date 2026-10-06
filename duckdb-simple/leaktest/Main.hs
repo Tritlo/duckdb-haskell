@@ -20,6 +20,7 @@ module Main (main) where
 import Control.Concurrent (forkFinally, killThread, newEmptyMVar, putMVar, takeMVar, threadDelay, tryPutMVar)
 import Control.Exception (AsyncException (ThreadKilled), IOException, SomeException, evaluate, fromException, try)
 import Control.Monad (forM_, replicateM, unless, void, when)
+import qualified Data.ByteString as BS
 import qualified Data.Geometry as G
 import Data.IORef (atomicModifyIORef', atomicWriteIORef, mkWeakIORef, newIORef, readIORef)
 import Data.Int (Int64)
@@ -108,17 +109,17 @@ main = do
     when (mode == "decode-failure") checkDecodeFailure
     when (mode `elem` ["all", "new-types"]) (checkNewTypes batches)
 
--- | Reuse geometry metadata and release native values after binding failures.
+-- | Import raw WKB and release native results after conversion failures.
 checkNewTypes :: Int -> IO ()
 checkNewTypes batches =
     withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
         [Only geometry] <- query_ conn "SELECT 'POINT ZM (1 2 3 4)'::GEOMETRY('OGC:CRS84')" :: IO [Only RawGeometry]
         typed <- either fail pure (fromRawGeometry geometry) :: IO G.Geometry
         let batch = forM_ [1 .. 100 :: Int] \_ -> do
-                rows <- query conn "SELECT ?, ?" (geometry, typed)
+                rows <- query conn "SELECT system.main.ST_SetCRS(system.main.ST_GeomFromWKB(?), ?), ?" (rawGeometryWKB geometry, rawGeometryCRS geometry, typed)
                 unless (rows == [(geometry, typed)]) (fail "geometry round trip failed")
-                expectFailure (query conn "SELECT ?, ?" (geometry, geometry{rawGeometryCRS = Just ""}) :: IO [(RawGeometry, RawGeometry)])
-                expectFailure (query conn "SELECT ?" (Only geometry) :: IO [Only Int64])
+                expectFailure (query conn "SELECT ?, system.main.ST_GeomFromWKB(?)" (typed, BS.pack [1, 1, 0, 0, 0]) :: IO [(G.Geometry, RawGeometry)])
+                expectFailure (query conn "SELECT system.main.ST_GeomFromWKB(?)" (Only (rawGeometryWKB geometry)) :: IO [Only Int64])
         batch
         performMajorGC
         before <- readUsage

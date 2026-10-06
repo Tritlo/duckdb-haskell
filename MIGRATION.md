@@ -28,7 +28,8 @@ DuckDB 1.5.6 update. It is not a separate release.
 
 Use `Data.Geometry.Geometry` from the published `geometry-simple` package for
 decoded shapes. Use `RawGeometry` for WKB bytes and CRS metadata. The package's
-`Geometry` type has no CRS. Both forms have parameter and result instances.
+`Geometry` type has no CRS. It has parameter and result instances.
+`RawGeometry` has a result instance. Import its WKB and CRS with explicit SQL.
 See [the Geometry notes](duckdb-simple/README.md#geometry) for examples and limits.
 
 `FieldValue` gains `FieldGeometry`, and `LogicalTypeRep` gains

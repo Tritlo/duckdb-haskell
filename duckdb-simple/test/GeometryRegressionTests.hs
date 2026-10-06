@@ -4,7 +4,7 @@
 
 module GeometryRegressionTests (tests) where
 
-import Control.Exception (SomeException, try)
+import Control.Exception (SomeException, displayException, try)
 import Control.Monad (forM_)
 import Data.Array (Array, listArray)
 import qualified Data.ByteString as BS
@@ -12,6 +12,7 @@ import qualified Data.Geometry as G
 import qualified Data.Geometry.WKB as WKB
 import qualified Data.Geometry.WKT as WKT
 import Data.Int (Int64)
+import Data.List (isInfixOf)
 import Data.Text (Text)
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
@@ -19,6 +20,7 @@ import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
 import Database.DuckDB.Simple.FromField (FieldValue, StructValue, UnionValue)
 import Database.DuckDB.Simple.Geometry (RawGeometry (..), fromRawGeometry, toRawGeometry)
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), logicalTypeFromRep)
 import GHC.Float (castWord64ToDouble)
 import System.Mem (performMajorGC)
 import Test.Tasty (TestTree, testGroup)
@@ -42,7 +44,7 @@ tests =
                 forM_ [G.LineString (G.CoordinatesXY coordinates), G.MultiPoint points] \shape -> do
                     (query conn "SELECT ?" (Only shape)) >>= (@?= [Only shape])
                     raw <- either assertFailure pure (toRawGeometry shape)
-                    (query conn "SELECT ?" (Only raw) :: IO [Only RawGeometry]) >>= (@?= [Only raw])
+                    (importRaw conn raw) >>= (@?= [Only raw])
         , testCase "WKT binding preserves exact finite coordinate bits" $
             withConnection ":memory:" \conn ->
                 forM_ [0, 0x8000000000000000, 1, 0x8000000000000001, 0x000fffffffffffff, 0x0010000000000000, 0x3fb999999999999b, 0x3ff0000000000001, 0x44b52d02c7e14af6, 0x7fefffffffffffff, 0xffefffffffffffff] \bits -> do
@@ -51,7 +53,7 @@ tests =
                     [(actual, wkt)] <- query conn "SELECT ST_AsWKB(?), ST_AsText(?)" (shape, shape) :: IO [(BS.ByteString, Text)]
                     actual @?= expected
                     (WKT.decodeWKT wkt >>= WKB.encodeWKB) @?= Right expected
-                    (query conn "SELECT ST_AsWKB(?)" (Only (RawGeometry expected Nothing)) :: IO [Only BS.ByteString])
+                    (query conn "SELECT system.main.ST_AsWKB(system.main.ST_GeomFromWKB(?))" (Only expected) :: IO [Only BS.ByteString])
                         >>= (@?= [Only expected])
         , testCase "pure WKT decoding agrees with native geometry results" $
             withConnection ":memory:" \conn ->
@@ -113,8 +115,10 @@ tests =
                 unannotated <- either assertFailure pure (toRawGeometry shape)
                 rawGeometryCRS unannotated @?= Nothing
                 rawGeometryWKB unannotated @?= rawGeometryWKB raw
-                (query conn "SELECT ST_CRS(?), ST_CRS(?), ST_CRS(?), ?" (raw, shape, unannotated{rawGeometryCRS = rawGeometryCRS raw}, shape) :: IO [(Maybe Text, Maybe Text, Maybe Text, G.Geometry)])
-                    >>= (@?= [(Just "OGC:CRS84", Nothing, Just "OGC:CRS84", shape)])
+                (query conn "SELECT system.main.ST_CRS(system.main.ST_SetCRS(system.main.ST_GeomFromWKB(?), ?))" (rawParameters raw) :: IO [Only (Maybe Text)])
+                    >>= (@?= [Only (Just "OGC:CRS84")])
+                (query conn "SELECT ST_CRS(?), ?" (shape, shape) :: IO [(Maybe Text, G.Geometry)])
+                    >>= (@?= [(Nothing, shape)])
         , testCase "decoded coordinates remain usable after closing their connection" $ do
             geometry <- withConnection ":memory:" \conn -> do
                 [Only value] <- query_ conn "SELECT 'LINESTRING (1 2, 3 4, 5 6)'::GEOMETRY('OGC:CRS84')" :: IO [Only G.Geometry]
@@ -123,11 +127,11 @@ tests =
             case geometry of
                 G.LineString (G.CoordinatesXY coords) -> U.foldl' (\acc (G.XY x y) -> acc + x + y) 0 coords @?= 21
                 other -> assertFailure ("unexpected geometry: " <> show other)
-        , testCase "native WKB round trips through GEOMETRY parameters" $
+        , testCase "native WKB round trips through explicit binary import" $
             withConnection ":memory:" \conn ->
                 forM_ shapes \wkt -> do
                     [Only geometry] <- query conn "SELECT ?::GEOMETRY" (Only wkt)
-                    (query conn "SELECT typeof(?), ?" (geometry, geometry) :: IO [(Text, RawGeometry)])
+                    (query conn "SELECT typeof(system.main.ST_GeomFromWKB(?)), system.main.ST_GeomFromWKB(?)" (rawGeometryWKB geometry, rawGeometryWKB geometry) :: IO [(Text, RawGeometry)])
                         >>= (@?= [("GEOMETRY", geometry)])
         , testCase "raw empty containers retain layouts that decoded values do not store" $
             withConnection ":memory:" \conn ->
@@ -140,18 +144,18 @@ tests =
                     )
                     \(wkt, normalizedWKT) -> do
                         [Only raw] <- query conn "SELECT ?::GEOMETRY('OGC:CRS84')" (Only (wkt :: Text)) :: IO [Only RawGeometry]
-                        (query conn "SELECT ?" (Only raw) :: IO [Only RawGeometry]) >>= (@?= [Only raw])
+                        (importRaw conn raw) >>= (@?= [Only raw])
                         decoded <- either assertFailure pure (fromRawGeometry raw)
                         WKT.encodeWKT decoded @?= Right normalizedWKT
                         normalized <- either assertFailure pure (toRawGeometry decoded)
                         rawGeometryCRS normalized @?= Nothing
                         assertBool "decoded empty containers must not retain an unstored dimension tag" (rawGeometryWKB normalized /= rawGeometryWKB raw)
-        , testCase "mixed-layout collections fail binding without poisoning the connection" $
+        , testCase "mixed-layout collections use binary import without WKT normalization" $
             withConnection ":memory:" \conn -> do
                 let geometry = G.GeometryCollection (V.fromList [G.PointGeometry (G.PointXY (G.XY 1 2)), G.PointGeometry (G.PointXYZ (G.XYZ 3 4 5))])
                 raw <- either assertFailure pure (toRawGeometry geometry)
                 assertFailureIO (query conn "SELECT ?" (Only geometry) :: IO [Only G.Geometry])
-                assertFailureIO (query conn "SELECT ?" (Only raw) :: IO [Only RawGeometry])
+                (importRaw conn raw) >>= (@?= [Only raw])
                 (query conn "SELECT ST_GeomFromWKB(?)" (Only (rawGeometryWKB raw)) :: IO [Only G.Geometry])
                     >>= (@?= [Only geometry])
                 (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
@@ -172,12 +176,24 @@ tests =
         , testCase "raw NaN points retain ordinates that decoded emptiness normalizes" $
             withConnection ":memory:" \conn -> do
                 [Only raw] <- query_ conn "SELECT 'POINT Z (NaN NaN 7)'::GEOMETRY" :: IO [Only RawGeometry]
-                (query conn "SELECT ?" (Only raw) :: IO [Only RawGeometry]) >>= (@?= [Only raw])
+                (importRaw conn raw) >>= (@?= [Only raw])
                 decoded <- either assertFailure pure (fromRawGeometry raw)
                 decoded @?= G.PointGeometry (G.EmptyPoint G.DimXYZ)
                 normalized <- either assertFailure pure (toRawGeometry decoded)
                 assertBool "decoding an XY-NaN point normalizes its extra ordinates" (rawGeometryWKB normalized /= rawGeometryWKB raw)
                 (query conn "SELECT ?" (Only decoded) :: IO [Only G.Geometry]) >>= (@?= [Only decoded])
+        , testCase "binary import preserves distinct NaN payload bits" $
+            withConnection ":memory:" \conn -> do
+                let shape = G.PointGeometry (G.PointXYZ (G.XYZ (castWord64ToDouble 0x7ff8000000000001) (castWord64ToDouble 0x7ff8000000000002) 7))
+                raw <- either assertFailure pure (toRawGeometry shape)
+                (importRaw conn raw) >>= (@?= [Only raw])
+                fromRawGeometry raw @?= Right (G.PointGeometry (G.EmptyPoint G.DimXYZ))
+        , testCase "binary import preserves mixed empty and nonempty member layouts" $
+            withConnection ":memory:" \conn -> do
+                let shape = G.GeometryCollection (V.fromList [G.PointGeometry (G.EmptyPoint G.DimXY), G.PointGeometry (G.PointXYZ (G.XYZ 1 2 3))])
+                raw <- either assertFailure pure (toRawGeometry shape)
+                (query conn "SELECT system.main.ST_GeomFromWKB(?)" (Only (rawGeometryWKB raw)) :: IO [Only RawGeometry]) >>= (@?= [Only raw])
+                (query conn "SELECT system.main.ST_GeomFromWKB(?)" (Only (rawGeometryWKB raw)) :: IO [Only G.Geometry]) >>= (@?= [Only shape])
         , testCase "decoded polygon writing normalizes all-empty rings" $
             withConnection ":memory:" \conn -> do
                 let emptyRing = G.CoordinatesXYZ U.empty
@@ -200,20 +216,26 @@ tests =
                 assertBool "raw result bytes remain available" (not (BS.null (rawGeometryWKB raw)))
                 assertFailureIO (query_ conn "SELECT 'LINESTRING (1 2)'::GEOMETRY" :: IO [Only G.Geometry])
                 (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
-        , testCase "CRS survives parameter binding and table insertion" $
+        , testCase "CRS survives explicit binary import and table insertion" $
             withConnection ":memory:" \conn -> do
                 [Only geometry] <- query_ conn "SELECT 'POINT ZM (1 2 3 4)'::GEOMETRY('OGC:CRS84')"
                 rawGeometryCRS geometry @?= Just "OGC:CRS84"
-                (query conn "SELECT ST_CRS(?), ?" (geometry, geometry) :: IO [(Text, RawGeometry)])
-                    >>= (@?= [("OGC:CRS84", geometry)])
+                (importRaw conn geometry)
+                    >>= (@?= [Only geometry])
                 _ <- execute_ conn "CREATE TABLE shapes (shape GEOMETRY('OGC:CRS84'))"
-                _ <- execute conn "INSERT INTO shapes VALUES (?)" (Only geometry)
+                _ <- execute conn "INSERT INTO shapes VALUES (system.main.ST_SetCRS(system.main.ST_GeomFromWKB(?), ?))" (rawParameters geometry)
                 (query_ conn "SELECT shape FROM shapes" :: IO [Only RawGeometry]) >>= (@?= [Only geometry])
-        , testCase "CRS parameters preserve quotes and Unicode" $
+        , testCase "CRS parameters preserve custom names and full definitions" $
             withConnection ":memory:" \conn -> do
                 [Only geometry] <- query_ conn "SELECT 'POINT (1 2)'::GEOMETRY"
-                let annotated = geometry{rawGeometryCRS = Just "local' íslenska λ"}
-                (query conn "SELECT ?" (Only annotated) :: IO [Only RawGeometry]) >>= (@?= [Only annotated])
+                forM_
+                    [ "local' íslenska λ"
+                    , "ENGCRS[\"Local grid\",EDATUM[\"Local datum\"],CS[Cartesian,2],AXIS[\"x\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"y\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]"
+                    , "{\"type\":\"EngineeringCRS\",\"name\":\"Local grid\",\"datum\":{\"type\":\"EngineeringDatum\",\"name\":\"Local datum\"},\"coordinate_system\":{\"subtype\":\"Cartesian\",\"axis\":[{\"name\":\"x\",\"abbreviation\":\"x\",\"direction\":\"east\",\"unit\":\"metre\"},{\"name\":\"y\",\"abbreviation\":\"y\",\"direction\":\"north\",\"unit\":\"metre\"}]}}"
+                    ]
+                    \crs -> do
+                        let annotated = geometry{rawGeometryCRS = Just crs}
+                        (importRaw conn annotated) >>= (@?= [Only annotated])
         , testCase "geometry construction ignores user macros with built-in names" $
             withConnection ":memory:" \conn -> do
                 [Only raw] <- query_ conn "SELECT 'POINT (1 2)'::GEOMETRY('OGC:CRS84')" :: IO [Only RawGeometry]
@@ -221,32 +243,34 @@ tests =
                 _ <- execute_ conn "CREATE MACRO ST_AsText(x) AS 42"
                 _ <- execute_ conn "CREATE MACRO ST_GeomFromWKB(x) AS 'POINT (9 9)'::GEOMETRY"
                 _ <- execute_ conn "CREATE MACRO ST_SetCRS(x, crs) AS 42"
-                (query conn "SELECT ?, ?" (raw, decoded) :: IO [(RawGeometry, G.Geometry)])
+                (query conn "SELECT system.main.ST_SetCRS(system.main.ST_GeomFromWKB(?), ?), ?" (rawGeometryWKB raw, rawGeometryCRS raw, decoded) :: IO [(RawGeometry, G.Geometry)])
                     >>= (@?= [(raw, decoded)])
         , testCase "NULL and empty geometry stay distinct" $
             withConnection ":memory:" \conn -> do
                 [Only empty] <- query_ conn "SELECT 'POINT EMPTY'::GEOMETRY" :: IO [Only RawGeometry]
-                (query conn "SELECT ?, ?" (Nothing :: Maybe RawGeometry, Just empty) :: IO [(Maybe RawGeometry, Maybe RawGeometry)])
+                (query conn "SELECT system.main.ST_GeomFromWKB(?), system.main.ST_GeomFromWKB(?)" (Nothing :: Maybe BS.ByteString, Just (rawGeometryWKB empty)) :: IO [(Maybe RawGeometry, Maybe RawGeometry)])
                     >>= (@?= [(Nothing, Just empty)])
-        , testCase "arrays keep their common CRS, including NULL elements" $
+        , testCase "binary import constructs arrays with a common CRS and NULL elements" $
             withConnection ":memory:" \conn -> do
                 [Only geometry] <- query_ conn "SELECT 'POINT (1 2)'::GEOMETRY('OGC:CRS84')" :: IO [Only RawGeometry]
                 let values = listArray (0, 2) [Nothing, Just geometry, Nothing]
-                (query conn "SELECT ?" (Only values) :: IO [Only (Array Int (Maybe RawGeometry))]) >>= (@?= [Only values])
-                assertFailureIO (query conn "SELECT ?" (Only (listArray (0 :: Int, 1) [geometry, geometry{rawGeometryCRS = Nothing}])) :: IO [Only FieldValue])
-        , testCase "nested LIST, ARRAY and MAP values preserve CRS" $
+                (query conn "SELECT [NULL, system.main.ST_SetCRS(system.main.ST_GeomFromWKB(?), ?), NULL]::GEOMETRY('OGC:CRS84')[3]" (rawParameters geometry) :: IO [Only (Array Int (Maybe RawGeometry))]) >>= (@?= [Only values])
+        , testCase "nested LIST, ARRAY and MAP results preserve CRS and reject implicit raw binding" $
             withConnection ":memory:" \conn -> do
                 [Only value] <-
                     query_
                         conn
                         "SELECT {'xs': ['POINT (1 2)'::GEOMETRY('OGC:CRS84'), NULL], 'fixed': ['POINT EMPTY'::GEOMETRY('OGC:CRS84')]::GEOMETRY('OGC:CRS84')[1], 'map': MAP {'one': 'POINT (3 4)'::GEOMETRY('OGC:CRS84')}}" ::
                         IO [Only (StructValue FieldValue)]
-                (query conn "SELECT ?" (Only value) :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only value])
-        , testCase "UNION payloads preserve geometry types, including NULL" $
-            withConnection ":memory:" \conn ->
-                forM_ ["SELECT union_value(shape := 'POINT (1 2)'::GEOMETRY('OGC:CRS84'))", "SELECT union_value(shape := NULL::GEOMETRY('OGC:CRS84'))"] \sql -> do
-                    [Only value] <- query_ conn sql :: IO [Only (UnionValue FieldValue)]
-                    (query conn "SELECT ?" (Only value) :: IO [Only (UnionValue FieldValue)]) >>= (@?= [Only value])
+                assertRawBindingFailure (query conn "SELECT ?" (Only value) :: IO [Only (StructValue FieldValue)])
+                (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
+        , testCase "UNION geometry results retain CRS and reject implicit raw binding" $
+            withConnection ":memory:" \conn -> do
+                [Only value] <- query_ conn "SELECT union_value(shape := 'POINT (1 2)'::GEOMETRY('OGC:CRS84'))" :: IO [Only (UnionValue FieldValue)]
+                assertRawBindingFailure (query conn "SELECT ?" (Only value) :: IO [Only (UnionValue FieldValue)])
+                [Only nullValue] <- query_ conn "SELECT union_value(shape := NULL::GEOMETRY('OGC:CRS84'))" :: IO [Only (UnionValue FieldValue)]
+                (query conn "SELECT ?" (Only nullValue) :: IO [Only (UnionValue FieldValue)]) >>= (@?= [Only nullValue])
+                (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
         , testGroup
             "folds cross chunk boundaries and preserve CRS"
             [ testCase mode $
@@ -258,12 +282,11 @@ tests =
                     count @?= 5000
             | (mode, foldRows) <- [("materialized", fold_), ("deprecated streaming", Streaming.fold_)]
             ]
-        , testCase "invalid WKB, empty CRS and NUL CRS fail without poisoning the connection" $
+        , testCase "invalid binary import and invalid type metadata leave the connection usable" $
             withConnection ":memory:" \conn -> do
-                assertFailureIO (query conn "SELECT ?" (Only (RawGeometry BS.empty Nothing)) :: IO [Only RawGeometry])
-                [Only geometry] <- query_ conn "SELECT 'POINT (1 2)'::GEOMETRY" :: IO [Only RawGeometry]
-                assertFailureIO (query conn "SELECT ?" (Only geometry{rawGeometryCRS = Just ""}) :: IO [Only RawGeometry])
-                assertFailureIO (query conn "SELECT ?" (Only geometry{rawGeometryCRS = Just "OGC:CRS84\0bad"}) :: IO [Only RawGeometry])
+                assertFailureIO (query conn "SELECT system.main.ST_GeomFromWKB(?)" (Only (BS.pack [1, 1, 0, 0, 0])) :: IO [Only RawGeometry])
+                assertFailureIO (logicalTypeFromRep (LogicalTypeGeometry (Just "")))
+                assertFailureIO (logicalTypeFromRep (LogicalTypeGeometry (Just "OGC:CRS84\0bad")))
                 (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
         ]
 
@@ -295,8 +318,26 @@ shapeRoundTrips conn dimensions point coordinates first second = do
         raw <- either assertFailure pure (toRawGeometry shape)
         fromRawGeometry raw @?= Right shape
         let annotated = raw{rawGeometryCRS = Just "local' íslenska λ"}
-        (query conn "SELECT ?, ST_CRS(?)" (annotated, annotated) :: IO [(G.Geometry, Maybe Text)])
-            >>= (@?= [(shape, rawGeometryCRS annotated)])
+        (importRaw conn annotated)
+            >>= (@?= [Only annotated])
+
+-- | Import WKB without converting a missing CRS to SQL NULL.
+importRaw :: Connection -> RawGeometry -> IO [Only RawGeometry]
+importRaw conn raw = case rawGeometryCRS raw of
+    Nothing -> query conn "SELECT system.main.ST_GeomFromWKB(?)" (Only (rawGeometryWKB raw))
+    Just crs -> query conn "SELECT system.main.ST_SetCRS(system.main.ST_GeomFromWKB(?), ?)" (rawGeometryWKB raw, crs)
+
+-- | Bind raw bytes and CRS as separate SQL parameters.
+rawParameters :: RawGeometry -> (BS.ByteString, Maybe Text)
+rawParameters raw = (rawGeometryWKB raw, rawGeometryCRS raw)
+
+-- | Check that generic values cannot silently normalize raw geometry.
+assertRawBindingFailure :: IO a -> Assertion
+assertRawBindingFailure action = do
+    result <- try (action >> pure ()) :: IO (Either SomeException ())
+    case result of
+        Left err -> assertBool (displayException err) ("raw GEOMETRY binding requires explicit" `isInfixOf` displayException err)
+        Right () -> assertFailure "expected raw geometry binding rejection"
 
 -- | Reject an invalid parameter without depending on native error text.
 assertFailureIO :: IO a -> Assertion

@@ -13,18 +13,21 @@ These changes target the 0.3.0.0 release. Do not release review branches separat
   and runtime coordinate layouts. This type does not store CRS metadata.
   `RawGeometry` retains WKB and CRS without decoding coordinates. Existing
   `ByteString` results still return WKB. Empty points remain distinct from SQL NULL.
-- Use published `geometry-simple >= 0.1.1.0` for pure types and WKB/WKT codecs.
-  Decoded parameters render to WKT for DuckDB's native cast. Raw parameters use
-  DuckDB's WKB reader and WKT writer to retain empty layout tags and native NaN
-  point details. Native conversion can normalize byte order and NaN bit patterns.
-  The WKB validator checks raw inputs without allocating coordinate buffers.
+- Use `geometry-simple >= 0.1.1.0` for pure geometry types and codecs.
+  Structured parameters use its WKT writer and DuckDB's native cast.
+  `RawGeometry` has no parameter instance. Import its WKB with
+  `ST_GeomFromWKB` and apply its CRS with `ST_SetCRS`. This preserves mixed
+  layouts, dimensional empties, and native NaN payloads without WKT conversion.
 - Add `FieldGeometry` and `LogicalTypeGeometry` to the public value and type
-  representations. Update exhaustive matches when upgrading to the next release.
-- Preserve CRS metadata in raw parameters and nested values. Reject empty CRS
-  strings and embedded NUL. Use `Nothing` for no CRS. Both geometry forms own
-  their memory and remain usable after the connection closes.
-- Resolve geometry conversion and CRS functions in DuckDB's system catalog.
-  User macros cannot replace those functions during parameter construction.
+  representations. Update exhaustive matches when upgrading.
+  Nested result decoding retains raw WKB and CRS. Generic parameters with
+  non-NULL `FieldGeometry` values raise an error instead of converting their
+  bytes through WKT. Construct those nested values with explicit SQL import.
+- Keep CRS metadata in this package. The standalone shape has no CRS.
+  Both forms own their memory and remain usable after the connection closes.
+  Logical type construction rejects empty CRS strings and embedded NUL.
+  It resolves the CRS function in DuckDB's system catalog. CRS text can hold
+  an identifier, a custom name, or a full WKT2/PROJJSON definition.
 - Add `toDuckValueOn` and `logicalTypeFromRepOn` to reuse the caller's connection
   during native construction. Existing `ToDuckValue` instances keep their
   default behavior. Standalone constructors close their temporary connection.

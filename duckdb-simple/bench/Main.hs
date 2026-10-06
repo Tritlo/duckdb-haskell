@@ -53,7 +53,7 @@ main = do
                     rows <- query_ conn (Query ("SELECT 'POINT (1 2)'::GEOMETRY('OGC:CRS84') FROM range(" <> Text.pack (show count) <> ")"))
                     evaluate (sum [fromIntegral (BS.length (rawGeometryWKB value)) | Only value <- rows])
                 "geometry-parameters" -> do
-                    rows <- replicateM (fromIntegral count) (query conn "SELECT ?" (Only geometry))
+                    rows <- replicateM (fromIntegral count) (query conn "SELECT system.main.ST_SetCRS(system.main.ST_GeomFromWKB(?), ?)" (rawGeometryWKB geometry, rawGeometryCRS geometry))
                     evaluate (sum [fromIntegral (BS.length (rawGeometryWKB value)) | [Only value] <- rows])
                 "geometry-typed" -> do
                     rows <- query_ conn (Query ("SELECT 'POINT (1 2)'::GEOMETRY('OGC:CRS84') FROM range(" <> Text.pack (show count) <> ")"))

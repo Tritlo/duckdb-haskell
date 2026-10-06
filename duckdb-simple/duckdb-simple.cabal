@@ -22,7 +22,7 @@ description:
   prepared statements, chunked folds, transactions, and Haskell scalar
   functions. The API follows the style of sqlite-simple and postgresql-simple.
   .
-  Supports native DuckDB >= 1.5.3 and < 1.6. Tested with version 1.5.3.
+  Supports native DuckDB >= 1.5.3 and < 1.6. Tested with versions 1.5.3 through 1.5.6.
 
 extra-doc-files:
   CHANGELOG.md
@@ -129,6 +129,7 @@ test-suite duckdb-simple-leak-test
   ghc-options: -threaded
   build-depends:
     base >=4.14 && <5,
+    bytestring,
     duckdb-simple,
     geometry-simple >=0.1.1.0 && <0.2,
 

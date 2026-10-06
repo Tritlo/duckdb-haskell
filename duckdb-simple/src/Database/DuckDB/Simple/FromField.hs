@@ -75,7 +75,10 @@ import GHC.Float (double2Float, float2Double)
 import GHC.Num.Integer (integerFromWordList)
 import Numeric.Natural (Natural)
 
--- | Internal representation of a column value.
+{- | Internal representation of a column value.
+'FieldGeometry' contains raw WKB and CRS metadata. Generic parameters that
+contain a non-NULL geometry require explicit SQL import.
+-}
 data FieldValue
     = FieldNull
     | FieldInt8 Int8

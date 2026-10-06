@@ -1,11 +1,10 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Queries used to construct native types and values.
+-- | Native type construction that needs SQL metadata.
 module Database.DuckDB.Simple.TypeContext (
     withTypeConnection,
     queryLogicalType,
-    queryGeometryText,
 ) where
 
 import Control.Exception (bracket, throwIO)
@@ -15,10 +14,10 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
 import Database.DuckDB.FFI
-import Database.DuckDB.Simple.Internal (destroyDataChunk, destroyValue, peekUtf8CString)
+import Database.DuckDB.Simple.Internal (destroyValue, peekUtf8CString)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Utils (fillBytes)
-import Foreign.Ptr (Ptr, castPtr, nullPtr)
+import Foreign.Ptr (Ptr, nullPtr)
 import Foreign.Storable (peek, poke, sizeOf)
 
 {- | Use the caller's connection when one is available. Standalone value and
@@ -59,32 +58,6 @@ queryLogicalType connection sql parameter = case parameter of
         logical <- c_duckdb_column_logical_type result 0
         when (logical == nullPtr) (throwIO (userError "duckdb-simple: type query returned no type"))
         pure logical
-
-{- | Convert checked WKB with DuckDB's own reader and writer. This preserves
-empty-container layout tags that the standalone representation does not store.
-The caller must validate the WKB before calling this function.
--}
-queryGeometryText :: DuckDBConnection -> BS.ByteString -> IO Text
-queryGeometryText connection bytes =
-    BS.useAsCStringLen bytes \(ptr, len) ->
-        bracket (c_duckdb_create_blob (castPtr ptr) (fromIntegral len)) destroyValue \native -> do
-            when (native == nullPtr) (throwIO (userError "duckdb-simple: cannot create geometry query parameter"))
-            withQueryResult connection "SELECT system.main.ST_AsText(system.main.ST_GeomFromWKB(?))" (Just native) \result -> do
-                resultType <- c_duckdb_column_type result 0
-                when (resultType /= DuckDBTypeVarchar) (throwIO (userError "duckdb-simple: geometry query returned a non-text column"))
-                bracket (c_duckdb_fetch_chunk result) destroyDataChunk \chunk -> do
-                    when (chunk == nullPtr) (throwIO (userError "duckdb-simple: geometry query returned no chunk"))
-                    count <- c_duckdb_data_chunk_get_size chunk
-                    when (count /= 1) (throwIO (userError "duckdb-simple: geometry query returned no value"))
-                    vector <- c_duckdb_data_chunk_get_vector chunk 0
-                    validity <- c_duckdb_vector_get_validity vector
-                    when (validity /= nullPtr) do
-                        valid <- c_duckdb_validity_row_is_valid validity 0
-                        when (valid == 0) (throwIO (userError "duckdb-simple: geometry query returned NULL"))
-                    string <- castPtr <$> c_duckdb_vector_get_data vector
-                    size <- c_duckdb_string_t_length string
-                    characters <- c_duckdb_string_t_data string
-                    Text.decodeUtf8 <$> BS.packCStringLen (characters, fromIntegral size)
 
 -- | Keep a prepared statement, optional borrowed parameter, and result scoped.
 withQueryResult :: DuckDBConnection -> Text -> Maybe DuckDBValue -> (Ptr DuckDBResult -> IO a) -> IO a

@@ -127,14 +127,16 @@ tests =
             case result of
                 Left err -> assertBool (displayException (err :: SomeException)) ("?::VARIANT" `isInfixOf` displayException err)
                 Right () -> assertFailure "expected VARIANT type rejection"
-        , testCase "composite parameters with VARIANT members raise an error" $ withConnection ":memory:" \conn -> do
-            [Only struct] <- query_ conn "SELECT {'payload': 42::VARIANT, 'shape': NULL::GEOMETRY('OGC:CRS84')}" :: IO [Only (StructValue FieldValue)]
+        , testCase "typed VARIANT NULLs and inactive members bind with the type cache" $ withConnection ":memory:" \conn -> do
             [Only nullStruct] <- query_ conn "SELECT {'payload': NULL::VARIANT}" :: IO [Only (StructValue FieldValue)]
             [Only inactive] <- query_ conn "SELECT union_value(number := 42::BIGINT)::UNION(number BIGINT, payload VARIANT)" :: IO [Only (UnionValue FieldValue)]
+            (query conn "SELECT ?" (Only nullStruct) :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only nullStruct])
+            (query conn "SELECT ?" (Only inactive) :: IO [Only (UnionValue FieldValue)]) >>= (@?= [Only inactive])
+            (query conn "SELECT typeof(?)" (Only (listArray (0, -1) [] :: Array Int Int64)) :: IO [Only Text]) >>= (@?= [Only "BIGINT[ANY]"])
+        , testCase "VARIANT payloads in composite parameters raise an error" $ withConnection ":memory:" \conn -> do
+            [Only struct] <- query_ conn "SELECT {'payload': 42::VARIANT, 'shape': NULL::GEOMETRY('OGC:CRS84')}" :: IO [Only (StructValue FieldValue)]
             [Only record] <- query_ conn "SELECT {'payload': 42::VARIANT}" :: IO [Only VariantRecord]
             assertVariantRejection (query conn "SELECT ?" (Only struct) :: IO [Only (StructValue FieldValue)])
-            assertVariantRejection (query conn "SELECT ?" (Only nullStruct) :: IO [Only (StructValue FieldValue)])
-            assertVariantRejection (query conn "SELECT ?" (Only inactive) :: IO [Only (UnionValue FieldValue)])
             assertVariantRejection (query conn "SELECT ?" (Only record) :: IO [Only VariantRecord])
             (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
         , testGroup

@@ -53,6 +53,15 @@ instance ToDuckValue NativeTimestamp where
 
 instance ToField NativeTimestamp
 
+-- | Delegate parameter construction to the scalar ToField instance.
+newtype DelegatedInteger = DelegatedInteger Int64
+
+instance DuckDBColumnType DelegatedInteger where
+    duckdbColumnTypeFor _ = "BIGINT"
+
+instance ToField DelegatedInteger where
+    toField (DelegatedInteger value) = toField (value + 1)
+
 -- | Record with identical field types to detect positional decoding.
 data NamedRecord = NamedRecord {firstValue :: Int64, secondValue :: Int64}
     deriving (Eq, Show, Generic)
@@ -86,6 +95,15 @@ valueRegressionTests =
             let members = listArray (0, 1) [UnionMemberType "number" (LogicalTypeScalar DuckDBTypeBigInt), UnionMemberType "text" (LogicalTypeScalar DuckDBTypeVarchar)]
                 original = UnionValue 0 "number" FieldNull members
             (query conn "SELECT ?" (Only original) :: IO [Only (UnionValue FieldValue)]) >>= (@?= [Only original])
+        , testCase "array children use custom ToField instances" $ withConnection ":memory:" \conn -> do
+            let values = listArray (0 :: Int, 2) [Nothing, Just (DelegatedInteger 41), Just (DelegatedInteger 99)]
+                expected = listArray (0, 2) [Nothing, Just 42, Just 100] :: Array Int (Maybe Int64)
+            (query conn "SELECT ?" (Only values) :: IO [Only (Array Int (Maybe Int64))]) >>= (@?= [Only expected])
+        , testCase "array children use default ToDuckValue instances" $ withConnection ":memory:" \conn -> do
+            let units = [-1, 0, 1234567]
+                values = listArray (0 :: Int, 2) (map Microseconds units)
+                expected = listArray (0, 2) (map (utcToLocalTime utc . posixSecondsToUTCTime . fromRational . (% 1000000) . toInteger) units)
+            (query conn "SELECT ?" (Only values) :: IO [Only (Array Int LocalTime)]) >>= (@?= [Only expected])
         , testCase "GEOMETRY decodes as well-known binary" $ withConnection ":memory:" \conn -> do
             [Only bytes] <- query_ conn "SELECT 'POINT(1 2)'::GEOMETRY" :: IO [Only BS.ByteString]
             BS.length bytes @?= 21

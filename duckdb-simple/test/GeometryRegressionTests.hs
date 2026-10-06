@@ -20,7 +20,7 @@ import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
 import Database.DuckDB.Simple.FromField (FieldValue, StructValue, UnionValue)
 import Database.DuckDB.Simple.Geometry (RawGeometry (..), fromRawGeometry, toRawGeometry)
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), destroyLogicalType, logicalTypeFromRep, logicalTypeToRep, withLogicalType)
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), destroyLogicalType, logicalTypeFromRep, logicalTypeToRep)
 import GHC.Float (castWord64ToDouble)
 import System.Mem (performMajorGC)
 import Test.Tasty (TestTree, testGroup)
@@ -269,35 +269,26 @@ tests =
                 [Only value] <- query_ conn "SELECT union_value(shape := 'POINT (1 2)'::GEOMETRY('OGC:CRS84'))" :: IO [Only (UnionValue FieldValue)]
                 assertRawBindingFailure (query conn "SELECT ?" (Only value) :: IO [Only (UnionValue FieldValue)])
                 [Only nullValue] <- query_ conn "SELECT union_value(shape := NULL::GEOMETRY('OGC:CRS84'))" :: IO [Only (UnionValue FieldValue)]
-                (query conn "SELECT ?" (Only nullValue) :: IO [Only (UnionValue FieldValue)]) >>= (@?= [Only nullValue])
+                (query conn "SELECT ?::UNION(shape GEOMETRY('OGC:CRS84'))" (Only nullValue) :: IO [Only (UnionValue FieldValue)]) >>= (@?= [Only nullValue])
                 (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
-        , testCase "inactive UNION geometry members retain CRS during binding" $
+        , testCase "inactive UNION geometry members regain CRS through a cast" $
             withConnection ":memory:" \conn -> do
                 [Only value] <- query_ conn "SELECT union_value(number := 42::BIGINT)::UNION(number BIGINT, shape GEOMETRY('OGC:CRS84'))" :: IO [Only (UnionValue FieldValue)]
-                (query conn "SELECT ?" (Only value) :: IO [Only (UnionValue FieldValue)]) >>= (@?= [Only value])
-        , testCase "NULL and empty nested geometry collections retain CRS during binding" $
+                (query conn "SELECT typeof(?)" (Only value) :: IO [Only Text]) >>= (@?= [Only "UNION(number BIGINT, shape GEOMETRY)"])
+                (query conn "SELECT ?::UNION(number BIGINT, shape GEOMETRY('OGC:CRS84'))" (Only value) :: IO [Only (UnionValue FieldValue)]) >>= (@?= [Only value])
+        , testCase "NULL and empty nested geometry collections regain CRS on insert" $
             withConnection ":memory:" \conn -> do
-                [Only value] <-
-                    query_
+                _ <-
+                    execute_
                         conn
-                        "SELECT {'null_list': NULL::GEOMETRY('OGC:CRS84')[], 'empty_list': []::GEOMETRY('OGC:CRS84')[], 'null_array': NULL::GEOMETRY('OGC:CRS84')[2], 'array': [NULL, NULL]::GEOMETRY('OGC:CRS84')[2], 'null_map': NULL::MAP(VARCHAR, GEOMETRY('OGC:CRS84')), 'empty_map': map([], [])::MAP(VARCHAR, GEOMETRY('OGC:CRS84')), 'map': map(['one'], [NULL::GEOMETRY('OGC:CRS84')])}" ::
-                        IO [Only (StructValue FieldValue)]
-                (query conn "SELECT ?" (Only value) :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only value])
-        , testCase "managed logical type construction retains CRS after callback failures" $
-            withConnection ":memory:" \conn -> do
-                let logical = LogicalTypeList (LogicalTypeGeometry (Just "OGC:CRS84"))
-                withLogicalType conn logical logicalTypeToRep >>= (@?= logical)
-                assertFailureIO (withLogicalType conn logical (const (ioError (userError "callback failure"))))
-                withLogicalType conn logical logicalTypeToRep >>= (@?= logical)
-                (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
-        , testCase "managed logical type construction rejects closed connections" $ do
-            conn <- withConnection ":memory:" pure
-            assertFailureIO (withLogicalType conn (LogicalTypeGeometry (Just "OGC:CRS84")) (const (pure ())))
-        , testCase "standalone CRS type construction requires a managed connection" $ do
-            result <- try (bracket (logicalTypeFromRep (LogicalTypeGeometry (Just "OGC:CRS84"))) destroyLogicalType (const (pure ())))
-            case result of
-                Left err -> assertBool (displayException (err :: SomeException)) ("withLogicalType" `isInfixOf` displayException err)
-                Right _ -> assertFailure "expected standalone CRS type rejection"
+                        "CREATE TABLE nested AS SELECT {'null_list': NULL::GEOMETRY('OGC:CRS84')[], 'empty_list': []::GEOMETRY('OGC:CRS84')[], 'null_array': NULL::GEOMETRY('OGC:CRS84')[2], 'array': [NULL, NULL]::GEOMETRY('OGC:CRS84')[2], 'null_map': NULL::MAP(VARCHAR, GEOMETRY('OGC:CRS84')), 'empty_map': map([], [])::MAP(VARCHAR, GEOMETRY('OGC:CRS84')), 'map': map(['one'], [NULL::GEOMETRY('OGC:CRS84')])} AS v"
+                [Only value] <- query_ conn "SELECT v FROM nested" :: IO [Only (StructValue FieldValue)]
+                _ <- execute conn "INSERT INTO nested VALUES (?)" (Only value)
+                (query_ conn "SELECT v FROM nested" :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only value, Only value])
+        , testCase "logical type construction drops CRS" $ do
+            let logical = LogicalTypeList (LogicalTypeGeometry (Just "OGC:CRS84"))
+            bracket (logicalTypeFromRep logical) destroyLogicalType logicalTypeToRep
+                >>= (@?= LogicalTypeList (LogicalTypeGeometry Nothing))
         , testGroup
             "folds cross chunk boundaries and preserve CRS"
             [ testCase mode $
@@ -309,11 +300,9 @@ tests =
                     count @?= 5000
             | (mode, foldRows) <- [("materialized", fold_), ("deprecated streaming", Streaming.fold_)]
             ]
-        , testCase "invalid binary import and invalid type metadata leave the connection usable" $
+        , testCase "invalid binary import leaves the connection usable" $
             withConnection ":memory:" \conn -> do
                 assertFailureIO (query conn "SELECT system.main.ST_GeomFromWKB(?)" (Only (BS.pack [1, 1, 0, 0, 0])) :: IO [Only RawGeometry])
-                assertFailureIO (withLogicalType conn (LogicalTypeGeometry (Just "")) (const (pure ())))
-                assertFailureIO (withLogicalType conn (LogicalTypeGeometry (Just "OGC:CRS84\0bad")) (const (pure ())))
                 (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
         ]
 

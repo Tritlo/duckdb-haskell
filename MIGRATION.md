@@ -36,20 +36,10 @@ See [the Geometry notes](duckdb-simple/README.md#geometry) for examples and limi
 `LogicalTypeGeometry`. Update exhaustive matches.
 Native DuckDB >= 1.5.3 and < 1.6 remains supported.
 
-`ToField` stays pure. Native parameter construction uses the statement's
-connection. The library does not open temporary databases for type construction.
-Existing `ToDuckValue` instances can keep their `toDuckValue` implementation.
-
-`logicalTypeFromRep` uses native constructors and raises an error for types
-that need CRS resolution. Use `withLogicalType` from
-`Database.DuckDB.Simple.LogicalRep` with a managed `Connection` instead. Its
-callback receives a borrowed type handle. Do not retain or destroy it.
-Standalone `toDuckValue` still supports ordinary STRUCT and UNION values.
-Bind composites with CRS metadata through `ToField`.
-
-Array elements now require `ToField` and `DuckDBColumnType`. Arrays use each
-element's `ToField` instance. If a custom element type only has `ToDuckValue`,
-add `instance ToField YourType`. The default implementation requires `Show`.
+`logicalTypeFromRep` creates `LogicalTypeGeometry` as `GEOMETRY` with no CRS,
+because the C API cannot create a GEOMETRY type with a CRS. Composite
+parameters bind their geometry members without a CRS. To apply a CRS, insert
+the value into a column with that CRS, or cast it in SQL.
 
 ## Binding fixes
 

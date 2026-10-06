@@ -38,7 +38,7 @@ main =
   ADTs as DuckDB STRUCTs and UNIONs via GHC generics and the `ViaDuckDB`
   deriving-via helper.
 - `Database.DuckDB.Simple.LogicalRep` – structured value types (`StructValue`,
-  `UnionValue`) and logical type construction, including scoped `withLogicalType`.
+  `UnionValue`) for working with DuckDB's composite types.
 - `Database.DuckDB.Simple.Types` – shared types (`Query`, `Null`, `Only`,
   `(:.)`, `SQLError`).
 - `Database.DuckDB.Simple.Function` – register scalar Haskell functions that
@@ -176,11 +176,6 @@ Non-record constructors use positional field names (`field1`, `field2`, etc.).
 ### Arrays and Lists
 
 DuckDB arrays (fixed-length) and lists (variable-length) are also supported:
-
-Array parameters require `ToField` and `DuckDBColumnType` for their elements.
-They use each element's `ToField` instance. If a custom element type already has
-`ToDuckValue`, add a `ToField` instance to use it in arrays. The default
-`ToField` implementation uses `toDuckValue` and requires `Show`.
 
 ```haskell
 import Data.Array (Array, listArray)
@@ -440,22 +435,15 @@ that contain non-NULL raw geometry raise an error. Construct those values in
 SQL with explicit WKB import. Their result decoding retains WKB and CRS,
 including inside LIST, ARRAY, MAP, STRUCT, and UNION values.
 
-`ToField` stays pure. It describes a parameter as a `FieldBinding`. Binding
-constructs the native value on the statement's connection. This also preserves
-CRS metadata in typed NULLs, empty collections, and inactive UNION members.
-Binding does not open a temporary database. Shape parameters need no metadata
-query.
+`LogicalTypeGeometry` describes CRS metadata. The C API cannot create a
+GEOMETRY type with a CRS. `logicalTypeFromRep` therefore creates `GEOMETRY`
+with no CRS. Composite parameters bind their geometry members without a CRS,
+including typed NULLs, empty collections, and inactive UNION members. To apply
+a CRS, insert the value into a column with that CRS, or cast it in SQL:
 
-`LogicalTypeGeometry` describes CRS metadata. `logicalTypeFromRep` constructs
-types through the C API and raises an error if a type needs CRS resolution.
-Use `withLogicalType` from `Database.DuckDB.Simple.LogicalRep` with a managed
-`Connection` to construct those types. Its callback receives a borrowed native
-type. The function destroys the type when the callback returns or raises an
-exception. Do not retain or destroy that handle. Type construction rejects
-empty CRS text and embedded NUL.
-
-Standalone `toDuckValue` still constructs ordinary STRUCT and UNION values.
-If their type metadata needs CRS resolution, pass them as query parameters.
+```haskell
+query conn "SELECT ?::UNION(number BIGINT, shape GEOMETRY('OGC:CRS84'))" (Only value)
+```
 
 See [geometry-simple](https://github.com/Tritlo/geometry-simple) for the seven
 supported families, construction checks, and codec normalization rules.

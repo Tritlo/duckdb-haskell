@@ -25,23 +25,12 @@ These changes target the 0.3.0.0 release. Do not release review branches separat
   bytes through WKT. Construct those nested values with explicit SQL import.
 - Keep CRS metadata in this package. The standalone shape has no CRS.
   Both forms own their memory and remain usable after the connection closes.
-  Logical type construction rejects empty CRS strings and embedded NUL.
-  It resolves the CRS function in DuckDB's system catalog. CRS text can hold
-  an identifier, a custom name, or a full WKT2/PROJJSON definition.
-- Keep `ToField` pure and construct parameter values on the statement's
-  connection. Preserve CRS metadata in typed NULLs, empty collections, and
-  inactive UNION members. Remove `toDuckValueOn`, `logicalTypeFromRepOn`, and
-  automatic temporary database creation.
-- Add scoped `withLogicalType` in `Database.DuckDB.Simple.LogicalRep`. It uses
-  a managed connection and destroys the native type after the callback.
-  `logicalTypeFromRep` and standalone `toDuckValue` use native constructors.
-  They raise an error if type construction needs CRS resolution.
-- Array parameters use each element's `ToField` instance. Elements now require
-  `ToField` and `DuckDBColumnType`. Custom elements that only provide
-  `ToDuckValue` must also provide `ToField`.
-- Initialize metadata-query results before native execution. A native error
-  that leaves the result untouched now raises an exception instead of allowing
-  cleanup to read uninitialized memory.
+  CRS text can hold an identifier, a custom name, or a full WKT2/PROJJSON
+  definition.
+- The C API cannot create a GEOMETRY type with a CRS. `logicalTypeFromRep`
+  creates `GEOMETRY` with no CRS, so composite parameters bind their geometry
+  members without a CRS. Insert the value into a column with a CRS, or cast it
+  in SQL, to apply the CRS.
 
 ## 0.2.0.0
 

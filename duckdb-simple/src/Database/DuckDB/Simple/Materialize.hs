@@ -1,8 +1,9 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
 module Database.DuckDB.Simple.Materialize (
-    materializeValue,
+    prepareValueReader,
 ) where
 
 import Control.Exception (bracket, throwIO)
@@ -33,6 +34,7 @@ import Database.DuckDB.Simple.FromField (
     DecimalValue (..),
     FieldValue (..),
     IntervalValue (..),
+    RawGeometry (..),
     TimeWithZone (..),
     fromBigNumBytes,
  )
@@ -85,6 +87,33 @@ chunkDecodeBlob dataPtr rowIdx = do
 duckdbStringTSize :: Int
 duckdbStringTSize = 16
 
+-- | Prepare metadata once for a vector. The reader must not outlive its chunk.
+prepareValueReader :: DuckDBType -> DuckDBVector -> Ptr () -> Ptr Word64 -> IO (Int -> IO FieldValue)
+prepareValueReader dtype vector dataPtr validity = case dtype of
+    DuckDBTypeGeometry -> whenValid FieldGeometry <$> prepareGeometryDecoder vector dataPtr
+    DuckDBTypeStruct -> whenValid FieldStruct <$> prepareStructDecoder vector
+    DuckDBTypeUnion -> whenValid FieldUnion <$> prepareUnionDecoder vector
+    _ -> pure (materializeValue dtype vector dataPtr validity)
+  where
+    whenValid wrap decode row = do
+        valid <- chunkIsRowValid validity (fromIntegral row)
+        if valid then wrap <$> decode row else pure FieldNull
+
+{- | Copy CRS metadata once for a vector. The decoder copies the WKB bytes of
+a valid row. It must not outlive its chunk.
+-}
+prepareGeometryDecoder :: DuckDBVector -> Ptr () -> IO (Int -> IO RawGeometry)
+prepareGeometryDecoder vector dataPtr = do
+    crs <- bracket
+        (c_duckdb_vector_get_column_type vector)
+        (\logical -> alloca \ptr -> poke ptr logical >> c_duckdb_destroy_logical_type ptr)
+        \logical -> do
+            rep <- logicalTypeToRep logical
+            case rep of
+                LogicalTypeGeometry value -> pure value
+                _ -> throwIO (userError "duckdb-simple: invalid GEOMETRY type")
+    pure \row -> (`RawGeometry` crs) <$> chunkDecodeBlob dataPtr (fromIntegral row)
+
 materializeValue :: DuckDBType -> DuckDBVector -> Ptr () -> Ptr Word64 -> Int -> IO FieldValue
 materializeValue dtype vector dataPtr validity rowIdx = do
     let duckIdx = fromIntegral rowIdx :: DuckDBIdx
@@ -131,6 +160,7 @@ materializeValue dtype vector dataPtr validity rowIdx = do
                 let upper = upperBiased `xor` (0x8000000000000000 :: Word64)
                 pure (FieldUUID (UUID.fromWords64 (fromIntegral upper) lower))
             DuckDBTypeBlob -> FieldBlob <$> chunkDecodeBlob dataPtr duckIdx
+            DuckDBTypeGeometry -> FieldGeometry <$> (prepareGeometryDecoder vector dataPtr >>= ($ rowIdx))
             DuckDBTypeDate -> do
                 raw <- peekElemOff (castPtr dataPtr :: Ptr Int32) rowIdx
                 FieldDate <$> decodeDuckDBDate (DuckDBDate raw)
@@ -216,10 +246,8 @@ materializeValue dtype vector dataPtr validity rowIdx = do
             DuckDBTypeArray -> FieldArray <$> decodeArrayElements vector rowIdx
             DuckDBTypeList -> FieldList <$> decodeListElements vector dataPtr rowIdx
             DuckDBTypeMap -> FieldMap <$> decodeMapPairs vector dataPtr rowIdx
-            DuckDBTypeStruct ->
-                FieldStruct <$> decodeStructValue vector rowIdx
-            DuckDBTypeUnion ->
-                FieldUnion <$> decodeUnionValue vector dataPtr rowIdx
+            DuckDBTypeStruct -> FieldStruct <$> (prepareStructDecoder vector >>= ($ rowIdx))
+            DuckDBTypeUnion -> FieldUnion <$> (prepareUnionDecoder vector >>= ($ rowIdx))
             DuckDBTypeEnum ->
                 bracket
                     (c_duckdb_vector_get_column_type vector)
@@ -264,10 +292,11 @@ decodeArrayElements vector rowIdx = do
     childType <- vectorElementType childVec
     childData <- c_duckdb_vector_get_data childVec
     childValidity <- c_duckdb_vector_get_validity childVec
+    readChild <- prepareValueReader childType childVec childData childValidity
     let baseIdx = rowIdx * arraySize
     values <-
         forM [0 .. arraySize - 1] \delta ->
-            materializeValue childType childVec childData childValidity (baseIdx + delta)
+            readChild (baseIdx + delta)
     pure $
         if arraySize <= 0
             then listArray (0, -1) []
@@ -283,8 +312,9 @@ decodeListElements vector dataPtr rowIdx = do
     childType <- vectorElementType childVec
     childData <- c_duckdb_vector_get_data childVec
     childValidity <- c_duckdb_vector_get_validity childVec
+    readChild <- prepareValueReader childType childVec childData childValidity
     forM [0 .. len - 1] \delta ->
-        materializeValue childType childVec childData childValidity (baseIdx + delta)
+        readChild (baseIdx + delta)
 
 decodeMapPairs :: DuckDBVector -> Ptr () -> Int -> IO [(FieldValue, FieldValue)]
 decodeMapPairs vector dataPtr rowIdx = do
@@ -303,14 +333,19 @@ decodeMapPairs vector dataPtr rowIdx = do
     valueData <- c_duckdb_vector_get_data valueVec
     keyValidity <- c_duckdb_vector_get_validity keyVec
     valueValidity <- c_duckdb_vector_get_validity valueVec
+    readKey <- prepareValueReader keyType keyVec keyData keyValidity
+    readValue <- prepareValueReader valueType valueVec valueData valueValidity
     forM [0 .. len - 1] \delta -> do
         let childIdx = baseIdx + delta
-        keyValue <- materializeValue keyType keyVec keyData keyValidity childIdx
-        valueValue <- materializeValue valueType valueVec valueData valueValidity childIdx
+        keyValue <- readKey childIdx
+        valueValue <- readValue childIdx
         pure (keyValue, valueValue)
 
-decodeStructValue :: DuckDBVector -> Int -> IO (StructValue FieldValue)
-decodeStructValue vector rowIdx =
+{- | Read the STRUCT type and prepare a reader for each child once for a vector.
+The decoder reads a valid row. It must not outlive its chunk.
+-}
+prepareStructDecoder :: DuckDBVector -> IO (Int -> IO (StructValue FieldValue))
+prepareStructDecoder vector =
     bracket
         (c_duckdb_vector_get_column_type vector)
         (\logical -> alloca $ \ptr -> poke ptr logical >> c_duckdb_destroy_logical_type ptr)
@@ -328,7 +363,9 @@ decodeStructValue vector rowIdx =
                             )
             let typeList = elems structFields
                 count = length typeList
-            valueFields <-
+                indexMap =
+                    Map.fromList (zip (map structFieldName typeList) [0 ..])
+            childReaders <-
                 forM (zip [0 .. count - 1] typeList) \(childIdx, StructField{structFieldName}) -> do
                     childVec <- c_duckdb_struct_vector_get_child vector (fromIntegral childIdx)
                     when (childVec == nullPtr) $
@@ -336,23 +373,29 @@ decodeStructValue vector rowIdx =
                     childType <- vectorElementType childVec
                     childData <- c_duckdb_vector_get_data childVec
                     childValidity <- c_duckdb_vector_get_validity childVec
-                    value <- materializeValue childType childVec childData childValidity rowIdx
-                    pure StructField{structFieldName, structFieldValue = value}
-            let fieldArray =
-                    if count <= 0
-                        then listArray (0, -1) []
-                        else listArray (0, count - 1) valueFields
-                indexMap =
-                    Map.fromList (zip (map structFieldName typeList) [0 ..])
-            pure
-                StructValue
-                    { structValueFields = fieldArray
-                    , structValueTypes = structFields
-                    , structValueIndex = indexMap
-                    }
+                    readChild <- prepareValueReader childType childVec childData childValidity
+                    pure (structFieldName, readChild)
+            pure \rowIdx -> do
+                valueFields <-
+                    forM childReaders \(name, readChild) -> do
+                        value <- readChild rowIdx
+                        pure StructField{structFieldName = name, structFieldValue = value}
+                let fieldArray =
+                        if count <= 0
+                            then listArray (0, -1) []
+                            else listArray (0, count - 1) valueFields
+                pure
+                    StructValue
+                        { structValueFields = fieldArray
+                        , structValueTypes = structFields
+                        , structValueIndex = indexMap
+                        }
 
-decodeUnionValue :: DuckDBVector -> Ptr () -> Int -> IO (UnionValue FieldValue)
-decodeUnionValue vector _dataPtr rowIdx =
+{- | Read the UNION type and prepare the tag reader and a reader for each member
+once for a vector. The decoder reads a valid row. It must not outlive its chunk.
+-}
+prepareUnionDecoder :: DuckDBVector -> IO (Int -> IO (UnionValue FieldValue))
+prepareUnionDecoder vector =
     bracket
         (c_duckdb_vector_get_column_type vector)
         (\logical -> alloca $ \ptr -> poke ptr logical >> c_duckdb_destroy_logical_type ptr)
@@ -376,60 +419,65 @@ decodeUnionValue vector _dataPtr rowIdx =
             tagType <- vectorElementType tagVec
             tagData <- c_duckdb_vector_get_data tagVec
             tagValidity <- c_duckdb_vector_get_validity tagVec
-            tagValue <- materializeValue tagType tagVec tagData tagValidity rowIdx
-            memberIdx <-
-                case tagValue of
-                    FieldWord8 tagWord -> pure (fromIntegral tagWord :: Int)
-                    FieldWord16 tagWord -> pure (fromIntegral tagWord :: Int)
-                    FieldWord32 tagWord ->
-                        if tagWord <= fromIntegral (maxBound :: Word16)
-                            then pure (fromIntegral tagWord)
-                            else throwIO (userError "duckdb-simple: union tag exceeds Word16 range")
-                    FieldWord64 tagWord ->
-                        if tagWord <= fromIntegral (maxBound :: Word16)
-                            then pure (fromIntegral tagWord)
-                            else throwIO (userError "duckdb-simple: union tag exceeds Word16 range")
-                    FieldInt8 tagInt
-                        | tagInt >= 0 -> pure (fromIntegral tagInt)
-                        | otherwise -> throwIO (userError "duckdb-simple: union tag negative")
-                    FieldInt16 tagInt
-                        | tagInt >= 0 -> pure (fromIntegral tagInt)
-                        | otherwise -> throwIO (userError "duckdb-simple: union tag negative")
-                    FieldInt32 tagInt
-                        | tagInt >= 0 && tagInt <= fromIntegral (maxBound :: Word16) -> pure (fromIntegral tagInt)
-                        | tagInt < 0 -> throwIO (userError "duckdb-simple: union tag negative")
-                        | otherwise -> throwIO (userError "duckdb-simple: union tag exceeds Word16 range")
-                    FieldInt64 tagInt
-                        | tagInt >= 0 && tagInt <= fromIntegral (maxBound :: Word16) -> pure (fromIntegral tagInt)
-                        | tagInt < 0 -> throwIO (userError "duckdb-simple: union tag negative")
-                        | otherwise -> throwIO (userError "duckdb-simple: union tag exceeds Word16 range")
-                    FieldNull ->
-                        throwIO (userError "duckdb-simple: encountered NULL union tag")
-                    other ->
-                        throwIO
-                            ( userError
-                                ( "duckdb-simple: unexpected union tag value "
-                                    <> show other
-                                )
-                            )
-            when (memberIdx < 0 || memberIdx >= memberCount) $
-                throwIO (userError "duckdb-simple: union tag out of range")
-            let selectedMember = membersList !! memberIdx
-                memberLabel = unionMemberName selectedMember
-            memberVec <- c_duckdb_struct_vector_get_child vector (fromIntegral (memberIdx + 1))
-            when (memberVec == nullPtr) $
-                throwIO (userError "duckdb-simple: union member vector is null")
-            memberType <- vectorElementType memberVec
-            memberData <- c_duckdb_vector_get_data memberVec
-            memberValidity <- c_duckdb_vector_get_validity memberVec
-            payload <- materializeValue memberType memberVec memberData memberValidity rowIdx
-            pure
-                UnionValue
-                    { unionValueIndex = fromIntegral memberIdx
-                    , unionValueLabel = memberLabel
-                    , unionValuePayload = payload
-                    , unionValueMembers = membersArray
-                    }
+            readTag <- prepareValueReader tagType tagVec tagData tagValidity
+            memberReaders <-
+                forM [1 .. memberCount] \childIdx -> do
+                    memberVec <- c_duckdb_struct_vector_get_child vector (fromIntegral childIdx)
+                    when (memberVec == nullPtr) $
+                        throwIO (userError "duckdb-simple: union member vector is null")
+                    memberType <- vectorElementType memberVec
+                    memberData <- c_duckdb_vector_get_data memberVec
+                    memberValidity <- c_duckdb_vector_get_validity memberVec
+                    prepareValueReader memberType memberVec memberData memberValidity
+            pure \rowIdx -> do
+                memberIdx <- readTag rowIdx >>= unionTagIndex
+                when (memberIdx < 0 || memberIdx >= memberCount) $
+                    throwIO (userError "duckdb-simple: union tag out of range")
+                payload <- (memberReaders !! memberIdx) rowIdx
+                pure
+                    UnionValue
+                        { unionValueIndex = fromIntegral memberIdx
+                        , unionValueLabel = unionMemberName (membersList !! memberIdx)
+                        , unionValuePayload = payload
+                        , unionValueMembers = membersArray
+                        }
+
+-- | Convert a decoded UNION tag to a member index.
+unionTagIndex :: FieldValue -> IO Int
+unionTagIndex = \case
+    FieldWord8 tagWord -> pure (fromIntegral tagWord :: Int)
+    FieldWord16 tagWord -> pure (fromIntegral tagWord :: Int)
+    FieldWord32 tagWord ->
+        if tagWord <= fromIntegral (maxBound :: Word16)
+            then pure (fromIntegral tagWord)
+            else throwIO (userError "duckdb-simple: union tag exceeds Word16 range")
+    FieldWord64 tagWord ->
+        if tagWord <= fromIntegral (maxBound :: Word16)
+            then pure (fromIntegral tagWord)
+            else throwIO (userError "duckdb-simple: union tag exceeds Word16 range")
+    FieldInt8 tagInt
+        | tagInt >= 0 -> pure (fromIntegral tagInt)
+        | otherwise -> throwIO (userError "duckdb-simple: union tag negative")
+    FieldInt16 tagInt
+        | tagInt >= 0 -> pure (fromIntegral tagInt)
+        | otherwise -> throwIO (userError "duckdb-simple: union tag negative")
+    FieldInt32 tagInt
+        | tagInt >= 0 && tagInt <= fromIntegral (maxBound :: Word16) -> pure (fromIntegral tagInt)
+        | tagInt < 0 -> throwIO (userError "duckdb-simple: union tag negative")
+        | otherwise -> throwIO (userError "duckdb-simple: union tag exceeds Word16 range")
+    FieldInt64 tagInt
+        | tagInt >= 0 && tagInt <= fromIntegral (maxBound :: Word16) -> pure (fromIntegral tagInt)
+        | tagInt < 0 -> throwIO (userError "duckdb-simple: union tag negative")
+        | otherwise -> throwIO (userError "duckdb-simple: union tag exceeds Word16 range")
+    FieldNull ->
+        throwIO (userError "duckdb-simple: encountered NULL union tag")
+    other ->
+        throwIO
+            ( userError
+                ( "duckdb-simple: unexpected union tag value "
+                    <> show other
+                )
+            )
 
 vectorElementType :: DuckDBVector -> IO DuckDBType
 vectorElementType vec =

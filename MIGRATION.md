@@ -21,6 +21,26 @@ The FFI adds the GEOMETRY and VARIANT type tags, the geometry CRS accessor,
 and the COPY_DATABASE, UPDATE_EXTENSIONS, and MERGE_INTO statement tags.
 Free strings returned by the CRS accessor with `duckdb_free`.
 
+## Unreleased Geometry support
+
+Geometry support will ship with `duckdb-simple-0.3.0.0`. Review it after the native
+DuckDB 1.5.6 update. It is not a separate release.
+
+Use `Data.Geometry.Geometry` from the published `geometry-simple` package for
+decoded shapes. Use `RawGeometry` for WKB bytes and CRS metadata. The package's
+`Geometry` type has no CRS. It has parameter and result instances.
+`RawGeometry` has a result instance. Import its WKB and CRS with explicit SQL.
+See [the Geometry notes](duckdb-simple/README.md#geometry) for examples and limits.
+
+`FieldValue` gains `FieldGeometry`, and `LogicalTypeRep` gains
+`LogicalTypeGeometry`. Update exhaustive matches.
+Native DuckDB >= 1.5.3 and < 1.6 remains supported.
+
+`logicalTypeFromRep` creates `LogicalTypeGeometry` as `GEOMETRY` with no CRS,
+because the C API cannot create a GEOMETRY type with a CRS. Composite
+parameters bind their geometry members without a CRS. To apply a CRS, insert
+the value into a column with that CRS, or cast it in SQL.
+
 ## Binding fixes
 
 - Default cursors and folds use DuckDB's supported materialized execution API. They

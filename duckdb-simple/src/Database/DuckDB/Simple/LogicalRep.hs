@@ -41,6 +41,7 @@ import Foreign.Storable (poke)
 data LogicalTypeRep
     = LogicalTypeScalar DuckDBType
     | LogicalTypeDecimal !Word8 !Word8
+    | LogicalTypeGeometry !(Maybe Text)
     | LogicalTypeList LogicalTypeRep
     | LogicalTypeArray LogicalTypeRep !Word64
     | LogicalTypeMap LogicalTypeRep LogicalTypeRep
@@ -100,6 +101,9 @@ logicalTypeToRep :: DuckDBLogicalType -> IO LogicalTypeRep
 logicalTypeToRep logical = do
     dtype <- c_duckdb_get_type_id logical
     case dtype of
+        DuckDBTypeGeometry ->
+            bracket (c_duckdb_geometry_type_get_crs logical) (c_duckdb_free . castPtr) \ptr ->
+                LogicalTypeGeometry <$> if ptr == nullPtr then pure Nothing else Just . TextEncoding.decodeUtf8 <$> BS.packCString ptr
         DuckDBTypeStruct -> do
             childCountRaw <- c_duckdb_struct_type_child_count logical
             childCount <- word64ToInt (Text.pack "struct child count") childCountRaw
@@ -170,7 +174,12 @@ logicalTypeToRep logical = do
         _ ->
             pure (LogicalTypeScalar dtype)
 
--- | Materialize a DuckDB logical type handle from a @LogicalTypeRep@ tree.
+{- | Materialize a DuckDB logical type handle from a @LogicalTypeRep@ tree.
+The C API cannot create a GEOMETRY type with a CRS. This function creates
+GEOMETRY without a CRS and ignores the CRS of 'LogicalTypeGeometry'.
+DuckDB applies a CRS when it casts the value to a column type with a CRS.
+-}
+-- TODO: improve this when this becomes available in the C API.
 logicalTypeFromRep :: LogicalTypeRep -> IO DuckDBLogicalType
 logicalTypeFromRep rep = do
     logical <- create rep
@@ -180,6 +189,7 @@ logicalTypeFromRep rep = do
   where
     create = \case
         LogicalTypeScalar dtype -> c_duckdb_create_logical_type dtype
+        LogicalTypeGeometry _ -> c_duckdb_create_logical_type DuckDBTypeGeometry
         LogicalTypeDecimal width scale -> do
             when (width < 1 || width > 38 || scale > width) $
                 throwIO (userError "duckdb-simple: invalid DECIMAL width or scale")

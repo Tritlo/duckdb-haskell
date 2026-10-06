@@ -8,6 +8,34 @@ These changes target the 0.3.0.0 release. Do not release review branches separat
   and < 1.6. Test native versions 1.5.3 through 1.5.6.
 - Require `duckdb-ffi >= 1.5.6.0` for the updated native bindings.
 
+- Add parameter and result instances for `Data.Geometry.Geometry` from
+  `geometry-simple`. It provides decoded shapes, unboxed coordinate vectors,
+  and runtime coordinate layouts. This type does not store CRS metadata.
+  `RawGeometry` retains WKB and CRS without decoding coordinates. Existing
+  `ByteString` results still return WKB. Empty points remain distinct from SQL NULL.
+- Use `geometry-simple >= 0.1.1.0` for pure geometry types and codecs.
+  Structured parameters use its WKT writer and DuckDB's native cast.
+  `RawGeometry` has no parameter instance. Import its WKB with
+  `ST_GeomFromWKB` and apply its CRS with `ST_SetCRS`. This preserves mixed
+  layouts, dimensional empties, and native NaN payloads without WKT conversion.
+- Add `FieldGeometry` and `LogicalTypeGeometry` to the public value and type
+  representations. Update exhaustive matches when upgrading.
+  Nested result decoding retains raw WKB and CRS. Generic parameters with
+  non-NULL `FieldGeometry` values raise an error instead of converting their
+  bytes through WKT. Construct those nested values with explicit SQL import.
+- Keep CRS metadata in this package. The standalone shape has no CRS.
+  Both forms own their memory and remain usable after the connection closes.
+  CRS text can hold an identifier, a custom name, or a full WKT2/PROJJSON
+  definition.
+- The C API cannot create a GEOMETRY type with a CRS. `logicalTypeFromRep`
+  creates `GEOMETRY` with no CRS, so composite parameters bind their geometry
+  members without a CRS. Insert the value into a column with a CRS, or cast it
+  in SQL, to apply the CRS.
+- Read STRUCT and UNION type metadata once for each result vector instead of
+  once for each row. Prepare their direct child readers at the same time.
+  A local benchmark with a CRS-tagged GEOMETRY field ran about ten times faster.
+  LIST, ARRAY, and MAP decoders can still read child metadata for each parent row.
+
 ## 0.2.0.0
 
 ### Query execution and resource lifetime

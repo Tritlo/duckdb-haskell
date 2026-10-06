@@ -298,7 +298,8 @@ For manual cursor-style iteration, use `nextRow`/`nextRowWith` on an open
 `Statement` to pull rows one at a time and decide when to stop.
 
 Cursors support the same column types as eager queries, including STRUCT
-and UNION values with nested collections and NULLs.
+and UNION values with nested collections and NULLs. GEOMETRY works with eager
+queries, cursors, and folds.
 
 #### Optional native streaming
 
@@ -365,6 +366,102 @@ the native result before callbacks start, so its memory use depends on the
 result size. The older Arrow query and scan bindings remain available through
 `Database.DuckDB.FFI.Deprecated` and emit deprecation warnings.
 
+### GEOMETRY
+
+Use `Geometry` from `Data.Geometry` for decoded shapes. The `geometry-simple`
+package supplies the type and unboxed coordinate vectors. `duckdb-simple`
+supplies its parameter and result instances:
+
+```haskell
+import qualified Data.Geometry as G
+import qualified Data.Vector.Unboxed as U
+import Database.DuckDB.Simple
+
+let line = G.LineString (G.CoordinatesXY (U.fromList [G.XY 0 0, G.XY 1 2, G.XY 3 4]))
+rows <- query conn "SELECT ?" (Only line) :: IO [Only G.Geometry]
+```
+
+Points and coordinate sequences store their XY, XYZ, XYM, or XYZM layout.
+`G.EmptyPoint G.DimXYZ` is an empty XYZ point. Use `Maybe G.Geometry` for SQL NULL.
+Use `decodeWKT` from `Data.Geometry.WKT` to parse text without a database.
+
+`G.Geometry` has no CRS metadata. Reading it returns the coordinates without
+their CRS label. Binding it creates a `GEOMETRY` with no CRS. To attach a label,
+use `ST_SetCRS(?, ?)` with a shape and CRS text. This does not transform coordinates.
+
+Use `RawGeometry` from `Database.DuckDB.Simple.Geometry` to read WKB and CRS
+without decoding coordinates. Its `rawGeometryWKB` and `rawGeometryCRS` fields
+own their data. They remain usable after the connection closes. Existing
+`ByteString` result decoding also returns WKB.
+
+`RawGeometry` has no `ToField` instance. Import its bytes explicitly:
+
+```haskell
+import Database.DuckDB.Simple.Geometry
+
+[Only raw] <- query_ conn "SELECT 'POINT Z (1 2 3)'::GEOMETRY('OGC:CRS84')"
+rows <- (case rawGeometryCRS raw of
+    Nothing -> query conn
+        "SELECT system.main.ST_GeomFromWKB(?)"
+        (Only (rawGeometryWKB raw))
+    Just crs -> query conn
+        "SELECT system.main.ST_SetCRS(system.main.ST_GeomFromWKB(?), ?)"
+        (rawGeometryWKB raw, crs)
+    ) :: IO [Only RawGeometry]
+```
+
+Use `Nothing` for no CRS and omit `ST_SetCRS` in that case. Passing SQL NULL
+to `ST_SetCRS` returns a NULL geometry. CRS text can contain `OGC:CRS84`,
+a custom name, or a full WKT2/PROJJSON definition. DuckDB can reduce a known
+CRS definition to its registered identifier. It can also normalize WKB byte
+order. The qualified function names select DuckDB's built-ins even if a user
+macro has the same name.
+
+`fromRawGeometry` decodes the shape and drops CRS metadata. `toRawGeometry`
+encodes a shape with no CRS. These helpers follow the geometry-simple contracts.
+NaN in both WKB point X and Y denotes an empty point. Empty multi-geometries
+and collections have no stored layout tag in the decoded representation.
+Keep the raw bytes when these details must survive.
+
+Structured parameters use `encodeWKT` and DuckDB's native cast. DuckDB 1.5
+has no WKB value constructor in its C API. The WKT writer combines layouts
+in multi-geometries and polygon rings. It fills absent Z or M with NaN.
+DuckDB's WKT parser limits nesting to 16 levels and rejects empty polygon rings
+and mixed collection layouts. Explicit WKB import preserves mixed member
+layouts and native NaN payload bits that WKT cannot retain.
+
+`FieldGeometry` contains a raw result. Generic STRUCT and UNION parameters
+that contain non-NULL raw geometry raise an error. Construct those values in
+SQL with explicit WKB import. Their result decoding retains WKB and CRS,
+including inside LIST, ARRAY, MAP, STRUCT, and UNION values.
+
+`LogicalTypeGeometry` describes CRS metadata. The C API cannot create a
+GEOMETRY type with a CRS. `logicalTypeFromRep` therefore creates `GEOMETRY`
+with no CRS. Composite parameters bind their geometry members without a CRS,
+including typed NULLs, empty collections, and inactive UNION members. To apply
+a CRS, insert the value into a column with that CRS, or cast it in SQL:
+
+```haskell
+query conn "SELECT ?::UNION(number BIGINT, shape GEOMETRY('OGC:CRS84'))" (Only value)
+```
+
+The CRS in a cast must be a constant. DuckDB rejects a parameter as a type
+modifier, so `?::GEOMETRY(?)` is not valid. To use a CRS that is known only at
+run time, write it into the query text as a SQL string literal, and double each
+single quote. A cast accepts a CRS that DuckDB recognizes, such as `OGC:CRS84`,
+or a full WKT2 or PROJJSON definition. Unless an extension recognizes it,
+DuckDB rejects other identifiers, such as `EPSG:4326`, and custom names.
+`ST_SetCRS` also accepts custom names, but it returns `GEOMETRY` with no CRS
+for a NULL input.
+
+A bound composite without a CRS also changes the type of expressions that
+combine it with CRS data. `UNION ALL` and `COALESCE` of `GEOMETRY` and
+`GEOMETRY('OGC:CRS84')` give `GEOMETRY` with no CRS for all rows. Cast the
+parameter before you combine it with other values.
+
+See [geometry-simple](https://github.com/Tritlo/geometry-simple) for the seven
+supported families, construction checks, and codec normalization rules.
+
 ### Feature Coverage
 
 - Connections, prepared statements, positional/named parameter binding.
@@ -375,7 +472,7 @@ result size. The older Arrow query and scan bindings remain available through
   decimals (with width/scale), intervals, precise and timezone-aware temporals,
   enums, bit strings, blobs, bignums, and UUIDs.
 - Composite types: STRUCTs, UNIONs, LISTs, fixed-length ARRAYs, and MAPs with
-  full encoding/decoding support.
+  typed parameters and results.
 - Generic encoding/decoding: automatic STRUCT/UNION mapping for Haskell ADTs via
   GHC generics and the `ViaDuckDB` deriving-via helper.
 - Row decoding via `FromField`/`FromRow`, with generic deriving for product types.

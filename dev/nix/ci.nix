@@ -9,6 +9,11 @@ let
       duckdb-ffi = (self.callCabal2nix "duckdb-ffi" ../../duckdb-ffi { }).overrideAttrs (_: {
         DUCKDB_TEST_VERSION = pkgs.duckdb.version;
       });
+      geometry-simple = self.callHackageDirect {
+        pkg = "geometry-simple";
+        ver = "0.1.1.0";
+        sha256 = "1nicg1v3v76x8wp02a38xpqzyl88dcn6m1gbn3ry3my2jj94gccw";
+      } { };
       duckdb-simple = self.callCabal2nix "duckdb-simple" ../../duckdb-simple { };
     };
   };

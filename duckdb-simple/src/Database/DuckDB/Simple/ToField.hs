@@ -29,6 +29,8 @@ import Control.Monad (when)
 import Data.Array (Array, elems)
 import Data.Bits (complement, shiftL, shiftR, (.&.), (.|.))
 import qualified Data.ByteString as BS
+import qualified Data.Geometry as G
+import qualified Data.Geometry.WKT as WKT
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
@@ -144,6 +146,10 @@ instance ToField BitString
 instance ToField Day
 instance ToField TimeOfDay
 instance ToField LocalTime
+
+-- | Bind the shape as @GEOMETRY@ with no CRS.
+instance ToField G.Geometry
+
 instance ToField UTCTime
 instance ToField (Unbounded Day)
 instance ToField (Unbounded LocalTime)
@@ -183,6 +189,9 @@ instance (ToField a) => ToField (Maybe a) where
          in binding
                 { fieldBindingDisplay = "Just " <> renderFieldBinding binding
                 }
+
+instance DuckDBColumnType G.Geometry where
+    duckdbColumnTypeFor _ = "GEOMETRY"
 
 instance DuckDBColumnType Null where
     duckdbColumnTypeFor _ = "NULL"
@@ -477,6 +486,10 @@ fieldValueWithTypeDuckValue typeRep FieldNull =
 fieldValueWithTypeDuckValue rep value =
     case rep of
         LogicalTypeScalar dtype -> scalarFieldValueDuckValue dtype value
+        LogicalTypeGeometry _ ->
+            case value of
+                FieldGeometry{} -> unsupportedRawGeometryBinding
+                other -> typeMismatch "GEOMETRY" other
         LogicalTypeDecimal width scale ->
             case value of
                 FieldDecimal decVal@DecimalValue{decimalWidth, decimalScale}
@@ -546,6 +559,7 @@ scalarFieldValueDuckValue dtype value =
         (DuckDBTypeDouble, FieldDouble d) -> doubleDuckValue d
         (DuckDBTypeVarchar, FieldText t) -> textDuckValue t
         (DuckDBTypeBlob, FieldBlob b) -> blobDuckValue b
+        (DuckDBTypeGeometry, FieldGeometry{}) -> unsupportedRawGeometryBinding
         (DuckDBTypeUUID, FieldUUID u) -> uuidDuckValue u
         (DuckDBTypeBit, FieldBit bits) -> bitDuckValue bits
         (DuckDBTypeDate, FieldDate d) -> dateDuckValue d
@@ -718,6 +732,7 @@ duckDBTypeFromName name =
         "TIMESTAMPTZ" -> Just DuckDBTypeTimestampTz
         "TEXT" -> Just DuckDBTypeVarchar
         "BLOB" -> Just DuckDBTypeBlob
+        "GEOMETRY" -> Just DuckDBTypeGeometry
         "UUID" -> Just DuckDBTypeUUID
         "BIT" -> Just DuckDBTypeBit
         "BIGNUM" -> Just DuckDBTypeBigNum
@@ -730,6 +745,20 @@ destroyLogicalType logical =
     alloca $ \ptr -> do
         poke ptr logical
         c_duckdb_destroy_logical_type ptr
+
+-- | Reject raw values that the C API cannot bind without format conversion.
+unsupportedRawGeometryBinding :: IO a
+unsupportedRawGeometryBinding =
+    throwIO (userError "duckdb-simple: raw GEOMETRY binding requires explicit ST_GeomFromWKB and ST_SetCRS parameters")
+
+instance ToDuckValue G.Geometry where
+    toDuckValue geometry = do
+        wkt <- either (throwIO . userError) pure (WKT.encodeWKT geometry)
+        bracket (logicalTypeFromRep (LogicalTypeGeometry Nothing)) destroyLogicalType \logical ->
+            withCreatedValues [textDuckValue wkt] \values ->
+                withDuckValues values \ptr ->
+                    bracket (checkedValue (c_duckdb_create_list_value logical ptr 1)) destroyValue \list ->
+                        checkedValue (c_duckdb_get_list_child list 0)
 
 instance ToDuckValue Null where
     toDuckValue _ = nullDuckValue

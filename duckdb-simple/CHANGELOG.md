@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+These changes target the 0.3.0.0 release. Do not release review branches separately.
+
+- Use native DuckDB 1.5.6 by default. Keep native support for DuckDB >= 1.5.3
+  and < 1.6. Test native versions 1.5.3 through 1.5.6.
+- Require `duckdb-ffi >= 1.5.6.0` for the updated native bindings.
+
 ## 0.2.0.0
 
 ### Query execution and resource lifetime

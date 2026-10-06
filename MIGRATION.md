@@ -5,12 +5,21 @@ DuckDB 1.4 line to the DuckDB 1.5 line.
 
 The short version is:
 
-- `duckdb-ffi` uses the DuckDB `1.5.0` C header. The native minimum is 1.5.3.
+- `duckdb-ffi` uses the DuckDB `1.5.6` C header. The native minimum is 1.5.3.
 - `duckdb-simple` now depends on `duckdb-ffi-1.5`.
 - Existing 1.4 bindings continue to work, but the runtime `libduckdb` you load
   must be >= 1.5.3 and < 1.6.
 - New 1.5 functionality is exposed through additive modules and helpers; no
   wholesale rewrite is required.
+
+## Native DuckDB 1.5.6
+
+The default native download is DuckDB 1.5.6. Native DuckDB >= 1.5.3 and < 1.6
+remains supported. `duckdb-simple` uses a separate API version.
+
+The FFI adds the GEOMETRY and VARIANT type tags, the geometry CRS accessor,
+and the COPY_DATABASE, UPDATE_EXTENSIONS, and MERGE_INTO statement tags.
+Free strings returned by the CRS accessor with `duckdb_free`.
 
 ## Binding fixes
 
@@ -47,7 +56,7 @@ The short version is:
 
 If you use `duckdb-ffi` directly:
 
-- Rebuild and relink against DuckDB `1.5.3`.
+- Rebuild and relink against DuckDB `1.5.6`.
 - Update any packaging, Nix, CI, Docker, or deployment config that still pulls
   a 1.4 `libduckdb`.
 - If you want the new 1.5 APIs, import the new raw modules and bind against the
@@ -55,7 +64,7 @@ If you use `duckdb-ffi` directly:
 
 If you use `duckdb-simple`:
 
-- Rebuild against `duckdb-simple-0.2.0.0` and DuckDB `1.5.3`.
+- Rebuild against `duckdb-simple-0.3.0.0` and DuckDB `1.5.6`.
 - Review the binding changes above for SQL parameter types, NULL handling,
   and generic decoding.
 - New 1.5 helpers are available from dedicated modules instead of being folded
@@ -71,7 +80,7 @@ Before:
 
 Now:
 
-- `duckdb-ffi-1.5.3.0` and `duckdb-simple-0.2.0.0` require a DuckDB 1.5
+- `duckdb-ffi-1.5.6.0` and `duckdb-simple-0.3.0.0` require a DuckDB 1.5
   shared library >= 1.5.3 and < 1.6 at runtime.
 
 If your executable still finds a 1.4 shared library first, you will see symbol
@@ -97,7 +106,7 @@ LD_LIBRARY_PATH=/path/to/duckdb-1.5 \
 
 ### Header and Symbol Surface
 
-The vendored `duckdb.h` now matches DuckDB 1.5.0.
+The vendored `duckdb.h` now matches DuckDB 1.5.6.
 
 The 1.5 change is additive for the C API surface used here:
 
@@ -291,9 +300,9 @@ using `duckdb_string_t_length`.
 ## Suggested Upgrade Steps
 
 1. Upgrade the Haskell packages to:
-   - `duckdb-ffi-1.5.3.0`
-   - `duckdb-simple-0.2.0.0`
-2. Upgrade the native DuckDB shared library to `1.5.3`.
+   - `duckdb-ffi-1.5.6.0`
+   - `duckdb-simple-0.3.0.0`
+2. Upgrade the native DuckDB shared library to `1.5.6`.
 3. Run your test suite with the 1.5 shared library explicitly selected.
 4. Update any tests that expected old 1.4 behavior, especially around
    `TIME_NS` or string helper assumptions.

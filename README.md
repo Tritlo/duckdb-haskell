@@ -14,13 +14,13 @@ Haskell FFI.
   appenders, and Arrow integration.
 - Groups bindings into modules under `Database.DuckDB.FFI.*`.
 - Includes integration tests for the native bindings.
-- Supports DuckDB >= 1.5.3 and < 1.6.
+- Supports DuckDB >= 1.5.3 and < 1.6, using the released 1.5.6 C header.
 
 ### Native library installation
 
 On glibc Linux (x86_64 and aarch64) and macOS, `cabal build all` downloads
-DuckDB 1.5.3 into `$XDG_CACHE_HOME/duckdb-haskell/1.5.3` (usually
-`~/.cache/duckdb-haskell/1.5.3`). Setup verifies the archive's SHA256
+DuckDB 1.5.6 into `$XDG_CACHE_HOME/duckdb-haskell/1.5.6` (usually
+`~/.cache/duckdb-haskell/1.5.6`). Setup verifies the archive's SHA256
 checksum before extraction. It requires `curl`, `unzip`, and `sha256sum` (`shasum` on
 macOS). Installation does not require root access. Keep this directory available
 while applications linked to it run.
@@ -34,7 +34,7 @@ As in [Hasktorch](https://github.com/hasktorch/hasktorch/blob/master/libtorch-ff
 cabal build all --configure-option="--duckdb-install-dir=$PWD/.duckdb"
 ```
 
-Setup appends the version and platform, for example `.duckdb/1.5.3/linux-amd64`.
+Setup appends the version and platform, for example `.duckdb/1.5.6/linux-amd64`.
 Use an absolute path. Cabal tracks this option and reconfigures the package
 when it changes. You can also set it in `cabal.project.local`:
 
@@ -105,7 +105,7 @@ CI tests these GHC releases:
 The project and Docker use GHC 9.14.1 by default.
 Use `cabal build all --with-compiler=ghc-VERSION` to select another compiler.
 
-CI tests the default DuckDB 1.5.3 download on Linux and macOS ARM64. It also
-builds and tests both packages with Nix's DuckDB library and in Docker.
+CI tests DuckDB 1.5.3 through 1.5.6 on Linux and 1.5.6 on macOS ARM64. Docker
+builds and tests both packages. Nix does the same with its own DuckDB library.
 The tests check the loaded native version. With GHC 9.14.1, CI also installs
 `duckdb-ffi` and runs a separate program with normal and dynamic Haskell linking.

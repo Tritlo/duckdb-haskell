@@ -29,9 +29,11 @@ import Control.Monad (when)
 import Data.Array (Array, elems)
 import Data.Bits (complement, shiftL, shiftR, (.&.), (.|.))
 import qualified Data.ByteString as BS
+import Data.Fixed (Pico)
 import qualified Data.Geometry as G
 import qualified Data.Geometry.WKT as WKT
 import Data.Int (Int16, Int32, Int64, Int8)
+import qualified Data.List as List
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -63,6 +65,7 @@ import Database.DuckDB.Simple.LogicalRep (
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
 import Database.DuckDB.Simple.TypeCache (TypeCache, cachedLogicalType)
 import Database.DuckDB.Simple.Types (Null (..))
+import Database.DuckDB.Simple.Variant (Variant (..))
 import Foreign.C.String (peekCString)
 import Foreign.C.Types (CDouble (..), CFloat (..))
 import Foreign.Marshal (fromBool)
@@ -158,6 +161,12 @@ instance ToField LocalTime
 -- | Bind the shape as @GEOMETRY@ with no CRS.
 instance ToField G.Geometry
 
+-- | Bind the payload as a VARIANT with the type cache of the connection.
+instance ToField Variant where
+    toField value =
+        cacheValueBinding (show value) \cache ->
+            variantDuckValue (cachedTypeFromRep cache) (variantPayload value)
+
 instance ToField UTCTime
 instance ToField (Unbounded Day)
 instance ToField (Unbounded LocalTime)
@@ -202,6 +211,9 @@ instance (ToField a) => ToField (Maybe a) where
 
 instance DuckDBColumnType G.Geometry where
     duckdbColumnTypeFor _ = "GEOMETRY"
+
+instance DuckDBColumnType Variant where
+    duckdbColumnTypeFor _ = "VARIANT"
 
 instance DuckDBColumnType Null where
     duckdbColumnTypeFor _ = "NULL"
@@ -496,6 +508,7 @@ fieldValueWithTypeDuckValue typeFromRep typeRep FieldNull =
                     checkedValue (c_duckdb_get_list_child list 0)
 fieldValueWithTypeDuckValue typeFromRep rep value =
     case rep of
+        LogicalTypeScalar DuckDBTypeVariant -> variantDuckValue typeFromRep value
         LogicalTypeScalar dtype -> scalarFieldValueDuckValue dtype value
         LogicalTypeGeometry _ ->
             case value of
@@ -571,7 +584,6 @@ scalarFieldValueDuckValue dtype value =
         (DuckDBTypeVarchar, FieldText t) -> textDuckValue t
         (DuckDBTypeBlob, FieldBlob b) -> blobDuckValue b
         (DuckDBTypeGeometry, FieldGeometry{}) -> unsupportedRawGeometryBinding
-        (DuckDBTypeVariant, _) -> unsupportedVariantBinding
         (DuckDBTypeUUID, FieldUUID u) -> uuidDuckValue u
         (DuckDBTypeBit, FieldBit bits) -> bitDuckValue bits
         (DuckDBTypeDate, FieldDate d) -> dateDuckValue d
@@ -745,6 +757,7 @@ duckDBTypeFromName name =
         "TEXT" -> Just DuckDBTypeVarchar
         "BLOB" -> Just DuckDBTypeBlob
         "GEOMETRY" -> Just DuckDBTypeGeometry
+        "VARIANT" -> Just DuckDBTypeVariant
         "UUID" -> Just DuckDBTypeUUID
         "BIT" -> Just DuckDBTypeBit
         "BIGNUM" -> Just DuckDBTypeBigNum
@@ -763,10 +776,71 @@ unsupportedRawGeometryBinding :: IO a
 unsupportedRawGeometryBinding =
     throwIO (userError "duckdb-simple: raw GEOMETRY binding requires explicit ST_GeomFromWKB and ST_SetCRS parameters")
 
--- | Reject VARIANT values because the C API cannot create a usable VARIANT type.
-unsupportedVariantBinding :: IO a
-unsupportedVariantBinding =
-    throwIO (userError "duckdb-simple: VARIANT payloads have no parameter encoder; cast a plain value with ?::VARIANT")
+{- | Construct an owned VARIANT value. A scalar keeps its native type. Lists,
+arrays, and STRUCT fields contain VARIANT values. The C API casts the payload
+through a one-element VARIANT list.
+-}
+variantDuckValue :: (LogicalTypeRep -> IO DuckDBLogicalType) -> FieldValue -> IO DuckDBValue
+variantDuckValue typeFromRep value = do
+    (rep, payload) <- variantPayloadType value
+    bracket (typeFromRep (LogicalTypeScalar DuckDBTypeVariant)) destroyLogicalType \variantType ->
+        withCreatedValues [fieldValueWithTypeDuckValue typeFromRep rep payload] \values ->
+            withDuckValues values \ptr ->
+                bracket (checkedValue (c_duckdb_create_list_value variantType ptr 1)) destroyValue \list ->
+                    checkedValue (c_duckdb_get_list_child list 0)
+
+{- | Choose the native type of a VARIANT payload. Containers get VARIANT
+elements and fields. Time values with sub-microsecond digits use nanosecond
+types.
+-}
+variantPayloadType :: FieldValue -> IO (LogicalTypeRep, FieldValue)
+variantPayloadType value = case value of
+    FieldNull -> pure (variant, value)
+    FieldBool{} -> scalar DuckDBTypeBoolean
+    FieldInt8{} -> scalar DuckDBTypeTinyInt
+    FieldInt16{} -> scalar DuckDBTypeSmallInt
+    FieldInt32{} -> scalar DuckDBTypeInteger
+    FieldInt64{} -> scalar DuckDBTypeBigInt
+    FieldWord8{} -> scalar DuckDBTypeUTinyInt
+    FieldWord16{} -> scalar DuckDBTypeUSmallInt
+    FieldWord32{} -> scalar DuckDBTypeUInteger
+    FieldWord64{} -> scalar DuckDBTypeUBigInt
+    FieldHugeInt{} -> scalar DuckDBTypeHugeInt
+    FieldUHugeInt{} -> scalar DuckDBTypeUHugeInt
+    FieldFloat{} -> scalar DuckDBTypeFloat
+    FieldDouble{} -> scalar DuckDBTypeDouble
+    FieldDecimal DecimalValue{decimalWidth, decimalScale} -> pure (LogicalTypeDecimal decimalWidth decimalScale, value)
+    FieldText{} -> scalar DuckDBTypeVarchar
+    FieldBlob{} -> scalar DuckDBTypeBlob
+    FieldUUID{} -> scalar DuckDBTypeUUID
+    FieldDate{} -> scalar DuckDBTypeDate
+    FieldTime time
+        | hasNanos time -> scalar DuckDBTypeTimeNs
+        | otherwise -> scalar DuckDBTypeTime
+    FieldTimestamp (Finite LocalTime{localTimeOfDay})
+        | hasNanos localTimeOfDay -> scalar DuckDBTypeTimestampNs
+    FieldTimestamp{} -> scalar DuckDBTypeTimestamp
+    FieldTimestampTZ{} -> scalar DuckDBTypeTimestampTz
+    FieldTimeTZ{} -> scalar DuckDBTypeTimeTz
+    FieldInterval{} -> scalar DuckDBTypeInterval
+    FieldBigNum{} -> scalar DuckDBTypeBigNum
+    FieldBit{} -> scalar DuckDBTypeBit
+    FieldList{} -> pure (LogicalTypeList variant, value)
+    FieldArray items -> pure (LogicalTypeList variant, FieldList (elems items))
+    FieldStruct structValue@StructValue{structValueTypes} -> do
+        let names = map structFieldName (elems structValueTypes)
+        when (any Text.null names || length names /= length (List.nub names)) $
+            throwIO (userError "duckdb-simple: VARIANT objects need unique, nonempty keys")
+        let types = fmap (\field -> field{structFieldValue = variant}) structValueTypes
+        pure (LogicalTypeStruct types, FieldStruct structValue{structValueTypes = types})
+    FieldUnion unionValue -> pure (unionValueTypeRep unionValue, value)
+    FieldGeometry{} -> unsupportedRawGeometryBinding
+    FieldMap{} -> throwIO (userError "duckdb-simple: VARIANT payloads cannot contain MAP values")
+    FieldEnum{} -> throwIO (userError "duckdb-simple: VARIANT payloads cannot contain ENUM values")
+  where
+    variant = LogicalTypeScalar DuckDBTypeVariant
+    scalar dtype = pure (LogicalTypeScalar dtype, value)
+    hasNanos time = snd (properFraction (todSec time * 1000000) :: (Integer, Pico)) /= 0
 
 instance ToDuckValue G.Geometry where
     toDuckValue geometry = do

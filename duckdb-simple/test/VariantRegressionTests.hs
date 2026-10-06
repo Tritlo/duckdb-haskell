@@ -14,15 +14,13 @@ import qualified Data.ByteString as BS
 import qualified Data.Geometry as G
 import Data.Int (Int64)
 import Data.List (isInfixOf)
-import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Vector as V
 import Database.DuckDB.FFI (pattern DuckDBTypeVariant)
 import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
-import Database.DuckDB.Simple.FromField (DecimalValue (..), FieldValue (..), StructValue (..), UnionValue (..))
+import Database.DuckDB.Simple.FromField (BitString (..), DecimalValue (..), FieldValue (..), StructValue (..), UnionValue)
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..))
 import Database.DuckDB.Simple.Geometry (RawGeometry (..), toRawGeometry)
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), destroyLogicalType, logicalTypeFromRep)
@@ -40,7 +38,7 @@ newtype VariantRecord = VariantRecord {payload :: Variant}
     deriving stock (Eq, Show, Generic)
     deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB VariantRecord)
 
--- | Check VARIANT payloads against native decoding and explicit parameter casts.
+-- | Check VARIANT payloads against native decoding and parameter round trips.
 tests :: TestTree
 tests =
     testGroup
@@ -50,6 +48,7 @@ tests =
             [ testCase (Text.unpack sql) $ withConnection ":memory:" \conn -> do
                 [(Variant actual, native)] <- query_ conn (Query ("SELECT (" <> sql <> ")::VARIANT, " <> sql)) :: IO [(Variant, FieldValue)]
                 actual @?= native
+                roundTrip conn native
             | sql <- scalarCases
             ]
         , testCase "explicit casts bind plain parameters" $ withConnection ":memory:" \conn -> do
@@ -63,16 +62,25 @@ tests =
             _ <- execute conn "INSERT INTO variants VALUES (?)" (Only record)
             (query_ conn "SELECT v FROM variants" :: IO [Only Variant])
                 >>= (@?= [Only (Variant (FieldInt64 7)), Only (Variant (FieldInt64 8)), Only (Variant (variantObject [("a", FieldInt32 1), ("b", FieldText "x")]))])
+        , testCase "existing FromField instances read VARIANT payloads" $ withConnection ":memory:" \conn -> do
+            (query_ conn "SELECT 42::BIGINT::VARIANT, 'x'::VARIANT, [1, 2, 3]::VARIANT" :: IO [(Int64, Text, [Int64])])
+                >>= (@?= [(42, "x", [1, 2, 3])])
+            (query_ conn "SELECT {'payload': {'x': 18446744073709551615::UBIGINT}::VARIANT}" :: IO [Only VariantRecord])
+                >>= (@?= [Only (VariantRecord (Variant (variantObject [("x", FieldWord64 maxBound)])))])
+        , testCase "bound payloads keep integer widths and decimal scale" $ withConnection ":memory:" \conn ->
+            forM_ [("'-128'::TINYINT", FieldInt8 minBound), ("12.34::DECIMAL(4,2)", FieldDecimal (DecimalValue 4 2 1234)), ("255::UTINYINT", FieldWord8 maxBound)] \(sql, value) ->
+                (query conn (Query ("SELECT variant_typeof(?) = variant_typeof((" <> sql <> ")::VARIANT)")) (Only (Variant value)) :: IO [Only Bool])
+                    >>= (@?= [Only True])
         , testCase "floating special values retain type and bits" $ withConnection ":memory:" \conn -> do
             forM_ [0, -0.0, 1 / 0, -1 / 0, 0 / 0] \value -> do
-                [Only (Variant actual)] <- query conn "SELECT ?::VARIANT" (Only (value :: Double))
+                [Only (Variant actual)] <- query conn "SELECT ?" (Only (Variant (FieldDouble value)))
                 case actual of
                     FieldDouble decoded
                         | isNaN value -> assertBool "expected Double NaN" (isNaN decoded)
                         | otherwise -> castDoubleToWord64 decoded @?= castDoubleToWord64 value
                     _ -> assertFailure (show actual)
             forM_ [0, -0.0, 1 / 0, -1 / 0, 0 / 0] \value -> do
-                [Only (Variant actual)] <- query conn "SELECT ?::VARIANT" (Only (value :: Float))
+                [Only (Variant actual)] <- query conn "SELECT ?" (Only (Variant (FieldFloat value)))
                 case actual of
                     FieldFloat decoded
                         | isNaN value -> assertBool "expected Float NaN" (isNaN decoded)
@@ -82,63 +90,63 @@ tests =
             forM_ ["'12:00:00+01:23'::TIMETZ", "'23:59:59.999999-15:59'::TIMETZ", "'00:00:00+00'::TIMETZ"] \sql -> do
                 [(Variant actual, native)] <- query_ conn (Query ("SELECT (" <> sql <> ")::VARIANT, " <> sql)) :: IO [(Variant, FieldValue)]
                 actual @?= native
+                roundTrip conn native
             assertFailureIO (query_ conn "SELECT '12:00:00+01:23:45'::TIMETZ::VARIANT" :: IO [Only Variant])
         , testCase "text and binary values preserve embedded NUL" $ withConnection ":memory:" \conn -> do
-            (query conn "SELECT ?::VARIANT" (Only ("before\0after íslenska λ 😀" :: Text)) :: IO [Only Variant]) >>= (@?= [Only (Variant (FieldText "before\0after íslenska λ 😀"))])
-            (query conn "SELECT ?::VARIANT" (Only (BS.pack [0, 1, 127, 128, 255, 0])) :: IO [Only Variant]) >>= (@?= [Only (Variant (FieldBlob (BS.pack [0, 1, 127, 128, 255, 0])))])
-        , testCase "objects preserve entry order and heterogeneous children" $ withConnection ":memory:" \conn -> do
-            let sql :: Text
-                sql = "SELECT {'zeta': 9007199254740993::BIGINT, 'alpha': 1234567890.123456789::DECIMAL(38,9), 'quote'' íslenska λ': [NULL::VARIANT, 'x'::VARIANT, []::INTEGER[]::VARIANT, '{}'::JSON::VARIANT]}::VARIANT AS value"
-            (query_ conn (Query sql) :: IO [Only Variant])
-                >>= ( @?=
-                        [ Only
-                            ( Variant
-                                ( variantObject
-                                    [ ("zeta", FieldInt64 9007199254740993)
-                                    , ("alpha", FieldDecimal (DecimalValue 38 9 1234567890123456789))
-                                    , ("quote' íslenska λ", FieldList [FieldNull, FieldText "x", FieldList [], variantObject []])
-                                    ]
-                                )
-                            )
+            roundTrip conn (FieldText "before\0after íslenska λ 😀")
+            roundTrip conn (FieldBlob (BS.pack [0, 1, 127, 128, 255, 0]))
+        , testCase "objects preserve case-sensitive names and heterogeneous children" $ withConnection ":memory:" \conn -> do
+            let value =
+                    variantObject
+                        [ ("Case", FieldInt64 9007199254740993)
+                        , ("case", FieldDecimal (DecimalValue 38 9 1234567890123456789))
+                        , ("quote' íslenska λ", FieldList [FieldNull, FieldText "x", FieldList [], variantObject []])
                         ]
-                    )
-            (query_ conn (Query ("SELECT variant_extract(value, 'zeta')::BIGINT, variant_extract(value, 'alpha')::DECIMAL(38,9)::VARCHAR FROM (" <> sql <> ")")) :: IO [(Int64, Text)])
+            roundTrip conn value
+            (query conn "SELECT variant_extract(?, 'Case')::BIGINT, variant_extract(?, 'case')::DECIMAL(38,9)::VARCHAR" (Variant value, Variant value) :: IO [(Int64, Text)])
                 >>= (@?= [(9007199254740993, "1234567890.123456789")])
         , testCase "empty containers and NULL stay distinct" $ withConnection ":memory:" \conn -> do
-            (query_ conn "SELECT []::INTEGER[]::VARIANT, '{}'::JSON::VARIANT, [NULL]::INTEGER[]::VARIANT, {'x': NULL}::VARIANT" :: IO [(Variant, Variant, Variant, Variant)])
-                >>= (@?= [(Variant (FieldList []), Variant (variantObject []), Variant (FieldList [FieldNull]), Variant (variantObject [("x", FieldNull)]))])
+            forM_ [FieldNull, FieldList [], variantObject [], FieldList [FieldNull], variantObject [("x", FieldNull)]] (roundTrip conn)
             (query_ conn "SELECT NULL::VARIANT" :: IO [Only (Maybe Variant)]) >>= (@?= [Only Nothing])
-            (query_ conn "SELECT NULL::VARIANT" :: IO [Only FieldValue]) >>= (@?= [Only FieldNull])
-        , testCase "existing FromField instances read VARIANT payloads" $ withConnection ":memory:" \conn -> do
-            (query_ conn "SELECT 42::BIGINT::VARIANT, 'x'::VARIANT, [1, 2, 3]::VARIANT" :: IO [(Int64, Text, [Int64])])
-                >>= (@?= [(42, "x", [1, 2, 3])])
-            (query_ conn "SELECT {'payload': {'x': 18446744073709551615::UBIGINT}::VARIANT}" :: IO [Only VariantRecord])
-                >>= (@?= [Only (VariantRecord (Variant (variantObject [("x", FieldWord64 maxBound)])))])
-        , testCase "native LIST, ARRAY and MAP containers decode VARIANT elements" $ withConnection ":memory:" \conn ->
-            (query_ conn "SELECT [1::VARIANT, 'two'::VARIANT, NULL], [42::VARIANT]::VARIANT[1], MAP {'x': {'a': 9}::VARIANT}" :: IO [([Variant], Array Int Variant, Map Text Variant)])
-                >>= (@?= [([Variant (FieldInt32 1), Variant (FieldText "two"), Variant FieldNull], listArray (0, 0) [Variant (FieldInt32 42)], Map.fromList [("x", Variant (variantObject [("a", FieldInt32 9)]))])])
-        , testCase "UNION payloads decode VARIANT, including NULL" $ withConnection ":memory:" \conn -> do
-            [Only value] <- query_ conn "SELECT union_value(v := {'a': 42}::VARIANT)" :: IO [Only (UnionValue FieldValue)]
-            unionValuePayload value @?= variantObject [("a", FieldInt32 42)]
-            [Only nullValue] <- query_ conn "SELECT union_value(v := NULL::VARIANT)" :: IO [Only (UnionValue FieldValue)]
-            unionValuePayload nullValue @?= FieldNull
+            (query conn "SELECT ?" (Only (Variant FieldNull)) :: IO [Only FieldValue]) >>= (@?= [Only FieldNull])
+        , testCase "ARRAY parameters and generic records contain VARIANT" $ withConnection ":memory:" \conn -> do
+            let array = listArray (0, 2) [Variant (FieldInt8 1), Variant (FieldText "two"), Variant FieldNull]
+            (query conn "SELECT ?" (Only array) :: IO [Only (Array Int Variant)]) >>= (@?= [Only array])
+            let record = VariantRecord (Variant (variantObject [("x", FieldWord64 maxBound)]))
+            (query conn "SELECT ?" (Only record) :: IO [Only VariantRecord]) >>= (@?= [Only record])
+        , testCase "nullable ARRAY parameters preserve heterogeneous VARIANT values" $ withConnection ":memory:" \conn -> do
+            let values = listArray (0, 3) [Nothing, Just (Variant (FieldInt64 42)), Just (Variant (FieldText "two")), Just (Variant (variantObject [("xs", FieldList [FieldNull, FieldBool True])]))]
+            (query conn "SELECT typeof(?), ?" (values, values) :: IO [(Text, Array Int (Maybe Variant))]) >>= (@?= [("VARIANT[4]", values)])
+        , testCase "empty ARRAY parameters retain VARIANT element type" $ withConnection ":memory:" \conn -> do
+            let values = listArray (0, -1) [] :: Array Int (Maybe Variant)
+            (query conn "SELECT typeof(?)" (Only values) :: IO [Only Text]) >>= (@?= [Only "VARIANT[ANY]"])
+        , testCase "parameter binding supplies a complete VARIANT type" $ withConnection ":memory:" \conn -> do
+            let value = variantObject [("xs", FieldList [FieldNull, FieldInt64 42])]
+            roundTrip conn value
+            (query conn "SELECT typeof(?)" (Only (Variant value)) :: IO [Only Text]) >>= (@?= [Only "VARIANT"])
         , testCase "VARIANT type construction raises an error" $ do
             result <- try (bracket (logicalTypeFromRep (LogicalTypeScalar DuckDBTypeVariant)) destroyLogicalType (const (pure ())))
             case result of
                 Left err -> assertBool (displayException (err :: SomeException)) ("?::VARIANT" `isInfixOf` displayException err)
                 Right () -> assertFailure "expected VARIANT type rejection"
-        , testCase "typed VARIANT NULLs and inactive members bind with the type cache" $ withConnection ":memory:" \conn -> do
-            [Only nullStruct] <- query_ conn "SELECT {'payload': NULL::VARIANT}" :: IO [Only (StructValue FieldValue)]
-            [Only inactive] <- query_ conn "SELECT union_value(number := 42::BIGINT)::UNION(number BIGINT, payload VARIANT)" :: IO [Only (UnionValue FieldValue)]
-            (query conn "SELECT ?" (Only nullStruct) :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only nullStruct])
-            (query conn "SELECT ?" (Only inactive) :: IO [Only (UnionValue FieldValue)]) >>= (@?= [Only inactive])
-            (query conn "SELECT typeof(?)" (Only (listArray (0, -1) [] :: Array Int Int64)) :: IO [Only Text]) >>= (@?= [Only "BIGINT[ANY]"])
-        , testCase "VARIANT payloads in composite parameters raise an error" $ withConnection ":memory:" \conn -> do
-            [Only struct] <- query_ conn "SELECT {'payload': 42::VARIANT, 'shape': NULL::GEOMETRY('OGC:CRS84')}" :: IO [Only (StructValue FieldValue)]
-            [Only record] <- query_ conn "SELECT {'payload': 42::VARIANT}" :: IO [Only VariantRecord]
-            assertVariantRejection (query conn "SELECT ?" (Only struct) :: IO [Only (StructValue FieldValue)])
-            assertVariantRejection (query conn "SELECT ?" (Only record) :: IO [Only VariantRecord])
-            (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
+        , testCase "VARIANT payloads and GEOMETRY CRS metadata bind together" $ withConnection ":memory:" \conn -> do
+            [Only value] <- query_ conn "SELECT {'payload': 42::VARIANT, 'shape': NULL::GEOMETRY('OGC:CRS84')}" :: IO [Only (StructValue FieldValue)]
+            (query conn "SELECT typeof(?)" (Only value) :: IO [Only Text]) >>= (@?= [Only "STRUCT(payload VARIANT, shape GEOMETRY('OGC:CRS84'))"])
+            (query conn "SELECT ?" (Only value) :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only value])
+        , testCase "inactive VARIANT UNION members have complete types" $ withConnection ":memory:" \conn -> do
+            [Only value] <- query_ conn "SELECT union_value(number := 42::BIGINT)::UNION(number BIGINT, payload VARIANT)" :: IO [Only (UnionValue FieldValue)]
+            (query conn "SELECT ?" (Only value) :: IO [Only (UnionValue FieldValue)]) >>= (@?= [Only value])
+        , testCase "native LIST, ARRAY, MAP and STRUCT metadata round trip" $ withConnection ":memory:" \conn -> do
+            [Only value] <-
+                query_
+                    conn
+                    "SELECT {'xs': [1::VARIANT, 'two'::VARIANT, NULL], 'fixed': [42::VARIANT]::VARIANT[1], 'map': MAP {'x': {'a': 9}::VARIANT}}" ::
+                    IO [Only (StructValue FieldValue)]
+            (query conn "SELECT ?" (Only value) :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only value])
+        , testCase "UNION payloads retain VARIANT type, including NULL" $ withConnection ":memory:" \conn ->
+            forM_ ["SELECT union_value(v := {'a': 42}::VARIANT)", "SELECT union_value(v := NULL::VARIANT)"] \sql -> do
+                [Only value] <- query_ conn sql :: IO [Only (UnionValue FieldValue)]
+                (query conn "SELECT ?" (Only value) :: IO [Only (UnionValue FieldValue)]) >>= (@?= [Only value])
         , testGroup
             "heterogeneous folds cross chunk boundaries"
             [ testCase mode $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
@@ -181,6 +189,12 @@ tests =
             value @?= geometryPayload (rawGeometryWKB geometry)
             (query conn "SELECT system.main.ST_GeomFromWKB(?)::VARIANT" (Only (rawGeometryWKB geometry)) :: IO [Only Variant]) >>= (@?= [Only value])
             (query conn "SELECT system.main.ST_CRS((system.main.ST_GeomFromWKB(?)::VARIANT)::GEOMETRY)" (Only (rawGeometryWKB geometry)) :: IO [Only (Maybe Text)]) >>= (@?= [Only Nothing])
+            forM_ [variantPayload value, FieldList [variantPayload value], variantObject [("shape", variantPayload value)]] \input -> do
+                result <- try (query conn "SELECT ?" (Only (Variant input)) :: IO [Only Variant]) :: IO (Either SomeException [Only Variant])
+                case result of
+                    Left err -> assertBool (displayException err) ("raw GEOMETRY binding requires explicit" `isInfixOf` displayException err)
+                    Right _ -> assertFailure "expected raw geometry binding rejection"
+            (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
         , testCase "geometry payload retains empty layout tags and native NaN points" $ withConnection ":memory:" \conn ->
             forM_ ["GEOMETRYCOLLECTION ZM EMPTY", "MULTIPOLYGON M EMPTY", "POINT Z (NaN NaN 7)"] \wkt -> do
                 [Only geometry] <- query conn "SELECT ?::GEOMETRY" (Only (wkt :: Text)) :: IO [Only RawGeometry]
@@ -198,19 +212,32 @@ tests =
                 \shape -> do
                     raw <- either assertFailure pure (toRawGeometry shape)
                     (query conn "SELECT system.main.ST_GeomFromWKB(?)::VARIANT" (Only (rawGeometryWKB raw)) :: IO [Only Variant]) >>= (@?= [Only (geometryPayload (rawGeometryWKB raw))])
+        , testCase "invalid values fail before binding and connection reuse succeeds" $ withConnection ":memory:" \conn -> do
+            forM_
+                [ FieldHugeInt (2 ^ (127 :: Int))
+                , FieldUHugeInt (-1)
+                , FieldUHugeInt (2 ^ (128 :: Int))
+                , FieldDecimal (DecimalValue 0 0 0)
+                , FieldDecimal (DecimalValue 5 6 1)
+                , FieldDecimal (DecimalValue 3 0 1000)
+                , FieldBit (BitString 8 (BS.singleton 0))
+                , variantObject [("same", FieldNull), ("same", FieldBool True)]
+                , variantObject [("", FieldBool True)]
+                , variantObject [("first", FieldBool False), ("", FieldBool True)]
+                , variantObject [("before\0after", FieldNull)]
+                ]
+                \value -> assertFailureIO (query conn "SELECT ?" (Only (Variant value)) :: IO [Only Variant])
+            (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
         ]
+
+-- | Bind a payload as VARIANT without a cast and read it back.
+roundTrip :: Connection -> FieldValue -> Assertion
+roundTrip conn expected =
+    (query conn "SELECT typeof(?) AS kind, ? AS value" (Variant expected, Variant expected) :: IO [(Text, Variant)]) >>= (@?= [("VARIANT", Variant expected)])
 
 -- | A raw geometry payload has no CRS inside a VARIANT.
 geometryPayload :: BS.ByteString -> Variant
 geometryPayload wkb = Variant (FieldGeometry (RawGeometry wkb Nothing))
-
--- | Check that a parameter with VARIANT metadata asks for an explicit cast.
-assertVariantRejection :: IO a -> Assertion
-assertVariantRejection action = do
-    result <- try (action >> pure ()) :: IO (Either SomeException ())
-    case result of
-        Left err -> assertBool (displayException err) ("?::VARIANT" `isInfixOf` displayException err)
-        Right () -> assertFailure "expected VARIANT parameter rejection"
 
 -- | SQL constructors for each scalar payload tag.
 scalarCases :: [Text]

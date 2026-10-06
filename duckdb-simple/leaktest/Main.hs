@@ -29,7 +29,7 @@ import Data.Maybe (catMaybes, listToMaybe)
 import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Copy as Copy
 import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
-import Database.DuckDB.Simple.FromField (FieldValue (..))
+import Database.DuckDB.Simple.FromField (DecimalValue (..), FieldValue (..))
 import Database.DuckDB.Simple.Geometry (RawGeometry (..), fromRawGeometry)
 import qualified Database.DuckDB.Simple.Logging as Logging
 import Database.DuckDB.Simple.Variant (Variant (..))
@@ -116,13 +116,14 @@ checkNewTypes batches =
     withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
         [Only geometry] <- query_ conn "SELECT 'POINT ZM (1 2 3 4)'::GEOMETRY('OGC:CRS84')" :: IO [Only RawGeometry]
         typed <- either fail pure (fromRawGeometry geometry) :: IO G.Geometry
-        let variant = Variant (FieldList [FieldInt64 42, FieldNull, FieldText "before\0after"])
+        let variant = Variant (FieldList [FieldInt64 42, FieldList [FieldNull, FieldText "before\0after"]])
             batch = forM_ [1 .. 100 :: Int] \_ -> do
-                rows <- query conn "SELECT [?::VARIANT, NULL, ?::VARIANT]::VARIANT, system.main.ST_SetCRS(system.main.ST_GeomFromWKB(?), ?), ?" (42 :: Int64, "before\0after" :: String, rawGeometryWKB geometry, rawGeometryCRS geometry, typed)
+                rows <- query conn "SELECT ?, system.main.ST_SetCRS(system.main.ST_GeomFromWKB(?), ?), ?" (variant, rawGeometryWKB geometry, rawGeometryCRS geometry, typed)
                 unless (rows == [(variant, geometry, typed)]) (fail "new type round trip failed")
                 expectFailure (query conn "SELECT ?, system.main.ST_GeomFromWKB(?)" (typed, BS.pack [1, 1, 0, 0, 0]) :: IO [(G.Geometry, RawGeometry)])
                 expectFailure (query conn "SELECT system.main.ST_GeomFromWKB(?)" (Only (rawGeometryWKB geometry)) :: IO [Only Int64])
-                expectFailure (query conn "SELECT [?::VARIANT]::VARIANT" (Only (42 :: Int64)) :: IO [Only Int64])
+                expectFailure (query conn "SELECT ?" (Only (Variant (FieldList [variantPayload variant, FieldDecimal (DecimalValue 0 0 0)]))) :: IO [Only Variant])
+                expectFailure (query conn "SELECT ?" (Only variant) :: IO [Only Int64])
         batch
         performMajorGC
         before <- readUsage

@@ -369,44 +369,34 @@ result size. The older Arrow query and scan bindings remain available through
 ### VARIANT
 
 A VARIANT result decodes to the `FieldValue` of the stored value, with its
-native type. So the usual `FromField` instances read VARIANT columns, for
-example as `Int64`, `Text`, `[a]`, or a generic record. Arrays decode to
-`FieldList`. Objects decode to `FieldStruct` values whose fields have the
-VARIANT type, in entry order. SQL NULL decodes to `FieldNull`.
+native type. The usual `FromField` instances read VARIANT columns, for example
+as `Int64`, `Text`, `[a]`, or a generic record. Arrays decode to `FieldList`.
+Objects decode to `FieldStruct` values whose fields have the VARIANT type, in
+entry order. SQL NULL decodes to `FieldNull`.
 
 `Variant` from `Database.DuckDB.Simple.Variant` wraps a `FieldValue`. Its
-`FromField` instance reads any column. Its `ToField` and `ToDuckValue`
-instances bind the payload as a VARIANT, so `SELECT ?` returns a VARIANT:
+`FromField` instance reads any column. It has no parameter instance, because
+the C API cannot create a usable VARIANT type
+([#27](https://github.com/Tritlo/duckdb-haskell/issues/27)). Bind a plain value
+and cast it in SQL, or insert it into a `VARIANT` column:
 
 ```haskell
-query conn "SELECT ?" (Only (Variant (FieldList [FieldInt8 1, FieldText "two"])))
+query conn "SELECT ?::VARIANT" (Only (42 :: Int64))
+execute conn "INSERT INTO t (v) VALUES (?)" (Only record)
 ```
 
-A scalar payload keeps its native type, such as `TINYINT` or `DECIMAL(4,2)`.
-Time and timestamp payloads bind as microsecond types, or as nanosecond types
-when they have sub-microsecond digits. So a `TIMESTAMP_S` result binds back as
-a `TIMESTAMP` with the same value. Lists, arrays, and STRUCT fields bind as
-VARIANT values. MAP and ENUM payloads raise an error.
-
-The C constructor in DuckDB 1.5 returns a VARIANT type that cannot be used
-([duckdb#24680](https://github.com/duckdb/duckdb/issues/24680)). The first
-VARIANT type construction in a process opens a temporary in-memory database
-with one thread, reads the type of `NULL::VARIANT`, and closes the database.
-`logicalTypeFromRep` returns copies of that type. The library keeps the
-original until the process exits.
+A `StructValue` becomes an object, and a list or an array becomes an array.
+To build an array with mixed element types, cast each element, as in
+`[?::VARIANT, ?::VARIANT]`. `logicalTypeFromRep` raises an error for VARIANT.
+A composite parameter that contains VARIANT metadata also raises an error.
 
 A GEOMETRY payload decodes to `FieldGeometry` with raw WKB and no CRS. Import
-these bytes with `ST_GeomFromWKB(?)::VARIANT`. A `Variant` parameter that
-contains `FieldGeometry` raises an error, also inside arrays and objects.
-TIMETZ payloads with an offset in seconds raise an error, as TIMETZ columns do.
-Object parameters reject duplicate keys, empty keys, and keys that contain NUL.
-Results can still contain empty or NUL keys. Text and blob payloads can contain
-NUL. For objects with names such as `Case` and `case`, give the result column
-an explicit alias, such as `SELECT ? AS value`. DuckDB 1.5 cannot derive an
-unnamed column name from those objects.
+these bytes with `ST_GeomFromWKB(?)::VARIANT`. A TIMETZ payload with an offset
+in seconds raises an error, as a TIMETZ column does. Results can contain empty
+or NUL object keys. Text and blob payloads can contain NUL.
 
 DuckDB 1.5 has no C API for reading VARIANT values. The decoder checks the
-native version and physical schema before reading the internal representation.
+native version and physical schema before it reads the internal representation.
 It checks payload bounds and rejects unknown tags. This format dependency is
 limited to the supported DuckDB 1.5 line.
 

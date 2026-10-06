@@ -46,14 +46,15 @@ the value into a column with that CRS, or cast it in SQL.
 Review VARIANT support after Geometry. Both features will ship in 0.3.0.0.
 VARIANT results decode to the `FieldValue` of the stored value, so existing
 `FromField` instances read them. Objects decode to `FieldStruct` values with
-VARIANT fields. `Variant` from `Database.DuckDB.Simple.Variant` wraps a
-`FieldValue` and binds it as a VARIANT. Native VARIANT loses geometry CRS
-metadata. Import raw geometry payloads with `ST_GeomFromWKB(?)::VARIANT`.
-See [the VARIANT notes](duckdb-simple/README.md#variant) for private-format
-and persistent-storage requirements.
+VARIANT fields. `Variant` from `Database.DuckDB.Simple.Variant` wraps the
+`FieldValue` of a result. Native VARIANT loses geometry CRS metadata. Import
+raw geometry payloads with `ST_GeomFromWKB(?)::VARIANT`. See [the VARIANT
+notes](duckdb-simple/README.md#variant) for private-format and
+persistent-storage requirements.
 
-`logicalTypeFromRep` constructs VARIANT types without a connection. The first
-construction in a process reads the type from a temporary in-memory database.
+`Variant` has no parameter instance, because the C API cannot create a usable
+VARIANT type. Bind a plain value and cast it with `?::VARIANT`, or insert it
+into a `VARIANT` column. `logicalTypeFromRep` raises an error for VARIANT.
 
 ## Binding fixes
 

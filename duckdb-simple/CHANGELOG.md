@@ -12,11 +12,19 @@ These changes target the 0.3.0.0 release. Do not release review branches separat
   `FromField` instances read them. Objects decode to `FieldStruct` values with
   VARIANT fields, in entry order. The decoder checks DuckDB's private 1.5
   format, payload bounds, and nesting depth.
-- Add `Variant`, a wrapper for the `FieldValue` of a result, and
-  `variantObject`, which builds an object payload. `Variant` has no
-  parameter instance, because the C API cannot create a usable VARIANT type.
-  Bind a plain value and cast it with `?::VARIANT`. `logicalTypeFromRep` and
-  composite parameters with VARIANT metadata raise an error.
+- Add `Variant`, a `FieldValue` that binds as a VARIANT, and `variantObject`,
+  which builds an object payload. Scalars keep their native type. Object
+  parameters reject duplicate, empty, and NUL-containing keys because the
+  native constructors cannot represent all of these names.
+  `Variant` has no `ToDuckValue` instance, and `logicalTypeFromRep` raises an
+  error for VARIANT.
+- Read the VARIANT type and GEOMETRY types for a list of CRS definitions when
+  a connection opens, because the C API cannot create them. Parameters use
+  these types. Add `ConnectionOptions`, `openWithOptions`, and
+  `withConnectionWithOptions` to set the CRS list, which defaults to
+  `OGC:CRS84`. Opening an in-memory database takes about 0.45 ms longer.
+- Array parameters use the element's `ToField` instance. Elements require
+  `ToField` and `DuckDBColumnType`.
 - A GEOMETRY payload decodes to `FieldGeometry` with raw WKB. Import those
   bytes with `ST_GeomFromWKB(?)::VARIANT`.
 - Add parameter and result instances for `Data.Geometry.Geometry` from
@@ -38,10 +46,10 @@ These changes target the 0.3.0.0 release. Do not release review branches separat
   Both forms own their memory and remain usable after the connection closes.
   CRS text can hold an identifier, a custom name, or a full WKT2/PROJJSON
   definition.
-- The C API cannot create a GEOMETRY type with a CRS. `logicalTypeFromRep`
-  creates `GEOMETRY` with no CRS, so composite parameters bind their geometry
-  members without a CRS. Insert the value into a column with a CRS, or cast it
-  in SQL, to apply the CRS.
+- Composite parameters keep GEOMETRY CRS metadata for the CRS definitions
+  that the connection read. Other CRS definitions bind without a CRS, and
+  `logicalTypeFromRep` creates `GEOMETRY` with no CRS. Insert the value into a
+  column with a CRS, or cast it in SQL, to apply the CRS.
 - Read STRUCT and UNION type metadata once for each result vector instead of
   once for each row. Prepare their direct child readers at the same time.
   A local benchmark with a CRS-tagged GEOMETRY field ran about ten times faster.

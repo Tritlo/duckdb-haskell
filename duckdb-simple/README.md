@@ -376,25 +376,33 @@ entry order. `variantObject` builds such a payload from a list of entries.
 SQL NULL decodes to `FieldNull`.
 
 `Variant` from `Database.DuckDB.Simple.Variant` wraps a `FieldValue`. Its
-`FromField` instance reads any column. It has no parameter instance, because
-the C API cannot create a usable VARIANT type
-([#27](https://github.com/Tritlo/duckdb-haskell/issues/27)). Bind a plain value
-and cast it in SQL, or insert it into a `VARIANT` column:
+`FromField` instance reads any column. Its `ToField` instance binds the
+payload as a VARIANT, so `SELECT ?` returns a VARIANT:
 
 ```haskell
-query conn "SELECT ?::VARIANT" (Only (42 :: Int64))
-execute conn "INSERT INTO t (v) VALUES (?)" (Only record)
+query conn "SELECT ?" (Only (Variant (FieldList [FieldInt8 1, FieldText "two"])))
 ```
 
-A `StructValue` becomes an object, and a list or an array becomes an array.
-To build an array with mixed element types, cast each element, as in
-`[?::VARIANT, ?::VARIANT]`. `logicalTypeFromRep` raises an error for VARIANT.
-A composite parameter that contains VARIANT metadata also raises an error.
+A scalar payload keeps its native type, such as `TINYINT` or `DECIMAL(4,2)`.
+Time and timestamp payloads bind as microsecond types, or as nanosecond types
+when they have sub-microsecond digits. So a `TIMESTAMP_S` result binds back as
+a `TIMESTAMP` with the same value. Lists, arrays, and STRUCT fields bind as
+VARIANT values. MAP and ENUM payloads raise an error. Object parameters reject
+duplicate keys, empty keys, and keys that contain NUL. You can also bind a
+plain value and cast it in SQL, as in `?::VARIANT`.
+
+The C API cannot create a usable VARIANT type
+([#27](https://github.com/Tritlo/duckdb-haskell/issues/27)). Each connection
+reads the VARIANT type when it opens, and its parameters use that type.
+`Variant` has no `ToDuckValue` instance, and `logicalTypeFromRep` raises an
+error for VARIANT, because neither has a connection.
 
 A GEOMETRY payload decodes to `FieldGeometry` with raw WKB and no CRS. Import
-these bytes with `ST_GeomFromWKB(?)::VARIANT`. A TIMETZ payload with an offset
-in seconds raises an error, as a TIMETZ column does. Results can contain empty
-or NUL object keys. Text and blob payloads can contain NUL.
+these bytes with `ST_GeomFromWKB(?)::VARIANT`. A `Variant` parameter that
+contains `FieldGeometry` raises an error, also inside arrays and objects. A
+TIMETZ payload with an offset in seconds raises an error, as a TIMETZ column
+does. Results can contain empty or NUL object keys. Text and blob payloads can
+contain NUL.
 
 DuckDB 1.5 has no C API for reading VARIANT values. The decoder checks the
 native version and physical schema before it reads the internal representation.
@@ -476,10 +484,22 @@ SQL with explicit WKB import. Their result decoding retains WKB and CRS,
 including inside LIST, ARRAY, MAP, STRUCT, and UNION values.
 
 `LogicalTypeGeometry` describes CRS metadata. The C API cannot create a
-GEOMETRY type with a CRS. `logicalTypeFromRep` therefore creates `GEOMETRY`
-with no CRS. Composite parameters bind their geometry members without a CRS,
-including typed NULLs, empty collections, and inactive UNION members. To apply
-a CRS, insert the value into a column with that CRS, or cast it in SQL:
+GEOMETRY type with a CRS. So each connection reads a GEOMETRY type for each
+CRS in a list when it opens, with one query. The default list holds
+`OGC:CRS84`. Composite parameters use these types, so typed NULLs, empty
+collections, and inactive UNION members keep their CRS. Set the list in
+`ConnectionOptions`:
+
+```haskell
+let options = defaultConnectionOptions{connectionGeometryCRS = ["OGC:CRS84", "EPSG:3857"]}
+withConnectionWithOptions "shapes.duckdb" options \conn -> ...
+```
+
+A list entry can be an identifier, a custom name, or a full WKT2 or PROJJSON
+definition. A composite parameter with a CRS that is not in the list binds its
+geometry members without a CRS. `logicalTypeFromRep` has no connection, so it
+creates `GEOMETRY` without a CRS. To apply a CRS in these cases, insert the
+value into a column with that CRS, or cast it in SQL:
 
 ```haskell
 query conn "SELECT ?::UNION(number BIGINT, shape GEOMETRY('OGC:CRS84'))" (Only value)

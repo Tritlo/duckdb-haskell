@@ -66,6 +66,9 @@ Format Haskell code with `fourmolu` before committing.
 Format Cabal files with `cabal-gild`. Keep names consistent with the surrounding
 module.
 
+Build parameter types with the type cache of the statement's connection. The
+connection fills the cache when it opens. Do not run queries during binding.
+
 ## Native library configuration
 
 The bindings support DuckDB >= 1.5.3 and < 1.6. Cabal downloads DuckDB 1.5.6

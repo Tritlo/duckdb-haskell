@@ -36,10 +36,13 @@ See [the Geometry notes](duckdb-simple/README.md#geometry) for examples and limi
 `LogicalTypeGeometry`. Update exhaustive matches.
 Native DuckDB >= 1.5.3 and < 1.6 remains supported.
 
-`logicalTypeFromRep` creates `LogicalTypeGeometry` as `GEOMETRY` with no CRS,
-because the C API cannot create a GEOMETRY type with a CRS. Composite
-parameters bind their geometry members without a CRS. To apply a CRS, insert
-the value into a column with that CRS, or cast it in SQL.
+The C API cannot create a GEOMETRY type with a CRS. Each connection reads
+GEOMETRY types for a list of CRS definitions when it opens, and composite
+parameters use them. The list defaults to `OGC:CRS84`. Set it with
+`ConnectionOptions`, `openWithOptions`, or `withConnectionWithOptions`. A CRS
+outside the list binds without a CRS, and `logicalTypeFromRep` creates
+`GEOMETRY` with no CRS. To apply a CRS in these cases, insert the value into a
+column with that CRS, or cast it in SQL.
 
 ## Unreleased VARIANT support
 
@@ -52,9 +55,14 @@ raw geometry payloads with `ST_GeomFromWKB(?)::VARIANT`. See [the VARIANT
 notes](duckdb-simple/README.md#variant) for private-format and
 persistent-storage requirements.
 
-`Variant` has no parameter instance, because the C API cannot create a usable
-VARIANT type. Bind a plain value and cast it with `?::VARIANT`, or insert it
-into a `VARIANT` column. `logicalTypeFromRep` raises an error for VARIANT.
+`Variant` binds as a VARIANT parameter. The connection reads the VARIANT type
+when it opens, because the C API cannot create a usable VARIANT type.
+`Variant` has no `ToDuckValue` instance, and `logicalTypeFromRep` raises an
+error for VARIANT.
+
+Array elements require `ToField` and `DuckDBColumnType`. Arrays use each
+element's `ToField` instance. If a custom element type only has `ToDuckValue`,
+add `instance ToField YourType`. The default implementation requires `Show`.
 
 ## Binding fixes
 

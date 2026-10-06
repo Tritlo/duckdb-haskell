@@ -70,7 +70,6 @@ import Database.DuckDB.Simple.LogicalRep (
  )
 import Database.DuckDB.Simple.Ok
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
-import Database.DuckDB.Simple.Types (Null (..))
 import GHC.Float (double2Float, float2Double)
 import GHC.Num.Integer (integerFromWordList)
 import Numeric.Natural (Natural)
@@ -339,12 +338,6 @@ instance FromField (UnionValue FieldValue) where
             FieldUnion unionVal -> Ok unionVal
             FieldNull -> returnError UnexpectedNull f ""
             _ -> returnError Incompatible f "expected UNION"
-
-instance FromField Null where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldNull -> Ok Null
-            _ -> returnError Incompatible f "expected NULL"
 
 instance FromField UUID.UUID where
     fromField f@Field{fieldValue} =

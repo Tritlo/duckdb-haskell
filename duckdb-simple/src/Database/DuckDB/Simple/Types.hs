@@ -22,17 +22,28 @@ module Database.DuckDB.Simple.Types (
 
 import Control.Exception (Exception)
 import Data.Text (Text)
+import qualified Data.Text as Text
 
+import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), FromField (..), ResultError (..), returnError)
 import Database.DuckDB.Simple.Internal (
     Connection,
     Query (..),
     SQLError (..),
     Statement,
  )
+import Database.DuckDB.Simple.Ok (Ok (..))
 
 -- | Placeholder representing SQL @NULL@.
 data Null = Null
     deriving (Eq, Ord, Show, Read)
+
+{- | This instance is in this module because @Internal@ imports @FromField@.
+An import of this module from @FromField@ would cause an import cycle.
+-}
+instance FromField Null where
+    fromField f = case fieldValue f of
+        FieldNull -> Ok Null
+        _ -> returnError Incompatible f (Text.pack "expected NULL")
 
 -- | Wrapper used for single-column rows.
 newtype Only a = Only {fromOnly :: a}

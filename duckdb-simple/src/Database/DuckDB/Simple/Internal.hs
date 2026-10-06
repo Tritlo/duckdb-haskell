@@ -25,7 +25,6 @@ module Database.DuckDB.Simple.Internal (
     ResultMode (..),
     StatementStreamColumn (..),
     StatementStreamChunk (..),
-    StatementStreamChunkVector (..),
     SQLError (..),
     toSQLError,
 
@@ -63,7 +62,6 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.Foreign as TextForeign
-import Data.Word (Word64)
 import Database.DuckDB.FFI (
     DuckDBClientContext,
     DuckDBConnection,
@@ -76,7 +74,6 @@ import Database.DuckDB.FFI (
     DuckDBState,
     DuckDBType,
     DuckDBValue,
-    DuckDBVector,
     c_duckdb_connection_get_client_context,
     c_duckdb_destroy_client_context,
     c_duckdb_destroy_data_chunk,
@@ -92,7 +89,7 @@ import Database.DuckDB.FFI (
     pattern DuckDBSuccess,
  )
 import Database.DuckDB.FFI.Deprecated (c_duckdb_execute_prepared_streaming)
-import Database.DuckDB.Simple.Geometry (RawGeometry)
+import Database.DuckDB.Simple.FromField (FieldValue)
 import Foreign.C.String (CString)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Utils (fillBytes)
@@ -169,15 +166,8 @@ data StatementStreamChunk = StatementStreamChunk
     { statementStreamChunkPtr :: DuckDBDataChunk
     , statementStreamChunkSize :: Int
     , statementStreamChunkIndex :: Int
-    , statementStreamChunkVectors :: [StatementStreamChunkVector]
-    }
-
--- | Raw vector pointers backing a chunk column.
-data StatementStreamChunkVector = StatementStreamChunkVector
-    { statementStreamChunkVectorHandle :: DuckDBVector
-    , statementStreamChunkVectorData :: Ptr ()
-    , statementStreamChunkVectorValidity :: Ptr Word64
-    , statementStreamChunkVectorGeometry :: Maybe (Int -> IO (Maybe RawGeometry))
+    , statementStreamChunkReaders :: [Int -> IO FieldValue]
+    -- ^ One reader for each column. A reader must not outlive its chunk.
     }
 
 -- | Represents an error reported by DuckDB or by duckdb-simple itself.

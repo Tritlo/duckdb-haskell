@@ -2,9 +2,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 
 module Database.DuckDB.Simple.Materialize (
-    materializeValue,
     prepareValueReader,
-    prepareGeometryDecoder,
 ) where
 
 import Control.Exception (bracket, throwIO)

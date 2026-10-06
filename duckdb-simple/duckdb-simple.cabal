@@ -68,6 +68,7 @@ library
     Database.DuckDB.Simple.Materialize
     Database.DuckDB.Simple.Result
     Database.DuckDB.Simple.Temporal
+    Database.DuckDB.Simple.TypeCache
     Database.DuckDB.Simple.VariantCodec
 
   hs-source-dirs: src
@@ -140,6 +141,7 @@ test-suite duckdb-simple-codec-test
     Database.DuckDB.Simple.Ok
     Database.DuckDB.Simple.Temporal
     Database.DuckDB.Simple.Time
+    Database.DuckDB.Simple.TypeCache
     Database.DuckDB.Simple.Variant
     Database.DuckDB.Simple.VariantCodec
 

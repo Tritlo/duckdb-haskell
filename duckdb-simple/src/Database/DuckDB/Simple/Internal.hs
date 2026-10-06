@@ -34,6 +34,7 @@ module Database.DuckDB.Simple.Internal (
     keepAlive,
     withDatabaseHandle,
     withConnectionHandle,
+    withTypeCache,
     withStatementHandle,
     withQueryCString,
     peekUtf8CString,
@@ -90,6 +91,7 @@ import Database.DuckDB.FFI (
  )
 import Database.DuckDB.FFI.Deprecated (c_duckdb_execute_prepared_streaming)
 import Database.DuckDB.Simple.FromField (FieldValue)
+import Database.DuckDB.Simple.TypeCache (TypeCache)
 import Foreign.C.String (CString)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Utils (fillBytes)
@@ -120,6 +122,7 @@ data ConnectionState
     | ConnectionOpen
         { connectionDatabase :: DuckDBDatabase
         , connectionHandle :: DuckDBConnection
+        , connectionTypeCache :: TypeCache
         }
 
 -- | Tracks the lifetime of a prepared statement.
@@ -342,6 +345,15 @@ withConnectionHandle conn@Connection{connectionState} action =
         case state of
             ConnectionClosed -> throwIO connectionClosedError
             ConnectionOpen{connectionHandle} -> action connectionHandle
+
+-- | Borrow the type cache of an open connection.
+withTypeCache :: Connection -> (TypeCache -> IO a) -> IO a
+withTypeCache conn@Connection{connectionState} action =
+    keepAlive conn $ do
+        state <- readIORef connectionState
+        case state of
+            ConnectionClosed -> throwIO connectionClosedError
+            ConnectionOpen{connectionTypeCache} -> action connectionTypeCache
 
 -- | Internal helper for safely accessing the underlying database handle.
 withDatabaseHandle :: Connection -> (DuckDBDatabase -> IO a) -> IO a

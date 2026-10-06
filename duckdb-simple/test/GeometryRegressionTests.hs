@@ -286,6 +286,12 @@ tests =
                 [Only value] <- query_ conn "SELECT v FROM nested" :: IO [Only (StructValue FieldValue)]
                 _ <- execute conn "INSERT INTO nested VALUES (?)" (Only value)
                 (query_ conn "SELECT v FROM nested" :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only value, Only value])
+        , testCase "connection options validate CRS definitions and pass configuration flags" $ do
+            forM_ ["", "OGC:CRS84\0bad"] \crs ->
+                assertFailureIO (withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = [crs]} (const (pure ())))
+            let options = defaultConnectionOptions{connectionConfig = [("threads", "1")], connectionGeometryCRS = ["local grid", "OGC:CRS84", "OGC:CRS84"]}
+            withConnectionWithOptions ":memory:" options \conn ->
+                (query_ conn "SELECT current_setting('threads')" :: IO [Only Int64]) >>= (@?= [Only 1])
         , testCase "logical type construction drops CRS" $ do
             let logical = LogicalTypeList (LogicalTypeGeometry (Just "OGC:CRS84"))
             bracket (logicalTypeFromRep logical) destroyLogicalType logicalTypeToRep

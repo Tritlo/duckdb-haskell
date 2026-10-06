@@ -445,6 +445,20 @@ a CRS, insert the value into a column with that CRS, or cast it in SQL:
 query conn "SELECT ?::UNION(number BIGINT, shape GEOMETRY('OGC:CRS84'))" (Only value)
 ```
 
+The CRS in a cast must be a constant. DuckDB rejects a parameter as a type
+modifier, so `?::GEOMETRY(?)` is not valid. To use a CRS that is known only at
+run time, write it into the query text as a SQL string literal, and double each
+single quote. A cast accepts a CRS that DuckDB recognizes, such as `OGC:CRS84`,
+or a full WKT2 or PROJJSON definition. Unless an extension recognizes it,
+DuckDB rejects other identifiers, such as `EPSG:4326`, and custom names.
+`ST_SetCRS` also accepts custom names, but it returns `GEOMETRY` with no CRS
+for a NULL input.
+
+A bound composite without a CRS also changes the type of expressions that
+combine it with CRS data. `UNION ALL` and `COALESCE` of `GEOMETRY` and
+`GEOMETRY('OGC:CRS84')` give `GEOMETRY` with no CRS for all rows. Cast the
+parameter before you combine it with other values.
+
 See [geometry-simple](https://github.com/Tritlo/geometry-simple) for the seven
 supported families, construction checks, and codec normalization rules.
 

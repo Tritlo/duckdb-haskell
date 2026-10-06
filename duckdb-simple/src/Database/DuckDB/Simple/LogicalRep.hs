@@ -179,6 +179,7 @@ The C API cannot create a GEOMETRY type with a CRS. This function creates
 GEOMETRY without a CRS and ignores the CRS of 'LogicalTypeGeometry'.
 DuckDB applies a CRS when it casts the value to a column type with a CRS.
 -}
+-- TODO: improve this when this becomes available in the C API.
 logicalTypeFromRep :: LogicalTypeRep -> IO DuckDBLogicalType
 logicalTypeFromRep rep = do
     logical <- create rep

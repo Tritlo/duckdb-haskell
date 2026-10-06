@@ -8,6 +8,20 @@ These changes target the 0.3.0.0 release. Do not release review branches separat
   and < 1.6. Test native versions 1.5.3 through 1.5.6.
 - Require `duckdb-ffi >= 1.5.6.0` for the updated native bindings.
 
+- Decode VARIANT results to the `FieldValue` of the stored value, so existing
+  `FromField` instances read them. Objects decode to `FieldStruct` values with
+  VARIANT fields, in entry order. The decoder checks DuckDB's private 1.5
+  format, payload bounds, and nesting depth.
+- Add `Variant`, a `FieldValue` that binds as a VARIANT. Scalars keep their
+  native type. Object parameters reject duplicate, empty, and NUL-containing
+  keys because the native constructors cannot represent all of these names.
+- The C constructor in DuckDB 1.5 returns a VARIANT type that cannot be used.
+  The first VARIANT type construction in a process reads a complete type from
+  a temporary in-memory database. `logicalTypeFromRep` and `toDuckValue`
+  return copies of it, so `Variant` binds without connection metadata.
+- A GEOMETRY payload decodes to `FieldGeometry` with raw WKB. Import those
+  bytes with `ST_GeomFromWKB(?)::VARIANT`. Binding a `Variant` that contains
+  geometry raises an error. This avoids WKT normalization of its bytes.
 - Add parameter and result instances for `Data.Geometry.Geometry` from
   `geometry-simple`. It provides decoded shapes, unboxed coordinate vectors,
   and runtime coordinate layouts. This type does not store CRS metadata.

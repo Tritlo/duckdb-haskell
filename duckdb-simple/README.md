@@ -298,8 +298,8 @@ For manual cursor-style iteration, use `nextRow`/`nextRowWith` on an open
 `Statement` to pull rows one at a time and decide when to stop.
 
 Cursors support the same column types as eager queries, including STRUCT
-and UNION values with nested collections and NULLs. GEOMETRY works with eager
-queries, cursors, and folds.
+and UNION values with nested collections and NULLs. VARIANT and GEOMETRY
+work with eager queries, cursors, and folds.
 
 #### Optional native streaming
 
@@ -365,6 +365,55 @@ Arrow export uses DuckDB's schema and chunk conversion API. DuckDB materializes
 the native result before callbacks start, so its memory use depends on the
 result size. The older Arrow query and scan bindings remain available through
 `Database.DuckDB.FFI.Deprecated` and emit deprecation warnings.
+
+### VARIANT
+
+A VARIANT result decodes to the `FieldValue` of the stored value, with its
+native type. So the usual `FromField` instances read VARIANT columns, for
+example as `Int64`, `Text`, `[a]`, or a generic record. Arrays decode to
+`FieldList`. Objects decode to `FieldStruct` values whose fields have the
+VARIANT type, in entry order. SQL NULL decodes to `FieldNull`.
+
+`Variant` from `Database.DuckDB.Simple.Variant` wraps a `FieldValue`. Its
+`FromField` instance reads any column. Its `ToField` and `ToDuckValue`
+instances bind the payload as a VARIANT, so `SELECT ?` returns a VARIANT:
+
+```haskell
+query conn "SELECT ?" (Only (Variant (FieldList [FieldInt8 1, FieldText "two"])))
+```
+
+A scalar payload keeps its native type, such as `TINYINT` or `DECIMAL(4,2)`.
+Time and timestamp payloads bind as microsecond types, or as nanosecond types
+when they have sub-microsecond digits. So a `TIMESTAMP_S` result binds back as
+a `TIMESTAMP` with the same value. Lists, arrays, and STRUCT fields bind as
+VARIANT values. MAP and ENUM payloads raise an error.
+
+The C constructor in DuckDB 1.5 returns a VARIANT type that cannot be used
+([duckdb#24680](https://github.com/duckdb/duckdb/issues/24680)). The first
+VARIANT type construction in a process opens a temporary in-memory database
+with one thread, reads the type of `NULL::VARIANT`, and closes the database.
+`logicalTypeFromRep` returns copies of that type. The library keeps the
+original until the process exits.
+
+A GEOMETRY payload decodes to `FieldGeometry` with raw WKB and no CRS. Import
+these bytes with `ST_GeomFromWKB(?)::VARIANT`. A `Variant` parameter that
+contains `FieldGeometry` raises an error, also inside arrays and objects.
+TIMETZ payloads with an offset in seconds raise an error, as TIMETZ columns do.
+Object parameters reject duplicate keys, empty keys, and keys that contain NUL.
+Results can still contain empty or NUL keys. Text and blob payloads can contain
+NUL. For objects with names such as `Case` and `case`, give the result column
+an explicit alias, such as `SELECT ? AS value`. DuckDB 1.5 cannot derive an
+unnamed column name from those objects.
+
+DuckDB 1.5 has no C API for reading VARIANT values. The decoder checks the
+native version and physical schema before reading the internal representation.
+It checks payload bounds and rejects unknown tags. This format dependency is
+limited to the supported DuckDB 1.5 line.
+
+Persistent VARIANT columns require storage format `v1.5.0` or later. For a new
+database, pass `[("storage_compatibility_version", "v1.5.0")]` to
+`openWithConfig` or `withConnectionWithConfig`. The library does not change an
+existing database's storage compatibility setting.
 
 ### GEOMETRY
 

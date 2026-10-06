@@ -37,6 +37,7 @@ import Database.DuckDB.Simple.LogicalRep (
     UnionValue (..),
     logicalTypeToRep,
  )
+import Database.DuckDB.Simple.VariantCodec (decodeVariant, prepareVariantDecoder)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (Storable (..), peekElemOff)
 
@@ -51,6 +52,7 @@ prepareVectorReader vector = do
 -- | Prepare metadata once for a vector. The reader must not outlive its chunk.
 prepareValueReader :: DuckDBType -> DuckDBVector -> Ptr () -> Ptr Word64 -> IO (Int -> IO FieldValue)
 prepareValueReader dtype vector dataPtr validity = case dtype of
+    DuckDBTypeVariant -> prepareVariantDecoder vector
     DuckDBTypeGeometry -> whenValid FieldGeometry <$> prepareGeometryDecoder vector dataPtr
     DuckDBTypeStruct -> whenValid FieldStruct <$> prepareStructDecoder vector
     DuckDBTypeUnion -> whenValid FieldUnion <$> prepareUnionDecoder vector
@@ -79,6 +81,7 @@ materializeValue dtype vector dataPtr validity rowIdx = do
         then pure FieldNull
         else case dtype of
             DuckDBTypeGeometry -> FieldGeometry <$> (prepareGeometryDecoder vector dataPtr >>= ($ rowIdx))
+            DuckDBTypeVariant -> decodeVariant vector rowIdx
             DuckDBTypeDecimal ->
                 withVectorType vector \logical -> do
                     width <- c_duckdb_decimal_width logical

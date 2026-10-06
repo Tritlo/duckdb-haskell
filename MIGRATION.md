@@ -41,6 +41,20 @@ because the C API cannot create a GEOMETRY type with a CRS. Composite
 parameters bind their geometry members without a CRS. To apply a CRS, insert
 the value into a column with that CRS, or cast it in SQL.
 
+## Unreleased VARIANT support
+
+Review VARIANT support after Geometry. Both features will ship in 0.3.0.0.
+VARIANT results decode to the `FieldValue` of the stored value, so existing
+`FromField` instances read them. Objects decode to `FieldStruct` values with
+VARIANT fields. `Variant` from `Database.DuckDB.Simple.Variant` wraps a
+`FieldValue` and binds it as a VARIANT. Native VARIANT loses geometry CRS
+metadata. Import raw geometry payloads with `ST_GeomFromWKB(?)::VARIANT`.
+See [the VARIANT notes](duckdb-simple/README.md#variant) for private-format
+and persistent-storage requirements.
+
+`logicalTypeFromRep` constructs VARIANT types without a connection. The first
+construction in a process reads the type from a temporary in-memory database.
+
 ## Binding fixes
 
 - Default cursors and folds use DuckDB's supported materialized execution API. They

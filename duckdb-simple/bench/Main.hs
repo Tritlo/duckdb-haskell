@@ -14,7 +14,9 @@ import qualified Data.Text as Text
 import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import Data.Time.LocalTime (LocalTime, localTimeToUTC, utc)
 import Database.DuckDB.Simple
+import Database.DuckDB.Simple.FromField (FieldValue (..))
 import Database.DuckDB.Simple.Geometry (RawGeometry (..))
+import Database.DuckDB.Simple.Variant (Variant (..))
 import GHC.Clock (getMonotonicTimeNSec)
 import System.Environment (getArgs)
 import System.Mem (performMajorGC)
@@ -49,6 +51,12 @@ main = do
                 "parameters" -> do
                     rows <- replicateM (fromIntegral count) (query conn "SELECT ?::BIGINT" (Only (1 :: Int64)))
                     evaluate (sum [n | [Only n] <- rows])
+                "variant" -> do
+                    rows <- query_ conn (Query ("SELECT i::VARIANT FROM range(" <> Text.pack (show count) <> ") t(i)"))
+                    evaluate (List.foldl' (\acc (Only value) -> acc + variantNumber value) 0 rows)
+                "variant-parameters" -> do
+                    rows <- replicateM (fromIntegral count) (query conn "SELECT ?::VARIANT" (Only (1 :: Int64)))
+                    evaluate (sum [variantNumber value | [Only value] <- rows])
                 "geometry" -> do
                     rows <- query_ conn (Query ("SELECT 'POINT (1 2)'::GEOMETRY('OGC:CRS84') FROM range(" <> Text.pack (show count) <> ")"))
                     evaluate (sum [fromIntegral (BS.length (rawGeometryWKB value)) | Only value <- rows])
@@ -61,9 +69,10 @@ main = do
                 "geometry-typed-parameters" -> do
                     rows <- replicateM (fromIntegral count) (query conn "SELECT ?" (Only typedGeometry))
                     evaluate (sum [pointChecksum value | [Only value] <- rows])
-                _ -> fail "Expected eager, fold, scalar, text, timestamp, parameters, geometry, geometry-parameters, geometry-typed, or geometry-typed-parameters"
+                _ -> fail "Expected eager, fold, scalar, text, timestamp, parameters, variant, variant-parameters, geometry, geometry-parameters, geometry-typed, or geometry-typed-parameters"
             expectedResult = case workload of
                 "parameters" -> count
+                "variant-parameters" -> count
                 "geometry" -> count * 21
                 "geometry-parameters" -> count * 21
                 "geometry-typed" -> count * 3
@@ -81,6 +90,11 @@ main = do
             end <- getMonotonicTimeNSec
             check result
             printf "%s,%d,%d,%.3f,%d\n" workload count run (fromIntegral (end - start) / 1000000 :: Double) result
+
+-- | Fail if the VARIANT benchmark changes its scalar type.
+variantNumber :: Variant -> Int64
+variantNumber (Variant (FieldInt64 value)) = value
+variantNumber value = error ("unexpected VARIANT benchmark value: " <> show value)
 
 -- | Force coordinate decoding and check the point shape.
 pointChecksum :: G.Geometry -> Int64

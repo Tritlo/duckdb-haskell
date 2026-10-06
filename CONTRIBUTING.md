@@ -66,6 +66,11 @@ Format Haskell code with `fourmolu` before committing.
 Format Cabal files with `cabal-gild`. Keep names consistent with the surrounding
 module.
 
+Keep `ToField` pure. Resolve connection-dependent type metadata during binding
+on the statement's connection. Do not open a temporary database for this work.
+Use `withLogicalType` for scoped native types that need a managed connection.
+Array parameters must use the element's `ToField` instance.
+
 ## Native library configuration
 
 The bindings support DuckDB >= 1.5.3 and < 1.6. Cabal downloads DuckDB 1.5.6

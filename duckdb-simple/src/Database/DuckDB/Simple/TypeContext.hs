@@ -3,7 +3,7 @@
 
 -- | Native type construction that needs SQL metadata.
 module Database.DuckDB.Simple.TypeContext (
-    withTypeConnection,
+    logicalTypeForConnection,
     queryLogicalType,
 ) where
 
@@ -15,32 +15,19 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
 import Database.DuckDB.FFI
 import Database.DuckDB.Simple.Internal (destroyValue, peekUtf8CString)
+import Database.DuckDB.Simple.LogicalRep.Internal (LogicalTypeRep (..), logicalTypeFromRepWith)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Utils (fillBytes)
 import Foreign.Ptr (Ptr, nullPtr)
 import Foreign.Storable (peek, poke, sizeOf)
 
-{- | Use the caller's connection when one is available. Standalone value and
-type constructors use a temporary database and connection. These temporary
-handles are closed before this function returns.
--}
-withTypeConnection :: Maybe DuckDBConnection -> (DuckDBConnection -> IO a) -> IO a
-withTypeConnection (Just connection) action = action connection
-withTypeConnection Nothing action =
-    alloca \database ->
-        bracket
-            (poke database nullPtr >> c_duckdb_open nullPtr database)
-            (const (c_duckdb_close database))
-            \opened -> do
-                when (opened /= DuckDBSuccess) (throwIO (userError "duckdb-simple: cannot open type construction database"))
-                db <- peek database
-                alloca \connection ->
-                    bracket
-                        (poke connection nullPtr >> c_duckdb_connect db connection)
-                        (const (c_duckdb_disconnect connection))
-                        \connected -> do
-                            when (connected /= DuckDBSuccess) (throwIO (userError "duckdb-simple: cannot connect to type construction database"))
-                            peek connection >>= action
+-- | Construct an owned type with the binding connection's SQL metadata.
+logicalTypeForConnection :: DuckDBConnection -> LogicalTypeRep -> IO DuckDBLogicalType
+logicalTypeForConnection connection = logicalTypeFromRepWith resolve
+  where
+    resolve (LogicalTypeGeometry (Just crs)) =
+        queryLogicalType connection "SELECT system.main.ST_SetCRS('POINT EMPTY'::GEOMETRY, ?)" (Just crs)
+    resolve _ = throwIO (userError "duckdb-simple: unsupported SQL logical type")
 
 {- | Obtain an owned column type from a constant query. The optional text
 parameter is bound by length. The caller must destroy the returned type.

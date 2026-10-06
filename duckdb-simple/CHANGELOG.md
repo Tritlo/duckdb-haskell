@@ -28,9 +28,17 @@ These changes target the 0.3.0.0 release. Do not release review branches separat
   Logical type construction rejects empty CRS strings and embedded NUL.
   It resolves the CRS function in DuckDB's system catalog. CRS text can hold
   an identifier, a custom name, or a full WKT2/PROJJSON definition.
-- Add `toDuckValueOn` and `logicalTypeFromRepOn` to reuse the caller's connection
-  during native construction. Existing `ToDuckValue` instances keep their
-  default behavior. Standalone constructors close their temporary connection.
+- Keep `ToField` pure and construct parameter values on the statement's
+  connection. Preserve CRS metadata in typed NULLs, empty collections, and
+  inactive UNION members. Remove `toDuckValueOn`, `logicalTypeFromRepOn`, and
+  automatic temporary database creation.
+- Add scoped `withLogicalType` in `Database.DuckDB.Simple.LogicalRep`. It uses
+  a managed connection and destroys the native type after the callback.
+  `logicalTypeFromRep` and standalone `toDuckValue` use native constructors.
+  They raise an error if type construction needs CRS resolution.
+- Array parameters use each element's `ToField` instance. Elements now require
+  `ToField` and `DuckDBColumnType`. Custom elements that only provide
+  `ToDuckValue` must also provide `ToField`.
 - Initialize metadata-query results before native execution. A native error
   that leaves the result untouched now raises an exception instead of allowing
   cleanup to read uninitialized memory.

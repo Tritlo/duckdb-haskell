@@ -65,6 +65,7 @@ library
   other-modules:
     Database.DuckDB.Simple.Arrow.Internal
     Database.DuckDB.Simple.Callback
+    Database.DuckDB.Simple.Element
     Database.DuckDB.Simple.Materialize
     Database.DuckDB.Simple.Result
     Database.DuckDB.Simple.Temporal

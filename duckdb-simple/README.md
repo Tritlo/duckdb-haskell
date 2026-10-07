@@ -392,7 +392,8 @@ query conn "SELECT ?" (Only (Variant (FieldList [FieldInt8 1, FieldText "two"]))
 A scalar payload keeps its native type, such as `TINYINT` or `DECIMAL(4,2)`.
 Time and timestamp payloads bind as microsecond types, or as nanosecond types
 when they have sub-microsecond digits. So a `TIMESTAMP_S` result binds back as
-a `TIMESTAMP` with the same value. Lists, arrays, and STRUCT fields bind as
+a `TIMESTAMP` when its value fits. Wider timestamp values use milliseconds or
+seconds without losing digits. Lists, arrays, and STRUCT fields bind as
 VARIANT values. MAP and ENUM payloads raise an error. Object parameters reject
 duplicate keys, empty keys, and keys that contain NUL. You can also bind a
 plain value and cast it in SQL, as in `?::VARIANT`.

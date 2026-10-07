@@ -17,14 +17,19 @@ import Data.List (isInfixOf)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Vector as V
-import Database.DuckDB.FFI (pattern DuckDBTypeVariant)
+import Database.DuckDB.FFI
 import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
 import Database.DuckDB.Simple.FromField (BitString (..), DecimalValue (..), FieldValue (..), StructValue (..), UnionValue)
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..))
 import Database.DuckDB.Simple.Geometry (RawGeometry (..), toRawGeometry)
+import Database.DuckDB.Simple.Internal (destroyValue, withConnectionHandle)
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), destroyLogicalType, logicalTypeFromRep)
 import Database.DuckDB.Simple.Variant
+import Foreign.C.String (withCString)
+import Foreign.Marshal.Alloc (alloca)
+import Foreign.Ptr (nullPtr)
+import Foreign.Storable (peek, poke)
 import GHC.Float (castDoubleToWord64, castFloatToWord32, castWord64ToDouble)
 import GHC.Generics (Generic)
 import System.Directory (doesFileExist, getTemporaryDirectory, removeFile)
@@ -92,6 +97,15 @@ tests =
                 actual @?= native
                 roundTrip conn native
             assertFailureIO (query_ conn "SELECT '12:00:00+01:23:45'::TIMETZ::VARIANT" :: IO [Only Variant])
+        , testCase "wide finite timestamp payloads round trip without losing digits" $ withConnection ":memory:" \conn -> do
+            void (execute_ conn "CREATE TABLE wide_timestamps (seconds TIMESTAMP_S, millis TIMESTAMP_MS)")
+            appendWideTimestamps conn [(30000000000000, 30000000000000001), (-30000000000000, -30000000000000001), (maxBound - 1, maxBound - 1), (minBound, minBound)]
+            rows <- query_ conn "SELECT seconds::VARIANT, seconds, millis::VARIANT, millis FROM wide_timestamps" :: IO [(Variant, FieldValue, Variant, FieldValue)]
+            length rows @?= 4
+            forM_ rows \(seconds, nativeSeconds, millis, nativeMillis) ->
+                forM_ [(seconds, nativeSeconds), (millis, nativeMillis)] \(Variant actual, native) -> do
+                    actual @?= native
+                    roundTrip conn actual
         , testCase "text and binary values preserve embedded NUL" $ withConnection ":memory:" \conn -> do
             roundTrip conn (FieldText "before\0after íslenska λ 😀")
             roundTrip conn (FieldBlob (BS.pack [0, 1, 127, 128, 255, 0]))
@@ -245,6 +259,24 @@ tests =
 roundTrip :: Connection -> FieldValue -> Assertion
 roundTrip conn expected =
     (query conn "SELECT typeof(?) AS kind, ? AS value" (Variant expected, Variant expected) :: IO [(Text, Variant)]) >>= (@?= [("VARIANT", Variant expected)])
+
+{- | Insert native timestamp units without the parameter API, which converts
+TIMESTAMP_S and TIMESTAMP_MS parameters to microseconds before execution.
+-}
+appendWideTimestamps :: Connection -> [(Int64, Int64)] -> IO ()
+appendWideTimestamps conn rows =
+    withConnectionHandle conn \native ->
+        withCString "wide_timestamps" \table ->
+            alloca \appenderPtr -> do
+                poke appenderPtr nullPtr
+                bracket (c_duckdb_appender_create native nullPtr table appenderPtr) (const (void (c_duckdb_appender_destroy appenderPtr))) \created -> do
+                    created @?= DuckDBSuccess
+                    appender <- peek appenderPtr
+                    forM_ rows \(seconds, millis) -> do
+                        bracket (c_duckdb_create_timestamp_s (DuckDBTimestampS seconds)) destroyValue (c_duckdb_append_value appender) >>= (@?= DuckDBSuccess)
+                        bracket (c_duckdb_create_timestamp_ms (DuckDBTimestampMs millis)) destroyValue (c_duckdb_append_value appender) >>= (@?= DuckDBSuccess)
+                        c_duckdb_appender_end_row appender >>= (@?= DuckDBSuccess)
+                    c_duckdb_appender_flush appender >>= (@?= DuckDBSuccess)
 
 -- | A raw geometry payload has no CRS inside a VARIANT.
 geometryPayload :: BS.ByteString -> Variant

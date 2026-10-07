@@ -25,6 +25,7 @@ import GHC.Float (castWord64ToDouble)
 import System.Mem (performMajorGC)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
+import TestUtils (assertFailureIO)
 
 -- | Check native construction, metadata, nesting, and streaming.
 tests :: TestTree
@@ -354,14 +355,6 @@ assertRawBindingFailure action = do
     case result of
         Left err -> assertBool (displayException err) ("raw GEOMETRY binding requires explicit" `isInfixOf` displayException err)
         Right () -> assertFailure "expected raw geometry binding rejection"
-
--- | Reject an invalid parameter without depending on native error text.
-assertFailureIO :: IO a -> Assertion
-assertFailureIO action = do
-    result <- try (action >> pure ()) :: IO (Either SomeException ())
-    case result of
-        Left _ -> pure ()
-        Right () -> assertFailure "expected parameter rejection"
 
 -- | Native shapes cover all families, dimensions, empty children, and exact doubles.
 shapes :: [Text]

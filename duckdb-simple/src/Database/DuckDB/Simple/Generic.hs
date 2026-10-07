@@ -131,6 +131,7 @@ import Database.DuckDB.Simple.LogicalRep (
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToField (..))
+import Database.DuckDB.Simple.Variant (Variant (..))
 
 --------------------------------------------------------------------------------
 -- DuckValue: bridge between Haskell scalars and FieldValue/LogicalTypeRep
@@ -157,6 +158,10 @@ class DuckValue a where
         case fromField Field{fieldName = Text.empty, fieldIndex = 0, fieldValue = fv} of
             Ok x -> Right x
             Errors errs -> Left (unlines (map displayException errs))
+
+instance DuckValue Variant where
+    duckToField = variantPayload
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeVariant
 
 instance DuckValue Bool where
     duckToField = FieldBool

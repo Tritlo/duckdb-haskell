@@ -298,8 +298,8 @@ For manual cursor-style iteration, use `nextRow`/`nextRowWith` on an open
 `Statement` to pull rows one at a time and decide when to stop.
 
 Cursors support the same column types as eager queries, including STRUCT
-and UNION values with nested collections and NULLs. GEOMETRY works with eager
-queries, cursors, and folds.
+and UNION values with nested collections and NULLs. VARIANT and GEOMETRY
+work with eager queries, cursors, and folds.
 
 #### Optional native streaming
 
@@ -365,6 +365,46 @@ Arrow export uses DuckDB's schema and chunk conversion API. DuckDB materializes
 the native result before callbacks start, so its memory use depends on the
 result size. The older Arrow query and scan bindings remain available through
 `Database.DuckDB.FFI.Deprecated` and emit deprecation warnings.
+
+### VARIANT
+
+A VARIANT result decodes to the `FieldValue` of the stored value, with its
+native type. The usual `FromField` instances read VARIANT columns, for example
+as `Int64`, `Text`, `[a]`, or a generic record. Arrays decode to `FieldList`.
+Objects decode to `FieldStruct` values whose fields have the VARIANT type, in
+entry order. `variantObject` builds such a payload from a list of entries.
+SQL NULL decodes to `FieldNull`.
+
+`Variant` from `Database.DuckDB.Simple.Variant` wraps a `FieldValue`. Its
+`FromField` instance reads any column. It has no parameter instance, because
+the C API cannot create a usable VARIANT type
+([#27](https://github.com/Tritlo/duckdb-haskell/issues/27)). Bind a plain value
+and cast it in SQL, or insert it into a `VARIANT` column:
+
+```haskell
+query conn "SELECT ?::VARIANT" (Only (42 :: Int64))
+execute conn "INSERT INTO t (v) VALUES (?)" (Only record)
+```
+
+A `StructValue` becomes an object, and a list or an array becomes an array.
+To build an array with mixed element types, cast each element, as in
+`[?::VARIANT, ?::VARIANT]`. `logicalTypeFromRep` raises an error for VARIANT.
+A composite parameter that contains VARIANT metadata also raises an error.
+
+A GEOMETRY payload decodes to `FieldGeometry` with raw WKB and no CRS. Import
+these bytes with `ST_GeomFromWKB(?)::VARIANT`. A TIMETZ payload with an offset
+in seconds raises an error, as a TIMETZ column does. Results can contain empty
+or NUL object keys. Text and blob payloads can contain NUL.
+
+DuckDB 1.5 has no C API for reading VARIANT values. The decoder checks the
+native version and physical schema before it reads the internal representation.
+It checks payload bounds and rejects unknown tags. This format dependency is
+limited to the supported DuckDB 1.5 line.
+
+Persistent VARIANT columns require storage format `v1.5.0` or later. For a new
+database, pass `[("storage_compatibility_version", "v1.5.0")]` to
+`openWithConfig` or `withConnectionWithConfig`. The library does not change an
+existing database's storage compatibility setting.
 
 ### GEOMETRY
 

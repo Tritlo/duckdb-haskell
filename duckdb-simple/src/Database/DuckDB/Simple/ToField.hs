@@ -560,6 +560,7 @@ scalarFieldValueDuckValue dtype value =
         (DuckDBTypeVarchar, FieldText t) -> textDuckValue t
         (DuckDBTypeBlob, FieldBlob b) -> blobDuckValue b
         (DuckDBTypeGeometry, FieldGeometry{}) -> unsupportedRawGeometryBinding
+        (DuckDBTypeVariant, _) -> unsupportedVariantBinding
         (DuckDBTypeUUID, FieldUUID u) -> uuidDuckValue u
         (DuckDBTypeBit, FieldBit bits) -> bitDuckValue bits
         (DuckDBTypeDate, FieldDate d) -> dateDuckValue d
@@ -750,6 +751,11 @@ destroyLogicalType logical =
 unsupportedRawGeometryBinding :: IO a
 unsupportedRawGeometryBinding =
     throwIO (userError "duckdb-simple: raw GEOMETRY binding requires explicit ST_GeomFromWKB and ST_SetCRS parameters")
+
+-- | Reject VARIANT values because the C API cannot create a usable VARIANT type.
+unsupportedVariantBinding :: IO a
+unsupportedVariantBinding =
+    throwIO (userError "duckdb-simple: the C API cannot create a VARIANT type; cast a plain value with ?::VARIANT")
 
 instance ToDuckValue G.Geometry where
     toDuckValue geometry = do

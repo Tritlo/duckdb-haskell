@@ -93,6 +93,7 @@ import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck (testProperty, (===))
 import TimeTests (timeTests)
 import ValueRegressionTests (valueRegressionTests)
+import qualified VariantRegressionTests
 
 data Person = Person
     { personId :: Int
@@ -211,6 +212,7 @@ tests =
         , nativeStreamingTests
         , extensionRegressionTests
         , GeometryRegressionTests.tests
+        , VariantRegressionTests.tests
         , valueRegressionTests
         , timeTests
         , withConnectionTests

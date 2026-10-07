@@ -178,8 +178,13 @@ logicalTypeToRep logical = do
 The C API cannot create a GEOMETRY type with a CRS. This function creates
 GEOMETRY without a CRS and ignores the CRS of 'LogicalTypeGeometry'.
 DuckDB applies a CRS when it casts the value to a column type with a CRS.
+The C API cannot create a usable VARIANT type. This function raises an error
+for VARIANT and for types that contain it. Cast a plain value with
+@?::VARIANT@ in SQL instead.
 -}
+
 -- TODO: improve this when this becomes available in the C API.
+-- See https://github.com/Tritlo/duckdb-haskell/issues/27 for VARIANT.
 logicalTypeFromRep :: LogicalTypeRep -> IO DuckDBLogicalType
 logicalTypeFromRep rep = do
     logical <- create rep
@@ -188,6 +193,8 @@ logicalTypeFromRep rep = do
     pure logical
   where
     create = \case
+        LogicalTypeScalar DuckDBTypeVariant ->
+            throwIO (userError "duckdb-simple: the C API cannot create a VARIANT type; cast a plain value with ?::VARIANT")
         LogicalTypeScalar dtype -> c_duckdb_create_logical_type dtype
         LogicalTypeGeometry _ -> c_duckdb_create_logical_type DuckDBTypeGeometry
         LogicalTypeDecimal width scale -> do

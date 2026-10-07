@@ -21,10 +21,9 @@ The FFI adds the GEOMETRY and VARIANT type tags, the geometry CRS accessor,
 and the COPY_DATABASE, UPDATE_EXTENSIONS, and MERGE_INTO statement tags.
 Free strings returned by the CRS accessor with `duckdb_free`.
 
-## Unreleased Geometry support
+## Geometry support
 
-Geometry support will ship with `duckdb-simple-0.3.0.0`. Review it after the native
-DuckDB 1.5.6 update. It is not a separate release.
+`duckdb-simple-0.3.0.0` adds Geometry support.
 
 Use `Data.Geometry.Geometry` from the published `geometry-simple` package for
 decoded shapes. Use `RawGeometry` for WKB bytes and CRS metadata. The package's
@@ -34,24 +33,23 @@ See [the Geometry notes](duckdb-simple/README.md#geometry) for examples and limi
 
 `FieldValue` gains `FieldGeometry`, and `LogicalTypeRep` gains
 `LogicalTypeGeometry`. Update exhaustive matches.
-Native DuckDB >= 1.5.3 and < 1.6 remains supported.
 
 The C API cannot create a GEOMETRY type with a CRS. Each connection reads
 GEOMETRY types for a list of CRS definitions the first time a parameter needs
-one, and composite parameters use them. The list defaults to `OGC:CRS84`. Set it with
-`ConnectionOptions`, `openWithOptions`, or `withConnectionWithOptions`. A CRS
-outside the list binds without a CRS, and `logicalTypeFromRep` creates
+one, and composite parameters use them. The list defaults to `OGC:CRS84`. Set
+it with `ConnectionOptions`, `openWithOptions`, or `withConnectionWithOptions`.
+A CRS outside the list binds without a CRS, and `logicalTypeFromRep` creates
 `GEOMETRY` with no CRS. To apply a CRS in these cases, insert the value into a
 column with that CRS, or cast it in SQL.
 
-## Unreleased VARIANT support
+## VARIANT support
 
-Review VARIANT support after Geometry. Both features will ship in 0.3.0.0.
-VARIANT results decode to the `FieldValue` of the stored value, so existing
-`FromField` instances read them. Objects decode to `FieldStruct` values with
-VARIANT fields. `Variant` from `Database.DuckDB.Simple.Variant` wraps the
-`FieldValue` of a result. Native VARIANT loses geometry CRS metadata. Import
-raw geometry payloads with `ST_GeomFromWKB(?)::VARIANT`. See [the VARIANT
+`duckdb-simple-0.3.0.0` adds VARIANT support. VARIANT results decode to the
+`FieldValue` of the stored value, so existing `FromField` instances read them.
+Objects decode to `FieldStruct` values with VARIANT fields. `Variant` from
+`Database.DuckDB.Simple.Variant` wraps the `FieldValue` of a result. Native
+VARIANT loses geometry CRS metadata. Import raw geometry payloads with
+`ST_GeomFromWKB(?)::VARIANT`. See [the VARIANT
 notes](duckdb-simple/README.md#variant) for private-format and
 persistent-storage requirements.
 

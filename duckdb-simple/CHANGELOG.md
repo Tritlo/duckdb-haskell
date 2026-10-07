@@ -1,28 +1,23 @@
 # Changelog
 
-## Unreleased
-
-These changes target the 0.3.0.0 release. Do not release review branches separately.
+## 0.3.0.0
 
 - Use native DuckDB 1.5.6 by default. Keep native support for DuckDB >= 1.5.3
   and < 1.6. Test native versions 1.5.3 through 1.5.6.
 - Require `duckdb-ffi >= 1.5.6.0` for the updated native bindings.
-
 - Decode VARIANT results to the `FieldValue` of the stored value, so existing
   `FromField` instances read them. Objects decode to `FieldStruct` values with
   VARIANT fields, in entry order. The decoder checks DuckDB's private 1.5
-  format and payload bounds, and rejects cyclic child references. Previously,
-  valid values with 128 nested containers raised an error. The decoder now
-  accepts deep acyclic values without a library depth limit.
+  format and payload bounds, and rejects cyclic child references. It has no
+  depth limit for acyclic values.
 - Add `Variant`, a `FieldValue` that binds as a VARIANT, and `variantObject`,
   which builds an object payload. Scalars keep their native type. Object
   parameters reject duplicate, empty, and NUL-containing keys because the
   native constructors cannot represent all of these names.
   `Variant` has no `ToDuckValue` instance, and `logicalTypeFromRep` raises an
   error for VARIANT.
-- Previously, a finite VARIANT timestamp outside the microsecond range
-  decoded correctly but could not bind again. Timestamp payloads now use
-  milliseconds or seconds when needed to preserve their value.
+- A VARIANT timestamp payload outside the microsecond range binds as a
+  millisecond or second timestamp, so it keeps its value.
 - Read the VARIANT type and GEOMETRY types for a list of CRS definitions,
   because the C API cannot create them. A connection reads them with one
   query on a separate connection, the first time a parameter needs one.
@@ -65,6 +60,11 @@ These changes target the 0.3.0.0 release. Do not release review branches separat
   once for each row. Prepare their direct child readers at the same time.
   A local benchmark with a CRS-tagged GEOMETRY field ran about ten times faster.
   LIST, ARRAY, and MAP decoders can still read child metadata for each parent row.
+- `Database.DuckDB.Simple.Internal` changes. `StatementStreamChunk` keeps one
+  reader for each column in `statementStreamChunkReaders`, and
+  `StatementStreamChunkVector` is removed. The module also exports
+  `withTypeCache`, `fetchPrepareError`, `duckDBTypeFromName`, and
+  `duckDBTypeToName`.
 
 ## 0.2.0.0
 

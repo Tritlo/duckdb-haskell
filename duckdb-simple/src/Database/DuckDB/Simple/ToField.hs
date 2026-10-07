@@ -46,6 +46,7 @@ import Database.DuckDB.Simple.FromField (BigNum (..), BitString (..), DecimalVal
 import Database.DuckDB.Simple.Internal (
     SQLError (..),
     Statement (..),
+    destroyValue,
     withStatementHandle,
  )
 import Database.DuckDB.Simple.LogicalRep (
@@ -54,6 +55,7 @@ import Database.DuckDB.Simple.LogicalRep (
     StructValue (..),
     UnionMemberType (..),
     UnionValue (..),
+    destroyLogicalType,
     logicalTypeFromRep,
     structValueTypeRep,
     unionValueTypeRep,
@@ -740,12 +742,6 @@ duckDBTypeFromName name =
         "NULL" -> Just DuckDBTypeSQLNull
         _ -> Nothing
 
-destroyLogicalType :: DuckDBLogicalType -> IO ()
-destroyLogicalType logical =
-    alloca $ \ptr -> do
-        poke ptr logical
-        c_duckdb_destroy_logical_type ptr
-
 -- | Reject raw values that the C API cannot bind without format conversion.
 unsupportedRawGeometryBinding :: IO a
 unsupportedRawGeometryBinding =
@@ -910,12 +906,6 @@ bindDuckValue stmt idx makeValue =
             when (rc /= DuckDBSuccess) $ do
                 err <- fetchPrepareError handle
                 throwBindError stmt err
-
-destroyValue :: DuckDBValue -> IO ()
-destroyValue value =
-    alloca \ptr -> do
-        poke ptr value
-        c_duckdb_destroy_value ptr
 
 fetchPrepareError :: DuckDBPreparedStatement -> IO Text
 fetchPrepareError handle = do

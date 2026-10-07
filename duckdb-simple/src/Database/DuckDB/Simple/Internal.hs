@@ -68,7 +68,6 @@ import Database.DuckDB.FFI (
     DuckDBDataChunk,
     DuckDBDatabase,
     DuckDBErrorType,
-    DuckDBLogicalType,
     DuckDBPreparedStatement,
     DuckDBResult,
     DuckDBState,
@@ -77,7 +76,6 @@ import Database.DuckDB.FFI (
     c_duckdb_connection_get_client_context,
     c_duckdb_destroy_client_context,
     c_duckdb_destroy_data_chunk,
-    c_duckdb_destroy_logical_type,
     c_duckdb_destroy_result,
     c_duckdb_destroy_value,
     c_duckdb_execute_prepared,
@@ -90,6 +88,7 @@ import Database.DuckDB.FFI (
  )
 import Database.DuckDB.FFI.Deprecated (c_duckdb_execute_prepared_streaming)
 import Database.DuckDB.Simple.FromField (FieldValue)
+import Database.DuckDB.Simple.LogicalRep (destroyLogicalType)
 import Foreign.C.String (CString)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Utils (fillBytes)
@@ -370,11 +369,6 @@ destroyClientContext ctx =
 destroyValue :: DuckDBValue -> IO ()
 destroyValue value =
     alloca $ \ptr -> poke ptr value >> c_duckdb_destroy_value ptr
-
--- | Destroy a logical type handle.
-destroyLogicalType :: DuckDBLogicalType -> IO ()
-destroyLogicalType logicalType =
-    alloca $ \ptr -> poke ptr logicalType >> c_duckdb_destroy_logical_type ptr
 
 -- | Throw a standardised registration error.
 throwRegistrationError :: String -> IO a

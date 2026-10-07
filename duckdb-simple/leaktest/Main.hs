@@ -20,6 +20,8 @@ module Main (main) where
 import Control.Concurrent (forkFinally, killThread, newEmptyMVar, putMVar, takeMVar, threadDelay, tryPutMVar)
 import Control.Exception (AsyncException (ThreadKilled), IOException, SomeException, evaluate, fromException, try)
 import Control.Monad (forM_, replicateM, unless, void, when)
+import qualified Data.ByteString as BS
+import qualified Data.Geometry as G
 import Data.IORef (atomicModifyIORef', atomicWriteIORef, mkWeakIORef, newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (isPrefixOf)
@@ -27,8 +29,10 @@ import Data.Maybe (catMaybes, listToMaybe)
 import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Copy as Copy
 import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
-import Database.DuckDB.Simple.FromField (FieldValue)
+import Database.DuckDB.Simple.FromField (DecimalValue (..), FieldValue (..))
+import Database.DuckDB.Simple.Geometry (RawGeometry (..), fromRawGeometry)
 import qualified Database.DuckDB.Simple.Logging as Logging
+import Database.DuckDB.Simple.Variant (Variant (..))
 import System.Environment (getArgs, lookupEnv)
 import System.Exit (exitFailure)
 import System.Mem (performMajorGC)
@@ -81,12 +85,14 @@ openCloseCycle = do
     stmt <- openStatement conn "SELECT 42"
     closeStatement stmt
     _ <- query_ conn "SELECT 42" :: IO [Only Int64]
-    -- VARIANT decoding fails after DuckDB allocates the materialized result.
+    -- The first VARIANT parameter fills the type cache. Close must destroy it.
+    _ <- query conn "SELECT ?" (Only (Variant (FieldInt64 42))) :: IO [Only Variant]
+    -- A TIMETZ offset with seconds fails during result materialization.
     -- The result and connection must still be destroyed.
-    rejected <- try (query_ conn "SELECT i::VARIANT FROM range(100000) t(i)") :: IO (Either SomeException [Only FieldValue])
+    rejected <- try (query_ conn "SELECT {'xs': [i, i + 1, i + 2, i + 3], 'bad': '12:00:00+01:23:45'::TIMETZ} FROM range(100000) t(i)") :: IO (Either SomeException [Only FieldValue])
     case rejected of
         Left _ -> pure ()
-        Right _ -> fail "expected unsupported VARIANT conversion"
+        Right _ -> fail "expected TIMETZ offset conversion failure"
     close conn
 
 main :: IO ()
@@ -97,13 +103,37 @@ main = do
             [name] -> (name, 10)
             [name, n] | Just count <- readMaybe n, count > 0 -> (name, count)
             _ -> ("invalid", 0)
-    unless (mode `elem` ["all", "open-close", "long-lived", "callbacks", "cancel", "decode-failure"]) $
-        fail "Expected [all|open-close|long-lived|callbacks|cancel|decode-failure] [positive batch count]"
+    unless (mode `elem` ["all", "open-close", "long-lived", "callbacks", "cancel", "decode-failure", "new-types"]) $
+        fail "Expected [all|open-close|long-lived|callbacks|cancel|decode-failure|new-types] [positive batch count]"
     when (mode `elem` ["all", "open-close"]) checkOpenClose
     when (mode `elem` ["all", "long-lived"]) (checkLongLived batches)
     when (mode `elem` ["all", "callbacks"]) (checkCallbacks batches)
     when (mode `elem` ["all", "cancel"]) (checkCancellation batches)
     when (mode == "decode-failure") checkDecodeFailure
+    when (mode `elem` ["all", "new-types"]) (checkNewTypes batches)
+
+-- | Import raw WKB and release native values after failed nested construction.
+checkNewTypes :: Int -> IO ()
+checkNewTypes batches =
+    withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
+        [Only geometry] <- query_ conn "SELECT 'POINT ZM (1 2 3 4)'::GEOMETRY('OGC:CRS84')" :: IO [Only RawGeometry]
+        typed <- either fail pure (fromRawGeometry geometry) :: IO G.Geometry
+        let variant = Variant (FieldList [FieldInt64 42, FieldList [FieldNull, FieldText "before\0after"]])
+            batch = forM_ [1 .. 100 :: Int] \_ -> do
+                rows <- query conn "SELECT ?, system.main.ST_SetCRS(system.main.ST_GeomFromWKB(?), ?), ?" (variant, rawGeometryWKB geometry, rawGeometryCRS geometry, typed)
+                unless (rows == [(variant, geometry, typed)]) (fail "new type round trip failed")
+                expectFailure (query conn "SELECT ?, system.main.ST_GeomFromWKB(?)" (typed, BS.pack [1, 1, 0, 0, 0]) :: IO [(G.Geometry, RawGeometry)])
+                expectFailure (query conn "SELECT system.main.ST_GeomFromWKB(?)" (Only (rawGeometryWKB geometry)) :: IO [Only Int64])
+                expectFailure (query conn "SELECT ?" (Only (Variant (FieldList [variantPayload variant, FieldDecimal (DecimalValue 0 0 0)]))) :: IO [Only Variant])
+                expectFailure (query conn "SELECT ?" (Only variant) :: IO [Only Int64])
+        batch
+        performMajorGC
+        before <- readUsage
+        forM_ [1 .. batches] \n -> do
+            batch
+            performMajorGC
+            after <- readUsage
+            reportOptional ("open connection, " <> show (n * 100) <> " new type cycles") before after
 
 -- | Check native results and database handles across connection lifetimes.
 checkOpenClose :: IO ()
@@ -129,7 +159,7 @@ checkLongLived batches =
             let cycleQuery = do
                     rows <- query_ conn "SELECT sum(i)::BIGINT FROM range(10000) t(i)"
                     unless (rows == [Only (49995000 :: Int64)]) (fail "wrong query result")
-                    expectFailure (query_ conn "SELECT i::VARIANT FROM range(10000) t(i)" :: IO [Only FieldValue])
+                    expectFailure (query_ conn "SELECT {'xs': [i, i + 1, i + 2, i + 3], 'bad': '12:00:00+01:23:45'::TIMETZ} FROM range(10000) t(i)" :: IO [Only FieldValue])
                     expectFailure (query_ conn "SELECT CAST('bad' AS BIGINT)" :: IO [Only Int64])
                     bind stmt [toField (42 :: Int64)]
                     nextRow stmt >>= \row -> unless (row == Just (Only (42 :: Int64))) (fail "wrong cursor result")
@@ -149,7 +179,7 @@ checkLongLived batches =
 checkDecodeFailure :: IO ()
 checkDecodeFailure =
     withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
-        let rejected = expectFailure (query_ conn "SELECT i::VARIANT FROM range(100000) t(i)" :: IO [Only FieldValue])
+        let rejected = expectFailure (query_ conn "SELECT {'xs': [i, i + 1, i + 2, i + 3], 'bad': '12:00:00+01:23:45'::TIMETZ} FROM range(100000) t(i)" :: IO [Only FieldValue])
         rejected
         performMajorGC
         before <- readUsage
@@ -271,6 +301,12 @@ checkCancellation batches =
                     if arrow
                         then Streaming.foldArrow_ conn sql () (\() _ _ -> delivered)
                         else Streaming.fold_ conn sql () (\() (Only (_ :: Int64)) -> delivered)
+                cancel \signal -> do
+                    signal
+                    void (query_ conn "SELECT {'x': i, 'values': [i, i + 1]}::VARIANT FROM range(100000) t(i)" :: IO [Only Variant])
+                cancel \signal -> do
+                    blocked <- newEmptyMVar
+                    void (fold_ conn "SELECT 'POINT (1 2)'::GEOMETRY('OGC:CRS84') FROM range(100000)" (0 :: Int64) (\n (Only (_ :: RawGeometry)) -> signal >> takeMVar blocked >> pure (n + 1)))
         batch
         performMajorGC
         before <- readUsage
@@ -278,7 +314,7 @@ checkCancellation batches =
             batch
             performMajorGC
             after <- readUsage
-            reportOptional ("open connection, " <> show (n * 50) <> " cancellations") before after
+            reportOptional ("open connection, " <> show (n * 70) <> " cancellations") before after
 
 -- | Report native counters when the operating system provides them.
 reportOptional :: String -> Maybe Usage -> Maybe Usage -> IO ()

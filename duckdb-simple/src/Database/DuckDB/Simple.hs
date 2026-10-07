@@ -16,9 +16,13 @@ module Database.DuckDB.Simple (
     Connection,
     open,
     openWithConfig,
+    ConnectionOptions (..),
+    defaultConnectionOptions,
+    openWithOptions,
     close,
     withConnection,
     withConnectionWithConfig,
+    withConnectionWithOptions,
 
     -- * Queries and statements
     Query (..),
@@ -112,6 +116,7 @@ import Database.DuckDB.Simple.Internal (
     Statement (..),
     StatementState (..),
     StatementStreamState (..),
+    fetchPrepareError,
     keepAlive,
     peekUtf8CString,
     runInterruptibleQuery,
@@ -125,6 +130,7 @@ import Database.DuckDB.Simple.Result (cleanupStatementStreamRef, collectRows, re
 import qualified Database.DuckDB.Simple.Result as Result
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), FieldBinding, NamedParam (..), ToField (..), bindFieldBinding, duckdbColumnType, renderFieldBinding)
 import Database.DuckDB.Simple.ToRow (ToRow (..))
+import Database.DuckDB.Simple.TypeCache (TypeCache, createTypeCache, defaultGeometryCRS, destroyTypeCache)
 import Database.DuckDB.Simple.Types (FormatError (..), Null (..), Only (..), (:.) (..))
 import Foreign.C.String (CString)
 import Foreign.Marshal.Alloc (alloca)
@@ -137,16 +143,45 @@ open path = openWithConfig path []
 
 -- | Open a DuckDB database with configuration flags applied before startup.
 openWithConfig :: FilePath -> [(Text, Text)] -> IO Connection
-openWithConfig path settings =
+openWithConfig path settings = openWithOptions path defaultConnectionOptions{connectionConfig = settings}
+
+-- | Settings that duckdb-simple applies when it opens a connection.
+data ConnectionOptions = ConnectionOptions
+    { connectionConfig :: [(Text, Text)]
+    -- ^ DuckDB configuration flags, as for 'openWithConfig'.
+    , connectionGeometryCRS :: [Text]
+    {- ^ CRS definitions. The connection reads a GEOMETRY type for each CRS
+    the first time a parameter needs a VARIANT type or a GEOMETRY type with a
+    CRS. Parameters can then contain GEOMETRY types with these CRSs.
+    -}
+    }
+    deriving (Eq, Show)
+
+-- | No configuration flags, and the CRS @OGC:CRS84@.
+defaultConnectionOptions :: ConnectionOptions
+defaultConnectionOptions =
+    ConnectionOptions
+        { connectionConfig = []
+        , connectionGeometryCRS = defaultGeometryCRS
+        }
+
+{- | Open a DuckDB database with options. The connection reads the VARIANT type
+and the GEOMETRY types for the configured CRSs the first time a parameter
+needs one of them. It reads them with one query on a separate connection.
+-}
+openWithOptions :: FilePath -> ConnectionOptions -> IO Connection
+openWithOptions path ConnectionOptions{connectionConfig, connectionGeometryCRS} =
     mask_ do
-        db <- openDatabaseWithConfig path settings
+        db <- openDatabaseWithConfig path connectionConfig
         conn <-
             connectDatabase db
                 `onException` closeDatabaseHandle db
-        createConnection db conn
-            `onException` do
-                closeConnectionHandle conn
-                closeDatabaseHandle db
+        let closeBoth = closeConnectionHandle conn >> closeDatabaseHandle db
+        cache <-
+            createTypeCache db connectionGeometryCRS
+                `onException` closeBoth
+        createConnection db conn cache
+            `onException` (destroyTypeCache cache >> closeBoth)
 
 -- | Close a connection.  The operation is idempotent.
 close :: Connection -> IO ()
@@ -166,6 +201,10 @@ withConnection path = bracket (open path) close
 withConnectionWithConfig :: FilePath -> [(Text, Text)] -> (Connection -> IO a) -> IO a
 withConnectionWithConfig path settings = bracket (openWithConfig path settings) close
 
+-- | Run an action with a connection opened with options, closing it afterwards.
+withConnectionWithOptions :: FilePath -> ConnectionOptions -> (Connection -> IO a) -> IO a
+withConnectionWithOptions path options = bracket (openWithOptions path options) close
+
 -- | Prepare a SQL statement for execution.
 openStatement :: Connection -> Query -> IO Statement
 openStatement conn queryText =
@@ -181,7 +220,7 @@ openStatement conn queryText =
                             if rc == DuckDBSuccess
                                 then pure stmt
                                 else do
-                                    errMsg <- fetchPrepareError stmt
+                                    errMsg <- fetchPrepareError (Text.pack "duckdb-simple: prepare failed") stmt
                                     throwIO $ mkPrepareError queryText errMsg
         createStatement conn handle queryText
             `onException` destroyPrepared handle
@@ -284,7 +323,7 @@ clearStatementBindings stmt =
         resetStatementStream stmt
         rc <- c_duckdb_clear_bindings handle
         when (rc /= DuckDBSuccess) $ do
-            err <- fetchPrepareError handle
+            err <- fetchPrepareError (Text.pack "duckdb-simple: prepare failed") handle
             throwIO $ mkPrepareError (statementQuery stmt) err
 
 -- | Look up the 1-based index of a named placeholder.
@@ -448,9 +487,9 @@ withTransaction conn action =
 
 -- Internal helpers -----------------------------------------------------------
 
-createConnection :: DuckDBDatabase -> DuckDBConnection -> IO Connection
-createConnection db conn = do
-    ref <- newIORef (ConnectionOpen db conn)
+createConnection :: DuckDBDatabase -> DuckDBConnection -> TypeCache -> IO Connection
+createConnection db conn cache = do
+    ref <- newIORef (ConnectionOpen db conn cache)
     _ <-
         mkWeakIORef ref $
             join $
@@ -534,7 +573,8 @@ connectDatabase db =
 
 closeHandles :: ConnectionState -> IO ()
 closeHandles ConnectionClosed = pure ()
-closeHandles ConnectionOpen{connectionDatabase, connectionHandle} = do
+closeHandles ConnectionOpen{connectionDatabase, connectionHandle, connectionTypeCache} = do
+    destroyTypeCache connectionTypeCache
     closeConnectionHandle connectionHandle
     closeDatabaseHandle connectionDatabase
 
@@ -549,13 +589,6 @@ closeDatabaseHandle db =
 destroyPrepared :: DuckDBPreparedStatement -> IO ()
 destroyPrepared stmt =
     alloca \ptr -> poke ptr stmt >> c_duckdb_destroy_prepare ptr
-
-fetchPrepareError :: DuckDBPreparedStatement -> IO Text
-fetchPrepareError stmt = do
-    msgPtr <- c_duckdb_prepare_error stmt
-    if msgPtr == nullPtr
-        then pure (Text.pack "duckdb-simple: prepare failed")
-        else peekUtf8CString msgPtr
 
 mkOpenError :: Text -> SQLError
 mkOpenError msg =

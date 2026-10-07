@@ -5,12 +5,63 @@ DuckDB 1.4 line to the DuckDB 1.5 line.
 
 The short version is:
 
-- `duckdb-ffi` uses the DuckDB `1.5.0` C header. The native minimum is 1.5.3.
+- `duckdb-ffi` uses the DuckDB `1.5.6` C header. The native minimum is 1.5.3.
 - `duckdb-simple` now depends on `duckdb-ffi-1.5`.
 - Existing 1.4 bindings continue to work, but the runtime `libduckdb` you load
   must be >= 1.5.3 and < 1.6.
 - New 1.5 functionality is exposed through additive modules and helpers; no
   wholesale rewrite is required.
+
+## Native DuckDB 1.5.6
+
+The default native download is DuckDB 1.5.6. Native DuckDB >= 1.5.3 and < 1.6
+remains supported. `duckdb-simple` uses a separate API version.
+
+The FFI adds the GEOMETRY and VARIANT type tags, the geometry CRS accessor,
+and the COPY_DATABASE, UPDATE_EXTENSIONS, and MERGE_INTO statement tags.
+Free strings returned by the CRS accessor with `duckdb_free`.
+
+## Geometry support
+
+`duckdb-simple-0.3.0.0` adds Geometry support.
+
+Use `Data.Geometry.Geometry` from the published `geometry-simple` package for
+decoded shapes. Use `RawGeometry` for WKB bytes and CRS metadata. The package's
+`Geometry` type has no CRS. It has parameter and result instances.
+`RawGeometry` has a result instance. Import its WKB and CRS with explicit SQL.
+See [the Geometry notes](duckdb-simple/README.md#geometry) for examples and limits.
+
+`FieldValue` gains `FieldGeometry`, and `LogicalTypeRep` gains
+`LogicalTypeGeometry`. Update exhaustive matches.
+
+The C API cannot create a GEOMETRY type with a CRS. Each connection reads
+GEOMETRY types for a list of CRS definitions the first time a parameter needs
+one, and composite parameters use them. The list defaults to `OGC:CRS84`. Set
+it with `ConnectionOptions`, `openWithOptions`, or `withConnectionWithOptions`.
+A CRS outside the list binds without a CRS, and `logicalTypeFromRep` creates
+`GEOMETRY` with no CRS. To apply a CRS in these cases, insert the value into a
+column with that CRS, or cast it in SQL.
+
+## VARIANT support
+
+`duckdb-simple-0.3.0.0` adds VARIANT support. VARIANT results decode to the
+`FieldValue` of the stored value, so existing `FromField` instances read them.
+Objects decode to `FieldStruct` values with VARIANT fields. `Variant` from
+`Database.DuckDB.Simple.Variant` wraps the `FieldValue` of a result. Native
+VARIANT loses geometry CRS metadata. Import raw geometry payloads with
+`ST_GeomFromWKB(?)::VARIANT`. See [the VARIANT
+notes](duckdb-simple/README.md#variant) for private-format and
+persistent-storage requirements.
+
+`Variant` binds as a VARIANT parameter. The connection reads the VARIANT type
+the first time a parameter needs it, because the C API cannot create a usable
+VARIANT type.
+`Variant` has no `ToDuckValue` instance, and `logicalTypeFromRep` raises an
+error for VARIANT.
+
+Array elements require `ToField` and `DuckDBColumnType`. Arrays use each
+element's `ToField` instance. If a custom element type only has `ToDuckValue`,
+add `instance ToField YourType`. The default implementation requires `Show`.
 
 ## Binding fixes
 
@@ -47,7 +98,7 @@ The short version is:
 
 If you use `duckdb-ffi` directly:
 
-- Rebuild and relink against DuckDB `1.5.3`.
+- Rebuild and relink against DuckDB `1.5.6`.
 - Update any packaging, Nix, CI, Docker, or deployment config that still pulls
   a 1.4 `libduckdb`.
 - If you want the new 1.5 APIs, import the new raw modules and bind against the
@@ -55,7 +106,7 @@ If you use `duckdb-ffi` directly:
 
 If you use `duckdb-simple`:
 
-- Rebuild against `duckdb-simple-0.2.0.0` and DuckDB `1.5.3`.
+- Rebuild against `duckdb-simple-0.3.0.0` and DuckDB `1.5.6`.
 - Review the binding changes above for SQL parameter types, NULL handling,
   and generic decoding.
 - New 1.5 helpers are available from dedicated modules instead of being folded
@@ -71,7 +122,7 @@ Before:
 
 Now:
 
-- `duckdb-ffi-1.5.3.0` and `duckdb-simple-0.2.0.0` require a DuckDB 1.5
+- `duckdb-ffi-1.5.6.0` and `duckdb-simple-0.3.0.0` require a DuckDB 1.5
   shared library >= 1.5.3 and < 1.6 at runtime.
 
 If your executable still finds a 1.4 shared library first, you will see symbol
@@ -97,7 +148,7 @@ LD_LIBRARY_PATH=/path/to/duckdb-1.5 \
 
 ### Header and Symbol Surface
 
-The vendored `duckdb.h` now matches DuckDB 1.5.0.
+The vendored `duckdb.h` now matches DuckDB 1.5.6.
 
 The 1.5 change is additive for the C API surface used here:
 
@@ -291,9 +342,9 @@ using `duckdb_string_t_length`.
 ## Suggested Upgrade Steps
 
 1. Upgrade the Haskell packages to:
-   - `duckdb-ffi-1.5.3.0`
-   - `duckdb-simple-0.2.0.0`
-2. Upgrade the native DuckDB shared library to `1.5.3`.
+   - `duckdb-ffi-1.5.6.0`
+   - `duckdb-simple-0.3.0.0`
+2. Upgrade the native DuckDB shared library to `1.5.6`.
 3. Run your test suite with the 1.5 shared library explicitly selected.
 4. Update any tests that expected old 1.4 behavior, especially around
    `TIME_NS` or string helper assumptions.

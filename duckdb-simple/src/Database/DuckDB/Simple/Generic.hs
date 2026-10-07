@@ -121,6 +121,7 @@ import Database.DuckDB.Simple.FromField (
     TimeWithZone (..),
     returnError,
  )
+import Database.DuckDB.Simple.Internal (duckDBTypeToName)
 import Database.DuckDB.Simple.LogicalRep (
     LogicalTypeRep (..),
     StructField (..),
@@ -131,6 +132,7 @@ import Database.DuckDB.Simple.LogicalRep (
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToField (..))
+import Database.DuckDB.Simple.Variant (Variant (..))
 
 --------------------------------------------------------------------------------
 -- DuckValue: bridge between Haskell scalars and FieldValue/LogicalTypeRep
@@ -157,6 +159,10 @@ class DuckValue a where
         case fromField Field{fieldName = Text.empty, fieldIndex = 0, fieldValue = fv} of
             Ok x -> Right x
             Errors errs -> Left (unlines (map displayException errs))
+
+instance DuckValue Variant where
+    duckToField = variantPayload
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeVariant
 
 instance DuckValue Bool where
     duckToField = FieldBool
@@ -446,10 +452,7 @@ instance (GStruct f) => GToField' 'False (M1 D meta (M1 C c f)) where
 instance (GSum f) => GToField' 'True (M1 D meta f) where
     gToField' _ (M1 value) =
         let members = gSumMembers (Proxy :: Proxy (f p))
-            membersArray =
-                case members of
-                    [] -> listArray (0, -1) []
-                    _ -> listArray (0, length members - 1) members
+            membersArray = listArray (0, length members - 1) members
             (idx, payload) = gSumEncode value
             label = unionMemberName (members !! idx)
          in EncodedUnion
@@ -461,10 +464,7 @@ instance (GSum f) => GToField' 'True (M1 D meta f) where
                     }
     gLogicalType' _ _ =
         let members = gSumMembers (Proxy :: Proxy (f p))
-            membersArray =
-                case members of
-                    [] -> listArray (0, -1) []
-                    _ -> listArray (0, length members - 1) members
+            membersArray = listArray (0, length members - 1) members
          in LogicalTypeUnion membersArray
 
 --------------------------------------------------------------------------------
@@ -491,12 +491,9 @@ and payloads.
 -}
 listArrayFrom :: [Text] -> [b] -> Array Int (StructField b)
 listArrayFrom names values =
-    case values of
-        [] -> listArray (0, -1) []
-        _ ->
-            listArray
-                (0, length values - 1)
-                (zipWith (\n v -> StructField{structFieldName = n, structFieldValue = v}) names values)
+    listArray
+        (0, length values - 1)
+        (zipWith (\n v -> StructField{structFieldName = n, structFieldValue = v}) names values)
 
 {- | Collect the components (values and types) of a product.  Implementations
 produce parallel lists so we can zip them during encoding and decoding.
@@ -707,9 +704,10 @@ instance (Generic a, GToField (Rep a)) => DuckDBColumnType (ViaDuckDB a) where
             LogicalTypeList{} -> Text.pack "LIST"
             LogicalTypeArray{} -> Text.pack "ARRAY"
             LogicalTypeMap{} -> Text.pack "MAP"
-            LogicalTypeScalar dtype -> duckdbTypeToName dtype
+            LogicalTypeScalar dtype -> duckDBTypeToName dtype
             LogicalTypeDecimal{} -> Text.pack "DECIMAL"
             LogicalTypeEnum{} -> Text.pack "ENUM"
+            LogicalTypeGeometry{} -> Text.pack "GEOMETRY"
 
 {- | Deriving-via @ToField@ instance. We reuse the helpers above to decide
 whether the top-level representation is a union, struct, or scalar and then
@@ -738,37 +736,6 @@ instance (Generic a, GFromField (Rep a), Typeable a) => FromField (ViaDuckDB a) 
             Right value -> pure (ViaDuckDB value)
             Left err ->
                 returnError ConversionFailed f (Text.pack err)
-
-duckdbTypeToName :: DuckDBType -> Text
-
-{- | Translate a @DuckDBType@ into a textual label for diagnostics and
-documentation.  This mirrors the naming used in "Database.DuckDB.Simple.ToField".
--}
-duckdbTypeToName dtype
-    | dtype == DuckDBTypeBoolean = Text.pack "BOOLEAN"
-    | dtype == DuckDBTypeTinyInt = Text.pack "TINYINT"
-    | dtype == DuckDBTypeSmallInt = Text.pack "SMALLINT"
-    | dtype == DuckDBTypeInteger = Text.pack "INTEGER"
-    | dtype == DuckDBTypeBigInt = Text.pack "BIGINT"
-    | dtype == DuckDBTypeUTinyInt = Text.pack "UTINYINT"
-    | dtype == DuckDBTypeUSmallInt = Text.pack "USMALLINT"
-    | dtype == DuckDBTypeUInteger = Text.pack "UINTEGER"
-    | dtype == DuckDBTypeUBigInt = Text.pack "UBIGINT"
-    | dtype == DuckDBTypeFloat = Text.pack "FLOAT"
-    | dtype == DuckDBTypeDouble = Text.pack "DOUBLE"
-    | dtype == DuckDBTypeVarchar = Text.pack "VARCHAR"
-    | dtype == DuckDBTypeBlob = Text.pack "BLOB"
-    | dtype == DuckDBTypeDate = Text.pack "DATE"
-    | dtype == DuckDBTypeTime = Text.pack "TIME"
-    | dtype == DuckDBTypeTimestamp = Text.pack "TIMESTAMP"
-    | dtype == DuckDBTypeTimestampTz = Text.pack "TIMESTAMP_TZ"
-    | dtype == DuckDBTypeUUID = Text.pack "UUID"
-    | dtype == DuckDBTypeInterval = Text.pack "INTERVAL"
-    | dtype == DuckDBTypeHugeInt = Text.pack "HUGEINT"
-    | dtype == DuckDBTypeUHugeInt = Text.pack "UHUGEINT"
-    | dtype == DuckDBTypeBigNum = Text.pack "BIGNUM"
-    | dtype == DuckDBTypeTimeTz = Text.pack "TIME_TZ"
-    | otherwise = Text.pack (show dtype)
 
 --------------------------------------------------------------------------------
 -- DuckDB type constructors (re-exported patterns)

@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.5.6.0
+
+- Use the official DuckDB 1.5.6 header and native download. Keep native support
+  for DuckDB >= 1.5.3 and < 1.6.
+- Add the COPY_DATABASE, UPDATE_EXTENSIONS, and MERGE_INTO statement tags.
+- Document that invalid DECIMAL metadata can terminate native DuckDB 1.5.3.
+  Test the nonfatal constructor behavior only on native 1.5.4 and later.
+- Add the GEOMETRY and VARIANT type tags and the geometry CRS accessor. The
+  returned CRS string is owned by the caller and must be freed with `duckdb_free`.
+- Document that `duckdb_create_logical_type` returns an incomplete VARIANT
+  descriptor. Obtain a complete descriptor from a query result before inspecting
+  its children.
+
 ## 1.5.3.0
 
 - Export invokers for Arrow schema/array release and all four stream callbacks.

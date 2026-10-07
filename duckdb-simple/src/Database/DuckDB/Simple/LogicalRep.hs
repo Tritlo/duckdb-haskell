@@ -17,6 +17,7 @@ module Database.DuckDB.Simple.LogicalRep (
     unionValueTypeRep,
     logicalTypeToRep,
     logicalTypeFromRep,
+    logicalTypeFromRepWith,
     destroyLogicalType,
 ) where
 
@@ -41,6 +42,7 @@ import Foreign.Storable (poke)
 data LogicalTypeRep
     = LogicalTypeScalar DuckDBType
     | LogicalTypeDecimal !Word8 !Word8
+    | LogicalTypeGeometry !(Maybe Text)
     | LogicalTypeList LogicalTypeRep
     | LogicalTypeArray LogicalTypeRep !Word64
     | LogicalTypeMap LogicalTypeRep LogicalTypeRep
@@ -100,6 +102,9 @@ logicalTypeToRep :: DuckDBLogicalType -> IO LogicalTypeRep
 logicalTypeToRep logical = do
     dtype <- c_duckdb_get_type_id logical
     case dtype of
+        DuckDBTypeGeometry ->
+            bracket (c_duckdb_geometry_type_get_crs logical) (c_duckdb_free . castPtr) \ptr ->
+                LogicalTypeGeometry <$> if ptr == nullPtr then pure Nothing else Just . TextEncoding.decodeUtf8 <$> BS.packCString ptr
         DuckDBTypeStruct -> do
             childCountRaw <- c_duckdb_struct_type_child_count logical
             childCount <- word64ToInt (Text.pack "struct child count") childCountRaw
@@ -114,10 +119,7 @@ logicalTypeToRep logical = do
                     pure StructField{structFieldName = name, structFieldValue = childRep}
             pure $
                 LogicalTypeStruct
-                    ( if childCount <= 0
-                        then listArray (0, -1) []
-                        else listArray (0, childCount - 1) fields
-                    )
+                    (listArray (0, childCount - 1) fields)
         DuckDBTypeUnion -> do
             memberCountRaw <- c_duckdb_union_type_member_count logical
             memberCount <- word64ToInt (Text.pack "union member count") memberCountRaw
@@ -132,10 +134,7 @@ logicalTypeToRep logical = do
                     pure UnionMemberType{unionMemberName = name, unionMemberType = memberRep}
             pure $
                 LogicalTypeUnion
-                    ( if memberCount <= 0
-                        then listArray (0, -1) []
-                        else listArray (0, memberCount - 1) members
-                    )
+                    (listArray (0, memberCount - 1) members)
         DuckDBTypeList -> do
             childRep <- bracket (c_duckdb_list_type_child_type logical) destroyLogicalType logicalTypeToRep
             pure (LogicalTypeList childRep)
@@ -163,46 +162,64 @@ logicalTypeToRep logical = do
                     pure entry
             pure $
                 LogicalTypeEnum
-                    ( if count <= 0
-                        then listArray (0, -1) []
-                        else listArray (0, count - 1) entries
-                    )
+                    (listArray (0, count - 1) entries)
         _ ->
             pure (LogicalTypeScalar dtype)
 
--- | Materialize a DuckDB logical type handle from a @LogicalTypeRep@ tree.
+{- | Materialize a DuckDB logical type handle from a @LogicalTypeRep@ tree.
+The C API cannot create a usable VARIANT type or a GEOMETRY type with a CRS.
+This function raises an error for VARIANT. It creates GEOMETRY without a CRS
+and ignores the CRS of 'LogicalTypeGeometry'. Parameter binding uses the
+types that a connection reads the first time a parameter needs one.
+-}
 logicalTypeFromRep :: LogicalTypeRep -> IO DuckDBLogicalType
-logicalTypeFromRep rep = do
+logicalTypeFromRep = logicalTypeFromRepWith \case
+    -- TODO: improve this when this becomes available in the C API.
+    -- See https://github.com/Tritlo/duckdb-haskell/issues/26 and
+    -- https://github.com/Tritlo/duckdb-haskell/issues/27.
+    LogicalTypeScalar DuckDBTypeVariant ->
+        throwIO (userError "duckdb-simple: a VARIANT type needs the type cache of a connection; bind the value as a parameter or cast a plain value with ?::VARIANT")
+    _ -> c_duckdb_create_logical_type DuckDBTypeGeometry
+
+{- | Materialize a type tree. The function argument creates the leaves that the
+C API cannot create: VARIANT, and GEOMETRY with a CRS. The caller must
+destroy the result.
+-}
+logicalTypeFromRepWith :: (LogicalTypeRep -> IO DuckDBLogicalType) -> LogicalTypeRep -> IO DuckDBLogicalType
+logicalTypeFromRepWith resolve rep = do
     logical <- create rep
     when (logical == nullPtr) $
         throwIO (userError "duckdb-simple: DuckDB logical type construction failed")
     pure logical
   where
     create = \case
+        leaf@(LogicalTypeScalar DuckDBTypeVariant) -> resolve leaf
         LogicalTypeScalar dtype -> c_duckdb_create_logical_type dtype
+        leaf@(LogicalTypeGeometry (Just _)) -> resolve leaf
+        LogicalTypeGeometry Nothing -> c_duckdb_create_logical_type DuckDBTypeGeometry
         LogicalTypeDecimal width scale -> do
             when (width < 1 || width > 38 || scale > width) $
                 throwIO (userError "duckdb-simple: invalid DECIMAL width or scale")
             c_duckdb_create_decimal_type width scale
         LogicalTypeList elemRep ->
-            bracket (logicalTypeFromRep elemRep) destroyLogicalType c_duckdb_create_list_type
+            bracket (logicalTypeFromRepWith resolve elemRep) destroyLogicalType c_duckdb_create_list_type
         LogicalTypeArray elemRep size ->
-            bracket (logicalTypeFromRep elemRep) destroyLogicalType $
+            bracket (logicalTypeFromRepWith resolve elemRep) destroyLogicalType $
                 flip c_duckdb_create_array_type size
         LogicalTypeMap keyRep valueRep ->
-            bracket (logicalTypeFromRep keyRep) destroyLogicalType \keyType ->
-                bracket (logicalTypeFromRep valueRep) destroyLogicalType $
+            bracket (logicalTypeFromRepWith resolve keyRep) destroyLogicalType \keyType ->
+                bracket (logicalTypeFromRepWith resolve valueRep) destroyLogicalType $
                     c_duckdb_create_map_type keyType
         LogicalTypeStruct fieldArray -> do
             let fields = elems fieldArray
-            withMany (\field -> bracket (logicalTypeFromRep (structFieldValue field)) destroyLogicalType) fields \childTypes ->
+            withMany (\field -> bracket (logicalTypeFromRepWith resolve (structFieldValue field)) destroyLogicalType) fields \childTypes ->
                 withMany withTypeName (map structFieldName fields) \names ->
                     withArray names \nameArray ->
                         withArray childTypes \typeArray ->
                             c_duckdb_create_struct_type typeArray nameArray (fromIntegral (length fields))
         LogicalTypeUnion memberArray -> do
             let members = elems memberArray
-            withMany (\member -> bracket (logicalTypeFromRep (unionMemberType member)) destroyLogicalType) members \memberTypes ->
+            withMany (\member -> bracket (logicalTypeFromRepWith resolve (unionMemberType member)) destroyLogicalType) members \memberTypes ->
                 withMany withTypeName (map unionMemberName members) \names ->
                     withArray names \nameArray ->
                         withArray memberTypes \typeArray ->

@@ -15,6 +15,7 @@ Description : Conversion from DuckDB column values to Haskell types.
 module Database.DuckDB.Simple.FromField (
     Field (..),
     FieldValue (..),
+    RawGeometry (..),
     StructField (..),
     StructValue (..),
     UnionMemberType (..),
@@ -39,6 +40,7 @@ import Data.Array (Array, assocs, bounds, listArray, range, (!))
 import Data.Bits (Bits (..), finiteBitSize)
 import qualified Data.ByteString as BS
 import Data.Data (Typeable, typeRep)
+import qualified Data.Geometry as G
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -58,6 +60,7 @@ import Data.Time.LocalTime (
  )
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
+import Database.DuckDB.Simple.Geometry (RawGeometry (..), fromRawGeometry)
 import Database.DuckDB.Simple.LogicalRep (
     LogicalTypeRep (..),
     StructField (..),
@@ -67,12 +70,14 @@ import Database.DuckDB.Simple.LogicalRep (
  )
 import Database.DuckDB.Simple.Ok
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
-import Database.DuckDB.Simple.Types (Null (..))
 import GHC.Float (double2Float, float2Double)
 import GHC.Num.Integer (integerFromWordList)
 import Numeric.Natural (Natural)
 
--- | Internal representation of a column value.
+{- | Internal representation of a column value.
+'FieldGeometry' contains raw WKB and CRS metadata. Generic parameters that
+contain a non-NULL geometry require explicit SQL import.
+-}
 data FieldValue
     = FieldNull
     | FieldInt8 Int8
@@ -89,6 +94,7 @@ data FieldValue
     | FieldText Text
     | FieldBool Bool
     | FieldBlob BS.ByteString
+    | FieldGeometry RawGeometry
     | FieldDate Date
     | FieldTime TimeOfDay
     | FieldTimestamp LocalTimestamp
@@ -305,6 +311,20 @@ class FromField a where
 instance FromField FieldValue where
     fromField Field{fieldValue} = Ok fieldValue
 
+instance FromField RawGeometry where
+    fromField f@Field{fieldValue} =
+        case fieldValue of
+            FieldGeometry value -> Ok value
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f "expected GEOMETRY"
+
+-- | Decode the shape without CRS metadata. Use t'RawGeometry' to retain the CRS.
+instance FromField G.Geometry where
+    fromField f@Field{fieldValue} = case fieldValue of
+        FieldGeometry raw -> either (returnError ConversionFailed f . Text.pack) pure (fromRawGeometry raw)
+        FieldNull -> returnError UnexpectedNull f ""
+        _ -> returnError Incompatible f "expected GEOMETRY"
+
 instance FromField (StructValue FieldValue) where
     fromField f@Field{fieldValue} =
         case fieldValue of
@@ -318,12 +338,6 @@ instance FromField (UnionValue FieldValue) where
             FieldUnion unionVal -> Ok unionVal
             FieldNull -> returnError UnexpectedNull f ""
             _ -> returnError Incompatible f "expected UNION"
-
-instance FromField Null where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldNull -> Ok Null
-            _ -> returnError Incompatible f "expected NULL"
 
 instance FromField UUID.UUID where
     fromField f@Field{fieldValue} =
@@ -549,6 +563,7 @@ instance FromField BS.ByteString where
     fromField f@Field{fieldValue} =
         case fieldValue of
             FieldBlob bs -> Ok bs
+            FieldGeometry RawGeometry{rawGeometryWKB} -> Ok rawGeometryWKB
             FieldText t -> Ok (TextEncoding.encodeUtf8 t)
             FieldBit (BitString _ bits) -> Ok bits
             FieldNull -> returnError UnexpectedNull f ""
@@ -777,6 +792,7 @@ fieldValueTypeName = \case
     FieldText{} -> "TEXT"
     FieldBool{} -> "BOOLEAN"
     FieldBlob{} -> "BLOB"
+    FieldGeometry{} -> "GEOMETRY"
     FieldDate{} -> "DATE"
     FieldTime{} -> "TIME"
     FieldTimestamp{} -> "TIMESTAMP"

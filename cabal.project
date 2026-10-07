@@ -35,4 +35,5 @@ package duckdb-simple
     "--ignore-link-symbol=Database.DuckDB.Simple.Function.argumentType"
     "--ignore-link-symbol=Database.DuckDB.Simple.Function.scalarReturnType"
     "--ignore-link-symbol=Database.DuckDB.Simple.Function.toScalarValue"
+    "--ignore-link-symbol=Database.DuckDB.Simple.TypeCache.TypeCache"
     "--ignore-link-symbol=Database.DuckDB.Simple.FromRow.RowParseRO"

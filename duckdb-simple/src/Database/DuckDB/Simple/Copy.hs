@@ -23,7 +23,7 @@ import Database.DuckDB.FFI
 import Database.DuckDB.Simple.Callback (runCallback, transferCallbackState, withCallbackResources)
 import Database.DuckDB.Simple.FromField (Field (..))
 import Database.DuckDB.Simple.Internal (Connection, destroyLogicalType, peekUtf8CString, throwRegistrationError, withConnectionHandle)
-import Database.DuckDB.Simple.Materialize (materializeValue)
+import Database.DuckDB.Simple.Materialize (prepareVectorReader)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, nullPtr)
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, deRefStablePtr)
@@ -180,13 +180,10 @@ type ColumnReader = DuckDBIdx -> IO Field
 
 makeColumnReader :: DuckDBDataChunk -> Int -> IO ColumnReader
 makeColumnReader chunk columnIndex = do
-    vector <- c_duckdb_data_chunk_get_vector chunk (fromIntegral columnIndex)
-    dtype <- bracket (c_duckdb_vector_get_column_type vector) destroyLogicalType c_duckdb_get_type_id
-    dataPtr <- c_duckdb_vector_get_data vector
-    validity <- c_duckdb_vector_get_validity vector
+    readValue <- c_duckdb_data_chunk_get_vector chunk (fromIntegral columnIndex) >>= prepareVectorReader
     let name = Text.pack ("column" <> show columnIndex)
     pure \rowIdx -> do
-        fieldValue <- materializeValue dtype vector dataPtr validity (fromIntegral rowIdx)
+        fieldValue <- readValue (fromIntegral rowIdx)
         pure Field{fieldName = name, fieldIndex = columnIndex, fieldValue}
 
 destroyCopyFunction :: DuckDBCopyFunction -> IO ()

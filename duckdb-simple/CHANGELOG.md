@@ -1,5 +1,74 @@
 # Changelog
 
+## 0.3.0.0
+
+- Use native DuckDB 1.5.6 by default. Keep native support for DuckDB >= 1.5.3
+  and < 1.6. Test native versions 1.5.3 through 1.5.6.
+- Require `duckdb-ffi >= 1.5.6.0` for the updated native bindings.
+- Decode VARIANT results to the `FieldValue` of the stored value, so existing
+  `FromField` instances read them. Objects decode to `FieldStruct` values with
+  VARIANT fields, in entry order. The decoder checks DuckDB's private 1.5
+  format and payload bounds, and rejects cyclic child references. It has no
+  depth limit for acyclic values.
+- Add `Variant`, a `FieldValue` that binds as a VARIANT, and `variantObject`,
+  which builds an object payload. Scalars keep their native type. Object
+  parameters reject duplicate, empty, and NUL-containing keys because the
+  native constructors cannot represent all of these names.
+  `Variant` has no `ToDuckValue` instance, and `logicalTypeFromRep` raises an
+  error for VARIANT.
+- A VARIANT timestamp payload outside the microsecond range binds as a
+  millisecond or second timestamp, so it keeps its value.
+- Read the VARIANT type and GEOMETRY types for a list of CRS definitions,
+  because the C API cannot create them. A connection reads them with one
+  query on a separate connection, the first time a parameter needs one.
+  Parameters use these types. Add `ConnectionOptions`, `openWithOptions`, and
+  `withConnectionWithOptions` to set the CRS list, which defaults to
+  `OGC:CRS84`.
+- Array parameters use the element's `ToField` instance. Elements require
+  `ToField` and `DuckDBColumnType`. Add a `ToDuckValue` instance for arrays
+  whose elements have `ToDuckValue`. It does not need a connection.
+- Array parameters of STRUCT values, UNION values, generic records, and
+  arrays bind. They take the element type of the first element that is not
+  NULL. The other non-NULL elements must have the same type, including field
+  names, decimal precision and scale, and nested types. Different types raise
+  an error, so DuckDB cannot cast away fields or round values. An empty or
+  all-NULL array of these elements raises an error. Scalar elements keep the
+  type of their column type name.
+- A GEOMETRY payload decodes to `FieldGeometry` with raw WKB. Import those
+  bytes with `ST_GeomFromWKB(?)::VARIANT`.
+- Add parameter and result instances for `Data.Geometry.Geometry` from
+  `geometry-simple`. It provides decoded shapes, unboxed coordinate vectors,
+  and runtime coordinate layouts. This type does not store CRS metadata.
+  `RawGeometry` retains WKB and CRS without decoding coordinates. Existing
+  `ByteString` results still return WKB. Empty points remain distinct from SQL NULL.
+- Use `geometry-simple >= 0.1.1.0` for pure geometry types and codecs.
+  Structured parameters use its WKT writer and DuckDB's native cast.
+  `RawGeometry` has no parameter instance. Import its WKB with
+  `ST_GeomFromWKB` and apply its CRS with `ST_SetCRS`. This preserves mixed
+  layouts, dimensional empties, and native NaN payloads without WKT conversion.
+- Add `FieldGeometry` and `LogicalTypeGeometry` to the public value and type
+  representations. Update exhaustive matches when upgrading.
+  Nested result decoding retains raw WKB and CRS. Generic parameters with
+  non-NULL `FieldGeometry` values raise an error instead of converting their
+  bytes through WKT. Construct those nested values with explicit SQL import.
+- Keep CRS metadata in this package. The standalone shape has no CRS.
+  Both forms own their memory and remain usable after the connection closes.
+  CRS text can hold an identifier, a custom name, or a full WKT2/PROJJSON
+  definition.
+- Composite parameters keep GEOMETRY CRS metadata for the CRS definitions
+  that the connection read. Other CRS definitions bind without a CRS, and
+  `logicalTypeFromRep` creates `GEOMETRY` with no CRS. Insert the value into a
+  column with a CRS, or cast it in SQL, to apply the CRS.
+- Read STRUCT and UNION type metadata once for each result vector instead of
+  once for each row. Prepare their direct child readers at the same time.
+  A local benchmark with a CRS-tagged GEOMETRY field ran about ten times faster.
+  LIST, ARRAY, and MAP decoders can still read child metadata for each parent row.
+- `Database.DuckDB.Simple.Internal` changes. `StatementStreamChunk` keeps one
+  reader for each column in `statementStreamChunkReaders`, and
+  `StatementStreamChunkVector` is removed. The module also exports
+  `withTypeCache`, `fetchPrepareError`, `duckDBTypeFromName`, and
+  `duckDBTypeToName`.
+
 ## 0.2.0.0
 
 ### Query execution and resource lifetime

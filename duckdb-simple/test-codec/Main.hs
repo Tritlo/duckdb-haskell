@@ -1,19 +1,15 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 -- | Check the private codec's validation without constructing invalid native vectors.
 module Main (main) where
 
 import Control.Exception (IOException, try)
-import Data.Array (listArray)
 import qualified Data.ByteString as BS
-import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import Data.Word (Word32, Word8)
-import Database.DuckDB.FFI (pattern DuckDBTypeVariant)
 import Database.DuckDB.Simple.FromField (FieldValue (..))
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), StructValue (..))
+import Database.DuckDB.Simple.Variant (variantObject)
 import Database.DuckDB.Simple.VariantCodec (decodeVariantPayload)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit
@@ -54,7 +50,7 @@ main =
                     >>= (@?= FieldList [FieldInt8 7, FieldInt8 7])
             , testCase "length-aware keys preserve embedded NUL" $
                 decodeVariantPayload [(29, 0), (1, 2)] [(Just 0, 1)] [(0, "a\0b")] (BS.pack [1, 0])
-                    >>= (@?= object [("a\0b", FieldBool True)])
+                    >>= (@?= variantObject [("a\0b", FieldBool True)])
             , testCase "128 levels are accepted" $
                 let (values, children, bytes) = nested 128
                  in decodeVariantPayload values children [] bytes >>= (@?= foldr (const (FieldList . pure)) (FieldInt8 7) [1 .. 127 :: Int])
@@ -75,18 +71,6 @@ assertRejected action = do
     case result of
         Left (_ :: IOException) -> pure ()
         Right value -> assertFailure ("expected payload rejection, got " <> show value)
-
--- | Build the object payload that VARIANT decoding produces.
-object :: [(Text, FieldValue)] -> FieldValue
-object entries =
-    FieldStruct
-        StructValue
-            { structValueFields = indexed [StructField name value | (name, value) <- entries]
-            , structValueTypes = indexed [StructField name (LogicalTypeScalar DuckDBTypeVariant) | (name, _) <- entries]
-            , structValueIndex = Map.fromList (zip (map fst entries) [0 ..])
-            }
-  where
-    indexed items = listArray (0, length items - 1) items
 
 -- | Construct a chain of arrays with one scalar leaf.
 nested :: Int -> ([(Word8, Word32)], [(Maybe Word32, Word32)], BS.ByteString)

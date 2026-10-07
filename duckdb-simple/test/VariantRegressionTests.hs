@@ -25,7 +25,7 @@ import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
 import Database.DuckDB.Simple.FromField (DecimalValue (..), FieldValue (..), StructValue (..), UnionValue (..))
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..))
 import Database.DuckDB.Simple.Geometry (RawGeometry (..), toRawGeometry)
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), destroyLogicalType, logicalTypeFromRep)
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), destroyLogicalType, logicalTypeFromRep)
 import Database.DuckDB.Simple.Variant
 import GHC.Float (castDoubleToWord64, castFloatToWord32, castWord64ToDouble)
 import GHC.Generics (Generic)
@@ -33,6 +33,7 @@ import System.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
+import TestUtils (assertFailureIO)
 
 -- | A generic record checks the bridge to composite type metadata.
 newtype VariantRecord = VariantRecord {payload :: Variant}
@@ -54,14 +55,14 @@ tests =
         , testCase "explicit casts bind plain parameters" $ withConnection ":memory:" \conn -> do
             [Only record] <- query_ conn "SELECT {'a': 1, 'b': 'x'}" :: IO [Only (StructValue FieldValue)]
             (query conn "SELECT ?::VARIANT, ?::VARIANT, ?::VARIANT, ?::VARIANT" (42 :: Int64, "two" :: Text, record, listArray (0, 1) [1, 2] :: Array Int Int64) :: IO [(Variant, Variant, Variant, Variant)])
-                >>= (@?= [(Variant (FieldInt64 42), Variant (FieldText "two"), Variant (object [("a", FieldInt32 1), ("b", FieldText "x")]), Variant (FieldList [FieldInt64 1, FieldInt64 2]))])
+                >>= (@?= [(Variant (FieldInt64 42), Variant (FieldText "two"), Variant (variantObject [("a", FieldInt32 1), ("b", FieldText "x")]), Variant (FieldList [FieldInt64 1, FieldInt64 2]))])
             (query conn "SELECT [NULL::VARIANT, ?::VARIANT, ?::VARIANT]" (42 :: Int64, "two" :: Text) :: IO [Only [Variant]])
                 >>= (@?= [Only [Variant FieldNull, Variant (FieldInt64 42), Variant (FieldText "two")]])
             _ <- execute_ conn "CREATE TABLE variants (v VARIANT)"
             _ <- executeMany conn "INSERT INTO variants VALUES (?)" [Only (7 :: Int64), Only 8]
             _ <- execute conn "INSERT INTO variants VALUES (?)" (Only record)
             (query_ conn "SELECT v FROM variants" :: IO [Only Variant])
-                >>= (@?= [Only (Variant (FieldInt64 7)), Only (Variant (FieldInt64 8)), Only (Variant (object [("a", FieldInt32 1), ("b", FieldText "x")]))])
+                >>= (@?= [Only (Variant (FieldInt64 7)), Only (Variant (FieldInt64 8)), Only (Variant (variantObject [("a", FieldInt32 1), ("b", FieldText "x")]))])
         , testCase "floating special values retain type and bits" $ withConnection ":memory:" \conn -> do
             forM_ [0, -0.0, 1 / 0, -1 / 0, 0 / 0] \value -> do
                 [Only (Variant actual)] <- query conn "SELECT ?::VARIANT" (Only (value :: Double))
@@ -92,10 +93,10 @@ tests =
                 >>= ( @?=
                         [ Only
                             ( Variant
-                                ( object
+                                ( variantObject
                                     [ ("zeta", FieldInt64 9007199254740993)
                                     , ("alpha", FieldDecimal (DecimalValue 38 9 1234567890123456789))
-                                    , ("quote' íslenska λ", FieldList [FieldNull, FieldText "x", FieldList [], object []])
+                                    , ("quote' íslenska λ", FieldList [FieldNull, FieldText "x", FieldList [], variantObject []])
                                     ]
                                 )
                             )
@@ -105,20 +106,20 @@ tests =
                 >>= (@?= [(9007199254740993, "1234567890.123456789")])
         , testCase "empty containers and NULL stay distinct" $ withConnection ":memory:" \conn -> do
             (query_ conn "SELECT []::INTEGER[]::VARIANT, '{}'::JSON::VARIANT, [NULL]::INTEGER[]::VARIANT, {'x': NULL}::VARIANT" :: IO [(Variant, Variant, Variant, Variant)])
-                >>= (@?= [(Variant (FieldList []), Variant (object []), Variant (FieldList [FieldNull]), Variant (object [("x", FieldNull)]))])
+                >>= (@?= [(Variant (FieldList []), Variant (variantObject []), Variant (FieldList [FieldNull]), Variant (variantObject [("x", FieldNull)]))])
             (query_ conn "SELECT NULL::VARIANT" :: IO [Only (Maybe Variant)]) >>= (@?= [Only Nothing])
             (query_ conn "SELECT NULL::VARIANT" :: IO [Only FieldValue]) >>= (@?= [Only FieldNull])
         , testCase "existing FromField instances read VARIANT payloads" $ withConnection ":memory:" \conn -> do
             (query_ conn "SELECT 42::BIGINT::VARIANT, 'x'::VARIANT, [1, 2, 3]::VARIANT" :: IO [(Int64, Text, [Int64])])
                 >>= (@?= [(42, "x", [1, 2, 3])])
             (query_ conn "SELECT {'payload': {'x': 18446744073709551615::UBIGINT}::VARIANT}" :: IO [Only VariantRecord])
-                >>= (@?= [Only (VariantRecord (Variant (object [("x", FieldWord64 maxBound)])))])
+                >>= (@?= [Only (VariantRecord (Variant (variantObject [("x", FieldWord64 maxBound)])))])
         , testCase "native LIST, ARRAY and MAP containers decode VARIANT elements" $ withConnection ":memory:" \conn ->
             (query_ conn "SELECT [1::VARIANT, 'two'::VARIANT, NULL], [42::VARIANT]::VARIANT[1], MAP {'x': {'a': 9}::VARIANT}" :: IO [([Variant], Array Int Variant, Map Text Variant)])
-                >>= (@?= [([Variant (FieldInt32 1), Variant (FieldText "two"), Variant FieldNull], listArray (0, 0) [Variant (FieldInt32 42)], Map.fromList [("x", Variant (object [("a", FieldInt32 9)]))])])
+                >>= (@?= [([Variant (FieldInt32 1), Variant (FieldText "two"), Variant FieldNull], listArray (0, 0) [Variant (FieldInt32 42)], Map.fromList [("x", Variant (variantObject [("a", FieldInt32 9)]))])])
         , testCase "UNION payloads decode VARIANT, including NULL" $ withConnection ":memory:" \conn -> do
             [Only value] <- query_ conn "SELECT union_value(v := {'a': 42}::VARIANT)" :: IO [Only (UnionValue FieldValue)]
-            unionValuePayload value @?= object [("a", FieldInt32 42)]
+            unionValuePayload value @?= variantObject [("a", FieldInt32 42)]
             [Only nullValue] <- query_ conn "SELECT union_value(v := NULL::VARIANT)" :: IO [Only (UnionValue FieldValue)]
             unionValuePayload nullValue @?= FieldNull
         , testCase "VARIANT type construction raises an error" $ do
@@ -147,7 +148,7 @@ tests =
                         let expected = case n `mod` 3 of
                                 0 -> FieldInt64 n
                                 1 -> FieldText "text"
-                                _ -> object [("n", FieldInt64 n), ("xs", FieldList [FieldNull, FieldInt64 n])]
+                                _ -> variantObject [("n", FieldInt64 n), ("xs", FieldList [FieldNull, FieldInt64 n])]
                         actual @?= expected
                         pure (n + 1)
                 count @?= 5000
@@ -155,7 +156,7 @@ tests =
             ]
         , testCase "filtered and reordered rows use the right child offsets" $ withConnection ":memory:" \conn -> do
             rows <- query_ conn "SELECT {'n': i, 'xs': [i, i + 1]}::VARIANT FROM range(10000) t(i) WHERE i % 97 = 0 ORDER BY i DESC LIMIT 40"
-            let expected = [Only (Variant (object [("n", FieldInt64 n), ("xs", FieldList [FieldInt64 n, FieldInt64 (n + 1)])])) | n <- take 40 (reverse [0, 97 .. 9999])]
+            let expected = [Only (Variant (variantObject [("n", FieldInt64 n), ("xs", FieldList [FieldInt64 n, FieldInt64 (n + 1)])])) | n <- take 40 (reverse [0, 97 .. 9999])]
             rows @?= expected
         , testCase "file-backed values survive checkpoint and reopen" $
             bracket newDatabase removeDatabase \path -> do
@@ -165,7 +166,7 @@ tests =
                 withConnectionWithConfig path [("storage_compatibility_version", "v1.5.0")] \conn -> do
                     rows <- query_ conn "SELECT value FROM stored WHERE i % 97 = 0 ORDER BY i DESC LIMIT 40" :: IO [Only Variant]
                     let expected =
-                            [ Only (Variant (object [("n", FieldInt64 n), ("xs", FieldList [FieldInt64 n, FieldNull]), ("text", FieldText (Text.pack (show n)))]))
+                            [ Only (Variant (variantObject [("n", FieldInt64 n), ("xs", FieldList [FieldInt64 n, FieldNull]), ("text", FieldText (Text.pack (show n)))]))
                             | n <- take 40 (reverse [0, 97 .. 9999])
                             ]
                     rows @?= expected
@@ -197,29 +198,9 @@ tests =
                     (query conn "SELECT system.main.ST_GeomFromWKB(?)::VARIANT" (Only (rawGeometryWKB raw)) :: IO [Only Variant]) >>= (@?= [Only (geometryPayload (rawGeometryWKB raw))])
         ]
 
--- | Build the object payload that VARIANT decoding produces.
-object :: [(Text, FieldValue)] -> FieldValue
-object entries =
-    FieldStruct
-        StructValue
-            { structValueFields = indexed [StructField name value | (name, value) <- entries]
-            , structValueTypes = indexed [StructField name (LogicalTypeScalar DuckDBTypeVariant) | (name, _) <- entries]
-            , structValueIndex = Map.fromList (zip (map fst entries) [0 ..])
-            }
-  where
-    indexed items = listArray (0, length items - 1) items
-
 -- | A raw geometry payload has no CRS inside a VARIANT.
 geometryPayload :: BS.ByteString -> Variant
 geometryPayload wkb = Variant (FieldGeometry (RawGeometry wkb Nothing))
-
--- | Require an exception without depending on native error text.
-assertFailureIO :: IO a -> Assertion
-assertFailureIO action = do
-    result <- try (action >> pure ()) :: IO (Either SomeException ())
-    case result of
-        Left _ -> pure ()
-        Right () -> assertFailure "expected an exception"
 
 -- | Check that a parameter with VARIANT metadata asks for an explicit cast.
 assertVariantRejection :: IO a -> Assertion

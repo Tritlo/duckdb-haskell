@@ -372,7 +372,8 @@ A VARIANT result decodes to the `FieldValue` of the stored value, with its
 native type. The usual `FromField` instances read VARIANT columns, for example
 as `Int64`, `Text`, `[a]`, or a generic record. Arrays decode to `FieldList`.
 Objects decode to `FieldStruct` values whose fields have the VARIANT type, in
-entry order. SQL NULL decodes to `FieldNull`.
+entry order. `variantObject` builds such a payload from a list of entries.
+SQL NULL decodes to `FieldNull`.
 
 `Variant` from `Database.DuckDB.Simple.Variant` wraps a `FieldValue`. Its
 `FromField` instance reads any column. It has no parameter instance, because

@@ -22,7 +22,6 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.IntSet as IntSet
-import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -38,7 +37,7 @@ import Database.DuckDB.Simple.FromField (
     fromBigNumBytes,
  )
 import Database.DuckDB.Simple.Internal (destroyLogicalType)
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), StructValue (..))
+import Database.DuckDB.Simple.Variant (variantObject)
 import Foreign.C.String (peekCString)
 import Foreign.Marshal.Alloc (alloca, allocaBytesAligned)
 import Foreign.Marshal.Utils (copyBytes)
@@ -439,18 +438,6 @@ decodeFixedWidth dtype size bytes = do
     allocaBytesAligned size 16 \buffer -> do
         BS.useAsCStringLen bytes \(source, _) -> copyBytes buffer (castPtr source) size
         decodeElement dtype (castPtr buffer) 0
-
--- | Build an object whose fields have the VARIANT type.
-variantObject :: [(Text, FieldValue)] -> FieldValue
-variantObject entries =
-    FieldStruct
-        StructValue
-            { structValueFields = indexed [StructField name value | (name, value) <- entries]
-            , structValueTypes = indexed [StructField name (LogicalTypeScalar DuckDBTypeVariant) | (name, _) <- entries]
-            , structValueIndex = Map.fromList (zip (map fst entries) [0 ..])
-            }
-  where
-    indexed items = listArray (0, length items - 1) items
 
 -- | Get the high-bit mask used for native BIT padding.
 paddingMask :: Word8 -> Word8

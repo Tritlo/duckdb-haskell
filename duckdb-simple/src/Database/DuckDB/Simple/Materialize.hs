@@ -133,9 +133,7 @@ decodeArrayElements vector rowIdx = do
         forM [0 .. arraySize - 1] \delta ->
             readChild (baseIdx + delta)
     pure $
-        if arraySize <= 0
-            then listArray (0, -1) []
-            else listArray (0, arraySize - 1) values
+        listArray (0, arraySize - 1) values
 
 decodeListElements :: DuckDBVector -> Ptr () -> Int -> IO [FieldValue]
 decodeListElements vector dataPtr rowIdx = do
@@ -201,9 +199,7 @@ prepareStructDecoder vector =
                     value <- readChild rowIdx
                     pure StructField{structFieldName = name, structFieldValue = value}
             let fieldArray =
-                    if count <= 0
-                        then listArray (0, -1) []
-                        else listArray (0, count - 1) valueFields
+                    listArray (0, count - 1) valueFields
             pure
                 StructValue
                     { structValueFields = fieldArray

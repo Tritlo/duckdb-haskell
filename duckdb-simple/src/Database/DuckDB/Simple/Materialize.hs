@@ -4,6 +4,7 @@
 
 module Database.DuckDB.Simple.Materialize (
     prepareValueReader,
+    prepareVectorReader,
 ) where
 
 import Control.Exception (bracket, throwIO)
@@ -86,6 +87,14 @@ chunkDecodeBlob dataPtr rowIdx = do
 
 duckdbStringTSize :: Int
 duckdbStringTSize = 16
+
+-- | Read the type, data, and validity of a vector, and prepare its reader.
+prepareVectorReader :: DuckDBVector -> IO (Int -> IO FieldValue)
+prepareVectorReader vector = do
+    dtype <- vectorElementType vector
+    dataPtr <- c_duckdb_vector_get_data vector
+    validity <- c_duckdb_vector_get_validity vector
+    prepareValueReader dtype vector dataPtr validity
 
 -- | Prepare metadata once for a vector. The reader must not outlive its chunk.
 prepareValueReader :: DuckDBType -> DuckDBVector -> Ptr () -> Ptr Word64 -> IO (Int -> IO FieldValue)
@@ -289,10 +298,7 @@ decodeArrayElements vector rowIdx = do
     childVec <- c_duckdb_array_vector_get_child vector
     when (childVec == nullPtr) $
         throwIO (userError "duckdb-simple: array child vector is null")
-    childType <- vectorElementType childVec
-    childData <- c_duckdb_vector_get_data childVec
-    childValidity <- c_duckdb_vector_get_validity childVec
-    readChild <- prepareValueReader childType childVec childData childValidity
+    readChild <- prepareVectorReader childVec
     let baseIdx = rowIdx * arraySize
     values <-
         forM [0 .. arraySize - 1] \delta ->
@@ -309,10 +315,7 @@ decodeListElements vector dataPtr rowIdx = do
     childVec <- c_duckdb_list_vector_get_child vector
     when (childVec == nullPtr) $
         throwIO (userError "duckdb-simple: list child vector is null")
-    childType <- vectorElementType childVec
-    childData <- c_duckdb_vector_get_data childVec
-    childValidity <- c_duckdb_vector_get_validity childVec
-    readChild <- prepareValueReader childType childVec childData childValidity
+    readChild <- prepareVectorReader childVec
     forM [0 .. len - 1] \delta ->
         readChild (baseIdx + delta)
 
@@ -327,14 +330,8 @@ decodeMapPairs vector dataPtr rowIdx = do
     valueVec <- c_duckdb_struct_vector_get_child structVec 1
     when (keyVec == nullPtr || valueVec == nullPtr) $
         throwIO (userError "duckdb-simple: map child vectors are null")
-    keyType <- vectorElementType keyVec
-    valueType <- vectorElementType valueVec
-    keyData <- c_duckdb_vector_get_data keyVec
-    valueData <- c_duckdb_vector_get_data valueVec
-    keyValidity <- c_duckdb_vector_get_validity keyVec
-    valueValidity <- c_duckdb_vector_get_validity valueVec
-    readKey <- prepareValueReader keyType keyVec keyData keyValidity
-    readValue <- prepareValueReader valueType valueVec valueData valueValidity
+    readKey <- prepareVectorReader keyVec
+    readValue <- prepareVectorReader valueVec
     forM [0 .. len - 1] \delta -> do
         let childIdx = baseIdx + delta
         keyValue <- readKey childIdx
@@ -370,10 +367,7 @@ prepareStructDecoder vector =
                     childVec <- c_duckdb_struct_vector_get_child vector (fromIntegral childIdx)
                     when (childVec == nullPtr) $
                         throwIO (userError "duckdb-simple: struct child vector is null")
-                    childType <- vectorElementType childVec
-                    childData <- c_duckdb_vector_get_data childVec
-                    childValidity <- c_duckdb_vector_get_validity childVec
-                    readChild <- prepareValueReader childType childVec childData childValidity
+                    readChild <- prepareVectorReader childVec
                     pure (structFieldName, readChild)
             pure \rowIdx -> do
                 valueFields <-
@@ -416,19 +410,13 @@ prepareUnionDecoder vector =
             tagVec <- c_duckdb_struct_vector_get_child vector 0
             when (tagVec == nullPtr) $
                 throwIO (userError "duckdb-simple: union tag vector is null")
-            tagType <- vectorElementType tagVec
-            tagData <- c_duckdb_vector_get_data tagVec
-            tagValidity <- c_duckdb_vector_get_validity tagVec
-            readTag <- prepareValueReader tagType tagVec tagData tagValidity
+            readTag <- prepareVectorReader tagVec
             memberReaders <-
                 forM [1 .. memberCount] \childIdx -> do
                     memberVec <- c_duckdb_struct_vector_get_child vector (fromIntegral childIdx)
                     when (memberVec == nullPtr) $
                         throwIO (userError "duckdb-simple: union member vector is null")
-                    memberType <- vectorElementType memberVec
-                    memberData <- c_duckdb_vector_get_data memberVec
-                    memberValidity <- c_duckdb_vector_get_validity memberVec
-                    prepareValueReader memberType memberVec memberData memberValidity
+                    prepareVectorReader memberVec
             pure \rowIdx -> do
                 memberIdx <- readTag rowIdx >>= unionTagIndex
                 when (memberIdx < 0 || memberIdx >= memberCount) $

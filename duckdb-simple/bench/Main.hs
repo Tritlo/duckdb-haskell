@@ -55,7 +55,7 @@ main = do
                     rows <- query_ conn (Query ("SELECT i::VARIANT FROM range(" <> Text.pack (show count) <> ") t(i)"))
                     evaluate (List.foldl' (\acc (Only value) -> acc + variantNumber value) 0 rows)
                 "variant-parameters" -> do
-                    rows <- replicateM (fromIntegral count) (query conn "SELECT ?::VARIANT" (Only (1 :: Int64)))
+                    rows <- replicateM (fromIntegral count) (query conn "SELECT ?" (Only (Variant (FieldInt64 1))))
                     evaluate (sum [variantNumber value | [Only value] <- rows])
                 "geometry" -> do
                     rows <- query_ conn (Query ("SELECT 'POINT (1 2)'::GEOMETRY('OGC:CRS84') FROM range(" <> Text.pack (show count) <> ")"))

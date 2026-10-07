@@ -37,6 +37,7 @@ import Foreign.Storable (peek, poke)
 import GHC.Generics (Generic)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit
+import TestUtils (assertFailureIO)
 
 -- | Native timestamps used to test the full storage range.
 data NativeTimestamp = Seconds Int64 | Milliseconds Int64 | Microseconds Int64 | Nanoseconds Int64
@@ -53,6 +54,27 @@ instance ToDuckValue NativeTimestamp where
 
 instance ToField NativeTimestamp
 
+-- | An array element with a ToField instance and no ToDuckValue instance.
+newtype DelegatedInteger = DelegatedInteger Int64
+
+instance DuckDBColumnType DelegatedInteger where
+    duckdbColumnTypeFor _ = "BIGINT"
+
+instance ToField DelegatedInteger where
+    toField (DelegatedInteger value) = toField value
+
+-- | Bind an array through its connection-free value.
+newtype Scores = Scores (Array Int Int64)
+    deriving (Show)
+
+instance DuckDBColumnType Scores where
+    duckdbColumnTypeFor _ = "BIGINT[]"
+
+instance ToDuckValue Scores where
+    toDuckValue (Scores values) = toDuckValue values
+
+instance ToField Scores
+
 -- | Record with identical field types to detect positional decoding.
 data NamedRecord = NamedRecord {firstValue :: Int64, secondValue :: Int64}
     deriving (Eq, Show, Generic)
@@ -60,6 +82,11 @@ data NamedRecord = NamedRecord {firstValue :: Int64, secondValue :: Int64}
 -- | Sum with a payload to test NULL member handling.
 data NullableSum = EmptyMember | DataMember Int64
     deriving (Eq, Show, Generic)
+
+-- | A generic record for array parameters.
+data Pair = Pair {pairName :: Text, pairValue :: Int64}
+    deriving stock (Eq, Show, Generic)
+    deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB Pair)
 
 -- | Generic nullary constructors retain their existing UNION schema.
 data Colour = Red | Blue
@@ -86,6 +113,28 @@ valueRegressionTests =
             let members = listArray (0, 1) [UnionMemberType "number" (LogicalTypeScalar DuckDBTypeBigInt), UnionMemberType "text" (LogicalTypeScalar DuckDBTypeVarchar)]
                 original = UnionValue 0 "number" FieldNull members
             (query conn "SELECT ?" (Only original) :: IO [Only (UnionValue FieldValue)]) >>= (@?= [Only original])
+        , testCase "array elements need only a ToField instance" $ withConnection ":memory:" \conn -> do
+            let values = listArray (0 :: Int, 2) [Nothing, Just (DelegatedInteger 41), Just (DelegatedInteger 99)]
+                expected = listArray (0, 2) [Nothing, Just 41, Just 99] :: Array Int (Maybe Int64)
+            (query conn "SELECT ?" (Only values) :: IO [Only (Array Int (Maybe Int64))]) >>= (@?= [Only expected])
+        , testCase "array children use default ToDuckValue instances" $ withConnection ":memory:" \conn -> do
+            let units = [-1, 0, 1234567]
+                values = listArray (0 :: Int, 2) (map Microseconds units)
+                expected = listArray (0, 2) (map (utcToLocalTime utc . posixSecondsToUTCTime . fromRational . (% 1000000) . toInteger) units)
+            (query conn "SELECT ?" (Only values) :: IO [Only (Array Int LocalTime)]) >>= (@?= [Only expected])
+        , testCase "arrays bind through ToDuckValue without a connection" $ withConnection ":memory:" \conn -> do
+            let values = listArray (0, 2) [1, -2, 3]
+            (query conn "SELECT typeof(?), ?" (Scores values, Scores values) :: IO [(Text, Array Int Int64)]) >>= (@?= [("BIGINT[3]", values)])
+        , testCase "arrays of STRUCT, record, and ARRAY elements take the type of a present element" $ withConnection ":memory:" \conn -> do
+            [Only struct] <- query_ conn "SELECT {'a': 1, 'b': 'x'}" :: IO [Only (StructValue FieldValue)]
+            let structs = listArray (0, 1) [struct, struct]
+            (query conn "SELECT typeof(?), ?" (structs, structs) :: IO [(Text, Array Int (StructValue FieldValue))]) >>= (@?= [("STRUCT(a INTEGER, b VARCHAR)[2]", structs)])
+            let pairs = listArray (0, 2) [Nothing, Just (Pair "x" 1), Just (Pair "y" 2)]
+            (query conn "SELECT typeof(?), ?" (pairs, pairs) :: IO [(Text, Array Int (Maybe Pair))]) >>= (@?= [("STRUCT(pairName VARCHAR, pairValue BIGINT)[3]", pairs)])
+            let nested = listArray (0, 1) [listArray (0, 1) [1, 2], listArray (0, 1) [3, 4]] :: Array Int (Array Int Int64)
+            (query conn "SELECT typeof(?), ?" (nested, nested) :: IO [(Text, Array Int (Array Int Int64))]) >>= (@?= [("BIGINT[2][2]", nested)])
+        , testCase "empty arrays of record elements have no element type" $ withConnection ":memory:" \conn ->
+            assertFailureIO (query conn "SELECT ?" (Only (listArray (0, -1) [] :: Array Int Pair)) :: IO [Only Text])
         , testCase "GEOMETRY decodes as well-known binary" $ withConnection ":memory:" \conn -> do
             [Only bytes] <- query_ conn "SELECT 'POINT(1 2)'::GEOMETRY" :: IO [Only BS.ByteString]
             BS.length bytes @?= 21

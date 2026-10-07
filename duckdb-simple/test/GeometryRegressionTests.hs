@@ -13,14 +13,16 @@ import qualified Data.Geometry.WKB as WKB
 import qualified Data.Geometry.WKT as WKT
 import Data.Int (Int64)
 import Data.List (isInfixOf)
+import qualified Data.Map.Strict as Map
 import Data.Text (Text)
+import qualified Data.Text as Text
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
-import Database.DuckDB.Simple.FromField (FieldValue, StructValue, UnionValue)
+import Database.DuckDB.Simple.FromField (FieldValue (..), StructValue (..), UnionValue)
 import Database.DuckDB.Simple.Geometry (RawGeometry (..), fromRawGeometry, toRawGeometry)
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), destroyLogicalType, logicalTypeFromRep, logicalTypeToRep)
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), destroyLogicalType, logicalTypeFromRep, logicalTypeToRep)
 import GHC.Float (castWord64ToDouble)
 import System.Mem (performMajorGC)
 import Test.Tasty (TestTree, testGroup)
@@ -270,22 +272,36 @@ tests =
                 [Only value] <- query_ conn "SELECT union_value(shape := 'POINT (1 2)'::GEOMETRY('OGC:CRS84'))" :: IO [Only (UnionValue FieldValue)]
                 assertRawBindingFailure (query conn "SELECT ?" (Only value) :: IO [Only (UnionValue FieldValue)])
                 [Only nullValue] <- query_ conn "SELECT union_value(shape := NULL::GEOMETRY('OGC:CRS84'))" :: IO [Only (UnionValue FieldValue)]
-                (query conn "SELECT ?::UNION(shape GEOMETRY('OGC:CRS84'))" (Only nullValue) :: IO [Only (UnionValue FieldValue)]) >>= (@?= [Only nullValue])
+                (query conn "SELECT ?" (Only nullValue) :: IO [Only (UnionValue FieldValue)]) >>= (@?= [Only nullValue])
                 (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
-        , testCase "inactive UNION geometry members regain CRS through a cast" $
+        , testCase "inactive UNION geometry members keep the CRS of the type cache" $
             withConnection ":memory:" \conn -> do
                 [Only value] <- query_ conn "SELECT union_value(number := 42::BIGINT)::UNION(number BIGINT, shape GEOMETRY('OGC:CRS84'))" :: IO [Only (UnionValue FieldValue)]
-                (query conn "SELECT typeof(?)" (Only value) :: IO [Only Text]) >>= (@?= [Only "UNION(number BIGINT, shape GEOMETRY)"])
-                (query conn "SELECT ?::UNION(number BIGINT, shape GEOMETRY('OGC:CRS84'))" (Only value) :: IO [Only (UnionValue FieldValue)]) >>= (@?= [Only value])
-        , testCase "NULL and empty nested geometry collections regain CRS on insert" $
+                (query conn "SELECT typeof(?)" (Only value) :: IO [Only Text]) >>= (@?= [Only "UNION(number BIGINT, shape GEOMETRY('OGC:CRS84'))"])
+                (query conn "SELECT ?" (Only value) :: IO [Only (UnionValue FieldValue)]) >>= (@?= [Only value])
+        , testCase "NULL and empty nested geometry collections keep the CRS of the type cache" $
             withConnection ":memory:" \conn -> do
                 _ <-
                     execute_
                         conn
                         "CREATE TABLE nested AS SELECT {'null_list': NULL::GEOMETRY('OGC:CRS84')[], 'empty_list': []::GEOMETRY('OGC:CRS84')[], 'null_array': NULL::GEOMETRY('OGC:CRS84')[2], 'array': [NULL, NULL]::GEOMETRY('OGC:CRS84')[2], 'null_map': NULL::MAP(VARCHAR, GEOMETRY('OGC:CRS84')), 'empty_map': map([], [])::MAP(VARCHAR, GEOMETRY('OGC:CRS84')), 'map': map(['one'], [NULL::GEOMETRY('OGC:CRS84')])} AS v"
                 [Only value] <- query_ conn "SELECT v FROM nested" :: IO [Only (StructValue FieldValue)]
+                (query conn "SELECT ?" (Only value) :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only value])
                 _ <- execute conn "INSERT INTO nested VALUES (?)" (Only value)
                 (query_ conn "SELECT v FROM nested" :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only value, Only value])
+        , testCase "configured CRS definitions bind; other CRS definitions bind without a CRS" $ do
+            let crs = "local' íslenska λ"
+            withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = [crs]} \conn -> do
+                [Only typed] <- query conn "SELECT typeof(?)" (Only (nullShape crs)) :: IO [Only Text]
+                assertBool (Text.unpack typed) ("íslenska λ" `Text.isInfixOf` typed)
+                (query conn "SELECT ?" (Only (nullShape crs)) :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only (nullShape crs)])
+                (query conn "SELECT typeof(?)" (Only (nullShape "OGC:CRS84")) :: IO [Only Text]) >>= (@?= [Only "STRUCT(shape GEOMETRY)"])
+        , testCase "connection options validate CRS definitions and pass configuration flags" $ do
+            forM_ ["", "OGC:CRS84\0bad"] \crs ->
+                assertFailureIO (withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = [crs]} (const (pure ())))
+            let options = defaultConnectionOptions{connectionConfig = [("threads", "1")], connectionGeometryCRS = ["local grid", "OGC:CRS84", "OGC:CRS84"]}
+            withConnectionWithOptions ":memory:" options \conn ->
+                (query_ conn "SELECT current_setting('threads')" :: IO [Only Int64]) >>= (@?= [Only 1])
         , testCase "logical type construction drops CRS" $ do
             let logical = LogicalTypeList (LogicalTypeGeometry (Just "OGC:CRS84"))
             bracket (logicalTypeFromRep logical) destroyLogicalType logicalTypeToRep
@@ -306,6 +322,15 @@ tests =
                 assertFailureIO (query conn "SELECT system.main.ST_GeomFromWKB(?)" (Only (BS.pack [1, 1, 0, 0, 0])) :: IO [Only RawGeometry])
                 (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
         ]
+
+-- | A one-field STRUCT with a NULL GEOMETRY of the given CRS.
+nullShape :: Text -> StructValue FieldValue
+nullShape crs =
+    StructValue
+        { structValueFields = listArray (0, 0) [StructField "shape" FieldNull]
+        , structValueTypes = listArray (0, 0) [StructField "shape" (LogicalTypeGeometry (Just crs))]
+        , structValueIndex = Map.singleton "shape" 0
+        }
 
 -- | Exercise all coordinate layouts with explicit point and sequence constructors.
 shapeRoundTrips :: (G.Coordinate coord) => Connection -> G.Dimensions -> (coord -> G.Point) -> (U.Vector coord -> G.Coordinates) -> coord -> coord -> Assertion

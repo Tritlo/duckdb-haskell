@@ -1,9 +1,10 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-{- | Checked access to DuckDB 1.5's private VARIANT payload.
+{- | Checked access to the supported DuckDB private VARIANT payload.
 Only public C handles and vector accessors cross the native boundary.
 -}
 module Database.DuckDB.Simple.VariantCodec (
@@ -58,10 +59,13 @@ checkVersion :: IO ()
 checkVersion = do
     version <- c_duckdb_library_version >>= peekCString
     let parts = Text.splitOn "." (Text.pack version)
-        patch = case parts of
-            ["v1", "5", p] -> readMaybe (Text.unpack p) :: Maybe Int
-            _ -> Nothing
-    unless (maybe False (>= 3) patch) (codecError ("unsupported native version " <> version))
+        supported = case parts of
+            ["v1", "5", p] -> maybe False (>= 3) (readMaybe (Text.unpack p) :: Maybe Int)
+#ifdef DUCKDB_API_V2
+            ["v2", "0", p] -> maybe False (>= 0) (readMaybe (Text.unpack (Text.takeWhile (/= '-') p)) :: Maybe Int)
+#endif
+            _ -> False
+    unless supported (codecError ("unsupported native version " <> version))
 
 -- | Check the byte order and pointer width required by native scalar loads.
 checkPlatform :: IO ()
@@ -271,7 +275,7 @@ decodeVariantPayload valueRows childRows keyRows bytes = do
     when (null valueRows) (codecError "missing root value")
     unless (IntMap.size keys == length keyRows) (codecError "duplicate key dictionary index")
     forM_ valueRows \(tag, offset) -> do
-        when (tag > 33) (codecError "unknown payload tag")
+        when (tag > 34) (codecError "unknown payload tag")
         when (toInteger offset > toInteger (BS.length bytes)) (codecError "byte offset exceeds data size")
     forM_ childRows \(key, value) -> do
         when (toInteger value >= toInteger valueCount) (codecError "child value index out of bounds")
@@ -421,6 +425,7 @@ fixedWidthTag = \case
     26 -> Just (DuckDBTypeTimeTz, 8)
     27 -> Just (DuckDBTypeTimestampTz, 8)
     28 -> Just (DuckDBTypeInterval, 16)
+    34 -> Just (DuckDBTypeTimestampTzNs, 8)
     _ -> Nothing
 
 -- | Copy a fixed-width payload to aligned memory and decode it as one element.

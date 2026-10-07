@@ -325,6 +325,8 @@ duckDBTypeNames =
         , ("TIMETZ", FFI.DuckDBTypeTimeTz)
         , ("TIMESTAMP", FFI.DuckDBTypeTimestamp)
         , ("TIMESTAMPTZ", FFI.DuckDBTypeTimestampTz)
+        , ("TIMESTAMPTZ_NS", FFI.DuckDBTypeTimestampTzNs)
+        , ("TIMESTAMP_NS WITH TIME ZONE", FFI.DuckDBTypeTimestampTzNs)
         , ("INTERVAL", FFI.DuckDBTypeInterval)
         , ("TEXT", FFI.DuckDBTypeVarchar)
         , ("BLOB", FFI.DuckDBTypeBlob)

@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -16,6 +17,11 @@ import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), returnError)
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..))
 import Database.DuckDB.Simple.Time
+
+#ifdef DUCKDB_API_V2
+import Database.DuckDB.Simple.Variant (Variant (..))
+
+#endif
 import GHC.Generics (Generic)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
@@ -66,6 +72,16 @@ timeTests =
         , testCase "infinity and NULL remain distinct" $ withConnection ":memory:" $ \conn -> do
             (query conn "SELECT ?::DATE, ?::TIMESTAMP, ?::TIMESTAMPTZ" (Nothing :: Maybe Date, Nothing :: Maybe LocalTimestamp, Nothing :: Maybe UTCTimestamp) :: IO [(Maybe Date, Maybe LocalTimestamp, Maybe UTCTimestamp)]) >>= (@?= [(Nothing, Nothing, Nothing)])
             (query_ conn "SELECT 'infinity'::DATE" :: IO [Only (Maybe Date)]) >>= (@?= [Only (Just PosInfinity)])
+#ifdef DUCKDB_API_V2
+        , testCase "nanosecond UTC results and VARIANTs preserve precision and infinity" $ withConnection ":memory:" $ \conn -> do
+            _ <- execute_ conn "SET TimeZone='Pacific/Auckland'"
+            let precise = localTimeToUTC utc (LocalTime day (TimeOfDay 3 4 5.123456789))
+            forM_ [("'2000-01-02 03:04:05.123456789+00'", Finite precise), ("'infinity'", PosInfinity), ("'-infinity'", NegInfinity)] $ \(literal, expected) -> do
+                let sql = Query ("SELECT " <> literal <> "::TIMESTAMPTZ_NS, (" <> literal <> "::TIMESTAMPTZ_NS)::VARIANT")
+                (query_ conn sql :: IO [(UTCTimestamp, Variant)]) >>= (@?= [(expected, Variant (FieldTimestampTZ expected))])
+            let value = Variant (FieldTimestampTZ (Finite precise))
+            query conn "SELECT ?" (Only value) >>= (@?= [Only value])
+#endif
         , testCase "ordinary finite targets reject infinity with a conversion error" $ withConnection ":memory:" $ \conn -> do
             assertConversionError (query_ conn "SELECT 'infinity'::DATE" :: IO [Only Day])
             assertConversionError (query_ conn "SELECT '-infinity'::TIMESTAMP" :: IO [Only LocalTime])

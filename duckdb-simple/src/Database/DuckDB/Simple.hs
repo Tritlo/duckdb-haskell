@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TupleSections #-}
@@ -265,7 +266,9 @@ bind stmt fields = do
     apply :: Int -> FieldBinding -> IO ()
     apply idx = bindFieldBinding stmt (fromIntegral idx :: DuckDBIdx)
 
--- | Bind named parameters to a prepared statement, preserving any positional bindings.
+{- | Bind named parameters to a prepared statement.
+In preview builds, session variables can supply omitted named parameters.
+-}
 bindNamed :: Statement -> [NamedParam] -> IO ()
 bindNamed stmt params =
     let bindings = fmap (\(name := value) -> (name, toField value)) params
@@ -295,7 +298,12 @@ bindNamed stmt params =
             withStatementHandle stmt \handle -> do
                 let actual = length bindings
                 expected <- fmap fromIntegral (c_duckdb_nparams handle)
-                when (actual /= expected) $
+#ifdef DUCKDB_API_V2
+                let wrongCount = actual > expected
+#else
+                let wrongCount = actual /= expected
+#endif
+                when wrongCount $
                     throwFormatErrorNamed stmt (parameterCountMessage expected actual) bindings
                 parameterNames <- fetchParameterNames handle expected
                 when (all isNothing parameterNames && expected > 0) $

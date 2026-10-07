@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DefaultSignatures #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
@@ -633,6 +634,10 @@ scalarFieldValueDuckValue dtype value =
         (DuckDBTypeTimestampNs, FieldTimestamp ts) ->
             encodeUnbounded (encodeTimestampUnits 1000000000) ts >>= c_duckdb_create_timestamp_ns . DuckDBTimestampNs
         (DuckDBTypeTimestampTz, FieldTimestampTZ ts) -> utcTimestampDuckValue ts
+#ifdef DUCKDB_API_V2
+        (DuckDBTypeTimestampTzNs, FieldTimestampTZ ts) ->
+            encodeUnbounded (encodeTimestampUnits 1000000000 . utcToLocalTime utc) ts >>= c_duckdb_create_timestamp_tz_ns . DuckDBTimestampNs
+#endif
         (DuckDBTypeInterval, FieldInterval iv) -> intervalDuckValue iv
         (DuckDBTypeHugeInt, FieldHugeInt i) -> hugeIntDuckValue i
         (DuckDBTypeUHugeInt, FieldUHugeInt i) -> uhugeIntDuckValue i
@@ -807,6 +812,10 @@ variantPayloadType value = case value of
       where
         micros = diffDays localDay (fromGregorian 1970 1 1) * 86400 * 1000000 + diffTimeToPicoseconds (timeOfDayToTime localTimeOfDay) `div` 1000000
     FieldTimestamp{} -> scalar DuckDBTypeTimestamp
+#ifdef DUCKDB_API_V2
+    FieldTimestampTZ (Finite instant)
+        | hasNanos (localTimeOfDay (utcToLocalTime utc instant)) -> scalar DuckDBTypeTimestampTzNs
+#endif
     FieldTimestampTZ{} -> scalar DuckDBTypeTimestampTz
     FieldTimeTZ{} -> scalar DuckDBTypeTimeTz
     FieldInterval{} -> scalar DuckDBTypeInterval

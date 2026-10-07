@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased: DuckDB 2.0 preparation
+
+- Add the `duckdb-v2` build flag and preview integration checks. The flag is off
+  by default.
+- Decode nanosecond timezone timestamps in results and VARIANT values.
+- Preserve nanosecond timezone timestamp precision in VARIANT parameters.
+- Allow session variables to supply omitted named parameters in preview builds.
+
 ## 0.3.0.0
 
 - Use native DuckDB 1.5.6 by default. Keep native support for DuckDB >= 1.5.3

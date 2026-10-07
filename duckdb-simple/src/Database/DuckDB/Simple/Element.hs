@@ -117,6 +117,7 @@ decodeElement dtype dataPtr rowIdx = case dtype of
     DuckDBTypeTimestampMs -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTimestamp . decodeDuckDBTimestampMilliseconds
     DuckDBTypeTimestampNs -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTimestamp . decodeDuckDBTimestampNanoseconds
     DuckDBTypeTimestampTz -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTimestampTZ . decodeDuckDBTimestampUTCTime
+    DuckDBTypeTimestampTzNs -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTimestampTZ . decodeDuckDBTimestampNsUTCTime
     DuckDBTypeInterval -> FieldInterval . intervalValueFromDuckDB <$> peekElemOff (castPtr dataPtr) rowIdx
     DuckDBTypeHugeInt -> FieldHugeInt . duckDBHugeIntToInteger <$> peekElemOff (castPtr dataPtr) rowIdx
     DuckDBTypeUHugeInt -> FieldUHugeInt . duckDBUHugeIntToInteger <$> peekElemOff (castPtr dataPtr) rowIdx
@@ -199,6 +200,11 @@ decodeDuckDBTimestampNanoseconds (DuckDBTimestampNs nanos) = decodeTimestampUnit
 decodeDuckDBTimestampUTCTime :: DuckDBTimestamp -> IO UTCTimestamp
 decodeDuckDBTimestampUTCTime (DuckDBTimestamp micros) =
     pure (decodeUnbounded (posixSecondsToUTCTime . fromRational . (% 1000000) . toInteger) micros)
+
+-- | Decode UTC nanoseconds with exact epoch arithmetic and preserve infinity.
+decodeDuckDBTimestampNsUTCTime :: DuckDBTimestampNs -> IO UTCTimestamp
+decodeDuckDBTimestampNsUTCTime (DuckDBTimestampNs nanos) =
+    pure (decodeUnbounded (posixSecondsToUTCTime . fromRational . (% 1000000000) . toInteger) nanos)
 
 intervalValueFromDuckDB :: DuckDBInterval -> IntervalValue
 intervalValueFromDuckDB DuckDBInterval{duckDBIntervalMonths, duckDBIntervalDays, duckDBIntervalMicros} =

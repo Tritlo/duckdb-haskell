@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingVia #-}
@@ -85,6 +86,11 @@ import GHC.Generics (Generic)
 import qualified GeometryRegressionTests
 import Numeric.Natural (Natural)
 import Properties (roundTripTests)
+
+#ifdef DUCKDB_API_V2
+import qualified PreviewTests
+
+#endif
 import StreamingTests (nativeStreamingTests)
 import System.Directory (doesFileExist, removeFile)
 import Test.Tasty (TestTree, defaultMain, testGroup)
@@ -215,6 +221,9 @@ tests =
         , VariantRegressionTests.tests
         , valueRegressionTests
         , timeTests
+#ifdef DUCKDB_API_V2
+        , PreviewTests.tests
+#endif
         , withConnectionTests
         , statementTests
         , roundTripTests

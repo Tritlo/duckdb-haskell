@@ -48,6 +48,9 @@ import Database.DuckDB.Simple.FromField (BigNum (..), BitString (..), DecimalVal
 import Database.DuckDB.Simple.Internal (
     SQLError (..),
     Statement (..),
+    destroyValue,
+    duckDBTypeFromName,
+    fetchPrepareError,
     withStatementHandle,
     withTypeCache,
  )
@@ -57,6 +60,7 @@ import Database.DuckDB.Simple.LogicalRep (
     StructValue (..),
     UnionMemberType (..),
     UnionValue (..),
+    destroyLogicalType,
     logicalTypeFromRep,
     logicalTypeFromRepWith,
     structValueTypeRep,
@@ -66,7 +70,6 @@ import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounde
 import Database.DuckDB.Simple.TypeCache (TypeCache, cachedLogicalType)
 import Database.DuckDB.Simple.Types (Null (..))
 import Database.DuckDB.Simple.Variant (Variant (..))
-import Foreign.C.String (peekCString)
 import Foreign.C.Types (CDouble (..), CFloat (..))
 import Foreign.Marshal (fromBool)
 import Foreign.Marshal.Alloc (alloca)
@@ -741,41 +744,6 @@ typeMismatch expected actual =
             )
         )
 
-duckDBTypeFromName :: Text -> Maybe DuckDBType
-duckDBTypeFromName name =
-    case name of
-        "BOOLEAN" -> Just DuckDBTypeBoolean
-        "TINYINT" -> Just DuckDBTypeTinyInt
-        "SMALLINT" -> Just DuckDBTypeSmallInt
-        "INTEGER" -> Just DuckDBTypeInteger
-        "BIGINT" -> Just DuckDBTypeBigInt
-        "UTINYINT" -> Just DuckDBTypeUTinyInt
-        "USMALLINT" -> Just DuckDBTypeUSmallInt
-        "UINTEGER" -> Just DuckDBTypeUInteger
-        "UBIGINT" -> Just DuckDBTypeUBigInt
-        "FLOAT" -> Just DuckDBTypeFloat
-        "DOUBLE" -> Just DuckDBTypeDouble
-        "DATE" -> Just DuckDBTypeDate
-        "TIME" -> Just DuckDBTypeTime
-        "TIMESTAMP" -> Just DuckDBTypeTimestamp
-        "TIMESTAMPTZ" -> Just DuckDBTypeTimestampTz
-        "TEXT" -> Just DuckDBTypeVarchar
-        "BLOB" -> Just DuckDBTypeBlob
-        "GEOMETRY" -> Just DuckDBTypeGeometry
-        "VARIANT" -> Just DuckDBTypeVariant
-        "UUID" -> Just DuckDBTypeUUID
-        "BIT" -> Just DuckDBTypeBit
-        "BIGNUM" -> Just DuckDBTypeBigNum
-        -- treat NULL as SQLNULL to provide element type for Maybe values without data
-        "NULL" -> Just DuckDBTypeSQLNull
-        _ -> Nothing
-
-destroyLogicalType :: DuckDBLogicalType -> IO ()
-destroyLogicalType logical =
-    alloca $ \ptr -> do
-        poke ptr logical
-        c_duckdb_destroy_logical_type ptr
-
 -- | Reject raw values that the C API cannot bind without format conversion.
 unsupportedRawGeometryBinding :: IO a
 unsupportedRawGeometryBinding =
@@ -1010,21 +978,8 @@ bindDuckValue stmt idx makeValue =
         bracket (checkedValue makeValue) destroyValue \value -> do
             rc <- c_duckdb_bind_value handle idx value
             when (rc /= DuckDBSuccess) $ do
-                err <- fetchPrepareError handle
+                err <- fetchPrepareError (Text.pack "duckdb-simple: parameter binding failed") handle
                 throwBindError stmt err
-
-destroyValue :: DuckDBValue -> IO ()
-destroyValue value =
-    alloca \ptr -> do
-        poke ptr value
-        c_duckdb_destroy_value ptr
-
-fetchPrepareError :: DuckDBPreparedStatement -> IO Text
-fetchPrepareError handle = do
-    msgPtr <- c_duckdb_prepare_error handle
-    if msgPtr == nullPtr
-        then pure (Text.pack "duckdb-simple: parameter binding failed")
-        else Text.pack <$> peekCString msgPtr
 
 throwBindError :: Statement -> Text -> IO a
 throwBindError Statement{statementQuery} msg =

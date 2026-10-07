@@ -116,6 +116,7 @@ import Database.DuckDB.Simple.Internal (
     Statement (..),
     StatementState (..),
     StatementStreamState (..),
+    fetchPrepareError,
     keepAlive,
     peekUtf8CString,
     runInterruptibleQuery,
@@ -219,7 +220,7 @@ openStatement conn queryText =
                             if rc == DuckDBSuccess
                                 then pure stmt
                                 else do
-                                    errMsg <- fetchPrepareError stmt
+                                    errMsg <- fetchPrepareError (Text.pack "duckdb-simple: prepare failed") stmt
                                     throwIO $ mkPrepareError queryText errMsg
         createStatement conn handle queryText
             `onException` destroyPrepared handle
@@ -322,7 +323,7 @@ clearStatementBindings stmt =
         resetStatementStream stmt
         rc <- c_duckdb_clear_bindings handle
         when (rc /= DuckDBSuccess) $ do
-            err <- fetchPrepareError handle
+            err <- fetchPrepareError (Text.pack "duckdb-simple: prepare failed") handle
             throwIO $ mkPrepareError (statementQuery stmt) err
 
 -- | Look up the 1-based index of a named placeholder.
@@ -588,13 +589,6 @@ closeDatabaseHandle db =
 destroyPrepared :: DuckDBPreparedStatement -> IO ()
 destroyPrepared stmt =
     alloca \ptr -> poke ptr stmt >> c_duckdb_destroy_prepare ptr
-
-fetchPrepareError :: DuckDBPreparedStatement -> IO Text
-fetchPrepareError stmt = do
-    msgPtr <- c_duckdb_prepare_error stmt
-    if msgPtr == nullPtr
-        then pure (Text.pack "duckdb-simple: prepare failed")
-        else peekUtf8CString msgPtr
 
 mkOpenError :: Text -> SQLError
 mkOpenError msg =

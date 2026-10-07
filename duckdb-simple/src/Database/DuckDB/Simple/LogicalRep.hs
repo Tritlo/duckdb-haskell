@@ -119,10 +119,7 @@ logicalTypeToRep logical = do
                     pure StructField{structFieldName = name, structFieldValue = childRep}
             pure $
                 LogicalTypeStruct
-                    ( if childCount <= 0
-                        then listArray (0, -1) []
-                        else listArray (0, childCount - 1) fields
-                    )
+                    (listArray (0, childCount - 1) fields)
         DuckDBTypeUnion -> do
             memberCountRaw <- c_duckdb_union_type_member_count logical
             memberCount <- word64ToInt (Text.pack "union member count") memberCountRaw
@@ -137,10 +134,7 @@ logicalTypeToRep logical = do
                     pure UnionMemberType{unionMemberName = name, unionMemberType = memberRep}
             pure $
                 LogicalTypeUnion
-                    ( if memberCount <= 0
-                        then listArray (0, -1) []
-                        else listArray (0, memberCount - 1) members
-                    )
+                    (listArray (0, memberCount - 1) members)
         DuckDBTypeList -> do
             childRep <- bracket (c_duckdb_list_type_child_type logical) destroyLogicalType logicalTypeToRep
             pure (LogicalTypeList childRep)
@@ -168,10 +162,7 @@ logicalTypeToRep logical = do
                     pure entry
             pure $
                 LogicalTypeEnum
-                    ( if count <= 0
-                        then listArray (0, -1) []
-                        else listArray (0, count - 1) entries
-                    )
+                    (listArray (0, count - 1) entries)
         _ ->
             pure (LogicalTypeScalar dtype)
 

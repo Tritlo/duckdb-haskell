@@ -38,6 +38,9 @@ module Database.DuckDB.Simple.Internal (
     withStatementHandle,
     withQueryCString,
     peekUtf8CString,
+    fetchPrepareError,
+    duckDBTypeFromName,
+    duckDBTypeToName,
     withResult,
     runInterruptibleQuery,
     executePreparedResult,
@@ -58,6 +61,7 @@ import Control.Exception (Exception, SomeException, bracket, bracket_, mask, mas
 import Control.Monad (when)
 import qualified Data.ByteString as BS
 import Data.IORef (IORef, readIORef)
+import Data.List (find)
 import Data.String (IsString (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -69,7 +73,6 @@ import Database.DuckDB.FFI (
     DuckDBDataChunk,
     DuckDBDatabase,
     DuckDBErrorType,
-    DuckDBLogicalType,
     DuckDBPreparedStatement,
     DuckDBResult,
     DuckDBState,
@@ -78,19 +81,21 @@ import Database.DuckDB.FFI (
     c_duckdb_connection_get_client_context,
     c_duckdb_destroy_client_context,
     c_duckdb_destroy_data_chunk,
-    c_duckdb_destroy_logical_type,
     c_duckdb_destroy_result,
     c_duckdb_destroy_value,
     c_duckdb_execute_prepared,
     c_duckdb_fetch_chunk,
     c_duckdb_interrupt,
+    c_duckdb_prepare_error,
     c_duckdb_result_error,
     c_duckdb_result_error_type,
     pattern DuckDBErrorInvalid,
     pattern DuckDBSuccess,
  )
+import qualified Database.DuckDB.FFI as FFI
 import Database.DuckDB.FFI.Deprecated (c_duckdb_execute_prepared_streaming)
 import Database.DuckDB.Simple.FromField (FieldValue)
+import Database.DuckDB.Simple.LogicalRep (destroyLogicalType)
 import Database.DuckDB.Simple.TypeCache (TypeCache)
 import Foreign.C.String (CString)
 import Foreign.Marshal.Alloc (alloca)
@@ -295,6 +300,60 @@ busy-spinning and can add up to one interval to completion detection.
 interruptRetryDelayMicros :: Int
 interruptRetryDelayMicros = 10 * 1000
 
+{- | The column type names that 'Database.DuckDB.Simple.ToField.DuckDBColumnType'
+instances use, and the types they denote. Each type has one name.
+-}
+duckDBTypeNames :: [(Text, DuckDBType)]
+duckDBTypeNames =
+    map
+        (\(name, dtype) -> (Text.pack name, dtype))
+        [ ("BOOLEAN", FFI.DuckDBTypeBoolean)
+        , ("TINYINT", FFI.DuckDBTypeTinyInt)
+        , ("SMALLINT", FFI.DuckDBTypeSmallInt)
+        , ("INTEGER", FFI.DuckDBTypeInteger)
+        , ("BIGINT", FFI.DuckDBTypeBigInt)
+        , ("HUGEINT", FFI.DuckDBTypeHugeInt)
+        , ("UTINYINT", FFI.DuckDBTypeUTinyInt)
+        , ("USMALLINT", FFI.DuckDBTypeUSmallInt)
+        , ("UINTEGER", FFI.DuckDBTypeUInteger)
+        , ("UBIGINT", FFI.DuckDBTypeUBigInt)
+        , ("UHUGEINT", FFI.DuckDBTypeUHugeInt)
+        , ("FLOAT", FFI.DuckDBTypeFloat)
+        , ("DOUBLE", FFI.DuckDBTypeDouble)
+        , ("DATE", FFI.DuckDBTypeDate)
+        , ("TIME", FFI.DuckDBTypeTime)
+        , ("TIMETZ", FFI.DuckDBTypeTimeTz)
+        , ("TIMESTAMP", FFI.DuckDBTypeTimestamp)
+        , ("TIMESTAMPTZ", FFI.DuckDBTypeTimestampTz)
+        , ("INTERVAL", FFI.DuckDBTypeInterval)
+        , ("TEXT", FFI.DuckDBTypeVarchar)
+        , ("BLOB", FFI.DuckDBTypeBlob)
+        , ("GEOMETRY", FFI.DuckDBTypeGeometry)
+        , ("VARIANT", FFI.DuckDBTypeVariant)
+        , ("UUID", FFI.DuckDBTypeUUID)
+        , ("BIT", FFI.DuckDBTypeBit)
+        , ("BIGNUM", FFI.DuckDBTypeBigNum)
+        , -- NULL gives an element type to Maybe values without data.
+          ("NULL", FFI.DuckDBTypeSQLNull)
+        ]
+
+-- | Find the type that a column type name denotes.
+duckDBTypeFromName :: Text -> Maybe DuckDBType
+duckDBTypeFromName name = lookup name duckDBTypeNames
+
+-- | Find the column type name of a type. Other types use their 'Show' text.
+duckDBTypeToName :: DuckDBType -> Text
+duckDBTypeToName dtype =
+    maybe (Text.pack (show dtype)) fst (find ((== dtype) . snd) duckDBTypeNames)
+
+{- | Read the error message of a prepared statement as UTF-8. Use the fallback
+when DuckDB reports no message.
+-}
+fetchPrepareError :: Text -> DuckDBPreparedStatement -> IO Text
+fetchPrepareError fallback statement = do
+    messagePtr <- c_duckdb_prepare_error statement
+    if messagePtr == nullPtr then pure fallback else peekUtf8CString messagePtr
+
 -- | Copy a result error while its native result remains alive.
 fetchResultError :: Ptr DuckDBResult -> IO (Text, Maybe DuckDBErrorType)
 fetchResultError resultPtr = do
@@ -382,11 +441,6 @@ destroyClientContext ctx =
 destroyValue :: DuckDBValue -> IO ()
 destroyValue value =
     alloca $ \ptr -> poke ptr value >> c_duckdb_destroy_value ptr
-
--- | Destroy a logical type handle.
-destroyLogicalType :: DuckDBLogicalType -> IO ()
-destroyLogicalType logicalType =
-    alloca $ \ptr -> poke ptr logicalType >> c_duckdb_destroy_logical_type ptr
 
 -- | Throw a standardised registration error.
 throwRegistrationError :: String -> IO a

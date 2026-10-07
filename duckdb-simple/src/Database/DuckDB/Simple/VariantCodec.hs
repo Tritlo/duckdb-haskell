@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -16,7 +17,7 @@ import Control.Monad (forM, forM_, unless, when)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.State.Strict (StateT, evalStateT, gets, modify')
 import Data.Array (Array, bounds, listArray, (!))
-import Data.Bits (complement, finiteBitSize, shiftL, shiftR, xor, (.&.), (.|.))
+import Data.Bits (complement, finiteBitSize, shiftL, (.&.), (.|.))
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import qualified Data.IntMap.Strict as IntMap
@@ -25,36 +26,23 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
-import qualified Data.UUID as UUID
 import Data.Word (Word32, Word8)
 import Database.DuckDB.FFI
+import Database.DuckDB.Simple.Element (bitStringFromBytes, chunkDecodeBlob, chunkIsRowValid, decodeElement)
 import Database.DuckDB.Simple.FromField (
     BigNum (..),
-    BitString (BitString),
     DecimalValue (..),
     FieldValue (..),
-    IntervalValue (..),
     RawGeometry (..),
+    fromBigNumBytes,
  )
 import Database.DuckDB.Simple.Internal (destroyLogicalType)
-import Database.DuckDB.Simple.Temporal (
-    decodeDuckDBDate,
-    decodeDuckDBTime,
-    decodeDuckDBTimeNs,
-    decodeDuckDBTimeTz,
-    decodeDuckDBTimestamp,
-    decodeDuckDBTimestampMilliseconds,
-    decodeDuckDBTimestampNanoseconds,
-    decodeDuckDBTimestampSeconds,
-    decodeDuckDBTimestampUTCTime,
- )
 import Database.DuckDB.Simple.Variant (variantObject)
 import Foreign.C.String (peekCString)
-import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
+import Foreign.Marshal.Alloc (alloca, allocaBytesAligned)
+import Foreign.Marshal.Utils (copyBytes)
+import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (Storable, peek, peekElemOff, poke, sizeOf)
-import GHC.Float (castWord32ToFloat, castWord64ToDouble)
-import GHC.Num.Integer (integerFromWordList)
 import Text.Read (readMaybe)
 
 -- | Raise a codec error before an invalid native operation.
@@ -147,12 +135,7 @@ checkIndex width index =
 prepareValidity :: DuckDBVector -> IO (Int -> IO Bool)
 prepareValidity vector = do
     validity <- c_duckdb_vector_get_validity vector
-    pure \index ->
-        if validity == nullPtr
-            then pure True
-            else do
-                word <- peekElemOff validity (index `div` 64)
-                pure (word .&. (1 `shiftL` (index `mod` 64)) /= 0)
+    pure (chunkIsRowValid validity . fromIntegral)
 
 -- | Borrow a fixed-width buffer until its chunk is destroyed.
 prepareElementReader :: (Storable a) => DuckDBVector -> IO (Int -> IO a)
@@ -183,14 +166,7 @@ prepareBytesReader vector = do
         present <- valid index
         unless present (codecError "NULL physical string element")
         when (base == nullPtr) (codecError "NULL string vector data")
-        let string = castPtr (base `plusPtr` (index * 16)) :: Ptr DuckDBStringT
-        len <- c_duckdb_string_t_length string
-        count <- checkedInt (toInteger len)
-        if count == 0
-            then pure BS.empty
-            else do
-                bytes <- nonNull "string data" (c_duckdb_string_t_data string)
-                BS.packCStringLen (bytes, count)
+        chunkDecodeBlob base (fromIntegral index)
 
 -- | Convert a nonnegative bounded integer to Int.
 checkedInt :: Integer -> IO Int
@@ -398,18 +374,6 @@ decodeScalar tag bytes = case tag of
     0 -> pure FieldNull
     1 -> pure (FieldBool True)
     2 -> pure (FieldBool False)
-    3 -> FieldInt8 . fromInteger <$> signed 1
-    4 -> FieldInt16 . fromInteger <$> signed 2
-    5 -> FieldInt32 . fromInteger <$> signed 4
-    6 -> FieldInt64 . fromInteger <$> signed 8
-    7 -> FieldHugeInt <$> signed 16
-    8 -> FieldWord8 . fromInteger <$> unsigned 1
-    9 -> FieldWord16 . fromInteger <$> unsigned 2
-    10 -> FieldWord32 . fromInteger <$> unsigned 4
-    11 -> FieldWord64 . fromInteger <$> unsigned 8
-    12 -> FieldUHugeInt <$> unsigned 16
-    13 -> FieldFloat . castWord32ToFloat . fromInteger <$> unsigned 4
-    14 -> FieldDouble . castWord64ToDouble . fromInteger <$> unsigned 8
     15 -> checked do
         (precision, rest) <- readVarint bytes
         (scale, digits) <- readVarint rest
@@ -422,54 +386,64 @@ decodeScalar tag bytes = case tag of
         string <- readString bytes
         FieldText <$> either (Left . show) Right (Text.decodeUtf8' string)
     17 -> FieldBlob <$> checked (readString bytes)
-    18 -> do
-        biased <- unsigned 16
-        let value = biased `xor` (1 `shiftL` 127)
-        pure (FieldUUID (UUID.fromWords64 (fromInteger (value `shiftR` 64)) (fromInteger value)))
-    19 -> FieldDate <$> (signed 4 >>= decodeDuckDBDate . DuckDBDate . fromInteger)
-    20 -> FieldTime <$> (signed 8 >>= decodeDuckDBTime . DuckDBTime . fromInteger)
-    21 -> FieldTime . decodeDuckDBTimeNs . DuckDBTimeNs . fromInteger <$> signed 8
-    22 -> FieldTimestamp <$> (signed 8 >>= decodeDuckDBTimestampSeconds . DuckDBTimestampS . fromInteger)
-    23 -> FieldTimestamp <$> (signed 8 >>= decodeDuckDBTimestampMilliseconds . DuckDBTimestampMs . fromInteger)
-    24 -> FieldTimestamp <$> (signed 8 >>= decodeDuckDBTimestamp . DuckDBTimestamp . fromInteger)
-    25 -> FieldTimestamp <$> (signed 8 >>= decodeDuckDBTimestampNanoseconds . DuckDBTimestampNs . fromInteger)
-    26 -> FieldTimeTZ <$> (unsigned 8 >>= decodeDuckDBTimeTz . DuckDBTimeTz . fromInteger)
-    27 -> FieldTimestampTZ <$> (signed 8 >>= decodeDuckDBTimestampUTCTime . DuckDBTimestamp . fromInteger)
-    28 -> checked do
-        months <- readSigned 4 bytes
-        days <- readSigned 4 (BS.drop 4 bytes)
-        micros <- readSigned 8 (BS.drop 8 bytes)
-        pure (FieldInterval (IntervalValue (fromInteger months) (fromInteger days) (fromInteger micros)))
     31 -> FieldBigNum . BigNum <$> checked (readString bytes >>= decodeBigNum)
     32 -> checked do
         bitBytes <- readString bytes
-        case BS.uncons bitBytes of
-            Just (padding, dat) -> do
-                checkBit padding dat
-                case BS.uncons dat of
-                    Just (first, rest) -> do
-                        let maskBits = paddingMask padding
-                        unless (first .&. maskBits == maskBits) (Left "invalid native BIT padding")
-                        pure (FieldBit (BitString padding (BS.cons (first .&. complement maskBits) rest)))
-                    Nothing -> Left "empty BIT data"
-            Nothing -> Left "missing BIT header"
+        case BS.unpack (BS.take 2 bitBytes) of
+            [padding, first] -> do
+                when (padding > 7) (Left "BIT padding exceeds seven")
+                let maskBits = paddingMask padding
+                unless (first .&. maskBits == maskBits) (Left "invalid native BIT padding")
+                pure (FieldBit (bitStringFromBytes bitBytes))
+            _ -> Left "BIT requires a padding byte and nonempty data"
     33 -> FieldGeometry . (`RawGeometry` Nothing) <$> checked (readString bytes)
-    _ -> codecError "unknown scalar tag"
-  where
-    signed count = checked (readSigned count bytes)
-    unsigned count = checked (fst <$> readUnsigned count bytes)
+    _ -> case fixedWidthTag tag of
+        Just (dtype, size) -> decodeFixedWidth dtype size bytes
+        Nothing -> codecError "unknown scalar tag"
 
--- | Check a BIT's nonempty data and left-padding count.
-checkBit :: Word8 -> ByteString -> Either String ()
-checkBit padding bytes
-    | padding > 7 || BS.null bytes = Left "BIT requires nonempty data and padding from 0 to 7"
-    | otherwise = Right ()
+{- | The type and the payload size of each fixed-width scalar tag. These
+payloads have the memory layout of one vector element of the type.
+-}
+fixedWidthTag :: Word8 -> Maybe (DuckDBType, Int)
+fixedWidthTag = \case
+    3 -> Just (DuckDBTypeTinyInt, 1)
+    4 -> Just (DuckDBTypeSmallInt, 2)
+    5 -> Just (DuckDBTypeInteger, 4)
+    6 -> Just (DuckDBTypeBigInt, 8)
+    7 -> Just (DuckDBTypeHugeInt, 16)
+    8 -> Just (DuckDBTypeUTinyInt, 1)
+    9 -> Just (DuckDBTypeUSmallInt, 2)
+    10 -> Just (DuckDBTypeUInteger, 4)
+    11 -> Just (DuckDBTypeUBigInt, 8)
+    12 -> Just (DuckDBTypeUHugeInt, 16)
+    13 -> Just (DuckDBTypeFloat, 4)
+    14 -> Just (DuckDBTypeDouble, 8)
+    18 -> Just (DuckDBTypeUUID, 16)
+    19 -> Just (DuckDBTypeDate, 4)
+    20 -> Just (DuckDBTypeTime, 8)
+    21 -> Just (DuckDBTypeTimeNs, 8)
+    22 -> Just (DuckDBTypeTimestampS, 8)
+    23 -> Just (DuckDBTypeTimestampMs, 8)
+    24 -> Just (DuckDBTypeTimestamp, 8)
+    25 -> Just (DuckDBTypeTimestampNs, 8)
+    26 -> Just (DuckDBTypeTimeTz, 8)
+    27 -> Just (DuckDBTypeTimestampTz, 8)
+    28 -> Just (DuckDBTypeInterval, 16)
+    _ -> Nothing
+
+-- | Copy a fixed-width payload to aligned memory and decode it as one element.
+decodeFixedWidth :: DuckDBType -> Int -> ByteString -> IO FieldValue
+decodeFixedWidth dtype size bytes = do
+    when (BS.length bytes < size) (codecError "truncated scalar payload")
+    allocaBytesAligned size 16 \buffer -> do
+        BS.useAsCStringLen bytes \(source, _) -> copyBytes buffer (castPtr source) size
+        decodeElement dtype (castPtr buffer) 0
 
 -- | Get the high-bit mask used for native BIT padding.
 paddingMask :: Word8 -> Word8
 paddingMask padding = complement ((1 `shiftL` (8 - fromIntegral padding)) - 1)
 
--- | Decode BIGNUM's sign, checked three-byte length header, and magnitude.
+-- | Check BIGNUM's sign, three-byte length header, and magnitude, then decode it.
 decodeBigNum :: ByteString -> Either String Integer
 decodeBigNum bytes = do
     when (BS.length bytes < 4) (Left "truncated BIGNUM header or magnitude")
@@ -483,12 +457,4 @@ decodeBigNum bytes = do
     case BS.uncons magnitude of
         Just (0, rest) | not (BS.null rest) || negative -> Left "noncanonical BIGNUM magnitude"
         _ -> Right ()
-    let wordBytes = finiteBitSize (0 :: Word) `div` 8
-        firstCount = BS.length magnitude `mod` wordBytes
-        (first, rest) = BS.splitAt firstCount magnitude
-        chunks input
-            | BS.null input = []
-            | otherwise = let (part, remaining) = BS.splitAt wordBytes input in part : chunks remaining
-        limbs = (if BS.null first then id else (first :)) (chunks rest)
-        toWord = BS.foldl' (\n byte -> n `shiftL` 8 .|. fromIntegral byte) 0
-    pure (integerFromWordList negative (map toWord limbs))
+    pure (fromBigNumBytes (BS.unpack bytes))

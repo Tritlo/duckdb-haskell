@@ -20,7 +20,7 @@ import Database.DuckDB.FFI
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue)
 import Database.DuckDB.Simple.FromRow (RowParser, parseRow, rowErrorsToSqlError)
 import Database.DuckDB.Simple.Internal
-import Database.DuckDB.Simple.Materialize (prepareValueReader)
+import Database.DuckDB.Simple.Materialize (prepareVectorReader)
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Foreign.Marshal.Alloc (free, malloc)
 import Foreign.Marshal.Utils (fillBytes)
@@ -139,11 +139,8 @@ fetchChunk conn queryText stream@StatementStream{statementStreamResult} = do
 -- | Prepare one reader for each column. The readers must not outlive the chunk.
 prepareChunkReaders :: DuckDBDataChunk -> [StatementStreamColumn] -> IO [Int -> IO FieldValue]
 prepareChunkReaders chunk columns =
-    forM columns \StatementStreamColumn{statementStreamColumnIndex, statementStreamColumnType} -> do
-        vector <- c_duckdb_data_chunk_get_vector chunk (fromIntegral statementStreamColumnIndex)
-        dataPtr <- c_duckdb_vector_get_data vector
-        validity <- c_duckdb_vector_get_validity vector
-        prepareValueReader statementStreamColumnType vector dataPtr validity
+    forM columns \StatementStreamColumn{statementStreamColumnIndex} ->
+        c_duckdb_data_chunk_get_vector chunk (fromIntegral statementStreamColumnIndex) >>= prepareVectorReader
 
 -- | Clear cursor ownership before releasing native resources.
 cleanupStatementStreamRef :: IORef StatementStreamState -> IO ()

@@ -30,6 +30,7 @@ import Control.Monad (filterM, forM_, when)
 import Data.Array (Array, elems)
 import Data.Bits (complement, shiftL, shiftR, (.&.), (.|.))
 import qualified Data.ByteString as BS
+import Data.Char (toLower)
 import Data.Fixed (Pico)
 import qualified Data.Geometry as G
 import qualified Data.Geometry.WKT as WKT
@@ -89,7 +90,7 @@ infixr 3 :=
 
 -- | Encapsulates the action required to bind a single positional parameter, together with a textual description used in diagnostics.
 data FieldBinding = FieldBinding
-    { fieldBindingValue :: !(TypeCache -> IO DuckDBValue)
+    { fieldBindingValue :: !(TypeCache -> IO (Maybe LogicalTypeRep) -> IO DuckDBValue)
     , fieldBindingDisplay :: !String
     }
 
@@ -104,6 +105,11 @@ valueBinding display = cacheValueBinding display . const
 -- | Construct a value with the type cache of the statement's connection.
 cacheValueBinding :: String -> (TypeCache -> IO DuckDBValue) -> FieldBinding
 cacheValueBinding display makeValue =
+    targetValueBinding display (\cache _ -> makeValue cache)
+
+-- | Construct a value with the prepared parameter type, when it is available.
+targetValueBinding :: String -> (TypeCache -> IO (Maybe LogicalTypeRep) -> IO DuckDBValue) -> FieldBinding
+targetValueBinding display makeValue =
     FieldBinding
         { fieldBindingValue = makeValue
         , fieldBindingDisplay = display
@@ -112,6 +118,64 @@ cacheValueBinding display makeValue =
 -- | Build types with the cached types for VARIANT and GEOMETRY with a CRS.
 cachedTypeFromRep :: TypeCache -> LogicalTypeRep -> IO DuckDBLogicalType
 cachedTypeFromRep = logicalTypeFromRepWith . cachedLogicalType
+
+-- | Preserve UTC nanoseconds where the prepared parameter requires them.
+temporalValueBinding :: String -> LogicalTypeRep -> FieldValue -> (TypeCache -> IO DuckDBValue) -> FieldBinding
+temporalValueBinding display source value makeDefault =
+    targetValueBinding display \cache readTarget -> do
+        target <- readTarget
+        let precise = timestampTypeForTarget target source
+        if precise == source
+            then makeDefault cache
+            else fieldValueWithTypeDuckValue (cachedTypeFromRep cache) precise (valueWithTypeMetadata precise value)
+
+-- | Read the element type of a prepared LIST or ARRAY parameter.
+collectionChildType :: Maybe LogicalTypeRep -> Maybe LogicalTypeRep
+collectionChildType (Just (LogicalTypeList child)) = Just child
+collectionChildType (Just (LogicalTypeArray child _)) = Just child
+collectionChildType _ = Nothing
+
+-- | Promote only UTC leaves that correspond to nanosecond parameter leaves.
+timestampTypeForTarget :: Maybe LogicalTypeRep -> LogicalTypeRep -> LogicalTypeRep
+timestampTypeForTarget target source = case (target, source) of
+    (Just (LogicalTypeScalar DuckDBTypeTimestampTzNs), LogicalTypeScalar DuckDBTypeTimestampTz) ->
+        LogicalTypeScalar DuckDBTypeTimestampTzNs
+    (_, LogicalTypeList child) ->
+        maybe source (\expected -> LogicalTypeList (timestampTypeForTarget (Just expected) child)) (collectionChildType target)
+    (_, LogicalTypeArray child size) ->
+        maybe source (\expected -> LogicalTypeArray (timestampTypeForTarget (Just expected) child) size) (collectionChildType target)
+    (Just (LogicalTypeMap targetKey targetValue), LogicalTypeMap key value) ->
+        LogicalTypeMap (timestampTypeForTarget (Just targetKey) key) (timestampTypeForTarget (Just targetValue) value)
+    (Just (LogicalTypeStruct targetFields), LogicalTypeStruct fields) ->
+        let targets = [(identifier name, rep) | StructField name rep <- elems targetFields]
+         in LogicalTypeStruct (fmap (\field -> field{structFieldValue = timestampTypeForTarget (lookup (identifier (structFieldName field)) targets) (structFieldValue field)}) fields)
+    (Just (LogicalTypeUnion targetMembers), LogicalTypeUnion members) ->
+        let targets = [(identifier name, rep) | UnionMemberType name rep <- elems targetMembers]
+         in LogicalTypeUnion (fmap (\member -> member{unionMemberType = timestampTypeForTarget (lookup (identifier (unionMemberName member)) targets) (unionMemberType member)}) members)
+    _ -> source
+  where
+    -- DuckDB compares identifiers without ASCII case.
+    identifier = Text.map (\char -> if char >= 'A' && char <= 'Z' then toLower char else char)
+
+-- | Copy adapted type metadata into nested values without changing their payloads.
+valueWithTypeMetadata :: LogicalTypeRep -> FieldValue -> FieldValue
+valueWithTypeMetadata logical value = case (logical, value) of
+    (LogicalTypeList child, FieldList values) -> FieldList (map (valueWithTypeMetadata child) values)
+    (LogicalTypeArray child _, FieldArray values) -> FieldArray (fmap (valueWithTypeMetadata child) values)
+    (LogicalTypeMap keyType valueType, FieldMap pairs) ->
+        FieldMap [(valueWithTypeMetadata keyType key, valueWithTypeMetadata valueType item) | (key, item) <- pairs]
+    (LogicalTypeStruct types, FieldStruct struct) ->
+        let fields = [(structFieldName field, structFieldValue field) | field <- elems types]
+            update field = case lookup (structFieldName field) fields of
+                Nothing -> field
+                Just rep -> field{structFieldValue = valueWithTypeMetadata rep (structFieldValue field)}
+         in FieldStruct struct{structValueTypes = types, structValueFields = fmap update (structValueFields struct)}
+    (LogicalTypeUnion members, FieldUnion union) ->
+        let payload = case drop (fromIntegral (unionValueIndex union)) (elems members) of
+                member : _ -> valueWithTypeMetadata (unionMemberType member) (unionValuePayload union)
+                [] -> unionValuePayload union
+         in FieldUnion union{unionValueMembers = members, unionValuePayload = payload}
+    _ -> value
 
 -- | Types that map to a concrete DuckDB column type when used with @ToField@.
 class DuckDBColumnType a where
@@ -125,7 +189,18 @@ duckdbColumnType = duckdbColumnTypeFor
 bindFieldBinding :: Statement -> DuckDBIdx -> FieldBinding -> IO ()
 bindFieldBinding stmt idx FieldBinding{fieldBindingValue} =
     withTypeCache (statementConnection stmt) \cache ->
-        bindDuckValue stmt idx (fieldBindingValue cache)
+        bindDuckValue stmt idx (fieldBindingValue cache (preparedParameterType stmt idx))
+
+-- | Read the preview parameter type. Legacy bindings keep their inferred type.
+preparedParameterType :: Statement -> DuckDBIdx -> IO (Maybe LogicalTypeRep)
+#ifdef DUCKDB_API_V2
+preparedParameterType stmt idx =
+    withStatementHandle stmt \handle ->
+        bracket (c_duckdb_param_logical_type handle idx) destroyLogicalType \logical ->
+            if logical == nullPtr then pure Nothing else Just <$> logicalTypeToRep logical
+#else
+preparedParameterType _ _ = pure Nothing
+#endif
 
 -- | Render a bound parameter for error reporting.
 renderFieldBinding :: FieldBinding -> String
@@ -172,23 +247,25 @@ instance ToField Variant where
         cacheValueBinding (show value) \cache ->
             variantDuckValue (cachedTypeFromRep cache) (variantPayload value)
 
-instance ToField UTCTime
+instance ToField UTCTime where
+    toField value = temporalValueBinding (show value) (LogicalTypeScalar DuckDBTypeTimestampTz) (FieldTimestampTZ (Finite value)) (const (utcTimeDuckValue value))
 instance ToField (Unbounded Day)
 instance ToField (Unbounded LocalTime)
-instance ToField (Unbounded UTCTime)
+instance ToField (Unbounded UTCTime) where
+    toField value = temporalValueBinding (show value) (LogicalTypeScalar DuckDBTypeTimestampTz) (FieldTimestampTZ value) (const (utcTimestampDuckValue value))
 
 instance ToField BigNum where
     toField big@(BigNum n) = valueBinding (show n) (bigNumDuckValue big)
 
 instance ToField (StructValue FieldValue) where
     toField structVal =
-        cacheValueBinding "<struct>" \cache ->
+        temporalValueBinding "<struct>" (structValueTypeRep structVal) (FieldStruct structVal) \cache ->
             structValueDuckValue (cachedTypeFromRep cache) structVal
 
 instance ToField (UnionValue FieldValue) where
     toField unionVal =
         let label = Text.unpack (unionValueLabel unionVal)
-         in cacheValueBinding ("<union " <> label <> ">") \cache ->
+         in temporalValueBinding ("<union " <> label <> ">") (unionValueTypeRep unionVal) (FieldUnion unionVal) \cache ->
                 unionValueDuckValue (cachedTypeFromRep cache) unionVal
 
 instance DuckDBColumnType BitString where
@@ -202,9 +279,12 @@ instance ToField BS.ByteString where
 
 instance (DuckDBColumnType a, ToField a) => ToField (Array Int a) where
     toField arr =
-        cacheValueBinding
+        targetValueBinding
             ("<array length=" <> show (length (elems arr)) <> ">")
-            \cache -> arrayDuckValue (cachedTypeFromRep cache) (\value -> fieldBindingValue (toField value) cache) arr
+            \cache readTarget -> do
+                target <- readTarget
+                let childTarget = collectionChildType target
+                arrayDuckValue (cachedTypeFromRep cache) childTarget (\value -> fieldBindingValue (toField value) cache (pure childTarget)) arr
 
 instance (ToField a) => ToField (Maybe a) where
     toField Nothing = nullBinding "Nothing"
@@ -465,10 +545,11 @@ arrayDuckValue ::
     forall a.
     (DuckDBColumnType a) =>
     (LogicalTypeRep -> IO DuckDBLogicalType) ->
+    Maybe LogicalTypeRep ->
     (a -> IO DuckDBValue) ->
     Array Int a ->
     IO DuckDBValue
-arrayDuckValue typeFromRep elementValue arr =
+arrayDuckValue typeFromRep target elementValue arr =
     withCreatedValues (map elementValue (elems arr)) \values ->
         withElementType values \elementType ->
             withDuckValues values \ptr ->
@@ -477,7 +558,7 @@ arrayDuckValue typeFromRep elementValue arr =
     typeName = duckdbColumnType (Proxy :: Proxy a)
     withElementType values action =
         case duckDBTypeFromName typeName of
-            Just dtype -> bracket (typeFromRep (LogicalTypeScalar dtype)) destroyLogicalType action
+            Just dtype -> bracket (typeFromRep (timestampTypeForTarget target (LogicalTypeScalar dtype))) destroyLogicalType action
             Nothing -> do
                 present <- filterM (fmap (== 0) . c_duckdb_is_null_value) values
                 case present of
@@ -634,10 +715,7 @@ scalarFieldValueDuckValue dtype value =
         (DuckDBTypeTimestampNs, FieldTimestamp ts) ->
             encodeUnbounded (encodeTimestampUnits 1000000000) ts >>= c_duckdb_create_timestamp_ns . DuckDBTimestampNs
         (DuckDBTypeTimestampTz, FieldTimestampTZ ts) -> utcTimestampDuckValue ts
-#ifdef DUCKDB_API_V2
-        (DuckDBTypeTimestampTzNs, FieldTimestampTZ ts) ->
-            encodeUnbounded (encodeTimestampUnits 1000000000 . utcToLocalTime utc) ts >>= c_duckdb_create_timestamp_tz_ns . DuckDBTimestampNs
-#endif
+        (DuckDBTypeTimestampTzNs, FieldTimestampTZ ts) -> utcTimestampNsDuckValue ts
         (DuckDBTypeInterval, FieldInterval iv) -> intervalDuckValue iv
         (DuckDBTypeHugeInt, FieldHugeInt i) -> hugeIntDuckValue i
         (DuckDBTypeUHugeInt, FieldUHugeInt i) -> uhugeIntDuckValue i
@@ -779,6 +857,8 @@ variantDuckValue typeFromRep value = do
 elements and fields. Time values with sub-microsecond digits use nanosecond
 types. Wide timestamps use milliseconds or seconds when these preserve the
 value and fit the native range.
+The C API cannot construct a nonempty object whose keys are all empty.
+DuckDB 2.0 treats that STRUCT type as a tuple and casts it to a VARIANT array.
 -}
 variantPayloadType :: FieldValue -> IO (LogicalTypeRep, FieldValue)
 variantPayloadType value = case value of
@@ -812,11 +892,7 @@ variantPayloadType value = case value of
       where
         micros = diffDays localDay (fromGregorian 1970 1 1) * 86400 * 1000000 + diffTimeToPicoseconds (timeOfDayToTime localTimeOfDay) `div` 1000000
     FieldTimestamp{} -> scalar DuckDBTypeTimestamp
-#ifdef DUCKDB_API_V2
-    FieldTimestampTZ (Finite instant)
-        | hasNanos (localTimeOfDay (utcToLocalTime utc instant)) -> scalar DuckDBTypeTimestampTzNs
-#endif
-    FieldTimestampTZ{} -> scalar DuckDBTypeTimestampTz
+    FieldTimestampTZ instant -> scalar (variantUtcTimestampType instant)
     FieldTimeTZ{} -> scalar DuckDBTypeTimeTz
     FieldInterval{} -> scalar DuckDBTypeInterval
     FieldBigNum{} -> scalar DuckDBTypeBigNum
@@ -825,8 +901,10 @@ variantPayloadType value = case value of
     FieldArray items -> pure (LogicalTypeList variant, FieldList (elems items))
     FieldStruct structValue@StructValue{structValueTypes} -> do
         let names = map structFieldName (elems structValueTypes)
-        when (any Text.null names || length names /= length (List.nub names)) $
-            throwIO (userError "duckdb-simple: VARIANT objects need unique, nonempty keys")
+        when (length names /= length (List.nub names)) $
+            throwIO (userError "duckdb-simple: VARIANT objects need unique keys")
+        when (not (null names) && all Text.null names) $
+            throwIO (userError "duckdb-simple: DuckDB's C API cannot construct a VARIANT object with only an empty key")
         let types = fmap (\field -> field{structFieldValue = variant}) structValueTypes
         pure (LogicalTypeStruct types, FieldStruct structValue{structValueTypes = types})
     FieldUnion unionValue -> pure (unionValueTypeRep unionValue, value)
@@ -837,6 +915,25 @@ variantPayloadType value = case value of
     variant = LogicalTypeScalar DuckDBTypeVariant
     scalar dtype = pure (LogicalTypeScalar dtype, value)
     hasNanos time = snd (properFraction (todSec time * 1000000) :: (Integer, Pico)) /= 0
+
+-- | Choose nanosecond storage for a precise UTC VARIANT payload in preview builds.
+variantUtcTimestampType :: UTCTimestamp -> DuckDBType
+#ifdef DUCKDB_API_V2
+variantUtcTimestampType (Finite instant)
+    | snd (properFraction (todSec (localTimeOfDay (utcToLocalTime utc instant)) * 1000000) :: (Integer, Pico)) /= 0 = DuckDBTypeTimestampTzNs
+variantUtcTimestampType _ = DuckDBTypeTimestampTz
+#else
+variantUtcTimestampType _ = DuckDBTypeTimestampTz
+#endif
+
+-- | Construct a UTC nanosecond value. Legacy builds reject this type.
+utcTimestampNsDuckValue :: UTCTimestamp -> IO DuckDBValue
+#ifdef DUCKDB_API_V2
+utcTimestampNsDuckValue value =
+    encodeUnbounded (encodeTimestampUnits 1000000000 . utcToLocalTime utc) value >>= c_duckdb_create_timestamp_tz_ns . DuckDBTimestampNs
+#else
+utcTimestampNsDuckValue _ = throwIO (userError "duckdb-simple: TIMESTAMP_TZ_NS requires the duckdb-v2 flag")
+#endif
 
 instance ToDuckValue G.Geometry where
     toDuckValue geometry = do
@@ -944,7 +1041,7 @@ instance ToDuckValue (UnionValue FieldValue) where
 this instance does not accept t'Variant' elements. 'toField' binds those.
 -}
 instance (DuckDBColumnType a, ToDuckValue a) => ToDuckValue (Array Int a) where
-    toDuckValue = arrayDuckValue logicalTypeFromRep toDuckValue
+    toDuckValue = arrayDuckValue logicalTypeFromRep Nothing toDuckValue
 
 instance (ToDuckValue a) => ToDuckValue (Maybe a) where
     toDuckValue Nothing = nullDuckValue

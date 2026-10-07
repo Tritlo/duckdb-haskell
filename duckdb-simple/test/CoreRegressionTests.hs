@@ -121,11 +121,16 @@ coreRegressionTests =
                     assertThrows (namedParameterIndex stmt "value\0suffix")
         , testCase "duplicate named bindings are rejected" $
             withConnection ":memory:" $ \conn ->
-                withStatement conn "SELECT $a + $b" $ \stmt -> do
-                    result <- try (bindNamed stmt ["a" := (1 :: Int64), "$a" := (2 :: Int64)])
-                    case result of
-                        Left (_ :: FormatError) -> pure ()
-                        Right () -> assertFailure "expected duplicate binding error before execution"
+                withStatement conn "SELECT $foo + $bar" $ \stmt ->
+                    forM_ ["$foo", "FOO"] $ \duplicate -> do
+                        result <- try (bindNamed stmt ["foo" := (1 :: Int64), duplicate := (2 :: Int64)])
+                        case result of
+                            Left (_ :: FormatError) -> pure ()
+                            Right () -> assertFailure "expected duplicate binding error before execution"
+        , testCase "named bindings retain distinct Unicode names" $
+            withConnection ":memory:" $ \conn ->
+                (queryNamed conn "SELECT $Straße::BIGINT, $STRASSE::BIGINT" ["Straße" := (1 :: Int64), "STRASSE" := (2 :: Int64)] :: IO [(Int64, Int64)])
+                    >>= (@?= [(1, 2)])
         , testCase "transaction preserves the original exception if rollback fails" $
             withConnection ":memory:" $ \conn -> do
                 result <- try $ withTransaction conn $ do

@@ -85,6 +85,7 @@ module Database.DuckDB.Simple (
 
 import Control.Exception (SomeException, bracket, finally, mask, mask_, onException, throwIO, try)
 import Control.Monad (forM, forM_, join, void, when, zipWithM_)
+import Data.Char (toLower)
 import Data.IORef (atomicModifyIORef', mkWeakIORef, newIORef)
 import Data.Maybe (isJust, isNothing)
 import qualified Data.Set as Set
@@ -298,18 +299,21 @@ bindNamed stmt params =
             withStatementHandle stmt \handle -> do
                 let actual = length bindings
                 expected <- fmap fromIntegral (c_duckdb_nparams handle)
-#ifdef DUCKDB_API_V2
-                let wrongCount = actual > expected
-#else
-                let wrongCount = actual /= expected
-#endif
-                when wrongCount $
+                when (wrongNamedParameterCount actual expected) $
                     throwFormatErrorNamed stmt (parameterCountMessage expected actual) bindings
                 parameterNames <- fetchParameterNames handle expected
                 when (all isNothing parameterNames && expected > 0) $
                     throwFormatErrorNamed stmt (Text.pack "duckdb-simple: statement does not define named parameters; use positional bindings or adjust the SQL") bindings
             clearStatementBindings stmt
             mapM_ apply bindings
+
+-- | Permit session-variable defaults in preview builds.
+wrongNamedParameterCount :: Int -> Int -> Bool
+#ifdef DUCKDB_API_V2
+wrongNamedParameterCount = (>)
+#else
+wrongNamedParameterCount = (/=)
+#endif
 
 fetchParameterNames :: DuckDBPreparedStatement -> Int -> IO [Maybe Text]
 fetchParameterNames handle count =
@@ -678,12 +682,18 @@ columnNameUnavailableError stmt idx =
         , sqlErrorQuery = Just (statementQuery stmt)
         }
 
+-- | Use DuckDB's ASCII case rules for parameter names.
 normalizeName :: Text -> Text
 normalizeName name =
-    case Text.uncons name of
-        Just (prefix, rest)
-            | prefix == ':' || prefix == '$' || prefix == '@' -> rest
-        _ -> name
+    Text.map asciiLower $
+        case Text.uncons name of
+            Just (prefix, rest)
+                | prefix == ':' || prefix == '$' || prefix == '@' -> rest
+            _ -> name
+  where
+    asciiLower char
+        | char >= 'A' && char <= 'Z' = toLower char
+        | otherwise = char
 
 resultRowsChanged :: Ptr DuckDBResult -> IO Int
 resultRowsChanged resPtr = fromIntegral <$> c_duckdb_rows_changed resPtr

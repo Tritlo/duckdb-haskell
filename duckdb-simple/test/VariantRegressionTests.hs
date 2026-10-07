@@ -7,7 +7,7 @@
 
 module VariantRegressionTests (tests) where
 
-import Control.Exception (SomeException, bracket, displayException, try)
+import Control.Exception (IOException, SomeException, bracket, displayException, try)
 import Control.Monad (forM_, void, when)
 import Data.Array (Array, listArray)
 import qualified Data.ByteString as BS
@@ -123,10 +123,24 @@ tests =
             forM_ [FieldNull, FieldList [], variantObject [], FieldList [FieldNull], variantObject [("x", FieldNull)]] (roundTrip conn)
             (query_ conn "SELECT NULL::VARIANT" :: IO [Only (Maybe Variant)]) >>= (@?= [Only Nothing])
             (query conn "SELECT ?" (Only (Variant FieldNull)) :: IO [Only FieldValue]) >>= (@?= [Only FieldNull])
+        , testCase "empty JSON object keys survive parameter binding" $ withConnection ":memory:" \conn -> do
+            [Only value] <- query_ conn "SELECT '{\"named\": 1, \"\": 42}'::JSON::VARIANT" :: IO [Only Variant]
+            query conn "SELECT ?" (Only value) >>= (@?= [Only value])
+            roundTrip conn (variantObject [("named", FieldBool True), ("", FieldList [FieldNull, variantObject [("named", FieldInt64 1), ("", FieldText "λ")]])])
+            [Only unsupported] <- query_ conn "SELECT '{\"\": 42}'::JSON::VARIANT" :: IO [Only Variant]
+            soleEmpty <- try (query conn "SELECT ?" (Only unsupported)) :: IO (Either IOException [Only Variant])
+            case soleEmpty of
+                Left err -> assertBool "must identify the native constructor limitation" ("only an empty key" `isInfixOf` displayException err)
+                Right _ -> assertFailure "expected a controlled error instead of an object to array conversion"
+            duplicate <- try (query conn "SELECT ?" (Only (Variant (variantObject [("", FieldInt64 1), ("", FieldInt64 2)])))) :: IO (Either IOException [Only Variant])
+            case duplicate of
+                Left _ -> pure ()
+                Right _ -> assertFailure "expected duplicate VARIANT keys to fail"
         , testCase "deep native arrays decode without a library depth limit" $ withConnection ":memory:" \conn ->
             forM_ [128, 256 :: Int] \depth -> do
                 let expected = Variant (foldr (const (FieldList . pure)) (FieldWord64 7) [1 .. depth])
-                (query conn "SELECT (repeat('[', ?) || '7' || repeat(']', ?))::JSON::VARIANT" (depth, depth) :: IO [Only Variant])
+                -- An alias avoids recursive native rendering of the default column name.
+                (query conn "SELECT (repeat('[', ?) || '7' || repeat(']', ?))::JSON::VARIANT AS payload" (depth, depth) :: IO [Only Variant])
                     >>= (@?= [Only expected])
         , testCase "ARRAY parameters and generic records contain VARIANT" $ withConnection ":memory:" \conn -> do
             let array = listArray (0, 2) [Variant (FieldInt8 1), Variant (FieldText "two"), Variant FieldNull]
@@ -247,8 +261,8 @@ tests =
                 , FieldDecimal (DecimalValue 3 0 1000)
                 , FieldBit (BitString 8 (BS.singleton 0))
                 , variantObject [("same", FieldNull), ("same", FieldBool True)]
+                , variantObject [("", FieldNull), ("", FieldBool True)]
                 , variantObject [("", FieldBool True)]
-                , variantObject [("first", FieldBool False), ("", FieldBool True)]
                 , variantObject [("before\0after", FieldNull)]
                 ]
                 \value -> assertFailureIO (query conn "SELECT ?" (Only (Variant value)) :: IO [Only Variant])

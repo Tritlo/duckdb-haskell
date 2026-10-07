@@ -69,6 +69,12 @@ tests =
             withConnection ":memory:" \conn ->
                 query conn "SELECT i FROM range(10) t(i) ORDER BY i OFFSET ? ROWS FETCH FIRST ? ROWS ONLY" (3 :: Int64, 2 :: Int64)
                     >>= (@?= [Only (3 :: Int64), Only 4])
+        , testCase "expression statements use the query and cursor paths" $
+            withConnection ":memory:" \conn -> do
+                query conn "?::BIGINT + 1" (Only (41 :: Int64)) >>= (@?= [Only (42 :: Int64)])
+                withStatement conn "42::BIGINT" \stmt -> do
+                    nextRow stmt >>= (@?= Just (Only (42 :: Int64)))
+                    nextRow stmt >>= (@?= (Nothing :: Maybe (Only Int64)))
         , testCase "NEAREST joins rank candidates for bound input rows" $
             withConnection ":memory:" \conn ->
                 query conn "SELECT q.id::BIGINT, t.value::BIGINT FROM (VALUES (1, ?::BIGINT), (2, ?::BIGINT)) q(id, value) INNER JOIN (VALUES (11), (19), (25), (100)) t(value) EXACT NEAREST 2 BY DISTANCE abs(q.value - t.value) ORDER BY q.id, t.value" (10 :: Int64, 20 :: Int64)
@@ -83,6 +89,8 @@ tests =
                     >>= (@?= [Only (18 :: Int64)])
         , testCase "JSON mutation accepts bound documents, paths, and values" $
             withConnection ":memory:" \conn -> do
+                query conn "SELECT json_set(?::JSON, ?, ?::JSON)" ("{\"a\":1}" :: Text, "$.b" :: Text, "[2,3]" :: Text)
+                    >>= (@?= [Only ("{\"a\":1,\"b\":[2,3]}" :: Text)])
                 query conn "SELECT json_set(?::JSON, ?, ?::JSON)::VARCHAR" ("{\"a\":1}" :: Text, "$.b" :: Text, "[2,3]" :: Text)
                     >>= (@?= [Only ("{\"a\":1,\"b\":[2,3]}" :: Text)])
                 query_ conn "SELECT json_remove(json_replace(json_insert('{\"a\":1}', '$.b', '2'), '$.a', '3'), '$.b')::VARCHAR"

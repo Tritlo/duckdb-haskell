@@ -326,6 +326,58 @@ V1_CALLBACK_ALIASES = {
 }
 
 
+SHARED_LAYOUTS = {
+    "DuckDBV2HugeintT": ("DuckDBHugeInt", "duckdb_hugeint", "duckdb_v2_hugeint_t"),
+    "DuckDBV2UhugeintT": ("DuckDBUHugeInt", "duckdb_uhugeint", "duckdb_v2_uhugeint_t"),
+    "DuckDBV2IntervalT": ("DuckDBInterval", "duckdb_interval", "duckdb_v2_interval_t"),
+    "DuckDBV2ListEntry": ("DuckDBListEntry", "duckdb_list_entry", "duckdb_v2_list_entry"),
+    "DuckDBV2ArrowSchema": ("ArrowSchema", "ArrowSchema", "ArrowSchema"),
+    "DuckDBV2ArrowArray": ("ArrowArray", "ArrowArray", "ArrowArray"),
+    "DuckDBV2ArrowArrayStream": ("ArrowArrayStream", "ArrowArrayStream", "ArrowArrayStream"),
+}
+SHARED_ARROW_CALLBACKS = {
+    "ArrowSchema_release_fn": "ArrowSchemaRelease",
+    "ArrowArray_release_fn": "ArrowArrayRelease",
+    "ArrowArrayStream_get_schema_fn": "ArrowStreamGetSchema",
+    "ArrowArrayStream_get_next_fn": "ArrowStreamGetNext",
+    "ArrowArrayStream_get_last_error_fn": "ArrowStreamGetLastError",
+    "ArrowArrayStream_release_fn": "ArrowStreamRelease",
+}
+
+
+def shared_layouts(v1: str, v2: str, bindings: str) -> dict[str, str]:
+    """Verify canonical type aliases and their shared C declarations."""
+    canonical = typedefs(v1) | typedefs(ROOT / "duckdb-ffi/cbits/duckdb_arrow.h")
+    current = typedefs(v2)
+    aliases = {name: types[0] for name, types in SHARED_LAYOUTS.items()}
+    aliases.update({"DuckDBV2Idx": "DuckDBIdx", "DuckDBV2SelT": "DuckDBSel"})
+    for name, target in aliases.items():
+        if not re.search(rf"^type\s+{name}\s*=\s*{target}\s*$", bindings, re.M):
+            raise ValueError(f"Missing shared type alias: {name} = {target}")
+    for name, target in (("DuckDBIdx", "Word64"), ("DuckDBSel", "Word32")):
+        if not re.search(rf"^type\s+{name}\s*=\s*{target}\s*$", bindings, re.M):
+            raise ValueError(f"Shared integer type differs: {name}")
+    for name, target in (("idx_t", "idx_t"), ("sel_t", "duckdb_v2_sel_t")):
+        if canonical[name].removesuffix(name).strip() != current[target].removesuffix(target).strip():
+            raise ValueError(f"Shared integer type differs: {target}")
+
+    def fields(declaration: str) -> str:
+        body = re.search(r"{(.*)}", declaration)
+        if body is None:
+            raise ValueError(f"Missing shared structure fields: {declaration}")
+        value = re.sub(r"\bidx_t\b", "uint64_t", body.group(1))
+        # Callback parameter names do not change the Arrow layout.
+        value = re.sub(r"(\(\*\w+\)\()([^()]*)\)", lambda match: match.group(1) + ",".join(parameter_type(p) for p in match.group(2).split(",")) + ")", value)
+        return normalize(value)
+
+    for alias, (target, before, after) in SHARED_LAYOUTS.items():
+        if not re.search(rf"\binstance\s+Storable\s+{target}\s+where\b", bindings):
+            raise ValueError(f"Missing canonical Storable instance: {target}")
+        if fields(canonical[before]) != fields(current[after]):
+            raise ValueError(f"Shared C structure differs: {alias}")
+    return aliases
+
+
 def coverage(header: Path | str, bindings: str, wrappers: str) -> dict[str, object]:
     """Check that each C function and callback has a raw binding."""
     declarations = functions(header)
@@ -367,6 +419,17 @@ def coverage(header: Path | str, bindings: str, wrappers: str) -> dict[str, obje
                 rf'foreign\s+import\s+ccall\s+(?:(?:safe|unsafe)\s+)?"dynamic"\s+call{re.escape(alias)}\b',
             ]
             present = all(re.search(pattern, bindings) for pattern in patterns)
+            if not present and name in SHARED_ARROW_CALLBACKS:
+                target = SHARED_ARROW_CALLBACKS[name]
+                shared_patterns = [
+                    patterns[0],
+                    r"\bimport\s+Database\.DuckDB\.FFI\.Arrow\s+qualified\s+as\s+Arrow\b",
+                    rf"^mk{alias}\s*=\s*Arrow\.wrap{target}\s*$",
+                    rf"^call{alias}\s*=\s*Arrow\.mk{target}\s*$",
+                    rf'foreign\s+import\s+ccall\s+(?:(?:safe|unsafe)\s+)?"wrapper"\s+wrap{target}\b',
+                    rf'foreign\s+import\s+ccall\s+(?:(?:safe|unsafe)\s+)?"dynamic"\s+mk{target}\b',
+                ]
+                present = all(re.search(pattern, bindings, re.M) for pattern in shared_patterns)
         else:
             present = re.search(rf"\btype\s+{re.escape(alias)}\s*=\s*FunPtr\b", bindings) is not None
         if present:
@@ -391,6 +454,7 @@ def audit() -> dict[str, object]:
         "unknown_functions": sorted(referenced - exports),
         "v1": coverage(v1, bindings, wrappers),
         "v2": coverage(v2, bindings, wrappers),
+        "shared_types": shared_layouts(v1, v2, bindings),
         "v1_function_changes": difference(functions(legacy), functions(v1)),
         "v1_type_changes": difference(typedefs(legacy), typedefs(v1)),
     }

@@ -1,6 +1,6 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
 
-{- | Complete raw DuckDB V2 preview C API.
+{- | Complete raw DuckDB V2 C API.
 
 Generated from the pinned header by @scripts/gen_ffi_v2.py@.
 Every import calls the C function directly with its native signature.
@@ -12,6 +12,7 @@ module Database.DuckDB.FFI.V2.Functions where
 
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.Word (Word16, Word32, Word64, Word8)
+import Database.DuckDB.FFI.Arrow qualified as Arrow
 import Database.DuckDB.FFI.V2.Types
 import Foreign.C.Types (CBool (..), CChar (..), CDouble (..), CFloat (..), CInt (..))
 import Foreign.Ptr (FunPtr, Ptr)
@@ -13158,11 +13159,11 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 The callback must not throw an exception across the C boundary.
 -}
 foreign import ccall "wrapper"
-    mkDuckDBV2OpaqueDestroyFn :: DuckDBV2OpaqueDestroyFn -> IO (FunPtr DuckDBV2OpaqueDestroyFn)
+    mkDuckDBV2OpaqueDestroyFn :: DuckDBV2OpaqueDestroyFn -> IO DuckDBDeleteCallback
 
 -- | Call a function pointer with the 'DuckDBV2OpaqueDestroyFn' signature.
 foreign import ccall safe "dynamic"
-    callDuckDBV2OpaqueDestroyFn :: FunPtr DuckDBV2OpaqueDestroyFn -> Ptr () -> IO ()
+    callDuckDBV2OpaqueDestroyFn :: DuckDBDeleteCallback -> Ptr () -> IO ()
 
 {- | Create a function pointer for 'DuckDBV2CastFunctionExecCallbackFn'.
 
@@ -13612,12 +13613,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2ArrowSchemaReleaseFn :: DuckDBV2ArrowSchemaReleaseFn -> IO (FunPtr DuckDBV2ArrowSchemaReleaseFn)
+mkDuckDBV2ArrowSchemaReleaseFn :: DuckDBV2ArrowSchemaReleaseFn -> IO (FunPtr DuckDBV2ArrowSchemaReleaseFn)
+mkDuckDBV2ArrowSchemaReleaseFn = Arrow.wrapArrowSchemaRelease
 
 -- | Call a function pointer with the 'DuckDBV2ArrowSchemaReleaseFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2ArrowSchemaReleaseFn :: FunPtr DuckDBV2ArrowSchemaReleaseFn -> Ptr DuckDBV2ArrowSchema -> IO ()
+callDuckDBV2ArrowSchemaReleaseFn :: FunPtr DuckDBV2ArrowSchemaReleaseFn -> Ptr DuckDBV2ArrowSchema -> IO ()
+callDuckDBV2ArrowSchemaReleaseFn = Arrow.mkArrowSchemaRelease
 
 {- | Create a function pointer for 'DuckDBV2ArrowArrayReleaseFn'.
 
@@ -13625,12 +13626,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2ArrowArrayReleaseFn :: DuckDBV2ArrowArrayReleaseFn -> IO (FunPtr DuckDBV2ArrowArrayReleaseFn)
+mkDuckDBV2ArrowArrayReleaseFn :: DuckDBV2ArrowArrayReleaseFn -> IO (FunPtr DuckDBV2ArrowArrayReleaseFn)
+mkDuckDBV2ArrowArrayReleaseFn = Arrow.wrapArrowArrayRelease
 
 -- | Call a function pointer with the 'DuckDBV2ArrowArrayReleaseFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2ArrowArrayReleaseFn :: FunPtr DuckDBV2ArrowArrayReleaseFn -> Ptr DuckDBV2ArrowArray -> IO ()
+callDuckDBV2ArrowArrayReleaseFn :: FunPtr DuckDBV2ArrowArrayReleaseFn -> Ptr DuckDBV2ArrowArray -> IO ()
+callDuckDBV2ArrowArrayReleaseFn = Arrow.mkArrowArrayRelease
 
 {- | Create a function pointer for 'DuckDBV2ArrowArrayStreamGetSchemaFn'.
 
@@ -13638,12 +13639,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2ArrowArrayStreamGetSchemaFn :: DuckDBV2ArrowArrayStreamGetSchemaFn -> IO (FunPtr DuckDBV2ArrowArrayStreamGetSchemaFn)
+mkDuckDBV2ArrowArrayStreamGetSchemaFn :: DuckDBV2ArrowArrayStreamGetSchemaFn -> IO (FunPtr DuckDBV2ArrowArrayStreamGetSchemaFn)
+mkDuckDBV2ArrowArrayStreamGetSchemaFn = Arrow.wrapArrowStreamGetSchema
 
 -- | Call a function pointer with the 'DuckDBV2ArrowArrayStreamGetSchemaFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2ArrowArrayStreamGetSchemaFn :: FunPtr DuckDBV2ArrowArrayStreamGetSchemaFn -> Ptr DuckDBV2ArrowArrayStream -> Ptr DuckDBV2ArrowSchema -> IO CInt
+callDuckDBV2ArrowArrayStreamGetSchemaFn :: FunPtr DuckDBV2ArrowArrayStreamGetSchemaFn -> Ptr DuckDBV2ArrowArrayStream -> Ptr DuckDBV2ArrowSchema -> IO CInt
+callDuckDBV2ArrowArrayStreamGetSchemaFn = Arrow.mkArrowStreamGetSchema
 
 {- | Create a function pointer for 'DuckDBV2ArrowArrayStreamGetNextFn'.
 
@@ -13651,12 +13652,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2ArrowArrayStreamGetNextFn :: DuckDBV2ArrowArrayStreamGetNextFn -> IO (FunPtr DuckDBV2ArrowArrayStreamGetNextFn)
+mkDuckDBV2ArrowArrayStreamGetNextFn :: DuckDBV2ArrowArrayStreamGetNextFn -> IO (FunPtr DuckDBV2ArrowArrayStreamGetNextFn)
+mkDuckDBV2ArrowArrayStreamGetNextFn = Arrow.wrapArrowStreamGetNext
 
 -- | Call a function pointer with the 'DuckDBV2ArrowArrayStreamGetNextFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2ArrowArrayStreamGetNextFn :: FunPtr DuckDBV2ArrowArrayStreamGetNextFn -> Ptr DuckDBV2ArrowArrayStream -> Ptr DuckDBV2ArrowArray -> IO CInt
+callDuckDBV2ArrowArrayStreamGetNextFn :: FunPtr DuckDBV2ArrowArrayStreamGetNextFn -> Ptr DuckDBV2ArrowArrayStream -> Ptr DuckDBV2ArrowArray -> IO CInt
+callDuckDBV2ArrowArrayStreamGetNextFn = Arrow.mkArrowStreamGetNext
 
 {- | Create a function pointer for 'DuckDBV2ArrowArrayStreamGetLastErrorFn'.
 
@@ -13664,12 +13665,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2ArrowArrayStreamGetLastErrorFn :: DuckDBV2ArrowArrayStreamGetLastErrorFn -> IO (FunPtr DuckDBV2ArrowArrayStreamGetLastErrorFn)
+mkDuckDBV2ArrowArrayStreamGetLastErrorFn :: DuckDBV2ArrowArrayStreamGetLastErrorFn -> IO (FunPtr DuckDBV2ArrowArrayStreamGetLastErrorFn)
+mkDuckDBV2ArrowArrayStreamGetLastErrorFn = Arrow.wrapArrowStreamGetLastError
 
 -- | Call a function pointer with the 'DuckDBV2ArrowArrayStreamGetLastErrorFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2ArrowArrayStreamGetLastErrorFn :: FunPtr DuckDBV2ArrowArrayStreamGetLastErrorFn -> Ptr DuckDBV2ArrowArrayStream -> IO (Ptr CChar)
+callDuckDBV2ArrowArrayStreamGetLastErrorFn :: FunPtr DuckDBV2ArrowArrayStreamGetLastErrorFn -> Ptr DuckDBV2ArrowArrayStream -> IO (Ptr CChar)
+callDuckDBV2ArrowArrayStreamGetLastErrorFn = Arrow.mkArrowStreamGetLastError
 
 {- | Create a function pointer for 'DuckDBV2ArrowArrayStreamReleaseFn'.
 
@@ -13677,9 +13678,9 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2ArrowArrayStreamReleaseFn :: DuckDBV2ArrowArrayStreamReleaseFn -> IO (FunPtr DuckDBV2ArrowArrayStreamReleaseFn)
+mkDuckDBV2ArrowArrayStreamReleaseFn :: DuckDBV2ArrowArrayStreamReleaseFn -> IO (FunPtr DuckDBV2ArrowArrayStreamReleaseFn)
+mkDuckDBV2ArrowArrayStreamReleaseFn = Arrow.wrapArrowStreamRelease
 
 -- | Call a function pointer with the 'DuckDBV2ArrowArrayStreamReleaseFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2ArrowArrayStreamReleaseFn :: FunPtr DuckDBV2ArrowArrayStreamReleaseFn -> Ptr DuckDBV2ArrowArrayStream -> IO ()
+callDuckDBV2ArrowArrayStreamReleaseFn :: FunPtr DuckDBV2ArrowArrayStreamReleaseFn -> Ptr DuckDBV2ArrowArrayStream -> IO ()
+callDuckDBV2ArrowArrayStreamReleaseFn = Arrow.mkArrowStreamRelease

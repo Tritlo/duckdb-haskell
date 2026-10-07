@@ -4,26 +4,50 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RecordWildCards #-}
 
-{- | Raw types for the DuckDB V2 preview API.
+{- | Raw types for the DuckDB V2 C API.
 
 Generated from the pinned header by @scripts/gen_ffi_v2.py@.
-Structure layouts and enum values come from that header through hsc2hs.
+Shared C layouts use the types from @Database.DuckDB.FFI.Types@.
+Other layouts and enum values come from the header through hsc2hs.
 Keep this module and the native library at the same upstream revision.
 Source documentation records the upstream API lifecycle status.
 -}
-module Database.DuckDB.FFI.V2.Types where
+module Database.DuckDB.FFI.V2.Types (
+    module Database.DuckDB.FFI.V2.Types,
+    ArrowSchema (..),
+    ArrowArray (..),
+    ArrowArrayStream (..),
+    DuckDBListEntry (..),
+    DuckDBHugeInt (..),
+    DuckDBUHugeInt (..),
+    DuckDBInterval (..),
+    DuckDBIdx,
+    DuckDBSel,
+    DuckDBDeleteCallback,
+) where
 
 #define DUCKDB_V2_API_ALLOW_UNSTABLE 1
 #include "duckdb_v2.h"
 
-import Data.Int (Int32, Int64)
 import Data.Word (Word32, Word64)
+import Database.DuckDB.FFI.Types (
+    ArrowArray (..),
+    ArrowArrayStream (..),
+    ArrowSchema (..),
+    DuckDBDeleteCallback,
+    DuckDBHugeInt (..),
+    DuckDBIdx,
+    DuckDBInterval (..),
+    DuckDBListEntry (..),
+    DuckDBSel,
+    DuckDBUHugeInt (..),
+ )
 import Foreign.C.Types (CBool (..), CChar (..), CInt (..))
 import Foreign.Ptr (FunPtr, Ptr, castPtr, plusPtr)
 import Foreign.Storable (Storable (..), peekByteOff, pokeByteOff)
 
 -- | DuckDB's unsigned index type.
-type DuckDBV2Idx = #{type idx_t}
+type DuckDBV2Idx = DuckDBIdx
 
 {- | Opaque target of @duckdb_v2_environment_handle@.
 
@@ -997,7 +1021,7 @@ A selection-vector is a "dictionary" represented as an array of indices (sel_t's
 the "physical" offsets in a vectors primary data buffer. Used by "dictionary vectors" to represent a filtered or
 "sparse" view of the vector's data.
 -}
-type DuckDBV2SelT = Word32
+type DuckDBV2SelT = DuckDBSel
 
 -- | VARCHAR storage. The bytes must contain valid UTF-8. Read the transparent bytes fields directly.
 type DuckDBV2VarcharT = DuckDBV2Bytes
@@ -2361,113 +2385,23 @@ duckdbV2ArrowFlagNullable = #{const ARROW_FLAG_NULLABLE}
 duckdbV2ArrowFlagMapKeysSorted :: Word32
 duckdbV2ArrowFlagMapKeysSorted = #{const ARROW_FLAG_MAP_KEYS_SORTED}
 
--- | The @ArrowSchema@ structure.
-data DuckDBV2ArrowSchema = DuckDBV2ArrowSchema
-    { duckdbV2ArrowSchemaFormat :: Ptr CChar
-    , duckdbV2ArrowSchemaName :: Ptr CChar
-    , duckdbV2ArrowSchemaMetadata :: Ptr CChar
-    , duckdbV2ArrowSchemaFlags :: Int64
-    , duckdbV2ArrowSchemaNChildren :: Int64
-    , duckdbV2ArrowSchemaChildren :: Ptr (Ptr DuckDBV2ArrowSchema)
-    , duckdbV2ArrowSchemaDictionary :: Ptr DuckDBV2ArrowSchema
-    , duckdbV2ArrowSchemaRelease :: FunPtr DuckDBV2ArrowSchemaReleaseFn
-    , duckdbV2ArrowSchemaPrivateData :: Ptr ()
-    }
-    deriving (Eq, Show)
+{- | The @ArrowSchema@ structure.
 
-instance Storable DuckDBV2ArrowSchema where
-    sizeOf _ = #{size struct ArrowSchema}
-    alignment _ = #{alignment struct ArrowSchema}
-    peek ptr =
-        DuckDBV2ArrowSchema
-            <$> peekByteOff ptr #{offset struct ArrowSchema, format}
-            <*> peekByteOff ptr #{offset struct ArrowSchema, name}
-            <*> peekByteOff ptr #{offset struct ArrowSchema, metadata}
-            <*> peekByteOff ptr #{offset struct ArrowSchema, flags}
-            <*> peekByteOff ptr #{offset struct ArrowSchema, n_children}
-            <*> peekByteOff ptr #{offset struct ArrowSchema, children}
-            <*> peekByteOff ptr #{offset struct ArrowSchema, dictionary}
-            <*> peekByteOff ptr #{offset struct ArrowSchema, release}
-            <*> peekByteOff ptr #{offset struct ArrowSchema, private_data}
-    poke ptr DuckDBV2ArrowSchema{..} = do
-        pokeByteOff ptr #{offset struct ArrowSchema, format} duckdbV2ArrowSchemaFormat
-        pokeByteOff ptr #{offset struct ArrowSchema, name} duckdbV2ArrowSchemaName
-        pokeByteOff ptr #{offset struct ArrowSchema, metadata} duckdbV2ArrowSchemaMetadata
-        pokeByteOff ptr #{offset struct ArrowSchema, flags} duckdbV2ArrowSchemaFlags
-        pokeByteOff ptr #{offset struct ArrowSchema, n_children} duckdbV2ArrowSchemaNChildren
-        pokeByteOff ptr #{offset struct ArrowSchema, children} duckdbV2ArrowSchemaChildren
-        pokeByteOff ptr #{offset struct ArrowSchema, dictionary} duckdbV2ArrowSchemaDictionary
-        pokeByteOff ptr #{offset struct ArrowSchema, release} duckdbV2ArrowSchemaRelease
-        pokeByteOff ptr #{offset struct ArrowSchema, private_data} duckdbV2ArrowSchemaPrivateData
+Uses the shared @ArrowSchema@ storage and constructors.
+-}
+type DuckDBV2ArrowSchema = ArrowSchema
 
--- | The @ArrowArray@ structure.
-data DuckDBV2ArrowArray = DuckDBV2ArrowArray
-    { duckdbV2ArrowArrayLength :: Int64
-    , duckdbV2ArrowArrayNullCount :: Int64
-    , duckdbV2ArrowArrayOffset :: Int64
-    , duckdbV2ArrowArrayNBuffers :: Int64
-    , duckdbV2ArrowArrayNChildren :: Int64
-    , duckdbV2ArrowArrayBuffers :: Ptr (Ptr ())
-    , duckdbV2ArrowArrayChildren :: Ptr (Ptr DuckDBV2ArrowArray)
-    , duckdbV2ArrowArrayDictionary :: Ptr DuckDBV2ArrowArray
-    , duckdbV2ArrowArrayRelease :: FunPtr DuckDBV2ArrowArrayReleaseFn
-    , duckdbV2ArrowArrayPrivateData :: Ptr ()
-    }
-    deriving (Eq, Show)
+{- | The @ArrowArray@ structure.
 
-instance Storable DuckDBV2ArrowArray where
-    sizeOf _ = #{size struct ArrowArray}
-    alignment _ = #{alignment struct ArrowArray}
-    peek ptr =
-        DuckDBV2ArrowArray
-            <$> peekByteOff ptr #{offset struct ArrowArray, length}
-            <*> peekByteOff ptr #{offset struct ArrowArray, null_count}
-            <*> peekByteOff ptr #{offset struct ArrowArray, offset}
-            <*> peekByteOff ptr #{offset struct ArrowArray, n_buffers}
-            <*> peekByteOff ptr #{offset struct ArrowArray, n_children}
-            <*> peekByteOff ptr #{offset struct ArrowArray, buffers}
-            <*> peekByteOff ptr #{offset struct ArrowArray, children}
-            <*> peekByteOff ptr #{offset struct ArrowArray, dictionary}
-            <*> peekByteOff ptr #{offset struct ArrowArray, release}
-            <*> peekByteOff ptr #{offset struct ArrowArray, private_data}
-    poke ptr DuckDBV2ArrowArray{..} = do
-        pokeByteOff ptr #{offset struct ArrowArray, length} duckdbV2ArrowArrayLength
-        pokeByteOff ptr #{offset struct ArrowArray, null_count} duckdbV2ArrowArrayNullCount
-        pokeByteOff ptr #{offset struct ArrowArray, offset} duckdbV2ArrowArrayOffset
-        pokeByteOff ptr #{offset struct ArrowArray, n_buffers} duckdbV2ArrowArrayNBuffers
-        pokeByteOff ptr #{offset struct ArrowArray, n_children} duckdbV2ArrowArrayNChildren
-        pokeByteOff ptr #{offset struct ArrowArray, buffers} duckdbV2ArrowArrayBuffers
-        pokeByteOff ptr #{offset struct ArrowArray, children} duckdbV2ArrowArrayChildren
-        pokeByteOff ptr #{offset struct ArrowArray, dictionary} duckdbV2ArrowArrayDictionary
-        pokeByteOff ptr #{offset struct ArrowArray, release} duckdbV2ArrowArrayRelease
-        pokeByteOff ptr #{offset struct ArrowArray, private_data} duckdbV2ArrowArrayPrivateData
+Uses the shared @ArrowArray@ storage and constructors.
+-}
+type DuckDBV2ArrowArray = ArrowArray
 
--- | The @ArrowArrayStream@ structure.
-data DuckDBV2ArrowArrayStream = DuckDBV2ArrowArrayStream
-    { duckdbV2ArrowArrayStreamGetSchema :: FunPtr DuckDBV2ArrowArrayStreamGetSchemaFn
-    , duckdbV2ArrowArrayStreamGetNext :: FunPtr DuckDBV2ArrowArrayStreamGetNextFn
-    , duckdbV2ArrowArrayStreamGetLastError :: FunPtr DuckDBV2ArrowArrayStreamGetLastErrorFn
-    , duckdbV2ArrowArrayStreamRelease :: FunPtr DuckDBV2ArrowArrayStreamReleaseFn
-    , duckdbV2ArrowArrayStreamPrivateData :: Ptr ()
-    }
-    deriving (Eq, Show)
+{- | The @ArrowArrayStream@ structure.
 
-instance Storable DuckDBV2ArrowArrayStream where
-    sizeOf _ = #{size struct ArrowArrayStream}
-    alignment _ = #{alignment struct ArrowArrayStream}
-    peek ptr =
-        DuckDBV2ArrowArrayStream
-            <$> peekByteOff ptr #{offset struct ArrowArrayStream, get_schema}
-            <*> peekByteOff ptr #{offset struct ArrowArrayStream, get_next}
-            <*> peekByteOff ptr #{offset struct ArrowArrayStream, get_last_error}
-            <*> peekByteOff ptr #{offset struct ArrowArrayStream, release}
-            <*> peekByteOff ptr #{offset struct ArrowArrayStream, private_data}
-    poke ptr DuckDBV2ArrowArrayStream{..} = do
-        pokeByteOff ptr #{offset struct ArrowArrayStream, get_schema} duckdbV2ArrowArrayStreamGetSchema
-        pokeByteOff ptr #{offset struct ArrowArrayStream, get_next} duckdbV2ArrowArrayStreamGetNext
-        pokeByteOff ptr #{offset struct ArrowArrayStream, get_last_error} duckdbV2ArrowArrayStreamGetLastError
-        pokeByteOff ptr #{offset struct ArrowArrayStream, release} duckdbV2ArrowArrayStreamRelease
-        pokeByteOff ptr #{offset struct ArrowArrayStream, private_data} duckdbV2ArrowArrayStreamPrivateData
+Uses the shared @ArrowArrayStream@ storage and constructors.
+-}
+type DuckDBV2ArrowArrayStream = ArrowArrayStream
 
 {- | A borrowed, length-delimited string view: @ptr@ points at @len@ bytes of character data. The bytes are NOT guaranteed
 to be null-terminated and may contain interior null bytes, so always honor @len@ rather than scanning for a
@@ -2554,7 +2488,7 @@ compare the resource.
 -}
 data DuckDBV2Opaque = DuckDBV2Opaque
     { duckdbV2OpaquePtr :: Ptr ()
-    , duckdbV2OpaqueDestroy :: FunPtr DuckDBV2OpaqueDestroyFn
+    , duckdbV2OpaqueDestroy :: DuckDBDeleteCallback
     , duckdbV2OpaqueEquals :: FunPtr DuckDBV2OpaqueEqualsFn
     }
     deriving (Eq, Show)
@@ -2622,77 +2556,26 @@ instance Storable DuckDBV2VectorView where
         pokeByteOff ptr #{offset duckdb_v2_vector_view, sel} duckdbV2VectorViewSel
         pokeByteOff ptr #{offset duckdb_v2_vector_view, count} duckdbV2VectorViewCount
 
--- | The @duckdb_v2_list_entry@ structure.
-data DuckDBV2ListEntry = DuckDBV2ListEntry
-    { duckdbV2ListEntryOffset :: DuckDBV2Idx
-    , duckdbV2ListEntryLength :: DuckDBV2Idx
-    }
-    deriving (Eq, Show)
+{- | The @duckdb_v2_list_entry@ structure.
 
-instance Storable DuckDBV2ListEntry where
-    sizeOf _ = #{size duckdb_v2_list_entry}
-    alignment _ = #{alignment duckdb_v2_list_entry}
-    peek ptr =
-        DuckDBV2ListEntry
-            <$> peekByteOff ptr #{offset duckdb_v2_list_entry, offset}
-            <*> peekByteOff ptr #{offset duckdb_v2_list_entry, length}
-    poke ptr DuckDBV2ListEntry{..} = do
-        pokeByteOff ptr #{offset duckdb_v2_list_entry, offset} duckdbV2ListEntryOffset
-        pokeByteOff ptr #{offset duckdb_v2_list_entry, length} duckdbV2ListEntryLength
+Uses the shared @DuckDBListEntry@ storage and constructors.
+-}
+type DuckDBV2ListEntry = DuckDBListEntry
 
--- | The @duckdb_v2_hugeint_t@ structure.
-data DuckDBV2HugeintT = DuckDBV2HugeintT
-    { duckdbV2HugeintTLower :: Word64
-    , duckdbV2HugeintTUpper :: Int64
-    }
-    deriving (Eq, Show)
+{- | The @duckdb_v2_hugeint_t@ structure.
 
-instance Storable DuckDBV2HugeintT where
-    sizeOf _ = #{size duckdb_v2_hugeint_t}
-    alignment _ = #{alignment duckdb_v2_hugeint_t}
-    peek ptr =
-        DuckDBV2HugeintT
-            <$> peekByteOff ptr #{offset duckdb_v2_hugeint_t, lower}
-            <*> peekByteOff ptr #{offset duckdb_v2_hugeint_t, upper}
-    poke ptr DuckDBV2HugeintT{..} = do
-        pokeByteOff ptr #{offset duckdb_v2_hugeint_t, lower} duckdbV2HugeintTLower
-        pokeByteOff ptr #{offset duckdb_v2_hugeint_t, upper} duckdbV2HugeintTUpper
+Uses the shared @DuckDBHugeInt@ storage and constructors.
+-}
+type DuckDBV2HugeintT = DuckDBHugeInt
 
--- | The @duckdb_v2_uhugeint_t@ structure.
-data DuckDBV2UhugeintT = DuckDBV2UhugeintT
-    { duckdbV2UhugeintTLower :: Word64
-    , duckdbV2UhugeintTUpper :: Word64
-    }
-    deriving (Eq, Show)
+{- | The @duckdb_v2_uhugeint_t@ structure.
 
-instance Storable DuckDBV2UhugeintT where
-    sizeOf _ = #{size duckdb_v2_uhugeint_t}
-    alignment _ = #{alignment duckdb_v2_uhugeint_t}
-    peek ptr =
-        DuckDBV2UhugeintT
-            <$> peekByteOff ptr #{offset duckdb_v2_uhugeint_t, lower}
-            <*> peekByteOff ptr #{offset duckdb_v2_uhugeint_t, upper}
-    poke ptr DuckDBV2UhugeintT{..} = do
-        pokeByteOff ptr #{offset duckdb_v2_uhugeint_t, lower} duckdbV2UhugeintTLower
-        pokeByteOff ptr #{offset duckdb_v2_uhugeint_t, upper} duckdbV2UhugeintTUpper
+Uses the shared @DuckDBUHugeInt@ storage and constructors.
+-}
+type DuckDBV2UhugeintT = DuckDBUHugeInt
 
--- | The @duckdb_v2_interval_t@ structure.
-data DuckDBV2IntervalT = DuckDBV2IntervalT
-    { duckdbV2IntervalTMonths :: Int32
-    , duckdbV2IntervalTDays :: Int32
-    , duckdbV2IntervalTMicros :: Int64
-    }
-    deriving (Eq, Show)
+{- | The @duckdb_v2_interval_t@ structure.
 
-instance Storable DuckDBV2IntervalT where
-    sizeOf _ = #{size duckdb_v2_interval_t}
-    alignment _ = #{alignment duckdb_v2_interval_t}
-    peek ptr =
-        DuckDBV2IntervalT
-            <$> peekByteOff ptr #{offset duckdb_v2_interval_t, months}
-            <*> peekByteOff ptr #{offset duckdb_v2_interval_t, days}
-            <*> peekByteOff ptr #{offset duckdb_v2_interval_t, micros}
-    poke ptr DuckDBV2IntervalT{..} = do
-        pokeByteOff ptr #{offset duckdb_v2_interval_t, months} duckdbV2IntervalTMonths
-        pokeByteOff ptr #{offset duckdb_v2_interval_t, days} duckdbV2IntervalTDays
-        pokeByteOff ptr #{offset duckdb_v2_interval_t, micros} duckdbV2IntervalTMicros
+Uses the shared @DuckDBInterval@ storage and constructors.
+-}
+type DuckDBV2IntervalT = DuckDBInterval

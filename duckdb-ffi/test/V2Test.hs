@@ -26,7 +26,7 @@ import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 tests :: TestTree
 tests =
     testGroup
-        "DuckDB V2 preview"
+        "DuckDB V2"
         [ testCase "environment refuses destruction while an instance is alive" testEnvironment
         , testCase "streamed query exposes schema, selection and validity" testQuery
         , testCase "statement binding exposes output and parameter schemas" testBind
@@ -206,9 +206,9 @@ testStrings = withConnection $ \conn -> withView "alpha\0omega" $ \input ->
 
 testNumericStructures :: IO ()
 testNumericStructures = withConnection $ \conn -> do
-    let huge = DuckDBV2HugeintT 0xffffffffffffffff (-7)
-        unsigned = DuckDBV2UhugeintT 0xfffffffffffffffd 13
-        interval = DuckDBV2IntervalT 3 (-2) 1234567
+    let huge = DuckDBHugeInt 0xffffffffffffffff (-7)
+        unsigned = DuckDBUHugeInt 0xfffffffffffffffd 13
+        interval = DuckDBInterval 3 (-2) 1234567
     with huge $ \ptr ->
         withHandle (c_duckdb_v2_value_create_hugeint_with_connection conn ptr) c_duckdb_v2_value_destroy $ \value ->
             output (c_duckdb_v2_value_get_hugeint value) >>= (@?= huge)
@@ -668,22 +668,22 @@ testArrow = withConnection $ \conn -> withStatement conn "SELECT i::BIGINT AS am
     checked (c_duckdb_v2_arrow_result_to_arrow_c_stream result streamPtr)
     peek result >>= (@?= nullPtr)
     stream <- peek streamPtr
-    assertBool "Arrow stream owns a release callback" (duckdbV2ArrowArrayStreamRelease stream /= nullFunPtr)
-    flip finally (callDuckDBV2ArrowArrayStreamReleaseFn (duckdbV2ArrowArrayStreamRelease stream) streamPtr) $ do
+    assertBool "Arrow stream owns a release callback" (arrowStreamRelease stream /= nullFunPtr)
+    flip finally (callDuckDBV2ArrowArrayStreamReleaseFn (arrowStreamRelease stream) streamPtr) $ do
         alloca $ \schemaPtr -> do
             fillBytes schemaPtr 0 (sizeOf (undefined :: DuckDBV2ArrowSchema))
-            callDuckDBV2ArrowArrayStreamGetSchemaFn (duckdbV2ArrowArrayStreamGetSchema stream) streamPtr schemaPtr >>= (@?= 0)
+            callDuckDBV2ArrowArrayStreamGetSchemaFn (arrowStreamGetSchema stream) streamPtr schemaPtr >>= (@?= 0)
             schema <- peek schemaPtr
-            duckdbV2ArrowSchemaNChildren schema @?= 1
-            callDuckDBV2ArrowSchemaReleaseFn (duckdbV2ArrowSchemaRelease schema) schemaPtr
+            arrowSchemaChildCount schema @?= 1
+            callDuckDBV2ArrowSchemaReleaseFn (arrowSchemaRelease schema) schemaPtr
         let fetch total = alloca $ \arrayPtr -> do
                 fillBytes arrayPtr 0 (sizeOf (undefined :: DuckDBV2ArrowArray))
-                callDuckDBV2ArrowArrayStreamGetNextFn (duckdbV2ArrowArrayStreamGetNext stream) streamPtr arrayPtr >>= (@?= 0)
+                callDuckDBV2ArrowArrayStreamGetNextFn (arrowStreamGetNext stream) streamPtr arrayPtr >>= (@?= 0)
                 array <- peek arrayPtr
-                if duckdbV2ArrowArrayRelease array == nullFunPtr
+                if arrowArrayRelease array == nullFunPtr
                     then pure total
                     else do
-                        let count = duckdbV2ArrowArrayLength array
-                        callDuckDBV2ArrowArrayReleaseFn (duckdbV2ArrowArrayRelease array) arrayPtr
+                        let count = arrowArrayLength array
+                        callDuckDBV2ArrowArrayReleaseFn (arrowArrayRelease array) arrayPtr
                         fetch (total + count)
         fetch 0 >>= (@?= 5)

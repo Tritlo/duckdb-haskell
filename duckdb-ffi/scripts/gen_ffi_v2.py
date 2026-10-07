@@ -131,6 +131,41 @@ class Function:
     doc: str
 
 
+# These layouts also occur in the original C API. Reuse their Haskell storage
+# only while every field and callback signature matches the pinned V2 header.
+SHARED_STRUCTURES: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = {
+    "ArrowSchema": ("ArrowSchema", (
+        ("const char *", "format"), ("const char *", "name"), ("const char *", "metadata"),
+        ("int64_t", "flags"), ("int64_t", "n_children"), ("struct ArrowSchema **", "children"),
+        ("struct ArrowSchema *", "dictionary"), ("ArrowSchema_release_fn", "release"), ("void *", "private_data"),
+    )),
+    "ArrowArray": ("ArrowArray", (
+        ("int64_t", "length"), ("int64_t", "null_count"), ("int64_t", "offset"),
+        ("int64_t", "n_buffers"), ("int64_t", "n_children"), ("const void **", "buffers"),
+        ("struct ArrowArray **", "children"), ("struct ArrowArray *", "dictionary"),
+        ("ArrowArray_release_fn", "release"), ("void *", "private_data"),
+    )),
+    "ArrowArrayStream": ("ArrowArrayStream", (
+        ("ArrowArrayStream_get_schema_fn", "get_schema"), ("ArrowArrayStream_get_next_fn", "get_next"),
+        ("ArrowArrayStream_get_last_error_fn", "get_last_error"), ("ArrowArrayStream_release_fn", "release"),
+        ("void *", "private_data"),
+    )),
+    "duckdb_v2_list_entry": ("DuckDBListEntry", (("idx_t", "offset"), ("idx_t", "length"))),
+    "duckdb_v2_hugeint_t": ("DuckDBHugeInt", (("uint64_t", "lower"), ("int64_t", "upper"))),
+    "duckdb_v2_uhugeint_t": ("DuckDBUHugeInt", (("uint64_t", "lower"), ("uint64_t", "upper"))),
+    "duckdb_v2_interval_t": ("DuckDBInterval", (("int32_t", "months"), ("int32_t", "days"), ("int64_t", "micros"))),
+}
+
+SHARED_ARROW_CALLBACKS: dict[str, tuple[str, str, tuple[str, ...]]] = {
+    "ArrowSchema_release_fn": ("ArrowSchemaRelease", "void", ("struct ArrowSchema *",)),
+    "ArrowArray_release_fn": ("ArrowArrayRelease", "void", ("struct ArrowArray *",)),
+    "ArrowArrayStream_get_schema_fn": ("ArrowStreamGetSchema", "int", ("struct ArrowArrayStream *", "struct ArrowSchema *")),
+    "ArrowArrayStream_get_next_fn": ("ArrowStreamGetNext", "int", ("struct ArrowArrayStream *", "struct ArrowArray *")),
+    "ArrowArrayStream_get_last_error_fn": ("ArrowStreamGetLastError", "const char *", ("struct ArrowArrayStream *",)),
+    "ArrowArrayStream_release_fn": ("ArrowStreamRelease", "void", ("struct ArrowArrayStream *",)),
+}
+
+
 class Generator:
     def __init__(self, source: str) -> None:
         self.source = source
@@ -219,6 +254,21 @@ class Generator:
                 self.hs_type(param.ctype)
                 if self.by_value(param.ctype):
                     raise ValueError(f"structure-by-value parameter requires an explicit C bridge: {function.name}.{param.name}")
+        self.check_shared_types()
+
+    def check_shared_types(self) -> None:
+        if not re.search(r"typedef\s+uint64_t\s+idx_t\s*;", self.clean) or self.aliases.get("duckdb_v2_sel_t") != "uint32_t":
+            raise ValueError("shared index or selection type changed")
+        for name, (_, expected) in SHARED_STRUCTURES.items():
+            actual = tuple((field.ctype, field.name) for field in self.structs.get(name, []))
+            if actual != expected:
+                raise ValueError(f"shared structure changed: {name}")
+        callbacks = {name: (result, params) for name, (_, result, params) in SHARED_ARROW_CALLBACKS.items()}
+        callbacks["duckdb_v2_opaque_destroy_fn"] = ("void", ("void *",))
+        for name, expected in callbacks.items():
+            callback = self.callbacks.get(name)
+            if callback is None or (callback.result, tuple(param.ctype for param in callback.params)) != expected:
+                raise ValueError(f"shared callback signature changed: {name}")
 
     def base(self, ctype: str) -> str:
         return re.sub(r"\b(?:const|struct)\b|\*", "", ctype).strip()
@@ -239,6 +289,8 @@ class Generator:
             hs = primitives[base]
         elif base in self.handles or base in self.aliases or base in self.enums or base in self.structs:
             hs = hs_name(base)
+        elif base == "duckdb_v2_opaque_destroy_fn":
+            hs = "DuckDBDeleteCallback"
         elif base in self.callbacks:
             hs = "FunPtr " + hs_name(base)
         else:
@@ -254,12 +306,15 @@ class Generator:
         return " -> ".join(parts)
 
     def types(self) -> str:
-        out = ["{-# LANGUAGE CPP #-}\n{-# LANGUAGE EmptyDataDecls #-}\n{-# LANGUAGE GeneralizedNewtypeDeriving #-}\n{-# LANGUAGE PatternSynonyms #-}\n{-# LANGUAGE RecordWildCards #-}\n\n", haddock("Raw types for the DuckDB V2 preview API.\n\nGenerated from the pinned header by @scripts/gen_ffi_v2.py@.\nStructure layouts and enum values come from that header through hsc2hs.\nKeep this module and the native library at the same upstream revision.\nSource documentation records the upstream API lifecycle status."), "module Database.DuckDB.FFI.V2.Types where\n\n", "#define DUCKDB_V2_API_ALLOW_UNSTABLE 1\n#include \"duckdb_v2.h\"\n\n", "import Data.Int (Int8, Int16, Int32, Int64)\nimport Data.Word (Word8, Word16, Word32, Word64)\nimport Foreign.C.Types (CBool(..), CChar(..), CInt(..), CFloat(..), CDouble(..))\nimport Foreign.Ptr (Ptr, FunPtr, castPtr, plusPtr)\nimport Foreign.Storable (Storable(..), peekByteOff, pokeByteOff)\n\n", haddock("DuckDB's unsigned index type."), "type DuckDBV2Idx = #{type idx_t}\n\n"]
+        shared = ",\n    ".join(f"{target}(..)" for target, _ in SHARED_STRUCTURES.values())
+        shared_names = "DuckDBIdx, DuckDBSel, DuckDBDeleteCallback"
+        out = ["{-# LANGUAGE CPP #-}\n{-# LANGUAGE EmptyDataDecls #-}\n{-# LANGUAGE GeneralizedNewtypeDeriving #-}\n{-# LANGUAGE PatternSynonyms #-}\n{-# LANGUAGE RecordWildCards #-}\n\n", haddock("Raw types for the DuckDB V2 C API.\n\nGenerated from the pinned header by @scripts/gen_ffi_v2.py@.\nShared C layouts use the types from @Database.DuckDB.FFI.Types@.\nOther layouts and enum values come from the header through hsc2hs.\nKeep this module and the native library at the same upstream revision.\nSource documentation records the upstream API lifecycle status."), f"module Database.DuckDB.FFI.V2.Types (\n    module Database.DuckDB.FFI.V2.Types,\n    {shared},\n    {shared_names}\n    ) where\n\n", "#define DUCKDB_V2_API_ALLOW_UNSTABLE 1\n#include \"duckdb_v2.h\"\n\n", f"import Database.DuckDB.FFI.Types (\n    {shared},\n    {shared_names}\n    )\n", "import Data.Word (Word32, Word64)\nimport Foreign.C.Types (CBool(..), CChar(..), CInt(..))\nimport Foreign.Ptr (Ptr, FunPtr, castPtr, plusPtr)\nimport Foreign.Storable (Storable(..), peekByteOff, pokeByteOff)\n\n", haddock("DuckDB's unsigned index type."), "type DuckDBV2Idx = DuckDBIdx\n\n"]
         for name in self.handles:
             marker = hs_name(name.removesuffix("_handle"))
             out += [haddock(f"Opaque target of @{name}@.\n\nDo not read or write the target storage."), f"data {marker}\n\n", haddock(self.docs.get(name, f"The @{name}@ handle.")), f"type {hs_name(name)} = Ptr {marker}\n\n"]
         for name, target in self.aliases.items():
-            out += [haddock(self.docs[name]), f"type {hs_name(name)} = {self.hs_type(target)}\n\n"]
+            hs_target = "DuckDBSel" if name == "duckdb_v2_sel_t" else self.hs_type(target)
+            out += [haddock(self.docs[name]), f"type {hs_name(name)} = {hs_target}\n\n"]
         for name, members in self.enums.items():
             hs = hs_name(name)
             out += [haddock(self.docs[name]), f"newtype {hs} = {hs} (#{'{type ' + name + '}'})\n    deriving (Eq, Ord, Show, Read, Storable)\n\n"]
@@ -276,10 +331,13 @@ class Generator:
             out += [haddock(f"The @{constant}@ constant from the pinned header."), f"{public} :: Word32\n{public} = #{{const {constant}}}\n\n"]
         for name in self.structs:
             out.append(self.structure(name))
-        return "".join(out).replace("import Data.Int (Int8, Int16, Int32, Int64)", "import Data.Int (Int32, Int64)").replace("import Data.Word (Word8, Word16, Word32, Word64)", "import Data.Word (Word32, Word64)").replace("import Foreign.C.Types (CBool(..), CChar(..), CInt(..), CFloat(..), CDouble(..))", "import Foreign.C.Types (CBool(..), CChar(..), CInt(..))")
+        return "".join(out)
 
     def structure(self, name: str) -> str:
         hs = hs_name(name)
+        if name in SHARED_STRUCTURES:
+            target, _ = SHARED_STRUCTURES[name]
+            return haddock(self.docs[name] + f"\n\nUses the shared @{target}@ storage and constructors.") + f"type {hs} = {target}\n\n"
         c_name = "struct " + name if name.startswith("Arrow") else name
         fields = self.structs[name]
         if name == "duckdb_v2_bytes":
@@ -309,13 +367,19 @@ class Generator:
         return "".join(out)
 
     def imports(self) -> str:
-        out = ["{-# LANGUAGE ForeignFunctionInterface #-}\n\n", haddock("Complete raw DuckDB V2 preview C API.\n\nGenerated from the pinned header by @scripts/gen_ffi_v2.py@.\nEvery import calls the C function directly with its native signature.\nEvery import is safe because calls can run registered Haskell callbacks.\nSource documentation records the upstream API lifecycle status.\nCallers must pin the matching native library."), "module Database.DuckDB.FFI.V2.Functions where\n\nimport Database.DuckDB.FFI.V2.Types\nimport Data.Int (Int8, Int16, Int32, Int64)\nimport Data.Word (Word8, Word16, Word32, Word64)\nimport Foreign.C.Types (CBool(..), CChar(..), CInt(..), CFloat(..), CDouble(..))\nimport Foreign.Ptr (Ptr, FunPtr)\n\n"]
+        out = ["{-# LANGUAGE ForeignFunctionInterface #-}\n\n", haddock("Complete raw DuckDB V2 C API.\n\nGenerated from the pinned header by @scripts/gen_ffi_v2.py@.\nEvery import calls the C function directly with its native signature.\nEvery import is safe because calls can run registered Haskell callbacks.\nSource documentation records the upstream API lifecycle status.\nCallers must pin the matching native library."), "module Database.DuckDB.FFI.V2.Functions where\n\nimport qualified Database.DuckDB.FFI.Arrow as Arrow\nimport Database.DuckDB.FFI.V2.Types\nimport Data.Int (Int8, Int16, Int32, Int64)\nimport Data.Word (Word8, Word16, Word32, Word64)\nimport Foreign.C.Types (CBool(..), CChar(..), CInt(..), CFloat(..), CDouble(..))\nimport Foreign.Ptr (Ptr, FunPtr)\n\n"]
         for function in self.functions:
             out += [haddock(function.doc), f'foreign import ccall safe "{function.name}"\n    c_{function.name} :: {self.signature(function)}\n\n']
         for name, callback in self.callbacks.items():
             hs = hs_name(name)
-            out += [haddock(f"Create a function pointer for '{hs}'.\n\nKeep the pointer alive while DuckDB can invoke it. Free the pointer with\n@freeHaskellFunPtr@ after its final possible invocation.\nThe callback must not throw an exception across the C boundary."), f'foreign import ccall "wrapper"\n    mk{hs} :: {hs} -> IO (FunPtr {hs})\n\n', haddock(f"Call a function pointer with the '{hs}' signature.")]
-            out += [f'foreign import ccall safe "dynamic"\n    call{hs} :: FunPtr {hs} -> {self.signature(callback)}\n\n']
+            pointer = self.hs_type(name)
+            io_pointer = f"({pointer})" if " " in pointer else pointer
+            out.append(haddock(f"Create a function pointer for '{hs}'.\n\nKeep the pointer alive while DuckDB can invoke it. Free the pointer with\n@freeHaskellFunPtr@ after its final possible invocation.\nThe callback must not throw an exception across the C boundary."))
+            if name in SHARED_ARROW_CALLBACKS:
+                target, _, _ = SHARED_ARROW_CALLBACKS[name]
+                out += [f"mk{hs} :: {hs} -> IO {io_pointer}\nmk{hs} = Arrow.wrap{target}\n\n", haddock(f"Call a function pointer with the '{hs}' signature."), f"call{hs} :: {pointer} -> {self.signature(callback)}\ncall{hs} = Arrow.mk{target}\n\n"]
+            else:
+                out += [f'foreign import ccall "wrapper"\n    mk{hs} :: {hs} -> IO {io_pointer}\n\n', haddock(f"Call a function pointer with the '{hs}' signature."), f'foreign import ccall safe "dynamic"\n    call{hs} :: {pointer} -> {self.signature(callback)}\n\n']
         return "".join(out)
 
 def format_haskell(source: str, filename: Path) -> str:
@@ -350,7 +414,7 @@ def main() -> None:
     outputs = {
         PACKAGE / "src/Database/DuckDB/FFI/V2/Types.hsc": gen.types(),
         PACKAGE / "src/Database/DuckDB/FFI/V2/Functions.hs": gen.imports(),
-        PACKAGE / "src/Database/DuckDB/FFI/V2.hs": "-- | Raw bindings for the pinned DuckDB V2 preview API.\nmodule Database.DuckDB.FFI.V2 (\n    module Database.DuckDB.FFI.V2.Types,\n    module Database.DuckDB.FFI.V2.Functions,\n) where\n\nimport Database.DuckDB.FFI.V2.Functions\nimport Database.DuckDB.FFI.V2.Types\n",
+        PACKAGE / "src/Database/DuckDB/FFI/V2.hs": "-- | Raw bindings for the pinned DuckDB V2 C API.\nmodule Database.DuckDB.FFI.V2 (\n    module Database.DuckDB.FFI.V2.Types,\n    module Database.DuckDB.FFI.V2.Functions,\n) where\n\nimport Database.DuckDB.FFI.V2.Functions\nimport Database.DuckDB.FFI.V2.Types\n",
     }
     failed: list[str] = []
     for path, source in outputs.items():

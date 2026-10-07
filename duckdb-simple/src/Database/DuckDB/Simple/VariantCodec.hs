@@ -29,13 +29,13 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
 import Data.Word (Word32, Word8)
 import Database.DuckDB.FFI
-import Database.DuckDB.Simple.Element (decodeElement)
+import Database.DuckDB.Simple.Element (bitStringFromBytes, decodeElement)
 import Database.DuckDB.Simple.FromField (
     BigNum (..),
-    BitString (BitString),
     DecimalValue (..),
     FieldValue (..),
     RawGeometry (..),
+    fromBigNumBytes,
  )
 import Database.DuckDB.Simple.Internal (destroyLogicalType)
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), StructValue (..))
@@ -44,7 +44,6 @@ import Foreign.Marshal.Alloc (alloca, allocaBytesAligned)
 import Foreign.Marshal.Utils (copyBytes)
 import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.Storable (Storable, peek, peekElemOff, poke, sizeOf)
-import GHC.Num.Integer (integerFromWordList)
 import Text.Read (readMaybe)
 
 -- | Raise a codec error before an invalid native operation.
@@ -410,16 +409,13 @@ decodeScalar tag bytes = case tag of
     31 -> FieldBigNum . BigNum <$> checked (readString bytes >>= decodeBigNum)
     32 -> checked do
         bitBytes <- readString bytes
-        case BS.uncons bitBytes of
-            Just (padding, dat) -> do
-                checkBit padding dat
-                case BS.uncons dat of
-                    Just (first, rest) -> do
-                        let maskBits = paddingMask padding
-                        unless (first .&. maskBits == maskBits) (Left "invalid native BIT padding")
-                        pure (FieldBit (BitString padding (BS.cons (first .&. complement maskBits) rest)))
-                    Nothing -> Left "empty BIT data"
-            Nothing -> Left "missing BIT header"
+        case BS.unpack (BS.take 2 bitBytes) of
+            [padding, first] -> do
+                when (padding > 7) (Left "BIT padding exceeds seven")
+                let maskBits = paddingMask padding
+                unless (first .&. maskBits == maskBits) (Left "invalid native BIT padding")
+                pure (FieldBit (bitStringFromBytes bitBytes))
+            _ -> Left "BIT requires a padding byte and nonempty data"
     33 -> FieldGeometry . (`RawGeometry` Nothing) <$> checked (readString bytes)
     _ -> case fixedWidthTag tag of
         Just (dtype, size) -> decodeFixedWidth dtype size bytes
@@ -475,17 +471,11 @@ variantObject entries =
   where
     indexed items = listArray (0, length items - 1) items
 
--- | Check a BIT's nonempty data and left-padding count.
-checkBit :: Word8 -> ByteString -> Either String ()
-checkBit padding bytes
-    | padding > 7 || BS.null bytes = Left "BIT requires nonempty data and padding from 0 to 7"
-    | otherwise = Right ()
-
 -- | Get the high-bit mask used for native BIT padding.
 paddingMask :: Word8 -> Word8
 paddingMask padding = complement ((1 `shiftL` (8 - fromIntegral padding)) - 1)
 
--- | Decode BIGNUM's sign, checked three-byte length header, and magnitude.
+-- | Check BIGNUM's sign, three-byte length header, and magnitude, then decode it.
 decodeBigNum :: ByteString -> Either String Integer
 decodeBigNum bytes = do
     when (BS.length bytes < 4) (Left "truncated BIGNUM header or magnitude")
@@ -499,12 +489,4 @@ decodeBigNum bytes = do
     case BS.uncons magnitude of
         Just (0, rest) | not (BS.null rest) || negative -> Left "noncanonical BIGNUM magnitude"
         _ -> Right ()
-    let wordBytes = finiteBitSize (0 :: Word) `div` 8
-        firstCount = BS.length magnitude `mod` wordBytes
-        (first, rest) = BS.splitAt firstCount magnitude
-        chunks input
-            | BS.null input = []
-            | otherwise = let (part, remaining) = BS.splitAt wordBytes input in part : chunks remaining
-        limbs = (if BS.null first then id else (first :)) (chunks rest)
-        toWord = BS.foldl' (\n byte -> n `shiftL` 8 .|. fromIntegral byte) 0
-    pure (integerFromWordList negative (map toWord limbs))
+    pure (fromBigNumBytes (BS.unpack bytes))

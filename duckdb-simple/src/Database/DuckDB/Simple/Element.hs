@@ -6,6 +6,7 @@ uses them for the types whose element needs no logical type metadata.
 -}
 module Database.DuckDB.Simple.Element (
     chunkIsRowValid,
+    bitStringFromBytes,
     chunkDecodeBlob,
     decodeElement,
     duckDBHugeIntToInteger,
@@ -63,6 +64,16 @@ chunkDecodeBlob dataPtr rowIdx = do
 duckdbStringTSize :: Int
 duckdbStringTSize = 16
 
+{- | Decode DuckDB's BIT bytes: a padding count, then the data bytes. Clear the
+unused high bits of the first data byte, which DuckDB sets.
+-}
+bitStringFromBytes :: BS.ByteString -> BitString
+bitStringFromBytes bytes = case BS.unpack bytes of
+    [] -> BitString 0 BS.empty
+    [padding] -> BitString padding BS.empty
+    padding : first : rest ->
+        BitString padding (BS.pack (foldl clearBit first [8 - fromIntegral padding .. 7] : rest))
+
 -- | Borrow the logical type of a vector. The type is destroyed after the action.
 withVectorType :: DuckDBVector -> (DuckDBLogicalType -> IO a) -> IO a
 withVectorType vector = bracket (c_duckdb_vector_get_column_type vector) destroyLogicalType
@@ -109,13 +120,7 @@ decodeElement dtype dataPtr rowIdx = case dtype of
     DuckDBTypeInterval -> FieldInterval . intervalValueFromDuckDB <$> peekElemOff (castPtr dataPtr) rowIdx
     DuckDBTypeHugeInt -> FieldHugeInt . duckDBHugeIntToInteger <$> peekElemOff (castPtr dataPtr) rowIdx
     DuckDBTypeUHugeInt -> FieldUHugeInt . duckDBUHugeIntToInteger <$> peekElemOff (castPtr dataPtr) rowIdx
-    DuckDBTypeBit -> do
-        bytes <- BS.unpack <$> chunkDecodeBlob dataPtr index
-        pure $ FieldBit case bytes of
-            [] -> BitString 0 BS.empty
-            [padding] -> BitString padding BS.empty
-            paddingByte : first : rest ->
-                BitString paddingByte (BS.pack (foldl clearBit first [8 - fromIntegral paddingByte .. 7] : rest))
+    DuckDBTypeBit -> FieldBit . bitStringFromBytes <$> chunkDecodeBlob dataPtr index
     DuckDBTypeBigNum -> do
         bytes <- chunkDecodeBlob dataPtr index
         pure (FieldBigNum (BigNum (if BS.length bytes < 3 then 0 else fromBigNumBytes (BS.unpack bytes))))

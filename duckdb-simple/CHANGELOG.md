@@ -18,11 +18,12 @@ These changes target the 0.3.0.0 release. Do not release review branches separat
   native constructors cannot represent all of these names.
   `Variant` has no `ToDuckValue` instance, and `logicalTypeFromRep` raises an
   error for VARIANT.
-- Read the VARIANT type and GEOMETRY types for a list of CRS definitions when
-  a connection opens, because the C API cannot create them. Parameters use
-  these types. Add `ConnectionOptions`, `openWithOptions`, and
+- Read the VARIANT type and GEOMETRY types for a list of CRS definitions,
+  because the C API cannot create them. A connection reads them with one
+  query on a separate connection, the first time a parameter needs one.
+  Parameters use these types. Add `ConnectionOptions`, `openWithOptions`, and
   `withConnectionWithOptions` to set the CRS list, which defaults to
-  `OGC:CRS84`. Opening an in-memory database takes about 0.45 ms longer.
+  `OGC:CRS84`.
 - Array parameters use the element's `ToField` instance. Elements require
   `ToField` and `DuckDBColumnType`.
 - A GEOMETRY payload decodes to `FieldGeometry` with raw WKB. Import those

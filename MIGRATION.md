@@ -37,8 +37,8 @@ See [the Geometry notes](duckdb-simple/README.md#geometry) for examples and limi
 Native DuckDB >= 1.5.3 and < 1.6 remains supported.
 
 The C API cannot create a GEOMETRY type with a CRS. Each connection reads
-GEOMETRY types for a list of CRS definitions when it opens, and composite
-parameters use them. The list defaults to `OGC:CRS84`. Set it with
+GEOMETRY types for a list of CRS definitions the first time a parameter needs
+one, and composite parameters use them. The list defaults to `OGC:CRS84`. Set it with
 `ConnectionOptions`, `openWithOptions`, or `withConnectionWithOptions`. A CRS
 outside the list binds without a CRS, and `logicalTypeFromRep` creates
 `GEOMETRY` with no CRS. To apply a CRS in these cases, insert the value into a
@@ -56,7 +56,8 @@ notes](duckdb-simple/README.md#variant) for private-format and
 persistent-storage requirements.
 
 `Variant` binds as a VARIANT parameter. The connection reads the VARIANT type
-when it opens, because the C API cannot create a usable VARIANT type.
+the first time a parameter needs it, because the C API cannot create a usable
+VARIANT type.
 `Variant` has no `ToDuckValue` instance, and `logicalTypeFromRep` raises an
 error for VARIANT.
 

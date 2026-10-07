@@ -67,7 +67,8 @@ Format Cabal files with `cabal-gild`. Keep names consistent with the surrounding
 module.
 
 Build parameter types with the type cache of the statement's connection. The
-connection fills the cache when it opens. Do not run queries during binding.
+cache reads its types on a separate connection the first time a parameter
+needs one. Do not run queries on the statement's connection during binding.
 
 ## Native library configuration
 

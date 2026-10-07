@@ -393,7 +393,10 @@ plain value and cast it in SQL, as in `?::VARIANT`.
 
 The C API cannot create a usable VARIANT type
 ([#27](https://github.com/Tritlo/duckdb-haskell/issues/27)). Each connection
-reads the VARIANT type when it opens, and its parameters use that type.
+reads the VARIANT type the first time a parameter needs it, and its
+parameters use that type. The connection reads the type with a query on a
+separate connection. So the query does not run in your transaction, and it
+does not end a streaming result.
 `Variant` has no `ToDuckValue` instance, and `logicalTypeFromRep` raises an
 error for VARIANT, because neither has a connection.
 
@@ -485,7 +488,8 @@ including inside LIST, ARRAY, MAP, STRUCT, and UNION values.
 
 `LogicalTypeGeometry` describes CRS metadata. The C API cannot create a
 GEOMETRY type with a CRS. So each connection reads a GEOMETRY type for each
-CRS in a list when it opens, with one query. The default list holds
+CRS in a list, together with the VARIANT type, the first time a parameter
+needs one of them. The default list holds
 `OGC:CRS84`. Composite parameters use these types, so typed NULLs, empty
 collections, and inactive UNION members keep their CRS. Set the list in
 `ConnectionOptions`:

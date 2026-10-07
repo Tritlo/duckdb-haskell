@@ -124,6 +124,12 @@ tests =
             let value = variantObject [("xs", FieldList [FieldNull, FieldInt64 42])]
             roundTrip conn value
             (query conn "SELECT typeof(?)" (Only (Variant value)) :: IO [Only Text]) >>= (@?= [Only "VARIANT"])
+        , testCase "the first VARIANT parameter does not end a streaming result" $ withConnection ":memory:" \conn ->
+            withStatement conn "SELECT ?" \stmt -> do
+                total <- Streaming.fold_ conn "SELECT i FROM range(100000) t(i)" 0 \acc (Only i) -> do
+                    when (i == 0) (bind stmt [toField (Variant (FieldInt64 42))])
+                    pure (acc + i)
+                total @?= (sum [0 .. 99999] :: Int64)
         , testCase "VARIANT type construction raises an error" $ do
             result <- try (bracket (logicalTypeFromRep (LogicalTypeScalar DuckDBTypeVariant)) destroyLogicalType (const (pure ())))
             case result of

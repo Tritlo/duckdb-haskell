@@ -85,6 +85,8 @@ openCloseCycle = do
     stmt <- openStatement conn "SELECT 42"
     closeStatement stmt
     _ <- query_ conn "SELECT 42" :: IO [Only Int64]
+    -- The first VARIANT parameter fills the type cache. Close must destroy it.
+    _ <- query conn "SELECT ?" (Only (Variant (FieldInt64 42))) :: IO [Only Variant]
     -- A TIMETZ offset with seconds fails during result materialization.
     -- The result and connection must still be destroyed.
     rejected <- try (query_ conn "SELECT {'xs': [i, i + 1, i + 2, i + 3], 'bad': '12:00:00+01:23:45'::TIMETZ} FROM range(100000) t(i)") :: IO (Either SomeException [Only FieldValue])

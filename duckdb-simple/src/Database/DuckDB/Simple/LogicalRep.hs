@@ -179,7 +179,7 @@ logicalTypeToRep logical = do
 The C API cannot create a usable VARIANT type or a GEOMETRY type with a CRS.
 This function raises an error for VARIANT. It creates GEOMETRY without a CRS
 and ignores the CRS of 'LogicalTypeGeometry'. Parameter binding uses the
-types that a connection reads when it opens.
+types that a connection reads the first time a parameter needs one.
 -}
 logicalTypeFromRep :: LogicalTypeRep -> IO DuckDBLogicalType
 logicalTypeFromRep = logicalTypeFromRepWith \case

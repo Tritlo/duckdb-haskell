@@ -149,8 +149,9 @@ data ConnectionOptions = ConnectionOptions
     { connectionConfig :: [(Text, Text)]
     -- ^ DuckDB configuration flags, as for 'openWithConfig'.
     , connectionGeometryCRS :: [Text]
-    {- ^ CRS definitions. The connection reads a GEOMETRY type for each CRS when
-    it opens. Parameters can then contain GEOMETRY types with these CRSs.
+    {- ^ CRS definitions. The connection reads a GEOMETRY type for each CRS
+    the first time a parameter needs a VARIANT type or a GEOMETRY type with a
+    CRS. Parameters can then contain GEOMETRY types with these CRSs.
     -}
     }
     deriving (Eq, Show)
@@ -164,7 +165,8 @@ defaultConnectionOptions =
         }
 
 {- | Open a DuckDB database with options. The connection reads the VARIANT type
-and the GEOMETRY types for the configured CRSs with one query.
+and the GEOMETRY types for the configured CRSs the first time a parameter
+needs one of them. It reads them with one query on a separate connection.
 -}
 openWithOptions :: FilePath -> ConnectionOptions -> IO Connection
 openWithOptions path ConnectionOptions{connectionConfig, connectionGeometryCRS} =
@@ -175,7 +177,7 @@ openWithOptions path ConnectionOptions{connectionConfig, connectionGeometryCRS} 
                 `onException` closeDatabaseHandle db
         let closeBoth = closeConnectionHandle conn >> closeDatabaseHandle db
         cache <-
-            createTypeCache conn connectionGeometryCRS
+            createTypeCache db connectionGeometryCRS
                 `onException` closeBoth
         createConnection db conn cache
             `onException` (destroyTypeCache cache >> closeBoth)

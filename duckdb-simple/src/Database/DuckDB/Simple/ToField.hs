@@ -25,7 +25,7 @@ module Database.DuckDB.Simple.ToField (
 ) where
 
 import Control.Exception (bracket, throwIO)
-import Control.Monad (when)
+import Control.Monad (filterM, when)
 import Data.Array (Array, elems)
 import Data.Bits (complement, shiftL, shiftR, (.&.), (.|.))
 import qualified Data.ByteString as BS
@@ -451,7 +451,11 @@ utcTimestampDuckValue :: UTCTimestamp -> IO DuckDBValue
 utcTimestampDuckValue value =
     encodeUnbounded (encodeTimestampUnits 1000000 . utcToLocalTime utc) value >>= c_duckdb_create_timestamp_tz . DuckDBTimestamp
 
--- | Build an array value from its element type and a function for each element.
+{- | Build an array value with a function for each element. A scalar element
+type comes from the column type name of the element, so an empty array keeps
+it. Other element types, such as STRUCT, UNION, and ARRAY, come from the
+first element that is not NULL.
+-}
 arrayDuckValue ::
     forall a.
     (DuckDBColumnType a) =>
@@ -460,10 +464,27 @@ arrayDuckValue ::
     Array Int a ->
     IO DuckDBValue
 arrayDuckValue typeFromRep elementValue arr =
-    bracket (createElementLogicalType typeFromRep (Proxy :: Proxy a)) destroyLogicalType \elementType ->
-        withCreatedValues (map elementValue (elems arr)) \values ->
+    withCreatedValues (map elementValue (elems arr)) \values ->
+        withElementType values \elementType ->
             withDuckValues values \ptr ->
                 checkedValue (c_duckdb_create_array_value elementType ptr (fromIntegral (length values)))
+  where
+    typeName = duckdbColumnType (Proxy :: Proxy a)
+    withElementType values action =
+        case duckDBTypeFromName typeName of
+            Just dtype -> bracket (typeFromRep (LogicalTypeScalar dtype)) destroyLogicalType action
+            Nothing -> do
+                present <- filterM (fmap (== 0) . c_duckdb_is_null_value) values
+                case present of
+                    -- The value owns this type.
+                    value : _ -> c_duckdb_get_value_type value >>= action
+                    [] ->
+                        throwIO
+                            SQLError
+                                { sqlErrorMessage = "duckdb-simple: an empty or all-NULL array of " <> typeName <> " elements has no element type"
+                                , sqlErrorType = Nothing
+                                , sqlErrorQuery = Nothing
+                                }
 
 structValueDuckValue :: (LogicalTypeRep -> IO DuckDBLogicalType) -> StructValue FieldValue -> IO DuckDBValue
 structValueDuckValue typeFromRep StructValue{structValueFields, structValueTypes, structValueIndex = _} = do
@@ -719,24 +740,6 @@ typeMismatch expected actual =
                 <> expected
             )
         )
-
-createElementLogicalType :: forall a. (DuckDBColumnType a) => (LogicalTypeRep -> IO DuckDBLogicalType) -> Proxy a -> IO DuckDBLogicalType
-createElementLogicalType typeFromRep proxy =
-    let typeName = duckdbColumnType proxy
-     in case duckDBTypeFromName typeName of
-            Just dtype -> typeFromRep (LogicalTypeScalar dtype)
-            Nothing ->
-                throwIO
-                    ( SQLError
-                        { sqlErrorMessage =
-                            Text.concat
-                                [ "duckdb-simple: unsupported array element type "
-                                , typeName
-                                ]
-                        , sqlErrorType = Nothing
-                        , sqlErrorQuery = Nothing
-                        }
-                    )
 
 duckDBTypeFromName :: Text -> Maybe DuckDBType
 duckDBTypeFromName name =

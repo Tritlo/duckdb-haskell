@@ -27,6 +27,10 @@ These changes target the 0.3.0.0 release. Do not release review branches separat
 - Array parameters use the element's `ToField` instance. Elements require
   `ToField` and `DuckDBColumnType`. Add a `ToDuckValue` instance for arrays
   whose elements have `ToDuckValue`. It does not need a connection.
+- Array parameters of STRUCT values, UNION values, generic records, and
+  arrays bind. They take the element type of the first element that is not
+  NULL. An empty or all-NULL array of these elements raises an error. Scalar
+  elements keep the type of their column type name.
 - A GEOMETRY payload decodes to `FieldGeometry` with raw WKB. Import those
   bytes with `ST_GeomFromWKB(?)::VARIANT`.
 - Add parameter and result instances for `Data.Geometry.Geometry` from

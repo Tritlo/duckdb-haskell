@@ -194,6 +194,12 @@ storeList conn = do
   fmap fromOnly <$> query_ conn "SELECT vals FROM lists"
 ```
 
+An array parameter with scalar elements takes its element type from the
+column type name of the element, so an empty array keeps its type. An array
+of STRUCT values, UNION values, generic records, or arrays takes the type of
+its first element that is not NULL. An empty or all-NULL array of such
+elements raises an error.
+
 ### Infinite dates and timestamps
 
 Use `Database.DuckDB.Simple.Time` when a column can contain temporal infinity.

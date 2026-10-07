@@ -37,6 +37,7 @@ import Foreign.Storable (peek, poke)
 import GHC.Generics (Generic)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit
+import TestUtils (assertFailureIO)
 
 -- | Native timestamps used to test the full storage range.
 data NativeTimestamp = Seconds Int64 | Milliseconds Int64 | Microseconds Int64 | Nanoseconds Int64
@@ -82,6 +83,11 @@ data NamedRecord = NamedRecord {firstValue :: Int64, secondValue :: Int64}
 data NullableSum = EmptyMember | DataMember Int64
     deriving (Eq, Show, Generic)
 
+-- | A generic record for array parameters.
+data Pair = Pair {pairName :: Text, pairValue :: Int64}
+    deriving stock (Eq, Show, Generic)
+    deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB Pair)
+
 -- | Generic nullary constructors retain their existing UNION schema.
 data Colour = Red | Blue
     deriving stock (Eq, Show, Generic)
@@ -119,6 +125,16 @@ valueRegressionTests =
         , testCase "arrays bind through ToDuckValue without a connection" $ withConnection ":memory:" \conn -> do
             let values = listArray (0, 2) [1, -2, 3]
             (query conn "SELECT typeof(?), ?" (Scores values, Scores values) :: IO [(Text, Array Int Int64)]) >>= (@?= [("BIGINT[3]", values)])
+        , testCase "arrays of STRUCT, record, and ARRAY elements take the type of a present element" $ withConnection ":memory:" \conn -> do
+            [Only struct] <- query_ conn "SELECT {'a': 1, 'b': 'x'}" :: IO [Only (StructValue FieldValue)]
+            let structs = listArray (0, 1) [struct, struct]
+            (query conn "SELECT typeof(?), ?" (structs, structs) :: IO [(Text, Array Int (StructValue FieldValue))]) >>= (@?= [("STRUCT(a INTEGER, b VARCHAR)[2]", structs)])
+            let pairs = listArray (0, 2) [Nothing, Just (Pair "x" 1), Just (Pair "y" 2)]
+            (query conn "SELECT typeof(?), ?" (pairs, pairs) :: IO [(Text, Array Int (Maybe Pair))]) >>= (@?= [("STRUCT(pairName VARCHAR, pairValue BIGINT)[3]", pairs)])
+            let nested = listArray (0, 1) [listArray (0, 1) [1, 2], listArray (0, 1) [3, 4]] :: Array Int (Array Int Int64)
+            (query conn "SELECT typeof(?), ?" (nested, nested) :: IO [(Text, Array Int (Array Int Int64))]) >>= (@?= [("BIGINT[2][2]", nested)])
+        , testCase "empty arrays of record elements have no element type" $ withConnection ":memory:" \conn ->
+            assertFailureIO (query conn "SELECT ?" (Only (listArray (0, -1) [] :: Array Int Pair)) :: IO [Only Text])
         , testCase "GEOMETRY decodes as well-known binary" $ withConnection ":memory:" \conn -> do
             [Only bytes] <- query_ conn "SELECT 'POINT(1 2)'::GEOMETRY" :: IO [Only BS.ByteString]
             BS.length bytes @?= 21

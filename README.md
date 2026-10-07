@@ -1,5 +1,9 @@
 # duckdb-haskell
 
+Enable `duckdb-v2` for the DuckDB 2.0 preview API.
+See [the API snapshot, feature coverage, build commands, and release checklist](docs/duckdb-2.0.md).
+The default build uses the released DuckDB 1.5.6 library.
+
 ## duckdb-ffi
 
 Available on [Hackage](https://hackage.haskell.org/package/duckdb-ffi).
@@ -14,7 +18,8 @@ Haskell FFI.
   appenders, and Arrow integration.
 - Groups bindings into modules under `Database.DuckDB.FFI.*`.
 - Includes integration tests for the native bindings.
-- Supports DuckDB >= 1.5.3 and < 1.6, using the released 1.5.6 C header.
+- Supports DuckDB >= 1.5.3 and < 1.6 by default. The preview flag adds the
+  pinned DuckDB 2.0 C API snapshot.
 
 ### Native library installation
 

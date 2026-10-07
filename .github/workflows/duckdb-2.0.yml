@@ -1,0 +1,88 @@
+name: DuckDB 2.0 preparation
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            ghc: '9.6.7'
+          - os: ubuntu-latest
+            ghc: '9.8.4'
+          - os: ubuntu-latest
+            ghc: '9.10.3'
+          - os: ubuntu-latest
+            ghc: '9.12.4'
+          - os: ubuntu-latest
+            ghc: '9.14.1'
+          - os: macos-latest
+            ghc: '9.14.1'
+    name: ${{ matrix.os }} / GHC ${{ matrix.ghc }} / DuckDB 2.0 preview
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      DUCKDB_TEST_VERSION: 2.0.0-dev0
+      DUCKDB_BUILD_JOBS: '3'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: haskell-actions/setup@0f8e8c99d88aeb3fbfd523f1ef2c6f762d10d64d
+        with:
+          ghc-version: ${{ matrix.ghc }}
+          cabal-version: '3.18.1.0'
+      - name: Update the package index
+        run: cabal update
+      - name: Install the generator formatter
+        if: matrix.ghc == '9.14.1'
+        run: cabal install fourmolu-0.20.1.0 --ignore-project
+      - name: Check the pinned C API
+        run: python3 scripts/duckdb-api.py --check
+      - name: Check the generated bindings
+        if: matrix.ghc == '9.14.1'
+        run: python3 duckdb-ffi/scripts/gen_ffi_v2.py --check
+      - name: Build the matching native library
+        run: bash scripts/build-duckdb-preview.sh "$RUNNER_TEMP/duckdb-preview"
+      - name: Configure the preview bindings
+        run: |
+          printf 'package duckdb-ffi\n  flags: +duckdb-v2 +systemlib\n  extra-lib-dirs: %s\npackage duckdb-simple\n  flags: +duckdb-v2\n' \
+            "$RUNNER_TEMP/duckdb-preview/native" > cabal.project.local
+      - name: Build and test both APIs
+        env:
+          LD_BIND_NOW: '1'
+        run: |
+          cabal build all --with-compiler=ghc --disable-documentation
+          cabal test all --with-compiler=ghc --disable-documentation --test-show-details=direct
+      - name: Check v2 ownership with Valgrind
+        if: matrix.os == 'ubuntu-latest' && matrix.ghc == '9.12.4'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y valgrind
+          v2_test=$(cabal list-bin duckdb-ffi:duckdb-ffi-v2-test --with-compiler=ghc --disable-documentation)
+          valgrind --vgdb=no --leak-check=full \
+            --show-leak-kinds=definite,indirect,possible \
+            --errors-for-leak-kinds=definite,indirect \
+            --error-exitcode=97 --undef-value-errors=no --num-callers=30 \
+            "$v2_test" --num-threads=1 +RTS -N1 -RTS
+      - name: Check DataFrame integration and documentation
+        run: |
+          cabal build duckdb-simple-dataframe-test -fdataframe-tests --with-compiler=ghc --disable-documentation
+          cabal test duckdb-simple-dataframe-test -fdataframe-tests --with-compiler=ghc --disable-documentation --test-show-details=direct
+          cabal haddock all --with-compiler=ghc
+          cabal sdist all
+      - name: Report macOS test process crashes
+        if: failure() && matrix.os == 'macos-latest'
+        run: |
+          shopt -s nullglob
+          duckdb_crash_reports=("$HOME"/Library/Logs/DiagnosticReports/duckdb-simple*.ips "$HOME"/Library/Logs/DiagnosticReports/duckdb-simple*.crash)
+          if [ "${#duckdb_crash_reports[@]}" -gt 0 ]; then
+            cat "${duckdb_crash_reports[@]}"
+          else
+            echo "No macOS crash report was produced for duckdb-simple."
+          fi

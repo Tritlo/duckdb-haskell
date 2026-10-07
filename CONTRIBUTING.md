@@ -73,6 +73,11 @@ needs one. Do not run queries on the statement's connection during binding.
 
 ## Native library configuration
 
+See [docs/duckdb-2.0.md](docs/duckdb-2.0.md) for DuckDB 2.0 development.
+Enable `duckdb-v2` in both packages and supply the matching native library.
+Check the header ABI before you run the preview suites. The preview workflow
+builds the native library on Linux and macOS from the pinned header commit.
+
 The bindings support DuckDB >= 1.5.3 and < 1.6. Cabal downloads DuckDB 1.5.6
 to the user cache on glibc Linux and macOS. Set
 `--configure-option=--duckdb-install-dir=/absolute/path` to select another

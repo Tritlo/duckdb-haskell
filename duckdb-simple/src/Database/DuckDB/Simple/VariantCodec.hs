@@ -369,13 +369,6 @@ readString bytes = do
         then Left "string length exceeds payload size"
         else Right (BS.take (fromIntegral count) rest)
 
--- | Validate decimal metadata and its unscaled value.
-checkDecimal :: Word8 -> Word8 -> Integer -> Either String ()
-checkDecimal precision scale value
-    | precision < 1 || precision > 38 || scale > precision = Left "invalid decimal precision or scale"
-    | abs value >= 10 ^ precision = Left "unscaled decimal exceeds its precision"
-    | otherwise = Right ()
-
 -- | Decode the scalar tags from VariantLogicalType in DuckDB 1.5.
 decodeScalar :: Word8 -> ByteString -> IO FieldValue
 decodeScalar tag bytes = case tag of
@@ -388,7 +381,7 @@ decodeScalar tag bytes = case tag of
         when (precision < 1 || precision > 38 || scale > precision) (Left "invalid decimal metadata")
         let count = if precision <= 4 then 2 else if precision <= 9 then 4 else if precision <= 18 then 8 else 16
         value <- readSigned count digits
-        checkDecimal (fromIntegral precision) (fromIntegral scale) value
+        when (abs value >= 10 ^ precision) (Left "unscaled decimal exceeds its precision")
         pure (FieldDecimal (DecimalValue (fromIntegral precision) (fromIntegral scale) value))
     16 -> checked do
         string <- readString bytes

@@ -56,7 +56,7 @@ import Database.DuckDB.Simple.Internal (
     withQueryCString,
     withResult,
  )
-import Database.DuckDB.Simple.Materialize (prepareValueReader)
+import Database.DuckDB.Simple.Materialize (prepareVectorReader)
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (FunPtr, Ptr, castPtr, nullPtr)
@@ -360,11 +360,7 @@ type ColumnReader = DuckDBIdx -> IO Field
 
 makeColumnReader :: DuckDBDataChunk -> Int -> IO ColumnReader
 makeColumnReader chunk columnIndex = do
-    vector <- c_duckdb_data_chunk_get_vector chunk (fromIntegral columnIndex)
-    dtype <- bracket (c_duckdb_vector_get_column_type vector) destroyLogicalType c_duckdb_get_type_id
-    dataPtr <- c_duckdb_vector_get_data vector
-    validity <- c_duckdb_vector_get_validity vector
-    readValue <- prepareValueReader dtype vector dataPtr validity
+    readValue <- c_duckdb_data_chunk_get_vector chunk (fromIntegral columnIndex) >>= prepareVectorReader
     let name = Text.pack ("arg" <> show columnIndex)
     pure \rowIdx -> do
         value <- readValue (fromIntegral rowIdx)

@@ -76,6 +76,54 @@ jobs:
           cabal test duckdb-simple-dataframe-test -fdataframe-tests --with-compiler=ghc --disable-documentation --test-show-details=direct
           cabal haddock all --with-compiler=ghc
           cabal sdist all
+      - name: Check project and installed consumer headers
+        if: matrix.ghc == '9.14.1'
+        run: |
+          consumer="$RUNNER_TEMP/duckdb-preview-consumer"
+          mkdir -p "$consumer/source"
+          cat > "$consumer/Main.hs" <<'HS'
+          {-# LANGUAGE CApiFFI #-}
+          import Database.DuckDB.FFI (c_duckdb_library_version)
+          import Database.DuckDB.FFI.V2
+          import Foreign.C.String (peekCString, peekCStringLen)
+          import Foreign.C.Types (CInt (..))
+          import Foreign.Marshal.Alloc (alloca)
+          import Foreign.Ptr (nullPtr)
+          import Foreign.Storable (peek)
+          foreign import capi "duckdb_v2.h value DUCKDB_V2_API_VERSION_MAJOR"
+              major :: CInt
+          foreign import capi "duckdb.h value DUCKDB_TYPE_TIMESTAMP_TZ_NS"
+              timestampType :: CInt
+          main :: IO ()
+          main = do
+              if major /= 2 || timestampType /= 42 then fail "Wrong installed DuckDB headers" else pure ()
+              c_duckdb_library_version >>= peekCString >>= putStrLn
+              alloca $ \slot -> do
+                  err <- c_duckdb_v2_library_version slot nullPtr
+                  if err /= DuckDBV2ErrorNone then fail (show err) else do
+                      DuckDBV2Str pointer len <- peek slot
+                      peekCStringLen (pointer, fromIntegral len) >>= putStrLn
+          HS
+          unset LD_LIBRARY_PATH DYLD_LIBRARY_PATH DYLD_FALLBACK_LIBRARY_PATH
+          for way in -static -dynamic; do
+            cabal exec --with-compiler=ghc -- ghc "$way" -fforce-recomp -package duckdb-ffi "$consumer/Main.hs" -o "$consumer/project-check"
+            "$consumer/project-check" > "$consumer/versions"
+            test "$(cat "$consumer/versions")" = "$(printf 'v%s\nv%s' "$DUCKDB_TEST_VERSION" "$DUCKDB_TEST_VERSION")"
+          done
+          tar -xzf "$PWD"/dist-newstyle/sdist/duckdb-ffi-*.tar.gz -C "$consumer/source" --strip-components=1
+          printf 'packages: .\n' > "$consumer/source/cabal.project"
+          cabal install --lib duckdb-ffi --project-dir="$consumer/source" --project-file=cabal.project \
+            --with-compiler=ghc --disable-documentation \
+            -fduckdb-v2 -fsystemlib --extra-lib-dirs="$RUNNER_TEMP/duckdb-preview/native" \
+            --package-env="$consumer/environment"
+          package_id=$(awk '$1 == "package-id" && $2 ~ /^duckdb-ffi-/ {print $2}' "$consumer/environment")
+          store_dir=$(cabal path --store-dir)
+          test -s "$store_dir"/*/"$package_id"/lib/include/duckdb-LICENSE
+          for way in -static -dynamic; do
+            ghc "$way" -fforce-recomp -package-env "$consumer/environment" "$consumer/Main.hs" -o "$consumer/check"
+            "$consumer/check" > "$consumer/versions"
+            test "$(cat "$consumer/versions")" = "$(printf 'v%s\nv%s' "$DUCKDB_TEST_VERSION" "$DUCKDB_TEST_VERSION")"
+          done
       - name: Report macOS test process crashes
         if: failure() && matrix.os == 'macos-latest'
         run: |

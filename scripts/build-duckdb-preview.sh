@@ -55,6 +55,7 @@ cmake -S "$source_dir" -B "$build_dir/build" \
 cmake --build "$build_dir/build" --target duckdb --parallel "${DUCKDB_BUILD_JOBS:-2}"
 mkdir -p "$build_dir/native"
 cp "$source_dir"/src/include/duckdb*.h "$build_dir/native/"
+cp "$source_dir/LICENSE" "$build_dir/native/duckdb-LICENSE"
 case "$(uname -s)" in
   Darwin) cp "$build_dir/build/src/libduckdb.dylib" "$build_dir/native/" ;;
   *) cp "$build_dir/build/src/libduckdb.so" "$build_dir/native/" ;;

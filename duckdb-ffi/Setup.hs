@@ -8,11 +8,12 @@ import Data.List (intercalate, isPrefixOf, nub, stripPrefix)
 import Data.Maybe (isJust, isNothing)
 import Distribution.PackageDescription
 import Distribution.Simple
-import Distribution.Simple.Setup (ConfigFlags, configConfigurationsFlags, configConfigureArgs, configDistPref, configExtraLibDirs, defaultDistPref, fromFlagOrDefault)
-import Distribution.Simple.Utils (shortRelativePath)
+import Distribution.Simple.InstallDirs (CopyDest (NoCopyDest), includedir)
+import qualified Distribution.Simple.LocalBuildInfo as LBI
+import Distribution.Simple.Setup (ConfigFlags, configConfigurationsFlags, configConfigureArgs, configDistPref, configExtraLibDirs, copyDest, defaultDistPref, fromFlagOrDefault, installDest, regInPlace)
 
 #if MIN_VERSION_Cabal(3,14,0)
-import Distribution.Utils.Path (getSymbolicPath, makeRelativePathEx, makeSymbolicPath)
+import Distribution.Utils.Path (getSymbolicPath, makeSymbolicPath)
 
 #endif
 import System.Directory
@@ -32,15 +33,32 @@ makeSymbolicPath = id
 getSymbolicPath :: FilePath -> FilePath
 getSymbolicPath = id
 
--- | Read an include file path with Cabal versions before 3.14.
-makeRelativePathEx :: FilePath -> FilePath
-makeRelativePathEx = id
-
 #endif
 
 -- | Save the native library and selected header paths in the package description.
 main :: IO ()
-main = defaultMainWithHooks simpleUserHooks{confHook = configure}
+main =
+    defaultMainWithHooks
+        simpleUserHooks
+            { confHook = configure
+            , copyHook = \package local hooks flags ->
+                copyHook simpleUserHooks (installDescription package local) local hooks flags
+            , instHook = \package local hooks flags ->
+                instHook simpleUserHooks (installDescription package local) local hooks flags
+            , regHook = \package local hooks flags ->
+                regHook
+                    simpleUserHooks
+                    (if fromFlagOrDefault False (regInPlace flags) then package else installDescription package local)
+                    local
+                    hooks
+                    flags
+            , postCopy = \args flags package local -> do
+                postCopy simpleUserHooks args flags package local
+                copyPreviewHeaders (fromFlagOrDefault NoCopyDest (copyDest flags)) package local
+            , postInst = \args flags package local -> do
+                postInst simpleUserHooks args flags package local
+                copyPreviewHeaders (fromFlagOrDefault NoCopyDest (installDest flags)) package local
+            }
   where
     configure (description, hooks) flags = do
         let preview = lookupFlagAssignment (mkFlagName "duckdb-v2") (configConfigurationsFlags flags) == Just True
@@ -54,8 +72,7 @@ main = defaultMainWithHooks simpleUserHooks{confHook = configure}
                                 { ldOptions =
                                     (if os `elem` ["linux", "darwin"] then concatMap (\dir -> ["-Xlinker", "-rpath", "-Xlinker", dir]) nativeDirs else [])
                                         <> ldOptions info
-                                , includeDirs = map makeSymbolicPath headerDirectories <> includeDirs info
-                                , installIncludes = (if preview then [makeRelativePathEx "duckdb_v2.h"] else []) <> installIncludes info
+                                , includeDirs = if preview then map makeSymbolicPath headerDirectories else includeDirs info
                                 }
                         }
             updated = description{condLibrary = fmap (\tree -> tree{condTreeData = addLibrary (condTreeData tree)}) (condLibrary description)}
@@ -70,7 +87,7 @@ extractPreviewHeaders :: ConfigFlags -> IO FilePath
 extractPreviewHeaders flags = do
     let archive = "vendor" </> "duckdb-api.tar.gz"
         checksumFile = "vendor" </> "duckdb-api.sha256"
-        headers = ["duckdb.h", "duckdb_v2.h"]
+        files = ["duckdb.h", "duckdb_v2.h", "LICENSE"]
     forM_ [archive, checksumFile] $ \path -> do
         exists <- doesFileExist path
         unless exists $ fail ("Bundled DuckDB API file is missing: " <> path)
@@ -94,9 +111,29 @@ extractPreviewHeaders flags = do
     buildDirectory <- makeAbsolute (getSymbolicPath (fromFlagOrDefault defaultDistPref (configDistPref flags)))
     let headerDirectory = buildDirectory </> "duckdb-api" </> "duckdb-2.0"
     createDirectoryIfMissing True headerDirectory
-    callProcess tarProgram (["-xzf", archive, "-C", headerDirectory, "--strip-components=1"] <> map ("duckdb-2.0" </>) headers)
-    packageDirectory <- getCurrentDirectory
-    pure (shortRelativePath packageDirectory headerDirectory)
+    callProcess tarProgram (["-xzf", archive, "-C", headerDirectory, "--strip-components=1"] <> map ("duckdb-2.0" </>) files)
+    renameFile (headerDirectory </> "LICENSE") (headerDirectory </> "duckdb-LICENSE")
+    pure headerDirectory
+
+-- | Install the preview headers and DuckDB license after Cabal copies the library.
+copyPreviewHeaders :: CopyDest -> PackageDescription -> LBI.LocalBuildInfo -> IO ()
+copyPreviewHeaders destination package local =
+    when (lookupFlagAssignment (mkFlagName "duckdb-v2") (LBI.flagAssignment local) == Just True) $ do
+        source <- extractPreviewHeaders (LBI.configFlags local)
+        let target = includedir (LBI.absoluteInstallDirs package local destination)
+        createDirectoryIfMissing True target
+        forM_ ["duckdb.h", "duckdb_v2.h", "duckdb-LICENSE"] $ \file ->
+            copyFile (source </> file) (target </> file)
+
+-- | Use the package header directory when Cabal copies or registers a preview library.
+installDescription :: PackageDescription -> LBI.LocalBuildInfo -> PackageDescription
+installDescription package local =
+    if lookupFlagAssignment (mkFlagName "duckdb-v2") (LBI.flagAssignment local) == Just True
+        then package{library = fmap installLibrary (library package)}
+        else package
+  where
+    installLibrary lib =
+        lib{libBuildInfo = (libBuildInfo lib){includeDirs = [makeSymbolicPath "cbits"]}}
 
 -- | Use a supplied library, or download one to the user cache.
 nativeLibraryDirs :: ConfigFlags -> IO [FilePath]

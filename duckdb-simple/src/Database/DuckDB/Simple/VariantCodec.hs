@@ -29,7 +29,7 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
 import Data.Word (Word32, Word8)
 import Database.DuckDB.FFI
-import Database.DuckDB.Simple.Element (bitStringFromBytes, decodeElement)
+import Database.DuckDB.Simple.Element (bitStringFromBytes, chunkDecodeBlob, chunkIsRowValid, decodeElement)
 import Database.DuckDB.Simple.FromField (
     BigNum (..),
     DecimalValue (..),
@@ -42,7 +42,7 @@ import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..),
 import Foreign.C.String (peekCString)
 import Foreign.Marshal.Alloc (alloca, allocaBytesAligned)
 import Foreign.Marshal.Utils (copyBytes)
-import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
+import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (Storable, peek, peekElemOff, poke, sizeOf)
 import Text.Read (readMaybe)
 
@@ -136,12 +136,7 @@ checkIndex width index =
 prepareValidity :: DuckDBVector -> IO (Int -> IO Bool)
 prepareValidity vector = do
     validity <- c_duckdb_vector_get_validity vector
-    pure \index ->
-        if validity == nullPtr
-            then pure True
-            else do
-                word <- peekElemOff validity (index `div` 64)
-                pure (word .&. (1 `shiftL` (index `mod` 64)) /= 0)
+    pure (chunkIsRowValid validity . fromIntegral)
 
 -- | Borrow a fixed-width buffer until its chunk is destroyed.
 prepareElementReader :: (Storable a) => DuckDBVector -> IO (Int -> IO a)
@@ -172,14 +167,7 @@ prepareBytesReader vector = do
         present <- valid index
         unless present (codecError "NULL physical string element")
         when (base == nullPtr) (codecError "NULL string vector data")
-        let string = castPtr (base `plusPtr` (index * 16)) :: Ptr DuckDBStringT
-        len <- c_duckdb_string_t_length string
-        count <- checkedInt (toInteger len)
-        if count == 0
-            then pure BS.empty
-            else do
-                bytes <- nonNull "string data" (c_duckdb_string_t_data string)
-                BS.packCStringLen (bytes, count)
+        chunkDecodeBlob base (fromIntegral index)
 
 -- | Convert a nonnegative bounded integer to Int.
 checkedInt :: Integer -> IO Int

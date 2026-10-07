@@ -334,14 +334,17 @@ SHARED_LAYOUTS = {
     "DuckDBV2ArrowSchema": ("ArrowSchema", "ArrowSchema", "ArrowSchema"),
     "DuckDBV2ArrowArray": ("ArrowArray", "ArrowArray", "ArrowArray"),
     "DuckDBV2ArrowArrayStream": ("ArrowArrayStream", "ArrowArrayStream", "ArrowArrayStream"),
+    "DuckDBV2Bytes": ("DuckDBStringT", "duckdb_string_t", "duckdb_v2_bytes"),
 }
-SHARED_ARROW_CALLBACKS = {
-    "ArrowSchema_release_fn": "ArrowSchemaRelease",
-    "ArrowArray_release_fn": "ArrowArrayRelease",
-    "ArrowArrayStream_get_schema_fn": "ArrowStreamGetSchema",
-    "ArrowArrayStream_get_next_fn": "ArrowStreamGetNext",
-    "ArrowArrayStream_get_last_error_fn": "ArrowStreamGetLastError",
-    "ArrowArrayStream_release_fn": "ArrowStreamRelease",
+SHARED_CALLBACK_SIGNATURES = {
+    "Void1": "Ptr a -> IO ()",
+    "Void2": "Ptr a -> Ptr b -> IO ()",
+    "Void3": "Ptr a -> Ptr b -> Ptr c -> IO ()",
+    "Void4": "Ptr a -> Ptr b -> Ptr c -> Ptr d -> IO ()",
+    "Bool2": "Ptr a -> Ptr b -> IO CBool",
+    "Int2": "Ptr a -> Ptr b -> IO CInt",
+    "Ptr1": "Ptr a -> IO (Ptr b)",
+    "Ptr2": "Ptr a -> Ptr b -> IO (Ptr c)",
 }
 
 
@@ -378,6 +381,49 @@ def shared_layouts(v1: str, v2: str, bindings: str) -> dict[str, str]:
     return aliases
 
 
+def callback_shape(declaration: str, declarations: dict[str, str]) -> str:
+    """Read the pointer arguments and C result of a shared callback."""
+    match = re.fullmatch(r"(.*?)\(\*\w+\)\((.*?)\)", declaration)
+    if match is None:
+        raise ValueError(f"Cannot read callback signature: {declaration}")
+
+    def pointer(ctype: str) -> bool:
+        base = re.sub(r"\b(?:const|struct)\b", "", ctype).strip()
+        return "*" in base or re.search(r"\*" + re.escape(base) + r"$", declarations.get(base, "")) is not None
+
+    parameters = [parameter_type(p) for p in match[2].split(",")]
+    if not all(pointer(p) for p in parameters):
+        raise ValueError(f"Shared callback has a non-pointer argument: {declaration}")
+    result = "Ptr" if pointer(match[1]) else {"void": "Void", "bool": "Bool", "int": "Int"}.get(match[1])
+    shape = f"{result}{len(parameters)}"
+    if shape not in SHARED_CALLBACK_SIGNATURES:
+        raise ValueError(f"Shared callback has an unsupported signature: {declaration}")
+    return shape
+
+
+def shared_callback_imports(bindings: str) -> None:
+    """Verify the common native imports and retained Arrow entry points."""
+    compact = re.sub(r"\s+", "", bindings)
+    for shape, signature in SHARED_CALLBACK_SIGNATURES.items():
+        wrapper = f'foreign import ccall "wrapper" wrap{shape} :: ({signature}) -> IO (FunPtr ({signature}))'
+        dynamic = f'foreign import ccall safe "dynamic" call{shape} :: FunPtr ({signature}) -> {signature}'
+        for declaration in (wrapper, dynamic):
+            if re.sub(r"\s+", "", declaration) not in compact:
+                raise ValueError(f"Missing or incompatible shared callback import: {shape}")
+    arrow = {
+        "ArrowSchemaRelease": "Void1",
+        "ArrowArrayRelease": "Void1",
+        "ArrowStreamRelease": "Void1",
+        "ArrowStreamGetSchema": "Int2",
+        "ArrowStreamGetNext": "Int2",
+        "ArrowStreamGetLastError": "Ptr1",
+    }
+    for name, shape in arrow.items():
+        for alias, target in (("wrap", "wrap"), ("mk", "call")):
+            if not re.search(rf"^{alias}{name}\s*=\s*Callbacks\.{target}{shape}\s*$", bindings, re.M):
+                raise ValueError(f"Missing shared Arrow callback: {alias}{name}")
+
+
 def coverage(header: Path | str, bindings: str, wrappers: str) -> dict[str, object]:
     """Check that each C function and callback has a raw binding."""
     declarations = functions(header)
@@ -399,13 +445,14 @@ def coverage(header: Path | str, bindings: str, wrappers: str) -> dict[str, obje
             bound[name] = "direct"
         elif f"wrapped_{name}" in imports and name in wrapper_calls.get(f"wrapped_{name}", set()):
             bound[name] = "C wrapper"
-    callbacks = {name: declaration for name, declaration in typedefs(header).items() if re.search(r"\(\*" + re.escape(name) + r"\)", declaration)}
+    declarations_types = typedefs(header)
+    callbacks = {name: declaration for name, declaration in declarations_types.items() if re.search(r"\(\*" + re.escape(name) + r"\)", declaration)}
     callback_typedef_count = len(callbacks)
     # Arrow structures contain callback fields without separate typedefs.
     source = header.read_text() if isinstance(header, Path) else header
     for struct in re.finditer(r"\bstruct\s+(Arrow\w+)\s*{([^{}]*)}", clean_c(source), re.S):
-        for field in re.finditer(r"\(\s*\*\s*(\w+)\s*\)\s*\([^;]*\)\s*;", struct.group(2)):
-            callbacks[f"{struct.group(1)}_{field.group(1)}_fn"] = normalize(field.group(0))
+        for field in re.finditer(r"([^;{}]+?)\(\s*\*\s*(\w+)\s*\)\s*\([^;]*\)\s*;", struct.group(2)):
+            callbacks[f"{struct.group(1)}_{field.group(2)}_fn"] = normalize(field.group(0).removesuffix(";"))
     aliases: dict[str, str] = {}
     for name in callbacks:
         if name.startswith("Arrow"):
@@ -413,23 +460,14 @@ def coverage(header: Path | str, bindings: str, wrappers: str) -> dict[str, obje
         else:
             alias = V1_CALLBACK_ALIASES.get(name, "DuckDB" + "".join(part[0].upper() + part[1:] for part in name.removeprefix("duckdb_").split("_")))
         if name.startswith(("duckdb_v2_", "Arrow")):
+            shape = callback_shape(callbacks[name], declarations_types)
             patterns = [
                 rf"\btype\s+{re.escape(alias)}\s*=",
-                rf'foreign\s+import\s+ccall\s+(?:(?:safe|unsafe)\s+)?"wrapper"\s+mk{re.escape(alias)}\b',
-                rf'foreign\s+import\s+ccall\s+(?:(?:safe|unsafe)\s+)?"dynamic"\s+call{re.escape(alias)}\b',
+                r"\bimport\s+Database\.DuckDB\.FFI\.Callbacks\s+qualified\s+as\s+Callbacks\b",
+                rf"^mk{alias}\s*=\s*Callbacks\.wrap{shape}\s*$",
+                rf"^call{alias}\s*=\s*Callbacks\.call{shape}\s*$",
             ]
-            present = all(re.search(pattern, bindings) for pattern in patterns)
-            if not present and name in SHARED_ARROW_CALLBACKS:
-                target = SHARED_ARROW_CALLBACKS[name]
-                shared_patterns = [
-                    patterns[0],
-                    r"\bimport\s+Database\.DuckDB\.FFI\.Arrow\s+qualified\s+as\s+Arrow\b",
-                    rf"^mk{alias}\s*=\s*Arrow\.wrap{target}\s*$",
-                    rf"^call{alias}\s*=\s*Arrow\.mk{target}\s*$",
-                    rf'foreign\s+import\s+ccall\s+(?:(?:safe|unsafe)\s+)?"wrapper"\s+wrap{target}\b',
-                    rf'foreign\s+import\s+ccall\s+(?:(?:safe|unsafe)\s+)?"dynamic"\s+mk{target}\b',
-                ]
-                present = all(re.search(pattern, bindings, re.M) for pattern in shared_patterns)
+            present = all(re.search(pattern, bindings, re.M) for pattern in patterns)
         else:
             present = re.search(rf"\btype\s+{re.escape(alias)}\s*=\s*FunPtr\b", bindings) is not None
         if present:
@@ -444,6 +482,7 @@ def audit() -> dict[str, object]:
     v1 = members[PREFIX + "duckdb.h"].decode()
     v2 = members[PREFIX + "duckdb_v2.h"].decode()
     bindings = "\n".join(path.read_text() for path in sorted((ROOT / "duckdb-ffi/src").rglob("*")) if path.suffix in (".hs", ".hsc"))
+    shared_callback_imports(bindings)
     wrappers = "\n".join(clean_c(path.read_text()) for path in sorted((ROOT / "duckdb-ffi/cbits").glob("*.c")))
     exports = set(functions(v1)) | set(functions(v2))
     imports = {name.removeprefix("&") for name in re.findall(r'foreign\s+import\s+(?:ccall|capi)\s+(?:(?:safe|unsafe|interruptible)\s+)?"([^"\n]+)"', bindings)}

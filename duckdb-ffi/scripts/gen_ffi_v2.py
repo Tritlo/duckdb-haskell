@@ -154,6 +154,7 @@ SHARED_STRUCTURES: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = {
     "duckdb_v2_hugeint_t": ("DuckDBHugeInt", (("uint64_t", "lower"), ("int64_t", "upper"))),
     "duckdb_v2_uhugeint_t": ("DuckDBUHugeInt", (("uint64_t", "lower"), ("uint64_t", "upper"))),
     "duckdb_v2_interval_t": ("DuckDBInterval", (("int32_t", "months"), ("int32_t", "days"), ("int64_t", "micros"))),
+    "duckdb_v2_bytes": ("DuckDBStringT", ()),  # The parser checks the complete union below.
 }
 
 SHARED_ARROW_CALLBACKS: dict[str, tuple[str, str, tuple[str, ...]]] = {
@@ -305,10 +306,31 @@ class Generator:
         parts.append("IO " + (f"({result})" if " " in result else result))
         return " -> ".join(parts)
 
+    def callback_shape(self, function: Function) -> str:
+        def is_pointer(ctype: str) -> bool:
+            base = self.base(ctype)
+            while base in self.aliases:
+                base = self.aliases[base]
+            return "*" in ctype or base in self.handles
+
+        if not all(is_pointer(param.ctype) for param in function.params):
+            raise ValueError(f"shared callback requires pointer arguments: {function.name}")
+        result = function.result
+        if is_pointer(result):
+            family = "Ptr"
+        elif result in {"void", "bool", "int"}:
+            family = {"void": "Void", "bool": "Bool", "int": "Int"}[result]
+        else:
+            raise ValueError(f"unsupported shared callback result: {function.name}: {result}")
+        shape = family + str(len(function.params))
+        if shape not in {"Void1", "Void2", "Void3", "Void4", "Bool2", "Int2", "Ptr1", "Ptr2"}:
+            raise ValueError(f"unsupported shared callback shape: {function.name}: {shape}")
+        return shape
+
     def types(self) -> str:
         shared = ",\n    ".join(f"{target}(..)" for target, _ in SHARED_STRUCTURES.values())
         shared_names = "DuckDBIdx, DuckDBSel, DuckDBDeleteCallback"
-        out = ["{-# LANGUAGE CPP #-}\n{-# LANGUAGE EmptyDataDecls #-}\n{-# LANGUAGE GeneralizedNewtypeDeriving #-}\n{-# LANGUAGE PatternSynonyms #-}\n{-# LANGUAGE RecordWildCards #-}\n\n", haddock("Raw types for the DuckDB V2 C API.\n\nGenerated from the pinned header by @scripts/gen_ffi_v2.py@.\nShared C layouts use the types from @Database.DuckDB.FFI.Types@.\nOther layouts and enum values come from the header through hsc2hs.\nKeep this module and the native library at the same upstream revision.\nSource documentation records the upstream API lifecycle status."), f"module Database.DuckDB.FFI.V2.Types (\n    module Database.DuckDB.FFI.V2.Types,\n    {shared},\n    {shared_names}\n    ) where\n\n", "#define DUCKDB_V2_API_ALLOW_UNSTABLE 1\n#include \"duckdb_v2.h\"\n\n", f"import Database.DuckDB.FFI.Types (\n    {shared},\n    {shared_names}\n    )\n", "import Data.Word (Word32, Word64)\nimport Foreign.C.Types (CBool(..), CChar(..), CInt(..))\nimport Foreign.Ptr (Ptr, FunPtr, castPtr, plusPtr)\nimport Foreign.Storable (Storable(..), peekByteOff, pokeByteOff)\n\n", haddock("DuckDB's unsigned index type."), "type DuckDBV2Idx = DuckDBIdx\n\n"]
+        out = ["{-# LANGUAGE CPP #-}\n{-# LANGUAGE EmptyDataDecls #-}\n{-# LANGUAGE GeneralizedNewtypeDeriving #-}\n{-# LANGUAGE PatternSynonyms #-}\n{-# LANGUAGE RecordWildCards #-}\n\n", haddock("Raw types for the DuckDB V2 C API.\n\nGenerated from the pinned header by @scripts/gen_ffi_v2.py@.\nShared C layouts use the types from @Database.DuckDB.FFI.Types@.\nOther layouts and enum values come from the header through hsc2hs.\nKeep this module and the native library at the same upstream revision.\nSource documentation records the upstream API lifecycle status."), f"module Database.DuckDB.FFI.V2.Types (\n    module Database.DuckDB.FFI.V2.Types,\n    {shared},\n    {shared_names}\n    ) where\n\n", "#define DUCKDB_V2_API_ALLOW_UNSTABLE 1\n#include \"duckdb_v2.h\"\n\n", "import Database.DuckDB.FFI.Helpers (c_duckdb_string_t_data)\n", f"import Database.DuckDB.FFI.Types (\n    {shared},\n    {shared_names}\n    )\n", "import Data.Word (Word32, Word64)\nimport Foreign.C.Types (CBool(..), CChar(..), CInt(..))\nimport Foreign.Ptr (Ptr, FunPtr, castPtr, plusPtr)\nimport Foreign.Storable (Storable(..), peekByteOff, pokeByteOff)\n\n", haddock("DuckDB's unsigned index type."), "type DuckDBV2Idx = DuckDBIdx\n\n"]
         for name in self.handles:
             marker = hs_name(name.removesuffix("_handle"))
             out += [haddock(f"Opaque target of @{name}@.\n\nDo not read or write the target storage."), f"data {marker}\n\n", haddock(self.docs.get(name, f"The @{name}@ handle.")), f"type {hs_name(name)} = Ptr {marker}\n\n"]
@@ -337,18 +359,15 @@ class Generator:
         hs = hs_name(name)
         if name in SHARED_STRUCTURES:
             target, _ = SHARED_STRUCTURES[name]
-            return haddock(self.docs[name] + f"\n\nUses the shared @{target}@ storage and constructors.") + f"type {hs} = {target}\n\n"
+            out = haddock(self.docs[name] + f"\n\nUses the shared @{target}@ storage and constructors.") + f"type {hs} = {target}\n\n"
+            if name == "duckdb_v2_bytes":
+                out += haddock("Return the borrowed payload pointer of the non-inline union arm.\n\nCall this only when the stored length exceeds 'duckdbV2BytesInlineLength'.\nThe pointer remains valid only while the owning vector or value is alive.") + "duckdbV2BytesPointer :: Ptr DuckDBV2Bytes -> IO (Ptr CChar)\nduckdbV2BytesPointer = c_duckdb_string_t_data\n\n"
+                out += haddock("Return a pointer to the inline bytes of the supplied storage.\n\nCall this only when the stored length is at most 'duckdbV2BytesInlineLength'.\nThe pointer remains valid only while the supplied storage is alive.") + "duckdbV2BytesInlinePointer :: Ptr DuckDBV2Bytes -> Ptr CChar\nduckdbV2BytesInlinePointer ptr = castPtr ptr `plusPtr` #{offset duckdb_v2_bytes, value.inlined.inlined}\n\n"
+            return out
         c_name = "struct " + name if name.startswith("Arrow") else name
         fields = self.structs[name]
-        if name == "duckdb_v2_bytes":
-            # Three fixed-width words preserve all 12 union bytes, including a
-            # pointer on a 64-bit host, without interpreting or owning them.
-            fields = [Parameter("uint32_t", "length"), Parameter("uint32_t", "storage0"), Parameter("uint32_t", "storage1"), Parameter("uint32_t", "storage2")]
-            offsets = ["#{offset duckdb_v2_bytes, value.inlined.length}"] + [f"(#{{offset duckdb_v2_bytes, value.inlined.inlined}} + {i})" for i in (0, 4, 8)]
-            doc = self.docs[name] + "\n\nThe three storage words preserve the union bytes. Read the pointer arm\nwith 'duckdbV2BytesPointer', or access the inline bytes with\n'duckdbV2BytesInlinePointer'. These functions borrow the supplied storage."
-        else:
-            offsets = [f"#{{offset {c_name}, {p.name}}}" for p in fields]
-            doc = self.docs[name]
+        offsets = [f"#{{offset {c_name}, {p.name}}}" for p in fields]
+        doc = self.docs[name]
         record_names = ["duckdbV2" + hs.removeprefix("DuckDBV2") + camel(p.name) for p in fields]
         out = [haddock(doc), f"data {hs} = {hs}\n    {{ "]
         for index, p in enumerate(fields):
@@ -362,12 +381,10 @@ class Generator:
         for record, offset in zip(record_names, offsets):
             out.append(f"        pokeByteOff ptr {offset} {record}\n")
         out.append("\n")
-        if name == "duckdb_v2_bytes":
-            out += [haddock("Return the borrowed payload pointer of the non-inline union arm.\n\nCall this only when the stored length exceeds 'duckdbV2BytesInlineLength'.\nThe pointer remains valid only while the owning vector or value is alive."), "duckdbV2BytesPointer :: Ptr DuckDBV2Bytes -> IO (Ptr CChar)\nduckdbV2BytesPointer ptr = peekByteOff ptr #{offset duckdb_v2_bytes, value.pointer.ptr}\n\n", haddock("Return a pointer to the inline bytes of the supplied storage.\n\nCall this only when the stored length is at most 'duckdbV2BytesInlineLength'.\nThe pointer remains valid only while the supplied storage is alive."), "duckdbV2BytesInlinePointer :: Ptr DuckDBV2Bytes -> Ptr CChar\nduckdbV2BytesInlinePointer ptr = castPtr ptr `plusPtr` #{offset duckdb_v2_bytes, value.inlined.inlined}\n\n"]
         return "".join(out)
 
     def imports(self) -> str:
-        out = ["{-# LANGUAGE ForeignFunctionInterface #-}\n\n", haddock("Complete raw DuckDB V2 C API.\n\nGenerated from the pinned header by @scripts/gen_ffi_v2.py@.\nEvery import calls the C function directly with its native signature.\nEvery import is safe because calls can run registered Haskell callbacks.\nSource documentation records the upstream API lifecycle status.\nCallers must pin the matching native library."), "module Database.DuckDB.FFI.V2.Functions where\n\nimport qualified Database.DuckDB.FFI.Arrow as Arrow\nimport Database.DuckDB.FFI.V2.Types\nimport Data.Int (Int8, Int16, Int32, Int64)\nimport Data.Word (Word8, Word16, Word32, Word64)\nimport Foreign.C.Types (CBool(..), CChar(..), CInt(..), CFloat(..), CDouble(..))\nimport Foreign.Ptr (Ptr, FunPtr)\n\n"]
+        out = ["{-# LANGUAGE ForeignFunctionInterface #-}\n\n", haddock("Complete raw DuckDB V2 C API.\n\nGenerated from the pinned header by @scripts/gen_ffi_v2.py@.\nEvery import calls the C function directly with its native signature.\nEvery import is safe because calls can run registered Haskell callbacks.\nSource documentation records the upstream API lifecycle status.\nCallers must pin the matching native library."), "module Database.DuckDB.FFI.V2.Functions where\n\nimport qualified Database.DuckDB.FFI.Callbacks as Callbacks\nimport Database.DuckDB.FFI.V2.Types\nimport Data.Int (Int8, Int16, Int32, Int64)\nimport Data.Word (Word8, Word16, Word32, Word64)\nimport Foreign.C.Types (CBool(..), CChar(..), CInt(..), CFloat(..), CDouble(..))\nimport Foreign.Ptr (Ptr, FunPtr)\n\n"]
         for function in self.functions:
             out += [haddock(function.doc), f'foreign import ccall safe "{function.name}"\n    c_{function.name} :: {self.signature(function)}\n\n']
         for name, callback in self.callbacks.items():
@@ -375,11 +392,8 @@ class Generator:
             pointer = self.hs_type(name)
             io_pointer = f"({pointer})" if " " in pointer else pointer
             out.append(haddock(f"Create a function pointer for '{hs}'.\n\nKeep the pointer alive while DuckDB can invoke it. Free the pointer with\n@freeHaskellFunPtr@ after its final possible invocation.\nThe callback must not throw an exception across the C boundary."))
-            if name in SHARED_ARROW_CALLBACKS:
-                target, _, _ = SHARED_ARROW_CALLBACKS[name]
-                out += [f"mk{hs} :: {hs} -> IO {io_pointer}\nmk{hs} = Arrow.wrap{target}\n\n", haddock(f"Call a function pointer with the '{hs}' signature."), f"call{hs} :: {pointer} -> {self.signature(callback)}\ncall{hs} = Arrow.mk{target}\n\n"]
-            else:
-                out += [f'foreign import ccall "wrapper"\n    mk{hs} :: {hs} -> IO {io_pointer}\n\n', haddock(f"Call a function pointer with the '{hs}' signature."), f'foreign import ccall safe "dynamic"\n    call{hs} :: {pointer} -> {self.signature(callback)}\n\n']
+            shape = self.callback_shape(callback)
+            out += [f"mk{hs} :: {hs} -> IO {io_pointer}\nmk{hs} = Callbacks.wrap{shape}\n\n", haddock(f"Call a function pointer with the '{hs}' signature."), f"call{hs} :: {pointer} -> {self.signature(callback)}\ncall{hs} = Callbacks.call{shape}\n\n"]
         return "".join(out)
 
 def format_haskell(source: str, filename: Path) -> str:

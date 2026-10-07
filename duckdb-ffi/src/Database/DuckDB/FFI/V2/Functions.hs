@@ -12,7 +12,7 @@ module Database.DuckDB.FFI.V2.Functions where
 
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.Word (Word16, Word32, Word64, Word8)
-import Database.DuckDB.FFI.Arrow qualified as Arrow
+import Database.DuckDB.FFI.Callbacks qualified as Callbacks
 import Database.DuckDB.FFI.V2.Types
 import Foreign.C.Types (CBool (..), CChar (..), CDouble (..), CFloat (..), CInt (..))
 import Foreign.Ptr (FunPtr, Ptr)
@@ -13132,12 +13132,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2TextSinkFn :: DuckDBV2TextSinkFn -> IO (FunPtr DuckDBV2TextSinkFn)
+mkDuckDBV2TextSinkFn :: DuckDBV2TextSinkFn -> IO (FunPtr DuckDBV2TextSinkFn)
+mkDuckDBV2TextSinkFn = Callbacks.wrapVoid3
 
 -- | Call a function pointer with the 'DuckDBV2TextSinkFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2TextSinkFn :: FunPtr DuckDBV2TextSinkFn -> Ptr DuckDBV2Str -> Ptr () -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2TextSinkFn :: FunPtr DuckDBV2TextSinkFn -> Ptr DuckDBV2Str -> Ptr () -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2TextSinkFn = Callbacks.callVoid3
 
 {- | Create a function pointer for 'DuckDBV2OpaqueEqualsFn'.
 
@@ -13145,12 +13145,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2OpaqueEqualsFn :: DuckDBV2OpaqueEqualsFn -> IO (FunPtr DuckDBV2OpaqueEqualsFn)
+mkDuckDBV2OpaqueEqualsFn :: DuckDBV2OpaqueEqualsFn -> IO (FunPtr DuckDBV2OpaqueEqualsFn)
+mkDuckDBV2OpaqueEqualsFn = Callbacks.wrapBool2
 
 -- | Call a function pointer with the 'DuckDBV2OpaqueEqualsFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2OpaqueEqualsFn :: FunPtr DuckDBV2OpaqueEqualsFn -> Ptr () -> Ptr () -> IO CBool
+callDuckDBV2OpaqueEqualsFn :: FunPtr DuckDBV2OpaqueEqualsFn -> Ptr () -> Ptr () -> IO CBool
+callDuckDBV2OpaqueEqualsFn = Callbacks.callBool2
 
 {- | Create a function pointer for 'DuckDBV2OpaqueDestroyFn'.
 
@@ -13158,12 +13158,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2OpaqueDestroyFn :: DuckDBV2OpaqueDestroyFn -> IO DuckDBDeleteCallback
+mkDuckDBV2OpaqueDestroyFn :: DuckDBV2OpaqueDestroyFn -> IO DuckDBDeleteCallback
+mkDuckDBV2OpaqueDestroyFn = Callbacks.wrapVoid1
 
 -- | Call a function pointer with the 'DuckDBV2OpaqueDestroyFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2OpaqueDestroyFn :: DuckDBDeleteCallback -> Ptr () -> IO ()
+callDuckDBV2OpaqueDestroyFn :: DuckDBDeleteCallback -> Ptr () -> IO ()
+callDuckDBV2OpaqueDestroyFn = Callbacks.callVoid1
 
 {- | Create a function pointer for 'DuckDBV2CastFunctionExecCallbackFn'.
 
@@ -13171,12 +13171,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2CastFunctionExecCallbackFn :: DuckDBV2CastFunctionExecCallbackFn -> IO (FunPtr DuckDBV2CastFunctionExecCallbackFn)
+mkDuckDBV2CastFunctionExecCallbackFn :: DuckDBV2CastFunctionExecCallbackFn -> IO (FunPtr DuckDBV2CastFunctionExecCallbackFn)
+mkDuckDBV2CastFunctionExecCallbackFn = Callbacks.wrapVoid3
 
 -- | Call a function pointer with the 'DuckDBV2CastFunctionExecCallbackFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2CastFunctionExecCallbackFn :: FunPtr DuckDBV2CastFunctionExecCallbackFn -> DuckDBV2CastFunctionExecInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2CastFunctionExecCallbackFn :: FunPtr DuckDBV2CastFunctionExecCallbackFn -> DuckDBV2CastFunctionExecInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2CastFunctionExecCallbackFn = Callbacks.callVoid3
 
 {- | Create a function pointer for 'DuckDBV2ExtensionGetApiFn'.
 
@@ -13184,12 +13184,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2ExtensionGetApiFn :: DuckDBV2ExtensionGetApiFn -> IO (FunPtr DuckDBV2ExtensionGetApiFn)
+mkDuckDBV2ExtensionGetApiFn :: DuckDBV2ExtensionGetApiFn -> IO (FunPtr DuckDBV2ExtensionGetApiFn)
+mkDuckDBV2ExtensionGetApiFn = Callbacks.wrapPtr2
 
 -- | Call a function pointer with the 'DuckDBV2ExtensionGetApiFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2ExtensionGetApiFn :: FunPtr DuckDBV2ExtensionGetApiFn -> DuckDBV2ExtensionHandle -> Ptr CChar -> IO (Ptr ())
+callDuckDBV2ExtensionGetApiFn :: FunPtr DuckDBV2ExtensionGetApiFn -> DuckDBV2ExtensionHandle -> Ptr CChar -> IO (Ptr ())
+callDuckDBV2ExtensionGetApiFn = Callbacks.callPtr2
 
 {- | Create a function pointer for 'DuckDBV2AggregateFunctionBindCallbackFn'.
 
@@ -13197,12 +13197,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2AggregateFunctionBindCallbackFn :: DuckDBV2AggregateFunctionBindCallbackFn -> IO (FunPtr DuckDBV2AggregateFunctionBindCallbackFn)
+mkDuckDBV2AggregateFunctionBindCallbackFn :: DuckDBV2AggregateFunctionBindCallbackFn -> IO (FunPtr DuckDBV2AggregateFunctionBindCallbackFn)
+mkDuckDBV2AggregateFunctionBindCallbackFn = Callbacks.wrapVoid4
 
 -- | Call a function pointer with the 'DuckDBV2AggregateFunctionBindCallbackFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2AggregateFunctionBindCallbackFn :: FunPtr DuckDBV2AggregateFunctionBindCallbackFn -> DuckDBV2FunctionBindInfoHandle -> DuckDBV2AggregateFunctionBindInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2AggregateFunctionBindCallbackFn :: FunPtr DuckDBV2AggregateFunctionBindCallbackFn -> DuckDBV2FunctionBindInfoHandle -> DuckDBV2AggregateFunctionBindInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2AggregateFunctionBindCallbackFn = Callbacks.callVoid4
 
 {- | Create a function pointer for 'DuckDBV2AggregateFunctionSizeCallbackFn'.
 
@@ -13210,12 +13210,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2AggregateFunctionSizeCallbackFn :: DuckDBV2AggregateFunctionSizeCallbackFn -> IO (FunPtr DuckDBV2AggregateFunctionSizeCallbackFn)
+mkDuckDBV2AggregateFunctionSizeCallbackFn :: DuckDBV2AggregateFunctionSizeCallbackFn -> IO (FunPtr DuckDBV2AggregateFunctionSizeCallbackFn)
+mkDuckDBV2AggregateFunctionSizeCallbackFn = Callbacks.wrapVoid2
 
 -- | Call a function pointer with the 'DuckDBV2AggregateFunctionSizeCallbackFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2AggregateFunctionSizeCallbackFn :: FunPtr DuckDBV2AggregateFunctionSizeCallbackFn -> DuckDBV2AggregateFunctionSizeInfoHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2AggregateFunctionSizeCallbackFn :: FunPtr DuckDBV2AggregateFunctionSizeCallbackFn -> DuckDBV2AggregateFunctionSizeInfoHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2AggregateFunctionSizeCallbackFn = Callbacks.callVoid2
 
 {- | Create a function pointer for 'DuckDBV2AggregateFunctionInitCallbackFn'.
 
@@ -13223,12 +13223,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2AggregateFunctionInitCallbackFn :: DuckDBV2AggregateFunctionInitCallbackFn -> IO (FunPtr DuckDBV2AggregateFunctionInitCallbackFn)
+mkDuckDBV2AggregateFunctionInitCallbackFn :: DuckDBV2AggregateFunctionInitCallbackFn -> IO (FunPtr DuckDBV2AggregateFunctionInitCallbackFn)
+mkDuckDBV2AggregateFunctionInitCallbackFn = Callbacks.wrapVoid2
 
 -- | Call a function pointer with the 'DuckDBV2AggregateFunctionInitCallbackFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2AggregateFunctionInitCallbackFn :: FunPtr DuckDBV2AggregateFunctionInitCallbackFn -> DuckDBV2AggregateFunctionInitInfoHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2AggregateFunctionInitCallbackFn :: FunPtr DuckDBV2AggregateFunctionInitCallbackFn -> DuckDBV2AggregateFunctionInitInfoHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2AggregateFunctionInitCallbackFn = Callbacks.callVoid2
 
 {- | Create a function pointer for 'DuckDBV2AggregateFunctionUpdateCallbackFn'.
 
@@ -13236,12 +13236,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2AggregateFunctionUpdateCallbackFn :: DuckDBV2AggregateFunctionUpdateCallbackFn -> IO (FunPtr DuckDBV2AggregateFunctionUpdateCallbackFn)
+mkDuckDBV2AggregateFunctionUpdateCallbackFn :: DuckDBV2AggregateFunctionUpdateCallbackFn -> IO (FunPtr DuckDBV2AggregateFunctionUpdateCallbackFn)
+mkDuckDBV2AggregateFunctionUpdateCallbackFn = Callbacks.wrapVoid2
 
 -- | Call a function pointer with the 'DuckDBV2AggregateFunctionUpdateCallbackFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2AggregateFunctionUpdateCallbackFn :: FunPtr DuckDBV2AggregateFunctionUpdateCallbackFn -> DuckDBV2AggregateFunctionUpdateInfoHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2AggregateFunctionUpdateCallbackFn :: FunPtr DuckDBV2AggregateFunctionUpdateCallbackFn -> DuckDBV2AggregateFunctionUpdateInfoHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2AggregateFunctionUpdateCallbackFn = Callbacks.callVoid2
 
 {- | Create a function pointer for 'DuckDBV2AggregateFunctionCombineCallbackFn'.
 
@@ -13249,12 +13249,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2AggregateFunctionCombineCallbackFn :: DuckDBV2AggregateFunctionCombineCallbackFn -> IO (FunPtr DuckDBV2AggregateFunctionCombineCallbackFn)
+mkDuckDBV2AggregateFunctionCombineCallbackFn :: DuckDBV2AggregateFunctionCombineCallbackFn -> IO (FunPtr DuckDBV2AggregateFunctionCombineCallbackFn)
+mkDuckDBV2AggregateFunctionCombineCallbackFn = Callbacks.wrapVoid2
 
 -- | Call a function pointer with the 'DuckDBV2AggregateFunctionCombineCallbackFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2AggregateFunctionCombineCallbackFn :: FunPtr DuckDBV2AggregateFunctionCombineCallbackFn -> DuckDBV2AggregateFunctionCombineInfoHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2AggregateFunctionCombineCallbackFn :: FunPtr DuckDBV2AggregateFunctionCombineCallbackFn -> DuckDBV2AggregateFunctionCombineInfoHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2AggregateFunctionCombineCallbackFn = Callbacks.callVoid2
 
 {- | Create a function pointer for 'DuckDBV2AggregateFunctionFinalizeCallbackFn'.
 
@@ -13262,12 +13262,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2AggregateFunctionFinalizeCallbackFn :: DuckDBV2AggregateFunctionFinalizeCallbackFn -> IO (FunPtr DuckDBV2AggregateFunctionFinalizeCallbackFn)
+mkDuckDBV2AggregateFunctionFinalizeCallbackFn :: DuckDBV2AggregateFunctionFinalizeCallbackFn -> IO (FunPtr DuckDBV2AggregateFunctionFinalizeCallbackFn)
+mkDuckDBV2AggregateFunctionFinalizeCallbackFn = Callbacks.wrapVoid2
 
 -- | Call a function pointer with the 'DuckDBV2AggregateFunctionFinalizeCallbackFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2AggregateFunctionFinalizeCallbackFn :: FunPtr DuckDBV2AggregateFunctionFinalizeCallbackFn -> DuckDBV2AggregateFunctionFinalizeInfoHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2AggregateFunctionFinalizeCallbackFn :: FunPtr DuckDBV2AggregateFunctionFinalizeCallbackFn -> DuckDBV2AggregateFunctionFinalizeInfoHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2AggregateFunctionFinalizeCallbackFn = Callbacks.callVoid2
 
 {- | Create a function pointer for 'DuckDBV2AggregateFunctionDestroyCallbackFn'.
 
@@ -13275,12 +13275,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2AggregateFunctionDestroyCallbackFn :: DuckDBV2AggregateFunctionDestroyCallbackFn -> IO (FunPtr DuckDBV2AggregateFunctionDestroyCallbackFn)
+mkDuckDBV2AggregateFunctionDestroyCallbackFn :: DuckDBV2AggregateFunctionDestroyCallbackFn -> IO (FunPtr DuckDBV2AggregateFunctionDestroyCallbackFn)
+mkDuckDBV2AggregateFunctionDestroyCallbackFn = Callbacks.wrapVoid2
 
 -- | Call a function pointer with the 'DuckDBV2AggregateFunctionDestroyCallbackFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2AggregateFunctionDestroyCallbackFn :: FunPtr DuckDBV2AggregateFunctionDestroyCallbackFn -> DuckDBV2AggregateFunctionDestroyInfoHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2AggregateFunctionDestroyCallbackFn :: FunPtr DuckDBV2AggregateFunctionDestroyCallbackFn -> DuckDBV2AggregateFunctionDestroyInfoHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2AggregateFunctionDestroyCallbackFn = Callbacks.callVoid2
 
 {- | Create a function pointer for 'DuckDBV2CopyToBindCallbackFn'.
 
@@ -13288,12 +13288,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2CopyToBindCallbackFn :: DuckDBV2CopyToBindCallbackFn -> IO (FunPtr DuckDBV2CopyToBindCallbackFn)
+mkDuckDBV2CopyToBindCallbackFn :: DuckDBV2CopyToBindCallbackFn -> IO (FunPtr DuckDBV2CopyToBindCallbackFn)
+mkDuckDBV2CopyToBindCallbackFn = Callbacks.wrapVoid3
 
 -- | Call a function pointer with the 'DuckDBV2CopyToBindCallbackFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2CopyToBindCallbackFn :: FunPtr DuckDBV2CopyToBindCallbackFn -> DuckDBV2CopyToBindInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2CopyToBindCallbackFn :: FunPtr DuckDBV2CopyToBindCallbackFn -> DuckDBV2CopyToBindInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2CopyToBindCallbackFn = Callbacks.callVoid3
 
 {- | Create a function pointer for 'DuckDBV2CopyToBatchSizeCallbackFn'.
 
@@ -13301,12 +13301,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2CopyToBatchSizeCallbackFn :: DuckDBV2CopyToBatchSizeCallbackFn -> IO (FunPtr DuckDBV2CopyToBatchSizeCallbackFn)
+mkDuckDBV2CopyToBatchSizeCallbackFn :: DuckDBV2CopyToBatchSizeCallbackFn -> IO (FunPtr DuckDBV2CopyToBatchSizeCallbackFn)
+mkDuckDBV2CopyToBatchSizeCallbackFn = Callbacks.wrapVoid3
 
 -- | Call a function pointer with the 'DuckDBV2CopyToBatchSizeCallbackFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2CopyToBatchSizeCallbackFn :: FunPtr DuckDBV2CopyToBatchSizeCallbackFn -> DuckDBV2CopyToBatchSizeInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2CopyToBatchSizeCallbackFn :: FunPtr DuckDBV2CopyToBatchSizeCallbackFn -> DuckDBV2CopyToBatchSizeInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2CopyToBatchSizeCallbackFn = Callbacks.callVoid3
 
 {- | Create a function pointer for 'DuckDBV2CopyToInitCallbackFn'.
 
@@ -13314,12 +13314,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2CopyToInitCallbackFn :: DuckDBV2CopyToInitCallbackFn -> IO (FunPtr DuckDBV2CopyToInitCallbackFn)
+mkDuckDBV2CopyToInitCallbackFn :: DuckDBV2CopyToInitCallbackFn -> IO (FunPtr DuckDBV2CopyToInitCallbackFn)
+mkDuckDBV2CopyToInitCallbackFn = Callbacks.wrapVoid3
 
 -- | Call a function pointer with the 'DuckDBV2CopyToInitCallbackFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2CopyToInitCallbackFn :: FunPtr DuckDBV2CopyToInitCallbackFn -> DuckDBV2CopyToInitInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2CopyToInitCallbackFn :: FunPtr DuckDBV2CopyToInitCallbackFn -> DuckDBV2CopyToInitInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2CopyToInitCallbackFn = Callbacks.callVoid3
 
 {- | Create a function pointer for 'DuckDBV2CopyToBatchCallbackFn'.
 
@@ -13327,12 +13327,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2CopyToBatchCallbackFn :: DuckDBV2CopyToBatchCallbackFn -> IO (FunPtr DuckDBV2CopyToBatchCallbackFn)
+mkDuckDBV2CopyToBatchCallbackFn :: DuckDBV2CopyToBatchCallbackFn -> IO (FunPtr DuckDBV2CopyToBatchCallbackFn)
+mkDuckDBV2CopyToBatchCallbackFn = Callbacks.wrapVoid3
 
 -- | Call a function pointer with the 'DuckDBV2CopyToBatchCallbackFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2CopyToBatchCallbackFn :: FunPtr DuckDBV2CopyToBatchCallbackFn -> DuckDBV2CopyToBatchInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2CopyToBatchCallbackFn :: FunPtr DuckDBV2CopyToBatchCallbackFn -> DuckDBV2CopyToBatchInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2CopyToBatchCallbackFn = Callbacks.callVoid3
 
 {- | Create a function pointer for 'DuckDBV2CopyToFlushCallbackFn'.
 
@@ -13340,12 +13340,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2CopyToFlushCallbackFn :: DuckDBV2CopyToFlushCallbackFn -> IO (FunPtr DuckDBV2CopyToFlushCallbackFn)
+mkDuckDBV2CopyToFlushCallbackFn :: DuckDBV2CopyToFlushCallbackFn -> IO (FunPtr DuckDBV2CopyToFlushCallbackFn)
+mkDuckDBV2CopyToFlushCallbackFn = Callbacks.wrapVoid3
 
 -- | Call a function pointer with the 'DuckDBV2CopyToFlushCallbackFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2CopyToFlushCallbackFn :: FunPtr DuckDBV2CopyToFlushCallbackFn -> DuckDBV2CopyToFlushInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2CopyToFlushCallbackFn :: FunPtr DuckDBV2CopyToFlushCallbackFn -> DuckDBV2CopyToFlushInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2CopyToFlushCallbackFn = Callbacks.callVoid3
 
 {- | Create a function pointer for 'DuckDBV2CopyToFinalizeCallbackFn'.
 
@@ -13353,12 +13353,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2CopyToFinalizeCallbackFn :: DuckDBV2CopyToFinalizeCallbackFn -> IO (FunPtr DuckDBV2CopyToFinalizeCallbackFn)
+mkDuckDBV2CopyToFinalizeCallbackFn :: DuckDBV2CopyToFinalizeCallbackFn -> IO (FunPtr DuckDBV2CopyToFinalizeCallbackFn)
+mkDuckDBV2CopyToFinalizeCallbackFn = Callbacks.wrapVoid3
 
 -- | Call a function pointer with the 'DuckDBV2CopyToFinalizeCallbackFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2CopyToFinalizeCallbackFn :: FunPtr DuckDBV2CopyToFinalizeCallbackFn -> DuckDBV2CopyToFinalizeInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2CopyToFinalizeCallbackFn :: FunPtr DuckDBV2CopyToFinalizeCallbackFn -> DuckDBV2CopyToFinalizeInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2CopyToFinalizeCallbackFn = Callbacks.callVoid3
 
 {- | Create a function pointer for 'DuckDBV2CopyToStatisticsCallbackFn'.
 
@@ -13366,12 +13366,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2CopyToStatisticsCallbackFn :: DuckDBV2CopyToStatisticsCallbackFn -> IO (FunPtr DuckDBV2CopyToStatisticsCallbackFn)
+mkDuckDBV2CopyToStatisticsCallbackFn :: DuckDBV2CopyToStatisticsCallbackFn -> IO (FunPtr DuckDBV2CopyToStatisticsCallbackFn)
+mkDuckDBV2CopyToStatisticsCallbackFn = Callbacks.wrapVoid3
 
 -- | Call a function pointer with the 'DuckDBV2CopyToStatisticsCallbackFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2CopyToStatisticsCallbackFn :: FunPtr DuckDBV2CopyToStatisticsCallbackFn -> DuckDBV2CopyToStatisticsInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2CopyToStatisticsCallbackFn :: FunPtr DuckDBV2CopyToStatisticsCallbackFn -> DuckDBV2CopyToStatisticsInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2CopyToStatisticsCallbackFn = Callbacks.callVoid3
 
 {- | Create a function pointer for 'DuckDBV2CopyFromBindCallbackFn'.
 
@@ -13379,12 +13379,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2CopyFromBindCallbackFn :: DuckDBV2CopyFromBindCallbackFn -> IO (FunPtr DuckDBV2CopyFromBindCallbackFn)
+mkDuckDBV2CopyFromBindCallbackFn :: DuckDBV2CopyFromBindCallbackFn -> IO (FunPtr DuckDBV2CopyFromBindCallbackFn)
+mkDuckDBV2CopyFromBindCallbackFn = Callbacks.wrapVoid3
 
 -- | Call a function pointer with the 'DuckDBV2CopyFromBindCallbackFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2CopyFromBindCallbackFn :: FunPtr DuckDBV2CopyFromBindCallbackFn -> DuckDBV2CopyFromBindInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2CopyFromBindCallbackFn :: FunPtr DuckDBV2CopyFromBindCallbackFn -> DuckDBV2CopyFromBindInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2CopyFromBindCallbackFn = Callbacks.callVoid3
 
 {- | Create a function pointer for 'DuckDBV2CopyFromInitGlobalCallbackFn'.
 
@@ -13392,12 +13392,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2CopyFromInitGlobalCallbackFn :: DuckDBV2CopyFromInitGlobalCallbackFn -> IO (FunPtr DuckDBV2CopyFromInitGlobalCallbackFn)
+mkDuckDBV2CopyFromInitGlobalCallbackFn :: DuckDBV2CopyFromInitGlobalCallbackFn -> IO (FunPtr DuckDBV2CopyFromInitGlobalCallbackFn)
+mkDuckDBV2CopyFromInitGlobalCallbackFn = Callbacks.wrapVoid3
 
 -- | Call a function pointer with the 'DuckDBV2CopyFromInitGlobalCallbackFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2CopyFromInitGlobalCallbackFn :: FunPtr DuckDBV2CopyFromInitGlobalCallbackFn -> DuckDBV2CopyFromInitGlobalInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2CopyFromInitGlobalCallbackFn :: FunPtr DuckDBV2CopyFromInitGlobalCallbackFn -> DuckDBV2CopyFromInitGlobalInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2CopyFromInitGlobalCallbackFn = Callbacks.callVoid3
 
 {- | Create a function pointer for 'DuckDBV2CopyFromInitLocalCallbackFn'.
 
@@ -13405,12 +13405,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2CopyFromInitLocalCallbackFn :: DuckDBV2CopyFromInitLocalCallbackFn -> IO (FunPtr DuckDBV2CopyFromInitLocalCallbackFn)
+mkDuckDBV2CopyFromInitLocalCallbackFn :: DuckDBV2CopyFromInitLocalCallbackFn -> IO (FunPtr DuckDBV2CopyFromInitLocalCallbackFn)
+mkDuckDBV2CopyFromInitLocalCallbackFn = Callbacks.wrapVoid3
 
 -- | Call a function pointer with the 'DuckDBV2CopyFromInitLocalCallbackFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2CopyFromInitLocalCallbackFn :: FunPtr DuckDBV2CopyFromInitLocalCallbackFn -> DuckDBV2CopyFromInitLocalInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2CopyFromInitLocalCallbackFn :: FunPtr DuckDBV2CopyFromInitLocalCallbackFn -> DuckDBV2CopyFromInitLocalInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2CopyFromInitLocalCallbackFn = Callbacks.callVoid3
 
 {- | Create a function pointer for 'DuckDBV2CopyFromExecCallbackFn'.
 
@@ -13418,12 +13418,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2CopyFromExecCallbackFn :: DuckDBV2CopyFromExecCallbackFn -> IO (FunPtr DuckDBV2CopyFromExecCallbackFn)
+mkDuckDBV2CopyFromExecCallbackFn :: DuckDBV2CopyFromExecCallbackFn -> IO (FunPtr DuckDBV2CopyFromExecCallbackFn)
+mkDuckDBV2CopyFromExecCallbackFn = Callbacks.wrapVoid3
 
 -- | Call a function pointer with the 'DuckDBV2CopyFromExecCallbackFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2CopyFromExecCallbackFn :: FunPtr DuckDBV2CopyFromExecCallbackFn -> DuckDBV2CopyFromExecInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2CopyFromExecCallbackFn :: FunPtr DuckDBV2CopyFromExecCallbackFn -> DuckDBV2CopyFromExecInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2CopyFromExecCallbackFn = Callbacks.callVoid3
 
 {- | Create a function pointer for 'DuckDBV2CopyFromProgressCallbackFn'.
 
@@ -13431,12 +13431,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2CopyFromProgressCallbackFn :: DuckDBV2CopyFromProgressCallbackFn -> IO (FunPtr DuckDBV2CopyFromProgressCallbackFn)
+mkDuckDBV2CopyFromProgressCallbackFn :: DuckDBV2CopyFromProgressCallbackFn -> IO (FunPtr DuckDBV2CopyFromProgressCallbackFn)
+mkDuckDBV2CopyFromProgressCallbackFn = Callbacks.wrapVoid3
 
 -- | Call a function pointer with the 'DuckDBV2CopyFromProgressCallbackFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2CopyFromProgressCallbackFn :: FunPtr DuckDBV2CopyFromProgressCallbackFn -> DuckDBV2CopyFromProgressInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2CopyFromProgressCallbackFn :: FunPtr DuckDBV2CopyFromProgressCallbackFn -> DuckDBV2CopyFromProgressInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2CopyFromProgressCallbackFn = Callbacks.callVoid3
 
 {- | Create a function pointer for 'DuckDBV2ReplacementScanCallbackFn'.
 
@@ -13444,12 +13444,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2ReplacementScanCallbackFn :: DuckDBV2ReplacementScanCallbackFn -> IO (FunPtr DuckDBV2ReplacementScanCallbackFn)
+mkDuckDBV2ReplacementScanCallbackFn :: DuckDBV2ReplacementScanCallbackFn -> IO (FunPtr DuckDBV2ReplacementScanCallbackFn)
+mkDuckDBV2ReplacementScanCallbackFn = Callbacks.wrapVoid3
 
 -- | Call a function pointer with the 'DuckDBV2ReplacementScanCallbackFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2ReplacementScanCallbackFn :: FunPtr DuckDBV2ReplacementScanCallbackFn -> DuckDBV2ReplacementScanInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2ReplacementScanCallbackFn :: FunPtr DuckDBV2ReplacementScanCallbackFn -> DuckDBV2ReplacementScanInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2ReplacementScanCallbackFn = Callbacks.callVoid3
 
 {- | Create a function pointer for 'DuckDBV2ScalarFunctionBindCallbackFn'.
 
@@ -13457,12 +13457,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2ScalarFunctionBindCallbackFn :: DuckDBV2ScalarFunctionBindCallbackFn -> IO (FunPtr DuckDBV2ScalarFunctionBindCallbackFn)
+mkDuckDBV2ScalarFunctionBindCallbackFn :: DuckDBV2ScalarFunctionBindCallbackFn -> IO (FunPtr DuckDBV2ScalarFunctionBindCallbackFn)
+mkDuckDBV2ScalarFunctionBindCallbackFn = Callbacks.wrapVoid4
 
 -- | Call a function pointer with the 'DuckDBV2ScalarFunctionBindCallbackFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2ScalarFunctionBindCallbackFn :: FunPtr DuckDBV2ScalarFunctionBindCallbackFn -> DuckDBV2FunctionBindInfoHandle -> DuckDBV2ScalarFunctionBindInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2ScalarFunctionBindCallbackFn :: FunPtr DuckDBV2ScalarFunctionBindCallbackFn -> DuckDBV2FunctionBindInfoHandle -> DuckDBV2ScalarFunctionBindInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2ScalarFunctionBindCallbackFn = Callbacks.callVoid4
 
 {- | Create a function pointer for 'DuckDBV2ScalarFunctionInitCallbackFn'.
 
@@ -13470,12 +13470,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2ScalarFunctionInitCallbackFn :: DuckDBV2ScalarFunctionInitCallbackFn -> IO (FunPtr DuckDBV2ScalarFunctionInitCallbackFn)
+mkDuckDBV2ScalarFunctionInitCallbackFn :: DuckDBV2ScalarFunctionInitCallbackFn -> IO (FunPtr DuckDBV2ScalarFunctionInitCallbackFn)
+mkDuckDBV2ScalarFunctionInitCallbackFn = Callbacks.wrapVoid3
 
 -- | Call a function pointer with the 'DuckDBV2ScalarFunctionInitCallbackFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2ScalarFunctionInitCallbackFn :: FunPtr DuckDBV2ScalarFunctionInitCallbackFn -> DuckDBV2ScalarFunctionInitInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2ScalarFunctionInitCallbackFn :: FunPtr DuckDBV2ScalarFunctionInitCallbackFn -> DuckDBV2ScalarFunctionInitInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2ScalarFunctionInitCallbackFn = Callbacks.callVoid3
 
 {- | Create a function pointer for 'DuckDBV2ScalarFunctionExecCallbackFn'.
 
@@ -13483,12 +13483,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2ScalarFunctionExecCallbackFn :: DuckDBV2ScalarFunctionExecCallbackFn -> IO (FunPtr DuckDBV2ScalarFunctionExecCallbackFn)
+mkDuckDBV2ScalarFunctionExecCallbackFn :: DuckDBV2ScalarFunctionExecCallbackFn -> IO (FunPtr DuckDBV2ScalarFunctionExecCallbackFn)
+mkDuckDBV2ScalarFunctionExecCallbackFn = Callbacks.wrapVoid3
 
 -- | Call a function pointer with the 'DuckDBV2ScalarFunctionExecCallbackFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2ScalarFunctionExecCallbackFn :: FunPtr DuckDBV2ScalarFunctionExecCallbackFn -> DuckDBV2ScalarFunctionExecInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2ScalarFunctionExecCallbackFn :: FunPtr DuckDBV2ScalarFunctionExecCallbackFn -> DuckDBV2ScalarFunctionExecInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2ScalarFunctionExecCallbackFn = Callbacks.callVoid3
 
 {- | Create a function pointer for 'DuckDBV2TableFunctionBindCallbackFn'.
 
@@ -13496,12 +13496,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2TableFunctionBindCallbackFn :: DuckDBV2TableFunctionBindCallbackFn -> IO (FunPtr DuckDBV2TableFunctionBindCallbackFn)
+mkDuckDBV2TableFunctionBindCallbackFn :: DuckDBV2TableFunctionBindCallbackFn -> IO (FunPtr DuckDBV2TableFunctionBindCallbackFn)
+mkDuckDBV2TableFunctionBindCallbackFn = Callbacks.wrapVoid4
 
 -- | Call a function pointer with the 'DuckDBV2TableFunctionBindCallbackFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2TableFunctionBindCallbackFn :: FunPtr DuckDBV2TableFunctionBindCallbackFn -> DuckDBV2FunctionBindInfoHandle -> DuckDBV2TableFunctionBindInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2TableFunctionBindCallbackFn :: FunPtr DuckDBV2TableFunctionBindCallbackFn -> DuckDBV2FunctionBindInfoHandle -> DuckDBV2TableFunctionBindInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2TableFunctionBindCallbackFn = Callbacks.callVoid4
 
 {- | Create a function pointer for 'DuckDBV2TableFunctionInitGlobalCallbackFn'.
 
@@ -13509,12 +13509,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2TableFunctionInitGlobalCallbackFn :: DuckDBV2TableFunctionInitGlobalCallbackFn -> IO (FunPtr DuckDBV2TableFunctionInitGlobalCallbackFn)
+mkDuckDBV2TableFunctionInitGlobalCallbackFn :: DuckDBV2TableFunctionInitGlobalCallbackFn -> IO (FunPtr DuckDBV2TableFunctionInitGlobalCallbackFn)
+mkDuckDBV2TableFunctionInitGlobalCallbackFn = Callbacks.wrapVoid3
 
 -- | Call a function pointer with the 'DuckDBV2TableFunctionInitGlobalCallbackFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2TableFunctionInitGlobalCallbackFn :: FunPtr DuckDBV2TableFunctionInitGlobalCallbackFn -> DuckDBV2TableFunctionInitGlobalInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2TableFunctionInitGlobalCallbackFn :: FunPtr DuckDBV2TableFunctionInitGlobalCallbackFn -> DuckDBV2TableFunctionInitGlobalInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2TableFunctionInitGlobalCallbackFn = Callbacks.callVoid3
 
 {- | Create a function pointer for 'DuckDBV2TableFunctionInitLocalCallbackFn'.
 
@@ -13522,12 +13522,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2TableFunctionInitLocalCallbackFn :: DuckDBV2TableFunctionInitLocalCallbackFn -> IO (FunPtr DuckDBV2TableFunctionInitLocalCallbackFn)
+mkDuckDBV2TableFunctionInitLocalCallbackFn :: DuckDBV2TableFunctionInitLocalCallbackFn -> IO (FunPtr DuckDBV2TableFunctionInitLocalCallbackFn)
+mkDuckDBV2TableFunctionInitLocalCallbackFn = Callbacks.wrapVoid3
 
 -- | Call a function pointer with the 'DuckDBV2TableFunctionInitLocalCallbackFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2TableFunctionInitLocalCallbackFn :: FunPtr DuckDBV2TableFunctionInitLocalCallbackFn -> DuckDBV2TableFunctionInitLocalInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2TableFunctionInitLocalCallbackFn :: FunPtr DuckDBV2TableFunctionInitLocalCallbackFn -> DuckDBV2TableFunctionInitLocalInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2TableFunctionInitLocalCallbackFn = Callbacks.callVoid3
 
 {- | Create a function pointer for 'DuckDBV2TableFunctionExecCallbackFn'.
 
@@ -13535,12 +13535,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2TableFunctionExecCallbackFn :: DuckDBV2TableFunctionExecCallbackFn -> IO (FunPtr DuckDBV2TableFunctionExecCallbackFn)
+mkDuckDBV2TableFunctionExecCallbackFn :: DuckDBV2TableFunctionExecCallbackFn -> IO (FunPtr DuckDBV2TableFunctionExecCallbackFn)
+mkDuckDBV2TableFunctionExecCallbackFn = Callbacks.wrapVoid3
 
 -- | Call a function pointer with the 'DuckDBV2TableFunctionExecCallbackFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2TableFunctionExecCallbackFn :: FunPtr DuckDBV2TableFunctionExecCallbackFn -> DuckDBV2TableFunctionExecInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2TableFunctionExecCallbackFn :: FunPtr DuckDBV2TableFunctionExecCallbackFn -> DuckDBV2TableFunctionExecInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2TableFunctionExecCallbackFn = Callbacks.callVoid3
 
 {- | Create a function pointer for 'DuckDBV2TableFunctionProgressCallbackFn'.
 
@@ -13548,12 +13548,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2TableFunctionProgressCallbackFn :: DuckDBV2TableFunctionProgressCallbackFn -> IO (FunPtr DuckDBV2TableFunctionProgressCallbackFn)
+mkDuckDBV2TableFunctionProgressCallbackFn :: DuckDBV2TableFunctionProgressCallbackFn -> IO (FunPtr DuckDBV2TableFunctionProgressCallbackFn)
+mkDuckDBV2TableFunctionProgressCallbackFn = Callbacks.wrapVoid3
 
 -- | Call a function pointer with the 'DuckDBV2TableFunctionProgressCallbackFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2TableFunctionProgressCallbackFn :: FunPtr DuckDBV2TableFunctionProgressCallbackFn -> DuckDBV2TableFunctionProgressInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2TableFunctionProgressCallbackFn :: FunPtr DuckDBV2TableFunctionProgressCallbackFn -> DuckDBV2TableFunctionProgressInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2TableFunctionProgressCallbackFn = Callbacks.callVoid3
 
 {- | Create a function pointer for 'DuckDBV2TableFunctionFilterPushdownCallbackFn'.
 
@@ -13561,12 +13561,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2TableFunctionFilterPushdownCallbackFn :: DuckDBV2TableFunctionFilterPushdownCallbackFn -> IO (FunPtr DuckDBV2TableFunctionFilterPushdownCallbackFn)
+mkDuckDBV2TableFunctionFilterPushdownCallbackFn :: DuckDBV2TableFunctionFilterPushdownCallbackFn -> IO (FunPtr DuckDBV2TableFunctionFilterPushdownCallbackFn)
+mkDuckDBV2TableFunctionFilterPushdownCallbackFn = Callbacks.wrapVoid3
 
 -- | Call a function pointer with the 'DuckDBV2TableFunctionFilterPushdownCallbackFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2TableFunctionFilterPushdownCallbackFn :: FunPtr DuckDBV2TableFunctionFilterPushdownCallbackFn -> DuckDBV2TableFunctionFilterPushdownInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2TableFunctionFilterPushdownCallbackFn :: FunPtr DuckDBV2TableFunctionFilterPushdownCallbackFn -> DuckDBV2TableFunctionFilterPushdownInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2TableFunctionFilterPushdownCallbackFn = Callbacks.callVoid3
 
 {- | Create a function pointer for 'DuckDBV2TableFunctionPartitionDataCallbackFn'.
 
@@ -13574,12 +13574,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2TableFunctionPartitionDataCallbackFn :: DuckDBV2TableFunctionPartitionDataCallbackFn -> IO (FunPtr DuckDBV2TableFunctionPartitionDataCallbackFn)
+mkDuckDBV2TableFunctionPartitionDataCallbackFn :: DuckDBV2TableFunctionPartitionDataCallbackFn -> IO (FunPtr DuckDBV2TableFunctionPartitionDataCallbackFn)
+mkDuckDBV2TableFunctionPartitionDataCallbackFn = Callbacks.wrapVoid3
 
 -- | Call a function pointer with the 'DuckDBV2TableFunctionPartitionDataCallbackFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2TableFunctionPartitionDataCallbackFn :: FunPtr DuckDBV2TableFunctionPartitionDataCallbackFn -> DuckDBV2TableFunctionPartitionDataInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2TableFunctionPartitionDataCallbackFn :: FunPtr DuckDBV2TableFunctionPartitionDataCallbackFn -> DuckDBV2TableFunctionPartitionDataInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2TableFunctionPartitionDataCallbackFn = Callbacks.callVoid3
 
 {- | Create a function pointer for 'DuckDBV2TableFunctionPartitioningCallbackFn'.
 
@@ -13587,12 +13587,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2TableFunctionPartitioningCallbackFn :: DuckDBV2TableFunctionPartitioningCallbackFn -> IO (FunPtr DuckDBV2TableFunctionPartitioningCallbackFn)
+mkDuckDBV2TableFunctionPartitioningCallbackFn :: DuckDBV2TableFunctionPartitioningCallbackFn -> IO (FunPtr DuckDBV2TableFunctionPartitioningCallbackFn)
+mkDuckDBV2TableFunctionPartitioningCallbackFn = Callbacks.wrapVoid3
 
 -- | Call a function pointer with the 'DuckDBV2TableFunctionPartitioningCallbackFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2TableFunctionPartitioningCallbackFn :: FunPtr DuckDBV2TableFunctionPartitioningCallbackFn -> DuckDBV2TableFunctionPartitioningInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2TableFunctionPartitioningCallbackFn :: FunPtr DuckDBV2TableFunctionPartitioningCallbackFn -> DuckDBV2TableFunctionPartitioningInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2TableFunctionPartitioningCallbackFn = Callbacks.callVoid3
 
 {- | Create a function pointer for 'DuckDBV2TableFunctionClaimBatchCallbackFn'.
 
@@ -13600,12 +13600,12 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 @freeHaskellFunPtr@ after its final possible invocation.
 The callback must not throw an exception across the C boundary.
 -}
-foreign import ccall "wrapper"
-    mkDuckDBV2TableFunctionClaimBatchCallbackFn :: DuckDBV2TableFunctionClaimBatchCallbackFn -> IO (FunPtr DuckDBV2TableFunctionClaimBatchCallbackFn)
+mkDuckDBV2TableFunctionClaimBatchCallbackFn :: DuckDBV2TableFunctionClaimBatchCallbackFn -> IO (FunPtr DuckDBV2TableFunctionClaimBatchCallbackFn)
+mkDuckDBV2TableFunctionClaimBatchCallbackFn = Callbacks.wrapVoid3
 
 -- | Call a function pointer with the 'DuckDBV2TableFunctionClaimBatchCallbackFn' signature.
-foreign import ccall safe "dynamic"
-    callDuckDBV2TableFunctionClaimBatchCallbackFn :: FunPtr DuckDBV2TableFunctionClaimBatchCallbackFn -> DuckDBV2TableFunctionClaimBatchInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2TableFunctionClaimBatchCallbackFn :: FunPtr DuckDBV2TableFunctionClaimBatchCallbackFn -> DuckDBV2TableFunctionClaimBatchInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+callDuckDBV2TableFunctionClaimBatchCallbackFn = Callbacks.callVoid3
 
 {- | Create a function pointer for 'DuckDBV2ArrowSchemaReleaseFn'.
 
@@ -13614,11 +13614,11 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 The callback must not throw an exception across the C boundary.
 -}
 mkDuckDBV2ArrowSchemaReleaseFn :: DuckDBV2ArrowSchemaReleaseFn -> IO (FunPtr DuckDBV2ArrowSchemaReleaseFn)
-mkDuckDBV2ArrowSchemaReleaseFn = Arrow.wrapArrowSchemaRelease
+mkDuckDBV2ArrowSchemaReleaseFn = Callbacks.wrapVoid1
 
 -- | Call a function pointer with the 'DuckDBV2ArrowSchemaReleaseFn' signature.
 callDuckDBV2ArrowSchemaReleaseFn :: FunPtr DuckDBV2ArrowSchemaReleaseFn -> Ptr DuckDBV2ArrowSchema -> IO ()
-callDuckDBV2ArrowSchemaReleaseFn = Arrow.mkArrowSchemaRelease
+callDuckDBV2ArrowSchemaReleaseFn = Callbacks.callVoid1
 
 {- | Create a function pointer for 'DuckDBV2ArrowArrayReleaseFn'.
 
@@ -13627,11 +13627,11 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 The callback must not throw an exception across the C boundary.
 -}
 mkDuckDBV2ArrowArrayReleaseFn :: DuckDBV2ArrowArrayReleaseFn -> IO (FunPtr DuckDBV2ArrowArrayReleaseFn)
-mkDuckDBV2ArrowArrayReleaseFn = Arrow.wrapArrowArrayRelease
+mkDuckDBV2ArrowArrayReleaseFn = Callbacks.wrapVoid1
 
 -- | Call a function pointer with the 'DuckDBV2ArrowArrayReleaseFn' signature.
 callDuckDBV2ArrowArrayReleaseFn :: FunPtr DuckDBV2ArrowArrayReleaseFn -> Ptr DuckDBV2ArrowArray -> IO ()
-callDuckDBV2ArrowArrayReleaseFn = Arrow.mkArrowArrayRelease
+callDuckDBV2ArrowArrayReleaseFn = Callbacks.callVoid1
 
 {- | Create a function pointer for 'DuckDBV2ArrowArrayStreamGetSchemaFn'.
 
@@ -13640,11 +13640,11 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 The callback must not throw an exception across the C boundary.
 -}
 mkDuckDBV2ArrowArrayStreamGetSchemaFn :: DuckDBV2ArrowArrayStreamGetSchemaFn -> IO (FunPtr DuckDBV2ArrowArrayStreamGetSchemaFn)
-mkDuckDBV2ArrowArrayStreamGetSchemaFn = Arrow.wrapArrowStreamGetSchema
+mkDuckDBV2ArrowArrayStreamGetSchemaFn = Callbacks.wrapInt2
 
 -- | Call a function pointer with the 'DuckDBV2ArrowArrayStreamGetSchemaFn' signature.
 callDuckDBV2ArrowArrayStreamGetSchemaFn :: FunPtr DuckDBV2ArrowArrayStreamGetSchemaFn -> Ptr DuckDBV2ArrowArrayStream -> Ptr DuckDBV2ArrowSchema -> IO CInt
-callDuckDBV2ArrowArrayStreamGetSchemaFn = Arrow.mkArrowStreamGetSchema
+callDuckDBV2ArrowArrayStreamGetSchemaFn = Callbacks.callInt2
 
 {- | Create a function pointer for 'DuckDBV2ArrowArrayStreamGetNextFn'.
 
@@ -13653,11 +13653,11 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 The callback must not throw an exception across the C boundary.
 -}
 mkDuckDBV2ArrowArrayStreamGetNextFn :: DuckDBV2ArrowArrayStreamGetNextFn -> IO (FunPtr DuckDBV2ArrowArrayStreamGetNextFn)
-mkDuckDBV2ArrowArrayStreamGetNextFn = Arrow.wrapArrowStreamGetNext
+mkDuckDBV2ArrowArrayStreamGetNextFn = Callbacks.wrapInt2
 
 -- | Call a function pointer with the 'DuckDBV2ArrowArrayStreamGetNextFn' signature.
 callDuckDBV2ArrowArrayStreamGetNextFn :: FunPtr DuckDBV2ArrowArrayStreamGetNextFn -> Ptr DuckDBV2ArrowArrayStream -> Ptr DuckDBV2ArrowArray -> IO CInt
-callDuckDBV2ArrowArrayStreamGetNextFn = Arrow.mkArrowStreamGetNext
+callDuckDBV2ArrowArrayStreamGetNextFn = Callbacks.callInt2
 
 {- | Create a function pointer for 'DuckDBV2ArrowArrayStreamGetLastErrorFn'.
 
@@ -13666,11 +13666,11 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 The callback must not throw an exception across the C boundary.
 -}
 mkDuckDBV2ArrowArrayStreamGetLastErrorFn :: DuckDBV2ArrowArrayStreamGetLastErrorFn -> IO (FunPtr DuckDBV2ArrowArrayStreamGetLastErrorFn)
-mkDuckDBV2ArrowArrayStreamGetLastErrorFn = Arrow.wrapArrowStreamGetLastError
+mkDuckDBV2ArrowArrayStreamGetLastErrorFn = Callbacks.wrapPtr1
 
 -- | Call a function pointer with the 'DuckDBV2ArrowArrayStreamGetLastErrorFn' signature.
 callDuckDBV2ArrowArrayStreamGetLastErrorFn :: FunPtr DuckDBV2ArrowArrayStreamGetLastErrorFn -> Ptr DuckDBV2ArrowArrayStream -> IO (Ptr CChar)
-callDuckDBV2ArrowArrayStreamGetLastErrorFn = Arrow.mkArrowStreamGetLastError
+callDuckDBV2ArrowArrayStreamGetLastErrorFn = Callbacks.callPtr1
 
 {- | Create a function pointer for 'DuckDBV2ArrowArrayStreamReleaseFn'.
 
@@ -13679,8 +13679,8 @@ Keep the pointer alive while DuckDB can invoke it. Free the pointer with
 The callback must not throw an exception across the C boundary.
 -}
 mkDuckDBV2ArrowArrayStreamReleaseFn :: DuckDBV2ArrowArrayStreamReleaseFn -> IO (FunPtr DuckDBV2ArrowArrayStreamReleaseFn)
-mkDuckDBV2ArrowArrayStreamReleaseFn = Arrow.wrapArrowStreamRelease
+mkDuckDBV2ArrowArrayStreamReleaseFn = Callbacks.wrapVoid1
 
 -- | Call a function pointer with the 'DuckDBV2ArrowArrayStreamReleaseFn' signature.
 callDuckDBV2ArrowArrayStreamReleaseFn :: FunPtr DuckDBV2ArrowArrayStreamReleaseFn -> Ptr DuckDBV2ArrowArrayStream -> IO ()
-callDuckDBV2ArrowArrayStreamReleaseFn = Arrow.mkArrowStreamRelease
+callDuckDBV2ArrowArrayStreamReleaseFn = Callbacks.callVoid1

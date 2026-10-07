@@ -189,7 +189,7 @@ module Database.DuckDB.FFI.Types (
     DuckDBDecimal (..),
     DuckDBBlob (..),
     DuckDBString (..),
-    DuckDBStringT,
+    DuckDBStringT (..),
     DuckDBBit (..),
     DuckDBBignum (..),
     DuckDBQueryProgress (..),
@@ -1120,8 +1120,36 @@ instance Storable DuckDBString where
         pokeByteOff ptr 0 dat
         pokeByteOff ptr (sizeOf (undefined :: Ptr CChar)) len
 
--- | Represents DuckDB's @duckdb_string_t@.
-data DuckDBStringT
+{- | Borrowed 16-byte storage for @duckdb_string_t@ and @duckdb_v2_bytes@.
+
+The length is stored in the first word. The three storage words preserve
+the union bytes. They contain up to 12 inline bytes, or a four-byte prefix
+and a borrowed pointer. Do not interpret them as numeric payload values.
+This structure does not own or free the payload. Keep the owning vector
+or value alive while you read the payload.
+-}
+data DuckDBStringT = DuckDBStringT
+    { duckDBStringTLength :: !Word32
+    , duckDBStringTStorage0 :: !Word32
+    , duckDBStringTStorage1 :: !Word32
+    , duckDBStringTStorage2 :: !Word32
+    }
+    deriving (Eq, Show)
+
+instance Storable DuckDBStringT where
+    sizeOf _ = 16
+    alignment _ = max (alignment (undefined :: Word32)) (alignment (undefined :: Ptr ()))
+    peek ptr =
+        DuckDBStringT
+            <$> peekByteOff ptr 0
+            <*> peekByteOff ptr 4
+            <*> peekByteOff ptr 8
+            <*> peekByteOff ptr 12
+    poke ptr DuckDBStringT{..} = do
+        pokeByteOff ptr 0 duckDBStringTLength
+        pokeByteOff ptr 4 duckDBStringTStorage0
+        pokeByteOff ptr 8 duckDBStringTStorage1
+        pokeByteOff ptr 12 duckDBStringTStorage2
 
 -- | Represents DuckDB's @duckdb_bit@.
 data DuckDBBit = DuckDBBit

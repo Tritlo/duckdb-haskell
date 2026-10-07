@@ -31,6 +31,7 @@ module Database.DuckDB.FFI.Arrow (
 
 import Control.Exception (mask_)
 import Control.Monad (when)
+import Database.DuckDB.FFI.Callbacks qualified as Callbacks
 import Database.DuckDB.FFI.Types
 import Foreign.C.String (CString)
 import Foreign.C.Types (CInt (..))
@@ -107,52 +108,52 @@ foreign import ccall safe "duckdb_destroy_arrow_converted_schema"
     c_duckdb_destroy_arrow_converted_schema :: Ptr DuckDBArrowConvertedSchema -> IO ()
 
 -- | Invoke a non-null Arrow schema release callback.
-foreign import ccall safe "dynamic"
-    mkArrowSchemaRelease :: FunPtr (Ptr ArrowSchema -> IO ()) -> Ptr ArrowSchema -> IO ()
+mkArrowSchemaRelease :: FunPtr (Ptr ArrowSchema -> IO ()) -> Ptr ArrowSchema -> IO ()
+mkArrowSchemaRelease = Callbacks.callVoid1
 
 -- | Invoke a non-null Arrow array release callback.
-foreign import ccall safe "dynamic"
-    mkArrowArrayRelease :: FunPtr (Ptr ArrowArray -> IO ()) -> Ptr ArrowArray -> IO ()
+mkArrowArrayRelease :: FunPtr (Ptr ArrowArray -> IO ()) -> Ptr ArrowArray -> IO ()
+mkArrowArrayRelease = Callbacks.callVoid1
 
 -- | Invoke the schema callback of an unreleased Arrow stream.
-foreign import ccall safe "dynamic"
-    mkArrowStreamGetSchema :: FunPtr (Ptr ArrowArrayStream -> Ptr ArrowSchema -> IO CInt) -> Ptr ArrowArrayStream -> Ptr ArrowSchema -> IO CInt
+mkArrowStreamGetSchema :: FunPtr (Ptr ArrowArrayStream -> Ptr ArrowSchema -> IO CInt) -> Ptr ArrowArrayStream -> Ptr ArrowSchema -> IO CInt
+mkArrowStreamGetSchema = Callbacks.callInt2
 
 -- | Invoke the next-array callback of an unreleased Arrow stream.
-foreign import ccall safe "dynamic"
-    mkArrowStreamGetNext :: FunPtr (Ptr ArrowArrayStream -> Ptr ArrowArray -> IO CInt) -> Ptr ArrowArrayStream -> Ptr ArrowArray -> IO CInt
+mkArrowStreamGetNext :: FunPtr (Ptr ArrowArrayStream -> Ptr ArrowArray -> IO CInt) -> Ptr ArrowArrayStream -> Ptr ArrowArray -> IO CInt
+mkArrowStreamGetNext = Callbacks.callInt2
 
 -- | Read a stream error after a failed callback. Copy it before the next callback.
-foreign import ccall safe "dynamic"
-    mkArrowStreamGetLastError :: FunPtr (Ptr ArrowArrayStream -> IO CString) -> Ptr ArrowArrayStream -> IO CString
+mkArrowStreamGetLastError :: FunPtr (Ptr ArrowArrayStream -> IO CString) -> Ptr ArrowArrayStream -> IO CString
+mkArrowStreamGetLastError = Callbacks.callPtr1
 
 -- | Invoke a non-null Arrow stream release callback.
-foreign import ccall safe "dynamic"
-    mkArrowStreamRelease :: FunPtr (Ptr ArrowArrayStream -> IO ()) -> Ptr ArrowArrayStream -> IO ()
+mkArrowStreamRelease :: FunPtr (Ptr ArrowArrayStream -> IO ()) -> Ptr ArrowArrayStream -> IO ()
+mkArrowStreamRelease = Callbacks.callVoid1
 
 -- | Allocate a C-callable Arrow schema release callback.
-foreign import ccall "wrapper"
-    wrapArrowSchemaRelease :: (Ptr ArrowSchema -> IO ()) -> IO (FunPtr (Ptr ArrowSchema -> IO ()))
+wrapArrowSchemaRelease :: (Ptr ArrowSchema -> IO ()) -> IO (FunPtr (Ptr ArrowSchema -> IO ()))
+wrapArrowSchemaRelease = Callbacks.wrapVoid1
 
 -- | Allocate a C-callable Arrow array release callback.
-foreign import ccall "wrapper"
-    wrapArrowArrayRelease :: (Ptr ArrowArray -> IO ()) -> IO (FunPtr (Ptr ArrowArray -> IO ()))
+wrapArrowArrayRelease :: (Ptr ArrowArray -> IO ()) -> IO (FunPtr (Ptr ArrowArray -> IO ()))
+wrapArrowArrayRelease = Callbacks.wrapVoid1
 
 -- | Allocate a C-callable Arrow stream schema callback.
-foreign import ccall "wrapper"
-    wrapArrowStreamGetSchema :: (Ptr ArrowArrayStream -> Ptr ArrowSchema -> IO CInt) -> IO (FunPtr (Ptr ArrowArrayStream -> Ptr ArrowSchema -> IO CInt))
+wrapArrowStreamGetSchema :: (Ptr ArrowArrayStream -> Ptr ArrowSchema -> IO CInt) -> IO (FunPtr (Ptr ArrowArrayStream -> Ptr ArrowSchema -> IO CInt))
+wrapArrowStreamGetSchema = Callbacks.wrapInt2
 
 -- | Allocate a C-callable Arrow stream next-array callback.
-foreign import ccall "wrapper"
-    wrapArrowStreamGetNext :: (Ptr ArrowArrayStream -> Ptr ArrowArray -> IO CInt) -> IO (FunPtr (Ptr ArrowArrayStream -> Ptr ArrowArray -> IO CInt))
+wrapArrowStreamGetNext :: (Ptr ArrowArrayStream -> Ptr ArrowArray -> IO CInt) -> IO (FunPtr (Ptr ArrowArrayStream -> Ptr ArrowArray -> IO CInt))
+wrapArrowStreamGetNext = Callbacks.wrapInt2
 
 -- | Allocate a C-callable Arrow stream last-error callback.
-foreign import ccall "wrapper"
-    wrapArrowStreamGetLastError :: (Ptr ArrowArrayStream -> IO CString) -> IO (FunPtr (Ptr ArrowArrayStream -> IO CString))
+wrapArrowStreamGetLastError :: (Ptr ArrowArrayStream -> IO CString) -> IO (FunPtr (Ptr ArrowArrayStream -> IO CString))
+wrapArrowStreamGetLastError = Callbacks.wrapPtr1
 
 -- | Allocate a C-callable Arrow stream release callback.
-foreign import ccall "wrapper"
-    wrapArrowStreamRelease :: (Ptr ArrowArrayStream -> IO ()) -> IO (FunPtr (Ptr ArrowArrayStream -> IO ()))
+wrapArrowStreamRelease :: (Ptr ArrowArrayStream -> IO ()) -> IO (FunPtr (Ptr ArrowArrayStream -> IO ()))
+wrapArrowStreamRelease = Callbacks.wrapVoid1
 
 {- | Release an Arrow schema unless its release callback is null.
 The pointer must address an initialized structure. The structure itself stays

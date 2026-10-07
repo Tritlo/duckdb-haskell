@@ -10,6 +10,7 @@ import Data.Bits (testBit)
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (isInfixOf)
+import qualified Database.DuckDB.FFI as Helpers
 import Database.DuckDB.FFI.V2
 import Foreign.C.String (CString, peekCStringLen, withCString, withCStringLen)
 import Foreign.C.Types (CBool (..), CInt (..))
@@ -447,19 +448,25 @@ testVectorMutation = withConnection $ \conn ->
                     peek validity >>= \word -> assertBool "only the chosen row is null" (testBit word 0 && not (testBit word 1) && testBit word 2)
                     checked (c_duckdb_v2_vector_set_size vector 2)
                     strings <- output (c_duckdb_v2_data_chunk_get_vector chunk 1)
-                    checked (c_duckdb_v2_vector_set_size strings 2)
-                    let values = ["a\0b", replicate 100 'x']
+                    let values = ["", "a\0b", replicate 12 'x', replicate 13 'y', replicate 100 'z']
+                    checked (c_duckdb_v2_vector_set_size strings (fromIntegral (length values)))
                     forM_ (zip [0 ..] values) $ \(i, value) -> withView value $ \input ->
                         withHandle (c_duckdb_v2_value_create_varchar_with_connection conn input) c_duckdb_v2_value_destroy $ \owned ->
                             checked (c_duckdb_v2_vector_set_value strings i owned)
                     stringView <- output (c_duckdb_v2_vector_get_view strings)
                     forM
-                        [0 .. 1]
-                        ( \i -> do
+                        (zip [0 ..] values)
+                        ( \(i, value) -> do
                             storage <- peekElemOff (castPtr (duckdbV2VectorViewData stringView)) i
                             with storage $ \ptr -> do
-                                bytes <- if duckdbV2BytesLength storage <= 12 then pure (duckdbV2BytesInlinePointer ptr) else duckdbV2BytesPointer ptr
-                                peekCStringLen (bytes, fromIntegral (duckdbV2BytesLength storage))
+                                len <- Helpers.c_duckdb_string_t_length ptr
+                                len @?= duckDBStringTLength storage
+                                len @?= fromIntegral (length value)
+                                inlineFlag <- Helpers.c_duckdb_string_is_inlined ptr
+                                inlineFlag @?= if len <= duckdbV2BytesInlineLength then CBool 1 else CBool 0
+                                bytes <- if len <= duckdbV2BytesInlineLength then pure (duckdbV2BytesInlinePointer ptr) else duckdbV2BytesPointer ptr
+                                Helpers.c_duckdb_string_t_data ptr >>= (@?= bytes)
+                                peekCStringLen (bytes, fromIntegral len)
                         )
                         >>= (@?= values)
                     arena <- output (c_duckdb_v2_vector_get_arena strings)

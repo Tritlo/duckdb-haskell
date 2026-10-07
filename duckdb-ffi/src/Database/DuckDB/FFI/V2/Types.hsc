@@ -21,6 +21,7 @@ module Database.DuckDB.FFI.V2.Types (
     DuckDBHugeInt (..),
     DuckDBUHugeInt (..),
     DuckDBInterval (..),
+    DuckDBStringT (..),
     DuckDBIdx,
     DuckDBSel,
     DuckDBDeleteCallback,
@@ -30,6 +31,7 @@ module Database.DuckDB.FFI.V2.Types (
 #include "duckdb_v2.h"
 
 import Data.Word (Word32, Word64)
+import Database.DuckDB.FFI.Helpers (c_duckdb_string_t_data)
 import Database.DuckDB.FFI.Types (
     ArrowArray (..),
     ArrowArrayStream (..),
@@ -40,6 +42,7 @@ import Database.DuckDB.FFI.Types (
     DuckDBInterval (..),
     DuckDBListEntry (..),
     DuckDBSel,
+    DuckDBStringT (..),
     DuckDBUHugeInt (..),
  )
 import Foreign.C.Types (CBool (..), CChar (..), CInt (..))
@@ -2440,32 +2443,9 @@ value.pointer.prefix repeats the first
 BLOB carry no further encoding; BIT and BIGNUM do. For BIT, byte 0 is the padding-bit count and bytes 1.. are the
 data; BIGNUM is decoded via @duckdb_v2_bignum_decode()@.
 
-The three storage words preserve the union bytes. Read the pointer arm
-with 'duckdbV2BytesPointer', or access the inline bytes with
-'duckdbV2BytesInlinePointer'. These functions borrow the supplied storage.
+Uses the shared @DuckDBStringT@ storage and constructors.
 -}
-data DuckDBV2Bytes = DuckDBV2Bytes
-    { duckdbV2BytesLength :: Word32
-    , duckdbV2BytesStorage0 :: Word32
-    , duckdbV2BytesStorage1 :: Word32
-    , duckdbV2BytesStorage2 :: Word32
-    }
-    deriving (Eq, Show)
-
-instance Storable DuckDBV2Bytes where
-    sizeOf _ = #{size duckdb_v2_bytes}
-    alignment _ = #{alignment duckdb_v2_bytes}
-    peek ptr =
-        DuckDBV2Bytes
-            <$> peekByteOff ptr #{offset duckdb_v2_bytes, value.inlined.length}
-            <*> peekByteOff ptr (#{offset duckdb_v2_bytes, value.inlined.inlined} + 0)
-            <*> peekByteOff ptr (#{offset duckdb_v2_bytes, value.inlined.inlined} + 4)
-            <*> peekByteOff ptr (#{offset duckdb_v2_bytes, value.inlined.inlined} + 8)
-    poke ptr DuckDBV2Bytes{..} = do
-        pokeByteOff ptr #{offset duckdb_v2_bytes, value.inlined.length} duckdbV2BytesLength
-        pokeByteOff ptr (#{offset duckdb_v2_bytes, value.inlined.inlined} + 0) duckdbV2BytesStorage0
-        pokeByteOff ptr (#{offset duckdb_v2_bytes, value.inlined.inlined} + 4) duckdbV2BytesStorage1
-        pokeByteOff ptr (#{offset duckdb_v2_bytes, value.inlined.inlined} + 8) duckdbV2BytesStorage2
+type DuckDBV2Bytes = DuckDBStringT
 
 {- | Return the borrowed payload pointer of the non-inline union arm.
 
@@ -2473,7 +2453,7 @@ Call this only when the stored length exceeds 'duckdbV2BytesInlineLength'.
 The pointer remains valid only while the owning vector or value is alive.
 -}
 duckdbV2BytesPointer :: Ptr DuckDBV2Bytes -> IO (Ptr CChar)
-duckdbV2BytesPointer ptr = peekByteOff ptr #{offset duckdb_v2_bytes, value.pointer.ptr}
+duckdbV2BytesPointer = c_duckdb_string_t_data
 
 {- | Return a pointer to the inline bytes of the supplied storage.
 

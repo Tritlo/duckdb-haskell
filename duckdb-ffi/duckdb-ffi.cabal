@@ -85,6 +85,7 @@ library
     Database.DuckDB.FFI.Appender
     Database.DuckDB.FFI.Arrow
     Database.DuckDB.FFI.BindValues
+    Database.DuckDB.FFI.Callbacks
     Database.DuckDB.FFI.CastFunctions
     Database.DuckDB.FFI.Catalog
     Database.DuckDB.FFI.Configuration

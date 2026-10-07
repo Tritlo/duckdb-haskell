@@ -183,16 +183,20 @@ import Data.Array (Array, listArray)
 storeArray :: Connection -> IO [Array Int Int]
 storeArray conn = do
   _ <- execute_ conn "CREATE TABLE arrays (vals INTEGER[3])"
-  let arr = listArray (0, 2) [1, 2, 3]
+  let arr = listArray (0, 2) [1, 2, 3] :: Array Int Int
   _ <- execute conn "INSERT INTO arrays VALUES (?)" (Only arr)
   fmap fromOnly <$> query_ conn "SELECT vals FROM arrays"
 
 storeList :: Connection -> IO [[Int]]
 storeList conn = do
   _ <- execute_ conn "CREATE TABLE lists (vals INTEGER[])"
-  _ <- execute conn "INSERT INTO lists VALUES (?)" (Only [1, 2, 3])
+  let arr = listArray (0, 2) [1, 2, 3] :: Array Int Int
+  _ <- execute conn "INSERT INTO lists VALUES (?)" (Only arr)
   fmap fromOnly <$> query_ conn "SELECT vals FROM lists"
 ```
+
+A Haskell list reads a LIST result. Lists have no parameter instance, so bind
+an `Array`. DuckDB casts the array to the LIST column type.
 
 An array parameter with scalar elements takes its element type from the
 column type name of the element, so an empty array keeps its type. An array
@@ -243,6 +247,7 @@ manualStruct conn = do
   [(s, u)] <- query_ conn
     "SELECT {'a': 1, 'b': 2}, \
     \CAST(union_value(x := 42) AS UNION(x INT, y VARCHAR))"
+    :: IO [(StructValue FieldValue, UnionValue FieldValue)]
   _ <- execute conn "INSERT INTO composite VALUES (?, ?)" (s, u)
   query_ conn "SELECT s, u FROM composite"
 ```

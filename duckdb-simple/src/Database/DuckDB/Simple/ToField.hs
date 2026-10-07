@@ -764,7 +764,8 @@ variantDuckValue typeFromRep value = do
 
 {- | Choose the native type of a VARIANT payload. Containers get VARIANT
 elements and fields. Time values with sub-microsecond digits use nanosecond
-types.
+types. Wide timestamps use milliseconds or seconds when these preserve the
+value and fit the native range.
 -}
 variantPayloadType :: FieldValue -> IO (LogicalTypeRep, FieldValue)
 variantPayloadType value = case value of
@@ -790,8 +791,13 @@ variantPayloadType value = case value of
     FieldTime time
         | hasNanos time -> scalar DuckDBTypeTimeNs
         | otherwise -> scalar DuckDBTypeTime
-    FieldTimestamp (Finite LocalTime{localTimeOfDay})
+    FieldTimestamp (Finite LocalTime{localDay, localTimeOfDay})
         | hasNanos localTimeOfDay -> scalar DuckDBTypeTimestampNs
+        | inFiniteRange (minBound :: Int64) maxBound micros -> scalar DuckDBTypeTimestamp
+        | micros `rem` 1000 == 0 && inFiniteRange (minBound :: Int64) maxBound (micros `div` 1000) -> scalar DuckDBTypeTimestampMs
+        | micros `rem` 1000000 == 0 && inFiniteRange (minBound :: Int64) maxBound (micros `div` 1000000) -> scalar DuckDBTypeTimestampS
+      where
+        micros = diffDays localDay (fromGregorian 1970 1 1) * 86400 * 1000000 + diffTimeToPicoseconds (timeOfDayToTime localTimeOfDay) `div` 1000000
     FieldTimestamp{} -> scalar DuckDBTypeTimestamp
     FieldTimestampTZ{} -> scalar DuckDBTypeTimestampTz
     FieldTimeTZ{} -> scalar DuckDBTypeTimeTz
@@ -918,7 +924,7 @@ instance ToDuckValue (UnionValue FieldValue) where
     toDuckValue = unionValueDuckValue logicalTypeFromRep
 
 {- | Build an array without a connection. The elements need 'ToDuckValue', so
-this instance does not accept 'Variant' elements. 'toField' binds those.
+this instance does not accept t'Variant' elements. 'toField' binds those.
 -}
 instance (DuckDBColumnType a, ToDuckValue a) => ToDuckValue (Array Int a) where
     toDuckValue = arrayDuckValue logicalTypeFromRep toDuckValue
@@ -959,8 +965,13 @@ encodeTimestampUnits units LocalTime{localDay, localTimeOfDay} = do
 -- | Check storage limits and the two DuckDB infinity sentinels.
 checkFiniteRange :: (Integral a) => String -> a -> a -> Integer -> IO ()
 checkFiniteRange label lower upper value =
-    when (value < toInteger lower || value >= toInteger upper || value == negate (toInteger upper)) $
+    when (not (inFiniteRange lower upper value)) $
         throwIO (userError ("duckdb-simple: " <> label <> " value out of finite range"))
+
+-- | Check storage limits without accepting the two infinity sentinels.
+inFiniteRange :: (Integral a) => a -> a -> Integer -> Bool
+inFiniteRange lower upper value =
+    value >= toInteger lower && value < toInteger upper && value /= negate (toInteger upper)
 
 -- | Validate time components and convert to the requested units per second.
 timeOfDayUnits :: Integer -> TimeOfDay -> IO Integer

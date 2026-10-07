@@ -13,7 +13,6 @@
   descriptor. Obtain a complete descriptor from a query result before inspecting
   its children.
 
-
 ## 1.5.3.0
 
 - Export invokers for Arrow schema/array release and all four stream callbacks.

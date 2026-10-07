@@ -258,8 +258,7 @@ prepareVariantDecoder vector = do
 Values are (tag, byte offset). Children are (optional key index, value index).
 Keys pair an index with its text. Indices are relative to this row's LISTs.
 The root value has index zero. This helper checks all metadata before decoding.
-It raises an error for cycles and for nesting above 128 levels. Shared values
-use a memo table.
+It raises an error for cycles. Shared values use a memo table.
 -}
 decodeVariantPayload :: [(Word8, Word32)] -> [(Maybe Word32, Word32)] -> [(Word32, Text)] -> ByteString -> IO FieldValue
 decodeVariantPayload valueRows childRows keyRows bytes = do
@@ -279,26 +278,21 @@ decodeVariantPayload valueRows childRows keyRows bytes = do
         case key of
             Just k -> unless (IntMap.member (fromIntegral k) keys) (codecError "missing child key")
             Nothing -> pure ()
-    fst <$> evalStateT (visit values children keys childCount 0 IntSet.empty 0) IntMap.empty
+    evalStateT (visit values children keys childCount IntSet.empty 0) IntMap.empty
   where
-    visit :: Array Int (Word8, Word32) -> Array Int (Maybe Word32, Word32) -> IntMap.IntMap Text -> Int -> Int -> IntSet.IntSet -> Int -> StateT (IntMap.IntMap (FieldValue, Int)) IO (FieldValue, Int)
-    visit values children keys childCount depth ancestors index = do
-        when (depth >= 128) (lift (codecError "nesting exceeds 128 value levels"))
+    visit :: Array Int (Word8, Word32) -> Array Int (Maybe Word32, Word32) -> IntMap.IntMap Text -> Int -> IntSet.IntSet -> Int -> StateT (IntMap.IntMap FieldValue) IO FieldValue
+    visit values children keys childCount ancestors index = do
         when (IntSet.member index ancestors) (lift (codecError "cyclic child reference"))
         cached <- gets (IntMap.lookup index)
         case cached of
-            Just result@(_, height) -> do
-                when (depth + height > 128) (lift (codecError "nesting exceeds 128 value levels"))
-                pure result
+            Just result -> pure result
             Nothing -> do
                 (tag, offset) <- lift (checked (arrayElement values index))
                 let payload = BS.drop (fromIntegral offset) bytes
                 result <- case tag of
                     29 -> nested True payload
                     30 -> nested False payload
-                    _ -> do
-                        value <- lift (decodeScalar tag payload)
-                        pure (value, 1)
+                    _ -> lift (decodeScalar tag payload)
                 modify' (IntMap.insert index result)
                 pure result
       where
@@ -315,16 +309,14 @@ decodeVariantPayload valueRows childRows keyRows bytes = do
                         Nothing -> lift (codecError "missing object key")
                     (False, Nothing) -> pure Text.empty
                     _ -> lift (codecError "container key validity does not match its tag")
-                (item, height) <- visit values children keys childCount (depth + 1) (IntSet.insert index ancestors) (fromIntegral childIndexValue)
-                pure ((name, item), height)
-            let height = 1 + maximum (0 : map snd entries)
-                items = map fst entries
+                item <- visit values children keys childCount (IntSet.insert index ancestors) (fromIntegral childIndexValue)
+                pure (name, item)
             if object
                 then do
-                    unless (Set.size (Set.fromList (map fst items)) == length items) $
+                    unless (Set.size (Set.fromList (map fst entries)) == length entries) $
                         lift (codecError "duplicate object key")
-                    pure (variantObject items, height)
-                else pure (FieldList (map snd items), height)
+                    pure (variantObject entries)
+                else pure (FieldList (map snd entries))
 
 -- | Read an array element after checking both bounds.
 arrayElement :: Array Int a -> Int -> Either String a

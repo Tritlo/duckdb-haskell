@@ -47,6 +47,7 @@ import Database.DuckDB.Simple.Internal (
     SQLError (..),
     Statement (..),
     destroyValue,
+    duckDBTypeFromName,
     fetchPrepareError,
     withStatementHandle,
  )
@@ -713,34 +714,6 @@ createElementLogicalType proxy =
                         , sqlErrorQuery = Nothing
                         }
                     )
-
-duckDBTypeFromName :: Text -> Maybe DuckDBType
-duckDBTypeFromName name =
-    case name of
-        "BOOLEAN" -> Just DuckDBTypeBoolean
-        "TINYINT" -> Just DuckDBTypeTinyInt
-        "SMALLINT" -> Just DuckDBTypeSmallInt
-        "INTEGER" -> Just DuckDBTypeInteger
-        "BIGINT" -> Just DuckDBTypeBigInt
-        "UTINYINT" -> Just DuckDBTypeUTinyInt
-        "USMALLINT" -> Just DuckDBTypeUSmallInt
-        "UINTEGER" -> Just DuckDBTypeUInteger
-        "UBIGINT" -> Just DuckDBTypeUBigInt
-        "FLOAT" -> Just DuckDBTypeFloat
-        "DOUBLE" -> Just DuckDBTypeDouble
-        "DATE" -> Just DuckDBTypeDate
-        "TIME" -> Just DuckDBTypeTime
-        "TIMESTAMP" -> Just DuckDBTypeTimestamp
-        "TIMESTAMPTZ" -> Just DuckDBTypeTimestampTz
-        "TEXT" -> Just DuckDBTypeVarchar
-        "BLOB" -> Just DuckDBTypeBlob
-        "GEOMETRY" -> Just DuckDBTypeGeometry
-        "UUID" -> Just DuckDBTypeUUID
-        "BIT" -> Just DuckDBTypeBit
-        "BIGNUM" -> Just DuckDBTypeBigNum
-        -- treat NULL as SQLNULL to provide element type for Maybe values without data
-        "NULL" -> Just DuckDBTypeSQLNull
-        _ -> Nothing
 
 -- | Reject raw values that the C API cannot bind without format conversion.
 unsupportedRawGeometryBinding :: IO a

@@ -38,6 +38,8 @@ module Database.DuckDB.Simple.Internal (
     withQueryCString,
     peekUtf8CString,
     fetchPrepareError,
+    duckDBTypeFromName,
+    duckDBTypeToName,
     withResult,
     runInterruptibleQuery,
     executePreparedResult,
@@ -58,6 +60,7 @@ import Control.Exception (Exception, SomeException, bracket, bracket_, mask, mas
 import Control.Monad (when)
 import qualified Data.ByteString as BS
 import Data.IORef (IORef, readIORef)
+import Data.List (find)
 import Data.String (IsString (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -88,6 +91,7 @@ import Database.DuckDB.FFI (
     pattern DuckDBErrorInvalid,
     pattern DuckDBSuccess,
  )
+import qualified Database.DuckDB.FFI as FFI
 import Database.DuckDB.FFI.Deprecated (c_duckdb_execute_prepared_streaming)
 import Database.DuckDB.Simple.FromField (FieldValue)
 import Database.DuckDB.Simple.LogicalRep (destroyLogicalType)
@@ -294,6 +298,51 @@ interruptRetryDelayMicros :: Int
 interruptRetryDelayMicros = 10 * 1000
 
 -- | Copy a result error while its native result remains alive.
+
+{- | The column type names that 'Database.DuckDB.Simple.ToField.DuckDBColumnType'
+instances use, and the types they denote. Each type has one name.
+-}
+duckDBTypeNames :: [(Text, DuckDBType)]
+duckDBTypeNames =
+    map
+        (\(name, dtype) -> (Text.pack name, dtype))
+        [ ("BOOLEAN", FFI.DuckDBTypeBoolean)
+        , ("TINYINT", FFI.DuckDBTypeTinyInt)
+        , ("SMALLINT", FFI.DuckDBTypeSmallInt)
+        , ("INTEGER", FFI.DuckDBTypeInteger)
+        , ("BIGINT", FFI.DuckDBTypeBigInt)
+        , ("HUGEINT", FFI.DuckDBTypeHugeInt)
+        , ("UTINYINT", FFI.DuckDBTypeUTinyInt)
+        , ("USMALLINT", FFI.DuckDBTypeUSmallInt)
+        , ("UINTEGER", FFI.DuckDBTypeUInteger)
+        , ("UBIGINT", FFI.DuckDBTypeUBigInt)
+        , ("UHUGEINT", FFI.DuckDBTypeUHugeInt)
+        , ("FLOAT", FFI.DuckDBTypeFloat)
+        , ("DOUBLE", FFI.DuckDBTypeDouble)
+        , ("DATE", FFI.DuckDBTypeDate)
+        , ("TIME", FFI.DuckDBTypeTime)
+        , ("TIMETZ", FFI.DuckDBTypeTimeTz)
+        , ("TIMESTAMP", FFI.DuckDBTypeTimestamp)
+        , ("TIMESTAMPTZ", FFI.DuckDBTypeTimestampTz)
+        , ("INTERVAL", FFI.DuckDBTypeInterval)
+        , ("TEXT", FFI.DuckDBTypeVarchar)
+        , ("BLOB", FFI.DuckDBTypeBlob)
+        , ("GEOMETRY", FFI.DuckDBTypeGeometry)
+        , ("UUID", FFI.DuckDBTypeUUID)
+        , ("BIT", FFI.DuckDBTypeBit)
+        , ("BIGNUM", FFI.DuckDBTypeBigNum)
+        , -- NULL gives an element type to Maybe values without data.
+          ("NULL", FFI.DuckDBTypeSQLNull)
+        ]
+
+-- | Find the type that a column type name denotes.
+duckDBTypeFromName :: Text -> Maybe DuckDBType
+duckDBTypeFromName name = lookup name duckDBTypeNames
+
+-- | Find the column type name of a type. Other types use their 'Show' text.
+duckDBTypeToName :: DuckDBType -> Text
+duckDBTypeToName dtype =
+    maybe (Text.pack (show dtype)) fst (find ((== dtype) . snd) duckDBTypeNames)
 
 {- | Read the error message of a prepared statement as UTF-8. Use the fallback
 when DuckDB reports no message.

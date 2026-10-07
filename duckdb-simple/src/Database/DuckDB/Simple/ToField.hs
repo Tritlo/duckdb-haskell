@@ -25,7 +25,7 @@ module Database.DuckDB.Simple.ToField (
 ) where
 
 import Control.Exception (bracket, throwIO)
-import Control.Monad (filterM, when)
+import Control.Monad (filterM, forM_, when)
 import Data.Array (Array, elems)
 import Data.Bits (complement, shiftL, shiftR, (.&.), (.|.))
 import qualified Data.ByteString as BS
@@ -63,6 +63,7 @@ import Database.DuckDB.Simple.LogicalRep (
     destroyLogicalType,
     logicalTypeFromRep,
     logicalTypeFromRepWith,
+    logicalTypeToRep,
     structValueTypeRep,
     unionValueTypeRep,
  )
@@ -457,7 +458,7 @@ utcTimestampDuckValue value =
 {- | Build an array value with a function for each element. A scalar element
 type comes from the column type name of the element, so an empty array keeps
 it. Other element types, such as STRUCT, UNION, and ARRAY, come from the
-first element that is not NULL.
+first element that is not NULL. All present elements must have the same type.
 -}
 arrayDuckValue ::
     forall a.
@@ -480,7 +481,14 @@ arrayDuckValue typeFromRep elementValue arr =
                 present <- filterM (fmap (== 0) . c_duckdb_is_null_value) values
                 case present of
                     -- The value owns this type.
-                    value : _ -> c_duckdb_get_value_type value >>= action
+                    value : rest -> do
+                        logical <- c_duckdb_get_value_type value
+                        expected <- logicalTypeToRep logical
+                        forM_ rest \element -> do
+                            actual <- c_duckdb_get_value_type element >>= logicalTypeToRep
+                            when (actual /= expected) $
+                                throwIO (userError "duckdb-simple: array elements have different logical types")
+                        action logical
                     [] ->
                         throwIO
                             SQLError

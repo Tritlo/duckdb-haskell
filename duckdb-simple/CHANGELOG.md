@@ -29,8 +29,11 @@
   whose elements have `ToDuckValue`. It does not need a connection.
 - Array parameters of STRUCT values, UNION values, generic records, and
   arrays bind. They take the element type of the first element that is not
-  NULL. An empty or all-NULL array of these elements raises an error. Scalar
-  elements keep the type of their column type name.
+  NULL. The other non-NULL elements must have the same type, including field
+  names, decimal precision and scale, and nested types. Different types raise
+  an error, so DuckDB cannot cast away fields or round values. An empty or
+  all-NULL array of these elements raises an error. Scalar elements keep the
+  type of their column type name.
 - A GEOMETRY payload decodes to `FieldGeometry` with raw WKB. Import those
   bytes with `ST_GeomFromWKB(?)::VARIANT`.
 - Add parameter and result instances for `Data.Geometry.Geometry` from

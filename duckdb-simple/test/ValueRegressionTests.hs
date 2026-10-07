@@ -26,7 +26,7 @@ import Database.DuckDB.FFI
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (BitString (..), DecimalValue (..), FieldValue (..), TimeWithZone (..), bsFromBool)
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..), genericFromFieldValue, genericToStructValue)
-import Database.DuckDB.Simple.Internal (withConnectionHandle)
+import Database.DuckDB.Simple.Internal (destroyValue, withConnectionHandle)
 import Database.DuckDB.Simple.LogicalRep
 import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
@@ -135,6 +135,21 @@ valueRegressionTests =
             (query conn "SELECT typeof(?), ?" (nested, nested) :: IO [(Text, Array Int (Array Int Int64))]) >>= (@?= [("BIGINT[2][2]", nested)])
         , testCase "empty arrays of record elements have no element type" $ withConnection ":memory:" \conn ->
             assertFailureIO (query conn "SELECT ?" (Only (listArray (0, -1) [] :: Array Int Pair)) :: IO [Only Text])
+        , testCase "composite arrays reject schemas that would discard fields or digits" $ withConnection ":memory:" \conn -> do
+            forM_
+                [ ("SELECT {'a': 1::INTEGER}", "SELECT {'a': 2::INTEGER, 'b': 3::INTEGER}")
+                , ("SELECT {'a': 1::INTEGER}", "SELECT {'a': 1.6::DOUBLE}")
+                , ("SELECT {'a': 1.2::DECIMAL(4,1)}", "SELECT {'a': 1.26::DECIMAL(4,2)}")
+                , ("SELECT {'a': [1.2::DECIMAL(4,1)]}", "SELECT {'a': [1.26::DECIMAL(4,2)]}")
+                ]
+                \(firstQuery, secondQuery) -> do
+                    [Only first] <- query_ conn firstQuery :: IO [Only (StructValue FieldValue)]
+                    [Only second] <- query_ conn secondQuery :: IO [Only (StructValue FieldValue)]
+                    forM_ [[Nothing, Just first, Just second], [Just second, Nothing, Just first]] \elements -> do
+                        let values = listArray (0 :: Int, 2) elements
+                        assertFailureIO (query conn "SELECT ?" (Only values) :: IO [Only FieldValue])
+                        assertFailureIO (bracket (toDuckValue values) destroyValue (const (pure ())))
+            (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
         , testCase "GEOMETRY decodes as well-known binary" $ withConnection ":memory:" \conn -> do
             [Only bytes] <- query_ conn "SELECT 'POINT(1 2)'::GEOMETRY" :: IO [Only BS.ByteString]
             BS.length bytes @?= 21

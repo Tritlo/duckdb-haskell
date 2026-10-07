@@ -201,8 +201,10 @@ an `Array`. DuckDB casts the array to the LIST column type.
 An array parameter with scalar elements takes its element type from the
 column type name of the element, so an empty array keeps its type. An array
 of STRUCT values, UNION values, generic records, or arrays takes the type of
-its first element that is not NULL. An empty or all-NULL array of such
-elements raises an error.
+its first element that is not NULL. All other non-NULL elements must have the
+same type, including field names, decimal precision and scale, and nested
+types. Different types raise an error before DuckDB can cast away fields or
+round values. An empty or all-NULL array of such elements raises an error.
 
 ### Infinite dates and timestamps
 

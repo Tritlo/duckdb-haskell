@@ -132,6 +132,7 @@ test-suite duckdb-simple-codec-test
 
   main-is: Main.hs
   other-modules:
+    Database.DuckDB.Simple.Element
     Database.DuckDB.Simple.FromField
     Database.DuckDB.Simple.Geometry
     Database.DuckDB.Simple.Internal

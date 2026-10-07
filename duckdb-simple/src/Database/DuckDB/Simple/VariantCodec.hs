@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -16,41 +17,33 @@ import Control.Monad (forM, forM_, unless, when)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.State.Strict (StateT, evalStateT, gets, modify')
 import Data.Array (Array, bounds, listArray, (!))
-import Data.Bits (complement, finiteBitSize, shiftL, shiftR, xor, (.&.), (.|.))
+import Data.Bits (complement, finiteBitSize, shiftL, (.&.), (.|.))
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
-import Data.Int (Int32, Int64)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.IntSet as IntSet
 import qualified Data.Map.Strict as Map
-import Data.Ratio ((%))
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
-import Data.Time.Calendar (addDays, fromGregorian)
-import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
-import Data.Time.LocalTime (TimeOfDay (..), minutesToTimeZone, utc, utcToLocalTime)
-import qualified Data.UUID as UUID
-import Data.Word (Word32, Word64, Word8)
+import Data.Word (Word32, Word8)
 import Database.DuckDB.FFI
+import Database.DuckDB.Simple.Element (decodeElement)
 import Database.DuckDB.Simple.FromField (
     BigNum (..),
     BitString (BitString),
     DecimalValue (..),
     FieldValue (..),
-    IntervalValue (..),
     RawGeometry (..),
-    TimeWithZone (..),
  )
 import Database.DuckDB.Simple.Internal (destroyLogicalType)
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), StructValue (..))
-import Database.DuckDB.Simple.Time (LocalTimestamp, Unbounded (..))
 import Foreign.C.String (peekCString)
-import Foreign.Marshal.Alloc (alloca)
+import Foreign.Marshal.Alloc (alloca, allocaBytesAligned)
+import Foreign.Marshal.Utils (copyBytes)
 import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.Storable (Storable, peek, peekElemOff, poke, sizeOf)
-import GHC.Float (castWord32ToFloat, castWord64ToDouble)
 import GHC.Num.Integer (integerFromWordList)
 import Text.Read (readMaybe)
 
@@ -271,7 +264,7 @@ prepareVariantDecoder vector = do
                     text <- checked (either (Left . show) Right (Text.decodeUtf8' bytes))
                     pure (index, text)
                 bytes <- readBlob row
-                checked (decodeVariantPayload valueRows childRows keyRows bytes)
+                decodeVariantPayload valueRows childRows keyRows bytes
   where
     child parent index = nonNull "STRUCT vector child" (c_duckdb_struct_vector_get_child parent index)
 
@@ -279,39 +272,40 @@ prepareVariantDecoder vector = do
 Values are (tag, byte offset). Children are (optional key index, value index).
 Keys pair an index with its text. Indices are relative to this row's LISTs.
 The root value has index zero. This helper checks all metadata before decoding.
-It rejects cycles and nesting above 128 levels. Shared values use a memo table.
+It raises an error for cycles and for nesting above 128 levels. Shared values
+use a memo table.
 -}
-decodeVariantPayload :: [(Word8, Word32)] -> [(Maybe Word32, Word32)] -> [(Word32, Text)] -> ByteString -> Either String FieldValue
+decodeVariantPayload :: [(Word8, Word32)] -> [(Maybe Word32, Word32)] -> [(Word32, Text)] -> ByteString -> IO FieldValue
 decodeVariantPayload valueRows childRows keyRows bytes = do
-    when (finiteBitSize (0 :: Int) < 64) (Left "the private codec requires a 64-bit host")
+    when (finiteBitSize (0 :: Int) < 64) (codecError "the private codec requires a 64-bit host")
     let values = listArray (0, length valueRows - 1) valueRows
         children = listArray (0, length childRows - 1) childRows
         keys = IntMap.fromList [(fromIntegral k, t) | (k, t) <- keyRows]
         valueCount = length valueRows
         childCount = length childRows
-    when (null valueRows) (Left "missing root value")
-    unless (IntMap.size keys == length keyRows) (Left "duplicate key dictionary index")
+    when (null valueRows) (codecError "missing root value")
+    unless (IntMap.size keys == length keyRows) (codecError "duplicate key dictionary index")
     forM_ valueRows \(tag, offset) -> do
-        when (tag > 33) (Left "unknown payload tag")
-        when (toInteger offset > toInteger (BS.length bytes)) (Left "byte offset exceeds data size")
+        when (tag > 33) (codecError "unknown payload tag")
+        when (toInteger offset > toInteger (BS.length bytes)) (codecError "byte offset exceeds data size")
     forM_ childRows \(key, value) -> do
-        when (toInteger value >= toInteger valueCount) (Left "child value index out of bounds")
+        when (toInteger value >= toInteger valueCount) (codecError "child value index out of bounds")
         case key of
-            Just k -> unless (IntMap.member (fromIntegral k) keys) (Left "missing child key")
-            Nothing -> Right ()
+            Just k -> unless (IntMap.member (fromIntegral k) keys) (codecError "missing child key")
+            Nothing -> pure ()
     fst <$> evalStateT (visit values children keys childCount 0 IntSet.empty 0) IntMap.empty
   where
-    visit :: Array Int (Word8, Word32) -> Array Int (Maybe Word32, Word32) -> IntMap.IntMap Text -> Int -> Int -> IntSet.IntSet -> Int -> StateT (IntMap.IntMap (FieldValue, Int)) (Either String) (FieldValue, Int)
+    visit :: Array Int (Word8, Word32) -> Array Int (Maybe Word32, Word32) -> IntMap.IntMap Text -> Int -> Int -> IntSet.IntSet -> Int -> StateT (IntMap.IntMap (FieldValue, Int)) IO (FieldValue, Int)
     visit values children keys childCount depth ancestors index = do
-        when (depth >= 128) (lift (Left "nesting exceeds 128 value levels"))
-        when (IntSet.member index ancestors) (lift (Left "cyclic child reference"))
+        when (depth >= 128) (lift (codecError "nesting exceeds 128 value levels"))
+        when (IntSet.member index ancestors) (lift (codecError "cyclic child reference"))
         cached <- gets (IntMap.lookup index)
         case cached of
             Just result@(_, height) -> do
-                when (depth + height > 128) (lift (Left "nesting exceeds 128 value levels"))
+                when (depth + height > 128) (lift (codecError "nesting exceeds 128 value levels"))
                 pure result
             Nothing -> do
-                (tag, offset) <- lift (arrayElement values index)
+                (tag, offset) <- lift (checked (arrayElement values index))
                 let payload = BS.drop (fromIntegral offset) bytes
                 result <- case tag of
                     29 -> nested True payload
@@ -323,18 +317,18 @@ decodeVariantPayload valueRows childRows keyRows bytes = do
                 pure result
       where
         nested object payload = do
-            (count, rest) <- lift (readVarint payload)
-            start <- if count == 0 then pure 0 else fst <$> lift (readVarint rest)
+            (count, rest) <- lift (checked (readVarint payload))
+            start <- if count == 0 then pure 0 else fst <$> lift (checked (readVarint rest))
             unless (toInteger start + toInteger count <= toInteger childCount) $
-                lift (Left "container child range out of bounds")
+                lift (codecError "container child range out of bounds")
             entries <- forM [fromIntegral start .. fromIntegral start + fromIntegral count - 1] \childIndex -> do
-                (key, childIndexValue) <- lift (arrayElement children childIndex)
+                (key, childIndexValue) <- lift (checked (arrayElement children childIndex))
                 name <- case (object, key) of
                     (True, Just k) -> case IntMap.lookup (fromIntegral k) keys of
                         Just text -> pure text
-                        Nothing -> lift (Left "missing object key")
+                        Nothing -> lift (codecError "missing object key")
                     (False, Nothing) -> pure Text.empty
-                    _ -> lift (Left "container key validity does not match its tag")
+                    _ -> lift (codecError "container key validity does not match its tag")
                 (item, height) <- visit values children keys childCount (depth + 1) (IntSet.insert index ancestors) (fromIntegral childIndexValue)
                 pure ((name, item), height)
             let height = 1 + maximum (0 : map snd entries)
@@ -342,7 +336,7 @@ decodeVariantPayload valueRows childRows keyRows bytes = do
             if object
                 then do
                     unless (Set.size (Set.fromList (map fst items)) == length items) $
-                        lift (Left "duplicate object key")
+                        lift (codecError "duplicate object key")
                     pure (variantObject items, height)
                 else pure (FieldList (map snd items), height)
 
@@ -396,24 +390,12 @@ checkDecimal precision scale value
     | otherwise = Right ()
 
 -- | Decode the scalar tags from VariantLogicalType in DuckDB 1.5.
-decodeScalar :: Word8 -> ByteString -> Either String FieldValue
+decodeScalar :: Word8 -> ByteString -> IO FieldValue
 decodeScalar tag bytes = case tag of
-    0 -> Right FieldNull
-    1 -> Right (FieldBool True)
-    2 -> Right (FieldBool False)
-    3 -> FieldInt8 . fromInteger <$> readSigned 1 bytes
-    4 -> FieldInt16 . fromInteger <$> readSigned 2 bytes
-    5 -> FieldInt32 . fromInteger <$> readSigned 4 bytes
-    6 -> FieldInt64 . fromInteger <$> readSigned 8 bytes
-    7 -> FieldHugeInt <$> readSigned 16 bytes
-    8 -> FieldWord8 . fromInteger . fst <$> readUnsigned 1 bytes
-    9 -> FieldWord16 . fromInteger . fst <$> readUnsigned 2 bytes
-    10 -> FieldWord32 . fromInteger . fst <$> readUnsigned 4 bytes
-    11 -> FieldWord64 . fromInteger . fst <$> readUnsigned 8 bytes
-    12 -> FieldUHugeInt . fst <$> readUnsigned 16 bytes
-    13 -> FieldFloat . castWord32ToFloat . fromInteger . fst <$> readUnsigned 4 bytes
-    14 -> FieldDouble . castWord64ToDouble . fromInteger . fst <$> readUnsigned 8 bytes
-    15 -> do
+    0 -> pure FieldNull
+    1 -> pure (FieldBool True)
+    2 -> pure (FieldBool False)
+    15 -> checked do
         (precision, rest) <- readVarint bytes
         (scale, digits) <- readVarint rest
         when (precision < 1 || precision > 38 || scale > precision) (Left "invalid decimal metadata")
@@ -421,30 +403,12 @@ decodeScalar tag bytes = case tag of
         value <- readSigned count digits
         checkDecimal (fromIntegral precision) (fromIntegral scale) value
         pure (FieldDecimal (DecimalValue (fromIntegral precision) (fromIntegral scale) value))
-    16 -> do
+    16 -> checked do
         string <- readString bytes
         FieldText <$> either (Left . show) Right (Text.decodeUtf8' string)
-    17 -> FieldBlob <$> readString bytes
-    18 -> do
-        (biased, _) <- readUnsigned 16 bytes
-        let value = biased `xor` (1 `shiftL` 127)
-        pure (FieldUUID (UUID.fromWords64 (fromInteger (value `shiftR` 64)) (fromInteger value)))
-    19 -> FieldDate . unbounded (\days -> addDays (toInteger days) (fromGregorian 1970 1 1)) . (fromInteger :: Integer -> Int32) <$> readSigned 4 bytes
-    20 -> FieldTime . timeOfDay 1000000 . fromInteger <$> readSigned 8 bytes
-    21 -> FieldTime . timeOfDay 1000000000 . fromInteger <$> readSigned 8 bytes
-    22 -> FieldTimestamp . localTimestamp 1 . fromInteger <$> readSigned 8 bytes
-    23 -> FieldTimestamp . localTimestamp 1000 . fromInteger <$> readSigned 8 bytes
-    24 -> FieldTimestamp . localTimestamp 1000000 . fromInteger <$> readSigned 8 bytes
-    25 -> FieldTimestamp . localTimestamp 1000000000 . fromInteger <$> readSigned 8 bytes
-    26 -> readUnsigned 8 bytes >>= timeWithZone . fromInteger . fst
-    27 -> FieldTimestampTZ . unbounded (posixSecondsToUTCTime . fromRational . (% 1000000) . toInteger) . (fromInteger :: Integer -> Int64) <$> readSigned 8 bytes
-    28 -> do
-        months <- readSigned 4 bytes
-        days <- readSigned 4 (BS.drop 4 bytes)
-        micros <- readSigned 8 (BS.drop 8 bytes)
-        pure (FieldInterval (IntervalValue (fromInteger months) (fromInteger days) (fromInteger micros)))
-    31 -> FieldBigNum . BigNum <$> (readString bytes >>= decodeBigNum)
-    32 -> do
+    17 -> FieldBlob <$> checked (readString bytes)
+    31 -> FieldBigNum . BigNum <$> checked (readString bytes >>= decodeBigNum)
+    32 -> checked do
         bitBytes <- readString bytes
         case BS.uncons bitBytes of
             Just (padding, dat) -> do
@@ -456,8 +420,48 @@ decodeScalar tag bytes = case tag of
                         pure (FieldBit (BitString padding (BS.cons (first .&. complement maskBits) rest)))
                     Nothing -> Left "empty BIT data"
             Nothing -> Left "missing BIT header"
-    33 -> FieldGeometry . (`RawGeometry` Nothing) <$> readString bytes
-    _ -> Left "unknown scalar tag"
+    33 -> FieldGeometry . (`RawGeometry` Nothing) <$> checked (readString bytes)
+    _ -> case fixedWidthTag tag of
+        Just (dtype, size) -> decodeFixedWidth dtype size bytes
+        Nothing -> codecError "unknown scalar tag"
+
+{- | The type and the payload size of each fixed-width scalar tag. These
+payloads have the memory layout of one vector element of the type.
+-}
+fixedWidthTag :: Word8 -> Maybe (DuckDBType, Int)
+fixedWidthTag = \case
+    3 -> Just (DuckDBTypeTinyInt, 1)
+    4 -> Just (DuckDBTypeSmallInt, 2)
+    5 -> Just (DuckDBTypeInteger, 4)
+    6 -> Just (DuckDBTypeBigInt, 8)
+    7 -> Just (DuckDBTypeHugeInt, 16)
+    8 -> Just (DuckDBTypeUTinyInt, 1)
+    9 -> Just (DuckDBTypeUSmallInt, 2)
+    10 -> Just (DuckDBTypeUInteger, 4)
+    11 -> Just (DuckDBTypeUBigInt, 8)
+    12 -> Just (DuckDBTypeUHugeInt, 16)
+    13 -> Just (DuckDBTypeFloat, 4)
+    14 -> Just (DuckDBTypeDouble, 8)
+    18 -> Just (DuckDBTypeUUID, 16)
+    19 -> Just (DuckDBTypeDate, 4)
+    20 -> Just (DuckDBTypeTime, 8)
+    21 -> Just (DuckDBTypeTimeNs, 8)
+    22 -> Just (DuckDBTypeTimestampS, 8)
+    23 -> Just (DuckDBTypeTimestampMs, 8)
+    24 -> Just (DuckDBTypeTimestamp, 8)
+    25 -> Just (DuckDBTypeTimestampNs, 8)
+    26 -> Just (DuckDBTypeTimeTz, 8)
+    27 -> Just (DuckDBTypeTimestampTz, 8)
+    28 -> Just (DuckDBTypeInterval, 16)
+    _ -> Nothing
+
+-- | Copy a fixed-width payload to aligned memory and decode it as one element.
+decodeFixedWidth :: DuckDBType -> Int -> ByteString -> IO FieldValue
+decodeFixedWidth dtype size bytes = do
+    when (BS.length bytes < size) (codecError "truncated scalar payload")
+    allocaBytesAligned size 16 \buffer -> do
+        BS.useAsCStringLen bytes \(source, _) -> copyBytes buffer (castPtr source) size
+        decodeElement dtype (castPtr buffer) 0
 
 -- | Build an object whose fields have the VARIANT type.
 variantObject :: [(Text, FieldValue)] -> FieldValue
@@ -470,34 +474,6 @@ variantObject entries =
             }
   where
     indexed items = listArray (0, length items - 1) items
-
--- | Interpret DuckDB's infinity sentinels before converting a finite value.
-unbounded :: (Integral a, Bounded a) => (a -> b) -> a -> Unbounded b
-unbounded convert value
-    | value == maxBound = PosInfinity
-    | value == negate maxBound = NegInfinity
-    | otherwise = Finite (convert value)
-
--- | Convert ticks since the epoch to a timestamp without a time zone.
-localTimestamp :: Integer -> Int64 -> LocalTimestamp
-localTimestamp units = unbounded (utcToLocalTime utc . posixSecondsToUTCTime . fromRational . (% units) . toInteger)
-
--- | Convert ticks since midnight to a time of day. Midnight at the end of a day is 24:00:00.
-timeOfDay :: Integer -> Int64 -> TimeOfDay
-timeOfDay units ticks =
-    let (hours, rest) = toInteger ticks `divMod` (3600 * units)
-        (minutes, seconds) = rest `divMod` (60 * units)
-     in TimeOfDay (fromInteger hours) (fromInteger minutes) (fromRational (seconds % units))
-
-{- | Unpack DuckDB's TIMETZ bits. The high 40 bits hold microseconds since
-midnight. The low 24 bits hold 57599 minus the offset in seconds.
--}
-timeWithZone :: Word64 -> Either String FieldValue
-timeWithZone packed = do
-    let micros = fromIntegral (packed `shiftR` 24) :: Int64
-        offset = 57599 - fromIntegral (packed .&. 0xffffff) :: Int
-    when (offset `rem` 60 /= 0) (Left "TIMETZ offset cannot be represented in whole minutes")
-    pure (FieldTimeTZ (TimeWithZone (timeOfDay 1000000 micros) (minutesToTimeZone (offset `div` 60))))
 
 -- | Check a BIT's nonempty data and left-padding count.
 checkBit :: Word8 -> ByteString -> Either String ()

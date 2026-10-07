@@ -1,12 +1,13 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 -- | Check the private codec's validation without constructing invalid native vectors.
 module Main (main) where
 
+import Control.Exception (IOException, try)
 import Data.Array (listArray)
 import qualified Data.ByteString as BS
-import Data.Either (isLeft)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import Data.Word (Word32, Word8)
@@ -47,25 +48,33 @@ main =
             , rejected "duplicate object key" [(29, 0), (1, 2)] [(Just 0, 1), (Just 1, 1)] [(0, "x"), (1, "x")] [2, 0]
             , rejected "cyclic child reference" [(30, 0)] [(Nothing, 0)] [] [1, 0]
             , testCase "empty values need no payload bytes" $
-                decodeVariantPayload [(30, 0)] [] [] (BS.singleton 0) @?= Right (FieldList [])
+                decodeVariantPayload [(30, 0)] [] [] (BS.singleton 0) >>= (@?= FieldList [])
             , testCase "shared children decode without duplicate traversal" $
                 decodeVariantPayload [(30, 0), (3, 2)] [(Nothing, 1), (Nothing, 1)] [] (BS.pack [2, 0, 7])
-                    @?= Right (FieldList [FieldInt8 7, FieldInt8 7])
+                    >>= (@?= FieldList [FieldInt8 7, FieldInt8 7])
             , testCase "length-aware keys preserve embedded NUL" $
                 decodeVariantPayload [(29, 0), (1, 2)] [(Just 0, 1)] [(0, "a\0b")] (BS.pack [1, 0])
-                    @?= Right (object [("a\0b", FieldBool True)])
+                    >>= (@?= object [("a\0b", FieldBool True)])
             , testCase "128 levels are accepted" $
                 let (values, children, bytes) = nested 128
-                 in decodeVariantPayload values children [] bytes @?= Right (foldr (const (FieldList . pure)) (FieldInt8 7) [1 .. 127 :: Int])
+                 in decodeVariantPayload values children [] bytes >>= (@?= foldr (const (FieldList . pure)) (FieldInt8 7) [1 .. 127 :: Int])
             , testCase "129 levels are rejected" $
                 let (values, children, bytes) = nested 129
-                 in assertBool "expected depth rejection" (isLeft (decodeVariantPayload values children [] bytes))
+                 in assertRejected (decodeVariantPayload values children [] bytes)
             ]
 
 -- | Require a validation error for copied native payload data.
 rejected :: String -> [(Word8, Word32)] -> [(Maybe Word32, Word32)] -> [(Word32, Text)] -> [Word8] -> TestTree
 rejected label values children keys bytes =
-    testCase label $ assertBool "expected payload rejection" (isLeft (decodeVariantPayload values children keys (BS.pack bytes)))
+    testCase label $ assertRejected (decodeVariantPayload values children keys (BS.pack bytes))
+
+-- | Require a codec error.
+assertRejected :: IO FieldValue -> Assertion
+assertRejected action = do
+    result <- try action
+    case result of
+        Left (_ :: IOException) -> pure ()
+        Right value -> assertFailure ("expected payload rejection, got " <> show value)
 
 -- | Build the object payload that VARIANT decoding produces.
 object :: [(Text, FieldValue)] -> FieldValue

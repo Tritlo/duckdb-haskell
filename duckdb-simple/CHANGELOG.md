@@ -1,14 +1,14 @@
 # Changelog
 
-## Unreleased: DuckDB 2.0 preparation
+## 0.4.0.0 (unreleased)
 
-- Add the `duckdb-v2` build flag and preview integration checks. The flag is off
-  by default.
+- Target DuckDB 2.0 with `duckdb-ffi >= 2.0.0.0`. The package version selects
+  the supported native API. No preview flag is required.
 - Decode nanosecond timezone timestamps in results and VARIANT values.
 - Preserve nanosecond timezone timestamp precision in VARIANT parameters and
   parameters whose prepared type requires `TIMESTAMPTZ_NS`. This includes UTC
   fields in collections, STRUCTs, MAPs, and UNIONs.
-- Allow session variables to supply omitted named parameters in preview builds.
+- Allow session variables to supply omitted named parameters.
 - Reject duplicate named parameters with DuckDB's ASCII case rules. Keep
   distinct non-ASCII names separate.
 - Allow a VARIANT object to contain an empty key with other named keys. Reject

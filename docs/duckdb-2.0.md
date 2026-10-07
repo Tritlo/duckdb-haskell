@@ -41,11 +41,21 @@ changes no existing v1 function signatures or structure definitions.
 The v2 header declares 582 functions and 37 callback typedefs. It also has six
 Arrow callback fields, for a total of 43 callbacks.
 
-The default build uses DuckDB 1.5.6. The `duckdb-v2` flag enables the
-preview additions. `Database.DuckDB.FFI.V2` exposes the v2 API. Keep v1 and v2
+`duckdb-ffi` 2.0.0.0 and `duckdb-simple` 0.4.0.0 target DuckDB 2.0.
+The package version selects the supported native API. There is no preview
+build flag. Earlier package releases remain available for DuckDB 1.5.
+`Database.DuckDB.FFI.V2` exposes the v2 API. Keep v1 and v2
 handles separate. Their result, connection, error, and ownership contracts differ.
 The raw API exposes native primitives. `duckdb-simple` retains its existing
 connection and result API.
+
+V2 shares seven layouts with the retained bindings: Arrow schema, array, and
+stream; list entry; signed and unsigned 128-bit integer; and interval.
+The shared types use one `Storable` implementation. Index types and compatible
+Arrow callbacks also share their definitions. V2 functions and handles remain
+separate because their signatures and ownership rules differ. Keep its enums
+separate too. For example, file flag 4 means exclusive creation in v1 and
+truncation in v2.
 
 The binding uses the C API and does not call the C++ API. Haskell calls the v2
 API directly because it passes structures by pointer. The v1 API retains its C
@@ -132,8 +142,8 @@ Build and test the pinned source with:
 ```sh
 scripts/build-duckdb-preview.sh /tmp/duckdb-2.0-native
 uv run scripts/duckdb-api.py --compare-headers /tmp/duckdb-2.0-native/native
-cabal build all -fduckdb-v2 -fsystemlib --extra-lib-dirs=/tmp/duckdb-2.0-native/native
-DUCKDB_TEST_VERSION=2.0.0-dev0 cabal test all -fduckdb-v2 -fsystemlib --extra-lib-dirs=/tmp/duckdb-2.0-native/native --test-show-details=direct
+cabal build all -fsystemlib --extra-lib-dirs=/tmp/duckdb-2.0-native/native
+DUCKDB_TEST_VERSION=2.0.0-dev0 cabal test all -fsystemlib --extra-lib-dirs=/tmp/duckdb-2.0-native/native --test-show-details=direct
 ```
 
 The `.github/workflows/duckdb-2.0.yml` job uses this source pin. Its checks apply
@@ -142,11 +152,11 @@ to this development commit. Validate the final release archives separately.
 The Nix and Docker preview paths use the same source archive pin:
 
 ```sh
-nix-build dev/nix/ci.nix --arg preview true --no-out-link
-docker build --build-arg DUCKDB_PREVIEW=true --tag duckdb-haskell:2.0-preview .
+nix-build dev/nix/ci.nix --no-out-link
+docker build --tag duckdb-haskell:2.0 .
 ```
 
-The default Nix and Docker paths use DuckDB 1.5. These commands build local
+The Nix and Docker paths always use the pinned DuckDB 2.0 source. These commands build local
 artifacts without uploading or deploying them.
 
 ## Feature coverage
@@ -221,10 +231,10 @@ writes, bound queries, streaming, and nanosecond timestamps. It fails if
 either path is missing. Run it with:
 
 ```sh
-cabal build duckdb-simple:duckdb-simple-quack-test -fduckdb-v2 -fquack-tests -fsystemlib --extra-lib-dirs=/absolute/path/to/native
+cabal build duckdb-simple:duckdb-simple-quack-test -fquack-tests -fsystemlib --extra-lib-dirs=/absolute/path/to/native
 DUCKDB_HTTPFS_EXTENSION=/absolute/path/to/httpfs.duckdb_extension \
 DUCKDB_QUACK_EXTENSION=/absolute/path/to/quack.duckdb_extension \
-cabal test duckdb-simple:duckdb-simple-quack-test -fduckdb-v2 -fquack-tests -fsystemlib --extra-lib-dirs=/absolute/path/to/native --test-show-details=direct
+cabal test duckdb-simple:duckdb-simple-quack-test -fquack-tests -fsystemlib --extra-lib-dirs=/absolute/path/to/native --test-show-details=direct
 ```
 
 The macOS crash report shows a native stack overflow in `Value::ToSQLString`
@@ -266,9 +276,9 @@ layout, so repeat its round trips after each native update.
 3. Set the final native version, package versions, and dependency bounds. Update
    runtime tests, README support claims, CONTRIBUTING, migration notes, and both
    changelogs. Decide the supported native range from tested final versions.
-   Preserve the existing 1.5 path until the 2.0 path passes the release checks.
+   Keep the 1.5 package release available to existing applications.
 4. Test all supported GHC versions on Linux and macOS with the final archives.
-   Include the preview API flag, optimization-disabled conversions, Arrow and
+   Include both C API generations, optimization-disabled conversions, Arrow and
    DataFrame integration, callbacks, cancellation, leak checks, and Valgrind.
    Run `cabal build all` before `cabal test all`, as CONTRIBUTING requires.
    Run the Quack suite with matching extensions. Recheck prepared parameters
@@ -297,5 +307,5 @@ cabal haddock all
 cabal sdist all
 ```
 
-Select the final native installation and enable `duckdb-v2` for the 2.0 run.
+Select the final DuckDB 2.0 native installation.
 Use the existing DataFrame and Nix commands in CONTRIBUTING for those checks.

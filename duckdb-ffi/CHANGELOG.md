@@ -1,12 +1,13 @@
 # Changelog
 
-## Unreleased: DuckDB 2.0 preparation
+## 2.0.0.0 (unreleased)
 
-- Add the `duckdb-v2` flag to enable the preview API, generated bindings, and
-  native layouts. The flag is off by default.
+- Target DuckDB 2.0. The package includes both C API generations without a
+  preview flag. Use the earlier package release with DuckDB 1.5.
 - Pin the preview headers and API specification to an upstream commit.
 - Add nanosecond timezone timestamp values and the data-corruption error tag.
-- Require a matching supplied library for preview builds.
+- Share common Arrow and scalar layouts between the C API generations.
+- Require a matching supplied library until the final native checksums are pinned.
 - Install both preview client headers and the DuckDB license. Keep preview
   headers available when the Cabal build directory is outside the source tree.
 - Test v2 aggregate, table, cast, COPY, vector, filesystem, and logging behavior.

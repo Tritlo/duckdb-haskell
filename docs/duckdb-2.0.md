@@ -21,8 +21,17 @@ The small `duckdb-api.json` manifest also pins the source archive used by
 
 The existing 1.5 header stays in `duckdb-ffi/cbits/duckdb.h`. Preview builds
 verify the archive and extract its two client headers into the Cabal build
-directory. This step runs offline. It requires `tar` and `sha256sum` or `shasum`.
+directory with the upstream license. This step runs offline. It requires `tar`
+and `sha256sum` or `shasum`.
 Python is required only for the audit, refresh, and generation tools.
+Package installation copies both preview client headers and `duckdb-LICENSE`
+into the installed include directory. Consumers do not need the build directory.
+
+The second review compared the snapshot with release-branch commit
+[6afcb082657ebae0911f7b1887a8743afa525355](https://github.com/duckdb/duckdb/commit/6afcb082657ebae0911f7b1887a8743afa525355).
+All 78 archived upstream files were unchanged. The later engine includes
+additional fixes. The source pin remains paired with the verified native
+preview. Refresh it and repeat the checks for the final release.
 
 The v1 header declares 548 functions and 21 callback typedefs. Compared with the
 original 1.5.6 header, it adds `duckdb_create_timestamp_tz_ns`,
@@ -101,9 +110,12 @@ The official Linux preview fetched during preparation reports
 `v2.0.0-alpha45189`. Its archive SHA256 is
 `5d08f26d7e5f07fcae3d315c039a09da627f52639aeace3af06abc5456e35132`.
 `PRAGMA version` reports source ID `13d1d8f56a` and codename `Cyanoptera`.
-All four headers in the archive are byte-identical to this snapshot. Verify the
-archive digest and headers before use because the
-[preview installation links](https://duckdb.org/install/preview) can change.
+All four headers in the archive are byte-identical to this snapshot. This
+records the binary used for validation. Its former download URL now returns
+404. The [preview installation links](https://duckdb.org/install/preview)
+can move and can serve an older binary. Build the pinned source below for a
+reproducible runtime. If you use another binary, verify its digest, headers,
+exported symbols, and reported version before testing.
 This preview works directly with both APIs. Set
 `DUCKDB_TEST_VERSION=2.0.0-alpha45189` for its test run.
 
@@ -168,19 +180,77 @@ The preview tests exercise triggers, DML CTEs, nested schemas, variables, JSON
 mutation, lambdas, NEAREST joins, recursive aggregation, and storage version
 2.0. They also check VARIANT storage and Parquet shredding. The raw v2 tests
 check instance lifetimes, prepared statements, streaming, cancellation,
-callbacks, and Arrow ownership.
+callbacks, and Arrow ownership. They also execute grouped and window
+aggregates, table functions, custom casts, COPY TO callbacks, vector mutations,
+custom configuration, filesystem operations, and context logging. An independent
+native compiler check verifies all function and callback signatures.
+These checks cover representative behavior. They do not execute every raw
+function. Loadable extension entry points, advanced COPY FROM and partitioned
+output, and multi-file callbacks still need dedicated runtime fixtures.
 
 The selected preview's Quack extension downloads returned HTTP 403 from
-`core_nightly` and HTTP 404 from `core` in this environment. The public Haskell
-API reached the installer. The download errors prevented it from loading Quack.
-CONNECT, authentication, remote parameter binding, and remote streaming remain
-unverified. Run a local server test when a compatible signed extension is
-available. See the [extension installation documentation](https://duckdb.org/docs/preview/extensions/installing_extensions).
+`core_nightly` and HTTP 404 from `core` in this environment. The second review
+built Quack from commit
+[f964cece8ecfe9006a607aa0a3e9b9030296c54f](https://github.com/duckdb/duckdb-quack/commit/f964cece8ecfe9006a607aa0a3e9b9030296c54f)
+against the pinned DuckDB source. It also built `httpfs` from commit
+[5e34903685e4d429cbb19b063406abdd8ce30591](https://github.com/duckdb/duckdb-httpfs/commit/5e34903685e4d429cbb19b063406abdd8ce30591)
+with the two patches selected by that DuckDB source. Quack needs a writable
+crypto provider from `httpfs`, even when the server uses an explicit token.
+The local builds require OpenSSL and libcurl development files.
 
-The first macOS preview CI run passed both FFI suites and the leak test. The
-high-level test process stopped during the nested streaming test without an
-assertion or exception message. This failure is unresolved. Confirm the cause
-and pass the macOS suite before release.
+The authenticated loopback check passes unparameterized CONNECT queries,
+remote reads and writes through ATTACH, and a streamed fold of 5,000 remote
+rows. Bound ATTACH queries require
+`SET disabled_optimizers='remote_pushdown'` in this snapshot. Default pushdown
+sends unresolved placeholders to the remote server during preparation.
+Parameterized CONNECT execution is also unsupported by the
+[pinned native engine](https://github.com/duckdb/duckdb/blob/13d1d8f56a82b3413055819eb90d0b0e68b5c847/src/main/client_context.cpp#L646).
+The binding preserves the native error and does not change optimizer settings.
+Use ATTACH with the checked setting for parameterized remote queries.
+Recheck both paths, signed extension installation, and TLS with the final
+release. The local check uses unsigned source-built fixtures on loopback.
+Remote cancellation also needs a release check. In a native-only CONNECT
+query, interrupting the client did not release a running remote aggregate
+within five seconds. The binding waits for the native worker before it frees
+resources. It cannot promise prompt cancellation while that worker is blocked.
+
+The optional `duckdb-simple-quack-test` suite requires compatible local
+`httpfs` and Quack artifacts. Their version and platform must match the
+selected native library. The suite checks authentication, server-visible
+writes, bound queries, streaming, and nanosecond timestamps. It fails if
+either path is missing. Run it with:
+
+```sh
+cabal build duckdb-simple:duckdb-simple-quack-test -fduckdb-v2 -fquack-tests -fsystemlib --extra-lib-dirs=/absolute/path/to/native
+DUCKDB_HTTPFS_EXTENSION=/absolute/path/to/httpfs.duckdb_extension \
+DUCKDB_QUACK_EXTENSION=/absolute/path/to/quack.duckdb_extension \
+cabal test duckdb-simple:duckdb-simple-quack-test -fduckdb-v2 -fquack-tests -fsystemlib --extra-lib-dirs=/absolute/path/to/native --test-show-details=direct
+```
+
+The macOS crash report shows a native stack overflow in `Value::ToSQLString`
+while DuckDB generates a default column name for a deeply nested VARIANT
+constant. A native-only Linux probe also fails at depth 256 with a 544 KiB
+thread stack. Adding `AS payload` avoids that recursive name generation.
+The decoder regression keeps the depth-128 and depth-256 values and uses that
+alias. This does not fix arbitrary native queries with the same expression.
+Confirm the workaround in macOS CI and recheck the engine at release time.
+
+UTC parameters now follow a prepared `TIMESTAMPTZ_NS` type, including leaves
+inside collections, STRUCTs, MAPs, and UNIONs. Untyped UTC parameters retain
+microsecond TIMESTAMPTZ behavior. Finite values outside the nanosecond range
+raise an encoding error. Infinity remains available through `UTCTimestamp`.
+DuckDB can retain the old parameter type after a table column changes.
+Close and prepare the statement again after a temporal schema change, or use
+an explicit nanosecond parameter cast. A parameter used with both microsecond
+and nanosecond casts has no single prepared type. Use separate parameters for
+those expressions to retain the intended precision.
+
+VARIANT objects can bind an empty key alongside named keys in this preview.
+The C constructor cannot represent an object with only an empty key; it
+produces a tuple that casts to an array. The binding rejects that shape change.
+Duplicate and NUL-containing object keys also raise errors. Results can still
+decode those names. The VARIANT decoder depends on the checked native storage
+layout, so repeat its round trips after each native update.
 
 ## Final release checklist
 
@@ -201,6 +271,8 @@ and pass the macOS suite before release.
    Include the preview API flag, optimization-disabled conversions, Arrow and
    DataFrame integration, callbacks, cancellation, leak checks, and Valgrind.
    Run `cabal build all` before `cabal test all`, as CONTRIBUTING requires.
+   Run the Quack suite with matching extensions. Recheck prepared parameters
+   with default pushdown and CONNECT. Verify remote cancellation and TLS.
 5. Update the pinned Nix DuckDB input and its version assertions. Run the build
    and tests in the Nix environment. Update the Docker native library and run
    its smoke checks. Verify that neither path downloads a different library.
@@ -208,6 +280,8 @@ and pass the macOS suite before release.
    for both packages. Confirm the archives contain generated modules, C adapters,
    preview headers, API specifications, and provenance. Extract them into a clean
    directory and build/test there against the final native library.
+   Install the extracted FFI package. Check both headers and the native license
+   with a separate consumer under normal and dynamic Haskell linking.
 7. Re-run the API check and the final-native tests after any release adjustment.
    Publish only after these checks pass and the release is explicitly authorized.
    `scripts/release.sh` uploads package candidates even without `--publish`.

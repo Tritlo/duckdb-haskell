@@ -7,6 +7,9 @@
 - Pin the preview headers and API specification to an upstream commit.
 - Add nanosecond timezone timestamp values and the data-corruption error tag.
 - Require a matching supplied library for preview builds.
+- Install both preview client headers and the DuckDB license. Keep preview
+  headers available when the Cabal build directory is outside the source tree.
+- Test v2 aggregate, table, cast, COPY, vector, filesystem, and logging behavior.
 
 ## 1.5.6.0
 

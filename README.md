@@ -1,6 +1,6 @@
 # duckdb-haskell
 
-Enable `duckdb-v2` for the DuckDB 2.0 preview API.
+Enable `duckdb-v2` in both packages for the DuckDB 2.0 preview API.
 See [the API snapshot, feature coverage, build commands, and release checklist](docs/duckdb-2.0.md).
 The default build uses the released DuckDB 1.5.6 library.
 

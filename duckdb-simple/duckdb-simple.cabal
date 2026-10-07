@@ -44,6 +44,11 @@ flag duckdb-v2
   default: False
   manual: True
 
+flag quack-tests
+  description: Test authenticated local Quack connections with supplied extensions.
+  default: False
+  manual: True
+
 library
   if flag(duckdb-v2)
     cpp-options: -DDUCKDB_API_V2
@@ -201,6 +206,24 @@ test-suite duckdb-simple-dataframe-test
     tasty >=1.4 && <1.6,
     tasty-hunit >=0.10 && <0.12,
     text,
+
+test-suite duckdb-simple-quack-test
+  type: exitcode-stdio-1.0
+  hs-source-dirs: test-quack
+  main-is: Main.hs
+  default-language: Haskell2010
+  ghc-options: -threaded
+
+  if !flag(quack-tests) || !flag(duckdb-v2)
+    buildable: False
+  build-depends:
+    base >=4.14 && <5,
+    directory >=1.3 && <1.4,
+    duckdb-simple,
+    tasty >=1.4 && <1.6,
+    tasty-hunit >=0.10 && <0.12,
+    text,
+    time,
 
 benchmark duckdb-simple-bench
   type: exitcode-stdio-1.0

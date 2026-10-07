@@ -132,6 +132,9 @@ columnTypes result count = go [] 0
 -- | Copy a type through a LIST type, because the C API has no copy function.
 copyLogicalType :: DuckDBLogicalType -> IO DuckDBLogicalType
 copyLogicalType logical =
+    -- TODO: use a copy function when the C API has one.
+    -- See https://github.com/Tritlo/duckdb-haskell/issues/30 and
+    -- https://github.com/duckdb/duckdb/issues/26664.
     bracket (c_duckdb_create_list_type logical) destroyLogicalType c_duckdb_list_type_child_type
 
 -- | Run an action with a new connection to the database. Disconnect after it.

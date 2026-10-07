@@ -68,7 +68,6 @@ library
     Database.DuckDB.Simple.Element
     Database.DuckDB.Simple.Materialize
     Database.DuckDB.Simple.Result
-    Database.DuckDB.Simple.Temporal
     Database.DuckDB.Simple.TypeCache
     Database.DuckDB.Simple.VariantCodec
 
@@ -135,12 +134,12 @@ test-suite duckdb-simple-codec-test
 
   main-is: Main.hs
   other-modules:
+    Database.DuckDB.Simple.Element
     Database.DuckDB.Simple.FromField
     Database.DuckDB.Simple.Geometry
     Database.DuckDB.Simple.Internal
     Database.DuckDB.Simple.LogicalRep
     Database.DuckDB.Simple.Ok
-    Database.DuckDB.Simple.Temporal
     Database.DuckDB.Simple.Time
     Database.DuckDB.Simple.TypeCache
     Database.DuckDB.Simple.Variant

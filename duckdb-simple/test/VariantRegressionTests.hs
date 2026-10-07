@@ -109,6 +109,11 @@ tests =
             forM_ [FieldNull, FieldList [], variantObject [], FieldList [FieldNull], variantObject [("x", FieldNull)]] (roundTrip conn)
             (query_ conn "SELECT NULL::VARIANT" :: IO [Only (Maybe Variant)]) >>= (@?= [Only Nothing])
             (query conn "SELECT ?" (Only (Variant FieldNull)) :: IO [Only FieldValue]) >>= (@?= [Only FieldNull])
+        , testCase "deep native arrays decode without a library depth limit" $ withConnection ":memory:" \conn ->
+            forM_ [128, 256 :: Int] \depth -> do
+                let expected = Variant (foldr (const (FieldList . pure)) (FieldWord64 7) [1 .. depth])
+                (query conn "SELECT (repeat('[', ?) || '7' || repeat(']', ?))::JSON::VARIANT" (depth, depth) :: IO [Only Variant])
+                    >>= (@?= [Only expected])
         , testCase "ARRAY parameters and generic records contain VARIANT" $ withConnection ":memory:" \conn -> do
             let array = listArray (0, 2) [Variant (FieldInt8 1), Variant (FieldText "two"), Variant FieldNull]
             (query conn "SELECT ?" (Only array) :: IO [Only (Array Int Variant)]) >>= (@?= [Only array])

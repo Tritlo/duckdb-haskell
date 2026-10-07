@@ -11,7 +11,9 @@ These changes target the 0.3.0.0 release. Do not release review branches separat
 - Decode VARIANT results to the `FieldValue` of the stored value, so existing
   `FromField` instances read them. Objects decode to `FieldStruct` values with
   VARIANT fields, in entry order. The decoder checks DuckDB's private 1.5
-  format, payload bounds, and nesting depth.
+  format and payload bounds, and rejects cyclic child references. Previously,
+  valid values with 128 nested containers raised an error. The decoder now
+  accepts deep acyclic values without a library depth limit.
 - Add `Variant`, a `FieldValue` that binds as a VARIANT, and `variantObject`,
   which builds an object payload. Scalars keep their native type. Object
   parameters reject duplicate, empty, and NUL-containing keys because the

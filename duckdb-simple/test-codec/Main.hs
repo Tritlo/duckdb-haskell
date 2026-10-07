@@ -5,6 +5,8 @@
 module Main (main) where
 
 import Control.Exception (IOException, try)
+import Control.Monad (forM_)
+import Data.Bits (shiftR, (.&.), (.|.))
 import qualified Data.ByteString as BS
 import Data.Text (Text)
 import Data.Word (Word32, Word8)
@@ -51,12 +53,10 @@ main =
             , testCase "length-aware keys preserve embedded NUL" $
                 decodeVariantPayload [(29, 0), (1, 2)] [(Just 0, 1)] [(0, "a\0b")] (BS.pack [1, 0])
                     >>= (@?= variantObject [("a\0b", FieldBool True)])
-            , testCase "128 levels are accepted" $
-                let (values, children, bytes) = nested 128
-                 in decodeVariantPayload values children [] bytes >>= (@?= foldr (const (FieldList . pure)) (FieldInt8 7) [1 .. 127 :: Int])
-            , testCase "129 levels are rejected" $
-                let (values, children, bytes) = nested 129
-                 in assertRejected (decodeVariantPayload values children [] bytes)
+            , testCase "deep acyclic containers are accepted" $
+                forM_ [128, 129, 257, 1025] $ \count ->
+                    let (values, children, bytes) = nested count
+                     in decodeVariantPayload values children [] bytes >>= (@?= foldr (const (FieldList . pure)) (FieldInt8 7) [1 .. count - 1])
             ]
 
 -- | Require a validation error for copied native payload data.
@@ -75,7 +75,14 @@ assertRejected action = do
 -- | Construct a chain of arrays with one scalar leaf.
 nested :: Int -> ([(Word8, Word32)], [(Maybe Word32, Word32)], BS.ByteString)
 nested count =
-    ( [(30, fromIntegral (2 * n)) | n <- [0 .. count - 2]] <> [(3, fromIntegral (2 * (count - 1)))]
+    ( zip (replicate (count - 1) 30 <> [3]) offsets
     , [(Nothing, fromIntegral (n + 1)) | n <- [0 .. count - 2]]
-    , BS.pack (concat [[1, fromIntegral n] | n <- [0 .. count - 2]] <> [7])
+    , BS.pack (concat payloads)
     )
+  where
+    payloads = [1 : varint (fromIntegral n) | n <- [0 .. count - 2]] <> [[7]]
+    offsets = scanl (+) 0 (map (fromIntegral . length) payloads)
+    varint :: Word32 -> [Word8]
+    varint value
+        | value < 128 = [fromIntegral value]
+        | otherwise = fromIntegral (value .&. 127 .|. 128) : varint (value `shiftR` 7)

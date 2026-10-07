@@ -1,5 +1,3 @@
-{-# LANGUAGE CPP #-}
-
 module Database.DuckDB.FFI.ValueInterface (
     c_duckdb_destroy_value,
     c_duckdb_create_varchar,
@@ -25,9 +23,7 @@ module Database.DuckDB.FFI.ValueInterface (
     c_duckdb_create_time_tz_value,
     c_duckdb_create_timestamp,
     c_duckdb_create_timestamp_tz,
-#ifdef DUCKDB_API_V2
     c_duckdb_create_timestamp_tz_ns,
-#endif
     c_duckdb_create_timestamp_s,
     c_duckdb_create_timestamp_ms,
     c_duckdb_create_timestamp_ns,
@@ -56,9 +52,7 @@ module Database.DuckDB.FFI.ValueInterface (
     c_duckdb_get_time_tz,
     c_duckdb_get_timestamp,
     c_duckdb_get_timestamp_tz,
-#ifdef DUCKDB_API_V2
     c_duckdb_get_timestamp_tz_ns,
-#endif
     c_duckdb_get_timestamp_s,
     c_duckdb_get_timestamp_ms,
     c_duckdb_get_timestamp_ns,
@@ -342,16 +336,12 @@ Returns The value. This must be destroyed with @duckdb_destroy_value@.
 foreign import ccall safe "wrapped_duckdb_create_timestamp_tz"
     c_duckdb_create_timestamp_tz :: DuckDBTimestamp -> IO DuckDBValue
 
-#ifdef DUCKDB_API_V2
-
 {- | Create a @TIMESTAMP_TZ_NS@ value from nanoseconds since the Unix epoch.
 Destroy the value with 'c_duckdb_destroy_value'. The C wrapper converts the
 scalar argument to the @duckdb_timestamp_ns@ structure.
 -}
 foreign import ccall safe "wrapped_duckdb_create_timestamp_tz_ns"
     c_duckdb_create_timestamp_tz_ns :: DuckDBTimestampNs -> IO DuckDBValue
-
-#endif
 
 {- | Creates a TIMESTAMP_S value from a duckdb_timestamp_s
 
@@ -657,15 +647,11 @@ Returns A duckdb_timestamp, or MinValue if the value cannot be converted
 foreign import ccall safe "wrapped_duckdb_get_timestamp_tz"
     c_duckdb_get_timestamp_tz :: DuckDBValue -> IO DuckDBTimestamp
 
-#ifdef DUCKDB_API_V2
-
 {- | Read a @TIMESTAMP_TZ_NS@ value in nanoseconds since the Unix epoch.
 The C wrapper returns the scalar field of the @duckdb_timestamp_ns@ structure.
 -}
 foreign import ccall safe "wrapped_duckdb_get_timestamp_tz_ns"
     c_duckdb_get_timestamp_tz_ns :: DuckDBValue -> IO DuckDBTimestampNs
-
-#endif
 
 {- | Returns the duckdb_timestamp_s value of the given value.
 

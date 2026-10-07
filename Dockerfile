@@ -11,7 +11,6 @@ ARG GHC_VERSION=9.14.1
 ARG CABAL_VERSION=3.18.1.0
 ARG UID=1001
 ARG GID=1001
-ARG DUCKDB_PREVIEW=false
 
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Europe/Stockholm \
@@ -60,20 +59,11 @@ COPY scripts/build-duckdb-preview.sh scripts/duckdb-api.py /preview/scripts/
 COPY duckdb-ffi/vendor/duckdb-api.* /preview/duckdb-ffi/vendor/
 COPY duckdb-ffi/cbits/duckdb.h /preview/duckdb-ffi/cbits/duckdb.h
 ARG DUCKDB_BUILD_JOBS=2
-RUN if [ "$DUCKDB_PREVIEW" = true ]; then \
-    DUCKDB_BUILD_JOBS="$DUCKDB_BUILD_JOBS" bash /preview/scripts/build-duckdb-preview.sh /tmp/duckdb-preview && \
+RUN DUCKDB_BUILD_JOBS="$DUCKDB_BUILD_JOBS" bash /preview/scripts/build-duckdb-preview.sh /tmp/duckdb-preview && \
     cp /tmp/duckdb-preview/native/libduckdb.so /usr/lib/ && \
     cp /tmp/duckdb-preview/native/duckdb*.h /usr/include/ && \
-    ldconfig; \
-    else \
-    curl --fail --location --proto '=https' --proto-redir '=https' -o /tmp/libduckdb.zip https://github.com/duckdb/duckdb/releases/download/v1.5.6/libduckdb-linux-amd64.zip && \
-    echo 'b845005f5132a7d8180057c35e14a7626632258782f871a90861b19c1c03841b  /tmp/libduckdb.zip' | sha256sum -c - && \
-    unzip libduckdb.zip && \
-    mv libduckdb.so /usr/lib/libduckdb.so && \
-    mv duckdb.h /usr/include/ && \
-    ldconfig && \
-    rm libduckdb.zip; \
-    fi
+    install -Dm644 /tmp/duckdb-preview/native/duckdb-LICENSE /usr/share/licenses/duckdb/LICENSE && \
+    ldconfig
 
 # Switch to the new user
 USER ${UID}:${GID}
@@ -107,9 +97,6 @@ RUN sed -i "s/with-compiler: ghc-.*/with-compiler: ghc-${GHC_VERSION}/" /app/cab
 WORKDIR /app
 # Using the cabal files, we can build the dependencies
 RUN printf 'package duckdb-ffi\n  flags: +systemlib\n' > cabal.project.local
-RUN if [ "$DUCKDB_PREVIEW" = true ]; then \
-    printf 'package duckdb-ffi\n  flags: +systemlib +duckdb-v2\npackage duckdb-simple\n  flags: +duckdb-v2\n' > cabal.project.local; \
-    fi
 RUN cabal update && \
     cabal build all --only-dependencies --project-file=cabal.project --project-dir=/app
 
@@ -126,8 +113,7 @@ RUN cabal build all --project-file=cabal.project --project-dir=/app
 
 
 # Test the packages
-RUN if [ "$DUCKDB_PREVIEW" = true ]; then native_version=2.0.0-dev0; else native_version=1.5.6; fi && \
-    DUCKDB_TEST_VERSION="$native_version" cabal test all --project-file=cabal.project --project-dir=/app --test-show-details=streaming
+RUN DUCKDB_TEST_VERSION=2.0.0-dev0 cabal test all --project-file=cabal.project --project-dir=/app --test-show-details=streaming
 
 # Generate Haddocks for all packages
 RUN cabal haddock all --project-file=cabal.project --project-dir=/app --haddock-for-hackage --enable-documentation

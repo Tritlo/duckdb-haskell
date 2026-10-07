@@ -1,5 +1,4 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE DefaultSignatures #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
@@ -191,16 +190,12 @@ bindFieldBinding stmt idx FieldBinding{fieldBindingValue} =
     withTypeCache (statementConnection stmt) \cache ->
         bindDuckValue stmt idx (fieldBindingValue cache (preparedParameterType stmt idx))
 
--- | Read the preview parameter type. Legacy bindings keep their inferred type.
+-- | Read the logical type of a prepared parameter.
 preparedParameterType :: Statement -> DuckDBIdx -> IO (Maybe LogicalTypeRep)
-#ifdef DUCKDB_API_V2
 preparedParameterType stmt idx =
     withStatementHandle stmt \handle ->
         bracket (c_duckdb_param_logical_type handle idx) destroyLogicalType \logical ->
             if logical == nullPtr then pure Nothing else Just <$> logicalTypeToRep logical
-#else
-preparedParameterType _ _ = pure Nothing
-#endif
 
 -- | Render a bound parameter for error reporting.
 renderFieldBinding :: FieldBinding -> String
@@ -916,24 +911,16 @@ variantPayloadType value = case value of
     scalar dtype = pure (LogicalTypeScalar dtype, value)
     hasNanos time = snd (properFraction (todSec time * 1000000) :: (Integer, Pico)) /= 0
 
--- | Choose nanosecond storage for a precise UTC VARIANT payload in preview builds.
+-- | Choose nanosecond storage for a precise UTC VARIANT payload.
 variantUtcTimestampType :: UTCTimestamp -> DuckDBType
-#ifdef DUCKDB_API_V2
 variantUtcTimestampType (Finite instant)
     | snd (properFraction (todSec (localTimeOfDay (utcToLocalTime utc instant)) * 1000000) :: (Integer, Pico)) /= 0 = DuckDBTypeTimestampTzNs
 variantUtcTimestampType _ = DuckDBTypeTimestampTz
-#else
-variantUtcTimestampType _ = DuckDBTypeTimestampTz
-#endif
 
--- | Construct a UTC nanosecond value. Legacy builds reject this type.
+-- | Construct a UTC nanosecond value.
 utcTimestampNsDuckValue :: UTCTimestamp -> IO DuckDBValue
-#ifdef DUCKDB_API_V2
 utcTimestampNsDuckValue value =
     encodeUnbounded (encodeTimestampUnits 1000000000 . utcToLocalTime utc) value >>= c_duckdb_create_timestamp_tz_ns . DuckDBTimestampNs
-#else
-utcTimestampNsDuckValue _ = throwIO (userError "duckdb-simple: TIMESTAMP_TZ_NS requires the duckdb-v2 flag")
-#endif
 
 instance ToDuckValue G.Geometry where
     toDuckValue geometry = do

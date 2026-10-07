@@ -1,5 +1,4 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE CPP #-}
 
 module ProfilingInfoTest (tests) where
 
@@ -34,24 +33,18 @@ profilingMetricsRoundtrip =
         withDatabase \db ->
             withConnection db \conn -> do
                 runStatement conn "PRAGMA enable_profiling='no_output'"
-#ifdef DUCKDB_API_V2
                 runStatement conn "SET tracked_metrics = ['query.cpu_time', 'operator.extra_info']"
-#endif
                 runStatement conn "CREATE TABLE profiling_numbers(value INTEGER)"
                 runStatement conn "INSERT INTO profiling_numbers VALUES (1), (2), (3)"
                 runStatement conn "SELECT sum(value) FROM profiling_numbers"
 
                 rootPtr <- c_duckdb_get_profiling_info conn
                 assertBool "profiling info pointer should be non-null" (rootPtr /= nullPtr)
-#ifdef DUCKDB_API_V2
                 rootMetrics <- c_duckdb_profiling_info_get_metrics rootPtr
                 c_duckdb_get_map_size rootMetrics >>= (@?= 0)
                 destroyDuckValue rootMetrics
                 infoPtr <- c_duckdb_profiling_info_get_child rootPtr 0
                 assertBool "operator node should be non-null" (infoPtr /= nullPtr)
-#else
-                let infoPtr = rootPtr
-#endif
 
                 metricsVal <- c_duckdb_profiling_info_get_metrics infoPtr
                 entryCountIdx <- c_duckdb_get_map_size metricsVal

@@ -1,6 +1,6 @@
 cabal-version: 3.4
 name: duckdb-ffi
-version: 1.5.6.0
+version: 2.0.0.0
 author: Matthias Pall Gissurarson
 maintainer: mpg@mpg.is
 category: Database
@@ -19,13 +19,12 @@ homepage: https://github.com/Tritlo/duckdb-haskell
 bug-reports: https://github.com/Tritlo/duckdb-haskell/issues
 description:
   Haskell FFI bindings to the DuckDB C API.
-  Supports native DuckDB >= 1.5.3 and < 1.6. Tested with versions 1.5.3 through 1.5.6.
+  Supports native DuckDB >= 2.0 and < 2.1.
   .
   Downloads a verified native library to the user cache on Linux and macOS.
   Uses an existing library when the user or Nix supplies it.
   .
-  The duckdb-v2 flag adds the pinned DuckDB 2.0 preview API.
-  This flag requires a matching supplied native library.
+  Includes the complete pinned DuckDB V2 C API.
 
 extra-doc-files: CHANGELOG.md
 extra-source-files:
@@ -42,11 +41,6 @@ source-repository head
 -- Setup.hs reads this flag. cabal check reports it as unused.
 flag systemlib
   description: Use an installed DuckDB library without downloading it.
-  default: False
-  manual: True
-
-flag duckdb-v2
-  description: Enable the pinned DuckDB 2.0 preview C API. Supply a matching native library.
   default: False
   manual: True
 
@@ -82,6 +76,9 @@ library
   exposed-modules:
     Database.DuckDB.FFI
     Database.DuckDB.FFI.Deprecated
+    Database.DuckDB.FFI.V2
+    Database.DuckDB.FFI.V2.Functions
+    Database.DuckDB.FFI.V2.Types
 
   other-modules:
     Database.DuckDB.FFI.AggregateFunctions
@@ -131,19 +128,7 @@ library
   install-includes: duckdb.h
   extra-libraries: duckdb
   c-sources: cbits/duckdb_stub.c
-
-  if flag(duckdb-v2)
-    exposed-modules:
-      Database.DuckDB.FFI.V2
-      Database.DuckDB.FFI.V2.Functions
-      Database.DuckDB.FFI.V2.Types
-
-    cpp-options: -DDUCKDB_API_V2
-    cc-options:
-      -DDUCKDB_API_V2
-      -DDUCKDB_V2_API_ALLOW_UNSTABLE=1
-
-    build-tool-depends: hsc2hs:hsc2hs >=0.68 && <0.69
+  build-tool-depends: hsc2hs:hsc2hs >=0.68 && <0.69
   build-depends:
     base >=4.18 && <4.23,
     bytestring >=0.11 && <0.13,
@@ -161,12 +146,6 @@ test-suite duckdb-ffi-v2-test
   other-modules: V2Test
   default-language: Haskell2010
   ghc-options: -threaded
-
-  if flag(duckdb-v2)
-    buildable: True
-  else
-    buildable: False
-
   build-depends:
     base >=4.18 && <4.23,
     duckdb-ffi,
@@ -212,9 +191,6 @@ test-suite duckdb-ffi-tests
     VectorTest
 
   ghc-options: -threaded
-
-  if flag(duckdb-v2)
-    cpp-options: -DDUCKDB_API_V2
   default-language: Haskell2010
   build-depends:
     base >=4.18 && <4.23,

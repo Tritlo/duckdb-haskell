@@ -35,34 +35,33 @@ getSymbolicPath = id
 
 #endif
 
--- | Save the native library and selected header paths in the package description.
+-- | Save the native library and verified header paths in the package description.
 main :: IO ()
 main =
     defaultMainWithHooks
         simpleUserHooks
             { confHook = configure
             , copyHook = \package local hooks flags ->
-                copyHook simpleUserHooks (installDescription package local) local hooks flags
+                copyHook simpleUserHooks (installDescription package) local hooks flags
             , instHook = \package local hooks flags ->
-                instHook simpleUserHooks (installDescription package local) local hooks flags
+                instHook simpleUserHooks (installDescription package) local hooks flags
             , regHook = \package local hooks flags ->
                 regHook
                     simpleUserHooks
-                    (if fromFlagOrDefault False (regInPlace flags) then package else installDescription package local)
+                    (if fromFlagOrDefault False (regInPlace flags) then package else installDescription package)
                     local
                     hooks
                     flags
             , postCopy = \args flags package local -> do
                 postCopy simpleUserHooks args flags package local
-                copyPreviewHeaders (fromFlagOrDefault NoCopyDest (copyDest flags)) package local
+                copyAPIHeaders (fromFlagOrDefault NoCopyDest (copyDest flags)) package local
             , postInst = \args flags package local -> do
                 postInst simpleUserHooks args flags package local
-                copyPreviewHeaders (fromFlagOrDefault NoCopyDest (installDest flags)) package local
+                copyAPIHeaders (fromFlagOrDefault NoCopyDest (installDest flags)) package local
             }
   where
     configure (description, hooks) flags = do
-        let preview = lookupFlagAssignment (mkFlagName "duckdb-v2") (configConfigurationsFlags flags) == Just True
-        headerDirectories <- if preview then (: []) <$> extractPreviewHeaders flags else pure []
+        headerDirectory <- extractAPIHeaders flags
         nativeDirs <- nativeLibraryDirs flags
         let addLibrary lib =
                 let info = libBuildInfo lib
@@ -72,7 +71,7 @@ main =
                                 { ldOptions =
                                     (if os `elem` ["linux", "darwin"] then concatMap (\dir -> ["-Xlinker", "-rpath", "-Xlinker", dir]) nativeDirs else [])
                                         <> ldOptions info
-                                , includeDirs = if preview then map makeSymbolicPath headerDirectories else includeDirs info
+                                , includeDirs = [makeSymbolicPath headerDirectory]
                                 }
                         }
             updated = description{condLibrary = fmap (\tree -> tree{condTreeData = addLibrary (condTreeData tree)}) (condLibrary description)}
@@ -82,9 +81,9 @@ main =
                     else flags{configExtraLibDirs = map makeSymbolicPath nativeDirs}
         confHook simpleUserHooks (updated, hooks) updatedFlags
 
--- | Verify the preview API archive. Extract its client headers into the build directory.
-extractPreviewHeaders :: ConfigFlags -> IO FilePath
-extractPreviewHeaders flags = do
+-- | Verify the API archive. Extract its client headers into the build directory.
+extractAPIHeaders :: ConfigFlags -> IO FilePath
+extractAPIHeaders flags = do
     let archive = "vendor" </> "duckdb-api.tar.gz"
         checksumFile = "vendor" </> "duckdb-api.sha256"
         files = ["duckdb.h", "duckdb_v2.h", "LICENSE"]
@@ -115,22 +114,18 @@ extractPreviewHeaders flags = do
     renameFile (headerDirectory </> "LICENSE") (headerDirectory </> "duckdb-LICENSE")
     pure headerDirectory
 
--- | Install the preview headers and DuckDB license after Cabal copies the library.
-copyPreviewHeaders :: CopyDest -> PackageDescription -> LBI.LocalBuildInfo -> IO ()
-copyPreviewHeaders destination package local =
-    when (lookupFlagAssignment (mkFlagName "duckdb-v2") (LBI.flagAssignment local) == Just True) $ do
-        source <- extractPreviewHeaders (LBI.configFlags local)
-        let target = includedir (LBI.absoluteInstallDirs package local destination)
-        createDirectoryIfMissing True target
-        forM_ ["duckdb.h", "duckdb_v2.h", "duckdb-LICENSE"] $ \file ->
-            copyFile (source </> file) (target </> file)
+-- | Install the client headers and DuckDB license after Cabal copies the library.
+copyAPIHeaders :: CopyDest -> PackageDescription -> LBI.LocalBuildInfo -> IO ()
+copyAPIHeaders destination package local = do
+    source <- extractAPIHeaders (LBI.configFlags local)
+    let target = includedir (LBI.absoluteInstallDirs package local destination)
+    createDirectoryIfMissing True target
+    forM_ ["duckdb.h", "duckdb_v2.h", "duckdb-LICENSE"] $ \file ->
+        copyFile (source </> file) (target </> file)
 
--- | Use the package header directory when Cabal copies or registers a preview library.
-installDescription :: PackageDescription -> LBI.LocalBuildInfo -> PackageDescription
-installDescription package local =
-    if lookupFlagAssignment (mkFlagName "duckdb-v2") (LBI.flagAssignment local) == Just True
-        then package{library = fmap installLibrary (library package)}
-        else package
+-- | Use the package header directory when Cabal copies or registers the library.
+installDescription :: PackageDescription -> PackageDescription
+installDescription package = package{library = fmap installLibrary (library package)}
   where
     installLibrary lib =
         lib{libBuildInfo = (libBuildInfo lib){includeDirs = [makeSymbolicPath "cbits"]}}
@@ -142,7 +137,6 @@ nativeLibraryDirs flags = do
     nixShell <- lookupEnv "IN_NIX_SHELL"
     let supplied = map getSymbolicPath (configExtraLibDirs flags)
         system = lookupFlagAssignment (mkFlagName "systemlib") (configConfigurationsFlags flags) == Just True
-        preview = lookupFlagAssignment (mkFlagName "duckdb-v2") (configConfigurationsFlags flags) == Just True
     if isJust nixBuild || isJust nixShell
         then pure []
         else
@@ -151,27 +145,25 @@ nativeLibraryDirs flags = do
                     unless (all isAbsolute supplied) $
                         fail "Use absolute paths in --extra-lib-dirs so Cabal can track the library location."
                     pure (nub supplied)
-                else do
-                    when preview $
-                        fail "The duckdb-v2 flag requires a matching DuckDB 2.0 library. Supply it with -fsystemlib and --extra-lib-dirs=/absolute/path. See docs/duckdb-2.0.md in the repository."
-                    (: []) <$> installNativeLibrary flags
+                else (: []) <$> installNativeLibrary flags
 
-{- | Pin the download to the release verified by the checksums below.
+{- | Pin automatic downloads to the final native release.
 The Haskell package version can differ from the native library version.
 -}
 nativeVersion :: String
-nativeVersion = "1.5.6"
+nativeVersion = "2.0.0"
 
 -- | Select an official archive and its release checksum.
 nativeArchive :: IO (String, String, FilePath)
 nativeArchive = case (os, arch) of
-    ("linux", "x86_64") -> pure ("linux-amd64", "b845005f5132a7d8180057c35e14a7626632258782f871a90861b19c1c03841b", "libduckdb.so")
-    ("linux", "aarch64") -> pure ("linux-arm64", "b72ed9f05003f5e9d2015f7ceada6416b377d9dd33169cdde3c9e33897856eee", "libduckdb.so")
-    ("darwin", "x86_64") -> mac
-    ("darwin", "aarch64") -> mac
-    _ -> fail "Automatic DuckDB installation supports glibc Linux and macOS. Supply DuckDB >= 1.5.3 and < 1.6 with -fsystemlib and --extra-lib-dirs."
+    ("linux", "x86_64") -> unavailable "linux-amd64"
+    ("linux", "aarch64") -> unavailable "linux-arm64"
+    ("darwin", "x86_64") -> unavailable "osx-universal"
+    ("darwin", "aarch64") -> unavailable "osx-universal"
+    _ -> fail "Automatic DuckDB installation supports glibc Linux and macOS. Supply DuckDB 2.0 with -fsystemlib and --extra-lib-dirs."
   where
-    mac = pure ("osx-universal", "e0bc007d9b0094c0970ac1847a8601d10aad07cbd2910ce586ec810f77b638d6", "libduckdb.dylib")
+    unavailable platform =
+        fail ("Verified DuckDB " <> nativeVersion <> " archive checksum for " <> platform <> " is not available before release. Supply a matching DuckDB 2.0 library with -fsystemlib and --extra-lib-dirs=/absolute/path. See docs/duckdb-2.0.md in the repository.")
 
 -- | Download into a temporary directory. Publish the verified library atomically.
 installNativeLibrary :: ConfigFlags -> IO FilePath

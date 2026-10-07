@@ -1,5 +1,4 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -60,10 +59,7 @@ checkVersion = do
     version <- c_duckdb_library_version >>= peekCString
     let parts = Text.splitOn "." (Text.pack version)
         supported = case parts of
-            ["v1", "5", p] -> maybe False (>= 3) (readMaybe (Text.unpack p) :: Maybe Int)
-#ifdef DUCKDB_API_V2
             ["v2", "0", p] -> maybe False (>= 0) (readMaybe (Text.unpack (Text.takeWhile (/= '-') p)) :: Maybe Int)
-#endif
             _ -> False
     unless supported (codecError ("unsupported native version " <> version))
 
@@ -197,7 +193,7 @@ decodeVariant vector row = prepareVariantDecoder vector >>= ($ row)
 
 {- | Check the format once and borrow buffers for a flattened result chunk.
 The returned reader must not outlive the chunk. The caller supplies row indices
-within that chunk. DuckDB result Fetch flattens nested vectors in 1.5.
+within that chunk. DuckDB result Fetch flattens nested vectors.
 Each read copies its payload into Haskell memory, including referenced keys.
 -}
 prepareVariantDecoder :: DuckDBVector -> IO (Int -> IO FieldValue)
@@ -258,7 +254,7 @@ prepareVariantDecoder vector = do
   where
     child parent index = nonNull "STRUCT vector child" (c_duckdb_struct_vector_get_child parent index)
 
-{- | Decode copied 1.5 payload data for one non-NULL row.
+{- | Decode copied DuckDB 2.0 payload data for one non-NULL row.
 Values are (tag, byte offset). Children are (optional key index, value index).
 Keys pair an index with its text. Indices are relative to this row's LISTs.
 The root value has index zero. This helper checks all metadata before decoding.
@@ -364,7 +360,7 @@ readString bytes = do
         then Left "string length exceeds payload size"
         else Right (BS.take (fromIntegral count) rest)
 
--- | Decode the scalar tags from VariantLogicalType in DuckDB 1.5.
+-- | Decode the scalar tags from VariantLogicalType in DuckDB 2.0.
 decodeScalar :: Word8 -> ByteString -> IO FieldValue
 decodeScalar tag bytes = case tag of
     0 -> pure FieldNull

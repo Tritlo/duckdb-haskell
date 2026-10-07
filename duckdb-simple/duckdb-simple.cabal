@@ -1,6 +1,6 @@
 cabal-version: 3.4
 name: duckdb-simple
-version: 0.3.0.0
+version: 0.4.0.0
 license: MPL-2.0
 license-file: LICENSE
 author: Matthias Pall Gissurarson
@@ -22,8 +22,8 @@ description:
   prepared statements, chunked folds, transactions, and Haskell scalar
   functions. The API follows the style of sqlite-simple and postgresql-simple.
   .
-  Supports native DuckDB >= 1.5.3 and < 1.6. Tested with versions 1.5.3 through 1.5.6.
-  Enable duckdb-v2 in both packages to test the pinned DuckDB 2.0 preview.
+  Supports native DuckDB >= 2.0 and < 2.1.
+  The duckdb-ffi package also provides the new V2 C API.
 
 extra-doc-files:
   CHANGELOG.md
@@ -39,19 +39,12 @@ flag dataframe-tests
   default: False
   manual: True
 
-flag duckdb-v2
-  description: Enable DuckDB 2.0 preview features. Also enable this flag for duckdb-ffi.
-  default: False
-  manual: True
-
 flag quack-tests
   description: Test authenticated local Quack connections with supplied extensions.
   default: False
   manual: True
 
 library
-  if flag(duckdb-v2)
-    cpp-options: -DDUCKDB_API_V2
   exposed-modules:
     Database.DuckDB.Simple
     Database.DuckDB.Simple.Arrow
@@ -91,7 +84,7 @@ library
     base >=4.14 && <5,
     bytestring >=0.11 && <0.13,
     containers >=0.6 && <0.9,
-    duckdb-ffi >=1.5.6.0 && <1.6,
+    duckdb-ffi >=2.0.0.0 && <2.1,
     geometry-simple >=0.1.1.0 && <0.2,
     text >=2.0 && <2.2,
     time >=1.12 && <1.16,
@@ -99,9 +92,6 @@ library
     uuid >=1.3 && <1.4,
 
 test-suite duckdb-simple-test
-  if flag(duckdb-v2)
-    cpp-options: -DDUCKDB_API_V2
-    other-modules: PreviewTests
   type: exitcode-stdio-1.0
   hs-source-dirs: test
   main-is: Spec.hs
@@ -111,6 +101,7 @@ test-suite duckdb-simple-test
     CoreRegressionTests
     ExtensionRegressionTests
     GeometryRegressionTests
+    PreviewTests
     Properties
     StreamingTests
     TestUtils
@@ -129,7 +120,7 @@ test-suite duckdb-simple-test
     bytestring,
     containers >=0.6 && <0.9,
     directory >=1.3 && <1.4,
-    duckdb-ffi >=1.5.6.0 && <1.6,
+    duckdb-ffi >=2.0.0.0 && <2.1,
     duckdb-simple,
     geometry-simple >=0.1.1.0 && <0.2,
     QuickCheck >=2.14 && <2.18,
@@ -167,7 +158,7 @@ test-suite duckdb-simple-codec-test
     base >=4.14 && <5,
     bytestring >=0.11 && <0.13,
     containers >=0.6 && <0.9,
-    duckdb-ffi >=1.5.6.0 && <1.6,
+    duckdb-ffi >=2.0.0.0 && <2.1,
     geometry-simple >=0.1.1.0 && <0.2,
     tasty >=1.4 && <1.6,
     tasty-hunit >=0.10 && <0.12,
@@ -201,7 +192,7 @@ test-suite duckdb-simple-dataframe-test
     base >=4.14 && <5,
     dataframe-arrow-bridge >=1.0 && <1.1,
     dataframe-core >=2.5 && <2.6,
-    duckdb-ffi >=1.5.6.0 && <1.6,
+    duckdb-ffi >=2.0.0.0 && <2.1,
     duckdb-simple,
     tasty >=1.4 && <1.6,
     tasty-hunit >=0.10 && <0.12,
@@ -214,7 +205,7 @@ test-suite duckdb-simple-quack-test
   default-language: Haskell2010
   ghc-options: -threaded
 
-  if !flag(quack-tests) || !flag(duckdb-v2)
+  if !flag(quack-tests)
     buildable: False
   build-depends:
     base >=4.14 && <5,

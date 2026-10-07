@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE NamedFieldPuns #-}
@@ -8,28 +7,22 @@
 -- | Round trips for finite dates and native temporal infinities.
 module TimeTests (timeTests) where
 
-import Control.Exception (try)
+import Control.Exception (IOException, try)
 import Control.Monad (forM_)
-import Data.Array (listArray)
-import qualified Data.Text as Text
-import Data.Time (Day, LocalTime (..), TimeOfDay (..), UTCTime, fromGregorian, localTimeToUTC, utc)
-import Database.DuckDB.Simple
-import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), returnError)
-import Database.DuckDB.Simple.Generic (ViaDuckDB (..))
-import Database.DuckDB.Simple.Time
-
-#ifdef DUCKDB_API_V2
-import Control.Exception (IOException)
-import Data.Array (Array)
+import Data.Array (Array, listArray)
 import Data.Int (Int64)
 import qualified Data.Map.Strict as Map
 import Data.Ratio ((%))
+import qualified Data.Text as Text
+import Data.Time (Day, LocalTime (..), TimeOfDay (..), UTCTime, fromGregorian, localTimeToUTC, utc)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Database.DuckDB.FFI
+import Database.DuckDB.Simple
+import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), returnError)
+import Database.DuckDB.Simple.Generic (ViaDuckDB (..))
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), StructValue (..), UnionMemberType (..), UnionValue (..))
+import Database.DuckDB.Simple.Time
 import Database.DuckDB.Simple.Variant (Variant (..))
-
-#endif
 import GHC.Generics (Generic)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
@@ -101,7 +94,7 @@ timeTests =
                 forM_ [ADate NegInfinity, ADate (Finite day), ALocal PosInfinity, AUtc NegInfinity, ADateNull Nothing] $ \value ->
                     query conn "SELECT ?" (Only value) >>= (@?= [Only value])
           ]
-            <> previewTimeTests
+            <> nanosecondTimeTests
   where
     day = fromGregorian 2000 1 2
     local = LocalTime day (TimeOfDay 3 4 5)
@@ -111,9 +104,8 @@ timeTests =
     dateText (Finite _) = "2000-01-02"
 
 -- | Check explicit nanosecond targets without changing ordinary UTC parameter types.
-previewTimeTests :: [TestTree]
-#ifdef DUCKDB_API_V2
-previewTimeTests =
+nanosecondTimeTests :: [TestTree]
+nanosecondTimeTests =
     [ testCase "nanosecond UTC results and VARIANTs preserve precision and infinity" $ withConnection ":memory:" $ \conn -> do
         _ <- execute_ conn "SET TimeZone='Pacific/Auckland'"
         let precise = localTimeToUTC utc (LocalTime (fromGregorian 2000 1 2) (TimeOfDay 3 4 5.123456789))
@@ -173,9 +165,6 @@ assertIOException action = do
     case result of
         Left (_ :: IOException) -> pure ()
         Right _ -> assertFailure "expected IOException"
-#else
-previewTimeTests = []
-#endif
 
 -- | Require a field conversion error, rather than an unrelated exception.
 assertConversionError :: IO a -> Assertion

@@ -1,5 +1,4 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingVia #-}
@@ -87,10 +86,7 @@ import qualified GeometryRegressionTests
 import Numeric.Natural (Natural)
 import Properties (roundTripTests)
 
-#ifdef DUCKDB_API_V2
 import qualified PreviewTests
-
-#endif
 import StreamingTests (nativeStreamingTests)
 import System.Directory (doesFileExist, removeFile)
 import Test.Tasty (TestTree, defaultMain, testGroup)
@@ -221,16 +217,14 @@ tests =
         , VariantRegressionTests.tests
         , valueRegressionTests
         , timeTests
-#ifdef DUCKDB_API_V2
         , PreviewTests.tests
-#endif
         , withConnectionTests
         , statementTests
         , roundTripTests
         , typeTests
         , streamingTests
         , functionsTests
-        , v15Tests
+        , v20Tests
         , transactionTests
         ]
 
@@ -254,10 +248,10 @@ connectionTests =
                 Just value -> Config.configValueText value @?= "1"
         ]
 
-v15Tests :: TestTree
-v15Tests =
+v20Tests :: TestTree
+v20Tests =
     testGroup
-        "DuckDB 1.5 wrappers"
+        "DuckDB 2.0 wrappers"
         [ testCase "lists config flags" $ do
             flags <- Config.listConfigFlags
             assertBool "expected at least one config flag" (not (null flags))

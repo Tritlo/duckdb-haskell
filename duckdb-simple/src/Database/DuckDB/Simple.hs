@@ -1,5 +1,4 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TupleSections #-}
@@ -268,7 +267,7 @@ bind stmt fields = do
     apply idx = bindFieldBinding stmt (fromIntegral idx :: DuckDBIdx)
 
 {- | Bind named parameters to a prepared statement.
-In preview builds, session variables can supply omitted named parameters.
+Session variables can supply omitted named parameters.
 -}
 bindNamed :: Statement -> [NamedParam] -> IO ()
 bindNamed stmt params =
@@ -299,21 +298,13 @@ bindNamed stmt params =
             withStatementHandle stmt \handle -> do
                 let actual = length bindings
                 expected <- fmap fromIntegral (c_duckdb_nparams handle)
-                when (wrongNamedParameterCount actual expected) $
+                when (actual > expected) $
                     throwFormatErrorNamed stmt (parameterCountMessage expected actual) bindings
                 parameterNames <- fetchParameterNames handle expected
                 when (all isNothing parameterNames && expected > 0) $
                     throwFormatErrorNamed stmt (Text.pack "duckdb-simple: statement does not define named parameters; use positional bindings or adjust the SQL") bindings
             clearStatementBindings stmt
             mapM_ apply bindings
-
--- | Permit session-variable defaults in preview builds.
-wrongNamedParameterCount :: Int -> Int -> Bool
-#ifdef DUCKDB_API_V2
-wrongNamedParameterCount = (>)
-#else
-wrongNamedParameterCount = (/=)
-#endif
 
 fetchParameterNames :: DuckDBPreparedStatement -> Int -> IO [Maybe Text]
 fetchParameterNames handle count =

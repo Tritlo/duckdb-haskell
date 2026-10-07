@@ -1,14 +1,9 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE CPP #-}
 
 module ValueInterfaceTest (tests) where
 
-import Control.Monad (when, (>=>))
+import Control.Monad (forM_, when, (>=>))
 
-#ifdef DUCKDB_API_V2
-import Control.Monad (forM_)
-
-#endif
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.FFI
@@ -21,12 +16,7 @@ import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (peek, poke)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (testCase, (@?=))
-import Utils (destroyDuckValue, destroyLogicalType, withDuckValue)
-
-#ifdef DUCKDB_API_V2
-import Utils (withConnection, withDatabase)
-
-#endif
+import Utils (destroyDuckValue, destroyLogicalType, withConnection, withDatabase, withDuckValue)
 
 tests :: TestTree
 tests =
@@ -35,12 +25,9 @@ tests =
         [ scalarCreatesRoundTrip
         , valueTypeReportsLogicalType
         , collectionValuesRoundTrip
-#ifdef DUCKDB_API_V2
         , timestampTzNsRoundTrip
-#endif
         ]
 
-#ifdef DUCKDB_API_V2
 timestampTzNsRoundTrip :: TestTree
 timestampTzNsRoundTrip =
     testCase "TIMESTAMP_TZ_NS values retain nanoseconds through SQL" $
@@ -68,8 +55,6 @@ timestampTzNsRoundTrip =
                                         c_duckdb_destroy_data_chunk chunkPtr
                                     c_duckdb_destroy_result resultPtr
                         c_duckdb_destroy_prepare statementPtr
-
-#endif
 
 scalarCreatesRoundTrip :: TestTree
 scalarCreatesRoundTrip =
@@ -359,11 +344,7 @@ collectionValuesRoundTrip =
         withDuckValue (c_duckdb_create_int32 42) \unionPayload ->
             withDuckValue (c_duckdb_create_union_value unionLogical 0 unionPayload) \unionVal -> do
                 strPtr <- c_duckdb_value_to_string unionVal
-#ifdef DUCKDB_API_V2
                 peekCString strPtr >>= (@?= "union_value(int_member := 42)::UNION(int_member INTEGER, text_member VARCHAR)")
-#else
-                peekCString strPtr >>= (@?= "union_value(int_member := 42)")
-#endif
                 c_duckdb_free (castPtr strPtr)
         destroyLogicalType unionLogical
         destroyLogicalType unionInt

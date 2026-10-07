@@ -1,4 +1,4 @@
-name: DuckDB 2.0 preparation
+name: DuckDB 2.0 validation
 
 on:
   pull_request:
@@ -8,26 +8,35 @@ permissions:
   contents: read
 
 jobs:
-  preview:
+  bindings:
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             ghc: '9.6.7'
+            optimization: '1'
           - os: ubuntu-latest
             ghc: '9.8.4'
+            optimization: '1'
           - os: ubuntu-latest
             ghc: '9.10.3'
+            optimization: '1'
           - os: ubuntu-latest
             ghc: '9.12.4'
+            optimization: '1'
           - os: ubuntu-latest
             ghc: '9.14.1'
+            optimization: '1'
           - os: macos-latest
             ghc: '9.14.1'
-    name: ${{ matrix.os }} / GHC ${{ matrix.ghc }} / DuckDB 2.0 preview
+            optimization: '1'
+          - os: ubuntu-latest
+            ghc: '9.14.1'
+            optimization: '0'
+    name: ${{ matrix.os }} / GHC ${{ matrix.ghc }} / DuckDB 2.0 / -O${{ matrix.optimization }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 120
     env:
       DUCKDB_TEST_VERSION: 2.0.0-dev0
       DUCKDB_BUILD_JOBS: '3'
@@ -40,31 +49,31 @@ jobs:
       - name: Update the package index
         run: cabal update
       - name: Install the generator formatter
-        if: matrix.ghc == '9.14.1'
+        if: matrix.ghc == '9.14.1' && matrix.optimization == '1'
         run: cabal install fourmolu-0.20.1.0 --ignore-project
       - name: Check the pinned C API
         run: python3 scripts/duckdb-api.py --check
       - name: Check the generated bindings
-        if: matrix.ghc == '9.14.1'
+        if: matrix.ghc == '9.14.1' && matrix.optimization == '1'
         run: python3 duckdb-ffi/scripts/gen_ffi_v2.py --check
       - name: Build the matching native library
         run: bash scripts/build-duckdb-preview.sh "$RUNNER_TEMP/duckdb-preview"
-      - name: Configure the preview bindings
+      - name: Configure the supplied native library
         run: |
-          printf 'package duckdb-ffi\n  flags: +duckdb-v2 +systemlib\n  extra-lib-dirs: %s\npackage duckdb-simple\n  flags: +duckdb-v2\n' \
+          printf 'package duckdb-ffi\n  flags: +systemlib\n  extra-lib-dirs: %s\n' \
             "$RUNNER_TEMP/duckdb-preview/native" > cabal.project.local
       - name: Build and test both APIs
         env:
           LD_BIND_NOW: '1'
         run: |
-          cabal build all --with-compiler=ghc --disable-documentation
-          cabal test all --with-compiler=ghc --disable-documentation --test-show-details=direct
+          cabal build all --with-compiler=ghc --disable-documentation --enable-optimization=${{ matrix.optimization }}
+          cabal test all --with-compiler=ghc --disable-documentation --enable-optimization=${{ matrix.optimization }} --test-show-details=direct
       - name: Check v2 ownership with Valgrind
         if: matrix.os == 'ubuntu-latest' && matrix.ghc == '9.12.4'
         run: |
           sudo apt-get update
           sudo apt-get install -y valgrind
-          v2_test=$(cabal list-bin duckdb-ffi:duckdb-ffi-v2-test --with-compiler=ghc --disable-documentation)
+          v2_test=$(cabal list-bin duckdb-ffi:duckdb-ffi-v2-test --with-compiler=ghc --disable-documentation --enable-optimization=${{ matrix.optimization }})
           valgrind --vgdb=no --leak-check=full \
             --show-leak-kinds=definite,indirect,possible \
             --errors-for-leak-kinds=definite,indirect \
@@ -72,12 +81,32 @@ jobs:
             "$v2_test" --num-threads=1 +RTS -N1 -RTS
       - name: Check DataFrame integration and documentation
         run: |
-          cabal build duckdb-simple-dataframe-test -fdataframe-tests --with-compiler=ghc --disable-documentation
-          cabal test duckdb-simple-dataframe-test -fdataframe-tests --with-compiler=ghc --disable-documentation --test-show-details=direct
-          cabal haddock all --with-compiler=ghc
+          cabal build duckdb-simple-dataframe-test -fdataframe-tests --with-compiler=ghc --disable-documentation --enable-optimization=${{ matrix.optimization }}
+          cabal test duckdb-simple-dataframe-test -fdataframe-tests --with-compiler=ghc --disable-documentation --enable-optimization=${{ matrix.optimization }} --test-show-details=direct
+          cabal haddock all --with-compiler=ghc --enable-optimization=${{ matrix.optimization }}
           cabal sdist all
+      - name: Check high-level allocation cleanup
+        if: matrix.os == 'ubuntu-latest' && matrix.ghc == '9.12.4'
+        env:
+          # Valgrind changes process RSS. The ordinary leak test checks RSS.
+          DUCKDB_LEAK_RSS_CHECK: '0'
+        run: |
+          leak_test=$(cabal list-bin duckdb-simple-leak-test --with-compiler=ghc --disable-documentation --enable-optimization=${{ matrix.optimization }})
+          for mode in open-close callbacks cancel new-types; do
+            valgrind --vgdb=no --leak-check=full \
+              --show-leak-kinds=definite,indirect,possible \
+              --errors-for-leak-kinds=definite,indirect \
+              --error-exitcode=97 --undef-value-errors=no --num-callers=30 \
+              "$leak_test" "$mode" 1
+          done
+          dataframe_test=$(cabal list-bin duckdb-simple-dataframe-test -fdataframe-tests --with-compiler=ghc --disable-documentation --enable-optimization=${{ matrix.optimization }})
+          valgrind --vgdb=no --leak-check=full \
+            --show-leak-kinds=definite,indirect,possible \
+            --errors-for-leak-kinds=definite,indirect \
+            --error-exitcode=97 --undef-value-errors=no --num-callers=30 \
+            "$dataframe_test" --num-threads=1 +RTS -N1 -RTS
       - name: Check project and installed consumer headers
-        if: matrix.ghc == '9.14.1'
+        if: matrix.ghc == '9.14.1' && matrix.optimization == '1'
         run: |
           consumer="$RUNNER_TEMP/duckdb-preview-consumer"
           mkdir -p "$consumer/source"
@@ -114,7 +143,7 @@ jobs:
           printf 'packages: .\n' > "$consumer/source/cabal.project"
           cabal install --lib duckdb-ffi --project-dir="$consumer/source" --project-file=cabal.project \
             --with-compiler=ghc --disable-documentation \
-            -fduckdb-v2 -fsystemlib --extra-lib-dirs="$RUNNER_TEMP/duckdb-preview/native" \
+            -fsystemlib --extra-lib-dirs="$RUNNER_TEMP/duckdb-preview/native" \
             --package-env="$consumer/environment"
           package_id=$(awk '$1 == "package-id" && $2 ~ /^duckdb-ffi-/ {print $2}' "$consumer/environment")
           store_dir=$(cabal path --store-dir)

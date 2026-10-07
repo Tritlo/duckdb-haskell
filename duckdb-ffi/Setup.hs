@@ -2,14 +2,18 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 import Control.Exception (IOException, catch, throwIO)
-import Control.Monad (filterM, unless, when)
+import Control.Monad (filterM, forM_, unless, when)
+import Data.Char (isHexDigit)
 import Data.List (intercalate, isPrefixOf, nub, stripPrefix)
 import Data.Maybe (isJust, isNothing)
 import Distribution.PackageDescription
 import Distribution.Simple
-import Distribution.Simple.Setup (ConfigFlags, configConfigurationsFlags, configConfigureArgs, configExtraLibDirs)
+import Distribution.Simple.Setup (ConfigFlags, configConfigurationsFlags, configConfigureArgs, configDistPref, configExtraLibDirs, defaultDistPref, fromFlagOrDefault)
+import Distribution.Simple.Utils (shortRelativePath)
+
 #if MIN_VERSION_Cabal(3,14,0)
-import Distribution.Utils.Path (getSymbolicPath, makeSymbolicPath)
+import Distribution.Utils.Path (getSymbolicPath, makeRelativePathEx, makeSymbolicPath)
+
 #endif
 import System.Directory
 import System.Environment (lookupEnv)
@@ -19,6 +23,7 @@ import System.Info (arch, os)
 import System.Process (callProcess, readProcess)
 
 #if !MIN_VERSION_Cabal(3,14,0)
+
 -- | Cabal versions before 3.14 use plain file paths.
 makeSymbolicPath :: FilePath -> FilePath
 makeSymbolicPath = id
@@ -26,13 +31,20 @@ makeSymbolicPath = id
 -- | Read a plain file path with Cabal versions before 3.14.
 getSymbolicPath :: FilePath -> FilePath
 getSymbolicPath = id
+
+-- | Read an include file path with Cabal versions before 3.14.
+makeRelativePathEx :: FilePath -> FilePath
+makeRelativePathEx = id
+
 #endif
 
--- | Save the native library directory in the package description.
+-- | Save the native library and selected header paths in the package description.
 main :: IO ()
 main = defaultMainWithHooks simpleUserHooks{confHook = configure}
   where
     configure (description, hooks) flags = do
+        let preview = lookupFlagAssignment (mkFlagName "duckdb-v2") (configConfigurationsFlags flags) == Just True
+        headerDirectories <- if preview then (: []) <$> extractPreviewHeaders flags else pure []
         nativeDirs <- nativeLibraryDirs flags
         let addLibrary lib =
                 let info = libBuildInfo lib
@@ -42,14 +54,49 @@ main = defaultMainWithHooks simpleUserHooks{confHook = configure}
                                 { ldOptions =
                                     (if os `elem` ["linux", "darwin"] then concatMap (\dir -> ["-Xlinker", "-rpath", "-Xlinker", dir]) nativeDirs else [])
                                         <> ldOptions info
+                                , includeDirs = map makeSymbolicPath headerDirectories <> includeDirs info
+                                , installIncludes = (if preview then [makeRelativePathEx "duckdb_v2.h"] else []) <> installIncludes info
                                 }
                         }
-            updated = description{condLibrary = fmap (fmap addLibrary) (condLibrary description)}
+            updated = description{condLibrary = fmap (\tree -> tree{condTreeData = addLibrary (condTreeData tree)}) (condLibrary description)}
             updatedFlags =
                 if null nativeDirs
                     then flags
                     else flags{configExtraLibDirs = map makeSymbolicPath nativeDirs}
         confHook simpleUserHooks (updated, hooks) updatedFlags
+
+-- | Verify the preview API archive. Extract its client headers into the build directory.
+extractPreviewHeaders :: ConfigFlags -> IO FilePath
+extractPreviewHeaders flags = do
+    let archive = "vendor" </> "duckdb-api.tar.gz"
+        checksumFile = "vendor" </> "duckdb-api.sha256"
+        headers = ["duckdb.h", "duckdb_v2.h"]
+    forM_ [archive, checksumFile] $ \path -> do
+        exists <- doesFileExist path
+        unless exists $ fail ("Bundled DuckDB API file is missing: " <> path)
+    checksumText <- readFile checksumFile
+    let checksum = takeWhile (/= '\n') checksumText
+    unless (length checksum == 64 && all isHexDigit checksum && checksumText == checksum <> "\n") $
+        fail ("Invalid SHA256 digest in " <> checksumFile <> ". Expected one hexadecimal digest followed by a newline.")
+    sha256sum <- findExecutable "sha256sum"
+    (checksumProgram, checksumArgs) <- case sha256sum of
+        Just program -> pure (program, [])
+        Nothing -> do
+            shasum <- findExecutable "shasum"
+            case shasum of
+                Just program -> pure (program, ["-a", "256"])
+                Nothing -> fail "DuckDB API archive verification requires sha256sum or shasum on PATH."
+    digest <- readProcess checksumProgram (checksumArgs <> [archive]) ""
+    unless (takeWhile (/= ' ') digest == checksum) $
+        fail ("Bundled DuckDB API archive checksum mismatch: " <> archive)
+    tar <- findExecutable "tar"
+    tarProgram <- maybe (fail "DuckDB API header extraction requires tar on PATH.") pure tar
+    buildDirectory <- makeAbsolute (getSymbolicPath (fromFlagOrDefault defaultDistPref (configDistPref flags)))
+    let headerDirectory = buildDirectory </> "duckdb-api" </> "duckdb-2.0"
+    createDirectoryIfMissing True headerDirectory
+    callProcess tarProgram (["-xzf", archive, "-C", headerDirectory, "--strip-components=1"] <> map ("duckdb-2.0" </>) headers)
+    packageDirectory <- getCurrentDirectory
+    pure (shortRelativePath packageDirectory headerDirectory)
 
 -- | Use a supplied library, or download one to the user cache.
 nativeLibraryDirs :: ConfigFlags -> IO [FilePath]
@@ -58,6 +105,7 @@ nativeLibraryDirs flags = do
     nixShell <- lookupEnv "IN_NIX_SHELL"
     let supplied = map getSymbolicPath (configExtraLibDirs flags)
         system = lookupFlagAssignment (mkFlagName "systemlib") (configConfigurationsFlags flags) == Just True
+        preview = lookupFlagAssignment (mkFlagName "duckdb-v2") (configConfigurationsFlags flags) == Just True
     if isJust nixBuild || isJust nixShell
         then pure []
         else
@@ -66,7 +114,10 @@ nativeLibraryDirs flags = do
                     unless (all isAbsolute supplied) $
                         fail "Use absolute paths in --extra-lib-dirs so Cabal can track the library location."
                     pure (nub supplied)
-                else (: []) <$> installNativeLibrary flags
+                else do
+                    when preview $
+                        fail "The duckdb-v2 flag requires a matching DuckDB 2.0 library. Supply it with -fsystemlib and --extra-lib-dirs=/absolute/path. See docs/duckdb-2.0.md in the repository."
+                    (: []) <$> installNativeLibrary flags
 
 {- | Pin the download to the release verified by the checksums below.
 The Haskell package version can differ from the native library version.

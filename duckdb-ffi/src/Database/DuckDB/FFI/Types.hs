@@ -52,6 +52,7 @@ module Database.DuckDB.FFI.Types (
     pattern DuckDBTypeTimeNs,
     pattern DuckDBTypeGeometry,
     pattern DuckDBTypeVariant,
+    pattern DuckDBTypeTimestampTzNs,
     DuckDBPendingState (..),
     pattern DuckDBPendingResultReady,
     pattern DuckDBPendingResultNotReady,
@@ -137,6 +138,7 @@ module Database.DuckDB.FFI.Types (
     pattern DuckDBErrorMissingExtension,
     pattern DuckDBErrorAutoload,
     pattern DuckDBErrorSequence,
+    pattern DuckDBErrorDataCorruption,
     pattern DuckDBInvalidConfiguration,
     pattern DuckDBErrorInvalidConfiguration,
     DuckDBCastMode (..),
@@ -444,6 +446,10 @@ pattern DuckDBTypeTimeNs = DuckDBType 39
 pattern DuckDBTypeGeometry = DuckDBType 40
 pattern DuckDBTypeVariant = DuckDBType 41
 
+-- | Nanosecond timestamp with a time zone (@DUCKDB_TYPE_TIMESTAMP_TZ_NS@).
+pattern DuckDBTypeTimestampTzNs :: DuckDBType
+pattern DuckDBTypeTimestampTzNs = DuckDBType 42
+
 -- | Pending result state returned from @duckdb_pending_*@ APIs.
 newtype DuckDBPendingState = DuckDBPendingState {unDuckDBPendingState :: CInt}
     deriving (Eq, Ord, Show, Storable)
@@ -688,6 +694,10 @@ pattern DuckDBErrorAutoload = DuckDBErrorType 40
 pattern DuckDBErrorSequence = DuckDBErrorType 41
 pattern DuckDBInvalidConfiguration = DuckDBErrorType 42
 
+-- | Data corruption error (@DUCKDB_ERROR_DATA_CORRUPTION@).
+pattern DuckDBErrorDataCorruption :: DuckDBErrorType
+pattern DuckDBErrorDataCorruption = DuckDBErrorType 43
+
 -- | Backwards-compatible alias for 'DuckDBInvalidConfiguration'.
 {-# DEPRECATED DuckDBErrorInvalidConfiguration "Use DuckDBInvalidConfiguration (matches upstream duckdb.h)" #-}
 pattern DuckDBErrorInvalidConfiguration :: DuckDBErrorType
@@ -737,6 +747,7 @@ pattern DuckDBErrorInvalidConfiguration = DuckDBInvalidConfiguration
     , DuckDBErrorAutoload
     , DuckDBErrorSequence
     , DuckDBInvalidConfiguration
+    , DuckDBErrorDataCorruption
     #-}
 
 -- | Behaviour of DuckDB's casting functions (@duckdb_cast_mode@).

@@ -1,4 +1,4 @@
-#include "duckdb.h"
+#include <duckdb.h>
 #include "duckdb_arrow.h"
 #include <stdint.h>
 
@@ -623,6 +623,13 @@ duckdb_value wrapped_duckdb_create_timestamp_tz(int64_t input) {
   return duckdb_create_timestamp_tz((duckdb_timestamp){input});
 }
 
+#ifdef DUCKDB_API_V2
+// Convert scalar fields at the C ABI boundary.
+duckdb_value wrapped_duckdb_create_timestamp_tz_ns(int64_t input) {
+  return duckdb_create_timestamp_tz_ns((duckdb_timestamp_ns){input});
+}
+#endif
+
 // Convert scalar fields at the C ABI boundary.
 duckdb_value wrapped_duckdb_create_timestamp_s(int64_t input) {
   return duckdb_create_timestamp_s((duckdb_timestamp_s){input});
@@ -667,6 +674,13 @@ int64_t wrapped_duckdb_get_timestamp(duckdb_value val) {
 int64_t wrapped_duckdb_get_timestamp_tz(duckdb_value val) {
   return duckdb_get_timestamp_tz(val).micros;
 }
+
+#ifdef DUCKDB_API_V2
+// Convert scalar fields at the C ABI boundary.
+int64_t wrapped_duckdb_get_timestamp_tz_ns(duckdb_value val) {
+  return duckdb_get_timestamp_tz_ns(val).nanos;
+}
+#endif
 
 // Convert scalar fields at the C ABI boundary.
 int64_t wrapped_duckdb_get_timestamp_s(duckdb_value val) {

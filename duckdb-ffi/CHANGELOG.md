@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased: DuckDB 2.0 preparation
+
+- Add the `duckdb-v2` flag to enable the preview API, generated bindings, and
+  native layouts. The flag is off by default.
+- Pin the preview headers and API specification to an upstream commit.
+- Add nanosecond timezone timestamp values and the data-corruption error tag.
+- Require a matching supplied library for preview builds.
+
 ## 1.5.6.0
 
 - Use the official DuckDB 1.5.6 header and native download. Keep native support

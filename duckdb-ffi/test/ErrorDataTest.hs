@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE CPP #-}
 
 module ErrorDataTest (tests) where
 
@@ -37,3 +38,15 @@ createInspectDestroy =
             alloca \ptr -> do
                 poke ptr errData
                 c_duckdb_destroy_error_data ptr
+
+#ifdef DUCKDB_API_V2
+
+            corruption <- c_duckdb_create_error_data DuckDBErrorDataCorruption message
+            assertBool "data corruption error pointer should not be null" (corruption /= nullPtr)
+            c_duckdb_error_data_error_type corruption >>= (@?= DuckDBErrorDataCorruption)
+            c_duckdb_error_data_has_error corruption >>= (@?= CBool 1)
+            alloca \ptr -> do
+                poke ptr corruption
+                c_duckdb_destroy_error_data ptr
+
+#endif

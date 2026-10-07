@@ -23,9 +23,16 @@ description:
   .
   Downloads a verified native library to the user cache on Linux and macOS.
   Uses an existing library when the user or Nix supplies it.
+  .
+  The duckdb-v2 flag adds the pinned DuckDB 2.0 preview API.
+  This flag requires a matching supplied native library.
 
 extra-doc-files: CHANGELOG.md
-extra-source-files: cbits/duckdb_arrow.h
+extra-source-files:
+  cbits/duckdb_arrow.h
+  vendor/duckdb-api.json
+  vendor/duckdb-api.sha256
+  vendor/duckdb-api.tar.gz
 
 source-repository head
   type: git
@@ -35,6 +42,11 @@ source-repository head
 -- Setup.hs reads this flag. cabal check reports it as unused.
 flag systemlib
   description: Use an installed DuckDB library without downloading it.
+  default: False
+  manual: True
+
+flag duckdb-v2
+  description: Enable the pinned DuckDB 2.0 preview C API. Supply a matching native library.
   default: False
   manual: True
 
@@ -119,6 +131,19 @@ library
   install-includes: duckdb.h
   extra-libraries: duckdb
   c-sources: cbits/duckdb_stub.c
+
+  if flag(duckdb-v2)
+    exposed-modules:
+      Database.DuckDB.FFI.V2
+      Database.DuckDB.FFI.V2.Functions
+      Database.DuckDB.FFI.V2.Types
+
+    cpp-options: -DDUCKDB_API_V2
+    cc-options:
+      -DDUCKDB_API_V2
+      -DDUCKDB_V2_API_ALLOW_UNSTABLE=1
+
+    build-tool-depends: hsc2hs:hsc2hs >=0.68 && <0.69
   build-depends:
     base >=4.18 && <4.23,
     bytestring >=0.11 && <0.13,
@@ -128,6 +153,25 @@ library
     text >=2.0 && <2.2,
     time >=1.12 && <1.16,
     transformers >=0.6 && <0.7,
+
+test-suite duckdb-ffi-v2-test
+  type: exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is: V2Main.hs
+  other-modules: V2Test
+  default-language: Haskell2010
+  ghc-options: -threaded
+
+  if flag(duckdb-v2)
+    buildable: True
+  else
+    buildable: False
+
+  build-depends:
+    base >=4.18 && <4.23,
+    duckdb-ffi,
+    tasty >=1.5 && <1.6,
+    tasty-hunit >=0.10 && <0.11,
 
 test-suite duckdb-ffi-tests
   type: exitcode-stdio-1.0
@@ -168,6 +212,9 @@ test-suite duckdb-ffi-tests
     VectorTest
 
   ghc-options: -threaded
+
+  if flag(duckdb-v2)
+    cpp-options: -DDUCKDB_API_V2
   default-language: Haskell2010
   build-depends:
     base >=4.18 && <4.23,

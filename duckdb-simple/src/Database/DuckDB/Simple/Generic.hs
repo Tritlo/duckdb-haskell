@@ -452,10 +452,7 @@ instance (GStruct f) => GToField' 'False (M1 D meta (M1 C c f)) where
 instance (GSum f) => GToField' 'True (M1 D meta f) where
     gToField' _ (M1 value) =
         let members = gSumMembers (Proxy :: Proxy (f p))
-            membersArray =
-                case members of
-                    [] -> listArray (0, -1) []
-                    _ -> listArray (0, length members - 1) members
+            membersArray = listArray (0, length members - 1) members
             (idx, payload) = gSumEncode value
             label = unionMemberName (members !! idx)
          in EncodedUnion
@@ -467,10 +464,7 @@ instance (GSum f) => GToField' 'True (M1 D meta f) where
                     }
     gLogicalType' _ _ =
         let members = gSumMembers (Proxy :: Proxy (f p))
-            membersArray =
-                case members of
-                    [] -> listArray (0, -1) []
-                    _ -> listArray (0, length members - 1) members
+            membersArray = listArray (0, length members - 1) members
          in LogicalTypeUnion membersArray
 
 --------------------------------------------------------------------------------
@@ -497,12 +491,9 @@ and payloads.
 -}
 listArrayFrom :: [Text] -> [b] -> Array Int (StructField b)
 listArrayFrom names values =
-    case values of
-        [] -> listArray (0, -1) []
-        _ ->
-            listArray
-                (0, length values - 1)
-                (zipWith (\n v -> StructField{structFieldName = n, structFieldValue = v}) names values)
+    listArray
+        (0, length values - 1)
+        (zipWith (\n v -> StructField{structFieldName = n, structFieldValue = v}) names values)
 
 {- | Collect the components (values and types) of a product.  Implementations
 produce parallel lists so we can zip them during encoding and decoding.

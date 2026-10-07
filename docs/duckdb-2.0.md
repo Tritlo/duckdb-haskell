@@ -49,10 +49,18 @@ handles separate. Their result, connection, error, and ownership contracts diffe
 The raw API exposes native primitives. `duckdb-simple` retains its existing
 connection and result API.
 
-V2 shares seven layouts with the retained bindings: Arrow schema, array, and
-stream; list entry; signed and unsigned 128-bit integer; and interval.
-The shared types use one `Storable` implementation. Index types and compatible
-Arrow callbacks also share their definitions. V2 functions and handles remain
+V2 shares eight layouts with the retained bindings: Arrow schema, array, and
+stream; list entry; signed and unsigned 128-bit integer; interval; and the byte
+union. Each shared type has one `Storable` implementation. `DuckDBV2Bytes` is
+an alias for `DuckDBStringT`. Use its constructor and fields to copy the union
+storage. The existing string length, inline, and data helpers accept V2 bytes
+without pointer casts. The storage borrows its payload.
+
+All 43 V2 callback makers and callers use eight shared C signatures. The
+retained Arrow helpers use the same imports. Each pointer argument has its own
+type parameter. Public signatures keep their specific handle types. This
+removes 70 repeated foreign imports without changing the callback contracts.
+Index types also share their definitions. V2 functions and handles remain
 separate because their signatures and ownership rules differ. Keep its enums
 separate too. For example, file flag 4 means exclusive creation in v1 and
 truncation in v2.

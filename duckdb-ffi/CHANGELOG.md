@@ -7,6 +7,10 @@
 - Pin the preview headers and API specification to an upstream commit.
 - Add nanosecond timezone timestamp values and the data-corruption error tag.
 - Share common Arrow and scalar layouts between the C API generations.
+- Share all V2 and retained Arrow callback imports through eight C signatures.
+  Keep public handle types distinct. Remove 70 repeated foreign imports.
+- Share the borrowed byte union as `DuckDBStringT`. V2 bytes can use the
+  existing string length, inline, and data helpers without casts.
 - Require a matching supplied library until the final native checksums are pinned.
 - Install both preview client headers and the DuckDB license. Keep preview
   headers available when the Cabal build directory is outside the source tree.

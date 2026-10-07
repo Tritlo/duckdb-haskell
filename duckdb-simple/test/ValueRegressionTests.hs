@@ -54,14 +54,14 @@ instance ToDuckValue NativeTimestamp where
 
 instance ToField NativeTimestamp
 
--- | Delegate parameter construction to the scalar ToField instance.
+-- | An array element with a ToField instance and no ToDuckValue instance.
 newtype DelegatedInteger = DelegatedInteger Int64
 
 instance DuckDBColumnType DelegatedInteger where
     duckdbColumnTypeFor _ = "BIGINT"
 
 instance ToField DelegatedInteger where
-    toField (DelegatedInteger value) = toField (value + 1)
+    toField (DelegatedInteger value) = toField value
 
 -- | Bind an array through its connection-free value.
 newtype Scores = Scores (Array Int Int64)
@@ -113,9 +113,9 @@ valueRegressionTests =
             let members = listArray (0, 1) [UnionMemberType "number" (LogicalTypeScalar DuckDBTypeBigInt), UnionMemberType "text" (LogicalTypeScalar DuckDBTypeVarchar)]
                 original = UnionValue 0 "number" FieldNull members
             (query conn "SELECT ?" (Only original) :: IO [Only (UnionValue FieldValue)]) >>= (@?= [Only original])
-        , testCase "array children use custom ToField instances" $ withConnection ":memory:" \conn -> do
+        , testCase "array elements need only a ToField instance" $ withConnection ":memory:" \conn -> do
             let values = listArray (0 :: Int, 2) [Nothing, Just (DelegatedInteger 41), Just (DelegatedInteger 99)]
-                expected = listArray (0, 2) [Nothing, Just 42, Just 100] :: Array Int (Maybe Int64)
+                expected = listArray (0, 2) [Nothing, Just 41, Just 99] :: Array Int (Maybe Int64)
             (query conn "SELECT ?" (Only values) :: IO [Only (Array Int (Maybe Int64))]) >>= (@?= [Only expected])
         , testCase "array children use default ToDuckValue instances" $ withConnection ":memory:" \conn -> do
             let units = [-1, 0, 1234567]

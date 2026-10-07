@@ -25,7 +25,8 @@ These changes target the 0.3.0.0 release. Do not release review branches separat
   `withConnectionWithOptions` to set the CRS list, which defaults to
   `OGC:CRS84`.
 - Array parameters use the element's `ToField` instance. Elements require
-  `ToField` and `DuckDBColumnType`.
+  `ToField` and `DuckDBColumnType`. Add a `ToDuckValue` instance for arrays
+  whose elements have `ToDuckValue`. It does not need a connection.
 - A GEOMETRY payload decodes to `FieldGeometry` with raw WKB. Import those
   bytes with `ST_GeomFromWKB(?)::VARIANT`.
 - Add parameter and result instances for `Data.Geometry.Geometry` from

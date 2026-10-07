@@ -62,6 +62,18 @@ instance DuckDBColumnType DelegatedInteger where
 instance ToField DelegatedInteger where
     toField (DelegatedInteger value) = toField (value + 1)
 
+-- | Bind an array through its connection-free value.
+newtype Scores = Scores (Array Int Int64)
+    deriving (Show)
+
+instance DuckDBColumnType Scores where
+    duckdbColumnTypeFor _ = "BIGINT[]"
+
+instance ToDuckValue Scores where
+    toDuckValue (Scores values) = toDuckValue values
+
+instance ToField Scores
+
 -- | Record with identical field types to detect positional decoding.
 data NamedRecord = NamedRecord {firstValue :: Int64, secondValue :: Int64}
     deriving (Eq, Show, Generic)
@@ -104,6 +116,9 @@ valueRegressionTests =
                 values = listArray (0 :: Int, 2) (map Microseconds units)
                 expected = listArray (0, 2) (map (utcToLocalTime utc . posixSecondsToUTCTime . fromRational . (% 1000000) . toInteger) units)
             (query conn "SELECT ?" (Only values) :: IO [Only (Array Int LocalTime)]) >>= (@?= [Only expected])
+        , testCase "arrays bind through ToDuckValue without a connection" $ withConnection ":memory:" \conn -> do
+            let values = listArray (0, 2) [1, -2, 3]
+            (query conn "SELECT typeof(?), ?" (Scores values, Scores values) :: IO [(Text, Array Int Int64)]) >>= (@?= [("BIGINT[3]", values)])
         , testCase "GEOMETRY decodes as well-known binary" $ withConnection ":memory:" \conn -> do
             [Only bytes] <- query_ conn "SELECT 'POINT(1 2)'::GEOMETRY" :: IO [Only BS.ByteString]
             BS.length bytes @?= 21

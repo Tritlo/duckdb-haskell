@@ -199,7 +199,7 @@ instance (DuckDBColumnType a, ToField a) => ToField (Array Int a) where
     toField arr =
         cacheValueBinding
             ("<array length=" <> show (length (elems arr)) <> ">")
-            (`arrayDuckValue` arr)
+            \cache -> arrayDuckValue (cachedTypeFromRep cache) (\value -> fieldBindingValue (toField value) cache) arr
 
 instance (ToField a) => ToField (Maybe a) where
     toField Nothing = nullBinding "Nothing"
@@ -451,15 +451,17 @@ utcTimestampDuckValue :: UTCTimestamp -> IO DuckDBValue
 utcTimestampDuckValue value =
     encodeUnbounded (encodeTimestampUnits 1000000 . utcToLocalTime utc) value >>= c_duckdb_create_timestamp_tz . DuckDBTimestamp
 
+-- | Build an array value from its element type and a function for each element.
 arrayDuckValue ::
     forall a.
-    (DuckDBColumnType a, ToField a) =>
-    TypeCache ->
+    (DuckDBColumnType a) =>
+    (LogicalTypeRep -> IO DuckDBLogicalType) ->
+    (a -> IO DuckDBValue) ->
     Array Int a ->
     IO DuckDBValue
-arrayDuckValue cache arr =
-    bracket (createElementLogicalType (cachedTypeFromRep cache) (Proxy :: Proxy a)) destroyLogicalType \elementType ->
-        withCreatedValues (map (\value -> fieldBindingValue (toField value) cache) (elems arr)) \values ->
+arrayDuckValue typeFromRep elementValue arr =
+    bracket (createElementLogicalType typeFromRep (Proxy :: Proxy a)) destroyLogicalType \elementType ->
+        withCreatedValues (map elementValue (elems arr)) \values ->
             withDuckValues values \ptr ->
                 checkedValue (c_duckdb_create_array_value elementType ptr (fromIntegral (length values)))
 
@@ -943,6 +945,12 @@ instance ToDuckValue (StructValue FieldValue) where
 
 instance ToDuckValue (UnionValue FieldValue) where
     toDuckValue = unionValueDuckValue logicalTypeFromRep
+
+{- | Build an array without a connection. The elements need 'ToDuckValue', so
+this instance does not accept 'Variant' elements. 'toField' binds those.
+-}
+instance (DuckDBColumnType a, ToDuckValue a) => ToDuckValue (Array Int a) where
+    toDuckValue = arrayDuckValue logicalTypeFromRep toDuckValue
 
 instance (ToDuckValue a) => ToDuckValue (Maybe a) where
     toDuckValue Nothing = nullDuckValue

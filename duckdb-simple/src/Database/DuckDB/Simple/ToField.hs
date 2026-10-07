@@ -924,7 +924,7 @@ instance ToDuckValue (UnionValue FieldValue) where
     toDuckValue = unionValueDuckValue logicalTypeFromRep
 
 {- | Build an array without a connection. The elements need 'ToDuckValue', so
-this instance does not accept 'Variant' elements. 'toField' binds those.
+this instance does not accept t'Variant' elements. 'toField' binds those.
 -}
 instance (DuckDBColumnType a, ToDuckValue a) => ToDuckValue (Array Int a) where
     toDuckValue = arrayDuckValue logicalTypeFromRep toDuckValue

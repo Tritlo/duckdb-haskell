@@ -38,6 +38,7 @@ module Database.DuckDB.Simple.Internal (
     withStatementHandle,
     withQueryCString,
     peekUtf8CString,
+    fetchPrepareError,
     withResult,
     runInterruptibleQuery,
     executePreparedResult,
@@ -82,6 +83,7 @@ import Database.DuckDB.FFI (
     c_duckdb_execute_prepared,
     c_duckdb_fetch_chunk,
     c_duckdb_interrupt,
+    c_duckdb_prepare_error,
     c_duckdb_result_error,
     c_duckdb_result_error_type,
     pattern DuckDBErrorInvalid,
@@ -293,6 +295,14 @@ busy-spinning and can add up to one interval to completion detection.
 -}
 interruptRetryDelayMicros :: Int
 interruptRetryDelayMicros = 10 * 1000
+
+{- | Read the error message of a prepared statement as UTF-8. Use the fallback
+when DuckDB reports no message.
+-}
+fetchPrepareError :: Text -> DuckDBPreparedStatement -> IO Text
+fetchPrepareError fallback statement = do
+    messagePtr <- c_duckdb_prepare_error statement
+    if messagePtr == nullPtr then pure fallback else peekUtf8CString messagePtr
 
 -- | Copy a result error while its native result remains alive.
 fetchResultError :: Ptr DuckDBResult -> IO (Text, Maybe DuckDBErrorType)

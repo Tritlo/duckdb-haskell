@@ -49,6 +49,7 @@ import Database.DuckDB.Simple.Internal (
     SQLError (..),
     Statement (..),
     destroyValue,
+    fetchPrepareError,
     withStatementHandle,
     withTypeCache,
  )
@@ -68,7 +69,6 @@ import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounde
 import Database.DuckDB.Simple.TypeCache (TypeCache, cachedLogicalType)
 import Database.DuckDB.Simple.Types (Null (..))
 import Database.DuckDB.Simple.Variant (Variant (..))
-import Foreign.C.String (peekCString)
 import Foreign.C.Types (CDouble (..), CFloat (..))
 import Foreign.Marshal (fromBool)
 import Foreign.Marshal.Alloc (alloca)
@@ -1006,15 +1006,8 @@ bindDuckValue stmt idx makeValue =
         bracket (checkedValue makeValue) destroyValue \value -> do
             rc <- c_duckdb_bind_value handle idx value
             when (rc /= DuckDBSuccess) $ do
-                err <- fetchPrepareError handle
+                err <- fetchPrepareError (Text.pack "duckdb-simple: parameter binding failed") handle
                 throwBindError stmt err
-
-fetchPrepareError :: DuckDBPreparedStatement -> IO Text
-fetchPrepareError handle = do
-    msgPtr <- c_duckdb_prepare_error handle
-    if msgPtr == nullPtr
-        then pure (Text.pack "duckdb-simple: parameter binding failed")
-        else Text.pack <$> peekCString msgPtr
 
 throwBindError :: Statement -> Text -> IO a
 throwBindError Statement{statementQuery} msg =

@@ -183,11 +183,14 @@ Generated struct marshalling does not transfer ownership.
 
 ### Naming configuration
 
-The maintainer driver uses existing hs-bindgen 1.0 APIs. Prescriptive binding
-specifications retain all 158 earlier type names. The `RenameTerm` category
-option adds `c_` directly to all 546 generated function names. There is no alias
-module. Record and newtype constructors use the configured type names.
-Enum constants retain their header spellings.
+The maintainer driver uses existing hs-bindgen 1.0 APIs. A naming rule derives
+`DuckDBFoo` names from C declarations and detects callbacks from type metadata.
+It retains all 158 earlier type names with five spelling exceptions. Opaque
+pointee names end in `Struct`. Callback names end in `Fun` or `Callback`.
+The script supplies these names as prescriptive binding specifications.
+The `RenameTerm` category option adds `c_` to all 546 function names.
+Record and newtype constructors use the type names. Enum constants retain
+their header spellings. There is no alias module or name table.
 
 ```haskell
 import Database.DuckDB.FFI
@@ -239,8 +242,8 @@ and its arithmetic dependencies from the package.
 Maintainers use `nix-shell dev/nix/generate.nix` and run
 `duckdb-ffi/scripts/generate-bindings.sh`. Use `--check` to check committed output.
 The script compiles and runs `GenerateBindings.hs` in the Nix shell. It creates
-naming and opaque binding specifications from header metadata and the spelling
-map. hs-bindgen, libclang, and the generator's compiler are maintainer tools.
+naming and opaque binding specifications from C declarations and type metadata.
+hs-bindgen, libclang, and the generator's compiler are maintainer tools.
 The preprocessing entry point is in hs-bindgen's internal library. Keep its
 version pinned when you update the driver.
 Consumer builds still need a C compiler for the generated ABI wrappers.

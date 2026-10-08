@@ -31,7 +31,6 @@ extra-source-files:
   scripts/binding-metadata.py
   scripts/generate-bindings.sh
   scripts/GenerateBindings.hs
-  scripts/type-names.json
 
 source-repository head
   type: git

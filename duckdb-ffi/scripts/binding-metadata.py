@@ -8,14 +8,51 @@ import sys
 from typing import Any
 
 
-def generation_spec(
-    header: pathlib.Path, metadata: dict[str, Any], names: dict[str, str]
-) -> dict[str, Any]:
+def public_type_name(c_name: str, is_callback: bool) -> str | None:
+    """Derive a public type name from its C declaration."""
+    c_name = c_name.split()[-1]
+    exceptions = {
+        "duckdb_query_progress_type": "DuckDBQueryProgress",
+        "duckdb_hugeint": "DuckDBHugeInt",
+        "duckdb_uhugeint": "DuckDBUHugeInt",
+        "idx_t": "DuckDBIdx",
+        "sel_t": "DuckDBSel",
+    }
+    if c_name in exceptions:
+        return exceptions[c_name]
+    suffix = ""
+    if c_name.startswith("_duckdb_"):
+        c_name = c_name[1:]
+        suffix = "Struct"
+    if not c_name.startswith("duckdb_"):
+        return None
+    name = c_name.removeprefix("duckdb_")
+    if is_callback:
+        name = name.removesuffix("_t")
+        if not name.endswith("_callback"):
+            suffix = "Fun"
+    return "DuckDB" + "".join(word.title() for word in name.split("_")) + suffix
+
+
+def generation_spec(header: pathlib.Path, metadata: dict[str, Any]) -> dict[str, Any]:
     """Preserve public type names and keep native handle pointees opaque."""
-    renames = {native: public for public, native in names.items()}
-    generated_names = {entry["hsname"] for entry in metadata["ctypes"]}
-    if not renames.keys() <= generated_names:
-        raise ValueError("The binding metadata does not contain every public type.")
+    callbacks = {
+        entry["hsname"]
+        for entry in metadata["hstypes"]
+        if entry.get("representation", {})
+        .get("newtype", {})
+        .get("ffitype", {})
+        .get("hsname")
+        == "FunPtrVoid"
+    }
+    renames = {
+        entry["hsname"]: name
+        for entry in metadata["ctypes"]
+        if (name := public_type_name(entry["cname"], entry["hsname"] in callbacks))
+        is not None
+    }
+    if len(set(renames.values())) != len(renames):
+        raise ValueError("The public type naming rules produce duplicate names.")
     tags = {
         "struct " + tag
         for tag, fields in re.findall(
@@ -239,11 +276,7 @@ def main() -> None:
     metadata = json.loads(pathlib.Path(metadata_path).read_text())
     if mode == "spec":
         output = json.dumps(
-            generation_spec(
-                pathlib.Path(input_path),
-                metadata,
-                json.loads(pathlib.Path(rest[0]).read_text()),
-            ),
+            generation_spec(pathlib.Path(input_path), metadata),
             indent=2,
         ) + "\n"
     elif mode == "abi":

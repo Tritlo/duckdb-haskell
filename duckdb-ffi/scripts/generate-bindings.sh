@@ -14,7 +14,7 @@ scratch_dir=$(mktemp -d)
 trap 'rm -rf -- "$scratch_dir"' EXIT
 cd -- "$package_dir"
 
-if [[ $(hs-bindgen-cli --version) != *"1.0.0.0"* ]]; then
+if [[ $(ghc-pkg field hs-bindgen version --simple-output) != "1.0.0.0" ]]; then
   echo "Use hs-bindgen 1.0.0.0 from dev/nix/generate.nix." >&2
   exit 1
 fi
@@ -37,7 +37,7 @@ generate() {
 
 generate initial x86_64-unknown-linux-gnu
 python3 "$script_dir/binding-metadata.py" spec cbits/duckdb.h \
-  "$scratch_dir/initial.json" "$scratch_dir/types.json" "$script_dir/type-names.json"
+  "$scratch_dir/initial.json" "$scratch_dir/types.json"
 
 for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu \
               x86_64-apple-macos10.13 arm64-apple-macos11; do

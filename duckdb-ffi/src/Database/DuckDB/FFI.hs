@@ -314,8 +314,8 @@ module Database.DuckDB.FFI
     , Database.DuckDB.FFI.DuckDBBindInfo(..)
     , Database.DuckDB.FFI.DuckDBInitInfoStruct
     , Database.DuckDB.FFI.DuckDBInitInfo(..)
-    , Database.DuckDB.FFI.C_Duckdb_extension_info
-    , Database.DuckDB.FFI.Duckdb_extension_info(..)
+    , Database.DuckDB.FFI.DuckDBExtensionInfoStruct
+    , Database.DuckDB.FFI.DuckDBExtensionInfo(..)
     , Database.DuckDB.FFI.DuckDBSel(..)
     , Database.DuckDB.FFI.DuckDBDeleteCallback_Aux(..)
     , Database.DuckDB.FFI.DuckDBDeleteCallback(..)
@@ -359,7 +359,7 @@ module Database.DuckDB.FFI
     , Database.DuckDB.FFI.DuckDBCopyFunctionBindFun(..)
     , Database.DuckDB.FFI.DuckDBCopyFunctionGlobalInitFun_Aux(..)
     , Database.DuckDB.FFI.DuckDBCopyFunctionGlobalInitFun(..)
-    , Database.DuckDB.FFI.Duckdb_extension_access(..)
+    , Database.DuckDB.FFI.DuckDBExtensionAccess(..)
     , Database.DuckDB.FFI.ArrowSchema(..)
     , Database.DuckDB.FFI.ArrowArray(..)
     , Database.DuckDB.FFI.ArrowArrayStream(..)
@@ -14106,9 +14106,9 @@ instance HasCField.HasCField DuckDBInitInfo "unwrap" where
 
     __exported by:__ @duckdb.h@
 -}
-data C_Duckdb_extension_info
+data DuckDBExtensionInfoStruct
 
-instance Marshal.StaticSize C_Duckdb_extension_info where
+instance Marshal.StaticSize DuckDBExtensionInfoStruct where
 
   staticSizeOf = \_ -> (8 :: Int)
 
@@ -14126,8 +14126,8 @@ instance Marshal.StaticSize C_Duckdb_extension_info where
 
     __exported by:__ @duckdb.h@
 -}
-newtype Duckdb_extension_info = Duckdb_extension_info
-  { unwrap :: BG.Ptr C_Duckdb_extension_info
+newtype DuckDBExtensionInfo = DuckDBExtensionInfo
+  { unwrap :: BG.Ptr DuckDBExtensionInfoStruct
   }
   deriving stock (Eq, BG.Generic, Ord, Show)
   deriving newtype
@@ -14138,23 +14138,23 @@ newtype Duckdb_extension_info = Duckdb_extension_info
     , Marshal.WriteRaw
     )
 
-instance ( ty ~ BG.Ptr C_Duckdb_extension_info
-         ) => BG.CompatHasField.HasField "unwrap" Duckdb_extension_info ty where
+instance ( ty ~ BG.Ptr DuckDBExtensionInfoStruct
+         ) => BG.CompatHasField.HasField "unwrap" DuckDBExtensionInfo ty where
 
   hasField =
     \x0 ->
       (\y1 ->
-         Duckdb_extension_info {unwrap = y1}, BG.getField @"unwrap" x0)
+         DuckDBExtensionInfo {unwrap = y1}, BG.getField @"unwrap" x0)
 
-instance ( ty ~ BG.Ptr C_Duckdb_extension_info
-         ) => BG.HasField "unwrap" (BG.Ptr Duckdb_extension_info) (BG.Ptr ty) where
+instance ( ty ~ BG.Ptr DuckDBExtensionInfoStruct
+         ) => BG.HasField "unwrap" (BG.Ptr DuckDBExtensionInfo) (BG.Ptr ty) where
 
   getField = HasCField.fromPtr (BG.Proxy @"unwrap")
 
-instance HasCField.HasCField Duckdb_extension_info "unwrap" where
+instance HasCField.HasCField DuckDBExtensionInfo "unwrap" where
 
-  type CFieldType Duckdb_extension_info "unwrap" =
-    BG.Ptr C_Duckdb_extension_info
+  type CFieldType DuckDBExtensionInfo "unwrap" =
+    BG.Ptr DuckDBExtensionInfoStruct
 
   offset# = \_ -> \_ -> 0
 
@@ -16672,22 +16672,22 @@ instance HasCField.HasCField DuckDBCopyFunctionGlobalInitFun "unwrap" where
 
     __exported by:__ @duckdb.h@
 -}
-data Duckdb_extension_access = Duckdb_extension_access
-  { set_error :: BG.FunPtr (Duckdb_extension_info -> PtrConst.PtrConst BG.CChar -> IO ())
+data DuckDBExtensionAccess = DuckDBExtensionAccess
+  { set_error :: BG.FunPtr (DuckDBExtensionInfo -> PtrConst.PtrConst BG.CChar -> IO ())
     {- ^ __C declaration:__ @set_error@
 
          __defined at:__ @duckdb.h 10333:9@
 
          __exported by:__ @duckdb.h@
     -}
-  , get_database :: BG.FunPtr (Duckdb_extension_info -> IO (BG.Ptr DuckDBDatabase))
+  , get_database :: BG.FunPtr (DuckDBExtensionInfo -> IO (BG.Ptr DuckDBDatabase))
     {- ^ __C declaration:__ @get_database@
 
          __defined at:__ @duckdb.h 10335:21@
 
          __exported by:__ @duckdb.h@
     -}
-  , get_api :: BG.FunPtr (Duckdb_extension_info -> PtrConst.PtrConst BG.CChar -> IO (PtrConst.PtrConst BG.Void))
+  , get_api :: BG.FunPtr (DuckDBExtensionInfo -> PtrConst.PtrConst BG.CChar -> IO (PtrConst.PtrConst BG.Void))
     {- ^ __C declaration:__ @get_api@
 
          __defined at:__ @duckdb.h 10337:16@
@@ -16697,35 +16697,35 @@ data Duckdb_extension_access = Duckdb_extension_access
   }
   deriving stock (Eq, BG.Generic, Show)
 
-instance Marshal.StaticSize Duckdb_extension_access where
+instance Marshal.StaticSize DuckDBExtensionAccess where
 
   staticSizeOf = \_ -> (24 :: Int)
 
   staticAlignment = \_ -> (8 :: Int)
 
-instance Marshal.ReadRaw Duckdb_extension_access where
+instance Marshal.ReadRaw DuckDBExtensionAccess where
 
   readRaw =
     \ptr0 ->
-          pure Duckdb_extension_access
+          pure DuckDBExtensionAccess
       <*> HasCField.readRaw (BG.Proxy @"set_error") ptr0
       <*> HasCField.readRaw (BG.Proxy @"get_database") ptr0
       <*> HasCField.readRaw (BG.Proxy @"get_api") ptr0
 
-instance Marshal.WriteRaw Duckdb_extension_access where
+instance Marshal.WriteRaw DuckDBExtensionAccess where
 
   writeRaw =
     \ptr0 ->
       \s1 ->
         case s1 of
-          Duckdb_extension_access set_error2 get_database3 get_api4 ->
+          DuckDBExtensionAccess set_error2 get_database3 get_api4 ->
                HasCField.writeRaw (BG.Proxy @"set_error") ptr0 set_error2
             >> HasCField.writeRaw (BG.Proxy @"get_database") ptr0 get_database3
             >> HasCField.writeRaw (BG.Proxy @"get_api") ptr0 get_api4
 
-deriving via Marshal.EquivStorable Duckdb_extension_access instance BG.Storable Duckdb_extension_access
+deriving via Marshal.EquivStorable DuckDBExtensionAccess instance BG.Storable DuckDBExtensionAccess
 
-deriving via Struct.IsStructViaReadRaw Duckdb_extension_access instance Struct.IsStruct Duckdb_extension_access
+deriving via Struct.IsStructViaReadRaw DuckDBExtensionAccess instance Struct.IsStruct DuckDBExtensionAccess
 
 {-| __C declaration:__ @set_error@
 
@@ -16733,28 +16733,28 @@ deriving via Struct.IsStructViaReadRaw Duckdb_extension_access instance Struct.I
 
     __exported by:__ @duckdb.h@
 -}
-instance ( ty ~ BG.FunPtr (Duckdb_extension_info -> PtrConst.PtrConst BG.CChar -> IO ())
-         ) => BG.CompatHasField.HasField "set_error" Duckdb_extension_access ty where
+instance ( ty ~ BG.FunPtr (DuckDBExtensionInfo -> PtrConst.PtrConst BG.CChar -> IO ())
+         ) => BG.CompatHasField.HasField "set_error" DuckDBExtensionAccess ty where
 
   hasField =
     \x0 ->
       ( \y1 ->
-          Duckdb_extension_access { set_error = y1
-                                  , get_database = BG.getField @"get_database" x0
-                                  , get_api = BG.getField @"get_api" x0
-                                  }
+          DuckDBExtensionAccess { set_error = y1
+                                , get_database = BG.getField @"get_database" x0
+                                , get_api = BG.getField @"get_api" x0
+                                }
       , BG.getField @"set_error" x0
       )
 
-instance ( ty ~ BG.FunPtr (Duckdb_extension_info -> PtrConst.PtrConst BG.CChar -> IO ())
-         ) => BG.HasField "set_error" (BG.Ptr Duckdb_extension_access) (BG.Ptr ty) where
+instance ( ty ~ BG.FunPtr (DuckDBExtensionInfo -> PtrConst.PtrConst BG.CChar -> IO ())
+         ) => BG.HasField "set_error" (BG.Ptr DuckDBExtensionAccess) (BG.Ptr ty) where
 
   getField = HasCField.fromPtr (BG.Proxy @"set_error")
 
-instance HasCField.HasCField Duckdb_extension_access "set_error" where
+instance HasCField.HasCField DuckDBExtensionAccess "set_error" where
 
-  type CFieldType Duckdb_extension_access "set_error" =
-    BG.FunPtr (Duckdb_extension_info -> PtrConst.PtrConst BG.CChar -> IO ())
+  type CFieldType DuckDBExtensionAccess "set_error" =
+    BG.FunPtr (DuckDBExtensionInfo -> PtrConst.PtrConst BG.CChar -> IO ())
 
   offset# = \_ -> \_ -> 0
 
@@ -16764,29 +16764,29 @@ instance HasCField.HasCField Duckdb_extension_access "set_error" where
 
     __exported by:__ @duckdb.h@
 -}
-instance ( ty ~ BG.FunPtr (Duckdb_extension_info -> IO (BG.Ptr DuckDBDatabase))
-         ) => BG.CompatHasField.HasField "get_database" Duckdb_extension_access ty where
+instance ( ty ~ BG.FunPtr (DuckDBExtensionInfo -> IO (BG.Ptr DuckDBDatabase))
+         ) => BG.CompatHasField.HasField "get_database" DuckDBExtensionAccess ty where
 
   hasField =
     \x0 ->
       ( \y1 ->
-          Duckdb_extension_access { get_database = y1
-                                  , set_error = BG.getField @"set_error" x0
-                                  , get_api = BG.getField @"get_api" x0
-                                  }
+          DuckDBExtensionAccess { get_database = y1
+                                , set_error = BG.getField @"set_error" x0
+                                , get_api = BG.getField @"get_api" x0
+                                }
       , BG.getField @"get_database" x0
       )
 
-instance ( ty ~ BG.FunPtr (Duckdb_extension_info -> IO (BG.Ptr DuckDBDatabase))
-         ) => BG.HasField "get_database" (BG.Ptr Duckdb_extension_access) (BG.Ptr ty) where
+instance ( ty ~ BG.FunPtr (DuckDBExtensionInfo -> IO (BG.Ptr DuckDBDatabase))
+         ) => BG.HasField "get_database" (BG.Ptr DuckDBExtensionAccess) (BG.Ptr ty) where
 
   getField =
     HasCField.fromPtr (BG.Proxy @"get_database")
 
-instance HasCField.HasCField Duckdb_extension_access "get_database" where
+instance HasCField.HasCField DuckDBExtensionAccess "get_database" where
 
-  type CFieldType Duckdb_extension_access "get_database" =
-    BG.FunPtr (Duckdb_extension_info -> IO (BG.Ptr DuckDBDatabase))
+  type CFieldType DuckDBExtensionAccess "get_database" =
+    BG.FunPtr (DuckDBExtensionInfo -> IO (BG.Ptr DuckDBDatabase))
 
   offset# = \_ -> \_ -> 8
 
@@ -16796,28 +16796,28 @@ instance HasCField.HasCField Duckdb_extension_access "get_database" where
 
     __exported by:__ @duckdb.h@
 -}
-instance ( ty ~ BG.FunPtr (Duckdb_extension_info -> PtrConst.PtrConst BG.CChar -> IO (PtrConst.PtrConst BG.Void))
-         ) => BG.CompatHasField.HasField "get_api" Duckdb_extension_access ty where
+instance ( ty ~ BG.FunPtr (DuckDBExtensionInfo -> PtrConst.PtrConst BG.CChar -> IO (PtrConst.PtrConst BG.Void))
+         ) => BG.CompatHasField.HasField "get_api" DuckDBExtensionAccess ty where
 
   hasField =
     \x0 ->
       ( \y1 ->
-          Duckdb_extension_access { get_api = y1
-                                  , set_error = BG.getField @"set_error" x0
-                                  , get_database = BG.getField @"get_database" x0
-                                  }
+          DuckDBExtensionAccess { get_api = y1
+                                , set_error = BG.getField @"set_error" x0
+                                , get_database = BG.getField @"get_database" x0
+                                }
       , BG.getField @"get_api" x0
       )
 
-instance ( ty ~ BG.FunPtr (Duckdb_extension_info -> PtrConst.PtrConst BG.CChar -> IO (PtrConst.PtrConst BG.Void))
-         ) => BG.HasField "get_api" (BG.Ptr Duckdb_extension_access) (BG.Ptr ty) where
+instance ( ty ~ BG.FunPtr (DuckDBExtensionInfo -> PtrConst.PtrConst BG.CChar -> IO (PtrConst.PtrConst BG.Void))
+         ) => BG.HasField "get_api" (BG.Ptr DuckDBExtensionAccess) (BG.Ptr ty) where
 
   getField = HasCField.fromPtr (BG.Proxy @"get_api")
 
-instance HasCField.HasCField Duckdb_extension_access "get_api" where
+instance HasCField.HasCField DuckDBExtensionAccess "get_api" where
 
-  type CFieldType Duckdb_extension_access "get_api" =
-    BG.FunPtr (Duckdb_extension_info -> PtrConst.PtrConst BG.CChar -> IO (PtrConst.PtrConst BG.Void))
+  type CFieldType DuckDBExtensionAccess "get_api" =
+    BG.FunPtr (DuckDBExtensionInfo -> PtrConst.PtrConst BG.CChar -> IO (PtrConst.PtrConst BG.Void))
 
   offset# = \_ -> \_ -> 16
 
@@ -18040,117 +18040,117 @@ instance HasCField.HasCField ArrowArrayStream "private_data" where
 
   offset# = \_ -> \_ -> 32
 
--- __unique:__ @instance ToFunPtr (Duckdb_extension_info -> IO (BG.Ptr DuckDBDatabase))@
-foreign import ccall safe "wrapper" hs_bindgen_7779694a9cde6711_base ::
+-- __unique:__ @instance ToFunPtr (DuckDBExtensionInfo -> IO (BG.Ptr DuckDBDatabase))@
+foreign import ccall safe "wrapper" hs_bindgen_48c5f906dd22ccd7_base ::
      (BG.Ptr BG.Void -> IO (BG.Ptr BG.Void))
   -> IO (BG.FunPtr (BG.Ptr BG.Void -> IO (BG.Ptr BG.Void)))
 
--- __unique:__ @instance ToFunPtr (Duckdb_extension_info -> IO (BG.Ptr DuckDBDatabase))@
-hs_bindgen_7779694a9cde6711 ::
-     (Duckdb_extension_info -> IO (BG.Ptr DuckDBDatabase))
-  -> IO (BG.FunPtr (Duckdb_extension_info -> IO (BG.Ptr DuckDBDatabase)))
-hs_bindgen_7779694a9cde6711 =
+-- __unique:__ @instance ToFunPtr (DuckDBExtensionInfo -> IO (BG.Ptr DuckDBDatabase))@
+hs_bindgen_48c5f906dd22ccd7 ::
+     (DuckDBExtensionInfo -> IO (BG.Ptr DuckDBDatabase))
+  -> IO (BG.FunPtr (DuckDBExtensionInfo -> IO (BG.Ptr DuckDBDatabase)))
+hs_bindgen_48c5f906dd22ccd7 =
   \fun0 ->
-    fmap BG.castFunPtr (hs_bindgen_7779694a9cde6711_base (\x1 ->
+    fmap BG.castFunPtr (hs_bindgen_48c5f906dd22ccd7_base (\x1 ->
                                                             fmap BG.toFFIType (fun0 (BG.fromFFIType x1))))
 
--- __unique:__ @instance FromFunPtr (Duckdb_extension_info -> IO (BG.Ptr DuckDBDatabase))@
-foreign import ccall safe "dynamic" hs_bindgen_34a47c504153e135_base ::
+-- __unique:__ @instance FromFunPtr (DuckDBExtensionInfo -> IO (BG.Ptr DuckDBDatabase))@
+foreign import ccall safe "dynamic" hs_bindgen_370a996b813960f9_base ::
      BG.FunPtr (BG.Ptr BG.Void -> IO (BG.Ptr BG.Void))
   -> BG.Ptr BG.Void -> IO (BG.Ptr BG.Void)
 
--- __unique:__ @instance FromFunPtr (Duckdb_extension_info -> IO (BG.Ptr DuckDBDatabase))@
-hs_bindgen_34a47c504153e135 ::
-     BG.FunPtr (Duckdb_extension_info -> IO (BG.Ptr DuckDBDatabase))
-  -> Duckdb_extension_info -> IO (BG.Ptr DuckDBDatabase)
-hs_bindgen_34a47c504153e135 =
+-- __unique:__ @instance FromFunPtr (DuckDBExtensionInfo -> IO (BG.Ptr DuckDBDatabase))@
+hs_bindgen_370a996b813960f9 ::
+     BG.FunPtr (DuckDBExtensionInfo -> IO (BG.Ptr DuckDBDatabase))
+  -> DuckDBExtensionInfo -> IO (BG.Ptr DuckDBDatabase)
+hs_bindgen_370a996b813960f9 =
   \funPtr0 ->
     \x1 ->
-      fmap BG.fromFFIType (hs_bindgen_34a47c504153e135_base (BG.castFunPtr funPtr0) (BG.toFFIType x1))
+      fmap BG.fromFFIType (hs_bindgen_370a996b813960f9_base (BG.castFunPtr funPtr0) (BG.toFFIType x1))
 
-instance BG.ToFunPtr (Duckdb_extension_info -> IO (BG.Ptr DuckDBDatabase)) where
+instance BG.ToFunPtr (DuckDBExtensionInfo -> IO (BG.Ptr DuckDBDatabase)) where
 
-  toFunPtr = hs_bindgen_7779694a9cde6711
+  toFunPtr = hs_bindgen_48c5f906dd22ccd7
 
-instance BG.FromFunPtr (Duckdb_extension_info -> IO (BG.Ptr DuckDBDatabase)) where
+instance BG.FromFunPtr (DuckDBExtensionInfo -> IO (BG.Ptr DuckDBDatabase)) where
 
-  fromFunPtr = hs_bindgen_34a47c504153e135
+  fromFunPtr = hs_bindgen_370a996b813960f9
 
--- __unique:__ @instance ToFunPtr (Duckdb_extension_info -> PtrConst.PtrConst BG.CChar -> IO (PtrConst.PtrConst BG.Void))@
-foreign import ccall safe "wrapper" hs_bindgen_c88ff2b87f7f12cc_base ::
+-- __unique:__ @instance ToFunPtr (DuckDBExtensionInfo -> PtrConst.PtrConst BG.CChar -> IO (PtrConst.PtrConst BG.Void))@
+foreign import ccall safe "wrapper" hs_bindgen_92ad7a7b5f490754_base ::
      (BG.Ptr BG.Void -> BG.Ptr BG.Void -> IO (BG.Ptr BG.Void))
   -> IO (BG.FunPtr (BG.Ptr BG.Void -> BG.Ptr BG.Void -> IO (BG.Ptr BG.Void)))
 
--- __unique:__ @instance ToFunPtr (Duckdb_extension_info -> PtrConst.PtrConst BG.CChar -> IO (PtrConst.PtrConst BG.Void))@
-hs_bindgen_c88ff2b87f7f12cc ::
-     (Duckdb_extension_info -> PtrConst.PtrConst BG.CChar -> IO (PtrConst.PtrConst BG.Void))
-  -> IO (BG.FunPtr (Duckdb_extension_info -> PtrConst.PtrConst BG.CChar -> IO (PtrConst.PtrConst BG.Void)))
-hs_bindgen_c88ff2b87f7f12cc =
+-- __unique:__ @instance ToFunPtr (DuckDBExtensionInfo -> PtrConst.PtrConst BG.CChar -> IO (PtrConst.PtrConst BG.Void))@
+hs_bindgen_92ad7a7b5f490754 ::
+     (DuckDBExtensionInfo -> PtrConst.PtrConst BG.CChar -> IO (PtrConst.PtrConst BG.Void))
+  -> IO (BG.FunPtr (DuckDBExtensionInfo -> PtrConst.PtrConst BG.CChar -> IO (PtrConst.PtrConst BG.Void)))
+hs_bindgen_92ad7a7b5f490754 =
   \fun0 ->
-    fmap BG.castFunPtr (hs_bindgen_c88ff2b87f7f12cc_base (\x1 ->
+    fmap BG.castFunPtr (hs_bindgen_92ad7a7b5f490754_base (\x1 ->
                                                             \x2 ->
                                                               fmap BG.toFFIType (fun0 (BG.fromFFIType x1) (BG.fromFFIType x2))))
 
--- __unique:__ @instance FromFunPtr (Duckdb_extension_info -> PtrConst.PtrConst BG.CChar -> IO (PtrConst.PtrConst BG.Void))@
-foreign import ccall safe "dynamic" hs_bindgen_1cfb12c085cc1040_base ::
+-- __unique:__ @instance FromFunPtr (DuckDBExtensionInfo -> PtrConst.PtrConst BG.CChar -> IO (PtrConst.PtrConst BG.Void))@
+foreign import ccall safe "dynamic" hs_bindgen_03c1795e92dc3294_base ::
      BG.FunPtr (BG.Ptr BG.Void -> BG.Ptr BG.Void -> IO (BG.Ptr BG.Void))
   -> BG.Ptr BG.Void -> BG.Ptr BG.Void -> IO (BG.Ptr BG.Void)
 
--- __unique:__ @instance FromFunPtr (Duckdb_extension_info -> PtrConst.PtrConst BG.CChar -> IO (PtrConst.PtrConst BG.Void))@
-hs_bindgen_1cfb12c085cc1040 ::
-     BG.FunPtr (Duckdb_extension_info -> PtrConst.PtrConst BG.CChar -> IO (PtrConst.PtrConst BG.Void))
-  -> Duckdb_extension_info -> PtrConst.PtrConst BG.CChar -> IO (PtrConst.PtrConst BG.Void)
-hs_bindgen_1cfb12c085cc1040 =
+-- __unique:__ @instance FromFunPtr (DuckDBExtensionInfo -> PtrConst.PtrConst BG.CChar -> IO (PtrConst.PtrConst BG.Void))@
+hs_bindgen_03c1795e92dc3294 ::
+     BG.FunPtr (DuckDBExtensionInfo -> PtrConst.PtrConst BG.CChar -> IO (PtrConst.PtrConst BG.Void))
+  -> DuckDBExtensionInfo -> PtrConst.PtrConst BG.CChar -> IO (PtrConst.PtrConst BG.Void)
+hs_bindgen_03c1795e92dc3294 =
   \funPtr0 ->
     \x1 ->
       \x2 ->
-        fmap BG.fromFFIType (hs_bindgen_1cfb12c085cc1040_base (BG.castFunPtr funPtr0) (BG.toFFIType x1) (BG.toFFIType x2))
+        fmap BG.fromFFIType (hs_bindgen_03c1795e92dc3294_base (BG.castFunPtr funPtr0) (BG.toFFIType x1) (BG.toFFIType x2))
 
-instance BG.ToFunPtr (Duckdb_extension_info -> PtrConst.PtrConst BG.CChar -> IO (PtrConst.PtrConst BG.Void)) where
+instance BG.ToFunPtr (DuckDBExtensionInfo -> PtrConst.PtrConst BG.CChar -> IO (PtrConst.PtrConst BG.Void)) where
 
-  toFunPtr = hs_bindgen_c88ff2b87f7f12cc
+  toFunPtr = hs_bindgen_92ad7a7b5f490754
 
-instance BG.FromFunPtr (Duckdb_extension_info -> PtrConst.PtrConst BG.CChar -> IO (PtrConst.PtrConst BG.Void)) where
+instance BG.FromFunPtr (DuckDBExtensionInfo -> PtrConst.PtrConst BG.CChar -> IO (PtrConst.PtrConst BG.Void)) where
 
-  fromFunPtr = hs_bindgen_1cfb12c085cc1040
+  fromFunPtr = hs_bindgen_03c1795e92dc3294
 
--- __unique:__ @instance ToFunPtr (Duckdb_extension_info -> PtrConst.PtrConst BG.CChar -> IO ())@
-foreign import ccall safe "wrapper" hs_bindgen_5069a3e5afe4de42_base ::
+-- __unique:__ @instance ToFunPtr (DuckDBExtensionInfo -> PtrConst.PtrConst BG.CChar -> IO ())@
+foreign import ccall safe "wrapper" hs_bindgen_2aa79b5f9f4ab491_base ::
      (BG.Ptr BG.Void -> BG.Ptr BG.Void -> IO ())
   -> IO (BG.FunPtr (BG.Ptr BG.Void -> BG.Ptr BG.Void -> IO ()))
 
--- __unique:__ @instance ToFunPtr (Duckdb_extension_info -> PtrConst.PtrConst BG.CChar -> IO ())@
-hs_bindgen_5069a3e5afe4de42 ::
-     (Duckdb_extension_info -> PtrConst.PtrConst BG.CChar -> IO ())
-  -> IO (BG.FunPtr (Duckdb_extension_info -> PtrConst.PtrConst BG.CChar -> IO ()))
-hs_bindgen_5069a3e5afe4de42 =
+-- __unique:__ @instance ToFunPtr (DuckDBExtensionInfo -> PtrConst.PtrConst BG.CChar -> IO ())@
+hs_bindgen_2aa79b5f9f4ab491 ::
+     (DuckDBExtensionInfo -> PtrConst.PtrConst BG.CChar -> IO ())
+  -> IO (BG.FunPtr (DuckDBExtensionInfo -> PtrConst.PtrConst BG.CChar -> IO ()))
+hs_bindgen_2aa79b5f9f4ab491 =
   \fun0 ->
-    fmap BG.castFunPtr (hs_bindgen_5069a3e5afe4de42_base (\x1 ->
+    fmap BG.castFunPtr (hs_bindgen_2aa79b5f9f4ab491_base (\x1 ->
                                                             \x2 ->
                                                               fun0 (BG.fromFFIType x1) (BG.fromFFIType x2)))
 
--- __unique:__ @instance FromFunPtr (Duckdb_extension_info -> PtrConst.PtrConst BG.CChar -> IO ())@
-foreign import ccall safe "dynamic" hs_bindgen_4d9f84854f816088_base ::
+-- __unique:__ @instance FromFunPtr (DuckDBExtensionInfo -> PtrConst.PtrConst BG.CChar -> IO ())@
+foreign import ccall safe "dynamic" hs_bindgen_13a4c88fcbc780df_base ::
      BG.FunPtr (BG.Ptr BG.Void -> BG.Ptr BG.Void -> IO ())
   -> BG.Ptr BG.Void -> BG.Ptr BG.Void -> IO ()
 
--- __unique:__ @instance FromFunPtr (Duckdb_extension_info -> PtrConst.PtrConst BG.CChar -> IO ())@
-hs_bindgen_4d9f84854f816088 ::
-     BG.FunPtr (Duckdb_extension_info -> PtrConst.PtrConst BG.CChar -> IO ())
-  -> Duckdb_extension_info -> PtrConst.PtrConst BG.CChar -> IO ()
-hs_bindgen_4d9f84854f816088 =
+-- __unique:__ @instance FromFunPtr (DuckDBExtensionInfo -> PtrConst.PtrConst BG.CChar -> IO ())@
+hs_bindgen_13a4c88fcbc780df ::
+     BG.FunPtr (DuckDBExtensionInfo -> PtrConst.PtrConst BG.CChar -> IO ())
+  -> DuckDBExtensionInfo -> PtrConst.PtrConst BG.CChar -> IO ()
+hs_bindgen_13a4c88fcbc780df =
   \funPtr0 ->
     \x1 ->
       \x2 ->
-        hs_bindgen_4d9f84854f816088_base (BG.castFunPtr funPtr0) (BG.toFFIType x1) (BG.toFFIType x2)
+        hs_bindgen_13a4c88fcbc780df_base (BG.castFunPtr funPtr0) (BG.toFFIType x1) (BG.toFFIType x2)
 
-instance BG.ToFunPtr (Duckdb_extension_info -> PtrConst.PtrConst BG.CChar -> IO ()) where
+instance BG.ToFunPtr (DuckDBExtensionInfo -> PtrConst.PtrConst BG.CChar -> IO ()) where
 
-  toFunPtr = hs_bindgen_5069a3e5afe4de42
+  toFunPtr = hs_bindgen_2aa79b5f9f4ab491
 
-instance BG.FromFunPtr (Duckdb_extension_info -> PtrConst.PtrConst BG.CChar -> IO ()) where
+instance BG.FromFunPtr (DuckDBExtensionInfo -> PtrConst.PtrConst BG.CChar -> IO ()) where
 
-  fromFunPtr = hs_bindgen_4d9f84854f816088
+  fromFunPtr = hs_bindgen_13a4c88fcbc780df
 
 -- __unique:__ @instance ToFunPtr (BG.Ptr ArrowArray -> IO ())@
 foreign import ccall safe "wrapper" hs_bindgen_4d336e4487b32130_base ::

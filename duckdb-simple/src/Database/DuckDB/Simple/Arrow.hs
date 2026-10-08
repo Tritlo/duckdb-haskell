@@ -19,15 +19,18 @@ Haskell consumers must mask asynchronous exceptions while moving a root and
 register its cleanup before restoring exceptions.
 
 This module uses the schema and chunk conversion API. The older query and scan
-functions in @Database.DuckDB.FFI.Deprecated@ are deprecated by DuckDB.
+functions in @Database.DuckDB.FFI@ are deprecated by DuckDB.
 -}
 module Database.DuckDB.Simple.Arrow (
     foldArrow,
     foldArrow_,
+    releaseArrowSchema,
+    releaseArrowArray,
+    releaseArrowStream,
 ) where
 
 import Database.DuckDB.FFI (ArrowArray, ArrowSchema)
-import Database.DuckDB.Simple.Arrow.Internal (foldArrowWith)
+import Database.DuckDB.Simple.Arrow.Internal (foldArrowWith, releaseArrowArray, releaseArrowSchema, releaseArrowStream)
 import Database.DuckDB.Simple.Internal (Connection, Query, ResultMode (MaterializedResult))
 import Database.DuckDB.Simple.ToRow (ToRow)
 import Foreign.Ptr (Ptr)

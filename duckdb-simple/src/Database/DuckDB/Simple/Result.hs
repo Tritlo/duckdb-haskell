@@ -22,10 +22,11 @@ import Database.DuckDB.Simple.FromRow (RowParser, parseRow, rowErrorsToSqlError)
 import Database.DuckDB.Simple.Internal
 import Database.DuckDB.Simple.Materialize (prepareVectorReader)
 import Database.DuckDB.Simple.Ok (Ok (..))
+import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Alloc (free, malloc)
 import Foreign.Marshal.Utils (fillBytes)
 import Foreign.Ptr (Ptr, nullPtr)
-import Foreign.Storable (sizeOf)
+import Foreign.Storable (peek, sizeOf)
 
 -- | Fold rows from one statement and release its result on every exit path.
 foldStatementWith :: ResultMode -> RowParser row -> Statement -> a -> (a -> row -> IO a) -> IO a
@@ -95,15 +96,15 @@ startStatementStream :: ResultMode -> Statement -> IO (Maybe StatementStream)
 startStatementStream mode stmt =
     withStatementHandle stmt \handle -> do
         resultPtr <- malloc
-        fillBytes resultPtr 0 (sizeOf (undefined :: DuckDBResult))
-        let release = c_duckdb_destroy_result resultPtr `finally` free resultPtr
+        fillBytes resultPtr 0 (sizeOf (undefined :: Duckdb_result))
+        let release = duckdb_destroy_result resultPtr `finally` free resultPtr
         flip onException release do
             rc <- runInterruptibleQuery (statementConnection stmt) (executePreparedResult mode handle resultPtr)
             when (rc /= DuckDBSuccess) do
                 (errMsg, errType) <- fetchResultError resultPtr
                 throwIO $ mkExecuteError (statementQuery stmt) errMsg errType
-            resultType <- c_duckdb_result_return_type resultPtr
-            if resultType /= DuckDBResultTypeQueryResult
+            resultType <- peek resultPtr >>= duckdb_result_return_type
+            if resultType /= DUCKDB_RESULT_TYPE_QUERY_RESULT
                 then release >> pure Nothing
                 else do
                     columns <- collectResultColumns resultPtr
@@ -112,12 +113,12 @@ startStatementStream mode stmt =
 fetchChunk :: Connection -> Query -> StatementStream -> IO StatementStream
 fetchChunk conn queryText stream@StatementStream{statementStreamResult} = do
     chunk <- fetchResultChunk (statementStreamMode stream) conn statementStreamResult
-    if chunk == nullPtr
+    if chunk == Duckdb_data_chunk nullPtr
         then do
             throwResultError queryText statementStreamResult
             pure stream
         else do
-            rawSize <- c_duckdb_data_chunk_get_size chunk
+            rawSize <- duckdb_data_chunk_get_size chunk
             let rowCount = fromIntegral rawSize :: Int
             if rowCount <= 0
                 then do
@@ -137,10 +138,10 @@ fetchChunk conn queryText stream@StatementStream{statementStreamResult} = do
                     pure stream{statementStreamChunk = Just chunkState}
 
 -- | Prepare one reader for each column. The readers must not outlive the chunk.
-prepareChunkReaders :: DuckDBDataChunk -> [StatementStreamColumn] -> IO [Int -> IO FieldValue]
+prepareChunkReaders :: Duckdb_data_chunk -> [StatementStreamColumn] -> IO [Int -> IO FieldValue]
 prepareChunkReaders chunk columns =
     forM columns \StatementStreamColumn{statementStreamColumnIndex} ->
-        c_duckdb_data_chunk_get_vector chunk (fromIntegral statementStreamColumnIndex) >>= prepareVectorReader
+        duckdb_data_chunk_get_vector chunk (fromIntegral statementStreamColumnIndex) >>= prepareVectorReader
 
 -- | Clear cursor ownership before releasing native resources.
 cleanupStatementStreamRef :: IORef StatementStreamState -> IO ()
@@ -157,7 +158,7 @@ finalizeStreamState = \case
 finalizeStream :: StatementStream -> IO ()
 finalizeStream StatementStream{statementStreamResult, statementStreamChunk} = do
     maybe (pure ()) finalizeChunk statementStreamChunk
-    c_duckdb_destroy_result statementStreamResult
+    duckdb_destroy_result statementStreamResult
     free statementStreamResult
 
 finalizeChunk :: StatementStreamChunk -> IO ()
@@ -165,14 +166,14 @@ finalizeChunk StatementStreamChunk{statementStreamChunkPtr} =
     destroyDataChunk statementStreamChunkPtr
 
 -- | Copy all rows from a materialized native result.
-collectRows :: Query -> Ptr DuckDBResult -> IO [[Field]]
+collectRows :: Query -> Ptr Duckdb_result -> IO [[Field]]
 collectRows queryText resPtr = do
     columns <- collectResultColumns resPtr
     collectChunks columns []
   where
     collectChunks columns acc = do
-        fetched <- bracket (c_duckdb_fetch_chunk resPtr) destroyDataChunk \chunk ->
-            if chunk == nullPtr
+        fetched <- bracket (peek resPtr >>= duckdb_fetch_chunk) destroyDataChunk \chunk ->
+            if chunk == Duckdb_data_chunk nullPtr
                 then throwResultError queryText resPtr >> pure Nothing
                 else Just <$> decodeChunk columns chunk
         case fetched of
@@ -182,7 +183,7 @@ collectRows queryText resPtr = do
                 collectChunks columns acc'
 
     decodeChunk columns chunk = do
-        rawSize <- c_duckdb_data_chunk_get_size chunk
+        rawSize <- duckdb_data_chunk_get_size chunk
         let rowCount = fromIntegral rawSize :: Int
         if rowCount <= 0
             then pure Nothing
@@ -194,17 +195,17 @@ collectRows queryText resPtr = do
                         rows <- mapM (buildMaterializedRow columns readers) [0 .. rowCount - 1]
                         pure (Just rows)
 
-collectResultColumns :: Ptr DuckDBResult -> IO [StatementStreamColumn]
+collectResultColumns :: Ptr Duckdb_result -> IO [StatementStreamColumn]
 collectResultColumns resPtr = do
-    rawCount <- c_duckdb_column_count resPtr
+    rawCount <- duckdb_column_count resPtr
     let cc = fromIntegral rawCount :: Int
     forM [0 .. cc - 1] \columnIndex -> do
-        namePtr <- c_duckdb_column_name resPtr (fromIntegral columnIndex)
+        namePtr <- duckdb_column_name resPtr (fromIntegral columnIndex)
         name <-
-            if namePtr == nullPtr
+            if namePtr == ConstPtr nullPtr
                 then pure (Text.pack ("column" <> show columnIndex))
                 else peekUtf8CString namePtr
-        dtype <- c_duckdb_column_type resPtr (fromIntegral columnIndex)
+        Duckdb_type dtype <- duckdb_column_type resPtr (fromIntegral columnIndex)
         pure
             StatementStreamColumn
                 { statementStreamColumnIndex = columnIndex

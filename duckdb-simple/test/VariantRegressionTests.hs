@@ -11,12 +11,14 @@ import Control.Exception (SomeException, bracket, displayException, try)
 import Control.Monad (forM_, void, when)
 import Data.Array (Array, listArray)
 import qualified Data.ByteString as BS
+import Data.Coerce (coerce)
 import qualified Data.Geometry as G
 import Data.Int (Int64)
 import Data.List (isInfixOf)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Vector as V
+import Data.Void (Void)
 import Database.DuckDB.FFI
 import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
@@ -26,9 +28,9 @@ import Database.DuckDB.Simple.Geometry (RawGeometry (..), toRawGeometry)
 import Database.DuckDB.Simple.Internal (destroyValue, withConnectionHandle)
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), destroyLogicalType, logicalTypeFromRep)
 import Database.DuckDB.Simple.Variant
-import Foreign.C.String (withCString)
+import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (nullPtr)
+import Foreign.Ptr (Ptr, nullPtr)
 import Foreign.Storable (peek, poke)
 import GHC.Float (castDoubleToWord64, castFloatToWord32, castWord64ToDouble)
 import GHC.Generics (Generic)
@@ -36,7 +38,7 @@ import System.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
-import TestUtils (assertFailureIO)
+import TestUtils (assertFailureIO, withConstCString)
 
 -- | A generic record checks the bridge to composite type metadata.
 newtype VariantRecord = VariantRecord {payload :: Variant}
@@ -150,7 +152,7 @@ tests =
                     pure (acc + i)
                 total @?= (sum [0 .. 99999] :: Int64)
         , testCase "VARIANT type construction raises an error" $ do
-            result <- try (bracket (logicalTypeFromRep (LogicalTypeScalar DuckDBTypeVariant)) destroyLogicalType (const (pure ())))
+            result <- try (bracket (logicalTypeFromRep (LogicalTypeScalar DUCKDB_TYPE_VARIANT)) destroyLogicalType (const (pure ())))
             case result of
                 Left err -> assertBool (displayException (err :: SomeException)) ("?::VARIANT" `isInfixOf` displayException err)
                 Right () -> assertFailure "expected VARIANT type rejection"
@@ -266,17 +268,17 @@ TIMESTAMP_S and TIMESTAMP_MS parameters to microseconds before execution.
 appendWideTimestamps :: Connection -> [(Int64, Int64)] -> IO ()
 appendWideTimestamps conn rows =
     withConnectionHandle conn \native ->
-        withCString "wide_timestamps" \table ->
+        withConstCString "wide_timestamps" \table ->
             alloca \appenderPtr -> do
-                poke appenderPtr nullPtr
-                bracket (c_duckdb_appender_create native nullPtr table appenderPtr) (const (void (c_duckdb_appender_destroy appenderPtr))) \created -> do
+                poke appenderPtr (coerce (nullPtr :: Ptr Void))
+                bracket (duckdb_appender_create native (coerce (nullPtr :: Ptr Void)) table appenderPtr) (const (void (duckdb_appender_destroy appenderPtr))) \created -> do
                     created @?= DuckDBSuccess
                     appender <- peek appenderPtr
                     forM_ rows \(seconds, millis) -> do
-                        bracket (c_duckdb_create_timestamp_s (DuckDBTimestampS seconds)) destroyValue (c_duckdb_append_value appender) >>= (@?= DuckDBSuccess)
-                        bracket (c_duckdb_create_timestamp_ms (DuckDBTimestampMs millis)) destroyValue (c_duckdb_append_value appender) >>= (@?= DuckDBSuccess)
-                        c_duckdb_appender_end_row appender >>= (@?= DuckDBSuccess)
-                    c_duckdb_appender_flush appender >>= (@?= DuckDBSuccess)
+                        bracket (duckdb_create_timestamp_s (Duckdb_timestamp_s seconds)) destroyValue (duckdb_append_value appender) >>= (@?= DuckDBSuccess)
+                        bracket (duckdb_create_timestamp_ms (Duckdb_timestamp_ms millis)) destroyValue (duckdb_append_value appender) >>= (@?= DuckDBSuccess)
+                        duckdb_appender_end_row appender >>= (@?= DuckDBSuccess)
+                    duckdb_appender_flush appender >>= (@?= DuckDBSuccess)
 
 -- | A raw geometry payload has no CRS inside a VARIANT.
 geometryPayload :: BS.ByteString -> Variant

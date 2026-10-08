@@ -12,7 +12,7 @@ import Control.Exception (AsyncException (..), SomeException, bracket, fromExcep
 import Control.Monad (unless, void)
 import Data.IORef (atomicWriteIORef, newIORef, readIORef)
 import Data.Int (Int64)
-import Database.DuckDB.FFI (c_duckdb_interrupt, c_duckdb_query)
+import Database.DuckDB.FFI (duckdb_interrupt, duckdb_query)
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.Arrow (foldArrow_)
 import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
@@ -87,7 +87,7 @@ cancellationTests =
                                     withResult
                                         conn
                                         longQuery
-                                        (\result -> signal queued >> readMVar begin >> c_duckdb_query handle sql result)
+                                        (\result -> signal queued >> readMVar begin >> duckdb_query handle sql result)
                                         (const (pure ()))
                         withCaller conn (signal begin) action \caller done -> do
                             await "query worker did not reach its entry gate" (readMVar queued)
@@ -149,7 +149,7 @@ withCaller conn release action use =
         case finished of
             Just _ -> pure ()
             Nothing -> do
-                withConnectionHandle conn c_duckdb_interrupt
+                withConnectionHandle conn duckdb_interrupt
                 threadDelay 10000
                 stop done
 

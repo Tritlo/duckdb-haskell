@@ -18,13 +18,16 @@ import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
 import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
+import Data.Void (Void)
 import Database.DuckDB.FFI
 import Database.DuckDB.Simple.Callback (ignoreCallbackExceptions, withCallbackResources)
 import Database.DuckDB.Simple.Internal (Connection, peekUtf8CString, throwRegistrationError, withDatabaseHandle)
-import Foreign.C.String (CString)
+import Foreign.C.ConstPtr (ConstPtr (..))
+import Foreign.C.Types (CChar)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, nullFunPtr, nullPtr)
 import Foreign.Storable (peek, poke)
+import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
 
 -- | A single log event delivered through DuckDB's log-storage callback.
 data LogEntry = LogEntry
@@ -40,28 +43,28 @@ registerLogStorage :: Connection -> Text -> (LogEntry -> IO ()) -> IO ()
 registerLogStorage conn name callback = do
     when (Text.null name || Text.any (== '\0') name) $
         throwRegistrationError "invalid log storage name"
-    bracket c_duckdb_create_log_storage destroyLogStorage \storage -> do
-        when (storage == nullPtr) $ throwRegistrationError "allocate log storage"
+    bracket duckdb_create_log_storage destroyLogStorage \storage -> do
+        when (storage == Duckdb_log_storage nullPtr) $ throwRegistrationError "allocate log storage"
         withCallbackResources
-            (\allocate -> allocate (mkWriteLogEntryCallback (logStorageHandler callback)))
-            (c_duckdb_log_storage_set_extra_data storage)
+            (\allocate -> Duckdb_logger_write_log_entry_t <$> allocate (toFunPtr (Duckdb_logger_write_log_entry_t_Aux (logStorageHandler callback))))
+            (duckdb_log_storage_set_extra_data storage)
             \writeCb -> do
-                TextForeign.withCString name $ c_duckdb_log_storage_set_name storage
-                c_duckdb_log_storage_set_write_log_entry storage writeCb
+                TextForeign.withCString name $ duckdb_log_storage_set_name storage . ConstPtr
+                duckdb_log_storage_set_write_log_entry storage writeCb
                 withDatabaseHandle conn \db -> mask_ do
-                    rc <- c_duckdb_register_log_storage db storage
+                    rc <- duckdb_register_log_storage db storage
                     -- DuckDB consumes extra data on duplicate-name failure.
                     -- Clear the wrapper to prevent a second destruction.
-                    c_duckdb_log_storage_set_extra_data storage nullPtr nullFunPtr
+                    duckdb_log_storage_set_extra_data storage nullPtr (Duckdb_delete_callback_t nullFunPtr)
                     when (rc /= DuckDBSuccess) $ throwRegistrationError "register log storage"
 
 logStorageHandler ::
     (LogEntry -> IO ()) ->
-    Ptr () ->
-    Ptr DuckDBTimestamp ->
-    CString ->
-    CString ->
-    CString ->
+    Ptr Void ->
+    Ptr Duckdb_timestamp ->
+    ConstPtr CChar ->
+    ConstPtr CChar ->
+    ConstPtr CChar ->
     IO ()
 logStorageHandler callback _ timestampPtr levelPtr logTypePtr messagePtr =
     ignoreCallbackExceptions do
@@ -73,23 +76,18 @@ logStorageHandler callback _ timestampPtr levelPtr logTypePtr messagePtr =
             pure LogEntry{logEntryTimestamp, logEntryLevel, logEntryType, logEntryMessage}
         callback entry
 
-readTimestamp :: Ptr DuckDBTimestamp -> IO (Maybe UTCTime)
+readTimestamp :: Ptr Duckdb_timestamp -> IO (Maybe UTCTime)
 readTimestamp ptr
     | ptr == nullPtr = pure Nothing
     | otherwise = do
-        DuckDBTimestamp micros <- peek ptr
+        Duckdb_timestamp micros <- peek ptr
         pure (Just (posixSecondsToUTCTime (fromRational (toInteger micros % 1000000))))
 
-readCStringText :: CString -> IO Text
+readCStringText :: ConstPtr CChar -> IO Text
 readCStringText ptr
-    | ptr == nullPtr = pure Text.empty
+    | ptr == ConstPtr nullPtr = pure Text.empty
     | otherwise = peekUtf8CString ptr
 
-destroyLogStorage :: DuckDBLogStorage -> IO ()
+destroyLogStorage :: Duckdb_log_storage -> IO ()
 destroyLogStorage storage =
-    alloca \ptr -> poke ptr storage >> c_duckdb_destroy_log_storage ptr
-
-foreign import ccall "wrapper"
-    mkWriteLogEntryCallback ::
-        (Ptr () -> Ptr DuckDBTimestamp -> CString -> CString -> CString -> IO ()) ->
-        IO DuckDBLoggerWriteLogEntryFun
+    alloca \ptr -> poke ptr storage >> duckdb_destroy_log_storage ptr

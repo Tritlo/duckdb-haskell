@@ -1,4 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-deprecations #-}
 
@@ -6,23 +8,26 @@ module AppenderTest (tests) where
 
 import Control.Exception (bracket, finally)
 import Control.Monad (forM_, when, (>=>))
+import Data.Coerce (coerce)
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.List (isInfixOf)
+import Data.Void (Void)
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.FFI
-import Database.DuckDB.FFI.Deprecated
-import Foreign.C.String (peekCString, withCString, withCStringLen)
+import Foreign.C.ConstPtr (ConstPtr (..))
+import Foreign.C.String (peekCString, withCStringLen)
 import Foreign.C.Types (CBool (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Array (peekArray, withArray)
-import Foreign.Marshal.Utils (with)
-import Foreign.Ptr (Ptr, castPtr, nullPtr)
+import Foreign.Ptr (Ptr, nullPtr)
 import Foreign.Storable (peek, poke, pokeElemOff)
+import GHC.Records (getField)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 import Utils (
     destroyErrorData,
     withConnection,
+    withConstCString,
     withDatabase,
     withDuckValue,
     withLogicalType,
@@ -52,50 +57,50 @@ appenderRowwiseLifecycle =
                 runStatement conn "CREATE TABLE appender_demo(id INTEGER, name VARCHAR, active BOOLEAN DEFAULT TRUE)"
 
                 withTableAppender conn "appender_demo" \app -> do
-                    c_duckdb_appender_column_count app >>= (@?= 3)
-                    checkColumnType app 0 DuckDBTypeInteger
-                    checkColumnType app 1 DuckDBTypeVarchar
-                    checkColumnType app 2 DuckDBTypeBoolean
+                    duckdb_appender_column_count app >>= (@?= 3)
+                    checkColumnType app 0 DUCKDB_TYPE_INTEGER
+                    checkColumnType app 1 DUCKDB_TYPE_VARCHAR
+                    checkColumnType app 2 DUCKDB_TYPE_BOOLEAN
 
-                    c_duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
-                    c_duckdb_append_int32 app 1 >>= (@?= DuckDBSuccess)
-                    withCString "alice" (c_duckdb_append_varchar app >=> (@?= DuckDBSuccess))
-                    c_duckdb_append_bool app (CBool 1) >>= (@?= DuckDBSuccess)
-                    c_duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
+                    duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
+                    duckdb_append_int32 app 1 >>= (@?= DuckDBSuccess)
+                    withConstCString "alice" (duckdb_append_varchar app >=> (@?= DuckDBSuccess))
+                    duckdb_append_bool app (CBool 1) >>= (@?= DuckDBSuccess)
+                    duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
 
-                    c_duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
-                    c_duckdb_append_int32 app 2 >>= (@?= DuckDBSuccess)
-                    c_duckdb_append_null app >>= (@?= DuckDBSuccess)
-                    c_duckdb_append_bool app (CBool 0) >>= (@?= DuckDBSuccess)
-                    c_duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
+                    duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
+                    duckdb_append_int32 app 2 >>= (@?= DuckDBSuccess)
+                    duckdb_append_null app >>= (@?= DuckDBSuccess)
+                    duckdb_append_bool app (CBool 0) >>= (@?= DuckDBSuccess)
+                    duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
 
-                    c_duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
-                    c_duckdb_append_int32 app 3 >>= (@?= DuckDBSuccess)
-                    withDuckValue (withCString "via_value" c_duckdb_create_varchar) (c_duckdb_append_value app >=> (@?= DuckDBSuccess))
-                    c_duckdb_append_default app >>= (@?= DuckDBSuccess)
-                    c_duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
+                    duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
+                    duckdb_append_int32 app 3 >>= (@?= DuckDBSuccess)
+                    withDuckValue (withConstCString "via_value" duckdb_create_varchar) (duckdb_append_value app >=> (@?= DuckDBSuccess))
+                    duckdb_append_default app >>= (@?= DuckDBSuccess)
+                    duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
 
-                    errPtr0 <- c_duckdb_appender_error app
-                    when (errPtr0 /= nullPtr) $ do
-                        msg <- peekCString errPtr0
+                    errPtr0 <- duckdb_appender_error app
+                    when (errPtr0 /= (coerce (nullPtr :: Ptr Void))) $ do
+                        msg <- (peekCString . coerce) errPtr0
                         msg @?= ""
 
-                    c_duckdb_appender_flush app >>= (@?= DuckDBSuccess)
-                    c_duckdb_appender_close app >>= (@?= DuckDBSuccess)
+                    duckdb_appender_flush app >>= (@?= DuckDBSuccess)
+                    duckdb_appender_close app >>= (@?= DuckDBSuccess)
 
-                    withCString "SELECT id, name, active FROM appender_demo ORDER BY id" \sql ->
+                    withConstCString "SELECT id, name, active FROM appender_demo ORDER BY id" \sql ->
                         withResultCString conn sql \resPtr -> do
-                            c_duckdb_row_count resPtr >>= (@?= 3)
+                            duckdb_row_count resPtr >>= (@?= 3)
 
-                            c_duckdb_value_int32 resPtr 0 0 >>= (@?= 1)
+                            duckdb_value_int32 resPtr 0 0 >>= (@?= 1)
                             fetchString resPtr 1 0 >>= (@?= "alice")
                             fetchBool resPtr 2 0 >>= (@?= True)
 
-                            c_duckdb_value_int32 resPtr 0 1 >>= (@?= 2)
-                            c_duckdb_value_is_null resPtr 1 1 >>= (@?= CBool 1)
+                            duckdb_value_int32 resPtr 0 1 >>= (@?= 2)
+                            duckdb_value_is_null resPtr 1 1 >>= (@?= CBool 1)
                             fetchBool resPtr 2 1 >>= (@?= False)
 
-                            c_duckdb_value_int32 resPtr 0 2 >>= (@?= 3)
+                            duckdb_value_int32 resPtr 0 2 >>= (@?= 3)
                             fetchString resPtr 1 2 >>= (@?= "via_value")
                             fetchBool resPtr 2 2 >>= (@?= True)
 
@@ -109,37 +114,37 @@ appenderColumnSubset =
                     "CREATE TABLE subset_demo(id INTEGER DEFAULT 100, name VARCHAR, note VARCHAR, active BOOLEAN DEFAULT FALSE)"
 
                 withTableAppender conn "subset_demo" \app -> do
-                    c_duckdb_appender_clear_columns app >>= (@?= DuckDBSuccess)
-                    withCString "name" (c_duckdb_appender_add_column app >=> (@?= DuckDBSuccess))
-                    withCString "note" (c_duckdb_appender_add_column app >=> (@?= DuckDBSuccess))
+                    duckdb_appender_clear_columns app >>= (@?= DuckDBSuccess)
+                    withConstCString "name" (duckdb_appender_add_column app >=> (@?= DuckDBSuccess))
+                    withConstCString "note" (duckdb_appender_add_column app >=> (@?= DuckDBSuccess))
 
-                    c_duckdb_appender_column_count app >>= (@?= 2)
+                    duckdb_appender_column_count app >>= (@?= 2)
 
-                    c_duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
-                    withCString "subset-one" (c_duckdb_append_varchar app >=> (@?= DuckDBSuccess))
-                    withCString "note one" (c_duckdb_append_varchar app >=> (@?= DuckDBSuccess))
-                    c_duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
+                    duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
+                    withConstCString "subset-one" (duckdb_append_varchar app >=> (@?= DuckDBSuccess))
+                    withConstCString "note one" (duckdb_append_varchar app >=> (@?= DuckDBSuccess))
+                    duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
 
-                    c_duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
-                    withCString "subset-two" (c_duckdb_append_varchar app >=> (@?= DuckDBSuccess))
-                    c_duckdb_append_null app >>= (@?= DuckDBSuccess)
-                    c_duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
+                    duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
+                    withConstCString "subset-two" (duckdb_append_varchar app >=> (@?= DuckDBSuccess))
+                    duckdb_append_null app >>= (@?= DuckDBSuccess)
+                    duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
 
-                    c_duckdb_appender_flush app >>= (@?= DuckDBSuccess)
-                    c_duckdb_appender_close app >>= (@?= DuckDBSuccess)
+                    duckdb_appender_flush app >>= (@?= DuckDBSuccess)
+                    duckdb_appender_close app >>= (@?= DuckDBSuccess)
 
-                    withCString "SELECT id, name, note, active FROM subset_demo ORDER BY rowid" \sql ->
+                    withConstCString "SELECT id, name, note, active FROM subset_demo ORDER BY rowid" \sql ->
                         withResultCString conn sql \resPtr -> do
-                            c_duckdb_row_count resPtr >>= (@?= 2)
+                            duckdb_row_count resPtr >>= (@?= 2)
 
-                            c_duckdb_value_int32 resPtr 0 0 >>= (@?= 100)
+                            duckdb_value_int32 resPtr 0 0 >>= (@?= 100)
                             fetchString resPtr 1 0 >>= (@?= "subset-one")
                             fetchString resPtr 2 0 >>= (@?= "note one")
                             fetchBool resPtr 3 0 >>= (@?= False)
 
-                            c_duckdb_value_int32 resPtr 0 1 >>= (@?= 100)
+                            duckdb_value_int32 resPtr 0 1 >>= (@?= 100)
                             fetchString resPtr 1 1 >>= (@?= "subset-two")
-                            c_duckdb_value_is_null resPtr 2 1 >>= (@?= CBool 1)
+                            duckdb_value_is_null resPtr 2 1 >>= (@?= CBool 1)
                             fetchBool resPtr 3 1 >>= (@?= False)
 
 appenderDataChunkInsert :: TestTree
@@ -150,30 +155,30 @@ appenderDataChunkInsert =
                 runStatement conn "CREATE TABLE chunk_demo(id INTEGER, label VARCHAR)"
 
                 withTableAppenderExt conn "chunk_demo" \app -> do
-                    c_duckdb_appender_column_count app >>= (@?= 2)
+                    duckdb_appender_column_count app >>= (@?= 2)
 
-                    withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \intType ->
-                        withLogicalType (c_duckdb_create_logical_type DuckDBTypeVarchar) \textType ->
+                    withLogicalType (duckdb_create_logical_type (Duckdb_type DUCKDB_TYPE_INTEGER)) \intType ->
+                        withLogicalType (duckdb_create_logical_type (Duckdb_type DUCKDB_TYPE_VARCHAR)) \textType ->
                             withArray [intType, textType] \typeArray ->
-                                withDataChunk (c_duckdb_create_data_chunk typeArray 2) \chunk -> do
-                                    intVec <- c_duckdb_data_chunk_get_vector chunk 0
+                                withDataChunk (duckdb_create_data_chunk typeArray 2) \chunk -> do
+                                    intVec <- duckdb_data_chunk_get_vector chunk 0
                                     fillIntVector intVec [10, 11]
 
-                                    textVec <- c_duckdb_data_chunk_get_vector chunk 1
+                                    textVec <- duckdb_data_chunk_get_vector chunk 1
                                     assignStrings textVec ["ten", "eleven"]
 
-                                    c_duckdb_data_chunk_set_size chunk 2
-                                    c_duckdb_append_data_chunk app chunk >>= (@?= DuckDBSuccess)
+                                    duckdb_data_chunk_set_size chunk 2
+                                    duckdb_append_data_chunk app chunk >>= (@?= DuckDBSuccess)
 
-                    c_duckdb_appender_flush app >>= (@?= DuckDBSuccess)
-                    c_duckdb_appender_close app >>= (@?= DuckDBSuccess)
+                    duckdb_appender_flush app >>= (@?= DuckDBSuccess)
+                    duckdb_appender_close app >>= (@?= DuckDBSuccess)
 
-                    withCString "SELECT id, label FROM chunk_demo ORDER BY id" \sql ->
+                    withConstCString "SELECT id, label FROM chunk_demo ORDER BY id" \sql ->
                         withResultCString conn sql \resPtr -> do
-                            c_duckdb_row_count resPtr >>= (@?= 2)
-                            c_duckdb_value_int32 resPtr 0 0 >>= (@?= 10)
+                            duckdb_row_count resPtr >>= (@?= 2)
+                            duckdb_value_int32 resPtr 0 0 >>= (@?= 10)
                             fetchString resPtr 1 0 >>= (@?= "ten")
-                            c_duckdb_value_int32 resPtr 0 1 >>= (@?= 11)
+                            duckdb_value_int32 resPtr 0 1 >>= (@?= 11)
                             fetchString resPtr 1 1 >>= (@?= "eleven")
 
 appenderQueryAppender :: TestTree
@@ -183,31 +188,31 @@ appenderQueryAppender =
             withConnection db \conn -> do
                 runStatement conn "CREATE TABLE query_target(id INTEGER, label VARCHAR)"
 
-                withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \intType ->
-                    withLogicalType (c_duckdb_create_logical_type DuckDBTypeVarchar) \textType -> do
+                withLogicalType (duckdb_create_logical_type (Duckdb_type DUCKDB_TYPE_INTEGER)) \intType ->
+                    withLogicalType (duckdb_create_logical_type (Duckdb_type DUCKDB_TYPE_VARCHAR)) \textType -> do
                         let types = [intType, textType]
                         withQueryAppender conn "INSERT INTO query_target SELECT * FROM appended_data" types \app -> do
-                            c_duckdb_appender_column_count app >>= (@?= 2)
+                            duckdb_appender_column_count app >>= (@?= 2)
 
-                            c_duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
-                            c_duckdb_append_int32 app 21 >>= (@?= DuckDBSuccess)
-                            withCString "twenty-one" (c_duckdb_append_varchar app >=> (@?= DuckDBSuccess))
-                            c_duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
+                            duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
+                            duckdb_append_int32 app 21 >>= (@?= DuckDBSuccess)
+                            withConstCString "twenty-one" (duckdb_append_varchar app >=> (@?= DuckDBSuccess))
+                            duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
 
-                            c_duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
-                            c_duckdb_append_int32 app 22 >>= (@?= DuckDBSuccess)
-                            withCString "twenty-two" (c_duckdb_append_varchar app >=> (@?= DuckDBSuccess))
-                            c_duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
+                            duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
+                            duckdb_append_int32 app 22 >>= (@?= DuckDBSuccess)
+                            withConstCString "twenty-two" (duckdb_append_varchar app >=> (@?= DuckDBSuccess))
+                            duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
 
-                            c_duckdb_appender_flush app >>= (@?= DuckDBSuccess)
-                            c_duckdb_appender_close app >>= (@?= DuckDBSuccess)
+                            duckdb_appender_flush app >>= (@?= DuckDBSuccess)
+                            duckdb_appender_close app >>= (@?= DuckDBSuccess)
 
-                        withCString "SELECT id, label FROM query_target ORDER BY id" \sql ->
+                        withConstCString "SELECT id, label FROM query_target ORDER BY id" \sql ->
                             withResultCString conn sql \resPtr -> do
-                                c_duckdb_row_count resPtr >>= (@?= 2)
-                                c_duckdb_value_int32 resPtr 0 0 >>= (@?= 21)
+                                duckdb_row_count resPtr >>= (@?= 2)
+                                duckdb_value_int32 resPtr 0 0 >>= (@?= 21)
                                 fetchString resPtr 1 0 >>= (@?= "twenty-one")
-                                c_duckdb_value_int32 resPtr 0 1 >>= (@?= 22)
+                                duckdb_value_int32 resPtr 0 1 >>= (@?= 22)
                                 fetchString resPtr 1 1 >>= (@?= "twenty-two")
 
 appenderNumericAndFloatScalars :: TestTree
@@ -237,32 +242,32 @@ appenderNumericAndFloatScalars =
                 let int8Val = (-12) :: Int8
                     int16Val = (-32000) :: Int16
                     int64Val = (-9876543210) :: Int64
-                    hugeVal = DuckDBHugeInt 0xFEDCBA9876543210 0
+                    hugeVal = Duckdb_hugeint 0xFEDCBA9876543210 0
                     uint8Val = 200 :: Word8
                     uint16Val = 60000 :: Word16
                     uint32Val = 4000000000 :: Word32
                     uint64Val = 12345678901234567890 :: Word64
-                    uhugeVal = DuckDBUHugeInt 0x0123456789ABCDEF 0x0011223344556677
+                    uhugeVal = Duckdb_uhugeint 0x0123456789ABCDEF 0x0011223344556677
                     floatVal = (-12.5) :: Float
                     doubleVal = 1234.5678 :: Double
 
                 withTableAppender conn "numeric_scalars_demo" \app -> do
-                    c_duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
-                    c_duckdb_append_int8 app int8Val >>= (@?= DuckDBSuccess)
-                    c_duckdb_append_int16 app int16Val >>= (@?= DuckDBSuccess)
-                    c_duckdb_append_int64 app int64Val >>= (@?= DuckDBSuccess)
-                    with hugeVal (c_duckdb_append_hugeint app >=> (@?= DuckDBSuccess))
-                    c_duckdb_append_uint8 app uint8Val >>= (@?= DuckDBSuccess)
-                    c_duckdb_append_uint16 app uint16Val >>= (@?= DuckDBSuccess)
-                    c_duckdb_append_uint32 app uint32Val >>= (@?= DuckDBSuccess)
-                    c_duckdb_append_uint64 app uint64Val >>= (@?= DuckDBSuccess)
-                    with uhugeVal (c_duckdb_append_uhugeint app >=> (@?= DuckDBSuccess))
-                    c_duckdb_append_float app (realToFrac floatVal) >>= (@?= DuckDBSuccess)
-                    c_duckdb_append_double app (realToFrac doubleVal) >>= (@?= DuckDBSuccess)
-                    c_duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
+                    duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
+                    duckdb_append_int8 app int8Val >>= (@?= DuckDBSuccess)
+                    duckdb_append_int16 app int16Val >>= (@?= DuckDBSuccess)
+                    duckdb_append_int64 app int64Val >>= (@?= DuckDBSuccess)
+                    duckdb_append_hugeint app hugeVal >>= (@?= DuckDBSuccess)
+                    duckdb_append_uint8 app uint8Val >>= (@?= DuckDBSuccess)
+                    duckdb_append_uint16 app uint16Val >>= (@?= DuckDBSuccess)
+                    duckdb_append_uint32 app uint32Val >>= (@?= DuckDBSuccess)
+                    duckdb_append_uint64 app uint64Val >>= (@?= DuckDBSuccess)
+                    duckdb_append_uhugeint app uhugeVal >>= (@?= DuckDBSuccess)
+                    duckdb_append_float app (realToFrac floatVal) >>= (@?= DuckDBSuccess)
+                    duckdb_append_double app (realToFrac doubleVal) >>= (@?= DuckDBSuccess)
+                    duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
 
-                    c_duckdb_appender_flush app >>= (@?= DuckDBSuccess)
-                    c_duckdb_appender_close app >>= (@?= DuckDBSuccess)
+                    duckdb_appender_flush app >>= (@?= DuckDBSuccess)
+                    duckdb_appender_close app >>= (@?= DuckDBSuccess)
 
                 let query =
                         unlines
@@ -281,25 +286,25 @@ appenderNumericAndFloatScalars =
                             , "FROM numeric_scalars_demo"
                             ]
 
-                withCString query \sql ->
+                withConstCString query \sql ->
                     withResultCString conn sql \resPtr -> do
-                        c_duckdb_row_count resPtr >>= (@?= 1)
-                        c_duckdb_value_int8 resPtr 0 0 >>= (@?= int8Val)
-                        c_duckdb_value_int16 resPtr 1 0 >>= (@?= int16Val)
-                        c_duckdb_value_int64 resPtr 2 0 >>= (@?= int64Val)
+                        duckdb_row_count resPtr >>= (@?= 1)
+                        duckdb_value_int8 resPtr 0 0 >>= (@?= int8Val)
+                        duckdb_value_int16 resPtr 1 0 >>= (@?= int16Val)
+                        duckdb_value_int64 resPtr 2 0 >>= (@?= int64Val)
                         alloca \ptr -> do
-                            c_duckdb_value_hugeint resPtr 3 0 ptr
+                            (duckdb_value_hugeint resPtr 3 0 >>= poke ptr)
                             peek ptr >>= (@?= hugeVal)
-                        c_duckdb_value_uint8 resPtr 4 0 >>= (@?= uint8Val)
-                        c_duckdb_value_uint16 resPtr 5 0 >>= (@?= uint16Val)
-                        c_duckdb_value_uint32 resPtr 6 0 >>= (@?= uint32Val)
-                        c_duckdb_value_uint64 resPtr 7 0 >>= (@?= uint64Val)
+                        duckdb_value_uint8 resPtr 4 0 >>= (@?= uint8Val)
+                        duckdb_value_uint16 resPtr 5 0 >>= (@?= uint16Val)
+                        duckdb_value_uint32 resPtr 6 0 >>= (@?= uint32Val)
+                        duckdb_value_uint64 resPtr 7 0 >>= (@?= uint64Val)
                         alloca \ptr -> do
-                            c_duckdb_value_uhugeint resPtr 8 0 ptr
+                            (duckdb_value_uhugeint resPtr 8 0 >>= poke ptr)
                             peek ptr >>= (@?= uhugeVal)
-                        fv <- c_duckdb_value_float resPtr 9 0
+                        fv <- duckdb_value_float resPtr 9 0
                         realToFrac fv @?= floatVal
-                        dv <- c_duckdb_value_double resPtr 10 0
+                        dv <- duckdb_value_double resPtr 10 0
                         realToFrac dv @?= doubleVal
 
 appenderTemporalTypes :: TestTree
@@ -311,49 +316,49 @@ appenderTemporalTypes =
                     conn
                     "CREATE TABLE temporal_demo(d DATE, t TIME, ts TIMESTAMP, iv INTERVAL)"
 
-                let dateStruct = DuckDBDateStruct 2024 3 31
-                dateVal <- with dateStruct c_duckdb_to_date
+                let dateStruct = Duckdb_date_struct 2024 3 31
+                dateVal <- duckdb_to_date dateStruct
 
-                let timeStruct = DuckDBTimeStruct 12 34 56 987654
-                timeVal <- with timeStruct c_duckdb_to_time
+                let timeStruct = Duckdb_time_struct 12 34 56 987654
+                timeVal <- duckdb_to_time timeStruct
 
-                let timestampStruct = DuckDBTimestampStruct dateStruct timeStruct
-                timestampVal <- with timestampStruct c_duckdb_to_timestamp
+                let timestampStruct = Duckdb_timestamp_struct dateStruct timeStruct
+                timestampVal <- duckdb_to_timestamp timestampStruct
 
-                let intervalVal = DuckDBInterval 5 12 3456789
+                let intervalVal = Duckdb_interval 5 12 3456789
 
                 withTableAppender conn "temporal_demo" \app -> do
-                    c_duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
-                    c_duckdb_append_date app dateVal >>= (@?= DuckDBSuccess)
-                    c_duckdb_append_time app timeVal >>= (@?= DuckDBSuccess)
-                    c_duckdb_append_timestamp app timestampVal >>= (@?= DuckDBSuccess)
-                    with intervalVal (c_duckdb_append_interval app >=> (@?= DuckDBSuccess))
-                    c_duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
+                    duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
+                    duckdb_append_date app dateVal >>= (@?= DuckDBSuccess)
+                    duckdb_append_time app timeVal >>= (@?= DuckDBSuccess)
+                    duckdb_append_timestamp app timestampVal >>= (@?= DuckDBSuccess)
+                    duckdb_append_interval app intervalVal >>= (@?= DuckDBSuccess)
+                    duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
 
-                    c_duckdb_appender_flush app >>= (@?= DuckDBSuccess)
-                    c_duckdb_appender_close app >>= (@?= DuckDBSuccess)
+                    duckdb_appender_flush app >>= (@?= DuckDBSuccess)
+                    duckdb_appender_close app >>= (@?= DuckDBSuccess)
 
-                withCString "SELECT d, t, ts, iv FROM temporal_demo" \sql ->
+                withConstCString "SELECT d, t, ts, iv FROM temporal_demo" \sql ->
                     withResultCString conn sql \resPtr -> do
-                        c_duckdb_row_count resPtr >>= (@?= 1)
+                        duckdb_row_count resPtr >>= (@?= 1)
 
-                        fetchedDate <- c_duckdb_value_date resPtr 0 0
+                        fetchedDate <- duckdb_value_date resPtr 0 0
                         alloca \structPtr -> do
-                            c_duckdb_from_date fetchedDate structPtr
+                            (duckdb_from_date fetchedDate >>= poke structPtr)
                             peek structPtr >>= (@?= dateStruct)
 
-                        fetchedTime <- c_duckdb_value_time resPtr 1 0
+                        fetchedTime <- duckdb_value_time resPtr 1 0
                         alloca \structPtr -> do
-                            c_duckdb_from_time fetchedTime structPtr
+                            (duckdb_from_time fetchedTime >>= poke structPtr)
                             peek structPtr >>= (@?= timeStruct)
 
-                        fetchedTimestamp <- c_duckdb_value_timestamp resPtr 2 0
+                        fetchedTimestamp <- duckdb_value_timestamp resPtr 2 0
                         alloca \structPtr -> do
-                            c_duckdb_from_timestamp fetchedTimestamp structPtr
+                            (duckdb_from_timestamp fetchedTimestamp >>= poke structPtr)
                             peek structPtr >>= (@?= timestampStruct)
 
                         alloca \intervalPtr -> do
-                            c_duckdb_value_interval resPtr 3 0 intervalPtr
+                            (duckdb_value_interval resPtr 3 0 >>= poke intervalPtr)
                             peek intervalPtr >>= (@?= intervalVal)
 
 appenderStringAndBlob :: TestTree
@@ -368,19 +373,19 @@ appenderStringAndBlob =
                 let blobBytes = [0xde, 0xad, 0xbe, 0xef] :: [Word8]
 
                 withTableAppender conn "string_blob_demo" \app -> do
-                    c_duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
+                    duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
                     withCStringLen "hello world" \(ptr, _len) -> do
-                        c_duckdb_append_varchar_length app ptr (fromIntegral @Integer 5) >>= (@?= DuckDBSuccess)
+                        duckdb_append_varchar_length app (coerce ptr) (fromIntegral @Integer 5) >>= (@?= DuckDBSuccess)
                     withArray blobBytes \ptr -> do
-                        c_duckdb_append_blob app (castPtr ptr) (fromIntegral (length blobBytes)) >>= (@?= DuckDBSuccess)
-                    c_duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
+                        duckdb_append_blob app (coerce ptr) (fromIntegral (length blobBytes)) >>= (@?= DuckDBSuccess)
+                    duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
 
-                    c_duckdb_appender_flush app >>= (@?= DuckDBSuccess)
-                    c_duckdb_appender_close app >>= (@?= DuckDBSuccess)
+                    duckdb_appender_flush app >>= (@?= DuckDBSuccess)
+                    duckdb_appender_close app >>= (@?= DuckDBSuccess)
 
-                withCString "SELECT text_fragment, payload FROM string_blob_demo" \sql ->
+                withConstCString "SELECT text_fragment, payload FROM string_blob_demo" \sql ->
                     withResultCString conn sql \resPtr -> do
-                        c_duckdb_row_count resPtr >>= (@?= 1)
+                        duckdb_row_count resPtr >>= (@?= 1)
                         fetchString resPtr 0 0 >>= (@?= "hello")
                         fetchBlob resPtr 1 0 >>= (@?= blobBytes)
 
@@ -394,33 +399,33 @@ appenderChunkDefaults =
                     "CREATE TABLE chunk_defaults_demo(val INTEGER DEFAULT 99, note VARCHAR DEFAULT 'fallback')"
 
                 withTableAppender conn "chunk_defaults_demo" \app -> do
-                    c_duckdb_appender_column_count app >>= (@?= 2)
+                    duckdb_appender_column_count app >>= (@?= 2)
 
-                    withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \intType ->
-                        withLogicalType (c_duckdb_create_logical_type DuckDBTypeVarchar) \textType ->
+                    withLogicalType (duckdb_create_logical_type (Duckdb_type DUCKDB_TYPE_INTEGER)) \intType ->
+                        withLogicalType (duckdb_create_logical_type (Duckdb_type DUCKDB_TYPE_VARCHAR)) \textType ->
                             withArray [intType, textType] \typeArray ->
-                                withDataChunk (c_duckdb_create_data_chunk typeArray 2) \chunk -> do
-                                    intVec <- c_duckdb_data_chunk_get_vector chunk 0
+                                withDataChunk (duckdb_create_data_chunk typeArray 2) \chunk -> do
+                                    intVec <- duckdb_data_chunk_get_vector chunk 0
                                     fillIntVector intVec [10]
 
-                                    textVec <- c_duckdb_data_chunk_get_vector chunk 1
+                                    textVec <- duckdb_data_chunk_get_vector chunk 1
                                     assignStrings textVec ["explicit"]
 
-                                    c_duckdb_append_default_to_chunk app chunk 0 1 >>= (@?= DuckDBSuccess)
-                                    c_duckdb_append_default_to_chunk app chunk 1 1 >>= (@?= DuckDBSuccess)
+                                    duckdb_append_default_to_chunk app chunk 0 1 >>= (@?= DuckDBSuccess)
+                                    duckdb_append_default_to_chunk app chunk 1 1 >>= (@?= DuckDBSuccess)
 
-                                    c_duckdb_data_chunk_set_size chunk 2
-                                    c_duckdb_append_data_chunk app chunk >>= (@?= DuckDBSuccess)
+                                    duckdb_data_chunk_set_size chunk 2
+                                    duckdb_append_data_chunk app chunk >>= (@?= DuckDBSuccess)
 
-                    c_duckdb_appender_flush app >>= (@?= DuckDBSuccess)
-                    c_duckdb_appender_close app >>= (@?= DuckDBSuccess)
+                    duckdb_appender_flush app >>= (@?= DuckDBSuccess)
+                    duckdb_appender_close app >>= (@?= DuckDBSuccess)
 
-                withCString "SELECT val, note FROM chunk_defaults_demo ORDER BY rowid" \sql ->
+                withConstCString "SELECT val, note FROM chunk_defaults_demo ORDER BY rowid" \sql ->
                     withResultCString conn sql \resPtr -> do
-                        c_duckdb_row_count resPtr >>= (@?= 2)
-                        c_duckdb_value_int32 resPtr 0 0 >>= (@?= 10)
+                        duckdb_row_count resPtr >>= (@?= 2)
+                        duckdb_value_int32 resPtr 0 0 >>= (@?= 10)
                         fetchString resPtr 1 0 >>= (@?= "explicit")
-                        c_duckdb_value_int32 resPtr 0 1 >>= (@?= 99)
+                        duckdb_value_int32 resPtr 0 1 >>= (@?= 99)
                         fetchString resPtr 1 1 >>= (@?= "fallback")
 
 appenderErrorDataInspection :: TestTree
@@ -433,123 +438,123 @@ appenderErrorDataInspection =
                     "CREATE TABLE error_demo(val INTEGER CHECK (val > 0))"
 
                 withTableAppender conn "error_demo" \app -> do
-                    c_duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
-                    c_duckdb_append_int32 app (-1) >>= (@?= DuckDBSuccess)
-                    c_duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
+                    duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
+                    duckdb_append_int32 app (-1) >>= (@?= DuckDBSuccess)
+                    duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
 
-                    flushState <- c_duckdb_appender_flush app
+                    flushState <- duckdb_appender_flush app
                     flushState @?= DuckDBError
 
-                    errData <- c_duckdb_appender_error_data app
-                    CBool hasError <- c_duckdb_error_data_has_error errData
+                    errData <- duckdb_appender_error_data app
+                    CBool hasError <- duckdb_error_data_has_error errData
                     assertBool "error data indicates failure" (hasError /= 0)
 
-                    errType <- c_duckdb_error_data_error_type errData
-                    errType @?= DuckDBErrorConstraint
+                    errType <- duckdb_error_data_error_type errData
+                    errType @?= DUCKDB_ERROR_CONSTRAINT
 
-                    errMsgPtr <- c_duckdb_error_data_message errData
-                    errMsg <- peekCString errMsgPtr
+                    errMsgPtr <- duckdb_error_data_message errData
+                    errMsg <- (peekCString . coerce) errMsgPtr
                     assertBool "constraint violation message mentions CHECK" ("CHECK" `isInfixOf` errMsg)
 
                     destroyErrorData errData
 
-                withCString "SELECT COUNT(*) FROM error_demo" \sql ->
+                withConstCString "SELECT COUNT(*) FROM error_demo" \sql ->
                     withResultCString conn sql \resPtr -> do
-                        c_duckdb_row_count resPtr >>= (@?= 1)
-                        c_duckdb_value_int64 resPtr 0 0 >>= (@?= 0)
+                        duckdb_row_count resPtr >>= (@?= 1)
+                        duckdb_value_int64 resPtr 0 0 >>= (@?= 0)
 
 -- Helpers -------------------------------------------------------------------
 
-runStatement :: DuckDBConnection -> String -> IO ()
+runStatement :: Duckdb_connection -> String -> IO ()
 runStatement conn sql =
-    withCString sql \sqlPtr ->
+    withConstCString sql \sqlPtr ->
         alloca \resPtr -> do
-            state <- c_duckdb_query conn sqlPtr resPtr
+            state <- duckdb_query conn sqlPtr resPtr
             if state == DuckDBSuccess
-                then c_duckdb_destroy_result resPtr
+                then duckdb_destroy_result resPtr
                 else do
-                    errPtr <- c_duckdb_result_error resPtr
+                    errPtr <- duckdb_result_error resPtr
                     errMsg <-
-                        if errPtr == nullPtr
+                        if errPtr == (coerce (nullPtr :: Ptr Void))
                             then pure "unknown error"
-                            else peekCString errPtr
-                    c_duckdb_destroy_result resPtr
+                            else (peekCString . coerce) errPtr
+                    duckdb_destroy_result resPtr
                     assertFailure ("duckdb_query failed: " <> errMsg)
 
-withTableAppender :: DuckDBConnection -> String -> (DuckDBAppender -> IO a) -> IO a
+withTableAppender :: Duckdb_connection -> String -> (Duckdb_appender -> IO a) -> IO a
 withTableAppender conn tableName action =
-    withCString tableName \tablePtr ->
+    withConstCString tableName \tablePtr ->
         withAppenderAcquire
-            (c_duckdb_appender_create conn nullPtr tablePtr)
+            (duckdb_appender_create conn (coerce (nullPtr :: Ptr Void)) tablePtr)
             action
 
-withTableAppenderExt :: DuckDBConnection -> String -> (DuckDBAppender -> IO a) -> IO a
+withTableAppenderExt :: Duckdb_connection -> String -> (Duckdb_appender -> IO a) -> IO a
 withTableAppenderExt conn tableName action =
-    withCString tableName \tablePtr ->
+    withConstCString tableName \tablePtr ->
         withAppenderAcquire
-            (c_duckdb_appender_create_ext conn nullPtr nullPtr tablePtr)
+            (duckdb_appender_create_ext conn (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)) tablePtr)
             action
 
-withQueryAppender :: DuckDBConnection -> String -> [DuckDBLogicalType] -> (DuckDBAppender -> IO a) -> IO a
+withQueryAppender :: Duckdb_connection -> String -> [Duckdb_logical_type] -> (Duckdb_appender -> IO a) -> IO a
 withQueryAppender conn query types action =
-    withCString query \queryPtr ->
+    withConstCString query \queryPtr ->
         withArray types \typeArray ->
             withAppenderAcquire
-                (c_duckdb_appender_create_query conn queryPtr (fromIntegral (length types)) typeArray nullPtr nullPtr)
+                (duckdb_appender_create_query conn queryPtr (fromIntegral (length types)) typeArray (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)))
                 action
 
-withAppenderAcquire :: (Ptr DuckDBAppender -> IO DuckDBState) -> (DuckDBAppender -> IO a) -> IO a
+withAppenderAcquire :: (Ptr Duckdb_appender -> IO Duckdb_state) -> (Duckdb_appender -> IO a) -> IO a
 withAppenderAcquire acquire action =
     alloca \appPtr -> do
         state <- acquire appPtr
         state @?= DuckDBSuccess
         app <- peek appPtr
         let release = do
-                destroyState <- c_duckdb_appender_destroy appPtr
+                destroyState <- duckdb_appender_destroy appPtr
                 assertBool "destroy returns success or error" (destroyState == DuckDBSuccess || destroyState == DuckDBError)
         action app `finally` release
 
-withDataChunk :: IO DuckDBDataChunk -> (DuckDBDataChunk -> IO a) -> IO a
+withDataChunk :: IO Duckdb_data_chunk -> (Duckdb_data_chunk -> IO a) -> IO a
 withDataChunk acquire = bracket acquire destroyChunk
   where
-    destroyChunk chunk = alloca \ptr -> poke ptr chunk >> c_duckdb_destroy_data_chunk ptr
+    destroyChunk chunk = alloca \ptr -> poke ptr chunk >> duckdb_destroy_data_chunk ptr
 
-fillIntVector :: DuckDBVector -> [Int32] -> IO ()
+fillIntVector :: Duckdb_vector -> [Int32] -> IO ()
 fillIntVector vec values = do
-    dataPtrRaw <- c_duckdb_vector_get_data vec
-    let dataPtr = castPtr dataPtrRaw :: Ptr Int32
+    dataPtrRaw <- duckdb_vector_get_data vec
+    let dataPtr = coerce dataPtrRaw :: Ptr Int32
     forM_ (zip [0 ..] values) (uncurry (pokeElemOff dataPtr))
 
-assignStrings :: DuckDBVector -> [String] -> IO ()
+assignStrings :: Duckdb_vector -> [String] -> IO ()
 assignStrings vec values =
     forM_ (zip [0 ..] values) \(idx, val) ->
-        withCString val $ \str ->
-            c_duckdb_vector_assign_string_element vec (fromIntegral @Integer idx) str
+        withConstCString val $ \str ->
+            duckdb_vector_assign_string_element vec (fromIntegral @Integer idx) str
 
-checkColumnType :: DuckDBAppender -> DuckDBIdx -> DuckDBType -> IO ()
+checkColumnType :: Duckdb_appender -> Idx_t -> DUCKDB_TYPE -> IO ()
 checkColumnType app idx expected =
     do
-        logicalType <- c_duckdb_appender_column_type app idx
-        withLogicalType (pure logicalType) (c_duckdb_get_type_id >=> (@?= expected))
+        logicalType <- duckdb_appender_column_type app idx
+        withLogicalType (pure logicalType) ((fmap (getField @"unwrap") . duckdb_get_type_id) >=> (@?= expected))
 
-fetchString :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO String
+fetchString :: Ptr Duckdb_result -> Idx_t -> Idx_t -> IO String
 fetchString resPtr col row = do
-    strPtr <- c_duckdb_value_varchar resPtr col row
-    text <- peekCString strPtr
-    c_duckdb_free (castPtr strPtr)
+    strPtr <- duckdb_value_varchar resPtr col row
+    text <- (peekCString . coerce) strPtr
+    duckdb_free (coerce strPtr)
     pure text
 
-fetchBlob :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO [Word8]
+fetchBlob :: Ptr Duckdb_result -> Idx_t -> Idx_t -> IO [Word8]
 fetchBlob resPtr col row =
     alloca \blobPtr -> do
-        c_duckdb_value_blob resPtr col row blobPtr
-        DuckDBBlob dat len <- peek blobPtr
-        let dataPtr = castPtr dat :: Ptr Word8
+        (duckdb_value_blob resPtr col row >>= poke blobPtr)
+        Duckdb_blob dat len <- peek blobPtr
+        let dataPtr = coerce dat :: Ptr Word8
         bytes <- peekArray (fromIntegral len) dataPtr
-        c_duckdb_free dat
+        duckdb_free dat
         pure bytes
 
-fetchBool :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO Bool
+fetchBool :: Ptr Duckdb_result -> Idx_t -> Idx_t -> IO Bool
 fetchBool resPtr col row = do
-    CBool val <- c_duckdb_value_boolean resPtr col row
+    CBool val <- duckdb_value_boolean resPtr col row
     pure (val /= 0)

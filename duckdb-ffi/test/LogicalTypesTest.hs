@@ -1,22 +1,28 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-deprecations #-}
 
 module LogicalTypesTest (tests) where
 
 import Control.Exception (bracket)
 import Control.Monad (forM_, when, (>=>))
+import Data.Coerce (coerce)
 import Data.List (stripPrefix)
+import Data.Void (Void)
 import Data.Word (Word32, Word8)
 import Database.DuckDB.FFI
-import Database.DuckDB.FFI.Deprecated
-import Foreign.C.String (peekCString, withCString)
+import Foreign.C.ConstPtr (ConstPtr (..))
+import Foreign.C.String (peekCString)
 import Foreign.Marshal.Array (withArray)
 import Foreign.Marshal.Utils (withMany)
-import Foreign.Ptr (castPtr, nullPtr)
+import Foreign.Ptr (Ptr, nullPtr)
+import GHC.Records (getField)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 import Text.Read (readMaybe)
-import Utils (withConnection, withDatabase, withLogicalType, withResult)
+import Utils (withConnection, withConstCString, withDatabase, withLogicalType, withResult)
 
 tests :: TestTree
 tests =
@@ -38,15 +44,15 @@ primitiveLogicalTypes :: TestTree
 primitiveLogicalTypes =
     testCase "primitive logical types report their ids" $
         forM_ primitives \(duckType, expected) ->
-            withLogicalType (c_duckdb_create_logical_type duckType) \lt -> do
-                typeId <- c_duckdb_get_type_id lt
+            withLogicalType (duckdb_create_logical_type (Duckdb_type duckType)) \lt -> do
+                typeId <- (fmap (getField @"unwrap") . duckdb_get_type_id) lt
                 typeId @?= expected
   where
     primitives =
-        [ (DuckDBTypeBoolean, DuckDBTypeBoolean)
-        , (DuckDBTypeInteger, DuckDBTypeInteger)
-        , (DuckDBTypeVarchar, DuckDBTypeVarchar)
-        , (DuckDBTypeBlob, DuckDBTypeBlob)
+        [ (DUCKDB_TYPE_BOOLEAN, DUCKDB_TYPE_BOOLEAN)
+        , (DUCKDB_TYPE_INTEGER, DUCKDB_TYPE_INTEGER)
+        , (DUCKDB_TYPE_VARCHAR, DUCKDB_TYPE_VARCHAR)
+        , (DUCKDB_TYPE_BLOB, DUCKDB_TYPE_BLOB)
         ]
 
 -- | VARIANT needs the complete descriptor from an executed query.
@@ -56,29 +62,29 @@ variantLogicalType =
         withDatabase \db ->
             withConnection db \conn ->
                 withResult conn "SELECT NULL::VARIANT" \result ->
-                    withLogicalType (c_duckdb_column_logical_type result 0) \logical -> do
-                        c_duckdb_get_type_id logical >>= (@?= DuckDBTypeVariant)
-                        c_duckdb_struct_type_child_count logical >>= (@?= 4)
+                    withLogicalType (duckdb_column_logical_type result 0) \logical -> do
+                        (fmap (getField @"unwrap") . duckdb_get_type_id) logical >>= (@?= DUCKDB_TYPE_VARIANT)
+                        duckdb_struct_type_child_count logical >>= (@?= 4)
 
 -- | Invalid decimal metadata became safe to pass to the C API in 1.5.4.
 invalidDecimalLogicalType :: TestTree
 invalidDecimalLogicalType =
     testCase "invalid decimal types return NULL on DuckDB 1.5.4 and later" $ do
-        version <- c_duckdb_library_version >>= peekCString
+        version <- duckdb_library_version >>= (peekCString . coerce)
         case stripPrefix "v1.5." version >>= readMaybe of
             Just patch | patch >= (4 :: Int) ->
                 forM_ [(0, 0), (39, 0), (2, 3), (255, 0)] \(width, scale) ->
-                    withLogicalType (c_duckdb_create_decimal_type width scale) (@?= nullPtr)
+                    withLogicalType (duckdb_create_decimal_type width scale) (@?= (coerce (nullPtr :: Ptr Void)))
             _ -> pure ()
 
 decimalLogicalType :: TestTree
 decimalLogicalType =
     testCase "decimal logical type exposes width/scale/internal type" $
-        withLogicalType (c_duckdb_create_decimal_type width scale) \lt -> do
-            c_duckdb_get_type_id lt >>= (@?= DuckDBTypeDecimal)
-            c_duckdb_decimal_width lt >>= (@?= width)
-            c_duckdb_decimal_scale lt >>= (@?= scale)
-            c_duckdb_decimal_internal_type lt >>= (@?= DuckDBTypeBigInt)
+        withLogicalType (duckdb_create_decimal_type width scale) \lt -> do
+            (fmap (getField @"unwrap") . duckdb_get_type_id) lt >>= (@?= DUCKDB_TYPE_DECIMAL)
+            duckdb_decimal_width lt >>= (@?= width)
+            duckdb_decimal_scale lt >>= (@?= scale)
+            (fmap (getField @"unwrap") . duckdb_decimal_internal_type) lt >>= (@?= DUCKDB_TYPE_BIGINT)
   where
     width, scale :: Word8
     width = 18
@@ -88,112 +94,112 @@ enumLogicalType :: TestTree
 enumLogicalType =
     testCase "enum logical type exposes dictionary" $ do
         enumType <-
-            withMany withCString ["Small", "Medium", "Large"] \namePtrs ->
-                withArray namePtrs (`c_duckdb_create_enum_type` 3)
+            withMany withConstCString ["Small", "Medium", "Large"] \namePtrs ->
+                withArray namePtrs (`duckdb_create_enum_type` 3)
         withLogicalType (pure enumType) \lt -> do
-            c_duckdb_get_type_id lt >>= (@?= DuckDBTypeEnum)
-            c_duckdb_enum_internal_type lt >>= (@?= DuckDBTypeUTinyInt)
-            c_duckdb_enum_dictionary_size lt >>= (@?= (3 :: Word32))
-            valuePtr <- c_duckdb_enum_dictionary_value lt 1
-            peekCString valuePtr >>= (@?= "Medium")
-            c_duckdb_free (castPtr valuePtr)
+            (fmap (getField @"unwrap") . duckdb_get_type_id) lt >>= (@?= DUCKDB_TYPE_ENUM)
+            (fmap (getField @"unwrap") . duckdb_enum_internal_type) lt >>= (@?= DUCKDB_TYPE_UTINYINT)
+            duckdb_enum_dictionary_size lt >>= (@?= (3 :: Word32))
+            valuePtr <- duckdb_enum_dictionary_value lt 1
+            (peekCString . coerce) valuePtr >>= (@?= "Medium")
+            duckdb_free (coerce valuePtr)
 
 compositeLogicalTypes :: TestTree
 compositeLogicalTypes =
     testCase "composite logical types expose nesting metadata" $ do
         -- List type
-        withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \child -> do
-            listType <- c_duckdb_create_list_type child
+        withLogicalType (duckdb_create_logical_type (Duckdb_type DUCKDB_TYPE_INTEGER)) \child -> do
+            listType <- duckdb_create_list_type child
             withLogicalType (pure listType) \lt -> do
-                c_duckdb_get_type_id lt >>= (@?= DuckDBTypeList)
-                listChild <- c_duckdb_list_type_child_type lt
-                withLogicalType (pure listChild) (c_duckdb_get_type_id >=> (@?= DuckDBTypeInteger))
+                (fmap (getField @"unwrap") . duckdb_get_type_id) lt >>= (@?= DUCKDB_TYPE_LIST)
+                listChild <- duckdb_list_type_child_type lt
+                withLogicalType (pure listChild) ((fmap (getField @"unwrap") . duckdb_get_type_id) >=> (@?= DUCKDB_TYPE_INTEGER))
 
         -- Array type
-        withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \arrayChild -> do
-            arrayType <- c_duckdb_create_array_type arrayChild 5
+        withLogicalType (duckdb_create_logical_type (Duckdb_type DUCKDB_TYPE_INTEGER)) \arrayChild -> do
+            arrayType <- duckdb_create_array_type arrayChild 5
             withLogicalType (pure arrayType) \lt -> do
-                c_duckdb_get_type_id lt >>= (@?= DuckDBTypeArray)
-                arrayChildType <- c_duckdb_array_type_child_type lt
-                withLogicalType (pure arrayChildType) (c_duckdb_get_type_id >=> (@?= DuckDBTypeInteger))
-                c_duckdb_array_type_array_size lt >>= (@?= 5)
+                (fmap (getField @"unwrap") . duckdb_get_type_id) lt >>= (@?= DUCKDB_TYPE_ARRAY)
+                arrayChildType <- duckdb_array_type_child_type lt
+                withLogicalType (pure arrayChildType) ((fmap (getField @"unwrap") . duckdb_get_type_id) >=> (@?= DUCKDB_TYPE_INTEGER))
+                duckdb_array_type_array_size lt >>= (@?= 5)
 
         -- Map type
-        withLogicalType (c_duckdb_create_logical_type DuckDBTypeVarchar) \keyType ->
-            withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \valType -> do
-                mapType <- c_duckdb_create_map_type keyType valType
+        withLogicalType (duckdb_create_logical_type (Duckdb_type DUCKDB_TYPE_VARCHAR)) \keyType ->
+            withLogicalType (duckdb_create_logical_type (Duckdb_type DUCKDB_TYPE_INTEGER)) \valType -> do
+                mapType <- duckdb_create_map_type keyType valType
                 withLogicalType (pure mapType) \lt -> do
-                    c_duckdb_get_type_id lt >>= (@?= DuckDBTypeMap)
-                    mapKey <- c_duckdb_map_type_key_type lt
-                    withLogicalType (pure mapKey) (c_duckdb_get_type_id >=> (@?= DuckDBTypeVarchar))
-                    mapVal <- c_duckdb_map_type_value_type lt
-                    withLogicalType (pure mapVal) (c_duckdb_get_type_id >=> (@?= DuckDBTypeInteger))
+                    (fmap (getField @"unwrap") . duckdb_get_type_id) lt >>= (@?= DUCKDB_TYPE_MAP)
+                    mapKey <- duckdb_map_type_key_type lt
+                    withLogicalType (pure mapKey) ((fmap (getField @"unwrap") . duckdb_get_type_id) >=> (@?= DUCKDB_TYPE_VARCHAR))
+                    mapVal <- duckdb_map_type_value_type lt
+                    withLogicalType (pure mapVal) ((fmap (getField @"unwrap") . duckdb_get_type_id) >=> (@?= DUCKDB_TYPE_INTEGER))
 
         -- Struct type
-        withMany withCString ["id", "name"] \fieldNames -> withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \idType ->
-            withLogicalType (c_duckdb_create_logical_type DuckDBTypeVarchar) \nameType ->
+        withMany withConstCString ["id", "name"] \fieldNames -> withLogicalType (duckdb_create_logical_type (Duckdb_type DUCKDB_TYPE_INTEGER)) \idType ->
+            withLogicalType (duckdb_create_logical_type (Duckdb_type DUCKDB_TYPE_VARCHAR)) \nameType ->
                 withArray [idType, nameType] \childArray ->
                     withArray fieldNames \namesArray -> do
-                        structType <- c_duckdb_create_struct_type childArray namesArray 2
+                        structType <- duckdb_create_struct_type childArray namesArray 2
                         withLogicalType (pure structType) \lt -> do
-                            c_duckdb_get_type_id lt >>= (@?= DuckDBTypeStruct)
-                            childCount <- c_duckdb_struct_type_child_count lt
+                            (fmap (getField @"unwrap") . duckdb_get_type_id) lt >>= (@?= DUCKDB_TYPE_STRUCT)
+                            childCount <- duckdb_struct_type_child_count lt
                             childCount @?= 2
-                            childName0 <- c_duckdb_struct_type_child_name lt 0
-                            peekCString childName0 >>= (@?= "id")
-                            c_duckdb_free (castPtr childName0)
-                            structChild1 <- c_duckdb_struct_type_child_type lt 1
-                            withLogicalType (pure structChild1) (c_duckdb_get_type_id >=> (@?= DuckDBTypeVarchar))
+                            childName0 <- duckdb_struct_type_child_name lt 0
+                            (peekCString . coerce) childName0 >>= (@?= "id")
+                            duckdb_free (coerce childName0)
+                            structChild1 <- duckdb_struct_type_child_type lt 1
+                            withLogicalType (pure structChild1) ((fmap (getField @"unwrap") . duckdb_get_type_id) >=> (@?= DUCKDB_TYPE_VARCHAR))
 
         -- Union type
-        withMany withCString ["int_member", "text_member"] \memberNames -> withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \intMember ->
-            withLogicalType (c_duckdb_create_logical_type DuckDBTypeVarchar) \textMember ->
+        withMany withConstCString ["int_member", "text_member"] \memberNames -> withLogicalType (duckdb_create_logical_type (Duckdb_type DUCKDB_TYPE_INTEGER)) \intMember ->
+            withLogicalType (duckdb_create_logical_type (Duckdb_type DUCKDB_TYPE_VARCHAR)) \textMember ->
                 withArray [intMember, textMember] \memberArray ->
                     withArray memberNames \nameArray -> do
-                        unionType <- c_duckdb_create_union_type memberArray nameArray 2
+                        unionType <- duckdb_create_union_type memberArray nameArray 2
                         withLogicalType (pure unionType) \lt -> do
-                            c_duckdb_get_type_id lt >>= (@?= DuckDBTypeUnion)
-                            memberCount <- c_duckdb_union_type_member_count lt
+                            (fmap (getField @"unwrap") . duckdb_get_type_id) lt >>= (@?= DUCKDB_TYPE_UNION)
+                            memberCount <- duckdb_union_type_member_count lt
                             memberCount @?= 2
-                            memberName0 <- c_duckdb_union_type_member_name lt 0
-                            peekCString memberName0 >>= (@?= "int_member")
-                            c_duckdb_free (castPtr memberName0)
-                            memberChild <- c_duckdb_union_type_member_type lt 1
-                            withLogicalType (pure memberChild) (c_duckdb_get_type_id >=> (@?= DuckDBTypeVarchar))
+                            memberName0 <- duckdb_union_type_member_name lt 0
+                            (peekCString . coerce) memberName0 >>= (@?= "int_member")
+                            duckdb_free (coerce memberName0)
+                            memberChild <- duckdb_union_type_member_type lt 1
+                            withLogicalType (pure memberChild) ((fmap (getField @"unwrap") . duckdb_get_type_id) >=> (@?= DUCKDB_TYPE_VARCHAR))
 
 aliasRoundtrip :: TestTree
 aliasRoundtrip =
     testCase "logical type aliases can be set and retrieved" $
-        withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \lt -> do
-            aliasBefore <- c_duckdb_logical_type_get_alias lt
-            aliasBefore @?= nullPtr
-            withCString "custom_alias" $ \alias -> c_duckdb_logical_type_set_alias lt alias
-            aliasAfter <- c_duckdb_logical_type_get_alias lt
-            assertBool "alias pointer should not be null" (aliasAfter /= nullPtr)
-            when (aliasAfter == nullPtr) $
+        withLogicalType (duckdb_create_logical_type (Duckdb_type DUCKDB_TYPE_INTEGER)) \lt -> do
+            aliasBefore <- duckdb_logical_type_get_alias lt
+            aliasBefore @?= (coerce (nullPtr :: Ptr Void))
+            withConstCString "custom_alias" $ \alias -> duckdb_logical_type_set_alias lt alias
+            aliasAfter <- duckdb_logical_type_get_alias lt
+            assertBool "alias pointer should not be null" (aliasAfter /= (coerce (nullPtr :: Ptr Void)))
+            when (aliasAfter == (coerce (nullPtr :: Ptr Void))) $
                 assertFailure "expected alias pointer"
-            peekCString aliasAfter >>= (@?= "custom_alias")
-            c_duckdb_free (castPtr aliasAfter)
+            (peekCString . coerce) aliasAfter >>= (@?= "custom_alias")
+            duckdb_free (coerce aliasAfter)
 
 registerLogicalType :: TestTree
 registerLogicalType =
     testCase "registered logical type alias is accepted in SQL" $
         withDatabase \db ->
             withConnection db \conn ->
-                withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \lt -> do
+                withLogicalType (duckdb_create_logical_type (Duckdb_type DUCKDB_TYPE_INTEGER)) \lt -> do
                     let aliasName = "custom_int_alias"
-                    withCString aliasName $ \aliasPtr ->
-                        c_duckdb_logical_type_set_alias lt aliasPtr
-                    c_duckdb_register_logical_type conn lt nullPtr >>= (@?= DuckDBSuccess)
+                    withConstCString aliasName $ \aliasPtr ->
+                        duckdb_logical_type_set_alias lt aliasPtr
+                    duckdb_register_logical_type conn lt (coerce (nullPtr :: Ptr Void)) >>= (@?= DuckDBSuccess)
 
                     let createSql = "CREATE TABLE logical_type_demo (val " ++ aliasName ++ ")"
                     withResult conn createSql \_ -> pure ()
 
                     withResult conn "PRAGMA table_info('logical_type_demo')" \resPtr -> do
-                        c_duckdb_row_count resPtr >>= (@?= 1)
-                        typePtr <- c_duckdb_value_varchar resPtr 2 0
-                        typeName <- peekCString typePtr
-                        c_duckdb_free (castPtr typePtr)
+                        duckdb_row_count resPtr >>= (@?= 1)
+                        typePtr <- duckdb_value_varchar resPtr 2 0
+                        typeName <- (peekCString . coerce) typePtr
+                        duckdb_free (coerce typePtr)
                         typeName @?= aliasName
 
 geometryTypeCrs :: TestTree
@@ -204,16 +210,16 @@ geometryTypeCrs =
                 -- A GEOMETRY column reports the GEOMETRY type id, and carries no
                 -- CRS unless the data supplies one.
                 withResult conn "SELECT 'POINT(1 2)'::GEOMETRY" \resPtr -> do
-                    columnType <- c_duckdb_column_logical_type resPtr 0
+                    columnType <- duckdb_column_logical_type resPtr 0
                     withLogicalType (pure columnType) \lt -> do
-                        c_duckdb_get_type_id lt >>= (@?= DuckDBTypeGeometry)
-                        crs <- c_duckdb_geometry_type_get_crs lt
-                        assertBool "plain GEOMETRY has no CRS" (crs == nullPtr)
+                        (fmap (getField @"unwrap") . duckdb_get_type_id) lt >>= (@?= DUCKDB_TYPE_GEOMETRY)
+                        crs <- duckdb_geometry_type_get_crs lt
+                        assertBool "plain GEOMETRY has no CRS" (crs == (coerce (nullPtr :: Ptr Void)))
 
                 -- Types other than GEOMETRY never have a CRS.
-                withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \lt -> do
-                    crs <- c_duckdb_geometry_type_get_crs lt
-                    assertBool "INTEGER has no CRS" (crs == nullPtr)
+                withLogicalType (duckdb_create_logical_type (Duckdb_type DUCKDB_TYPE_INTEGER)) \lt -> do
+                    crs <- duckdb_geometry_type_get_crs lt
+                    assertBool "INTEGER has no CRS" (crs == (coerce (nullPtr :: Ptr Void)))
 
 -- | The caller owns the returned CRS independently of the type and result.
 geometryTypeCrsOwnership :: TestTree
@@ -223,9 +229,9 @@ geometryTypeCrsOwnership =
             ( withDatabase \db ->
                 withConnection db \conn ->
                     withResult conn "SELECT ST_SetCRS('POINT(1 2)'::GEOMETRY, 'duckdb-haskell-test-crs')" \result ->
-                        withLogicalType (c_duckdb_column_logical_type result 0) c_duckdb_geometry_type_get_crs
+                        withLogicalType (duckdb_column_logical_type result 0) duckdb_geometry_type_get_crs
             )
-            (c_duckdb_free . castPtr)
+            (duckdb_free . coerce)
             \crs -> do
-                assertBool "expected an owned CRS string" (crs /= nullPtr)
-                peekCString crs >>= (@?= "duckdb-haskell-test-crs")
+                assertBool "expected an owned CRS string" (crs /= (coerce (nullPtr :: Ptr Void)))
+                (peekCString . coerce) crs >>= (@?= "duckdb-haskell-test-crs")

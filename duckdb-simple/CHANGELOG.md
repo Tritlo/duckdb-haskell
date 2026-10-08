@@ -2,6 +2,11 @@
 
 ## 0.3.0.0
 
+- Use the hs-bindgen-generated raw API. Preserve value conversion, native
+  ownership, callback cleanup, cancellation, and streaming behavior.
+- Exposed raw types now use generated names, handle newtypes, and `ConstPtr`.
+  Export Arrow release helpers from `Database.DuckDB.Simple.Arrow`.
+
 - Use native DuckDB 1.5.6 by default. Keep native support for DuckDB >= 1.5.3
   and < 1.6. Test native versions 1.5.3 through 1.5.6.
 - Require `duckdb-ffi >= 1.5.6.0` for the updated native bindings.

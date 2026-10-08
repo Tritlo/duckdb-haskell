@@ -199,45 +199,45 @@ extensionRegressionTests =
         , testCase "filesystem action exceptions release handles" $
             withTemporaryFile \path ->
                 withConnection ":memory:" \conn -> do
-                    outcome <- try $ FileSystem.withFileHandle conn path [DuckDBFileFlagWrite] \_ -> throwIO (userError "file action failure")
+                    outcome <- try $ FileSystem.withFileHandle conn path [DUCKDB_FILE_FLAG_WRITE] \_ -> throwIO (userError "file action failure")
                     case outcome :: Either SomeException () of
                         Left _ -> pure ()
                         Right () -> assertFailure "expected file action exception"
-                    FileSystem.withFileHandle conn path [DuckDBFileFlagWrite] \handle -> do
+                    FileSystem.withFileHandle conn path [DUCKDB_FILE_FLAG_WRITE] \handle -> do
                         FileSystem.writeFileHandleBytes handle (BS.pack [0, 255]) >>= (@?= 2)
                         FileSystem.fileHandleSync handle
-                    FileSystem.withFileHandle conn path [DuckDBFileFlagRead] \handle -> do
+                    FileSystem.withFileHandle conn path [DUCKDB_FILE_FLAG_READ] \handle -> do
                         FileSystem.readFileHandleChunk handle 0 >>= (@?= BS.empty)
                         FileSystem.readFileHandleChunk handle 8 >>= (@?= BS.pack [0, 255])
         , testCase "filesystem errors remain controlled" $
             withConnection ":memory:" \conn -> do
-                assertSqlError $ FileSystem.withFileHandle conn "/tmp/duckdb-review-missing-dir/no-file" [DuckDBFileFlagRead] (\_ -> pure ())
+                assertSqlError $ FileSystem.withFileHandle conn "/tmp/duckdb-review-missing-dir/no-file" [DUCKDB_FILE_FLAG_READ] (\_ -> pure ())
                 withTemporaryFile \path ->
-                    assertSqlError $ FileSystem.withFileHandle conn (path <> "\0suffix") [DuckDBFileFlagRead] (\_ -> pure ())
+                    assertSqlError $ FileSystem.withFileHandle conn (path <> "\0suffix") [DUCKDB_FILE_FLAG_READ] (\_ -> pure ())
         , testCase "catalog unsupported kinds fail safely" $
             withConnection ":memory:" \conn ->
                 withTransaction conn $
                     mapM_
                         (\kind -> assertSqlError $ Catalog.lookupCatalogEntry conn "memory" "main" "probe" kind)
-                        [DuckDBCatalogEntryTypeInvalid, DuckDBCatalogEntryTypeSchema, DuckDBCatalogEntryTypePreparedStatement, DuckDBCatalogEntryTypeDatabase, DuckDBCatalogEntryType 99]
+                        [DUCKDB_CATALOG_ENTRY_TYPE_INVALID, DUCKDB_CATALOG_ENTRY_TYPE_SCHEMA, DUCKDB_CATALOG_ENTRY_TYPE_PREPARED_STATEMENT, DUCKDB_CATALOG_ENTRY_TYPE_DATABASE, Duckdb_catalog_entry_type 99]
         , testCase "catalog and config NUL names fail safely" $
             withConnection ":memory:" \conn -> do
                 assertSqlError $ Config.getConfigOption conn "threads\0suffix"
                 withTransaction conn do
                     assertSqlError $ Catalog.catalogTypeName conn "memory\0suffix"
-                    assertSqlError $ Catalog.lookupCatalogEntry conn "memory" "main\0suffix" "probe" DuckDBCatalogEntryTypeTable
+                    assertSqlError $ Catalog.lookupCatalogEntry conn "memory" "main\0suffix" "probe" DUCKDB_CATALOG_ENTRY_TYPE_TABLE
         , testCase "catalog names preserve UTF8" $
             withConnection ":memory:" \conn -> do
                 void $ execute_ conn "CREATE TABLE \"\955\" (i INT)"
                 withTransaction conn do
-                    entry <- Catalog.lookupCatalogEntry conn "memory" "main" "\955" DuckDBCatalogEntryTypeTable
+                    entry <- Catalog.lookupCatalogEntry conn "memory" "main" "\955" DUCKDB_CATALOG_ENTRY_TYPE_TABLE
                     fmap Catalog.catalogEntryName entry @?= Just "\955"
         , testCase "catalog and config missing values remain safe" $
             withConnection ":memory:" \conn -> do
                 Config.getConfigOption conn "no_such_config_option" >>= (@?= Nothing)
                 withTransaction conn do
                     Catalog.catalogTypeName conn "no_such_catalog" >>= (@?= Nothing)
-                    Catalog.lookupCatalogEntry conn "memory" "main" "no_such_table" DuckDBCatalogEntryTypeTable >>= (@?= Nothing)
+                    Catalog.lookupCatalogEntry conn "memory" "main" "no_such_table" DUCKDB_CATALOG_ENTRY_TYPE_TABLE >>= (@?= Nothing)
         ]
 
 -- | Raise a second exception when the callback error is rendered.
@@ -260,7 +260,7 @@ instance Function BrokenSignature where
 data InvalidSignature = InvalidSignature
 
 instance Function InvalidSignature where
-    argumentTypes _ = [DuckDBTypeInvalid]
+    argumentTypes _ = [DUCKDB_TYPE_INVALID]
     returnType _ = returnType (Proxy :: Proxy Int64)
     isVolatile _ = False
     applyFunction _ _ = error "unregistered function"

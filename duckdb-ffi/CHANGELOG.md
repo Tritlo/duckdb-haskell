@@ -2,6 +2,15 @@
 
 ## 1.5.6.0
 
+- Generate the complete raw API from the DuckDB and Arrow headers with
+  hs-bindgen 1.0. Remove handwritten raw modules, C ABI shims, and the old
+  binding generator. Use native C function names and generated types.
+- Generate layouts and callbacks for each build platform. LLVM/Clang,
+  libclang development files, llvm-config, Doxygen, and zlib development
+  headers are build dependencies. The generator is a Cabal build tool.
+- Move Arrow ownership helpers to `duckdb-simple`. Raw calls use direct struct
+  arguments/results and do not preserve the old C shims' NULL defaults.
+
 - Use the official DuckDB 1.5.6 header and native download. Keep native support
   for DuckDB >= 1.5.3 and < 1.6.
 - Add the COPY_DATABASE, UPDATE_EXTENSIONS, and MERGE_INTO statement tags.

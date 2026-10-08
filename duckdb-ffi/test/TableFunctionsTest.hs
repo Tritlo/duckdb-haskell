@@ -9,20 +9,23 @@ import Control.Concurrent (runInBoundThread)
 import Control.Exception (bracket)
 import Control.Monad (forM_, when)
 import Data.Char (isAsciiUpper)
+import Data.Coerce (coerce)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int64)
 import Data.List (isInfixOf)
 import Data.Maybe (fromMaybe)
+import Data.Void (Void)
 import Database.DuckDB.FFI
-import Database.DuckDB.FFI.Deprecated
-import Foreign.C.String (CString, peekCString, withCString)
-import Foreign.C.Types (CBool (..))
+import Foreign.C.ConstPtr (ConstPtr (..))
+import Foreign.C.String (peekCString)
+import Foreign.C.Types (CBool (..), CChar)
 import Foreign.Marshal.Alloc (alloca, free, mallocBytes)
-import Foreign.Ptr (Ptr, castPtr, freeHaskellFunPtr, nullPtr)
+import Foreign.Ptr (Ptr, freeHaskellFunPtr, nullPtr)
 import Foreign.Storable (peek, peekElemOff, poke, pokeElemOff, sizeOf)
+import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
-import Utils (withConnection, withDatabase, withLogicalType, withResultCString, withValue)
+import Utils (withConnection, withConstCString, withDatabase, withLogicalType, withResultCString, withValue)
 
 tests :: TestTree
 tests =
@@ -35,53 +38,53 @@ tableFunctionLifecycle =
     testCase "table function lifecycle covers core callbacks" $
         runInBoundThread do
             withDatabase \db ->
-                withLogicalType (c_duckdb_create_logical_type DuckDBTypeBigInt) \bigint ->
+                withLogicalType (duckdb_create_logical_type (Duckdb_type DUCKDB_TYPE_BIGINT)) \bigint ->
                     withHarness bigint \harness@TableHarness{} -> do
                         (bindError, execError, initError) <-
                             withConnection db \conn ->
                                 withTableFunction \tableFun -> do
                                     configureTableFunction tableFun harness
-                                    c_duckdb_register_table_function conn tableFun >>= (@?= DuckDBSuccess)
+                                    duckdb_register_table_function conn tableFun >>= (@?= DuckDBSuccess)
 
-                                    withCString "SELECT value, double_value FROM haskell_numbers(5, start => 2)" \sql ->
+                                    withConstCString "SELECT value, double_value FROM haskell_numbers(5, start => 2)" \sql ->
                                         withResultCString conn sql \resPtr -> do
-                                            c_duckdb_column_count resPtr >>= (@?= 2)
-                                            c_duckdb_row_count resPtr >>= (@?= 5)
+                                            duckdb_column_count resPtr >>= (@?= 2)
+                                            duckdb_row_count resPtr >>= (@?= 5)
                                             forM_ [0 .. 4] \idx -> do
-                                                c_duckdb_value_int64 resPtr 0 idx >>= (@?= 2 + fromIntegral idx)
-                                                c_duckdb_value_int64 resPtr 1 idx >>= (@?= 2 * (2 + fromIntegral idx))
+                                                duckdb_value_int64 resPtr 0 idx >>= (@?= 2 + fromIntegral idx)
+                                                duckdb_value_int64 resPtr 1 idx >>= (@?= 2 * (2 + fromIntegral idx))
 
-                                    withCString "SELECT value FROM haskell_numbers(3)" \sql ->
+                                    withConstCString "SELECT value FROM haskell_numbers(3)" \sql ->
                                         withResultCString conn sql \resPtr -> do
-                                            c_duckdb_column_count resPtr >>= (@?= 1)
+                                            duckdb_column_count resPtr >>= (@?= 1)
                                             forM_ (zip [0 ..] [0 .. 2]) \(idx, expected) ->
-                                                c_duckdb_value_int64 resPtr 0 idx >>= (@?= expected)
+                                                duckdb_value_int64 resPtr 0 idx >>= (@?= expected)
 
                                     bindError <-
-                                        withCString "SELECT * FROM haskell_numbers(0)" \sql ->
+                                        withConstCString "SELECT * FROM haskell_numbers(0)" \sql ->
                                             alloca \resPtr -> do
-                                                state <- c_duckdb_query conn sql resPtr
-                                                errPtr <- c_duckdb_result_error resPtr
+                                                state <- duckdb_query conn sql resPtr
+                                                errPtr <- duckdb_result_error resPtr
                                                 msg <- peekCStringMaybe errPtr
-                                                c_duckdb_destroy_result resPtr
+                                                duckdb_destroy_result resPtr
                                                 pure (state, msg)
 
                                     execError <-
-                                        withCString "SELECT * FROM haskell_numbers(5, fail_at => 3)" \sql ->
+                                        withConstCString "SELECT * FROM haskell_numbers(5, fail_at => 3)" \sql ->
                                             alloca \resPtr -> do
-                                                state <- c_duckdb_query conn sql resPtr
-                                                errPtr <- c_duckdb_result_error resPtr
+                                                state <- duckdb_query conn sql resPtr
+                                                errPtr <- duckdb_result_error resPtr
                                                 msg <- peekCStringMaybe errPtr
-                                                c_duckdb_destroy_result resPtr
+                                                duckdb_destroy_result resPtr
                                                 pure (state, msg)
 
                                     initError <-
-                                        withCString "SELECT * FROM haskell_numbers(2, force_init_error => 1)" \sql ->
+                                        withConstCString "SELECT * FROM haskell_numbers(2, force_init_error => 1)" \sql ->
                                             alloca \resPtr -> do
-                                                state <- c_duckdb_query conn sql resPtr
-                                                errPtr <- c_duckdb_result_error resPtr
+                                                state <- duckdb_query conn sql resPtr
+                                                errPtr <- duckdb_result_error resPtr
                                                 msg <- peekCStringMaybe errPtr
-                                                c_duckdb_destroy_result resPtr
+                                                duckdb_destroy_result resPtr
                                                 pure (state, msg)
 
                                     pure (bindError, execError, initError)
@@ -120,15 +123,15 @@ data ExecutionMode
     deriving (Eq, Show)
 
 data TableHarness = TableHarness
-    { thColumnType :: !DuckDBLogicalType
-    , thExtraBuffer :: !(Ptr ())
+    { thColumnType :: !Duckdb_logical_type
+    , thExtraBuffer :: !(Ptr Void)
     , thExtraCount :: !(IORef Int)
     , thBindCount :: !(IORef Int)
     , thInitCount :: !(IORef Int)
     , thLocalCount :: !(IORef Int)
-    , thBindPtr :: !(IORef (Maybe (Ptr ())))
-    , thInitPtr :: !(IORef (Maybe (Ptr ())))
-    , thLocalPtr :: !(IORef (Maybe (Ptr ())))
+    , thBindPtr :: !(IORef (Maybe (Ptr Void)))
+    , thInitPtr :: !(IORef (Maybe (Ptr Void)))
+    , thLocalPtr :: !(IORef (Maybe (Ptr Void)))
     , thProjectionCurrent :: !(IORef (Maybe ProjectionSnapshot))
     , thProjectionHistory :: !(IORef [ProjectionSnapshot])
     , thClientContextSeen :: !(IORef Bool)
@@ -139,17 +142,17 @@ data TableHarness = TableHarness
     }
 
 data TableCallbacks = TableCallbacks
-    { tcBind :: !DuckDBTableFunctionBindFun
-    , tcInit :: !DuckDBTableFunctionInitFun
-    , tcLocalInit :: !DuckDBTableFunctionInitFun
-    , tcExecute :: !DuckDBTableFunctionFun
+    { tcBind :: !Duckdb_table_function_bind_t
+    , tcInit :: !Duckdb_table_function_init_t
+    , tcLocalInit :: !Duckdb_table_function_init_t
+    , tcExecute :: !Duckdb_table_function_t
     }
 
 data DeleteCallbacks = DeleteCallbacks
-    { dcExtra :: !DuckDBDeleteCallback
-    , dcBind :: !DuckDBDeleteCallback
-    , dcInit :: !DuckDBDeleteCallback
-    , dcLocal :: !DuckDBDeleteCallback
+    { dcExtra :: !Duckdb_delete_callback_t
+    , dcBind :: !Duckdb_delete_callback_t
+    , dcInit :: !Duckdb_delete_callback_t
+    , dcLocal :: !Duckdb_delete_callback_t
     }
 
 data HarnessStats = HarnessStats
@@ -163,11 +166,11 @@ data HarnessStats = HarnessStats
     }
     deriving (Eq, Show)
 
-withHarness :: DuckDBLogicalType -> (TableHarness -> IO a) -> IO a
+withHarness :: Duckdb_logical_type -> (TableHarness -> IO a) -> IO a
 withHarness columnType action = do
     rawExtraBuffer <- mallocBytes sizeOfInt64
-    let extraBuffer = castPtr rawExtraBuffer :: Ptr ()
-    poke (castPtr extraBuffer :: Ptr Int64) extraInfoSentinel
+    let extraBuffer = coerce rawExtraBuffer :: Ptr Void
+    poke (coerce extraBuffer :: Ptr Int64) extraInfoSentinel
     extraCount <- newIORef 0
     bindCount <- newIORef 0
     initCount <- newIORef 0
@@ -181,31 +184,31 @@ withHarness columnType action = do
     modeRef <- newIORef ModeUnset
     countHistory <- newIORef []
 
-    let takeInt64 ptr = peekElemOff (castPtr ptr :: Ptr Int64)
-        putInt64 ptr = pokeElemOff (castPtr ptr :: Ptr Int64)
+    let takeInt64 ptr = peekElemOff (coerce ptr :: Ptr Int64)
+        putInt64 ptr = pokeElemOff (coerce ptr :: Ptr Int64)
 
     extraDelete <-
         mkDeleteCallback \ptr -> do
             modifyIORef' extraCount (+ 1)
-            when (ptr /= nullPtr) (free ptr)
+            when (ptr /= (coerce (nullPtr :: Ptr Void))) (free ptr)
 
     bindDelete <-
         mkDeleteCallback \ptr -> do
             modifyIORef' bindCount (+ 1)
             writeIORef bindPtrRef Nothing
-            when (ptr /= nullPtr) (free ptr)
+            when (ptr /= (coerce (nullPtr :: Ptr Void))) (free ptr)
 
     initDelete <-
         mkDeleteCallback \ptr -> do
             modifyIORef' initCount (+ 1)
             writeIORef initPtrRef Nothing
-            when (ptr /= nullPtr) (free ptr)
+            when (ptr /= (coerce (nullPtr :: Ptr Void))) (free ptr)
 
     localDelete <-
         mkDeleteCallback \ptr -> do
             modifyIORef' localCount (+ 1)
             writeIORef localPtrRef Nothing
-            when (ptr /= nullPtr) (free ptr)
+            when (ptr /= (coerce (nullPtr :: Ptr Void))) (free ptr)
 
     let resetLifecycle = do
             writeIORef projectionCurrent Nothing
@@ -221,47 +224,47 @@ withHarness columnType action = do
         bindCallback info = do
             resetLifecycle
             writeIORef modeRef ModeRejected
-            extraPtr <- c_duckdb_bind_get_extra_info info
+            extraPtr <- duckdb_bind_get_extra_info info
             extraPtr @?= extraBuffer
-            sentinel <- peek (castPtr extraPtr :: Ptr Int64)
+            sentinel <- peek (coerce extraPtr :: Ptr Int64)
             sentinel @?= extraInfoSentinel
 
             alloca \ctxPtr -> do
-                poke ctxPtr nullPtr
-                c_duckdb_table_function_get_client_context info ctxPtr
+                poke ctxPtr (coerce (nullPtr :: Ptr Void))
+                duckdb_table_function_get_client_context info ctxPtr
                 ctx <- peek ctxPtr
-                assertBool "client context should not be null" (ctx /= nullPtr)
-                cid <- c_duckdb_client_context_get_connection_id ctx
+                assertBool "client context should not be null" (ctx /= (coerce (nullPtr :: Ptr Void)))
+                cid <- duckdb_client_context_get_connection_id ctx
                 assertBool "connection id should be non-negative" (cid >= 0)
-                c_duckdb_destroy_client_context ctxPtr
+                duckdb_destroy_client_context ctxPtr
                 writeIORef clientContextSeen True
 
-            paramCount <- c_duckdb_bind_get_parameter_count info
+            paramCount <- duckdb_bind_get_parameter_count info
             paramCount @?= 1
 
-            withValue (c_duckdb_bind_get_parameter info 0) \value -> do
-                countValue <- c_duckdb_get_int64 value
+            withValue (duckdb_bind_get_parameter info 0) \value -> do
+                countValue <- duckdb_get_int64 value
                 modifyIORef' countHistory (<> [countValue])
                 if countValue <= 0
-                    then withCString "count must be positive" $ \msg -> c_duckdb_bind_set_error info msg
+                    then withConstCString "count must be positive" $ \msg -> duckdb_bind_set_error info msg
                     else do
                         startValue <-
-                            withCString "start" \name ->
-                                fmap (fromMaybe 0) (withOptionalValue (c_duckdb_bind_get_named_parameter info name) c_duckdb_get_int64)
+                            withConstCString "start" \name ->
+                                fmap (fromMaybe 0) (withOptionalValue (duckdb_bind_get_named_parameter info name) duckdb_get_int64)
                         failAtValue <-
-                            withCString "fail_at" \name ->
-                                fmap (fromMaybe (-1)) (withOptionalValue (c_duckdb_bind_get_named_parameter info name) c_duckdb_get_int64)
+                            withConstCString "fail_at" \name ->
+                                fmap (fromMaybe (-1)) (withOptionalValue (duckdb_bind_get_named_parameter info name) duckdb_get_int64)
                         initErrValue <-
-                            withCString "force_init_error" \name ->
-                                fmap (fromMaybe 0) (withOptionalValue (c_duckdb_bind_get_named_parameter info name) c_duckdb_get_int64)
+                            withConstCString "force_init_error" \name ->
+                                fmap (fromMaybe 0) (withOptionalValue (duckdb_bind_get_named_parameter info name) duckdb_get_int64)
                         absentValue <-
-                            withCString "missing" \name ->
-                                withOptionalValue (c_duckdb_bind_get_named_parameter info name) c_duckdb_get_int64
+                            withConstCString "missing" \name ->
+                                withOptionalValue (duckdb_bind_get_named_parameter info name) duckdb_get_int64
                         absentValue @?= Nothing
 
-                        withCString "value" \col -> c_duckdb_bind_add_result_column info col columnType
-                        withCString "double_value" \col -> c_duckdb_bind_add_result_column info col columnType
-                        c_duckdb_bind_set_cardinality info (fromIntegral countValue) (toCBool True)
+                        withConstCString "value" \col -> duckdb_bind_add_result_column info col columnType
+                        withConstCString "double_value" \col -> duckdb_bind_add_result_column info col columnType
+                        duckdb_bind_set_cardinality info (fromIntegral countValue) (toCBool True)
 
                         if initErrValue /= 0
                             then do
@@ -272,21 +275,21 @@ withHarness columnType action = do
                                 putInt64 cfgPtr 0 startValue
                                 putInt64 cfgPtr 1 countValue
                                 putInt64 cfgPtr 2 failAtValue
-                                c_duckdb_bind_set_bind_data info (castPtr cfgPtr) bindDelete
-                                writeIORef bindPtrRef (Just (castPtr cfgPtr))
+                                duckdb_bind_set_bind_data info (coerce cfgPtr) bindDelete
+                                writeIORef bindPtrRef (Just (coerce cfgPtr))
                                 writeIORef modeRef ModeNormal
 
         initCallback info = do
-            extraPtr <- c_duckdb_init_get_extra_info info
+            extraPtr <- duckdb_init_get_extra_info info
             extraPtr @?= extraBuffer
             mode <- readIORef modeRef
             case mode of
                 ModeInitError -> do
-                    bindRaw <- c_duckdb_init_get_bind_data info
-                    bindRaw @?= nullPtr
-                    withCString "init rejected missing bind data" $ \msg -> c_duckdb_init_set_error info msg
+                    bindRaw <- duckdb_init_get_bind_data info
+                    bindRaw @?= (coerce (nullPtr :: Ptr Void))
+                    withConstCString "init rejected missing bind data" $ \msg -> duckdb_init_set_error info msg
                 ModeNormal -> do
-                    bindRaw <- c_duckdb_init_get_bind_data info
+                    bindRaw <- duckdb_init_get_bind_data info
                     stored <- readIORef bindPtrRef
                     case stored of
                         Nothing -> assertFailure "bind data expected during init"
@@ -296,10 +299,10 @@ withHarness columnType action = do
                     countValue <- takeInt64 bindRaw 1
                     failAtValue <- takeInt64 bindRaw 2
 
-                    columnCount <- fromIntegral <$> c_duckdb_init_get_column_count info
+                    columnCount <- fromIntegral <$> duckdb_init_get_column_count info
                     indices <-
                         mapM
-                            (fmap (fromIntegral :: DuckDBIdx -> Int) . c_duckdb_init_get_column_index info . fromIntegral)
+                            (fmap (fromIntegral :: Idx_t -> Int) . duckdb_init_get_column_index info . fromIntegral)
                             [0 .. columnCount - 1]
                     recordProjection ProjectionSnapshot{psCount = columnCount, psIndices = indices}
 
@@ -307,54 +310,54 @@ withHarness columnType action = do
                     putInt64 statePtr 0 startValue
                     putInt64 statePtr 1 (startValue + countValue)
                     putInt64 statePtr 2 failAtValue
-                    c_duckdb_init_set_init_data info (castPtr statePtr) initDelete
-                    writeIORef initPtrRef (Just (castPtr statePtr))
-                    c_duckdb_init_set_max_threads info 1
+                    duckdb_init_set_init_data info (coerce statePtr) initDelete
+                    writeIORef initPtrRef (Just (coerce statePtr))
+                    duckdb_init_set_max_threads info 1
                 _ -> pure ()
 
         localInitCallback info = do
-            extraPtr <- c_duckdb_init_get_extra_info info
+            extraPtr <- duckdb_init_get_extra_info info
             extraPtr @?= extraBuffer
             mode <- readIORef modeRef
             case mode of
                 ModeNormal -> do
-                    bindRaw <- c_duckdb_init_get_bind_data info
+                    bindRaw <- duckdb_init_get_bind_data info
                     stored <- readIORef bindPtrRef
                     case stored of
                         Nothing -> assertFailure "bind data should be present during local init"
                         Just expected -> bindRaw @?= expected
                     localPtr <- mallocBytes sizeOfInt64
-                    poke (castPtr localPtr :: Ptr Int64) localInitSentinel
-                    c_duckdb_init_set_init_data info (castPtr localPtr) localDelete
-                    writeIORef localPtrRef (Just (castPtr localPtr))
-                ModeInitError -> withCString "local init skipped after init error" $ \msg -> c_duckdb_init_set_error info msg
+                    poke (coerce localPtr :: Ptr Int64) localInitSentinel
+                    duckdb_init_set_init_data info (coerce localPtr) localDelete
+                    writeIORef localPtrRef (Just (coerce localPtr))
+                ModeInitError -> withConstCString "local init skipped after init error" $ \msg -> duckdb_init_set_error info msg
                 _ -> pure ()
 
         executeCallback info chunk = do
-            extraPtr <- c_duckdb_function_get_extra_info info
+            extraPtr <- duckdb_function_get_extra_info info
             extraPtr @?= extraBuffer
 
             mode <- readIORef modeRef
             case mode of
                 ModeNormal -> do
-                    bindRaw <- c_duckdb_function_get_bind_data info
+                    bindRaw <- duckdb_function_get_bind_data info
                     storedBind <- readIORef bindPtrRef
                     case storedBind of
                         Nothing -> assertFailure "bind data should be recorded before execution"
                         Just expected -> bindRaw @?= expected
 
-                    initRaw <- c_duckdb_function_get_init_data info
+                    initRaw <- duckdb_function_get_init_data info
                     storedInit <- readIORef initPtrRef
                     case storedInit of
                         Nothing -> assertFailure "init data should exist during execution"
                         Just expected -> initRaw @?= expected
 
-                    localRaw <- c_duckdb_function_get_local_init_data info
+                    localRaw <- duckdb_function_get_local_init_data info
                     storedLocal <- readIORef localPtrRef
                     case storedLocal of
                         Nothing -> assertFailure "local init data should exist during execution"
                         Just expected -> localRaw @?= expected
-                    sentinel <- peek (castPtr localRaw :: Ptr Int64)
+                    sentinel <- peek (coerce localRaw :: Ptr Int64)
                     sentinel @?= localInitSentinel
 
                     snapshot <- readIORef projectionCurrent
@@ -370,19 +373,19 @@ withHarness columnType action = do
                     endVal <- takeInt64 initRaw 1
                     failAtValue <- takeInt64 initRaw 2
                     if nextVal >= endVal
-                        then c_duckdb_data_chunk_set_size chunk 0
+                        then duckdb_data_chunk_set_size chunk 0
                         else do
                             let remaining = endVal - nextVal
                                 batch = min remaining 1024
                                 chunkEnd = nextVal + batch
                             if failAtValue >= nextVal && failAtValue < chunkEnd && failAtValue >= 0
                                 then do
-                                    withCString "execution aborted by table function" $ \msg -> c_duckdb_function_set_error info msg
-                                    c_duckdb_data_chunk_set_size chunk 0
+                                    withConstCString "execution aborted by table function" $ \msg -> duckdb_function_set_error info msg
+                                    duckdb_data_chunk_set_size chunk 0
                                     putInt64 initRaw 0 chunkEnd
                                 else do
                                     forM_ (zip [0 :: Integer ..] psIndices) \(slot, schemaIdx) -> do
-                                        vec <- c_duckdb_data_chunk_get_vector chunk (fromIntegral slot)
+                                        vec <- duckdb_data_chunk_get_vector chunk (fromIntegral slot)
                                         dataPtr <- vectorDataPtr vec
                                         forM_ [0 :: Integer .. fromIntegral batch - 1] \offset -> do
                                             let base = nextVal + fromIntegral offset
@@ -392,17 +395,17 @@ withHarness columnType action = do
                                                         1 -> 2 * base
                                                         _ -> 0
                                             pokeElemOff dataPtr (fromIntegral offset) val
-                                    c_duckdb_data_chunk_set_size chunk (fromIntegral batch)
+                                    duckdb_data_chunk_set_size chunk (fromIntegral batch)
                                     putInt64 initRaw 0 chunkEnd
                 ModeInitError -> do
-                    withCString "execution blocked by init error" $ \msg -> c_duckdb_function_set_error info msg
-                    c_duckdb_data_chunk_set_size chunk 0
+                    withConstCString "execution blocked by init error" $ \msg -> duckdb_function_set_error info msg
+                    duckdb_data_chunk_set_size chunk 0
                 ModeRejected -> do
-                    withCString "execution not expected after bind error" $ \msg -> c_duckdb_function_set_error info msg
-                    c_duckdb_data_chunk_set_size chunk 0
+                    withConstCString "execution not expected after bind error" $ \msg -> duckdb_function_set_error info msg
+                    duckdb_data_chunk_set_size chunk 0
                 ModeUnset -> do
-                    withCString "execution invoked without prior bind" $ \msg -> c_duckdb_function_set_error info msg
-                    c_duckdb_data_chunk_set_size chunk 0
+                    withConstCString "execution invoked without prior bind" $ \msg -> duckdb_function_set_error info msg
+                    duckdb_data_chunk_set_size chunk 0
 
     bindFun <- mkBindFun bindCallback
     initFun <- mkInitFun initCallback
@@ -446,35 +449,35 @@ withHarness columnType action = do
 
     result <- action harness
 
-    freeHaskellFunPtr bindFun
-    freeHaskellFunPtr initFun
-    freeHaskellFunPtr localInitFun
-    freeHaskellFunPtr execFun
+    (freeHaskellFunPtr . coerce) bindFun
+    (freeHaskellFunPtr . coerce) initFun
+    (freeHaskellFunPtr . coerce) localInitFun
+    (freeHaskellFunPtr . coerce) execFun
     -- DuckDB may still invoke delete callbacks while the table function tears down.
     -- Rely on process teardown to reclaim them to avoid racing with finalizers.
 
     pure result
 
-withTableFunction :: (DuckDBTableFunction -> IO a) -> IO a
-withTableFunction = bracket c_duckdb_create_table_function destroy
+withTableFunction :: (Duckdb_table_function -> IO a) -> IO a
+withTableFunction = bracket duckdb_create_table_function destroy
   where
-    destroy fun = alloca \ptr -> poke ptr fun >> c_duckdb_destroy_table_function ptr
+    destroy fun = alloca \ptr -> poke ptr fun >> duckdb_destroy_table_function ptr
 
-configureTableFunction :: DuckDBTableFunction -> TableHarness -> IO ()
+configureTableFunction :: Duckdb_table_function -> TableHarness -> IO ()
 configureTableFunction fun TableHarness{..} = do
-    withCString "haskell_numbers" $ \name -> c_duckdb_table_function_set_name fun name
-    c_duckdb_table_function_add_parameter fun thColumnType
-    withCString "start" \n -> c_duckdb_table_function_add_named_parameter fun n thColumnType
-    withCString "fail_at" \n -> c_duckdb_table_function_add_named_parameter fun n thColumnType
-    withCString "force_init_error" \n -> c_duckdb_table_function_add_named_parameter fun n thColumnType
+    withConstCString "haskell_numbers" $ \name -> duckdb_table_function_set_name fun name
+    duckdb_table_function_add_parameter fun thColumnType
+    withConstCString "start" \n -> duckdb_table_function_add_named_parameter fun n thColumnType
+    withConstCString "fail_at" \n -> duckdb_table_function_add_named_parameter fun n thColumnType
+    withConstCString "force_init_error" \n -> duckdb_table_function_add_named_parameter fun n thColumnType
     -- NOTE: DuckDB expects the extra-info pointer to be populated alongside the other callbacks;
     -- leaving it unset would skip the destructor and break the lifetime assertions below.
-    c_duckdb_table_function_set_extra_info fun thExtraBuffer (dcExtra thDeletes)
-    c_duckdb_table_function_set_bind fun (tcBind thCallbacks)
-    c_duckdb_table_function_set_init fun (tcInit thCallbacks)
-    c_duckdb_table_function_set_local_init fun (tcLocalInit thCallbacks)
-    c_duckdb_table_function_set_function fun (tcExecute thCallbacks)
-    c_duckdb_table_function_supports_projection_pushdown fun (toCBool True)
+    duckdb_table_function_set_extra_info fun thExtraBuffer (dcExtra thDeletes)
+    duckdb_table_function_set_bind fun (tcBind thCallbacks)
+    duckdb_table_function_set_init fun (tcInit thCallbacks)
+    duckdb_table_function_set_local_init fun (tcLocalInit thCallbacks)
+    duckdb_table_function_set_function fun (tcExecute thCallbacks)
+    duckdb_table_function_supports_projection_pushdown fun (toCBool True)
 
 snapshotStats :: TableHarness -> IO HarnessStats
 snapshotStats TableHarness{..} = do
@@ -502,20 +505,20 @@ localInitSentinel = 0x105105105
 sizeOfInt64 :: Int
 sizeOfInt64 = sizeOf (undefined :: Int64)
 
-withOptionalValue :: IO DuckDBValue -> (DuckDBValue -> IO a) -> IO (Maybe a)
+withOptionalValue :: IO Duckdb_value -> (Duckdb_value -> IO a) -> IO (Maybe a)
 withOptionalValue acquire action = do
     value <- acquire
-    if value == nullPtr
+    if value == (coerce (nullPtr :: Ptr Void))
         then pure Nothing
         else do
             result <- action value
             destroy value
             pure (Just result)
   where
-    destroy val = alloca \ptr -> poke ptr val >> c_duckdb_destroy_value ptr
+    destroy val = alloca \ptr -> poke ptr val >> duckdb_destroy_value ptr
 
-vectorDataPtr :: DuckDBVector -> IO (Ptr Int64)
-vectorDataPtr vec = castPtr <$> c_duckdb_vector_get_data vec
+vectorDataPtr :: Duckdb_vector -> IO (Ptr Int64)
+vectorDataPtr vec = coerce <$> duckdb_vector_get_data vec
 
 contains :: String -> String -> Bool
 contains needle haystack = mapLower needle `isInfixOf` mapLower haystack
@@ -529,21 +532,21 @@ toCBool :: Bool -> CBool
 toCBool False = CBool 0
 toCBool True = CBool 1
 
-peekCStringMaybe :: CString -> IO String
+peekCStringMaybe :: (ConstPtr CChar) -> IO String
 peekCStringMaybe ptr
-    | ptr == nullPtr = pure ""
-    | otherwise = peekCString ptr
+    | ptr == (coerce (nullPtr :: Ptr Void)) = pure ""
+    | otherwise = (peekCString . coerce) ptr
 
 -- Wrappers -------------------------------------------------------------------
 
-foreign import ccall "wrapper"
-    mkBindFun :: (DuckDBBindInfo -> IO ()) -> IO DuckDBTableFunctionBindFun
+mkBindFun :: (Duckdb_bind_info -> IO ()) -> IO Duckdb_table_function_bind_t
+mkBindFun = fmap Duckdb_table_function_bind_t . toFunPtr . Duckdb_table_function_bind_t_Aux
 
-foreign import ccall "wrapper"
-    mkInitFun :: (DuckDBInitInfo -> IO ()) -> IO DuckDBTableFunctionInitFun
+mkInitFun :: (Duckdb_init_info -> IO ()) -> IO Duckdb_table_function_init_t
+mkInitFun = fmap Duckdb_table_function_init_t . toFunPtr . Duckdb_table_function_init_t_Aux
 
-foreign import ccall "wrapper"
-    mkFunctionFun :: (DuckDBFunctionInfo -> DuckDBDataChunk -> IO ()) -> IO DuckDBTableFunctionFun
+mkFunctionFun :: (Duckdb_function_info -> Duckdb_data_chunk -> IO ()) -> IO Duckdb_table_function_t
+mkFunctionFun = fmap Duckdb_table_function_t . toFunPtr . Duckdb_table_function_t_Aux
 
-foreign import ccall "wrapper"
-    mkDeleteCallback :: (Ptr () -> IO ()) -> IO DuckDBDeleteCallback
+mkDeleteCallback :: (Ptr Void -> IO ()) -> IO Duckdb_delete_callback_t
+mkDeleteCallback = fmap Duckdb_delete_callback_t . toFunPtr . Duckdb_delete_callback_t_Aux

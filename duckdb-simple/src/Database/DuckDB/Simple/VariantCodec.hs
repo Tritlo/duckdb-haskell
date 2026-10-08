@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -20,6 +21,7 @@ import Data.Array (Array, bounds, listArray, (!))
 import Data.Bits (complement, finiteBitSize, shiftL, (.&.), (.|.))
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
+import Data.Coerce (Coercible, coerce)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.IntSet as IntSet
 import qualified Data.Set as Set
@@ -38,6 +40,7 @@ import Database.DuckDB.Simple.FromField (
  )
 import Database.DuckDB.Simple.Internal (destroyLogicalType)
 import Database.DuckDB.Simple.Variant (variantObject)
+import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (peekCString)
 import Foreign.Marshal.Alloc (alloca, allocaBytesAligned)
 import Foreign.Marshal.Utils (copyBytes)
@@ -56,7 +59,8 @@ checked = either codecError pure
 -- | Reject native versions outside the supported private-format range.
 checkVersion :: IO ()
 checkVersion = do
-    version <- c_duckdb_library_version >>= peekCString
+    ConstPtr versionPtr <- duckdb_library_version
+    version <- peekCString versionPtr
     let parts = Text.splitOn "." (Text.pack version)
         patch = case parts of
             ["v1", "5", p] -> readMaybe (Text.unpack p) :: Maybe Int
@@ -72,58 +76,58 @@ checkPlatform = alloca \ptr -> do
         codecError "the private codec requires a 64-bit little-endian host"
 
 -- | Acquire a non-NULL native handle.
-nonNull :: String -> IO (Ptr a) -> IO (Ptr a)
+nonNull :: (Coercible a (Ptr ())) => String -> IO a -> IO a
 nonNull label action = do
     ptr <- action
-    when (ptr == nullPtr) (codecError (label <> " returned NULL"))
+    when (coerce ptr == (nullPtr :: Ptr ())) (codecError (label <> " returned NULL"))
     pure ptr
 
 -- | Check a logical type's tag.
-expectType :: DuckDBType -> DuckDBLogicalType -> IO ()
+expectType :: DUCKDB_TYPE -> Duckdb_logical_type -> IO ()
 expectType expected logical = do
-    actual <- c_duckdb_get_type_id logical
+    Duckdb_type actual <- duckdb_get_type_id logical
     unless (actual == expected) (codecError "unexpected physical child type")
 
 -- | Check a STRUCT's names and owned child descriptors.
-checkStruct :: DuckDBLogicalType -> [(Text, DuckDBLogicalType -> IO ())] -> IO ()
+checkStruct :: Duckdb_logical_type -> [(Text, Duckdb_logical_type -> IO ())] -> IO ()
 checkStruct logical fields = do
-    count <- c_duckdb_struct_type_child_count logical
+    count <- duckdb_struct_type_child_count logical
     unless (count == fromIntegral (length fields)) (codecError "unexpected physical child count")
     sequence_
         [ do
-            bracket (nonNull "child name" (c_duckdb_struct_type_child_name logical index)) (c_duckdb_free . castPtr) \name -> do
+            bracket (nonNull "child name" (duckdb_struct_type_child_name logical index)) (duckdb_free . castPtr) \name -> do
                 bytes <- BS.packCString name
                 unless (bytes == Text.encodeUtf8 expectedName) (codecError "unexpected physical child name")
-            bracket (nonNull "child type" (c_duckdb_struct_type_child_type logical index)) destroyLogicalType checkChild
+            bracket (nonNull "child type" (duckdb_struct_type_child_type logical index)) destroyLogicalType checkChild
         | (index, (expectedName, checkChild)) <- zip [0 ..] fields
         ]
 
 -- | Check a LIST and its owned element descriptor.
-checkList :: (DuckDBLogicalType -> IO ()) -> DuckDBLogicalType -> IO ()
+checkList :: (Duckdb_logical_type -> IO ()) -> Duckdb_logical_type -> IO ()
 checkList checkChild logical = do
-    expectType DuckDBTypeList logical
-    bracket (nonNull "list child type" (c_duckdb_list_type_child_type logical)) destroyLogicalType checkChild
+    expectType DUCKDB_TYPE_LIST logical
+    bracket (nonNull "list child type" (duckdb_list_type_child_type logical)) destroyLogicalType checkChild
 
 -- | Check the complete, unshredded four-child VARIANT schema.
-checkSchema :: DuckDBLogicalType -> IO ()
+checkSchema :: Duckdb_logical_type -> IO ()
 checkSchema logical = do
-    expectType DuckDBTypeVariant logical
+    expectType DUCKDB_TYPE_VARIANT logical
     checkStruct
         logical
-        [ ("keys", checkList (expectType DuckDBTypeVarchar))
+        [ ("keys", checkList (expectType DUCKDB_TYPE_VARCHAR))
         ,
             ( "children"
             , checkList \child -> do
-                expectType DuckDBTypeStruct child
-                checkStruct child [("keys_index", expectType DuckDBTypeUInteger), ("values_index", expectType DuckDBTypeUInteger)]
+                expectType DUCKDB_TYPE_STRUCT child
+                checkStruct child [("keys_index", expectType DUCKDB_TYPE_UINTEGER), ("values_index", expectType DUCKDB_TYPE_UINTEGER)]
             )
         ,
             ( "values"
             , checkList \child -> do
-                expectType DuckDBTypeStruct child
-                checkStruct child [("type_id", expectType DuckDBTypeUTinyInt), ("byte_offset", expectType DuckDBTypeUInteger)]
+                expectType DUCKDB_TYPE_STRUCT child
+                checkStruct child [("type_id", expectType DUCKDB_TYPE_UTINYINT), ("byte_offset", expectType DUCKDB_TYPE_UINTEGER)]
             )
-        , ("data", expectType DuckDBTypeBlob)
+        , ("data", expectType DUCKDB_TYPE_BLOB)
         ]
 
 -- | Check an element index before native pointer arithmetic.
@@ -132,15 +136,15 @@ checkIndex width index =
     when (index < 0 || index > maxBound `div` width) (codecError "native element index exceeds Int range")
 
 -- | Prepare validity access for a chunk. The caller checks row bounds.
-prepareValidity :: DuckDBVector -> IO (Int -> IO Bool)
+prepareValidity :: Duckdb_vector -> IO (Int -> IO Bool)
 prepareValidity vector = do
-    validity <- c_duckdb_vector_get_validity vector
+    validity <- duckdb_vector_get_validity vector
     pure (chunkIsRowValid validity . fromIntegral)
 
 -- | Borrow a fixed-width buffer until its chunk is destroyed.
-prepareElementReader :: (Storable a) => DuckDBVector -> IO (Int -> IO a)
+prepareElementReader :: (Storable a) => Duckdb_vector -> IO (Int -> IO a)
 prepareElementReader vector = do
-    ptr <- c_duckdb_vector_get_data vector
+    ptr <- duckdb_vector_get_data vector
     valid <- prepareValidity vector
     pure (readAt valid (castPtr ptr))
   where
@@ -157,12 +161,12 @@ prepareElementReader vector = do
     element _ = undefined
 
 -- | Borrow a string buffer and copy each requested value into Haskell memory.
-prepareBytesReader :: DuckDBVector -> IO (Int -> IO ByteString)
+prepareBytesReader :: Duckdb_vector -> IO (Int -> IO ByteString)
 prepareBytesReader vector = do
-    base <- c_duckdb_vector_get_data vector
+    base <- duckdb_vector_get_data vector
     valid <- prepareValidity vector
     pure \index -> do
-        checkIndex 16 index
+        checkIndex (sizeOf (undefined :: Duckdb_string_t)) index
         present <- valid index
         unless present (codecError "NULL physical string element")
         when (base == nullPtr) (codecError "NULL string vector data")
@@ -175,12 +179,12 @@ checkedInt n
     | otherwise = pure (fromInteger n)
 
 -- | Prepare LIST bounds checks against the chunk's fixed child size.
-prepareListBounds :: DuckDBVector -> IO (Int -> IO (Int, Int))
+prepareListBounds :: Duckdb_vector -> IO (Int -> IO (Int, Int))
 prepareListBounds vector = do
     readEntry <- prepareElementReader vector
-    size <- c_duckdb_list_vector_get_size vector
+    Idx_t size <- duckdb_list_vector_get_size vector
     pure \row -> do
-        DuckDBListEntry offset count <- readEntry row
+        Duckdb_list_entry offset count <- readEntry row
         unless (offset <= size && count <= size - offset) (codecError "LIST bounds exceed child size")
         start <- checkedInt (toInteger offset)
         len <- checkedInt (toInteger count)
@@ -188,7 +192,7 @@ prepareListBounds vector = do
         pure (start, len)
 
 -- | Decode one row while its flattened result chunk remains alive.
-decodeVariant :: DuckDBVector -> Int -> IO FieldValue
+decodeVariant :: Duckdb_vector -> Int -> IO FieldValue
 decodeVariant vector row = prepareVariantDecoder vector >>= ($ row)
 
 {- | Check the format once and borrow buffers for a flattened result chunk.
@@ -196,12 +200,12 @@ The returned reader must not outlive the chunk. The caller supplies row indices
 within that chunk. DuckDB result Fetch flattens nested vectors in 1.5.
 Each read copies its payload into Haskell memory, including referenced keys.
 -}
-prepareVariantDecoder :: DuckDBVector -> IO (Int -> IO FieldValue)
+prepareVariantDecoder :: Duckdb_vector -> IO (Int -> IO FieldValue)
 prepareVariantDecoder vector = do
     checkVersion
     checkPlatform
-    when (vector == nullPtr) (codecError "NULL vector")
-    bracket (nonNull "vector type" (c_duckdb_vector_get_column_type vector)) destroyLogicalType checkSchema
+    when (vector == Duckdb_vector nullPtr) (codecError "NULL vector")
+    bracket (nonNull "vector type" (duckdb_vector_get_column_type vector)) destroyLogicalType checkSchema
     valid <- prepareValidity vector
     keys <- child vector 0
     children <- child vector 1
@@ -210,9 +214,9 @@ prepareVariantDecoder vector = do
     keyBounds <- prepareListBounds keys
     childBounds <- prepareListBounds children
     valueBounds <- prepareListBounds values
-    keyVector <- nonNull "keys vector" (c_duckdb_list_vector_get_child keys)
-    childVector <- nonNull "children vector" (c_duckdb_list_vector_get_child children)
-    valueVector <- nonNull "values vector" (c_duckdb_list_vector_get_child values)
+    keyVector <- nonNull "keys vector" (duckdb_list_vector_get_child keys)
+    childVector <- nonNull "children vector" (duckdb_list_vector_get_child children)
+    valueVector <- nonNull "values vector" (duckdb_list_vector_get_child values)
     keyIndices <- child childVector 0
     valueIndices <- child childVector 1
     tags <- child valueVector 0
@@ -225,7 +229,7 @@ prepareVariantDecoder vector = do
     readKeyBytes <- prepareBytesReader keyVector
     readBlob <- prepareBytesReader blob
     pure \row -> do
-        checkIndex 16 row
+        checkIndex (sizeOf (undefined :: Duckdb_list_entry)) row
         present <- valid row
         if not present
             then pure FieldNull
@@ -252,7 +256,7 @@ prepareVariantDecoder vector = do
                 bytes <- readBlob row
                 decodeVariantPayload valueRows childRows keyRows bytes
   where
-    child parent index = nonNull "STRUCT vector child" (c_duckdb_struct_vector_get_child parent index)
+    child parent index = nonNull "STRUCT vector child" (duckdb_struct_vector_get_child parent index)
 
 {- | Decode copied 1.5 payload data for one non-NULL row.
 Values are (tag, byte offset). Children are (optional key index, value index).
@@ -396,35 +400,35 @@ decodeScalar tag bytes = case tag of
 {- | The type and the payload size of each fixed-width scalar tag. These
 payloads have the memory layout of one vector element of the type.
 -}
-fixedWidthTag :: Word8 -> Maybe (DuckDBType, Int)
+fixedWidthTag :: Word8 -> Maybe (DUCKDB_TYPE, Int)
 fixedWidthTag = \case
-    3 -> Just (DuckDBTypeTinyInt, 1)
-    4 -> Just (DuckDBTypeSmallInt, 2)
-    5 -> Just (DuckDBTypeInteger, 4)
-    6 -> Just (DuckDBTypeBigInt, 8)
-    7 -> Just (DuckDBTypeHugeInt, 16)
-    8 -> Just (DuckDBTypeUTinyInt, 1)
-    9 -> Just (DuckDBTypeUSmallInt, 2)
-    10 -> Just (DuckDBTypeUInteger, 4)
-    11 -> Just (DuckDBTypeUBigInt, 8)
-    12 -> Just (DuckDBTypeUHugeInt, 16)
-    13 -> Just (DuckDBTypeFloat, 4)
-    14 -> Just (DuckDBTypeDouble, 8)
-    18 -> Just (DuckDBTypeUUID, 16)
-    19 -> Just (DuckDBTypeDate, 4)
-    20 -> Just (DuckDBTypeTime, 8)
-    21 -> Just (DuckDBTypeTimeNs, 8)
-    22 -> Just (DuckDBTypeTimestampS, 8)
-    23 -> Just (DuckDBTypeTimestampMs, 8)
-    24 -> Just (DuckDBTypeTimestamp, 8)
-    25 -> Just (DuckDBTypeTimestampNs, 8)
-    26 -> Just (DuckDBTypeTimeTz, 8)
-    27 -> Just (DuckDBTypeTimestampTz, 8)
-    28 -> Just (DuckDBTypeInterval, 16)
+    3 -> Just (DUCKDB_TYPE_TINYINT, 1)
+    4 -> Just (DUCKDB_TYPE_SMALLINT, 2)
+    5 -> Just (DUCKDB_TYPE_INTEGER, 4)
+    6 -> Just (DUCKDB_TYPE_BIGINT, 8)
+    7 -> Just (DUCKDB_TYPE_HUGEINT, 16)
+    8 -> Just (DUCKDB_TYPE_UTINYINT, 1)
+    9 -> Just (DUCKDB_TYPE_USMALLINT, 2)
+    10 -> Just (DUCKDB_TYPE_UINTEGER, 4)
+    11 -> Just (DUCKDB_TYPE_UBIGINT, 8)
+    12 -> Just (DUCKDB_TYPE_UHUGEINT, 16)
+    13 -> Just (DUCKDB_TYPE_FLOAT, 4)
+    14 -> Just (DUCKDB_TYPE_DOUBLE, 8)
+    18 -> Just (DUCKDB_TYPE_UUID, 16)
+    19 -> Just (DUCKDB_TYPE_DATE, 4)
+    20 -> Just (DUCKDB_TYPE_TIME, 8)
+    21 -> Just (DUCKDB_TYPE_TIME_NS, 8)
+    22 -> Just (DUCKDB_TYPE_TIMESTAMP_S, 8)
+    23 -> Just (DUCKDB_TYPE_TIMESTAMP_MS, 8)
+    24 -> Just (DUCKDB_TYPE_TIMESTAMP, 8)
+    25 -> Just (DUCKDB_TYPE_TIMESTAMP_NS, 8)
+    26 -> Just (DUCKDB_TYPE_TIME_TZ, 8)
+    27 -> Just (DUCKDB_TYPE_TIMESTAMP_TZ, 8)
+    28 -> Just (DUCKDB_TYPE_INTERVAL, 16)
     _ -> Nothing
 
 -- | Copy a fixed-width payload to aligned memory and decode it as one element.
-decodeFixedWidth :: DuckDBType -> Int -> ByteString -> IO FieldValue
+decodeFixedWidth :: DUCKDB_TYPE -> Int -> ByteString -> IO FieldValue
 decodeFixedWidth dtype size bytes = do
     when (BS.length bytes < size) (codecError "truncated scalar payload")
     allocaBytesAligned size 16 \buffer -> do

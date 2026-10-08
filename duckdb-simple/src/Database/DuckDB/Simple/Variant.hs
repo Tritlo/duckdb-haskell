@@ -10,7 +10,7 @@ module Database.DuckDB.Simple.Variant (
 import Data.Array (listArray)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
-import Database.DuckDB.FFI (pattern DuckDBTypeVariant)
+import Database.DuckDB.FFI (pattern DUCKDB_TYPE_VARIANT)
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), FromField (..))
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), StructValue (..))
 import Database.DuckDB.Simple.Ok (Ok (..))
@@ -31,7 +31,7 @@ variantObject entries =
     FieldStruct
         StructValue
             { structValueFields = listArray (0, length entries - 1) [StructField name value | (name, value) <- entries]
-            , structValueTypes = listArray (0, length entries - 1) [StructField name (LogicalTypeScalar DuckDBTypeVariant) | (name, _) <- entries]
+            , structValueTypes = listArray (0, length entries - 1) [StructField name (LogicalTypeScalar DUCKDB_TYPE_VARIANT) | (name, _) <- entries]
             , structValueIndex = Map.fromList (zip (map fst entries) [0 ..])
             }
 

@@ -12,7 +12,7 @@ documentation: True
 -- which prevents building with GHC 9.14+ (template-haskell-2.24).
 -- The optional DataFrame test uses bytestring-lexing. Its base bound excludes
 -- GHC 9.14, but the package builds with base-4.22 without source changes.
-allow-newer: uuid-types:template-haskell, bytestring-lexing:base
+allow-newer: debruijn:base, skew-list:base, uuid-types:template-haskell, bytestring-lexing:base
 
 program-options
 
@@ -37,3 +37,6 @@ package duckdb-simple
     "--ignore-link-symbol=Database.DuckDB.Simple.Function.toScalarValue"
     "--ignore-link-symbol=Database.DuckDB.Simple.TypeCache.TypeCache"
     "--ignore-link-symbol=Database.DuckDB.Simple.FromRow.RowParseRO"
+
+package hs-bindgen
+  optimization: False

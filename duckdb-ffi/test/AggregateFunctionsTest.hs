@@ -7,19 +7,22 @@ module AggregateFunctionsTest (tests) where
 import Control.Concurrent (runInBoundThread)
 import Control.Exception (bracket)
 import Control.Monad (forM_, when)
+import Data.Coerce (coerce)
 import Data.Int (Int32)
 import Data.List (isInfixOf)
+import Data.Void (Void)
 import Data.Word (Word64)
 import Database.DuckDB.FFI
-import Database.DuckDB.FFI.Deprecated
-import Foreign.C.String (CString, peekCString, withCString)
-import Foreign.C.Types (CBool (..))
+import Foreign.C.ConstPtr (ConstPtr (..))
+import Foreign.C.String (peekCString)
+import Foreign.C.Types (CBool (..), CChar)
 import Foreign.Marshal.Alloc (alloca, free, mallocBytes)
-import Foreign.Ptr (Ptr, castPtr, freeHaskellFunPtr, nullFunPtr, nullPtr)
+import Foreign.Ptr (FunPtr, Ptr, freeHaskellFunPtr, nullFunPtr, nullPtr)
 import Foreign.Storable (peek, peekElemOff, poke, pokeElemOff, sizeOf)
+import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
-import Utils (withConnection, withDatabase, withLogicalType, withResultCString)
+import Utils (withConnection, withConstCString, withDatabase, withLogicalType, withResultCString)
 
 tests :: TestTree
 tests =
@@ -40,14 +43,14 @@ sumAggregate =
         runInBoundThread do
             withDatabase \db ->
                 withConnection db \conn ->
-                    withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \intType ->
+                    withLogicalType (duckdb_create_logical_type (Duckdb_type DUCKDB_TYPE_INTEGER)) \intType ->
                         withAggregateFunction \aggFun ->
                             withCallbacks \cbs -> do
                                 setupAggregateFunction aggFun cbs intType "haskell_sum"
-                                c_duckdb_register_aggregate_function conn aggFun >>= (@?= DuckDBSuccess)
-                                withCString "SELECT haskell_sum(v) FROM (VALUES (1), (2), (3)) t(v)" \sql ->
+                                duckdb_register_aggregate_function conn aggFun >>= (@?= DuckDBSuccess)
+                                withConstCString "SELECT haskell_sum(v) FROM (VALUES (1), (2), (3)) t(v)" \sql ->
                                     withResultCString conn sql \resPtr ->
-                                        c_duckdb_value_int32 resPtr 0 0 >>= (@?= 6)
+                                        duckdb_value_int32 resPtr 0 0 >>= (@?= 6)
 
 extraInfoAggregate :: TestTree
 extraInfoAggregate =
@@ -56,18 +59,18 @@ extraInfoAggregate =
             let config = defaultAggregateConfig{cfgBonus = 2}
             withDatabase \db ->
                 withConnection db \conn ->
-                    withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \intType ->
+                    withLogicalType (duckdb_create_logical_type (Duckdb_type DUCKDB_TYPE_INTEGER)) \intType ->
                         withAggregateConfig config \configPtr ->
                             withAggregateFunction \aggFun ->
                                 withCallbacks \cbs -> do
                                     setupAggregateFunction aggFun cbs intType "haskell_bonus_sum"
-                                    c_duckdb_aggregate_function_set_extra_info aggFun configPtr nullFunPtr
+                                    duckdb_aggregate_function_set_extra_info aggFun configPtr (coerce (nullFunPtr :: FunPtr Void))
 
-                                    c_duckdb_register_aggregate_function conn aggFun >>= (@?= DuckDBSuccess)
+                                    duckdb_register_aggregate_function conn aggFun >>= (@?= DuckDBSuccess)
 
-                                    withCString "SELECT haskell_bonus_sum(v) FROM (VALUES (1), (2), (3)) t(v)" \sql ->
+                                    withConstCString "SELECT haskell_bonus_sum(v) FROM (VALUES (1), (2), (3)) t(v)" \sql ->
                                         withResultCString conn sql \resPtr ->
-                                            c_duckdb_value_int32 resPtr 0 0 >>= (@?= 12)
+                                            duckdb_value_int32 resPtr 0 0 >>= (@?= 12)
 
 aggregateFunctionSet :: TestTree
 aggregateFunctionSet =
@@ -75,18 +78,18 @@ aggregateFunctionSet =
         runInBoundThread do
             withDatabase \db ->
                 withConnection db \conn ->
-                    withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \intType ->
+                    withLogicalType (duckdb_create_logical_type (Duckdb_type DUCKDB_TYPE_INTEGER)) \intType ->
                         withAggregateFunction \aggFun ->
                             withCallbacks \cbs -> do
                                 setupAggregateFunction aggFun cbs intType "haskell_sum_set"
-                                withCString "haskell_sum_set" \setName ->
+                                withConstCString "haskell_sum_set" \setName ->
                                     withAggregateFunctionSet setName \set -> do
-                                        c_duckdb_add_aggregate_function_to_set set aggFun >>= (@?= DuckDBSuccess)
-                                        c_duckdb_register_aggregate_function_set conn set >>= (@?= DuckDBSuccess)
+                                        duckdb_add_aggregate_function_to_set set aggFun >>= (@?= DuckDBSuccess)
+                                        duckdb_register_aggregate_function_set conn set >>= (@?= DuckDBSuccess)
 
-                                        withCString "SELECT haskell_sum_set(v) FROM (VALUES (4), (5), (6)) t(v)" \sql ->
+                                        withConstCString "SELECT haskell_sum_set(v) FROM (VALUES (4), (5), (6)) t(v)" \sql ->
                                             withResultCString conn sql \resPtr ->
-                                                c_duckdb_value_int32 resPtr 0 0 >>= (@?= 15)
+                                                duckdb_value_int32 resPtr 0 0 >>= (@?= 15)
 
 aggregateErrorPropagation :: TestTree
 aggregateErrorPropagation =
@@ -95,24 +98,24 @@ aggregateErrorPropagation =
             let config = defaultAggregateConfig{cfgFailOnNegative = 1}
             withDatabase \db ->
                 withConnection db \conn ->
-                    withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \intType ->
+                    withLogicalType (duckdb_create_logical_type (Duckdb_type DUCKDB_TYPE_INTEGER)) \intType ->
                         withAggregateConfig config \configPtr ->
                             withAggregateFunction \aggFun ->
                                 withCallbacks \cbs -> do
                                     setupAggregateFunction aggFun cbs intType "no_negatives"
-                                    c_duckdb_aggregate_function_set_extra_info aggFun configPtr nullFunPtr
-                                    c_duckdb_register_aggregate_function conn aggFun >>= (@?= DuckDBSuccess)
+                                    duckdb_aggregate_function_set_extra_info aggFun configPtr (coerce (nullFunPtr :: FunPtr Void))
+                                    duckdb_register_aggregate_function conn aggFun >>= (@?= DuckDBSuccess)
 
-                                    withCString "SELECT no_negatives(v) FROM (VALUES (1), (-5)) t(v)" \sql ->
+                                    withConstCString "SELECT no_negatives(v) FROM (VALUES (1), (-5)) t(v)" \sql ->
                                         alloca \resPtr -> do
-                                            errState <- c_duckdb_query conn sql resPtr
+                                            errState <- duckdb_query conn sql resPtr
                                             errState @?= DuckDBError
 
-                                            msgPtr <- c_duckdb_result_error resPtr
-                                            errMsg <- peekCString msgPtr
+                                            msgPtr <- duckdb_result_error resPtr
+                                            errMsg <- (peekCString . coerce) msgPtr
                                             assertBool "expected negative error message" ("negatives not allowed" `isInfixOf` errMsg)
 
-                                            c_duckdb_destroy_result resPtr
+                                            duckdb_destroy_result resPtr
 
 specialHandlingNulls :: TestTree
 specialHandlingNulls =
@@ -121,18 +124,18 @@ specialHandlingNulls =
             let config = defaultAggregateConfig{cfgNullIfAllInvalid = 1}
             withDatabase \db ->
                 withConnection db \conn ->
-                    withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \intType ->
+                    withLogicalType (duckdb_create_logical_type (Duckdb_type DUCKDB_TYPE_INTEGER)) \intType ->
                         withAggregateConfig config \configPtr ->
                             withAggregateFunction \aggFun ->
                                 withCallbacks \cbs -> do
                                     setupAggregateFunction aggFun cbs intType "nullable_sum"
-                                    c_duckdb_aggregate_function_set_extra_info aggFun configPtr nullFunPtr
-                                    c_duckdb_aggregate_function_set_special_handling aggFun
-                                    c_duckdb_register_aggregate_function conn aggFun >>= (@?= DuckDBSuccess)
+                                    duckdb_aggregate_function_set_extra_info aggFun configPtr (coerce (nullFunPtr :: FunPtr Void))
+                                    duckdb_aggregate_function_set_special_handling aggFun
+                                    duckdb_register_aggregate_function conn aggFun >>= (@?= DuckDBSuccess)
 
-                                    withCString "SELECT nullable_sum(v) FROM (VALUES (CAST(NULL AS INTEGER))) t(v)" \sql ->
+                                    withConstCString "SELECT nullable_sum(v) FROM (VALUES (CAST(NULL AS INTEGER))) t(v)" \sql ->
                                         withResultCString conn sql \resPtr -> do
-                                            isNull <- c_duckdb_value_is_null resPtr 0 0
+                                            isNull <- duckdb_value_is_null resPtr 0 0
                                             cbToBool isNull @?= True
 
 -- Aggregate state -----------------------------------------------------------
@@ -202,16 +205,16 @@ peekAggregateConfig ptr = do
             , cfgNullIfAllInvalid = nullAll
             }
 
-configFromInfo :: DuckDBFunctionInfo -> IO AggregateConfig
+configFromInfo :: Duckdb_function_info -> IO AggregateConfig
 configFromInfo info = do
-    raw <- c_duckdb_aggregate_function_get_extra_info info
-    if raw == nullPtr
+    raw <- duckdb_aggregate_function_get_extra_info info
+    if raw == (coerce (nullPtr :: Ptr Void))
         then pure defaultAggregateConfig
-        else peekAggregateConfig (castPtr raw)
+        else peekAggregateConfig (coerce raw)
 
-withAggregateConfig :: AggregateConfig -> (Ptr () -> IO a) -> IO a
+withAggregateConfig :: AggregateConfig -> (Ptr Void -> IO a) -> IO a
 withAggregateConfig cfg action =
-    bracket acquire freeConfig (action . castPtr)
+    bracket acquire freeConfig (action . coerce)
   where
     acquire = do
         ptr <- mallocBytes aggregateConfigSize :: IO AggregateConfigPtr
@@ -231,12 +234,12 @@ shouldMarkNullWhenAllInvalid AggregateConfig{cfgNullIfAllInvalid = flag} = flag 
 -- Callback implementations --------------------------------------------------
 
 data Callbacks = Callbacks
-    { cbStateSize :: DuckDBAggregateStateSizeFun
-    , cbInit :: DuckDBAggregateInitFun
-    , cbUpdate :: DuckDBAggregateUpdateFun
-    , cbCombine :: DuckDBAggregateCombineFun
-    , cbFinalize :: DuckDBAggregateFinalizeFun
-    , cbDestroy :: DuckDBAggregateDestroyFun
+    { cbStateSize :: Duckdb_aggregate_state_size
+    , cbInit :: Duckdb_aggregate_init_t
+    , cbUpdate :: Duckdb_aggregate_update_t
+    , cbCombine :: Duckdb_aggregate_combine_t
+    , cbFinalize :: Duckdb_aggregate_finalize_t
+    , cbDestroy :: Duckdb_aggregate_destroy_t
     }
 
 withCallbacks :: (Callbacks -> IO a) -> IO a
@@ -259,37 +262,37 @@ withCallbacks = bracket acquire release
                 , cbDestroy = destroyFun
                 }
     release Callbacks{cbStateSize = sizeFun, cbInit = initFun, cbUpdate = updateFun, cbCombine = combineFun, cbFinalize = finalizeFun, cbDestroy = destroyFun} = do
-        freeHaskellFunPtr sizeFun
-        freeHaskellFunPtr initFun
-        freeHaskellFunPtr updateFun
-        freeHaskellFunPtr combineFun
-        freeHaskellFunPtr finalizeFun
-        freeHaskellFunPtr destroyFun
+        (freeHaskellFunPtr . coerce) sizeFun
+        (freeHaskellFunPtr . coerce) initFun
+        (freeHaskellFunPtr . coerce) updateFun
+        (freeHaskellFunPtr . coerce) combineFun
+        (freeHaskellFunPtr . coerce) finalizeFun
+        (freeHaskellFunPtr . coerce) destroyFun
 
-setupAggregateFunction :: DuckDBAggregateFunction -> Callbacks -> DuckDBLogicalType -> String -> IO ()
+setupAggregateFunction :: Duckdb_aggregate_function -> Callbacks -> Duckdb_logical_type -> String -> IO ()
 setupAggregateFunction aggFun Callbacks{cbStateSize = sizeFun, cbInit = initFun, cbUpdate = updateFun, cbCombine = combineFun, cbFinalize = finalizeFun, cbDestroy = destroyFun} intType name = do
-    withCString name $ \cname -> c_duckdb_aggregate_function_set_name aggFun cname
-    c_duckdb_aggregate_function_add_parameter aggFun intType
-    c_duckdb_aggregate_function_set_return_type aggFun intType
-    c_duckdb_aggregate_function_set_functions aggFun sizeFun initFun updateFun combineFun finalizeFun
-    c_duckdb_aggregate_function_set_destructor aggFun destroyFun
+    withConstCString name $ \cname -> duckdb_aggregate_function_set_name aggFun cname
+    duckdb_aggregate_function_add_parameter aggFun intType
+    duckdb_aggregate_function_set_return_type aggFun intType
+    duckdb_aggregate_function_set_functions aggFun sizeFun initFun updateFun combineFun finalizeFun
+    duckdb_aggregate_function_set_destructor aggFun destroyFun
 
-stateSizeFun :: DuckDBFunctionInfo -> IO DuckDBIdx
-stateSizeFun _ = pure (fromIntegral (sizeOf (nullPtr :: Ptr ())))
+stateSizeFun :: Duckdb_function_info -> IO Idx_t
+stateSizeFun _ = pure (fromIntegral (sizeOf ((coerce (nullPtr :: Ptr Void)) :: Ptr Void)))
 
-initCallback :: DuckDBFunctionInfo -> DuckDBAggregateState -> IO ()
+initCallback :: Duckdb_function_info -> Duckdb_aggregate_state -> IO ()
 initCallback _ state = do
-    raw <- c_duckdb_malloc (fromIntegral sumStateSize)
-    let storage = castPtr raw :: SumStatePtr
+    raw <- duckdb_malloc (fromIntegral sumStateSize)
+    let storage = coerce raw :: SumStatePtr
     writeSumState storage initialSumState
     writeStateValuePtr state storage
 
-updateCallback :: DuckDBFunctionInfo -> DuckDBDataChunk -> Ptr DuckDBAggregateState -> IO ()
+updateCallback :: Duckdb_function_info -> Duckdb_data_chunk -> Ptr Duckdb_aggregate_state -> IO ()
 updateCallback info chunk stateArrayPtr = do
-    rowCount <- c_duckdb_data_chunk_get_size chunk
-    vec <- c_duckdb_data_chunk_get_vector chunk 0
+    rowCount <- duckdb_data_chunk_get_size chunk
+    vec <- duckdb_data_chunk_get_vector chunk 0
     dataPtr <- vectorDataPtr vec
-    validity <- c_duckdb_vector_get_validity vec
+    validity <- duckdb_vector_get_validity vec
     config <- configFromInfo info
 
     let rowCountInt = fromIntegral rowCount
@@ -307,14 +310,14 @@ updateCallback info chunk stateArrayPtr = do
                 value <- peekElemOff dataPtr i
                 if shouldFailOnNegative config && value < 0
                     then do
-                        withCString "negatives not allowed" $ \errMsg ->
-                            c_duckdb_aggregate_function_set_error info errMsg
+                        withConstCString "negatives not allowed" $ \errMsg ->
+                            duckdb_aggregate_function_set_error info errMsg
                         writeSumState storage current{ssSeen = seen'}
                     else
                         let total' = ssTotal current + value + cfgBonus config
                          in writeSumState storage SumState{ssTotal = total', ssSeen = seen', ssNulls = ssNulls current}
 
-combineCallback :: DuckDBFunctionInfo -> Ptr DuckDBAggregateState -> Ptr DuckDBAggregateState -> DuckDBIdx -> IO ()
+combineCallback :: Duckdb_function_info -> Ptr Duckdb_aggregate_state -> Ptr Duckdb_aggregate_state -> Idx_t -> IO ()
 combineCallback _ sourceStates targetStates count =
     forM_ [0 .. fromIntegral count - 1] \i -> do
         sourceState <- peekElemOff sourceStates i
@@ -332,7 +335,7 @@ combineCallback _ sourceStates targetStates count =
                     }
         writeSumState targetPtr combined
 
-finalizeCallback :: DuckDBFunctionInfo -> Ptr DuckDBAggregateState -> DuckDBVector -> DuckDBIdx -> DuckDBIdx -> IO ()
+finalizeCallback :: Duckdb_function_info -> Ptr Duckdb_aggregate_state -> Duckdb_vector -> Idx_t -> Idx_t -> IO ()
 finalizeCallback info stateArrayPtr outVec _ offset = do
     state <- peekElemOff stateArrayPtr (fromIntegral offset)
     storage <- readStateValuePtr state
@@ -345,69 +348,69 @@ finalizeCallback info stateArrayPtr outVec _ offset = do
 
     let allInvalid = seen > 0 && seen == nulls
     when (shouldMarkNullWhenAllInvalid config && allInvalid) do
-        c_duckdb_vector_ensure_validity_writable outVec
-        validity <- c_duckdb_vector_get_validity outVec
-        c_duckdb_validity_set_row_invalid validity offset
+        duckdb_vector_ensure_validity_writable outVec
+        validity <- duckdb_vector_get_validity outVec
+        duckdb_validity_set_row_invalid validity offset
 
-destroyCallback :: Ptr DuckDBAggregateState -> DuckDBIdx -> IO ()
+destroyCallback :: Ptr Duckdb_aggregate_state -> Idx_t -> IO ()
 destroyCallback states count =
     forM_ [0 .. fromIntegral count - 1] \i -> do
         state <- peekElemOff states i
         storage <- readStateValuePtr state
-        when (storage /= nullPtr) $
-            c_duckdb_free (castPtr storage)
+        when (storage /= (coerce (nullPtr :: Ptr Void))) $
+            duckdb_free (coerce storage)
 
 -- Helper pointer accessors --------------------------------------------------
 
-writeStateValuePtr :: DuckDBAggregateState -> SumStatePtr -> IO ()
+writeStateValuePtr :: Duckdb_aggregate_state -> SumStatePtr -> IO ()
 writeStateValuePtr state ptr =
-    poke (castPtr state :: Ptr (Ptr ())) (castPtr ptr)
+    poke (coerce state :: Ptr (Ptr Void)) (coerce ptr)
 
-readStateValuePtr :: DuckDBAggregateState -> IO SumStatePtr
+readStateValuePtr :: Duckdb_aggregate_state -> IO SumStatePtr
 readStateValuePtr state = do
-    raw <- peek (castPtr state :: Ptr (Ptr ()))
-    pure (castPtr raw)
+    raw <- peek (coerce state :: Ptr (Ptr Void))
+    pure (coerce raw)
 
-vectorDataPtr :: DuckDBVector -> IO (Ptr Int32)
-vectorDataPtr vec = castPtr <$> c_duckdb_vector_get_data vec
+vectorDataPtr :: Duckdb_vector -> IO (Ptr Int32)
+vectorDataPtr vec = coerce <$> duckdb_vector_get_data vec
 
-rowIsValid :: Ptr Word64 -> DuckDBIdx -> IO Bool
+rowIsValid :: Ptr Word64 -> Idx_t -> IO Bool
 rowIsValid validity idx
-    | validity == nullPtr = pure True
-    | otherwise = cbToBool <$> c_duckdb_validity_row_is_valid validity idx
+    | validity == (coerce (nullPtr :: Ptr Void)) = pure True
+    | otherwise = cbToBool <$> duckdb_validity_row_is_valid validity idx
 
 cbToBool :: CBool -> Bool
 cbToBool (CBool v) = v /= 0
 
 -- Wrapper builders ----------------------------------------------------------
 
-foreign import ccall "wrapper"
-    mkStateSizeFun :: (DuckDBFunctionInfo -> IO DuckDBIdx) -> IO DuckDBAggregateStateSizeFun
+mkStateSizeFun :: (Duckdb_function_info -> IO Idx_t) -> IO Duckdb_aggregate_state_size
+mkStateSizeFun = fmap Duckdb_aggregate_state_size . toFunPtr . Duckdb_aggregate_state_size_Aux
 
-foreign import ccall "wrapper"
-    mkInitFun :: (DuckDBFunctionInfo -> DuckDBAggregateState -> IO ()) -> IO DuckDBAggregateInitFun
+mkInitFun :: (Duckdb_function_info -> Duckdb_aggregate_state -> IO ()) -> IO Duckdb_aggregate_init_t
+mkInitFun = fmap Duckdb_aggregate_init_t . toFunPtr . Duckdb_aggregate_init_t_Aux
 
-foreign import ccall "wrapper"
-    mkUpdateFun :: (DuckDBFunctionInfo -> DuckDBDataChunk -> Ptr DuckDBAggregateState -> IO ()) -> IO DuckDBAggregateUpdateFun
+mkUpdateFun :: (Duckdb_function_info -> Duckdb_data_chunk -> Ptr Duckdb_aggregate_state -> IO ()) -> IO Duckdb_aggregate_update_t
+mkUpdateFun = fmap Duckdb_aggregate_update_t . toFunPtr . Duckdb_aggregate_update_t_Aux
 
-foreign import ccall "wrapper"
-    mkCombineFun :: (DuckDBFunctionInfo -> Ptr DuckDBAggregateState -> Ptr DuckDBAggregateState -> DuckDBIdx -> IO ()) -> IO DuckDBAggregateCombineFun
+mkCombineFun :: (Duckdb_function_info -> Ptr Duckdb_aggregate_state -> Ptr Duckdb_aggregate_state -> Idx_t -> IO ()) -> IO Duckdb_aggregate_combine_t
+mkCombineFun = fmap Duckdb_aggregate_combine_t . toFunPtr . Duckdb_aggregate_combine_t_Aux
 
-foreign import ccall "wrapper"
-    mkFinalizeFun :: (DuckDBFunctionInfo -> Ptr DuckDBAggregateState -> DuckDBVector -> DuckDBIdx -> DuckDBIdx -> IO ()) -> IO DuckDBAggregateFinalizeFun
+mkFinalizeFun :: (Duckdb_function_info -> Ptr Duckdb_aggregate_state -> Duckdb_vector -> Idx_t -> Idx_t -> IO ()) -> IO Duckdb_aggregate_finalize_t
+mkFinalizeFun = fmap Duckdb_aggregate_finalize_t . toFunPtr . Duckdb_aggregate_finalize_t_Aux
 
-foreign import ccall "wrapper"
-    mkDestroyFun :: (Ptr DuckDBAggregateState -> DuckDBIdx -> IO ()) -> IO DuckDBAggregateDestroyFun
+mkDestroyFun :: (Ptr Duckdb_aggregate_state -> Idx_t -> IO ()) -> IO Duckdb_aggregate_destroy_t
+mkDestroyFun = fmap Duckdb_aggregate_destroy_t . toFunPtr . Duckdb_aggregate_destroy_t_Aux
 
 -- Resource helpers ----------------------------------------------------------
 
-withAggregateFunction :: (DuckDBAggregateFunction -> IO a) -> IO a
-withAggregateFunction = bracket c_duckdb_create_aggregate_function destroy
+withAggregateFunction :: (Duckdb_aggregate_function -> IO a) -> IO a
+withAggregateFunction = bracket duckdb_create_aggregate_function destroy
   where
-    destroy fun = alloca \ptr -> poke ptr fun >> c_duckdb_destroy_aggregate_function ptr
+    destroy fun = alloca \ptr -> poke ptr fun >> duckdb_destroy_aggregate_function ptr
 
-withAggregateFunctionSet :: CString -> (DuckDBAggregateFunctionSet -> IO a) -> IO a
+withAggregateFunctionSet :: (ConstPtr CChar) -> (Duckdb_aggregate_function_set -> IO a) -> IO a
 withAggregateFunctionSet name = bracket acquire release
   where
-    acquire = c_duckdb_create_aggregate_function_set name
-    release set = alloca \ptr -> poke ptr set >> c_duckdb_destroy_aggregate_function_set ptr
+    acquire = duckdb_create_aggregate_function_set name
+    release set = alloca \ptr -> poke ptr set >> duckdb_destroy_aggregate_function_set ptr

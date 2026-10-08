@@ -1,4 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE ImportQualifiedPost #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 
 module Utils (
     withDatabase,
@@ -18,87 +20,98 @@ module Utils (
     clearValidityBit,
     plusWord,
     destroyErrorData,
+    withConstCString,
+    releaseArrowSchema,
+    releaseArrowArray,
+    releaseArrowStream,
 ) where
 
-import Control.Exception (bracket)
-import Control.Monad (forM_)
+import Control.Exception (bracket, bracket_, mask_)
+import Control.Monad (forM_, when)
 import Data.Bits (clearBit, setBit)
 import Data.Word (Word64)
 import Database.DuckDB.FFI
-import Foreign.C.String (CString, withCString)
+import Foreign.C.ConstPtr (ConstPtr (..))
+import Foreign.C.String (withCString)
+import Foreign.C.Types (CChar)
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (Ptr, plusPtr)
+import Foreign.Ptr (Ptr, nullFunPtr, nullPtr, plusPtr)
 import Foreign.Storable (peek, poke, sizeOf)
+import HsBindgen.Runtime.Struct qualified as Struct
+import HsBindgen.Runtime.Support.FunPtr (fromFunPtr)
 import Test.Tasty.HUnit ((@?=))
 
-withDatabase :: (DuckDBDatabase -> IO a) -> IO a
-withDatabase action =
-    withCString ":memory:" \path ->
-        alloca \dbPtr -> do
-            c_duckdb_open path dbPtr >>= (@?= DuckDBSuccess)
-            db <- peek dbPtr
-            result <- action db
-            c_duckdb_close dbPtr
-            pure result
+-- | Supply a constant C string for one native call.
+withConstCString :: String -> (ConstPtr CChar -> IO a) -> IO a
+withConstCString text action = withCString text (action . ConstPtr)
 
-withConnection :: DuckDBDatabase -> (DuckDBConnection -> IO a) -> IO a
+withDatabase :: (Duckdb_database -> IO a) -> IO a
+withDatabase action =
+    alloca \dbPtr -> do
+        poke dbPtr (Duckdb_database nullPtr)
+        bracket_ (pure ()) (duckdb_close dbPtr) $
+            withConstCString ":memory:" \path -> do
+                duckdb_open path dbPtr >>= (@?= DuckDBSuccess)
+                peek dbPtr >>= action
+
+withConnection :: Duckdb_database -> (Duckdb_connection -> IO a) -> IO a
 withConnection db = bracket acquire release
   where
     acquire =
         alloca \connPtr -> do
-            c_duckdb_connect db connPtr >>= (@?= DuckDBSuccess)
+            duckdb_connect db connPtr >>= (@?= DuckDBSuccess)
             peek connPtr
     release conn =
         alloca \connPtr -> do
             poke connPtr conn
-            c_duckdb_disconnect connPtr
+            duckdb_disconnect connPtr
 
-withResult :: DuckDBConnection -> String -> (Ptr DuckDBResult -> IO a) -> IO a
+withResult :: Duckdb_connection -> String -> (Ptr Duckdb_result -> IO a) -> IO a
 withResult conn sql action =
-    withCString sql \sqlPtr -> withResultCString conn sqlPtr action
+    withConstCString sql \sqlPtr -> withResultCString conn sqlPtr action
 
-withResultCString :: DuckDBConnection -> CString -> (Ptr DuckDBResult -> IO a) -> IO a
+withResultCString :: Duckdb_connection -> (ConstPtr CChar) -> (Ptr Duckdb_result -> IO a) -> IO a
 withResultCString conn sql action =
     alloca \resPtr -> do
-        c_duckdb_query conn sql resPtr >>= (@?= DuckDBSuccess)
-        result <- action resPtr
-        c_duckdb_destroy_result resPtr
-        pure result
+        poke resPtr Struct.zero
+        bracket_ (pure ()) (duckdb_destroy_result resPtr) $ do
+            duckdb_query conn sql resPtr >>= (@?= DuckDBSuccess)
+            action resPtr
 
-withValue :: IO DuckDBValue -> (DuckDBValue -> IO a) -> IO a
+withValue :: IO Duckdb_value -> (Duckdb_value -> IO a) -> IO a
 withValue acquire = bracket acquire destroyDuckValue
 
-withDuckValue :: IO DuckDBValue -> (DuckDBValue -> IO a) -> IO a
+withDuckValue :: IO Duckdb_value -> (Duckdb_value -> IO a) -> IO a
 withDuckValue = withValue
 
-destroyDuckValue :: DuckDBValue -> IO ()
+destroyDuckValue :: Duckdb_value -> IO ()
 destroyDuckValue value =
-    alloca \ptr -> poke ptr value >> c_duckdb_destroy_value ptr
+    alloca \ptr -> poke ptr value >> duckdb_destroy_value ptr
 
-withLogicalType :: IO DuckDBLogicalType -> (DuckDBLogicalType -> IO a) -> IO a
+withLogicalType :: IO Duckdb_logical_type -> (Duckdb_logical_type -> IO a) -> IO a
 withLogicalType acquire = bracket acquire destroyLogicalType
 
-destroyLogicalType :: DuckDBLogicalType -> IO ()
+destroyLogicalType :: Duckdb_logical_type -> IO ()
 destroyLogicalType lt =
-    alloca \ptr -> poke ptr lt >> c_duckdb_destroy_logical_type ptr
+    alloca \ptr -> poke ptr lt >> duckdb_destroy_logical_type ptr
 
-withSelectionVector :: DuckDBIdx -> (DuckDBSelectionVector -> IO a) -> IO a
-withSelectionVector n = bracket (c_duckdb_create_selection_vector n) c_duckdb_destroy_selection_vector
+withSelectionVector :: Idx_t -> (Duckdb_selection_vector -> IO a) -> IO a
+withSelectionVector n = bracket (duckdb_create_selection_vector n) duckdb_destroy_selection_vector
 
-withScalarFunction :: (DuckDBScalarFunction -> IO a) -> IO a
-withScalarFunction = bracket c_duckdb_create_scalar_function destroy
+withScalarFunction :: (Duckdb_scalar_function -> IO a) -> IO a
+withScalarFunction = bracket duckdb_create_scalar_function destroy
   where
     destroy fun =
-        alloca \ptr -> poke ptr fun >> c_duckdb_destroy_scalar_function ptr
+        alloca \ptr -> poke ptr fun >> duckdb_destroy_scalar_function ptr
 
-withVector :: IO DuckDBVector -> (DuckDBVector -> IO a) -> IO a
+withVector :: IO Duckdb_vector -> (Duckdb_vector -> IO a) -> IO a
 withVector acquire = bracket acquire destroyVector
   where
     destroyVector vec =
-        alloca \ptr -> poke ptr vec >> c_duckdb_destroy_vector ptr
+        alloca \ptr -> poke ptr vec >> duckdb_destroy_vector ptr
 
-withVectorOfType :: DuckDBLogicalType -> DuckDBIdx -> (DuckDBVector -> IO a) -> IO a
-withVectorOfType lt capacity = withVector (c_duckdb_create_vector lt capacity)
+withVectorOfType :: Duckdb_logical_type -> Idx_t -> (Duckdb_vector -> IO a) -> IO a
+withVectorOfType lt capacity = withVector (duckdb_create_vector lt capacity)
 
 setAllValid :: Ptr Word64 -> Int -> IO ()
 setAllValid mask count =
@@ -120,6 +133,24 @@ clearValidityBit mask idx = do
 plusWord :: Ptr Word64 -> Int -> Ptr Word64
 plusWord base idx = base `plusPtr` (idx * sizeOf (undefined :: Word64))
 
-destroyErrorData :: DuckDBErrorData -> IO ()
+destroyErrorData :: Duckdb_error_data -> IO ()
 destroyErrorData errData =
-    alloca \ptr -> poke ptr errData >> c_duckdb_destroy_error_data ptr
+    alloca \ptr -> poke ptr errData >> duckdb_destroy_error_data ptr
+
+-- | Release the buffers of an initialized Arrow schema.
+releaseArrowSchema :: Ptr ArrowSchema -> IO ()
+releaseArrowSchema ptr = mask_ do
+    value <- peek ptr
+    when (value.release /= nullFunPtr) (fromFunPtr value.release ptr)
+
+-- | Release the buffers of an initialized Arrow array.
+releaseArrowArray :: Ptr ArrowArray -> IO ()
+releaseArrowArray ptr = mask_ do
+    value <- peek ptr
+    when (value.release /= nullFunPtr) (fromFunPtr value.release ptr)
+
+-- | Release the state of an initialized Arrow stream.
+releaseArrowStream :: Ptr ArrowArrayStream -> IO ()
+releaseArrowStream ptr = mask_ do
+    value <- peek ptr
+    when (value.release /= nullFunPtr) (fromFunPtr value.release ptr)

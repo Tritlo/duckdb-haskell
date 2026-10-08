@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 {- |
 Module      : Database.DuckDB.Simple.FileSystem
@@ -16,33 +17,35 @@ module Database.DuckDB.Simple.FileSystem (
 
 import Control.Exception (bracket, mask_, throwIO)
 import qualified Data.ByteString as BS
+import Data.Coerce (Coercible, coerce)
 import Data.Int (Int64)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
 import Database.DuckDB.FFI
 import Database.DuckDB.Simple.Internal (Connection, SQLError (..), peekUtf8CString, withClientContext)
+import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Alloc (alloca, free, mallocBytes)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (peek, poke)
 
 -- | Open a file through DuckDB's file-system layer for the duration of an action.
-withFileHandle :: Connection -> FilePath -> [DuckDBFileFlag] -> (DuckDBFileHandle -> IO a) -> IO a
+withFileHandle :: Connection -> FilePath -> [Duckdb_file_flag] -> (Duckdb_file_handle -> IO a) -> IO a
 withFileHandle conn path flags action
     | '\0' `elem` path = throwIO (SQLError (Text.pack "duckdb-simple: file path contains NUL") Nothing Nothing)
     | otherwise =
         withFileSystem conn \fs ->
             bracket
-                c_duckdb_create_file_open_options
+                duckdb_create_file_open_options
                 destroyFileOpenOptions
                 \opts -> do
                     whenNull opts "allocate file-open options"
-                    mapM_ (\flag -> expectState "set file-open flag" (c_duckdb_file_open_options_set_flag opts flag 1)) flags
+                    mapM_ (\flag -> expectState "set file-open flag" (duckdb_file_open_options_set_flag opts flag 1)) flags
                     TextForeign.withCString (Text.pack path) \cPath ->
                         bracket
                             ( alloca \filePtr -> do
-                                poke filePtr nullPtr
-                                rc <- c_duckdb_file_system_open fs cPath opts filePtr
+                                poke filePtr (Duckdb_file_handle nullPtr)
+                                rc <- duckdb_file_system_open fs (ConstPtr cPath) opts filePtr
                                 if rc /= DuckDBSuccess
                                     then throwFileSystemError fs path
                                     else do
@@ -54,14 +57,14 @@ withFileHandle conn path flags action
                             action
 
 -- | Read up to the requested number of bytes from a file handle.
-readFileHandleChunk :: DuckDBFileHandle -> Int64 -> IO BS.ByteString
+readFileHandleChunk :: Duckdb_file_handle -> Int64 -> IO BS.ByteString
 readFileHandleChunk handle requested
     | requested <= 0 = pure BS.empty
     | toInteger requested > toInteger (maxBound :: Int) =
         throwIO (SQLError (Text.pack "duckdb-simple: file read size exceeds Int range") Nothing Nothing)
     | otherwise =
         bracket (mallocBytes (fromIntegral requested)) free \raw -> do
-            bytesRead <- c_duckdb_file_handle_read handle raw requested
+            bytesRead <- duckdb_file_handle_read handle raw requested
             if bytesRead < 0
                 then throwFileHandleError handle (Text.pack "read failed")
                 else
@@ -70,79 +73,79 @@ readFileHandleChunk handle requested
                         else BS.packCStringLen (castPtr raw, fromIntegral bytesRead)
 
 -- | Write an entire bytestring to a file handle.
-writeFileHandleBytes :: DuckDBFileHandle -> BS.ByteString -> IO Int64
+writeFileHandleBytes :: Duckdb_file_handle -> BS.ByteString -> IO Int64
 writeFileHandleBytes handle bytes =
     BS.useAsCStringLen bytes \(ptr, len) -> do
-        written <- c_duckdb_file_handle_write handle (castPtr ptr) (fromIntegral len)
+        written <- duckdb_file_handle_write handle (ConstPtr (castPtr ptr)) (fromIntegral len)
         if written < 0
             then throwFileHandleError handle (Text.pack "write failed")
             else pure written
 
 -- | Return the current file position.
-fileHandleTell :: DuckDBFileHandle -> IO Int64
+fileHandleTell :: Duckdb_file_handle -> IO Int64
 fileHandleTell handle = do
-    pos <- c_duckdb_file_handle_tell handle
+    pos <- duckdb_file_handle_tell handle
     if pos < 0 then throwFileHandleError handle (Text.pack "tell failed") else pure pos
 
 -- | Return the current file size in bytes.
-fileHandleSize :: DuckDBFileHandle -> IO Int64
+fileHandleSize :: Duckdb_file_handle -> IO Int64
 fileHandleSize handle = do
-    size <- c_duckdb_file_handle_size handle
+    size <- duckdb_file_handle_size handle
     if size < 0 then throwFileHandleError handle (Text.pack "size failed") else pure size
 
 -- | Seek to an absolute byte offset.
-fileHandleSeek :: DuckDBFileHandle -> Int64 -> IO ()
+fileHandleSeek :: Duckdb_file_handle -> Int64 -> IO ()
 fileHandleSeek handle pos = do
-    rc <- c_duckdb_file_handle_seek handle pos
+    rc <- duckdb_file_handle_seek handle pos
     if rc == DuckDBSuccess
         then pure ()
         else throwFileHandleError handle (Text.pack "seek failed")
 
 -- | Flush file-handle writes to stable storage.
-fileHandleSync :: DuckDBFileHandle -> IO ()
+fileHandleSync :: Duckdb_file_handle -> IO ()
 fileHandleSync handle = do
-    rc <- c_duckdb_file_handle_sync handle
+    rc <- duckdb_file_handle_sync handle
     if rc == DuckDBSuccess
         then pure ()
         else throwFileHandleError handle (Text.pack "sync failed")
 
-withFileSystem :: Connection -> (DuckDBFileSystem -> IO a) -> IO a
+withFileSystem :: Connection -> (Duckdb_file_system -> IO a) -> IO a
 withFileSystem conn action =
     withClientContext conn \ctx ->
         bracket
-            (c_duckdb_client_context_get_file_system ctx)
+            (duckdb_client_context_get_file_system ctx)
             destroyFileSystem
             (\fs -> whenNull fs "allocate file system" >> action fs)
 
-destroyFileSystem :: DuckDBFileSystem -> IO ()
+destroyFileSystem :: Duckdb_file_system -> IO ()
 destroyFileSystem fs =
-    alloca \ptr -> poke ptr fs >> c_duckdb_destroy_file_system ptr
+    alloca \ptr -> poke ptr fs >> duckdb_destroy_file_system ptr
 
-destroyFileOpenOptions :: DuckDBFileOpenOptions -> IO ()
+destroyFileOpenOptions :: Duckdb_file_open_options -> IO ()
 destroyFileOpenOptions opts =
-    alloca \ptr -> poke ptr opts >> c_duckdb_destroy_file_open_options ptr
+    alloca \ptr -> poke ptr opts >> duckdb_destroy_file_open_options ptr
 
-destroyFileHandle :: DuckDBFileHandle -> IO ()
+destroyFileHandle :: Duckdb_file_handle -> IO ()
 destroyFileHandle handle =
-    alloca \ptr -> poke ptr handle >> c_duckdb_destroy_file_handle ptr
+    alloca \ptr -> poke ptr handle >> duckdb_destroy_file_handle ptr
 
-throwFileSystemError :: DuckDBFileSystem -> FilePath -> IO a
+throwFileSystemError :: Duckdb_file_system -> FilePath -> IO a
 throwFileSystemError fs path = mask_ do
-    err <- c_duckdb_file_system_error_data fs
+    err <- duckdb_file_system_error_data fs
     throwErrorData err (Text.concat [Text.pack "duckdb-simple: failed to open file ", Text.pack path])
 
-throwFileHandleError :: DuckDBFileHandle -> Text -> IO a
+throwFileHandleError :: Duckdb_file_handle -> Text -> IO a
 throwFileHandleError handle fallback = mask_ do
-    err <- c_duckdb_file_handle_error_data handle
+    err <- duckdb_file_handle_error_data handle
     throwErrorData err fallback
 
-throwErrorData :: DuckDBErrorData -> Text -> IO a
+throwErrorData :: Duckdb_error_data -> Text -> IO a
 throwErrorData err fallback =
     bracket (pure err) destroyErrorData \errData -> do
-        msgPtr <- c_duckdb_error_data_message errData
-        errType <- c_duckdb_error_data_error_type errData
+        msgPtr <- duckdb_error_data_message errData
+        errType <- duckdb_error_data_error_type errData
         message <-
-            if msgPtr == nullPtr
+            if msgPtr == ConstPtr nullPtr
                 then pure fallback
                 else peekUtf8CString msgPtr
         throwIO
@@ -152,11 +155,11 @@ throwErrorData err fallback =
                 , sqlErrorQuery = Nothing
                 }
 
-destroyErrorData :: DuckDBErrorData -> IO ()
+destroyErrorData :: Duckdb_error_data -> IO ()
 destroyErrorData err =
-    alloca \ptr -> poke ptr err >> c_duckdb_destroy_error_data ptr
+    alloca \ptr -> poke ptr err >> duckdb_destroy_error_data ptr
 
-expectState :: String -> IO DuckDBState -> IO ()
+expectState :: String -> IO Duckdb_state -> IO ()
 expectState label action = do
     rc <- action
     if rc == DuckDBSuccess
@@ -170,6 +173,6 @@ expectState label action = do
                     }
 
 -- | Reject a null file-system handle before use.
-whenNull :: Ptr a -> String -> IO ()
+whenNull :: (Coercible p (Ptr ())) => p -> String -> IO ()
 whenNull ptr label =
-    if ptr == nullPtr then expectState label (pure DuckDBError) else pure ()
+    if coerce ptr == (nullPtr :: Ptr ()) then expectState label (pure DuckDBError) else pure ()

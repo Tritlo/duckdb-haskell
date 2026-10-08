@@ -19,19 +19,22 @@ import Control.Monad (forM, when)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
+import Data.Void (Void)
 import Database.DuckDB.FFI
 import Database.DuckDB.Simple.Callback (runCallback, transferCallbackState, withCallbackResources)
 import Database.DuckDB.Simple.FromField (Field (..))
 import Database.DuckDB.Simple.Internal (Connection, destroyLogicalType, peekUtf8CString, throwRegistrationError, withConnectionHandle)
 import Database.DuckDB.Simple.Materialize (prepareVectorReader)
+import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (Ptr, nullPtr)
+import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, deRefStablePtr)
 import Foreign.Storable (poke)
+import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
 
 -- | Bind-phase metadata for a custom `COPY ... TO` function.
 data CopyBindInfo = CopyBindInfo
-    { copyBindColumnTypes :: ![DuckDBType]
+    { copyBindColumnTypes :: ![DUCKDB_TYPE]
     }
     deriving (Eq, Show)
 
@@ -54,10 +57,10 @@ data CopyFinalizeInfo bindState globalState = CopyFinalizeInfo
     }
 
 data CopyFunctionResources = CopyFunctionResources
-    { copyBindPtr :: !DuckDBCopyFunctionBindFun
-    , copyInitPtr :: !DuckDBCopyFunctionGlobalInitFun
-    , copySinkPtr :: !DuckDBCopyFunctionSinkFun
-    , copyFinalizePtr :: !DuckDBCopyFunctionFinalizeFun
+    { copyBindPtr :: !Duckdb_copy_function_bind_t
+    , copyInitPtr :: !Duckdb_copy_function_global_init_t
+    , copySinkPtr :: !Duckdb_copy_function_sink_t
+    , copyFinalizePtr :: !Duckdb_copy_function_finalize_t
     }
 
 -- | Register a custom `COPY ... TO` implementation backed by Haskell callbacks.
@@ -73,131 +76,119 @@ registerCopyToFunction ::
 registerCopyToFunction conn name bindFn initFn sinkFn finalizeFn = do
     when (Text.null name || Text.any (== '\0') name) $
         throwRegistrationError "invalid copy function name"
-    bracket c_duckdb_create_copy_function destroyCopyFunction \copyFun -> do
-        when (copyFun == nullPtr) $ throwRegistrationError "allocate copy function"
+    bracket duckdb_create_copy_function destroyCopyFunction \copyFun -> do
+        when (copyFun == Duckdb_copy_function nullPtr) $ throwRegistrationError "allocate copy function"
         withCallbackResources
             ( \allocate -> do
-                copyBindPtr <- allocate (mkCopyBindFun (copyBindHandler bindFn))
-                copyInitPtr <- allocate (mkCopyGlobalInitFun (copyGlobalInitHandler initFn))
-                copySinkPtr <- allocate (mkCopySinkFun (copySinkHandler sinkFn))
-                copyFinalizePtr <- allocate (mkCopyFinalizeFun (copyFinalizeHandler finalizeFn))
+                copyBindPtr <- Duckdb_copy_function_bind_t <$> allocate (toFunPtr (Duckdb_copy_function_bind_t_Aux (copyBindHandler bindFn)))
+                copyInitPtr <- Duckdb_copy_function_global_init_t <$> allocate (toFunPtr (Duckdb_copy_function_global_init_t_Aux (copyGlobalInitHandler initFn)))
+                copySinkPtr <- Duckdb_copy_function_sink_t <$> allocate (toFunPtr (Duckdb_copy_function_sink_t_Aux (copySinkHandler sinkFn)))
+                copyFinalizePtr <- Duckdb_copy_function_finalize_t <$> allocate (toFunPtr (Duckdb_copy_function_finalize_t_Aux (copyFinalizeHandler finalizeFn)))
                 pure CopyFunctionResources{copyBindPtr, copyInitPtr, copySinkPtr, copyFinalizePtr}
             )
-            (c_duckdb_copy_function_set_extra_info copyFun)
+            (duckdb_copy_function_set_extra_info copyFun)
             \CopyFunctionResources{copyBindPtr, copyInitPtr, copySinkPtr, copyFinalizePtr} -> do
-                TextForeign.withCString name $ c_duckdb_copy_function_set_name copyFun
-                c_duckdb_copy_function_set_bind copyFun copyBindPtr
-                c_duckdb_copy_function_set_global_init copyFun copyInitPtr
-                c_duckdb_copy_function_set_sink copyFun copySinkPtr
-                c_duckdb_copy_function_set_finalize copyFun copyFinalizePtr
+                TextForeign.withCString name $ duckdb_copy_function_set_name copyFun . ConstPtr
+                duckdb_copy_function_set_bind copyFun copyBindPtr
+                duckdb_copy_function_set_global_init copyFun copyInitPtr
+                duckdb_copy_function_set_sink copyFun copySinkPtr
+                duckdb_copy_function_set_finalize copyFun copyFinalizePtr
                 withConnectionHandle conn \connPtr -> do
-                    rc <- c_duckdb_register_copy_function connPtr copyFun
+                    rc <- duckdb_register_copy_function connPtr copyFun
                     when (rc /= DuckDBSuccess) $ throwRegistrationError "register copy function"
 
 copyBindHandler ::
     forall bindState.
     (CopyBindInfo -> IO bindState) ->
-    DuckDBCopyFunctionBindInfo ->
+    Duckdb_copy_function_bind_info ->
     IO ()
 copyBindHandler bindFn info =
-    runCallback (c_duckdb_copy_function_bind_set_error info) do
+    runCallback (duckdb_copy_function_bind_set_error info) do
         copyBindColumnTypes <- fetchColumnTypes info
         bindState <- bindFn CopyBindInfo{copyBindColumnTypes}
-        transferCallbackState (c_duckdb_copy_function_bind_set_bind_data info) bindState
+        transferCallbackState (duckdb_copy_function_bind_set_bind_data info) bindState
 
 copyGlobalInitHandler ::
     forall bindState globalState.
     (CopyInitInfo bindState -> IO globalState) ->
-    DuckDBCopyFunctionGlobalInitInfo ->
+    Duckdb_copy_function_global_init_info ->
     IO ()
 copyGlobalInitHandler initFn info =
-    runCallback (c_duckdb_copy_function_global_init_set_error info) do
-        rawBindState <- c_duckdb_copy_function_global_init_get_bind_data info
+    runCallback (duckdb_copy_function_global_init_set_error info) do
+        rawBindState <- duckdb_copy_function_global_init_get_bind_data info
         when (rawBindState == nullPtr) $
             throwRegistrationError "missing copy bind state"
-        bindState <- deRefStablePtr (castPtrToStablePtr rawBindState :: StablePtr bindState)
-        pathPtr <- c_duckdb_copy_function_global_init_get_file_path info
+        bindState <- deRefStablePtr (castPtrToStablePtr (castPtr rawBindState) :: StablePtr bindState)
+        pathPtr <- duckdb_copy_function_global_init_get_file_path info
         filePath <-
-            if pathPtr == nullPtr
+            if pathPtr == ConstPtr nullPtr
                 then pure ""
                 else Text.unpack <$> peekUtf8CString pathPtr
         globalState <- initFn CopyInitInfo{copyInitBindState = bindState, copyInitFilePath = filePath}
-        transferCallbackState (c_duckdb_copy_function_global_init_set_global_state info) globalState
+        transferCallbackState (duckdb_copy_function_global_init_set_global_state info) globalState
 
 copySinkHandler ::
     forall bindState globalState.
     (CopySinkInfo bindState globalState -> [[Field]] -> IO ()) ->
-    DuckDBCopyFunctionSinkInfo ->
-    DuckDBDataChunk ->
+    Duckdb_copy_function_sink_info ->
+    Duckdb_data_chunk ->
     IO ()
 copySinkHandler sinkFn info chunk =
-    runCallback (c_duckdb_copy_function_sink_set_error info) do
-        bindState <- readStablePtrState c_duckdb_copy_function_sink_get_bind_data info
-        globalState <- readStablePtrState c_duckdb_copy_function_sink_get_global_state info
+    runCallback (duckdb_copy_function_sink_set_error info) do
+        bindState <- readStablePtrState duckdb_copy_function_sink_get_bind_data info
+        globalState <- readStablePtrState duckdb_copy_function_sink_get_global_state info
         rows <- materializeChunkRows chunk
         sinkFn CopySinkInfo{copySinkBindState = bindState, copySinkGlobalState = globalState} rows
 
 copyFinalizeHandler ::
     forall bindState globalState.
     (CopyFinalizeInfo bindState globalState -> IO ()) ->
-    DuckDBCopyFunctionFinalizeInfo ->
+    Duckdb_copy_function_finalize_info ->
     IO ()
 copyFinalizeHandler finalizeFn info =
-    runCallback (c_duckdb_copy_function_finalize_set_error info) do
-        bindState <- readStablePtrState c_duckdb_copy_function_finalize_get_bind_data info
-        globalState <- readStablePtrState c_duckdb_copy_function_finalize_get_global_state info
+    runCallback (duckdb_copy_function_finalize_set_error info) do
+        bindState <- readStablePtrState duckdb_copy_function_finalize_get_bind_data info
+        globalState <- readStablePtrState duckdb_copy_function_finalize_get_global_state info
         finalizeFn CopyFinalizeInfo{copyFinalizeBindState = bindState, copyFinalizeGlobalState = globalState}
 
-fetchColumnTypes :: DuckDBCopyFunctionBindInfo -> IO [DuckDBType]
+fetchColumnTypes :: Duckdb_copy_function_bind_info -> IO [DUCKDB_TYPE]
 fetchColumnTypes info = do
-    count <- c_duckdb_copy_function_bind_get_column_count info
+    count <- duckdb_copy_function_bind_get_column_count info
     let indices = [0 .. fromIntegral count - 1] :: [Int]
     forM indices \idx -> do
         bracket
-            (c_duckdb_copy_function_bind_get_column_type info (fromIntegral idx))
+            (duckdb_copy_function_bind_get_column_type info (fromIntegral idx))
             destroyLogicalType
-            c_duckdb_get_type_id
+            (fmap (\(Duckdb_type dtype) -> dtype) . duckdb_get_type_id)
 
-readStablePtrState :: forall a i. (i -> IO (Ptr ())) -> i -> IO a
+readStablePtrState :: forall a i. (i -> IO (Ptr Void)) -> i -> IO a
 readStablePtrState getter info = do
     rawPtr <- getter info
     if rawPtr == nullPtr
         then throwRegistrationError "missing copy callback state"
-        else deRefStablePtr (castPtrToStablePtr rawPtr :: StablePtr a)
+        else deRefStablePtr (castPtrToStablePtr (castPtr rawPtr) :: StablePtr a)
 
-materializeChunkRows :: DuckDBDataChunk -> IO [[Field]]
+materializeChunkRows :: Duckdb_data_chunk -> IO [[Field]]
 materializeChunkRows chunk = do
-    rawColumnCount <- c_duckdb_data_chunk_get_column_count chunk
+    rawColumnCount <- duckdb_data_chunk_get_column_count chunk
     let columnCount = fromIntegral rawColumnCount :: Int
     readers <- mapM (makeColumnReader chunk) [0 .. columnCount - 1]
-    rawRowCount <- c_duckdb_data_chunk_get_size chunk
+    rawRowCount <- duckdb_data_chunk_get_size chunk
     let rowCount = fromIntegral rawRowCount :: Int
     forM [0 .. rowCount - 1] \row ->
         forM readers \reader ->
             reader (fromIntegral row)
 
-type ColumnReader = DuckDBIdx -> IO Field
+type ColumnReader = Idx_t -> IO Field
 
-makeColumnReader :: DuckDBDataChunk -> Int -> IO ColumnReader
+makeColumnReader :: Duckdb_data_chunk -> Int -> IO ColumnReader
 makeColumnReader chunk columnIndex = do
-    readValue <- c_duckdb_data_chunk_get_vector chunk (fromIntegral columnIndex) >>= prepareVectorReader
+    readValue <- duckdb_data_chunk_get_vector chunk (fromIntegral columnIndex) >>= prepareVectorReader
     let name = Text.pack ("column" <> show columnIndex)
     pure \rowIdx -> do
         fieldValue <- readValue (fromIntegral rowIdx)
         pure Field{fieldName = name, fieldIndex = columnIndex, fieldValue}
 
-destroyCopyFunction :: DuckDBCopyFunction -> IO ()
+destroyCopyFunction :: Duckdb_copy_function -> IO ()
 destroyCopyFunction copyFun =
-    alloca \ptr -> poke ptr copyFun >> c_duckdb_destroy_copy_function ptr
-
-foreign import ccall "wrapper"
-    mkCopyBindFun :: (DuckDBCopyFunctionBindInfo -> IO ()) -> IO DuckDBCopyFunctionBindFun
-
-foreign import ccall "wrapper"
-    mkCopyGlobalInitFun :: (DuckDBCopyFunctionGlobalInitInfo -> IO ()) -> IO DuckDBCopyFunctionGlobalInitFun
-
-foreign import ccall "wrapper"
-    mkCopySinkFun :: (DuckDBCopyFunctionSinkInfo -> DuckDBDataChunk -> IO ()) -> IO DuckDBCopyFunctionSinkFun
-
-foreign import ccall "wrapper"
-    mkCopyFinalizeFun :: (DuckDBCopyFunctionFinalizeInfo -> IO ()) -> IO DuckDBCopyFunctionFinalizeFun
+    alloca \ptr -> poke ptr copyFun >> duckdb_destroy_copy_function ptr

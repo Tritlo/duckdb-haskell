@@ -282,13 +282,14 @@ checkCancellation batches =
                             \FROM started, range(1000000) a(i), range(1000000) b(j)" ::
                             IO [Only Double]
                         )
+                -- Use multiple chunks without large materialized buffers.
                 cancel \signal -> do
                     blocked <- newEmptyMVar
-                    void (fold_ conn "SELECT {'x': i, 'values': [i, i + 1]} FROM range(100000) t(i)" () (\() (Only (_ :: FieldValue)) -> signal >> takeMVar blocked))
+                    void (fold_ conn "SELECT {'x': i, 'values': [i, i + 1]} FROM range(8192) t(i)" () (\() (Only (_ :: FieldValue)) -> signal >> takeMVar blocked))
                 cancel \signal -> do
                     blocked <- newEmptyMVar
                     -- Keep the first chunk live until the worker is cancelled.
-                    void (fold_ conn "SELECT {'x': i, 'values': [i, NULL]} FROM range(100000) t(i)" (0 :: Int64) (\n (Only (_ :: FieldValue)) -> signal >> takeMVar blocked >> pure (n + 1)))
+                    void (fold_ conn "SELECT {'x': i, 'values': [i, NULL]} FROM range(8192) t(i)" (0 :: Int64) (\n (Only (_ :: FieldValue)) -> signal >> takeMVar blocked >> pure (n + 1)))
                 forM_ [False, True] \arrow -> cancel \signal -> do
                     filtering <- newIORef False
                     createFunction conn "leak_stream_filter" \(_ :: Int64) -> do
@@ -302,10 +303,10 @@ checkCancellation batches =
                         else Streaming.fold_ conn sql () (\() (Only (_ :: Int64)) -> delivered)
                 cancel \signal -> do
                     blocked <- newEmptyMVar
-                    void (fold_ conn "SELECT {'x': i, 'values': [i, i + 1]}::VARIANT FROM range(100000) t(i)" () (\() (Only (_ :: Variant)) -> signal >> takeMVar blocked))
+                    void (fold_ conn "SELECT {'x': i, 'values': [i, i + 1]}::VARIANT FROM range(8192) t(i)" () (\() (Only (_ :: Variant)) -> signal >> takeMVar blocked))
                 cancel \signal -> do
                     blocked <- newEmptyMVar
-                    void (fold_ conn "SELECT 'POINT (1 2)'::GEOMETRY('OGC:CRS84') FROM range(100000)" (0 :: Int64) (\n (Only (_ :: RawGeometry)) -> signal >> takeMVar blocked >> pure (n + 1)))
+                    void (fold_ conn "SELECT 'POINT (1 2)'::GEOMETRY('OGC:CRS84') FROM range(8192)" (0 :: Int64) (\n (Only (_ :: RawGeometry)) -> signal >> takeMVar blocked >> pure (n + 1)))
         batch
         performMajorGC
         before <- readUsage

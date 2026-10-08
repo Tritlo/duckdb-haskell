@@ -142,7 +142,8 @@ scalarFunctionSetFeatures =
                     deleteBindCb <- mkDeleteCallback \ptr ->
                         when (ptr /= (coerce (nullPtr :: Ptr Void))) (free ptr)
 
-                    let copyBindData src
+                    let copyBindData :: Ptr Void -> IO (Ptr Void)
+                        copyBindData src
                             | src == (coerce (nullPtr :: Ptr Void)) = pure (coerce (nullPtr :: Ptr Void))
                             | otherwise = do
                                 newPtr <- mallocBytes bindDataSize

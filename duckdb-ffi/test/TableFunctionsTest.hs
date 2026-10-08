@@ -184,7 +184,9 @@ withHarness columnType action = do
     modeRef <- newIORef ModeUnset
     countHistory <- newIORef []
 
-    let takeInt64 ptr = peekElemOff (coerce ptr :: Ptr Int64)
+    let takeInt64 :: Ptr Void -> Int -> IO Int64
+        takeInt64 ptr = peekElemOff (coerce ptr :: Ptr Int64)
+        putInt64 :: Ptr Void -> Int -> Int64 -> IO ()
         putInt64 ptr = pokeElemOff (coerce ptr :: Ptr Int64)
 
     extraDelete <-

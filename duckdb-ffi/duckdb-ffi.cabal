@@ -28,6 +28,9 @@ extra-doc-files: CHANGELOG.md
 extra-source-files:
   cbits/duckdb.h
   cbits/duckdb_arrow.h
+  scripts/binding-metadata.py
+  scripts/generate-bindings.sh
+  scripts/legacy-names.json
 
 source-repository head
   type: git
@@ -51,30 +54,22 @@ custom-setup
 
 library
   default-language: GHC2021
-  -- GHC does not track the C headers used by the literate preprocessor.
-  ghc-options:
-    -fforce-recomp
-    -pgmL
-    hs-bindgen-cli
-    -optL
-    tool-support
-    -optL
-    literate
-
   hs-source-dirs:
     src
 
-  exposed-modules: Database.DuckDB.FFI
+  exposed-modules:
+    Database.DuckDB.FFI
+    Database.DuckDB.FFI.Compat
+
   include-dirs: cbits/
   install-includes:
     duckdb.h
     duckdb_arrow.h
 
+  c-sources: cbits/abi-checks.c
   extra-libraries: duckdb
-  build-tool-depends: hs-bindgen:hs-bindgen-cli >=1.0.0.0 && <1.1
   build-depends:
     base >=4.18 && <4.23,
-    c-expr-runtime >=0.1 && <0.2,
     hs-bindgen-runtime >=1.0.0.0 && <1.1,
 
 test-suite duckdb-ffi-tests

@@ -5,9 +5,14 @@
 - Generate the complete raw API from the DuckDB and Arrow headers with
   hs-bindgen 1.0. Remove handwritten raw modules, C ABI shims, and the old
   binding generator. Use native C function names and generated types.
-- Generate layouts and callbacks for each build platform. LLVM/Clang,
-  libclang development files, llvm-config, Doxygen, and zlib development
-  headers are build dependencies. The generator is a Cabal build tool.
+- Add `Database.DuckDB.FFI.Compat` with generated aliases for the earlier
+  `DuckDBFoo` and `c_duckdb_*` spellings. These aliases retain generated types.
+- Ship generated source. Generate it locally with the maintainer script and
+  pinned Nix toolchain. Consumers need only `base`, `hs-bindgen-runtime`,
+  a C compiler, and DuckDB. Compare the four supported native targets and
+  check generated layouts with C static assertions.
+- Keep native handle pointees opaque. Do not generate readable instances
+  for the placeholder structs in the C header.
 - Move Arrow ownership helpers to `duckdb-simple`. Raw calls use direct struct
   arguments/results and do not preserve the old C shims' NULL defaults.
 

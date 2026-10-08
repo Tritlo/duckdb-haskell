@@ -40,12 +40,7 @@ RUN --mount=type=cache,id=apt-cache,target=/var/cache/apt \
       libffi-dev \
       libgmp-dev \
       libncurses-dev \
-      zlib1g-dev \
       unzip \
-      clang \
-      llvm-dev \
-      libclang-dev \
-      doxygen \
       && \
     apt-get autoremove -y && \
     apt-get clean -y && \

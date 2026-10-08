@@ -21,6 +21,16 @@ jobs:
           --option sandbox true --option sandbox-fallback false
           --max-jobs 2 --cores 2
 
+  generated:
+    name: Generated source check
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      - name: Check checked-in bindings for all supported targets
+        run: nix-shell dev/nix/generate.nix --run 'duckdb-ffi/scripts/generate-bindings.sh --check'
+
   bindings:
     strategy:
       fail-fast: false
@@ -80,20 +90,6 @@ jobs:
         with:
           ghc-version: ${{ matrix.ghc }}
           cabal-version: '3.18.1.0'
-      - name: Install binding generator dependencies on Linux
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang llvm-dev libclang-dev doxygen zlib1g-dev
-          printf '%s\n' "$(/usr/bin/llvm-config --bindir)" >> "$GITHUB_PATH"
-      - name: Install binding generator dependencies on macOS
-        if: runner.os == 'macOS'
-        run: |
-          brew install llvm doxygen
-          llvm_prefix=$(brew --prefix llvm)
-          printf '%s/bin\n' "$llvm_prefix" >> "$GITHUB_PATH"
-          printf 'SDKROOT=%s\n' "$(xcrun --sdk macosx --show-sdk-path)" >> "$GITHUB_ENV"
-          printf 'DYLD_LIBRARY_PATH=%s/lib\n' "$llvm_prefix" >> "$GITHUB_ENV"
       - name: Install an older supported native library
         if: matrix.duckdb != '1.5.6'
         env:

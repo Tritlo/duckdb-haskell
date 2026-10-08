@@ -5,15 +5,12 @@ let
   }) { };
 in
 pkgs.mkShell {
-  LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.llvmPackages.libclang pkgs.stdenv.cc.cc ];
+  LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.duckdb pkgs.stdenv.cc.cc ];
   packages = [
     pkgs.haskell.compiler.ghc9141
     pkgs.cabal-install
-    pkgs.llvmPackages.clang
-    pkgs.llvmPackages.libclang
-    pkgs.llvmPackages.llvm
+    pkgs.duckdb
     pkgs.pkg-config
     pkgs.zlib
-    pkgs.doxygen
   ];
 }

@@ -145,9 +145,23 @@ jobs:
             --with-compiler=ghc --disable-documentation \
             -fsystemlib --extra-lib-dirs="$RUNNER_TEMP/duckdb-preview/native" \
             --package-env="$consumer/environment"
-          package_id=$(awk '$1 == "package-id" && $2 ~ /^duckdb-ffi-/ {print $2}' "$consumer/environment")
-          store_dir=$(cabal path --store-dir)
-          test -s "$store_dir"/*/"$package_id"/lib/include/duckdb-LICENSE
+          # Cabal uses shortened unit IDs on macOS. Query the installed package
+          # by name in the environment's store database, rather than guessing paths.
+          package_db=$(awk '$1 == "package-db" {print $2}' "$consumer/environment")
+          test -d "$package_db"
+          package_id=$(ghc-pkg --no-user-package-db --package-db="$package_db" field duckdb-ffi id --simple-output)
+          grep -Fx "package-id $package_id" "$consumer/environment"
+          include_dir=$(ghc-pkg --no-user-package-db --package-db="$package_db" field --ipid "$package_id" include-dirs --simple-output)
+          echo "Checking installed DuckDB files in $include_dir"
+          mkdir -p "$consumer/expected"
+          tar -xzf "$consumer/source/vendor/duckdb-api.tar.gz" -C "$consumer/expected" --strip-components=1 \
+            duckdb-2.0/duckdb.h duckdb-2.0/duckdb_v2.h duckdb-2.0/LICENSE
+          for file in duckdb.h duckdb_v2.h duckdb-LICENSE; do
+            test -s "$include_dir/$file" || { echo "Missing installed file: $include_dir/$file" >&2; exit 1; }
+            expected=$file
+            if [ "$file" = duckdb-LICENSE ]; then expected=LICENSE; fi
+            cmp "$consumer/expected/$expected" "$include_dir/$file"
+          done
           for way in -static -dynamic; do
             ghc "$way" -fforce-recomp -package-env "$consumer/environment" "$consumer/Main.hs" -o "$consumer/check"
             "$consumer/check" > "$consumer/versions"

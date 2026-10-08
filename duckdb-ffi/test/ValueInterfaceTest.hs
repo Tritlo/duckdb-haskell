@@ -2,7 +2,8 @@
 
 module ValueInterfaceTest (tests) where
 
-import Control.Monad (when, (>=>))
+import Control.Monad (forM_, when, (>=>))
+
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.FFI
@@ -15,7 +16,7 @@ import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (peek, poke)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (testCase, (@?=))
-import Utils (destroyDuckValue, destroyLogicalType, withDuckValue)
+import Utils (destroyDuckValue, destroyLogicalType, withConnection, withDatabase, withDuckValue)
 
 tests :: TestTree
 tests =
@@ -24,7 +25,36 @@ tests =
         [ scalarCreatesRoundTrip
         , valueTypeReportsLogicalType
         , collectionValuesRoundTrip
+        , timestampTzNsRoundTrip
         ]
+
+timestampTzNsRoundTrip :: TestTree
+timestampTzNsRoundTrip =
+    testCase "TIMESTAMP_TZ_NS values retain nanoseconds through SQL" $
+        withDatabase \db ->
+            withConnection db \conn ->
+                withCString "SELECT ?" \sql ->
+                    alloca \statementPtr -> do
+                        c_duckdb_prepare conn sql statementPtr >>= (@?= DuckDBSuccess)
+                        statement <- peek statementPtr
+                        forM_ [0, 1234567890123456789, -1234567890123456789, maxBound - 1, maxBound, negate maxBound] \nanos ->
+                            withDuckValue (c_duckdb_create_timestamp_tz_ns (DuckDBTimestampNs nanos)) \value -> do
+                                c_duckdb_get_timestamp_tz_ns value >>= (@?= DuckDBTimestampNs nanos)
+                                logical <- c_duckdb_get_value_type value
+                                c_duckdb_get_type_id logical >>= (@?= DuckDBTypeTimestampTzNs)
+                                c_duckdb_bind_value statement 1 value >>= (@?= DuckDBSuccess)
+                                alloca \resultPtr -> do
+                                    c_duckdb_execute_prepared statement resultPtr >>= (@?= DuckDBSuccess)
+                                    c_duckdb_column_type resultPtr 0 >>= (@?= DuckDBTypeTimestampTzNs)
+                                    chunk <- c_duckdb_fetch_chunk resultPtr
+                                    vector <- c_duckdb_data_chunk_get_vector chunk 0
+                                    dataPtr <- c_duckdb_vector_get_data vector
+                                    peek (castPtr dataPtr :: Ptr Int64) >>= (@?= nanos)
+                                    alloca \chunkPtr -> do
+                                        poke chunkPtr chunk
+                                        c_duckdb_destroy_data_chunk chunkPtr
+                                    c_duckdb_destroy_result resultPtr
+                        c_duckdb_destroy_prepare statementPtr
 
 scalarCreatesRoundTrip :: TestTree
 scalarCreatesRoundTrip =
@@ -314,7 +344,7 @@ collectionValuesRoundTrip =
         withDuckValue (c_duckdb_create_int32 42) \unionPayload ->
             withDuckValue (c_duckdb_create_union_value unionLogical 0 unionPayload) \unionVal -> do
                 strPtr <- c_duckdb_value_to_string unionVal
-                peekCString strPtr >>= (@?= "union_value(int_member := 42)")
+                peekCString strPtr >>= (@?= "union_value(int_member := 42)::UNION(int_member INTEGER, text_member VARCHAR)")
                 c_duckdb_free (castPtr strPtr)
         destroyLogicalType unionLogical
         destroyLogicalType unionInt

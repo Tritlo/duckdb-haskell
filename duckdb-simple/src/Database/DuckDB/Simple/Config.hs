@@ -2,7 +2,7 @@
 
 {- |
 Module      : Database.DuckDB.Simple.Config
-Description : High-level helpers for DuckDB 1.5 configuration inspection.
+Description : High-level helpers for DuckDB 2.0 configuration inspection.
 -}
 module Database.DuckDB.Simple.Config (
     ConfigFlag (..),

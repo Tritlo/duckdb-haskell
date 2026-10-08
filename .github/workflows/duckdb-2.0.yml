@@ -1,0 +1,179 @@
+name: DuckDB 2.0 validation
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bindings:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            ghc: '9.6.7'
+            optimization: '1'
+          - os: ubuntu-latest
+            ghc: '9.8.4'
+            optimization: '1'
+          - os: ubuntu-latest
+            ghc: '9.10.3'
+            optimization: '1'
+          - os: ubuntu-latest
+            ghc: '9.12.4'
+            optimization: '1'
+          - os: ubuntu-latest
+            ghc: '9.14.1'
+            optimization: '1'
+          - os: macos-latest
+            ghc: '9.14.1'
+            optimization: '1'
+          - os: ubuntu-latest
+            ghc: '9.14.1'
+            optimization: '0'
+    name: ${{ matrix.os }} / GHC ${{ matrix.ghc }} / DuckDB 2.0 / -O${{ matrix.optimization }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    env:
+      DUCKDB_TEST_VERSION: 2.0.0-dev0
+      DUCKDB_BUILD_JOBS: '3'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: haskell-actions/setup@0f8e8c99d88aeb3fbfd523f1ef2c6f762d10d64d
+        with:
+          ghc-version: ${{ matrix.ghc }}
+          cabal-version: '3.18.1.0'
+      - name: Update the package index
+        run: cabal update
+      - name: Install the generator formatter
+        if: matrix.ghc == '9.14.1' && matrix.optimization == '1'
+        run: cabal install fourmolu-0.20.1.0 --ignore-project
+      - name: Check the pinned C API
+        run: python3 scripts/duckdb-api.py --check
+      - name: Check the generated bindings
+        if: matrix.ghc == '9.14.1' && matrix.optimization == '1'
+        run: python3 duckdb-ffi/scripts/gen_ffi_v2.py --check
+      - name: Build the matching native library
+        run: bash scripts/build-duckdb-preview.sh "$RUNNER_TEMP/duckdb-preview"
+      - name: Configure the supplied native library
+        run: |
+          printf 'package duckdb-ffi\n  flags: +systemlib\n  extra-lib-dirs: %s\n' \
+            "$RUNNER_TEMP/duckdb-preview/native" > cabal.project.local
+      - name: Build and test both APIs
+        env:
+          LD_BIND_NOW: '1'
+        run: |
+          cabal build all --with-compiler=ghc --disable-documentation --enable-optimization=${{ matrix.optimization }}
+          cabal test all --with-compiler=ghc --disable-documentation --enable-optimization=${{ matrix.optimization }} --test-show-details=direct
+      - name: Check v2 ownership with Valgrind
+        if: matrix.os == 'ubuntu-latest' && matrix.ghc == '9.12.4'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y valgrind
+          v2_test=$(cabal list-bin duckdb-ffi:duckdb-ffi-v2-test --with-compiler=ghc --disable-documentation --enable-optimization=${{ matrix.optimization }})
+          valgrind --vgdb=no --leak-check=full \
+            --show-leak-kinds=definite,indirect,possible \
+            --errors-for-leak-kinds=definite,indirect \
+            --error-exitcode=97 --undef-value-errors=no --num-callers=30 \
+            "$v2_test" --num-threads=1 +RTS -N1 -RTS
+      - name: Check DataFrame integration and documentation
+        run: |
+          cabal build duckdb-simple-dataframe-test -fdataframe-tests --with-compiler=ghc --disable-documentation --enable-optimization=${{ matrix.optimization }}
+          cabal test duckdb-simple-dataframe-test -fdataframe-tests --with-compiler=ghc --disable-documentation --enable-optimization=${{ matrix.optimization }} --test-show-details=direct
+          cabal haddock all --with-compiler=ghc --enable-optimization=${{ matrix.optimization }}
+          cabal sdist all
+      - name: Check high-level allocation cleanup
+        if: matrix.os == 'ubuntu-latest' && matrix.ghc == '9.12.4'
+        env:
+          # Valgrind changes process RSS. The ordinary leak test checks RSS.
+          DUCKDB_LEAK_RSS_CHECK: '0'
+        run: |
+          leak_test=$(cabal list-bin duckdb-simple-leak-test --with-compiler=ghc --disable-documentation --enable-optimization=${{ matrix.optimization }})
+          for mode in open-close callbacks cancel new-types; do
+            valgrind --vgdb=no --leak-check=full \
+              --show-leak-kinds=definite,indirect,possible \
+              --errors-for-leak-kinds=definite,indirect \
+              --error-exitcode=97 --undef-value-errors=no --num-callers=30 \
+              "$leak_test" "$mode" 1
+          done
+          dataframe_test=$(cabal list-bin duckdb-simple-dataframe-test -fdataframe-tests --with-compiler=ghc --disable-documentation --enable-optimization=${{ matrix.optimization }})
+          valgrind --vgdb=no --leak-check=full \
+            --show-leak-kinds=definite,indirect,possible \
+            --errors-for-leak-kinds=definite,indirect \
+            --error-exitcode=97 --undef-value-errors=no --num-callers=30 \
+            "$dataframe_test" --num-threads=1 +RTS -N1 -RTS
+      - name: Check project and installed consumer headers
+        if: matrix.ghc == '9.14.1' && matrix.optimization == '1'
+        run: |
+          consumer="$RUNNER_TEMP/duckdb-preview-consumer"
+          mkdir -p "$consumer/source"
+          cat > "$consumer/Main.hs" <<'HS'
+          {-# LANGUAGE CApiFFI #-}
+          import Database.DuckDB.FFI (c_duckdb_library_version)
+          import Database.DuckDB.FFI.V2
+          import Foreign.C.String (peekCString, peekCStringLen)
+          import Foreign.C.Types (CInt (..))
+          import Foreign.Marshal.Alloc (alloca)
+          import Foreign.Ptr (nullPtr)
+          import Foreign.Storable (peek)
+          foreign import capi "duckdb_v2.h value DUCKDB_V2_API_VERSION_MAJOR"
+              major :: CInt
+          foreign import capi "duckdb.h value DUCKDB_TYPE_TIMESTAMP_TZ_NS"
+              timestampType :: CInt
+          main :: IO ()
+          main = do
+              if major /= 2 || timestampType /= 42 then fail "Wrong installed DuckDB headers" else pure ()
+              c_duckdb_library_version >>= peekCString >>= putStrLn
+              alloca $ \slot -> do
+                  err <- c_duckdb_v2_library_version slot nullPtr
+                  if err /= DuckDBV2ErrorNone then fail (show err) else do
+                      DuckDBV2Str pointer len <- peek slot
+                      peekCStringLen (pointer, fromIntegral len) >>= putStrLn
+          HS
+          unset LD_LIBRARY_PATH DYLD_LIBRARY_PATH DYLD_FALLBACK_LIBRARY_PATH
+          for way in -static -dynamic; do
+            cabal exec --with-compiler=ghc -- ghc "$way" -fforce-recomp -package duckdb-ffi "$consumer/Main.hs" -o "$consumer/project-check"
+            "$consumer/project-check" > "$consumer/versions"
+            test "$(cat "$consumer/versions")" = "$(printf 'v%s\nv%s' "$DUCKDB_TEST_VERSION" "$DUCKDB_TEST_VERSION")"
+          done
+          tar -xzf "$PWD"/dist-newstyle/sdist/duckdb-ffi-*.tar.gz -C "$consumer/source" --strip-components=1
+          printf 'packages: .\n' > "$consumer/source/cabal.project"
+          cabal install --lib duckdb-ffi --project-dir="$consumer/source" --project-file=cabal.project \
+            --with-compiler=ghc --disable-documentation \
+            -fsystemlib --extra-lib-dirs="$RUNNER_TEMP/duckdb-preview/native" \
+            --package-env="$consumer/environment"
+          # Cabal uses shortened unit IDs on macOS. Query the installed package
+          # by name in the environment's store database, rather than guessing paths.
+          package_db=$(awk '$1 == "package-db" {print $2}' "$consumer/environment")
+          test -d "$package_db"
+          package_id=$(ghc-pkg --no-user-package-db --package-db="$package_db" field duckdb-ffi id --simple-output)
+          grep -Fx "package-id $package_id" "$consumer/environment"
+          include_dir=$(ghc-pkg --no-user-package-db --package-db="$package_db" field --ipid "$package_id" include-dirs --simple-output)
+          echo "Checking installed DuckDB files in $include_dir"
+          mkdir -p "$consumer/expected"
+          tar -xzf "$consumer/source/vendor/duckdb-api.tar.gz" -C "$consumer/expected" --strip-components=1 \
+            duckdb-2.0/duckdb.h duckdb-2.0/duckdb_v2.h duckdb-2.0/LICENSE
+          for file in duckdb.h duckdb_v2.h duckdb-LICENSE; do
+            test -s "$include_dir/$file" || { echo "Missing installed file: $include_dir/$file" >&2; exit 1; }
+            expected=$file
+            if [ "$file" = duckdb-LICENSE ]; then expected=LICENSE; fi
+            cmp "$consumer/expected/$expected" "$include_dir/$file"
+          done
+          for way in -static -dynamic; do
+            ghc "$way" -fforce-recomp -package-env "$consumer/environment" "$consumer/Main.hs" -o "$consumer/check"
+            "$consumer/check" > "$consumer/versions"
+            test "$(cat "$consumer/versions")" = "$(printf 'v%s\nv%s' "$DUCKDB_TEST_VERSION" "$DUCKDB_TEST_VERSION")"
+          done
+      - name: Report macOS test process crashes
+        if: failure() && matrix.os == 'macos-latest'
+        run: |
+          shopt -s nullglob
+          duckdb_crash_reports=("$HOME"/Library/Logs/DiagnosticReports/duckdb-simple*.ips "$HOME"/Library/Logs/DiagnosticReports/duckdb-simple*.crash)
+          if [ "${#duckdb_crash_reports[@]}" -gt 0 ]; then
+            cat "${duckdb_crash_reports[@]}"
+          else
+            echo "No macOS crash report was produced for duckdb-simple."
+          fi

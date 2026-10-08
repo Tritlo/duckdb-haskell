@@ -33,12 +33,18 @@ profilingMetricsRoundtrip =
         withDatabase \db ->
             withConnection db \conn -> do
                 runStatement conn "PRAGMA enable_profiling='no_output'"
+                runStatement conn "SET tracked_metrics = ['query.cpu_time', 'operator.extra_info']"
                 runStatement conn "CREATE TABLE profiling_numbers(value INTEGER)"
                 runStatement conn "INSERT INTO profiling_numbers VALUES (1), (2), (3)"
                 runStatement conn "SELECT sum(value) FROM profiling_numbers"
 
-                infoPtr <- c_duckdb_get_profiling_info conn
-                assertBool "profiling info pointer should be non-null" (infoPtr /= nullPtr)
+                rootPtr <- c_duckdb_get_profiling_info conn
+                assertBool "profiling info pointer should be non-null" (rootPtr /= nullPtr)
+                rootMetrics <- c_duckdb_profiling_info_get_metrics rootPtr
+                c_duckdb_get_map_size rootMetrics >>= (@?= 0)
+                destroyDuckValue rootMetrics
+                infoPtr <- c_duckdb_profiling_info_get_child rootPtr 0
+                assertBool "operator node should be non-null" (infoPtr /= nullPtr)
 
                 metricsVal <- c_duckdb_profiling_info_get_metrics infoPtr
                 entryCountIdx <- c_duckdb_get_map_size metricsVal
@@ -54,7 +60,7 @@ profilingMetricsRoundtrip =
                 withCString firstKey \keyPtr -> do
                     valueHandle <- c_duckdb_profiling_info_get_value infoPtr keyPtr
                     assertBool ("metric " <> firstKey <> " should be present") (valueHandle /= nullPtr)
-                    fetchedValue <- duckValueToString valueHandle
+                    fetchedValue <- duckValueToText valueHandle
                     destroyDuckValue valueHandle
                     fetchedValue @?= firstValue
 
@@ -95,7 +101,7 @@ collectMetrics metricsVal entryCountIdx = do
         destroyDuckValue keyHandle
 
         valHandle <- c_duckdb_get_map_value metricsVal idx
-        valText <- duckValueToString valHandle
+        valText <- duckValueToText valHandle
         destroyDuckValue valHandle
 
         pure (keyName, valText)
@@ -103,13 +109,6 @@ collectMetrics metricsVal entryCountIdx = do
 duckValueToText :: DuckDBValue -> IO String
 duckValueToText valHandle = do
     strPtr <- c_duckdb_get_varchar valHandle
-    text <- peekCString strPtr
-    c_duckdb_free (castPtr strPtr)
-    pure text
-
-duckValueToString :: DuckDBValue -> IO String
-duckValueToString valHandle = do
-    strPtr <- c_duckdb_value_to_string valHandle
     text <- peekCString strPtr
     c_duckdb_free (castPtr strPtr)
     pure text

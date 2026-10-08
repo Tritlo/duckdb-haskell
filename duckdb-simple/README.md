@@ -82,6 +82,12 @@ DuckDB does not allow mixing positional and named placeholders within the same
 SQL statement; the library preserves DuckDB’s error message in that situation.
 DuckDB does not support savepoints. This library does not provide `withSavepoint`.
 
+Parameter names use DuckDB's ASCII case rules. For example, `$amount` and
+`$AMOUNT` refer to the same parameter. Supplying both raises a `FormatError`.
+Non-ASCII characters retain their case. Session variables
+can supply omitted named parameters. DuckDB rejects an omitted parameter
+that has no variable value.
+
 If the number of supplied parameters does not match the statement’s declared
 placeholders—or if you attempt to bind named arguments to a positional-only
 statement—`duckdb-simple` raises a `FormatError` before executing the query.
@@ -225,6 +231,15 @@ The ordinary `Day`, `LocalTime`, and `UTCTime` instances reject infinity with
 a conversion error. Use `Maybe Date` to distinguish SQL NULL from infinity.
 Floating-point NaN and infinities remain valid `Float` and `Double` values.
 
+`UTCTime` and `UTCTimestamp` parameters preserve
+nanoseconds when the prepared parameter type is `TIMESTAMPTZ_NS`. Use an
+explicit cast, such as `SELECT ?::TIMESTAMPTZ_NS`, or a column with that type.
+UTC values inside collections, STRUCTs, MAPs, and UNIONs follow their target
+types. An untyped UTC parameter still binds as microsecond TIMESTAMPTZ.
+Prepare the statement again after a temporal column type changes. DuckDB can
+retain its old parameter type. Use separate parameters when one expression
+requires microseconds and another requires nanoseconds.
+
 ### Manual STRUCT and UNION Handling
 
 Temporal fields retain their SQL units when composite values are rebound.
@@ -293,7 +308,7 @@ success or an exception. The accumulator determines Haskell memory use.
 ### Cursors and folds
 
 `fold`, `fold_`, and `foldNamed` decode one row at a time from DuckDB's result
-chunks. DuckDB 1.5 materializes the native result before the first row is
+chunks. This API materializes the native result before the first row is
 returned. These functions avoid a complete Haskell row list, but native memory
 use still depends on the result size. The native API for starting a streaming
 result is deprecated; the default interface uses the supported execution API.
@@ -402,8 +417,10 @@ when they have sub-microsecond digits. So a `TIMESTAMP_S` result binds back as
 a `TIMESTAMP` when its value fits. Wider timestamp values use milliseconds or
 seconds without losing digits. Lists, arrays, and STRUCT fields bind as
 VARIANT values. MAP and ENUM payloads raise an error. Object parameters reject
-duplicate keys, empty keys, and keys that contain NUL. You can also bind a
-plain value and cast it in SQL, as in `?::VARIANT`.
+duplicate keys and keys that contain NUL. An object with only an empty key
+also raises an error because DuckDB treats its STRUCT type as a tuple.
+DuckDB 2.0 permits an empty key with other named keys. You can also bind a plain
+value and cast it in SQL, as in `?::VARIANT`.
 
 The C API cannot create a usable VARIANT type
 ([#27](https://github.com/Tritlo/duckdb-haskell/issues/27)). Each connection
@@ -421,15 +438,14 @@ TIMETZ payload with an offset in seconds raises an error, as a TIMETZ column
 does. Results can contain empty or NUL object keys. Text and blob payloads can
 contain NUL.
 
-DuckDB 1.5 has no C API for reading VARIANT values. The decoder checks the
+The v1 C API has no accessor for VARIANT payloads. The decoder checks the
 native version and physical schema before it reads the internal representation.
 It checks payload bounds and rejects unknown tags. This format dependency is
-limited to the supported DuckDB 1.5 line.
+limited to the tested DuckDB 2.0 runtime.
 
-Persistent VARIANT columns require storage format `v1.5.0` or later. For a new
-database, pass `[("storage_compatibility_version", "v1.5.0")]` to
-`openWithConfig` or `withConnectionWithConfig`. The library does not change an
-existing database's storage compatibility setting.
+New DuckDB 2.0 databases use storage format 2.0, which supports VARIANT columns.
+The library does not change an existing database's storage compatibility
+setting. VARIANT columns require storage format `v1.5.0` or later.
 
 ### GEOMETRY
 
@@ -488,8 +504,8 @@ NaN in both WKB point X and Y denotes an empty point. Empty multi-geometries
 and collections have no stored layout tag in the decoded representation.
 Keep the raw bytes when these details must survive.
 
-Structured parameters use `encodeWKT` and DuckDB's native cast. DuckDB 1.5
-has no WKB value constructor in its C API. The WKT writer combines layouts
+Structured parameters use `encodeWKT` and DuckDB's native cast. The v1
+C API has no WKB value constructor. The WKT writer combines layouts
 in multi-geometries and polygon rings. It fills absent Z or M with NaN.
 DuckDB's WKT parser limits nesting to 16 levels and rejects empty polygon rings
 and mixed collection layouts. Explicit WKB import preserves mixed member

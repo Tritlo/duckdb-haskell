@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.0.0 (unreleased)
+
+- Target DuckDB 2.0 with `duckdb-ffi >= 2.0.0.0`. The package version selects
+  the supported native API. No preview flag is required.
+- Decode nanosecond timezone timestamps in results and VARIANT values.
+- Preserve nanosecond timezone timestamp precision in VARIANT parameters and
+  parameters whose prepared type requires `TIMESTAMPTZ_NS`. This includes UTC
+  fields in collections, STRUCTs, MAPs, and UNIONs.
+- Allow session variables to supply omitted named parameters.
+- Reject duplicate named parameters with DuckDB's ASCII case rules. Keep
+  distinct non-ASCII names separate.
+- Allow a VARIANT object to contain an empty key with other named keys. Reject
+  an object with only an empty key because the C API changes its shape.
+- Add the optional `quack-tests` suite for authenticated remote queries,
+  parameter binding, writes, streaming, and nanosecond timestamps.
+
 ## 0.3.0.0
 
 - Use native DuckDB 1.5.6 by default. Keep native support for DuckDB >= 1.5.3
@@ -12,8 +28,8 @@
   depth limit for acyclic values.
 - Add `Variant`, a `FieldValue` that binds as a VARIANT, and `variantObject`,
   which builds an object payload. Scalars keep their native type. Object
-  parameters reject duplicate, empty, and NUL-containing keys because the
-  native constructors cannot represent all of these names.
+  parameters reject duplicate and NUL-containing keys, and objects with only
+  an empty key, because the native constructors cannot represent these names.
   `Variant` has no `ToDuckValue` instance, and `logicalTypeFromRep` raises an
   error for VARIANT.
 - A VARIANT timestamp payload outside the microsecond range binds as a

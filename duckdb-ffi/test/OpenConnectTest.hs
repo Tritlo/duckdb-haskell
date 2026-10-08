@@ -31,9 +31,9 @@ testLibraryVersion =
     testCase "loads a supported DuckDB runtime" $ do
         versionPtr <- c_duckdb_library_version
         version <- peekCString versionPtr
-        let unsupported = "Expected DuckDB >= 1.5.3 and < 1.6; loaded " <> version
+        let unsupported = "Expected DuckDB 2.0 or a 2.0 preview; loaded " <> version
         case readP_to_S (char 'v' *> parseVersion <* eof) version of
-            [(Version [1, 5, patch] [], "")] -> assertBool unsupported (patch >= 3)
+            [(Version [2, 0, _] _, "")] -> pure ()
             _ -> assertFailure unsupported
         expected <- lookupEnv "DUCKDB_TEST_VERSION"
         forM_ expected $ \wanted -> version @?= ('v' : wanted)

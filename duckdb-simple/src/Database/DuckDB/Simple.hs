@@ -84,6 +84,7 @@ module Database.DuckDB.Simple (
 
 import Control.Exception (SomeException, bracket, finally, mask, mask_, onException, throwIO, try)
 import Control.Monad (forM, forM_, join, void, when, zipWithM_)
+import Data.Char (toLower)
 import Data.IORef (atomicModifyIORef', mkWeakIORef, newIORef)
 import Data.Maybe (isJust, isNothing)
 import qualified Data.Set as Set
@@ -265,7 +266,9 @@ bind stmt fields = do
     apply :: Int -> FieldBinding -> IO ()
     apply idx = bindFieldBinding stmt (fromIntegral idx :: DuckDBIdx)
 
--- | Bind named parameters to a prepared statement, preserving any positional bindings.
+{- | Bind named parameters to a prepared statement.
+Session variables can supply omitted named parameters.
+-}
 bindNamed :: Statement -> [NamedParam] -> IO ()
 bindNamed stmt params =
     let bindings = fmap (\(name := value) -> (name, toField value)) params
@@ -295,7 +298,7 @@ bindNamed stmt params =
             withStatementHandle stmt \handle -> do
                 let actual = length bindings
                 expected <- fmap fromIntegral (c_duckdb_nparams handle)
-                when (actual /= expected) $
+                when (actual > expected) $
                     throwFormatErrorNamed stmt (parameterCountMessage expected actual) bindings
                 parameterNames <- fetchParameterNames handle expected
                 when (all isNothing parameterNames && expected > 0) $
@@ -670,12 +673,18 @@ columnNameUnavailableError stmt idx =
         , sqlErrorQuery = Just (statementQuery stmt)
         }
 
+-- | Use DuckDB's ASCII case rules for parameter names.
 normalizeName :: Text -> Text
 normalizeName name =
-    case Text.uncons name of
-        Just (prefix, rest)
-            | prefix == ':' || prefix == '$' || prefix == '@' -> rest
-        _ -> name
+    Text.map asciiLower $
+        case Text.uncons name of
+            Just (prefix, rest)
+                | prefix == ':' || prefix == '$' || prefix == '@' -> rest
+            _ -> name
+  where
+    asciiLower char
+        | char >= 'A' && char <= 'Z' = toLower char
+        | otherwise = char
 
 resultRowsChanged :: Ptr DuckDBResult -> IO Int
 resultRowsChanged resPtr = fromIntegral <$> c_duckdb_rows_changed resPtr

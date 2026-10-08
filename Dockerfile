@@ -37,6 +37,8 @@ RUN --mount=type=cache,id=apt-cache,target=/var/cache/apt \
       ca-certificates \
       locales \
       build-essential \
+      cmake \
+      python3 \
       libffi-dev \
       libgmp-dev \
       libncurses-dev \
@@ -53,13 +55,15 @@ RUN groupadd -g "$GID" -o "$USER_NAME" && \
     echo '%sudo ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
 
 WORKDIR /tmp
-RUN curl --fail --location --proto '=https' --proto-redir '=https' -o /tmp/libduckdb.zip https://github.com/duckdb/duckdb/releases/download/v1.5.6/libduckdb-linux-amd64.zip && \
-    echo 'b845005f5132a7d8180057c35e14a7626632258782f871a90861b19c1c03841b  /tmp/libduckdb.zip' | sha256sum -c - && \
-    unzip libduckdb.zip && \
-    mv libduckdb.so /usr/lib/libduckdb.so && \
-    mv duckdb.h /usr/include/ && \
-    ldconfig && \
-    rm libduckdb.zip
+COPY scripts/build-duckdb-preview.sh scripts/duckdb-api.py /preview/scripts/
+COPY duckdb-ffi/vendor/duckdb-api.* /preview/duckdb-ffi/vendor/
+COPY duckdb-ffi/cbits/duckdb.h /preview/duckdb-ffi/cbits/duckdb.h
+ARG DUCKDB_BUILD_JOBS=2
+RUN DUCKDB_BUILD_JOBS="$DUCKDB_BUILD_JOBS" bash /preview/scripts/build-duckdb-preview.sh /tmp/duckdb-preview && \
+    cp /tmp/duckdb-preview/native/libduckdb.so /usr/lib/ && \
+    cp /tmp/duckdb-preview/native/duckdb*.h /usr/include/ && \
+    install -Dm644 /tmp/duckdb-preview/native/duckdb-LICENSE /usr/share/licenses/duckdb/LICENSE && \
+    ldconfig
 
 # Switch to the new user
 USER ${UID}:${GID}
@@ -109,7 +113,7 @@ RUN cabal build all --project-file=cabal.project --project-dir=/app
 
 
 # Test the packages
-RUN DUCKDB_TEST_VERSION=1.5.6 cabal test all --project-file=cabal.project --project-dir=/app --test-show-details=streaming
+RUN DUCKDB_TEST_VERSION=2.0.0-dev0 cabal test all --project-file=cabal.project --project-dir=/app --test-show-details=streaming
 
 # Generate Haddocks for all packages
 RUN cabal haddock all --project-file=cabal.project --project-dir=/app --haddock-for-hackage --enable-documentation

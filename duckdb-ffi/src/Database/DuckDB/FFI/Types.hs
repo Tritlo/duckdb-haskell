@@ -52,6 +52,7 @@ module Database.DuckDB.FFI.Types (
     pattern DuckDBTypeTimeNs,
     pattern DuckDBTypeGeometry,
     pattern DuckDBTypeVariant,
+    pattern DuckDBTypeTimestampTzNs,
     DuckDBPendingState (..),
     pattern DuckDBPendingResultReady,
     pattern DuckDBPendingResultNotReady,
@@ -137,6 +138,7 @@ module Database.DuckDB.FFI.Types (
     pattern DuckDBErrorMissingExtension,
     pattern DuckDBErrorAutoload,
     pattern DuckDBErrorSequence,
+    pattern DuckDBErrorDataCorruption,
     pattern DuckDBInvalidConfiguration,
     pattern DuckDBErrorInvalidConfiguration,
     DuckDBCastMode (..),
@@ -187,7 +189,7 @@ module Database.DuckDB.FFI.Types (
     DuckDBDecimal (..),
     DuckDBBlob (..),
     DuckDBString (..),
-    DuckDBStringT,
+    DuckDBStringT (..),
     DuckDBBit (..),
     DuckDBBignum (..),
     DuckDBQueryProgress (..),
@@ -444,6 +446,10 @@ pattern DuckDBTypeTimeNs = DuckDBType 39
 pattern DuckDBTypeGeometry = DuckDBType 40
 pattern DuckDBTypeVariant = DuckDBType 41
 
+-- | Nanosecond timestamp with a time zone (@DUCKDB_TYPE_TIMESTAMP_TZ_NS@).
+pattern DuckDBTypeTimestampTzNs :: DuckDBType
+pattern DuckDBTypeTimestampTzNs = DuckDBType 42
+
 -- | Pending result state returned from @duckdb_pending_*@ APIs.
 newtype DuckDBPendingState = DuckDBPendingState {unDuckDBPendingState :: CInt}
     deriving (Eq, Ord, Show, Storable)
@@ -688,6 +694,10 @@ pattern DuckDBErrorAutoload = DuckDBErrorType 40
 pattern DuckDBErrorSequence = DuckDBErrorType 41
 pattern DuckDBInvalidConfiguration = DuckDBErrorType 42
 
+-- | Data corruption error (@DUCKDB_ERROR_DATA_CORRUPTION@).
+pattern DuckDBErrorDataCorruption :: DuckDBErrorType
+pattern DuckDBErrorDataCorruption = DuckDBErrorType 43
+
 -- | Backwards-compatible alias for 'DuckDBInvalidConfiguration'.
 {-# DEPRECATED DuckDBErrorInvalidConfiguration "Use DuckDBInvalidConfiguration (matches upstream duckdb.h)" #-}
 pattern DuckDBErrorInvalidConfiguration :: DuckDBErrorType
@@ -737,6 +747,7 @@ pattern DuckDBErrorInvalidConfiguration = DuckDBInvalidConfiguration
     , DuckDBErrorAutoload
     , DuckDBErrorSequence
     , DuckDBInvalidConfiguration
+    , DuckDBErrorDataCorruption
     #-}
 
 -- | Behaviour of DuckDB's casting functions (@duckdb_cast_mode@).
@@ -1109,8 +1120,36 @@ instance Storable DuckDBString where
         pokeByteOff ptr 0 dat
         pokeByteOff ptr (sizeOf (undefined :: Ptr CChar)) len
 
--- | Represents DuckDB's @duckdb_string_t@.
-data DuckDBStringT
+{- | Borrowed 16-byte storage for @duckdb_string_t@ and @duckdb_v2_bytes@.
+
+The length is stored in the first word. The three storage words preserve
+the union bytes. They contain up to 12 inline bytes, or a four-byte prefix
+and a borrowed pointer. Do not interpret them as numeric payload values.
+This structure does not own or free the payload. Keep the owning vector
+or value alive while you read the payload.
+-}
+data DuckDBStringT = DuckDBStringT
+    { duckDBStringTLength :: !Word32
+    , duckDBStringTStorage0 :: !Word32
+    , duckDBStringTStorage1 :: !Word32
+    , duckDBStringTStorage2 :: !Word32
+    }
+    deriving (Eq, Show)
+
+instance Storable DuckDBStringT where
+    sizeOf _ = 16
+    alignment _ = max (alignment (undefined :: Word32)) (alignment (undefined :: Ptr ()))
+    peek ptr =
+        DuckDBStringT
+            <$> peekByteOff ptr 0
+            <*> peekByteOff ptr 4
+            <*> peekByteOff ptr 8
+            <*> peekByteOff ptr 12
+    poke ptr DuckDBStringT{..} = do
+        pokeByteOff ptr 0 duckDBStringTLength
+        pokeByteOff ptr 4 duckDBStringTStorage0
+        pokeByteOff ptr 8 duckDBStringTStorage1
+        pokeByteOff ptr 12 duckDBStringTStorage2
 
 -- | Represents DuckDB's @duckdb_bit@.
 data DuckDBBit = DuckDBBit

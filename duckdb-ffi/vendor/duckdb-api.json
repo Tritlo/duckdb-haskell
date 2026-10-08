@@ -1,0 +1,10 @@
+{
+  "commit": "13d1d8f56a82b3413055819eb90d0b0e68b5c847",
+  "commit_date": "2026-10-07T09:17:36Z",
+  "ref": "v2.0-cyanoptera",
+  "repository": "https://github.com/duckdb/duckdb",
+  "source_archive": {
+    "sha256": "1336e583afcc3a97fdba9d2c7c469846956635007c4272b7e7758a1bad5cd535",
+    "url": "https://codeload.github.com/duckdb/duckdb/tar.gz/13d1d8f56a82b3413055819eb90d0b0e68b5c847"
+  }
+}

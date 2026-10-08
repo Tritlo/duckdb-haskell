@@ -2,14 +2,19 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 import Control.Exception (IOException, catch, throwIO)
-import Control.Monad (filterM, unless, when)
+import Control.Monad (filterM, forM_, unless, when)
+import Data.Char (isHexDigit)
 import Data.List (intercalate, isPrefixOf, nub, stripPrefix)
 import Data.Maybe (isJust, isNothing)
 import Distribution.PackageDescription
 import Distribution.Simple
-import Distribution.Simple.Setup (ConfigFlags, configConfigurationsFlags, configConfigureArgs, configExtraLibDirs)
+import Distribution.Simple.InstallDirs (CopyDest (NoCopyDest), includedir)
+import qualified Distribution.Simple.LocalBuildInfo as LBI
+import Distribution.Simple.Setup (ConfigFlags, configConfigurationsFlags, configConfigureArgs, configDistPref, configExtraLibDirs, copyDest, defaultDistPref, fromFlagOrDefault, installDest, regInPlace)
+
 #if MIN_VERSION_Cabal(3,14,0)
 import Distribution.Utils.Path (getSymbolicPath, makeSymbolicPath)
+
 #endif
 import System.Directory
 import System.Environment (lookupEnv)
@@ -19,6 +24,7 @@ import System.Info (arch, os)
 import System.Process (callProcess, readProcess)
 
 #if !MIN_VERSION_Cabal(3,14,0)
+
 -- | Cabal versions before 3.14 use plain file paths.
 makeSymbolicPath :: FilePath -> FilePath
 makeSymbolicPath = id
@@ -26,13 +32,36 @@ makeSymbolicPath = id
 -- | Read a plain file path with Cabal versions before 3.14.
 getSymbolicPath :: FilePath -> FilePath
 getSymbolicPath = id
+
 #endif
 
--- | Save the native library directory in the package description.
+-- | Save the native library and verified header paths in the package description.
 main :: IO ()
-main = defaultMainWithHooks simpleUserHooks{confHook = configure}
+main =
+    defaultMainWithHooks
+        simpleUserHooks
+            { confHook = configure
+            , copyHook = \package local hooks flags ->
+                copyHook simpleUserHooks (installDescription package) local hooks flags
+            , instHook = \package local hooks flags ->
+                instHook simpleUserHooks (installDescription package) local hooks flags
+            , regHook = \package local hooks flags ->
+                regHook
+                    simpleUserHooks
+                    (if fromFlagOrDefault False (regInPlace flags) then package else installDescription package)
+                    local
+                    hooks
+                    flags
+            , postCopy = \args flags package local -> do
+                postCopy simpleUserHooks args flags package local
+                copyAPIHeaders (fromFlagOrDefault NoCopyDest (copyDest flags)) package local
+            , postInst = \args flags package local -> do
+                postInst simpleUserHooks args flags package local
+                copyAPIHeaders (fromFlagOrDefault NoCopyDest (installDest flags)) package local
+            }
   where
     configure (description, hooks) flags = do
+        headerDirectory <- extractAPIHeaders flags
         nativeDirs <- nativeLibraryDirs flags
         let addLibrary lib =
                 let info = libBuildInfo lib
@@ -42,14 +71,64 @@ main = defaultMainWithHooks simpleUserHooks{confHook = configure}
                                 { ldOptions =
                                     (if os `elem` ["linux", "darwin"] then concatMap (\dir -> ["-Xlinker", "-rpath", "-Xlinker", dir]) nativeDirs else [])
                                         <> ldOptions info
+                                , includeDirs = [makeSymbolicPath headerDirectory]
                                 }
                         }
-            updated = description{condLibrary = fmap (fmap addLibrary) (condLibrary description)}
+            updated = description{condLibrary = fmap (\tree -> tree{condTreeData = addLibrary (condTreeData tree)}) (condLibrary description)}
             updatedFlags =
                 if null nativeDirs
                     then flags
                     else flags{configExtraLibDirs = map makeSymbolicPath nativeDirs}
         confHook simpleUserHooks (updated, hooks) updatedFlags
+
+-- | Verify the API archive. Extract its client headers into the build directory.
+extractAPIHeaders :: ConfigFlags -> IO FilePath
+extractAPIHeaders flags = do
+    let archive = "vendor" </> "duckdb-api.tar.gz"
+        checksumFile = "vendor" </> "duckdb-api.sha256"
+        files = ["duckdb.h", "duckdb_v2.h", "LICENSE"]
+    forM_ [archive, checksumFile] $ \path -> do
+        exists <- doesFileExist path
+        unless exists $ fail ("Bundled DuckDB API file is missing: " <> path)
+    checksumText <- readFile checksumFile
+    let checksum = takeWhile (/= '\n') checksumText
+    unless (length checksum == 64 && all isHexDigit checksum && checksumText == checksum <> "\n") $
+        fail ("Invalid SHA256 digest in " <> checksumFile <> ". Expected one hexadecimal digest followed by a newline.")
+    sha256sum <- findExecutable "sha256sum"
+    (checksumProgram, checksumArgs) <- case sha256sum of
+        Just program -> pure (program, [])
+        Nothing -> do
+            shasum <- findExecutable "shasum"
+            case shasum of
+                Just program -> pure (program, ["-a", "256"])
+                Nothing -> fail "DuckDB API archive verification requires sha256sum or shasum on PATH."
+    digest <- readProcess checksumProgram (checksumArgs <> [archive]) ""
+    unless (takeWhile (/= ' ') digest == checksum) $
+        fail ("Bundled DuckDB API archive checksum mismatch: " <> archive)
+    tar <- findExecutable "tar"
+    tarProgram <- maybe (fail "DuckDB API header extraction requires tar on PATH.") pure tar
+    buildDirectory <- makeAbsolute (getSymbolicPath (fromFlagOrDefault defaultDistPref (configDistPref flags)))
+    let headerDirectory = buildDirectory </> "duckdb-api" </> "duckdb-2.0"
+    createDirectoryIfMissing True headerDirectory
+    callProcess tarProgram (["-xzf", archive, "-C", headerDirectory, "--strip-components=1"] <> map ("duckdb-2.0" </>) files)
+    renameFile (headerDirectory </> "LICENSE") (headerDirectory </> "duckdb-LICENSE")
+    pure headerDirectory
+
+-- | Install the client headers and DuckDB license after Cabal copies the library.
+copyAPIHeaders :: CopyDest -> PackageDescription -> LBI.LocalBuildInfo -> IO ()
+copyAPIHeaders destination package local = do
+    source <- extractAPIHeaders (LBI.configFlags local)
+    let target = includedir (LBI.absoluteInstallDirs package local destination)
+    createDirectoryIfMissing True target
+    forM_ ["duckdb.h", "duckdb_v2.h", "duckdb-LICENSE"] $ \file ->
+        copyFile (source </> file) (target </> file)
+
+-- | Use the package header directory when Cabal copies or registers the library.
+installDescription :: PackageDescription -> PackageDescription
+installDescription package = package{library = fmap installLibrary (library package)}
+  where
+    installLibrary lib =
+        lib{libBuildInfo = (libBuildInfo lib){includeDirs = [makeSymbolicPath "cbits"]}}
 
 -- | Use a supplied library, or download one to the user cache.
 nativeLibraryDirs :: ConfigFlags -> IO [FilePath]
@@ -68,22 +147,23 @@ nativeLibraryDirs flags = do
                     pure (nub supplied)
                 else (: []) <$> installNativeLibrary flags
 
-{- | Pin the download to the release verified by the checksums below.
+{- | Pin automatic downloads to the final native release.
 The Haskell package version can differ from the native library version.
 -}
 nativeVersion :: String
-nativeVersion = "1.5.6"
+nativeVersion = "2.0.0"
 
 -- | Select an official archive and its release checksum.
 nativeArchive :: IO (String, String, FilePath)
 nativeArchive = case (os, arch) of
-    ("linux", "x86_64") -> pure ("linux-amd64", "b845005f5132a7d8180057c35e14a7626632258782f871a90861b19c1c03841b", "libduckdb.so")
-    ("linux", "aarch64") -> pure ("linux-arm64", "b72ed9f05003f5e9d2015f7ceada6416b377d9dd33169cdde3c9e33897856eee", "libduckdb.so")
-    ("darwin", "x86_64") -> mac
-    ("darwin", "aarch64") -> mac
-    _ -> fail "Automatic DuckDB installation supports glibc Linux and macOS. Supply DuckDB >= 1.5.3 and < 1.6 with -fsystemlib and --extra-lib-dirs."
+    ("linux", "x86_64") -> unavailable "linux-amd64"
+    ("linux", "aarch64") -> unavailable "linux-arm64"
+    ("darwin", "x86_64") -> unavailable "osx-universal"
+    ("darwin", "aarch64") -> unavailable "osx-universal"
+    _ -> fail "Automatic DuckDB installation supports glibc Linux and macOS. Supply DuckDB 2.0 with -fsystemlib and --extra-lib-dirs."
   where
-    mac = pure ("osx-universal", "e0bc007d9b0094c0970ac1847a8601d10aad07cbd2910ce586ec810f77b638d6", "libduckdb.dylib")
+    unavailable platform =
+        fail ("Verified DuckDB " <> nativeVersion <> " archive checksum for " <> platform <> " is not available before release. Supply a matching DuckDB 2.0 library with -fsystemlib and --extra-lib-dirs=/absolute/path. See docs/duckdb-2.0.md in the repository.")
 
 -- | Download into a temporary directory. Publish the verified library atomically.
 installNativeLibrary :: ConfigFlags -> IO FilePath

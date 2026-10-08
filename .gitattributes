@@ -1,0 +1,3 @@
+duckdb-ffi/vendor/duckdb-api.tar.gz binary linguist-generated
+duckdb-ffi/src/Database/DuckDB/FFI/V2/Functions.hs linguist-generated
+duckdb-ffi/src/Database/DuckDB/FFI/V2/Types.hsc linguist-generated

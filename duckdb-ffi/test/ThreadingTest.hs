@@ -13,7 +13,7 @@ import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (nullPtr)
 import Foreign.Storable (peek)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
+import Test.Tasty.HUnit (assertBool, testCase, (@?=))
 import Utils (withConnection)
 
 tests :: TestTree
@@ -54,7 +54,9 @@ executeTasksCompletesPendingQuery =
             withConnection db \conn -> do
                 setupAggTable conn
 
-                withCString "SELECT SUM(val) FROM threading_numbers;" \querySql ->
+                -- INSERT retains its result before execution. A SELECT result
+                -- can wait for its consumer after the scheduler runs its tasks.
+                withCString "INSERT INTO threading_numbers SELECT SUM(val) FROM threading_numbers;" \querySql ->
                     alloca \stmtPtr -> do
                         stPrepare <- c_duckdb_prepare conn querySql stmtPtr
                         stPrepare @?= DuckDBSuccess
@@ -70,7 +72,7 @@ executeTasksCompletesPendingQuery =
                             finishedBefore <- c_duckdb_execution_is_finished conn
                             finishedBefore @?= CBool 0
 
-                            driveTasks db conn
+                            c_duckdb_execute_tasks db 1000
 
                             finishedAfter <- c_duckdb_execution_is_finished conn
                             finishedAfter @?= CBool 1
@@ -78,13 +80,19 @@ executeTasksCompletesPendingQuery =
                             alloca \resPtr -> do
                                 stExec <- c_duckdb_execute_pending pending resPtr
                                 stExec @?= DuckDBSuccess
-                                sumVal <- c_duckdb_value_int64 resPtr 0 0
-                                (sumVal :: Int64) @?= 15
+                                c_duckdb_rows_changed resPtr >>= (@?= 1)
                                 c_duckdb_destroy_result resPtr
 
                             c_duckdb_destroy_pending pendingPtr
 
                         c_duckdb_destroy_prepare stmtPtr
+
+                withCString "SELECT SUM(val) FROM threading_numbers;" \querySql ->
+                    alloca \resPtr -> do
+                        c_duckdb_query conn querySql resPtr >>= (@?= DuckDBSuccess)
+                        sumVal <- c_duckdb_value_int64 resPtr 0 0
+                        (sumVal :: Int64) @?= 30
+                        c_duckdb_destroy_result resPtr
 
 taskStateControlsExecutionLifecycle :: TestTree
 taskStateControlsExecutionLifecycle =
@@ -119,19 +127,6 @@ setupAggTable conn = do
         execStatement conn createSql
     withCString "INSERT INTO threading_numbers VALUES (1), (2), (3), (4), (5);" $ \insertSql ->
         execStatement conn insertSql
-
-driveTasks :: DuckDBDatabase -> DuckDBConnection -> IO ()
-driveTasks db conn = go 0
-  where
-    go :: Int -> IO ()
-    go attempts
-        | attempts > 10 = assertFailure "execute_tasks did not finish query within expected iterations"
-        | otherwise = do
-            c_duckdb_execute_tasks db 1000
-            finished <- c_duckdb_execution_is_finished conn
-            if finished == CBool 1
-                then pure ()
-                else go (attempts + 1)
 
 execStatement :: DuckDBConnection -> CString -> IO ()
 execStatement conn sql =

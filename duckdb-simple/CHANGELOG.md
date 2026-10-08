@@ -4,7 +4,8 @@
 
 - Use the hs-bindgen-generated raw API. Preserve value conversion, native
   ownership, callback cleanup, cancellation, and streaming behavior.
-- Exposed raw types now use generated names, handle newtypes, and `ConstPtr`.
+- Use generated compatibility names for raw calls and types. Exposed raw
+  types retain familiar spellings but now use handle newtypes and `ConstPtr`.
   Export Arrow release helpers from `Database.DuckDB.Simple.Arrow`.
 
 - Use native DuckDB 1.5.6 by default. Keep native support for DuckDB >= 1.5.3

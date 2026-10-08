@@ -19,7 +19,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Vector as V
 import Data.Void (Void)
-import Database.DuckDB.FFI
+import Database.DuckDB.FFI.Compat
 import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
 import Database.DuckDB.Simple.FromField (BitString (..), DecimalValue (..), FieldValue (..), StructValue (..), UnionValue)
@@ -271,14 +271,14 @@ appendWideTimestamps conn rows =
         withConstCString "wide_timestamps" \table ->
             alloca \appenderPtr -> do
                 poke appenderPtr (coerce (nullPtr :: Ptr Void))
-                bracket (duckdb_appender_create native (coerce (nullPtr :: Ptr Void)) table appenderPtr) (const (void (duckdb_appender_destroy appenderPtr))) \created -> do
+                bracket (c_duckdb_appender_create native (coerce (nullPtr :: Ptr Void)) table appenderPtr) (const (void (c_duckdb_appender_destroy appenderPtr))) \created -> do
                     created @?= DuckDBSuccess
                     appender <- peek appenderPtr
                     forM_ rows \(seconds, millis) -> do
-                        bracket (duckdb_create_timestamp_s (Duckdb_timestamp_s seconds)) destroyValue (duckdb_append_value appender) >>= (@?= DuckDBSuccess)
-                        bracket (duckdb_create_timestamp_ms (Duckdb_timestamp_ms millis)) destroyValue (duckdb_append_value appender) >>= (@?= DuckDBSuccess)
-                        duckdb_appender_end_row appender >>= (@?= DuckDBSuccess)
-                    duckdb_appender_flush appender >>= (@?= DuckDBSuccess)
+                        bracket (c_duckdb_create_timestamp_s (DuckDBTimestampS seconds)) destroyValue (c_duckdb_append_value appender) >>= (@?= DuckDBSuccess)
+                        bracket (c_duckdb_create_timestamp_ms (DuckDBTimestampMs millis)) destroyValue (c_duckdb_append_value appender) >>= (@?= DuckDBSuccess)
+                        c_duckdb_appender_end_row appender >>= (@?= DuckDBSuccess)
+                    c_duckdb_appender_flush appender >>= (@?= DuckDBSuccess)
 
 -- | A raw geometry payload has no CRS inside a VARIANT.
 geometryPayload :: BS.ByteString -> Variant

@@ -29,7 +29,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
 import Data.Word (Word32, Word8)
-import Database.DuckDB.FFI
+import Database.DuckDB.FFI.Compat
 import Database.DuckDB.Simple.Element (bitStringFromBytes, chunkDecodeBlob, chunkIsRowValid, decodeElement)
 import Database.DuckDB.Simple.FromField (
     BigNum (..),
@@ -59,7 +59,7 @@ checked = either codecError pure
 -- | Reject native versions outside the supported private-format range.
 checkVersion :: IO ()
 checkVersion = do
-    ConstPtr versionPtr <- duckdb_library_version
+    ConstPtr versionPtr <- c_duckdb_library_version
     version <- peekCString versionPtr
     let parts = Text.splitOn "." (Text.pack version)
         patch = case parts of
@@ -83,33 +83,33 @@ nonNull label action = do
     pure ptr
 
 -- | Check a logical type's tag.
-expectType :: DUCKDB_TYPE -> Duckdb_logical_type -> IO ()
+expectType :: DUCKDB_TYPE -> DuckDBLogicalType -> IO ()
 expectType expected logical = do
-    Duckdb_type actual <- duckdb_get_type_id logical
+    DuckDBType actual <- c_duckdb_get_type_id logical
     unless (actual == expected) (codecError "unexpected physical child type")
 
 -- | Check a STRUCT's names and owned child descriptors.
-checkStruct :: Duckdb_logical_type -> [(Text, Duckdb_logical_type -> IO ())] -> IO ()
+checkStruct :: DuckDBLogicalType -> [(Text, DuckDBLogicalType -> IO ())] -> IO ()
 checkStruct logical fields = do
-    count <- duckdb_struct_type_child_count logical
+    count <- c_duckdb_struct_type_child_count logical
     unless (count == fromIntegral (length fields)) (codecError "unexpected physical child count")
     sequence_
         [ do
-            bracket (nonNull "child name" (duckdb_struct_type_child_name logical index)) (duckdb_free . castPtr) \name -> do
+            bracket (nonNull "child name" (c_duckdb_struct_type_child_name logical index)) (c_duckdb_free . castPtr) \name -> do
                 bytes <- BS.packCString name
                 unless (bytes == Text.encodeUtf8 expectedName) (codecError "unexpected physical child name")
-            bracket (nonNull "child type" (duckdb_struct_type_child_type logical index)) destroyLogicalType checkChild
+            bracket (nonNull "child type" (c_duckdb_struct_type_child_type logical index)) destroyLogicalType checkChild
         | (index, (expectedName, checkChild)) <- zip [0 ..] fields
         ]
 
 -- | Check a LIST and its owned element descriptor.
-checkList :: (Duckdb_logical_type -> IO ()) -> Duckdb_logical_type -> IO ()
+checkList :: (DuckDBLogicalType -> IO ()) -> DuckDBLogicalType -> IO ()
 checkList checkChild logical = do
     expectType DUCKDB_TYPE_LIST logical
-    bracket (nonNull "list child type" (duckdb_list_type_child_type logical)) destroyLogicalType checkChild
+    bracket (nonNull "list child type" (c_duckdb_list_type_child_type logical)) destroyLogicalType checkChild
 
 -- | Check the complete, unshredded four-child VARIANT schema.
-checkSchema :: Duckdb_logical_type -> IO ()
+checkSchema :: DuckDBLogicalType -> IO ()
 checkSchema logical = do
     expectType DUCKDB_TYPE_VARIANT logical
     checkStruct
@@ -136,15 +136,15 @@ checkIndex width index =
     when (index < 0 || index > maxBound `div` width) (codecError "native element index exceeds Int range")
 
 -- | Prepare validity access for a chunk. The caller checks row bounds.
-prepareValidity :: Duckdb_vector -> IO (Int -> IO Bool)
+prepareValidity :: DuckDBVector -> IO (Int -> IO Bool)
 prepareValidity vector = do
-    validity <- duckdb_vector_get_validity vector
+    validity <- c_duckdb_vector_get_validity vector
     pure (chunkIsRowValid validity . fromIntegral)
 
 -- | Borrow a fixed-width buffer until its chunk is destroyed.
-prepareElementReader :: (Storable a) => Duckdb_vector -> IO (Int -> IO a)
+prepareElementReader :: (Storable a) => DuckDBVector -> IO (Int -> IO a)
 prepareElementReader vector = do
-    ptr <- duckdb_vector_get_data vector
+    ptr <- c_duckdb_vector_get_data vector
     valid <- prepareValidity vector
     pure (readAt valid (castPtr ptr))
   where
@@ -161,12 +161,12 @@ prepareElementReader vector = do
     element _ = undefined
 
 -- | Borrow a string buffer and copy each requested value into Haskell memory.
-prepareBytesReader :: Duckdb_vector -> IO (Int -> IO ByteString)
+prepareBytesReader :: DuckDBVector -> IO (Int -> IO ByteString)
 prepareBytesReader vector = do
-    base <- duckdb_vector_get_data vector
+    base <- c_duckdb_vector_get_data vector
     valid <- prepareValidity vector
     pure \index -> do
-        checkIndex (sizeOf (undefined :: Duckdb_string_t)) index
+        checkIndex (sizeOf (undefined :: DuckDBStringT)) index
         present <- valid index
         unless present (codecError "NULL physical string element")
         when (base == nullPtr) (codecError "NULL string vector data")
@@ -179,12 +179,12 @@ checkedInt n
     | otherwise = pure (fromInteger n)
 
 -- | Prepare LIST bounds checks against the chunk's fixed child size.
-prepareListBounds :: Duckdb_vector -> IO (Int -> IO (Int, Int))
+prepareListBounds :: DuckDBVector -> IO (Int -> IO (Int, Int))
 prepareListBounds vector = do
     readEntry <- prepareElementReader vector
-    Idx_t size <- duckdb_list_vector_get_size vector
+    DuckDBIdx size <- c_duckdb_list_vector_get_size vector
     pure \row -> do
-        Duckdb_list_entry offset count <- readEntry row
+        DuckDBListEntry offset count <- readEntry row
         unless (offset <= size && count <= size - offset) (codecError "LIST bounds exceed child size")
         start <- checkedInt (toInteger offset)
         len <- checkedInt (toInteger count)
@@ -192,7 +192,7 @@ prepareListBounds vector = do
         pure (start, len)
 
 -- | Decode one row while its flattened result chunk remains alive.
-decodeVariant :: Duckdb_vector -> Int -> IO FieldValue
+decodeVariant :: DuckDBVector -> Int -> IO FieldValue
 decodeVariant vector row = prepareVariantDecoder vector >>= ($ row)
 
 {- | Check the format once and borrow buffers for a flattened result chunk.
@@ -200,12 +200,12 @@ The returned reader must not outlive the chunk. The caller supplies row indices
 within that chunk. DuckDB result Fetch flattens nested vectors in 1.5.
 Each read copies its payload into Haskell memory, including referenced keys.
 -}
-prepareVariantDecoder :: Duckdb_vector -> IO (Int -> IO FieldValue)
+prepareVariantDecoder :: DuckDBVector -> IO (Int -> IO FieldValue)
 prepareVariantDecoder vector = do
     checkVersion
     checkPlatform
-    when (vector == Duckdb_vector nullPtr) (codecError "NULL vector")
-    bracket (nonNull "vector type" (duckdb_vector_get_column_type vector)) destroyLogicalType checkSchema
+    when (vector == DuckDBVector nullPtr) (codecError "NULL vector")
+    bracket (nonNull "vector type" (c_duckdb_vector_get_column_type vector)) destroyLogicalType checkSchema
     valid <- prepareValidity vector
     keys <- child vector 0
     children <- child vector 1
@@ -214,9 +214,9 @@ prepareVariantDecoder vector = do
     keyBounds <- prepareListBounds keys
     childBounds <- prepareListBounds children
     valueBounds <- prepareListBounds values
-    keyVector <- nonNull "keys vector" (duckdb_list_vector_get_child keys)
-    childVector <- nonNull "children vector" (duckdb_list_vector_get_child children)
-    valueVector <- nonNull "values vector" (duckdb_list_vector_get_child values)
+    keyVector <- nonNull "keys vector" (c_duckdb_list_vector_get_child keys)
+    childVector <- nonNull "children vector" (c_duckdb_list_vector_get_child children)
+    valueVector <- nonNull "values vector" (c_duckdb_list_vector_get_child values)
     keyIndices <- child childVector 0
     valueIndices <- child childVector 1
     tags <- child valueVector 0
@@ -229,7 +229,7 @@ prepareVariantDecoder vector = do
     readKeyBytes <- prepareBytesReader keyVector
     readBlob <- prepareBytesReader blob
     pure \row -> do
-        checkIndex (sizeOf (undefined :: Duckdb_list_entry)) row
+        checkIndex (sizeOf (undefined :: DuckDBListEntry)) row
         present <- valid row
         if not present
             then pure FieldNull
@@ -256,7 +256,7 @@ prepareVariantDecoder vector = do
                 bytes <- readBlob row
                 decodeVariantPayload valueRows childRows keyRows bytes
   where
-    child parent index = nonNull "STRUCT vector child" (duckdb_struct_vector_get_child parent index)
+    child parent index = nonNull "STRUCT vector child" (c_duckdb_struct_vector_get_child parent index)
 
 {- | Decode copied 1.5 payload data for one non-NULL row.
 Values are (tag, byte offset). Children are (optional key index, value index).

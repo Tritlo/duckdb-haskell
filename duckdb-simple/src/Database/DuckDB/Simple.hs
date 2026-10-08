@@ -90,7 +90,7 @@ import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
-import Database.DuckDB.FFI
+import Database.DuckDB.FFI.Compat
 import Database.DuckDB.Simple.FromField (
     Field (..),
     FieldParser,
@@ -214,9 +214,9 @@ openStatement conn queryText =
             withConnectionHandle conn \connPtr ->
                 withQueryCString queryText \sql ->
                     alloca \stmtPtr -> do
-                        poke stmtPtr (Duckdb_prepared_statement nullPtr)
-                        flip onException (duckdb_destroy_prepare stmtPtr) do
-                            rc <- runInterruptibleQuery conn (duckdb_prepare connPtr sql stmtPtr)
+                        poke stmtPtr (DuckDBPreparedStatement nullPtr)
+                        flip onException (c_duckdb_destroy_prepare stmtPtr) do
+                            rc <- runInterruptibleQuery conn (c_duckdb_prepare connPtr sql stmtPtr)
                             stmt <- peek stmtPtr
                             if rc == DuckDBSuccess
                                 then pure stmt
@@ -246,7 +246,7 @@ bind stmt fields = do
     resetStatementStream stmt
     withStatementHandle stmt \handle -> do
         let actual = length fields
-        expected <- fmap fromIntegral (duckdb_nparams handle)
+        expected <- fmap fromIntegral (c_duckdb_nparams handle)
         when (actual /= expected) $
             throwFormatErrorBindings stmt (parameterCountMessage expected actual) fields
         parameterNames <- fetchParameterNames handle expected
@@ -264,7 +264,7 @@ bind stmt fields = do
                 <> " argument(s) were supplied"
 
     apply :: Int -> FieldBinding -> IO ()
-    apply idx = bindFieldBinding stmt (fromIntegral idx :: Idx_t)
+    apply idx = bindFieldBinding stmt (fromIntegral idx :: DuckDBIdx)
 
 -- | Bind named parameters to a prepared statement, preserving any positional bindings.
 bindNamed :: Statement -> [NamedParam] -> IO ()
@@ -287,7 +287,7 @@ bindNamed stmt params =
             case mIdx of
                 Nothing ->
                     throwFormatErrorNamed stmt (unknownNameMessage name) bindings
-                Just idx -> bindFieldBinding stmt (fromIntegral idx :: Idx_t) binding
+                Just idx -> bindFieldBinding stmt (fromIntegral idx :: DuckDBIdx) binding
      in do
             resetStatementStream stmt
             let names = map (normalizeName . fst) bindings
@@ -295,7 +295,7 @@ bindNamed stmt params =
                 throwFormatErrorNamed stmt (Text.pack "duckdb-simple: duplicate named parameter") bindings
             withStatementHandle stmt \handle -> do
                 let actual = length bindings
-                expected <- fmap fromIntegral (duckdb_nparams handle)
+                expected <- fmap fromIntegral (c_duckdb_nparams handle)
                 when (actual /= expected) $
                     throwFormatErrorNamed stmt (parameterCountMessage expected actual) bindings
                 parameterNames <- fetchParameterNames handle expected
@@ -304,10 +304,10 @@ bindNamed stmt params =
             clearStatementBindings stmt
             mapM_ apply bindings
 
-fetchParameterNames :: Duckdb_prepared_statement -> Int -> IO [Maybe Text]
+fetchParameterNames :: DuckDBPreparedStatement -> Int -> IO [Maybe Text]
 fetchParameterNames handle count =
     forM [1 .. count] \idx ->
-        bracket (duckdb_parameter_name handle (fromIntegral idx)) (duckdb_free . castPtr . unConstPtr) \namePtr ->
+        bracket (c_duckdb_parameter_name handle (fromIntegral idx)) (c_duckdb_free . castPtr . unConstPtr) \namePtr ->
             if namePtr == ConstPtr nullPtr
                 then pure Nothing
                 else do
@@ -322,7 +322,7 @@ clearStatementBindings :: Statement -> IO ()
 clearStatementBindings stmt =
     withStatementHandle stmt \handle -> do
         resetStatementStream stmt
-        rc <- duckdb_clear_bindings handle
+        rc <- c_duckdb_clear_bindings handle
         when (rc /= DuckDBSuccess) $ do
             err <- fetchPrepareError (Text.pack "duckdb-simple: prepare failed") handle
             throwIO $ mkPrepareError (statementQuery stmt) err
@@ -336,7 +336,7 @@ namedParameterIndex stmt name =
         let normalized = normalizeName name
         TextForeign.withCString normalized \cName ->
             alloca \idxPtr -> do
-                rc <- duckdb_bind_parameter_index handle idxPtr (ConstPtr cName)
+                rc <- c_duckdb_bind_parameter_index handle idxPtr (ConstPtr cName)
                 if rc == DuckDBSuccess
                     then do
                         idx <- peek idxPtr
@@ -349,7 +349,7 @@ namedParameterIndex stmt name =
 columnCount :: Statement -> IO Int
 columnCount stmt =
     withStatementHandle stmt $ \handle ->
-        fmap fromIntegral (duckdb_prepared_statement_column_count handle)
+        fmap fromIntegral (c_duckdb_prepared_statement_column_count handle)
 
 -- | Look up the zero-based column name exposed by a prepared statement result.
 columnName :: Statement -> Int -> IO Text
@@ -357,10 +357,10 @@ columnName stmt columnIndex
     | columnIndex < 0 = throwIO (columnIndexError stmt columnIndex Nothing)
     | otherwise =
         withStatementHandle stmt \handle -> do
-            total <- fmap fromIntegral (duckdb_prepared_statement_column_count handle)
+            total <- fmap fromIntegral (c_duckdb_prepared_statement_column_count handle)
             when (columnIndex >= total) $
                 throwIO (columnIndexError stmt columnIndex (Just total))
-            bracket (duckdb_prepared_statement_column_name handle (fromIntegral columnIndex)) (duckdb_free . castPtr . unConstPtr) \namePtr ->
+            bracket (c_duckdb_prepared_statement_column_name handle (fromIntegral columnIndex)) (c_duckdb_free . castPtr . unConstPtr) \namePtr ->
                 if namePtr == ConstPtr nullPtr
                     then throwIO (columnNameUnavailableError stmt columnIndex)
                     else peekUtf8CString namePtr
@@ -373,7 +373,7 @@ executeStatement :: Statement -> IO Int
 executeStatement stmt =
     withStatementHandle stmt \handle -> do
         resetStatementStream stmt
-        withResult (statementConnection stmt) (statementQuery stmt) (duckdb_execute_prepared handle) resultRowsChanged
+        withResult (statementConnection stmt) (statementQuery stmt) (c_duckdb_execute_prepared handle) resultRowsChanged
 
 -- | Execute a query with positional parameters and return the affected row count.
 execute :: (ToRow q) => Connection -> Query -> q -> IO Int
@@ -393,7 +393,7 @@ execute_ :: Connection -> Query -> IO Int
 execute_ conn queryText =
     withConnectionHandle conn \connPtr ->
         withQueryCString queryText \sql ->
-            withResult conn queryText (duckdb_query connPtr sql) resultRowsChanged
+            withResult conn queryText (c_duckdb_query connPtr sql) resultRowsChanged
 
 -- | Execute a query that uses named parameters.
 executeNamed :: Connection -> Query -> [NamedParam] -> IO Int
@@ -412,7 +412,7 @@ queryWith parser conn queryText params =
     withStatement conn queryText \stmt -> do
         bind stmt (toRow params)
         withStatementHandle stmt \handle ->
-            withResult conn queryText (duckdb_execute_prepared handle) \resPtr ->
+            withResult conn queryText (c_duckdb_execute_prepared handle) \resPtr ->
                 collectRows queryText resPtr >>= convertRowsWith parser queryText
 
 -- | Run a query that uses named parameters and decode all rows eagerly.
@@ -421,7 +421,7 @@ queryNamed conn queryText params =
     withStatement conn queryText \stmt -> do
         bindNamed stmt params
         withStatementHandle stmt \handle ->
-            withResult conn queryText (duckdb_execute_prepared handle) \resPtr ->
+            withResult conn queryText (c_duckdb_execute_prepared handle) \resPtr ->
                 collectRows queryText resPtr >>= convertRows queryText
 
 -- | Run a query without supplying parameters and decode all rows eagerly.
@@ -433,7 +433,7 @@ queryWith_ :: RowParser r -> Connection -> Query -> IO [r]
 queryWith_ parser conn queryText =
     withConnectionHandle conn \connPtr ->
         withQueryCString queryText \sql ->
-            withResult conn queryText (duckdb_query connPtr sql) \resPtr ->
+            withResult conn queryText (c_duckdb_query connPtr sql) \resPtr ->
                 collectRows queryText resPtr >>= convertRowsWith parser queryText
 
 -- Cursors and folds ---------------------------------------------------------
@@ -488,7 +488,7 @@ withTransaction conn action =
 
 -- Internal helpers -----------------------------------------------------------
 
-createConnection :: Duckdb_database -> Duckdb_connection -> TypeCache -> IO Connection
+createConnection :: DuckDBDatabase -> DuckDBConnection -> TypeCache -> IO Connection
 createConnection db conn cache = do
     ref <- newIORef (ConnectionOpen db conn cache)
     _ <-
@@ -500,7 +500,7 @@ createConnection db conn cache = do
                         (ConnectionClosed, closeHandles openState)
     pure Connection{connectionState = ref}
 
-createStatement :: Connection -> Duckdb_prepared_statement -> Query -> IO Statement
+createStatement :: Connection -> DuckDBPreparedStatement -> Query -> IO Statement
 createStatement parent handle queryText = do
     ref <- newIORef (StatementOpen handle)
     streamRef <- newIORef StatementStreamIdle
@@ -524,27 +524,27 @@ createStatement parent handle queryText = do
             , statementStream = streamRef
             }
 
-openDatabaseWithConfig :: FilePath -> [(Text, Text)] -> IO Duckdb_database
+openDatabaseWithConfig :: FilePath -> [(Text, Text)] -> IO DuckDBDatabase
 openDatabaseWithConfig path settings = do
     when ('\0' `elem` path || any (\(name, value) -> Text.any (== '\0') name || Text.any (== '\0') value) settings) $
         throwIO (mkOpenError (Text.pack "duckdb-simple: database path or configuration contains NUL"))
     alloca \dbPtr ->
         alloca \configPtr ->
             alloca \errPtr -> do
-                rcConfig <- duckdb_create_config configPtr
+                rcConfig <- c_duckdb_create_config configPtr
                 when (rcConfig /= DuckDBSuccess) $
                     throwIO (mkOpenError (Text.pack "duckdb-simple: failed to allocate DuckDB config"))
                 config <- peek configPtr
                 poke errPtr nullPtr
                 let destroyConfig =
-                        when (config /= Duckdb_config nullPtr) $
-                            alloca \cfgPtr -> poke cfgPtr config >> duckdb_destroy_config cfgPtr
+                        when (config /= DuckDBConfig nullPtr) $
+                            alloca \cfgPtr -> poke cfgPtr config >> c_duckdb_destroy_config cfgPtr
                 flip finally destroyConfig $
                     do
                         forM_ settings \(name, value) ->
                             TextForeign.withCString name \cName ->
                                 TextForeign.withCString value \cValue -> do
-                                    rcSet <- duckdb_set_config config (ConstPtr cName) (ConstPtr cValue)
+                                    rcSet <- c_duckdb_set_config config (ConstPtr cName) (ConstPtr cValue)
                                     when (rcSet /= DuckDBSuccess)
                                         $ throwIO
                                         $ mkOpenError
@@ -553,7 +553,7 @@ openDatabaseWithConfig path settings = do
                                             , name
                                             ]
                         TextForeign.withCString (Text.pack path) \cPath -> do
-                            rc <- duckdb_open_ext (ConstPtr cPath) dbPtr config errPtr
+                            rc <- c_duckdb_open_ext (ConstPtr cPath) dbPtr config errPtr
                             if rc == DuckDBSuccess
                                 then do
                                     db <- peek dbPtr
@@ -564,10 +564,10 @@ openDatabaseWithConfig path settings = do
                                     maybeFreeErr errPtr
                                     throwIO $ mkOpenError errMsg
 
-connectDatabase :: Duckdb_database -> IO Duckdb_connection
+connectDatabase :: DuckDBDatabase -> IO DuckDBConnection
 connectDatabase db =
     alloca \connPtr -> do
-        rc <- duckdb_connect db connPtr
+        rc <- c_duckdb_connect db connPtr
         if rc == DuckDBSuccess
             then peek connPtr
             else throwIO mkConnectError
@@ -579,17 +579,17 @@ closeHandles ConnectionOpen{connectionDatabase, connectionHandle, connectionType
     closeConnectionHandle connectionHandle
     closeDatabaseHandle connectionDatabase
 
-closeConnectionHandle :: Duckdb_connection -> IO ()
+closeConnectionHandle :: DuckDBConnection -> IO ()
 closeConnectionHandle conn =
-    alloca \ptr -> poke ptr conn >> duckdb_disconnect ptr
+    alloca \ptr -> poke ptr conn >> c_duckdb_disconnect ptr
 
-closeDatabaseHandle :: Duckdb_database -> IO ()
+closeDatabaseHandle :: DuckDBDatabase -> IO ()
 closeDatabaseHandle db =
-    alloca \ptr -> poke ptr db >> duckdb_close ptr
+    alloca \ptr -> poke ptr db >> c_duckdb_close ptr
 
-destroyPrepared :: Duckdb_prepared_statement -> IO ()
+destroyPrepared :: DuckDBPreparedStatement -> IO ()
 destroyPrepared stmt =
-    alloca \ptr -> poke ptr stmt >> duckdb_destroy_prepare ptr
+    alloca \ptr -> poke ptr stmt >> c_duckdb_destroy_prepare ptr
 
 mkOpenError :: Text -> SQLError
 mkOpenError msg =
@@ -678,8 +678,8 @@ normalizeName name =
             | prefix == ':' || prefix == '$' || prefix == '@' -> rest
         _ -> name
 
-resultRowsChanged :: Ptr Duckdb_result -> IO Int
-resultRowsChanged resPtr = fromIntegral <$> duckdb_rows_changed resPtr
+resultRowsChanged :: Ptr DuckDBResult -> IO Int
+resultRowsChanged resPtr = fromIntegral <$> c_duckdb_rows_changed resPtr
 
 convertRows :: (FromRow r) => Query -> [[Field]] -> IO [r]
 convertRows = convertRowsWith fromRow
@@ -701,4 +701,4 @@ peekError ptr = do
 maybeFreeErr :: Ptr CString -> IO ()
 maybeFreeErr ptr = do
     errPtr <- peek ptr
-    when (errPtr /= nullPtr) $ duckdb_free (castPtr errPtr)
+    when (errPtr /= nullPtr) $ c_duckdb_free (castPtr errPtr)

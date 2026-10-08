@@ -2,8 +2,7 @@
 
 ## Project structure
 
-`duckdb-ffi/src/Database/DuckDB/FFI.lhs` generates the C API bindings with
-hs-bindgen. The pinned headers are in `duckdb-ffi/cbits`, and the tests are in
+`duckdb-ffi/src/Database/DuckDB/FFI.hs` contains the generated C API bindings. The pinned headers are in `duckdb-ffi/cbits`, and the tests are in
 `duckdb-ffi/test`. Do not add handwritten raw imports or C ABI wrappers.
 `duckdb-simple/src` contains the higher-level API. Its integration and property
 tests are in `duckdb-simple/test`, and its leak test is in `duckdb-simple/leaktest`.
@@ -14,10 +13,20 @@ The pure geometry types and codecs are maintained in
 ## Testing guidelines
 
 Use `nix-shell dev/nix/shell.nix` for the development toolchain. Supply a DuckDB
-library through `cabal.project.local`. The shell uses GHC 9.14.1, matching
-LLVM/Clang, libclang, and Doxygen. Keep the generator and C compiler on the same
-ABI. The hs-bindgen literate preprocessor generates bindings during compilation.
-Cabal lists both input headers as source files.
+library through `cabal.project.local`. The shell uses GHC 9.14.1.
+Package builds compile the checked-in bindings. They do not run the generator.
+Use the separate maintainer environment after changing a header:
+
+```sh
+nix-shell dev/nix/generate.nix --run 'duckdb-ffi/scripts/generate-bindings.sh'
+nix-shell dev/nix/generate.nix --run 'duckdb-ffi/scripts/generate-bindings.sh --check'
+```
+
+The script generates bindings for the four supported native targets and compares
+the output. It also generates C static assertions from the binding metadata.
+Commit the Haskell output, compatibility aliases, and C assertions together.
+Do not edit their layouts. The frozen legacy spelling map defines the earlier
+public names. It does not define C signatures or layouts.
 
 Test new behavior through the database where possible. Add regressions for
 bug fixes. Run the full test suite before submitting a change.

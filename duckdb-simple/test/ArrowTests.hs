@@ -20,7 +20,7 @@ import Data.Proxy (Proxy (..))
 import qualified Data.Text as Text
 import Data.Void (Void)
 import Data.Word (Word8)
-import Database.DuckDB.FFI
+import Database.DuckDB.FFI.Compat
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.Arrow (releaseArrowArray, releaseArrowSchema)
 import qualified Database.DuckDB.Simple.Arrow as Arrow

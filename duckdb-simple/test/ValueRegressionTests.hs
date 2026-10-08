@@ -24,7 +24,7 @@ import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), minutesToTimeZone, utc, utcToLocalTime)
 import Data.Void (Void)
 import Data.Word (Word16, Word32, Word8)
-import Database.DuckDB.FFI
+import Database.DuckDB.FFI.Compat
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (BitString (..), DecimalValue (..), FieldValue (..), TimeWithZone (..), bsFromBool)
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..), genericFromFieldValue, genericToStructValue)
@@ -49,10 +49,10 @@ instance DuckDBColumnType NativeTimestamp where
     duckdbColumnTypeFor _ = "TIMESTAMP"
 
 instance ToDuckValue NativeTimestamp where
-    toDuckValue (Seconds value) = duckdb_create_timestamp_s (Duckdb_timestamp_s value)
-    toDuckValue (Milliseconds value) = duckdb_create_timestamp_ms (Duckdb_timestamp_ms value)
-    toDuckValue (Microseconds value) = duckdb_create_timestamp (Duckdb_timestamp value)
-    toDuckValue (Nanoseconds value) = duckdb_create_timestamp_ns (Duckdb_timestamp_ns value)
+    toDuckValue (Seconds value) = c_duckdb_create_timestamp_s (DuckDBTimestampS value)
+    toDuckValue (Milliseconds value) = c_duckdb_create_timestamp_ms (DuckDBTimestampMs value)
+    toDuckValue (Microseconds value) = c_duckdb_create_timestamp (DuckDBTimestamp value)
+    toDuckValue (Nanoseconds value) = c_duckdb_create_timestamp_ns (DuckDBTimestampNs value)
 
 instance ToField NativeTimestamp
 
@@ -321,19 +321,19 @@ assertTemporalRoundTrip conn dtype expression = do
     query conn "SELECT ?, ?" original >>= (@?= [original])
 
 -- | Store raw timestamp units without the prepared-parameter type conversion.
-appendTimestamp :: Connection -> String -> IO Duckdb_value -> IO ()
+appendTimestamp :: Connection -> String -> IO DuckDBValue -> IO ()
 appendTimestamp conn dtype createValue = do
     _ <- execute_ conn (fromString ("CREATE TABLE native_timestamp(value " <> dtype <> ")"))
     withConnectionHandle conn \handle ->
         alloca \appenderPtr -> do
             poke appenderPtr (coerce (nullPtr :: Ptr Void))
             withConstCString "native_timestamp" \table ->
-                duckdb_appender_create handle (coerce (nullPtr :: Ptr Void)) table appenderPtr >>= (@?= DuckDBSuccess)
-            bracket (peek appenderPtr) (const (duckdb_appender_destroy appenderPtr >> pure ())) \appender -> do
-                bracket createValue (\value -> alloca \ptr -> poke ptr value >> duckdb_destroy_value ptr) \value ->
-                    duckdb_append_value appender value >>= (@?= DuckDBSuccess)
-                duckdb_appender_end_row appender >>= (@?= DuckDBSuccess)
-                duckdb_appender_flush appender >>= (@?= DuckDBSuccess)
+                c_duckdb_appender_create handle (coerce (nullPtr :: Ptr Void)) table appenderPtr >>= (@?= DuckDBSuccess)
+            bracket (peek appenderPtr) (const (c_duckdb_appender_destroy appenderPtr >> pure ())) \appender -> do
+                bracket createValue (\value -> alloca \ptr -> poke ptr value >> c_duckdb_destroy_value ptr) \value ->
+                    c_duckdb_append_value appender value >>= (@?= DuckDBSuccess)
+                c_duckdb_appender_end_row appender >>= (@?= DuckDBSuccess)
+                c_duckdb_appender_flush appender >>= (@?= DuckDBSuccess)
 
 -- | Build a single-field struct for nested binding tests.
 singleField :: LogicalTypeRep -> FieldValue -> StructValue FieldValue

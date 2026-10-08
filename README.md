@@ -5,9 +5,9 @@
 Available on [Hackage](https://hackage.haskell.org/package/duckdb-ffi).
 `duckdb-ffi` provides low-level Haskell bindings to the
 [DuckDB](https://duckdb.org) [C API](https://duckdb.org/docs/api/c/overview).
-The package generates the complete raw API from the official `duckdb.h`
-header with hs-bindgen 1.0. Struct layouts, unions, enum values, callback
-conversions, and C ABI wrappers are generated during compilation.
+The package ships the complete raw API generated from the official `duckdb.h`
+header with hs-bindgen 1.0. Maintainers generate struct layouts, unions, enum
+values, callback conversions, and C ABI wrappers before release.
 
 ### Highlights
 
@@ -15,17 +15,17 @@ conversions, and C ABI wrappers are generated during compilation.
   appenders, and Arrow integration.
 - Exposes generated bindings in `Database.DuckDB.FFI`.
 - Uses C function names directly, such as `duckdb_open`.
+- Provides generated `DuckDBFoo` and `c_duckdb_*` aliases in
+  `Database.DuckDB.FFI.Compat`.
 - Includes integration tests for the native bindings.
 - Supports DuckDB >= 1.5.3 and < 1.6, using the released 1.5.6 C header.
 
 ### Build dependencies
 
-Install LLVM/Clang 16 or later, its `libclang` development files, `llvm-config`,
-Doxygen, and zlib development headers. Use matching Clang and libclang versions.
-With GHC 9.14.1, add `allow-newer: debruijn:base, skew-list:base` to the
-application's `cabal.project`. These hs-bindgen dependencies have outdated
-`base` bounds. This repository already sets the overrides.
-The pinned development shell supplies these tools:
+Package builds need GHC, Cabal, a C compiler, and DuckDB. They do not run
+hs-bindgen or need LLVM, libclang, or Doxygen. The raw library depends only on
+`base` and `hs-bindgen-runtime`.
+The pinned development shell supplies the build tools:
 
 ```sh
 nix-shell dev/nix/shell.nix
@@ -33,8 +33,16 @@ nix-shell dev/nix/shell.nix
 
 Nix shells need a supplied DuckDB library, as described below.
 Ordinary Cabal builds retain the verified native download.
-The generator uses the target ABI. Rebuild bindings on each platform.
-Do not copy generated layouts from another platform.
+Maintainers regenerate the checked-in source with:
+
+```sh
+nix-shell dev/nix/generate.nix --run 'duckdb-ffi/scripts/generate-bindings.sh'
+```
+
+The script compares generation for Linux x86_64/aarch64 and macOS x86_64/ARM64.
+The generated layouts are identical on these targets. C static assertions check
+the compiler's sizes, alignments, and field offsets during each package build.
+An incompatible target fails compilation. Use `--check` to check committed output.
 See [MIGRATION.md](MIGRATION.md#duckdb-ffi-migration) for raw API changes.
 
 ### Native library installation

@@ -29,7 +29,7 @@ module Database.DuckDB.Simple.Arrow (
     releaseArrowStream,
 ) where
 
-import Database.DuckDB.FFI (ArrowArray, ArrowSchema)
+import Database.DuckDB.FFI.Compat (ArrowArray, ArrowSchema)
 import Database.DuckDB.Simple.Arrow.Internal (foldArrowWith, releaseArrowArray, releaseArrowSchema, releaseArrowStream)
 import Database.DuckDB.Simple.Internal (Connection, Query, ResultMode (MaterializedResult))
 import Database.DuckDB.Simple.ToRow (ToRow)

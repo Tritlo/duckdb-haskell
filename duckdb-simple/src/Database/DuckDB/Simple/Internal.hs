@@ -69,8 +69,8 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.Foreign as TextForeign
-import Database.DuckDB.FFI (DUCKDB_TYPE, Duckdb_client_context (..), Duckdb_connection, Duckdb_data_chunk (..), Duckdb_database, Duckdb_error_type, Duckdb_prepared_statement, Duckdb_result, Duckdb_state, Duckdb_value, duckdb_connection_get_client_context, duckdb_destroy_client_context, duckdb_destroy_data_chunk, duckdb_destroy_result, duckdb_destroy_value, duckdb_execute_prepared, duckdb_execute_prepared_streaming, duckdb_fetch_chunk, duckdb_interrupt, duckdb_prepare_error, duckdb_result_error, duckdb_result_error_type, pattern DUCKDB_ERROR_INVALID, pattern DuckDBSuccess)
-import qualified Database.DuckDB.FFI as FFI
+import Database.DuckDB.FFI.Compat (DUCKDB_TYPE, DuckDBClientContext, DuckDBConnection, DuckDBDataChunk, DuckDBDatabase, DuckDBErrorType, DuckDBPreparedStatement, DuckDBResult, DuckDBState, DuckDBValue, c_duckdb_connection_get_client_context, c_duckdb_destroy_client_context, c_duckdb_destroy_data_chunk, c_duckdb_destroy_result, c_duckdb_destroy_value, c_duckdb_execute_prepared, c_duckdb_execute_prepared_streaming, c_duckdb_fetch_chunk, c_duckdb_interrupt, c_duckdb_prepare_error, c_duckdb_result_error, c_duckdb_result_error_type, pattern DuckDBDataChunk, pattern DuckDBErrorInvalid, pattern DuckDBSuccess)
+import qualified Database.DuckDB.FFI.Compat as FFI
 import Database.DuckDB.Simple.FromField (FieldValue)
 import Database.DuckDB.Simple.LogicalRep (destroyLogicalType)
 import Database.DuckDB.Simple.TypeCache (TypeCache)
@@ -104,8 +104,8 @@ newtype Connection = Connection {connectionState :: IORef ConnectionState}
 data ConnectionState
     = ConnectionClosed
     | ConnectionOpen
-        { connectionDatabase :: Duckdb_database
-        , connectionHandle :: Duckdb_connection
+        { connectionDatabase :: DuckDBDatabase
+        , connectionHandle :: DuckDBConnection
         , connectionTypeCache :: TypeCache
         }
 
@@ -121,7 +121,7 @@ data Statement = Statement
 data StatementState
     = StatementClosed
     | StatementOpen
-        { statementHandle :: Duckdb_prepared_statement
+        { statementHandle :: DuckDBPreparedStatement
         }
 
 -- | Streaming execution state for prepared statements.
@@ -132,7 +132,7 @@ data StatementStreamState
 
 -- | Streaming cursor backing an active result set.
 data StatementStream = StatementStream
-    { statementStreamResult :: Ptr Duckdb_result
+    { statementStreamResult :: Ptr DuckDBResult
     , statementStreamColumns :: [StatementStreamColumn]
     , statementStreamChunk :: Maybe StatementStreamChunk
     , statementStreamMode :: ResultMode
@@ -150,7 +150,7 @@ data StatementStreamColumn = StatementStreamColumn
 
 -- | Currently loaded data chunk plus iteration cursor.
 data StatementStreamChunk = StatementStreamChunk
-    { statementStreamChunkPtr :: Duckdb_data_chunk
+    { statementStreamChunkPtr :: DuckDBDataChunk
     , statementStreamChunkSize :: Int
     , statementStreamChunkIndex :: Int
     , statementStreamChunkReaders :: [Int -> IO FieldValue]
@@ -160,7 +160,7 @@ data StatementStreamChunk = StatementStreamChunk
 -- | Represents an error reported by DuckDB or by duckdb-simple itself.
 data SQLError = SQLError
     { sqlErrorMessage :: Text
-    , sqlErrorType :: Maybe Duckdb_error_type
+    , sqlErrorType :: Maybe DuckDBErrorType
     , sqlErrorQuery :: Maybe Query
     }
     deriving stock (Eq, Show)
@@ -206,12 +206,12 @@ peekUtf8CString :: (Coercible p CString) => p -> IO Text
 peekUtf8CString ptr = TextEncoding.decodeUtf8 <$> BS.packCString (coerce ptr)
 
 -- | Execute a query and destroy its result after success or failure.
-withResult :: Connection -> Query -> (Ptr Duckdb_result -> IO Duckdb_state) -> (Ptr Duckdb_result -> IO a) -> IO a
+withResult :: Connection -> Query -> (Ptr DuckDBResult -> IO DuckDBState) -> (Ptr DuckDBResult -> IO a) -> IO a
 withResult conn queryText executeResult action =
     alloca $ \resPtr ->
         bracket_
-            (fillBytes resPtr 0 (sizeOf (undefined :: Duckdb_result)))
-            (duckdb_destroy_result resPtr)
+            (fillBytes resPtr 0 (sizeOf (undefined :: DuckDBResult)))
+            (c_duckdb_destroy_result resPtr)
             $ do
                 rc <- runInterruptibleQuery conn (executeResult resPtr)
                 when (rc /= DuckDBSuccess) $ do
@@ -220,42 +220,42 @@ withResult conn queryText executeResult action =
                 action resPtr
 
 -- | Execute a prepared statement with the requested native result mode.
-executePreparedResult :: ResultMode -> Duckdb_prepared_statement -> Ptr Duckdb_result -> IO Duckdb_state
-executePreparedResult MaterializedResult = duckdb_execute_prepared
-executePreparedResult StreamingResult = duckdb_execute_prepared_streaming
+executePreparedResult :: ResultMode -> DuckDBPreparedStatement -> Ptr DuckDBResult -> IO DuckDBState
+executePreparedResult MaterializedResult = c_duckdb_execute_prepared
+executePreparedResult StreamingResult = c_duckdb_execute_prepared_streaming
 
 {- | Fetch an owned chunk. The caller must remain masked until it records ownership.
   Streaming fetches can execute SQL. Keep their output in a caller-owned slot
   so cancellation can destroy a chunk that the worker has already fetched.
 -}
-fetchResultChunk :: ResultMode -> Connection -> Ptr Duckdb_result -> IO Duckdb_data_chunk
+fetchResultChunk :: ResultMode -> Connection -> Ptr DuckDBResult -> IO DuckDBDataChunk
 fetchResultChunk MaterializedResult conn result =
-    withConnectionHandle conn $ \_ -> peek result >>= duckdb_fetch_chunk
+    withConnectionHandle conn $ \_ -> peek result >>= c_duckdb_fetch_chunk
 fetchResultChunk StreamingResult conn result =
     alloca $ \chunkPtr -> mask_ $ do
-        poke chunkPtr (Duckdb_data_chunk nullPtr)
+        poke chunkPtr (DuckDBDataChunk nullPtr)
         let fetch = do
-                chunk <- peek result >>= duckdb_fetch_chunk
+                chunk <- peek result >>= c_duckdb_fetch_chunk
                 poke chunkPtr chunk
                 pure DuckDBSuccess
         (runInterruptibleQuery conn fetch >> peek chunkPtr)
-            `onException` duckdb_destroy_data_chunk chunkPtr
+            `onException` c_duckdb_destroy_data_chunk chunkPtr
 
 -- | Destroy an owned native data chunk. A null chunk is allowed.
-destroyDataChunk :: Duckdb_data_chunk -> IO ()
-destroyDataChunk chunk = alloca $ \ptr -> poke ptr chunk >> duckdb_destroy_data_chunk ptr
+destroyDataChunk :: DuckDBDataChunk -> IO ()
+destroyDataChunk chunk = alloca $ \ptr -> poke ptr chunk >> c_duckdb_destroy_data_chunk ptr
 
 {- | Run a native query while the caller can receive asynchronous exceptions.
   Prompt cancellation requires the threaded RTS. Cleanup interrupts DuckDB and
   waits for the worker before the caller can release native storage.
 -}
-runInterruptibleQuery :: Connection -> IO Duckdb_state -> IO Duckdb_state
+runInterruptibleQuery :: Connection -> IO DuckDBState -> IO DuckDBState
 runInterruptibleQuery conn action =
     withConnectionHandle conn $ \handle ->
         mask $ \restore -> do
             done <- newEmptyMVar
             _ <- forkIO $ do
-                outcome <- try action :: IO (Either SomeException Duckdb_state)
+                outcome <- try action :: IO (Either SomeException DuckDBState)
                 putMVar done outcome
             let cancelAndWait = do
                     finished <- tryReadMVar done
@@ -264,7 +264,7 @@ runInterruptibleQuery conn action =
                         Nothing -> do
                             -- DuckDB clears the interrupt flag at query entry.
                             -- Repeat the interrupt to cover cancellation before entry.
-                            duckdb_interrupt handle
+                            c_duckdb_interrupt handle
                             threadDelay interruptRetryDelayMicros
                             cancelAndWait
             -- A second exception must not release storage still used by the worker.
@@ -328,24 +328,24 @@ duckDBTypeToName dtype =
 {- | Read the error message of a prepared statement as UTF-8. Use the fallback
 when DuckDB reports no message.
 -}
-fetchPrepareError :: Text -> Duckdb_prepared_statement -> IO Text
+fetchPrepareError :: Text -> DuckDBPreparedStatement -> IO Text
 fetchPrepareError fallback statement = do
-    messagePtr <- duckdb_prepare_error statement
+    messagePtr <- c_duckdb_prepare_error statement
     if messagePtr == ConstPtr nullPtr then pure fallback else peekUtf8CString messagePtr
 
 -- | Copy a result error while its native result remains alive.
-fetchResultError :: Ptr Duckdb_result -> IO (Text, Maybe Duckdb_error_type)
+fetchResultError :: Ptr DuckDBResult -> IO (Text, Maybe DuckDBErrorType)
 fetchResultError resultPtr = do
-    msgPtr <- duckdb_result_error resultPtr
+    msgPtr <- c_duckdb_result_error resultPtr
     message <-
         if msgPtr == ConstPtr nullPtr
             then pure (Text.pack "duckdb-simple: query failed")
             else peekUtf8CString msgPtr
-    errorType <- duckdb_result_error_type resultPtr
-    pure (message, if errorType == DUCKDB_ERROR_INVALID then Nothing else Just errorType)
+    errorType <- c_duckdb_result_error_type resultPtr
+    pure (message, if errorType == DuckDBErrorInvalid then Nothing else Just errorType)
 
 -- | Attach the query and native error category to an execution error.
-mkExecuteError :: Query -> Text -> Maybe Duckdb_error_type -> SQLError
+mkExecuteError :: Query -> Text -> Maybe DuckDBErrorType -> SQLError
 mkExecuteError queryText message errorType =
     SQLError
         { sqlErrorMessage = message
@@ -354,9 +354,9 @@ mkExecuteError queryText message errorType =
         }
 
 -- | Report a fetch failure before treating a null chunk as end of input.
-throwResultError :: Query -> Ptr Duckdb_result -> IO ()
+throwResultError :: Query -> Ptr DuckDBResult -> IO ()
 throwResultError queryText resPtr = do
-    errorPtr <- duckdb_result_error resPtr
+    errorPtr <- c_duckdb_result_error resPtr
     when (errorPtr /= ConstPtr nullPtr) $ do
         (message, errorType) <- fetchResultError resPtr
         throwIO (mkExecuteError queryText message errorType)
@@ -366,7 +366,7 @@ keepAlive :: a -> IO b -> IO b
 keepAlive owner (IO action) = IO (\state -> keepAlive# owner state action)
 
 -- | Internal helper for safely accessing the underlying prepared statement.
-withStatementHandle :: Statement -> (Duckdb_prepared_statement -> IO a) -> IO a
+withStatementHandle :: Statement -> (DuckDBPreparedStatement -> IO a) -> IO a
 withStatementHandle stmt@Statement{statementState, statementConnection} action =
     keepAlive stmt $
         withConnectionHandle statementConnection $ \_ -> do
@@ -376,7 +376,7 @@ withStatementHandle stmt@Statement{statementState, statementConnection} action =
                 StatementOpen{statementHandle} -> action statementHandle
 
 -- | Internal helper for safely accessing the underlying connection handle.
-withConnectionHandle :: Connection -> (Duckdb_connection -> IO a) -> IO a
+withConnectionHandle :: Connection -> (DuckDBConnection -> IO a) -> IO a
 withConnectionHandle conn@Connection{connectionState} action =
     keepAlive conn $ do
         state <- readIORef connectionState
@@ -394,7 +394,7 @@ withTypeCache conn@Connection{connectionState} action =
             ConnectionOpen{connectionTypeCache} -> action connectionTypeCache
 
 -- | Internal helper for safely accessing the underlying database handle.
-withDatabaseHandle :: Connection -> (Duckdb_database -> IO a) -> IO a
+withDatabaseHandle :: Connection -> (DuckDBDatabase -> IO a) -> IO a
 withDatabaseHandle conn@Connection{connectionState} action =
     keepAlive conn $ do
         state <- readIORef connectionState
@@ -403,23 +403,23 @@ withDatabaseHandle conn@Connection{connectionState} action =
             ConnectionOpen{connectionDatabase} -> action connectionDatabase
 
 -- | Acquire the client context for the connection, destroying it after the action.
-withClientContext :: Connection -> (Duckdb_client_context -> IO a) -> IO a
+withClientContext :: Connection -> (DuckDBClientContext -> IO a) -> IO a
 withClientContext conn action =
     withConnectionHandle conn $ \connPtr ->
         bracket
-            (alloca $ \ctxPtr -> duckdb_connection_get_client_context connPtr ctxPtr >> peek ctxPtr)
+            (alloca $ \ctxPtr -> c_duckdb_connection_get_client_context connPtr ctxPtr >> peek ctxPtr)
             destroyClientContext
             action
 
 -- | Destroy a client context handle.
-destroyClientContext :: Duckdb_client_context -> IO ()
+destroyClientContext :: DuckDBClientContext -> IO ()
 destroyClientContext ctx =
-    alloca $ \ptr -> poke ptr ctx >> duckdb_destroy_client_context ptr
+    alloca $ \ptr -> poke ptr ctx >> c_duckdb_destroy_client_context ptr
 
 -- | Destroy a value handle.
-destroyValue :: Duckdb_value -> IO ()
+destroyValue :: DuckDBValue -> IO ()
 destroyValue value =
-    alloca $ \ptr -> poke ptr value >> duckdb_destroy_value ptr
+    alloca $ \ptr -> poke ptr value >> c_duckdb_destroy_value ptr
 
 -- | Throw a standardised registration error.
 throwRegistrationError :: String -> IO a

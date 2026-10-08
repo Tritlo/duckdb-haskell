@@ -15,7 +15,7 @@ import Control.Exception (bracket)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
-import Database.DuckDB.FFI
+import Database.DuckDB.FFI.Compat
 import Database.DuckDB.Simple.Internal (Connection, destroyValue, peekUtf8CString, throwRegistrationError, withClientContext)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Alloc (alloca)
@@ -32,21 +32,21 @@ data ConfigFlag = ConfigFlag
 -- | The current value of a configuration option plus its scope, when available.
 data ConfigValue = ConfigValue
     { configValueText :: !Text
-    , configValueScope :: !(Maybe Duckdb_config_option_scope)
+    , configValueScope :: !(Maybe DuckDBConfigOptionScope)
     }
     deriving (Eq, Show)
 
 -- | List all configuration flags known to the linked DuckDB runtime.
 listConfigFlags :: IO [ConfigFlag]
 listConfigFlags = do
-    count <- duckdb_config_count
+    count <- c_duckdb_config_count
     let indices = [0 .. fromIntegral count - 1] :: [Int]
     mapM fetchFlag indices
   where
     fetchFlag idx =
         alloca \namePtr ->
             alloca \descPtr -> do
-                rc <- duckdb_get_config_flag (fromIntegral idx) namePtr descPtr
+                rc <- c_duckdb_get_config_flag (fromIntegral idx) namePtr descPtr
                 if rc /= DuckDBSuccess
                     then pure ConfigFlag{configFlagName = Text.pack (show idx), configFlagDescription = Text.pack ""}
                     else do
@@ -62,18 +62,18 @@ getConfigOption conn name
         withClientContext conn \ctx ->
             TextForeign.withCString name \cName ->
                 alloca \scopePtr -> do
-                    poke scopePtr DUCKDB_CONFIG_OPTION_SCOPE_INVALID
+                    poke scopePtr DuckDBConfigOptionScopeInvalid
                     bracket
-                        (duckdb_client_context_get_config_option ctx (ConstPtr cName) scopePtr)
+                        (c_duckdb_client_context_get_config_option ctx (ConstPtr cName) scopePtr)
                         destroyValue
                         \duckValue ->
-                            if duckValue == Duckdb_value nullPtr
+                            if duckValue == DuckDBValue nullPtr
                                 then pure Nothing
                                 else do
                                     rendered <-
                                         bracket
-                                            (duckdb_get_varchar duckValue)
-                                            (duckdb_free . castPtr)
+                                            (c_duckdb_get_varchar duckValue)
+                                            (c_duckdb_free . castPtr)
                                             \strPtr ->
                                                 if strPtr == nullPtr
                                                     then pure Text.empty
@@ -84,7 +84,7 @@ getConfigOption conn name
                                             ConfigValue
                                                 { configValueText = rendered
                                                 , configValueScope =
-                                                    if scope == DUCKDB_CONFIG_OPTION_SCOPE_INVALID
+                                                    if scope == DuckDBConfigOptionScopeInvalid
                                                         then Nothing
                                                         else Just scope
                                                 }

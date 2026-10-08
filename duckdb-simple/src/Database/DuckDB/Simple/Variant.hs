@@ -10,7 +10,7 @@ module Database.DuckDB.Simple.Variant (
 import Data.Array (listArray)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
-import Database.DuckDB.FFI (pattern DUCKDB_TYPE_VARIANT)
+import Database.DuckDB.FFI.Compat (pattern DUCKDB_TYPE_VARIANT)
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), FromField (..))
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), StructValue (..))
 import Database.DuckDB.Simple.Ok (Ok (..))

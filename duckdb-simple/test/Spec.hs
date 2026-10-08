@@ -41,11 +41,11 @@ import Data.Time.LocalTime (
  )
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
-import Database.DuckDB.FFI (
-    pattern DUCKDB_CATALOG_ENTRY_TYPE_TABLE,
-    pattern DUCKDB_FILE_FLAG_CREATE,
-    pattern DUCKDB_FILE_FLAG_READ,
-    pattern DUCKDB_FILE_FLAG_WRITE,
+import Database.DuckDB.FFI.Compat (
+    pattern DuckDBCatalogEntryTypeTable,
+    pattern DuckDBFileFlagCreate,
+    pattern DuckDBFileFlagRead,
+    pattern DuckDBFileFlagWrite,
  )
 import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Catalog as Catalog
@@ -259,7 +259,7 @@ v15Tests =
                 withTransaction conn $ do
                     mType <- Catalog.catalogTypeName conn "memory"
                     assertBool "expected catalog type name" (mType /= Nothing)
-                    mEntry <- Catalog.lookupCatalogEntry conn "memory" "main" "catalog_probe" DUCKDB_CATALOG_ENTRY_TYPE_TABLE
+                    mEntry <- Catalog.lookupCatalogEntry conn "memory" "main" "catalog_probe" DuckDBCatalogEntryTypeTable
                     case mEntry of
                         Nothing -> assertFailure "expected catalog entry"
                         Just entry -> Catalog.catalogEntryName entry @?= "catalog_probe"
@@ -269,11 +269,11 @@ v15Tests =
             exists <- doesFileExist path
             when exists (removeFile path)
             withConnection ":memory:" \conn -> do
-                FileSystem.withFileHandle conn path [DUCKDB_FILE_FLAG_CREATE, DUCKDB_FILE_FLAG_WRITE] \handle -> do
+                FileSystem.withFileHandle conn path [DuckDBFileFlagCreate, DuckDBFileFlagWrite] \handle -> do
                     written <- FileSystem.writeFileHandleBytes handle payload
                     written @?= fromIntegral (BS.length payload)
                     FileSystem.fileHandleSync handle
-                FileSystem.withFileHandle conn path [DUCKDB_FILE_FLAG_READ] \handle -> do
+                FileSystem.withFileHandle conn path [DuckDBFileFlagRead] \handle -> do
                     size <- FileSystem.fileHandleSize handle
                     size @?= fromIntegral (BS.length payload)
                     bytes <- FileSystem.readFileHandleChunk handle 32
@@ -531,13 +531,13 @@ data DuckDBExpectation
     | ExpectSatisfies (FieldValue -> Assertion)
     | ExpectException (SomeException -> Assertion)
 
-data Duckdb_expression
+data DuckDBExpression
     = CastExpression Text.Text Text.Text
     | DirectExpression Text.Text
 
 data DuckDBCastCase = DuckDBCastCase
     { castLabel :: String
-    , castExpression :: Duckdb_expression
+    , castExpression :: DuckDBExpression
     , castExpectation :: DuckDBExpectation
     , castExpectFailureReason :: Maybe String
     }

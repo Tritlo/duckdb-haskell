@@ -28,7 +28,7 @@ module Database.DuckDB.Simple.Deprecated.Streaming
     foldArrow_,
 ) where
 
-import Database.DuckDB.FFI (ArrowArray, ArrowSchema)
+import Database.DuckDB.FFI.Compat (ArrowArray, ArrowSchema)
 import Database.DuckDB.Simple (bind, bindNamed, withStatement)
 import qualified Database.DuckDB.Simple.Arrow.Internal as Arrow
 import Database.DuckDB.Simple.FromRow (FromRow (..), RowParser)

@@ -7,8 +7,8 @@ The short version is:
 
 - `duckdb-ffi` uses the DuckDB `1.5.6` C header. The native minimum is 1.5.3.
 - `duckdb-simple` now depends on `duckdb-ffi-1.5`.
-- The raw FFI is generated with hs-bindgen 1.0. Its Haskell names and types
-  replace the previous handwritten API.
+- The raw FFI is generated with hs-bindgen 1.0. The optional `Compat` module
+  preserves earlier spellings with the generated types.
 - The runtime `libduckdb` must be >= 1.5.3 and < 1.6. High-level SQL operations
   retain their behavior. Types that expose raw FFI values change.
 
@@ -91,8 +91,8 @@ add `instance ToField YourType`. The default implementation requires `Show`.
   additional `nextRow` does not execute the statement again.
 - Generic records and sums match SQL field and member names. An incompatible
   schema fails instead of decoding values by position.
-- Update applications that use the FFI directly to the generated names and
-  types. There is no compatibility layer for the handwritten raw API.
+- Update applications that use the FFI directly to the generated types.
+  Import `Database.DuckDB.FFI.Compat` to retain earlier spellings.
 
 ## Who Needs to Change What
 
@@ -149,10 +149,11 @@ LD_LIBRARY_PATH=/path/to/duckdb-1.5 \
 hs-bindgen 1.0 generates all 546 native functions from the pinned DuckDB 1.5.6
 header. It also generates struct layouts, the VARCHAR union, Arrow records,
 enum patterns, callback constructors/invokers, and C ABI wrappers.
-`Database.DuckDB.FFI` is the only raw module.
+`Database.DuckDB.FFI` contains the native API.
+`Database.DuckDB.FFI.Compat` contains generated aliases for earlier spellings.
 The 44 handwritten modules, 22 manual `Storable` instances, C shims, and old
-binding generator are removed. The source contains an eight-line generator
-configuration instead of 8,482 lines of raw Haskell and 714 lines of C shims.
+binding generator are removed. The package ships generated source. Maintainers regenerate it from the pinned
+headers. Consumers do not run the generator.
 
 ### Names and types
 
@@ -180,6 +181,34 @@ an output pointer. `duckdb_fetch_chunk` takes a `Duckdb_result` value.
 Keep the owning result alive while that copied record refers to native data.
 Generated struct marshalling does not transfer ownership.
 
+### Earlier spellings
+
+Import `Database.DuckDB.FFI.Compat` for `DuckDBConnection`, `DuckDBIdx`,
+`DuckDBTypeInteger`, and `c_duckdb_*`. The module also reexports the native API.
+`duckdb-simple` uses these aliases to reduce changes that only rename identifiers.
+The aliases and constructor patterns are generated. They add no foreign imports.
+The frozen spelling map defines names from the previous API. New native functions
+receive a `c_` alias automatically.
+
+```haskell
+import Database.DuckDB.FFI.Compat
+
+integerType = c_duckdb_create_logical_type DuckDBTypeInteger
+```
+
+The module preserves spellings, not the previous representations. Handles and
+indexes still use newtypes. Constant pointers still use `ConstPtr`. Struct calls
+still use generated records. Import constructor patterns separately, for example
+`DuckDBConnection, pattern DuckDBConnection`, instead of `DuckDBConnection(..)`.
+Old record selectors, callback wrapper names, module paths, and NULL-default
+helpers are not restored. Use native constructors for record syntax.
+
+Released hs-bindgen supports explicit type names in binding specifications.
+Its CLI supports function suffixes, but no function-prefix modifier. This release
+uses the supported generator and a separate compatibility module. A local
+upstream spike adds type, function, constructor, field, and enum name modifiers.
+The spike does not change the package's generator dependency.
+
 ### Const pointers and callbacks
 
 Read a constant string with `ConstPtr` unwrapped for `peekCString`.
@@ -204,19 +233,18 @@ Raw callers must supply valid input and output storage.
 
 ### Build and maintenance
 
-Install matching LLVM/Clang and libclang, `llvm-config`, Doxygen, and zlib
-development headers.
-The pinned Nix shell supplies these tools with GHC 9.14.1.
-GHC 9.14.1 needs scoped overrides for outdated `base` bounds in `debruijn`
-and `skew-list`; `cabal.project` records them.
-Bindings are generated for each target platform during compilation.
-The hs-bindgen literate preprocessor runs as a Cabal build tool.
-The library depends on `hs-bindgen-runtime` and `c-expr-runtime`; the generator
-is not a runtime dependency. The two runtime packages add transitive Haskell
-dependencies. Check application size and dynamic library packaging.
-Both headers are listed as package source files.
-The FFI library uses `-fforce-recomp` because GHC does not track header inputs
-to the literate preprocessor. Cabal still skips an unchanged package.
+Package builds use checked-in source. They need a C compiler and the small
+`hs-bindgen-runtime` package. They do not need hs-bindgen, LLVM, libclang, or
+Doxygen. The two unused API-version predicate macros are excluded from generation.
+They were absent from the previous raw API. This also removes `c-expr-runtime`
+and its arithmetic dependencies from the package.
+
+Maintainers use `nix-shell dev/nix/generate.nix` and run
+`duckdb-ffi/scripts/generate-bindings.sh`. Use `--check` to check committed output.
+The script compares output for Linux x86_64/aarch64 and macOS x86_64/ARM64.
+C static assertions check generated layouts against the build compiler.
+The script refuses output that differs between targets. An incompatible target
+fails compilation instead of using incompatible layouts.
 
 The generator uses `OmitFieldPrefixes`, `DuplicateRecordFields`, and
 `NoFieldSelectors`. Default field prefixes collide with DECIMAL width/scale
@@ -229,6 +257,43 @@ Keep high-level ownership, cancellation, conversion, and the private VARIANT
 format checks in `duckdb-simple`. They cannot be inferred from a C header.
 When updating DuckDB, update the header and native pins, then run the existing
 native, compiler, platform, and leak checks. Do not edit generated declarations.
+
+### Binding audit
+
+The `_duckdb_*` records in the C header contain placeholder fields. Native
+handles point to private objects. Reading those fields is invalid. The generation
+script selects an opaque representation for all 49 placeholder records. It keeps
+all 546 functions and the real value and Arrow records.
+
+The audit compared all 546 public signatures, 21 callbacks, 94 old C shim
+signatures, and the supported LP64 layouts. It found no signature or layout
+mismatch on the supported targets. The old 32-bit `ArrowSchema` formula allocates
+36 bytes where the C ABI requires 44 bytes. The generated layout avoids manual
+pointer-size formulas. This release does not support 32-bit targets.
+
+Generated enum storage can be unsigned where the previous bindings used `CInt`.
+Use the generated enum patterns and typedef wrappers. Equal storage size does
+not make their Haskell types interchangeable.
+
+Struct results can contain borrowed pointers. A copied struct is not a copied
+native allocation. Keep its owner alive and free each owned allocation once.
+The generator checks the ABI. It cannot infer these ownership rules.
+
+### binding-combinators assessment
+
+A native prototype used
+[binding-combinators](https://github.com/well-typed/binding-combinators/tree/e9b54b56791538a784cde2fdf796f2838248ab80)
+for handle outputs, status checks, UTF-8 input, logical types, and error cleanup.
+The library can reduce marshalling code. It does not yet replace this package's
+ownership and cancellation code. Its current runtime bound excludes
+`hs-bindgen-runtime-1.0`, so the prototype needed a scoped bound override.
+
+A registered DuckDB callback must remain allocated after registration returns.
+The library's scoped `funPtrIn` frees it when the call returns. Owned strings
+need `duckdb_free`. Native results can need destruction even when their status
+indicates failure. Resource acquisition also needs masking before the native
+call returns an owned value. These paths need custom marshallers. This revision
+does not add binding-combinators as a package dependency.
 
 ## `duckdb-simple` Migration
 

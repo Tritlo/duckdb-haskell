@@ -212,7 +212,9 @@ and `skew-list`; `cabal.project` records them.
 Bindings are generated for each target platform during compilation.
 The hs-bindgen literate preprocessor runs as a Cabal build tool.
 The library depends on `hs-bindgen-runtime` and `c-expr-runtime`; the generator
-is not a runtime dependency. Both headers are listed as package source files.
+is not a runtime dependency. The two runtime packages add transitive Haskell
+dependencies. Check application size and dynamic library packaging.
+Both headers are listed as package source files.
 The FFI library uses `-fforce-recomp` because GHC does not track header inputs
 to the literate preprocessor. Cabal still skips an unchanged package.
 

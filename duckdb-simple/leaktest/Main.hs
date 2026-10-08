@@ -17,7 +17,7 @@ functional checks and callback collection checks still run.
 -}
 module Main (main) where
 
-import Control.Concurrent (forkFinally, killThread, newEmptyMVar, putMVar, takeMVar, threadDelay, tryPutMVar)
+import Control.Concurrent (forkFinally, killThread, newEmptyMVar, putMVar, takeMVar, tryPutMVar)
 import Control.Exception (AsyncException (ThreadKilled), IOException, SomeException, evaluate, fromException, try)
 import Control.Monad (forM_, replicateM, unless, void, when)
 import qualified Data.ByteString as BS
@@ -263,7 +263,6 @@ checkCancellation batches =
                 let signal = void (tryPutMVar started ())
                 tid <- forkFinally (action signal) (\outcome -> putMVar done outcome >> signal)
                 takeMVar started
-                threadDelay 1000
                 killThread tid
                 outcome <- takeMVar done
                 case outcome of
@@ -284,8 +283,8 @@ checkCancellation batches =
                             IO [Only Double]
                         )
                 cancel \signal -> do
-                    signal
-                    void (query_ conn "SELECT {'x': i, 'values': [i, i + 1]} FROM range(100000) t(i)" :: IO [Only FieldValue])
+                    blocked <- newEmptyMVar
+                    void (fold_ conn "SELECT {'x': i, 'values': [i, i + 1]} FROM range(100000) t(i)" () (\() (Only (_ :: FieldValue)) -> signal >> takeMVar blocked))
                 cancel \signal -> do
                     blocked <- newEmptyMVar
                     -- Keep the first chunk live until the worker is cancelled.
@@ -302,8 +301,8 @@ checkCancellation batches =
                         then Streaming.foldArrow_ conn sql () (\() _ _ -> delivered)
                         else Streaming.fold_ conn sql () (\() (Only (_ :: Int64)) -> delivered)
                 cancel \signal -> do
-                    signal
-                    void (query_ conn "SELECT {'x': i, 'values': [i, i + 1]}::VARIANT FROM range(100000) t(i)" :: IO [Only Variant])
+                    blocked <- newEmptyMVar
+                    void (fold_ conn "SELECT {'x': i, 'values': [i, i + 1]}::VARIANT FROM range(100000) t(i)" () (\() (Only (_ :: Variant)) -> signal >> takeMVar blocked))
                 cancel \signal -> do
                     blocked <- newEmptyMVar
                     void (fold_ conn "SELECT 'POINT (1 2)'::GEOMETRY('OGC:CRS84') FROM range(100000)" (0 :: Int64) (\n (Only (_ :: RawGeometry)) -> signal >> takeMVar blocked >> pure (n + 1)))

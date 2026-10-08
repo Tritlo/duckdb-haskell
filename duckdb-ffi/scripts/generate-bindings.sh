@@ -22,39 +22,14 @@ fi
 bindgen_unit_id=$(ghc-pkg field z-hs-bindgen-z-internal id --simple-output)
 bindgen_public_unit_id=$(ghc-pkg field hs-bindgen id --simple-output)
 # Expose both components explicitly. Otherwise GHC hides one of them.
-ghc -hide-all-packages -package base -package data-default \
+ghc -hide-all-packages -package base -package aeson -package bytestring \
+  -package containers -package data-default -package directory -package filepath \
+  -package text \
   -package-id "$bindgen_public_unit_id" -package-id "$bindgen_unit_id" -Wall -Werror \
   -outputdir "$scratch_dir/build" -o "$scratch_dir/generate" \
   "$script_dir/GenerateBindings.hs"
 
-generate() {
-  local output=$1
-  local target=$2
-  local specification=${3:--}
-  "$scratch_dir/generate" "$target" "$scratch_dir/$output" \
-    "$scratch_dir/$output.json" "$specification"
-}
-
-generate initial x86_64-unknown-linux-gnu
-python3 "$script_dir/binding-metadata.py" spec cbits/duckdb.h \
-  "$scratch_dir/initial.json" "$scratch_dir/types.json"
-
-for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu \
-              x86_64-apple-macos10.13 arm64-apple-macos11; do
-  generate "$target" "$target" "$scratch_dir/types.json"
-done
-generate native native "$scratch_dir/types.json"
-
-generated="$scratch_dir/x86_64-unknown-linux-gnu/Database/DuckDB/FFI.hs"
-for output in "$scratch_dir"/*/Database/DuckDB/FFI.hs; do
-  [[ $output == "$scratch_dir/initial/Database/DuckDB/FFI.hs" ]] && continue
-  cmp -- "$generated" "$output"
-done
-python3 "$script_dir/binding-metadata.py" abi "$generated" \
-  "$scratch_dir/x86_64-unknown-linux-gnu.json" "$scratch_dir/abi-checks.c" cbits
-mkdir -p src/Database/DuckDB
-cp -- "$generated" src/Database/DuckDB/FFI.hs
-cp -- "$scratch_dir/abi-checks.c" cbits/abi-checks.c
+"$scratch_dir/generate" "$scratch_dir"
 if "$check"; then
   sha256sum --check generated.sha256
 fi

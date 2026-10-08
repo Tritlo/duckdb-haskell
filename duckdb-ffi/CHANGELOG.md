@@ -8,6 +8,9 @@
   function names directly in `Database.DuckDB.FFI`. Enum constants use C names.
 - Use existing hs-bindgen type specifications and `RenameTerm` configuration
   through a maintainer Haskell driver. Retained names use generated representations.
+- Configure names and opaque handles, compare targets, and generate ABI checks
+  from typed library declarations in the driver. Remove the Python helper and
+  external Clang probe. Keep the shell for compilation and checksum verification.
 - Include generated source and 508 C ABI assertions in release archives.
   Keep these files out of Git. Generate both files with the maintainer script
   and pinned Nix toolchain before checkout builds. Commit their SHA256 checksums

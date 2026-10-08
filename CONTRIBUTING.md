@@ -25,8 +25,11 @@ nix-shell dev/nix/generate.nix --run 'duckdb-ffi/scripts/generate-bindings.sh'
 nix-shell dev/nix/generate.nix --run 'duckdb-ffi/scripts/generate-bindings.sh --check'
 ```
 
-The script generates bindings for the four supported native targets and compares
-the output. It also generates C static assertions from the binding metadata.
+`GenerateBindings.hs` generates bindings for the four supported native targets
+and compares the output. It reads typed C and Haskell declarations to configure
+names and handles, check function coverage, and generate C static assertions.
+It evaluates ABI expressions through the library's Clang parser. It does not
+parse generated Haskell text or invoke an external Clang probe.
 The `--check` command generates both files and verifies them against
 `duckdb-ffi/generated.sha256`. Git tracks this checksum manifest. Do not commit
 or edit the generated files. A naming rule with five exceptions preserves the

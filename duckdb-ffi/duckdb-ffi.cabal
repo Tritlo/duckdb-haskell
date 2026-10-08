@@ -29,7 +29,6 @@ extra-source-files:
   cbits/duckdb.h
   cbits/duckdb_arrow.h
   generated.sha256
-  scripts/binding-metadata.py
   scripts/generate-bindings.sh
   scripts/GenerateBindings.hs
 

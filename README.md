@@ -25,6 +25,8 @@ Builds from release archives need GHC, Cabal, a C compiler, and DuckDB. The
 archives include generated source. Consumers do not run hs-bindgen or need
 LLVM, libclang, or Doxygen. The raw library depends only on `base` and
 `hs-bindgen-runtime`.
+The generated module uses this library for struct and union marshalling, field
+access, pointer and callback conversions, and compiling its C wrappers with GHC.
 The pinned development shell supplies the build tools:
 
 ```sh
@@ -43,10 +45,11 @@ Run this command before local Cabal, Nix, or Docker builds from the checkout.
 The release script runs it with `--check` before preparing documentation and
 source archives.
 
-The script compiles and runs `GenerateBindings.hs` with the supported hs-bindgen
-1.0 API. Binding specifications set the type names and opaque handle pointees.
-`RenameTerm` adds the `c_` function prefix. The generator and libclang stay in
-the maintainer shell.
+The script compiles and runs `GenerateBindings.hs` with the hs-bindgen 1.0 API.
+The driver reads typed declarations to set public names and opaque handles,
+generate ABI assertions, and check function coverage. It compares all target
+outputs. `RenameTerm` adds the `c_` function prefix. The shell verifies the
+checksums. The generator and libclang stay in the maintainer environment.
 
 Release archives include two generated files: `FFI.hs` and `abi-checks.c`.
 Git ignores these files and tracks their SHA256 checksums in

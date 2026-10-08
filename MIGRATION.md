@@ -255,7 +255,12 @@ updates. CI generates the files, verifies their checksums, and supplies them
 to build jobs as an artifact. `scripts/release.sh` runs the pinned generation
 command with `--check` before it prepares documentation and source archives.
 The script compiles and runs `GenerateBindings.hs` in the Nix shell. It creates
-naming and opaque binding specifications from C declarations and type metadata.
+naming and opaque binding specifications from typed C declarations and aliases.
+The driver reads generated Haskell declarations to check function coverage and
+collect layout assertions. It evaluates native ABI expressions through the
+library's Clang parser. Target generation and comparison also run in the driver.
+The shell compiles the driver and verifies the checksums. The temporary naming
+specification file remains because the configuration API accepts a file path.
 hs-bindgen, libclang, and the generator's compiler are maintainer tools.
 The preprocessing entry point is in hs-bindgen's internal library. Keep its
 version pinned when you update the driver.

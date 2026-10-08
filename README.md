@@ -22,6 +22,9 @@ conversions, and C ABI wrappers are generated during compilation.
 
 Install LLVM/Clang 16 or later, its `libclang` development files, `llvm-config`,
 Doxygen, and zlib development headers. Use matching Clang and libclang versions.
+With GHC 9.14.1, add `allow-newer: debruijn:base, skew-list:base` to the
+application's `cabal.project`. These hs-bindgen dependencies have outdated
+`base` bounds. This repository already sets the overrides.
 The pinned development shell supplies these tools:
 
 ```sh

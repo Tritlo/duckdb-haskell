@@ -9,11 +9,14 @@ let
   loaderPath = pkgs.lib.makeLibraryPath [ clang.libclang pkgs.duckdb pkgs.stdenv.cc.cc ];
   haskellPackages = pkgs.haskell.packages.ghc9141.override {
     overrides = self: super: {
-      hs-bindgen = (self.callHackageDirect {
+      hs-bindgen = (pkgs.haskell.lib.overrideCabal (self.callHackageDirect {
         pkg = "hs-bindgen";
         ver = "1.0.0.0";
         sha256 = "0k0mq38w9s1swvs30ibw5a11lc7szbp9dg7rr29jrqm8d7fb42dc";
-      } { }).overrideAttrs (old: {
+      } { }) (old: {
+        # These two fixture groups require a Cabal project environment file.
+        testFlags = (old.testFlags or [ ]) ++ [ "--pattern=!/th-fixtures/ && !/pp-fixtures/" ];
+      })).overrideAttrs (old: {
         nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ clang.clang clang.llvm pkgs.doxygen ];
         C_INCLUDE_PATH = systemIncludePath;
         LD_LIBRARY_PATH = loaderPath;

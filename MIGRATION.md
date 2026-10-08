@@ -152,8 +152,9 @@ enum patterns, callback constructors/invokers, and C ABI wrappers.
 `Database.DuckDB.FFI` contains the native API.
 The 44 handwritten modules, 22 manual `Storable` instances, C shims, and old
 binding generator are removed. The package ships generated source and C ABI
-assertions. Maintainers regenerate both files from the pinned headers.
-Consumers do not run the generator.
+assertions in release archives. Git does not track these files. Maintainers
+generate both files from the pinned headers before checkout builds or releases.
+Consumers of release archives do not run the generator.
 
 ### Names and types
 
@@ -233,14 +234,26 @@ Raw callers must supply valid input and output storage.
 
 ### Build and maintenance
 
-Package builds use checked-in source. They need a C compiler and the small
-`hs-bindgen-runtime` package. They do not need hs-bindgen, LLVM, libclang, or
-Doxygen. The two unused API-version predicate macros are excluded from generation.
+Release archives include generated source. Consumer builds need a C compiler
+and the small `hs-bindgen-runtime` package. They do not need hs-bindgen, LLVM,
+libclang, or Doxygen. The two unused API-version predicate macros are excluded
+from generation.
 They were absent from the previous raw API. This also removes `c-expr-runtime`
 and its arithmetic dependencies from the package.
 
-Maintainers use `nix-shell dev/nix/generate.nix` and run
-`duckdb-ffi/scripts/generate-bindings.sh`. Use `--check` to check committed output.
+Before building a Git checkout with Cabal, Nix, or Docker, generate both files:
+
+```sh
+nix-shell dev/nix/generate.nix --run 'duckdb-ffi/scripts/generate-bindings.sh'
+```
+
+Regenerate them after changing the headers or generator. Use `--check` to
+generate both files and verify them against `duckdb-ffi/generated.sha256`.
+Git tracks the checksum manifest and ignores both generated files. See
+[CONTRIBUTING.md](CONTRIBUTING.md#testing-guidelines) for intentional checksum
+updates. CI generates the files, verifies their checksums, and supplies them
+to build jobs as an artifact. `scripts/release.sh` runs the pinned generation
+command with `--check` before it prepares documentation and source archives.
 The script compiles and runs `GenerateBindings.hs` in the Nix shell. It creates
 naming and opaque binding specifications from C declarations and type metadata.
 hs-bindgen, libclang, and the generator's compiler are maintainer tools.

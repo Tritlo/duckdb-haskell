@@ -2,7 +2,9 @@
 
 ## Project structure
 
-`duckdb-ffi/src/Database/DuckDB/FFI.hs` contains the generated C API bindings. The pinned headers are in `duckdb-ffi/cbits`, and the tests are in
+`duckdb-ffi/src/Database/DuckDB/FFI.hs` contains the generated C API bindings.
+Git does not track this file or `duckdb-ffi/cbits/abi-checks.c`.
+The pinned headers are in `duckdb-ffi/cbits`, and the tests are in
 `duckdb-ffi/test`. Do not add handwritten raw imports or C ABI wrappers.
 `duckdb-simple/src` contains the higher-level API. Its integration and property
 tests are in `duckdb-simple/test`, and its leak test is in `duckdb-simple/leaktest`.
@@ -14,8 +16,9 @@ The pure geometry types and codecs are maintained in
 
 Use `nix-shell dev/nix/shell.nix` for the development toolchain. Supply a DuckDB
 library through `cabal.project.local`. The shell uses GHC 9.14.1.
-Package builds compile the checked-in bindings. They do not run the generator.
-Use the separate maintainer environment after changing a header:
+Generate the ignored bindings before building a Git checkout. This applies to
+local Cabal, Nix, and Docker builds. Regenerate them after changing a header or
+the generator. Use the separate maintainer environment:
 
 ```sh
 nix-shell dev/nix/generate.nix --run 'duckdb-ffi/scripts/generate-bindings.sh'
@@ -24,9 +27,26 @@ nix-shell dev/nix/generate.nix --run 'duckdb-ffi/scripts/generate-bindings.sh --
 
 The script generates bindings for the four supported native targets and compares
 the output. It also generates C static assertions from the binding metadata.
-Commit the Haskell output, compatibility aliases, and C assertions together.
-Do not edit their layouts. The frozen legacy spelling map defines the earlier
-public names. It does not define C signatures or layouts.
+The `--check` command generates both files and verifies them against
+`duckdb-ffi/generated.sha256`. Git tracks this checksum manifest. Do not commit
+or edit the generated files. A naming rule with five exceptions preserves the
+earlier public type names. hs-bindgen derives C signatures and layouts from the
+headers. CI generates both files, verifies their checksums, and supplies them to
+build jobs as an artifact.
+
+For intentional changes to generated output, run the generator without
+`--check`. Review the API changes. Then update the checksum manifest with:
+
+```sh
+nix-shell dev/nix/generate.nix --run 'cd duckdb-ffi && sha256sum src/Database/DuckDB/FFI.hs cbits/abi-checks.c > generated.sha256'
+```
+
+Commit the manifest with the header or generator changes. Generation does not
+update the manifest automatically.
+
+`scripts/release.sh` runs the pinned generation command with `--check` before
+preparing documentation and source archives. Release archives include both
+generated files. Consumers compile them without the generator toolchain.
 
 Test new behavior through the database where possible. Add regressions for
 bug fixes. Run the full test suite before submitting a change.

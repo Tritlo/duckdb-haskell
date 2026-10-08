@@ -52,10 +52,9 @@ for output in "$scratch_dir"/*/Database/DuckDB/FFI.hs; do
 done
 python3 "$script_dir/binding-metadata.py" abi "$generated" \
   "$scratch_dir/x86_64-unknown-linux-gnu.json" "$scratch_dir/abi-checks.c" cbits
+mkdir -p src/Database/DuckDB
+cp -- "$generated" src/Database/DuckDB/FFI.hs
+cp -- "$scratch_dir/abi-checks.c" cbits/abi-checks.c
 if "$check"; then
-  cmp -- "$generated" src/Database/DuckDB/FFI.hs
-  cmp -- "$scratch_dir/abi-checks.c" cbits/abi-checks.c
-else
-  cp -- "$generated" src/Database/DuckDB/FFI.hs
-  cp -- "$scratch_dir/abi-checks.c" cbits/abi-checks.c
+  sha256sum --check generated.sha256
 fi

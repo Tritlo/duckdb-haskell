@@ -8,11 +8,14 @@
   function names directly in `Database.DuckDB.FFI`. Enum constants use C names.
 - Use existing hs-bindgen type specifications and `RenameTerm` configuration
   through a maintainer Haskell driver. Retained names use generated representations.
-- Ship generated source and 508 C ABI assertions. Generate both files with
-  the maintainer script and pinned Nix toolchain. Consumers need only
-  `base`, `hs-bindgen-runtime`,
-  a C compiler, and DuckDB. Compare the four supported native targets and
-  check generated layouts during each package build.
+- Include generated source and 508 C ABI assertions in release archives.
+  Keep these files out of Git. Generate both files with the maintainer script
+  and pinned Nix toolchain before checkout builds. Commit their SHA256 checksums
+  in `generated.sha256`. CI and the release script generate and verify both
+  files against this manifest. The release script completes this check before
+  it prepares documentation and source archives. Consumers need only `base`,
+  `hs-bindgen-runtime`, a C compiler, and DuckDB. Compare the four supported
+  native targets and check generated layouts during each package build.
 - Keep native handle pointees opaque. Do not generate readable instances
   for the placeholder structs in the C header.
 - Move Arrow ownership helpers to `duckdb-simple`. Raw calls use direct struct

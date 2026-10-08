@@ -30,8 +30,11 @@ case "$package" in
   *) echo "Error: unknown package '$package'. Must be duckdb-ffi, duckdb-simple, or all." ; exit 1 ;;
 esac
 
-read -p "Username: " username
-read -sp "Password: " password
+# Generate and verify the sources before documentation and source archives.
+nix-shell dev/nix/generate.nix --run 'duckdb-ffi/scripts/generate-bindings.sh --check'
+
+read -rp "Username: " username
+read -rsp "Password: " password
 echo ""
 
 upload_package() {

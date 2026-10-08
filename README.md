@@ -21,9 +21,10 @@ values, callback conversions, and C ABI wrappers before release.
 
 ### Build dependencies
 
-Package builds need GHC, Cabal, a C compiler, and DuckDB. They do not run
-hs-bindgen or need LLVM, libclang, or Doxygen. The raw library depends only on
-`base` and `hs-bindgen-runtime`.
+Builds from release archives need GHC, Cabal, a C compiler, and DuckDB. The
+archives include generated source. Consumers do not run hs-bindgen or need
+LLVM, libclang, or Doxygen. The raw library depends only on `base` and
+`hs-bindgen-runtime`.
 The pinned development shell supplies the build tools:
 
 ```sh
@@ -32,22 +33,31 @@ nix-shell dev/nix/shell.nix
 
 Nix shells need a supplied DuckDB library, as described below.
 Ordinary Cabal builds retain the verified native download.
-Maintainers regenerate the checked-in source with:
+Before building a Git checkout, generate the ignored source files with:
 
 ```sh
 nix-shell dev/nix/generate.nix --run 'duckdb-ffi/scripts/generate-bindings.sh'
 ```
+
+Run this command before local Cabal, Nix, or Docker builds from the checkout.
+The release script runs it with `--check` before preparing documentation and
+source archives.
 
 The script compiles and runs `GenerateBindings.hs` with the supported hs-bindgen
 1.0 API. Binding specifications set the type names and opaque handle pointees.
 `RenameTerm` adds the `c_` function prefix. The generator and libclang stay in
 the maintainer shell.
 
-The release ships two generated files: `FFI.hs` and `abi-checks.c`.
+Release archives include two generated files: `FFI.hs` and `abi-checks.c`.
+Git ignores these files and tracks their SHA256 checksums in
+`duckdb-ffi/generated.sha256`. CI generates the files, verifies their checksums,
+and supplies them to build jobs.
 The script compares generation for Linux x86_64/aarch64 and macOS x86_64/ARM64.
 The generated layouts are identical on these targets. During each package build,
 508 C static assertions check sizes, alignments, and field offsets.
-An incompatible target fails compilation. Use `--check` to check committed output.
+An incompatible target fails compilation. Use `--check` to generate the files
+and verify them against the committed checksums. See
+[CONTRIBUTING.md](CONTRIBUTING.md#testing-guidelines) for checksum updates.
 See [MIGRATION.md](MIGRATION.md#duckdb-ffi-migration) for raw API changes.
 
 ### Native library installation

@@ -377,7 +377,8 @@ that use it must declare their own dependency on `dataframe-arrow-bridge`.
 Arrow export uses DuckDB's schema and chunk conversion API. DuckDB materializes
 the native result before callbacks start, so its memory use depends on the
 result size. The older Arrow query and scan bindings remain available through
-`Database.DuckDB.FFI.Deprecated` and emit deprecation warnings.
+`Database.DuckDB.FFI`. The high-level streaming module emits deprecation
+warnings.
 
 ### VARIANT
 

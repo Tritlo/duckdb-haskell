@@ -5,16 +5,34 @@
 Available on [Hackage](https://hackage.haskell.org/package/duckdb-ffi).
 `duckdb-ffi` provides low-level Haskell bindings to the
 [DuckDB](https://duckdb.org) [C API](https://duckdb.org/docs/api/c/overview).
-The package includes the official `duckdb.h` header and C wrappers for the
-Haskell FFI.
+The package generates the complete raw API from the official `duckdb.h`
+header with hs-bindgen 1.0. Struct layouts, unions, enum values, callback
+conversions, and C ABI wrappers are generated during compilation.
 
 ### Highlights
 
 - Covers connections, prepared statements, result sets, vectors, logical types,
   appenders, and Arrow integration.
-- Groups bindings into modules under `Database.DuckDB.FFI.*`.
+- Exposes generated bindings in `Database.DuckDB.FFI`.
+- Uses C function names directly, such as `duckdb_open`.
 - Includes integration tests for the native bindings.
 - Supports DuckDB >= 1.5.3 and < 1.6, using the released 1.5.6 C header.
+
+### Build dependencies
+
+Install LLVM/Clang 16 or later, its `libclang` development files, `llvm-config`,
+Doxygen, and zlib development headers. Use matching Clang and libclang versions.
+The pinned development shell supplies these tools:
+
+```sh
+nix-shell dev/nix/shell.nix
+```
+
+Nix shells need a supplied DuckDB library, as described below.
+Ordinary Cabal builds retain the verified native download.
+The generator uses the target ABI. Rebuild bindings on each platform.
+Do not copy generated layouts from another platform.
+See [MIGRATION.md](MIGRATION.md#duckdb-ffi-migration) for raw API changes.
 
 ### Native library installation
 

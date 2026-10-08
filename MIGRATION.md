@@ -1,4 +1,4 @@
-# Migration Guide: DuckDB 1.4 to 1.5
+# Migration Guide: DuckDB 1.5 and hs-bindgen
 
 This guide covers the changes needed when upgrading this repository from the
 DuckDB 1.4 line to the DuckDB 1.5 line.
@@ -7,10 +7,10 @@ The short version is:
 
 - `duckdb-ffi` uses the DuckDB `1.5.6` C header. The native minimum is 1.5.3.
 - `duckdb-simple` now depends on `duckdb-ffi-1.5`.
-- Existing 1.4 bindings continue to work, but the runtime `libduckdb` you load
-  must be >= 1.5.3 and < 1.6.
-- New 1.5 functionality is exposed through additive modules and helpers; no
-  wholesale rewrite is required.
+- The raw FFI is generated with hs-bindgen 1.0. Its Haskell names and types
+  replace the previous handwritten API.
+- The runtime `libduckdb` must be >= 1.5.3 and < 1.6. High-level SQL operations
+  retain their behavior. Types that expose raw FFI values change.
 
 ## Native DuckDB 1.5.6
 
@@ -91,8 +91,8 @@ add `instance ToField YourType`. The default implementation requires `Show`.
   additional `nextRow` does not execute the statement again.
 - Generic records and sums match SQL field and member names. An incompatible
   schema fails instead of decoding values by position.
-- Rebuild applications that use the FFI directly. The corrected C adapters
-  preserve Haskell types.
+- Update applications that use the FFI directly to the generated names and
+  types. There is no compatibility layer for the handwritten raw API.
 
 ## Who Needs to Change What
 
@@ -101,8 +101,8 @@ If you use `duckdb-ffi` directly:
 - Rebuild and relink against DuckDB `1.5.6`.
 - Update any packaging, Nix, CI, Docker, or deployment config that still pulls
   a 1.4 `libduckdb`.
-- If you want the new 1.5 APIs, import the new raw modules and bind against the
-  new opaque handle types and callbacks.
+- Import generated functions and types from `Database.DuckDB.FFI`. Update raw
+  names, handle constructors, const pointers, and struct arguments/results.
 
 If you use `duckdb-simple`:
 
@@ -146,62 +146,87 @@ LD_LIBRARY_PATH=/path/to/duckdb-1.5 \
 
 ## `duckdb-ffi` Migration
 
-### Header and Symbol Surface
+hs-bindgen 1.0 generates all 546 native functions from the pinned DuckDB 1.5.6
+header. It also generates struct layouts, the VARCHAR union, Arrow records,
+enum patterns, callback constructors/invokers, and C ABI wrappers.
+`Database.DuckDB.FFI` is the only raw module.
+The 44 handwritten modules, 22 manual `Storable` instances, C shims, and old
+binding generator are removed. The source contains an eight-line generator
+configuration instead of 8,482 lines of raw Haskell and 714 lines of C shims.
 
-The vendored `duckdb.h` now matches DuckDB 1.5.6.
+### Names and types
 
-The 1.5 change is additive for the C API surface used here:
+| Previous raw API | Generated API |
+| --- | --- |
+| `c_duckdb_open` | `duckdb_open` |
+| `DuckDBConnection` | `Duckdb_connection`, a typed pointer newtype |
+| `DuckDBIdx` | `Idx_t`, a `Word64` newtype |
+| `DuckDBTypeInteger` | `DUCKDB_TYPE_INTEGER` |
+| `CString` for a const string | `ConstPtr CChar` |
+| Scalar temporal wrappers | Records such as `Duckdb_date` and `Duckdb_timestamp` |
+| Handwritten record selectors | Record fields through `OverloadedRecordDot` |
+| Pointer/out-parameter ABI shims | Direct struct arguments and results |
 
-- existing 1.4 function imports remain valid
-- new 1.5 functions, enums, handles, and callbacks are now available
+The C typedef `duckdb_type` is a separate generated `Duckdb_type` newtype around
+`DUCKDB_TYPE`. For example, create an INTEGER logical type with
+`duckdb_create_logical_type (Duckdb_type DUCKDB_TYPE_INTEGER)`.
+Unwrap `Duckdb_type` when inspecting `duckdb_get_type_id`.
+Do not assume that a handle is a `Ptr ()` or compare it directly with `nullPtr`.
+Use its generated constructor, or its `unwrap` field where necessary.
 
-This means most direct FFI users do not need to rewrite existing code. Instead:
+Functions with struct results return records directly.
+For example, `duckdb_from_date` returns `Duckdb_date_struct` instead of writing
+an output pointer. `duckdb_fetch_chunk` takes a `Duckdb_result` value.
+Keep the owning result alive while that copied record refers to native data.
+Generated struct marshalling does not transfer ownership.
 
-- keep existing bindings for legacy 1.4 APIs
-- opt into the new 1.5 APIs where needed
+### Const pointers and callbacks
 
-### New Raw Modules
+Read a constant string with `ConstPtr` unwrapped for `peekCString`.
+Use `ConstPtr` when passing a `withCString` buffer to a constant argument.
+Keep the buffer alive through the native call.
+An owned string still needs `duckdb_free`, even when it has a const-qualified
+type. Constness does not specify ownership.
 
-The new 1.5 areas are exposed through these modules:
+Use `toFunPtr` and `fromFunPtr` from
+`HsBindgen.Runtime.Support.FunPtr` for generated callbacks.
+A callback typedef wraps a `FunPtr` to its generated `_Aux` function type.
+Free an allocated callback with `freeHaskellFunPtr` after native code can no
+longer call it. Catch Haskell exceptions inside the callback.
+Generated callbacks do not implement ownership transfer or exception cleanup.
+The static callback destructors in `duckdb-simple` retain those rules.
 
-- `Database.DuckDB.FFI.Catalog`
-- `Database.DuckDB.FFI.CopyFunctions`
-- `Database.DuckDB.FFI.FileSystem`
-- `Database.DuckDB.FFI.Logging`
+Arrow release helpers now live in `Database.DuckDB.Simple.Arrow`.
+They still mask asynchronous exceptions and check the release pointer.
+Deprecated Arrow handles point directly to Arrow records.
+The old synthetic internal-pointer helpers and NULL-default C shims are removed.
+Raw callers must supply valid input and output storage.
 
-Use these when adopting new 1.5 functionality rather than trying to infer the
-symbols manually from the header.
+### Build and maintenance
 
-### New Types and Callbacks
+Install matching LLVM/Clang and libclang, `llvm-config`, Doxygen, and zlib
+development headers.
+The pinned Nix shell supplies these tools with GHC 9.14.1.
+GHC 9.14.1 needs scoped overrides for outdated `base` bounds in `debruijn`
+and `skew-list`; `cabal.project` records them.
+Bindings are generated for each target platform during compilation.
+The hs-bindgen literate preprocessor runs as a Cabal build tool.
+The library depends on `hs-bindgen-runtime` and `c-expr-runtime`; the generator
+is not a runtime dependency. Both headers are listed as package source files.
+The FFI library uses `-fforce-recomp` because GHC does not track header inputs
+to the literate preprocessor. Cabal still skips an unchanged package.
 
-DuckDB 1.5 introduces new opaque handles and enums that may affect your own FFI
-layer if you were maintaining local bindings. In this repository they are now
-provided centrally, including:
+The generator uses `OmitFieldPrefixes`, `DuplicateRecordFields`, and
+`NoFieldSelectors`. Default field prefixes collide with DECIMAL width/scale
+functions and omit eight related functions.
+The three untranslated macros contain compiler attributes; Clang still applies
+the attributes while parsing the declarations.
 
-- file flags
-- config option scopes
-- catalog entry types
-- copy-function handles and callback types
-- file-system and file-handle handles
-- catalog and catalog-entry handles
-- log-storage handles
-- scalar function init callbacks
-
-If you had local downstream bindings for any of these, delete them and import
-the shared versions from `Database.DuckDB.FFI.Types`.
-
-### Error-Handling Guidance
-
-DuckDB 1.5 adds more `duckdb_error_data`-style paths.
-
-You do not need to rewrite all existing code to use them immediately.
-
-Recommended approach:
-
-- leave old bindings that already use legacy error accessors in place
-- prefer the structured 1.5 error-data interface when binding new APIs
-
-That is the policy used in this repository.
+Keep the native installer and checksum pins in `Setup.hs`.
+Keep high-level ownership, cancellation, conversion, and the private VARIANT
+format checks in `duckdb-simple`. They cannot be inferred from a C header.
+When updating DuckDB, update the header and native pins, then run the existing
+native, compiler, platform, and leak checks. Do not edit generated declarations.
 
 ## `duckdb-simple` Migration
 

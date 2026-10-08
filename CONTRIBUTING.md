@@ -2,8 +2,9 @@
 
 ## Project structure
 
-`duckdb-ffi/src` contains the C API bindings. The C wrappers are in
-`duckdb-ffi/cbits`, and the tests are in `duckdb-ffi/test`.
+`duckdb-ffi/src/Database/DuckDB/FFI.lhs` generates the C API bindings with
+hs-bindgen. The pinned headers are in `duckdb-ffi/cbits`, and the tests are in
+`duckdb-ffi/test`. Do not add handwritten raw imports or C ABI wrappers.
 `duckdb-simple/src` contains the higher-level API. Its integration and property
 tests are in `duckdb-simple/test`, and its leak test is in `duckdb-simple/leaktest`.
 
@@ -11,6 +12,12 @@ The pure geometry types and codecs are maintained in
 [geometry-simple](https://github.com/Tritlo/geometry-simple).
 
 ## Testing guidelines
+
+Use `nix-shell dev/nix/shell.nix` for the development toolchain. Supply a DuckDB
+library through `cabal.project.local`. The shell uses GHC 9.14.1, matching
+LLVM/Clang, libclang, and Doxygen. Keep the generator and C compiler on the same
+ABI. The hs-bindgen literate preprocessor generates bindings during compilation.
+Cabal lists both input headers as source files.
 
 Test new behavior through the database where possible. Add regressions for
 bug fixes. Run the full test suite before submitting a change.

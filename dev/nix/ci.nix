@@ -5,6 +5,7 @@ let
   };
   pkgs = import nixpkgs { };
   clang = pkgs.llvmPackages;
+  systemIncludePath = "${pkgs.stdenv.cc.libc.dev}/include";
   loaderPath = pkgs.lib.makeLibraryPath [ clang.libclang pkgs.duckdb pkgs.stdenv.cc.cc ];
   haskellPackages = pkgs.haskell.packages.ghc9141.override {
     overrides = self: super: {
@@ -14,6 +15,7 @@ let
         sha256 = "0k0mq38w9s1swvs30ibw5a11lc7szbp9dg7rr29jrqm8d7fb42dc";
       } { }).overrideAttrs (old: {
         nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ clang.clang clang.llvm pkgs.doxygen ];
+        C_INCLUDE_PATH = systemIncludePath;
         LD_LIBRARY_PATH = loaderPath;
       });
       hs-bindgen-runtime = self.callHackageDirect {
@@ -63,6 +65,7 @@ let
       vec = pkgs.haskell.lib.doJailbreak super.vec;
       duckdb-ffi = (self.callCabal2nix "duckdb-ffi" ../../duckdb-ffi { }).overrideAttrs (old: {
         nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ clang.clang clang.llvm pkgs.doxygen ];
+        C_INCLUDE_PATH = systemIncludePath;
         LD_LIBRARY_PATH = loaderPath;
         DUCKDB_TEST_VERSION = pkgs.duckdb.version;
       });

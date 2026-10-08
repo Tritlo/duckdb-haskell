@@ -103,10 +103,10 @@ logicalTypeToRep :: DuckDBLogicalType -> IO LogicalTypeRep
 logicalTypeToRep logical = do
     DuckDBType dtype <- c_duckdb_get_type_id logical
     case dtype of
-        DUCKDB_TYPE_GEOMETRY ->
+        DuckDBTypeGeometry ->
             bracket (c_duckdb_geometry_type_get_crs logical) (c_duckdb_free . castPtr) \ptr ->
                 LogicalTypeGeometry <$> if ptr == nullPtr then pure Nothing else Just . TextEncoding.decodeUtf8 <$> BS.packCString ptr
-        DUCKDB_TYPE_STRUCT -> do
+        DuckDBTypeStruct -> do
             childCountRaw <- c_duckdb_struct_type_child_count logical
             childCount <- word64ToInt (Text.pack "struct child count") (fromIntegral childCountRaw)
             fields <-
@@ -121,7 +121,7 @@ logicalTypeToRep logical = do
             pure $
                 LogicalTypeStruct
                     (listArray (0, childCount - 1) fields)
-        DUCKDB_TYPE_UNION -> do
+        DuckDBTypeUnion -> do
             memberCountRaw <- c_duckdb_union_type_member_count logical
             memberCount <- word64ToInt (Text.pack "union member count") (fromIntegral memberCountRaw)
             members <-
@@ -136,22 +136,22 @@ logicalTypeToRep logical = do
             pure $
                 LogicalTypeUnion
                     (listArray (0, memberCount - 1) members)
-        DUCKDB_TYPE_LIST -> do
+        DuckDBTypeList -> do
             childRep <- bracket (c_duckdb_list_type_child_type logical) destroyLogicalType logicalTypeToRep
             pure (LogicalTypeList childRep)
-        DUCKDB_TYPE_ARRAY -> do
+        DuckDBTypeArray -> do
             childRep <- bracket (c_duckdb_array_type_child_type logical) destroyLogicalType logicalTypeToRep
             size <- c_duckdb_array_type_array_size logical
             pure (LogicalTypeArray childRep (fromIntegral size))
-        DUCKDB_TYPE_MAP -> do
+        DuckDBTypeMap -> do
             keyRep <- bracket (c_duckdb_map_type_key_type logical) destroyLogicalType logicalTypeToRep
             valueRep <- bracket (c_duckdb_map_type_value_type logical) destroyLogicalType logicalTypeToRep
             pure (LogicalTypeMap keyRep valueRep)
-        DUCKDB_TYPE_DECIMAL -> do
+        DuckDBTypeDecimal -> do
             width <- c_duckdb_decimal_width logical
             scale <- c_duckdb_decimal_scale logical
             pure (LogicalTypeDecimal width scale)
-        DUCKDB_TYPE_ENUM -> do
+        DuckDBTypeEnum -> do
             dictSize <- c_duckdb_enum_dictionary_size logical
             let count = fromIntegral dictSize :: Int
             entries <-
@@ -178,9 +178,9 @@ logicalTypeFromRep = logicalTypeFromRepWith \case
     -- TODO: improve this when this becomes available in the C API.
     -- See https://github.com/Tritlo/duckdb-haskell/issues/26 and
     -- https://github.com/Tritlo/duckdb-haskell/issues/27.
-    LogicalTypeScalar DUCKDB_TYPE_VARIANT ->
+    LogicalTypeScalar DuckDBTypeVariant ->
         throwIO (userError "duckdb-simple: a VARIANT type needs the type cache of a connection; bind the value as a parameter or cast a plain value with ?::VARIANT")
-    _ -> c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_GEOMETRY)
+    _ -> c_duckdb_create_logical_type (DuckDBType DuckDBTypeGeometry)
 
 {- | Materialize a type tree. The function argument creates the leaves that the
 C API cannot create: VARIANT, and GEOMETRY with a CRS. The caller must
@@ -194,10 +194,10 @@ logicalTypeFromRepWith resolve rep = do
     pure logical
   where
     create = \case
-        leaf@(LogicalTypeScalar DUCKDB_TYPE_VARIANT) -> resolve leaf
+        leaf@(LogicalTypeScalar DuckDBTypeVariant) -> resolve leaf
         LogicalTypeScalar dtype -> c_duckdb_create_logical_type (DuckDBType dtype)
         leaf@(LogicalTypeGeometry (Just _)) -> resolve leaf
-        LogicalTypeGeometry Nothing -> c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_GEOMETRY)
+        LogicalTypeGeometry Nothing -> c_duckdb_create_logical_type (DuckDBType DuckDBTypeGeometry)
         LogicalTypeDecimal width scale -> do
             when (width < 1 || width > 38 || scale > width) $
                 throwIO (userError "duckdb-simple: invalid DECIMAL width or scale")

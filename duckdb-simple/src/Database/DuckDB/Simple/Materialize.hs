@@ -53,10 +53,10 @@ prepareVectorReader vector = do
 -- | Prepare metadata once for a vector. The reader must not outlive its chunk.
 prepareValueReader :: DUCKDB_TYPE -> DuckDBVector -> Ptr Void -> Ptr Word64 -> IO (Int -> IO FieldValue)
 prepareValueReader dtype vector dataPtr validity = case dtype of
-    DUCKDB_TYPE_VARIANT -> prepareVariantDecoder vector
-    DUCKDB_TYPE_GEOMETRY -> whenValid FieldGeometry <$> prepareGeometryDecoder vector dataPtr
-    DUCKDB_TYPE_STRUCT -> whenValid FieldStruct <$> prepareStructDecoder vector
-    DUCKDB_TYPE_UNION -> whenValid FieldUnion <$> prepareUnionDecoder vector
+    DuckDBTypeVariant -> prepareVariantDecoder vector
+    DuckDBTypeGeometry -> whenValid FieldGeometry <$> prepareGeometryDecoder vector dataPtr
+    DuckDBTypeStruct -> whenValid FieldStruct <$> prepareStructDecoder vector
+    DuckDBTypeUnion -> whenValid FieldUnion <$> prepareUnionDecoder vector
     _ -> pure (materializeValue dtype vector dataPtr validity)
   where
     whenValid wrap decode row = do
@@ -81,44 +81,44 @@ materializeValue dtype vector dataPtr validity rowIdx = do
     if not valid
         then pure FieldNull
         else case dtype of
-            DUCKDB_TYPE_GEOMETRY -> FieldGeometry <$> (prepareGeometryDecoder vector dataPtr >>= ($ rowIdx))
-            DUCKDB_TYPE_VARIANT -> decodeVariant vector rowIdx
-            DUCKDB_TYPE_DECIMAL ->
+            DuckDBTypeGeometry -> FieldGeometry <$> (prepareGeometryDecoder vector dataPtr >>= ($ rowIdx))
+            DuckDBTypeVariant -> decodeVariant vector rowIdx
+            DuckDBTypeDecimal ->
                 withVectorType vector \logical -> do
                     width <- c_duckdb_decimal_width logical
                     scale <- c_duckdb_decimal_scale logical
                     DuckDBType internalTy <- c_duckdb_decimal_internal_type logical
                     rawValue <-
                         case internalTy of
-                            DUCKDB_TYPE_SMALLINT ->
+                            DuckDBTypeSmallInt ->
                                 toInteger <$> peekElemOff (castPtr dataPtr :: Ptr Int16) rowIdx
-                            DUCKDB_TYPE_INTEGER ->
+                            DuckDBTypeInteger ->
                                 toInteger <$> peekElemOff (castPtr dataPtr :: Ptr Int32) rowIdx
-                            DUCKDB_TYPE_BIGINT ->
+                            DuckDBTypeBigInt ->
                                 toInteger <$> peekElemOff (castPtr dataPtr :: Ptr Int64) rowIdx
-                            DUCKDB_TYPE_HUGEINT ->
+                            DuckDBTypeHugeInt ->
                                 duckDBHugeIntToInteger <$> peekElemOff (castPtr dataPtr :: Ptr DuckDBHugeInt) rowIdx
                             _ ->
                                 error "duckdb-simple: unsupported decimal internal storage type"
                     pure (FieldDecimal (DecimalValue width scale rawValue))
-            DUCKDB_TYPE_ARRAY -> FieldArray <$> decodeArrayElements vector rowIdx
-            DUCKDB_TYPE_LIST -> FieldList <$> decodeListElements vector dataPtr rowIdx
-            DUCKDB_TYPE_MAP -> FieldMap <$> decodeMapPairs vector dataPtr rowIdx
-            DUCKDB_TYPE_STRUCT -> FieldStruct <$> (prepareStructDecoder vector >>= ($ rowIdx))
-            DUCKDB_TYPE_UNION -> FieldUnion <$> (prepareUnionDecoder vector >>= ($ rowIdx))
-            DUCKDB_TYPE_ENUM ->
+            DuckDBTypeArray -> FieldArray <$> decodeArrayElements vector rowIdx
+            DuckDBTypeList -> FieldList <$> decodeListElements vector dataPtr rowIdx
+            DuckDBTypeMap -> FieldMap <$> decodeMapPairs vector dataPtr rowIdx
+            DuckDBTypeStruct -> FieldStruct <$> (prepareStructDecoder vector >>= ($ rowIdx))
+            DuckDBTypeUnion -> FieldUnion <$> (prepareUnionDecoder vector >>= ($ rowIdx))
+            DuckDBTypeEnum ->
                 withVectorType vector \logical -> do
                     DuckDBType enumInternal <- c_duckdb_enum_internal_type logical
                     case enumInternal of
-                        DUCKDB_TYPE_UTINYINT ->
+                        DuckDBTypeUTinyInt ->
                             FieldEnum . fromIntegral <$> peekElemOff (castPtr dataPtr :: Ptr Word8) rowIdx
-                        DUCKDB_TYPE_USMALLINT ->
+                        DuckDBTypeUSmallInt ->
                             FieldEnum . fromIntegral <$> peekElemOff (castPtr dataPtr :: Ptr Word16) rowIdx
-                        DUCKDB_TYPE_UINTEGER ->
+                        DuckDBTypeUInteger ->
                             FieldEnum <$> peekElemOff (castPtr dataPtr :: Ptr Word32) rowIdx
                         _ ->
                             error "duckdb-simple: unsupported enum internal storage type"
-            DUCKDB_TYPE_SQLNULL -> pure FieldNull
+            DuckDBTypeSQLNull -> pure FieldNull
             _ -> decodeElement dtype dataPtr rowIdx
 
 decodeArrayElements :: DuckDBVector -> Int -> IO (Array Int FieldValue)

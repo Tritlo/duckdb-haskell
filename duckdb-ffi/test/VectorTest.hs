@@ -38,10 +38,10 @@ tests =
 vectorDataAccess :: TestTree
 vectorDataAccess =
     testCase "write and read integer vector data" $ do
-        withLogicalType (c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_INTEGER)) \intType ->
+        withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \intType ->
             withVectorOfType intType 4 \vec -> do
                 colType <- c_duckdb_vector_get_column_type vec
-                withLogicalType (pure colType) ((fmap (getField @"unwrap") . c_duckdb_get_type_id) >=> (@?= DUCKDB_TYPE_INTEGER))
+                withLogicalType (pure colType) ((fmap (getField @"unwrap") . c_duckdb_get_type_id) >=> (@?= DuckDBTypeInteger))
 
                 rawPtr <- c_duckdb_vector_get_data vec
                 let dataPtr = coerce rawPtr :: Ptr Int32
@@ -53,7 +53,7 @@ vectorDataAccess =
 vectorValidityMask :: TestTree
 vectorValidityMask =
     testCase "ensure validity mask and clear single entry" $ do
-        withLogicalType (c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_INTEGER)) \intType ->
+        withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \intType ->
             withVectorOfType intType 4 \vec -> do
                 void (c_duckdb_vector_ensure_validity_writable vec)
                 validity <- c_duckdb_vector_get_validity vec
@@ -70,7 +70,7 @@ vectorValidityMask =
 listVectorChildManagement :: TestTree
 listVectorChildManagement =
     testCase "list vector reserves space and reports size" $ do
-        withLogicalType (c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_INTEGER)) \intType ->
+        withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \intType ->
             withLogicalType (c_duckdb_create_list_type intType) \listType ->
                 withVectorOfType listType 2 \listVec -> do
                     childVec0 <- c_duckdb_list_vector_get_child listVec
@@ -105,12 +105,12 @@ listVectorChildManagement =
 arrayVectorChildAccess :: TestTree
 arrayVectorChildAccess =
     testCase "array vector child flattens elements" $ do
-        withLogicalType (c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_INTEGER)) \intType ->
+        withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \intType ->
             withLogicalType (c_duckdb_create_array_type intType 3) \arrayType ->
                 withVectorOfType arrayType 2 \arrayVec -> do
                     childVec <- c_duckdb_array_vector_get_child arrayVec
                     childType <- c_duckdb_vector_get_column_type childVec
-                    withLogicalType (pure childType) ((fmap (getField @"unwrap") . c_duckdb_get_type_id) >=> (@?= DUCKDB_TYPE_INTEGER))
+                    withLogicalType (pure childType) ((fmap (getField @"unwrap") . c_duckdb_get_type_id) >=> (@?= DuckDBTypeInteger))
 
                     childRaw <- c_duckdb_vector_get_data childVec
                     let childInts = coerce childRaw :: Ptr Int32
@@ -122,7 +122,7 @@ arrayVectorChildAccess =
 vectorSliceWithSelection :: TestTree
 vectorSliceWithSelection =
     testCase "slice vector materializes dictionary order" $ do
-        withLogicalType (c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_INTEGER)) \intType ->
+        withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \intType ->
             withVectorOfType intType 4 \vec -> do
                 dataRaw <- c_duckdb_vector_get_data vec
                 let vecData = coerce dataRaw :: Ptr Int32
@@ -148,8 +148,8 @@ vectorSliceWithSelection =
 structVectorChildAccess :: TestTree
 structVectorChildAccess =
     testCase "struct vector exposes typed child vectors" $ do
-        withLogicalType (c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_INTEGER)) \intType ->
-            withLogicalType (c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_DOUBLE)) \doubleType ->
+        withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \intType ->
+            withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeDouble)) \doubleType ->
                 allocaArray 2 \typesPtr -> do
                     pokeElemOff typesPtr 0 intType
                     pokeElemOff typesPtr 1 doubleType
@@ -162,9 +162,9 @@ structVectorChildAccess =
                                         dblChild <- c_duckdb_struct_vector_get_child structVec 1
 
                                         intChildType <- c_duckdb_vector_get_column_type intChild
-                                        withLogicalType (pure intChildType) ((fmap (getField @"unwrap") . c_duckdb_get_type_id) >=> (@?= DUCKDB_TYPE_INTEGER))
+                                        withLogicalType (pure intChildType) ((fmap (getField @"unwrap") . c_duckdb_get_type_id) >=> (@?= DuckDBTypeInteger))
                                         dblChildType <- c_duckdb_vector_get_column_type dblChild
-                                        withLogicalType (pure dblChildType) ((fmap (getField @"unwrap") . c_duckdb_get_type_id) >=> (@?= DUCKDB_TYPE_DOUBLE))
+                                        withLogicalType (pure dblChildType) ((fmap (getField @"unwrap") . c_duckdb_get_type_id) >=> (@?= DuckDBTypeDouble))
 
                                         intRaw <- c_duckdb_vector_get_data intChild
                                         dblRaw <- c_duckdb_vector_get_data dblChild
@@ -179,7 +179,7 @@ structVectorChildAccess =
 vectorReferenceValue :: TestTree
 vectorReferenceValue =
     testCase "vector_reference_value writes scalar contents" $ do
-        withLogicalType (c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_INTEGER)) \intType ->
+        withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \intType ->
             withVectorOfType intType 1 \vec ->
                 withValue (c_duckdb_create_int32 123) \value -> do
                     c_duckdb_vector_reference_value vec value

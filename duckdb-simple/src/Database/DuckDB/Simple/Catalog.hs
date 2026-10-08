@@ -46,7 +46,7 @@ catalogTypeName conn catalogName
 lookupCatalogEntry :: Connection -> Text -> Text -> Text -> DuckDBCatalogEntryType -> IO (Maybe CatalogEntry)
 lookupCatalogEntry conn catalogName schemaName entryName entryType
     | any (Text.any (== '\0')) [catalogName, schemaName, entryName] = throwRegistrationError "catalog lookup name contains NUL"
-    | entryType `notElem` [DUCKDB_CATALOG_ENTRY_TYPE_TABLE, DUCKDB_CATALOG_ENTRY_TYPE_VIEW, DUCKDB_CATALOG_ENTRY_TYPE_INDEX, DUCKDB_CATALOG_ENTRY_TYPE_SEQUENCE, DUCKDB_CATALOG_ENTRY_TYPE_COLLATION, DUCKDB_CATALOG_ENTRY_TYPE_TYPE] =
+    | entryType `notElem` [DuckDBCatalogEntryTypeTable, DuckDBCatalogEntryTypeView, DuckDBCatalogEntryTypeIndex, DuckDBCatalogEntryTypeSequence, DuckDBCatalogEntryTypeCollation, DuckDBCatalogEntryTypeType] =
         throwRegistrationError "unsupported catalog entry type"
     | otherwise =
         withClientContext conn \ctx ->

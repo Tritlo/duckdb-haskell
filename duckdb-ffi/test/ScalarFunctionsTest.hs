@@ -36,7 +36,7 @@ scalarFunctionRoundtrip =
     testCase "register custom scalar function and execute" $ do
         withDatabase \db ->
             withConnection db \conn -> do
-                withLogicalType (c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_INTEGER)) \intType -> do
+                withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \intType -> do
                     funPtr <- mkScalarFun negateCallback
                     withScalarFunction \fun -> do
                         withConstCString "negate_int" $ \name -> c_duckdb_scalar_function_set_name fun name
@@ -131,7 +131,7 @@ scalarFunctionSetFeatures =
     testCase "scalar function bind helpers and function sets" $
         withDatabase \db ->
             withConnection db \conn ->
-                withLogicalType (c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_INTEGER)) \intType -> do
+                withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \intType -> do
                     let bindDataSize = sizeOf (undefined :: Int32)
 
                     extraStorage <- mallocBytes bindDataSize

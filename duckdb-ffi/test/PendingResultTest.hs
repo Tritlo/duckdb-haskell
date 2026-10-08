@@ -44,10 +44,10 @@ pendingErrorMessage pending = do
 assertPendingState :: DuckDBPendingState -> IO ()
 assertPendingState state =
     let valid =
-            state == DUCKDB_PENDING_RESULT_READY
-                || state == DUCKDB_PENDING_RESULT_NOT_READY
-                || state == DUCKDB_PENDING_ERROR
-                || state == DUCKDB_PENDING_NO_TASKS_AVAILABLE
+            state == DuckDBPendingResultReady
+                || state == DuckDBPendingResultNotReady
+                || state == DuckDBPendingError
+                || state == DuckDBPendingNoTasksAvailable
      in assertBool "unexpected pending state" valid
 
 pendingPreparedRoundtrip :: TestTree

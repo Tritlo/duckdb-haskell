@@ -69,7 +69,32 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.Foreign as TextForeign
-import Database.DuckDB.FFI (DUCKDB_TYPE, DuckDBClientContext, DuckDBConnection, DuckDBDataChunk (..), DuckDBDatabase, DuckDBErrorType, DuckDBPreparedStatement, DuckDBResult, DuckDBState, DuckDBValue, c_duckdb_connection_get_client_context, c_duckdb_destroy_client_context, c_duckdb_destroy_data_chunk, c_duckdb_destroy_result, c_duckdb_destroy_value, c_duckdb_execute_prepared, c_duckdb_execute_prepared_streaming, c_duckdb_fetch_chunk, c_duckdb_interrupt, c_duckdb_prepare_error, c_duckdb_result_error, c_duckdb_result_error_type, pattern DUCKDB_ERROR_INVALID, pattern DuckDBSuccess)
+import Database.DuckDB.FFI (
+    DUCKDB_TYPE,
+    DuckDBClientContext,
+    DuckDBConnection,
+    DuckDBDataChunk (..),
+    DuckDBDatabase,
+    DuckDBErrorType,
+    DuckDBPreparedStatement,
+    DuckDBResult,
+    DuckDBState,
+    DuckDBValue,
+    c_duckdb_connection_get_client_context,
+    c_duckdb_destroy_client_context,
+    c_duckdb_destroy_data_chunk,
+    c_duckdb_destroy_result,
+    c_duckdb_destroy_value,
+    c_duckdb_execute_prepared,
+    c_duckdb_execute_prepared_streaming,
+    c_duckdb_fetch_chunk,
+    c_duckdb_interrupt,
+    c_duckdb_prepare_error,
+    c_duckdb_result_error,
+    c_duckdb_result_error_type,
+    pattern DuckDBErrorInvalid,
+    pattern DuckDBSuccess,
+ )
 import qualified Database.DuckDB.FFI as FFI
 import Database.DuckDB.Simple.FromField (FieldValue)
 import Database.DuckDB.Simple.LogicalRep (destroyLogicalType)
@@ -286,34 +311,34 @@ duckDBTypeNames :: [(Text, DUCKDB_TYPE)]
 duckDBTypeNames =
     map
         (\(name, dtype) -> (Text.pack name, dtype))
-        [ ("BOOLEAN", FFI.DUCKDB_TYPE_BOOLEAN)
-        , ("TINYINT", FFI.DUCKDB_TYPE_TINYINT)
-        , ("SMALLINT", FFI.DUCKDB_TYPE_SMALLINT)
-        , ("INTEGER", FFI.DUCKDB_TYPE_INTEGER)
-        , ("BIGINT", FFI.DUCKDB_TYPE_BIGINT)
-        , ("HUGEINT", FFI.DUCKDB_TYPE_HUGEINT)
-        , ("UTINYINT", FFI.DUCKDB_TYPE_UTINYINT)
-        , ("USMALLINT", FFI.DUCKDB_TYPE_USMALLINT)
-        , ("UINTEGER", FFI.DUCKDB_TYPE_UINTEGER)
-        , ("UBIGINT", FFI.DUCKDB_TYPE_UBIGINT)
-        , ("UHUGEINT", FFI.DUCKDB_TYPE_UHUGEINT)
-        , ("FLOAT", FFI.DUCKDB_TYPE_FLOAT)
-        , ("DOUBLE", FFI.DUCKDB_TYPE_DOUBLE)
-        , ("DATE", FFI.DUCKDB_TYPE_DATE)
-        , ("TIME", FFI.DUCKDB_TYPE_TIME)
-        , ("TIMETZ", FFI.DUCKDB_TYPE_TIME_TZ)
-        , ("TIMESTAMP", FFI.DUCKDB_TYPE_TIMESTAMP)
-        , ("TIMESTAMPTZ", FFI.DUCKDB_TYPE_TIMESTAMP_TZ)
-        , ("INTERVAL", FFI.DUCKDB_TYPE_INTERVAL)
-        , ("TEXT", FFI.DUCKDB_TYPE_VARCHAR)
-        , ("BLOB", FFI.DUCKDB_TYPE_BLOB)
-        , ("GEOMETRY", FFI.DUCKDB_TYPE_GEOMETRY)
-        , ("VARIANT", FFI.DUCKDB_TYPE_VARIANT)
-        , ("UUID", FFI.DUCKDB_TYPE_UUID)
-        , ("BIT", FFI.DUCKDB_TYPE_BIT)
-        , ("BIGNUM", FFI.DUCKDB_TYPE_BIGNUM)
+        [ ("BOOLEAN", FFI.DuckDBTypeBoolean)
+        , ("TINYINT", FFI.DuckDBTypeTinyInt)
+        , ("SMALLINT", FFI.DuckDBTypeSmallInt)
+        , ("INTEGER", FFI.DuckDBTypeInteger)
+        , ("BIGINT", FFI.DuckDBTypeBigInt)
+        , ("HUGEINT", FFI.DuckDBTypeHugeInt)
+        , ("UTINYINT", FFI.DuckDBTypeUTinyInt)
+        , ("USMALLINT", FFI.DuckDBTypeUSmallInt)
+        , ("UINTEGER", FFI.DuckDBTypeUInteger)
+        , ("UBIGINT", FFI.DuckDBTypeUBigInt)
+        , ("UHUGEINT", FFI.DuckDBTypeUHugeInt)
+        , ("FLOAT", FFI.DuckDBTypeFloat)
+        , ("DOUBLE", FFI.DuckDBTypeDouble)
+        , ("DATE", FFI.DuckDBTypeDate)
+        , ("TIME", FFI.DuckDBTypeTime)
+        , ("TIMETZ", FFI.DuckDBTypeTimeTz)
+        , ("TIMESTAMP", FFI.DuckDBTypeTimestamp)
+        , ("TIMESTAMPTZ", FFI.DuckDBTypeTimestampTz)
+        , ("INTERVAL", FFI.DuckDBTypeInterval)
+        , ("TEXT", FFI.DuckDBTypeVarchar)
+        , ("BLOB", FFI.DuckDBTypeBlob)
+        , ("GEOMETRY", FFI.DuckDBTypeGeometry)
+        , ("VARIANT", FFI.DuckDBTypeVariant)
+        , ("UUID", FFI.DuckDBTypeUUID)
+        , ("BIT", FFI.DuckDBTypeBit)
+        , ("BIGNUM", FFI.DuckDBTypeBigNum)
         , -- NULL gives an element type to Maybe values without data.
-          ("NULL", FFI.DUCKDB_TYPE_SQLNULL)
+          ("NULL", FFI.DuckDBTypeSQLNull)
         ]
 
 -- | Find the type that a column type name denotes.
@@ -342,7 +367,7 @@ fetchResultError resultPtr = do
             then pure (Text.pack "duckdb-simple: query failed")
             else peekUtf8CString msgPtr
     errorType <- c_duckdb_result_error_type resultPtr
-    pure (message, if errorType == DUCKDB_ERROR_INVALID then Nothing else Just errorType)
+    pure (message, if errorType == DuckDBErrorInvalid then Nothing else Just errorType)
 
 -- | Attach the query and native error category to an execution error.
 mkExecuteError :: Query -> Text -> Maybe DuckDBErrorType -> SQLError

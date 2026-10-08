@@ -34,7 +34,7 @@ selectionVectorPointerWritable =
 selectionVectorCopySelection :: TestTree
 selectionVectorCopySelection =
     testCase "vector_copy_sel copies selected rows" $ do
-        withLogicalType (c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_INTEGER)) \intType -> do
+        withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \intType -> do
             withVector (c_duckdb_create_vector intType 4) \srcVec -> do
                 srcPtr <- vectorDataPtr srcVec
                 forM_ (zip [0 ..] [10, 20, 30, 40 :: Int32]) (uncurry (pokeElemOff srcPtr))

@@ -152,7 +152,7 @@ tests =
                     pure (acc + i)
                 total @?= (sum [0 .. 99999] :: Int64)
         , testCase "VARIANT type construction raises an error" $ do
-            result <- try (bracket (logicalTypeFromRep (LogicalTypeScalar DUCKDB_TYPE_VARIANT)) destroyLogicalType (const (pure ())))
+            result <- try (bracket (logicalTypeFromRep (LogicalTypeScalar DuckDBTypeVariant)) destroyLogicalType (const (pure ())))
             case result of
                 Left err -> assertBool (displayException (err :: SomeException)) ("?::VARIANT" `isInfixOf` displayException err)
                 Right () -> assertFailure "expected VARIANT type rejection"

@@ -5,7 +5,8 @@
 - Generate the complete raw API from the DuckDB and Arrow headers with
   hs-bindgen 1.0. Remove handwritten raw modules, C ABI shims, and the old
   binding generator. Keep all 158 earlier type names and all 546 `c_duckdb_*`
-  function names directly in `Database.DuckDB.FFI`. Enum constants use C names.
+  function names directly in `Database.DuckDB.FFI`. Keep all 148 earlier enum
+  pattern names through a small pass over typed output.
 - Use existing hs-bindgen type specifications and `RenameTerm` configuration
   through a maintainer Haskell driver. Retained names use generated representations.
 - Configure names and opaque handles, compare targets, and generate ABI checks

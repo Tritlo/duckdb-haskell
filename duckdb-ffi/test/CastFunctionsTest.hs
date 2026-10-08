@@ -78,21 +78,21 @@ castFunctionTryMode =
                         c_duckdb_value_is_null resPtr 0 1 >>= (@?= CBool 1)
                         errPtr <- c_duckdb_result_error resPtr
                         errPtr @?= (coerce (nullPtr :: Ptr Void))
-                    chLastMode >>= (@?= DUCKDB_CAST_TRY)
+                    chLastMode >>= (@?= DuckDBCastTry)
                     chExtraSeen >>= (@?= True)
 
 -- Harness ------------------------------------------------------------------
 
 withTestCast :: DuckDBConnection -> (CastHarness -> IO a) -> IO a
 withTestCast conn action = do
-    modeRef <- newIORef DUCKDB_CAST_NORMAL
+    modeRef <- newIORef DuckDBCastNormal
     extraSeenRef <- newIORef False
     prefixStable <- newStablePtr ("value: " :: String)
     castFunPtr <- mkCastFun (castCallback modeRef extraSeenRef prefixStable)
     result <-
         withCastFunction \castFun ->
-            withLogicalType (c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_INTEGER)) \sourceType ->
-                withLogicalType (c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_VARCHAR)) \targetType -> do
+            withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \sourceType ->
+                withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeVarchar)) \targetType -> do
                     c_duckdb_cast_function_set_source_type castFun sourceType
                     c_duckdb_cast_function_set_target_type castFun targetType
                     c_duckdb_cast_function_set_implicit_cast_cost castFun 0
@@ -132,7 +132,7 @@ castCallback modeRef extraSeenRef prefixStable info count inputVec outputVec = d
             val <- peekElemOff inPtr idx
             if val < 0
                 then withConstCString "negative values not allowed" \errMsg ->
-                    if mode == DUCKDB_CAST_TRY
+                    if mode == DuckDBCastTry
                         then do
                             c_duckdb_cast_function_set_row_error info errMsg (fromIntegral idx) outVec
                             processRows prefix mode inPtr outVec (idx + 1) total

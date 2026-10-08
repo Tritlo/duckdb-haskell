@@ -155,43 +155,43 @@ class FunctionArg a where
     argumentType :: Proxy a -> DUCKDB_TYPE
 
 instance FunctionArg Int where
-    argumentType _ = DUCKDB_TYPE_BIGINT
+    argumentType _ = DuckDBTypeBigInt
 
 instance FunctionArg Int16 where
-    argumentType _ = DUCKDB_TYPE_SMALLINT
+    argumentType _ = DuckDBTypeSmallInt
 
 instance FunctionArg Int32 where
-    argumentType _ = DUCKDB_TYPE_INTEGER
+    argumentType _ = DuckDBTypeInteger
 
 instance FunctionArg Int64 where
-    argumentType _ = DUCKDB_TYPE_BIGINT
+    argumentType _ = DuckDBTypeBigInt
 
 instance FunctionArg Word where
-    argumentType _ = DUCKDB_TYPE_UBIGINT
+    argumentType _ = DuckDBTypeUBigInt
 
 instance FunctionArg Word16 where
-    argumentType _ = DUCKDB_TYPE_USMALLINT
+    argumentType _ = DuckDBTypeUSmallInt
 
 instance FunctionArg Word32 where
-    argumentType _ = DUCKDB_TYPE_UINTEGER
+    argumentType _ = DuckDBTypeUInteger
 
 instance FunctionArg Word64 where
-    argumentType _ = DUCKDB_TYPE_UBIGINT
+    argumentType _ = DuckDBTypeUBigInt
 
 instance FunctionArg Double where
-    argumentType _ = DUCKDB_TYPE_DOUBLE
+    argumentType _ = DuckDBTypeDouble
 
 instance FunctionArg Float where
-    argumentType _ = DUCKDB_TYPE_FLOAT
+    argumentType _ = DuckDBTypeFloat
 
 instance FunctionArg Bool where
-    argumentType _ = DUCKDB_TYPE_BOOLEAN
+    argumentType _ = DuckDBTypeBoolean
 
 instance FunctionArg Text where
-    argumentType _ = DUCKDB_TYPE_VARCHAR
+    argumentType _ = DuckDBTypeVarchar
 
 instance FunctionArg String where
-    argumentType _ = DUCKDB_TYPE_VARCHAR
+    argumentType _ = DuckDBTypeVarchar
 
 instance (FunctionArg a) => FunctionArg (Maybe a) where
     argumentType _ = argumentType (Proxy :: Proxy a)
@@ -312,11 +312,11 @@ withLogicalType dtype =
 
 duckTypeForScalar :: ScalarType -> DUCKDB_TYPE
 duckTypeForScalar = \case
-    ScalarTypeBoolean -> DUCKDB_TYPE_BOOLEAN
-    ScalarTypeBigInt -> DUCKDB_TYPE_BIGINT
-    ScalarTypeUBigInt -> DUCKDB_TYPE_UBIGINT
-    ScalarTypeDouble -> DUCKDB_TYPE_DOUBLE
-    ScalarTypeVarchar -> DUCKDB_TYPE_VARCHAR
+    ScalarTypeBoolean -> DuckDBTypeBoolean
+    ScalarTypeBigInt -> DuckDBTypeBigInt
+    ScalarTypeUBigInt -> DuckDBTypeUBigInt
+    ScalarTypeDouble -> DuckDBTypeDouble
+    ScalarTypeVarchar -> DuckDBTypeVarchar
 
 scalarFunctionHandler :: forall f. (Function f) => f -> DuckDBFunctionInfo -> DuckDBDataChunk -> DuckDBVector -> IO ()
 scalarFunctionHandler fn info chunk outVec =

@@ -112,7 +112,7 @@ valueRegressionTests =
             forM_ [Red, Blue] \colour ->
                 (query conn "SELECT ?" (Only colour) :: IO [Only Colour]) >>= (@?= [Only colour])
         , testCase "UNION NULL payload retains its member type" $ withConnection ":memory:" \conn -> do
-            let members = listArray (0, 1) [UnionMemberType "number" (LogicalTypeScalar DUCKDB_TYPE_BIGINT), UnionMemberType "text" (LogicalTypeScalar DUCKDB_TYPE_VARCHAR)]
+            let members = listArray (0, 1) [UnionMemberType "number" (LogicalTypeScalar DuckDBTypeBigInt), UnionMemberType "text" (LogicalTypeScalar DuckDBTypeVarchar)]
                 original = UnionValue 0 "number" FieldNull members
             (query conn "SELECT ?" (Only original) :: IO [Only (UnionValue FieldValue)]) >>= (@?= [Only original])
         , testCase "array elements need only a ToField instance" $ withConnection ":memory:" \conn -> do
@@ -188,20 +188,20 @@ valueRegressionTests =
                     _ <- execute_ conn "DROP TABLE native_timestamp"
                     pure ()
         , testCase "composite timestamps reject infinity and storage overflow" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
-            forM_ [(DUCKDB_TYPE_TIMESTAMP_S, 1), (DUCKDB_TYPE_TIMESTAMP_MS, 1000), (DUCKDB_TYPE_TIMESTAMP, 1000000), (DUCKDB_TYPE_TIMESTAMP_NS, 1000000000)] \(dtype, units) ->
+            forM_ [(DuckDBTypeTimestampS, 1), (DuckDBTypeTimestampMs, 1000), (DuckDBTypeTimestamp, 1000000), (DuckDBTypeTimestampNs, 1000000000)] \(dtype, units) ->
                 forM_ [toInteger (minBound :: Int64) - 1, negate (toInteger (maxBound :: Int64)), toInteger (maxBound :: Int64), toInteger (maxBound :: Int64) + 1] \value -> do
                     let timestamp = utcToLocalTime utc (posixSecondsToUTCTime (fromRational (value % units)))
                         struct = singleField (LogicalTypeScalar dtype) (FieldTimestamp (Finite timestamp))
                     assertIOError (query conn "SELECT ?" (Only struct) :: IO [Only FieldValue])
         , testCase "composite timestamps floor fractional units before the epoch" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
-            forM_ [(DUCKDB_TYPE_TIMESTAMP_S, 1), (DUCKDB_TYPE_TIMESTAMP_MS, 1000), (DUCKDB_TYPE_TIMESTAMP, 1000000), (DUCKDB_TYPE_TIMESTAMP_NS, 1000000000)] \(dtype, units) -> do
+            forM_ [(DuckDBTypeTimestampS, 1), (DuckDBTypeTimestampMs, 1000), (DuckDBTypeTimestamp, 1000000), (DuckDBTypeTimestampNs, 1000000000)] \(dtype, units) -> do
                 let timestamp = utcToLocalTime utc (posixSecondsToUTCTime (fromRational ((-1) % (2 * units))))
                     expected = utcToLocalTime utc (posixSecondsToUTCTime (fromRational ((-1) % units)))
                     struct = singleField (LogicalTypeScalar dtype) (FieldTimestamp (Finite timestamp))
                 (query conn "SELECT (?).value" (Only struct) :: IO [Only LocalTime]) >>= (@?= [Only expected])
         , testCase "composite TIME_NS rejects invalid clock components" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
             forM_ [TimeOfDay (-1) 0 0, TimeOfDay 25 0 0, TimeOfDay 0 60 0, TimeOfDay 0 0 (-1), TimeOfDay 24 0 0.000000001, TimeOfDay 23 59 60.000000001] \value ->
-                assertIOError (query conn "SELECT ?" (Only (singleField (LogicalTypeScalar DUCKDB_TYPE_TIME_NS) (FieldTime value))) :: IO [Only FieldValue])
+                assertIOError (query conn "SELECT ?" (Only (singleField (LogicalTypeScalar DuckDBTypeTimeNs) (FieldTime value))) :: IO [Only FieldValue])
         , testCase "microsecond timestamps retain finite extrema" $ withConnection ":memory:" \conn ->
             forM_ [minBound, negate (maxBound :: Int64) + 1, -1, 0, maxBound - 1] \value -> do
                 let expected = utcToLocalTime utc (posixSecondsToUTCTime (fromRational (toInteger value % 1000000)))
@@ -247,7 +247,7 @@ valueRegressionTests =
             (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
         , testCase "generic NULL product and payload return Left" $ do
             assertLeft (genericFromFieldValue FieldNull :: Either String NamedRecord)
-            let member = UnionMemberType "DataMember" (LogicalTypeScalar DUCKDB_TYPE_BIGINT)
+            let member = UnionMemberType "DataMember" (LogicalTypeScalar DuckDBTypeBigInt)
                 union = UnionValue 0 "DataMember" FieldNull (listArray (0, 0) [member])
             assertLeft (genericFromFieldValue (FieldUnion union) :: Either String NullableSum)
         , testCase "generic records decode by name" $ withConnection ":memory:" \conn -> do
@@ -257,7 +257,7 @@ valueRegressionTests =
             [Only union] <- query_ conn "SELECT union_value(DataMember := {'field1': 42::BIGINT})" :: IO [Only (UnionValue FieldValue)]
             genericFromFieldValue (FieldUnion union) @?= Right (DataMember 42)
         , testCase "union binding rejects inconsistent member name" $ withConnection ":memory:" \conn -> do
-            let member = UnionMemberType "right" (LogicalTypeScalar DUCKDB_TYPE_BIGINT)
+            let member = UnionMemberType "right" (LogicalTypeScalar DuckDBTypeBigInt)
                 union = UnionValue 0 "wrong" (FieldInt64 42) (listArray (0, 0) [member])
             assertIOError (query conn "SELECT ?" (Only union) :: IO [Only FieldValue])
         , testCase "generic records reject wrong names" $ do
@@ -267,14 +267,14 @@ valueRegressionTests =
                     let fields = listArray (0, 1) [StructField "wrong" (FieldInt64 1), StructField "secondValue" (FieldInt64 2)]
                     assertLeft (genericFromFieldValue (FieldStruct struct{structValueFields = fields}) :: Either String NamedRecord)
         , testCase "logical type Unicode names round trip" $ do
-            let logical = LogicalTypeStruct (listArray (0, 0) [StructField "íslenska_λ_😀" (LogicalTypeScalar DUCKDB_TYPE_BIGINT)])
+            let logical = LogicalTypeStruct (listArray (0, 0) [StructField "íslenska_λ_😀" (LogicalTypeScalar DuckDBTypeBigInt)])
             bracket (logicalTypeFromRep logical) destroyLogicalType \handle ->
                 logicalTypeToRep handle >>= (@?= logical)
         , testCase "logical type names reject embedded NUL" $ do
-            let logical = LogicalTypeStruct (listArray (0, 0) [StructField "before\0after" (LogicalTypeScalar DUCKDB_TYPE_BIGINT)])
+            let logical = LogicalTypeStruct (listArray (0, 0) [StructField "before\0after" (LogicalTypeScalar DuckDBTypeBigInt)])
             assertIOError (bracket (logicalTypeFromRep logical) destroyLogicalType (const (pure ())))
         , testCase "invalid native composite constructor returns controlled error" $ withConnection ":memory:" \conn -> do
-            let struct = singleField (LogicalTypeMap (LogicalTypeScalar DUCKDB_TYPE_BIGINT) (LogicalTypeScalar DUCKDB_TYPE_BIGINT)) (FieldMap [(FieldNull, FieldInt64 1)])
+            let struct = singleField (LogicalTypeMap (LogicalTypeScalar DuckDBTypeBigInt) (LogicalTypeScalar DuckDBTypeBigInt)) (FieldMap [(FieldNull, FieldInt64 1)])
             assertIOError (query conn "SELECT ?" (Only struct) :: IO [Only FieldValue])
         , testCase "BIT padding preserves SQL bit_count" $ withConnection ":memory:" \conn -> do
             let bits = bsFromBool [True, False, True]
@@ -288,7 +288,7 @@ valueRegressionTests =
             assertIOError (query conn "SELECT ?" (Only (singleField (LogicalTypeEnum (listArray (0, 1) ["a", "b"])) (FieldEnum 2))) :: IO [Only FieldValue])
         , testCase "TIMETZ input offset overflow fails before native use" $ withConnection ":memory:" \conn -> do
             let value = TimeWithZone (TimeOfDay 12 0 0) (minutesToTimeZone maxBound)
-                struct = singleField (LogicalTypeScalar DUCKDB_TYPE_TIME_TZ) (FieldTimeTZ value)
+                struct = singleField (LogicalTypeScalar DuckDBTypeTimeTz) (FieldTimeTZ value)
             assertIOError (query conn "SELECT ?" (Only struct) :: IO [Only FieldValue])
         , testCase "invalid TIME input returns controlled error" $ withConnection ":memory:" \conn ->
             assertIOError (query conn "SELECT ?" (Only (TimeOfDay 1000000000 0 0)) :: IO [Only TimeOfDay])

@@ -104,7 +104,7 @@ startStatementStream mode stmt =
                 (errMsg, errType) <- fetchResultError resultPtr
                 throwIO $ mkExecuteError (statementQuery stmt) errMsg errType
             resultType <- peek resultPtr >>= c_duckdb_result_return_type
-            if resultType /= DUCKDB_RESULT_TYPE_QUERY_RESULT
+            if resultType /= DuckDBResultTypeQueryResult
                 then release >> pure Nothing
                 else do
                     columns <- collectResultColumns resultPtr

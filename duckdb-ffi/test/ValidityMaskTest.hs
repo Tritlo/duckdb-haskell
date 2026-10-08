@@ -54,7 +54,7 @@ validitySetOperations =
 
 withIntegerVector :: DuckDBIdx -> (DuckDBVector -> IO a) -> IO a
 withIntegerVector capacity action =
-    withLogicalType (c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_INTEGER)) \intType ->
+    withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \intType ->
         withVector (c_duckdb_create_vector intType capacity) action
 
 toBool :: IO CBool -> IO Bool

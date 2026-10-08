@@ -59,7 +59,7 @@ queryLifecycle =
                         rowsChanged @?= 0
 
                         stmtType <- (peek resPtr >>= \rawValue -> c_duckdb_result_statement_type rawValue)
-                        stmtType @?= DUCKDB_STATEMENT_TYPE_SELECT
+                        stmtType @?= DuckDBStatementTypeSelect
 
                         arrowOpts <- c_duckdb_result_get_arrow_options resPtr
                         assertBool "arrow options should not be null" (arrowOpts /= (coerce (nullPtr :: Ptr Void)))
@@ -74,7 +74,7 @@ queryLifecycle =
                             colName @?= expected
 
                             colType <- (getField @"unwrap" <$> c_duckdb_column_type resPtr idx)
-                            let expectedType = if idx == 0 then DUCKDB_TYPE_INTEGER else DUCKDB_TYPE_VARCHAR
+                            let expectedType = if idx == 0 then DuckDBTypeInteger else DuckDBTypeVarchar
                             colType @?= expectedType
 
                             logicalType <- c_duckdb_column_logical_type resPtr idx
@@ -95,6 +95,6 @@ queryLifecycle =
                             assertBool ("unexpected error: " <> errMsg) False
 
                         errType <- c_duckdb_result_error_type resPtr
-                        errType @?= DUCKDB_ERROR_INVALID
+                        errType @?= DuckDBErrorInvalid
 
                         c_duckdb_destroy_result resPtr

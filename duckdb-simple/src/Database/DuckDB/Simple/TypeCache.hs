@@ -77,11 +77,11 @@ without a CRS.
 -}
 cachedLogicalType :: TypeCache -> LogicalTypeRep -> IO DuckDBLogicalType
 cachedLogicalType cache = \case
-    LogicalTypeScalar DUCKDB_TYPE_VARIANT -> nativeTypes cache >>= copyLogicalType . nativeVariant
+    LogicalTypeScalar DuckDBTypeVariant -> nativeTypes cache >>= copyLogicalType . nativeVariant
     LogicalTypeGeometry (Just crs) -> do
         NativeTypes{nativeGeometry} <- nativeTypes cache
-        maybe (c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_GEOMETRY)) copyLogicalType (Map.lookup crs nativeGeometry)
-    LogicalTypeGeometry Nothing -> c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_GEOMETRY)
+        maybe (c_duckdb_create_logical_type (DuckDBType DuckDBTypeGeometry)) copyLogicalType (Map.lookup crs nativeGeometry)
+    LogicalTypeGeometry Nothing -> c_duckdb_create_logical_type (DuckDBType DuckDBTypeGeometry)
     other -> throwIO (userError ("duckdb-simple: the type cache cannot create " <> show other))
 
 {- | Get the native types. Read them on first use with a separate connection,

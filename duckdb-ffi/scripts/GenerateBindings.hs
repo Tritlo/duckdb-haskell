@@ -29,10 +29,16 @@ import HsBindgen.Backend.Hs.AST qualified as Hs
 import HsBindgen.Backend.Hs.Name qualified as Name
 import HsBindgen.Backend.Hs.Origin qualified as Origin
 import HsBindgen.Backend.Hs.Translation.Field qualified as Field
+import HsBindgen.Backend.HsModule.Render (render)
+import HsBindgen.Backend.HsModule.Translation (translateModuleSingle)
+import HsBindgen.Backend.HsModule.Translation.Doxygen (computeExportTags, resolveExports)
+import HsBindgen.Backend.SHs.AST qualified as Pattern (PatternSynonym (..))
+import HsBindgen.Backend.SHs.AST qualified as SHs
 import HsBindgen.BindingSpec (BindingSpecConfig (..))
 import HsBindgen.BindingSpec qualified as BindingSpec
 import HsBindgen.Config (Config_ (..), FieldNamingStrategy (..), UniqueId (..), toBindgenConfig)
 import HsBindgen.Config.ClangArgs
+import HsBindgen.Config.Internal qualified as Bindgen
 import HsBindgen.Frontend.Pass.Final (Final)
 import HsBindgen.Frontend.Pass.Parse.IsPass (Parse)
 import HsBindgen.Frontend.Pass.Parse.Result
@@ -98,12 +104,12 @@ generate scratchDirectory = do
     specification <- runBindgen target Nothing directives generationSpecification
     LBS.writeFile specificationPath (Aeson.encode specification)
     (bindings, result) <- runBindgen target (Just specificationPath) directives $ do
-        bindings <- getBindings def
+        bindings <- namedBindings
         checks <- getABIChecks
         pure (bindings, checks)
     (checks, functions) <- either die pure result
     forM_ ["aarch64-unknown-linux-gnu", "x86_64-apple-macos10.13", "arm64-apple-macos11", "native"] $ \otherTarget -> do
-        otherBindings <- runBindgen otherTarget (Just specificationPath) directives (getBindings def)
+        otherBindings <- runBindgen otherTarget (Just specificationPath) directives namedBindings
         unless (bindings == otherBindings) $
             die ("Generated bindings differ for " <> otherTarget)
     let probePath = scratchDirectory </> "abi.h"
@@ -120,6 +126,70 @@ generate scratchDirectory = do
     createDirectoryIfMissing True "src/Database/DuckDB"
     writeFile "src/Database/DuckDB/FFI.hs" bindings
     writeFile "cbits/abi-checks.c" (abiHeader <> unlines assertions)
+
+-- | Preserve enum names through the typed output and the normal module renderer.
+namedBindings :: Artefact l String
+namedBindings = do
+    name <- ModuleBaseName
+    headers <- RootDirectives
+    declarations <- FinalDecls
+    doxygen <- DoxygenA
+    nativeDeclarations <- getReifiedC
+    config <- getConfig
+    let patterns = [pattern'.name.text | (_, bindings) <- toList declarations, SHs.DPatternSynonym pattern' <- bindings]
+        renames = Map.fromList [(pattern', enumName pattern') | pattern' <- patterns]
+        rename value = Map.findWithDefault value value renames
+        tags = Map.mapKeys rename (computeExportTags doxygen nativeDeclarations)
+        named = fmap (\(wrappers, bindings) -> (wrappers, map (nameEnums rename) bindings)) declarations
+    unless (length patterns == Set.size (Set.fromList (Map.elems renames))) $
+        error "The public enum naming rules produce duplicate names."
+    pure $ render $ translateModuleSingle (config :: Bindgen.BindgenConfig).frontend.fieldNamingStrategy def headers name (resolveExports tags) named
+
+-- | Rename enum patterns and their conversion and sequence instances together.
+nameEnums :: (Text -> Text) -> SHs.SDecl -> SHs.SDecl
+nameEnums rename = \case
+    SHs.DPatternSynonym pattern' -> SHs.DPatternSynonym pattern'{Pattern.name = name pattern'.name}
+    SHs.DCompletePragma pragma -> SHs.DCompletePragma pragma{Hs.patterns = map name pragma.patterns}
+    SHs.DInst instance'
+        | instance'.clss `elem` [Inst.CEnum, Inst.SequentialCEnum] ->
+            SHs.DInst instance'{SHs.decs = [(method, expression body) | (method, body) <- instance'.decs]}
+    declaration -> declaration
+  where
+    name (UnsafeName value) = UnsafeName (rename value)
+    expression :: SHs.SExpr ctx -> SHs.SExpr ctx
+    expression = \case
+        SHs.EString value -> SHs.EString (Text.unpack (rename (Text.pack value)))
+        SHs.ECon value -> SHs.ECon (name value)
+        SHs.EApp function argument -> SHs.EApp (expression function) (expression argument)
+        SHs.EInfix operator left right -> SHs.EInfix operator (expression left) (expression right)
+        SHs.EUnusedLam body -> SHs.EUnusedLam (expression body)
+        SHs.EList values -> SHs.EList (map expression values)
+        value -> value
+
+-- | Derive public enum spellings without a table of individual constants.
+enumName :: Text -> Text
+enumName original = case Text.stripPrefix "DUCKDB_" original of
+    Nothing -> original
+    Just rest -> "DuckDB" <> Text.concat (map word (Text.splitOn "_" rest))
+  where
+    word value = Map.findWithDefault (Text.toTitle value) value spellings
+    spellings =
+        Map.fromList
+            [ ("TINYINT", "TinyInt")
+            , ("SMALLINT", "SmallInt")
+            , ("BIGINT", "BigInt")
+            , ("UTINYINT", "UTinyInt")
+            , ("USMALLINT", "USmallInt")
+            , ("UINTEGER", "UInteger")
+            , ("UBIGINT", "UBigInt")
+            , ("HUGEINT", "HugeInt")
+            , ("UHUGEINT", "UHugeInt")
+            , ("BIGNUM", "BigNum")
+            , ("SQLNULL", "SQLNull")
+            , ("UUID", "UUID")
+            , ("IO", "IO")
+            , ("HTTP", "HTTP")
+            ]
 
 -- | Name one enum constant in the native ABI probe.
 probeName :: Int -> String

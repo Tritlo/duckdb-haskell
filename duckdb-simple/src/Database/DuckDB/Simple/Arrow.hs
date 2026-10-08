@@ -18,8 +18,9 @@ separately. Moved contents remain valid after the query and connection close.
 Haskell consumers must mask asynchronous exceptions while moving a root and
 register its cleanup before restoring exceptions.
 
-This module uses the schema and chunk conversion API. The older query and scan
-functions in @Database.DuckDB.FFI@ are deprecated by DuckDB.
+This module uses the supported schema and chunk conversion functions.
+DuckDB deprecates older Arrow functions such as @c_duckdb_query_arrow@ and
+@c_duckdb_arrow_scan@. Both API groups are in @Database.DuckDB.FFI@.
 -}
 module Database.DuckDB.Simple.Arrow (
     foldArrow,

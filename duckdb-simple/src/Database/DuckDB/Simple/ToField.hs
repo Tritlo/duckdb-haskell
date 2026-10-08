@@ -514,7 +514,7 @@ fieldValueWithTypeDuckValue typeFromRep typeRep FieldNull =
                     checkedValue (c_duckdb_get_list_child list 0)
 fieldValueWithTypeDuckValue typeFromRep rep value =
     case rep of
-        LogicalTypeScalar DUCKDB_TYPE_VARIANT -> variantDuckValue typeFromRep value
+        LogicalTypeScalar DuckDBTypeVariant -> variantDuckValue typeFromRep value
         LogicalTypeScalar dtype -> scalarFieldValueDuckValue dtype value
         LogicalTypeGeometry _ ->
             case value of
@@ -576,40 +576,40 @@ fieldValueWithTypeDuckValue typeFromRep rep value =
 scalarFieldValueDuckValue :: DUCKDB_TYPE -> FieldValue -> IO DuckDBValue
 scalarFieldValueDuckValue dtype value =
     case (dtype, value) of
-        (DUCKDB_TYPE_BOOLEAN, FieldBool b) -> boolDuckValue b
-        (DUCKDB_TYPE_TINYINT, FieldInt8 i) -> int8DuckValue i
-        (DUCKDB_TYPE_SMALLINT, FieldInt16 i) -> int16DuckValue i
-        (DUCKDB_TYPE_INTEGER, FieldInt32 i) -> int32DuckValue i
-        (DUCKDB_TYPE_BIGINT, FieldInt64 i) -> int64DuckValue i
-        (DUCKDB_TYPE_UTINYINT, FieldWord8 w) -> uint8DuckValue w
-        (DUCKDB_TYPE_USMALLINT, FieldWord16 w) -> uint16DuckValue w
-        (DUCKDB_TYPE_UINTEGER, FieldWord32 w) -> uint32DuckValue w
-        (DUCKDB_TYPE_UBIGINT, FieldWord64 w) -> uint64DuckValue w
-        (DUCKDB_TYPE_FLOAT, FieldFloat f) -> floatDuckValue f
-        (DUCKDB_TYPE_DOUBLE, FieldDouble d) -> doubleDuckValue d
-        (DUCKDB_TYPE_VARCHAR, FieldText t) -> textDuckValue t
-        (DUCKDB_TYPE_BLOB, FieldBlob b) -> blobDuckValue b
-        (DUCKDB_TYPE_GEOMETRY, FieldGeometry{}) -> unsupportedRawGeometryBinding
-        (DUCKDB_TYPE_UUID, FieldUUID u) -> uuidDuckValue u
-        (DUCKDB_TYPE_BIT, FieldBit bits) -> bitDuckValue bits
-        (DUCKDB_TYPE_DATE, FieldDate d) -> dateDuckValue d
-        (DUCKDB_TYPE_TIME, FieldTime t) -> timeOfDayDuckValue t
-        (DUCKDB_TYPE_TIME_NS, FieldTime t) ->
+        (DuckDBTypeBoolean, FieldBool b) -> boolDuckValue b
+        (DuckDBTypeTinyInt, FieldInt8 i) -> int8DuckValue i
+        (DuckDBTypeSmallInt, FieldInt16 i) -> int16DuckValue i
+        (DuckDBTypeInteger, FieldInt32 i) -> int32DuckValue i
+        (DuckDBTypeBigInt, FieldInt64 i) -> int64DuckValue i
+        (DuckDBTypeUTinyInt, FieldWord8 w) -> uint8DuckValue w
+        (DuckDBTypeUSmallInt, FieldWord16 w) -> uint16DuckValue w
+        (DuckDBTypeUInteger, FieldWord32 w) -> uint32DuckValue w
+        (DuckDBTypeUBigInt, FieldWord64 w) -> uint64DuckValue w
+        (DuckDBTypeFloat, FieldFloat f) -> floatDuckValue f
+        (DuckDBTypeDouble, FieldDouble d) -> doubleDuckValue d
+        (DuckDBTypeVarchar, FieldText t) -> textDuckValue t
+        (DuckDBTypeBlob, FieldBlob b) -> blobDuckValue b
+        (DuckDBTypeGeometry, FieldGeometry{}) -> unsupportedRawGeometryBinding
+        (DuckDBTypeUUID, FieldUUID u) -> uuidDuckValue u
+        (DuckDBTypeBit, FieldBit bits) -> bitDuckValue bits
+        (DuckDBTypeDate, FieldDate d) -> dateDuckValue d
+        (DuckDBTypeTime, FieldTime t) -> timeOfDayDuckValue t
+        (DuckDBTypeTimeNs, FieldTime t) ->
             timeOfDayUnits 1000000000 t >>= c_duckdb_create_time_ns . DuckDBTimeNs . fromInteger
-        (DUCKDB_TYPE_TIME_TZ, FieldTimeTZ tz) -> timeWithZoneDuckValue tz
-        (DUCKDB_TYPE_TIMESTAMP, FieldTimestamp ts) -> localTimestampDuckValue ts
-        (DUCKDB_TYPE_TIMESTAMP_S, FieldTimestamp ts) ->
+        (DuckDBTypeTimeTz, FieldTimeTZ tz) -> timeWithZoneDuckValue tz
+        (DuckDBTypeTimestamp, FieldTimestamp ts) -> localTimestampDuckValue ts
+        (DuckDBTypeTimestampS, FieldTimestamp ts) ->
             encodeUnbounded (encodeTimestampUnits 1) ts >>= c_duckdb_create_timestamp_s . DuckDBTimestampS
-        (DUCKDB_TYPE_TIMESTAMP_MS, FieldTimestamp ts) ->
+        (DuckDBTypeTimestampMs, FieldTimestamp ts) ->
             encodeUnbounded (encodeTimestampUnits 1000) ts >>= c_duckdb_create_timestamp_ms . DuckDBTimestampMs
-        (DUCKDB_TYPE_TIMESTAMP_NS, FieldTimestamp ts) ->
+        (DuckDBTypeTimestampNs, FieldTimestamp ts) ->
             encodeUnbounded (encodeTimestampUnits 1000000000) ts >>= c_duckdb_create_timestamp_ns . DuckDBTimestampNs
-        (DUCKDB_TYPE_TIMESTAMP_TZ, FieldTimestampTZ ts) -> utcTimestampDuckValue ts
-        (DUCKDB_TYPE_INTERVAL, FieldInterval iv) -> intervalDuckValue iv
-        (DUCKDB_TYPE_HUGEINT, FieldHugeInt i) -> hugeIntDuckValue i
-        (DUCKDB_TYPE_UHUGEINT, FieldUHugeInt i) -> uhugeIntDuckValue i
-        (DUCKDB_TYPE_BIGNUM, FieldBigNum big) -> bigNumDuckValue big
-        (DUCKDB_TYPE_SQLNULL, _) -> nullDuckValue
+        (DuckDBTypeTimestampTz, FieldTimestampTZ ts) -> utcTimestampDuckValue ts
+        (DuckDBTypeInterval, FieldInterval iv) -> intervalDuckValue iv
+        (DuckDBTypeHugeInt, FieldHugeInt i) -> hugeIntDuckValue i
+        (DuckDBTypeUHugeInt, FieldUHugeInt i) -> uhugeIntDuckValue i
+        (DuckDBTypeBigNum, FieldBigNum big) -> bigNumDuckValue big
+        (DuckDBTypeSQLNull, _) -> nullDuckValue
         _ ->
             case value of
                 FieldNull -> nullDuckValue
@@ -718,7 +718,7 @@ through a one-element VARIANT list.
 variantDuckValue :: (LogicalTypeRep -> IO DuckDBLogicalType) -> FieldValue -> IO DuckDBValue
 variantDuckValue typeFromRep value = do
     (rep, payload) <- variantPayloadType value
-    bracket (typeFromRep (LogicalTypeScalar DUCKDB_TYPE_VARIANT)) destroyLogicalType \variantType ->
+    bracket (typeFromRep (LogicalTypeScalar DuckDBTypeVariant)) destroyLogicalType \variantType ->
         withCreatedValues [fieldValueWithTypeDuckValue typeFromRep rep payload] \values ->
             withDuckValues values \ptr ->
                 bracket (checkedValue (c_duckdb_create_list_value variantType ptr 1)) destroyValue \list ->
@@ -732,40 +732,40 @@ value and fit the native range.
 variantPayloadType :: FieldValue -> IO (LogicalTypeRep, FieldValue)
 variantPayloadType value = case value of
     FieldNull -> pure (variant, value)
-    FieldBool{} -> scalar DUCKDB_TYPE_BOOLEAN
-    FieldInt8{} -> scalar DUCKDB_TYPE_TINYINT
-    FieldInt16{} -> scalar DUCKDB_TYPE_SMALLINT
-    FieldInt32{} -> scalar DUCKDB_TYPE_INTEGER
-    FieldInt64{} -> scalar DUCKDB_TYPE_BIGINT
-    FieldWord8{} -> scalar DUCKDB_TYPE_UTINYINT
-    FieldWord16{} -> scalar DUCKDB_TYPE_USMALLINT
-    FieldWord32{} -> scalar DUCKDB_TYPE_UINTEGER
-    FieldWord64{} -> scalar DUCKDB_TYPE_UBIGINT
-    FieldHugeInt{} -> scalar DUCKDB_TYPE_HUGEINT
-    FieldUHugeInt{} -> scalar DUCKDB_TYPE_UHUGEINT
-    FieldFloat{} -> scalar DUCKDB_TYPE_FLOAT
-    FieldDouble{} -> scalar DUCKDB_TYPE_DOUBLE
+    FieldBool{} -> scalar DuckDBTypeBoolean
+    FieldInt8{} -> scalar DuckDBTypeTinyInt
+    FieldInt16{} -> scalar DuckDBTypeSmallInt
+    FieldInt32{} -> scalar DuckDBTypeInteger
+    FieldInt64{} -> scalar DuckDBTypeBigInt
+    FieldWord8{} -> scalar DuckDBTypeUTinyInt
+    FieldWord16{} -> scalar DuckDBTypeUSmallInt
+    FieldWord32{} -> scalar DuckDBTypeUInteger
+    FieldWord64{} -> scalar DuckDBTypeUBigInt
+    FieldHugeInt{} -> scalar DuckDBTypeHugeInt
+    FieldUHugeInt{} -> scalar DuckDBTypeUHugeInt
+    FieldFloat{} -> scalar DuckDBTypeFloat
+    FieldDouble{} -> scalar DuckDBTypeDouble
     FieldDecimal DecimalValue{decimalWidth, decimalScale} -> pure (LogicalTypeDecimal decimalWidth decimalScale, value)
-    FieldText{} -> scalar DUCKDB_TYPE_VARCHAR
-    FieldBlob{} -> scalar DUCKDB_TYPE_BLOB
-    FieldUUID{} -> scalar DUCKDB_TYPE_UUID
-    FieldDate{} -> scalar DUCKDB_TYPE_DATE
+    FieldText{} -> scalar DuckDBTypeVarchar
+    FieldBlob{} -> scalar DuckDBTypeBlob
+    FieldUUID{} -> scalar DuckDBTypeUUID
+    FieldDate{} -> scalar DuckDBTypeDate
     FieldTime time
-        | hasNanos time -> scalar DUCKDB_TYPE_TIME_NS
-        | otherwise -> scalar DUCKDB_TYPE_TIME
+        | hasNanos time -> scalar DuckDBTypeTimeNs
+        | otherwise -> scalar DuckDBTypeTime
     FieldTimestamp (Finite LocalTime{localDay, localTimeOfDay})
-        | hasNanos localTimeOfDay -> scalar DUCKDB_TYPE_TIMESTAMP_NS
-        | inFiniteRange (minBound :: Int64) maxBound micros -> scalar DUCKDB_TYPE_TIMESTAMP
-        | micros `rem` 1000 == 0 && inFiniteRange (minBound :: Int64) maxBound (micros `div` 1000) -> scalar DUCKDB_TYPE_TIMESTAMP_MS
-        | micros `rem` 1000000 == 0 && inFiniteRange (minBound :: Int64) maxBound (micros `div` 1000000) -> scalar DUCKDB_TYPE_TIMESTAMP_S
+        | hasNanos localTimeOfDay -> scalar DuckDBTypeTimestampNs
+        | inFiniteRange (minBound :: Int64) maxBound micros -> scalar DuckDBTypeTimestamp
+        | micros `rem` 1000 == 0 && inFiniteRange (minBound :: Int64) maxBound (micros `div` 1000) -> scalar DuckDBTypeTimestampMs
+        | micros `rem` 1000000 == 0 && inFiniteRange (minBound :: Int64) maxBound (micros `div` 1000000) -> scalar DuckDBTypeTimestampS
       where
         micros = diffDays localDay (fromGregorian 1970 1 1) * 86400 * 1000000 + diffTimeToPicoseconds (timeOfDayToTime localTimeOfDay) `div` 1000000
-    FieldTimestamp{} -> scalar DUCKDB_TYPE_TIMESTAMP
-    FieldTimestampTZ{} -> scalar DUCKDB_TYPE_TIMESTAMP_TZ
-    FieldTimeTZ{} -> scalar DUCKDB_TYPE_TIME_TZ
-    FieldInterval{} -> scalar DUCKDB_TYPE_INTERVAL
-    FieldBigNum{} -> scalar DUCKDB_TYPE_BIGNUM
-    FieldBit{} -> scalar DUCKDB_TYPE_BIT
+    FieldTimestamp{} -> scalar DuckDBTypeTimestamp
+    FieldTimestampTZ{} -> scalar DuckDBTypeTimestampTz
+    FieldTimeTZ{} -> scalar DuckDBTypeTimeTz
+    FieldInterval{} -> scalar DuckDBTypeInterval
+    FieldBigNum{} -> scalar DuckDBTypeBigNum
+    FieldBit{} -> scalar DuckDBTypeBit
     FieldList{} -> pure (LogicalTypeList variant, value)
     FieldArray items -> pure (LogicalTypeList variant, FieldList (elems items))
     FieldStruct structValue@StructValue{structValueTypes} -> do
@@ -779,7 +779,7 @@ variantPayloadType value = case value of
     FieldMap{} -> throwIO (userError "duckdb-simple: VARIANT payloads cannot contain MAP values")
     FieldEnum{} -> throwIO (userError "duckdb-simple: VARIANT payloads cannot contain ENUM values")
   where
-    variant = LogicalTypeScalar DUCKDB_TYPE_VARIANT
+    variant = LogicalTypeScalar DuckDBTypeVariant
     scalar dtype = pure (LogicalTypeScalar dtype, value)
     hasNanos time = snd (properFraction (todSec time * 1000000) :: (Integer, Pico)) /= 0
 

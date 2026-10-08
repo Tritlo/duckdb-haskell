@@ -62,7 +62,7 @@ getConfigOption conn name
         withClientContext conn \ctx ->
             TextForeign.withCString name \cName ->
                 alloca \scopePtr -> do
-                    poke scopePtr DUCKDB_CONFIG_OPTION_SCOPE_INVALID
+                    poke scopePtr DuckDBConfigOptionScopeInvalid
                     bracket
                         (c_duckdb_client_context_get_config_option ctx (ConstPtr cName) scopePtr)
                         destroyValue
@@ -84,7 +84,7 @@ getConfigOption conn name
                                             ConfigValue
                                                 { configValueText = rendered
                                                 , configValueScope =
-                                                    if scope == DUCKDB_CONFIG_OPTION_SCOPE_INVALID
+                                                    if scope == DuckDBConfigOptionScopeInvalid
                                                         then Nothing
                                                         else Just scope
                                                 }

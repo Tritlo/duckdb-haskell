@@ -43,7 +43,7 @@ sumAggregate =
         runInBoundThread do
             withDatabase \db ->
                 withConnection db \conn ->
-                    withLogicalType (c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_INTEGER)) \intType ->
+                    withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \intType ->
                         withAggregateFunction \aggFun ->
                             withCallbacks \cbs -> do
                                 setupAggregateFunction aggFun cbs intType "haskell_sum"
@@ -59,7 +59,7 @@ extraInfoAggregate =
             let config = defaultAggregateConfig{cfgBonus = 2}
             withDatabase \db ->
                 withConnection db \conn ->
-                    withLogicalType (c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_INTEGER)) \intType ->
+                    withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \intType ->
                         withAggregateConfig config \configPtr ->
                             withAggregateFunction \aggFun ->
                                 withCallbacks \cbs -> do
@@ -78,7 +78,7 @@ aggregateFunctionSet =
         runInBoundThread do
             withDatabase \db ->
                 withConnection db \conn ->
-                    withLogicalType (c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_INTEGER)) \intType ->
+                    withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \intType ->
                         withAggregateFunction \aggFun ->
                             withCallbacks \cbs -> do
                                 setupAggregateFunction aggFun cbs intType "haskell_sum_set"
@@ -98,7 +98,7 @@ aggregateErrorPropagation =
             let config = defaultAggregateConfig{cfgFailOnNegative = 1}
             withDatabase \db ->
                 withConnection db \conn ->
-                    withLogicalType (c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_INTEGER)) \intType ->
+                    withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \intType ->
                         withAggregateConfig config \configPtr ->
                             withAggregateFunction \aggFun ->
                                 withCallbacks \cbs -> do
@@ -124,7 +124,7 @@ specialHandlingNulls =
             let config = defaultAggregateConfig{cfgNullIfAllInvalid = 1}
             withDatabase \db ->
                 withConnection db \conn ->
-                    withLogicalType (c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_INTEGER)) \intType ->
+                    withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \intType ->
                         withAggregateConfig config \configPtr ->
                             withAggregateFunction \aggFun ->
                                 withCallbacks \cbs -> do

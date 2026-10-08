@@ -89,46 +89,46 @@ decoders. The caller checks validity.
 -}
 decodeElement :: DUCKDB_TYPE -> Ptr Void -> Int -> IO FieldValue
 decodeElement dtype dataPtr rowIdx = case dtype of
-    DUCKDB_TYPE_BOOLEAN -> do
+    DuckDBTypeBoolean -> do
         raw <- peekElemOff (castPtr dataPtr :: Ptr Word8) rowIdx
         pure (FieldBool (raw /= 0))
-    DUCKDB_TYPE_TINYINT -> FieldInt8 <$> peekElemOff (castPtr dataPtr) rowIdx
-    DUCKDB_TYPE_SMALLINT -> FieldInt16 <$> peekElemOff (castPtr dataPtr) rowIdx
-    DUCKDB_TYPE_INTEGER -> FieldInt32 <$> peekElemOff (castPtr dataPtr) rowIdx
-    DUCKDB_TYPE_BIGINT -> FieldInt64 <$> peekElemOff (castPtr dataPtr) rowIdx
-    DUCKDB_TYPE_UTINYINT -> FieldWord8 <$> peekElemOff (castPtr dataPtr) rowIdx
-    DUCKDB_TYPE_USMALLINT -> FieldWord16 <$> peekElemOff (castPtr dataPtr) rowIdx
-    DUCKDB_TYPE_UINTEGER -> FieldWord32 <$> peekElemOff (castPtr dataPtr) rowIdx
-    DUCKDB_TYPE_UBIGINT -> FieldWord64 <$> peekElemOff (castPtr dataPtr) rowIdx
-    DUCKDB_TYPE_FLOAT -> FieldFloat <$> peekElemOff (castPtr dataPtr) rowIdx
-    DUCKDB_TYPE_DOUBLE -> FieldDouble <$> peekElemOff (castPtr dataPtr) rowIdx
-    DUCKDB_TYPE_VARCHAR -> FieldText . TextEncoding.decodeUtf8 <$> chunkDecodeBlob dataPtr index
-    DUCKDB_TYPE_STRING_LITERAL -> FieldText . TextEncoding.decodeUtf8 <$> chunkDecodeBlob dataPtr index
-    DUCKDB_TYPE_BLOB -> FieldBlob <$> chunkDecodeBlob dataPtr index
-    DUCKDB_TYPE_UUID -> do
+    DuckDBTypeTinyInt -> FieldInt8 <$> peekElemOff (castPtr dataPtr) rowIdx
+    DuckDBTypeSmallInt -> FieldInt16 <$> peekElemOff (castPtr dataPtr) rowIdx
+    DuckDBTypeInteger -> FieldInt32 <$> peekElemOff (castPtr dataPtr) rowIdx
+    DuckDBTypeBigInt -> FieldInt64 <$> peekElemOff (castPtr dataPtr) rowIdx
+    DuckDBTypeUTinyInt -> FieldWord8 <$> peekElemOff (castPtr dataPtr) rowIdx
+    DuckDBTypeUSmallInt -> FieldWord16 <$> peekElemOff (castPtr dataPtr) rowIdx
+    DuckDBTypeUInteger -> FieldWord32 <$> peekElemOff (castPtr dataPtr) rowIdx
+    DuckDBTypeUBigInt -> FieldWord64 <$> peekElemOff (castPtr dataPtr) rowIdx
+    DuckDBTypeFloat -> FieldFloat <$> peekElemOff (castPtr dataPtr) rowIdx
+    DuckDBTypeDouble -> FieldDouble <$> peekElemOff (castPtr dataPtr) rowIdx
+    DuckDBTypeVarchar -> FieldText . TextEncoding.decodeUtf8 <$> chunkDecodeBlob dataPtr index
+    DuckDBTypeStringLiteral -> FieldText . TextEncoding.decodeUtf8 <$> chunkDecodeBlob dataPtr index
+    DuckDBTypeBlob -> FieldBlob <$> chunkDecodeBlob dataPtr index
+    DuckDBTypeUUID -> do
         DuckDBUHugeInt lower upperBiased <- peekElemOff (castPtr dataPtr :: Ptr DuckDBUHugeInt) rowIdx
         let upper = upperBiased `xor` (0x8000000000000000 :: Word64)
         pure (FieldUUID (UUID.fromWords64 (fromIntegral upper) lower))
-    DUCKDB_TYPE_DATE -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldDate . decodeDuckDBDate
-    DUCKDB_TYPE_TIME -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTime . decodeDuckDBTime
-    DUCKDB_TYPE_TIME_NS -> FieldTime . decodeDuckDBTimeNs <$> peekElemOff (castPtr dataPtr) rowIdx
-    DUCKDB_TYPE_TIME_TZ -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTimeTZ . decodeDuckDBTimeTz
-    DUCKDB_TYPE_TIMESTAMP -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTimestamp . decodeDuckDBTimestamp
-    DUCKDB_TYPE_TIMESTAMP_S -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTimestamp . decodeDuckDBTimestampSeconds
-    DUCKDB_TYPE_TIMESTAMP_MS -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTimestamp . decodeDuckDBTimestampMilliseconds
-    DUCKDB_TYPE_TIMESTAMP_NS -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTimestamp . decodeDuckDBTimestampNanoseconds
-    DUCKDB_TYPE_TIMESTAMP_TZ -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTimestampTZ . decodeDuckDBTimestampUTCTime
-    DUCKDB_TYPE_INTERVAL -> FieldInterval . intervalValueFromDuckDB <$> peekElemOff (castPtr dataPtr) rowIdx
-    DUCKDB_TYPE_HUGEINT -> FieldHugeInt . duckDBHugeIntToInteger <$> peekElemOff (castPtr dataPtr) rowIdx
-    DUCKDB_TYPE_UHUGEINT -> FieldUHugeInt . duckDBUHugeIntToInteger <$> peekElemOff (castPtr dataPtr) rowIdx
-    DUCKDB_TYPE_BIT -> FieldBit . bitStringFromBytes <$> chunkDecodeBlob dataPtr index
-    DUCKDB_TYPE_BIGNUM -> do
+    DuckDBTypeDate -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldDate . decodeDuckDBDate
+    DuckDBTypeTime -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTime . decodeDuckDBTime
+    DuckDBTypeTimeNs -> FieldTime . decodeDuckDBTimeNs <$> peekElemOff (castPtr dataPtr) rowIdx
+    DuckDBTypeTimeTz -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTimeTZ . decodeDuckDBTimeTz
+    DuckDBTypeTimestamp -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTimestamp . decodeDuckDBTimestamp
+    DuckDBTypeTimestampS -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTimestamp . decodeDuckDBTimestampSeconds
+    DuckDBTypeTimestampMs -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTimestamp . decodeDuckDBTimestampMilliseconds
+    DuckDBTypeTimestampNs -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTimestamp . decodeDuckDBTimestampNanoseconds
+    DuckDBTypeTimestampTz -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTimestampTZ . decodeDuckDBTimestampUTCTime
+    DuckDBTypeInterval -> FieldInterval . intervalValueFromDuckDB <$> peekElemOff (castPtr dataPtr) rowIdx
+    DuckDBTypeHugeInt -> FieldHugeInt . duckDBHugeIntToInteger <$> peekElemOff (castPtr dataPtr) rowIdx
+    DuckDBTypeUHugeInt -> FieldUHugeInt . duckDBUHugeIntToInteger <$> peekElemOff (castPtr dataPtr) rowIdx
+    DuckDBTypeBit -> FieldBit . bitStringFromBytes <$> chunkDecodeBlob dataPtr index
+    DuckDBTypeBigNum -> do
         bytes <- chunkDecodeBlob dataPtr index
         pure (FieldBigNum (BigNum (if BS.length bytes < 3 then 0 else fromBigNumBytes (BS.unpack bytes))))
-    DUCKDB_TYPE_INTEGER_LITERAL -> FieldInt64 <$> peekElemOff (castPtr dataPtr) rowIdx
-    DUCKDB_TYPE_INVALID ->
+    DuckDBTypeIntegerLiteral -> FieldInt64 <$> peekElemOff (castPtr dataPtr) rowIdx
+    DuckDBTypeInvalid ->
         error "duckdb-simple: INVALID type in eager result"
-    DUCKDB_TYPE_ANY ->
+    DuckDBTypeAny ->
         error "duckdb-simple: ANY columns should not appear in results"
     other ->
         error ("duckdb-simple: UNKNOWN type in eager result: " <> show other)

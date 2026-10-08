@@ -105,29 +105,29 @@ checkStruct logical fields = do
 -- | Check a LIST and its owned element descriptor.
 checkList :: (DuckDBLogicalType -> IO ()) -> DuckDBLogicalType -> IO ()
 checkList checkChild logical = do
-    expectType DUCKDB_TYPE_LIST logical
+    expectType DuckDBTypeList logical
     bracket (nonNull "list child type" (c_duckdb_list_type_child_type logical)) destroyLogicalType checkChild
 
 -- | Check the complete, unshredded four-child VARIANT schema.
 checkSchema :: DuckDBLogicalType -> IO ()
 checkSchema logical = do
-    expectType DUCKDB_TYPE_VARIANT logical
+    expectType DuckDBTypeVariant logical
     checkStruct
         logical
-        [ ("keys", checkList (expectType DUCKDB_TYPE_VARCHAR))
+        [ ("keys", checkList (expectType DuckDBTypeVarchar))
         ,
             ( "children"
             , checkList \child -> do
-                expectType DUCKDB_TYPE_STRUCT child
-                checkStruct child [("keys_index", expectType DUCKDB_TYPE_UINTEGER), ("values_index", expectType DUCKDB_TYPE_UINTEGER)]
+                expectType DuckDBTypeStruct child
+                checkStruct child [("keys_index", expectType DuckDBTypeUInteger), ("values_index", expectType DuckDBTypeUInteger)]
             )
         ,
             ( "values"
             , checkList \child -> do
-                expectType DUCKDB_TYPE_STRUCT child
-                checkStruct child [("type_id", expectType DUCKDB_TYPE_UTINYINT), ("byte_offset", expectType DUCKDB_TYPE_UINTEGER)]
+                expectType DuckDBTypeStruct child
+                checkStruct child [("type_id", expectType DuckDBTypeUTinyInt), ("byte_offset", expectType DuckDBTypeUInteger)]
             )
-        , ("data", expectType DUCKDB_TYPE_BLOB)
+        , ("data", expectType DuckDBTypeBlob)
         ]
 
 -- | Check an element index before native pointer arithmetic.
@@ -402,29 +402,29 @@ payloads have the memory layout of one vector element of the type.
 -}
 fixedWidthTag :: Word8 -> Maybe (DUCKDB_TYPE, Int)
 fixedWidthTag = \case
-    3 -> Just (DUCKDB_TYPE_TINYINT, 1)
-    4 -> Just (DUCKDB_TYPE_SMALLINT, 2)
-    5 -> Just (DUCKDB_TYPE_INTEGER, 4)
-    6 -> Just (DUCKDB_TYPE_BIGINT, 8)
-    7 -> Just (DUCKDB_TYPE_HUGEINT, 16)
-    8 -> Just (DUCKDB_TYPE_UTINYINT, 1)
-    9 -> Just (DUCKDB_TYPE_USMALLINT, 2)
-    10 -> Just (DUCKDB_TYPE_UINTEGER, 4)
-    11 -> Just (DUCKDB_TYPE_UBIGINT, 8)
-    12 -> Just (DUCKDB_TYPE_UHUGEINT, 16)
-    13 -> Just (DUCKDB_TYPE_FLOAT, 4)
-    14 -> Just (DUCKDB_TYPE_DOUBLE, 8)
-    18 -> Just (DUCKDB_TYPE_UUID, 16)
-    19 -> Just (DUCKDB_TYPE_DATE, 4)
-    20 -> Just (DUCKDB_TYPE_TIME, 8)
-    21 -> Just (DUCKDB_TYPE_TIME_NS, 8)
-    22 -> Just (DUCKDB_TYPE_TIMESTAMP_S, 8)
-    23 -> Just (DUCKDB_TYPE_TIMESTAMP_MS, 8)
-    24 -> Just (DUCKDB_TYPE_TIMESTAMP, 8)
-    25 -> Just (DUCKDB_TYPE_TIMESTAMP_NS, 8)
-    26 -> Just (DUCKDB_TYPE_TIME_TZ, 8)
-    27 -> Just (DUCKDB_TYPE_TIMESTAMP_TZ, 8)
-    28 -> Just (DUCKDB_TYPE_INTERVAL, 16)
+    3 -> Just (DuckDBTypeTinyInt, 1)
+    4 -> Just (DuckDBTypeSmallInt, 2)
+    5 -> Just (DuckDBTypeInteger, 4)
+    6 -> Just (DuckDBTypeBigInt, 8)
+    7 -> Just (DuckDBTypeHugeInt, 16)
+    8 -> Just (DuckDBTypeUTinyInt, 1)
+    9 -> Just (DuckDBTypeUSmallInt, 2)
+    10 -> Just (DuckDBTypeUInteger, 4)
+    11 -> Just (DuckDBTypeUBigInt, 8)
+    12 -> Just (DuckDBTypeUHugeInt, 16)
+    13 -> Just (DuckDBTypeFloat, 4)
+    14 -> Just (DuckDBTypeDouble, 8)
+    18 -> Just (DuckDBTypeUUID, 16)
+    19 -> Just (DuckDBTypeDate, 4)
+    20 -> Just (DuckDBTypeTime, 8)
+    21 -> Just (DuckDBTypeTimeNs, 8)
+    22 -> Just (DuckDBTypeTimestampS, 8)
+    23 -> Just (DuckDBTypeTimestampMs, 8)
+    24 -> Just (DuckDBTypeTimestamp, 8)
+    25 -> Just (DuckDBTypeTimestampNs, 8)
+    26 -> Just (DuckDBTypeTimeTz, 8)
+    27 -> Just (DuckDBTypeTimestampTz, 8)
+    28 -> Just (DuckDBTypeInterval, 16)
     _ -> Nothing
 
 -- | Copy a fixed-width payload to aligned memory and decode it as one element.

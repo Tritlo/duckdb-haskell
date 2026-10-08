@@ -60,10 +60,10 @@ extractPrepareAndExecuteSequence =
                                     case idx of
                                         0 -> do
                                             resultType <- (peek resPtr >>= \rawValue -> c_duckdb_result_return_type rawValue)
-                                            resultType @?= DUCKDB_RESULT_TYPE_NOTHING
+                                            resultType @?= DuckDBResultTypeNothing
                                         1 -> do
                                             resultType <- (peek resPtr >>= \rawValue -> c_duckdb_result_return_type rawValue)
-                                            resultType @?= DUCKDB_RESULT_TYPE_CHANGED_ROWS
+                                            resultType @?= DuckDBResultTypeChangedRows
                                         2 -> do
                                             rowCount <- c_duckdb_row_count resPtr
                                             rowCount @?= 1

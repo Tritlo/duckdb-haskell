@@ -104,7 +104,7 @@ testStringHelpers =
         inspectString (replicate 32 'x') False
   where
     inspectString text expectInline =
-        withLogicalType (c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_VARCHAR)) \varcharType ->
+        withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeVarchar)) \varcharType ->
             allocaArray 1 \typesPtr -> do
                 pokeElemOff typesPtr 0 varcharType
                 bracket

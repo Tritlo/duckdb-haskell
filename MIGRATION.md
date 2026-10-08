@@ -163,7 +163,7 @@ Consumers of release archives do not run the generator.
 | `c_duckdb_open` | `c_duckdb_open` |
 | `DuckDBConnection` | `DuckDBConnection`, a typed pointer newtype |
 | `DuckDBIdx` | `DuckDBIdx`, a `Word64` newtype |
-| `DuckDBTypeInteger` | `DUCKDB_TYPE_INTEGER` |
+| `DuckDBTypeInteger` in a native call | `DuckDBType DuckDBTypeInteger` |
 | `CString` for a const string | `ConstPtr CChar` |
 | Scalar temporal wrappers | Records such as `DuckDBDate` and `DuckDBTimestamp` |
 | Handwritten record selectors | Record fields through `OverloadedRecordDot` |
@@ -171,7 +171,7 @@ Consumers of release archives do not run the generator.
 
 The C typedef `duckdb_type` is a separate generated `DuckDBType` newtype around
 `DUCKDB_TYPE`. For example, create an INTEGER logical type with
-`c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_INTEGER)`.
+`c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)`.
 Unwrap `DuckDBType` when inspecting `c_duckdb_get_type_id`.
 Do not assume that a handle is a `Ptr ()` or compare it directly with `nullPtr`.
 Use its generated constructor, or its `unwrap` field where necessary.
@@ -185,18 +185,21 @@ Generated struct marshalling does not transfer ownership.
 ### Naming configuration
 
 The maintainer driver uses existing hs-bindgen 1.0 APIs. A naming rule derives
-`DuckDBFoo` names from C declarations and detects callbacks from type metadata.
+`DuckDBFoo` names from C declarations and detects callbacks from parsed types.
 It retains all 158 earlier type names with five spelling exceptions. Opaque
 pointee names end in `Struct`. Callback names end in `Fun` or `Callback`.
-The script supplies these names as prescriptive binding specifications.
+The driver supplies these names as prescriptive binding specifications.
 The `RenameTerm` category option adds `c_` to all 546 function names.
-Record and newtype constructors use the type names. Enum constants retain
-their header spellings. There is no alias module or name table.
+Record and newtype constructors use the type names. A small pass over typed
+output retains all 148 earlier enum pattern names. It updates enum conversion
+instances and sequence bounds with the patterns. It checks for duplicate names
+before the standard module renderer runs. There is no alias module or table of
+individual enum constants. C values, types, layouts, and wrappers do not change.
 
 ```haskell
 import Database.DuckDB.FFI
 
-integerType = c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_INTEGER)
+integerType = c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)
 ```
 
 `RenameTerm` runs after frontend identifier validation and collision detection.
@@ -209,6 +212,13 @@ Retained names do not preserve the previous representations. Handles and
 indexes use newtypes. Constant pointers use `ConstPtr`. Struct calls use generated
 records. Old record selectors, callback wrapper names, per-topic module paths,
 and NULL-default helpers are removed. Constructor field types can also change.
+
+The driver keeps the generated representations. Experiments with hs-bindgen
+1.0 accepted `typealias`, record-field, and constructor specifications but did
+not apply them to generated output. Giving the enum and its typedef the same
+Haskell name dropped dependent functions. The function coverage check rejected
+that output. Replacing generated wrappers and instances would add too much
+custom code to recover those parts of the old API.
 
 ### Const pointers and callbacks
 

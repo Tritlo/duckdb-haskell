@@ -46,7 +46,7 @@ chunkIntrospection =
                         assertBool "chunk count should be positive" (chunkCount > 0)
 
                         returnType <- (peek resPtr >>= \rawValue -> c_duckdb_result_return_type rawValue)
-                        returnType @?= DUCKDB_RESULT_TYPE_QUERY_RESULT
+                        returnType @?= DuckDBResultTypeQueryResult
 
                         streamingFlag <- (peek resPtr >>= \rawValue -> c_duckdb_result_is_streaming rawValue)
                         streamingFlag @?= CBool 0

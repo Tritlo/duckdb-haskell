@@ -162,120 +162,120 @@ class DuckValue a where
 
 instance DuckValue Variant where
     duckToField = variantPayload
-    duckLogicalType _ = LogicalTypeScalar DUCKDB_TYPE_VARIANT
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeVariant
 
 instance DuckValue Bool where
     duckToField = FieldBool
-    duckLogicalType _ = LogicalTypeScalar DUCKDB_TYPE_BOOLEAN
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeBoolean
 
 instance DuckValue Int where
     duckToField = FieldInt64 . fromIntegral
-    duckLogicalType _ = LogicalTypeScalar DUCKDB_TYPE_BIGINT
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeBigInt
 
 instance DuckValue Int8 where
     duckToField = FieldInt8
-    duckLogicalType _ = LogicalTypeScalar DUCKDB_TYPE_TINYINT
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeTinyInt
 
 instance DuckValue Int16 where
     duckToField = FieldInt16
-    duckLogicalType _ = LogicalTypeScalar DUCKDB_TYPE_SMALLINT
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeSmallInt
 
 instance DuckValue Int32 where
     duckToField = FieldInt32
-    duckLogicalType _ = LogicalTypeScalar DUCKDB_TYPE_INTEGER
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeInteger
 
 instance DuckValue Int64 where
     duckToField = FieldInt64
-    duckLogicalType _ = LogicalTypeScalar DUCKDB_TYPE_BIGINT
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeBigInt
 
 instance DuckValue Integer where
     duckToField = FieldHugeInt
-    duckLogicalType _ = LogicalTypeScalar DUCKDB_TYPE_HUGEINT
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeHugeInt
 
 instance DuckValue Natural where
     duckToField = FieldUHugeInt . toInteger
-    duckLogicalType _ = LogicalTypeScalar DUCKDB_TYPE_UHUGEINT
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeUHugeInt
 
 instance DuckValue Word where
     duckToField = FieldWord64 . fromIntegral
-    duckLogicalType _ = LogicalTypeScalar DUCKDB_TYPE_UBIGINT
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeUBigInt
 
 instance DuckValue Word8 where
     duckToField = FieldWord8
-    duckLogicalType _ = LogicalTypeScalar DUCKDB_TYPE_UTINYINT
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeUTinyInt
 
 instance DuckValue Word16 where
     duckToField = FieldWord16
-    duckLogicalType _ = LogicalTypeScalar DUCKDB_TYPE_USMALLINT
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeUSmallInt
 
 instance DuckValue Word32 where
     duckToField = FieldWord32
-    duckLogicalType _ = LogicalTypeScalar DUCKDB_TYPE_UINTEGER
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeUInteger
 
 instance DuckValue Word64 where
     duckToField = FieldWord64
-    duckLogicalType _ = LogicalTypeScalar DUCKDB_TYPE_UBIGINT
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeUBigInt
 
 instance DuckValue Float where
     duckToField = FieldFloat
-    duckLogicalType _ = LogicalTypeScalar DUCKDB_TYPE_FLOAT
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeFloat
 
 instance DuckValue Double where
     duckToField = FieldDouble
-    duckLogicalType _ = LogicalTypeScalar DUCKDB_TYPE_DOUBLE
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeDouble
 
 instance DuckValue Text where
     duckToField = FieldText
-    duckLogicalType _ = LogicalTypeScalar DUCKDB_TYPE_VARCHAR
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeVarchar
 
 instance DuckValue String where
     duckToField = FieldText . Text.pack
-    duckLogicalType _ = LogicalTypeScalar DUCKDB_TYPE_VARCHAR
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeVarchar
     duckFromField fv = Text.unpack <$> duckFromField fv
 
 instance DuckValue BS.ByteString where
     duckToField = FieldBlob
-    duckLogicalType _ = LogicalTypeScalar DUCKDB_TYPE_BLOB
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeBlob
 
 instance DuckValue Day where
     duckToField = FieldDate . Finite
-    duckLogicalType _ = LogicalTypeScalar DUCKDB_TYPE_DATE
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeDate
 
 instance DuckValue TimeOfDay where
     duckToField = FieldTime
-    duckLogicalType _ = LogicalTypeScalar DUCKDB_TYPE_TIME
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeTime
 
 instance DuckValue LocalTime where
     duckToField = FieldTimestamp . Finite
-    duckLogicalType _ = LogicalTypeScalar DUCKDB_TYPE_TIMESTAMP
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeTimestamp
 
 instance DuckValue UTCTime where
     duckToField = FieldTimestampTZ . Finite
-    duckLogicalType _ = LogicalTypeScalar DUCKDB_TYPE_TIMESTAMP_TZ
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeTimestampTz
 
 instance DuckValue (Unbounded Day) where
     duckToField = FieldDate
-    duckLogicalType _ = LogicalTypeScalar DUCKDB_TYPE_DATE
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeDate
 
 instance DuckValue (Unbounded LocalTime) where
     duckToField = FieldTimestamp
-    duckLogicalType _ = LogicalTypeScalar DUCKDB_TYPE_TIMESTAMP
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeTimestamp
 
 instance DuckValue (Unbounded UTCTime) where
     duckToField = FieldTimestampTZ
-    duckLogicalType _ = LogicalTypeScalar DUCKDB_TYPE_TIMESTAMP_TZ
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeTimestampTz
 
 instance DuckValue UUID.UUID where
     duckToField = FieldUUID
-    duckLogicalType _ = LogicalTypeScalar DUCKDB_TYPE_UUID
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeUUID
 
 instance DuckValue IntervalValue where
     duckToField = FieldInterval
-    duckLogicalType _ = LogicalTypeScalar DUCKDB_TYPE_INTERVAL
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeInterval
 
 instance DuckValue TimeWithZone where
     duckToField = FieldTimeTZ
-    duckLogicalType _ = LogicalTypeScalar DUCKDB_TYPE_TIME_TZ
+    duckLogicalType _ = LogicalTypeScalar DuckDBTypeTimeTz
 
 instance (DuckValue a) => DuckValue (Maybe a) where
     duckToField (Just x) = duckToField x
@@ -736,8 +736,3 @@ instance (Generic a, GFromField (Rep a), Typeable a) => FromField (ViaDuckDB a) 
             Right value -> pure (ViaDuckDB value)
             Left err ->
                 returnError ConversionFailed f (Text.pack err)
-
---------------------------------------------------------------------------------
--- DuckDB type constructors (re-exported patterns)
-
--- These pattern synonyms come from duckdb-ffi; re-exporting to avoid users having to import it.

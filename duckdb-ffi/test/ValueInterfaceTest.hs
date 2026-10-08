@@ -196,20 +196,20 @@ valueTypeReportsLogicalType =
     testCase "value type identifiers track constructors" $ do
         withDuckValue (c_duckdb_create_int32 42) \intVal -> do
             intType <- c_duckdb_get_value_type intVal
-            (fmap (getField @"unwrap") . c_duckdb_get_type_id) intType >>= (@?= DUCKDB_TYPE_INTEGER)
+            (fmap (getField @"unwrap") . c_duckdb_get_type_id) intType >>= (@?= DuckDBTypeInteger)
 
         withDuckValue (withConstCString "duckdb" c_duckdb_create_varchar) \strVal -> do
             strType <- c_duckdb_get_value_type strVal
-            (fmap (getField @"unwrap") . c_duckdb_get_type_id) strType >>= (@?= DUCKDB_TYPE_VARCHAR)
+            (fmap (getField @"unwrap") . c_duckdb_get_type_id) strType >>= (@?= DuckDBTypeVarchar)
 
-        listChild <- c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_INTEGER)
+        listChild <- c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)
         listLogical <- c_duckdb_create_list_type listChild
         elemVal <- c_duckdb_create_int32 7
         withArray [elemVal] \valuesArray -> do
             let count = fromIntegral (1 :: Int)
             withDuckValue (c_duckdb_create_list_value listChild valuesArray count) \listVal -> do
                 listType <- c_duckdb_get_value_type listVal
-                (fmap (getField @"unwrap") . c_duckdb_get_type_id) listType >>= (@?= DUCKDB_TYPE_LIST)
+                (fmap (getField @"unwrap") . c_duckdb_get_type_id) listType >>= (@?= DuckDBTypeList)
         destroyDuckValue elemVal
         destroyLogicalType listLogical
         destroyLogicalType listChild
@@ -218,7 +218,7 @@ collectionValuesRoundTrip :: TestTree
 collectionValuesRoundTrip =
     testCase "list/array/map/struct/enum/union constructors" $ do
         -- List value
-        listChild <- c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_INTEGER)
+        listChild <- c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)
         listLogical <- c_duckdb_create_list_type listChild
         listVal1 <- c_duckdb_create_int32 1
         listVal2 <- c_duckdb_create_int32 2
@@ -241,7 +241,7 @@ collectionValuesRoundTrip =
         destroyLogicalType listChild
 
         -- Array value
-        arrayChild <- c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_INTEGER)
+        arrayChild <- c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)
         arrayLogical <- c_duckdb_create_array_type arrayChild 2
         arrVal1 <- c_duckdb_create_int32 7
         arrVal2 <- c_duckdb_create_int32 8
@@ -258,8 +258,8 @@ collectionValuesRoundTrip =
         destroyLogicalType arrayChild
 
         -- Map value
-        keyType <- c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_VARCHAR)
-        valType <- c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_INTEGER)
+        keyType <- c_duckdb_create_logical_type (DuckDBType DuckDBTypeVarchar)
+        valType <- c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)
         mapLogical <- c_duckdb_create_map_type keyType valType
         keyValue <- withConstCString "key" c_duckdb_create_varchar
         valValue <- c_duckdb_create_int32 99
@@ -283,8 +283,8 @@ collectionValuesRoundTrip =
         destroyLogicalType valType
 
         -- Struct value
-        structInt <- c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_INTEGER)
-        structText <- c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_VARCHAR)
+        structInt <- c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)
+        structText <- c_duckdb_create_logical_type (DuckDBType DuckDBTypeVarchar)
         structLogical <-
             withMany withConstCString ["id", "name"] \namePtrs ->
                 withArray [structInt, structText] \typeArray ->
@@ -311,8 +311,8 @@ collectionValuesRoundTrip =
         destroyLogicalType enumLogical
 
         -- Union value
-        unionInt <- c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_INTEGER)
-        unionText <- c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_VARCHAR)
+        unionInt <- c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)
+        unionText <- c_duckdb_create_logical_type (DuckDBType DuckDBTypeVarchar)
         unionLogical <-
             withMany withConstCString ["int_member", "text_member"] \namePtrs ->
                 withArray [unionInt, unionText] \typeArray ->

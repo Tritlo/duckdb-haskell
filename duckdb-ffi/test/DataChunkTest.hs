@@ -65,7 +65,7 @@ dataChunkReset =
 -- Helpers -------------------------------------------------------------------
 
 withIntegerLogicalType :: (DuckDBLogicalType -> IO a) -> IO a
-withIntegerLogicalType = withLogicalType (c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_INTEGER))
+withIntegerLogicalType = withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger))
 
 withDataChunk :: IO DuckDBDataChunk -> (DuckDBDataChunk -> IO a) -> IO a
 withDataChunk acquire = bracket acquire destroyChunk
@@ -75,7 +75,7 @@ withDataChunk acquire = bracket acquire destroyChunk
 fillVectorWithSequence :: DuckDBVector -> [Int32] -> IO ()
 fillVectorWithSequence vec values = do
     colType <- c_duckdb_vector_get_column_type vec
-    withLogicalType (pure colType) ((fmap (getField @"unwrap") . c_duckdb_get_type_id) >=> (@?= DUCKDB_TYPE_INTEGER))
+    withLogicalType (pure colType) ((fmap (getField @"unwrap") . c_duckdb_get_type_id) >=> (@?= DuckDBTypeInteger))
     void (c_duckdb_vector_ensure_validity_writable vec)
     dataPtrRaw <- c_duckdb_vector_get_data vec
     let dataPtr = coerce dataPtrRaw :: Ptr Int32

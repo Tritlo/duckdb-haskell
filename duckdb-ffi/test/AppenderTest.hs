@@ -58,9 +58,9 @@ appenderRowwiseLifecycle =
 
                 withTableAppender conn "appender_demo" \app -> do
                     c_duckdb_appender_column_count app >>= (@?= 3)
-                    checkColumnType app 0 DUCKDB_TYPE_INTEGER
-                    checkColumnType app 1 DUCKDB_TYPE_VARCHAR
-                    checkColumnType app 2 DUCKDB_TYPE_BOOLEAN
+                    checkColumnType app 0 DuckDBTypeInteger
+                    checkColumnType app 1 DuckDBTypeVarchar
+                    checkColumnType app 2 DuckDBTypeBoolean
 
                     c_duckdb_appender_begin_row app >>= (@?= DuckDBSuccess)
                     c_duckdb_append_int32 app 1 >>= (@?= DuckDBSuccess)
@@ -157,8 +157,8 @@ appenderDataChunkInsert =
                 withTableAppenderExt conn "chunk_demo" \app -> do
                     c_duckdb_appender_column_count app >>= (@?= 2)
 
-                    withLogicalType (c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_INTEGER)) \intType ->
-                        withLogicalType (c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_VARCHAR)) \textType ->
+                    withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \intType ->
+                        withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeVarchar)) \textType ->
                             withArray [intType, textType] \typeArray ->
                                 withDataChunk (c_duckdb_create_data_chunk typeArray 2) \chunk -> do
                                     intVec <- c_duckdb_data_chunk_get_vector chunk 0
@@ -188,8 +188,8 @@ appenderQueryAppender =
             withConnection db \conn -> do
                 runStatement conn "CREATE TABLE query_target(id INTEGER, label VARCHAR)"
 
-                withLogicalType (c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_INTEGER)) \intType ->
-                    withLogicalType (c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_VARCHAR)) \textType -> do
+                withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \intType ->
+                    withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeVarchar)) \textType -> do
                         let types = [intType, textType]
                         withQueryAppender conn "INSERT INTO query_target SELECT * FROM appended_data" types \app -> do
                             c_duckdb_appender_column_count app >>= (@?= 2)
@@ -401,8 +401,8 @@ appenderChunkDefaults =
                 withTableAppender conn "chunk_defaults_demo" \app -> do
                     c_duckdb_appender_column_count app >>= (@?= 2)
 
-                    withLogicalType (c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_INTEGER)) \intType ->
-                        withLogicalType (c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_VARCHAR)) \textType ->
+                    withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \intType ->
+                        withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeVarchar)) \textType ->
                             withArray [intType, textType] \typeArray ->
                                 withDataChunk (c_duckdb_create_data_chunk typeArray 2) \chunk -> do
                                     intVec <- c_duckdb_data_chunk_get_vector chunk 0
@@ -450,7 +450,7 @@ appenderErrorDataInspection =
                     assertBool "error data indicates failure" (hasError /= 0)
 
                     errType <- c_duckdb_error_data_error_type errData
-                    errType @?= DUCKDB_ERROR_CONSTRAINT
+                    errType @?= DuckDBErrorConstraint
 
                     errMsgPtr <- c_duckdb_error_data_message errData
                     errMsg <- (peekCString . coerce) errMsgPtr

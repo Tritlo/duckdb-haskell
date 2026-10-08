@@ -53,7 +53,7 @@ preparedStatementMetadata =
 
                         paramType <- (getField @"unwrap" <$> c_duckdb_param_type stmt 0)
                         -- Physical type defaults to invalid until bound; logical type carries information.
-                        paramType @?= DUCKDB_TYPE_INVALID
+                        paramType @?= DuckDBTypeInvalid
 
                         logicalTypePtr <- c_duckdb_param_logical_type stmt 0
                         when (logicalTypePtr /= (coerce (nullPtr :: Ptr Void))) $ do
@@ -68,7 +68,7 @@ preparedStatementMetadata =
 
                         -- Statement type
                         stmtType <- c_duckdb_prepared_statement_type stmt
-                        stmtType @?= DUCKDB_STATEMENT_TYPE_SELECT
+                        stmtType @?= DuckDBStatementTypeSelect
 
                         -- Column metadata
                         colCount <- c_duckdb_prepared_statement_column_count stmt
@@ -79,7 +79,7 @@ preparedStatementMetadata =
                         colName @?= "value"
 
                         colType <- c_duckdb_prepared_statement_column_type stmt 0
-                        colType @?= DuckDBType DUCKDB_TYPE_INTEGER
+                        colType @?= DuckDBType DuckDBTypeInteger
 
                         colLogicalType <- c_duckdb_prepared_statement_column_logical_type stmt 0
                         assertBool "column logical type should not be null" (colLogicalType /= (coerce (nullPtr :: Ptr Void)))

@@ -67,7 +67,7 @@ arrowSchemaRoundtrip =
         withDatabase \db ->
             withConnection db \conn ->
                 withArrowOptions conn \arrowOpts ->
-                    withLogicalTypes [DUCKDB_TYPE_INTEGER, DUCKDB_TYPE_VARCHAR] \logicalTypes ->
+                    withLogicalTypes [DuckDBTypeInteger, DuckDBTypeVarchar] \logicalTypes ->
                         withArray logicalTypes \logicalArray ->
                             withColumnNames ["id", "label"] \nameArray ->
                                 withArrowSchema \schemaPtr -> do
@@ -95,7 +95,7 @@ arrowChunkRoundtrip =
         withDatabase \db ->
             withConnection db \conn ->
                 withArrowOptions conn \arrowOpts ->
-                    withLogicalTypes [DUCKDB_TYPE_INTEGER] \logicalTypes ->
+                    withLogicalTypes [DuckDBTypeInteger] \logicalTypes ->
                         withArray logicalTypes \logicalArray ->
                             withColumnNames ["val"] \nameArray ->
                                 withArrowSchema \schemaPtr -> do

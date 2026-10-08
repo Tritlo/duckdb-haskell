@@ -65,7 +65,7 @@ expressionFoldLiteral =
                 withExpressionFunction conn "expr_literal" \ExpressionHarness{ehFoldable, ehReturnType, ehFoldedValue, ehFoldError} -> do
                     withResult conn "SELECT expr_literal(42)" \_ -> pure ()
                     ehFoldable >>= (@?= Just True)
-                    ehReturnType >>= (@?= Just DUCKDB_TYPE_INTEGER)
+                    ehReturnType >>= (@?= Just DuckDBTypeInteger)
                     ehFoldedValue >>= (@?= Just "42")
                     ehFoldError >>= (@?= Nothing)
 
@@ -77,7 +77,7 @@ expressionNonFoldable =
                 withExpressionFunction conn "expr_non_foldable" \ExpressionHarness{ehFoldable, ehReturnType, ehFoldedValue, ehFoldError} -> do
                     withResult conn "SELECT expr_non_foldable(v) FROM (VALUES (7)) t(v)" \_ -> pure ()
                     ehFoldable >>= (@?= Just False)
-                    ehReturnType >>= (@?= Just DUCKDB_TYPE_INTEGER)
+                    ehReturnType >>= (@?= Just DuckDBTypeInteger)
                     ehFoldedValue >>= (@?= Nothing)
                     errMsg <- ehFoldError
                     assertBool "expected fold error message" $
@@ -95,7 +95,7 @@ withExpressionFunction conn funcName action = do
     result <-
         withScalarFunction $ \scalarFun -> do
             withConstCString funcName $ \name -> c_duckdb_scalar_function_set_name scalarFun name
-            withLogicalType (c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_INTEGER)) $ \intType -> do
+            withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) $ \intType -> do
                 c_duckdb_scalar_function_add_parameter scalarFun intType
                 c_duckdb_scalar_function_set_return_type scalarFun intType
                 c_duckdb_scalar_function_set_bind scalarFun bindPtr

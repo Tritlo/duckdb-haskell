@@ -1,0 +1,8 @@
+packages: .
+allow-newer: debruijn:base, skew-list:base
+
+package hs-bindgen-spike
+  ghc-options: -Wall -Werror
+
+package hs-bindgen
+  optimization: False

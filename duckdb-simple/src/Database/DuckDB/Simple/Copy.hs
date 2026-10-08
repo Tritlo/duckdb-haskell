@@ -20,7 +20,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
 import Data.Void (Void)
-import Database.DuckDB.FFI.Compat
+import Database.DuckDB.FFI
 import Database.DuckDB.Simple.Callback (runCallback, transferCallbackState, withCallbackResources)
 import Database.DuckDB.Simple.FromField (Field (..))
 import Database.DuckDB.Simple.Internal (Connection, destroyLogicalType, peekUtf8CString, throwRegistrationError, withConnectionHandle)
@@ -80,10 +80,10 @@ registerCopyToFunction conn name bindFn initFn sinkFn finalizeFn = do
         when (copyFun == DuckDBCopyFunction nullPtr) $ throwRegistrationError "allocate copy function"
         withCallbackResources
             ( \allocate -> do
-                copyBindPtr <- DuckDBCopyFunctionBindFun <$> allocate (toFunPtr (Duckdb_copy_function_bind_t_Aux (copyBindHandler bindFn)))
-                copyInitPtr <- DuckDBCopyFunctionGlobalInitFun <$> allocate (toFunPtr (Duckdb_copy_function_global_init_t_Aux (copyGlobalInitHandler initFn)))
-                copySinkPtr <- DuckDBCopyFunctionSinkFun <$> allocate (toFunPtr (Duckdb_copy_function_sink_t_Aux (copySinkHandler sinkFn)))
-                copyFinalizePtr <- DuckDBCopyFunctionFinalizeFun <$> allocate (toFunPtr (Duckdb_copy_function_finalize_t_Aux (copyFinalizeHandler finalizeFn)))
+                copyBindPtr <- DuckDBCopyFunctionBindFun <$> allocate (toFunPtr (DuckDBCopyFunctionBindFun_Aux (copyBindHandler bindFn)))
+                copyInitPtr <- DuckDBCopyFunctionGlobalInitFun <$> allocate (toFunPtr (DuckDBCopyFunctionGlobalInitFun_Aux (copyGlobalInitHandler initFn)))
+                copySinkPtr <- DuckDBCopyFunctionSinkFun <$> allocate (toFunPtr (DuckDBCopyFunctionSinkFun_Aux (copySinkHandler sinkFn)))
+                copyFinalizePtr <- DuckDBCopyFunctionFinalizeFun <$> allocate (toFunPtr (DuckDBCopyFunctionFinalizeFun_Aux (copyFinalizeHandler finalizeFn)))
                 pure CopyFunctionResources{copyBindPtr, copyInitPtr, copySinkPtr, copyFinalizePtr}
             )
             (c_duckdb_copy_function_set_extra_info copyFun)

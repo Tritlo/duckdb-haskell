@@ -25,19 +25,19 @@ createInspectDestroy :: TestTree
 createInspectDestroy =
     testCase "create error data, inspect properties, destroy" $
         withConstCString "synthetic failure" \message -> do
-            errData <- duckdb_create_error_data DUCKDB_ERROR_INVALID message
+            errData <- c_duckdb_create_error_data DUCKDB_ERROR_INVALID message
             assertBool "error data pointer should not be null" (errData /= (coerce (nullPtr :: Ptr Void)))
 
-            errType <- duckdb_error_data_error_type errData
+            errType <- c_duckdb_error_data_error_type errData
             errType @?= DUCKDB_ERROR_INVALID
 
-            retrievedMessagePtr <- duckdb_error_data_message errData
+            retrievedMessagePtr <- c_duckdb_error_data_message errData
             retrievedMessage <- (peekCString . coerce) retrievedMessagePtr
             retrievedMessage @?= "synthetic failure"
 
-            hasErr <- duckdb_error_data_has_error errData
+            hasErr <- c_duckdb_error_data_has_error errData
             hasErr @?= CBool 1
 
             alloca \ptr -> do
                 poke ptr errData
-                duckdb_destroy_error_data ptr
+                c_duckdb_destroy_error_data ptr

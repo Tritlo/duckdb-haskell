@@ -11,7 +11,7 @@ import Data.IORef (readIORef)
 import Data.Int (Int64)
 import Data.List (isInfixOf)
 import Data.Text (Text)
-import Database.DuckDB.FFI.Compat (c_duckdb_result_is_streaming)
+import Database.DuckDB.FFI (c_duckdb_result_is_streaming)
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (FieldValue)
 import Database.DuckDB.Simple.Internal (Statement (statementStream), StatementStream (statementStreamResult), StatementStreamState (..))

@@ -16,7 +16,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Void (Void)
 import Data.Word (Word16, Word32, Word64, Word8)
-import Database.DuckDB.FFI.Compat
+import Database.DuckDB.FFI
 import Database.DuckDB.Simple.Element (
     chunkDecodeBlob,
     chunkIsRowValid,

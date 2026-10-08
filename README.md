@@ -14,9 +14,8 @@ values, callback conversions, and C ABI wrappers before release.
 - Covers connections, prepared statements, result sets, vectors, logical types,
   appenders, and Arrow integration.
 - Exposes generated bindings in `Database.DuckDB.FFI`.
-- Uses C function names directly, such as `duckdb_open`.
-- Provides generated `DuckDBFoo` and `c_duckdb_*` aliases in
-  `Database.DuckDB.FFI.Compat`.
+- Keeps the `DuckDBFoo` type names and `c_duckdb_*` function names directly
+  in the generated API. Enum constants use their C header names.
 - Includes integration tests for the native bindings.
 - Supports DuckDB >= 1.5.3 and < 1.6, using the released 1.5.6 C header.
 
@@ -39,9 +38,15 @@ Maintainers regenerate the checked-in source with:
 nix-shell dev/nix/generate.nix --run 'duckdb-ffi/scripts/generate-bindings.sh'
 ```
 
+The script compiles and runs `GenerateBindings.hs` with the supported hs-bindgen
+1.0 API. Binding specifications set the type names and opaque handle pointees.
+`RenameTerm` adds the `c_` function prefix. The generator and libclang stay in
+the maintainer shell.
+
+The release ships two generated files: `FFI.hs` and `abi-checks.c`.
 The script compares generation for Linux x86_64/aarch64 and macOS x86_64/ARM64.
-The generated layouts are identical on these targets. C static assertions check
-the compiler's sizes, alignments, and field offsets during each package build.
+The generated layouts are identical on these targets. During each package build,
+508 C static assertions check sizes, alignments, and field offsets.
 An incompatible target fails compilation. Use `--check` to check committed output.
 See [MIGRATION.md](MIGRATION.md#duckdb-ffi-migration) for raw API changes.
 

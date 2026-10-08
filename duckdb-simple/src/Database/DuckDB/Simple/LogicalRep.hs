@@ -30,7 +30,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word16, Word64, Word8)
-import Database.DuckDB.FFI.Compat
+import Database.DuckDB.FFI
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.Types (CChar)
 import Foreign.Marshal.Alloc (alloca)

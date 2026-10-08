@@ -69,8 +69,8 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.Foreign as TextForeign
-import Database.DuckDB.FFI.Compat (DUCKDB_TYPE, DuckDBClientContext, DuckDBConnection, DuckDBDataChunk, DuckDBDatabase, DuckDBErrorType, DuckDBPreparedStatement, DuckDBResult, DuckDBState, DuckDBValue, c_duckdb_connection_get_client_context, c_duckdb_destroy_client_context, c_duckdb_destroy_data_chunk, c_duckdb_destroy_result, c_duckdb_destroy_value, c_duckdb_execute_prepared, c_duckdb_execute_prepared_streaming, c_duckdb_fetch_chunk, c_duckdb_interrupt, c_duckdb_prepare_error, c_duckdb_result_error, c_duckdb_result_error_type, pattern DuckDBDataChunk, pattern DuckDBErrorInvalid, pattern DuckDBSuccess)
-import qualified Database.DuckDB.FFI.Compat as FFI
+import Database.DuckDB.FFI (DUCKDB_TYPE, DuckDBClientContext, DuckDBConnection, DuckDBDataChunk (..), DuckDBDatabase, DuckDBErrorType, DuckDBPreparedStatement, DuckDBResult, DuckDBState, DuckDBValue, c_duckdb_connection_get_client_context, c_duckdb_destroy_client_context, c_duckdb_destroy_data_chunk, c_duckdb_destroy_result, c_duckdb_destroy_value, c_duckdb_execute_prepared, c_duckdb_execute_prepared_streaming, c_duckdb_fetch_chunk, c_duckdb_interrupt, c_duckdb_prepare_error, c_duckdb_result_error, c_duckdb_result_error_type, pattern DUCKDB_ERROR_INVALID, pattern DuckDBSuccess)
+import qualified Database.DuckDB.FFI as FFI
 import Database.DuckDB.Simple.FromField (FieldValue)
 import Database.DuckDB.Simple.LogicalRep (destroyLogicalType)
 import Database.DuckDB.Simple.TypeCache (TypeCache)
@@ -342,7 +342,7 @@ fetchResultError resultPtr = do
             then pure (Text.pack "duckdb-simple: query failed")
             else peekUtf8CString msgPtr
     errorType <- c_duckdb_result_error_type resultPtr
-    pure (message, if errorType == DuckDBErrorInvalid then Nothing else Just errorType)
+    pure (message, if errorType == DUCKDB_ERROR_INVALID then Nothing else Just errorType)
 
 -- | Attach the query and native error category to an execution error.
 mkExecuteError :: Query -> Text -> Maybe DuckDBErrorType -> SQLError

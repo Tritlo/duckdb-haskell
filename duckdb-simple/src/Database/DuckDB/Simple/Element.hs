@@ -27,7 +27,7 @@ import Data.Time.LocalTime (TimeOfDay (..), minutesToTimeZone, utc, utcToLocalTi
 import qualified Data.UUID as UUID
 import Data.Void (Void)
 import Data.Word (Word64, Word8)
-import Database.DuckDB.FFI.Compat
+import Database.DuckDB.FFI
 import Database.DuckDB.Simple.FromField (
     BigNum (..),
     BitString (..),

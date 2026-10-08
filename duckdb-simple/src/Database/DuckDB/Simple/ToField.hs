@@ -43,7 +43,7 @@ import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds)
 import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), TimeZone (..), timeOfDayToTime, timeZoneMinutes, utc, utcToLocalTime)
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
-import Database.DuckDB.FFI.Compat
+import Database.DuckDB.FFI
 import Database.DuckDB.Simple.FromField (BigNum (..), BitString (..), DecimalValue (..), FieldValue (..), IntervalValue (..), TimeWithZone (..), toBigNumBytes)
 import Database.DuckDB.Simple.Internal (
     SQLError (..),
@@ -91,7 +91,7 @@ data FieldBinding = FieldBinding
     , fieldBindingDisplay :: !String
     }
 
--- | Low-level class for values that can be marshalled directly into `Duckdb_value`s.
+-- | Low-level class for values that can be marshalled directly into `DuckDBValue`s.
 class (DuckDBColumnType a) => ToDuckValue a where
     -- | Convert a Haskell value into an owned DuckDB boxed value.
     toDuckValue :: a -> IO DuckDBValue
@@ -425,7 +425,7 @@ localTimestampDuckValue value =
 -- | Bind a timestamp with a time zone, including infinity.
 utcTimestampDuckValue :: UTCTimestamp -> IO DuckDBValue
 utcTimestampDuckValue value =
-    encodeUnbounded (encodeTimestampUnits 1000000 . utcToLocalTime utc) value >>= c_duckdb_create_timestamp_tz . Duckdb_timestamp
+    encodeUnbounded (encodeTimestampUnits 1000000 . utcToLocalTime utc) value >>= c_duckdb_create_timestamp_tz . DuckDBTimestamp
 
 {- | Build an array value with a function for each element. A scalar element
 type comes from the column type name of the element, so an empty array keeps

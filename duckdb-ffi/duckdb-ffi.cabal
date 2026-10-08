@@ -30,7 +30,8 @@ extra-source-files:
   cbits/duckdb_arrow.h
   scripts/binding-metadata.py
   scripts/generate-bindings.sh
-  scripts/legacy-names.json
+  scripts/GenerateBindings.hs
+  scripts/type-names.json
 
 source-repository head
   type: git
@@ -59,7 +60,6 @@ library
 
   exposed-modules:
     Database.DuckDB.FFI
-    Database.DuckDB.FFI.Compat
 
   include-dirs: cbits/
   install-includes:

@@ -24,7 +24,7 @@ import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), minutesToTimeZone, utc, utcToLocalTime)
 import Data.Void (Void)
 import Data.Word (Word16, Word32, Word8)
-import Database.DuckDB.FFI.Compat
+import Database.DuckDB.FFI
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (BitString (..), DecimalValue (..), FieldValue (..), TimeWithZone (..), bsFromBool)
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..), genericFromFieldValue, genericToStructValue)

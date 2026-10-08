@@ -51,16 +51,16 @@ queryArrowExposesSchemaAndArrays =
         withDatabase \db ->
             withConnection db \conn ->
                 withSuccessfulArrow conn "SELECT 1::INTEGER AS id, 'duck'::VARCHAR AS label" \arrow -> do
-                    columnCount <- duckdb_arrow_column_count arrow
+                    columnCount <- c_duckdb_arrow_column_count arrow
                     columnCount @?= 2
 
-                    rowCount <- duckdb_arrow_row_count arrow
+                    rowCount <- c_duckdb_arrow_row_count arrow
                     rowCount @?= 1
 
-                    rowsChanged <- duckdb_arrow_rows_changed arrow
+                    rowsChanged <- c_duckdb_arrow_rows_changed arrow
                     rowsChanged @?= 0
 
-                    errPtr <- duckdb_query_arrow_error arrow
+                    errPtr <- c_duckdb_query_arrow_error arrow
                     when (errPtr /= (coerce (nullPtr :: Ptr Void))) $ do
                         errMsg <- (peekCString . coerce) errPtr
                         errMsg @?= ""
@@ -77,18 +77,18 @@ queryArrowReportsErrors =
                 withConstCString "SELECT * FROM missing_table" \querySql ->
                     alloca \arrowPtr -> do
                         poke arrowPtr (coerce (nullPtr :: Ptr Void))
-                        state <- duckdb_query_arrow conn querySql arrowPtr
+                        state <- c_duckdb_query_arrow conn querySql arrowPtr
                         state @?= DuckDBError
 
                         arrow <- peek arrowPtr
                         assertBool "arrow result should still be allocated on error" (arrow /= (coerce (nullPtr :: Ptr Void)))
 
-                        errPtr <- duckdb_query_arrow_error arrow
+                        errPtr <- c_duckdb_query_arrow_error arrow
                         assertBool "error message should be present" (errPtr /= (coerce (nullPtr :: Ptr Void)))
                         errMsg <- (peekCString . coerce) errPtr
                         assertBool "error message should mention missing_table" ("missing_table" `isInfixOf` errMsg)
 
-                        duckdb_destroy_arrow arrowPtr
+                        c_duckdb_destroy_arrow arrowPtr
 
 -- prepared statements -------------------------------------------------------
 
@@ -102,7 +102,7 @@ preparedArrowSchemaMatchesStatement =
                         poke schemaStorage zeroArrowSchema
                         alloca \schemaOut -> do
                             poke schemaOut (coerce schemaStorage)
-                            duckdb_prepared_arrow_schema stmt schemaOut >>= (@?= DuckDBSuccess)
+                            c_duckdb_prepared_arrow_schema stmt schemaOut >>= (@?= DuckDBSuccess)
                             schema <- peek schemaStorage
                             (getField @"n_children") schema @?= 2
                             children <- mapM (peekElemOff ((getField @"children") schema) >=> peek) [0, 1]
@@ -116,13 +116,13 @@ executePreparedArrowProducesRows =
         withDatabase \db ->
             withConnection db \conn ->
                 withPrepared conn "SELECT ?::INTEGER + 5 AS computed" \stmt -> do
-                    duckdb_bind_int32 stmt 1 (5 :: Int32) >>= (@?= DuckDBSuccess)
+                    c_duckdb_bind_int32 stmt 1 (5 :: Int32) >>= (@?= DuckDBSuccess)
 
                     withPreparedArrow stmt \arrow -> do
-                        rowCount <- duckdb_arrow_row_count arrow
+                        rowCount <- c_duckdb_arrow_row_count arrow
                         rowCount @?= 1
 
-                        colCount <- duckdb_arrow_column_count arrow
+                        colCount <- c_duckdb_arrow_column_count arrow
                         colCount @?= 1
 
 -- result conversion ---------------------------------------------------------
@@ -140,19 +140,19 @@ resultArrowArrayMirrorsChunk =
                 execStatement conn "INSERT INTO arrow_chunks VALUES (10, 'ten'), (11, 'eleven');"
 
                 withResult conn "SELECT id, label FROM arrow_chunks ORDER BY id" \resPtr -> do
-                    chunk <- (peek resPtr >>= \rawValue -> duckdb_result_get_chunk rawValue 0)
+                    chunk <- (peek resPtr >>= \rawValue -> c_duckdb_result_get_chunk rawValue 0)
                     assertBool "fetch_chunk returned a null chunk" (chunk /= (coerce (nullPtr :: Ptr Void)))
-                    chunkSize <- duckdb_data_chunk_get_size chunk
-                    chunkCols <- duckdb_data_chunk_get_column_count chunk
+                    chunkSize <- c_duckdb_data_chunk_get_size chunk
+                    chunkCols <- c_duckdb_data_chunk_get_column_count chunk
 
                     alloca \arrowArrayPtr -> do
                         poke arrowArrayPtr zeroArrowArray
-                        let duckArray :: Duckdb_arrow_array
+                        let duckArray :: DuckDBArrowArray
                             duckArray = coerce arrowArrayPtr
 
                         alloca \arrayOut -> do
                             poke arrayOut duckArray
-                            (peek resPtr >>= \rawValue -> duckdb_result_arrow_array rawValue chunk arrayOut)
+                            (peek resPtr >>= \rawValue -> c_duckdb_result_arrow_array rawValue chunk arrayOut)
 
                             array <- peek arrowArrayPtr
 
@@ -175,10 +175,10 @@ arrowRowsChangedReflectsMutations =
                 execStatement conn "CREATE TABLE arrow_changes(val INTEGER);"
 
                 withSuccessfulArrow conn "INSERT INTO arrow_changes VALUES (1), (2), (3)" \arrow -> do
-                    rowCount <- duckdb_arrow_row_count arrow
+                    rowCount <- c_duckdb_arrow_row_count arrow
                     assertBool "modification result should not report negative rows" (rowCount >= 0)
 
-                    changed <- duckdb_arrow_rows_changed arrow
+                    changed <- c_duckdb_arrow_rows_changed arrow
                     assertBool "rows_changed should report positive count" (changed > 0)
 
 -- arrow scans ----------------------------------------------------------------
@@ -198,34 +198,34 @@ arrowArrayScanRegistersView =
                 withSuccessfulArrow conn "SELECT i, label FROM arrow_scan_source ORDER BY i" \arrow -> do
                     alloca \schemaStorage -> do
                         poke schemaStorage zeroArrowSchema
-                        let schemaHandle = coerce schemaStorage :: Duckdb_arrow_schema
+                        let schemaHandle = coerce schemaStorage :: DuckDBArrowSchema
                         alloca \schemaOut -> do
                             poke schemaOut schemaHandle
-                            schemaState <- duckdb_query_arrow_schema arrow schemaOut
+                            schemaState <- c_duckdb_query_arrow_schema arrow schemaOut
                             schemaState @?= DuckDBSuccess
 
                             alloca \arrayStorage -> do
                                 poke arrayStorage zeroArrowArray
-                                let arrayHandle = coerce arrayStorage :: Duckdb_arrow_array
+                                let arrayHandle = coerce arrayStorage :: DuckDBArrowArray
                                 alloca \arrayOut -> do
                                     poke arrayOut arrayHandle
-                                    arrayState <- duckdb_query_arrow_array arrow arrayOut
+                                    arrayState <- c_duckdb_query_arrow_array arrow arrayOut
                                     arrayState @?= DuckDBSuccess
 
                                     withConstCString "arrow_array_view" \viewName ->
                                         alloca \streamOut -> do
                                             poke streamOut (coerce (nullPtr :: Ptr Void))
-                                            scanState <- duckdb_arrow_array_scan conn viewName schemaHandle arrayHandle streamOut
+                                            scanState <- c_duckdb_arrow_array_scan conn viewName schemaHandle arrayHandle streamOut
                                             scanState @?= DuckDBSuccess
 
                                             streamWrapper <- peek streamOut
                                             assertBool "arrow_array_scan returned a null stream handle" (streamWrapper /= (coerce (nullPtr :: Ptr Void)))
 
                                             withResult conn "SELECT COUNT(*) FROM arrow_array_view" \resPtr -> do
-                                                count <- duckdb_value_int64 resPtr 0 0
+                                                count <- c_duckdb_value_int64 resPtr 0 0
                                                 count @?= 2
 
-                                            duckdb_destroy_arrow_stream streamOut
+                                            c_duckdb_destroy_arrow_stream streamOut
                                     releaseArrowArray arrayStorage
                         releaseArrowSchema schemaStorage
 
@@ -246,40 +246,40 @@ arrowStreamScanRegistersView =
                         finally
                             ( do
                                 poke schemaStorage zeroArrowSchema
-                                let schemaHandle = coerce schemaStorage :: Duckdb_arrow_schema
+                                let schemaHandle = coerce schemaStorage :: DuckDBArrowSchema
                                 alloca \schemaOut -> do
                                     poke schemaOut schemaHandle
-                                    schemaState <- duckdb_query_arrow_schema arrow schemaOut
+                                    schemaState <- c_duckdb_query_arrow_schema arrow schemaOut
                                     schemaState @?= DuckDBSuccess
 
                                     alloca \arrayStorage ->
                                         finally
                                             ( do
                                                 poke arrayStorage zeroArrowArray
-                                                let arrayHandle = coerce arrayStorage :: Duckdb_arrow_array
+                                                let arrayHandle = coerce arrayStorage :: DuckDBArrowArray
                                                 alloca \arrayOut -> do
                                                     poke arrayOut arrayHandle
-                                                    arrayState <- duckdb_query_arrow_array arrow arrayOut
+                                                    arrayState <- c_duckdb_query_arrow_array arrow arrayOut
                                                     arrayState @?= DuckDBSuccess
 
                                                     withConstCString "arrow_stream_array_view" \sourceView ->
                                                         alloca \streamOut -> do
                                                             poke streamOut (coerce (nullPtr :: Ptr Void))
-                                                            arrayScanState <- duckdb_arrow_array_scan conn sourceView schemaHandle arrayHandle streamOut
+                                                            arrayScanState <- c_duckdb_arrow_array_scan conn sourceView schemaHandle arrayHandle streamOut
                                                             arrayScanState @?= DuckDBSuccess
 
                                                             streamHandle <- peek streamOut
                                                             assertBool "arrow_array_scan returned a null stream" (streamHandle /= (coerce (nullPtr :: Ptr Void)))
 
                                                             withConstCString "arrow_stream_view" \streamView -> do
-                                                                streamScanState <- duckdb_arrow_scan conn streamView streamHandle
+                                                                streamScanState <- c_duckdb_arrow_scan conn streamView streamHandle
                                                                 streamScanState @?= DuckDBSuccess
 
                                                             withResult conn "SELECT COUNT(*) FROM arrow_stream_view" \resPtr -> do
-                                                                count <- duckdb_value_int64 resPtr 0 0
+                                                                count <- c_duckdb_value_int64 resPtr 0 0
                                                                 count @?= 2
 
-                                                            duckdb_destroy_arrow_stream streamOut
+                                                            c_duckdb_destroy_arrow_stream streamOut
                                             )
                                             (releaseArrowArray arrayStorage)
                             )
@@ -293,22 +293,22 @@ arrowStructMovesPreserveOwnership =
                 withSuccessfulArrow conn "SELECT 42::BIGINT AS id, 'duck' AS label" \arrow ->
                     alloca \schemaStorage -> do
                         poke schemaStorage zeroArrowSchema
-                        let schemaHandle = coerce schemaStorage :: Duckdb_arrow_schema
+                        let schemaHandle = coerce schemaStorage :: DuckDBArrowSchema
                         alloca \schemaOut -> do
                             poke schemaOut schemaHandle
-                            duckdb_query_arrow_schema arrow schemaOut >>= (@?= DuckDBSuccess)
+                            c_duckdb_query_arrow_schema arrow schemaOut >>= (@?= DuckDBSuccess)
 
                         alloca \arrayStorage -> do
                             poke arrayStorage zeroArrowArray
-                            let arrayHandle = coerce arrayStorage :: Duckdb_arrow_array
+                            let arrayHandle = coerce arrayStorage :: DuckDBArrowArray
                             alloca \arrayOut -> do
                                 poke arrayOut arrayHandle
-                                duckdb_query_arrow_array arrow arrayOut >>= (@?= DuckDBSuccess)
+                                c_duckdb_query_arrow_array arrow arrayOut >>= (@?= DuckDBSuccess)
 
                             withConstCString "arrow_helper_view" \viewName ->
                                 alloca \streamOut -> do
                                     poke streamOut (coerce (nullPtr :: Ptr Void))
-                                    duckdb_arrow_array_scan conn viewName schemaHandle arrayHandle streamOut >>= (@?= DuckDBSuccess)
+                                    c_duckdb_arrow_array_scan conn viewName schemaHandle arrayHandle streamOut >>= (@?= DuckDBSuccess)
                                     stream <- peek streamOut
 
                                     original <- peek (coerce stream :: Ptr ArrowArrayStream)
@@ -336,7 +336,7 @@ arrowStructMovesPreserveOwnership =
                                         fromFunPtr ((getField @"release") original) movedStream
                                         moved <- peek movedStream
                                         (getField @"release") moved @?= (coerce (nullFunPtr :: FunPtr Void))
-                                    duckdb_destroy_arrow_stream streamOut
+                                    c_duckdb_destroy_arrow_stream streamOut
                                     peek streamOut >>= (@?= (coerce (nullPtr :: Ptr Void)))
 
                             originalArray <- peek arrayStorage
@@ -455,60 +455,60 @@ validateChunkChildren array = do
             [0 .. rowCount - 1]
     labels @?= expectedLabels
 
-withSuccessfulArrow :: Duckdb_connection -> String -> (Duckdb_arrow -> IO a) -> IO a
+withSuccessfulArrow :: DuckDBConnection -> String -> (DuckDBArrow -> IO a) -> IO a
 withSuccessfulArrow conn sql action =
     withConstCString sql \sqlPtr ->
         alloca \arrowPtr ->
             bracket
                 ( do
                     poke arrowPtr (coerce (nullPtr :: Ptr Void))
-                    state <- duckdb_query_arrow conn sqlPtr arrowPtr
+                    state <- c_duckdb_query_arrow conn sqlPtr arrowPtr
                     state @?= DuckDBSuccess
                     arrow <- peek arrowPtr
                     assertBool "duckdb_query_arrow returned null result" (arrow /= (coerce (nullPtr :: Ptr Void)))
                     pure arrow
                 )
-                (\_ -> duckdb_destroy_arrow arrowPtr)
+                (\_ -> c_duckdb_destroy_arrow arrowPtr)
                 action
 
-withPrepared :: Duckdb_connection -> String -> (Duckdb_prepared_statement -> IO a) -> IO a
+withPrepared :: DuckDBConnection -> String -> (DuckDBPreparedStatement -> IO a) -> IO a
 withPrepared conn sql action =
     withConstCString sql \sqlPtr ->
         alloca \stmtPtr ->
             bracket
                 ( do
-                    state <- duckdb_prepare conn sqlPtr stmtPtr
+                    state <- c_duckdb_prepare conn sqlPtr stmtPtr
                     state @?= DuckDBSuccess
                     stmt <- peek stmtPtr
                     assertBool "prepare should produce a statement" (stmt /= (coerce (nullPtr :: Ptr Void)))
                     pure stmt
                 )
-                (\_ -> duckdb_destroy_prepare stmtPtr)
+                (\_ -> c_duckdb_destroy_prepare stmtPtr)
                 action
 
-withPreparedArrow :: Duckdb_prepared_statement -> (Duckdb_arrow -> IO a) -> IO a
+withPreparedArrow :: DuckDBPreparedStatement -> (DuckDBArrow -> IO a) -> IO a
 withPreparedArrow stmt action =
     alloca \arrowPtr ->
         bracket
             ( do
                 poke arrowPtr (coerce (nullPtr :: Ptr Void))
-                state <- duckdb_execute_prepared_arrow stmt arrowPtr
+                state <- c_duckdb_execute_prepared_arrow stmt arrowPtr
                 state @?= DuckDBSuccess
                 arrow <- peek arrowPtr
                 assertBool "execute_prepared_arrow returned null result" (arrow /= (coerce (nullPtr :: Ptr Void)))
                 pure arrow
             )
-            (\_ -> duckdb_destroy_arrow arrowPtr)
+            (\_ -> c_duckdb_destroy_arrow arrowPtr)
             action
 
-destroyChunk :: Duckdb_data_chunk -> IO ()
+destroyChunk :: DuckDBDataChunk -> IO ()
 destroyChunk chunk =
-    alloca \ptr -> poke ptr chunk >> duckdb_destroy_data_chunk ptr
+    alloca \ptr -> poke ptr chunk >> c_duckdb_destroy_data_chunk ptr
 
-execStatement :: Duckdb_connection -> String -> IO ()
+execStatement :: DuckDBConnection -> String -> IO ()
 execStatement conn sql =
     withConstCString sql \sqlPtr ->
         alloca \resPtr -> do
-            st <- duckdb_query conn sqlPtr resPtr
+            st <- c_duckdb_query conn sqlPtr resPtr
             st @?= DuckDBSuccess
-            duckdb_destroy_result resPtr
+            c_duckdb_destroy_result resPtr

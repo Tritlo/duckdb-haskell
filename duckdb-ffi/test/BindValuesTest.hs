@@ -43,15 +43,15 @@ bindValuesRoundtrip =
             withConnection db \conn -> do
                 withConstCString setSessionTimeZoneSQL \tzSQL ->
                     alloca \resPtr -> do
-                        st <- duckdb_query conn tzSQL resPtr
+                        st <- c_duckdb_query conn tzSQL resPtr
                         st @?= DuckDBSuccess
-                        duckdb_destroy_result resPtr
+                        c_duckdb_destroy_result resPtr
 
                 withConstCString createSQL \ddl ->
                     alloca \resPtr -> do
-                        st <- duckdb_query conn ddl resPtr
+                        st <- c_duckdb_query conn ddl resPtr
                         st @?= DuckDBSuccess
-                        duckdb_destroy_result resPtr
+                        c_duckdb_destroy_result resPtr
 
                 -- values used for binding and verification
                 let boolValue = CBool 1
@@ -67,15 +67,15 @@ bindValuesRoundtrip =
                     doubleValue = CDouble 2.5
                     dateDay = fromGregorian 2021 7 20
                     epoch = fromGregorian 1970 1 1
-                    dateValue = Duckdb_date (fromIntegral (diffDays dateDay epoch))
+                    dateValue = DuckDBDate (fromIntegral (diffDays dateDay epoch))
                     timeMicros :: Integer
                     timeMicros = ((12 * 60 + 34) * 60 + 56) * 1000000
-                    timeValue = Duckdb_time (fromIntegral timeMicros)
-                    timestampValue = Duckdb_timestamp (fromIntegral (duckDBDateDays dateValue) * 86400000000 + fromIntegral timeMicros)
-                    intervalValue = Duckdb_interval{months = 0, days = 1, micros = 7200000000}
-                    decimalValue = Duckdb_decimal{width = 18, scale = 2, value = Duckdb_hugeint{lower = 1234567, upper = 0}}
-                    hugeValue = Duckdb_hugeint{lower = 9223372036854775809, upper = 0}
-                    uhugeValue = Duckdb_uhugeint{lower = 123456789, upper = 1}
+                    timeValue = DuckDBTime (fromIntegral timeMicros)
+                    timestampValue = DuckDBTimestamp (fromIntegral (duckDBDateDays dateValue) * 86400000000 + fromIntegral timeMicros)
+                    intervalValue = DuckDBInterval{months = 0, days = 1, micros = 7200000000}
+                    decimalValue = DuckDBDecimal{width = 18, scale = 2, value = DuckDBHugeInt{lower = 1234567, upper = 0}}
+                    hugeValue = DuckDBHugeInt{lower = 9223372036854775809, upper = 0}
+                    uhugeValue = DuckDBUHugeInt{lower = 123456789, upper = 1}
                     varcharValue = "varchar binding"
                     varcharLenValue = "varchar length binding"
                     blobBytes :: [Word8]
@@ -83,10 +83,10 @@ bindValuesRoundtrip =
 
                 withConstCString insertSQL \cInsert ->
                     alloca \stmtPtr -> do
-                        st <- duckdb_prepare conn cInsert stmtPtr
+                        st <- c_duckdb_prepare conn cInsert stmtPtr
                         stmt <- peek stmtPtr
                         when (st /= DuckDBSuccess) $ do
-                            msg <- if stmt == (coerce (nullPtr :: Ptr Void)) then pure "prepare failed" else duckdb_prepare_error stmt >>= (peekCString . coerce)
+                            msg <- if stmt == (coerce (nullPtr :: Ptr Void)) then pure "prepare failed" else c_duckdb_prepare_error stmt >>= (peekCString . coerce)
                             assertFailure msg
                         st @?= DuckDBSuccess
                         assertBool "prepared statement should not be null" (stmt /= (coerce (nullPtr :: Ptr Void)))
@@ -104,154 +104,154 @@ bindValuesRoundtrip =
                                                         poke decimalPtr decimalValue
                                                         poke intervalPtr intervalValue
 
-                                                        duckValue <- duckdb_create_bool boolValue
+                                                        duckValue <- c_duckdb_create_bool boolValue
                                                         poke valuePtr duckValue
-                                                        duckdb_bind_value stmt 1 duckValue >>= (@?= DuckDBSuccess)
-                                                        duckdb_destroy_value valuePtr
+                                                        c_duckdb_bind_value stmt 1 duckValue >>= (@?= DuckDBSuccess)
+                                                        c_duckdb_destroy_value valuePtr
 
-                                                        duckdb_bind_boolean stmt 2 boolValue >>= (@?= DuckDBSuccess)
-                                                        duckdb_bind_int8 stmt 3 tinyValue >>= (@?= DuckDBSuccess)
-                                                        duckdb_bind_int16 stmt 4 smallValue >>= (@?= DuckDBSuccess)
-                                                        duckdb_bind_int32 stmt 5 intValue >>= (@?= DuckDBSuccess)
-                                                        duckdb_bind_int64 stmt 6 bigValue >>= (@?= DuckDBSuccess)
-                                                        (peek hugePtr >>= \rawValue -> duckdb_bind_hugeint stmt 7 rawValue) >>= (@?= DuckDBSuccess)
-                                                        duckdb_bind_uint8 stmt 8 u8Value >>= (@?= DuckDBSuccess)
-                                                        duckdb_bind_uint16 stmt 9 u16Value >>= (@?= DuckDBSuccess)
-                                                        duckdb_bind_uint32 stmt 10 u32Value >>= (@?= DuckDBSuccess)
-                                                        duckdb_bind_uint64 stmt 11 u64Value >>= (@?= DuckDBSuccess)
-                                                        (peek uhugePtr >>= \rawValue -> duckdb_bind_uhugeint stmt 12 rawValue) >>= (@?= DuckDBSuccess)
-                                                        duckdb_bind_float stmt 13 floatValue >>= (@?= DuckDBSuccess)
-                                                        duckdb_bind_double stmt 14 doubleValue >>= (@?= DuckDBSuccess)
-                                                        duckdb_bind_date stmt 15 dateValue >>= (@?= DuckDBSuccess)
-                                                        duckdb_bind_time stmt 16 timeValue >>= (@?= DuckDBSuccess)
-                                                        duckdb_bind_timestamp stmt 17 timestampValue >>= (@?= DuckDBSuccess)
-                                                        duckdb_bind_timestamp_tz stmt 18 timestampValue >>= (@?= DuckDBSuccess)
-                                                        (peek intervalPtr >>= \rawValue -> duckdb_bind_interval stmt 19 rawValue) >>= (@?= DuckDBSuccess)
-                                                        (peek decimalPtr >>= \rawValue -> duckdb_bind_decimal stmt 20 rawValue) >>= (@?= DuckDBSuccess)
-                                                        duckdb_bind_varchar stmt 21 varcharPtr >>= (@?= DuckDBSuccess)
-                                                        duckdb_bind_varchar_length stmt 22 varcharLenPtr (fromIntegral (length varcharLenValue) :: Idx_t) >>= (@?= DuckDBSuccess)
-                                                        duckdb_bind_blob stmt 23 (coerce blobPtr) (fromIntegral (length blobBytes) :: Idx_t) >>= (@?= DuckDBSuccess)
-                                                        duckdb_bind_null stmt 24 >>= (@?= DuckDBSuccess)
+                                                        c_duckdb_bind_boolean stmt 2 boolValue >>= (@?= DuckDBSuccess)
+                                                        c_duckdb_bind_int8 stmt 3 tinyValue >>= (@?= DuckDBSuccess)
+                                                        c_duckdb_bind_int16 stmt 4 smallValue >>= (@?= DuckDBSuccess)
+                                                        c_duckdb_bind_int32 stmt 5 intValue >>= (@?= DuckDBSuccess)
+                                                        c_duckdb_bind_int64 stmt 6 bigValue >>= (@?= DuckDBSuccess)
+                                                        (peek hugePtr >>= \rawValue -> c_duckdb_bind_hugeint stmt 7 rawValue) >>= (@?= DuckDBSuccess)
+                                                        c_duckdb_bind_uint8 stmt 8 u8Value >>= (@?= DuckDBSuccess)
+                                                        c_duckdb_bind_uint16 stmt 9 u16Value >>= (@?= DuckDBSuccess)
+                                                        c_duckdb_bind_uint32 stmt 10 u32Value >>= (@?= DuckDBSuccess)
+                                                        c_duckdb_bind_uint64 stmt 11 u64Value >>= (@?= DuckDBSuccess)
+                                                        (peek uhugePtr >>= \rawValue -> c_duckdb_bind_uhugeint stmt 12 rawValue) >>= (@?= DuckDBSuccess)
+                                                        c_duckdb_bind_float stmt 13 floatValue >>= (@?= DuckDBSuccess)
+                                                        c_duckdb_bind_double stmt 14 doubleValue >>= (@?= DuckDBSuccess)
+                                                        c_duckdb_bind_date stmt 15 dateValue >>= (@?= DuckDBSuccess)
+                                                        c_duckdb_bind_time stmt 16 timeValue >>= (@?= DuckDBSuccess)
+                                                        c_duckdb_bind_timestamp stmt 17 timestampValue >>= (@?= DuckDBSuccess)
+                                                        c_duckdb_bind_timestamp_tz stmt 18 timestampValue >>= (@?= DuckDBSuccess)
+                                                        (peek intervalPtr >>= \rawValue -> c_duckdb_bind_interval stmt 19 rawValue) >>= (@?= DuckDBSuccess)
+                                                        (peek decimalPtr >>= \rawValue -> c_duckdb_bind_decimal stmt 20 rawValue) >>= (@?= DuckDBSuccess)
+                                                        c_duckdb_bind_varchar stmt 21 varcharPtr >>= (@?= DuckDBSuccess)
+                                                        c_duckdb_bind_varchar_length stmt 22 varcharLenPtr (fromIntegral (length varcharLenValue) :: DuckDBIdx) >>= (@?= DuckDBSuccess)
+                                                        c_duckdb_bind_blob stmt 23 (coerce blobPtr) (fromIntegral (length blobBytes) :: DuckDBIdx) >>= (@?= DuckDBSuccess)
+                                                        c_duckdb_bind_null stmt 24 >>= (@?= DuckDBSuccess)
 
                                                         alloca \execResPtr -> do
-                                                            stExec <- duckdb_execute_prepared stmt execResPtr
+                                                            stExec <- c_duckdb_execute_prepared stmt execResPtr
                                                             stExec @?= DuckDBSuccess
-                                                            duckdb_destroy_result execResPtr
+                                                            c_duckdb_destroy_result execResPtr
 
-                                                        duckdb_destroy_prepare stmtPtr
+                                                        c_duckdb_destroy_prepare stmtPtr
 
                 -- Validate inserted row
                 withConstCString selectSQL \cSelect ->
                     alloca \resPtr -> do
-                        st <- duckdb_query conn cSelect resPtr
+                        st <- c_duckdb_query conn cSelect resPtr
                         st @?= DuckDBSuccess
 
-                        rowCount <- duckdb_row_count resPtr
+                        rowCount <- c_duckdb_row_count resPtr
                         rowCount @?= 1
 
-                        duckdb_value_boolean resPtr 0 0 >>= (@?= CBool 1)
-                        duckdb_value_boolean resPtr 1 0 >>= (@?= CBool 1)
-                        duckdb_value_int8 resPtr 2 0 >>= (@?= (-5 :: Int8))
-                        duckdb_value_int16 resPtr 3 0 >>= (@?= (-300 :: Int16))
-                        duckdb_value_int32 resPtr 4 0 >>= (@?= (-4000000 :: Int32))
-                        duckdb_value_int64 resPtr 5 0 >>= (@?= (-5000000000000 :: Int64))
+                        c_duckdb_value_boolean resPtr 0 0 >>= (@?= CBool 1)
+                        c_duckdb_value_boolean resPtr 1 0 >>= (@?= CBool 1)
+                        c_duckdb_value_int8 resPtr 2 0 >>= (@?= (-5 :: Int8))
+                        c_duckdb_value_int16 resPtr 3 0 >>= (@?= (-300 :: Int16))
+                        c_duckdb_value_int32 resPtr 4 0 >>= (@?= (-4000000 :: Int32))
+                        c_duckdb_value_int64 resPtr 5 0 >>= (@?= (-5000000000000 :: Int64))
 
                         alloca \hugePtr -> do
-                            (duckdb_value_hugeint resPtr 6 0 >>= poke hugePtr)
-                            peek hugePtr >>= (@?= Duckdb_hugeint{lower = 9223372036854775809, upper = 0})
+                            (c_duckdb_value_hugeint resPtr 6 0 >>= poke hugePtr)
+                            peek hugePtr >>= (@?= DuckDBHugeInt{lower = 9223372036854775809, upper = 0})
 
-                        duckdb_value_uint8 resPtr 7 0 >>= (@?= (200 :: Word8))
-                        duckdb_value_uint16 resPtr 8 0 >>= (@?= (60000 :: Word16))
-                        duckdb_value_uint32 resPtr 9 0 >>= (@?= (4000000000 :: Word32))
-                        duckdb_value_uint64 resPtr 10 0 >>= (@?= maxBound)
+                        c_duckdb_value_uint8 resPtr 7 0 >>= (@?= (200 :: Word8))
+                        c_duckdb_value_uint16 resPtr 8 0 >>= (@?= (60000 :: Word16))
+                        c_duckdb_value_uint32 resPtr 9 0 >>= (@?= (4000000000 :: Word32))
+                        c_duckdb_value_uint64 resPtr 10 0 >>= (@?= maxBound)
 
                         alloca \uhugePtr -> do
-                            (duckdb_value_uhugeint resPtr 11 0 >>= poke uhugePtr)
-                            peek uhugePtr >>= (@?= Duckdb_uhugeint{lower = 123456789, upper = 1})
+                            (c_duckdb_value_uhugeint resPtr 11 0 >>= poke uhugePtr)
+                            peek uhugePtr >>= (@?= DuckDBUHugeInt{lower = 123456789, upper = 1})
 
-                        valFloat <- duckdb_value_float resPtr 12 0
+                        valFloat <- c_duckdb_value_float resPtr 12 0
                         realToFrac valFloat @?= (1.5 :: Double)
-                        valDouble <- duckdb_value_double resPtr 13 0
+                        valDouble <- c_duckdb_value_double resPtr 13 0
                         realToFrac valDouble @?= (2.5 :: Double)
 
-                        Duckdb_date fetchedDate <- duckdb_value_date resPtr 14 0
+                        DuckDBDate fetchedDate <- c_duckdb_value_date resPtr 14 0
                         fetchedDate @?= duckDBDateDays dateValue
 
-                        Duckdb_time fetchedTime <- duckdb_value_time resPtr 15 0
+                        DuckDBTime fetchedTime <- c_duckdb_value_time resPtr 15 0
                         fetchedTime @?= duckDBTimeMicros timeValue
 
-                        Duckdb_timestamp fetchedTs <- duckdb_value_timestamp resPtr 16 0
+                        DuckDBTimestamp fetchedTs <- c_duckdb_value_timestamp resPtr 16 0
                         fetchedTs @?= duckDBTimestampMicros timestampValue
 
-                        Duckdb_timestamp fetchedTsTz <- duckdb_value_timestamp resPtr 17 0
+                        DuckDBTimestamp fetchedTsTz <- c_duckdb_value_timestamp resPtr 17 0
                         let tzDifference = fetchedTsTz - duckDBTimestampMicros timestampValue
                         tzDifference @?= 7200000000
 
                         alloca \intervalPtr -> do
-                            (duckdb_value_interval resPtr 18 0 >>= poke intervalPtr)
+                            (c_duckdb_value_interval resPtr 18 0 >>= poke intervalPtr)
                             peek intervalPtr >>= (@?= intervalValue)
 
                         alloca \decimalPtr -> do
-                            (duckdb_value_decimal resPtr 19 0 >>= poke decimalPtr)
-                            Duckdb_decimal{width = width, scale = scale} <- peek decimalPtr
+                            (c_duckdb_value_decimal resPtr 19 0 >>= poke decimalPtr)
+                            DuckDBDecimal{width = width, scale = scale} <- peek decimalPtr
                             (width, scale) @?= (18, 2)
 
-                        varchar <- duckdb_value_varchar resPtr 20 0
+                        varchar <- c_duckdb_value_varchar resPtr 20 0
                         (peekCString . coerce) varchar >>= (@?= varcharValue)
-                        duckdb_free (coerce varchar)
+                        c_duckdb_free (coerce varchar)
 
                         alloca \stringPtr -> do
-                            (duckdb_value_string resPtr 21 0 >>= poke stringPtr)
-                            Duckdb_string{data' = datPtr, size = datSize} <- peek stringPtr
+                            (c_duckdb_value_string resPtr 21 0 >>= poke stringPtr)
+                            DuckDBString{data' = datPtr, size = datSize} <- peek stringPtr
                             peekCStringLen (coerce datPtr, fromIntegral datSize) >>= (@?= varcharLenValue)
-                            when (datPtr /= (coerce (nullPtr :: Ptr Void))) $ duckdb_free (coerce datPtr)
+                            when (datPtr /= (coerce (nullPtr :: Ptr Void))) $ c_duckdb_free (coerce datPtr)
 
                         alloca \blobPtr -> do
-                            (duckdb_value_blob resPtr 22 0 >>= poke blobPtr)
-                            Duckdb_blob{data' = blobDataPtr, size = blobSize} <- peek blobPtr
+                            (c_duckdb_value_blob resPtr 22 0 >>= poke blobPtr)
+                            DuckDBBlob{data' = blobDataPtr, size = blobSize} <- peek blobPtr
                             peekArray (fromIntegral blobSize) (coerce blobDataPtr :: Ptr Word8) >>= (@?= blobBytes)
-                            duckdb_free (coerce blobDataPtr)
+                            c_duckdb_free (coerce blobDataPtr)
 
-                        duckdb_value_is_null resPtr 23 0 >>= (@?= CBool 1)
+                        c_duckdb_value_is_null resPtr 23 0 >>= (@?= CBool 1)
 
-                        duckdb_destroy_result resPtr
+                        c_duckdb_destroy_result resPtr
 
                 -- Named parameter index lookup (separate statement)
                 withConstCString "SELECT $named_param" \namedSQL ->
                     alloca \stmtPtr -> do
-                        st <- duckdb_prepare conn namedSQL stmtPtr
+                        st <- c_duckdb_prepare conn namedSQL stmtPtr
                         stmt <- peek stmtPtr
                         when (st /= DuckDBSuccess) $ do
-                            errPtr <- duckdb_prepare_error stmt
+                            errPtr <- c_duckdb_prepare_error stmt
                             msg <- if errPtr == (coerce (nullPtr :: Ptr Void)) then pure "prepare failed" else (peekCString . coerce) errPtr
                             assertFailure msg
                         st @?= DuckDBSuccess
                         assertBool "named statement" (stmt /= (coerce (nullPtr :: Ptr Void)))
 
                         alloca \idxPtr -> do
-                            stIdx <- withConstCString "named_param" $ \name -> duckdb_bind_parameter_index stmt idxPtr name
+                            stIdx <- withConstCString "named_param" $ \name -> c_duckdb_bind_parameter_index stmt idxPtr name
                             when (stIdx /= DuckDBSuccess) $ do
-                                errPtr <- duckdb_prepare_error stmt
+                                errPtr <- c_duckdb_prepare_error stmt
                                 msg <- if errPtr == (coerce (nullPtr :: Ptr Void)) then pure "bind_parameter_index failed" else (peekCString . coerce) errPtr
                                 assertFailure msg
                             stIdx @?= DuckDBSuccess
                             idx <- peek idxPtr
                             idx @?= 1
-                            bindState <- duckdb_bind_int32 stmt idx 42
+                            bindState <- c_duckdb_bind_int32 stmt idx 42
                             when (bindState /= DuckDBSuccess) $ do
-                                errPtr <- duckdb_prepare_error stmt
+                                errPtr <- c_duckdb_prepare_error stmt
                                 msg <- if errPtr == (coerce (nullPtr :: Ptr Void)) then pure "bind failed" else (peekCString . coerce) errPtr
                                 assertFailure msg
                             bindState @?= DuckDBSuccess
 
                         alloca \execResPtr -> do
-                            stExec <- duckdb_execute_prepared stmt execResPtr
+                            stExec <- c_duckdb_execute_prepared stmt execResPtr
                             stExec @?= DuckDBSuccess
-                            duckdb_row_count execResPtr >>= (@?= 1)
-                            duckdb_value_int32 execResPtr 0 0 >>= (@?= 42)
-                            duckdb_destroy_result execResPtr
+                            c_duckdb_row_count execResPtr >>= (@?= 1)
+                            c_duckdb_value_int32 execResPtr 0 0 >>= (@?= 42)
+                            c_duckdb_destroy_result execResPtr
 
-                        duckdb_destroy_prepare stmtPtr
+                        c_duckdb_destroy_prepare stmtPtr
   where
     createSQL =
         "CREATE TABLE bind_values ("
@@ -291,9 +291,9 @@ bindValuesRoundtrip =
     -- session TimeZone above, yielding bound + 02:00.
     selectSQL = "SELECT * REPLACE (tstz_col::TIMESTAMP AS tstz_col) FROM bind_values"
 
-    duckDBDateDays (Duckdb_date d) = d
-    duckDBTimeMicros (Duckdb_time t) = t
-    duckDBTimestampMicros (Duckdb_timestamp t) = t
+    duckDBDateDays (DuckDBDate d) = d
+    duckDBTimeMicros (DuckDBTime t) = t
+    duckDBTimestampMicros (DuckDBTimestamp t) = t
 
 {- | Regression test for issue #8: reading a TIMESTAMPTZ column via
 'duckdb_value_timestamp' converts to the session's TimeZone, so the
@@ -307,8 +307,8 @@ bindTimestampTzAcrossSessions =
             withConnection db \conn -> do
                 withConstCString "CREATE TABLE tstz_only (ts TIMESTAMPTZ)" \ddl ->
                     alloca \resPtr -> do
-                        duckdb_query conn ddl resPtr >>= (@?= DuckDBSuccess)
-                        duckdb_destroy_result resPtr
+                        c_duckdb_query conn ddl resPtr >>= (@?= DuckDBSuccess)
+                        c_duckdb_destroy_result resPtr
 
                 -- A fixed UTC instant: 2021-07-20 12:34:56 UTC
                 let boundMicros :: Int64
@@ -316,17 +316,17 @@ bindTimestampTzAcrossSessions =
                         fromIntegral (diffDays (fromGregorian 2021 7 20) (fromGregorian 1970 1 1))
                             * 86400000000
                             + ((12 * 60 + 34) * 60 + 56) * 1000000
-                    bound = Duckdb_timestamp boundMicros
+                    bound = DuckDBTimestamp boundMicros
 
                 withConstCString "INSERT INTO tstz_only VALUES (?)" \cInsert ->
                     alloca \stmtPtr -> do
-                        duckdb_prepare conn cInsert stmtPtr >>= (@?= DuckDBSuccess)
+                        c_duckdb_prepare conn cInsert stmtPtr >>= (@?= DuckDBSuccess)
                         stmt <- peek stmtPtr
-                        duckdb_bind_timestamp_tz stmt 1 bound >>= (@?= DuckDBSuccess)
+                        c_duckdb_bind_timestamp_tz stmt 1 bound >>= (@?= DuckDBSuccess)
                         alloca \execResPtr -> do
-                            duckdb_execute_prepared stmt execResPtr >>= (@?= DuckDBSuccess)
-                            duckdb_destroy_result execResPtr
-                        duckdb_destroy_prepare stmtPtr
+                            c_duckdb_execute_prepared stmt execResPtr >>= (@?= DuckDBSuccess)
+                            c_duckdb_destroy_result execResPtr
+                        c_duckdb_destroy_prepare stmtPtr
 
                 -- For each session TimeZone, the readback wall-clock should be
                 -- bound + offset, independent of the host OS TZ.
@@ -343,16 +343,16 @@ bindTimestampTzAcrossSessions =
     assertTimeZoneOffset conn boundMicros (tz, expected) = do
         withConstCString ("SET TimeZone='" <> tz <> "'") \setTzSQL ->
             alloca \resPtr -> do
-                duckdb_query conn setTzSQL resPtr >>= (@?= DuckDBSuccess)
-                duckdb_destroy_result resPtr
+                c_duckdb_query conn setTzSQL resPtr >>= (@?= DuckDBSuccess)
+                c_duckdb_destroy_result resPtr
 
         -- Cast TIMESTAMPTZ → TIMESTAMP in-query; the cast uses the
         -- session TimeZone just set, so the wall-clock readback carries
         -- the expected offset.
         withConstCString "SELECT ts::TIMESTAMP FROM tstz_only" \cSelect ->
             alloca \resPtr -> do
-                duckdb_query conn cSelect resPtr >>= (@?= DuckDBSuccess)
-                Duckdb_timestamp fetched <- duckdb_value_timestamp resPtr 0 0
+                c_duckdb_query conn cSelect resPtr >>= (@?= DuckDBSuccess)
+                DuckDBTimestamp fetched <- c_duckdb_value_timestamp resPtr 0 0
                 let msg = "TimeZone=" <> tz <> ": expected offset " <> show expected
                 assertBool msg (fetched - boundMicros == expected)
-                duckdb_destroy_result resPtr
+                c_duckdb_destroy_result resPtr

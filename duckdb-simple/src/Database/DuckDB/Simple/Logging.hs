@@ -19,7 +19,7 @@ import qualified Data.Text.Foreign as TextForeign
 import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Data.Void (Void)
-import Database.DuckDB.FFI.Compat
+import Database.DuckDB.FFI
 import Database.DuckDB.Simple.Callback (ignoreCallbackExceptions, withCallbackResources)
 import Database.DuckDB.Simple.Internal (Connection, peekUtf8CString, throwRegistrationError, withDatabaseHandle)
 import Foreign.C.ConstPtr (ConstPtr (..))
@@ -46,7 +46,7 @@ registerLogStorage conn name callback = do
     bracket c_duckdb_create_log_storage destroyLogStorage \storage -> do
         when (storage == DuckDBLogStorage nullPtr) $ throwRegistrationError "allocate log storage"
         withCallbackResources
-            (\allocate -> DuckDBLoggerWriteLogEntryFun <$> allocate (toFunPtr (Duckdb_logger_write_log_entry_t_Aux (logStorageHandler callback))))
+            (\allocate -> DuckDBLoggerWriteLogEntryFun <$> allocate (toFunPtr (DuckDBLoggerWriteLogEntryFun_Aux (logStorageHandler callback))))
             (c_duckdb_log_storage_set_extra_data storage)
             \writeCb -> do
                 TextForeign.withCString name $ c_duckdb_log_storage_set_name storage . ConstPtr

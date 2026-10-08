@@ -41,7 +41,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
 import Data.Word (Word16, Word32, Word64, Word8)
-import Database.DuckDB.FFI.Compat
+import Database.DuckDB.FFI
 import Database.DuckDB.Simple.Callback (runCallback, transferCallbackState, withCallbackResources)
 import Database.DuckDB.Simple.FromField (
     Field (..),
@@ -232,15 +232,15 @@ instance {-# OVERLAPPABLE #-} (FromField a, FunctionArg a, Function r) => Functi
 createFunction :: forall f. (Function f) => Connection -> Text -> f -> IO ()
 createFunction conn name fn =
     registerScalarFunction conn name (Proxy :: Proxy f) \allocate -> do
-        scalarFunctionExecPtr <- DuckDBScalarFunctionFun <$> allocate (toFunPtr (Duckdb_scalar_function_t_Aux (scalarFunctionHandler fn)))
+        scalarFunctionExecPtr <- DuckDBScalarFunctionFun <$> allocate (toFunPtr (DuckDBScalarFunctionFun_Aux (scalarFunctionHandler fn)))
         pure ScalarFunctionResources{scalarFunctionExecPtr, scalarFunctionInitPtr = Nothing}
 
 -- | Register a scalar function with per-worker thread-local state.
 createFunctionWithState :: forall s f. (Function f) => Connection -> Text -> IO s -> (s -> f) -> IO ()
 createFunctionWithState conn name initState mkFn =
     registerScalarFunction conn name (Proxy :: Proxy f) \allocate -> do
-        scalarFunctionExecPtr <- DuckDBScalarFunctionFun <$> allocate (toFunPtr (Duckdb_scalar_function_t_Aux (scalarFunctionHandlerWithState mkFn)))
-        initPtr <- DuckDBScalarFunctionInitFun <$> allocate (toFunPtr (Duckdb_scalar_function_init_t_Aux (scalarFunctionInitHandler initState)))
+        scalarFunctionExecPtr <- DuckDBScalarFunctionFun <$> allocate (toFunPtr (DuckDBScalarFunctionFun_Aux (scalarFunctionHandlerWithState mkFn)))
+        initPtr <- DuckDBScalarFunctionInitFun <$> allocate (toFunPtr (DuckDBScalarFunctionInitFun_Aux (scalarFunctionInitHandler initState)))
         pure ScalarFunctionResources{scalarFunctionExecPtr, scalarFunctionInitPtr = Just initPtr}
 
 -- | Configure a scalar function and transfer its callbacks to DuckDB.

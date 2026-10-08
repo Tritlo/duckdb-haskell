@@ -15,7 +15,7 @@ import Control.Exception (bracket)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
-import Database.DuckDB.FFI.Compat
+import Database.DuckDB.FFI
 import Database.DuckDB.Simple.Internal (Connection, destroyValue, peekUtf8CString, throwRegistrationError, withClientContext)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Alloc (alloca)
@@ -62,7 +62,7 @@ getConfigOption conn name
         withClientContext conn \ctx ->
             TextForeign.withCString name \cName ->
                 alloca \scopePtr -> do
-                    poke scopePtr DuckDBConfigOptionScopeInvalid
+                    poke scopePtr DUCKDB_CONFIG_OPTION_SCOPE_INVALID
                     bracket
                         (c_duckdb_client_context_get_config_option ctx (ConstPtr cName) scopePtr)
                         destroyValue
@@ -84,7 +84,7 @@ getConfigOption conn name
                                             ConfigValue
                                                 { configValueText = rendered
                                                 , configValueScope =
-                                                    if scope == DuckDBConfigOptionScopeInvalid
+                                                    if scope == DUCKDB_CONFIG_OPTION_SCOPE_INVALID
                                                         then Nothing
                                                         else Just scope
                                                 }

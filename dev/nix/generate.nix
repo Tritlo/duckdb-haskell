@@ -74,7 +74,7 @@ pkgs.mkShell {
   C_INCLUDE_PATH = systemIncludePath;
   LD_LIBRARY_PATH = loaderPath;
   packages = [
-    haskellPackages.hs-bindgen
+    (haskellPackages.ghcWithPackages (hs: [ hs.hs-bindgen hs.data-default ]))
     clang.clang
     clang.llvm
     pkgs.doxygen

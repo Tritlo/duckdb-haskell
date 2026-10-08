@@ -13,7 +13,7 @@ import Data.Int (Int64)
 import Data.List (isInfixOf)
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Database.DuckDB.FFI.Compat (c_duckdb_result_is_streaming, c_duckdb_vector_size)
+import Database.DuckDB.FFI (c_duckdb_result_is_streaming, c_duckdb_vector_size)
 import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
 import Database.DuckDB.Simple.FromField (FieldValue)

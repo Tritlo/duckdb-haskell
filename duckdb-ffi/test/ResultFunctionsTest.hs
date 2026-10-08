@@ -33,30 +33,30 @@ chunkIntrospection =
                 forM_ [createSQL, insertSQL] \sql ->
                     withConstCString sql \cSql ->
                         alloca \resPtr -> do
-                            st <- duckdb_query conn cSql resPtr
+                            st <- c_duckdb_query conn cSql resPtr
                             st @?= DuckDBSuccess
-                            duckdb_destroy_result resPtr
+                            c_duckdb_destroy_result resPtr
 
                 withConstCString "SELECT * FROM items" \selectSQL ->
                     alloca \resPtr -> do
-                        st <- duckdb_query conn selectSQL resPtr
+                        st <- c_duckdb_query conn selectSQL resPtr
                         st @?= DuckDBSuccess
 
-                        chunkCount <- (peek resPtr >>= \rawValue -> duckdb_result_chunk_count rawValue)
+                        chunkCount <- (peek resPtr >>= \rawValue -> c_duckdb_result_chunk_count rawValue)
                         assertBool "chunk count should be positive" (chunkCount > 0)
 
-                        returnType <- (peek resPtr >>= \rawValue -> duckdb_result_return_type rawValue)
+                        returnType <- (peek resPtr >>= \rawValue -> c_duckdb_result_return_type rawValue)
                         returnType @?= DUCKDB_RESULT_TYPE_QUERY_RESULT
 
-                        streamingFlag <- (peek resPtr >>= \rawValue -> duckdb_result_is_streaming rawValue)
+                        streamingFlag <- (peek resPtr >>= \rawValue -> c_duckdb_result_is_streaming rawValue)
                         streamingFlag @?= CBool 0
 
                         -- Retrieve first chunk if available
                         when (chunkCount > 0) $ do
-                            chunk0 <- (peek resPtr >>= \rawValue -> duckdb_result_get_chunk rawValue 0)
+                            chunk0 <- (peek resPtr >>= \rawValue -> c_duckdb_result_get_chunk rawValue 0)
                             assertBool "first chunk should not be null" (chunk0 /= (coerce (nullPtr :: Ptr Void)))
                             -- Requesting beyond the available chunk count should return null
-                            chunkInvalid <- (peek resPtr >>= \rawValue -> duckdb_result_get_chunk rawValue chunkCount)
+                            chunkInvalid <- (peek resPtr >>= \rawValue -> c_duckdb_result_get_chunk rawValue chunkCount)
                             assertBool "out-of-range chunk should be null" (chunkInvalid == (coerce (nullPtr :: Ptr Void)))
 
-                        duckdb_destroy_result resPtr
+                        c_duckdb_destroy_result resPtr

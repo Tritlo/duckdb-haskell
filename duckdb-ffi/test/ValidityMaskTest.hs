@@ -25,37 +25,37 @@ validityRowHelpers :: TestTree
 validityRowHelpers =
     testCase "row validity helpers reflect changes" $ do
         withIntegerVector 4 \vec -> do
-            void (duckdb_vector_ensure_validity_writable vec)
-            mask <- duckdb_vector_get_validity vec
+            void (c_duckdb_vector_ensure_validity_writable vec)
+            mask <- c_duckdb_vector_get_validity vec
             assertBool "validity pointer should not be null" (mask /= (coerce (nullPtr :: Ptr Void)))
             setAllValid mask 4
 
-            toBool (duckdb_validity_row_is_valid mask 2) >>= (@?= True)
-            duckdb_validity_set_row_invalid mask 2
-            toBool (duckdb_validity_row_is_valid mask 2) >>= (@?= False)
-            duckdb_validity_set_row_valid mask 2
-            toBool (duckdb_validity_row_is_valid mask 2) >>= (@?= True)
+            toBool (c_duckdb_validity_row_is_valid mask 2) >>= (@?= True)
+            c_duckdb_validity_set_row_invalid mask 2
+            toBool (c_duckdb_validity_row_is_valid mask 2) >>= (@?= False)
+            c_duckdb_validity_set_row_valid mask 2
+            toBool (c_duckdb_validity_row_is_valid mask 2) >>= (@?= True)
 
 validitySetOperations :: TestTree
 validitySetOperations =
     testCase "set_row_validity toggles state based on CBool" $ do
         withIntegerVector 3 \vec -> do
-            void (duckdb_vector_ensure_validity_writable vec)
-            mask <- duckdb_vector_get_validity vec
+            void (c_duckdb_vector_ensure_validity_writable vec)
+            mask <- c_duckdb_vector_get_validity vec
             setAllValid mask 3
 
-            duckdb_validity_set_row_validity mask 1 (CBool 0)
-            toBool (duckdb_validity_row_is_valid mask 1) >>= (@?= False)
+            c_duckdb_validity_set_row_validity mask 1 (CBool 0)
+            toBool (c_duckdb_validity_row_is_valid mask 1) >>= (@?= False)
 
-            duckdb_validity_set_row_validity mask 1 (CBool 1)
-            toBool (duckdb_validity_row_is_valid mask 1) >>= (@?= True)
+            c_duckdb_validity_set_row_validity mask 1 (CBool 1)
+            toBool (c_duckdb_validity_row_is_valid mask 1) >>= (@?= True)
 
 -- Helpers -------------------------------------------------------------------
 
-withIntegerVector :: Idx_t -> (Duckdb_vector -> IO a) -> IO a
+withIntegerVector :: DuckDBIdx -> (DuckDBVector -> IO a) -> IO a
 withIntegerVector capacity action =
-    withLogicalType (duckdb_create_logical_type (Duckdb_type DUCKDB_TYPE_INTEGER)) \intType ->
-        withVector (duckdb_create_vector intType capacity) action
+    withLogicalType (c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_INTEGER)) \intType ->
+        withVector (c_duckdb_create_vector intType capacity) action
 
 toBool :: IO CBool -> IO Bool
 toBool action = do

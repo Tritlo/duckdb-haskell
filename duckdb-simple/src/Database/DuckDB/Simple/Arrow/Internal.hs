@@ -15,7 +15,7 @@ module Database.DuckDB.Simple.Arrow.Internal (
 
 import Control.Exception (bracket, bracket_, mask_, throwIO)
 import Control.Monad (forM, when)
-import Database.DuckDB.FFI.Compat
+import Database.DuckDB.FFI
 import Database.DuckDB.Simple (bind, withStatement)
 import Database.DuckDB.Simple.Internal (Connection, Query, ResultMode, SQLError (..), destroyDataChunk, destroyLogicalType, executePreparedResult, fetchResultChunk, peekUtf8CString, throwResultError, withResult, withStatementHandle)
 import Database.DuckDB.Simple.ToRow (ToRow (..))

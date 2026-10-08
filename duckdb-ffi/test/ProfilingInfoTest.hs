@@ -27,7 +27,7 @@ profilingDisabledByDefault =
     testCase "profiling info requires enabling profiling" $
         withDatabase \db ->
             withConnection db \conn -> do
-                infoPtr <- duckdb_get_profiling_info conn
+                infoPtr <- c_duckdb_get_profiling_info conn
                 infoPtr @?= (coerce (nullPtr :: Ptr Void))
 
 profilingMetricsRoundtrip :: TestTree
@@ -40,11 +40,11 @@ profilingMetricsRoundtrip =
                 runStatement conn "INSERT INTO profiling_numbers VALUES (1), (2), (3)"
                 runStatement conn "SELECT sum(value) FROM profiling_numbers"
 
-                infoPtr <- duckdb_get_profiling_info conn
+                infoPtr <- c_duckdb_get_profiling_info conn
                 assertBool "profiling info pointer should be non-null" (infoPtr /= (coerce (nullPtr :: Ptr Void)))
 
-                metricsVal <- duckdb_profiling_info_get_metrics infoPtr
-                entryCountIdx <- duckdb_get_map_size metricsVal
+                metricsVal <- c_duckdb_profiling_info_get_metrics infoPtr
+                entryCountIdx <- c_duckdb_get_map_size metricsVal
                 assertBool "expected at least one metric entry" (entryCountIdx > 0)
                 entries <- collectMetrics metricsVal entryCountIdx
                 destroyDuckValue metricsVal
@@ -55,64 +55,64 @@ profilingMetricsRoundtrip =
                         [] -> error "unreachable: entries is non-empty"
 
                 withConstCString firstKey \keyPtr -> do
-                    valueHandle <- duckdb_profiling_info_get_value infoPtr keyPtr
+                    valueHandle <- c_duckdb_profiling_info_get_value infoPtr keyPtr
                     assertBool ("metric " <> firstKey <> " should be present") (valueHandle /= (coerce (nullPtr :: Ptr Void)))
                     fetchedValue <- duckValueToString valueHandle
                     destroyDuckValue valueHandle
                     fetchedValue @?= firstValue
 
-                childCount <- duckdb_profiling_info_get_child_count infoPtr
+                childCount <- c_duckdb_profiling_info_get_child_count infoPtr
                 assertBool "expected at least one child node" (childCount > 0)
                 let firstChildIdx = 0
-                childPtr <- duckdb_profiling_info_get_child infoPtr firstChildIdx
+                childPtr <- c_duckdb_profiling_info_get_child infoPtr firstChildIdx
                 assertBool "child pointer should be non-null" (childPtr /= (coerce (nullPtr :: Ptr Void)))
 
-                childMetrics <- duckdb_profiling_info_get_metrics childPtr
-                childCountIdx <- duckdb_get_map_size childMetrics
+                childMetrics <- c_duckdb_profiling_info_get_metrics childPtr
+                childCountIdx <- c_duckdb_get_map_size childMetrics
                 assertBool "child node should expose metrics" (childCountIdx > 0)
                 destroyDuckValue childMetrics
 
-runStatement :: Duckdb_connection -> String -> IO ()
+runStatement :: DuckDBConnection -> String -> IO ()
 runStatement conn sql =
     withConstCString sql \sqlPtr ->
         alloca \resPtr -> do
-            state <- duckdb_query conn sqlPtr resPtr
+            state <- c_duckdb_query conn sqlPtr resPtr
             if state == DuckDBSuccess
-                then duckdb_destroy_result resPtr
+                then c_duckdb_destroy_result resPtr
                 else do
-                    errPtr <- duckdb_result_error resPtr
+                    errPtr <- c_duckdb_result_error resPtr
                     errMsg <-
                         if errPtr == (coerce (nullPtr :: Ptr Void))
                             then pure "unknown error"
                             else (peekCString . coerce) errPtr
-                    duckdb_destroy_result resPtr
+                    c_duckdb_destroy_result resPtr
                     assertFailure ("duckdb_query failed: " <> errMsg)
 
-collectMetrics :: Duckdb_value -> Idx_t -> IO [(String, String)]
+collectMetrics :: DuckDBValue -> DuckDBIdx -> IO [(String, String)]
 collectMetrics metricsVal entryCountIdx = do
     let entryCount = fromIntegral entryCountIdx :: Int
     forM [0 .. entryCount - 1] \i -> do
-        let idx = fromIntegral i :: Idx_t
-        keyHandle <- duckdb_get_map_key metricsVal idx
+        let idx = fromIntegral i :: DuckDBIdx
+        keyHandle <- c_duckdb_get_map_key metricsVal idx
         keyName <- duckValueToText keyHandle
         destroyDuckValue keyHandle
 
-        valHandle <- duckdb_get_map_value metricsVal idx
+        valHandle <- c_duckdb_get_map_value metricsVal idx
         valText <- duckValueToString valHandle
         destroyDuckValue valHandle
 
         pure (keyName, valText)
 
-duckValueToText :: Duckdb_value -> IO String
+duckValueToText :: DuckDBValue -> IO String
 duckValueToText valHandle = do
-    strPtr <- duckdb_get_varchar valHandle
+    strPtr <- c_duckdb_get_varchar valHandle
     text <- (peekCString . coerce) strPtr
-    duckdb_free (coerce strPtr)
+    c_duckdb_free (coerce strPtr)
     pure text
 
-duckValueToString :: Duckdb_value -> IO String
+duckValueToString :: DuckDBValue -> IO String
 duckValueToString valHandle = do
-    strPtr <- duckdb_value_to_string valHandle
+    strPtr <- c_duckdb_value_to_string valHandle
     text <- (peekCString . coerce) strPtr
-    duckdb_free (coerce strPtr)
+    c_duckdb_free (coerce strPtr)
     pure text

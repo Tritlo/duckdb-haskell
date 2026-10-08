@@ -19,28 +19,31 @@ if [[ $(hs-bindgen-cli --version) != *"1.0.0.0"* ]]; then
   exit 1
 fi
 
+bindgen_unit_id=$(ghc-pkg field z-hs-bindgen-z-internal id --simple-output)
+bindgen_public_unit_id=$(ghc-pkg field hs-bindgen id --simple-output)
+# Expose both components explicitly. Otherwise GHC hides one of them.
+ghc -hide-all-packages -package base -package data-default \
+  -package-id "$bindgen_public_unit_id" -package-id "$bindgen_unit_id" -Wall -Werror \
+  -outputdir "$scratch_dir/build" -o "$scratch_dir/generate" \
+  "$script_dir/GenerateBindings.hs"
+
 generate() {
   local output=$1
-  shift
-  hs-bindgen-cli -v 0 preprocess \
-    -I cbits --module=Database.DuckDB.FFI --unique-id=duckdb-ffi \
-    --omit-field-prefixes --single-file --safe='' \
-    '--select-except-by-decl-name=^macro DUCKDB_API_VERSION_(AT_LEAST|BELOW)$' \
-    --hs-output-dir="$scratch_dir/$output" --create-output-dirs \
-    --gen-binding-spec="$scratch_dir/$output.json" \
-    "$@" duckdb.h duckdb_arrow.h
+  local target=$2
+  local specification=${3:--}
+  "$scratch_dir/generate" "$target" "$scratch_dir/$output" \
+    "$scratch_dir/$output.json" "$specification"
 }
 
-generate initial --clang-option=--target=x86_64-unknown-linux-gnu --clang-option=-ffreestanding
-python3 "$script_dir/binding-metadata.py" opaque cbits/duckdb.h \
-  "$scratch_dir/initial.json" "$scratch_dir/opaque.json"
+generate initial x86_64-unknown-linux-gnu
+python3 "$script_dir/binding-metadata.py" spec cbits/duckdb.h \
+  "$scratch_dir/initial.json" "$scratch_dir/types.json" "$script_dir/type-names.json"
 
 for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu \
               x86_64-apple-macos10.13 arm64-apple-macos11; do
-  generate "$target" --prescriptive-binding-spec="$scratch_dir/opaque.json" \
-    --clang-option="--target=$target" --clang-option=-ffreestanding
+  generate "$target" "$target" "$scratch_dir/types.json"
 done
-generate native --prescriptive-binding-spec="$scratch_dir/opaque.json"
+generate native native "$scratch_dir/types.json"
 
 generated="$scratch_dir/x86_64-unknown-linux-gnu/Database/DuckDB/FFI.hs"
 for output in "$scratch_dir"/*/Database/DuckDB/FFI.hs; do
@@ -49,17 +52,10 @@ for output in "$scratch_dir"/*/Database/DuckDB/FFI.hs; do
 done
 python3 "$script_dir/binding-metadata.py" abi "$generated" \
   "$scratch_dir/x86_64-unknown-linux-gnu.json" "$scratch_dir/abi-checks.c" cbits
-python3 "$script_dir/binding-metadata.py" compat "$generated" \
-  "$scratch_dir/x86_64-unknown-linux-gnu.json" "$scratch_dir/Compat.hs" \
-  "$script_dir/legacy-names.json"
-
 if "$check"; then
   cmp -- "$generated" src/Database/DuckDB/FFI.hs
   cmp -- "$scratch_dir/abi-checks.c" cbits/abi-checks.c
-  cmp -- "$scratch_dir/Compat.hs" src/Database/DuckDB/FFI/Compat.hs
 else
   cp -- "$generated" src/Database/DuckDB/FFI.hs
   cp -- "$scratch_dir/abi-checks.c" cbits/abi-checks.c
-  mkdir -p src/Database/DuckDB/FFI
-  cp -- "$scratch_dir/Compat.hs" src/Database/DuckDB/FFI/Compat.hs
 fi

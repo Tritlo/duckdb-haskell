@@ -12,7 +12,7 @@ import Control.Exception (AsyncException (..), SomeException, bracket, fromExcep
 import Control.Monad (unless, void)
 import Data.IORef (atomicWriteIORef, newIORef, readIORef)
 import Data.Int (Int64)
-import Database.DuckDB.FFI.Compat (c_duckdb_interrupt, c_duckdb_query)
+import Database.DuckDB.FFI (c_duckdb_interrupt, c_duckdb_query)
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.Arrow (foldArrow_)
 import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming

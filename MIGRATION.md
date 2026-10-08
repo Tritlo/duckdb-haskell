@@ -7,8 +7,8 @@ The short version is:
 
 - `duckdb-ffi` uses the DuckDB `1.5.6` C header. The native minimum is 1.5.3.
 - `duckdb-simple` now depends on `duckdb-ffi-1.5`.
-- The raw FFI is generated with hs-bindgen 1.0. The optional `Compat` module
-  preserves earlier spellings with the generated types.
+- The raw FFI is generated with hs-bindgen 1.0. It keeps `DuckDBFoo` type names
+  and `c_duckdb_*` function names in `Database.DuckDB.FFI`.
 - The runtime `libduckdb` must be >= 1.5.3 and < 1.6. High-level SQL operations
   retain their behavior. Types that expose raw FFI values change.
 
@@ -19,7 +19,7 @@ remains supported. `duckdb-simple` uses a separate API version.
 
 The FFI adds the GEOMETRY and VARIANT type tags, the geometry CRS accessor,
 and the COPY_DATABASE, UPDATE_EXTENSIONS, and MERGE_INTO statement tags.
-Free strings returned by the CRS accessor with `duckdb_free`.
+Free strings returned by the CRS accessor with `c_duckdb_free`.
 
 ## Geometry support
 
@@ -92,7 +92,7 @@ add `instance ToField YourType`. The default implementation requires `Show`.
 - Generic records and sums match SQL field and member names. An incompatible
   schema fails instead of decoding values by position.
 - Update applications that use the FFI directly to the generated types.
-  Import `Database.DuckDB.FFI.Compat` to retain earlier spellings.
+  Import `Database.DuckDB.FFI`.
 
 ## Who Needs to Change What
 
@@ -101,8 +101,8 @@ If you use `duckdb-ffi` directly:
 - Rebuild and relink against DuckDB `1.5.6`.
 - Update any packaging, Nix, CI, Docker, or deployment config that still pulls
   a 1.4 `libduckdb`.
-- Import generated functions and types from `Database.DuckDB.FFI`. Update raw
-  names, handle constructors, const pointers, and struct arguments/results.
+- Import generated functions and types from `Database.DuckDB.FFI`. Update enum
+  constants, handle representations, const pointers, and struct arguments/results.
 
 If you use `duckdb-simple`:
 
@@ -150,71 +150,68 @@ hs-bindgen 1.0 generates all 546 native functions from the pinned DuckDB 1.5.6
 header. It also generates struct layouts, the VARCHAR union, Arrow records,
 enum patterns, callback constructors/invokers, and C ABI wrappers.
 `Database.DuckDB.FFI` contains the native API.
-`Database.DuckDB.FFI.Compat` contains generated aliases for earlier spellings.
 The 44 handwritten modules, 22 manual `Storable` instances, C shims, and old
-binding generator are removed. The package ships generated source. Maintainers regenerate it from the pinned
-headers. Consumers do not run the generator.
+binding generator are removed. The package ships generated source and C ABI
+assertions. Maintainers regenerate both files from the pinned headers.
+Consumers do not run the generator.
 
 ### Names and types
 
 | Previous raw API | Generated API |
 | --- | --- |
-| `c_duckdb_open` | `duckdb_open` |
-| `DuckDBConnection` | `Duckdb_connection`, a typed pointer newtype |
-| `DuckDBIdx` | `Idx_t`, a `Word64` newtype |
+| `c_duckdb_open` | `c_duckdb_open` |
+| `DuckDBConnection` | `DuckDBConnection`, a typed pointer newtype |
+| `DuckDBIdx` | `DuckDBIdx`, a `Word64` newtype |
 | `DuckDBTypeInteger` | `DUCKDB_TYPE_INTEGER` |
 | `CString` for a const string | `ConstPtr CChar` |
-| Scalar temporal wrappers | Records such as `Duckdb_date` and `Duckdb_timestamp` |
+| Scalar temporal wrappers | Records such as `DuckDBDate` and `DuckDBTimestamp` |
 | Handwritten record selectors | Record fields through `OverloadedRecordDot` |
 | Pointer/out-parameter ABI shims | Direct struct arguments and results |
 
-The C typedef `duckdb_type` is a separate generated `Duckdb_type` newtype around
+The C typedef `duckdb_type` is a separate generated `DuckDBType` newtype around
 `DUCKDB_TYPE`. For example, create an INTEGER logical type with
-`duckdb_create_logical_type (Duckdb_type DUCKDB_TYPE_INTEGER)`.
-Unwrap `Duckdb_type` when inspecting `duckdb_get_type_id`.
+`c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_INTEGER)`.
+Unwrap `DuckDBType` when inspecting `c_duckdb_get_type_id`.
 Do not assume that a handle is a `Ptr ()` or compare it directly with `nullPtr`.
 Use its generated constructor, or its `unwrap` field where necessary.
 
 Functions with struct results return records directly.
-For example, `duckdb_from_date` returns `Duckdb_date_struct` instead of writing
-an output pointer. `duckdb_fetch_chunk` takes a `Duckdb_result` value.
+For example, `c_duckdb_from_date` returns `DuckDBDateStruct` instead of writing
+an output pointer. `c_duckdb_fetch_chunk` takes a `DuckDBResult` value.
 Keep the owning result alive while that copied record refers to native data.
 Generated struct marshalling does not transfer ownership.
 
-### Earlier spellings
+### Naming configuration
 
-Import `Database.DuckDB.FFI.Compat` for `DuckDBConnection`, `DuckDBIdx`,
-`DuckDBTypeInteger`, and `c_duckdb_*`. The module also reexports the native API.
-`duckdb-simple` uses these aliases to reduce changes that only rename identifiers.
-The aliases and constructor patterns are generated. They add no foreign imports.
-The frozen spelling map defines names from the previous API. New native functions
-receive a `c_` alias automatically.
+The maintainer driver uses existing hs-bindgen 1.0 APIs. Prescriptive binding
+specifications retain all 158 earlier type names. The `RenameTerm` category
+option adds `c_` directly to all 546 generated function names. There is no alias
+module. Record and newtype constructors use the configured type names.
+Enum constants retain their header spellings.
 
 ```haskell
-import Database.DuckDB.FFI.Compat
+import Database.DuckDB.FFI
 
-integerType = c_duckdb_create_logical_type DuckDBTypeInteger
+integerType = c_duckdb_create_logical_type (DuckDBType DUCKDB_TYPE_INTEGER)
 ```
 
-The module preserves spellings, not the previous representations. Handles and
-indexes still use newtypes. Constant pointers still use `ConstPtr`. Struct calls
-still use generated records. Import constructor patterns separately, for example
-`DuckDBConnection, pattern DuckDBConnection`, instead of `DuckDBConnection(..)`.
-Old record selectors, callback wrapper names, module paths, and NULL-default
-helpers are not restored. Use native constructors for record syntax.
+`RenameTerm` runs after frontend identifier validation and collision detection.
+The caller must supply valid, unique names. A fixed `c_` prefix meets these
+requirements for DuckDB functions: it is valid and maps distinct names to distinct
+names. Types and fields are in the separate `CType` category, so they do not
+receive the function prefix.
 
-Released hs-bindgen supports explicit type names in binding specifications.
-Its CLI supports function suffixes, but no function-prefix modifier. This release
-uses the supported generator and a separate compatibility module. A local
-upstream spike adds type, function, constructor, field, and enum name modifiers.
-The spike does not change the package's generator dependency.
+Retained names do not preserve the previous representations. Handles and
+indexes use newtypes. Constant pointers use `ConstPtr`. Struct calls use generated
+records. Old record selectors, callback wrapper names, per-topic module paths,
+and NULL-default helpers are removed. Constructor field types can also change.
 
 ### Const pointers and callbacks
 
 Read a constant string with `ConstPtr` unwrapped for `peekCString`.
 Use `ConstPtr` when passing a `withCString` buffer to a constant argument.
 Keep the buffer alive through the native call.
-An owned string still needs `duckdb_free`, even when it has a const-qualified
+An owned string still needs `c_duckdb_free`, even when it has a const-qualified
 type. Constness does not specify ownership.
 
 Use `toFunPtr` and `fromFunPtr` from
@@ -241,8 +238,15 @@ and its arithmetic dependencies from the package.
 
 Maintainers use `nix-shell dev/nix/generate.nix` and run
 `duckdb-ffi/scripts/generate-bindings.sh`. Use `--check` to check committed output.
+The script compiles and runs `GenerateBindings.hs` in the Nix shell. It creates
+naming and opaque binding specifications from header metadata and the spelling
+map. hs-bindgen, libclang, and the generator's compiler are maintainer tools.
+The preprocessing entry point is in hs-bindgen's internal library. Keep its
+version pinned when you update the driver.
+Consumer builds still need a C compiler for the generated ABI wrappers.
 The script compares output for Linux x86_64/aarch64 and macOS x86_64/ARM64.
-C static assertions check generated layouts against the build compiler.
+The two release artifacts are `FFI.hs` and `abi-checks.c`. The 508 C static
+assertions check generated layouts against the build compiler.
 The script refuses output that differs between targets. An incompatible target
 fails compilation instead of using incompatible layouts.
 
@@ -414,8 +418,8 @@ For most users this is a strict improvement:
 
 ### `duckdb_string_t` Handling
 
-DuckDB 1.5 made it more obvious that `duckdb_string_t_data` must be consumed
-with its explicit length, not by assuming NUL termination.
+Read `c_duckdb_string_t_data` with its explicit length. Do not assume NUL
+termination.
 
 If you have downstream helper code using:
 
@@ -423,13 +427,13 @@ If you have downstream helper code using:
 peekCString ...
 ```
 
-on `duckdb_string_t_data`, switch to a length-aware read such as:
+on `c_duckdb_string_t_data`, switch to a length-aware read such as:
 
 ```haskell
 peekCStringLen ...
 ```
 
-using `duckdb_string_t_length`.
+using `c_duckdb_string_t_length`.
 
 ## Suggested Upgrade Steps
 

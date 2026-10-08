@@ -38,63 +38,63 @@ queryLifecycle =
                 forM_ [createSQL, insertSQL] \sql ->
                     withConstCString sql \cSql ->
                         alloca \resPtr -> do
-                            st <- duckdb_query conn cSql resPtr
+                            st <- c_duckdb_query conn cSql resPtr
                             st @?= DuckDBSuccess
-                            duckdb_destroy_result resPtr
+                            c_duckdb_destroy_result resPtr
 
                 -- Query data
                 withConstCString "SELECT id, name FROM items ORDER BY id" \selectSql ->
                     alloca \resPtr -> do
-                        st <- duckdb_query conn selectSql resPtr
+                        st <- c_duckdb_query conn selectSql resPtr
                         st @?= DuckDBSuccess
 
                         -- Column metadata
-                        columnCount <- duckdb_column_count resPtr
+                        columnCount <- c_duckdb_column_count resPtr
                         columnCount @?= 2
 
-                        rowCount <- duckdb_row_count resPtr
+                        rowCount <- c_duckdb_row_count resPtr
                         rowCount @?= 2
 
-                        rowsChanged <- duckdb_rows_changed resPtr
+                        rowsChanged <- c_duckdb_rows_changed resPtr
                         rowsChanged @?= 0
 
-                        stmtType <- (peek resPtr >>= \rawValue -> duckdb_result_statement_type rawValue)
+                        stmtType <- (peek resPtr >>= \rawValue -> c_duckdb_result_statement_type rawValue)
                         stmtType @?= DUCKDB_STATEMENT_TYPE_SELECT
 
-                        arrowOpts <- duckdb_result_get_arrow_options resPtr
+                        arrowOpts <- c_duckdb_result_get_arrow_options resPtr
                         assertBool "arrow options should not be null" (arrowOpts /= (coerce (nullPtr :: Ptr Void)))
                         alloca \arrowPtr -> do
                             poke arrowPtr arrowOpts
-                            duckdb_destroy_arrow_options arrowPtr
+                            c_duckdb_destroy_arrow_options arrowPtr
 
                         forM_ [0 .. columnCount - 1] \idx -> do
-                            namePtr <- duckdb_column_name resPtr idx
+                            namePtr <- c_duckdb_column_name resPtr idx
                             colName <- (peekCString . coerce) namePtr
                             let expected = if idx == 0 then "id" else "name"
                             colName @?= expected
 
-                            colType <- (getField @"unwrap" <$> duckdb_column_type resPtr idx)
+                            colType <- (getField @"unwrap" <$> c_duckdb_column_type resPtr idx)
                             let expectedType = if idx == 0 then DUCKDB_TYPE_INTEGER else DUCKDB_TYPE_VARCHAR
                             colType @?= expectedType
 
-                            logicalType <- duckdb_column_logical_type resPtr idx
+                            logicalType <- c_duckdb_column_logical_type resPtr idx
                             assertBool "logical type pointer should not be null" (logicalType /= (coerce (nullPtr :: Ptr Void)))
                             alloca \typePtr -> do
                                 poke typePtr logicalType
-                                duckdb_destroy_logical_type typePtr
+                                c_duckdb_destroy_logical_type typePtr
 
-                            dataPtr <- duckdb_column_data resPtr idx
+                            dataPtr <- c_duckdb_column_data resPtr idx
                             assertBool "column data pointer should not be null" (dataPtr /= (coerce (nullPtr :: Ptr Void)))
 
-                            nullmaskPtr <- duckdb_nullmask_data resPtr idx
+                            nullmaskPtr <- c_duckdb_nullmask_data resPtr idx
                             assertBool "nullmask pointer should not be null" (nullmaskPtr /= (coerce (nullPtr :: Ptr Void)))
 
-                        errPtr <- duckdb_result_error resPtr
+                        errPtr <- c_duckdb_result_error resPtr
                         when (errPtr /= (coerce (nullPtr :: Ptr Void))) $ do
                             errMsg <- (peekCString . coerce) errPtr
                             assertBool ("unexpected error: " <> errMsg) False
 
-                        errType <- duckdb_result_error_type resPtr
+                        errType <- c_duckdb_result_error_type resPtr
                         errType @?= DUCKDB_ERROR_INVALID
 
-                        duckdb_destroy_result resPtr
+                        c_duckdb_destroy_result resPtr

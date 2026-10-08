@@ -16,7 +16,7 @@ import Data.IORef (modifyIORef', newIORef, readIORef)
 import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
 import Data.Void (Void)
-import Database.DuckDB.FFI (Duckdb_delete_callback_t (..))
+import Database.DuckDB.FFI (DuckDBDeleteCallback (..))
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (withCString)
 import Foreign.C.Types (CChar)
@@ -28,7 +28,7 @@ The object must be non-null. Its destructor must run after the action.
 -}
 withCallbackResources ::
     ((forall a. IO (FunPtr a) -> IO (FunPtr a)) -> IO r) ->
-    (Ptr Void -> Duckdb_delete_callback_t -> IO ()) ->
+    (Ptr Void -> DuckDBDeleteCallback -> IO ()) ->
     (r -> IO b) ->
     IO b
 withCallbackResources acquire attach action = mask \restore -> do
@@ -46,7 +46,7 @@ withCallbackResources acquire attach action = mask \restore -> do
     restore (action resources)
 
 -- | Transfer one state value to a DuckDB callback state slot.
-transferCallbackState :: (Ptr Void -> Duckdb_delete_callback_t -> IO ()) -> a -> IO ()
+transferCallbackState :: (Ptr Void -> DuckDBDeleteCallback -> IO ()) -> a -> IO ()
 transferCallbackState attach state = mask_ do
     stable <- newStablePtr state
     attach (castPtr (castStablePtrToPtr stable)) callbackStateDestructor
@@ -100,9 +100,9 @@ foreign import ccall "&duckdb_simple_release_callback_state"
     callbackStateDestructorAddress :: FunPtr (Ptr Void -> IO ())
 
 -- | Use the generated callback type for the static destructor address.
-callbackResourcesDestructor :: Duckdb_delete_callback_t
-callbackResourcesDestructor = Duckdb_delete_callback_t (castFunPtr callbackResourcesDestructorAddress)
+callbackResourcesDestructor :: DuckDBDeleteCallback
+callbackResourcesDestructor = DuckDBDeleteCallback (castFunPtr callbackResourcesDestructorAddress)
 
 -- | Use the generated callback type for the static state destructor address.
-callbackStateDestructor :: Duckdb_delete_callback_t
-callbackStateDestructor = Duckdb_delete_callback_t (castFunPtr callbackStateDestructorAddress)
+callbackStateDestructor :: DuckDBDeleteCallback
+callbackStateDestructor = DuckDBDeleteCallback (castFunPtr callbackStateDestructorAddress)

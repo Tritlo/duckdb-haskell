@@ -22,7 +22,7 @@ import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), timeOfDayToTime)
 import Data.UUID (UUID)
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
-import Database.DuckDB.FFI.Compat (
+import Database.DuckDB.FFI (
     pattern DUCKDB_TYPE_BLOB,
     pattern DUCKDB_TYPE_BOOLEAN,
     pattern DUCKDB_TYPE_DOUBLE,

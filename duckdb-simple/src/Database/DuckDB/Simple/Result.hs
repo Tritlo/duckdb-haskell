@@ -16,7 +16,7 @@ import Control.Exception (bracket, evaluate, finally, mask, mask_, onException, 
 import Control.Monad (forM, when, zipWithM)
 import Data.IORef (IORef, atomicModifyIORef', readIORef, writeIORef)
 import qualified Data.Text as Text
-import Database.DuckDB.FFI.Compat
+import Database.DuckDB.FFI
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue)
 import Database.DuckDB.Simple.FromRow (RowParser, parseRow, rowErrorsToSqlError)
 import Database.DuckDB.Simple.Internal
@@ -104,7 +104,7 @@ startStatementStream mode stmt =
                 (errMsg, errType) <- fetchResultError resultPtr
                 throwIO $ mkExecuteError (statementQuery stmt) errMsg errType
             resultType <- peek resultPtr >>= c_duckdb_result_return_type
-            if resultType /= DuckDBResultTypeQueryResult
+            if resultType /= DUCKDB_RESULT_TYPE_QUERY_RESULT
                 then release >> pure Nothing
                 else do
                     columns <- collectResultColumns resultPtr

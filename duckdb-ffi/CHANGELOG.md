@@ -4,13 +4,15 @@
 
 - Generate the complete raw API from the DuckDB and Arrow headers with
   hs-bindgen 1.0. Remove handwritten raw modules, C ABI shims, and the old
-  binding generator. Use native C function names and generated types.
-- Add `Database.DuckDB.FFI.Compat` with generated aliases for the earlier
-  `DuckDBFoo` and `c_duckdb_*` spellings. These aliases retain generated types.
-- Ship generated source. Generate it locally with the maintainer script and
-  pinned Nix toolchain. Consumers need only `base`, `hs-bindgen-runtime`,
+  binding generator. Keep all 158 earlier type names and all 546 `c_duckdb_*`
+  function names directly in `Database.DuckDB.FFI`. Enum constants use C names.
+- Use existing hs-bindgen type specifications and `RenameTerm` configuration
+  through a maintainer Haskell driver. Retained names use generated representations.
+- Ship generated source and 508 C ABI assertions. Generate both files with
+  the maintainer script and pinned Nix toolchain. Consumers need only
+  `base`, `hs-bindgen-runtime`,
   a C compiler, and DuckDB. Compare the four supported native targets and
-  check generated layouts with C static assertions.
+  check generated layouts during each package build.
 - Keep native handle pointees opaque. Do not generate readable instances
   for the placeholder structs in the C header.
 - Move Arrow ownership helpers to `duckdb-simple`. Raw calls use direct struct

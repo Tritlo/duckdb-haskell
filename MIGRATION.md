@@ -1,16 +1,17 @@
-# Migration Guide: DuckDB 1.5 and hs-bindgen
+# Migration guide: DuckDB 1.5 and hs-bindgen
 
 This guide covers the changes needed when upgrading this repository from the
 DuckDB 1.4 line to the DuckDB 1.5 line.
 
-The short version is:
+The hs-bindgen section describes the implementation in this experimental PR.
+We plan to use generated bindings from DuckDB 2.0.0 onwards. The 1.5.x line
+will keep its current modules and public types.
 
 - `duckdb-ffi` uses the DuckDB `1.5.6` C header. The native minimum is 1.5.3.
 - `duckdb-simple` now depends on `duckdb-ffi-1.5`.
-- The raw FFI is generated with hs-bindgen 1.0. It keeps `DuckDBFoo` type names
-  and `c_duckdb_*` function names in `Database.DuckDB.FFI`.
 - The runtime `libduckdb` must be >= 1.5.3 and < 1.6. High-level SQL operations
-  retain their behavior. Types that expose raw FFI values change.
+  retain their behavior. The generated API changes types that expose raw FFI
+  values.
 
 ## Native DuckDB 1.5.6
 
@@ -94,15 +95,15 @@ add `instance ToField YourType`. The default implementation requires `Show`.
 - Update applications that use the FFI directly to the generated types.
   Import `Database.DuckDB.FFI`.
 
-## Who Needs to Change What
+## Who needs to change what
 
 If you use `duckdb-ffi` directly:
 
 - Rebuild and relink against DuckDB `1.5.6`.
 - Update any packaging, Nix, CI, Docker, or deployment config that still pulls
   a 1.4 `libduckdb`.
-- Import generated functions and types from `Database.DuckDB.FFI`. Update enum
-  constants, handle representations, const pointers, and struct arguments/results.
+- For the generated API, import functions and types from `Database.DuckDB.FFI`.
+  Update handles, const pointers, and struct arguments/results as described below.
 
 If you use `duckdb-simple`:
 
@@ -112,18 +113,10 @@ If you use `duckdb-simple`:
 - New 1.5 helpers are available from dedicated modules instead of being folded
   into the core query API.
 
-## Runtime Compatibility
+## Runtime compatibility
 
-The biggest practical change is the runtime baseline.
-
-Before:
-
-- The packages were validated against DuckDB 1.4.x.
-
-Now:
-
-- `duckdb-ffi-1.5.6.0` and `duckdb-simple-0.3.0.0` require a DuckDB 1.5
-  shared library >= 1.5.3 and < 1.6 at runtime.
+`duckdb-ffi-1.5.6.0` and `duckdb-simple-0.3.0.0` require a DuckDB 1.5
+shared library >= 1.5.3 and < 1.6 at runtime.
 
 If your executable still finds a 1.4 shared library first, you will see symbol
 lookup failures for new 1.5 APIs such as config, catalog, or logging symbols.
@@ -146,27 +139,35 @@ LD_LIBRARY_PATH=/path/to/duckdb-1.5 \
 
 ## `duckdb-ffi` Migration
 
-hs-bindgen 1.0 generates all 546 native functions from the pinned DuckDB 1.5.6
-header. It also generates struct layouts, the VARCHAR union, Arrow records,
-enum patterns, callback constructors/invokers, and C ABI wrappers.
-`Database.DuckDB.FFI` contains the native API.
-The 44 handwritten modules, 22 manual `Storable` instances, C shims, and old
-binding generator are removed. The package ships generated source and C ABI
-assertions in release archives. Git does not track these files. Maintainers
-generate both files from the pinned headers before checkout builds or releases.
-Consumers of release archives do not run the generator.
+This experiment uses hs-bindgen 1.0 with the DuckDB 1.5.6 headers so we can
+compare the generated API with the released bindings. It generates all 546
+native functions, struct layouts, the VARCHAR union, Arrow records, enum
+patterns, callback constructors/invokers, and C ABI wrappers.
+
+The main migration cost is the module structure. One generated
+`Database.DuckDB.FFI` replaces 44 handwritten modules. The per-topic source
+files and the exposed `Database.DuckDB.FFI.Deprecated` module are gone.
+Supported and deprecated native functions now share the same module.
+Replace imports of `Database.DuckDB.FFI.Deprecated` with `Database.DuckDB.FFI`.
+Arrow release helpers move to `Database.DuckDB.Simple.Arrow`.
+
+Release archives contain the generated source and C ABI assertions. Maintainers
+generate them before checkout builds and releases. Git does not track these
+files, and consumers of release archives do not run the generator.
 
 ### Names and types
 
-| Previous raw API | Generated API |
+The driver keeps the `DuckDBFoo` type names, `c_duckdb_*` function names, and
+enum pattern names. These are the changes that callers need to make:
+
+| Previous representation or call | Generated API |
 | --- | --- |
-| `c_duckdb_open` | `c_duckdb_open` |
-| `DuckDBConnection` | `DuckDBConnection`, a typed pointer newtype |
-| `DuckDBIdx` | `DuckDBIdx`, a `Word64` newtype |
+| Pointer aliases for handles | Typed pointer newtypes such as `DuckDBConnection` |
+| `Word64` indexes | The `DuckDBIdx` newtype |
 | `DuckDBTypeInteger` in a native call | `DuckDBType DuckDBTypeInteger` |
 | `CString` for a const string | `ConstPtr CChar` |
-| Scalar temporal wrappers | Records such as `DuckDBDate` and `DuckDBTimestamp` |
-| Handwritten record selectors | Record fields through `OverloadedRecordDot` |
+| `unDuckDBDate date` | `date.days` through `OverloadedRecordDot` |
+| `duckDBHugeIntLower value` | `value.lower` through `OverloadedRecordDot` |
 | Pointer/out-parameter ABI shims | Direct struct arguments and results |
 
 The C typedef `duckdb_type` is a separate generated `DuckDBType` newtype around
@@ -184,17 +185,17 @@ Generated struct marshalling does not transfer ownership.
 
 ### Naming configuration
 
-The maintainer driver uses existing hs-bindgen 1.0 APIs. A naming rule derives
-`DuckDBFoo` names from C declarations and detects callbacks from parsed types.
-It retains all 158 earlier type names with five spelling exceptions. Opaque
-pointee names end in `Struct`. Callback names end in `Fun` or `Callback`.
-The driver supplies these names as prescriptive binding specifications.
-The `RenameTerm` category option adds `c_` to all 546 function names.
-Record and newtype constructors use the type names. A small pass over typed
-output retains all 148 earlier enum pattern names. It updates enum conversion
-instances and sequence bounds with the patterns. It checks for duplicate names
-before the standard module renderer runs. There is no alias module or table of
-individual enum constants. C values, types, layouts, and wrappers do not change.
+The driver derives type names from C declarations and detects callbacks from
+parsed types. Five spelling exceptions retain all 158 earlier type names. Opaque
+pointee names end in `Struct`; callback names end in `Fun` or `Callback`.
+It supplies these names through hs-bindgen's type specifications.
+`RenameTerm` adds `c_` to the 546 function names.
+
+A small pass over typed output retains the 148 earlier enum pattern names.
+It updates enum conversion instances and sequence bounds with the patterns,
+then checks for duplicate names before the standard renderer runs. The naming
+pass preserves C values, types, layouts, and wrappers. It needs no alias module
+or table of individual constants.
 
 ```haskell
 import Database.DuckDB.FFI
@@ -208,17 +209,9 @@ requirements for DuckDB functions: it is valid and maps distinct names to distin
 names. Types and fields are in the separate `CType` category, so they do not
 receive the function prefix.
 
-Retained names do not preserve the previous representations. Handles and
-indexes use newtypes. Constant pointers use `ConstPtr`. Struct calls use generated
-records. Old record selectors, callback wrapper names, per-topic module paths,
-and NULL-default helpers are removed. Constructor field types can also change.
-
-The driver keeps the generated representations. Experiments with hs-bindgen
-1.0 accepted `typealias`, record-field, and constructor specifications but did
-not apply them to generated output. Giving the enum and its typedef the same
-Haskell name dropped dependent functions. The function coverage check rejected
-that output. Replacing generated wrappers and instances would add too much
-custom code to recover those parts of the old API.
+The retained names use the generated representations described above.
+Old callback wrapper names and NULL-default helpers are removed.
+Constructor field types can also change.
 
 ### Const pointers and callbacks
 
@@ -236,8 +229,8 @@ longer call it. Catch Haskell exceptions inside the callback.
 Generated callbacks do not implement ownership transfer or exception cleanup.
 The static callback destructors in `duckdb-simple` retain those rules.
 
-Arrow release helpers now live in `Database.DuckDB.Simple.Arrow`.
-They still mask asynchronous exceptions and check the release pointer.
+Arrow release helpers still mask asynchronous exceptions and check the release
+pointer.
 Deprecated Arrow handles point directly to Arrow records.
 The old synthetic internal-pointer helpers and NULL-default C shims are removed.
 Raw callers must supply valid input and output storage.
@@ -264,22 +257,17 @@ Git tracks the checksum manifest and ignores both generated files. See
 updates. CI generates the files, verifies their checksums, and supplies them
 to build jobs as an artifact. `scripts/release.sh` runs the pinned generation
 command with `--check` before it prepares documentation and source archives.
-The script compiles and runs `GenerateBindings.hs` in the Nix shell. It creates
-naming and opaque binding specifications from typed C declarations and aliases.
-The driver reads generated Haskell declarations to check function coverage and
-collect layout assertions. It evaluates native ABI expressions through the
-library's Clang parser. Target generation and comparison also run in the driver.
-The shell compiles the driver and verifies the checksums. The temporary naming
-specification file remains because the configuration API accepts a file path.
-hs-bindgen, libclang, and the generator's compiler are maintainer tools.
-The preprocessing entry point is in hs-bindgen's internal library. Keep its
-version pinned when you update the driver.
-Consumer builds still need a C compiler for the generated ABI wrappers.
-The script compares output for Linux x86_64/aarch64 and macOS x86_64/ARM64.
-The two release artifacts are `FFI.hs` and `abi-checks.c`. The 508 C static
-assertions check generated layouts against the build compiler.
-The script refuses output that differs between targets. An incompatible target
-fails compilation instead of using incompatible layouts.
+The shell compiles and runs `GenerateBindings.hs`. The driver reads typed C
+and Haskell declarations to set names, keep handles opaque, check function
+coverage, and collect layout assertions. It evaluates native ABI expressions
+through the library's Clang parser. A temporary naming specification is needed
+because the configuration API accepts a file path. The driver uses hs-bindgen's
+internal library, so keep its version pinned when updating the generator.
+
+Generation must produce identical output for Linux x86_64/aarch64 and macOS
+x86_64/ARM64. The two release artifacts are `FFI.hs` and `abi-checks.c`.
+During consumer builds, 508 C static assertions check generated layouts against
+the build compiler. An incompatible target fails compilation.
 
 The generator uses `OmitFieldPrefixes`, `DuplicateRecordFields`, and
 `NoFieldSelectors`. Default field prefixes collide with DECIMAL width/scale
@@ -314,25 +302,26 @@ Struct results can contain borrowed pointers. A copied struct is not a copied
 native allocation. Keep its owner alive and free each owned allocation once.
 The generator checks the ABI. It cannot infer these ownership rules.
 
-### binding-combinators assessment
+### Release plan
 
-A native prototype used
-[binding-combinators](https://github.com/well-typed/binding-combinators/tree/e9b54b56791538a784cde2fdf796f2838248ab80)
-for handle outputs, status checks, UTF-8 input, logical types, and error cleanup.
-The library can reduce marshalling code. It does not yet replace this package's
-ownership and cancellation code. Its current runtime bound excludes
-`hs-bindgen-runtime-1.0`, so the prototype needed a scoped bound override.
+We plan to use hs-bindgen from DuckDB 2.0.0 onwards. The 1.5.x packages will keep
+their current module structure and public API. Bug fixes that preserve the API
+can ship as `1.5.6.1`.
 
-A registered DuckDB callback must remain allocated after registration returns.
-The library's scoped `funPtrIn` frees it when the call returns. Owned strings
-need `duckdb_free`. Native results can need destruction even when their status
-indicates failure. Resource acquisition also needs masking before the native
-call returns an owned value. These paths need custom marshallers. This revision
-does not add binding-combinators as a package dependency.
+Under the [Haskell Package Versioning Policy](https://pvp.haskell.org/), removing
+modules or changing public types requires a change to the first two version
+components. Neither `1.5.6.1` nor `1.5.7.0` signals this API break. Using the
+DuckDB 2.0 release gives the Haskell migration a major version change while
+keeping the package and native library versions together.
 
-## `duckdb-simple` Migration
+This PR uses 1.5.6 headers for comparison. Before a 2.0 release, update the
+headers and native library pins, regenerate the bindings, and run the compiler,
+native, platform, and leak checks. Update `duckdb-simple`'s version and dependency
+bounds for the generated API at that point.
 
-### Existing Query Code
+## `duckdb-simple` migration
+
+### Existing query code
 
 Most `duckdb-simple` code should not need source changes.
 
@@ -344,7 +333,7 @@ The following remain source-compatible:
 - `ToField`/`FromField`-based row and parameter handling
 - existing scalar function registration with `createFunction`
 
-### New Modules
+### New modules
 
 DuckDB 1.5 features are exposed in additive modules:
 
@@ -357,7 +346,7 @@ DuckDB 1.5 features are exposed in additive modules:
 Import them only where needed. The main `Database.DuckDB.Simple` module stays
 focused on the core query interface.
 
-### Opening with Config
+### Opening with config
 
 If you previously created connections only with:
 
@@ -379,7 +368,7 @@ or:
 withConnectionWithConfig ":memory:" [("threads", "1")] $ \conn -> ...
 ```
 
-### Stateful Scalar Functions
+### Stateful scalar functions
 
 DuckDB 1.5 adds scalar-function init/state hooks. In `duckdb-simple`, that is
 surfaced as `createFunctionWithState`.
@@ -406,7 +395,7 @@ createFunctionWithState conn "hs_counter" (newIORef (0 :: Int)) $ \ref -> do
 This is an additive feature. Existing `createFunction` users do not need to
 rewrite working code.
 
-### Copy Functions
+### Copy functions
 
 DuckDB 1.5 adds C APIs for custom `COPY` integrations. `duckdb-simple` now
 exposes `registerCopyToFunction` in `Database.DuckDB.Simple.Copy`.
@@ -435,9 +424,9 @@ DuckDB 1.5 adds custom log storage registration. `duckdb-simple` now exposes
 This is optional advanced functionality. Existing applications do not need to
 change anything unless they want to capture DuckDB log events.
 
-## Behavior Changes Worth Noting
+## Behavior changes worth noting
 
-### `TIME_NS` Decoding
+### `TIME_NS` decoding
 
 The test suite was updated because DuckDB 1.5 now successfully decodes
 `TIME_NS`, where older expectations treated that as unsupported.
@@ -447,7 +436,7 @@ For most users this is a strict improvement:
 - code that already handled `FieldTime` continues to work
 - tests that expected a failure for `TIME_NS` should be updated
 
-### `duckdb_string_t` Handling
+### `duckdb_string_t` handling
 
 Read `c_duckdb_string_t_data` with its explicit length. Do not assume NUL
 termination.
@@ -466,7 +455,7 @@ peekCStringLen ...
 
 using `c_duckdb_string_t_length`.
 
-## Suggested Upgrade Steps
+## Suggested upgrade steps
 
 1. Upgrade the Haskell packages to:
    - `duckdb-ffi-1.5.6.0`
@@ -477,7 +466,7 @@ using `c_duckdb_string_t_length`.
    `TIME_NS` or string helper assumptions.
 5. Adopt the new modules only where you need 1.5-specific features.
 
-## Repository Notes
+## Repository notes
 
 Relevant release notes live in:
 

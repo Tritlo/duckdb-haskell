@@ -1,5 +1,9 @@
 # duckdb-haskell
 
+This PR evaluates hs-bindgen with the DuckDB 1.5.6 headers. We plan to use the
+generated bindings from DuckDB 2.0.0 onwards. The 1.5.x line will keep its current
+modules and public API.
+
 ## duckdb-ffi
 
 Available on [Hackage](https://hackage.haskell.org/package/duckdb-ffi).
@@ -15,7 +19,7 @@ values, callback conversions, and C ABI wrappers before release.
   appenders, and Arrow integration.
 - Exposes generated bindings in `Database.DuckDB.FFI`.
 - Keeps the `DuckDBFoo` type names and `c_duckdb_*` function names directly
-  in the generated API. Enum constants use their C header names.
+  in the generated API, along with the earlier enum pattern names.
 - Includes integration tests for the native bindings.
 - Supports DuckDB >= 1.5.3 and < 1.6, using the released 1.5.6 C header.
 

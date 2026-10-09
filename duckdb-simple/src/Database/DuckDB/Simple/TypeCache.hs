@@ -26,6 +26,7 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Database.DuckDB.FFI
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), destroyLogicalType, logicalTypeToRep)
+import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Utils (fillBytes)
 import Foreign.Ptr (Ptr, nullPtr)
@@ -79,8 +80,8 @@ cachedLogicalType cache = \case
     LogicalTypeScalar DuckDBTypeVariant -> nativeTypes cache >>= copyLogicalType . nativeVariant
     LogicalTypeGeometry (Just crs) -> do
         NativeTypes{nativeGeometry} <- nativeTypes cache
-        maybe (c_duckdb_create_logical_type DuckDBTypeGeometry) copyLogicalType (Map.lookup crs nativeGeometry)
-    LogicalTypeGeometry Nothing -> c_duckdb_create_logical_type DuckDBTypeGeometry
+        maybe (c_duckdb_create_logical_type (DuckDBType DuckDBTypeGeometry)) copyLogicalType (Map.lookup crs nativeGeometry)
+    LogicalTypeGeometry Nothing -> c_duckdb_create_logical_type (DuckDBType DuckDBTypeGeometry)
     other -> throwIO (userError ("duckdb-simple: the type cache cannot create " <> show other))
 
 {- | Get the native types. Read them on first use with a separate connection,
@@ -124,7 +125,7 @@ columnTypes result count = go [] 0
         | column == count = pure (reverse taken)
         | otherwise = do
             logical <- c_duckdb_column_logical_type result (fromIntegral column) `onException` mapM_ destroyLogicalType taken
-            when (logical == nullPtr) do
+            when (logical == DuckDBLogicalType nullPtr) do
                 mapM_ destroyLogicalType taken
                 throwIO (userError "duckdb-simple: the type query returned no type")
             go (logical : taken) (column + 1)
@@ -151,22 +152,22 @@ withTypeQuery :: DuckDBConnection -> Text -> [Text] -> (Ptr DuckDBResult -> IO a
 withTypeQuery connection sql parameters action =
     BS.useAsCString (TextEncoding.encodeUtf8 sql) \sqlPtr ->
         alloca \statementPtr -> do
-            poke statementPtr nullPtr
-            bracket (c_duckdb_prepare connection sqlPtr statementPtr) (const (c_duckdb_destroy_prepare statementPtr)) \prepared -> do
+            poke statementPtr (DuckDBPreparedStatement nullPtr)
+            bracket (c_duckdb_prepare connection (ConstPtr sqlPtr) statementPtr) (const (c_duckdb_destroy_prepare statementPtr)) \prepared -> do
                 statement <- peek statementPtr
                 when (prepared /= DuckDBSuccess) do
-                    errorPtr <- c_duckdb_prepare_error statement
+                    ConstPtr errorPtr <- c_duckdb_prepare_error statement
                     message <- if errorPtr == nullPtr then pure "prepare failed" else TextEncoding.decodeUtf8 <$> BS.packCString errorPtr
                     queryFailed message
                 forM_ (zip [1 ..] parameters) \(index, parameter) ->
                     BS.useAsCStringLen (TextEncoding.encodeUtf8 parameter) \(ptr, len) -> do
-                        bound <- c_duckdb_bind_varchar_length statement index ptr (fromIntegral len)
+                        bound <- c_duckdb_bind_varchar_length statement index (ConstPtr ptr) (fromIntegral len)
                         when (bound /= DuckDBSuccess) (queryFailed ("cannot bind CRS " <> parameter))
                 alloca \result -> do
                     fillBytes result 0 (sizeOf (undefined :: DuckDBResult))
                     bracket (c_duckdb_execute_prepared statement result) (const (c_duckdb_destroy_result result)) \executed -> do
                         when (executed /= DuckDBSuccess) do
-                            errorPtr <- c_duckdb_result_error result
+                            ConstPtr errorPtr <- c_duckdb_result_error result
                             message <- if errorPtr == nullPtr then pure "execution failed" else TextEncoding.decodeUtf8 <$> BS.packCString errorPtr
                             queryFailed message
                         action result

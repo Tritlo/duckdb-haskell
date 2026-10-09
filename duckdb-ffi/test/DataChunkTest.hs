@@ -1,15 +1,21 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE TypeApplications #-}
 
 module DataChunkTest (tests) where
 
 import Control.Exception (bracket)
 import Control.Monad (forM_, void, when, (>=>))
+import Data.Coerce (coerce)
 import Data.Int (Int32)
+import Data.Void (Void)
 import Database.DuckDB.FFI
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Array (withArray)
-import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
+import Foreign.Ptr (Ptr, nullPtr, plusPtr)
 import Foreign.Storable (peek, poke, sizeOf)
+import GHC.Records (getField)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (testCase, (@?=))
 import Utils (setAllValid, withLogicalType)
@@ -59,7 +65,7 @@ dataChunkReset =
 -- Helpers -------------------------------------------------------------------
 
 withIntegerLogicalType :: (DuckDBLogicalType -> IO a) -> IO a
-withIntegerLogicalType = withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger)
+withIntegerLogicalType = withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger))
 
 withDataChunk :: IO DuckDBDataChunk -> (DuckDBDataChunk -> IO a) -> IO a
 withDataChunk acquire = bracket acquire destroyChunk
@@ -69,12 +75,12 @@ withDataChunk acquire = bracket acquire destroyChunk
 fillVectorWithSequence :: DuckDBVector -> [Int32] -> IO ()
 fillVectorWithSequence vec values = do
     colType <- c_duckdb_vector_get_column_type vec
-    withLogicalType (pure colType) (c_duckdb_get_type_id >=> (@?= DuckDBTypeInteger))
+    withLogicalType (pure colType) ((fmap (getField @"unwrap") . c_duckdb_get_type_id) >=> (@?= DuckDBTypeInteger))
     void (c_duckdb_vector_ensure_validity_writable vec)
     dataPtrRaw <- c_duckdb_vector_get_data vec
-    let dataPtr = castPtr dataPtrRaw :: Ptr Int32
+    let dataPtr = coerce dataPtrRaw :: Ptr Int32
     validity <- c_duckdb_vector_get_validity vec
-    when (validity /= nullPtr) $ setAllValid validity (length values)
+    when (validity /= (coerce (nullPtr :: Ptr Void))) $ setAllValid validity (length values)
     forM_ (zip [0 ..] values) (uncurry (pokeElem dataPtr))
 
 verifyChunkContents :: DuckDBDataChunk -> [Int32] -> IO ()
@@ -83,7 +89,7 @@ verifyChunkContents chunk expected = do
     sz @?= fromIntegral (length expected)
     vec <- c_duckdb_data_chunk_get_vector chunk 0
     dataPtrRaw <- c_duckdb_vector_get_data vec
-    let dataPtr = castPtr dataPtrRaw :: Ptr Int32
+    let dataPtr = coerce dataPtrRaw :: Ptr Int32
     forM_ (zip [0 ..] expected) \(idx, val) -> peekElem dataPtr idx >>= (@?= val)
 
 -- validity helpers ----------------------------------------------------------

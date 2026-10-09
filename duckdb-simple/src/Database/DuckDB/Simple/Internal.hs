@@ -1,4 +1,5 @@
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE MagicHash #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE PatternSynonyms #-}
@@ -60,6 +61,7 @@ import Control.Concurrent (forkIO, newEmptyMVar, putMVar, readMVar, threadDelay,
 import Control.Exception (Exception, SomeException, bracket, bracket_, mask, mask_, onException, throwIO, try, uninterruptibleMask_)
 import Control.Monad (when)
 import qualified Data.ByteString as BS
+import Data.Coerce (Coercible, coerce)
 import Data.IORef (IORef, readIORef)
 import Data.List (find)
 import Data.String (IsString (..))
@@ -68,15 +70,15 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.Foreign as TextForeign
 import Database.DuckDB.FFI (
+    DUCKDB_TYPE,
     DuckDBClientContext,
     DuckDBConnection,
-    DuckDBDataChunk,
+    DuckDBDataChunk (..),
     DuckDBDatabase,
     DuckDBErrorType,
     DuckDBPreparedStatement,
     DuckDBResult,
     DuckDBState,
-    DuckDBType,
     DuckDBValue,
     c_duckdb_connection_get_client_context,
     c_duckdb_destroy_client_context,
@@ -84,6 +86,7 @@ import Database.DuckDB.FFI (
     c_duckdb_destroy_result,
     c_duckdb_destroy_value,
     c_duckdb_execute_prepared,
+    c_duckdb_execute_prepared_streaming,
     c_duckdb_fetch_chunk,
     c_duckdb_interrupt,
     c_duckdb_prepare_error,
@@ -93,11 +96,12 @@ import Database.DuckDB.FFI (
     pattern DuckDBSuccess,
  )
 import qualified Database.DuckDB.FFI as FFI
-import Database.DuckDB.FFI.Deprecated (c_duckdb_execute_prepared_streaming)
 import Database.DuckDB.Simple.FromField (FieldValue)
 import Database.DuckDB.Simple.LogicalRep (destroyLogicalType)
 import Database.DuckDB.Simple.TypeCache (TypeCache)
+import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (CString)
+import Foreign.C.Types (CChar)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Utils (fillBytes)
 import Foreign.Ptr (Ptr, nullPtr)
@@ -166,7 +170,7 @@ data ResultMode = MaterializedResult | StreamingResult
 data StatementStreamColumn = StatementStreamColumn
     { statementStreamColumnIndex :: Int
     , statementStreamColumnName :: Text
-    , statementStreamColumnType :: DuckDBType
+    , statementStreamColumnType :: DUCKDB_TYPE
     }
 
 -- | Currently loaded data chunk plus iteration cursor.
@@ -216,15 +220,15 @@ statementClosedError Statement{statementQuery} =
         }
 
 -- | Provide a UTF-8 encoded C string view of the query text.
-withQueryCString :: Query -> (CString -> IO a) -> IO a
+withQueryCString :: Query -> (ConstPtr CChar -> IO a) -> IO a
 withQueryCString query@(Query txt) action
     | Text.any (== '\0') txt =
         throwIO (SQLError (Text.pack "duckdb-simple: SQL contains NUL") Nothing (Just query))
-    | otherwise = TextForeign.withCString txt action
+    | otherwise = TextForeign.withCString txt (action . ConstPtr)
 
 -- | Copy a NUL-terminated UTF-8 string from DuckDB.
-peekUtf8CString :: CString -> IO Text
-peekUtf8CString ptr = TextEncoding.decodeUtf8 <$> BS.packCString ptr
+peekUtf8CString :: (Coercible p CString) => p -> IO Text
+peekUtf8CString ptr = TextEncoding.decodeUtf8 <$> BS.packCString (coerce ptr)
 
 -- | Execute a query and destroy its result after success or failure.
 withResult :: Connection -> Query -> (Ptr DuckDBResult -> IO DuckDBState) -> (Ptr DuckDBResult -> IO a) -> IO a
@@ -251,12 +255,12 @@ executePreparedResult StreamingResult = c_duckdb_execute_prepared_streaming
 -}
 fetchResultChunk :: ResultMode -> Connection -> Ptr DuckDBResult -> IO DuckDBDataChunk
 fetchResultChunk MaterializedResult conn result =
-    withConnectionHandle conn $ \_ -> c_duckdb_fetch_chunk result
+    withConnectionHandle conn $ \_ -> peek result >>= c_duckdb_fetch_chunk
 fetchResultChunk StreamingResult conn result =
     alloca $ \chunkPtr -> mask_ $ do
-        poke chunkPtr nullPtr
+        poke chunkPtr (DuckDBDataChunk nullPtr)
         let fetch = do
-                chunk <- c_duckdb_fetch_chunk result
+                chunk <- peek result >>= c_duckdb_fetch_chunk
                 poke chunkPtr chunk
                 pure DuckDBSuccess
         (runInterruptibleQuery conn fetch >> peek chunkPtr)
@@ -303,7 +307,7 @@ interruptRetryDelayMicros = 10 * 1000
 {- | The column type names that 'Database.DuckDB.Simple.ToField.DuckDBColumnType'
 instances use, and the types they denote. Each type has one name.
 -}
-duckDBTypeNames :: [(Text, DuckDBType)]
+duckDBTypeNames :: [(Text, DUCKDB_TYPE)]
 duckDBTypeNames =
     map
         (\(name, dtype) -> (Text.pack name, dtype))
@@ -338,11 +342,11 @@ duckDBTypeNames =
         ]
 
 -- | Find the type that a column type name denotes.
-duckDBTypeFromName :: Text -> Maybe DuckDBType
+duckDBTypeFromName :: Text -> Maybe DUCKDB_TYPE
 duckDBTypeFromName name = lookup name duckDBTypeNames
 
 -- | Find the column type name of a type. Other types use their 'Show' text.
-duckDBTypeToName :: DuckDBType -> Text
+duckDBTypeToName :: DUCKDB_TYPE -> Text
 duckDBTypeToName dtype =
     maybe (Text.pack (show dtype)) fst (find ((== dtype) . snd) duckDBTypeNames)
 
@@ -352,14 +356,14 @@ when DuckDB reports no message.
 fetchPrepareError :: Text -> DuckDBPreparedStatement -> IO Text
 fetchPrepareError fallback statement = do
     messagePtr <- c_duckdb_prepare_error statement
-    if messagePtr == nullPtr then pure fallback else peekUtf8CString messagePtr
+    if messagePtr == ConstPtr nullPtr then pure fallback else peekUtf8CString messagePtr
 
 -- | Copy a result error while its native result remains alive.
 fetchResultError :: Ptr DuckDBResult -> IO (Text, Maybe DuckDBErrorType)
 fetchResultError resultPtr = do
     msgPtr <- c_duckdb_result_error resultPtr
     message <-
-        if msgPtr == nullPtr
+        if msgPtr == ConstPtr nullPtr
             then pure (Text.pack "duckdb-simple: query failed")
             else peekUtf8CString msgPtr
     errorType <- c_duckdb_result_error_type resultPtr
@@ -378,7 +382,7 @@ mkExecuteError queryText message errorType =
 throwResultError :: Query -> Ptr DuckDBResult -> IO ()
 throwResultError queryText resPtr = do
     errorPtr <- c_duckdb_result_error resPtr
-    when (errorPtr /= nullPtr) $ do
+    when (errorPtr /= ConstPtr nullPtr) $ do
         (message, errorType) <- fetchResultError resPtr
         throwIO (mkExecuteError queryText message errorType)
 

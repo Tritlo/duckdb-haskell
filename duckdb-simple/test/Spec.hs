@@ -625,7 +625,7 @@ duckdbCastCases =
     , successCase "UUID" (quoted $ UUID.toText uuid) "UUID" (ExpectEquals (FieldUUID uuid))
     , successCase "BIT" (quoted $ Text.pack $ show bits) "BIT" (ExpectEquals (FieldBit bits))
     , successCase "ARRAY" (quoted "[1,2,3]") "INTEGER[3]" (ExpectEquals (FieldArray arrayElements))
-    , -- This one is broken upstream, instead of a DuckDBTypeTimeNs, we get a DuckDBType 0
+    , -- This one is broken upstream, instead of a DuckDBTypeTimeNs, we get a DUCKDB_TYPE 0
       successCase "TIME_NS" (quoted "03:04:05.123456789") "TIME_NS" (ExpectEquals (FieldTime (TimeOfDay 3 4 5.123456789)))
     , successDirect "STRUCT" "{'a': 1, 'b': 2}" (expectStruct structFields)
     , successDirect "UNION" "CAST(union_value(a := 42) AS UNION(a INTEGER, b VARCHAR))" (expectUnion 0 (Text.pack "a") (FieldInt32 42))

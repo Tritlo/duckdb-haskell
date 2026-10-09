@@ -2,14 +2,18 @@
 
 module ErrorDataTest (tests) where
 
+import Data.Coerce (coerce)
+import Data.Void (Void)
 import Database.DuckDB.FFI
-import Foreign.C.String (peekCString, withCString)
+import Foreign.C.ConstPtr (ConstPtr (..))
+import Foreign.C.String (peekCString)
 import Foreign.C.Types (CBool (..))
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (nullPtr)
+import Foreign.Ptr (Ptr, nullPtr)
 import Foreign.Storable (poke)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
+import Utils (withConstCString)
 
 tests :: TestTree
 tests =
@@ -20,15 +24,15 @@ tests =
 createInspectDestroy :: TestTree
 createInspectDestroy =
     testCase "create error data, inspect properties, destroy" $
-        withCString "synthetic failure" \message -> do
+        withConstCString "synthetic failure" \message -> do
             errData <- c_duckdb_create_error_data DuckDBErrorInvalid message
-            assertBool "error data pointer should not be null" (errData /= nullPtr)
+            assertBool "error data pointer should not be null" (errData /= (coerce (nullPtr :: Ptr Void)))
 
             errType <- c_duckdb_error_data_error_type errData
             errType @?= DuckDBErrorInvalid
 
             retrievedMessagePtr <- c_duckdb_error_data_message errData
-            retrievedMessage <- peekCString retrievedMessagePtr
+            retrievedMessage <- (peekCString . coerce) retrievedMessagePtr
             retrievedMessage @?= "synthetic failure"
 
             hasErr <- c_duckdb_error_data_has_error errData

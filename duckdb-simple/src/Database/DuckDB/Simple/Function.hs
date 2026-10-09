@@ -58,11 +58,13 @@ import Database.DuckDB.Simple.Internal (
  )
 import Database.DuckDB.Simple.Materialize (prepareVectorReader)
 import Database.DuckDB.Simple.Ok (Ok (..))
+import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (FunPtr, Ptr, castPtr, nullPtr)
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, deRefStablePtr)
 import Foreign.Storable (poke, pokeElemOff)
 import GHC.Float (float2Double)
+import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
 
 data ScalarFunctionResources = ScalarFunctionResources
     { scalarFunctionExecPtr :: !DuckDBScalarFunctionFun
@@ -150,7 +152,7 @@ instance (FunctionResult a) => FunctionResult (Maybe a) where
 
 -- | Argument types supported by the scalar function machinery.
 class FunctionArg a where
-    argumentType :: Proxy a -> DuckDBType
+    argumentType :: Proxy a -> DUCKDB_TYPE
 
 instance FunctionArg Int where
     argumentType _ = DuckDBTypeBigInt
@@ -196,7 +198,7 @@ instance (FunctionArg a) => FunctionArg (Maybe a) where
 
 -- | Typeclass describing Haskell functions that can be exposed to DuckDB.
 class Function a where
-    argumentTypes :: Proxy a -> [DuckDBType]
+    argumentTypes :: Proxy a -> [DUCKDB_TYPE]
     returnType :: Proxy a -> ScalarType
     isVolatile :: Proxy a -> Bool
     applyFunction :: [Field] -> a -> IO ScalarValue
@@ -230,15 +232,15 @@ instance {-# OVERLAPPABLE #-} (FromField a, FunctionArg a, Function r) => Functi
 createFunction :: forall f. (Function f) => Connection -> Text -> f -> IO ()
 createFunction conn name fn =
     registerScalarFunction conn name (Proxy :: Proxy f) \allocate -> do
-        scalarFunctionExecPtr <- allocate (mkScalarFun (scalarFunctionHandler fn))
+        scalarFunctionExecPtr <- DuckDBScalarFunctionFun <$> allocate (toFunPtr (DuckDBScalarFunctionFun_Aux (scalarFunctionHandler fn)))
         pure ScalarFunctionResources{scalarFunctionExecPtr, scalarFunctionInitPtr = Nothing}
 
 -- | Register a scalar function with per-worker thread-local state.
 createFunctionWithState :: forall s f. (Function f) => Connection -> Text -> IO s -> (s -> f) -> IO ()
 createFunctionWithState conn name initState mkFn =
     registerScalarFunction conn name (Proxy :: Proxy f) \allocate -> do
-        scalarFunctionExecPtr <- allocate (mkScalarFun (scalarFunctionHandlerWithState mkFn))
-        initPtr <- allocate (mkScalarInitFun (scalarFunctionInitHandler initState))
+        scalarFunctionExecPtr <- DuckDBScalarFunctionFun <$> allocate (toFunPtr (DuckDBScalarFunctionFun_Aux (scalarFunctionHandlerWithState mkFn)))
+        initPtr <- DuckDBScalarFunctionInitFun <$> allocate (toFunPtr (DuckDBScalarFunctionInitFun_Aux (scalarFunctionInitHandler initState)))
         pure ScalarFunctionResources{scalarFunctionExecPtr, scalarFunctionInitPtr = Just initPtr}
 
 -- | Configure a scalar function and transfer its callbacks to DuckDB.
@@ -247,13 +249,13 @@ registerScalarFunction conn name proxy acquire = do
     when (Text.null name || Text.any (== '\0') name) $
         throwIO (functionInvocationError "duckdb-simple: invalid scalar function name")
     bracket c_duckdb_create_scalar_function cleanupScalarFunction \scalarFun -> do
-        when (scalarFun == nullPtr) $
+        when (scalarFun == DuckDBScalarFunction nullPtr) $
             throwIO (functionInvocationError "duckdb-simple: failed to allocate scalar function")
         withCallbackResources
             acquire
             (c_duckdb_scalar_function_set_extra_info scalarFun)
             \ScalarFunctionResources{scalarFunctionExecPtr, scalarFunctionInitPtr} -> do
-                TextForeign.withCString name $ c_duckdb_scalar_function_set_name scalarFun
+                TextForeign.withCString name $ c_duckdb_scalar_function_set_name scalarFun . ConstPtr
                 forM_ (argumentTypes proxy) \dtype ->
                     withLogicalType dtype $ c_duckdb_scalar_function_add_parameter scalarFun
                 withLogicalType (duckTypeForScalar (returnType proxy)) $ c_duckdb_scalar_function_set_return_type scalarFun
@@ -296,19 +298,19 @@ cleanupScalarFunction scalarFun =
         poke ptr scalarFun
         c_duckdb_destroy_scalar_function ptr
 
-withLogicalType :: DuckDBType -> (DuckDBLogicalType -> IO a) -> IO a
+withLogicalType :: DUCKDB_TYPE -> (DuckDBLogicalType -> IO a) -> IO a
 withLogicalType dtype =
     bracket
         ( do
-            logical <- c_duckdb_create_logical_type dtype
-            when (logical == nullPtr)
+            logical <- c_duckdb_create_logical_type (DuckDBType dtype)
+            when (logical == DuckDBLogicalType nullPtr)
                 $ throwIO
                 $ functionInvocationError (Text.pack "duckdb-simple: failed to allocate logical type")
             pure logical
         )
         destroyLogicalType
 
-duckTypeForScalar :: ScalarType -> DuckDBType
+duckTypeForScalar :: ScalarType -> DUCKDB_TYPE
 duckTypeForScalar = \case
     ScalarTypeBoolean -> DuckDBTypeBoolean
     ScalarTypeBigInt -> DuckDBTypeBigInt
@@ -347,7 +349,7 @@ scalarFunctionHandlerWithState mkFn info chunk outVec =
         statePtr <- c_duckdb_scalar_function_get_state info
         when (statePtr == nullPtr) $
             throwIO (functionInvocationError "duckdb-simple: scalar function state was not initialised")
-        state <- deRefStablePtr (castPtrToStablePtr statePtr :: StablePtr s)
+        state <- deRefStablePtr (castPtrToStablePtr (castPtr statePtr) :: StablePtr s)
         scalarFunctionHandler (mkFn state) info chunk outVec
 
 scalarFunctionInitHandler :: IO s -> DuckDBInitInfo -> IO ()
@@ -396,7 +398,7 @@ writeResults resultType values outVec = do
             (ScalarTypeVarchar, ScalarText txt) -> do
                 markValid validityPtr idx
                 TextForeign.withCStringLen txt \(ptr, len) ->
-                    c_duckdb_vector_assign_string_element_len outVec (fromIntegral idx) ptr (fromIntegral len)
+                    c_duckdb_vector_assign_string_element_len outVec (fromIntegral idx) (ConstPtr ptr) (fromIntegral len)
             _ ->
                 throwIO
                     $ functionInvocationError
@@ -448,9 +450,3 @@ quoteIdent ident =
         , Text.replace (Text.pack "\"") (Text.pack "\"\"") ident
         , Text.pack "\""
         ]
-
-foreign import ccall "wrapper"
-    mkScalarFun :: (DuckDBFunctionInfo -> DuckDBDataChunk -> DuckDBVector -> IO ()) -> IO DuckDBScalarFunctionFun
-
-foreign import ccall "wrapper"
-    mkScalarInitFun :: (DuckDBInitInfo -> IO ()) -> IO DuckDBScalarFunctionInitFun

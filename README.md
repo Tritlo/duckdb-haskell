@@ -1,20 +1,71 @@
 # duckdb-haskell
 
+This PR evaluates hs-bindgen with the DuckDB 1.5.6 headers. We plan to use the
+generated bindings from DuckDB 2.0.0 onwards. The 1.5.x line will keep its current
+modules and public API.
+
 ## duckdb-ffi
 
 Available on [Hackage](https://hackage.haskell.org/package/duckdb-ffi).
 `duckdb-ffi` provides low-level Haskell bindings to the
 [DuckDB](https://duckdb.org) [C API](https://duckdb.org/docs/api/c/overview).
-The package includes the official `duckdb.h` header and C wrappers for the
-Haskell FFI.
+The package ships the complete raw API generated from the official `duckdb.h`
+header with hs-bindgen 1.0. Maintainers generate struct layouts, unions, enum
+values, callback conversions, and C ABI wrappers before release.
 
 ### Highlights
 
 - Covers connections, prepared statements, result sets, vectors, logical types,
   appenders, and Arrow integration.
-- Groups bindings into modules under `Database.DuckDB.FFI.*`.
+- Exposes generated bindings in `Database.DuckDB.FFI`.
+- Keeps the `DuckDBFoo` type names and `c_duckdb_*` function names directly
+  in the generated API, along with the earlier enum pattern names.
 - Includes integration tests for the native bindings.
 - Supports DuckDB >= 1.5.3 and < 1.6, using the released 1.5.6 C header.
+
+### Build dependencies
+
+Builds from release archives need GHC, Cabal, a C compiler, and DuckDB. The
+archives include generated source. Consumers do not run hs-bindgen or need
+LLVM, libclang, or Doxygen. The raw library depends only on `base` and
+`hs-bindgen-runtime`.
+The generated module uses this library for struct and union marshalling, field
+access, pointer and callback conversions, and compiling its C wrappers with GHC.
+The pinned development shell supplies the build tools:
+
+```sh
+nix-shell dev/nix/shell.nix
+```
+
+Nix shells need a supplied DuckDB library, as described below.
+Ordinary Cabal builds retain the verified native download.
+Before building a Git checkout, generate the ignored source files with:
+
+```sh
+nix-shell dev/nix/generate.nix --run 'duckdb-ffi/scripts/generate-bindings.sh'
+```
+
+Run this command before local Cabal, Nix, or Docker builds from the checkout.
+The release script runs it with `--check` before preparing documentation and
+source archives.
+
+The script compiles and runs `GenerateBindings.hs` with the hs-bindgen 1.0 API.
+The driver reads typed declarations to set public names and opaque handles,
+generate ABI assertions, and check function coverage. It compares all target
+outputs. `RenameTerm` adds the `c_` function prefix. The shell verifies the
+checksums. The generator and libclang stay in the maintainer environment.
+
+Release archives include two generated files: `FFI.hs` and `abi-checks.c`.
+Git ignores these files and tracks their SHA256 checksums in
+`duckdb-ffi/generated.sha256`. CI generates the files, verifies their checksums,
+and supplies them to build jobs.
+The script compares generation for Linux x86_64/aarch64 and macOS x86_64/ARM64.
+The generated layouts are identical on these targets. During each package build,
+508 C static assertions check sizes, alignments, and field offsets.
+An incompatible target fails compilation. Use `--check` to generate the files
+and verify them against the committed checksums. See
+[CONTRIBUTING.md](CONTRIBUTING.md#testing-guidelines) for checksum updates.
+See [MIGRATION.md](MIGRATION.md#duckdb-ffi-migration) for raw API changes.
 
 ### Native library installation
 

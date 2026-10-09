@@ -132,6 +132,7 @@ import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), FieldBinding, Name
 import Database.DuckDB.Simple.ToRow (ToRow (..))
 import Database.DuckDB.Simple.TypeCache (TypeCache, createTypeCache, defaultGeometryCRS, destroyTypeCache)
 import Database.DuckDB.Simple.Types (FormatError (..), Null (..), Only (..), (:.) (..))
+import Foreign.C.ConstPtr (ConstPtr (..), unConstPtr)
 import Foreign.C.String (CString)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
@@ -213,7 +214,7 @@ openStatement conn queryText =
             withConnectionHandle conn \connPtr ->
                 withQueryCString queryText \sql ->
                     alloca \stmtPtr -> do
-                        poke stmtPtr nullPtr
+                        poke stmtPtr (DuckDBPreparedStatement nullPtr)
                         flip onException (c_duckdb_destroy_prepare stmtPtr) do
                             rc <- runInterruptibleQuery conn (c_duckdb_prepare connPtr sql stmtPtr)
                             stmt <- peek stmtPtr
@@ -306,8 +307,8 @@ bindNamed stmt params =
 fetchParameterNames :: DuckDBPreparedStatement -> Int -> IO [Maybe Text]
 fetchParameterNames handle count =
     forM [1 .. count] \idx ->
-        bracket (c_duckdb_parameter_name handle (fromIntegral idx)) (c_duckdb_free . castPtr) \namePtr ->
-            if namePtr == nullPtr
+        bracket (c_duckdb_parameter_name handle (fromIntegral idx)) (c_duckdb_free . castPtr . unConstPtr) \namePtr ->
+            if namePtr == ConstPtr nullPtr
                 then pure Nothing
                 else do
                     name <- peekUtf8CString namePtr
@@ -335,7 +336,7 @@ namedParameterIndex stmt name =
         let normalized = normalizeName name
         TextForeign.withCString normalized \cName ->
             alloca \idxPtr -> do
-                rc <- c_duckdb_bind_parameter_index handle idxPtr cName
+                rc <- c_duckdb_bind_parameter_index handle idxPtr (ConstPtr cName)
                 if rc == DuckDBSuccess
                     then do
                         idx <- peek idxPtr
@@ -359,8 +360,8 @@ columnName stmt columnIndex
             total <- fmap fromIntegral (c_duckdb_prepared_statement_column_count handle)
             when (columnIndex >= total) $
                 throwIO (columnIndexError stmt columnIndex (Just total))
-            bracket (c_duckdb_prepared_statement_column_name handle (fromIntegral columnIndex)) (c_duckdb_free . castPtr) \namePtr ->
-                if namePtr == nullPtr
+            bracket (c_duckdb_prepared_statement_column_name handle (fromIntegral columnIndex)) (c_duckdb_free . castPtr . unConstPtr) \namePtr ->
+                if namePtr == ConstPtr nullPtr
                     then throwIO (columnNameUnavailableError stmt columnIndex)
                     else peekUtf8CString namePtr
 
@@ -536,14 +537,14 @@ openDatabaseWithConfig path settings = do
                 config <- peek configPtr
                 poke errPtr nullPtr
                 let destroyConfig =
-                        when (config /= nullPtr) $
+                        when (config /= DuckDBConfig nullPtr) $
                             alloca \cfgPtr -> poke cfgPtr config >> c_duckdb_destroy_config cfgPtr
                 flip finally destroyConfig $
                     do
                         forM_ settings \(name, value) ->
                             TextForeign.withCString name \cName ->
                                 TextForeign.withCString value \cValue -> do
-                                    rcSet <- c_duckdb_set_config config cName cValue
+                                    rcSet <- c_duckdb_set_config config (ConstPtr cName) (ConstPtr cValue)
                                     when (rcSet /= DuckDBSuccess)
                                         $ throwIO
                                         $ mkOpenError
@@ -552,7 +553,7 @@ openDatabaseWithConfig path settings = do
                                             , name
                                             ]
                         TextForeign.withCString (Text.pack path) \cPath -> do
-                            rc <- c_duckdb_open_ext cPath dbPtr config errPtr
+                            rc <- c_duckdb_open_ext (ConstPtr cPath) dbPtr config errPtr
                             if rc == DuckDBSuccess
                                 then do
                                     db <- peek dbPtr

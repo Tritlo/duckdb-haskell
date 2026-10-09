@@ -4,16 +4,18 @@
 module ExtractStatementsTest (tests) where
 
 import Control.Monad (forM_, when)
+import Data.Coerce (coerce)
 import Data.Int (Int64)
+import Data.Void (Void)
 import Database.DuckDB.FFI
-import Database.DuckDB.FFI.Deprecated
-import Foreign.C.String (peekCString, withCString)
+import Foreign.C.ConstPtr (ConstPtr (..))
+import Foreign.C.String (peekCString)
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (nullPtr)
+import Foreign.Ptr (Ptr, nullPtr)
 import Foreign.Storable (peek)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
-import Utils (withConnection, withDatabase)
+import Utils (withConnection, withConstCString, withDatabase)
 
 tests :: TestTree
 tests =
@@ -33,13 +35,13 @@ extractPrepareAndExecuteSequence =
                             <> "INSERT INTO extracted_values VALUES (1), (2);"
                             <> "SELECT SUM(val) FROM extracted_values;"
 
-                withCString script \scriptPtr ->
+                withConstCString script \scriptPtr ->
                     alloca \exPtr -> do
                         stmtCount <- c_duckdb_extract_statements conn scriptPtr exPtr
                         stmtCount @?= 3
 
                         extracted <- peek exPtr
-                        assertBool "extracted handle should not be null" (extracted /= nullPtr)
+                        assertBool "extracted handle should not be null" (extracted /= (coerce (nullPtr :: Ptr Void)))
 
                         let indices = [0 :: Integer .. fromIntegral stmtCount - 1]
                         forM_ indices \idx ->
@@ -49,7 +51,7 @@ extractPrepareAndExecuteSequence =
                                 prepState @?= DuckDBSuccess
 
                                 stmt <- peek stmtPtr
-                                assertBool "prepared statement should not be null" (stmt /= nullPtr)
+                                assertBool "prepared statement should not be null" (stmt /= (coerce (nullPtr :: Ptr Void)))
 
                                 alloca \resPtr -> do
                                     execState <- c_duckdb_execute_prepared stmt resPtr
@@ -57,10 +59,10 @@ extractPrepareAndExecuteSequence =
 
                                     case idx of
                                         0 -> do
-                                            resultType <- c_duckdb_result_return_type resPtr
+                                            resultType <- (peek resPtr >>= \rawValue -> c_duckdb_result_return_type rawValue)
                                             resultType @?= DuckDBResultTypeNothing
                                         1 -> do
-                                            resultType <- c_duckdb_result_return_type resPtr
+                                            resultType <- (peek resPtr >>= \rawValue -> c_duckdb_result_return_type rawValue)
                                             resultType @?= DuckDBResultTypeChangedRows
                                         2 -> do
                                             rowCount <- c_duckdb_row_count resPtr
@@ -79,7 +81,7 @@ extractPrepareAndExecuteSequence =
                             stInvalid <- c_duckdb_prepare_extracted_statement conn extracted invalidIdx stmtPtr
                             stInvalid @?= DuckDBError
                             stmt <- peek stmtPtr
-                            assertBool "invalid index should not yield a statement handle" (stmt == nullPtr)
+                            assertBool "invalid index should not yield a statement handle" (stmt == (coerce (nullPtr :: Ptr Void)))
 
                         c_duckdb_destroy_extracted exPtr
 
@@ -88,18 +90,18 @@ extractFailureYieldsErrorMessage =
     testCase "failed extract surfaces parser error" $
         withDatabase \db ->
             withConnection db \conn -> do
-                withCString "SELECT * FROM invalid_table WHERE" \badSql ->
+                withConstCString "SELECT * FROM invalid_table WHERE" \badSql ->
                     alloca \exPtr -> do
                         stmtCount <- c_duckdb_extract_statements conn badSql exPtr
                         stmtCount @?= 0
 
                         extracted <- peek exPtr
-                        assertBool "extracted handle should be available for errors" (extracted /= nullPtr)
+                        assertBool "extracted handle should be available for errors" (extracted /= (coerce (nullPtr :: Ptr Void)))
 
                         errPtr <- c_duckdb_extract_statements_error extracted
-                        when (errPtr == nullPtr) $
+                        when (errPtr == (coerce (nullPtr :: Ptr Void))) $
                             assertFailure "expected error message pointer from failed extract"
-                        errMsg <- peekCString errPtr
+                        errMsg <- (peekCString . coerce) errPtr
                         assertBool "error message should not be empty" (not (null errMsg))
 
                         c_duckdb_destroy_extracted exPtr

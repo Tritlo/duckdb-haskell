@@ -1,6 +1,9 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-deprecations #-}
 
 -- | Integration tests for scoped Arrow batches and their native ownership.
@@ -10,20 +13,28 @@ import Control.Concurrent (forkIO, killThread, newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (AsyncException (ThreadKilled), IOException, SomeException, bracket, bracket_, fromException, mask_, throwIO, try)
 import Control.Monad (forM, forM_, when)
 import Data.Bits (testBit)
+import Data.Coerce (coerce)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
+import Data.Proxy (Proxy (..))
 import qualified Data.Text as Text
+import Data.Void (Void)
 import Data.Word (Word8)
 import Database.DuckDB.FFI
 import Database.DuckDB.Simple
+import Database.DuckDB.Simple.Arrow (releaseArrowArray, releaseArrowSchema)
 import qualified Database.DuckDB.Simple.Arrow as Arrow
 import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
 import Database.DuckDB.Simple.Internal (peekUtf8CString)
+import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (peekCString)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Utils (fillBytes)
-import Foreign.Ptr (Ptr, castPtr, freeHaskellFunPtr, nullFunPtr, nullPtr)
+import Foreign.Ptr (FunPtr, Ptr, freeHaskellFunPtr, nullFunPtr, nullPtr)
 import Foreign.Storable (peek, peekElemOff, poke, sizeOf)
+import GHC.Records (getField)
+import HsBindgen.Runtime.HasCField (fromPtr)
+import HsBindgen.Runtime.Support.FunPtr (fromFunPtr, toFunPtr)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
 
@@ -42,10 +53,10 @@ arrowModeTests streaming =
                 (batches, chunks) <-
                     foldArrow conn "SELECT CASE WHEN i % 3 = 0 THEN NULL ELSE i END AS \"íslenska_λ\" FROM range(?::BIGINT) t(i)" (Only (5000 :: Int64)) (0 :: Int, []) \(count, acc) schemaPtr arrayPtr -> do
                         schema <- peek schemaPtr
-                        arrowSchemaChildCount schema @?= 1
-                        child <- peekElemOff (arrowSchemaChildren schema) 0 >>= peek
-                        peekUtf8CString (arrowSchemaName child) >>= (@?= "íslenska_λ")
-                        peekCString (arrowSchemaFormat child) >>= (@?= "l")
+                        (getField @"n_children") schema @?= 1
+                        child <- peekElemOff ((getField @"children") schema) 0 >>= peek
+                        peekUtf8CString ((getField @"name") child) >>= (@?= "íslenska_λ")
+                        (peekCString . coerce) ((getField @"format") child) >>= (@?= "l")
                         values <- readInt64Batch arrayPtr
                         pure (count + 1, values : acc)
                 assertBool "more than one native batch" (batches > 1)
@@ -97,14 +108,14 @@ arrowModeTests streaming =
                                     schema <- peek schemaPtr
                                     array <- peek arrayPtr
                                     poke savedSchema schema
-                                    poke schemaPtr schema{arrowSchemaRelease = nullFunPtr}
+                                    poke (fromPtr (Proxy @"release") (schemaPtr :: Ptr ArrowSchema)) (coerce (nullFunPtr :: FunPtr Void))
                                     poke savedArray array
-                                    poke arrayPtr array{arrowArrayRelease = nullFunPtr}
+                                    poke (fromPtr (Proxy @"release") (arrayPtr :: Ptr ArrowArray)) (coerce (nullFunPtr :: FunPtr Void))
                             readIORef schemaReleases >>= (@?= 0)
                             readIORef arrayReleases >>= (@?= 0)
                             schema <- peek savedSchema
-                            child <- peekElemOff (arrowSchemaChildren schema) 0 >>= peek
-                            peekCString (arrowSchemaName child) >>= (@?= "id")
+                            child <- peekElemOff ((getField @"children") schema) 0 >>= peek
+                            (peekCString . coerce) ((getField @"name") child) >>= (@?= "id")
                             readInt64Batch savedArray >>= (@?= [Just 42])
                 readIORef schemaReleases >>= (@?= 1)
                 readIORef arrayReleases >>= (@?= 1)
@@ -189,18 +200,18 @@ arrowModeTests streaming =
 readInt64Batch :: Ptr ArrowArray -> IO [Maybe Int64]
 readInt64Batch arrayPtr = do
     array <- peek arrayPtr
-    child <- peekElemOff (arrowArrayChildren array) 0 >>= peek
-    validity <- peekElemOff (arrowArrayBuffers child) 0
-    values <- peekElemOff (arrowArrayBuffers child) 1
-    forM [0 .. fromIntegral (arrowArrayLength array) - 1] \row -> do
-        let index = fromIntegral (arrowArrayOffset child) + row
+    child <- peekElemOff ((getField @"children") array) 0 >>= peek
+    validity <- peekElemOff ((getField @"buffers") child) 0
+    values <- peekElemOff ((getField @"buffers") child) 1
+    forM [0 .. fromIntegral ((getField @"length") array) - 1] \row -> do
+        let index = fromIntegral ((getField @"offset") child) + row
         valid <-
-            if validity == nullPtr
+            if validity == (coerce (nullPtr :: Ptr Void))
                 then pure True
                 else do
-                    byte <- peekElemOff (castPtr validity :: Ptr Word8) (index `div` 8)
+                    byte <- peekElemOff (coerce validity :: Ptr Word8) (index `div` 8)
                     pure (testBit byte (index `rem` 8))
-        if valid then Just <$> peekElemOff (castPtr values) index else pure Nothing
+        if valid then Just <$> peekElemOff (coerce values) index else pure Nothing
 
 -- | Wrap real release callbacks to observe cleanup without changing ownership.
 withReleaseCounters :: (IORef Int -> IORef Int -> (Ptr ArrowSchema -> Ptr ArrowArray -> IO ()) -> IO a) -> IO a
@@ -210,30 +221,30 @@ withReleaseCounters action = do
     originalSchema <- newIORef Nothing
     originalArray <- newIORef Nothing
     bracket
-        ( wrapArrowSchemaRelease \ptr -> do
+        ( toFunPtr \ptr -> do
             modifyIORef' schemaReleases (+ 1)
             callback <- readIORef originalSchema
-            maybe (assertFailure "missing schema release") (\release -> mkArrowSchemaRelease release ptr) callback
+            maybe (assertFailure "missing schema release") (\release -> fromFunPtr release ptr) callback
         )
-        freeHaskellFunPtr
+        (freeHaskellFunPtr . coerce)
         \schemaCallback ->
             bracket
-                ( wrapArrowArrayRelease \ptr -> do
+                ( toFunPtr \ptr -> do
                     modifyIORef' arrayReleases (+ 1)
                     callback <- readIORef originalArray
-                    maybe (assertFailure "missing array release") (\release -> mkArrowArrayRelease release ptr) callback
+                    maybe (assertFailure "missing array release") (\release -> fromFunPtr release ptr) callback
                 )
-                freeHaskellFunPtr
+                (freeHaskellFunPtr . coerce)
                 \arrayCallback -> do
                     let observe schemaPtr arrayPtr = do
                             schema <- peek schemaPtr
-                            assertBool "schema must not have been released" (arrowSchemaRelease schema /= nullFunPtr)
-                            when (arrowSchemaRelease schema /= schemaCallback) do
-                                modifyIORef' originalSchema (const (Just (arrowSchemaRelease schema)))
-                                poke schemaPtr schema{arrowSchemaRelease = schemaCallback}
+                            assertBool "schema must not have been released" ((getField @"release") schema /= (coerce (nullFunPtr :: FunPtr Void)))
+                            when ((getField @"release") schema /= schemaCallback) do
+                                modifyIORef' originalSchema (const (Just ((getField @"release") schema)))
+                                poke (fromPtr (Proxy @"release") (schemaPtr :: Ptr ArrowSchema)) schemaCallback
                             array <- peek arrayPtr
-                            modifyIORef' originalArray (const (Just (arrowArrayRelease array)))
-                            poke arrayPtr array{arrowArrayRelease = arrayCallback}
+                            modifyIORef' originalArray (const (Just ((getField @"release") array)))
+                            poke (fromPtr (Proxy @"release") (arrayPtr :: Ptr ArrowArray)) arrayCallback
                     action schemaReleases arrayReleases observe
 
 -- | Check that no failed Arrow operation leaves the connection busy.

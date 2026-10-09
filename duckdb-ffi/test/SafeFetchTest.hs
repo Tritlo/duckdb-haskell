@@ -1,23 +1,27 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-deprecations #-}
 
 module SafeFetchTest (tests) where
 
 import Control.Monad (when)
+import Data.Coerce (coerce)
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.Time.Calendar (diffDays, fromGregorian)
+import Data.Void (Void)
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.FFI
-import Database.DuckDB.FFI.Deprecated
-import Foreign.C.String (peekCString, peekCStringLen, withCString)
+import Foreign.C.ConstPtr (ConstPtr (..))
+import Foreign.C.String (peekCString, peekCStringLen)
 import Foreign.C.Types (CBool (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Array (peekArray)
-import Foreign.Ptr (Ptr, castPtr, nullPtr)
-import Foreign.Storable (peek)
+import Foreign.Ptr (Ptr, nullPtr)
+import Foreign.Storable (peek, poke)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
-import Utils (withConnection, withDatabase)
+import Utils (withConnection, withConstCString, withDatabase)
 
 tests :: TestTree
 tests =
@@ -53,12 +57,12 @@ safeFetchRoundtrip =
                             <> "'this string is definitely longer than inline storage'::VARCHAR AS txt," -- 18
                             <> "CAST('abc' AS BLOB) AS blob_col," -- 19
                             <> "NULL::INTEGER AS null_col" -- 20
-                withCString query \cQuery ->
+                withConstCString query \cQuery ->
                     alloca \resPtr -> do
                         state <- c_duckdb_query conn cQuery resPtr
                         when (state /= DuckDBSuccess) $ do
                             errPtr <- c_duckdb_result_error resPtr
-                            errMsg <- if errPtr == nullPtr then pure "<no error>" else peekCString errPtr
+                            errMsg <- if errPtr == (coerce (nullPtr :: Ptr Void)) then pure "<no error>" else (peekCString . coerce) errPtr
                             assertFailure ("duckdb_query failed: " <> errMsg)
                         state @?= DuckDBSuccess
 
@@ -74,8 +78,8 @@ safeFetchRoundtrip =
 
                         -- HugeInt
                         alloca \hugePtr -> do
-                            c_duckdb_value_hugeint resPtr 5 0 hugePtr
-                            DuckDBHugeInt{duckDBHugeIntLower = lowerHuge, duckDBHugeIntUpper = upperHuge} <- peek hugePtr
+                            (c_duckdb_value_hugeint resPtr 5 0 >>= poke hugePtr)
+                            DuckDBHugeInt{lower = lowerHuge, upper = upperHuge} <- peek hugePtr
                             lowerHuge @?= 9223372036854775809
                             upperHuge @?= 0
 
@@ -86,8 +90,8 @@ safeFetchRoundtrip =
                         c_duckdb_value_uint64 resPtr 9 0 >>= (@?= (maxBound :: Word64))
 
                         alloca \uhugePtr -> do
-                            c_duckdb_value_uhugeint resPtr 10 0 uhugePtr
-                            DuckDBUHugeInt{duckDBUHugeIntLower = lowerUHuge, duckDBUHugeIntUpper = upperUHuge} <- peek uhugePtr
+                            (c_duckdb_value_uhugeint resPtr 10 0 >>= poke uhugePtr)
+                            DuckDBUHugeInt{lower = lowerUHuge, upper = upperUHuge} <- peek uhugePtr
                             lowerUHuge @?= 0
                             upperUHuge @?= 1
 
@@ -116,52 +120,52 @@ safeFetchRoundtrip =
 
                         -- Interval
                         alloca \intervalPtr -> do
-                            c_duckdb_value_interval resPtr 16 0 intervalPtr
-                            DuckDBInterval{duckDBIntervalMonths = months, duckDBIntervalDays = days, duckDBIntervalMicros = micros} <- peek intervalPtr
+                            (c_duckdb_value_interval resPtr 16 0 >>= poke intervalPtr)
+                            DuckDBInterval{months = months, days = days, micros = micros} <- peek intervalPtr
                             months @?= 0
                             days @?= 1
                             micros @?= 7200000000
 
                         -- Decimal
                         alloca \decimalPtr -> do
-                            c_duckdb_value_decimal resPtr 17 0 decimalPtr
-                            DuckDBDecimal{duckDBDecimalWidth = width, duckDBDecimalScale = scale, duckDBDecimalValue = decValue} <- peek decimalPtr
+                            (c_duckdb_value_decimal resPtr 17 0 >>= poke decimalPtr)
+                            DuckDBDecimal{width = width, scale = scale, value = decValue} <- peek decimalPtr
                             width @?= 18
                             scale @?= 2
-                            DuckDBHugeInt{duckDBHugeIntLower = decimalLower, duckDBHugeIntUpper = decimalUpper} <- pure decValue
+                            DuckDBHugeInt{lower = decimalLower, upper = decimalUpper} <- pure decValue
                             decimalLower @?= 1234567
                             decimalUpper @?= 0
 
                         -- Strings
                         strVarchar <- c_duckdb_value_varchar resPtr 18 0
-                        varcharText <- peekCString strVarchar
+                        varcharText <- (peekCString . coerce) strVarchar
                         varcharText @?= stringLiteral
-                        c_duckdb_free (castPtr strVarchar)
+                        c_duckdb_free (coerce strVarchar)
 
                         alloca \stringPtr -> do
-                            c_duckdb_value_string resPtr 18 0 stringPtr
-                            DuckDBString{duckDBStringData = datPtr, duckDBStringSize = datSize} <- peek stringPtr
-                            bytes <- peekCStringLen (datPtr, fromIntegral datSize)
+                            (c_duckdb_value_string resPtr 18 0 >>= poke stringPtr)
+                            DuckDBString{data' = datPtr, size = datSize} <- peek stringPtr
+                            bytes <- peekCStringLen (coerce datPtr, fromIntegral datSize)
                             bytes @?= stringLiteral
-                            when (datPtr /= nullPtr) $ c_duckdb_free (castPtr datPtr)
+                            when (datPtr /= (coerce (nullPtr :: Ptr Void))) $ c_duckdb_free (coerce datPtr)
 
                         alloca \stringInternalPtr -> do
-                            c_duckdb_value_string_internal resPtr 18 0 stringInternalPtr
-                            DuckDBString{duckDBStringData = datPtr, duckDBStringSize = datSize} <- peek stringInternalPtr
-                            bytes <- peekCStringLen (datPtr, fromIntegral datSize)
+                            (c_duckdb_value_string_internal resPtr 18 0 >>= poke stringInternalPtr)
+                            DuckDBString{data' = datPtr, size = datSize} <- peek stringInternalPtr
+                            bytes <- peekCStringLen (coerce datPtr, fromIntegral datSize)
                             bytes @?= stringLiteral
 
                         varcharInternal <- c_duckdb_value_varchar_internal resPtr 18 0
-                        peekCString varcharInternal >>= (@?= stringLiteral)
+                        (peekCString . coerce) varcharInternal >>= (@?= stringLiteral)
 
                         -- Blob
                         alloca \blobPtr -> do
-                            c_duckdb_value_blob resPtr 19 0 blobPtr
-                            DuckDBBlob{duckDBBlobData = blobData, duckDBBlobSize = blobSize} <- peek blobPtr
+                            (c_duckdb_value_blob resPtr 19 0 >>= poke blobPtr)
+                            DuckDBBlob{data' = blobData, size = blobSize} <- peek blobPtr
                             let expectedBlob :: [Word8]
                                 expectedBlob = map (fromIntegral . fromEnum) ("abc" :: String)
-                            peekArray (fromIntegral blobSize) (castPtr blobData :: Ptr Word8) >>= (@?= expectedBlob)
-                            c_duckdb_free (castPtr blobData)
+                            peekArray (fromIntegral blobSize) (coerce blobData :: Ptr Word8) >>= (@?= expectedBlob)
+                            c_duckdb_free (coerce blobData)
 
                         -- Null handling
                         c_duckdb_value_is_null resPtr 20 0 >>= (@?= CBool 1)

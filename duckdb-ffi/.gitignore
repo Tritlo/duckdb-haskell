@@ -7,3 +7,5 @@ api.md
 **/venv
 cbits/*.zip
 cbits/duckdb/
+/src/Database/DuckDB/FFI.hs
+/cbits/abi-checks.c

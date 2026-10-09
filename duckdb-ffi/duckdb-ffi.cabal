@@ -18,14 +18,19 @@ synopsis: Low-level bindings to the DuckDB C API
 homepage: https://github.com/Tritlo/duckdb-haskell
 bug-reports: https://github.com/Tritlo/duckdb-haskell/issues
 description:
-  Haskell FFI bindings to the DuckDB C API.
+  Haskell FFI bindings generated from the DuckDB C API with hs-bindgen.
   Supports native DuckDB >= 1.5.3 and < 1.6. Tested with versions 1.5.3 through 1.5.6.
   .
   Downloads a verified native library to the user cache on Linux and macOS.
   Uses an existing library when the user or Nix supplies it.
 
 extra-doc-files: CHANGELOG.md
-extra-source-files: cbits/duckdb_arrow.h
+extra-source-files:
+  cbits/duckdb.h
+  cbits/duckdb_arrow.h
+  generated.sha256
+  scripts/generate-bindings.sh
+  scripts/GenerateBindings.hs
 
 source-repository head
   type: git
@@ -48,86 +53,23 @@ custom-setup
     temporary >=1.3 && <1.4,
 
 library
-  default-language:
-    Haskell2010
-
-  default-extensions:
-    AllowAmbiguousTypes
-    DataKinds
-    GADTs
-    GeneralizedNewtypeDeriving
-    ImportQualifiedPost
-    LambdaCase
-    MultiParamTypeClasses
-    OverloadedStrings
-    RankNTypes
-    ScopedTypeVariables
-    TypeApplications
-
+  default-language: GHC2021
   hs-source-dirs:
     src
 
   exposed-modules:
     Database.DuckDB.FFI
-    Database.DuckDB.FFI.Deprecated
-
-  other-modules:
-    Database.DuckDB.FFI.AggregateFunctions
-    Database.DuckDB.FFI.Appender
-    Database.DuckDB.FFI.Arrow
-    Database.DuckDB.FFI.BindValues
-    Database.DuckDB.FFI.CastFunctions
-    Database.DuckDB.FFI.Catalog
-    Database.DuckDB.FFI.Configuration
-    Database.DuckDB.FFI.CopyFunctions
-    Database.DuckDB.FFI.DataChunk
-    Database.DuckDB.FFI.Deprecated.Appender
-    Database.DuckDB.FFI.Deprecated.Arrow
-    Database.DuckDB.FFI.Deprecated.ExecutePrepared
-    Database.DuckDB.FFI.Deprecated.PendingResult
-    Database.DuckDB.FFI.Deprecated.QueryExecution
-    Database.DuckDB.FFI.Deprecated.ResultFunctions
-    Database.DuckDB.FFI.Deprecated.SafeFetch
-    Database.DuckDB.FFI.Deprecated.StreamingResult
-    Database.DuckDB.FFI.ErrorData
-    Database.DuckDB.FFI.ExecutePrepared
-    Database.DuckDB.FFI.Expression
-    Database.DuckDB.FFI.ExtractStatements
-    Database.DuckDB.FFI.FileSystem
-    Database.DuckDB.FFI.Helpers
-    Database.DuckDB.FFI.Logging
-    Database.DuckDB.FFI.LogicalTypes
-    Database.DuckDB.FFI.OpenConnect
-    Database.DuckDB.FFI.PendingResult
-    Database.DuckDB.FFI.PreparedStatements
-    Database.DuckDB.FFI.ProfilingInfo
-    Database.DuckDB.FFI.QueryExecution
-    Database.DuckDB.FFI.ReplacementScans
-    Database.DuckDB.FFI.ResultFunctions
-    Database.DuckDB.FFI.ScalarFunctions
-    Database.DuckDB.FFI.SelectionVector
-    Database.DuckDB.FFI.StreamingResult
-    Database.DuckDB.FFI.TableDescription
-    Database.DuckDB.FFI.TableFunctions
-    Database.DuckDB.FFI.Threading
-    Database.DuckDB.FFI.Types
-    Database.DuckDB.FFI.Validity
-    Database.DuckDB.FFI.ValueInterface
-    Database.DuckDB.FFI.Vector
 
   include-dirs: cbits/
-  install-includes: duckdb.h
+  install-includes:
+    duckdb.h
+    duckdb_arrow.h
+
+  c-sources: cbits/abi-checks.c
   extra-libraries: duckdb
-  c-sources: cbits/duckdb_stub.c
   build-depends:
     base >=4.18 && <4.23,
-    bytestring >=0.11 && <0.13,
-    containers >=0.6 && <0.9,
-    exceptions >=0.10 && <0.11,
-    mtl >=2.3 && <2.4,
-    text >=2.0 && <2.2,
-    time >=1.12 && <1.16,
-    transformers >=0.6 && <0.7,
+    hs-bindgen-runtime >=1.0.0.0 && <1.1,
 
 test-suite duckdb-ffi-tests
   type: exitcode-stdio-1.0
@@ -172,6 +114,7 @@ test-suite duckdb-ffi-tests
   build-depends:
     base >=4.18 && <4.23,
     duckdb-ffi,
+    hs-bindgen-runtime >=1.0.0.0 && <1.1,
     tasty >=1.5 && <1.6,
     tasty-expected-failure >=0.12 && <0.13,
     tasty-hunit >=0.10 && <0.11,

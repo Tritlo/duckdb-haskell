@@ -31,6 +31,14 @@ jobs:
     - name: Checkout project
       uses: actions/checkout@v4
 
+    - name: Install Nix
+      if: github.event.pull_request.draft == false
+      uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+
+    - name: Generate bindings and verify checksums
+      if: github.event.pull_request.draft == false
+      run: nix-shell dev/nix/generate.nix --run 'duckdb-ffi/scripts/generate-bindings.sh --check'
+
 
     # Allows better caching of layers
     - name: Set up Buildx

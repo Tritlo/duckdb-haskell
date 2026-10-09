@@ -22,10 +22,11 @@ import Database.DuckDB.Simple.FromRow (RowParser, parseRow, rowErrorsToSqlError)
 import Database.DuckDB.Simple.Internal
 import Database.DuckDB.Simple.Materialize (prepareVectorReader)
 import Database.DuckDB.Simple.Ok (Ok (..))
+import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Alloc (free, malloc)
 import Foreign.Marshal.Utils (fillBytes)
 import Foreign.Ptr (Ptr, nullPtr)
-import Foreign.Storable (sizeOf)
+import Foreign.Storable (peek, sizeOf)
 
 -- | Fold rows from one statement and release its result on every exit path.
 foldStatementWith :: ResultMode -> RowParser row -> Statement -> a -> (a -> row -> IO a) -> IO a
@@ -102,7 +103,7 @@ startStatementStream mode stmt =
             when (rc /= DuckDBSuccess) do
                 (errMsg, errType) <- fetchResultError resultPtr
                 throwIO $ mkExecuteError (statementQuery stmt) errMsg errType
-            resultType <- c_duckdb_result_return_type resultPtr
+            resultType <- peek resultPtr >>= c_duckdb_result_return_type
             if resultType /= DuckDBResultTypeQueryResult
                 then release >> pure Nothing
                 else do
@@ -112,7 +113,7 @@ startStatementStream mode stmt =
 fetchChunk :: Connection -> Query -> StatementStream -> IO StatementStream
 fetchChunk conn queryText stream@StatementStream{statementStreamResult} = do
     chunk <- fetchResultChunk (statementStreamMode stream) conn statementStreamResult
-    if chunk == nullPtr
+    if chunk == DuckDBDataChunk nullPtr
         then do
             throwResultError queryText statementStreamResult
             pure stream
@@ -171,8 +172,8 @@ collectRows queryText resPtr = do
     collectChunks columns []
   where
     collectChunks columns acc = do
-        fetched <- bracket (c_duckdb_fetch_chunk resPtr) destroyDataChunk \chunk ->
-            if chunk == nullPtr
+        fetched <- bracket (peek resPtr >>= c_duckdb_fetch_chunk) destroyDataChunk \chunk ->
+            if chunk == DuckDBDataChunk nullPtr
                 then throwResultError queryText resPtr >> pure Nothing
                 else Just <$> decodeChunk columns chunk
         case fetched of
@@ -201,10 +202,10 @@ collectResultColumns resPtr = do
     forM [0 .. cc - 1] \columnIndex -> do
         namePtr <- c_duckdb_column_name resPtr (fromIntegral columnIndex)
         name <-
-            if namePtr == nullPtr
+            if namePtr == ConstPtr nullPtr
                 then pure (Text.pack ("column" <> show columnIndex))
                 else peekUtf8CString namePtr
-        dtype <- c_duckdb_column_type resPtr (fromIntegral columnIndex)
+        DuckDBType dtype <- c_duckdb_column_type resPtr (fromIntegral columnIndex)
         pure
             StatementStreamColumn
                 { statementStreamColumnIndex = columnIndex

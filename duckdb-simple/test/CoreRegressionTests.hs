@@ -11,10 +11,11 @@ import Data.IORef (readIORef)
 import Data.Int (Int64)
 import Data.List (isInfixOf)
 import Data.Text (Text)
-import Database.DuckDB.FFI.Deprecated (c_duckdb_result_is_streaming)
+import Database.DuckDB.FFI (c_duckdb_result_is_streaming)
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (FieldValue)
 import Database.DuckDB.Simple.Internal (Statement (statementStream), StatementStream (statementStreamResult), StatementStreamState (..))
+import Foreign.Storable (peek)
 import System.Mem (performMajorGC)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
@@ -35,7 +36,7 @@ coreRegressionTests =
                     state <- readIORef (statementStream stmt)
                     case state of
                         StatementStreamActive stream -> do
-                            streaming <- c_duckdb_result_is_streaming (statementStreamResult stream)
+                            streaming <- (peek (statementStreamResult stream) >>= \rawValue -> c_duckdb_result_is_streaming rawValue)
                             assertBool "expected a materialized native result" (streaming == 0)
                         _ -> assertFailure "expected an active cursor"
         , testCase "stream metadata preserves 64-bit values" $

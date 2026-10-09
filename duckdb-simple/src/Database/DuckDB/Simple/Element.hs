@@ -25,6 +25,7 @@ import Data.Time.Calendar (addDays, fromGregorian)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Data.Time.LocalTime (TimeOfDay (..), minutesToTimeZone, utc, utcToLocalTime)
 import qualified Data.UUID as UUID
+import Data.Void (Void)
 import Data.Word (Word64, Word8)
 import Database.DuckDB.FFI
 import Database.DuckDB.Simple.FromField (
@@ -37,8 +38,8 @@ import Database.DuckDB.Simple.FromField (
  )
 import Database.DuckDB.Simple.LogicalRep (destroyLogicalType)
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
+import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.Types (CBool (..))
-import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.Storable (Storable (..), peekElemOff)
 
@@ -49,20 +50,20 @@ chunkIsRowValid validity rowIdx
         CBool flag <- c_duckdb_validity_row_is_valid validity rowIdx
         pure (flag /= 0)
 
-chunkDecodeBlob :: Ptr () -> DuckDBIdx -> IO BS.ByteString
+chunkDecodeBlob :: Ptr Void -> DuckDBIdx -> IO BS.ByteString
 chunkDecodeBlob dataPtr rowIdx = do
     let base = castPtr dataPtr :: Ptr Word8
         offset = fromIntegral rowIdx * duckdbStringTSize
         stringPtr = castPtr (base `plusPtr` offset) :: Ptr DuckDBStringT
-    len <- c_duckdb_string_t_length stringPtr
+    len <- peek stringPtr >>= c_duckdb_string_t_length
     if len == 0
         then pure BS.empty
         else do
-            ptr <- c_duckdb_string_t_data stringPtr
+            ConstPtr ptr <- c_duckdb_string_t_data stringPtr
             BS.packCStringLen (ptr, fromIntegral len)
 
 duckdbStringTSize :: Int
-duckdbStringTSize = 16
+duckdbStringTSize = sizeOf (undefined :: DuckDBStringT)
 
 {- | Decode DuckDB's BIT bytes: a padding count, then the data bytes. Clear the
 unused high bits of the first data byte, which DuckDB sets.
@@ -78,15 +79,15 @@ bitStringFromBytes bytes = case BS.unpack bytes of
 withVectorType :: DuckDBVector -> (DuckDBLogicalType -> IO a) -> IO a
 withVectorType vector = bracket (c_duckdb_vector_get_column_type vector) destroyLogicalType
 
-vectorElementType :: DuckDBVector -> IO DuckDBType
+vectorElementType :: DuckDBVector -> IO DUCKDB_TYPE
 vectorElementType vec =
-    bracket (c_duckdb_vector_get_column_type vec) destroyLogicalType c_duckdb_get_type_id
+    bracket (c_duckdb_vector_get_column_type vec) destroyLogicalType (fmap (\(DuckDBType dtype) -> dtype) . c_duckdb_get_type_id)
 
 {- | Decode the element at an index of a vector's data. The type must not need
 logical type metadata: DECIMAL, ENUM, GEOMETRY, and nested types use their own
 decoders. The caller checks validity.
 -}
-decodeElement :: DuckDBType -> Ptr () -> Int -> IO FieldValue
+decodeElement :: DUCKDB_TYPE -> Ptr Void -> Int -> IO FieldValue
 decodeElement dtype dataPtr rowIdx = case dtype of
     DuckDBTypeBoolean -> do
         raw <- peekElemOff (castPtr dataPtr :: Ptr Word8) rowIdx
@@ -140,11 +141,7 @@ decodeDuckDBDate (DuckDBDate days) =
     pure (decodeUnbounded (\value -> addDays (toInteger value) (fromGregorian 1970 1 1)) days)
 
 decodeDuckDBTime :: DuckDBTime -> IO TimeOfDay
-decodeDuckDBTime raw =
-    alloca $ \ptr -> do
-        c_duckdb_from_time raw ptr
-        timeStruct <- peek ptr
-        pure (timeStructToTimeOfDay timeStruct)
+decodeDuckDBTime raw = timeStructToTimeOfDay <$> c_duckdb_from_time raw
 
 decodeDuckDBTimestamp :: DuckDBTimestamp -> IO LocalTimestamp
 decodeDuckDBTimestamp (DuckDBTimestamp micros) = decodeTimestampUnits 1000000 micros
@@ -174,16 +171,14 @@ decodeDuckDBTimeNs (DuckDBTimeNs nanos) =
             totalSeconds
 
 decodeDuckDBTimeTz :: DuckDBTimeTz -> IO TimeWithZone
-decodeDuckDBTimeTz raw =
-    alloca $ \ptr -> do
-        c_duckdb_from_time_tz raw ptr
-        DuckDBTimeTzStruct{duckDBTimeTzStructTime = timeStruct, duckDBTimeTzStructOffset = offset} <- peek ptr
-        when (offset `rem` 60 /= 0) $
-            throwIO (userError "duckdb-simple: TIMETZ offset cannot be represented in whole minutes")
-        let timeOfDay = timeStructToTimeOfDay timeStruct
-            minutes = fromIntegral offset `div` 60
-            zone = minutesToTimeZone minutes
-        pure TimeWithZone{timeWithZoneTime = timeOfDay, timeWithZoneZone = zone}
+decodeDuckDBTimeTz raw = do
+    DuckDBTimeTzStruct timeStruct offset <- c_duckdb_from_time_tz raw
+    when (offset `rem` 60 /= 0) $
+        throwIO (userError "duckdb-simple: TIMETZ offset cannot be represented in whole minutes")
+    let timeOfDay = timeStructToTimeOfDay timeStruct
+        minutes = fromIntegral offset `div` 60
+        zone = minutesToTimeZone minutes
+    pure TimeWithZone{timeWithZoneTime = timeOfDay, timeWithZoneZone = zone}
 
 decodeDuckDBTimestampSeconds :: DuckDBTimestampS -> IO LocalTimestamp
 decodeDuckDBTimestampSeconds (DuckDBTimestampS seconds) =
@@ -201,28 +196,27 @@ decodeDuckDBTimestampUTCTime (DuckDBTimestamp micros) =
     pure (decodeUnbounded (posixSecondsToUTCTime . fromRational . (% 1000000) . toInteger) micros)
 
 intervalValueFromDuckDB :: DuckDBInterval -> IntervalValue
-intervalValueFromDuckDB DuckDBInterval{duckDBIntervalMonths, duckDBIntervalDays, duckDBIntervalMicros} =
+intervalValueFromDuckDB (DuckDBInterval months days micros) =
     IntervalValue
-        { intervalMonths = duckDBIntervalMonths
-        , intervalDays = duckDBIntervalDays
-        , intervalMicros = duckDBIntervalMicros
+        { intervalMonths = months
+        , intervalDays = days
+        , intervalMicros = micros
         }
 
 duckDBHugeIntToInteger :: DuckDBHugeInt -> Integer
-duckDBHugeIntToInteger DuckDBHugeInt{duckDBHugeIntLower, duckDBHugeIntUpper} =
-    (fromIntegral duckDBHugeIntUpper `shiftL` 64) .|. fromIntegral duckDBHugeIntLower
+duckDBHugeIntToInteger (DuckDBHugeInt lower upper) =
+    (fromIntegral upper `shiftL` 64) .|. fromIntegral lower
 
 duckDBUHugeIntToInteger :: DuckDBUHugeInt -> Integer
-duckDBUHugeIntToInteger DuckDBUHugeInt{duckDBUHugeIntLower, duckDBUHugeIntUpper} =
-    (fromIntegral duckDBUHugeIntUpper `shiftL` 64) .|. fromIntegral duckDBUHugeIntLower
+duckDBUHugeIntToInteger (DuckDBUHugeInt lower upper) =
+    (fromIntegral upper `shiftL` 64) .|. fromIntegral lower
 
 timeStructToTimeOfDay :: DuckDBTimeStruct -> TimeOfDay
-timeStructToTimeOfDay DuckDBTimeStruct{duckDBTimeStructHour, duckDBTimeStructMinute, duckDBTimeStructSecond, duckDBTimeStructMicros} =
-    let secondsInt = fromIntegral duckDBTimeStructSecond :: Integer
-        micros = fromIntegral duckDBTimeStructMicros :: Integer
-        fractional = fromRational (micros % 1000000)
+timeStructToTimeOfDay (DuckDBTimeStruct hour minute second micros) =
+    let secondsInt = fromIntegral second :: Integer
+        fractional = fromRational (toInteger micros % 1000000)
         totalSeconds = fromInteger secondsInt + fractional
      in TimeOfDay
-            (fromIntegral duckDBTimeStructHour)
-            (fromIntegral duckDBTimeStructMinute)
+            (fromIntegral hour)
+            (fromIntegral minute)
             totalSeconds

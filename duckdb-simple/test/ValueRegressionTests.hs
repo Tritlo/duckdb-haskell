@@ -12,6 +12,7 @@ import Control.Exception (IOException, bracket, try)
 import Control.Monad (forM_)
 import Data.Array (Array, listArray)
 import qualified Data.ByteString as BS
+import Data.Coerce (coerce)
 import Data.Int (Int32, Int64, Int8)
 import qualified Data.Map.Strict as Map
 import Data.Ratio ((%))
@@ -21,6 +22,7 @@ import Data.Time.Calendar (Day, addDays, fromGregorian)
 import Data.Time.Clock (UTCTime (..))
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), minutesToTimeZone, utc, utcToLocalTime)
+import Data.Void (Void)
 import Data.Word (Word16, Word32, Word8)
 import Database.DuckDB.FFI
 import Database.DuckDB.Simple
@@ -30,14 +32,14 @@ import Database.DuckDB.Simple.Internal (destroyValue, withConnectionHandle)
 import Database.DuckDB.Simple.LogicalRep
 import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
-import Foreign.C.String (withCString)
+import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (nullPtr)
+import Foreign.Ptr (Ptr, nullPtr)
 import Foreign.Storable (peek, poke)
 import GHC.Generics (Generic)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit
-import TestUtils (assertFailureIO)
+import TestUtils (assertFailureIO, withConstCString)
 
 -- | Native timestamps used to test the full storage range.
 data NativeTimestamp = Seconds Int64 | Milliseconds Int64 | Microseconds Int64 | Nanoseconds Int64
@@ -324,9 +326,9 @@ appendTimestamp conn dtype createValue = do
     _ <- execute_ conn (fromString ("CREATE TABLE native_timestamp(value " <> dtype <> ")"))
     withConnectionHandle conn \handle ->
         alloca \appenderPtr -> do
-            poke appenderPtr nullPtr
-            withCString "native_timestamp" \table ->
-                c_duckdb_appender_create handle nullPtr table appenderPtr >>= (@?= DuckDBSuccess)
+            poke appenderPtr (coerce (nullPtr :: Ptr Void))
+            withConstCString "native_timestamp" \table ->
+                c_duckdb_appender_create handle (coerce (nullPtr :: Ptr Void)) table appenderPtr >>= (@?= DuckDBSuccess)
             bracket (peek appenderPtr) (const (c_duckdb_appender_destroy appenderPtr >> pure ())) \appender -> do
                 bracket createValue (\value -> alloca \ptr -> poke ptr value >> c_duckdb_destroy_value ptr) \value ->
                     c_duckdb_append_value appender value >>= (@?= DuckDBSuccess)

@@ -7,20 +7,23 @@ module CastFunctionsTest (tests) where
 
 import Control.Exception (bracket)
 import Control.Monad (when)
+import Data.Coerce (coerce)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Int (Int32)
 import Data.List (isInfixOf)
+import Data.Void (Void)
 import Database.DuckDB.FFI
-import Database.DuckDB.FFI.Deprecated
-import Foreign.C.String (peekCString, withCString, withCStringLen)
+import Foreign.C.ConstPtr (ConstPtr (..))
+import Foreign.C.String (peekCString, withCStringLen)
 import Foreign.C.Types (CBool (..))
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (Ptr, castPtr, freeHaskellFunPtr, nullFunPtr, nullPtr)
+import Foreign.Ptr (FunPtr, Ptr, freeHaskellFunPtr, nullFunPtr, nullPtr)
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deRefStablePtr, freeStablePtr, newStablePtr)
 import Foreign.Storable (peekElemOff, poke)
+import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
-import Utils (withConnection, withDatabase, withLogicalType, withResult)
+import Utils (withConnection, withConstCString, withDatabase, withLogicalType, withResult)
 
 data CastHarness = CastHarness
     { chLastMode :: IO DuckDBCastMode
@@ -46,7 +49,7 @@ castFunctionOverridesBuiltin =
                         fetchString resPtr 0 0 >>= (@?= "value: 1")
                         fetchString resPtr 0 1 >>= (@?= "value: 5")
                         errPtr <- c_duckdb_result_error resPtr
-                        errPtr @?= nullPtr
+                        errPtr @?= (coerce (nullPtr :: Ptr Void))
 
 castFunctionReportsErrors :: TestTree
 castFunctionReportsErrors =
@@ -54,13 +57,13 @@ castFunctionReportsErrors =
         withDatabase \db ->
             withConnection db \conn ->
                 withTestCast conn \_ ->
-                    withCString "SELECT CAST(v AS VARCHAR) FROM (VALUES (-7)) AS t(v)" \sql ->
+                    withConstCString "SELECT CAST(v AS VARCHAR) FROM (VALUES (-7)) AS t(v)" \sql ->
                         alloca \resPtr -> do
                             state <- c_duckdb_query conn sql resPtr
                             state @?= DuckDBError
                             errPtr <- c_duckdb_result_error resPtr
-                            assertBool "expected error pointer" (errPtr /= nullPtr)
-                            errMsg <- peekCString errPtr
+                            assertBool "expected error pointer" (errPtr /= (coerce (nullPtr :: Ptr Void)))
+                            errMsg <- (peekCString . coerce) errPtr
                             assertBool "error message should mention negative" ("negative" `isInfixOf` errMsg)
                             c_duckdb_destroy_result resPtr
 
@@ -74,7 +77,7 @@ castFunctionTryMode =
                         fetchString resPtr 0 0 >>= (@?= "value: 2")
                         c_duckdb_value_is_null resPtr 0 1 >>= (@?= CBool 1)
                         errPtr <- c_duckdb_result_error resPtr
-                        errPtr @?= nullPtr
+                        errPtr @?= (coerce (nullPtr :: Ptr Void))
                     chLastMode >>= (@?= DuckDBCastTry)
                     chExtraSeen >>= (@?= True)
 
@@ -88,12 +91,12 @@ withTestCast conn action = do
     castFunPtr <- mkCastFun (castCallback modeRef extraSeenRef prefixStable)
     result <-
         withCastFunction \castFun ->
-            withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \sourceType ->
-                withLogicalType (c_duckdb_create_logical_type DuckDBTypeVarchar) \targetType -> do
+            withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \sourceType ->
+                withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeVarchar)) \targetType -> do
                     c_duckdb_cast_function_set_source_type castFun sourceType
                     c_duckdb_cast_function_set_target_type castFun targetType
                     c_duckdb_cast_function_set_implicit_cast_cost castFun 0
-                    c_duckdb_cast_function_set_extra_info castFun (castStablePtrToPtr prefixStable) nullFunPtr
+                    c_duckdb_cast_function_set_extra_info castFun ((coerce . castStablePtrToPtr) prefixStable) (coerce (nullFunPtr :: FunPtr Void))
                     c_duckdb_cast_function_set_function castFun castFunPtr
                     c_duckdb_register_cast_function conn castFun >>= (@?= DuckDBSuccess)
                     action
@@ -101,23 +104,23 @@ withTestCast conn action = do
                             { chLastMode = readIORef modeRef
                             , chExtraSeen = readIORef extraSeenRef
                             }
-    freeHaskellFunPtr castFunPtr
+    (freeHaskellFunPtr . coerce) castFunPtr
     freeStablePtr prefixStable
     pure result
 
 castCallback :: IORef DuckDBCastMode -> IORef Bool -> StablePtr String -> DuckDBFunctionInfo -> DuckDBIdx -> DuckDBVector -> DuckDBVector -> IO CBool
 castCallback modeRef extraSeenRef prefixStable info count inputVec outputVec = do
     actualPtr <- c_duckdb_cast_function_get_extra_info info
-    when (actualPtr == castStablePtrToPtr prefixStable) $ writeIORef extraSeenRef True
+    when (actualPtr == (coerce . castStablePtrToPtr) prefixStable) $ writeIORef extraSeenRef True
     prefix <-
-        if actualPtr == nullPtr
+        if actualPtr == (coerce (nullPtr :: Ptr Void))
             then pure "value: "
-            else deRefStablePtr (castPtrToStablePtr actualPtr)
+            else deRefStablePtr ((castPtrToStablePtr . coerce) actualPtr)
     mode <- c_duckdb_cast_function_get_cast_mode info
     writeIORef modeRef mode
     inputData <- c_duckdb_vector_get_data inputVec
     c_duckdb_vector_ensure_validity_writable outputVec
-    let inPtr = castPtr inputData :: Ptr Int32
+    let inPtr = coerce inputData :: Ptr Int32
         rowCount = fromIntegral count :: Int
     success <- processRows prefix mode inPtr outputVec 0 rowCount
     pure (if success then CBool 1 else CBool 0)
@@ -128,7 +131,7 @@ castCallback modeRef extraSeenRef prefixStable info count inputVec outputVec = d
         | otherwise = do
             val <- peekElemOff inPtr idx
             if val < 0
-                then withCString "negative values not allowed" \errMsg ->
+                then withConstCString "negative values not allowed" \errMsg ->
                     if mode == DuckDBCastTry
                         then do
                             c_duckdb_cast_function_set_row_error info errMsg (fromIntegral idx) outVec
@@ -139,7 +142,7 @@ castCallback modeRef extraSeenRef prefixStable info count inputVec outputVec = d
                 else do
                     let rendered = prefix ++ show val
                     withCStringLen rendered \(cStr, len) ->
-                        c_duckdb_vector_assign_string_element_len outVec (fromIntegral idx) cStr (fromIntegral len)
+                        c_duckdb_vector_assign_string_element_len outVec (fromIntegral idx) (coerce cStr) (fromIntegral len)
                     processRows prefix mode inPtr outVec (idx + 1) total
 
 -- Helpers ------------------------------------------------------------------
@@ -152,11 +155,11 @@ withCastFunction = bracket c_duckdb_create_cast_function destroy
 fetchString :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO String
 fetchString resPtr col row = do
     cStr <- c_duckdb_value_varchar resPtr col row
-    value <- peekCString cStr
-    c_duckdb_free (castPtr cStr)
+    value <- (peekCString . coerce) cStr
+    c_duckdb_free (coerce cStr)
     pure value
 
 -- Wrapper constructors ------------------------------------------------------
 
-foreign import ccall "wrapper"
-    mkCastFun :: (DuckDBFunctionInfo -> DuckDBIdx -> DuckDBVector -> DuckDBVector -> IO CBool) -> IO DuckDBCastFunctionFun
+mkCastFun :: (DuckDBFunctionInfo -> DuckDBIdx -> DuckDBVector -> DuckDBVector -> IO CBool) -> IO DuckDBCastFunctionFun
+mkCastFun = fmap DuckDBCastFunctionFun . toFunPtr . DuckDBCastFunctionFun_Aux

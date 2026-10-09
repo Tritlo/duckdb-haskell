@@ -71,13 +71,12 @@ import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounde
 import Database.DuckDB.Simple.TypeCache (TypeCache, cachedLogicalType)
 import Database.DuckDB.Simple.Types (Null (..))
 import Database.DuckDB.Simple.Variant (Variant (..))
+import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.Types (CDouble (..), CFloat (..))
 import Foreign.Marshal (fromBool)
-import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Array (withArray)
 import Foreign.Marshal.Utils (withMany)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
-import Foreign.Storable (poke)
 import Numeric.Natural (Natural)
 
 -- | Represents a named parameter binding using the @:=@ operator.
@@ -357,7 +356,7 @@ floatDuckValue = c_duckdb_create_float . CFloat
 textDuckValue :: Text -> IO DuckDBValue
 textDuckValue txt =
     BS.useAsCStringLen (TextEncoding.encodeUtf8 txt) \(ptr, len) ->
-        c_duckdb_create_varchar_length ptr (fromIntegral len)
+        c_duckdb_create_varchar_length (ConstPtr ptr) (fromIntegral len)
 
 stringDuckValue :: String -> IO DuckDBValue
 stringDuckValue = textDuckValue . Text.pack
@@ -365,19 +364,12 @@ stringDuckValue = textDuckValue . Text.pack
 blobDuckValue :: BS.ByteString -> IO DuckDBValue
 blobDuckValue bs =
     BS.useAsCStringLen bs \(ptr, len) ->
-        c_duckdb_create_blob (castPtr ptr :: Ptr Word8) (fromIntegral len)
+        c_duckdb_create_blob (ConstPtr (castPtr ptr :: Ptr Word8)) (fromIntegral len)
 
 uuidDuckValue :: UUID.UUID -> IO DuckDBValue
 uuidDuckValue uuid =
-    alloca $ \ptr -> do
-        let (upper, lower) = UUID.toWords64 uuid
-        poke
-            ptr
-            DuckDBUHugeInt
-                { duckDBUHugeIntLower = lower
-                , duckDBUHugeIntUpper = upper
-                }
-        c_duckdb_create_uuid ptr
+    let (upper, lower) = UUID.toWords64 uuid
+     in c_duckdb_create_uuid (DuckDBUHugeInt lower upper)
 
 bitDuckValue :: BitString -> IO DuckDBValue
 bitDuckValue (BitString padding bits) = do
@@ -386,9 +378,7 @@ bitDuckValue (BitString padding bits) = do
     let nativePadding = complement ((1 `shiftL` (8 - fromIntegral padding)) - 1) :: Word8
         payload = BS.cons padding (BS.cons (BS.head bits .|. nativePadding) (BS.tail bits))
     BS.useAsCStringLen payload \(rawPtr, len) ->
-        alloca \ptr -> do
-            poke ptr DuckDBBit{duckDBBitData = castPtr rawPtr, duckDBBitSize = fromIntegral len}
-            c_duckdb_create_bit ptr
+        c_duckdb_create_bit (DuckDBBit (castPtr rawPtr) (fromIntegral len))
 
 bigNumDuckValue :: BigNum -> IO DuckDBValue
 bigNumDuckValue (BigNum big) =
@@ -398,28 +388,10 @@ bigNumDuckValue (BigNum big) =
                 if big < 0
                     then map complement (drop 3 $ toBigNumBytes big)
                     else drop 3 $ toBigNumBytes big
-        withPayload action =
-            if BS.null payload
-                then alloca \ptr -> do
-                    poke
-                        ptr
-                        DuckDBBignum
-                            { duckDBBignumData = nullPtr
-                            , duckDBBignumSize = 0
-                            , duckDBBignumIsNegative = neg
-                            }
-                    action ptr
-                else BS.useAsCStringLen payload \(rawPtr, len) ->
-                    alloca \ptr -> do
-                        poke
-                            ptr
-                            DuckDBBignum
-                                { duckDBBignumData = castPtr rawPtr
-                                , duckDBBignumSize = fromIntegral len
-                                , duckDBBignumIsNegative = neg
-                                }
-                        action ptr
-     in withPayload c_duckdb_create_bignum
+     in if BS.null payload
+            then c_duckdb_create_bignum (DuckDBBignum nullPtr 0 neg)
+            else BS.useAsCStringLen payload \(rawPtr, len) ->
+                c_duckdb_create_bignum (DuckDBBignum (castPtr rawPtr) (fromIntegral len) neg)
 
 dayDuckValue :: Day -> IO DuckDBValue
 dayDuckValue day = do
@@ -443,7 +415,7 @@ utcTimeDuckValue utcTime =
 -- | Bind a date, including either infinity sentinel.
 dateDuckValue :: Date -> IO DuckDBValue
 dateDuckValue value =
-    encodeUnbounded (fmap unDuckDBDate . encodeDay) value >>= c_duckdb_create_date . DuckDBDate
+    encodeUnbounded (fmap (\(DuckDBDate days) -> days) . encodeDay) value >>= c_duckdb_create_date . DuckDBDate
 
 -- | Bind a timestamp without a time zone, including infinity.
 localTimestampDuckValue :: LocalTimestamp -> IO DuckDBValue
@@ -601,7 +573,7 @@ fieldValueWithTypeDuckValue typeFromRep rep value =
                 FieldEnum enumIdx -> enumDuckValue dict enumIdx
                 other -> typeMismatch "ENUM" other
 
-scalarFieldValueDuckValue :: DuckDBType -> FieldValue -> IO DuckDBValue
+scalarFieldValueDuckValue :: DUCKDB_TYPE -> FieldValue -> IO DuckDBValue
 scalarFieldValueDuckValue dtype value =
     case (dtype, value) of
         (DuckDBTypeBoolean, FieldBool b) -> boolDuckValue b
@@ -659,18 +631,10 @@ enumDuckValue dict idx = do
         checkedValue (c_duckdb_create_enum_value enumLogical (fromIntegral idx))
 
 hugeIntDuckValue :: Integer -> IO DuckDBValue
-hugeIntDuckValue value =
-    integerToHugeInt value >>= \huge ->
-        alloca \ptr -> do
-            poke ptr huge
-            c_duckdb_create_hugeint ptr
+hugeIntDuckValue value = integerToHugeInt value >>= c_duckdb_create_hugeint
 
 uhugeIntDuckValue :: Integer -> IO DuckDBValue
-uhugeIntDuckValue value =
-    integerToUHugeInt value >>= \uhu ->
-        alloca \ptr -> do
-            poke ptr uhu
-            c_duckdb_create_uhugeint ptr
+uhugeIntDuckValue value = integerToUHugeInt value >>= c_duckdb_create_uhugeint
 
 decimalDuckValue :: DecimalValue -> IO DuckDBValue
 decimalDuckValue DecimalValue{decimalWidth, decimalScale, decimalInteger} = do
@@ -679,21 +643,11 @@ decimalDuckValue DecimalValue{decimalWidth, decimalScale, decimalInteger} = do
     when (abs decimalInteger >= 10 ^ decimalWidth) $
         throwIO (userError "duckdb-simple: DECIMAL value exceeds declared precision")
     huge <- integerToHugeInt decimalInteger
-    alloca \ptr -> do
-        poke
-            ptr
-            DuckDBDecimal
-                { duckDBDecimalWidth = decimalWidth
-                , duckDBDecimalScale = decimalScale
-                , duckDBDecimalValue = huge
-                }
-        c_duckdb_create_decimal ptr
+    c_duckdb_create_decimal (DuckDBDecimal decimalWidth decimalScale huge)
 
 intervalDuckValue :: IntervalValue -> IO DuckDBValue
 intervalDuckValue IntervalValue{intervalMonths, intervalDays, intervalMicros} =
-    alloca \ptr -> do
-        poke ptr (DuckDBInterval intervalMonths intervalDays intervalMicros)
-        c_duckdb_create_interval ptr
+    c_duckdb_create_interval (DuckDBInterval intervalMonths intervalDays intervalMicros)
 
 timeWithZoneDuckValue :: TimeWithZone -> IO DuckDBValue
 timeWithZoneDuckValue TimeWithZone{timeWithZoneTime, timeWithZoneZone} = do
@@ -713,7 +667,7 @@ integerToHugeInt value = do
     let lowerMask = (1 `shiftL` 64) - 1
         lower = fromIntegral (value .&. lowerMask)
         upper = fromIntegral (value `shiftR` 64)
-    pure DuckDBHugeInt{duckDBHugeIntLower = lower, duckDBHugeIntUpper = upper}
+    pure (DuckDBHugeInt lower upper)
 
 integerToUHugeInt :: Integer -> IO DuckDBUHugeInt
 integerToUHugeInt value = do
@@ -724,7 +678,7 @@ integerToUHugeInt value = do
     let lowerMask = (1 `shiftL` 64) - 1
         lower = fromIntegral (value .&. lowerMask)
         upper = fromIntegral (value `shiftR` 64)
-    pure DuckDBUHugeInt{duckDBUHugeIntLower = lower, duckDBUHugeIntUpper = upper}
+    pure (DuckDBUHugeInt lower upper)
 
 -- | Release every child handle when construction fails or completes.
 withCreatedValues :: [IO DuckDBValue] -> ([DuckDBValue] -> IO a) -> IO a
@@ -734,7 +688,7 @@ withCreatedValues = withMany (\action -> bracket (checkedValue action) destroyVa
 checkedValue :: IO DuckDBValue -> IO DuckDBValue
 checkedValue action = do
     value <- action
-    when (value == nullPtr) $
+    when (value == DuckDBValue nullPtr) $
         throwIO (userError "duckdb-simple: DuckDB value construction failed")
     pure value
 

@@ -736,8 +736,3 @@ instance (Generic a, GFromField (Rep a), Typeable a) => FromField (ViaDuckDB a) 
             Right value -> pure (ViaDuckDB value)
             Left err ->
                 returnError ConversionFailed f (Text.pack err)
-
---------------------------------------------------------------------------------
--- DuckDB type constructors (re-exported patterns)
-
--- These pattern synonyms come from duckdb-ffi; re-exporting to avoid users having to import it.

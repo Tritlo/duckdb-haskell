@@ -6,6 +6,11 @@ let
   pkgs = import nixpkgs { };
   haskellPackages = pkgs.haskell.packages.ghc9141.override {
     overrides = self: _super: {
+      hs-bindgen-runtime = self.callHackageDirect {
+        pkg = "hs-bindgen-runtime";
+        ver = "1.0.0.0";
+        sha256 = "1ai7rls9afpr3dv0gf8p61g3k8bgi7cfl51nsckbhjlb3ap39vq4";
+      } { };
       duckdb-ffi = (self.callCabal2nix "duckdb-ffi" ../../duckdb-ffi { }).overrideAttrs (_: {
         DUCKDB_TEST_VERSION = pkgs.duckdb.version;
       });

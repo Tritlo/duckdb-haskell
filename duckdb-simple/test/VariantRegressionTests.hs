@@ -11,12 +11,14 @@ import Control.Exception (SomeException, bracket, displayException, try)
 import Control.Monad (forM_, void, when)
 import Data.Array (Array, listArray)
 import qualified Data.ByteString as BS
+import Data.Coerce (coerce)
 import qualified Data.Geometry as G
 import Data.Int (Int64)
 import Data.List (isInfixOf)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Vector as V
+import Data.Void (Void)
 import Database.DuckDB.FFI
 import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
@@ -26,9 +28,9 @@ import Database.DuckDB.Simple.Geometry (RawGeometry (..), toRawGeometry)
 import Database.DuckDB.Simple.Internal (destroyValue, withConnectionHandle)
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), destroyLogicalType, logicalTypeFromRep)
 import Database.DuckDB.Simple.Variant
-import Foreign.C.String (withCString)
+import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (nullPtr)
+import Foreign.Ptr (Ptr, nullPtr)
 import Foreign.Storable (peek, poke)
 import GHC.Float (castDoubleToWord64, castFloatToWord32, castWord64ToDouble)
 import GHC.Generics (Generic)
@@ -36,7 +38,7 @@ import System.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
-import TestUtils (assertFailureIO)
+import TestUtils (assertFailureIO, withConstCString)
 
 -- | A generic record checks the bridge to composite type metadata.
 newtype VariantRecord = VariantRecord {payload :: Variant}
@@ -266,10 +268,10 @@ TIMESTAMP_S and TIMESTAMP_MS parameters to microseconds before execution.
 appendWideTimestamps :: Connection -> [(Int64, Int64)] -> IO ()
 appendWideTimestamps conn rows =
     withConnectionHandle conn \native ->
-        withCString "wide_timestamps" \table ->
+        withConstCString "wide_timestamps" \table ->
             alloca \appenderPtr -> do
-                poke appenderPtr nullPtr
-                bracket (c_duckdb_appender_create native nullPtr table appenderPtr) (const (void (c_duckdb_appender_destroy appenderPtr))) \created -> do
+                poke appenderPtr (coerce (nullPtr :: Ptr Void))
+                bracket (c_duckdb_appender_create native (coerce (nullPtr :: Ptr Void)) table appenderPtr) (const (void (c_duckdb_appender_destroy appenderPtr))) \created -> do
                     created @?= DuckDBSuccess
                     appender <- peek appenderPtr
                     forM_ rows \(seconds, millis) -> do

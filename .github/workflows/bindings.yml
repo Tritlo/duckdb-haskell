@@ -10,10 +10,15 @@ permissions:
 jobs:
   nix:
     name: Nix / GHC 9.14.1
+    needs: generated
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: generated-duckdb-bindings
+          path: duckdb-ffi
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
       - name: Build and test both packages with Nix
         run: >-
@@ -21,7 +26,25 @@ jobs:
           --option sandbox true --option sandbox-fallback false
           --max-jobs 2 --cores 2
 
+  generated:
+    name: Generate and verify bindings
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      - name: Generate bindings and verify checksums
+        run: nix-shell dev/nix/generate.nix --run 'duckdb-ffi/scripts/generate-bindings.sh --check'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: generated-duckdb-bindings
+          path: |
+            duckdb-ffi/src/Database/DuckDB/FFI.hs
+            duckdb-ffi/cbits/abi-checks.c
+          if-no-files-found: error
+
   bindings:
+    needs: generated
     strategy:
       fail-fast: false
       matrix:
@@ -76,6 +99,10 @@ jobs:
       DUCKDB_TEST_VERSION: ${{ matrix.duckdb }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: generated-duckdb-bindings
+          path: duckdb-ffi
       - uses: haskell-actions/setup@0f8e8c99d88aeb3fbfd523f1ef2c6f762d10d64d
         with:
           ghc-version: ${{ matrix.ghc }}
@@ -120,8 +147,9 @@ jobs:
           cabal install --lib duckdb-ffi --with-compiler=ghc --disable-documentation --package-env="$consumer/environment"
           printf '%s\n' \
             'import Database.DuckDB.FFI (c_duckdb_library_version)' \
+            'import Foreign.C.ConstPtr (unConstPtr)' \
             'import Foreign.C.String (peekCString)' \
-            'main = c_duckdb_library_version >>= peekCString >>= putStrLn' > "$consumer/Main.hs"
+            'main = c_duckdb_library_version >>= peekCString . unConstPtr >>= putStrLn' > "$consumer/Main.hs"
           unset LD_LIBRARY_PATH DYLD_LIBRARY_PATH DYLD_FALLBACK_LIBRARY_PATH
           for way in -static -dynamic; do
             ghc "$way" -fforce-recomp -package-env "$consumer/environment" "$consumer/Main.hs" -o "$consumer/check"

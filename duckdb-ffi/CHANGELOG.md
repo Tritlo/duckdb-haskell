@@ -2,6 +2,29 @@
 
 ## 1.5.6.0
 
+- Generate the complete raw API from the DuckDB and Arrow headers with
+  hs-bindgen 1.0. Remove handwritten raw modules, C ABI shims, and the old
+  binding generator. Keep all 158 earlier type names and all 546 `c_duckdb_*`
+  function names directly in `Database.DuckDB.FFI`. Keep all 148 earlier enum
+  pattern names through a small pass over typed output.
+- Use existing hs-bindgen type specifications and `RenameTerm` configuration
+  through a maintainer Haskell driver. Retained names use generated representations.
+- Configure names and opaque handles, compare targets, and generate ABI checks
+  from typed library declarations in the driver. Remove the Python helper and
+  external Clang probe. Keep the shell for compilation and checksum verification.
+- Include generated source and 508 C ABI assertions in release archives.
+  Keep these files out of Git. Generate both files with the maintainer script
+  and pinned Nix toolchain before checkout builds. Commit their SHA256 checksums
+  in `generated.sha256`. CI and the release script generate and verify both
+  files against this manifest. The release script completes this check before
+  it prepares documentation and source archives. Consumers need only `base`,
+  `hs-bindgen-runtime`, a C compiler, and DuckDB. Compare the four supported
+  native targets and check generated layouts during each package build.
+- Keep native handle pointees opaque. Do not generate readable instances
+  for the placeholder structs in the C header.
+- Move Arrow ownership helpers to `duckdb-simple`. Raw calls use direct struct
+  arguments/results and do not preserve the old C shims' NULL defaults.
+
 - Use the official DuckDB 1.5.6 header and native download. Keep native support
   for DuckDB >= 1.5.3 and < 1.6.
 - Add the COPY_DATABASE, UPDATE_EXTENSIONS, and MERGE_INTO statement tags.

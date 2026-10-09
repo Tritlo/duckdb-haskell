@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -20,6 +21,7 @@ import Data.Array (Array, bounds, listArray, (!))
 import Data.Bits (complement, finiteBitSize, shiftL, (.&.), (.|.))
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
+import Data.Coerce (Coercible, coerce)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.IntSet as IntSet
 import qualified Data.Set as Set
@@ -38,6 +40,7 @@ import Database.DuckDB.Simple.FromField (
  )
 import Database.DuckDB.Simple.Internal (destroyLogicalType)
 import Database.DuckDB.Simple.Variant (variantObject)
+import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (peekCString)
 import Foreign.Marshal.Alloc (alloca, allocaBytesAligned)
 import Foreign.Marshal.Utils (copyBytes)
@@ -56,7 +59,8 @@ checked = either codecError pure
 -- | Reject native versions outside the supported private-format range.
 checkVersion :: IO ()
 checkVersion = do
-    version <- c_duckdb_library_version >>= peekCString
+    ConstPtr versionPtr <- c_duckdb_library_version
+    version <- peekCString versionPtr
     let parts = Text.splitOn "." (Text.pack version)
         patch = case parts of
             ["v1", "5", p] -> readMaybe (Text.unpack p) :: Maybe Int
@@ -72,16 +76,16 @@ checkPlatform = alloca \ptr -> do
         codecError "the private codec requires a 64-bit little-endian host"
 
 -- | Acquire a non-NULL native handle.
-nonNull :: String -> IO (Ptr a) -> IO (Ptr a)
+nonNull :: (Coercible a (Ptr ())) => String -> IO a -> IO a
 nonNull label action = do
     ptr <- action
-    when (ptr == nullPtr) (codecError (label <> " returned NULL"))
+    when (coerce ptr == (nullPtr :: Ptr ())) (codecError (label <> " returned NULL"))
     pure ptr
 
 -- | Check a logical type's tag.
-expectType :: DuckDBType -> DuckDBLogicalType -> IO ()
+expectType :: DUCKDB_TYPE -> DuckDBLogicalType -> IO ()
 expectType expected logical = do
-    actual <- c_duckdb_get_type_id logical
+    DuckDBType actual <- c_duckdb_get_type_id logical
     unless (actual == expected) (codecError "unexpected physical child type")
 
 -- | Check a STRUCT's names and owned child descriptors.
@@ -162,7 +166,7 @@ prepareBytesReader vector = do
     base <- c_duckdb_vector_get_data vector
     valid <- prepareValidity vector
     pure \index -> do
-        checkIndex 16 index
+        checkIndex (sizeOf (undefined :: DuckDBStringT)) index
         present <- valid index
         unless present (codecError "NULL physical string element")
         when (base == nullPtr) (codecError "NULL string vector data")
@@ -178,7 +182,7 @@ checkedInt n
 prepareListBounds :: DuckDBVector -> IO (Int -> IO (Int, Int))
 prepareListBounds vector = do
     readEntry <- prepareElementReader vector
-    size <- c_duckdb_list_vector_get_size vector
+    DuckDBIdx size <- c_duckdb_list_vector_get_size vector
     pure \row -> do
         DuckDBListEntry offset count <- readEntry row
         unless (offset <= size && count <= size - offset) (codecError "LIST bounds exceed child size")
@@ -200,7 +204,7 @@ prepareVariantDecoder :: DuckDBVector -> IO (Int -> IO FieldValue)
 prepareVariantDecoder vector = do
     checkVersion
     checkPlatform
-    when (vector == nullPtr) (codecError "NULL vector")
+    when (vector == DuckDBVector nullPtr) (codecError "NULL vector")
     bracket (nonNull "vector type" (c_duckdb_vector_get_column_type vector)) destroyLogicalType checkSchema
     valid <- prepareValidity vector
     keys <- child vector 0
@@ -225,7 +229,7 @@ prepareVariantDecoder vector = do
     readKeyBytes <- prepareBytesReader keyVector
     readBlob <- prepareBytesReader blob
     pure \row -> do
-        checkIndex 16 row
+        checkIndex (sizeOf (undefined :: DuckDBListEntry)) row
         present <- valid row
         if not present
             then pure FieldNull
@@ -396,7 +400,7 @@ decodeScalar tag bytes = case tag of
 {- | The type and the payload size of each fixed-width scalar tag. These
 payloads have the memory layout of one vector element of the type.
 -}
-fixedWidthTag :: Word8 -> Maybe (DuckDBType, Int)
+fixedWidthTag :: Word8 -> Maybe (DUCKDB_TYPE, Int)
 fixedWidthTag = \case
     3 -> Just (DuckDBTypeTinyInt, 1)
     4 -> Just (DuckDBTypeSmallInt, 2)
@@ -424,7 +428,7 @@ fixedWidthTag = \case
     _ -> Nothing
 
 -- | Copy a fixed-width payload to aligned memory and decode it as one element.
-decodeFixedWidth :: DuckDBType -> Int -> ByteString -> IO FieldValue
+decodeFixedWidth :: DUCKDB_TYPE -> Int -> ByteString -> IO FieldValue
 decodeFixedWidth dtype size bytes = do
     when (BS.length bytes < size) (codecError "truncated scalar payload")
     allocaBytesAligned size 16 \buffer -> do

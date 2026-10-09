@@ -1,18 +1,26 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE TypeApplications #-}
 
 module ExpressionTest (tests) where
 
 import Control.Exception (finally)
 import Data.Char (toLower)
+import Data.Coerce (coerce)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf)
+import Data.Void (Void)
 import Database.DuckDB.FFI
-import Foreign.C.String (peekCString, withCString)
+import Foreign.C.ConstPtr (ConstPtr (..))
+import Foreign.C.String (peekCString)
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (castPtr, freeHaskellFunPtr, nullFunPtr, nullPtr)
+import Foreign.Ptr (FunPtr, Ptr, freeHaskellFunPtr, nullFunPtr, nullPtr)
 import Foreign.Storable (peek, poke)
+import GHC.Records (getField)
+import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
 import Utils (
@@ -20,6 +28,7 @@ import Utils (
     destroyErrorData,
     destroyLogicalType,
     withConnection,
+    withConstCString,
     withDatabase,
     withLogicalType,
     withResult,
@@ -28,14 +37,14 @@ import Utils (
 
 data ExpressionHarness = ExpressionHarness
     { ehFoldable :: IO (Maybe Bool)
-    , ehReturnType :: IO (Maybe DuckDBType)
+    , ehReturnType :: IO (Maybe DUCKDB_TYPE)
     , ehFoldedValue :: IO (Maybe String)
     , ehFoldError :: IO (Maybe String)
     }
 
 data ExpressionState = ExpressionState
     { esFoldable :: IORef (Maybe Bool)
-    , esReturnType :: IORef (Maybe DuckDBType)
+    , esReturnType :: IORef (Maybe DUCKDB_TYPE)
     , esFoldValue :: IORef (Maybe String)
     , esFoldError :: IORef (Maybe String)
     }
@@ -85,13 +94,13 @@ withExpressionFunction conn funcName action = do
     execPtr <- mkScalarExecFun expressionExec
     result <-
         withScalarFunction $ \scalarFun -> do
-            withCString funcName $ \name -> c_duckdb_scalar_function_set_name scalarFun name
-            withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) $ \intType -> do
+            withConstCString funcName $ \name -> c_duckdb_scalar_function_set_name scalarFun name
+            withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) $ \intType -> do
                 c_duckdb_scalar_function_add_parameter scalarFun intType
                 c_duckdb_scalar_function_set_return_type scalarFun intType
                 c_duckdb_scalar_function_set_bind scalarFun bindPtr
                 c_duckdb_scalar_function_set_function scalarFun execPtr
-                c_duckdb_scalar_function_set_extra_info scalarFun nullPtr nullFunPtr
+                c_duckdb_scalar_function_set_extra_info scalarFun (coerce (nullPtr :: Ptr Void)) (coerce (nullFunPtr :: FunPtr Void))
                 c_duckdb_register_scalar_function conn scalarFun >>= (@?= DuckDBSuccess)
                 action
                     ExpressionHarness
@@ -100,8 +109,8 @@ withExpressionFunction conn funcName action = do
                         , ehFoldedValue = readIORef valueRef
                         , ehFoldError = readIORef errorRef
                         }
-    freeHaskellFunPtr bindPtr
-    freeHaskellFunPtr execPtr
+    (freeHaskellFunPtr . coerce) bindPtr
+    (freeHaskellFunPtr . coerce) execPtr
     pure result
 
 expressionBind :: ExpressionState -> DuckDBBindInfo -> IO ()
@@ -115,19 +124,19 @@ expressionBind ExpressionState{esFoldable, esReturnType, esFoldValue, esFoldErro
             let isFoldable = foldableFlag /= 0
             writeIORef esFoldable (Just isFoldable)
             retType <- c_duckdb_expression_return_type exprHandle
-            typeId <- c_duckdb_get_type_id retType
+            typeId <- (fmap (getField @"unwrap") . c_duckdb_get_type_id) retType
             destroyLogicalType retType
             writeIORef esReturnType (Just typeId)
             alloca \ctxPtr -> do
                 c_duckdb_scalar_function_get_client_context info ctxPtr
                 ctx <- peek ctxPtr
                 alloca \valuePtr -> do
-                    poke valuePtr nullPtr
+                    poke valuePtr (coerce (nullPtr :: Ptr Void))
                     errData <- c_duckdb_expression_fold ctx exprHandle valuePtr
-                    if errData == nullPtr
+                    if errData == (coerce (nullPtr :: Ptr Void))
                         then do
                             valueHandle <- peek valuePtr
-                            if valueHandle == nullPtr
+                            if valueHandle == (coerce (nullPtr :: Ptr Void))
                                 then do
                                     writeIORef esFoldValue Nothing
                                     writeIORef esFoldError (Just "fold produced null value")
@@ -138,7 +147,7 @@ expressionBind ExpressionState{esFoldable, esReturnType, esFoldValue, esFoldErro
                                     destroyDuckValue valueHandle
                         else do
                             msgPtr <- c_duckdb_error_data_message errData
-                            msg <- peekCString msgPtr
+                            msg <- (peekCString . coerce) msgPtr
                             writeIORef esFoldValue Nothing
                             writeIORef esFoldError (Just msg)
                             destroyErrorData errData
@@ -155,14 +164,14 @@ expressionExec _ chunk outVec = do
 duckValueToString :: DuckDBValue -> IO String
 duckValueToString value = do
     strPtr <- c_duckdb_value_to_string value
-    text <- peekCString strPtr
-    c_duckdb_free (castPtr strPtr)
+    text <- (peekCString . coerce) strPtr
+    c_duckdb_free (coerce strPtr)
     pure text
 
 -- Wrapper constructors -----------------------------------------------------
 
-foreign import ccall "wrapper"
-    mkScalarBindFun :: (DuckDBBindInfo -> IO ()) -> IO DuckDBScalarFunctionBindFun
+mkScalarBindFun :: (DuckDBBindInfo -> IO ()) -> IO DuckDBScalarFunctionBindFun
+mkScalarBindFun = fmap DuckDBScalarFunctionBindFun . toFunPtr . DuckDBScalarFunctionBindFun_Aux
 
-foreign import ccall "wrapper"
-    mkScalarExecFun :: (DuckDBFunctionInfo -> DuckDBDataChunk -> DuckDBVector -> IO ()) -> IO DuckDBScalarFunctionFun
+mkScalarExecFun :: (DuckDBFunctionInfo -> DuckDBDataChunk -> DuckDBVector -> IO ()) -> IO DuckDBScalarFunctionFun
+mkScalarExecFun = fmap DuckDBScalarFunctionFun . toFunPtr . DuckDBScalarFunctionFun_Aux

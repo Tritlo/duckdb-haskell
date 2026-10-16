@@ -346,12 +346,15 @@ layout, so repeat its round trips after each native update.
    with a separate consumer under normal and dynamic Haskell linking.
 7. Re-run the API check and the final-native tests after any release adjustment.
    Publish only after these checks pass and the release is explicitly authorized.
+   `scripts/release.sh` regenerates both APIs and verifies their checksums and
+   coverage before it builds and uploads the Hackage archives.
    `scripts/release.sh` uploads package candidates even without `--publish`.
    Local archive preparation does not need that script.
 
 These commands build and check the packages locally without uploading:
 
 ```sh
+nix-shell dev/nix/generate.nix --run 'duckdb-ffi/scripts/generate-bindings.sh --check'
 cabal build all
 cabal test all --test-show-details=direct
 cabal run duckdb-simple-leak-test -- all 100

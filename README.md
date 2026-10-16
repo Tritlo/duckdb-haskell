@@ -36,6 +36,8 @@ The Haskell modules and C ABI assertions stay in the ignored
 builds. Git contains the generator, pinned headers, and checksums. Source
 archives contain the generated sources, so package users need only
 `hs-bindgen-runtime` and a matching native library.
+`scripts/release.sh` generates and verifies both APIs before it builds and
+uploads the Hackage archives. Package users do not need LLVM or hs-bindgen.
 
 For a local build with the pinned native preview:
 

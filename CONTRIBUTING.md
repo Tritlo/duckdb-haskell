@@ -27,6 +27,12 @@ C ABI assertions. Keep it outside Git. The checksum file and generator are
 tracked. Run the generator without `--check` after an intentional input change.
 Review the new checksums and run the coverage audit.
 
+`scripts/release.sh` generates and verifies both APIs before it builds the
+Hackage source archives and documentation. It then uploads the selected
+packages. The source archives contain the generated Haskell modules and C ABI
+checks. Package users do not need Nix, LLVM, or hs-bindgen. The release script
+uploads candidates by default. Use `--publish` for an authorized release.
+
 Build all components before running the tests. With Cabal 3.16 and 3.18,
 `cabal test all` on a clean tree can skip building the tests for a package
 with a custom setup.

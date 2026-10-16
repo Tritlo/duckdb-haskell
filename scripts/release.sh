@@ -30,6 +30,11 @@ case "$package" in
   *) echo "Error: unknown package '$package'. Must be duckdb-ffi, duckdb-simple, or all." ; exit 1 ;;
 esac
 
+repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+cd -- "$repo_dir"
+nix-shell dev/nix/generate.nix --run 'duckdb-ffi/scripts/generate-bindings.sh --check'
+python3 scripts/duckdb-api.py --check
+
 read -p "Username: " username
 read -sp "Password: " password
 echo ""

@@ -1,19 +1,20 @@
 # Package the Haskell demo extension
 
-`pack.py` copies a built foreign library and appends unsigned DuckDB extension
-metadata. It uses Python's standard library. It does not build the library or
-change the input file.
+`Pack.hs` copies a built foreign library and appends unsigned DuckDB extension
+metadata. It runs with `runghc` and the standard GHC packages. It does not build
+the library or change the input file.
 
 Supply the exact library path from the build output. Keep the output basename
 `haskell_demo.duckdb_extension`. DuckDB uses that name to find the demo's load
 entrypoint. The input library can retain its Cabal build filename.
 
 ```sh
-uv run dev/extensions/pack.py /absolute/path/to/libhaskell_demo.so \
+nix-shell dev/nix/shell.nix --run 'GHC_ENVIRONMENT=- runghc \
+  dev/extensions/Pack.hs /absolute/path/to/libhaskell_demo.so \
   --output /absolute/path/to/haskell_demo.duckdb_extension \
   --platform linux_amd64 \
   --duckdb-version 13d1d8f56a \
-  --extension-version 0.1.0
+  --extension-version 0.1.0'
 ```
 
 Set `--platform` to the exact DuckDB platform that matches the library. For
@@ -48,6 +49,8 @@ DuckDB version, extension version, ABI type, and three empty reserved fields.
 The zero signature does not authenticate the library. Native loading requires
 DuckDB's unsigned-extension option.
 
-Byte-for-byte comparison with the official CMake script remains deferred.
-Native build, load, and entrypoint checks also remain deferred. The packer does
-not verify exported symbols or native dependency resolution.
+The generated suffix matches the pinned official CMake writer byte for byte.
+The check used a temporary library fixture and verified that the input did not
+change. It also checked invalid fields, existing outputs, repeated metadata,
+and supported native headers. The packer does not verify exported symbols or
+native dependency resolution.

@@ -82,6 +82,7 @@ library
     Database.DuckDB.Simple.Arrow.Internal
     Database.DuckDB.Simple.Callback
     Database.DuckDB.Simple.Element
+    Database.DuckDB.Simple.Function.Internal
     Database.DuckDB.Simple.Materialize
     Database.DuckDB.Simple.Native
     Database.DuckDB.Simple.Result
@@ -94,6 +95,7 @@ library
   if flag(extension)
     if os(linux) || os(osx)
       cc-options: -fvisibility=hidden
+      ghc-options: -optc-fvisibility=hidden
     else
       buildable: False
   build-depends:

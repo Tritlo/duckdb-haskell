@@ -31,3 +31,8 @@ uv run dev/bindings/duckdb-api.py --check
 Package users do not need these tools, Nix, LLVM, or hs-bindgen.
 The header audit uses Python's standard library. DuckDB's native CMake build
 also requires Python.
+
+CI caches the generated files by generator, toolchain, headers, manifest, and
+expected checksums. An exact cache hit skips Nix setup and generation. Every
+run checks the file checksums, header provenance, and API coverage before it
+uploads the generated artifact. A cache miss runs the pinned generator.

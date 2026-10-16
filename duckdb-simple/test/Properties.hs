@@ -74,18 +74,18 @@ data SomeRoundTrip
 
 roundTripTests :: TestTree
 roundTripTests =
+    testGroup
+        "round-trip properties"
+        (fmap mkRoundTripTest specs)
+
+mkRoundTripTest :: SomeRoundTrip -> TestTree
+mkRoundTripTest (SomeRoundTrip label proxy gen shrinker) =
     withResource
         (open ":memory:")
         close
         \getConn ->
-            testGroup
-                "round-trip properties"
-                (fmap (mkRoundTripTest getConn) specs)
-
-mkRoundTripTest :: IO Connection -> SomeRoundTrip -> TestTree
-mkRoundTripTest getConn (SomeRoundTrip label proxy gen shrinker) =
-    testProperty label $
-        forAllShrink gen shrinker (roundTripProperty getConn proxy)
+            testProperty label $
+                forAllShrink gen shrinker (roundTripProperty getConn proxy)
 
 roundTripProperty ::
     forall a.

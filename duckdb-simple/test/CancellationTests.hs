@@ -12,11 +12,10 @@ import Control.Exception (AsyncException (..), SomeException, bracket, fromExcep
 import Control.Monad (unless, void)
 import Data.IORef (atomicWriteIORef, newIORef, readIORef)
 import Data.Int (Int64)
-import Database.DuckDB.FFI (c_duckdb_interrupt, c_duckdb_query)
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.Arrow (foldArrow_)
 import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
-import Database.DuckDB.Simple.Internal (withConnectionHandle, withQueryCString, withResult)
+import Database.DuckDB.Simple.Internal (c_duckdb_v2_connection_interrupt, c_duckdb_v2_result_drain, checked, output, runInterruptibleQuery, withConnectionHandle, withResult)
 import GHC.Conc (BlockReason (..), ThreadStatus (..), threadStatus)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
@@ -82,13 +81,11 @@ cancellationTests =
                         queued <- newEmptyMVar
                         begin <- newEmptyMVar
                         createFunction conn "query_started" (pure 1 :: IO Int64)
-                        let action = withConnectionHandle conn \handle ->
-                                withQueryCString longQuery \sql ->
-                                    withResult
-                                        conn
-                                        longQuery
-                                        (\result -> signal queued >> readMVar begin >> c_duckdb_query handle sql result)
-                                        (const (pure ()))
+                        let action = withStatement conn longQuery \stmt ->
+                                withResult stmt \result -> runInterruptibleQuery conn do
+                                    signal queued
+                                    readMVar begin
+                                    void (output (c_duckdb_v2_result_drain result))
                         withCaller conn (signal begin) action \caller done -> do
                             await "query worker did not reach its entry gate" (readMVar queued)
                             (_, sent) <- startCaller (throwTo caller UserInterrupt)
@@ -149,7 +146,7 @@ withCaller conn release action use =
         case finished of
             Just _ -> pure ()
             Nothing -> do
-                withConnectionHandle conn c_duckdb_interrupt
+                withConnectionHandle conn (\raw -> checked (c_duckdb_v2_connection_interrupt raw))
                 threadDelay 10000
                 stop done
 

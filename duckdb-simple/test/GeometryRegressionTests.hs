@@ -15,14 +15,14 @@ import Data.Int (Int64)
 import Data.List (isInfixOf)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
-import qualified Data.Text as Text
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
 import Database.DuckDB.Simple
-import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
 import Database.DuckDB.Simple.FromField (FieldValue (..), StructValue (..), UnionValue)
 import Database.DuckDB.Simple.Geometry (RawGeometry (..), fromRawGeometry, toRawGeometry)
+import Database.DuckDB.Simple.Internal (withConnectionHandle)
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), destroyLogicalType, logicalTypeFromRep, logicalTypeToRep)
+import qualified Database.DuckDB.Simple.Streaming as Streaming
 import GHC.Float (castWord64ToDouble)
 import System.Mem (performMajorGC)
 import Test.Tasty (TestTree, testGroup)
@@ -274,12 +274,12 @@ tests =
                 [Only nullValue] <- query_ conn "SELECT union_value(shape := NULL::GEOMETRY('OGC:CRS84'))" :: IO [Only (UnionValue FieldValue)]
                 (query conn "SELECT ?" (Only nullValue) :: IO [Only (UnionValue FieldValue)]) >>= (@?= [Only nullValue])
                 (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
-        , testCase "inactive UNION geometry members keep the CRS of the type cache" $
+        , testCase "inactive UNION geometry members keep the CRS of their declared type" $
             withConnection ":memory:" \conn -> do
                 [Only value] <- query_ conn "SELECT union_value(number := 42::BIGINT)::UNION(number BIGINT, shape GEOMETRY('OGC:CRS84'))" :: IO [Only (UnionValue FieldValue)]
                 (query conn "SELECT typeof(?)" (Only value) :: IO [Only Text]) >>= (@?= [Only "UNION(number BIGINT, shape GEOMETRY('OGC:CRS84'))"])
                 (query conn "SELECT ?" (Only value) :: IO [Only (UnionValue FieldValue)]) >>= (@?= [Only value])
-        , testCase "NULL and empty nested geometry collections keep the CRS of the type cache" $
+        , testCase "NULL and empty nested geometry collections keep the CRS of their declared type" $
             withConnection ":memory:" \conn -> do
                 _ <-
                     execute_
@@ -289,23 +289,25 @@ tests =
                 (query conn "SELECT ?" (Only value) :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only value])
                 _ <- execute conn "INSERT INTO nested VALUES (?)" (Only value)
                 (query_ conn "SELECT v FROM nested" :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only value, Only value])
-        , testCase "configured CRS definitions bind; other CRS definitions bind without a CRS" $ do
+        , testCase "recognized CRS definitions retain metadata and unknown names fail" $ do
             let crs = "local' íslenska λ"
             withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = [crs]} \conn -> do
-                [Only typed] <- query conn "SELECT typeof(?)" (Only (nullShape crs)) :: IO [Only Text]
-                assertBool (Text.unpack typed) ("íslenska λ" `Text.isInfixOf` typed)
-                (query conn "SELECT ?" (Only (nullShape crs)) :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only (nullShape crs)])
-                (query conn "SELECT typeof(?)" (Only (nullShape "OGC:CRS84")) :: IO [Only Text]) >>= (@?= [Only "STRUCT(shape GEOMETRY)"])
+                assertFailureIO (query conn "SELECT ?" (Only (nullShape crs)) :: IO [Only (StructValue FieldValue)])
+                (query conn "SELECT typeof(?)" (Only (nullShape "OGC:CRS84")) :: IO [Only Text]) >>= (@?= [Only "STRUCT(shape GEOMETRY('OGC:CRS84'))"])
+                (query conn "SELECT ?" (Only (nullShape "OGC:CRS84"))) >>= (@?= [Only (nullShape "OGC:CRS84")])
+        , testCase "unknown CRS cannot silently drop metadata" $
+            withConnectionWithConfig ":memory:" [("ignore_unknown_crs", "true")] \conn ->
+                assertFailureIO (query conn "SELECT ?" (Only (nullShape "local grid")) :: IO [Only (StructValue FieldValue)])
         , testCase "connection options validate CRS definitions and pass configuration flags" $ do
             forM_ ["", "OGC:CRS84\0bad"] \crs ->
                 assertFailureIO (withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = [crs]} (const (pure ())))
             let options = defaultConnectionOptions{connectionConfig = [("threads", "1")], connectionGeometryCRS = ["local grid", "OGC:CRS84", "OGC:CRS84"]}
             withConnectionWithOptions ":memory:" options \conn ->
                 (query_ conn "SELECT current_setting('threads')" :: IO [Only Int64]) >>= (@?= [Only 1])
-        , testCase "logical type construction drops CRS" $ do
-            let logical = LogicalTypeList (LogicalTypeGeometry (Just "OGC:CRS84"))
-            bracket (logicalTypeFromRep logical) destroyLogicalType logicalTypeToRep
-                >>= (@?= LogicalTypeList (LogicalTypeGeometry Nothing))
+        , testCase "logical type construction preserves CRS" $
+            withConnection ":memory:" \conn -> withConnectionHandle conn \native -> do
+                let logical = LogicalTypeList (LogicalTypeGeometry (Just "OGC:CRS84"))
+                bracket (logicalTypeFromRep native logical) destroyLogicalType logicalTypeToRep >>= (@?= logical)
         , testGroup
             "folds cross chunk boundaries and preserve CRS"
             [ testCase mode $
@@ -315,7 +317,7 @@ tests =
                         actual @?= expected
                         pure (n + 1)
                     count @?= 5000
-            | (mode, foldRows) <- [("materialized", fold_), ("deprecated streaming", Streaming.fold_)]
+            | (mode, foldRows) <- [("materialized", fold_), ("native streaming", Streaming.fold_)]
             ]
         , testCase "invalid binary import leaves the connection usable" $
             withConnection ":memory:" \conn -> do

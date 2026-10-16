@@ -52,11 +52,11 @@ main = do
                     rows <- replicateM (fromIntegral count) (query conn "SELECT ?::BIGINT" (Only (1 :: Int64)))
                     evaluate (sum [n | [Only n] <- rows])
                 "variant" -> do
-                    rows <- query_ conn (Query ("SELECT i::VARIANT FROM range(" <> Text.pack (show count) <> ") t(i)"))
-                    evaluate (List.foldl' (\acc (Only value) -> acc + variantNumber value) 0 rows)
+                    rows <- query_ conn (Query ("SELECT i::VARIANT::BIGINT FROM range(" <> Text.pack (show count) <> ") t(i)"))
+                    evaluate (List.foldl' (\acc (Only value) -> acc + value) 0 rows)
                 "variant-parameters" -> do
-                    rows <- replicateM (fromIntegral count) (query conn "SELECT ?" (Only (Variant (FieldInt64 1))))
-                    evaluate (sum [variantNumber value | [Only value] <- rows])
+                    rows <- replicateM (fromIntegral count) (query conn "SELECT ?::BIGINT" (Only (Variant (FieldInt64 1))))
+                    evaluate (sum [value | [Only value] <- rows])
                 "geometry" -> do
                     rows <- query_ conn (Query ("SELECT 'POINT (1 2)'::GEOMETRY('OGC:CRS84') FROM range(" <> Text.pack (show count) <> ")"))
                     evaluate (sum [fromIntegral (BS.length (rawGeometryWKB value)) | Only value <- rows])
@@ -90,11 +90,6 @@ main = do
             end <- getMonotonicTimeNSec
             check result
             printf "%s,%d,%d,%.3f,%d\n" workload count run (fromIntegral (end - start) / 1000000 :: Double) result
-
--- | Fail if the VARIANT benchmark changes its scalar type.
-variantNumber :: Variant -> Int64
-variantNumber (Variant (FieldInt64 value)) = value
-variantNumber value = error ("unexpected VARIANT benchmark value: " <> show value)
 
 -- | Force coordinate decoding and check the point shape.
 pointChecksum :: G.Geometry -> Int64

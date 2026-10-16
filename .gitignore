@@ -9,3 +9,4 @@ api.md
 **/venv
 
 dev/ci-logs/
+*_stub.h

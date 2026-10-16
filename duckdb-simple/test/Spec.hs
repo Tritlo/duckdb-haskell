@@ -17,6 +17,7 @@ import CancellationTests (cancellationTests)
 import Control.Applicative ((<|>))
 import Control.Exception (ErrorCall, Exception, SomeException, displayException, fromException, try)
 import Control.Monad (forM_, replicateM_, when)
+import CopyTests (copyTests)
 import CoreRegressionTests (coreRegressionTests)
 import Data.Array (Array, elems, listArray)
 import qualified Data.ByteString as BS
@@ -41,11 +42,10 @@ import Data.Time.LocalTime (
  )
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
-import Database.DuckDB.FFI (
-    pattern DuckDBCatalogEntryTypeTable,
-    pattern DuckDBFileFlagCreate,
-    pattern DuckDBFileFlagRead,
-    pattern DuckDBFileFlagWrite,
+import Database.DuckDB.FFI.V2 (
+    pattern DuckDBV2FileFlagCreate,
+    pattern DuckDBV2FileFlagRead,
+    pattern DuckDBV2FileFlagWrite,
  )
 import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Catalog as Catalog
@@ -85,6 +85,7 @@ import GHC.Generics (Generic)
 import qualified GeometryRegressionTests
 import Numeric.Natural (Natural)
 import Properties (roundTripTests)
+import RegistrationTests (registrationTests)
 
 import qualified PreviewTests
 import StreamingTests (nativeStreamingTests)
@@ -213,6 +214,8 @@ tests =
         , cancellationTests
         , nativeStreamingTests
         , extensionRegressionTests
+        , registrationTests
+        , copyTests
         , GeometryRegressionTests.tests
         , VariantRegressionTests.tests
         , valueRegressionTests
@@ -262,7 +265,7 @@ v20Tests =
                 withTransaction conn $ do
                     mType <- Catalog.catalogTypeName conn "memory"
                     assertBool "expected catalog type name" (mType /= Nothing)
-                    mEntry <- Catalog.lookupCatalogEntry conn "memory" "main" "catalog_probe" DuckDBCatalogEntryTypeTable
+                    mEntry <- Catalog.lookupCatalogEntry conn "memory" "main" "catalog_probe" Catalog.CatalogTable
                     case mEntry of
                         Nothing -> assertFailure "expected catalog entry"
                         Just entry -> Catalog.catalogEntryName entry @?= "catalog_probe"
@@ -272,11 +275,11 @@ v20Tests =
             exists <- doesFileExist path
             when exists (removeFile path)
             withConnection ":memory:" \conn -> do
-                FileSystem.withFileHandle conn path [DuckDBFileFlagCreate, DuckDBFileFlagWrite] \handle -> do
+                FileSystem.withFileHandle conn path [DuckDBV2FileFlagCreate, DuckDBV2FileFlagWrite] \handle -> do
                     written <- FileSystem.writeFileHandleBytes handle payload
                     written @?= fromIntegral (BS.length payload)
                     FileSystem.fileHandleSync handle
-                FileSystem.withFileHandle conn path [DuckDBFileFlagRead] \handle -> do
+                FileSystem.withFileHandle conn path [DuckDBV2FileFlagRead] \handle -> do
                     size <- FileSystem.fileHandleSize handle
                     size @?= fromIntegral (BS.length payload)
                     bytes <- FileSystem.readFileHandleChunk handle 32
@@ -309,14 +312,12 @@ v20Tests =
                 filePath <- readIORef pathRef
                 captured @?= [1, 2, 3]
                 filePath @?= Just "/tmp/duckdb-simple-copy.out"
-        , testCase "logging wrapper registers a log sink" $
+        , testCase "custom log storage reports the V2 limitation" $
             withConnection ":memory:" \conn -> do
-                entriesRef <- newIORef ([] :: [Logging.LogEntry])
-                Logging.registerLogStorage conn "hs_log_capture" \entry ->
-                    atomicModifyIORef' entriesRef \entries -> (entry : entries, ())
-                _ <- execute_ conn "SELECT write_log('duckdb-simple logging wrapper', level := 'INFO', scope := 'connection')"
-                _ <- readIORef entriesRef
-                pure ()
+                result <- try (Logging.registerLogStorage conn "hs_log_capture" (\_ -> pure ()))
+                case result of
+                    Left (err :: SQLError) -> assertBool "explicit unsupported diagnostic" ("unavailable" `Text.isInfixOf` sqlErrorMessage err)
+                    Right () -> assertFailure "expected unsupported log registration"
         ]
 
 fieldInt :: [Field] -> IO Int

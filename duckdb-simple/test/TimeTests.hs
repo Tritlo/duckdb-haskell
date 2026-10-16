@@ -16,7 +16,7 @@ import Data.Ratio ((%))
 import qualified Data.Text as Text
 import Data.Time (Day, LocalTime (..), TimeOfDay (..), UTCTime, fromGregorian, localTimeToUTC, utc)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
-import Database.DuckDB.FFI
+import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), returnError)
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..))
@@ -106,14 +106,14 @@ timeTests =
 -- | Check explicit nanosecond targets without changing ordinary UTC parameter types.
 nanosecondTimeTests :: [TestTree]
 nanosecondTimeTests =
-    [ testCase "nanosecond UTC results and VARIANTs preserve precision and infinity" $ withConnection ":memory:" $ \conn -> do
+    [ testCase "nanosecond UTC results and explicit VARIANT casts preserve precision and infinity" $ withConnection ":memory:" $ \conn -> do
         _ <- execute_ conn "SET TimeZone='Pacific/Auckland'"
         let precise = localTimeToUTC utc (LocalTime (fromGregorian 2000 1 2) (TimeOfDay 3 4 5.123456789))
         forM_ [("'2000-01-02 03:04:05.123456789+00'", Finite precise), ("'infinity'", PosInfinity), ("'-infinity'", NegInfinity)] $ \(literal, expected) -> do
-            let sql = Query ("SELECT " <> literal <> "::TIMESTAMPTZ_NS, (" <> literal <> "::TIMESTAMPTZ_NS)::VARIANT")
-            (query_ conn sql :: IO [(UTCTimestamp, Variant)]) >>= (@?= [(expected, Variant (FieldTimestampTZ expected))])
+            let sql = Query ("SELECT " <> literal <> "::TIMESTAMPTZ_NS, (" <> literal <> "::TIMESTAMPTZ_NS)::VARIANT::TIMESTAMPTZ_NS")
+            (query_ conn sql :: IO [(UTCTimestamp, UTCTimestamp)]) >>= (@?= [(expected, expected)])
         let value = Variant (FieldTimestampTZ (Finite precise))
-        query conn "SELECT ?" (Only value) >>= (@?= [Only value])
+        (query conn "SELECT ?::TIMESTAMPTZ_NS" (Only value) :: IO [Only UTCTimestamp]) >>= (@?= [Only (Finite precise)])
     , testCase "explicit nanosecond UTC parameters preserve finite units and infinities" $ withConnection ":memory:" $ \conn -> do
         _ <- execute_ conn "SET TimeZone='Pacific/Auckland'"
         forM_ [minBound, negate (maxBound :: Int64) + 1, -1, 0, 1, 123456789, maxBound - 1] $ \nanos -> do
@@ -125,14 +125,14 @@ nanosecondTimeTests =
         let precise = posixSecondsToUTCTime 0.123456789
             ordinary = posixSecondsToUTCTime 0.123456
         (query conn "SELECT typeof(?), ?" (precise, precise) :: IO [(String, UTCTime)]) >>= (@?= [("TIMESTAMP WITH TIME ZONE", ordinary)])
-    , testCase "nanosecond UTC arrays retain NULLs and empty element types" $ withConnection ":memory:" $ \conn -> do
+    , testCase "nanosecond UTC arrays retain NULLs and reject empty arrays" $ withConnection ":memory:" $ \conn -> do
         let precise = posixSecondsToUTCTime 0.123456789
             negative = posixSecondsToUTCTime (-0.000000001)
             values = listArray (0 :: Int, 2) [Just precise, Nothing, Just negative]
             empty = listArray (0, -1) [] :: Array Int (Maybe UTCTime)
             nulls = listArray (0, 1) [Nothing, Nothing] :: Array Int (Maybe UTCTime)
         (query conn "SELECT ?::TIMESTAMPTZ_NS[]" (Only values) :: IO [Only [Maybe UTCTime]]) >>= (@?= [Only [Just precise, Nothing, Just negative]])
-        (query conn "SELECT ?::TIMESTAMPTZ_NS[]" (Only empty) :: IO [Only [Maybe UTCTime]]) >>= (@?= [Only []])
+        assertEmptyArrayUnavailable (query conn "SELECT ?::TIMESTAMPTZ_NS[]" (Only empty) :: IO [Only [Maybe UTCTime]])
         (query conn "SELECT ?::TIMESTAMPTZ_NS[]" (Only nulls) :: IO [Only [Maybe UTCTime]]) >>= (@?= [Only [Nothing, Nothing]])
         (query conn "SELECT ?::TIMESTAMPTZ_NS" (Only (Nothing :: Maybe UTCTime)) :: IO [Only (Maybe UTCTime)]) >>= (@?= [Only Nothing])
         let nested = listArray (0 :: Int, 1) [values, values]
@@ -140,9 +140,9 @@ nanosecondTimeTests =
     , testCase "nanosecond targets preserve matching STRUCT MAP and UNION leaves" $ withConnection ":memory:" $ \conn -> do
         let precise = Finite (posixSecondsToUTCTime 0.123456789)
             coarse = Finite (localTimeToUTC utc (LocalTime (fromGregorian 5000 1 1) (TimeOfDay 0 0 0)))
-            utcType = LogicalTypeScalar DuckDBTypeTimestampTz
+            utcType = LogicalTypeScalar DuckDBV2LogicalTypeIdTimestampTz
             fields = listArray (0, 3) [StructField "Precise" (FieldTimestampTZ precise), StructField "Coarse" (FieldTimestampTZ coarse), StructField "items" (FieldList [FieldTimestampTZ precise, FieldNull, FieldTimestampTZ NegInfinity]), StructField "lookup" (FieldMap [(FieldInt64 1, FieldTimestampTZ precise)])]
-            types = listArray (0, 3) [StructField "Precise" utcType, StructField "Coarse" utcType, StructField "items" (LogicalTypeList utcType), StructField "lookup" (LogicalTypeMap (LogicalTypeScalar DuckDBTypeBigInt) utcType)]
+            types = listArray (0, 3) [StructField "Precise" utcType, StructField "Coarse" utcType, StructField "items" (LogicalTypeList utcType), StructField "lookup" (LogicalTypeMap (LogicalTypeScalar DuckDBV2LogicalTypeIdBigInt) utcType)]
             struct = StructValue fields types (Map.fromList [("Precise", 0), ("Coarse", 1), ("items", 2), ("lookup", 3)])
             sql = "WITH bound AS (SELECT ?::STRUCT(coarse TIMESTAMPTZ, items TIMESTAMPTZ_NS[], lookup MAP(BIGINT, TIMESTAMPTZ_NS), precise TIMESTAMPTZ_NS) AS value) SELECT value.precise, value.coarse, value.items, map_values(value.lookup) FROM bound"
         (query conn sql (Only struct) :: IO [(UTCTimestamp, UTCTimestamp, [Maybe UTCTimestamp], [UTCTimestamp])]) >>= (@?= [(precise, coarse, [Just precise, Nothing, Just NegInfinity], [precise])])
@@ -174,3 +174,11 @@ assertConversionError action = do
         Left SQLError{sqlErrorMessage = message} ->
             assertBool "error must identify infinity" ("infinity" `Text.isInfixOf` message)
         Right _ -> assertFailure "expected a conversion error"
+
+-- | Require the explicit V2 limit for zero-length ARRAY parameters.
+assertEmptyArrayUnavailable :: IO a -> Assertion
+assertEmptyArrayUnavailable action = do
+    result <- try action
+    case result of
+        Left SQLError{sqlErrorMessage = message} -> assertBool "must identify empty ARRAY" ("empty ARRAY" `Text.isInfixOf` message)
+        Right _ -> assertFailure "expected the V2 empty ARRAY limit"

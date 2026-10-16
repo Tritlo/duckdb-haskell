@@ -2,9 +2,9 @@
 Module      : Database.DuckDB.Simple.Arrow
 Description : Scoped Arrow export through the DuckDB C Data Interface.
 
-These functions execute a query and visit its Arrow batches. DuckDB materializes
-the native result before the first callback. The Haskell code converts and
-releases one batch at a time. Native result memory can grow with the query size.
+These functions execute a query and visit its Arrow batches. The default fold
+collects owned batches and closes the native cursor before the first callback.
+It releases each batch after its callback. Memory use can grow with the query size.
 
 Each callback receives a separate schema and array. It may read them or pass
 them to a consumer that releases or moves them under the Arrow C Data Interface.
@@ -18,9 +18,8 @@ separately. Moved contents remain valid after the query and connection close.
 Haskell consumers must mask asynchronous exceptions while moving a root and
 register its cleanup before restoring exceptions.
 
-This module uses the supported schema and chunk conversion functions.
-DuckDB deprecates older Arrow functions such as @c_duckdb_query_arrow@ and
-@c_duckdb_arrow_scan@. Both API groups are in @Database.DuckDB.FFI@.
+This module uses native V2 Arrow results. It retains owned Arrow batches
+until execution finishes, then delivers them to the callback.
 -}
 module Database.DuckDB.Simple.Arrow (
     foldArrow,
@@ -30,7 +29,7 @@ module Database.DuckDB.Simple.Arrow (
     releaseArrowStream,
 ) where
 
-import Database.DuckDB.FFI (ArrowArray, ArrowSchema)
+import Database.DuckDB.FFI.V2 (ArrowArray, ArrowSchema)
 import Database.DuckDB.Simple.Arrow.Internal (foldArrowWith, releaseArrowArray, releaseArrowSchema, releaseArrowStream)
 import Database.DuckDB.Simple.Internal (Connection, Query, ResultMode (MaterializedResult))
 import Database.DuckDB.Simple.ToRow (ToRow)
@@ -44,8 +43,8 @@ array pointers are valid only during the callback. A consumer may release or
 move their contents as described in the module documentation. The accumulator
 is evaluated to weak head normal form after each callback.
 
-DuckDB materializes the native result before this fold starts. This function
-does not provide bounded-memory query execution.
+The fold collects all owned batches and closes the native cursor before it
+calls the step function. It does not provide bounded-memory query execution.
 -}
 foldArrow :: (ToRow q) => Connection -> Query -> q -> a -> (a -> Ptr ArrowSchema -> Ptr ArrowArray -> IO a) -> IO a
 foldArrow = foldArrowWith MaterializedResult

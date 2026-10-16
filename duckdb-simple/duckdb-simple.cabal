@@ -23,7 +23,9 @@ description:
   functions. The API follows the style of sqlite-simple and postgresql-simple.
   .
   Supports native DuckDB >= 2.0 and < 2.1.
-  The duckdb-ffi package also provides the new V2 C API.
+  The backend uses the generated V2 API from duckdb-ffi.
+  It provides shared environments and instances, function registration,
+  native streaming, and Arrow batches.
 
 extra-doc-files:
   CHANGELOG.md
@@ -62,8 +64,11 @@ library
     Database.DuckDB.Simple.Logging
     Database.DuckDB.Simple.LogicalRep
     Database.DuckDB.Simple.Ok
+    Database.DuckDB.Simple.Registration
+    Database.DuckDB.Simple.Streaming
     Database.DuckDB.Simple.Time
     Database.DuckDB.Simple.ToField
+    Database.DuckDB.Simple.Tokenizer
     Database.DuckDB.Simple.ToRow
     Database.DuckDB.Simple.Types
     Database.DuckDB.Simple.Variant
@@ -73,6 +78,7 @@ library
     Database.DuckDB.Simple.Callback
     Database.DuckDB.Simple.Element
     Database.DuckDB.Simple.Materialize
+    Database.DuckDB.Simple.Native
     Database.DuckDB.Simple.Result
     Database.DuckDB.Simple.TypeCache
     Database.DuckDB.Simple.VariantCodec
@@ -99,11 +105,13 @@ test-suite duckdb-simple-test
   other-modules:
     ArrowTests
     CancellationTests
+    CopyTests
     CoreRegressionTests
     ExtensionRegressionTests
     GeometryRegressionTests
     PreviewTests
     Properties
+    RegistrationTests
     StreamingTests
     TestUtils
     TimeTests
@@ -123,6 +131,7 @@ test-suite duckdb-simple-test
     directory >=1.3 && <1.4,
     duckdb-ffi >=2.0.0.0 && <2.1,
     duckdb-simple,
+    filepath >=1.4 && <1.6,
     geometry-simple >=0.1.1.0 && <0.2,
     hs-bindgen-runtime >=1.0.0.0 && <1.1,
     QuickCheck >=2.14 && <2.18,
@@ -134,41 +143,6 @@ test-suite duckdb-simple-test
     time,
     uuid >=1.3 && <1.4,
     vector >=0.13 && <0.14,
-
-test-suite duckdb-simple-codec-test
-  type: exitcode-stdio-1.0
-  hs-source-dirs:
-    test-codec
-    src
-
-  main-is: Main.hs
-  other-modules:
-    Database.DuckDB.Simple.Element
-    Database.DuckDB.Simple.FromField
-    Database.DuckDB.Simple.Geometry
-    Database.DuckDB.Simple.Internal
-    Database.DuckDB.Simple.LogicalRep
-    Database.DuckDB.Simple.Ok
-    Database.DuckDB.Simple.Time
-    Database.DuckDB.Simple.TypeCache
-    Database.DuckDB.Simple.Variant
-    Database.DuckDB.Simple.VariantCodec
-
-  default-language: Haskell2010
-  build-depends:
-    array >=0.5 && <0.6,
-    base >=4.14 && <5,
-    bytestring >=0.11 && <0.13,
-    containers >=0.6 && <0.9,
-    duckdb-ffi >=2.0.0.0 && <2.1,
-    geometry-simple >=0.1.1.0 && <0.2,
-    hs-bindgen-runtime >=1.0.0.0 && <1.1,
-    tasty >=1.4 && <1.6,
-    tasty-hunit >=0.10 && <0.12,
-    text >=2.0 && <2.2,
-    time >=1.12 && <1.16,
-    transformers >=0.6 && <0.7,
-    uuid >=1.3 && <1.4,
 
 test-suite duckdb-simple-leak-test
   type: exitcode-stdio-1.0

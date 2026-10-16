@@ -5,18 +5,20 @@
 -- | Regression tests for result metadata, cursor state, and handle lifetime.
 module CoreRegressionTests (coreRegressionTests) where
 
-import Control.Exception (SomeException, throwIO, try)
+import Control.Concurrent (threadDelay)
+import Control.Exception (SomeException, finally, throwIO, try)
 import Control.Monad (forM_, replicateM_, void)
-import Data.IORef (readIORef)
+import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (isInfixOf)
 import Data.Text (Text)
-import Database.DuckDB.FFI (c_duckdb_result_is_streaming)
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (FieldValue)
-import Database.DuckDB.Simple.Internal (Statement (statementStream), StatementStream (statementStreamResult), StatementStreamState (..))
-import Foreign.Storable (peek)
+import Database.DuckDB.Simple.Internal (DuckDBV2ResultHandle (..), Statement (statementStream), StatementStream (statementStreamResult), StatementStreamState (..), nullHandle)
+import System.Directory (getTemporaryDirectory, removeFile)
+import System.IO (hClose, openBinaryTempFile)
 import System.Mem (performMajorGC)
+import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
 
@@ -36,8 +38,7 @@ coreRegressionTests =
                     state <- readIORef (statementStream stmt)
                     case state of
                         StatementStreamActive stream -> do
-                            streaming <- (peek (statementStreamResult stream) >>= \rawValue -> c_duckdb_result_is_streaming rawValue)
-                            assertBool "expected a materialized native result" (streaming == 0)
+                            assertBool "expected a released execution cursor" (statementStreamResult stream == nullHandle)
                         _ -> assertFailure "expected an active cursor"
         , testCase "stream metadata preserves 64-bit values" $
             withConnection ":memory:" $ \conn -> do
@@ -140,6 +141,65 @@ coreRegressionTests =
                 case result of
                     Left (err :: IOError) -> assertBool "original exception" ("original transaction failure" `isInfixOf` show err)
                     Right () -> assertFailure "expected transaction failure"
+        , testCase "materialization reports a late error before the first callback" $
+            withConnectionWithConfig ":memory:" [("threads", "1")] $ \conn -> do
+                calls <- newIORef (0 :: Int)
+                assertThrows $ fold_ conn "SELECT CASE WHEN i = 5000 THEN error('late failure') ELSE i END FROM range(10000) t(i)" () $ \() (Only (_ :: Int64)) ->
+                    modifyIORef' calls (+ 1)
+                readIORef calls >>= (@?= 0)
+        , testCase "a materialized callback can query the same connection" $
+            withConnection ":memory:" $ \conn -> do
+                count <- fold_ conn "SELECT i FROM range(3) t(i)" (0 :: Int) $ \acc (Only (_ :: Int64)) -> do
+                    query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+                    pure (acc + 1)
+                count @?= 3
+        , testCase "ad hoc SQL executes statement-expanded groups" $
+            withConnection ":memory:" $ \conn -> do
+                void (execute_ conn "CREATE TABLE pivot_probe(category VARCHAR, yr INTEGER, amount BIGINT); INSERT INTO pivot_probe VALUES ('a',2020,1),('a',2021,2)")
+                query_ conn "PIVOT pivot_probe ON yr USING sum(amount)" >>= (@?= [("a" :: Text, 1 :: Int64, 2 :: Int64)])
+                void (execute_ conn "ALTER TABLE pivot_probe ADD COLUMN extra DOUBLE DEFAULT random()")
+                query_ conn "SELECT count(*) FROM pivot_probe WHERE extra IS NOT NULL" >>= (@?= [Only (2 :: Int64)])
+        , testCase "connections share an explicit instance" $
+            withEnvironment $ \environment -> withInstance environment [] $ \instance_ -> do
+                attachDatabase instance_ ":memory:" "shared" [] True
+                withConnectionOn instance_ $ \first -> withConnectionOn instance_ $ \second -> do
+                    void (execute_ first "CREATE TABLE shared_probe(x BIGINT); INSERT INTO shared_probe VALUES (42)")
+                    query_ second "SELECT x FROM shared_probe" >>= (@?= [Only (42 :: Int64)])
+        , testCase "environment close releases live cursors before their parents" $ do
+            environment <- createEnvironment
+            instance_ <- createInstance environment []
+            attachDatabase instance_ ":memory:" "shared" [] True
+            conn <- connect instance_
+            stmt <- openStatement conn "SELECT i FROM range(5000) t(i)"
+            nextRow stmt >>= (@?= Just (Only (0 :: Int64)))
+            replicateM_ 20 (void (openStatement conn "SELECT 42"))
+            performMajorGC
+            closeEnvironment environment
+            assertThrows (nextRow stmt :: IO (Maybe (Only Int64)))
+            assertThrows (query_ conn "SELECT 42" :: IO [Only Int64])
+            closeStatement stmt
+            close conn
+            closeInstance instance_
+            closeEnvironment environment
+        , testCase "GC releases an unclosed convenience connection" $ do
+            directory <- getTemporaryDirectory
+            (path, file) <- openBinaryTempFile directory "duckdb-v2-gc.duckdb"
+            hClose file
+            removeFile path
+            let allocate = do
+                    conn <- openWithConfig path [("threads", "1")]
+                    void (execute_ conn "CREATE TABLE gc_probe AS SELECT 42::BIGINT AS x")
+                wait = do
+                    performMajorGC
+                    reopened <- try $ withConnectionWithConfig path [("threads", "1")] $ \conn ->
+                        query_ conn "SELECT x FROM gc_probe" >>= (@?= [Only (42 :: Int64)])
+                    case reopened of
+                        Right () -> pure ()
+                        Left (_ :: SQLError) -> threadDelay 10000 >> wait
+            flip finally (removeFile path) $ do
+                allocate
+                released <- timeout 5000000 wait
+                released @?= Just ()
         , testCase "GC during the last connection use keeps native owners alive" $ do
             -- A bracket cleanup would retain conn and hide early finalization.
             conn <- open ":memory:"

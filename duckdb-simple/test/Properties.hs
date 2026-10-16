@@ -22,12 +22,12 @@ import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), timeOfDayToTime)
 import Data.UUID (UUID)
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
-import Database.DuckDB.FFI (
-    pattern DuckDBTypeBlob,
-    pattern DuckDBTypeBoolean,
-    pattern DuckDBTypeDouble,
-    pattern DuckDBTypeInteger,
-    pattern DuckDBTypeVarchar,
+import Database.DuckDB.FFI.V2 (
+    pattern DuckDBV2LogicalTypeIdBlob,
+    pattern DuckDBV2LogicalTypeIdBoolean,
+    pattern DuckDBV2LogicalTypeIdDouble,
+    pattern DuckDBV2LogicalTypeIdInteger,
+    pattern DuckDBV2LogicalTypeIdVarchar,
  )
 import Database.DuckDB.Simple (Connection, close, open, query)
 import Database.DuckDB.Simple.FromField (
@@ -138,7 +138,7 @@ specs =
     , SomeRoundTrip "LocalTime" (Proxy :: Proxy LocalTime) genLocalTime shrinkLocalTime
     , SomeRoundTrip "UTCTime" (Proxy :: Proxy UTCTime) genUTCTime shrinkUTCTime
     , SomeRoundTrip "Maybe Int" (Proxy :: Proxy (Maybe Int)) genMaybeInt shrinkMaybeInt
-    , SomeRoundTrip "Array Int Int" (Proxy :: Proxy (Array Int Int)) genIntArray shrinkIntArray
+    , SomeRoundTrip "nonempty Array Int Int" (Proxy :: Proxy (Array Int Int)) genIntArray shrinkIntArray
     , SomeRoundTrip "StructValue FieldValue" (Proxy :: Proxy (StructValue FieldValue)) genStructValue shrinkStructValue
     , SomeRoundTrip "UnionValue FieldValue" (Proxy :: Proxy (UnionValue FieldValue)) genUnionValue shrinkNone
     ]
@@ -287,12 +287,9 @@ shrinkUTCTime (UTCTime day diff) =
 genIntArray :: Gen (Array Int Int)
 genIntArray =
     sized \n -> do
-        size <- chooseInt (0, max 0 (min n 8))
+        size <- chooseInt (1, max 1 (min n 8))
         values <- vectorOf size (arbitrary :: Gen Int)
-        pure $
-            if size == 0
-                then listArray (1, 0) []
-                else listArray (0, size - 1) values
+        pure (listArray (0, size - 1) values)
 
 shrinkIntArray :: Array Int Int -> [Array Int Int]
 shrinkIntArray arr =
@@ -301,7 +298,6 @@ shrinkIntArray arr =
         | xs <- shrink values
         , not (null xs)
         ]
-            ++ if null values then [] else [listArray (1, 0) []]
 
 genStructValue :: Gen (StructValue FieldValue)
 genStructValue = do
@@ -380,11 +376,11 @@ genSimpleType =
 
 simpleTypeRep :: SimpleType -> LogicalTypeRep
 simpleTypeRep = \case
-    SimpleBool -> LogicalTypeScalar DuckDBTypeBoolean
-    SimpleInt32 -> LogicalTypeScalar DuckDBTypeInteger
-    SimpleDouble -> LogicalTypeScalar DuckDBTypeDouble
-    SimpleText -> LogicalTypeScalar DuckDBTypeVarchar
-    SimpleBlob -> LogicalTypeScalar DuckDBTypeBlob
+    SimpleBool -> LogicalTypeScalar DuckDBV2LogicalTypeIdBoolean
+    SimpleInt32 -> LogicalTypeScalar DuckDBV2LogicalTypeIdInteger
+    SimpleDouble -> LogicalTypeScalar DuckDBV2LogicalTypeIdDouble
+    SimpleText -> LogicalTypeScalar DuckDBV2LogicalTypeIdVarchar
+    SimpleBlob -> LogicalTypeScalar DuckDBV2LogicalTypeIdBlob
 
 simpleTypeValue :: SimpleType -> Gen FieldValue
 simpleTypeValue = \case

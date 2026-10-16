@@ -1,22 +1,19 @@
-{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MagicHash #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE PatternSynonyms #-}
-{-# LANGUAGE StrictData #-}
-{-# OPTIONS_GHC -Wno-deprecations #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 
-{- |
-Module      : Database.DuckDB.Simple.Internal
-Description : Internal machinery backing the duckdb-simple API surface.
-
-This module provides access to the opaque data constructors and helper
-utilities required by the high-level API.  It is not part of the supported
-public interface; consumers should depend on @Database.DuckDB.Simple@ instead.
--}
+-- | Native V2 ownership and execution used by the public API.
 module Database.DuckDB.Simple.Internal (
-    -- * Data constructors (internal use only)
-    Query (..),
+    module Database.DuckDB.Simple.Native,
+    Environment (..),
+    EnvironmentState (..),
+    Instance (..),
+    InstanceState (..),
     Connection (..),
     ConnectionState (..),
     Statement (..),
@@ -26,434 +23,582 @@ module Database.DuckDB.Simple.Internal (
     ResultMode (..),
     StatementStreamColumn (..),
     StatementStreamChunk (..),
-    SQLError (..),
-    toSQLError,
-
-    -- * Helpers
+    createEnvironment,
+    closeEnvironment,
+    createInstance,
+    closeInstance,
+    createConnection,
+    closeConnection,
+    closeStatementState,
+    createStatementFromParsed,
+    withParsedStatements,
+    statementSchemas,
+    preparedParameterType,
+    storeBoundValue,
+    clearBoundValues,
+    cleanupStatementStreamRef,
     connectionClosedError,
     statementClosedError,
     keepAlive,
+    withInstanceHandle,
     withDatabaseHandle,
     withConnectionHandle,
     withTypeCache,
     withStatementHandle,
     withQueryCString,
+    withQueryError,
     peekUtf8CString,
-    fetchPrepareError,
     duckDBTypeFromName,
     duckDBTypeToName,
     withResult,
     runInterruptibleQuery,
     executePreparedResult,
+    executeParsedResult,
+    executePreparedArrowResult,
+    withArrowResult,
+    clearArrowResult,
     fetchResultChunk,
     destroyDataChunk,
-    fetchResultError,
-    throwResultError,
-    mkExecuteError,
-    withClientContext,
-    destroyClientContext,
     destroyValue,
     destroyLogicalType,
     throwRegistrationError,
 ) where
 
-import Control.Concurrent (forkIO, newEmptyMVar, putMVar, readMVar, threadDelay, tryReadMVar)
-import Control.Exception (Exception, SomeException, bracket, bracket_, mask, mask_, onException, throwIO, try, uninterruptibleMask_)
-import Control.Monad (when)
+import Control.Concurrent (MVar, forkIO, newEmptyMVar, putMVar, readMVar, threadDelay, tryReadMVar)
+import Control.Exception (SomeException, bracket, catch, finally, mask, mask_, onException, throwIO, try, uninterruptibleMask_)
+import Control.Monad (forM, forM_, unless, void, when)
 import qualified Data.ByteString as BS
 import Data.Coerce (Coercible, coerce)
-import Data.IORef (IORef, readIORef)
+import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, newIORef, readIORef, writeIORef)
+import qualified Data.IntMap.Strict as IntMap
 import Data.List (find)
-import Data.String (IsString (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
-import qualified Data.Text.Encoding as TextEncoding
+import qualified Data.Text.Encoding as Text
 import qualified Data.Text.Foreign as TextForeign
-import Database.DuckDB.FFI (
-    DUCKDB_TYPE,
-    DuckDBClientContext,
-    DuckDBConnection,
-    DuckDBDataChunk (..),
-    DuckDBDatabase,
-    DuckDBErrorType,
-    DuckDBPreparedStatement,
-    DuckDBResult,
-    DuckDBState,
-    DuckDBValue,
-    c_duckdb_connection_get_client_context,
-    c_duckdb_destroy_client_context,
-    c_duckdb_destroy_data_chunk,
-    c_duckdb_destroy_result,
-    c_duckdb_destroy_value,
-    c_duckdb_execute_prepared,
-    c_duckdb_execute_prepared_streaming,
-    c_duckdb_fetch_chunk,
-    c_duckdb_interrupt,
-    c_duckdb_prepare_error,
-    c_duckdb_result_error,
-    c_duckdb_result_error_type,
-    pattern DuckDBErrorInvalid,
-    pattern DuckDBSuccess,
- )
-import qualified Database.DuckDB.FFI as FFI
 import Database.DuckDB.Simple.FromField (FieldValue)
-import Database.DuckDB.Simple.LogicalRep (destroyLogicalType)
-import Database.DuckDB.Simple.TypeCache (TypeCache)
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep, logicalTypeToRep)
+import Database.DuckDB.Simple.Native
+import Database.DuckDB.Simple.TypeCache (TypeCache, createTypeCache, destroyTypeCache)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (CString)
 import Foreign.C.Types (CChar)
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Marshal.Utils (fillBytes)
-import Foreign.Ptr (Ptr, nullPtr)
-import Foreign.Storable (peek, poke, sizeOf)
+import Foreign.Marshal.Array (withArray)
+import Foreign.Marshal.Utils (withMany)
+import Foreign.Ptr (nullPtr)
+import Foreign.Storable (peek, poke)
 import GHC.Exts (keepAlive#)
 import GHC.IO (IO (..))
+import System.Mem.Weak (Weak, deRefWeak, finalize)
 
--- | Represents a textual SQL query with UTF-8 encoding semantics.
-newtype Query = Query
-    { fromQuery :: Text
-    -- ^ Extract the underlying textual representation of the query.
-    }
-    deriving stock (Eq, Ord, Show)
+-- | Track child finalizers without retaining live children.
+newtype Children a = Children (IORef [(Weak (IORef a), MVar ())])
 
-instance Semigroup Query where
-    Query a <> Query b = Query (a <> b)
+-- | Create an empty child registry.
+newChildren :: IO (Children a)
+newChildren = Children <$> newIORef []
 
-instance IsString Query where
-    fromString = Query . Text.pack
+-- | Register a child and remove completed entries.
+registerChild :: (a -> Bool) -> Children a -> IORef a -> IO () -> IO ()
+registerChild isOpen (Children children) child cleanup = do
+    previous <- readIORef children
+    live <- fmap concat $ forM previous \entry@(weak, _) ->
+        deRefWeak weak >>= \case
+            Nothing -> finishChild entry >> pure []
+            Just ref -> do
+                state <- readIORef ref
+                if isOpen state then pure [entry] else finishChild entry >> pure []
+    done <- newEmptyMVar
+    weak <- mkWeakIORef child (cleanup `finally` putMVar done ())
+    writeIORef children ((weak, done) : live)
 
--- | Tracks the lifetime of a DuckDB database and connection pair.
-newtype Connection = Connection {connectionState :: IORef ConnectionState}
+-- | Run a child finalizer and wait for its completion.
+finishChild :: (Weak (IORef a), MVar ()) -> IO ()
+finishChild (weak, done) = uninterruptibleMask_ (finalize weak `finally` readMVar done)
 
--- | Internal connection lifecycle state.
+-- | Complete child finalizers before their parent closes.
+closeChildren :: Children a -> IO ()
+closeChildren (Children children) = do
+    owned <- atomicModifyIORef' children ([],)
+    foldr finally (pure ()) (map finishChild owned)
+
+-- | A native environment shared by one or more instances.
+newtype Environment = Environment {environmentState :: IORef EnvironmentState}
+
+-- | Internal environment state.
+data EnvironmentState = EnvironmentClosed | EnvironmentOpen DuckDBV2EnvironmentHandle (Children InstanceState)
+
+-- | An instance with catalogs and configuration shared by its connections.
+data Instance = Instance {instanceState :: IORef InstanceState, instanceEnvironment :: Environment}
+
+-- | Internal instance state.
+data InstanceState = InstanceClosed | InstanceOpen DuckDBV2InstanceHandle (Children ConnectionState)
+
+-- | A connection that retains its instance until it closes.
+data Connection = Connection {connectionState :: IORef ConnectionState, connectionInstance :: Instance}
+
+-- | Internal connection state.
 data ConnectionState
     = ConnectionClosed
     | ConnectionOpen
-        { connectionDatabase :: DuckDBDatabase
-        , connectionHandle :: DuckDBConnection
+        { connectionHandle :: DuckDBV2ConnectionHandle
         , connectionTypeCache :: TypeCache
+        , connectionStatements :: Children StatementState
+        , connectionReleaseParent :: IO ()
         }
 
--- | Tracks the lifetime of a prepared statement.
+-- | A prepared statement and its owned bindings and cursor.
 data Statement = Statement
     { statementState :: IORef StatementState
     , statementConnection :: Connection
     , statementQuery :: Query
     , statementStream :: IORef StatementStreamState
+    , statementArrowResult :: IORef DuckDBV2ArrowResultHandle
+    , statementBindings :: IORef (IntMap.IntMap DuckDBV2ValueHandle)
+    , statementParameterNames :: [Text]
     }
 
--- | Internal statement lifecycle state.
+-- | Internal prepared statement state.
 data StatementState
     = StatementClosed
     | StatementOpen
-        { statementHandle :: DuckDBPreparedStatement
+        { statementHandle :: DuckDBV2PreparedStatementHandle
+        , statementParsed :: DuckDBV2SqlStatementHandle
+        , statementSchemaCache :: IORef (Maybe (DuckDBV2SchemaHandle, DuckDBV2SchemaHandle))
+        , statementOwnedBindings :: IORef (IntMap.IntMap DuckDBV2ValueHandle)
+        , statementOwnedArrowResult :: IORef DuckDBV2ArrowResultHandle
+        , statementOwnedStream :: IORef StatementStreamState
         }
 
--- | Streaming execution state for prepared statements.
-data StatementStreamState
-    = StatementStreamIdle
-    | StatementStreamExhausted
-    | StatementStreamActive !StatementStream
+-- | Cursor state. Exhaustion persists until the caller resets the statement.
+data StatementStreamState = StatementStreamIdle | StatementStreamExhausted | StatementStreamActive StatementStream
 
--- | Streaming cursor backing an active result set.
+-- | An execution cursor or an owned collection of materialized chunks.
 data StatementStream = StatementStream
-    { statementStreamResult :: Ptr DuckDBResult
+    { statementStreamResult :: DuckDBV2ResultHandle
     , statementStreamColumns :: [StatementStreamColumn]
+    , statementStreamPendingChunks :: [DuckDBV2DataChunkHandle]
     , statementStreamChunk :: Maybe StatementStreamChunk
     , statementStreamMode :: ResultMode
     }
 
--- | Select native execution. DuckDB can materialize a streaming request.
-data ResultMode = MaterializedResult | StreamingResult
+-- | Select materialization before decoding or incremental native execution.
+data ResultMode = MaterializedResult | StreamingResult deriving (Eq, Show)
 
--- | Metadata describing a result column surfaced through streaming.
+-- | Metadata for one result column.
 data StatementStreamColumn = StatementStreamColumn
     { statementStreamColumnIndex :: Int
     , statementStreamColumnName :: Text
-    , statementStreamColumnType :: DUCKDB_TYPE
+    , statementStreamColumnType :: DuckDBV2LogicalTypeId
     }
 
--- | Currently loaded data chunk plus iteration cursor.
+-- | One owned chunk and the readers that borrow its vectors.
 data StatementStreamChunk = StatementStreamChunk
-    { statementStreamChunkPtr :: DuckDBDataChunk
+    { statementStreamChunkPtr :: DuckDBV2DataChunkHandle
     , statementStreamChunkSize :: Int
     , statementStreamChunkIndex :: Int
     , statementStreamChunkReaders :: [Int -> IO FieldValue]
-    -- ^ One reader for each column. A reader must not outlive its chunk.
     }
 
--- | Represents an error reported by DuckDB or by duckdb-simple itself.
-data SQLError = SQLError
-    { sqlErrorMessage :: Text
-    , sqlErrorType :: Maybe DuckDBErrorType
-    , sqlErrorQuery :: Maybe Query
-    }
-    deriving stock (Eq, Show)
+-- | Create an environment. Close it after all related work finishes.
+createEnvironment :: IO Environment
+createEnvironment = mask_ do
+    raw <- output c_duckdb_v2_environment_create
+    children <- newChildren
+    ref <- newIORef (EnvironmentOpen raw children)
+    _ <- mkWeakIORef ref (closeEnvironmentState ref)
+    pure (Environment ref)
 
-instance Exception SQLError
+-- | Close an environment and its instances and connections. This is idempotent.
+closeEnvironment :: Environment -> IO ()
+closeEnvironment Environment{environmentState} = closeEnvironmentState environmentState
 
--- | Convert an arbitrary exception into an untyped @SQLError@.
-toSQLError :: (Exception e) => e -> SQLError
-toSQLError ex =
-    SQLError
-        { sqlErrorMessage = Text.pack (show ex)
-        , sqlErrorType = Nothing
-        , sqlErrorQuery = Nothing
-        }
+-- | Mark the environment closed before releasing its native state.
+closeEnvironmentState :: IORef EnvironmentState -> IO ()
+closeEnvironmentState ref = mask_ $ joinCleanup ref \case
+    EnvironmentClosed -> (EnvironmentClosed, pure ())
+    EnvironmentOpen raw children -> (EnvironmentClosed, closeChildren children `finally` destroy c_duckdb_v2_environment_destroy raw)
 
--- | Shared error value used when an operation targets a closed connection.
+-- | Create an instance with configuration applied before its first connection.
+createInstance :: Environment -> [(Text, Text)] -> IO Instance
+createInstance environment@Environment{environmentState} settings = keepAlive environment $ mask_ do
+    (rawEnvironment, children) <-
+        readIORef environmentState >>= \case
+            EnvironmentClosed -> throwIO (SQLError "duckdb-simple: environment is closed" Nothing Nothing)
+            EnvironmentOpen raw children -> pure (raw, children)
+    when (any (\(name, value) -> Text.any (== '\0') name || Text.any (== '\0') value) settings) $
+        throwIO (SQLError "duckdb-simple: configuration contains NUL" Nothing Nothing)
+    raw <- output (c_duckdb_v2_instance_create rawEnvironment)
+    flip onException (destroy c_duckdb_v2_instance_destroy raw) do
+        forM_ settings \(name, value) -> withIdentifier name \key -> withText value \text ->
+            checked (c_duckdb_v2_instance_set_option raw key text)
+        connections <- newChildren
+        ref <- newIORef (InstanceOpen raw connections)
+        registerChild (\case InstanceOpen{} -> True; _ -> False) children ref (keepAlive environment (closeInstanceState ref))
+        pure (Instance ref environment)
+
+-- | Close an instance and all its connections. This is idempotent.
+closeInstance :: Instance -> IO ()
+closeInstance Instance{instanceState} = closeInstanceState instanceState
+
+-- | Mark the instance closed before releasing its native state.
+closeInstanceState :: IORef InstanceState -> IO ()
+closeInstanceState ref = mask_ $ joinCleanup ref \case
+    InstanceClosed -> (InstanceClosed, pure ())
+    InstanceOpen raw children -> (InstanceClosed, closeChildren children `finally` destroy c_duckdb_v2_instance_destroy raw)
+
+-- | Create a connection. The final action releases private convenience parents.
+createConnection :: Instance -> [Text] -> IO () -> IO Connection
+createConnection parent@Instance{instanceState} crss releaseParent = keepAlive parent $ mask_ do
+    (rawInstance, children) <-
+        readIORef instanceState >>= \case
+            InstanceClosed -> throwIO (SQLError "duckdb-simple: instance is closed" Nothing Nothing)
+            InstanceOpen raw children -> pure (raw, children)
+    raw <- output (c_duckdb_v2_connection_create rawInstance)
+    cache <- createTypeCache raw crss `onException` destroy c_duckdb_v2_connection_destroy raw
+    flip onException (destroyTypeCache cache `finally` destroy c_duckdb_v2_connection_destroy raw) do
+        statements <- newChildren
+        ref <- newIORef (ConnectionOpen raw cache statements releaseParent)
+        registerChild (\case ConnectionOpen{} -> True; _ -> False) children ref (keepAlive parent (closeConnectionState False ref))
+        pure (Connection ref parent)
+
+-- | Close a connection and every prepared statement that belongs to it.
+closeConnection :: Connection -> IO ()
+closeConnection Connection{connectionState} = closeConnectionState True connectionState
+
+-- | GC releases the child first. Parent finalizers run after their references drop.
+closeConnectionState :: Bool -> IORef ConnectionState -> IO ()
+closeConnectionState releaseParents ref = mask_ $ joinCleanup ref \case
+    ConnectionClosed -> (ConnectionClosed, pure ())
+    ConnectionOpen{connectionHandle, connectionTypeCache, connectionStatements, connectionReleaseParent} ->
+        ( ConnectionClosed
+        , closeChildren connectionStatements
+            `finally` ( destroyTypeCache connectionTypeCache
+                            `finally` (destroy c_duckdb_v2_connection_destroy connectionHandle `finally` when releaseParents connectionReleaseParent)
+                      )
+        )
+
+-- | Replace lifecycle state before running its cleanup action.
+joinCleanup :: IORef a -> (a -> (a, IO ())) -> IO ()
+joinCleanup ref action = atomicModifyIORef' ref action >>= id
+
+-- | Close all native state owned by one statement.
+closeStatementState :: IORef StatementState -> IO ()
+closeStatementState ref = mask_ $ joinCleanup ref \case
+    StatementClosed -> (StatementClosed, pure ())
+    StatementOpen{statementHandle, statementParsed, statementSchemaCache, statementOwnedBindings, statementOwnedStream, statementOwnedArrowResult} ->
+        ( StatementClosed
+        , (cleanupStatementStreamRef statementOwnedStream `finally` clearArrowResultRef statementOwnedArrowResult)
+            `finally` ( clearBoundValues statementOwnedBindings
+                            `finally` ( releaseSchemas statementSchemaCache
+                                            `finally` ( destroy c_duckdb_v2_prepared_statement_destroy statementHandle
+                                                            `finally` destroy c_duckdb_v2_sql_statement_destroy statementParsed
+                                                      )
+                                      )
+                      )
+        )
+
+-- | Release both owned statement schemas.
+releaseSchemas :: IORef (Maybe (DuckDBV2SchemaHandle, DuckDBV2SchemaHandle)) -> IO ()
+releaseSchemas ref =
+    atomicModifyIORef' ref (Nothing,) >>= mapM_ \(result, parameters) ->
+        destroy c_duckdb_v2_schema_destroy result `finally` destroy c_duckdb_v2_schema_destroy parameters
+
+-- | Parse SQL and borrow the resulting statements for one action.
+withParsedStatements :: Connection -> Query -> ([DuckDBV2SqlStatementHandle] -> IO a) -> IO a
+withParsedStatements conn query action = withQueryError query $ withConnectionHandle conn \raw ->
+    withQueryCString query \sql -> bracket (output (c_duckdb_v2_parse_sql raw sql)) (destroy c_duckdb_v2_statement_iterator_destroy) \iterator ->
+        let gather acc = bracket (output (c_duckdb_v2_statement_iterator_next iterator)) (destroy c_duckdb_v2_sql_statement_destroy) \parsed ->
+                if parsed == nullHandle then action (reverse acc) else gather (parsed : acc)
+         in gather []
+
+-- | Prepare a borrowed parsed statement. The native handle copies its SQL.
+createStatementFromParsed :: Connection -> Query -> DuckDBV2SqlStatementHandle -> IO Statement
+createStatementFromParsed parent query parsed = withQueryError query $ withConnectionHandle parent \raw -> mask_ do
+    handle <- alloca \slot -> do
+        poke slot nullHandle
+        flip onException (peek slot >>= destroy c_duckdb_v2_prepared_statement_destroy) do
+            runInterruptibleQuery parent (checked (c_duckdb_v2_prepared_statement_create raw parsed 0 slot))
+            peek slot
+    flip onException (destroy c_duckdb_v2_prepared_statement_destroy handle) do
+        -- Keep a separate parsed handle for metadata after the input iterator closes.
+        text <- output (c_duckdb_v2_sql_statement_get_text parsed) >>= readText
+        copied <- withQueryCString (Query text) \sql -> bracket (output (c_duckdb_v2_parse_sql raw sql)) (destroy c_duckdb_v2_statement_iterator_destroy) \iterator ->
+            output (c_duckdb_v2_statement_iterator_next iterator)
+        flip onException (destroy c_duckdb_v2_sql_statement_destroy copied) do
+            count <- output (c_duckdb_v2_sql_statement_get_parameter_count copied)
+            names <- forM [0 .. fromIntegral count - 1 :: Int] \idx ->
+                output (c_duckdb_v2_sql_statement_get_parameter_name copied (fromIntegral idx)) >>= readIdentifier
+            schemas <- newIORef Nothing
+            bindings <- newIORef IntMap.empty
+            stream <- newIORef StatementStreamIdle
+            arrow <- newIORef nullHandle
+            ref <- newIORef (StatementOpen handle copied schemas bindings arrow stream)
+            children <-
+                readIORef (connectionState parent) >>= \case
+                    ConnectionClosed -> throwIO connectionClosedError
+                    ConnectionOpen{connectionStatements} -> pure connectionStatements
+            registerChild (\case StatementOpen{} -> True; _ -> False) children ref (keepAlive parent (closeStatementState ref))
+            pure (Statement ref parent query stream arrow bindings names)
+
+-- | Error raised when an operation targets a closed connection.
 connectionClosedError :: SQLError
-connectionClosedError =
-    SQLError
-        { sqlErrorMessage = Text.pack "duckdb-simple: connection is closed"
-        , sqlErrorType = Nothing
-        , sqlErrorQuery = Nothing
-        }
+connectionClosedError = SQLError "duckdb-simple: connection is closed" Nothing Nothing
 
--- | Shared error value used when an operation targets a closed statement.
+-- | Error raised when an operation targets a closed statement.
 statementClosedError :: Statement -> SQLError
-statementClosedError Statement{statementQuery} =
-    SQLError
-        { sqlErrorMessage = Text.pack "duckdb-simple: statement is closed"
-        , sqlErrorType = Nothing
-        , sqlErrorQuery = Just statementQuery
-        }
+statementClosedError Statement{statementQuery} = SQLError "duckdb-simple: statement is closed" Nothing (Just statementQuery)
 
--- | Provide a UTF-8 encoded C string view of the query text.
-withQueryCString :: Query -> (ConstPtr CChar -> IO a) -> IO a
-withQueryCString query@(Query txt) action
-    | Text.any (== '\0') txt =
-        throwIO (SQLError (Text.pack "duckdb-simple: SQL contains NUL") Nothing (Just query))
-    | otherwise = TextForeign.withCString txt (action . ConstPtr)
-
--- | Copy a NUL-terminated UTF-8 string from DuckDB.
-peekUtf8CString :: (Coercible p CString) => p -> IO Text
-peekUtf8CString ptr = TextEncoding.decodeUtf8 <$> BS.packCString (coerce ptr)
-
--- | Execute a query and destroy its result after success or failure.
-withResult :: Connection -> Query -> (Ptr DuckDBResult -> IO DuckDBState) -> (Ptr DuckDBResult -> IO a) -> IO a
-withResult conn queryText executeResult action =
-    alloca $ \resPtr ->
-        bracket_
-            (fillBytes resPtr 0 (sizeOf (undefined :: DuckDBResult)))
-            (c_duckdb_destroy_result resPtr)
-            $ do
-                rc <- runInterruptibleQuery conn (executeResult resPtr)
-                when (rc /= DuckDBSuccess) $ do
-                    (message, errorType) <- fetchResultError resPtr
-                    throwIO (mkExecuteError queryText message errorType)
-                action resPtr
-
--- | Execute a prepared statement with the requested native result mode.
-executePreparedResult :: ResultMode -> DuckDBPreparedStatement -> Ptr DuckDBResult -> IO DuckDBState
-executePreparedResult MaterializedResult = c_duckdb_execute_prepared
-executePreparedResult StreamingResult = c_duckdb_execute_prepared_streaming
-
-{- | Fetch an owned chunk. The caller must remain masked until it records ownership.
-  Streaming fetches can execute SQL. Keep their output in a caller-owned slot
-  so cancellation can destroy a chunk that the worker has already fetched.
--}
-fetchResultChunk :: ResultMode -> Connection -> Ptr DuckDBResult -> IO DuckDBDataChunk
-fetchResultChunk MaterializedResult conn result =
-    withConnectionHandle conn $ \_ -> peek result >>= c_duckdb_fetch_chunk
-fetchResultChunk StreamingResult conn result =
-    alloca $ \chunkPtr -> mask_ $ do
-        poke chunkPtr (DuckDBDataChunk nullPtr)
-        let fetch = do
-                chunk <- peek result >>= c_duckdb_fetch_chunk
-                poke chunkPtr chunk
-                pure DuckDBSuccess
-        (runInterruptibleQuery conn fetch >> peek chunkPtr)
-            `onException` c_duckdb_destroy_data_chunk chunkPtr
-
--- | Destroy an owned native data chunk. A null chunk is allowed.
-destroyDataChunk :: DuckDBDataChunk -> IO ()
-destroyDataChunk chunk = alloca $ \ptr -> poke ptr chunk >> c_duckdb_destroy_data_chunk ptr
-
-{- | Run a native query while the caller can receive asynchronous exceptions.
-  Prompt cancellation requires the threaded RTS. Cleanup interrupts DuckDB and
-  waits for the worker before the caller can release native storage.
--}
-runInterruptibleQuery :: Connection -> IO DuckDBState -> IO DuckDBState
-runInterruptibleQuery conn action =
-    withConnectionHandle conn $ \handle ->
-        mask $ \restore -> do
-            done <- newEmptyMVar
-            _ <- forkIO $ do
-                outcome <- try action :: IO (Either SomeException DuckDBState)
-                putMVar done outcome
-            let cancelAndWait = do
-                    finished <- tryReadMVar done
-                    case finished of
-                        Just _ -> pure ()
-                        Nothing -> do
-                            -- DuckDB clears the interrupt flag at query entry.
-                            -- Repeat the interrupt to cover cancellation before entry.
-                            c_duckdb_interrupt handle
-                            threadDelay interruptRetryDelayMicros
-                            cancelAndWait
-            -- A second exception must not release storage still used by the worker.
-            -- Native code and Haskell callbacks must return before cleanup can finish.
-            outcome <- restore (readMVar done) `onException` uninterruptibleMask_ cancelAndWait
-            either throwIO pure outcome
-
-{- | Retry cancellation at most 100 times per second while native work finishes.
-DuckDB can clear an earlier interrupt at query entry. This interval avoids
-busy-spinning and can add up to one interval to completion detection.
--}
-interruptRetryDelayMicros :: Int
-interruptRetryDelayMicros = 10 * 1000
-
-{- | The column type names that 'Database.DuckDB.Simple.ToField.DuckDBColumnType'
-instances use, and the types they denote. Each type has one name.
--}
-duckDBTypeNames :: [(Text, DUCKDB_TYPE)]
-duckDBTypeNames =
-    map
-        (\(name, dtype) -> (Text.pack name, dtype))
-        [ ("BOOLEAN", FFI.DuckDBTypeBoolean)
-        , ("TINYINT", FFI.DuckDBTypeTinyInt)
-        , ("SMALLINT", FFI.DuckDBTypeSmallInt)
-        , ("INTEGER", FFI.DuckDBTypeInteger)
-        , ("BIGINT", FFI.DuckDBTypeBigInt)
-        , ("HUGEINT", FFI.DuckDBTypeHugeInt)
-        , ("UTINYINT", FFI.DuckDBTypeUTinyInt)
-        , ("USMALLINT", FFI.DuckDBTypeUSmallInt)
-        , ("UINTEGER", FFI.DuckDBTypeUInteger)
-        , ("UBIGINT", FFI.DuckDBTypeUBigInt)
-        , ("UHUGEINT", FFI.DuckDBTypeUHugeInt)
-        , ("FLOAT", FFI.DuckDBTypeFloat)
-        , ("DOUBLE", FFI.DuckDBTypeDouble)
-        , ("DATE", FFI.DuckDBTypeDate)
-        , ("TIME", FFI.DuckDBTypeTime)
-        , ("TIMETZ", FFI.DuckDBTypeTimeTz)
-        , ("TIMESTAMP", FFI.DuckDBTypeTimestamp)
-        , ("TIMESTAMPTZ", FFI.DuckDBTypeTimestampTz)
-        , ("TIMESTAMPTZ_NS", FFI.DuckDBTypeTimestampTzNs)
-        , ("TIMESTAMP_NS WITH TIME ZONE", FFI.DuckDBTypeTimestampTzNs)
-        , ("INTERVAL", FFI.DuckDBTypeInterval)
-        , ("TEXT", FFI.DuckDBTypeVarchar)
-        , ("BLOB", FFI.DuckDBTypeBlob)
-        , ("GEOMETRY", FFI.DuckDBTypeGeometry)
-        , ("VARIANT", FFI.DuckDBTypeVariant)
-        , ("UUID", FFI.DuckDBTypeUUID)
-        , ("BIT", FFI.DuckDBTypeBit)
-        , ("BIGNUM", FFI.DuckDBTypeBigNum)
-        , -- NULL gives an element type to Maybe values without data.
-          ("NULL", FFI.DuckDBTypeSQLNull)
-        ]
-
--- | Find the type that a column type name denotes.
-duckDBTypeFromName :: Text -> Maybe DUCKDB_TYPE
-duckDBTypeFromName name = lookup name duckDBTypeNames
-
--- | Find the column type name of a type. Other types use their 'Show' text.
-duckDBTypeToName :: DUCKDB_TYPE -> Text
-duckDBTypeToName dtype =
-    maybe (Text.pack (show dtype)) fst (find ((== dtype) . snd) duckDBTypeNames)
-
-{- | Read the error message of a prepared statement as UTF-8. Use the fallback
-when DuckDB reports no message.
--}
-fetchPrepareError :: Text -> DuckDBPreparedStatement -> IO Text
-fetchPrepareError fallback statement = do
-    messagePtr <- c_duckdb_prepare_error statement
-    if messagePtr == ConstPtr nullPtr then pure fallback else peekUtf8CString messagePtr
-
--- | Copy a result error while its native result remains alive.
-fetchResultError :: Ptr DuckDBResult -> IO (Text, Maybe DuckDBErrorType)
-fetchResultError resultPtr = do
-    msgPtr <- c_duckdb_result_error resultPtr
-    message <-
-        if msgPtr == ConstPtr nullPtr
-            then pure (Text.pack "duckdb-simple: query failed")
-            else peekUtf8CString msgPtr
-    errorType <- c_duckdb_result_error_type resultPtr
-    pure (message, if errorType == DuckDBErrorInvalid then Nothing else Just errorType)
-
--- | Attach the query and native error category to an execution error.
-mkExecuteError :: Query -> Text -> Maybe DuckDBErrorType -> SQLError
-mkExecuteError queryText message errorType =
-    SQLError
-        { sqlErrorMessage = message
-        , sqlErrorType = errorType
-        , sqlErrorQuery = Just queryText
-        }
-
--- | Report a fetch failure before treating a null chunk as end of input.
-throwResultError :: Query -> Ptr DuckDBResult -> IO ()
-throwResultError queryText resPtr = do
-    errorPtr <- c_duckdb_result_error resPtr
-    when (errorPtr /= ConstPtr nullPtr) $ do
-        (message, errorType) <- fetchResultError resPtr
-        throwIO (mkExecuteError queryText message errorType)
-
--- | Keep the weak-finalizer owner alive until the native operation returns.
+-- | Keep a Haskell owner reachable until an action finishes.
 keepAlive :: a -> IO b -> IO b
-keepAlive owner (IO action) = IO (\state -> keepAlive# owner state action)
+keepAlive owner (IO action) = IO \state -> keepAlive# owner state action
 
--- | Internal helper for safely accessing the underlying prepared statement.
-withStatementHandle :: Statement -> (DuckDBPreparedStatement -> IO a) -> IO a
-withStatementHandle stmt@Statement{statementState, statementConnection} action =
-    keepAlive stmt $
-        withConnectionHandle statementConnection $ \_ -> do
-            state <- readIORef statementState
-            case state of
-                StatementClosed -> throwIO (statementClosedError stmt)
-                StatementOpen{statementHandle} -> action statementHandle
+-- | Borrow a live instance handle.
+withInstanceHandle :: Instance -> (DuckDBV2InstanceHandle -> IO a) -> IO a
+withInstanceHandle owner@Instance{instanceState} action =
+    keepAlive owner $
+        readIORef instanceState >>= \case
+            InstanceClosed -> throwIO (SQLError "duckdb-simple: instance is closed" Nothing Nothing)
+            InstanceOpen raw _ -> action raw
 
--- | Internal helper for safely accessing the underlying connection handle.
-withConnectionHandle :: Connection -> (DuckDBConnection -> IO a) -> IO a
-withConnectionHandle conn@Connection{connectionState} action =
-    keepAlive conn $ do
-        state <- readIORef connectionState
-        case state of
+-- | Borrow the instance that owns a live connection.
+withDatabaseHandle :: Connection -> (DuckDBV2InstanceHandle -> IO a) -> IO a
+withDatabaseHandle conn action = withConnectionHandle conn \_ -> withInstanceHandle (connectionInstance conn) action
+
+-- | Borrow a live connection handle.
+withConnectionHandle :: Connection -> (DuckDBV2ConnectionHandle -> IO a) -> IO a
+withConnectionHandle owner@Connection{connectionState} action =
+    keepAlive owner $
+        readIORef connectionState >>= \case
             ConnectionClosed -> throwIO connectionClosedError
             ConnectionOpen{connectionHandle} -> action connectionHandle
 
--- | Borrow the type cache of an open connection.
+-- | Borrow a connection's logical type cache.
 withTypeCache :: Connection -> (TypeCache -> IO a) -> IO a
-withTypeCache conn@Connection{connectionState} action =
-    keepAlive conn $ do
-        state <- readIORef connectionState
-        case state of
+withTypeCache owner@Connection{connectionState} action =
+    keepAlive owner $
+        readIORef connectionState >>= \case
             ConnectionClosed -> throwIO connectionClosedError
             ConnectionOpen{connectionTypeCache} -> action connectionTypeCache
 
--- | Internal helper for safely accessing the underlying database handle.
-withDatabaseHandle :: Connection -> (DuckDBDatabase -> IO a) -> IO a
-withDatabaseHandle conn@Connection{connectionState} action =
-    keepAlive conn $ do
-        state <- readIORef connectionState
-        case state of
-            ConnectionClosed -> throwIO connectionClosedError
-            ConnectionOpen{connectionDatabase} -> action connectionDatabase
+-- | Borrow a live prepared statement handle.
+withStatementHandle :: Statement -> (DuckDBV2PreparedStatementHandle -> IO a) -> IO a
+withStatementHandle owner@Statement{statementState, statementConnection, statementQuery} action = keepAlive owner $
+    withQueryError statementQuery $ withConnectionHandle statementConnection \_ ->
+        readIORef statementState >>= \case
+            StatementClosed -> throwIO (statementClosedError owner)
+            StatementOpen{statementHandle} -> action statementHandle
 
--- | Acquire the client context for the connection, destroying it after the action.
-withClientContext :: Connection -> (DuckDBClientContext -> IO a) -> IO a
-withClientContext conn action =
-    withConnectionHandle conn $ \connPtr ->
-        bracket
-            (alloca $ \ctxPtr -> c_duckdb_connection_get_client_context connPtr ctxPtr >> peek ctxPtr)
-            destroyClientContext
-            action
+-- | Attach the SQL text to errors from native calls.
+withQueryError :: Query -> IO a -> IO a
+withQueryError query action = action `catch` \err -> throwIO err{sqlErrorQuery = Just query}
 
--- | Destroy a client context handle.
-destroyClientContext :: DuckDBClientContext -> IO ()
-destroyClientContext ctx =
-    alloca $ \ptr -> poke ptr ctx >> c_duckdb_destroy_client_context ptr
+-- | Borrow SQL as a NUL-terminated UTF-8 string.
+withQueryCString :: Query -> (ConstPtr CChar -> IO a) -> IO a
+withQueryCString query@(Query text) action = do
+    when (Text.any (== '\0') text) $ throwIO (SQLError "duckdb-simple: query contains NUL" Nothing (Just query))
+    TextForeign.withCString text (action . ConstPtr)
 
--- | Destroy a value handle.
-destroyValue :: DuckDBValue -> IO ()
-destroyValue value =
-    alloca $ \ptr -> poke ptr value >> c_duckdb_destroy_value ptr
+-- | Copy a UTF-8 C string.
+peekUtf8CString :: (Coercible a CString) => a -> IO Text
+peekUtf8CString ptr = Text.decodeUtf8 <$> BS.packCString (coerce ptr)
 
--- | Throw a standardised registration error.
-throwRegistrationError :: String -> IO a
-throwRegistrationError label =
-    throwIO
-        SQLError
-            { sqlErrorMessage = Text.pack ("duckdb-simple: " <> label <> " failed")
-            , sqlErrorType = Nothing
-            , sqlErrorQuery = Nothing
-            }
+-- | Run native work with cancellation and wait for it before releasing inputs.
+runInterruptibleQuery :: forall a. Connection -> IO a -> IO a
+runInterruptibleQuery conn action = withConnectionHandle conn \handle -> mask \restore -> do
+    done <- newEmptyMVar
+    _ <- forkIO do
+        outcome <- try action :: IO (Either SomeException a)
+        putMVar done outcome
+    let wait =
+            tryReadMVar done >>= \case
+                Just _ -> pure ()
+                Nothing -> void (c_duckdb_v2_connection_interrupt handle nullPtr) >> threadDelay 10000 >> wait
+        stop = uninterruptibleMask_ wait
+    outcome <- restore (readMVar done) `onException` stop
+    either throwIO pure outcome
+
+-- | Execute a borrowed parsed statement. The caller owns the returned cursor.
+executeParsedResult :: Connection -> Query -> DuckDBV2SqlStatementHandle -> IO DuckDBV2ResultHandle
+executeParsedResult conn query parsed = withQueryError query $ withConnectionHandle conn \raw -> mask_ $ alloca \slot -> do
+    poke slot nullHandle
+    flip onException (peek slot >>= destroy c_duckdb_v2_result_destroy) do
+        runInterruptibleQuery conn $
+            checked (c_duckdb_v2_statement_execute raw parsed (ConstPtr nullPtr) (ConstPtr nullPtr) 0 slot)
+        peek slot
+
+-- | Execute a prepared statement. The caller owns the returned result.
+executePreparedResult :: Statement -> IO DuckDBV2ResultHandle
+executePreparedResult stmt = withStatementHandle stmt \handle -> mask_ $ alloca \slot -> do
+    poke slot nullHandle
+    flip onException (peek slot >>= destroy c_duckdb_v2_result_destroy) $
+        withBoundValues stmt \names values count -> do
+            runInterruptibleQuery (statementConnection stmt) $
+                checked (c_duckdb_v2_prepared_statement_execute handle names values count slot)
+            peek slot
+
+-- | Borrow parameter names and values until native execution returns.
+withBoundValues :: Statement -> (ConstPtr DuckDBV2IdentifierT -> ConstPtr DuckDBV2ValueHandle -> DuckDBIdx -> IO a) -> IO a
+withBoundValues stmt action = do
+    bindings <- IntMap.toAscList <$> readIORef (statementBindings stmt)
+    let names = map (\(idx, _) -> statementParameterNames stmt !! (idx - 1)) bindings
+        values = map snd bindings
+        positional = all (Text.all (\c -> c >= '0' && c <= '9')) names
+    withMany withIdentifier names \namePtrs -> do
+        nativeNames <- mapM (\(ConstPtr ptr) -> peek ptr) namePtrs
+        withArray nativeNames \namesPtr -> withArray values \valuesPtr ->
+            action (ConstPtr (if positional then nullPtr else namesPtr)) (ConstPtr valuesPtr) (fromIntegral (length bindings))
+
+-- | Execute a prepared Arrow result and register it for statement cleanup.
+executePreparedArrowResult :: Statement -> IO DuckDBV2ArrowResultHandle
+executePreparedArrowResult stmt = withStatementHandle stmt \handle -> mask_ $ alloca \slot -> do
+    poke slot nullHandle
+    flip onException (peek slot >>= destroy c_duckdb_v2_arrow_result_destroy) $
+        withBoundValues stmt \names values count -> do
+            runInterruptibleQuery (statementConnection stmt) $
+                checked (c_duckdb_v2_prepared_statement_execute_arrow handle names values count 2048 slot)
+            result <- peek slot
+            writeIORef (statementArrowResult stmt) result
+            pure result
+
+-- | Execute an Arrow result and release it on every exit path.
+withArrowResult :: Statement -> (DuckDBV2ArrowResultHandle -> IO a) -> IO a
+withArrowResult stmt = bracket (executePreparedArrowResult stmt) (const (clearArrowResult stmt))
+
+-- | Release an Arrow result before callbacks use materialized batches.
+clearArrowResult :: Statement -> IO ()
+clearArrowResult = clearArrowResultRef . statementArrowResult
+
+-- | Remove the owned Arrow cursor before releasing it.
+clearArrowResultRef :: IORef DuckDBV2ArrowResultHandle -> IO ()
+clearArrowResultRef ref =
+    mask_ $
+        atomicModifyIORef' ref (nullHandle,) >>= destroy c_duckdb_v2_arrow_result_destroy
+
+-- | Execute and release one result on every exit path.
+withResult :: Statement -> (DuckDBV2ResultHandle -> IO a) -> IO a
+withResult stmt = bracket (executePreparedResult stmt) (destroy c_duckdb_v2_result_destroy)
+
+-- | Fetch one owned chunk. A null handle denotes completion.
+fetchResultChunk :: ResultMode -> Connection -> DuckDBV2ResultHandle -> IO DuckDBV2DataChunkHandle
+fetchResultChunk _ conn result = mask_ $ alloca \slot -> do
+    poke slot nullHandle
+    flip onException (peek slot >>= destroyDataChunk) do
+        runInterruptibleQuery conn (checked (c_duckdb_v2_result_fetch_chunk result slot))
+        peek slot
+
+-- | Release an owned native data chunk.
+destroyDataChunk :: DuckDBV2DataChunkHandle -> IO ()
+destroyDataChunk = destroy c_duckdb_v2_data_chunk_destroy
+
+-- | Release an owned native value.
+destroyValue :: DuckDBV2ValueHandle -> IO ()
+destroyValue = destroy c_duckdb_v2_value_destroy
+
+-- | Release an owned native logical type.
+destroyLogicalType :: DuckDBV2LogicalTypeHandle -> IO ()
+destroyLogicalType = destroy c_duckdb_v2_logical_type_destroy
+
+-- | Release the active cursor and return to the idle state.
+cleanupStatementStreamRef :: IORef StatementStreamState -> IO ()
+cleanupStatementStreamRef ref = mask_ do
+    state <- atomicModifyIORef' ref (StatementStreamIdle,)
+    case state of
+        StatementStreamActive StatementStream{statementStreamResult, statementStreamPendingChunks, statementStreamChunk} ->
+            maybe (pure ()) (destroyDataChunk . statementStreamChunkPtr) statementStreamChunk
+                `finally` (mapM_ destroyDataChunk statementStreamPendingChunks `finally` destroy c_duckdb_v2_result_destroy statementStreamResult)
+        _ -> pure ()
+
+-- | Transfer ownership of one successfully constructed parameter value.
+storeBoundValue :: Statement -> DuckDBIdx -> DuckDBV2ValueHandle -> IO ()
+storeBoundValue stmt index value = withStatementHandle stmt \_ -> mask_ do
+    let idx = fromIntegral index
+    unless (idx >= 1 && idx <= length (statementParameterNames stmt)) $
+        throwIO (SQLError "duckdb-simple: parameter index is out of bounds" Nothing (Just (statementQuery stmt)))
+    previous <- IntMap.lookup idx <$> readIORef (statementBindings stmt)
+    mapM_ destroyValue previous
+    atomicModifyIORef' (statementBindings stmt) \values -> (IntMap.insert idx value values, ())
+
+-- | Release all owned parameter values.
+clearBoundValues :: IORef (IntMap.IntMap DuckDBV2ValueHandle) -> IO ()
+clearBoundValues ref = atomicModifyIORef' ref (IntMap.empty,) >>= mapM_ destroyValue
+
+-- | Bind SQL metadata and retain its output and parameter schemas.
+statementSchemas :: Statement -> IO (DuckDBV2SchemaHandle, DuckDBV2SchemaHandle)
+statementSchemas stmt = withStatementHandle stmt \_ -> mask_ do
+    state <- readIORef (statementState stmt)
+    case state of
+        StatementClosed -> throwIO (statementClosedError stmt)
+        StatementOpen{statementParsed, statementSchemaCache} ->
+            readIORef statementSchemaCache >>= \case
+                Just schemas -> pure schemas
+                Nothing -> withConnectionHandle (statementConnection stmt) \conn -> alloca \result -> alloca \parameters -> do
+                    poke result nullHandle
+                    poke parameters nullHandle
+                    let release = (peek result >>= destroy c_duckdb_v2_schema_destroy) `finally` (peek parameters >>= destroy c_duckdb_v2_schema_destroy)
+                    flip onException release do
+                        runInterruptibleQuery (statementConnection stmt) (checked (c_duckdb_v2_statement_bind conn statementParsed result parameters))
+                        schemas <- (,) <$> peek result <*> peek parameters
+                        writeIORef statementSchemaCache (Just schemas)
+                        pure schemas
+
+-- | Read a parameter type when the binder can determine it without values.
+preparedParameterType :: Statement -> DuckDBIdx -> IO (Maybe LogicalTypeRep)
+preparedParameterType stmt idx = do
+    (_, schema) <- statementSchemas stmt
+    alloca \name -> do
+        dtype <- output (c_duckdb_v2_schema_get_field schema (idx - 1) name)
+        ident <- output (c_duckdb_v2_logical_type_get_id dtype)
+        if ident == DuckDBV2LogicalTypeIdUnknown || ident == DuckDBV2LogicalTypeIdSQLNull
+            then pure Nothing
+            else Just <$> logicalTypeToRep dtype
+
+-- | Report a scalar function registration failure.
+throwRegistrationError :: Text -> IO a
+throwRegistrationError message = throwIO (SQLError message Nothing Nothing)
+
+duckDBTypeNames :: [(Text, DuckDBV2LogicalTypeId)]
+duckDBTypeNames =
+    map
+        (\(name, dtype) -> (Text.pack name, dtype))
+        [ ("BOOLEAN", DuckDBV2LogicalTypeIdBoolean)
+        , ("TINYINT", DuckDBV2LogicalTypeIdTinyInt)
+        , ("SMALLINT", DuckDBV2LogicalTypeIdSmallInt)
+        , ("INTEGER", DuckDBV2LogicalTypeIdInteger)
+        , ("BIGINT", DuckDBV2LogicalTypeIdBigInt)
+        , ("HUGEINT", DuckDBV2LogicalTypeIdHugeInt)
+        , ("UTINYINT", DuckDBV2LogicalTypeIdUTinyInt)
+        , ("USMALLINT", DuckDBV2LogicalTypeIdUSmallInt)
+        , ("UINTEGER", DuckDBV2LogicalTypeIdUInteger)
+        , ("UBIGINT", DuckDBV2LogicalTypeIdUBigInt)
+        , ("UHUGEINT", DuckDBV2LogicalTypeIdUHugeInt)
+        , ("FLOAT", DuckDBV2LogicalTypeIdFloat)
+        , ("DOUBLE", DuckDBV2LogicalTypeIdDouble)
+        , ("DATE", DuckDBV2LogicalTypeIdDate)
+        , ("TIME", DuckDBV2LogicalTypeIdTime)
+        , ("TIMETZ", DuckDBV2LogicalTypeIdTimeTz)
+        , ("TIMESTAMP", DuckDBV2LogicalTypeIdTimestamp)
+        , ("TIMESTAMPTZ", DuckDBV2LogicalTypeIdTimestampTz)
+        , ("TIMESTAMPTZ_NS", DuckDBV2LogicalTypeIdTimestampTzNs)
+        , ("TIMESTAMP_NS WITH TIME ZONE", DuckDBV2LogicalTypeIdTimestampTzNs)
+        , ("INTERVAL", DuckDBV2LogicalTypeIdInterval)
+        , ("TEXT", DuckDBV2LogicalTypeIdVarchar)
+        , ("BLOB", DuckDBV2LogicalTypeIdBlob)
+        , ("GEOMETRY", DuckDBV2LogicalTypeIdGeometry)
+        , ("VARIANT", DuckDBV2LogicalTypeIdVariant)
+        , ("UUID", DuckDBV2LogicalTypeIdUUID)
+        , ("BIT", DuckDBV2LogicalTypeIdBit)
+        , ("BIGNUM", DuckDBV2LogicalTypeIdBigNum)
+        , -- NULL gives an element type to Maybe values without data.
+          ("NULL", DuckDBV2LogicalTypeIdSQLNull)
+        ]
+
+-- | Find the type that a column type name denotes.
+duckDBTypeFromName :: Text -> Maybe DuckDBV2LogicalTypeId
+duckDBTypeFromName name = lookup name duckDBTypeNames
+
+-- | Find the column type name of a type. Other types use their 'Show' text.
+duckDBTypeToName :: DuckDBV2LogicalTypeId -> Text
+duckDBTypeToName dtype =
+    maybe (Text.pack (show dtype)) fst (find ((== dtype) . snd) duckDBTypeNames)

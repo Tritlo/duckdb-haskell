@@ -9,18 +9,20 @@ module ExtensionRegressionTests (main, extensionRegressionTests) where
 import Control.Exception (AsyncException (ThreadKilled), ErrorCall, Exception (..), SomeException, bracket, throwIO, try)
 import Control.Monad (forM_, replicateM_, void)
 import qualified Data.ByteString as BS
-import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
+import Data.List (find)
 import Data.Proxy (Proxy (..))
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as Text
 import Data.Word (Word64)
-import Database.DuckDB.FFI
+import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Catalog as Catalog
 import qualified Database.DuckDB.Simple.Config as Config
 import qualified Database.DuckDB.Simple.Copy as Copy
 import qualified Database.DuckDB.Simple.FileSystem as FileSystem
 import qualified Database.DuckDB.Simple.Logging as Logging
+import qualified Database.DuckDB.Simple.Tokenizer as Tokenizer
 import System.Directory (removeFile)
 import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, defaultMain, testGroup)
@@ -69,7 +71,7 @@ extensionRegressionTests =
                 replicateM_ 32 $ assertSqlError $ createFunctionWithState conn "invalid_state" (pure ()) (\() -> InvalidSignature)
         , testCase "logging duplicate registration cleanup" $
             withConnection ":memory:" \conn -> do
-                Logging.registerLogStorage conn "duplicate_log" (\_ -> pure ())
+                assertSqlError $ Logging.registerLogStorage conn "duplicate_log" (\_ -> pure ())
                 replicateM_ 32 $ assertSqlError $ Logging.registerLogStorage conn "duplicate_log" (\_ -> pure ())
                 query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
         , testCase "empty registration names fail safely" $
@@ -176,68 +178,93 @@ extensionRegressionTests =
             withConnection ":memory:" \conn -> do
                 registerCopy conn "copy_repeat" Nothing
                 replicateM_ 32 $ void $ execute_ conn "COPY (SELECT * FROM range(5000)) TO '/tmp/duckdb-simple-regression-copy' (FORMAT copy_repeat)"
-        , testCase "logging exceptions stay inside callback" $
+        , testCase "custom log storage reports the V2 limitation" $
             withConnection ":memory:" \conn -> do
-                calls <- newIORef (0 :: Int)
-                Logging.registerLogStorage conn "throwing_log" \_ -> do
-                    modifyIORef' calls (+ 1)
-                    throwIO (userError "log callback failure")
-                void $ execute_ conn "SET logging_storage = 'throwing_log'"
-                void $ execute_ conn "SET enable_logging = true"
-                void $ execute_ conn "SELECT write_log('callback regression', level := 'INFO', scope := 'connection')"
-                readIORef calls >>= \n -> assertBool "log callback ran" (n > 0)
+                assertSqlErrorContaining "unavailable" $ Logging.registerLogStorage conn "throwing_log" (\_ -> throwIO ThreadKilled)
                 query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
-        , testCase "logging messages preserve UTF8" $
-            withConnection ":memory:" \conn -> do
-                messages <- newIORef []
-                Logging.registerLogStorage conn "unicode_log" \entry ->
-                    modifyIORef' messages (Logging.logEntryMessage entry :)
-                void $ execute_ conn "SET logging_storage = 'unicode_log'"
-                void $ execute_ conn "SET enable_logging = true"
-                void $ execute_ conn "SELECT write_log('\955', level := 'INFO', scope := 'connection')"
-                readIORef messages >>= \entries -> assertBool "Unicode log message" ("\955" `elem` entries)
         , testCase "filesystem action exceptions release handles" $
             withTemporaryFile \path ->
                 withConnection ":memory:" \conn -> do
-                    outcome <- try $ FileSystem.withFileHandle conn path [DuckDBFileFlagWrite] \_ -> throwIO (userError "file action failure")
+                    outcome <- try $ FileSystem.withFileHandle conn path [DuckDBV2FileFlagWrite] \_ -> throwIO (userError "file action failure")
                     case outcome :: Either SomeException () of
                         Left _ -> pure ()
                         Right () -> assertFailure "expected file action exception"
-                    FileSystem.withFileHandle conn path [DuckDBFileFlagWrite] \handle -> do
+                    FileSystem.withFileHandle conn path [DuckDBV2FileFlagWrite] \handle -> do
                         FileSystem.writeFileHandleBytes handle (BS.pack [0, 255]) >>= (@?= 2)
                         FileSystem.fileHandleSync handle
-                    FileSystem.withFileHandle conn path [DuckDBFileFlagRead] \handle -> do
+                    FileSystem.withFileHandle conn path [DuckDBV2FileFlagRead] \handle -> do
                         FileSystem.readFileHandleChunk handle 0 >>= (@?= BS.empty)
                         FileSystem.readFileHandleChunk handle 8 >>= (@?= BS.pack [0, 255])
         , testCase "filesystem errors remain controlled" $
             withConnection ":memory:" \conn -> do
-                assertSqlError $ FileSystem.withFileHandle conn "/tmp/duckdb-review-missing-dir/no-file" [DuckDBFileFlagRead] (\_ -> pure ())
+                assertSqlError $ FileSystem.withFileHandle conn "/tmp/duckdb-review-missing-dir/no-file" [DuckDBV2FileFlagRead] (\_ -> pure ())
                 withTemporaryFile \path ->
-                    assertSqlError $ FileSystem.withFileHandle conn (path <> "\0suffix") [DuckDBFileFlagRead] (\_ -> pure ())
-        , testCase "catalog unsupported kinds fail safely" $
+                    assertSqlError $ FileSystem.withFileHandle conn (path <> "\0suffix") [DuckDBV2FileFlagRead] (\_ -> pure ())
+        , testCase "scoped collation lookup reports the V2 limitation" $
             withConnection ":memory:" \conn ->
-                withTransaction conn $
-                    mapM_
-                        (\kind -> assertSqlError $ Catalog.lookupCatalogEntry conn "memory" "main" "probe" kind)
-                        [DuckDBCatalogEntryTypeInvalid, DuckDBCatalogEntryTypeSchema, DuckDBCatalogEntryTypePreparedStatement, DuckDBCatalogEntryTypeDatabase, DuckDBCatalogEntryType 99]
+                assertSqlErrorContaining "unavailable" $ Catalog.lookupCatalogEntry conn "memory" "main" "probe" Catalog.CatalogCollation
         , testCase "catalog and config NUL names fail safely" $
             withConnection ":memory:" \conn -> do
                 assertSqlError $ Config.getConfigOption conn "threads\0suffix"
                 withTransaction conn do
                     assertSqlError $ Catalog.catalogTypeName conn "memory\0suffix"
-                    assertSqlError $ Catalog.lookupCatalogEntry conn "memory" "main\0suffix" "probe" DuckDBCatalogEntryTypeTable
+                    assertSqlError $ Catalog.lookupCatalogEntry conn "memory" "main\0suffix" "probe" Catalog.CatalogTable
         , testCase "catalog names preserve UTF8" $
             withConnection ":memory:" \conn -> do
                 void $ execute_ conn "CREATE TABLE \"\955\" (i INT)"
                 withTransaction conn do
-                    entry <- Catalog.lookupCatalogEntry conn "memory" "main" "\955" DuckDBCatalogEntryTypeTable
+                    entry <- Catalog.lookupCatalogEntry conn "memory" "main" "\955" Catalog.CatalogTable
                     fmap Catalog.catalogEntryName entry @?= Just "\955"
         , testCase "catalog and config missing values remain safe" $
             withConnection ":memory:" \conn -> do
                 Config.getConfigOption conn "no_such_config_option" >>= (@?= Nothing)
                 withTransaction conn do
                     Catalog.catalogTypeName conn "no_such_catalog" >>= (@?= Nothing)
-                    Catalog.lookupCatalogEntry conn "memory" "main" "no_such_table" DuckDBCatalogEntryTypeTable >>= (@?= Nothing)
+                    Catalog.lookupCatalogEntry conn "memory" "main" "no_such_table" Catalog.CatalogTable >>= (@?= Nothing)
+        , testCase "configuration descriptors remain usable after connection close" $
+            withConnection ":memory:" \conn -> do
+                Config.setConfigOption conn DuckDBV2SettingScopeGlobal "threads" "1"
+                options <- Config.listConfigOptions conn
+                fmap Config.configValueText <$> Config.getConfigOption conn "threads" >>= (@?= Just "1")
+                close conn
+                case find ((== "threads") . Config.configOptionName) options of
+                    Nothing -> assertFailure "missing threads descriptor"
+                    Just option -> do
+                        Config.configOptionSetting option @?= "1"
+                        Config.configOptionName option @?= "threads"
+                        assertBool "description is retained" (not (Text.null (Config.configOptionDescription option)))
+        , testCase "table descriptions resolve names and copy borrowed column types" $
+            withConnection ":memory:" \conn -> do
+                void $ execute_ conn "CREATE TABLE \"\955\" (id BIGINT DEFAULT 7, twice BIGINT GENERATED ALWAYS AS (id * 2))"
+                description <- Catalog.describeTable conn "\"\955\""
+                Catalog.tableDescriptionName description @?= ["memory", "main", "\955"]
+                Catalog.tableDescriptionReadonly description @?= False
+                map Catalog.columnDescriptionName (Catalog.tableDescriptionColumns description) @?= ["id", "twice"]
+                map Catalog.columnDescriptionHasDefault (Catalog.tableDescriptionColumns description) @?= [True, False]
+                map Catalog.columnDescriptionGenerated (Catalog.tableDescriptionColumns description) @?= [False, True]
+                query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+        , testCase "tokenization copies Unicode byte offsets and unterminated state" $
+            withConnection ":memory:" \conn -> do
+                let sql = "SELECT \"\955\", 'x'; -- comment\n"
+                    bytes = Text.encodeUtf8 sql
+                parsed <- Tokenizer.tokenize conn sql
+                Tokenizer.tokenizationUnterminated parsed @?= False
+                forM_ (Tokenizer.tokenizationTokens parsed) \token ->
+                    BS.take (BS.length (Tokenizer.tokenBytes token)) (BS.drop (Tokenizer.tokenOffset token) bytes) @?= Tokenizer.tokenBytes token
+                assertBool "comment token" (any ((== DuckDBV2TokenTypeComment) . Tokenizer.tokenType) (Tokenizer.tokenizationTokens parsed))
+                unfinished <- Tokenizer.tokenize conn "SELECT 'unclosed"
+                Tokenizer.tokenizationUnterminated unfinished @?= True
+        , testCase "positioned file operations preserve the sequential position" $
+            withTemporaryFile \path -> withConnection ":memory:" \conn ->
+                FileSystem.withFileHandle conn path [DuckDBV2FileFlagRead, DuckDBV2FileFlagWrite] \handle -> do
+                    FileSystem.writeFileHandleBytes handle (BS.pack [1, 2, 3, 4]) >>= (@?= 4)
+                    FileSystem.fileHandleSeek handle 1
+                    FileSystem.readFileHandleAt handle 2 2 >>= (@?= BS.pack [3, 4])
+                    FileSystem.fileHandleTell handle >>= (@?= 1)
+                    FileSystem.writeFileHandleAt handle 0 (BS.pack [8, 9])
+                    FileSystem.fileHandleTell handle >>= (@?= 1)
+                    FileSystem.fileHandleSeek handle 0
+                    FileSystem.readFileHandleChunk handle 8 >>= (@?= BS.pack [8, 9, 3, 4])
         ]
 
 -- | Raise a second exception when the callback error is rendered.
@@ -260,7 +287,7 @@ instance Function BrokenSignature where
 data InvalidSignature = InvalidSignature
 
 instance Function InvalidSignature where
-    argumentTypes _ = [DuckDBTypeInvalid]
+    argumentTypes _ = [DuckDBV2LogicalTypeIdInvalid]
     returnType _ = returnType (Proxy :: Proxy Int64)
     isVolatile _ = False
     applyFunction _ _ = error "unregistered function"

@@ -14,7 +14,7 @@ import qualified Data.Text as Text
 import Data.Time (UTCTime)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Database.DuckDB.Simple
-import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
+import qualified Database.DuckDB.Simple.Streaming as Streaming
 import System.Directory (canonicalizePath, doesFileExist)
 import System.Environment (lookupEnv)
 import Test.Tasty (defaultMain)

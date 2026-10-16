@@ -17,11 +17,11 @@ import qualified Data.Text as Text
 import Data.Void (Void)
 import qualified DataFrame.Core as DataFrame
 import qualified DataFrame.IO.Arrow as DataFrameArrow
-import Database.DuckDB.FFI (ArrowArray (..), ArrowSchema (..))
+import Database.DuckDB.FFI.V2 (ArrowArray (..), ArrowSchema (..))
 import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Arrow as Arrow
 import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
-import Foreign.Ptr (FunPtr, Ptr, nullFunPtr)
+import Foreign.Ptr (FunPtr, Ptr, castPtr, nullFunPtr)
 import Foreign.Storable (peek)
 import GHC.Records (getField)
 import Test.Tasty (TestTree, defaultMain, testGroup)
@@ -46,7 +46,7 @@ dataframeTests streaming =
                     \(offset, acc) schema array -> do
                         assertLiveSchema schema
                         count <- fromIntegral . (getField @"length") <$> peek array
-                        frame <- DataFrameArrow.arrowToDataframe (coerce schema) (coerce array)
+                        frame <- DataFrameArrow.arrowToDataframe (castPtr schema) (castPtr array)
                         assertConsumed schema array
                         pure (offset + count, (offset, count, frame) : acc)
             rowCount @?= 5000
@@ -59,7 +59,7 @@ dataframeTests streaming =
             withDb \conn -> do
                 -- Import one supported column before the unsupported column fails.
                 result <- try $ foldArrow conn "SELECT 42::BIGINT AS n, true AS unsupported" () () \() schema array -> do
-                    _ <- DataFrameArrow.arrowToDataframe (coerce schema) (coerce array)
+                    _ <- DataFrameArrow.arrowToDataframe (castPtr schema) (castPtr array)
                     pure ()
                 case result of
                     Left (err :: ErrorCall) ->
@@ -69,7 +69,7 @@ dataframeTests streaming =
         , testCase "an empty result does not call the consumer" $
             withDb \conn -> do
                 count <- foldArrow conn "SELECT 1::BIGINT AS n WHERE false" () (0 :: Int) \_ schema array -> do
-                    _ <- DataFrameArrow.arrowToDataframe (coerce schema) (coerce array)
+                    _ <- DataFrameArrow.arrowToDataframe (castPtr schema) (castPtr array)
                     assertFailure "unexpected batch"
                 count @?= 0
         ]

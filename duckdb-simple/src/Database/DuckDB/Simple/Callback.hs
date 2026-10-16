@@ -9,26 +9,25 @@ module Database.DuckDB.Simple.Callback (
     transferCallbackState,
     runCallback,
     ignoreCallbackExceptions,
+    attachOpaque,
 ) where
 
 import Control.Exception (SomeException, catch, displayException, finally, mask, mask_, onException, try)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import qualified Data.Text as Text
-import qualified Data.Text.Foreign as TextForeign
 import Data.Void (Void)
-import Database.DuckDB.FFI (DuckDBDeleteCallback (..))
-import Foreign.C.ConstPtr (ConstPtr (..))
-import Foreign.C.String (withCString)
-import Foreign.C.Types (CChar)
-import Foreign.Ptr (FunPtr, Ptr, castFunPtr, castPtr, freeHaskellFunPtr, nullPtr)
+import Database.DuckDB.Simple.Native
+import Foreign.Marshal.Utils (with)
+import Foreign.Ptr (FunPtr, Ptr, castFunPtr, castPtr, freeHaskellFunPtr, nullFunPtr, nullPtr)
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deRefStablePtr, freeStablePtr, newStablePtr)
+import Foreign.Storable (peek)
 
 {- | Acquire callbacks and transfer their cleanup to a DuckDB object.
 The object must be non-null. Its destructor must run after the action.
 -}
 withCallbackResources ::
     ((forall a. IO (FunPtr a) -> IO (FunPtr a)) -> IO r) ->
-    (Ptr Void -> DuckDBDeleteCallback -> IO ()) ->
+    (Ptr Void -> DuckDBV2OpaqueDestroyFn -> IO ()) ->
     (r -> IO b) ->
     IO b
 withCallbackResources acquire attach action = mask \restore -> do
@@ -46,23 +45,42 @@ withCallbackResources acquire attach action = mask \restore -> do
     restore (action resources)
 
 -- | Transfer one state value to a DuckDB callback state slot.
-transferCallbackState :: (Ptr Void -> DuckDBDeleteCallback -> IO ()) -> a -> IO ()
+transferCallbackState :: (Ptr Void -> DuckDBV2OpaqueDestroyFn -> IO ()) -> a -> IO ()
 transferCallbackState attach state = mask_ do
     stable <- newStablePtr state
     attach (castPtr (castStablePtrToPtr stable)) callbackStateDestructor
         `onException` freeStablePtr stable
 
--- | Convert callback exceptions to DuckDB errors.
-runCallback :: (ConstPtr CChar -> IO ()) -> IO () -> IO ()
-runCallback setError action = mask \restore -> do
+-- | Convert callback exceptions to native V2 diagnostics.
+runCallback :: Ptr DuckDBV2ErrorInfoHandle -> IO () -> IO ()
+runCallback err action = mask \restore -> do
     outcome <- try (restore action)
     case outcome of
         Right () -> pure ()
-        Left (err :: SomeException) ->
-            TextForeign.withCString (Text.pack (displayException err)) (setError . ConstPtr)
-                `catch` \(_ :: SomeException) ->
-                    ignoreCallbackExceptions $
-                        withCString "duckdb-simple: Haskell callback failed" (setError . ConstPtr)
+        Left (failure :: SomeException) ->
+            ignoreCallbackExceptions $
+                if err == nullPtr
+                    then pure ()
+                    else do
+                        info <- peek err
+                        if info == nullHandle
+                            then pure ()
+                            else do
+                                c_duckdb_v2_error_info_set_code info DuckDBV2ErrorApi >>= checkCode
+                                withText (Text.pack "Haskell callback failed") $ \message ->
+                                    c_duckdb_v2_error_info_set_text info message >>= checkCode
+                                withText (Text.pack (displayException failure)) $ \message ->
+                                    c_duckdb_v2_error_info_set_text info message >>= checkCode
+
+-- | Transfer an opaque resource to a checked V2 setter.
+attachOpaque ::
+    (Ptr DuckDBV2Opaque -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) ->
+    Ptr Void ->
+    DuckDBV2OpaqueDestroyFn ->
+    IO ()
+attachOpaque setter ptr release =
+    with (DuckDBV2Opaque ptr release (DuckDBV2OpaqueEqualsFn nullFunPtr)) $ \opaque ->
+        checked (setter opaque)
 
 -- | Contain exceptions in callbacks which have no error channel.
 ignoreCallbackExceptions :: IO () -> IO ()
@@ -100,9 +118,9 @@ foreign import ccall "&duckdb_simple_release_callback_state"
     callbackStateDestructorAddress :: FunPtr (Ptr Void -> IO ())
 
 -- | Use the generated callback type for the static destructor address.
-callbackResourcesDestructor :: DuckDBDeleteCallback
-callbackResourcesDestructor = DuckDBDeleteCallback (castFunPtr callbackResourcesDestructorAddress)
+callbackResourcesDestructor :: DuckDBV2OpaqueDestroyFn
+callbackResourcesDestructor = DuckDBV2OpaqueDestroyFn (castFunPtr callbackResourcesDestructorAddress)
 
 -- | Use the generated callback type for the static state destructor address.
-callbackStateDestructor :: DuckDBDeleteCallback
-callbackStateDestructor = DuckDBDeleteCallback (castFunPtr callbackStateDestructorAddress)
+callbackStateDestructor :: DuckDBV2OpaqueDestroyFn
+callbackStateDestructor = DuckDBV2OpaqueDestroyFn (castFunPtr callbackStateDestructorAddress)

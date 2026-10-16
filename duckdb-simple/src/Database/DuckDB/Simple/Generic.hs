@@ -111,7 +111,6 @@ import Data.Word (Word16, Word32, Word64, Word8)
 import GHC.Generics
 import Numeric.Natural (Natural)
 
-import Database.DuckDB.FFI
 import Database.DuckDB.Simple.FromField (
     Field (..),
     FieldValue (..),
@@ -129,6 +128,7 @@ import Database.DuckDB.Simple.LogicalRep (
     UnionMemberType (..),
     UnionValue (..),
  )
+import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToField (..))
@@ -162,120 +162,120 @@ class DuckValue a where
 
 instance DuckValue Variant where
     duckToField = variantPayload
-    duckLogicalType _ = LogicalTypeScalar DuckDBTypeVariant
+    duckLogicalType _ = LogicalTypeScalar DuckDBV2LogicalTypeIdVariant
 
 instance DuckValue Bool where
     duckToField = FieldBool
-    duckLogicalType _ = LogicalTypeScalar DuckDBTypeBoolean
+    duckLogicalType _ = LogicalTypeScalar DuckDBV2LogicalTypeIdBoolean
 
 instance DuckValue Int where
     duckToField = FieldInt64 . fromIntegral
-    duckLogicalType _ = LogicalTypeScalar DuckDBTypeBigInt
+    duckLogicalType _ = LogicalTypeScalar DuckDBV2LogicalTypeIdBigInt
 
 instance DuckValue Int8 where
     duckToField = FieldInt8
-    duckLogicalType _ = LogicalTypeScalar DuckDBTypeTinyInt
+    duckLogicalType _ = LogicalTypeScalar DuckDBV2LogicalTypeIdTinyInt
 
 instance DuckValue Int16 where
     duckToField = FieldInt16
-    duckLogicalType _ = LogicalTypeScalar DuckDBTypeSmallInt
+    duckLogicalType _ = LogicalTypeScalar DuckDBV2LogicalTypeIdSmallInt
 
 instance DuckValue Int32 where
     duckToField = FieldInt32
-    duckLogicalType _ = LogicalTypeScalar DuckDBTypeInteger
+    duckLogicalType _ = LogicalTypeScalar DuckDBV2LogicalTypeIdInteger
 
 instance DuckValue Int64 where
     duckToField = FieldInt64
-    duckLogicalType _ = LogicalTypeScalar DuckDBTypeBigInt
+    duckLogicalType _ = LogicalTypeScalar DuckDBV2LogicalTypeIdBigInt
 
 instance DuckValue Integer where
     duckToField = FieldHugeInt
-    duckLogicalType _ = LogicalTypeScalar DuckDBTypeHugeInt
+    duckLogicalType _ = LogicalTypeScalar DuckDBV2LogicalTypeIdHugeInt
 
 instance DuckValue Natural where
     duckToField = FieldUHugeInt . toInteger
-    duckLogicalType _ = LogicalTypeScalar DuckDBTypeUHugeInt
+    duckLogicalType _ = LogicalTypeScalar DuckDBV2LogicalTypeIdUHugeInt
 
 instance DuckValue Word where
     duckToField = FieldWord64 . fromIntegral
-    duckLogicalType _ = LogicalTypeScalar DuckDBTypeUBigInt
+    duckLogicalType _ = LogicalTypeScalar DuckDBV2LogicalTypeIdUBigInt
 
 instance DuckValue Word8 where
     duckToField = FieldWord8
-    duckLogicalType _ = LogicalTypeScalar DuckDBTypeUTinyInt
+    duckLogicalType _ = LogicalTypeScalar DuckDBV2LogicalTypeIdUTinyInt
 
 instance DuckValue Word16 where
     duckToField = FieldWord16
-    duckLogicalType _ = LogicalTypeScalar DuckDBTypeUSmallInt
+    duckLogicalType _ = LogicalTypeScalar DuckDBV2LogicalTypeIdUSmallInt
 
 instance DuckValue Word32 where
     duckToField = FieldWord32
-    duckLogicalType _ = LogicalTypeScalar DuckDBTypeUInteger
+    duckLogicalType _ = LogicalTypeScalar DuckDBV2LogicalTypeIdUInteger
 
 instance DuckValue Word64 where
     duckToField = FieldWord64
-    duckLogicalType _ = LogicalTypeScalar DuckDBTypeUBigInt
+    duckLogicalType _ = LogicalTypeScalar DuckDBV2LogicalTypeIdUBigInt
 
 instance DuckValue Float where
     duckToField = FieldFloat
-    duckLogicalType _ = LogicalTypeScalar DuckDBTypeFloat
+    duckLogicalType _ = LogicalTypeScalar DuckDBV2LogicalTypeIdFloat
 
 instance DuckValue Double where
     duckToField = FieldDouble
-    duckLogicalType _ = LogicalTypeScalar DuckDBTypeDouble
+    duckLogicalType _ = LogicalTypeScalar DuckDBV2LogicalTypeIdDouble
 
 instance DuckValue Text where
     duckToField = FieldText
-    duckLogicalType _ = LogicalTypeScalar DuckDBTypeVarchar
+    duckLogicalType _ = LogicalTypeScalar DuckDBV2LogicalTypeIdVarchar
 
 instance DuckValue String where
     duckToField = FieldText . Text.pack
-    duckLogicalType _ = LogicalTypeScalar DuckDBTypeVarchar
+    duckLogicalType _ = LogicalTypeScalar DuckDBV2LogicalTypeIdVarchar
     duckFromField fv = Text.unpack <$> duckFromField fv
 
 instance DuckValue BS.ByteString where
     duckToField = FieldBlob
-    duckLogicalType _ = LogicalTypeScalar DuckDBTypeBlob
+    duckLogicalType _ = LogicalTypeScalar DuckDBV2LogicalTypeIdBlob
 
 instance DuckValue Day where
     duckToField = FieldDate . Finite
-    duckLogicalType _ = LogicalTypeScalar DuckDBTypeDate
+    duckLogicalType _ = LogicalTypeScalar DuckDBV2LogicalTypeIdDate
 
 instance DuckValue TimeOfDay where
     duckToField = FieldTime
-    duckLogicalType _ = LogicalTypeScalar DuckDBTypeTime
+    duckLogicalType _ = LogicalTypeScalar DuckDBV2LogicalTypeIdTime
 
 instance DuckValue LocalTime where
     duckToField = FieldTimestamp . Finite
-    duckLogicalType _ = LogicalTypeScalar DuckDBTypeTimestamp
+    duckLogicalType _ = LogicalTypeScalar DuckDBV2LogicalTypeIdTimestamp
 
 instance DuckValue UTCTime where
     duckToField = FieldTimestampTZ . Finite
-    duckLogicalType _ = LogicalTypeScalar DuckDBTypeTimestampTz
+    duckLogicalType _ = LogicalTypeScalar DuckDBV2LogicalTypeIdTimestampTz
 
 instance DuckValue (Unbounded Day) where
     duckToField = FieldDate
-    duckLogicalType _ = LogicalTypeScalar DuckDBTypeDate
+    duckLogicalType _ = LogicalTypeScalar DuckDBV2LogicalTypeIdDate
 
 instance DuckValue (Unbounded LocalTime) where
     duckToField = FieldTimestamp
-    duckLogicalType _ = LogicalTypeScalar DuckDBTypeTimestamp
+    duckLogicalType _ = LogicalTypeScalar DuckDBV2LogicalTypeIdTimestamp
 
 instance DuckValue (Unbounded UTCTime) where
     duckToField = FieldTimestampTZ
-    duckLogicalType _ = LogicalTypeScalar DuckDBTypeTimestampTz
+    duckLogicalType _ = LogicalTypeScalar DuckDBV2LogicalTypeIdTimestampTz
 
 instance DuckValue UUID.UUID where
     duckToField = FieldUUID
-    duckLogicalType _ = LogicalTypeScalar DuckDBTypeUUID
+    duckLogicalType _ = LogicalTypeScalar DuckDBV2LogicalTypeIdUUID
 
 instance DuckValue IntervalValue where
     duckToField = FieldInterval
-    duckLogicalType _ = LogicalTypeScalar DuckDBTypeInterval
+    duckLogicalType _ = LogicalTypeScalar DuckDBV2LogicalTypeIdInterval
 
 instance DuckValue TimeWithZone where
     duckToField = FieldTimeTZ
-    duckLogicalType _ = LogicalTypeScalar DuckDBTypeTimeTz
+    duckLogicalType _ = LogicalTypeScalar DuckDBV2LogicalTypeIdTimeTz
 
 instance (DuckValue a) => DuckValue (Maybe a) where
     duckToField (Just x) = duckToField x

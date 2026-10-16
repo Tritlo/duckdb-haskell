@@ -10,6 +10,10 @@
       "sha256": "9ff8bfb6f88ed1be4f845399ed7ff35980a65e011848d027cef88467fe9e0886",
       "source": "src/include/duckdb.h"
     },
+    "cbits/duckdb_extension_v2.h": {
+      "sha256": "1cababc2f89f81ec29c902714581ca2a71f26177e9119f9414be5d6fe7acef73",
+      "source": "src/include/duckdb_extension_v2.h"
+    },
     "cbits/duckdb_v2.h": {
       "sha256": "4986911c5dc70ac13a1f00811e92fa1e2fe5433e9cf8ac9fc98cb408cbdd0fcb",
       "source": "src/include/duckdb_v2.h"

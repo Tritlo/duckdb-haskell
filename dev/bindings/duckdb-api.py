@@ -23,6 +23,7 @@ HEADERS = ("duckdb.h", "duckdb_v2.h")
 FILES = {
     "cbits/duckdb.h": "src/include/duckdb.h",
     "cbits/duckdb_v2.h": "src/include/duckdb_v2.h",
+    "cbits/duckdb_extension_v2.h": "src/include/duckdb_extension_v2.h",
     "cbits/duckdb-LICENSE": "LICENSE",
 }
 
@@ -76,7 +77,7 @@ def verify_snapshot(manifest: Manifest, files: dict[str, bytes]) -> None:
     if source["url"] != f"https://codeload.github.com/duckdb/duckdb/tar.gz/{manifest['commit']}" or not re.fullmatch(r"[0-9a-f]{64}", source["sha256"]):
         raise ValueError("Native source archive URL or SHA256 is invalid")
     if manifest["files"].keys() != FILES.keys() or files.keys() != FILES.keys():
-        raise ValueError("Snapshot must contain both client headers and the upstream license")
+        raise ValueError("Snapshot must contain both client headers, the V2 extension header, and the upstream license")
     for target, expected_source in FILES.items():
         record = manifest["files"][target]
         if record["source"] != expected_source or not re.fullmatch(r"[0-9a-f]{64}", record["sha256"]):
@@ -410,7 +411,7 @@ def main() -> int:
         return 0
     if args.verify_headers:
         metadata, _ = read_snapshot()
-        print(f"Verified client headers and license at {metadata['commit']}")
+        print(f"Verified client headers, V2 extension header, and license at {metadata['commit']}")
         return 0
     if args.compare_headers:
         return compare_headers(args.compare_headers)

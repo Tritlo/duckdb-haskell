@@ -10,6 +10,7 @@ checks, client headers, and upstream license.
   authorized Hackage candidates or releases.
 - `build-ghc-matrix.sh` runs local Docker builds. It writes logs to `ci-logs/`.
 - `nix/` contains pinned development, generation, and CI environments.
+- `v2-migration.md` records the V2 backend scope, contracts, and validation.
 - `preview/` builds the pinned development runtime. See its README for the
   removal condition.
 - `diagnostics/` contains a native probe for the deprecated Arrow API. Set

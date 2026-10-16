@@ -87,9 +87,9 @@ Format Haskell code with `fourmolu` before committing.
 Format Cabal files with `cabal-gild`. Keep names consistent with the surrounding
 module.
 
-Build parameter types with the type cache of the statement's connection. The
-cache reads its types on a separate connection the first time a parameter
-needs one. Do not run queries on the statement's connection during binding.
+Build parameter types and values with the V2 handle of the statement's
+connection. V2 constructs these types directly. Binding must not run an
+auxiliary query or open another connection.
 
 ## Native library configuration
 

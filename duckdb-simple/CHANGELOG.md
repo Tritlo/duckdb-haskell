@@ -4,13 +4,25 @@
 
 - Target DuckDB 2.0 with `duckdb-ffi >= 2.0.0.0`. The package version selects
   the supported native API. No preview flag is required.
-- Use the generated raw API from `hs-bindgen`. Raw handles and typedefs use
-  newtypes. Constant pointers use `ConstPtr`.
+- Move the backend to the generated V2 API. Raw handles, logical type IDs,
+  callback handles, and error codes now use V2 types.
+- Add shared environments and instances, attachment management, option
+  discovery, table descriptions, SQL tokenization, positioned file I/O,
+  managed function and type registration, replacement scans, and COPY callbacks.
+- Add `Database.DuckDB.Simple.Streaming` for V2 row and Arrow streaming.
+  Keep the deprecated module as a compatibility reexport.
+- Preserve materialized query behavior by draining the native cursor before
+  row or Arrow callbacks. Another query can run on the same connection then.
+  Explicit streaming retains the native one-live-result restriction.
+- Require a V2 connection in `ToDuckValue.toDuckValue` and
+  `logicalTypeFromRep`. Construct VARIANT and GEOMETRY types directly, without
+  an auxiliary connection. Preserve nanosecond timestamps and CRS metadata.
+- Bind VARIANT parameters. Non-NULL VARIANT results raise `SQLError` because
+  the pinned V2 API has no structural accessor. Use explicit SQL casts or
+  typed field extraction. SQL NULL VARIANT results remain supported.
+- Report unavailable custom log-storage registration, scoped collation lookup,
+  and zero-length fixed ARRAY types explicitly. Empty LIST values still work.
 - Export Arrow release helpers from `Database.DuckDB.Simple.Arrow`.
-- Decode nanosecond timezone timestamps in results and VARIANT values.
-- Preserve nanosecond timezone timestamp precision in VARIANT parameters and
-  parameters whose prepared type requires `TIMESTAMPTZ_NS`. This includes UTC
-  fields in collections, STRUCTs, MAPs, and UNIONs.
 - Allow session variables to supply omitted named parameters.
 - Reject duplicate named parameters with DuckDB's ASCII case rules. Keep
   distinct non-ASCII names separate.

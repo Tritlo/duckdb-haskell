@@ -35,8 +35,10 @@ The package version selects the supported native API. There is no preview
 build flag. Earlier package releases remain available for DuckDB 1.5.
 `Database.DuckDB.FFI.V2` exposes the v2 API. Keep v1 and v2
 handles separate. Their result, connection, error, and ownership contracts differ.
-The raw API exposes native primitives. `duckdb-simple` retains its existing
-connection and result API.
+The raw API exposes native primitives. `duckdb-simple` uses V2 handles for its
+connection, statement, result, conversion, callback, and Arrow backends. The
+query and execute interfaces retain their existing behavior. New shared
+environments and instances allow explicit catalog and configuration sharing.
 
 Both client APIs are generated with `hs-bindgen` 1.0. The package exposes
 `Database.DuckDB.FFI` and `Database.DuckDB.FFI.V2`. The former replaces the old
@@ -95,21 +97,27 @@ verify that a Haskell shared library can load as a DuckDB extension.
 Local validation on 2026-10-16 used Nix GHC 9.14.1 on Linux x86_64 and the
 pinned native `2.0.0-dev0` library. The build uses `-Wall -Werror`.
 
-- All 97 retained raw, 19 V2, 456 high-level, 27 codec, and six DataFrame tests
+- All 97 retained raw, 19 V2, 484 high-level, and six DataFrame tests
   pass. The default leak suite passes.
 - All 19 V2 cases pass under Valgrind with zero errors and zero definite,
   indirect, or possible lost bytes. Use `--fair-sched=yes`. The first query
   stalled with default Valgrind scheduling. The same query also passes in a
   separate native C probe.
+- All seven managed registration and five COPY fixtures pass under Valgrind
+  with zero errors and zero definite, indirect, or possible lost bytes. They
+  cover default/named parameters, grouped and window aggregates, table state,
+  custom types and casts, replacement scans, statistics, partition paths,
+  COPY FROM, and multi-file reads.
 - Haddock builds for both packages. Generated links produce type/constructor
   ambiguity and unresolved-link warnings. Review those before release.
 - Regeneration matches all four stored checksums. The coverage audit passes.
   Eleven temporary omission probes confirm that the audit rejects missing
   exports, C shims, native calls, and callback conversions.
-- Both packages produce source archives. An extracted FFI archive installs
-  without the generator. A separate consumer calls both APIs with static and
-  dynamic Haskell linking. It checks installed header constants and compares
-  all three installed headers and the native license with the package inputs.
+- Both extracted source packages install without LLVM or hs-bindgen. Separate
+  consumers pass with static and dynamic Haskell linking and the loader
+  environment unset. They check both raw APIs, shared instances, named/default
+  scalar registration, and COPY callbacks. Installed header constants, all
+  three headers, the native license, and generated hashes match their inputs.
   Both Haskell linking modes use the supplied shared native DuckDB library.
 
 The platform matrix is configured in CI. Runtime checks on other compilers,
@@ -219,17 +227,17 @@ on the native build and its installed extensions.
 | Triggers, DML in CTEs, nested schemas, NEAREST joins, variables, JSON mutation, recursive CTE additions | Existing `query` and `execute` SQL paths | Execute representative SQL against the final runtime. |
 | PEG parser, expression statements, lambda syntax changes | Existing SQL paths | Check parameters, multi-statement extraction, quoted names, and parser errors. The [parser extension API](https://duckdb.org/2026/08/20/duckdb-20-peg-parser) remains a preview. |
 | Quack, CONNECT, remote pushdown | SQL with the required extensions | Test a local server separately. Check authentication and extension availability. |
-| VARIANT and GEOMETRY | Existing `Variant`, geometry types, and codecs | Check nested values, Parquet round trips, CRS, and the VARIANT storage codec. |
-| Nanosecond TIMESTAMPTZ | Preview v1 value access and typed conversion | Check sub-microsecond precision and temporal infinity. |
+| VARIANT and GEOMETRY | V2 parameter binding, explicit SQL casts for VARIANT results, geometry types and codecs | Check nested values, Parquet round trips, CRS, and explicit errors for unavailable VARIANT access. |
+| Nanosecond TIMESTAMPTZ | V2 value access and typed conversion | Check sub-microsecond precision and temporal infinity. |
 | Asynchronous I/O, storage format 2.0, query optimizations | Native engine through existing SQL paths | Check file reopen, cancellation, and older database reads. State the new write format. |
 | Timezones and collations | SQL and existing temporal types | Check timezone conversion and extension loading. |
 | Extension repositories | SQL | Check local signed repository loading separately. |
-| Environment, instances, connections, attachment options, schemas, catalog | Raw v2 | Check lifetime order, resource-in-use errors, attach/detach, and option discovery. |
-| SQL tokenization, statements, prepared statements, expressions, result cursors, Arrow results and streams | Raw v2 | Check token iteration, bind/execute, chunk exhaustion, cancellation, errors, and Arrow release callbacks. |
-| Values, logical/custom types, vectors, data chunks, arenas, column collections | Raw v2 | Check widths, buffer layouts, nulls, borrowed data, and destruction. |
-| Scalar, aggregate, table, cast, COPY functions and signatures | Raw v2 and callback constructors | Check registration and execution, parameter kinds, named/default arguments, callback errors, state destruction, and COPY statistics. |
-| Multi-file functions, table partitioning, batch claiming | Raw v2 and callbacks | Check file metadata, partition values, batch order, and callback lifetimes. |
-| Replacement scans, file systems, logging, extension entry points | Raw v2 | Check callback lifetime and custom file operations. Loadable-extension packaging needs separate validation. |
+| Environment, instances, connections, attachment options, schemas, catalog | `duckdb-simple`, `Config`, `Catalog`, and raw V2 | Check lifetime order, resource-in-use errors, attach/detach, and option discovery. |
+| SQL tokenization, statements, prepared statements, expressions, result cursors, Arrow results and streams | `Tokenizer`, query and streaming APIs, `Arrow`, and raw V2 expression operations | Check token iteration, bind/execute, chunk exhaustion, cancellation, errors, and Arrow release callbacks. |
+| Values, logical/custom types, vectors, data chunks, arenas, column collections | Typed conversions, `LogicalRep`, `Registration`, and raw V2 vector operations | Check widths, buffer layouts, nulls, borrowed data, and destruction. |
+| Scalar, aggregate, table, cast, COPY functions and signatures | Managed `Registration` and `Copy` callbacks, typed signatures, and raw V2 | Check registration and execution, parameter kinds, named/default arguments, callback errors, state destruction, and COPY statistics. |
+| Multi-file functions, table partitioning, batch claiming | Managed `Copy` multi-file setup and `Registration.TableCallbacks` | Check file metadata, partition values, batch order, and callback lifetimes. |
+| Replacement scans, file systems, logging, extension entry points | Managed `Registration`, `FileSystem`, context logging, and extension-target builders | Check callback lifetime and file operations. V2 has no custom file-system or log-storage registration. Loadable-extension packaging needs separate validation. |
 
 Some features use SQL or the raw API without a dedicated `duckdb-simple`
 wrapper. Appender access uses the v1 API in this snapshot. Check extension
@@ -244,8 +252,10 @@ aggregates, table functions, custom casts, COPY TO callbacks, vector mutations,
 custom configuration, filesystem operations, and context logging. An independent
 native compiler check verifies all function and callback signatures.
 These checks cover representative behavior. They do not execute every raw
-function. Loadable extension entry points, advanced COPY FROM and partitioned
-output, and multi-file callbacks still need dedicated runtime fixtures.
+function. Managed registration and COPY fixtures also check COPY FROM,
+partitioned output, statistics, and multi-file reads. Small fixtures do not
+guarantee a progress callback invocation. Extension targets compile, but a
+loadable Haskell extension still needs separate packaging validation.
 
 The selected preview's Quack extension downloads returned HTTP 403 from
 `core_nightly` and HTTP 404 from `core` in this environment. The second review
@@ -307,9 +317,32 @@ those expressions to retain the intended precision.
 VARIANT objects can bind an empty key alongside named keys in this preview.
 The C constructor cannot represent an object with only an empty key; it
 produces a tuple that casts to an array. The binding rejects that shape change.
-Duplicate and NUL-containing object keys also raise errors. Results can still
-decode those names. The VARIANT decoder depends on the checked native storage
-layout, so repeat its round trips after each native update.
+Duplicate and NUL-containing object keys also raise errors. The pinned V2 API
+has no structural VARIANT accessor. Non-NULL VARIANT results raise `SQLError`.
+Select an explicit SQL cast or typed field extraction instead. SQL NULL VARIANT
+results remain supported. The V2 backend does not read the retained API's
+private VARIANT layout.
+
+## V2 migration limits
+
+The migration uses the pinned API. It does not add native symbols. The missing
+operations are documented in the package README and report controlled errors:
+
+- The pinned prepared API cannot plan some expanding statements, including
+  dynamic PIVOT. Use direct `query_` or `execute_` for those statements.
+- V2 cannot expose non-NULL VARIANT payloads for automatic result decoding.
+  Parameter binding, native storage, explicit SQL casts, and typed field
+  extraction remain available.
+- V2 cannot register custom log storage or custom file systems. Callback
+  contexts can still write log messages. Existing file handles support checked
+  sequential and positioned I/O.
+- The native type builder rejects zero-length fixed ARRAY types. Empty LIST
+  values remain supported.
+- Direct GEOMETRY type construction requires a recognized CRS identifier or a
+  complete definition. Unknown custom names raise errors. The binding rejects
+  construction that silently drops CRS metadata.
+- The metadata API cannot perform scoped collation lookup. Other catalog
+  lookups use SQL metadata. Table descriptions use native V2 handles.
 
 ## Final release checklist
 

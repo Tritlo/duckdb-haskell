@@ -10,16 +10,18 @@
   discovery, table descriptions, SQL tokenization, positioned file I/O,
   managed function and type registration, replacement scans, and COPY callbacks.
 - Add `Database.DuckDB.Simple.Streaming` for V2 row and Arrow streaming.
-  Keep the deprecated module as a compatibility reexport.
+  Remove `Database.DuckDB.Simple.Deprecated.Streaming`. Use the V2 module.
 - Preserve materialized query behavior by draining the native cursor before
   row or Arrow callbacks. Another query can run on the same connection then.
   Explicit streaming retains the native one-live-result restriction.
 - Require a V2 connection in `ToDuckValue.toDuckValue` and
-  `logicalTypeFromRep`. Construct VARIANT and GEOMETRY types directly, without
-  an auxiliary connection. Preserve nanosecond timestamps and CRS metadata.
-- Bind VARIANT parameters. Non-NULL VARIANT results raise `SQLError` because
-  the pinned V2 API has no structural accessor. Use explicit SQL casts or
-  typed field extraction. SQL NULL VARIANT results remain supported.
+  `logicalTypeFromRep`. Preserve nanosecond timestamps and CRS metadata.
+  Cache SQL-derived types on a helper connection to preserve configured custom
+  CRS names in nested parameters without interrupting an active stream.
+- Bind and decode VARIANT values through public V2 operations. Use batched SQL
+  type metadata and native casts to preserve scalar types, precision, object
+  order, and nested values. Object keys use DuckDB's native lexicographic order.
+  Do not read the private native payload layout.
 - Report unavailable custom log-storage registration, scoped collation lookup,
   and zero-length fixed ARRAY types explicitly. Empty LIST values still work.
 - Export Arrow release helpers from `Database.DuckDB.Simple.Arrow`.

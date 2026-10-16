@@ -374,8 +374,8 @@ For manual cursor-style iteration, use `nextRow`/`nextRowWith` on an open
 `Statement` to pull rows one at a time and decide when to stop.
 
 Cursors support the same column types as eager queries, including STRUCT
-and UNION values with nested collections and NULLs. GEOMETRY works with eager
-queries, cursors, and folds. Read VARIANT values through explicit SQL casts.
+and UNION values with nested collections and NULLs. GEOMETRY and VARIANT work
+with eager queries, cursors, and folds.
 
 #### Optional native streaming
 
@@ -394,8 +394,7 @@ streamSum conn =
 
 This module uses V2 execution and incremental chunk fetching. DuckDB can still
 materialize some queries. Streaming does not bound the memory used by query
-operators. `Database.DuckDB.Simple.Deprecated.Streaming` remains a deprecated
-compatibility import.
+operators.
 
 The first cursor fetch selects the execution mode until an explicit reset.
 Switching between default and streaming `nextRow` calls retains that mode.
@@ -445,22 +444,26 @@ cursor remains open.
 
 ### VARIANT
 
-The pinned V2 API cannot expose the structural payload of a non-NULL VARIANT
-result. Such a result raises `SQLError`. Cast it or extract typed fields in SQL:
+VARIANT results decode to the `FieldValue` of the stored value. Existing
+`FromField` instances read scalar payloads. Objects decode to `FieldStruct`
+values with VARIANT fields in DuckDB's native key order (lexicographic).
+Arrays decode to `FieldList` and preserve element order.
+The decoder uses SQL type metadata and native casts. It preserves scalar types,
+precision, and nested values without reading DuckDB's private payload format.
 
 ```haskell
-query_ conn "SELECT ({'n': 42}::VARIANT).n::BIGINT" :: IO [Only Int]
+query_ conn "SELECT 42::BIGINT::VARIANT" :: IO [Only Int64]
 ```
 
 SQL NULL VARIANT values decode to `FieldNull`. `Variant` from
 `Database.DuckDB.Simple.Variant` wraps a `FieldValue`. Its `ToField` instance
 binds the payload as VARIANT. `variantObject` builds an object from named fields.
-Select a supported native type to read the value back:
+It can read the bound value back directly:
 
 ```haskell
-query conn "SELECT (?::VARIANT)::BIGINT[]"
+query conn "SELECT ?"
   (Only (Variant (FieldList [FieldInt64 1, FieldInt64 2])))
-  :: IO [Only [Int64]]
+  :: IO [Only Variant]
 ```
 
 A scalar payload keeps its native type, such as `TINYINT` or `DECIMAL(4,2)`.
@@ -474,10 +477,11 @@ also raises an error because DuckDB treats its STRUCT type as a tuple.
 DuckDB 2.0 permits an empty key with other named keys. You can also bind a plain
 value and cast it in SQL, as in `?::VARIANT`.
 
-V2 constructs VARIANT and GEOMETRY types directly through the connection. It
-does not run an auxiliary query on a separate connection. Low-level
-`ToDuckValue.toDuckValue` and `logicalTypeFromRep` now require a V2 connection
-handle. Keep owned values and logical types within that connection's lifetime.
+The library uses a separate helper connection for VARIANT type metadata and
+configured GEOMETRY types. It caches the types and batches VARIANT metadata
+queries. This preserves an active stream on the caller's connection. Low-level
+`ToDuckValue.toDuckValue` and `logicalTypeFromRep` require a V2 connection handle.
+Keep owned values and logical types within that connection's lifetime.
 
 A `Variant` parameter that contains `FieldGeometry` raises an error, including
 inside arrays and objects. Import raw WKB explicitly in SQL. Text and blob
@@ -560,15 +564,17 @@ that contain non-NULL raw geometry raise an error. Construct those values in
 SQL with explicit WKB import. Their result decoding retains WKB and CRS,
 including inside LIST, ARRAY, MAP, STRUCT, and UNION values.
 
-`LogicalTypeGeometry` describes CRS metadata. V2 constructs this type directly
-from the connection. Composite parameters retain CRS metadata for typed NULLs,
-empty collections, and inactive UNION members. Type construction requires a CRS identifier recognized by the native catalog
-or an extension, or a complete WKT2/PROJJSON definition. An unknown custom name
-raises an error. The binding also rejects native construction that drops CRS
-metadata under `ignore_unknown_crs`.
+`LogicalTypeGeometry` describes CRS metadata. Composite parameters retain CRS
+metadata for typed NULLs, empty collections, and inactive UNION members.
+Set `connectionGeometryCRS` in `ConnectionOptions` to preserve arbitrary custom
+CRS names in these parameters. The list defaults to `OGC:CRS84`. The library
+reads the configured types through SQL on a helper connection and caches them.
 
-The legacy `connectionGeometryCRS` option remains accepted. Type construction no longer
-uses its list as a whitelist or opens a separate connection.
+CRS definitions outside the configured list use direct V2 type construction.
+This requires a recognized identifier or a complete WKT2/PROJJSON definition.
+An unconfigured custom name raises an error. The binding rejects construction
+that silently drops CRS metadata under `ignore_unknown_crs`. Direct low-level
+`logicalTypeFromRep` calls use the same native construction rules.
 
 The CRS in a cast must be a constant. DuckDB rejects a parameter as a type
 modifier, so `?::GEOMETRY(?)` is not valid. To use a CRS that is known only at

@@ -36,8 +36,9 @@ into V2 handles.
 - Catch all exceptions at native callback boundaries. DuckDB owns registered
   callback resources until it releases the registration.
 - Preserve nanosecond timestamps, infinities, nested values, GEOMETRY WKB, and
-  CRS metadata. Bind VARIANT values and use explicit SQL casts to read them.
-  Do not substitute lossy text conversions.
+  CRS metadata. Bind and decode VARIANT values without lossy text conversions.
+  Use public SQL metadata and native casts when direct V2 access is incomplete.
+  Keep helper queries off the caller's active connection.
 
 ## Implementation and validation
 
@@ -47,14 +48,17 @@ use V2. The branch is based on PR #34 at `28bacb3`.
 Local checks on 2026-10-16 used Nix GHC 9.14.1 on Linux x86_64 and the pinned
 `2.0.0-dev0` native library:
 
-- All 484 high-level, 97 retained-API, 19 raw V2, and six DataFrame tests pass.
-  The high-level total includes the registration and COPY fixtures.
+- All 608 functional tests pass: 486 high-level, 97 retained-API, 19 raw V2,
+  and six DataFrame tests. The high-level total includes registration, COPY,
+  automatic VARIANT decoding, and configured custom CRS fixtures.
 - The default leak suite passes with stable thread counts and RSS inside its
   32 MB allowance. It includes 1,000 callback cycles, 700 cancellations, and
   1,000 new-type cycles.
 - All seven registration and five COPY cases pass under Valgrind with
   `--fair-sched=yes`. Both runs report zero errors and no definite, indirect,
-  or possible lost bytes.
+  or possible lost bytes. A separate 15-case Valgrind run covers VARIANT scalar
+  precision, nested values, COPY callbacks, configured CRS, active streams, and
+  cursor-error cleanup. It reports the same zero-error and leak results.
 - Both packages build with `-Wall -Werror`, and Haddock builds. Generated
   declarations still produce unresolved-link and ambiguity warnings.
 - Regeneration matches all four stored checksums. The coverage audit verifies
@@ -62,14 +66,29 @@ Local checks on 2026-10-16 used Nix GHC 9.14.1 on Linux x86_64 and the pinned
   outside Git.
 - Both extracted source packages install without LLVM or hs-bindgen. Separate
   static and dynamic Haskell consumers pass with the loader environment unset.
-  They exercise both raw APIs, shared instances, typed registration, and COPY.
+  They exercise both raw APIs, shared instances, typed registration, COPY,
+  automatic nested VARIANT decoding, and configured custom CRS names with
+  quotes and Unicode. VARIANT checks retain integer and decimal precision,
+  interior NUL bytes, NULLs, array order, and the native object-key order.
   All installed headers and the license match the package inputs. Source
-  archives include generated bindings and exclude maintainer tools.
+  archives include generated bindings and exclude maintainer tools and the
+  removed streaming module. The installed package does not expose that module.
+  Installed source digests match both final archives. All 103 archived files
+  match the frozen checkout.
 - Fourmolu and cabal-gild checks pass. The release script passes nine isolated
   mock cases after the tool move. No Hackage upload ran.
 
-The unused private VARIANT payload parser and its separate suite are removed.
-The V2 boundary retains SQL NULL handling and explicit unsupported errors.
+The private VARIANT payload parser and its separate suite are removed.
+VARIANT decoding uses batched SQL type metadata and native casts. Object keys
+use DuckDB's native lexicographic order. Arrays retain element order. A helper
+connection also caches SQL-derived VARIANT and configured GEOMETRY types.
+Configured custom CRS names remain available in nested parameters, including
+typed NULLs and empty collections. The helper does not interrupt the caller's
+active stream. The backend does not read private payload layouts or convert
+handles between the retained and V2 APIs.
+
+`Database.DuckDB.Simple.Streaming` provides V2 row and Arrow streaming.
+The former `Database.DuckDB.Simple.Deprecated.Streaming` module is removed.
 
 The platform matrix remains for CI. Quack runtime tests need local extension
 fixtures. Managed extension targets compile, but loading a Haskell shared
@@ -84,16 +103,14 @@ bindings. The migration uses the current API. It does not add native symbols.
 - The pinned prepared API cannot plan some expanding statements, including
   dynamic PIVOT. Direct `query_` and `execute_` use native statement execution
   and support these statements.
-- Non-NULL VARIANT results cannot expose their structural payload through V2.
-  Use an explicit SQL cast or field extraction to select supported result types.
-  Binding VARIANT values and reading SQL NULL VARIANT values remain supported.
 - V2 cannot register custom log storage or a custom file system. Log-storage
   registration raises `SQLError`. Native callback logging remains available.
 - V2 rejects fixed ARRAY types with zero elements. Empty LIST values remain
   supported. The binding must not change one type into the other.
-- Direct V2 GEOMETRY type construction requires a recognized CRS or a complete
-  definition. An unknown name raises an error. Do not silently drop CRS metadata
-  when `ignore_unknown_crs` is enabled.
+- Unconfigured GEOMETRY CRS names use direct V2 type construction. This requires
+  a recognized CRS or a complete definition. Configure custom names through
+  `connectionGeometryCRS` to preserve them through the SQL-derived type cache.
+  Do not silently drop CRS metadata when `ignore_unknown_crs` is enabled.
 - V2 metadata cannot perform scoped collation lookup. That operation raises
   `SQLError`. Table, view, index, sequence, and type lookups use SQL metadata.
 

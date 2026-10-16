@@ -17,8 +17,17 @@ combining the APIs.
 
 The generator does not manage ownership. Callers must still release native
 resources, retain callbacks for their required lifetime, and contain exceptions
-inside callbacks. `duckdb-simple` adapts its existing connection, result, and
-conversion code to the generated retained API. Its SQL workflow stays the same.
+inside callbacks. `duckdb-simple` 0.4 uses the generated V2 API for connections,
+results, and conversions. Its SQL workflow stays the same. Import
+`Database.DuckDB.Simple.Streaming` for native row and Arrow streaming.
+The former `Database.DuckDB.Simple.Deprecated.Streaming` module is removed.
+
+VARIANT results decode through SQL type metadata and native casts. Object keys
+use DuckDB's native lexicographic order. Arrays retain element order. Configured
+custom GEOMETRY CRS names use cached SQL-derived types. These operations use a
+helper connection and preserve the caller's active stream. Set custom names
+through `connectionGeometryCRS`. Direct low-level type construction still
+requires a CRS recognized by DuckDB or a complete CRS definition.
 
 A repository checkout must generate the ignored build artefacts before it
 builds. CI does this too. Source archives include those artefacts. See the
@@ -77,7 +86,7 @@ Objects decode to `FieldStruct` values with VARIANT fields. `Variant` from
 `Database.DuckDB.Simple.Variant` wraps the `FieldValue` of a result. Native
 VARIANT loses geometry CRS metadata. Import raw geometry payloads with
 `ST_GeomFromWKB(?)::VARIANT`. See [the VARIANT
-notes](duckdb-simple/README.md#variant) for private-format and
+notes](duckdb-simple/README.md#variant) for current decoding and
 persistent-storage requirements.
 
 `Variant` binds as a VARIANT parameter. The connection reads the VARIANT type
@@ -95,9 +104,9 @@ add `instance ToField YourType`. The default implementation requires `Show`.
 - Default cursors and folds use DuckDB's supported materialized execution API. They
   decode one Haskell row at a time, but native result memory depends on the
   result size. To request native streaming, import
-  `Database.DuckDB.Simple.Deprecated.Streaming` qualified. Its row and Arrow
-  folds emit a deprecation warning because they use DuckDB's deprecated
-  streaming execution entry point. The raw bindings remain in duckdb-ffi.
+  `Database.DuckDB.Simple.Streaming` qualified with `duckdb-simple` 0.4.
+  Earlier releases use `Database.DuckDB.Simple.Deprecated.Streaming` and
+  DuckDB's deprecated streaming entry point. The raw bindings remain in duckdb-ffi.
 
 - `UTCTime` parameters have SQL type TIMESTAMPTZ. Use `LocalTime` for TIMESTAMP.
 - `Float` parameters have SQL type FLOAT. REAL values decode to Float or Double.

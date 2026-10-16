@@ -227,7 +227,7 @@ on the native build and its installed extensions.
 | Triggers, DML in CTEs, nested schemas, NEAREST joins, variables, JSON mutation, recursive CTE additions | Existing `query` and `execute` SQL paths | Execute representative SQL against the final runtime. |
 | PEG parser, expression statements, lambda syntax changes | Existing SQL paths | Check parameters, multi-statement extraction, quoted names, and parser errors. The [parser extension API](https://duckdb.org/2026/08/20/duckdb-20-peg-parser) remains a preview. |
 | Quack, CONNECT, remote pushdown | SQL with the required extensions | Test a local server separately. Check authentication and extension availability. |
-| VARIANT and GEOMETRY | V2 parameter binding, explicit SQL casts for VARIANT results, geometry types and codecs | Check nested values, Parquet round trips, CRS, and explicit errors for unavailable VARIANT access. |
+| VARIANT and GEOMETRY | V2 parameter binding and result decoding, SQL type metadata, native casts, and geometry codecs | Check nested values, scalar precision, object order, Parquet round trips, and configured custom CRS names. |
 | Nanosecond TIMESTAMPTZ | V2 value access and typed conversion | Check sub-microsecond precision and temporal infinity. |
 | Asynchronous I/O, storage format 2.0, query optimizations | Native engine through existing SQL paths | Check file reopen, cancellation, and older database reads. State the new write format. |
 | Timezones and collations | SQL and existing temporal types | Check timezone conversion and extension loading. |
@@ -318,10 +318,13 @@ VARIANT objects can bind an empty key alongside named keys in this preview.
 The C constructor cannot represent an object with only an empty key; it
 produces a tuple that casts to an array. The binding rejects that shape change.
 Duplicate and NUL-containing object keys also raise errors. The pinned V2 API
-has no structural VARIANT accessor. Non-NULL VARIANT results raise `SQLError`.
-Select an explicit SQL cast or typed field extraction instead. SQL NULL VARIANT
-results remain supported. The V2 backend does not read the retained API's
-private VARIANT layout.
+has no direct structural VARIANT accessor. The backend uses batched SQL type
+metadata and native casts to decode scalar and nested payloads without losing
+precision. Object keys follow DuckDB's native lexicographic order. Arrays retain
+element order. The decoder does not read the retained API's private layout.
+The same helper connection caches SQL-derived VARIANT and configured GEOMETRY
+types. Set `connectionGeometryCRS` to preserve arbitrary custom CRS names in
+nested parameters. Helper queries do not interrupt the caller's active stream.
 
 ## V2 migration limits
 
@@ -330,17 +333,15 @@ operations are documented in the package README and report controlled errors:
 
 - The pinned prepared API cannot plan some expanding statements, including
   dynamic PIVOT. Use direct `query_` or `execute_` for those statements.
-- V2 cannot expose non-NULL VARIANT payloads for automatic result decoding.
-  Parameter binding, native storage, explicit SQL casts, and typed field
-  extraction remain available.
 - V2 cannot register custom log storage or custom file systems. Callback
   contexts can still write log messages. Existing file handles support checked
   sequential and positioned I/O.
 - The native type builder rejects zero-length fixed ARRAY types. Empty LIST
   values remain supported.
 - Direct GEOMETRY type construction requires a recognized CRS identifier or a
-  complete definition. Unknown custom names raise errors. The binding rejects
-  construction that silently drops CRS metadata.
+  complete definition. The high-level type cache also preserves custom names
+  configured through `connectionGeometryCRS`. Unconfigured unknown names raise
+  errors. The binding rejects construction that silently drops CRS metadata.
 - The metadata API cannot perform scoped collation lookup. Other catalog
   lookups use SQL metadata. Table descriptions use native V2 handles.
 

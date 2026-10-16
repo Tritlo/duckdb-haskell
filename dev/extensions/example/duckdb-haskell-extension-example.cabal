@@ -1,0 +1,32 @@
+cabal-version: 3.4
+name: duckdb-haskell-extension-example
+version: 0.1.0.0
+build-type: Simple
+license: MPL-2.0
+license-file: LICENSE
+author: Matthias Pall Gissurarson
+maintainer: mpg@mpg.is
+synopsis: Loadable Haskell extension example for the pinned DuckDB V2 API
+category: Database
+description:
+  A maintainer example with native V2 loading, managed Haskell callbacks,
+  and process-lifetime GHC runtime initialization.
+
+foreign-library haskell_demo
+  type: native-shared
+  hs-source-dirs: src
+  other-modules: Demo
+  c-sources: cbits/entry.c
+  default-language: Haskell2010
+  ghc-options: -threaded
+  build-depends:
+    base >=4.18 && <4.23,
+    duckdb-ffi >=2.0.0.0 && <2.1,
+    duckdb-simple >=0.4.0.0 && <0.5,
+    hs-bindgen-runtime >=1.0.0.0 && <1.1,
+    text >=2.0 && <2.2,
+
+  if os(linux) || os(osx)
+    extra-libraries: pthread
+  else
+    buildable: False

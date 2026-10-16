@@ -2,6 +2,9 @@
 
 ## 0.4.0.0 (unreleased)
 
+- Add `Extension.runExtension` for managed load-entry error handling.
+  Use the opt-in `extension` flags and the example under `dev/extensions/`.
+  Native build and load validation remain pending.
 - Target DuckDB 2.0 with `duckdb-ffi >= 2.0.0.0`. The package version selects
   the supported native API. No preview flag is required.
 - Move the backend to the generated V2 API. Raw handles, logical type IDs,

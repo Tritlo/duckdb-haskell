@@ -2,6 +2,9 @@
 
 ## 2.0.0.0 (unreleased)
 
+- Add opt-in `extension` mode for loadable V2 extensions on Linux and macOS.
+  Use the host function table instead of linking another DuckDB library.
+  This mode exposes only the V2 module and requires entrypoint initialization.
 - Target DuckDB 2.0. The package includes both C API generations without a
   preview flag. Use the earlier package release with DuckDB 1.5.
 - Pin the preview headers and API specification to an upstream commit.

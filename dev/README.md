@@ -11,6 +11,8 @@ checks, client headers, and upstream license.
 - `build-ghc-matrix.sh` runs local Docker builds. It writes logs to `ci-logs/`.
 - `nix/` contains pinned development, generation, and CI environments.
 - `v2-migration.md` records the V2 backend scope, contracts, and validation.
+- `extensions/` prepares a loadable Haskell extension for the pinned preview.
+  Its README records the build and load checks that remain unrun.
 - `preview/` builds the pinned development runtime. See its README for the
   removal condition.
 - `diagnostics/` contains a native probe for the deprecated Arrow API. Set

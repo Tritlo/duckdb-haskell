@@ -20,18 +20,14 @@ module Database.DuckDB.Simple.Function.Internal (
     FunctionArg (),
     FunctionResult (),
     Function (..),
-    createFunction,
-    createFunctionWithState,
-    createExtensionFunction,
-    createExtensionFunctionWithState,
-    deleteFunction,
+    createFunctionUsing,
+    createFunctionWithStateUsing,
 ) where
 
 import Control.Exception (
     SomeException,
     bracket,
     throwIO,
-    try,
  )
 import Control.Monad (forM, forM_, when)
 import Data.Bits (clearBit, setBit)
@@ -45,21 +41,10 @@ import Database.DuckDB.Simple.FromField (
     Field (..),
     FromField (..),
  )
-import Database.DuckDB.Simple.Internal (
-    Connection,
-    Statement (..),
-    closeStatementState,
-    createStatementFromParsed,
-    destroyLogicalType,
-    runInterruptibleQuery,
-    withConnectionHandle,
-    withParsedStatements,
-    withResult,
- )
+import Database.DuckDB.Simple.Internal (destroyLogicalType)
 import Database.DuckDB.Simple.Materialize (prepareVectorReader)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
-import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (advancePtr, allocaArray, peekArray)
 import Foreign.Ptr (FunPtr, Ptr, castPtr, nullPtr)
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, deRefStablePtr)
@@ -229,41 +214,6 @@ instance {-# OVERLAPPABLE #-} (FromField a, FunctionArg a, Function r) => Functi
             Errors err -> throwIO (argumentConversionError (fieldIndex field) err)
             Ok value -> applyFunction rest (fn value)
 
--- | Register a Haskell function under the supplied name.
-createFunction :: forall f. (Function f) => Connection -> Text -> f -> IO ()
-createFunction conn name fn =
-    withConnectionHandle conn \connection ->
-        createFunctionUsing
-            (output (c_duckdb_v2_scalar_function_create_with_connection connection))
-            (\dtype -> output (c_duckdb_v2_connection_create_type_from_id connection dtype (ConstPtr nullPtr) (ConstPtr nullPtr) 0))
-            name
-            fn
-
--- | Register a scalar function with per-worker thread-local state.
-createFunctionWithState :: forall s f. (Function f) => Connection -> Text -> IO s -> (s -> f) -> IO ()
-createFunctionWithState conn name initState mkFn =
-    withConnectionHandle conn \connection ->
-        createFunctionWithStateUsing
-            (output (c_duckdb_v2_scalar_function_create_with_connection connection))
-            (\dtype -> output (c_duckdb_v2_connection_create_type_from_id connection dtype (ConstPtr nullPtr) (ConstPtr nullPtr) 0))
-            name
-            initState
-            mkFn
-
--- | Register with the borrowed extension target and load context.
-createExtensionFunction :: (Function f) => DuckDBV2ExtensionHandle -> DuckDBV2ContextHandle -> Text -> f -> IO ()
-createExtensionFunction extension context =
-    createFunctionUsing
-        (output (c_duckdb_v2_scalar_function_create_with_extension extension))
-        (\dtype -> output (c_duckdb_v2_context_create_type_from_id context dtype (ConstPtr nullPtr) (ConstPtr nullPtr) 0))
-
--- | Register per-worker state with the borrowed extension load context.
-createExtensionFunctionWithState :: (Function f) => DuckDBV2ExtensionHandle -> DuckDBV2ContextHandle -> Text -> IO s -> (s -> f) -> IO ()
-createExtensionFunctionWithState extension context =
-    createFunctionWithStateUsing
-        (output (c_duckdb_v2_scalar_function_create_with_extension extension))
-        (\dtype -> output (c_duckdb_v2_context_create_type_from_id context dtype (ConstPtr nullPtr) (ConstPtr nullPtr) 0))
-
 -- | Share the callback conversion and resource ownership for both targets.
 createFunctionUsing :: forall f. (Function f) => IO DuckDBV2ScalarFunctionHandle -> (DuckDBV2LogicalTypeId -> IO DuckDBV2LogicalTypeHandle) -> Text -> f -> IO ()
 createFunctionUsing createScalar createType name fn =
@@ -307,26 +257,6 @@ registerScalarFunction createScalar createType name proxy acquire = do
                     checked (c_duckdb_v2_scalar_function_set_exec_callback scalarFun scalarFunctionExecPtr)
                     forM_ scalarFunctionInitPtr $ checked . c_duckdb_v2_scalar_function_set_init_callback scalarFun
                     checked (c_duckdb_v2_scalar_function_register scalarFun)
-
--- | Drop a previously registered scalar function with a DROP FUNCTION statement.
-deleteFunction :: Connection -> Text -> IO ()
-deleteFunction conn name = do
-    let dropQuery = Query ("DROP FUNCTION IF EXISTS " <> qualifyIdentifier name)
-    outcome <- try $
-        withParsedStatements conn dropQuery $ \parsed ->
-            forM_ parsed $ \statement ->
-                bracket
-                    (createStatementFromParsed conn dropQuery statement)
-                    (closeStatementState . statementState)
-                    \prepared -> withResult prepared $ \result -> do
-                        _ <- runInterruptibleQuery conn (output (c_duckdb_v2_result_drain result))
-                        pure ()
-    case outcome of
-        Right () -> pure ()
-        Left err
-            -- Native scalar functions are internal catalog entries and cannot be dropped.
-            | Text.isInfixOf "Cannot drop internal catalog entry" (sqlErrorMessage err) -> pure ()
-            | otherwise -> throwIO err
 
 -- | Release each owned logical type after the signature copies it.
 withLogicalType :: (DuckDBV2LogicalTypeId -> IO DuckDBV2LogicalTypeHandle) -> DuckDBV2LogicalTypeId -> (DuckDBV2LogicalTypeHandle -> IO a) -> IO a
@@ -455,16 +385,3 @@ functionInvocationError message =
         , sqlErrorType = Nothing
         , sqlErrorQuery = Nothing
         }
-
-qualifyIdentifier :: Text -> Text
-qualifyIdentifier rawName =
-    let parts = Text.splitOn "." rawName
-     in Text.intercalate (Text.pack ".") (map quoteIdent parts)
-
-quoteIdent :: Text -> Text
-quoteIdent ident =
-    Text.concat
-        [ Text.pack "\""
-        , Text.replace (Text.pack "\"") (Text.pack "\"\"") ident
-        , Text.pack "\""
-        ]

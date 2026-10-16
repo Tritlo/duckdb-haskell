@@ -15,9 +15,11 @@ module Database.DuckDB.Simple.Extension (
 import Data.Text (Text)
 import Database.DuckDB.FFI.V2 (DuckDBV2ContextHandle, DuckDBV2ErrorInfoHandle, DuckDBV2ExtensionHandle)
 import Database.DuckDB.Simple.Callback (runCallback)
-import Database.DuckDB.Simple.Function.Internal (Function, createExtensionFunction, createExtensionFunctionWithState)
+import Database.DuckDB.Simple.Function.Internal (Function, createFunctionUsing, createFunctionWithStateUsing)
+import Database.DuckDB.Simple.Native (c_duckdb_v2_context_create_type_from_id, c_duckdb_v2_scalar_function_create_with_extension, output)
 import Database.DuckDB.Simple.Registration (RegistrationTarget (ExtensionTarget))
-import Foreign.Ptr (Ptr)
+import Foreign.C.ConstPtr (ConstPtr (..))
+import Foreign.Ptr (Ptr, nullPtr)
 
 {- | The borrowed registration target and context for one extension load.
 Use this value only inside the action passed to 'runExtension'. Do not retain it
@@ -38,11 +40,17 @@ runExtension initialize extension context err =
 
 -- | Register a typed Haskell function with the loading DuckDB host.
 createFunction :: (Function f) => Extension -> Text -> f -> IO ()
-createFunction (Extension extension context) = createExtensionFunction extension context
+createFunction (Extension extension context) =
+    createFunctionUsing
+        (output (c_duckdb_v2_scalar_function_create_with_extension extension))
+        (\dtype -> output (c_duckdb_v2_context_create_type_from_id context dtype (ConstPtr nullPtr) (ConstPtr nullPtr) 0))
 
 -- | Register a typed function with per-worker state owned by DuckDB.
 createFunctionWithState :: (Function f) => Extension -> Text -> IO s -> (s -> f) -> IO ()
-createFunctionWithState (Extension extension context) = createExtensionFunctionWithState extension context
+createFunctionWithState (Extension extension context) =
+    createFunctionWithStateUsing
+        (output (c_duckdb_v2_scalar_function_create_with_extension extension))
+        (\dtype -> output (c_duckdb_v2_context_create_type_from_id context dtype (ConstPtr nullPtr) (ConstPtr nullPtr) 0))
 
 {- | Use the borrowed target and context for advanced managed registration.
 Use this action for aggregate, table, COPY, and other registration APIs. Do not

@@ -4,7 +4,6 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# OPTIONS_GHC -Wno-deprecations #-}
 
 -- | VARIANT binding and explicit SQL conversion through the V2 API.
 module VariantRegressionTests (tests) where
@@ -22,7 +21,7 @@ import qualified Data.Text as Text
 import qualified Data.Vector as V
 import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple
-import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
+import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Database.DuckDB.Simple.FromField (BitString (..), DecimalValue (..), FieldValue (..), StructValue (..), UnionValue (..))
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..))
 import Database.DuckDB.Simple.Geometry (RawGeometry (..), toRawGeometry)
@@ -164,7 +163,7 @@ tests =
                     items @?= if n `mod` 3 == 2 then Just [Nothing, Just n] else Nothing
                     pure (n + 1)
                 count @?= 5000
-            | (mode, foldRows) <- [("materialized", fold_), ("deprecated streaming", Streaming.fold_)]
+            | (mode, foldRows) <- [("materialized", fold_), ("native streaming", Streaming.fold_)]
             ]
         , testCase "filtered rows preserve explicit nested projection offsets" $ withConnection ":memory:" \conn -> do
             rows <- query_ conn "SELECT {'n':variant_extract(v,'n')::BIGINT,'xs':variant_extract(v,'xs')::BIGINT[]} FROM (SELECT i, {'n':i,'xs':[i,i+1]}::VARIANT AS v FROM range(10000) t(i)) WHERE i%97=0 ORDER BY i DESC LIMIT 40" :: IO [Only (StructValue FieldValue)]

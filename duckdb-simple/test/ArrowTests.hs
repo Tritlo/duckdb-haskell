@@ -4,7 +4,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
-{-# OPTIONS_GHC -Wno-deprecations #-}
 
 -- | Integration tests for scoped Arrow batches and their native ownership.
 module ArrowTests (arrowTests) where
@@ -24,7 +23,7 @@ import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.Arrow (releaseArrowArray, releaseArrowSchema)
 import qualified Database.DuckDB.Simple.Arrow as Arrow
-import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
+import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Database.DuckDB.Simple.Internal (peekUtf8CString)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (peekCString)
@@ -47,7 +46,7 @@ arrowTests =
 arrowModeTests :: Bool -> TestTree
 arrowModeTests streaming =
     testGroup
-        (if streaming then "deprecated streaming" else "materialized")
+        (if streaming then "native streaming" else "materialized")
         [ testCase "parameters, Unicode names, NULLs and multiple batches" $
             withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
                 (batches, chunks) <-

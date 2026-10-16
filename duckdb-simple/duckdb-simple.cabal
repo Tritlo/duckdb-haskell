@@ -53,7 +53,6 @@ library
     Database.DuckDB.Simple.Catalog
     Database.DuckDB.Simple.Config
     Database.DuckDB.Simple.Copy
-    Database.DuckDB.Simple.Deprecated.Streaming
     Database.DuckDB.Simple.FileSystem
     Database.DuckDB.Simple.FromField
     Database.DuckDB.Simple.FromRow

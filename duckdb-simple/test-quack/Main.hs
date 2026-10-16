@@ -1,7 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# OPTIONS_GHC -Wno-deprecations #-}
 
 -- | Check authenticated Quack connections with local extension artifacts.
 module Main (main) where

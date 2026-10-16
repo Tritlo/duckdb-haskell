@@ -1,6 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# OPTIONS_GHC -Wno-deprecations #-}
 
 -- | Regression tests for result metadata, cursor state, and handle lifetime.
 module CoreRegressionTests (coreRegressionTests) where

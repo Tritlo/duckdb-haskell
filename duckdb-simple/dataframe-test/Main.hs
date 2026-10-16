@@ -4,7 +4,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
-{-# OPTIONS_GHC -Wno-deprecations #-}
 
 -- | Consume DuckDB Arrow batches with the dataframe library.
 module Main (main) where
@@ -20,7 +19,7 @@ import qualified DataFrame.IO.Arrow as DataFrameArrow
 import Database.DuckDB.FFI.V2 (ArrowArray (..), ArrowSchema (..))
 import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Arrow as Arrow
-import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
+import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Foreign.Ptr (FunPtr, Ptr, castPtr, nullFunPtr)
 import Foreign.Storable (peek)
 import GHC.Records (getField)
@@ -35,7 +34,7 @@ main = defaultMain $ testGroup "DataFrame Arrow import" [dataframeTests False, d
 dataframeTests :: Bool -> TestTree
 dataframeTests streaming =
     testGroup
-        (if streaming then "deprecated streaming" else "materialized")
+        (if streaming then "native streaming" else "materialized")
         [ testCase "several batches remain readable after connection close" do
             (rowCount, batches) <- withDb \conn ->
                 foldArrow

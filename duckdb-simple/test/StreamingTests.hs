@@ -1,7 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# OPTIONS_GHC -Wno-deprecations #-}
 
 -- | Check the explicit native streaming API and its cursor ownership.
 module StreamingTests (nativeStreamingTests) where
@@ -14,7 +13,7 @@ import Data.List (isInfixOf)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple
-import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
+import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Database.DuckDB.Simple.FromField (FieldValue)
 import Database.DuckDB.Simple.Internal (DuckDBV2ResultHandle (..), Statement (statementStream), StatementStream (statementStreamResult), StatementStreamState (..), nullHandle)
 import Test.Tasty (TestTree, testGroup)

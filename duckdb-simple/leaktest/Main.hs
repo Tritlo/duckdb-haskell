@@ -1,7 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# OPTIONS_GHC -Wno-deprecations #-}
 
 {- | Regression check for leaked DuckDB handles.
 

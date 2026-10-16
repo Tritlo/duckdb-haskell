@@ -2,7 +2,6 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# OPTIONS_GHC -Wno-deprecations #-}
 
 -- | Cancellation during native execution must finish before handles are released.
 module CancellationTests (cancellationTests) where
@@ -14,7 +13,7 @@ import Data.IORef (atomicWriteIORef, newIORef, readIORef)
 import Data.Int (Int64)
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.Arrow (foldArrow_)
-import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
+import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Database.DuckDB.Simple.Internal (c_duckdb_v2_connection_interrupt, c_duckdb_v2_result_drain, checked, output, runInterruptibleQuery, withConnectionHandle, withResult)
 import GHC.Conc (BlockReason (..), ThreadStatus (..), threadStatus)
 import System.Timeout (timeout)

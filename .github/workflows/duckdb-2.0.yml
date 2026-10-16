@@ -50,6 +50,14 @@ jobs:
         with:
           name: duckdb-generated
           path: duckdb-ffi/generated/
+      # Match the compiler and linker to the Command Line Tools SDK.
+      # https://github.com/actions/runner-images/issues/14940
+      - name: Select matching macOS command line tools
+        if: runner.os == 'macOS'
+        run: |
+          sudo xcode-select --switch /Library/Developer/CommandLineTools
+          xcrun clang --version
+          xcrun --show-sdk-path
       - uses: haskell-actions/setup@0f8e8c99d88aeb3fbfd523f1ef2c6f762d10d64d
         with:
           ghc-version: ${{ matrix.ghc }}

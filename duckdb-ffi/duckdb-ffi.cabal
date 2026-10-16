@@ -86,6 +86,14 @@ library
         -include
         duckdb_haskell_extension.h
 
+      -- Keep private C calls inside this shared library. GHC also compiles
+      -- the C wrappers emitted by Template Haskell.
+      ghc-options:
+        -fomit-interface-pragmas
+        -optc-fvisibility=hidden
+        -optc-include
+        -optcduckdb_haskell_extension.h
+
       c-sources: cbits/extension.c
       extra-libraries: pthread
     else

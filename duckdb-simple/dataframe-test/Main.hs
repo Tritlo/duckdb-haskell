@@ -1,6 +1,9 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-deprecations #-}
 
 -- | Consume DuckDB Arrow batches with the dataframe library.
@@ -8,16 +11,19 @@ module Main (main) where
 
 import Control.Exception (ErrorCall, displayException, try)
 import Control.Monad (forM_)
+import Data.Coerce (coerce)
 import Data.Int (Int64)
 import qualified Data.Text as Text
+import Data.Void (Void)
 import qualified DataFrame.Core as DataFrame
 import qualified DataFrame.IO.Arrow as DataFrameArrow
 import Database.DuckDB.FFI (ArrowArray (..), ArrowSchema (..))
 import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Arrow as Arrow
 import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
-import Foreign.Ptr (Ptr, castPtr, nullFunPtr)
+import Foreign.Ptr (FunPtr, Ptr, nullFunPtr)
 import Foreign.Storable (peek)
+import GHC.Records (getField)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit
 
@@ -39,8 +45,8 @@ dataframeTests streaming =
                     (0 :: Int, [])
                     \(offset, acc) schema array -> do
                         assertLiveSchema schema
-                        count <- fromIntegral . arrowArrayLength <$> peek array
-                        frame <- DataFrameArrow.arrowToDataframe (castPtr schema) (castPtr array)
+                        count <- fromIntegral . (getField @"length") <$> peek array
+                        frame <- DataFrameArrow.arrowToDataframe (coerce schema) (coerce array)
                         assertConsumed schema array
                         pure (offset + count, (offset, count, frame) : acc)
             rowCount @?= 5000
@@ -53,7 +59,7 @@ dataframeTests streaming =
             withDb \conn -> do
                 -- Import one supported column before the unsupported column fails.
                 result <- try $ foldArrow conn "SELECT 42::BIGINT AS n, true AS unsupported" () () \() schema array -> do
-                    _ <- DataFrameArrow.arrowToDataframe (castPtr schema) (castPtr array)
+                    _ <- DataFrameArrow.arrowToDataframe (coerce schema) (coerce array)
                     pure ()
                 case result of
                     Left (err :: ErrorCall) ->
@@ -63,7 +69,7 @@ dataframeTests streaming =
         , testCase "an empty result does not call the consumer" $
             withDb \conn -> do
                 count <- foldArrow conn "SELECT 1::BIGINT AS n WHERE false" () (0 :: Int) \_ schema array -> do
-                    _ <- DataFrameArrow.arrowToDataframe (castPtr schema) (castPtr array)
+                    _ <- DataFrameArrow.arrowToDataframe (coerce schema) (coerce array)
                     assertFailure "unexpected batch"
                 count @?= 0
         ]
@@ -92,13 +98,13 @@ expectedFrame rows =
 assertLiveSchema :: Ptr ArrowSchema -> Assertion
 assertLiveSchema ptr = do
     schema <- peek ptr
-    assertBool "each batch needs an unreleased schema" (arrowSchemaRelease schema /= nullFunPtr)
+    assertBool "each batch needs an unreleased schema" ((getField @"release") schema /= (coerce (nullFunPtr :: FunPtr Void)))
 
 -- | The DataFrame importer releases both objects after copying their contents.
 assertConsumed :: Ptr ArrowSchema -> Ptr ArrowArray -> Assertion
 assertConsumed schema array = do
-    arrowSchemaRelease <$> peek schema >>= (@?= nullFunPtr)
-    arrowArrayRelease <$> peek array >>= (@?= nullFunPtr)
+    (getField @"release") <$> peek schema >>= (@?= (coerce (nullFunPtr :: FunPtr Void)))
+    (getField @"release") <$> peek array >>= (@?= (coerce (nullFunPtr :: FunPtr Void)))
 
 -- | Keep native batch ordering deterministic in both execution modes.
 withDb :: (Connection -> IO a) -> IO a

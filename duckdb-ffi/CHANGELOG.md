@@ -1,5 +1,22 @@
 # Changelog
 
+## 2.0.0.0 (unreleased)
+
+- Target DuckDB 2.0. The package includes both C API generations without a
+  preview flag. Use the earlier package release with DuckDB 1.5.
+- Pin the preview headers and API specification to an upstream commit.
+- Add nanosecond timezone timestamp values and the data-corruption error tag.
+- Generate both C APIs with hs-bindgen 1.0. Keep generated Haskell and C
+  artefacts outside Git. Generate them locally and in CI.
+- Expose one generated module per API. Remove the exposed Deprecated module
+  and V2 Functions and Types submodules. Use native typedef newtypes, const
+  pointers, and generated callback conversions.
+- Check complete function and callback coverage and 1,072 native ABI assertions.
+- Require a matching supplied library until the final native checksums are pinned.
+- Install both preview client headers and the DuckDB license. Keep preview
+  headers available when the Cabal build directory is outside the source tree.
+- Test v2 aggregate, table, cast, COPY, vector, filesystem, and logging behavior.
+
 ## 1.5.6.0
 
 - Use the official DuckDB 1.5.6 header and native download. Keep native support

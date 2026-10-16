@@ -2,8 +2,9 @@
 
 ## Project structure
 
-`duckdb-ffi/src` contains the C API bindings. The C wrappers are in
-`duckdb-ffi/cbits`, and the tests are in `duckdb-ffi/test`.
+`duckdb-ffi/generated` contains the generated C API bindings and ABI checks.
+The generation driver is in `duckdb-ffi/scripts`. The tests are in
+`duckdb-ffi/test`.
 `duckdb-simple/src` contains the higher-level API. Its integration and property
 tests are in `duckdb-simple/test`, and its leak test is in `duckdb-simple/leaktest`.
 
@@ -14,6 +15,17 @@ The pure geometry types and codecs are maintained in
 
 Test new behavior through the database where possible. Add regressions for
 bug fixes. Run the full test suite before submitting a change.
+
+Generate the local binding artefacts before building a checkout:
+
+```sh
+nix-shell dev/nix/generate.nix --run 'duckdb-ffi/scripts/generate-bindings.sh --check'
+```
+
+The ignored `duckdb-ffi/generated/` directory contains the Haskell modules and
+C ABI assertions. Keep it outside Git. The checksum file and generator are
+tracked. Run the generator without `--check` after an intentional input change.
+Review the new checksums and run the coverage audit.
 
 Build all components before running the tests. With Cabal 3.16 and 3.18,
 `cabal test all` on a clean tree can skip building the tests for a package
@@ -73,23 +85,30 @@ needs one. Do not run queries on the statement's connection during binding.
 
 ## Native library configuration
 
-The bindings support DuckDB >= 1.5.3 and < 1.6. Cabal downloads DuckDB 1.5.6
-to the user cache on glibc Linux and macOS. Set
+See [docs/duckdb-2.0.md](docs/duckdb-2.0.md) for DuckDB 2.0 development.
+Supply the matching native library. The package versions target DuckDB 2.0.
+Check the header ABI before you run the suites. The source-build workflow
+builds the native library on Linux and macOS from the pinned header commit.
+The optional `quack-tests` suite requires matching local `httpfs` and Quack
+extensions. See the same document for its commands and native limitations.
+
+The bindings target DuckDB 2.0. Automatic downloads remain disabled until
+the final native archive checksums are recorded. After that, set
 `--configure-option=--duckdb-install-dir=/absolute/path` to select another
 installation directory. Enable the `systemlib` Cabal flag to use the system
 library. Set `extra-lib-dirs` to an absolute path to select
 a library in another directory. See the `cabal.project` example in the README.
 Nix builds use the library supplied by Nix and do not download it.
 
-CI tests 1.5.3, 1.5.4, and 1.5.5 with GHC 9.14.1 on Linux. It tests 1.5.6
-with all supported compilers on Linux and GHC 9.14.1 on macOS. The FFI suite
+CI tests the pinned 2.0 source with all supported compilers on Linux and
+GHC 9.14.1 on macOS. The FFI suite
 rejects runtimes outside the supported range. Set
-`DUCKDB_TEST_VERSION` to the exact expected version, such as `1.5.3`, to detect
+`DUCKDB_TEST_VERSION` to the exact expected version, such as `2.0.0-dev0`, to detect
 loader configuration errors. Run the full suite on each supported native
 version. Do not skip feature tests that pass on the minimum version.
 
 CI also builds and tests with `--enable-optimization=0` on GHC 9.14.1 and
-DuckDB 1.5.3. Floating-point conversion must preserve special values without
+DuckDB 2.0. Floating-point conversion must preserve special values without
 compiler rewrite rules.
 
 ## Documentation

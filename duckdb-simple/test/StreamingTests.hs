@@ -13,12 +13,12 @@ import Data.Int (Int64)
 import Data.List (isInfixOf)
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Database.DuckDB.FFI (c_duckdb_vector_size)
-import Database.DuckDB.FFI.Deprecated (c_duckdb_result_is_streaming)
+import Database.DuckDB.FFI (c_duckdb_result_is_streaming, c_duckdb_vector_size)
 import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
 import Database.DuckDB.Simple.FromField (FieldValue)
 import Database.DuckDB.Simple.Internal (Statement (statementStream), StatementStream (statementStreamResult), StatementStreamState (..))
+import Foreign.Storable (peek)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
 
@@ -33,7 +33,7 @@ nativeStreamingTests =
                 state <- readIORef (statementStream stmt)
                 case state of
                     StatementStreamActive stream -> do
-                        flag <- c_duckdb_result_is_streaming (statementStreamResult stream)
+                        flag <- (peek (statementStreamResult stream) >>= \rawValue -> c_duckdb_result_is_streaming rawValue)
                         assertBool "expected a native streaming result" (flag /= 0)
                     _ -> assertFailure "expected an active cursor"
         , testCase "default execution remains materialized when cursor entry points change" $ withDb \conn ->
@@ -43,7 +43,7 @@ nativeStreamingTests =
                 state <- readIORef (statementStream stmt)
                 case state of
                     StatementStreamActive stream -> do
-                        flag <- c_duckdb_result_is_streaming (statementStreamResult stream)
+                        flag <- (peek (statementStreamResult stream) >>= \rawValue -> c_duckdb_result_is_streaming rawValue)
                         flag @?= 0
                     _ -> assertFailure "expected an active cursor"
         , testCase "nested values survive chunk cleanup" $ withDb \conn ->

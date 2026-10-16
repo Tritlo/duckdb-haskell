@@ -1,4 +1,6 @@
 dist-newstyle
+dist-newstyle-bindgen/
+duckdb-ffi/generated/
 *.so*
 
 reference

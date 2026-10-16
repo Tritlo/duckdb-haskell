@@ -2,7 +2,7 @@
 
 {- |
 Module      : Database.DuckDB.Simple.Config
-Description : High-level helpers for DuckDB 1.5 configuration inspection.
+Description : High-level helpers for DuckDB 2.0 configuration inspection.
 -}
 module Database.DuckDB.Simple.Config (
     ConfigFlag (..),
@@ -17,6 +17,7 @@ import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
 import Database.DuckDB.FFI
 import Database.DuckDB.Simple.Internal (Connection, destroyValue, peekUtf8CString, throwRegistrationError, withClientContext)
+import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (castPtr, nullPtr)
 import Foreign.Storable (peek, poke)
@@ -63,10 +64,10 @@ getConfigOption conn name
                 alloca \scopePtr -> do
                     poke scopePtr DuckDBConfigOptionScopeInvalid
                     bracket
-                        (c_duckdb_client_context_get_config_option ctx cName scopePtr)
+                        (c_duckdb_client_context_get_config_option ctx (ConstPtr cName) scopePtr)
                         destroyValue
                         \duckValue ->
-                            if duckValue == nullPtr
+                            if duckValue == DuckDBValue nullPtr
                                 then pure Nothing
                                 else do
                                     rendered <-

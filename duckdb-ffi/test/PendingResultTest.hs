@@ -4,18 +4,20 @@
 module PendingResultTest (tests) where
 
 import Control.Monad (forM_, when)
+import Data.Coerce (coerce)
 import Data.Int (Int32, Int64)
 import Data.Maybe (isNothing)
+import Data.Void (Void)
 import Database.DuckDB.FFI
-import Database.DuckDB.FFI.Deprecated
-import Foreign.C.String (peekCString, withCString)
+import Foreign.C.ConstPtr (ConstPtr (..))
+import Foreign.C.String (peekCString)
 import Foreign.C.Types (CBool (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, nullPtr)
 import Foreign.Storable (peek, poke)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
-import Utils (withConnection, withDatabase)
+import Utils (withConnection, withConstCString, withDatabase)
 
 tests :: TestTree
 tests =
@@ -35,9 +37,9 @@ withChunk chunk action =
 pendingErrorMessage :: DuckDBPendingResult -> IO (Maybe String)
 pendingErrorMessage pending = do
     errPtr <- c_duckdb_pending_error pending
-    if errPtr == nullPtr
+    if errPtr == (coerce (nullPtr :: Ptr Void))
         then pure Nothing
-        else Just <$> peekCString errPtr
+        else Just <$> (peekCString . coerce) errPtr
 
 assertPendingState :: DuckDBPendingState -> IO ()
 assertPendingState state =
@@ -58,24 +60,24 @@ pendingPreparedRoundtrip =
                     , "INSERT INTO pending_numbers VALUES (1), (2), (3);"
                     ]
                     \sql ->
-                        withCString sql \cSql ->
+                        withConstCString sql \cSql ->
                             alloca \resPtr -> do
                                 st <- c_duckdb_query conn cSql resPtr
                                 st @?= DuckDBSuccess
                                 c_duckdb_destroy_result resPtr
 
-                withCString "SELECT SUM(val) FROM pending_numbers;" \querySql ->
+                withConstCString "SELECT SUM(val) FROM pending_numbers;" \querySql ->
                     alloca \stmtPtr -> do
                         st <- c_duckdb_prepare conn querySql stmtPtr
                         st @?= DuckDBSuccess
                         stmt <- peek stmtPtr
-                        assertBool "prepared statement should not be null" (stmt /= nullPtr)
+                        assertBool "prepared statement should not be null" (stmt /= (coerce (nullPtr :: Ptr Void)))
 
                         alloca \pendingPtr -> do
                             stPending <- c_duckdb_pending_prepared stmt pendingPtr
                             stPending @?= DuckDBSuccess
                             pending <- peek pendingPtr
-                            assertBool "pending result should not be null" (pending /= nullPtr)
+                            assertBool "pending result should not be null" (pending /= (coerce (nullPtr :: Ptr Void)))
 
                             stateBefore <- c_duckdb_pending_execute_check_state pending
                             assertPendingState stateBefore
@@ -116,24 +118,24 @@ pendingPreparedStreamingRoundtrip =
                     , "INSERT INTO pending_stream VALUES (1), (2), (3), (4);"
                     ]
                     \sql ->
-                        withCString sql \cSql ->
+                        withConstCString sql \cSql ->
                             alloca \resPtr -> do
                                 st <- c_duckdb_query conn cSql resPtr
                                 st @?= DuckDBSuccess
                                 c_duckdb_destroy_result resPtr
 
-                withCString "SELECT * FROM pending_stream ORDER BY id;" \querySql ->
+                withConstCString "SELECT * FROM pending_stream ORDER BY id;" \querySql ->
                     alloca \stmtPtr -> do
                         st <- c_duckdb_prepare conn querySql stmtPtr
                         st @?= DuckDBSuccess
                         stmt <- peek stmtPtr
-                        assertBool "prepared statement should not be null" (stmt /= nullPtr)
+                        assertBool "prepared statement should not be null" (stmt /= (coerce (nullPtr :: Ptr Void)))
 
                         alloca \pendingPtr -> do
                             stPending <- c_duckdb_pending_prepared_streaming stmt pendingPtr
                             stPending @?= DuckDBSuccess
                             pending <- peek pendingPtr
-                            assertBool "pending result should not be null" (pending /= nullPtr)
+                            assertBool "pending result should not be null" (pending /= (coerce (nullPtr :: Ptr Void)))
 
                             stateBefore <- c_duckdb_pending_execute_check_state pending
                             assertPendingState stateBefore
@@ -147,11 +149,11 @@ pendingPreparedStreamingRoundtrip =
                                 execState <- c_duckdb_execute_pending pending resPtr
                                 execState @?= DuckDBSuccess
 
-                                streamingFlag <- c_duckdb_result_is_streaming resPtr
+                                streamingFlag <- (peek resPtr >>= \rawValue -> c_duckdb_result_is_streaming rawValue)
                                 streamingFlag @?= CBool 1
 
-                                chunk <- c_duckdb_stream_fetch_chunk resPtr
-                                assertBool "streaming fetch should yield a chunk" (chunk /= nullPtr)
+                                chunk <- (peek resPtr >>= \rawValue -> c_duckdb_stream_fetch_chunk rawValue)
+                                assertBool "streaming fetch should yield a chunk" (chunk /= (coerce (nullPtr :: Ptr Void)))
 
                                 chunkSize <- c_duckdb_data_chunk_get_size chunk
                                 assertBool "streamed chunk should have rows" (chunkSize > 0)
@@ -176,18 +178,18 @@ pendingPreparedReportsError =
                     , "INSERT INTO pending_unique VALUES (1);"
                     ]
                     \sql ->
-                        withCString sql \cSql ->
+                        withConstCString sql \cSql ->
                             alloca \resPtr -> do
                                 st <- c_duckdb_query conn cSql resPtr
                                 st @?= DuckDBSuccess
                                 c_duckdb_destroy_result resPtr
 
-                withCString "INSERT INTO pending_unique VALUES (?);" \insertSql ->
+                withConstCString "INSERT INTO pending_unique VALUES (?);" \insertSql ->
                     alloca \stmtPtr -> do
                         st <- c_duckdb_prepare conn insertSql stmtPtr
                         st @?= DuckDBSuccess
                         stmt <- peek stmtPtr
-                        assertBool "prepared insert statement should not be null" (stmt /= nullPtr)
+                        assertBool "prepared insert statement should not be null" (stmt /= (coerce (nullPtr :: Ptr Void)))
 
                         c_duckdb_bind_int32 stmt 1 (1 :: Int32) >>= (@?= DuckDBSuccess)
 
@@ -195,7 +197,7 @@ pendingPreparedReportsError =
                             stPending <- c_duckdb_pending_prepared stmt pendingPtr
                             stPending @?= DuckDBSuccess
                             pending <- peek pendingPtr
-                            assertBool "pending result should not be null" (pending /= nullPtr)
+                            assertBool "pending result should not be null" (pending /= (coerce (nullPtr :: Ptr Void)))
 
                             _ <- c_duckdb_pending_execute_check_state pending
                             taskState <- c_duckdb_pending_execute_task pending

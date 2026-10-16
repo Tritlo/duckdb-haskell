@@ -1,4 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE ImportQualifiedPost #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 
 module Utils (
     withDatabase,
@@ -18,28 +20,39 @@ module Utils (
     clearValidityBit,
     plusWord,
     destroyErrorData,
+    withConstCString,
+    releaseArrowSchema,
+    releaseArrowArray,
+    releaseArrowStream,
 ) where
 
-import Control.Exception (bracket)
-import Control.Monad (forM_)
+import Control.Exception (bracket, bracket_, mask_)
+import Control.Monad (forM_, when)
 import Data.Bits (clearBit, setBit)
 import Data.Word (Word64)
 import Database.DuckDB.FFI
-import Foreign.C.String (CString, withCString)
+import Foreign.C.ConstPtr (ConstPtr (..))
+import Foreign.C.String (withCString)
+import Foreign.C.Types (CChar)
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (Ptr, plusPtr)
+import Foreign.Ptr (Ptr, nullFunPtr, nullPtr, plusPtr)
 import Foreign.Storable (peek, poke, sizeOf)
+import HsBindgen.Runtime.Struct qualified as Struct
+import HsBindgen.Runtime.Support.FunPtr (fromFunPtr)
 import Test.Tasty.HUnit ((@?=))
+
+-- | Supply a constant C string for one native call.
+withConstCString :: String -> (ConstPtr CChar -> IO a) -> IO a
+withConstCString text action = withCString text (action . ConstPtr)
 
 withDatabase :: (DuckDBDatabase -> IO a) -> IO a
 withDatabase action =
-    withCString ":memory:" \path ->
-        alloca \dbPtr -> do
-            c_duckdb_open path dbPtr >>= (@?= DuckDBSuccess)
-            db <- peek dbPtr
-            result <- action db
-            c_duckdb_close dbPtr
-            pure result
+    alloca \dbPtr -> do
+        poke dbPtr (DuckDBDatabase nullPtr)
+        bracket_ (pure ()) (c_duckdb_close dbPtr) $
+            withConstCString ":memory:" \path -> do
+                c_duckdb_open path dbPtr >>= (@?= DuckDBSuccess)
+                peek dbPtr >>= action
 
 withConnection :: DuckDBDatabase -> (DuckDBConnection -> IO a) -> IO a
 withConnection db = bracket acquire release
@@ -55,15 +68,15 @@ withConnection db = bracket acquire release
 
 withResult :: DuckDBConnection -> String -> (Ptr DuckDBResult -> IO a) -> IO a
 withResult conn sql action =
-    withCString sql \sqlPtr -> withResultCString conn sqlPtr action
+    withConstCString sql \sqlPtr -> withResultCString conn sqlPtr action
 
-withResultCString :: DuckDBConnection -> CString -> (Ptr DuckDBResult -> IO a) -> IO a
+withResultCString :: DuckDBConnection -> (ConstPtr CChar) -> (Ptr DuckDBResult -> IO a) -> IO a
 withResultCString conn sql action =
     alloca \resPtr -> do
-        c_duckdb_query conn sql resPtr >>= (@?= DuckDBSuccess)
-        result <- action resPtr
-        c_duckdb_destroy_result resPtr
-        pure result
+        poke resPtr Struct.zero
+        bracket_ (pure ()) (c_duckdb_destroy_result resPtr) $ do
+            c_duckdb_query conn sql resPtr >>= (@?= DuckDBSuccess)
+            action resPtr
 
 withValue :: IO DuckDBValue -> (DuckDBValue -> IO a) -> IO a
 withValue acquire = bracket acquire destroyDuckValue
@@ -123,3 +136,21 @@ plusWord base idx = base `plusPtr` (idx * sizeOf (undefined :: Word64))
 destroyErrorData :: DuckDBErrorData -> IO ()
 destroyErrorData errData =
     alloca \ptr -> poke ptr errData >> c_duckdb_destroy_error_data ptr
+
+-- | Release the buffers of an initialized Arrow schema.
+releaseArrowSchema :: Ptr ArrowSchema -> IO ()
+releaseArrowSchema ptr = mask_ do
+    value <- peek ptr
+    when (value.release /= nullFunPtr) (fromFunPtr value.release ptr)
+
+-- | Release the buffers of an initialized Arrow array.
+releaseArrowArray :: Ptr ArrowArray -> IO ()
+releaseArrowArray ptr = mask_ do
+    value <- peek ptr
+    when (value.release /= nullFunPtr) (fromFunPtr value.release ptr)
+
+-- | Release the state of an initialized Arrow stream.
+releaseArrowStream :: Ptr ArrowArrayStream -> IO ()
+releaseArrowStream ptr = mask_ do
+    value <- peek ptr
+    when (value.release /= nullFunPtr) (fromFunPtr value.release ptr)

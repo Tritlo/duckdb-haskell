@@ -1,0 +1,4 @@
+b778097d880662d9fc2509c0fbd281441c55a47f7f9c5215ce42d6d16a24f9f7  generated/Database/DuckDB/FFI.hs
+d9819a1855788b3669ececa39d1f297663212078c635ff0b5595e822caab1eec  generated/Database/DuckDB/FFI/V2.hs
+dd400e920309745159f424c2a6df24172d050bb9702dfe6084a0484c5960b98e  generated/abi-checks.c
+6082791c0bf2afc0e4476f9e29c2e075a0f24fbc7fa5b27c44eb362d0d771a12  generated/abi-checks-v2.c

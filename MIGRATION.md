@@ -1,4 +1,31 @@
-# Migration Guide: DuckDB 1.4 to 1.5
+# Migration notes
+
+## DuckDB 2.0 generated bindings
+
+`duckdb-ffi` 2.0 uses `hs-bindgen` for both C APIs in the pinned native 2.0
+headers. The native runtime must be DuckDB 2.0. Earlier package releases
+remain available for DuckDB 1.5.
+
+The raw API changes. Import `Database.DuckDB.FFI` or
+`Database.DuckDB.FFI.V2`. The Deprecated module and the V2 Functions and Types
+submodules are no longer exposed. Generated types retain native typedefs as
+newtypes. Const pointers, record field names, callback wrappers, and functions
+that pass structures by value also change. Use `getField` for generated record
+fields and `toFunPtr` and `fromFunPtr` for callbacks. The two APIs have separate
+Haskell types, including their Arrow structures. Use qualified imports when
+combining the APIs.
+
+The generator does not manage ownership. Callers must still release native
+resources, retain callbacks for their required lifetime, and contain exceptions
+inside callbacks. `duckdb-simple` adapts its existing connection, result, and
+conversion code to the generated retained API. Its SQL workflow stays the same.
+
+A repository checkout must generate the ignored build artefacts before it
+builds. CI does this too. Source archives include those artefacts. See the
+[generation command](README.md#generate-the-bindings) and
+[2.0 preparation notes](docs/duckdb-2.0.md).
+
+## DuckDB 1.4 to 1.5
 
 This guide covers the changes needed when upgrading this repository from the
 DuckDB 1.4 line to the DuckDB 1.5 line.

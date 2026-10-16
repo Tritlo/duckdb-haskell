@@ -28,14 +28,14 @@ description:
 
 extra-doc-files: CHANGELOG.md
 extra-source-files:
+  cbits/duckdb-LICENSE
   cbits/duckdb.h
   cbits/duckdb_arrow.h
+  cbits/duckdb_v2.h
   generated.sha256
   scripts/generate-bindings.sh
   scripts/GenerateBindings.hs
   vendor/duckdb-api.json
-  vendor/duckdb-api.sha256
-  vendor/duckdb-api.tar.gz
 
 source-repository head
   type: git
@@ -66,8 +66,10 @@ library
 
   include-dirs: cbits/
   install-includes:
+    duckdb-LICENSE
     duckdb.h
     duckdb_arrow.h
+    duckdb_v2.h
 
   c-sources:
     generated/abi-checks-v2.c

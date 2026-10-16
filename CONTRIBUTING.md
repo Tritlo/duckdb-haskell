@@ -3,6 +3,8 @@
 ## Project structure
 
 `duckdb-ffi/generated` contains the generated C API bindings and ABI checks.
+The client headers and upstream license are in `duckdb-ffi/cbits`. Their source
+commit and SHA256 digests are in `duckdb-ffi/vendor/duckdb-api.json`.
 The generation driver is in `duckdb-ffi/scripts`. The tests are in
 `duckdb-ffi/test`.
 `duckdb-simple/src` contains the higher-level API. Its integration and property

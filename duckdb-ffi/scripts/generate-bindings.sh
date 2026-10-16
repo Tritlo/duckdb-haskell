@@ -14,12 +14,7 @@ scratch_dir=$(mktemp -d)
 trap 'rm -rf -- "$scratch_dir"' EXIT
 cd -- "$package_dir"
 
-digest=$(sha256sum vendor/duckdb-api.tar.gz)
-if [[ ${digest%% *} != "$(cat vendor/duckdb-api.sha256)" ]]; then
-  echo "Bundled DuckDB API archive checksum mismatch." >&2
-  exit 1
-fi
-tar -xzf vendor/duckdb-api.tar.gz -C "$scratch_dir" duckdb-2.0/duckdb.h duckdb-2.0/duckdb_v2.h
+python3 "$script_dir/../../scripts/duckdb-api.py" --verify-headers
 
 if [[ $(ghc-pkg field hs-bindgen version --simple-output) != "1.0.0.0" ]]; then
   echo "Use hs-bindgen 1.0.0.0 from dev/nix/generate.nix." >&2

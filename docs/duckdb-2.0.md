@@ -7,31 +7,20 @@ checksums before release.
 
 ## Pinned API
 
-The snapshot in `duckdb-ffi/vendor/duckdb-api.tar.gz` comes from
+The client headers in `duckdb-ffi/cbits/duckdb.h` and `duckdb_v2.h` come from
 [13d1d8f56a82b3413055819eb90d0b0e68b5c847](https://github.com/duckdb/duckdb/commit/13d1d8f56a82b3413055819eb90d0b0e68b5c847)
-on the upstream `v2.0-cyanoptera` release branch, dated 2026-10-07. It contains
-both client headers and both extension headers. It also contains the v1 and v2
-YAML specifications, versioning rules, and upstream license.
-The archive contains `provenance.json`, which records each upstream path and
-SHA256 digest. `duckdb-api.sha256` verifies the archive. These are
-development headers. A `stable` lifecycle entry for v2.0.0 describes the intended
-release contract. The snapshot's ABI can still change before release.
-The small `duckdb-api.json` manifest also pins the source archive used by
-`scripts/build-duckdb-preview.sh`.
+on the upstream `v2.0-cyanoptera` release branch, dated 2026-10-07.
+`duckdb-ffi/cbits/duckdb-LICENSE` contains the upstream license.
+These files are plain, unmodified upstream files. The per-file source paths and
+SHA256 digests are in `duckdb-ffi/vendor/duckdb-api.json`. That manifest also
+pins the native source archive used by the preview source builder.
 
-The existing 1.5 header stays in `duckdb-ffi/cbits/duckdb.h`. Preview builds
-verify the archive and extract its two client headers into the Cabal build
-directory with the upstream license. This step runs offline. It requires `tar`
-and `sha256sum` or `shasum`.
-Python is required only for the audit, refresh, and generation tools.
-Package installation copies both preview client headers and `duckdb-LICENSE`
-into the installed include directory. Consumers do not need the build directory.
-
-The second review compared the snapshot with release-branch commit
-[6afcb082657ebae0911f7b1887a8743afa525355](https://github.com/duckdb/duckdb/commit/6afcb082657ebae0911f7b1887a8743afa525355).
-All 78 archived upstream files were unchanged. The later engine includes
-additional fixes. The source pin remains paired with the verified native
-preview. Refresh it and repeat the checks for the final release.
+Builds use the checked-in headers directly. Cabal installs both client headers,
+`duckdb_arrow.h`, and `duckdb-LICENSE` with the library. Package users do not
+need header extraction tools, Python, LLVM, or hs-bindgen. The header audit and
+source builder are maintainer tools. Neither is part of the Hackage packages.
+These headers describe a development snapshot. Refresh the pin and repeat the
+checks for the final release.
 
 The v1 header declares 548 functions and 21 callback typedefs. Compared with the
 original 1.5.6 header, it adds `duckdb_create_timestamp_tz_ns`,
@@ -143,11 +132,12 @@ uv run scripts/duckdb-api.py --report > /tmp/duckdb-api-report.json
 uv run scripts/duckdb-api.py --compare-headers /absolute/path/to/native/include
 ```
 
-`--check` verifies the archive and all snapshot digests. For every v1 and v2 function, it requires
+`--verify-headers` verifies the pinned source metadata and each client file digest.
+It does not need generated bindings. `--check` also verifies generated coverage. For every v1 and v2 function, it requires
 an exported generated binding, its FFI shim, and the native call in that shim. It also requires
 every callback typedef and Arrow callback field, with both callback conversions. `--report` lists each covered function,
-callback alias, omission, and v1 declaration change. It compares function types
-without parameter names. It also compares complete typedefs, including
+callback type and omission. `--compare-headers` compares both APIs with another header directory. It compares
+function types without parameter names and complete typedefs, including
 enumerations and structure definitions. Run compilation, ABI checks, and behavior
 tests in addition to the coverage checks.
 
@@ -163,8 +153,9 @@ uv run scripts/duckdb-api.py --report > /tmp/duckdb-api-final.json
 ```
 
 `--refresh` resolves the ref to a full SHA before it downloads any files. It
-replaces the archive, manifest, and checksum. Review the manifest, API report,
-and generated code. The archive preserves the upstream files without edits.
+reports function and type changes for both APIs against the current verified pin.
+It replaces the client headers, upstream license, and per-file manifest. Review
+the plain-file diff, manifest, and generated code. Upstream files remain unmodified.
 Use the recorded SHA for subsequent downloads and builds.
 Select `v2.0.0` instead of the branch when the final release tag is available.
 
@@ -172,7 +163,7 @@ The official Linux preview fetched during preparation reports
 `v2.0.0-alpha45189`. Its archive SHA256 is
 `5d08f26d7e5f07fcae3d315c039a09da627f52639aeace3af06abc5456e35132`.
 `PRAGMA version` reports source ID `13d1d8f56a` and codename `Cyanoptera`.
-All four headers in the archive are byte-identical to this snapshot. This
+Both client headers in the native archive match the checked-in headers. This
 records the binary used for validation. Its former download URL now returns
 404. The [preview installation links](https://duckdb.org/install/preview)
 can move and can serve an older binary. Build the pinned source below for a
@@ -186,6 +177,11 @@ identifies `v2.0-cyanoptera` as the release branch. Select a commit on that
 branch for 2.0 work. The separate `main` branch has diverged and does not provide
 the same 2.0 C API. This snapshot uses the exact preview source commit so the
 native binary and source pin agree.
+
+The preview source builder is temporary. Remove it after the final native
+archives are available and verified. The header audit remains a maintainer tool
+for pin refreshes and ABI comparisons. Neither tool runs during ordinary package
+builds.
 
 The source build requires Bash, Python 3, CMake, a C/C++ compiler, a build tool
 such as Make, `curl`, `tar`, and `sha256sum` or `shasum`.
@@ -340,7 +336,7 @@ layout, so repeat its round trips after each native update.
    its smoke checks. Verify that neither path downloads a different library.
 6. Run `fourmolu`, `cabal-gild`, `cabal check`, and Haddock. Build source archives
    for both packages. Confirm the archives contain generated modules, C adapters,
-   preview headers, API specifications, and provenance. Extract them into a clean
+   client headers, the upstream license, and per-file provenance. Extract them into a clean
    directory and build/test there against the final native library.
    Install the extracted FFI package. Check both headers and the native license
    with a separate consumer under normal and dynamic Haskell linking.

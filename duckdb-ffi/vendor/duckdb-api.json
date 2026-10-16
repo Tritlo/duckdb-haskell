@@ -1,6 +1,20 @@
 {
   "commit": "13d1d8f56a82b3413055819eb90d0b0e68b5c847",
   "commit_date": "2026-10-07T09:17:36Z",
+  "files": {
+    "cbits/duckdb-LICENSE": {
+      "sha256": "075c33400ffcb0c586dd106a029d3e733e9da3693f8fcb9cebfc651c8a2f14e3",
+      "source": "LICENSE"
+    },
+    "cbits/duckdb.h": {
+      "sha256": "9ff8bfb6f88ed1be4f845399ed7ff35980a65e011848d027cef88467fe9e0886",
+      "source": "src/include/duckdb.h"
+    },
+    "cbits/duckdb_v2.h": {
+      "sha256": "4986911c5dc70ac13a1f00811e92fa1e2fe5433e9cf8ac9fc98cb408cbdd0fcb",
+      "source": "src/include/duckdb_v2.h"
+    }
+  },
   "ref": "v2.0-cyanoptera",
   "repository": "https://github.com/duckdb/duckdb",
   "source_archive": {

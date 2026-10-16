@@ -2,15 +2,12 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 import Control.Exception (IOException, catch, throwIO)
-import Control.Monad (filterM, forM_, unless, when)
-import Data.Char (isHexDigit)
+import Control.Monad (filterM, unless, when)
 import Data.List (intercalate, isPrefixOf, nub, stripPrefix)
 import Data.Maybe (isJust, isNothing)
 import Distribution.PackageDescription
 import Distribution.Simple
-import Distribution.Simple.InstallDirs (CopyDest (NoCopyDest), includedir)
-import qualified Distribution.Simple.LocalBuildInfo as LBI
-import Distribution.Simple.Setup (ConfigFlags, configConfigurationsFlags, configConfigureArgs, configDistPref, configExtraLibDirs, copyDest, defaultDistPref, fromFlagOrDefault, installDest, regInPlace)
+import Distribution.Simple.Setup (ConfigFlags, configConfigurationsFlags, configConfigureArgs, configExtraLibDirs)
 
 #if MIN_VERSION_Cabal(3,14,0)
 import Distribution.Utils.Path (getSymbolicPath, makeSymbolicPath)
@@ -35,33 +32,11 @@ getSymbolicPath = id
 
 #endif
 
--- | Save the native library and verified header paths in the package description.
+-- | Set native library paths when Cabal configures the package.
 main :: IO ()
-main =
-    defaultMainWithHooks
-        simpleUserHooks
-            { confHook = configure
-            , copyHook = \package local hooks flags ->
-                copyHook simpleUserHooks (installDescription package) local hooks flags
-            , instHook = \package local hooks flags ->
-                instHook simpleUserHooks (installDescription package) local hooks flags
-            , regHook = \package local hooks flags ->
-                regHook
-                    simpleUserHooks
-                    (if fromFlagOrDefault False (regInPlace flags) then package else installDescription package)
-                    local
-                    hooks
-                    flags
-            , postCopy = \args flags package local -> do
-                postCopy simpleUserHooks args flags package local
-                copyAPIHeaders (fromFlagOrDefault NoCopyDest (copyDest flags)) package local
-            , postInst = \args flags package local -> do
-                postInst simpleUserHooks args flags package local
-                copyAPIHeaders (fromFlagOrDefault NoCopyDest (installDest flags)) package local
-            }
+main = defaultMainWithHooks simpleUserHooks{confHook = configure}
   where
     configure (description, hooks) flags = do
-        headerDirectory <- extractAPIHeaders flags
         nativeDirs <- nativeLibraryDirs flags
         let addLibrary lib =
                 let info = libBuildInfo lib
@@ -71,7 +46,6 @@ main =
                                 { ldOptions =
                                     (if os `elem` ["linux", "darwin"] then concatMap (\dir -> ["-Xlinker", "-rpath", "-Xlinker", dir]) nativeDirs else [])
                                         <> ldOptions info
-                                , includeDirs = [makeSymbolicPath headerDirectory]
                                 }
                         }
             updated = description{condLibrary = fmap (\tree -> tree{condTreeData = addLibrary (condTreeData tree)}) (condLibrary description)}
@@ -80,56 +54,6 @@ main =
                     then flags
                     else flags{configExtraLibDirs = map makeSymbolicPath nativeDirs}
         confHook simpleUserHooks (updated, hooks) updatedFlags
-
--- | Verify the API archive. Extract its client headers into the build directory.
-extractAPIHeaders :: ConfigFlags -> IO FilePath
-extractAPIHeaders flags = do
-    let archive = "vendor" </> "duckdb-api.tar.gz"
-        checksumFile = "vendor" </> "duckdb-api.sha256"
-        files = ["duckdb.h", "duckdb_v2.h", "LICENSE"]
-    forM_ [archive, checksumFile] $ \path -> do
-        exists <- doesFileExist path
-        unless exists $ fail ("Bundled DuckDB API file is missing: " <> path)
-    checksumText <- readFile checksumFile
-    let checksum = takeWhile (/= '\n') checksumText
-    unless (length checksum == 64 && all isHexDigit checksum && checksumText == checksum <> "\n") $
-        fail ("Invalid SHA256 digest in " <> checksumFile <> ". Expected one hexadecimal digest followed by a newline.")
-    sha256sum <- findExecutable "sha256sum"
-    (checksumProgram, checksumArgs) <- case sha256sum of
-        Just program -> pure (program, [])
-        Nothing -> do
-            shasum <- findExecutable "shasum"
-            case shasum of
-                Just program -> pure (program, ["-a", "256"])
-                Nothing -> fail "DuckDB API archive verification requires sha256sum or shasum on PATH."
-    digest <- readProcess checksumProgram (checksumArgs <> [archive]) ""
-    unless (takeWhile (/= ' ') digest == checksum) $
-        fail ("Bundled DuckDB API archive checksum mismatch: " <> archive)
-    tar <- findExecutable "tar"
-    tarProgram <- maybe (fail "DuckDB API header extraction requires tar on PATH.") pure tar
-    buildDirectory <- makeAbsolute (getSymbolicPath (fromFlagOrDefault defaultDistPref (configDistPref flags)))
-    let headerDirectory = buildDirectory </> "duckdb-api" </> "duckdb-2.0"
-    createDirectoryIfMissing True headerDirectory
-    callProcess tarProgram (["-xzf", archive, "-C", headerDirectory, "--strip-components=1"] <> map ("duckdb-2.0" </>) files)
-    renameFile (headerDirectory </> "LICENSE") (headerDirectory </> "duckdb-LICENSE")
-    copyFile ("cbits" </> "duckdb_arrow.h") (headerDirectory </> "duckdb_arrow.h")
-    pure headerDirectory
-
--- | Install the client headers and DuckDB license after Cabal copies the library.
-copyAPIHeaders :: CopyDest -> PackageDescription -> LBI.LocalBuildInfo -> IO ()
-copyAPIHeaders destination package local = do
-    source <- extractAPIHeaders (LBI.configFlags local)
-    let target = includedir (LBI.absoluteInstallDirs package local destination)
-    createDirectoryIfMissing True target
-    forM_ ["duckdb.h", "duckdb_v2.h", "duckdb_arrow.h", "duckdb-LICENSE"] $ \file ->
-        copyFile (source </> file) (target </> file)
-
--- | Use the package header directory when Cabal copies or registers the library.
-installDescription :: PackageDescription -> PackageDescription
-installDescription package = package{library = fmap installLibrary (library package)}
-  where
-    installLibrary lib =
-        lib{libBuildInfo = (libBuildInfo lib){includeDirs = [makeSymbolicPath "cbits"]}}
 
 -- | Use a supplied library, or download one to the user cache.
 nativeLibraryDirs :: ConfigFlags -> IO [FilePath]

@@ -1,31 +1,30 @@
 #!/usr/bin/env python3
 # pyright: strict
-"""Fetch a pinned DuckDB API snapshot and check binding coverage offline."""
+"""Fetch pinned DuckDB client headers and check generated binding coverage offline."""
 
 from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
-import gzip
 import hashlib
-import io
 import json
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import re
 import sys
-import tarfile
 from typing import TypedDict, cast
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 
 ROOT = Path(__file__).resolve().parents[1]
-VENDOR = ROOT / "duckdb-ffi/vendor"
-ARCHIVE = VENDOR / "duckdb-api.tar.gz"
-METADATA = VENDOR / "duckdb-api.json"
-CHECKSUM = VENDOR / "duckdb-api.sha256"
-PREFIX = "duckdb-2.0/"
-HEADERS = ("duckdb.h", "duckdb_v2.h", "duckdb_extension.h", "duckdb_extension_v2.h")
+PACKAGE = ROOT / "duckdb-ffi"
+METADATA = PACKAGE / "vendor/duckdb-api.json"
+HEADERS = ("duckdb.h", "duckdb_v2.h")
+FILES = {
+    "cbits/duckdb.h": "src/include/duckdb.h",
+    "cbits/duckdb_v2.h": "src/include/duckdb_v2.h",
+    "cbits/duckdb-LICENSE": "LICENSE",
+}
 
 
 class FileRecord(TypedDict):
@@ -38,31 +37,18 @@ class SourceArchive(TypedDict):
     sha256: str
 
 
-class Pin(TypedDict):
+class Manifest(TypedDict):
     repository: str
     ref: str
     commit: str
     commit_date: str
     source_archive: SourceArchive
-
-
-class Manifest(Pin):
     files: dict[str, FileRecord]
 
 
 class CommitInfo(TypedDict):
     sha: str
     commit: dict[str, dict[str, str]]
-
-
-class TreeEntry(TypedDict):
-    path: str
-    type: str
-
-
-class TreeInfo(TypedDict):
-    truncated: bool
-    tree: list[TreeEntry]
 
 
 def download(url: str) -> bytes:
@@ -73,7 +59,7 @@ def download(url: str) -> bytes:
 
 
 def archive_digest(url: str) -> str:
-    """Read a source archive and calculate its SHA256 digest."""
+    """Read the native source archive and calculate its SHA256 digest."""
     digest = hashlib.sha256()
     request = Request(url, headers={"User-Agent": "duckdb-haskell-api-snapshot"})
     with urlopen(request, timeout=60) as response:
@@ -82,34 +68,48 @@ def archive_digest(url: str) -> str:
     return digest.hexdigest()
 
 
+def verify_snapshot(manifest: Manifest, files: dict[str, bytes]) -> None:
+    """Verify the source pin and every plain client file digest."""
+    if manifest["repository"] != "https://github.com/duckdb/duckdb" or not re.fullmatch(r"[0-9a-f]{40}", manifest["commit"]):
+        raise ValueError("Snapshot must name the DuckDB repository and a full commit SHA")
+    source = manifest["source_archive"]
+    if source["url"] != f"https://codeload.github.com/duckdb/duckdb/tar.gz/{manifest['commit']}" or not re.fullmatch(r"[0-9a-f]{64}", source["sha256"]):
+        raise ValueError("Native source archive URL or SHA256 is invalid")
+    if manifest["files"].keys() != FILES.keys() or files.keys() != FILES.keys():
+        raise ValueError("Snapshot must contain both client headers and the upstream license")
+    for target, expected_source in FILES.items():
+        record = manifest["files"][target]
+        if record["source"] != expected_source or not re.fullmatch(r"[0-9a-f]{64}", record["sha256"]):
+            raise ValueError(f"Invalid source or SHA256: {target}")
+        if hashlib.sha256(files[target]).hexdigest() != record["sha256"]:
+            raise ValueError(f"SHA256 mismatch: {target}")
+
+
+def read_snapshot() -> tuple[Manifest, dict[str, bytes]]:
+    """Read the pinned client files after verifying their provenance and digests."""
+    manifest = cast(Manifest, json.loads(METADATA.read_text()))
+    files = {target: (PACKAGE / target).read_bytes() for target in FILES}
+    verify_snapshot(manifest, files)
+    return manifest, files
+
+
 def refresh(ref: str) -> None:
-    """Resolve an explicit ref and fetch its headers and API specification."""
+    """Fetch one explicit source pin and report changes to both client APIs."""
+    _, previous = read_snapshot()
     api = "https://api.github.com/repos/duckdb/duckdb"
     commit = cast(CommitInfo, json.loads(download(f"{api}/commits/{quote(ref, safe='')}")))
     sha = commit["sha"]
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise ValueError("Upstream did not return a full commit SHA")
-    tree = cast(TreeInfo, json.loads(download(f"{api}/git/trees/{sha}?recursive=1")))
-    if tree["truncated"]:
-        raise ValueError("Upstream tree response is incomplete")
-    sources = {f"src/include/{header}": header for header in HEADERS}
-    sources["LICENSE"] = "LICENSE"
-    for entry in tree["tree"]:
-        path = entry["path"]
-        if entry["type"] == "blob" and (
-            re.fullmatch(r"api_spec/v[12]/.*\.yaml", path)
-            or path in ("api_spec/README.md", "api_spec/VERSIONING.md")
-        ):
-            sources[path] = path
 
     def fetch(item: tuple[str, str]) -> tuple[str, str, bytes]:
-        source, target = item
+        target, source = item
         data = download(f"https://raw.githubusercontent.com/duckdb/duckdb/{sha}/{source}")
-        return source, target, data
+        return target, source, data
 
     # Fetch all files before changing the snapshot.
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        fetched = list(pool.map(fetch, sorted(sources.items())))
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        fetched = list(pool.map(fetch, sorted(FILES.items())))
     archive_url = f"https://codeload.github.com/duckdb/duckdb/tar.gz/{sha}"
     manifest: Manifest = {
         "repository": "https://github.com/duckdb/duckdb",
@@ -117,105 +117,23 @@ def refresh(ref: str) -> None:
         "commit": sha,
         "commit_date": commit["commit"]["committer"]["date"],
         "source_archive": {"url": archive_url, "sha256": archive_digest(archive_url)},
-        "files": {},
+        "files": {target: {"source": source, "sha256": hashlib.sha256(data).hexdigest()} for target, source, data in fetched},
     }
-    members: dict[str, bytes] = {}
-    for source, target, data in fetched:
-        members[PREFIX + target] = data
-        manifest["files"][target] = {"source": source, "sha256": hashlib.sha256(data).hexdigest()}
-    members[PREFIX + "provenance.json"] = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
-    metadata = snapshot_metadata(manifest)
-    write_archive(metadata, members)
-    print(f"Fetched {len(fetched)} files at {sha}")
-
-
-def snapshot_metadata(manifest: Manifest) -> Pin:
-    """Keep the pin metadata outside the archive."""
-    return {
-        "repository": manifest["repository"],
-        "ref": manifest["ref"],
-        "commit": manifest["commit"],
-        "commit_date": manifest["commit_date"],
-        "source_archive": manifest["source_archive"],
+    files = {target: data for target, _, data in fetched}
+    verify_snapshot(manifest, files)
+    changes = {
+        header: {
+            "functions": difference(functions(previous["cbits/" + header].decode()), functions(files["cbits/" + header].decode())),
+            "types": difference(typedefs(previous["cbits/" + header].decode()), typedefs(files["cbits/" + header].decode())),
+        }
+        for header in HEADERS
     }
-
-
-def archive_bytes(members: dict[str, bytes]) -> bytes:
-    """Build an archive with fixed order, modes, and timestamps."""
-    output = io.BytesIO()
-    with gzip.GzipFile(filename="", mode="wb", fileobj=output, mtime=0, compresslevel=9) as compressed:
-        with tarfile.open(fileobj=compressed, mode="w", format=tarfile.USTAR_FORMAT) as archive:
-            for name, data in sorted(members.items()):
-                member = tarfile.TarInfo(name)
-                member.size = len(data)
-                member.mode = 0o644
-                member.mtime = 0
-                member.uid = member.gid = 0
-                member.uname = member.gname = ""
-                archive.addfile(member, io.BytesIO(data))
-    return output.getvalue()
-
-
-def verify_archive(data: bytes, metadata: Pin) -> dict[str, bytes]:
-    """Verify member names, metadata, and every archived file digest."""
-    if not re.fullmatch(r"[0-9a-f]{40}", metadata["commit"]):
-        raise ValueError("Snapshot commit must be a full SHA")
-    source = metadata["source_archive"]
-    if source["url"] != f"https://codeload.github.com/duckdb/duckdb/tar.gz/{metadata['commit']}" or not re.fullmatch(r"[0-9a-f]{64}", source["sha256"]):
-        raise ValueError("Source archive URL or SHA256 is invalid")
-    members: dict[str, bytes] = {}
-    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
-        for member in archive.getmembers():
-            name = member.name
-            path = PurePosixPath(name)
-            if path.is_absolute() or ".." in path.parts or "\\" in name or path.as_posix() != name:
-                raise ValueError(f"Unsafe archive member: {name}")
-            if not member.isfile():
-                raise ValueError(f"Archive member must be a regular file: {name}")
-            if name in members:
-                raise ValueError(f"Duplicate archive member: {name}")
-            handle = archive.extractfile(member)
-            if handle is None:
-                raise ValueError(f"Unreadable archive member: {name}")
-            with handle:
-                members[name] = handle.read()
-    manifest = cast(Manifest, json.loads(members[PREFIX + "provenance.json"]))
-    if snapshot_metadata(manifest) != metadata:
-        raise ValueError("Inner provenance differs from external metadata")
-    expected = {PREFIX + name for name in manifest["files"]} | {PREFIX + "provenance.json"}
-    if expected != members.keys():
-        raise ValueError(f"Archive file list differs: {sorted(expected ^ members.keys())}")
-    for target, record in manifest["files"].items():
-        if hashlib.sha256(members[PREFIX + target]).hexdigest() != record["sha256"]:
-            raise ValueError(f"SHA256 mismatch: {target}")
-    return members
-
-
-def read_archive() -> tuple[Pin, dict[str, bytes]]:
-    """Read the pinned archive after verifying its checksum and contents."""
-    data = ARCHIVE.read_bytes()
-    digest = CHECKSUM.read_text()
-    if not re.fullmatch(r"[0-9a-f]{64}\n", digest):
-        raise ValueError("Archive checksum must be one SHA256 digest and a newline")
-    if hashlib.sha256(data).hexdigest() != digest.strip():
-        raise ValueError("SHA256 mismatch: API archive")
-    metadata = cast(Pin, json.loads(METADATA.read_text()))
-    return metadata, verify_archive(data, metadata)
-
-
-def write_archive(metadata: Pin, members: dict[str, bytes]) -> None:
-    """Write the verified archive, compact metadata, and checksum."""
-    data = archive_bytes(members)
-    verify_archive(data, metadata)
-    VENDOR.mkdir(parents=True, exist_ok=True)
-    for path, contents in (
-        (ARCHIVE, data),
-        (METADATA, (json.dumps(metadata, indent=2, sort_keys=True) + "\n").encode()),
-        (CHECKSUM, (hashlib.sha256(data).hexdigest() + "\n").encode()),
-    ):
+    print(json.dumps(changes, indent=2, sort_keys=True))
+    for path, data in [(PACKAGE / target, data) for target, data in files.items()] + [(METADATA, (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode())]:
         temporary = path.with_suffix(path.suffix + ".tmp")
-        temporary.write_bytes(contents)
+        temporary.write_bytes(data)
         temporary.replace(path)
+    print(f"Fetched {len(files)} files at {sha}")
 
 
 def clean_c(source: str) -> str:
@@ -347,11 +265,10 @@ def shared_layouts(v1: str, v2: str, bindings: dict[str, str]) -> dict[str, obje
 
 
 def audit() -> dict[str, object]:
-    """Compare the legacy v1 API and the pinned preview APIs."""
-    metadata, members = read_archive()
-    legacy = ROOT / "duckdb-ffi/cbits/duckdb.h"
-    v1 = members[PREFIX + "duckdb.h"].decode()
-    v2 = members[PREFIX + "duckdb_v2.h"].decode()
+    """Check generated coverage of both pinned client APIs."""
+    metadata, files = read_snapshot()
+    v1 = files["cbits/duckdb.h"].decode()
+    v2 = files["cbits/duckdb_v2.h"].decode()
     bindings = {
         "v1": (ROOT / "duckdb-ffi/generated/Database/DuckDB/FFI.hs").read_text(),
         "v2": (ROOT / "duckdb-ffi/generated/Database/DuckDB/FFI/V2.hs").read_text(),
@@ -366,8 +283,6 @@ def audit() -> dict[str, object]:
         "v1": v1_coverage,
         "v2": v2_coverage,
         "shared_types": shared_layouts(v1, v2, bindings),
-        "v1_function_changes": difference(functions(legacy), functions(v1)),
-        "v1_type_changes": difference(typedefs(legacy), typedefs(v1)),
     }
 
 
@@ -465,13 +380,13 @@ def coverage(header: str, bindings: str) -> tuple[dict[str, object], set[str]]:
 
 def compare_headers(directory: Path) -> int:
     """Reject a native header set that differs from the pinned API."""
-    _, members = read_archive()
+    _, files = read_snapshot()
     report: dict[str, dict[str, dict[str, object]]] = {}
     failed = False
-    for header in ("duckdb.h", "duckdb_v2.h"):
+    for header in HEADERS:
         report[header] = {
-            "functions": difference(functions(members[PREFIX + header].decode()), functions(directory / header)),
-            "types": difference(typedefs(members[PREFIX + header].decode()), typedefs(directory / header)),
+            "functions": difference(functions(files["cbits/" + header].decode()), functions(directory / header)),
+            "types": difference(typedefs(files["cbits/" + header].decode()), typedefs(directory / header)),
         }
         for changes in report[header].values():
             if any(changes.values()):
@@ -485,12 +400,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     actions = parser.add_mutually_exclusive_group(required=True)
     actions.add_argument("--refresh", metavar="REF", help="fetch an explicit upstream commit, release branch (v2.0-cyanoptera), or tag")
-    actions.add_argument("--check", action="store_true", help="verify SHA256 and require complete raw API coverage offline")
-    actions.add_argument("--report", action="store_true", help="print the complete offline API coverage and v1 ABI comparison as JSON")
+    actions.add_argument("--verify-headers", action="store_true", help="verify the pinned client files without generated bindings")
+    actions.add_argument("--check", action="store_true", help="verify client file SHA256 digests and require complete raw API coverage offline")
+    actions.add_argument("--report", action="store_true", help="print complete offline coverage of both client APIs as JSON")
     actions.add_argument("--compare-headers", type=Path, metavar="DIR", help="require a native header set to match the pinned function and type declarations")
     args = parser.parse_args()
     if args.refresh:
         refresh(args.refresh)
+        return 0
+    if args.verify_headers:
+        metadata, _ = read_snapshot()
+        print(f"Verified client headers and license at {metadata['commit']}")
         return 0
     if args.compare_headers:
         return compare_headers(args.compare_headers)
@@ -513,14 +433,12 @@ def main() -> int:
             if missing:
                 print(f"Missing {version} {kind}: {', '.join(missing)}", file=sys.stderr)
                 failed = True
-    changes = cast(dict[str, object], report["v1_function_changes"])
-    print(f"v1 changes: {len(cast(list[str], changes['added']))} added, {len(cast(list[str], changes['removed']))} removed, {len(cast(dict[str, object], changes['changed']))} changed signatures")
     return 1 if failed else 0
 
 
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except (OSError, ValueError, KeyError, TypeError, tarfile.TarError) as error:
+    except (OSError, ValueError, KeyError, TypeError) as error:
         print(f"duckdb-api: {error}", file=sys.stderr)
         sys.exit(1)

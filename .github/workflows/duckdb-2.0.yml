@@ -160,15 +160,9 @@ jobs:
           grep -Fx "package-id $package_id" "$consumer/environment"
           include_dir=$(ghc-pkg --no-user-package-db --package-db="$package_db" field --ipid "$package_id" include-dirs --simple-output)
           echo "Checking installed DuckDB files in $include_dir"
-          mkdir -p "$consumer/expected"
-          tar -xzf "$consumer/source/vendor/duckdb-api.tar.gz" -C "$consumer/expected" --strip-components=1 \
-            duckdb-2.0/duckdb.h duckdb-2.0/duckdb_v2.h duckdb-2.0/LICENSE
-          cp "$consumer/source/cbits/duckdb_arrow.h" "$consumer/expected/duckdb_arrow.h"
           for file in duckdb.h duckdb_v2.h duckdb_arrow.h duckdb-LICENSE; do
             test -s "$include_dir/$file" || { echo "Missing installed file: $include_dir/$file" >&2; exit 1; }
-            expected=$file
-            if [ "$file" = duckdb-LICENSE ]; then expected=LICENSE; fi
-            cmp "$consumer/expected/$expected" "$include_dir/$file"
+            cmp "$consumer/source/cbits/$file" "$include_dir/$file"
           done
           for way in -static -dynamic; do
             ghc "$way" -fforce-recomp -package-env "$consumer/environment" "$consumer/Main.hs" -o "$consumer/check"

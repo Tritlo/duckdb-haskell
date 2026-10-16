@@ -64,8 +64,8 @@ main = do
         _ -> die "Usage: GenerateBindings SCRATCH_DIR"
 
 -- | Run the library with the DuckDB naming and selection settings.
-runBindgen :: FilePath -> String -> String -> Maybe FilePath -> [C.UncheckedRootDirective] -> Artefact Macro.CExpr a -> IO a
-runBindgen includeDirectory moduleName target specification directives =
+runBindgen :: String -> String -> Maybe FilePath -> [C.UncheckedRootDirective] -> Artefact Macro.CExpr a -> IO a
+runBindgen moduleName target specification directives =
     hsBindgenMacroLang (pure . Macro.cExpr) quiet quiet bindgenConfig directives
   where
     config :: Config_ FilePath
@@ -73,7 +73,7 @@ runBindgen includeDirectory moduleName target specification directives =
         def
             { clang =
                 def
-                    { extraIncludeDirs = [includeDirectory, "cbits"]
+                    { extraIncludeDirs = ["cbits"]
                     , argsAfter =
                         if target == "native"
                             then []
@@ -110,7 +110,7 @@ generateModule scratchDirectory moduleName headers outputPath checksPath = do
                 <> map (C.DirectiveHashInclude . fromString) headers
         specificationPath = scratchDirectory </> moduleName <> "-types.json"
         run :: String -> Maybe FilePath -> [C.UncheckedRootDirective] -> Artefact Macro.CExpr a -> IO a
-        run = runBindgen (scratchDirectory </> "duckdb-2.0") moduleName
+        run = runBindgen moduleName
     specification <- run target Nothing directives generationSpecification
     LBS.writeFile specificationPath (Aeson.encode specification)
     (bindings, result) <- run target (Just specificationPath) directives $ do

@@ -12,7 +12,8 @@ checks, client headers, and upstream license.
 - `nix/` contains pinned development, generation, and CI environments.
 - `v2-migration.md` records the V2 backend scope, contracts, and validation.
 - `extensions/` prepares a loadable Haskell extension for the pinned preview.
-  Its README records the build and load checks that remain unrun.
+  Its README records Linux build and load results and the remaining checks.
+  Its packer and smoke tools use `runghc` with GHC's bundled packages.
 - `preview/` builds the pinned development runtime. See its README for the
   removal condition.
 - `diagnostics/` contains a native probe for the deprecated Arrow API. Set
@@ -28,3 +29,5 @@ uv run dev/bindings/duckdb-api.py --check
 ```
 
 Package users do not need these tools, Nix, LLVM, or hs-bindgen.
+The header audit uses Python's standard library. DuckDB's native CMake build
+also requires Python.

@@ -18,6 +18,8 @@ It copies the borrowed table into the FFI library and publishes it once under
 a mutex. This mode supports one DuckDB implementation per process. Generated
 C wrappers, the table, and managed callback helpers have hidden visibility.
 The initializer and the demo's native entrypoint remain exported.
+Extension mode omits interface unfoldings. This keeps calls to private C
+wrappers inside the FFI shared library when a client uses optimization.
 
 The demo initializes the threaded RTS once. It uses private arguments, ignores
 `GHCRTS`, and disables the RTS signal handlers. It keeps the RTS alive for the
@@ -37,6 +39,18 @@ The example registers `haskell_answer()`, `haskell_add_one(BIGINT)`, and
 and callback error handling. The entrypoint is
 `haskell_demo_init_c_api_v2`. Keep the packaged filename
 `haskell_demo.duckdb_extension`.
+
+Registration code uses ordinary Haskell values and functions:
+
+```haskell
+register extension = do
+    Extension.createFunction extension "answer" (42 :: Int64)
+    Extension.createFunction extension "add" ((+) :: Int64 -> Int64 -> Int64)
+```
+
+See [Demo.hs](example/src/Demo.hs) for the complete entrypoint. GHC requires
+the two native handle constructors in scope at its foreign export. Application
+functions do not need native handles, vectors, or allocation calls.
 
 ## Build and load
 
@@ -112,17 +126,31 @@ Nix build-store paths require those stores to remain available. Relocatable
 bundling, Windows, and loading into another Haskell executable remain outside
 this prepared recipe.
 
-Before declaring support, complete these checks:
+Linux x86_64 validation uses GHC 9.14.1 and the pinned native preview:
 
-- Confirm that the extension and its Haskell dependency closure have no
-  `libduckdb` dependency or unresolved direct `duckdb_v2_*` symbols. Use
-  `readelf` on Linux or `otool` and `nm` on macOS.
-- Run the CLI smoke script on Linux and macOS. Inspect startup, symbol lookup,
-  NULL behavior, error recovery, and process shutdown.
-- Check initialization failure, multiple databases in one native host,
-  concurrent loads, callback-state destruction, and cancellation under Valgrind.
-- Run the ordinary package suites with both extension flags disabled.
-- Check source archives and installed extension-mode consumers without LLVM.
+- The typed demo builds and passes the native CLI smoke checks.
+- A plain C host passes concurrent first loads, repeated loads, independent
+  databases, callback cleanup, cancellation, and connection recovery.
+- Runtime startup preserves ten installed host signal handlers. Refused API
+  negotiation leaves the borrowed native error slot unchanged.
+- `ldd`, `readelf`, and `nm` confirm no `libduckdb` dependency, direct native
+  imports, exported generated C wrappers, or exported callback cleanup helpers.
+- Valgrind reports no errors and no definite or indirect lost bytes. The live
+  RTS retains 1,536 possible lost bytes in four thread-local-storage blocks
+  and about 4.8 MB of reachable process-lifetime state.
+- All 602 ordinary functional tests pass with four test workers. The default
+  leak suite and Haddock build also pass. Generated Haddock link warnings remain.
+- The exact sandboxed Nix CI build passes for both packages.
+- The Haskell packer matches the official CMake writer byte for byte. Both
+  tools compile with `-Wall -Werror`.
+- Fresh source archives build and load without LLVM or the hs-bindgen
+  generator. Temporary consumers verify worker state and initialization-error
+  containment. These checks use extracted source packages and the existing
+  dependency cache. They do not use `cabal install --lib`.
+
+macOS loading and deployment remain unverified. Run the same native checks on
+macOS before declaring support there. Inspect dependencies with `otool` and
+`nm` on that platform.
 
 References: [Cabal foreign libraries](https://cabal.readthedocs.io/en/3.18/cabal-package-description-file.html#foreign-libraries),
 [GHC runtime initialization](https://downloads.haskell.org/ghc/9.14.1/docs/users_guide/exts/ffi.html#using-your-own-main),

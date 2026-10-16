@@ -5,7 +5,7 @@
 `duckdb-ffi/generated` contains the generated C API bindings and ABI checks.
 The client headers and upstream license are in `duckdb-ffi/cbits`. Their source
 commit and SHA256 digests are in `duckdb-ffi/vendor/duckdb-api.json`.
-The generation driver is in `duckdb-ffi/scripts`. The tests are in
+The generation driver and header audit are in `dev/bindings`. The tests are in
 `duckdb-ffi/test`.
 `duckdb-simple/src` contains the higher-level API. Its integration and property
 tests are in `duckdb-simple/test`, and its leak test is in `duckdb-simple/leaktest`.
@@ -21,7 +21,7 @@ bug fixes. Run the full test suite before submitting a change.
 Generate the local binding artefacts before building a checkout:
 
 ```sh
-nix-shell dev/nix/generate.nix --run 'duckdb-ffi/scripts/generate-bindings.sh --check'
+nix-shell dev/nix/generate.nix --run 'dev/bindings/generate-bindings.sh --check'
 ```
 
 The ignored `duckdb-ffi/generated/` directory contains the Haskell modules and
@@ -29,7 +29,7 @@ C ABI assertions. Keep it outside Git. The checksum file and generator are
 tracked. Run the generator without `--check` after an intentional input change.
 Review the new checksums and run the coverage audit.
 
-`scripts/release.sh` generates and verifies both APIs before it builds the
+`dev/release.sh` generates and verifies both APIs before it builds the
 Hackage source archives and documentation. It then uploads the selected
 packages. The source archives contain the generated Haskell modules and C ABI
 checks. Package users do not need Nix, LLVM, or hs-bindgen. The release script

@@ -7,3 +7,5 @@ reference
 
 api.md
 **/venv
+
+dev/ci-logs/

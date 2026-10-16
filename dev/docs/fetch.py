@@ -8,7 +8,7 @@ from bs4 import BeautifulSoup
 
 BASE = "https://duckdb.org"
 SITEMAP_URL = f"{BASE}/sitemap.html"
-OUT = Path("c_api.md")
+OUT = Path(__file__).with_name("c_api.md")
 
 def http_get(url: str) -> str:
     r = requests.get(url, timeout=20)

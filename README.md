@@ -27,7 +27,7 @@ The package generates bindings from the pinned DuckDB 2.0 client headers with
 Run this command before building a repository checkout:
 
 ```sh
-nix-shell dev/nix/generate.nix --run 'duckdb-ffi/scripts/generate-bindings.sh --check'
+nix-shell dev/nix/generate.nix --run 'dev/bindings/generate-bindings.sh --check'
 ```
 
 The command checks the generated output against `duckdb-ffi/generated.sha256`.
@@ -36,8 +36,10 @@ The Haskell modules and C ABI assertions stay in the ignored
 builds. Git contains the generator, pinned headers, and checksums. Source
 archives contain the generated sources, so package users need only
 `hs-bindgen-runtime` and a matching native library.
-`scripts/release.sh` generates and verifies both APIs before it builds and
+`dev/release.sh` generates and verifies both APIs before it builds and
 uploads the Hackage archives. Package users do not need LLVM or hs-bindgen.
+See [dev/README.md](dev/README.md) for the maintainer tools and preview-only
+runtime builder.
 
 For a local build with the pinned native preview:
 
@@ -48,7 +50,7 @@ nix-shell dev/nix/shell.nix --run 'cabal build all --with-compiler=ghc -fsysteml
 ### Native library installation
 
 Supply the matching DuckDB 2.0 library while the final release archives are
-unavailable. Build the pinned source with `scripts/build-duckdb-preview.sh`.
+unavailable. Build the pinned source with `dev/preview/build-duckdb.sh`.
 The build commands are in [docs/duckdb-2.0.md](docs/duckdb-2.0.md).
 Setup fails before downloading if final native checksums have not been recorded.
 It cannot fall back to DuckDB 1.5.

@@ -11,7 +11,7 @@ from ctypes import c_char_p, c_int, c_int32, c_int64, c_uint64, c_void_p
 
 
 HERE = os.path.abspath(os.path.dirname(__file__))
-DEFAULT_LIB = os.path.abspath(os.path.join(HERE, "..", "cbits", "duckdb", "libduckdb.so"))
+DEFAULT_LIB = os.path.abspath(os.path.join(HERE, "..", "..", "duckdb-ffi", "cbits", "duckdb", "libduckdb.so"))
 
 DuckDBSuccess = 0
 DuckDBError = 1

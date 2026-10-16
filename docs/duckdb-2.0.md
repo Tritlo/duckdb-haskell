@@ -56,7 +56,7 @@ the calling code. Cabal builds the generated modules.
 Generate the artefacts before building a checkout:
 
 ```sh
-nix-shell dev/nix/generate.nix --run 'duckdb-ffi/scripts/generate-bindings.sh --check'
+nix-shell dev/nix/generate.nix --run 'dev/bindings/generate-bindings.sh --check'
 ```
 
 Generation verifies identical Haskell output for x86_64 and aarch64 Linux,
@@ -127,29 +127,30 @@ cover that retained-API test.
 These commands use Python's standard library. The checks run offline:
 
 ```sh
-uv run scripts/duckdb-api.py --check
-uv run scripts/duckdb-api.py --report > /tmp/duckdb-api-report.json
-uv run scripts/duckdb-api.py --compare-headers /absolute/path/to/native/include
+uv run dev/bindings/duckdb-api.py --check
+uv run dev/bindings/duckdb-api.py --report > /tmp/duckdb-api-report.json
+uv run dev/bindings/duckdb-api.py --compare-headers /absolute/path/to/native/include
 ```
 
 `--verify-headers` verifies the pinned source metadata and each client file digest.
-It does not need generated bindings. `--check` also verifies generated coverage. For every v1 and v2 function, it requires
-an exported generated binding, its FFI shim, and the native call in that shim. It also requires
-every callback typedef and Arrow callback field, with both callback conversions. `--report` lists each covered function,
-callback type and omission. `--compare-headers` compares both APIs with another header directory. It compares
-function types without parameter names and complete typedefs, including
-enumerations and structure definitions. Run compilation, ABI checks, and behavior
-tests in addition to the coverage checks.
+It does not need generated bindings. `--check` also verifies generated coverage.
+For every v1 and v2 function, it requires an exported generated binding, its FFI
+shim, and the native call in that shim. It also requires every callback typedef
+and Arrow callback field, with both callback conversions. `--report` lists each
+covered function, callback type, and omission. `--compare-headers` compares both
+APIs with another header directory. It compares function types without parameter
+names and complete typedefs, including enumerations and structure definitions.
+Run compilation, ABI checks, and behavior tests in addition to the coverage checks.
 
 Refresh only after selecting an upstream commit, release branch, or release tag.
 Use `v2.0-cyanoptera` for 2.0 preparation. Generate new output and checksums with
 the pinned Nix toolchain. Review the checksum change.
 
 ```sh
-uv run scripts/duckdb-api.py --refresh v2.0-cyanoptera
-nix-shell dev/nix/generate.nix --run 'duckdb-ffi/scripts/generate-bindings.sh'
-uv run scripts/duckdb-api.py --check
-uv run scripts/duckdb-api.py --report > /tmp/duckdb-api-final.json
+uv run dev/bindings/duckdb-api.py --refresh v2.0-cyanoptera
+nix-shell dev/nix/generate.nix --run 'dev/bindings/generate-bindings.sh'
+uv run dev/bindings/duckdb-api.py --check
+uv run dev/bindings/duckdb-api.py --report > /tmp/duckdb-api-final.json
 ```
 
 `--refresh` resolves the ref to a full SHA before it downloads any files. It
@@ -188,8 +189,8 @@ such as Make, `curl`, `tar`, and `sha256sum` or `shasum`.
 Build and test the pinned source with:
 
 ```sh
-scripts/build-duckdb-preview.sh /tmp/duckdb-2.0-native
-uv run scripts/duckdb-api.py --compare-headers /tmp/duckdb-2.0-native/native
+dev/preview/build-duckdb.sh /tmp/duckdb-2.0-native
+uv run dev/bindings/duckdb-api.py --compare-headers /tmp/duckdb-2.0-native/native
 cabal build all -fsystemlib --extra-lib-dirs=/tmp/duckdb-2.0-native/native
 DUCKDB_TEST_VERSION=2.0.0-dev0 cabal test all -fsystemlib --extra-lib-dirs=/tmp/duckdb-2.0-native/native --test-show-details=direct
 ```
@@ -342,15 +343,15 @@ layout, so repeat its round trips after each native update.
    with a separate consumer under normal and dynamic Haskell linking.
 7. Re-run the API check and the final-native tests after any release adjustment.
    Publish only after these checks pass and the release is explicitly authorized.
-   `scripts/release.sh` regenerates both APIs and verifies their checksums and
+   `dev/release.sh` regenerates both APIs and verifies their checksums and
    coverage before it builds and uploads the Hackage archives.
-   `scripts/release.sh` uploads package candidates even without `--publish`.
+   `dev/release.sh` uploads package candidates even without `--publish`.
    Local archive preparation does not need that script.
 
 These commands build and check the packages locally without uploading:
 
 ```sh
-nix-shell dev/nix/generate.nix --run 'duckdb-ffi/scripts/generate-bindings.sh --check'
+nix-shell dev/nix/generate.nix --run 'dev/bindings/generate-bindings.sh --check'
 cabal build all
 cabal test all --test-show-details=direct
 cabal run duckdb-simple-leak-test -- all 100

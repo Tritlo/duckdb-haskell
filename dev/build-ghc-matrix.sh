@@ -3,7 +3,7 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-log_dir="$repo_root/ci"
+log_dir="$repo_root/dev/ci-logs"
 mkdir -p "$log_dir"
 
 if [[ $# -gt 0 ]]; then

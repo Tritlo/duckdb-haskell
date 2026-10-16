@@ -55,11 +55,12 @@ RUN groupadd -g "$GID" -o "$USER_NAME" && \
     echo '%sudo ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
 
 WORKDIR /tmp
-COPY scripts/build-duckdb-preview.sh scripts/duckdb-api.py /preview/scripts/
+COPY dev/preview/build-duckdb.sh /preview/dev/preview/
+COPY dev/bindings/duckdb-api.py /preview/dev/bindings/
 COPY duckdb-ffi/vendor/duckdb-api.json /preview/duckdb-ffi/vendor/
 COPY duckdb-ffi/cbits/duckdb*.h duckdb-ffi/cbits/duckdb-LICENSE /preview/duckdb-ffi/cbits/
 ARG DUCKDB_BUILD_JOBS=2
-RUN DUCKDB_BUILD_JOBS="$DUCKDB_BUILD_JOBS" bash /preview/scripts/build-duckdb-preview.sh /tmp/duckdb-preview && \
+RUN DUCKDB_BUILD_JOBS="$DUCKDB_BUILD_JOBS" bash /preview/dev/preview/build-duckdb.sh /tmp/duckdb-preview && \
     cp /tmp/duckdb-preview/native/libduckdb.so /usr/lib/ && \
     cp /tmp/duckdb-preview/native/duckdb*.h /usr/include/ && \
     install -Dm644 /tmp/duckdb-preview/native/duckdb-LICENSE /usr/share/licenses/duckdb/LICENSE && \

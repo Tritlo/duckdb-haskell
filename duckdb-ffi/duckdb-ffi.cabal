@@ -33,8 +33,6 @@ extra-source-files:
   cbits/duckdb_arrow.h
   cbits/duckdb_v2.h
   generated.sha256
-  scripts/generate-bindings.sh
-  scripts/GenerateBindings.hs
   vendor/duckdb-api.json
 
 source-repository head

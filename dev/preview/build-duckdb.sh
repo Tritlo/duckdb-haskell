@@ -10,7 +10,7 @@ case "$1" in
   *) echo "Use an absolute build directory." >&2; exit 2 ;;
 esac
 
-repo_dir=$(cd "$(dirname "$0")/.." && pwd)
+repo_dir=$(cd "$(dirname "$0")/../.." && pwd)
 build_dir=$1
 mkdir -p "$build_dir"
 source_info=$(python3 - "$repo_dir/duckdb-ffi/vendor/duckdb-api.json" <<'PY'
@@ -47,7 +47,7 @@ source_dir="$build_dir/duckdb-$commit"
 if [ ! -d "$source_dir" ]; then
   tar -xzf "$archive" -C "$build_dir"
 fi
-python3 "$repo_dir/scripts/duckdb-api.py" --compare-headers "$source_dir/src/include"
+python3 "$repo_dir/dev/bindings/duckdb-api.py" --compare-headers "$source_dir/src/include"
 cmake -S "$source_dir" -B "$build_dir/build" \
   -DCMAKE_BUILD_TYPE=Release -DBUILD_UNITTESTS=OFF -DBUILD_SHELL=OFF \
   '-DBUILD_EXTENSIONS=icu;json;parquet' \

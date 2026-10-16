@@ -9,12 +9,13 @@ case "${1:-}" in
 esac
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-package_dir=$(cd -- "$script_dir/.." && pwd)
+repo_dir=$(cd -- "$script_dir/../.." && pwd)
+package_dir="$repo_dir/duckdb-ffi"
 scratch_dir=$(mktemp -d)
 trap 'rm -rf -- "$scratch_dir"' EXIT
 cd -- "$package_dir"
 
-python3 "$script_dir/../../scripts/duckdb-api.py" --verify-headers
+python3 "$script_dir/duckdb-api.py" --verify-headers
 
 if [[ $(ghc-pkg field hs-bindgen version --simple-output) != "1.0.0.0" ]]; then
   echo "Use hs-bindgen 1.0.0.0 from dev/nix/generate.nix." >&2

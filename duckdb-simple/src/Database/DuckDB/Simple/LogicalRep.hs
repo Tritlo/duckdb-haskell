@@ -17,6 +17,7 @@ module Database.DuckDB.Simple.LogicalRep (
     unionValueTypeRep,
     logicalTypeToRep,
     logicalTypeFromRep,
+    logicalTypeFromRepWith,
     destroyLogicalType,
 ) where
 
@@ -134,9 +135,16 @@ logicalTypeToRep logical = do
             LogicalTypeEnum . listArray (0, size - 1) <$> mapM (string . fromIntegral) [0 .. size - 1]
         _ -> pure (LogicalTypeScalar dtype)
 
--- | Construct an owned logical type in the supplied connection.
+{- | Construct an owned logical type in the supplied connection.
+CRS labels must be recognized by the native type constructor. Use the resolver
+in 'logicalTypeFromRepWith' for SQL-derived types with arbitrary CRS labels.
+-}
 logicalTypeFromRep :: DuckDBV2ConnectionHandle -> LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle
-logicalTypeFromRep conn = create
+logicalTypeFromRep conn = logicalTypeFromRepWith conn (const (pure Nothing))
+
+-- | Construct a type tree. Use the resolver for owned native leaf types.
+logicalTypeFromRepWith :: DuckDBV2ConnectionHandle -> (LogicalTypeRep -> IO (Maybe DuckDBV2LogicalTypeHandle)) -> LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle
+logicalTypeFromRepWith conn resolve = create
   where
     owned = destroy c_duckdb_v2_value_destroy
     boxed rep = bracket (create rep) destroyLogicalType (output . c_duckdb_v2_value_create_type_with_connection conn)
@@ -152,7 +160,8 @@ logicalTypeFromRep conn = create
                     else withMany (\name action -> withIdentifier name (\(ConstPtr ptr) -> peek ptr >>= action)) names \identifiers ->
                         withArray identifiers \namePtr ->
                             output (c_duckdb_v2_connection_create_type_from_id conn dtype (ConstPtr namePtr) (ConstPtr valuePtr) (fromIntegral (length values)))
-    create = \case
+    create rep = resolve rep >>= maybe (constructRep rep) pure
+    constructRep = \case
         LogicalTypeScalar DuckDBV2LogicalTypeIdVariant -> fromText (Text.pack "VARIANT")
         LogicalTypeScalar DuckDBV2LogicalTypeIdGeometry -> fromText (Text.pack "GEOMETRY")
         LogicalTypeScalar DuckDBV2LogicalTypeIdSQLNull -> fromText (Text.pack "\"NULL\"")

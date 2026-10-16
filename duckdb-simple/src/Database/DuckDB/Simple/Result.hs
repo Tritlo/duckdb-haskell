@@ -19,8 +19,9 @@ import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue)
 import Database.DuckDB.Simple.FromRow (RowParser, parseRow, rowErrorsToSqlError)
 import Database.DuckDB.Simple.Internal
-import Database.DuckDB.Simple.Materialize (prepareVectorReader)
+import Database.DuckDB.Simple.Materialize (prepareVariantReader, prepareVectorReader)
 import Database.DuckDB.Simple.Ok (Ok (..))
+import Database.DuckDB.Simple.TypeCache (withTypeConnection)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Storable (peek)
 
@@ -63,7 +64,7 @@ resetStatementStream Statement{statementStream} =
 consumeStream :: IORef StatementStreamState -> RowParser r -> Statement -> StatementStream -> IO (Maybe r)
 consumeStream streamRef parser stmt stream = mask \restore -> do
     loaded <- case statementStreamChunk stream of
-        Nothing -> fetchChunk streamRef (statementConnection stmt) (statementQuery stmt) stream
+        Nothing -> restore (fetchChunk streamRef (statementConnection stmt) (statementQuery stmt) stream)
         Just _ -> pure stream
     writeIORef streamRef (StatementStreamActive loaded)
     case statementStreamChunk loaded of
@@ -130,7 +131,7 @@ startResultStream mode conn result = mask_ do
                         pure (Just (StatementStream result columns chunks Nothing mode))
 
 fetchChunk :: IORef StatementStreamState -> Connection -> Query -> StatementStream -> IO StatementStream
-fetchChunk ref conn queryText stream = withQueryError queryText do
+fetchChunk ref conn queryText stream = withQueryError queryText $ mask \restore -> do
     (chunk, remaining) <- case statementStreamPendingChunks stream of
         next : rest -> pure (next, rest)
         [] | statementStreamResult stream == nullHandle -> pure (nullHandle, [])
@@ -147,16 +148,16 @@ fetchChunk ref conn queryText stream = withQueryError queryText do
                 then do
                     writeIORef ref (StatementStreamActive nextStream)
                     destroyDataChunk chunk
-                    fetchChunk ref conn queryText nextStream
+                    restore (fetchChunk ref conn queryText nextStream)
                 else do
-                    readers <- prepareChunkReaders chunk (statementStreamColumns stream)
+                    readers <- restore (prepareChunkReaders conn chunk (statementStreamColumns stream))
                     pure nextStream{statementStreamChunk = Just (StatementStreamChunk chunk rowCount 0 readers)}
 
 -- | Prepare readers that borrow the vectors in an owned chunk.
-prepareChunkReaders :: DuckDBV2DataChunkHandle -> [StatementStreamColumn] -> IO [Int -> IO FieldValue]
-prepareChunkReaders chunk columns =
+prepareChunkReaders :: Connection -> DuckDBV2DataChunkHandle -> [StatementStreamColumn] -> IO [Int -> IO FieldValue]
+prepareChunkReaders conn chunk columns = withTypeCache conn \cache ->
     forM columns \StatementStreamColumn{statementStreamColumnIndex} ->
-        output (c_duckdb_v2_data_chunk_get_vector chunk (fromIntegral statementStreamColumnIndex)) >>= prepareVectorReader
+        output (c_duckdb_v2_data_chunk_get_vector chunk (fromIntegral statementStreamColumnIndex)) >>= prepareVectorReader (\vector -> withTypeConnection cache (\helper -> prepareVariantReader helper vector))
 
 finalizeStream :: StatementStream -> IO ()
 finalizeStream StatementStream{statementStreamResult, statementStreamChunk, statementStreamPendingChunks} =
@@ -168,23 +169,23 @@ finalizeChunk StatementStreamChunk{statementStreamChunkPtr} = destroyDataChunk s
 
 -- | Decode all rows after the statement has materialized its native chunks.
 collectRows :: Statement -> IO [[Field]]
-collectRows stmt = collectStreamRows (statementQuery stmt) (startStatementStream MaterializedResult stmt)
+collectRows stmt = collectStreamRows (statementConnection stmt) (statementQuery stmt) (startStatementStream MaterializedResult stmt)
 
 -- | Execute a parsed statement directly and materialize its owned native chunks.
 collectParsedRows :: Connection -> Query -> DuckDBV2SqlStatementHandle -> IO [[Field]]
-collectParsedRows conn query parsed = collectStreamRows query $ mask_ do
+collectParsedRows conn query parsed = collectStreamRows conn query $ mask_ do
     result <- executeParsedResult conn query parsed
     startResultStream MaterializedResult conn result
 
 -- | Decode owned materialized chunks and release them on every exit path.
-collectStreamRows :: Query -> IO (Maybe StatementStream) -> IO [[Field]]
-collectStreamRows query acquire = withQueryError query $
+collectStreamRows :: Connection -> Query -> IO (Maybe StatementStream) -> IO [[Field]]
+collectStreamRows conn query acquire = withQueryError query $
     bracket acquire (mapM_ finalizeStream) \case
         Nothing -> pure []
         Just owned -> do
             rows <- forM (statementStreamPendingChunks owned) \chunk -> do
                 rowCount <- fromIntegral <$> output (c_duckdb_v2_data_chunk_get_size chunk)
-                readers <- prepareChunkReaders chunk (statementStreamColumns owned)
+                readers <- prepareChunkReaders conn chunk (statementStreamColumns owned)
                 mapM (buildMaterializedRow (statementStreamColumns owned) readers) [0 .. rowCount - 1]
             pure (concat rows)
 

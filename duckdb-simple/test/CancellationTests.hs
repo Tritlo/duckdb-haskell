@@ -13,8 +13,8 @@ import Data.IORef (atomicWriteIORef, newIORef, readIORef)
 import Data.Int (Int64)
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.Arrow (foldArrow_)
-import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Database.DuckDB.Simple.Internal (c_duckdb_v2_connection_interrupt, c_duckdb_v2_result_drain, checked, output, runInterruptibleQuery, withConnectionHandle, withResult)
+import qualified Database.DuckDB.Simple.Streaming as Streaming
 import GHC.Conc (BlockReason (..), ThreadStatus (..), threadStatus)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)

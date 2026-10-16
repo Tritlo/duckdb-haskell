@@ -105,7 +105,7 @@ tests =
                     query_ conn "SELECT tags['storage_version'] FROM duckdb_databases() WHERE NOT internal" >>= (@?= [Only ("v2.0.0+" :: Text)])
                 withConnection path \conn -> do
                     query_ conn "SELECT tags['storage_version'] FROM duckdb_databases() WHERE NOT internal" >>= (@?= [Only ("v2.0.0+" :: Text)])
-                    query_ conn "SELECT value.n::BIGINT, value.text::VARCHAR FROM stored" >>= (@?= [(7 :: Int64, "saved" :: Text)])
+                    query_ conn "SELECT value FROM stored" >>= (@?= [Only value])
         , testCase "VARIANT values survive native storage and explicit Parquet shredding" $
             withFiles \path -> do
                 let parquet = path <> ".parquet"
@@ -116,6 +116,7 @@ tests =
                     void (execute_ conn "CHECKPOINT")
                 withConnectionWithConfig path [("storage_compatibility_version", "v1.5.0")] \conn -> do
                     query_ conn "SELECT v.n::BIGINT, v.text::VARCHAR FROM variants WHERE i % 2048 = 0 ORDER BY i" >>= (@?= expected)
+                    query_ conn "SELECT v FROM variants WHERE i % 2048 = 0 ORDER BY i" >>= (@?= [Only (Variant (variantObject [("n", FieldInt64 i), ("text", FieldText text)])) | (i, text) <- expected])
                     void (execute conn "COPY variants TO ? (FORMAT PARQUET, SHREDDING {'v': 'STRUCT(n BIGINT, text VARCHAR)'})" (Only (Text.pack parquet)))
                     query conn "SELECT v.n::BIGINT, v.text::VARCHAR FROM read_parquet(?) WHERE i % 2048 = 0 ORDER BY i" (Only (Text.pack parquet)) >>= (@?= expected)
                     query conn "SELECT count(*) > 0 FROM parquet_schema(?) WHERE name='typed_value'" (Only (Text.pack parquet)) >>= (@?= [Only True])

@@ -5,13 +5,16 @@
 {-# LANGUAGE TypeApplications #-}
 
 module Database.DuckDB.Simple.Materialize (
+    VariantReader,
+    prepareVariantReader,
     prepareValueReader,
     prepareVectorReader,
 ) where
 
-import Control.Exception (throwIO)
+import Control.Exception (bracket, throwIO)
 import Control.Monad (forM, when)
 import Data.Array (Array, elems, listArray)
+import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Int (Int16, Int32, Int64)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
@@ -40,15 +43,34 @@ import Database.DuckDB.Simple.LogicalRep (
     logicalTypeToRep,
  )
 import Database.DuckDB.Simple.Native
-import Database.DuckDB.Simple.VariantCodec (decodeVariant, prepareVariantDecoder)
+import qualified Database.DuckDB.Simple.VariantCodec as VariantCodec
 import Foreign.C.ConstPtr (ConstPtr (..))
+import Foreign.Marshal.Array (withArray)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (Storable (..), peekElemOff)
 import GHC.Records (getField)
 
+-- | Prepare copied VARIANT rows with a dedicated metadata connection.
+type VariantReader = DuckDBV2VectorHandle -> IO (Int -> IO FieldValue)
+
+-- | Copy VARIANT rows before releasing the borrowed metadata connection.
+prepareVariantReader :: DuckDBV2ConnectionHandle -> VariantReader
+prepareVariantReader = VariantCodec.prepareVariantDecoder materializeScalarValue
+
+-- | Decode one scalar after the VARIANT decoder casts it to its exact type.
+materializeScalarValue :: DuckDBV2ConnectionHandle -> DuckDBV2ValueHandle -> IO FieldValue
+materializeScalarValue connection value =
+    bracket (output (c_duckdb_v2_value_get_logical_type value)) (destroy c_duckdb_v2_logical_type_destroy) \logical ->
+        withArray [logical] \types ->
+            bracket (output (c_duckdb_v2_data_chunk_create_with_connection connection (ConstPtr types) 1)) (destroy c_duckdb_v2_data_chunk_destroy) \chunk -> do
+                vector <- output (c_duckdb_v2_data_chunk_get_vector chunk 0)
+                checked (c_duckdb_v2_vector_set_size vector 1)
+                checked (c_duckdb_v2_vector_set_value vector 0 value)
+                prepareVectorReader (\_ -> throwIO (userError "duckdb-simple: expected a scalar VARIANT cast")) vector >>= ($ 0)
+
 -- | Read the type, data, and validity of a vector, and prepare its reader.
-prepareVectorReader :: DuckDBV2VectorHandle -> IO (Int -> IO FieldValue)
-prepareVectorReader vector = do
+prepareVectorReader :: VariantReader -> DuckDBV2VectorHandle -> IO (Int -> IO FieldValue)
+prepareVectorReader variantReader vector = do
     -- Flatten before borrowing buffers. Nested children then use physical row indices.
     checked (c_duckdb_v2_vector_flatten vector)
     dtype <- vectorElementType vector
@@ -56,7 +78,7 @@ prepareVectorReader vector = do
     let ConstPtr dataPtr = getField @"data'" view
         ConstPtr validity = getField @"validity" view
         ConstPtr selection = getField @"sel" view
-    readValue <- prepareValueReader dtype vector dataPtr validity
+    readValue <- prepareValueReader variantReader dtype vector dataPtr validity
     pure \row -> do
         when (row < 0 || fromIntegral row >= getField @"count" view) $
             throwIO (userError "duckdb-simple: vector row index out of range")
@@ -64,12 +86,15 @@ prepareVectorReader vector = do
         readValue physical
 
 -- | Prepare metadata once for a vector. The reader must not outlive its chunk.
-prepareValueReader :: DuckDBV2LogicalTypeId -> DuckDBV2VectorHandle -> Ptr Void -> Ptr Word64 -> IO (Int -> IO FieldValue)
-prepareValueReader dtype vector dataPtr validity = case dtype of
-    DuckDBV2LogicalTypeIdVariant -> prepareVariantDecoder vector
+prepareValueReader :: VariantReader -> DuckDBV2LogicalTypeId -> DuckDBV2VectorHandle -> Ptr Void -> Ptr Word64 -> IO (Int -> IO FieldValue)
+prepareValueReader variantReader dtype vector dataPtr validity = case dtype of
+    DuckDBV2LogicalTypeIdVariant -> variantReader vector
     DuckDBV2LogicalTypeIdGeometry -> whenValid FieldGeometry <$> prepareGeometryDecoder vector dataPtr
-    DuckDBV2LogicalTypeIdStruct -> whenValid FieldStruct <$> prepareStructDecoder vector
-    DuckDBV2LogicalTypeIdUnion -> whenValid FieldUnion <$> prepareUnionDecoder vector
+    DuckDBV2LogicalTypeIdArray -> whenValid FieldArray <$> prepareArrayDecoder variantReader vector
+    DuckDBV2LogicalTypeIdList -> whenValid FieldList <$> prepareListDecoder variantReader vector dataPtr
+    DuckDBV2LogicalTypeIdMap -> whenValid FieldMap <$> prepareMapDecoder variantReader vector dataPtr
+    DuckDBV2LogicalTypeIdStruct -> whenValid FieldStruct <$> prepareStructDecoder variantReader vector
+    DuckDBV2LogicalTypeIdUnion -> whenValid FieldUnion <$> prepareUnionDecoder variantReader vector
     _ -> pure (materializeValue dtype vector dataPtr validity)
   where
     whenValid wrap decode row = do
@@ -94,8 +119,6 @@ materializeValue dtype vector dataPtr validity rowIdx = do
     if not valid
         then pure FieldNull
         else case dtype of
-            DuckDBV2LogicalTypeIdGeometry -> FieldGeometry <$> (prepareGeometryDecoder vector dataPtr >>= ($ rowIdx))
-            DuckDBV2LogicalTypeIdVariant -> decodeVariant vector rowIdx
             DuckDBV2LogicalTypeIdDecimal ->
                 withVectorType vector \logical -> do
                     rep <- logicalTypeToRep logical
@@ -113,11 +136,6 @@ materializeValue dtype vector dataPtr validity rowIdx = do
                                             then toInteger <$> peekElemOff (castPtr dataPtr :: Ptr Int64) rowIdx
                                             else duckDBHugeIntToInteger <$> peekElemOff (castPtr dataPtr :: Ptr DuckDBV2HugeintT) rowIdx
                     pure (FieldDecimal (DecimalValue width scale rawValue))
-            DuckDBV2LogicalTypeIdArray -> FieldArray <$> decodeArrayElements vector rowIdx
-            DuckDBV2LogicalTypeIdList -> FieldList <$> decodeListElements vector dataPtr rowIdx
-            DuckDBV2LogicalTypeIdMap -> FieldMap <$> decodeMapPairs vector dataPtr rowIdx
-            DuckDBV2LogicalTypeIdStruct -> FieldStruct <$> (prepareStructDecoder vector >>= ($ rowIdx))
-            DuckDBV2LogicalTypeIdUnion -> FieldUnion <$> (prepareUnionDecoder vector >>= ($ rowIdx))
             DuckDBV2LogicalTypeIdEnum ->
                 withVectorType vector \logical -> do
                     count <- output (c_duckdb_v2_logical_type_get_param_count logical)
@@ -130,8 +148,8 @@ materializeValue dtype vector dataPtr validity rowIdx = do
             DuckDBV2LogicalTypeIdSQLNull -> pure FieldNull
             _ -> decodeElement dtype dataPtr rowIdx
 
-decodeArrayElements :: DuckDBV2VectorHandle -> Int -> IO (Array Int FieldValue)
-decodeArrayElements vector rowIdx = do
+prepareArrayDecoder :: VariantReader -> DuckDBV2VectorHandle -> IO (Int -> IO (Array Int FieldValue))
+prepareArrayDecoder variantReader vector = do
     arraySize <-
         withVectorType vector \logical -> do
             rep <- logicalTypeToRep logical
@@ -141,29 +159,25 @@ decodeArrayElements vector rowIdx = do
     childVec <- vectorChild vector 0
     when (childVec == DuckDBV2VectorHandle nullPtr) $
         throwIO (userError "duckdb-simple: array child vector is null")
-    readChild <- prepareVectorReader childVec
-    let baseIdx = rowIdx * arraySize
-    values <-
-        forM [0 .. arraySize - 1] \delta ->
-            readChild (baseIdx + delta)
-    pure $
-        listArray (0, arraySize - 1) values
+    readChild <- prepareVectorReader variantReader childVec
+    pure \rowIdx -> do
+        let baseIdx = rowIdx * arraySize
+        values <- forM [0 .. arraySize - 1] \delta -> readChild (baseIdx + delta)
+        pure (listArray (0, arraySize - 1) values)
 
-decodeListElements :: DuckDBV2VectorHandle -> Ptr Void -> Int -> IO [FieldValue]
-decodeListElements vector dataPtr rowIdx = do
-    entry <- peekElemOff (castPtr dataPtr :: Ptr DuckDBV2ListEntry) rowIdx
-    (baseIdx, len) <- listEntryBounds (Text.pack "list") entry
+prepareListDecoder :: VariantReader -> DuckDBV2VectorHandle -> Ptr Void -> IO (Int -> IO [FieldValue])
+prepareListDecoder variantReader vector dataPtr = do
     childVec <- vectorChild vector 0
     when (childVec == DuckDBV2VectorHandle nullPtr) $
         throwIO (userError "duckdb-simple: list child vector is null")
-    readChild <- prepareVectorReader childVec
-    forM [0 .. len - 1] \delta ->
-        readChild (baseIdx + delta)
+    readChild <- prepareVectorReader variantReader childVec
+    pure \rowIdx -> do
+        entry <- peekElemOff (castPtr dataPtr :: Ptr DuckDBV2ListEntry) rowIdx
+        (baseIdx, len) <- listEntryBounds (Text.pack "list") entry
+        forM [0 .. len - 1] \delta -> readChild (baseIdx + delta)
 
-decodeMapPairs :: DuckDBV2VectorHandle -> Ptr Void -> Int -> IO [(FieldValue, FieldValue)]
-decodeMapPairs vector dataPtr rowIdx = do
-    entry <- peekElemOff (castPtr dataPtr :: Ptr DuckDBV2ListEntry) rowIdx
-    (baseIdx, len) <- listEntryBounds (Text.pack "map") entry
+prepareMapDecoder :: VariantReader -> DuckDBV2VectorHandle -> Ptr Void -> IO (Int -> IO [(FieldValue, FieldValue)])
+prepareMapDecoder variantReader vector dataPtr = do
     structVec <- vectorChild vector 0
     when (structVec == DuckDBV2VectorHandle nullPtr) $
         throwIO (userError "duckdb-simple: map struct vector is null")
@@ -171,19 +185,22 @@ decodeMapPairs vector dataPtr rowIdx = do
     valueVec <- vectorChild structVec 1
     when (keyVec == DuckDBV2VectorHandle nullPtr || valueVec == DuckDBV2VectorHandle nullPtr) $
         throwIO (userError "duckdb-simple: map child vectors are null")
-    readKey <- prepareVectorReader keyVec
-    readValue <- prepareVectorReader valueVec
-    forM [0 .. len - 1] \delta -> do
-        let childIdx = baseIdx + delta
-        keyValue <- readKey childIdx
-        valueValue <- readValue childIdx
-        pure (keyValue, valueValue)
+    readKey <- prepareVectorReader variantReader keyVec
+    readValue <- prepareVectorReader variantReader valueVec
+    pure \rowIdx -> do
+        entry <- peekElemOff (castPtr dataPtr :: Ptr DuckDBV2ListEntry) rowIdx
+        (baseIdx, len) <- listEntryBounds (Text.pack "map") entry
+        forM [0 .. len - 1] \delta -> do
+            let childIdx = baseIdx + delta
+            keyValue <- readKey childIdx
+            valueValue <- readValue childIdx
+            pure (keyValue, valueValue)
 
 {- | Read the STRUCT type and prepare a reader for each child once for a vector.
 The decoder reads a valid row. It must not outlive its chunk.
 -}
-prepareStructDecoder :: DuckDBV2VectorHandle -> IO (Int -> IO (StructValue FieldValue))
-prepareStructDecoder vector =
+prepareStructDecoder :: VariantReader -> DuckDBV2VectorHandle -> IO (Int -> IO (StructValue FieldValue))
+prepareStructDecoder variantReader vector =
     withVectorType vector \logical -> do
         structTypeRep <- logicalTypeToRep logical
         structFields <-
@@ -205,7 +222,7 @@ prepareStructDecoder vector =
                 childVec <- vectorChild vector (fromIntegral childIdx)
                 when (childVec == DuckDBV2VectorHandle nullPtr) $
                     throwIO (userError "duckdb-simple: struct child vector is null")
-                readChild <- prepareVectorReader childVec
+                readChild <- prepareVectorReader variantReader childVec
                 pure (structFieldName, readChild)
         pure \rowIdx -> do
             valueFields <-
@@ -224,8 +241,8 @@ prepareStructDecoder vector =
 {- | Read the UNION type and prepare the tag reader and a reader for each member
 once for a vector. The decoder reads a valid row. It must not outlive its chunk.
 -}
-prepareUnionDecoder :: DuckDBV2VectorHandle -> IO (Int -> IO (UnionValue FieldValue))
-prepareUnionDecoder vector =
+prepareUnionDecoder :: VariantReader -> DuckDBV2VectorHandle -> IO (Int -> IO (UnionValue FieldValue))
+prepareUnionDecoder variantReader vector =
     withVectorType vector \logical -> do
         unionTypeRep <- logicalTypeToRep logical
         membersArray <-
@@ -243,13 +260,22 @@ prepareUnionDecoder vector =
         tagVec <- vectorChild vector 0
         when (tagVec == DuckDBV2VectorHandle nullPtr) $
             throwIO (userError "duckdb-simple: union tag vector is null")
-        readTag <- prepareVectorReader tagVec
+        readTag <- prepareVectorReader variantReader tagVec
         memberReaders <-
             forM [1 .. memberCount] \childIdx -> do
                 memberVec <- vectorChild vector (fromIntegral childIdx)
                 when (memberVec == DuckDBV2VectorHandle nullPtr) $
                     throwIO (userError "duckdb-simple: union member vector is null")
-                pure (\row -> prepareVectorReader memberVec >>= ($ row))
+                prepared <- newIORef Nothing
+                pure \row -> do
+                    cached <- readIORef prepared
+                    readMember <- case cached of
+                        Just reader -> pure reader
+                        Nothing -> do
+                            reader <- prepareVectorReader variantReader memberVec
+                            writeIORef prepared (Just reader)
+                            pure reader
+                    readMember row
         pure \rowIdx -> do
             memberIdx <- readTag rowIdx >>= unionTagIndex
             when (memberIdx < 0 || memberIdx >= memberCount) $

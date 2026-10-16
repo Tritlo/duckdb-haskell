@@ -1,6 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# OPTIONS_GHC -Wno-deprecations #-}
+{-# LANGUAGE PatternSynonyms #-}
 
 module GeometryRegressionTests (tests) where
 
@@ -15,13 +15,15 @@ import Data.Int (Int64)
 import Data.List (isInfixOf)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
+import qualified Data.Text as Text
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
+import Database.DuckDB.FFI.V2 (pattern DuckDBV2LogicalTypeIdBigInt, pattern DuckDBV2LogicalTypeIdVarchar)
 import Database.DuckDB.Simple
-import Database.DuckDB.Simple.FromField (FieldValue (..), StructValue (..), UnionValue)
+import Database.DuckDB.Simple.FromField (FieldValue (..), StructValue (..), UnionValue (..))
 import Database.DuckDB.Simple.Geometry (RawGeometry (..), fromRawGeometry, toRawGeometry)
 import Database.DuckDB.Simple.Internal (withConnectionHandle)
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), destroyLogicalType, logicalTypeFromRep, logicalTypeToRep)
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), UnionMemberType (..), destroyLogicalType, logicalTypeFromRep, logicalTypeToRep)
 import qualified Database.DuckDB.Simple.Streaming as Streaming
 import GHC.Float (castWord64ToDouble)
 import System.Mem (performMajorGC)
@@ -289,12 +291,37 @@ tests =
                 (query conn "SELECT ?" (Only value) :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only value])
                 _ <- execute conn "INSERT INTO nested VALUES (?)" (Only value)
                 (query_ conn "SELECT v FROM nested" :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only value, Only value])
-        , testCase "recognized CRS definitions retain metadata and unknown names fail" $ do
+        , testCase "configured custom CRS and recognized definitions retain metadata" $ do
             let crs = "local' íslenska λ"
             withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = [crs]} \conn -> do
-                assertFailureIO (query conn "SELECT ?" (Only (nullShape crs)) :: IO [Only (StructValue FieldValue)])
+                [Only typed] <- query conn "SELECT typeof(?)" (Only (nullShape crs)) :: IO [Only Text]
+                assertBool (Text.unpack typed) ("íslenska λ" `Text.isInfixOf` typed)
+                (query conn "SELECT ?" (Only (nullShape crs))) >>= (@?= [Only (nullShape crs)])
                 (query conn "SELECT typeof(?)" (Only (nullShape "OGC:CRS84")) :: IO [Only Text]) >>= (@?= [Only "STRUCT(shape GEOMETRY('OGC:CRS84'))"])
                 (query conn "SELECT ?" (Only (nullShape "OGC:CRS84"))) >>= (@?= [Only (nullShape "OGC:CRS84")])
+        , testCase "configured CRS survives nested parameter types and prepared rebinding" $ do
+            let crs = "local' íslenska λ"
+                value = nestedNullShapes crs
+                array = listArray (0 :: Int, 0) [value]
+            withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = [crs, crs]} \conn -> do
+                (query conn "SELECT ?" (Only value)) >>= (@?= [Only value])
+                (queryNamed conn "SELECT $shape" ["shape" := value]) >>= (@?= [Only value])
+                (query conn "SELECT ?" (Only array)) >>= (@?= [Only array])
+                withStatement conn "SELECT ?" \stmt -> do
+                    bind stmt [toField value]
+                    nextRow stmt >>= (@?= Just (Only value))
+                    bind stmt [toField value]
+                    nextRow stmt >>= (@?= Just (Only value))
+        , testCase "lazy CRS lookup leaves an active caller stream usable" $ do
+            let crs = "local' íslenska λ"
+            withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = [crs]} \conn ->
+                withStatement conn "SELECT ?" \parameter -> do
+                    withStatement conn "SELECT i::BIGINT FROM range(3) t(i)" \stmt -> do
+                        Streaming.nextRow stmt >>= (@?= Just (Only (0 :: Int64)))
+                        bind parameter [toField (nullShape crs)]
+                        performMajorGC
+                        Streaming.nextRow stmt >>= (@?= Just (Only (1 :: Int64)))
+                    nextRow parameter >>= (@?= Just (Only (nullShape crs)))
         , testCase "unknown CRS cannot silently drop metadata" $
             withConnectionWithConfig ":memory:" [("ignore_unknown_crs", "true")] \conn ->
                 assertFailureIO (query conn "SELECT ?" (Only (nullShape "local grid")) :: IO [Only (StructValue FieldValue)])
@@ -333,6 +360,34 @@ nullShape crs =
         , structValueTypes = listArray (0, 0) [StructField "shape" (LogicalTypeGeometry (Just crs))]
         , structValueIndex = Map.singleton "shape" 0
         }
+
+-- | Retain custom CRS metadata in NULL, empty, and inactive nested values.
+nestedNullShapes :: Text -> StructValue FieldValue
+nestedNullShapes crs =
+    StructValue
+        { structValueFields = listArray (0, length fields - 1) [StructField name value | (name, value, _) <- fields]
+        , structValueTypes = listArray (0, length fields - 1) [StructField name logical | (name, _, logical) <- fields]
+        , structValueIndex = Map.fromList (zip [name | (name, _, _) <- fields] [0 ..])
+        }
+  where
+    geometry = LogicalTypeGeometry (Just crs)
+    list = LogicalTypeList geometry
+    array = LogicalTypeArray geometry 2
+    mapping = LogicalTypeMap (LogicalTypeScalar DuckDBV2LogicalTypeIdVarchar) geometry
+    members = listArray (0, 1) [UnionMemberType "number" (LogicalTypeScalar DuckDBV2LogicalTypeIdBigInt), UnionMemberType "shape" geometry]
+    inactive = UnionValue 0 "number" (FieldInt64 42) members
+    shape = nullShape crs
+    fields =
+        [ ("null_list", FieldNull, list)
+        , ("empty_list", FieldList [], list)
+        , ("null_array", FieldNull, array)
+        , ("array", FieldArray (listArray (0, 1) [FieldNull, FieldNull]), array)
+        , ("null_map", FieldNull, mapping)
+        , ("empty_map", FieldMap [], mapping)
+        , ("map", FieldMap [(FieldText "one", FieldNull)], mapping)
+        , ("inactive", FieldUnion inactive, LogicalTypeUnion members)
+        , ("nested", FieldStruct shape, LogicalTypeStruct (structValueTypes shape))
+        ]
 
 -- | Exercise all coordinate layouts with explicit point and sequence constructors.
 shapeRoundTrips :: (G.Coordinate coord) => Connection -> G.Dimensions -> (coord -> G.Point) -> (U.Vector coord -> G.Coordinates) -> coord -> coord -> Assertion

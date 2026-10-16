@@ -180,8 +180,9 @@ data ConnectionOptions = ConnectionOptions
     { connectionConfig :: [(Text, Text)]
     -- ^ DuckDB configuration flags, as for 'openWithConfig'.
     , connectionGeometryCRS :: [Text]
-    {- ^ CRS definitions to validate at connection creation. V2 constructs
-    GEOMETRY types directly. It does not require a separate type query.
+    {- ^ CRS definitions to preserve in composite parameters. A helper
+    connection reads and caches their SQL-derived types on first use.
+    The default is @OGC:CRS84@. Include custom CRS names in this list.
     -}
     }
     deriving (Eq, Show)

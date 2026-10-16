@@ -23,8 +23,8 @@ import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.Arrow (releaseArrowArray, releaseArrowSchema)
 import qualified Database.DuckDB.Simple.Arrow as Arrow
-import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Database.DuckDB.Simple.Internal (peekUtf8CString)
+import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (peekCString)
 import Foreign.Marshal.Alloc (alloca)

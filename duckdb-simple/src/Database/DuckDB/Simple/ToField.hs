@@ -66,7 +66,7 @@ import Database.DuckDB.Simple.LogicalRep (
  )
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
-import Database.DuckDB.Simple.TypeCache (TypeCache, typeCacheConnection)
+import Database.DuckDB.Simple.TypeCache (TypeCache, cachedLogicalType, typeCacheConnection)
 import Database.DuckDB.Simple.Types (Null (..))
 import Database.DuckDB.Simple.Variant (Variant (..))
 import Foreign.C.ConstPtr (ConstPtr (..))
@@ -93,7 +93,9 @@ data FieldBinding = FieldBinding
 
 -- | Low-level class for values that can be marshalled directly into `DuckDBV2ValueHandle`s.
 class (DuckDBColumnType a) => ToDuckValue a where
-    -- | Construct an owned value. Keep the connection alive until it is destroyed.
+    {- | Construct an owned value. Keep the connection alive until it is destroyed.
+    Use 'ToField' to resolve arbitrary CRS labels from connection options.
+    -}
     toDuckValue :: DuckDBV2ConnectionHandle -> a -> IO DuckDBV2ValueHandle
 
 valueBinding :: String -> (DuckDBV2ConnectionHandle -> IO DuckDBV2ValueHandle) -> FieldBinding
@@ -120,7 +122,7 @@ temporalValueBinding display source value makeDefault =
         let precise = timestampTypeForTarget target source
         if precise == source
             then makeDefault cache
-            else fieldValueWithTypeDuckValue (typeCacheConnection cache) precise (valueWithTypeMetadata precise value)
+            else fieldValueWithTypeDuckValue (cachedLogicalType cache) (typeCacheConnection cache) precise (valueWithTypeMetadata precise value)
 
 -- | Read the element type of a prepared LIST or ARRAY parameter.
 collectionChildType :: Maybe LogicalTypeRep -> Maybe LogicalTypeRep
@@ -227,7 +229,7 @@ instance ToField G.Geometry
 instance ToField Variant where
     toField value =
         cacheValueBinding (show value) \cache ->
-            variantDuckValue (typeCacheConnection cache) (variantPayload value)
+            variantDuckValue (cachedLogicalType cache) (typeCacheConnection cache) (variantPayload value)
 
 instance ToField UTCTime where
     toField value = temporalValueBinding (show value) (LogicalTypeScalar DuckDBV2LogicalTypeIdTimestampTz) (FieldTimestampTZ (Finite value)) (\cache -> utcTimeDuckValue (typeCacheConnection cache) value)
@@ -242,13 +244,13 @@ instance ToField BigNum where
 instance ToField (StructValue FieldValue) where
     toField structVal =
         temporalValueBinding "<struct>" (structValueTypeRep structVal) (FieldStruct structVal) \cache ->
-            structValueDuckValue (typeCacheConnection cache) structVal
+            structValueDuckValue (cachedLogicalType cache) (typeCacheConnection cache) structVal
 
 instance ToField (UnionValue FieldValue) where
     toField unionVal =
         let label = Text.unpack (unionValueLabel unionVal)
          in temporalValueBinding ("<union " <> label <> ">") (unionValueTypeRep unionVal) (FieldUnion unionVal) \cache ->
-                unionValueDuckValue (typeCacheConnection cache) unionVal
+                unionValueDuckValue (cachedLogicalType cache) (typeCacheConnection cache) unionVal
 
 instance DuckDBColumnType BitString where
     duckdbColumnTypeFor _ = "BIT"
@@ -266,7 +268,7 @@ instance (DuckDBColumnType a, ToField a) => ToField (Array Int a) where
             \cache readTarget -> do
                 target <- readTarget
                 let childTarget = collectionChildType target
-                arrayDuckValue (typeCacheConnection cache) childTarget (\value -> fieldBindingValue (toField value) cache (pure childTarget)) arr
+                arrayDuckValue (cachedLogicalType cache) (typeCacheConnection cache) childTarget (\value -> fieldBindingValue (toField value) cache (pure childTarget)) arr
 
 instance (ToField a) => ToField (Maybe a) where
     toField Nothing = nullBinding "Nothing"
@@ -476,8 +478,8 @@ utcTimestampDuckValue :: DuckDBV2ConnectionHandle -> UTCTimestamp -> IO DuckDBV2
 utcTimestampDuckValue conn value = encodeUnbounded (encodeTimestampUnits 1000000 . utcToLocalTime utc) value >>= output . c_duckdb_v2_value_create_timestamp_tz_with_connection conn
 
 -- | Construct an ARRAY value and retain its element type for empty arrays.
-arrayDuckValue :: forall a. (DuckDBColumnType a) => DuckDBV2ConnectionHandle -> Maybe LogicalTypeRep -> (a -> IO DuckDBV2ValueHandle) -> Array Int a -> IO DuckDBV2ValueHandle
-arrayDuckValue conn target elementValue array = do
+arrayDuckValue :: forall a. (DuckDBColumnType a) => (LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle) -> DuckDBV2ConnectionHandle -> Maybe LogicalTypeRep -> (a -> IO DuckDBV2ValueHandle) -> Array Int a -> IO DuckDBV2ValueHandle
+arrayDuckValue makeType conn target elementValue array = do
     when (null (elems array)) $
         throwIO (SQLError "duckdb-simple: empty ARRAY parameters are unavailable in DuckDB's V2 API; use an explicit SQL empty LIST" Nothing Nothing)
     withCreatedValues (map elementValue (elems array)) \values ->
@@ -487,7 +489,7 @@ arrayDuckValue conn target elementValue array = do
   where
     typeName = duckdbColumnType (Proxy :: Proxy a)
     withElementType values action = case duckDBTypeFromName typeName of
-        Just dtype -> bracket (logicalTypeFromRep conn (timestampTypeForTarget target (LogicalTypeScalar dtype))) destroyLogicalType action
+        Just dtype -> bracket (makeType (timestampTypeForTarget target (LogicalTypeScalar dtype))) destroyLogicalType action
         Nothing -> do
             present <- filterM (fmap (== 0) . output . c_duckdb_v2_value_is_null) values
             case present of
@@ -506,26 +508,26 @@ arrayDuckValue conn target elementValue array = do
                             }
 
 -- | Construct named fields. The native call copies the field values.
-structValueDuckValue :: DuckDBV2ConnectionHandle -> StructValue FieldValue -> IO DuckDBV2ValueHandle
-structValueDuckValue conn StructValue{structValueFields, structValueTypes} = do
+structValueDuckValue :: (LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle) -> DuckDBV2ConnectionHandle -> StructValue FieldValue -> IO DuckDBV2ValueHandle
+structValueDuckValue makeType conn StructValue{structValueFields, structValueTypes} = do
     let fields = elems structValueFields
         types = elems structValueTypes
         names = map structFieldName fields
     when (names /= map structFieldName types) $
         throwIO (userError "duckdb-simple: struct value/type fields mismatch")
-    withCreatedValues (zipWith (\field logical -> fieldValueWithTypeDuckValue conn (structFieldValue logical) (structFieldValue field)) fields types) \values ->
+    withCreatedValues (zipWith (\field logical -> fieldValueWithTypeDuckValue makeType conn (structFieldValue logical) (structFieldValue field)) fields types) \values ->
         withIdentifiers names \namePtr -> withDuckValues values \valuePtr ->
             output (c_duckdb_v2_value_create_struct_with_connection conn (ConstPtr namePtr) (ConstPtr valuePtr) (fromIntegral (length values)))
 
 -- | Build one UNION row through its public tag and member vectors.
-unionValueDuckValue :: DuckDBV2ConnectionHandle -> UnionValue FieldValue -> IO DuckDBV2ValueHandle
-unionValueDuckValue conn UnionValue{unionValueIndex, unionValueLabel, unionValuePayload, unionValueMembers} = do
+unionValueDuckValue :: (LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle) -> DuckDBV2ConnectionHandle -> UnionValue FieldValue -> IO DuckDBV2ValueHandle
+unionValueDuckValue makeType conn UnionValue{unionValueIndex, unionValueLabel, unionValuePayload, unionValueMembers} = do
     let members = elems unionValueMembers
         index = fromIntegral unionValueIndex
     when (index >= length members) $ throwIO (userError "duckdb-simple: union value tag out of range")
     let UnionMemberType name rep = members !! index
     when (name /= unionValueLabel) $ throwIO (userError "duckdb-simple: union tag and member name mismatch")
-    bracket (logicalTypeFromRep conn (LogicalTypeUnion unionValueMembers)) destroyLogicalType \logical ->
+    bracket (makeType (LogicalTypeUnion unionValueMembers)) destroyLogicalType \logical ->
         withArray [logical] \typePtr ->
             bracket (output (c_duckdb_v2_data_chunk_create_with_connection conn (ConstPtr typePtr) 1)) (destroy c_duckdb_v2_data_chunk_destroy) \chunk -> do
                 vector <- output (c_duckdb_v2_data_chunk_get_vector chunk 0)
@@ -538,17 +540,17 @@ unionValueDuckValue conn UnionValue{unionValueIndex, unionValueLabel, unionValue
                     member <- output (c_duckdb_v2_vector_get_child vector (fromIntegral memberIndex + 1))
                     checked (c_duckdb_v2_vector_set_size member 1)
                     if memberIndex == index
-                        then bracket (fieldValueWithTypeDuckValue conn rep unionValuePayload) destroyValue \value ->
+                        then bracket (fieldValueWithTypeDuckValue makeType conn rep unionValuePayload) destroyValue \value ->
                             checked (c_duckdb_v2_vector_set_value member 0 value)
                         else checked (c_duckdb_v2_vector_set_null member 0)
                 output (c_duckdb_v2_vector_get_value vector 0)
 
 -- | Construct a value with explicit logical metadata, including typed NULL.
-fieldValueWithTypeDuckValue :: DuckDBV2ConnectionHandle -> LogicalTypeRep -> FieldValue -> IO DuckDBV2ValueHandle
-fieldValueWithTypeDuckValue conn rep FieldNull = bracket (logicalTypeFromRep conn rep) destroyLogicalType \logical ->
+fieldValueWithTypeDuckValue :: (LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle) -> DuckDBV2ConnectionHandle -> LogicalTypeRep -> FieldValue -> IO DuckDBV2ValueHandle
+fieldValueWithTypeDuckValue makeType conn rep FieldNull = bracket (makeType rep) destroyLogicalType \logical ->
     output (c_duckdb_v2_value_create_null_with_connection conn logical)
-fieldValueWithTypeDuckValue conn rep value = case (rep, value) of
-    (LogicalTypeScalar DuckDBV2LogicalTypeIdVariant, _) -> variantDuckValue conn value
+fieldValueWithTypeDuckValue makeType conn rep value = case (rep, value) of
+    (LogicalTypeScalar DuckDBV2LogicalTypeIdVariant, _) -> variantDuckValue makeType conn value
     (LogicalTypeScalar dtype, _) -> scalarFieldValueDuckValue conn dtype value
     (LogicalTypeGeometry _, FieldGeometry{}) -> unsupportedRawGeometryBinding
     (LogicalTypeDecimal width scale, FieldDecimal decimal@DecimalValue{decimalWidth, decimalScale})
@@ -557,21 +559,21 @@ fieldValueWithTypeDuckValue conn rep value = case (rep, value) of
     (LogicalTypeArray child size, FieldArray array)
         | fromIntegral (length (elems array)) == size -> sequenceValue c_duckdb_v2_value_create_array_with_connection child (elems array)
     (LogicalTypeMap keyRep valueRep, FieldMap pairs) ->
-        bracket (logicalTypeFromRep conn keyRep) destroyLogicalType \keyType ->
-            bracket (logicalTypeFromRep conn valueRep) destroyLogicalType \valueType ->
-                withCreatedValues (map (fieldValueWithTypeDuckValue conn keyRep . fst) pairs) \keys ->
-                    withCreatedValues (map (fieldValueWithTypeDuckValue conn valueRep . snd) pairs) \values ->
+        bracket (makeType keyRep) destroyLogicalType \keyType ->
+            bracket (makeType valueRep) destroyLogicalType \valueType ->
+                withCreatedValues (map (fieldValueWithTypeDuckValue makeType conn keyRep . fst) pairs) \keys ->
+                    withCreatedValues (map (fieldValueWithTypeDuckValue makeType conn valueRep . snd) pairs) \values ->
                         withDuckValues keys \keyPtr -> withDuckValues values \valuePtr ->
                             output (c_duckdb_v2_value_create_map_with_connection conn keyType valueType (ConstPtr keyPtr) (ConstPtr valuePtr) (fromIntegral (length pairs)))
     (LogicalTypeStruct _, FieldStruct struct)
-        | rep == structValueTypeRep struct -> structValueDuckValue conn struct
+        | rep == structValueTypeRep struct -> structValueDuckValue makeType conn struct
     (LogicalTypeUnion _, FieldUnion union)
-        | rep == unionValueTypeRep union -> unionValueDuckValue conn union
+        | rep == unionValueTypeRep union -> unionValueDuckValue makeType conn union
     (LogicalTypeEnum entries, FieldEnum index) -> enumDuckValue conn entries index
     _ -> typeMismatch (show rep) value
   where
-    sequenceValue create child values = bracket (logicalTypeFromRep conn child) destroyLogicalType \logical ->
-        withCreatedValues (map (fieldValueWithTypeDuckValue conn child) values) \native -> withDuckValues native \ptr ->
+    sequenceValue create child values = bracket (makeType child) destroyLogicalType \logical ->
+        withCreatedValues (map (fieldValueWithTypeDuckValue makeType conn child) values) \native -> withDuckValues native \ptr ->
             output (create conn logical (ConstPtr ptr) (fromIntegral (length native)))
 
 scalarFieldValueDuckValue :: DuckDBV2ConnectionHandle -> DuckDBV2LogicalTypeId -> FieldValue -> IO DuckDBV2ValueHandle
@@ -688,11 +690,11 @@ unsupportedRawGeometryBinding :: IO a
 unsupportedRawGeometryBinding = throwIO (userError "duckdb-simple: raw GEOMETRY binding requires explicit ST_GeomFromWKB and ST_SetCRS parameters")
 
 -- | Cast the payload to VARIANT with the supplied native connection.
-variantDuckValue :: DuckDBV2ConnectionHandle -> FieldValue -> IO DuckDBV2ValueHandle
-variantDuckValue conn value = do
+variantDuckValue :: (LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle) -> DuckDBV2ConnectionHandle -> FieldValue -> IO DuckDBV2ValueHandle
+variantDuckValue makeType conn value = do
     (rep, payload) <- variantPayloadType value
-    bracket (logicalTypeFromRep conn (LogicalTypeScalar DuckDBV2LogicalTypeIdVariant)) destroyLogicalType \logical ->
-        bracket (fieldValueWithTypeDuckValue conn rep payload) destroyValue \native ->
+    bracket (makeType (LogicalTypeScalar DuckDBV2LogicalTypeIdVariant)) destroyLogicalType \logical ->
+        bracket (fieldValueWithTypeDuckValue makeType conn rep payload) destroyValue \native ->
             output (c_duckdb_v2_value_cast_with_connection conn native logical)
 
 -- | Construct a UTC nanosecond value without losing sub-microsecond digits.
@@ -707,7 +709,7 @@ instance ToDuckValue G.Geometry where
                 output (c_duckdb_v2_value_cast_with_connection conn value logical)
 
 instance ToDuckValue Variant where
-    toDuckValue conn = variantDuckValue conn . variantPayload
+    toDuckValue conn = variantDuckValue (logicalTypeFromRep conn) conn . variantPayload
 
 {- | Choose the native type of a VARIANT payload. Containers get VARIANT
 elements and fields. Time values with sub-microsecond digits use nanosecond
@@ -866,14 +868,14 @@ instance ToDuckValue (Unbounded UTCTime) where
     toDuckValue = utcTimestampDuckValue
 
 instance ToDuckValue (StructValue FieldValue) where
-    toDuckValue = structValueDuckValue
+    toDuckValue conn = structValueDuckValue (logicalTypeFromRep conn) conn
 
 instance ToDuckValue (UnionValue FieldValue) where
-    toDuckValue = unionValueDuckValue
+    toDuckValue conn = unionValueDuckValue (logicalTypeFromRep conn) conn
 
 -- | Construct an array with the supplied connection and element type.
 instance (DuckDBColumnType a, ToDuckValue a) => ToDuckValue (Array Int a) where
-    toDuckValue conn = arrayDuckValue conn Nothing (toDuckValue conn)
+    toDuckValue conn = arrayDuckValue (logicalTypeFromRep conn) conn Nothing (toDuckValue conn)
 
 instance (ToDuckValue a) => ToDuckValue (Maybe a) where
     toDuckValue conn Nothing = nullDuckValue conn

@@ -44,9 +44,9 @@ import qualified Data.Text as Text
 import Data.Void (Void)
 import Database.DuckDB.Simple.Callback (attachOpaque, ignoreCallbackExceptions, runCallback, withCallbackResources)
 import Database.DuckDB.Simple.FromField (Field (..))
-import Database.DuckDB.Simple.Internal (Connection, throwRegistrationError, withConnectionHandle)
+import Database.DuckDB.Simple.Internal (Connection, throwRegistrationError, withConnectionHandle, withDatabaseHandle)
 import Database.DuckDB.Simple.LogicalRep (destroyLogicalType)
-import Database.DuckDB.Simple.Materialize (prepareVectorReader)
+import Database.DuckDB.Simple.Materialize (VariantReader, prepareVariantReader, prepareVectorReader)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Registration (ContextCallback, RegistrationTarget (..), getCallbackState, setCallbackState)
 import Foreign.C.ConstPtr (ConstPtr (..))
@@ -190,11 +190,11 @@ registerCopyToFunction ::
     (CopySinkInfo bindState globalState -> [[Field]] -> IO ()) ->
     (CopyFinalizeInfo bindState globalState -> IO ()) ->
     IO ()
-registerCopyToFunction connection name bindFn initFn sinkFn finalizeFn =
+registerCopyToFunction connection name bindFn initFn sinkFn finalizeFn = withDatabaseHandle connection \instanceHandle ->
     registerCopyToCallbacks
         connection
         name
-        (copyToCallbacks batch flush)
+        (copyToCallbacks (batch instanceHandle) flush)
             { copyToBindCallback = Just bind
             , copyToInitCallback = Just initialize
             , copyToFinalizeCallback = Just finalize
@@ -214,10 +214,13 @@ registerCopyToFunction connection name bindFn initFn sinkFn finalizeFn =
         path <- output (c_duckdb_v2_copy_to_init_get_file_path info) >>= readText
         global <- initFn (CopyInitInfo state (Text.unpack path))
         setCallbackState (c_duckdb_v2_copy_to_init_set_init_data info) global
-    batch info _ = do
+    batch instanceHandle info _ = do
         (_, types) <- readCopyBinding (c_duckdb_v2_copy_to_batch_get_bind_data info) :: IO (bindState, [DuckDBV2LogicalTypeHandle])
-        rows <- bracket (output (c_duckdb_v2_copy_to_batch_take_input info)) (destroy c_duckdb_v2_column_data_collection_destroy) (materializeCollection types)
+        rows <- bracket (output (c_duckdb_v2_copy_to_batch_take_input info)) (destroy c_duckdb_v2_column_data_collection_destroy) (materializeCollection (readVariant instanceHandle) types)
         setCallbackState (c_duckdb_v2_copy_to_batch_set_batch_data info) rows
+    readVariant instanceHandle vector =
+        bracket (output (c_duckdb_v2_connection_create instanceHandle)) (destroy c_duckdb_v2_connection_destroy) \helper ->
+            prepareVariantReader helper vector
     flush info _ = do
         (state, _) <- readCopyBinding (c_duckdb_v2_copy_to_flush_get_bind_data info)
         global <- getCallbackState (c_duckdb_v2_copy_to_flush_get_init_data info)
@@ -269,8 +272,8 @@ copyBindingDestructor :: DuckDBV2OpaqueDestroyFn
 copyBindingDestructor = DuckDBV2OpaqueDestroyFn (castFunPtr copyBindingDestructorAddress)
 
 -- | Copy each scanned chunk before the scan invalidates its borrowed buffers.
-materializeCollection :: [DuckDBV2LogicalTypeHandle] -> DuckDBV2ColumnDataCollectionHandle -> IO [[Field]]
-materializeCollection types collection =
+materializeCollection :: VariantReader -> [DuckDBV2LogicalTypeHandle] -> DuckDBV2ColumnDataCollectionHandle -> IO [[Field]]
+materializeCollection variantReader types collection =
     withArray types \typePtr ->
         bracket (output (c_duckdb_v2_data_chunk_create (ConstPtr typePtr) (fromIntegral (length types)))) (destroy c_duckdb_v2_data_chunk_destroy) \chunk ->
             bracket (output (c_duckdb_v2_column_data_collection_shared_scan_state_create collection)) (destroy c_duckdb_v2_column_data_collection_shared_scan_state_destroy) \shared ->
@@ -280,17 +283,17 @@ materializeCollection types collection =
                             if produced == 0
                                 then pure (concat (reverse groups))
                                 else do
-                                    rows <- materializeChunkRows chunk
+                                    rows <- materializeChunkRows variantReader chunk
                                     loop (rows : groups)
                      in loop []
 
 -- | Copy a complete chunk before its collection scan advances.
-materializeChunkRows :: DuckDBV2DataChunkHandle -> IO [[Field]]
-materializeChunkRows chunk = do
+materializeChunkRows :: VariantReader -> DuckDBV2DataChunkHandle -> IO [[Field]]
+materializeChunkRows variantReader chunk = do
     columns <- output (c_duckdb_v2_data_chunk_get_vector_count chunk)
     readers <- forM [0 .. fromIntegral columns - 1] \index -> do
         vector <- output (c_duckdb_v2_data_chunk_get_vector chunk (fromIntegral (index :: Int)))
-        readValue <- prepareVectorReader vector
+        readValue <- prepareVectorReader variantReader vector
         pure \row -> Field (Text.pack ("column" <> show index)) index <$> readValue row
     rows <- output (c_duckdb_v2_data_chunk_get_size chunk)
     forM [0 .. fromIntegral rows - 1] \row -> mapM ($ row) readers

@@ -256,7 +256,7 @@ createConnection parent@Instance{instanceState} crss releaseParent = keepAlive p
             InstanceClosed -> throwIO (SQLError "duckdb-simple: instance is closed" Nothing Nothing)
             InstanceOpen raw children -> pure (raw, children)
     raw <- output (c_duckdb_v2_connection_create rawInstance)
-    cache <- createTypeCache raw crss `onException` destroy c_duckdb_v2_connection_destroy raw
+    cache <- createTypeCache rawInstance raw crss `onException` destroy c_duckdb_v2_connection_destroy raw
     flip onException (destroyTypeCache cache `finally` destroy c_duckdb_v2_connection_destroy raw) do
         statements <- newChildren
         ref <- newIORef (ConnectionOpen raw cache statements releaseParent)

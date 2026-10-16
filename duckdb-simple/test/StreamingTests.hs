@@ -13,9 +13,9 @@ import Data.List (isInfixOf)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple
-import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Database.DuckDB.Simple.FromField (FieldValue)
 import Database.DuckDB.Simple.Internal (DuckDBV2ResultHandle (..), Statement (statementStream), StatementStream (statementStreamResult), StatementStreamState (..), nullHandle)
+import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
 

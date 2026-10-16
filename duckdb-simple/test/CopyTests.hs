@@ -19,6 +19,7 @@ import Database.DuckDB.Simple hiding (bind)
 import qualified Database.DuckDB.Simple.Copy as Copy
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..))
 import qualified Database.DuckDB.Simple.Registration as R
+import Database.DuckDB.Simple.Variant (variantObject)
 import Foreign.Ptr (castPtr)
 import Foreign.Storable (pokeElemOff)
 import System.Directory (createDirectory, getTemporaryDirectory, removeFile, removePathForcibly)
@@ -34,6 +35,7 @@ copyTests =
         "managed COPY"
         [ testCase "COPY TO scans batches and reports statistics" testCopyTo
         , testCase "row callbacks receive per-partition file paths" testPartitionedCopy
+        , testCase "row callbacks decode VARIANT after the registering connection closes" testVariantCopy
         , testCase "COPY FROM runs bind global local and exec callbacks" testCopyFrom
         , testCase "callback exceptions become SQL errors and permit reuse" testCopyFailure
         , testCase "multi-file wrappers support lists globs filename and hive columns" testMultiFile
@@ -116,6 +118,22 @@ testPartitionedCopy = withDirectory \directory -> withConnection ":memory:" \con
     paths <- readIORef files
     length paths @?= 2
     assertBool "partition paths" (all (Text.isInfixOf "part=" . Text.pack) paths)
+
+-- | COPY registrations share the instance and copy nested VARIANT payloads.
+testVariantCopy :: Assertion
+testVariantCopy = withDirectory \directory -> withEnvironment \environment -> withInstance environment [] \instance' -> do
+    received <- newIORef ([] :: [FieldValue])
+    withConnectionOn instance' \connection ->
+        Copy.registerCopyToFunction
+            connection
+            "managed_variant"
+            (\info -> Copy.copyBindColumnTypes info @?= [DuckDBV2LogicalTypeIdVariant])
+            (\info -> writeFile (Copy.copyInitFilePath info) "")
+            (\_ rows -> atomicModifyIORef' received (\previous -> (previous <> [fieldValue entry | [entry] <- rows], ())))
+            (const (pure ()))
+    withConnectionOn instance' \connection -> do
+        void (execute connection "COPY (SELECT {'n': i, 'values': [i, NULL]}::VARIANT FROM range(3) t(i)) TO ? (FORMAT managed_variant)" (Only (Text.pack (directory </> "variant"))))
+        readIORef received >>= (@?= [variantObject [("n", FieldInt64 i), ("values", FieldList [FieldInt64 i, FieldNull])] | i <- [0 .. 2]])
 
 -- | Fill one output vector from state created in each native COPY FROM phase.
 testCopyFrom :: Assertion

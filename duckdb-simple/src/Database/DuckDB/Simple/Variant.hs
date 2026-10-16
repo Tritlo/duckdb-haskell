@@ -17,9 +17,10 @@ import Database.DuckDB.Simple.Ok (Ok (..))
 
 {- | A VARIANT value. The payload is a 'FieldValue' with the native type of the
 stored value. Arrays are 'FieldList' values. Objects are 'FieldStruct' values
-whose fields have the VARIANT type. SQL NULL is 'FieldNull'.
-A t'Variant' parameter binds its payload as a VARIANT. Non-NULL VARIANT
-results need an explicit SQL cast because V2 has no structural payload accessor.
+whose fields have the VARIANT type. Decoded object keys use DuckDB's native
+lexicographic order. Array elements retain their order. SQL NULL is 'FieldNull'.
+A t'Variant' parameter binds its payload as a VARIANT. Results preserve their
+native scalar types and nested values through public V2 operations.
 -}
 newtype Variant = Variant {variantPayload :: FieldValue}
     deriving (Eq, Show)
@@ -36,6 +37,6 @@ variantObject entries =
             , structValueIndex = Map.fromList (zip (map fst entries) [0 ..])
             }
 
--- | Wrap a decoded column. Non-NULL VARIANT columns need an explicit SQL cast.
+-- | Wrap a decoded column and retain its native payload types.
 instance FromField Variant where
     fromField Field{fieldValue} = Ok (Variant fieldValue)

@@ -140,7 +140,7 @@ tests =
         , testCase "deep native arrays decode without a library depth limit" $ withConnection ":memory:" \conn ->
             forM_ [128, 256 :: Int] \depth -> do
                 let expected = Variant (foldr (const (FieldList . pure)) (FieldWord64 7) [1 .. depth])
-                (query conn "SELECT (repeat('[', ?) || '7' || repeat(']', ?))::JSON::VARIANT" (depth, depth) :: IO [Only Variant])
+                (query conn "SELECT (repeat('[', ?) || '7' || repeat(']', ?))::JSON::VARIANT AS payload" (depth, depth) :: IO [Only Variant])
                     >>= (@?= [Only expected])
         , testCase "ARRAY parameters and generic records contain VARIANT" $ withConnection ":memory:" \conn -> do
             let array = listArray (0, 2) [Variant (FieldInt8 1), Variant (FieldText "two"), Variant FieldNull]

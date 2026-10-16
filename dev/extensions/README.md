@@ -148,9 +148,21 @@ Linux x86_64 validation uses GHC 9.14.1 and the pinned native preview:
   containment. These checks use extracted source packages and the existing
   dependency cache. They do not use `cabal install --lib`.
 
-macOS loading and deployment remain unverified. Run the same native checks on
-macOS before declaring support there. Inspect dependencies with `otool` and
-`nm` on that platform.
+macOS ARM64 validation uses Nix GHC 9.14.1, Clang 21.1.8, and the same native
+preview:
+
+- The Mach-O demo passes both native CLI smoke processes.
+- The C hosts pass concurrent first loads, repeated loads, independent
+  databases, cancellation, connection recovery, host signal preservation,
+  and refused API negotiation.
+- `otool` and `nm` confirm the threaded RTS dependency and no `libduckdb`
+  dependency, direct native imports, or exported private C helpers.
+- All 602 ordinary functional tests pass with four test workers. Callback
+  collection and the functional leak checks also pass. Native RSS and thread
+  counters require Linux `/proc`.
+
+These checks use the local Cabal and Nix dependency stores. Relocatable
+deployment remains outside this recipe.
 
 References: [Cabal foreign libraries](https://cabal.readthedocs.io/en/3.18/cabal-package-description-file.html#foreign-libraries),
 [GHC runtime initialization](https://downloads.haskell.org/ghc/9.14.1/docs/users_guide/exts/ffi.html#using-your-own-main),

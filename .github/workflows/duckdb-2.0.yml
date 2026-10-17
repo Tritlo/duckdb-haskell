@@ -106,14 +106,14 @@ jobs:
         run: |
           leak_test=$(cabal list-bin duckdb-simple-leak-test --with-compiler=ghc --disable-documentation --enable-optimization=${{ matrix.optimization }})
           for mode in open-close callbacks cancel new-types; do
-            valgrind --vgdb=no --leak-check=full \
+            valgrind --vgdb=no --fair-sched=yes --leak-check=full \
               --show-leak-kinds=definite,indirect,possible \
               --errors-for-leak-kinds=definite,indirect \
               --error-exitcode=97 --undef-value-errors=no --num-callers=30 \
               "$leak_test" "$mode" 1
           done
           dataframe_test=$(cabal list-bin duckdb-simple-dataframe-test -fdataframe-tests --with-compiler=ghc --disable-documentation --enable-optimization=${{ matrix.optimization }})
-          valgrind --vgdb=no --leak-check=full \
+          valgrind --vgdb=no --fair-sched=yes --leak-check=full \
             --show-leak-kinds=definite,indirect,possible \
             --errors-for-leak-kinds=definite,indirect \
             --error-exitcode=97 --undef-value-errors=no --num-callers=30 \

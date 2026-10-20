@@ -220,8 +220,8 @@ The historical October 7 Linux preview fetched during preparation reports
 `v2.0.0-alpha45189`. Its archive SHA256 is
 `5d08f26d7e5f07fcae3d315c039a09da627f52639aeace3af06abc5456e35132`.
 `PRAGMA version` reports source ID `13d1d8f56a` and codename `Cyanoptera`.
-Both client headers in the native archive match the checked-in headers. This
-records the binary used for validation. Its former download URL now returns
+At that pin, both client headers in the native archive matched the checked-in
+headers. This records the earlier validation binary. Its former download URL now returns
 404. The [preview installation links](https://duckdb.org/install/preview)
 can move and can serve an older binary. Build the pinned source below for a
 reproducible runtime. If you use another binary, verify its digest, headers,

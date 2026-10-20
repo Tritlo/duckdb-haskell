@@ -6,9 +6,10 @@
 -- | Regression tests for extension callbacks and native handle ownership.
 module ExtensionRegressionTests (main, extensionRegressionTests) where
 
-import Control.Exception (AsyncException (ThreadKilled), ErrorCall, Exception (..), SomeException, bracket, throwIO, try)
-import Control.Monad (forM_, replicateM_, void)
+import Control.Exception (AsyncException (ThreadKilled), ErrorCall, Exception (..), SomeException, bracket, bracket_, finally, throwIO, try)
+import Control.Monad (forM_, replicateM_, void, when)
 import qualified Data.ByteString as BS
+import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (find)
 import Data.Proxy (Proxy (..))
@@ -22,6 +23,8 @@ import qualified Database.DuckDB.Simple.Config as Config
 import qualified Database.DuckDB.Simple.Copy as Copy
 import qualified Database.DuckDB.Simple.FileSystem as FileSystem
 import qualified Database.DuckDB.Simple.Logging as Logging
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..))
+import qualified Database.DuckDB.Simple.Registration as Registration
 import qualified Database.DuckDB.Simple.Tokenizer as Tokenizer
 import System.Directory (removeFile)
 import System.IO (hClose, openBinaryTempFile)
@@ -71,7 +74,7 @@ extensionRegressionTests =
                 replicateM_ 32 $ assertSqlError $ createFunctionWithState conn "invalid_state" (pure ()) (\() -> InvalidSignature)
         , testCase "logging duplicate registration cleanup" $
             withConnection ":memory:" \conn -> do
-                assertSqlError $ Logging.registerLogStorage conn "duplicate_log" (\_ -> pure ())
+                Logging.registerLogStorage conn "duplicate_log" (\_ -> pure ())
                 replicateM_ 32 $ assertSqlError $ Logging.registerLogStorage conn "duplicate_log" (\_ -> pure ())
                 query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
         , testCase "empty registration names fail safely" $
@@ -178,10 +181,28 @@ extensionRegressionTests =
             withConnection ":memory:" \conn -> do
                 registerCopy conn "copy_repeat" Nothing
                 replicateM_ 32 $ void $ execute_ conn "COPY (SELECT * FROM range(5000)) TO '/tmp/duckdb-simple-regression-copy' (FORMAT copy_repeat)"
-        , testCase "custom log storage reports the V2 limitation" $
+        , testCase "log sink callback exceptions cannot fail a query" $
             withConnection ":memory:" \conn -> do
-                assertSqlErrorContaining "unavailable" $ Logging.registerLogStorage conn "throwing_log" (\_ -> throwIO ThreadKilled)
+                Logging.registerLogStorage conn "throwing_log" (\_ -> throwIO ThreadKilled)
+                void $ execute_ conn "CALL enable_logging(); SET logging_storage = 'throwing_log'; SELECT write_log('contained')"
                 query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+        , testCase "log sinks copy entries and flush when released" do
+            entries <- newIORef []
+            flushes <- newIORef (0 :: Int)
+            withConnection ":memory:" \conn -> do
+                Logging.registerLogSink
+                    conn
+                    "captured_log"
+                    (\entry -> atomicModifyIORef' entries (\values -> (entry : values, ())))
+                    (atomicModifyIORef' flushes (\count -> (count + 1, ())))
+                void $ execute_ conn "CALL enable_logging(); SET logging_storage = 'captured_log'; SELECT write_log('Matti λ', level := 'warning', log_type := 'HaskellTest'); SET logging_storage = 'memory'"
+            received <- filter ((== "HaskellTest") . Logging.logEntryType) <$> readIORef entries
+            map Logging.logEntryMessage received @?= ["Matti λ"]
+            map Logging.logEntrySeverity received @?= [DuckDBV2LogLevelWarning]
+            map Logging.logEntryScope received @?= [DuckDBV2LogScopeConnection]
+            assertBool "entry has a timestamp" (all ((/= Nothing) . Logging.logEntryTimestamp) received)
+            assertBool "entry has a connection id" (all ((/= Nothing) . Logging.logEntryConnectionId) received)
+            readIORef flushes >>= assertBool "flush and final cleanup ran" . (>= 2)
         , testCase "filesystem action exceptions release handles" $
             withTemporaryFile \path ->
                 withConnection ":memory:" \conn -> do
@@ -233,6 +254,30 @@ extensionRegressionTests =
                         Config.configOptionSetting option @?= "1"
                         Config.configOptionName option @?= "threads"
                         assertBool "description is retained" (not (Text.null (Config.configOptionDescription option)))
+        , testCase "custom options retain typed defaults scopes and callback errors" $
+            withConnection ":memory:" \conn -> do
+                let option =
+                        (Config.customOption "haskell_limit" (Registration.StructuredType (LogicalTypeScalar DuckDBV2LogicalTypeIdBigInt)))
+                            { Config.customOptionDefault = Just (Registration.defaultValue (3 :: Int64))
+                            , Config.customOptionDescription = "A Haskell option"
+                            , Config.customOptionDefaultScope = DuckDBV2SettingScopeSession
+                            , Config.customOptionScopes = [DuckDBV2SettingScopeGlobal, DuckDBV2SettingScopeSession]
+                            , Config.customOptionUpdate = Just \info _ ->
+                                bracket (Registration.output (c_duckdb_v2_custom_option_update_get_value info)) (Registration.destroy c_duckdb_v2_value_destroy) \value -> do
+                                    number <- Registration.output (c_duckdb_v2_value_get_bigint value)
+                                    when (number < 0) $ throwIO (userError "limit must be nonnegative")
+                            }
+                Config.registerCustomOption conn option
+                Config.withConfigOptionDefaultValue conn "haskell_limit" \value ->
+                    Registration.output (c_duckdb_v2_value_get_bigint value) >>= (@?= 3)
+                Config.setConfigValue conn DuckDBV2SettingScopeSession "haskell_limit" (7 :: Int64)
+                Config.withConfigOptionValue conn "haskell_limit" \value scope -> do
+                    Registration.output (c_duckdb_v2_value_get_bigint value) >>= (@?= 7)
+                    scope @?= DuckDBV2SettingScopeSession
+                assertSqlErrorContaining "limit must be nonnegative" $ Config.setConfigValue conn DuckDBV2SettingScopeSession "haskell_limit" (-1 :: Int64)
+                void $ execute_ conn "RESET haskell_limit"
+                fmap Config.configValueText <$> Config.getConfigOption conn "haskell_limit" >>= (@?= Just "3")
+                assertSqlError $ Config.registerCustomOption conn option
         , testCase "table descriptions resolve names and copy borrowed column types" $
             withConnection ":memory:" \conn -> do
                 void $ execute_ conn "CREATE TABLE \"\955\" (id BIGINT DEFAULT 7, twice BIGINT GENERATED ALWAYS AS (id * 2))"
@@ -265,6 +310,23 @@ extensionRegressionTests =
                     FileSystem.fileHandleTell handle >>= (@?= 1)
                     FileSystem.fileHandleSeek handle 0
                     FileSystem.readFileHandleChunk handle 8 >>= (@?= BS.pack [8, 9, 3, 4])
+        , testCase "file paths support expansion glob movement and removal" $
+            withTemporaryFile \path -> withConnection ":memory:" \conn -> do
+                FileSystem.pathExists conn path >>= (@?= True)
+                FileSystem.expandPath conn path >>= (@?= path)
+                FileSystem.globPaths conn path >>= (@?= [path])
+                FileSystem.pathIsRemote conn "https://example.com/data.parquet" >>= (@?= True)
+                FileSystem.pathIsRemote conn path >>= (@?= False)
+                let moved = path <> ".moved"
+                bracket_ (FileSystem.movePath conn path moved) (FileSystem.movePath conn moved path) do
+                    FileSystem.pathExists conn path >>= (@?= False)
+                    FileSystem.pathExists conn moved >>= (@?= True)
+                ( do
+                        FileSystem.removePath conn path >>= (@?= True)
+                        FileSystem.removePath conn path >>= (@?= False)
+                    )
+                    `finally` BS.writeFile path BS.empty
+                assertSqlError $ FileSystem.globPaths conn (path <> "\0suffix")
         ]
 
 -- | Raise a second exception when the callback error is rendered.

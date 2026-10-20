@@ -6,6 +6,7 @@
 -- | Manage callback resources at the DuckDB ownership boundary.
 module Database.DuckDB.Simple.Callback (
     withCallbackResources,
+    withCallbackResourcesFinally,
     transferCallbackState,
     runCallback,
     ignoreCallbackExceptions,
@@ -30,9 +31,20 @@ withCallbackResources ::
     (Ptr Void -> DuckDBV2OpaqueDestroyFn -> IO ()) ->
     (r -> IO b) ->
     IO b
-withCallbackResources acquire attach action = mask \restore -> do
+withCallbackResources = withCallbackResourcesFinally (pure ())
+
+{- | Run a final action before the callback resources are released.
+This includes acquisition and registration failure. Contain final-action errors.
+-}
+withCallbackResourcesFinally ::
+    IO () ->
+    ((forall a. IO (FunPtr a) -> IO (FunPtr a)) -> IO r) ->
+    (Ptr Void -> DuckDBV2OpaqueDestroyFn -> IO ()) ->
+    (r -> IO b) ->
+    IO b
+withCallbackResourcesFinally finalizer acquire attach action = mask \restore -> do
     cleanups <- newIORef []
-    let cleanup = readIORef cleanups >>= sequence_
+    let cleanup = ignoreCallbackExceptions finalizer `finally` (readIORef cleanups >>= sequence_)
         allocate make = do
             ptr <- make
             modifyIORef' cleanups (freeHaskellFunPtr ptr :)

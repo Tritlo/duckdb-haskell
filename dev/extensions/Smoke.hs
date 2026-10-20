@@ -8,9 +8,7 @@ import Control.Concurrent (MVar, ThreadId, forkFinally, killThread, newEmptyMVar
 import Control.Exception (IOException, SomeException, bracket, catch, throwIO)
 import Control.Monad (unless, when)
 import qualified Data.ByteString as BS
-import Data.ByteString.Builder (stringUtf8, toLazyByteString)
 import qualified Data.ByteString.Char8 as BS8
-import qualified Data.ByteString.Lazy as BL
 import Data.List (intercalate)
 import System.Console.GetOpt
 import System.Directory (canonicalizePath, doesFileExist)
@@ -109,7 +107,7 @@ checkProcess executable extension label statements expectedRows expectedErrors =
     (timedOut, status, stdoutBytes, stderrBytes) <- runCLI executable sql
     let expectedStatus = if null expectedErrors then ExitSuccess else ExitFailure 1
         actualLines = map (BS8.dropWhileEnd (== '\r')) (BS8.lines stdoutBytes)
-        expectedLines = map (BL.toStrict . toLazyByteString . stringUtf8 . intercalate ",") expectedRows
+        expectedLines = map (BS8.pack . intercalate ",") expectedRows
         problems =
             ["DuckDB CLI exceeded 60 seconds" | timedOut]
                 <> ["exit status " <> show status <> ", expected " <> show expectedStatus | status /= expectedStatus]
@@ -139,7 +137,7 @@ smoke executable extension = do
         , "SELECT 'reloaded', haskell_answer();"
         , "SELECT 'native_batches', count(*), min(value), max(value), sum(value) FROM (SELECT haskell_add_one(i) AS value FROM range(10000) AS t(i));"
         , "SELECT 'null', CASE WHEN haskell_add_one(NULL::BIGINT) IS NULL THEN 'preserved' ELSE 'changed' END;"
-        , "SELECT 'text', haskell_greet('Matti λ');"
+        , "SELECT 'text', haskell_greet('Matti λ') = 'Hello Matti λ';"
         , "SELECT 'macro', haskell_twice(21::BIGINT);"
         , "PRAGMA haskell_demo;"
         , "SET haskell_multiplier=9;"
@@ -149,7 +147,7 @@ smoke executable extension = do
         , ["reloaded", "42"]
         , ["native_batches", "10000", "1", "10000", "50005000"]
         , ["null", "preserved"]
-        , ["text", "Hello Matti λ"]
+        , ["text", "true"]
         , ["macro", "42"]
         , ["pragma", "7"]
         , ["pragma", "9"]

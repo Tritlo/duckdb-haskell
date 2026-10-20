@@ -28,7 +28,7 @@ options :: [OptDescr Flag]
 options =
     [ Option [] ["output"] (ReqArg Output "OUTPUT") "new path named haskell_demo.duckdb_extension; must not exist"
     , Option [] ["platform"] (ReqArg Platform "PLATFORM") "exact DuckDB platform, such as linux_amd64 or osx_arm64"
-    , Option [] ["duckdb-version"] (ReqArg DuckDBVersion "VERSION") "exact normalized loader version; pinned dev: 13d1d8f56a"
+    , Option [] ["duckdb-version"] (ReqArg DuckDBVersion "VERSION") "exact normalized loader version; pinned dev: d54cbbe3df"
     , Option [] ["extension-version"] (ReqArg ExtensionVersion "VERSION") "extension release version to record"
     , Option ['h'] ["help"] (NoArg Help) "show this help"
     ]

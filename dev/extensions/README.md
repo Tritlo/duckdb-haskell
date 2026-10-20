@@ -71,6 +71,14 @@ nix-shell dev/nix/generate.nix --run 'dev/bindings/generate-bindings.sh --check'
 
 Build only the example in its separate project and build directory:
 
+Use a fresh build directory after a native header change. Cabal can retain C
+objects from the previous function table. Clean an existing directory before
+the build when the source pin changes:
+
+```sh
+(cd dev/extensions && cabal clean --builddir=../../dist-newstyle-extensions)
+```
+
 ```sh
 nix-shell dev/nix/shell.nix --run '(cd dev/extensions && \
   GHC_ENVIRONMENT=- cabal build --project-file=cabal.project \

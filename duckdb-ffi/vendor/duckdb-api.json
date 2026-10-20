@@ -11,7 +11,7 @@
       "source": "src/include/duckdb.h"
     },
     "cbits/duckdb_extension_v2.h": {
-      "sha256": "1cababc2f89f81ec29c902714581ca2a71f26177e9119f9414be5d6fe7acef73",
+      "sha256": "fa0871d3f5b8e5da9a686c019fcaf8210349440831d5e9228720cbba31ccaa51",
       "source": "src/include/duckdb_extension_v2.h"
     },
     "cbits/duckdb_v2.h": {

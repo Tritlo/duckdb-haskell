@@ -220,8 +220,8 @@ The historical October 7 Linux preview fetched during preparation reports
 `v2.0.0-alpha45189`. Its archive SHA256 is
 `5d08f26d7e5f07fcae3d315c039a09da627f52639aeace3af06abc5456e35132`.
 `PRAGMA version` reports source ID `13d1d8f56a` and codename `Cyanoptera`.
-Both client headers in the native archive match the checked-in headers. This
-records the binary used for validation. Its former download URL now returns
+At that pin, both client headers in the native archive matched the checked-in
+headers. This records the earlier validation binary. Its former download URL now returns
 404. The [preview installation links](https://duckdb.org/install/preview)
 can move and can serve an older binary. Build the pinned source below for a
 reproducible runtime. If you use another binary, verify its digest, headers,
@@ -267,8 +267,11 @@ artifacts without uploading or deploying them.
 
 ## Feature coverage
 
-The following feature and limitation records describe the October 7 runtime.
-Repeat them against the refreshed source and the final release.
+The current client suites pass 617 functional tests against the October 20
+pin. See [V2 migration validation](../dev/v2-migration.md) for the counts and
+native memory checks. Repeat these checks against the final release. The
+Quack, CONNECT, and remote-cancellation observations below use the earlier
+October 7 runtime. They require separate validation with compatible extensions.
 
 The SQL feature list follows the [upstream 2.0 preview](https://duckdb.org/2026/08/17/duckdb-20-highlights).
 The C API list follows the pinned headers and specifications. SQL support depends
@@ -279,7 +282,7 @@ on the native build and its installed extensions.
 | Triggers, DML in CTEs, nested schemas, NEAREST joins, variables, JSON mutation, recursive CTE additions | Existing `query` and `execute` SQL paths | Execute representative SQL against the final runtime. |
 | PEG parser and lambda syntax changes | Existing SQL paths | Check parameters, multi-statement extraction, quoted names, and parser errors. Bare expression statements use the CLI's shell grammar; client SQL needs `SELECT`. The [parser extension API](https://duckdb.org/2026/08/20/duckdb-20-peg-parser) remains a preview. |
 | Quack, CONNECT, remote pushdown | SQL with the required extensions | Test a local server separately. Check authentication and extension availability. |
-| VARIANT and GEOMETRY | V2 parameter binding and result decoding, SQL type metadata, native casts, and geometry codecs | Check nested values, scalar precision, object order, Parquet round trips, and configured custom CRS names. |
+| VARIANT and GEOMETRY | V2 binding and decoding, SQL metadata, native extraction and casts, and geometry codecs | Check nested values, scalar precision, object order, Parquet round trips, and configured custom CRS names. Native geometry collections require one Z/M layout. |
 | Nanosecond TIMESTAMPTZ | V2 value access and typed conversion | Check sub-microsecond precision and temporal infinity. |
 | Asynchronous I/O, storage format 2.0, query optimizations | Native engine through existing SQL paths | Check file reopen, cancellation, and older database reads. State the new write format. |
 | Timezones and collations | SQL and existing temporal types | Check timezone conversion and extension loading. |
@@ -370,10 +373,12 @@ those expressions to retain the intended precision.
 VARIANT objects can bind an empty key alongside named keys in this preview.
 The C constructor cannot represent an object with only an empty key; it
 produces a tuple that casts to an array. The binding rejects that shape change.
-Duplicate and NUL-containing object keys also raise errors. The pinned V2 API
+Binding duplicate or NUL-containing object keys also raises errors. The pinned V2 API
 has no direct structural VARIANT accessor. The backend uses batched SQL type
-metadata and native casts to decode scalar and nested payloads without losing
-precision. Object keys follow DuckDB's native lexicographic order. Arrays retain
+metadata, key extraction, and native casts to decode scalar and nested payloads
+without losing precision. Decoding supports empty and NUL-containing object
+keys through bound extraction parameters. Object keys follow DuckDB's native
+lexicographic order. Arrays retain
 element order. The decoder does not read the retained API's private layout.
 The same helper connection caches SQL-derived VARIANT and configured GEOMETRY
 types. Set `connectionGeometryCRS` to preserve arbitrary custom CRS names in

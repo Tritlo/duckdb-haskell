@@ -48,11 +48,45 @@ into V2 handles.
 The current source pin is `d54cbbe3df17e8e5ce68312f483b4155836112aa` from
 2026-10-20. Both client modules regenerate with the existing naming policy.
 The retained API has 548 functions and 508 ABI assertions. V2 has 620 functions
-and 642 ABI assertions. All V2 functions are marked unstable. Runtime validation
-of this update is in progress. The checks below describe the earlier pin.
+and 642 ABI assertions. All V2 functions are marked unstable. Rebuild clients
+and extensions when the native pin changes.
 
 The core, conversion, scalar callback, Arrow, registration, and COPY backends
-use V2. The branch is based on PR #34 at `28bacb3`.
+use V2. The branch is based on PR #34.
+
+Local checks on 2026-10-20 use Nix GHC 9.14.1 on Linux x86_64 and the matching
+`2.0.0-dev0` native library:
+
+- All 617 functional tests pass: 495 high-level, 97 retained-API, 19 raw V2,
+  and six DataFrame tests. New cases cover typed custom options, log sinks,
+  pragmas, query metrics, function documentation, path operations, borrowed
+  collection statements, and repeated dynamic PIVOT with a changed schema.
+- The default leak suite passes. Thread counts stay stable. RSS stays within
+  its 32 MB allowance during callback, cancellation, and new-type cycles.
+- The 19 raw V2 cases pass under Valgrind with zero errors and no definite,
+  indirect, or possible lost bytes.
+- A separate 26-case Valgrind run covers registration, COPY, custom-option and
+  log-sink callbacks, exact VARIANT payloads, and empty or NUL object keys. It
+  reports zero errors and no definite, indirect, or possible lost bytes.
+- Regeneration and the complete API audit pass. All four generated-file
+  checksums match. Generated files remain outside Git.
+- Both extracted source packages install without LLVM or hs-bindgen. Static
+  and dynamic consumers pass with `LD_LIBRARY_PATH` unset. They use both raw
+  APIs, typed queries, batched functions, configuration, custom options, log
+  sinks, and nested VARIANT values with exact integers and NUL bytes.
+- Haddock builds for both packages. Generated-link warnings remain.
+- Fourmolu and cabal-gild checks pass. Both `cabal check` commands return zero.
+  Existing warnings concern the Setup-only `systemlib` flag and `-O2`.
+  No Hackage upload ran.
+
+The update uses native factories and scoped registration. Configuration
+separates startup options from settings that need a live instance. Scalar
+callbacks can resolve types before argument casts and bind after those casts.
+Table callbacks can copy bind metadata. Extension macros support scalar and
+table bodies.
+
+The following checks describe the earlier October 16 pin. They do not establish
+current platform compatibility.
 
 Local checks on 2026-10-16 used Nix GHC 9.14.1 on Linux x86_64 and the pinned
 `2.0.0-dev0` native library:
@@ -88,8 +122,10 @@ Local checks on 2026-10-16 used Nix GHC 9.14.1 on Linux x86_64 and the pinned
   mock cases after the tool move. No Hackage upload ran.
 
 The private VARIANT payload parser and its separate suite are removed.
-VARIANT decoding uses batched SQL type metadata and native casts. Object keys
-use DuckDB's native lexicographic order. Arrays retain element order. A helper
+VARIANT decoding uses batched SQL type metadata, native extraction, and casts.
+Object extraction binds exact keys, including empty strings and interior NUL
+bytes. It does not cast objects to MAP values. Object keys use DuckDB's native
+lexicographic order. Arrays retain element order. A helper
 connection also caches SQL-derived VARIANT and configured GEOMETRY types.
 Configured custom CRS names remain available in nested parameters, including
 typed NULLs and empty collections. The helper does not interrupt the caller's

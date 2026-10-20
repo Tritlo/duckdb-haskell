@@ -18,7 +18,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
-import Database.DuckDB.FFI.V2 (pattern DuckDBV2ErrorInputInvalid, pattern DuckDBV2LogicalTypeIdBigInt, pattern DuckDBV2LogicalTypeIdVarchar)
+import Database.DuckDB.FFI.V2 (DuckDBV2Error, pattern DuckDBV2ErrorInputInvalid, pattern DuckDBV2ErrorTypeConversion, pattern DuckDBV2LogicalTypeIdBigInt, pattern DuckDBV2LogicalTypeIdVarchar)
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (FieldValue (..), StructValue (..), UnionValue (..))
 import Database.DuckDB.Simple.Geometry (RawGeometry (..), fromRawGeometry, toRawGeometry)
@@ -162,9 +162,9 @@ tests =
                 fromRawGeometry raw @?= Right geometry
                 (fromRawGeometry raw >>= toRawGeometry) @?= Right raw
                 assertFailureIO (query conn "SELECT ?" (Only geometry) :: IO [Only G.Geometry])
-                assertMixedLayoutFailure (importRaw conn raw)
-                assertMixedLayoutFailure (query conn "SELECT system.main.ST_GeomFromWKB(?)" (Only (rawGeometryWKB raw)) :: IO [Only G.Geometry])
-                assertMixedLayoutFailure (query conn "SELECT ?::GEOMETRY" (Only (rawGeometryWKB raw)) :: IO [Only RawGeometry])
+                assertMixedLayoutFailure DuckDBV2ErrorInputInvalid (importRaw conn raw)
+                assertMixedLayoutFailure DuckDBV2ErrorInputInvalid (query conn "SELECT system.main.ST_GeomFromWKB(?)" (Only (rawGeometryWKB raw)) :: IO [Only G.Geometry])
+                assertMixedLayoutFailure DuckDBV2ErrorTypeConversion (query conn "SELECT ?::GEOMETRY" (Only (rawGeometryWKB raw)) :: IO [Only RawGeometry])
                 (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
         , testCase "mixed multipoint layouts promote missing ordinates to NaN" $
             withConnection ":memory:" \conn -> do
@@ -201,8 +201,8 @@ tests =
                 raw <- either assertFailure pure (toRawGeometry shape)
                 fromRawGeometry raw @?= Right shape
                 (fromRawGeometry raw >>= toRawGeometry) @?= Right raw
-                assertMixedLayoutFailure (importRaw conn raw)
-                assertMixedLayoutFailure (query conn "SELECT system.main.ST_GeomFromWKB(?)" (Only (rawGeometryWKB raw)) :: IO [Only G.Geometry])
+                assertMixedLayoutFailure DuckDBV2ErrorInputInvalid (importRaw conn raw)
+                assertMixedLayoutFailure DuckDBV2ErrorInputInvalid (query conn "SELECT system.main.ST_GeomFromWKB(?)" (Only (rawGeometryWKB raw)) :: IO [Only G.Geometry])
                 (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
         , testCase "decoded polygon writing normalizes all-empty rings" $
             withConnection ":memory:" \conn -> do
@@ -436,12 +436,12 @@ rawParameters :: RawGeometry -> (BS.ByteString, Maybe Text)
 rawParameters raw = (rawGeometryWKB raw, rawGeometryCRS raw)
 
 -- | Check the native rejection without accepting unrelated failures.
-assertMixedLayoutFailure :: IO a -> Assertion
-assertMixedLayoutFailure action = do
+assertMixedLayoutFailure :: DuckDBV2Error -> IO a -> Assertion
+assertMixedLayoutFailure expectedCode action = do
     result <- try (action >> pure ()) :: IO (Either SQLError ())
     case result of
         Left err -> do
-            sqlErrorType err @?= Just DuckDBV2ErrorInputInvalid
+            sqlErrorType err @?= Just expectedCode
             assertBool (show err) ("inconsistent Z/M dimensions" `Text.isInfixOf` sqlErrorMessage err)
         Right () -> assertFailure "expected native mixed-layout geometry rejection"
 

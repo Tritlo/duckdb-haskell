@@ -25,7 +25,7 @@ let
     installPhase = ''
       runHook preInstall
       mkdir -p $out/lib $out/include $out/share/licenses/duckdb
-      cp src/libduckdb${pkgs.stdenv.hostPlatform.extensions.sharedLibrary} $out/lib/
+      cp -P src/libduckdb*${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}* $out/lib/
       cp ../src/include/duckdb*.h $out/include/
       cp ../LICENSE $out/share/licenses/duckdb/LICENSE
       runHook postInstall

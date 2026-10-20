@@ -50,7 +50,7 @@ tests =
         , testCase "aggregate callbacks traverse grouped state arrays" testAggregate
         , testCase "custom catalog types invoke registered cast callbacks" testCast
         , testCase "writable vectors expose constants, sequences, nulls and string storage" testVectorMutation
-        , testCase "connection options distinguish local and global settings" testOptions
+        , testCase "connection options distinguish session and global settings" testOptions
         , testCase "COPY callbacks consume input and release their owned state" testCopy
         , testCase "native file I/O preserves positions and closes owned handles" testFileSystem
         , testCase "callback logging respects the connection log configuration" testLogging
@@ -86,11 +86,16 @@ withConnection :: (DuckDBV2ConnectionHandle -> IO a) -> IO a
 withConnection action =
     withHandle c_duckdb_v2_environment_create c_duckdb_v2_environment_destroy $ \env ->
         withHandle (c_duckdb_v2_instance_create env) c_duckdb_v2_instance_destroy $ \instanceHandle -> do
+            config <- output (c_duckdb_v2_instance_get_config instanceHandle)
             withView "threads" $ \name -> withView "2" $ \setting ->
-                checked (c_duckdb_v2_instance_set_option instanceHandle (coerce name) setting)
+                checked (c_duckdb_v2_config_set_option_text config (coerce name) setting DuckDBV2SettingScopeDefault)
             withView ":memory:" $ \path ->
-                checked (c_duckdb_v2_instance_attach instanceHandle path (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)) (CBool 1))
+                checked (c_duckdb_v2_instance_attach instanceHandle (coerce (nullPtr :: Ptr Void)) path (coerce (nullPtr :: Ptr Void)) (CBool 1))
             withHandle (c_duckdb_v2_connection_create instanceHandle) c_duckdb_v2_connection_destroy action
+
+-- | Borrow a factory for the lifetime of its connection.
+withFactory :: DuckDBV2ConnectionHandle -> (DuckDBV2FactoryHandle -> IO a) -> IO a
+withFactory conn action = output (c_duckdb_v2_connection_get_factory conn) >>= action
 
 withView :: String -> (PtrConst DuckDBV2Str -> IO a) -> IO a
 withView text action = withCStringLen text $ \(ptr, len) -> with (DuckDBV2Str (ConstPtr ptr) (fromIntegral len)) (action . ConstPtr)
@@ -195,19 +200,19 @@ testCancellation = withConnection $ \conn -> withResult conn "SELECT i::BIGINT F
     withResult conn "SELECT 9::BIGINT" $ \second -> readIntegers second >>= (@?= [Just 9])
 
 testPrepared :: IO ()
-testPrepared = withConnection $ \conn ->
+testPrepared = withConnection $ \conn -> withFactory conn $ \factory ->
     withStatement conn "SELECT $amount::BIGINT + 1 AS answer" $ \statement ->
         withHandle (c_duckdb_v2_prepared_statement_create conn statement (CBool 1)) c_duckdb_v2_prepared_statement_destroy $ \prepared -> do
             output (c_duckdb_v2_prepared_statement_reuses_plan prepared) >>= (@?= CBool 1)
             forM_ [40, 41] $ \amount ->
-                withHandle (c_duckdb_v2_value_create_bigint_with_connection conn amount) c_duckdb_v2_value_destroy $ \value ->
+                withHandle (c_duckdb_v2_value_create_bigint factory amount) c_duckdb_v2_value_destroy $ \value ->
                     withView "amount" $ \name -> withArray [value] $ \values ->
                         withHandle (c_duckdb_v2_prepared_statement_execute prepared (coerce name) (ConstPtr values) 1) c_duckdb_v2_result_destroy $ \result ->
                             readIntegers result >>= (@?= [Just (amount + 1)])
 
 testStrings :: IO ()
-testStrings = withConnection $ \conn -> withView "alpha\0omega" $ \input ->
-    withHandle (c_duckdb_v2_value_create_varchar_with_connection conn input) c_duckdb_v2_value_destroy $ \value -> do
+testStrings = withConnection $ \conn -> withFactory conn $ \factory -> withView "alpha\0omega" $ \input ->
+    withHandle (c_duckdb_v2_value_create_varchar factory input) c_duckdb_v2_value_destroy $ \value -> do
         output (c_duckdb_v2_value_get_varchar value) >>= readView >>= (@?= "alpha\0omega")
         withStatement conn "SELECT length($text)::BIGINT" $ \statement ->
             withView "text" $ \name -> withArray [value] $ \values ->
@@ -215,18 +220,18 @@ testStrings = withConnection $ \conn -> withView "alpha\0omega" $ \input ->
                     readIntegers result >>= (@?= [Just 11])
 
 testNumericStructures :: IO ()
-testNumericStructures = withConnection $ \conn -> do
+testNumericStructures = withConnection $ \conn -> withFactory conn $ \factory -> do
     let huge = DuckDBV2HugeintT 0xffffffffffffffff (-7)
         unsigned = DuckDBV2UhugeintT 0xfffffffffffffffd 13
         interval = DuckDBV2IntervalT 3 (-2) 1234567
     with huge $ \ptr ->
-        withHandle (c_duckdb_v2_value_create_hugeint_with_connection conn (ConstPtr ptr)) c_duckdb_v2_value_destroy $ \value ->
+        withHandle (c_duckdb_v2_value_create_hugeint factory (ConstPtr ptr)) c_duckdb_v2_value_destroy $ \value ->
             output (c_duckdb_v2_value_get_hugeint value) >>= (@?= huge)
     with unsigned $ \ptr ->
-        withHandle (c_duckdb_v2_value_create_uhugeint_with_connection conn (ConstPtr ptr)) c_duckdb_v2_value_destroy $ \value ->
+        withHandle (c_duckdb_v2_value_create_uhugeint factory (ConstPtr ptr)) c_duckdb_v2_value_destroy $ \value ->
             output (c_duckdb_v2_value_get_uhugeint value) >>= (@?= unsigned)
     with interval $ \ptr ->
-        withHandle (c_duckdb_v2_value_create_interval_with_connection conn (ConstPtr ptr)) c_duckdb_v2_value_destroy $ \value ->
+        withHandle (c_duckdb_v2_value_create_interval factory (ConstPtr ptr)) c_duckdb_v2_value_destroy $ \value ->
             output (c_duckdb_v2_value_get_interval value) >>= (@?= interval)
 
 testError :: IO ()
@@ -267,14 +272,14 @@ testScalar = do
             dataPtr <- output (c_duckdb_v2_vector_get_data_mutable vector)
             forM_ [0 .. fromIntegral rows - 1] $ \i -> pokeElemOff (coerce dataPtr) i (42 :: Int64)
     bracket (DuckDBV2ScalarFunctionExecCallbackFn <$> toFunPtr (DuckDBV2ScalarFunctionExecCallbackFn_Aux callback)) (freeHaskellFunPtr . getField @"unwrap") $ \callbackPtr ->
-        withConnection $ \conn ->
-            withHandle (c_duckdb_v2_connection_create_type_from_id conn DuckDBV2LogicalTypeIdBigInt (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)) 0) c_duckdb_v2_logical_type_destroy $ \ty ->
-                withHandle (c_duckdb_v2_scalar_function_create_with_connection conn) c_duckdb_v2_scalar_function_destroy $ \function -> do
+        withConnection $ \conn -> withFactory conn $ \factory ->
+            withHandle (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdBigInt (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)) 0) c_duckdb_v2_logical_type_destroy $ \ty ->
+                withHandle (c_duckdb_v2_scalar_function_create factory) c_duckdb_v2_scalar_function_destroy $ \function -> do
                     withView "v2_answer" $ \name -> checked (c_duckdb_v2_scalar_function_set_name function (coerce name))
                     signature <- output (c_duckdb_v2_scalar_function_get_signature function)
                     checked (c_duckdb_v2_function_signature_set_return_type signature ty)
                     checked (c_duckdb_v2_scalar_function_set_exec_callback function callbackPtr)
-                    checked (c_duckdb_v2_scalar_function_register function)
+                    checked (c_duckdb_v2_connection_register_scalar_function conn function)
                     withResult conn "SELECT v2_answer() FROM range(3)" $ \result -> readIntegers result >>= (@?= replicate 3 (Just 42))
     readIORef failures >>= (@?= [])
     readIORef calls >>= assertBool "scalar callback was invoked" . (> 0)
@@ -285,9 +290,10 @@ testTable = do
     destroyed <- newIORef (0 :: Int)
     let destroyState ptr = free ptr >> modifyIORef' destroyed (+ 1)
         bind info result context err = callbackGuard failures err $ do
+            contextFactory <- output (c_duckdb_v2_context_get_factory context)
             withHandle (c_duckdb_v2_function_bind_get_arg_value info 0) c_duckdb_v2_value_destroy $ \value ->
                 output (c_duckdb_v2_value_get_bigint value) >>= (@?= 3)
-            withHandle (c_duckdb_v2_context_create_type_from_id context DuckDBV2LogicalTypeIdBigInt (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)) 0) c_duckdb_v2_logical_type_destroy $ \ty ->
+            withHandle (c_duckdb_v2_factory_create_type_from_id contextFactory DuckDBV2LogicalTypeIdBigInt (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)) 0) c_duckdb_v2_logical_type_destroy $ \ty ->
                 withView "amount" $ \name -> checked (c_duckdb_v2_table_function_bind_add_result_column result (coerce name) ty)
             checked (c_duckdb_v2_table_function_bind_set_cardinality result 3 (CBool 1))
         execute info _context err = callbackGuard failures err $ do
@@ -312,16 +318,16 @@ testTable = do
         bracket (DuckDBV2TableFunctionBindCallbackFn <$> toFunPtr (DuckDBV2TableFunctionBindCallbackFn_Aux bind)) (freeHaskellFunPtr . getField @"unwrap") $ \bindPtr ->
             bracket (DuckDBV2TableFunctionInitGlobalCallbackFn <$> toFunPtr (DuckDBV2TableFunctionInitGlobalCallbackFn_Aux initialize)) (freeHaskellFunPtr . getField @"unwrap") $ \initializePtr ->
                 bracket (DuckDBV2TableFunctionExecCallbackFn <$> toFunPtr (DuckDBV2TableFunctionExecCallbackFn_Aux execute)) (freeHaskellFunPtr . getField @"unwrap") $ \executePtr ->
-                    withConnection $ \conn -> do
-                        withHandle (c_duckdb_v2_connection_create_type_from_id conn DuckDBV2LogicalTypeIdBigInt (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)) 0) c_duckdb_v2_logical_type_destroy $ \ty ->
-                            withHandle (c_duckdb_v2_table_function_create_with_connection conn) c_duckdb_v2_table_function_destroy $ \function -> do
+                    withConnection $ \conn -> withFactory conn $ \factory -> do
+                        withHandle (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdBigInt (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)) 0) c_duckdb_v2_logical_type_destroy $ \ty ->
+                            withHandle (c_duckdb_v2_table_function_create factory) c_duckdb_v2_table_function_destroy $ \function -> do
                                 withView "v2_scan" $ \name -> checked (c_duckdb_v2_table_function_set_name function (coerce name))
                                 signature <- output (c_duckdb_v2_table_function_get_signature function)
                                 withView "count" $ \name -> checked (c_duckdb_v2_function_signature_add_parameter signature (coerce name) ty (coerce (nullPtr :: Ptr Void)) DuckDBV2FunctionParameterKindStandard)
                                 checked (c_duckdb_v2_table_function_set_bind_callback function bindPtr)
                                 checked (c_duckdb_v2_table_function_set_init_global_callback function initializePtr)
                                 checked (c_duckdb_v2_table_function_set_exec_callback function executePtr)
-                                checked (c_duckdb_v2_table_function_register function)
+                                checked (c_duckdb_v2_connection_register_table_function conn function)
                         withResult conn "SELECT amount FROM v2_scan(3)" $ \result -> readIntegers result >>= (@?= [Just 42, Just 43, Just 44])
     readIORef failures >>= (@?= [])
     readIORef destroyed >>= (@?= 1)
@@ -373,9 +379,9 @@ testAggregate = do
             bracket (DuckDBV2AggregateFunctionUpdateCallbackFn <$> toFunPtr (DuckDBV2AggregateFunctionUpdateCallbackFn_Aux update)) (freeHaskellFunPtr . getField @"unwrap") $ \updatePtr ->
                 bracket (DuckDBV2AggregateFunctionCombineCallbackFn <$> toFunPtr (DuckDBV2AggregateFunctionCombineCallbackFn_Aux combine)) (freeHaskellFunPtr . getField @"unwrap") $ \combinePtr ->
                     bracket (DuckDBV2AggregateFunctionFinalizeCallbackFn <$> toFunPtr (DuckDBV2AggregateFunctionFinalizeCallbackFn_Aux finalize)) (freeHaskellFunPtr . getField @"unwrap") $ \finalizePtr ->
-                        withConnection $ \conn -> do
-                            withHandle (c_duckdb_v2_connection_create_type_from_id conn DuckDBV2LogicalTypeIdBigInt (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)) 0) c_duckdb_v2_logical_type_destroy $ \ty ->
-                                withHandle (c_duckdb_v2_aggregate_function_create_with_connection conn) c_duckdb_v2_aggregate_function_destroy $ \function -> do
+                        withConnection $ \conn -> withFactory conn $ \factory -> do
+                            withHandle (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdBigInt (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)) 0) c_duckdb_v2_logical_type_destroy $ \ty ->
+                                withHandle (c_duckdb_v2_aggregate_function_create factory) c_duckdb_v2_aggregate_function_destroy $ \function -> do
                                     withView "v2_sum" $ \name -> checked (c_duckdb_v2_aggregate_function_set_name function (coerce name))
                                     signature <- output (c_duckdb_v2_aggregate_function_get_signature function)
                                     withView "value" $ \name -> checked (c_duckdb_v2_function_signature_add_parameter signature (coerce name) ty (coerce (nullPtr :: Ptr Void)) DuckDBV2FunctionParameterKindStandard)
@@ -385,7 +391,7 @@ testAggregate = do
                                     checked (c_duckdb_v2_aggregate_function_set_update_callback function updatePtr)
                                     checked (c_duckdb_v2_aggregate_function_set_combine_callback function combinePtr)
                                     checked (c_duckdb_v2_aggregate_function_set_finalize_callback function finalizePtr)
-                                    checked (c_duckdb_v2_aggregate_function_register function)
+                                    checked (c_duckdb_v2_connection_register_aggregate_function conn function)
                             withResult conn "SELECT v2_sum(i::BIGINT) FROM range(12) t(i) GROUP BY i % 3 ORDER BY i % 3" $ \result ->
                                 readIntegers result >>= (@?= [Just 18, Just 22, Just 26])
                             withResult conn "SELECT v2_sum(i::BIGINT) OVER () FROM range(4096) t(i) LIMIT 1" $ \result ->
@@ -412,32 +418,32 @@ testCast = do
                 value <- peekElemOff (coerce (getField @"data'" view)) index
                 pokeElemOff (coerce raw) i (value + 100 :: Int64)
     bracket (DuckDBV2CastFunctionExecCallbackFn <$> toFunPtr (DuckDBV2CastFunctionExecCallbackFn_Aux execute)) (freeHaskellFunPtr . getField @"unwrap") $ \executePtr ->
-        withConnection $ \conn ->
-            withHandle (c_duckdb_v2_connection_create_type_from_id conn DuckDBV2LogicalTypeIdBigInt (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)) 0) c_duckdb_v2_logical_type_destroy $ \ty ->
+        withConnection $ \conn -> withFactory conn $ \factory ->
+            withHandle (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdBigInt (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)) 0) c_duckdb_v2_logical_type_destroy $ \ty ->
                 withView "v2_shifted" $ \name -> do
-                    withHandle (c_duckdb_v2_custom_type_create_with_connection conn) c_duckdb_v2_custom_type_destroy $ \custom -> do
+                    withHandle (c_duckdb_v2_custom_type_create factory) c_duckdb_v2_custom_type_destroy $ \custom -> do
                         checked (c_duckdb_v2_custom_type_set_name custom (coerce name))
                         checked (c_duckdb_v2_custom_type_set_base_type custom ty)
-                        checked (c_duckdb_v2_custom_type_register custom)
-                    withHandle (c_duckdb_v2_connection_create_type_with_alias conn ty (coerce name)) c_duckdb_v2_logical_type_destroy $ \alias ->
-                        withHandle (c_duckdb_v2_cast_function_create_with_connection conn) c_duckdb_v2_cast_function_destroy $ \function -> do
+                        checked (c_duckdb_v2_connection_register_custom_type conn custom)
+                    withHandle (c_duckdb_v2_factory_create_type_with_alias factory ty (coerce name)) c_duckdb_v2_logical_type_destroy $ \alias ->
+                        withHandle (c_duckdb_v2_cast_function_create factory) c_duckdb_v2_cast_function_destroy $ \function -> do
                             checked (c_duckdb_v2_cast_function_set_source_type function ty)
                             checked (c_duckdb_v2_cast_function_set_target_type function alias)
                             checked (c_duckdb_v2_cast_function_set_exec_callback function executePtr)
-                            checked (c_duckdb_v2_cast_function_register function)
+                            checked (c_duckdb_v2_connection_register_cast_function conn function)
                     withResult conn "SELECT CAST(i::BIGINT AS v2_shifted)::BIGINT FROM range(3) t(i)" $ \result -> readIntegers result >>= (@?= [Just 100, Just 101, Just 102])
                     withResult conn "SELECT TRY_CAST(i::BIGINT AS v2_shifted)::BIGINT FROM range(3) t(i)" $ \result -> readIntegers result >>= (@?= [Just 100, Just 101, Just 102])
     readIORef failures >>= (@?= [])
     readIORef modes >>= \seen -> assertBool "normal and try cast modes reach the callback" (DuckDBV2CastModeNormal `elem` seen && DuckDBV2CastModeTry `elem` seen)
 
 testVectorMutation :: IO ()
-testVectorMutation = withConnection $ \conn ->
-    withHandle (c_duckdb_v2_connection_create_type_from_id conn DuckDBV2LogicalTypeIdBigInt (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)) 0) c_duckdb_v2_logical_type_destroy $ \integer ->
-        withHandle (c_duckdb_v2_connection_create_type_from_id conn DuckDBV2LogicalTypeIdVarchar (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)) 0) c_duckdb_v2_logical_type_destroy $ \text ->
+testVectorMutation = withConnection $ \conn -> withFactory conn $ \factory ->
+    withHandle (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdBigInt (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)) 0) c_duckdb_v2_logical_type_destroy $ \integer ->
+        withHandle (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdVarchar (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)) 0) c_duckdb_v2_logical_type_destroy $ \text ->
             withArray [integer, text] $ \types ->
-                withHandle (c_duckdb_v2_data_chunk_create_with_connection conn (ConstPtr types) 2) c_duckdb_v2_data_chunk_destroy $ \chunk -> do
+                withHandle (c_duckdb_v2_data_chunk_create factory (ConstPtr types) 2) c_duckdb_v2_data_chunk_destroy $ \chunk -> do
                     vector <- output (c_duckdb_v2_data_chunk_get_vector chunk 0)
-                    withHandle (c_duckdb_v2_value_create_bigint_with_connection conn 7) c_duckdb_v2_value_destroy $ \value ->
+                    withHandle (c_duckdb_v2_value_create_bigint factory 7) c_duckdb_v2_value_destroy $ \value ->
                         checked (c_duckdb_v2_vector_make_constant vector value 4)
                     constant <- output (c_duckdb_v2_vector_get_view vector)
                     (getField @"count" constant) @?= 4
@@ -460,7 +466,7 @@ testVectorMutation = withConnection $ \conn ->
                     let values = ["", "a\0b", replicate 12 'x', replicate 13 'y', replicate 100 'z']
                     checked (c_duckdb_v2_vector_set_size strings (fromIntegral (length values)))
                     forM_ (zip [0 ..] values) $ \(i, value) -> withView value $ \input ->
-                        withHandle (c_duckdb_v2_value_create_varchar_with_connection conn input) c_duckdb_v2_value_destroy $ \owned ->
+                        withHandle (c_duckdb_v2_value_create_varchar factory input) c_duckdb_v2_value_destroy $ \owned ->
                             checked (c_duckdb_v2_vector_set_value strings i owned)
                     stringView <- output (c_duckdb_v2_vector_get_view strings)
                     forM
@@ -487,18 +493,25 @@ testOptions :: IO ()
 testOptions =
     withHandle c_duckdb_v2_environment_create c_duckdb_v2_environment_destroy $ \env ->
         withHandle (c_duckdb_v2_instance_create env) c_duckdb_v2_instance_destroy $ \instanceHandle -> do
+            config <- output (c_duckdb_v2_instance_get_config instanceHandle)
             withView "threads" $ \name -> withView "2" $ \setting ->
-                checked (c_duckdb_v2_instance_set_option instanceHandle (coerce name) setting)
-            withView ":memory:" $ \path -> checked (c_duckdb_v2_instance_attach instanceHandle path (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)) (CBool 1))
+                checked (c_duckdb_v2_config_set_option_text config (coerce name) setting DuckDBV2SettingScopeDefault)
+            withView ":memory:" $ \path -> checked (c_duckdb_v2_instance_attach instanceHandle (coerce (nullPtr :: Ptr Void)) path (coerce (nullPtr :: Ptr Void)) (CBool 1))
             withHandle (c_duckdb_v2_connection_create instanceHandle) c_duckdb_v2_connection_destroy $ \first ->
-                withHandle (c_duckdb_v2_connection_create instanceHandle) c_duckdb_v2_connection_destroy $ \second ->
+                withHandle (c_duckdb_v2_connection_create instanceHandle) c_duckdb_v2_connection_destroy $ \second -> do
+                    firstConfig <- output (c_duckdb_v2_connection_get_config first)
+                    secondConfig <- output (c_duckdb_v2_connection_get_config second)
                     withView "TimeZone" $ \name -> do
-                        withView "Europe/Berlin" $ \setting -> checked (c_duckdb_v2_connection_set_option first (coerce name) setting DuckDBV2SettingScopeGlobal)
-                        withView "UTC" $ \setting -> checked (c_duckdb_v2_connection_set_option first (coerce name) setting DuckDBV2SettingScopeLocal)
-                        withHandle (c_duckdb_v2_connection_get_option_by_name first (coerce name)) c_duckdb_v2_option_destroy $ \option ->
-                            output (c_duckdb_v2_option_get_setting option) >>= readView >>= (@?= "UTC")
-                        withHandle (c_duckdb_v2_connection_get_option_by_name second (coerce name)) c_duckdb_v2_option_destroy $ \option ->
-                            output (c_duckdb_v2_option_get_setting option) >>= readView >>= (@?= "Europe/Berlin")
+                        withView "Europe/Berlin" $ \setting -> checked (c_duckdb_v2_config_set_option_text firstConfig (coerce name) setting DuckDBV2SettingScopeGlobal)
+                        withView "UTC" $ \setting -> checked (c_duckdb_v2_config_set_option_text firstConfig (coerce name) setting DuckDBV2SettingScopeSession)
+                        alloca $ \scope -> do
+                            withHandle (\value -> c_duckdb_v2_config_get_option_value firstConfig (coerce name) value scope) c_duckdb_v2_value_destroy $ \value ->
+                                output (c_duckdb_v2_value_get_varchar value) >>= readView >>= (@?= "UTC")
+                            peek scope >>= (@?= DuckDBV2SettingScopeSession)
+                        alloca $ \scope -> do
+                            withHandle (\value -> c_duckdb_v2_config_get_option_value secondConfig (coerce name) value scope) c_duckdb_v2_value_destroy $ \value ->
+                                output (c_duckdb_v2_value_get_varchar value) >>= readView >>= (@?= "Europe/Berlin")
+                            peek scope >>= (@?= DuckDBV2SettingScopeGlobal)
                         withResult first "SELECT EXTRACT(hour FROM TIMESTAMPTZ '2000-01-01 00:00:00+00')::BIGINT" $ \result -> readIntegers result >>= (@?= [Just 0])
                         withResult second "SELECT EXTRACT(hour FROM TIMESTAMPTZ '2000-01-01 00:00:00+00')::BIGINT" $ \result -> readIntegers result >>= (@?= [Just 1])
 
@@ -558,15 +571,15 @@ testCopy = do
                 bracket (DuckDBV2CopyToBatchCallbackFn <$> toFunPtr (DuckDBV2CopyToBatchCallbackFn_Aux batch)) (freeHaskellFunPtr . getField @"unwrap") $ \batchPtr ->
                     bracket (DuckDBV2CopyToFlushCallbackFn <$> toFunPtr (DuckDBV2CopyToFlushCallbackFn_Aux flush)) (freeHaskellFunPtr . getField @"unwrap") $ \flushPtr ->
                         bracket (DuckDBV2CopyToFinalizeCallbackFn <$> toFunPtr (DuckDBV2CopyToFinalizeCallbackFn_Aux finalize)) (freeHaskellFunPtr . getField @"unwrap") $ \finalizePtr ->
-                            withConnection $ \conn -> do
-                                withHandle (c_duckdb_v2_copy_function_create_with_connection conn) c_duckdb_v2_copy_function_destroy $ \function -> do
+                            withConnection $ \conn -> withFactory conn $ \factory -> do
+                                withHandle (c_duckdb_v2_copy_function_create factory) c_duckdb_v2_copy_function_destroy $ \function -> do
                                     withView "v2_count" $ \name -> checked (c_duckdb_v2_copy_function_set_name function (coerce name))
                                     checked (c_duckdb_v2_copy_to_set_bind_callback function bindPtr)
                                     checked (c_duckdb_v2_copy_to_set_init_callback function initializePtr)
                                     checked (c_duckdb_v2_copy_to_set_batch_callback function batchPtr)
                                     checked (c_duckdb_v2_copy_to_set_flush_callback function flushPtr)
                                     checked (c_duckdb_v2_copy_to_set_finalize_callback function finalizePtr)
-                                    checked (c_duckdb_v2_copy_function_register function)
+                                    checked (c_duckdb_v2_connection_register_copy_function conn function)
                                 withResult conn ("COPY (SELECT i::BIGINT FROM range(5) t(i)) TO '" <> path <> "' (FORMAT v2_count, USE_TMP_FILE FALSE)") $ \result ->
                                     readIntegers result >>= (@?= [Just 5])
     readIORef failures >>= (@?= [])
@@ -589,7 +602,7 @@ testFileSystem =
         )
         (\path -> withCString path $ \name -> removeTestFile name >>= (@?= 0))
         ( \path -> withConnection $ \conn -> do
-            fileSystem <- output (c_duckdb_v2_file_system_get_from_connection conn)
+            fileSystem <- output (c_duckdb_v2_connection_get_file_system conn)
             withHandle (c_duckdb_v2_file_open_options_create fileSystem) c_duckdb_v2_file_open_options_destroy $ \options -> do
                 checked (c_duckdb_v2_file_open_options_set_flag options DuckDBV2FileFlagRead)
                 checked (c_duckdb_v2_file_open_options_set_flag options DuckDBV2FileFlagWrite)
@@ -630,14 +643,14 @@ testLogging = do
             raw <- output (c_duckdb_v2_vector_get_data_mutable vector)
             poke (coerce raw) (1 :: Int64)
     bracket (DuckDBV2ScalarFunctionExecCallbackFn <$> toFunPtr (DuckDBV2ScalarFunctionExecCallbackFn_Aux execute)) (freeHaskellFunPtr . getField @"unwrap") $ \executePtr ->
-        withConnection $ \conn -> do
-            withHandle (c_duckdb_v2_connection_create_type_from_id conn DuckDBV2LogicalTypeIdBigInt (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)) 0) c_duckdb_v2_logical_type_destroy $ \ty ->
-                withHandle (c_duckdb_v2_scalar_function_create_with_connection conn) c_duckdb_v2_scalar_function_destroy $ \function -> do
+        withConnection $ \conn -> withFactory conn $ \factory -> do
+            withHandle (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdBigInt (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)) 0) c_duckdb_v2_logical_type_destroy $ \ty ->
+                withHandle (c_duckdb_v2_scalar_function_create factory) c_duckdb_v2_scalar_function_destroy $ \function -> do
                     withView "v2_log" $ \name -> checked (c_duckdb_v2_scalar_function_set_name function (coerce name))
                     signature <- output (c_duckdb_v2_scalar_function_get_signature function)
                     checked (c_duckdb_v2_function_signature_set_return_type signature ty)
                     checked (c_duckdb_v2_scalar_function_set_exec_callback function executePtr)
-                    checked (c_duckdb_v2_scalar_function_register function)
+                    checked (c_duckdb_v2_connection_register_scalar_function conn function)
             withResult conn "CALL enable_logging()" consume
             withResult conn "SET logging_level='info'" consume
             withResult conn "SELECT v2_log()" $ \result -> readIntegers result >>= (@?= [Just 1])

@@ -9,7 +9,8 @@ parameters, and decoding typed results—including the full set of DuckDB scalar
 types (signed/unsigned integers, decimals, hugeints, intervals, precise and
 timezone-aware temporals, blobs, enums, bit strings, and bignums).
 
-The backend uses the generated DuckDB V2 API. It requires native DuckDB 2.0.
+The backend uses the generated DuckDB V2 API. All V2 declarations are currently
+unstable. Use the exact native snapshot recorded in the binding package.
 
 ## Shared environments and instances
 
@@ -35,8 +36,9 @@ existing convenience behavior.
 
 ## V2 facilities
 
-- `Config` lists options with effective values, defaults, aliases, and declared
-  target scopes. A native descriptor can report an unknown scope.
+- `Config` lists options with effective values, typed defaults, aliases, and
+  supported scopes. It reads and writes typed values and registers custom
+  options with managed update callbacks.
 - `Catalog.describeTable` copies resolved names, column types, default flags,
   generated-column flags, and catalog read-only status.
 - `Tokenizer.tokenize` returns token kinds, UTF-8 byte offsets, token bytes, and
@@ -45,16 +47,30 @@ existing convenience behavior.
   registration, replacement scans, function properties, and parameter kinds,
   names, and defaults. Haskell callbacks use typed V2 info handles. The library
   retains their function pointers and contains callback exceptions. The advanced
-  extension builders also accept a borrowed native extension handle.
+  extension builders accept a borrowed native extension handle and context.
+  Scalar type resolution runs before binding. Table callbacks can report
+  multi-file column identifiers and metadata after binding.
 - `Copy` supports managed COPY TO and COPY FROM callbacks. The native interfaces
   include batch transfer, flush, statistics, progress, and multi-file setup.
 - `FileSystem` supports sequential and positioned reads and writes, file size,
-  position, seek, and sync. `Logging.logMessage` writes from a callback context.
+  position, seek, sync, path tests, expansion, globbing, movement, and removal.
+- `Logging` registers native log sinks with managed write and flush callbacks.
+  It copies timestamps, severity, scope, and available context identifiers.
+  Callbacks can run concurrently. They must not log or change logging settings.
+- `Pragma` registers query and execution callbacks. `Macro` registers scalar
+  and table macros during extension initialization. The native macro builder
+  has no connection target; use SQL `CREATE MACRO` on a connection.
+- `FunctionDocs` sets descriptions, examples, and categories on function builders.
+- `QueryMetrics` enables profiling and copies query and operator metric trees.
+- `withCollectionStatement` binds native column collections as named table inputs
+  for one scoped prepared-statement action. The caller retains the collections.
 
-The pinned V2 API does not expose custom file-system registration or custom
-log-storage registration. `registerLogStorage` raises `SQLError`. Scoped
+The pinned V2 API does not expose custom file-system registration. Scoped
 collation lookup is also unavailable. Fixed ARRAY types with zero elements are
 not supported by this native API. Empty LIST values remain supported.
+Prepared dynamic PIVOT supports repeated execution with a changing schema. It
+does not support parameters or a cacheable plan. VARIANT decoding and configured
+GEOMETRY CRS names still use the SQL metadata and native-cast helpers.
 
 ## Getting Started
 

@@ -12,6 +12,15 @@
 - Add shared environments and instances, attachment management, option
   discovery, table descriptions, SQL tokenization, positioned file I/O,
   managed function and type registration, replacement scans, and COPY callbacks.
+- Update to the October 20 V2 API. Borrow factories for type and value creation.
+  Register builders on an explicit connection or extension target. Supply
+  startup-only settings when creating an instance.
+- Add custom configuration options, typed values and defaults, managed log
+  sinks, macro and pragma registration, function documentation, query metrics,
+  and file path operations. Separate scalar type resolution from binding and
+  expose table bind metadata for multi-file readers.
+- Add scoped named collection inputs and support prepared dynamic PIVOT with
+  deferred output schema. Native expanding statements cannot have parameters.
 - Add `Database.DuckDB.Simple.Streaming` for V2 row and Arrow streaming.
   Remove `Database.DuckDB.Simple.Deprecated.Streaming`. Use the V2 module.
 - Preserve materialized query behavior by draining the native cursor before
@@ -25,7 +34,7 @@
   type metadata and native casts to preserve scalar types, precision, object
   order, and nested values. Object keys use DuckDB's native lexicographic order.
   Do not read the private native payload layout.
-- Report unavailable custom log-storage registration, scoped collation lookup,
+- Report unavailable custom file-system registration, scoped collation lookup,
   and zero-length fixed ARRAY types explicitly. Empty LIST values still work.
 - Export Arrow release helpers from `Database.DuckDB.Simple.Arrow`.
 - Allow session variables to supply omitted named parameters.

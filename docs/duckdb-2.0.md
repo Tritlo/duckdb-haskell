@@ -277,7 +277,7 @@ on the native build and its installed extensions.
 | Feature | Access from this repository | Release validation |
 | --- | --- | --- |
 | Triggers, DML in CTEs, nested schemas, NEAREST joins, variables, JSON mutation, recursive CTE additions | Existing `query` and `execute` SQL paths | Execute representative SQL against the final runtime. |
-| PEG parser, expression statements, lambda syntax changes | Existing SQL paths | Check parameters, multi-statement extraction, quoted names, and parser errors. The [parser extension API](https://duckdb.org/2026/08/20/duckdb-20-peg-parser) remains a preview. |
+| PEG parser and lambda syntax changes | Existing SQL paths | Check parameters, multi-statement extraction, quoted names, and parser errors. Bare expression statements use the CLI's shell grammar; client SQL needs `SELECT`. The [parser extension API](https://duckdb.org/2026/08/20/duckdb-20-peg-parser) remains a preview. |
 | Quack, CONNECT, remote pushdown | SQL with the required extensions | Test a local server separately. Check authentication and extension availability. |
 | VARIANT and GEOMETRY | V2 parameter binding and result decoding, SQL type metadata, native casts, and geometry codecs | Check nested values, scalar precision, object order, Parquet round trips, and configured custom CRS names. |
 | Nanosecond TIMESTAMPTZ | V2 value access and typed conversion | Check sub-microsecond precision and temporal infinity. |
@@ -393,7 +393,7 @@ operations are documented in the package README and report controlled errors:
   values remain supported.
 - Native GEOMETRY collections require the same Z/M dimensions on all members,
   including empty members. Mixed-layout WKB still round trips through the
-  standalone codec. Native import raises `InputInvalid` without normalization.
+  standalone codec. Native import raises `SQLError` without normalization.
 - Direct GEOMETRY type construction requires a recognized CRS identifier or a
   complete definition. The high-level type cache also preserves custom names
   configured through `connectionGeometryCRS`. Unconfigured unknown names raise

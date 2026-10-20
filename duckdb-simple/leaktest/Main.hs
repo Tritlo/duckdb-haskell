@@ -199,6 +199,7 @@ checkCallbacks batches =
                 pure state
         Copy.registerCopyToFunction conn "leak_copy" (\_ -> newCopyState) (\_ -> newCopyState) (\_ _ -> pure ()) (\_ -> pure ())
         Copy.registerCopyToFunction conn "leak_copy_failure" (\_ -> newCopyState) (\_ -> fail "COPY init failure" :: IO ()) (\_ _ -> pure ()) (\_ -> pure ())
+        Logging.registerLogStorage conn "leak_log" (\_ -> pure ())
         let cycleCallback = do
                 retained <- newIORef (42 :: Int64)
                 weak <- mkWeakIORef retained (pure ())

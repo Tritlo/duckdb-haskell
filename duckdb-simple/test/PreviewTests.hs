@@ -71,7 +71,7 @@ tests =
                     >>= (@?= [Only (3 :: Int64), Only 4])
         , testCase "expression statements use the query and cursor paths" $
             withConnection ":memory:" \conn -> do
-                query conn "?::BIGINT + 1" (Only (41 :: Int64)) >>= (@?= [Only (42 :: Int64)])
+                query conn "(?::BIGINT + 1)" (Only (41 :: Int64)) >>= (@?= [Only (42 :: Int64)])
                 withStatement conn "42::BIGINT" \stmt -> do
                     nextRow stmt >>= (@?= Just (Only (42 :: Int64)))
                     nextRow stmt >>= (@?= (Nothing :: Maybe (Only Int64)))

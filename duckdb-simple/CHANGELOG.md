@@ -21,6 +21,8 @@
   expose table bind metadata for multi-file readers.
 - Add scoped named collection inputs and support prepared dynamic PIVOT with
   deferred output schema. Native expanding statements cannot have parameters.
+- Keep mixed-dimension WKB codec support. Report the native GEOMETRY import
+  restriction on mixed Z/M collection members without changing coordinates.
 - Add `Database.DuckDB.Simple.Streaming` for V2 row and Arrow streaming.
   Remove `Database.DuckDB.Simple.Deprecated.Streaming`. Use the V2 module.
 - Preserve materialized query behavior by draining the native cursor before

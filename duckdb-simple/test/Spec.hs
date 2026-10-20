@@ -16,7 +16,7 @@ import ArrowTests (arrowTests)
 import CancellationTests (cancellationTests)
 import Control.Applicative ((<|>))
 import Control.Exception (ErrorCall, Exception, SomeException, displayException, fromException, try)
-import Control.Monad (forM_, replicateM_, when)
+import Control.Monad (forM_, replicateM_, void, when)
 import CopyTests (copyTests)
 import CoreRegressionTests (coreRegressionTests)
 import Data.Array (Array, elems, listArray)
@@ -312,12 +312,10 @@ v20Tests =
                 filePath <- readIORef pathRef
                 captured @?= [1, 2, 3]
                 filePath @?= Just "/tmp/duckdb-simple-copy.out"
-        , testCase "custom log storage reports the V2 limitation" $
+        , testCase "custom log storage registers a native sink" $
             withConnection ":memory:" \conn -> do
-                result <- try (Logging.registerLogStorage conn "hs_log_capture" (\_ -> pure ()))
-                case result of
-                    Left (err :: SQLError) -> assertBool "explicit unsupported diagnostic" ("unavailable" `Text.isInfixOf` sqlErrorMessage err)
-                    Right () -> assertFailure "expected unsupported log registration"
+                Logging.registerLogStorage conn "hs_log_capture" (\_ -> pure ())
+                void $ execute_ conn "CALL enable_logging(); SET logging_storage = 'hs_log_capture'; SELECT write_log('registered')"
         ]
 
 fieldInt :: [Field] -> IO Int

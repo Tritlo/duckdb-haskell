@@ -109,11 +109,12 @@ a library in another directory. See the `cabal.project` example in the README.
 Nix builds use the library supplied by Nix and do not download it.
 
 CI tests the pinned 2.0 source with all supported compilers on Linux and
-GHC 9.14.1 on macOS. The FFI suite
-rejects runtimes outside the supported range. Set
+GHC 9.14.1 on macOS. V2 is unstable and requires the native source pin in
+`duckdb-ffi/vendor/duckdb-api.json`. Set
 `DUCKDB_TEST_VERSION` to the exact expected version, such as `2.0.0-dev0`, to detect
-loader configuration errors. Run the full suite on each supported native
-version. Do not skip feature tests that pass on the minimum version.
+loader configuration errors. The version string alone does not identify a
+development snapshot. Check its source ID too. Run the full suite after each
+native pin update.
 
 CI also builds and tests with `--enable-optimization=0` on GHC 9.14.1 and
 DuckDB 2.0. Floating-point conversion must preserve special values without

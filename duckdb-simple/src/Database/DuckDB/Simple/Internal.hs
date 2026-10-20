@@ -31,6 +31,7 @@ module Database.DuckDB.Simple.Internal (
     closeConnection,
     closeStatementState,
     createStatementFromParsed,
+    createStatementFromParsedWithCollections,
     withParsedStatements,
     statementSchemas,
     preparedParameterType,
@@ -71,7 +72,7 @@ import qualified Data.ByteString as BS
 import Data.Coerce (Coercible, coerce)
 import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, newIORef, readIORef, writeIORef)
 import qualified Data.IntMap.Strict as IntMap
-import Data.List (find)
+import Data.List (find, partition)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
@@ -229,14 +230,37 @@ createInstance environment@Environment{environmentState} settings = keepAlive en
             EnvironmentOpen raw children -> pure (raw, children)
     when (any (\(name, value) -> Text.any (== '\0') name || Text.any (== '\0') value) settings) $
         throwIO (SQLError "duckdb-simple: configuration contains NUL" Nothing Nothing)
-    raw <- output (c_duckdb_v2_instance_create rawEnvironment)
+    let hasWhitelist = any ((`elem` ["allowed_directories", "allowed_paths"]) . Text.toLower . fst) settings
+        needsInstance (name, _) = Text.toLower name `elem` runtimeOptions || (hasWhitelist && Text.toLower name == "enable_external_access")
+        (deferredSettings, startupSettings) = partition needsInstance settings
+        (runtimeSettings, externalAccessSettings) = partition ((/= "enable_external_access") . Text.toLower . fst) deferredSettings
+        withView text action = withText text \(ConstPtr ptr) -> peek ptr >>= action
+    raw <- withMany withView (map fst startupSettings) \names ->
+        withMany withView (map snd startupSettings) \values ->
+            withArray names \nameArray -> withArray values \valueArray ->
+                output (c_duckdb_v2_instance_create_with_options rawEnvironment (ConstPtr nameArray) (ConstPtr valueArray) (fromIntegral (length startupSettings)))
     flip onException (destroy c_duckdb_v2_instance_destroy raw) do
-        forM_ settings \(name, value) -> withIdentifier name \key -> withText value \text ->
-            checked (c_duckdb_v2_instance_set_option raw key text)
+        config <- output (c_duckdb_v2_instance_get_config raw)
+        -- Set the whitelist before external access can be disabled.
+        forM_ (runtimeSettings ++ externalAccessSettings) \(name, value) -> withIdentifier name \key -> withText value \text ->
+            checked (c_duckdb_v2_config_set_option_text config key text DuckDBV2SettingScopeDefault)
         connections <- newChildren
         ref <- newIORef (InstanceOpen raw connections)
         registerChild (\case InstanceOpen{} -> True; _ -> False) children ref (keepAlive environment (closeInstanceState ref))
         pure (Instance ref environment)
+  where
+    -- These options require the native instance and its file system or logger.
+    runtimeOptions =
+        [ "enable_logging"
+        , "logging_mode"
+        , "logging_level"
+        , "logging_storage"
+        , "enabled_log_types"
+        , "disabled_log_types"
+        , "allowed_directories"
+        , "allowed_paths"
+        , "disabled_filesystems"
+        ]
 
 -- | Close an instance and all its connections. This is idempotent.
 closeInstance :: Instance -> IO ()
@@ -315,7 +339,12 @@ withParsedStatements conn query action = withQueryError query $ withConnectionHa
 
 -- | Prepare a borrowed parsed statement. The native handle copies its SQL.
 createStatementFromParsed :: Connection -> Query -> DuckDBV2SqlStatementHandle -> IO Statement
-createStatementFromParsed parent query parsed = withQueryError query $ withConnectionHandle parent \raw -> mask_ do
+createStatementFromParsed parent query parsed = createStatementFromParsedWithCollections parent query parsed []
+
+-- | Prepare SQL and retain its collection bindings in the metadata copy.
+createStatementFromParsedWithCollections :: Connection -> Query -> DuckDBV2SqlStatementHandle -> [(Text, DuckDBV2ColumnDataCollectionHandle, [Text])] -> IO Statement
+createStatementFromParsedWithCollections parent query parsed collections = withQueryError query $ withConnectionHandle parent \raw -> mask_ do
+    addCollections parsed
     handle <- alloca \slot -> do
         poke slot nullHandle
         flip onException (peek slot >>= destroy c_duckdb_v2_prepared_statement_destroy) do
@@ -327,6 +356,7 @@ createStatementFromParsed parent query parsed = withQueryError query $ withConne
         copied <- withQueryCString (Query text) \sql -> bracket (output (c_duckdb_v2_parse_sql raw sql)) (destroy c_duckdb_v2_statement_iterator_destroy) \iterator ->
             output (c_duckdb_v2_statement_iterator_next iterator)
         flip onException (destroy c_duckdb_v2_sql_statement_destroy copied) do
+            addCollections copied
             count <- output (c_duckdb_v2_sql_statement_get_parameter_count copied)
             names <- forM [0 .. fromIntegral count - 1 :: Int] \idx ->
                 output (c_duckdb_v2_sql_statement_get_parameter_name copied (fromIntegral idx)) >>= readIdentifier
@@ -341,6 +371,14 @@ createStatementFromParsed parent query parsed = withQueryError query $ withConne
                     ConnectionOpen{connectionStatements} -> pure connectionStatements
             registerChild (\case StatementOpen{} -> True; _ -> False) children ref (keepAlive parent (closeStatementState ref))
             pure (Statement ref parent query stream arrow bindings names)
+  where
+    addCollections statement = forM_ collections \(name, collection, columns) -> do
+        when (any (Text.any (== '\0')) (name : columns)) $
+            throwIO (SQLError "duckdb-simple: collection name or column name contains NUL" Nothing (Just query))
+        withIdentifier name \nativeName ->
+            withMany (\column action -> withIdentifier column (\(ConstPtr ptr) -> peek ptr >>= action)) columns \names ->
+                withArray names \nativeColumns ->
+                    checked (c_duckdb_v2_statement_add_collection statement nativeName collection (ConstPtr (if null names then nullPtr else nativeColumns)) (fromIntegral (length columns)))
 
 -- | Error raised when an operation targets a closed connection.
 connectionClosedError :: SQLError

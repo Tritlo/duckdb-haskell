@@ -7,6 +7,7 @@
 module Database.DuckDB.Simple.Materialize (
     VariantReader,
     prepareVariantReader,
+    materializeValue,
     prepareValueReader,
     prepareVectorReader,
 ) where
@@ -59,14 +60,19 @@ prepareVariantReader = VariantCodec.prepareVariantDecoder materializeScalarValue
 
 -- | Decode one scalar after the VARIANT decoder casts it to its exact type.
 materializeScalarValue :: DuckDBV2ConnectionHandle -> DuckDBV2ValueHandle -> IO FieldValue
-materializeScalarValue connection value =
+materializeScalarValue connection value = withConnectionFactory connection \factory ->
+    materializeValue (\_ -> throwIO (userError "duckdb-simple: expected a scalar VARIANT cast")) factory value
+
+-- | Copy one value through an owned vector. The caller retains the factory owner.
+materializeValue :: VariantReader -> DuckDBV2FactoryHandle -> DuckDBV2ValueHandle -> IO FieldValue
+materializeValue variantReader factory value =
     bracket (output (c_duckdb_v2_value_get_logical_type value)) (destroy c_duckdb_v2_logical_type_destroy) \logical ->
         withArray [logical] \types ->
-            bracket (output (c_duckdb_v2_data_chunk_create_with_connection connection (ConstPtr types) 1)) (destroy c_duckdb_v2_data_chunk_destroy) \chunk -> do
+            bracket (output (c_duckdb_v2_data_chunk_create factory (ConstPtr types) 1)) (destroy c_duckdb_v2_data_chunk_destroy) \chunk -> do
                 vector <- output (c_duckdb_v2_data_chunk_get_vector chunk 0)
                 checked (c_duckdb_v2_vector_set_size vector 1)
                 checked (c_duckdb_v2_vector_set_value vector 0 value)
-                prepareVectorReader (\_ -> throwIO (userError "duckdb-simple: expected a scalar VARIANT cast")) vector >>= ($ 0)
+                prepareVectorReader variantReader vector >>= ($ 0)
 
 -- | Read the type, data, and validity of a vector, and prepare its reader.
 prepareVectorReader :: VariantReader -> DuckDBV2VectorHandle -> IO (Int -> IO FieldValue)
@@ -95,7 +101,7 @@ prepareValueReader variantReader dtype vector dataPtr validity = case dtype of
     DuckDBV2LogicalTypeIdMap -> whenValid FieldMap <$> prepareMapDecoder variantReader vector dataPtr
     DuckDBV2LogicalTypeIdStruct -> whenValid FieldStruct <$> prepareStructDecoder variantReader vector
     DuckDBV2LogicalTypeIdUnion -> whenValid FieldUnion <$> prepareUnionDecoder variantReader vector
-    _ -> pure (materializeValue dtype vector dataPtr validity)
+    _ -> pure (materializeElement dtype vector dataPtr validity)
   where
     whenValid wrap decode row = do
         valid <- chunkIsRowValid validity (fromIntegral row)
@@ -113,8 +119,8 @@ prepareGeometryDecoder vector dataPtr = do
             _ -> throwIO (userError "duckdb-simple: invalid GEOMETRY type")
     pure \row -> (`RawGeometry` crs) <$> chunkDecodeBlob dataPtr (fromIntegral row)
 
-materializeValue :: DuckDBV2LogicalTypeId -> DuckDBV2VectorHandle -> Ptr Void -> Ptr Word64 -> Int -> IO FieldValue
-materializeValue dtype vector dataPtr validity rowIdx = do
+materializeElement :: DuckDBV2LogicalTypeId -> DuckDBV2VectorHandle -> Ptr Void -> Ptr Word64 -> Int -> IO FieldValue
+materializeElement dtype vector dataPtr validity rowIdx = do
     valid <- chunkIsRowValid validity (fromIntegral rowIdx)
     if not valid
         then pure FieldNull

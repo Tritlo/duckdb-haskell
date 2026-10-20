@@ -384,55 +384,55 @@ nullBinding :: String -> FieldBinding
 nullBinding repr = valueBinding repr nullDuckValue
 
 nullDuckValue :: DuckDBV2ConnectionHandle -> IO DuckDBV2ValueHandle
-nullDuckValue conn = bracket (logicalTypeFromRep conn (LogicalTypeScalar DuckDBV2LogicalTypeIdSQLNull)) destroyLogicalType (output . c_duckdb_v2_value_create_null_with_connection conn)
+nullDuckValue conn = bracket (logicalTypeFromRep conn (LogicalTypeScalar DuckDBV2LogicalTypeIdSQLNull)) destroyLogicalType (\nativeInput -> withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_null nativeFactory nativeInput)))
 
 boolDuckValue :: DuckDBV2ConnectionHandle -> Bool -> IO DuckDBV2ValueHandle
-boolDuckValue conn value = output (c_duckdb_v2_value_create_bool_with_connection conn (if value then 1 else 0))
+boolDuckValue conn value = withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_bool nativeFactory (if value then 1 else 0)))
 
 int8DuckValue :: DuckDBV2ConnectionHandle -> Int8 -> IO DuckDBV2ValueHandle
-int8DuckValue conn value = output (c_duckdb_v2_value_create_tinyint_with_connection conn value)
+int8DuckValue conn value = withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_tinyint nativeFactory value))
 
 int16DuckValue :: DuckDBV2ConnectionHandle -> Int16 -> IO DuckDBV2ValueHandle
-int16DuckValue conn value = output (c_duckdb_v2_value_create_smallint_with_connection conn value)
+int16DuckValue conn value = withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_smallint nativeFactory value))
 
 int32DuckValue :: DuckDBV2ConnectionHandle -> Int32 -> IO DuckDBV2ValueHandle
-int32DuckValue conn value = output (c_duckdb_v2_value_create_int_with_connection conn value)
+int32DuckValue conn value = withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_int nativeFactory value))
 
 int64DuckValue :: DuckDBV2ConnectionHandle -> Int64 -> IO DuckDBV2ValueHandle
-int64DuckValue conn value = output (c_duckdb_v2_value_create_bigint_with_connection conn value)
+int64DuckValue conn value = withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_bigint nativeFactory value))
 
 uint64DuckValue :: DuckDBV2ConnectionHandle -> Word64 -> IO DuckDBV2ValueHandle
-uint64DuckValue conn value = output (c_duckdb_v2_value_create_ubigint_with_connection conn value)
+uint64DuckValue conn value = withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_ubigint nativeFactory value))
 
 uint32DuckValue :: DuckDBV2ConnectionHandle -> Word32 -> IO DuckDBV2ValueHandle
-uint32DuckValue conn value = output (c_duckdb_v2_value_create_uint_with_connection conn value)
+uint32DuckValue conn value = withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_uint nativeFactory value))
 
 uint16DuckValue :: DuckDBV2ConnectionHandle -> Word16 -> IO DuckDBV2ValueHandle
-uint16DuckValue conn value = output (c_duckdb_v2_value_create_usmallint_with_connection conn value)
+uint16DuckValue conn value = withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_usmallint nativeFactory value))
 
 uint8DuckValue :: DuckDBV2ConnectionHandle -> Word8 -> IO DuckDBV2ValueHandle
-uint8DuckValue conn value = output (c_duckdb_v2_value_create_utinyint_with_connection conn value)
+uint8DuckValue conn value = withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_utinyint nativeFactory value))
 
 doubleDuckValue :: DuckDBV2ConnectionHandle -> Double -> IO DuckDBV2ValueHandle
-doubleDuckValue conn value = output (c_duckdb_v2_value_create_double_with_connection conn (CDouble value))
+doubleDuckValue conn value = withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_double nativeFactory (CDouble value)))
 
 floatDuckValue :: DuckDBV2ConnectionHandle -> Float -> IO DuckDBV2ValueHandle
-floatDuckValue conn value = output (c_duckdb_v2_value_create_float_with_connection conn (CFloat value))
+floatDuckValue conn value = withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_float nativeFactory (CFloat value)))
 
 textDuckValue :: DuckDBV2ConnectionHandle -> Text -> IO DuckDBV2ValueHandle
-textDuckValue conn value = withText value (output . c_duckdb_v2_value_create_varchar_with_connection conn)
+textDuckValue conn value = withText value (\nativeInput -> withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_varchar nativeFactory nativeInput)))
 
 stringDuckValue :: DuckDBV2ConnectionHandle -> String -> IO DuckDBV2ValueHandle
 stringDuckValue conn = textDuckValue conn . Text.pack
 
 blobDuckValue :: DuckDBV2ConnectionHandle -> BS.ByteString -> IO DuckDBV2ValueHandle
-blobDuckValue conn value = withBytes value (output . c_duckdb_v2_value_create_blob_with_connection conn)
+blobDuckValue conn value = withBytes value (\nativeInput -> withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_blob nativeFactory nativeInput)))
 
 uuidDuckValue :: DuckDBV2ConnectionHandle -> UUID.UUID -> IO DuckDBV2ValueHandle
 uuidDuckValue conn uuid =
     let (upper, lower) = UUID.toWords64 uuid
         value = DuckDBV2HugeintT lower (fromIntegral (upper `xor` 0x8000000000000000))
-     in with value (\ptr -> output (c_duckdb_v2_value_create_uuid_with_connection conn (ConstPtr ptr)))
+     in with value (\ptr -> withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_uuid nativeFactory (ConstPtr ptr))))
 
 bitDuckValue :: DuckDBV2ConnectionHandle -> BitString -> IO DuckDBV2ValueHandle
 bitDuckValue conn (BitString padding bits) = do
@@ -440,7 +440,7 @@ bitDuckValue conn (BitString padding bits) = do
         throwIO (userError "duckdb-simple: BIT requires nonempty data and padding from 0 to 7")
     let nativePadding = complement ((1 `shiftL` (8 - fromIntegral padding)) - 1) :: Word8
         payload = BS.cons padding (BS.cons (BS.head bits .|. nativePadding) (BS.tail bits))
-    withBytes payload (output . c_duckdb_v2_value_create_bit_with_connection conn)
+    withBytes payload (\nativeInput -> withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_bit nativeFactory nativeInput)))
 
 bigNumDuckValue :: DuckDBV2ConnectionHandle -> BigNum -> IO DuckDBV2ValueHandle
 bigNumDuckValue conn (BigNum value) = do
@@ -454,28 +454,28 @@ bigNumDuckValue conn (BigNum value) = do
         allocaBytes (fromIntegral size) \storage -> do
             encode storage size
             payload <- BS.packCStringLen (castPtr storage, fromIntegral size)
-            withBytes payload (output . c_duckdb_v2_value_create_bignum_with_connection conn)
+            withBytes payload (\nativeInput -> withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_bignum nativeFactory nativeInput)))
 
 dayDuckValue :: DuckDBV2ConnectionHandle -> Day -> IO DuckDBV2ValueHandle
-dayDuckValue conn value = encodeDay value >>= output . c_duckdb_v2_value_create_date_with_connection conn
+dayDuckValue conn value = encodeDay value >>= (\nativeInput -> withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_date nativeFactory nativeInput)))
 
 timeOfDayDuckValue :: DuckDBV2ConnectionHandle -> TimeOfDay -> IO DuckDBV2ValueHandle
-timeOfDayDuckValue conn value = encodeTimeOfDay value >>= output . c_duckdb_v2_value_create_time_with_connection conn
+timeOfDayDuckValue conn value = encodeTimeOfDay value >>= (\nativeInput -> withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_time nativeFactory nativeInput)))
 
 localTimeDuckValue :: DuckDBV2ConnectionHandle -> LocalTime -> IO DuckDBV2ValueHandle
-localTimeDuckValue conn value = encodeLocalTime value >>= output . c_duckdb_v2_value_create_timestamp_with_connection conn
+localTimeDuckValue conn value = encodeLocalTime value >>= (\nativeInput -> withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_timestamp nativeFactory nativeInput)))
 
 utcTimeDuckValue :: DuckDBV2ConnectionHandle -> UTCTime -> IO DuckDBV2ValueHandle
 utcTimeDuckValue conn = utcTimestampDuckValue conn . Finite
 
 dateDuckValue :: DuckDBV2ConnectionHandle -> Date -> IO DuckDBV2ValueHandle
-dateDuckValue conn value = encodeUnbounded encodeDay value >>= output . c_duckdb_v2_value_create_date_with_connection conn
+dateDuckValue conn value = encodeUnbounded encodeDay value >>= (\nativeInput -> withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_date nativeFactory nativeInput)))
 
 localTimestampDuckValue :: DuckDBV2ConnectionHandle -> LocalTimestamp -> IO DuckDBV2ValueHandle
-localTimestampDuckValue conn value = encodeUnbounded (encodeTimestampUnits 1000000) value >>= output . c_duckdb_v2_value_create_timestamp_with_connection conn
+localTimestampDuckValue conn value = encodeUnbounded (encodeTimestampUnits 1000000) value >>= (\nativeInput -> withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_timestamp nativeFactory nativeInput)))
 
 utcTimestampDuckValue :: DuckDBV2ConnectionHandle -> UTCTimestamp -> IO DuckDBV2ValueHandle
-utcTimestampDuckValue conn value = encodeUnbounded (encodeTimestampUnits 1000000 . utcToLocalTime utc) value >>= output . c_duckdb_v2_value_create_timestamp_tz_with_connection conn
+utcTimestampDuckValue conn value = encodeUnbounded (encodeTimestampUnits 1000000 . utcToLocalTime utc) value >>= (\nativeInput -> withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_timestamp_tz nativeFactory nativeInput)))
 
 -- | Construct an ARRAY value and retain its element type for empty arrays.
 arrayDuckValue :: forall a. (DuckDBColumnType a) => (LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle) -> DuckDBV2ConnectionHandle -> Maybe LogicalTypeRep -> (a -> IO DuckDBV2ValueHandle) -> Array Int a -> IO DuckDBV2ValueHandle
@@ -485,7 +485,7 @@ arrayDuckValue makeType conn target elementValue array = do
     withCreatedValues (map elementValue (elems array)) \values ->
         withElementType values \elementType ->
             withDuckValues values \ptr ->
-                output (c_duckdb_v2_value_create_array_with_connection conn elementType (ConstPtr ptr) (fromIntegral (length values)))
+                withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_array nativeFactory elementType (ConstPtr ptr) (fromIntegral (length values))))
   where
     typeName = duckdbColumnType (Proxy :: Proxy a)
     withElementType values action = case duckDBTypeFromName typeName of
@@ -517,7 +517,7 @@ structValueDuckValue makeType conn StructValue{structValueFields, structValueTyp
         throwIO (userError "duckdb-simple: struct value/type fields mismatch")
     withCreatedValues (zipWith (\field logical -> fieldValueWithTypeDuckValue makeType conn (structFieldValue logical) (structFieldValue field)) fields types) \values ->
         withIdentifiers names \namePtr -> withDuckValues values \valuePtr ->
-            output (c_duckdb_v2_value_create_struct_with_connection conn (ConstPtr namePtr) (ConstPtr valuePtr) (fromIntegral (length values)))
+            withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_struct nativeFactory (ConstPtr namePtr) (ConstPtr valuePtr) (fromIntegral (length values))))
 
 -- | Build one UNION row through its public tag and member vectors.
 unionValueDuckValue :: (LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle) -> DuckDBV2ConnectionHandle -> UnionValue FieldValue -> IO DuckDBV2ValueHandle
@@ -529,7 +529,7 @@ unionValueDuckValue makeType conn UnionValue{unionValueIndex, unionValueLabel, u
     when (name /= unionValueLabel) $ throwIO (userError "duckdb-simple: union tag and member name mismatch")
     bracket (makeType (LogicalTypeUnion unionValueMembers)) destroyLogicalType \logical ->
         withArray [logical] \typePtr ->
-            bracket (output (c_duckdb_v2_data_chunk_create_with_connection conn (ConstPtr typePtr) 1)) (destroy c_duckdb_v2_data_chunk_destroy) \chunk -> do
+            bracket (withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_data_chunk_create nativeFactory (ConstPtr typePtr) 1))) (destroy c_duckdb_v2_data_chunk_destroy) \chunk -> do
                 vector <- output (c_duckdb_v2_data_chunk_get_vector chunk 0)
                 checked (c_duckdb_v2_vector_set_size vector 1)
                 tag <- output (c_duckdb_v2_vector_get_child vector 0)
@@ -548,23 +548,23 @@ unionValueDuckValue makeType conn UnionValue{unionValueIndex, unionValueLabel, u
 -- | Construct a value with explicit logical metadata, including typed NULL.
 fieldValueWithTypeDuckValue :: (LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle) -> DuckDBV2ConnectionHandle -> LogicalTypeRep -> FieldValue -> IO DuckDBV2ValueHandle
 fieldValueWithTypeDuckValue makeType conn rep FieldNull = bracket (makeType rep) destroyLogicalType \logical ->
-    output (c_duckdb_v2_value_create_null_with_connection conn logical)
+    withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_null nativeFactory logical))
 fieldValueWithTypeDuckValue makeType conn rep value = case (rep, value) of
     (LogicalTypeScalar DuckDBV2LogicalTypeIdVariant, _) -> variantDuckValue makeType conn value
     (LogicalTypeScalar dtype, _) -> scalarFieldValueDuckValue conn dtype value
     (LogicalTypeGeometry _, FieldGeometry{}) -> unsupportedRawGeometryBinding
     (LogicalTypeDecimal width scale, FieldDecimal decimal@DecimalValue{decimalWidth, decimalScale})
         | width == decimalWidth && scale == decimalScale -> decimalDuckValue conn decimal
-    (LogicalTypeList child, FieldList values) -> sequenceValue c_duckdb_v2_value_create_list_with_connection child values
+    (LogicalTypeList child, FieldList values) -> sequenceValue c_duckdb_v2_value_create_list child values
     (LogicalTypeArray child size, FieldArray array)
-        | fromIntegral (length (elems array)) == size -> sequenceValue c_duckdb_v2_value_create_array_with_connection child (elems array)
+        | fromIntegral (length (elems array)) == size -> sequenceValue c_duckdb_v2_value_create_array child (elems array)
     (LogicalTypeMap keyRep valueRep, FieldMap pairs) ->
         bracket (makeType keyRep) destroyLogicalType \keyType ->
             bracket (makeType valueRep) destroyLogicalType \valueType ->
                 withCreatedValues (map (fieldValueWithTypeDuckValue makeType conn keyRep . fst) pairs) \keys ->
                     withCreatedValues (map (fieldValueWithTypeDuckValue makeType conn valueRep . snd) pairs) \values ->
                         withDuckValues keys \keyPtr -> withDuckValues values \valuePtr ->
-                            output (c_duckdb_v2_value_create_map_with_connection conn keyType valueType (ConstPtr keyPtr) (ConstPtr valuePtr) (fromIntegral (length pairs)))
+                            withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_map nativeFactory keyType valueType (ConstPtr keyPtr) (ConstPtr valuePtr) (fromIntegral (length pairs))))
     (LogicalTypeStruct _, FieldStruct struct)
         | rep == structValueTypeRep struct -> structValueDuckValue makeType conn struct
     (LogicalTypeUnion _, FieldUnion union)
@@ -574,7 +574,7 @@ fieldValueWithTypeDuckValue makeType conn rep value = case (rep, value) of
   where
     sequenceValue create child values = bracket (makeType child) destroyLogicalType \logical ->
         withCreatedValues (map (fieldValueWithTypeDuckValue makeType conn child) values) \native -> withDuckValues native \ptr ->
-            output (create conn logical (ConstPtr ptr) (fromIntegral (length native)))
+            withConnectionFactory conn \factory -> output (create factory logical (ConstPtr ptr) (fromIntegral (length native)))
 
 scalarFieldValueDuckValue :: DuckDBV2ConnectionHandle -> DuckDBV2LogicalTypeId -> FieldValue -> IO DuckDBV2ValueHandle
 scalarFieldValueDuckValue conn dtype value = case (dtype, value) of
@@ -597,15 +597,15 @@ scalarFieldValueDuckValue conn dtype value = case (dtype, value) of
     (DuckDBV2LogicalTypeIdDate, FieldDate d) -> dateDuckValue conn d
     (DuckDBV2LogicalTypeIdTime, FieldTime t) -> timeOfDayDuckValue conn t
     (DuckDBV2LogicalTypeIdTimeNs, FieldTime t) ->
-        timeOfDayUnits 1000000000 t >>= output . c_duckdb_v2_value_create_time_ns_with_connection conn . fromInteger
+        timeOfDayUnits 1000000000 t >>= (\nativeInput -> withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_time_ns nativeFactory nativeInput))) . fromInteger
     (DuckDBV2LogicalTypeIdTimeTz, FieldTimeTZ tz) -> timeWithZoneDuckValue conn tz
     (DuckDBV2LogicalTypeIdTimestamp, FieldTimestamp ts) -> localTimestampDuckValue conn ts
     (DuckDBV2LogicalTypeIdTimestampSec, FieldTimestamp ts) ->
-        encodeUnbounded (encodeTimestampUnits 1) ts >>= output . c_duckdb_v2_value_create_timestamp_sec_with_connection conn
+        encodeUnbounded (encodeTimestampUnits 1) ts >>= (\nativeInput -> withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_timestamp_sec nativeFactory nativeInput)))
     (DuckDBV2LogicalTypeIdTimestampMs, FieldTimestamp ts) ->
-        encodeUnbounded (encodeTimestampUnits 1000) ts >>= output . c_duckdb_v2_value_create_timestamp_ms_with_connection conn
+        encodeUnbounded (encodeTimestampUnits 1000) ts >>= (\nativeInput -> withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_timestamp_ms nativeFactory nativeInput)))
     (DuckDBV2LogicalTypeIdTimestampNs, FieldTimestamp ts) ->
-        encodeUnbounded (encodeTimestampUnits 1000000000) ts >>= output . c_duckdb_v2_value_create_timestamp_ns_with_connection conn
+        encodeUnbounded (encodeTimestampUnits 1000000000) ts >>= (\nativeInput -> withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_timestamp_ns nativeFactory nativeInput)))
     (DuckDBV2LogicalTypeIdTimestampTz, FieldTimestampTZ ts) -> utcTimestampDuckValue conn ts
     (DuckDBV2LogicalTypeIdTimestampTzNs, FieldTimestampTZ ts) -> utcTimestampNsDuckValue conn ts
     (DuckDBV2LogicalTypeIdInterval, FieldInterval iv) -> intervalDuckValue conn iv
@@ -632,31 +632,31 @@ enumDuckValue conn entries index = do
     when (toInteger index >= toInteger (length dictionary)) $ throwIO (userError "duckdb-simple: ENUM index out of range")
     bracket (logicalTypeFromRep conn (LogicalTypeEnum entries)) destroyLogicalType \logical ->
         bracket (textDuckValue conn (dictionary !! fromIntegral index)) destroyValue \value ->
-            output (c_duckdb_v2_value_cast_with_connection conn value logical)
+            withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_cast nativeFactory value logical))
 
 hugeIntDuckValue :: DuckDBV2ConnectionHandle -> Integer -> IO DuckDBV2ValueHandle
-hugeIntDuckValue conn value = integerToHugeInt value >>= \huge -> with huge (\ptr -> output (c_duckdb_v2_value_create_hugeint_with_connection conn (ConstPtr ptr)))
+hugeIntDuckValue conn value = integerToHugeInt value >>= \huge -> with huge (\ptr -> withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_hugeint nativeFactory (ConstPtr ptr))))
 
 uhugeIntDuckValue :: DuckDBV2ConnectionHandle -> Integer -> IO DuckDBV2ValueHandle
-uhugeIntDuckValue conn value = integerToUHugeInt value >>= \huge -> with huge (\ptr -> output (c_duckdb_v2_value_create_uhugeint_with_connection conn (ConstPtr ptr)))
+uhugeIntDuckValue conn value = integerToUHugeInt value >>= \huge -> with huge (\ptr -> withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_uhugeint nativeFactory (ConstPtr ptr))))
 
 decimalDuckValue :: DuckDBV2ConnectionHandle -> DecimalValue -> IO DuckDBV2ValueHandle
 decimalDuckValue conn DecimalValue{decimalWidth, decimalScale, decimalInteger} = do
     when (decimalWidth < 1 || decimalWidth > 38 || decimalScale > decimalWidth) $ throwIO (userError "duckdb-simple: invalid DECIMAL width or scale")
     when (abs decimalInteger >= 10 ^ decimalWidth) $ throwIO (userError "duckdb-simple: DECIMAL value exceeds declared precision")
     huge <- integerToHugeInt decimalInteger
-    with huge (\ptr -> output (c_duckdb_v2_value_create_decimal_with_connection conn (ConstPtr ptr) decimalWidth decimalScale))
+    with huge (\ptr -> withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_decimal nativeFactory (ConstPtr ptr) decimalWidth decimalScale)))
 
 intervalDuckValue :: DuckDBV2ConnectionHandle -> IntervalValue -> IO DuckDBV2ValueHandle
 intervalDuckValue conn IntervalValue{intervalMonths, intervalDays, intervalMicros} =
-    with (DuckDBV2IntervalT intervalMonths intervalDays intervalMicros) (\ptr -> output (c_duckdb_v2_value_create_interval_with_connection conn (ConstPtr ptr)))
+    with (DuckDBV2IntervalT intervalMonths intervalDays intervalMicros) (\ptr -> withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_interval nativeFactory (ConstPtr ptr))))
 
 timeWithZoneDuckValue :: DuckDBV2ConnectionHandle -> TimeWithZone -> IO DuckDBV2ValueHandle
 timeWithZoneDuckValue conn TimeWithZone{timeWithZoneTime, timeWithZoneZone} = do
     micros <- timeOfDayUnits 1000000 timeWithZoneTime
     let offset = toInteger (timeZoneMinutes timeWithZoneZone) * 60
     when (abs offset > 57599) $ throwIO (userError "duckdb-simple: TIME WITH TIME ZONE offset out of range")
-    output (c_duckdb_v2_value_create_time_tz_with_connection conn ((fromIntegral micros `shiftL` 24) .|. fromIntegral (57599 - offset)))
+    withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_time_tz nativeFactory ((fromIntegral micros `shiftL` 24) .|. fromIntegral (57599 - offset))))
 
 integerToHugeInt :: Integer -> IO DuckDBV2HugeintT
 integerToHugeInt value = do
@@ -695,18 +695,18 @@ variantDuckValue makeType conn value = do
     (rep, payload) <- variantPayloadType value
     bracket (makeType (LogicalTypeScalar DuckDBV2LogicalTypeIdVariant)) destroyLogicalType \logical ->
         bracket (fieldValueWithTypeDuckValue makeType conn rep payload) destroyValue \native ->
-            output (c_duckdb_v2_value_cast_with_connection conn native logical)
+            withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_cast nativeFactory native logical))
 
 -- | Construct a UTC nanosecond value without losing sub-microsecond digits.
 utcTimestampNsDuckValue :: DuckDBV2ConnectionHandle -> UTCTimestamp -> IO DuckDBV2ValueHandle
-utcTimestampNsDuckValue conn value = encodeUnbounded (encodeTimestampUnits 1000000000 . utcToLocalTime utc) value >>= output . c_duckdb_v2_value_create_timestamp_tz_ns_with_connection conn
+utcTimestampNsDuckValue conn value = encodeUnbounded (encodeTimestampUnits 1000000000 . utcToLocalTime utc) value >>= (\nativeInput -> withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_timestamp_tz_ns nativeFactory nativeInput)))
 
 instance ToDuckValue G.Geometry where
     toDuckValue conn geometry = do
         wkt <- either (throwIO . userError) pure (WKT.encodeWKT geometry)
         bracket (logicalTypeFromRep conn (LogicalTypeGeometry Nothing)) destroyLogicalType \logical ->
             bracket (textDuckValue conn wkt) destroyValue \value ->
-                output (c_duckdb_v2_value_cast_with_connection conn value logical)
+                withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_cast nativeFactory value logical))
 
 instance ToDuckValue Variant where
     toDuckValue conn = variantDuckValue (logicalTypeFromRep conn) conn . variantPayload

@@ -252,7 +252,7 @@ registerScalarFunction conn name proxy acquire = do
         throwIO (functionInvocationError "duckdb-simple: invalid scalar function name")
     withConnectionHandle conn \connection ->
         bracket
-            (output (c_duckdb_v2_scalar_function_create_with_connection connection))
+            (withConnectionFactory connection (\nativeFactory -> output (c_duckdb_v2_scalar_function_create nativeFactory)))
             (destroy c_duckdb_v2_scalar_function_destroy)
             \scalarFun ->
                 withCallbackResources
@@ -273,7 +273,7 @@ registerScalarFunction conn name proxy acquire = do
                         checked (c_duckdb_v2_scalar_function_set_property scalarFun DuckDBV2FunctionPropertyFallibility DuckDBV2FunctionPropertyFallibilityFallible)
                         checked (c_duckdb_v2_scalar_function_set_exec_callback scalarFun scalarFunctionExecPtr)
                         forM_ scalarFunctionInitPtr $ checked . c_duckdb_v2_scalar_function_set_init_callback scalarFun
-                        checked (c_duckdb_v2_scalar_function_register scalarFun)
+                        checked (c_duckdb_v2_connection_register_scalar_function connection scalarFun)
 
 -- | Drop a previously registered scalar function with a DROP FUNCTION statement.
 deleteFunction :: Connection -> Text -> IO ()
@@ -298,7 +298,7 @@ deleteFunction conn name = do
 withLogicalType :: DuckDBV2ConnectionHandle -> DuckDBV2LogicalTypeId -> (DuckDBV2LogicalTypeHandle -> IO a) -> IO a
 withLogicalType connection dtype =
     bracket
-        (output (c_duckdb_v2_connection_create_type_from_id connection dtype (ConstPtr nullPtr) (ConstPtr nullPtr) 0))
+        (withConnectionFactory connection (\nativeFactory -> output (c_duckdb_v2_factory_create_type_from_id nativeFactory dtype (ConstPtr nullPtr) (ConstPtr nullPtr) 0)))
         destroyLogicalType
 
 duckTypeForScalar :: ScalarType -> DuckDBV2LogicalTypeId
@@ -383,7 +383,7 @@ writeResults context resultType values outVec = do
                 pokeElemOff (castPtr dataPtr :: Ptr Double) idx dbl
             (ScalarTypeVarchar, ScalarText txt) ->
                 bracket
-                    (withText txt (output . c_duckdb_v2_value_create_varchar_with_context context))
+                    (withContextFactory context \factory -> withText txt (output . c_duckdb_v2_value_create_varchar factory))
                     (destroy c_duckdb_v2_value_destroy)
                     \value -> checked (c_duckdb_v2_vector_set_value outVec (fromIntegral idx) value)
             _ ->

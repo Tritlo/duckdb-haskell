@@ -18,6 +18,7 @@ module Database.DuckDB.Simple.LogicalRep (
     logicalTypeToRep,
     logicalTypeFromRep,
     logicalTypeFromRepWith,
+    logicalTypeFromRepWithFactory,
     destroyLogicalType,
 ) where
 
@@ -144,22 +145,31 @@ logicalTypeFromRep conn = logicalTypeFromRepWith conn (const (pure Nothing))
 
 -- | Construct a type tree. Use the resolver for owned native leaf types.
 logicalTypeFromRepWith :: DuckDBV2ConnectionHandle -> (LogicalTypeRep -> IO (Maybe DuckDBV2LogicalTypeHandle)) -> LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle
-logicalTypeFromRepWith conn resolve = create
+logicalTypeFromRepWith conn resolve rep =
+    withConnectionFactory conn \factory -> logicalTypeFromFactory factory resolve rep
+
+-- | Construct an owned type through a borrowed native factory.
+logicalTypeFromRepWithFactory :: DuckDBV2FactoryHandle -> LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle
+logicalTypeFromRepWithFactory factory = logicalTypeFromFactory factory (const (pure Nothing))
+
+-- | Resolve native leaf types before constructing their parent types.
+logicalTypeFromFactory :: DuckDBV2FactoryHandle -> (LogicalTypeRep -> IO (Maybe DuckDBV2LogicalTypeHandle)) -> LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle
+logicalTypeFromFactory factory resolve = create
   where
     owned = destroy c_duckdb_v2_value_destroy
-    boxed rep = bracket (create rep) destroyLogicalType (output . c_duckdb_v2_value_create_type_with_connection conn)
-    text value = withText value (output . c_duckdb_v2_value_create_varchar_with_connection conn)
-    fromText value = withText value (output . c_duckdb_v2_connection_create_type_from_text conn)
+    boxed rep = bracket (create rep) destroyLogicalType (output . c_duckdb_v2_value_create_type factory)
+    text value = withText value (output . c_duckdb_v2_value_create_varchar factory)
+    fromText value = withText value (output . c_duckdb_v2_factory_create_type_from_text factory)
     construct dtype names actions = do
         when (any (Text.any (== '\0')) names) $
             throwIO (userError "duckdb-simple: logical type name contains NUL")
         withMany (\action -> bracket action owned) actions \values ->
             withArray values \valuePtr ->
                 if null names
-                    then output (c_duckdb_v2_connection_create_type_from_id conn dtype (ConstPtr nullPtr) (ConstPtr valuePtr) (fromIntegral (length values)))
+                    then output (c_duckdb_v2_factory_create_type_from_id factory dtype (ConstPtr nullPtr) (ConstPtr valuePtr) (fromIntegral (length values)))
                     else withMany (\name action -> withIdentifier name (\(ConstPtr ptr) -> peek ptr >>= action)) names \identifiers ->
                         withArray identifiers \namePtr ->
-                            output (c_duckdb_v2_connection_create_type_from_id conn dtype (ConstPtr namePtr) (ConstPtr valuePtr) (fromIntegral (length values)))
+                            output (c_duckdb_v2_factory_create_type_from_id factory dtype (ConstPtr namePtr) (ConstPtr valuePtr) (fromIntegral (length values)))
     create rep = resolve rep >>= maybe (constructRep rep) pure
     constructRep = \case
         LogicalTypeScalar DuckDBV2LogicalTypeIdVariant -> fromText (Text.pack "VARIANT")
@@ -177,16 +187,16 @@ logicalTypeFromRepWith conn resolve = create
         LogicalTypeDecimal width scale -> do
             when (width < 1 || width > 38 || scale > width) $
                 throwIO (userError "duckdb-simple: invalid DECIMAL width or scale")
-            construct DuckDBV2LogicalTypeIdDecimal [] [output (c_duckdb_v2_value_create_utinyint_with_connection conn width), output (c_duckdb_v2_value_create_utinyint_with_connection conn scale)]
+            construct DuckDBV2LogicalTypeIdDecimal [] [output (c_duckdb_v2_value_create_utinyint factory width), output (c_duckdb_v2_value_create_utinyint factory scale)]
         LogicalTypeList element -> construct DuckDBV2LogicalTypeIdList [] [boxed element]
         LogicalTypeArray element size -> do
             when (toInteger size > toInteger (maxBound :: Int)) $
                 throwIO (userError "duckdb-simple: ARRAY size exceeds Int range")
-            construct DuckDBV2LogicalTypeIdArray [] [boxed element, output (c_duckdb_v2_value_create_bigint_with_connection conn (fromIntegral size))]
+            construct DuckDBV2LogicalTypeIdArray [] [boxed element, output (c_duckdb_v2_value_create_bigint factory (fromIntegral size))]
         LogicalTypeMap key value -> construct DuckDBV2LogicalTypeIdMap [] [boxed key, boxed value]
         LogicalTypeStruct fields
             | null (elems fields) ->
-                bracket (output (c_duckdb_v2_value_create_struct_with_connection conn (ConstPtr nullPtr) (ConstPtr nullPtr) 0)) owned (output . c_duckdb_v2_value_get_logical_type)
+                bracket (output (c_duckdb_v2_value_create_struct factory (ConstPtr nullPtr) (ConstPtr nullPtr) 0)) owned (output . c_duckdb_v2_value_get_logical_type)
         LogicalTypeStruct fields -> construct DuckDBV2LogicalTypeIdStruct (map structFieldName (elems fields)) (map (boxed . structFieldValue) (elems fields))
         LogicalTypeUnion members -> construct DuckDBV2LogicalTypeIdUnion (map unionMemberName (elems members)) (map (boxed . unionMemberType) (elems members))
         LogicalTypeEnum entries -> construct DuckDBV2LogicalTypeIdEnum [] (map text (elems entries))

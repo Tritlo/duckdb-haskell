@@ -17,7 +17,9 @@ The public additions include shared environments and instances, attachment
 management, option discovery, tokenization, advanced function signatures,
 aggregate/table/cast registration, COPY FROM and advanced COPY TO operations,
 custom types, replacement scans, file operations, callback logging, and Arrow
-integration. Custom file-system and log-storage registration are absent from V2.
+integration. The October 20 API also provides log sinks, custom options, macros,
+pragmas, query metrics, and function documentation. Custom file-system
+registration remains absent from V2.
 Use native V2 errors and ownership rules. Do not convert retained API handles
 into V2 handles.
 
@@ -29,7 +31,8 @@ into V2 handles.
 - Default cursors materialize native chunks before row delivery. Explicit
   streaming retains the one-live-result restriction of a V2 connection.
 - Bound values remain owned by the statement until replacement, clear, or close.
-  Value construction receives a connection. Prepared statements accept valid
+  Value construction borrows a factory from its live connection or callback.
+  Prepared statements accept valid
   non-cacheable SQL.
 - Copy borrowed schemas, strings, and diagnostics before releasing their owners.
   Apply selection vectors before reading physical vector cells.
@@ -41,6 +44,12 @@ into V2 handles.
   Keep helper queries off the caller's active connection.
 
 ## Implementation and validation
+
+The current source pin is `d54cbbe3df17e8e5ce68312f483b4155836112aa` from
+2026-10-20. Both client modules regenerate with the existing naming policy.
+The retained API has 548 functions and 508 ABI assertions. V2 has 620 functions
+and 642 ABI assertions. All V2 functions are marked unstable. Runtime validation
+of this update is in progress. The checks below describe the earlier pin.
 
 The core, conversion, scalar callback, Arrow, registration, and COPY backends
 use V2. The branch is based on PR #34 at `28bacb3`.
@@ -100,11 +109,12 @@ opaque equality callback remains available through the raw API.
 These are limits of the pinned native API. They are not missing generated
 bindings. The migration uses the current API. It does not add native symbols.
 
-- The pinned prepared API cannot plan some expanding statements, including
-  dynamic PIVOT. Direct `query_` and `execute_` use native statement execution
-  and support these statements.
-- V2 cannot register custom log storage or a custom file system. Log-storage
-  registration raises `SQLError`. Native callback logging remains available.
+- Prepared expanding statements, including dynamic PIVOT, cannot have parameters
+  or require a cacheable plan. Their schema becomes available during execution.
+  The backend fetches before reading schema, including Arrow results.
+- V2 cannot register a custom file system. Native log-sink registration is
+  available. Log callbacks can run concurrently and must not log or change the
+  logging configuration. Native logging contains and discards callback errors.
 - V2 rejects fixed ARRAY types with zero elements. Empty LIST values remain
   supported. The binding must not change one type into the other.
 - Unconfigured GEOMETRY CRS names use direct V2 type construction. This requires

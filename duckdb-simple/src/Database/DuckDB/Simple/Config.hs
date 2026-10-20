@@ -11,16 +11,32 @@ module Database.DuckDB.Simple.Config (
     listInstanceOptions,
     getConfigOption,
     setConfigOption,
+    withConfigOptionValue,
+    withConfigOptionDefaultValue,
+    setConfigValue,
+    CustomOption (..),
+    customOption,
+    registerCustomOption,
+    registerCustomOptionWith,
 ) where
 
 import Control.Exception (bracket)
-import Control.Monad (forM, when)
+import Control.Monad (filterM, forM, when)
+import qualified Data.ByteString as BS
 import Data.List (find)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as Text
 import Database.DuckDB.Simple (withConnection)
+import Database.DuckDB.Simple.Callback (attachOpaque, runCallback, withCallbackResources)
 import Database.DuckDB.Simple.Internal (Connection, Instance, throwRegistrationError, withConnectionHandle, withInstanceHandle)
 import Database.DuckDB.Simple.Native
+import Database.DuckDB.Simple.Registration (ContextCallback, DefaultValue (..), RegistrationTarget (..), TypeDeclaration, withTypeDeclaration)
+import Database.DuckDB.Simple.ToField (ToDuckValue (..))
+import Foreign.Marshal.Alloc (alloca, allocaBytes)
+import Foreign.Ptr (nullPtr)
+import Foreign.Storable (peek)
+import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
 
 -- | The canonical name and description of a configuration option.
 data ConfigFlag = ConfigFlag
@@ -29,10 +45,10 @@ data ConfigFlag = ConfigFlag
     }
     deriving (Eq, Show)
 
--- | An effective option value and its permitted setting scope.
+-- | An effective option value and the scope that supplied it.
 data ConfigValue = ConfigValue
     { configValueText :: !Text
-    , configValueScope :: !(Maybe DuckDBV2OptionTargetScope)
+    , configValueScope :: !DuckDBV2SettingScope
     }
     deriving (Eq, Show)
 
@@ -42,10 +58,69 @@ data ConfigOption = ConfigOption
     , configOptionDescription :: !Text
     , configOptionSetting :: !Text
     , configOptionDefault :: !Text
-    , configOptionScope :: !DuckDBV2OptionTargetScope
+    , configOptionScope :: !DuckDBV2SettingScope
+    , configOptionScopes :: ![DuckDBV2SettingScope]
     , configOptionAliases :: ![Text]
     }
     deriving (Eq, Show)
+
+-- | A custom setting. The optional update callback may validate or replace values.
+data CustomOption = CustomOption
+    { customOptionName :: !Text
+    , customOptionType :: !TypeDeclaration
+    , customOptionDefault :: Maybe DefaultValue
+    , customOptionDescription :: !Text
+    , customOptionDefaultScope :: !DuckDBV2SettingScope
+    , customOptionScopes :: ![DuckDBV2SettingScope]
+    , customOptionUpdate :: Maybe (ContextCallback DuckDBV2CustomOptionUpdateInfoHandle)
+    }
+
+-- | Declare a global option without a default value or an update callback.
+customOption :: Text -> TypeDeclaration -> CustomOption
+customOption name dtype = CustomOption name dtype Nothing "" DuckDBV2SettingScopeGlobal [DuckDBV2SettingScopeGlobal] Nothing
+
+{- | Register a typed custom option on the connection's database.
+Update callbacks must not write options. They borrow their native handles.
+-}
+registerCustomOption :: Connection -> CustomOption -> IO ()
+registerCustomOption conn option = withConnectionHandle conn \native ->
+    registerCustomOptionWith
+        (ConnectionTarget conn)
+        ( \handle -> do
+            withIdentifier (customOptionName option) $ checked . c_duckdb_v2_custom_option_set_name handle
+            withTypeDeclaration native (customOptionType option) $ checked . c_duckdb_v2_custom_option_set_type handle
+            case customOptionDefault option of
+                Nothing -> pure ()
+                Just (DefaultValue make) -> bracket (make native) (destroy c_duckdb_v2_value_destroy) \value -> checked (c_duckdb_v2_custom_option_set_default_value handle value)
+                Just (FactoryDefaultValue make) -> withConnectionFactory native \factory -> bracket (make factory) (destroy c_duckdb_v2_value_destroy) \value -> checked (c_duckdb_v2_custom_option_set_default_value handle value)
+            withText (customOptionDescription option) $ checked . c_duckdb_v2_custom_option_set_description handle
+            mapM_ (\scope -> checked (c_duckdb_v2_custom_option_set_supports_scope handle scope (if scope `elem` customOptionScopes option then 1 else 0))) [DuckDBV2SettingScopeGlobal, DuckDBV2SettingScopeSession]
+            checked (c_duckdb_v2_custom_option_set_default_scope handle (customOptionDefaultScope option))
+        )
+        (customOptionUpdate option)
+
+{- | Configure and register a custom option with managed callback cleanup.
+The configuration action borrows the builder. Do not set user data or callbacks.
+An extension target includes the borrowed initialization context.
+-}
+registerCustomOptionWith :: RegistrationTarget -> (DuckDBV2CustomOptionHandle -> IO ()) -> Maybe (ContextCallback DuckDBV2CustomOptionUpdateInfoHandle) -> IO ()
+registerCustomOptionWith target configure callback = case target of
+    ConnectionTarget conn -> withConnectionHandle conn \native -> withConnectionFactory native \factory ->
+        build factory (checked . c_duckdb_v2_connection_register_custom_option native)
+    ExtensionTarget extension context -> withContextFactory context \factory ->
+        build factory (checked . c_duckdb_v2_extension_register_custom_option extension)
+  where
+    build factory register = bracket (output (c_duckdb_v2_custom_option_create factory)) (destroy c_duckdb_v2_custom_option_destroy) \option ->
+        withCallbackResources
+            ( \allocate -> case callback of
+                Nothing -> pure Nothing
+                Just update -> Just . DuckDBV2CustomOptionUpdateCallbackFn <$> allocate (toFunPtr (DuckDBV2CustomOptionUpdateCallbackFn_Aux (\info context err -> runCallback err (update info context))))
+            )
+            (attachOpaque (c_duckdb_v2_custom_option_set_user_data option))
+            \update -> do
+                configure option
+                mapM_ (checked . c_duckdb_v2_custom_option_set_update_callback option) update
+                register option
 
 -- | List built-in configuration flags using a temporary connection.
 listConfigFlags :: IO [ConfigFlag]
@@ -55,44 +130,89 @@ listConfigFlags = withConnection ":memory:" \conn ->
 -- | List options with effective values from a live connection.
 listConfigOptions :: Connection -> IO [ConfigOption]
 listConfigOptions conn = withConnectionHandle conn \handle -> do
-    count <- output (c_duckdb_v2_connection_get_option_count handle)
-    forM (indices count) \index ->
-        bracket (output (c_duckdb_v2_connection_get_option_by_index handle index)) (destroy c_duckdb_v2_option_destroy) copyOption
+    config <- output (c_duckdb_v2_connection_get_config handle)
+    copyOptions config
 
 -- | List options and global values from an instance.
 listInstanceOptions :: Instance -> IO [ConfigOption]
 listInstanceOptions instance_ = withInstanceHandle instance_ \handle -> do
-    count <- output (c_duckdb_v2_instance_get_option_count handle)
-    forM (indices count) \index ->
-        bracket (output (c_duckdb_v2_instance_get_option_by_index handle index)) (destroy c_duckdb_v2_option_destroy) copyOption
+    config <- output (c_duckdb_v2_instance_get_config handle)
+    copyOptions config
 
 -- | Read an effective option by its canonical name or an alias.
 getConfigOption :: Connection -> Text -> IO (Maybe ConfigValue)
 getConfigOption conn name = do
     when (Text.any (== '\0') name) $ throwRegistrationError "config option name contains NUL"
     options <- listConfigOptions conn
-    pure $ do
-        option <- find (\value -> configOptionName value == name || name `elem` configOptionAliases value) options
-        let scope = configOptionScope option
-        pure (ConfigValue (configOptionSetting option) (if scope == DuckDBV2OptionTargetScopeUnknown then Nothing else Just scope))
+    case find (\value -> configOptionName value == name || name `elem` configOptionAliases value) options of
+        Nothing -> pure Nothing
+        Just _ -> withConfigOptionValue conn name \value scope -> Just . (`ConfigValue` scope) <$> valueText value
 
--- | Write an option at automatic, global, or local scope.
+-- | Write an option at its default, global, or session scope.
 setConfigOption :: Connection -> DuckDBV2SettingScope -> Text -> Text -> IO ()
 setConfigOption conn scope name value = withConnectionHandle conn \handle ->
-    withIdentifier name \key -> withText value \setting ->
-        checked (c_duckdb_v2_connection_set_option handle key setting scope)
+    do
+        config <- output (c_duckdb_v2_connection_get_config handle)
+        withIdentifier name \key -> withText value \setting ->
+            checked (c_duckdb_v2_config_set_option_text config key setting scope)
+
+-- | Read a typed option value during one action. The action borrows the value.
+withConfigOptionValue :: Connection -> Text -> (DuckDBV2ValueHandle -> DuckDBV2SettingScope -> IO a) -> IO a
+withConfigOptionValue conn name action = withConnectionHandle conn \handle -> do
+    config <- output (c_duckdb_v2_connection_get_config handle)
+    withOptionValue config name action
+
+-- | Borrow the typed static default of an option during one action.
+withConfigOptionDefaultValue :: Connection -> Text -> (DuckDBV2ValueHandle -> IO a) -> IO a
+withConfigOptionDefaultValue conn name action = withConnectionHandle conn \handle -> do
+    config <- output (c_duckdb_v2_connection_get_config handle)
+    withIdentifier name \key ->
+        bracket (output (c_duckdb_v2_config_get_option_by_name config key)) (destroy c_duckdb_v2_option_destroy) \option ->
+            bracket (output (c_duckdb_v2_option_get_default_value option)) (destroy c_duckdb_v2_value_destroy) action
+
+-- | Set an option from a typed Haskell value. Native code casts it to the option type.
+setConfigValue :: (ToDuckValue a) => Connection -> DuckDBV2SettingScope -> Text -> a -> IO ()
+setConfigValue conn scope name value = withConnectionHandle conn \handle -> do
+    config <- output (c_duckdb_v2_connection_get_config handle)
+    bracket (toDuckValue handle value) (destroy c_duckdb_v2_value_destroy) \native ->
+        withIdentifier name \key -> checked (c_duckdb_v2_config_set_option_value config key native scope)
+
+-- | Copy the options visible through a borrowed config.
+copyOptions :: DuckDBV2ConfigHandle -> IO [ConfigOption]
+copyOptions config = do
+    count <- output (c_duckdb_v2_config_get_option_count config)
+    forM (indices count) \index ->
+        bracket (output (c_duckdb_v2_config_get_option_by_index config index)) (destroy c_duckdb_v2_option_destroy) (copyOption config)
 
 -- | Copy a descriptor while its native strings are alive.
-copyOption :: DuckDBV2OptionHandle -> IO ConfigOption
-copyOption handle = do
+copyOption :: DuckDBV2ConfigHandle -> DuckDBV2OptionHandle -> IO ConfigOption
+copyOption config handle = do
     name <- output (c_duckdb_v2_option_get_name handle) >>= readIdentifier
     description <- output (c_duckdb_v2_option_get_description handle) >>= readText
-    setting <- output (c_duckdb_v2_option_get_setting handle) >>= readText
-    defaultSetting <- output (c_duckdb_v2_option_get_default_setting handle) >>= readText
-    scope <- output (c_duckdb_v2_option_get_target_scope handle)
+    setting <- withOptionValue config name \value _ -> valueText value
+    defaultSetting <- bracket (output (c_duckdb_v2_option_get_default_value handle)) (destroy c_duckdb_v2_value_destroy) valueText
+    scope <- output (c_duckdb_v2_option_get_default_scope handle)
+    scopes <- filterM (\candidate -> (/= 0) <$> output (c_duckdb_v2_option_supports_scope handle candidate)) [DuckDBV2SettingScopeGlobal, DuckDBV2SettingScopeSession]
     count <- output (c_duckdb_v2_option_get_alias_count handle)
     aliases <- forM (indices count) \index -> output (c_duckdb_v2_option_get_alias handle index) >>= readIdentifier
-    pure (ConfigOption name description setting defaultSetting scope aliases)
+    pure (ConfigOption name description setting defaultSetting scope scopes aliases)
+
+-- | Release each owned option value after its action.
+withOptionValue :: DuckDBV2ConfigHandle -> Text -> (DuckDBV2ValueHandle -> DuckDBV2SettingScope -> IO a) -> IO a
+withOptionValue config name action = withIdentifier name \key -> alloca \scope ->
+    bracket
+        (output (\value -> c_duckdb_v2_config_get_option_value config key value scope))
+        (destroy c_duckdb_v2_value_destroy)
+        \value -> peek scope >>= action value
+
+-- | Copy the native diagnostic text of a configuration value.
+valueText :: DuckDBV2ValueHandle -> IO Text
+valueText value = do
+    count <- output (c_duckdb_v2_value_to_string value nullPtr 0)
+    when (toInteger count >= toInteger (maxBound :: Int)) $ throwRegistrationError "configuration value exceeds Int range"
+    allocaBytes (fromIntegral count + 1) \buffer -> do
+        _ <- output (c_duckdb_v2_value_to_string value buffer (count + 1))
+        Text.decodeUtf8 <$> BS.packCStringLen (buffer, fromIntegral count)
 
 -- | Enumerate a native count without unsigned underflow for empty input.
 indices :: DuckDBIdx -> [DuckDBIdx]

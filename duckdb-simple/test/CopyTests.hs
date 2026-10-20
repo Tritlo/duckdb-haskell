@@ -20,7 +20,8 @@ import qualified Database.DuckDB.Simple.Copy as Copy
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..))
 import qualified Database.DuckDB.Simple.Registration as R
 import Database.DuckDB.Simple.Variant (variantObject)
-import Foreign.Ptr (castPtr)
+import Foreign.C.ConstPtr (ConstPtr (..))
+import Foreign.Ptr (castPtr, nullPtr)
 import Foreign.Storable (pokeElemOff)
 import System.Directory (createDirectory, getTemporaryDirectory, removeFile, removePathForcibly)
 import System.FilePath ((</>))
@@ -194,7 +195,7 @@ testMultiFile = withDirectory \directory -> withConnection ":memory:" \connectio
         second = directory </> "second.mock"
     writeFile first "7"
     writeFile second "11"
-    registerSingleFileReader connection
+    bindInfoCalls <- registerSingleFileReader connection
     Copy.registerMultiFileFunction connection "managed_files" "managed_single" (Copy.MultiFileOptions (Just "managed fixture") (Just "mock"))
     query connection "SELECT value FROM managed_files(?) ORDER BY value" (Only (Text.pack (directory </> "*.mock"))) >>= (@?= map Only ([7, 11] :: [Int64]))
     let paths = listArray (0 :: Int, 1) [Text.pack first, Text.pack second]
@@ -204,22 +205,33 @@ testMultiFile = withDirectory \directory -> withConnection ":memory:" \connectio
         createDirectory path
         writeFile (path </> "data.mock") (show value)
     query connection "SELECT value,part FROM managed_files(?,hive_partitioning=true,union_by_name=true) ORDER BY value" (Only (Text.pack (directory </> "part=*" </> "*.mock"))) >>= (@?= [(3 :: Int64, "left" :: Text), (5, "right")])
+    readIORef bindInfoCalls >>= assertBool "table get-bind-info callback" . (> 0)
 
 -- | Register a table function that returns the integer stored in one text file.
-registerSingleFileReader :: Connection -> IO ()
-registerSingleFileReader connection =
+registerSingleFileReader :: Connection -> IO (IORef Int)
+registerSingleFileReader connection = do
+    calls <- newIORef 0
     R.registerTableFunction
         connection
         "managed_single"
         [R.parameter "path" (R.TypeExpression "VARCHAR")]
-        (R.tableCallbacks bind executeRows){R.tableInitGlobalCallback = Just initialize}
+        (R.tableCallbacks bind executeRows){R.tableInitGlobalCallback = Just initialize, R.tableGetBindInfoCallback = Just (getBindInfo calls)}
+    pure calls
   where
     bind input result context = do
         path <- bracket (R.output (c_duckdb_v2_function_bind_get_arg_value input 0)) (R.destroy c_duckdb_v2_value_destroy) \value -> R.output (c_duckdb_v2_value_get_varchar value) >>= R.readText
         value <- read <$> readFile (Text.unpack path) :: IO Int64
         R.setCallbackState (c_duckdb_v2_function_bind_set_bind_data input) value
-        bracket (R.withText "BIGINT" (R.output . c_duckdb_v2_context_create_type_from_text context)) (R.destroy c_duckdb_v2_logical_type_destroy) \dtype ->
+        bracket (R.output (c_duckdb_v2_context_get_factory context) >>= \factory -> R.withText "BIGINT" (R.output . c_duckdb_v2_factory_create_type_from_text factory)) (R.destroy c_duckdb_v2_logical_type_destroy) \dtype ->
             R.withIdentifier "value" \name -> R.checked (c_duckdb_v2_table_function_bind_add_result_column result name dtype)
+    getBindInfo calls info context = do
+        modifyIORef' calls (+ 1)
+        value <- R.getCallbackState (c_duckdb_v2_table_function_get_bind_info_get_bind_data info) :: IO Int64
+        factory <- R.output (c_duckdb_v2_context_get_factory context)
+        bracket (R.withText "value" (R.output . c_duckdb_v2_value_create_varchar factory)) (R.destroy c_duckdb_v2_value_destroy) $ \identifier ->
+            R.checked (c_duckdb_v2_table_function_get_bind_info_set_column_identifier info 0 (ConstPtr nullPtr) 0 identifier)
+        bracket (R.output (c_duckdb_v2_value_create_bigint factory value)) (R.destroy c_duckdb_v2_value_destroy) $ \native ->
+            R.withText "fixture_value" $ \(ConstPtr key) -> R.checked (c_duckdb_v2_table_function_get_bind_info_set_option info key native)
     initialize info _ = do
         value <- R.getCallbackState (c_duckdb_v2_table_function_init_global_get_bind_data info)
         state <- newIORef (Just (value :: Int64))

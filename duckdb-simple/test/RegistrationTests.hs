@@ -13,7 +13,11 @@ import Data.Maybe (isNothing)
 import qualified Data.Text as Text
 import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple hiding (bind, execute)
+import Database.DuckDB.Simple.FromField (FieldValue (..))
+import qualified Database.DuckDB.Simple.FunctionDocs as Docs
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..))
+import qualified Database.DuckDB.Simple.Pragma as Pragma
+import qualified Database.DuckDB.Simple.QueryMetrics as Metrics
 import qualified Database.DuckDB.Simple.Registration as R
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (advancePtr, allocaArray, peekArray)
@@ -30,6 +34,9 @@ registrationTests =
     testGroup
         "V2 registration"
         [ testCase "scalar named defaults and all parameter kinds" testScalar
+        , testCase "scalar type resolution bind state and documentation" testScalarResolution
+        , testCase "pragma query execution errors and documentation" testPragma
+        , testCase "query metric snapshots copy values and survive later queries" testMetrics
         , testCase "aggregate grouped and window execution" testAggregate
         , testCase "table state and typed default parameter" testTable
         , testCase "custom type and normal and try cast" testCast
@@ -58,7 +65,7 @@ scalarSum info _ = do
 testScalar :: Assertion
 testScalar = withConnection ":memory:" \connection -> do
     let left = (R.parameter "left" bigint){R.parameterDefault = Just (R.defaultValue (7 :: Int64))}
-        right = (R.parameter "right" bigint){R.parameterDefault = Just (R.defaultValue (35 :: Int64)), R.parameterKind = DuckDBV2FunctionParameterKindNamedOnly}
+        right = (R.parameter "right" bigint){R.parameterDefault = Just (R.FactoryDefaultValue (\factory -> R.output (c_duckdb_v2_value_create_bigint factory 35))), R.parameterKind = DuckDBV2FunctionParameterKindNamedOnly}
     R.registerScalarFunction connection "managed_default" (scalarSignature [left, right]) [] (R.scalarCallbacks scalarSum)
     query_ connection "SELECT managed_default()" >>= (@?= [Only (42 :: Int64)])
     query_ connection "SELECT managed_default(right := 5, left := 3)" >>= (@?= [Only (8 :: Int64)])
@@ -69,6 +76,89 @@ testScalar = withConnection ":memory:" \connection -> do
         kwargs = (R.parameter "kwargs" bigint){R.parameterKind = DuckDBV2FunctionParameterKindNamedVariadic}
     R.registerScalarFunction connection "managed_variadic" (scalarSignature [positional, standard, rest, named, kwargs]) [] (R.scalarCallbacks scalarSum)
     query_ connection "SELECT managed_variadic(1, 2, 3, 4, named := 5, extra := 6)" >>= (@?= [Only (21 :: Int64)])
+
+testScalarResolution :: Assertion
+testScalarResolution = withConnection ":memory:" \connection -> do
+    phases <- newIORef ([] :: [Text.Text])
+    let mark phase = modifyIORef' phases (phase :)
+        resolve input result _ = do
+            mark "resolve"
+            bracket (R.output (c_duckdb_v2_function_bind_get_arg_type input 0)) (R.destroy c_duckdb_v2_logical_type_destroy) $ \dtype ->
+                R.checked (c_duckdb_v2_scalar_function_resolve_types_set_return_type result dtype)
+        bindState _ result _ = do
+            mark "bind"
+            R.setCallbackState (c_duckdb_v2_scalar_function_bind_set_bind_data result) (42 :: Int)
+        executeRows info _ = do
+            state <- R.getCallbackState (c_duckdb_v2_scalar_function_exec_get_bind_data info)
+            (state :: Int) @?= 42
+            count <- R.output (c_duckdb_v2_scalar_function_exec_get_row_count info)
+            argument <- R.output (c_duckdb_v2_scalar_function_exec_get_arg info 0)
+            result <- R.output (c_duckdb_v2_scalar_function_exec_get_result info)
+            R.checked (c_duckdb_v2_vector_set_size result count)
+            forM_ (takeWhile (< count) [0 ..]) $ \index ->
+                bracket (R.output (c_duckdb_v2_vector_get_value argument index)) (R.destroy c_duckdb_v2_value_destroy) $ \value ->
+                    R.checked (c_duckdb_v2_vector_set_value result index value)
+        anyType = R.TypeExpression "ANY"
+        signature = R.FunctionSignature [R.parameter "value" anyType] (Just anyType)
+        target = R.ConnectionTarget connection
+    R.withRegistrationFactory target $ \factory ->
+        R.registerScalarFunctionWith
+            target
+            ( \function -> do
+                R.withIdentifier "managed_resolved" (R.checked . c_duckdb_v2_scalar_function_set_name function)
+                R.output (c_duckdb_v2_scalar_function_get_signature function) >>= R.configureFunctionSignatureWithFactory factory signature
+                docs <- R.output (c_duckdb_v2_scalar_function_get_docs function)
+                Docs.setFunctionDocs docs (Docs.FunctionDocs (Just "Preserve the input type.") [("Example", "SELECT managed_resolved(42)")] ["test"])
+            )
+            (R.scalarCallbacks executeRows){R.scalarResolveTypesCallback = Just resolve, R.scalarBindCallback = Just bindState}
+    query_ connection "SELECT typeof(managed_resolved(i::SMALLINT)), managed_resolved(i::SMALLINT) FROM range(2) t(i) ORDER BY i" >>= (@?= [("SMALLINT" :: Text.Text, 0 :: Int64), ("SMALLINT", 1)])
+    seen <- readIORef phases
+    assertBool "resolve-types callback" ("resolve" `elem` seen)
+    assertBool "bind callback" ("bind" `elem` seen)
+    query_ connection "SELECT description FROM duckdb_functions() WHERE function_name='managed_resolved'" >>= (@?= [Only ("Preserve the input type." :: Text.Text)])
+
+testPragma :: Assertion
+testPragma = withConnection ":memory:" \connection -> do
+    let amount = (R.parameter "amount" bigint){R.parameterDefault = Just (R.defaultValue (42 :: Int64))}
+    Pragma.registerPragmaFunction connection "managed_query" [amount] $ Pragma.QueryPragma $ \info _ -> do
+        value <- bracket (R.output (c_duckdb_v2_function_bind_get_arg_value info 0)) (R.destroy c_duckdb_v2_value_destroy) (R.output . c_duckdb_v2_value_get_bigint)
+        pure ("SELECT " <> Text.pack (show value) <> "::BIGINT")
+    query_ connection "PRAGMA managed_query()" >>= (@?= [Only (42 :: Int64)])
+    query_ connection "PRAGMA managed_query(7)" >>= (@?= [Only (7 :: Int64)])
+    calls <- newIORef (0 :: Int)
+    Pragma.registerPragmaFunctionWith
+        (R.ConnectionTarget connection)
+        ( \function -> do
+            R.withIdentifier "managed_exec" (R.checked . c_duckdb_v2_pragma_function_set_name function)
+            docs <- R.output (c_duckdb_v2_pragma_function_get_docs function)
+            Docs.setFunctionDocs docs Docs.defaultFunctionDocs{Docs.functionDescription = Just "Count calls."}
+        )
+        (Pragma.ExecPragma (\_ _ -> modifyIORef' calls (+ 1)))
+    void (execute_ connection "PRAGMA managed_exec")
+    readIORef calls >>= (@?= 1)
+    Pragma.registerPragmaFunction connection "managed_pragma_error" [] (Pragma.QueryPragma (\_ _ -> throwIO (userError "managed callback failure")))
+    assertSqlError (query_ connection "PRAGMA managed_pragma_error" :: IO [Only Int64])
+    query_ connection "SELECT 1::BIGINT" >>= (@?= [Only (1 :: Int64)])
+
+testMetrics :: Assertion
+testMetrics = withConnection ":memory:" \connection -> do
+    void (execute_ connection "SET enable_profiling='no_output'")
+    Metrics.enableProfiling connection True
+    query_ connection "SELECT sum(i)::BIGINT FROM range(10) t(i)" >>= (@?= [Only (45 :: Int64)])
+    snapshot <- Metrics.queryMetrics connection
+    Metrics.metricsNodeName snapshot @?= "QUERY"
+    assertBool "root metrics" (not (null (Metrics.metricsValues snapshot)))
+    assertBool "operator metrics" (not (null (Metrics.metricsChildren snapshot)))
+    let scanRows = [value | node <- metricNodes snapshot, Metrics.metricsNodeName node == "TABLE_SCAN", Just value <- [lookup "operator.intermediate_rows" (Metrics.metricsValues node)]]
+    scanRows @?= [FieldWord64 10]
+    Metrics.enableProfiling connection False
+    query_ connection "SELECT 2::BIGINT" >>= (@?= [Only (2 :: Int64)])
+    scanRows @?= [FieldWord64 10]
+    empty <- Metrics.queryMetrics connection
+    Metrics.metricsValues empty @?= []
+    Metrics.metricsChildren empty @?= []
+  where
+    metricNodes node = node : concatMap metricNodes (Metrics.metricsChildren node)
 
 sumCallbacks :: R.AggregateCallbacks
 sumCallbacks = R.aggregateCallbacks stateSize initialize update combine finalize
@@ -122,7 +212,7 @@ tableDefinition = (R.tableCallbacks bind execute){R.tableInitGlobalCallback = Ju
             R.output (c_duckdb_v2_value_get_bigint value)
         R.setCallbackState (c_duckdb_v2_function_bind_set_bind_data input) (amount :: Int64)
         bracket
-            (R.output (c_duckdb_v2_context_create_type_from_id context DuckDBV2LogicalTypeIdBigInt (ConstPtr nullPtr) (ConstPtr nullPtr) 0))
+            (R.output (c_duckdb_v2_context_get_factory context) >>= \factory -> R.output (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdBigInt (ConstPtr nullPtr) (ConstPtr nullPtr) 0))
             (R.destroy c_duckdb_v2_logical_type_destroy)
             \dtype -> R.withIdentifier "amount" \name -> R.checked (c_duckdb_v2_table_function_bind_add_result_column result name dtype)
     initialize info _ = do
@@ -211,8 +301,12 @@ testRelease = do
         query_ connection "SELECT managed_release()" >>= (@?= [Only (43 :: Int64)])
         stateRefs <- readIORef states
         assertBool "state initialized" (not (null stateRefs))
+        pragmaClosure <- newIORef (7 :: Int64)
+        pragmaWeak <- mkWeakIORef pragmaClosure (pure ())
+        Pragma.registerPragmaFunction connection "managed_pragma_release" [] (Pragma.ExecPragma (\_ _ -> void (readIORef pragmaClosure)))
+        void (execute_ connection "PRAGMA managed_pragma_release")
         failed <- failedRegistration connection
-        pure (closureWeak : failed : stateRefs)
+        pure (closureWeak : pragmaWeak : failed : stateRefs)
     performMajorGC
     performMajorGC
     forM_ references \reference -> deRefWeak reference >>= assertBool "native callback state or closure remains live" . isNothing

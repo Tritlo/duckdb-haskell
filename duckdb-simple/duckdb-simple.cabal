@@ -22,7 +22,8 @@ description:
   prepared statements, chunked folds, transactions, and Haskell scalar
   functions. The API follows the style of sqlite-simple and postgresql-simple.
   .
-  Supports native DuckDB >= 2.0 and < 2.1.
+  Targets the pinned native DuckDB 2.0 runtime.
+  The V2 API has no cross-version ABI guarantee.
   The backend uses the generated V2 API from duckdb-ffi.
   It provides shared environments and instances, function registration,
   native streaming, and Arrow batches.
@@ -63,12 +64,16 @@ library
     Database.DuckDB.Simple.FromField
     Database.DuckDB.Simple.FromRow
     Database.DuckDB.Simple.Function
+    Database.DuckDB.Simple.FunctionDocs
     Database.DuckDB.Simple.Generic
     Database.DuckDB.Simple.Geometry
     Database.DuckDB.Simple.Internal
     Database.DuckDB.Simple.Logging
     Database.DuckDB.Simple.LogicalRep
+    Database.DuckDB.Simple.Macro
     Database.DuckDB.Simple.Ok
+    Database.DuckDB.Simple.Pragma
+    Database.DuckDB.Simple.QueryMetrics
     Database.DuckDB.Simple.Registration
     Database.DuckDB.Simple.Streaming
     Database.DuckDB.Simple.Time

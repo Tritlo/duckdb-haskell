@@ -212,8 +212,8 @@ The historical October 7 Linux preview fetched during preparation reports
 `v2.0.0-alpha45189`. Its archive SHA256 is
 `5d08f26d7e5f07fcae3d315c039a09da627f52639aeace3af06abc5456e35132`.
 `PRAGMA version` reports source ID `13d1d8f56a` and codename `Cyanoptera`.
-Both client headers in the native archive match the checked-in headers. This
-records the binary used for validation. Its former download URL now returns
+At that pin, both client headers in the native archive matched the checked-in
+headers. This records the earlier validation binary. Its former download URL now returns
 404. The [preview installation links](https://duckdb.org/install/preview)
 can move and can serve an older binary. Build the pinned source below for a
 reproducible runtime. If you use another binary, verify its digest, headers,
@@ -269,7 +269,7 @@ on the native build and its installed extensions.
 | Feature | Access from this repository | Release validation |
 | --- | --- | --- |
 | Triggers, DML in CTEs, nested schemas, NEAREST joins, variables, JSON mutation, recursive CTE additions | Existing `query` and `execute` SQL paths | Execute representative SQL against the final runtime. |
-| PEG parser, expression statements, lambda syntax changes | Existing SQL paths | Check parameters, multi-statement extraction, quoted names, and parser errors. The [parser extension API](https://duckdb.org/2026/08/20/duckdb-20-peg-parser) remains a preview. |
+| PEG parser and lambda syntax changes | Existing SQL paths | Check parameters, multi-statement extraction, quoted names, and parser errors. Bare expression statements use the CLI's shell grammar; client SQL needs `SELECT`. The [parser extension API](https://duckdb.org/2026/08/20/duckdb-20-peg-parser) remains a preview. |
 | Quack, CONNECT, remote pushdown | SQL with the required extensions | Test a local server separately. Check authentication and extension availability. |
 | VARIANT and GEOMETRY | Existing `Variant`, geometry types, and codecs | Check nested values, Parquet round trips, CRS, and the VARIANT storage codec. |
 | Nanosecond TIMESTAMPTZ | Preview v1 value access and typed conversion | Check sub-microsecond precision and temporal infinity. |

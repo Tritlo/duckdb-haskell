@@ -15,7 +15,8 @@ import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Registration (FunctionParameter, FunctionSignature (..), configureFunctionSignatureWithFactory)
 
 {- | Register a scalar expression or table SELECT as an extension macro.
-Parameters must use the standard parameter kind. Use ANY for an untyped
+Parameters must use the standard parameter kind. Use
+@StructuredType (LogicalTypeScalar DuckDBV2LogicalTypeIdAny)@ for an untyped
 parameter and 'Database.DuckDB.Simple.Registration.FactoryDefaultValue' for defaults.
 DuckDB validates the body and signature. It resolves the body when the macro runs.
 The extension and context handles must belong to the current load callback.

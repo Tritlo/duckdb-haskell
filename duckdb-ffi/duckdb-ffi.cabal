@@ -19,10 +19,11 @@ homepage: https://github.com/Tritlo/duckdb-haskell
 bug-reports: https://github.com/Tritlo/duckdb-haskell/issues
 description:
   Haskell FFI bindings generated from the DuckDB 2.0 C APIs with hs-bindgen.
-  Supports native DuckDB >= 2.0 and < 2.1.
+  Targets the retained DuckDB 2.0 API. The V2 API is unstable and requires
+  the native source pin recorded in vendor/duckdb-api.json.
   .
-  Downloads a verified native library to the user cache on Linux and macOS.
-  Uses an existing library when the user or Nix supplies it.
+  Uses a native library supplied by the user or Nix. Automatic downloads
+  remain disabled until verified final release checksums are recorded.
   .
   Includes the complete pinned DuckDB V2 C API.
 

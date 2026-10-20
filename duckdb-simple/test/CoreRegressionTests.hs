@@ -177,6 +177,8 @@ coreRegressionTests =
                     withStatement conn "SELECT 42::BIGINT" $ \source ->
                         bracket (executePreparedResult source) (destroy Raw.c_duckdb_v2_result_destroy) $ \result ->
                             bracket (output (Raw.c_duckdb_v2_result_fetch_chunk result)) (destroy Raw.c_duckdb_v2_data_chunk_destroy) $ \chunk -> do
+                                bracket (output (Raw.c_duckdb_v2_result_fetch_chunk result)) (destroy Raw.c_duckdb_v2_data_chunk_destroy) $ \end ->
+                                    end @?= nullHandle
                                 vector <- output (Raw.c_duckdb_v2_data_chunk_get_vector chunk 0)
                                 bracket (output (Raw.c_duckdb_v2_vector_get_logical_type vector)) (destroy Raw.c_duckdb_v2_logical_type_destroy) $ \logical ->
                                     withArray [logical] $ \types ->

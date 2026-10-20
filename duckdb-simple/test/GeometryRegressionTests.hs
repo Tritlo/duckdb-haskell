@@ -18,7 +18,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
-import Database.DuckDB.FFI.V2 (pattern DuckDBV2LogicalTypeIdBigInt, pattern DuckDBV2LogicalTypeIdVarchar)
+import Database.DuckDB.FFI.V2 (pattern DuckDBV2ErrorInputInvalid, pattern DuckDBV2LogicalTypeIdBigInt, pattern DuckDBV2LogicalTypeIdVarchar)
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (FieldValue (..), StructValue (..), UnionValue (..))
 import Database.DuckDB.Simple.Geometry (RawGeometry (..), fromRawGeometry, toRawGeometry)
@@ -155,14 +155,16 @@ tests =
                         normalized <- either assertFailure pure (toRawGeometry decoded)
                         rawGeometryCRS normalized @?= Nothing
                         assertBool "decoded empty containers must not retain an unstored dimension tag" (rawGeometryWKB normalized /= rawGeometryWKB raw)
-        , testCase "mixed-layout collections use binary import without WKT normalization" $
+        , testCase "mixed-layout collections retain WKB but native import rejects them" $
             withConnection ":memory:" \conn -> do
                 let geometry = G.GeometryCollection (V.fromList [G.PointGeometry (G.PointXY (G.XY 1 2)), G.PointGeometry (G.PointXYZ (G.XYZ 3 4 5))])
                 raw <- either assertFailure pure (toRawGeometry geometry)
+                fromRawGeometry raw @?= Right geometry
+                (fromRawGeometry raw >>= toRawGeometry) @?= Right raw
                 assertFailureIO (query conn "SELECT ?" (Only geometry) :: IO [Only G.Geometry])
-                (importRaw conn raw) >>= (@?= [Only raw])
-                (query conn "SELECT ST_GeomFromWKB(?)" (Only (rawGeometryWKB raw)) :: IO [Only G.Geometry])
-                    >>= (@?= [Only geometry])
+                assertMixedLayoutFailure (importRaw conn raw)
+                assertMixedLayoutFailure (query conn "SELECT system.main.ST_GeomFromWKB(?)" (Only (rawGeometryWKB raw)) :: IO [Only G.Geometry])
+                assertMixedLayoutFailure (query conn "SELECT ?::GEOMETRY" (Only (rawGeometryWKB raw)) :: IO [Only RawGeometry])
                 (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
         , testCase "mixed multipoint layouts promote missing ordinates to NaN" $
             withConnection ":memory:" \conn -> do
@@ -193,12 +195,15 @@ tests =
                 raw <- either assertFailure pure (toRawGeometry shape)
                 (importRaw conn raw) >>= (@?= [Only raw])
                 fromRawGeometry raw @?= Right (G.PointGeometry (G.EmptyPoint G.DimXYZ))
-        , testCase "binary import preserves mixed empty and nonempty member layouts" $
+        , testCase "mixed empty and nonempty layouts retain WKB but native import rejects them" $
             withConnection ":memory:" \conn -> do
                 let shape = G.GeometryCollection (V.fromList [G.PointGeometry (G.EmptyPoint G.DimXY), G.PointGeometry (G.PointXYZ (G.XYZ 1 2 3))])
                 raw <- either assertFailure pure (toRawGeometry shape)
-                (query conn "SELECT system.main.ST_GeomFromWKB(?)" (Only (rawGeometryWKB raw)) :: IO [Only RawGeometry]) >>= (@?= [Only raw])
-                (query conn "SELECT system.main.ST_GeomFromWKB(?)" (Only (rawGeometryWKB raw)) :: IO [Only G.Geometry]) >>= (@?= [Only shape])
+                fromRawGeometry raw @?= Right shape
+                (fromRawGeometry raw >>= toRawGeometry) @?= Right raw
+                assertMixedLayoutFailure (importRaw conn raw)
+                assertMixedLayoutFailure (query conn "SELECT system.main.ST_GeomFromWKB(?)" (Only (rawGeometryWKB raw)) :: IO [Only G.Geometry])
+                (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
         , testCase "decoded polygon writing normalizes all-empty rings" $
             withConnection ":memory:" \conn -> do
                 let emptyRing = G.CoordinatesXYZ U.empty
@@ -429,6 +434,16 @@ importRaw conn raw = case rawGeometryCRS raw of
 -- | Bind raw bytes and CRS as separate SQL parameters.
 rawParameters :: RawGeometry -> (BS.ByteString, Maybe Text)
 rawParameters raw = (rawGeometryWKB raw, rawGeometryCRS raw)
+
+-- | Check the native rejection without accepting unrelated failures.
+assertMixedLayoutFailure :: IO a -> Assertion
+assertMixedLayoutFailure action = do
+    result <- try (action >> pure ()) :: IO (Either SQLError ())
+    case result of
+        Left err -> do
+            sqlErrorType err @?= Just DuckDBV2ErrorInputInvalid
+            assertBool (show err) ("inconsistent Z/M dimensions" `Text.isInfixOf` sqlErrorMessage err)
+        Right () -> assertFailure "expected native mixed-layout geometry rejection"
 
 -- | Check that generic values cannot silently normalize raw geometry.
 assertRawBindingFailure :: IO a -> Assertion

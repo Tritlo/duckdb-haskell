@@ -117,6 +117,11 @@ bindings. The migration uses the current API. It does not add native symbols.
   logging configuration. Native logging contains and discards callback errors.
 - V2 rejects fixed ARRAY types with zero elements. Empty LIST values remain
   supported. The binding must not change one type into the other.
+- Native GEOMETRY collections require one Z/M layout for all members, including
+  empty members. Mixed-layout WKB remains valid for the standalone codec, but
+  native import raises `InputInvalid`. Do not promote or remove coordinates.
+- A parameter at the start of a bare expression requires parentheses in this
+  parser snapshot. Use `(?::BIGINT + 1)` or an explicit `SELECT`.
 - Unconfigured GEOMETRY CRS names use direct V2 type construction. This requires
   a recognized CRS or a complete definition. Configure custom names through
   `connectionGeometryCRS` to preserve them through the SQL-derived type cache.

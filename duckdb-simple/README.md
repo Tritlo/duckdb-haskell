@@ -71,6 +71,8 @@ not supported by this native API. Empty LIST values remain supported.
 Prepared dynamic PIVOT supports repeated execution with a changing schema. It
 does not support parameters or a cacheable plan. VARIANT decoding and configured
 GEOMETRY CRS names still use the SQL metadata and native-cast helpers.
+Native GEOMETRY collections require the same Z/M dimensions on every member,
+including empty members. The standalone WKB codec retains mixed layouts.
 
 ## Getting Started
 

@@ -10,6 +10,8 @@ module Database.DuckDB.Simple.VariantCodec (
 import Control.Exception (bracket, evaluate, finally, mask_, onException, throwIO)
 import Control.Monad (forM, unless)
 import Data.Array (listArray, (!))
+import qualified Data.IntMap.Strict as IntMap
+import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.FromField (FieldValue (..))
@@ -27,7 +29,8 @@ decodeVariant scalar connection vector row = prepareVariantDecoder scalar connec
 {- | Copy a vector before returning its row reader. The connection is a dedicated
 metadata connection. It must remain exclusively borrowed until this function
 returns. The scalar callback decodes a value after its exact native cast.
-Each nesting level uses one type query for all values at that level.
+Each level batches type and key metadata. Objects with the same keys share
+one extraction query. Keys remain bound values, including empty and NUL keys.
 -}
 prepareVariantDecoder :: (DuckDBV2ConnectionHandle -> DuckDBV2ValueHandle -> IO FieldValue) -> DuckDBV2ConnectionHandle -> DuckDBV2VectorHandle -> IO (Int -> IO FieldValue)
 prepareVariantDecoder scalar connection vector = do
@@ -48,31 +51,66 @@ data VariantNode
 decodeValues :: (DuckDBV2ConnectionHandle -> DuckDBV2ValueHandle -> IO FieldValue) -> DuckDBV2ConnectionHandle -> DuckDBV2SqlStatementHandle -> [DuckDBV2ValueHandle] -> IO [FieldValue]
 decodeValues _ _ _ [] = pure []
 decodeValues scalar connection statement values = do
-    tags <- queryTypes connection statement values
-    unless (length tags == length values) (codecError "type query returned an unexpected number of tags")
-    bracket (acquireItems releaseNode (zipWith decodeNode tags values)) (releaseItems releaseNode) \nodes -> do
-        children <- decodeValues scalar connection statement (concatMap nodeChildren nodes)
-        assemble nodes children
+    metadata <- queryMetadata connection statement values
+    unless (length metadata == length values) (codecError "metadata query returned an unexpected number of nodes")
+    let indexed = zip3 [0 ..] metadata values
+        groups = Map.fromListWith (++) [(keys, [(index, value)]) | (index, (tag, keys), value) <- indexed, isObject tag]
+        releaseIndexed = releaseNode . snd
+    bracket
+        (acquireItems releaseIndexed [(,) index <$> decodeNode tag value | (index, (tag, _), value) <- indexed, not (isObject tag)])
+        (releaseItems releaseIndexed)
+        \otherNodes ->
+            bracket
+                (acquireItems (releaseItems releaseIndexed) [queryObjectGroup connection keys rows | (keys, rows) <- Map.toList groups])
+                (releaseItems (releaseItems releaseIndexed))
+                \objectGroups -> do
+                    let indexedNodes = IntMap.fromList (otherNodes <> concat objectGroups)
+                    nodes <- forM [0 .. length values - 1] \index ->
+                        maybe (codecError "object extraction omitted a node") pure (IntMap.lookup index indexedNodes)
+                    children <- decodeValues scalar connection statement (concatMap nodeChildren nodes)
+                    assemble nodes children
   where
+    isObject = Text.isPrefixOf "OBJECT("
     decodeNode tag value
         | tag == "VARIANT_NULL" = pure (ScalarNode FieldNull)
         | "ARRAY(" `Text.isPrefixOf` tag =
             withCast connection value "VARIANT[]" \list -> do
                 count <- output (c_duckdb_v2_value_get_child_count list)
                 ListNode <$> acquireItems releaseValue [output (c_duckdb_v2_value_get_child list i) | i <- indices count]
-        | "OBJECT(" `Text.isPrefixOf` tag =
-            withCast connection value "MAP(VARCHAR,VARIANT)" \object -> do
-                count <- output (c_duckdb_v2_value_get_child_count object)
-                unless (even count) (codecError "object cast returned an incomplete key/value pair")
-                ObjectNode <$> acquireItems (releaseValue . snd) [readEntry object i | i <- indices (count `div` 2)]
         | otherwise = do
             target <- scalarType tag
             ScalarNode <$> withCast connection value target (scalar connection)
-    readEntry object index = do
-        key <- bracket (output (c_duckdb_v2_value_get_child object (2 * index))) releaseValue \value ->
-            output (c_duckdb_v2_value_get_varchar value) >>= readText
-        child <- output (c_duckdb_v2_value_get_child object (2 * index + 1))
-        pure (key, child)
+
+{- | Extract objects with one key layout as a native VARIANT[][] value.
+The binder needs constant extraction keys. Bind each key once and apply the
+extractions to all objects with that layout. This avoids per-row queries and
+preserves keys that cannot be SQL identifiers.
+-}
+queryObjectGroup :: DuckDBV2ConnectionHandle -> [Text] -> [(Int, DuckDBV2ValueHandle)] -> IO [(Int, VariantNode)]
+queryObjectGroup _ [] rows = pure [(index, ObjectNode []) | (index, _) <- rows]
+queryObjectGroup connection keys rows =
+    withVariantList connection (map snd rows) \list ->
+        withConnectionFactory connection \factory ->
+            bracket
+                (acquireItems releaseValue [withText key (output . c_duckdb_v2_value_create_varchar factory) | key <- keys])
+                (releaseItems releaseValue)
+                \keyValues ->
+                    withSQLStatement connection sql \statement ->
+                        withStatementValue connection statement (list : keyValues) \objects -> do
+                            count <- output (c_duckdb_v2_value_get_child_count objects)
+                            unless (toInteger count == toInteger (length rows)) (codecError "object extraction returned an unexpected row count")
+                            acquireItems
+                                (releaseNode . snd)
+                                [ bracket (output (c_duckdb_v2_value_get_child objects i)) releaseValue \children -> do
+                                    childCount <- output (c_duckdb_v2_value_get_child_count children)
+                                    unless (toInteger childCount == toInteger (length keys)) (codecError "object extraction returned an unexpected child count")
+                                    owned <- acquireItems releaseValue [output (c_duckdb_v2_value_get_child children j) | j <- indices childCount]
+                                    pure (index, ObjectNode (zip keys owned))
+                                | (i, (index, _)) <- zip [0 ..] rows
+                                ]
+  where
+    sql = "SELECT system.main.list_transform($1::VARIANT[], lambda value: system.main.list_value(" <> Text.intercalate "," extracts <> "))"
+    extracts = ["system.main.variant_extract(value,$" <> Text.pack (show index) <> "::VARCHAR)" | index <- [2 .. length keys + 1]]
 
 -- | Rebuild a level from its copied children in their native order.
 assemble :: [VariantNode] -> [FieldValue] -> IO [FieldValue]
@@ -96,27 +134,55 @@ withCast connection value target action =
 
 -- | Parse one metadata statement and reuse it for each nesting level.
 withTypeStatement :: DuckDBV2ConnectionHandle -> (DuckDBV2SqlStatementHandle -> IO a) -> IO a
-withTypeStatement connection action =
-    withCString "SELECT system.main.list_transform(?::VARIANT[], lambda value: system.main.variant_typeof(value))" \sql ->
-        bracket (output (c_duckdb_v2_parse_sql connection (ConstPtr sql))) (destroy c_duckdb_v2_statement_iterator_destroy) \iterator ->
+withTypeStatement connection =
+    withSQLStatement
+        connection
+        "SELECT system.main.list_transform(?::VARIANT[], lambda value: system.main.struct_pack(tag := system.main.variant_typeof(value), keys := system.main.variant_keys(value)))"
+
+-- | Borrow a parsed SQL statement. Payloads and object keys are not SQL text.
+withSQLStatement :: DuckDBV2ConnectionHandle -> Text -> (DuckDBV2SqlStatementHandle -> IO a) -> IO a
+withSQLStatement connection sql action =
+    withCString (Text.unpack sql) \source ->
+        bracket (output (c_duckdb_v2_parse_sql connection (ConstPtr source))) (destroy c_duckdb_v2_statement_iterator_destroy) \iterator ->
             bracket (output (c_duckdb_v2_statement_iterator_next iterator)) (destroy c_duckdb_v2_sql_statement_destroy) action
 
--- | Read exact scalar tags without converting payloads to text or JSON.
-queryTypes :: DuckDBV2ConnectionHandle -> DuckDBV2SqlStatementHandle -> [DuckDBV2ValueHandle] -> IO [Text]
-queryTypes connection statement values =
-    bracket (withText "VARIANT" (\nativeInput -> withConnectionFactory connection (\nativeFactory -> output (c_duckdb_v2_factory_create_type_from_text nativeFactory nativeInput)))) (destroy c_duckdb_v2_logical_type_destroy) \logical ->
-        withArray values \items ->
-            bracket (withConnectionFactory connection (\nativeFactory -> output (c_duckdb_v2_value_create_list nativeFactory logical (ConstPtr items) (fromIntegral (length values))))) releaseValue \list ->
-                withArray [list] \parameter ->
-                    bracket (output (c_duckdb_v2_statement_execute connection statement (ConstPtr nullPtr) (ConstPtr parameter) 1)) (destroy c_duckdb_v2_result_destroy) \result ->
-                        bracket (output (c_duckdb_v2_result_fetch_chunk result)) (destroy c_duckdb_v2_data_chunk_destroy) \chunk -> do
-                            unless (chunk /= nullHandle) (codecError "type query returned no rows")
-                            vector <- output (c_duckdb_v2_data_chunk_get_vector chunk 0)
-                            bracket (output (c_duckdb_v2_vector_get_value vector 0)) releaseValue \tags -> do
-                                count <- output (c_duckdb_v2_value_get_child_count tags)
-                                forM (indices count) \i ->
-                                    bracket (output (c_duckdb_v2_value_get_child tags i)) releaseValue \tag ->
-                                        output (c_duckdb_v2_value_get_varchar tag) >>= readText
+-- | Read exact scalar tags and object keys without serializing payloads.
+queryMetadata :: DuckDBV2ConnectionHandle -> DuckDBV2SqlStatementHandle -> [DuckDBV2ValueHandle] -> IO [(Text, [Text])]
+queryMetadata connection statement values = withVariantList connection values \list ->
+    withStatementValue connection statement [list] \metadata -> do
+        count <- output (c_duckdb_v2_value_get_child_count metadata)
+        forM (indices count) \index ->
+            bracket (output (c_duckdb_v2_value_get_child metadata index)) releaseValue \node -> do
+                tag <- bracket (output (c_duckdb_v2_value_get_child node 0)) releaseValue \value ->
+                    output (c_duckdb_v2_value_get_varchar value) >>= readText
+                keys <- bracket (output (c_duckdb_v2_value_get_child node 1)) releaseValue \value -> do
+                    isNull <- output (c_duckdb_v2_value_is_null value)
+                    if isNull /= 0
+                        then pure []
+                        else do
+                            keyCount <- output (c_duckdb_v2_value_get_child_count value)
+                            forM (indices keyCount) \i ->
+                                bracket (output (c_duckdb_v2_value_get_child value i)) releaseValue \key ->
+                                    output (c_duckdb_v2_value_get_varchar key) >>= readText
+                pure (tag, keys)
+
+-- | Borrow an owned VARIANT list that copies all supplied values.
+withVariantList :: DuckDBV2ConnectionHandle -> [DuckDBV2ValueHandle] -> (DuckDBV2ValueHandle -> IO a) -> IO a
+withVariantList connection values action =
+    withConnectionFactory connection \factory ->
+        bracket (withText "VARIANT" (output . c_duckdb_v2_factory_create_type_from_text factory)) (destroy c_duckdb_v2_logical_type_destroy) \logical ->
+            withArray values \items ->
+                bracket (output (c_duckdb_v2_value_create_list factory logical (ConstPtr items) (fromIntegral (length values)))) releaseValue action
+
+-- | Borrow the first result value while its statement result stays alive.
+withStatementValue :: DuckDBV2ConnectionHandle -> DuckDBV2SqlStatementHandle -> [DuckDBV2ValueHandle] -> (DuckDBV2ValueHandle -> IO a) -> IO a
+withStatementValue connection statement parameters action =
+    withArray parameters \items ->
+        bracket (output (c_duckdb_v2_statement_execute connection statement (ConstPtr nullPtr) (ConstPtr items) (fromIntegral (length parameters)))) (destroy c_duckdb_v2_result_destroy) \result ->
+            bracket (output (c_duckdb_v2_result_fetch_chunk result)) (destroy c_duckdb_v2_data_chunk_destroy) \chunk -> do
+                unless (chunk /= nullHandle) (codecError "metadata query returned no rows")
+                vector <- output (c_duckdb_v2_data_chunk_get_vector chunk 0)
+                bracket (output (c_duckdb_v2_vector_get_value vector 0)) releaseValue action
 
 -- | Map every native VARIANT scalar tag to its exact cast target.
 scalarType :: Text -> IO Text

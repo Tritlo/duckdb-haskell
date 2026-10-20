@@ -510,9 +510,9 @@ The library does not change an existing database's storage compatibility
 setting. VARIANT columns require storage format `v1.5.0` or later.
 
 The direct `query_` and `execute_` paths support statements that expand during
-parsing, including dynamic PIVOT. The pinned V2 prepared API cannot plan some of
-these statements. Parameterized queries, `withStatement`, and folds use that
-prepared API and report its native error for those cases.
+parsing, including dynamic PIVOT. Prepared dynamic PIVOT also supports repeated
+execution and schema changes. It cannot have parameters or require a cacheable
+plan. Read its schema after execution starts.
 
 ### GEOMETRY
 

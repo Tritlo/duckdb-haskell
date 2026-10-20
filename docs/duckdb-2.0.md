@@ -48,8 +48,8 @@ keep handles and enums from the two APIs separate. File flag 4 means exclusive
 creation in v1 and truncation in v2.
 
 The generator supplies layouts, typed callbacks, const pointers, and adapters
-for structures passed by value. It generates all 620 V2 functions. The entire V2 surface is currently
-unstable and must match the native snapshot. The generated C source enables
+for structures passed by value. It generates all 620 V2 functions. The entire
+V2 surface is currently unstable and must match the native snapshot. The generated C source enables
 `DUCKDB_V2_API_ALLOW_UNSTABLE` explicitly. Ownership, callback lifetimes,
 exception handling, Arrow release operations, and value conversion remain in
 the calling code. Cabal builds the generated modules.
@@ -78,10 +78,11 @@ Do not destroy borrowed handles. Keep callback function pointers alive until
 DuckDB releases the registration. Catch Haskell exceptions inside callbacks
 and report failures through the native error handle.
 
-If this preview rejects an invalid `duckdb_v2_result_render_box` render mode,
-it leaves the result slot non-null. The header says the call consumes the result
-on failure. After an error, destroy any owned result that remains in the slot. The
-[implementation validates the mode before transfer](https://github.com/duckdb/duckdb/blob/d54cbbe3df17e8e5ce68312f483b4155836112aa/src/main/capi/v2/capi_v2_result.cpp#L472).
+After a `duckdb_v2_result_render_box` error, check the result slot and destroy
+any owned handle that remains. The pinned implementation checks the render mode
+and view arguments before it transfers ownership. These argument errors leave
+the result intact. After transfer, it clears the slot on success and failure.
+See the [validation before transfer](https://github.com/duckdb/duckdb/blob/d54cbbe3df17e8e5ce68312f483b4155836112aa/src/main/capi/v2/capi_v2_result.cpp#L464).
 Recheck this ownership behavior against the final runtime.
 
 The [upstream versioning rules](https://github.com/duckdb/duckdb/blob/d54cbbe3df17e8e5ce68312f483b4155836112aa/api_spec/VERSIONING.md)

@@ -15,7 +15,8 @@ closures for registration data and 'setCallbackState' for bind or execution
 state. Each state getter must use the same Haskell type as its setter. Synchronize
 access to state that DuckDB shares between workers.
 
-The pinned V2 API has no custom file-system or log-storage registration API.
+The pinned V2 API has no custom file-system registration API. Use
+@Database.DuckDB.Simple.Logging@ for managed log-sink registration.
 -}
 module Database.DuckDB.Simple.Registration (
     RegistrationTarget (..),

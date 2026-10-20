@@ -135,8 +135,10 @@ tests =
         , testCase "metadata conversion ignores shadowing macros" $ withConnection ":memory:" \conn -> do
             void (execute_ conn "CREATE MACRO variant_typeof(x) AS 'VARCHAR'")
             void (execute_ conn "CREATE MACRO list_transform(x,y) AS [42]")
+            void (execute_ conn "CREATE MACRO variant_keys(x) AS ['wrong']")
             (query_ conn "SELECT [42::TINYINT::VARIANT, 'two'::VARIANT]::VARIANT" :: IO [Only Variant])
                 >>= (@?= [Only (Variant (FieldList [FieldInt8 42, FieldText "two"]))])
+            (query_ conn "SELECT {'a': 42::TINYINT}::VARIANT" :: IO [Only Variant]) >>= (@?= [Only (Variant (variantObject [("a", FieldInt8 42)]))])
         , testCase "deep native arrays decode without a library depth limit" $ withConnection ":memory:" \conn ->
             forM_ [128, 256 :: Int] \depth -> do
                 let expected = Variant (foldr (const (FieldList . pure)) (FieldWord64 7) [1 .. depth])
@@ -221,7 +223,7 @@ tests =
                             | n <- take 40 (reverse [0, 97 .. 9999])
                             ]
                     rows @?= expected
-                    [Only nativeKeys] <- query_ conn "SELECT map_keys(value::MAP(VARCHAR,VARIANT)) FROM stored LIMIT 1" :: IO [Only [Text]]
+                    [Only nativeKeys] <- query_ conn "SELECT system.main.variant_keys(value) FROM stored LIMIT 1" :: IO [Only [Text]]
                     nativeKeys @?= ["n", "text", "xs"]
                     forM_ rows \(Only (Variant payloadValue)) -> case payloadValue of
                         FieldStruct object -> map structFieldName (elems (structValueFields object)) @?= nativeKeys
@@ -250,14 +252,17 @@ tests =
             _ <- execute_ conn "CREATE MACRO ST_AsText(x) AS 42"
             _ <- execute_ conn "CREATE MACRO ST_GeomFromWKB(x) AS 'POINT (9 9)'::GEOMETRY"
             (query conn "SELECT system.main.ST_GeomFromWKB(?)::VARIANT" (Only (rawGeometryWKB geometry)) :: IO [Only Variant]) >>= (@?= [Only (geometryPayload (rawGeometryWKB geometry))])
-        , testCase "binary geometry payloads retain NaN bits and mixed member layouts" $ withConnection ":memory:" \conn ->
-            forM_
-                [ G.PointGeometry (G.PointXYZ (G.XYZ (castWord64ToDouble 0x7ff8000000000001) (castWord64ToDouble 0x7ff8000000000002) 7))
-                , G.GeometryCollection (V.fromList [G.PointGeometry (G.PointXY (G.XY 1 2)), G.PointGeometry (G.PointXYZ (G.XYZ 3 4 5))])
-                ]
-                \shape -> do
-                    raw <- either assertFailure pure (toRawGeometry shape)
-                    (query conn "SELECT system.main.ST_GeomFromWKB(?)::VARIANT" (Only (rawGeometryWKB raw)) :: IO [Only Variant]) >>= (@?= [Only (geometryPayload (rawGeometryWKB raw))])
+        , testCase "binary geometry preserves NaN bits and rejects mixed member layouts" $ withConnection ":memory:" \conn -> do
+            let nanPoint = G.PointGeometry (G.PointXYZ (G.XYZ (castWord64ToDouble 0x7ff8000000000001) (castWord64ToDouble 0x7ff8000000000002) 7))
+            raw <- either assertFailure pure (toRawGeometry nanPoint)
+            (query conn "SELECT system.main.ST_GeomFromWKB(?)::VARIANT" (Only (rawGeometryWKB raw)) :: IO [Only Variant]) >>= (@?= [Only (geometryPayload (rawGeometryWKB raw))])
+            let mixed = G.GeometryCollection (V.fromList [G.PointGeometry (G.PointXY (G.XY 1 2)), G.PointGeometry (G.PointXYZ (G.XYZ 3 4 5))])
+            mixedRaw <- either assertFailure pure (toRawGeometry mixed)
+            outcome <- try (query conn "SELECT system.main.ST_GeomFromWKB(?)::VARIANT" (Only (rawGeometryWKB mixedRaw)) :: IO [Only Variant])
+            case outcome of
+                Left (err :: SQLError) -> sqlErrorType err @?= Just DuckDBV2ErrorInputInvalid
+                Right _ -> assertFailure "native GEOMETRY must reject mixed Z/M dimensions"
+            (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
         , testCase "invalid values fail before binding and connection reuse succeeds" $ withConnection ":memory:" \conn -> do
             forM_
                 [ FieldHugeInt (2 ^ (127 :: Int))

@@ -123,7 +123,7 @@ testPragma = withConnection ":memory:" \connection -> do
     Pragma.registerPragmaFunction connection "managed_query" [amount] $ Pragma.QueryPragma $ \info _ -> do
         value <- bracket (R.output (c_duckdb_v2_function_bind_get_arg_value info 0)) (R.destroy c_duckdb_v2_value_destroy) (R.output . c_duckdb_v2_value_get_bigint)
         pure ("SELECT " <> Text.pack (show value) <> "::BIGINT")
-    query_ connection "PRAGMA managed_query()" >>= (@?= [Only (42 :: Int64)])
+    query_ connection "PRAGMA managed_query" >>= (@?= [Only (42 :: Int64)])
     query_ connection "PRAGMA managed_query(7)" >>= (@?= [Only (7 :: Int64)])
     calls <- newIORef (0 :: Int)
     Pragma.registerPragmaFunctionWith

@@ -289,7 +289,8 @@ on the native build and its installed extensions.
 | Values, logical/custom types, vectors, data chunks, arenas, column collections | Typed conversions, `LogicalRep`, `Registration`, and raw V2 vector operations | Check widths, buffer layouts, nulls, borrowed data, and destruction. |
 | Scalar, aggregate, table, cast, COPY functions and signatures | Managed `Registration` and `Copy` callbacks, typed signatures, and raw V2 | Check registration and execution, parameter kinds, named/default arguments, callback errors, state destruction, and COPY statistics. |
 | Multi-file functions, table partitioning, batch claiming | Managed `Copy` multi-file setup and `Registration.TableCallbacks` | Check file metadata, partition values, batch order, and callback lifetimes. |
-| Replacement scans, file systems, logging, extension entry points | Managed `Registration`, `FileSystem`, context logging, and extension-target builders | Check callback lifetime and file operations. V2 has no custom file-system or log-storage registration. Loadable-extension packaging needs separate validation. |
+| Replacement scans, file systems, logging, extension entry points | Managed `Registration`, `FileSystem`, `Logging`, and extension-target builders | Check callback lifetime, log-sink cleanup, and file operations. V2 has no custom file-system registration. Loadable-extension packaging needs separate validation. |
+| Custom options, macro and pragma functions, function documentation, query profiles | `Config`, `Macro`, `Pragma`, `FunctionDocs`, and `QueryMetrics` | Check typed defaults and scopes, callback errors, extension targets, and copied metric ownership. |
 
 Some features use SQL or the raw API without a dedicated `duckdb-simple`
 wrapper. Appender access uses the v1 API in this snapshot. Check extension
@@ -383,13 +384,16 @@ nested parameters. Helper queries do not interrupt the caller's active stream.
 The migration uses the pinned API. It does not add native symbols. The missing
 operations are documented in the package README and report controlled errors:
 
-- The pinned prepared API cannot plan some expanding statements, including
-  dynamic PIVOT. Use direct `query_` or `execute_` for those statements.
-- V2 cannot register custom log storage or custom file systems. Callback
-  contexts can still write log messages. Existing file handles support checked
-  sequential and positioned I/O.
+- Prepared expanding statements, including dynamic PIVOT, have deferred schemas
+  and cannot have parameters or require a cacheable plan. The backend fetches
+  before reading their output schema.
+- V2 cannot register custom file systems. Native log sinks support managed write
+  and flush callbacks. Native logging contains and discards callback errors.
 - The native type builder rejects zero-length fixed ARRAY types. Empty LIST
   values remain supported.
+- Native GEOMETRY collections require the same Z/M dimensions on all members,
+  including empty members. Mixed-layout WKB still round trips through the
+  standalone codec. Native import raises `InputInvalid` without normalization.
 - Direct GEOMETRY type construction requires a recognized CRS identifier or a
   complete definition. The high-level type cache also preserves custom names
   configured through `connectionGeometryCRS`. Unconfigured unknown names raise

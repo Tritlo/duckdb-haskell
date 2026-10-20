@@ -17,6 +17,7 @@ module Database.DuckDB.Simple.Config (
     CustomOption (..),
     customOption,
     registerCustomOption,
+    registerCustomOptionOn,
     registerCustomOptionWith,
 ) where
 
@@ -31,7 +32,7 @@ import Database.DuckDB.Simple (withConnection)
 import Database.DuckDB.Simple.Callback (attachOpaque, runCallback, withCallbackResources)
 import Database.DuckDB.Simple.Internal (Connection, Instance, throwRegistrationError, withConnectionHandle, withInstanceHandle)
 import Database.DuckDB.Simple.Native
-import Database.DuckDB.Simple.Registration (ContextCallback, DefaultValue (..), RegistrationTarget (..), TypeDeclaration, withTypeDeclaration)
+import Database.DuckDB.Simple.Registration (ContextCallback, DefaultValue (..), RegistrationTarget (..), TypeDeclaration, withRegistrationFactory, withTypeDeclarationWithFactory)
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
 import Foreign.Marshal.Alloc (alloca, allocaBytes)
 import Foreign.Ptr (nullPtr)
@@ -83,21 +84,33 @@ customOption name dtype = CustomOption name dtype Nothing "" DuckDBV2SettingScop
 Update callbacks must not write options. They borrow their native handles.
 -}
 registerCustomOption :: Connection -> CustomOption -> IO ()
-registerCustomOption conn option = withConnectionHandle conn \native ->
+registerCustomOption conn = registerCustomOptionOn (ConnectionTarget conn)
+
+{- | Register a declared option on a connection or loading extension.
+Extension defaults must use 'FactoryDefaultValue'.
+-}
+registerCustomOptionOn :: RegistrationTarget -> CustomOption -> IO ()
+registerCustomOptionOn target option = do
+    when (Text.null (customOptionName option) || Text.any (== '\0') (customOptionName option)) $
+        throwRegistrationError "custom option name must be nonempty and must not contain NUL"
     registerCustomOptionWith
-        (ConnectionTarget conn)
-        ( \handle -> do
+        target
+        ( \handle -> withRegistrationFactory target \factory -> do
             withIdentifier (customOptionName option) $ checked . c_duckdb_v2_custom_option_set_name handle
-            withTypeDeclaration native (customOptionType option) $ checked . c_duckdb_v2_custom_option_set_type handle
+            withTypeDeclarationWithFactory factory (customOptionType option) $ checked . c_duckdb_v2_custom_option_set_type handle
             case customOptionDefault option of
                 Nothing -> pure ()
-                Just (DefaultValue make) -> bracket (make native) (destroy c_duckdb_v2_value_destroy) \value -> checked (c_duckdb_v2_custom_option_set_default_value handle value)
-                Just (FactoryDefaultValue make) -> withConnectionFactory native \factory -> bracket (make factory) (destroy c_duckdb_v2_value_destroy) \value -> checked (c_duckdb_v2_custom_option_set_default_value handle value)
+                Just value -> bracket (makeDefault factory value) (destroy c_duckdb_v2_value_destroy) \native -> checked (c_duckdb_v2_custom_option_set_default_value handle native)
             withText (customOptionDescription option) $ checked . c_duckdb_v2_custom_option_set_description handle
             mapM_ (\scope -> checked (c_duckdb_v2_custom_option_set_supports_scope handle scope (if scope `elem` customOptionScopes option then 1 else 0))) [DuckDBV2SettingScopeGlobal, DuckDBV2SettingScopeSession]
             checked (c_duckdb_v2_custom_option_set_default_scope handle (customOptionDefaultScope option))
         )
         (customOptionUpdate option)
+  where
+    makeDefault factory (FactoryDefaultValue make) = make factory
+    makeDefault _ (DefaultValue make) = case target of
+        ConnectionTarget conn -> withConnectionHandle conn make
+        ExtensionTarget{} -> throwRegistrationError "extension defaults require FactoryDefaultValue"
 
 {- | Configure and register a custom option with managed callback cleanup.
 The configuration action borrows the builder. Do not set user data or callbacks.

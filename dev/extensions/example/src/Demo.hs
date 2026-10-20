@@ -8,7 +8,7 @@ module Demo where
 import Control.Exception (throwIO)
 import Data.Int (Int64)
 import Data.Text (Text)
-import Database.DuckDB.FFI.V2 (DuckDBV2ContextHandle (..), DuckDBV2ExtensionHandle (..), c_duckdb_v2_value_create_bigint, pattern DuckDBV2LogicalTypeIdAny, pattern DuckDBV2MacroFunctionTypeScalar)
+import Database.DuckDB.FFI.V2 (DuckDBV2ContextHandle (..), DuckDBV2ExtensionHandle (..), c_duckdb_v2_value_create_bigint, pattern DuckDBV2LogicalTypeIdAny, pattern DuckDBV2MacroFunctionTypeScalar, pattern DuckDBV2MacroFunctionTypeTable)
 import qualified Database.DuckDB.Simple.Config as Config
 import Database.DuckDB.Simple.Extension (Extension, ExtensionEntry)
 import qualified Database.DuckDB.Simple.Extension as Extension
@@ -22,7 +22,7 @@ initialize = Extension.runExtension register
 
 foreign export ccall "duckdb_haskell_demo_register" initialize :: ExtensionEntry
 
--- | Register typed callbacks, a macro, a PRAGMA, and a custom option.
+-- | Register typed callbacks, macros, a PRAGMA, a custom option, and a log sink.
 register :: Extension -> IO ()
 register extension = do
     Extension.createFunction extension "haskell_answer" (42 :: Int64)
@@ -30,12 +30,14 @@ register extension = do
     Extension.createFunction extension "haskell_greet" (("Hello " <>) :: Text -> Text)
     Extension.createFunction extension "haskell_fail" (throwIO (userError "Haskell callback failure") :: IO Int64)
     Extension.registerMacro extension "haskell_twice" DuckDBV2MacroFunctionTypeScalar [Registration.parameter "value" (Registration.StructuredType (LogicalTypeScalar DuckDBV2LogicalTypeIdAny))] "value + value"
+    Extension.registerMacro extension "haskell_table" DuckDBV2MacroFunctionTypeTable [] "SELECT 42::BIGINT AS answer"
     Extension.registerCustomOption extension $
         (Config.customOption "haskell_multiplier" (Registration.TypeExpression "BIGINT"))
             { Config.customOptionDefault = Just (Registration.FactoryDefaultValue (\factory -> Registration.output (c_duckdb_v2_value_create_bigint factory 7)))
             }
     Extension.registerPragma extension "haskell_demo" [] $
         Pragma.QueryPragma (\_ _ -> pure "SELECT 'pragma', current_setting('haskell_multiplier')::BIGINT")
+    Extension.registerLogSink extension "haskell_sink" (\_ -> pure ()) (pure ())
 
 -- | Increment a BIGINT argument. Keep NULL values and report overflow.
 addOne :: Maybe Int64 -> IO (Maybe Int64)

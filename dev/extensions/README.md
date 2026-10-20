@@ -41,9 +41,9 @@ All V2 declarations are currently unstable. Rebuild the extension when the
 native source pin or release version changes. A matching major or minor
 version does not establish ABI compatibility.
 
-The example registers `haskell_answer()`, `haskell_add_one(BIGINT)`, and
-`haskell_fail()`. They exercise native results, batch inputs, NULLs, overflow,
-and callback error handling. The entrypoint is
+The example registers typed scalar functions, scalar and table macros, a
+PRAGMA, a typed custom option, and a log sink. They exercise native results,
+batch inputs, NULLs, Unicode text, overflow, and callback errors. The entrypoint is
 `haskell_demo_init_c_api_v2`. Keep the packaged filename
 `haskell_demo.duckdb_extension`.
 
@@ -130,7 +130,9 @@ nix-shell dev/nix/shell.nix --run 'GHC_ENVIRONMENT=- runghc \
 
 The smoke script starts two plain native CLI processes. It checks repeated
 loading, scalar results, 10,000 input rows, NULLs, callback errors, overflow,
-and connection reuse after errors. It does not use a Haskell host executable.
+and connection reuse after errors. It also checks both macro kinds, PRAGMA
+results before and after an option update, and native log-sink selection.
+It does not use a Haskell host executable.
 
 ## Deployment and remaining validation
 
@@ -141,7 +143,25 @@ Nix build-store paths require those stores to remain available. Relocatable
 bundling, Windows, and loading into another Haskell executable remain outside
 this prepared recipe.
 
-Linux x86_64 validation uses GHC 9.14.1 and the pinned native preview:
+Linux x86_64 checks on 2026-10-20 use GHC 9.14.1 and native source
+`d54cbbe3df17e8e5ce68312f483b4155836112aa`:
+
+- A clean extension build passes both native CLI smoke processes, including
+  both macro kinds, the PRAGMA, custom-option updates, and log-sink selection.
+- The updated native function table has 620 entries. An old C object can retain
+  the previous table size. Use a fresh build directory after a header change.
+- The ordinary client suites pass all 617 functional tests and the default
+  leak suite against the same native library.
+- Fresh source archives build and install without LLVM or hs-bindgen. Static
+  and dynamic consumers pass with the loader environment unset.
+- `ldd` confirms the threaded RTS dependency and no `libduckdb` dependency.
+- Haddock builds for both extension-mode libraries. Existing generated-link
+  warnings remain.
+
+The following checks used the October 16 pin. They do not establish current
+platform compatibility.
+
+Linux x86_64 validation used GHC 9.14.1 and the earlier native preview:
 
 - The typed demo builds and passes the native CLI smoke checks.
 - A plain C host passes concurrent first loads, repeated loads, independent
@@ -163,7 +183,7 @@ Linux x86_64 validation uses GHC 9.14.1 and the pinned native preview:
   containment. These checks use extracted source packages and the existing
   dependency cache. They do not use `cabal install --lib`.
 
-macOS ARM64 validation uses Nix GHC 9.14.1, Clang 21.1.8, and the same native
+macOS ARM64 validation used Nix GHC 9.14.1, Clang 21.1.8, and the earlier native
 preview:
 
 - The Mach-O demo passes both native CLI smoke processes.

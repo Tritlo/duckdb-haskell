@@ -139,7 +139,13 @@ smoke executable extension = do
         , "SELECT 'null', CASE WHEN haskell_add_one(NULL::BIGINT) IS NULL THEN 'preserved' ELSE 'changed' END;"
         , "SELECT 'text', haskell_greet('Matti λ') = 'Hello Matti λ';"
         , "SELECT 'macro', haskell_twice(21::BIGINT);"
+        , "SELECT 'table_macro', answer FROM haskell_table();"
         , "PRAGMA haskell_demo;"
+        , "SET enable_logging=true;"
+        , "SET logging_storage='haskell_sink';"
+        , "SELECT 'log_sink', write_log('Haskell extension smoke', return_value := 42);"
+        , "SET logging_storage='memory';"
+        , "SET enable_logging=false;"
         , "SET haskell_multiplier=9;"
         , "PRAGMA haskell_demo;"
         ]
@@ -149,7 +155,9 @@ smoke executable extension = do
         , ["null", "preserved"]
         , ["text", "true"]
         , ["macro", "42"]
+        , ["table_macro", "42"]
         , ["pragma", "7"]
+        , ["log_sink", "42"]
         , ["pragma", "9"]
         ]
         []

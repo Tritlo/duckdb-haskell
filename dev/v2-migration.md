@@ -136,9 +136,9 @@ handles between the retained and V2 APIs.
 The former `Database.DuckDB.Simple.Deprecated.Streaming` module is removed.
 
 The platform matrix remains for CI. Quack runtime tests need local extension
-fixtures. Managed extension targets compile, but loading a Haskell shared
-library as a native extension remains separate packaging work. The advanced
-opaque equality callback remains available through the raw API.
+fixtures. Loadable Haskell extension packaging and native smoke checks are in
+[the extension recipe](extensions/README.md). The advanced opaque equality
+callback remains available through the raw API.
 
 ## Native limitations
 

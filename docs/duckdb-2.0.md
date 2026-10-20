@@ -292,7 +292,7 @@ on the native build and its installed extensions.
 | Values, logical/custom types, vectors, data chunks, arenas, column collections | Typed conversions, `LogicalRep`, `Registration`, and raw V2 vector operations | Check widths, buffer layouts, nulls, borrowed data, and destruction. |
 | Scalar, aggregate, table, cast, COPY functions and signatures | Managed `Registration` and `Copy` callbacks, typed signatures, and raw V2 | Check registration and execution, parameter kinds, named/default arguments, callback errors, state destruction, and COPY statistics. |
 | Multi-file functions, table partitioning, batch claiming | Managed `Copy` multi-file setup and `Registration.TableCallbacks` | Check file metadata, partition values, batch order, and callback lifetimes. |
-| Replacement scans, file systems, logging, extension entry points | Managed `Registration`, `FileSystem`, `Logging`, and extension-target builders | Check callback lifetime, log-sink cleanup, and file operations. V2 has no custom file-system registration. Loadable-extension packaging needs separate validation. |
+| Replacement scans, file systems, logging, extension entry points | Managed `Registration`, `FileSystem`, `Logging`, and extension-target builders | Check callback lifetime, log-sink cleanup, and file operations. V2 has no custom file-system registration. See the [loadable-extension checks](../dev/extensions/README.md). |
 | Custom options, macro and pragma functions, function documentation, query profiles | `Config`, `Macro`, `Pragma`, `FunctionDocs`, and `QueryMetrics` | Check typed defaults and scopes, callback errors, extension targets, and copied metric ownership. |
 
 Some features use SQL or the raw API without a dedicated `duckdb-simple`
@@ -310,8 +310,9 @@ native compiler check verifies all function and callback signatures.
 These checks cover representative behavior. They do not execute every raw
 function. Managed registration and COPY fixtures also check COPY FROM,
 partitioned output, statistics, and multi-file reads. Small fixtures do not
-guarantee a progress callback invocation. Extension targets compile, but a
-loadable Haskell extension still needs separate packaging validation.
+guarantee a progress callback invocation. The [loadable-extension recipe](../dev/extensions/README.md)
+also passes native Linux CLI smoke checks for this pin. Its earlier macOS
+validation requires a rerun with the refreshed native source.
 
 The selected preview's Quack extension downloads returned HTTP 403 from
 `core_nightly` and HTTP 404 from `core` in this environment. The second review

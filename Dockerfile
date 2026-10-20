@@ -42,7 +42,6 @@ RUN --mount=type=cache,id=apt-cache,target=/var/cache/apt \
       libffi-dev \
       libgmp-dev \
       libncurses-dev \
-      unzip \
       && \
     apt-get autoremove -y && \
     apt-get clean -y && \
@@ -61,7 +60,7 @@ COPY duckdb-ffi/vendor/duckdb-api.json /preview/duckdb-ffi/vendor/
 COPY duckdb-ffi/cbits/duckdb*.h duckdb-ffi/cbits/duckdb-LICENSE /preview/duckdb-ffi/cbits/
 ARG DUCKDB_BUILD_JOBS=2
 RUN DUCKDB_BUILD_JOBS="$DUCKDB_BUILD_JOBS" bash /preview/dev/preview/build-duckdb.sh /tmp/duckdb-preview && \
-    cp /tmp/duckdb-preview/native/libduckdb.so /usr/lib/ && \
+    cp -P /tmp/duckdb-preview/native/libduckdb.so* /usr/lib/ && \
     cp /tmp/duckdb-preview/native/duckdb*.h /usr/include/ && \
     install -Dm644 /tmp/duckdb-preview/native/duckdb-LICENSE /usr/share/licenses/duckdb/LICENSE && \
     ldconfig

@@ -51,10 +51,10 @@ creation in v1 and truncation in v2.
 
 The generator supplies layouts, typed callbacks, const pointers, and adapters
 for structures passed by value. It generates all 620 V2 functions. The entire
-V2 surface is currently unstable and must match the native snapshot. The generated C source enables
-`DUCKDB_V2_API_ALLOW_UNSTABLE` explicitly. Ownership, callback lifetimes,
-exception handling, Arrow release operations, and value conversion remain in
-the calling code. Cabal builds the generated modules.
+V2 surface is currently unstable and must match the native snapshot. The
+generated C source enables `DUCKDB_V2_API_ALLOW_UNSTABLE` explicitly. Ownership,
+callback lifetimes, exception handling, Arrow release operations, and value
+conversion remain in the calling code. Cabal builds the generated modules.
 
 Generate the artefacts before building a checkout:
 
@@ -118,12 +118,24 @@ the metadata-deferred error are new. Existing value structures and callback
 signatures remain unchanged. No surviving enum constant is renumbered. The
 extension function-pointer table changes with the API and requires a rebuild.
 
-Generation and the complete API audit pass for this pin. The raw V2 suite
-type-checks with `-Wall -Werror` on GHC 9.14.1. Native runtime checks are pending
-the matching source build. The installer integration fixture verifies complete
-tar extraction, versioned symlink targets, warm-cache reuse, and rejection of
-wrong checksums or missing targets before publication. Final release archives
-and platform runtime checks remain unverified.
+Validation on 2026-10-20 used Nix GHC 9.14.1 on Linux x86_64 and a native
+source build at this pin. The library and CLI report `v2.0.0-dev0` with source
+ID `d54cbbe3df`.
+
+- Generation, checksum verification, and the complete API audit pass. Both
+  generated modules and their C ABI checks build with `-Wall -Werror`.
+- All 97 retained API tests and all 19 V2 tests pass.
+- All 19 V2 tests pass under Valgrind 3.26 with zero errors and zero definite,
+  indirect, or possible leaks. The run uses `--fair-sched=yes`,
+  `--undef-value-errors=no`, and one Haskell runtime capability.
+- A fresh FFI source archive contains both generated modules and both C ABI
+  checks. All four generated checksums pass after extraction.
+- The installer integration fixture verifies complete tar extraction,
+  versioned symlink targets, warm-cache reuse, and rejection of wrong checksums
+  or missing targets before publication.
+
+Final release archives, other compilers, and macOS runtime checks remain
+unverified for this pin.
 
 ## Previous binding validation
 

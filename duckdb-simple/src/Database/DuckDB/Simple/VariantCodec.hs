@@ -91,8 +91,8 @@ assemble (node : rest) children = do
 -- | Borrow the native cast result while copying its payload.
 withCast :: DuckDBV2ConnectionHandle -> DuckDBV2ValueHandle -> Text -> (DuckDBV2ValueHandle -> IO a) -> IO a
 withCast connection value target action =
-    bracket (withText target (output . c_duckdb_v2_connection_create_type_from_text connection)) (destroy c_duckdb_v2_logical_type_destroy) \logical ->
-        bracket (output (c_duckdb_v2_value_cast_with_connection connection value logical)) releaseValue action
+    bracket (withText target (\nativeInput -> withConnectionFactory connection (\nativeFactory -> output (c_duckdb_v2_factory_create_type_from_text nativeFactory nativeInput)))) (destroy c_duckdb_v2_logical_type_destroy) \logical ->
+        bracket (withConnectionFactory connection (\nativeFactory -> output (c_duckdb_v2_value_cast nativeFactory value logical))) releaseValue action
 
 -- | Parse one metadata statement and reuse it for each nesting level.
 withTypeStatement :: DuckDBV2ConnectionHandle -> (DuckDBV2SqlStatementHandle -> IO a) -> IO a
@@ -104,9 +104,9 @@ withTypeStatement connection action =
 -- | Read exact scalar tags without converting payloads to text or JSON.
 queryTypes :: DuckDBV2ConnectionHandle -> DuckDBV2SqlStatementHandle -> [DuckDBV2ValueHandle] -> IO [Text]
 queryTypes connection statement values =
-    bracket (withText "VARIANT" (output . c_duckdb_v2_connection_create_type_from_text connection)) (destroy c_duckdb_v2_logical_type_destroy) \logical ->
+    bracket (withText "VARIANT" (\nativeInput -> withConnectionFactory connection (\nativeFactory -> output (c_duckdb_v2_factory_create_type_from_text nativeFactory nativeInput)))) (destroy c_duckdb_v2_logical_type_destroy) \logical ->
         withArray values \items ->
-            bracket (output (c_duckdb_v2_value_create_list_with_connection connection logical (ConstPtr items) (fromIntegral (length values)))) releaseValue \list ->
+            bracket (withConnectionFactory connection (\nativeFactory -> output (c_duckdb_v2_value_create_list nativeFactory logical (ConstPtr items) (fromIntegral (length values))))) releaseValue \list ->
                 withArray [list] \parameter ->
                     bracket (output (c_duckdb_v2_statement_execute connection statement (ConstPtr nullPtr) (ConstPtr parameter) 1)) (destroy c_duckdb_v2_result_destroy) \result ->
                         bracket (output (c_duckdb_v2_result_fetch_chunk result)) (destroy c_duckdb_v2_data_chunk_destroy) \chunk -> do

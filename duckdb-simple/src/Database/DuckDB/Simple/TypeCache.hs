@@ -103,7 +103,7 @@ withNativeTypes TypeCache{typeCacheInstance, typeCacheCRS, typeCacheState} actio
 readNativeTypes :: DuckDBV2ConnectionHandle -> [Text] -> IO NativeTypes
 readNativeTypes connection crss = do
     let sql = Text.concat ("SELECT NULL::VARIANT" : [", system.main.ST_SetCRS('POINT EMPTY'::GEOMETRY, ?)" | _ <- crss])
-        ownValue value = bracket (withText value (output . c_duckdb_v2_value_create_varchar_with_connection connection)) (destroy c_duckdb_v2_value_destroy)
+        ownValue value = bracket (withText value (\nativeInput -> withConnectionFactory connection (\nativeFactory -> output (c_duckdb_v2_value_create_varchar nativeFactory nativeInput)))) (destroy c_duckdb_v2_value_destroy)
     TextForeign.withCString sql \text ->
         bracket (output (c_duckdb_v2_parse_sql connection (ConstPtr text))) (destroy c_duckdb_v2_statement_iterator_destroy) \iterator ->
             bracket (output (c_duckdb_v2_statement_iterator_next iterator)) (destroy c_duckdb_v2_sql_statement_destroy) \parsed ->

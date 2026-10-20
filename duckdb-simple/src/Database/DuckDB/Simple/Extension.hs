@@ -1,3 +1,5 @@
+{-# LANGUAGE BlockArguments #-}
+
 {- | Entry support for a loadable V2 Haskell extension.
 Build duckdb-ffi with its @extension@ flag. The C entrypoint must first call
 @duckdb_haskell_extension_init_api@, then initialize the threaded GHC runtime,
@@ -9,15 +11,26 @@ module Database.DuckDB.Simple.Extension (
     runExtension,
     createFunction,
     createFunctionWithState,
+    registerMacro,
+    registerPragma,
+    registerCustomOption,
+    registerLogSink,
     withExtensionContext,
 ) where
 
 import Data.Text (Text)
 import Database.DuckDB.FFI.V2 (DuckDBV2ContextHandle, DuckDBV2ErrorInfoHandle, DuckDBV2ExtensionHandle)
 import Database.DuckDB.Simple.Callback (runCallback)
+import Database.DuckDB.Simple.Config (CustomOption)
+import qualified Database.DuckDB.Simple.Config as Config
 import Database.DuckDB.Simple.Function.Internal (Function, createFunctionUsing, createFunctionWithStateUsing)
-import Database.DuckDB.Simple.Native (c_duckdb_v2_context_create_type_from_id, c_duckdb_v2_scalar_function_create_with_extension, output)
-import Database.DuckDB.Simple.Registration (RegistrationTarget (ExtensionTarget))
+import Database.DuckDB.Simple.Logging (LogEntry)
+import qualified Database.DuckDB.Simple.Logging as Logging
+import qualified Database.DuckDB.Simple.Macro as Macro
+import Database.DuckDB.Simple.Native (DuckDBV2MacroFunctionType, c_duckdb_v2_extension_register_scalar_function, c_duckdb_v2_factory_create_type_from_id, c_duckdb_v2_pragma_function_get_signature, c_duckdb_v2_pragma_function_set_name, c_duckdb_v2_scalar_function_create, checked, output, withContextFactory, withIdentifier)
+import Database.DuckDB.Simple.Pragma (PragmaCallback)
+import qualified Database.DuckDB.Simple.Pragma as Pragma
+import Database.DuckDB.Simple.Registration (FunctionParameter, FunctionSignature (..), RegistrationTarget (ExtensionTarget), configureFunctionSignatureWithFactory)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Ptr (Ptr, nullPtr)
 
@@ -40,21 +53,56 @@ runExtension initialize extension context err =
 
 -- | Register a typed Haskell function with the loading DuckDB host.
 createFunction :: (Function f) => Extension -> Text -> f -> IO ()
-createFunction (Extension extension context) =
+createFunction (Extension extension context) name fn = withContextFactory context \factory ->
     createFunctionUsing
-        (output (c_duckdb_v2_scalar_function_create_with_extension extension))
-        (\dtype -> output (c_duckdb_v2_context_create_type_from_id context dtype (ConstPtr nullPtr) (ConstPtr nullPtr) 0))
+        (output (c_duckdb_v2_scalar_function_create factory))
+        (\dtype -> output (c_duckdb_v2_factory_create_type_from_id factory dtype (ConstPtr nullPtr) (ConstPtr nullPtr) 0))
+        (checked . c_duckdb_v2_extension_register_scalar_function extension)
+        name
+        fn
 
 -- | Register a typed function with per-worker state owned by DuckDB.
 createFunctionWithState :: (Function f) => Extension -> Text -> IO s -> (s -> f) -> IO ()
-createFunctionWithState (Extension extension context) =
+createFunctionWithState (Extension extension context) name initialize makeFunction = withContextFactory context \factory ->
     createFunctionWithStateUsing
-        (output (c_duckdb_v2_scalar_function_create_with_extension extension))
-        (\dtype -> output (c_duckdb_v2_context_create_type_from_id context dtype (ConstPtr nullPtr) (ConstPtr nullPtr) 0))
+        (output (c_duckdb_v2_scalar_function_create factory))
+        (\dtype -> output (c_duckdb_v2_factory_create_type_from_id factory dtype (ConstPtr nullPtr) (ConstPtr nullPtr) 0))
+        (checked . c_duckdb_v2_extension_register_scalar_function extension)
+        name
+        initialize
+        makeFunction
+
+-- | Register a scalar expression or a table SELECT on the loading extension.
+registerMacro :: Extension -> Text -> DuckDBV2MacroFunctionType -> [FunctionParameter] -> Text -> IO ()
+registerMacro (Extension extension context) = Macro.registerMacroFunction extension context
+
+-- | Register a managed PRAGMA callback on the loading extension.
+registerPragma :: Extension -> Text -> [FunctionParameter] -> PragmaCallback -> IO ()
+registerPragma (Extension extension context) name parameters callback = withContextFactory context \factory ->
+    Pragma.registerPragmaFunctionWith
+        (ExtensionTarget extension context)
+        ( \function -> do
+            withIdentifier name (checked . c_duckdb_v2_pragma_function_set_name function)
+            signature <- output (c_duckdb_v2_pragma_function_get_signature function)
+            configureFunctionSignatureWithFactory factory (FunctionSignature parameters Nothing) signature
+        )
+        callback
+
+{- | Register a typed option during extension initialization.
+Use a factory default value. A connection default value requires a connection.
+-}
+registerCustomOption :: Extension -> CustomOption -> IO ()
+registerCustomOption (Extension extension context) = Config.registerCustomOptionOn (ExtensionTarget extension context)
+
+{- | Register a log sink with callback resources owned by DuckDB.
+Callbacks can run concurrently. They must not log or change logging settings.
+-}
+registerLogSink :: Extension -> Text -> (LogEntry -> IO ()) -> IO () -> IO ()
+registerLogSink (Extension extension context) = Logging.registerExtensionLogSink extension context
 
 {- | Use the borrowed target and context for advanced managed registration.
 Use this action for aggregate, table, COPY, and other registration APIs. Do not
 retain or destroy the handles. They are valid only during 'runExtension'.
 -}
 withExtensionContext :: Extension -> (RegistrationTarget -> DuckDBV2ContextHandle -> IO a) -> IO a
-withExtensionContext (Extension extension context) action = action (ExtensionTarget extension) context
+withExtensionContext (Extension extension context) action = action (ExtensionTarget extension context) context

@@ -20,6 +20,9 @@ module Database.DuckDB.Simple.Native (
     readBytes,
     withIdentifier,
     readIdentifier,
+    withConnectionFactory,
+    withContextFactory,
+    withInstanceFactory,
 ) where
 
 import Control.Exception (Exception, finally, mask_, throwIO)
@@ -127,3 +130,15 @@ withIdentifier value action = withText value (action . coerce)
 -- | Copy a borrowed native identifier.
 readIdentifier :: DuckDBV2IdentifierT -> IO Text
 readIdentifier = readText . coerce
+
+-- | Borrow a factory while its connection remains alive. Do not destroy it.
+withConnectionFactory :: DuckDBV2ConnectionHandle -> (DuckDBV2FactoryHandle -> IO a) -> IO a
+withConnectionFactory connection action = output (c_duckdb_v2_connection_get_factory connection) >>= action
+
+-- | Borrow a factory during its native callback. Do not retain or destroy it.
+withContextFactory :: DuckDBV2ContextHandle -> (DuckDBV2FactoryHandle -> IO a) -> IO a
+withContextFactory context action = output (c_duckdb_v2_context_get_factory context) >>= action
+
+-- | Borrow an instance factory for built-in types, casts, and allocations.
+withInstanceFactory :: DuckDBV2InstanceHandle -> (DuckDBV2FactoryHandle -> IO a) -> IO a
+withInstanceFactory instance_ action = output (c_duckdb_v2_instance_get_factory instance_) >>= action

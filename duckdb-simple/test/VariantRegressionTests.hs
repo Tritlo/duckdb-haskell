@@ -23,7 +23,7 @@ import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (BitString (..), DecimalValue (..), FieldValue (..), StructValue (..), UnionValue)
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..))
 import Database.DuckDB.Simple.Geometry (RawGeometry (..), toRawGeometry)
-import Database.DuckDB.Simple.Internal (withConnectionHandle, withStatementHandle)
+import Database.DuckDB.Simple.Internal (withConnectionFactory, withConnectionHandle, withStatementHandle)
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), destroyLogicalType, logicalTypeFromRep, logicalTypeToRep)
 import Database.DuckDB.Simple.Registration (destroy, output)
 import qualified Database.DuckDB.Simple.Streaming as Streaming
@@ -287,8 +287,8 @@ appendWideTimestamps conn rows =
         withStatement conn "INSERT INTO wide_timestamps VALUES (?, ?)" \statement ->
             withStatementHandle statement \prepared ->
                 forM_ rows \(seconds, millis) ->
-                    bracket (output (c_duckdb_v2_value_create_timestamp_sec_with_connection native (fromIntegral seconds))) (destroy c_duckdb_v2_value_destroy) \secondsValue ->
-                        bracket (output (c_duckdb_v2_value_create_timestamp_ms_with_connection native (fromIntegral millis))) (destroy c_duckdb_v2_value_destroy) \millisValue ->
+                    bracket (withConnectionFactory native (\nativeFactory -> output (c_duckdb_v2_value_create_timestamp_sec nativeFactory (fromIntegral seconds)))) (destroy c_duckdb_v2_value_destroy) \secondsValue ->
+                        bracket (withConnectionFactory native (\nativeFactory -> output (c_duckdb_v2_value_create_timestamp_ms nativeFactory (fromIntegral millis)))) (destroy c_duckdb_v2_value_destroy) \millisValue ->
                             withArray [secondsValue, millisValue] \values ->
                                 bracket (output (c_duckdb_v2_prepared_statement_execute prepared (ConstPtr nullPtr) (ConstPtr values) 2)) (destroy c_duckdb_v2_result_destroy) \result ->
                                     void (output (c_duckdb_v2_result_drain result))

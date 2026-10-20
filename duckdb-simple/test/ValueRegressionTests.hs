@@ -26,7 +26,7 @@ import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (BitString (..), DecimalValue (..), FieldValue (..), TimeWithZone (..), bsFromBool)
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..), genericFromFieldValue, genericToStructValue)
-import Database.DuckDB.Simple.Internal (destroyValue, output, withConnectionHandle)
+import Database.DuckDB.Simple.Internal (destroyValue, output, withConnectionFactory, withConnectionHandle)
 import Database.DuckDB.Simple.LogicalRep
 import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
@@ -43,10 +43,10 @@ instance DuckDBColumnType NativeTimestamp where
     duckdbColumnTypeFor _ = "TIMESTAMP"
 
 instance ToDuckValue NativeTimestamp where
-    toDuckValue conn (Seconds value) = output (c_duckdb_v2_value_create_timestamp_sec_with_connection conn value)
-    toDuckValue conn (Milliseconds value) = output (c_duckdb_v2_value_create_timestamp_ms_with_connection conn value)
-    toDuckValue conn (Microseconds value) = output (c_duckdb_v2_value_create_timestamp_with_connection conn value)
-    toDuckValue conn (Nanoseconds value) = output (c_duckdb_v2_value_create_timestamp_ns_with_connection conn value)
+    toDuckValue conn (Seconds value) = withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_timestamp_sec nativeFactory value))
+    toDuckValue conn (Milliseconds value) = withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_timestamp_ms nativeFactory value))
+    toDuckValue conn (Microseconds value) = withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_timestamp nativeFactory value))
+    toDuckValue conn (Nanoseconds value) = withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_timestamp_ns nativeFactory value))
 
 instance ToField NativeTimestamp
 

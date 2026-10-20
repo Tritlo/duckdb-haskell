@@ -8,8 +8,13 @@ the checked-in files. It does not run during ordinary package builds.
 dev/preview/build-duckdb.sh /tmp/duckdb-2.0-native
 ```
 
-Set `DUCKDB_BUILD_SHELL=ON` to also build the matching native CLI. The builder
-copies it to `native/duckdb`. Loadable extension checks use that CLI.
+Set `DUCKDB_BUILD_SHELL=ON` to also build and copy the matching CLI.
+`DUCKDB_BUILD_JOBS` sets the compiler parallelism and defaults to two jobs.
+The native output keeps the shared-library symlinks and their targets.
+
+```sh
+DUCKDB_BUILD_SHELL=ON dev/preview/build-duckdb.sh /tmp/duckdb-2.0-native
+```
 
 Remove this builder after the final DuckDB 2.0 native archives are available
 and verified. Change CI, Docker, and Nix to use the final release inputs at that

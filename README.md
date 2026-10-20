@@ -20,7 +20,9 @@ The package generates bindings from the pinned DuckDB 2.0 client headers with
   appenders, and Arrow integration.
 - Generates native types, layouts, callbacks, and calling-convention adapters.
 - Includes integration tests for the native bindings.
-- Covers all 548 retained and 582 V2 functions in the pinned 2.0 snapshot.
+- Covers all 548 retained and 620 V2 functions in the pinned 2.0 snapshot.
+- V2 is currently unstable. Use the native source pin in
+  `duckdb-ffi/vendor/duckdb-api.json` until the final API is verified.
 
 ### Generate the bindings
 
@@ -59,7 +61,9 @@ The automatic installer supports glibc Linux (x86_64 and aarch64) and macOS.
 After the final archives are verified and pinned, it downloads DuckDB 2.0.0 into
 `$XDG_CACHE_HOME/duckdb-haskell/2.0.0` (usually
 `~/.cache/duckdb-haskell/2.0.0`). It verifies SHA256 before extraction.
-It requires `curl`, `unzip`, and `sha256sum` (`shasum` on macOS).
+It requires `curl`, `tar`, and `sha256sum` (`shasum` on macOS).
+The installer uses upstream `duckdb-shared-libs-PLATFORM.tar.gz` archives.
+It keeps shared-library symlinks and their versioned targets together.
 Keep the installed native directory available while linked applications run.
 
 The download version and checksums are pinned together in `Setup.hs`.

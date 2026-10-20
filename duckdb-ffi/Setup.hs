@@ -89,7 +89,7 @@ nativeArchive = case (os, arch) of
     _ -> fail "Automatic DuckDB installation supports glibc Linux and macOS. Supply DuckDB 2.0 with -fsystemlib and --extra-lib-dirs."
   where
     unavailable platform =
-        fail ("Verified DuckDB " <> nativeVersion <> " archive checksum for " <> platform <> " is not available before release. Supply a matching DuckDB 2.0 library with -fsystemlib and --extra-lib-dirs=/absolute/path. See docs/duckdb-2.0.md in the repository.")
+        fail ("Verified DuckDB " <> nativeVersion <> " archive checksum for " <> platform <> " has not been recorded. Supply a matching DuckDB 2.0 library with -fsystemlib and --extra-lib-dirs=/absolute/path. See docs/duckdb-2.0.md in the repository.")
 
 -- | Download into a temporary directory. Publish the verified library atomically.
 installNativeLibrary :: ConfigFlags -> IO FilePath
@@ -114,15 +114,15 @@ installNativeLibrary flags = do
     ready <- complete destination
     unless ready $ do
         when exists $ fail ("Incomplete DuckDB installation: remove " <> destination <> " and retry.")
-        let programs = ["curl", "unzip", if os == "darwin" then "shasum" else "sha256sum"]
+        let programs = ["curl", "tar", if os == "darwin" then "shasum" else "sha256sum"]
         missing <- filterM (\program -> isNothing <$> findExecutable program) programs
         unless (null missing) $
             fail ("DuckDB installation requires these programs on PATH: " <> intercalate ", " missing <> ". Install them, or supply DuckDB with -fsystemlib and --extra-lib-dirs. See README.md for details.")
         createDirectoryIfMissing True root
         withTempDirectory root ".download-" $ \staging -> do
-            let archive = staging </> "duckdb.zip"
+            let archive = staging </> "duckdb.tar.gz"
                 extracted = staging </> "library"
-                url = "https://github.com/duckdb/duckdb/releases/download/v" <> nativeVersion <> "/libduckdb-" <> platform <> ".zip"
+                url = "https://github.com/duckdb/duckdb/releases/download/v" <> nativeVersion <> "/duckdb-shared-libs-" <> platform <> ".tar.gz"
             putStrLn ("Downloading DuckDB " <> nativeVersion <> " to " <> destination)
             callProcess "curl" ["--fail", "--location", "--proto", "=https", "--proto-redir", "=https", "--tlsv1.2", "--retry", "2", "--output", archive, url]
             digest <-
@@ -131,7 +131,10 @@ installNativeLibrary flags = do
                     else readProcess "sha256sum" [archive] ""
             unless (takeWhile (/= ' ') digest == checksum) $ fail "DuckDB archive checksum mismatch."
             createDirectory extracted
-            callProcess "unzip" ["-q", archive, libraryName, "-d", extracted]
+            -- Keep the shared-library symlinks and their versioned targets together.
+            callProcess "tar" ["-xzf", archive, "-C", extracted]
+            libraryPresent <- doesFileExist (extracted </> libraryName)
+            unless libraryPresent $ fail "DuckDB archive does not contain the expected shared library and its symlink targets."
             writeFile (extracted </> "SHA256") (checksum <> "\n")
             -- Another build can publish the same verified archive first.
             renameDirectory extracted destination `catch` \(err :: IOException) -> do

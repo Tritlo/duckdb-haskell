@@ -215,23 +215,23 @@ instance {-# OVERLAPPABLE #-} (FromField a, FunctionArg a, Function r) => Functi
             Ok value -> applyFunction rest (fn value)
 
 -- | Share the callback conversion and resource ownership for both targets.
-createFunctionUsing :: forall f. (Function f) => IO DuckDBV2ScalarFunctionHandle -> (DuckDBV2LogicalTypeId -> IO DuckDBV2LogicalTypeHandle) -> Text -> f -> IO ()
-createFunctionUsing createScalar createType name fn =
-    registerScalarFunction createScalar createType name (Proxy :: Proxy f) \allocate -> do
+createFunctionUsing :: forall f. (Function f) => IO DuckDBV2ScalarFunctionHandle -> (DuckDBV2LogicalTypeId -> IO DuckDBV2LogicalTypeHandle) -> (DuckDBV2ScalarFunctionHandle -> IO ()) -> Text -> f -> IO ()
+createFunctionUsing createScalar createType register name fn =
+    registerScalarFunction createScalar createType register name (Proxy :: Proxy f) \allocate -> do
         scalarFunctionExecPtr <- DuckDBV2ScalarFunctionExecCallbackFn <$> allocate (toFunPtr (DuckDBV2ScalarFunctionExecCallbackFn_Aux (scalarFunctionHandler fn)))
         pure ScalarFunctionResources{scalarFunctionExecPtr, scalarFunctionInitPtr = Nothing}
 
 -- | Share per-worker state and callback resource ownership for both targets.
-createFunctionWithStateUsing :: forall s f. (Function f) => IO DuckDBV2ScalarFunctionHandle -> (DuckDBV2LogicalTypeId -> IO DuckDBV2LogicalTypeHandle) -> Text -> IO s -> (s -> f) -> IO ()
-createFunctionWithStateUsing createScalar createType name initState mkFn =
-    registerScalarFunction createScalar createType name (Proxy :: Proxy f) \allocate -> do
+createFunctionWithStateUsing :: forall s f. (Function f) => IO DuckDBV2ScalarFunctionHandle -> (DuckDBV2LogicalTypeId -> IO DuckDBV2LogicalTypeHandle) -> (DuckDBV2ScalarFunctionHandle -> IO ()) -> Text -> IO s -> (s -> f) -> IO ()
+createFunctionWithStateUsing createScalar createType register name initState mkFn =
+    registerScalarFunction createScalar createType register name (Proxy :: Proxy f) \allocate -> do
         scalarFunctionExecPtr <- DuckDBV2ScalarFunctionExecCallbackFn <$> allocate (toFunPtr (DuckDBV2ScalarFunctionExecCallbackFn_Aux (scalarFunctionHandlerWithState mkFn)))
         initPtr <- DuckDBV2ScalarFunctionInitCallbackFn <$> allocate (toFunPtr (DuckDBV2ScalarFunctionInitCallbackFn_Aux (scalarFunctionInitHandler initState)))
         pure ScalarFunctionResources{scalarFunctionExecPtr, scalarFunctionInitPtr = Just initPtr}
 
 -- | Configure a scalar function and transfer its callbacks to DuckDB.
-registerScalarFunction :: (Function f) => IO DuckDBV2ScalarFunctionHandle -> (DuckDBV2LogicalTypeId -> IO DuckDBV2LogicalTypeHandle) -> Text -> Proxy f -> ((forall a. IO (FunPtr a) -> IO (FunPtr a)) -> IO ScalarFunctionResources) -> IO ()
-registerScalarFunction createScalar createType name proxy acquire = do
+registerScalarFunction :: (Function f) => IO DuckDBV2ScalarFunctionHandle -> (DuckDBV2LogicalTypeId -> IO DuckDBV2LogicalTypeHandle) -> (DuckDBV2ScalarFunctionHandle -> IO ()) -> Text -> Proxy f -> ((forall a. IO (FunPtr a) -> IO (FunPtr a)) -> IO ScalarFunctionResources) -> IO ()
+registerScalarFunction createScalar createType register name proxy acquire = do
     when (Text.null name || Text.any (== '\0') name) $
         throwIO (functionInvocationError "duckdb-simple: invalid scalar function name")
     bracket
@@ -256,7 +256,7 @@ registerScalarFunction createScalar createType name proxy acquire = do
                     checked (c_duckdb_v2_scalar_function_set_property scalarFun DuckDBV2FunctionPropertyFallibility DuckDBV2FunctionPropertyFallibilityFallible)
                     checked (c_duckdb_v2_scalar_function_set_exec_callback scalarFun scalarFunctionExecPtr)
                     forM_ scalarFunctionInitPtr $ checked . c_duckdb_v2_scalar_function_set_init_callback scalarFun
-                    checked (c_duckdb_v2_scalar_function_register scalarFun)
+                    register scalarFun
 
 -- | Release each owned logical type after the signature copies it.
 withLogicalType :: (DuckDBV2LogicalTypeId -> IO DuckDBV2LogicalTypeHandle) -> DuckDBV2LogicalTypeId -> (DuckDBV2LogicalTypeHandle -> IO a) -> IO a
@@ -347,7 +347,7 @@ writeResults context resultType values outVec = do
                 pokeElemOff (castPtr dataPtr :: Ptr Double) idx dbl
             (ScalarTypeVarchar, ScalarText txt) ->
                 bracket
-                    (withText txt (output . c_duckdb_v2_value_create_varchar_with_context context))
+                    (withContextFactory context \factory -> withText txt (output . c_duckdb_v2_value_create_varchar factory))
                     (destroy c_duckdb_v2_value_destroy)
                     \value -> checked (c_duckdb_v2_vector_set_value outVec (fromIntegral idx) value)
             _ ->

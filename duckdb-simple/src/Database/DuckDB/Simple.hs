@@ -44,6 +44,7 @@ module Database.DuckDB.Simple (
     openStatement,
     closeStatement,
     withStatement,
+    withCollectionStatement,
     clearStatementBindings,
     namedParameterIndex,
     columnCount,
@@ -135,32 +136,34 @@ attachDatabase instance_ path alias settings makeDefault = withInstanceHandle in
         forM_ settings \(key, value) -> withIdentifier key \name -> withText value \text ->
             checked (c_duckdb_v2_attach_options_set options name text)
         withText (Text.pack path) \file -> withIdentifier alias \name ->
-            checked (c_duckdb_v2_instance_attach raw file name options (if makeDefault then 1 else 0))
+            checked (c_duckdb_v2_instance_attach raw name file options (if makeDefault then 1 else 0))
 
 -- | Detach a catalog from an instance.
 detachDatabase :: Instance -> Text -> IO ()
-detachDatabase instance_ alias = withInstanceHandle instance_ \raw -> withText alias \name ->
+detachDatabase instance_ alias = withInstanceHandle instance_ \raw -> withIdentifier alias \name ->
     checked (c_duckdb_v2_instance_detach raw name)
 
 -- | Select the default catalog for new connections to an instance.
 setDefaultDatabase :: Instance -> Text -> IO ()
-setDefaultDatabase instance_ alias = withInstanceHandle instance_ \raw -> withText alias \name ->
+setDefaultDatabase instance_ alias = withInstanceHandle instance_ \raw -> withIdentifier alias \name ->
     checked (c_duckdb_v2_instance_set_default raw name)
 
 -- | Open a connection to a shared instance.
 connect :: Instance -> IO Connection
 connect instance_ = connectWithOptions instance_ defaultConnectionOptions
 
--- | Open a connection with options. Configuration uses DuckDB's automatic scope.
+-- | Open a connection with options. Configuration uses DuckDB's default scope.
 connectWithOptions :: Instance -> ConnectionOptions -> IO Connection
 connectWithOptions instance_ ConnectionOptions{connectionConfig, connectionGeometryCRS} = mask_ do
     when (any (\(name, value) -> Text.any (== '\0') name || Text.any (== '\0') value) connectionConfig) $
         throwIO (SQLError (Text.pack "duckdb-simple: configuration contains NUL") Nothing Nothing)
     conn <- createConnection instance_ connectionGeometryCRS (pure ())
     flip onException (close conn) do
-        withConnectionHandle conn \raw -> forM_ connectionConfig \(key, value) ->
-            withIdentifier key \name -> withText value \text ->
-                checked (c_duckdb_v2_connection_set_option raw name text DuckDBV2SettingScopeAutomatic)
+        withConnectionHandle conn \raw -> do
+            config <- output (c_duckdb_v2_connection_get_config raw)
+            forM_ connectionConfig \(key, value) ->
+                withIdentifier key \name -> withText value \text ->
+                    checked (c_duckdb_v2_config_set_option_text config name text DuckDBV2SettingScopeDefault)
         pure conn
 
 -- | Run an action with a connection to a shared instance.
@@ -236,6 +239,18 @@ closeStatement = closeStatementState . statementState
 -- | Run an action with a prepared statement, closing it afterwards.
 withStatement :: Connection -> Query -> (Statement -> IO a) -> IO a
 withStatement conn sql = bracket (openStatement conn sql) closeStatement
+
+{- | Prepare SQL with borrowed column collections as named input tables.
+The caller must keep each collection alive and unchanged until the callback
+returns. An empty column-name list selects DuckDB's default column names.
+The statement and all its results close before this function returns.
+-}
+withCollectionStatement :: Connection -> Query -> [(Text, DuckDBV2ColumnDataCollectionHandle, [Text])] -> (Statement -> IO a) -> IO a
+withCollectionStatement conn queryText collections action = withParsedStatements conn queryText \parsed ->
+    case parsed of
+        [statement] -> bracket (createStatementFromParsedWithCollections conn queryText statement collections) closeStatement action
+        [] -> throwIO (mkPrepareError queryText (Text.pack "duckdb-simple: SQL query contains no statement"))
+        _ -> throwIO (mkPrepareError queryText (Text.pack "duckdb-simple: prepared SQL contains more than one statement"))
 
 -- | Bind positional parameters to a prepared statement, replacing any previous bindings.
 bind :: Statement -> [FieldBinding] -> IO ()

@@ -5,15 +5,18 @@
 module CoreRegressionTests (coreRegressionTests) where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (SomeException, finally, throwIO, try)
+import Control.Exception (SomeException, bracket, finally, throwIO, try)
 import Control.Monad (forM_, replicateM_, void)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (isInfixOf)
 import Data.Text (Text)
+import qualified Database.DuckDB.FFI.V2 as Raw
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (FieldValue)
-import Database.DuckDB.Simple.Internal (DuckDBV2ResultHandle (..), Statement (statementStream), StatementStream (statementStreamResult), StatementStreamState (..), nullHandle)
+import Database.DuckDB.Simple.Internal (DuckDBV2ResultHandle (..), Statement (statementStream), StatementStream (statementStreamResult), StatementStreamState (..), checked, destroy, executePreparedResult, nullHandle, output, withConnectionFactory, withConnectionHandle)
+import Foreign.C.ConstPtr (ConstPtr (..))
+import Foreign.Marshal.Array (withArray)
 import System.Directory (getTemporaryDirectory, removeFile)
 import System.IO (hClose, openBinaryTempFile)
 import System.Mem (performMajorGC)
@@ -158,12 +161,44 @@ coreRegressionTests =
                 query_ conn "PIVOT pivot_probe ON yr USING sum(amount)" >>= (@?= [("a" :: Text, 1 :: Int64, 2 :: Int64)])
                 void (execute_ conn "ALTER TABLE pivot_probe ADD COLUMN extra DOUBLE DEFAULT random()")
                 query_ conn "SELECT count(*) FROM pivot_probe WHERE extra IS NOT NULL" >>= (@?= [Only (2 :: Int64)])
+        , testCase "a prepared PIVOT refreshes its result schema on each execution" $
+            withConnection ":memory:" $ \conn -> do
+                void (execute_ conn "CREATE TABLE prepared_pivot(category VARCHAR, yr INTEGER, amount BIGINT); INSERT INTO prepared_pivot VALUES ('a',2020,1),('a',2021,2)")
+                withStatement conn "PIVOT prepared_pivot ON yr USING sum(amount)" $ \stmt -> do
+                    nextRow stmt >>= (@?= Just ("a" :: Text, 1 :: Int64, 2 :: Int64))
+                    nextRow stmt >>= (@?= (Nothing :: Maybe (Text, Int64, Int64)))
+                    void (execute_ conn "INSERT INTO prepared_pivot VALUES ('a',2022,3)")
+                    clearStatementBindings stmt
+                    nextRow stmt >>= (@?= Just ("a" :: Text, 1 :: Int64, 2 :: Int64, 3 :: Int64))
+                    nextRow stmt >>= (@?= (Nothing :: Maybe (Text, Int64, Int64, Int64)))
+        , testCase "a scoped collection statement retains named input and parameter metadata" $
+            withConnection ":memory:" $ \conn ->
+                withConnectionHandle conn $ \native -> withConnectionFactory native $ \factory ->
+                    withStatement conn "SELECT 42::BIGINT" $ \source ->
+                        bracket (executePreparedResult source) (destroy Raw.c_duckdb_v2_result_destroy) $ \result ->
+                            bracket (output (Raw.c_duckdb_v2_result_fetch_chunk result)) (destroy Raw.c_duckdb_v2_data_chunk_destroy) $ \chunk -> do
+                                vector <- output (Raw.c_duckdb_v2_data_chunk_get_vector chunk 0)
+                                bracket (output (Raw.c_duckdb_v2_vector_get_logical_type vector)) (destroy Raw.c_duckdb_v2_logical_type_destroy) $ \logical ->
+                                    withArray [logical] $ \types ->
+                                        bracket (output (Raw.c_duckdb_v2_column_data_collection_create factory (ConstPtr types) 1)) (destroy Raw.c_duckdb_v2_column_data_collection_destroy) $ \collection -> do
+                                            let checkRows :: Maybe (Only Int64) -> IO ()
+                                                checkRows expected = withCollectionStatement conn "SELECT payload + ?::BIGINT FROM input_rows" [("input_rows", collection, ["payload"])] $ \stmt -> do
+                                                    bind stmt [toField (1 :: Int64)]
+                                                    nextRow stmt >>= (@?= expected)
+                                                    nextRow stmt >>= (@?= (Nothing :: Maybe (Only Int64)))
+                                            checkRows Nothing
+                                            bracket (output (Raw.c_duckdb_v2_column_data_collection_append_state_create collection)) (destroy Raw.c_duckdb_v2_column_data_collection_append_state_destroy) $ \appendState ->
+                                                checked (Raw.c_duckdb_v2_column_data_collection_append collection appendState chunk)
+                                            checkRows (Just (Only (43 :: Int64)))
         , testCase "connections share an explicit instance" $
             withEnvironment $ \environment -> withInstance environment [] $ \instance_ -> do
                 attachDatabase instance_ ":memory:" "shared" [] True
                 withConnectionOn instance_ $ \first -> withConnectionOn instance_ $ \second -> do
                     void (execute_ first "CREATE TABLE shared_probe(x BIGINT); INSERT INTO shared_probe VALUES (42)")
                     query_ second "SELECT x FROM shared_probe" >>= (@?= [Only (42 :: Int64)])
+        , testCase "startup configuration sets the whitelist before disabling external access" $
+            withConnectionWithConfig ":memory:" [("enable_external_access", "false"), ("allowed_paths", "['/tmp/duckdb-whitelist-probe']")] $ \conn ->
+                query_ conn "SELECT current_setting('enable_external_access'), list_contains(current_setting('allowed_paths'), '/tmp/duckdb-whitelist-probe')" >>= (@?= [(False, True)])
         , testCase "environment close releases live cursors before their parents" $ do
             environment <- createEnvironment
             instance_ <- createInstance environment []

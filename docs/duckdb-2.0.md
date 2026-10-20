@@ -1,6 +1,6 @@
 # DuckDB 2.0 release preparation
 
-Research date: 2026-10-07. The upstream [release calendar](https://duckdb.org/release_calendar)
+Research date: 2026-10-20. The upstream [release calendar](https://duckdb.org/release_calendar)
 lists 2026-10-21 for DuckDB 2.0.0. The date is tentative. DuckDB 2.0 is still a
 preview. Confirm the final tag and API, and verify the native archives and
 checksums before release.
@@ -8,8 +8,8 @@ checksums before release.
 ## Pinned API
 
 The client headers in `duckdb-ffi/cbits/duckdb.h` and `duckdb_v2.h` come from
-[13d1d8f56a82b3413055819eb90d0b0e68b5c847](https://github.com/duckdb/duckdb/commit/13d1d8f56a82b3413055819eb90d0b0e68b5c847)
-on the upstream `v2.0-cyanoptera` release branch, dated 2026-10-07.
+[d54cbbe3df17e8e5ce68312f483b4155836112aa](https://github.com/duckdb/duckdb/commit/d54cbbe3df17e8e5ce68312f483b4155836112aa)
+on the upstream `v2.0-cyanoptera` release branch, dated 2026-10-20.
 `duckdb-ffi/cbits/duckdb-LICENSE` contains the upstream license.
 These files are plain, unmodified upstream files. The per-file source paths and
 SHA256 digests are in `duckdb-ffi/vendor/duckdb-api.json`. That manifest also
@@ -25,10 +25,11 @@ checks for the final release.
 The v1 header declares 548 functions and 21 callback typedefs. Compared with the
 original 1.5.6 header, it adds `duckdb_create_timestamp_tz_ns`,
 `duckdb_get_timestamp_tz_ns`, type tag `DUCKDB_TYPE_TIMESTAMP_TZ_NS = 42`, and
-error tag `DUCKDB_ERROR_DATA_CORRUPTION = 43`. It removes no v1 functions and
+error tags `DUCKDB_ERROR_DATA_CORRUPTION = 43` and
+`DUCKDB_ERROR_RESOURCE_IN_USE = 44`. It removes no v1 functions and
 changes no existing v1 function signatures or structure definitions.
-The v2 header declares 582 functions and 37 callback typedefs. It also has six
-Arrow callback fields, for a total of 43 callbacks.
+The v2 header declares 620 functions and 45 callback typedefs. It also has six
+Arrow callback fields, for a total of 51 callbacks.
 
 `duckdb-ffi` 2.0.0.0 and `duckdb-simple` 0.4.0.0 target DuckDB 2.0.
 The package version selects the supported native API. There is no preview
@@ -49,8 +50,8 @@ keep handles and enums from the two APIs separate. File flag 4 means exclusive
 creation in v1 and truncation in v2.
 
 The generator supplies layouts, typed callbacks, const pointers, and adapters
-for structures passed by value. It generates all 23 unstable V2 functions as
-well as the stable surface. The generated C source enables
+for structures passed by value. It generates all 620 V2 functions. The entire V2 surface is currently
+unstable and must match the native snapshot. The generated C source enables
 `DUCKDB_V2_API_ALLOW_UNSTABLE` explicitly. Ownership, callback lifetimes,
 exception handling, Arrow release operations, and value conversion remain in
 the calling code. Cabal builds the generated modules.
@@ -63,7 +64,7 @@ nix-shell dev/nix/generate.nix --run 'dev/bindings/generate-bindings.sh --check'
 
 Generation verifies identical Haskell output for x86_64 and aarch64 Linux,
 x86_64 and arm64 macOS, and the native target. The generated C files contain
-508 retained-API and 564 V2 ABI assertions. Compilation checks their sizes,
+508 retained-API and 642 V2 ABI assertions. Compilation checks their sizes,
 alignments, and field offsets against the pinned headers. These checks do not
 replace runtime ownership tests.
 
@@ -82,20 +83,54 @@ and report failures through the native error handle.
 If this preview rejects an invalid `duckdb_v2_result_render_box` render mode,
 it leaves the result slot non-null. The header says the call consumes the result
 on failure. After an error, destroy any owned result that remains in the slot. The
-[implementation validates the mode before transfer](https://github.com/duckdb/duckdb/blob/13d1d8f56a82b3413055819eb90d0b0e68b5c847/src/main/capi/v2/capi_v2_result.cpp#L554).
+[implementation validates the mode before transfer](https://github.com/duckdb/duckdb/blob/d54cbbe3df17e8e5ce68312f483b4155836112aa/src/main/capi/v2/capi_v2_result.cpp#L472).
 Recheck this ownership behavior against the final runtime.
 
-The [upstream versioning rules](https://github.com/duckdb/duckdb/blob/13d1d8f56a82b3413055819eb90d0b0e68b5c847/api_spec/VERSIONING.md)
+The [upstream versioning rules](https://github.com/duckdb/duckdb/blob/d54cbbe3df17e8e5ce68312f483b4155836112aa/api_spec/VERSIONING.md)
 define stable, deprecated, unstable, and removed lifecycle states. Headers default
 to the newest specified version. To use unstable declarations, enable them
 explicitly and target the newest API. Extension headers use versioned function
 tables. Ordinary clients link exported functions. Header coverage alone does not
 verify that a Haskell shared library can load as a DuckDB extension.
 
-## Generated binding validation
+## October 20 API refresh
+
+The source archive SHA256 is
+`93e3d1f9c84b6ec3493237d21565c01c2c19b9862e54e5552d3d7999ccc3bbb4`.
+This is a development source archive. It is not a final release archive or a
+checksum for the automatic native installer.
+
+Compared with the October 7 pin, the retained API keeps all function signatures.
+V2 adds 172 functions, removes 134, and changes five existing signatures. Most
+constructor pairs now use one borrowed factory. Get the factory from an instance,
+connection, or callback context. Register completed builders with an explicit
+connection or extension target. Configuration uses borrowed config handles.
+
+`duckdb_v2_data_chunk_create` and `duckdb_v2_value_create_null` gain a factory
+argument. `duckdb_v2_instance_attach` takes the name before the path. Detach and
+set-default operations now take identifiers. Scalar return-type resolution and
+table scan metadata have dedicated callbacks. Scope names change from AUTOMATIC
+to DEFAULT and from LOCAL to SESSION. OPTION_TARGET_SCOPE is removed.
+
+Eight callback typedefs, fifteen opaque handle types, log and macro enums, and
+the metadata-deferred error are new. Existing value structures and callback
+signatures remain unchanged. No surviving enum constant is renumbered. The
+extension function-pointer table changes with the API and requires a rebuild.
+
+Generation and the complete API audit pass for this pin. The raw V2 suite
+type-checks with `-Wall -Werror` on GHC 9.14.1. Native runtime checks are pending
+the matching source build. The installer integration fixture verifies complete
+tar extraction, versioned symlink targets, warm-cache reuse, and rejection of
+wrong checksums or missing targets before publication. Final release archives
+and platform runtime checks remain unverified.
+
+## Previous binding validation
+
+The following results apply to the October 7 pin `13d1d8f56a`. They do not
+establish runtime compatibility with the October 20 API.
 
 Local validation on 2026-10-16 used Nix GHC 9.14.1 on Linux x86_64 and the
-pinned native `2.0.0-dev0` library. The build uses `-Wall -Werror`.
+then-pinned native `2.0.0-dev0` library. The build uses `-Wall -Werror`.
 
 - All 97 retained raw, 19 V2, 484 high-level, and six DataFrame tests
   pass. The default leak suite passes.
@@ -168,7 +203,7 @@ the plain-file diff, manifest, and generated code. Upstream files remain unmodif
 Use the recorded SHA for subsequent downloads and builds.
 Select `v2.0.0` instead of the branch when the final release tag is available.
 
-The official Linux preview fetched during preparation reports
+The historical October 7 Linux preview fetched during preparation reports
 `v2.0.0-alpha45189`. Its archive SHA256 is
 `5d08f26d7e5f07fcae3d315c039a09da627f52639aeace3af06abc5456e35132`.
 `PRAGMA version` reports source ID `13d1d8f56a` and codename `Cyanoptera`.
@@ -184,8 +219,9 @@ This preview works directly with both APIs. Set
 The [alpha announcement](https://duckdb.org/2026/09/02/try-duckdb-20-alpha)
 identifies `v2.0-cyanoptera` as the release branch. Select a commit on that
 branch for 2.0 work. The separate `main` branch has diverged and does not provide
-the same 2.0 C API. This snapshot uses the exact preview source commit so the
-native binary and source pin agree.
+the same 2.0 C API. The current snapshot uses the audited October 20 source commit. Build that
+source for a matching runtime; the historical October 7 binary does not match
+the refreshed V2 API.
 
 The preview source builder is temporary. Remove it after the final native
 archives are available and verified. The header audit remains a maintainer tool
@@ -217,6 +253,9 @@ The Nix and Docker paths always use the pinned DuckDB 2.0 source. These commands
 artifacts without uploading or deploying them.
 
 ## Feature coverage
+
+The following feature and limitation records describe the October 7 runtime.
+Repeat them against the refreshed source and the final release.
 
 The SQL feature list follows the [upstream 2.0 preview](https://duckdb.org/2026/08/17/duckdb-20-highlights).
 The C API list follows the pinned headers and specifications. SQL support depends
@@ -351,8 +390,9 @@ operations are documented in the package README and report controlled errors:
    regenerate bindings. Review signature, enum, callback, and ownership changes.
    Recheck result-rendering cleanup after an error. Update the documented counts.
    Resolve every failed audit.
-2. Fetch the final native archives for each supported platform. Record their
-   SHA256 digests in `duckdb-ffi/Setup.hs`. Verify headers, exported symbols,
+2. Fetch the final `duckdb-shared-libs-PLATFORM.tar.gz` archives for each
+   supported platform. Check the complete versioned library and symlink closure.
+   Record their SHA256 digests in `duckdb-ffi/Setup.hs`. Verify headers, exported symbols,
    architecture, loader paths, and `duckdb_library_version` against those archives.
    Check glibc Linux x86_64/arm64 and macOS. Keep untested native platforms outside
    the supported download matrix.

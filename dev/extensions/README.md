@@ -34,6 +34,13 @@ to its borrowed target and context. These handles must not escape the entrypoint
 Initialization and callback exceptions become native errors. Managed
 registration retains callback resources after the entrypoint returns.
 
+`Extension.registerMacro`, `registerPragma`, `registerCustomOption`, and
+`registerLogSink` use the same opaque extension value. Macro signatures and
+custom-option defaults use `FactoryDefaultValue` during initialization.
+All V2 declarations are currently unstable. Rebuild the extension when the
+native source pin or release version changes. A matching major or minor
+version does not establish ABI compatibility.
+
 The example registers `haskell_answer()`, `haskell_add_one(BIGINT)`, and
 `haskell_fail()`. They exercise native results, batch inputs, NULLs, overflow,
 and callback error handling. The entrypoint is
@@ -95,7 +102,7 @@ Read the target platform and version before packaging:
   -c 'PRAGMA platform; PRAGMA version;'
 ```
 
-The pinned development loader uses source ID `13d1d8f56a` as its version field.
+The pinned development loader uses source ID `d54cbbe3df` as its version field.
 It does not use `v2.0.0-dev0`. See [PACKAGING.md](PACKAGING.md). Use the exact
 platform printed by the CLI. Replace the library path and platform below:
 
@@ -104,7 +111,7 @@ mkdir -p dev/extensions/dist
 nix-shell dev/nix/shell.nix --run 'GHC_ENVIRONMENT=- runghc \
   dev/extensions/Pack.hs /absolute/path/to/libhaskell_demo.so \
   --output dev/extensions/dist/haskell_demo.duckdb_extension \
-  --platform linux_amd64 --duckdb-version 13d1d8f56a \
+  --platform linux_amd64 --duckdb-version d54cbbe3df \
   --extension-version 0.1.0'
 
 nix-shell dev/nix/shell.nix --run 'GHC_ENVIRONMENT=- runghc \

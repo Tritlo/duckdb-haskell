@@ -13,7 +13,7 @@ nix-shell dev/nix/shell.nix --run 'GHC_ENVIRONMENT=- runghc \
   dev/extensions/Pack.hs /absolute/path/to/libhaskell_demo.so \
   --output /absolute/path/to/haskell_demo.duckdb_extension \
   --platform linux_amd64 \
-  --duckdb-version 13d1d8f56a \
+  --duckdb-version d54cbbe3df \
   --extension-version 0.1.0'
 ```
 
@@ -29,7 +29,7 @@ universal Mach-O files.
 
 The footer uses the `C_STRUCT_UNSTABLE` ABI. Its DuckDB version field must match
 the native loader's version exactly. For the pinned development source, that
-value is the ten-character source ID `13d1d8f56a`. It is not the reported
+value is the ten-character source ID `d54cbbe3df`. It is not the reported
 `v2.0.0-dev0` library version. Release builds use a normalized version tag such
 as `v2.0.0`. Read the target runtime's `PRAGMA version` and `PRAGMA platform`
 results before packaging for another build. The script records the supplied
@@ -42,7 +42,7 @@ refuses to overwrite any existing output. Remove an old output explicitly
 before packaging it again.
 
 The 534-byte suffix follows the pinned DuckDB
-[`scripts/append_metadata.cmake`](https://github.com/duckdb/duckdb/blob/13d1d8f56a82b3413055819eb90d0b0e68b5c847/scripts/append_metadata.cmake):
+[`scripts/append_metadata.cmake`](https://github.com/duckdb/duckdb/blob/d54cbbe3df17e8e5ce68312f483b4155836112aa/scripts/append_metadata.cmake):
 a 22-byte custom-section prefix, eight reversed 32-byte metadata fields, and a
 256-byte zero signature. The fields record metadata format `4`, platform,
 DuckDB version, extension version, ABI type, and three empty reserved fields.

@@ -1,13 +1,13 @@
 {
-  "commit": "13d1d8f56a82b3413055819eb90d0b0e68b5c847",
-  "commit_date": "2026-10-07T09:17:36Z",
+  "commit": "d54cbbe3df17e8e5ce68312f483b4155836112aa",
+  "commit_date": "2026-10-20T11:25:24Z",
   "files": {
     "cbits/duckdb-LICENSE": {
       "sha256": "075c33400ffcb0c586dd106a029d3e733e9da3693f8fcb9cebfc651c8a2f14e3",
       "source": "LICENSE"
     },
     "cbits/duckdb.h": {
-      "sha256": "9ff8bfb6f88ed1be4f845399ed7ff35980a65e011848d027cef88467fe9e0886",
+      "sha256": "8dbc9c71a10f0a75fcacc1a3f4f7c76093a84d232fc152222ee5b6e512ab4560",
       "source": "src/include/duckdb.h"
     },
     "cbits/duckdb_extension_v2.h": {
@@ -15,14 +15,14 @@
       "source": "src/include/duckdb_extension_v2.h"
     },
     "cbits/duckdb_v2.h": {
-      "sha256": "4986911c5dc70ac13a1f00811e92fa1e2fe5433e9cf8ac9fc98cb408cbdd0fcb",
+      "sha256": "73026a28e5b55952afb6e2e9ce80fd4f76614afedce329da895ccaf85a4a8be6",
       "source": "src/include/duckdb_v2.h"
     }
   },
   "ref": "v2.0-cyanoptera",
   "repository": "https://github.com/duckdb/duckdb",
   "source_archive": {
-    "sha256": "1336e583afcc3a97fdba9d2c7c469846956635007c4272b7e7758a1bad5cd535",
-    "url": "https://codeload.github.com/duckdb/duckdb/tar.gz/13d1d8f56a82b3413055819eb90d0b0e68b5c847"
+    "sha256": "93e3d1f9c84b6ec3493237d21565c01c2c19b9862e54e5552d3d7999ccc3bbb4",
+    "url": "https://codeload.github.com/duckdb/duckdb/tar.gz/d54cbbe3df17e8e5ce68312f483b4155836112aa"
   }
 }

@@ -121,14 +121,14 @@ registerCopyFunction connection name to from = do
 -- | Register COPY callbacks on a connection or a borrowed extension target.
 registerCopyFunctionWith :: RegistrationTarget -> (DuckDBV2CopyFunctionHandle -> IO ()) -> Maybe CopyToCallbacks -> Maybe CopyFromCallbacks -> IO ()
 registerCopyFunctionWith target configure to from =
-    withTarget target c_duckdb_v2_copy_function_create_with_connection c_duckdb_v2_copy_function_create_with_extension c_duckdb_v2_copy_function_destroy \function ->
+    withTarget target c_duckdb_v2_copy_function_create c_duckdb_v2_copy_function_destroy c_duckdb_v2_connection_register_copy_function c_duckdb_v2_extension_register_copy_function \function register ->
         withCallbackResources
             (\allocate -> sequence_ <$> sequence (toInstallers allocate function to <> fromInstallers allocate function from))
             (attachOpaque (c_duckdb_v2_copy_function_set_user_data function))
             \installCallbacks -> do
                 configure function
                 installCallbacks
-                checked (c_duckdb_v2_copy_function_register function)
+                register
 
 -- | Register the advanced COPY TO callback interface.
 registerCopyToCallbacks :: Connection -> Text -> CopyToCallbacks -> IO ()
@@ -214,9 +214,9 @@ registerCopyToFunction connection name bindFn initFn sinkFn finalizeFn = withDat
         path <- output (c_duckdb_v2_copy_to_init_get_file_path info) >>= readText
         global <- initFn (CopyInitInfo state (Text.unpack path))
         setCallbackState (c_duckdb_v2_copy_to_init_set_init_data info) global
-    batch instanceHandle info _ = do
+    batch instanceHandle info context = withContextFactory context $ \factory -> do
         (_, types) <- readCopyBinding (c_duckdb_v2_copy_to_batch_get_bind_data info) :: IO (bindState, [DuckDBV2LogicalTypeHandle])
-        rows <- bracket (output (c_duckdb_v2_copy_to_batch_take_input info)) (destroy c_duckdb_v2_column_data_collection_destroy) (materializeCollection (readVariant instanceHandle) types)
+        rows <- bracket (output (c_duckdb_v2_copy_to_batch_take_input info)) (destroy c_duckdb_v2_column_data_collection_destroy) (materializeCollection factory (readVariant instanceHandle) types)
         setCallbackState (c_duckdb_v2_copy_to_batch_set_batch_data info) rows
     readVariant instanceHandle vector =
         bracket (output (c_duckdb_v2_connection_create instanceHandle)) (destroy c_duckdb_v2_connection_destroy) \helper ->
@@ -272,10 +272,10 @@ copyBindingDestructor :: DuckDBV2OpaqueDestroyFn
 copyBindingDestructor = DuckDBV2OpaqueDestroyFn (castFunPtr copyBindingDestructorAddress)
 
 -- | Copy each scanned chunk before the scan invalidates its borrowed buffers.
-materializeCollection :: VariantReader -> [DuckDBV2LogicalTypeHandle] -> DuckDBV2ColumnDataCollectionHandle -> IO [[Field]]
-materializeCollection variantReader types collection =
+materializeCollection :: DuckDBV2FactoryHandle -> VariantReader -> [DuckDBV2LogicalTypeHandle] -> DuckDBV2ColumnDataCollectionHandle -> IO [[Field]]
+materializeCollection factory variantReader types collection =
     withArray types \typePtr ->
-        bracket (output (c_duckdb_v2_data_chunk_create (ConstPtr typePtr) (fromIntegral (length types)))) (destroy c_duckdb_v2_data_chunk_destroy) \chunk ->
+        bracket (output (c_duckdb_v2_data_chunk_create factory (ConstPtr typePtr) (fromIntegral (length types)))) (destroy c_duckdb_v2_data_chunk_destroy) \chunk ->
             bracket (output (c_duckdb_v2_column_data_collection_shared_scan_state_create collection)) (destroy c_duckdb_v2_column_data_collection_shared_scan_state_destroy) \shared ->
                 bracket (output (c_duckdb_v2_column_data_collection_worker_scan_state_create collection)) (destroy c_duckdb_v2_column_data_collection_worker_scan_state_destroy) \worker ->
                     let loop groups = do
@@ -322,19 +322,23 @@ registerMultiFileFunction connection name singleFile MultiFileOptions{multiFileR
 -- | Configure a multi-file wrapper on a connection or borrowed extension target.
 registerMultiFileFunctionWith :: RegistrationTarget -> (DuckDBV2MultiFileFunctionHandle -> IO ()) -> IO ()
 registerMultiFileFunctionWith target configure =
-    withTarget target c_duckdb_v2_multi_file_function_create_with_connection c_duckdb_v2_multi_file_function_create_with_extension c_duckdb_v2_multi_file_function_destroy \function -> do
+    withTarget target c_duckdb_v2_multi_file_function_create c_duckdb_v2_multi_file_function_destroy c_duckdb_v2_connection_register_multi_file_function c_duckdb_v2_extension_register_multi_file_function \function register -> do
         configure function
-        checked (c_duckdb_v2_multi_file_function_register function)
+        register
 
--- | Keep a target alive while a native registration builder is borrowed.
+-- | Keep the target alive while borrowing its factory and registration builder.
 withTarget ::
     (Storable handle) =>
     RegistrationTarget ->
-    (DuckDBV2ConnectionHandle -> Ptr handle -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) ->
-    (DuckDBV2ExtensionHandle -> Ptr handle -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) ->
+    (DuckDBV2FactoryHandle -> Ptr handle -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) ->
     (Ptr handle -> IO DuckDBV2Error) ->
-    (handle -> IO a) ->
+    (DuckDBV2ConnectionHandle -> handle -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) ->
+    (DuckDBV2ExtensionHandle -> handle -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) ->
+    (handle -> IO () -> IO a) ->
     IO a
-withTarget target connectionCreate extensionCreate release action = case target of
-    ConnectionTarget connection -> withConnectionHandle connection \native -> bracket (output (connectionCreate native)) (destroy release) action
-    ExtensionTarget extension -> bracket (output (extensionCreate extension)) (destroy release) action
+withTarget target create release registerConnection registerExtension action = case target of
+    ConnectionTarget connection -> withConnectionHandle connection $ \native ->
+        withConnectionFactory native $ \factory ->
+            bracket (output (create factory)) (destroy release) $ \handle -> action handle (checked (registerConnection native handle))
+    ExtensionTarget extension context -> withContextFactory context $ \factory ->
+        bracket (output (create factory)) (destroy release) $ \handle -> action handle (checked (registerExtension extension handle))

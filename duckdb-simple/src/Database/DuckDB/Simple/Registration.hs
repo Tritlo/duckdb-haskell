@@ -19,6 +19,7 @@ The pinned V2 API has no custom file-system or log-storage registration API.
 -}
 module Database.DuckDB.Simple.Registration (
     RegistrationTarget (..),
+    withRegistrationFactory,
     TypeDeclaration (..),
     DefaultValue (..),
     defaultValue,
@@ -50,6 +51,9 @@ module Database.DuckDB.Simple.Registration (
     setCallbackState,
     getCallbackState,
     withTypeDeclaration,
+    withTypeDeclarationWithFactory,
+    configureFunctionSignature,
+    configureFunctionSignatureWithFactory,
     checked,
     output,
     destroy,
@@ -68,7 +72,7 @@ import qualified Data.Text as Text
 import Data.Void (Void)
 import Database.DuckDB.Simple.Callback (attachOpaque, runCallback, transferCallbackState, withCallbackResources)
 import Database.DuckDB.Simple.Internal (Connection, Instance, withConnectionHandle, withInstanceHandle)
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep, logicalTypeFromRep)
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep, logicalTypeFromRep, logicalTypeFromRepWithFactory)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
 import Foreign.Ptr (FunPtr, Ptr, castPtr, nullPtr)
@@ -80,14 +84,27 @@ import HsBindgen.Runtime.Support.FunPtr (ToFunPtr, toFunPtr)
 callback and must not escape it. Configure extension types and values with
 the context supplied to that callback.
 -}
-data RegistrationTarget = ConnectionTarget Connection | ExtensionTarget DuckDBV2ExtensionHandle
+data RegistrationTarget = ConnectionTarget Connection | ExtensionTarget DuckDBV2ExtensionHandle DuckDBV2ContextHandle
+
+{- | Borrow the factory of a registration target. The factory must not escape
+this action. Use it to construct signature types and values in a configuration action.
+-}
+withRegistrationFactory :: RegistrationTarget -> (DuckDBV2FactoryHandle -> IO a) -> IO a
+withRegistrationFactory target action = case target of
+    ConnectionTarget connection -> withConnectionHandle connection $ \native -> withConnectionFactory native action
+    ExtensionTarget _ context -> withContextFactory context action
 
 -- | A structured type or a SQL type expression, including a registered alias.
 data TypeDeclaration = StructuredType LogicalTypeRep | TypeExpression Text
     deriving (Eq, Show)
 
--- | Construct an owned native default value. Registration releases the value.
-newtype DefaultValue = DefaultValue (DuckDBV2ConnectionHandle -> IO DuckDBV2ValueHandle)
+{- | Construct an owned native default value. Registration releases the value.
+Use 'FactoryDefaultValue' for extension signatures. The connection constructor
+also supports SQL-derived values through 'defaultValue'.
+-}
+data DefaultValue
+    = DefaultValue (DuckDBV2ConnectionHandle -> IO DuckDBV2ValueHandle)
+    | FactoryDefaultValue (DuckDBV2FactoryHandle -> IO DuckDBV2ValueHandle)
 
 -- | Use a typed Haskell value as a parameter default.
 defaultValue :: (ToDuckValue a) => a -> DefaultValue
@@ -122,14 +139,15 @@ type BindCallback result = DuckDBV2FunctionBindInfoHandle -> result -> DuckDBV2C
 
 -- | All scalar function callbacks. The exec callback is required.
 data ScalarCallbacks = ScalarCallbacks
-    { scalarBindCallback :: Maybe (BindCallback DuckDBV2ScalarFunctionBindInfoHandle)
+    { scalarResolveTypesCallback :: Maybe (BindCallback DuckDBV2ScalarFunctionResolveTypesInfoHandle)
+    , scalarBindCallback :: Maybe (BindCallback DuckDBV2ScalarFunctionBindInfoHandle)
     , scalarInitCallback :: Maybe (ContextCallback DuckDBV2ScalarFunctionInitInfoHandle)
     , scalarExecCallback :: ContextCallback DuckDBV2ScalarFunctionExecInfoHandle
     }
 
 -- | Use one exec callback and no optional scalar callbacks.
 scalarCallbacks :: ContextCallback DuckDBV2ScalarFunctionExecInfoHandle -> ScalarCallbacks
-scalarCallbacks execute = ScalarCallbacks Nothing Nothing execute
+scalarCallbacks execute = ScalarCallbacks Nothing Nothing Nothing execute
 
 {- | All aggregate callbacks. Bind and state destruction are optional.
 Aggregate state callbacks have no context in native V2. Native cleanup ignores
@@ -169,15 +187,16 @@ data TableCallbacks = TableCallbacks
     , tablePartitionDataCallback :: Maybe (ContextCallback DuckDBV2TableFunctionPartitionDataInfoHandle)
     , tablePartitioningCallback :: Maybe (ContextCallback DuckDBV2TableFunctionPartitioningInfoHandle)
     , tableClaimBatchCallback :: Maybe (ContextCallback DuckDBV2TableFunctionClaimBatchInfoHandle)
+    , tableGetBindInfoCallback :: Maybe (ContextCallback DuckDBV2TableFunctionGetBindInfoInfoHandle)
     , tableProjectionPushdown :: Bool
     }
 
 -- | Use bind and exec callbacks. Disable optional callbacks and projection pushdown.
 tableCallbacks :: BindCallback DuckDBV2TableFunctionBindInfoHandle -> ContextCallback DuckDBV2TableFunctionExecInfoHandle -> TableCallbacks
-tableCallbacks bind execute = TableCallbacks bind Nothing Nothing execute Nothing Nothing Nothing Nothing Nothing False
+tableCallbacks bind execute = TableCallbacks bind Nothing Nothing execute Nothing Nothing Nothing Nothing Nothing Nothing False
 
 {- | Register an advanced scalar function on the connection's database.
-Set an ANY return type only when the bind callback supplies a concrete type.
+Set an ANY return type only when the resolve-types callback supplies a concrete type.
 -}
 registerScalarFunction :: Connection -> Text -> FunctionSignature -> FunctionProperties -> ScalarCallbacks -> IO ()
 registerScalarFunction connection name signature properties callbacks = do
@@ -187,7 +206,7 @@ registerScalarFunction connection name signature properties callbacks = do
             (ConnectionTarget connection)
             ( \function -> do
                 withIdentifier name $ checked . c_duckdb_v2_scalar_function_set_name function
-                output (c_duckdb_v2_scalar_function_get_signature function) >>= configureSignature native signature
+                output (c_duckdb_v2_scalar_function_get_signature function) >>= configureFunctionSignature native signature
                 forM_ properties $ \(key, value) -> checked (c_duckdb_v2_scalar_function_set_property function key value)
             )
             callbacks
@@ -199,15 +218,17 @@ registerScalarFunctionWith :: RegistrationTarget -> (DuckDBV2ScalarFunctionHandl
 registerScalarFunctionWith target configure callbacks =
     withTarget
         target
-        c_duckdb_v2_scalar_function_create_with_connection
-        c_duckdb_v2_scalar_function_create_with_extension
+        c_duckdb_v2_scalar_function_create
         c_duckdb_v2_scalar_function_destroy
-        \function ->
+        c_duckdb_v2_connection_register_scalar_function
+        c_duckdb_v2_extension_register_scalar_function
+        \function register ->
             withCallbackResources
                 ( \allocate ->
                     sequence_
                         <$> sequence
-                            [ optional (scalarBindCallback callbacks) $ \callback -> install allocate DuckDBV2ScalarFunctionBindCallbackFn (DuckDBV2ScalarFunctionBindCallbackFn_Aux (guardBind callback)) (c_duckdb_v2_scalar_function_set_bind_callback function)
+                            [ optional (scalarResolveTypesCallback callbacks) $ \callback -> install allocate DuckDBV2ScalarFunctionResolveTypesCallbackFn (DuckDBV2ScalarFunctionResolveTypesCallbackFn_Aux (guardBind callback)) (c_duckdb_v2_scalar_function_set_resolve_types_callback function)
+                            , optional (scalarBindCallback callbacks) $ \callback -> install allocate DuckDBV2ScalarFunctionBindCallbackFn (DuckDBV2ScalarFunctionBindCallbackFn_Aux (guardBind callback)) (c_duckdb_v2_scalar_function_set_bind_callback function)
                             , optional (scalarInitCallback callbacks) $ \callback -> install allocate DuckDBV2ScalarFunctionInitCallbackFn (DuckDBV2ScalarFunctionInitCallbackFn_Aux (guardContext callback)) (c_duckdb_v2_scalar_function_set_init_callback function)
                             , install allocate DuckDBV2ScalarFunctionExecCallbackFn (DuckDBV2ScalarFunctionExecCallbackFn_Aux (guardContext (scalarExecCallback callbacks))) (c_duckdb_v2_scalar_function_set_exec_callback function)
                             ]
@@ -217,7 +238,7 @@ registerScalarFunctionWith target configure callbacks =
                     checked (c_duckdb_v2_scalar_function_set_property function DuckDBV2FunctionPropertyFallibility DuckDBV2FunctionPropertyFallibilityFallible)
                     configure function
                     installCallbacks
-                    checked (c_duckdb_v2_scalar_function_register function)
+                    register
 
 {- | Register an aggregate function on the connection's database.
 State memory and its size follow the native V2 aggregate contract.
@@ -230,7 +251,7 @@ registerAggregateFunction connection name signature properties callbacks = do
             (ConnectionTarget connection)
             ( \function -> do
                 withIdentifier name $ checked . c_duckdb_v2_aggregate_function_set_name function
-                output (c_duckdb_v2_aggregate_function_get_signature function) >>= configureSignature native signature
+                output (c_duckdb_v2_aggregate_function_get_signature function) >>= configureFunctionSignature native signature
                 forM_ properties $ \(key, value) -> checked (c_duckdb_v2_aggregate_function_set_property function key value)
             )
             callbacks
@@ -242,10 +263,11 @@ registerAggregateFunctionWith :: RegistrationTarget -> (DuckDBV2AggregateFunctio
 registerAggregateFunctionWith target configure callbacks =
     withTarget
         target
-        c_duckdb_v2_aggregate_function_create_with_connection
-        c_duckdb_v2_aggregate_function_create_with_extension
+        c_duckdb_v2_aggregate_function_create
         c_duckdb_v2_aggregate_function_destroy
-        \function ->
+        c_duckdb_v2_connection_register_aggregate_function
+        c_duckdb_v2_extension_register_aggregate_function
+        \function register ->
             withCallbackResources
                 ( \allocate ->
                     sequence_
@@ -264,7 +286,7 @@ registerAggregateFunctionWith target configure callbacks =
                     checked (c_duckdb_v2_aggregate_function_set_property function DuckDBV2FunctionPropertyFallibility DuckDBV2FunctionPropertyFallibilityFallible)
                     configure function
                     installCallbacks
-                    checked (c_duckdb_v2_aggregate_function_register function)
+                    register
 
 -- | Register a table function. Its bind callback declares the result columns.
 registerTableFunction :: Connection -> Text -> [FunctionParameter] -> TableCallbacks -> IO ()
@@ -275,7 +297,7 @@ registerTableFunction connection name parameters callbacks = do
             (ConnectionTarget connection)
             ( \function -> do
                 withIdentifier name $ checked . c_duckdb_v2_table_function_set_name function
-                output (c_duckdb_v2_table_function_get_signature function) >>= configureSignature native (FunctionSignature parameters Nothing)
+                output (c_duckdb_v2_table_function_get_signature function) >>= configureFunctionSignature native (FunctionSignature parameters Nothing)
             )
             callbacks
 
@@ -286,10 +308,11 @@ registerTableFunctionWith :: RegistrationTarget -> (DuckDBV2TableFunctionHandle 
 registerTableFunctionWith target configure callbacks =
     withTarget
         target
-        c_duckdb_v2_table_function_create_with_connection
-        c_duckdb_v2_table_function_create_with_extension
+        c_duckdb_v2_table_function_create
         c_duckdb_v2_table_function_destroy
-        \function ->
+        c_duckdb_v2_connection_register_table_function
+        c_duckdb_v2_extension_register_table_function
+        \function register ->
             withCallbackResources
                 ( \allocate ->
                     sequence_
@@ -303,6 +326,7 @@ registerTableFunctionWith target configure callbacks =
                             , optional (tablePartitionDataCallback callbacks) $ \callback -> install allocate DuckDBV2TableFunctionPartitionDataCallbackFn (DuckDBV2TableFunctionPartitionDataCallbackFn_Aux (guardContext callback)) (c_duckdb_v2_table_function_set_partition_data_callback function)
                             , optional (tablePartitioningCallback callbacks) $ \callback -> install allocate DuckDBV2TableFunctionPartitioningCallbackFn (DuckDBV2TableFunctionPartitioningCallbackFn_Aux (guardContext callback)) (c_duckdb_v2_table_function_set_partitioning_callback function)
                             , optional (tableClaimBatchCallback callbacks) $ \callback -> install allocate DuckDBV2TableFunctionClaimBatchCallbackFn (DuckDBV2TableFunctionClaimBatchCallbackFn_Aux (guardContext callback)) (c_duckdb_v2_table_function_set_claim_batch_callback function)
+                            , optional (tableGetBindInfoCallback callbacks) $ \callback -> install allocate DuckDBV2TableFunctionGetBindInfoCallbackFn (DuckDBV2TableFunctionGetBindInfoCallbackFn_Aux (guardContext callback)) (c_duckdb_v2_table_function_set_get_bind_info_callback function)
                             ]
                 )
                 (attachOpaque (c_duckdb_v2_table_function_set_user_data function))
@@ -310,7 +334,7 @@ registerTableFunctionWith target configure callbacks =
                     checked (c_duckdb_v2_table_function_set_projection_pushdown function (if tableProjectionPushdown callbacks then 1 else 0))
                     configure function
                     installCallbacks
-                    checked (c_duckdb_v2_table_function_register function)
+                    register
 
 {- | Register a cast. Nothing keeps the native explicit-cast cost.
 The callback must inspect the native cast mode to implement TRY_CAST behavior.
@@ -332,14 +356,14 @@ The configuration action borrows the builder. Do not set callbacks or user data.
 -}
 registerCastWith :: RegistrationTarget -> (DuckDBV2CastFunctionHandle -> IO ()) -> ContextCallback DuckDBV2CastFunctionExecInfoHandle -> IO ()
 registerCastWith target configure execute =
-    withTarget target c_duckdb_v2_cast_function_create_with_connection c_duckdb_v2_cast_function_create_with_extension c_duckdb_v2_cast_function_destroy \function ->
+    withTarget target c_duckdb_v2_cast_function_create c_duckdb_v2_cast_function_destroy c_duckdb_v2_connection_register_cast_function c_duckdb_v2_extension_register_cast_function \function register ->
         withCallbackResources
             (\allocate -> install allocate DuckDBV2CastFunctionExecCallbackFn (DuckDBV2CastFunctionExecCallbackFn_Aux (guardContext execute)) (c_duckdb_v2_cast_function_set_exec_callback function))
             (attachOpaque (c_duckdb_v2_cast_function_set_user_data function))
             \installCallback -> do
                 configure function
                 installCallback
-                checked (c_duckdb_v2_cast_function_register function)
+                register
 
 -- | Register a custom type with a native base type. Casts are registered separately.
 registerCustomType :: Connection -> Text -> TypeDeclaration -> IO ()
@@ -355,8 +379,8 @@ The configuration action borrows the builder.
 -}
 registerCustomTypeWith :: RegistrationTarget -> (DuckDBV2CustomTypeHandle -> IO ()) -> IO ()
 registerCustomTypeWith target configure =
-    withTarget target c_duckdb_v2_custom_type_create_with_connection c_duckdb_v2_custom_type_create_with_extension c_duckdb_v2_custom_type_destroy \custom ->
-        configure custom >> checked (c_duckdb_v2_custom_type_register custom)
+    withTarget target c_duckdb_v2_custom_type_create c_duckdb_v2_custom_type_destroy c_duckdb_v2_connection_register_custom_type c_duckdb_v2_extension_register_custom_type \custom register ->
+        configure custom >> register
 
 -- | Register a connection-local replacement scan. It precedes instance scans.
 registerReplacementScan :: Connection -> ContextCallback DuckDBV2ReplacementScanInfoHandle -> IO ()
@@ -367,12 +391,14 @@ Extension scans belong to the instance.
 -}
 registerReplacementScanWith :: RegistrationTarget -> ContextCallback DuckDBV2ReplacementScanInfoHandle -> IO ()
 registerReplacementScanWith target callback =
-    withTarget target c_duckdb_v2_replacement_scan_create_with_connection c_duckdb_v2_replacement_scan_create_with_extension c_duckdb_v2_replacement_scan_destroy (configureScan callback)
+    withTarget target c_duckdb_v2_replacement_scan_create c_duckdb_v2_replacement_scan_destroy c_duckdb_v2_connection_register_replacement_scan c_duckdb_v2_extension_register_replacement_scan (configureScan callback)
 
 -- | Register an instance-wide replacement scan. It is shared by its connections.
 registerInstanceReplacementScan :: Instance -> ContextCallback DuckDBV2ReplacementScanInfoHandle -> IO ()
 registerInstanceReplacementScan instance' callback = withInstanceHandle instance' $ \native ->
-    registerScan (output (c_duckdb_v2_replacement_scan_create_with_instance native)) callback
+    withInstanceFactory native $ \factory ->
+        bracket (output (c_duckdb_v2_replacement_scan_create factory)) (destroy c_duckdb_v2_replacement_scan_destroy) $ \scan ->
+            configureScan callback scan (checked (c_duckdb_v2_instance_register_replacement_scan native scan))
 
 {- | Store Haskell state in a native-owned bind, global, local, or init data slot.
 Pass the corresponding native opaque setter. Do not use registration user data.
@@ -392,46 +418,76 @@ getCallbackState getter = do
 
 -- | Construct a type, borrow it for an action, and release it on every exit path.
 withTypeDeclaration :: DuckDBV2ConnectionHandle -> TypeDeclaration -> (DuckDBV2LogicalTypeHandle -> IO a) -> IO a
-withTypeDeclaration connection declaration = bracket acquire (destroy c_duckdb_v2_logical_type_destroy)
+withTypeDeclaration connection declaration action = case declaration of
+    StructuredType rep -> bracket (logicalTypeFromRep connection rep) (destroy c_duckdb_v2_logical_type_destroy) action
+    TypeExpression sql -> withConnectionFactory connection $ \factory -> withTypeDeclarationWithFactory factory (TypeExpression sql) action
+
+-- | Construct a type through a borrowed factory. This also supports extension contexts.
+withTypeDeclarationWithFactory :: DuckDBV2FactoryHandle -> TypeDeclaration -> (DuckDBV2LogicalTypeHandle -> IO a) -> IO a
+withTypeDeclarationWithFactory factory declaration = bracket acquire (destroy c_duckdb_v2_logical_type_destroy)
   where
     acquire = case declaration of
-        StructuredType rep -> logicalTypeFromRep connection rep
-        TypeExpression sql -> withText sql (output . c_duckdb_v2_connection_create_type_from_text connection)
+        StructuredType rep -> logicalTypeFromRepWithFactory factory rep
+        TypeExpression sql -> withText sql (output . c_duckdb_v2_factory_create_type_from_text factory)
 
-configureSignature :: DuckDBV2ConnectionHandle -> FunctionSignature -> DuckDBV2FunctionSignatureHandle -> IO ()
-configureSignature connection FunctionSignature{signatureParameters, signatureReturnType} signature = do
+-- | Add parameters and an optional return type to a borrowed native signature.
+configureFunctionSignature :: DuckDBV2ConnectionHandle -> FunctionSignature -> DuckDBV2FunctionSignatureHandle -> IO ()
+configureFunctionSignature connection declaration signature =
+    withConnectionFactory connection $ \factory ->
+        configureSignature (withTypeDeclaration connection) (makeDefault factory) declaration signature
+  where
+    makeDefault _ (DefaultValue make) = make connection
+    makeDefault factory (FactoryDefaultValue make) = make factory
+
+{- | Add a signature through a borrowed factory. Defaults must use
+'FactoryDefaultValue'. The action does not need a connection and can run in an
+extension load callback.
+-}
+configureFunctionSignatureWithFactory :: DuckDBV2FactoryHandle -> FunctionSignature -> DuckDBV2FunctionSignatureHandle -> IO ()
+configureFunctionSignatureWithFactory factory = configureSignature (withTypeDeclarationWithFactory factory) makeDefault
+  where
+    makeDefault (FactoryDefaultValue make) = make factory
+    makeDefault (DefaultValue _) = throwIO (SQLError "duckdb-simple: extension defaults require FactoryDefaultValue" Nothing Nothing)
+
+configureSignature ::
+    (forall a. TypeDeclaration -> (DuckDBV2LogicalTypeHandle -> IO a) -> IO a) ->
+    (DefaultValue -> IO DuckDBV2ValueHandle) ->
+    FunctionSignature ->
+    DuckDBV2FunctionSignatureHandle ->
+    IO ()
+configureSignature withType makeDefault FunctionSignature{signatureParameters, signatureReturnType} signature = do
     forM_ signatureParameters $ \FunctionParameter{parameterName, parameterType, parameterDefault, parameterKind} ->
         withIdentifier parameterName $ \name ->
-            withTypeDeclaration connection parameterType $ \dtype ->
+            withType parameterType $ \dtype ->
                 case parameterDefault of
                     Nothing -> checked (c_duckdb_v2_function_signature_add_parameter signature name dtype nullHandle parameterKind)
-                    Just (DefaultValue make) -> bracket (make connection) (destroy c_duckdb_v2_value_destroy) $ \value ->
-                        checked (c_duckdb_v2_function_signature_add_parameter signature name dtype value parameterKind)
+                    Just value -> bracket (makeDefault value) (destroy c_duckdb_v2_value_destroy) $ \native ->
+                        checked (c_duckdb_v2_function_signature_add_parameter signature name dtype native parameterKind)
     forM_ signatureReturnType $ \dtype ->
-        withTypeDeclaration connection dtype $ checked . c_duckdb_v2_function_signature_set_return_type signature
+        withType dtype $ checked . c_duckdb_v2_function_signature_set_return_type signature
 
-registerScan :: IO DuckDBV2ReplacementScanHandle -> ContextCallback DuckDBV2ReplacementScanInfoHandle -> IO ()
-registerScan acquire callback = bracket acquire (destroy c_duckdb_v2_replacement_scan_destroy) (configureScan callback)
-
-configureScan :: ContextCallback DuckDBV2ReplacementScanInfoHandle -> DuckDBV2ReplacementScanHandle -> IO ()
-configureScan callback scan =
+configureScan :: ContextCallback DuckDBV2ReplacementScanInfoHandle -> DuckDBV2ReplacementScanHandle -> IO () -> IO ()
+configureScan callback scan register =
     withCallbackResources
         (\allocate -> install allocate DuckDBV2ReplacementScanCallbackFn (DuckDBV2ReplacementScanCallbackFn_Aux (guardContext callback)) (c_duckdb_v2_replacement_scan_set_callback scan))
         (attachOpaque (c_duckdb_v2_replacement_scan_set_user_data scan))
-        \installCallback -> installCallback >> checked (c_duckdb_v2_replacement_scan_register scan)
+        \installCallback -> installCallback >> register
 
 withTarget ::
     (Storable handle) =>
     RegistrationTarget ->
-    (DuckDBV2ConnectionHandle -> Ptr handle -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) ->
-    (DuckDBV2ExtensionHandle -> Ptr handle -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) ->
+    (DuckDBV2FactoryHandle -> Ptr handle -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) ->
     (Ptr handle -> IO DuckDBV2Error) ->
-    (handle -> IO a) ->
+    (DuckDBV2ConnectionHandle -> handle -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) ->
+    (DuckDBV2ExtensionHandle -> handle -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) ->
+    (handle -> IO () -> IO a) ->
     IO a
-withTarget target connectionCreate extensionCreate release action = case target of
+withTarget target create release registerConnection registerExtension action = case target of
     ConnectionTarget connection -> withConnectionHandle connection $ \native ->
-        bracket (output (connectionCreate native)) (destroy release) action
-    ExtensionTarget extension -> bracket (output (extensionCreate extension)) (destroy release) action
+        withConnectionFactory native $ \factory ->
+            bracket (output (create factory)) (destroy release) $ \handle -> action handle (checked (registerConnection native handle))
+    ExtensionTarget extension context -> withContextFactory context $ \factory ->
+        bracket (output (create factory)) (destroy release) $ \handle -> action handle (checked (registerExtension extension handle))
 
 type Allocator = forall a. IO (FunPtr a) -> IO (FunPtr a)
 

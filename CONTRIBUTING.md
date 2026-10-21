@@ -98,8 +98,8 @@ Do not read private payload layouts or convert handles between the two APIs.
 
 See [docs/duckdb-2.0.md](docs/duckdb-2.0.md) for DuckDB 2.0 development.
 Supply the matching native library. The package versions target DuckDB 2.0.
-Check the header ABI before you run the suites. The source-build workflow
-builds the native library on Linux and macOS from the pinned header commit.
+Check the header ABI before you run the suites. CI uses the verified release
+archives on Linux and macOS. Nix builds the pinned release source.
 The optional `quack-tests` suite requires matching local `httpfs` and Quack
 extensions. See the same document for its commands and native limitations.
 

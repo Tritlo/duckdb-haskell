@@ -39,6 +39,7 @@ import Database.DuckDB.Simple.LogicalRep (
     LogicalTypeRep (..),
     StructField (..),
     StructValue (..),
+    TupleValue (..),
     UnionMemberType (..),
     UnionValue (..),
     logicalTypeToRep,
@@ -100,7 +101,7 @@ prepareValueReader variantReader dtype vector dataPtr validity = case dtype of
     DuckDBV2LogicalTypeIdList -> whenValid FieldList <$> prepareListDecoder variantReader vector dataPtr
     DuckDBV2LogicalTypeIdMap -> whenValid FieldMap <$> prepareMapDecoder variantReader vector dataPtr
     DuckDBV2LogicalTypeIdStruct -> whenValid FieldStruct <$> prepareStructDecoder variantReader vector
-    DuckDBV2LogicalTypeIdTuple -> whenValid FieldStruct <$> prepareStructDecoder variantReader vector
+    DuckDBV2LogicalTypeIdTuple -> whenValid FieldTuple <$> prepareTupleDecoder variantReader vector
     DuckDBV2LogicalTypeIdUnion -> whenValid FieldUnion <$> prepareUnionDecoder variantReader vector
     _ -> pure (materializeElement dtype vector dataPtr validity)
   where
@@ -244,6 +245,20 @@ prepareStructDecoder variantReader vector =
                     , structValueTypes = structFields
                     , structValueIndex = indexMap
                     }
+
+-- | Read positional field metadata and prepare readers that borrow the tuple.
+prepareTupleDecoder :: VariantReader -> DuckDBV2VectorHandle -> IO (Int -> IO (TupleValue FieldValue))
+prepareTupleDecoder variantReader vector = withVectorType vector \logical -> do
+    rep <- logicalTypeToRep logical
+    types <- case rep of
+        LogicalTypeTuple fields -> pure fields
+        _ -> throwIO (userError "duckdb-simple: invalid TUPLE type")
+    let count = length (elems types)
+    readers <- forM [0 .. count - 1] \index ->
+        vectorChild vector (fromIntegral index) >>= prepareVectorReader variantReader
+    pure \row -> do
+        fields <- mapM ($ row) readers
+        pure (TupleValue (listArray (0, count - 1) fields) types)
 
 {- | Read the UNION type and prepare the tag reader and a reader for each member
 once for a vector. The decoder reads a valid row. It must not outlive its chunk.

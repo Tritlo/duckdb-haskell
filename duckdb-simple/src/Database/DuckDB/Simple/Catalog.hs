@@ -52,10 +52,10 @@ data ColumnDescription = ColumnDescription
 catalogTypeName :: Connection -> Text -> IO (Maybe Text)
 catalogTypeName conn name = do
     validateNames [name]
-    rows <- query conn "SELECT type::VARCHAR FROM duckdb_databases() WHERE database_name = ?" (Only name)
+    rows <- query conn (Query ("SELECT type::VARCHAR FROM system.main.duckdb_databases() WHERE " <> identifierMatches "database_name")) (Only name)
     pure (case rows of Only value : _ -> Just value; [] -> Nothing)
 
--- | Look up a catalog entry through DuckDB's metadata table functions.
+-- | Look up an entry in a top-level schema. Names use DuckDB's identifier rules.
 lookupCatalogEntry :: Connection -> Text -> Text -> Text -> CatalogEntryType -> IO (Maybe CatalogEntry)
 lookupCatalogEntry conn catalog schema name kind = do
     validateNames [catalog, schema, name]
@@ -66,9 +66,32 @@ lookupCatalogEntry conn catalog schema name kind = do
         CatalogSequence -> pure ("duckdb_sequences()", "sequence_name")
         CatalogType -> pure ("duckdb_types()", "type_name")
         CatalogCollation -> throwIO (SQLError "duckdb-simple: scoped collation lookup is unavailable in DuckDB V2 metadata" (Just DuckDBV2ErrorApi) Nothing)
-    let sql = Query ("SELECT " <> columnName <> "::VARCHAR FROM " <> functionName <> " WHERE database_name = ? AND schema_name = ? AND " <> columnName <> " = ? LIMIT 1")
+    let sql =
+            Query
+                ( "SELECT e."
+                    <> columnName
+                    <> "::VARCHAR FROM system.main."
+                    <> functionName
+                    <> " e"
+                    <> " JOIN system.main.duckdb_schemas() s ON e.database_oid = s.database_oid AND e.schema_oid = s.oid"
+                    <> " WHERE s.parent_schema_oid IS NULL AND "
+                    <> identifierMatches "e.database_name"
+                    <> " AND "
+                    <> identifierMatches "e.schema_name"
+                    <> " AND "
+                    <> identifierMatches ("e." <> columnName)
+                    <> " LIMIT 1"
+                )
     rows <- query conn sql (catalog, schema, name)
     pure (case rows of Only value : _ -> Just (CatalogEntry value kind); [] -> Nothing)
+
+{- | Compare a trusted column with a parameter using ASCII case folding.
+Binary comparison keeps the result independent of the SQL collation.
+-}
+identifierMatches :: Text -> Text
+identifierMatches column = normalize column <> " = " <> normalize "?"
+  where
+    normalize expression = "system.main.encode(system.main.translate(" <> expression <> ", 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'))"
 
 -- | Copy a native base-table description using a parsed qualified name.
 describeTable :: Connection -> Text -> IO TableDescription

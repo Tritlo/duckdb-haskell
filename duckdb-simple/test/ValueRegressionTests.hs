@@ -263,17 +263,36 @@ valueRegressionTests =
                     assertLeft (genericFromFieldValue (FieldStruct struct{structValueFields = fields}) :: Either String NamedRecord)
         , testCase "unnamed tuples preserve scalar and nested fields on round trip" $ withConnection ":memory:" \conn -> do
             let tuple =
-                    StructValue
-                        (listArray (0, 1) [StructField "" (FieldInt64 42), StructField "" (FieldText "λ")])
-                        (listArray (0, 1) [StructField "" (LogicalTypeScalar DuckDBV2LogicalTypeIdBigInt), StructField "" (LogicalTypeScalar DuckDBV2LogicalTypeIdVarchar)])
-                        (Map.singleton "" 1)
-            (query_ conn "SELECT row(42::BIGINT, 'λ')" :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only tuple])
-            (query_ conn "SELECT [row(42::BIGINT, 'λ')]" :: IO [Only [StructValue FieldValue]]) >>= (@?= [Only [tuple]])
-            (query conn "SELECT ?" (Only tuple) :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only tuple])
+                    TupleValue
+                        (listArray (0, 1) [FieldInt64 42, FieldText "λ"])
+                        (listArray (0, 1) [LogicalTypeScalar DuckDBV2LogicalTypeIdBigInt, LogicalTypeScalar DuckDBV2LogicalTypeIdVarchar])
+            (query_ conn "SELECT row(42::BIGINT, 'λ')" :: IO [Only (TupleValue FieldValue)]) >>= (@?= [Only tuple])
+            (query_ conn "SELECT [row(42::BIGINT, 'λ')]" :: IO [Only [TupleValue FieldValue]]) >>= (@?= [Only [tuple]])
+            (query conn "SELECT ?" (Only tuple) :: IO [Only (TupleValue FieldValue)]) >>= (@?= [Only tuple])
+        , testCase "empty tuples retain their type independently of empty structs" $ withConnection ":memory:" \conn -> do
+            let tuple = TupleValue (listArray (0, -1) []) (listArray (0, -1) []) :: TupleValue FieldValue
+                struct = StructValue (listArray (0, -1) []) (listArray (0, -1) []) Map.empty :: StructValue FieldValue
+            (query_ conn "SELECT row(), [row()]" :: IO [(TupleValue FieldValue, [TupleValue FieldValue])]) >>= (@?= [(tuple, [tuple])])
+            (query conn "SELECT typeof(?), ?" (tuple, tuple) :: IO [(Text, TupleValue FieldValue)]) >>= (@?= [("TUPLE", tuple)])
+            (query conn "SELECT typeof(?), ?" (struct, struct) :: IO [(Text, StructValue FieldValue)]) >>= (@?= [("STRUCT", struct)])
+            withConnectionHandle conn \native ->
+                bracket (logicalTypeFromRep native (tupleValueTypeRep tuple)) destroyLogicalType \logical ->
+                    logicalTypeToRep logical >>= (@?= tupleValueTypeRep tuple)
+            assertIOError (query conn "SELECT ?" (Only tuple{tupleValueFields = listArray (4, 4) [FieldNull]}) :: IO [Only FieldValue])
         , testCase "filtered tuple cursors retain positional fields" $ withConnection ":memory:" \conn -> do
             rows <- Streaming.fold_ conn "SELECT row(i::BIGINT, 'λ') FROM range(6) t(i) WHERE i % 2 = 1" [] $ \values (Only tuple) ->
-                pure (values <> [map structFieldValue (elems (structValueFields tuple))])
+                pure (values <> [elems (tupleValueFields tuple)])
             rows @?= [[FieldInt64 value, FieldText "λ"] | value <- [1, 3, 5]]
+        , testCase "composite VARCHAR collations retain native comparison semantics" $ withConnection ":memory:" \conn -> do
+            let collated = LogicalTypeCollatedVarchar "nocase"
+            [Only original] <- query_ conn "SELECT {'text':'A' COLLATE nocase,'items':['B' COLLATE nocase], 'optional':NULL::VARCHAR COLLATE nocase}" :: IO [Only (StructValue FieldValue)]
+            map structFieldValue (elems (structValueTypes original)) @?= [collated, LogicalTypeList collated, collated]
+            (query conn "SELECT value.text='a', value.items[1]='b', value.optional IS NULL FROM (SELECT ? AS value)" (Only original) :: IO [(Bool, Bool, Bool)]) >>= (@?= [(True, True, True)])
+            (query conn "SELECT ?" (Only original) :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only original])
+            [Only tuple] <- query_ conn "SELECT row('A' COLLATE nocase)" :: IO [Only (TupleValue FieldValue)]
+            (query conn "SELECT value[1]='a' FROM (SELECT ? AS value)" (Only tuple) :: IO [Only Bool]) >>= (@?= [Only True])
+            withConnectionHandle conn \native ->
+                bracket (logicalTypeFromRep native collated) destroyLogicalType \logical -> logicalTypeToRep logical >>= (@?= collated)
         , testCase "logical type Unicode names round trip" $ withConnection ":memory:" \conn -> withConnectionHandle conn \native -> do
             let logical = LogicalTypeStruct (listArray (0, 0) [StructField "íslenska_λ_😀" (LogicalTypeScalar DuckDBV2LogicalTypeIdBigInt)])
             bracket (logicalTypeFromRep native logical) destroyLogicalType \handle ->

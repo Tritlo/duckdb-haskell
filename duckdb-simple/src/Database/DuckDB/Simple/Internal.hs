@@ -103,17 +103,20 @@ newChildren = Children <$> newIORef []
 
 -- | Register a child and remove completed entries.
 registerChild :: (a -> Bool) -> Children a -> IORef a -> IO () -> IO ()
-registerChild isOpen (Children children) child cleanup = do
+registerChild isOpen (Children children) child cleanup = mask_ do
     previous <- readIORef children
-    live <- fmap concat $ forM previous \entry@(weak, _) ->
+    finished <- fmap concat $ forM previous \entry@(weak, done) ->
         deRefWeak weak >>= \case
-            Nothing -> finishChild entry >> pure []
+            Nothing -> finishChild entry >> pure [done]
             Just ref -> do
                 state <- readIORef ref
-                if isOpen state then pure [entry] else finishChild entry >> pure []
+                if isOpen state then pure [] else finishChild entry >> pure [done]
+    -- Finish stale cleanup before transferring ownership of the new child.
     done <- newEmptyMVar
     weak <- mkWeakIORef child (cleanup `finally` putMVar done ())
-    writeIORef children ((weak, done) : live)
+    -- Remove only finished snapshot entries. Keep concurrent registrations.
+    atomicModifyIORef' children $ \current ->
+        ((weak, done) : filter (\(_, completed) -> completed `notElem` finished) current, ())
 
 -- | Run a child finalizer and wait for its completion.
 finishChild :: (Weak (IORef a), MVar ()) -> IO ()
@@ -212,7 +215,9 @@ createEnvironment = mask_ do
     _ <- mkWeakIORef ref (closeEnvironmentState ref)
     pure (Environment ref)
 
--- | Close an environment and its instances and connections. This is idempotent.
+{- | Close an environment and its instances and connections. This is idempotent.
+Wait for child creation and all descendant operations to finish before closing.
+-}
 closeEnvironment :: Environment -> IO ()
 closeEnvironment Environment{environmentState} = closeEnvironmentState environmentState
 
@@ -263,7 +268,9 @@ createInstance environment@Environment{environmentState} settings = keepAlive en
         , "disabled_filesystems"
         ]
 
--- | Close an instance and all its connections. This is idempotent.
+{- | Close an instance and all its connections. This is idempotent.
+Wait for connection creation and all descendant operations to finish before closing.
+-}
 closeInstance :: Instance -> IO ()
 closeInstance Instance{instanceState} = closeInstanceState instanceState
 

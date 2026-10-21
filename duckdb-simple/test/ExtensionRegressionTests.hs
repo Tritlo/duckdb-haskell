@@ -61,6 +61,16 @@ extensionRegressionTests =
                 createFunction conn "duplicate_scalar" (42 :: Int64)
                 replicateM_ 32 $ createFunction conn "duplicate_scalar" (7 :: Int64)
                 query_ conn "SELECT duplicate_scalar()" >>= (@?= [Only (7 :: Int64)])
+        , testCase "scalar deletion refusal keeps function and connection usable" $
+            withConnection ":memory:" \conn -> do
+                createFunction conn "retained_scalar" (42 :: Int64)
+                assertSqlErrorContaining "Cannot drop internal catalog entry" $ deleteFunction conn "retained_scalar"
+                query_ conn "SELECT retained_scalar()" >>= (@?= [Only (42 :: Int64)])
+                query_ conn "SELECT 7" >>= (@?= [Only (7 :: Int64)])
+        , testCase "absent scalar deletion succeeds" $
+            withConnection ":memory:" \conn -> do
+                deleteFunction conn "absent_scalar"
+                query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
         , testCase "stateful replacement registration cleanup" $
             withConnection ":memory:" \conn -> do
                 createFunctionWithState conn "duplicate_state" (pure ()) (\() -> (42 :: Int64))
@@ -236,6 +246,23 @@ extensionRegressionTests =
                 withTransaction conn do
                     entry <- Catalog.lookupCatalogEntry conn "memory" "main" "\955" Catalog.CatalogTable
                     fmap Catalog.catalogEntryName entry @?= Just "\955"
+        , testCase "catalog names use ASCII identifier comparison independently of collation" $
+            withConnection ":memory:" \conn -> do
+                void $ execute_ conn "CREATE TABLE MiXeD (i INT); CREATE TABLE \"Ä\" (i INT); CREATE TABLE \"ä\" (i INT)"
+                void $ execute_ conn "SET default_collation = 'nocase'"
+                Catalog.catalogTypeName conn "MEMORY" >>= (@?= Just "duckdb")
+                entry <- Catalog.lookupCatalogEntry conn "MEMORY" "MAIN" "mixed" Catalog.CatalogTable
+                fmap Catalog.catalogEntryName entry @?= Just "MiXeD"
+                forM_ ["Ä", "ä"] \name -> do
+                    found <- Catalog.lookupCatalogEntry conn "memory" "main" name Catalog.CatalogTable
+                    fmap Catalog.catalogEntryName found @?= Just name
+        , testCase "catalog lookup keeps nested and literal-dot schema names distinct" $
+            withConnection ":memory:" \conn -> do
+                void $ execute_ conn "CREATE SCHEMA parent; CREATE SCHEMA parent.child; CREATE TABLE parent.child.inside (i INT)"
+                Catalog.lookupCatalogEntry conn "memory" "child" "inside" Catalog.CatalogTable >>= (@?= Nothing)
+                void $ execute_ conn "CREATE SCHEMA \"parent.child\"; CREATE TABLE \"parent.child\".outside (i INT)"
+                found <- Catalog.lookupCatalogEntry conn "memory" "parent.child" "outside" Catalog.CatalogTable
+                fmap Catalog.catalogEntryName found @?= Just "outside"
         , testCase "catalog and config missing values remain safe" $
             withConnection ":memory:" \conn -> do
                 Config.getConfigOption conn "no_such_config_option" >>= (@?= Nothing)
@@ -254,6 +281,14 @@ extensionRegressionTests =
                         Config.configOptionSetting option @?= "1"
                         Config.configOptionName option @?= "threads"
                         assertBool "description is retained" (not (Text.null (Config.configOptionDescription option)))
+        , testCase "configuration values resolve case-insensitive names and aliases" $
+            withConnection ":memory:" \conn -> do
+                Config.setConfigOption conn DuckDBV2SettingScopeGlobal "threads" "1"
+                forM_ ["threads", "THREADS", "worker_threads", "WORKER_THREADS"] \name ->
+                    fmap Config.configValueText <$> Config.getConfigOption conn name >>= (@?= Just "1")
+                Config.getConfigOption conn "NO_SUCH_CONFIG_OPTION" >>= (@?= Nothing)
+                close conn
+                assertSqlError $ Config.getConfigOption conn "threads"
         , testCase "custom options retain typed defaults scopes and callback errors" $
             withConnection ":memory:" \conn -> do
                 let option =

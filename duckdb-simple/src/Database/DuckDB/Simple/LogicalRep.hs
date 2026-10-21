@@ -10,10 +10,12 @@ module Database.DuckDB.Simple.LogicalRep (
     -- * Structured value helpers
     StructField (..),
     StructValue (..),
+    TupleValue (..),
     UnionMemberType (..),
     UnionValue (..),
     LogicalTypeRep (..),
     structValueTypeRep,
+    tupleValueTypeRep,
     unionValueTypeRep,
     logicalTypeToRep,
     logicalTypeFromRep,
@@ -41,11 +43,13 @@ import Foreign.Storable (peek)
 data LogicalTypeRep
     = LogicalTypeScalar DuckDBV2LogicalTypeId
     | LogicalTypeDecimal !Word8 !Word8
+    | LogicalTypeCollatedVarchar !Text
     | LogicalTypeGeometry !(Maybe Text)
     | LogicalTypeList LogicalTypeRep
     | LogicalTypeArray LogicalTypeRep !Word64
     | LogicalTypeMap LogicalTypeRep LogicalTypeRep
     | LogicalTypeStruct !(Array Int (StructField LogicalTypeRep))
+    | LogicalTypeTuple !(Array Int LogicalTypeRep)
     | LogicalTypeUnion !(Array Int UnionMemberType)
     | LogicalTypeEnum !(Array Int Text)
     deriving (Eq, Show)
@@ -62,6 +66,13 @@ data StructValue a = StructValue
     { structValueFields :: !(Array Int (StructField a))
     , structValueTypes :: !(Array Int (StructField LogicalTypeRep))
     , structValueIndex :: !(Map Text Int)
+    }
+    deriving (Eq, Show)
+
+-- | A positional TUPLE value with its field types. Array bounds are independent.
+data TupleValue a = TupleValue
+    { tupleValueFields :: !(Array Int a)
+    , tupleValueTypes :: !(Array Int LogicalTypeRep)
     }
     deriving (Eq, Show)
 
@@ -84,6 +95,10 @@ data UnionValue a = UnionValue
 -- | Recover the logical STRUCT type corresponding to a @StructValue@.
 structValueTypeRep :: StructValue a -> LogicalTypeRep
 structValueTypeRep StructValue{structValueTypes} = LogicalTypeStruct structValueTypes
+
+-- | Recover the logical TUPLE type of a positional value.
+tupleValueTypeRep :: TupleValue a -> LogicalTypeRep
+tupleValueTypeRep TupleValue{tupleValueTypes} = LogicalTypeTuple tupleValueTypes
 
 -- | Recover the logical UNION type corresponding to a @UnionValue@.
 unionValueTypeRep :: UnionValue a -> LogicalTypeRep
@@ -119,7 +134,10 @@ logicalTypeToRep logical = do
             size <- count
             LogicalTypeGeometry <$> if size == 0 then pure Nothing else Just <$> string 0
         DuckDBV2LogicalTypeIdStruct -> LogicalTypeStruct <$> fields StructField
-        DuckDBV2LogicalTypeIdTuple -> LogicalTypeStruct <$> fields StructField
+        DuckDBV2LogicalTypeIdTuple -> LogicalTypeTuple <$> fields (\_ rep -> rep)
+        DuckDBV2LogicalTypeIdVarchar -> do
+            size <- count
+            if size == 0 then pure (LogicalTypeScalar dtype) else LogicalTypeCollatedVarchar <$> string 0
         DuckDBV2LogicalTypeIdUnion -> LogicalTypeUnion <$> fields UnionMemberType
         DuckDBV2LogicalTypeIdList -> LogicalTypeList <$> child 0
         DuckDBV2LogicalTypeIdArray -> do
@@ -176,6 +194,7 @@ logicalTypeFromFactory factory resolve = create
         LogicalTypeScalar DuckDBV2LogicalTypeIdGeometry -> fromText (Text.pack "GEOMETRY")
         LogicalTypeScalar DuckDBV2LogicalTypeIdSQLNull -> fromText (Text.pack "\"NULL\"")
         LogicalTypeScalar dtype -> construct dtype [] []
+        LogicalTypeCollatedVarchar collation -> construct DuckDBV2LogicalTypeIdVarchar [Text.pack "collation"] [text collation]
         LogicalTypeGeometry Nothing -> fromText (Text.pack "GEOMETRY")
         LogicalTypeGeometry (Just crs) -> mask_ do
             logical <- construct DuckDBV2LogicalTypeIdGeometry [] [text crs]
@@ -197,8 +216,11 @@ logicalTypeFromFactory factory resolve = create
         LogicalTypeStruct fields
             | null (elems fields) ->
                 bracket (output (c_duckdb_v2_value_create_struct factory (ConstPtr nullPtr) (ConstPtr nullPtr) 0)) owned (output . c_duckdb_v2_value_get_logical_type)
-            | all (Text.null . structFieldName) (elems fields) -> construct DuckDBV2LogicalTypeIdTuple [] (map (boxed . structFieldValue) (elems fields))
         LogicalTypeStruct fields -> construct DuckDBV2LogicalTypeIdStruct (map structFieldName (elems fields)) (map (boxed . structFieldValue) (elems fields))
+        LogicalTypeTuple fields
+            | null (elems fields) ->
+                bracket (output (c_duckdb_v2_value_create_tuple factory (ConstPtr nullPtr) 0)) owned (output . c_duckdb_v2_value_get_logical_type)
+            | otherwise -> construct DuckDBV2LogicalTypeIdTuple [] (map boxed (elems fields))
         LogicalTypeUnion members -> construct DuckDBV2LogicalTypeIdUnion (map unionMemberName (elems members)) (map (boxed . unionMemberType) (elems members))
         LogicalTypeEnum entries -> construct DuckDBV2LogicalTypeIdEnum [] (map text (elems entries))
 

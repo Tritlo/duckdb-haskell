@@ -19,7 +19,7 @@ module Database.DuckDB.Simple.Function (
     deleteFunction,
 ) where
 
-import Control.Exception (bracket, throwIO, try)
+import Control.Exception (bracket)
 import Control.Monad (forM_)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -69,25 +69,20 @@ createFunctionWithState conn name initState mkFn =
             initState
             mkFn
 
--- | Drop a previously registered scalar function with a DROP FUNCTION statement.
+{- | Run @DROP FUNCTION IF EXISTS@ and report native errors.
+DuckDB does not permit deletion of functions registered through the C API.
+-}
 deleteFunction :: Connection -> Text -> IO ()
 deleteFunction conn name = do
     let dropQuery = Query ("DROP FUNCTION IF EXISTS " <> qualifyIdentifier name)
-    outcome <- try $
-        withParsedStatements conn dropQuery $ \parsed ->
-            forM_ parsed $ \statement ->
-                bracket
-                    (createStatementFromParsed conn dropQuery statement)
-                    (closeStatementState . statementState)
-                    \prepared -> withResult prepared $ \result -> do
-                        _ <- runInterruptibleQuery conn (output (c_duckdb_v2_result_drain result))
-                        pure ()
-    case outcome of
-        Right () -> pure ()
-        Left err
-            -- Native scalar functions are internal catalog entries and cannot be dropped.
-            | Text.isInfixOf "Cannot drop internal catalog entry" (sqlErrorMessage err) -> pure ()
-            | otherwise -> throwIO err
+    withParsedStatements conn dropQuery $ \parsed ->
+        forM_ parsed $ \statement ->
+            bracket
+                (createStatementFromParsed conn dropQuery statement)
+                (closeStatementState . statementState)
+                \prepared -> withResult prepared $ \result -> do
+                    _ <- runInterruptibleQuery conn (output (c_duckdb_v2_result_drain result))
+                    pure ()
 
 qualifyIdentifier :: Text -> Text
 qualifyIdentifier rawName =

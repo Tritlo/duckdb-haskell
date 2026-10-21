@@ -21,10 +21,9 @@ module Database.DuckDB.Simple.Config (
     registerCustomOptionWith,
 ) where
 
-import Control.Exception (bracket)
+import Control.Exception (bracket, catch, throwIO)
 import Control.Monad (filterM, forM, when)
 import qualified Data.ByteString as BS
-import Data.List (find)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
@@ -156,10 +155,11 @@ listInstanceOptions instance_ = withInstanceHandle instance_ \handle -> do
 getConfigOption :: Connection -> Text -> IO (Maybe ConfigValue)
 getConfigOption conn name = do
     when (Text.any (== '\0') name) $ throwRegistrationError "config option name contains NUL"
-    options <- listConfigOptions conn
-    case find (\value -> configOptionName value == name || name `elem` configOptionAliases value) options of
-        Nothing -> pure Nothing
-        Just _ -> withConfigOptionValue conn name \value scope -> Just . (`ConfigValue` scope) <$> valueText value
+    (withConfigOptionValue conn name \value scope -> Just . (`ConfigValue` scope) <$> valueText value)
+        `catch` \err ->
+            if sqlErrorType err == Just DuckDBV2ErrorInputInvalid
+                then pure Nothing
+                else throwIO err
 
 -- | Write an option at its default, global, or session scope.
 setConfigOption :: Connection -> DuckDBV2SettingScope -> Text -> Text -> IO ()

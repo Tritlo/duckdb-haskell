@@ -4,9 +4,10 @@
 -- | Regression tests for result metadata, cursor state, and handle lifetime.
 module CoreRegressionTests (coreRegressionTests) where
 
-import Control.Concurrent (threadDelay)
+import Control.Concurrent (forkFinally, getNumCapabilities, newEmptyMVar, putMVar, readMVar, setNumCapabilities, takeMVar, threadDelay)
 import Control.Exception (SomeException, bracket, finally, throwIO, try)
-import Control.Monad (forM_, replicateM_, void)
+import Control.Monad (forM_, replicateM, replicateM_, void)
+import Data.Either (partitionEithers)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (isInfixOf)
@@ -77,8 +78,18 @@ coreRegressionTests =
             withConnection ":memory:" $ \conn -> do
                 void $ execute_ conn "CREATE TABLE once_probe(x INTEGER)"
                 withStatement conn "INSERT INTO once_probe VALUES (1)" $ \stmt ->
-                    replicateM_ 3 $ void (nextRow stmt :: IO (Maybe (Only Int64)))
+                    replicateM_ 3 $ nextRow stmt >>= (@?= (Nothing :: Maybe (Only Int64)))
                 query_ conn "SELECT count(*) FROM once_probe" >>= (@?= [Only (1 :: Int64)])
+        , testCase "eager queries retain native changed-row results" $
+            withConnection ":memory:" $ \conn -> do
+                void (execute_ conn "CREATE TABLE changed_rows(value BIGINT)")
+                (query_ conn "INSERT INTO changed_rows VALUES (1),(2)" :: IO [Only Int64]) >>= (@?= [Only 2])
+                (query conn "INSERT INTO changed_rows VALUES (?)" (Only (3 :: Int64)) :: IO [Only Int64]) >>= (@?= [Only 1])
+                (queryNamed conn "UPDATE changed_rows SET value=value+10 WHERE value<=$limit" ["limit" := (2 :: Int64)] :: IO [Only Int64]) >>= (@?= [Only 2])
+                (query_ conn "DELETE FROM changed_rows WHERE false" :: IO [Only Int64]) >>= (@?= [Only 0])
+                calls <- fold_ conn "INSERT INTO changed_rows VALUES (4)" (0 :: Int) $ \count (Only (_ :: Int64)) -> pure (count + 1)
+                calls @?= 0
+                query_ conn "SELECT count(*) FROM changed_rows" >>= (@?= [Only (4 :: Int64)])
         , testCase "rebinding resets an exhausted cursor" $
             withConnection ":memory:" $ \conn ->
                 withStatement conn "SELECT ?::BIGINT" $ \stmt -> do
@@ -214,6 +225,27 @@ coreRegressionTests =
                 withConnectionOn instance_ $ \first -> withConnectionOn instance_ $ \second -> do
                     void (execute_ first "CREATE TABLE shared_probe(x BIGINT); INSERT INTO shared_probe VALUES (42)")
                     query_ second "SELECT x FROM shared_probe" >>= (@?= [Only (42 :: Int64)])
+        , testCase "parent close releases concurrently created children" $
+            bracket getNumCapabilities setNumCapabilities $ \capabilities -> do
+                setNumCapabilities (max 2 capabilities)
+                withEnvironment $ \environment -> withInstance environment [("threads", "1"), ("async_threads", "1")] $ \instance_ ->
+                    withConcurrentChildren 64 (connect instance_) close $ \connections -> do
+                        closeInstance instance_
+                        forM_ connections $ \connection -> do
+                            state <- readIORef (Internal.connectionState connection)
+                            case state of
+                                Internal.ConnectionClosed -> pure ()
+                                Internal.ConnectionOpen{} -> assertFailure "parent close missed a connection"
+                            assertThrows (query_ connection "SELECT 42" :: IO [Only Int64])
+                withEnvironment $ \environment ->
+                    withConcurrentChildren 16 (createInstance environment [("threads", "1"), ("async_threads", "1")]) closeInstance $ \instances -> do
+                        closeEnvironment environment
+                        forM_ instances $ \instance_ -> do
+                            state <- readIORef (Internal.instanceState instance_)
+                            case state of
+                                Internal.InstanceClosed -> pure ()
+                                Internal.InstanceOpen{} -> assertFailure "parent close missed an instance"
+                            assertThrows (connect instance_)
         , testCase "startup configuration sets the whitelist before disabling external access" $ do
             path <- canonicalizePath "/tmp/duckdb-whitelist-probe"
             withConnectionWithConfig ":memory:" [("enable_external_access", "false"), ("allowed_paths", "['/tmp/duckdb-whitelist-probe']")] $ \conn ->
@@ -262,6 +294,22 @@ coreRegressionTests =
         ]
   where
     collect acc row = pure (acc <> [row])
+
+-- | Join all creation workers and release every acquired child after the action.
+withConcurrentChildren :: Int -> IO a -> (a -> IO ()) -> ([a] -> IO ()) -> IO ()
+withConcurrentChildren count acquire release action =
+    bracket createChildren (mapM_ release) action
+  where
+    createChildren = do
+        start <- newEmptyMVar
+        completed <- replicateM count newEmptyMVar
+        forM_ completed $ \result ->
+            void $ forkFinally (readMVar start >> acquire) (putMVar result)
+        putMVar start ()
+        outcomes <- mapM takeMVar completed
+        case partitionEithers outcomes of
+            ([], children) -> pure children
+            (failure : _, children) -> mapM_ release children >> throwIO failure
 
 -- | Require an exception without constraining its concrete type.
 assertThrows :: IO a -> Assertion

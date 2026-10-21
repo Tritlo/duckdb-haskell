@@ -109,7 +109,7 @@ queryObjectGroup connection keys rows =
                                 | (i, (index, _)) <- zip [0 ..] rows
                                 ]
   where
-    sql = "SELECT system.main.list_transform($1::VARIANT[], lambda value: system.main.list_value(" <> Text.intercalate "," extracts <> "))"
+    sql = "SELECT system.main.list_transform($1::VARIANT[], lambda value: system.main.list_value(" <> Text.intercalate "," extracts <> ")) AS payload"
     extracts = ["system.main.variant_extract(value,$" <> Text.pack (show index) <> "::VARCHAR)" | index <- [2 .. length keys + 1]]
 
 -- | Rebuild a level from its copied children in their native order.
@@ -137,7 +137,7 @@ withTypeStatement :: DuckDBV2ConnectionHandle -> (DuckDBV2SqlStatementHandle -> 
 withTypeStatement connection =
     withSQLStatement
         connection
-        "SELECT system.main.list_transform(?::VARIANT[], lambda value: system.main.struct_pack(tag := system.main.variant_typeof(value), keys := system.main.variant_keys(value)))"
+        "SELECT system.main.list_transform(?::VARIANT[], lambda value: system.main.struct_pack(tag := system.main.variant_typeof(value), keys := system.main.variant_keys(value))) AS metadata"
 
 -- | Borrow a parsed SQL statement. Payloads and object keys are not SQL text.
 withSQLStatement :: DuckDBV2ConnectionHandle -> Text -> (DuckDBV2SqlStatementHandle -> IO a) -> IO a

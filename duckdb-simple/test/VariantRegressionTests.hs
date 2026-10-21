@@ -144,6 +144,9 @@ tests =
                 let expected = Variant (foldr (const (FieldList . pure)) (FieldWord64 7) [1 .. depth])
                 (query conn "SELECT (repeat('[', ?) || '7' || repeat(']', ?))::JSON::VARIANT AS payload" (depth, depth) :: IO [Only Variant])
                     >>= (@?= [Only expected])
+                let object = Variant (variantObject [("nested", variantPayload expected)])
+                (query conn "SELECT ('{\"nested\":' || repeat('[', ?) || '7' || repeat(']', ?) || '}')::JSON::VARIANT AS payload" (depth, depth) :: IO [Only Variant])
+                    >>= (@?= [Only object])
         , testCase "ARRAY parameters and generic records contain VARIANT" $ withConnection ":memory:" \conn -> do
             let array = listArray (0, 2) [Variant (FieldInt8 1), Variant (FieldText "two"), Variant FieldNull]
             (query conn "SELECT ?" (Only array) :: IO [Only (Array Int Variant)]) >>= (@?= [Only array])

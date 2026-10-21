@@ -18,6 +18,7 @@ module Database.DuckDB.Simple.FromField (
     RawGeometry (..),
     StructField (..),
     StructValue (..),
+    TupleValue (..),
     UnionMemberType (..),
     UnionValue (..),
     LogicalTypeRep (..),
@@ -65,6 +66,7 @@ import Database.DuckDB.Simple.LogicalRep (
     LogicalTypeRep (..),
     StructField (..),
     StructValue (..),
+    TupleValue (..),
     UnionMemberType (..),
     UnionValue (..),
  )
@@ -111,6 +113,7 @@ data FieldValue
     | FieldList [FieldValue]
     | FieldMap [(FieldValue, FieldValue)]
     | FieldStruct (StructValue FieldValue)
+    | FieldTuple (TupleValue FieldValue)
     | FieldUnion (UnionValue FieldValue)
     deriving (Eq, Show)
 
@@ -347,6 +350,13 @@ instance FromField UUID.UUID where
                     Just uuid -> Ok uuid
                     Nothing -> returnError ConversionFailed f "invalid UUID format"
             FieldUUID uuid -> Ok uuid
+            FieldNull -> returnError UnexpectedNull f ""
+            _ -> returnError Incompatible f ""
+
+instance FromField (TupleValue FieldValue) where
+    fromField f@Field{fieldValue} =
+        case fieldValue of
+            FieldTuple tuple -> Ok tuple
             FieldNull -> returnError UnexpectedNull f ""
             _ -> returnError Incompatible f ""
 
@@ -810,4 +820,5 @@ fieldValueTypeName = \case
     FieldMap{} -> "MAP"
     FieldUUID{} -> "UUID"
     FieldStruct{} -> "STRUCT"
+    FieldTuple{} -> "TUPLE"
     FieldUnion{} -> "UNION"

@@ -56,12 +56,14 @@ import Database.DuckDB.Simple.LogicalRep (
     LogicalTypeRep (..),
     StructField (..),
     StructValue (..),
+    TupleValue (..),
     UnionMemberType (..),
     UnionValue (..),
     destroyLogicalType,
     logicalTypeFromRep,
     logicalTypeToRep,
     structValueTypeRep,
+    tupleValueTypeRep,
     unionValueTypeRep,
  )
 import Database.DuckDB.Simple.Native
@@ -144,11 +146,17 @@ timestampTypeForTarget target source = case (target, source) of
     (Just (LogicalTypeStruct targetFields), LogicalTypeStruct fields) ->
         let sourceFields = elems fields
             targets = [(identifier name, rep) | StructField name rep <- elems targetFields]
-            matching
-                | all (Text.null . structFieldName) sourceFields || all (Text.null . structFieldName) (elems targetFields) = map (Just . structFieldValue) (elems targetFields) <> repeat Nothing
-                | otherwise = [lookup (identifier (structFieldName field)) targets | field <- sourceFields]
+            matching = [lookup (identifier (structFieldName field)) targets | field <- sourceFields]
             updated = zipWith (\field expected -> field{structFieldValue = timestampTypeForTarget expected (structFieldValue field)}) sourceFields matching
          in LogicalTypeStruct (listArray (bounds fields) updated)
+    (Just (LogicalTypeTuple targetFields), LogicalTypeStruct fields) ->
+        let matching = map Just (elems targetFields) <> repeat Nothing
+            updated = zipWith (\field expected -> field{structFieldValue = timestampTypeForTarget expected (structFieldValue field)}) (elems fields) matching
+         in LogicalTypeStruct (listArray (bounds fields) updated)
+    (Just (LogicalTypeTuple targetFields), LogicalTypeTuple fields) ->
+        positionalTuple (elems targetFields) fields
+    (Just (LogicalTypeStruct targetFields), LogicalTypeTuple fields) ->
+        positionalTuple (map structFieldValue (elems targetFields)) fields
     (Just (LogicalTypeUnion targetMembers), LogicalTypeUnion members) ->
         let targets = [(identifier name, rep) | UnionMemberType name rep <- elems targetMembers]
          in LogicalTypeUnion (fmap (\member -> member{unionMemberType = timestampTypeForTarget (lookup (identifier (unionMemberName member)) targets) (unionMemberType member)}) members)
@@ -156,6 +164,7 @@ timestampTypeForTarget target source = case (target, source) of
   where
     -- DuckDB compares identifiers without ASCII case.
     identifier = Text.map (\char -> if char >= 'A' && char <= 'Z' then toLower char else char)
+    positionalTuple targets fields = LogicalTypeTuple (listArray (bounds fields) (zipWith timestampTypeForTarget (map Just targets <> repeat Nothing) (elems fields)))
 
 -- | Copy adapted type metadata into nested values without changing their payloads.
 valueWithTypeMetadata :: LogicalTypeRep -> FieldValue -> FieldValue
@@ -167,13 +176,15 @@ valueWithTypeMetadata logical value = case (logical, value) of
     (LogicalTypeStruct types, FieldStruct struct) ->
         let sourceFields = elems (structValueFields struct)
             fields = [(structFieldName field, structFieldValue field) | field <- elems types]
-            matching
-                | all (Text.null . structFieldName) sourceFields || all (Text.null . structFieldName) (elems types) = map (Just . structFieldValue) (elems types) <> repeat Nothing
-                | otherwise = [lookup (structFieldName field) fields | field <- sourceFields]
+            matching = [lookup (structFieldName field) fields | field <- sourceFields]
             update field expected = case expected of
                 Nothing -> field
                 Just rep -> field{structFieldValue = valueWithTypeMetadata rep (structFieldValue field)}
          in FieldStruct struct{structValueTypes = types, structValueFields = listArray (bounds (structValueFields struct)) (zipWith update sourceFields matching)}
+    (LogicalTypeTuple types, FieldTuple tuple) ->
+        let update item expected = maybe item (`valueWithTypeMetadata` item) expected
+            fields = zipWith update (elems (tupleValueFields tuple)) (map Just (elems types) <> repeat Nothing)
+         in FieldTuple tuple{tupleValueTypes = types, tupleValueFields = listArray (bounds (tupleValueFields tuple)) fields}
     (LogicalTypeUnion members, FieldUnion union) ->
         let payload = case drop (fromIntegral (unionValueIndex union)) (elems members) of
                 member : _ -> valueWithTypeMetadata (unionMemberType member) (unionValuePayload union)
@@ -254,6 +265,11 @@ instance ToField (StructValue FieldValue) where
     toField structVal =
         temporalValueBinding "<struct>" (structValueTypeRep structVal) (FieldStruct structVal) \cache ->
             structValueDuckValue (cachedLogicalType cache) (typeCacheConnection cache) structVal
+
+instance ToField (TupleValue FieldValue) where
+    toField tuple =
+        temporalValueBinding "<tuple>" (tupleValueTypeRep tuple) (FieldTuple tuple) \cache ->
+            tupleValueDuckValue (cachedLogicalType cache) (typeCacheConnection cache) tuple
 
 instance ToField (UnionValue FieldValue) where
     toField unionVal =
@@ -379,6 +395,9 @@ instance DuckDBColumnType (Unbounded UTCTime) where
 
 instance DuckDBColumnType (StructValue FieldValue) where
     duckdbColumnTypeFor _ = "STRUCT"
+
+instance DuckDBColumnType (TupleValue FieldValue) where
+    duckdbColumnTypeFor _ = "TUPLE"
 
 instance DuckDBColumnType (UnionValue FieldValue) where
     duckdbColumnTypeFor _ = "UNION"
@@ -526,7 +545,45 @@ structValueDuckValue makeType conn StructValue{structValueFields, structValueTyp
         throwIO (userError "duckdb-simple: struct value/type fields mismatch")
     withCreatedValues (zipWith (\field logical -> fieldValueWithTypeDuckValue makeType conn (structFieldValue logical) (structFieldValue field)) fields types) \values ->
         withIdentifiers names \namePtr -> withDuckValues values \valuePtr ->
-            withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_struct nativeFactory (ConstPtr namePtr) (ConstPtr valuePtr) (fromIntegral (length values))))
+            declaredCompositeValue makeType conn (LogicalTypeStruct structValueTypes) $
+                withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_struct nativeFactory (ConstPtr namePtr) (ConstPtr valuePtr) (fromIntegral (length values))))
+
+-- | Construct positional fields without inferring a TUPLE from field names.
+tupleValueDuckValue :: (LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle) -> DuckDBV2ConnectionHandle -> TupleValue FieldValue -> IO DuckDBV2ValueHandle
+tupleValueDuckValue makeType conn TupleValue{tupleValueFields, tupleValueTypes} = do
+    let fields = elems tupleValueFields
+        types = elems tupleValueTypes
+    when (length fields /= length types) $
+        throwIO (userError "duckdb-simple: tuple value/type fields mismatch")
+    withCreatedValues (zipWith (fieldValueWithTypeDuckValue makeType conn) types fields) \values ->
+        withDuckValues values \valuePtr ->
+            declaredCompositeValue makeType conn (LogicalTypeTuple tupleValueTypes) $
+                withConnectionFactory conn (\factory -> output (c_duckdb_v2_value_create_tuple factory (ConstPtr valuePtr) (fromIntegral (length values))))
+
+{- | Preserve declared field types through an owned vector. Scalar VARCHAR
+values do not retain collations, but their enclosing composite type does.
+-}
+declaredCompositeValue :: (LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle) -> DuckDBV2ConnectionHandle -> LogicalTypeRep -> IO DuckDBV2ValueHandle -> IO DuckDBV2ValueHandle
+declaredCompositeValue _ _ rep create | not (hasCollation rep) = create
+declaredCompositeValue makeType conn rep create = bracket create destroyValue \value ->
+    bracket (makeType rep) destroyLogicalType \logical -> withArray [logical] \types ->
+        bracket (withConnectionFactory conn (\factory -> output (c_duckdb_v2_data_chunk_create factory (ConstPtr types) 1))) (destroy c_duckdb_v2_data_chunk_destroy) \chunk -> do
+            vector <- output (c_duckdb_v2_data_chunk_get_vector chunk 0)
+            checked (c_duckdb_v2_vector_set_size vector 1)
+            checked (c_duckdb_v2_vector_set_value vector 0 value)
+            output (c_duckdb_v2_vector_get_value vector 0)
+
+-- | Test whether a type tree contains a VARCHAR collation.
+hasCollation :: LogicalTypeRep -> Bool
+hasCollation rep = case rep of
+    LogicalTypeCollatedVarchar _ -> True
+    LogicalTypeList child -> hasCollation child
+    LogicalTypeArray child _ -> hasCollation child
+    LogicalTypeMap key value -> hasCollation key || hasCollation value
+    LogicalTypeStruct fields -> any (hasCollation . structFieldValue) (elems fields)
+    LogicalTypeTuple fields -> any hasCollation (elems fields)
+    LogicalTypeUnion members -> any (hasCollation . unionMemberType) (elems members)
+    _ -> False
 
 -- | Build one UNION row through its public tag and member vectors.
 unionValueDuckValue :: (LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle) -> DuckDBV2ConnectionHandle -> UnionValue FieldValue -> IO DuckDBV2ValueHandle
@@ -561,6 +618,7 @@ fieldValueWithTypeDuckValue makeType conn rep FieldNull = bracket (makeType rep)
 fieldValueWithTypeDuckValue makeType conn rep value = case (rep, value) of
     (LogicalTypeScalar DuckDBV2LogicalTypeIdVariant, _) -> variantDuckValue makeType conn value
     (LogicalTypeScalar dtype, _) -> scalarFieldValueDuckValue conn dtype value
+    (LogicalTypeCollatedVarchar _, FieldText text) -> textDuckValue conn text
     (LogicalTypeGeometry _, FieldGeometry{}) -> unsupportedRawGeometryBinding
     (LogicalTypeDecimal width scale, FieldDecimal decimal@DecimalValue{decimalWidth, decimalScale})
         | width == decimalWidth && scale == decimalScale -> decimalDuckValue conn decimal
@@ -576,6 +634,8 @@ fieldValueWithTypeDuckValue makeType conn rep value = case (rep, value) of
                             withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_map nativeFactory keyType valueType (ConstPtr keyPtr) (ConstPtr valuePtr) (fromIntegral (length pairs))))
     (LogicalTypeStruct _, FieldStruct struct)
         | rep == structValueTypeRep struct -> structValueDuckValue makeType conn struct
+    (LogicalTypeTuple _, FieldTuple tuple)
+        | rep == tupleValueTypeRep tuple -> tupleValueDuckValue makeType conn tuple
     (LogicalTypeUnion _, FieldUnion union)
         | rep == unionValueTypeRep union -> unionValueDuckValue makeType conn union
     (LogicalTypeEnum entries, FieldEnum index) -> enumDuckValue conn entries index
@@ -766,6 +826,7 @@ variantPayloadType value = case value of
     FieldBit{} -> scalar DuckDBV2LogicalTypeIdBit
     FieldList{} -> pure (LogicalTypeList variant, value)
     FieldArray items -> pure (LogicalTypeList variant, FieldList (elems items))
+    FieldTuple TupleValue{tupleValueFields} -> pure (LogicalTypeList variant, FieldList (elems tupleValueFields))
     FieldStruct structValue@StructValue{structValueTypes} -> do
         let names = map structFieldName (elems structValueTypes)
         when (length names /= length (List.nub names)) $
@@ -878,6 +939,9 @@ instance ToDuckValue (Unbounded UTCTime) where
 
 instance ToDuckValue (StructValue FieldValue) where
     toDuckValue conn = structValueDuckValue (logicalTypeFromRep conn) conn
+
+instance ToDuckValue (TupleValue FieldValue) where
+    toDuckValue conn = tupleValueDuckValue (logicalTypeFromRep conn) conn
 
 instance ToDuckValue (UnionValue FieldValue) where
     toDuckValue conn = unionValueDuckValue (logicalTypeFromRep conn) conn

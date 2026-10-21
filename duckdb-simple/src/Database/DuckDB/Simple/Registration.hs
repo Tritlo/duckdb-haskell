@@ -74,20 +74,12 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Typeable (Typeable, typeRep)
 import Data.Void (Void)
-import Database.DuckDB.Simple.Callback (RegistrationTarget (..), attachOpaque, guardContext, install, installOptional, readCallbackState, runCallback, transferCallbackState, withCallbackResources, withTarget)
+import Database.DuckDB.Simple.Callback (RegistrationTarget (..), attachOpaque, guardContext, install, installOptional, readCallbackState, runCallback, transferCallbackState, withCallbackResources, withRegistrationFactory, withTarget)
 import Database.DuckDB.Simple.Internal (Connection, Instance, withConnectionHandle, withInstanceHandle)
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep, logicalTypeFromRep, logicalTypeFromRepWithFactory)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
 import Foreign.Ptr (Ptr)
-
-{- | Borrow the factory of a registration target. The factory must not escape
-this action. Use it to construct signature types and values in a configuration action.
--}
-withRegistrationFactory :: RegistrationTarget -> (DuckDBV2FactoryHandle -> IO a) -> IO a
-withRegistrationFactory target action = case target of
-    ConnectionTarget connection -> withConnectionHandle connection $ \native -> withConnectionFactory native action
-    ExtensionTarget _ context -> withContextFactory context action
 
 -- | A structured type or a SQL type expression, including a registered alias.
 data TypeDeclaration = StructuredType LogicalTypeRep | TypeExpression Text

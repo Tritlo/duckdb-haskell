@@ -23,16 +23,15 @@ import Database.DuckDB.FFI.V2 (DuckDBV2ContextHandle, DuckDBV2ErrorInfoHandle, D
 import Database.DuckDB.Simple.Callback (runCallback)
 import Database.DuckDB.Simple.Config (CustomOption)
 import qualified Database.DuckDB.Simple.Config as Config
-import Database.DuckDB.Simple.Function.Internal (Function, createFunctionUsing, createFunctionWithStateUsing)
+import Database.DuckDB.Simple.Function.Internal (Function, createFunctionOn, createFunctionWithStateOn)
 import Database.DuckDB.Simple.Logging (LogEntry)
 import qualified Database.DuckDB.Simple.Logging as Logging
 import qualified Database.DuckDB.Simple.Macro as Macro
-import Database.DuckDB.Simple.Native (DuckDBV2MacroFunctionType, c_duckdb_v2_extension_register_scalar_function, c_duckdb_v2_factory_create_type_from_id, c_duckdb_v2_pragma_function_get_signature, c_duckdb_v2_pragma_function_set_name, c_duckdb_v2_scalar_function_create, checked, output, withContextFactory, withIdentifier)
+import Database.DuckDB.Simple.Native (DuckDBV2MacroFunctionType, c_duckdb_v2_pragma_function_get_signature, c_duckdb_v2_pragma_function_set_name, checked, output, withContextFactory, withIdentifier)
 import Database.DuckDB.Simple.Pragma (PragmaCallback)
 import qualified Database.DuckDB.Simple.Pragma as Pragma
 import Database.DuckDB.Simple.Registration (FunctionParameter, FunctionSignature (..), RegistrationTarget (ExtensionTarget), configureFunctionSignatureWithFactory)
-import Foreign.C.ConstPtr (ConstPtr (..))
-import Foreign.Ptr (Ptr, nullPtr)
+import Foreign.Ptr (Ptr)
 
 {- | The borrowed registration target and context for one extension load.
 Use this value only inside the action passed to 'runExtension'. Do not retain it
@@ -53,24 +52,11 @@ runExtension initialize extension context err =
 
 -- | Register a typed Haskell function with the loading DuckDB host.
 createFunction :: (Function f) => Extension -> Text -> f -> IO ()
-createFunction (Extension extension context) name fn = withContextFactory context \factory ->
-    createFunctionUsing
-        (output (c_duckdb_v2_scalar_function_create factory))
-        (\dtype -> output (c_duckdb_v2_factory_create_type_from_id factory dtype (ConstPtr nullPtr) (ConstPtr nullPtr) 0))
-        (checked . c_duckdb_v2_extension_register_scalar_function extension)
-        name
-        fn
+createFunction (Extension extension context) = createFunctionOn (ExtensionTarget extension context)
 
 -- | Register a typed function with per-worker state owned by DuckDB.
 createFunctionWithState :: (Function f) => Extension -> Text -> IO s -> (s -> f) -> IO ()
-createFunctionWithState (Extension extension context) name initialize makeFunction = withContextFactory context \factory ->
-    createFunctionWithStateUsing
-        (output (c_duckdb_v2_scalar_function_create factory))
-        (\dtype -> output (c_duckdb_v2_factory_create_type_from_id factory dtype (ConstPtr nullPtr) (ConstPtr nullPtr) 0))
-        (checked . c_duckdb_v2_extension_register_scalar_function extension)
-        name
-        initialize
-        makeFunction
+createFunctionWithState (Extension extension context) = createFunctionWithStateOn (ExtensionTarget extension context)
 
 -- | Register a scalar expression or a table SELECT on the loading extension.
 registerMacro :: Extension -> Text -> DuckDBV2MacroFunctionType -> [FunctionParameter] -> Text -> IO ()

@@ -10,8 +10,10 @@ checks, client headers, and upstream license.
   authorized Hackage candidates or releases.
 - `build-ghc-matrix.sh` runs local Docker builds. It writes logs to `ci-logs/`.
 - `nix/` contains pinned development, generation, and CI environments.
-- `fetch-duckdb.sh` downloads the pinned release library and CLI for local,
-  CI, and Docker validation. It verifies each archive checksum.
+- `fetch-duckdb.sh` downloads the release library from
+  `duckdb-ffi/native.sha256` for local, CI, and Docker validation. It verifies
+  the archive checksum and compares the release headers with the vendored
+  headers.
 
 Generate and audit bindings from a checkout:
 

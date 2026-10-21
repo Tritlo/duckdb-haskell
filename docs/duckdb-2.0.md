@@ -128,13 +128,13 @@ select release-branch commits after the tag.
 
 ## Native runtime
 
-`dev/fetch-duckdb.sh` downloads the official shared library and CLI and checks
-their pinned SHA256 digests. The header audit compares the SDK with the
-checked-in headers. These tools do not run during ordinary package builds.
+`duckdb-ffi/native.sha256` pins the official shared-library archives.
+`Setup.hs` downloads from it by default. `dev/fetch-duckdb.sh` downloads the
+same archive for `-fsystemlib` builds. It checks the archive digest and
+requires the release headers to be identical to the vendored headers.
 
 ```sh
 dev/fetch-duckdb.sh /tmp/duckdb-2.0-native
-uv run dev/bindings/duckdb-api.py --compare-headers /tmp/duckdb-2.0-native/native
 cabal build all -fsystemlib --extra-lib-dirs=/tmp/duckdb-2.0-native/native
 DUCKDB_TEST_VERSION=2.0.0 cabal test all -fsystemlib --extra-lib-dirs=/tmp/duckdb-2.0-native/native --test-show-details=direct
 ```
@@ -192,8 +192,8 @@ cabal test duckdb-simple:duckdb-simple-quack-test -fquack-tests -fsystemlib --ex
 
 1. Refresh the headers and regenerate both APIs. Review signature, enum,
    callback, and ownership changes. Update the counts in this document.
-2. Record the new shared-library archive digests in `duckdb-ffi/Setup.hs` and
-   `dev/fetch-duckdb.sh`. Keep untested platforms out of the download matrix.
+2. Record the new shared-library archive digests in `duckdb-ffi/native.sha256`.
+   Keep untested platforms out of the download matrix.
 3. Update the Nix source pin and its version assertions.
 4. Run the full suites, the leak suite, and Haddock on all supported compilers.
 5. Build source archives with `cabal sdist all`. Check that they contain the

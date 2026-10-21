@@ -59,7 +59,7 @@ The installer uses upstream `duckdb-shared-libs-PLATFORM.tar.gz` archives.
 It keeps shared-library symlinks and their versioned targets together.
 Keep the installed native directory available while linked applications run.
 
-The download version and checksums are pinned together in `Setup.hs`.
+`duckdb-ffi/native.sha256` pins the release archives and their checksums.
 The Haskell package version can differ from the native library version.
 
 As in [Hasktorch](https://github.com/hasktorch/hasktorch/blob/master/libtorch-ffi/Setup.hs), you can choose the installation directory:

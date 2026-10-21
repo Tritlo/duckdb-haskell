@@ -32,7 +32,6 @@ import Control.Exception (
     SomeException,
     bracket,
     throwIO,
-    try,
  )
 import Control.Monad (forM, forM_, when)
 import Data.Bits (clearBit, setBit)
@@ -275,25 +274,20 @@ registerScalarFunction conn name proxy acquire = do
                         forM_ scalarFunctionInitPtr $ checked . c_duckdb_v2_scalar_function_set_init_callback scalarFun
                         checked (c_duckdb_v2_connection_register_scalar_function connection scalarFun)
 
--- | Drop a previously registered scalar function with a DROP FUNCTION statement.
+{- | Run @DROP FUNCTION IF EXISTS@ and report native errors.
+DuckDB does not permit deletion of functions registered through the C API.
+-}
 deleteFunction :: Connection -> Text -> IO ()
 deleteFunction conn name = do
     let dropQuery = Query ("DROP FUNCTION IF EXISTS " <> qualifyIdentifier name)
-    outcome <- try $
-        withParsedStatements conn dropQuery $ \parsed ->
-            forM_ parsed $ \statement ->
-                bracket
-                    (createStatementFromParsed conn dropQuery statement)
-                    (closeStatementState . statementState)
-                    \prepared -> withResult prepared $ \result -> do
-                        _ <- runInterruptibleQuery conn (output (c_duckdb_v2_result_drain result))
-                        pure ()
-    case outcome of
-        Right () -> pure ()
-        Left err
-            -- Native scalar functions are internal catalog entries and cannot be dropped.
-            | Text.isInfixOf "Cannot drop internal catalog entry" (sqlErrorMessage err) -> pure ()
-            | otherwise -> throwIO err
+    withParsedStatements conn dropQuery $ \parsed ->
+        forM_ parsed $ \statement ->
+            bracket
+                (createStatementFromParsed conn dropQuery statement)
+                (closeStatementState . statementState)
+                \prepared -> withResult prepared $ \result -> do
+                    _ <- runInterruptibleQuery conn (output (c_duckdb_v2_result_drain result))
+                    pure ()
 
 withLogicalType :: DuckDBV2ConnectionHandle -> DuckDBV2LogicalTypeId -> (DuckDBV2LogicalTypeHandle -> IO a) -> IO a
 withLogicalType connection dtype =

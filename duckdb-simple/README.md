@@ -655,22 +655,20 @@ box.
 ```haskell
 import Data.Int (Int64)
 import Database.DuckDB.Simple
-import Database.DuckDB.Simple.Function (createFunction, deleteFunction)
+import Database.DuckDB.Simple.Function (createFunction)
 import Database.DuckDB.Simple.Types (Only (..))
 
 registerAndUse :: Connection -> IO [Only Int64]
 registerAndUse conn = do
   createFunction conn "hs_times_two" (\(x :: Int64) -> x * 2)
-  result <- query_ conn "SELECT hs_times_two(21)" :: IO [Only Int64]
-  deleteFunction conn "hs_times_two"
-  pure result
+  query_ conn "SELECT hs_times_two(21)"
 ```
 
-Exceptions raised while the function executes are propagated back to DuckDB as
-`SQLError` values, and `deleteFunction` issues a `DROP FUNCTION IF EXISTS`
-statement to remove the registration. DuckDB registers C API scalar functions
-as internal entries; attempting to drop them this way will yield an error, which
-the library surfaces as an `SQLError`.
+Exceptions raised while the function executes become `SQLError` values.
+`deleteFunction` issues a `DROP FUNCTION IF EXISTS` statement and reports native
+errors. DuckDB registers C API scalar functions as internal entries and rejects
+their deletion. The function remains registered after this `SQLError`.
+Deleting an absent name succeeds.
 
 ## Tests
 

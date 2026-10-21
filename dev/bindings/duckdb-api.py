@@ -354,7 +354,7 @@ def coverage(header: str, bindings: str) -> tuple[dict[str, object], set[str]]:
                 aliases[name] = alias
                 break
     callback_typedef_count = len(callbacks)
-    for structure in re.finditer(r"\bstruct\s+(Arrow\w+)\s*{([^{}]*)}", clean_c(header), re.S):
+    for structure in re.finditer(r"\bstruct\s+(\w+)\s*{([^{}]*)}", clean_c(header), re.S):
         for field in re.finditer(r"([^;{}]+?)\(\s*\*\s*(\w+)\s*\)\s*\([^;]*\)\s*;", structure[2]):
             name = f"{structure[1]}_{field[2]}_fn"
             callbacks[name] = normalize(field[0].removesuffix(";"))

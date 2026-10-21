@@ -37,7 +37,6 @@ RUN --mount=type=cache,id=apt-cache,target=/var/cache/apt \
       ca-certificates \
       locales \
       build-essential \
-      cmake \
       python3 \
       libffi-dev \
       libgmp-dev \
@@ -54,15 +53,15 @@ RUN groupadd -g "$GID" -o "$USER_NAME" && \
     echo '%sudo ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
 
 WORKDIR /tmp
-COPY dev/preview/build-duckdb.sh /preview/dev/preview/
-COPY dev/bindings/duckdb-api.py /preview/dev/bindings/
-COPY duckdb-ffi/vendor/duckdb-api.json /preview/duckdb-ffi/vendor/
-COPY duckdb-ffi/cbits/duckdb*.h duckdb-ffi/cbits/duckdb-LICENSE /preview/duckdb-ffi/cbits/
-ARG DUCKDB_BUILD_JOBS=2
-RUN DUCKDB_BUILD_JOBS="$DUCKDB_BUILD_JOBS" bash /preview/dev/preview/build-duckdb.sh /tmp/duckdb-preview && \
-    cp -P /tmp/duckdb-preview/native/libduckdb.so* /usr/lib/ && \
-    cp /tmp/duckdb-preview/native/duckdb*.h /usr/include/ && \
-    install -Dm644 /tmp/duckdb-preview/native/duckdb-LICENSE /usr/share/licenses/duckdb/LICENSE && \
+COPY dev/fetch-duckdb.sh /native/dev/
+COPY dev/bindings/duckdb-api.py /native/dev/bindings/
+COPY duckdb-ffi/vendor/duckdb-api.json /native/duckdb-ffi/vendor/
+COPY duckdb-ffi/cbits/duckdb*.h duckdb-ffi/cbits/duckdb-LICENSE /native/duckdb-ffi/cbits/
+RUN bash /native/dev/fetch-duckdb.sh /tmp/duckdb-2.0 && \
+    cp /tmp/duckdb-2.0/native/libduckdb.so /usr/lib/ && \
+    cp /tmp/duckdb-2.0/native/duckdb*.h /usr/include/ && \
+    install -Dm755 /tmp/duckdb-2.0/native/duckdb /usr/local/bin/duckdb && \
+    install -Dm644 /tmp/duckdb-2.0/native/duckdb-LICENSE /usr/share/licenses/duckdb/LICENSE && \
     ldconfig
 
 # Switch to the new user
@@ -114,7 +113,7 @@ RUN (cd duckdb-ffi && sha256sum --check generated.sha256) && \
 
 
 # Test the packages
-RUN DUCKDB_TEST_VERSION=2.0.0-dev0 cabal test all --project-file=cabal.project --project-dir=/app --test-show-details=streaming
+RUN DUCKDB_TEST_VERSION=2.0.0 cabal test all --project-file=cabal.project --project-dir=/app --test-show-details=streaming
 
 # Generate Haddocks for all packages
 RUN cabal haddock all --project-file=cabal.project --project-dir=/app --haddock-for-hackage --enable-documentation

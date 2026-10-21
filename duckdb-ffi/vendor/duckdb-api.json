@@ -15,7 +15,7 @@
       "source": "src/include/duckdb_v2.h"
     }
   },
-  "ref": "v2.0-cyanoptera",
+  "ref": "v2.0.0",
   "repository": "https://github.com/duckdb/duckdb",
   "source_archive": {
     "sha256": "93e3d1f9c84b6ec3493237d21565c01c2c19b9862e54e5552d3d7999ccc3bbb4",

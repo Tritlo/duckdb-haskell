@@ -7,8 +7,8 @@ let
   pkgs = import nixpkgs { };
   manifest = builtins.fromJSON (builtins.readFile ../../duckdb-ffi/vendor/duckdb-api.json);
   nativeDuckDB = pkgs.stdenv.mkDerivation {
-    pname = "duckdb-preview";
-    version = "2.0.0-dev0";
+    pname = "duckdb";
+    version = "2.0.0";
     src = pkgs.fetchurl {
       name = "duckdb-${manifest.commit}.tar.gz";
       inherit (manifest.source_archive) url sha256;
@@ -18,7 +18,7 @@ let
       "-DBUILD_UNITTESTS=OFF"
       "-DBUILD_SHELL=OFF"
       "-DBUILD_EXTENSIONS=icu;json;parquet"
-      "-DDUCKDB_EXPLICIT_VERSION=v2.0.0-dev0"
+      "-DDUCKDB_EXPLICIT_VERSION=v2.0.0"
       "-DGIT_COMMIT_HASH=${manifest.commit}"
     ];
     buildTarget = "duckdb";

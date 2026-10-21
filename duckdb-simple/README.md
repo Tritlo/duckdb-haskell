@@ -88,9 +88,10 @@ Non-ASCII characters retain their case. Session variables
 can supply omitted named parameters. DuckDB rejects an omitted parameter
 that has no variable value.
 
-If the number of supplied parameters does not match the statement’s declared
-placeholders—or if you attempt to bind named arguments to a positional-only
-statement—`duckdb-simple` raises a `FormatError` before executing the query.
+`duckdb-simple` raises a `FormatError` before it executes the query in these
+cases: the number of positional parameters does not match the placeholders,
+you supply more named parameters than the statement declares, or you bind named
+arguments to a statement with only positional placeholders.
 
 ### Decoding rows
 
@@ -350,9 +351,11 @@ does not bound the memory used by query operators.
 
 The first cursor fetch selects the execution mode until an explicit reset.
 Switching between default and streaming `nextRow` calls retains that mode.
-Keep the connection dedicated to the active stream; another query on that
-connection can invalidate it. Cancellation interrupts native chunk fetching
-as well as execution.
+Keep the connection dedicated to the active stream. Until the stream is
+complete, DuckDB rejects other statements on that connection with a
+`RESOURCE_IN_USE` error. If you close an incomplete stream, DuckDB aborts its
+statement. In autocommit mode, DuckDB rolls back the writes of that statement.
+Cancellation interrupts native chunk fetching as well as execution.
 
 This module also provides `foldArrow` and `foldArrow_` for streaming Arrow
 batches. They use the same supported Arrow conversion and scoped ownership
@@ -441,8 +444,8 @@ contain NUL.
 
 The v1 C API has no accessor for VARIANT payloads. The decoder checks the
 native version and physical schema before it reads the internal representation.
-It checks payload bounds and rejects unknown tags. This format dependency is
-limited to the tested DuckDB 2.0 runtime.
+It checks payload bounds and rejects unknown tags. The decoder accepts only
+DuckDB 2.0.x releases, because development builds can use another format.
 
 New DuckDB 2.0 databases use storage format 2.0, which supports VARIANT columns.
 The library does not change an existing database's storage compatibility
@@ -509,8 +512,9 @@ Structured parameters use `encodeWKT` and DuckDB's native cast. The v1
 C API has no WKB value constructor. The WKT writer combines layouts
 in multi-geometries and polygon rings. It fills absent Z or M with NaN.
 DuckDB's WKT parser limits nesting to 16 levels and rejects empty polygon rings
-and mixed collection layouts. Explicit WKB import preserves mixed member
-layouts and native NaN payload bits that WKT cannot retain.
+and mixed collection layouts. DuckDB 2.0 also rejects WKB with mixed Z/M member
+layouts. Explicit WKB import preserves native NaN payload bits that WKT cannot
+retain.
 
 `FieldGeometry` contains a raw result. Generic STRUCT and UNION parameters
 that contain non-NULL raw geometry raise an error. Construct those values in

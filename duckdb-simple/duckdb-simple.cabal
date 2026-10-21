@@ -22,7 +22,7 @@ description:
   prepared statements, chunked folds, transactions, and Haskell scalar
   functions. The API follows the style of sqlite-simple and postgresql-simple.
   .
-  Supports native DuckDB >= 2.0 and < 2.1.
+  Supports DuckDB 2.0.x releases. Tested with DuckDB 2.0.0.
   The duckdb-ffi package also provides the new V2 C API.
 
 extra-doc-files:
@@ -102,8 +102,8 @@ test-suite duckdb-simple-test
     CoreRegressionTests
     ExtensionRegressionTests
     GeometryRegressionTests
-    PreviewTests
     Properties
+    SqlFeatureTests
     StreamingTests
     TestUtils
     TimeTests

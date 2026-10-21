@@ -2,7 +2,6 @@
 
 `duckdb-ffi` 2.0 and `duckdb-simple` 0.4 target DuckDB 2.0.
 See [the pinned API, feature coverage, and build commands](docs/duckdb-2.0.md).
-The package version selects the native API; builds need no preview flag.
 Use the earlier package releases with DuckDB 1.5.
 
 ## duckdb-ffi
@@ -21,8 +20,11 @@ The package generates bindings from the pinned DuckDB 2.0 client headers with
 - Generates native types, layouts, callbacks, and calling-convention adapters.
 - Includes integration tests for the native bindings.
 - Covers all 548 retained and 620 V2 functions in the pinned 2.0.0 release.
-- V2 is unstable. Use DuckDB 2.0.0, which matches the source pin in
-  `duckdb-ffi/vendor/duckdb-api.json`.
+- `Database.DuckDB.FFI` supports DuckDB 2.0.x releases. CI tests DuckDB 2.0.0.
+- `Database.DuckDB.FFI.V2` requires exactly DuckDB 2.0.0. Upstream marks the
+  complete V2 API as unstable: "The C API v2 is not yet stable. Its interface
+  may change in upcoming releases." A later DuckDB release can require a new
+  `duckdb-ffi` release for V2.
 
 ### Generate the bindings
 
@@ -96,10 +98,13 @@ When building this repository, you can also pass `-fsystemlib` and
 `--extra-lib-dirs=/absolute/path/to/duckdb` on the command line.
 Supplying `extra-lib-dirs` also skips the download without the flag.
 
-The supplied library must be DuckDB 2.0.0 and match the bundled headers.
-In Nix builds and shells, Setup uses Cabal and Nix to find the library and
-skips the download. Cross builds, musl Linux, and other platforms must supply
-the target library explicitly.
+The supplied library must be a DuckDB 2.0.x release. The V2 API requires
+exactly DuckDB 2.0.0. In Nix builds and shells, Setup uses Cabal and Nix to
+find the library and skips the download.
+
+`duckdb-ffi` builds on Linux and macOS on x86_64 and aarch64. The generated ABI
+checks reject other platforms. The automatic download supports glibc Linux and
+macOS. On other Linux systems, supply the library with `-fsystemlib`.
 
 For raw API changes and earlier upgrade notes, see
 [MIGRATION.md](MIGRATION.md).
@@ -149,7 +154,7 @@ The project and Docker use GHC 9.14.1 by default.
 Use `cabal build all --with-compiler=ghc-VERSION` to select another compiler.
 
 CI uses the pinned DuckDB 2.0.0 release archives on Linux and macOS ARM64.
-Docker builds and tests both packages with the same release. Nix builds the
-pinned final source and tests both packages.
+Two jobs use the automatic download. Docker builds and tests both packages
+with the same release. Nix builds the pinned source and tests both packages.
 The tests check the loaded native version. With GHC 9.14.1, CI also installs
 `duckdb-ffi` and runs a separate program with normal and dynamic Haskell linking.

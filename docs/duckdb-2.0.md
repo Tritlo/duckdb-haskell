@@ -32,8 +32,8 @@ structure definitions. The V2 header declares 620 functions.
 
 Both client APIs are generated with `hs-bindgen` 1.0. `Database.DuckDB.FFI`
 exposes the retained API and replaces the old aggregate and Deprecated modules.
-`Database.DuckDB.FFI.V2` exposes the V2 API. The V2 Functions and Types
-submodules are no longer exposed. The raw API exposes native primitives.
+`Database.DuckDB.FFI.V2` exposes the new V2 API. The raw API exposes native
+primitives.
 `duckdb-simple` retains its existing connection and result API.
 
 Each generated module has its own native types. Equal C layouts do not make
@@ -129,7 +129,7 @@ These commands build local artifacts without uploading or deploying them.
 
 ## Feature coverage
 
-The SQL feature list follows the [upstream 2.0 preview](https://duckdb.org/2026/08/17/duckdb-20-highlights).
+The SQL feature list follows the [DuckDB 2.0.0 announcement](https://duckdb.org/2026/10/21/announcing-duckdb-200).
 The C API list follows the pinned headers. SQL support depends on the native
 build and its installed extensions.
 

@@ -3,6 +3,7 @@
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# OPTIONS_GHC -Wno-deprecations #-}
 
 module VariantRegressionTests (tests) where
@@ -243,14 +244,17 @@ tests =
             _ <- execute_ conn "CREATE MACRO ST_AsText(x) AS 42"
             _ <- execute_ conn "CREATE MACRO ST_GeomFromWKB(x) AS 'POINT (9 9)'::GEOMETRY"
             (query conn "SELECT system.main.ST_GeomFromWKB(?)::VARIANT" (Only (rawGeometryWKB geometry)) :: IO [Only Variant]) >>= (@?= [Only (geometryPayload (rawGeometryWKB geometry))])
-        , testCase "binary geometry payloads retain NaN bits and mixed member layouts" $ withConnection ":memory:" \conn ->
-            forM_
-                [ G.PointGeometry (G.PointXYZ (G.XYZ (castWord64ToDouble 0x7ff8000000000001) (castWord64ToDouble 0x7ff8000000000002) 7))
-                , G.GeometryCollection (V.fromList [G.PointGeometry (G.PointXY (G.XY 1 2)), G.PointGeometry (G.PointXYZ (G.XYZ 3 4 5))])
-                ]
-                \shape -> do
-                    raw <- either assertFailure pure (toRawGeometry shape)
-                    (query conn "SELECT system.main.ST_GeomFromWKB(?)::VARIANT" (Only (rawGeometryWKB raw)) :: IO [Only Variant]) >>= (@?= [Only (geometryPayload (rawGeometryWKB raw))])
+        , testCase "binary geometry preserves NaN bits and rejects mixed member layouts" $ withConnection ":memory:" \conn -> do
+            let nanPoint = G.PointGeometry (G.PointXYZ (G.XYZ (castWord64ToDouble 0x7ff8000000000001) (castWord64ToDouble 0x7ff8000000000002) 7))
+            raw <- either assertFailure pure (toRawGeometry nanPoint)
+            (query conn "SELECT system.main.ST_GeomFromWKB(?)::VARIANT" (Only (rawGeometryWKB raw)) :: IO [Only Variant]) >>= (@?= [Only (geometryPayload (rawGeometryWKB raw))])
+            let mixed = G.GeometryCollection (V.fromList [G.PointGeometry (G.PointXY (G.XY 1 2)), G.PointGeometry (G.PointXYZ (G.XYZ 3 4 5))])
+            mixedRaw <- either assertFailure pure (toRawGeometry mixed)
+            outcome <- try (query conn "SELECT system.main.ST_GeomFromWKB(?)::VARIANT" (Only (rawGeometryWKB mixedRaw)) :: IO [Only Variant])
+            case outcome of
+                Left (err :: SQLError) -> sqlErrorType err @?= Just DuckDBErrorInvalidInput
+                Right _ -> assertFailure "native GEOMETRY must reject mixed Z/M dimensions"
+            (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
         , testCase "invalid values fail before binding and connection reuse succeeds" $ withConnection ":memory:" \conn -> do
             forM_
                 [ FieldHugeInt (2 ^ (127 :: Int))

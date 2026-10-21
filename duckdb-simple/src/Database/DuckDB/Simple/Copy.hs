@@ -43,10 +43,9 @@ import Control.Monad (forM, forM_, when)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Void (Void)
-import Database.DuckDB.Simple.Callback (attachOpaque, ignoreCallbackExceptions, runCallback, withCallbackResources)
+import Database.DuckDB.Simple.Callback (Allocator, attachOpaque, guardContext, ignoreCallbackExceptions, install, installOptional, readCallbackState, transferCallbackState, withCallbackResources, withTarget)
 import Database.DuckDB.Simple.FromField (Field (..))
-import Database.DuckDB.Simple.Internal (Connection, throwRegistrationError, withConnectionHandle, withDatabaseHandle)
-import Database.DuckDB.Simple.LogicalRep (destroyLogicalType)
+import Database.DuckDB.Simple.Internal (Connection, withDatabaseHandle)
 import Database.DuckDB.Simple.Materialize (VariantReader, prepareVariantReader, prepareVectorReader)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Registration (ContextCallback, RegistrationTarget (..), getCallbackState, setCallbackState)
@@ -54,8 +53,6 @@ import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (withArray)
 import Foreign.Ptr (FunPtr, Ptr, castFunPtr, castPtr, nullPtr)
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deRefStablePtr, freeStablePtr, newStablePtr)
-import Foreign.Storable (Storable)
-import HsBindgen.Runtime.Support.FunPtr (ToFunPtr, toFunPtr)
 
 -- | Bind-phase metadata for a custom COPY TO function.
 data CopyBindInfo = CopyBindInfo
@@ -112,7 +109,7 @@ copyFromCallbacks bind execute = CopyFromCallbacks bind Nothing Nothing execute 
 -- | Register either direction or both. DuckDB owns the allocated callbacks.
 registerCopyFunction :: Connection -> Text -> Maybe CopyToCallbacks -> Maybe CopyFromCallbacks -> IO ()
 registerCopyFunction connection name to from = do
-    when (Text.null name || Text.any (== '\0') name) $ throwRegistrationError "invalid copy function name"
+    when (Text.null name || Text.any (== '\0') name) $ throwInvalidArgument "invalid copy function name"
     registerCopyFunctionWith
         (ConnectionTarget connection)
         (\function -> withIdentifier name (checked . c_duckdb_v2_copy_function_set_name function))
@@ -139,20 +136,17 @@ registerCopyToCallbacks connection name callbacks = registerCopyFunction connect
 registerCopyFromFunction :: Connection -> Text -> CopyFromCallbacks -> IO ()
 registerCopyFromFunction connection name callbacks = registerCopyFunction connection name Nothing (Just callbacks)
 
--- | Allocate a callback pointer tracked by the native registration owner.
-type Allocator = forall a. IO (FunPtr a) -> IO (FunPtr a)
-
 -- | Allocate the configured COPY TO callbacks before installing them.
 toInstallers :: Allocator -> DuckDBV2CopyFunctionHandle -> Maybe CopyToCallbacks -> [IO (IO ())]
 toInstallers _ _ Nothing = []
 toInstallers allocate function (Just callbacks) =
-    [ optional (copyToBindCallback callbacks) $ \callback -> install allocate DuckDBV2CopyToBindCallbackFn (DuckDBV2CopyToBindCallbackFn_Aux (guardContext callback)) (c_duckdb_v2_copy_to_set_bind_callback function)
-    , optional (copyToBatchSizeCallback callbacks) $ \callback -> install allocate DuckDBV2CopyToBatchSizeCallbackFn (DuckDBV2CopyToBatchSizeCallbackFn_Aux (guardContext callback)) (c_duckdb_v2_copy_to_set_batch_size_callback function)
-    , optional (copyToInitCallback callbacks) $ \callback -> install allocate DuckDBV2CopyToInitCallbackFn (DuckDBV2CopyToInitCallbackFn_Aux (guardContext callback)) (c_duckdb_v2_copy_to_set_init_callback function)
+    [ installOptional (copyToBindCallback callbacks) $ \callback -> install allocate DuckDBV2CopyToBindCallbackFn (DuckDBV2CopyToBindCallbackFn_Aux (guardContext callback)) (c_duckdb_v2_copy_to_set_bind_callback function)
+    , installOptional (copyToBatchSizeCallback callbacks) $ \callback -> install allocate DuckDBV2CopyToBatchSizeCallbackFn (DuckDBV2CopyToBatchSizeCallbackFn_Aux (guardContext callback)) (c_duckdb_v2_copy_to_set_batch_size_callback function)
+    , installOptional (copyToInitCallback callbacks) $ \callback -> install allocate DuckDBV2CopyToInitCallbackFn (DuckDBV2CopyToInitCallbackFn_Aux (guardContext callback)) (c_duckdb_v2_copy_to_set_init_callback function)
     , install allocate DuckDBV2CopyToBatchCallbackFn (DuckDBV2CopyToBatchCallbackFn_Aux (guardContext (copyToBatchCallback callbacks))) (c_duckdb_v2_copy_to_set_batch_callback function)
     , install allocate DuckDBV2CopyToFlushCallbackFn (DuckDBV2CopyToFlushCallbackFn_Aux (guardContext (copyToFlushCallback callbacks))) (c_duckdb_v2_copy_to_set_flush_callback function)
-    , optional (copyToFinalizeCallback callbacks) $ \callback -> install allocate DuckDBV2CopyToFinalizeCallbackFn (DuckDBV2CopyToFinalizeCallbackFn_Aux (guardContext callback)) (c_duckdb_v2_copy_to_set_finalize_callback function)
-    , optional (copyToStatisticsCallback callbacks) $ \callback -> install allocate DuckDBV2CopyToStatisticsCallbackFn (DuckDBV2CopyToStatisticsCallbackFn_Aux (guardContext callback)) (c_duckdb_v2_copy_to_set_statistics_callback function)
+    , installOptional (copyToFinalizeCallback callbacks) $ \callback -> install allocate DuckDBV2CopyToFinalizeCallbackFn (DuckDBV2CopyToFinalizeCallbackFn_Aux (guardContext callback)) (c_duckdb_v2_copy_to_set_finalize_callback function)
+    , installOptional (copyToStatisticsCallback callbacks) $ \callback -> install allocate DuckDBV2CopyToStatisticsCallbackFn (DuckDBV2CopyToStatisticsCallbackFn_Aux (guardContext callback)) (c_duckdb_v2_copy_to_set_statistics_callback function)
     ]
 
 -- | Allocate the configured COPY FROM callbacks before installing them.
@@ -160,26 +154,11 @@ fromInstallers :: Allocator -> DuckDBV2CopyFunctionHandle -> Maybe CopyFromCallb
 fromInstallers _ _ Nothing = []
 fromInstallers allocate function (Just callbacks) =
     [ install allocate DuckDBV2CopyFromBindCallbackFn (DuckDBV2CopyFromBindCallbackFn_Aux (guardContext (copyFromBindCallback callbacks))) (c_duckdb_v2_copy_from_set_bind_callback function)
-    , optional (copyFromInitGlobalCallback callbacks) $ \callback -> install allocate DuckDBV2CopyFromInitGlobalCallbackFn (DuckDBV2CopyFromInitGlobalCallbackFn_Aux (guardContext callback)) (c_duckdb_v2_copy_from_set_init_global_callback function)
-    , optional (copyFromInitLocalCallback callbacks) $ \callback -> install allocate DuckDBV2CopyFromInitLocalCallbackFn (DuckDBV2CopyFromInitLocalCallbackFn_Aux (guardContext callback)) (c_duckdb_v2_copy_from_set_init_local_callback function)
+    , installOptional (copyFromInitGlobalCallback callbacks) $ \callback -> install allocate DuckDBV2CopyFromInitGlobalCallbackFn (DuckDBV2CopyFromInitGlobalCallbackFn_Aux (guardContext callback)) (c_duckdb_v2_copy_from_set_init_global_callback function)
+    , installOptional (copyFromInitLocalCallback callbacks) $ \callback -> install allocate DuckDBV2CopyFromInitLocalCallbackFn (DuckDBV2CopyFromInitLocalCallbackFn_Aux (guardContext callback)) (c_duckdb_v2_copy_from_set_init_local_callback function)
     , install allocate DuckDBV2CopyFromExecCallbackFn (DuckDBV2CopyFromExecCallbackFn_Aux (guardContext (copyFromExecCallback callbacks))) (c_duckdb_v2_copy_from_set_exec_callback function)
-    , optional (copyFromProgressCallback callbacks) $ \callback -> install allocate DuckDBV2CopyFromProgressCallbackFn (DuckDBV2CopyFromProgressCallbackFn_Aux (guardContext callback)) (c_duckdb_v2_copy_from_set_progress_callback function)
+    , installOptional (copyFromProgressCallback callbacks) $ \callback -> install allocate DuckDBV2CopyFromProgressCallbackFn (DuckDBV2CopyFromProgressCallbackFn_Aux (guardContext callback)) (c_duckdb_v2_copy_from_set_progress_callback function)
     ]
-
--- | Allocate one generated callback and defer its checked setter.
-install :: (ToFunPtr auxiliary) => Allocator -> (FunPtr auxiliary -> callback) -> auxiliary -> (callback -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO (IO ())
-install allocate wrap callback setter = do
-    pointer <- wrap <$> allocate (toFunPtr callback)
-    pure (checked (setter pointer))
-
--- | Allocate an optional callback when it is present.
-optional :: Maybe a -> (a -> IO (IO ())) -> IO (IO ())
-optional Nothing _ = pure (pure ())
-optional (Just value) action = action value
-
--- | Translate a callback exception through its native error channel.
-guardContext :: ContextCallback info -> info -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
-guardContext callback info context err = runCallback err (callback info context)
 
 -- | Register row-oriented COPY TO callbacks. Native batch buffers are copied.
 registerCopyToFunction ::
@@ -214,22 +193,22 @@ registerCopyToFunction connection name bindFn initFn sinkFn finalizeFn = withDat
         (state, _) <- readCopyBinding (c_duckdb_v2_copy_to_init_get_bind_data info)
         path <- output (c_duckdb_v2_copy_to_init_get_file_path info) >>= readText
         global <- initFn (CopyInitInfo state (Text.unpack path))
-        setCallbackState (c_duckdb_v2_copy_to_init_set_init_data info) global
+        transferCallbackState (attachOpaque (c_duckdb_v2_copy_to_init_set_init_data info)) global
     batch instanceHandle info context = withContextFactory context $ \factory -> do
         (_, types) <- readCopyBinding (c_duckdb_v2_copy_to_batch_get_bind_data info) :: IO (bindState, [DuckDBV2LogicalTypeHandle])
         rows <- bracket (output (c_duckdb_v2_copy_to_batch_take_input info)) (destroy c_duckdb_v2_column_data_collection_destroy) (materializeCollection factory (readVariant instanceHandle) types)
-        setCallbackState (c_duckdb_v2_copy_to_batch_set_batch_data info) rows
+        transferCallbackState (attachOpaque (c_duckdb_v2_copy_to_batch_set_batch_data info)) rows
     readVariant instanceHandle vector =
         bracket (output (c_duckdb_v2_connection_create instanceHandle)) (destroy c_duckdb_v2_connection_destroy) \helper ->
             prepareVariantReader helper vector
     flush info _ = do
         (state, _) <- readCopyBinding (c_duckdb_v2_copy_to_flush_get_bind_data info)
-        global <- getCallbackState (c_duckdb_v2_copy_to_flush_get_init_data info)
-        rows <- getCallbackState (c_duckdb_v2_copy_to_flush_get_batch_data info)
+        global <- readCallbackState (c_duckdb_v2_copy_to_flush_get_init_data info)
+        rows <- readCallbackState (c_duckdb_v2_copy_to_flush_get_batch_data info)
         sinkFn (CopySinkInfo state global) rows
     finalize info _ = do
         (state, _) <- readCopyBinding (c_duckdb_v2_copy_to_finalize_get_bind_data info)
-        global <- getCallbackState (c_duckdb_v2_copy_to_finalize_get_init_data info)
+        global <- readCallbackState (c_duckdb_v2_copy_to_finalize_get_init_data info)
         finalizeFn (CopyFinalizeInfo state global)
 
 -- | A bind state and its owned logical descriptors share one native lifetime.
@@ -246,7 +225,7 @@ acquireTypes info count taken index
 -- | Read the row wrapper state with its retained logical descriptors.
 readCopyBinding :: (Ptr (Ptr Void) -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO (a, [DuckDBV2LogicalTypeHandle])
 readCopyBinding getter = do
-    CopyBindingStorage raw types <- getCallbackState getter
+    CopyBindingStorage raw types <- readCallbackState getter
     state <- deRefStablePtr (castPtrToStablePtr raw)
     pure (state, types)
 
@@ -313,7 +292,7 @@ defaultMultiFileOptions = MultiFileOptions Nothing Nothing
 -- | Register globbing, file lists, filename columns, and hive partition support.
 registerMultiFileFunction :: Connection -> Text -> Text -> MultiFileOptions -> IO ()
 registerMultiFileFunction connection name singleFile MultiFileOptions{multiFileReaderType, multiFileExtension} = do
-    when (any (\value -> Text.null value || Text.any (== '\0') value) [name, singleFile]) $ throwRegistrationError "invalid multi-file function name"
+    when (any (\value -> Text.null value || Text.any (== '\0') value) [name, singleFile]) $ throwInvalidArgument "invalid multi-file function name"
     registerMultiFileFunctionWith (ConnectionTarget connection) \function -> do
         withText name (\(ConstPtr view) -> checked (c_duckdb_v2_multi_file_function_set_name function view))
         withText singleFile (\(ConstPtr view) -> checked (c_duckdb_v2_multi_file_function_set_single_file_function function view))
@@ -326,20 +305,3 @@ registerMultiFileFunctionWith target configure =
     withTarget target c_duckdb_v2_multi_file_function_create c_duckdb_v2_multi_file_function_destroy c_duckdb_v2_connection_register_multi_file_function c_duckdb_v2_extension_register_multi_file_function \function register -> do
         configure function
         register
-
--- | Keep the target alive while borrowing its factory and registration builder.
-withTarget ::
-    (Storable handle) =>
-    RegistrationTarget ->
-    (DuckDBV2FactoryHandle -> Ptr handle -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) ->
-    (Ptr handle -> IO DuckDBV2Error) ->
-    (DuckDBV2ConnectionHandle -> handle -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) ->
-    (DuckDBV2ExtensionHandle -> handle -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) ->
-    (handle -> IO () -> IO a) ->
-    IO a
-withTarget target create release registerConnection registerExtension action = case target of
-    ConnectionTarget connection -> withConnectionHandle connection $ \native ->
-        withConnectionFactory native $ \factory ->
-            bracket (output (create factory)) (destroy release) $ \handle -> action handle (checked (registerConnection native handle))
-    ExtensionTarget extension context -> withContextFactory context $ \factory ->
-        bracket (output (create factory)) (destroy release) $ \handle -> action handle (checked (registerExtension extension handle))

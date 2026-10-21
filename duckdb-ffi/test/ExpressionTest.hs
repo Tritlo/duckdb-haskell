@@ -1,7 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TypeApplications #-}
 
@@ -12,12 +11,11 @@ import Data.Char (toLower)
 import Data.Coerce (coerce)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf)
-import Data.Void (Void)
 import Database.DuckDB.FFI
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (peekCString)
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (FunPtr, Ptr, freeHaskellFunPtr, nullFunPtr, nullPtr)
+import Foreign.Ptr (freeHaskellFunPtr, nullFunPtr, nullPtr)
 import Foreign.Storable (peek, poke)
 import GHC.Records (getField)
 import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
@@ -100,7 +98,7 @@ withExpressionFunction conn funcName action = do
                 c_duckdb_scalar_function_set_return_type scalarFun intType
                 c_duckdb_scalar_function_set_bind scalarFun bindPtr
                 c_duckdb_scalar_function_set_function scalarFun execPtr
-                c_duckdb_scalar_function_set_extra_info scalarFun (coerce (nullPtr :: Ptr Void)) (coerce (nullFunPtr :: FunPtr Void))
+                c_duckdb_scalar_function_set_extra_info scalarFun nullPtr (coerce nullFunPtr)
                 c_duckdb_register_scalar_function conn scalarFun >>= (@?= DuckDBSuccess)
                 action
                     ExpressionHarness
@@ -109,8 +107,8 @@ withExpressionFunction conn funcName action = do
                         , ehFoldedValue = readIORef valueRef
                         , ehFoldError = readIORef errorRef
                         }
-    (freeHaskellFunPtr . coerce) bindPtr
-    (freeHaskellFunPtr . coerce) execPtr
+    freeHaskellFunPtr (coerce bindPtr)
+    freeHaskellFunPtr (coerce execPtr)
     pure result
 
 expressionBind :: ExpressionState -> DuckDBBindInfo -> IO ()
@@ -131,12 +129,12 @@ expressionBind ExpressionState{esFoldable, esReturnType, esFoldValue, esFoldErro
                 c_duckdb_scalar_function_get_client_context info ctxPtr
                 ctx <- peek ctxPtr
                 alloca \valuePtr -> do
-                    poke valuePtr (coerce (nullPtr :: Ptr Void))
+                    poke valuePtr (coerce nullPtr)
                     errData <- c_duckdb_expression_fold ctx exprHandle valuePtr
-                    if errData == (coerce (nullPtr :: Ptr Void))
+                    if errData == coerce nullPtr
                         then do
                             valueHandle <- peek valuePtr
-                            if valueHandle == (coerce (nullPtr :: Ptr Void))
+                            if valueHandle == coerce nullPtr
                                 then do
                                     writeIORef esFoldValue Nothing
                                     writeIORef esFoldError (Just "fold produced null value")
@@ -147,7 +145,7 @@ expressionBind ExpressionState{esFoldable, esReturnType, esFoldValue, esFoldErro
                                     destroyDuckValue valueHandle
                         else do
                             msgPtr <- c_duckdb_error_data_message errData
-                            msg <- (peekCString . coerce) msgPtr
+                            msg <- peekCString (coerce msgPtr)
                             writeIORef esFoldValue Nothing
                             writeIORef esFoldError (Just msg)
                             destroyErrorData errData
@@ -164,7 +162,7 @@ expressionExec _ chunk outVec = do
 duckValueToString :: DuckDBValue -> IO String
 duckValueToString value = do
     strPtr <- c_duckdb_value_to_string value
-    text <- (peekCString . coerce) strPtr
+    text <- peekCString (coerce strPtr)
     c_duckdb_free (coerce strPtr)
     pure text
 

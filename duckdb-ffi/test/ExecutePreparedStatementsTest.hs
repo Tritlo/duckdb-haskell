@@ -5,12 +5,11 @@ module ExecutePreparedStatementsTest (tests) where
 
 import Control.Monad (forM_)
 import Data.Coerce (coerce)
-import Data.Void (Void)
 import Database.DuckDB.FFI
 import Foreign.C.String (peekCString)
 import Foreign.C.Types (CBool (..))
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (Ptr, nullPtr)
+import Foreign.Ptr (nullPtr)
 import Foreign.Storable (peek, poke)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
@@ -49,7 +48,7 @@ executePreparedProducesResult =
                         st <- c_duckdb_prepare conn querySql stmtPtr
                         st @?= DuckDBSuccess
                         stmt <- peek stmtPtr
-                        assertBool "prepared statement should not be null" (stmt /= (coerce (nullPtr :: Ptr Void)))
+                        assertBool "prepared statement should not be null" (stmt /= coerce nullPtr)
 
                         c_duckdb_bind_int32 stmt 1 2 >>= (@?= DuckDBSuccess)
 
@@ -57,14 +56,14 @@ executePreparedProducesResult =
                             execState <- c_duckdb_execute_prepared stmt resPtr
                             execState @?= DuckDBSuccess
 
-                            streamingFlag <- (peek resPtr >>= \rawValue -> c_duckdb_result_is_streaming rawValue)
+                            streamingFlag <- peek resPtr >>= \rawValue -> c_duckdb_result_is_streaming rawValue
                             streamingFlag @?= CBool 0
 
                             rowCount <- c_duckdb_row_count resPtr
                             rowCount @?= 1
 
                             varcharPtr <- c_duckdb_value_varchar resPtr 0 0
-                            (peekCString . coerce) varcharPtr >>= (@?= "beta")
+                            peekCString (coerce varcharPtr) >>= (@?= "beta")
                             c_duckdb_free (coerce varcharPtr)
 
                             c_duckdb_destroy_result resPtr
@@ -83,17 +82,17 @@ executePreparedStreamingProducesChunks =
                         st <- c_duckdb_prepare conn querySql stmtPtr
                         st @?= DuckDBSuccess
                         stmt <- peek stmtPtr
-                        assertBool "streaming prepared statement should not be null" (stmt /= (coerce (nullPtr :: Ptr Void)))
+                        assertBool "streaming prepared statement should not be null" (stmt /= coerce nullPtr)
 
                         alloca \resPtr -> do
                             execState <- c_duckdb_execute_prepared_streaming stmt resPtr
                             execState @?= DuckDBSuccess
 
-                            streamingFlag <- (peek resPtr >>= \rawValue -> c_duckdb_result_is_streaming rawValue)
+                            streamingFlag <- peek resPtr >>= \rawValue -> c_duckdb_result_is_streaming rawValue
                             streamingFlag @?= CBool 1
 
-                            chunk <- (peek resPtr >>= \rawValue -> c_duckdb_stream_fetch_chunk rawValue)
-                            assertBool "streaming fetch chunk returns data" (chunk /= (coerce (nullPtr :: Ptr Void)))
+                            chunk <- peek resPtr >>= \rawValue -> c_duckdb_stream_fetch_chunk rawValue
+                            assertBool "streaming fetch chunk returns data" (chunk /= coerce nullPtr)
 
                             chunkSize <- c_duckdb_data_chunk_get_size chunk
                             assertBool "streamed chunk should contain rows" (chunkSize > 0)

@@ -3,31 +3,81 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- | Manage callback resources at the DuckDB ownership boundary.
+-- | Manage callback resources and registration builders at the DuckDB ownership boundary.
 module Database.DuckDB.Simple.Callback (
+    RegistrationTarget (..),
+    withTarget,
+    Allocator,
+    install,
+    installOptional,
+    guardContext,
     withCallbackResources,
     withCallbackResourcesFinally,
     transferCallbackState,
+    readCallbackState,
     runCallback,
     ignoreCallbackExceptions,
     attachOpaque,
 ) where
 
-import Control.Exception (SomeException, catch, displayException, finally, mask, mask_, onException, try)
+import Control.Exception (SomeException, bracket, catch, displayException, finally, mask, mask_, onException, try)
+import Control.Monad (when)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import qualified Data.Text as Text
 import Data.Void (Void)
+import Database.DuckDB.Simple.Internal (Connection, withConnectionHandle)
 import Database.DuckDB.Simple.Native
 import Foreign.Marshal.Utils (with)
 import Foreign.Ptr (FunPtr, Ptr, castFunPtr, castPtr, freeHaskellFunPtr, nullFunPtr, nullPtr)
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deRefStablePtr, freeStablePtr, newStablePtr)
-import Foreign.Storable (peek)
+import Foreign.Storable (Storable, peek)
+import HsBindgen.Runtime.Support.FunPtr (ToFunPtr, toFunPtr)
+
+{- | A registration target. Extension handles are borrowed from an extension load
+callback and must not escape it. Configure extension types and values with
+the context supplied to that callback.
+-}
+data RegistrationTarget = ConnectionTarget Connection | ExtensionTarget DuckDBV2ExtensionHandle DuckDBV2ContextHandle
+
+-- | Keep the target alive while borrowing its factory and registration builder.
+withTarget ::
+    (Storable handle) =>
+    RegistrationTarget ->
+    (DuckDBV2FactoryHandle -> Ptr handle -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) ->
+    (Ptr handle -> IO DuckDBV2Error) ->
+    (DuckDBV2ConnectionHandle -> handle -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) ->
+    (DuckDBV2ExtensionHandle -> handle -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) ->
+    (handle -> IO () -> IO a) ->
+    IO a
+withTarget target create release registerConnection registerExtension action = case target of
+    ConnectionTarget connection -> withConnectionHandle connection $ \native ->
+        withConnectionFactory native $ \factory ->
+            bracket (output (create factory)) (destroy release) $ \handle -> action handle (checked (registerConnection native handle))
+    ExtensionTarget extension context -> withContextFactory context $ \factory ->
+        bracket (output (create factory)) (destroy release) $ \handle -> action handle (checked (registerExtension extension handle))
+
+-- | Allocate a callback pointer tracked by the native registration owner.
+type Allocator = forall a. IO (FunPtr a) -> IO (FunPtr a)
+
+-- | Allocate one generated callback and defer its checked setter.
+install :: (ToFunPtr auxiliary) => Allocator -> (FunPtr auxiliary -> callback) -> auxiliary -> (callback -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO (IO ())
+install allocate wrap callback setter = do
+    pointer <- wrap <$> allocate (toFunPtr callback)
+    pure (checked (setter pointer))
+
+-- | Allocate an optional callback when it is present.
+installOptional :: Maybe a -> (a -> IO (IO ())) -> IO (IO ())
+installOptional value action = maybe (pure (pure ())) action value
+
+-- | Translate a callback exception through its native error channel.
+guardContext :: (info -> DuckDBV2ContextHandle -> IO ()) -> info -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+guardContext callback info context err = runCallback err (callback info context)
 
 {- | Acquire callbacks and transfer their cleanup to a DuckDB object.
 The object must be non-null. Its destructor must run after the action.
 -}
 withCallbackResources ::
-    ((forall a. IO (FunPtr a) -> IO (FunPtr a)) -> IO r) ->
+    (Allocator -> IO r) ->
     (Ptr Void -> DuckDBV2OpaqueDestroyFn -> IO ()) ->
     (r -> IO b) ->
     IO b
@@ -38,7 +88,7 @@ This includes acquisition and registration failure. Contain final-action errors.
 -}
 withCallbackResourcesFinally ::
     IO () ->
-    ((forall a. IO (FunPtr a) -> IO (FunPtr a)) -> IO r) ->
+    (Allocator -> IO r) ->
     (Ptr Void -> DuckDBV2OpaqueDestroyFn -> IO ()) ->
     (r -> IO b) ->
     IO b
@@ -64,6 +114,13 @@ transferCallbackState attach state = mask_ do
     stable <- newStablePtr state
     attach (castPtr (castStablePtrToPtr stable)) callbackStateDestructor
         `onException` freeStablePtr stable
+
+-- | Read state stored with 'transferCallbackState'. The caller supplies its type.
+readCallbackState :: (Ptr (Ptr Void) -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO a
+readCallbackState getter = do
+    ptr <- output getter
+    when (ptr == nullPtr) $ throwInvalidArgument (Text.pack "callback state is not initialized")
+    deRefStablePtr (castPtrToStablePtr (castPtr ptr))
 
 -- | Convert callback exceptions to native V2 diagnostics.
 runCallback :: Ptr DuckDBV2ErrorInfoHandle -> IO () -> IO ()

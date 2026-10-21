@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | V2 log sinks with managed callbacks and copied log entries.
@@ -22,7 +23,7 @@ import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Data.Word (Word64)
 import Database.DuckDB.Simple.Callback (attachOpaque, runCallback, withCallbackResourcesFinally)
-import Database.DuckDB.Simple.Internal (Connection, Instance, throwRegistrationError, withConnectionHandle, withDatabaseHandle, withInstanceHandle)
+import Database.DuckDB.Simple.Internal (Connection, Instance, withConnectionHandle, withDatabaseHandle, withInstanceHandle)
 import Database.DuckDB.Simple.Native
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.Types (CBool)
@@ -76,7 +77,7 @@ registerExtensionLogSink extension context name write flush = withContextFactory
 -- | Transfer callback ownership to the native sink and release its builder.
 registerSink :: DuckDBV2FactoryHandle -> (DuckDBV2LogSinkHandle -> IO ()) -> Text -> (LogEntry -> IO ()) -> IO () -> IO ()
 registerSink factory register name write flush = do
-    when (Text.null name || Text.any (== '\0') name) $ throwRegistrationError "log sink name must be nonempty and must not contain NUL"
+    when (Text.null name || Text.any (== '\0') name) $ throwInvalidArgument "log sink name must be nonempty and must not contain NUL"
     bracket (output (c_duckdb_v2_log_sink_create factory)) (destroy c_duckdb_v2_log_sink_destroy) \sink ->
         withCallbackResourcesFinally
             flush
@@ -109,14 +110,14 @@ optionalId getter = alloca \present -> do
 
 -- | Retain the textual severity names of the log-storage interface.
 levelName :: DuckDBV2LogLevel -> Text
-levelName level
-    | level == DuckDBV2LogLevelTrace = "TRACE"
-    | level == DuckDBV2LogLevelDebug = "DEBUG"
-    | level == DuckDBV2LogLevelInfo = "INFO"
-    | level == DuckDBV2LogLevelWarning = "WARNING"
-    | level == DuckDBV2LogLevelError = "ERROR"
-    | level == DuckDBV2LogLevelFatal = "FATAL"
-    | otherwise = Text.pack (show level)
+levelName = \case
+    DuckDBV2LogLevelTrace -> "TRACE"
+    DuckDBV2LogLevelDebug -> "DEBUG"
+    DuckDBV2LogLevelInfo -> "INFO"
+    DuckDBV2LogLevelWarning -> "WARNING"
+    DuckDBV2LogLevelError -> "ERROR"
+    DuckDBV2LogLevelFatal -> "FATAL"
+    level -> Text.pack (show level)
 
 -- | Emit a message from a native callback's borrowed context.
 logMessage :: DuckDBV2ContextHandle -> DuckDBV2LogLevel -> Text -> Text -> IO ()

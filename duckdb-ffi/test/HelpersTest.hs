@@ -8,7 +8,6 @@ import Control.Exception (bracket)
 import Data.Coerce (coerce)
 import Data.Int (Int64)
 import Data.Time.Calendar (diffDays, fromGregorian)
-import Data.Void (Void)
 import Database.DuckDB.FFI
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (peekCStringLen)
@@ -37,7 +36,7 @@ testMallocFree :: TestTree
 testMallocFree =
     testCase "duckdb_malloc/duckdb_free allocate and release memory" $ do
         ptr <- c_duckdb_malloc (CSize 128)
-        assertBool "allocation should succeed" (ptr /= (coerce (nullPtr :: Ptr Void)))
+        assertBool "allocation should succeed" (ptr /= nullPtr)
         c_duckdb_free ptr
 
 testVectorSize :: TestTree
@@ -55,10 +54,10 @@ testDateTimeHelpers =
             duckDay = DuckDBDate (fromIntegral days)
 
         alloca \dateStructPtr -> do
-            (c_duckdb_from_date duckDay >>= poke dateStructPtr)
+            c_duckdb_from_date duckDay >>= poke dateStructPtr
             DuckDBDateStruct{year = y, month = m, day = d} <- peek dateStructPtr
             (y, m, d) @?= (2023, 6, 1)
-            roundTrippedDay <- (peek dateStructPtr >>= \rawValue -> c_duckdb_to_date rawValue)
+            roundTrippedDay <- peek dateStructPtr >>= \rawValue -> c_duckdb_to_date rawValue
             roundTrippedDay @?= duckDay
 
         c_duckdb_is_finite_date duckDay >>= (@?= CBool 1)
@@ -68,15 +67,15 @@ testDateTimeHelpers =
             duckTime = DuckDBTime (fromIntegral timeMicros)
 
         alloca \timeStructPtr -> do
-            (c_duckdb_from_time duckTime >>= poke timeStructPtr)
+            c_duckdb_from_time duckTime >>= poke timeStructPtr
             DuckDBTimeStruct{hour = h, min = mi, sec = s, micros = mu} <- peek timeStructPtr
             (h, mi, s, mu) @?= (12, 34, 56, 0)
-            roundTrippedTime <- (peek timeStructPtr >>= \rawValue -> c_duckdb_to_time rawValue)
+            roundTrippedTime <- peek timeStructPtr >>= \rawValue -> c_duckdb_to_time rawValue
             roundTrippedTime @?= duckTime
 
         DuckDBTimeTz tz <- c_duckdb_create_time_tz (fromIntegral @Integer timeMicros) 60
         alloca \timeTzPtr -> do
-            (c_duckdb_from_time_tz (DuckDBTimeTz tz) >>= poke timeTzPtr)
+            c_duckdb_from_time_tz (DuckDBTimeTz tz) >>= poke timeTzPtr
             DuckDBTimeTzStruct{time = DuckDBTimeStruct{hour = h', min = mi', sec = s'}, offset = offset} <- peek timeTzPtr
             (h', mi', s', offset) @?= (12, 34, 56, 60)
 
@@ -85,11 +84,11 @@ testDateTimeHelpers =
             duckTimestamp = DuckDBTimestamp tsMicros
 
         alloca \tsStructPtr -> do
-            (c_duckdb_from_timestamp duckTimestamp >>= poke tsStructPtr)
+            c_duckdb_from_timestamp duckTimestamp >>= poke tsStructPtr
             DuckDBTimestampStruct{date = DuckDBDateStruct{year = y', month = m', day = d'}, time = DuckDBTimeStruct{hour = hour', min = minute', sec = sec', micros = micro'}} <-
                 peek tsStructPtr
             (y', m', d', hour', minute', sec', micro') @?= (2023, 6, 1, 12, 34, 56, 0)
-            roundTrippedTs <- (peek tsStructPtr >>= \rawValue -> c_duckdb_to_timestamp rawValue)
+            roundTrippedTs <- peek tsStructPtr >>= \rawValue -> c_duckdb_to_timestamp rawValue
             roundTrippedTs @?= duckTimestamp
 
         c_duckdb_is_finite_timestamp duckTimestamp >>= (@?= CBool 1)
@@ -117,9 +116,9 @@ testStringHelpers =
                         c_duckdb_data_chunk_set_size chunk 1
                         dataPtr <- c_duckdb_vector_get_data vec
                         let stringPtr = coerce dataPtr :: Ptr DuckDBStringT
-                        inlineFlag <- (peek stringPtr >>= \rawValue -> c_duckdb_string_is_inlined rawValue)
+                        inlineFlag <- peek stringPtr >>= \rawValue -> c_duckdb_string_is_inlined rawValue
                         inlineFlag @?= if expectInline then CBool 1 else CBool 0
-                        len <- (peek stringPtr >>= \rawValue -> c_duckdb_string_t_length rawValue)
+                        len <- peek stringPtr >>= \rawValue -> c_duckdb_string_t_length rawValue
                         len @?= fromIntegral (length text)
                         textPtr <- c_duckdb_string_t_data stringPtr
                         peekCStringLen (coerce textPtr, fromIntegral len) >>= (@?= text)
@@ -130,18 +129,18 @@ testHugeIntHelpers =
         alloca \hugePtr -> do
             let hugeVal = DuckDBHugeInt{lower = 123456789, upper = 0}
             poke hugePtr hugeVal
-            CDouble dbl <- (peek hugePtr >>= \rawValue -> c_duckdb_hugeint_to_double rawValue)
+            CDouble dbl <- peek hugePtr >>= \rawValue -> c_duckdb_hugeint_to_double rawValue
             dbl @?= 123456789
-            (c_duckdb_double_to_hugeint (CDouble 987654321) >>= poke hugePtr)
+            c_duckdb_double_to_hugeint (CDouble 987654321) >>= poke hugePtr
             DuckDBHugeInt{lower = lower, upper = upper} <- peek hugePtr
             (upper, lower) @?= (0, 987654321)
 
         alloca \uhugePtr -> do
             let uhugeVal = DuckDBUHugeInt{lower = 987654321, upper = 1}
             poke uhugePtr uhugeVal
-            CDouble dbl <- (peek uhugePtr >>= \rawValue -> c_duckdb_uhugeint_to_double rawValue)
+            CDouble dbl <- peek uhugePtr >>= \rawValue -> c_duckdb_uhugeint_to_double rawValue
             dbl @?= fromIntegral @Integer (987654321 + 2 ^ (64 :: Int))
-            (c_duckdb_double_to_uhugeint (CDouble 123456789) >>= poke uhugePtr)
+            c_duckdb_double_to_uhugeint (CDouble 123456789) >>= poke uhugePtr
             DuckDBUHugeInt{lower = lower, upper = upper} <- peek uhugePtr
             (upper, lower) @?= (0, 123456789)
 
@@ -150,10 +149,10 @@ testDecimalHelpers =
     testCase "decimal helper round-trip" $ do
         let input = CDouble 12345.67
         alloca \decimalPtr -> do
-            (c_duckdb_double_to_decimal input 18 2 >>= poke decimalPtr)
+            c_duckdb_double_to_decimal input 18 2 >>= poke decimalPtr
             DuckDBDecimal{width = width, scale = scale} <- peek decimalPtr
             (width, scale) @?= (18, 2)
-            result <- (peek decimalPtr >>= \rawValue -> c_duckdb_decimal_to_double rawValue)
+            result <- peek decimalPtr >>= \rawValue -> c_duckdb_decimal_to_double rawValue
             result @?= input
 
 -- Utilities ----------------------------------------------------------------

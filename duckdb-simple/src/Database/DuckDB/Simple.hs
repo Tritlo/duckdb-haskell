@@ -99,7 +99,6 @@ module Database.DuckDB.Simple (
 
 import Control.Exception (SomeException, bracket, finally, mask, mask_, onException, throwIO, try)
 import Control.Monad (forM_, void, when, zipWithM_)
-import Data.Char (toLower)
 import Data.List (findIndex)
 import Data.Maybe (isJust, isNothing)
 import qualified Data.Set as Set
@@ -127,9 +126,13 @@ withEnvironment = bracket createEnvironment closeEnvironment
 withInstance :: Environment -> [(Text, Text)] -> (Instance -> IO a) -> IO a
 withInstance environment settings = bracket (createInstance environment settings) closeInstance
 
--- | Attach a catalog. The final argument selects it as the default catalog.
-attachDatabase :: Instance -> FilePath -> Text -> [(Text, Text)] -> Bool -> IO ()
-attachDatabase instance_ path alias settings makeDefault = withInstanceHandle instance_ \raw -> do
+-- | Attach a catalog. Use 'setDefaultDatabase' to select it for new connections.
+attachDatabase :: Instance -> FilePath -> Text -> [(Text, Text)] -> IO ()
+attachDatabase instance_ path alias settings = attachCatalog instance_ path alias settings False
+
+-- | Attach a catalog and optionally select it in the same native call.
+attachCatalog :: Instance -> FilePath -> Text -> [(Text, Text)] -> Bool -> IO ()
+attachCatalog instance_ path alias settings makeDefault = withInstanceHandle instance_ \raw -> do
     when ('\0' `elem` path || Text.any (== '\0') alias) $
         throwIO (SQLError (Text.pack "duckdb-simple: database path or alias contains NUL") Nothing Nothing)
     bracket (output (c_duckdb_v2_attach_options_create raw)) (destroy c_duckdb_v2_attach_options_destroy) \options -> do
@@ -205,7 +208,8 @@ openWithOptions path ConnectionOptions{connectionConfig, connectionGeometryCRS} 
     instance_ <- createInstance environment connectionConfig `onException` closeEnvironment environment
     let release = closeInstance instance_ `finally` closeEnvironment environment
     flip onException release do
-        attachDatabase instance_ (if null path then ":memory:" else path) Text.empty [] True
+        -- An empty alias lets DuckDB derive the catalog name from the path.
+        attachCatalog instance_ (if null path then ":memory:" else path) Text.empty [] True
         createConnection instance_ connectionGeometryCRS release
 
 -- | Close a connection and its statements. The operation is idempotent.
@@ -234,7 +238,7 @@ openStatement conn queryText = withParsedStatements conn queryText \parsed ->
 
 -- | Finalize a prepared statement. The operation is idempotent.
 closeStatement :: Statement -> IO ()
-closeStatement = closeStatementState . statementState
+closeStatement = closeStatementState
 
 -- | Run an action with a prepared statement, closing it afterwards.
 withStatement :: Connection -> Query -> (Statement -> IO a) -> IO a
@@ -427,12 +431,6 @@ withAdHocStatement conn queryText action empty = withParsedStatements conn query
             run rest
      in run statements
 
--- | Execute a parsed statement directly and drain all its side effects.
-executeParsedStatement :: Connection -> Query -> DuckDBV2SqlStatementHandle -> IO Int
-executeParsedStatement conn queryText parsed = withQueryError queryText $
-    bracket (executeParsedResult conn queryText parsed) (destroy c_duckdb_v2_result_destroy) \result ->
-        fromIntegral <$> runInterruptibleQuery conn (output (c_duckdb_v2_result_drain result))
-
 -- Cursors and folds ---------------------------------------------------------
 
 {- | Fold a parameterised result without constructing a complete Haskell row list.
@@ -540,15 +538,11 @@ columnIndexError stmt idx total =
 -- | Use DuckDB's ASCII case rules for parameter names.
 normalizeName :: Text -> Text
 normalizeName name =
-    Text.map asciiLower $
+    foldIdentifier $
         case Text.uncons name of
             Just (prefix, rest)
                 | prefix == ':' || prefix == '$' || prefix == '@' -> rest
             _ -> name
-  where
-    asciiLower char
-        | char >= 'A' && char <= 'Z' = toLower char
-        | otherwise = char
 
 convertRows :: (FromRow r) => Query -> [[Field]] -> IO [r]
 convertRows = convertRowsWith fromRow

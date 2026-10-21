@@ -11,9 +11,9 @@
 - Add shared environments and instances, attachment management, option
   discovery, table descriptions, SQL tokenization, positioned file I/O,
   managed function and type registration, replacement scans, and COPY callbacks.
-- Update to the October 20 V2 API. Borrow factories for type and value creation.
-  Register builders on an explicit connection or extension target. Supply
-  startup-only settings when creating an instance.
+- Borrow factories for type and value creation. Register builders on an
+  explicit connection or extension target. Supply startup-only settings when
+  creating an instance.
 - Add custom configuration options, typed values and defaults, managed log
   sinks, macro and pragma registration, function documentation, query metrics,
   and file path operations. Separate scalar type resolution from binding and
@@ -47,8 +47,7 @@
 - Bind and decode VARIANT values through public V2 operations. Use batched SQL
   type metadata and native casts to preserve scalar types, precision, object
   order, and nested values. Object keys use DuckDB's native lexicographic order.
-  Construct VARIANT types directly through the native factory. Alias internal
-  projections to avoid recursive native column-name generation for deep values.
+  Construct VARIANT types directly through the native factory.
 - Report unavailable custom file-system registration, scoped collation lookup,
   and zero-length fixed ARRAY types explicitly. Empty LIST values still work.
 - Export Arrow release helpers from `Database.DuckDB.Simple.Arrow`.

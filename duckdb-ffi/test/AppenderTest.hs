@@ -11,7 +11,6 @@ import Control.Monad (forM_, when, (>=>))
 import Data.Coerce (coerce)
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.List (isInfixOf)
-import Data.Void (Void)
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.FFI
 import Foreign.C.ConstPtr (ConstPtr (..))
@@ -81,8 +80,8 @@ appenderRowwiseLifecycle =
                     c_duckdb_appender_end_row app >>= (@?= DuckDBSuccess)
 
                     errPtr0 <- c_duckdb_appender_error app
-                    when (errPtr0 /= (coerce (nullPtr :: Ptr Void))) $ do
-                        msg <- (peekCString . coerce) errPtr0
+                    when (errPtr0 /= coerce nullPtr) $ do
+                        msg <- peekCString (coerce errPtr0)
                         msg @?= ""
 
                     c_duckdb_appender_flush app >>= (@?= DuckDBSuccess)
@@ -293,14 +292,14 @@ appenderNumericAndFloatScalars =
                         c_duckdb_value_int16 resPtr 1 0 >>= (@?= int16Val)
                         c_duckdb_value_int64 resPtr 2 0 >>= (@?= int64Val)
                         alloca \ptr -> do
-                            (c_duckdb_value_hugeint resPtr 3 0 >>= poke ptr)
+                            c_duckdb_value_hugeint resPtr 3 0 >>= poke ptr
                             peek ptr >>= (@?= hugeVal)
                         c_duckdb_value_uint8 resPtr 4 0 >>= (@?= uint8Val)
                         c_duckdb_value_uint16 resPtr 5 0 >>= (@?= uint16Val)
                         c_duckdb_value_uint32 resPtr 6 0 >>= (@?= uint32Val)
                         c_duckdb_value_uint64 resPtr 7 0 >>= (@?= uint64Val)
                         alloca \ptr -> do
-                            (c_duckdb_value_uhugeint resPtr 8 0 >>= poke ptr)
+                            c_duckdb_value_uhugeint resPtr 8 0 >>= poke ptr
                             peek ptr >>= (@?= uhugeVal)
                         fv <- c_duckdb_value_float resPtr 9 0
                         realToFrac fv @?= floatVal
@@ -344,21 +343,21 @@ appenderTemporalTypes =
 
                         fetchedDate <- c_duckdb_value_date resPtr 0 0
                         alloca \structPtr -> do
-                            (c_duckdb_from_date fetchedDate >>= poke structPtr)
+                            c_duckdb_from_date fetchedDate >>= poke structPtr
                             peek structPtr >>= (@?= dateStruct)
 
                         fetchedTime <- c_duckdb_value_time resPtr 1 0
                         alloca \structPtr -> do
-                            (c_duckdb_from_time fetchedTime >>= poke structPtr)
+                            c_duckdb_from_time fetchedTime >>= poke structPtr
                             peek structPtr >>= (@?= timeStruct)
 
                         fetchedTimestamp <- c_duckdb_value_timestamp resPtr 2 0
                         alloca \structPtr -> do
-                            (c_duckdb_from_timestamp fetchedTimestamp >>= poke structPtr)
+                            c_duckdb_from_timestamp fetchedTimestamp >>= poke structPtr
                             peek structPtr >>= (@?= timestampStruct)
 
                         alloca \intervalPtr -> do
-                            (c_duckdb_value_interval resPtr 3 0 >>= poke intervalPtr)
+                            c_duckdb_value_interval resPtr 3 0 >>= poke intervalPtr
                             peek intervalPtr >>= (@?= intervalVal)
 
 appenderStringAndBlob :: TestTree
@@ -453,7 +452,7 @@ appenderErrorDataInspection =
                     errType @?= DuckDBErrorConstraint
 
                     errMsgPtr <- c_duckdb_error_data_message errData
-                    errMsg <- (peekCString . coerce) errMsgPtr
+                    errMsg <- peekCString (coerce errMsgPtr)
                     assertBool "constraint violation message mentions CHECK" ("CHECK" `isInfixOf` errMsg)
 
                     destroyErrorData errData
@@ -475,9 +474,9 @@ runStatement conn sql =
                 else do
                     errPtr <- c_duckdb_result_error resPtr
                     errMsg <-
-                        if errPtr == (coerce (nullPtr :: Ptr Void))
+                        if errPtr == coerce nullPtr
                             then pure "unknown error"
-                            else (peekCString . coerce) errPtr
+                            else peekCString (coerce errPtr)
                     c_duckdb_destroy_result resPtr
                     assertFailure ("duckdb_query failed: " <> errMsg)
 
@@ -485,14 +484,14 @@ withTableAppender :: DuckDBConnection -> String -> (DuckDBAppender -> IO a) -> I
 withTableAppender conn tableName action =
     withConstCString tableName \tablePtr ->
         withAppenderAcquire
-            (c_duckdb_appender_create conn (coerce (nullPtr :: Ptr Void)) tablePtr)
+            (c_duckdb_appender_create conn (coerce nullPtr) tablePtr)
             action
 
 withTableAppenderExt :: DuckDBConnection -> String -> (DuckDBAppender -> IO a) -> IO a
 withTableAppenderExt conn tableName action =
     withConstCString tableName \tablePtr ->
         withAppenderAcquire
-            (c_duckdb_appender_create_ext conn (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)) tablePtr)
+            (c_duckdb_appender_create_ext conn (coerce nullPtr) (coerce nullPtr) tablePtr)
             action
 
 withQueryAppender :: DuckDBConnection -> String -> [DuckDBLogicalType] -> (DuckDBAppender -> IO a) -> IO a
@@ -500,7 +499,7 @@ withQueryAppender conn query types action =
     withConstCString query \queryPtr ->
         withArray types \typeArray ->
             withAppenderAcquire
-                (c_duckdb_appender_create_query conn queryPtr (fromIntegral (length types)) typeArray (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)))
+                (c_duckdb_appender_create_query conn queryPtr (fromIntegral (length types)) typeArray (coerce nullPtr) nullPtr)
                 action
 
 withAppenderAcquire :: (Ptr DuckDBAppender -> IO DuckDBState) -> (DuckDBAppender -> IO a) -> IO a
@@ -540,14 +539,14 @@ checkColumnType app idx expected =
 fetchString :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO String
 fetchString resPtr col row = do
     strPtr <- c_duckdb_value_varchar resPtr col row
-    text <- (peekCString . coerce) strPtr
+    text <- peekCString (coerce strPtr)
     c_duckdb_free (coerce strPtr)
     pure text
 
 fetchBlob :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO [Word8]
 fetchBlob resPtr col row =
     alloca \blobPtr -> do
-        (c_duckdb_value_blob resPtr col row >>= poke blobPtr)
+        c_duckdb_value_blob resPtr col row >>= poke blobPtr
         DuckDBBlob dat len <- peek blobPtr
         let dataPtr = coerce dat :: Ptr Word8
         bytes <- peekArray (fromIntegral len) dataPtr

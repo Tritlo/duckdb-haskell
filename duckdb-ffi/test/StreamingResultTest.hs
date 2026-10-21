@@ -7,7 +7,6 @@ import Control.Monad (void)
 import Data.Coerce (coerce)
 import Data.Int (Int64)
 import Data.List (intercalate)
-import Data.Void (Void)
 import Database.DuckDB.FFI
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.Types (CBool (..), CChar)
@@ -38,13 +37,13 @@ streamingFetchConsumesAllChunks =
                         prepareOk <- c_duckdb_prepare conn querySql stmtPtr
                         prepareOk @?= DuckDBSuccess
                         stmt <- peek stmtPtr
-                        assertBool "prepared statement should not be null" (stmt /= (coerce (nullPtr :: Ptr Void)))
+                        assertBool "prepared statement should not be null" (stmt /= coerce nullPtr)
 
                         alloca \pendingPtr -> do
                             stPending <- c_duckdb_pending_prepared_streaming stmt pendingPtr
                             stPending @?= DuckDBSuccess
                             pending <- peek pendingPtr
-                            assertBool "pending result should not be null" (pending /= (coerce (nullPtr :: Ptr Void)))
+                            assertBool "pending result should not be null" (pending /= coerce nullPtr)
 
                             void (c_duckdb_pending_execute_task pending)
 
@@ -52,7 +51,7 @@ streamingFetchConsumesAllChunks =
                                 execState <- c_duckdb_execute_pending pending resPtr
                                 execState @?= DuckDBSuccess
 
-                                streamingFlag <- (peek resPtr >>= \rawValue -> c_duckdb_result_is_streaming rawValue)
+                                streamingFlag <- peek resPtr >>= \rawValue -> c_duckdb_result_is_streaming rawValue
                                 streamingFlag @?= CBool 1
 
                                 totalRows <- consumeStreamingChunks resPtr 0
@@ -72,23 +71,23 @@ materializedFetchChunkExhaustsResult =
                 setupTable conn "materialized_table" 4
 
                 withResult conn "SELECT id FROM materialized_table ORDER BY id" \resPtr -> do
-                    chunk <- (peek resPtr >>= \rawValue -> c_duckdb_fetch_chunk rawValue)
-                    assertBool "first fetch_chunk should yield a chunk" (chunk /= (coerce (nullPtr :: Ptr Void)))
+                    chunk <- peek resPtr >>= \rawValue -> c_duckdb_fetch_chunk rawValue
+                    assertBool "first fetch_chunk should yield a chunk" (chunk /= coerce nullPtr)
 
                     chunkSize <- c_duckdb_data_chunk_get_size chunk
                     assertBool "materialized chunk should have rows" (chunkSize > 0)
 
                     destroyChunk chunk
 
-                    chunkNext <- (peek resPtr >>= \rawValue -> c_duckdb_fetch_chunk rawValue)
-                    chunkNext @?= (coerce (nullPtr :: Ptr Void))
+                    chunkNext <- peek resPtr >>= \rawValue -> c_duckdb_fetch_chunk rawValue
+                    chunkNext @?= coerce nullPtr
 
 -- helpers ------------------------------------------------------------------
 
 consumeStreamingChunks :: Ptr DuckDBResult -> Int64 -> IO Int64
 consumeStreamingChunks resPtr acc = do
-    chunk <- (peek resPtr >>= \rawValue -> c_duckdb_stream_fetch_chunk rawValue)
-    if chunk == (coerce (nullPtr :: Ptr Void))
+    chunk <- peek resPtr >>= \rawValue -> c_duckdb_stream_fetch_chunk rawValue
+    if chunk == coerce nullPtr
         then pure acc
         else do
             chunkSize <- c_duckdb_data_chunk_get_size chunk
@@ -105,7 +104,7 @@ setupTable conn tableName totalRows = do
     withConstCString insertSql $ \insertCStr ->
         execStatement conn insertCStr
 
-execStatement :: DuckDBConnection -> (ConstPtr CChar) -> IO ()
+execStatement :: DuckDBConnection -> ConstPtr CChar -> IO ()
 execStatement conn sql =
     alloca \resPtr -> do
         st <- c_duckdb_query conn sql resPtr

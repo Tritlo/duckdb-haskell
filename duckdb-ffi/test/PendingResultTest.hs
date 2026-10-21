@@ -7,7 +7,6 @@ import Control.Monad (forM_, when)
 import Data.Coerce (coerce)
 import Data.Int (Int32, Int64)
 import Data.Maybe (isNothing)
-import Data.Void (Void)
 import Database.DuckDB.FFI
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (peekCString)
@@ -37,9 +36,9 @@ withChunk chunk action =
 pendingErrorMessage :: DuckDBPendingResult -> IO (Maybe String)
 pendingErrorMessage pending = do
     errPtr <- c_duckdb_pending_error pending
-    if errPtr == (coerce (nullPtr :: Ptr Void))
+    if errPtr == coerce nullPtr
         then pure Nothing
-        else Just <$> (peekCString . coerce) errPtr
+        else Just <$> peekCString (coerce errPtr)
 
 assertPendingState :: DuckDBPendingState -> IO ()
 assertPendingState state =
@@ -71,13 +70,13 @@ pendingPreparedRoundtrip =
                         st <- c_duckdb_prepare conn querySql stmtPtr
                         st @?= DuckDBSuccess
                         stmt <- peek stmtPtr
-                        assertBool "prepared statement should not be null" (stmt /= (coerce (nullPtr :: Ptr Void)))
+                        assertBool "prepared statement should not be null" (stmt /= coerce nullPtr)
 
                         alloca \pendingPtr -> do
                             stPending <- c_duckdb_pending_prepared stmt pendingPtr
                             stPending @?= DuckDBSuccess
                             pending <- peek pendingPtr
-                            assertBool "pending result should not be null" (pending /= (coerce (nullPtr :: Ptr Void)))
+                            assertBool "pending result should not be null" (pending /= coerce nullPtr)
 
                             stateBefore <- c_duckdb_pending_execute_check_state pending
                             assertPendingState stateBefore
@@ -129,13 +128,13 @@ pendingPreparedStreamingRoundtrip =
                         st <- c_duckdb_prepare conn querySql stmtPtr
                         st @?= DuckDBSuccess
                         stmt <- peek stmtPtr
-                        assertBool "prepared statement should not be null" (stmt /= (coerce (nullPtr :: Ptr Void)))
+                        assertBool "prepared statement should not be null" (stmt /= coerce nullPtr)
 
                         alloca \pendingPtr -> do
                             stPending <- c_duckdb_pending_prepared_streaming stmt pendingPtr
                             stPending @?= DuckDBSuccess
                             pending <- peek pendingPtr
-                            assertBool "pending result should not be null" (pending /= (coerce (nullPtr :: Ptr Void)))
+                            assertBool "pending result should not be null" (pending /= coerce nullPtr)
 
                             stateBefore <- c_duckdb_pending_execute_check_state pending
                             assertPendingState stateBefore
@@ -149,11 +148,11 @@ pendingPreparedStreamingRoundtrip =
                                 execState <- c_duckdb_execute_pending pending resPtr
                                 execState @?= DuckDBSuccess
 
-                                streamingFlag <- (peek resPtr >>= \rawValue -> c_duckdb_result_is_streaming rawValue)
+                                streamingFlag <- peek resPtr >>= \rawValue -> c_duckdb_result_is_streaming rawValue
                                 streamingFlag @?= CBool 1
 
-                                chunk <- (peek resPtr >>= \rawValue -> c_duckdb_stream_fetch_chunk rawValue)
-                                assertBool "streaming fetch should yield a chunk" (chunk /= (coerce (nullPtr :: Ptr Void)))
+                                chunk <- peek resPtr >>= \rawValue -> c_duckdb_stream_fetch_chunk rawValue
+                                assertBool "streaming fetch should yield a chunk" (chunk /= coerce nullPtr)
 
                                 chunkSize <- c_duckdb_data_chunk_get_size chunk
                                 assertBool "streamed chunk should have rows" (chunkSize > 0)
@@ -189,7 +188,7 @@ pendingPreparedReportsError =
                         st <- c_duckdb_prepare conn insertSql stmtPtr
                         st @?= DuckDBSuccess
                         stmt <- peek stmtPtr
-                        assertBool "prepared insert statement should not be null" (stmt /= (coerce (nullPtr :: Ptr Void)))
+                        assertBool "prepared insert statement should not be null" (stmt /= coerce nullPtr)
 
                         c_duckdb_bind_int32 stmt 1 (1 :: Int32) >>= (@?= DuckDBSuccess)
 
@@ -197,7 +196,7 @@ pendingPreparedReportsError =
                             stPending <- c_duckdb_pending_prepared stmt pendingPtr
                             stPending @?= DuckDBSuccess
                             pending <- peek pendingPtr
-                            assertBool "pending result should not be null" (pending /= (coerce (nullPtr :: Ptr Void)))
+                            assertBool "pending result should not be null" (pending /= coerce nullPtr)
 
                             _ <- c_duckdb_pending_execute_check_state pending
                             taskState <- c_duckdb_pending_execute_task pending

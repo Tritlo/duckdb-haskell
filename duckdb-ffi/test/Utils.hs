@@ -70,7 +70,7 @@ withResult :: DuckDBConnection -> String -> (Ptr DuckDBResult -> IO a) -> IO a
 withResult conn sql action =
     withConstCString sql \sqlPtr -> withResultCString conn sqlPtr action
 
-withResultCString :: DuckDBConnection -> (ConstPtr CChar) -> (Ptr DuckDBResult -> IO a) -> IO a
+withResultCString :: DuckDBConnection -> ConstPtr CChar -> (Ptr DuckDBResult -> IO a) -> IO a
 withResultCString conn sql action =
     alloca \resPtr -> do
         poke resPtr Struct.zero

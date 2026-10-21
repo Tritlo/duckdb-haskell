@@ -16,7 +16,7 @@ import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (peekCString)
 import Foreign.C.Types (CChar)
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (FunPtr, Ptr, freeHaskellFunPtr, nullFunPtr, nullPtr)
+import Foreign.Ptr (Ptr, freeHaskellFunPtr, nullFunPtr, nullPtr)
 import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
@@ -41,7 +41,7 @@ replacementScanRewritesAndErrors =
 
             withReplacementCallback seenTablesRef startValue endValue \callback -> do
                 withDatabase \db -> do
-                    c_duckdb_add_replacement_scan db callback (coerce (nullPtr :: Ptr Void)) (coerce (nullFunPtr :: FunPtr Void))
+                    c_duckdb_add_replacement_scan db callback nullPtr (coerce nullFunPtr)
                     withConnection db \conn -> do
                         assertReplacementQuery conn startValue countValue
                         assertReplacementError conn
@@ -67,11 +67,11 @@ replacementCallback ::
     Int64 ->
     Int64 ->
     DuckDBReplacementScanInfo ->
-    (ConstPtr CChar) ->
+    ConstPtr CChar ->
     Ptr Void ->
     IO ()
 replacementCallback seenTablesRef startValue endValue info tableName _extra = do
-    name <- (peekCString . coerce) tableName
+    name <- peekCString (coerce tableName)
     modifyIORef' seenTablesRef (name :)
     case name of
         "haskell_magic" -> do
@@ -103,7 +103,7 @@ assertReplacementError conn =
             state <- c_duckdb_query conn sql resPtr
             state @?= DuckDBError
             errPtr <- c_duckdb_result_error resPtr
-            errMsg <- (peekCString . coerce) errPtr
+            errMsg <- peekCString (coerce errPtr)
             assertBool "replacement error message should surface" ("rejected" `isInfixOf` errMsg)
             c_duckdb_destroy_result resPtr
 

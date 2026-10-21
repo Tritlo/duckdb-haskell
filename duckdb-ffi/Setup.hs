@@ -4,7 +4,7 @@
 import Control.Exception (IOException, catch, throwIO)
 import Control.Monad (filterM, unless, when)
 import Data.List (intercalate, isPrefixOf, nub, stripPrefix)
-import Data.Maybe (fromMaybe, isJust, isNothing)
+import Data.Maybe (isJust, isNothing)
 import Distribution.PackageDescription
 import Distribution.Simple
 import Distribution.Simple.Setup (ConfigFlags, configConfigurationsFlags, configConfigureArgs, configExtraLibDirs)
@@ -18,7 +18,7 @@ import System.Environment (lookupEnv)
 import System.FilePath (isAbsolute, (</>))
 import System.IO.Temp (withTempDirectory)
 import System.Info (arch, os)
-import System.Process (callProcess, readProcess)
+import System.Process (CreateProcess (..), callProcess, proc, readCreateProcess)
 
 #if !MIN_VERSION_Cabal(3,14,0)
 
@@ -84,8 +84,7 @@ nativeArchive :: IO (String, String, FilePath)
 nativeArchive = case (os, arch) of
     ("linux", "x86_64") -> pure ("linux-amd64", "993ad89e7dfca66cd6da994c2cad090c2fc160ddf9f550498a098ab4bb13cfb1", "libduckdb.so")
     ("linux", "aarch64") -> pure ("linux-arm64", "c60eecf91143ca6bbac55c4f4d40dc22520488b0ac257c86e0fe9a2b451cf2b7", "libduckdb.so")
-    ("darwin", "x86_64") -> pure ("osx-universal", "14cd63180614cfd961f7959146ecd9087527ff20b67311efdc3fa1c29c18204d", "libduckdb.dylib")
-    ("darwin", "aarch64") -> pure ("osx-universal", "14cd63180614cfd961f7959146ecd9087527ff20b67311efdc3fa1c29c18204d", "libduckdb.dylib")
+    ("darwin", cpu) | cpu `elem` ["x86_64", "aarch64"] -> pure ("osx-universal", "14cd63180614cfd961f7959146ecd9087527ff20b67311efdc3fa1c29c18204d", "libduckdb.dylib")
     _ -> fail "Automatic DuckDB installation supports glibc Linux and macOS. Supply DuckDB 2.0 with -fsystemlib and --extra-lib-dirs."
 
 -- | Download into a temporary directory. Publish the verified library atomically.
@@ -117,18 +116,16 @@ installNativeLibrary flags = do
             fail ("DuckDB installation requires these programs on PATH: " <> intercalate ", " missing <> ". Install them, or supply DuckDB with -fsystemlib and --extra-lib-dirs. See README.md for details.")
         createDirectoryIfMissing True root
         withTempDirectory root ".download-" $ \staging -> do
-            let archive = staging </> "duckdb.tar.gz"
+            let archiveName = "duckdb.tar.gz"
+                archive = staging </> archiveName
                 extracted = staging </> "library"
                 url = "https://github.com/duckdb/duckdb/releases/download/v" <> nativeVersion <> "/duckdb-shared-libs-" <> platform <> ".tar.gz"
+                hash = if os == "darwin" then proc "shasum" ["-a", "256", archiveName] else proc "sha256sum" [archiveName]
             putStrLn ("Downloading DuckDB " <> nativeVersion <> " to " <> destination)
             callProcess "curl" ["--fail", "--location", "--proto", "=https", "--proto-redir", "=https", "--tlsv1.2", "--retry", "2", "--output", archive, url]
-            digest <-
-                if os == "darwin"
-                    then readProcess "shasum" ["-a", "256", archive] ""
-                    else readProcess "sha256sum" [archive] ""
-            -- Hash tools prefix escaped filenames with a backslash.
-            let actual = takeWhile (/= ' ') (fromMaybe digest (stripPrefix "\\" digest))
-            unless (actual == checksum) $ fail "DuckDB archive checksum mismatch."
+            -- Hash a plain relative name. Hash tools escape other names in their output.
+            digest <- readCreateProcess hash{cwd = Just staging} ""
+            unless (takeWhile (/= ' ') digest == checksum) $ fail "DuckDB archive checksum mismatch."
             createDirectory extracted
             -- Keep the shared-library symlinks and their versioned targets together.
             callProcess "tar" ["-xzf", archive, "-C", extracted]

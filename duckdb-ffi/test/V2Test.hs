@@ -1,7 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
-{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
@@ -60,11 +59,11 @@ tests =
 
 checked :: (HasCallStack) => (Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO ()
 checked action = alloca $ \err -> do
-    poke err (coerce (nullPtr :: Ptr Void))
+    poke err (coerce nullPtr)
     code <- action err
     info <- peek err
     message <-
-        if info == (coerce (nullPtr :: Ptr Void))
+        if info == coerce nullPtr
             then pure ""
             else alloca $ \text -> do
                 textCode <- c_duckdb_v2_error_info_get_text info text
@@ -76,10 +75,10 @@ checked action = alloca $ \err -> do
 
 withHandle :: (HasCallStack, Storable a, Eq a, Coercible (Ptr Void) a) => (Ptr a -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> (Ptr a -> IO DuckDBV2Error) -> (a -> IO b) -> IO b
 withHandle create destroy action = alloca $ \slot -> do
-    poke slot (coerce (nullPtr :: Ptr Void))
+    poke slot (coerce nullPtr)
     checked (create slot)
     handle <- peek slot
-    assertBool "created handle is non-null" (handle /= (coerce (nullPtr :: Ptr Void)))
+    assertBool "created handle is non-null" (handle /= coerce nullPtr)
     action handle `finally` (destroy slot >>= (@?= DuckDBV2ErrorNone))
 
 withConnection :: (DuckDBV2ConnectionHandle -> IO a) -> IO a
@@ -90,7 +89,7 @@ withConnection action =
             withView "threads" $ \name -> withView "2" $ \setting ->
                 checked (c_duckdb_v2_config_set_option_text config (coerce name) setting DuckDBV2SettingScopeDefault)
             withView ":memory:" $ \path ->
-                checked (c_duckdb_v2_instance_attach instanceHandle (coerce (nullPtr :: Ptr Void)) path (coerce (nullPtr :: Ptr Void)) (CBool 1))
+                checked (c_duckdb_v2_instance_attach instanceHandle (coerce nullPtr) path (coerce nullPtr) (CBool 1))
             withHandle (c_duckdb_v2_connection_create instanceHandle) c_duckdb_v2_connection_destroy action
 
 -- | Borrow a factory for the lifetime of its connection.
@@ -112,17 +111,17 @@ withStatement conn sql action = withCString sql $ \text ->
 
 withResult :: DuckDBV2ConnectionHandle -> String -> (DuckDBV2ResultHandle -> IO a) -> IO a
 withResult conn sql action = withStatement conn sql $ \statement ->
-    withHandle (c_duckdb_v2_statement_execute conn statement (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)) 0) c_duckdb_v2_result_destroy action
+    withHandle (c_duckdb_v2_statement_execute conn statement (coerce nullPtr) (coerce nullPtr) 0) c_duckdb_v2_result_destroy action
 
 output :: (HasCallStack, Storable a) => (Ptr a -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO a
 output action = alloca $ \slot -> checked (action slot) >> peek slot
 
 readIntegers :: DuckDBV2ResultHandle -> IO [Maybe Int64]
 readIntegers result = alloca $ \chunkSlot -> do
-    poke chunkSlot (coerce (nullPtr :: Ptr Void))
+    poke chunkSlot (coerce nullPtr)
     checked (c_duckdb_v2_result_fetch_chunk result chunkSlot)
     chunk <- peek chunkSlot
-    if chunk == (coerce (nullPtr :: Ptr Void))
+    if chunk == coerce nullPtr
         then pure []
         else do
             rows <-
@@ -131,11 +130,11 @@ readIntegers result = alloca $ \chunkSlot -> do
                     view <- output (c_duckdb_v2_vector_get_view vector)
                     forM [0 .. fromIntegral (getField @"count" view) - 1] $ \i -> do
                         index <-
-                            if (getField @"sel" view) == (coerce (nullPtr :: Ptr Void))
+                            if getField @"sel" view == coerce nullPtr
                                 then pure i
                                 else fromIntegral <$> peekElemOff (coerce (getField @"sel" view) :: Ptr DuckDBV2SelT) i
                         valid <-
-                            if (getField @"validity" view) == (coerce (nullPtr :: Ptr Void))
+                            if getField @"validity" view == coerce nullPtr
                                 then pure True
                                 else do
                                     word <- peekElemOff (coerce (getField @"validity" view) :: Ptr Word64) (index `div` 64)
@@ -150,7 +149,7 @@ readIntegers result = alloca $ \chunkSlot -> do
 
 testEnvironment :: IO ()
 testEnvironment = alloca $ \envSlot -> do
-    poke envSlot (coerce (nullPtr :: Ptr Void))
+    poke envSlot (coerce nullPtr)
     checked (c_duckdb_v2_environment_create envSlot)
     env <- peek envSlot
     withHandle (c_duckdb_v2_instance_create env) c_duckdb_v2_instance_destroy $ \_ -> do
@@ -159,7 +158,7 @@ testEnvironment = alloca $ \envSlot -> do
         peek envSlot >>= (@?= env)
     output (c_duckdb_v2_environment_get_instance_count env) >>= (@?= 0)
     c_duckdb_v2_environment_destroy envSlot >>= (@?= DuckDBV2ErrorNone)
-    peek envSlot >>= (@?= (coerce (nullPtr :: Ptr Void)))
+    peek envSlot >>= (@?= coerce nullPtr)
 
 testQuery :: IO ()
 testQuery = withConnection $ \conn ->
@@ -176,27 +175,27 @@ testQuery = withConnection $ \conn ->
 testBind :: IO ()
 testBind = withConnection $ \conn -> withStatement conn "SELECT $amount::BIGINT AS total" $ \statement ->
     alloca $ \parameters -> do
-        poke parameters (coerce (nullPtr :: Ptr Void))
+        poke parameters (coerce nullPtr)
         withHandle (\schema err -> c_duckdb_v2_statement_bind conn statement schema parameters err) c_duckdb_v2_schema_destroy $ \schema -> do
             output (c_duckdb_v2_schema_get_count schema) >>= (@?= 1)
             params <- peek parameters
-            assertBool "parameter schema is non-null" (params /= (coerce (nullPtr :: Ptr Void)))
+            assertBool "parameter schema is non-null" (params /= coerce nullPtr)
             (output (c_duckdb_v2_schema_get_count params) >>= (@?= 1))
                 `finally` void (c_duckdb_v2_schema_destroy parameters)
 
 testCancellation :: IO ()
 testCancellation = withConnection $ \conn -> withResult conn "SELECT i::BIGINT FROM range(100000) t(i)" $ \result -> do
     withStatement conn "SELECT 9::BIGINT" $ \statement -> alloca $ \slot -> do
-        poke slot (coerce (nullPtr :: Ptr Void))
-        code <- c_duckdb_v2_statement_execute conn statement (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)) 0 slot (coerce (nullPtr :: Ptr Void))
+        poke slot (coerce nullPtr)
+        code <- c_duckdb_v2_statement_execute conn statement (coerce nullPtr) (coerce nullPtr) 0 slot (coerce nullPtr)
         code @?= DuckDBV2ErrorResourceInUse
-        peek slot >>= (@?= (coerce (nullPtr :: Ptr Void)))
+        peek slot >>= (@?= coerce nullPtr)
     checked (c_duckdb_v2_connection_interrupt conn)
     alloca $ \chunk -> alloca $ \status -> do
-        poke chunk (coerce (nullPtr :: Ptr Void))
+        poke chunk (coerce nullPtr)
         checked (c_duckdb_v2_result_step result chunk status)
         peek status >>= (@?= DuckDBV2ResultStepStatusCancelled)
-        peek chunk >>= (@?= (coerce (nullPtr :: Ptr Void)))
+        peek chunk >>= (@?= coerce nullPtr)
     withResult conn "SELECT 9::BIGINT" $ \second -> readIntegers second >>= (@?= [Just 9])
 
 testPrepared :: IO ()
@@ -236,13 +235,13 @@ testNumericStructures = withConnection $ \conn -> withFactory conn $ \factory ->
 
 testError :: IO ()
 testError = withConnection $ \conn -> withStatement conn "SELECT absent_column" $ \statement -> alloca $ \result -> alloca $ \err -> do
-    poke result (coerce (nullPtr :: Ptr Void))
-    poke err (coerce (nullPtr :: Ptr Void))
-    code <- c_duckdb_v2_statement_execute conn statement (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)) 0 result err
+    poke result (coerce nullPtr)
+    poke err (coerce nullPtr)
+    code <- c_duckdb_v2_statement_execute conn statement (coerce nullPtr) (coerce nullPtr) 0 result err
     code @?= DuckDBV2ErrorQueryBinder
-    peek result >>= (@?= (coerce (nullPtr :: Ptr Void)))
+    peek result >>= (@?= coerce nullPtr)
     info <- peek err
-    assertBool "failure has an owned error handle" (info /= (coerce (nullPtr :: Ptr Void)))
+    assertBool "failure has an owned error handle" (info /= coerce nullPtr)
     alloca $ \stored -> do
         c_duckdb_v2_error_info_get_code info stored >>= (@?= DuckDBV2ErrorNone)
         peek stored >>= (@?= code)
@@ -251,7 +250,7 @@ testError = withConnection $ \conn -> withStatement conn "SELECT absent_column" 
         message <- peek text >>= readView
         assertBool "error identifies the missing column" ("absent_column" `isInfixOf` message)
     c_duckdb_v2_error_info_destroy err >>= (@?= DuckDBV2ErrorNone)
-    peek err >>= (@?= (coerce (nullPtr :: Ptr Void)))
+    peek err >>= (@?= coerce nullPtr)
 
 callbackGuard :: IORef [String] -> Ptr DuckDBV2ErrorInfoHandle -> IO () -> IO ()
 callbackGuard failures err action =
@@ -273,7 +272,7 @@ testScalar = do
             forM_ [0 .. fromIntegral rows - 1] $ \i -> pokeElemOff (coerce dataPtr) i (42 :: Int64)
     bracket (DuckDBV2ScalarFunctionExecCallbackFn <$> toFunPtr (DuckDBV2ScalarFunctionExecCallbackFn_Aux callback)) (freeHaskellFunPtr . getField @"unwrap") $ \callbackPtr ->
         withConnection $ \conn -> withFactory conn $ \factory ->
-            withHandle (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdBigInt (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)) 0) c_duckdb_v2_logical_type_destroy $ \ty ->
+            withHandle (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdBigInt (coerce nullPtr) (coerce nullPtr) 0) c_duckdb_v2_logical_type_destroy $ \ty ->
                 withHandle (c_duckdb_v2_scalar_function_create factory) c_duckdb_v2_scalar_function_destroy $ \function -> do
                     withView "v2_answer" $ \name -> checked (c_duckdb_v2_scalar_function_set_name function (coerce name))
                     signature <- output (c_duckdb_v2_scalar_function_get_signature function)
@@ -293,7 +292,7 @@ testTable = do
             contextFactory <- output (c_duckdb_v2_context_get_factory context)
             withHandle (c_duckdb_v2_function_bind_get_arg_value info 0) c_duckdb_v2_value_destroy $ \value ->
                 output (c_duckdb_v2_value_get_bigint value) >>= (@?= 3)
-            withHandle (c_duckdb_v2_factory_create_type_from_id contextFactory DuckDBV2LogicalTypeIdBigInt (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)) 0) c_duckdb_v2_logical_type_destroy $ \ty ->
+            withHandle (c_duckdb_v2_factory_create_type_from_id contextFactory DuckDBV2LogicalTypeIdBigInt (coerce nullPtr) (coerce nullPtr) 0) c_duckdb_v2_logical_type_destroy $ \ty ->
                 withView "amount" $ \name -> checked (c_duckdb_v2_table_function_bind_add_result_column result (coerce name) ty)
             checked (c_duckdb_v2_table_function_bind_set_cardinality result 3 (CBool 1))
         execute info _context err = callbackGuard failures err $ do
@@ -319,11 +318,11 @@ testTable = do
             bracket (DuckDBV2TableFunctionInitGlobalCallbackFn <$> toFunPtr (DuckDBV2TableFunctionInitGlobalCallbackFn_Aux initialize)) (freeHaskellFunPtr . getField @"unwrap") $ \initializePtr ->
                 bracket (DuckDBV2TableFunctionExecCallbackFn <$> toFunPtr (DuckDBV2TableFunctionExecCallbackFn_Aux execute)) (freeHaskellFunPtr . getField @"unwrap") $ \executePtr ->
                     withConnection $ \conn -> withFactory conn $ \factory -> do
-                        withHandle (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdBigInt (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)) 0) c_duckdb_v2_logical_type_destroy $ \ty ->
+                        withHandle (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdBigInt (coerce nullPtr) (coerce nullPtr) 0) c_duckdb_v2_logical_type_destroy $ \ty ->
                             withHandle (c_duckdb_v2_table_function_create factory) c_duckdb_v2_table_function_destroy $ \function -> do
                                 withView "v2_scan" $ \name -> checked (c_duckdb_v2_table_function_set_name function (coerce name))
                                 signature <- output (c_duckdb_v2_table_function_get_signature function)
-                                withView "count" $ \name -> checked (c_duckdb_v2_function_signature_add_parameter signature (coerce name) ty (coerce (nullPtr :: Ptr Void)) DuckDBV2FunctionParameterKindStandard)
+                                withView "count" $ \name -> checked (c_duckdb_v2_function_signature_add_parameter signature (coerce name) ty (coerce nullPtr) DuckDBV2FunctionParameterKindStandard)
                                 checked (c_duckdb_v2_table_function_set_bind_callback function bindPtr)
                                 checked (c_duckdb_v2_table_function_set_init_global_callback function initializePtr)
                                 checked (c_duckdb_v2_table_function_set_exec_callback function executePtr)
@@ -350,7 +349,7 @@ testAggregate = do
             checked (c_duckdb_v2_vector_flatten vector)
             view <- output (c_duckdb_v2_vector_get_view vector)
             forM_ [0 .. fromIntegral count - 1] $ \i -> do
-                index <- if (getField @"sel" view) == (coerce (nullPtr :: Ptr Void)) then pure i else fromIntegral <$> peekElemOff (coerce (getField @"sel" view) :: Ptr DuckDBV2SelT) i
+                index <- if getField @"sel" view == coerce nullPtr then pure i else fromIntegral <$> peekElemOff (coerce (getField @"sel" view) :: Ptr DuckDBV2SelT) i
                 value <- peekElemOff (coerce (getField @"data'" view)) index
                 state <- coerce <$> peekElemOff states i
                 total <- peek state
@@ -380,11 +379,11 @@ testAggregate = do
                 bracket (DuckDBV2AggregateFunctionCombineCallbackFn <$> toFunPtr (DuckDBV2AggregateFunctionCombineCallbackFn_Aux combine)) (freeHaskellFunPtr . getField @"unwrap") $ \combinePtr ->
                     bracket (DuckDBV2AggregateFunctionFinalizeCallbackFn <$> toFunPtr (DuckDBV2AggregateFunctionFinalizeCallbackFn_Aux finalize)) (freeHaskellFunPtr . getField @"unwrap") $ \finalizePtr ->
                         withConnection $ \conn -> withFactory conn $ \factory -> do
-                            withHandle (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdBigInt (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)) 0) c_duckdb_v2_logical_type_destroy $ \ty ->
+                            withHandle (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdBigInt (coerce nullPtr) (coerce nullPtr) 0) c_duckdb_v2_logical_type_destroy $ \ty ->
                                 withHandle (c_duckdb_v2_aggregate_function_create factory) c_duckdb_v2_aggregate_function_destroy $ \function -> do
                                     withView "v2_sum" $ \name -> checked (c_duckdb_v2_aggregate_function_set_name function (coerce name))
                                     signature <- output (c_duckdb_v2_aggregate_function_get_signature function)
-                                    withView "value" $ \name -> checked (c_duckdb_v2_function_signature_add_parameter signature (coerce name) ty (coerce (nullPtr :: Ptr Void)) DuckDBV2FunctionParameterKindStandard)
+                                    withView "value" $ \name -> checked (c_duckdb_v2_function_signature_add_parameter signature (coerce name) ty (coerce nullPtr) DuckDBV2FunctionParameterKindStandard)
                                     checked (c_duckdb_v2_function_signature_set_return_type signature ty)
                                     checked (c_duckdb_v2_aggregate_function_set_size_callback function sizePtr)
                                     checked (c_duckdb_v2_aggregate_function_set_init_callback function initializePtr)
@@ -404,7 +403,7 @@ testCast = do
     failures <- newIORef []
     modes <- newIORef []
     let execute info context err = callbackGuard failures err $ do
-            assertBool "cast context is borrowed and non-null" (context /= (coerce (nullPtr :: Ptr Void)))
+            assertBool "cast context is borrowed and non-null" (context /= coerce nullPtr)
             mode <- output (c_duckdb_v2_cast_function_exec_get_mode info)
             modifyIORef' modes (mode :)
             count <- output (c_duckdb_v2_cast_function_exec_get_row_count info)
@@ -414,12 +413,12 @@ testCast = do
             result <- output (c_duckdb_v2_cast_function_exec_get_output info)
             raw <- output (c_duckdb_v2_vector_get_data_mutable result)
             forM_ [0 .. fromIntegral count - 1] $ \i -> do
-                index <- if (getField @"sel" view) == (coerce (nullPtr :: Ptr Void)) then pure i else fromIntegral <$> peekElemOff (coerce (getField @"sel" view) :: Ptr DuckDBV2SelT) i
+                index <- if getField @"sel" view == coerce nullPtr then pure i else fromIntegral <$> peekElemOff (coerce (getField @"sel" view) :: Ptr DuckDBV2SelT) i
                 value <- peekElemOff (coerce (getField @"data'" view)) index
                 pokeElemOff (coerce raw) i (value + 100 :: Int64)
     bracket (DuckDBV2CastFunctionExecCallbackFn <$> toFunPtr (DuckDBV2CastFunctionExecCallbackFn_Aux execute)) (freeHaskellFunPtr . getField @"unwrap") $ \executePtr ->
         withConnection $ \conn -> withFactory conn $ \factory ->
-            withHandle (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdBigInt (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)) 0) c_duckdb_v2_logical_type_destroy $ \ty ->
+            withHandle (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdBigInt (coerce nullPtr) (coerce nullPtr) 0) c_duckdb_v2_logical_type_destroy $ \ty ->
                 withView "v2_shifted" $ \name -> do
                     withHandle (c_duckdb_v2_custom_type_create factory) c_duckdb_v2_custom_type_destroy $ \custom -> do
                         checked (c_duckdb_v2_custom_type_set_name custom (coerce name))
@@ -438,23 +437,23 @@ testCast = do
 
 testVectorMutation :: IO ()
 testVectorMutation = withConnection $ \conn -> withFactory conn $ \factory ->
-    withHandle (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdBigInt (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)) 0) c_duckdb_v2_logical_type_destroy $ \integer ->
-        withHandle (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdVarchar (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)) 0) c_duckdb_v2_logical_type_destroy $ \text ->
+    withHandle (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdBigInt (coerce nullPtr) (coerce nullPtr) 0) c_duckdb_v2_logical_type_destroy $ \integer ->
+        withHandle (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdVarchar (coerce nullPtr) (coerce nullPtr) 0) c_duckdb_v2_logical_type_destroy $ \text ->
             withArray [integer, text] $ \types ->
                 withHandle (c_duckdb_v2_data_chunk_create factory (ConstPtr types) 2) c_duckdb_v2_data_chunk_destroy $ \chunk -> do
                     vector <- output (c_duckdb_v2_data_chunk_get_vector chunk 0)
                     withHandle (c_duckdb_v2_value_create_bigint factory 7) c_duckdb_v2_value_destroy $ \value ->
                         checked (c_duckdb_v2_vector_make_constant vector value 4)
                     constant <- output (c_duckdb_v2_vector_get_view vector)
-                    (getField @"count" constant) @?= 4
+                    getField @"count" constant @?= 4
                     forM_ [0 .. 3] $ \i -> peekElemOff (coerce (getField @"sel" constant) :: Ptr DuckDBV2SelT) i >>= (@?= 0)
                     peek (coerce (getField @"data'" constant)) >>= (@?= (7 :: Int64))
                     checked (c_duckdb_v2_vector_make_sequence vector 10 3 4)
                     alloca $ \view -> do
-                        c_duckdb_v2_vector_get_view vector view (coerce (nullPtr :: Ptr Void)) >>= (@?= DuckDBV2ErrorInputInvalid)
+                        c_duckdb_v2_vector_get_view vector view nullPtr >>= (@?= DuckDBV2ErrorInputInvalid)
                         invalid <- peek view
-                        (getField @"data'" invalid) @?= (coerce (nullPtr :: Ptr Void))
-                        (getField @"count" invalid) @?= 0
+                        getField @"data'" invalid @?= coerce nullPtr
+                        getField @"count" invalid @?= 0
                     checked (c_duckdb_v2_vector_flatten vector)
                     flat <- output (c_duckdb_v2_vector_get_view vector)
                     forM [0 .. 3] (peekElemOff (coerce (getField @"data'" flat))) >>= (@?= ([10, 13, 16, 19] :: [Int64]))
@@ -496,7 +495,7 @@ testOptions =
             config <- output (c_duckdb_v2_instance_get_config instanceHandle)
             withView "threads" $ \name -> withView "2" $ \setting ->
                 checked (c_duckdb_v2_config_set_option_text config (coerce name) setting DuckDBV2SettingScopeDefault)
-            withView ":memory:" $ \path -> checked (c_duckdb_v2_instance_attach instanceHandle (coerce (nullPtr :: Ptr Void)) path (coerce (nullPtr :: Ptr Void)) (CBool 1))
+            withView ":memory:" $ \path -> checked (c_duckdb_v2_instance_attach instanceHandle (coerce nullPtr) path (coerce nullPtr) (CBool 1))
             withHandle (c_duckdb_v2_connection_create instanceHandle) c_duckdb_v2_connection_destroy $ \first ->
                 withHandle (c_duckdb_v2_connection_create instanceHandle) c_duckdb_v2_connection_destroy $ \second -> do
                     firstConfig <- output (c_duckdb_v2_connection_get_config first)
@@ -551,9 +550,9 @@ testCopy = do
                     atomicModifyIORef' prepared $ \count -> (count + 1, ())
                     count <- output (c_duckdb_v2_column_data_collection_row_count input)
                     alloca $ \second -> do
-                        poke second (coerce (nullPtr :: Ptr Void))
-                        c_duckdb_v2_copy_to_batch_take_input info second (coerce (nullPtr :: Ptr Void)) >>= (@?= DuckDBV2ErrorInputInvalid)
-                        peek second >>= (@?= (coerce (nullPtr :: Ptr Void)))
+                        poke second (coerce nullPtr)
+                        c_duckdb_v2_copy_to_batch_take_input info second (coerce nullPtr) >>= (@?= DuckDBV2ErrorInputInvalid)
+                        peek second >>= (@?= coerce nullPtr)
                     setState (c_duckdb_v2_copy_to_batch_set_batch_data info) (fromIntegral count)
             flush info _context err = callbackGuard failures err $ do
                 initialized <- output (c_duckdb_v2_copy_to_flush_get_init_data info)
@@ -630,10 +629,10 @@ testLogging :: IO ()
 testLogging = do
     failures <- newIORef []
     let consume result = alloca $ \chunk -> do
-            poke chunk (coerce (nullPtr :: Ptr Void))
+            poke chunk (coerce nullPtr)
             checked (c_duckdb_v2_result_fetch_chunk result chunk)
             next <- peek chunk
-            unless (next == (coerce (nullPtr :: Ptr Void))) $ do
+            unless (next == coerce nullPtr) $ do
                 c_duckdb_v2_data_chunk_destroy chunk >>= (@?= DuckDBV2ErrorNone)
                 consume result
         execute info context err = callbackGuard failures err $ do
@@ -644,7 +643,7 @@ testLogging = do
             poke (coerce raw) (1 :: Int64)
     bracket (DuckDBV2ScalarFunctionExecCallbackFn <$> toFunPtr (DuckDBV2ScalarFunctionExecCallbackFn_Aux execute)) (freeHaskellFunPtr . getField @"unwrap") $ \executePtr ->
         withConnection $ \conn -> withFactory conn $ \factory -> do
-            withHandle (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdBigInt (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)) 0) c_duckdb_v2_logical_type_destroy $ \ty ->
+            withHandle (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdBigInt (coerce nullPtr) (coerce nullPtr) 0) c_duckdb_v2_logical_type_destroy $ \ty ->
                 withHandle (c_duckdb_v2_scalar_function_create factory) c_duckdb_v2_scalar_function_destroy $ \function -> do
                     withView "v2_log" $ \name -> checked (c_duckdb_v2_scalar_function_set_name function (coerce name))
                     signature <- output (c_duckdb_v2_scalar_function_get_signature function)
@@ -669,21 +668,21 @@ testTextSink = do
             modifyIORef' received (rendered :)
     bracket (DuckDBV2TextSinkFn <$> toFunPtr (DuckDBV2TextSinkFn_Aux callback)) (freeHaskellFunPtr . getField @"unwrap") $ \sink -> withConnection $ \conn ->
         withStatement conn "SELECT 42::BIGINT AS answer" $ \statement -> alloca $ \result -> do
-            poke result (coerce (nullPtr :: Ptr Void))
-            checked (c_duckdb_v2_statement_execute conn statement (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)) 0 result)
+            poke result (coerce nullPtr)
+            checked (c_duckdb_v2_statement_execute conn statement (coerce nullPtr) (coerce nullPtr) 0 result)
             original <- peek result
-            assertBool "execution returns a live result" (original /= (coerce (nullPtr :: Ptr Void)))
+            assertBool "execution returns a live result" (original /= coerce nullPtr)
             flip finally (c_duckdb_v2_result_destroy result >>= (@?= DuckDBV2ErrorNone)) $
                 withView "" $ \nullText -> do
                     alloca $ \err -> do
-                        poke err (coerce (nullPtr :: Ptr Void))
+                        poke err (coerce nullPtr)
                         flip finally (c_duckdb_v2_error_info_destroy err >>= (@?= DuckDBV2ErrorNone)) $ do
-                            code <- c_duckdb_v2_result_render_box result 0 80 20 nullText 2 0 sink (coerce (nullPtr :: Ptr Void)) err
+                            code <- c_duckdb_v2_result_render_box result 0 80 20 nullText 2 0 sink (coerce nullPtr) err
                             code @?= DuckDBV2ErrorInputInvalid
                             peek result >>= (@?= original)
                             readIORef received >>= (@?= [])
-                    checked (c_duckdb_v2_result_render_box result 0 80 20 nullText 0 0 sink (coerce (nullPtr :: Ptr Void)))
-                    peek result >>= (@?= (coerce (nullPtr :: Ptr Void)))
+                    checked (c_duckdb_v2_result_render_box result 0 80 20 nullText 0 0 sink (coerce nullPtr))
+                    peek result >>= (@?= coerce nullPtr)
     readIORef failures >>= (@?= [])
     rendered <- readIORef received
     length rendered @?= 1
@@ -691,28 +690,28 @@ testTextSink = do
 
 testArrow :: IO ()
 testArrow = withConnection $ \conn -> withStatement conn "SELECT i::BIGINT AS amount FROM range(5) t(i)" $ \statement -> alloca $ \result -> alloca $ \streamPtr -> do
-    poke result (coerce (nullPtr :: Ptr Void))
-    checked (c_duckdb_v2_statement_execute_arrow conn statement (coerce (nullPtr :: Ptr Void)) (coerce (nullPtr :: Ptr Void)) 0 0 result)
+    poke result (coerce nullPtr)
+    checked (c_duckdb_v2_statement_execute_arrow conn statement (coerce nullPtr) (coerce nullPtr) 0 0 result)
     fillBytes streamPtr 0 (sizeOf (undefined :: ArrowArrayStream))
     checked (c_duckdb_v2_arrow_result_to_arrow_c_stream result streamPtr)
-    peek result >>= (@?= (coerce (nullPtr :: Ptr Void)))
+    peek result >>= (@?= coerce nullPtr)
     stream <- peek streamPtr
-    assertBool "Arrow stream owns a release callback" ((getField @"release" stream) /= nullFunPtr)
+    assertBool "Arrow stream owns a release callback" (getField @"release" stream /= nullFunPtr)
     flip finally (fromFunPtr (getField @"release" stream) streamPtr) $ do
         alloca $ \schemaPtr -> do
             fillBytes schemaPtr 0 (sizeOf (undefined :: ArrowSchema))
             fromFunPtr (getField @"get_schema" stream) streamPtr schemaPtr >>= (@?= 0)
             schema <- peek schemaPtr
-            (getField @"n_children" schema) @?= 1
+            getField @"n_children" schema @?= 1
             fromFunPtr (getField @"release" schema) schemaPtr
         let fetch total = alloca $ \arrayPtr -> do
                 fillBytes arrayPtr 0 (sizeOf (undefined :: ArrowArray))
                 fromFunPtr (getField @"get_next" stream) streamPtr arrayPtr >>= (@?= 0)
                 array <- peek arrayPtr
-                if (getField @"release" array) == nullFunPtr
+                if getField @"release" array == nullFunPtr
                     then pure total
                     else do
-                        let count = (getField @"length" array)
+                        let count = getField @"length" array
                         fromFunPtr (getField @"release" array) arrayPtr
                         fetch (total + count)
         fetch 0 >>= (@?= 5)

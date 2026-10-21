@@ -221,7 +221,8 @@ coreRegressionTests =
                                             checkRows (Just (Only (43 :: Int64)))
         , testCase "connections share an explicit instance" $
             withEnvironment $ \environment -> withInstance environment [] $ \instance_ -> do
-                attachDatabase instance_ ":memory:" "shared" [] True
+                attachDatabase instance_ ":memory:" "shared" []
+                setDefaultDatabase instance_ "shared"
                 withConnectionOn instance_ $ \first -> withConnectionOn instance_ $ \second -> do
                     void (execute_ first "CREATE TABLE shared_probe(x BIGINT); INSERT INTO shared_probe VALUES (42)")
                     query_ second "SELECT x FROM shared_probe" >>= (@?= [Only (42 :: Int64)])
@@ -253,7 +254,8 @@ coreRegressionTests =
         , testCase "environment close releases live cursors before their parents" $ do
             environment <- createEnvironment
             instance_ <- createInstance environment []
-            attachDatabase instance_ ":memory:" "shared" [] True
+            attachDatabase instance_ ":memory:" "shared" []
+            setDefaultDatabase instance_ "shared"
             conn <- connect instance_
             stmt <- openStatement conn "SELECT i FROM range(5000) t(i)"
             nextRow stmt >>= (@?= Just (Only (0 :: Int64)))

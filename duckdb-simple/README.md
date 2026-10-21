@@ -10,7 +10,7 @@ types (signed/unsigned integers, decimals, hugeints, intervals, precise and
 timezone-aware temporals, blobs, enums, bit strings, and bignums).
 
 The backend uses the generated DuckDB V2 API. All V2 declarations are currently
-unstable. Use the exact native snapshot recorded in the binding package.
+unstable. Use the exact native release recorded in the binding package.
 
 ## Shared environments and instances
 
@@ -23,7 +23,8 @@ Wait for child creation and all worker operations to finish before calling
 ```haskell
 withEnvironment $ \environment ->
   withInstance environment [("threads", "2")] $ \instance_ -> do
-    attachDatabase instance_ ":memory:" "shared" [] True
+    attachDatabase instance_ ":memory:" "shared" []
+    setDefaultDatabase instance_ "shared"
     withConnectionOn instance_ $ \writer -> do
       execute_ writer "CREATE TABLE items(id BIGINT)"
       execute writer "INSERT INTO items VALUES (?)" (Only (42 :: Int))

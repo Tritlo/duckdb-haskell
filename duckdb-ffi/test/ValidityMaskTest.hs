@@ -3,11 +3,9 @@
 module ValidityMaskTest (tests) where
 
 import Control.Monad (void)
-import Data.Coerce (coerce)
-import Data.Void (Void)
 import Database.DuckDB.FFI
 import Foreign.C.Types (CBool (..))
-import Foreign.Ptr (Ptr, nullPtr)
+import Foreign.Ptr (nullPtr)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
 import Utils (setAllValid, withLogicalType, withVector)
@@ -27,7 +25,7 @@ validityRowHelpers =
         withIntegerVector 4 \vec -> do
             void (c_duckdb_vector_ensure_validity_writable vec)
             mask <- c_duckdb_vector_get_validity vec
-            assertBool "validity pointer should not be null" (mask /= (coerce (nullPtr :: Ptr Void)))
+            assertBool "validity pointer should not be null" (mask /= nullPtr)
             setAllValid mask 4
 
             toBool (c_duckdb_validity_row_is_valid mask 2) >>= (@?= True)

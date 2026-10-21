@@ -21,12 +21,10 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
-import qualified Data.Text.Foreign as TextForeign
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), destroyLogicalType, logicalTypeFromRepWith, logicalTypeToRep)
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), logicalTypeFromRepWith, logicalTypeToRep)
 import Database.DuckDB.Simple.Native
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (withArray)
-import Foreign.Marshal.Utils (withMany)
 import Foreign.Ptr (nullPtr)
 
 -- | Owned helper state. The caller connection owns this cache.
@@ -101,24 +99,22 @@ readNativeTypes :: DuckDBV2ConnectionHandle -> [Text] -> IO NativeTypes
 readNativeTypes _ [] = pure (NativeTypes Map.empty [])
 readNativeTypes connection crss = do
     let sql = "SELECT " <> Text.intercalate ", " ["system.main.ST_SetCRS('POINT EMPTY'::GEOMETRY, ?)" | _ <- crss]
-        ownValue value = bracket (withText value (\nativeInput -> withConnectionFactory connection (\nativeFactory -> output (c_duckdb_v2_value_create_varchar nativeFactory nativeInput)))) (destroy c_duckdb_v2_value_destroy)
-    TextForeign.withCString sql \text ->
-        bracket (output (c_duckdb_v2_parse_sql connection (ConstPtr text))) (destroy c_duckdb_v2_statement_iterator_destroy) \iterator ->
-            bracket (output (c_duckdb_v2_statement_iterator_next iterator)) (destroy c_duckdb_v2_sql_statement_destroy) \parsed ->
-                withMany ownValue crss \values -> withArray values \valuePtr ->
-                    bracket (output (c_duckdb_v2_statement_execute connection parsed (ConstPtr nullPtr) (ConstPtr valuePtr) (fromIntegral (length values)))) (destroy c_duckdb_v2_result_destroy) \result ->
-                        bracket (output (c_duckdb_v2_result_fetch_chunk result)) (destroy c_duckdb_v2_data_chunk_destroy) \chunk -> do
-                            when (chunk == nullHandle) $ throwIO (userError "duckdb-simple: the type query returned no row")
-                            owned <- columnTypes chunk (length crss)
-                            flip onException (mapM_ destroyLogicalType owned) do
-                                reported <- mapM logicalTypeToRep owned
-                                when (any (\rep -> case rep of LogicalTypeGeometry (Just _) -> False; _ -> True) reported) $
-                                    throwIO (userError "duckdb-simple: the type query did not preserve a configured GEOMETRY CRS")
-                                pure
-                                    NativeTypes
-                                        { nativeGeometry = Map.fromList (concat [(crs, logical) : [(normalized, logical) | LogicalTypeGeometry (Just normalized) <- [rep]] | (crs, rep, logical) <- zip3 crss reported owned])
-                                        , nativeOwned = owned
-                                        }
+        textValue value = withText value (\text -> factoryOutput connection (\factory -> c_duckdb_v2_value_create_varchar factory text))
+    withSQLStatement connection sql \parsed ->
+        withCreatedValues (map textValue crss) \values -> withArray values \valuePtr ->
+            bracket (output (c_duckdb_v2_statement_execute connection parsed (ConstPtr nullPtr) (ConstPtr valuePtr) (fromIntegral (length values)))) (destroy c_duckdb_v2_result_destroy) \result ->
+                bracket (output (c_duckdb_v2_result_fetch_chunk result)) (destroy c_duckdb_v2_data_chunk_destroy) \chunk -> do
+                    when (chunk == nullHandle) $ throwIO (userError "duckdb-simple: the type query returned no row")
+                    owned <- columnTypes chunk (length crss)
+                    flip onException (mapM_ destroyLogicalType owned) do
+                        reported <- mapM logicalTypeToRep owned
+                        when (any (\rep -> case rep of LogicalTypeGeometry (Just _) -> False; _ -> True) reported) $
+                            throwIO (userError "duckdb-simple: the type query did not preserve a configured GEOMETRY CRS")
+                        pure
+                            NativeTypes
+                                { nativeGeometry = Map.fromList (concat [(crs, logical) : [(normalized, logical) | LogicalTypeGeometry (Just normalized) <- [rep]] | (crs, rep, logical) <- zip3 crss reported owned])
+                                , nativeOwned = owned
+                                }
 
 -- | Take owned vector types. Destroy earlier types if an accessor fails.
 columnTypes :: DuckDBV2DataChunkHandle -> Int -> IO [DuckDBV2LogicalTypeHandle]

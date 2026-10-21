@@ -9,7 +9,6 @@ import Control.Exception (bracket)
 import Control.Monad (forM_, void, when, (>=>))
 import Data.Coerce (coerce)
 import Data.Int (Int32)
-import Data.Void (Void)
 import Database.DuckDB.FFI
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Array (withArray)
@@ -80,7 +79,7 @@ fillVectorWithSequence vec values = do
     dataPtrRaw <- c_duckdb_vector_get_data vec
     let dataPtr = coerce dataPtrRaw :: Ptr Int32
     validity <- c_duckdb_vector_get_validity vec
-    when (validity /= (coerce (nullPtr :: Ptr Void))) $ setAllValid validity (length values)
+    when (validity /= nullPtr) $ setAllValid validity (length values)
     forM_ (zip [0 ..] values) (uncurry (pokeElem dataPtr))
 
 verifyChunkContents :: DuckDBDataChunk -> [Int32] -> IO ()

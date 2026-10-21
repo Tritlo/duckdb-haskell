@@ -1,6 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-deprecations #-}
 
 module BindValuesTest (tests) where
@@ -10,7 +9,6 @@ import Data.Coerce (coerce)
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.List (intercalate)
 import Data.Time.Calendar (diffDays, fromGregorian)
-import Data.Void (Void)
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.FFI
 import Foreign.C.ConstPtr (ConstPtr (..))
@@ -86,10 +84,10 @@ bindValuesRoundtrip =
                         st <- c_duckdb_prepare conn cInsert stmtPtr
                         stmt <- peek stmtPtr
                         when (st /= DuckDBSuccess) $ do
-                            msg <- if stmt == (coerce (nullPtr :: Ptr Void)) then pure "prepare failed" else c_duckdb_prepare_error stmt >>= (peekCString . coerce)
+                            msg <- if stmt == coerce nullPtr then pure "prepare failed" else c_duckdb_prepare_error stmt >>= (peekCString . coerce)
                             assertFailure msg
                         st @?= DuckDBSuccess
-                        assertBool "prepared statement should not be null" (stmt /= (coerce (nullPtr :: Ptr Void)))
+                        assertBool "prepared statement should not be null" (stmt /= coerce nullPtr)
 
                         withConstCString varcharValue \varcharPtr ->
                             withConstCString varcharLenValue \varcharLenPtr ->
@@ -157,7 +155,7 @@ bindValuesRoundtrip =
                         c_duckdb_value_int64 resPtr 5 0 >>= (@?= (-5000000000000 :: Int64))
 
                         alloca \hugePtr -> do
-                            (c_duckdb_value_hugeint resPtr 6 0 >>= poke hugePtr)
+                            c_duckdb_value_hugeint resPtr 6 0 >>= poke hugePtr
                             peek hugePtr >>= (@?= DuckDBHugeInt{lower = 9223372036854775809, upper = 0})
 
                         c_duckdb_value_uint8 resPtr 7 0 >>= (@?= (200 :: Word8))
@@ -166,7 +164,7 @@ bindValuesRoundtrip =
                         c_duckdb_value_uint64 resPtr 10 0 >>= (@?= maxBound)
 
                         alloca \uhugePtr -> do
-                            (c_duckdb_value_uhugeint resPtr 11 0 >>= poke uhugePtr)
+                            c_duckdb_value_uhugeint resPtr 11 0 >>= poke uhugePtr
                             peek uhugePtr >>= (@?= DuckDBUHugeInt{lower = 123456789, upper = 1})
 
                         valFloat <- c_duckdb_value_float resPtr 12 0
@@ -188,26 +186,26 @@ bindValuesRoundtrip =
                         tzDifference @?= 7200000000
 
                         alloca \intervalPtr -> do
-                            (c_duckdb_value_interval resPtr 18 0 >>= poke intervalPtr)
+                            c_duckdb_value_interval resPtr 18 0 >>= poke intervalPtr
                             peek intervalPtr >>= (@?= intervalValue)
 
                         alloca \decimalPtr -> do
-                            (c_duckdb_value_decimal resPtr 19 0 >>= poke decimalPtr)
+                            c_duckdb_value_decimal resPtr 19 0 >>= poke decimalPtr
                             DuckDBDecimal{width = width, scale = scale} <- peek decimalPtr
                             (width, scale) @?= (18, 2)
 
                         varchar <- c_duckdb_value_varchar resPtr 20 0
-                        (peekCString . coerce) varchar >>= (@?= varcharValue)
+                        peekCString (coerce varchar) >>= (@?= varcharValue)
                         c_duckdb_free (coerce varchar)
 
                         alloca \stringPtr -> do
-                            (c_duckdb_value_string resPtr 21 0 >>= poke stringPtr)
+                            c_duckdb_value_string resPtr 21 0 >>= poke stringPtr
                             DuckDBString{data' = datPtr, size = datSize} <- peek stringPtr
                             peekCStringLen (coerce datPtr, fromIntegral datSize) >>= (@?= varcharLenValue)
-                            when (datPtr /= (coerce (nullPtr :: Ptr Void))) $ c_duckdb_free (coerce datPtr)
+                            when (datPtr /= nullPtr) $ c_duckdb_free (coerce datPtr)
 
                         alloca \blobPtr -> do
-                            (c_duckdb_value_blob resPtr 22 0 >>= poke blobPtr)
+                            c_duckdb_value_blob resPtr 22 0 >>= poke blobPtr
                             DuckDBBlob{data' = blobDataPtr, size = blobSize} <- peek blobPtr
                             peekArray (fromIntegral blobSize) (coerce blobDataPtr :: Ptr Word8) >>= (@?= blobBytes)
                             c_duckdb_free (coerce blobDataPtr)
@@ -223,16 +221,16 @@ bindValuesRoundtrip =
                         stmt <- peek stmtPtr
                         when (st /= DuckDBSuccess) $ do
                             errPtr <- c_duckdb_prepare_error stmt
-                            msg <- if errPtr == (coerce (nullPtr :: Ptr Void)) then pure "prepare failed" else (peekCString . coerce) errPtr
+                            msg <- if errPtr == coerce nullPtr then pure "prepare failed" else peekCString (coerce errPtr)
                             assertFailure msg
                         st @?= DuckDBSuccess
-                        assertBool "named statement" (stmt /= (coerce (nullPtr :: Ptr Void)))
+                        assertBool "named statement" (stmt /= coerce nullPtr)
 
                         alloca \idxPtr -> do
                             stIdx <- withConstCString "named_param" $ \name -> c_duckdb_bind_parameter_index stmt idxPtr name
                             when (stIdx /= DuckDBSuccess) $ do
                                 errPtr <- c_duckdb_prepare_error stmt
-                                msg <- if errPtr == (coerce (nullPtr :: Ptr Void)) then pure "bind_parameter_index failed" else (peekCString . coerce) errPtr
+                                msg <- if errPtr == coerce nullPtr then pure "bind_parameter_index failed" else peekCString (coerce errPtr)
                                 assertFailure msg
                             stIdx @?= DuckDBSuccess
                             idx <- peek idxPtr
@@ -240,7 +238,7 @@ bindValuesRoundtrip =
                             bindState <- c_duckdb_bind_int32 stmt idx 42
                             when (bindState /= DuckDBSuccess) $ do
                                 errPtr <- c_duckdb_prepare_error stmt
-                                msg <- if errPtr == (coerce (nullPtr :: Ptr Void)) then pure "bind failed" else (peekCString . coerce) errPtr
+                                msg <- if errPtr == coerce nullPtr then pure "bind failed" else peekCString (coerce errPtr)
                                 assertFailure msg
                             bindState @?= DuckDBSuccess
 

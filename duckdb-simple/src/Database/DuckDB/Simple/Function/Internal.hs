@@ -41,7 +41,6 @@ import Database.DuckDB.Simple.FromField (
     Field (..),
     FromField (..),
  )
-import Database.DuckDB.Simple.Internal (destroyLogicalType)
 import Database.DuckDB.Simple.Materialize (prepareVectorReader)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))

@@ -23,7 +23,8 @@ Wait for child creation and all worker operations to finish before calling
 ```haskell
 withEnvironment $ \environment ->
   withInstance environment [("threads", "2")] $ \instance_ -> do
-    attachDatabase instance_ ":memory:" "shared" [] True
+    attachDatabase instance_ ":memory:" "shared" []
+    setDefaultDatabase instance_ "shared"
     withConnectionOn instance_ $ \writer -> do
       execute_ writer "CREATE TABLE items(id BIGINT)"
       execute writer "INSERT INTO items VALUES (?)" (Only (42 :: Int))

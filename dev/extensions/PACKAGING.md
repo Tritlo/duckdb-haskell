@@ -49,8 +49,4 @@ DuckDB version, extension version, ABI type, and three empty reserved fields.
 The zero signature does not authenticate the library. Native loading requires
 DuckDB's unsigned-extension option.
 
-The generated suffix matches the pinned official CMake writer byte for byte.
-The packaging checks used a temporary library fixture and confirmed that the
-input did not change. They covered invalid fields, existing outputs, repeated
-metadata, and supported native headers. The packer does not verify exported
-symbols or native dependency resolution.
+The packer does not verify exported symbols or native dependency resolution.

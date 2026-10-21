@@ -155,94 +155,13 @@ The CI matrix builds and loads the example on Linux and macOS with
 GHC 9.14.1 at optimization level 1. Each job uses a fresh extension build
 directory and the matching native CLI.
 
-## Deployment and remaining validation
+## Deployment
 
 The example targets Linux and macOS and uses shared GHC and package libraries.
 Keep those dependencies available, including the threaded RTS, when you rename
 or deploy the foreign library. Cabal and Nix build-store paths require those
 stores to remain available. This example does not cover relocatable bundling,
 Windows, or loading into another Haskell executable.
-
-Final-release Linux x86_64 checks on 2026-10-21 use the verified official
-`v2.0.0` CLI and shared library:
-
-- A fresh optimized Haskell extension build passes both native CLI smoke
-  processes. The CLI uses the matching Nix loader for the Nix GHC libraries.
-- The loader accepts `v2.0.0` metadata and rejects the development source ID.
-  The 534-byte footer matches the final official CMake writer byte for byte.
-- All 624 ordinary functional tests and the default leak suite pass.
-- The final SDK headers match the pinned inputs. All four generated-file
-  checksums remain unchanged. The V2 table still has 620 unstable entries.
-- `ldd` confirms the threaded RTS dependency and no `libduckdb` dependency.
-
-The post-release review repeats both native CLI smoke processes after the V2
-value and lifetime fixes. All 633 client functional tests, the default leak
-suite, and Haddock pass. See [the V2 review](../v2-migration.md) for the fixes
-and focused Valgrind results. These checks use Linux x86_64 and Nix GHC 9.14.1.
-
-Linux x86_64 checks on 2026-10-20 use GHC 9.14.1 and native source
-`d54cbbe3df17e8e5ce68312f483b4155836112aa`:
-
-- A clean extension build passes both native CLI smoke processes, including
-  both macro kinds, the PRAGMA, custom-option updates, and log-sink selection.
-- The updated native function table has 620 entries. An old C object can retain
-  the previous table size. Use a fresh build directory after a header change.
-- The ordinary client suites pass all 617 functional tests and the default
-  leak suite against the same native library.
-- Fresh source archives build and install without LLVM or hs-bindgen. Static
-  and dynamic consumers pass with the loader environment unset.
-- `ldd` confirms the threaded RTS dependency and no `libduckdb` dependency.
-- Haddock builds for both extension-mode libraries. Existing generated-link
-  warnings remain.
-
-The committed-code audit on 2026-10-21 repeats the native CLI checks with a
-fresh optimized extension build. A C host also passes concurrent first loads,
-repeated loads, callback cleanup, cancellation, connection recovery, and host
-signal preservation. The packer output matches the pinned official CMake
-writer byte for byte. Valgrind reports no errors and no definite or indirect
-lost bytes. The live RTS retains 1,536 possible lost bytes in four glibc TLS
-blocks and about 4.8 MB of reachable process-lifetime storage.
-
-The following checks used the October 16 pin. They do not establish current
-platform compatibility.
-
-Linux x86_64 validation used GHC 9.14.1 and the earlier native preview:
-
-- The typed demo builds and passes the native CLI smoke checks.
-- A plain C host passes concurrent first loads, repeated loads, independent
-  databases, callback cleanup, cancellation, and connection recovery.
-- Runtime startup preserves ten installed host signal handlers. Refused API
-  negotiation leaves the borrowed native error slot unchanged.
-- `ldd`, `readelf`, and `nm` confirm no `libduckdb` dependency, direct native
-  imports, exported generated C wrappers, or exported callback cleanup helpers.
-- Valgrind reports no errors and no definite or indirect lost bytes. The live
-  RTS retains 1,536 possible lost bytes in four thread-local-storage blocks
-  and about 4.8 MB of reachable process-lifetime state.
-- All 602 ordinary functional tests pass with four test workers. The default
-  leak suite and Haddock build also pass. Generated Haddock link warnings remain.
-- The exact sandboxed Nix CI build passes for both packages.
-- The Haskell packer matches the official CMake writer byte for byte. Both
-  tools compile with `-Wall -Werror`.
-- Fresh source archives build and load without LLVM or the hs-bindgen
-  generator. Temporary consumers verify worker state and initialization-error
-  containment. These checks use extracted source packages and the existing
-  dependency cache. They do not use `cabal install --lib`.
-
-macOS ARM64 validation used Nix GHC 9.14.1, Clang 21.1.8, and the earlier native
-preview:
-
-- The Mach-O demo passes both native CLI smoke processes.
-- The C hosts pass concurrent first loads, repeated loads, independent
-  databases, cancellation, connection recovery, host signal preservation,
-  and refused API negotiation.
-- `otool` and `nm` confirm the threaded RTS dependency and no `libduckdb`
-  dependency, direct native imports, or exported private C helpers.
-- All 602 ordinary functional tests pass with four test workers. Callback
-  collection and the functional leak checks also pass. Native RSS and thread
-  counters require Linux `/proc`.
-
-These checks use the local Cabal and Nix dependency stores. They do not verify
-relocatable deployment.
 
 References: [Cabal foreign libraries](https://cabal.readthedocs.io/en/3.18/cabal-package-description-file.html#foreign-libraries),
 [GHC runtime initialization](https://downloads.haskell.org/ghc/9.14.1/docs/users_guide/exts/ffi.html#using-your-own-main),

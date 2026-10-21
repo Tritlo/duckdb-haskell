@@ -10,7 +10,7 @@ module ValueRegressionTests (main, valueRegressionTests) where
 
 import Control.Exception (IOException, bracket, try)
 import Control.Monad (forM_)
-import Data.Array (Array, listArray)
+import Data.Array (Array, elems, listArray)
 import qualified Data.ByteString as BS
 import Data.Int (Int32, Int64, Int8)
 import qualified Data.Map.Strict as Map
@@ -28,6 +28,7 @@ import Database.DuckDB.Simple.FromField (BitString (..), DecimalValue (..), Fiel
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..), genericFromFieldValue, genericToStructValue)
 import Database.DuckDB.Simple.Internal (destroyValue, output, withConnectionFactory, withConnectionHandle)
 import Database.DuckDB.Simple.LogicalRep
+import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
 import GHC.Generics (Generic)
@@ -260,6 +261,19 @@ valueRegressionTests =
                 Just struct -> do
                     let fields = listArray (0, 1) [StructField "wrong" (FieldInt64 1), StructField "secondValue" (FieldInt64 2)]
                     assertLeft (genericFromFieldValue (FieldStruct struct{structValueFields = fields}) :: Either String NamedRecord)
+        , testCase "unnamed tuples preserve scalar and nested fields on round trip" $ withConnection ":memory:" \conn -> do
+            let tuple =
+                    StructValue
+                        (listArray (0, 1) [StructField "" (FieldInt64 42), StructField "" (FieldText "λ")])
+                        (listArray (0, 1) [StructField "" (LogicalTypeScalar DuckDBV2LogicalTypeIdBigInt), StructField "" (LogicalTypeScalar DuckDBV2LogicalTypeIdVarchar)])
+                        (Map.singleton "" 1)
+            (query_ conn "SELECT row(42::BIGINT, 'λ')" :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only tuple])
+            (query_ conn "SELECT [row(42::BIGINT, 'λ')]" :: IO [Only [StructValue FieldValue]]) >>= (@?= [Only [tuple]])
+            (query conn "SELECT ?" (Only tuple) :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only tuple])
+        , testCase "filtered tuple cursors retain positional fields" $ withConnection ":memory:" \conn -> do
+            rows <- Streaming.fold_ conn "SELECT row(i::BIGINT, 'λ') FROM range(6) t(i) WHERE i % 2 = 1" [] $ \values (Only tuple) ->
+                pure (values <> [map structFieldValue (elems (structValueFields tuple))])
+            rows @?= [[FieldInt64 value, FieldText "λ"] | value <- [1, 3, 5]]
         , testCase "logical type Unicode names round trip" $ withConnection ":memory:" \conn -> withConnectionHandle conn \native -> do
             let logical = LogicalTypeStruct (listArray (0, 0) [StructField "íslenska_λ_😀" (LogicalTypeScalar DuckDBV2LogicalTypeIdBigInt)])
             bracket (logicalTypeFromRep native logical) destroyLogicalType \handle ->

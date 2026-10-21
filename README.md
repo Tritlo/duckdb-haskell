@@ -1,7 +1,7 @@
 # duckdb-haskell
 
 `duckdb-ffi` 2.0 and `duckdb-simple` 0.4 target DuckDB 2.0.
-See [the API snapshot, feature coverage, build commands, and release checklist](docs/duckdb-2.0.md).
+See [the pinned API, feature coverage, and build commands](docs/duckdb-2.0.md).
 The package version selects the native API; builds need no preview flag.
 Use the earlier package releases with DuckDB 1.5.
 

@@ -17,6 +17,8 @@ unstable. Use the exact native snapshot recorded in the binding package.
 Use an explicit instance when several connections must share catalogs and
 configuration. Each connection supports one active native stream. Use a separate
 connection for each concurrent worker.
+Wait for child creation and all worker operations to finish before calling
+`closeInstance` or `closeEnvironment`. Closing a parent also closes its children.
 
 ```haskell
 withEnvironment $ \environment ->
@@ -103,7 +105,7 @@ main =
   ADTs as DuckDB STRUCTs and UNIONs via GHC generics and the `ViaDuckDB`
   deriving-via helper.
 - `Database.DuckDB.Simple.LogicalRep` – structured value types (`StructValue`,
-  `UnionValue`) for working with DuckDB's composite types.
+  `TupleValue`, `UnionValue`) for working with DuckDB's composite types.
 - `Database.DuckDB.Simple.Types` – shared types (`Query`, `Null`, `Only`,
   `(:.)`, `SQLError`).
 - `Database.DuckDB.Simple.Function` – register scalar Haskell functions that
@@ -125,6 +127,11 @@ fetchNames conn = do
 
 The execution helpers return the number of affected rows (`Int`) so callers can
 assert on data changes when needed.
+
+`query_` and `execute_` parse all input statements before execution. A syntax
+error prevents every statement in that input from running. An execution error
+can leave effects from earlier statements. Use `withTransaction` when those
+effects must roll back together.
 
 ## Named Parameters
 
@@ -305,11 +312,14 @@ The library refreshes prepared metadata when it resets or rebinds a statement.
 Use separate parameters when one expression requires microseconds and another
 requires nanoseconds.
 
-### Manual STRUCT and UNION Handling
+### Manual STRUCT, TUPLE, and UNION Handling
 
-SQL tuples, such as `row(42, 'text')`, decode as `StructValue` with empty field
-names. Read these fields by position in `structValueFields`. The name index
-contains only the last field for the repeated empty name.
+SQL tuples, such as `row(42, 'text')`, decode as `TupleValue`. Read their
+positional fields in `tupleValueFields` and types in `tupleValueTypes`.
+`FieldTuple` and `LogicalTypeTuple` preserve empty tuples independently of
+empty STRUCT values. STRUCT fields retain their names in `StructValue`.
+`LogicalTypeCollatedVarchar` preserves a VARCHAR field's collation in composite
+parameters. Its comparisons use that collation after a round trip.
 
 Temporal fields retain their SQL units when composite values are rebound.
 The `FieldDate`, `FieldTimestamp`, and `FieldTimestampTZ` constructors hold
@@ -499,9 +509,10 @@ also raises an error because DuckDB treats its STRUCT type as a tuple.
 DuckDB 2.0 permits an empty key with other named keys. You can also bind a plain
 value and cast it in SQL, as in `?::VARIANT`.
 
-The library uses a separate helper connection for VARIANT type metadata and
-configured GEOMETRY types. It caches the types and batches VARIANT metadata
-queries. This preserves an active stream on the caller's connection. Low-level
+The library uses a separate helper connection for configured GEOMETRY types
+and VARIANT decoder metadata. It caches the GEOMETRY types and batches VARIANT
+metadata queries. It constructs VARIANT types directly through the native
+factory. This preserves an active stream on the caller's connection. Low-level
 `ToDuckValue.toDuckValue` and `logicalTypeFromRep` require a V2 connection handle.
 Keep owned values and logical types within that connection's lifetime.
 

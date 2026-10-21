@@ -700,6 +700,7 @@ instance (Generic a, GToField (Rep a)) => DuckDBColumnType (ViaDuckDB a) where
     duckdbColumnTypeFor _ =
         case genericLogicalType (Proxy :: Proxy a) of
             LogicalTypeStruct{} -> Text.pack "STRUCT"
+            LogicalTypeTuple{} -> Text.pack "TUPLE"
             LogicalTypeUnion{} -> Text.pack "UNION"
             LogicalTypeList{} -> Text.pack "LIST"
             LogicalTypeArray{} -> Text.pack "ARRAY"
@@ -708,6 +709,7 @@ instance (Generic a, GToField (Rep a)) => DuckDBColumnType (ViaDuckDB a) where
             LogicalTypeDecimal{} -> Text.pack "DECIMAL"
             LogicalTypeEnum{} -> Text.pack "ENUM"
             LogicalTypeGeometry{} -> Text.pack "GEOMETRY"
+            LogicalTypeCollatedVarchar{} -> Text.pack "VARCHAR"
 
 {- | Deriving-via @ToField@ instance. We reuse the helpers above to decide
 whether the top-level representation is a union, struct, or scalar and then

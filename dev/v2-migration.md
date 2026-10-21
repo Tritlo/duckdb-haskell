@@ -28,6 +28,9 @@ into V2 handles.
 - `open` owns a private environment and instance. Explicit instances can share
   connections. Close children before their native owners.
 - `execute` drains V2 results so side effects complete before it returns.
+- Ad-hoc helpers parse all statements before execution. A syntax error prevents
+  earlier statements from running. The retained native query API can execute
+  earlier statements before reporting a later syntax error.
 - Default cursors materialize native chunks before row delivery. Explicit
   streaming retains the one-live-result restriction of a V2 connection.
 - Bound values remain owned by the statement until replacement, clear, or close.
@@ -148,7 +151,8 @@ VARIANT decoding uses batched SQL type metadata, native extraction, and casts.
 Object extraction binds exact keys, including empty strings and interior NUL
 bytes. It does not cast objects to MAP values. Object keys use DuckDB's native
 lexicographic order. Arrays retain element order. A helper
-connection also caches SQL-derived VARIANT and configured GEOMETRY types.
+connection also caches SQL-derived configured GEOMETRY types. Native factories
+construct VARIANT types directly.
 Configured custom CRS names remain available in nested parameters, including
 typed NULLs and empty collections. The helper does not interrupt the caller's
 active stream. The backend does not read private payload layouts or convert
@@ -186,6 +190,9 @@ bindings. The migration uses the current API. It does not add native symbols.
   Do not silently drop CRS metadata when `ignore_unknown_crs` is enabled.
 - V2 metadata cannot perform scoped collation lookup. That operation raises
   `SQLError`. Table, view, index, sequence, and type lookups use SQL metadata.
+  These lookups accept a top-level schema identifier. A dot in that identifier
+  is literal. V2 table descriptions accept at most three qualified name parts,
+  so they cannot describe tables in nested schemas.
 
 ## Validation commands
 

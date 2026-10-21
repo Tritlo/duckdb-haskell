@@ -11,7 +11,6 @@ import Data.Bits (testBit)
 import Data.Coerce (coerce)
 import Data.Int (Int32)
 import Data.Proxy (Proxy (..))
-import Data.Void (Void)
 import Database.DuckDB.FFI
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (peekCString)
@@ -19,7 +18,7 @@ import Foreign.C.Types (CChar)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Array (peekArray, withArray)
 import Foreign.Marshal.Utils (withMany)
-import Foreign.Ptr (FunPtr, Ptr, freeHaskellFunPtr, nullFunPtr, nullPtr)
+import Foreign.Ptr (Ptr, freeHaskellFunPtr, nullFunPtr, nullPtr)
 import Foreign.Storable (Storable (..), peek, peekElemOff, poke, pokeElemOff)
 import GHC.Records (getField)
 import HsBindgen.Runtime.HasCField (fromPtr)
@@ -46,19 +45,19 @@ arrowStreamErrorCallbacks =
                 bracket (toFunPtr (const (pure message))) (freeHaskellFunPtr . coerce) \lastError ->
                     bracket
                         ( toFunPtr \stream -> do
-                            poke (fromPtr (Proxy @"release") (stream :: Ptr ArrowArrayStream)) (coerce (nullFunPtr :: FunPtr Void))
+                            poke (fromPtr (Proxy @"release") (stream :: Ptr ArrowArrayStream)) nullFunPtr
                         )
                         (freeHaskellFunPtr . coerce)
                         \release ->
                             alloca \stream -> do
-                                poke stream (ArrowArrayStream (coerce (nullFunPtr :: FunPtr Void)) next lastError release (coerce (nullPtr :: Ptr Void)))
+                                poke stream (ArrowArrayStream nullFunPtr next lastError release nullPtr)
                                 alloca \array -> do
                                     poke array zeroArrowArray
                                     fromFunPtr next stream array >>= (@?= 5)
                                     fromFunPtr lastError stream >>= (peekCString . coerce) >>= (@?= "Arrow producer failed")
                                 releaseArrowStream stream
                                 value <- peek stream
-                                (getField @"release") value @?= (coerce (nullFunPtr :: FunPtr Void))
+                                (getField @"release") value @?= nullFunPtr
                                 releaseArrowStream stream
 
 arrowSchemaRoundtrip :: TestTree
@@ -81,11 +80,11 @@ arrowSchemaRoundtrip =
 
                                     let childCount = fromIntegral ((getField @"n_children") schema)
                                     let childArrayPtr = (getField @"children") schema
-                                    assertBool "children pointer should not be null" (childArrayPtr /= (coerce (nullPtr :: Ptr Void)))
+                                    assertBool "children pointer should not be null" (childArrayPtr /= nullPtr)
                                     [fc, sc] <- peekArray childCount childArrayPtr >>= mapM peek
                                     (peekCString . coerce) ((getField @"name") fc) >>= (@?= "id")
                                     (peekCString . coerce) ((getField @"name") sc) >>= (@?= "label")
-                                    assertBool "schema release pointer should be set" ((getField @"release") schema /= (coerce (nullFunPtr :: FunPtr Void)))
+                                    assertBool "schema release pointer should be set" ((getField @"release") schema /= nullFunPtr)
 
                                     withConvertedSchema conn schemaPtr (const (pure ()))
 
@@ -105,7 +104,7 @@ arrowChunkRoundtrip =
                                     withConvertedSchema conn schemaPtr \convertedSchema ->
                                         do
                                             chunk <- c_duckdb_create_data_chunk logicalArray 1
-                                            assertBool "create_data_chunk should return chunk" (chunk /= (coerce (nullPtr :: Ptr Void)))
+                                            assertBool "create_data_chunk should return chunk" (chunk /= coerce nullPtr)
 
                                             withOwnedChunk chunk \ownedChunk -> do
                                                 c_duckdb_data_chunk_set_size ownedChunk 2
@@ -117,7 +116,7 @@ arrowChunkRoundtrip =
 
                                                 c_duckdb_vector_ensure_validity_writable vector
                                                 maskPtr <- c_duckdb_vector_get_validity vector
-                                                assertBool "validity mask pointer should not be null" (maskPtr /= (coerce (nullPtr :: Ptr Void)))
+                                                assertBool "validity mask pointer should not be null" (maskPtr /= nullPtr)
                                                 c_duckdb_validity_set_row_valid maskPtr 0
                                                 c_duckdb_validity_set_row_invalid maskPtr 1
 
@@ -128,14 +127,14 @@ arrowChunkRoundtrip =
 
                                                         array <- peek arrayPtr
                                                         (getField @"length") array @?= 2
-                                                        assertBool "release pointer should not be null before transfer" ((getField @"release") array /= (coerce (nullFunPtr :: FunPtr Void)))
+                                                        assertBool "release pointer should not be null before transfer" ((getField @"release") array /= nullFunPtr)
 
                                                         alloca \outChunkPtr -> do
-                                                            poke outChunkPtr (coerce (nullPtr :: Ptr Void))
+                                                            poke outChunkPtr (coerce nullPtr)
                                                             errFromArrow <- c_duckdb_data_chunk_from_arrow conn (coerce arrayPtr) convertedSchema outChunkPtr
                                                             assertNoError errFromArrow
                                                             restoredChunk <- peek outChunkPtr
-                                                            assertBool "restored chunk should not be null" (restoredChunk /= (coerce (nullPtr :: Ptr Void)))
+                                                            assertBool "restored chunk should not be null" (restoredChunk /= coerce nullPtr)
 
                                                             withOwnedChunk restoredChunk $ \restored -> do
                                                                 restoredSize <- c_duckdb_data_chunk_get_size restored
@@ -148,22 +147,22 @@ arrowChunkRoundtrip =
                                                                 restoredVal @?= 42
 
                                                                 restoredMaskPtr <- c_duckdb_vector_get_validity restoredVector
-                                                                assertBool "restored validity mask pointer should not be null" (restoredMaskPtr /= (coerce (nullPtr :: Ptr Void)))
+                                                                assertBool "restored validity mask pointer should not be null" (restoredMaskPtr /= nullPtr)
                                                                 restoredMaskWord <- peek restoredMaskPtr
                                                                 assertBool "first row should be valid" (testBit restoredMaskWord 0)
                                                                 assertBool "second row should be null" (not (testBit restoredMaskWord 1))
 
                                                             arrayAfter <- peek arrayPtr
-                                                            (getField @"release") arrayAfter @?= (coerce (nullFunPtr :: FunPtr Void))
+                                                            (getField @"release") arrayAfter @?= nullFunPtr
 
 withArrowOptions :: DuckDBConnection -> (DuckDBArrowOptions -> IO a) -> IO a
 withArrowOptions conn action =
     alloca \optsPtr -> do
         let acquire = do
-                poke optsPtr (coerce (nullPtr :: Ptr Void))
+                poke optsPtr (coerce nullPtr)
                 c_duckdb_connection_get_arrow_options conn optsPtr
                 opts <- peek optsPtr
-                when (opts == (coerce (nullPtr :: Ptr Void))) $ assertFailure "duckdb_connection_get_arrow_options returned null"
+                when (opts == coerce nullPtr) $ assertFailure "duckdb_connection_get_arrow_options returned null"
                 pure opts
             release _ = c_duckdb_destroy_arrow_options optsPtr
         bracket acquire release action
@@ -198,11 +197,11 @@ withOwnedChunk chunk = bracket (pure chunk) destroyChunk
 withConvertedSchema :: DuckDBConnection -> Ptr ArrowSchema -> (DuckDBArrowConvertedSchema -> IO a) -> IO a
 withConvertedSchema conn schemaPtr action =
     alloca \convertedPtr -> do
-        poke convertedPtr (coerce (nullPtr :: Ptr Void))
+        poke convertedPtr (coerce nullPtr)
         err <- c_duckdb_schema_from_arrow conn (coerce schemaPtr) convertedPtr
         assertNoError err
         converted <- peek convertedPtr
-        assertBool "converted schema pointer should not be null" (converted /= (coerce (nullPtr :: Ptr Void)))
+        assertBool "converted schema pointer should not be null" (converted /= coerce nullPtr)
         bracket (pure converted) destroyArrowConvertedSchema action
 
 destroyLogicalType :: DuckDBLogicalType -> IO ()
@@ -231,24 +230,24 @@ destroyErrorData err =
 
 assertNoError :: DuckDBErrorData -> IO ()
 assertNoError err =
-    when (err /= (coerce (nullPtr :: Ptr Void))) $ do
+    when (err /= coerce nullPtr) $ do
         msgPtr <- c_duckdb_error_data_message err
-        msg <- (peekCString . coerce) msgPtr
+        msg <- peekCString (coerce msgPtr)
         destroyErrorData err
         assertFailure ("DuckDB reported error: " <> msg)
 
 zeroArrowSchema :: ArrowSchema
 zeroArrowSchema =
     ArrowSchema
-        { format = (coerce (nullPtr :: Ptr Void))
-        , name = (coerce (nullPtr :: Ptr Void))
-        , metadata = (coerce (nullPtr :: Ptr Void))
+        { format = coerce nullPtr
+        , name = coerce nullPtr
+        , metadata = coerce nullPtr
         , flags = 0
         , n_children = 0
-        , children = (coerce (nullPtr :: Ptr Void))
-        , dictionary = (coerce (nullPtr :: Ptr Void))
-        , release = (coerce (nullFunPtr :: FunPtr Void))
-        , private_data = (coerce (nullPtr :: Ptr Void))
+        , children = nullPtr
+        , dictionary = nullPtr
+        , release = nullFunPtr
+        , private_data = nullPtr
         }
 
 zeroArrowArray :: ArrowArray
@@ -259,9 +258,9 @@ zeroArrowArray =
         , offset = 0
         , n_buffers = 0
         , n_children = 0
-        , buffers = (coerce (nullPtr :: Ptr Void))
-        , children = (coerce (nullPtr :: Ptr Void))
-        , dictionary = (coerce (nullPtr :: Ptr Void))
-        , release = (coerce (nullFunPtr :: FunPtr Void))
-        , private_data = (coerce (nullPtr :: Ptr Void))
+        , buffers = nullPtr
+        , children = nullPtr
+        , dictionary = nullPtr
+        , release = nullFunPtr
+        , private_data = nullPtr
         }

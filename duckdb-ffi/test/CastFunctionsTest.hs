@@ -1,5 +1,4 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# OPTIONS_GHC -Wno-deprecations #-}
 
@@ -11,13 +10,12 @@ import Data.Coerce (coerce)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Int (Int32)
 import Data.List (isInfixOf)
-import Data.Void (Void)
 import Database.DuckDB.FFI
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (peekCString, withCStringLen)
 import Foreign.C.Types (CBool (..))
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (FunPtr, Ptr, freeHaskellFunPtr, nullFunPtr, nullPtr)
+import Foreign.Ptr (Ptr, freeHaskellFunPtr, nullFunPtr, nullPtr)
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deRefStablePtr, freeStablePtr, newStablePtr)
 import Foreign.Storable (peekElemOff, poke)
 import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
@@ -49,7 +47,7 @@ castFunctionOverridesBuiltin =
                         fetchString resPtr 0 0 >>= (@?= "value: 1")
                         fetchString resPtr 0 1 >>= (@?= "value: 5")
                         errPtr <- c_duckdb_result_error resPtr
-                        errPtr @?= (coerce (nullPtr :: Ptr Void))
+                        errPtr @?= coerce nullPtr
 
 castFunctionReportsErrors :: TestTree
 castFunctionReportsErrors =
@@ -62,8 +60,8 @@ castFunctionReportsErrors =
                             state <- c_duckdb_query conn sql resPtr
                             state @?= DuckDBError
                             errPtr <- c_duckdb_result_error resPtr
-                            assertBool "expected error pointer" (errPtr /= (coerce (nullPtr :: Ptr Void)))
-                            errMsg <- (peekCString . coerce) errPtr
+                            assertBool "expected error pointer" (errPtr /= coerce nullPtr)
+                            errMsg <- peekCString (coerce errPtr)
                             assertBool "error message should mention negative" ("negative" `isInfixOf` errMsg)
                             c_duckdb_destroy_result resPtr
 
@@ -77,7 +75,7 @@ castFunctionTryMode =
                         fetchString resPtr 0 0 >>= (@?= "value: 2")
                         c_duckdb_value_is_null resPtr 0 1 >>= (@?= CBool 1)
                         errPtr <- c_duckdb_result_error resPtr
-                        errPtr @?= (coerce (nullPtr :: Ptr Void))
+                        errPtr @?= coerce nullPtr
                     chLastMode >>= (@?= DuckDBCastTry)
                     chExtraSeen >>= (@?= True)
 
@@ -96,7 +94,7 @@ withTestCast conn action = do
                     c_duckdb_cast_function_set_source_type castFun sourceType
                     c_duckdb_cast_function_set_target_type castFun targetType
                     c_duckdb_cast_function_set_implicit_cast_cost castFun 0
-                    c_duckdb_cast_function_set_extra_info castFun ((coerce . castStablePtrToPtr) prefixStable) (coerce (nullFunPtr :: FunPtr Void))
+                    c_duckdb_cast_function_set_extra_info castFun ((coerce . castStablePtrToPtr) prefixStable) (coerce nullFunPtr)
                     c_duckdb_cast_function_set_function castFun castFunPtr
                     c_duckdb_register_cast_function conn castFun >>= (@?= DuckDBSuccess)
                     action
@@ -104,7 +102,7 @@ withTestCast conn action = do
                             { chLastMode = readIORef modeRef
                             , chExtraSeen = readIORef extraSeenRef
                             }
-    (freeHaskellFunPtr . coerce) castFunPtr
+    freeHaskellFunPtr (coerce castFunPtr)
     freeStablePtr prefixStable
     pure result
 
@@ -113,7 +111,7 @@ castCallback modeRef extraSeenRef prefixStable info count inputVec outputVec = d
     actualPtr <- c_duckdb_cast_function_get_extra_info info
     when (actualPtr == (coerce . castStablePtrToPtr) prefixStable) $ writeIORef extraSeenRef True
     prefix <-
-        if actualPtr == (coerce (nullPtr :: Ptr Void))
+        if actualPtr == nullPtr
             then pure "value: "
             else deRefStablePtr ((castPtrToStablePtr . coerce) actualPtr)
     mode <- c_duckdb_cast_function_get_cast_mode info
@@ -155,7 +153,7 @@ withCastFunction = bracket c_duckdb_create_cast_function destroy
 fetchString :: Ptr DuckDBResult -> DuckDBIdx -> DuckDBIdx -> IO String
 fetchString resPtr col row = do
     cStr <- c_duckdb_value_varchar resPtr col row
-    value <- (peekCString . coerce) cStr
+    value <- peekCString (coerce cStr)
     c_duckdb_free (coerce cStr)
     pure value
 

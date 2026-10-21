@@ -1,5 +1,4 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# OPTIONS_GHC -Wno-deprecations #-}
 
@@ -192,25 +191,25 @@ withHarness columnType action = do
     extraDelete <-
         mkDeleteCallback \ptr -> do
             modifyIORef' extraCount (+ 1)
-            when (ptr /= (coerce (nullPtr :: Ptr Void))) (free ptr)
+            when (ptr /= nullPtr) (free ptr)
 
     bindDelete <-
         mkDeleteCallback \ptr -> do
             modifyIORef' bindCount (+ 1)
             writeIORef bindPtrRef Nothing
-            when (ptr /= (coerce (nullPtr :: Ptr Void))) (free ptr)
+            when (ptr /= nullPtr) (free ptr)
 
     initDelete <-
         mkDeleteCallback \ptr -> do
             modifyIORef' initCount (+ 1)
             writeIORef initPtrRef Nothing
-            when (ptr /= (coerce (nullPtr :: Ptr Void))) (free ptr)
+            when (ptr /= nullPtr) (free ptr)
 
     localDelete <-
         mkDeleteCallback \ptr -> do
             modifyIORef' localCount (+ 1)
             writeIORef localPtrRef Nothing
-            when (ptr /= (coerce (nullPtr :: Ptr Void))) (free ptr)
+            when (ptr /= nullPtr) (free ptr)
 
     let resetLifecycle = do
             writeIORef projectionCurrent Nothing
@@ -232,10 +231,10 @@ withHarness columnType action = do
             sentinel @?= extraInfoSentinel
 
             alloca \ctxPtr -> do
-                poke ctxPtr (coerce (nullPtr :: Ptr Void))
+                poke ctxPtr (coerce nullPtr)
                 c_duckdb_table_function_get_client_context info ctxPtr
                 ctx <- peek ctxPtr
-                assertBool "client context should not be null" (ctx /= (coerce (nullPtr :: Ptr Void)))
+                assertBool "client context should not be null" (ctx /= coerce nullPtr)
                 cid <- c_duckdb_client_context_get_connection_id ctx
                 assertBool "connection id should be non-negative" (cid >= 0)
                 c_duckdb_destroy_client_context ctxPtr
@@ -288,7 +287,7 @@ withHarness columnType action = do
             case mode of
                 ModeInitError -> do
                     bindRaw <- c_duckdb_init_get_bind_data info
-                    bindRaw @?= (coerce (nullPtr :: Ptr Void))
+                    bindRaw @?= nullPtr
                     withConstCString "init rejected missing bind data" $ \msg -> c_duckdb_init_set_error info msg
                 ModeNormal -> do
                     bindRaw <- c_duckdb_init_get_bind_data info
@@ -451,10 +450,10 @@ withHarness columnType action = do
 
     result <- action harness
 
-    (freeHaskellFunPtr . coerce) bindFun
-    (freeHaskellFunPtr . coerce) initFun
-    (freeHaskellFunPtr . coerce) localInitFun
-    (freeHaskellFunPtr . coerce) execFun
+    freeHaskellFunPtr (coerce bindFun)
+    freeHaskellFunPtr (coerce initFun)
+    freeHaskellFunPtr (coerce localInitFun)
+    freeHaskellFunPtr (coerce execFun)
     -- DuckDB may still invoke delete callbacks while the table function tears down.
     -- Rely on process teardown to reclaim them to avoid racing with finalizers.
 
@@ -510,7 +509,7 @@ sizeOfInt64 = sizeOf (undefined :: Int64)
 withOptionalValue :: IO DuckDBValue -> (DuckDBValue -> IO a) -> IO (Maybe a)
 withOptionalValue acquire action = do
     value <- acquire
-    if value == (coerce (nullPtr :: Ptr Void))
+    if value == coerce nullPtr
         then pure Nothing
         else do
             result <- action value
@@ -534,10 +533,10 @@ toCBool :: Bool -> CBool
 toCBool False = CBool 0
 toCBool True = CBool 1
 
-peekCStringMaybe :: (ConstPtr CChar) -> IO String
+peekCStringMaybe :: ConstPtr CChar -> IO String
 peekCStringMaybe ptr
-    | ptr == (coerce (nullPtr :: Ptr Void)) = pure ""
-    | otherwise = (peekCString . coerce) ptr
+    | ptr == coerce nullPtr = pure ""
+    | otherwise = peekCString (coerce ptr)
 
 -- Wrappers -------------------------------------------------------------------
 

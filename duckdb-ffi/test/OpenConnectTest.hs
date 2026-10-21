@@ -1,7 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TypeApplications #-}
 
 module OpenConnectTest (tests) where
@@ -9,13 +8,12 @@ module OpenConnectTest (tests) where
 import Control.Monad (forM_, when)
 import Data.Coerce (coerce)
 import Data.Version (Version (..), parseVersion)
-import Data.Void (Void)
 import Database.DuckDB.FFI
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (peekCString)
 import Foreign.C.Types (CBool (..))
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (Ptr, nullPtr)
+import Foreign.Ptr (nullPtr)
 import Foreign.Storable (peek, poke)
 import GHC.Records (getField)
 import System.Environment (lookupEnv)
@@ -38,7 +36,7 @@ testLibraryVersion :: TestTree
 testLibraryVersion =
     testCase "loads a supported DuckDB runtime" $ do
         versionPtr <- c_duckdb_library_version
-        version <- (peekCString . coerce) versionPtr
+        version <- peekCString (coerce versionPtr)
         let unsupported = "Expected DuckDB 2.0 or a 2.0 preview; loaded " <> version
         case readP_to_S (char 'v' *> parseVersion <* eof) version of
             [(Version [2, 0, _] _, "")] -> pure ()
@@ -63,7 +61,7 @@ testOpenAndConnect =
                     -- Query progress information (should succeed even without a running query)
                     alloca $ \progressPtr -> do
                         poke progressPtr (DuckDBQueryProgress 0 0 0)
-                        (c_duckdb_query_progress conn >>= poke progressPtr)
+                        c_duckdb_query_progress conn >>= poke progressPtr
                         progress <- peek progressPtr
                         assertBool "rows processed should be non-negative" (getField @"rows_processed" progress >= 0 && getField @"total_rows_to_process" progress >= 0)
 
@@ -72,20 +70,20 @@ testOpenAndConnect =
 
                     -- Retrieve client context and confirm it points back to the same connection
                     alloca $ \ctxPtr -> do
-                        poke ctxPtr (coerce (nullPtr :: Ptr Void))
+                        poke ctxPtr (coerce nullPtr)
                         c_duckdb_connection_get_client_context conn ctxPtr
                         ctx <- peek ctxPtr
-                        assertBool "client context should not be null" (ctx /= (coerce (nullPtr :: Ptr Void)))
+                        assertBool "client context should not be null" (ctx /= coerce nullPtr)
                         cid <- c_duckdb_client_context_get_connection_id ctx
                         assertBool "connection id should be non-negative" (cid >= 0)
                         c_duckdb_destroy_client_context ctxPtr
 
                     -- Retrieve arrow options object
                     alloca $ \arrowPtr -> do
-                        poke arrowPtr (coerce (nullPtr :: Ptr Void))
+                        poke arrowPtr (coerce nullPtr)
                         c_duckdb_connection_get_arrow_options conn arrowPtr
                         arrowOpts <- peek arrowPtr
-                        assertBool "arrow options should not be null" (arrowOpts /= (coerce (nullPtr :: Ptr Void)))
+                        assertBool "arrow options should not be null" (arrowOpts /= coerce nullPtr)
                         c_duckdb_destroy_arrow_options arrowPtr
 
                     -- Fetch table names (there should be none, but the call should succeed)
@@ -109,13 +107,13 @@ testOpenExtWithConfig =
                 config <- peek configPtr
 
                 alloca $ \errorPtr -> do
-                    poke errorPtr (coerce (nullPtr :: Ptr Void))
+                    poke errorPtr (coerce nullPtr)
                     alloca $ \dbPtr -> do
                         state <- c_duckdb_open_ext path dbPtr config errorPtr
                         state @?= DuckDBSuccess
 
                         errMsgPtr <- peek errorPtr
-                        when (errMsgPtr /= (coerce (nullPtr :: Ptr Void))) $
+                        when (errMsgPtr /= nullPtr) $
                             c_duckdb_free (coerce errMsgPtr)
 
                         c_duckdb_close dbPtr
@@ -132,15 +130,15 @@ testInstanceCache =
                 config <- peek configPtr
 
                 cache <- c_duckdb_create_instance_cache
-                assertBool "instance cache should not be null" (cache /= (coerce (nullPtr :: Ptr Void)))
+                assertBool "instance cache should not be null" (cache /= coerce nullPtr)
 
                 alloca $ \dbPtr -> do
                     alloca $ \errorPtr -> do
-                        poke errorPtr (coerce (nullPtr :: Ptr Void))
+                        poke errorPtr (coerce nullPtr)
                         state <- c_duckdb_get_or_create_from_cache cache path dbPtr config errorPtr
                         state @?= DuckDBSuccess
                         err <- peek errorPtr
-                        when (err /= (coerce (nullPtr :: Ptr Void))) $
+                        when (err /= nullPtr) $
                             c_duckdb_free (coerce err)
 
                         -- the database returned from the cache should be usable (we close it immediately)

@@ -5,7 +5,6 @@ module SelectionVectorTest (tests) where
 import Control.Monad (forM_)
 import Data.Coerce (coerce)
 import Data.Int (Int32)
-import Data.Void (Void)
 import Database.DuckDB.FFI
 import Foreign.Ptr (Ptr, nullPtr)
 import Foreign.Storable (peekElemOff, pokeElemOff)
@@ -26,7 +25,7 @@ selectionVectorPointerWritable =
     testCase "selection vector exposes writable data pointer" $ do
         withSelectionVector 4 \selVec -> do
             dataPtr <- c_duckdb_selection_vector_get_data_ptr selVec
-            assertBool "data pointer should be non-null" (dataPtr /= (coerce (nullPtr :: Ptr Void)))
+            assertBool "data pointer should be non-null" (dataPtr /= nullPtr)
             forM_ (zip [0 ..] [0, 2, 4, 6 :: DuckDBSel]) (uncurry (pokeElemOff dataPtr))
             fetched <- mapM (peekElemOff dataPtr) [0 .. 3]
             fetched @?= [0, 2, 4, 6]

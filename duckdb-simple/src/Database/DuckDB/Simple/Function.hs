@@ -32,7 +32,6 @@ import Control.Exception (
     SomeException,
     bracket,
     throwIO,
-    try,
  )
 import Control.Monad (forM, forM_, when)
 import Data.Int (Int16, Int32, Int64)
@@ -268,29 +267,20 @@ registerScalarFunction conn name proxy acquire = do
                     when (rc /= DuckDBSuccess) $
                         throwIO (functionInvocationError "duckdb-simple: registering function failed")
 
--- | Drop a previously registered scalar function by issuing a DROP FUNCTION statement.
+{- | Run @DROP FUNCTION IF EXISTS@ and report native errors.
+DuckDB does not permit deletion of functions registered through the C API.
+-}
 deleteFunction :: Connection -> Text -> IO ()
 deleteFunction conn name =
-    do
-        outcome <-
-            try $
-                withConnectionHandle conn \connPtr -> do
-                    let dropQuery =
-                            Query $
-                                Text.concat
-                                    [ Text.pack "DROP FUNCTION IF EXISTS "
-                                    , qualifyIdentifier name
-                                    ]
-                    withQueryCString dropQuery \sql ->
-                        withResult conn dropQuery (c_duckdb_query connPtr sql) (const (pure ()))
-        case outcome of
-            Right () -> pure ()
-            Left err
-                -- DuckDB does not allow dropping scalar functions registered via the C API,
-                -- so we ignore that specific error here.
-                -- TODO: Update this when DuckDB adds support for dropping such functions.
-                | Text.isInfixOf (Text.pack "Cannot drop internal catalog entry") (sqlErrorMessage err) -> return ()
-                | otherwise -> throwIO err
+    withConnectionHandle conn \connPtr -> do
+        let dropQuery =
+                Query $
+                    Text.concat
+                        [ Text.pack "DROP FUNCTION IF EXISTS "
+                        , qualifyIdentifier name
+                        ]
+        withQueryCString dropQuery \sql ->
+            withResult conn dropQuery (c_duckdb_query connPtr sql) (const (pure ()))
 
 cleanupScalarFunction :: DuckDBScalarFunction -> IO ()
 cleanupScalarFunction scalarFun =

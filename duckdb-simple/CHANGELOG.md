@@ -2,16 +2,23 @@
 
 ## 0.4.0.0 (unreleased)
 
-- Target DuckDB 2.0 with `duckdb-ffi >= 2.0.0.0`. The package version selects
-  the supported native API. No preview flag is required.
-- Use the generated raw API from `hs-bindgen`. Raw handles and typedefs use
-  newtypes. Constant pointers use `ConstPtr`.
+- Target DuckDB 2.0 with `duckdb-ffi >= 2.0.0.0`. Support DuckDB 2.0.x
+  releases.
+- Use the generated raw API from `hs-bindgen`. `LogicalTypeScalar`,
+  `argumentType`, `argumentTypes`, and `copyBindColumnTypes` use `DUCKDB_TYPE`
+  instead of `DuckDBType`. See MIGRATION.md.
 - Export Arrow release helpers from `Database.DuckDB.Simple.Arrow`.
+- `sqlErrorType` can report the DuckDB 2.0 data-corruption and resource-in-use
+  error tags.
+- While a stream is incomplete, DuckDB rejects other statements on its
+  connection. Closing an incomplete stream aborts its statement.
+- DuckDB 2.0 rejects WKB with mixed Z/M member layouts.
 - Decode nanosecond timezone timestamps in results and VARIANT values.
 - Preserve nanosecond timezone timestamp precision in VARIANT parameters and
   parameters whose prepared type requires `TIMESTAMPTZ_NS`. This includes UTC
   fields in collections, STRUCTs, MAPs, and UNIONs.
-- Allow session variables to supply omitted named parameters.
+- Allow session variables to supply omitted named parameters. Only too many
+  named parameters raise `FormatError`.
 - Reject duplicate named parameters with DuckDB's ASCII case rules. Keep
   distinct non-ASCII names separate.
 - Allow a VARIANT object to contain an empty key with other named keys. Reject

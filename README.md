@@ -21,8 +21,8 @@ The package generates bindings from the pinned DuckDB 2.0 client headers with
 - Generates native types, layouts, callbacks, and calling-convention adapters.
 - Includes integration tests for the native bindings.
 - Covers all 548 retained and 620 V2 functions in the pinned 2.0 snapshot.
-- V2 is currently unstable. Use the native source pin in
-  `duckdb-ffi/vendor/duckdb-api.json` until the final API is verified.
+- V2 is unstable. Use DuckDB 2.0.0, which matches the source pin in
+  `duckdb-ffi/vendor/duckdb-api.json`.
 
 ### Generate the bindings
 
@@ -40,10 +40,9 @@ archives contain the generated sources, so package users need only
 `hs-bindgen-runtime` and a matching native library.
 `dev/release.sh` generates and verifies both APIs before it builds and
 uploads the Hackage archives. Package users do not need LLVM or hs-bindgen.
-See [dev/README.md](dev/README.md) for the maintainer tools and preview-only
-runtime builder.
+See [dev/README.md](dev/README.md) for the maintainer tools.
 
-For a local build with the pinned native preview:
+For a local build with the pinned native release:
 
 ```sh
 nix-shell dev/nix/shell.nix --run 'cabal build all --with-compiler=ghc -fsystemlib'
@@ -51,14 +50,8 @@ nix-shell dev/nix/shell.nix --run 'cabal build all --with-compiler=ghc -fsysteml
 
 ### Native library installation
 
-Supply the matching DuckDB 2.0 library while the final release archives are
-unavailable. Build the pinned source with `dev/preview/build-duckdb.sh`.
-The build commands are in [docs/duckdb-2.0.md](docs/duckdb-2.0.md).
-Setup fails before downloading if final native checksums have not been recorded.
-It cannot fall back to DuckDB 1.5.
-
 The automatic installer supports glibc Linux (x86_64 and aarch64) and macOS.
-After the final archives are verified and pinned, it downloads DuckDB 2.0.0 into
+It downloads the verified DuckDB 2.0.0 release into
 `$XDG_CACHE_HOME/duckdb-haskell/2.0.0` (usually
 `~/.cache/duckdb-haskell/2.0.0`). It verifies SHA256 before extraction.
 It requires `curl`, `tar`, and `sha256sum` (`shasum` on macOS).
@@ -103,7 +96,7 @@ When building this repository, you can also pass `-fsystemlib` and
 `--extra-lib-dirs=/absolute/path/to/duckdb` on the command line.
 Supplying `extra-lib-dirs` also skips the download without the flag.
 
-The supplied library must be DuckDB 2.0 and match the bundled headers. In Nix builds and
+The supplied library must be DuckDB 2.0.0 and match the bundled headers. In Nix builds and
 shells, Setup skips the download and leaves library discovery to Cabal and
 the Nix build environment. Cross builds, musl Linux, and other platforms must
 supply the target library explicitly.
@@ -155,7 +148,8 @@ CI tests these GHC releases:
 The project and Docker use GHC 9.14.1 by default.
 Use `cabal build all --with-compiler=ghc-VERSION` to select another compiler.
 
-CI builds the pinned DuckDB 2.0 source on Linux and macOS ARM64. Docker
-builds and tests both packages. Nix does the same with the pinned DuckDB preview.
+CI uses the pinned DuckDB 2.0.0 release archives on Linux and macOS ARM64.
+Docker builds and tests both packages with the same release. Nix builds the
+pinned final source and tests both packages.
 The tests check the loaded native version. With GHC 9.14.1, CI also installs
 `duckdb-ffi` and runs a separate program with normal and dynamic Haskell linking.

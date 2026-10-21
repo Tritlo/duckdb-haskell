@@ -1,26 +1,24 @@
-# DuckDB 2.0 release preparation
+# DuckDB 2.0
 
-Research date: 2026-10-20. The upstream [release calendar](https://duckdb.org/release_calendar)
-lists 2026-10-21 for DuckDB 2.0.0. The date is tentative. DuckDB 2.0 is still a
-preview. Confirm the final tag and API, and verify the native archives and
-checksums before release.
+DuckDB [2.0.0](https://github.com/duckdb/duckdb/releases/tag/v2.0.0) was released
+on 2026-10-21. Its final tag is the same commit as the audited October 20
+snapshot. The final tag requires no changes to the generated API or ABI checks.
 
 ## Pinned API
 
 The client headers in `duckdb-ffi/cbits/duckdb.h` and `duckdb_v2.h` come from
 [d54cbbe3df17e8e5ce68312f483b4155836112aa](https://github.com/duckdb/duckdb/commit/d54cbbe3df17e8e5ce68312f483b4155836112aa)
-on the upstream `v2.0-cyanoptera` release branch, dated 2026-10-20.
+at the upstream `v2.0.0` tag. The source commit is dated 2026-10-20.
 `duckdb-ffi/cbits/duckdb-LICENSE` contains the upstream license.
 These files are plain, unmodified upstream files. The per-file source paths and
 SHA256 digests are in `duckdb-ffi/vendor/duckdb-api.json`. That manifest also
-pins the native source archive used by the preview source builder.
+pins the native source archive used by Nix.
 
 Builds use the checked-in headers directly. Cabal installs both client headers,
 `duckdb_arrow.h`, and `duckdb-LICENSE` with the library. Package users do not
 need header extraction tools, Python, LLVM, or hs-bindgen. The header audit and
-source builder are maintainer tools. Neither is part of the Hackage packages.
-These headers describe a development snapshot. Refresh the pin and repeat the
-checks for the final release.
+runtime download helper are maintainer tools. Neither is part of the Hackage
+packages. These headers describe the final 2.0.0 release.
 
 The v1 header declares 548 functions and 21 callback typedefs. Compared with the
 original 1.5.6 header, it adds `duckdb_create_timestamp_tz_ns`,
@@ -94,12 +92,25 @@ explicitly and target the newest API. Extension headers use versioned function
 tables. Ordinary clients link exported functions. Header coverage alone does not
 verify that a Haskell shared library can load as a DuckDB extension.
 
+## Final release verification
+
+The final tag, published SDK, and supported shared-library archives contain
+the same client headers as the audited snapshot. Fresh generation matches
+all four stored checksums. The final SDK passes all 1,150 ABI assertions.
+
+On Linux with Nix GHC 9.14.1, the official 2.0.0 binary passes all 607
+retained-backend functional checks and the default leak suite. The installer
+checks pass for cold download, warm cache, wrong digests, incomplete caches,
+and concurrent publication. The three supported archive digests and their
+library paths are verified. Final native runtime checks on other systems
+remain part of CI validation.
+
 ## October 20 API refresh
 
 The source archive SHA256 is
 `93e3d1f9c84b6ec3493237d21565c01c2c19b9862e54e5552d3d7999ccc3bbb4`.
-This is a development source archive. It is not a final release archive or a
-checksum for the automatic native installer.
+This immutable source archive also matches the final 2.0.0 tag. Its digest
+is separate from the shared-library archive checksums in the native installer.
 
 Compared with the October 7 pin, the retained API keeps all function signatures.
 V2 adds 172 functions, removes 134, and changes five existing signatures. Most
@@ -147,8 +158,9 @@ Fresh regeneration, checksum verification, API coverage, installer fixtures,
 and static and dynamic archive consumers pass. Package consumers do not need
 LLVM or hs-bindgen.
 
-Final release archives, other compilers, and macOS runtime checks remain
-unverified for this pin.
+The source-build CI audit at this pin also passes on Linux with GHC 9.6.7,
+9.8.4, 9.10.3, 9.12.4, and 9.14.1, and macOS with GHC 9.14.1.
+These results precede the final binary archive validation.
 
 ## Previous binding validation
 
@@ -222,7 +234,7 @@ reports function and type changes for both APIs against the current verified pin
 It replaces the client headers, upstream license, and per-file manifest. Review
 the plain-file diff, manifest, and generated code. Upstream files remain unmodified.
 Use the recorded SHA for subsequent downloads and builds.
-Select `v2.0.0` instead of the branch when the final release tag is available.
+Use `v2.0.0` for the released API. Do not select later release-branch commits.
 
 The historical October 7 Linux preview fetched during preparation reports
 `v2.0.0-alpha45189`. Its archive SHA256 is
@@ -231,47 +243,39 @@ The historical October 7 Linux preview fetched during preparation reports
 At that pin, both client headers in the native archive matched the checked-in
 headers. This records the earlier validation binary. Its former download URL now returns
 404. The [preview installation links](https://duckdb.org/install/preview)
-can move and can serve an older binary. Build the pinned source below for a
-reproducible runtime. If you use another binary, verify its digest, headers,
+can move and can serve an older binary. Use the final release archives below.
+If you use another binary, verify its digest, headers,
 exported symbols, and reported version before testing.
 This preview works directly with both APIs. Set
 `DUCKDB_TEST_VERSION=2.0.0-alpha45189` for its test run.
 
-The [alpha announcement](https://duckdb.org/2026/09/02/try-duckdb-20-alpha)
-identifies `v2.0-cyanoptera` as the release branch. Select a commit on that
-branch for 2.0 work. The separate `main` branch has diverged and does not provide
-the same 2.0 C API. The current snapshot uses the audited October 20 source commit. Build that
-source for a matching runtime; the historical October 7 binary does not match
-the refreshed V2 API.
+The final tag uses the audited October 20 source commit. The historical
+October 7 binary does not match this V2 API. The release branch and `main`
+can contain later changes. Use the final tag for this package release.
 
-The preview source builder is temporary. Remove it after the final native
-archives are available and verified. The header audit remains a maintainer tool
-for pin refreshes and ABI comparisons. Neither tool runs during ordinary package
-builds.
+The preview source builder has been removed. The runtime helper downloads
+the official final shared library and CLI. It verifies their pinned SHA256
+digests. The header audit compares the SDK with the checked-in headers.
+These tools do not run during ordinary package builds.
 
-The source build requires Bash, Python 3, CMake, a C/C++ compiler, a build tool
-such as Make, `curl`, `tar`, and `sha256sum` or `shasum`.
-Build and test the pinned source with:
+Download and test the final release with:
 
 ```sh
-dev/preview/build-duckdb.sh /tmp/duckdb-2.0-native
+dev/fetch-duckdb.sh /tmp/duckdb-2.0-native
 uv run dev/bindings/duckdb-api.py --compare-headers /tmp/duckdb-2.0-native/native
 cabal build all -fsystemlib --extra-lib-dirs=/tmp/duckdb-2.0-native/native
-DUCKDB_TEST_VERSION=2.0.0-dev0 cabal test all -fsystemlib --extra-lib-dirs=/tmp/duckdb-2.0-native/native --test-show-details=direct
+DUCKDB_TEST_VERSION=2.0.0 cabal test all -fsystemlib --extra-lib-dirs=/tmp/duckdb-2.0-native/native --test-show-details=direct
 ```
 
-The `.github/workflows/duckdb-2.0.yml` job uses this source pin. Its checks apply
-to this development commit. Validate the final release archives separately.
-
-The Nix and Docker preview paths use the same source archive pin:
+The `.github/workflows/duckdb-2.0.yml` job and Docker use the final release
+archives. Nix builds the same final source pin with explicit version 2.0.0:
 
 ```sh
 nix-build dev/nix/ci.nix --no-out-link
 docker build --tag duckdb-haskell:2.0 .
 ```
 
-The Nix and Docker paths always use the pinned DuckDB 2.0 source. These commands build local
-artifacts without uploading or deploying them.
+These commands build local artifacts without uploading or deploying them.
 
 ## Feature coverage
 

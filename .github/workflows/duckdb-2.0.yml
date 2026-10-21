@@ -42,8 +42,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     env:
-      DUCKDB_TEST_VERSION: 2.0.0-dev0
-      DUCKDB_BUILD_JOBS: '3'
+      DUCKDB_TEST_VERSION: 2.0.0
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -69,14 +68,12 @@ jobs:
       - name: Check the generated bindings
         working-directory: duckdb-ffi
         run: shasum -a 256 --check generated.sha256
-      - name: Build the matching native library
-        env:
-          DUCKDB_BUILD_SHELL: ${{ matrix.ghc == '9.14.1' && matrix.optimization == '1' && 'ON' || 'OFF' }}
-        run: bash dev/preview/build-duckdb.sh "$RUNNER_TEMP/duckdb-preview"
+      - name: Fetch the verified native release
+        run: bash dev/fetch-duckdb.sh "$RUNNER_TEMP/duckdb-2.0"
       - name: Configure the supplied native library
         run: |
           printf 'package duckdb-ffi\n  flags: +systemlib\n  extra-lib-dirs: %s\n' \
-            "$RUNNER_TEMP/duckdb-preview/native" > cabal.project.local
+            "$RUNNER_TEMP/duckdb-2.0/native" > cabal.project.local
       - name: Build and test both APIs
         env:
           LD_BIND_NOW: '1'
@@ -107,7 +104,7 @@ jobs:
         run: |
           project_root="$PWD"
           extension_build="$RUNNER_TEMP/duckdb-haskell-extension"
-          native="$RUNNER_TEMP/duckdb-preview/native"
+          native="$RUNNER_TEMP/duckdb-2.0/native"
           cd dev/extensions
           cabal build --project-file=cabal.project --builddir="$extension_build" \
             --with-compiler=ghc --disable-documentation -j2 \
@@ -117,10 +114,10 @@ jobs:
             duckdb-haskell-extension-example:flib:haskell_demo)
           cd "$project_root"
           platform=$("$native/duckdb" -csv -noheader -c 'PRAGMA platform;')
-          source_id=$("$native/duckdb" -csv -noheader -c 'SELECT source_id FROM pragma_version();')
+          loader_version=$("$native/duckdb" -csv -noheader -c 'SELECT library_version FROM pragma_version();')
           extension_file="$RUNNER_TEMP/haskell_demo.duckdb_extension"
           runghc dev/extensions/Pack.hs "$library" --output "$extension_file" \
-            --platform "$platform" --duckdb-version "$source_id" --extension-version 0.1.0
+            --platform "$platform" --duckdb-version "$loader_version" --extension-version 0.1.0
           runghc dev/extensions/Smoke.hs --duckdb "$native/duckdb" "$extension_file"
       - name: Check high-level allocation cleanup
         if: matrix.os == 'ubuntu-latest' && matrix.ghc == '9.12.4'
@@ -145,7 +142,7 @@ jobs:
       - name: Check project and installed consumer headers
         if: matrix.ghc == '9.14.1' && matrix.optimization == '1'
         run: |
-          consumer="$RUNNER_TEMP/duckdb-preview-consumer"
+          consumer="$RUNNER_TEMP/duckdb-consumer"
           mkdir -p "$consumer/source"
           cat > "$consumer/Main.hs" <<'HS'
           {-# LANGUAGE CApiFFI #-}
@@ -182,7 +179,7 @@ jobs:
           printf 'packages: .\n' > "$consumer/source/cabal.project"
           cabal install --lib duckdb-ffi --project-dir="$consumer/source" --project-file=cabal.project \
             --with-compiler=ghc --disable-documentation \
-            -fsystemlib --extra-lib-dirs="$RUNNER_TEMP/duckdb-preview/native" \
+            -fsystemlib --extra-lib-dirs="$RUNNER_TEMP/duckdb-2.0/native" \
             --package-env="$consumer/environment"
           # Cabal uses shortened unit IDs on macOS. Query the installed package
           # by name in the environment's store database, rather than guessing paths.

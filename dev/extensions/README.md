@@ -132,7 +132,12 @@ The smoke script starts two plain native CLI processes. It checks repeated
 loading, scalar results, 10,000 input rows, NULLs, callback errors, overflow,
 and connection reuse after errors. It also checks both macro kinds, PRAGMA
 results before and after an option update, and native log-sink selection.
-It does not use a Haskell host executable.
+It does not use a Haskell host executable. The timeout includes process exit
+and output collection. A timeout kills and reaps the CLI child.
+
+The preview CI matrix builds and loads the example on Linux and macOS with
+GHC 9.14.1 at optimization level 1. Each job uses a fresh extension build
+directory and the matching native CLI.
 
 ## Deployment and remaining validation
 
@@ -157,6 +162,14 @@ Linux x86_64 checks on 2026-10-20 use GHC 9.14.1 and native source
 - `ldd` confirms the threaded RTS dependency and no `libduckdb` dependency.
 - Haddock builds for both extension-mode libraries. Existing generated-link
   warnings remain.
+
+The committed-code audit on 2026-10-21 repeats the native CLI checks with a
+fresh optimized extension build. A C host also passes concurrent first loads,
+repeated loads, callback cleanup, cancellation, connection recovery, and host
+signal preservation. The packer output matches the pinned official CMake
+writer byte for byte. Valgrind reports no errors and no definite or indirect
+lost bytes. The live RTS retains 1,536 possible lost bytes in four glibc TLS
+blocks and about 4.8 MB of reachable process-lifetime storage.
 
 The following checks used the October 16 pin. They do not establish current
 platform compatibility.

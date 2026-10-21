@@ -46,7 +46,8 @@ cabal run duckdb-simple-leak-test -- all 100
 ```
 
 The last command checks 10,000 query cycles, 10,000 callback cycles, 10,000
-VARIANT/GEOMETRY cycles, and 7,000 cancellations. Each phase keeps one connection open.
+VARIANT/GEOMETRY cycles, and 7,000 cancellation attempts.
+Each phase keeps one connection open.
 The normal leak test uses one tenth of those counts. Native RSS and thread
 checks require Linux `/proc`.
 Callback collection and functional checks also run on other systems.

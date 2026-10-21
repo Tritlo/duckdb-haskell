@@ -279,9 +279,10 @@ These commands build local artifacts without uploading or deploying them.
 
 ## Feature coverage
 
-The current client suites pass 617 functional tests against the October 20
-pin. See [V2 migration validation](../dev/v2-migration.md) for the counts and
-native memory checks. Repeat these checks against the final release. The
+The current client suites pass 624 functional tests and the default leak
+suite against the verified official `v2.0.0` Linux x86_64 library. See
+[V2 migration validation](../dev/v2-migration.md) for the counts and native
+memory checks. The
 Quack, CONNECT, and remote-cancellation observations below use the earlier
 October 7 runtime. They require separate validation with compatible extensions.
 

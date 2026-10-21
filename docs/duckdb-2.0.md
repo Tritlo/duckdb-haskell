@@ -165,11 +165,6 @@ macOS, and ARM64 remain for CI. Matching generation output across targets does
 not replace those runtime checks. Docker and the complete Nix derivations were
 not rebuilt during this local validation.
 
-A separate test cleanup remains: `timestampTzNsRoundTrip` in
-`duckdb-ffi/test/ValueInterfaceTest.hs` obtains six logical-type handles without
-destroying them. This predates the migration. The V2 Valgrind result does not
-cover that retained-API test.
-
 ## Audit and refresh
 
 These commands use Python's standard library. The checks run offline:

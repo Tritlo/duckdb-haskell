@@ -135,6 +135,12 @@ coreRegressionTests =
             withConnection ":memory:" $ \conn ->
                 (queryNamed conn "SELECT $Straße::BIGINT, $STRASSE::BIGINT" ["Straße" := (1 :: Int64), "STRASSE" := (2 :: Int64)] :: IO [(Int64, Int64)])
                     >>= (@?= [(1, 2)])
+        , testCase "numeric named bindings retain sparse and reordered parameter names" $
+            withConnection ":memory:" $ \conn -> do
+                (queryNamed conn "SELECT $3::BIGINT" ["3" := (33 :: Int64)] :: IO [Only Int64]) >>= (@?= [Only 33])
+                (queryNamed conn "SELECT $3::BIGINT, $1::BIGINT, $3::BIGINT" ["1" := (11 :: Int64), "3" := (33 :: Int64)] :: IO [(Int64, Int64, Int64)])
+                    >>= (@?= [(33, 11, 33)])
+                (query conn "SELECT ?::BIGINT, ?::BIGINT" ((1 :: Int64), (2 :: Int64)) :: IO [(Int64, Int64)]) >>= (@?= [(1, 2)])
         , testCase "transaction preserves the original exception if rollback fails" $
             withConnection ":memory:" $ \conn -> do
                 result <- try $ withTransaction conn $ do

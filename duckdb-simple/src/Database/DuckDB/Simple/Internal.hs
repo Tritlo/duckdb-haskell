@@ -482,11 +482,10 @@ withBoundValues stmt action = do
     bindings <- IntMap.toAscList <$> readIORef (statementBindings stmt)
     let names = map (\(idx, _) -> statementParameterNames stmt !! (idx - 1)) bindings
         values = map snd bindings
-        positional = all (Text.all (\c -> c >= '0' && c <= '9')) names
     withMany withIdentifier names \namePtrs -> do
         nativeNames <- mapM (\(ConstPtr ptr) -> peek ptr) namePtrs
         withArray nativeNames \namesPtr -> withArray values \valuesPtr ->
-            action (ConstPtr (if positional then nullPtr else namesPtr)) (ConstPtr valuesPtr) (fromIntegral (length bindings))
+            action (ConstPtr namesPtr) (ConstPtr valuesPtr) (fromIntegral (length bindings))
 
 -- | Execute a prepared Arrow result and register it for statement cleanup.
 executePreparedArrowResult :: Statement -> IO DuckDBV2ArrowResultHandle

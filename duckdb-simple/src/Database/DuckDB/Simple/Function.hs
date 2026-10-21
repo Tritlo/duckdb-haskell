@@ -47,14 +47,11 @@ import Database.DuckDB.Simple.FromField (
  )
 import Database.DuckDB.Simple.Internal (
     Connection,
-    Statement (..),
-    closeStatementState,
-    createStatementFromParsed,
     destroyLogicalType,
+    executeParsedResult,
     runInterruptibleQuery,
     withConnectionHandle,
     withParsedStatements,
-    withResult,
  )
 import Database.DuckDB.Simple.Materialize (prepareVectorReader)
 import Database.DuckDB.Simple.Native
@@ -283,9 +280,9 @@ deleteFunction conn name = do
     withParsedStatements conn dropQuery $ \parsed ->
         forM_ parsed $ \statement ->
             bracket
-                (createStatementFromParsed conn dropQuery statement)
-                (closeStatementState . statementState)
-                \prepared -> withResult prepared $ \result -> do
+                (executeParsedResult conn dropQuery statement)
+                (destroy c_duckdb_v2_result_destroy)
+                \result -> do
                     _ <- runInterruptibleQuery conn (output (c_duckdb_v2_result_drain result))
                     pure ()
 

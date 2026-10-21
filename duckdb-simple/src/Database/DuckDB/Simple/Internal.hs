@@ -185,7 +185,6 @@ data StatementStream = StatementStream
     , statementStreamColumns :: [StatementStreamColumn]
     , statementStreamPendingChunks :: [DuckDBV2DataChunkHandle]
     , statementStreamChunk :: Maybe StatementStreamChunk
-    , statementStreamMode :: ResultMode
     }
 
 -- | Select materialization before decoding or incremental native execution.
@@ -195,7 +194,6 @@ data ResultMode = MaterializedResult | StreamingResult deriving (Eq, Show)
 data StatementStreamColumn = StatementStreamColumn
     { statementStreamColumnIndex :: Int
     , statementStreamColumnName :: Text
-    , statementStreamColumnType :: DuckDBV2LogicalTypeId
     }
 
 -- | One owned chunk and the readers that borrow its vectors.
@@ -533,8 +531,8 @@ withResult :: Statement -> (DuckDBV2ResultHandle -> IO a) -> IO a
 withResult stmt = bracket (executePreparedResult stmt) (destroy c_duckdb_v2_result_destroy)
 
 -- | Fetch one owned chunk. A null handle denotes completion.
-fetchResultChunk :: ResultMode -> Connection -> DuckDBV2ResultHandle -> IO DuckDBV2DataChunkHandle
-fetchResultChunk _ conn result = mask_ $ alloca \slot -> do
+fetchResultChunk :: Connection -> DuckDBV2ResultHandle -> IO DuckDBV2DataChunkHandle
+fetchResultChunk conn result = mask_ $ alloca \slot -> do
     poke slot nullHandle
     flip onException (peek slot >>= destroyDataChunk) do
         runInterruptibleQuery conn (checked (c_duckdb_v2_result_fetch_chunk result slot))

@@ -41,9 +41,9 @@ fetch() {
     mv "$archive.tmp" "$archive"
   fi
   if command -v sha256sum >/dev/null; then
-    digest=$(sha256sum "$archive")
+    digest=$(sha256sum < "$archive")
   else
-    digest=$(shasum -a 256 "$archive")
+    digest=$(shasum -a 256 < "$archive")
   fi
   if [ "${digest%% *}" != "$expected" ]; then
     echo "DuckDB archive checksum mismatch: $archive" >&2

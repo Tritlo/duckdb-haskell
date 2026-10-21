@@ -4,7 +4,7 @@
 import Control.Exception (IOException, catch, throwIO)
 import Control.Monad (filterM, unless, when)
 import Data.List (intercalate, isPrefixOf, nub, stripPrefix)
-import Data.Maybe (isJust, isNothing)
+import Data.Maybe (fromMaybe, isJust, isNothing)
 import Distribution.PackageDescription
 import Distribution.Simple
 import Distribution.Simple.Setup (ConfigFlags, configConfigurationsFlags, configConfigureArgs, configExtraLibDirs)
@@ -125,7 +125,9 @@ installNativeLibrary flags = do
                 if os == "darwin"
                     then readProcess "shasum" ["-a", "256", archive] ""
                     else readProcess "sha256sum" [archive] ""
-            unless (takeWhile (/= ' ') digest == checksum) $ fail "DuckDB archive checksum mismatch."
+            -- Hash tools prefix escaped filenames with a backslash.
+            let actual = takeWhile (/= ' ') (fromMaybe digest (stripPrefix "\\" digest))
+            unless (actual == checksum) $ fail "DuckDB archive checksum mismatch."
             createDirectory extracted
             -- Keep the shared-library symlinks and their versioned targets together.
             callProcess "tar" ["-xzf", archive, "-C", extracted]

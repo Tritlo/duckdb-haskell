@@ -4,7 +4,7 @@
 -- | Check a packaged Haskell extension with an explicitly selected DuckDB CLI.
 module Main where
 
-import Control.Concurrent (MVar, ThreadId, forkFinally, killThread, newEmptyMVar, putMVar, readMVar)
+import Control.Concurrent (MVar, ThreadId, forkFinally, killThread, newEmptyMVar, putMVar, readMVar, tryReadMVar)
 import Control.Exception (IOException, SomeException, bracket, catch, throwIO)
 import Control.Monad (unless, when)
 import qualified Data.ByteString as BS
@@ -79,16 +79,18 @@ runCLI executable sql =
                         hSetEncoding stdinHandle utf8
                         hPutStr stdinHandle sql
                         hClose stdinHandle
-                        waitForProcess child
-                    (timedOut, status) <- case result of
-                        Just status -> pure (False, status)
+                        status <- waitForProcess child
+                        stdoutBytes <- readerResult stdoutResult
+                        stderrBytes <- readerResult stderrResult
+                        pure (status, stdoutBytes, stderrBytes)
+                    case result of
+                        Just (status, stdoutBytes, stderrBytes) -> pure (False, status, stdoutBytes, stderrBytes)
                         Nothing -> do
                             killChild child
                             status <- waitForProcess child
-                            pure (True, status)
-                    stdoutBytes <- readerResult stdoutResult
-                    stderrBytes <- readerResult stderrResult
-                    pure (timedOut, status, stdoutBytes, stderrBytes)
+                            stdoutBytes <- maybe BS.empty (either (const BS.empty) id) <$> tryReadMVar stdoutResult
+                            stderrBytes <- maybe BS.empty (either (const BS.empty) id) <$> tryReadMVar stderrResult
+                            pure (True, status, stdoutBytes, stderrBytes)
         _ -> ioError (userError "could not create the DuckDB CLI pipes")
   where
     -- STANDARD stdin continues after errors. Skip user startup configuration.

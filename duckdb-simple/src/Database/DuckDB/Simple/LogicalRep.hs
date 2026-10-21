@@ -197,6 +197,7 @@ logicalTypeFromFactory factory resolve = create
         LogicalTypeStruct fields
             | null (elems fields) ->
                 bracket (output (c_duckdb_v2_value_create_struct factory (ConstPtr nullPtr) (ConstPtr nullPtr) 0)) owned (output . c_duckdb_v2_value_get_logical_type)
+            | all (Text.null . structFieldName) (elems fields) -> construct DuckDBV2LogicalTypeIdTuple [] (map (boxed . structFieldValue) (elems fields))
         LogicalTypeStruct fields -> construct DuckDBV2LogicalTypeIdStruct (map structFieldName (elems fields)) (map (boxed . structFieldValue) (elems fields))
         LogicalTypeUnion members -> construct DuckDBV2LogicalTypeIdUnion (map unionMemberName (elems members)) (map (boxed . unionMemberType) (elems members))
         LogicalTypeEnum entries -> construct DuckDBV2LogicalTypeIdEnum [] (map text (elems entries))

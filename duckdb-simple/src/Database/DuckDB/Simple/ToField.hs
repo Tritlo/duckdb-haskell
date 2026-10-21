@@ -26,7 +26,7 @@ module Database.DuckDB.Simple.ToField (
 
 import Control.Exception (bracket, mask_, onException, throwIO)
 import Control.Monad (filterM, forM_, when)
-import Data.Array (Array, elems)
+import Data.Array (Array, bounds, elems, listArray)
 import Data.Bits (complement, shiftL, shiftR, xor, (.|.))
 import qualified Data.ByteString as BS
 import Data.Char (toLower)
@@ -142,8 +142,13 @@ timestampTypeForTarget target source = case (target, source) of
     (Just (LogicalTypeMap targetKey targetValue), LogicalTypeMap key value) ->
         LogicalTypeMap (timestampTypeForTarget (Just targetKey) key) (timestampTypeForTarget (Just targetValue) value)
     (Just (LogicalTypeStruct targetFields), LogicalTypeStruct fields) ->
-        let targets = [(identifier name, rep) | StructField name rep <- elems targetFields]
-         in LogicalTypeStruct (fmap (\field -> field{structFieldValue = timestampTypeForTarget (lookup (identifier (structFieldName field)) targets) (structFieldValue field)}) fields)
+        let sourceFields = elems fields
+            targets = [(identifier name, rep) | StructField name rep <- elems targetFields]
+            matching
+                | all (Text.null . structFieldName) sourceFields || all (Text.null . structFieldName) (elems targetFields) = map (Just . structFieldValue) (elems targetFields) <> repeat Nothing
+                | otherwise = [lookup (identifier (structFieldName field)) targets | field <- sourceFields]
+            updated = zipWith (\field expected -> field{structFieldValue = timestampTypeForTarget expected (structFieldValue field)}) sourceFields matching
+         in LogicalTypeStruct (listArray (bounds fields) updated)
     (Just (LogicalTypeUnion targetMembers), LogicalTypeUnion members) ->
         let targets = [(identifier name, rep) | UnionMemberType name rep <- elems targetMembers]
          in LogicalTypeUnion (fmap (\member -> member{unionMemberType = timestampTypeForTarget (lookup (identifier (unionMemberName member)) targets) (unionMemberType member)}) members)
@@ -160,11 +165,15 @@ valueWithTypeMetadata logical value = case (logical, value) of
     (LogicalTypeMap keyType valueType, FieldMap pairs) ->
         FieldMap [(valueWithTypeMetadata keyType key, valueWithTypeMetadata valueType item) | (key, item) <- pairs]
     (LogicalTypeStruct types, FieldStruct struct) ->
-        let fields = [(structFieldName field, structFieldValue field) | field <- elems types]
-            update field = case lookup (structFieldName field) fields of
+        let sourceFields = elems (structValueFields struct)
+            fields = [(structFieldName field, structFieldValue field) | field <- elems types]
+            matching
+                | all (Text.null . structFieldName) sourceFields || all (Text.null . structFieldName) (elems types) = map (Just . structFieldValue) (elems types) <> repeat Nothing
+                | otherwise = [lookup (structFieldName field) fields | field <- sourceFields]
+            update field expected = case expected of
                 Nothing -> field
                 Just rep -> field{structFieldValue = valueWithTypeMetadata rep (structFieldValue field)}
-         in FieldStruct struct{structValueTypes = types, structValueFields = fmap update (structValueFields struct)}
+         in FieldStruct struct{structValueTypes = types, structValueFields = listArray (bounds (structValueFields struct)) (zipWith update sourceFields matching)}
     (LogicalTypeUnion members, FieldUnion union) ->
         let payload = case drop (fromIntegral (unionValueIndex union)) (elems members) of
                 member : _ -> valueWithTypeMetadata (unionMemberType member) (unionValuePayload union)

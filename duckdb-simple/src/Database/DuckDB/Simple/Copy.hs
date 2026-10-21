@@ -43,7 +43,7 @@ import Control.Monad (forM, forM_, when)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Void (Void)
-import Database.DuckDB.Simple.Callback (Allocator, attachOpaque, guardContext, ignoreCallbackExceptions, install, installOptional, withCallbackResources, withTarget)
+import Database.DuckDB.Simple.Callback (Allocator, attachOpaque, guardContext, ignoreCallbackExceptions, install, installOptional, readCallbackState, transferCallbackState, withCallbackResources, withTarget)
 import Database.DuckDB.Simple.FromField (Field (..))
 import Database.DuckDB.Simple.Internal (Connection, withDatabaseHandle)
 import Database.DuckDB.Simple.Materialize (VariantReader, prepareVariantReader, prepareVectorReader)
@@ -193,22 +193,22 @@ registerCopyToFunction connection name bindFn initFn sinkFn finalizeFn = withDat
         (state, _) <- readCopyBinding (c_duckdb_v2_copy_to_init_get_bind_data info)
         path <- output (c_duckdb_v2_copy_to_init_get_file_path info) >>= readText
         global <- initFn (CopyInitInfo state (Text.unpack path))
-        setCallbackState (c_duckdb_v2_copy_to_init_set_init_data info) global
+        transferCallbackState (attachOpaque (c_duckdb_v2_copy_to_init_set_init_data info)) global
     batch instanceHandle info context = withContextFactory context $ \factory -> do
         (_, types) <- readCopyBinding (c_duckdb_v2_copy_to_batch_get_bind_data info) :: IO (bindState, [DuckDBV2LogicalTypeHandle])
         rows <- bracket (output (c_duckdb_v2_copy_to_batch_take_input info)) (destroy c_duckdb_v2_column_data_collection_destroy) (materializeCollection factory (readVariant instanceHandle) types)
-        setCallbackState (c_duckdb_v2_copy_to_batch_set_batch_data info) rows
+        transferCallbackState (attachOpaque (c_duckdb_v2_copy_to_batch_set_batch_data info)) rows
     readVariant instanceHandle vector =
         bracket (output (c_duckdb_v2_connection_create instanceHandle)) (destroy c_duckdb_v2_connection_destroy) \helper ->
             prepareVariantReader helper vector
     flush info _ = do
         (state, _) <- readCopyBinding (c_duckdb_v2_copy_to_flush_get_bind_data info)
-        global <- getCallbackState (c_duckdb_v2_copy_to_flush_get_init_data info)
-        rows <- getCallbackState (c_duckdb_v2_copy_to_flush_get_batch_data info)
+        global <- readCallbackState (c_duckdb_v2_copy_to_flush_get_init_data info)
+        rows <- readCallbackState (c_duckdb_v2_copy_to_flush_get_batch_data info)
         sinkFn (CopySinkInfo state global) rows
     finalize info _ = do
         (state, _) <- readCopyBinding (c_duckdb_v2_copy_to_finalize_get_bind_data info)
-        global <- getCallbackState (c_duckdb_v2_copy_to_finalize_get_init_data info)
+        global <- readCallbackState (c_duckdb_v2_copy_to_finalize_get_init_data info)
         finalizeFn (CopyFinalizeInfo state global)
 
 -- | A bind state and its owned logical descriptors share one native lifetime.
@@ -225,7 +225,7 @@ acquireTypes info count taken index
 -- | Read the row wrapper state with its retained logical descriptors.
 readCopyBinding :: (Ptr (Ptr Void) -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO (a, [DuckDBV2LogicalTypeHandle])
 readCopyBinding getter = do
-    CopyBindingStorage raw types <- getCallbackState getter
+    CopyBindingStorage raw types <- readCallbackState getter
     state <- deRefStablePtr (castPtrToStablePtr raw)
     pure (state, types)
 

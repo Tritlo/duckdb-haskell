@@ -91,6 +91,8 @@ testScalarResolution = withConnection ":memory:" \connection -> do
         executeRows info _ = do
             state <- R.getCallbackState (c_duckdb_v2_scalar_function_exec_get_bind_data info)
             (state :: Int) @?= 42
+            mismatch <- try (R.getCallbackState (c_duckdb_v2_scalar_function_exec_get_bind_data info) :: IO Bool)
+            either (\(_ :: SQLError) -> pure ()) (\_ -> assertFailure "state read with another type") mismatch
             count <- R.output (c_duckdb_v2_scalar_function_exec_get_row_count info)
             argument <- R.output (c_duckdb_v2_scalar_function_exec_get_arg info 0)
             result <- R.output (c_duckdb_v2_scalar_function_exec_get_result info)

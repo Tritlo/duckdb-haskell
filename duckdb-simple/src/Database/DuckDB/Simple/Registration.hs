@@ -12,8 +12,8 @@ info and context handles are borrowed and must not escape the callback. Use
 
 The registration user-data slot is reserved for callback cleanup. Use Haskell
 closures for registration data and 'setCallbackState' for bind or execution
-state. Each state getter must use the same Haskell type as its setter. Synchronize
-access to state that DuckDB shares between workers.
+state. A state getter with a different type than its setter raises an error.
+Synchronize access to state that DuckDB shares between workers.
 
 The pinned V2 API has no custom file-system registration API. Use
 @Database.DuckDB.Simple.Logging@ for managed log-sink registration.
@@ -67,17 +67,19 @@ module Database.DuckDB.Simple.Registration (
 
 import Control.Exception (bracket, throwIO)
 import Control.Monad (forM_, when)
+import Data.Dynamic (dynTypeRep, fromDynamic, toDyn)
 import Data.Int (Int64)
+import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Data.Typeable (Typeable, typeRep)
 import Data.Void (Void)
-import Database.DuckDB.Simple.Callback (RegistrationTarget (..), attachOpaque, guardContext, install, installOptional, runCallback, transferCallbackState, withCallbackResources, withTarget)
+import Database.DuckDB.Simple.Callback (RegistrationTarget (..), attachOpaque, guardContext, install, installOptional, readCallbackState, runCallback, transferCallbackState, withCallbackResources, withTarget)
 import Database.DuckDB.Simple.Internal (Connection, Instance, withConnectionHandle, withInstanceHandle)
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep, logicalTypeFromRep, logicalTypeFromRepWithFactory)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
-import Foreign.Ptr (Ptr, castPtr, nullPtr)
-import Foreign.StablePtr (castPtrToStablePtr, deRefStablePtr)
+import Foreign.Ptr (Ptr)
 
 {- | Borrow the factory of a registration target. The factory must not escape
 this action. Use it to construct signature types and values in a configuration action.
@@ -400,17 +402,21 @@ Transfer a value at most once to each native state slot. Native init and batch
 setters do not release replaced pointers. Store an @IORef@ or another mutable
 state cell when the callback must change its state.
 -}
-setCallbackState :: (Ptr DuckDBV2Opaque -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> a -> IO ()
-setCallbackState setter = transferCallbackState (attachOpaque setter)
+setCallbackState :: (Typeable a) => (Ptr DuckDBV2Opaque -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> a -> IO ()
+setCallbackState setter = transferCallbackState (attachOpaque setter) . toDyn
 
-{- | Read state previously stored with 'setCallbackState', with the same type.
-Pass the corresponding native pointer getter. A missing state raises an error.
+{- | Read state previously stored with 'setCallbackState'.
+Pass the corresponding native pointer getter. A missing state or a state of
+another type raises an error.
 -}
-getCallbackState :: (Ptr (Ptr Void) -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO a
+getCallbackState :: forall a. (Typeable a) => (Ptr (Ptr Void) -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO a
 getCallbackState getter = do
-    ptr <- output getter
-    when (ptr == nullPtr) $ throwIO (SQLError "duckdb-simple: callback state is not initialized" Nothing Nothing)
-    deRefStablePtr (castPtrToStablePtr (castPtr ptr))
+    stored <- readCallbackState getter
+    case fromDynamic stored of
+        Just value -> pure value
+        Nothing ->
+            throwInvalidArgument $
+                "callback state has type " <> Text.pack (show (dynTypeRep stored)) <> ", not " <> Text.pack (show (typeRep (Proxy :: Proxy a)))
 
 -- | Construct a type, borrow it for an action, and release it on every exit path.
 withTypeDeclaration :: DuckDBV2ConnectionHandle -> TypeDeclaration -> (DuckDBV2LogicalTypeHandle -> IO a) -> IO a

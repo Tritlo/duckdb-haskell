@@ -14,12 +14,14 @@ module Database.DuckDB.Simple.Callback (
     withCallbackResources,
     withCallbackResourcesFinally,
     transferCallbackState,
+    readCallbackState,
     runCallback,
     ignoreCallbackExceptions,
     attachOpaque,
 ) where
 
 import Control.Exception (SomeException, bracket, catch, displayException, finally, mask, mask_, onException, try)
+import Control.Monad (when)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import qualified Data.Text as Text
 import Data.Void (Void)
@@ -112,6 +114,13 @@ transferCallbackState attach state = mask_ do
     stable <- newStablePtr state
     attach (castPtr (castStablePtrToPtr stable)) callbackStateDestructor
         `onException` freeStablePtr stable
+
+-- | Read state stored with 'transferCallbackState'. The caller supplies its type.
+readCallbackState :: (Ptr (Ptr Void) -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO a
+readCallbackState getter = do
+    ptr <- output getter
+    when (ptr == nullPtr) $ throwInvalidArgument (Text.pack "callback state is not initialized")
+    deRefStablePtr (castPtrToStablePtr (castPtr ptr))
 
 -- | Convert callback exceptions to native V2 diagnostics.
 runCallback :: Ptr DuckDBV2ErrorInfoHandle -> IO () -> IO ()

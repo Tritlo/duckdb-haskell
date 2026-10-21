@@ -172,7 +172,8 @@ cabal test duckdb-simple:duckdb-simple-quack-test -fquack-tests -fsystemlib --ex
    Review signature, enum, callback, and ownership changes. Update the
    function counts in this document.
 2. Keep untested platforms out of `duckdb-ffi/native.sha256`.
-3. Update the Nix source pin and its version assertions.
+3. Update `DUCKDB_TEST_VERSION` in the CI workflow and the Dockerfile. Nix
+   reads its source pin and version from `vendor/duckdb-api.json`.
 4. Run the full suites, the leak suite, and Haddock on all supported compilers.
 5. Build source archives with `cabal sdist all`. Check that they contain the
    generated modules, C checks, client headers, license, and manifest.

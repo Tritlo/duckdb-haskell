@@ -1,9 +1,6 @@
 let
-  nixpkgs = builtins.fetchTarball {
-    url = "https://github.com/NixOS/nixpkgs/archive/ac6b2166e7a9375683b8e98f860f273222337b16.tar.gz";
-    sha256 = "0k6m5apwzg36qkm3wil1pf4q0lv1hp7r2imx4nfz9bfssnk9gj5w";
-  };
-  pkgs = import nixpkgs { };
+  pins = import ./pins.nix;
+  pkgs = pins.pkgs;
   clang = pkgs.llvmPackages;
   libclangLibrary = "${clang.libclang.lib}/lib/libclang${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}";
   systemIncludePath = if pkgs.stdenv.hostPlatform.isLinux then "${pkgs.stdenv.cc.libc.dev}/include" else "";
@@ -22,11 +19,7 @@ let
         C_INCLUDE_PATH = systemIncludePath;
         LD_LIBRARY_PATH = loaderPath;
       });
-      hs-bindgen-runtime = self.callHackageDirect {
-        pkg = "hs-bindgen-runtime";
-        ver = "1.0.0.0";
-        sha256 = "1ai7rls9afpr3dv0gf8p61g3k8bgi7cfl51nsckbhjlb3ap39vq4";
-      } { };
+      hs-bindgen-runtime = pins.hsBindgenRuntime self;
       libclang-bindings = (pkgs.haskell.lib.doJailbreak (self.callHackageDirect {
         pkg = "libclang-bindings";
         ver = "0.2.0.0";
@@ -71,6 +64,8 @@ let
   };
 in
 pkgs.mkShell {
+  # dev/bindings/generate-bindings.sh requires this hs-bindgen version.
+  HS_BINDGEN_VERSION = haskellPackages.hs-bindgen.version;
   C_INCLUDE_PATH = systemIncludePath;
   LD_LIBRARY_PATH = loaderPath;
   packages = [

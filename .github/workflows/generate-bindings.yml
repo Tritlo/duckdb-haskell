@@ -23,6 +23,7 @@ jobs:
                 'dev/bindings/GenerateBindings.hs',
                 'dev/bindings/generate-bindings.sh',
                 'dev/nix/generate.nix',
+                'dev/nix/pins.nix',
                 'duckdb-ffi/generated.sha256',
                 'duckdb-ffi/vendor/upstream.sha256',
                 'duckdb-ffi/cbits/duckdb.h',

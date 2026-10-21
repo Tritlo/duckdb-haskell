@@ -8,7 +8,7 @@
 module TimeTests (timeTests) where
 
 import Control.Exception (IOException, try)
-import Control.Monad (forM_)
+import Control.Monad (forM_, void)
 import Data.Array (Array, listArray)
 import Data.Int (Int64)
 import qualified Data.Map.Strict as Map
@@ -125,6 +125,17 @@ nanosecondTimeTests =
         let precise = posixSecondsToUTCTime 0.123456789
             ordinary = posixSecondsToUTCTime 0.123456
         (query conn "SELECT typeof(?), ?" (precise, precise) :: IO [(String, UTCTime)]) >>= (@?= [("TIMESTAMP WITH TIME ZONE", ordinary)])
+    , testCase "reused statements refresh nanosecond UTC parameter metadata after ALTER" $ withConnection ":memory:" $ \conn -> do
+        void $ execute_ conn "CREATE TABLE utc_rebind(value TIMESTAMPTZ)"
+        let coarse = posixSecondsToUTCTime 0.123456
+            precise = posixSecondsToUTCTime 0.123456789
+        withStatement conn "INSERT INTO utc_rebind VALUES (?)" $ \stmt -> do
+            bind stmt [toField coarse]
+            void $ executeStatement stmt
+            void $ execute_ conn "ALTER TABLE utc_rebind ALTER COLUMN value TYPE TIMESTAMPTZ_NS"
+            bind stmt [toField precise]
+            void $ executeStatement stmt
+        (query_ conn "SELECT epoch_ns(value) FROM utc_rebind ORDER BY value" :: IO [Only Int64]) >>= (@?= [Only 123456000, Only 123456789])
     , testCase "nanosecond UTC arrays retain NULLs and reject empty arrays" $ withConnection ":memory:" $ \conn -> do
         let precise = posixSecondsToUTCTime 0.123456789
             negative = posixSecondsToUTCTime (-0.000000001)

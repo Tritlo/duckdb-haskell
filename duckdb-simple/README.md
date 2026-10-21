@@ -301,11 +301,15 @@ nanoseconds when the prepared parameter type is `TIMESTAMPTZ_NS`. Use an
 explicit cast, such as `SELECT ?::TIMESTAMPTZ_NS`, or a column with that type.
 UTC values inside collections, STRUCTs, MAPs, and UNIONs follow their target
 types. An untyped UTC parameter still binds as microsecond TIMESTAMPTZ.
-Prepare the statement again after a temporal column type changes. DuckDB can
-retain its old parameter type. Use separate parameters when one expression
-requires microseconds and another requires nanoseconds.
+The library refreshes prepared metadata when it resets or rebinds a statement.
+Use separate parameters when one expression requires microseconds and another
+requires nanoseconds.
 
 ### Manual STRUCT and UNION Handling
+
+SQL tuples, such as `row(42, 'text')`, decode as `StructValue` with empty field
+names. Read these fields by position in `structValueFields`. The name index
+contains only the last field for the repeated empty name.
 
 Temporal fields retain their SQL units when composite values are rebound.
 The `FieldDate`, `FieldTimestamp`, and `FieldTimestampTZ` constructors hold

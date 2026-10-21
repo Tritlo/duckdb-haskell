@@ -364,11 +364,10 @@ UTC parameters now follow a prepared `TIMESTAMPTZ_NS` type, including leaves
 inside collections, STRUCTs, MAPs, and UNIONs. Untyped UTC parameters retain
 microsecond TIMESTAMPTZ behavior. Finite values outside the nanosecond range
 raise an encoding error. Infinity remains available through `UTCTimestamp`.
-DuckDB can retain the old parameter type after a table column changes.
-Close and prepare the statement again after a temporal schema change, or use
-an explicit nanosecond parameter cast. A parameter used with both microsecond
-and nanosecond casts has no single prepared type. Use separate parameters for
-those expressions to retain the intended precision.
+The library refreshes cached metadata when it resets or rebinds a statement.
+A reused statement follows a column changed to TIMESTAMPTZ_NS. A parameter
+used with both microsecond and nanosecond casts has no single prepared type.
+Use separate parameters for those expressions to retain the intended precision.
 
 VARIANT objects can bind an empty key alongside named keys in this preview.
 The C constructor cannot represent an object with only an empty key; it

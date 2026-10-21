@@ -34,6 +34,7 @@ module Database.DuckDB.Simple.Internal (
     createStatementFromParsedWithCollections,
     withParsedStatements,
     statementSchemas,
+    clearStatementSchemas,
     preparedParameterType,
     storeBoundValue,
     clearBoundValues,
@@ -329,6 +330,13 @@ releaseSchemas ref =
     atomicModifyIORef' ref (Nothing,) >>= mapM_ \(result, parameters) ->
         destroy c_duckdb_v2_schema_destroy result `finally` destroy c_duckdb_v2_schema_destroy parameters
 
+-- | Release cached metadata before binding or executing the statement again.
+clearStatementSchemas :: Statement -> IO ()
+clearStatementSchemas Statement{statementState} = mask_ do
+    readIORef statementState >>= \case
+        StatementClosed -> pure ()
+        StatementOpen{statementSchemaCache} -> releaseSchemas statementSchemaCache
+
 -- | Parse SQL and borrow the resulting statements for one action.
 withParsedStatements :: Connection -> Query -> ([DuckDBV2SqlStatementHandle] -> IO a) -> IO a
 withParsedStatements conn query action = withQueryError query $ withConnectionHandle conn \raw ->
@@ -561,7 +569,9 @@ storeBoundValue stmt index value = withStatementHandle stmt \_ -> mask_ do
 clearBoundValues :: IORef (IntMap.IntMap DuckDBV2ValueHandle) -> IO ()
 clearBoundValues ref = atomicModifyIORef' ref (IntMap.empty,) >>= mapM_ destroyValue
 
--- | Bind SQL metadata and retain its output and parameter schemas.
+{- | Bind SQL metadata and borrow the cached output and parameter schemas.
+The handles remain valid until the statement resets, rebinds, or closes.
+-}
 statementSchemas :: Statement -> IO (DuckDBV2SchemaHandle, DuckDBV2SchemaHandle)
 statementSchemas stmt = withStatementHandle stmt \_ -> mask_ do
     state <- readIORef (statementState stmt)

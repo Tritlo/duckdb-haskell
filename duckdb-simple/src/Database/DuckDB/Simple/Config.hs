@@ -28,8 +28,8 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
 import Database.DuckDB.Simple (withConnection)
-import Database.DuckDB.Simple.Callback (attachOpaque, runCallback, withCallbackResources)
-import Database.DuckDB.Simple.Internal (Connection, Instance, throwRegistrationError, withConnectionHandle, withInstanceHandle)
+import Database.DuckDB.Simple.Callback (attachOpaque, runCallback, withCallbackResources, withTarget)
+import Database.DuckDB.Simple.Internal (Connection, Instance, withConnectionHandle, withInstanceHandle)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Registration (ContextCallback, DefaultValue (..), RegistrationTarget (..), TypeDeclaration, withRegistrationFactory, withTypeDeclarationWithFactory)
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
@@ -91,7 +91,7 @@ Extension defaults must use 'FactoryDefaultValue'.
 registerCustomOptionOn :: RegistrationTarget -> CustomOption -> IO ()
 registerCustomOptionOn target option = do
     when (Text.null (customOptionName option) || Text.any (== '\0') (customOptionName option)) $
-        throwRegistrationError "custom option name must be nonempty and must not contain NUL"
+        throwInvalidArgument "custom option name must be nonempty and must not contain NUL"
     registerCustomOptionWith
         target
         ( \handle -> withRegistrationFactory target \factory -> do
@@ -109,20 +109,15 @@ registerCustomOptionOn target option = do
     makeDefault factory (FactoryDefaultValue make) = make factory
     makeDefault _ (DefaultValue make) = case target of
         ConnectionTarget conn -> withConnectionHandle conn make
-        ExtensionTarget{} -> throwRegistrationError "extension defaults require FactoryDefaultValue"
+        ExtensionTarget{} -> throwInvalidArgument "extension defaults require FactoryDefaultValue"
 
 {- | Configure and register a custom option with managed callback cleanup.
 The configuration action borrows the builder. Do not set user data or callbacks.
 An extension target includes the borrowed initialization context.
 -}
 registerCustomOptionWith :: RegistrationTarget -> (DuckDBV2CustomOptionHandle -> IO ()) -> Maybe (ContextCallback DuckDBV2CustomOptionUpdateInfoHandle) -> IO ()
-registerCustomOptionWith target configure callback = case target of
-    ConnectionTarget conn -> withConnectionHandle conn \native -> withConnectionFactory native \factory ->
-        build factory (checked . c_duckdb_v2_connection_register_custom_option native)
-    ExtensionTarget extension context -> withContextFactory context \factory ->
-        build factory (checked . c_duckdb_v2_extension_register_custom_option extension)
-  where
-    build factory register = bracket (output (c_duckdb_v2_custom_option_create factory)) (destroy c_duckdb_v2_custom_option_destroy) \option ->
+registerCustomOptionWith target configure callback =
+    withTarget target c_duckdb_v2_custom_option_create c_duckdb_v2_custom_option_destroy c_duckdb_v2_connection_register_custom_option c_duckdb_v2_extension_register_custom_option \option register ->
         withCallbackResources
             ( \allocate -> case callback of
                 Nothing -> pure Nothing
@@ -132,7 +127,7 @@ registerCustomOptionWith target configure callback = case target of
             \update -> do
                 configure option
                 mapM_ (checked . c_duckdb_v2_custom_option_set_update_callback option) update
-                register option
+                register
 
 -- | List built-in configuration flags using a temporary connection.
 listConfigFlags :: IO [ConfigFlag]
@@ -154,7 +149,7 @@ listInstanceOptions instance_ = withInstanceHandle instance_ \handle -> do
 -- | Read an effective option by its canonical name or an alias.
 getConfigOption :: Connection -> Text -> IO (Maybe ConfigValue)
 getConfigOption conn name = do
-    when (Text.any (== '\0') name) $ throwRegistrationError "config option name contains NUL"
+    when (Text.any (== '\0') name) $ throwInvalidArgument "config option name contains NUL"
     (withConfigOptionValue conn name \value scope -> Just . (`ConfigValue` scope) <$> valueText value)
         `catch` \err ->
             if sqlErrorType err == Just DuckDBV2ErrorInputInvalid
@@ -163,11 +158,10 @@ getConfigOption conn name = do
 
 -- | Write an option at its default, global, or session scope.
 setConfigOption :: Connection -> DuckDBV2SettingScope -> Text -> Text -> IO ()
-setConfigOption conn scope name value = withConnectionHandle conn \handle ->
-    do
-        config <- output (c_duckdb_v2_connection_get_config handle)
-        withIdentifier name \key -> withText value \setting ->
-            checked (c_duckdb_v2_config_set_option_text config key setting scope)
+setConfigOption conn scope name value = withConnectionHandle conn \handle -> do
+    config <- output (c_duckdb_v2_connection_get_config handle)
+    withIdentifier name \key -> withText value \setting ->
+        checked (c_duckdb_v2_config_set_option_text config key setting scope)
 
 -- | Read a typed option value during one action. The action borrows the value.
 withConfigOptionValue :: Connection -> Text -> (DuckDBV2ValueHandle -> DuckDBV2SettingScope -> IO a) -> IO a
@@ -222,11 +216,7 @@ withOptionValue config name action = withIdentifier name \key -> alloca \scope -
 valueText :: DuckDBV2ValueHandle -> IO Text
 valueText value = do
     count <- output (c_duckdb_v2_value_to_string value nullPtr 0)
-    when (toInteger count >= toInteger (maxBound :: Int)) $ throwRegistrationError "configuration value exceeds Int range"
+    when (toInteger count >= toInteger (maxBound :: Int)) $ throwInvalidArgument "configuration value exceeds Int range"
     allocaBytes (fromIntegral count + 1) \buffer -> do
         _ <- output (c_duckdb_v2_value_to_string value buffer (count + 1))
         Text.decodeUtf8 <$> BS.packCStringLen (buffer, fromIntegral count)
-
--- | Enumerate a native count without unsigned underflow for empty input.
-indices :: DuckDBIdx -> [DuckDBIdx]
-indices count = if count == 0 then [] else [0 .. count - 1]

@@ -37,7 +37,6 @@ import Database.DuckDB.Simple.FromField (
     IntervalValue (..),
     TimeWithZone (..),
  )
-import Database.DuckDB.Simple.LogicalRep (destroyLogicalType)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
 import Foreign.C.ConstPtr (ConstPtr (..))

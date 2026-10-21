@@ -59,4 +59,3 @@ queryMetrics connection = withConnectionHandle connection \native ->
         children <- forM (indices childCount) \index ->
             output (c_duckdb_v2_query_metrics_node_get_child node index) >>= copyNode readValue
         pure (QueryMetrics name metrics children)
-    indices count = takeWhile (< count) [0 ..]

@@ -12,11 +12,11 @@ module Database.DuckDB.Simple.Catalog (
 ) where
 
 import Control.Exception (bracket, throwIO)
-import Control.Monad (forM)
+import Control.Monad (forM, when)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple (Only (..), query)
-import Database.DuckDB.Simple.Internal (Connection, throwRegistrationError, withConnectionHandle)
+import Database.DuckDB.Simple.Internal (Connection, withConnectionHandle)
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep, logicalTypeToRep)
 import Database.DuckDB.Simple.Native
 
@@ -112,10 +112,6 @@ describeTable conn name = withConnectionHandle conn $ \handle ->
                     pure (ColumnDescription columnName columnType (defaultValue /= 0) (generated /= 0))
             pure (TableDescription copiedName (readonly /= 0) columns)
 
--- | Reject names which the earlier catalog interface did not accept.
+-- | Reject names that contain NUL.
 validateNames :: [Text] -> IO ()
-validateNames names = if any (Text.any (== '\0')) names then throwRegistrationError "catalog lookup name contains NUL" else pure ()
-
--- | Enumerate a native count without unsigned underflow.
-indices :: DuckDBIdx -> [DuckDBIdx]
-indices count = if count == 0 then [] else [0 .. count - 1]
+validateNames names = when (any (Text.any (== '\0')) names) $ throwInvalidArgument "catalog lookup name contains NUL"

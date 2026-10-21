@@ -47,7 +47,6 @@ import Database.DuckDB.Simple.FromField (
  )
 import Database.DuckDB.Simple.Internal (
     Connection,
-    destroyLogicalType,
     executeParsedResult,
     runInterruptibleQuery,
     withConnectionHandle,
@@ -248,7 +247,7 @@ registerScalarFunction conn name proxy acquire = do
         throwIO (functionInvocationError "duckdb-simple: invalid scalar function name")
     withConnectionHandle conn \connection ->
         bracket
-            (withConnectionFactory connection (\nativeFactory -> output (c_duckdb_v2_scalar_function_create nativeFactory)))
+            (factoryOutput connection c_duckdb_v2_scalar_function_create)
             (destroy c_duckdb_v2_scalar_function_destroy)
             \scalarFun ->
                 withCallbackResources
@@ -289,7 +288,7 @@ deleteFunction conn name = do
 withLogicalType :: DuckDBV2ConnectionHandle -> DuckDBV2LogicalTypeId -> (DuckDBV2LogicalTypeHandle -> IO a) -> IO a
 withLogicalType connection dtype =
     bracket
-        (withConnectionFactory connection (\nativeFactory -> output (c_duckdb_v2_factory_create_type_from_id nativeFactory dtype (ConstPtr nullPtr) (ConstPtr nullPtr) 0)))
+        (factoryOutput connection (\factory -> c_duckdb_v2_factory_create_type_from_id factory dtype (ConstPtr nullPtr) (ConstPtr nullPtr) 0))
         destroyLogicalType
 
 duckTypeForScalar :: ScalarType -> DuckDBV2LogicalTypeId

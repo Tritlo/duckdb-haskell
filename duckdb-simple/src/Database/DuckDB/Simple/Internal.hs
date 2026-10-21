@@ -61,14 +61,11 @@ module Database.DuckDB.Simple.Internal (
     clearArrowResult,
     fetchResultChunk,
     destroyDataChunk,
-    destroyValue,
-    destroyLogicalType,
-    throwRegistrationError,
 ) where
 
 import Control.Concurrent (MVar, forkIO, newEmptyMVar, putMVar, readMVar, threadDelay, tryReadMVar)
 import Control.Exception (SomeException, bracket, catch, finally, mask, mask_, onException, throwIO, try, uninterruptibleMask_)
-import Control.Monad (forM, forM_, unless, void, when)
+import Control.Monad (forM, forM_, join, unless, void, when)
 import qualified Data.ByteString as BS
 import Data.Coerce (Coercible, coerce)
 import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, newIORef, readIORef, writeIORef)
@@ -87,7 +84,6 @@ import Foreign.C.String (CString)
 import Foreign.C.Types (CChar)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Array (withArray)
-import Foreign.Marshal.Utils (withMany)
 import Foreign.Ptr (nullPtr)
 import Foreign.Storable (peek, poke)
 import GHC.Exts (keepAlive#)
@@ -124,9 +120,11 @@ finishChild (weak, done) = uninterruptibleMask_ (finalize weak `finally` readMVa
 
 -- | Complete child finalizers before their parent closes.
 closeChildren :: Children a -> IO ()
-closeChildren (Children children) = do
-    owned <- atomicModifyIORef' children ([],)
-    foldr finally (pure ()) (map finishChild owned)
+closeChildren (Children children) = atomicModifyIORef' children ([],) >>= cleanupAll . map finishChild
+
+-- | Run every cleanup action in order, even when an earlier action throws.
+cleanupAll :: [IO ()] -> IO ()
+cleanupAll = foldr finally (pure ())
 
 -- | A native environment shared by one or more instances.
 newtype Environment = Environment {environmentState :: IORef EnvironmentState}
@@ -171,9 +169,6 @@ data StatementState
         { statementHandle :: DuckDBV2PreparedStatementHandle
         , statementParsed :: DuckDBV2SqlStatementHandle
         , statementSchemaCache :: IORef (Maybe (DuckDBV2SchemaHandle, DuckDBV2SchemaHandle))
-        , statementOwnedBindings :: IORef (IntMap.IntMap DuckDBV2ValueHandle)
-        , statementOwnedArrowResult :: IORef DuckDBV2ArrowResultHandle
-        , statementOwnedStream :: IORef StatementStreamState
         }
 
 -- | Cursor state. Exhaustion persists until the caller resets the statement.
@@ -223,7 +218,7 @@ closeEnvironment Environment{environmentState} = closeEnvironmentState environme
 closeEnvironmentState :: IORef EnvironmentState -> IO ()
 closeEnvironmentState ref = mask_ $ joinCleanup ref \case
     EnvironmentClosed -> (EnvironmentClosed, pure ())
-    EnvironmentOpen raw children -> (EnvironmentClosed, closeChildren children `finally` destroy c_duckdb_v2_environment_destroy raw)
+    EnvironmentOpen raw children -> (EnvironmentClosed, cleanupAll [closeChildren children, destroy c_duckdb_v2_environment_destroy raw])
 
 -- | Create an instance with configuration applied before its first connection.
 createInstance :: Environment -> [(Text, Text)] -> IO Instance
@@ -238,11 +233,8 @@ createInstance environment@Environment{environmentState} settings = keepAlive en
         needsInstance (name, _) = Text.toLower name `elem` runtimeOptions || (hasWhitelist && Text.toLower name == "enable_external_access")
         (deferredSettings, startupSettings) = partition needsInstance settings
         (runtimeSettings, externalAccessSettings) = partition ((/= "enable_external_access") . Text.toLower . fst) deferredSettings
-        withView text action = withText text \(ConstPtr ptr) -> peek ptr >>= action
-    raw <- withMany withView (map fst startupSettings) \names ->
-        withMany withView (map snd startupSettings) \values ->
-            withArray names \nameArray -> withArray values \valueArray ->
-                output (c_duckdb_v2_instance_create_with_options rawEnvironment (ConstPtr nameArray) (ConstPtr valueArray) (fromIntegral (length startupSettings)))
+    raw <- withTextArray (map fst startupSettings) \names -> withTextArray (map snd startupSettings) \values ->
+        output (c_duckdb_v2_instance_create_with_options rawEnvironment (ConstPtr names) (ConstPtr values) (fromIntegral (length startupSettings)))
     flip onException (destroy c_duckdb_v2_instance_destroy raw) do
         config <- output (c_duckdb_v2_instance_get_config raw)
         -- Set the whitelist before external access can be disabled.
@@ -276,7 +268,7 @@ closeInstance Instance{instanceState} = closeInstanceState instanceState
 closeInstanceState :: IORef InstanceState -> IO ()
 closeInstanceState ref = mask_ $ joinCleanup ref \case
     InstanceClosed -> (InstanceClosed, pure ())
-    InstanceOpen raw children -> (InstanceClosed, closeChildren children `finally` destroy c_duckdb_v2_instance_destroy raw)
+    InstanceOpen raw children -> (InstanceClosed, cleanupAll [closeChildren children, destroy c_duckdb_v2_instance_destroy raw])
 
 -- | Create a connection. The final action releases private convenience parents.
 createConnection :: Instance -> [Text] -> IO () -> IO Connection
@@ -303,30 +295,32 @@ closeConnectionState releaseParents ref = mask_ $ joinCleanup ref \case
     ConnectionClosed -> (ConnectionClosed, pure ())
     ConnectionOpen{connectionHandle, connectionTypeCache, connectionStatements, connectionReleaseParent} ->
         ( ConnectionClosed
-        , closeChildren connectionStatements
-            `finally` ( destroyTypeCache connectionTypeCache
-                            `finally` (destroy c_duckdb_v2_connection_destroy connectionHandle `finally` when releaseParents connectionReleaseParent)
-                      )
+        , cleanupAll
+            [ closeChildren connectionStatements
+            , destroyTypeCache connectionTypeCache
+            , destroy c_duckdb_v2_connection_destroy connectionHandle
+            , when releaseParents connectionReleaseParent
+            ]
         )
 
 -- | Replace lifecycle state before running its cleanup action.
 joinCleanup :: IORef a -> (a -> (a, IO ())) -> IO ()
-joinCleanup ref action = atomicModifyIORef' ref action >>= id
+joinCleanup ref action = join (atomicModifyIORef' ref action)
 
 -- | Close all native state owned by one statement.
-closeStatementState :: IORef StatementState -> IO ()
-closeStatementState ref = mask_ $ joinCleanup ref \case
+closeStatementState :: Statement -> IO ()
+closeStatementState Statement{statementState, statementStream, statementArrowResult, statementBindings} = mask_ $ joinCleanup statementState \case
     StatementClosed -> (StatementClosed, pure ())
-    StatementOpen{statementHandle, statementParsed, statementSchemaCache, statementOwnedBindings, statementOwnedStream, statementOwnedArrowResult} ->
+    StatementOpen{statementHandle, statementParsed, statementSchemaCache} ->
         ( StatementClosed
-        , (cleanupStatementStreamRef statementOwnedStream `finally` clearArrowResultRef statementOwnedArrowResult)
-            `finally` ( clearBoundValues statementOwnedBindings
-                            `finally` ( releaseSchemas statementSchemaCache
-                                            `finally` ( destroy c_duckdb_v2_prepared_statement_destroy statementHandle
-                                                            `finally` destroy c_duckdb_v2_sql_statement_destroy statementParsed
-                                                      )
-                                      )
-                      )
+        , cleanupAll
+            [ cleanupStatementStreamRef statementStream
+            , clearArrowResultRef statementArrowResult
+            , clearBoundValues statementBindings
+            , releaseSchemas statementSchemaCache
+            , destroy c_duckdb_v2_prepared_statement_destroy statementHandle
+            , destroy c_duckdb_v2_sql_statement_destroy statementParsed
+            ]
         )
 
 -- | Release both owned statement schemas.
@@ -377,21 +371,21 @@ createStatementFromParsedWithCollections parent query parsed collections = withQ
             bindings <- newIORef IntMap.empty
             stream <- newIORef StatementStreamIdle
             arrow <- newIORef nullHandle
-            ref <- newIORef (StatementOpen handle copied schemas bindings arrow stream)
+            ref <- newIORef (StatementOpen handle copied schemas)
+            let statement = Statement ref parent query stream arrow bindings names
             children <-
                 readIORef (connectionState parent) >>= \case
                     ConnectionClosed -> throwIO connectionClosedError
                     ConnectionOpen{connectionStatements} -> pure connectionStatements
-            registerChild (\case StatementOpen{} -> True; _ -> False) children ref (keepAlive parent (closeStatementState ref))
-            pure (Statement ref parent query stream arrow bindings names)
+            -- The finalizer does not keep its weak key alive through this closure.
+            registerChild (\case StatementOpen{} -> True; _ -> False) children ref (keepAlive parent (closeStatementState statement))
+            pure statement
   where
     addCollections statement = forM_ collections \(name, collection, columns) -> do
         when (any (Text.any (== '\0')) (name : columns)) $
             throwIO (SQLError "duckdb-simple: collection name or column name contains NUL" Nothing (Just query))
-        withIdentifier name \nativeName ->
-            withMany (\column action -> withIdentifier column (\(ConstPtr ptr) -> peek ptr >>= action)) columns \names ->
-                withArray names \nativeColumns ->
-                    checked (c_duckdb_v2_statement_add_collection statement nativeName collection (ConstPtr (if null names then nullPtr else nativeColumns)) (fromIntegral (length columns)))
+        withIdentifier name \nativeName -> withIdentifierArray columns \nativeColumns ->
+            checked (c_duckdb_v2_statement_add_collection statement nativeName collection (ConstPtr (if null columns then nullPtr else nativeColumns)) (fromIntegral (length columns)))
 
 -- | Error raised when an operation targets a closed connection.
 connectionClosedError :: SQLError
@@ -495,10 +489,8 @@ withBoundValues stmt action = do
     bindings <- IntMap.toAscList <$> readIORef (statementBindings stmt)
     let names = map (\(idx, _) -> statementParameterNames stmt !! (idx - 1)) bindings
         values = map snd bindings
-    withMany withIdentifier names \namePtrs -> do
-        nativeNames <- mapM (\(ConstPtr ptr) -> peek ptr) namePtrs
-        withArray nativeNames \namesPtr -> withArray values \valuesPtr ->
-            action (ConstPtr namesPtr) (ConstPtr valuesPtr) (fromIntegral (length bindings))
+    withIdentifierArray names \namesPtr -> withArray values \valuesPtr ->
+        action (ConstPtr namesPtr) (ConstPtr valuesPtr) (fromIntegral (length bindings))
 
 -- | Execute a prepared Arrow result and register it for statement cleanup.
 executePreparedArrowResult :: Statement -> IO DuckDBV2ArrowResultHandle
@@ -541,14 +533,6 @@ fetchResultChunk conn result = mask_ $ alloca \slot -> do
 -- | Release an owned native data chunk.
 destroyDataChunk :: DuckDBV2DataChunkHandle -> IO ()
 destroyDataChunk = destroy c_duckdb_v2_data_chunk_destroy
-
--- | Release an owned native value.
-destroyValue :: DuckDBV2ValueHandle -> IO ()
-destroyValue = destroy c_duckdb_v2_value_destroy
-
--- | Release an owned native logical type.
-destroyLogicalType :: DuckDBV2LogicalTypeHandle -> IO ()
-destroyLogicalType = destroy c_duckdb_v2_logical_type_destroy
 
 -- | Release the active cursor and return to the idle state.
 cleanupStatementStreamRef :: IORef StatementStreamState -> IO ()
@@ -606,45 +590,40 @@ preparedParameterType stmt idx = do
             then pure Nothing
             else Just <$> logicalTypeToRep dtype
 
--- | Report a scalar function registration failure.
-throwRegistrationError :: Text -> IO a
-throwRegistrationError message = throwIO (SQLError message Nothing Nothing)
-
+-- | Column type names and the logical types that they denote.
 duckDBTypeNames :: [(Text, DuckDBV2LogicalTypeId)]
 duckDBTypeNames =
-    map
-        (\(name, dtype) -> (Text.pack name, dtype))
-        [ ("BOOLEAN", DuckDBV2LogicalTypeIdBoolean)
-        , ("TINYINT", DuckDBV2LogicalTypeIdTinyInt)
-        , ("SMALLINT", DuckDBV2LogicalTypeIdSmallInt)
-        , ("INTEGER", DuckDBV2LogicalTypeIdInteger)
-        , ("BIGINT", DuckDBV2LogicalTypeIdBigInt)
-        , ("HUGEINT", DuckDBV2LogicalTypeIdHugeInt)
-        , ("UTINYINT", DuckDBV2LogicalTypeIdUTinyInt)
-        , ("USMALLINT", DuckDBV2LogicalTypeIdUSmallInt)
-        , ("UINTEGER", DuckDBV2LogicalTypeIdUInteger)
-        , ("UBIGINT", DuckDBV2LogicalTypeIdUBigInt)
-        , ("UHUGEINT", DuckDBV2LogicalTypeIdUHugeInt)
-        , ("FLOAT", DuckDBV2LogicalTypeIdFloat)
-        , ("DOUBLE", DuckDBV2LogicalTypeIdDouble)
-        , ("DATE", DuckDBV2LogicalTypeIdDate)
-        , ("TIME", DuckDBV2LogicalTypeIdTime)
-        , ("TIMETZ", DuckDBV2LogicalTypeIdTimeTz)
-        , ("TIMESTAMP", DuckDBV2LogicalTypeIdTimestamp)
-        , ("TIMESTAMPTZ", DuckDBV2LogicalTypeIdTimestampTz)
-        , ("TIMESTAMPTZ_NS", DuckDBV2LogicalTypeIdTimestampTzNs)
-        , ("TIMESTAMP_NS WITH TIME ZONE", DuckDBV2LogicalTypeIdTimestampTzNs)
-        , ("INTERVAL", DuckDBV2LogicalTypeIdInterval)
-        , ("TEXT", DuckDBV2LogicalTypeIdVarchar)
-        , ("BLOB", DuckDBV2LogicalTypeIdBlob)
-        , ("GEOMETRY", DuckDBV2LogicalTypeIdGeometry)
-        , ("VARIANT", DuckDBV2LogicalTypeIdVariant)
-        , ("UUID", DuckDBV2LogicalTypeIdUUID)
-        , ("BIT", DuckDBV2LogicalTypeIdBit)
-        , ("BIGNUM", DuckDBV2LogicalTypeIdBigNum)
-        , -- NULL gives an element type to Maybe values without data.
-          ("NULL", DuckDBV2LogicalTypeIdSQLNull)
-        ]
+    [ ("BOOLEAN", DuckDBV2LogicalTypeIdBoolean)
+    , ("TINYINT", DuckDBV2LogicalTypeIdTinyInt)
+    , ("SMALLINT", DuckDBV2LogicalTypeIdSmallInt)
+    , ("INTEGER", DuckDBV2LogicalTypeIdInteger)
+    , ("BIGINT", DuckDBV2LogicalTypeIdBigInt)
+    , ("HUGEINT", DuckDBV2LogicalTypeIdHugeInt)
+    , ("UTINYINT", DuckDBV2LogicalTypeIdUTinyInt)
+    , ("USMALLINT", DuckDBV2LogicalTypeIdUSmallInt)
+    , ("UINTEGER", DuckDBV2LogicalTypeIdUInteger)
+    , ("UBIGINT", DuckDBV2LogicalTypeIdUBigInt)
+    , ("UHUGEINT", DuckDBV2LogicalTypeIdUHugeInt)
+    , ("FLOAT", DuckDBV2LogicalTypeIdFloat)
+    , ("DOUBLE", DuckDBV2LogicalTypeIdDouble)
+    , ("DATE", DuckDBV2LogicalTypeIdDate)
+    , ("TIME", DuckDBV2LogicalTypeIdTime)
+    , ("TIMETZ", DuckDBV2LogicalTypeIdTimeTz)
+    , ("TIMESTAMP", DuckDBV2LogicalTypeIdTimestamp)
+    , ("TIMESTAMPTZ", DuckDBV2LogicalTypeIdTimestampTz)
+    , ("TIMESTAMPTZ_NS", DuckDBV2LogicalTypeIdTimestampTzNs)
+    , ("TIMESTAMP_NS WITH TIME ZONE", DuckDBV2LogicalTypeIdTimestampTzNs)
+    , ("INTERVAL", DuckDBV2LogicalTypeIdInterval)
+    , ("TEXT", DuckDBV2LogicalTypeIdVarchar)
+    , ("BLOB", DuckDBV2LogicalTypeIdBlob)
+    , ("GEOMETRY", DuckDBV2LogicalTypeIdGeometry)
+    , ("VARIANT", DuckDBV2LogicalTypeIdVariant)
+    , ("UUID", DuckDBV2LogicalTypeIdUUID)
+    , ("BIT", DuckDBV2LogicalTypeIdBit)
+    , ("BIGNUM", DuckDBV2LogicalTypeIdBigNum)
+    , -- NULL gives an element type to Maybe values without data.
+      ("NULL", DuckDBV2LogicalTypeIdSQLNull)
+    ]
 
 -- | Find the type that a column type name denotes.
 duckDBTypeFromName :: Text -> Maybe DuckDBV2LogicalTypeId

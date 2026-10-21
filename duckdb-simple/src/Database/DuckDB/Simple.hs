@@ -234,7 +234,7 @@ openStatement conn queryText = withParsedStatements conn queryText \parsed ->
 
 -- | Finalize a prepared statement. The operation is idempotent.
 closeStatement :: Statement -> IO ()
-closeStatement = closeStatementState . statementState
+closeStatement = closeStatementState
 
 -- | Run an action with a prepared statement, closing it afterwards.
 withStatement :: Connection -> Query -> (Statement -> IO a) -> IO a

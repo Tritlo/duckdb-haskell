@@ -35,7 +35,6 @@ import Database.DuckDB.Simple.Native
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Array (withArray)
-import Foreign.Marshal.Utils (withMany)
 import Foreign.Ptr (nullPtr)
 import Foreign.Storable (peek)
 
@@ -104,10 +103,6 @@ tupleValueTypeRep TupleValue{tupleValueTypes} = LogicalTypeTuple tupleValueTypes
 unionValueTypeRep :: UnionValue a -> LogicalTypeRep
 unionValueTypeRep UnionValue{unionValueMembers} = LogicalTypeUnion unionValueMembers
 
--- | Destroy an owned logical type handle.
-destroyLogicalType :: DuckDBV2LogicalTypeHandle -> IO ()
-destroyLogicalType = destroy c_duckdb_v2_logical_type_destroy
-
 -- | Copy a native logical type into a Haskell type tree.
 logicalTypeToRep :: DuckDBV2LogicalTypeHandle -> IO LogicalTypeRep
 logicalTypeToRep logical = do
@@ -174,20 +169,18 @@ logicalTypeFromRepWithFactory factory = logicalTypeFromFactory factory (const (p
 logicalTypeFromFactory :: DuckDBV2FactoryHandle -> (LogicalTypeRep -> IO (Maybe DuckDBV2LogicalTypeHandle)) -> LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle
 logicalTypeFromFactory factory resolve = create
   where
-    owned = destroy c_duckdb_v2_value_destroy
     boxed rep = bracket (create rep) destroyLogicalType (output . c_duckdb_v2_value_create_type factory)
     text value = withText value (output . c_duckdb_v2_value_create_varchar factory)
     fromText value = withText value (output . c_duckdb_v2_factory_create_type_from_text factory)
     construct dtype names actions = do
         when (any (Text.any (== '\0')) names) $
             throwIO (userError "duckdb-simple: logical type name contains NUL")
-        withMany (\action -> bracket action owned) actions \values ->
+        withCreatedValues actions \values ->
             withArray values \valuePtr ->
                 if null names
                     then output (c_duckdb_v2_factory_create_type_from_id factory dtype (ConstPtr nullPtr) (ConstPtr valuePtr) (fromIntegral (length values)))
-                    else withMany (\name action -> withIdentifier name (\(ConstPtr ptr) -> peek ptr >>= action)) names \identifiers ->
-                        withArray identifiers \namePtr ->
-                            output (c_duckdb_v2_factory_create_type_from_id factory dtype (ConstPtr namePtr) (ConstPtr valuePtr) (fromIntegral (length values)))
+                    else withIdentifierArray names \namePtr ->
+                        output (c_duckdb_v2_factory_create_type_from_id factory dtype (ConstPtr namePtr) (ConstPtr valuePtr) (fromIntegral (length values)))
     create rep = resolve rep >>= maybe (constructRep rep) pure
     constructRep = \case
         LogicalTypeScalar DuckDBV2LogicalTypeIdVariant -> fromText (Text.pack "VARIANT")
@@ -215,11 +208,11 @@ logicalTypeFromFactory factory resolve = create
         LogicalTypeMap key value -> construct DuckDBV2LogicalTypeIdMap [] [boxed key, boxed value]
         LogicalTypeStruct fields
             | null (elems fields) ->
-                bracket (output (c_duckdb_v2_value_create_struct factory (ConstPtr nullPtr) (ConstPtr nullPtr) 0)) owned (output . c_duckdb_v2_value_get_logical_type)
+                bracket (output (c_duckdb_v2_value_create_struct factory (ConstPtr nullPtr) (ConstPtr nullPtr) 0)) destroyValue (output . c_duckdb_v2_value_get_logical_type)
         LogicalTypeStruct fields -> construct DuckDBV2LogicalTypeIdStruct (map structFieldName (elems fields)) (map (boxed . structFieldValue) (elems fields))
         LogicalTypeTuple fields
             | null (elems fields) ->
-                bracket (output (c_duckdb_v2_value_create_tuple factory (ConstPtr nullPtr) 0)) owned (output . c_duckdb_v2_value_get_logical_type)
+                bracket (output (c_duckdb_v2_value_create_tuple factory (ConstPtr nullPtr) 0)) destroyValue (output . c_duckdb_v2_value_get_logical_type)
             | otherwise -> construct DuckDBV2LogicalTypeIdTuple [] (map boxed (elems fields))
         LogicalTypeUnion members -> construct DuckDBV2LogicalTypeIdUnion (map unionMemberName (elems members)) (map (boxed . unionMemberType) (elems members))
         LogicalTypeEnum entries -> construct DuckDBV2LogicalTypeIdEnum [] (map text (elems entries))

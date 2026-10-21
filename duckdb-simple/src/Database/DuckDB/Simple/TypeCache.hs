@@ -22,7 +22,7 @@ import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), destroyLogicalType, logicalTypeFromRepWith, logicalTypeToRep)
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), logicalTypeFromRepWith, logicalTypeToRep)
 import Database.DuckDB.Simple.Native
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (withArray)
@@ -101,7 +101,7 @@ readNativeTypes :: DuckDBV2ConnectionHandle -> [Text] -> IO NativeTypes
 readNativeTypes _ [] = pure (NativeTypes Map.empty [])
 readNativeTypes connection crss = do
     let sql = "SELECT " <> Text.intercalate ", " ["system.main.ST_SetCRS('POINT EMPTY'::GEOMETRY, ?)" | _ <- crss]
-        ownValue value = bracket (withText value (\nativeInput -> withConnectionFactory connection (\nativeFactory -> output (c_duckdb_v2_value_create_varchar nativeFactory nativeInput)))) (destroy c_duckdb_v2_value_destroy)
+        ownValue value = bracket (withText value (\text -> factoryOutput connection (\factory -> c_duckdb_v2_value_create_varchar factory text))) (destroy c_duckdb_v2_value_destroy)
     TextForeign.withCString sql \text ->
         bracket (output (c_duckdb_v2_parse_sql connection (ConstPtr text))) (destroy c_duckdb_v2_statement_iterator_destroy) \iterator ->
             bracket (output (c_duckdb_v2_statement_iterator_next iterator)) (destroy c_duckdb_v2_sql_statement_destroy) \parsed ->

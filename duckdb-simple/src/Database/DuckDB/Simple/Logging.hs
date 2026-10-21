@@ -22,7 +22,7 @@ import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Data.Word (Word64)
 import Database.DuckDB.Simple.Callback (attachOpaque, runCallback, withCallbackResourcesFinally)
-import Database.DuckDB.Simple.Internal (Connection, Instance, throwRegistrationError, withConnectionHandle, withDatabaseHandle, withInstanceHandle)
+import Database.DuckDB.Simple.Internal (Connection, Instance, withConnectionHandle, withDatabaseHandle, withInstanceHandle)
 import Database.DuckDB.Simple.Native
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.Types (CBool)
@@ -76,7 +76,7 @@ registerExtensionLogSink extension context name write flush = withContextFactory
 -- | Transfer callback ownership to the native sink and release its builder.
 registerSink :: DuckDBV2FactoryHandle -> (DuckDBV2LogSinkHandle -> IO ()) -> Text -> (LogEntry -> IO ()) -> IO () -> IO ()
 registerSink factory register name write flush = do
-    when (Text.null name || Text.any (== '\0') name) $ throwRegistrationError "log sink name must be nonempty and must not contain NUL"
+    when (Text.null name || Text.any (== '\0') name) $ throwInvalidArgument "log sink name must be nonempty and must not contain NUL"
     bracket (output (c_duckdb_v2_log_sink_create factory)) (destroy c_duckdb_v2_log_sink_destroy) \sink ->
         withCallbackResourcesFinally
             flush

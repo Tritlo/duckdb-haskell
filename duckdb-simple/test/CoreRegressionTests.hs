@@ -14,7 +14,8 @@ import Data.Text (Text)
 import qualified Database.DuckDB.FFI.V2 as Raw
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (FieldValue)
-import Database.DuckDB.Simple.Internal (DuckDBV2ResultHandle (..), Statement (statementStream), StatementStream (statementStreamResult), StatementStreamState (..), checked, destroy, executePreparedResult, nullHandle, output, withConnectionFactory, withConnectionHandle)
+import Database.DuckDB.Simple.Internal (DuckDBV2ResultHandle (..), Statement (statementStream), StatementStream (statementStreamResult), StatementStreamState (..), checked, executePreparedResult, nullHandle, output, withConnectionFactory, withConnectionHandle)
+import qualified Database.DuckDB.Simple.Internal as Internal
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (withArray)
 import System.Directory (canonicalizePath, getTemporaryDirectory, removeFile)
@@ -190,21 +191,21 @@ coreRegressionTests =
             withConnection ":memory:" $ \conn ->
                 withConnectionHandle conn $ \native -> withConnectionFactory native $ \factory ->
                     withStatement conn "SELECT 42::BIGINT" $ \source ->
-                        bracket (executePreparedResult source) (destroy Raw.c_duckdb_v2_result_destroy) $ \result ->
-                            bracket (output (Raw.c_duckdb_v2_result_fetch_chunk result)) (destroy Raw.c_duckdb_v2_data_chunk_destroy) $ \chunk -> do
-                                bracket (output (Raw.c_duckdb_v2_result_fetch_chunk result)) (destroy Raw.c_duckdb_v2_data_chunk_destroy) $ \end ->
+                        bracket (executePreparedResult source) (Internal.destroy Raw.c_duckdb_v2_result_destroy) $ \result ->
+                            bracket (output (Raw.c_duckdb_v2_result_fetch_chunk result)) (Internal.destroy Raw.c_duckdb_v2_data_chunk_destroy) $ \chunk -> do
+                                bracket (output (Raw.c_duckdb_v2_result_fetch_chunk result)) (Internal.destroy Raw.c_duckdb_v2_data_chunk_destroy) $ \end ->
                                     end @?= nullHandle
                                 vector <- output (Raw.c_duckdb_v2_data_chunk_get_vector chunk 0)
-                                bracket (output (Raw.c_duckdb_v2_vector_get_logical_type vector)) (destroy Raw.c_duckdb_v2_logical_type_destroy) $ \logical ->
+                                bracket (output (Raw.c_duckdb_v2_vector_get_logical_type vector)) (Internal.destroy Raw.c_duckdb_v2_logical_type_destroy) $ \logical ->
                                     withArray [logical] $ \types ->
-                                        bracket (output (Raw.c_duckdb_v2_column_data_collection_create factory (ConstPtr types) 1)) (destroy Raw.c_duckdb_v2_column_data_collection_destroy) $ \collection -> do
+                                        bracket (output (Raw.c_duckdb_v2_column_data_collection_create factory (ConstPtr types) 1)) (Internal.destroy Raw.c_duckdb_v2_column_data_collection_destroy) $ \collection -> do
                                             let checkRows :: Maybe (Only Int64) -> IO ()
                                                 checkRows expected = withCollectionStatement conn "SELECT payload + ?::BIGINT FROM input_rows" [("input_rows", collection, ["payload"])] $ \stmt -> do
                                                     bind stmt [toField (1 :: Int64)]
                                                     nextRow stmt >>= (@?= expected)
                                                     nextRow stmt >>= (@?= (Nothing :: Maybe (Only Int64)))
                                             checkRows Nothing
-                                            bracket (output (Raw.c_duckdb_v2_column_data_collection_append_state_create collection)) (destroy Raw.c_duckdb_v2_column_data_collection_append_state_destroy) $ \appendState ->
+                                            bracket (output (Raw.c_duckdb_v2_column_data_collection_append_state_create collection)) (Internal.destroy Raw.c_duckdb_v2_column_data_collection_append_state_destroy) $ \appendState ->
                                                 checked (Raw.c_duckdb_v2_column_data_collection_append collection appendState chunk)
                                             checkRows (Just (Only (43 :: Int64)))
         , testCase "connections share an explicit instance" $

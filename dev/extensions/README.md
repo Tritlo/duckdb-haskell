@@ -175,6 +175,11 @@ Final-release Linux x86_64 checks on 2026-10-21 use the verified official
   checksums remain unchanged. The V2 table still has 620 unstable entries.
 - `ldd` confirms the threaded RTS dependency and no `libduckdb` dependency.
 
+The post-release review repeats both native CLI smoke processes after the V2
+value and lifetime fixes. All 633 client functional tests, the default leak
+suite, and Haddock pass. See [the V2 review](../v2-migration.md) for the fixes
+and focused Valgrind results. These checks use Linux x86_64 and Nix GHC 9.14.1.
+
 Linux x86_64 checks on 2026-10-20 use GHC 9.14.1 and native source
 `d54cbbe3df17e8e5ce68312f483b4155836112aa`:
 

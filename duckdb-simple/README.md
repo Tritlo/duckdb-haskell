@@ -10,7 +10,7 @@ types (signed/unsigned integers, decimals, hugeints, intervals, precise and
 timezone-aware temporals, blobs, enums, bit strings, and bignums).
 
 The backend uses the generated DuckDB V2 API. All V2 declarations are currently
-unstable. Use the exact native snapshot recorded in the binding package.
+unstable. Use the exact native release recorded in the binding package.
 
 ## Shared environments and instances
 

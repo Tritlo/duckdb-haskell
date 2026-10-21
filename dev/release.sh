@@ -6,7 +6,7 @@ usage() {
   echo ""
   echo "Packages: duckdb-ffi, duckdb-simple, all"
   echo ""
-  echo "Without --publish, uploads as a package candidate (dry run)."
+  echo "Without --publish, uploads as a package candidate."
   echo "With --publish, uploads as a published release."
   exit 1
 }

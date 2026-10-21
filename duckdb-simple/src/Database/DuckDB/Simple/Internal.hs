@@ -56,6 +56,7 @@ module Database.DuckDB.Simple.Internal (
     runInterruptibleQuery,
     executePreparedResult,
     executeParsedResult,
+    executeParsedStatement,
     executePreparedArrowResult,
     withArrowResult,
     clearArrowResult,
@@ -472,6 +473,12 @@ executeParsedResult conn query parsed = withQueryError query $ withConnectionHan
         runInterruptibleQuery conn $
             checked (c_duckdb_v2_statement_execute raw parsed (ConstPtr nullPtr) (ConstPtr nullPtr) 0 slot)
         peek slot
+
+-- | Execute a parsed statement directly and drain all its side effects.
+executeParsedStatement :: Connection -> Query -> DuckDBV2SqlStatementHandle -> IO Int
+executeParsedStatement conn queryText parsed = withQueryError queryText $
+    bracket (executeParsedResult conn queryText parsed) (destroy c_duckdb_v2_result_destroy) \result ->
+        fromIntegral <$> runInterruptibleQuery conn (output (c_duckdb_v2_result_drain result))
 
 -- | Execute a prepared statement. The caller owns the returned result.
 executePreparedResult :: Statement -> IO DuckDBV2ResultHandle

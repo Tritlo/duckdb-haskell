@@ -29,7 +29,6 @@ import Control.Monad (filterM, forM_, unless, when)
 import Data.Array (Array, bounds, elems, listArray)
 import Data.Bits (complement, shiftL, shiftR, xor, (.|.))
 import qualified Data.ByteString as BS
-import Data.Char (toLower)
 import Data.Fixed (Pico)
 import qualified Data.Geometry as G
 import qualified Data.Geometry.WKT as WKT
@@ -161,7 +160,7 @@ timestampTypeForTarget target source = case (target, source) of
     _ -> source
   where
     -- DuckDB compares identifiers without ASCII case.
-    identifier = Text.map (\char -> if char >= 'A' && char <= 'Z' then toLower char else char)
+    identifier = foldIdentifier
     positionalTuple targets fields = LogicalTypeTuple (listArray (bounds fields) (zipWith timestampTypeForTarget (map Just targets <> repeat Nothing) (elems fields)))
 
 -- | Copy adapted type metadata into nested values without changing their payloads.

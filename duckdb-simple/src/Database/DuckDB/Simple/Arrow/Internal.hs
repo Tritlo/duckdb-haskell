@@ -1,5 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 
 -- | V2 Arrow execution and ownership of exported schemas and arrays.
@@ -10,7 +11,7 @@ module Database.DuckDB.Simple.Arrow.Internal (
     releaseArrowStream,
 ) where
 
-import Control.Exception (bracket, finally, mask, mask_, onException)
+import Control.Exception (finally, mask, mask_, onException)
 import Control.Monad (when)
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Database.DuckDB.Simple (bind, withStatement)
@@ -38,7 +39,7 @@ foldArrowWith mode conn queryText params initial step = withStatement conn query
                 case next of
                     Nothing -> pure acc
                     Just batch -> do
-                        acc' <- bracket (pure batch) releaseBatch (deliver acc)
+                        acc' <- deliver acc batch `finally` releaseBatch batch
                         stream acc'
         case mode of
             StreamingResult -> stream initial
@@ -52,7 +53,7 @@ foldArrowWith mode conn queryText params initial step = withStatement conn query
                         atomicModifyIORef' owned (\case [] -> ([], Nothing); batch : rest -> (rest, Just batch)) >>= \case
                             Nothing -> pure acc
                             Just batch -> do
-                                acc' <- bracket (pure batch) releaseBatch (deliver acc)
+                                acc' <- deliver acc batch `finally` releaseBatch batch
                                 consume acc'
                     release = readIORef owned >>= mapM_ releaseBatch
                 flip finally release do
@@ -75,10 +76,10 @@ fetchBatch stmt result = mask_ do
         when (exported.release /= nullFunPtr && exported.length /= 0) $
             checked (c_duckdb_v2_arrow_result_get_schema result schema)
         pure exported
-    if exported.release == nullFunPtr
-        then releaseBatch batch >> pure Nothing
-        else
-            if exported.length == 0 then releaseBatch batch >> fetchBatch stmt result else pure (Just batch)
+    if
+        | exported.release == nullFunPtr -> releaseBatch batch >> pure Nothing
+        | exported.length == 0 -> releaseBatch batch >> fetchBatch stmt result
+        | otherwise -> pure (Just batch)
 
 -- | Release both Arrow objects and free their root storage.
 releaseBatch :: ArrowBatch -> IO ()

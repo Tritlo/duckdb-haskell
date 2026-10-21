@@ -25,9 +25,11 @@ module Database.DuckDB.Simple.Native (
     withIdentifier,
     withIdentifierArray,
     readIdentifier,
+    foldIdentifier,
     throwInvalidArgument,
     withConnectionFactory,
     factoryOutput,
+    withSQLStatement,
     withContextFactory,
     withInstanceFactory,
 ) where
@@ -35,11 +37,13 @@ module Database.DuckDB.Simple.Native (
 import Control.Exception (Exception, bracket, finally, mask_, throwIO)
 import Control.Monad (unless)
 import qualified Data.ByteString as BS
+import Data.Char (isAsciiUpper, toLower)
 import Data.Coerce (Coercible, coerce)
 import Data.String (IsString (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
+import qualified Data.Text.Foreign as TextForeign
 import Database.DuckDB.FFI.V2
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Alloc (alloca)
@@ -160,6 +164,10 @@ withIdentifierArray values action = withTextArray values (action . castPtr)
 readIdentifier :: DuckDBV2IdentifierT -> IO Text
 readIdentifier = readText . coerce
 
+-- | Fold ASCII letters to lower case, as DuckDB does for identifiers.
+foldIdentifier :: Text -> Text
+foldIdentifier = Text.map (\char -> if isAsciiUpper char then toLower char else char)
+
 -- | Raise an error for an invalid library argument.
 throwInvalidArgument :: Text -> IO a
 throwInvalidArgument message = throwIO (SQLError ("duckdb-simple: " <> message) Nothing Nothing)
@@ -171,6 +179,13 @@ withConnectionFactory connection action = output (c_duckdb_v2_connection_get_fac
 -- | Read one checked output from a call that borrows the connection's factory.
 factoryOutput :: (Storable a) => DuckDBV2ConnectionHandle -> (DuckDBV2FactoryHandle -> Ptr a -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO a
 factoryOutput connection create = withConnectionFactory connection (output . create)
+
+-- | Parse trusted SQL and borrow its first statement.
+withSQLStatement :: DuckDBV2ConnectionHandle -> Text -> (DuckDBV2SqlStatementHandle -> IO a) -> IO a
+withSQLStatement connection sql action =
+    TextForeign.withCString sql $ \source ->
+        bracket (output (c_duckdb_v2_parse_sql connection (ConstPtr source))) (destroy c_duckdb_v2_statement_iterator_destroy) $ \iterator ->
+            bracket (output (c_duckdb_v2_statement_iterator_next iterator)) (destroy c_duckdb_v2_sql_statement_destroy) action
 
 -- | Borrow a factory during its native callback. Do not retain or destroy it.
 withContextFactory :: DuckDBV2ContextHandle -> (DuckDBV2FactoryHandle -> IO a) -> IO a

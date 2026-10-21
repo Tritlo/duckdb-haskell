@@ -17,7 +17,6 @@ import Database.DuckDB.Simple.FromField (FieldValue (..))
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Variant (variantObject)
 import Foreign.C.ConstPtr (ConstPtr (..))
-import Foreign.C.String (withCString)
 import Foreign.Marshal.Array (withArray)
 import Foreign.Ptr (nullPtr)
 
@@ -133,13 +132,6 @@ withTypeStatement connection =
     withSQLStatement
         connection
         "SELECT system.main.list_transform(?::VARIANT[], lambda value: system.main.struct_pack(tag := system.main.variant_typeof(value), keys := system.main.variant_keys(value))) AS metadata"
-
--- | Borrow a parsed SQL statement. Payloads and object keys are not SQL text.
-withSQLStatement :: DuckDBV2ConnectionHandle -> Text -> (DuckDBV2SqlStatementHandle -> IO a) -> IO a
-withSQLStatement connection sql action =
-    withCString (Text.unpack sql) \source ->
-        bracket (output (c_duckdb_v2_parse_sql connection (ConstPtr source))) (destroy c_duckdb_v2_statement_iterator_destroy) \iterator ->
-            bracket (output (c_duckdb_v2_statement_iterator_next iterator)) (destroy c_duckdb_v2_sql_statement_destroy) action
 
 -- | Read exact scalar tags and object keys without serializing payloads.
 queryMetadata :: DuckDBV2ConnectionHandle -> DuckDBV2SqlStatementHandle -> [DuckDBV2ValueHandle] -> IO [(Text, [Text])]

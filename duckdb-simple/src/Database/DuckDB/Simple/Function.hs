@@ -47,8 +47,7 @@ import Database.DuckDB.Simple.FromField (
  )
 import Database.DuckDB.Simple.Internal (
     Connection,
-    executeParsedResult,
-    runInterruptibleQuery,
+    executeParsedStatement,
     withConnectionHandle,
     withParsedStatements,
  )
@@ -276,14 +275,7 @@ DuckDB does not permit deletion of functions registered through the C API.
 deleteFunction :: Connection -> Text -> IO ()
 deleteFunction conn name = do
     let dropQuery = Query ("DROP FUNCTION IF EXISTS " <> qualifyIdentifier name)
-    withParsedStatements conn dropQuery $ \parsed ->
-        forM_ parsed $ \statement ->
-            bracket
-                (executeParsedResult conn dropQuery statement)
-                (destroy c_duckdb_v2_result_destroy)
-                \result -> do
-                    _ <- runInterruptibleQuery conn (output (c_duckdb_v2_result_drain result))
-                    pure ()
+    withParsedStatements conn dropQuery (mapM_ (executeParsedStatement conn dropQuery))
 
 withLogicalType :: DuckDBV2ConnectionHandle -> DuckDBV2LogicalTypeId -> (DuckDBV2LogicalTypeHandle -> IO a) -> IO a
 withLogicalType connection dtype =
@@ -412,15 +404,10 @@ functionInvocationError message =
         , sqlErrorQuery = Nothing
         }
 
+-- | Quote each dot-separated part of a function name.
 qualifyIdentifier :: Text -> Text
-qualifyIdentifier rawName =
-    let parts = Text.splitOn "." rawName
-     in Text.intercalate (Text.pack ".") (map quoteIdent parts)
+qualifyIdentifier = Text.intercalate "." . map quoteIdent . Text.splitOn "."
 
+-- | Quote one SQL identifier.
 quoteIdent :: Text -> Text
-quoteIdent ident =
-    Text.concat
-        [ Text.pack "\""
-        , Text.replace (Text.pack "\"") (Text.pack "\"\"") ident
-        , Text.pack "\""
-        ]
+quoteIdent ident = "\"" <> Text.replace "\"" "\"\"" ident <> "\""

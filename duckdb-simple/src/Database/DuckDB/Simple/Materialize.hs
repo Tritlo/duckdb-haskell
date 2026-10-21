@@ -133,28 +133,26 @@ materializeElement dtype vector dataPtr validity rowIdx = do
                     (width, scale) <- case rep of
                         LogicalTypeDecimal width scale -> pure (width, scale)
                         _ -> throwIO (userError "duckdb-simple: invalid DECIMAL type")
-                    rawValue <-
-                        if width <= 4
-                            then toInteger <$> peekElemOff (castPtr dataPtr :: Ptr Int16) rowIdx
-                            else
-                                if width <= 9
-                                    then toInteger <$> peekElemOff (castPtr dataPtr :: Ptr Int32) rowIdx
-                                    else
-                                        if width <= 18
-                                            then toInteger <$> peekElemOff (castPtr dataPtr :: Ptr Int64) rowIdx
-                                            else duckDBHugeIntToInteger <$> peekElemOff (castPtr dataPtr :: Ptr DuckDBV2HugeintT) rowIdx
+                    rawValue <- decimalStorage width
                     pure (FieldDecimal (DecimalValue width scale rawValue))
             DuckDBV2LogicalTypeIdEnum ->
                 withVectorType vector \logical -> do
                     count <- output (c_duckdb_v2_logical_type_get_param_count logical)
-                    if count <= 255
-                        then FieldEnum . fromIntegral <$> peekElemOff (castPtr dataPtr :: Ptr Word8) rowIdx
-                        else
-                            if count <= 65535
-                                then FieldEnum . fromIntegral <$> peekElemOff (castPtr dataPtr :: Ptr Word16) rowIdx
-                                else FieldEnum <$> peekElemOff (castPtr dataPtr :: Ptr Word32) rowIdx
+                    FieldEnum <$> enumStorage count
             DuckDBV2LogicalTypeIdSQLNull -> pure FieldNull
             _ -> decodeElement dtype dataPtr rowIdx
+  where
+    -- DuckDB stores DECIMAL values in the smallest integer type for their width.
+    decimalStorage width
+        | width <= 4 = toInteger <$> peekElemOff (castPtr dataPtr :: Ptr Int16) rowIdx
+        | width <= 9 = toInteger <$> peekElemOff (castPtr dataPtr :: Ptr Int32) rowIdx
+        | width <= 18 = toInteger <$> peekElemOff (castPtr dataPtr :: Ptr Int64) rowIdx
+        | otherwise = duckDBHugeIntToInteger <$> peekElemOff (castPtr dataPtr :: Ptr DuckDBV2HugeintT) rowIdx
+    -- DuckDB stores ENUM indices in the smallest unsigned type for the dictionary size.
+    enumStorage count
+        | count <= 255 = fromIntegral <$> peekElemOff (castPtr dataPtr :: Ptr Word8) rowIdx
+        | count <= 65535 = fromIntegral <$> peekElemOff (castPtr dataPtr :: Ptr Word16) rowIdx
+        | otherwise = peekElemOff (castPtr dataPtr :: Ptr Word32) rowIdx
 
 prepareArrayDecoder :: VariantReader -> DuckDBV2VectorHandle -> IO (Int -> IO (Array Int FieldValue))
 prepareArrayDecoder variantReader vector = do
@@ -165,7 +163,7 @@ prepareArrayDecoder variantReader vector = do
                 LogicalTypeArray _ size -> ensureWithinIntRange (Text.pack "array size") size
                 _ -> throwIO (userError "duckdb-simple: invalid ARRAY type")
     childVec <- vectorChild vector 0
-    when (childVec == DuckDBV2VectorHandle nullPtr) $
+    when (childVec == nullHandle) $
         throwIO (userError "duckdb-simple: array child vector is null")
     readChild <- prepareVectorReader variantReader childVec
     pure \rowIdx -> do
@@ -176,7 +174,7 @@ prepareArrayDecoder variantReader vector = do
 prepareListDecoder :: VariantReader -> DuckDBV2VectorHandle -> Ptr Void -> IO (Int -> IO [FieldValue])
 prepareListDecoder variantReader vector dataPtr = do
     childVec <- vectorChild vector 0
-    when (childVec == DuckDBV2VectorHandle nullPtr) $
+    when (childVec == nullHandle) $
         throwIO (userError "duckdb-simple: list child vector is null")
     readChild <- prepareVectorReader variantReader childVec
     pure \rowIdx -> do
@@ -187,11 +185,11 @@ prepareListDecoder variantReader vector dataPtr = do
 prepareMapDecoder :: VariantReader -> DuckDBV2VectorHandle -> Ptr Void -> IO (Int -> IO [(FieldValue, FieldValue)])
 prepareMapDecoder variantReader vector dataPtr = do
     structVec <- vectorChild vector 0
-    when (structVec == DuckDBV2VectorHandle nullPtr) $
+    when (structVec == nullHandle) $
         throwIO (userError "duckdb-simple: map struct vector is null")
     keyVec <- vectorChild structVec 0
     valueVec <- vectorChild structVec 1
-    when (keyVec == DuckDBV2VectorHandle nullPtr || valueVec == DuckDBV2VectorHandle nullPtr) $
+    when (keyVec == nullHandle || valueVec == nullHandle) $
         throwIO (userError "duckdb-simple: map child vectors are null")
     readKey <- prepareVectorReader variantReader keyVec
     readValue <- prepareVectorReader variantReader valueVec
@@ -228,7 +226,7 @@ prepareStructDecoder variantReader vector =
         childReaders <-
             forM (zip [0 .. count - 1] typeList) \(childIdx, StructField{structFieldName}) -> do
                 childVec <- vectorChild vector (fromIntegral childIdx)
-                when (childVec == DuckDBV2VectorHandle nullPtr) $
+                when (childVec == nullHandle) $
                     throwIO (userError "duckdb-simple: struct child vector is null")
                 readChild <- prepareVectorReader variantReader childVec
                 pure (structFieldName, readChild)
@@ -280,13 +278,13 @@ prepareUnionDecoder variantReader vector =
         let membersList = elems membersArray
             memberCount = length membersList
         tagVec <- vectorChild vector 0
-        when (tagVec == DuckDBV2VectorHandle nullPtr) $
+        when (tagVec == nullHandle) $
             throwIO (userError "duckdb-simple: union tag vector is null")
         readTag <- prepareVectorReader variantReader tagVec
         memberReaders <-
             forM [1 .. memberCount] \childIdx -> do
                 memberVec <- vectorChild vector (fromIntegral childIdx)
-                when (memberVec == DuckDBV2VectorHandle nullPtr) $
+                when (memberVec == nullHandle) $
                     throwIO (userError "duckdb-simple: union member vector is null")
                 prepared <- newIORef Nothing
                 pure \row -> do

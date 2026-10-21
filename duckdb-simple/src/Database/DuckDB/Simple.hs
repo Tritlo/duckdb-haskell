@@ -99,7 +99,6 @@ module Database.DuckDB.Simple (
 
 import Control.Exception (SomeException, bracket, finally, mask, mask_, onException, throwIO, try)
 import Control.Monad (forM_, void, when, zipWithM_)
-import Data.Char (toLower)
 import Data.List (findIndex)
 import Data.Maybe (isJust, isNothing)
 import qualified Data.Set as Set
@@ -427,12 +426,6 @@ withAdHocStatement conn queryText action empty = withParsedStatements conn query
             run rest
      in run statements
 
--- | Execute a parsed statement directly and drain all its side effects.
-executeParsedStatement :: Connection -> Query -> DuckDBV2SqlStatementHandle -> IO Int
-executeParsedStatement conn queryText parsed = withQueryError queryText $
-    bracket (executeParsedResult conn queryText parsed) (destroy c_duckdb_v2_result_destroy) \result ->
-        fromIntegral <$> runInterruptibleQuery conn (output (c_duckdb_v2_result_drain result))
-
 -- Cursors and folds ---------------------------------------------------------
 
 {- | Fold a parameterised result without constructing a complete Haskell row list.
@@ -540,15 +533,11 @@ columnIndexError stmt idx total =
 -- | Use DuckDB's ASCII case rules for parameter names.
 normalizeName :: Text -> Text
 normalizeName name =
-    Text.map asciiLower $
+    foldIdentifier $
         case Text.uncons name of
             Just (prefix, rest)
                 | prefix == ':' || prefix == '$' || prefix == '@' -> rest
             _ -> name
-  where
-    asciiLower char
-        | char >= 'A' && char <= 'Z' = toLower char
-        | otherwise = char
 
 convertRows :: (FromRow r) => Query -> [[Field]] -> IO [r]
 convertRows = convertRowsWith fromRow

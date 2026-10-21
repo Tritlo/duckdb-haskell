@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | V2 log sinks with managed callbacks and copied log entries.
@@ -109,14 +110,14 @@ optionalId getter = alloca \present -> do
 
 -- | Retain the textual severity names of the log-storage interface.
 levelName :: DuckDBV2LogLevel -> Text
-levelName level
-    | level == DuckDBV2LogLevelTrace = "TRACE"
-    | level == DuckDBV2LogLevelDebug = "DEBUG"
-    | level == DuckDBV2LogLevelInfo = "INFO"
-    | level == DuckDBV2LogLevelWarning = "WARNING"
-    | level == DuckDBV2LogLevelError = "ERROR"
-    | level == DuckDBV2LogLevelFatal = "FATAL"
-    | otherwise = Text.pack (show level)
+levelName = \case
+    DuckDBV2LogLevelTrace -> "TRACE"
+    DuckDBV2LogLevelDebug -> "DEBUG"
+    DuckDBV2LogLevelInfo -> "INFO"
+    DuckDBV2LogLevelWarning -> "WARNING"
+    DuckDBV2LogLevelError -> "ERROR"
+    DuckDBV2LogLevelFatal -> "FATAL"
+    level -> Text.pack (show level)
 
 -- | Emit a message from a native callback's borrowed context.
 logMessage :: DuckDBV2ContextHandle -> DuckDBV2LogLevel -> Text -> Text -> IO ()

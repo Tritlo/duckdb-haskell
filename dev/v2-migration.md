@@ -79,6 +79,22 @@ Local checks on 2026-10-20 use Nix GHC 9.14.1 on Linux x86_64 and the matching
   Existing warnings concern the Setup-only `systemlib` flag and `-O2`.
   No Hackage upload ran.
 
+The committed-code audit on 2026-10-21 uses the same native pin and toolchain.
+All 624 functional tests pass: 502 high-level, 97 retained-API, 19 raw V2,
+and six DataFrame tests. The default leak suite also passes.
+
+The audit fixes sparse numeric parameter names, native tuple decoding and
+construction, and cached schemas after statement reset or rebinding. A reused
+statement now preserves nanoseconds after its target column changes from
+`TIMESTAMPTZ` to `TIMESTAMPTZ_NS`. Tuple casts match timestamp metadata by
+position when either side is unnamed. Nested tuples retain independent field
+resolutions. Named STRUCT casts still match fields by name.
+
+Two focused Valgrind runs cover ten core cases and three temporal cases.
+Both report zero errors and zero definite, indirect, or possible lost bytes.
+The native callback state contract now requires one ownership transfer per
+state slot. Store a mutable state cell inside that value when needed.
+
 The update uses native factories and scoped registration. Configuration
 separates startup options from settings that need a live instance. Scalar
 callbacks can resolve types before argument casts and bind after those casts.

@@ -24,6 +24,11 @@
   restriction on mixed Z/M collection members without changing coordinates.
 - Add `Database.DuckDB.Simple.Streaming` for V2 row and Arrow streaming.
   Remove `Database.DuckDB.Simple.Deprecated.Streaming`. Use the V2 module.
+- Decode and bind unnamed TUPLE values through positional `StructValue` fields.
+  Preserve mixed timestamp resolutions in tuple casts and nested tuple values.
+- Refresh statement metadata after reset or rebinding. Reused statements retain
+  nanosecond precision after a timestamp column changes type.
+- Preserve sparse numeric names such as `$3` during parameter execution.
 - Preserve materialized query behavior by draining the native cursor before
   row or Arrow callbacks. Another query can run on the same connection then.
   Explicit streaming retains the native one-live-result restriction.

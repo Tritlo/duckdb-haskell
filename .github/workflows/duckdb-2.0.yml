@@ -70,6 +70,8 @@ jobs:
         working-directory: duckdb-ffi
         run: shasum -a 256 --check generated.sha256
       - name: Build the matching native library
+        env:
+          DUCKDB_BUILD_SHELL: ${{ matrix.ghc == '9.14.1' && matrix.optimization == '1' && 'ON' || 'OFF' }}
         run: bash dev/preview/build-duckdb.sh "$RUNNER_TEMP/duckdb-preview"
       - name: Configure the supplied native library
         run: |
@@ -98,6 +100,28 @@ jobs:
           cabal test duckdb-simple-dataframe-test -fdataframe-tests --with-compiler=ghc --disable-documentation --enable-optimization=${{ matrix.optimization }} --test-show-details=direct
           cabal haddock all --with-compiler=ghc --enable-optimization=${{ matrix.optimization }}
           cabal sdist all
+      - name: Build and load the Haskell extension
+        if: matrix.ghc == '9.14.1' && matrix.optimization == '1'
+        env:
+          GHC_ENVIRONMENT: '-'
+        run: |
+          project_root="$PWD"
+          extension_build="$RUNNER_TEMP/duckdb-haskell-extension"
+          native="$RUNNER_TEMP/duckdb-preview/native"
+          cd dev/extensions
+          cabal build --project-file=cabal.project --builddir="$extension_build" \
+            --with-compiler=ghc --disable-documentation -j2 \
+            duckdb-haskell-extension-example:flib:haskell_demo
+          library=$(cabal list-bin --project-file=cabal.project --builddir="$extension_build" \
+            --with-compiler=ghc --disable-documentation \
+            duckdb-haskell-extension-example:flib:haskell_demo)
+          cd "$project_root"
+          platform=$("$native/duckdb" -csv -noheader -c 'PRAGMA platform;')
+          source_id=$("$native/duckdb" -csv -noheader -c 'SELECT source_id FROM pragma_version();')
+          extension_file="$RUNNER_TEMP/haskell_demo.duckdb_extension"
+          runghc dev/extensions/Pack.hs "$library" --output "$extension_file" \
+            --platform "$platform" --duckdb-version "$source_id" --extension-version 0.1.0
+          runghc dev/extensions/Smoke.hs --duckdb "$native/duckdb" "$extension_file"
       - name: Check high-level allocation cleanup
         if: matrix.os == 'ubuntu-latest' && matrix.ghc == '9.12.4'
         env:

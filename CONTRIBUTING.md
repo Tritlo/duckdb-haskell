@@ -101,18 +101,18 @@ builds the native library on Linux and macOS from the pinned header commit.
 The optional `quack-tests` suite requires matching local `httpfs` and Quack
 extensions. See the same document for its commands and native limitations.
 
-The bindings target DuckDB 2.0. Automatic downloads remain disabled until
-the final native archive checksums are recorded. After that, set
+The bindings target DuckDB 2.0.0. The automatic installer verifies the final
+native archive checksums. Set
 `--configure-option=--duckdb-install-dir=/absolute/path` to select another
 installation directory. Enable the `systemlib` Cabal flag to use the system
 library. Set `extra-lib-dirs` to an absolute path to select
 a library in another directory. See the `cabal.project` example in the README.
 Nix builds use the library supplied by Nix and do not download it.
 
-CI tests the pinned 2.0 source with all supported compilers on Linux and
+CI tests the pinned 2.0.0 release with all supported compilers on Linux and
 GHC 9.14.1 on macOS. V2 is unstable and requires the native source pin in
 `duckdb-ffi/vendor/duckdb-api.json`. Set
-`DUCKDB_TEST_VERSION` to the exact expected version, such as `2.0.0-dev0`, to detect
+`DUCKDB_TEST_VERSION` to the exact expected version, such as `2.0.0`, to detect
 loader configuration errors. The version string alone does not identify a
 development snapshot. Check its source ID too. Run the full suite after each
 native pin update.

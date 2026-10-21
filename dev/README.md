@@ -10,8 +10,8 @@ checks, client headers, and upstream license.
   authorized Hackage candidates or releases.
 - `build-ghc-matrix.sh` runs local Docker builds. It writes logs to `ci-logs/`.
 - `nix/` contains pinned development, generation, and CI environments.
-- `preview/` builds the pinned development runtime. See its README for the
-  removal condition.
+- `fetch-duckdb.sh` downloads the pinned release library and CLI for local,
+  CI, and Docker validation. It verifies each archive checksum.
 - `diagnostics/` contains a native probe for the deprecated Arrow API. Set
   `DUCKDB_LIB_PATH` to the library under test.
 - `docs/` contains the C API documentation snapshot and its fetch tool. Run the

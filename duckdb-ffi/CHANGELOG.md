@@ -4,8 +4,8 @@
 
 - Target DuckDB 2.0. The package includes both C API generations without a
   preview flag. Use the earlier package release with DuckDB 1.5.
-- Pin both client headers to upstream development commit `d54cbbe3df` on
-  2026-10-20. Refresh factories, configuration handles, explicit registration
+- Pin both client headers to the final DuckDB 2.0.0 tag, commit `d54cbbe3df`.
+  Refresh factories, configuration handles, explicit registration
   targets, callbacks, and scope enums with the current V2 API.
 - Expose all 620 V2 functions. The entire V2 API is currently unstable and
   requires the matching native snapshot. The retained API has 548 functions.
@@ -16,10 +16,9 @@
   and V2 Functions and Types submodules. Use native typedef newtypes, const
   pointers, and generated callback conversions.
 - Check complete function and callback coverage and 1,150 native ABI assertions.
-- Require a matching supplied library until the final native checksums are pinned.
-  Prepare the installer for upstream shared-library tar archives and preserve
-  their symlinks and versioned library files.
-- Install both preview client headers and the DuckDB license. Keep preview
+- Install verified DuckDB 2.0.0 shared-library archives on glibc Linux and macOS.
+  Preserve their symlinks and versioned library files.
+- Install both client headers and the DuckDB license. Keep these
   headers available when the Cabal build directory is outside the source tree.
 - Test v2 aggregate, table, cast, COPY, vector, filesystem, and logging behavior.
 

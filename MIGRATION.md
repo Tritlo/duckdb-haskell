@@ -23,7 +23,7 @@ conversion code to the generated retained API. Its SQL workflow stays the same.
 A repository checkout must generate the ignored build artefacts before it
 builds. CI does this too. Source archives include those artefacts. See the
 [generation command](README.md#generate-the-bindings) and
-[2.0 preparation notes](docs/duckdb-2.0.md).
+[2.0 API and runtime notes](docs/duckdb-2.0.md).
 
 ## DuckDB 1.4 to 1.5
 

@@ -81,14 +81,11 @@ nativeVersion = "2.0.0"
 -- | Select an official archive and its release checksum.
 nativeArchive :: IO (String, String, FilePath)
 nativeArchive = case (os, arch) of
-    ("linux", "x86_64") -> unavailable "linux-amd64"
-    ("linux", "aarch64") -> unavailable "linux-arm64"
-    ("darwin", "x86_64") -> unavailable "osx-universal"
-    ("darwin", "aarch64") -> unavailable "osx-universal"
+    ("linux", "x86_64") -> pure ("linux-amd64", "993ad89e7dfca66cd6da994c2cad090c2fc160ddf9f550498a098ab4bb13cfb1", "libduckdb.so")
+    ("linux", "aarch64") -> pure ("linux-arm64", "c60eecf91143ca6bbac55c4f4d40dc22520488b0ac257c86e0fe9a2b451cf2b7", "libduckdb.so")
+    ("darwin", "x86_64") -> pure ("osx-universal", "14cd63180614cfd961f7959146ecd9087527ff20b67311efdc3fa1c29c18204d", "libduckdb.dylib")
+    ("darwin", "aarch64") -> pure ("osx-universal", "14cd63180614cfd961f7959146ecd9087527ff20b67311efdc3fa1c29c18204d", "libduckdb.dylib")
     _ -> fail "Automatic DuckDB installation supports glibc Linux and macOS. Supply DuckDB 2.0 with -fsystemlib and --extra-lib-dirs."
-  where
-    unavailable platform =
-        fail ("Verified DuckDB " <> nativeVersion <> " archive checksum for " <> platform <> " has not been recorded. Supply a matching DuckDB 2.0 library with -fsystemlib and --extra-lib-dirs=/absolute/path. See docs/duckdb-2.0.md in the repository.")
 
 -- | Download into a temporary directory. Publish the verified library atomically.
 installNativeLibrary :: ConfigFlags -> IO FilePath

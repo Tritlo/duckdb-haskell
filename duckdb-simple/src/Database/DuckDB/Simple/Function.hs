@@ -34,13 +34,10 @@ import Database.DuckDB.Simple.Function.Internal (
  )
 import Database.DuckDB.Simple.Internal (
     Connection,
-    Statement (..),
-    closeStatementState,
-    createStatementFromParsed,
+    executeParsedResult,
     runInterruptibleQuery,
     withConnectionHandle,
     withParsedStatements,
-    withResult,
  )
 import Database.DuckDB.Simple.Native
 import Foreign.C.ConstPtr (ConstPtr (..))
@@ -78,9 +75,9 @@ deleteFunction conn name = do
     withParsedStatements conn dropQuery $ \parsed ->
         forM_ parsed $ \statement ->
             bracket
-                (createStatementFromParsed conn dropQuery statement)
-                (closeStatementState . statementState)
-                \prepared -> withResult prepared $ \result -> do
+                (executeParsedResult conn dropQuery statement)
+                (destroy c_duckdb_v2_result_destroy)
+                \result -> do
                     _ <- runInterruptibleQuery conn (output (c_duckdb_v2_result_drain result))
                     pure ()
 

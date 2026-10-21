@@ -3,7 +3,7 @@
 ## DuckDB 2.0 generated bindings
 
 `duckdb-ffi` 2.0 uses `hs-bindgen` for both C APIs in the pinned native 2.0
-headers. The native runtime must be DuckDB 2.0. Earlier package releases
+headers. Use the matching DuckDB 2.0.0 runtime. Earlier package releases
 remain available for DuckDB 1.5.
 
 The raw API changes. Import `Database.DuckDB.FFI` or
@@ -15,12 +15,22 @@ fields and `toFunPtr` and `fromFunPtr` for callbacks. The two APIs have separate
 Haskell types, including their Arrow structures. Use qualified imports when
 combining the APIs.
 
-The generator does not manage ownership. Callers must still release native
-resources, retain callbacks for their required lifetime, and contain exceptions
-inside callbacks. `duckdb-simple` 0.4 uses the generated V2 API for connections,
-results, and conversions. Its SQL workflow stays the same. Import
+Raw callers must release native resources, retain callbacks for their required
+lifetime, and catch exceptions inside callbacks. `duckdb-simple` 0.4 uses the
+generated V2 API for connections, results, and conversions. Import
 `Database.DuckDB.Simple.Streaming` for native row and Arrow streaming.
 The former `Database.DuckDB.Simple.Deprecated.Streaming` module is removed.
+
+SQL TUPLE values decode as `TupleValue`, with positional values and types in
+`tupleValueFields` and `tupleValueTypes`. Use `StructValue` for named STRUCT
+fields. Update exhaustive matches for `FieldTuple`, `LogicalTypeTuple`, and
+`LogicalTypeCollatedVarchar`. Empty tuples retain their TUPLE type, and
+composite VARCHAR fields retain their collation when rebound.
+
+`query_` and `execute_` parse all statements before execution. A syntax error
+prevents earlier statements in that input from running. The retained native
+query API can execute those statements before reporting the syntax error.
+Use `withTransaction` when earlier effects must roll back on execution errors.
 
 VARIANT results decode through SQL type metadata and native casts. Object keys
 use DuckDB's native lexicographic order. Arrays retain element order. Configured
@@ -28,6 +38,7 @@ custom GEOMETRY CRS names use cached SQL-derived types. These operations use a
 helper connection and preserve the caller's active stream. Set custom names
 through `connectionGeometryCRS`. Direct low-level type construction still
 requires a CRS recognized by DuckDB or a complete CRS definition.
+V2 factories construct VARIANT logical types directly.
 
 A repository checkout must generate the ignored build artefacts before it
 builds. CI does this too. Source archives include those artefacts. See the

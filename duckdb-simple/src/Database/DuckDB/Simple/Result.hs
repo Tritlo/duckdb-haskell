@@ -101,7 +101,7 @@ startResultStream :: Bool -> ResultMode -> Connection -> DuckDBV2ResultHandle ->
 startResultStream includeChangedRows mode conn result = mask_ do
     owned <- newIORef []
     let release = (readIORef owned >>= mapM_ destroyDataChunk) `finally` destroy c_duckdb_v2_result_destroy result
-        fetch = fetchResultChunk mode conn result
+        fetch = fetchResultChunk conn result
         gather = do
             chunk <- fetch
             when (chunk /= nullHandle) do
@@ -125,17 +125,17 @@ startResultStream includeChangedRows mode conn result = mask_ do
                         gather
                         chunks <- reverse <$> readIORef owned
                         destroy c_duckdb_v2_result_destroy result
-                        pure (Just (StatementStream nullHandle columns chunks Nothing mode))
+                        pure (Just (StatementStream nullHandle columns chunks Nothing))
                     StreamingResult -> do
                         chunks <- reverse <$> readIORef owned
-                        pure (Just (StatementStream result columns chunks Nothing mode))
+                        pure (Just (StatementStream result columns chunks Nothing))
 
 fetchChunk :: IORef StatementStreamState -> Connection -> Query -> StatementStream -> IO StatementStream
 fetchChunk ref conn queryText stream = withQueryError queryText $ mask \restore -> do
     (chunk, remaining) <- case statementStreamPendingChunks stream of
         next : rest -> pure (next, rest)
         [] | statementStreamResult stream == nullHandle -> pure (nullHandle, [])
-        [] -> (,[]) <$> fetchResultChunk (statementStreamMode stream) conn (statementStreamResult stream)
+        [] -> (,[]) <$> fetchResultChunk conn (statementStreamResult stream)
     let nextStream = stream{statementStreamPendingChunks = remaining}
     if chunk == nullHandle
         then pure nextStream
@@ -193,10 +193,9 @@ collectResultColumns :: DuckDBV2ResultHandle -> IO [StatementStreamColumn]
 collectResultColumns result = bracket (output (c_duckdb_v2_result_get_schema result)) (destroy c_duckdb_v2_schema_destroy) \schema -> do
     count <- fromIntegral <$> output (c_duckdb_v2_schema_get_count schema)
     forM [0 .. count - 1] \idx -> alloca \name -> do
-        dtype <- output (c_duckdb_v2_schema_get_field schema (fromIntegral idx) name)
+        _ <- output (c_duckdb_v2_schema_get_field schema (fromIntegral idx) name)
         columnName <- peek name >>= readIdentifier
-        typeId <- output (c_duckdb_v2_logical_type_get_id dtype)
-        pure (StatementStreamColumn idx columnName typeId)
+        pure (StatementStreamColumn idx columnName)
 
 buildMaterializedRow :: [StatementStreamColumn] -> [Int -> IO FieldValue] -> Int -> IO [Field]
 buildMaterializedRow columns readers rowIdx =

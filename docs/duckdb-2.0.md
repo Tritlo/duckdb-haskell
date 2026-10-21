@@ -2,7 +2,7 @@
 
 DuckDB [2.0.0](https://github.com/duckdb/duckdb/releases/tag/v2.0.0) was released
 on 2026-10-21. Its final tag is the same commit as the audited October 20
-snapshot. The final tag requires no changes to the generated API or ABI checks.
+snapshot, so the generated API and ABI checks match the final release.
 
 ## Pinned API
 
@@ -10,17 +10,17 @@ The client headers in `duckdb-ffi/cbits/duckdb.h` and `duckdb_v2.h` come from
 [d54cbbe3df17e8e5ce68312f483b4155836112aa](https://github.com/duckdb/duckdb/commit/d54cbbe3df17e8e5ce68312f483b4155836112aa)
 at the upstream `v2.0.0` tag. The source commit is dated 2026-10-20.
 `duckdb-ffi/cbits/duckdb-LICENSE` contains the upstream license.
-These files are plain, unmodified upstream files. The per-file source paths and
-SHA256 digests are in `duckdb-ffi/vendor/duckdb-api.json`. That manifest also
-pins the native source archive used by Nix.
+The headers and license are unmodified upstream files. Their source paths and
+SHA256 digests are in `duckdb-ffi/vendor/duckdb-api.json`, which also pins the
+native source archive used by Nix.
 
 Builds use the checked-in headers directly. Cabal installs both client headers,
 `duckdb_arrow.h`, and `duckdb-LICENSE` with the library. Package users do not
 need header extraction tools, Python, LLVM, or hs-bindgen. The header audit and
-runtime download helper are maintainer tools. Neither is part of the Hackage
-packages. These headers describe the final 2.0.0 release.
+runtime download helper are maintainer tools outside the Hackage packages.
 
-The v1 header declares 548 functions and 21 callback typedefs. Compared with the
+The v1 header declares 548 functions, 21 callback typedefs, and nine inline
+callback fields. Compared with the
 original 1.5.6 header, it adds `duckdb_create_timestamp_tz_ns`,
 `duckdb_get_timestamp_tz_ns`, type tag `DUCKDB_TYPE_TIMESTAMP_TZ_NS = 42`, and
 error tags `DUCKDB_ERROR_DATA_CORRUPTION = 43` and
@@ -36,8 +36,10 @@ build flag. Earlier package releases remain available for DuckDB 1.5.
 handles separate. Their result, connection, error, and ownership contracts differ.
 The raw API exposes native primitives. `duckdb-simple` uses V2 handles for its
 connection, statement, result, conversion, callback, and Arrow backends. The
-query and execute interfaces retain their existing behavior. New shared
-environments and instances allow explicit catalog and configuration sharing.
+query and execute entrypoints keep their public signatures. Shared environments
+and instances let connections share catalogs and configuration. Ad-hoc helpers
+parse all input before execution; a syntax error prevents earlier statements
+in the input from running.
 
 Both client APIs are generated with `hs-bindgen` 1.0. The package exposes
 `Database.DuckDB.FFI` and `Database.DuckDB.FFI.V2`. The former replaces the old
@@ -48,8 +50,8 @@ keep handles and enums from the two APIs separate. File flag 4 means exclusive
 creation in v1 and truncation in v2.
 
 The generator supplies layouts, typed callbacks, const pointers, and adapters
-for structures passed by value. It generates all 620 V2 functions. The entire
-V2 surface is currently unstable and must match the native snapshot. The
+for structures passed by value. All 620 V2 functions are unstable and must
+match the native snapshot. The
 generated C source enables `DUCKDB_V2_API_ALLOW_UNSTABLE` explicitly. Ownership,
 callback lifetimes, exception handling, Arrow release operations, and value
 conversion remain in the calling code. Cabal builds the generated modules.
@@ -98,7 +100,7 @@ The final tag, published SDK, and supported shared-library archives contain
 the same client headers as the audited snapshot. Fresh generation matches
 all four stored checksums. The final SDK passes all 1,150 ABI assertions.
 
-On Linux with Nix GHC 9.14.1, the official 2.0.0 binary passes all 607
+On Linux with Nix GHC 9.14.1, the official 2.0.0 binary passes all 609
 retained-backend functional checks and the default leak suite. The installer
 checks pass for cold download, warm cache, wrong digests, incomplete caches,
 and concurrent publication. The three supported archive digests and their
@@ -218,12 +220,12 @@ APIs with another header directory. It compares function types without parameter
 names and complete typedefs, including enumerations and structure definitions.
 Run compilation, ABI checks, and behavior tests in addition to the coverage checks.
 
-Refresh only after selecting an upstream commit, release branch, or release tag.
-Use `v2.0-cyanoptera` for 2.0 preparation. Generate new output and checksums with
-the pinned Nix toolchain. Review the checksum change.
+Select an upstream commit or release tag before refreshing. For this release,
+use `v2.0.0`. Generate output with the pinned Nix toolchain and review any
+checksum changes.
 
 ```sh
-uv run dev/bindings/duckdb-api.py --refresh v2.0-cyanoptera
+uv run dev/bindings/duckdb-api.py --refresh v2.0.0
 nix-shell dev/nix/generate.nix --run 'dev/bindings/generate-bindings.sh'
 uv run dev/bindings/duckdb-api.py --check
 uv run dev/bindings/duckdb-api.py --report > /tmp/duckdb-api-final.json
@@ -279,12 +281,12 @@ These commands build local artifacts without uploading or deploying them.
 
 ## Feature coverage
 
-The current client suites pass 624 functional tests and the default leak
+The current client suites pass 633 functional tests and the default leak
 suite against the verified official `v2.0.0` Linux x86_64 library. See
 [V2 migration validation](../dev/v2-migration.md) for the counts and native
-memory checks. The
-Quack, CONNECT, and remote-cancellation observations below use the earlier
-October 7 runtime. They require separate validation with compatible extensions.
+memory checks. The Quack, CONNECT, and remote-cancellation observations below
+use the earlier October 7 runtime. They require separate validation with
+compatible extensions.
 
 The SQL feature list follows the [upstream 2.0 preview](https://duckdb.org/2026/08/17/duckdb-20-highlights).
 The C API list follows the pinned headers and specifications. SQL support depends
@@ -391,11 +393,11 @@ has no direct structural VARIANT accessor. The backend uses batched SQL type
 metadata, key extraction, and native casts to decode scalar and nested payloads
 without losing precision. Decoding supports empty and NUL-containing object
 keys through bound extraction parameters. Object keys follow DuckDB's native
-lexicographic order. Arrays retain
-element order. The decoder does not read the retained API's private layout.
-The same helper connection caches SQL-derived VARIANT and configured GEOMETRY
-types. Set `connectionGeometryCRS` to preserve arbitrary custom CRS names in
-nested parameters. Helper queries do not interrupt the caller's active stream.
+lexicographic order. Arrays retain element order. The decoder uses public V2
+operations. Native factories construct VARIANT types directly. The helper
+connection caches configured GEOMETRY types. Set `connectionGeometryCRS` to
+preserve arbitrary custom CRS names in nested parameters. Helper queries do
+not interrupt the caller's active stream.
 
 ## V2 migration limits
 
@@ -417,7 +419,8 @@ operations are documented in the package README and report controlled errors:
   configured through `connectionGeometryCRS`. Unconfigured unknown names raise
   errors. The binding rejects construction that silently drops CRS metadata.
 - The metadata API cannot perform scoped collation lookup. Other catalog
-  lookups use SQL metadata. Table descriptions use native V2 handles.
+  lookups use SQL metadata and accept a top-level schema identifier. Table
+  descriptions use native V2 handles and cannot address nested schemas.
 
 ## Final release checklist
 

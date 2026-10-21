@@ -21,6 +21,7 @@ import Data.Array (Array, bounds, listArray, (!))
 import Data.Bits (complement, finiteBitSize, shiftL, (.&.), (.|.))
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
+import Data.Char (isDigit)
 import Data.Coerce (Coercible, coerce)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.IntSet as IntSet
@@ -46,7 +47,6 @@ import Foreign.Marshal.Alloc (alloca, allocaBytesAligned)
 import Foreign.Marshal.Utils (copyBytes)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (Storable, peek, peekElemOff, poke, sizeOf)
-import Text.Read (readMaybe)
 
 -- | Raise a codec error before an invalid native operation.
 codecError :: String -> IO a
@@ -56,14 +56,15 @@ codecError message = throwIO (userError ("duckdb-simple: VARIANT: " <> message))
 checked :: Either String a -> IO a
 checked = either codecError pure
 
--- | Reject native versions outside the supported private-format range.
+{- | Accept only DuckDB 2.0.x releases. Development builds can use another
+private VARIANT format.
+-}
 checkVersion :: IO ()
 checkVersion = do
     ConstPtr versionPtr <- c_duckdb_library_version
     version <- peekCString versionPtr
-    let parts = Text.splitOn "." (Text.pack version)
-        supported = case parts of
-            ["v2", "0", p] -> maybe False (>= 0) (readMaybe (Text.unpack (Text.takeWhile (/= '-') p)) :: Maybe Int)
+    let supported = case Text.splitOn "." (Text.pack version) of
+            ["v2", "0", patch] -> not (Text.null patch) && Text.all isDigit patch
             _ -> False
     unless supported (codecError ("unsupported native version " <> version))
 

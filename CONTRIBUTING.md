@@ -89,8 +89,8 @@ Format Cabal files with `cabal-gild`. Keep names consistent with the surrounding
 module.
 
 Build parameter values with the V2 handle of the statement's connection.
-Use the managed type cache for SQL-derived VARIANT and configured GEOMETRY
-types. Run metadata queries on its helper connection so binding and decoding
+Use the managed type cache for configured GEOMETRY types. Run metadata queries
+on its helper connection so binding and decoding
 do not interrupt an active stream. Use public V2 operations and SQL metadata.
 Do not read private payload layouts or convert handles between the two APIs.
 

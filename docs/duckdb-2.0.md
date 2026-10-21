@@ -36,8 +36,10 @@ build flag. Earlier package releases remain available for DuckDB 1.5.
 handles separate. Their result, connection, error, and ownership contracts differ.
 The raw API exposes native primitives. `duckdb-simple` uses V2 handles for its
 connection, statement, result, conversion, callback, and Arrow backends. The
-query and execute interfaces retain their existing behavior. New shared
-environments and instances allow explicit catalog and configuration sharing.
+query and execute entrypoints keep their public signatures. Shared environments
+and instances let connections share catalogs and configuration. Ad-hoc helpers
+parse all input before execution; a syntax error prevents earlier statements
+in the input from running.
 
 Both client APIs are generated with `hs-bindgen` 1.0. The package exposes
 `Database.DuckDB.FFI` and `Database.DuckDB.FFI.V2`. The former replaces the old
@@ -279,12 +281,12 @@ These commands build local artifacts without uploading or deploying them.
 
 ## Feature coverage
 
-The current client suites pass 624 functional tests and the default leak
+The current client suites pass 633 functional tests and the default leak
 suite against the verified official `v2.0.0` Linux x86_64 library. See
 [V2 migration validation](../dev/v2-migration.md) for the counts and native
-memory checks. The
-Quack, CONNECT, and remote-cancellation observations below use the earlier
-October 7 runtime. They require separate validation with compatible extensions.
+memory checks. The Quack, CONNECT, and remote-cancellation observations below
+use the earlier October 7 runtime. They require separate validation with
+compatible extensions.
 
 The SQL feature list follows the [upstream 2.0 preview](https://duckdb.org/2026/08/17/duckdb-20-highlights).
 The C API list follows the pinned headers and specifications. SQL support depends
@@ -390,11 +392,11 @@ has no direct structural VARIANT accessor. The backend uses batched SQL type
 metadata, key extraction, and native casts to decode scalar and nested payloads
 without losing precision. Decoding supports empty and NUL-containing object
 keys through bound extraction parameters. Object keys follow DuckDB's native
-lexicographic order. Arrays retain
-element order. The decoder does not read the retained API's private layout.
-The same helper connection caches SQL-derived VARIANT and configured GEOMETRY
-types. Set `connectionGeometryCRS` to preserve arbitrary custom CRS names in
-nested parameters. Helper queries do not interrupt the caller's active stream.
+lexicographic order. Arrays retain element order. The decoder uses public V2
+operations. Native factories construct VARIANT types directly. The helper
+connection caches configured GEOMETRY types. Set `connectionGeometryCRS` to
+preserve arbitrary custom CRS names in nested parameters. Helper queries do
+not interrupt the caller's active stream.
 
 ## V2 migration limits
 
@@ -416,7 +418,8 @@ operations are documented in the package README and report controlled errors:
   configured through `connectionGeometryCRS`. Unconfigured unknown names raise
   errors. The binding rejects construction that silently drops CRS metadata.
 - The metadata API cannot perform scoped collation lookup. Other catalog
-  lookups use SQL metadata. Table descriptions use native V2 handles.
+  lookups use SQL metadata and accept a top-level schema identifier. Table
+  descriptions use native V2 handles and cannot address nested schemas.
 
 ## Final release checklist
 

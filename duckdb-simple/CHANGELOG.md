@@ -22,8 +22,16 @@
   restriction on mixed Z/M collection members without changing coordinates.
 - Add `Database.DuckDB.Simple.Streaming` for V2 row and Arrow streaming.
   Remove `Database.DuckDB.Simple.Deprecated.Streaming`. Use the V2 module.
-- Decode and bind unnamed TUPLE values through positional `StructValue` fields.
-  Preserve mixed timestamp resolutions in tuple casts and nested tuple values.
+- Decode and bind TUPLE values with `TupleValue`, `FieldTuple`, and
+  `LogicalTypeTuple`. Preserve empty tuples separately from empty STRUCTs,
+  and retain mixed timestamp resolutions in tuple casts and nested values.
+- Preserve composite VARCHAR collations with `LogicalTypeCollatedVarchar`.
+- Keep concurrently created connections and instances in their parent's child
+  registry so parent close releases every child after workers finish.
+- Return native changed-row counts from eager query helpers. Report refused
+  scalar-function deletion as `SQLError`.
+- Resolve configuration names and aliases through the native getter. Use
+  DuckDB's ASCII identifier rules for catalog names and top-level schemas.
 - Refresh statement metadata after reset or rebinding. Reused statements retain
   nanosecond precision after a timestamp column changes type.
 - Preserve sparse numeric names such as `$3` during parameter execution.
@@ -37,7 +45,8 @@
 - Bind and decode VARIANT values through public V2 operations. Use batched SQL
   type metadata and native casts to preserve scalar types, precision, object
   order, and nested values. Object keys use DuckDB's native lexicographic order.
-  Do not read the private native payload layout.
+  Construct VARIANT types directly through the native factory. Alias internal
+  projections to avoid recursive native column-name generation for deep values.
 - Report unavailable custom file-system registration, scoped collation lookup,
   and zero-length fixed ARRAY types explicitly. Empty LIST values still work.
 - Export Arrow release helpers from `Database.DuckDB.Simple.Arrow`.

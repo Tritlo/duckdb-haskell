@@ -17,7 +17,7 @@ import Database.DuckDB.Simple.FromField (FieldValue)
 import Database.DuckDB.Simple.Internal (DuckDBV2ResultHandle (..), Statement (statementStream), StatementStream (statementStreamResult), StatementStreamState (..), checked, destroy, executePreparedResult, nullHandle, output, withConnectionFactory, withConnectionHandle)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (withArray)
-import System.Directory (getTemporaryDirectory, removeFile)
+import System.Directory (canonicalizePath, getTemporaryDirectory, removeFile)
 import System.IO (hClose, openBinaryTempFile)
 import System.Mem (performMajorGC)
 import System.Timeout (timeout)
@@ -213,9 +213,10 @@ coreRegressionTests =
                 withConnectionOn instance_ $ \first -> withConnectionOn instance_ $ \second -> do
                     void (execute_ first "CREATE TABLE shared_probe(x BIGINT); INSERT INTO shared_probe VALUES (42)")
                     query_ second "SELECT x FROM shared_probe" >>= (@?= [Only (42 :: Int64)])
-        , testCase "startup configuration sets the whitelist before disabling external access" $
+        , testCase "startup configuration sets the whitelist before disabling external access" $ do
+            path <- canonicalizePath "/tmp/duckdb-whitelist-probe"
             withConnectionWithConfig ":memory:" [("enable_external_access", "false"), ("allowed_paths", "['/tmp/duckdb-whitelist-probe']")] $ \conn ->
-                query_ conn "SELECT current_setting('enable_external_access'), list_contains(current_setting('allowed_paths'), '/tmp/duckdb-whitelist-probe')" >>= (@?= [(False, True)])
+                query conn "SELECT current_setting('enable_external_access'), list_contains(current_setting('allowed_paths'), ?)" (Only path) >>= (@?= [(False, True)])
         , testCase "environment close releases live cursors before their parents" $ do
             environment <- createEnvironment
             instance_ <- createInstance environment []

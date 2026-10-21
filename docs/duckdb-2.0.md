@@ -132,6 +132,19 @@ ID `d54cbbe3df`.
   versioned symlink targets, warm-cache reuse, and rejection of wrong checksums
   or missing targets before publication.
 
+The committed-code audit on 2026-10-21 also checks the retained backend.
+Its full functional and default leak suites pass against the matching native
+library. The geometry fixtures now require the native rejection of mixed Z/M
+collection members. The standalone WKB codec still preserves those layouts.
+Client SQL tests use explicit `SELECT`; SELECT-less expressions use shell
+parsing only.
+
+The project-owned Arrow header now uses the standard Arrow interface guards.
+Installed consumers can include it with `duckdb_v2.h` in either order.
+Fresh regeneration, checksum verification, API coverage, installer fixtures,
+and static and dynamic archive consumers pass. Package consumers do not need
+LLVM or hs-bindgen.
+
 Final release archives, other compilers, and macOS runtime checks remain
 unverified for this pin.
 

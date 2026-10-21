@@ -9,6 +9,7 @@
 Callback info and context handles are borrowed and must not escape a callback.
 The registration user-data slot is reserved for callback cleanup. Use closures
 for registration data and 'setCallbackState' for bind, init, and batch state.
+Transfer state to each slot once. Use an @IORef@ to change existing state.
 Batch preparation may run concurrently. Flushes for one output file are serial.
 Destroy a collection acquired with @copy_to_batch_take_input@ after use.
 Multi-file functions use the callbacks of a registered single-file table function.

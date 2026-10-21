@@ -58,8 +58,8 @@ nextRowWith mode parser stmt@Statement{statementStream} =
 
 -- | Release an active cursor and allow the statement to execute again.
 resetStatementStream :: Statement -> IO ()
-resetStatementStream Statement{statementStream} =
-    cleanupStatementStreamRef statementStream
+resetStatementStream stmt@Statement{statementStream} =
+    cleanupStatementStreamRef statementStream `finally` clearStatementSchemas stmt
 
 consumeStream :: IORef StatementStreamState -> RowParser r -> Statement -> StatementStream -> IO (Maybe r)
 consumeStream streamRef parser stmt stream = mask \restore -> do

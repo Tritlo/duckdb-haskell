@@ -8,7 +8,7 @@
 module TimeTests (timeTests) where
 
 import Control.Exception (IOException, try)
-import Control.Monad (forM_)
+import Control.Monad (forM_, void)
 import Data.Array (Array, listArray)
 import Data.Int (Int64)
 import qualified Data.Map.Strict as Map
@@ -125,6 +125,17 @@ nanosecondTimeTests =
         let precise = posixSecondsToUTCTime 0.123456789
             ordinary = posixSecondsToUTCTime 0.123456
         (query conn "SELECT typeof(?), ?" (precise, precise) :: IO [(String, UTCTime)]) >>= (@?= [("TIMESTAMP WITH TIME ZONE", ordinary)])
+    , testCase "reused statements refresh nanosecond UTC parameter metadata after ALTER" $ withConnection ":memory:" $ \conn -> do
+        void $ execute_ conn "CREATE TABLE utc_rebind(value TIMESTAMPTZ)"
+        let coarse = posixSecondsToUTCTime 0.123456
+            precise = posixSecondsToUTCTime 0.123456789
+        withStatement conn "INSERT INTO utc_rebind VALUES (?)" $ \stmt -> do
+            bind stmt [toField coarse]
+            void $ executeStatement stmt
+            void $ execute_ conn "ALTER TABLE utc_rebind ALTER COLUMN value TYPE TIMESTAMPTZ_NS"
+            bind stmt [toField precise]
+            void $ executeStatement stmt
+        (query_ conn "SELECT epoch_ns(value) FROM utc_rebind ORDER BY value" :: IO [Only Int64]) >>= (@?= [Only 123456000, Only 123456789])
     , testCase "nanosecond UTC arrays retain NULLs and reject empty arrays" $ withConnection ":memory:" $ \conn -> do
         let precise = posixSecondsToUTCTime 0.123456789
             negative = posixSecondsToUTCTime (-0.000000001)
@@ -150,6 +161,29 @@ nanosecondTimeTests =
         (query conn "SELECT union_extract(?::UNION(value TIMESTAMPTZ_NS), 'value')" (Only union) :: IO [Only UTCTimestamp]) >>= (@?= [Only precise])
         assertIOException (query conn sql (Only struct{structValueFields = listArray (0, 0) [StructField "wrong" (FieldTimestampTZ precise)]}) :: IO [Only FieldValue])
         assertIOException (query conn "SELECT ?::UNION(value TIMESTAMPTZ_NS)" (Only union{unionValueLabel = "wrong"}) :: IO [Only FieldValue])
+    , testCase "nanosecond tuple targets match unnamed fields by position" $ withConnection ":memory:" $ \conn -> do
+        let precise = Finite (posixSecondsToUTCTime 0.123456789)
+            utcType = LogicalTypeScalar DuckDBV2LogicalTypeIdTimestampTz
+            structure names = StructValue (listArray (3, 5) (zipWith StructField names [FieldTimestampTZ precise, FieldTimestampTZ precise, FieldNull])) (listArray (7, 9) [StructField name utcType | name <- names]) (Map.fromList (zip names [0 ..]))
+            tuple = structure (replicate 3 "")
+            named = structure ["first", "second", "optional"]
+            sql = "SELECT epoch_ns(value[1]), epoch_ns(value[2]), value[3] IS NULL FROM (SELECT ?::TUPLE(TIMESTAMPTZ,TIMESTAMPTZ_NS,TIMESTAMPTZ_NS) AS value)"
+        forM_ [tuple, named] $ \parameter ->
+            (query conn sql (Only parameter) :: IO [(Int64, Int64, Bool)]) >>= (@?= [(123456000, 123456789, True)])
+        (query conn "SELECT epoch_ns(value.first), epoch_ns(value.second), value.optional IS NULL FROM (SELECT ?::STRUCT(first TIMESTAMPTZ,second TIMESTAMPTZ_NS,optional TIMESTAMPTZ_NS) AS value)" (Only tuple) :: IO [(Int64, Int64, Bool)]) >>= (@?= [(123456000, 123456789, True)])
+        result <- try (query conn "SELECT ?::TUPLE(TIMESTAMPTZ,TIMESTAMPTZ_NS)" (Only tuple) :: IO [Only FieldValue])
+        case result of
+            Left (_ :: SQLError) -> pure ()
+            Right _ -> assertFailure "expected tuple arity mismatch"
+    , testCase "nested tuple lists retain independent temporal field metadata" $ withConnection ":memory:" $ \conn -> do
+        let precise = Finite (posixSecondsToUTCTime 0.123456789)
+            utcType = LogicalTypeScalar DuckDBV2LogicalTypeIdTimestampTz
+            innerTypes = listArray (4, 4) [StructField "value" utcType]
+            inner = StructValue (listArray (2, 2) [StructField "value" (FieldTimestampTZ precise)]) innerTypes (Map.singleton "value" 0)
+            tuple = StructValue (listArray (3, 4) (replicate 2 (StructField "" (FieldStruct inner)))) (listArray (6, 7) (replicate 2 (StructField "" (LogicalTypeStruct innerTypes)))) (Map.singleton "" 1)
+            container = StructValue (listArray (1, 1) [StructField "items" (FieldList [FieldStruct tuple])]) (listArray (5, 5) [StructField "items" (LogicalTypeList (LogicalTypeStruct (structValueTypes tuple)))]) (Map.singleton "items" 0)
+            sql = "SELECT epoch_ns((value.items[1][1]).value), epoch_ns((value.items[1][2]).value) FROM (SELECT ?::STRUCT(items TUPLE(STRUCT(value TIMESTAMPTZ),STRUCT(value TIMESTAMPTZ_NS))[]) AS value)"
+        (query conn sql (Only container) :: IO [(Int64, Int64)]) >>= (@?= [(123456000, 123456789)])
     , testCase "nanosecond UTC targets reject finite overflow and sentinel collisions" $ withConnection ":memory:" $ \conn -> do
         forM_ [toInteger (minBound :: Int64) - 1, negate (toInteger (maxBound :: Int64)), toInteger (maxBound :: Int64), toInteger (maxBound :: Int64) + 1] $ \nanos -> do
             let instant = posixSecondsToUTCTime (fromRational (nanos % 1000000000))

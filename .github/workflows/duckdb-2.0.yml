@@ -196,6 +196,10 @@ jobs:
             test -s "$include_dir/$file" || { echo "Missing installed file: $include_dir/$file" >&2; exit 1; }
             cmp "$consumer/source/cbits/$file" "$include_dir/$file"
           done
+          printf '#include "duckdb_arrow.h"\n#include "duckdb_v2.h"\n' |
+            cc -std=c11 -Wall -Werror -fsyntax-only -I "$include_dir" -x c -
+          printf '#include "duckdb_v2.h"\n#include "duckdb_arrow.h"\n' |
+            cc -std=c11 -Wall -Werror -fsyntax-only -I "$include_dir" -x c -
           for way in -static -dynamic; do
             ghc "$way" -fforce-recomp -package-env "$consumer/environment" "$consumer/Main.hs" -o "$consumer/check"
             "$consumer/check" > "$consumer/versions"

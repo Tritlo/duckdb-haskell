@@ -56,7 +56,9 @@ withCallbackResourcesFinally finalizer acquire attach action = mask \restore -> 
         `onException` (freeStablePtr stable >> cleanup)
     restore (action resources)
 
--- | Transfer one state value to a DuckDB callback state slot.
+{- | Transfer one state value to a DuckDB callback state slot.
+Use each slot once. Native init and batch setters do not release replaced values.
+-}
 transferCallbackState :: (Ptr Void -> DuckDBV2OpaqueDestroyFn -> IO ()) -> a -> IO ()
 transferCallbackState attach state = mask_ do
     stable <- newStablePtr state

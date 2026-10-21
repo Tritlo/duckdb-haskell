@@ -58,6 +58,15 @@ coreRegressionTests =
                     void $ execute_ conn "CREATE TABLE rebind_probe(x BIGINT)"
                     void $ execute_ conn "INSERT INTO rebind_probe VALUES (5000000000)"
                     nextRow stmt >>= (@?= Just (Only (5000000000 :: Int64)))
+        , testCase "reset metadata follows an altered result schema" $
+            withConnection ":memory:" $ \conn -> do
+                void $ execute_ conn "CREATE TABLE metadata_rebind(x BIGINT)"
+                withStatement conn "SELECT * FROM metadata_rebind" $ \stmt -> do
+                    columnCount stmt >>= (@?= 1)
+                    void $ execute_ conn "ALTER TABLE metadata_rebind ADD COLUMN y VARCHAR"
+                    clearStatementBindings stmt
+                    columnCount stmt >>= (@?= 2)
+                    columnName stmt 1 >>= (@?= "y")
         , testCase "EOF remains exhausted" $
             withConnection ":memory:" $ \conn ->
                 withStatement conn "SELECT 42" $ \stmt -> do
@@ -135,6 +144,12 @@ coreRegressionTests =
             withConnection ":memory:" $ \conn ->
                 (queryNamed conn "SELECT $Straße::BIGINT, $STRASSE::BIGINT" ["Straße" := (1 :: Int64), "STRASSE" := (2 :: Int64)] :: IO [(Int64, Int64)])
                     >>= (@?= [(1, 2)])
+        , testCase "numeric named bindings retain sparse and reordered parameter names" $
+            withConnection ":memory:" $ \conn -> do
+                (queryNamed conn "SELECT $3::BIGINT" ["3" := (33 :: Int64)] :: IO [Only Int64]) >>= (@?= [Only 33])
+                (queryNamed conn "SELECT $3::BIGINT, $1::BIGINT, $3::BIGINT" ["1" := (11 :: Int64), "3" := (33 :: Int64)] :: IO [(Int64, Int64, Int64)])
+                    >>= (@?= [(33, 11, 33)])
+                (query conn "SELECT ?::BIGINT, ?::BIGINT" ((1 :: Int64), (2 :: Int64)) :: IO [(Int64, Int64)]) >>= (@?= [(1, 2)])
         , testCase "transaction preserves the original exception if rollback fails" $
             withConnection ":memory:" $ \conn -> do
                 result <- try $ withTransaction conn $ do

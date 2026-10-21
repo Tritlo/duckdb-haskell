@@ -34,6 +34,7 @@ module Database.DuckDB.Simple.Internal (
     createStatementFromParsedWithCollections,
     withParsedStatements,
     statementSchemas,
+    clearStatementSchemas,
     preparedParameterType,
     storeBoundValue,
     clearBoundValues,
@@ -329,6 +330,13 @@ releaseSchemas ref =
     atomicModifyIORef' ref (Nothing,) >>= mapM_ \(result, parameters) ->
         destroy c_duckdb_v2_schema_destroy result `finally` destroy c_duckdb_v2_schema_destroy parameters
 
+-- | Release cached metadata before binding or executing the statement again.
+clearStatementSchemas :: Statement -> IO ()
+clearStatementSchemas Statement{statementState} = mask_ do
+    readIORef statementState >>= \case
+        StatementClosed -> pure ()
+        StatementOpen{statementSchemaCache} -> releaseSchemas statementSchemaCache
+
 -- | Parse SQL and borrow the resulting statements for one action.
 withParsedStatements :: Connection -> Query -> ([DuckDBV2SqlStatementHandle] -> IO a) -> IO a
 withParsedStatements conn query action = withQueryError query $ withConnectionHandle conn \raw ->
@@ -482,11 +490,10 @@ withBoundValues stmt action = do
     bindings <- IntMap.toAscList <$> readIORef (statementBindings stmt)
     let names = map (\(idx, _) -> statementParameterNames stmt !! (idx - 1)) bindings
         values = map snd bindings
-        positional = all (Text.all (\c -> c >= '0' && c <= '9')) names
     withMany withIdentifier names \namePtrs -> do
         nativeNames <- mapM (\(ConstPtr ptr) -> peek ptr) namePtrs
         withArray nativeNames \namesPtr -> withArray values \valuesPtr ->
-            action (ConstPtr (if positional then nullPtr else namesPtr)) (ConstPtr valuesPtr) (fromIntegral (length bindings))
+            action (ConstPtr namesPtr) (ConstPtr valuesPtr) (fromIntegral (length bindings))
 
 -- | Execute a prepared Arrow result and register it for statement cleanup.
 executePreparedArrowResult :: Statement -> IO DuckDBV2ArrowResultHandle
@@ -562,7 +569,9 @@ storeBoundValue stmt index value = withStatementHandle stmt \_ -> mask_ do
 clearBoundValues :: IORef (IntMap.IntMap DuckDBV2ValueHandle) -> IO ()
 clearBoundValues ref = atomicModifyIORef' ref (IntMap.empty,) >>= mapM_ destroyValue
 
--- | Bind SQL metadata and retain its output and parameter schemas.
+{- | Bind SQL metadata and borrow the cached output and parameter schemas.
+The handles remain valid until the statement resets, rebinds, or closes.
+-}
 statementSchemas :: Statement -> IO (DuckDBV2SchemaHandle, DuckDBV2SchemaHandle)
 statementSchemas stmt = withStatementHandle stmt \_ -> mask_ do
     state <- readIORef (statementState stmt)

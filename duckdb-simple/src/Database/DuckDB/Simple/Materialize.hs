@@ -100,6 +100,7 @@ prepareValueReader variantReader dtype vector dataPtr validity = case dtype of
     DuckDBV2LogicalTypeIdList -> whenValid FieldList <$> prepareListDecoder variantReader vector dataPtr
     DuckDBV2LogicalTypeIdMap -> whenValid FieldMap <$> prepareMapDecoder variantReader vector dataPtr
     DuckDBV2LogicalTypeIdStruct -> whenValid FieldStruct <$> prepareStructDecoder variantReader vector
+    DuckDBV2LogicalTypeIdTuple -> whenValid FieldStruct <$> prepareStructDecoder variantReader vector
     DuckDBV2LogicalTypeIdUnion -> whenValid FieldUnion <$> prepareUnionDecoder variantReader vector
     _ -> pure (materializeElement dtype vector dataPtr validity)
   where

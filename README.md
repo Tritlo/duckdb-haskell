@@ -2,7 +2,7 @@
 
 `duckdb-ffi` 2.0 and `duckdb-simple` 0.4 target DuckDB 2.0.
 See [the API snapshot, feature coverage, build commands, and release checklist](docs/duckdb-2.0.md).
-The package version selects the supported native API. No preview flag is required.
+The package version selects the native API; builds need no preview flag.
 Use the earlier package releases with DuckDB 1.5.
 
 ## duckdb-ffi
@@ -32,14 +32,14 @@ Run this command before building a repository checkout:
 nix-shell dev/nix/generate.nix --run 'dev/bindings/generate-bindings.sh --check'
 ```
 
-The command checks the generated output against `duckdb-ffi/generated.sha256`.
-The Haskell modules and C ABI assertions stay in the ignored
-`duckdb-ffi/generated/` directory. CI generates the same artefacts before its
-builds. Git contains the generator, pinned headers, and checksums. Source
-archives contain the generated sources, so package users need only
-`hs-bindgen-runtime` and a matching native library.
-`dev/release.sh` generates and verifies both APIs before it builds and
-uploads the Hackage archives. Package users do not need LLVM or hs-bindgen.
+The command checks the output against `duckdb-ffi/generated.sha256` and writes
+the Haskell modules and C ABI assertions to the ignored `duckdb-ffi/generated/`
+directory. CI generates the same artefacts before building. Git tracks the
+generator, pinned headers, and checksums.
+
+`dev/release.sh` generates and verifies both APIs, then builds and uploads the
+Hackage archives. Those archives include the generated sources. Package users
+need `hs-bindgen-runtime` and a matching native library, but no LLVM or hs-bindgen.
 See [dev/README.md](dev/README.md) for the maintainer tools.
 
 For a local build with the pinned native release:
@@ -96,10 +96,10 @@ When building this repository, you can also pass `-fsystemlib` and
 `--extra-lib-dirs=/absolute/path/to/duckdb` on the command line.
 Supplying `extra-lib-dirs` also skips the download without the flag.
 
-The supplied library must be DuckDB 2.0.0 and match the bundled headers. In Nix builds and
-shells, Setup skips the download and leaves library discovery to Cabal and
-the Nix build environment. Cross builds, musl Linux, and other platforms must
-supply the target library explicitly.
+The supplied library must be DuckDB 2.0.0 and match the bundled headers.
+In Nix builds and shells, Setup uses Cabal and Nix to find the library and
+skips the download. Cross builds, musl Linux, and other platforms must supply
+the target library explicitly.
 
 For raw API changes and earlier upgrade notes, see
 [MIGRATION.md](MIGRATION.md).

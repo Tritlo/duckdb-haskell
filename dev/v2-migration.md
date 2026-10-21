@@ -90,7 +90,25 @@ and six DataFrame tests. The default leak suite also passes.
 The final-release check on 2026-10-21 repeats all 624 functional tests and the
 default leak suite against the verified official Linux x86_64 library. The
 runtime reports `v2.0.0`. The final headers match the audited inputs, and all
-four generated-file checksums remain unchanged. No API adaptation is needed.
+four generated-file checksums remain unchanged. The release requires no header
+or native pin adaptation beyond the release metadata.
+
+The post-release review fixes concurrent child registration, eager changed-row
+results, option aliases and case matching, catalog identifier matching, and
+refused scalar-function deletion. TUPLE values now use `TupleValue`,
+`FieldTuple`, and `LogicalTypeTuple`. They preserve empty tuples independently
+of empty STRUCT values. `LogicalTypeCollatedVarchar` retains comparison
+semantics in composite values. Native factories construct VARIANT types
+directly. Internal VARIANT queries use explicit projection aliases to avoid
+recursive native column-name generation for deep values.
+
+All 633 functional tests pass after this review: 511 high-level, 97 retained
+API, 19 raw V2, and six DataFrame tests. The default leak suite passes. Six
+focused Valgrind cases cover concurrent parent cleanup, tuple and collation
+round trips, and deep VARIANT decoding. They report no memory errors and no
+definite or indirect lost bytes. The RTS retains 384 possible lost bytes in
+thread-local storage. These checks use the official Linux x86_64 library and
+Nix GHC 9.14.1. They do not establish final-release macOS compatibility.
 
 The audit fixes sparse numeric parameter names, native tuple decoding and
 construction, and cached schemas after statement reset or rebinding. A reused

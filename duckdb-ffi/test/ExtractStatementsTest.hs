@@ -6,12 +6,11 @@ module ExtractStatementsTest (tests) where
 import Control.Monad (forM_, when)
 import Data.Coerce (coerce)
 import Data.Int (Int64)
-import Data.Void (Void)
 import Database.DuckDB.FFI
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (peekCString)
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (Ptr, nullPtr)
+import Foreign.Ptr (nullPtr)
 import Foreign.Storable (peek)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -41,7 +40,7 @@ extractPrepareAndExecuteSequence =
                         stmtCount @?= 3
 
                         extracted <- peek exPtr
-                        assertBool "extracted handle should not be null" (extracted /= (coerce (nullPtr :: Ptr Void)))
+                        assertBool "extracted handle should not be null" (extracted /= coerce nullPtr)
 
                         let indices = [0 :: Integer .. fromIntegral stmtCount - 1]
                         forM_ indices \idx ->
@@ -51,7 +50,7 @@ extractPrepareAndExecuteSequence =
                                 prepState @?= DuckDBSuccess
 
                                 stmt <- peek stmtPtr
-                                assertBool "prepared statement should not be null" (stmt /= (coerce (nullPtr :: Ptr Void)))
+                                assertBool "prepared statement should not be null" (stmt /= coerce nullPtr)
 
                                 alloca \resPtr -> do
                                     execState <- c_duckdb_execute_prepared stmt resPtr
@@ -59,10 +58,10 @@ extractPrepareAndExecuteSequence =
 
                                     case idx of
                                         0 -> do
-                                            resultType <- (peek resPtr >>= \rawValue -> c_duckdb_result_return_type rawValue)
+                                            resultType <- peek resPtr >>= \rawValue -> c_duckdb_result_return_type rawValue
                                             resultType @?= DuckDBResultTypeNothing
                                         1 -> do
-                                            resultType <- (peek resPtr >>= \rawValue -> c_duckdb_result_return_type rawValue)
+                                            resultType <- peek resPtr >>= \rawValue -> c_duckdb_result_return_type rawValue
                                             resultType @?= DuckDBResultTypeChangedRows
                                         2 -> do
                                             rowCount <- c_duckdb_row_count resPtr
@@ -81,7 +80,7 @@ extractPrepareAndExecuteSequence =
                             stInvalid <- c_duckdb_prepare_extracted_statement conn extracted invalidIdx stmtPtr
                             stInvalid @?= DuckDBError
                             stmt <- peek stmtPtr
-                            assertBool "invalid index should not yield a statement handle" (stmt == (coerce (nullPtr :: Ptr Void)))
+                            assertBool "invalid index should not yield a statement handle" (stmt == coerce nullPtr)
 
                         c_duckdb_destroy_extracted exPtr
 
@@ -96,12 +95,12 @@ extractFailureYieldsErrorMessage =
                         stmtCount @?= 0
 
                         extracted <- peek exPtr
-                        assertBool "extracted handle should be available for errors" (extracted /= (coerce (nullPtr :: Ptr Void)))
+                        assertBool "extracted handle should be available for errors" (extracted /= coerce nullPtr)
 
                         errPtr <- c_duckdb_extract_statements_error extracted
-                        when (errPtr == (coerce (nullPtr :: Ptr Void))) $
+                        when (errPtr == coerce nullPtr) $
                             assertFailure "expected error message pointer from failed extract"
-                        errMsg <- (peekCString . coerce) errPtr
+                        errMsg <- peekCString (coerce errPtr)
                         assertBool "error message should not be empty" (not (null errMsg))
 
                         c_duckdb_destroy_extracted exPtr

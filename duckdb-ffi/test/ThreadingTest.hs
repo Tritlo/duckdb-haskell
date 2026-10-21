@@ -6,12 +6,11 @@ module ThreadingTest (tests) where
 import Control.Concurrent (forkFinally, newEmptyMVar, putMVar, takeMVar)
 import Data.Coerce (coerce)
 import Data.Int (Int64)
-import Data.Void (Void)
 import Database.DuckDB.FFI
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.Types (CBool (..), CChar)
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (Ptr, nullPtr)
+import Foreign.Ptr (nullPtr)
 import Foreign.Storable (peek)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
@@ -40,7 +39,7 @@ withSingleThreadedDatabase action =
                 withConstCString "1" \value ->
                     c_duckdb_set_config config flag value >>= (@?= DuckDBSuccess)
             alloca \dbPtr -> do
-                st <- c_duckdb_open_ext path dbPtr config (coerce (nullPtr :: Ptr Void))
+                st <- c_duckdb_open_ext path dbPtr config nullPtr
                 c_duckdb_destroy_config configPtr
                 st @?= DuckDBSuccess
                 db <- peek dbPtr
@@ -62,13 +61,13 @@ executeTasksCompletesPendingQuery =
                         stPrepare <- c_duckdb_prepare conn querySql stmtPtr
                         stPrepare @?= DuckDBSuccess
                         stmt <- peek stmtPtr
-                        assertBool "prepared statement should not be null" (stmt /= coerce (nullPtr :: Ptr Void))
+                        assertBool "prepared statement should not be null" (stmt /= coerce nullPtr)
 
                         alloca \pendingPtr -> do
                             stPending <- c_duckdb_pending_prepared stmt pendingPtr
                             stPending @?= DuckDBSuccess
                             pending <- peek pendingPtr
-                            assertBool "pending result should not be null" (pending /= coerce (nullPtr :: Ptr Void))
+                            assertBool "pending result should not be null" (pending /= coerce nullPtr)
 
                             finishedBefore <- c_duckdb_execution_is_finished conn
                             finishedBefore @?= CBool 0
@@ -103,7 +102,7 @@ taskStateControlsExecutionLifecycle =
                 setupAggTable conn
 
                 taskState <- c_duckdb_create_task_state db
-                assertBool "task state should not be null" (taskState /= (coerce (nullPtr :: Ptr Void)))
+                assertBool "task state should not be null" (taskState /= coerce nullPtr)
 
                 doneVar <- newEmptyMVar
                 _ <- forkFinally (c_duckdb_execute_tasks_state taskState) (const (putMVar doneVar ()))

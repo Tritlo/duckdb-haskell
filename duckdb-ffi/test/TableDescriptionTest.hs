@@ -5,7 +5,6 @@ module TableDescriptionTest (tests) where
 import Control.Exception (finally)
 import Control.Monad (when)
 import Data.Coerce (coerce)
-import Data.Void (Void)
 import Database.DuckDB.FFI
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (peekCString)
@@ -39,7 +38,7 @@ tableDescriptionLifecycle =
                     checkColumn desc 0 "id" False
                     checkColumn desc 1 "name" True
                     checkColumn desc 2 "active" True
-                    c_duckdb_table_description_error desc >>= (@?= (coerce (nullPtr :: Ptr Void)))
+                    c_duckdb_table_description_error desc >>= (@?= coerce nullPtr)
 
 tableDescriptionExtended :: TestTree
 tableDescriptionExtended =
@@ -52,7 +51,7 @@ tableDescriptionExtended =
                 withTableDescriptionExt conn Nothing (Just "custom_schema") "ext_demo" \desc -> do
                     checkColumn desc 0 "id" True
                     checkColumn desc 1 "note" False
-                    c_duckdb_table_description_error desc >>= (@?= (coerce (nullPtr :: Ptr Void)))
+                    c_duckdb_table_description_error desc >>= (@?= coerce nullPtr)
 
 tableDescriptionErrorHandling :: TestTree
 tableDescriptionErrorHandling =
@@ -61,17 +60,17 @@ tableDescriptionErrorHandling =
             withConnection db \conn ->
                 withConstCString "missing_table" \tablePtr ->
                     alloca \descPtr -> do
-                        state <- c_duckdb_table_description_create conn (coerce (nullPtr :: Ptr Void)) tablePtr descPtr
+                        state <- c_duckdb_table_description_create conn (coerce nullPtr) tablePtr descPtr
                         state @?= DuckDBError
                         desc <- peek descPtr
                         let cleanup = c_duckdb_table_description_destroy descPtr
                         let action =
-                                if desc == (coerce (nullPtr :: Ptr Void))
+                                if desc == coerce nullPtr
                                     then assertFailure "table description handle should be populated on error"
                                     else do
                                         errPtr <- c_duckdb_table_description_error desc
-                                        assertBool "error pointer should not be null" (errPtr /= (coerce (nullPtr :: Ptr Void)))
-                                        errMsg <- (peekCString . coerce) errPtr
+                                        assertBool "error pointer should not be null" (errPtr /= coerce nullPtr)
+                                        errMsg <- peekCString (coerce errPtr)
                                         assertBool "error message should not be empty" (not (null errMsg))
                         action `finally` cleanup
 
@@ -87,9 +86,9 @@ runStatement conn sql =
                 else do
                     errPtr <- c_duckdb_result_error resPtr
                     errMsg <-
-                        if errPtr == (coerce (nullPtr :: Ptr Void))
+                        if errPtr == coerce nullPtr
                             then pure "unknown error"
-                            else (peekCString . coerce) errPtr
+                            else peekCString (coerce errPtr)
                     c_duckdb_destroy_result resPtr
                     assertFailure ("duckdb_query failed: " <> errMsg)
 
@@ -112,13 +111,13 @@ withDescriptionHandle acquire action =
         state <- acquire descPtr
         state @?= DuckDBSuccess
         desc <- peek descPtr
-        when (desc == (coerce (nullPtr :: Ptr Void))) $
+        when (desc == coerce nullPtr) $
             assertFailure "table description handle should not be null"
         let cleanup = c_duckdb_table_description_destroy descPtr
         action desc `finally` cleanup
 
-withMaybeCString :: Maybe String -> ((ConstPtr CChar) -> IO a) -> IO a
-withMaybeCString Nothing action = action (coerce (nullPtr :: Ptr Void))
+withMaybeCString :: Maybe String -> (ConstPtr CChar -> IO a) -> IO a
+withMaybeCString Nothing action = action (coerce nullPtr)
 withMaybeCString (Just txt) action = withConstCString txt action
 
 checkColumn :: DuckDBTableDescription -> DuckDBIdx -> String -> Bool -> IO ()
@@ -131,8 +130,8 @@ checkColumn desc idx expectedName expectedDefault = do
 getColumnName :: DuckDBTableDescription -> DuckDBIdx -> IO String
 getColumnName desc idx = do
     namePtr <- c_duckdb_table_description_get_column_name desc idx
-    assertBool "column name pointer should not be null" (namePtr /= (coerce (nullPtr :: Ptr Void)))
-    name <- (peekCString . coerce) namePtr
+    assertBool "column name pointer should not be null" (namePtr /= nullPtr)
+    name <- peekCString (coerce namePtr)
     c_duckdb_free (coerce namePtr)
     pure name
 

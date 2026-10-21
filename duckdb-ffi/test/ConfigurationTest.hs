@@ -3,12 +3,11 @@
 module ConfigurationTest (tests) where
 
 import Data.Coerce (coerce)
-import Data.Void (Void)
 import Database.DuckDB.FFI
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (peekCString)
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (Ptr, nullPtr)
+import Foreign.Ptr (nullPtr)
 import Foreign.Storable (peek)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
@@ -28,7 +27,7 @@ configurationLifecycle =
             state @?= DuckDBSuccess
 
             config <- peek configPtr
-            assertBool "config pointer should not be null" (config /= (coerce (nullPtr :: Ptr Void)))
+            assertBool "config pointer should not be null" (config /= coerce nullPtr)
 
             count <- c_duckdb_config_count
             assertBool "config flag count should be > 0" (count > 0)

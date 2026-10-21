@@ -8,12 +8,11 @@ module QueryExecutionTest (tests) where
 
 import Control.Monad (forM_, when)
 import Data.Coerce (coerce)
-import Data.Void (Void)
 import Database.DuckDB.FFI
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (peekCString)
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (Ptr, nullPtr)
+import Foreign.Ptr (nullPtr)
 import Foreign.Storable (peek, poke)
 import GHC.Records (getField)
 import Test.Tasty (TestTree, testGroup)
@@ -58,40 +57,40 @@ queryLifecycle =
                         rowsChanged <- c_duckdb_rows_changed resPtr
                         rowsChanged @?= 0
 
-                        stmtType <- (peek resPtr >>= \rawValue -> c_duckdb_result_statement_type rawValue)
+                        stmtType <- peek resPtr >>= \rawValue -> c_duckdb_result_statement_type rawValue
                         stmtType @?= DuckDBStatementTypeSelect
 
                         arrowOpts <- c_duckdb_result_get_arrow_options resPtr
-                        assertBool "arrow options should not be null" (arrowOpts /= (coerce (nullPtr :: Ptr Void)))
+                        assertBool "arrow options should not be null" (arrowOpts /= coerce nullPtr)
                         alloca \arrowPtr -> do
                             poke arrowPtr arrowOpts
                             c_duckdb_destroy_arrow_options arrowPtr
 
                         forM_ [0 .. columnCount - 1] \idx -> do
                             namePtr <- c_duckdb_column_name resPtr idx
-                            colName <- (peekCString . coerce) namePtr
+                            colName <- peekCString (coerce namePtr)
                             let expected = if idx == 0 then "id" else "name"
                             colName @?= expected
 
-                            colType <- (getField @"unwrap" <$> c_duckdb_column_type resPtr idx)
+                            colType <- getField @"unwrap" <$> c_duckdb_column_type resPtr idx
                             let expectedType = if idx == 0 then DuckDBTypeInteger else DuckDBTypeVarchar
                             colType @?= expectedType
 
                             logicalType <- c_duckdb_column_logical_type resPtr idx
-                            assertBool "logical type pointer should not be null" (logicalType /= (coerce (nullPtr :: Ptr Void)))
+                            assertBool "logical type pointer should not be null" (logicalType /= coerce nullPtr)
                             alloca \typePtr -> do
                                 poke typePtr logicalType
                                 c_duckdb_destroy_logical_type typePtr
 
                             dataPtr <- c_duckdb_column_data resPtr idx
-                            assertBool "column data pointer should not be null" (dataPtr /= (coerce (nullPtr :: Ptr Void)))
+                            assertBool "column data pointer should not be null" (dataPtr /= nullPtr)
 
                             nullmaskPtr <- c_duckdb_nullmask_data resPtr idx
-                            assertBool "nullmask pointer should not be null" (nullmaskPtr /= (coerce (nullPtr :: Ptr Void)))
+                            assertBool "nullmask pointer should not be null" (nullmaskPtr /= nullPtr)
 
                         errPtr <- c_duckdb_result_error resPtr
-                        when (errPtr /= (coerce (nullPtr :: Ptr Void))) $ do
-                            errMsg <- (peekCString . coerce) errPtr
+                        when (errPtr /= coerce nullPtr) $ do
+                            errMsg <- peekCString (coerce errPtr)
                             assertBool ("unexpected error: " <> errMsg) False
 
                         errType <- c_duckdb_result_error_type resPtr

@@ -1,7 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-deprecations #-}
 
@@ -13,13 +12,12 @@ import Data.Coerce (coerce)
 import Data.Int (Int32, Int64)
 import Data.List (isInfixOf)
 import Data.Proxy (Proxy (..))
-import Data.Void (Void)
 import Database.DuckDB.FFI
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (peekCString, peekCStringLen)
 import Foreign.C.Types (CChar)
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (FunPtr, Ptr, nullFunPtr, nullPtr, plusPtr)
+import Foreign.Ptr (Ptr, nullFunPtr, nullPtr, plusPtr)
 import Foreign.Storable (peek, peekElemOff, poke)
 import GHC.Records (getField)
 import HsBindgen.Runtime.HasCField (fromPtr)
@@ -61,8 +59,8 @@ queryArrowExposesSchemaAndArrays =
                     rowsChanged @?= 0
 
                     errPtr <- c_duckdb_query_arrow_error arrow
-                    when (errPtr /= (coerce (nullPtr :: Ptr Void))) $ do
-                        errMsg <- (peekCString . coerce) errPtr
+                    when (errPtr /= coerce nullPtr) $ do
+                        errMsg <- peekCString (coerce errPtr)
                         errMsg @?= ""
 
 -- schema/array access validated in dedicated scan test
@@ -76,16 +74,16 @@ queryArrowReportsErrors =
             withConnection db \conn ->
                 withConstCString "SELECT * FROM missing_table" \querySql ->
                     alloca \arrowPtr -> do
-                        poke arrowPtr (coerce (nullPtr :: Ptr Void))
+                        poke arrowPtr (coerce nullPtr)
                         state <- c_duckdb_query_arrow conn querySql arrowPtr
                         state @?= DuckDBError
 
                         arrow <- peek arrowPtr
-                        assertBool "arrow result should still be allocated on error" (arrow /= (coerce (nullPtr :: Ptr Void)))
+                        assertBool "arrow result should still be allocated on error" (arrow /= coerce nullPtr)
 
                         errPtr <- c_duckdb_query_arrow_error arrow
-                        assertBool "error message should be present" (errPtr /= (coerce (nullPtr :: Ptr Void)))
-                        errMsg <- (peekCString . coerce) errPtr
+                        assertBool "error message should be present" (errPtr /= coerce nullPtr)
+                        errMsg <- peekCString (coerce errPtr)
                         assertBool "error message should mention missing_table" ("missing_table" `isInfixOf` errMsg)
 
                         c_duckdb_destroy_arrow arrowPtr
@@ -140,8 +138,8 @@ resultArrowArrayMirrorsChunk =
                 execStatement conn "INSERT INTO arrow_chunks VALUES (10, 'ten'), (11, 'eleven');"
 
                 withResult conn "SELECT id, label FROM arrow_chunks ORDER BY id" \resPtr -> do
-                    chunk <- (peek resPtr >>= \rawValue -> c_duckdb_result_get_chunk rawValue 0)
-                    assertBool "fetch_chunk returned a null chunk" (chunk /= (coerce (nullPtr :: Ptr Void)))
+                    chunk <- peek resPtr >>= \rawValue -> c_duckdb_result_get_chunk rawValue 0
+                    assertBool "fetch_chunk returned a null chunk" (chunk /= coerce nullPtr)
                     chunkSize <- c_duckdb_data_chunk_get_size chunk
                     chunkCols <- c_duckdb_data_chunk_get_column_count chunk
 
@@ -152,7 +150,7 @@ resultArrowArrayMirrorsChunk =
 
                         alloca \arrayOut -> do
                             poke arrayOut duckArray
-                            (peek resPtr >>= \rawValue -> c_duckdb_result_arrow_array rawValue chunk arrayOut)
+                            peek resPtr >>= \rawValue -> c_duckdb_result_arrow_array rawValue chunk arrayOut
 
                             array <- peek arrowArrayPtr
 
@@ -214,12 +212,12 @@ arrowArrayScanRegistersView =
 
                                     withConstCString "arrow_array_view" \viewName ->
                                         alloca \streamOut -> do
-                                            poke streamOut (coerce (nullPtr :: Ptr Void))
+                                            poke streamOut (coerce nullPtr)
                                             scanState <- c_duckdb_arrow_array_scan conn viewName schemaHandle arrayHandle streamOut
                                             scanState @?= DuckDBSuccess
 
                                             streamWrapper <- peek streamOut
-                                            assertBool "arrow_array_scan returned a null stream handle" (streamWrapper /= (coerce (nullPtr :: Ptr Void)))
+                                            assertBool "arrow_array_scan returned a null stream handle" (streamWrapper /= coerce nullPtr)
 
                                             withResult conn "SELECT COUNT(*) FROM arrow_array_view" \resPtr -> do
                                                 count <- c_duckdb_value_int64 resPtr 0 0
@@ -264,12 +262,12 @@ arrowStreamScanRegistersView =
 
                                                     withConstCString "arrow_stream_array_view" \sourceView ->
                                                         alloca \streamOut -> do
-                                                            poke streamOut (coerce (nullPtr :: Ptr Void))
+                                                            poke streamOut (coerce nullPtr)
                                                             arrayScanState <- c_duckdb_arrow_array_scan conn sourceView schemaHandle arrayHandle streamOut
                                                             arrayScanState @?= DuckDBSuccess
 
                                                             streamHandle <- peek streamOut
-                                                            assertBool "arrow_array_scan returned a null stream" (streamHandle /= (coerce (nullPtr :: Ptr Void)))
+                                                            assertBool "arrow_array_scan returned a null stream" (streamHandle /= coerce nullPtr)
 
                                                             withConstCString "arrow_stream_view" \streamView -> do
                                                                 streamScanState <- c_duckdb_arrow_scan conn streamView streamHandle
@@ -307,16 +305,16 @@ arrowStructMovesPreserveOwnership =
 
                             withConstCString "arrow_helper_view" \viewName ->
                                 alloca \streamOut -> do
-                                    poke streamOut (coerce (nullPtr :: Ptr Void))
+                                    poke streamOut (coerce nullPtr)
                                     c_duckdb_arrow_array_scan conn viewName schemaHandle arrayHandle streamOut >>= (@?= DuckDBSuccess)
                                     stream <- peek streamOut
 
                                     original <- peek (coerce stream :: Ptr ArrowArrayStream)
                                     alloca \movedStream -> do
                                         poke movedStream original
-                                        poke (fromPtr (Proxy @"release") ((coerce stream :: Ptr ArrowArrayStream) :: Ptr ArrowArrayStream)) (coerce (nullFunPtr :: FunPtr Void))
+                                        poke (fromPtr (Proxy @"release") ((coerce stream :: Ptr ArrowArrayStream) :: Ptr ArrowArrayStream)) nullFunPtr
                                         source <- peek (coerce stream :: Ptr ArrowArrayStream)
-                                        (getField @"release") source @?= (coerce (nullFunPtr :: FunPtr Void))
+                                        (getField @"release") source @?= nullFunPtr
                                         (getField @"get_schema") source @?= (getField @"get_schema") original
                                         alloca \movedSchema -> do
                                             poke movedSchema zeroArrowSchema
@@ -332,42 +330,42 @@ arrowStructMovesPreserveOwnership =
                                             releaseArrowArray movedArray
                                             fromFunPtr ((getField @"get_next") original) movedStream movedArray >>= (@?= 0)
                                             exhausted <- peek movedArray
-                                            (getField @"release") exhausted @?= (coerce (nullFunPtr :: FunPtr Void))
+                                            (getField @"release") exhausted @?= nullFunPtr
                                         fromFunPtr ((getField @"release") original) movedStream
                                         moved <- peek movedStream
-                                        (getField @"release") moved @?= (coerce (nullFunPtr :: FunPtr Void))
+                                        (getField @"release") moved @?= nullFunPtr
                                     c_duckdb_destroy_arrow_stream streamOut
-                                    peek streamOut >>= (@?= (coerce (nullPtr :: Ptr Void)))
+                                    peek streamOut >>= (@?= coerce nullPtr)
 
                             originalArray <- peek arrayStorage
                             alloca \movedArray -> do
                                 poke movedArray originalArray
-                                poke (fromPtr (Proxy @"release") (arrayStorage :: Ptr ArrowArray)) (coerce (nullFunPtr :: FunPtr Void))
+                                poke (fromPtr (Proxy @"release") (arrayStorage :: Ptr ArrowArray)) nullFunPtr
                                 source <- peek arrayStorage
                                 (getField @"length") source @?= (getField @"length") originalArray
                                 (getField @"buffers") source @?= (getField @"buffers") originalArray
-                                (getField @"release") source @?= (coerce (nullFunPtr :: FunPtr Void))
+                                (getField @"release") source @?= nullFunPtr
                                 moved <- peek movedArray
                                 (getField @"length") moved @?= 1
                                 child <- peekElemOff ((getField @"children") moved) 0 >>= peek
                                 buffer <- peekElemOff ((getField @"buffers") child) 1
                                 peek (coerce buffer :: Ptr Int64) >>= (@?= 42)
                                 releaseArrowArray movedArray
-                                poke (fromPtr (Proxy @"release") (arrayStorage :: Ptr ArrowArray)) (coerce (nullFunPtr :: FunPtr Void))
+                                poke (fromPtr (Proxy @"release") (arrayStorage :: Ptr ArrowArray)) nullFunPtr
 
                         originalSchema <- peek schemaStorage
                         alloca \movedSchema -> do
                             poke movedSchema originalSchema
-                            poke (fromPtr (Proxy @"release") (schemaStorage :: Ptr ArrowSchema)) (coerce (nullFunPtr :: FunPtr Void))
+                            poke (fromPtr (Proxy @"release") (schemaStorage :: Ptr ArrowSchema)) nullFunPtr
                             source <- peek schemaStorage
                             (getField @"format") source @?= (getField @"format") originalSchema
-                            (getField @"release") source @?= (coerce (nullFunPtr :: FunPtr Void))
+                            (getField @"release") source @?= nullFunPtr
                             moved <- peek movedSchema
                             (peekCString . coerce) ((getField @"format") moved) >>= (@?= "+s")
                             child <- peekElemOff ((getField @"children") moved) 0 >>= peek
                             (peekCString . coerce) ((getField @"name") child) >>= (@?= "id")
                             releaseArrowSchema movedSchema
-                            poke (fromPtr (Proxy @"release") (schemaStorage :: Ptr ArrowSchema)) (coerce (nullFunPtr :: FunPtr Void))
+                            poke (fromPtr (Proxy @"release") (schemaStorage :: Ptr ArrowSchema)) nullFunPtr
 
 zeroArrowArray :: ArrowArray
 zeroArrowArray =
@@ -377,25 +375,25 @@ zeroArrowArray =
         , offset = 0
         , n_buffers = 0
         , n_children = 0
-        , buffers = (coerce (nullPtr :: Ptr Void))
-        , children = (coerce (nullPtr :: Ptr Void))
-        , dictionary = (coerce (nullPtr :: Ptr Void))
-        , release = (coerce (nullFunPtr :: FunPtr Void))
-        , private_data = (coerce (nullPtr :: Ptr Void))
+        , buffers = nullPtr
+        , children = nullPtr
+        , dictionary = nullPtr
+        , release = nullFunPtr
+        , private_data = nullPtr
         }
 
 zeroArrowSchema :: ArrowSchema
 zeroArrowSchema =
     ArrowSchema
-        { format = (coerce (nullPtr :: Ptr Void))
-        , name = (coerce (nullPtr :: Ptr Void))
-        , metadata = (coerce (nullPtr :: Ptr Void))
+        { format = coerce nullPtr
+        , name = coerce nullPtr
+        , metadata = coerce nullPtr
         , flags = 0
         , n_children = 0
-        , children = (coerce (nullPtr :: Ptr Void))
-        , dictionary = (coerce (nullPtr :: Ptr Void))
-        , release = (coerce (nullFunPtr :: FunPtr Void))
-        , private_data = (coerce (nullPtr :: Ptr Void))
+        , children = nullPtr
+        , dictionary = nullPtr
+        , release = nullFunPtr
+        , private_data = nullPtr
         }
 
 validateChunkChildren :: ArrowArray -> IO ()
@@ -408,40 +406,40 @@ validateChunkChildren array = do
     rowCount @?= length expectedIds
 
     let childrenPtr = (getField @"children") array
-    assertBool "Arrow array did not expose child arrays" (childrenPtr /= (coerce (nullPtr :: Ptr Void)))
+    assertBool "Arrow array did not expose child arrays" (childrenPtr /= nullPtr)
 
     let ensurePtr name ptrPred =
             unless ptrPred $
                 assertFailure ("Arrow array " ++ name ++ " pointer is null")
 
     intChildPtr <- peekElemOff childrenPtr 0
-    ensurePtr "integer child" (intChildPtr /= (coerce (nullPtr :: Ptr Void)))
+    ensurePtr "integer child" (intChildPtr /= nullPtr)
     intChild <- peek intChildPtr
     (getField @"null_count") intChild @?= 0
     let intBufferCount = fromIntegral ((getField @"n_buffers") intChild) :: Int
     assertBool "Integer child did not expose the expected buffers" (intBufferCount >= 2)
 
     let intBuffers = (getField @"buffers") intChild
-    ensurePtr "integer buffers" (intBuffers /= (coerce (nullPtr :: Ptr Void)))
+    ensurePtr "integer buffers" (intBuffers /= nullPtr)
     valueBufferRaw <- peekElemOff intBuffers 1
-    ensurePtr "integer value buffer" (valueBufferRaw /= (coerce (nullPtr :: Ptr Void)))
+    ensurePtr "integer value buffer" (valueBufferRaw /= coerce nullPtr)
     let valueBuffer = coerce valueBufferRaw :: Ptr Int64
     values <- mapM (peekElemOff valueBuffer) [0 .. rowCount - 1]
     values @?= expectedIds
 
     strChildPtr <- peekElemOff childrenPtr 1
-    ensurePtr "varchar child" (strChildPtr /= (coerce (nullPtr :: Ptr Void)))
+    ensurePtr "varchar child" (strChildPtr /= nullPtr)
     strChild <- peek strChildPtr
     (getField @"null_count") strChild @?= 0
     let strBufferCount = fromIntegral ((getField @"n_buffers") strChild) :: Int
     assertBool "Varchar child did not expose the expected buffers" (strBufferCount >= 3)
 
     let strBuffers = (getField @"buffers") strChild
-    ensurePtr "varchar buffers" (strBuffers /= (coerce (nullPtr :: Ptr Void)))
+    ensurePtr "varchar buffers" (strBuffers /= nullPtr)
     offsetsRaw <- peekElemOff strBuffers 1
     dataRaw <- peekElemOff strBuffers 2
-    ensurePtr "varchar offsets buffer" (offsetsRaw /= (coerce (nullPtr :: Ptr Void)))
-    ensurePtr "varchar data buffer" (dataRaw /= (coerce (nullPtr :: Ptr Void)))
+    ensurePtr "varchar offsets buffer" (offsetsRaw /= coerce nullPtr)
+    ensurePtr "varchar data buffer" (dataRaw /= coerce nullPtr)
 
     let offsetsPtr = coerce offsetsRaw :: Ptr Int32
         dataPtr = coerce dataRaw :: Ptr CChar
@@ -461,11 +459,11 @@ withSuccessfulArrow conn sql action =
         alloca \arrowPtr ->
             bracket
                 ( do
-                    poke arrowPtr (coerce (nullPtr :: Ptr Void))
+                    poke arrowPtr (coerce nullPtr)
                     state <- c_duckdb_query_arrow conn sqlPtr arrowPtr
                     state @?= DuckDBSuccess
                     arrow <- peek arrowPtr
-                    assertBool "duckdb_query_arrow returned null result" (arrow /= (coerce (nullPtr :: Ptr Void)))
+                    assertBool "duckdb_query_arrow returned null result" (arrow /= coerce nullPtr)
                     pure arrow
                 )
                 (\_ -> c_duckdb_destroy_arrow arrowPtr)
@@ -480,7 +478,7 @@ withPrepared conn sql action =
                     state <- c_duckdb_prepare conn sqlPtr stmtPtr
                     state @?= DuckDBSuccess
                     stmt <- peek stmtPtr
-                    assertBool "prepare should produce a statement" (stmt /= (coerce (nullPtr :: Ptr Void)))
+                    assertBool "prepare should produce a statement" (stmt /= coerce nullPtr)
                     pure stmt
                 )
                 (\_ -> c_duckdb_destroy_prepare stmtPtr)
@@ -491,11 +489,11 @@ withPreparedArrow stmt action =
     alloca \arrowPtr ->
         bracket
             ( do
-                poke arrowPtr (coerce (nullPtr :: Ptr Void))
+                poke arrowPtr (coerce nullPtr)
                 state <- c_duckdb_execute_prepared_arrow stmt arrowPtr
                 state @?= DuckDBSuccess
                 arrow <- peek arrowPtr
-                assertBool "execute_prepared_arrow returned null result" (arrow /= (coerce (nullPtr :: Ptr Void)))
+                assertBool "execute_prepared_arrow returned null result" (arrow /= coerce nullPtr)
                 pure arrow
             )
             (\_ -> c_duckdb_destroy_arrow arrowPtr)

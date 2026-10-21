@@ -9,7 +9,6 @@ import Control.Monad (forM_, void, (>=>))
 import Data.Bits (setBit)
 import Data.Coerce (coerce)
 import Data.Int (Int32)
-import Data.Void (Void)
 import Data.Word (Word64)
 import Database.DuckDB.FFI
 import Foreign.Marshal.Array (allocaArray, withArray)
@@ -57,7 +56,7 @@ vectorValidityMask =
             withVectorOfType intType 4 \vec -> do
                 void (c_duckdb_vector_ensure_validity_writable vec)
                 validity <- c_duckdb_vector_get_validity vec
-                assertBool "validity mask should exist" (validity /= (coerce (nullPtr :: Ptr Void)))
+                assertBool "validity mask should exist" (validity /= nullPtr)
 
                 setAllValid validity 4
                 clearValidityBit validity 2
@@ -74,7 +73,7 @@ listVectorChildManagement =
             withLogicalType (c_duckdb_create_list_type intType) \listType ->
                 withVectorOfType listType 2 \listVec -> do
                     childVec0 <- c_duckdb_list_vector_get_child listVec
-                    assertBool "list child vector should be non-null" (childVec0 /= (coerce (nullPtr :: Ptr Void)))
+                    assertBool "list child vector should be non-null" (childVec0 /= coerce nullPtr)
                     initialSize <- c_duckdb_list_vector_get_size listVec
                     initialSize @?= 0
 

@@ -1,6 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-deprecations #-}
 
 module SafeFetchTest (tests) where
@@ -9,7 +8,6 @@ import Control.Monad (when)
 import Data.Coerce (coerce)
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.Time.Calendar (diffDays, fromGregorian)
-import Data.Void (Void)
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.FFI
 import Foreign.C.ConstPtr (ConstPtr (..))
@@ -62,7 +60,7 @@ safeFetchRoundtrip =
                         state <- c_duckdb_query conn cQuery resPtr
                         when (state /= DuckDBSuccess) $ do
                             errPtr <- c_duckdb_result_error resPtr
-                            errMsg <- if errPtr == (coerce (nullPtr :: Ptr Void)) then pure "<no error>" else (peekCString . coerce) errPtr
+                            errMsg <- if errPtr == coerce nullPtr then pure "<no error>" else peekCString (coerce errPtr)
                             assertFailure ("duckdb_query failed: " <> errMsg)
                         state @?= DuckDBSuccess
 
@@ -78,7 +76,7 @@ safeFetchRoundtrip =
 
                         -- HugeInt
                         alloca \hugePtr -> do
-                            (c_duckdb_value_hugeint resPtr 5 0 >>= poke hugePtr)
+                            c_duckdb_value_hugeint resPtr 5 0 >>= poke hugePtr
                             DuckDBHugeInt{lower = lowerHuge, upper = upperHuge} <- peek hugePtr
                             lowerHuge @?= 9223372036854775809
                             upperHuge @?= 0
@@ -90,7 +88,7 @@ safeFetchRoundtrip =
                         c_duckdb_value_uint64 resPtr 9 0 >>= (@?= (maxBound :: Word64))
 
                         alloca \uhugePtr -> do
-                            (c_duckdb_value_uhugeint resPtr 10 0 >>= poke uhugePtr)
+                            c_duckdb_value_uhugeint resPtr 10 0 >>= poke uhugePtr
                             DuckDBUHugeInt{lower = lowerUHuge, upper = upperUHuge} <- peek uhugePtr
                             lowerUHuge @?= 0
                             upperUHuge @?= 1
@@ -120,7 +118,7 @@ safeFetchRoundtrip =
 
                         -- Interval
                         alloca \intervalPtr -> do
-                            (c_duckdb_value_interval resPtr 16 0 >>= poke intervalPtr)
+                            c_duckdb_value_interval resPtr 16 0 >>= poke intervalPtr
                             DuckDBInterval{months = months, days = days, micros = micros} <- peek intervalPtr
                             months @?= 0
                             days @?= 1
@@ -128,7 +126,7 @@ safeFetchRoundtrip =
 
                         -- Decimal
                         alloca \decimalPtr -> do
-                            (c_duckdb_value_decimal resPtr 17 0 >>= poke decimalPtr)
+                            c_duckdb_value_decimal resPtr 17 0 >>= poke decimalPtr
                             DuckDBDecimal{width = width, scale = scale, value = decValue} <- peek decimalPtr
                             width @?= 18
                             scale @?= 2
@@ -138,29 +136,29 @@ safeFetchRoundtrip =
 
                         -- Strings
                         strVarchar <- c_duckdb_value_varchar resPtr 18 0
-                        varcharText <- (peekCString . coerce) strVarchar
+                        varcharText <- peekCString (coerce strVarchar)
                         varcharText @?= stringLiteral
                         c_duckdb_free (coerce strVarchar)
 
                         alloca \stringPtr -> do
-                            (c_duckdb_value_string resPtr 18 0 >>= poke stringPtr)
+                            c_duckdb_value_string resPtr 18 0 >>= poke stringPtr
                             DuckDBString{data' = datPtr, size = datSize} <- peek stringPtr
                             bytes <- peekCStringLen (coerce datPtr, fromIntegral datSize)
                             bytes @?= stringLiteral
-                            when (datPtr /= (coerce (nullPtr :: Ptr Void))) $ c_duckdb_free (coerce datPtr)
+                            when (datPtr /= nullPtr) $ c_duckdb_free (coerce datPtr)
 
                         alloca \stringInternalPtr -> do
-                            (c_duckdb_value_string_internal resPtr 18 0 >>= poke stringInternalPtr)
+                            c_duckdb_value_string_internal resPtr 18 0 >>= poke stringInternalPtr
                             DuckDBString{data' = datPtr, size = datSize} <- peek stringInternalPtr
                             bytes <- peekCStringLen (coerce datPtr, fromIntegral datSize)
                             bytes @?= stringLiteral
 
                         varcharInternal <- c_duckdb_value_varchar_internal resPtr 18 0
-                        (peekCString . coerce) varcharInternal >>= (@?= stringLiteral)
+                        peekCString (coerce varcharInternal) >>= (@?= stringLiteral)
 
                         -- Blob
                         alloca \blobPtr -> do
-                            (c_duckdb_value_blob resPtr 19 0 >>= poke blobPtr)
+                            c_duckdb_value_blob resPtr 19 0 >>= poke blobPtr
                             DuckDBBlob{data' = blobData, size = blobSize} <- peek blobPtr
                             let expectedBlob :: [Word8]
                                 expectedBlob = map (fromIntegral . fromEnum) ("abc" :: String)

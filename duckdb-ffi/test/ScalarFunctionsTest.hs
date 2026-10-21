@@ -1,5 +1,4 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE ForeignFunctionInterface #-}
 {-# OPTIONS_GHC -Wno-deprecations #-}
 
 module ScalarFunctionsTest (tests) where
@@ -75,7 +74,7 @@ varargBind extraPtr deleteBindCb copyCb bindDataSize info = do
     alloca \ctxPtr -> do
         c_duckdb_scalar_function_get_client_context info ctxPtr
         ctx <- peek ctxPtr
-        unless (ctx == (coerce (nullPtr :: Ptr Void))) $
+        unless (ctx == coerce nullPtr) $
             c_duckdb_destroy_client_context ctxPtr
 
     if argCount == 0
@@ -95,7 +94,7 @@ varargExec :: Ptr Void -> Int -> DuckDBFunctionInfo -> DuckDBDataChunk -> DuckDB
 varargExec extraPtr _ info chunk outVec = do
     bindData <- c_duckdb_scalar_function_get_bind_data info
     argCount <-
-        if bindData == (coerce (nullPtr :: Ptr Void))
+        if bindData == nullPtr
             then pure (0 :: Integer)
             else fromIntegral <$> peek (coerce bindData :: Ptr Int32)
 
@@ -137,14 +136,14 @@ scalarFunctionSetFeatures =
                     extraStorage <- mallocBytes bindDataSize
                     poke (coerce extraStorage) (123 :: Int32)
                     deleteExtraCb <- mkDeleteCallback \ptr ->
-                        when (ptr /= (coerce (nullPtr :: Ptr Void))) (free ptr)
+                        when (ptr /= nullPtr) (free ptr)
 
                     deleteBindCb <- mkDeleteCallback \ptr ->
-                        when (ptr /= (coerce (nullPtr :: Ptr Void))) (free ptr)
+                        when (ptr /= nullPtr) (free ptr)
 
                     let copyBindData :: Ptr Void -> IO (Ptr Void)
                         copyBindData src
-                            | src == (coerce (nullPtr :: Ptr Void)) = pure (coerce (nullPtr :: Ptr Void))
+                            | src == nullPtr = pure nullPtr
                             | otherwise = do
                                 newPtr <- mallocBytes bindDataSize
                                 value <- peek (coerce src :: Ptr Int32)
@@ -222,7 +221,7 @@ expectQueryError conn sql expectedFragment =
             state <- c_duckdb_query conn sqlPtr resPtr
             state @?= DuckDBError
             errPtr <- c_duckdb_result_error resPtr
-            errMsg <- (peekCString . coerce) errPtr
+            errMsg <- peekCString (coerce errPtr)
             let needle = map toLower expectedFragment
                 haystack = map toLower errMsg
             assertBool

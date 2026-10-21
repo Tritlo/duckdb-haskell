@@ -7,12 +7,11 @@ module PreparedStatementsTest (tests) where
 
 import Control.Monad (when)
 import Data.Coerce (coerce)
-import Data.Void (Void)
 import Database.DuckDB.FFI
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (peekCString)
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (Ptr, nullPtr)
+import Foreign.Ptr (nullPtr)
 import Foreign.Storable (peek, poke)
 import GHC.Records (getField)
 import Test.Tasty (TestTree, testGroup)
@@ -45,25 +44,25 @@ preparedStatementMetadata =
                         st <- c_duckdb_prepare conn cSql stmtPtr
                         st @?= DuckDBSuccess
                         stmt <- peek stmtPtr
-                        assertBool "statement pointer should not be null" (stmt /= (coerce (nullPtr :: Ptr Void)))
+                        assertBool "statement pointer should not be null" (stmt /= coerce nullPtr)
 
                         -- Parameter metadata
                         paramCount <- c_duckdb_nparams stmt
                         paramCount @?= 1
 
-                        paramType <- (getField @"unwrap" <$> c_duckdb_param_type stmt 0)
+                        paramType <- getField @"unwrap" <$> c_duckdb_param_type stmt 0
                         -- Physical type defaults to invalid until bound; logical type carries information.
                         paramType @?= DuckDBTypeInvalid
 
                         logicalTypePtr <- c_duckdb_param_logical_type stmt 0
-                        when (logicalTypePtr /= (coerce (nullPtr :: Ptr Void))) $ do
+                        when (logicalTypePtr /= coerce nullPtr) $ do
                             alloca \typePtr -> do
                                 poke typePtr logicalTypePtr
                                 c_duckdb_destroy_logical_type typePtr
 
                         namePtr <- c_duckdb_parameter_name stmt 0
-                        when (namePtr /= (coerce (nullPtr :: Ptr Void))) $ do
-                            name <- (peekCString . coerce) namePtr
+                        when (namePtr /= coerce nullPtr) $ do
+                            name <- peekCString (coerce namePtr)
                             name @?= ""
 
                         -- Statement type
@@ -75,14 +74,14 @@ preparedStatementMetadata =
                         colCount @?= 1
 
                         colNamePtr <- c_duckdb_prepared_statement_column_name stmt 0
-                        colName <- (peekCString . coerce) colNamePtr
+                        colName <- peekCString (coerce colNamePtr)
                         colName @?= "value"
 
                         colType <- c_duckdb_prepared_statement_column_type stmt 0
                         colType @?= DuckDBType DuckDBTypeInteger
 
                         colLogicalType <- c_duckdb_prepared_statement_column_logical_type stmt 0
-                        assertBool "column logical type should not be null" (colLogicalType /= (coerce (nullPtr :: Ptr Void)))
+                        assertBool "column logical type should not be null" (colLogicalType /= coerce nullPtr)
                         alloca \colTypePtr -> do
                             poke colTypePtr colLogicalType
                             c_duckdb_destroy_logical_type colTypePtr
@@ -92,8 +91,8 @@ preparedStatementMetadata =
 
                         -- No preparation error
                         errPtr <- c_duckdb_prepare_error stmt
-                        when (errPtr /= (coerce (nullPtr :: Ptr Void))) $ do
-                            msg <- (peekCString . coerce) errPtr
+                        when (errPtr /= coerce nullPtr) $ do
+                            msg <- peekCString (coerce errPtr)
                             msg @?= ""
 
                         c_duckdb_destroy_prepare stmtPtr
@@ -109,11 +108,11 @@ preparedStatementError =
                         st <- c_duckdb_prepare conn cSql stmtPtr
                         st @?= DuckDBError
                         stmt <- peek stmtPtr
-                        if stmt == (coerce (nullPtr :: Ptr Void))
+                        if stmt == coerce nullPtr
                             then assertFailure "expected prepared statement handle after failure"
                             else do
                                 errMsgPtr <- c_duckdb_prepare_error stmt
-                                when (errMsgPtr == (coerce (nullPtr :: Ptr Void))) $ assertFailure "expected error message for failed prepare"
-                                msg <- (peekCString . coerce) errMsgPtr
+                                when (errMsgPtr == coerce nullPtr) $ assertFailure "expected error message for failed prepare"
+                                msg <- peekCString (coerce errMsgPtr)
                                 assertBool "error message should mention table" (not (null msg))
                                 c_duckdb_destroy_prepare stmtPtr

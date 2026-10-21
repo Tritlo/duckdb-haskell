@@ -1,7 +1,7 @@
 # Loadable Haskell extensions
 
-For the pinned DuckDB 2.0.0 release. This directory prepares a loadable
-Haskell example. It is not part of either Hackage package. The reusable
+This directory contains a loadable Haskell example for the pinned DuckDB 2.0.0
+release. The example is not part of either Hackage package. The reusable
 `Database.DuckDB.Simple.Extension` helper and extension-mode FFI headers are
 part of the packages.
 
@@ -69,11 +69,10 @@ Generate ignored API artifacts if they are absent:
 nix-shell dev/nix/generate.nix --run 'dev/bindings/generate-bindings.sh --check'
 ```
 
-Build only the example in its separate project and build directory:
-
-Use a fresh build directory after a native header change. Cabal can retain C
-objects from the previous function table. Clean an existing directory before
-the build when the source pin changes:
+Build only the example in its separate project and build directory. Use a fresh
+build directory after a native header change. When the source pin changes,
+clean an existing directory before the build. Cabal can retain C objects from
+the previous function table:
 
 ```sh
 (cd dev/extensions && cabal clean --builddir=../../dist-newstyle-extensions)
@@ -110,7 +109,7 @@ Read the target platform and version before packaging:
 
 The pinned release loader uses `v2.0.0` as its version field, including the
 leading `v`. See [PACKAGING.md](PACKAGING.md). Use the exact
-platform printed by the CLI. Replace the library path and platform below:
+platform printed by the CLI.
 
 On Linux, Nix's GHC can require a newer glibc than the host CLI uses.
 `nix-shell` does not replace the downloaded CLI's ELF interpreter. In that
@@ -128,6 +127,8 @@ exec "$loader" --library-path "$libc_dir:$cxx_dir" "$(dirname "$0")/duckdb" "$@"
 SH
 chmod +x /tmp/duckdb-extension-native/native/duckdb-nix
 ```
+
+Replace the library path and platform in the packaging command:
 
 ```sh
 mkdir -p dev/extensions/dist
@@ -156,12 +157,11 @@ directory and the matching native CLI.
 
 ## Deployment and remaining validation
 
-The prepared recipe targets Linux and macOS. It uses shared GHC and package
-libraries. A renamed foreign library is not a self-contained distribution.
-Keep its dependency closure available, including the threaded RTS. Cabal and
-Nix build-store paths require those stores to remain available. Relocatable
-bundling, Windows, and loading into another Haskell executable remain outside
-this prepared recipe.
+The example targets Linux and macOS and uses shared GHC and package libraries.
+Keep those dependencies available, including the threaded RTS, when you rename
+or deploy the foreign library. Cabal and Nix build-store paths require those
+stores to remain available. This example does not cover relocatable bundling,
+Windows, or loading into another Haskell executable.
 
 Final-release Linux x86_64 checks on 2026-10-21 use the verified official
 `v2.0.0` CLI and shared library:
@@ -241,8 +241,8 @@ preview:
   collection and the functional leak checks also pass. Native RSS and thread
   counters require Linux `/proc`.
 
-These checks use the local Cabal and Nix dependency stores. Relocatable
-deployment remains outside this recipe.
+These checks use the local Cabal and Nix dependency stores. They do not verify
+relocatable deployment.
 
 References: [Cabal foreign libraries](https://cabal.readthedocs.io/en/3.18/cabal-package-description-file.html#foreign-libraries),
 [GHC runtime initialization](https://downloads.haskell.org/ghc/9.14.1/docs/users_guide/exts/ffi.html#using-your-own-main),

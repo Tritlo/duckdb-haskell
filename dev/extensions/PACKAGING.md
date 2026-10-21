@@ -50,7 +50,7 @@ The zero signature does not authenticate the library. Native loading requires
 DuckDB's unsigned-extension option.
 
 The generated suffix matches the pinned official CMake writer byte for byte.
-The check used a temporary library fixture and verified that the input did not
-change. It also checked invalid fields, existing outputs, repeated metadata,
-and supported native headers. The packer does not verify exported symbols or
-native dependency resolution.
+The packaging checks used a temporary library fixture and confirmed that the
+input did not change. They covered invalid fields, existing outputs, repeated
+metadata, and supported native headers. The packer does not verify exported
+symbols or native dependency resolution.

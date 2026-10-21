@@ -13,7 +13,7 @@ nix-shell dev/nix/shell.nix --run 'GHC_ENVIRONMENT=- runghc \
   dev/extensions/Pack.hs /absolute/path/to/libhaskell_demo.so \
   --output /absolute/path/to/haskell_demo.duckdb_extension \
   --platform linux_amd64 \
-  --duckdb-version d54cbbe3df \
+  --duckdb-version v2.0.0 \
   --extension-version 0.1.0'
 ```
 
@@ -28,12 +28,12 @@ libraries or bundles on macOS. It rejects Windows DLLs, static archives, and
 universal Mach-O files.
 
 The footer uses the `C_STRUCT_UNSTABLE` ABI. Its DuckDB version field must match
-the native loader's version exactly. For the pinned development source, that
-value is the ten-character source ID `d54cbbe3df`. It is not the reported
-`v2.0.0-dev0` library version. Release builds use a normalized version tag such
-as `v2.0.0`. Read the target runtime's `PRAGMA version` and `PRAGMA platform`
-results before packaging for another build. The script records the supplied
-values without version normalization or runtime inspection.
+the native loader's version exactly. For the pinned release, use `v2.0.0`,
+including the leading `v`. The source ID `d54cbbe3df` is rejected by this loader.
+Development builds can use a source ID instead of a release version. Read the
+target runtime's `PRAGMA version` and `PRAGMA platform` results before packaging
+for another build. The script records the supplied values without version
+normalization or runtime inspection.
 
 Each metadata field must contain at most 32 ASCII bytes. Required fields must
 be nonempty and must not contain NUL. The script rejects input that already has

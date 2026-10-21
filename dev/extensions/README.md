@@ -1,6 +1,6 @@
 # Loadable Haskell extensions
 
-For the pinned DuckDB 2.0 preview only. This directory prepares a loadable
+For the pinned DuckDB 2.0.0 release. This directory prepares a loadable
 Haskell example. It is not part of either Hackage package. The reusable
 `Database.DuckDB.Simple.Extension` helper and extension-mode FFI headers are
 part of the packages.
@@ -95,12 +95,10 @@ nix-shell dev/nix/shell.nix --run '(cd dev/extensions && \
   duckdb-haskell-extension-example:flib:haskell_demo)'
 ```
 
-Build a plain native CLI from the same pin. The preview builder normally
-builds only the shared library. This opt-in also builds the CLI:
+Fetch the verified native CLI and shared library for the pinned release:
 
 ```sh
-nix-shell dev/nix/shell.nix --run \
-  'DUCKDB_BUILD_SHELL=ON dev/preview/build-duckdb.sh /tmp/duckdb-extension-native'
+dev/fetch-duckdb.sh /tmp/duckdb-extension-native
 ```
 
 Read the target platform and version before packaging:
@@ -110,16 +108,33 @@ Read the target platform and version before packaging:
   -c 'PRAGMA platform; PRAGMA version;'
 ```
 
-The pinned development loader uses source ID `d54cbbe3df` as its version field.
-It does not use `v2.0.0-dev0`. See [PACKAGING.md](PACKAGING.md). Use the exact
+The pinned release loader uses `v2.0.0` as its version field, including the
+leading `v`. See [PACKAGING.md](PACKAGING.md). Use the exact
 platform printed by the CLI. Replace the library path and platform below:
+
+On Linux, Nix's GHC can require a newer glibc than the host CLI uses.
+`nix-shell` does not replace the downloaded CLI's ELF interpreter. In that
+case, create this wrapper and use its path for `--duckdb` in the smoke command.
+Run it inside the same Nix shell as the extension build:
+
+```sh
+cat > /tmp/duckdb-extension-native/native/duckdb-nix <<'SH'
+#!/usr/bin/env bash
+set -eu
+loader=$(cat "$NIX_CC/nix-support/dynamic-linker")
+libc_dir=$(dirname "$loader")
+cxx_dir=$(dirname "$(cc -print-file-name=libstdc++.so.6)")
+exec "$loader" --library-path "$libc_dir:$cxx_dir" "$(dirname "$0")/duckdb" "$@"
+SH
+chmod +x /tmp/duckdb-extension-native/native/duckdb-nix
+```
 
 ```sh
 mkdir -p dev/extensions/dist
 nix-shell dev/nix/shell.nix --run 'GHC_ENVIRONMENT=- runghc \
   dev/extensions/Pack.hs /absolute/path/to/libhaskell_demo.so \
   --output dev/extensions/dist/haskell_demo.duckdb_extension \
-  --platform linux_amd64 --duckdb-version d54cbbe3df \
+  --platform linux_amd64 --duckdb-version v2.0.0 \
   --extension-version 0.1.0'
 
 nix-shell dev/nix/shell.nix --run 'GHC_ENVIRONMENT=- runghc \
@@ -135,7 +150,7 @@ results before and after an option update, and native log-sink selection.
 It does not use a Haskell host executable. The timeout includes process exit
 and output collection. A timeout kills and reaps the CLI child.
 
-The preview CI matrix builds and loads the example on Linux and macOS with
+The CI matrix builds and loads the example on Linux and macOS with
 GHC 9.14.1 at optimization level 1. Each job uses a fresh extension build
 directory and the matching native CLI.
 
@@ -147,6 +162,18 @@ Keep its dependency closure available, including the threaded RTS. Cabal and
 Nix build-store paths require those stores to remain available. Relocatable
 bundling, Windows, and loading into another Haskell executable remain outside
 this prepared recipe.
+
+Final-release Linux x86_64 checks on 2026-10-21 use the verified official
+`v2.0.0` CLI and shared library:
+
+- A fresh optimized Haskell extension build passes both native CLI smoke
+  processes. The CLI uses the matching Nix loader for the Nix GHC libraries.
+- The loader accepts `v2.0.0` metadata and rejects the development source ID.
+  The 534-byte footer matches the final official CMake writer byte for byte.
+- All 624 ordinary functional tests and the default leak suite pass.
+- The final SDK headers match the pinned inputs. All four generated-file
+  checksums remain unchanged. The V2 table still has 620 unstable entries.
+- `ldd` confirms the threaded RTS dependency and no `libduckdb` dependency.
 
 Linux x86_64 checks on 2026-10-20 use GHC 9.14.1 and native source
 `d54cbbe3df17e8e5ce68312f483b4155836112aa`:

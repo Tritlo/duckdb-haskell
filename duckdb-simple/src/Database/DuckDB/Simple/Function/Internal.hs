@@ -234,6 +234,7 @@ registerScalarFunction :: (Function f) => RegistrationTarget -> Text -> Proxy f 
 registerScalarFunction target name proxy acquire = do
     when (Text.null name || Text.any (== '\0') name) $
         throwIO (functionInvocationError "duckdb-simple: invalid scalar function name")
+    -- withTarget keeps its factory private. Borrow another one for the signature types.
     withRegistrationFactory target \factory ->
         withTarget target c_duckdb_v2_scalar_function_create c_duckdb_v2_scalar_function_destroy c_duckdb_v2_connection_register_scalar_function c_duckdb_v2_extension_register_scalar_function \scalarFun register ->
             withCallbackResources

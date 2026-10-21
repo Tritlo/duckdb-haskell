@@ -20,7 +20,7 @@ The package generates bindings from the pinned DuckDB 2.0 client headers with
   appenders, and Arrow integration.
 - Generates native types, layouts, callbacks, and calling-convention adapters.
 - Includes integration tests for the native bindings.
-- Covers all 548 retained and 620 V2 functions in the pinned 2.0 snapshot.
+- Covers all 548 retained and 620 V2 functions in the pinned 2.0.0 release.
 - V2 is unstable. Use DuckDB 2.0.0, which matches the source pin in
   `duckdb-ffi/vendor/duckdb-api.json`.
 

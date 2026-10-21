@@ -11,23 +11,22 @@ The client headers in `duckdb-ffi/cbits/duckdb.h` and `duckdb_v2.h` come from
 the upstream `v2.0.0` tag, commit
 [d54cbbe3df17e8e5ce68312f483b4155836112aa](https://github.com/duckdb/duckdb/commit/d54cbbe3df17e8e5ce68312f483b4155836112aa).
 `duckdb-ffi/cbits/duckdb-LICENSE` contains the upstream license.
-The headers and license are unmodified upstream files. Their source paths and
-SHA256 digests are in `duckdb-ffi/vendor/duckdb-api.json`, which also pins the
-native source archive used by Nix.
+The headers and license are unmodified upstream files.
+`duckdb-ffi/vendor/upstream.sha256` records their SHA256 digests.
+`duckdb-ffi/vendor/duckdb-api.json` records the source commit and the native
+source archive that Nix builds.
 
 Builds use the checked-in headers directly. Cabal installs both client headers,
 `duckdb_arrow.h`, and `duckdb-LICENSE` with the library. Package users do not
-need header extraction tools, Python, LLVM, or hs-bindgen. The header audit and
-runtime download helper are maintainer tools outside the Hackage packages.
+need LLVM or hs-bindgen. The pin update and download scripts are maintainer
+tools outside the Hackage packages.
 
-The retained header declares 548 functions, 21 callback typedefs, and nine
-inline callback fields. Compared with the 1.5.6 header, it adds
+The retained header declares 548 functions. Compared with the 1.5.6 header, it adds
 `duckdb_create_timestamp_tz_ns`, `duckdb_get_timestamp_tz_ns`, type tag
 `DUCKDB_TYPE_TIMESTAMP_TZ_NS = 42`, and error tags
 `DUCKDB_ERROR_DATA_CORRUPTION = 43` and `DUCKDB_ERROR_RESOURCE_IN_USE = 44`.
 It removes no functions and changes no existing function signatures or
-structure definitions. The V2 header declares 620 functions and 45 callback
-typedefs. It also has six Arrow callback fields, for a total of 51 callbacks.
+structure definitions. The V2 header declares 620 functions.
 
 ## Generated modules
 
@@ -57,10 +56,10 @@ nix-shell dev/nix/generate.nix --run 'dev/bindings/generate-bindings.sh --check'
 ```
 
 Generation verifies identical Haskell output for x86_64 and aarch64 Linux,
-x86_64 and arm64 macOS, and the native target. The generated C files contain
-508 retained-API and 642 V2 ABI assertions. Compilation checks their sizes,
-alignments, and field offsets against the pinned headers. These checks do not
-replace runtime ownership tests.
+x86_64 and arm64 macOS, and the native target. It fails if a native function
+has no binding. The generated C files contain ABI assertions. Compilation
+checks their sizes, alignments, and field offsets against the pinned headers.
+These checks do not replace runtime ownership tests.
 
 The generated Haskell modules and ABI-check C files are build artefacts in
 `duckdb-ffi/generated/`. Git ignores that directory. CI generates and checks
@@ -88,43 +87,22 @@ default to the newest specified version. To use unstable declarations, enable
 them explicitly and target the newest API. Extension headers use versioned
 function tables. Ordinary clients link exported functions.
 
-## Audit and refresh
+## Pin updates
 
-These commands use Python's standard library. The checks run offline:
-
-```sh
-uv run dev/bindings/duckdb-api.py --check
-uv run dev/bindings/duckdb-api.py --report > /tmp/duckdb-api-report.json
-uv run dev/bindings/duckdb-api.py --compare-headers /absolute/path/to/native/include
-```
-
-`--verify-headers` verifies the pinned source metadata and each client file digest.
-It does not need generated bindings. `--check` also verifies generated coverage.
-For every retained and V2 function, it requires an exported generated binding,
-its FFI shim, and the native call in that shim. It also requires every callback
-typedef and inline callback field, with both callback conversions. `--report`
-lists each covered function, callback type, and omission. `--compare-headers`
-compares both APIs with another header directory. It compares function types
-without parameter names and complete typedefs, including enumerations and
-structure definitions. Run compilation, ABI checks, and behavior tests in
-addition to the coverage checks.
-
-To move to another upstream release, select its tag. Generate output with the
-pinned Nix toolchain and review any checksum changes:
+`dev/update-duckdb.sh` pins a release tag. It resolves the tag to a full commit
+SHA before it downloads files. It replaces the client headers and the upstream
+license. It writes new digests to `vendor/upstream.sha256`, `native.sha256`, and
+`vendor/duckdb-api.json`. Regenerate with the pinned Nix toolchain and review
+the diff:
 
 ```sh
-uv run dev/bindings/duckdb-api.py --refresh v2.0.0
+dev/update-duckdb.sh v2.0.0
 nix-shell dev/nix/generate.nix --run 'dev/bindings/generate-bindings.sh'
-uv run dev/bindings/duckdb-api.py --check
-uv run dev/bindings/duckdb-api.py --report > /tmp/duckdb-api-final.json
+git diff
 ```
 
-`--refresh` resolves the ref to a full SHA before it downloads any files. It
-reports function and type changes for both APIs against the current verified pin.
-It replaces the client headers, upstream license, and per-file manifest. Review
-the plain-file diff, manifest, and generated code. Upstream files remain
-unmodified. Use the recorded SHA for subsequent downloads and builds. Do not
-select release-branch commits after the tag.
+`generate-bindings.sh` checks the vendored files against
+`vendor/upstream.sha256` before it runs. CI repeats this check.
 
 ## Native runtime
 
@@ -190,14 +168,14 @@ cabal test duckdb-simple:duckdb-simple-quack-test -fquack-tests -fsystemlib --ex
 
 ## Native pin update
 
-1. Refresh the headers and regenerate both APIs. Review signature, enum,
-   callback, and ownership changes. Update the counts in this document.
-2. Record the new shared-library archive digests in `duckdb-ffi/native.sha256`.
-   Keep untested platforms out of the download matrix.
+1. Run `dev/update-duckdb.sh` with the release tag and regenerate both APIs.
+   Review signature, enum, callback, and ownership changes. Update the
+   function counts in this document.
+2. Keep untested platforms out of `duckdb-ffi/native.sha256`.
 3. Update the Nix source pin and its version assertions.
 4. Run the full suites, the leak suite, and Haddock on all supported compilers.
 5. Build source archives with `cabal sdist all`. Check that they contain the
    generated modules, C checks, client headers, license, and manifest.
-6. `dev/release.sh` regenerates both APIs and verifies their checksums and
-   coverage before it builds and uploads the Hackage archives. It uploads
+6. `dev/release.sh` regenerates both APIs and verifies the header digests and
+   generated checksums before it builds and uploads the Hackage archives. It uploads
    package candidates even without `--publish`.

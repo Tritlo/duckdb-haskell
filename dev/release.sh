@@ -33,7 +33,6 @@ esac
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd -- "$repo_dir"
 nix-shell dev/nix/generate.nix --run 'dev/bindings/generate-bindings.sh --check'
-python3 dev/bindings/duckdb-api.py --check
 
 read -p "Username: " username
 read -sp "Password: " password

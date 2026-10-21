@@ -79,6 +79,5 @@ pkgs.mkShell {
     clang.llvm
     pkgs.doxygen
     pkgs.coreutils
-    pkgs.python3
   ];
 }

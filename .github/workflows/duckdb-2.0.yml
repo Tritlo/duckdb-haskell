@@ -63,8 +63,6 @@ jobs:
           cabal-version: '3.18.1.0'
       - name: Update the package index
         run: cabal update
-      - name: Check the pinned C API
-        run: python3 dev/bindings/duckdb-api.py --check
       - name: Check the generated bindings
         working-directory: duckdb-ffi
         run: shasum -a 256 --check generated.sha256

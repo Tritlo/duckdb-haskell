@@ -22,14 +22,12 @@ jobs:
               hashFiles(
                 'dev/bindings/GenerateBindings.hs',
                 'dev/bindings/generate-bindings.sh',
-                'dev/bindings/duckdb-api.py',
                 'dev/nix/generate.nix',
                 'duckdb-ffi/generated.sha256',
-                'duckdb-ffi/vendor/duckdb-api.json',
+                'duckdb-ffi/vendor/upstream.sha256',
                 'duckdb-ffi/cbits/duckdb.h',
                 'duckdb-ffi/cbits/duckdb_arrow.h',
                 'duckdb-ffi/cbits/duckdb_v2.h',
-                'duckdb-ffi/cbits/duckdb_extension_v2.h',
                 'duckdb-ffi/cbits/duckdb-LICENSE'
               ) }}
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
@@ -39,10 +37,11 @@ jobs:
         run: >-
           nix-shell dev/nix/generate.nix --max-jobs 2 --cores 2
           --run 'dev/bindings/generate-bindings.sh --check'
-      - name: Verify generated bindings
+      - name: Verify the vendored headers and generated bindings
+        working-directory: duckdb-ffi
         run: |
-          (cd duckdb-ffi && sha256sum --check generated.sha256)
-          python3 dev/bindings/duckdb-api.py --check
+          sha256sum --check vendor/upstream.sha256
+          sha256sum --check generated.sha256
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: duckdb-generated

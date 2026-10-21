@@ -204,7 +204,7 @@ uv run dev/bindings/duckdb-api.py --compare-headers /absolute/path/to/native/inc
 It does not need generated bindings. `--check` also verifies generated coverage.
 For every v1 and v2 function, it requires an exported generated binding, its FFI
 shim, and the native call in that shim. It also requires every callback typedef
-and Arrow callback field, with both callback conversions. `--report` lists each
+and inline callback field, with both callback conversions. `--report` lists each
 covered function, callback type, and omission. `--compare-headers` compares both
 APIs with another header directory. It compares function types without parameter
 names and complete typedefs, including enumerations and structure definitions.

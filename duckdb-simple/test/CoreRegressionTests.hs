@@ -228,7 +228,7 @@ coreRegressionTests =
         , testCase "parent close releases concurrently created children" $
             bracket getNumCapabilities setNumCapabilities $ \capabilities -> do
                 setNumCapabilities (max 2 capabilities)
-                withEnvironment $ \environment -> withInstance environment [("threads", "1")] $ \instance_ ->
+                withEnvironment $ \environment -> withInstance environment [("threads", "1"), ("async_threads", "1")] $ \instance_ ->
                     withConcurrentChildren 64 (connect instance_) close $ \connections -> do
                         closeInstance instance_
                         forM_ connections $ \connection -> do
@@ -238,7 +238,7 @@ coreRegressionTests =
                                 Internal.ConnectionOpen{} -> assertFailure "parent close missed a connection"
                             assertThrows (query_ connection "SELECT 42" :: IO [Only Int64])
                 withEnvironment $ \environment ->
-                    withConcurrentChildren 16 (createInstance environment [("threads", "1")]) closeInstance $ \instances -> do
+                    withConcurrentChildren 16 (createInstance environment [("threads", "1"), ("async_threads", "1")]) closeInstance $ \instances -> do
                         closeEnvironment environment
                         forM_ instances $ \instance_ -> do
                             state <- readIORef (Internal.instanceState instance_)

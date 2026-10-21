@@ -45,7 +45,8 @@ into V2 handles.
 
 ## Implementation and validation
 
-The current source pin is `d54cbbe3df17e8e5ce68312f483b4155836112aa` from
+The DuckDB `v2.0.0` tag resolves to
+`d54cbbe3df17e8e5ce68312f483b4155836112aa`. It is the source pin audited on
 2026-10-20. Both client modules regenerate with the existing naming policy.
 The retained API has 548 functions and 508 ABI assertions. V2 has 620 functions
 and 642 ABI assertions. All V2 functions are marked unstable. Rebuild clients
@@ -82,6 +83,11 @@ Local checks on 2026-10-20 use Nix GHC 9.14.1 on Linux x86_64 and the matching
 The committed-code audit on 2026-10-21 uses the same native pin and toolchain.
 All 624 functional tests pass: 502 high-level, 97 retained-API, 19 raw V2,
 and six DataFrame tests. The default leak suite also passes.
+
+The final-release check on 2026-10-21 repeats all 624 functional tests and the
+default leak suite against the verified official Linux x86_64 library. The
+runtime reports `v2.0.0`. The final headers match the audited inputs, and all
+four generated-file checksums remain unchanged. No API adaptation is needed.
 
 The audit fixes sparse numeric parameter names, native tuple decoding and
 construction, and cached schemas after statement reset or rebinding. A reused
@@ -189,7 +195,7 @@ suites. Check callback exceptions, async cancellation, selection vectors,
 shared lifetimes, registration cleanup, and materialized cursor behavior.
 Run Valgrind with `--fair-sched=yes` for V2 tests. Run both formatters and
 Haddock. Verify extracted source archives and installed consumers without the
-generator. Record native preview limitations separately from missing bindings.
+generator. Record native API limitations separately from missing bindings.
 
 Use `GHC_ENVIRONMENT=- cabal exec --with-compiler=ghc
 --builddir=dist-newstyle-bindgen -- ghc ...` for isolated compiler probes inside

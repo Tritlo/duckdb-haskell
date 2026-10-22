@@ -1,9 +1,10 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-{- | Checked access to DuckDB 1.5's private VARIANT payload.
+{- | Checked access to the supported DuckDB private VARIANT payload.
 Only public C handles and vector accessors cross the native boundary.
 -}
 module Database.DuckDB.Simple.VariantCodec (
@@ -20,6 +21,8 @@ import Data.Array (Array, bounds, listArray, (!))
 import Data.Bits (complement, finiteBitSize, shiftL, (.&.), (.|.))
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
+import Data.Char (isDigit)
+import Data.Coerce (Coercible, coerce)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.IntSet as IntSet
 import qualified Data.Set as Set
@@ -38,12 +41,12 @@ import Database.DuckDB.Simple.FromField (
  )
 import Database.DuckDB.Simple.Internal (destroyLogicalType)
 import Database.DuckDB.Simple.Variant (variantObject)
+import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (peekCString)
 import Foreign.Marshal.Alloc (alloca, allocaBytesAligned)
 import Foreign.Marshal.Utils (copyBytes)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (Storable, peek, peekElemOff, poke, sizeOf)
-import Text.Read (readMaybe)
 
 -- | Raise a codec error before an invalid native operation.
 codecError :: String -> IO a
@@ -53,15 +56,17 @@ codecError message = throwIO (userError ("duckdb-simple: VARIANT: " <> message))
 checked :: Either String a -> IO a
 checked = either codecError pure
 
--- | Reject native versions outside the supported private-format range.
+{- | Accept only DuckDB 2.0.x releases. Development builds can use another
+private VARIANT format.
+-}
 checkVersion :: IO ()
 checkVersion = do
-    version <- c_duckdb_library_version >>= peekCString
-    let parts = Text.splitOn "." (Text.pack version)
-        patch = case parts of
-            ["v1", "5", p] -> readMaybe (Text.unpack p) :: Maybe Int
-            _ -> Nothing
-    unless (maybe False (>= 3) patch) (codecError ("unsupported native version " <> version))
+    ConstPtr versionPtr <- c_duckdb_library_version
+    version <- peekCString versionPtr
+    let supported = case Text.splitOn "." (Text.pack version) of
+            ["v2", "0", patch] -> not (Text.null patch) && Text.all isDigit patch
+            _ -> False
+    unless supported (codecError ("unsupported native version " <> version))
 
 -- | Check the byte order and pointer width required by native scalar loads.
 checkPlatform :: IO ()
@@ -72,16 +77,16 @@ checkPlatform = alloca \ptr -> do
         codecError "the private codec requires a 64-bit little-endian host"
 
 -- | Acquire a non-NULL native handle.
-nonNull :: String -> IO (Ptr a) -> IO (Ptr a)
+nonNull :: (Coercible a (Ptr ())) => String -> IO a -> IO a
 nonNull label action = do
     ptr <- action
-    when (ptr == nullPtr) (codecError (label <> " returned NULL"))
+    when (coerce ptr == (nullPtr :: Ptr ())) (codecError (label <> " returned NULL"))
     pure ptr
 
 -- | Check a logical type's tag.
-expectType :: DuckDBType -> DuckDBLogicalType -> IO ()
+expectType :: DUCKDB_TYPE -> DuckDBLogicalType -> IO ()
 expectType expected logical = do
-    actual <- c_duckdb_get_type_id logical
+    DuckDBType actual <- c_duckdb_get_type_id logical
     unless (actual == expected) (codecError "unexpected physical child type")
 
 -- | Check a STRUCT's names and owned child descriptors.
@@ -162,7 +167,7 @@ prepareBytesReader vector = do
     base <- c_duckdb_vector_get_data vector
     valid <- prepareValidity vector
     pure \index -> do
-        checkIndex 16 index
+        checkIndex (sizeOf (undefined :: DuckDBStringT)) index
         present <- valid index
         unless present (codecError "NULL physical string element")
         when (base == nullPtr) (codecError "NULL string vector data")
@@ -178,7 +183,7 @@ checkedInt n
 prepareListBounds :: DuckDBVector -> IO (Int -> IO (Int, Int))
 prepareListBounds vector = do
     readEntry <- prepareElementReader vector
-    size <- c_duckdb_list_vector_get_size vector
+    DuckDBIdx size <- c_duckdb_list_vector_get_size vector
     pure \row -> do
         DuckDBListEntry offset count <- readEntry row
         unless (offset <= size && count <= size - offset) (codecError "LIST bounds exceed child size")
@@ -193,14 +198,14 @@ decodeVariant vector row = prepareVariantDecoder vector >>= ($ row)
 
 {- | Check the format once and borrow buffers for a flattened result chunk.
 The returned reader must not outlive the chunk. The caller supplies row indices
-within that chunk. DuckDB result Fetch flattens nested vectors in 1.5.
+within that chunk. DuckDB result Fetch flattens nested vectors.
 Each read copies its payload into Haskell memory, including referenced keys.
 -}
 prepareVariantDecoder :: DuckDBVector -> IO (Int -> IO FieldValue)
 prepareVariantDecoder vector = do
     checkVersion
     checkPlatform
-    when (vector == nullPtr) (codecError "NULL vector")
+    when (vector == DuckDBVector nullPtr) (codecError "NULL vector")
     bracket (nonNull "vector type" (c_duckdb_vector_get_column_type vector)) destroyLogicalType checkSchema
     valid <- prepareValidity vector
     keys <- child vector 0
@@ -225,7 +230,7 @@ prepareVariantDecoder vector = do
     readKeyBytes <- prepareBytesReader keyVector
     readBlob <- prepareBytesReader blob
     pure \row -> do
-        checkIndex 16 row
+        checkIndex (sizeOf (undefined :: DuckDBListEntry)) row
         present <- valid row
         if not present
             then pure FieldNull
@@ -254,7 +259,7 @@ prepareVariantDecoder vector = do
   where
     child parent index = nonNull "STRUCT vector child" (c_duckdb_struct_vector_get_child parent index)
 
-{- | Decode copied 1.5 payload data for one non-NULL row.
+{- | Decode copied DuckDB 2.0 payload data for one non-NULL row.
 Values are (tag, byte offset). Children are (optional key index, value index).
 Keys pair an index with its text. Indices are relative to this row's LISTs.
 The root value has index zero. This helper checks all metadata before decoding.
@@ -271,7 +276,7 @@ decodeVariantPayload valueRows childRows keyRows bytes = do
     when (null valueRows) (codecError "missing root value")
     unless (IntMap.size keys == length keyRows) (codecError "duplicate key dictionary index")
     forM_ valueRows \(tag, offset) -> do
-        when (tag > 33) (codecError "unknown payload tag")
+        when (tag > 34) (codecError "unknown payload tag")
         when (toInteger offset > toInteger (BS.length bytes)) (codecError "byte offset exceeds data size")
     forM_ childRows \(key, value) -> do
         when (toInteger value >= toInteger valueCount) (codecError "child value index out of bounds")
@@ -360,7 +365,7 @@ readString bytes = do
         then Left "string length exceeds payload size"
         else Right (BS.take (fromIntegral count) rest)
 
--- | Decode the scalar tags from VariantLogicalType in DuckDB 1.5.
+-- | Decode the scalar tags from VariantLogicalType in DuckDB 2.0.
 decodeScalar :: Word8 -> ByteString -> IO FieldValue
 decodeScalar tag bytes = case tag of
     0 -> pure FieldNull
@@ -396,7 +401,7 @@ decodeScalar tag bytes = case tag of
 {- | The type and the payload size of each fixed-width scalar tag. These
 payloads have the memory layout of one vector element of the type.
 -}
-fixedWidthTag :: Word8 -> Maybe (DuckDBType, Int)
+fixedWidthTag :: Word8 -> Maybe (DUCKDB_TYPE, Int)
 fixedWidthTag = \case
     3 -> Just (DuckDBTypeTinyInt, 1)
     4 -> Just (DuckDBTypeSmallInt, 2)
@@ -421,10 +426,11 @@ fixedWidthTag = \case
     26 -> Just (DuckDBTypeTimeTz, 8)
     27 -> Just (DuckDBTypeTimestampTz, 8)
     28 -> Just (DuckDBTypeInterval, 16)
+    34 -> Just (DuckDBTypeTimestampTzNs, 8)
     _ -> Nothing
 
 -- | Copy a fixed-width payload to aligned memory and decode it as one element.
-decodeFixedWidth :: DuckDBType -> Int -> ByteString -> IO FieldValue
+decodeFixedWidth :: DUCKDB_TYPE -> Int -> ByteString -> IO FieldValue
 decodeFixedWidth dtype size bytes = do
     when (BS.length bytes < size) (codecError "truncated scalar payload")
     allocaBytesAligned size 16 \buffer -> do

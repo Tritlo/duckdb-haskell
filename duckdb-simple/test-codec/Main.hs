@@ -23,7 +23,7 @@ main =
         testGroup
             "VARIANT payload validation"
             [ rejected "missing root" [] [] [] []
-            , rejected "unknown tag" [(34, 0)] [] [] []
+            , rejected "unknown tag" [(35, 0)] [] [] []
             , rejected "offset outside blob" [(1, 1)] [] [] []
             , rejected "truncated BIGINT" [(6, 0)] [] [] (replicate 7 0)
             , rejected "truncated varint" [(16, 0)] [] [] [128]

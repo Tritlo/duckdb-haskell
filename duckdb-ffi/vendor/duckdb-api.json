@@ -1,0 +1,9 @@
+{
+  "commit": "d54cbbe3df17e8e5ce68312f483b4155836112aa",
+  "ref": "v2.0.0",
+  "repository": "https://github.com/duckdb/duckdb",
+  "source_archive": {
+    "sha256": "93e3d1f9c84b6ec3493237d21565c01c2c19b9862e54e5552d3d7999ccc3bbb4",
+    "url": "https://codeload.github.com/duckdb/duckdb/tar.gz/d54cbbe3df17e8e5ce68312f483b4155836112aa"
+  }
+}

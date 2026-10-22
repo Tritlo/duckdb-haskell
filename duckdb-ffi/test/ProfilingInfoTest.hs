@@ -3,13 +3,15 @@
 module ProfilingInfoTest (tests) where
 
 import Control.Monad (forM)
+import Data.Coerce (coerce)
 import Database.DuckDB.FFI
-import Foreign.C.String (peekCString, withCString)
+import Foreign.C.ConstPtr (ConstPtr (..))
+import Foreign.C.String (peekCString)
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (castPtr, nullPtr)
+import Foreign.Ptr (nullPtr)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
-import Utils (destroyDuckValue, withConnection, withDatabase)
+import Utils (destroyDuckValue, withConnection, withConstCString, withDatabase)
 
 tests :: TestTree
 tests =
@@ -25,7 +27,7 @@ profilingDisabledByDefault =
         withDatabase \db ->
             withConnection db \conn -> do
                 infoPtr <- c_duckdb_get_profiling_info conn
-                infoPtr @?= nullPtr
+                infoPtr @?= coerce nullPtr
 
 profilingMetricsRoundtrip :: TestTree
 profilingMetricsRoundtrip =
@@ -33,12 +35,18 @@ profilingMetricsRoundtrip =
         withDatabase \db ->
             withConnection db \conn -> do
                 runStatement conn "PRAGMA enable_profiling='no_output'"
+                runStatement conn "SET tracked_metrics = ['query.cpu_time', 'operator.extra_info']"
                 runStatement conn "CREATE TABLE profiling_numbers(value INTEGER)"
                 runStatement conn "INSERT INTO profiling_numbers VALUES (1), (2), (3)"
                 runStatement conn "SELECT sum(value) FROM profiling_numbers"
 
-                infoPtr <- c_duckdb_get_profiling_info conn
-                assertBool "profiling info pointer should be non-null" (infoPtr /= nullPtr)
+                rootPtr <- c_duckdb_get_profiling_info conn
+                assertBool "profiling info pointer should be non-null" (rootPtr /= coerce nullPtr)
+                rootMetrics <- c_duckdb_profiling_info_get_metrics rootPtr
+                c_duckdb_get_map_size rootMetrics >>= (@?= 0)
+                destroyDuckValue rootMetrics
+                infoPtr <- c_duckdb_profiling_info_get_child rootPtr 0
+                assertBool "operator node should be non-null" (infoPtr /= coerce nullPtr)
 
                 metricsVal <- c_duckdb_profiling_info_get_metrics infoPtr
                 entryCountIdx <- c_duckdb_get_map_size metricsVal
@@ -51,10 +59,10 @@ profilingMetricsRoundtrip =
                         (e : _) -> e
                         [] -> error "unreachable: entries is non-empty"
 
-                withCString firstKey \keyPtr -> do
+                withConstCString firstKey \keyPtr -> do
                     valueHandle <- c_duckdb_profiling_info_get_value infoPtr keyPtr
-                    assertBool ("metric " <> firstKey <> " should be present") (valueHandle /= nullPtr)
-                    fetchedValue <- duckValueToString valueHandle
+                    assertBool ("metric " <> firstKey <> " should be present") (valueHandle /= coerce nullPtr)
+                    fetchedValue <- duckValueToText valueHandle
                     destroyDuckValue valueHandle
                     fetchedValue @?= firstValue
 
@@ -62,7 +70,7 @@ profilingMetricsRoundtrip =
                 assertBool "expected at least one child node" (childCount > 0)
                 let firstChildIdx = 0
                 childPtr <- c_duckdb_profiling_info_get_child infoPtr firstChildIdx
-                assertBool "child pointer should be non-null" (childPtr /= nullPtr)
+                assertBool "child pointer should be non-null" (childPtr /= coerce nullPtr)
 
                 childMetrics <- c_duckdb_profiling_info_get_metrics childPtr
                 childCountIdx <- c_duckdb_get_map_size childMetrics
@@ -71,7 +79,7 @@ profilingMetricsRoundtrip =
 
 runStatement :: DuckDBConnection -> String -> IO ()
 runStatement conn sql =
-    withCString sql \sqlPtr ->
+    withConstCString sql \sqlPtr ->
         alloca \resPtr -> do
             state <- c_duckdb_query conn sqlPtr resPtr
             if state == DuckDBSuccess
@@ -79,9 +87,9 @@ runStatement conn sql =
                 else do
                     errPtr <- c_duckdb_result_error resPtr
                     errMsg <-
-                        if errPtr == nullPtr
+                        if errPtr == coerce nullPtr
                             then pure "unknown error"
-                            else peekCString errPtr
+                            else peekCString (coerce errPtr)
                     c_duckdb_destroy_result resPtr
                     assertFailure ("duckdb_query failed: " <> errMsg)
 
@@ -95,7 +103,7 @@ collectMetrics metricsVal entryCountIdx = do
         destroyDuckValue keyHandle
 
         valHandle <- c_duckdb_get_map_value metricsVal idx
-        valText <- duckValueToString valHandle
+        valText <- duckValueToText valHandle
         destroyDuckValue valHandle
 
         pure (keyName, valText)
@@ -103,13 +111,6 @@ collectMetrics metricsVal entryCountIdx = do
 duckValueToText :: DuckDBValue -> IO String
 duckValueToText valHandle = do
     strPtr <- c_duckdb_get_varchar valHandle
-    text <- peekCString strPtr
-    c_duckdb_free (castPtr strPtr)
-    pure text
-
-duckValueToString :: DuckDBValue -> IO String
-duckValueToString valHandle = do
-    strPtr <- c_duckdb_value_to_string valHandle
-    text <- peekCString strPtr
-    c_duckdb_free (castPtr strPtr)
+    text <- peekCString (coerce strPtr)
+    c_duckdb_free (coerce strPtr)
     pure text

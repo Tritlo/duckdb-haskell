@@ -1,5 +1,27 @@
 # Changelog
 
+## 2.0.0.0 (unreleased)
+
+- Target DuckDB 2.0. The retained API supports DuckDB 2.0.x releases. Use the
+  earlier package release with DuckDB 1.5.
+- Generate the bindings from the DuckDB 2.0.0 client headers with hs-bindgen
+  1.0. `Database.DuckDB.FFI` contains all 548 functions of the retained API.
+  Remove `Database.DuckDB.FFI.Deprecated`. Its functions are in
+  `Database.DuckDB.FFI`. See MIGRATION.md for the changed types and names.
+- Add `Database.DuckDB.FFI.V2` with the 620 functions of the new C API.
+  Upstream marks this API as unstable, so it requires exactly DuckDB 2.0.0.
+- Add nanosecond timezone timestamps and the data-corruption and
+  resource-in-use error tags.
+- Remove the Arrow callback constructors, wrappers, and release helpers. Use
+  `toFunPtr` and `fromFunPtr` from hs-bindgen-runtime.
+- Deprecated native functions no longer have `DEPRECATED` pragmas.
+- Download the DuckDB 2.0.0 shared-library archives on glibc Linux and macOS.
+  Keep their symlinks and versioned library files.
+- Install both client headers, `duckdb_arrow.h`, and the DuckDB license with
+  the library.
+- Reject platforms other than Linux and macOS on x86_64 and aarch64 at compile
+  time.
+
 ## 1.5.6.0
 
 - Use the official DuckDB 1.5.6 header and native download. Keep native support

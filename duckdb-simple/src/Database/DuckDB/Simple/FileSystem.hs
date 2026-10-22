@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 {- |
 Module      : Database.DuckDB.Simple.FileSystem
@@ -16,12 +17,14 @@ module Database.DuckDB.Simple.FileSystem (
 
 import Control.Exception (bracket, mask_, throwIO)
 import qualified Data.ByteString as BS
+import Data.Coerce (Coercible, coerce)
 import Data.Int (Int64)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
 import Database.DuckDB.FFI
 import Database.DuckDB.Simple.Internal (Connection, SQLError (..), peekUtf8CString, withClientContext)
+import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Alloc (alloca, free, mallocBytes)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (peek, poke)
@@ -41,8 +44,8 @@ withFileHandle conn path flags action
                     TextForeign.withCString (Text.pack path) \cPath ->
                         bracket
                             ( alloca \filePtr -> do
-                                poke filePtr nullPtr
-                                rc <- c_duckdb_file_system_open fs cPath opts filePtr
+                                poke filePtr (DuckDBFileHandle nullPtr)
+                                rc <- c_duckdb_file_system_open fs (ConstPtr cPath) opts filePtr
                                 if rc /= DuckDBSuccess
                                     then throwFileSystemError fs path
                                     else do
@@ -73,7 +76,7 @@ readFileHandleChunk handle requested
 writeFileHandleBytes :: DuckDBFileHandle -> BS.ByteString -> IO Int64
 writeFileHandleBytes handle bytes =
     BS.useAsCStringLen bytes \(ptr, len) -> do
-        written <- c_duckdb_file_handle_write handle (castPtr ptr) (fromIntegral len)
+        written <- c_duckdb_file_handle_write handle (ConstPtr (castPtr ptr)) (fromIntegral len)
         if written < 0
             then throwFileHandleError handle (Text.pack "write failed")
             else pure written
@@ -142,7 +145,7 @@ throwErrorData err fallback =
         msgPtr <- c_duckdb_error_data_message errData
         errType <- c_duckdb_error_data_error_type errData
         message <-
-            if msgPtr == nullPtr
+            if msgPtr == ConstPtr nullPtr
                 then pure fallback
                 else peekUtf8CString msgPtr
         throwIO
@@ -170,6 +173,6 @@ expectState label action = do
                     }
 
 -- | Reject a null file-system handle before use.
-whenNull :: Ptr a -> String -> IO ()
+whenNull :: (Coercible p (Ptr ())) => p -> String -> IO ()
 whenNull ptr label =
-    if ptr == nullPtr then expectState label (pure DuckDBError) else pure ()
+    if coerce ptr == (nullPtr :: Ptr ()) then expectState label (pure DuckDBError) else pure ()

@@ -31,7 +31,8 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word16, Word64, Word8)
 import Database.DuckDB.FFI
-import Foreign.C.String (CString)
+import Foreign.C.ConstPtr (ConstPtr (..))
+import Foreign.C.Types (CChar)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Array (withArray)
 import Foreign.Marshal.Utils (withMany)
@@ -40,7 +41,7 @@ import Foreign.Storable (poke)
 
 -- | A Haskell description of a DuckDB logical type tree.
 data LogicalTypeRep
-    = LogicalTypeScalar DuckDBType
+    = LogicalTypeScalar DUCKDB_TYPE
     | LogicalTypeDecimal !Word8 !Word8
     | LogicalTypeGeometry !(Maybe Text)
     | LogicalTypeList LogicalTypeRep
@@ -100,14 +101,14 @@ destroyLogicalType logical =
 -- | Convert a DuckDB logical type handle into the pure @LogicalTypeRep@ tree.
 logicalTypeToRep :: DuckDBLogicalType -> IO LogicalTypeRep
 logicalTypeToRep logical = do
-    dtype <- c_duckdb_get_type_id logical
+    DuckDBType dtype <- c_duckdb_get_type_id logical
     case dtype of
         DuckDBTypeGeometry ->
             bracket (c_duckdb_geometry_type_get_crs logical) (c_duckdb_free . castPtr) \ptr ->
                 LogicalTypeGeometry <$> if ptr == nullPtr then pure Nothing else Just . TextEncoding.decodeUtf8 <$> BS.packCString ptr
         DuckDBTypeStruct -> do
             childCountRaw <- c_duckdb_struct_type_child_count logical
-            childCount <- word64ToInt (Text.pack "struct child count") childCountRaw
+            childCount <- word64ToInt (Text.pack "struct child count") (fromIntegral childCountRaw)
             fields <-
                 forM [0 .. childCount - 1] \idx -> do
                     name <- bracket (c_duckdb_struct_type_child_name logical (fromIntegral idx)) (c_duckdb_free . castPtr) $ \ptr -> do
@@ -122,7 +123,7 @@ logicalTypeToRep logical = do
                     (listArray (0, childCount - 1) fields)
         DuckDBTypeUnion -> do
             memberCountRaw <- c_duckdb_union_type_member_count logical
-            memberCount <- word64ToInt (Text.pack "union member count") memberCountRaw
+            memberCount <- word64ToInt (Text.pack "union member count") (fromIntegral memberCountRaw)
             members <-
                 forM [0 .. memberCount - 1] \idx -> do
                     name <- bracket (c_duckdb_union_type_member_name logical (fromIntegral idx)) (c_duckdb_free . castPtr) $ \ptr -> do
@@ -141,7 +142,7 @@ logicalTypeToRep logical = do
         DuckDBTypeArray -> do
             childRep <- bracket (c_duckdb_array_type_child_type logical) destroyLogicalType logicalTypeToRep
             size <- c_duckdb_array_type_array_size logical
-            pure (LogicalTypeArray childRep size)
+            pure (LogicalTypeArray childRep (fromIntegral size))
         DuckDBTypeMap -> do
             keyRep <- bracket (c_duckdb_map_type_key_type logical) destroyLogicalType logicalTypeToRep
             valueRep <- bracket (c_duckdb_map_type_value_type logical) destroyLogicalType logicalTypeToRep
@@ -179,7 +180,7 @@ logicalTypeFromRep = logicalTypeFromRepWith \case
     -- https://github.com/Tritlo/duckdb-haskell/issues/27.
     LogicalTypeScalar DuckDBTypeVariant ->
         throwIO (userError "duckdb-simple: a VARIANT type needs the type cache of a connection; bind the value as a parameter or cast a plain value with ?::VARIANT")
-    _ -> c_duckdb_create_logical_type DuckDBTypeGeometry
+    _ -> c_duckdb_create_logical_type (DuckDBType DuckDBTypeGeometry)
 
 {- | Materialize a type tree. The function argument creates the leaves that the
 C API cannot create: VARIANT, and GEOMETRY with a CRS. The caller must
@@ -188,15 +189,15 @@ destroy the result.
 logicalTypeFromRepWith :: (LogicalTypeRep -> IO DuckDBLogicalType) -> LogicalTypeRep -> IO DuckDBLogicalType
 logicalTypeFromRepWith resolve rep = do
     logical <- create rep
-    when (logical == nullPtr) $
+    when (logical == DuckDBLogicalType nullPtr) $
         throwIO (userError "duckdb-simple: DuckDB logical type construction failed")
     pure logical
   where
     create = \case
         leaf@(LogicalTypeScalar DuckDBTypeVariant) -> resolve leaf
-        LogicalTypeScalar dtype -> c_duckdb_create_logical_type dtype
+        LogicalTypeScalar dtype -> c_duckdb_create_logical_type (DuckDBType dtype)
         leaf@(LogicalTypeGeometry (Just _)) -> resolve leaf
-        LogicalTypeGeometry Nothing -> c_duckdb_create_logical_type DuckDBTypeGeometry
+        LogicalTypeGeometry Nothing -> c_duckdb_create_logical_type (DuckDBType DuckDBTypeGeometry)
         LogicalTypeDecimal width scale -> do
             when (width < 1 || width > 38 || scale > width) $
                 throwIO (userError "duckdb-simple: invalid DECIMAL width or scale")
@@ -205,7 +206,7 @@ logicalTypeFromRepWith resolve rep = do
             bracket (logicalTypeFromRepWith resolve elemRep) destroyLogicalType c_duckdb_create_list_type
         LogicalTypeArray elemRep size ->
             bracket (logicalTypeFromRepWith resolve elemRep) destroyLogicalType $
-                flip c_duckdb_create_array_type size
+                flip c_duckdb_create_array_type (fromIntegral size)
         LogicalTypeMap keyRep valueRep ->
             bracket (logicalTypeFromRepWith resolve keyRep) destroyLogicalType \keyType ->
                 bracket (logicalTypeFromRepWith resolve valueRep) destroyLogicalType $
@@ -230,11 +231,11 @@ logicalTypeFromRepWith resolve rep = do
                     c_duckdb_create_enum_type nameArray (fromIntegral (length names))
 
 -- | Encode native type names as UTF-8 and reject embedded NUL.
-withTypeName :: Text -> (CString -> IO a) -> IO a
+withTypeName :: Text -> (ConstPtr CChar -> IO a) -> IO a
 withTypeName name action = do
     when (Text.any (== '\0') name) $
         throwIO (userError "duckdb-simple: logical type name contains NUL")
-    BS.useAsCString (TextEncoding.encodeUtf8 name) action
+    BS.useAsCString (TextEncoding.encodeUtf8 name) (action . ConstPtr)
 
 word64ToInt :: Text -> Word64 -> IO Int
 word64ToInt label value =

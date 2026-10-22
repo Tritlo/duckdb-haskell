@@ -4,6 +4,9 @@
 #include <stdint.h>
 
 // Arrow C Data Interface structures used by the deprecated DuckDB API.
+#ifndef ARROW_C_DATA_INTERFACE
+#define ARROW_C_DATA_INTERFACE
+
 struct ArrowSchema {
   const char *format;
   const char *name;
@@ -28,6 +31,10 @@ struct ArrowArray {
   void (*release)(struct ArrowArray *);
   void *private_data;
 };
+#endif
+
+#ifndef ARROW_C_STREAM_INTERFACE
+#define ARROW_C_STREAM_INTERFACE
 
 struct ArrowArrayStream {
   int (*get_schema)(struct ArrowArrayStream *, struct ArrowSchema *);
@@ -36,5 +43,6 @@ struct ArrowArrayStream {
   void (*release)(struct ArrowArrayStream *);
   void *private_data;
 };
+#endif
 
 #endif

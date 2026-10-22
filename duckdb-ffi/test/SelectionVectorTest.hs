@@ -3,10 +3,10 @@
 module SelectionVectorTest (tests) where
 
 import Control.Monad (forM_)
+import Data.Coerce (coerce)
 import Data.Int (Int32)
-import Data.Word (Word32)
 import Database.DuckDB.FFI
-import Foreign.Ptr (Ptr, castPtr, nullPtr)
+import Foreign.Ptr (Ptr, nullPtr)
 import Foreign.Storable (peekElemOff, pokeElemOff)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
@@ -26,14 +26,14 @@ selectionVectorPointerWritable =
         withSelectionVector 4 \selVec -> do
             dataPtr <- c_duckdb_selection_vector_get_data_ptr selVec
             assertBool "data pointer should be non-null" (dataPtr /= nullPtr)
-            forM_ (zip [0 ..] [0, 2, 4, 6 :: Word32]) (uncurry (pokeElemOff dataPtr))
+            forM_ (zip [0 ..] [0, 2, 4, 6 :: DuckDBSel]) (uncurry (pokeElemOff dataPtr))
             fetched <- mapM (peekElemOff dataPtr) [0 .. 3]
             fetched @?= [0, 2, 4, 6]
 
 selectionVectorCopySelection :: TestTree
 selectionVectorCopySelection =
     testCase "vector_copy_sel copies selected rows" $ do
-        withLogicalType (c_duckdb_create_logical_type DuckDBTypeInteger) \intType -> do
+        withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \intType -> do
             withVector (c_duckdb_create_vector intType 4) \srcVec -> do
                 srcPtr <- vectorDataPtr srcVec
                 forM_ (zip [0 ..] [10, 20, 30, 40 :: Int32]) (uncurry (pokeElemOff srcPtr))
@@ -56,4 +56,4 @@ selectionVectorCopySelection =
 vectorDataPtr :: DuckDBVector -> IO (Ptr Int32)
 vectorDataPtr vec = do
     raw <- c_duckdb_vector_get_data vec
-    pure (castPtr raw)
+    pure (coerce raw)

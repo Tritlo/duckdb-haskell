@@ -2,8 +2,12 @@
 
 ## Project structure
 
-`duckdb-ffi/src` contains the C API bindings. The C wrappers are in
-`duckdb-ffi/cbits`, and the tests are in `duckdb-ffi/test`.
+`duckdb-ffi/generated` contains the generated C API bindings and ABI checks.
+The client headers and upstream license are in `duckdb-ffi/cbits`.
+`duckdb-ffi/vendor/upstream.sha256` records their digests, and
+`duckdb-ffi/vendor/duckdb-api.json` records their source commit.
+The generation driver is in `dev/bindings`. The tests are in
+`duckdb-ffi/test`.
 `duckdb-simple/src` contains the higher-level API. Its integration and property
 tests are in `duckdb-simple/test`, and its leak test is in `duckdb-simple/leaktest`.
 
@@ -14,6 +18,23 @@ The pure geometry types and codecs are maintained in
 
 Test new behavior through the database where possible. Add regressions for
 bug fixes. Run the full test suite before submitting a change.
+
+Generate the local binding artefacts before building a checkout:
+
+```sh
+nix-shell dev/nix/generate.nix --run 'dev/bindings/generate-bindings.sh --check'
+```
+
+The ignored `duckdb-ffi/generated/` directory contains the Haskell modules and
+C ABI assertions. Keep it outside Git. The checksum file and generator are
+tracked. Run the generator without `--check` after an intentional input change.
+Review the new checksums and run the coverage audit.
+
+`dev/release.sh` generates and verifies both APIs before it builds the
+Hackage source archives and documentation. It then uploads the selected
+packages. The source archives contain the generated Haskell modules and C ABI
+checks. Package users do not need Nix, LLVM, or hs-bindgen. The release script
+uploads candidates by default. Use `--publish` for an authorized release.
 
 Build all components before running the tests. With Cabal 3.16 and 3.18,
 `cabal test all` on a clean tree can skip building the tests for a package
@@ -26,7 +47,8 @@ cabal run duckdb-simple-leak-test -- all 100
 ```
 
 The last command checks 10,000 query cycles, 10,000 callback cycles, 10,000
-VARIANT/GEOMETRY cycles, and 7,000 cancellations. Each phase keeps one connection open.
+VARIANT/GEOMETRY cycles, and 7,000 cancellation attempts.
+Each phase keeps one connection open.
 The normal leak test uses one tenth of those counts. Native RSS and thread
 checks require Linux `/proc`.
 Callback collection and functional checks also run on other systems.
@@ -45,7 +67,8 @@ For example:
 cabal bench duckdb-simple-bench --benchmark-options='fold 100000'
 ```
 
-Nix CI builds and tests both packages with GHC 9.14.1 and Nix's DuckDB library.
+Nix CI builds DuckDB from the pinned source. It builds and tests both packages
+with GHC 9.14.1.
 Run the same build locally with `nix-build dev/nix/ci.nix --no-out-link`.
 
 The separate DataFrame integration suite checks Arrow export with
@@ -73,23 +96,28 @@ needs one. Do not run queries on the statement's connection during binding.
 
 ## Native library configuration
 
-The bindings support DuckDB >= 1.5.3 and < 1.6. Cabal downloads DuckDB 1.5.6
-to the user cache on glibc Linux and macOS. Set
+See [docs/duckdb-2.0.md](docs/duckdb-2.0.md) for DuckDB 2.0 development.
+Supply the matching native library. The package versions target DuckDB 2.0.
+Check the header ABI before you run the suites. CI uses the verified release
+archives on Linux and macOS. Nix builds the pinned release source.
+The optional `quack-tests` suite requires matching local `httpfs` and Quack
+extensions. See the same document for its commands and native limitations.
+
+The bindings target DuckDB 2.0.0. The automatic installer verifies the archive
+checksums in `duckdb-ffi/native.sha256`. Set
 `--configure-option=--duckdb-install-dir=/absolute/path` to select another
 installation directory. Enable the `systemlib` Cabal flag to use the system
 library. Set `extra-lib-dirs` to an absolute path to select
 a library in another directory. See the `cabal.project` example in the README.
 Nix builds use the library supplied by Nix and do not download it.
 
-CI tests 1.5.3, 1.5.4, and 1.5.5 with GHC 9.14.1 on Linux. It tests 1.5.6
-with all supported compilers on Linux and GHC 9.14.1 on macOS. The FFI suite
-rejects runtimes outside the supported range. Set
-`DUCKDB_TEST_VERSION` to the exact expected version, such as `1.5.3`, to detect
-loader configuration errors. Run the full suite on each supported native
-version. Do not skip feature tests that pass on the minimum version.
+CI tests the pinned 2.0.0 release with all supported compilers on Linux and
+GHC 9.14.1 on macOS. The V2 API requires exactly DuckDB 2.0.0. Set
+`DUCKDB_TEST_VERSION` to the exact expected version, such as `2.0.0`, to detect
+loader configuration errors. Run the full suite after each native pin update.
 
 CI also builds and tests with `--enable-optimization=0` on GHC 9.14.1 and
-DuckDB 1.5.3. Floating-point conversion must preserve special values without
+DuckDB 2.0. Floating-point conversion must preserve special values without
 compiler rewrite rules.
 
 ## Documentation

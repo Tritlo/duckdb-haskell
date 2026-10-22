@@ -1,0 +1,75 @@
+#!/bin/bash
+set -euo pipefail
+
+usage() {
+  echo "Usage: $0 [--publish] <package>"
+  echo ""
+  echo "Packages: duckdb-ffi, duckdb-simple, all"
+  echo ""
+  echo "Without --publish, uploads as a package candidate."
+  echo "With --publish, uploads as a published release."
+  exit 1
+}
+
+publish_flag=""
+package=""
+for arg in "$@"; do
+  case "$arg" in
+    --publish) publish_flag="--publish" ;;
+    -h|--help) usage ;;
+    *) package="$arg" ;;
+  esac
+done
+
+if [ -z "$package" ]; then
+  usage
+fi
+
+case "$package" in
+  duckdb-ffi|duckdb-simple|all) ;;
+  *) echo "Error: unknown package '$package'. Must be duckdb-ffi, duckdb-simple, or all." ; exit 1 ;;
+esac
+
+repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+cd -- "$repo_dir"
+nix-shell dev/nix/generate.nix --run 'dev/bindings/generate-bindings.sh --check'
+
+read -p "Username: " username
+read -sp "Password: " password
+echo ""
+
+upload_package() {
+  local name="$1"
+  echo ""
+  echo "=== Releasing $name ==="
+
+  # Use [0-9] so package prefixes do not cross-match.
+  rm -rf dist-newstyle/"$name"-[0-9]*-docs.tar.gz
+  rm -rf dist-newstyle/sdist/"$name"-[0-9]*.tar.gz
+  cabal haddock --haddock-for-hackage "$name"
+  cabal sdist "$name"
+
+  cabal upload $publish_flag -u "$username" -p "$password" dist-newstyle/sdist/"$name"-[0-9]*.tar.gz
+  cabal upload $publish_flag -d -u "$username" -p "$password" dist-newstyle/"$name"-[0-9]*-docs.tar.gz
+
+  echo "=== Done: $name ==="
+}
+
+# Cabal looks for dependency interfaces in the ordinary documentation directory.
+# The Hackage build writes to a separate directory with the package version.
+if [ "$package" = "duckdb-simple" ] || [ "$package" = "all" ]; then
+  cabal haddock duckdb-ffi
+fi
+
+case "$package" in
+  duckdb-ffi)
+    upload_package duckdb-ffi
+    ;;
+  duckdb-simple)
+    upload_package duckdb-simple
+    ;;
+  all)
+    upload_package duckdb-ffi
+    upload_package duckdb-simple
+    ;;
+esac

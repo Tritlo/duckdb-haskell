@@ -82,9 +82,16 @@ DuckDB does not allow mixing positional and named placeholders within the same
 SQL statement; the library preserves DuckDB’s error message in that situation.
 DuckDB does not support savepoints. This library does not provide `withSavepoint`.
 
-If the number of supplied parameters does not match the statement’s declared
-placeholders—or if you attempt to bind named arguments to a positional-only
-statement—`duckdb-simple` raises a `FormatError` before executing the query.
+Parameter names use DuckDB's ASCII case rules. For example, `$amount` and
+`$AMOUNT` refer to the same parameter. Supplying both raises a `FormatError`.
+Non-ASCII characters retain their case. Session variables
+can supply omitted named parameters. DuckDB rejects an omitted parameter
+that has no variable value.
+
+`duckdb-simple` raises a `FormatError` before it executes the query in these
+cases: the number of positional parameters does not match the placeholders,
+you supply more named parameters than the statement declares, or you bind named
+arguments to a statement with only positional placeholders.
 
 ### Decoding rows
 
@@ -225,6 +232,15 @@ The ordinary `Day`, `LocalTime`, and `UTCTime` instances reject infinity with
 a conversion error. Use `Maybe Date` to distinguish SQL NULL from infinity.
 Floating-point NaN and infinities remain valid `Float` and `Double` values.
 
+`UTCTime` and `UTCTimestamp` parameters preserve
+nanoseconds when the prepared parameter type is `TIMESTAMPTZ_NS`. Use an
+explicit cast, such as `SELECT ?::TIMESTAMPTZ_NS`, or a column with that type.
+UTC values inside collections, STRUCTs, MAPs, and UNIONs follow their target
+types. An untyped UTC parameter still binds as microsecond TIMESTAMPTZ.
+Prepare the statement again after a temporal column type changes. DuckDB can
+retain its old parameter type. Use separate parameters when one expression
+requires microseconds and another requires nanoseconds.
+
 ### Manual STRUCT and UNION Handling
 
 Temporal fields retain their SQL units when composite values are rebound.
@@ -293,7 +309,7 @@ success or an exception. The accumulator determines Haskell memory use.
 ### Cursors and folds
 
 `fold`, `fold_`, and `foldNamed` decode one row at a time from DuckDB's result
-chunks. DuckDB 1.5 materializes the native result before the first row is
+chunks. This API materializes the native result before the first row is
 returned. These functions avoid a complete Haskell row list, but native memory
 use still depends on the result size. The native API for starting a streaming
 result is deprecated; the default interface uses the supported execution API.
@@ -335,9 +351,11 @@ does not bound the memory used by query operators.
 
 The first cursor fetch selects the execution mode until an explicit reset.
 Switching between default and streaming `nextRow` calls retains that mode.
-Keep the connection dedicated to the active stream; another query on that
-connection can invalidate it. Cancellation interrupts native chunk fetching
-as well as execution.
+Keep the connection dedicated to the active stream. Until the stream is
+complete, DuckDB rejects other statements on that connection with a
+`RESOURCE_IN_USE` error. If you close an incomplete stream, DuckDB aborts its
+statement. In autocommit mode, DuckDB rolls back the writes of that statement.
+Cancellation interrupts native chunk fetching as well as execution.
 
 This module also provides `foldArrow` and `foldArrow_` for streaming Arrow
 batches. They use the same supported Arrow conversion and scoped ownership
@@ -377,7 +395,8 @@ that use it must declare their own dependency on `dataframe-arrow-bridge`.
 Arrow export uses DuckDB's schema and chunk conversion API. DuckDB materializes
 the native result before callbacks start, so its memory use depends on the
 result size. The older Arrow query and scan bindings remain available through
-`Database.DuckDB.FFI.Deprecated` and emit deprecation warnings.
+`Database.DuckDB.FFI`. The high-level streaming module emits deprecation
+warnings.
 
 ### VARIANT
 
@@ -402,8 +421,10 @@ when they have sub-microsecond digits. So a `TIMESTAMP_S` result binds back as
 a `TIMESTAMP` when its value fits. Wider timestamp values use milliseconds or
 seconds without losing digits. Lists, arrays, and STRUCT fields bind as
 VARIANT values. MAP and ENUM payloads raise an error. Object parameters reject
-duplicate keys, empty keys, and keys that contain NUL. You can also bind a
-plain value and cast it in SQL, as in `?::VARIANT`.
+duplicate keys and keys that contain NUL. An object with only an empty key
+also raises an error because DuckDB treats its STRUCT type as a tuple.
+DuckDB 2.0 permits an empty key with other named keys. You can also bind a plain
+value and cast it in SQL, as in `?::VARIANT`.
 
 The C API cannot create a usable VARIANT type
 ([#27](https://github.com/Tritlo/duckdb-haskell/issues/27)). Each connection
@@ -421,15 +442,14 @@ TIMETZ payload with an offset in seconds raises an error, as a TIMETZ column
 does. Results can contain empty or NUL object keys. Text and blob payloads can
 contain NUL.
 
-DuckDB 1.5 has no C API for reading VARIANT values. The decoder checks the
+The v1 C API has no accessor for VARIANT payloads. The decoder checks the
 native version and physical schema before it reads the internal representation.
-It checks payload bounds and rejects unknown tags. This format dependency is
-limited to the supported DuckDB 1.5 line.
+It checks payload bounds and rejects unknown tags. The decoder accepts only
+DuckDB 2.0.x releases, because development builds can use another format.
 
-Persistent VARIANT columns require storage format `v1.5.0` or later. For a new
-database, pass `[("storage_compatibility_version", "v1.5.0")]` to
-`openWithConfig` or `withConnectionWithConfig`. The library does not change an
-existing database's storage compatibility setting.
+New DuckDB 2.0 databases use storage format 2.0, which supports VARIANT columns.
+The library does not change an existing database's storage compatibility
+setting. VARIANT columns require storage format `v1.5.0` or later.
 
 ### GEOMETRY
 
@@ -488,12 +508,13 @@ NaN in both WKB point X and Y denotes an empty point. Empty multi-geometries
 and collections have no stored layout tag in the decoded representation.
 Keep the raw bytes when these details must survive.
 
-Structured parameters use `encodeWKT` and DuckDB's native cast. DuckDB 1.5
-has no WKB value constructor in its C API. The WKT writer combines layouts
+Structured parameters use `encodeWKT` and DuckDB's native cast. The v1
+C API has no WKB value constructor. The WKT writer combines layouts
 in multi-geometries and polygon rings. It fills absent Z or M with NaN.
 DuckDB's WKT parser limits nesting to 16 levels and rejects empty polygon rings
-and mixed collection layouts. Explicit WKB import preserves mixed member
-layouts and native NaN payload bits that WKT cannot retain.
+and mixed collection layouts. DuckDB 2.0 also rejects WKB with mixed Z/M member
+layouts. Explicit WKB import preserves native NaN payload bits that WKT cannot
+retain.
 
 `FieldGeometry` contains a raw result. Generic STRUCT and UNION parameters
 that contain non-NULL raw geometry raise an error. Construct those values in
@@ -569,22 +590,20 @@ box.
 ```haskell
 import Data.Int (Int64)
 import Database.DuckDB.Simple
-import Database.DuckDB.Simple.Function (createFunction, deleteFunction)
+import Database.DuckDB.Simple.Function (createFunction)
 import Database.DuckDB.Simple.Types (Only (..))
 
 registerAndUse :: Connection -> IO [Only Int64]
 registerAndUse conn = do
   createFunction conn "hs_times_two" (\(x :: Int64) -> x * 2)
-  result <- query_ conn "SELECT hs_times_two(21)" :: IO [Only Int64]
-  deleteFunction conn "hs_times_two"
-  pure result
+  query_ conn "SELECT hs_times_two(21)"
 ```
 
-Exceptions raised while the function executes are propagated back to DuckDB as
-`SQLError` values, and `deleteFunction` issues a `DROP FUNCTION IF EXISTS`
-statement to remove the registration. DuckDB registers C API scalar functions
-as internal entries; attempting to drop them this way will yield an error, which
-the library surfaces as an `SQLError`.
+Exceptions raised while the function executes become `SQLError` values.
+`deleteFunction` issues a `DROP FUNCTION IF EXISTS` statement and reports native
+errors. DuckDB registers C API scalar functions as internal entries and rejects
+their deletion. The function remains registered after this `SQLError`.
+Deleting an absent name succeeds.
 
 ## Tests
 

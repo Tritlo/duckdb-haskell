@@ -1,4 +1,84 @@
-# Migration Guide: DuckDB 1.4 to 1.5
+# Migration notes
+
+## DuckDB 2.0
+
+`duckdb-ffi` 2.0 and `duckdb-simple` 0.4 require DuckDB 2.0. Earlier package
+releases remain available for DuckDB 1.5. The retained API and `duckdb-simple`
+support DuckDB 2.0.x releases. The V2 API requires exactly DuckDB 2.0.0,
+because upstream marks it as unstable.
+
+### duckdb-ffi 1.5 to 2.0
+
+`hs-bindgen` 1.0 generates both C APIs from the pinned 2.0.0 headers. The
+function names stay the same. Many of their types change.
+
+- Import `Database.DuckDB.FFI` for the retained API. The
+  `Database.DuckDB.FFI.Deprecated` module is removed. Its functions are in
+  `Database.DuckDB.FFI`. `Database.DuckDB.FFI.V2` is new.
+- Add `hs-bindgen-runtime` to your dependencies to use `toFunPtr`,
+  `fromFunPtr`, and the generated record fields.
+- Enum types are newtypes over `CUInt` with one field, `unwrap`. The pattern
+  names stay the same. Logical type tags have the type `DUCKDB_TYPE`.
+  Functions take and return its wrapper `DuckDBType`. For example,
+  `c_duckdb_create_logical_type DuckDBTypeInteger` becomes
+  `c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)`.
+- Handles are newtypes over `Ptr`. `DuckDBIdx` and `DuckDBSel` are newtypes
+  over `Word64` and `Word32`. Write a null handle as, for example,
+  `DuckDBDataChunk nullPtr`.
+- `const char *` is `ConstPtr CChar`. `void *` is `Ptr Void`.
+- Record fields have the C names, and the module uses `NoFieldSelectors`. Read
+  them with `getField` or `OverloadedRecordDot`. For example,
+  `duckDBDateStructYear` becomes `year`, `arrowSchemaFormat` becomes `format`,
+  `arrowArrayNullCount` becomes `null_count`, and `duckDBBlobData` becomes
+  `data'`. `DuckDBDate`, `DuckDBTime`, and `DuckDBTimestamp` are records with a
+  `days` or `micros` field.
+- Callback types are newtypes over `FunPtr`. Use `toFunPtr` and `fromFunPtr`.
+- Structures pass by value, as in C. `c_duckdb_fetch_chunk resultPtr` becomes
+  `peek resultPtr >>= c_duckdb_fetch_chunk`. Functions that wrote a structure
+  through a pointer now return it. For example, `c_duckdb_from_date` and
+  `c_duckdb_query_progress` return `DuckDBDateStruct` and
+  `DuckDBQueryProgress`. The value getters for HUGEINT, UHUGEINT, DECIMAL,
+  INTERVAL, BLOB, BIT, UUID, and BIGNUM also return structures.
+- These names are removed: `mkArrow*`, `wrapArrow*`, `releaseArrowSchema`,
+  `releaseArrowArray`, `releaseArrowStream`, `duckdbArrow*Internal`,
+  `duckdbArrow*Clear`, `ArrowSchemaPtr`, `ArrowArrayPtr`, `ArrowStreamPtr`, and
+  `DuckDBErrorInvalidConfiguration`. `Database.DuckDB.Simple.Arrow` provides
+  the release helpers. Use `DuckDBInvalidConfiguration` for the error tag.
+- The generated functions have no `DEPRECATED` pragmas. The header
+  documentation still identifies the deprecated functions.
+- The generated ABI checks accept only Linux and macOS on x86_64 and aarch64.
+- The two APIs have separate Haskell types, including their Arrow structures.
+  Use qualified imports when you combine them.
+
+The generator does not manage ownership. Callers must still release native
+resources, keep callbacks alive for their required lifetime, and catch
+exceptions inside callbacks.
+
+### duckdb-simple 0.3 to 0.4
+
+The SQL workflow stays the same. These changes can affect your code:
+
+- `LogicalTypeScalar`, `FunctionArg.argumentType`, `Function.argumentTypes`,
+  and `CopyBindInfo.copyBindColumnTypes` use `DUCKDB_TYPE` instead of
+  `DuckDBType`. The pattern names, such as `DuckDBTypeInteger`, stay the same.
+- `sqlErrorType` can contain the DuckDB 2.0 tags `DuckDBErrorDataCorruption`
+  and `DuckDBErrorResourceInUse`.
+- A session variable can supply a named parameter that you omit. DuckDB
+  raises an error when no variable has that name. Only too many named
+  parameters raise `FormatError`.
+- While a stream is incomplete, DuckDB rejects other statements on its
+  connection with a `RESOURCE_IN_USE` error. Closing an incomplete stream
+  aborts its statement. In autocommit mode, DuckDB rolls back its writes.
+- DuckDB 2.0 rejects WKB with mixed Z/M member layouts.
+- The Arrow release helpers moved from `duckdb-ffi` to
+  `Database.DuckDB.Simple.Arrow`.
+
+A repository checkout must generate the ignored build artefacts before it
+builds. CI does this too. Source archives include those artefacts. See the
+[generation command](README.md#generate-the-bindings) and
+[2.0 API and runtime notes](docs/duckdb-2.0.md).
+
+## DuckDB 1.4 to 1.5
 
 This guide covers the changes needed when upgrading this repository from the
 DuckDB 1.4 line to the DuckDB 1.5 line.

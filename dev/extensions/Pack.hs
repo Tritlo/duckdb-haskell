@@ -9,9 +9,9 @@ import Data.Bits ((.&.))
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
 import Data.Char (ord)
-import Data.List (isPrefixOf)
+import Data.List (intercalate, isPrefixOf, isSuffixOf)
 import System.Console.GetOpt
-import System.Directory (canonicalizePath, removeFile)
+import System.Directory (canonicalizePath, doesFileExist, removeFile)
 import System.Environment (getArgs)
 import System.Exit (ExitCode (..), exitSuccess, exitWith)
 import System.FilePath (takeDirectory, takeFileName)
@@ -20,15 +20,14 @@ import System.IO.Error (ioeGetErrorString)
 import System.Posix.Files (createLink, fileMode, getFileStatus, isRegularFile, setFileMode)
 
 -- | Command-line metadata. Each required option occurs once.
-data Flag = Output FilePath | Platform String | DuckDBVersion String | ExtensionVersion String | Help
+data Flag = Output FilePath | Platform String | ExtensionVersion String | Help
     deriving (Eq, Show)
 
--- | Accepted options match the original packaging CLI.
+-- | Command-line options. The DuckDB version comes from the pinned V2 header.
 options :: [OptDescr Flag]
 options =
-    [ Option [] ["output"] (ReqArg Output "OUTPUT") "new path named haskell_demo.duckdb_extension; must not exist"
+    [ Option [] ["output"] (ReqArg Output "OUTPUT") "new NAME.duckdb_extension path, where NAME_init_c_api_v2 is the entrypoint; must not exist"
     , Option [] ["platform"] (ReqArg Platform "PLATFORM") "exact DuckDB platform, such as linux_amd64 or osx_arm64"
-    , Option [] ["duckdb-version"] (ReqArg DuckDBVersion "VERSION") "exact loader version; pinned release: v2.0.0"
     , Option [] ["extension-version"] (ReqArg ExtensionVersion "VERSION") "extension release version to record"
     , Option ['h'] ["help"] (NoArg Help) "show this help"
     ]
@@ -97,6 +96,21 @@ checkLibrary header platform
     magic = BS.take 4 header
     invalid = ioError . userError
 
+{- | Read the release version from the pinned V2 header. The unstable function
+table matches only this exact DuckDB release, so the footer must name it.
+-}
+pinnedVersion :: IO String
+pinnedVersion = do
+    let header = "duckdb-ffi/cbits/duckdb_v2.h"
+    found <- doesFileExist header
+    unless found $ failUsage ("run this script from the repository root; " <> header <> " is missing")
+    definitions <- map words . lines <$> readFile header
+    let part name = case [value | ["#define", key, value] <- definitions, key == "DUCKDB_V2_API_VERSION_" <> name] of
+            [value] -> pure value
+            _ -> failUsage (header <> " must define DUCKDB_V2_API_VERSION_" <> name <> " once")
+    parts <- mapM part ["MAJOR", "MINOR", "PATCH"]
+    pure ('v' : intercalate "." parts)
+
 -- | Copy bytes without retaining the complete shared library in memory.
 copyHandle :: Handle -> Handle -> IO ()
 copyHandle source target = do
@@ -110,8 +124,8 @@ pack library output platform duckdbVersion extensionVersion = do
     source <- canonicalizePath library
     destination <- canonicalizePath output
     when (source == destination) $ ioError (userError "input and output paths must differ")
-    unless (takeFileName output == "haskell_demo.duckdb_extension") $
-        ioError (userError "output must be named haskell_demo.duckdb_extension to match the demo entrypoint")
+    unless (".duckdb_extension" `isSuffixOf` takeFileName output) $
+        ioError (userError "output must be named NAME.duckdb_extension, where NAME_init_c_api_v2 is the entrypoint")
     status <- getFileStatus source
     unless (isRegularFile status) $ ioError (userError "input must be a regular shared-library file")
     withBinaryFile source ReadMode $ \original -> do
@@ -124,7 +138,7 @@ pack library output platform duckdbVersion extensionVersion = do
             when (magic == expected) $ ioError (userError "input already contains DuckDB extension metadata")
         hSeek original AbsoluteSeek 0
         -- Publish the complete file with an exclusive hard link. Existing outputs stay intact.
-        bracket (openBinaryTempFile (takeDirectory output) ".haskell_demo.pack") cleanup $ \(temporary, target) -> do
+        bracket (openBinaryTempFile (takeDirectory output) ".pack") cleanup $ \(temporary, target) -> do
             copyHandle original target
             BS.hPut target suffix
             hClose target
@@ -145,7 +159,7 @@ main = do
         _ -> failUsage "supply one explicit shared-library path"
     output <- required "--output" [value | Output value <- flags]
     platform <- required "--platform" [value | Platform value <- flags]
-    duckdbVersion <- required "--duckdb-version" [value | DuckDBVersion value <- flags]
+    duckdbVersion <- pinnedVersion
     extensionVersion <- required "--extension-version" [value | ExtensionVersion value <- flags]
     (pack library output platform duckdbVersion extensionVersion >> putStrLn output)
         `catch` \exception -> failUsage (ioeGetErrorString (exception :: IOException))

@@ -4,16 +4,17 @@
 metadata. It runs with `runghc` and the standard GHC packages. It does not build
 the library or change the input file.
 
-Supply the exact library path from the build output. Keep the output basename
-`haskell_demo.duckdb_extension`. DuckDB uses that name to find the demo's load
-entrypoint. The input library can retain its Cabal build filename.
+Supply the exact library path from the build output. Name the output
+`NAME.duckdb_extension`, where `NAME_init_c_api_v2` is the load entrypoint.
+DuckDB uses the file name to find it. For the demo, use
+`haskell_demo.duckdb_extension`. The input library can keep its Cabal build
+file name. Run the script from the repository root.
 
 ```sh
 nix-shell dev/nix/shell.nix --run 'GHC_ENVIRONMENT=- runghc \
   dev/extensions/Pack.hs /absolute/path/to/libhaskell_demo.so \
   --output /absolute/path/to/haskell_demo.duckdb_extension \
   --platform linux_amd64 \
-  --duckdb-version v2.0.0 \
   --extension-version 0.1.0'
 ```
 
@@ -27,13 +28,11 @@ The script accepts 64-bit ELF shared objects on Linux and thin 64-bit Mach-O
 libraries or bundles on macOS. It rejects Windows DLLs, static archives, and
 universal Mach-O files.
 
-The footer uses the `C_STRUCT_UNSTABLE` ABI. Its DuckDB version field must match
-the native loader's version exactly. For the pinned release, use `v2.0.0`,
-including the leading `v`. The source ID `d54cbbe3df` is rejected by this loader.
-Development builds can use a source ID instead of a release version. Read the
-target runtime's `PRAGMA version` and `PRAGMA platform` results before packaging
-for another build. The script records the supplied values without version
-normalization or runtime inspection.
+The footer uses the `C_STRUCT_UNSTABLE` ABI. DuckDB loads it only into the
+release named in its version field. The script reads that version from the
+`DUCKDB_V2_API_VERSION_*` definitions in `duckdb-ffi/cbits/duckdb_v2.h`. For the
+pinned headers, the field is `v2.0.0`. The version is not an option, because
+the function table of another release can differ.
 
 Each metadata field must contain at most 32 ASCII bytes. Required fields must
 be nonempty and must not contain NUL. The script rejects input that already has

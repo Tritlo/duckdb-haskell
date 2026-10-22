@@ -114,10 +114,10 @@ jobs:
             duckdb-haskell-extension-example:flib:haskell_demo)
           cd "$project_root"
           platform=$("$native/duckdb" -csv -noheader -c 'PRAGMA platform;')
-          loader_version=$("$native/duckdb" -csv -noheader -c 'SELECT library_version FROM pragma_version();')
           extension_file="$RUNNER_TEMP/haskell_demo.duckdb_extension"
+          # Pack.hs takes the DuckDB version from the pinned header, not the CLI.
           runghc dev/extensions/Pack.hs "$library" --output "$extension_file" \
-            --platform "$platform" --duckdb-version "$loader_version" --extension-version 0.1.0
+            --platform "$platform" --extension-version 0.1.0
           runghc dev/extensions/Smoke.hs --duckdb "$native/duckdb" "$extension_file"
       - name: Check high-level allocation cleanup
         if: matrix.os == 'ubuntu-latest' && matrix.ghc == '9.12.4'

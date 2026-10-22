@@ -1,6 +1,6 @@
 cabal-version: 3.4
 name: duckdb-simple
-version: 0.4.0.0
+version: 0.5.0.0
 license: MPL-2.0
 license-file: LICENSE
 author: Matthias Pall Gissurarson
@@ -22,9 +22,8 @@ description:
   prepared statements, chunked folds, transactions, and Haskell scalar
   functions. The API follows the style of sqlite-simple and postgresql-simple.
   .
-  Targets the pinned native DuckDB 2.0 runtime.
-  The V2 API has no cross-version ABI guarantee.
-  The backend uses the generated V2 API from duckdb-ffi.
+  The backend uses the generated V2 API from duckdb-ffi. Upstream marks
+  that API as unstable, so this release requires exactly DuckDB 2.0.0.
   It provides shared environments and instances, function registration,
   native streaming, and Arrow batches.
 
@@ -113,9 +112,9 @@ test-suite duckdb-simple-test
     CoreRegressionTests
     ExtensionRegressionTests
     GeometryRegressionTests
-    PreviewTests
     Properties
     RegistrationTests
+    SqlFeatureTests
     StreamingTests
     TestUtils
     TimeTests

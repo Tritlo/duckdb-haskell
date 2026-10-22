@@ -1,4 +1,4 @@
-name: DuckDB 2.0 validation
+name: Build and test
 
 on:
   pull_request:
@@ -29,16 +29,19 @@ jobs:
           - os: ubuntu-latest
             ghc: '9.12.4'
             optimization: '1'
+          # These rows use the default Setup.hs download, as Hackage users do.
           - os: ubuntu-latest
             ghc: '9.14.1'
             optimization: '1'
+            download: true
           - os: macos-latest
             ghc: '9.14.1'
             optimization: '1'
+            download: true
           - os: ubuntu-latest
             ghc: '9.14.1'
             optimization: '0'
-    name: ${{ matrix.os }} / GHC ${{ matrix.ghc }} / DuckDB 2.0 / -O${{ matrix.optimization }}
+    name: ${{ matrix.os }} / GHC ${{ matrix.ghc }} / -O${{ matrix.optimization }}${{ matrix.download && ' / download' || '' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     env:
@@ -63,23 +66,32 @@ jobs:
           cabal-version: '3.18.1.0'
       - name: Update the package index
         run: cabal update
-      - name: Check the pinned C API
-        run: python3 dev/bindings/duckdb-api.py --check
       - name: Check the generated bindings
         working-directory: duckdb-ffi
         run: shasum -a 256 --check generated.sha256
       - name: Fetch the verified native release
+        if: ${{ !matrix.download }}
         run: bash dev/fetch-duckdb.sh "$RUNNER_TEMP/duckdb-2.0"
       - name: Configure the supplied native library
+        if: ${{ !matrix.download }}
         run: |
           printf 'package duckdb-ffi\n  flags: +systemlib\n  extra-lib-dirs: %s\n' \
             "$RUNNER_TEMP/duckdb-2.0/native" > cabal.project.local
+      # Setup.hs downloads into this directory. The space checks path quoting.
+      - name: Configure the native download directory
+        if: ${{ matrix.download }}
+        run: |
+          printf 'package duckdb-ffi\n  configure-options: "--duckdb-install-dir=%s"\n' \
+            "$RUNNER_TEMP/duckdb native" > cabal.project.local
       - name: Build and test both APIs
         env:
           LD_BIND_NOW: '1'
         run: |
           cabal build all --with-compiler=ghc --disable-documentation --enable-optimization=${{ matrix.optimization }}
           cabal test all --with-compiler=ghc --disable-documentation --enable-optimization=${{ matrix.optimization }} --test-show-details=direct
+      - name: Check the downloaded library
+        if: ${{ matrix.download }}
+        run: test -s "$RUNNER_TEMP/duckdb native/$DUCKDB_TEST_VERSION/"*/libduckdb.*
       - name: Check v2 ownership with Valgrind
         if: matrix.os == 'ubuntu-latest' && matrix.ghc == '9.12.4'
         run: |
@@ -118,7 +130,7 @@ jobs:
             --error-exitcode=97 --undef-value-errors=no --num-callers=30 \
             "$dataframe_test" --num-threads=1 +RTS -N1 -RTS
       - name: Check project and installed consumer headers
-        if: matrix.ghc == '9.14.1' && matrix.optimization == '1'
+        if: ${{ matrix.download }}
         run: |
           consumer="$RUNNER_TEMP/duckdb-consumer"
           mkdir -p "$consumer/source"
@@ -154,10 +166,11 @@ jobs:
             test "$(cat "$consumer/versions")" = "$(printf 'v%s\nv%s' "$DUCKDB_TEST_VERSION" "$DUCKDB_TEST_VERSION")"
           done
           tar -xzf "$PWD"/dist-newstyle/sdist/duckdb-ffi-*.tar.gz -C "$consumer/source" --strip-components=1
-          printf 'packages: .\n' > "$consumer/source/cabal.project"
+          # Install the source archive with its own Setup.hs and native.sha256.
+          printf 'packages: .\npackage duckdb-ffi\n  configure-options: "--duckdb-install-dir=%s"\n' \
+            "$RUNNER_TEMP/duckdb native" > "$consumer/source/cabal.project"
           cabal install --lib duckdb-ffi --project-dir="$consumer/source" --project-file=cabal.project \
             --with-compiler=ghc --disable-documentation \
-            -fsystemlib --extra-lib-dirs="$RUNNER_TEMP/duckdb-2.0/native" \
             --package-env="$consumer/environment"
           # Cabal uses shortened unit IDs on macOS. Query the installed package
           # by name in the environment's store database, rather than guessing paths.

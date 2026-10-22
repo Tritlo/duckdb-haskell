@@ -1,44 +1,123 @@
 # Migration notes
 
-## DuckDB 2.0 generated bindings
+## DuckDB 2.0
 
-`duckdb-ffi` 2.0 uses `hs-bindgen` for both C APIs in the pinned native 2.0
-headers. Use the matching DuckDB 2.0.0 runtime. Earlier package releases
-remain available for DuckDB 1.5.
+`duckdb-ffi` 2.0 and `duckdb-simple` 0.4 require DuckDB 2.0. Earlier package
+releases remain available for DuckDB 1.5. The retained API and `duckdb-simple`
+0.4 support DuckDB 2.0.x releases. The V2 API requires exactly DuckDB 2.0.0,
+because upstream marks it as unstable.
+`duckdb-simple` 0.5 uses the V2 API, so it also requires exactly DuckDB 2.0.0.
 
-The raw API changes. Import `Database.DuckDB.FFI` or
-`Database.DuckDB.FFI.V2`. The Deprecated module and the V2 Functions and Types
-submodules are no longer exposed. Generated types retain native typedefs as
-newtypes. Const pointers, record field names, callback wrappers, and functions
-that pass structures by value also change. Use `getField` for generated record
-fields and `toFunPtr` and `fromFunPtr` for callbacks. The two APIs have separate
-Haskell types, including their Arrow structures. Use qualified imports when
-combining the APIs.
+### duckdb-ffi 1.5 to 2.0
 
-Raw callers must release native resources, retain callbacks for their required
-lifetime, and catch exceptions inside callbacks. `duckdb-simple` 0.4 uses the
-generated V2 API for connections, results, and conversions. Import
-`Database.DuckDB.Simple.Streaming` for native row and Arrow streaming.
-The former `Database.DuckDB.Simple.Deprecated.Streaming` module is removed.
+`hs-bindgen` 1.0 generates both C APIs from the pinned 2.0.0 headers. The
+function names stay the same. Many of their types change.
 
-SQL TUPLE values decode as `TupleValue`, with positional values and types in
-`tupleValueFields` and `tupleValueTypes`. Use `StructValue` for named STRUCT
-fields. Update exhaustive matches for `FieldTuple`, `LogicalTypeTuple`, and
-`LogicalTypeCollatedVarchar`. Empty tuples retain their TUPLE type, and
-composite VARCHAR fields retain their collation when rebound.
+- Import `Database.DuckDB.FFI` for the retained API. The
+  `Database.DuckDB.FFI.Deprecated` module is removed. Its functions are in
+  `Database.DuckDB.FFI`. `Database.DuckDB.FFI.V2` is new.
+- Add `hs-bindgen-runtime` to your dependencies to use `toFunPtr`,
+  `fromFunPtr`, and the generated record fields.
+- Enum types are newtypes over `CUInt` with one field, `unwrap`. The pattern
+  names stay the same. Logical type tags have the type `DUCKDB_TYPE`.
+  Functions take and return its wrapper `DuckDBType`. For example,
+  `c_duckdb_create_logical_type DuckDBTypeInteger` becomes
+  `c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)`.
+- Handles are newtypes over `Ptr`. `DuckDBIdx` and `DuckDBSel` are newtypes
+  over `Word64` and `Word32`. Write a null handle as, for example,
+  `DuckDBDataChunk nullPtr`.
+- `const char *` is `ConstPtr CChar`. `void *` is `Ptr Void`.
+- Record fields have the C names, and the module uses `NoFieldSelectors`. Read
+  them with `getField` or `OverloadedRecordDot`. For example,
+  `duckDBDateStructYear` becomes `year`, `arrowSchemaFormat` becomes `format`,
+  `arrowArrayNullCount` becomes `null_count`, and `duckDBBlobData` becomes
+  `data'`. `DuckDBDate`, `DuckDBTime`, and `DuckDBTimestamp` are records with a
+  `days` or `micros` field.
+- Callback types are newtypes over `FunPtr`. Use `toFunPtr` and `fromFunPtr`.
+- Structures pass by value, as in C. `c_duckdb_fetch_chunk resultPtr` becomes
+  `peek resultPtr >>= c_duckdb_fetch_chunk`. Functions that wrote a structure
+  through a pointer now return it. For example, `c_duckdb_from_date` and
+  `c_duckdb_query_progress` return `DuckDBDateStruct` and
+  `DuckDBQueryProgress`. The value getters for HUGEINT, UHUGEINT, DECIMAL,
+  INTERVAL, BLOB, BIT, UUID, and BIGNUM also return structures.
+- These names are removed: `mkArrow*`, `wrapArrow*`, `releaseArrowSchema`,
+  `releaseArrowArray`, `releaseArrowStream`, `duckdbArrow*Internal`,
+  `duckdbArrow*Clear`, `ArrowSchemaPtr`, `ArrowArrayPtr`, `ArrowStreamPtr`, and
+  `DuckDBErrorInvalidConfiguration`. `Database.DuckDB.Simple.Arrow` provides
+  the release helpers. Use `DuckDBInvalidConfiguration` for the error tag.
+- The generated functions have no `DEPRECATED` pragmas. The header
+  documentation still identifies the deprecated functions.
+- The generated ABI checks accept only Linux and macOS on x86_64 and aarch64.
+- The two APIs have separate Haskell types, including their Arrow structures.
+  Use qualified imports when you combine them.
 
-`query_` and `execute_` parse all statements before execution. A syntax error
-prevents earlier statements in that input from running. The retained native
-query API can execute those statements before reporting the syntax error.
-Use `withTransaction` when earlier effects must roll back on execution errors.
+The generator does not manage ownership. Callers must still release native
+resources, keep callbacks alive for their required lifetime, and catch
+exceptions inside callbacks.
 
-VARIANT results decode through SQL type metadata and native casts. Object keys
-use DuckDB's native lexicographic order. Arrays retain element order. Configured
-custom GEOMETRY CRS names use cached SQL-derived types. These operations use a
-helper connection and preserve the caller's active stream. Set custom names
-through `connectionGeometryCRS`. Direct low-level type construction still
-requires a CRS recognized by DuckDB or a complete CRS definition.
-V2 factories construct VARIANT logical types directly.
+### duckdb-simple 0.3 to 0.4
+
+The SQL workflow stays the same. These changes can affect your code:
+
+- `LogicalTypeScalar`, `FunctionArg.argumentType`, `Function.argumentTypes`,
+  and `CopyBindInfo.copyBindColumnTypes` use `DUCKDB_TYPE` instead of
+  `DuckDBType`. The pattern names, such as `DuckDBTypeInteger`, stay the same.
+- `sqlErrorType` can contain the DuckDB 2.0 tags `DuckDBErrorDataCorruption`
+  and `DuckDBErrorResourceInUse`.
+- A session variable can supply a named parameter that you omit. DuckDB
+  raises an error when no variable has that name. Only too many named
+  parameters raise `FormatError`.
+- While a stream is incomplete, DuckDB rejects other statements on its
+  connection with a `RESOURCE_IN_USE` error. Closing an incomplete stream
+  aborts its statement. In autocommit mode, DuckDB rolls back its writes.
+- DuckDB 2.0 rejects WKB with mixed Z/M member layouts.
+- The Arrow release helpers moved from `duckdb-ffi` to
+  `Database.DuckDB.Simple.Arrow`.
+
+### duckdb-simple 0.4 to 0.5
+
+`duckdb-simple` 0.5 uses the V2 C API for connections, results, conversions,
+and callbacks. Upstream marks that API as unstable, so 0.5 requires exactly
+DuckDB 2.0.0. Creating an environment raises `SQLError` for another version.
+The SQL workflow stays the same. These changes can affect your code:
+
+- Raw types come from `Database.DuckDB.FFI.V2`. They are distinct from the
+  retained API types that 0.4 uses.
+- `SQLError.sqlErrorType` is `Maybe DuckDBV2Error`. For example,
+  `DuckDBErrorConstraint` becomes `DuckDBV2ErrorDatabaseConstraint`,
+  `DuckDBErrorCatalog` becomes `DuckDBV2ErrorDatabaseCatalog`,
+  `DuckDBErrorBinder` becomes `DuckDBV2ErrorQueryBinder`,
+  `DuckDBErrorConversion` becomes `DuckDBV2ErrorTypeConversion`,
+  `DuckDBErrorInvalidInput` becomes `DuckDBV2ErrorInputInvalid`,
+  `DuckDBErrorInterrupt` becomes `DuckDBV2ErrorRuntimeInterrupt`, and
+  `DuckDBErrorResourceInUse` becomes `DuckDBV2ErrorResourceInUse`. V2 has no
+  data-corruption tag.
+- `ToDuckValue.toDuckValue` takes a `DuckDBV2ConnectionHandle` and returns a
+  `DuckDBV2ValueHandle`. Keep the connection alive until you destroy the value.
+  `logicalTypeFromRep` also takes the connection.
+- `LogicalTypeScalar`, `Function.argumentTypes`, and
+  `CopyBindInfo.copyBindColumnTypes` use `DuckDBV2LogicalTypeId`. For example,
+  `DuckDBTypeBigInt` becomes `DuckDBV2LogicalTypeIdBigInt`.
+- SQL TUPLE values decode as `FieldTuple` with a `TupleValue`. `LogicalTypeRep`
+  adds `LogicalTypeTuple` and `LogicalTypeCollatedVarchar`. Update exhaustive
+  matches.
+- `LogEntry` has six new fields. Use record syntax to construct or match it.
+- `ConfigValue.configValueScope` is `DuckDBV2SettingScope` instead of
+  `Maybe DuckDBConfigOptionScope`.
+- `CatalogEntry.catalogEntryType` and `lookupCatalogEntry` use the new
+  `CatalogEntryType`. V2 metadata cannot look up collations.
+- File system functions use `DuckDBV2FileFlag` and `DuckDBV2FileHandle`.
+- `foldArrow` callbacks and the Arrow release helpers use the V2
+  `ArrowSchema` and `ArrowArray` types.
+- `Database.DuckDB.Simple.Deprecated.Streaming` is now
+  `Database.DuckDB.Simple.Streaming`, with the same exports.
+- `query_` and `execute_` parse all statements before they run any. A syntax
+  error stops earlier statements in the same input from running.
+- Empty `Array` parameters raise `SQLError`. Use an SQL empty LIST.
+- A composite parameter with a GEOMETRY CRS that DuckDB does not recognize
+  raises `SQLError`. Version 0.4 bound it without the CRS. Configure custom CRS
+  names through `connectionGeometryCRS`.
+- Decoded VARIANT objects list their keys in DuckDB's lexicographic order.
 
 A repository checkout must generate the ignored build artefacts before it
 builds. CI does this too. Source archives include those artefacts. See the

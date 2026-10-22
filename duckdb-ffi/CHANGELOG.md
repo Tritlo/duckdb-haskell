@@ -2,25 +2,25 @@
 
 ## 2.0.0.0 (unreleased)
 
-- Target DuckDB 2.0. The package includes both C API generations without a
-  preview flag. Use the earlier package release with DuckDB 1.5.
-- Pin both client headers to the final DuckDB 2.0.0 tag, commit `d54cbbe3df`.
-  Refresh factories, configuration handles, explicit registration
-  targets, callbacks, and scope enums with the current V2 API.
-- Expose all 620 V2 functions. The entire V2 API is currently unstable and
-  requires the matching native snapshot. The retained API has 548 functions.
-- Add nanosecond timezone timestamp values and the data-corruption error tag.
-- Generate both C APIs with hs-bindgen 1.0. Keep generated Haskell and C
-  artefacts outside Git. Generate them locally and in CI.
-- Expose one generated module per API. Remove the exposed Deprecated module
-  and V2 Functions and Types submodules. Use native typedef newtypes, const
-  pointers, and generated callback conversions.
-- Check complete function and callback coverage and 1,150 native ABI assertions.
-- Install verified DuckDB 2.0.0 shared-library archives on glibc Linux and macOS.
-  Preserve their symlinks and versioned library files.
-- Install both client headers and the DuckDB license. Keep these
-  headers available when the Cabal build directory is outside the source tree.
-- Test v2 aggregate, table, cast, COPY, vector, filesystem, and logging behavior.
+- Target DuckDB 2.0. The retained API supports DuckDB 2.0.x releases. Use the
+  earlier package release with DuckDB 1.5.
+- Generate the bindings from the DuckDB 2.0.0 client headers with hs-bindgen
+  1.0. `Database.DuckDB.FFI` contains all 548 functions of the retained API.
+  Remove `Database.DuckDB.FFI.Deprecated`. Its functions are in
+  `Database.DuckDB.FFI`. See MIGRATION.md for the changed types and names.
+- Add `Database.DuckDB.FFI.V2` with the 620 functions of the new C API.
+  Upstream marks this API as unstable, so it requires exactly DuckDB 2.0.0.
+- Add nanosecond timezone timestamps and the data-corruption and
+  resource-in-use error tags.
+- Remove the Arrow callback constructors, wrappers, and release helpers. Use
+  `toFunPtr` and `fromFunPtr` from hs-bindgen-runtime.
+- Deprecated native functions no longer have `DEPRECATED` pragmas.
+- Download the DuckDB 2.0.0 shared-library archives on glibc Linux and macOS.
+  Keep their symlinks and versioned library files.
+- Install both client headers, `duckdb_arrow.h`, and the DuckDB license with
+  the library.
+- Reject platforms other than Linux and macOS on x86_64 and aarch64 at compile
+  time.
 
 ## 1.5.6.0
 

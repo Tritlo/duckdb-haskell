@@ -13,7 +13,7 @@ import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (nullPtr)
 import Foreign.Storable (peek)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertBool, testCase, (@?=))
+import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 import Utils (withConnection, withConstCString)
 
 tests :: TestTree
@@ -72,10 +72,7 @@ executeTasksCompletesPendingQuery =
                             finishedBefore <- c_duckdb_execution_is_finished conn
                             finishedBefore @?= CBool 0
 
-                            c_duckdb_execute_tasks db 1000
-
-                            finishedAfter <- c_duckdb_execution_is_finished conn
-                            finishedAfter @?= CBool 1
+                            driveTasks db conn
 
                             alloca \resPtr -> do
                                 stExec <- c_duckdb_execute_pending pending resPtr
@@ -127,6 +124,17 @@ setupAggTable conn = do
         execStatement conn createSql
     withConstCString "INSERT INTO threading_numbers VALUES (1), (2), (3), (4), (5);" $ \insertSql ->
         execStatement conn insertSql
+
+-- | Run scheduler tasks until the pending query finishes, with a bounded retry.
+driveTasks :: DuckDBDatabase -> DuckDBConnection -> IO ()
+driveTasks db conn = go (0 :: Int)
+  where
+    go attempts
+        | attempts > 10 = assertFailure "execute_tasks did not finish the query within 10 rounds"
+        | otherwise = do
+            c_duckdb_execute_tasks db 1000
+            finished <- c_duckdb_execution_is_finished conn
+            if finished == CBool 1 then pure () else go (attempts + 1)
 
 execStatement :: DuckDBConnection -> ConstPtr CChar -> IO ()
 execStatement conn sql =

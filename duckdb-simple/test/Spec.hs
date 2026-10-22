@@ -87,7 +87,7 @@ import Numeric.Natural (Natural)
 import Properties (roundTripTests)
 import RegistrationTests (registrationTests)
 
-import qualified PreviewTests
+import qualified SqlFeatureTests
 import StreamingTests (nativeStreamingTests)
 import System.Directory (doesFileExist, removeFile)
 import Test.Tasty (TestTree, defaultMain, testGroup)
@@ -220,7 +220,7 @@ tests =
         , VariantRegressionTests.tests
         , valueRegressionTests
         , timeTests
-        , PreviewTests.tests
+        , SqlFeatureTests.tests
         , withConnectionTests
         , statementTests
         , roundTripTests

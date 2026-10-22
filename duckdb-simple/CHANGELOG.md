@@ -1,55 +1,61 @@
 # Changelog
 
-## 0.4.0.0 (unreleased)
+## 0.5.0.0 (unreleased)
 
-- Target DuckDB 2.0 with `duckdb-ffi >= 2.0.0.0`. The package version selects
-  the supported native API. No preview flag is required.
-- Move the backend to the generated V2 API. Raw handles, logical type IDs,
-  callback handles, and error codes now use V2 types.
+- Move the backend to the generated V2 C API. Upstream marks the V2 API as
+  unstable ("The C API v2 is not yet stable. Its interface may change in
+  upcoming releases."), so this release requires exactly DuckDB 2.0.0.
+  Creating an environment raises `SQLError` for another library version.
+- Raw handles, logical type IDs, callback handles, and error codes use V2
+  types. See MIGRATION.md.
 - Add shared environments and instances, attachment management, option
   discovery, table descriptions, SQL tokenization, positioned file I/O,
   managed function and type registration, replacement scans, and COPY callbacks.
-- Borrow factories for type and value creation. Register builders on an
-  explicit connection or extension target. Supply startup-only settings when
-  creating an instance.
 - Add custom configuration options, typed values and defaults, managed log
   sinks, macro and pragma registration, function documentation, query metrics,
-  and file path operations. Separate scalar type resolution from binding and
-  expose table bind metadata for multi-file readers.
-- Add scoped named collection inputs and support prepared dynamic PIVOT with
-  deferred output schema. Native expanding statements cannot have parameters.
-- Keep mixed-dimension WKB codec support. Report the native GEOMETRY import
-  restriction on mixed Z/M collection members without changing coordinates.
-- Add `Database.DuckDB.Simple.Streaming` for V2 row and Arrow streaming.
-  Remove `Database.DuckDB.Simple.Deprecated.Streaming`. Use the V2 module.
+  and file path operations. Expose table bind metadata for multi-file readers.
+- Add scoped named collection inputs and prepared dynamic PIVOT with a deferred
+  output schema. Native expanding statements cannot have parameters.
+- Rename `Database.DuckDB.Simple.Deprecated.Streaming` to
+  `Database.DuckDB.Simple.Streaming`.
 - Decode and bind TUPLE values with `TupleValue`, `FieldTuple`, and
-  `LogicalTypeTuple`. Preserve empty tuples separately from empty STRUCTs,
-  and retain mixed timestamp resolutions in tuple casts and nested values.
+  `LogicalTypeTuple`.
 - Preserve composite VARCHAR collations with `LogicalTypeCollatedVarchar`.
-- Keep concurrently created connections and instances in their parent's child
-  registry so parent close releases every child after workers finish.
-- Return native changed-row counts from eager query helpers. Report refused
-  scalar-function deletion as `SQLError`.
-- Resolve configuration names and aliases through the native getter. Use
-  DuckDB's ASCII identifier rules for catalog names and top-level schemas.
-- Refresh statement metadata after reset or rebinding. Reused statements retain
-  nanosecond precision after a timestamp column changes type.
-- Preserve sparse numeric names such as `$3` during parameter execution.
-- Preserve materialized query behavior by draining the native cursor before
-  row or Arrow callbacks. Another query can run on the same connection then.
-  Explicit streaming retains the native one-live-result restriction.
-- Require a V2 connection in `ToDuckValue.toDuckValue` and
-  `logicalTypeFromRep`. Preserve nanosecond timestamps and CRS metadata.
-  Cache SQL-derived types on a helper connection to preserve configured custom
-  CRS names in nested parameters without interrupting an active stream.
-- Bind and decode VARIANT values through public V2 operations. Use batched SQL
-  type metadata and native casts to preserve scalar types, precision, object
-  order, and nested values. Object keys use DuckDB's native lexicographic order.
-  Construct VARIANT types directly through the native factory.
-- Report unavailable custom file-system registration, scoped collation lookup,
-  and zero-length fixed ARRAY types explicitly. Empty LIST values still work.
+- Resolve configuration names and aliases case-insensitively. Use DuckDB's
+  ASCII identifier rules for catalog names and top-level schemas.
+- Refresh statement metadata after reset or rebinding.
+- Preserve sparse numeric parameter names such as `$3`.
+- The default `query`, `fold`, and Arrow folds collect the result before the
+  first callback, so a callback can query the same connection. Explicit
+  streaming keeps the native one-live-result restriction.
+- `ToDuckValue.toDuckValue` and `logicalTypeFromRep` take a V2 connection.
+  Composite parameters keep GEOMETRY CRS metadata. A CRS that DuckDB does not
+  recognize raises `SQLError` instead of being dropped.
+- Decode VARIANT values through public V2 operations. Object keys use DuckDB's
+  lexicographic order.
+- Empty `Array` parameters raise `SQLError`. Use an SQL empty LIST.
+- Read GEOMETRY results through a native cast to BLOB.
+- `enableProfiling` collects metrics without printing a profile.
+
+## 0.4.0.0 (unreleased)
+
+- Target DuckDB 2.0 with `duckdb-ffi >= 2.0.0.0`. Support DuckDB 2.0.x
+  releases.
+- Use the generated raw API from `hs-bindgen`. `LogicalTypeScalar`,
+  `argumentType`, `argumentTypes`, and `copyBindColumnTypes` use `DUCKDB_TYPE`
+  instead of `DuckDBType`. See MIGRATION.md.
 - Export Arrow release helpers from `Database.DuckDB.Simple.Arrow`.
-- Allow session variables to supply omitted named parameters.
+- `sqlErrorType` can report the DuckDB 2.0 data-corruption and resource-in-use
+  error tags.
+- While a stream is incomplete, DuckDB rejects other statements on its
+  connection. Closing an incomplete stream aborts its statement.
+- DuckDB 2.0 rejects WKB with mixed Z/M member layouts.
+- Decode nanosecond timezone timestamps in results and VARIANT values.
+- Preserve nanosecond timezone timestamp precision in VARIANT parameters and
+  parameters whose prepared type requires `TIMESTAMPTZ_NS`. This includes UTC
+  fields in collections, STRUCTs, MAPs, and UNIONs.
+- Allow session variables to supply omitted named parameters. Only too many
+  named parameters raise `FormatError`.
 - Reject duplicate named parameters with DuckDB's ASCII case rules. Keep
   distinct non-ASCII names separate.
 - Allow a VARIANT object to contain an empty key with other named keys. Reject

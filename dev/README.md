@@ -4,30 +4,29 @@ These files support development and release work. Hackage packages do not
 include them. Package source archives contain the generated bindings, C ABI
 checks, client headers, and upstream license.
 
-- `bindings/` generates both client APIs and checks header provenance, API
-  coverage, and ABI changes. These tools remain useful after the final release.
+- `bindings/` generates both client APIs and their ABI checks.
+- `update-duckdb.sh` pins a DuckDB release tag. It updates the client headers,
+  the upstream license, and all native digests.
 - `release.sh` generates and checks the bindings, then builds and uploads
   authorized Hackage candidates or releases.
-- `build-ghc-matrix.sh` runs local Docker builds. It writes logs to `ci-logs/`.
+- `build-ghc-matrix.sh` runs local Docker builds. Generate the bindings first.
+  It writes logs to `ci-logs/`.
 - `nix/` contains pinned development, generation, and CI environments.
 - `v2-migration.md` describes the V2 backend contracts and native limits.
-- `fetch-duckdb.sh` downloads the pinned release library and CLI for local,
-  CI, and Docker validation. It verifies each archive checksum.
-- `diagnostics/` contains a native probe for the deprecated Arrow API. Set
-  `DUCKDB_LIB_PATH` to the library under test.
-- `docs/` contains the C API documentation snapshot and its fetch tool. Run the
-  fetch tool with `uv run --with requests --with beautifulsoup4 dev/docs/fetch.py`.
+- `fetch-duckdb.sh` downloads the release library from
+  `duckdb-ffi/native.sha256` for local, CI, and Docker validation. It verifies
+  the archive checksum and compares the release headers with the vendored
+  headers.
 
-Generate and audit bindings from a checkout:
+Generate and check the bindings from a checkout:
 
 ```sh
 nix-shell dev/nix/generate.nix --run 'dev/bindings/generate-bindings.sh --check'
-uv run dev/bindings/duckdb-api.py --check
 ```
 
 Package users do not need these tools, Nix, LLVM, or hs-bindgen.
 
-CI caches the generated files by generator, toolchain, headers, manifest, and
-expected checksums. An exact cache hit skips Nix setup and generation. Every
-run checks the file checksums, header provenance, and API coverage before it
-uploads the generated artifact. A cache miss runs the pinned generator.
+CI caches the generated files by generator, toolchain, headers, and expected
+checksums. An exact cache hit skips Nix setup and generation. Every run checks
+the header digests and the generated checksums before it uploads the generated
+artifact. A cache miss runs the pinned generator.

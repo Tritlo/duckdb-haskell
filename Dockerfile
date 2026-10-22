@@ -37,7 +37,6 @@ RUN --mount=type=cache,id=apt-cache,target=/var/cache/apt \
       ca-certificates \
       locales \
       build-essential \
-      python3 \
       libffi-dev \
       libgmp-dev \
       libncurses-dev \
@@ -54,13 +53,11 @@ RUN groupadd -g "$GID" -o "$USER_NAME" && \
 
 WORKDIR /tmp
 COPY dev/fetch-duckdb.sh /native/dev/
-COPY dev/bindings/duckdb-api.py /native/dev/bindings/
-COPY duckdb-ffi/vendor/duckdb-api.json /native/duckdb-ffi/vendor/
+COPY duckdb-ffi/native.sha256 /native/duckdb-ffi/
 COPY duckdb-ffi/cbits/duckdb*.h duckdb-ffi/cbits/duckdb-LICENSE /native/duckdb-ffi/cbits/
 RUN bash /native/dev/fetch-duckdb.sh /tmp/duckdb-2.0 && \
     cp /tmp/duckdb-2.0/native/libduckdb.so /usr/lib/ && \
     cp /tmp/duckdb-2.0/native/duckdb*.h /usr/include/ && \
-    install -Dm755 /tmp/duckdb-2.0/native/duckdb /usr/local/bin/duckdb && \
     install -Dm644 /tmp/duckdb-2.0/native/duckdb-LICENSE /usr/share/licenses/duckdb/LICENSE && \
     ldconfig
 

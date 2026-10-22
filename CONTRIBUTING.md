@@ -3,9 +3,10 @@
 ## Project structure
 
 `duckdb-ffi/generated` contains the generated C API bindings and ABI checks.
-The client headers and upstream license are in `duckdb-ffi/cbits`. Their source
-commit and SHA256 digests are in `duckdb-ffi/vendor/duckdb-api.json`.
-The generation driver and header audit are in `dev/bindings`. The tests are in
+The client headers and upstream license are in `duckdb-ffi/cbits`.
+`duckdb-ffi/vendor/upstream.sha256` records their digests, and
+`duckdb-ffi/vendor/duckdb-api.json` records their source commit.
+The generation driver is in `dev/bindings`. The tests are in
 `duckdb-ffi/test`.
 `duckdb-simple/src` contains the higher-level API. Its integration and property
 tests are in `duckdb-simple/test`, and its leak test is in `duckdb-simple/leaktest`.
@@ -66,7 +67,8 @@ For example:
 cabal bench duckdb-simple-bench --benchmark-options='fold 100000'
 ```
 
-Nix CI builds and tests both packages with GHC 9.14.1 and Nix's DuckDB library.
+Nix CI builds DuckDB from the pinned source. It builds and tests both packages
+with GHC 9.14.1.
 Run the same build locally with `nix-build dev/nix/ci.nix --no-out-link`.
 
 The separate DataFrame integration suite checks Arrow export with
@@ -103,8 +105,8 @@ archives on Linux and macOS. Nix builds the pinned release source.
 The optional `quack-tests` suite requires matching local `httpfs` and Quack
 extensions. See the same document for its commands and native limitations.
 
-The bindings target DuckDB 2.0.0. The automatic installer verifies the final
-native archive checksums. Set
+The bindings target DuckDB 2.0.0. The automatic installer verifies the archive
+checksums in `duckdb-ffi/native.sha256`. Set
 `--configure-option=--duckdb-install-dir=/absolute/path` to select another
 installation directory. Enable the `systemlib` Cabal flag to use the system
 library. Set `extra-lib-dirs` to an absolute path to select
@@ -112,12 +114,9 @@ a library in another directory. See the `cabal.project` example in the README.
 Nix builds use the library supplied by Nix and do not download it.
 
 CI tests the pinned 2.0.0 release with all supported compilers on Linux and
-GHC 9.14.1 on macOS. V2 is unstable and requires the native source pin in
-`duckdb-ffi/vendor/duckdb-api.json`. Set
+GHC 9.14.1 on macOS. The V2 API requires exactly DuckDB 2.0.0. Set
 `DUCKDB_TEST_VERSION` to the exact expected version, such as `2.0.0`, to detect
-loader configuration errors. The version string alone does not identify a
-development snapshot. Check its source ID too. Run the full suite after each
-native pin update.
+loader configuration errors. Run the full suite after each native pin update.
 
 CI also builds and tests with `--enable-optimization=0` on GHC 9.14.1 and
 DuckDB 2.0. Floating-point conversion must preserve special values without

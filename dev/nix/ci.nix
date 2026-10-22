@@ -1,14 +1,11 @@
 { }:
 let
-  nixpkgs = builtins.fetchTarball {
-    url = "https://github.com/NixOS/nixpkgs/archive/ac6b2166e7a9375683b8e98f860f273222337b16.tar.gz";
-    sha256 = "0k6m5apwzg36qkm3wil1pf4q0lv1hp7r2imx4nfz9bfssnk9gj5w";
-  };
-  pkgs = import nixpkgs { };
+  pins = import ./pins.nix;
+  pkgs = pins.pkgs;
   manifest = builtins.fromJSON (builtins.readFile ../../duckdb-ffi/vendor/duckdb-api.json);
   nativeDuckDB = pkgs.stdenv.mkDerivation {
     pname = "duckdb";
-    version = "2.0.0";
+    version = pkgs.lib.removePrefix "v" manifest.ref;
     src = pkgs.fetchurl {
       name = "duckdb-${manifest.commit}.tar.gz";
       inherit (manifest.source_archive) url sha256;
@@ -18,7 +15,7 @@ let
       "-DBUILD_UNITTESTS=OFF"
       "-DBUILD_SHELL=OFF"
       "-DBUILD_EXTENSIONS=icu;json;parquet"
-      "-DDUCKDB_EXPLICIT_VERSION=v2.0.0"
+      "-DDUCKDB_EXPLICIT_VERSION=${manifest.ref}"
       "-DGIT_COMMIT_HASH=${manifest.commit}"
     ];
     buildTarget = "duckdb";
@@ -33,11 +30,7 @@ let
   };
   haskellPackages = pkgs.haskell.packages.ghc9141.override {
     overrides = self: _super: {
-      hs-bindgen-runtime = self.callHackageDirect {
-        pkg = "hs-bindgen-runtime";
-        ver = "1.0.0.0";
-        sha256 = "1ai7rls9afpr3dv0gf8p61g3k8bgi7cfl51nsckbhjlb3ap39vq4";
-      } { };
+      hs-bindgen-runtime = pins.hsBindgenRuntime self;
       duckdb-ffi = (self.callCabal2nix "duckdb-ffi" ../../duckdb-ffi { duckdb = nativeDuckDB; }).overrideAttrs (old: {
         DUCKDB_TEST_VERSION = nativeDuckDB.version;
       });

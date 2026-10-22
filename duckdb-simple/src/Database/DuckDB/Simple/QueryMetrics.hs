@@ -9,7 +9,7 @@ module Database.DuckDB.Simple.QueryMetrics (
 ) where
 
 import Control.Exception (bracket, throwIO)
-import Control.Monad (forM)
+import Control.Monad (forM, when)
 import Data.Text (Text)
 import Database.DuckDB.Simple.FromField (FieldValue)
 import Database.DuckDB.Simple.Internal (Connection, withConnectionHandle)
@@ -28,11 +28,15 @@ data QueryMetrics = QueryMetrics
     deriving (Eq, Show)
 
 {- | Enable or disable profiling for later queries on this connection.
-DuckDB also prints the configured profile by default. Set the native
-@enable_profiling@ option to @no_output@ to collect metrics without printing.
+Enabling sets the native @enable_profiling@ option to @no_output@. DuckDB then
+collects the metrics and does not print a profile.
 -}
 enableProfiling :: Connection -> Bool -> IO ()
-enableProfiling connection enabled = withConnectionHandle connection \native ->
+enableProfiling connection enabled = withConnectionHandle connection \native -> do
+    when enabled do
+        config <- output (c_duckdb_v2_connection_get_config native)
+        withIdentifier "enable_profiling" \name -> withText "no_output" \value ->
+            checked (c_duckdb_v2_config_set_option_text config name value DuckDBV2SettingScopeDefault)
     checked (c_duckdb_v2_connection_enable_profiling native (if enabled then 1 else 0))
 
 {- | Copy the profile of the last completed query. Drain or close any active

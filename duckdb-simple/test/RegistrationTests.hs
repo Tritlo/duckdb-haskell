@@ -144,7 +144,6 @@ testPragma = withConnection ":memory:" \connection -> do
 
 testMetrics :: Assertion
 testMetrics = withConnection ":memory:" \connection -> do
-    void (execute_ connection "SET enable_profiling='no_output'")
     Metrics.enableProfiling connection True
     query_ connection "SELECT sum(i)::BIGINT FROM range(10) t(i)" >>= (@?= [Only (45 :: Int64)])
     snapshot <- Metrics.queryMetrics connection
@@ -155,7 +154,6 @@ testMetrics = withConnection ":memory:" \connection -> do
     scanRows @?= [FieldWord64 10]
     Metrics.enableProfiling connection False
     query_ connection "SELECT 2::BIGINT" >>= (@?= [Only (2 :: Int64)])
-    scanRows @?= [FieldWord64 10]
     empty <- Metrics.queryMetrics connection
     Metrics.metricsValues empty @?= []
     Metrics.metricsChildren empty @?= []

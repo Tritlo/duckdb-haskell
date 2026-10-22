@@ -68,8 +68,8 @@ existing convenience behavior.
 - `withCollectionStatement` binds native column collections as named table inputs
   for one scoped prepared-statement action. The caller retains the collections.
 
-The pinned V2 API does not expose custom file-system registration. Scoped
-collation lookup is also unavailable. Fixed ARRAY types with zero elements are
+The pinned V2 API does not expose custom file-system registration or
+collation lookup. Fixed ARRAY types with zero elements are
 not supported by this native API. Empty LIST values remain supported.
 Prepared dynamic PIVOT supports repeated execution with a changing schema. It
 does not support parameters or a cacheable plan. VARIANT decoding and configured

@@ -231,9 +231,6 @@ extensionRegressionTests =
                 assertSqlError $ FileSystem.withFileHandle conn "/tmp/duckdb-review-missing-dir/no-file" [DuckDBV2FileFlagRead] (\_ -> pure ())
                 withTemporaryFile \path ->
                     assertSqlError $ FileSystem.withFileHandle conn (path <> "\0suffix") [DuckDBV2FileFlagRead] (\_ -> pure ())
-        , testCase "scoped collation lookup reports the V2 limitation" $
-            withConnection ":memory:" \conn ->
-                assertSqlErrorContaining "unavailable" $ Catalog.lookupCatalogEntry conn "memory" "main" "probe" Catalog.CatalogCollation
         , testCase "catalog and config NUL names fail safely" $
             withConnection ":memory:" \conn -> do
                 assertSqlError $ Config.getConfigOption conn "threads\0suffix"

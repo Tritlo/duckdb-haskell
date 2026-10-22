@@ -11,7 +11,7 @@ module Database.DuckDB.Simple.Catalog (
     describeTable,
 ) where
 
-import Control.Exception (bracket, throwIO)
+import Control.Exception (bracket)
 import Control.Monad (forM, when)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -20,8 +20,10 @@ import Database.DuckDB.Simple.Internal (Connection, withConnectionHandle)
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep, logicalTypeToRep)
 import Database.DuckDB.Simple.Native
 
--- | Entry kinds that DuckDB exposes through catalog metadata.
-data CatalogEntryType = CatalogTable | CatalogView | CatalogIndex | CatalogSequence | CatalogCollation | CatalogType
+{- | Entry kinds that DuckDB exposes through catalog metadata. V2 metadata
+cannot look up collations.
+-}
+data CatalogEntryType = CatalogTable | CatalogView | CatalogIndex | CatalogSequence | CatalogType
     deriving (Eq, Ord, Show, Read)
 
 -- | A copied catalog entry name and kind.
@@ -65,7 +67,6 @@ lookupCatalogEntry conn catalog schema name kind = do
         CatalogIndex -> pure ("duckdb_indexes()", "index_name")
         CatalogSequence -> pure ("duckdb_sequences()", "sequence_name")
         CatalogType -> pure ("duckdb_types()", "type_name")
-        CatalogCollation -> throwIO (SQLError "duckdb-simple: scoped collation lookup is unavailable in DuckDB V2 metadata" (Just DuckDBV2ErrorApi) Nothing)
     let sql =
             Query
                 ( "SELECT e."

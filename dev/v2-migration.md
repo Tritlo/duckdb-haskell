@@ -82,8 +82,9 @@ bindings. The migration uses the current API. It does not add native symbols.
   a recognized CRS or a complete definition. Configure custom names through
   `connectionGeometryCRS` to preserve them through the SQL-derived type cache.
   Do not silently drop CRS metadata when `ignore_unknown_crs` is enabled.
-- V2 metadata cannot perform scoped collation lookup. That operation raises
-  `SQLError`. Table, view, index, sequence, and type lookups use SQL metadata.
+- V2 metadata cannot look up collations, so `CatalogEntryType` has no
+  collation kind. Table, view, index, sequence, and type lookups use SQL
+  metadata.
   These lookups accept a top-level schema identifier. A dot in that identifier
   is literal. V2 table descriptions accept at most three qualified name parts,
   so they cannot describe tables in nested schemas.

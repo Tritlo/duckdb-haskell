@@ -19,7 +19,7 @@ import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue)
 import Database.DuckDB.Simple.FromRow (RowParser, parseRow, rowErrorsToSqlError)
 import Database.DuckDB.Simple.Internal
-import Database.DuckDB.Simple.Materialize (prepareVariantReader, prepareVectorReader)
+import Database.DuckDB.Simple.Materialize (castReader, prepareVariantReader, prepareVectorReader)
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.TypeCache (withTypeConnection)
 import Foreign.Marshal.Alloc (alloca)
@@ -155,9 +155,10 @@ fetchChunk ref conn queryText stream = withQueryError queryText $ mask \restore 
 
 -- | Prepare readers that borrow the vectors in an owned chunk.
 prepareChunkReaders :: Connection -> DuckDBV2DataChunkHandle -> [StatementStreamColumn] -> IO [Int -> IO FieldValue]
-prepareChunkReaders conn chunk columns = withTypeCache conn \cache ->
+prepareChunkReaders conn chunk columns = withTypeCache conn \cache -> withConnectionHandle conn \native -> withConnectionFactory native \factory -> do
+    let readVariant vector = withTypeConnection cache (\helper -> prepareVariantReader helper vector)
     forM columns \StatementStreamColumn{statementStreamColumnIndex} ->
-        output (c_duckdb_v2_data_chunk_get_vector chunk (fromIntegral statementStreamColumnIndex)) >>= prepareVectorReader (\vector -> withTypeConnection cache (\helper -> prepareVariantReader helper vector))
+        output (c_duckdb_v2_data_chunk_get_vector chunk (fromIntegral statementStreamColumnIndex)) >>= prepareVectorReader (castReader factory readVariant)
 
 finalizeStream :: StatementStream -> IO ()
 finalizeStream StatementStream{statementStreamResult, statementStreamChunk, statementStreamPendingChunks} =

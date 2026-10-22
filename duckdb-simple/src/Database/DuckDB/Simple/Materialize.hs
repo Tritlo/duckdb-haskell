@@ -6,6 +6,7 @@
 
 module Database.DuckDB.Simple.Materialize (
     VariantReader,
+    castReader,
     prepareVariantReader,
     materializeValue,
     prepareValueReader,
@@ -14,7 +15,7 @@ module Database.DuckDB.Simple.Materialize (
 
 import Control.Exception (bracket, throwIO)
 import Control.Monad (forM, when)
-import Data.Array (Array, elems, listArray)
+import Data.Array (Array, elems, listArray, (!))
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Int (Int16, Int32, Int64)
 import qualified Data.Map.Strict as Map
@@ -23,7 +24,6 @@ import qualified Data.Text as Text
 import Data.Void (Void)
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.Simple.Element (
-    chunkDecodeBlob,
     chunkIsRowValid,
     decodeElement,
     duckDBHugeIntToInteger,
@@ -52,8 +52,17 @@ import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (Storable (..), peekElemOff)
 import GHC.Records (getField)
 
--- | Prepare copied VARIANT rows with a dedicated metadata connection.
+{- | Prepare rows of the types without a committed vector layout, VARIANT and
+GEOMETRY. Both need native casts.
+-}
 type VariantReader = DuckDBV2VectorHandle -> IO (Int -> IO FieldValue)
+
+-- | Read GEOMETRY with the casts of @factory@ and VARIANT with @variant@.
+castReader :: DuckDBV2FactoryHandle -> VariantReader -> VariantReader
+castReader factory variant vector =
+    vectorElementType vector >>= \case
+        DuckDBV2LogicalTypeIdGeometry -> prepareGeometryReader factory vector
+        _ -> variant vector
 
 -- | Copy VARIANT rows before releasing the borrowed metadata connection.
 prepareVariantReader :: DuckDBV2ConnectionHandle -> VariantReader
@@ -73,7 +82,7 @@ materializeValue variantReader factory value =
                 vector <- output (c_duckdb_v2_data_chunk_get_vector chunk 0)
                 checked (c_duckdb_v2_vector_set_size vector 1)
                 checked (c_duckdb_v2_vector_set_value vector 0 value)
-                prepareVectorReader variantReader vector >>= ($ 0)
+                prepareVectorReader (castReader factory variantReader) vector >>= ($ 0)
 
 -- | Read the type, data, and validity of a vector, and prepare its reader.
 prepareVectorReader :: VariantReader -> DuckDBV2VectorHandle -> IO (Int -> IO FieldValue)
@@ -96,7 +105,7 @@ prepareVectorReader variantReader vector = do
 prepareValueReader :: VariantReader -> DuckDBV2LogicalTypeId -> DuckDBV2VectorHandle -> Ptr Void -> Ptr Word64 -> IO (Int -> IO FieldValue)
 prepareValueReader variantReader dtype vector dataPtr validity = case dtype of
     DuckDBV2LogicalTypeIdVariant -> variantReader vector
-    DuckDBV2LogicalTypeIdGeometry -> whenValid FieldGeometry <$> prepareGeometryDecoder vector dataPtr
+    DuckDBV2LogicalTypeIdGeometry -> variantReader vector
     DuckDBV2LogicalTypeIdArray -> whenValid FieldArray <$> prepareArrayDecoder variantReader vector
     DuckDBV2LogicalTypeIdList -> whenValid FieldList <$> prepareListDecoder variantReader vector dataPtr
     DuckDBV2LogicalTypeIdMap -> whenValid FieldMap <$> prepareMapDecoder variantReader vector dataPtr
@@ -109,17 +118,30 @@ prepareValueReader variantReader dtype vector dataPtr validity = case dtype of
         valid <- chunkIsRowValid validity (fromIntegral row)
         if valid then wrap <$> decode row else pure FieldNull
 
-{- | Copy CRS metadata once for a vector. The decoder copies the WKB bytes of
-a valid row. It must not outlive its chunk.
+{- | Copy the WKB bytes and CRS of every GEOMETRY row in a vector. GEOMETRY has
+no committed vector layout, so a native cast to BLOB reads the rows.
 -}
-prepareGeometryDecoder :: DuckDBV2VectorHandle -> Ptr Void -> IO (Int -> IO RawGeometry)
-prepareGeometryDecoder vector dataPtr = do
+prepareGeometryReader :: DuckDBV2FactoryHandle -> DuckDBV2VectorHandle -> IO (Int -> IO FieldValue)
+prepareGeometryReader factory vector = do
     crs <- withVectorType vector \logical -> do
         rep <- logicalTypeToRep logical
         case rep of
             LogicalTypeGeometry value -> pure value
             _ -> throwIO (userError "duckdb-simple: invalid GEOMETRY type")
-    pure \row -> (`RawGeometry` crs) <$> chunkDecodeBlob dataPtr (fromIntegral row)
+    count <- fromIntegral <$> output (c_duckdb_v2_vector_get_size vector)
+    blobs <-
+        bracket (output (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdBlob (ConstPtr nullPtr) (ConstPtr nullPtr) 0)) destroyLogicalType \blob ->
+            withArray [blob] \types ->
+                bracket (output (c_duckdb_v2_data_chunk_create factory (ConstPtr types) 1)) (destroy c_duckdb_v2_data_chunk_destroy) \chunk -> do
+                    target <- output (c_duckdb_v2_data_chunk_get_vector chunk 0)
+                    checked (c_duckdb_v2_vector_cast factory vector target DuckDBV2CastModeNormal nullPtr nullPtr)
+                    readBlob <- prepareVectorReader (\_ -> throwIO (userError "duckdb-simple: expected a BLOB vector")) target
+                    forM [0 .. count - 1] readBlob
+    let rows = listArray (0, count - 1) blobs :: Array Int FieldValue
+    pure \row -> case rows ! row of
+        FieldBlob bytes -> pure (FieldGeometry (RawGeometry bytes crs))
+        FieldNull -> pure FieldNull
+        _ -> throwIO (userError "duckdb-simple: GEOMETRY cast did not produce a BLOB")
 
 materializeElement :: DuckDBV2LogicalTypeId -> DuckDBV2VectorHandle -> Ptr Void -> Ptr Word64 -> Int -> IO FieldValue
 materializeElement dtype vector dataPtr validity rowIdx = do

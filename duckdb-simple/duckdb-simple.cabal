@@ -99,8 +99,12 @@ library
 
   if flag(extension)
     if os(linux) || os(osx)
+      -- Keep the C stubs private to this shared library. Omit unfoldings, so
+      -- optimized clients cannot inline references to the hidden stubs.
       cc-options: -fvisibility=hidden
-      ghc-options: -optc-fvisibility=hidden
+      ghc-options:
+        -fomit-interface-pragmas
+        -optc-fvisibility=hidden
     else
       buildable: False
   build-depends:

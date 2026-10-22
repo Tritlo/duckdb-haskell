@@ -4,8 +4,9 @@
 
 `duckdb-ffi` 2.0 and `duckdb-simple` 0.4 require DuckDB 2.0. Earlier package
 releases remain available for DuckDB 1.5. The retained API and `duckdb-simple`
-support DuckDB 2.0.x releases. The V2 API requires exactly DuckDB 2.0.0,
+0.4 support DuckDB 2.0.x releases. The V2 API requires exactly DuckDB 2.0.0,
 because upstream marks it as unstable.
+`duckdb-simple` 0.5 uses the V2 API, so it also requires exactly DuckDB 2.0.0.
 
 ### duckdb-ffi 1.5 to 2.0
 
@@ -73,6 +74,51 @@ The SQL workflow stays the same. These changes can affect your code:
 - The Arrow release helpers moved from `duckdb-ffi` to
   `Database.DuckDB.Simple.Arrow`.
 
+### duckdb-simple 0.4 to 0.5
+
+`duckdb-simple` 0.5 uses the V2 C API for connections, results, conversions,
+and callbacks. Upstream marks that API as unstable, so 0.5 requires exactly
+DuckDB 2.0.0. Creating an environment raises `SQLError` for another version.
+The SQL workflow stays the same. These changes can affect your code:
+
+- Raw types come from `Database.DuckDB.FFI.V2`. They are distinct from the
+  retained API types that 0.4 uses.
+- `SQLError.sqlErrorType` is `Maybe DuckDBV2Error`. For example,
+  `DuckDBErrorConstraint` becomes `DuckDBV2ErrorDatabaseConstraint`,
+  `DuckDBErrorCatalog` becomes `DuckDBV2ErrorDatabaseCatalog`,
+  `DuckDBErrorBinder` becomes `DuckDBV2ErrorQueryBinder`,
+  `DuckDBErrorConversion` becomes `DuckDBV2ErrorTypeConversion`,
+  `DuckDBErrorInvalidInput` becomes `DuckDBV2ErrorInputInvalid`,
+  `DuckDBErrorInterrupt` becomes `DuckDBV2ErrorRuntimeInterrupt`, and
+  `DuckDBErrorResourceInUse` becomes `DuckDBV2ErrorResourceInUse`. V2 has no
+  data-corruption tag.
+- `ToDuckValue.toDuckValue` takes a `DuckDBV2ConnectionHandle` and returns a
+  `DuckDBV2ValueHandle`. Keep the connection alive until you destroy the value.
+  `logicalTypeFromRep` also takes the connection.
+- `LogicalTypeScalar`, `Function.argumentTypes`, and
+  `CopyBindInfo.copyBindColumnTypes` use `DuckDBV2LogicalTypeId`. For example,
+  `DuckDBTypeBigInt` becomes `DuckDBV2LogicalTypeIdBigInt`.
+- SQL TUPLE values decode as `FieldTuple` with a `TupleValue`. `LogicalTypeRep`
+  adds `LogicalTypeTuple` and `LogicalTypeCollatedVarchar`. Update exhaustive
+  matches.
+- `LogEntry` has six new fields. Use record syntax to construct or match it.
+- `ConfigValue.configValueScope` is `DuckDBV2SettingScope` instead of
+  `Maybe DuckDBConfigOptionScope`.
+- `CatalogEntry.catalogEntryType` and `lookupCatalogEntry` use the new
+  `CatalogEntryType`. V2 metadata cannot look up collations.
+- File system functions use `DuckDBV2FileFlag` and `DuckDBV2FileHandle`.
+- `foldArrow` callbacks and the Arrow release helpers use the V2
+  `ArrowSchema` and `ArrowArray` types.
+- `Database.DuckDB.Simple.Deprecated.Streaming` is now
+  `Database.DuckDB.Simple.Streaming`, with the same exports.
+- `query_` and `execute_` parse all statements before they run any. A syntax
+  error stops earlier statements in the same input from running.
+- Empty `Array` parameters raise `SQLError`. Use an SQL empty LIST.
+- A composite parameter with a GEOMETRY CRS that DuckDB does not recognize
+  raises `SQLError`. Version 0.4 bound it without the CRS. Configure custom CRS
+  names through `connectionGeometryCRS`.
+- Decoded VARIANT objects list their keys in DuckDB's lexicographic order.
+
 A repository checkout must generate the ignored build artefacts before it
 builds. CI does this too. Source archives include those artefacts. See the
 [generation command](README.md#generate-the-bindings) and
@@ -130,7 +176,7 @@ Objects decode to `FieldStruct` values with VARIANT fields. `Variant` from
 `Database.DuckDB.Simple.Variant` wraps the `FieldValue` of a result. Native
 VARIANT loses geometry CRS metadata. Import raw geometry payloads with
 `ST_GeomFromWKB(?)::VARIANT`. See [the VARIANT
-notes](duckdb-simple/README.md#variant) for private-format and
+notes](duckdb-simple/README.md#variant) for current decoding and
 persistent-storage requirements.
 
 `Variant` binds as a VARIANT parameter. The connection reads the VARIANT type
@@ -148,9 +194,9 @@ add `instance ToField YourType`. The default implementation requires `Show`.
 - Default cursors and folds use DuckDB's supported materialized execution API. They
   decode one Haskell row at a time, but native result memory depends on the
   result size. To request native streaming, import
-  `Database.DuckDB.Simple.Deprecated.Streaming` qualified. Its row and Arrow
-  folds emit a deprecation warning because they use DuckDB's deprecated
-  streaming execution entry point. The raw bindings remain in duckdb-ffi.
+  `Database.DuckDB.Simple.Streaming` qualified with `duckdb-simple` 0.4.
+  Earlier releases use `Database.DuckDB.Simple.Deprecated.Streaming` and
+  DuckDB's deprecated streaming entry point. The raw bindings remain in duckdb-ffi.
 
 - `UTCTime` parameters have SQL type TIMESTAMPTZ. Use `LocalTime` for TIMESTAMP.
 - `Float` parameters have SQL type FLOAT. REAL values decode to Float or Double.

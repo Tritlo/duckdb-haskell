@@ -1,7 +1,8 @@
 # DuckDB 2.0
 
 `duckdb-ffi` 2.0.0.0 and `duckdb-simple` 0.4.0.0 target DuckDB
-[2.0.0](https://github.com/duckdb/duckdb/releases/tag/v2.0.0). The package
+[2.0.0](https://github.com/duckdb/duckdb/releases/tag/v2.0.0). `duckdb-simple`
+0.5.0.0 uses the V2 API and requires exactly DuckDB 2.0.0. The package
 version selects the supported native API. Earlier package releases remain
 available for DuckDB 1.5.
 
@@ -33,8 +34,11 @@ structure definitions. The V2 header declares 620 functions.
 Both client APIs are generated with `hs-bindgen` 1.0. `Database.DuckDB.FFI`
 exposes the retained API and replaces the old aggregate and Deprecated modules.
 `Database.DuckDB.FFI.V2` exposes the new V2 API. The raw API exposes native
-primitives.
-`duckdb-simple` retains its existing connection and result API.
+primitives. `duckdb-simple` uses V2 handles for its connection, statement,
+result, conversion, callback, and Arrow backends. The query and execute
+entrypoints keep their public signatures. See
+[the V2 backend notes](../dev/v2-migration.md) for its contracts and native
+limits.
 
 Each generated module has its own native types. Equal C layouts do not make
 the corresponding Haskell types interchangeable. Keep handles and enums from
@@ -138,16 +142,17 @@ build and its installed extensions.
 | Triggers, DML in CTEs, nested schemas, NEAREST joins, variables, JSON mutation, recursive CTE additions | `query` and `execute` |
 | PEG parser and lambda syntax changes | `query` and `execute`. Client SQL needs `SELECT`; bare expression statements use the CLI's shell grammar. |
 | Quack, CONNECT, remote pushdown | SQL with the required extensions |
-| VARIANT and GEOMETRY | `Variant`, geometry types, and codecs |
-| Nanosecond TIMESTAMPTZ | Retained value access and typed conversion |
+| VARIANT and GEOMETRY | V2 binding and decoding, SQL metadata, native casts, and geometry codecs |
+| Nanosecond TIMESTAMPTZ | V2 value access and typed conversion |
 | Asynchronous I/O, storage format 2.0, query optimizations | The native engine through SQL |
 | Timezones, collations, extension repositories | SQL |
-| Environment, instances, connections, attachment options, schemas, catalog | Raw V2 |
-| SQL tokenization, statements, prepared statements, expressions, result cursors, Arrow results and streams | Raw V2 |
-| Values, logical and custom types, vectors, data chunks, arenas, column collections | Raw V2 |
-| Scalar, aggregate, table, cast, and COPY functions and signatures | Raw V2 and callback constructors |
-| Multi-file functions, table partitioning, batch claiming | Raw V2 and callbacks |
-| Replacement scans, file systems, logging, extension entry points | Raw V2 |
+| Environment, instances, connections, attachment options, schemas, catalog | `duckdb-simple`, `Config`, `Catalog`, and raw V2 |
+| SQL tokenization, statements, prepared statements, expressions, result cursors, Arrow results and streams | `Tokenizer`, query and streaming APIs, `Arrow`, and raw V2 expression operations |
+| Values, logical and custom types, vectors, data chunks, arenas, column collections | Typed conversions, `LogicalRep`, `Registration`, and raw V2 vector operations |
+| Scalar, aggregate, table, cast, and COPY functions and signatures | Managed `Registration` and `Copy` callbacks, typed signatures, and raw V2 |
+| Multi-file functions, table partitioning, batch claiming | Managed `Copy` multi-file setup and `Registration.TableCallbacks` |
+| Replacement scans, file systems, logging, extension entry points | Managed `Registration`, `FileSystem`, `Logging`, and extension-target builders. V2 has no custom file-system registration. |
+| Custom options, macro and pragma functions, function documentation, query profiles | `Config`, `Macro`, `Pragma`, `FunctionDocs`, and `QueryMetrics` |
 
 Appender access uses the retained API.
 

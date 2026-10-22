@@ -1,16 +1,16 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingVia #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# OPTIONS_GHC -Wno-deprecations #-}
 
+-- | Lossless VARIANT binding and result conversion through the V2 API.
 module VariantRegressionTests (tests) where
 
-import Control.Exception (IOException, SomeException, bracket, displayException, try)
+import Control.Exception (SomeException, bracket, displayException, try)
 import Control.Monad (forM_, void, when)
-import Data.Array (Array, listArray)
+import Data.Array (Array, elems, listArray)
 import qualified Data.ByteString as BS
 import qualified Data.Geometry as G
 import Data.Int (Int64)
@@ -18,26 +18,26 @@ import Data.List (isInfixOf)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Vector as V
-import Database.DuckDB.FFI
+import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple
-import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
 import Database.DuckDB.Simple.FromField (BitString (..), DecimalValue (..), FieldValue (..), StructValue (..), UnionValue)
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..))
 import Database.DuckDB.Simple.Geometry (RawGeometry (..), toRawGeometry)
-import Database.DuckDB.Simple.Internal (destroyValue, withConnectionHandle)
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), destroyLogicalType, logicalTypeFromRep)
+import Database.DuckDB.Simple.Internal (withConnectionFactory, withConnectionHandle, withStatementHandle)
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), destroyLogicalType, logicalTypeFromRep, logicalTypeToRep)
+import Database.DuckDB.Simple.Registration (destroy, output)
+import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Database.DuckDB.Simple.Variant
 import Foreign.C.ConstPtr (ConstPtr (..))
-import Foreign.Marshal.Alloc (alloca)
+import Foreign.Marshal.Array (withArray)
 import Foreign.Ptr (nullPtr)
-import Foreign.Storable (peek, poke)
 import GHC.Float (castDoubleToWord64, castFloatToWord32, castWord64ToDouble)
 import GHC.Generics (Generic)
 import System.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
-import TestUtils (assertFailureIO, withConstCString)
+import TestUtils (assertFailureIO)
 
 -- | A generic record checks the bridge to composite type metadata.
 newtype VariantRecord = VariantRecord {payload :: Variant}
@@ -120,29 +120,42 @@ tests =
             roundTrip conn value
             (query conn "SELECT variant_extract(?, 'Case')::BIGINT, variant_extract(?, 'case')::DECIMAL(38,9)::VARCHAR" (Variant value, Variant value) :: IO [(Int64, Text)])
                 >>= (@?= [(9007199254740993, "1234567890.123456789")])
+        , testCase "native objects use lexical key order and arrays retain element order" $ withConnection ":memory:" \conn ->
+            (query_ conn "SELECT {'z':1, 'a':2, 'm':[3,1,2]}::VARIANT" :: IO [Only Variant])
+                >>= (@?= [Only (Variant (variantObject [("a", FieldInt32 2), ("m", FieldList [FieldInt32 3, FieldInt32 1, FieldInt32 2]), ("z", FieldInt32 1)]))])
         , testCase "empty containers and NULL stay distinct" $ withConnection ":memory:" \conn -> do
             forM_ [FieldNull, FieldList [], variantObject [], FieldList [FieldNull], variantObject [("x", FieldNull)]] (roundTrip conn)
             (query_ conn "SELECT NULL::VARIANT" :: IO [Only (Maybe Variant)]) >>= (@?= [Only Nothing])
             (query conn "SELECT ?" (Only (Variant FieldNull)) :: IO [Only FieldValue]) >>= (@?= [Only FieldNull])
-        , testCase "empty JSON object keys survive parameter binding" $ withConnection ":memory:" \conn -> do
+        , testCase "native objects preserve empty and embedded NUL keys" $ withConnection ":memory:" \conn -> do
+            (query_ conn "SELECT '{\"\":42}'::JSON::VARIANT" :: IO [Only Variant])
+                >>= (@?= [Only (Variant (variantObject [("", FieldWord64 42)]))])
+            (query_ conn "SELECT '{\"A\":1,\"a\":2,\"a\\u0000b\":3}'::JSON::VARIANT" :: IO [Only Variant])
+                >>= (@?= [Only (Variant (variantObject [("A", FieldWord64 1), ("a", FieldWord64 2), ("a\0b", FieldWord64 3)]))])
+        , testCase "empty object keys survive parameter binding" $ withConnection ":memory:" \conn -> do
             [Only value] <- query_ conn "SELECT '{\"named\": 1, \"\": 42}'::JSON::VARIANT" :: IO [Only Variant]
             query conn "SELECT ?" (Only value) >>= (@?= [Only value])
-            roundTrip conn (variantObject [("named", FieldBool True), ("", FieldList [FieldNull, variantObject [("named", FieldInt64 1), ("", FieldText "λ")]])])
-            [Only unsupported] <- query_ conn "SELECT '{\"\": 42}'::JSON::VARIANT" :: IO [Only Variant]
-            soleEmpty <- try (query conn "SELECT ?" (Only unsupported)) :: IO (Either IOException [Only Variant])
-            case soleEmpty of
-                Left err -> assertBool "must identify the native constructor limitation" ("only an empty key" `isInfixOf` displayException err)
-                Right _ -> assertFailure "expected a controlled error instead of an object to array conversion"
-            duplicate <- try (query conn "SELECT ?" (Only (Variant (variantObject [("", FieldInt64 1), ("", FieldInt64 2)])))) :: IO (Either IOException [Only Variant])
-            case duplicate of
-                Left _ -> pure ()
-                Right _ -> assertFailure "expected duplicate VARIANT keys to fail"
+            -- Decoded objects list their keys in DuckDB's lexicographic order.
+            roundTrip conn (variantObject [("", FieldList [FieldNull, variantObject [("", FieldText "λ"), ("named", FieldInt64 1)]]), ("named", FieldBool True)])
+            sole <- try (query conn "SELECT ?" (Only (Variant (variantObject [("", FieldInt64 42)])))) :: IO (Either SomeException [Only Variant])
+            case sole of
+                Left err -> assertBool (displayException err) ("only an empty key" `isInfixOf` displayException err)
+                Right _ -> assertFailure "expected the native constructor limit for an object with only an empty key"
+        , testCase "metadata conversion ignores shadowing macros" $ withConnection ":memory:" \conn -> do
+            void (execute_ conn "CREATE MACRO variant_typeof(x) AS 'VARCHAR'")
+            void (execute_ conn "CREATE MACRO list_transform(x,y) AS [42]")
+            void (execute_ conn "CREATE MACRO variant_keys(x) AS ['wrong']")
+            (query_ conn "SELECT [42::TINYINT::VARIANT, 'two'::VARIANT]::VARIANT" :: IO [Only Variant])
+                >>= (@?= [Only (Variant (FieldList [FieldInt8 42, FieldText "two"]))])
+            (query_ conn "SELECT {'a': 42::TINYINT}::VARIANT" :: IO [Only Variant]) >>= (@?= [Only (Variant (variantObject [("a", FieldInt8 42)]))])
         , testCase "deep native arrays decode without a library depth limit" $ withConnection ":memory:" \conn ->
             forM_ [128, 256 :: Int] \depth -> do
                 let expected = Variant (foldr (const (FieldList . pure)) (FieldWord64 7) [1 .. depth])
-                -- An alias avoids recursive native rendering of the default column name.
                 (query conn "SELECT (repeat('[', ?) || '7' || repeat(']', ?))::JSON::VARIANT AS payload" (depth, depth) :: IO [Only Variant])
                     >>= (@?= [Only expected])
+                let object = Variant (variantObject [("nested", variantPayload expected)])
+                (query conn "SELECT ('{\"nested\":' || repeat('[', ?) || '7' || repeat(']', ?) || '}')::JSON::VARIANT AS payload" (depth, depth) :: IO [Only Variant])
+                    >>= (@?= [Only object])
         , testCase "ARRAY parameters and generic records contain VARIANT" $ withConnection ":memory:" \conn -> do
             let array = listArray (0, 2) [Variant (FieldInt8 1), Variant (FieldText "two"), Variant FieldNull]
             (query conn "SELECT ?" (Only array) :: IO [Only (Array Int Variant)]) >>= (@?= [Only array])
@@ -151,9 +164,12 @@ tests =
         , testCase "nullable ARRAY parameters preserve heterogeneous VARIANT values" $ withConnection ":memory:" \conn -> do
             let values = listArray (0, 3) [Nothing, Just (Variant (FieldInt64 42)), Just (Variant (FieldText "two")), Just (Variant (variantObject [("xs", FieldList [FieldNull, FieldBool True])]))]
             (query conn "SELECT typeof(?), ?" (values, values) :: IO [(Text, Array Int (Maybe Variant))]) >>= (@?= [("VARIANT[4]", values)])
-        , testCase "empty ARRAY parameters retain VARIANT element type" $ withConnection ":memory:" \conn -> do
+        , testCase "empty ARRAY parameters report the V2 limit" $ withConnection ":memory:" \conn -> do
             let values = listArray (0, -1) [] :: Array Int (Maybe Variant)
-            (query conn "SELECT typeof(?)" (Only values) :: IO [Only Text]) >>= (@?= [Only "VARIANT[ANY]"])
+            result <- try (query conn "SELECT typeof(?)" (Only values))
+            case result of
+                Left SQLError{sqlErrorMessage} -> assertBool "must identify empty ARRAY" ("empty ARRAY" `Text.isInfixOf` sqlErrorMessage)
+                Right (_ :: [Only Text]) -> assertFailure "expected the V2 empty ARRAY limit"
         , testCase "parameter binding supplies a complete VARIANT type" $ withConnection ":memory:" \conn -> do
             let value = variantObject [("xs", FieldList [FieldNull, FieldInt64 42])]
             roundTrip conn value
@@ -164,11 +180,10 @@ tests =
                     when (i == 0) (bind stmt [toField (Variant (FieldInt64 42))])
                     pure (acc + i)
                 total @?= (sum [0 .. 99999] :: Int64)
-        , testCase "VARIANT type construction raises an error" $ do
-            result <- try (bracket (logicalTypeFromRep (LogicalTypeScalar DuckDBTypeVariant)) destroyLogicalType (const (pure ())))
-            case result of
-                Left err -> assertBool (displayException (err :: SomeException)) ("?::VARIANT" `isInfixOf` displayException err)
-                Right () -> assertFailure "expected VARIANT type rejection"
+        , testCase "VARIANT type construction uses the supplied connection" $ withConnection ":memory:" \conn ->
+            withConnectionHandle conn \native ->
+                bracket (logicalTypeFromRep native (LogicalTypeScalar DuckDBV2LogicalTypeIdVariant)) destroyLogicalType \logical ->
+                    logicalTypeToRep logical >>= (@?= LogicalTypeScalar DuckDBV2LogicalTypeIdVariant)
         , testCase "VARIANT payloads and GEOMETRY CRS metadata bind together" $ withConnection ":memory:" \conn -> do
             [Only value] <- query_ conn "SELECT {'payload': 42::VARIANT, 'shape': NULL::GEOMETRY('OGC:CRS84')}" :: IO [Only (StructValue FieldValue)]
             (query conn "SELECT typeof(?)" (Only value) :: IO [Only Text]) >>= (@?= [Only "STRUCT(payload VARIANT, shape GEOMETRY('OGC:CRS84'))"])
@@ -202,7 +217,7 @@ tests =
                         actual @?= expected
                         pure (n + 1)
                 count @?= 5000
-            | (mode, foldRows) <- [("materialized", fold_), ("deprecated streaming", Streaming.fold_)]
+            | (mode, foldRows) <- [("materialized", fold_), ("native streaming", Streaming.fold_)]
             ]
         , testCase "filtered and reordered rows use the right child offsets" $ withConnection ":memory:" \conn -> do
             rows <- query_ conn "SELECT {'n': i, 'xs': [i, i + 1]}::VARIANT FROM range(10000) t(i) WHERE i % 97 = 0 ORDER BY i DESC LIMIT 40"
@@ -216,10 +231,15 @@ tests =
                 withConnectionWithConfig path [("storage_compatibility_version", "v1.5.0")] \conn -> do
                     rows <- query_ conn "SELECT value FROM stored WHERE i % 97 = 0 ORDER BY i DESC LIMIT 40" :: IO [Only Variant]
                     let expected =
-                            [ Only (Variant (variantObject [("n", FieldInt64 n), ("xs", FieldList [FieldInt64 n, FieldNull]), ("text", FieldText (Text.pack (show n)))]))
+                            [ Only (Variant (variantObject [("n", FieldInt64 n), ("text", FieldText (Text.pack (show n))), ("xs", FieldList [FieldInt64 n, FieldNull])]))
                             | n <- take 40 (reverse [0, 97 .. 9999])
                             ]
                     rows @?= expected
+                    [Only nativeKeys] <- query_ conn "SELECT system.main.variant_keys(value) FROM stored LIMIT 1" :: IO [Only [Text]]
+                    nativeKeys @?= ["n", "text", "xs"]
+                    forM_ rows \(Only (Variant payloadValue)) -> case payloadValue of
+                        FieldStruct object -> map structFieldName (elems (structValueFields object)) @?= nativeKeys
+                        other -> assertFailure (show other)
                     [Only geometry] <- query_ conn "SELECT geometry FROM stored LIMIT 1" :: IO [Only RawGeometry]
                     rawGeometryCRS geometry @?= Just "OGC:CRS84"
                     BS.length (rawGeometryWKB geometry) @?= 21
@@ -252,7 +272,7 @@ tests =
             mixedRaw <- either assertFailure pure (toRawGeometry mixed)
             outcome <- try (query conn "SELECT system.main.ST_GeomFromWKB(?)::VARIANT" (Only (rawGeometryWKB mixedRaw)) :: IO [Only Variant])
             case outcome of
-                Left (err :: SQLError) -> sqlErrorType err @?= Just DuckDBErrorInvalidInput
+                Left (err :: SQLError) -> sqlErrorType err @?= Just DuckDBV2ErrorInputInvalid
                 Right _ -> assertFailure "native GEOMETRY must reject mixed Z/M dimensions"
             (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
         , testCase "invalid values fail before binding and connection reuse succeeds" $ withConnection ":memory:" \conn -> do
@@ -265,7 +285,6 @@ tests =
                 , FieldDecimal (DecimalValue 3 0 1000)
                 , FieldBit (BitString 8 (BS.singleton 0))
                 , variantObject [("same", FieldNull), ("same", FieldBool True)]
-                , variantObject [("", FieldNull), ("", FieldBool True)]
                 , variantObject [("", FieldBool True)]
                 , variantObject [("before\0after", FieldNull)]
                 ]
@@ -278,23 +297,18 @@ roundTrip :: Connection -> FieldValue -> Assertion
 roundTrip conn expected =
     (query conn "SELECT typeof(?) AS kind, ? AS value" (Variant expected, Variant expected) :: IO [(Text, Variant)]) >>= (@?= [("VARIANT", Variant expected)])
 
-{- | Insert native timestamp units without the parameter API, which converts
-TIMESTAMP_S and TIMESTAMP_MS parameters to microseconds before execution.
--}
+-- | Insert exact native timestamp units without changing their logical types.
 appendWideTimestamps :: Connection -> [(Int64, Int64)] -> IO ()
 appendWideTimestamps conn rows =
     withConnectionHandle conn \native ->
-        withConstCString "wide_timestamps" \table ->
-            alloca \appenderPtr -> do
-                poke appenderPtr (DuckDBAppender nullPtr)
-                bracket (c_duckdb_appender_create native (ConstPtr nullPtr) table appenderPtr) (const (void (c_duckdb_appender_destroy appenderPtr))) \created -> do
-                    created @?= DuckDBSuccess
-                    appender <- peek appenderPtr
-                    forM_ rows \(seconds, millis) -> do
-                        bracket (c_duckdb_create_timestamp_s (DuckDBTimestampS seconds)) destroyValue (c_duckdb_append_value appender) >>= (@?= DuckDBSuccess)
-                        bracket (c_duckdb_create_timestamp_ms (DuckDBTimestampMs millis)) destroyValue (c_duckdb_append_value appender) >>= (@?= DuckDBSuccess)
-                        c_duckdb_appender_end_row appender >>= (@?= DuckDBSuccess)
-                    c_duckdb_appender_flush appender >>= (@?= DuckDBSuccess)
+        withStatement conn "INSERT INTO wide_timestamps VALUES (?, ?)" \statement ->
+            withStatementHandle statement \prepared ->
+                forM_ rows \(seconds, millis) ->
+                    bracket (withConnectionFactory native (\nativeFactory -> output (c_duckdb_v2_value_create_timestamp_sec nativeFactory (fromIntegral seconds)))) (destroy c_duckdb_v2_value_destroy) \secondsValue ->
+                        bracket (withConnectionFactory native (\nativeFactory -> output (c_duckdb_v2_value_create_timestamp_ms nativeFactory (fromIntegral millis)))) (destroy c_duckdb_v2_value_destroy) \millisValue ->
+                            withArray [secondsValue, millisValue] \values ->
+                                bracket (output (c_duckdb_v2_prepared_statement_execute prepared (ConstPtr nullPtr) (ConstPtr values) 2)) (destroy c_duckdb_v2_result_destroy) \result ->
+                                    void (output (c_duckdb_v2_result_drain result))
 
 -- | A raw geometry payload has no CRS inside a VARIANT.
 geometryPayload :: BS.ByteString -> Variant
@@ -336,6 +350,7 @@ scalarCases =
     , "'1970-01-01 00:00:01.234567891'::TIMESTAMP_NS"
     , "'infinity'::TIMESTAMP_NS"
     , "'1970-01-01 00:00:01.234567+00'::TIMESTAMPTZ"
+    , "'1970-01-01 00:00:01.234567891+00'::TIMESTAMPTZ_NS"
     , "INTERVAL '-4 MONTHS 8 DAYS 123456789 MICROSECONDS'"
     , "'12345678901234567890123456789012345678901234567890'::BIGNUM"
     , "'-12345678901234567890123456789012345678901234567890'::BIGNUM"

@@ -4,7 +4,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
-{-# OPTIONS_GHC -Wno-deprecations #-}
 
 -- | Integration tests for scoped Arrow batches and their native ownership.
 module ArrowTests (arrowTests) where
@@ -20,12 +19,12 @@ import Data.Proxy (Proxy (..))
 import qualified Data.Text as Text
 import Data.Void (Void)
 import Data.Word (Word8)
-import Database.DuckDB.FFI
+import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.Arrow (releaseArrowArray, releaseArrowSchema)
 import qualified Database.DuckDB.Simple.Arrow as Arrow
-import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
 import Database.DuckDB.Simple.Internal (peekUtf8CString)
+import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (peekCString)
 import Foreign.Marshal.Alloc (alloca)
@@ -47,7 +46,7 @@ arrowTests =
 arrowModeTests :: Bool -> TestTree
 arrowModeTests streaming =
     testGroup
-        (if streaming then "deprecated streaming" else "materialized")
+        (if streaming then "native streaming" else "materialized")
         [ testCase "parameters, Unicode names, NULLs and multiple batches" $
             withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
                 (batches, chunks) <-
@@ -174,6 +173,18 @@ arrowModeTests streaming =
                     Left (err :: SQLError) -> assertBool "native error" ("Arrow query failed" `Text.isInfixOf` sqlErrorMessage err)
                     Right () -> assertFailure "expected query error"
                 assertConnectionUsable conn
+        , testCase "callback connection use follows the execution mode" $
+            withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
+                count <- foldArrow_ conn "SELECT i FROM range(5000) t(i)" (0 :: Int) \acc _ _ -> do
+                    if streaming
+                        then do
+                            outcome <- try (query_ conn "SELECT 42" :: IO [Only Int64])
+                            case outcome of
+                                Left (err :: SQLError) -> sqlErrorType err @?= Just DuckDBV2ErrorResourceInUse
+                                Right _ -> assertFailure "expected a busy streaming connection"
+                        else query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+                    pure (acc + 1)
+                assertBool "expected multiple callbacks" (count > 1)
         , testCase "closing the connection stops further batch callbacks" $
             withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
                 withReleaseCounters \schemaReleases arrayReleases observe -> do

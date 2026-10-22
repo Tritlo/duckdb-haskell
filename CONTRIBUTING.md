@@ -90,9 +90,11 @@ Format Haskell code with `fourmolu` before committing.
 Format Cabal files with `cabal-gild`. Keep names consistent with the surrounding
 module.
 
-Build parameter types with the type cache of the statement's connection. The
-cache reads its types on a separate connection the first time a parameter
-needs one. Do not run queries on the statement's connection during binding.
+Build parameter values with the V2 handle of the statement's connection.
+Use the managed type cache for configured GEOMETRY types. Run metadata queries
+on its helper connection so binding and decoding
+do not interrupt an active stream. Use public V2 operations and SQL metadata.
+Do not read private payload layouts or convert handles between the two APIs.
 
 ## Native library configuration
 

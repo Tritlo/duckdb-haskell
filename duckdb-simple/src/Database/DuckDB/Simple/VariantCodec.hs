@@ -1,458 +1,245 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 
-{- | Checked access to the supported DuckDB private VARIANT payload.
-Only public C handles and vector accessors cross the native boundary.
--}
+-- | Lossless VARIANT decoding through public V2 values and SQL type metadata.
 module Database.DuckDB.Simple.VariantCodec (
-    decodeVariant,
     prepareVariantDecoder,
-    decodeVariantPayload,
 ) where
 
-import Control.Exception (bracket, throwIO)
-import Control.Monad (forM, forM_, unless, when)
-import Control.Monad.Trans.Class (lift)
-import Control.Monad.Trans.State.Strict (StateT, evalStateT, gets, modify')
-import Data.Array (Array, bounds, listArray, (!))
-import Data.Bits (complement, finiteBitSize, shiftL, (.&.), (.|.))
-import Data.ByteString (ByteString)
-import qualified Data.ByteString as BS
-import Data.Char (isDigit)
-import Data.Coerce (Coercible, coerce)
+import Control.Exception (bracket, evaluate, finally, mask_, onException, throwIO)
+import Control.Monad (forM, unless)
+import Data.Array (listArray, (!))
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import qualified Data.IntMap.Strict as IntMap
-import qualified Data.IntSet as IntSet
-import qualified Data.Set as Set
+import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
-import qualified Data.Text.Encoding as Text
-import Data.Word (Word32, Word8)
-import Database.DuckDB.FFI
-import Database.DuckDB.Simple.Element (bitStringFromBytes, chunkDecodeBlob, chunkIsRowValid, decodeElement)
-import Database.DuckDB.Simple.FromField (
-    BigNum (..),
-    DecimalValue (..),
-    FieldValue (..),
-    RawGeometry (..),
-    fromBigNumBytes,
- )
-import Database.DuckDB.Simple.Internal (destroyLogicalType)
+import Database.DuckDB.Simple.FromField (FieldValue (..))
+import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Variant (variantObject)
 import Foreign.C.ConstPtr (ConstPtr (..))
-import Foreign.C.String (peekCString)
-import Foreign.Marshal.Alloc (alloca, allocaBytesAligned)
-import Foreign.Marshal.Utils (copyBytes)
-import Foreign.Ptr (Ptr, castPtr, nullPtr)
-import Foreign.Storable (Storable, peek, peekElemOff, poke, sizeOf)
+import Foreign.Marshal.Array (withArray)
+import Foreign.Ptr (nullPtr)
 
--- | Raise a codec error before an invalid native operation.
-codecError :: String -> IO a
-codecError message = throwIO (userError ("duckdb-simple: VARIANT: " <> message))
-
--- | Convert a checked pure result to an IO result.
-checked :: Either String a -> IO a
-checked = either codecError pure
-
-{- | Accept only DuckDB 2.0.x releases. Development builds can use another
-private VARIANT format.
+{- | Copy a vector before returning its row reader. The connection is a dedicated
+metadata connection. It must remain exclusively borrowed until this function
+returns. The scalar callback decodes a value after its exact native cast.
+Each level batches type and key metadata. Objects with the same keys share
+one extraction query. Keys remain bound values, including empty and NUL keys.
 -}
-checkVersion :: IO ()
-checkVersion = do
-    ConstPtr versionPtr <- c_duckdb_library_version
-    version <- peekCString versionPtr
-    let supported = case Text.splitOn "." (Text.pack version) of
-            ["v2", "0", patch] -> not (Text.null patch) && Text.all isDigit patch
-            _ -> False
-    unless supported (codecError ("unsupported native version " <> version))
+prepareVariantDecoder :: (DuckDBV2ConnectionHandle -> DuckDBV2ValueHandle -> IO FieldValue) -> DuckDBV2ConnectionHandle -> DuckDBV2VectorHandle -> IO (Int -> IO FieldValue)
+prepareVariantDecoder scalar connection vector = do
+    count <- output (c_duckdb_v2_vector_get_size vector)
+    bracket (acquireItems destroyValue [output (c_duckdb_v2_vector_get_value vector i) | i <- indices count]) (releaseItems destroyValue) \values ->
+        withTypeStatement connection \statement -> withCastTypes \castTypes -> do
+            decoded <- decodeValues scalar connection statement castTypes values
+            let rows = listArray (0, length decoded - 1) decoded
+            pure (evaluate . (rows !))
 
--- | Check the byte order and pointer width required by native scalar loads.
-checkPlatform :: IO ()
-checkPlatform = alloca \ptr -> do
-    poke ptr (1 :: Word32)
-    first <- peek (castPtr ptr :: Ptr Word8)
-    unless (first == 1 && sizeOf (nullPtr :: Ptr ()) == 8) $
-        codecError "the private codec requires a 64-bit little-endian host"
+-- | A decoded node owns the child values needed at the next nesting level.
+data VariantNode
+    = ScalarNode FieldValue
+    | ListNode [DuckDBV2ValueHandle]
+    | ObjectNode [(Text, DuckDBV2ValueHandle)]
 
--- | Acquire a non-NULL native handle.
-nonNull :: (Coercible a (Ptr ())) => String -> IO a -> IO a
-nonNull label action = do
-    ptr <- action
-    when (coerce ptr == (nullPtr :: Ptr ())) (codecError (label <> " returned NULL"))
-    pure ptr
-
--- | Check a logical type's tag.
-expectType :: DUCKDB_TYPE -> DuckDBLogicalType -> IO ()
-expectType expected logical = do
-    DuckDBType actual <- c_duckdb_get_type_id logical
-    unless (actual == expected) (codecError "unexpected physical child type")
-
--- | Check a STRUCT's names and owned child descriptors.
-checkStruct :: DuckDBLogicalType -> [(Text, DuckDBLogicalType -> IO ())] -> IO ()
-checkStruct logical fields = do
-    count <- c_duckdb_struct_type_child_count logical
-    unless (count == fromIntegral (length fields)) (codecError "unexpected physical child count")
-    sequence_
-        [ do
-            bracket (nonNull "child name" (c_duckdb_struct_type_child_name logical index)) (c_duckdb_free . castPtr) \name -> do
-                bytes <- BS.packCString name
-                unless (bytes == Text.encodeUtf8 expectedName) (codecError "unexpected physical child name")
-            bracket (nonNull "child type" (c_duckdb_struct_type_child_type logical index)) destroyLogicalType checkChild
-        | (index, (expectedName, checkChild)) <- zip [0 ..] fields
-        ]
-
--- | Check a LIST and its owned element descriptor.
-checkList :: (DuckDBLogicalType -> IO ()) -> DuckDBLogicalType -> IO ()
-checkList checkChild logical = do
-    expectType DuckDBTypeList logical
-    bracket (nonNull "list child type" (c_duckdb_list_type_child_type logical)) destroyLogicalType checkChild
-
--- | Check the complete, unshredded four-child VARIANT schema.
-checkSchema :: DuckDBLogicalType -> IO ()
-checkSchema logical = do
-    expectType DuckDBTypeVariant logical
-    checkStruct
-        logical
-        [ ("keys", checkList (expectType DuckDBTypeVarchar))
-        ,
-            ( "children"
-            , checkList \child -> do
-                expectType DuckDBTypeStruct child
-                checkStruct child [("keys_index", expectType DuckDBTypeUInteger), ("values_index", expectType DuckDBTypeUInteger)]
-            )
-        ,
-            ( "values"
-            , checkList \child -> do
-                expectType DuckDBTypeStruct child
-                checkStruct child [("type_id", expectType DuckDBTypeUTinyInt), ("byte_offset", expectType DuckDBTypeUInteger)]
-            )
-        , ("data", expectType DuckDBTypeBlob)
-        ]
-
--- | Check an element index before native pointer arithmetic.
-checkIndex :: Int -> Int -> IO ()
-checkIndex width index =
-    when (index < 0 || index > maxBound `div` width) (codecError "native element index exceeds Int range")
-
--- | Prepare validity access for a chunk. The caller checks row bounds.
-prepareValidity :: DuckDBVector -> IO (Int -> IO Bool)
-prepareValidity vector = do
-    validity <- c_duckdb_vector_get_validity vector
-    pure (chunkIsRowValid validity . fromIntegral)
-
--- | Borrow a fixed-width buffer until its chunk is destroyed.
-prepareElementReader :: (Storable a) => DuckDBVector -> IO (Int -> IO a)
-prepareElementReader vector = do
-    ptr <- c_duckdb_vector_get_data vector
-    valid <- prepareValidity vector
-    pure (readAt valid (castPtr ptr))
+-- | Decode all siblings together before reconstructing their parent nodes.
+decodeValues :: (DuckDBV2ConnectionHandle -> DuckDBV2ValueHandle -> IO FieldValue) -> DuckDBV2ConnectionHandle -> DuckDBV2SqlStatementHandle -> CastTypes -> [DuckDBV2ValueHandle] -> IO [FieldValue]
+decodeValues _ _ _ _ [] = pure []
+decodeValues scalar connection statement castTypes values = do
+    metadata <- queryMetadata connection statement values
+    unless (length metadata == length values) (codecError "metadata query returned an unexpected number of nodes")
+    let indexed = zip3 [0 ..] metadata values
+        groups = Map.fromListWith (++) [(keys, [(index, value)]) | (index, (tag, keys), value) <- indexed, isObject tag]
+        releaseIndexed = releaseNode . snd
+    bracket
+        (acquireItems releaseIndexed [(,) index <$> decodeNode tag value | (index, (tag, _), value) <- indexed, not (isObject tag)])
+        (releaseItems releaseIndexed)
+        \otherNodes ->
+            bracket
+                (acquireItems (releaseItems releaseIndexed) [queryObjectGroup connection keys rows | (keys, rows) <- Map.toList groups])
+                (releaseItems (releaseItems releaseIndexed))
+                \objectGroups -> do
+                    let indexedNodes = IntMap.fromList (otherNodes <> concat objectGroups)
+                    nodes <- forM [0 .. length values - 1] \index ->
+                        maybe (codecError "object extraction omitted a node") pure (IntMap.lookup index indexedNodes)
+                    children <- decodeValues scalar connection statement castTypes (concatMap nodeChildren nodes)
+                    assemble nodes children
   where
-    readAt :: (Storable a) => (Int -> IO Bool) -> Ptr a -> Int -> IO a
-    readAt valid ptr index = do
-        checkIndex (sizeOfElement ptr) index
-        when (ptr == nullPtr) (codecError "NULL vector data")
-        present <- valid index
-        unless present (codecError "NULL physical payload element")
-        peekElemOff ptr index
-    sizeOfElement :: (Storable a) => Ptr a -> Int
-    sizeOfElement ptr = sizeOf (undefined `asTypeOf` element ptr)
-    element :: Ptr a -> a
-    element _ = undefined
+    isObject = Text.isPrefixOf "OBJECT("
+    decodeNode tag value
+        | tag == "VARIANT_NULL" = pure (ScalarNode FieldNull)
+        | "ARRAY(" `Text.isPrefixOf` tag =
+            withCast connection castTypes value "VARIANT[]" \list -> do
+                count <- output (c_duckdb_v2_value_get_child_count list)
+                ListNode <$> acquireItems destroyValue [output (c_duckdb_v2_value_get_child list i) | i <- indices count]
+        | otherwise = do
+            target <- scalarType tag
+            ScalarNode <$> withCast connection castTypes value target (scalar connection)
 
--- | Borrow a string buffer and copy each requested value into Haskell memory.
-prepareBytesReader :: DuckDBVector -> IO (Int -> IO ByteString)
-prepareBytesReader vector = do
-    base <- c_duckdb_vector_get_data vector
-    valid <- prepareValidity vector
-    pure \index -> do
-        checkIndex (sizeOf (undefined :: DuckDBStringT)) index
-        present <- valid index
-        unless present (codecError "NULL physical string element")
-        when (base == nullPtr) (codecError "NULL string vector data")
-        chunkDecodeBlob base (fromIntegral index)
-
--- | Convert a nonnegative bounded integer to Int.
-checkedInt :: Integer -> IO Int
-checkedInt n
-    | n < 0 || n > toInteger (maxBound :: Int) = codecError "payload size exceeds Int range"
-    | otherwise = pure (fromInteger n)
-
--- | Prepare LIST bounds checks against the chunk's fixed child size.
-prepareListBounds :: DuckDBVector -> IO (Int -> IO (Int, Int))
-prepareListBounds vector = do
-    readEntry <- prepareElementReader vector
-    DuckDBIdx size <- c_duckdb_list_vector_get_size vector
-    pure \row -> do
-        DuckDBListEntry offset count <- readEntry row
-        unless (offset <= size && count <= size - offset) (codecError "LIST bounds exceed child size")
-        start <- checkedInt (toInteger offset)
-        len <- checkedInt (toInteger count)
-        _ <- checkedInt (toInteger offset + toInteger count)
-        pure (start, len)
-
--- | Decode one row while its flattened result chunk remains alive.
-decodeVariant :: DuckDBVector -> Int -> IO FieldValue
-decodeVariant vector row = prepareVariantDecoder vector >>= ($ row)
-
-{- | Check the format once and borrow buffers for a flattened result chunk.
-The returned reader must not outlive the chunk. The caller supplies row indices
-within that chunk. DuckDB result Fetch flattens nested vectors.
-Each read copies its payload into Haskell memory, including referenced keys.
+{- | Extract objects with one key layout as a native VARIANT[][] value.
+The binder needs constant extraction keys. Bind each key once and apply the
+extractions to all objects with that layout. This avoids per-row queries and
+preserves keys that cannot be SQL identifiers.
 -}
-prepareVariantDecoder :: DuckDBVector -> IO (Int -> IO FieldValue)
-prepareVariantDecoder vector = do
-    checkVersion
-    checkPlatform
-    when (vector == DuckDBVector nullPtr) (codecError "NULL vector")
-    bracket (nonNull "vector type" (c_duckdb_vector_get_column_type vector)) destroyLogicalType checkSchema
-    valid <- prepareValidity vector
-    keys <- child vector 0
-    children <- child vector 1
-    values <- child vector 2
-    blob <- child vector 3
-    keyBounds <- prepareListBounds keys
-    childBounds <- prepareListBounds children
-    valueBounds <- prepareListBounds values
-    keyVector <- nonNull "keys vector" (c_duckdb_list_vector_get_child keys)
-    childVector <- nonNull "children vector" (c_duckdb_list_vector_get_child children)
-    valueVector <- nonNull "values vector" (c_duckdb_list_vector_get_child values)
-    keyIndices <- child childVector 0
-    valueIndices <- child childVector 1
-    tags <- child valueVector 0
-    offsets <- child valueVector 1
-    readTag <- prepareElementReader tags
-    readOffset <- prepareElementReader offsets
-    hasKey <- prepareValidity keyIndices
-    readKey <- prepareElementReader keyIndices
-    readValue <- prepareElementReader valueIndices
-    readKeyBytes <- prepareBytesReader keyVector
-    readBlob <- prepareBytesReader blob
-    pure \row -> do
-        checkIndex (sizeOf (undefined :: DuckDBListEntry)) row
-        present <- valid row
-        if not present
-            then pure FieldNull
-            else do
-                (keyStart, keyCount) <- keyBounds row
-                (childStart, childCount) <- childBounds row
-                (valueStart, valueCount) <- valueBounds row
-                valueRows <- forM [valueStart .. valueStart + valueCount - 1] \index ->
-                    (,) <$> readTag index <*> readOffset index
-                childRows <- forM [childStart .. childStart + childCount - 1] \index -> do
-                    keyed <- hasKey index
-                    key <- if keyed then Just <$> readKey index else pure Nothing
-                    value <- readValue index
-                    when (toInteger value >= toInteger valueCount) (codecError "child value index out of bounds")
-                    case key of
-                        Just k | toInteger k >= toInteger keyCount -> codecError "child key index out of bounds"
-                        _ -> pure ()
-                    pure (key, value)
-                let usedKeys = Set.toList (Set.fromList [k | (Just k, _) <- childRows])
-                keyRows <- forM usedKeys \index -> do
-                    bytes <- readKeyBytes (keyStart + fromIntegral index)
-                    text <- checked (either (Left . show) Right (Text.decodeUtf8' bytes))
-                    pure (index, text)
-                bytes <- readBlob row
-                decodeVariantPayload valueRows childRows keyRows bytes
+queryObjectGroup :: DuckDBV2ConnectionHandle -> [Text] -> [(Int, DuckDBV2ValueHandle)] -> IO [(Int, VariantNode)]
+queryObjectGroup _ [] rows = pure [(index, ObjectNode []) | (index, _) <- rows]
+queryObjectGroup connection keys rows =
+    withVariantList connection (map snd rows) \list ->
+        withConnectionFactory connection \factory ->
+            bracket
+                (acquireItems destroyValue [withText key (output . c_duckdb_v2_value_create_varchar factory) | key <- keys])
+                (releaseItems destroyValue)
+                \keyValues ->
+                    withSQLStatement connection sql \statement ->
+                        withStatementValue connection statement (list : keyValues) \objects -> do
+                            count <- output (c_duckdb_v2_value_get_child_count objects)
+                            unless (toInteger count == toInteger (length rows)) (codecError "object extraction returned an unexpected row count")
+                            acquireItems
+                                (releaseNode . snd)
+                                [ bracket (output (c_duckdb_v2_value_get_child objects i)) destroyValue \children -> do
+                                    childCount <- output (c_duckdb_v2_value_get_child_count children)
+                                    unless (toInteger childCount == toInteger (length keys)) (codecError "object extraction returned an unexpected child count")
+                                    owned <- acquireItems destroyValue [output (c_duckdb_v2_value_get_child children j) | j <- indices childCount]
+                                    pure (index, ObjectNode (zip keys owned))
+                                | (i, (index, _)) <- zip [0 ..] rows
+                                ]
   where
-    child parent index = nonNull "STRUCT vector child" (c_duckdb_struct_vector_get_child parent index)
+    sql = "SELECT system.main.list_transform($1::VARIANT[], lambda value: system.main.list_value(" <> Text.intercalate "," extracts <> ")) AS payload"
+    extracts = ["system.main.variant_extract(value,$" <> Text.pack (show index) <> "::VARCHAR)" | index <- [2 .. length keys + 1]]
 
-{- | Decode copied DuckDB 2.0 payload data for one non-NULL row.
-Values are (tag, byte offset). Children are (optional key index, value index).
-Keys pair an index with its text. Indices are relative to this row's LISTs.
-The root value has index zero. This helper checks all metadata before decoding.
-It raises an error for cycles. Shared values use a memo table.
--}
-decodeVariantPayload :: [(Word8, Word32)] -> [(Maybe Word32, Word32)] -> [(Word32, Text)] -> ByteString -> IO FieldValue
-decodeVariantPayload valueRows childRows keyRows bytes = do
-    when (finiteBitSize (0 :: Int) < 64) (codecError "the private codec requires a 64-bit host")
-    let values = listArray (0, length valueRows - 1) valueRows
-        children = listArray (0, length childRows - 1) childRows
-        keys = IntMap.fromList [(fromIntegral k, t) | (k, t) <- keyRows]
-        valueCount = length valueRows
-        childCount = length childRows
-    when (null valueRows) (codecError "missing root value")
-    unless (IntMap.size keys == length keyRows) (codecError "duplicate key dictionary index")
-    forM_ valueRows \(tag, offset) -> do
-        when (tag > 34) (codecError "unknown payload tag")
-        when (toInteger offset > toInteger (BS.length bytes)) (codecError "byte offset exceeds data size")
-    forM_ childRows \(key, value) -> do
-        when (toInteger value >= toInteger valueCount) (codecError "child value index out of bounds")
-        case key of
-            Just k -> unless (IntMap.member (fromIntegral k) keys) (codecError "missing child key")
-            Nothing -> pure ()
-    evalStateT (visit values children keys childCount IntSet.empty 0) IntMap.empty
+-- | Rebuild a level from its copied children in their native order.
+assemble :: [VariantNode] -> [FieldValue] -> IO [FieldValue]
+assemble [] [] = pure []
+assemble [] _ = codecError "decoded child count exceeds its parent count"
+assemble (node : rest) children = do
+    let (count, build) = case node of
+            ScalarNode value -> (0, const value)
+            ListNode values -> (length values, FieldList)
+            ObjectNode entries -> (length entries, variantObject . zip (map fst entries))
+        (ownChildren, remaining) = splitAt count children
+    unless (length ownChildren == count) (codecError "decoded child count is smaller than its parent count")
+    value <- evaluate (build ownChildren)
+    (value :) <$> assemble rest remaining
+
+-- | Cast target types by type text. One decode parses each type once.
+type CastTypes = IORef (Map.Map Text DuckDBV2LogicalTypeHandle)
+
+-- | Destroy the cached cast types after the action.
+withCastTypes :: (CastTypes -> IO a) -> IO a
+withCastTypes = bracket (newIORef Map.empty) (\ref -> readIORef ref >>= mapM_ destroyLogicalType)
+
+-- | Borrow the native cast result while copying its payload.
+withCast :: DuckDBV2ConnectionHandle -> CastTypes -> DuckDBV2ValueHandle -> Text -> (DuckDBV2ValueHandle -> IO a) -> IO a
+withCast connection castTypes value target action = do
+    logical <-
+        Map.lookup target <$> readIORef castTypes >>= \case
+            Just cached -> pure cached
+            Nothing -> mask_ do
+                created <- withText target (\text -> factoryOutput connection (\factory -> c_duckdb_v2_factory_create_type_from_text factory text))
+                modifyIORef' castTypes (Map.insert target created)
+                pure created
+    bracket (factoryOutput connection (\factory -> c_duckdb_v2_value_cast factory value logical)) destroyValue action
+
+-- | Parse one metadata statement and reuse it for each nesting level.
+withTypeStatement :: DuckDBV2ConnectionHandle -> (DuckDBV2SqlStatementHandle -> IO a) -> IO a
+withTypeStatement connection =
+    withSQLStatement
+        connection
+        "SELECT system.main.list_transform(?::VARIANT[], lambda value: system.main.struct_pack(tag := system.main.variant_typeof(value), keys := system.main.variant_keys(value))) AS metadata"
+
+-- | Read exact scalar tags and object keys without serializing payloads.
+queryMetadata :: DuckDBV2ConnectionHandle -> DuckDBV2SqlStatementHandle -> [DuckDBV2ValueHandle] -> IO [(Text, [Text])]
+queryMetadata connection statement values = withVariantList connection values \list ->
+    withStatementValue connection statement [list] \metadata -> do
+        count <- output (c_duckdb_v2_value_get_child_count metadata)
+        forM (indices count) \index ->
+            bracket (output (c_duckdb_v2_value_get_child metadata index)) destroyValue \node -> do
+                tag <- bracket (output (c_duckdb_v2_value_get_child node 0)) destroyValue \value ->
+                    output (c_duckdb_v2_value_get_varchar value) >>= readText
+                keys <- bracket (output (c_duckdb_v2_value_get_child node 1)) destroyValue \value -> do
+                    isNull <- output (c_duckdb_v2_value_is_null value)
+                    if isNull /= 0
+                        then pure []
+                        else do
+                            keyCount <- output (c_duckdb_v2_value_get_child_count value)
+                            forM (indices keyCount) \i ->
+                                bracket (output (c_duckdb_v2_value_get_child value i)) destroyValue \key ->
+                                    output (c_duckdb_v2_value_get_varchar key) >>= readText
+                pure (tag, keys)
+
+-- | Borrow an owned VARIANT list that copies all supplied values.
+withVariantList :: DuckDBV2ConnectionHandle -> [DuckDBV2ValueHandle] -> (DuckDBV2ValueHandle -> IO a) -> IO a
+withVariantList connection values action =
+    withConnectionFactory connection \factory ->
+        bracket (withText "VARIANT" (output . c_duckdb_v2_factory_create_type_from_text factory)) (destroy c_duckdb_v2_logical_type_destroy) \logical ->
+            withArray values \items ->
+                bracket (output (c_duckdb_v2_value_create_list factory logical (ConstPtr items) (fromIntegral (length values)))) destroyValue action
+
+-- | Borrow the first result value while its statement result stays alive.
+withStatementValue :: DuckDBV2ConnectionHandle -> DuckDBV2SqlStatementHandle -> [DuckDBV2ValueHandle] -> (DuckDBV2ValueHandle -> IO a) -> IO a
+withStatementValue connection statement parameters action =
+    withArray parameters \items ->
+        bracket (output (c_duckdb_v2_statement_execute connection statement (ConstPtr nullPtr) (ConstPtr items) (fromIntegral (length parameters)))) (destroy c_duckdb_v2_result_destroy) \result ->
+            bracket (output (c_duckdb_v2_result_fetch_chunk result)) (destroy c_duckdb_v2_data_chunk_destroy) \chunk -> do
+                unless (chunk /= nullHandle) (codecError "metadata query returned no rows")
+                vector <- output (c_duckdb_v2_data_chunk_get_vector chunk 0)
+                bracket (output (c_duckdb_v2_vector_get_value vector 0)) destroyValue action
+
+-- | Map every native VARIANT scalar tag to its exact cast target.
+scalarType :: Text -> IO Text
+scalarType tag = case tag of
+    "BOOL_TRUE" -> pure "BOOLEAN"
+    "BOOL_FALSE" -> pure "BOOLEAN"
+    "INT8" -> pure "TINYINT"
+    "INT16" -> pure "SMALLINT"
+    "INT32" -> pure "INTEGER"
+    "INT64" -> pure "BIGINT"
+    "INT128" -> pure "HUGEINT"
+    "UINT8" -> pure "UTINYINT"
+    "UINT16" -> pure "USMALLINT"
+    "UINT32" -> pure "UINTEGER"
+    "UINT64" -> pure "UBIGINT"
+    "UINT128" -> pure "UHUGEINT"
+    "TIME_MICROS" -> pure "TIME"
+    "TIME_NANOS" -> pure "TIME_NS"
+    "TIME_MICROS_TZ" -> pure "TIMETZ"
+    "TIMESTAMP_SEC" -> pure "TIMESTAMP_S"
+    "TIMESTAMP_MILIS" -> pure "TIMESTAMP_MS"
+    "TIMESTAMP_MICROS" -> pure "TIMESTAMP"
+    "TIMESTAMP_NANOS" -> pure "TIMESTAMP_NS"
+    "TIMESTAMP_MICROS_TZ" -> pure "TIMESTAMPTZ"
+    "TIMESTAMP_NANOS_TZ" -> pure "TIMESTAMPTZ_NS"
+    "BITSTRING" -> pure "BIT"
+    _
+        | tag `elem` ["FLOAT", "DOUBLE", "VARCHAR", "BLOB", "UUID", "DATE", "INTERVAL", "BIGNUM", "GEOMETRY"] -> pure tag
+        | "DECIMAL(" `Text.isPrefixOf` tag && ")" `Text.isSuffixOf` tag -> pure tag
+        | otherwise -> codecError ("unsupported scalar tag " <> tag)
+
+-- | Acquire owned items without an asynchronous exception between transfers.
+acquireItems :: (a -> IO ()) -> [IO a] -> IO [a]
+acquireItems release = mask_ . go []
   where
-    visit :: Array Int (Word8, Word32) -> Array Int (Maybe Word32, Word32) -> IntMap.IntMap Text -> Int -> IntSet.IntSet -> Int -> StateT (IntMap.IntMap FieldValue) IO FieldValue
-    visit values children keys childCount ancestors index = do
-        when (IntSet.member index ancestors) (lift (codecError "cyclic child reference"))
-        cached <- gets (IntMap.lookup index)
-        case cached of
-            Just result -> pure result
-            Nothing -> do
-                (tag, offset) <- lift (checked (arrayElement values index))
-                let payload = BS.drop (fromIntegral offset) bytes
-                result <- case tag of
-                    29 -> nested True payload
-                    30 -> nested False payload
-                    _ -> lift (decodeScalar tag payload)
-                modify' (IntMap.insert index result)
-                pure result
-      where
-        nested object payload = do
-            (count, rest) <- lift (checked (readVarint payload))
-            start <- if count == 0 then pure 0 else fst <$> lift (checked (readVarint rest))
-            unless (toInteger start + toInteger count <= toInteger childCount) $
-                lift (codecError "container child range out of bounds")
-            entries <- forM [fromIntegral start .. fromIntegral start + fromIntegral count - 1] \childIndex -> do
-                (key, childIndexValue) <- lift (checked (arrayElement children childIndex))
-                name <- case (object, key) of
-                    (True, Just k) -> case IntMap.lookup (fromIntegral k) keys of
-                        Just text -> pure text
-                        Nothing -> lift (codecError "missing object key")
-                    (False, Nothing) -> pure Text.empty
-                    _ -> lift (codecError "container key validity does not match its tag")
-                item <- visit values children keys childCount (IntSet.insert index ancestors) (fromIntegral childIndexValue)
-                pure (name, item)
-            if object
-                then do
-                    unless (Set.size (Set.fromList (map fst entries)) == length entries) $
-                        lift (codecError "duplicate object key")
-                    pure (variantObject entries)
-                else pure (FieldList (map snd entries))
+    go owned [] = pure (reverse owned)
+    go owned (acquire : rest) = do
+        item <- acquire `onException` releaseItems release owned
+        go (item : owned) rest
 
--- | Read an array element after checking both bounds.
-arrayElement :: Array Int a -> Int -> Either String a
-arrayElement array index
-    | index < lower || index > upper = Left "value index out of bounds"
-    | otherwise = Right (array ! index)
-  where
-    (lower, upper) = bounds array
+-- | Release every owned item even if one destructor reports an error.
+releaseItems :: (a -> IO ()) -> [a] -> IO ()
+releaseItems _ [] = pure ()
+releaseItems release (item : rest) = release item `finally` releaseItems release rest
 
--- | Read an unsigned base-128 uint32 without overflow or truncation.
-readVarint :: ByteString -> Either String (Word32, ByteString)
-readVarint = go 0 0
-  where
-    go shift value input = case BS.uncons input of
-        Nothing -> Left "truncated varint"
-        Just (byte, rest)
-            | shift == 28 && byte > 15 -> Left "varint exceeds uint32"
-            | otherwise ->
-                let result = value .|. (fromIntegral (byte .&. 127) `shiftL` shift)
-                 in if byte .&. 128 == 0 then Right (result, rest) else go (shift + 7) result rest
+-- | List a node's owned children in their native order.
+nodeChildren :: VariantNode -> [DuckDBV2ValueHandle]
+nodeChildren (ScalarNode _) = []
+nodeChildren (ListNode values) = values
+nodeChildren (ObjectNode entries) = map snd entries
 
--- | Read a bounded fixed-size payload in little-endian order.
-readUnsigned :: Int -> ByteString -> Either String (Integer, ByteString)
-readUnsigned count bytes
-    | BS.length bytes < count = Left "truncated scalar payload"
-    | otherwise =
-        let (part, rest) = BS.splitAt count bytes
-         in Right (BS.foldr (\byte value -> value `shiftL` 8 .|. toInteger byte) 0 part, rest)
+-- | Release the children owned by a decoded node.
+releaseNode :: VariantNode -> IO ()
+releaseNode = releaseItems destroyValue . nodeChildren
 
--- | Read a two's-complement integer with a checked payload length.
-readSigned :: Int -> ByteString -> Either String Integer
-readSigned count bytes = do
-    (value, _) <- readUnsigned count bytes
-    pure (if value >= 2 ^ (count * 8 - 1) then value - 2 ^ (count * 8) else value)
-
--- | Read a length-prefixed string or blob.
-readString :: ByteString -> Either String ByteString
-readString bytes = do
-    (count, rest) <- readVarint bytes
-    if toInteger count > toInteger (BS.length rest)
-        then Left "string length exceeds payload size"
-        else Right (BS.take (fromIntegral count) rest)
-
--- | Decode the scalar tags from VariantLogicalType in DuckDB 2.0.
-decodeScalar :: Word8 -> ByteString -> IO FieldValue
-decodeScalar tag bytes = case tag of
-    0 -> pure FieldNull
-    1 -> pure (FieldBool True)
-    2 -> pure (FieldBool False)
-    15 -> checked do
-        (precision, rest) <- readVarint bytes
-        (scale, digits) <- readVarint rest
-        when (precision < 1 || precision > 38 || scale > precision) (Left "invalid decimal metadata")
-        let count = if precision <= 4 then 2 else if precision <= 9 then 4 else if precision <= 18 then 8 else 16
-        value <- readSigned count digits
-        when (abs value >= 10 ^ precision) (Left "unscaled decimal exceeds its precision")
-        pure (FieldDecimal (DecimalValue (fromIntegral precision) (fromIntegral scale) value))
-    16 -> checked do
-        string <- readString bytes
-        FieldText <$> either (Left . show) Right (Text.decodeUtf8' string)
-    17 -> FieldBlob <$> checked (readString bytes)
-    31 -> FieldBigNum . BigNum <$> checked (readString bytes >>= decodeBigNum)
-    32 -> checked do
-        bitBytes <- readString bytes
-        case BS.unpack (BS.take 2 bitBytes) of
-            [padding, first] -> do
-                when (padding > 7) (Left "BIT padding exceeds seven")
-                let maskBits = paddingMask padding
-                unless (first .&. maskBits == maskBits) (Left "invalid native BIT padding")
-                pure (FieldBit (bitStringFromBytes bitBytes))
-            _ -> Left "BIT requires a padding byte and nonempty data"
-    33 -> FieldGeometry . (`RawGeometry` Nothing) <$> checked (readString bytes)
-    _ -> case fixedWidthTag tag of
-        Just (dtype, size) -> decodeFixedWidth dtype size bytes
-        Nothing -> codecError "unknown scalar tag"
-
-{- | The type and the payload size of each fixed-width scalar tag. These
-payloads have the memory layout of one vector element of the type.
--}
-fixedWidthTag :: Word8 -> Maybe (DUCKDB_TYPE, Int)
-fixedWidthTag = \case
-    3 -> Just (DuckDBTypeTinyInt, 1)
-    4 -> Just (DuckDBTypeSmallInt, 2)
-    5 -> Just (DuckDBTypeInteger, 4)
-    6 -> Just (DuckDBTypeBigInt, 8)
-    7 -> Just (DuckDBTypeHugeInt, 16)
-    8 -> Just (DuckDBTypeUTinyInt, 1)
-    9 -> Just (DuckDBTypeUSmallInt, 2)
-    10 -> Just (DuckDBTypeUInteger, 4)
-    11 -> Just (DuckDBTypeUBigInt, 8)
-    12 -> Just (DuckDBTypeUHugeInt, 16)
-    13 -> Just (DuckDBTypeFloat, 4)
-    14 -> Just (DuckDBTypeDouble, 8)
-    18 -> Just (DuckDBTypeUUID, 16)
-    19 -> Just (DuckDBTypeDate, 4)
-    20 -> Just (DuckDBTypeTime, 8)
-    21 -> Just (DuckDBTypeTimeNs, 8)
-    22 -> Just (DuckDBTypeTimestampS, 8)
-    23 -> Just (DuckDBTypeTimestampMs, 8)
-    24 -> Just (DuckDBTypeTimestamp, 8)
-    25 -> Just (DuckDBTypeTimestampNs, 8)
-    26 -> Just (DuckDBTypeTimeTz, 8)
-    27 -> Just (DuckDBTypeTimestampTz, 8)
-    28 -> Just (DuckDBTypeInterval, 16)
-    34 -> Just (DuckDBTypeTimestampTzNs, 8)
-    _ -> Nothing
-
--- | Copy a fixed-width payload to aligned memory and decode it as one element.
-decodeFixedWidth :: DUCKDB_TYPE -> Int -> ByteString -> IO FieldValue
-decodeFixedWidth dtype size bytes = do
-    when (BS.length bytes < size) (codecError "truncated scalar payload")
-    allocaBytesAligned size 16 \buffer -> do
-        BS.useAsCStringLen bytes \(source, _) -> copyBytes buffer (castPtr source) size
-        decodeElement dtype (castPtr buffer) 0
-
--- | Get the high-bit mask used for native BIT padding.
-paddingMask :: Word8 -> Word8
-paddingMask padding = complement ((1 `shiftL` (8 - fromIntegral padding)) - 1)
-
--- | Check BIGNUM's sign, three-byte length header, and magnitude, then decode it.
-decodeBigNum :: ByteString -> Either String Integer
-decodeBigNum bytes = do
-    when (BS.length bytes < 4) (Left "truncated BIGNUM header or magnitude")
-    let (header, raw) = BS.splitAt 3 bytes
-        encoded = BS.foldl' (\n byte -> n `shiftL` 8 .|. fromIntegral byte) (0 :: Word32) header
-        negative = encoded .&. 0x800000 == 0
-        decoded = if negative then complement encoded .&. 0xffffff else encoded
-        count = decoded .&. 0x7fffff
-        magnitude = if negative then BS.map complement raw else raw
-    unless (toInteger count == toInteger (BS.length magnitude)) (Left "BIGNUM header length mismatch")
-    case BS.uncons magnitude of
-        Just (0, rest) | not (BS.null rest) || negative -> Left "noncanonical BIGNUM magnitude"
-        _ -> Right ()
-    pure (fromBigNumBytes (BS.unpack bytes))
+-- | Report a metadata or payload mismatch before decoding a native value.
+codecError :: Text -> IO a
+codecError message = throwIO (SQLError ("duckdb-simple: VARIANT: " <> message) Nothing Nothing)

@@ -11,7 +11,7 @@ import qualified Data.Geometry as G
 import Data.Int (Int64)
 import qualified Data.List as List
 import qualified Data.Text as Text
-import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
+import Data.Time.Clock.POSIX (posixSecondsToUTCTime, utcTimeToPOSIXSeconds)
 import Data.Time.LocalTime (LocalTime, localTimeToUTC, utc)
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (FieldValue (..))
@@ -51,12 +51,19 @@ main = do
                 "parameters" -> do
                     rows <- replicateM (fromIntegral count) (query conn "SELECT ?::BIGINT" (Only (1 :: Int64)))
                     evaluate (sum [n | [Only n] <- rows])
+                "timestamp-parameters" -> do
+                    rows <- replicateM (fromIntegral count) (query conn "SELECT 1::BIGINT WHERE ? IS NOT NULL" (Only (posixSecondsToUTCTime 0)))
+                    evaluate (sum [n | [Only n] <- rows])
                 "variant" -> do
                     rows <- query_ conn (Query ("SELECT i::VARIANT FROM range(" <> Text.pack (show count) <> ") t(i)"))
                     evaluate (List.foldl' (\acc (Only value) -> acc + variantNumber value) 0 rows)
                 "variant-parameters" -> do
                     rows <- replicateM (fromIntegral count) (query conn "SELECT ?" (Only (Variant (FieldInt64 1))))
                     evaluate (sum [variantNumber value | [Only value] <- rows])
+                -- Objects with 64 different key sets.
+                "variant-objects" -> do
+                    rows <- query_ conn (Query ("SELECT json_object('k' || (i % 64)::VARCHAR, i)::VARIANT FROM range(" <> Text.pack (show count) <> ") t(i)"))
+                    evaluate (sum [1 | Only (value :: Variant) <- rows, not (null (show value))])
                 "geometry" -> do
                     rows <- query_ conn (Query ("SELECT 'POINT (1 2)'::GEOMETRY('OGC:CRS84') FROM range(" <> Text.pack (show count) <> ")"))
                     evaluate (sum [fromIntegral (BS.length (rawGeometryWKB value)) | Only value <- rows])
@@ -69,10 +76,12 @@ main = do
                 "geometry-typed-parameters" -> do
                     rows <- replicateM (fromIntegral count) (query conn "SELECT ?" (Only typedGeometry))
                     evaluate (sum [pointChecksum value | [Only value] <- rows])
-                _ -> fail "Expected eager, fold, scalar, text, timestamp, parameters, variant, variant-parameters, geometry, geometry-parameters, geometry-typed, or geometry-typed-parameters"
+                _ -> fail "Expected eager, fold, scalar, text, timestamp, timestamp-parameters, parameters, variant, variant-parameters, variant-objects, geometry, geometry-parameters, geometry-typed, or geometry-typed-parameters"
             expectedResult = case workload of
                 "parameters" -> count
+                "timestamp-parameters" -> count
                 "variant-parameters" -> count
+                "variant-objects" -> count
                 "geometry" -> count * 21
                 "geometry-parameters" -> count * 21
                 "geometry-typed" -> count * 3
@@ -91,7 +100,7 @@ main = do
             check result
             printf "%s,%d,%d,%.3f,%d\n" workload count run (fromIntegral (end - start) / 1000000 :: Double) result
 
--- | Fail if the VARIANT benchmark changes its scalar type.
+-- | Read the integer in a scalar VARIANT.
 variantNumber :: Variant -> Int64
 variantNumber (Variant (FieldInt64 value)) = value
 variantNumber value = error ("unexpected VARIANT benchmark value: " <> show value)

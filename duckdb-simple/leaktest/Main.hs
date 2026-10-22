@@ -1,7 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# OPTIONS_GHC -Wno-deprecations #-}
 
 {- | Regression check for leaked DuckDB handles.
 
@@ -28,10 +27,10 @@ import Data.List (isPrefixOf)
 import Data.Maybe (catMaybes, listToMaybe)
 import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Copy as Copy
-import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
 import Database.DuckDB.Simple.FromField (DecimalValue (..), FieldValue (..))
 import Database.DuckDB.Simple.Geometry (RawGeometry (..), fromRawGeometry)
 import qualified Database.DuckDB.Simple.Logging as Logging
+import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Database.DuckDB.Simple.Variant (Variant (..))
 import System.Environment (getArgs, lookupEnv)
 import System.Exit (exitFailure)
@@ -85,8 +84,8 @@ openCloseCycle = do
     stmt <- openStatement conn "SELECT 42"
     closeStatement stmt
     _ <- query_ conn "SELECT 42" :: IO [Only Int64]
-    -- The first VARIANT parameter fills the type cache. Close must destroy it.
-    _ <- query conn "SELECT ?" (Only (Variant (FieldInt64 42))) :: IO [Only Variant]
+    values <- query conn "SELECT ?" (Only (Variant (FieldInt64 42)))
+    unless (values == [Only (Variant (FieldInt64 42))]) (fail "wrong VARIANT payload")
     -- A TIMETZ offset with seconds fails during result materialization.
     -- The result and connection must still be destroyed.
     rejected <- try (query_ conn "SELECT {'xs': [i, i + 1, i + 2, i + 3], 'bad': '12:00:00+01:23:45'::TIMETZ} FROM range(100000) t(i)") :: IO (Either SomeException [Only FieldValue])
@@ -192,7 +191,6 @@ checkDecodeFailure =
 checkCallbacks :: Int -> IO ()
 checkCallbacks batches =
     withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
-        Logging.registerLogStorage conn "leak_log" (\_ -> pure ())
         copyStates <- newIORef []
         let newCopyState = do
                 state <- newIORef (7 :: Int64)
@@ -201,6 +199,7 @@ checkCallbacks batches =
                 pure state
         Copy.registerCopyToFunction conn "leak_copy" (\_ -> newCopyState) (\_ -> newCopyState) (\_ _ -> pure ()) (\_ -> pure ())
         Copy.registerCopyToFunction conn "leak_copy_failure" (\_ -> newCopyState) (\_ -> fail "COPY init failure" :: IO ()) (\_ _ -> pure ()) (\_ -> pure ())
+        Logging.registerLogStorage conn "leak_log" (\_ -> pure ())
         let cycleCallback = do
                 retained <- newIORef (42 :: Int64)
                 weak <- mkWeakIORef retained (pure ())
@@ -309,7 +308,7 @@ checkCancellation batches =
                         else Streaming.fold_ conn sql () (\() (Only (_ :: Int64)) -> delivered)
                 interrupt \signal -> do
                     signal
-                    void (query_ conn "SELECT {'x': i, 'values': [i, i + 1]}::VARIANT FROM range(100000) t(i)" :: IO [Only Variant])
+                    void (query_ conn "SELECT {'x': i, 'values': [i, i + 1]}::VARIANT FROM range(100000) t(i)" :: IO [Only FieldValue])
                 cancel \signal -> do
                     blocked <- newEmptyMVar
                     void (fold_ conn "SELECT 'POINT (1 2)'::GEOMETRY('OGC:CRS84') FROM range(100000)" (0 :: Int64) (\n (Only (_ :: RawGeometry)) -> signal >> takeMVar blocked >> pure (n + 1)))

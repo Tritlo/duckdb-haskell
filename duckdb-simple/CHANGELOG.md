@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.5.0.0 (unreleased)
+
+- Move the backend to the generated V2 C API. Upstream marks the V2 API as
+  unstable ("The C API v2 is not yet stable. Its interface may change in
+  upcoming releases."), so this release requires exactly DuckDB 2.0.0.
+  Creating an environment raises `SQLError` for another library version.
+- Raw handles, logical type IDs, callback handles, and error codes use V2
+  types. See MIGRATION.md.
+- Add shared environments and instances, attachment management, option
+  discovery, table descriptions, SQL tokenization, positioned file I/O,
+  managed function and type registration, replacement scans, and COPY callbacks.
+- Add custom configuration options, typed values and defaults, managed log
+  sinks, macro and pragma registration, function documentation, query metrics,
+  and file path operations. Expose table bind metadata for multi-file readers.
+- Add scoped named collection inputs and prepared dynamic PIVOT with a deferred
+  output schema. Native expanding statements cannot have parameters.
+- Rename `Database.DuckDB.Simple.Deprecated.Streaming` to
+  `Database.DuckDB.Simple.Streaming`.
+- Decode and bind TUPLE values with `TupleValue`, `FieldTuple`, and
+  `LogicalTypeTuple`.
+- Preserve composite VARCHAR collations with `LogicalTypeCollatedVarchar`.
+- Resolve configuration names and aliases case-insensitively. Use DuckDB's
+  ASCII identifier rules for catalog names and top-level schemas.
+- Refresh statement metadata after reset or rebinding.
+- Preserve sparse numeric parameter names such as `$3`.
+- The default `query`, `fold`, and Arrow folds collect the result before the
+  first callback, so a callback can query the same connection. Explicit
+  streaming keeps the native one-live-result restriction.
+- `ToDuckValue.toDuckValue` and `logicalTypeFromRep` take a V2 connection.
+  Composite parameters keep GEOMETRY CRS metadata. A CRS that DuckDB does not
+  recognize raises `SQLError` instead of being dropped.
+- Decode VARIANT values through public V2 operations. Object keys use DuckDB's
+  lexicographic order.
+- Empty `Array` parameters raise `SQLError`. Use an SQL empty LIST.
+- Read GEOMETRY results through a native cast to BLOB.
+- `enableProfiling` collects metrics without printing a profile.
+
 ## 0.4.0.0 (unreleased)
 
 - Target DuckDB 2.0 with `duckdb-ffi >= 2.0.0.0`. Support DuckDB 2.0.x

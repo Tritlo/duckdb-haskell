@@ -1,89 +1,118 @@
-{-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE OverloadedStrings #-}
 
-{- |
-Module      : Database.DuckDB.Simple.Catalog
-Description : High-level helpers for DuckDB catalog inspection.
--}
+-- | Catalog inspection through V2 queries and native table descriptions.
 module Database.DuckDB.Simple.Catalog (
+    CatalogEntryType (..),
     CatalogEntry (..),
     catalogTypeName,
     lookupCatalogEntry,
+    TableDescription (..),
+    ColumnDescription (..),
+    describeTable,
 ) where
 
 import Control.Exception (bracket)
+import Control.Monad (forM, when)
 import Data.Text (Text)
 import qualified Data.Text as Text
-import qualified Data.Text.Foreign as TextForeign
-import Database.DuckDB.FFI
-import Database.DuckDB.Simple.Internal (Connection, peekUtf8CString, throwRegistrationError, withClientContext)
-import Foreign.C.ConstPtr (ConstPtr (..))
-import Foreign.C.Types (CChar)
-import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (nullPtr)
-import Foreign.Storable (poke)
+import Database.DuckDB.Simple (Only (..), query)
+import Database.DuckDB.Simple.Internal (Connection, withConnectionHandle)
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep, logicalTypeToRep)
+import Database.DuckDB.Simple.Native
 
--- | A simplified view of a catalog entry returned by DuckDB.
+{- | Entry kinds that DuckDB exposes through catalog metadata. V2 metadata
+cannot look up collations.
+-}
+data CatalogEntryType = CatalogTable | CatalogView | CatalogIndex | CatalogSequence | CatalogType
+    deriving (Eq, Ord, Show, Read)
+
+-- | A copied catalog entry name and kind.
 data CatalogEntry = CatalogEntry
     { catalogEntryName :: !Text
-    , catalogEntryType :: !DuckDBCatalogEntryType
+    , catalogEntryType :: !CatalogEntryType
     }
     deriving (Eq, Show)
 
--- | Look up the backend type name of a named catalog.
+-- | A table's qualified name, access mode, and columns.
+data TableDescription = TableDescription
+    { tableDescriptionName :: ![Text]
+    , tableDescriptionReadonly :: !Bool
+    , tableDescriptionColumns :: ![ColumnDescription]
+    }
+    deriving (Eq, Show)
+
+-- | A copied column description. Native handles remain inside the call.
+data ColumnDescription = ColumnDescription
+    { columnDescriptionName :: !Text
+    , columnDescriptionType :: !LogicalTypeRep
+    , columnDescriptionHasDefault :: !Bool
+    , columnDescriptionGenerated :: !Bool
+    }
+    deriving (Eq, Show)
+
+-- | Read the backend type of an attached database.
 catalogTypeName :: Connection -> Text -> IO (Maybe Text)
-catalogTypeName conn catalogName
-    | Text.any (== '\0') catalogName = throwRegistrationError "catalog name contains NUL"
-    | otherwise =
-        withClientContext conn \ctx ->
-            TextForeign.withCString catalogName \cName ->
-                withMaybeCatalog ctx (ConstPtr cName) \catalog -> do
-                    namePtr <- c_duckdb_catalog_get_type_name catalog
-                    if namePtr == ConstPtr nullPtr
-                        then pure Nothing
-                        else Just <$> peekUtf8CString namePtr
+catalogTypeName conn name = do
+    validateNames [name]
+    rows <- query conn (Query ("SELECT type::VARCHAR FROM system.main.duckdb_databases() WHERE " <> identifierMatches "database_name")) (Only name)
+    pure (case rows of Only value : _ -> Just value; [] -> Nothing)
 
--- | Look up a catalog entry by catalog, schema, name, and expected entry kind.
-lookupCatalogEntry :: Connection -> Text -> Text -> Text -> DuckDBCatalogEntryType -> IO (Maybe CatalogEntry)
-lookupCatalogEntry conn catalogName schemaName entryName entryType
-    | any (Text.any (== '\0')) [catalogName, schemaName, entryName] = throwRegistrationError "catalog lookup name contains NUL"
-    | entryType `notElem` [DuckDBCatalogEntryTypeTable, DuckDBCatalogEntryTypeView, DuckDBCatalogEntryTypeIndex, DuckDBCatalogEntryTypeSequence, DuckDBCatalogEntryTypeCollation, DuckDBCatalogEntryTypeType] =
-        throwRegistrationError "unsupported catalog entry type"
-    | otherwise =
-        withClientContext conn \ctx ->
-            TextForeign.withCString catalogName \cCatalog ->
-                TextForeign.withCString schemaName \cSchema ->
-                    TextForeign.withCString entryName \cEntry ->
-                        withMaybeCatalog ctx (ConstPtr cCatalog) \catalog ->
-                            withMaybeCatalogEntry catalog ctx entryType (ConstPtr cSchema) (ConstPtr cEntry) \entry -> do
-                                typ <- c_duckdb_catalog_entry_get_type entry
-                                namePtr <- c_duckdb_catalog_entry_get_name entry
-                                if namePtr == ConstPtr nullPtr
-                                    then pure Nothing
-                                    else do
-                                        name <- peekUtf8CString namePtr
-                                        pure (Just CatalogEntry{catalogEntryName = name, catalogEntryType = typ})
+-- | Look up an entry in a top-level schema. Names use DuckDB's identifier rules.
+lookupCatalogEntry :: Connection -> Text -> Text -> Text -> CatalogEntryType -> IO (Maybe CatalogEntry)
+lookupCatalogEntry conn catalog schema name kind = do
+    validateNames [catalog, schema, name]
+    (functionName, columnName) <- case kind of
+        CatalogTable -> pure ("duckdb_tables()", "table_name")
+        CatalogView -> pure ("duckdb_views()", "view_name")
+        CatalogIndex -> pure ("duckdb_indexes()", "index_name")
+        CatalogSequence -> pure ("duckdb_sequences()", "sequence_name")
+        CatalogType -> pure ("duckdb_types()", "type_name")
+    let sql =
+            Query
+                ( "SELECT e."
+                    <> columnName
+                    <> "::VARCHAR FROM system.main."
+                    <> functionName
+                    <> " e"
+                    <> " JOIN system.main.duckdb_schemas() s ON e.database_oid = s.database_oid AND e.schema_oid = s.oid"
+                    <> " WHERE s.parent_schema_oid IS NULL AND "
+                    <> identifierMatches "e.database_name"
+                    <> " AND "
+                    <> identifierMatches "e.schema_name"
+                    <> " AND "
+                    <> identifierMatches ("e." <> columnName)
+                    <> " LIMIT 1"
+                )
+    rows <- query conn sql (catalog, schema, name)
+    pure (case rows of Only value : _ -> Just (CatalogEntry value kind); [] -> Nothing)
 
-destroyCatalog :: DuckDBCatalog -> IO ()
-destroyCatalog catalog =
-    alloca \ptr -> poke ptr catalog >> c_duckdb_destroy_catalog ptr
+{- | Compare a trusted column with a parameter using ASCII case folding.
+Binary comparison keeps the result independent of the SQL collation.
+-}
+identifierMatches :: Text -> Text
+identifierMatches column = normalize column <> " = " <> normalize "?"
+  where
+    normalize expression = "system.main.encode(system.main.translate(" <> expression <> ", 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'))"
 
-destroyCatalogEntry :: DuckDBCatalogEntry -> IO ()
-destroyCatalogEntry entry =
-    alloca \ptr -> poke ptr entry >> c_duckdb_destroy_catalog_entry ptr
+-- | Copy a native base-table description using a parsed qualified name.
+describeTable :: Connection -> Text -> IO TableDescription
+describeTable conn name = withConnectionHandle conn $ \handle ->
+    withText name $ \text -> bracket (output (c_duckdb_v2_qname_parse text)) (destroy c_duckdb_v2_qname_destroy) $ \qname ->
+        bracket (output (c_duckdb_v2_connection_describe_table handle qname)) (destroy c_duckdb_v2_table_description_destroy) $ \table -> do
+            copiedName <- bracket (output (c_duckdb_v2_table_description_get_qname table)) (destroy c_duckdb_v2_qname_destroy) $ \resolved -> do
+                parts <- output (c_duckdb_v2_qname_get_part_count resolved)
+                forM (indices parts) $ \index -> output (c_duckdb_v2_qname_get_part resolved index) >>= readIdentifier
+            readonly <- output (c_duckdb_v2_table_description_is_readonly table)
+            count <- output (c_duckdb_v2_table_description_get_column_count table)
+            columns <- forM (indices count) $ \index ->
+                bracket (output (c_duckdb_v2_table_description_get_column table index)) (destroy c_duckdb_v2_column_description_destroy) $ \column -> do
+                    columnName <- output (c_duckdb_v2_column_description_get_name column) >>= readIdentifier
+                    columnType <- output (c_duckdb_v2_column_description_get_type column) >>= logicalTypeToRep
+                    defaultValue <- output (c_duckdb_v2_column_description_has_default column)
+                    generated <- output (c_duckdb_v2_column_description_has_generated column)
+                    pure (ColumnDescription columnName columnType (defaultValue /= 0) (generated /= 0))
+            pure (TableDescription copiedName (readonly /= 0) columns)
 
-withMaybeCatalog :: DuckDBClientContext -> ConstPtr CChar -> (DuckDBCatalog -> IO (Maybe a)) -> IO (Maybe a)
-withMaybeCatalog ctx name action =
-    bracket (c_duckdb_client_context_get_catalog ctx name) destroyCatalog \catalog ->
-        if catalog == DuckDBCatalog nullPtr then pure Nothing else action catalog
-
-withMaybeCatalogEntry ::
-    DuckDBCatalog ->
-    DuckDBClientContext ->
-    DuckDBCatalogEntryType ->
-    ConstPtr CChar ->
-    ConstPtr CChar ->
-    (DuckDBCatalogEntry -> IO (Maybe a)) ->
-    IO (Maybe a)
-withMaybeCatalogEntry catalog ctx entryType schemaName entryName action =
-    bracket (c_duckdb_catalog_get_entry catalog ctx entryType schemaName entryName) destroyCatalogEntry \entry ->
-        if entry == DuckDBCatalogEntry nullPtr then pure Nothing else action entry
+-- | Reject names that contain NUL.
+validateNames :: [Text] -> IO ()
+validateNames names = when (any (Text.any (== '\0')) names) $ throwInvalidArgument "catalog lookup name contains NUL"

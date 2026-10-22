@@ -8,7 +8,7 @@
 module TimeTests (timeTests) where
 
 import Control.Exception (IOException, try)
-import Control.Monad (forM_)
+import Control.Monad (forM_, void)
 import Data.Array (Array, listArray)
 import Data.Int (Int64)
 import qualified Data.Map.Strict as Map
@@ -16,11 +16,11 @@ import Data.Ratio ((%))
 import qualified Data.Text as Text
 import Data.Time (Day, LocalTime (..), TimeOfDay (..), UTCTime, fromGregorian, localTimeToUTC, utc)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
-import Database.DuckDB.FFI
+import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), returnError)
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..))
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), StructValue (..), UnionMemberType (..), UnionValue (..))
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), StructValue (..), TupleValue (..), UnionMemberType (..), UnionValue (..))
 import Database.DuckDB.Simple.Time
 import Database.DuckDB.Simple.Variant (Variant (..))
 import GHC.Generics (Generic)
@@ -125,14 +125,25 @@ nanosecondTimeTests =
         let precise = posixSecondsToUTCTime 0.123456789
             ordinary = posixSecondsToUTCTime 0.123456
         (query conn "SELECT typeof(?), ?" (precise, precise) :: IO [(String, UTCTime)]) >>= (@?= [("TIMESTAMP WITH TIME ZONE", ordinary)])
-    , testCase "nanosecond UTC arrays retain NULLs and empty element types" $ withConnection ":memory:" $ \conn -> do
+    , testCase "reused statements refresh nanosecond UTC parameter metadata after ALTER" $ withConnection ":memory:" $ \conn -> do
+        void $ execute_ conn "CREATE TABLE utc_rebind(value TIMESTAMPTZ)"
+        let coarse = posixSecondsToUTCTime 0.123456
+            precise = posixSecondsToUTCTime 0.123456789
+        withStatement conn "INSERT INTO utc_rebind VALUES (?)" $ \stmt -> do
+            bind stmt [toField coarse]
+            void $ executeStatement stmt
+            void $ execute_ conn "ALTER TABLE utc_rebind ALTER COLUMN value TYPE TIMESTAMPTZ_NS"
+            bind stmt [toField precise]
+            void $ executeStatement stmt
+        (query_ conn "SELECT epoch_ns(value) FROM utc_rebind ORDER BY value" :: IO [Only Int64]) >>= (@?= [Only 123456000, Only 123456789])
+    , testCase "nanosecond UTC arrays retain NULLs and reject empty arrays" $ withConnection ":memory:" $ \conn -> do
         let precise = posixSecondsToUTCTime 0.123456789
             negative = posixSecondsToUTCTime (-0.000000001)
             values = listArray (0 :: Int, 2) [Just precise, Nothing, Just negative]
             empty = listArray (0, -1) [] :: Array Int (Maybe UTCTime)
             nulls = listArray (0, 1) [Nothing, Nothing] :: Array Int (Maybe UTCTime)
         (query conn "SELECT ?::TIMESTAMPTZ_NS[]" (Only values) :: IO [Only [Maybe UTCTime]]) >>= (@?= [Only [Just precise, Nothing, Just negative]])
-        (query conn "SELECT ?::TIMESTAMPTZ_NS[]" (Only empty) :: IO [Only [Maybe UTCTime]]) >>= (@?= [Only []])
+        assertEmptyArrayUnavailable (query conn "SELECT ?::TIMESTAMPTZ_NS[]" (Only empty) :: IO [Only [Maybe UTCTime]])
         (query conn "SELECT ?::TIMESTAMPTZ_NS[]" (Only nulls) :: IO [Only [Maybe UTCTime]]) >>= (@?= [Only [Nothing, Nothing]])
         (query conn "SELECT ?::TIMESTAMPTZ_NS" (Only (Nothing :: Maybe UTCTime)) :: IO [Only (Maybe UTCTime)]) >>= (@?= [Only Nothing])
         let nested = listArray (0 :: Int, 1) [values, values]
@@ -140,9 +151,9 @@ nanosecondTimeTests =
     , testCase "nanosecond targets preserve matching STRUCT MAP and UNION leaves" $ withConnection ":memory:" $ \conn -> do
         let precise = Finite (posixSecondsToUTCTime 0.123456789)
             coarse = Finite (localTimeToUTC utc (LocalTime (fromGregorian 5000 1 1) (TimeOfDay 0 0 0)))
-            utcType = LogicalTypeScalar DuckDBTypeTimestampTz
+            utcType = LogicalTypeScalar DuckDBV2LogicalTypeIdTimestampTz
             fields = listArray (0, 3) [StructField "Precise" (FieldTimestampTZ precise), StructField "Coarse" (FieldTimestampTZ coarse), StructField "items" (FieldList [FieldTimestampTZ precise, FieldNull, FieldTimestampTZ NegInfinity]), StructField "lookup" (FieldMap [(FieldInt64 1, FieldTimestampTZ precise)])]
-            types = listArray (0, 3) [StructField "Precise" utcType, StructField "Coarse" utcType, StructField "items" (LogicalTypeList utcType), StructField "lookup" (LogicalTypeMap (LogicalTypeScalar DuckDBTypeBigInt) utcType)]
+            types = listArray (0, 3) [StructField "Precise" utcType, StructField "Coarse" utcType, StructField "items" (LogicalTypeList utcType), StructField "lookup" (LogicalTypeMap (LogicalTypeScalar DuckDBV2LogicalTypeIdBigInt) utcType)]
             struct = StructValue fields types (Map.fromList [("Precise", 0), ("Coarse", 1), ("items", 2), ("lookup", 3)])
             sql = "WITH bound AS (SELECT ?::STRUCT(coarse TIMESTAMPTZ, items TIMESTAMPTZ_NS[], lookup MAP(BIGINT, TIMESTAMPTZ_NS), precise TIMESTAMPTZ_NS) AS value) SELECT value.precise, value.coarse, value.items, map_values(value.lookup) FROM bound"
         (query conn sql (Only struct) :: IO [(UTCTimestamp, UTCTimestamp, [Maybe UTCTimestamp], [UTCTimestamp])]) >>= (@?= [(precise, coarse, [Just precise, Nothing, Just NegInfinity], [precise])])
@@ -150,15 +161,15 @@ nanosecondTimeTests =
         (query conn "SELECT union_extract(?::UNION(value TIMESTAMPTZ_NS), 'value')" (Only union) :: IO [Only UTCTimestamp]) >>= (@?= [Only precise])
         assertIOException (query conn sql (Only struct{structValueFields = listArray (0, 0) [StructField "wrong" (FieldTimestampTZ precise)]}) :: IO [Only FieldValue])
         assertIOException (query conn "SELECT ?::UNION(value TIMESTAMPTZ_NS)" (Only union{unionValueLabel = "wrong"}) :: IO [Only FieldValue])
-    , testCase "nanosecond tuple targets match unnamed fields by position" $ withConnection ":memory:" $ \conn -> do
+    , testCase "nanosecond tuple targets match positional fields" $ withConnection ":memory:" $ \conn -> do
         let precise = Finite (posixSecondsToUTCTime 0.123456789)
-            utcType = LogicalTypeScalar DuckDBTypeTimestampTz
+            utcType = LogicalTypeScalar DuckDBV2LogicalTypeIdTimestampTz
             structure names = StructValue (listArray (3, 5) (zipWith StructField names [FieldTimestampTZ precise, FieldTimestampTZ precise, FieldNull])) (listArray (7, 9) [StructField name utcType | name <- names]) (Map.fromList (zip names [0 ..]))
-            tuple = structure (replicate 3 "")
+            tuple = TupleValue (listArray (3, 5) [FieldTimestampTZ precise, FieldTimestampTZ precise, FieldNull]) (listArray (7, 9) (replicate 3 utcType))
             named = structure ["first", "second", "optional"]
             sql = "SELECT epoch_ns(value[1]), epoch_ns(value[2]), value[3] IS NULL FROM (SELECT ?::TUPLE(TIMESTAMPTZ,TIMESTAMPTZ_NS,TIMESTAMPTZ_NS) AS value)"
-        forM_ [tuple, named] $ \parameter ->
-            (query conn sql (Only parameter) :: IO [(Int64, Int64, Bool)]) >>= (@?= [(123456000, 123456789, True)])
+        (query conn sql (Only tuple) :: IO [(Int64, Int64, Bool)]) >>= (@?= [(123456000, 123456789, True)])
+        (query conn sql (Only named) :: IO [(Int64, Int64, Bool)]) >>= (@?= [(123456000, 123456789, True)])
         (query conn "SELECT epoch_ns(value.first), epoch_ns(value.second), value.optional IS NULL FROM (SELECT ?::STRUCT(first TIMESTAMPTZ,second TIMESTAMPTZ_NS,optional TIMESTAMPTZ_NS) AS value)" (Only tuple) :: IO [(Int64, Int64, Bool)]) >>= (@?= [(123456000, 123456789, True)])
         result <- try (query conn "SELECT ?::TUPLE(TIMESTAMPTZ,TIMESTAMPTZ_NS)" (Only tuple) :: IO [Only FieldValue])
         case result of
@@ -166,11 +177,11 @@ nanosecondTimeTests =
             Right _ -> assertFailure "expected tuple arity mismatch"
     , testCase "nested tuple lists retain independent temporal field metadata" $ withConnection ":memory:" $ \conn -> do
         let precise = Finite (posixSecondsToUTCTime 0.123456789)
-            utcType = LogicalTypeScalar DuckDBTypeTimestampTz
+            utcType = LogicalTypeScalar DuckDBV2LogicalTypeIdTimestampTz
             innerTypes = listArray (4, 4) [StructField "value" utcType]
             inner = StructValue (listArray (2, 2) [StructField "value" (FieldTimestampTZ precise)]) innerTypes (Map.singleton "value" 0)
-            tuple = StructValue (listArray (3, 4) (replicate 2 (StructField "" (FieldStruct inner)))) (listArray (6, 7) (replicate 2 (StructField "" (LogicalTypeStruct innerTypes)))) (Map.singleton "" 1)
-            container = StructValue (listArray (1, 1) [StructField "items" (FieldList [FieldStruct tuple])]) (listArray (5, 5) [StructField "items" (LogicalTypeList (LogicalTypeStruct (structValueTypes tuple)))]) (Map.singleton "items" 0)
+            tuple = TupleValue (listArray (3, 4) (replicate 2 (FieldStruct inner))) (listArray (6, 7) (replicate 2 (LogicalTypeStruct innerTypes)))
+            container = StructValue (listArray (1, 1) [StructField "items" (FieldList [FieldTuple tuple])]) (listArray (5, 5) [StructField "items" (LogicalTypeList (LogicalTypeTuple (tupleValueTypes tuple)))]) (Map.singleton "items" 0)
             sql = "SELECT epoch_ns((value.items[1][1]).value), epoch_ns((value.items[1][2]).value) FROM (SELECT ?::STRUCT(items TUPLE(STRUCT(value TIMESTAMPTZ),STRUCT(value TIMESTAMPTZ_NS))[]) AS value)"
         (query conn sql (Only container) :: IO [(Int64, Int64)]) >>= (@?= [(123456000, 123456789)])
     , testCase "nanosecond UTC targets reject finite overflow and sentinel collisions" $ withConnection ":memory:" $ \conn -> do
@@ -197,3 +208,11 @@ assertConversionError action = do
         Left SQLError{sqlErrorMessage = message} ->
             assertBool "error must identify infinity" ("infinity" `Text.isInfixOf` message)
         Right _ -> assertFailure "expected a conversion error"
+
+-- | Require the explicit V2 limit for zero-length ARRAY parameters.
+assertEmptyArrayUnavailable :: IO a -> Assertion
+assertEmptyArrayUnavailable action = do
+    result <- try action
+    case result of
+        Left SQLError{sqlErrorMessage = message} -> assertBool "must identify empty ARRAY" ("empty ARRAY" `Text.isInfixOf` message)
+        Right _ -> assertFailure "expected the V2 empty ARRAY limit"

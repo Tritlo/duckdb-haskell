@@ -6,6 +6,7 @@
 -- | Shared result decoding and cursor ownership for both execution modes.
 module Database.DuckDB.Simple.Result (
     collectRows,
+    collectParsedRows,
     foldStatementWith,
     nextRowWith,
     resetStatementStream,
@@ -14,19 +15,15 @@ module Database.DuckDB.Simple.Result (
 
 import Control.Exception (bracket, evaluate, finally, mask, mask_, onException, throwIO)
 import Control.Monad (forM, when, zipWithM)
-import Data.IORef (IORef, atomicModifyIORef', readIORef, writeIORef)
-import qualified Data.Text as Text
-import Database.DuckDB.FFI
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue)
 import Database.DuckDB.Simple.FromRow (RowParser, parseRow, rowErrorsToSqlError)
 import Database.DuckDB.Simple.Internal
-import Database.DuckDB.Simple.Materialize (prepareVectorReader)
+import Database.DuckDB.Simple.Materialize (castReader, prepareVariantReader, prepareVectorReader)
 import Database.DuckDB.Simple.Ok (Ok (..))
-import Foreign.C.ConstPtr (ConstPtr (..))
-import Foreign.Marshal.Alloc (free, malloc)
-import Foreign.Marshal.Utils (fillBytes)
-import Foreign.Ptr (Ptr, nullPtr)
-import Foreign.Storable (peek, sizeOf)
+import Database.DuckDB.Simple.TypeCache (withTypeConnection)
+import Foreign.Marshal.Alloc (alloca)
+import Foreign.Storable (peek)
 
 -- | Fold rows from one statement and release its result on every exit path.
 foldStatementWith :: ResultMode -> RowParser row -> Statement -> a -> (a -> row -> IO a) -> IO a
@@ -48,7 +45,7 @@ nextRowWith mode parser stmt@Statement{statementStream} =
         case state of
             StatementStreamExhausted -> pure Nothing
             StatementStreamIdle -> do
-                newStream <- startStatementStream mode stmt
+                newStream <- startStatementStream False mode stmt
                 case newStream of
                     Nothing -> writeIORef statementStream StatementStreamExhausted >> pure Nothing
                     Just stream -> do
@@ -61,13 +58,13 @@ nextRowWith mode parser stmt@Statement{statementStream} =
 
 -- | Release an active cursor and allow the statement to execute again.
 resetStatementStream :: Statement -> IO ()
-resetStatementStream Statement{statementStream} =
-    cleanupStatementStreamRef statementStream
+resetStatementStream stmt@Statement{statementStream} =
+    cleanupStatementStreamRef statementStream `finally` clearStatementSchemas stmt
 
 consumeStream :: IORef StatementStreamState -> RowParser r -> Statement -> StatementStream -> IO (Maybe r)
 consumeStream streamRef parser stmt stream = mask \restore -> do
     loaded <- case statementStreamChunk stream of
-        Nothing -> fetchChunk (statementConnection stmt) (statementQuery stmt) stream
+        Nothing -> restore (fetchChunk streamRef (statementConnection stmt) (statementQuery stmt) stream)
         Just _ -> pure stream
     writeIORef streamRef (StatementStreamActive loaded)
     case statementStreamChunk loaded of
@@ -90,128 +87,116 @@ consumeStream streamRef parser stmt stream = mask \restore -> do
 exhaustStatementStream :: IORef StatementStreamState -> IO ()
 exhaustStatementStream ref = mask_ do
     state <- atomicModifyIORef' ref (StatementStreamExhausted,)
-    finalizeStreamState state
+    case state of
+        StatementStreamActive stream -> finalizeStream stream
+        _ -> pure ()
 
-startStatementStream :: ResultMode -> Statement -> IO (Maybe StatementStream)
-startStatementStream mode stmt =
-    withStatementHandle stmt \handle -> do
-        resultPtr <- malloc
-        fillBytes resultPtr 0 (sizeOf (undefined :: DuckDBResult))
-        let release = c_duckdb_destroy_result resultPtr `finally` free resultPtr
-        flip onException release do
-            rc <- runInterruptibleQuery (statementConnection stmt) (executePreparedResult mode handle resultPtr)
-            when (rc /= DuckDBSuccess) do
-                (errMsg, errType) <- fetchResultError resultPtr
-                throwIO $ mkExecuteError (statementQuery stmt) errMsg errType
-            resultType <- peek resultPtr >>= c_duckdb_result_return_type
-            if resultType /= DuckDBResultTypeQueryResult
-                then release >> pure Nothing
-                else do
-                    columns <- collectResultColumns resultPtr
-                    pure (Just (StatementStream resultPtr columns Nothing mode))
+startStatementStream :: Bool -> ResultMode -> Statement -> IO (Maybe StatementStream)
+startStatementStream includeChangedRows mode stmt = withQueryError (statementQuery stmt) $ mask_ do
+    result <- executePreparedResult stmt
+    startResultStream includeChangedRows mode (statementConnection stmt) result
 
-fetchChunk :: Connection -> Query -> StatementStream -> IO StatementStream
-fetchChunk conn queryText stream@StatementStream{statementStreamResult} = do
-    chunk <- fetchResultChunk (statementStreamMode stream) conn statementStreamResult
-    if chunk == DuckDBDataChunk nullPtr
-        then do
-            throwResultError queryText statementStreamResult
-            pure stream
+-- | Take ownership of a cursor and retain its chunks in the selected mode.
+startResultStream :: Bool -> ResultMode -> Connection -> DuckDBV2ResultHandle -> IO (Maybe StatementStream)
+startResultStream includeChangedRows mode conn result = mask_ do
+    owned <- newIORef []
+    let release = (readIORef owned >>= mapM_ destroyDataChunk) `finally` destroy c_duckdb_v2_result_destroy result
+        fetch = fetchResultChunk conn result
+        gather = do
+            chunk <- fetch
+            when (chunk /= nullHandle) do
+                atomicModifyIORef' owned (\chunks -> (chunk : chunks, ()))
+                gather
+    flip onException release do
+        -- Expanded statements expose metadata after the first native fetch.
+        first <- fetch
+        when (first /= nullHandle) $
+            atomicModifyIORef' owned (\chunks -> (first : chunks, ()))
+        resultType <- output (c_duckdb_v2_result_get_result_type result)
+        if resultType /= DuckDBV2ResultTypeQueryResult && not (includeChangedRows && resultType == DuckDBV2ResultTypeChangedRows)
+            then do
+                _ <- runInterruptibleQuery conn (output (c_duckdb_v2_result_drain result))
+                release
+                pure Nothing
+            else do
+                columns <- collectResultColumns result
+                case mode of
+                    MaterializedResult -> do
+                        gather
+                        chunks <- reverse <$> readIORef owned
+                        destroy c_duckdb_v2_result_destroy result
+                        pure (Just (StatementStream nullHandle columns chunks Nothing))
+                    StreamingResult -> do
+                        chunks <- reverse <$> readIORef owned
+                        pure (Just (StatementStream result columns chunks Nothing))
+
+fetchChunk :: IORef StatementStreamState -> Connection -> Query -> StatementStream -> IO StatementStream
+fetchChunk ref conn queryText stream = withQueryError queryText $ mask \restore -> do
+    (chunk, remaining) <- case statementStreamPendingChunks stream of
+        next : rest -> pure (next, rest)
+        [] | statementStreamResult stream == nullHandle -> pure (nullHandle, [])
+        [] -> (,[]) <$> fetchResultChunk conn (statementStreamResult stream)
+    let nextStream = stream{statementStreamPendingChunks = remaining}
+    if chunk == nullHandle
+        then pure nextStream
         else do
-            rawSize <- c_duckdb_data_chunk_get_size chunk
-            let rowCount = fromIntegral rawSize :: Int
+            -- Transfer ownership before native metadata or reader setup can fail.
+            let owned = nextStream{statementStreamChunk = Just (StatementStreamChunk chunk 0 0 [])}
+            writeIORef ref (StatementStreamActive owned)
+            rowCount <- fromIntegral <$> output (c_duckdb_v2_data_chunk_get_size chunk)
             if rowCount <= 0
                 then do
+                    writeIORef ref (StatementStreamActive nextStream)
                     destroyDataChunk chunk
-                    fetchChunk conn queryText stream
+                    restore (fetchChunk ref conn queryText nextStream)
                 else do
-                    readers <-
-                        prepareChunkReaders chunk (statementStreamColumns stream)
-                            `onException` destroyDataChunk chunk
-                    let chunkState =
-                            StatementStreamChunk
-                                { statementStreamChunkPtr = chunk
-                                , statementStreamChunkSize = rowCount
-                                , statementStreamChunkIndex = 0
-                                , statementStreamChunkReaders = readers
-                                }
-                    pure stream{statementStreamChunk = Just chunkState}
+                    readers <- restore (prepareChunkReaders conn chunk (statementStreamColumns stream))
+                    pure nextStream{statementStreamChunk = Just (StatementStreamChunk chunk rowCount 0 readers)}
 
--- | Prepare one reader for each column. The readers must not outlive the chunk.
-prepareChunkReaders :: DuckDBDataChunk -> [StatementStreamColumn] -> IO [Int -> IO FieldValue]
-prepareChunkReaders chunk columns =
+-- | Prepare readers that borrow the vectors in an owned chunk.
+prepareChunkReaders :: Connection -> DuckDBV2DataChunkHandle -> [StatementStreamColumn] -> IO [Int -> IO FieldValue]
+prepareChunkReaders conn chunk columns = withTypeCache conn \cache -> withConnectionHandle conn \native -> withConnectionFactory native \factory -> do
+    let readVariant vector = withTypeConnection cache (\helper -> prepareVariantReader helper vector)
     forM columns \StatementStreamColumn{statementStreamColumnIndex} ->
-        c_duckdb_data_chunk_get_vector chunk (fromIntegral statementStreamColumnIndex) >>= prepareVectorReader
-
--- | Clear cursor ownership before releasing native resources.
-cleanupStatementStreamRef :: IORef StatementStreamState -> IO ()
-cleanupStatementStreamRef ref = mask_ do
-    state <- atomicModifyIORef' ref (StatementStreamIdle,)
-    finalizeStreamState state
-
-finalizeStreamState :: StatementStreamState -> IO ()
-finalizeStreamState = \case
-    StatementStreamIdle -> pure ()
-    StatementStreamExhausted -> pure ()
-    StatementStreamActive stream -> finalizeStream stream
+        output (c_duckdb_v2_data_chunk_get_vector chunk (fromIntegral statementStreamColumnIndex)) >>= prepareVectorReader (castReader factory readVariant)
 
 finalizeStream :: StatementStream -> IO ()
-finalizeStream StatementStream{statementStreamResult, statementStreamChunk} = do
+finalizeStream StatementStream{statementStreamResult, statementStreamChunk, statementStreamPendingChunks} =
     maybe (pure ()) finalizeChunk statementStreamChunk
-    c_duckdb_destroy_result statementStreamResult
-    free statementStreamResult
+        `finally` (mapM_ destroyDataChunk statementStreamPendingChunks `finally` destroy c_duckdb_v2_result_destroy statementStreamResult)
 
 finalizeChunk :: StatementStreamChunk -> IO ()
-finalizeChunk StatementStreamChunk{statementStreamChunkPtr} =
-    destroyDataChunk statementStreamChunkPtr
+finalizeChunk StatementStreamChunk{statementStreamChunkPtr} = destroyDataChunk statementStreamChunkPtr
 
--- | Copy all rows from a materialized native result.
-collectRows :: Query -> Ptr DuckDBResult -> IO [[Field]]
-collectRows queryText resPtr = do
-    columns <- collectResultColumns resPtr
-    collectChunks columns []
-  where
-    collectChunks columns acc = do
-        fetched <- bracket (peek resPtr >>= c_duckdb_fetch_chunk) destroyDataChunk \chunk ->
-            if chunk == DuckDBDataChunk nullPtr
-                then throwResultError queryText resPtr >> pure Nothing
-                else Just <$> decodeChunk columns chunk
-        case fetched of
-            Nothing -> pure (concat (reverse acc))
-            Just rows -> do
-                let acc' = maybe acc (: acc) rows
-                collectChunks columns acc'
+-- | Decode all rows after the statement has materialized its native chunks.
+collectRows :: Statement -> IO [[Field]]
+collectRows stmt = collectStreamRows (statementConnection stmt) (statementQuery stmt) (startStatementStream True MaterializedResult stmt)
 
-    decodeChunk columns chunk = do
-        rawSize <- c_duckdb_data_chunk_get_size chunk
-        let rowCount = fromIntegral rawSize :: Int
-        if rowCount <= 0
-            then pure Nothing
-            else
-                if null columns
-                    then pure (Just (replicate rowCount []))
-                    else do
-                        readers <- prepareChunkReaders chunk columns
-                        rows <- mapM (buildMaterializedRow columns readers) [0 .. rowCount - 1]
-                        pure (Just rows)
+-- | Execute a parsed statement directly and materialize its owned native chunks.
+collectParsedRows :: Connection -> Query -> DuckDBV2SqlStatementHandle -> IO [[Field]]
+collectParsedRows conn query parsed = collectStreamRows conn query $ mask_ do
+    result <- executeParsedResult conn query parsed
+    startResultStream True MaterializedResult conn result
 
-collectResultColumns :: Ptr DuckDBResult -> IO [StatementStreamColumn]
-collectResultColumns resPtr = do
-    rawCount <- c_duckdb_column_count resPtr
-    let cc = fromIntegral rawCount :: Int
-    forM [0 .. cc - 1] \columnIndex -> do
-        namePtr <- c_duckdb_column_name resPtr (fromIntegral columnIndex)
-        name <-
-            if namePtr == ConstPtr nullPtr
-                then pure (Text.pack ("column" <> show columnIndex))
-                else peekUtf8CString namePtr
-        DuckDBType dtype <- c_duckdb_column_type resPtr (fromIntegral columnIndex)
-        pure
-            StatementStreamColumn
-                { statementStreamColumnIndex = columnIndex
-                , statementStreamColumnName = name
-                , statementStreamColumnType = dtype
-                }
+-- | Decode owned materialized chunks and release them on every exit path.
+collectStreamRows :: Connection -> Query -> IO (Maybe StatementStream) -> IO [[Field]]
+collectStreamRows conn query acquire = withQueryError query $
+    bracket acquire (mapM_ finalizeStream) \case
+        Nothing -> pure []
+        Just owned -> do
+            rows <- forM (statementStreamPendingChunks owned) \chunk -> do
+                rowCount <- fromIntegral <$> output (c_duckdb_v2_data_chunk_get_size chunk)
+                readers <- prepareChunkReaders conn chunk (statementStreamColumns owned)
+                mapM (buildMaterializedRow (statementStreamColumns owned) readers) [0 .. rowCount - 1]
+            pure (concat rows)
+
+collectResultColumns :: DuckDBV2ResultHandle -> IO [StatementStreamColumn]
+collectResultColumns result = bracket (output (c_duckdb_v2_result_get_schema result)) (destroy c_duckdb_v2_schema_destroy) \schema -> do
+    count <- fromIntegral <$> output (c_duckdb_v2_schema_get_count schema)
+    forM [0 .. count - 1] \idx -> alloca \name -> do
+        _ <- output (c_duckdb_v2_schema_get_field schema (fromIntegral idx) name)
+        columnName <- peek name >>= readIdentifier
+        pure (StatementStreamColumn idx columnName)
 
 buildMaterializedRow :: [StatementStreamColumn] -> [Int -> IO FieldValue] -> Int -> IO [Field]
 buildMaterializedRow columns readers rowIdx =

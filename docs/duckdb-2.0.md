@@ -94,8 +94,9 @@ function tables. Ordinary clients link exported functions.
 ## Pin updates
 
 `dev/update-duckdb.sh` pins a release tag. It resolves the tag to a full commit
-SHA before it downloads files. It replaces the client headers and the upstream
-license. It writes new digests to `vendor/upstream.sha256`, `native.sha256`, and
+SHA before it downloads files. It replaces the client headers, the V2 extension
+header, and the upstream license. It writes new digests to
+`vendor/upstream.sha256`, `native.sha256` (library and CLI archives), and
 `vendor/duckdb-api.json`. Regenerate with the pinned Nix toolchain and review
 the diff:
 
@@ -151,7 +152,7 @@ build and its installed extensions.
 | Values, logical and custom types, vectors, data chunks, arenas, column collections | Typed conversions, `LogicalRep`, `Registration`, and raw V2 vector operations |
 | Scalar, aggregate, table, cast, and COPY functions and signatures | Managed `Registration` and `Copy` callbacks, typed signatures, and raw V2 |
 | Multi-file functions, table partitioning, batch claiming | Managed `Copy` multi-file setup and `Registration.TableCallbacks` |
-| Replacement scans, file systems, logging, extension entry points | Managed `Registration`, `FileSystem`, `Logging`, and extension-target builders. V2 has no custom file-system registration. |
+| Replacement scans, file systems, logging, extension entry points | Managed `Registration`, `FileSystem`, `Logging`, and `Extension`. V2 has no custom file-system registration. See [the extension recipe](../dev/extensions/README.md). |
 | Custom options, macro and pragma functions, function documentation, query profiles | `Config`, `Macro`, `Pragma`, `FunctionDocs`, and `QueryMetrics` |
 
 Appender access uses the retained API.
@@ -180,6 +181,7 @@ cabal test duckdb-simple:duckdb-simple-quack-test -fquack-tests -fsystemlib --ex
 3. Update `DUCKDB_TEST_VERSION` in the CI workflow and the Dockerfile. Nix
    reads its source pin and version from `vendor/duckdb-api.json`.
 4. Run the full suites, the leak suite, and Haddock on all supported compilers.
+   Rebuild loadable extensions, because V2 has no cross-version ABI guarantee.
 5. Build source archives with `cabal sdist all`. Check that they contain the
    generated modules, C checks, client headers, license, and manifest.
 6. `dev/release.sh` regenerates both APIs and verifies the header digests and

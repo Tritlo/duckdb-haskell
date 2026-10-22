@@ -41,6 +41,11 @@ flag dataframe-tests
   default: False
   manual: True
 
+flag extension
+  description: Build loadable extensions with private C callback helpers.
+  default: False
+  manual: True
+
 flag quack-tests
   description: Test authenticated local Quack connections with supplied extensions.
   default: False
@@ -53,6 +58,7 @@ library
     Database.DuckDB.Simple.Catalog
     Database.DuckDB.Simple.Config
     Database.DuckDB.Simple.Copy
+    Database.DuckDB.Simple.Extension
     Database.DuckDB.Simple.FileSystem
     Database.DuckDB.Simple.FromField
     Database.DuckDB.Simple.FromRow
@@ -80,6 +86,7 @@ library
     Database.DuckDB.Simple.Arrow.Internal
     Database.DuckDB.Simple.Callback
     Database.DuckDB.Simple.Element
+    Database.DuckDB.Simple.Function.Internal
     Database.DuckDB.Simple.Materialize
     Database.DuckDB.Simple.Native
     Database.DuckDB.Simple.Result
@@ -88,12 +95,23 @@ library
 
   hs-source-dirs: src
   default-language: Haskell2010
+
+  if flag(extension)
+    if os(linux) || os(osx)
+      -- Keep the C stubs private to this shared library. Omit unfoldings, so
+      -- optimized clients cannot inline references to the hidden stubs.
+      cc-options: -fvisibility=hidden
+      ghc-options:
+        -fomit-interface-pragmas
+        -optc-fvisibility=hidden
+    else
+      buildable: False
   build-depends:
     array >=0.5 && <0.6,
     base >=4.18 && <5,
     bytestring >=0.11 && <0.13,
     containers >=0.6 && <0.9,
-    duckdb-ffi >=2.0.0.0 && <2.1,
+    duckdb-ffi >=2.0.1.0 && <2.1,
     geometry-simple >=0.1.1.0 && <0.2,
     hs-bindgen-runtime >=1.0.0.0 && <1.1,
     text >=2.0 && <2.2,
@@ -102,6 +120,8 @@ library
     uuid >=1.3 && <1.4,
 
 test-suite duckdb-simple-test
+  if flag(extension)
+    buildable: False
   type: exitcode-stdio-1.0
   hs-source-dirs: test
   main-is: Spec.hs
@@ -132,7 +152,7 @@ test-suite duckdb-simple-test
     bytestring,
     containers >=0.6 && <0.9,
     directory >=1.3 && <1.4,
-    duckdb-ffi >=2.0.0.0 && <2.1,
+    duckdb-ffi >=2.0.1.0 && <2.1,
     duckdb-simple,
     filepath >=1.4 && <1.6,
     geometry-simple >=0.1.1.0 && <0.2,
@@ -148,6 +168,8 @@ test-suite duckdb-simple-test
     vector >=0.13 && <0.14,
 
 test-suite duckdb-simple-leak-test
+  if flag(extension)
+    buildable: False
   type: exitcode-stdio-1.0
   hs-source-dirs: leaktest
   main-is: Main.hs
@@ -166,13 +188,13 @@ test-suite duckdb-simple-dataframe-test
   default-language: Haskell2010
   ghc-options: -threaded
 
-  if !flag(dataframe-tests)
+  if flag(extension) || !flag(dataframe-tests)
     buildable: False
   build-depends:
     base >=4.18 && <5,
     dataframe-arrow-bridge >=1.0 && <1.1,
     dataframe-core >=2.5 && <2.6,
-    duckdb-ffi >=2.0.0.0 && <2.1,
+    duckdb-ffi >=2.0.1.0 && <2.1,
     duckdb-simple,
     hs-bindgen-runtime >=1.0.0.0 && <1.1,
     tasty >=1.4 && <1.6,
@@ -186,7 +208,7 @@ test-suite duckdb-simple-quack-test
   default-language: Haskell2010
   ghc-options: -threaded
 
-  if !flag(quack-tests)
+  if flag(extension) || !flag(quack-tests)
     buildable: False
   build-depends:
     base >=4.18 && <5,
@@ -198,6 +220,8 @@ test-suite duckdb-simple-quack-test
     time,
 
 benchmark duckdb-simple-bench
+  if flag(extension)
+    buildable: False
   type: exitcode-stdio-1.0
   hs-source-dirs: bench
   main-is: Main.hs

@@ -8,6 +8,8 @@
   Creating an environment raises `SQLError` for another library version.
 - Raw handles, logical type IDs, callback handles, and error codes use V2
   types. See MIGRATION.md.
+- Add `Database.DuckDB.Simple.Extension` for loadable Haskell extensions.
+  Enable the `extension` flags of both packages. See `dev/extensions/`.
 - Add shared environments and instances, attachment management, option
   discovery, table descriptions, SQL tokenization, positioned file I/O,
   managed function and type registration, replacement scans, and COPY callbacks.

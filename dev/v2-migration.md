@@ -60,6 +60,8 @@ or convert handles between the retained and V2 APIs.
 
 `Database.DuckDB.Simple.Streaming` provides V2 row and Arrow streaming. The
 advanced opaque equality callback remains available through the raw API.
+[The extension recipe](extensions/README.md) builds and loads a Haskell
+extension.
 
 ## Native limitations
 

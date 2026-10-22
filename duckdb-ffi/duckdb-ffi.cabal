@@ -1,6 +1,6 @@
 cabal-version: 3.4
 name: duckdb-ffi
-version: 2.0.0.0
+version: 2.0.1.0
 author: Matthias Pall Gissurarson
 maintainer: mpg@mpg.is
 category: Database
@@ -32,6 +32,8 @@ extra-source-files:
   cbits/duckdb-LICENSE
   cbits/duckdb.h
   cbits/duckdb_arrow.h
+  cbits/duckdb_extension_v2.h
+  cbits/duckdb_haskell_extension.h
   cbits/duckdb_v2.h
   generated.sha256
   native.sha256
@@ -49,6 +51,11 @@ flag systemlib
   default: False
   manual: True
 
+flag extension
+  description: Use the host V2 function table for a loadable extension.
+  default: False
+  manual: True
+
 custom-setup
   setup-depends:
     base >=4.18 && <4.23,
@@ -62,7 +69,6 @@ library
   default-language: GHC2021
   hs-source-dirs: generated
   exposed-modules:
-    Database.DuckDB.FFI
     Database.DuckDB.FFI.V2
 
   include-dirs: cbits/
@@ -70,18 +76,43 @@ library
     duckdb-LICENSE
     duckdb.h
     duckdb_arrow.h
+    duckdb_extension_v2.h
+    duckdb_haskell_extension.h
     duckdb_v2.h
 
-  c-sources:
-    generated/abi-checks-v2.c
-    generated/abi-checks.c
+  c-sources: generated/abi-checks-v2.c
 
-  extra-libraries: duckdb
+  if flag(extension)
+    if os(linux) || os(osx)
+      cc-options:
+        -fvisibility=hidden
+        -include
+        duckdb_haskell_extension.h
+
+      -- Keep private C calls inside this shared library. GHC also compiles
+      -- the C wrappers emitted by Template Haskell.
+      ghc-options:
+        -fomit-interface-pragmas
+        -optc-fvisibility=hidden
+        -optc-include
+        -optcduckdb_haskell_extension.h
+
+      c-sources: cbits/extension.c
+      extra-libraries: pthread
+    else
+      buildable: False
+  else
+    exposed-modules: Database.DuckDB.FFI
+    c-sources: generated/abi-checks.c
+    extra-libraries: duckdb
+
   build-depends:
     base >=4.18 && <4.23,
     hs-bindgen-runtime >=1.0.0.0 && <1.1,
 
 test-suite duckdb-ffi-v2-test
+  if flag(extension)
+    buildable: False
   type: exitcode-stdio-1.0
   hs-source-dirs: test
   main-is: V2Main.hs
@@ -96,6 +127,8 @@ test-suite duckdb-ffi-v2-test
     tasty-hunit >=0.10 && <0.11,
 
 test-suite duckdb-ffi-tests
+  if flag(extension)
+    buildable: False
   type: exitcode-stdio-1.0
   hs-source-dirs: test
   main-is: Main.hs

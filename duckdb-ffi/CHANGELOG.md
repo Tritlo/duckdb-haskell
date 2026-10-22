@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.1.0 (unreleased)
+
+- Add an opt-in `extension` mode for loadable V2 extensions on Linux and macOS.
+  It uses the host's function table and does not link another DuckDB library.
+  This mode exposes only the V2 module and requires entrypoint initialization.
+- Install `duckdb_extension_v2.h` and `duckdb_haskell_extension.h`.
+
 ## 2.0.0.0 (unreleased)
 
 - Target DuckDB 2.0. The retained API supports DuckDB 2.0.x releases. Use the

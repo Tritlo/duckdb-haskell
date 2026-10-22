@@ -62,7 +62,8 @@ nativeLibraryDirs flags = do
     nixShell <- lookupEnv "IN_NIX_SHELL"
     let supplied = map getSymbolicPath (configExtraLibDirs flags)
         system = lookupFlagAssignment (mkFlagName "systemlib") (configConfigurationsFlags flags) == Just True
-    if isJust nixBuild || isJust nixShell
+        extension = lookupFlagAssignment (mkFlagName "extension") (configConfigurationsFlags flags) == Just True
+    if extension || isJust nixBuild || isJust nixShell
         then pure []
         else
             if system || not (null supplied)

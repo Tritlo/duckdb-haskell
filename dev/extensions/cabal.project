@@ -1,0 +1,20 @@
+packages:
+  ../../duckdb-ffi
+  ../../duckdb-simple
+  ./example
+
+with-compiler: ghc-9.14.1
+tests: False
+benchmarks: False
+documentation: False
+shared: True
+allow-newer: uuid-types:template-haskell
+
+package duckdb-ffi
+  flags: +extension
+
+package duckdb-simple
+  flags: +extension
+
+program-options
+  ghc-options: -Wall -Werror

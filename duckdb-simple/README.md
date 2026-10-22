@@ -9,8 +9,10 @@ parameters, and decoding typed results—including the full set of DuckDB scalar
 types (signed/unsigned integers, decimals, hugeints, intervals, precise and
 timezone-aware temporals, blobs, enums, bit strings, and bignums).
 
-The backend uses the generated DuckDB V2 API. All V2 declarations are currently
-unstable. Use the exact native release recorded in the binding package.
+The backend uses the generated DuckDB V2 API. Upstream marks the complete V2
+API as unstable: "The C API v2 is not yet stable. Its interface may change in
+upcoming releases." This release therefore requires exactly DuckDB 2.0.0.
+Creating an environment raises `SQLError` for another library version.
 
 ## Shared environments and instances
 
@@ -73,7 +75,8 @@ collation lookup. Fixed ARRAY types with zero elements are
 not supported by this native API. Empty LIST values remain supported.
 Prepared dynamic PIVOT supports repeated execution with a changing schema. It
 does not support parameters or a cacheable plan. VARIANT decoding and configured
-GEOMETRY CRS names still use the SQL metadata and native-cast helpers.
+GEOMETRY CRS names use SQL metadata and native casts on a helper connection.
+GEOMETRY results use a native cast to BLOB.
 Native GEOMETRY collections require the same Z/M dimensions on every member,
 including empty members. The standalone WKB codec retains mixed layouts.
 

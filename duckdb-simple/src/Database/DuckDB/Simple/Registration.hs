@@ -101,7 +101,10 @@ data DefaultValue
     = DefaultValue (DuckDBV2ConnectionHandle -> IO DuckDBV2ValueHandle)
     | FactoryDefaultValue (DuckDBV2FactoryHandle -> IO DuckDBV2ValueHandle)
 
--- | Use a typed Haskell value as a parameter default.
+{- | Use a typed Haskell value as a parameter default. The value needs a
+connection, so registration on an 'ExtensionTarget' raises 'SQLError'. Use
+'FactoryDefaultValue' there.
+-}
 defaultValue :: (ToDuckValue a) => a -> DefaultValue
 defaultValue value = DefaultValue (\connection -> toDuckValue connection value)
 

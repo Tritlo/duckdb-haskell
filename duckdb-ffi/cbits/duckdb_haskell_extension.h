@@ -16,7 +16,9 @@ DUCKDB_EXTENSION_EXTERN
 #pragma GCC visibility pop
 #endif
 
-/* Negotiate and copy the host table before starting Haskell. */
+/* Negotiate and copy the host table before starting Haskell. Only this
+ * function is for use outside duckdb-ffi. The table is hidden in the duckdb-ffi
+ * library, so other C code cannot call DuckDB through the redirected names. */
 DUCKDB_EXTENSION_API int duckdb_haskell_extension_init_api(struct duckdb_v2_extension_input *input);
 
 DUCKDB_EXTENSION_EXTERN_C_GUARD_CLOSE

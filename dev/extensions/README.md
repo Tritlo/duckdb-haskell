@@ -8,7 +8,9 @@ part of the packages.
 ## Design
 
 The separate Cabal project enables the `extension` flags on `duckdb-ffi` and
-`duckdb-simple`. The FFI mode exposes only `Database.DuckDB.FFI.V2`. It skips
+`duckdb-simple`. Enable both flags together. A flag applies to the complete
+build plan, so one project cannot build a DuckDB host and an extension. The
+FFI mode exposes only `Database.DuckDB.FFI.V2`. It skips
 native-library installation and does not link `libduckdb`. A forced C include
 uses DuckDB's official function-table macros in the existing hs-bindgen C
 wrappers. The generated bindings remain unchanged and outside Git.
@@ -26,6 +28,12 @@ The demo initializes the threaded RTS once. It uses private arguments, ignores
 process lifetime. Do not call `hs_exit` after registration or database close.
 DuckDB can still own Haskell callbacks, state, and destructor addresses.
 
+The RTS runs with `-N1`, so callbacks from all DuckDB worker threads share one
+Haskell capability. Users cannot change the RTS options. Haskell extensions
+built with the same GHC share one RTS, and the options of the first loaded
+extension apply. Extensions built with different GHC versions in one process
+are not tested. If the RTS cannot start, the process ends.
+
 `Extension.runExtension` passes an opaque `Extension` to the registration action.
 `Extension.createFunction` and `Extension.createFunctionWithState` use the same
 typed argument and result conversions as the connection API. The scoped
@@ -37,15 +45,17 @@ registration retains callback resources after the entrypoint returns.
 `Extension.registerMacro`, `registerPragma`, `registerCustomOption`, and
 `registerLogSink` use the same opaque extension value. Macro signatures and
 custom-option defaults use `FactoryDefaultValue` during initialization.
-All V2 declarations are currently unstable. Rebuild the extension when the
-native source pin or release version changes. A matching major or minor
-version does not establish ABI compatibility.
+Upstream marks the complete V2 API as unstable. An extension uses the
+`C_STRUCT_UNSTABLE` function table, which DuckDB gives only to an extension
+whose footer names the exact running release. `Pack.hs` writes the version of
+the pinned V2 header. A later DuckDB release needs a `duckdb-ffi` release with
+its headers. A rebuild against the same headers does not help.
 
 The example registers typed scalar functions, scalar and table macros, a
 PRAGMA, a typed custom option, and a log sink. They exercise native results,
 batch inputs, NULLs, Unicode text, overflow, and callback errors. The entrypoint is
-`haskell_demo_init_c_api_v2`. Keep the packaged filename
-`haskell_demo.duckdb_extension`.
+`haskell_demo_init_c_api_v2`. DuckDB derives the entrypoint name from the
+file name, so the packaged file must be `haskell_demo.duckdb_extension`.
 
 Registration code uses ordinary Haskell values and functions:
 
@@ -100,16 +110,15 @@ Fetch the verified native CLI and shared library for the pinned release:
 dev/fetch-duckdb.sh /tmp/duckdb-extension-native
 ```
 
-Read the target platform and version before packaging:
+Read the target platform before packaging:
 
 ```sh
-/tmp/duckdb-extension-native/native/duckdb -csv -noheader \
-  -c 'PRAGMA platform; PRAGMA version;'
+/tmp/duckdb-extension-native/native/duckdb -csv -noheader -c 'PRAGMA platform;'
 ```
 
-The pinned release loader uses `v2.0.0` as its version field, including the
-leading `v`. See [PACKAGING.md](PACKAGING.md). Use the exact
-platform printed by the CLI.
+Use the exact platform printed by the CLI. `Pack.hs` reads the DuckDB version
+from `duckdb-ffi/cbits/duckdb_v2.h`, so run it from the repository root. See
+[PACKAGING.md](PACKAGING.md).
 
 On Linux, Nix's GHC can require a newer glibc than the host CLI uses.
 `nix-shell` does not replace the downloaded CLI's ELF interpreter. In that
@@ -135,8 +144,7 @@ mkdir -p dev/extensions/dist
 nix-shell dev/nix/shell.nix --run 'GHC_ENVIRONMENT=- runghc \
   dev/extensions/Pack.hs /absolute/path/to/libhaskell_demo.so \
   --output dev/extensions/dist/haskell_demo.duckdb_extension \
-  --platform linux_amd64 --duckdb-version v2.0.0 \
-  --extension-version 0.1.0'
+  --platform linux_amd64 --extension-version 0.1.0'
 
 nix-shell dev/nix/shell.nix --run 'GHC_ENVIRONMENT=- runghc \
   dev/extensions/Smoke.hs \
@@ -144,10 +152,12 @@ nix-shell dev/nix/shell.nix --run 'GHC_ENVIRONMENT=- runghc \
   dev/extensions/dist/haskell_demo.duckdb_extension'
 ```
 
-The smoke script starts two plain native CLI processes. It checks repeated
-loading, scalar results, 10,000 input rows, NULLs, callback errors, overflow,
-and connection reuse after errors. It also checks both macro kinds, PRAGMA
-results before and after an option update, and native log-sink selection.
+The smoke script starts two plain native CLI processes. It checks a second
+`LOAD` of the loaded extension, which DuckDB skips, scalar results, 10,000
+input rows, NULLs, callback errors, overflow, and connection reuse after
+errors. It also checks both macro kinds, PRAGMA results before and after an
+option update, and that the Haskell log sink receives entries. The entrypoint
+runs once in each process.
 It does not use a Haskell host executable. The timeout includes process exit
 and output collection. A timeout kills and reaps the CLI child.
 
@@ -157,11 +167,14 @@ directory and the matching native CLI.
 
 ## Deployment
 
-The example targets Linux and macOS and uses shared GHC and package libraries.
-Keep those dependencies available, including the threaded RTS, when you rename
-or deploy the foreign library. Cabal and Nix build-store paths require those
-stores to remain available. This example does not cover relocatable bundling,
-Windows, or loading into another Haskell executable.
+The example targets Linux and macOS and links GHC and package libraries
+dynamically. Its run paths point into the Cabal build directory, the Cabal
+store, and the GHC or Nix installation. The packaged extension loads only on a
+machine where those paths exist, and `cabal clean` breaks it. Two extensions
+built in different projects can use the same `-inplace` library names. The
+loader then reuses the first library, so do not load two such extensions in
+one process. This example does not cover relocatable bundling, Windows, or
+loading into another Haskell executable.
 
 References: [Cabal foreign libraries](https://cabal.readthedocs.io/en/3.18/cabal-package-description-file.html#foreign-libraries),
 [GHC runtime initialization](https://downloads.haskell.org/ghc/9.14.1/docs/users_guide/exts/ffi.html#using-your-own-main),

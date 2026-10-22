@@ -184,7 +184,11 @@ openWithConfig path settings = openWithOptions path defaultConnectionOptions{con
 -- | Settings that duckdb-simple applies when it opens a connection.
 data ConnectionOptions = ConnectionOptions
     { connectionConfig :: [(Text, Text)]
-    -- ^ DuckDB configuration flags, as for 'openWithConfig'.
+    {- ^ DuckDB configuration flags. 'openWithOptions' applies them when it
+    creates the instance, as 'openWithConfig' does. 'connectWithOptions' applies
+    them to a new connection of a running instance, so options that DuckDB
+    accepts only at startup fail there.
+    -}
     , connectionGeometryCRS :: [Text]
     {- ^ CRS definitions to preserve in composite parameters. A helper
     connection reads and caches their SQL-derived types on first use.

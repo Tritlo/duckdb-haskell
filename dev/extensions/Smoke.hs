@@ -23,7 +23,7 @@ import System.Timeout (timeout)
 -- | The CLI executable is explicit. Each run uses a fresh native process.
 data Flag = DuckDB FilePath | Help deriving (Eq, Show)
 
--- | Accepted options match the original smoke CLI.
+-- | Command-line options.
 options :: [OptDescr Flag]
 options =
     [ Option [] ["duckdb"] (ReqArg DuckDB "DUCKDB") "explicit path to the matching DuckDB CLI"
@@ -133,10 +133,10 @@ smoke executable extension = do
     checkProcess
         cli
         library
-        "load, repeated load, native batches, NULL, and extension registration"
+        "load, a second LOAD, native batches, NULL, and extension registration"
         [ "SELECT 'loaded', haskell_answer();"
         , "LOAD " <> quoted <> ";"
-        , "SELECT 'reloaded', haskell_answer();"
+        , "SELECT 'after_second_load', haskell_answer();"
         , "SELECT 'native_batches', count(*), min(value), max(value), sum(value) FROM (SELECT haskell_add_one(i) AS value FROM range(10000) AS t(i));"
         , "SELECT 'null', CASE WHEN haskell_add_one(NULL::BIGINT) IS NULL THEN 'preserved' ELSE 'changed' END;"
         , "SELECT 'text', haskell_greet('Matti λ') = 'Hello Matti λ';"
@@ -145,14 +145,15 @@ smoke executable extension = do
         , "PRAGMA haskell_demo;"
         , "SET enable_logging=true;"
         , "SET logging_storage='haskell_sink';"
-        , "SELECT 'log_sink', write_log('Haskell extension smoke', return_value := 42);"
+        , "SELECT 'log_sink', write_log('Haskell extension smoke', level := 'warning', return_value := 42);"
         , "SET logging_storage='memory';"
         , "SET enable_logging=false;"
+        , "SELECT 'log_entries', haskell_log_entries() > 0;"
         , "SET haskell_multiplier=9;"
         , "PRAGMA haskell_demo;"
         ]
         [ ["loaded", "42"]
-        , ["reloaded", "42"]
+        , ["after_second_load", "42"]
         , ["native_batches", "10000", "1", "10000", "50005000"]
         , ["null", "preserved"]
         , ["text", "true"]
@@ -160,6 +161,7 @@ smoke executable extension = do
         , ["table_macro", "42"]
         , ["pragma", "7"]
         , ["log_sink", "42"]
+        , ["log_entries", "true"]
         , ["pragma", "9"]
         ]
         []

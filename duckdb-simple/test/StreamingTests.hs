@@ -12,6 +12,7 @@ import Data.Int (Int64)
 import Data.List (isInfixOf)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Database.DuckDB.FFI as Retained (c_duckdb_vector_size)
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (FieldValue)
 import Database.DuckDB.Simple.Internal (DuckDBV2ResultHandle (..), Statement (statementStream), StatementStream (statementStreamResult), StatementStreamState (..), nullHandle)
@@ -98,7 +99,7 @@ nativeStreamingTests =
             void $ execute_ conn "SET streaming_buffer_size = '64KB'"
             failNext <- newIORef False
             delivered <- newIORef (0 :: Int)
-            let batchSize = 1
+            batchSize <- fromIntegral <$> Retained.c_duckdb_vector_size
             createFunction conn "late_stream_error" \(value :: Int64) -> do
                 shouldFail <- readIORef failNext
                 when shouldFail (throwIO (userError "late stream error"))

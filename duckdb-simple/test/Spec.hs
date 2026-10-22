@@ -312,10 +312,12 @@ v20Tests =
                 filePath <- readIORef pathRef
                 captured @?= [1, 2, 3]
                 filePath @?= Just "/tmp/duckdb-simple-copy.out"
-        , testCase "custom log storage registers a native sink" $
+        , testCase "custom log storage registers a native sink" do
+            calls <- newIORef (0 :: Int)
             withConnection ":memory:" \conn -> do
-                Logging.registerLogStorage conn "hs_log_capture" (\_ -> pure ())
+                Logging.registerLogStorage conn "hs_log_capture" (\_ -> atomicModifyIORef' calls (\n -> (n + 1, ())))
                 void $ execute_ conn "CALL enable_logging(); SET logging_storage = 'hs_log_capture'; SELECT write_log('registered')"
+            readIORef calls >>= assertBool "the sink received an entry" . (> 0)
         ]
 
 fieldInt :: [Field] -> IO Int

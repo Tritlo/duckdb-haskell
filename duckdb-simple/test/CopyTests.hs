@@ -163,6 +163,8 @@ testCopyFrom = withConnection ":memory:" \connection -> do
             chunk <- R.output (c_duckdb_v2_copy_from_exec_get_output_chunk info)
             vector <- R.output (c_duckdb_v2_data_chunk_get_vector chunk 0)
             writeIntegers vector (maybe [] (\first -> [first .. first + 2]) start)
+        -- DuckDB calls this only to display progress, so the test checks
+        -- registration and does not require a call.
         progress info _ = R.checked (c_duckdb_v2_copy_from_progress_set_progress info 0.5)
         callbacks =
             (Copy.copyFromCallbacks bind executeRows)

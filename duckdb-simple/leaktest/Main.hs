@@ -123,8 +123,8 @@ checkNewTypes batches =
                 unless (rows == [(variant, geometry, typed)]) (fail "new type round trip failed")
                 expectFailure (query conn "SELECT ?, system.main.ST_GeomFromWKB(?)" (typed, BS.pack [1, 1, 0, 0, 0]) :: IO [(G.Geometry, RawGeometry)])
                 expectFailure (query conn "SELECT system.main.ST_GeomFromWKB(?)" (Only (rawGeometryWKB geometry)) :: IO [Only Int64])
-                expectFailure (query conn "SELECT ?::VARCHAR" (Only (Variant (FieldList [variantPayload variant, FieldDecimal (DecimalValue 0 0 0)]))) :: IO [Only String])
-                expectFailure (query conn "SELECT ?::BIGINT" (Only variant) :: IO [Only Int64])
+                expectFailure (query conn "SELECT ?" (Only (Variant (FieldList [variantPayload variant, FieldDecimal (DecimalValue 0 0 0)]))) :: IO [Only Variant])
+                expectFailure (query conn "SELECT ?" (Only variant) :: IO [Only Int64])
         batch
         performMajorGC
         before <- readUsage

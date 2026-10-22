@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Lossless VARIANT decoding through public V2 values and SQL type metadata.
@@ -9,6 +10,7 @@ module Database.DuckDB.Simple.VariantCodec (
 import Control.Exception (bracket, evaluate, finally, mask_, onException, throwIO)
 import Control.Monad (forM, unless)
 import Data.Array (listArray, (!))
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
@@ -30,8 +32,8 @@ prepareVariantDecoder :: (DuckDBV2ConnectionHandle -> DuckDBV2ValueHandle -> IO 
 prepareVariantDecoder scalar connection vector = do
     count <- output (c_duckdb_v2_vector_get_size vector)
     bracket (acquireItems destroyValue [output (c_duckdb_v2_vector_get_value vector i) | i <- indices count]) (releaseItems destroyValue) \values ->
-        withTypeStatement connection \statement -> do
-            decoded <- decodeValues scalar connection statement values
+        withTypeStatement connection \statement -> withCastTypes \castTypes -> do
+            decoded <- decodeValues scalar connection statement castTypes values
             let rows = listArray (0, length decoded - 1) decoded
             pure (evaluate . (rows !))
 
@@ -42,9 +44,9 @@ data VariantNode
     | ObjectNode [(Text, DuckDBV2ValueHandle)]
 
 -- | Decode all siblings together before reconstructing their parent nodes.
-decodeValues :: (DuckDBV2ConnectionHandle -> DuckDBV2ValueHandle -> IO FieldValue) -> DuckDBV2ConnectionHandle -> DuckDBV2SqlStatementHandle -> [DuckDBV2ValueHandle] -> IO [FieldValue]
-decodeValues _ _ _ [] = pure []
-decodeValues scalar connection statement values = do
+decodeValues :: (DuckDBV2ConnectionHandle -> DuckDBV2ValueHandle -> IO FieldValue) -> DuckDBV2ConnectionHandle -> DuckDBV2SqlStatementHandle -> CastTypes -> [DuckDBV2ValueHandle] -> IO [FieldValue]
+decodeValues _ _ _ _ [] = pure []
+decodeValues scalar connection statement castTypes values = do
     metadata <- queryMetadata connection statement values
     unless (length metadata == length values) (codecError "metadata query returned an unexpected number of nodes")
     let indexed = zip3 [0 ..] metadata values
@@ -61,19 +63,19 @@ decodeValues scalar connection statement values = do
                     let indexedNodes = IntMap.fromList (otherNodes <> concat objectGroups)
                     nodes <- forM [0 .. length values - 1] \index ->
                         maybe (codecError "object extraction omitted a node") pure (IntMap.lookup index indexedNodes)
-                    children <- decodeValues scalar connection statement (concatMap nodeChildren nodes)
+                    children <- decodeValues scalar connection statement castTypes (concatMap nodeChildren nodes)
                     assemble nodes children
   where
     isObject = Text.isPrefixOf "OBJECT("
     decodeNode tag value
         | tag == "VARIANT_NULL" = pure (ScalarNode FieldNull)
         | "ARRAY(" `Text.isPrefixOf` tag =
-            withCast connection value "VARIANT[]" \list -> do
+            withCast connection castTypes value "VARIANT[]" \list -> do
                 count <- output (c_duckdb_v2_value_get_child_count list)
                 ListNode <$> acquireItems destroyValue [output (c_duckdb_v2_value_get_child list i) | i <- indices count]
         | otherwise = do
             target <- scalarType tag
-            ScalarNode <$> withCast connection value target (scalar connection)
+            ScalarNode <$> withCast connection castTypes value target (scalar connection)
 
 {- | Extract objects with one key layout as a native VARIANT[][] value.
 The binder needs constant extraction keys. Bind each key once and apply the
@@ -120,11 +122,24 @@ assemble (node : rest) children = do
     value <- evaluate (build ownChildren)
     (value :) <$> assemble rest remaining
 
+-- | Cast target types by type text. One decode parses each type once.
+type CastTypes = IORef (Map.Map Text DuckDBV2LogicalTypeHandle)
+
+-- | Destroy the cached cast types after the action.
+withCastTypes :: (CastTypes -> IO a) -> IO a
+withCastTypes = bracket (newIORef Map.empty) (\ref -> readIORef ref >>= mapM_ destroyLogicalType)
+
 -- | Borrow the native cast result while copying its payload.
-withCast :: DuckDBV2ConnectionHandle -> DuckDBV2ValueHandle -> Text -> (DuckDBV2ValueHandle -> IO a) -> IO a
-withCast connection value target action =
-    bracket (withText target (\text -> factoryOutput connection (\factory -> c_duckdb_v2_factory_create_type_from_text factory text))) (destroy c_duckdb_v2_logical_type_destroy) \logical ->
-        bracket (factoryOutput connection (\factory -> c_duckdb_v2_value_cast factory value logical)) destroyValue action
+withCast :: DuckDBV2ConnectionHandle -> CastTypes -> DuckDBV2ValueHandle -> Text -> (DuckDBV2ValueHandle -> IO a) -> IO a
+withCast connection castTypes value target action = do
+    logical <-
+        Map.lookup target <$> readIORef castTypes >>= \case
+            Just cached -> pure cached
+            Nothing -> mask_ do
+                created <- withText target (\text -> factoryOutput connection (\factory -> c_duckdb_v2_factory_create_type_from_text factory text))
+                modifyIORef' castTypes (Map.insert target created)
+                pure created
+    bracket (factoryOutput connection (\factory -> c_duckdb_v2_value_cast factory value logical)) destroyValue action
 
 -- | Parse one metadata statement and reuse it for each nesting level.
 withTypeStatement :: DuckDBV2ConnectionHandle -> (DuckDBV2SqlStatementHandle -> IO a) -> IO a

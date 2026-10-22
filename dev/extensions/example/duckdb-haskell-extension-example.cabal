@@ -20,8 +20,8 @@ foreign-library haskell_demo
   ghc-options: -threaded
   build-depends:
     base >=4.18 && <4.23,
-    duckdb-ffi >=2.0.0.0 && <2.1,
-    duckdb-simple >=0.4.0.0 && <0.5,
+    duckdb-ffi >=2.0.1.0 && <2.1,
+    duckdb-simple >=0.5.0.0 && <0.6,
     hs-bindgen-runtime >=1.0.0.0 && <1.1,
     text >=2.0 && <2.2,
 

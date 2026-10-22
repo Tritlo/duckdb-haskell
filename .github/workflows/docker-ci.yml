@@ -19,12 +19,15 @@ on:
 
 
 jobs:
+  # Draft pull requests skip the image build. The checks show as skipped.
   generate:
+    if: github.event.pull_request.draft == false
     permissions:
       contents: read
     uses: ./.github/workflows/generate-bindings.yml
 
   build:
+    if: github.event.pull_request.draft == false
     needs: generate
     runs-on: ubuntu-latest
 
@@ -68,7 +71,6 @@ jobs:
 
     # Single build step; push only when on main
     - name: Build (and conditionally push) base Docker image
-      if: github.event.pull_request.draft == false
       uses: docker/build-push-action@v6
       with:
         context: .

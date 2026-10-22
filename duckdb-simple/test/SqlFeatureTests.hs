@@ -1,8 +1,8 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Integration checks for SQL features in the DuckDB 2.0 development snapshot.
-module PreviewTests (tests) where
+-- | Integration checks for DuckDB 2.0 SQL features.
+module SqlFeatureTests (tests) where
 
 import Control.Exception (bracket)
 import Control.Monad (forM_, void, when)
@@ -51,20 +51,20 @@ tests =
                 query_ conn "SELECT parent_schema FROM duckdb_schemas() WHERE schema_name='child_schema'" >>= (@?= [Only ("parent_schema" :: Text)])
         , testCase "session variables supply cursor and fold defaults; named bindings override them" $
             withConnection ":memory:" \conn -> do
-                void (execute_ conn "SET VARIABLE preview_value = 41")
-                query_ conn "SELECT $preview_value + 1" >>= (@?= [Only (42 :: Int64)])
-                withStatement conn "SELECT $preview_value + 1" \stmt -> do
+                void (execute_ conn "SET VARIABLE session_value = 41")
+                query_ conn "SELECT $session_value + 1" >>= (@?= [Only (42 :: Int64)])
+                withStatement conn "SELECT $session_value + 1" \stmt -> do
                     nextRow stmt >>= (@?= Just (Only (42 :: Int64)))
                     nextRow stmt >>= (@?= (Nothing :: Maybe (Only Int64)))
-                queryNamed conn "SELECT $preview_value + 1" ["preview_value" := (9 :: Int64)] >>= (@?= [Only (10 :: Int64)])
-                queryNamed conn "SELECT $preview_value + $amount" ["amount" := (1 :: Int64)] >>= (@?= [Only (42 :: Int64)])
-                queryNamed conn "SELECT $preview_value" [] >>= (@?= [Only (41 :: Int64)])
-                assertFailureIO (queryNamed conn "SELECT $preview_value + $missing" [] :: IO [Only Int64])
-                void (execute_ conn "SET VARIABLE preview_value = 83")
-                total <- fold_ conn "SELECT $preview_value + 1" (0 :: Int64) \acc (Only value) -> pure (acc + value)
+                queryNamed conn "SELECT $session_value + 1" ["session_value" := (9 :: Int64)] >>= (@?= [Only (10 :: Int64)])
+                queryNamed conn "SELECT $session_value + $amount" ["amount" := (1 :: Int64)] >>= (@?= [Only (42 :: Int64)])
+                queryNamed conn "SELECT $session_value" [] >>= (@?= [Only (41 :: Int64)])
+                assertFailureIO (queryNamed conn "SELECT $session_value + $missing" [] :: IO [Only Int64])
+                void (execute_ conn "SET VARIABLE session_value = 83")
+                total <- fold_ conn "SELECT $session_value + 1" (0 :: Int64) \acc (Only value) -> pure (acc + value)
                 total @?= 84
-                void (execute_ conn "RESET VARIABLE preview_value")
-                assertFailureIO (query_ conn "SELECT $preview_value" :: IO [Only Int64])
+                void (execute_ conn "RESET VARIABLE session_value")
+                assertFailureIO (query_ conn "SELECT $session_value" :: IO [Only Int64])
         , testCase "FETCH FIRST and OFFSET work with bound counts" $
             withConnection ":memory:" \conn ->
                 query conn "SELECT i FROM range(10) t(i) ORDER BY i OFFSET ? ROWS FETCH FIRST ? ROWS ONLY" (3 :: Int64, 2 :: Int64)
@@ -130,7 +130,7 @@ withFiles = bracket acquire release
   where
     acquire = do
         directory <- getTemporaryDirectory
-        (path, handle) <- openBinaryTempFile directory "duckdb-preview"
+        (path, handle) <- openBinaryTempFile directory "duckdb-sql-feature"
         hClose handle
         removeFile path
         pure path

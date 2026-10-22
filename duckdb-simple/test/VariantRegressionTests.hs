@@ -132,6 +132,15 @@ tests =
                 >>= (@?= [Only (Variant (variantObject [("", FieldWord64 42)]))])
             (query_ conn "SELECT '{\"A\":1,\"a\":2,\"a\\u0000b\":3}'::JSON::VARIANT" :: IO [Only Variant])
                 >>= (@?= [Only (Variant (variantObject [("A", FieldWord64 1), ("a", FieldWord64 2), ("a\0b", FieldWord64 3)]))])
+        , testCase "empty object keys survive parameter binding" $ withConnection ":memory:" \conn -> do
+            [Only value] <- query_ conn "SELECT '{\"named\": 1, \"\": 42}'::JSON::VARIANT" :: IO [Only Variant]
+            query conn "SELECT ?" (Only value) >>= (@?= [Only value])
+            -- Decoded objects list their keys in DuckDB's lexicographic order.
+            roundTrip conn (variantObject [("", FieldList [FieldNull, variantObject [("", FieldText "λ"), ("named", FieldInt64 1)]]), ("named", FieldBool True)])
+            sole <- try (query conn "SELECT ?" (Only (Variant (variantObject [("", FieldInt64 42)])))) :: IO (Either SomeException [Only Variant])
+            case sole of
+                Left err -> assertBool (displayException err) ("only an empty key" `isInfixOf` displayException err)
+                Right _ -> assertFailure "expected the native constructor limit for an object with only an empty key"
         , testCase "metadata conversion ignores shadowing macros" $ withConnection ":memory:" \conn -> do
             void (execute_ conn "CREATE MACRO variant_typeof(x) AS 'VARCHAR'")
             void (execute_ conn "CREATE MACRO list_transform(x,y) AS [42]")

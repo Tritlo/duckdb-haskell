@@ -37,17 +37,16 @@ tokenize conn sql = withConnectionHandle conn \handle ->
     let bytes = Text.encodeUtf8 sql
      in withBytes bytes \source ->
             bracket (output (c_duckdb_v2_tokenize_sql handle source)) (destroy c_duckdb_v2_token_iterator_destroy) \iterator -> do
-                tokens <- collect bytes iterator []
+                tokens <- alloca \kind -> alloca \start -> alloca \count ->
+                    let collect acc = do
+                            checked (c_duckdb_v2_token_iterator_next iterator kind start count)
+                            typ <- peek kind
+                            if typ == DuckDBV2TokenTypeEndOfInput
+                                then pure (reverse acc)
+                                else do
+                                    offset <- fromIntegral <$> peek start
+                                    size <- fromIntegral <$> peek count
+                                    collect (Token typ offset (BS.take size (BS.drop offset bytes)) : acc)
+                     in collect []
                 unfinished <- output (c_duckdb_v2_token_iterator_ends_unterminated iterator)
                 pure (Tokenization tokens (unfinished /= 0))
-  where
-    collect bytes iterator acc = alloca \kind -> alloca \start -> alloca \count -> do
-        checked (c_duckdb_v2_token_iterator_next iterator kind start count)
-        typ <- peek kind
-        if typ == DuckDBV2TokenTypeEndOfInput
-            then pure (reverse acc)
-            else do
-                offset <- fromIntegral <$> peek start
-                size <- fromIntegral <$> peek count
-                let token = Token typ offset (BS.take size (BS.drop offset bytes))
-                collect bytes iterator (token : acc)

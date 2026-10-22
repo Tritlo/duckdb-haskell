@@ -46,7 +46,7 @@ import Data.Void (Void)
 import Database.DuckDB.Simple.Callback (Allocator, attachOpaque, guardContext, ignoreCallbackExceptions, install, installOptional, readCallbackState, transferCallbackState, withCallbackResources, withTarget)
 import Database.DuckDB.Simple.FromField (Field (..))
 import Database.DuckDB.Simple.Internal (Connection, withDatabaseHandle)
-import Database.DuckDB.Simple.Materialize (VariantReader, prepareVariantReader, prepareVectorReader)
+import Database.DuckDB.Simple.Materialize (VariantReader, castReader, prepareVariantReader, prepareVectorReader)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Registration (ContextCallback, RegistrationTarget (..), getCallbackState, setCallbackState)
 import Foreign.C.ConstPtr (ConstPtr (..))
@@ -263,7 +263,7 @@ materializeCollection factory variantReader types collection =
                             if produced == 0
                                 then pure (concat (reverse groups))
                                 else do
-                                    rows <- materializeChunkRows variantReader chunk
+                                    rows <- materializeChunkRows (castReader factory variantReader) chunk
                                     loop (rows : groups)
                      in loop []
 

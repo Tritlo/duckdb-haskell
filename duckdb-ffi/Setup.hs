@@ -3,7 +3,7 @@
 
 import Control.Exception (IOException, catch, throwIO)
 import Control.Monad (filterM, unless, when)
-import Data.List (intercalate, isPrefixOf, nub, stripPrefix)
+import Data.List (intercalate, isPrefixOf, isSuffixOf, nub, stripPrefix)
 import Data.Maybe (isJust, isNothing)
 import Distribution.PackageDescription
 import Distribution.Simple
@@ -73,19 +73,26 @@ nativeLibraryDirs flags = do
                     pure (nub supplied)
                 else (: []) <$> installNativeLibrary flags
 
-{- | Pin automatic downloads to the final native release.
-The Haskell package version can differ from the native library version.
--}
-nativeVersion :: String
-nativeVersion = "2.0.0"
+-- | Name the release platform and the shared library for this system.
+nativePlatform :: IO (String, FilePath)
+nativePlatform = case (os, arch) of
+    ("linux", "x86_64") -> pure ("linux-amd64", "libduckdb.so")
+    ("linux", "aarch64") -> pure ("linux-arm64", "libduckdb.so")
+    ("darwin", cpu) | cpu `elem` ["x86_64", "aarch64"] -> pure ("osx-universal", "libduckdb.dylib")
+    _ -> fail "duckdb-ffi supports glibc Linux and macOS on x86_64 and aarch64."
 
--- | Select an official archive and its release checksum.
-nativeArchive :: IO (String, String, FilePath)
-nativeArchive = case (os, arch) of
-    ("linux", "x86_64") -> pure ("linux-amd64", "993ad89e7dfca66cd6da994c2cad090c2fc160ddf9f550498a098ab4bb13cfb1", "libduckdb.so")
-    ("linux", "aarch64") -> pure ("linux-arm64", "c60eecf91143ca6bbac55c4f4d40dc22520488b0ac257c86e0fe9a2b451cf2b7", "libduckdb.so")
-    ("darwin", cpu) | cpu `elem` ["x86_64", "aarch64"] -> pure ("osx-universal", "14cd63180614cfd961f7959146ecd9087527ff20b67311efdc3fa1c29c18204d", "libduckdb.dylib")
-    _ -> fail "Automatic DuckDB installation supports glibc Linux and macOS. Supply DuckDB 2.0 with -fsystemlib and --extra-lib-dirs."
+{- | Read the release path and checksum for one platform from @native.sha256@.
+Each line has a checksum and a release path, for example
+@v2.0.0/duckdb-shared-libs-linux-amd64.tar.gz@.
+-}
+nativeArchive :: String -> IO (FilePath, String)
+nativeArchive platform = do
+    pinned <- doesFileExist "native.sha256"
+    unless pinned $ fail "native.sha256 is missing. The package must list it in extra-source-files."
+    pins <- readFile "native.sha256"
+    case [(path, checksum) | [checksum, path] <- map words (lines pins), ("/duckdb-shared-libs-" <> platform <> ".tar.gz") `isSuffixOf` path] of
+        [archive] -> pure archive
+        _ -> fail ("native.sha256 must contain one archive for " <> platform <> ".")
 
 -- | Download into a temporary directory. Publish the verified library atomically.
 installNativeLibrary :: ConfigFlags -> IO FilePath
@@ -97,8 +104,10 @@ installNativeLibrary flags = do
             , isAbsolute directory ->
                 pure directory
         _ -> fail "Pass --configure-option=--duckdb-install-dir=/absolute/path once, with an absolute directory."
-    (platform, checksum, libraryName) <- nativeArchive
-    let root = base </> nativeVersion
+    (platform, libraryName) <- nativePlatform
+    (release, checksum) <- nativeArchive platform
+    let version = drop 1 (takeWhile (/= '/') release)
+        root = base </> version
         destination = root </> platform
         complete dir = do
             libraryExists <- doesFileExist (dir </> libraryName)
@@ -119,9 +128,9 @@ installNativeLibrary flags = do
             let archiveName = "duckdb.tar.gz"
                 archive = staging </> archiveName
                 extracted = staging </> "library"
-                url = "https://github.com/duckdb/duckdb/releases/download/v" <> nativeVersion <> "/duckdb-shared-libs-" <> platform <> ".tar.gz"
+                url = "https://github.com/duckdb/duckdb/releases/download/" <> release
                 hash = if os == "darwin" then proc "shasum" ["-a", "256", archiveName] else proc "sha256sum" [archiveName]
-            putStrLn ("Downloading DuckDB " <> nativeVersion <> " to " <> destination)
+            putStrLn ("Downloading DuckDB " <> version <> " to " <> destination)
             callProcess "curl" ["--fail", "--location", "--proto", "=https", "--proto-redir", "=https", "--tlsv1.2", "--retry", "2", "--output", archive, url]
             -- Hash a plain relative name. Hash tools escape other names in their output.
             digest <- readCreateProcess hash{cwd = Just staging} ""

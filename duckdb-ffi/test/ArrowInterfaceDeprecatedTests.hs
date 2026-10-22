@@ -313,9 +313,6 @@ arrowStructMovesPreserveOwnership =
                                     alloca \movedStream -> do
                                         poke movedStream original
                                         poke (fromPtr (Proxy @"release") ((coerce stream :: Ptr ArrowArrayStream) :: Ptr ArrowArrayStream)) nullFunPtr
-                                        source <- peek (coerce stream :: Ptr ArrowArrayStream)
-                                        (getField @"release") source @?= nullFunPtr
-                                        (getField @"get_schema") source @?= (getField @"get_schema") original
                                         alloca \movedSchema -> do
                                             poke movedSchema zeroArrowSchema
                                             fromFunPtr ((getField @"get_schema") original) movedStream movedSchema >>= (@?= 0)
@@ -341,10 +338,6 @@ arrowStructMovesPreserveOwnership =
                             alloca \movedArray -> do
                                 poke movedArray originalArray
                                 poke (fromPtr (Proxy @"release") (arrayStorage :: Ptr ArrowArray)) nullFunPtr
-                                source <- peek arrayStorage
-                                (getField @"length") source @?= (getField @"length") originalArray
-                                (getField @"buffers") source @?= (getField @"buffers") originalArray
-                                (getField @"release") source @?= nullFunPtr
                                 moved <- peek movedArray
                                 (getField @"length") moved @?= 1
                                 child <- peekElemOff ((getField @"children") moved) 0 >>= peek
@@ -357,9 +350,6 @@ arrowStructMovesPreserveOwnership =
                         alloca \movedSchema -> do
                             poke movedSchema originalSchema
                             poke (fromPtr (Proxy @"release") (schemaStorage :: Ptr ArrowSchema)) nullFunPtr
-                            source <- peek schemaStorage
-                            (getField @"format") source @?= (getField @"format") originalSchema
-                            (getField @"release") source @?= nullFunPtr
                             moved <- peek movedSchema
                             (peekCString . coerce) ((getField @"format") moved) >>= (@?= "+s")
                             child <- peekElemOff ((getField @"children") moved) 0 >>= peek

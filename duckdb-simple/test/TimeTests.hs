@@ -106,14 +106,14 @@ timeTests =
 -- | Check explicit nanosecond targets without changing ordinary UTC parameter types.
 nanosecondTimeTests :: [TestTree]
 nanosecondTimeTests =
-    [ testCase "nanosecond UTC results and explicit VARIANT casts preserve precision and infinity" $ withConnection ":memory:" $ \conn -> do
+    [ testCase "nanosecond UTC results and VARIANTs preserve precision and infinity" $ withConnection ":memory:" $ \conn -> do
         _ <- execute_ conn "SET TimeZone='Pacific/Auckland'"
         let precise = localTimeToUTC utc (LocalTime (fromGregorian 2000 1 2) (TimeOfDay 3 4 5.123456789))
         forM_ [("'2000-01-02 03:04:05.123456789+00'", Finite precise), ("'infinity'", PosInfinity), ("'-infinity'", NegInfinity)] $ \(literal, expected) -> do
-            let sql = Query ("SELECT " <> literal <> "::TIMESTAMPTZ_NS, (" <> literal <> "::TIMESTAMPTZ_NS)::VARIANT::TIMESTAMPTZ_NS")
-            (query_ conn sql :: IO [(UTCTimestamp, UTCTimestamp)]) >>= (@?= [(expected, expected)])
+            let sql = Query ("SELECT " <> literal <> "::TIMESTAMPTZ_NS, (" <> literal <> "::TIMESTAMPTZ_NS)::VARIANT")
+            (query_ conn sql :: IO [(UTCTimestamp, Variant)]) >>= (@?= [(expected, Variant (FieldTimestampTZ expected))])
         let value = Variant (FieldTimestampTZ (Finite precise))
-        (query conn "SELECT ?::TIMESTAMPTZ_NS" (Only value) :: IO [Only UTCTimestamp]) >>= (@?= [Only (Finite precise)])
+        query conn "SELECT ?" (Only value) >>= (@?= [Only value])
     , testCase "explicit nanosecond UTC parameters preserve finite units and infinities" $ withConnection ":memory:" $ \conn -> do
         _ <- execute_ conn "SET TimeZone='Pacific/Auckland'"
         forM_ [minBound, negate (maxBound :: Int64) + 1, -1, 0, 1, 123456789, maxBound - 1] $ \nanos -> do

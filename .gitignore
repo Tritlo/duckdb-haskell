@@ -1,5 +1,4 @@
 dist-newstyle
-dist-newstyle-bindgen/
 dist-newstyle-extensions/
 duckdb-ffi/generated/
 *.so*

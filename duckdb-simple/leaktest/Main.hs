@@ -123,8 +123,8 @@ checkNewTypes batches =
                 unless (rows == [(variant, geometry, typed)]) (fail "new type round trip failed")
                 expectFailure (query conn "SELECT ?, system.main.ST_GeomFromWKB(?)" (typed, BS.pack [1, 1, 0, 0, 0]) :: IO [(G.Geometry, RawGeometry)])
                 expectFailure (query conn "SELECT system.main.ST_GeomFromWKB(?)" (Only (rawGeometryWKB geometry)) :: IO [Only Int64])
-                expectFailure (query conn "SELECT ?::VARCHAR" (Only (Variant (FieldList [variantPayload variant, FieldDecimal (DecimalValue 0 0 0)]))) :: IO [Only String])
-                expectFailure (query conn "SELECT ?::BIGINT" (Only variant) :: IO [Only Int64])
+                expectFailure (query conn "SELECT ?" (Only (Variant (FieldList [variantPayload variant, FieldDecimal (DecimalValue 0 0 0)]))) :: IO [Only Variant])
+                expectFailure (query conn "SELECT ?" (Only variant) :: IO [Only Int64])
         batch
         performMajorGC
         before <- readUsage
@@ -256,7 +256,7 @@ checkCancellation :: Int -> IO ()
 checkCancellation batches =
     withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
         void (execute_ conn "SET streaming_buffer_size = '64KB'")
-        let cancel action = do
+        let run mayFinish action = do
                 started <- newEmptyMVar
                 done <- newEmptyMVar
                 let signal = void (tryPutMVar started ())
@@ -268,10 +268,15 @@ checkCancellation batches =
                 case outcome of
                     Left err | fromException err == Just ThreadKilled -> pure ()
                     Left err -> fail ("unexpected cancellation error: " <> show err)
-                    -- A finite query can finish before the interrupt reaches it.
-                    Right () -> pure ()
+                    Right ()
+                        | mayFinish -> pure ()
+                        | otherwise -> fail "query completed before cancellation"
                 rows <- query_ conn "SELECT 42"
                 unless (rows == [Only (42 :: Int64)]) (fail "connection failed after cancellation")
+            -- These queries block or run until the thread is killed.
+            cancel = run False
+            -- These finite queries can finish before the interrupt reaches them.
+            interrupt = run True
             batch = forM_ [1 .. 10 :: Int] \_ -> do
                 cancel \signal -> do
                     createFunction conn "leak_cancel_started" (signal >> pure (1 :: Int64))
@@ -283,7 +288,7 @@ checkCancellation batches =
                             \FROM started, range(1000000) a(i), range(1000000) b(j)" ::
                             IO [Only Double]
                         )
-                cancel \signal -> do
+                interrupt \signal -> do
                     signal
                     void (query_ conn "SELECT {'x': i, 'values': [i, i + 1]} FROM range(100000) t(i)" :: IO [Only FieldValue])
                 cancel \signal -> do
@@ -301,7 +306,7 @@ checkCancellation batches =
                     if arrow
                         then Streaming.foldArrow_ conn sql () (\() _ _ -> delivered)
                         else Streaming.fold_ conn sql () (\() (Only (_ :: Int64)) -> delivered)
-                cancel \signal -> do
+                interrupt \signal -> do
                     signal
                     void (query_ conn "SELECT {'x': i, 'values': [i, i + 1]}::VARIANT FROM range(100000) t(i)" :: IO [Only FieldValue])
                 cancel \signal -> do

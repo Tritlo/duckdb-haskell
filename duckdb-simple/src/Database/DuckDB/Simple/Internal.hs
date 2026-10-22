@@ -71,7 +71,7 @@ import qualified Data.ByteString as BS
 import Data.Coerce (Coercible, coerce)
 import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, newIORef, readIORef, writeIORef)
 import qualified Data.IntMap.Strict as IntMap
-import Data.List (find, partition)
+import Data.List (find, intercalate, partition)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
@@ -203,11 +203,23 @@ data StatementStreamChunk = StatementStreamChunk
 -- | Create an environment. Close it after all related work finishes.
 createEnvironment :: IO Environment
 createEnvironment = mask_ do
+    checkLibraryVersion
     raw <- output c_duckdb_v2_environment_create
     children <- newChildren
     ref <- newIORef (EnvironmentOpen raw children)
     _ <- mkWeakIORef ref (closeEnvironmentState ref)
     pure (Environment ref)
+
+{- | Require the DuckDB release that the V2 bindings describe. Upstream marks
+the V2 API as unstable, so another release can change its functions.
+-}
+checkLibraryVersion :: IO ()
+checkLibraryVersion = do
+    actual <- output c_duckdb_v2_library_version >>= readText
+    unless (actual == expected) $
+        throwIO (SQLError ("duckdb-simple: the V2 API requires DuckDB " <> expected <> ", but the loaded library is " <> actual) Nothing Nothing)
+  where
+    expected = Text.pack ('v' : intercalate "." (map show [dUCKDB_V2_API_VERSION_MAJOR, dUCKDB_V2_API_VERSION_MINOR, dUCKDB_V2_API_VERSION_PATCH]))
 
 {- | Close an environment and its instances and connections. This is idempotent.
 Wait for child creation and all descendant operations to finish before closing.

@@ -15,10 +15,10 @@ scratch_dir=$(mktemp -d)
 trap 'rm -rf -- "$scratch_dir"' EXIT
 cd -- "$package_dir"
 
-python3 "$script_dir/duckdb-api.py" --verify-headers
+sha256sum --check --quiet vendor/upstream.sha256
 
-if [[ $(ghc-pkg field hs-bindgen version --simple-output) != "1.0.0.0" ]]; then
-  echo "Use hs-bindgen 1.0.0.0 from dev/nix/generate.nix." >&2
+if [[ -z ${HS_BINDGEN_VERSION:-} || $(ghc-pkg field hs-bindgen version --simple-output) != "$HS_BINDGEN_VERSION" ]]; then
+  echo "Run this script in dev/nix/generate.nix." >&2
   exit 1
 fi
 

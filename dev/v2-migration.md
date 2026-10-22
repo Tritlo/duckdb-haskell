@@ -1,25 +1,23 @@
-# duckdb-simple V2 migration
+# duckdb-simple V2 backend
 
-This document records the scope, contracts, and native limits of the V2
-backend.
+This document describes the contracts, design, and native limits of the
+`duckdb-simple` backend on the generated V2 client API.
 
-## Scope
+## Overview
 
-Move the default `duckdb-simple` backend to the generated V2 client API.
-Preserve query, binding, callback, Arrow, and cleanup behavior where the pinned
-V2 API provides the required operations. Add public support for its available
-client facilities. Report unavailable operations explicitly. Keep generated
-bindings outside Git. Release source archives must build without LLVM or the
-generator.
+The backend uses only V2 handles. It does not convert retained API handles into
+V2 handles. Upstream marks the complete V2 API as unstable, so the backend
+requires exactly the DuckDB release of the pinned headers. Creating an
+environment compares the library version with the header version and raises
+`SQLError` on a mismatch.
 
-The public additions include shared environments and instances, attachment
+The public API includes shared environments and instances, attachment
 management, option discovery, tokenization, advanced function signatures,
-aggregate/table/cast registration, COPY FROM and advanced COPY TO operations,
+aggregate, table, and cast registration, COPY FROM and COPY TO operations,
 custom types, replacement scans, file operations, callback logging, log sinks,
 custom options, macros, pragmas, query metrics, function documentation, and
-Arrow integration. V2 has no custom file-system registration.
-Use native V2 errors and ownership rules. Do not convert retained API handles
-into V2 handles.
+Arrow integration. Operations that V2 does not provide raise `SQLError` or are
+absent.
 
 ## Contracts
 
@@ -50,6 +48,9 @@ SQL type metadata, native extraction, and casts. Object extraction binds exact
 keys, including empty strings and interior NUL bytes. It does not cast objects
 to MAP values. Object keys use DuckDB's native lexicographic order. Arrays
 retain element order. Native factories construct VARIANT types directly.
+
+GEOMETRY has no committed vector layout. The reader casts each GEOMETRY vector
+to BLOB with the factory of the result's connection and copies the WKB rows.
 
 A helper connection caches SQL-derived GEOMETRY types for the CRS names in
 `connectionGeometryCRS`. These names remain available in nested parameters,
@@ -84,22 +85,16 @@ bindings. The migration uses the current API. It does not add native symbols.
   a recognized CRS or a complete definition. Configure custom names through
   `connectionGeometryCRS` to preserve them through the SQL-derived type cache.
   Do not silently drop CRS metadata when `ignore_unknown_crs` is enabled.
-- V2 metadata cannot perform scoped collation lookup. That operation raises
-  `SQLError`. Table, view, index, sequence, and type lookups use SQL metadata.
+- V2 metadata cannot look up collations, so `CatalogEntryType` has no
+  collation kind. Table, view, index, sequence, and type lookups use SQL
+  metadata.
   These lookups accept a top-level schema identifier. A dot in that identifier
   is literal. V2 table descriptions accept at most three qualified name parts,
   so they cannot describe tables in nested schemas.
 
-## Validation commands
+## Validation
 
-Run generation and coverage checks, then build all components in
-`dev/nix/shell.nix`. Run all existing integration, DataFrame, and leak
-suites. Check callback exceptions, async cancellation, selection vectors,
-shared lifetimes, registration cleanup, and materialized cursor behavior.
-Run Valgrind with `--fair-sched=yes` for V2 tests. Run both formatters and
-Haddock. Verify extracted source archives and installed consumers without the
-generator. Record native API limitations separately from missing bindings.
-
-Use `GHC_ENVIRONMENT=- cabal exec --with-compiler=ghc
---builddir=dist-newstyle-bindgen -- ghc ...` for isolated compiler probes inside
-the Nix shell. The default global package environment can contain stale units.
+After a backend change, run the full suites, the leak suite, the DataFrame
+suite, and Haddock. Run Valgrind with `--fair-sched=yes` for the V2 tests.
+Check callback exceptions, async cancellation, selection vectors, shared
+lifetimes, registration cleanup, and materialized cursor behavior.

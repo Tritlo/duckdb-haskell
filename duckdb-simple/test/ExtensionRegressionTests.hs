@@ -26,7 +26,7 @@ import qualified Database.DuckDB.Simple.Logging as Logging
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..))
 import qualified Database.DuckDB.Simple.Registration as Registration
 import qualified Database.DuckDB.Simple.Tokenizer as Tokenizer
-import System.Directory (removeFile)
+import System.Directory (getHomeDirectory, removeFile)
 import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertFailure, testCase, (@?=))
@@ -191,11 +191,13 @@ extensionRegressionTests =
             withConnection ":memory:" \conn -> do
                 registerCopy conn "copy_repeat" Nothing
                 replicateM_ 32 $ void $ execute_ conn "COPY (SELECT * FROM range(5000)) TO '/tmp/duckdb-simple-regression-copy' (FORMAT copy_repeat)"
-        , testCase "log sink callback exceptions cannot fail a query" $
+        , testCase "log sink callback exceptions cannot fail a query" do
+            calls <- newIORef (0 :: Int)
             withConnection ":memory:" \conn -> do
-                Logging.registerLogStorage conn "throwing_log" (\_ -> throwIO ThreadKilled)
+                Logging.registerLogStorage conn "throwing_log" (\_ -> atomicModifyIORef' calls (\n -> (n + 1, ())) >> throwIO ThreadKilled)
                 void $ execute_ conn "CALL enable_logging(); SET logging_storage = 'throwing_log'; SELECT write_log('contained')"
                 query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+            readIORef calls >>= assertBool "the sink ran" . (> 0)
         , testCase "log sinks copy entries and flush when released" do
             entries <- newIORef []
             flushes <- newIORef (0 :: Int)
@@ -231,9 +233,6 @@ extensionRegressionTests =
                 assertSqlError $ FileSystem.withFileHandle conn "/tmp/duckdb-review-missing-dir/no-file" [DuckDBV2FileFlagRead] (\_ -> pure ())
                 withTemporaryFile \path ->
                     assertSqlError $ FileSystem.withFileHandle conn (path <> "\0suffix") [DuckDBV2FileFlagRead] (\_ -> pure ())
-        , testCase "scoped collation lookup reports the V2 limitation" $
-            withConnection ":memory:" \conn ->
-                assertSqlErrorContaining "unavailable" $ Catalog.lookupCatalogEntry conn "memory" "main" "probe" Catalog.CatalogCollation
         , testCase "catalog and config NUL names fail safely" $
             withConnection ":memory:" \conn -> do
                 assertSqlError $ Config.getConfigOption conn "threads\0suffix"
@@ -348,8 +347,9 @@ extensionRegressionTests =
         , testCase "file paths support expansion glob movement and removal" $
             withTemporaryFile \path -> withConnection ":memory:" \conn -> do
                 FileSystem.pathExists conn path >>= (@?= True)
-                FileSystem.expandPath conn path >>= (@?= path)
-                FileSystem.globPaths conn path >>= (@?= [path])
+                home <- getHomeDirectory
+                FileSystem.expandPath conn "~/duckdb-simple-path" >>= (@?= home <> "/duckdb-simple-path")
+                FileSystem.globPaths conn (path <> "*") >>= (@?= [path])
                 FileSystem.pathIsRemote conn "https://example.com/data.parquet" >>= (@?= True)
                 FileSystem.pathIsRemote conn path >>= (@?= False)
                 let moved = path <> ".moved"

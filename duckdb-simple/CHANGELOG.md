@@ -1,69 +1,64 @@
 # Changelog
 
-## 0.5.0.0 (unreleased)
+## 0.4.0.0 (unreleased)
 
-- Move the backend to the generated V2 C API. Upstream marks the V2 API as
-  unstable ("The C API v2 is not yet stable. Its interface may change in
-  upcoming releases."), so this release requires exactly DuckDB 2.0.0.
-  Creating an environment raises `SQLError` for another library version.
+- Target DuckDB 2.0 with `duckdb-ffi >= 2.0.0.0`. The backend uses the
+  generated V2 C API. Upstream marks the V2 API as unstable ("The C API v2 is
+  not yet stable. Its interface may change in upcoming releases."), so this
+  release requires exactly DuckDB 2.0.0. Creating an environment raises
+  `SQLError` for another library version. Use the earlier release with
+  DuckDB 1.5.
 - Raw handles, logical type IDs, callback handles, and error codes use V2
-  types. See MIGRATION.md.
+  types. `sqlErrorType` is `Maybe DuckDBV2Error`. See MIGRATION.md.
 - Add shared environments and instances, attachment management, option
   discovery, table descriptions, SQL tokenization, positioned file I/O,
   managed function and type registration, replacement scans, and COPY callbacks.
 - Add custom configuration options, typed values and defaults, managed log
   sinks, macro and pragma registration, function documentation, query metrics,
   and file path operations. Expose table bind metadata for multi-file readers.
+  `enableProfiling` collects metrics without printing a profile.
 - Add scoped named collection inputs and prepared dynamic PIVOT with a deferred
   output schema. Native expanding statements cannot have parameters.
 - Rename `Database.DuckDB.Simple.Deprecated.Streaming` to
   `Database.DuckDB.Simple.Streaming`.
+- Export Arrow release helpers from `Database.DuckDB.Simple.Arrow`.
+- The default `query`, `fold`, and Arrow folds collect the result before the
+  first callback, so a callback can query the same connection.
+- While an explicit stream is incomplete, DuckDB rejects other statements on
+  its connection. Closing an incomplete stream aborts its statement.
+- Each connection serializes statement preparation and its open native result.
+  Threads that share a connection wait for each other in the default query
+  functions. Serialize transactions and explicit streams in the application.
+- `query_` and `execute_` parse all statements before they run any.
 - Decode and bind TUPLE values with `TupleValue`, `FieldTuple`, and
   `LogicalTypeTuple`.
 - Preserve composite VARCHAR collations with `LogicalTypeCollatedVarchar`.
-- Resolve configuration names and aliases case-insensitively. Use DuckDB's
-  ASCII identifier rules for catalog names and top-level schemas.
-- Refresh statement metadata after reset or rebinding.
-- Preserve sparse numeric parameter names such as `$3`.
-- The default `query`, `fold`, and Arrow folds collect the result before the
-  first callback, so a callback can query the same connection. Explicit
-  streaming keeps the native one-live-result restriction.
-- `ToDuckValue.toDuckValue` and `logicalTypeFromRep` take a V2 connection.
-  Composite parameters keep GEOMETRY CRS metadata. A CRS that DuckDB does not
-  recognize raises `SQLError` instead of being dropped.
-- Decode VARIANT values through public V2 operations. Object keys use DuckDB's
-  lexicographic order.
-- Empty `Array` parameters raise `SQLError`. Use an SQL empty LIST.
-- Read GEOMETRY results through a native cast to BLOB.
-- `enableProfiling` collects metrics without printing a profile.
-
-## 0.4.0.0 (unreleased)
-
-- Target DuckDB 2.0 with `duckdb-ffi >= 2.0.0.0`. Support DuckDB 2.0.x
-  releases.
-- Use the generated raw API from `hs-bindgen`. `LogicalTypeScalar`,
-  `argumentType`, `argumentTypes`, and `copyBindColumnTypes` use `DUCKDB_TYPE`
-  instead of `DuckDBType`. See MIGRATION.md.
-- Export Arrow release helpers from `Database.DuckDB.Simple.Arrow`.
-- `sqlErrorType` can report the DuckDB 2.0 data-corruption and resource-in-use
-  error tags.
-- While a stream is incomplete, DuckDB rejects other statements on its
-  connection. Closing an incomplete stream aborts its statement.
-- DuckDB 2.0 rejects WKB with mixed Z/M member layouts.
 - Decode nanosecond timezone timestamps in results and VARIANT values.
 - Preserve nanosecond timezone timestamp precision in VARIANT parameters and
   parameters whose prepared type requires `TIMESTAMPTZ_NS`. This includes UTC
   fields in collections, STRUCTs, MAPs, and UNIONs.
+- Decode VARIANT values through public V2 operations. Object keys use DuckDB's
+  lexicographic order.
+- Allow a VARIANT object to contain an empty key with other named keys. Reject
+  an object with only an empty key because the C API changes its shape.
+- Read GEOMETRY results through a native cast to BLOB. DuckDB 2.0 rejects WKB
+  with mixed Z/M member layouts.
+- `ToDuckValue.toDuckValue`, `logicalTypeFromRep`, and `logicalTypeFromRepWith`
+  take a V2 connection. Composite parameters keep GEOMETRY CRS metadata. A CRS
+  that DuckDB does not recognize raises `SQLError` instead of being dropped.
+- Empty `Array` parameters raise `SQLError`. Use an SQL empty LIST.
 - Allow session variables to supply omitted named parameters. Only too many
   named parameters raise `FormatError`.
+- Reject duplicate named parameters with DuckDB's ASCII case rules. Keep
+  distinct non-ASCII names separate. Preserve sparse numeric parameter names
+  such as `$3`.
+- Refresh statement metadata after reset or rebinding.
+- Resolve configuration names and aliases case-insensitively. Use DuckDB's
+  ASCII identifier rules for catalog names and top-level schemas.
 - `deleteFunction` reports the error from DuckDB. DuckDB does not permit
   deletion of functions registered through the C API, so the call raises
   `SQLError` for a function made with `createFunction`. Version 0.3 ignored
   this error.
-- Reject duplicate named parameters with DuckDB's ASCII case rules. Keep
-  distinct non-ASCII names separate.
-- Allow a VARIANT object to contain an empty key with other named keys. Reject
-  an object with only an empty key because the C API changes its shape.
 - Add the optional `quack-tests` suite for authenticated remote queries,
   parameter binding, writes, streaming, and nanosecond timestamps.
 

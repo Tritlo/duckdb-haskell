@@ -364,13 +364,23 @@ manualStruct conn = do
 - `execute`/`query` variants reset statement bindings each run so prepared
   statements can be reused safely.
 
-For concurrent workers, use a separate connection per worker. A connection
-can move between threads or be shared when the application serializes access.
-Hold that lock for the whole transaction or cursor lifetime, including `close`.
-DuckDB serializes native query calls, but this does not protect the Haskell
-handle state or prevent another call from interfering with an active cursor.
-Statements and connections do not provide their own lock. A callback must not
-execute another query on its active connection or close that connection.
+For concurrent workers, use a separate connection per worker. Threads can
+also share one connection. DuckDB permits one open result for each connection,
+so each connection has a lock. `query`, `execute`, the default folds, and
+statement preparation hold this lock until their native result closes. A call
+from another thread waits. The lock does not cover these cases. Serialize them
+in the application:
+
+- A transaction. Statements of other threads run inside it.
+- One `Statement` that two threads use.
+- An explicit stream from `Database.DuckDB.Simple.Streaming`. Its result stays
+  open between calls, and another query on that connection fails until the
+  stream is complete or closed.
+- `close`. Wait for all operations on the connection before you close it.
+
+A callback must not execute another query on its active connection or close
+that connection. With the default API, such a query waits for the lock of the
+active query and does not return.
 
 Link your executable with `ghc-options: -threaded` to allow prompt cancellation
 of native queries, including Ctrl-C. On cancellation, the library interrupts

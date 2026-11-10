@@ -196,6 +196,28 @@ coreRegressionTests =
                     query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
                     pure (acc + 1)
                 count @?= 3
+        , testCase "threads share a connection for default queries" $
+            bracket getNumCapabilities setNumCapabilities $ \capabilities -> do
+                setNumCapabilities (max 4 capabilities)
+                withConnection ":memory:" $ \conn -> do
+                    void (execute_ conn "CREATE TABLE shared_rows(worker BIGINT, i BIGINT)")
+                    start <- newEmptyMVar
+                    completed <- replicateM 8 newEmptyMVar
+                    forM_ (zip [1 :: Int64 ..] completed) $ \(worker, result) ->
+                        void $ flip forkFinally (putMVar result) $ do
+                            readMVar start
+                            forM_ [1 .. 50 :: Int64] $ \i -> do
+                                query conn "SELECT ? + ?" (worker, i) >>= (@?= [Only (worker + i)])
+                                execute conn "INSERT INTO shared_rows VALUES (?, ?)" (worker, i) >>= (@?= 1)
+                                query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+                                fold_ conn "SELECT i FROM range(3) t(i)" (0 :: Int64) (\acc (Only n) -> pure (acc + n)) >>= (@?= 3)
+                                execute_ conn "UPDATE shared_rows SET i = i WHERE worker = 0" >>= (@?= 0)
+                    putMVar start ()
+                    outcomes <- mapM takeMVar completed
+                    case partitionEithers outcomes of
+                        ([], _) -> pure ()
+                        (failure : _, _) -> throwIO failure
+                    query_ conn "SELECT count(*) FROM shared_rows" >>= (@?= [Only (400 :: Int64)])
         , testCase "ad hoc SQL executes statement-expanded groups" $
             withConnection ":memory:" $ \conn -> do
                 void (execute_ conn "CREATE TABLE pivot_probe(category VARCHAR, yr INTEGER, amount BIGINT); INSERT INTO pivot_probe VALUES ('a',2020,1),('a',2021,2)")

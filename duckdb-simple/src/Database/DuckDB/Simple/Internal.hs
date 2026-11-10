@@ -45,6 +45,7 @@ module Database.DuckDB.Simple.Internal (
     withInstanceHandle,
     withDatabaseHandle,
     withConnectionHandle,
+    withConnectionLock,
     withTypeCache,
     withStatementHandle,
     withQueryCString,
@@ -64,7 +65,7 @@ module Database.DuckDB.Simple.Internal (
     destroyDataChunk,
 ) where
 
-import Control.Concurrent (MVar, forkIO, newEmptyMVar, putMVar, readMVar, threadDelay, tryReadMVar)
+import Control.Concurrent (MVar, forkIO, newEmptyMVar, newMVar, putMVar, readMVar, threadDelay, tryReadMVar, withMVar)
 import Control.Exception (SomeException, bracket, catch, finally, mask, mask_, onException, throwIO, try, uninterruptibleMask_)
 import Control.Monad (forM, forM_, join, unless, void, when)
 import Data.Array (Array, bounds, inRange, listArray, (!))
@@ -155,7 +156,12 @@ data Instance = Instance {instanceState :: IORef InstanceState, instanceEnvironm
 data InstanceState = InstanceClosed | InstanceOpen DuckDBV2InstanceHandle (Children ConnectionState)
 
 -- | A connection that retains its instance until it closes.
-data Connection = Connection {connectionState :: IORef ConnectionState, connectionInstance :: Instance}
+data Connection = Connection
+    { connectionState :: IORef ConnectionState
+    , connectionInstance :: Instance
+    , connectionLock :: MVar ()
+    -- ^ Held while a native result of this connection is open. See 'withConnectionLock'.
+    }
 
 -- | Internal connection state.
 data ConnectionState
@@ -312,7 +318,7 @@ createConnection parent@Instance{instanceState} crss releaseParent = keepAlive p
         statements <- newChildren
         ref <- newIORef (ConnectionOpen raw cache statements releaseParent)
         registerChild forkFinalizer (\case ConnectionOpen{} -> True; _ -> False) children ref (keepAlive parent (closeConnectionState False ref))
-        pure (Connection ref parent)
+        Connection ref parent <$> newMVar ()
 
 -- | Close a connection and every prepared statement that belongs to it.
 closeConnection :: Connection -> IO ()
@@ -384,7 +390,8 @@ createStatementFromParsedWithCollections parent query parsed collections = withQ
     handle <- alloca \slot -> do
         poke slot nullHandle
         flip onException (peek slot >>= destroy c_duckdb_v2_prepared_statement_destroy) do
-            runInterruptibleQuery parent (checked (c_duckdb_v2_prepared_statement_create raw parsed 0 slot))
+            -- DuckDB also rejects preparation while another result is open.
+            withConnectionLock parent (runInterruptibleQuery parent (checked (c_duckdb_v2_prepared_statement_create raw parsed 0 slot)))
             peek slot
     flip onException (destroy c_duckdb_v2_prepared_statement_destroy handle) do
         -- Keep a separate parsed handle for metadata after the input iterator closes.
@@ -460,6 +467,15 @@ withConnectionHandle owner@Connection{connectionState} action =
             ConnectionClosed -> throwIO connectionClosedError
             ConnectionOpen{connectionHandle} -> action connectionHandle
 
+{- | Serialize the native calls of one result. DuckDB permits one open result
+for each connection and rejects a second execution. Hold the lock from the
+execution until the result closes, so that threads which share a connection
+wait for each other. Do not run user callbacks under this lock. The lock is
+not reentrant.
+-}
+withConnectionLock :: Connection -> IO a -> IO a
+withConnectionLock Connection{connectionLock} = withMVar connectionLock . const
+
 -- | Borrow a connection's logical type cache.
 withTypeCache :: Connection -> (TypeCache -> IO a) -> IO a
 withTypeCache owner@Connection{connectionState} action =
@@ -516,7 +532,7 @@ executeParsedResult conn query parsed = withQueryError query $ withConnectionHan
 
 -- | Execute a parsed statement directly and drain all its side effects.
 executeParsedStatement :: Connection -> Query -> DuckDBV2SqlStatementHandle -> IO Int
-executeParsedStatement conn queryText parsed = withQueryError queryText $
+executeParsedStatement conn queryText parsed = withQueryError queryText . withConnectionLock conn $
     bracket (executeParsedResult conn queryText parsed) (destroy c_duckdb_v2_result_destroy) \result ->
         fromIntegral <$> runInterruptibleQuery conn (output (c_duckdb_v2_result_drain result))
 
@@ -621,7 +637,7 @@ statementSchemas stmt = withStatementHandle stmt \_ -> mask_ do
                     poke parameters nullHandle
                     let release = (peek result >>= destroy c_duckdb_v2_schema_destroy) `finally` (peek parameters >>= destroy c_duckdb_v2_schema_destroy)
                     flip onException release do
-                        runInterruptibleQuery (statementConnection stmt) (checked (c_duckdb_v2_statement_bind conn statementParsed result parameters))
+                        withConnectionLock (statementConnection stmt) (runInterruptibleQuery (statementConnection stmt) (checked (c_duckdb_v2_statement_bind conn statementParsed result parameters)))
                         schemas <- (,) <$> peek result <*> peek parameters
                         writeIORef statementSchemaCache (Just schemas)
                         pure schemas

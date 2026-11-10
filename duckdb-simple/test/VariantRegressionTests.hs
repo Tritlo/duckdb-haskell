@@ -219,6 +219,28 @@ tests =
                 count @?= 5000
             | (mode, foldRows) <- [("materialized", fold_), ("native streaming", Streaming.fold_)]
             ]
+        , testCase "one column with many payload tags decodes each row exactly" $ withConnection ":memory:" \conn -> do
+            rows <-
+                query_
+                    conn
+                    "SELECT i, CASE i % 12 WHEN 0 THEN NULL WHEN 1 THEN (i % 24 = 1)::VARIANT WHEN 2 THEN (i % 100)::TINYINT::VARIANT WHEN 3 THEN i::VARIANT WHEN 4 THEN (i * 0.5)::DOUBLE::VARIANT WHEN 5 THEN i::DECIMAL(9,2)::VARIANT WHEN 6 THEN ('t' || i)::VARIANT WHEN 7 THEN [i, NULL, i + 1]::VARIANT WHEN 8 THEN {'n': i, 'xs': [i]}::VARIANT WHEN 9 THEN {'k': {'deep': 't' || i}}::VARIANT WHEN 10 THEN []::VARIANT ELSE i::UBIGINT::VARIANT END FROM range(5000) t(i)" ::
+                    IO [(Int64, Maybe Variant)]
+            let text n = FieldText ("t" <> Text.pack (show n))
+                expected n = case n `mod` 12 of
+                    0 -> Nothing
+                    1 -> Just (FieldBool (n `mod` 24 == 1))
+                    2 -> Just (FieldInt8 (fromIntegral (n `mod` 100)))
+                    3 -> Just (FieldInt64 n)
+                    4 -> Just (FieldDouble (fromIntegral n * 0.5))
+                    5 -> Just (FieldDecimal (DecimalValue 9 2 (toInteger n * 100)))
+                    6 -> Just (text n)
+                    7 -> Just (FieldList [FieldInt64 n, FieldNull, FieldInt64 (n + 1)])
+                    8 -> Just (variantObject [("n", FieldInt64 n), ("xs", FieldList [FieldInt64 n])])
+                    9 -> Just (variantObject [("k", variantObject [("deep", text n)])])
+                    10 -> Just (FieldList [])
+                    _ -> Just (FieldWord64 (fromIntegral n))
+            length rows @?= 5000
+            forM_ rows \(n, actual) -> fmap variantPayload actual @?= expected n
         , testCase "filtered and reordered rows use the right child offsets" $ withConnection ":memory:" \conn -> do
             rows <- query_ conn "SELECT {'n': i, 'xs': [i, i + 1]}::VARIANT FROM range(10000) t(i) WHERE i % 97 = 0 ORDER BY i DESC LIMIT 40"
             let expected = [Only (Variant (variantObject [("n", FieldInt64 n), ("xs", FieldList [FieldInt64 n, FieldInt64 (n + 1)])])) | n <- take 40 (reverse [0, 97 .. 9999])]

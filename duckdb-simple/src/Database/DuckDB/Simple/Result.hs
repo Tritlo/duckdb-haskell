@@ -92,7 +92,7 @@ exhaustStatementStream ref = mask_ do
         _ -> pure ()
 
 startStatementStream :: Bool -> ResultMode -> Statement -> IO (Maybe StatementStream)
-startStatementStream includeChangedRows mode stmt = withQueryError (statementQuery stmt) . withConnectionLock (statementConnection stmt) $ mask_ do
+startStatementStream includeChangedRows mode stmt = withQueryError (statementQuery stmt) . withResultWindow (statementConnection stmt) (mapM_ finalizeStream) $ mask_ do
     -- A materialized result closes here. A stream stays open after the lock is released.
     result <- executePreparedResult stmt
     startResultStream includeChangedRows mode (statementConnection stmt) result
@@ -175,7 +175,7 @@ collectRows stmt = collectStreamRows (statementConnection stmt) (statementQuery 
 
 -- | Execute a parsed statement directly and materialize its owned native chunks.
 collectParsedRows :: Connection -> Query -> DuckDBV2SqlStatementHandle -> IO [[Field]]
-collectParsedRows conn query parsed = collectStreamRows conn query . withConnectionLock conn $ mask_ do
+collectParsedRows conn query parsed = collectStreamRows conn query . withResultWindow conn (mapM_ finalizeStream) $ mask_ do
     result <- executeParsedResult conn query parsed
     startResultStream True MaterializedResult conn result
 

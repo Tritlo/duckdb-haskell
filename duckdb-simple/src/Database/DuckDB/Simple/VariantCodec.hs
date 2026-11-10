@@ -1,13 +1,14 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 -- | Lossless VARIANT decoding through public V2 values and SQL type metadata.
 module Database.DuckDB.Simple.VariantCodec (
     prepareVariantDecoder,
 ) where
 
-import Control.Exception (bracket, evaluate, finally, mask_, onException, throwIO)
+import Control.Exception (SomeException, bracket, evaluate, mask_, onException, throwIO, try)
 import Control.Monad (forM, unless)
 import Data.Array (listArray, (!))
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
@@ -153,7 +154,7 @@ queryMetadata :: DuckDBV2ConnectionHandle -> DuckDBV2SqlStatementHandle -> [Duck
 queryMetadata connection statement values = withVariantList connection values \list ->
     withStatementValue connection statement [list] \metadata -> do
         count <- output (c_duckdb_v2_value_get_child_count metadata)
-        forM (indices count) \index ->
+        flip mapFlat (indices count) \index ->
             bracket (output (c_duckdb_v2_value_get_child metadata index)) destroyValue \node -> do
                 tag <- bracket (output (c_duckdb_v2_value_get_child node 0)) destroyValue \value ->
                     output (c_duckdb_v2_value_get_varchar value) >>= readText
@@ -225,10 +226,17 @@ acquireItems release = mask_ . go []
         item <- acquire `onException` releaseItems release owned
         go (item : owned) rest
 
--- | Release every owned item even if one destructor reports an error.
-releaseItems :: (a -> IO ()) -> [a] -> IO ()
-releaseItems _ [] = pure ()
-releaseItems release (item : rest) = release item `finally` releaseItems release rest
+{- | Release every owned item even if one destructor reports an error. Raise
+the first error after the last release. The loop keeps the stack flat.
+-}
+releaseItems :: forall a. (a -> IO ()) -> [a] -> IO ()
+releaseItems release = go Nothing
+  where
+    go :: Maybe SomeException -> [a] -> IO ()
+    go failure [] = mapM_ throwIO failure
+    go failure (item : rest) = do
+        outcome <- try (release item)
+        go (either (\err -> Just (maybe err id failure)) (const failure) outcome) rest
 
 -- | List a node's owned children in their native order.
 nodeChildren :: VariantNode -> [DuckDBV2ValueHandle]

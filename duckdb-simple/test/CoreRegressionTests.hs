@@ -12,6 +12,7 @@ import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (isInfixOf)
 import Data.Text (Text)
+import qualified Data.Text as Text
 import qualified Database.DuckDB.FFI.V2 as Raw
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (FieldValue)
@@ -162,6 +163,19 @@ coreRegressionTests =
                 (queryNamed conn "SELECT $3::BIGINT, $1::BIGINT, $3::BIGINT" ["1" := (11 :: Int64), "3" := (33 :: Int64)] :: IO [(Int64, Int64, Int64)])
                     >>= (@?= [(33, 11, 33)])
                 (query conn "SELECT ?::BIGINT, ?::BIGINT" ((1 :: Int64), (2 :: Int64)) :: IO [(Int64, Int64)]) >>= (@?= [(1, 2)])
+        , testCase "statements bind several thousand parameters by position and by name" $
+            withConnection ":memory:" $ \conn -> do
+                let count = 3000 :: Int
+                    values = [1 .. fromIntegral count] :: [Int64]
+                    listSum items = Query ("SELECT list_sum([" <> Text.intercalate "," items <> "])")
+                    name index = "p" <> Text.pack (show index)
+                (query conn (listSum (replicate count "?::BIGINT")) values :: IO [Only Int64]) >>= (@?= [Only (sum values)])
+                (queryNamed conn (listSum ["$" <> name index <> "::BIGINT" | index <- [1 .. count]]) [name index := value | (index, value) <- zip [1 :: Int ..] values] :: IO [Only Int64])
+                    >>= (@?= [Only (sum values)])
+                -- The last parameter decides whether the names are the positions 1 to n.
+                (query conn "SELECT $2::BIGINT, $1::BIGINT, $3::BIGINT" (1 :: Int64, 2 :: Int64, 3 :: Int64) :: IO [(Int64, Int64, Int64)]) >>= (@?= [(2, 1, 3)])
+                (queryNamed conn "SELECT $1::BIGINT, $3::BIGINT" ["1" := (11 :: Int64), "3" := (33 :: Int64)] :: IO [(Int64, Int64)]) >>= (@?= [(11, 33)])
+                assertThrows (query conn "SELECT $1::BIGINT, $3::BIGINT" (11 :: Int64, 33 :: Int64) :: IO [(Int64, Int64)])
         , testCase "transaction preserves the original exception if rollback fails" $
             withConnection ":memory:" $ \conn -> do
                 result <- try $ withTransaction conn $ do

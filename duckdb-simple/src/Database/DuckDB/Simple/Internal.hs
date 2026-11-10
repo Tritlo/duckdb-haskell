@@ -67,6 +67,7 @@ module Database.DuckDB.Simple.Internal (
 import Control.Concurrent (MVar, forkIO, newEmptyMVar, putMVar, readMVar, threadDelay, tryReadMVar)
 import Control.Exception (SomeException, bracket, catch, finally, mask, mask_, onException, throwIO, try, uninterruptibleMask_)
 import Control.Monad (forM, forM_, join, unless, void, when)
+import Data.Array (Array, bounds, inRange, listArray, (!))
 import qualified Data.ByteString as BS
 import Data.Coerce (Coercible, coerce)
 import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, newIORef, readIORef, writeIORef)
@@ -160,7 +161,8 @@ data Statement = Statement
     , statementStream :: IORef StatementStreamState
     , statementArrowResult :: IORef DuckDBV2ArrowResultHandle
     , statementBindings :: IORef (IntMap.IntMap DuckDBV2ValueHandle)
-    , statementParameterNames :: [Text]
+    , statementParameterNames :: Array Int Text
+    -- ^ The parameter names in binding order. The first index is 1.
     }
 
 -- | Internal prepared statement state.
@@ -377,15 +379,14 @@ createStatementFromParsedWithCollections parent query parsed collections = withQ
             output (c_duckdb_v2_statement_iterator_next iterator)
         flip onException (destroy c_duckdb_v2_sql_statement_destroy copied) do
             addCollections copied
-            count <- output (c_duckdb_v2_sql_statement_get_parameter_count copied)
-            names <- forM [0 .. fromIntegral count - 1 :: Int] \idx ->
-                output (c_duckdb_v2_sql_statement_get_parameter_name copied (fromIntegral idx)) >>= readIdentifier
+            count <- fromIntegral <$> output (c_duckdb_v2_sql_statement_get_parameter_count copied)
+            names <- parameterNames copied count
             schemas <- newIORef Nothing
             bindings <- newIORef IntMap.empty
             stream <- newIORef StatementStreamIdle
             arrow <- newIORef nullHandle
             ref <- newIORef (StatementOpen handle copied schemas)
-            let statement = Statement ref parent query stream arrow bindings names
+            let statement = Statement ref parent query stream arrow bindings (listArray (1, count) names)
             children <-
                 readIORef (connectionState parent) >>= \case
                     ConnectionClosed -> throwIO connectionClosedError
@@ -399,6 +400,19 @@ createStatementFromParsedWithCollections parent query parsed collections = withQ
             throwIO (SQLError "duckdb-simple: collection name or column name contains NUL" Nothing (Just query))
         withIdentifier name \nativeName -> withIdentifierArray columns \nativeColumns ->
             checked (c_duckdb_v2_statement_add_collection statement nativeName collection (ConstPtr (if null columns then nullPtr else nativeColumns)) (fromIntegral (length columns)))
+
+{- | Read the parameter names in binding order. DuckDB sorts all names again
+for each name that it returns. DuckDB rejects a mix of named and numbered
+parameters, and numbered names are distinct and sorted. So @count@ names that
+end with @count@ are the positions 1 to @count@. Read only the last name then.
+-}
+parameterNames :: DuckDBV2SqlStatementHandle -> Int -> IO [Text]
+parameterNames _ 0 = pure []
+parameterNames statement count = do
+    let name index = output (c_duckdb_v2_sql_statement_get_parameter_name statement (fromIntegral index)) >>= readIdentifier
+        positions = map (Text.pack . show) [1 .. count]
+    final <- name (count - 1)
+    if final == last positions then pure positions else forM [0 .. count - 1] name
 
 -- | Error raised when an operation targets a closed connection.
 connectionClosedError :: SQLError
@@ -506,7 +520,7 @@ executePreparedResult stmt = withStatementHandle stmt \handle -> mask_ $ alloca 
 withBoundValues :: Statement -> (ConstPtr DuckDBV2IdentifierT -> ConstPtr DuckDBV2ValueHandle -> DuckDBIdx -> IO a) -> IO a
 withBoundValues stmt action = do
     bindings <- IntMap.toAscList <$> readIORef (statementBindings stmt)
-    let names = map (\(idx, _) -> statementParameterNames stmt !! (idx - 1)) bindings
+    let names = map (\(idx, _) -> statementParameterNames stmt ! idx) bindings
         values = map snd bindings
     withIdentifierArray names \namesPtr -> withArray values \valuesPtr ->
         action (ConstPtr namesPtr) (ConstPtr valuesPtr) (fromIntegral (length bindings))
@@ -567,7 +581,7 @@ cleanupStatementStreamRef ref = mask_ do
 storeBoundValue :: Statement -> DuckDBIdx -> DuckDBV2ValueHandle -> IO ()
 storeBoundValue stmt index value = withStatementHandle stmt \_ -> mask_ do
     let idx = fromIntegral index
-    unless (idx >= 1 && idx <= length (statementParameterNames stmt)) $
+    unless (inRange (bounds (statementParameterNames stmt)) idx) $
         throwIO (SQLError "duckdb-simple: parameter index is out of bounds" Nothing (Just (statementQuery stmt)))
     previous <- IntMap.lookup idx <$> readIORef (statementBindings stmt)
     mapM_ destroyValue previous

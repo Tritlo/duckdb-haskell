@@ -90,6 +90,7 @@ import Foreign.Ptr (nullPtr)
 import Foreign.Storable (peek, poke)
 import GHC.Exts (keepAlive#)
 import GHC.IO (IO (..))
+import GHC.Weak.Finalize (getFinalizerExceptionHandler)
 import System.Mem.Weak (Weak, deRefWeak, finalize)
 
 -- | Track child finalizers without retaining live children.
@@ -99,9 +100,11 @@ newtype Children a = Children (IORef [(Weak (IORef a), MVar ())])
 newChildren :: IO (Children a)
 newChildren = Children <$> newIORef []
 
--- | Register a child and remove completed entries.
-registerChild :: (a -> Bool) -> Children a -> IORef a -> IO () -> IO ()
-registerChild isOpen (Children children) child cleanup = mask_ do
+{- | Register a child and remove completed entries. The first argument runs
+the finalizer of the child. Use 'forkFinalizer' for a child that has children.
+-}
+registerChild :: (IO () -> IO ()) -> (a -> Bool) -> Children a -> IORef a -> IO () -> IO ()
+registerChild runFinalizer isOpen (Children children) child cleanup = mask_ do
     previous <- readIORef children
     finished <- fmap concat $ forM previous \entry@(weak, done) ->
         deRefWeak weak >>= \case
@@ -111,10 +114,21 @@ registerChild isOpen (Children children) child cleanup = mask_ do
                 if isOpen state then pure [] else finishChild entry >> pure [done]
     -- Finish stale cleanup before transferring ownership of the new child.
     done <- newEmptyMVar
-    weak <- mkWeakIORef child (cleanup `finally` putMVar done ())
+    weak <- mkWeakIORef child (runFinalizer (cleanup `finally` putMVar done ()))
     -- Remove only finished snapshot entries. Keep concurrent registrations.
     atomicModifyIORef' children $ \current ->
         ((weak, done) : filter (\(_, completed) -> completed `notElem` finished) current, ())
+
+{- | Run a finalizer in a new thread. The collector runs the finalizers of one
+collection in sequence in one thread, and a parent waits for its children. A
+cleanup in that thread can wait for a child finalizer that is behind it.
+Report an exception as the collector reports it for a finalizer.
+A statement has no children, so its finalizer runs in the collector's thread.
+-}
+forkFinalizer :: IO () -> IO ()
+forkFinalizer cleanup =
+    void . forkIO $
+        cleanup `catch` \(err :: SomeException) -> getFinalizerExceptionHandler >>= ($ err)
 
 -- | Run a child finalizer and wait for its completion.
 finishChild :: (Weak (IORef a), MVar ()) -> IO ()
@@ -209,7 +223,7 @@ createEnvironment = mask_ do
     raw <- output c_duckdb_v2_environment_create
     children <- newChildren
     ref <- newIORef (EnvironmentOpen raw children)
-    _ <- mkWeakIORef ref (closeEnvironmentState ref)
+    _ <- mkWeakIORef ref (forkFinalizer (closeEnvironmentState ref))
     pure (Environment ref)
 
 {- | Require the DuckDB release that the V2 bindings describe. Upstream marks
@@ -257,7 +271,7 @@ createInstance environment@Environment{environmentState} settings = keepAlive en
             checked (c_duckdb_v2_config_set_option_text config key text DuckDBV2SettingScopeDefault)
         connections <- newChildren
         ref <- newIORef (InstanceOpen raw connections)
-        registerChild (\case InstanceOpen{} -> True; _ -> False) children ref (keepAlive environment (closeInstanceState ref))
+        registerChild forkFinalizer (\case InstanceOpen{} -> True; _ -> False) children ref (keepAlive environment (closeInstanceState ref))
         pure (Instance ref environment)
   where
     -- These options require the native instance and its file system or logger.
@@ -297,7 +311,7 @@ createConnection parent@Instance{instanceState} crss releaseParent = keepAlive p
     flip onException (destroyTypeCache cache `finally` destroy c_duckdb_v2_connection_destroy raw) do
         statements <- newChildren
         ref <- newIORef (ConnectionOpen raw cache statements releaseParent)
-        registerChild (\case ConnectionOpen{} -> True; _ -> False) children ref (keepAlive parent (closeConnectionState False ref))
+        registerChild forkFinalizer (\case ConnectionOpen{} -> True; _ -> False) children ref (keepAlive parent (closeConnectionState False ref))
         pure (Connection ref parent)
 
 -- | Close a connection and every prepared statement that belongs to it.
@@ -392,7 +406,7 @@ createStatementFromParsedWithCollections parent query parsed collections = withQ
                     ConnectionClosed -> throwIO connectionClosedError
                     ConnectionOpen{connectionStatements} -> pure connectionStatements
             -- The finalizer does not keep its weak key alive through this closure.
-            registerChild (\case StatementOpen{} -> True; _ -> False) children ref (keepAlive parent (closeStatementState statement))
+            registerChild id (\case StatementOpen{} -> True; _ -> False) children ref (keepAlive parent (closeStatementState statement))
             pure statement
   where
     addCollections statement = forM_ collections \(name, collection, columns) -> do

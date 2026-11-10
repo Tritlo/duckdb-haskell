@@ -372,7 +372,7 @@ columnName stmt columnIndex
 executeStatement :: Statement -> IO Int
 executeStatement stmt = do
     resetStatementStream stmt
-    withQueryError (statementQuery stmt) . withConnectionLock (statementConnection stmt) $ withResult stmt \result ->
+    withQueryError (statementQuery stmt) . withResultWindow (statementConnection stmt) (const (pure ())) $ withResult stmt \result ->
         fromIntegral <$> runInterruptibleQuery (statementConnection stmt) (output (c_duckdb_v2_result_drain result))
 
 -- | Execute a query with positional parameters and return the affected row count.

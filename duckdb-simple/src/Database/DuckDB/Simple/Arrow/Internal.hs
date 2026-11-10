@@ -61,7 +61,8 @@ foldArrowWith mode conn queryText params initial step = withStatement conn query
                     release = readIORef owned >>= mapM_ releaseBatch
                 flip finally release do
                     -- Hold the lock until the native result closes. The callbacks run after that.
-                    withConnectionLock conn (withArrowResult stmt gather)
+                    -- The batches are in storage that this thread releases.
+                    withResultWindow conn (const (pure ())) (withArrowResult stmt gather)
                     atomicModifyIORef' owned (\batches -> (reverse batches, ()))
                     consume initial
 

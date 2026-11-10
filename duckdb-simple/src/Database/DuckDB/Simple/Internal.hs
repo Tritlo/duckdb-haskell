@@ -46,6 +46,7 @@ module Database.DuckDB.Simple.Internal (
     withDatabaseHandle,
     withConnectionHandle,
     withConnectionLock,
+    withResultWindow,
     withTypeCache,
     withStatementHandle,
     withQueryCString,
@@ -65,8 +66,8 @@ module Database.DuckDB.Simple.Internal (
     destroyDataChunk,
 ) where
 
-import Control.Concurrent (MVar, forkIO, newEmptyMVar, newMVar, putMVar, readMVar, threadDelay, tryReadMVar, withMVar)
-import Control.Exception (SomeException, bracket, catch, finally, mask, mask_, onException, throwIO, try, uninterruptibleMask_)
+import Control.Concurrent (MVar, ThreadId, forkIO, myThreadId, newEmptyMVar, newMVar, putMVar, readMVar, threadDelay, tryReadMVar, withMVar)
+import Control.Exception (SomeException, bracket, bracket_, catch, finally, mask, mask_, onException, throwIO, try, uninterruptibleMask_)
 import Control.Monad (forM, forM_, join, unless, void, when)
 import Data.Array (Array, bounds, inRange, listArray, (!))
 import qualified Data.ByteString as BS
@@ -161,6 +162,8 @@ data Connection = Connection
     , connectionInstance :: Instance
     , connectionLock :: MVar ()
     -- ^ Held while a native result of this connection is open. See 'withConnectionLock'.
+    , connectionWindow :: IORef (Maybe ThreadId)
+    -- ^ The helper thread that runs the current result. See 'withResultWindow'.
     }
 
 -- | Internal connection state.
@@ -318,7 +321,7 @@ createConnection parent@Instance{instanceState} crss releaseParent = keepAlive p
         statements <- newChildren
         ref <- newIORef (ConnectionOpen raw cache statements releaseParent)
         registerChild forkFinalizer (\case ConnectionOpen{} -> True; _ -> False) children ref (keepAlive parent (closeConnectionState False ref))
-        Connection ref parent <$> newMVar ()
+        Connection ref parent <$> newMVar () <*> newIORef Nothing
 
 -- | Close a connection and every prepared statement that belongs to it.
 closeConnection :: Connection -> IO ()
@@ -476,6 +479,21 @@ not reentrant.
 withConnectionLock :: Connection -> IO a -> IO a
 withConnectionLock Connection{connectionLock} = withMVar connectionLock . const
 
+{- | Run the native calls of one result as one unit. Hold the connection lock,
+and run the calls in one helper thread. Each interruptible native call uses a
+helper thread, and a bound caller, such as the main thread, changes operating
+system threads to wait for one. With this function the caller changes threads
+once for the result and not once for each call.
+
+The caller can be cancelled after the helper thread has made its result. The
+first argument releases that result. Do not run user callbacks in the action.
+-}
+withResultWindow :: Connection -> (a -> IO ()) -> IO a -> IO a
+withResultWindow conn@Connection{connectionWindow} release action =
+    withConnectionLock conn . runInterruptible conn release $ do
+        self <- myThreadId
+        bracket_ (writeIORef connectionWindow (Just self)) (writeIORef connectionWindow Nothing) action
+
 -- | Borrow a connection's logical type cache.
 withTypeCache :: Connection -> (TypeCache -> IO a) -> IO a
 withTypeCache owner@Connection{connectionState} action =
@@ -506,20 +524,35 @@ withQueryCString query@(Query text) action = do
 peekUtf8CString :: (Coercible a CString) => a -> IO Text
 peekUtf8CString ptr = Text.decodeUtf8 <$> BS.packCString (coerce ptr)
 
--- | Run native work with cancellation and wait for it before releasing inputs.
-runInterruptibleQuery :: forall a. Connection -> IO a -> IO a
-runInterruptibleQuery conn action = withConnectionHandle conn \handle -> mask \restore -> do
-    done <- newEmptyMVar
-    _ <- forkIO do
-        outcome <- try action :: IO (Either SomeException a)
-        putMVar done outcome
-    let wait =
-            tryReadMVar done >>= \case
-                Just _ -> pure ()
-                Nothing -> void (c_duckdb_v2_connection_interrupt handle nullPtr) >> threadDelay 10000 >> wait
-        stop = uninterruptibleMask_ wait
-    outcome <- restore (readMVar done) `onException` stop
-    either throwIO pure outcome
+{- | Run native work with cancellation and wait for it before releasing inputs.
+The work must keep its native results in storage that the caller releases.
+-}
+runInterruptibleQuery :: Connection -> IO a -> IO a
+runInterruptibleQuery conn = runInterruptible conn (const (pure ()))
+
+{- | Run native work in a helper thread. On cancellation, interrupt DuckDB
+until the work returns, and release a result that the caller does not receive.
+The helper thread of 'withResultWindow' is interruptible as one unit, so a call
+from that thread runs the work directly.
+-}
+runInterruptible :: forall a. Connection -> (a -> IO ()) -> IO a -> IO a
+runInterruptible conn release action = do
+    self <- myThreadId
+    window <- readIORef (connectionWindow conn)
+    if window == Just self then action else interruptible
+  where
+    interruptible = withConnectionHandle conn \handle -> mask \restore -> do
+        done <- newEmptyMVar
+        _ <- forkIO do
+            outcome <- try action :: IO (Either SomeException a)
+            putMVar done outcome
+        let wait =
+                tryReadMVar done >>= \case
+                    Just outcome -> pure outcome
+                    Nothing -> void (c_duckdb_v2_connection_interrupt handle nullPtr) >> threadDelay 10000 >> wait
+            stop = uninterruptibleMask_ (wait >>= either (const (pure ())) release)
+        outcome <- restore (readMVar done) `onException` stop
+        either throwIO pure outcome
 
 -- | Execute a borrowed parsed statement. The caller owns the returned cursor.
 executeParsedResult :: Connection -> Query -> DuckDBV2SqlStatementHandle -> IO DuckDBV2ResultHandle
@@ -532,7 +565,7 @@ executeParsedResult conn query parsed = withQueryError query $ withConnectionHan
 
 -- | Execute a parsed statement directly and drain all its side effects.
 executeParsedStatement :: Connection -> Query -> DuckDBV2SqlStatementHandle -> IO Int
-executeParsedStatement conn queryText parsed = withQueryError queryText . withConnectionLock conn $
+executeParsedStatement conn queryText parsed = withQueryError queryText . withResultWindow conn (const (pure ())) $
     bracket (executeParsedResult conn queryText parsed) (destroy c_duckdb_v2_result_destroy) \result ->
         fromIntegral <$> runInterruptibleQuery conn (output (c_duckdb_v2_result_drain result))
 

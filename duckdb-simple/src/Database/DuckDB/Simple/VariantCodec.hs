@@ -10,13 +10,14 @@ module Database.DuckDB.Simple.VariantCodec (
 
 import Control.Exception (SomeException, bracket, evaluate, mask_, onException, throwIO, try)
 import Control.Monad (forM, unless)
-import Data.Array (listArray, (!))
+import Data.Array (elems, listArray, (!))
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.FromField (FieldValue (..))
+import Database.DuckDB.Simple.LogicalRep (StructField (..), StructValue (..))
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Variant (variantObject)
 import Foreign.C.ConstPtr (ConstPtr (..))
@@ -49,7 +50,7 @@ data VariantNode
 decodeValues :: (DuckDBV2ConnectionHandle -> DuckDBV2ValueHandle -> IO FieldValue) -> DuckDBV2ConnectionHandle -> DuckDBV2SqlStatementHandle -> CastTypes -> [DuckDBV2ValueHandle] -> IO [FieldValue]
 decodeValues _ _ _ _ [] = pure []
 decodeValues plain connection statement castTypes values = do
-    metadata <- queryMetadata connection statement values
+    metadata <- queryMetadata plain connection statement values
     unless (length metadata == length values) (codecError "metadata query returned an unexpected number of nodes")
     let indexed = zip3 [0 ..] metadata values
         grouped key select = Map.toList (Map.fromListWith (++) [(key node, [(index, value)]) | (index, node@(tag, _), value) <- indexed, select tag])
@@ -158,24 +159,31 @@ withTypeStatement connection =
         "SELECT system.main.list_transform(?::VARIANT[], lambda value: system.main.struct_pack(tag := system.main.variant_typeof(value), keys := system.main.variant_keys(value))) AS metadata"
 
 -- | Read exact scalar tags and object keys without serializing payloads.
-queryMetadata :: DuckDBV2ConnectionHandle -> DuckDBV2SqlStatementHandle -> [DuckDBV2ValueHandle] -> IO [(Text, [Text])]
-queryMetadata connection statement values = withVariantList connection values \list ->
-    withStatementValue connection statement [list] \metadata -> do
-        count <- output (c_duckdb_v2_value_get_child_count metadata)
-        flip mapFlat (indices count) \index ->
-            bracket (output (c_duckdb_v2_value_get_child metadata index)) destroyValue \node -> do
-                tag <- bracket (output (c_duckdb_v2_value_get_child node 0)) destroyValue \value ->
-                    output (c_duckdb_v2_value_get_varchar value) >>= readText
-                keys <- bracket (output (c_duckdb_v2_value_get_child node 1)) destroyValue \value -> do
-                    isNull <- output (c_duckdb_v2_value_is_null value)
-                    if isNull /= 0
-                        then pure []
-                        else do
-                            keyCount <- output (c_duckdb_v2_value_get_child_count value)
-                            forM (indices keyCount) \i ->
-                                bracket (output (c_duckdb_v2_value_get_child value i)) destroyValue \key ->
-                                    output (c_duckdb_v2_value_get_varchar key) >>= readText
-                pure (tag, keys)
+queryMetadata :: (DuckDBV2ConnectionHandle -> DuckDBV2ValueHandle -> IO FieldValue) -> DuckDBV2ConnectionHandle -> DuckDBV2SqlStatementHandle -> [DuckDBV2ValueHandle] -> IO [(Text, [Text])]
+queryMetadata plain connection statement values = withVariantList connection values \list ->
+    withStatementValue connection statement [list] \metadata ->
+        plain connection metadata >>= maybe (codecError "metadata query returned an unexpected value") pure . metadataNodes
+
+{- | Read the tag and the object keys of each metadata node. A NULL key list
+gives no keys. Return 'Nothing' for an unexpected shape.
+-}
+metadataNodes :: FieldValue -> Maybe [(Text, [Text])]
+metadataNodes = \case
+    FieldList nodes -> traverse node nodes
+    _ -> Nothing
+  where
+    node = \case
+        FieldStruct struct -> case elems (structValueFields struct) of
+            [StructField "tag" (FieldText tag), StructField "keys" keys] -> (,) tag <$> keyList keys
+            _ -> Nothing
+        _ -> Nothing
+    keyList = \case
+        FieldNull -> Just []
+        FieldList keys -> traverse keyText keys
+        _ -> Nothing
+    keyText = \case
+        FieldText key -> Just key
+        _ -> Nothing
 
 -- | Borrow an owned VARIANT list that copies all supplied values.
 withVariantList :: DuckDBV2ConnectionHandle -> [DuckDBV2ValueHandle] -> (DuckDBV2ValueHandle -> IO a) -> IO a

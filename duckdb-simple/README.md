@@ -388,6 +388,13 @@ DuckDB and waits for the native call to return before it releases resources
 and propagates the exception. Cancellation is cooperative: native code and
 Haskell callbacks must return before cleanup can finish.
 
+Each native call that can run for a long time runs in a helper thread, so that
+an asynchronous exception can interrupt it. A bound thread, such as the main
+thread, changes operating system threads for each of these calls. A small
+query then takes up to 1.7 times as long as from an unbound thread. Run code
+with many small queries in a thread made with `forkIO`, or wrap the main
+action in `Control.Concurrent.runInUnboundThread`.
+
 Close or reset an abandoned statement to release its result. DuckDB can retain
 native result buffers until that result is destroyed.
 Use `withStatement` for manual iteration. `fold` releases the result after

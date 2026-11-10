@@ -67,6 +67,10 @@ The SQL workflow stays the same. These changes can affect your code:
 - A session variable can supply a named parameter that you omit. DuckDB
   raises an error when no variable has that name. Only too many named
   parameters raise `FormatError`.
+- `deleteFunction` raises `SQLError` for a function made with `createFunction`.
+  DuckDB does not permit deletion of functions registered through the C API,
+  and version 0.3 ignored that error. Remove the call, or catch the error. The
+  function stays registered until its database closes.
 - While a stream is incomplete, DuckDB rejects other statements on its
   connection with a `RESOURCE_IN_USE` error. Closing an incomplete stream
   aborts its statement. In autocommit mode, DuckDB rolls back its writes.

@@ -99,7 +99,9 @@ module Database.DuckDB.Simple (
 
 import Control.Exception (SomeException, bracket, finally, mask, mask_, onException, throwIO, try)
 import Control.Monad (forM_, void, when, zipWithM_)
+import Data.Array (elems)
 import Data.List (findIndex)
+import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust, isNothing)
 import qualified Data.Set as Set
 import Data.Text (Text)
@@ -304,9 +306,12 @@ bindNamed stmt params =
                 [ Text.pack "duckdb-simple: unknown named parameter "
                 , name
                 ]
+        -- One lookup table serves all bindings of this call.
+        positions = Map.fromList (zip (map normalizeName (elems (statementParameterNames stmt))) [1 :: Int ..])
         apply (name, binding) = do
-            mIdx <- namedParameterIndex stmt name
-            case mIdx of
+            when (Text.any (== '\0') name) $
+                throwIO (mkPrepareError (statementQuery stmt) (Text.pack "duckdb-simple: parameter name contains NUL"))
+            case Map.lookup (normalizeName name) positions of
                 Nothing ->
                     throwFormatErrorNamed stmt (unknownNameMessage name) bindings
                 Just idx -> bindFieldBinding stmt (fromIntegral idx :: DuckDBIdx) binding
@@ -327,7 +332,7 @@ bindNamed stmt params =
             mapM_ apply bindings
 
 fetchParameterNames :: Statement -> [Maybe Text]
-fetchParameterNames stmt = zipWith (\idx name -> if normalizeName name == Text.pack (show idx) then Nothing else Just name) [1 :: Int ..] (statementParameterNames stmt)
+fetchParameterNames stmt = zipWith (\idx name -> if normalizeName name == Text.pack (show idx) then Nothing else Just name) [1 :: Int ..] (elems (statementParameterNames stmt))
 
 -- | Remove all parameter bindings and release an active result.
 clearStatementBindings :: Statement -> IO ()
@@ -340,7 +345,7 @@ namedParameterIndex :: Statement -> Text -> IO (Maybe Int)
 namedParameterIndex stmt name = withStatementHandle stmt \_ -> do
     when (Text.any (== '\0') name) $
         throwIO (mkPrepareError (statementQuery stmt) (Text.pack "duckdb-simple: parameter name contains NUL"))
-    pure ((+ 1) <$> findIndex ((== normalizeName name) . normalizeName) (statementParameterNames stmt))
+    pure ((+ 1) <$> findIndex ((== normalizeName name) . normalizeName) (elems (statementParameterNames stmt)))
 
 -- | Retrieve the number of columns produced by the supplied prepared statement.
 columnCount :: Statement -> IO Int
@@ -367,7 +372,7 @@ columnName stmt columnIndex
 executeStatement :: Statement -> IO Int
 executeStatement stmt = do
     resetStatementStream stmt
-    withQueryError (statementQuery stmt) $ withResult stmt \result ->
+    withQueryError (statementQuery stmt) . withConnectionLock (statementConnection stmt) $ withResult stmt \result ->
         fromIntegral <$> runInterruptibleQuery (statementConnection stmt) (output (c_duckdb_v2_result_drain result))
 
 -- | Execute a query with positional parameters and return the affected row count.

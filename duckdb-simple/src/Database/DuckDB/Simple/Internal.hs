@@ -45,6 +45,7 @@ module Database.DuckDB.Simple.Internal (
     withInstanceHandle,
     withDatabaseHandle,
     withConnectionHandle,
+    withConnectionLock,
     withTypeCache,
     withStatementHandle,
     withQueryCString,
@@ -64,9 +65,10 @@ module Database.DuckDB.Simple.Internal (
     destroyDataChunk,
 ) where
 
-import Control.Concurrent (MVar, forkIO, newEmptyMVar, putMVar, readMVar, threadDelay, tryReadMVar)
+import Control.Concurrent (MVar, forkIO, newEmptyMVar, newMVar, putMVar, readMVar, threadDelay, tryReadMVar, withMVar)
 import Control.Exception (SomeException, bracket, catch, finally, mask, mask_, onException, throwIO, try, uninterruptibleMask_)
 import Control.Monad (forM, forM_, join, unless, void, when)
+import Data.Array (Array, bounds, inRange, listArray, (!))
 import qualified Data.ByteString as BS
 import Data.Coerce (Coercible, coerce)
 import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, newIORef, readIORef, writeIORef)
@@ -89,6 +91,7 @@ import Foreign.Ptr (nullPtr)
 import Foreign.Storable (peek, poke)
 import GHC.Exts (keepAlive#)
 import GHC.IO (IO (..))
+import GHC.Weak.Finalize (getFinalizerExceptionHandler)
 import System.Mem.Weak (Weak, deRefWeak, finalize)
 
 -- | Track child finalizers without retaining live children.
@@ -98,9 +101,11 @@ newtype Children a = Children (IORef [(Weak (IORef a), MVar ())])
 newChildren :: IO (Children a)
 newChildren = Children <$> newIORef []
 
--- | Register a child and remove completed entries.
-registerChild :: (a -> Bool) -> Children a -> IORef a -> IO () -> IO ()
-registerChild isOpen (Children children) child cleanup = mask_ do
+{- | Register a child and remove completed entries. The first argument runs
+the finalizer of the child. Use 'forkFinalizer' for a child that has children.
+-}
+registerChild :: (IO () -> IO ()) -> (a -> Bool) -> Children a -> IORef a -> IO () -> IO ()
+registerChild runFinalizer isOpen (Children children) child cleanup = mask_ do
     previous <- readIORef children
     finished <- fmap concat $ forM previous \entry@(weak, done) ->
         deRefWeak weak >>= \case
@@ -110,10 +115,21 @@ registerChild isOpen (Children children) child cleanup = mask_ do
                 if isOpen state then pure [] else finishChild entry >> pure [done]
     -- Finish stale cleanup before transferring ownership of the new child.
     done <- newEmptyMVar
-    weak <- mkWeakIORef child (cleanup `finally` putMVar done ())
+    weak <- mkWeakIORef child (runFinalizer (cleanup `finally` putMVar done ()))
     -- Remove only finished snapshot entries. Keep concurrent registrations.
     atomicModifyIORef' children $ \current ->
         ((weak, done) : filter (\(_, completed) -> completed `notElem` finished) current, ())
+
+{- | Run a finalizer in a new thread. The collector runs the finalizers of one
+collection in sequence in one thread, and a parent waits for its children. A
+cleanup in that thread can wait for a child finalizer that is behind it.
+Report an exception as the collector reports it for a finalizer.
+A statement has no children, so its finalizer runs in the collector's thread.
+-}
+forkFinalizer :: IO () -> IO ()
+forkFinalizer cleanup =
+    void . forkIO $
+        cleanup `catch` \(err :: SomeException) -> getFinalizerExceptionHandler >>= ($ err)
 
 -- | Run a child finalizer and wait for its completion.
 finishChild :: (Weak (IORef a), MVar ()) -> IO ()
@@ -140,7 +156,12 @@ data Instance = Instance {instanceState :: IORef InstanceState, instanceEnvironm
 data InstanceState = InstanceClosed | InstanceOpen DuckDBV2InstanceHandle (Children ConnectionState)
 
 -- | A connection that retains its instance until it closes.
-data Connection = Connection {connectionState :: IORef ConnectionState, connectionInstance :: Instance}
+data Connection = Connection
+    { connectionState :: IORef ConnectionState
+    , connectionInstance :: Instance
+    , connectionLock :: MVar ()
+    -- ^ Held while a native result of this connection is open. See 'withConnectionLock'.
+    }
 
 -- | Internal connection state.
 data ConnectionState
@@ -160,7 +181,8 @@ data Statement = Statement
     , statementStream :: IORef StatementStreamState
     , statementArrowResult :: IORef DuckDBV2ArrowResultHandle
     , statementBindings :: IORef (IntMap.IntMap DuckDBV2ValueHandle)
-    , statementParameterNames :: [Text]
+    , statementParameterNames :: Array Int Text
+    -- ^ The parameter names in binding order. The first index is 1.
     }
 
 -- | Internal prepared statement state.
@@ -207,7 +229,7 @@ createEnvironment = mask_ do
     raw <- output c_duckdb_v2_environment_create
     children <- newChildren
     ref <- newIORef (EnvironmentOpen raw children)
-    _ <- mkWeakIORef ref (closeEnvironmentState ref)
+    _ <- mkWeakIORef ref (forkFinalizer (closeEnvironmentState ref))
     pure (Environment ref)
 
 {- | Require the DuckDB release that the V2 bindings describe. Upstream marks
@@ -255,7 +277,7 @@ createInstance environment@Environment{environmentState} settings = keepAlive en
             checked (c_duckdb_v2_config_set_option_text config key text DuckDBV2SettingScopeDefault)
         connections <- newChildren
         ref <- newIORef (InstanceOpen raw connections)
-        registerChild (\case InstanceOpen{} -> True; _ -> False) children ref (keepAlive environment (closeInstanceState ref))
+        registerChild forkFinalizer (\case InstanceOpen{} -> True; _ -> False) children ref (keepAlive environment (closeInstanceState ref))
         pure (Instance ref environment)
   where
     -- These options require the native instance and its file system or logger.
@@ -295,8 +317,8 @@ createConnection parent@Instance{instanceState} crss releaseParent = keepAlive p
     flip onException (destroyTypeCache cache `finally` destroy c_duckdb_v2_connection_destroy raw) do
         statements <- newChildren
         ref <- newIORef (ConnectionOpen raw cache statements releaseParent)
-        registerChild (\case ConnectionOpen{} -> True; _ -> False) children ref (keepAlive parent (closeConnectionState False ref))
-        pure (Connection ref parent)
+        registerChild forkFinalizer (\case ConnectionOpen{} -> True; _ -> False) children ref (keepAlive parent (closeConnectionState False ref))
+        Connection ref parent <$> newMVar ()
 
 -- | Close a connection and every prepared statement that belongs to it.
 closeConnection :: Connection -> IO ()
@@ -368,7 +390,8 @@ createStatementFromParsedWithCollections parent query parsed collections = withQ
     handle <- alloca \slot -> do
         poke slot nullHandle
         flip onException (peek slot >>= destroy c_duckdb_v2_prepared_statement_destroy) do
-            runInterruptibleQuery parent (checked (c_duckdb_v2_prepared_statement_create raw parsed 0 slot))
+            -- DuckDB also rejects preparation while another result is open.
+            withConnectionLock parent (runInterruptibleQuery parent (checked (c_duckdb_v2_prepared_statement_create raw parsed 0 slot)))
             peek slot
     flip onException (destroy c_duckdb_v2_prepared_statement_destroy handle) do
         -- Keep a separate parsed handle for metadata after the input iterator closes.
@@ -377,21 +400,20 @@ createStatementFromParsedWithCollections parent query parsed collections = withQ
             output (c_duckdb_v2_statement_iterator_next iterator)
         flip onException (destroy c_duckdb_v2_sql_statement_destroy copied) do
             addCollections copied
-            count <- output (c_duckdb_v2_sql_statement_get_parameter_count copied)
-            names <- forM [0 .. fromIntegral count - 1 :: Int] \idx ->
-                output (c_duckdb_v2_sql_statement_get_parameter_name copied (fromIntegral idx)) >>= readIdentifier
+            count <- fromIntegral <$> output (c_duckdb_v2_sql_statement_get_parameter_count copied)
+            names <- parameterNames copied count
             schemas <- newIORef Nothing
             bindings <- newIORef IntMap.empty
             stream <- newIORef StatementStreamIdle
             arrow <- newIORef nullHandle
             ref <- newIORef (StatementOpen handle copied schemas)
-            let statement = Statement ref parent query stream arrow bindings names
+            let statement = Statement ref parent query stream arrow bindings (listArray (1, count) names)
             children <-
                 readIORef (connectionState parent) >>= \case
                     ConnectionClosed -> throwIO connectionClosedError
                     ConnectionOpen{connectionStatements} -> pure connectionStatements
             -- The finalizer does not keep its weak key alive through this closure.
-            registerChild (\case StatementOpen{} -> True; _ -> False) children ref (keepAlive parent (closeStatementState statement))
+            registerChild id (\case StatementOpen{} -> True; _ -> False) children ref (keepAlive parent (closeStatementState statement))
             pure statement
   where
     addCollections statement = forM_ collections \(name, collection, columns) -> do
@@ -399,6 +421,19 @@ createStatementFromParsedWithCollections parent query parsed collections = withQ
             throwIO (SQLError "duckdb-simple: collection name or column name contains NUL" Nothing (Just query))
         withIdentifier name \nativeName -> withIdentifierArray columns \nativeColumns ->
             checked (c_duckdb_v2_statement_add_collection statement nativeName collection (ConstPtr (if null columns then nullPtr else nativeColumns)) (fromIntegral (length columns)))
+
+{- | Read the parameter names in binding order. DuckDB sorts all names again
+for each name that it returns. DuckDB rejects a mix of named and numbered
+parameters, and numbered names are distinct and sorted. So @count@ names that
+end with @count@ are the positions 1 to @count@. Read only the last name then.
+-}
+parameterNames :: DuckDBV2SqlStatementHandle -> Int -> IO [Text]
+parameterNames _ 0 = pure []
+parameterNames statement count = do
+    let name index = output (c_duckdb_v2_sql_statement_get_parameter_name statement (fromIntegral index)) >>= readIdentifier
+        positions = map (Text.pack . show) [1 .. count]
+    final <- name (count - 1)
+    if final == last positions then pure positions else forM [0 .. count - 1] name
 
 -- | Error raised when an operation targets a closed connection.
 connectionClosedError :: SQLError
@@ -431,6 +466,15 @@ withConnectionHandle owner@Connection{connectionState} action =
         readIORef connectionState >>= \case
             ConnectionClosed -> throwIO connectionClosedError
             ConnectionOpen{connectionHandle} -> action connectionHandle
+
+{- | Serialize the native calls of one result. DuckDB permits one open result
+for each connection and rejects a second execution. Hold the lock from the
+execution until the result closes, so that threads which share a connection
+wait for each other. Do not run user callbacks under this lock. The lock is
+not reentrant.
+-}
+withConnectionLock :: Connection -> IO a -> IO a
+withConnectionLock Connection{connectionLock} = withMVar connectionLock . const
 
 -- | Borrow a connection's logical type cache.
 withTypeCache :: Connection -> (TypeCache -> IO a) -> IO a
@@ -488,7 +532,7 @@ executeParsedResult conn query parsed = withQueryError query $ withConnectionHan
 
 -- | Execute a parsed statement directly and drain all its side effects.
 executeParsedStatement :: Connection -> Query -> DuckDBV2SqlStatementHandle -> IO Int
-executeParsedStatement conn queryText parsed = withQueryError queryText $
+executeParsedStatement conn queryText parsed = withQueryError queryText . withConnectionLock conn $
     bracket (executeParsedResult conn queryText parsed) (destroy c_duckdb_v2_result_destroy) \result ->
         fromIntegral <$> runInterruptibleQuery conn (output (c_duckdb_v2_result_drain result))
 
@@ -506,7 +550,7 @@ executePreparedResult stmt = withStatementHandle stmt \handle -> mask_ $ alloca 
 withBoundValues :: Statement -> (ConstPtr DuckDBV2IdentifierT -> ConstPtr DuckDBV2ValueHandle -> DuckDBIdx -> IO a) -> IO a
 withBoundValues stmt action = do
     bindings <- IntMap.toAscList <$> readIORef (statementBindings stmt)
-    let names = map (\(idx, _) -> statementParameterNames stmt !! (idx - 1)) bindings
+    let names = map (\(idx, _) -> statementParameterNames stmt ! idx) bindings
         values = map snd bindings
     withIdentifierArray names \namesPtr -> withArray values \valuesPtr ->
         action (ConstPtr namesPtr) (ConstPtr valuesPtr) (fromIntegral (length bindings))
@@ -567,7 +611,7 @@ cleanupStatementStreamRef ref = mask_ do
 storeBoundValue :: Statement -> DuckDBIdx -> DuckDBV2ValueHandle -> IO ()
 storeBoundValue stmt index value = withStatementHandle stmt \_ -> mask_ do
     let idx = fromIntegral index
-    unless (idx >= 1 && idx <= length (statementParameterNames stmt)) $
+    unless (inRange (bounds (statementParameterNames stmt)) idx) $
         throwIO (SQLError "duckdb-simple: parameter index is out of bounds" Nothing (Just (statementQuery stmt)))
     previous <- IntMap.lookup idx <$> readIORef (statementBindings stmt)
     mapM_ destroyValue previous
@@ -593,7 +637,7 @@ statementSchemas stmt = withStatementHandle stmt \_ -> mask_ do
                     poke parameters nullHandle
                     let release = (peek result >>= destroy c_duckdb_v2_schema_destroy) `finally` (peek parameters >>= destroy c_duckdb_v2_schema_destroy)
                     flip onException release do
-                        runInterruptibleQuery (statementConnection stmt) (checked (c_duckdb_v2_statement_bind conn statementParsed result parameters))
+                        withConnectionLock (statementConnection stmt) (runInterruptibleQuery (statementConnection stmt) (checked (c_duckdb_v2_statement_bind conn statementParsed result parameters)))
                         schemas <- (,) <$> peek result <*> peek parameters
                         writeIORef statementSchemaCache (Just schemas)
                         pure schemas

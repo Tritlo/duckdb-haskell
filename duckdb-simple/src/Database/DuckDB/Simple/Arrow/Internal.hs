@@ -11,7 +11,7 @@ module Database.DuckDB.Simple.Arrow.Internal (
     releaseArrowStream,
 ) where
 
-import Control.Exception (finally, mask, mask_, onException)
+import Control.Exception (bracket, finally, mask, mask_, onException)
 import Control.Monad (when)
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Database.DuckDB.Simple (bind, withStatement)
@@ -30,25 +30,28 @@ type ArrowBatch = (Ptr ArrowSchema, Ptr ArrowArray)
 foldArrowWith :: (ToRow q) => ResultMode -> Connection -> Query -> q -> a -> (a -> Ptr ArrowSchema -> Ptr ArrowArray -> IO a) -> IO a
 foldArrowWith mode conn queryText params initial step = withStatement conn queryText \stmt -> do
     bind stmt (toRow params)
-    withQueryError queryText $ withArrowResult stmt \result -> mask \restore -> do
+    withQueryError queryText $ mask \restore -> do
         let deliver acc (schema, array) = withStatementHandle stmt \_ -> do
                 next <- restore (step acc schema array)
                 next `seq` pure next
-            stream acc = withStatementHandle stmt \_ -> do
-                next <- fetchBatch stmt result
-                case next of
-                    Nothing -> pure acc
-                    Just batch -> do
-                        acc' <- deliver acc batch `finally` releaseBatch batch
-                        stream acc'
         case mode of
-            StreamingResult -> stream initial
+            StreamingResult ->
+                -- Serialize the execution call. The stream stays open after it.
+                bracket (withConnectionLock conn (executePreparedArrowResult stmt)) (const (clearArrowResult stmt)) \result ->
+                    let stream acc = withStatementHandle stmt \_ -> do
+                            next <- fetchBatch stmt result
+                            case next of
+                                Nothing -> pure acc
+                                Just batch -> do
+                                    acc' <- deliver acc batch `finally` releaseBatch batch
+                                    stream acc'
+                     in stream initial
             MaterializedResult -> do
                 owned <- newIORef []
-                let gather =
+                let gather result =
                         fetchBatch stmt result >>= \case
                             Nothing -> pure ()
-                            Just batch -> atomicModifyIORef' owned (\batches -> (batch : batches, ())) >> gather
+                            Just batch -> atomicModifyIORef' owned (\batches -> (batch : batches, ())) >> gather result
                     consume acc =
                         atomicModifyIORef' owned (\case [] -> ([], Nothing); batch : rest -> (rest, Just batch)) >>= \case
                             Nothing -> pure acc
@@ -57,9 +60,9 @@ foldArrowWith mode conn queryText params initial step = withStatement conn query
                                 consume acc'
                     release = readIORef owned >>= mapM_ releaseBatch
                 flip finally release do
-                    gather
+                    -- Hold the lock until the native result closes. The callbacks run after that.
+                    withConnectionLock conn (withArrowResult stmt gather)
                     atomicModifyIORef' owned (\batches -> (reverse batches, ()))
-                    clearArrowResult stmt
                     consume initial
 
 -- | Fetch one owned nonempty batch and its independent schema.

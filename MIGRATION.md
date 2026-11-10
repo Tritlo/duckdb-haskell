@@ -3,10 +3,11 @@
 ## DuckDB 2.0
 
 `duckdb-ffi` 2.0 and `duckdb-simple` 0.4 require DuckDB 2.0. Earlier package
-releases remain available for DuckDB 1.5. The retained API and `duckdb-simple`
-0.4 support DuckDB 2.0.x releases. The V2 API requires exactly DuckDB 2.0.0,
-because upstream marks it as unstable.
-`duckdb-simple` 0.5 uses the V2 API, so it also requires exactly DuckDB 2.0.0.
+releases remain available for DuckDB 1.5. The retained API in
+`Database.DuckDB.FFI` supports DuckDB 2.0.x releases. The V2 API in
+`Database.DuckDB.FFI.V2` requires exactly DuckDB 2.0.0, because upstream marks
+it as unstable. `duckdb-simple` 0.4 uses the V2 API, so it also requires
+exactly DuckDB 2.0.0.
 
 ### duckdb-ffi 1.5 to 2.0
 
@@ -57,44 +58,26 @@ exceptions inside callbacks.
 
 ### duckdb-simple 0.3 to 0.4
 
-The SQL workflow stays the same. These changes can affect your code:
-
-- `LogicalTypeScalar`, `FunctionArg.argumentType`, `Function.argumentTypes`,
-  and `CopyBindInfo.copyBindColumnTypes` use `DUCKDB_TYPE` instead of
-  `DuckDBType`. The pattern names, such as `DuckDBTypeInteger`, stay the same.
-- `sqlErrorType` can contain the DuckDB 2.0 tags `DuckDBErrorDataCorruption`
-  and `DuckDBErrorResourceInUse`.
-- A session variable can supply a named parameter that you omit. DuckDB
-  raises an error when no variable has that name. Only too many named
-  parameters raise `FormatError`.
-- While a stream is incomplete, DuckDB rejects other statements on its
-  connection with a `RESOURCE_IN_USE` error. Closing an incomplete stream
-  aborts its statement. In autocommit mode, DuckDB rolls back its writes.
-- DuckDB 2.0 rejects WKB with mixed Z/M member layouts.
-- The Arrow release helpers moved from `duckdb-ffi` to
-  `Database.DuckDB.Simple.Arrow`.
-
-### duckdb-simple 0.4 to 0.5
-
-`duckdb-simple` 0.5 uses the V2 C API for connections, results, conversions,
-and callbacks. Upstream marks that API as unstable, so 0.5 requires exactly
+`duckdb-simple` 0.4 uses the V2 C API for connections, results, conversions,
+and callbacks. Upstream marks that API as unstable, so 0.4 requires exactly
 DuckDB 2.0.0. Creating an environment raises `SQLError` for another version.
 The SQL workflow stays the same. These changes can affect your code:
 
 - Raw types come from `Database.DuckDB.FFI.V2`. They are distinct from the
-  retained API types that 0.4 uses.
+  retained API types in `Database.DuckDB.FFI`.
 - `SQLError.sqlErrorType` is `Maybe DuckDBV2Error`. For example,
   `DuckDBErrorConstraint` becomes `DuckDBV2ErrorDatabaseConstraint`,
   `DuckDBErrorCatalog` becomes `DuckDBV2ErrorDatabaseCatalog`,
   `DuckDBErrorBinder` becomes `DuckDBV2ErrorQueryBinder`,
   `DuckDBErrorConversion` becomes `DuckDBV2ErrorTypeConversion`,
-  `DuckDBErrorInvalidInput` becomes `DuckDBV2ErrorInputInvalid`,
-  `DuckDBErrorInterrupt` becomes `DuckDBV2ErrorRuntimeInterrupt`, and
-  `DuckDBErrorResourceInUse` becomes `DuckDBV2ErrorResourceInUse`. V2 has no
-  data-corruption tag.
+  `DuckDBErrorInvalidInput` becomes `DuckDBV2ErrorInputInvalid`, and
+  `DuckDBErrorInterrupt` becomes `DuckDBV2ErrorRuntimeInterrupt`.
+  `DuckDBV2ErrorResourceInUse` is new.
 - `ToDuckValue.toDuckValue` takes a `DuckDBV2ConnectionHandle` and returns a
   `DuckDBV2ValueHandle`. Keep the connection alive until you destroy the value.
   `logicalTypeFromRep` also takes the connection.
+- `logicalTypeFromRepWith` takes the connection, and its resolver returns
+  `Maybe` a native type. `Nothing` selects the default construction.
 - `LogicalTypeScalar`, `Function.argumentTypes`, and
   `CopyBindInfo.copyBindColumnTypes` use `DuckDBV2LogicalTypeId`. For example,
   `DuckDBTypeBigInt` becomes `DuckDBV2LogicalTypeIdBigInt`.
@@ -107,16 +90,33 @@ The SQL workflow stays the same. These changes can affect your code:
 - `CatalogEntry.catalogEntryType` and `lookupCatalogEntry` use the new
   `CatalogEntryType`. V2 metadata cannot look up collations.
 - File system functions use `DuckDBV2FileFlag` and `DuckDBV2FileHandle`.
-- `foldArrow` callbacks and the Arrow release helpers use the V2
-  `ArrowSchema` and `ArrowArray` types.
+- The Arrow release helpers moved from `duckdb-ffi` to
+  `Database.DuckDB.Simple.Arrow`. These helpers and the `foldArrow` callbacks
+  use the V2 `ArrowSchema` and `ArrowArray` types.
 - `Database.DuckDB.Simple.Deprecated.Streaming` is now
   `Database.DuckDB.Simple.Streaming`, with the same exports.
+- While an explicit stream is incomplete, DuckDB rejects other statements on
+  its connection with a `RESOURCE_IN_USE` error. Closing an incomplete stream
+  aborts its statement. In autocommit mode, DuckDB rolls back its writes.
+- Each connection has a lock for statement preparation and for its open native
+  result. Threads that share a connection wait for each other in the default
+  query functions. Serialize a transaction, a shared `Statement`, and an
+  explicit stream in the application. A callback that queries its active
+  connection waits for this lock and does not return.
 - `query_` and `execute_` parse all statements before they run any. A syntax
   error stops earlier statements in the same input from running.
+- A session variable can supply a named parameter that you omit. DuckDB
+  raises an error when no variable has that name. Only too many named
+  parameters raise `FormatError`.
+- `deleteFunction` raises `SQLError` for a function made with `createFunction`.
+  DuckDB does not permit deletion of functions registered through the C API,
+  and version 0.3 ignored that error. Remove the call, or catch the error. The
+  function stays registered until its database closes.
 - Empty `Array` parameters raise `SQLError`. Use an SQL empty LIST.
 - A composite parameter with a GEOMETRY CRS that DuckDB does not recognize
-  raises `SQLError`. Version 0.4 bound it without the CRS. Configure custom CRS
+  raises `SQLError`. Version 0.3 bound it without the CRS. Configure custom CRS
   names through `connectionGeometryCRS`.
+- DuckDB 2.0 rejects WKB with mixed Z/M member layouts.
 - Decoded VARIANT objects list their keys in DuckDB's lexicographic order.
 
 A repository checkout must generate the ignored build artefacts before it

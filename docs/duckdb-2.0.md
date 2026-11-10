@@ -2,9 +2,9 @@
 
 `duckdb-ffi` 2.0.0.0 and `duckdb-simple` 0.4.0.0 target DuckDB
 [2.0.0](https://github.com/duckdb/duckdb/releases/tag/v2.0.0). `duckdb-simple`
-0.5.0.0 uses the V2 API and requires exactly DuckDB 2.0.0. The package
-version selects the supported native API. Earlier package releases remain
-available for DuckDB 1.5.
+uses the V2 API and requires exactly DuckDB 2.0.0. The package version selects
+the supported native API. Earlier package releases remain available for
+DuckDB 1.5.
 
 ## Pinned API
 

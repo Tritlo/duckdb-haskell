@@ -112,7 +112,17 @@ prepareValueReader variantReader dtype vector dataPtr validity = case dtype of
     DuckDBV2LogicalTypeIdStruct -> whenValid FieldStruct <$> prepareStructDecoder variantReader vector
     DuckDBV2LogicalTypeIdTuple -> whenValid FieldTuple <$> prepareTupleDecoder variantReader vector
     DuckDBV2LogicalTypeIdUnion -> whenValid FieldUnion <$> prepareUnionDecoder variantReader vector
-    _ -> pure (materializeElement dtype vector dataPtr validity)
+    DuckDBV2LogicalTypeIdDecimal -> do
+        (width, scale) <- withVectorType vector \logical ->
+            logicalTypeToRep logical >>= \case
+                LogicalTypeDecimal width scale -> pure (width, scale)
+                _ -> throwIO (userError "duckdb-simple: invalid DECIMAL type")
+        pure (whenValid (FieldDecimal . DecimalValue width scale) (decimalStorage dataPtr width))
+    DuckDBV2LogicalTypeIdEnum -> do
+        count <- withVectorType vector (output . c_duckdb_v2_logical_type_get_param_count)
+        pure (whenValid FieldEnum (enumStorage dataPtr count))
+    DuckDBV2LogicalTypeIdSQLNull -> pure \_ -> pure FieldNull
+    _ -> pure (whenValid id (decodeElement dtype dataPtr))
   where
     whenValid wrap decode row = do
         valid <- chunkIsRowValid validity (fromIntegral row)
@@ -143,38 +153,20 @@ prepareGeometryReader factory vector = do
         FieldNull -> pure FieldNull
         _ -> throwIO (userError "duckdb-simple: GEOMETRY cast did not produce a BLOB")
 
-materializeElement :: DuckDBV2LogicalTypeId -> DuckDBV2VectorHandle -> Ptr Void -> Ptr Word64 -> Int -> IO FieldValue
-materializeElement dtype vector dataPtr validity rowIdx = do
-    valid <- chunkIsRowValid validity (fromIntegral rowIdx)
-    if not valid
-        then pure FieldNull
-        else case dtype of
-            DuckDBV2LogicalTypeIdDecimal ->
-                withVectorType vector \logical -> do
-                    rep <- logicalTypeToRep logical
-                    (width, scale) <- case rep of
-                        LogicalTypeDecimal width scale -> pure (width, scale)
-                        _ -> throwIO (userError "duckdb-simple: invalid DECIMAL type")
-                    rawValue <- decimalStorage width
-                    pure (FieldDecimal (DecimalValue width scale rawValue))
-            DuckDBV2LogicalTypeIdEnum ->
-                withVectorType vector \logical -> do
-                    count <- output (c_duckdb_v2_logical_type_get_param_count logical)
-                    FieldEnum <$> enumStorage count
-            DuckDBV2LogicalTypeIdSQLNull -> pure FieldNull
-            _ -> decodeElement dtype dataPtr rowIdx
-  where
-    -- DuckDB stores DECIMAL values in the smallest integer type for their width.
-    decimalStorage width
-        | width <= 4 = toInteger <$> peekElemOff (castPtr dataPtr :: Ptr Int16) rowIdx
-        | width <= 9 = toInteger <$> peekElemOff (castPtr dataPtr :: Ptr Int32) rowIdx
-        | width <= 18 = toInteger <$> peekElemOff (castPtr dataPtr :: Ptr Int64) rowIdx
-        | otherwise = duckDBHugeIntToInteger <$> peekElemOff (castPtr dataPtr :: Ptr DuckDBV2HugeintT) rowIdx
-    -- DuckDB stores ENUM indices in the smallest unsigned type for the dictionary size.
-    enumStorage count
-        | count <= 255 = fromIntegral <$> peekElemOff (castPtr dataPtr :: Ptr Word8) rowIdx
-        | count <= 65535 = fromIntegral <$> peekElemOff (castPtr dataPtr :: Ptr Word16) rowIdx
-        | otherwise = peekElemOff (castPtr dataPtr :: Ptr Word32) rowIdx
+-- | Read a DECIMAL. DuckDB stores it in the smallest integer type for its width.
+decimalStorage :: Ptr Void -> Word8 -> Int -> IO Integer
+decimalStorage dataPtr width rowIdx
+    | width <= 4 = toInteger <$> peekElemOff (castPtr dataPtr :: Ptr Int16) rowIdx
+    | width <= 9 = toInteger <$> peekElemOff (castPtr dataPtr :: Ptr Int32) rowIdx
+    | width <= 18 = toInteger <$> peekElemOff (castPtr dataPtr :: Ptr Int64) rowIdx
+    | otherwise = duckDBHugeIntToInteger <$> peekElemOff (castPtr dataPtr :: Ptr DuckDBV2HugeintT) rowIdx
+
+-- | Read an ENUM index. DuckDB stores it in the smallest unsigned type for the dictionary size.
+enumStorage :: Ptr Void -> DuckDBIdx -> Int -> IO Word32
+enumStorage dataPtr count rowIdx
+    | count <= 255 = fromIntegral <$> peekElemOff (castPtr dataPtr :: Ptr Word8) rowIdx
+    | count <= 65535 = fromIntegral <$> peekElemOff (castPtr dataPtr :: Ptr Word16) rowIdx
+    | otherwise = peekElemOff (castPtr dataPtr :: Ptr Word32) rowIdx
 
 prepareArrayDecoder :: VariantReader -> DuckDBV2VectorHandle -> IO (Int -> IO (Array Int FieldValue))
 prepareArrayDecoder variantReader vector = do

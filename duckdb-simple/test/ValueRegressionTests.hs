@@ -17,6 +17,7 @@ import qualified Data.Map.Strict as Map
 import Data.Ratio ((%))
 import Data.String (fromString)
 import Data.Text (Text)
+import qualified Data.Text as Text
 import Data.Time.Calendar (Day, addDays, fromGregorian)
 import Data.Time.Clock (UTCTime (..))
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
@@ -233,6 +234,19 @@ valueRegressionTests =
                 struct = singleField (LogicalTypeDecimal 38 9) (FieldDecimal decimal)
             [Only result] <- query conn "SELECT ?" (Only struct) :: IO [Only (StructValue FieldValue)]
             structValueFields result @?= structValueFields struct
+        , testCase "DECIMAL and ENUM columns decode at each storage width" $ withConnection ":memory:" \conn -> do
+            -- Each column has a NULL between values, so one reader serves valid and invalid rows.
+            forM_ [(4, 1), (9, 3), (18, 3), (38, 9)] \(width, scale) -> do
+                let dtype = "DECIMAL(" <> Text.pack (show width) <> "," <> Text.pack (show scale) <> ")"
+                    decimal units = FieldDecimal (DecimalValue width scale (units * 10 ^ scale))
+                rows <- query_ conn (Query ("SELECT CASE WHEN i = 1 THEN NULL ELSE (i - 2)::" <> dtype <> " END FROM range(4) t(i)")) :: IO [Only FieldValue]
+                rows @?= map Only [decimal (-2), FieldNull, decimal 0, decimal 1]
+            forM_ [200, 300, 70000 :: Int] \size -> do
+                let label index = "v" <> Text.pack (show index)
+                    dtype = "enum_width_" <> Text.pack (show size)
+                _ <- execute_ conn (Query ("CREATE TYPE " <> dtype <> " AS ENUM (" <> Text.intercalate "," ["'" <> label index <> "'" | index <- [0 .. size - 1]] <> ")"))
+                rows <- query_ conn (Query ("SELECT x::" <> dtype <> " FROM (VALUES ('v0'), (NULL), ('" <> label (size - 1) <> "')) t(x)")) :: IO [Only FieldValue]
+                rows @?= map Only [FieldEnum 0, FieldNull, FieldEnum (fromIntegral (size - 1))]
         , testCase "invalid DECIMAL width scale and magnitude are rejected" $ withConnection ":memory:" \conn ->
             forM_ [DecimalValue 0 0 0, DecimalValue 39 0 0, DecimalValue 2 3 1, DecimalValue 2 0 100, DecimalValue 2 0 (-100)] \decimal ->
                 assertIOError (query conn "SELECT ?" (Only (singleField (LogicalTypeDecimal (decimalWidth decimal) (decimalScale decimal)) (FieldDecimal decimal))) :: IO [Only FieldValue])

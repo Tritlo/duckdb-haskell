@@ -52,9 +52,12 @@ tests =
         [ testGroup
             "scalar payloads decode like native values"
             [ testCase (Text.unpack sql) $ withConnection ":memory:" \conn -> do
-                [(Variant actual, native)] <- query_ conn (Query ("SELECT (" <> sql <> ")::VARIANT, " <> sql)) :: IO [(Variant, FieldValue)]
-                actual @?= native
-                roundTrip conn native
+                -- Two rows with one tag use the list cast. The round trip uses the cast of one value.
+                rows <- query_ conn (Query ("SELECT (" <> sql <> ")::VARIANT, " <> sql <> " FROM range(2)")) :: IO [(Variant, FieldValue)]
+                length rows @?= 2
+                forM_ rows \(Variant actual, native) -> do
+                    actual @?= native
+                    roundTrip conn native
             | sql <- scalarCases
             ]
         , testCase "explicit casts bind plain parameters" $ withConnection ":memory:" \conn -> do
@@ -94,9 +97,11 @@ tests =
                     _ -> assertFailure (show actual)
         , testCase "TIMETZ offsets decode like native values" $ withConnection ":memory:" \conn -> do
             forM_ ["'12:00:00+01:23'::TIMETZ", "'23:59:59.999999-15:59'::TIMETZ", "'00:00:00+00'::TIMETZ"] \sql -> do
-                [(Variant actual, native)] <- query_ conn (Query ("SELECT (" <> sql <> ")::VARIANT, " <> sql)) :: IO [(Variant, FieldValue)]
-                actual @?= native
-                roundTrip conn native
+                rows <- query_ conn (Query ("SELECT (" <> sql <> ")::VARIANT, " <> sql <> " FROM range(2)")) :: IO [(Variant, FieldValue)]
+                length rows @?= 2
+                forM_ rows \(Variant actual, native) -> do
+                    actual @?= native
+                    roundTrip conn native
             assertFailureIO (query_ conn "SELECT '12:00:00+01:23:45'::TIMETZ::VARIANT" :: IO [Only Variant])
         , testCase "wide finite timestamp payloads round trip without losing digits" $ withConnection ":memory:" \conn -> do
             void (execute_ conn "CREATE TABLE wide_timestamps (seconds TIMESTAMP_S, millis TIMESTAMP_MS)")
@@ -241,6 +246,25 @@ tests =
                     _ -> Just (FieldWord64 (fromIntegral n))
             length rows @?= 5000
             forM_ rows \(n, actual) -> fmap variantPayload actual @?= expected n
+        , testCase "GEOMETRY, BLOB and BIGNUM payloads in one column decode like native values" $ withConnection ":memory:" \conn -> do
+            rows <-
+                query_
+                    conn
+                    "SELECT i, CASE i % 3 WHEN 0 THEN g::VARIANT WHEN 1 THEN b::VARIANT ELSE n::VARIANT END, g, b, n FROM (SELECT i, ('POINT (' || i || ' ' || (i + 1) || ')')::GEOMETRY AS g, encode('b' || i) AS b, (i::VARCHAR || '12345678901234567890')::BIGNUM AS n FROM range(5000) t(i))" ::
+                    IO [(Int64, Variant, FieldValue, FieldValue, FieldValue)]
+            length rows @?= 5000
+            forM_ rows \(n, Variant actual, geometry, blob, bignum) ->
+                actual @?= case n `mod` 3 of
+                    0 -> geometry
+                    1 -> blob
+                    _ -> bignum
+        , testCase "objects with many key layouts and many keys decode exactly" $ withConnection ":memory:" \conn -> do
+            let digits = Text.pack . show :: Int64 -> Text
+            layouts <- query_ conn "SELECT i, json_object('k' || i::VARCHAR, i)::VARIANT FROM range(3000) t(i)" :: IO [(Int64, Variant)]
+            length layouts @?= 3000
+            forM_ layouts \(n, Variant actual) -> actual @?= variantObject [("k" <> digits n, FieldWord64 (fromIntegral n))]
+            (query_ conn "SELECT json_group_object('k' || lpad(i::VARCHAR, 3, '0'), i)::VARIANT FROM range(300) t(i)" :: IO [Only Variant])
+                >>= (@?= [Only (Variant (variantObject [("k" <> Text.justifyRight 3 '0' (digits n), FieldWord64 (fromIntegral n)) | n <- [0 .. 299]]))])
         , testCase "filtered and reordered rows use the right child offsets" $ withConnection ":memory:" \conn -> do
             rows <- query_ conn "SELECT {'n': i, 'xs': [i, i + 1]}::VARIANT FROM range(10000) t(i) WHERE i % 97 = 0 ORDER BY i DESC LIMIT 40"
             let expected = [Only (Variant (variantObject [("n", FieldInt64 n), ("xs", FieldList [FieldInt64 n, FieldInt64 (n + 1)])])) | n <- take 40 (reverse [0, 97 .. 9999])]

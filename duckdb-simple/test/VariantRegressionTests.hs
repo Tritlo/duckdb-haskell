@@ -53,10 +53,11 @@ tests =
             "scalar payloads decode like native values"
             [ testCase (Text.unpack sql) $ withConnection ":memory:" \conn -> do
                 -- Two rows with one tag use the list cast. The round trip uses the cast of one value.
-                rows <- query_ conn (Query ("SELECT (" <> sql <> ")::VARIANT, " <> sql <> " FROM range(2)")) :: IO [(Variant, FieldValue)]
+                rows <- query_ conn (Query ("SELECT (" <> sql <> ")::VARIANT, {'v': " <> sql <> "}::VARIANT, " <> sql <> " FROM range(2)")) :: IO [(Variant, Variant, FieldValue)]
                 length rows @?= 2
-                forM_ rows \(Variant actual, native) -> do
+                forM_ rows \(Variant actual, Variant object, native) -> do
                     actual @?= native
+                    object @?= variantObject [("v", native)]
                     roundTrip conn native
             | sql <- scalarCases
             ]
@@ -265,6 +266,22 @@ tests =
             forM_ layouts \(n, Variant actual) -> actual @?= variantObject [("k" <> digits n, FieldWord64 (fromIntegral n))]
             (query_ conn "SELECT json_group_object('k' || lpad(i::VARCHAR, 3, '0'), i)::VARIANT FROM range(300) t(i)" :: IO [Only Variant])
                 >>= (@?= [Only (Variant (variantObject [("k" <> Text.justifyRight 3 '0' (digits n), FieldWord64 (fromIntegral n)) | n <- [0 .. 299]]))])
+        , testCase "one column mixes object layouts with special keys" $ withConnection ":memory:" \conn -> do
+            rows <-
+                query_
+                    conn
+                    "SELECT i, CASE i % 4 WHEN 0 THEN json_object('A', i, 'a', i + 1)::VARIANT WHEN 1 THEN json_object('', i, 'n', i + 1)::VARIANT WHEN 2 THEN json_object('É', i, 'é', i + 1, 'a\"b', i + 2, 'it''s λ', i + 3)::VARIANT ELSE json_object('n', i, 'a', i + 1)::VARIANT END FROM range(3000) t(i)" ::
+                    IO [(Int64, Variant)]
+            -- Decoded objects list their keys in DuckDB's lexicographic order.
+            let expected n = variantObject [(key, FieldWord64 (fromIntegral (n + offset))) | (key, offset) <- layout]
+                  where
+                    layout = case n `mod` 4 of
+                        0 -> [("A", 0), ("a", 1)]
+                        1 -> [("", 0), ("n", 1)]
+                        2 -> [("a\"b", 2), ("it's λ", 3), ("É", 0), ("é", 1)]
+                        _ -> [("a", 1), ("n", 0)]
+            length rows @?= 3000
+            forM_ rows \(n, Variant actual) -> actual @?= expected n
         , testCase "filtered and reordered rows use the right child offsets" $ withConnection ":memory:" \conn -> do
             rows <- query_ conn "SELECT {'n': i, 'xs': [i, i + 1]}::VARIANT FROM range(10000) t(i) WHERE i % 97 = 0 ORDER BY i DESC LIMIT 40"
             let expected = [Only (Variant (variantObject [("n", FieldInt64 n), ("xs", FieldList [FieldInt64 n, FieldInt64 (n + 1)])])) | n <- take 40 (reverse [0, 97 .. 9999])]

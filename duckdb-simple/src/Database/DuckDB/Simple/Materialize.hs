@@ -66,12 +66,12 @@ castReader factory variant vector =
 
 -- | Copy VARIANT rows before releasing the borrowed metadata connection.
 prepareVariantReader :: DuckDBV2ConnectionHandle -> VariantReader
-prepareVariantReader = VariantCodec.prepareVariantDecoder materializeScalarValue
+prepareVariantReader = VariantCodec.prepareVariantDecoder materializePlainValue
 
--- | Decode one scalar after the VARIANT decoder casts it to its exact type.
-materializeScalarValue :: DuckDBV2ConnectionHandle -> DuckDBV2ValueHandle -> IO FieldValue
-materializeScalarValue connection value = withConnectionFactory connection \factory ->
-    materializeValue (\_ -> throwIO (userError "duckdb-simple: expected a scalar VARIANT cast")) factory value
+-- | Decode a value from the VARIANT decoder. The value contains no VARIANT.
+materializePlainValue :: DuckDBV2ConnectionHandle -> DuckDBV2ValueHandle -> IO FieldValue
+materializePlainValue connection value = withConnectionFactory connection \factory ->
+    materializeValue (\_ -> throwIO (userError "duckdb-simple: expected a value without VARIANT")) factory value
 
 -- | Copy one value through an owned vector. The caller retains the factory owner.
 materializeValue :: VariantReader -> DuckDBV2FactoryHandle -> DuckDBV2ValueHandle -> IO FieldValue

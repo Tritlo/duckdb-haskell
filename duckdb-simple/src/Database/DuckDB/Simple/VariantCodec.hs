@@ -25,16 +25,17 @@ import Foreign.Ptr (nullPtr)
 
 {- | Copy a vector before returning its row reader. The connection is a dedicated
 metadata connection. It must remain exclusively borrowed until this function
-returns. The scalar callback decodes a value after its exact native cast.
-Each level batches type and key metadata. Objects with the same keys share
-one extraction query. Keys remain bound values, including empty and NUL keys.
+returns. The callback decodes a value that contains no VARIANT.
+Each level batches type and key metadata. Scalars with the same tag share
+one native cast. Objects with the same keys share one extraction query.
+Keys remain bound values, including empty and NUL keys.
 -}
 prepareVariantDecoder :: (DuckDBV2ConnectionHandle -> DuckDBV2ValueHandle -> IO FieldValue) -> DuckDBV2ConnectionHandle -> DuckDBV2VectorHandle -> IO (Int -> IO FieldValue)
-prepareVariantDecoder scalar connection vector = do
+prepareVariantDecoder plain connection vector = do
     count <- output (c_duckdb_v2_vector_get_size vector)
     bracket (acquireItems destroyValue [output (c_duckdb_v2_vector_get_value vector i) | i <- indices count]) (releaseItems destroyValue) \values ->
         withTypeStatement connection \statement -> withCastTypes \castTypes -> do
-            decoded <- decodeValues scalar connection statement castTypes values
+            decoded <- decodeValues plain connection statement castTypes values
             let rows = listArray (0, length decoded - 1) decoded
             pure (evaluate . (rows !))
 
@@ -47,36 +48,43 @@ data VariantNode
 -- | Decode all siblings together before reconstructing their parent nodes.
 decodeValues :: (DuckDBV2ConnectionHandle -> DuckDBV2ValueHandle -> IO FieldValue) -> DuckDBV2ConnectionHandle -> DuckDBV2SqlStatementHandle -> CastTypes -> [DuckDBV2ValueHandle] -> IO [FieldValue]
 decodeValues _ _ _ _ [] = pure []
-decodeValues scalar connection statement castTypes values = do
+decodeValues plain connection statement castTypes values = do
     metadata <- queryMetadata connection statement values
     unless (length metadata == length values) (codecError "metadata query returned an unexpected number of nodes")
     let indexed = zip3 [0 ..] metadata values
-        groups = Map.fromListWith (++) [(keys, [(index, value)]) | (index, (tag, keys), value) <- indexed, isObject tag]
+        grouped key select = Map.toList (Map.fromListWith (++) [(key node, [(index, value)]) | (index, node@(tag, _), value) <- indexed, select tag])
+        nulls = [(index, ScalarNode FieldNull) | (index, (tag, _), _) <- indexed, isNull tag]
         releaseIndexed = releaseNode . snd
+    scalars <- mapFlat (uncurry decodeScalars) (grouped fst (\tag -> not (isNull tag || isArray tag || isObject tag)))
     bracket
-        (acquireItems releaseIndexed [(,) index <$> decodeNode tag value | (index, (tag, _), value) <- indexed, not (isObject tag)])
+        (acquireItems releaseIndexed [(,) index <$> decodeArray value | (index, (tag, _), value) <- indexed, isArray tag])
         (releaseItems releaseIndexed)
-        \otherNodes ->
+        \arrays ->
             bracket
-                (acquireItems (releaseItems releaseIndexed) [queryObjectGroup connection keys rows | (keys, rows) <- Map.toList groups])
+                (acquireItems (releaseItems releaseIndexed) [queryObjectGroup connection keys rows | (keys, rows) <- grouped snd isObject])
                 (releaseItems (releaseItems releaseIndexed))
                 \objectGroups -> do
-                    let indexedNodes = IntMap.fromList (otherNodes <> concat objectGroups)
+                    let indexedNodes = IntMap.fromList (nulls <> concat scalars <> arrays <> concat objectGroups)
                     nodes <- forM [0 .. length values - 1] \index ->
                         maybe (codecError "object extraction omitted a node") pure (IntMap.lookup index indexedNodes)
-                    children <- decodeValues scalar connection statement castTypes (concatMap nodeChildren nodes)
+                    children <- decodeValues plain connection statement castTypes (concatMap nodeChildren nodes)
                     assemble nodes children
   where
+    isNull = (== "VARIANT_NULL")
+    isArray = Text.isPrefixOf "ARRAY("
     isObject = Text.isPrefixOf "OBJECT("
-    decodeNode tag value
-        | tag == "VARIANT_NULL" = pure (ScalarNode FieldNull)
-        | "ARRAY(" `Text.isPrefixOf` tag =
-            withCast connection castTypes value "VARIANT[]" \list -> do
-                count <- output (c_duckdb_v2_value_get_child_count list)
-                ListNode <$> acquireItems destroyValue [output (c_duckdb_v2_value_get_child list i) | i <- indices count]
-        | otherwise = do
-            target <- scalarType tag
-            ScalarNode <$> withCast connection castTypes value target (scalar connection)
+    decodeArray value =
+        withCast connection castTypes value "VARIANT[]" \list -> do
+            count <- output (c_duckdb_v2_value_get_child_count list)
+            ListNode <$> acquireItems destroyValue [output (c_duckdb_v2_value_get_child list i) | i <- indices count]
+    -- Cast the scalars of one tag as one list. The cast keeps the exact type.
+    decodeScalars tag rows = do
+        target <- scalarType tag
+        withVariantList connection (map snd rows) \list ->
+            withCast connection castTypes list (target <> "[]") \cast ->
+                plain connection cast >>= \case
+                    FieldList decoded | length decoded == length rows -> pure (zip (map fst rows) (map ScalarNode decoded))
+                    _ -> codecError "scalar cast returned an unexpected value"
 
 {- | Extract objects with one key layout as a native VARIANT[][] value.
 The binder needs constant extraction keys. Bind each key once and apply the

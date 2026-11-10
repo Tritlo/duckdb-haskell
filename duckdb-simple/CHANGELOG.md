@@ -19,6 +19,10 @@
   fields in collections, STRUCTs, MAPs, and UNIONs.
 - Allow session variables to supply omitted named parameters. Only too many
   named parameters raise `FormatError`.
+- `deleteFunction` reports the error from DuckDB. DuckDB does not permit
+  deletion of functions registered through the C API, so the call raises
+  `SQLError` for a function made with `createFunction`. Version 0.3 ignored
+  this error.
 - Reject duplicate named parameters with DuckDB's ASCII case rules. Keep
   distinct non-ASCII names separate.
 - Allow a VARIANT object to contain an empty key with other named keys. Reject

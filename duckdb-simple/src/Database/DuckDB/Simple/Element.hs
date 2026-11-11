@@ -79,15 +79,15 @@ bitStringFromBytes bytes = case BS.unpack bytes of
 withVectorType :: DuckDBVector -> (DuckDBLogicalType -> IO a) -> IO a
 withVectorType vector = bracket (c_duckdb_vector_get_column_type vector) destroyLogicalType
 
-vectorElementType :: DuckDBVector -> IO DUCKDB_TYPE
+vectorElementType :: DuckDBVector -> IO DuckDBType
 vectorElementType vec =
-    bracket (c_duckdb_vector_get_column_type vec) destroyLogicalType (fmap (\(DuckDBType dtype) -> dtype) . c_duckdb_get_type_id)
+    bracket (c_duckdb_vector_get_column_type vec) destroyLogicalType (fmap (\(DuckDBTypeAlias dtype) -> dtype) . c_duckdb_get_type_id)
 
 {- | Decode the element at an index of a vector's data. The type must not need
 logical type metadata: DECIMAL, ENUM, GEOMETRY, and nested types use their own
 decoders. The caller checks validity.
 -}
-decodeElement :: DUCKDB_TYPE -> Ptr Void -> Int -> IO FieldValue
+decodeElement :: DuckDBType -> Ptr Void -> Int -> IO FieldValue
 decodeElement dtype dataPtr rowIdx = case dtype of
     DuckDBTypeBoolean -> do
         raw <- peekElemOff (castPtr dataPtr :: Ptr Word8) rowIdx

@@ -205,7 +205,7 @@ collectResultColumns resPtr = do
             if namePtr == ConstPtr nullPtr
                 then pure (Text.pack ("column" <> show columnIndex))
                 else peekUtf8CString namePtr
-        DuckDBType dtype <- c_duckdb_column_type resPtr (fromIntegral columnIndex)
+        DuckDBTypeAlias dtype <- c_duckdb_column_type resPtr (fromIntegral columnIndex)
         pure
             StatementStreamColumn
                 { statementStreamColumnIndex = columnIndex

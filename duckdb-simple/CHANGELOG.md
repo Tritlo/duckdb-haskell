@@ -4,9 +4,7 @@
 
 - Target DuckDB 2.0 with `duckdb-ffi >= 2.0.0.0`. Support DuckDB 2.0.x
   releases.
-- Use the generated raw API from `hs-bindgen`. `LogicalTypeScalar`,
-  `argumentType`, `argumentTypes`, and `copyBindColumnTypes` use `DUCKDB_TYPE`
-  instead of `DuckDBType`. See MIGRATION.md.
+- Use the generated raw API from `hs-bindgen`. See MIGRATION.md.
 - Export Arrow release helpers from `Database.DuckDB.Simple.Arrow`.
 - `sqlErrorType` can report the DuckDB 2.0 data-corruption and resource-in-use
   error tags.

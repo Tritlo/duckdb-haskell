@@ -84,9 +84,9 @@ nonNull label action = do
     pure ptr
 
 -- | Check a logical type's tag.
-expectType :: DUCKDB_TYPE -> DuckDBLogicalType -> IO ()
+expectType :: DuckDBType -> DuckDBLogicalType -> IO ()
 expectType expected logical = do
-    DuckDBType actual <- c_duckdb_get_type_id logical
+    DuckDBTypeAlias actual <- c_duckdb_get_type_id logical
     unless (actual == expected) (codecError "unexpected physical child type")
 
 -- | Check a STRUCT's names and owned child descriptors.
@@ -401,7 +401,7 @@ decodeScalar tag bytes = case tag of
 {- | The type and the payload size of each fixed-width scalar tag. These
 payloads have the memory layout of one vector element of the type.
 -}
-fixedWidthTag :: Word8 -> Maybe (DUCKDB_TYPE, Int)
+fixedWidthTag :: Word8 -> Maybe (DuckDBType, Int)
 fixedWidthTag = \case
     3 -> Just (DuckDBTypeTinyInt, 1)
     4 -> Just (DuckDBTypeSmallInt, 2)
@@ -430,7 +430,7 @@ fixedWidthTag = \case
     _ -> Nothing
 
 -- | Copy a fixed-width payload to aligned memory and decode it as one element.
-decodeFixedWidth :: DUCKDB_TYPE -> Int -> ByteString -> IO FieldValue
+decodeFixedWidth :: DuckDBType -> Int -> ByteString -> IO FieldValue
 decodeFixedWidth dtype size bytes = do
     when (BS.length bytes < size) (codecError "truncated scalar payload")
     allocaBytesAligned size 16 \buffer -> do

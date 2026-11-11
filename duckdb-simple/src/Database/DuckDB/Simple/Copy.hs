@@ -34,7 +34,7 @@ import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
 
 -- | Bind-phase metadata for a custom `COPY ... TO` function.
 data CopyBindInfo = CopyBindInfo
-    { copyBindColumnTypes :: ![DUCKDB_TYPE]
+    { copyBindColumnTypes :: ![DuckDBType]
     }
     deriving (Eq, Show)
 
@@ -151,7 +151,7 @@ copyFinalizeHandler finalizeFn info =
         globalState <- readStablePtrState c_duckdb_copy_function_finalize_get_global_state info
         finalizeFn CopyFinalizeInfo{copyFinalizeBindState = bindState, copyFinalizeGlobalState = globalState}
 
-fetchColumnTypes :: DuckDBCopyFunctionBindInfo -> IO [DUCKDB_TYPE]
+fetchColumnTypes :: DuckDBCopyFunctionBindInfo -> IO [DuckDBType]
 fetchColumnTypes info = do
     count <- c_duckdb_copy_function_bind_get_column_count info
     let indices = [0 .. fromIntegral count - 1] :: [Int]
@@ -159,7 +159,7 @@ fetchColumnTypes info = do
         bracket
             (c_duckdb_copy_function_bind_get_column_type info (fromIntegral idx))
             destroyLogicalType
-            (fmap (\(DuckDBType dtype) -> dtype) . c_duckdb_get_type_id)
+            (fmap (\(DuckDBTypeAlias dtype) -> dtype) . c_duckdb_get_type_id)
 
 readStablePtrState :: forall a i. (i -> IO (Ptr Void)) -> i -> IO a
 readStablePtrState getter info = do

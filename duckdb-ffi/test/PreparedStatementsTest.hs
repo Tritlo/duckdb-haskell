@@ -78,7 +78,7 @@ preparedStatementMetadata =
                         colName @?= "value"
 
                         colType <- c_duckdb_prepared_statement_column_type stmt 0
-                        colType @?= DuckDBType DuckDBTypeInteger
+                        colType @?= DuckDBTypeAlias DuckDBTypeInteger
 
                         colLogicalType <- c_duckdb_prepared_statement_column_logical_type stmt 0
                         assertBool "column logical type should not be null" (colLogicalType /= coerce nullPtr)

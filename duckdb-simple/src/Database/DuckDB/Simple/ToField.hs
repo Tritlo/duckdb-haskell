@@ -659,7 +659,7 @@ fieldValueWithTypeDuckValue typeFromRep rep value =
                 FieldEnum enumIdx -> enumDuckValue dict enumIdx
                 other -> typeMismatch "ENUM" other
 
-scalarFieldValueDuckValue :: DUCKDB_TYPE -> FieldValue -> IO DuckDBValue
+scalarFieldValueDuckValue :: DuckDBType -> FieldValue -> IO DuckDBValue
 scalarFieldValueDuckValue dtype value =
     case (dtype, value) of
         (DuckDBTypeBoolean, FieldBool b) -> boolDuckValue b
@@ -875,7 +875,7 @@ variantPayloadType value = case value of
     hasNanos time = snd (properFraction (todSec time * 1000000) :: (Integer, Pico)) /= 0
 
 -- | Choose nanosecond storage for a precise UTC VARIANT payload.
-variantUtcTimestampType :: UTCTimestamp -> DUCKDB_TYPE
+variantUtcTimestampType :: UTCTimestamp -> DuckDBType
 variantUtcTimestampType (Finite instant)
     | snd (properFraction (todSec (localTimeOfDay (utcToLocalTime utc instant)) * 1000000) :: (Integer, Pico)) /= 0 = DuckDBTypeTimestampTzNs
 variantUtcTimestampType _ = DuckDBTypeTimestampTz

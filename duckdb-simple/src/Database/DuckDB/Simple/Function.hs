@@ -151,7 +151,7 @@ instance (FunctionResult a) => FunctionResult (Maybe a) where
 
 -- | Argument types supported by the scalar function machinery.
 class FunctionArg a where
-    argumentType :: Proxy a -> DUCKDB_TYPE
+    argumentType :: Proxy a -> DuckDBType
 
 instance FunctionArg Int where
     argumentType _ = DuckDBTypeBigInt
@@ -197,7 +197,7 @@ instance (FunctionArg a) => FunctionArg (Maybe a) where
 
 -- | Typeclass describing Haskell functions that can be exposed to DuckDB.
 class Function a where
-    argumentTypes :: Proxy a -> [DUCKDB_TYPE]
+    argumentTypes :: Proxy a -> [DuckDBType]
     returnType :: Proxy a -> ScalarType
     isVolatile :: Proxy a -> Bool
     applyFunction :: [Field] -> a -> IO ScalarValue
@@ -288,11 +288,11 @@ cleanupScalarFunction scalarFun =
         poke ptr scalarFun
         c_duckdb_destroy_scalar_function ptr
 
-withLogicalType :: DUCKDB_TYPE -> (DuckDBLogicalType -> IO a) -> IO a
+withLogicalType :: DuckDBType -> (DuckDBLogicalType -> IO a) -> IO a
 withLogicalType dtype =
     bracket
         ( do
-            logical <- c_duckdb_create_logical_type (DuckDBType dtype)
+            logical <- c_duckdb_create_logical_type (DuckDBTypeAlias dtype)
             when (logical == DuckDBLogicalType nullPtr)
                 $ throwIO
                 $ functionInvocationError (Text.pack "duckdb-simple: failed to allocate logical type")
@@ -300,7 +300,7 @@ withLogicalType dtype =
         )
         destroyLogicalType
 
-duckTypeForScalar :: ScalarType -> DUCKDB_TYPE
+duckTypeForScalar :: ScalarType -> DuckDBType
 duckTypeForScalar = \case
     ScalarTypeBoolean -> DuckDBTypeBoolean
     ScalarTypeBigInt -> DuckDBTypeBigInt

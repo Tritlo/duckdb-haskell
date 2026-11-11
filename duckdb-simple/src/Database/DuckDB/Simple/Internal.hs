@@ -70,7 +70,6 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.Foreign as TextForeign
 import Database.DuckDB.FFI (
-    DUCKDB_TYPE,
     DuckDBClientContext,
     DuckDBConnection,
     DuckDBDataChunk (..),
@@ -79,6 +78,7 @@ import Database.DuckDB.FFI (
     DuckDBPreparedStatement,
     DuckDBResult,
     DuckDBState,
+    DuckDBType,
     DuckDBValue,
     c_duckdb_connection_get_client_context,
     c_duckdb_destroy_client_context,
@@ -170,7 +170,7 @@ data ResultMode = MaterializedResult | StreamingResult
 data StatementStreamColumn = StatementStreamColumn
     { statementStreamColumnIndex :: Int
     , statementStreamColumnName :: Text
-    , statementStreamColumnType :: DUCKDB_TYPE
+    , statementStreamColumnType :: DuckDBType
     }
 
 -- | Currently loaded data chunk plus iteration cursor.
@@ -307,7 +307,7 @@ interruptRetryDelayMicros = 10 * 1000
 {- | The column type names that 'Database.DuckDB.Simple.ToField.DuckDBColumnType'
 instances use, and the types they denote. Each type has one name.
 -}
-duckDBTypeNames :: [(Text, DUCKDB_TYPE)]
+duckDBTypeNames :: [(Text, DuckDBType)]
 duckDBTypeNames =
     map
         (\(name, dtype) -> (Text.pack name, dtype))
@@ -344,11 +344,11 @@ duckDBTypeNames =
         ]
 
 -- | Find the type that a column type name denotes.
-duckDBTypeFromName :: Text -> Maybe DUCKDB_TYPE
+duckDBTypeFromName :: Text -> Maybe DuckDBType
 duckDBTypeFromName name = lookup name duckDBTypeNames
 
 -- | Find the column type name of a type. Other types use their 'Show' text.
-duckDBTypeToName :: DUCKDB_TYPE -> Text
+duckDBTypeToName :: DuckDBType -> Text
 duckDBTypeToName dtype =
     maybe (Text.pack (show dtype)) fst (find ((== dtype) . snd) duckDBTypeNames)
 

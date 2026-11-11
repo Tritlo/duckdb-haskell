@@ -41,7 +41,7 @@ import Foreign.Storable (poke)
 
 -- | A Haskell description of a DuckDB logical type tree.
 data LogicalTypeRep
-    = LogicalTypeScalar DUCKDB_TYPE
+    = LogicalTypeScalar DuckDBType
     | LogicalTypeDecimal !Word8 !Word8
     | LogicalTypeGeometry !(Maybe Text)
     | LogicalTypeList LogicalTypeRep
@@ -101,7 +101,7 @@ destroyLogicalType logical =
 -- | Convert a DuckDB logical type handle into the pure @LogicalTypeRep@ tree.
 logicalTypeToRep :: DuckDBLogicalType -> IO LogicalTypeRep
 logicalTypeToRep logical = do
-    DuckDBType dtype <- c_duckdb_get_type_id logical
+    DuckDBTypeAlias dtype <- c_duckdb_get_type_id logical
     case dtype of
         DuckDBTypeGeometry ->
             bracket (c_duckdb_geometry_type_get_crs logical) (c_duckdb_free . castPtr) \ptr ->
@@ -180,7 +180,7 @@ logicalTypeFromRep = logicalTypeFromRepWith \case
     -- https://github.com/Tritlo/duckdb-haskell/issues/27.
     LogicalTypeScalar DuckDBTypeVariant ->
         throwIO (userError "duckdb-simple: a VARIANT type needs the type cache of a connection; bind the value as a parameter or cast a plain value with ?::VARIANT")
-    _ -> c_duckdb_create_logical_type (DuckDBType DuckDBTypeGeometry)
+    _ -> c_duckdb_create_logical_type (DuckDBTypeAlias DuckDBTypeGeometry)
 
 {- | Materialize a type tree. The function argument creates the leaves that the
 C API cannot create: VARIANT, and GEOMETRY with a CRS. The caller must
@@ -195,9 +195,9 @@ logicalTypeFromRepWith resolve rep = do
   where
     create = \case
         leaf@(LogicalTypeScalar DuckDBTypeVariant) -> resolve leaf
-        LogicalTypeScalar dtype -> c_duckdb_create_logical_type (DuckDBType dtype)
+        LogicalTypeScalar dtype -> c_duckdb_create_logical_type (DuckDBTypeAlias dtype)
         leaf@(LogicalTypeGeometry (Just _)) -> resolve leaf
-        LogicalTypeGeometry Nothing -> c_duckdb_create_logical_type (DuckDBType DuckDBTypeGeometry)
+        LogicalTypeGeometry Nothing -> c_duckdb_create_logical_type (DuckDBTypeAlias DuckDBTypeGeometry)
         LogicalTypeDecimal width scale -> do
             when (width < 1 || width > 38 || scale > width) $
                 throwIO (userError "duckdb-simple: invalid DECIMAL width or scale")

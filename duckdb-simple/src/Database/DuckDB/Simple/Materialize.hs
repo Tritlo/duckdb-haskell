@@ -51,7 +51,7 @@ prepareVectorReader vector = do
     prepareValueReader dtype vector dataPtr validity
 
 -- | Prepare metadata once for a vector. The reader must not outlive its chunk.
-prepareValueReader :: DUCKDB_TYPE -> DuckDBVector -> Ptr Void -> Ptr Word64 -> IO (Int -> IO FieldValue)
+prepareValueReader :: DuckDBType -> DuckDBVector -> Ptr Void -> Ptr Word64 -> IO (Int -> IO FieldValue)
 prepareValueReader dtype vector dataPtr validity = case dtype of
     DuckDBTypeVariant -> prepareVariantDecoder vector
     DuckDBTypeGeometry -> whenValid FieldGeometry <$> prepareGeometryDecoder vector dataPtr
@@ -75,7 +75,7 @@ prepareGeometryDecoder vector dataPtr = do
             _ -> throwIO (userError "duckdb-simple: invalid GEOMETRY type")
     pure \row -> (`RawGeometry` crs) <$> chunkDecodeBlob dataPtr (fromIntegral row)
 
-materializeValue :: DUCKDB_TYPE -> DuckDBVector -> Ptr Void -> Ptr Word64 -> Int -> IO FieldValue
+materializeValue :: DuckDBType -> DuckDBVector -> Ptr Void -> Ptr Word64 -> Int -> IO FieldValue
 materializeValue dtype vector dataPtr validity rowIdx = do
     valid <- chunkIsRowValid validity (fromIntegral rowIdx)
     if not valid
@@ -87,7 +87,7 @@ materializeValue dtype vector dataPtr validity rowIdx = do
                 withVectorType vector \logical -> do
                     width <- c_duckdb_decimal_width logical
                     scale <- c_duckdb_decimal_scale logical
-                    DuckDBType internalTy <- c_duckdb_decimal_internal_type logical
+                    DuckDBTypeAlias internalTy <- c_duckdb_decimal_internal_type logical
                     rawValue <-
                         case internalTy of
                             DuckDBTypeSmallInt ->
@@ -108,7 +108,7 @@ materializeValue dtype vector dataPtr validity rowIdx = do
             DuckDBTypeUnion -> FieldUnion <$> (prepareUnionDecoder vector >>= ($ rowIdx))
             DuckDBTypeEnum ->
                 withVectorType vector \logical -> do
-                    DuckDBType enumInternal <- c_duckdb_enum_internal_type logical
+                    DuckDBTypeAlias enumInternal <- c_duckdb_enum_internal_type logical
                     case enumInternal of
                         DuckDBTypeUTinyInt ->
                             FieldEnum . fromIntegral <$> peekElemOff (castPtr dataPtr :: Ptr Word8) rowIdx

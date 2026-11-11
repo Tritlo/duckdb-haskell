@@ -44,7 +44,7 @@ Hackage archives. Those archives include the generated sources. Package users
 need `hs-bindgen-runtime` and a matching native library, but no LLVM or hs-bindgen.
 See [dev/README.md](dev/README.md) for the maintainer tools.
 
-For a local build with the pinned native release:
+For a local build in the Nix shell, which builds DuckDB from the pinned source:
 
 ```sh
 nix-shell dev/nix/shell.nix --run 'cabal build all --with-compiler=ghc -fsystemlib'

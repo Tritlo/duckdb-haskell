@@ -148,6 +148,8 @@ tests =
                 Left err -> assertBool (displayException err) ("only an empty key" `isInfixOf` displayException err)
                 Right _ -> assertFailure "expected the native constructor limit for an object with only an empty key"
         , testCase "metadata conversion ignores shadowing macros" $ withConnection ":memory:" \conn -> do
+            -- The connection keeps the parsed metadata statement of the first decode.
+            (query_ conn "SELECT {'a': 42::TINYINT}::VARIANT" :: IO [Only Variant]) >>= (@?= [Only (Variant (variantObject [("a", FieldInt8 42)]))])
             void (execute_ conn "CREATE MACRO variant_typeof(x) AS 'VARCHAR'")
             void (execute_ conn "CREATE MACRO list_transform(x,y) AS [42]")
             void (execute_ conn "CREATE MACRO variant_keys(x) AS ['wrong']")

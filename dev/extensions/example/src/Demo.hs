@@ -31,13 +31,13 @@ register extension = do
     Extension.createFunction extension "haskell_add_one" addOne
     Extension.createFunction extension "haskell_greet" (("Hello " <>) :: Text -> Text)
     Extension.createFunction extension "haskell_fail" (throwIO (userError "Haskell callback failure") :: IO Int64)
-    Extension.registerMacro extension "haskell_twice" DuckDBV2MacroFunctionTypeScalar [Registration.parameter "value" (Registration.StructuredType (LogicalTypeScalar DuckDBV2LogicalTypeIdAny))] "value + value"
-    Extension.registerMacro extension "haskell_table" DuckDBV2MacroFunctionTypeTable [] "SELECT 42::BIGINT AS answer"
+    Extension.registerMacroFunction extension "haskell_twice" DuckDBV2MacroFunctionTypeScalar [Registration.parameter "value" (Registration.StructuredType (LogicalTypeScalar DuckDBV2LogicalTypeIdAny))] "value + value"
+    Extension.registerMacroFunction extension "haskell_table" DuckDBV2MacroFunctionTypeTable [] "SELECT 42::BIGINT AS answer"
     Extension.registerCustomOption extension $
         (Config.customOption "haskell_multiplier" (Registration.TypeExpression "BIGINT"))
             { Config.customOptionDefault = Just (Registration.defaultValue (7 :: Int64))
             }
-    Extension.registerPragma extension "haskell_demo" [] $
+    Extension.registerPragmaFunction extension "haskell_demo" [] $
         Pragma.QueryPragma (\_ _ -> pure "SELECT 'pragma', current_setting('haskell_multiplier')::BIGINT")
     Extension.registerLogSink extension "haskell_sink" (\_ -> atomicModifyIORef' logEntries (\count -> (count + 1, ()))) (pure ())
     Extension.createFunction extension "haskell_log_entries" (readIORef logEntries)

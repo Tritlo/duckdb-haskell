@@ -8,7 +8,7 @@ module Database.DuckDB.Simple.Logging (
     registerLogStorage,
     registerLogSink,
     registerInstanceLogSink,
-    registerExtensionLogSink,
+    registerLogSinkOn,
     logMessage,
     logConnectionMessage,
     logInstanceMessage,
@@ -22,7 +22,7 @@ import qualified Data.Text as Text
 import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Data.Word (Word64)
-import Database.DuckDB.Simple.Callback (attachOpaque, runCallback, withCallbackResourcesFinally)
+import Database.DuckDB.Simple.Callback (RegistrationTarget (..), attachOpaque, runCallback, withCallbackResourcesFinally)
 import Database.DuckDB.Simple.Internal (Connection, Instance, withConnectionHandle, withDatabaseHandle, withInstanceHandle)
 import Database.DuckDB.Simple.Native
 import Foreign.C.ConstPtr (ConstPtr (..))
@@ -69,10 +69,12 @@ registerInstanceLogSink instance_ name write flush = withInstanceHandle instance
     withInstanceFactory native \factory ->
         registerSink factory (checked . c_duckdb_v2_instance_register_log_sink native) name write flush
 
--- | Register a log sink during extension initialization. Both handles are borrowed.
-registerExtensionLogSink :: DuckDBV2ExtensionHandle -> DuckDBV2ContextHandle -> Text -> (LogEntry -> IO ()) -> IO () -> IO ()
-registerExtensionLogSink extension context name write flush = withContextFactory context \factory ->
-    registerSink factory (checked . c_duckdb_v2_extension_register_log_sink extension) name write flush
+-- | Register a log sink on a connection or a loading extension.
+registerLogSinkOn :: RegistrationTarget -> Text -> (LogEntry -> IO ()) -> IO () -> IO ()
+registerLogSinkOn target name write flush = case target of
+    ConnectionTarget conn -> registerLogSink conn name write flush
+    ExtensionTarget extension context -> withContextFactory context \factory ->
+        registerSink factory (checked . c_duckdb_v2_extension_register_log_sink extension) name write flush
 
 -- | Transfer callback ownership to the native sink and release its builder.
 registerSink :: DuckDBV2FactoryHandle -> (DuckDBV2LogSinkHandle -> IO ()) -> Text -> (LogEntry -> IO ()) -> IO () -> IO ()

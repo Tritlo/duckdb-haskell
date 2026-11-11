@@ -40,15 +40,17 @@ are not tested. If the RTS cannot start, the process ends.
 
 `Extension.runExtension` passes an opaque `Extension` to the registration action.
 `Extension.createFunction` and `Extension.createFunctionWithState` use the same
-typed argument and result conversions as the connection API. The scoped
-`Extension.withExtensionContext` helper gives advanced registration code access
-to its borrowed target and context. These handles must not escape the entrypoint.
+typed argument and result conversions as the connection API.
+`Extension.extensionTarget` gives the registration target for the functions
+that take a `RegistrationTarget`, such as the aggregate, table, and COPY
+registration functions. The target must not escape the entrypoint.
 Initialization and callback exceptions become native errors. Managed
 registration retains callback resources after the entrypoint returns.
 
-`Extension.registerMacro`, `registerPragma`, `registerCustomOption`, and
-`registerLogSink` use the same opaque extension value. Macro signatures and
-custom-option defaults use `FactoryDefaultValue` during initialization.
+`Extension.registerMacroFunction`, `registerPragmaFunction`,
+`registerCustomOption`, and `registerLogSink` use the same opaque extension
+value. Macro signatures and custom-option defaults use `defaultValue`, as on a
+connection.
 Upstream marks the complete V2 API as unstable. An extension uses the
 `C_STRUCT_UNSTABLE` function table, which DuckDB gives only to an extension
 whose footer names the exact running release. `Pack.hs` writes the version of
@@ -153,6 +155,14 @@ nix-shell dev/nix/shell.nix --run 'GHC_ENVIRONMENT=- runghc \
   dev/extensions/Smoke.hs \
   --duckdb /tmp/duckdb-extension-native/native/duckdb \
   dev/extensions/dist/haskell_demo.duckdb_extension'
+```
+
+To load the packaged extension by hand, start the CLI with `-unsigned`. The
+packaged file has no signature:
+
+```sh
+/tmp/duckdb-extension-native/native/duckdb -unsigned \
+  -c "LOAD 'dev/extensions/dist/haskell_demo.duckdb_extension'; SELECT haskell_answer();"
 ```
 
 The smoke script starts two plain native CLI processes. It checks a second

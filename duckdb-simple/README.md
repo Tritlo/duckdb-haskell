@@ -62,9 +62,9 @@ existing convenience behavior.
 - `Logging` registers native log sinks with managed write and flush callbacks.
   It copies timestamps, severity, scope, and available context identifiers.
   Callbacks can run concurrently. They must not log or change logging settings.
-- `Pragma` registers query and execution callbacks. `Macro` registers scalar
-  and table macros during extension initialization. The native macro builder
-  has no connection target; use SQL `CREATE MACRO` on a connection.
+- `Pragma` registers query and execution callbacks. `Extension` registers
+  scalar and table macros during extension initialization. The native macro
+  builder has no connection target; use SQL `CREATE MACRO` on a connection.
 - `FunctionDocs` sets descriptions, examples, and categories on function builders.
 - `QueryMetrics` enables profiling and copies query and operator metric trees.
 - `Internal.withCollectionStatement` binds native column collections as named

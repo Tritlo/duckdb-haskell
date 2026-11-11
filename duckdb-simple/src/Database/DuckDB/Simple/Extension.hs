@@ -9,25 +9,25 @@ module Database.DuckDB.Simple.Extension (
     Extension,
     ExtensionEntry,
     runExtension,
+    extensionTarget,
     createFunction,
     createFunctionWithState,
-    registerMacro,
-    registerPragma,
+    registerMacroFunction,
+    registerMacroFunctionWith,
+    registerPragmaFunction,
     registerCustomOption,
     registerLogSink,
-    withExtensionContext,
 ) where
 
+import Control.Exception (bracket)
 import Data.Text (Text)
-import Database.DuckDB.FFI.V2 (DuckDBV2ContextHandle (..), DuckDBV2ExtensionHandle (..))
 import Database.DuckDB.Simple.Callback (runCallback)
 import Database.DuckDB.Simple.Config (CustomOption)
 import qualified Database.DuckDB.Simple.Config as Config
 import Database.DuckDB.Simple.Function.Internal (Function, createFunctionOn, createFunctionWithStateOn)
 import Database.DuckDB.Simple.Logging (LogEntry)
 import qualified Database.DuckDB.Simple.Logging as Logging
-import qualified Database.DuckDB.Simple.Macro as Macro
-import Database.DuckDB.Simple.Native (DuckDBV2MacroFunctionType, c_duckdb_v2_pragma_function_get_signature, c_duckdb_v2_pragma_function_set_name, checked, output, withContextFactory, withIdentifier)
+import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Pragma (PragmaCallback)
 import qualified Database.DuckDB.Simple.Pragma as Pragma
 import Database.DuckDB.Simple.Registration (FunctionParameter, FunctionSignature (..), RegistrationTarget (ExtensionTarget), configureFunctionSignature)
@@ -53,45 +53,60 @@ runExtension :: (Extension -> IO ()) -> ExtensionEntry
 runExtension initialize extension context err =
     runCallback (castPtr err) (initialize (Extension (DuckDBV2ExtensionHandle (castPtr extension)) (DuckDBV2ContextHandle (castPtr context))))
 
+{- | The registration target of the loading extension. Pass it to the
+registration functions that take a 'RegistrationTarget', for example for an
+aggregate function, a table function, or a COPY function. The target is valid
+only during 'runExtension'.
+-}
+extensionTarget :: Extension -> RegistrationTarget
+extensionTarget (Extension extension context) = ExtensionTarget extension context
+
 -- | Register a typed Haskell function with the loading DuckDB host.
 createFunction :: (Function f) => Extension -> Text -> f -> IO ()
-createFunction (Extension extension context) = createFunctionOn (ExtensionTarget extension context)
+createFunction = createFunctionOn . extensionTarget
 
 -- | Register a typed function with per-worker state owned by DuckDB.
 createFunctionWithState :: (Function f) => Extension -> Text -> IO s -> (s -> f) -> IO ()
-createFunctionWithState (Extension extension context) = createFunctionWithStateOn (ExtensionTarget extension context)
+createFunctionWithState = createFunctionWithStateOn . extensionTarget
 
--- | Register a scalar expression or a table SELECT on the loading extension.
-registerMacro :: Extension -> Text -> DuckDBV2MacroFunctionType -> [FunctionParameter] -> Text -> IO ()
-registerMacro (Extension extension context) = Macro.registerMacroFunction extension context
+{- | Register a scalar expression or a table SELECT as a macro of the loading
+extension. The V2 API registers a macro only for an extension. Use SQL
+@CREATE MACRO@ on a connection. Parameters must use the standard parameter
+kind. Use @StructuredType (LogicalTypeScalar DuckDBV2LogicalTypeIdAny)@ for an
+untyped parameter and 'Database.DuckDB.Simple.Registration.defaultValue' for a
+default. DuckDB validates the body and the signature. It resolves the body
+when the macro runs.
+-}
+registerMacroFunction :: Extension -> Text -> DuckDBV2MacroFunctionType -> [FunctionParameter] -> Text -> IO ()
+registerMacroFunction extension@(Extension _ context) name kind parameters body =
+    withContextFactory context \factory ->
+        registerMacroFunctionWith extension kind \function -> do
+            withIdentifier name (checked . c_duckdb_v2_macro_function_set_name function)
+            withText body (checked . c_duckdb_v2_macro_function_set_body function)
+            signature <- output (c_duckdb_v2_macro_function_get_signature function)
+            configureFunctionSignature factory (FunctionSignature parameters Nothing) signature
+
+{- | Configure and register a macro of the loading extension. The configuration
+action borrows the builder. It can set the name, the body, the signature, and
+the documentation. DuckDB keeps copies after this action returns.
+-}
+registerMacroFunctionWith :: Extension -> DuckDBV2MacroFunctionType -> (DuckDBV2MacroFunctionHandle -> IO ()) -> IO ()
+registerMacroFunctionWith (Extension extension context) kind configure =
+    withContextFactory context \factory ->
+        bracket (output (c_duckdb_v2_macro_function_create factory kind)) (destroy c_duckdb_v2_macro_function_destroy) \function -> do
+            configure function
+            checked (c_duckdb_v2_extension_register_macro_function extension function)
 
 -- | Register a managed PRAGMA callback on the loading extension.
-registerPragma :: Extension -> Text -> [FunctionParameter] -> PragmaCallback -> IO ()
-registerPragma (Extension extension context) name parameters callback = withContextFactory context \factory ->
-    Pragma.registerPragmaFunctionWith
-        (ExtensionTarget extension context)
-        ( \function -> do
-            withIdentifier name (checked . c_duckdb_v2_pragma_function_set_name function)
-            signature <- output (c_duckdb_v2_pragma_function_get_signature function)
-            configureFunctionSignature factory (FunctionSignature parameters Nothing) signature
-        )
-        callback
+registerPragmaFunction :: Extension -> Text -> [FunctionParameter] -> PragmaCallback -> IO ()
+registerPragmaFunction = Pragma.registerPragmaFunctionOn . extensionTarget
 
-{- | Register a typed option during extension initialization.
-Use a factory default value. A connection default value requires a connection.
--}
+-- | Register a typed option during extension initialization.
 registerCustomOption :: Extension -> CustomOption -> IO ()
-registerCustomOption (Extension extension context) = Config.registerCustomOptionOn (ExtensionTarget extension context)
+registerCustomOption = Config.registerCustomOptionOn . extensionTarget
 
 {- | Register a log sink with callback resources owned by DuckDB.
 Callbacks can run concurrently. They must not log or change logging settings.
 -}
 registerLogSink :: Extension -> Text -> (LogEntry -> IO ()) -> IO () -> IO ()
-registerLogSink (Extension extension context) = Logging.registerExtensionLogSink extension context
-
-{- | Use the borrowed target and context for advanced managed registration.
-Use this action for aggregate, table, COPY, and other registration APIs. Do not
-retain or destroy the handles. They are valid only during 'runExtension'.
--}
-withExtensionContext :: Extension -> (RegistrationTarget -> DuckDBV2ContextHandle -> IO a) -> IO a
-withExtensionContext (Extension extension context) action = action (ExtensionTarget extension context) context
+registerLogSink = Logging.registerLogSinkOn . extensionTarget

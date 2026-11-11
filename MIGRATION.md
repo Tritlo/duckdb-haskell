@@ -112,7 +112,10 @@ The SQL workflow stays the same. These changes can affect your code:
 - `deleteFunction` raises `SQLError` for a function made with `createFunction`.
   DuckDB does not permit deletion of functions registered through the C API,
   and version 0.3 ignored that error. Remove the call, or catch the error. The
-  function stays registered until its database closes.
+  function stays registered until its database closes. To replace the
+  function, register the name again. Each use of `deleteFunction` causes a
+  compile-time warning. A build with `-Werror` must allow that warning, for
+  example with `-Wno-error=deprecations`.
 - Empty `Array` parameters raise `SQLError`. Use an SQL empty LIST.
 - A composite parameter with a GEOMETRY CRS that DuckDB does not recognize
   raises `SQLError`. Version 0.3 bound it without the CRS. Configure custom CRS

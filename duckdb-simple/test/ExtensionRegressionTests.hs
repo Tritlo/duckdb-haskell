@@ -2,6 +2,8 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+-- The tests call deleteFunction on purpose, so its warning does not apply.
+{-# OPTIONS_GHC -Wno-deprecations #-}
 
 -- | Regression tests for extension callbacks and native handle ownership.
 module ExtensionRegressionTests (main, extensionRegressionTests) where

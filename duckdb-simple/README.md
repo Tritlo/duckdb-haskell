@@ -696,7 +696,10 @@ Exceptions raised while the function executes become `SQLError` values.
 `deleteFunction` issues a `DROP FUNCTION IF EXISTS` statement and reports native
 errors. DuckDB registers C API scalar functions as internal entries and rejects
 their deletion. The function remains registered after this `SQLError`.
-Deleting an absent name succeeds.
+Deleting an absent name succeeds. To replace a function, register the name
+again. `deleteFunction` has a GHC `WARNING` pragma, so each use causes a
+compile-time warning. A build with `-Werror` must allow that warning, for
+example with `-Wno-error=deprecations`.
 
 ## Tests
 

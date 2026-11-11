@@ -58,7 +58,9 @@
 - `deleteFunction` reports the error from DuckDB. DuckDB does not permit
   deletion of functions registered through the C API, so the call raises
   `SQLError` for a function made with `createFunction`. Version 0.3 ignored
-  this error.
+  this error. A `WARNING` pragma on `deleteFunction` causes a compile-time
+  warning at each use. A build with `-Werror` must allow that warning, for
+  example with `-Wno-error=deprecations`.
 - Add the optional `quack-tests` suite for authenticated remote queries,
   parameter binding, writes, streaming, and nanosecond timestamps.
 

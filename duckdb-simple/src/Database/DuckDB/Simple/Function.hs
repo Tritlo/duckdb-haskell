@@ -271,11 +271,16 @@ registerScalarFunction conn name proxy acquire = do
 
 {- | Run @DROP FUNCTION IF EXISTS@ and report native errors.
 DuckDB does not permit deletion of functions registered through the C API.
+For a function from 'createFunction', this call raises 'SQLError' and the
+function stays registered. Register the name again to replace the function.
+GHC reports a warning at each use of this function. A build with @-Werror@
+must allow that warning, for example with @-Wno-error=deprecations@.
 -}
 deleteFunction :: Connection -> Text -> IO ()
 deleteFunction conn name = do
     let dropQuery = Query ("DROP FUNCTION IF EXISTS " <> qualifyIdentifier name)
     withParsedStatements conn dropQuery (mapM_ (executeParsedStatement conn dropQuery))
+{-# WARNING deleteFunction "DuckDB cannot drop a function that its C API registered. deleteFunction raises SQLError for a function from createFunction. Register the name again to replace the function." #-}
 
 withLogicalType :: DuckDBV2ConnectionHandle -> DuckDBV2LogicalTypeId -> (DuckDBV2LogicalTypeHandle -> IO a) -> IO a
 withLogicalType connection dtype =

@@ -264,6 +264,20 @@ coreRegressionTests =
                 withConnectionOn instance_ $ \first -> withConnectionOn instance_ $ \second -> do
                     void (execute_ first "CREATE TABLE shared_probe(x BIGINT); INSERT INTO shared_probe VALUES (42)")
                     query_ second "SELECT x FROM shared_probe" >>= (@?= [Only (42 :: Int64)])
+        , testCase "a detached database is not reachable" $
+            withEnvironment $ \environment -> withInstance environment [] $ \instance_ -> do
+                attachDatabase instance_ ":memory:" "shared" []
+                setDefaultDatabase instance_ "shared"
+                attachDatabase instance_ ":memory:" "side" []
+                withConnectionOn instance_ $ \conn -> do
+                    void (execute_ conn "CREATE TABLE side.probe(x BIGINT); INSERT INTO side.probe VALUES (7)")
+                    query_ conn "SELECT x FROM side.probe" >>= (@?= [Only (7 :: Int64)])
+                detachDatabase instance_ "side"
+                withConnectionOn instance_ $ \conn -> do
+                    query_ conn "SELECT count(*) FROM duckdb_databases() WHERE database_name = 'side'" >>= (@?= [Only (0 :: Int64)])
+                    assertThrows (query_ conn "SELECT x FROM side.probe" :: IO [Only Int64])
+                    query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+                assertThrows (detachDatabase instance_ "side")
         , testCase "parent close releases concurrently created children" $
             bracket getNumCapabilities setNumCapabilities $ \capabilities -> do
                 setNumCapabilities (max 2 capabilities)

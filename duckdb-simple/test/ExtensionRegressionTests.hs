@@ -216,6 +216,25 @@ extensionRegressionTests =
             assertBool "entry has a timestamp" (all ((/= Nothing) . Logging.logEntryTimestamp) received)
             assertBool "entry has a connection id" (all ((/= Nothing) . Logging.logEntryConnectionId) received)
             readIORef flushes >>= assertBool "flush and final cleanup ran" . (>= 2)
+        , testCase "instance log sinks receive connection and instance messages" do
+            entries <- newIORef []
+            withEnvironment \environment -> withInstance environment [] \instance_ -> do
+                attachDatabase instance_ ":memory:" "shared" []
+                setDefaultDatabase instance_ "shared"
+                Logging.registerInstanceLogSink instance_ "instance_log" (\entry -> atomicModifyIORef' entries (\values -> (entry : values, ()))) (pure ())
+                withConnectionOn instance_ \conn -> do
+                    void $ execute_ conn "CALL enable_logging(); SET logging_storage = 'instance_log'"
+                    Logging.logConnectionMessage conn DuckDBV2LogLevelWarning "HaskellConnection" "from a connection"
+                    Logging.logInstanceMessage instance_ DuckDBV2LogLevelWarning "HaskellInstance" "from an instance"
+                    void $ execute_ conn "SET logging_storage = 'memory'"
+            received <- readIORef entries
+            let ofType kind = filter ((== kind) . Logging.logEntryType) received
+            map Logging.logEntryMessage (ofType "HaskellConnection") @?= ["from a connection"]
+            map Logging.logEntryScope (ofType "HaskellConnection") @?= [DuckDBV2LogScopeConnection]
+            assertBool "connection entry has a connection id" (all ((/= Nothing) . Logging.logEntryConnectionId) (ofType "HaskellConnection"))
+            map Logging.logEntryMessage (ofType "HaskellInstance") @?= ["from an instance"]
+            map Logging.logEntryScope (ofType "HaskellInstance") @?= [DuckDBV2LogScopeDatabase]
+            map Logging.logEntryConnectionId (ofType "HaskellInstance") @?= [Nothing]
         , testCase "filesystem action exceptions release handles" $
             withTemporaryFile \path ->
                 withConnection ":memory:" \conn -> do
@@ -281,6 +300,10 @@ extensionRegressionTests =
                         Config.configOptionSetting option @?= "1"
                         Config.configOptionName option @?= "threads"
                         assertBool "description is retained" (not (Text.null (Config.configOptionDescription option)))
+        , testCase "instance options list global values" $
+            withEnvironment \environment -> withInstance environment [("threads", "1")] \instance_ -> do
+                options <- Config.listInstanceOptions instance_
+                fmap Config.configOptionSetting (find ((== "threads") . Config.configOptionName) options) @?= Just "1"
         , testCase "configuration values resolve case-insensitive names and aliases" $
             withConnection ":memory:" \conn -> do
                 Config.setConfigOption conn DuckDBV2SettingScopeGlobal "threads" "1"

@@ -23,6 +23,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), logicalTypeFromRepWith, logicalTypeToRep)
 import Database.DuckDB.Simple.Native
+import Database.DuckDB.Simple.VariantCodec (VariantState, destroyVariantState, newVariantState)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (withArray)
 import Foreign.Ptr (nullPtr)
@@ -32,6 +33,10 @@ data TypeCache = TypeCache
     { typeCacheConnection :: !DuckDBV2ConnectionHandle
     , typeCacheInstance :: !DuckDBV2InstanceHandle
     , typeCacheCRS :: ![Text]
+    , typeCacheVariant :: !VariantState
+    {- ^ The VARIANT decoder state of the helper connection. Use it only inside
+    'withNativeTypes', which holds the cache 'MVar'.
+    -}
     , typeCacheState :: !(MVar CacheState)
     }
 
@@ -53,22 +58,25 @@ createTypeCache :: DuckDBV2InstanceHandle -> DuckDBV2ConnectionHandle -> [Text] 
 createTypeCache instance_ connection crss = do
     when (any Text.null crss || any (Text.any (== '\0')) crss) $
         throwIO (userError "duckdb-simple: a GEOMETRY CRS must be nonempty and must not contain NUL")
-    TypeCache connection instance_ (nub crss) <$> newMVar Unopened
+    TypeCache connection instance_ (nub crss) <$> newVariantState <*> newMVar Unopened
 
--- | Close the helper after all users finish. Destroy cached types once.
+{- | Close the helper after all users finish. Destroy the VARIANT state and the
+cached types once, before the helper connection.
+-}
 destroyTypeCache :: TypeCache -> IO ()
-destroyTypeCache TypeCache{typeCacheState} = uninterruptibleMask_ do
+destroyTypeCache TypeCache{typeCacheVariant, typeCacheState} = uninterruptibleMask_ do
     previous <- modifyMVarMasked typeCacheState (\state -> pure (Closed, state))
     case previous of
         Open helper NativeTypes{nativeOwned} ->
-            mapM_ destroyLogicalType nativeOwned `finally` destroy c_duckdb_v2_connection_destroy helper
+            (destroyVariantState typeCacheVariant `finally` mapM_ destroyLogicalType nativeOwned)
+                `finally` destroy c_duckdb_v2_connection_destroy helper
         _ -> pure ()
 
-{- | Borrow the persistent helper connection. Calls execute in sequence.
-Do not enter this cache again from the supplied action.
+{- | Borrow the persistent helper connection and its VARIANT state. Calls
+execute in sequence. Do not enter this cache again from the supplied action.
 -}
-withTypeConnection :: TypeCache -> (DuckDBV2ConnectionHandle -> IO a) -> IO a
-withTypeConnection cache action = withNativeTypes cache (\helper _ -> action helper)
+withTypeConnection :: TypeCache -> (DuckDBV2ConnectionHandle -> VariantState -> IO a) -> IO a
+withTypeConnection cache@TypeCache{typeCacheVariant} action = withNativeTypes cache (\helper _ -> action helper typeCacheVariant)
 
 -- | Construct an owned type. Resolve configured CRS leaves at every depth.
 cachedLogicalType :: TypeCache -> LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle

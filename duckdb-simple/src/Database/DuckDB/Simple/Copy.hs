@@ -49,6 +49,7 @@ import Database.DuckDB.Simple.Internal (Connection, withDatabaseHandle)
 import Database.DuckDB.Simple.Materialize (VariantReader, castReader, prepareVariantReader, prepareVectorReader)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Registration (ContextCallback, RegistrationTarget (..), getCallbackState, setCallbackState)
+import Database.DuckDB.Simple.VariantCodec (destroyVariantState, newVariantState)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (withArray)
 import Foreign.Ptr (FunPtr, Ptr, castFunPtr, castPtr, nullPtr)
@@ -200,7 +201,7 @@ registerCopyToFunction connection name bindFn initFn sinkFn finalizeFn = withDat
         transferCallbackState (attachOpaque (c_duckdb_v2_copy_to_batch_set_batch_data info)) rows
     readVariant instanceHandle vector =
         bracket (output (c_duckdb_v2_connection_create instanceHandle)) (destroy c_duckdb_v2_connection_destroy) \helper ->
-            prepareVariantReader helper vector
+            bracket newVariantState destroyVariantState \state -> prepareVariantReader helper state vector
     flush info _ = do
         (state, _) <- readCopyBinding (c_duckdb_v2_copy_to_flush_get_bind_data info)
         global <- readCallbackState (c_duckdb_v2_copy_to_flush_get_init_data info)

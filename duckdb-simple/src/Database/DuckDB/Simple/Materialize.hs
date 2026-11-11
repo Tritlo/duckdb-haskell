@@ -64,8 +64,10 @@ castReader factory variant vector =
         DuckDBV2LogicalTypeIdGeometry -> prepareGeometryReader factory vector
         _ -> variant vector
 
--- | Copy VARIANT rows before releasing the borrowed metadata connection.
-prepareVariantReader :: DuckDBV2ConnectionHandle -> VariantReader
+{- | Copy VARIANT rows before releasing the borrowed metadata connection. The
+state belongs to that connection.
+-}
+prepareVariantReader :: DuckDBV2ConnectionHandle -> VariantCodec.VariantState -> VariantReader
 prepareVariantReader = VariantCodec.prepareVariantDecoder materializePlainValue
 
 -- | Decode a value from the VARIANT decoder. The value contains no VARIANT.

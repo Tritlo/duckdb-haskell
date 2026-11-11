@@ -133,6 +133,9 @@ checkDroppedHandles = do
             weak <- mkWeakIORef token (pure ())
             conn <- open ":memory:"
             createFunction conn "dropped_token" (readIORef token)
+            -- A VARIANT result gives the type cache native state to release.
+            values <- query conn "SELECT ?" (Only (Variant (FieldInt64 42)))
+            unless (values == [Only (Variant (FieldInt64 42))]) (fail "wrong VARIANT payload before the drop")
             replicateM_ before performMajorGC
             stmt <- openStatement conn "SELECT dropped_token()"
             replicateM_ after performMajorGC

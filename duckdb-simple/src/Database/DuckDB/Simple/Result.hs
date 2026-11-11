@@ -157,7 +157,7 @@ fetchChunk ref conn queryText stream = withQueryError queryText $ mask \restore 
 -- | Prepare readers that borrow the vectors in an owned chunk.
 prepareChunkReaders :: Connection -> DuckDBV2DataChunkHandle -> [StatementStreamColumn] -> IO [Int -> IO FieldValue]
 prepareChunkReaders conn chunk columns = withTypeCache conn \cache -> withConnectionHandle conn \native -> withConnectionFactory native \factory -> do
-    let readVariant vector = withTypeConnection cache (\helper -> prepareVariantReader helper vector)
+    let readVariant vector = withTypeConnection cache (\helper state -> prepareVariantReader helper state vector)
     forM columns \StatementStreamColumn{statementStreamColumnIndex} ->
         output (c_duckdb_v2_data_chunk_get_vector chunk (fromIntegral statementStreamColumnIndex)) >>= prepareVectorReader (castReader factory readVariant)
 

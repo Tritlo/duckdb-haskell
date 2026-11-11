@@ -535,7 +535,8 @@ DuckDB 2.0 permits an empty key with other named keys. You can also bind a plain
 value and cast it in SQL, as in `?::VARIANT`.
 
 The library uses a separate helper connection for configured GEOMETRY types
-and VARIANT decoder metadata. It caches the GEOMETRY types and batches VARIANT
+and VARIANT decoder metadata. It caches the GEOMETRY types, the parsed VARIANT
+metadata statement, and the types for VARIANT casts. It batches VARIANT
 metadata queries. It constructs VARIANT types directly through the native
 factory. This preserves an active stream on the caller's connection. Low-level
 `ToDuckValue.toDuckValue` and `logicalTypeFromRep` require a V2 connection handle.

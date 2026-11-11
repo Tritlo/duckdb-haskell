@@ -9,7 +9,7 @@ import Control.Exception (throwIO)
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Data.Text (Text)
-import Database.DuckDB.FFI.V2 (c_duckdb_v2_value_create_bigint, pattern DuckDBV2LogicalTypeIdAny, pattern DuckDBV2MacroFunctionTypeScalar, pattern DuckDBV2MacroFunctionTypeTable)
+import Database.DuckDB.FFI.V2 (pattern DuckDBV2LogicalTypeIdAny, pattern DuckDBV2MacroFunctionTypeScalar, pattern DuckDBV2MacroFunctionTypeTable)
 import qualified Database.DuckDB.Simple.Config as Config
 import Database.DuckDB.Simple.Extension (Extension, ExtensionEntry)
 import qualified Database.DuckDB.Simple.Extension as Extension
@@ -35,7 +35,7 @@ register extension = do
     Extension.registerMacro extension "haskell_table" DuckDBV2MacroFunctionTypeTable [] "SELECT 42::BIGINT AS answer"
     Extension.registerCustomOption extension $
         (Config.customOption "haskell_multiplier" (Registration.TypeExpression "BIGINT"))
-            { Config.customOptionDefault = Just (Registration.FactoryDefaultValue (\factory -> Registration.output (c_duckdb_v2_value_create_bigint factory 7)))
+            { Config.customOptionDefault = Just (Registration.defaultValue (7 :: Int64))
             }
     Extension.registerPragma extension "haskell_demo" [] $
         Pragma.QueryPragma (\_ _ -> pure "SELECT 'pragma', current_setting('haskell_multiplier')::BIGINT")

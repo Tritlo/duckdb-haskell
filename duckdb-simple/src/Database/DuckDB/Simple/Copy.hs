@@ -27,7 +27,7 @@ module Database.DuckDB.Simple.Copy (
     registerCopyFunction,
     registerCopyFunctionWith,
     registerCopyToCallbacks,
-    registerCopyFromFunction,
+    registerCopyFromCallbacks,
     MultiFileOptions (..),
     defaultMultiFileOptions,
     registerMultiFileFunction,
@@ -134,8 +134,8 @@ registerCopyToCallbacks :: Connection -> Text -> CopyToCallbacks -> IO ()
 registerCopyToCallbacks connection name callbacks = registerCopyFunction connection name (Just callbacks) Nothing
 
 -- | Register the advanced COPY FROM callback interface.
-registerCopyFromFunction :: Connection -> Text -> CopyFromCallbacks -> IO ()
-registerCopyFromFunction connection name callbacks = registerCopyFunction connection name Nothing (Just callbacks)
+registerCopyFromCallbacks :: Connection -> Text -> CopyFromCallbacks -> IO ()
+registerCopyFromCallbacks connection name callbacks = registerCopyFunction connection name Nothing (Just callbacks)
 
 -- | Allocate the configured COPY TO callbacks before installing them.
 toInstallers :: Allocator -> DuckDBV2CopyFunctionHandle -> Maybe CopyToCallbacks -> [IO (IO ())]

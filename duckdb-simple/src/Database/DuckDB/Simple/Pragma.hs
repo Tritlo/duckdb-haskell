@@ -25,13 +25,13 @@ data PragmaCallback
 -- | Register a pragma with named, default, or variadic parameters and no return type.
 registerPragmaFunction :: Connection -> Text -> [FunctionParameter] -> PragmaCallback -> IO ()
 registerPragmaFunction connection name parameters callback =
-    withConnectionHandle connection \native ->
+    withConnectionHandle connection \native -> withConnectionFactory native \factory ->
         registerPragmaFunctionWith
             (ConnectionTarget connection)
             ( \function -> do
                 withIdentifier name (checked . c_duckdb_v2_pragma_function_set_name function)
                 signature <- output (c_duckdb_v2_pragma_function_get_signature function)
-                configureFunctionSignature native (FunctionSignature parameters Nothing) signature
+                configureFunctionSignature factory (FunctionSignature parameters Nothing) signature
             )
             callback
 

@@ -30,7 +30,7 @@ import qualified Database.DuckDB.Simple.Macro as Macro
 import Database.DuckDB.Simple.Native (DuckDBV2MacroFunctionType, c_duckdb_v2_pragma_function_get_signature, c_duckdb_v2_pragma_function_set_name, checked, output, withContextFactory, withIdentifier)
 import Database.DuckDB.Simple.Pragma (PragmaCallback)
 import qualified Database.DuckDB.Simple.Pragma as Pragma
-import Database.DuckDB.Simple.Registration (FunctionParameter, FunctionSignature (..), RegistrationTarget (ExtensionTarget), configureFunctionSignatureWithFactory)
+import Database.DuckDB.Simple.Registration (FunctionParameter, FunctionSignature (..), RegistrationTarget (ExtensionTarget), configureFunctionSignature)
 import Foreign.Ptr (Ptr, castPtr)
 
 {- | The borrowed registration target and context for one extension load.
@@ -73,7 +73,7 @@ registerPragma (Extension extension context) name parameters callback = withCont
         ( \function -> do
             withIdentifier name (checked . c_duckdb_v2_pragma_function_set_name function)
             signature <- output (c_duckdb_v2_pragma_function_get_signature function)
-            configureFunctionSignatureWithFactory factory (FunctionSignature parameters Nothing) signature
+            configureFunctionSignature factory (FunctionSignature parameters Nothing) signature
         )
         callback
 

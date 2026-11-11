@@ -44,7 +44,6 @@ module Database.DuckDB.Simple (
     openStatement,
     closeStatement,
     withStatement,
-    withCollectionStatement,
     clearStatementBindings,
     namedParameterIndex,
     columnCount,
@@ -249,18 +248,6 @@ closeStatement = closeStatementState
 -- | Run an action with a prepared statement, closing it afterwards.
 withStatement :: Connection -> Query -> (Statement -> IO a) -> IO a
 withStatement conn sql = bracket (openStatement conn sql) closeStatement
-
-{- | Prepare SQL with borrowed column collections as named input tables.
-The caller must keep each collection alive and unchanged until the callback
-returns. An empty column-name list selects DuckDB's default column names.
-The statement and all its results close before this function returns.
--}
-withCollectionStatement :: Connection -> Query -> [(Text, DuckDBV2ColumnDataCollectionHandle, [Text])] -> (Statement -> IO a) -> IO a
-withCollectionStatement conn queryText collections action = withParsedStatements conn queryText \parsed ->
-    case parsed of
-        [statement] -> bracket (createStatementFromParsedWithCollections conn queryText statement collections) closeStatement action
-        [] -> throwIO (mkPrepareError queryText (Text.pack "duckdb-simple: SQL query contains no statement"))
-        _ -> throwIO (mkPrepareError queryText (Text.pack "duckdb-simple: prepared SQL contains more than one statement"))
 
 -- | Bind positional parameters to a prepared statement, replacing any previous bindings.
 bind :: Statement -> [FieldBinding] -> IO ()
@@ -491,14 +478,6 @@ withTransaction conn action =
     rollback = Query (Text.pack "ROLLBACK")
 
 -- Internal helpers -----------------------------------------------------------
-
-mkPrepareError :: Query -> Text -> SQLError
-mkPrepareError queryText msg =
-    SQLError
-        { sqlErrorMessage = msg
-        , sqlErrorType = Nothing
-        , sqlErrorQuery = Just queryText
-        }
 
 throwFormatError :: Statement -> Text -> [String] -> IO a
 throwFormatError Statement{statementQuery} message params =

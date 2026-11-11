@@ -164,8 +164,9 @@ withObjectChildren connection keys list action
         -- extra key. Thus a wrong field list does not cause an error. The
         -- result is exact only because the fields are the keys of each object
         -- and 'validStructFields' accepts them. Do not relax that predicate.
-        bracket (logicalTypeFromRep connection structList) destroyLogicalType \logical ->
-            bracket (factoryOutput connection (\factory -> c_duckdb_v2_value_cast factory list logical)) destroyValue action
+        withConnectionFactory connection \factory ->
+            bracket (logicalTypeFromRep factory structList) destroyLogicalType \logical ->
+                bracket (output (c_duckdb_v2_value_cast factory list logical)) destroyValue action
     | otherwise =
         withConnectionFactory connection \factory ->
             bracket

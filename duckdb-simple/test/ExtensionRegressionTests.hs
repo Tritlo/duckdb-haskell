@@ -2,12 +2,14 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+-- The tests call deleteFunction on purpose, so its warning does not apply.
+{-# OPTIONS_GHC -Wno-deprecations #-}
 
 -- | Regression tests for extension callbacks and native handle ownership.
 module ExtensionRegressionTests (main, extensionRegressionTests) where
 
 import Control.Exception (AsyncException (ThreadKilled), ErrorCall, Exception (..), SomeException, bracket, bracket_, finally, throwIO, try)
-import Control.Monad (forM_, replicateM_, void, when)
+import Control.Monad (forM, forM_, replicateM_, void, when)
 import qualified Data.ByteString as BS
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
@@ -22,6 +24,7 @@ import qualified Database.DuckDB.Simple.Catalog as Catalog
 import qualified Database.DuckDB.Simple.Config as Config
 import qualified Database.DuckDB.Simple.Copy as Copy
 import qualified Database.DuckDB.Simple.FileSystem as FileSystem
+import Database.DuckDB.Simple.FromField (FieldValue (..))
 import qualified Database.DuckDB.Simple.Logging as Logging
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..))
 import qualified Database.DuckDB.Simple.Registration as Registration
@@ -215,6 +218,25 @@ extensionRegressionTests =
             assertBool "entry has a timestamp" (all ((/= Nothing) . Logging.logEntryTimestamp) received)
             assertBool "entry has a connection id" (all ((/= Nothing) . Logging.logEntryConnectionId) received)
             readIORef flushes >>= assertBool "flush and final cleanup ran" . (>= 2)
+        , testCase "instance log sinks receive connection and instance messages" do
+            entries <- newIORef []
+            withEnvironment \environment -> withInstance environment [] \instance_ -> do
+                attachDatabase instance_ ":memory:" "shared" []
+                setDefaultDatabase instance_ "shared"
+                Logging.registerInstanceLogSink instance_ "instance_log" (\entry -> atomicModifyIORef' entries (\values -> (entry : values, ()))) (pure ())
+                withConnectionOn instance_ \conn -> do
+                    void $ execute_ conn "CALL enable_logging(); SET logging_storage = 'instance_log'"
+                    Logging.logConnectionMessage conn DuckDBV2LogLevelWarning "HaskellConnection" "from a connection"
+                    Logging.logInstanceMessage instance_ DuckDBV2LogLevelWarning "HaskellInstance" "from an instance"
+                    void $ execute_ conn "SET logging_storage = 'memory'"
+            received <- readIORef entries
+            let ofType kind = filter ((== kind) . Logging.logEntryType) received
+            map Logging.logEntryMessage (ofType "HaskellConnection") @?= ["from a connection"]
+            map Logging.logEntryScope (ofType "HaskellConnection") @?= [DuckDBV2LogScopeConnection]
+            assertBool "connection entry has a connection id" (all ((/= Nothing) . Logging.logEntryConnectionId) (ofType "HaskellConnection"))
+            map Logging.logEntryMessage (ofType "HaskellInstance") @?= ["from an instance"]
+            map Logging.logEntryScope (ofType "HaskellInstance") @?= [DuckDBV2LogScopeDatabase]
+            map Logging.logEntryConnectionId (ofType "HaskellInstance") @?= [Nothing]
         , testCase "filesystem action exceptions release handles" $
             withTemporaryFile \path ->
                 withConnection ":memory:" \conn -> do
@@ -280,6 +302,10 @@ extensionRegressionTests =
                         Config.configOptionSetting option @?= "1"
                         Config.configOptionName option @?= "threads"
                         assertBool "description is retained" (not (Text.null (Config.configOptionDescription option)))
+        , testCase "instance options list global values" $
+            withEnvironment \environment -> withInstance environment [("threads", "1")] \instance_ -> do
+                options <- Config.listInstanceOptions instance_
+                fmap Config.configOptionSetting (find ((== "threads") . Config.configOptionName) options) @?= Just "1"
         , testCase "configuration values resolve case-insensitive names and aliases" $
             withConnection ":memory:" \conn -> do
                 Config.setConfigOption conn DuckDBV2SettingScopeGlobal "threads" "1"
@@ -288,6 +314,19 @@ extensionRegressionTests =
                 Config.getConfigOption conn "NO_SUCH_CONFIG_OPTION" >>= (@?= Nothing)
                 close conn
                 assertSqlError $ Config.getConfigOption conn "threads"
+        , testCase "typed reads copy the value of every listed option" $
+            withConnection ":memory:" \conn -> do
+                options <- Config.listConfigOptions conn
+                assertBool "options are listed" (not (null options))
+                failures <- forM options \option -> do
+                    let name = Config.configOptionName option
+                    outcome <- try (Config.getConfigValue conn name)
+                    pure case outcome of
+                        Left (err :: SomeException) -> [(name, displayException err)]
+                        Right _ -> []
+                concat failures @?= []
+                assertSqlError $ Config.getConfigValue conn "NO_SUCH_CONFIG_OPTION"
+                assertSqlError $ Config.getConfigDefaultValue conn "NO_SUCH_CONFIG_OPTION"
         , testCase "custom options retain typed defaults scopes and callback errors" $
             withConnection ":memory:" \conn -> do
                 let option =
@@ -302,12 +341,9 @@ extensionRegressionTests =
                                     when (number < 0) $ throwIO (userError "limit must be nonnegative")
                             }
                 Config.registerCustomOption conn option
-                Config.withConfigOptionDefaultValue conn "haskell_limit" \value ->
-                    Registration.output (c_duckdb_v2_value_get_bigint value) >>= (@?= 3)
+                Config.getConfigDefaultValue conn "haskell_limit" >>= (@?= FieldInt64 3)
                 Config.setConfigValue conn DuckDBV2SettingScopeSession "haskell_limit" (7 :: Int64)
-                Config.withConfigOptionValue conn "haskell_limit" \value scope -> do
-                    Registration.output (c_duckdb_v2_value_get_bigint value) >>= (@?= 7)
-                    scope @?= DuckDBV2SettingScopeSession
+                Config.getConfigValue conn "haskell_limit" >>= (@?= (FieldInt64 7, DuckDBV2SettingScopeSession))
                 assertSqlErrorContaining "limit must be nonnegative" $ Config.setConfigValue conn DuckDBV2SettingScopeSession "haskell_limit" (-1 :: Int64)
                 void $ execute_ conn "RESET haskell_limit"
                 fmap Config.configValueText <$> Config.getConfigOption conn "haskell_limit" >>= (@?= Just "3")

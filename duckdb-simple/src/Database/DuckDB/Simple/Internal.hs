@@ -33,6 +33,7 @@ module Database.DuckDB.Simple.Internal (
     createStatementFromParsed,
     createStatementFromParsedWithCollections,
     withParsedStatements,
+    withCollectionStatement,
     statementSchemas,
     clearStatementSchemas,
     preparedParameterType,
@@ -41,6 +42,7 @@ module Database.DuckDB.Simple.Internal (
     cleanupStatementStreamRef,
     connectionClosedError,
     statementClosedError,
+    mkPrepareError,
     keepAlive,
     withInstanceHandle,
     withDatabaseHandle,
@@ -425,6 +427,18 @@ createStatementFromParsedWithCollections parent query parsed collections = withQ
         withIdentifier name \nativeName -> withIdentifierArray columns \nativeColumns ->
             checked (c_duckdb_v2_statement_add_collection statement nativeName collection (ConstPtr (if null columns then nullPtr else nativeColumns)) (fromIntegral (length columns)))
 
+{- | Prepare SQL with borrowed column collections as named input tables.
+The caller must keep each collection alive and unchanged until the callback
+returns. An empty column-name list selects DuckDB's default column names.
+The statement and all its results close before this function returns.
+-}
+withCollectionStatement :: Connection -> Query -> [(Text, DuckDBV2ColumnDataCollectionHandle, [Text])] -> (Statement -> IO a) -> IO a
+withCollectionStatement conn queryText collections action = withParsedStatements conn queryText \parsed ->
+    case parsed of
+        [statement] -> bracket (createStatementFromParsedWithCollections conn queryText statement collections) closeStatementState action
+        [] -> throwIO (mkPrepareError queryText "duckdb-simple: SQL query contains no statement")
+        _ -> throwIO (mkPrepareError queryText "duckdb-simple: prepared SQL contains more than one statement")
+
 {- | Read the parameter names in binding order. DuckDB sorts all names again
 for each name that it returns. DuckDB rejects a mix of named and numbered
 parameters, and numbered names are distinct and sorted. So @count@ names that
@@ -445,6 +459,15 @@ connectionClosedError = SQLError "duckdb-simple: connection is closed" Nothing N
 -- | Error raised when an operation targets a closed statement.
 statementClosedError :: Statement -> SQLError
 statementClosedError Statement{statementQuery} = SQLError "duckdb-simple: statement is closed" Nothing (Just statementQuery)
+
+-- | Build an 'SQLError' with a message and its query. It has no native error type.
+mkPrepareError :: Query -> Text -> SQLError
+mkPrepareError queryText msg =
+    SQLError
+        { sqlErrorMessage = msg
+        , sqlErrorType = Nothing
+        , sqlErrorQuery = Just queryText
+        }
 
 -- | Keep a Haskell owner reachable until an action finishes.
 keepAlive :: a -> IO b -> IO b

@@ -11,8 +11,8 @@ module Database.DuckDB.Simple.Config (
     listInstanceOptions,
     getConfigOption,
     setConfigOption,
-    withConfigOptionValue,
-    withConfigOptionDefaultValue,
+    getConfigValue,
+    getConfigDefaultValue,
     setConfigValue,
     CustomOption (..),
     customOption,
@@ -29,9 +29,11 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
 import Database.DuckDB.Simple (withConnection)
 import Database.DuckDB.Simple.Callback (attachOpaque, runCallback, withCallbackResources, withTarget)
+import Database.DuckDB.Simple.FromField (FieldValue)
 import Database.DuckDB.Simple.Internal (Connection, Instance, withConnectionHandle, withInstanceHandle)
+import Database.DuckDB.Simple.Materialize (materializeValue)
 import Database.DuckDB.Simple.Native
-import Database.DuckDB.Simple.Registration (ContextCallback, DefaultValue (..), RegistrationTarget (..), TypeDeclaration, withRegistrationFactory, withTypeDeclarationWithFactory)
+import Database.DuckDB.Simple.Registration (ContextCallback, DefaultValue (..), RegistrationTarget (..), TypeDeclaration, withRegistrationFactory, withTypeDeclaration)
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
 import Foreign.Marshal.Alloc (alloca, allocaBytes)
 import Foreign.Ptr (nullPtr)
@@ -85,9 +87,7 @@ Update callbacks must not write options. They borrow their native handles.
 registerCustomOption :: Connection -> CustomOption -> IO ()
 registerCustomOption conn = registerCustomOptionOn (ConnectionTarget conn)
 
-{- | Register a declared option on a connection or loading extension.
-Extension defaults must use 'FactoryDefaultValue'.
--}
+-- | Register a declared option on a connection or loading extension.
 registerCustomOptionOn :: RegistrationTarget -> CustomOption -> IO ()
 registerCustomOptionOn target option = do
     when (Text.null (customOptionName option) || Text.any (== '\0') (customOptionName option)) $
@@ -96,20 +96,15 @@ registerCustomOptionOn target option = do
         target
         ( \handle -> withRegistrationFactory target \factory -> do
             withIdentifier (customOptionName option) $ checked . c_duckdb_v2_custom_option_set_name handle
-            withTypeDeclarationWithFactory factory (customOptionType option) $ checked . c_duckdb_v2_custom_option_set_type handle
+            withTypeDeclaration factory (customOptionType option) $ checked . c_duckdb_v2_custom_option_set_type handle
             case customOptionDefault option of
                 Nothing -> pure ()
-                Just value -> bracket (makeDefault factory value) (destroy c_duckdb_v2_value_destroy) \native -> checked (c_duckdb_v2_custom_option_set_default_value handle native)
+                Just (DefaultValue make) -> bracket (make factory) (destroy c_duckdb_v2_value_destroy) \native -> checked (c_duckdb_v2_custom_option_set_default_value handle native)
             withText (customOptionDescription option) $ checked . c_duckdb_v2_custom_option_set_description handle
             mapM_ (\scope -> checked (c_duckdb_v2_custom_option_set_supports_scope handle scope (if scope `elem` customOptionScopes option then 1 else 0))) [DuckDBV2SettingScopeGlobal, DuckDBV2SettingScopeSession]
             checked (c_duckdb_v2_custom_option_set_default_scope handle (customOptionDefaultScope option))
         )
         (customOptionUpdate option)
-  where
-    makeDefault factory (FactoryDefaultValue make) = make factory
-    makeDefault _ (DefaultValue make) = case target of
-        ConnectionTarget conn -> withConnectionHandle conn make
-        ExtensionTarget{} -> throwInvalidArgument "extension defaults require FactoryDefaultValue"
 
 {- | Configure and register a custom option with managed callback cleanup.
 The configuration action borrows the builder. Do not set user data or callbacks.
@@ -169,20 +164,40 @@ withConfigOptionValue conn name action = withConnectionHandle conn \handle -> do
     config <- output (c_duckdb_v2_connection_get_config handle)
     withOptionValue config name action
 
--- | Borrow the typed static default of an option during one action.
-withConfigOptionDefaultValue :: Connection -> Text -> (DuckDBV2ValueHandle -> IO a) -> IO a
-withConfigOptionDefaultValue conn name action = withConnectionHandle conn \handle -> do
+{- | Copy the effective typed value of an option and the scope of that value.
+An unknown option name raises 'SQLError'. The function releases all native
+handles before it returns.
+-}
+getConfigValue :: Connection -> Text -> IO (FieldValue, DuckDBV2SettingScope)
+getConfigValue conn name = withConnectionHandle conn \handle -> do
     config <- output (c_duckdb_v2_connection_get_config handle)
-    withIdentifier name \key ->
-        bracket (output (c_duckdb_v2_config_get_option_by_name config key)) (destroy c_duckdb_v2_option_destroy) \option ->
-            bracket (output (c_duckdb_v2_option_get_default_value option)) (destroy c_duckdb_v2_value_destroy) action
+    withConnectionFactory handle \factory ->
+        withOptionValue config name \value scope -> do
+            copied <- materializeValue unexpectedVariant factory value
+            pure (copied, scope)
+
+{- | Copy the typed static default of an option. An unknown option name raises
+'SQLError'. The function releases all native handles before it returns.
+-}
+getConfigDefaultValue :: Connection -> Text -> IO FieldValue
+getConfigDefaultValue conn name = withConnectionHandle conn \handle -> do
+    config <- output (c_duckdb_v2_connection_get_config handle)
+    withConnectionFactory handle \factory ->
+        withIdentifier name \key ->
+            bracket (output (c_duckdb_v2_config_get_option_by_name config key)) (destroy c_duckdb_v2_option_destroy) \option ->
+                bracket (output (c_duckdb_v2_option_get_default_value option)) (destroy c_duckdb_v2_value_destroy) (materializeValue unexpectedVariant factory)
+
+-- | Raise 'SQLError' for a VARIANT value. Configuration reads do not decode VARIANT.
+unexpectedVariant :: DuckDBV2VectorHandle -> IO a
+unexpectedVariant _ = throwIO (SQLError "duckdb-simple: configuration values must not contain VARIANT" Nothing Nothing)
 
 -- | Set an option from a typed Haskell value. Native code casts it to the option type.
 setConfigValue :: (ToDuckValue a) => Connection -> DuckDBV2SettingScope -> Text -> a -> IO ()
 setConfigValue conn scope name value = withConnectionHandle conn \handle -> do
     config <- output (c_duckdb_v2_connection_get_config handle)
-    bracket (toDuckValue handle value) (destroy c_duckdb_v2_value_destroy) \native ->
-        withIdentifier name \key -> checked (c_duckdb_v2_config_set_option_value config key native scope)
+    withConnectionFactory handle \factory ->
+        bracket (toDuckValue factory value) (destroy c_duckdb_v2_value_destroy) \native ->
+            withIdentifier name \key -> checked (c_duckdb_v2_config_set_option_value config key native scope)
 
 -- | Copy the options visible through a borrowed config.
 copyOptions :: DuckDBV2ConfigHandle -> IO [ConfigOption]

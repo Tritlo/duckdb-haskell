@@ -12,12 +12,12 @@ module Database.DuckDB.Simple.Macro (
 import Control.Exception (bracket)
 import Data.Text (Text)
 import Database.DuckDB.Simple.Native
-import Database.DuckDB.Simple.Registration (FunctionParameter, FunctionSignature (..), configureFunctionSignatureWithFactory)
+import Database.DuckDB.Simple.Registration (FunctionParameter, FunctionSignature (..), configureFunctionSignature)
 
 {- | Register a scalar expression or table SELECT as an extension macro.
 Parameters must use the standard parameter kind. Use
 @StructuredType (LogicalTypeScalar DuckDBV2LogicalTypeIdAny)@ for an untyped
-parameter and 'Database.DuckDB.Simple.Registration.FactoryDefaultValue' for defaults.
+parameter and 'Database.DuckDB.Simple.Registration.defaultValue' for defaults.
 DuckDB validates the body and signature. It resolves the body when the macro runs.
 The extension and context handles must belong to the current load callback.
 -}
@@ -35,7 +35,7 @@ registerMacroFunction extension context name kind parameters body =
             withIdentifier name (checked . c_duckdb_v2_macro_function_set_name function)
             withText body (checked . c_duckdb_v2_macro_function_set_body function)
             signature <- output (c_duckdb_v2_macro_function_get_signature function)
-            configureFunctionSignatureWithFactory factory (FunctionSignature parameters Nothing) signature
+            configureFunctionSignature factory (FunctionSignature parameters Nothing) signature
 
 {- | Configure and register a macro on the loading extension's database.
 The configuration action borrows the builder. It can set the name, body,

@@ -34,26 +34,10 @@ repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd -- "$repo_dir"
 nix-shell dev/nix/generate.nix --run 'dev/bindings/generate-bindings.sh --check'
 
-read -p "Username: " username
-read -sp "Password: " password
-echo ""
-
-upload_package() {
-  local name="$1"
-  echo ""
-  echo "=== Releasing $name ==="
-
-  # Use [0-9] so package prefixes do not cross-match.
-  rm -rf dist-newstyle/"$name"-[0-9]*-docs.tar.gz
-  rm -rf dist-newstyle/sdist/"$name"-[0-9]*.tar.gz
-  cabal haddock --haddock-for-hackage "$name"
-  cabal sdist "$name"
-
-  cabal upload $publish_flag -u "$username" -p "$password" dist-newstyle/sdist/"$name"-[0-9]*.tar.gz
-  cabal upload $publish_flag -d -u "$username" -p "$password" dist-newstyle/"$name"-[0-9]*-docs.tar.gz
-
-  echo "=== Done: $name ==="
-}
+case "$package" in
+  all) packages=(duckdb-ffi duckdb-simple) ;;
+  *) packages=("$package") ;;
+esac
 
 # Cabal looks for dependency interfaces in the ordinary documentation directory.
 # The Hackage build writes to a separate directory with the package version.
@@ -61,15 +45,28 @@ if [ "$package" = "duckdb-simple" ] || [ "$package" = "all" ]; then
   cabal haddock duckdb-ffi
 fi
 
-case "$package" in
-  duckdb-ffi)
-    upload_package duckdb-ffi
-    ;;
-  duckdb-simple)
-    upload_package duckdb-simple
-    ;;
-  all)
-    upload_package duckdb-ffi
-    upload_package duckdb-simple
-    ;;
-esac
+# Build each archive before the first upload. A build failure uploads nothing.
+for name in "${packages[@]}"; do
+  echo ""
+  echo "=== Building $name ==="
+
+  # Use [0-9] so package prefixes do not cross-match.
+  rm -rf dist-newstyle/"$name"-[0-9]*-docs.tar.gz
+  rm -rf dist-newstyle/sdist/"$name"-[0-9]*.tar.gz
+  cabal haddock --haddock-for-hackage "$name"
+  cabal sdist "$name"
+done
+
+# All archives exist at this point. Stop here for a rehearsal without an upload.
+echo ""
+read -p "Username: " username
+read -sp "Password: " password
+echo ""
+
+for name in "${packages[@]}"; do
+  echo ""
+  echo "=== Uploading $name ==="
+  cabal upload $publish_flag -u "$username" -p "$password" dist-newstyle/sdist/"$name"-[0-9]*.tar.gz
+  cabal upload $publish_flag -d -u "$username" -p "$password" dist-newstyle/"$name"-[0-9]*-docs.tar.gz
+  echo "=== Done: $name ==="
+done

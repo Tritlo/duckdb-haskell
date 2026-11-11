@@ -80,7 +80,8 @@ withTypeConnection cache@TypeCache{typeCacheVariant} action = withNativeTypes ca
 
 -- | Construct an owned type. Resolve configured CRS leaves at every depth.
 cachedLogicalType :: TypeCache -> LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle
-cachedLogicalType cache@TypeCache{typeCacheConnection} = logicalTypeFromRepWith typeCacheConnection resolve
+cachedLogicalType cache@TypeCache{typeCacheConnection} rep =
+    withConnectionFactory typeCacheConnection \factory -> logicalTypeFromRepWith factory resolve rep
   where
     copy = fmap Just . output . c_duckdb_v2_logical_type_copy
     resolve (LogicalTypeGeometry (Just crs)) =

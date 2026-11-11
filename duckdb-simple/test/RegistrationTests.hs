@@ -15,6 +15,7 @@ import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple hiding (bind, execute)
 import Database.DuckDB.Simple.FromField (FieldValue (..))
 import qualified Database.DuckDB.Simple.FunctionDocs as Docs
+import qualified Database.DuckDB.Simple.Logging as Logging
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..))
 import qualified Database.DuckDB.Simple.Pragma as Pragma
 import qualified Database.DuckDB.Simple.QueryMetrics as Metrics
@@ -41,6 +42,7 @@ registrationTests =
         , testCase "table state and typed default parameter" testTable
         , testCase "custom type and normal and try cast" testCast
         , testCase "connection scans precede instance scans" testReplacement
+        , testCase "callback contexts write log entries" testContextLog
         , testCase "callback failures become SQL errors" testErrors
         , testCase "callback closures and query states are released" testRelease
         ]
@@ -65,10 +67,20 @@ scalarSum info _ = do
 testScalar :: Assertion
 testScalar = withConnection ":memory:" \connection -> do
     let left = (R.parameter "left" bigint){R.parameterDefault = Just (R.defaultValue (7 :: Int64))}
-        right = (R.parameter "right" bigint){R.parameterDefault = Just (R.FactoryDefaultValue (\factory -> R.output (c_duckdb_v2_value_create_bigint factory 35))), R.parameterKind = DuckDBV2FunctionParameterKindNamedOnly}
+        right = (R.parameter "right" bigint){R.parameterDefault = Just (R.DefaultValue (\factory -> R.output (c_duckdb_v2_value_create_bigint factory 35))), R.parameterKind = DuckDBV2FunctionParameterKindNamedOnly}
     R.registerScalarFunction connection "managed_default" (scalarSignature [left, right]) [] (R.scalarCallbacks scalarSum)
     query_ connection "SELECT managed_default()" >>= (@?= [Only (42 :: Int64)])
     query_ connection "SELECT managed_default(right := 5, left := 3)" >>= (@?= [Only (8 :: Int64)])
+    let target = R.ConnectionTarget connection
+    R.withRegistrationFactory target \factory ->
+        R.registerScalarFunctionWith
+            target
+            ( \function -> do
+                R.withIdentifier "managed_target_default" (R.checked . c_duckdb_v2_scalar_function_set_name function)
+                R.output (c_duckdb_v2_scalar_function_get_signature function) >>= R.configureFunctionSignature factory (scalarSignature [left])
+            )
+            (R.scalarCallbacks scalarSum)
+    query_ connection "SELECT managed_target_default()" >>= (@?= [Only (7 :: Int64)])
     let positional = (R.parameter "first" bigint){R.parameterKind = DuckDBV2FunctionParameterKindPositionalOnly}
         standard = R.parameter "second" bigint
         rest = (R.parameter "rest" bigint){R.parameterKind = DuckDBV2FunctionParameterKindPositionalVariadic}
@@ -108,7 +120,7 @@ testScalarResolution = withConnection ":memory:" \connection -> do
             target
             ( \function -> do
                 R.withIdentifier "managed_resolved" (R.checked . c_duckdb_v2_scalar_function_set_name function)
-                R.output (c_duckdb_v2_scalar_function_get_signature function) >>= R.configureFunctionSignatureWithFactory factory signature
+                R.output (c_duckdb_v2_scalar_function_get_signature function) >>= R.configureFunctionSignature factory signature
                 docs <- R.output (c_duckdb_v2_scalar_function_get_docs function)
                 Docs.setFunctionDocs docs (Docs.FunctionDocs (Just "Preserve the input type.") [("Example", "SELECT managed_resolved(42)")] ["test"])
             )
@@ -267,6 +279,24 @@ testReplacement = withEnvironment \environment -> withInstance environment [] \i
         R.registerReplacementScan first (replacement 42)
         query_ first "SELECT amount FROM managed_missing" >>= (@?= [Only (42 :: Int64)])
         query_ second "SELECT amount FROM managed_missing" >>= (@?= [Only (7 :: Int64)])
+
+testContextLog :: Assertion
+testContextLog = do
+    entries <- newIORef []
+    withConnection ":memory:" \connection -> do
+        Logging.registerLogSink connection "context_log" (\entry -> atomicModifyIORef' entries (\values -> (entry : values, ()))) (pure ())
+        let logged info context = do
+                Logging.logMessage context DuckDBV2LogLevelWarning "HaskellContext" "from a callback"
+                count <- R.output (c_duckdb_v2_scalar_function_exec_get_row_count info)
+                vector <- R.output (c_duckdb_v2_scalar_function_exec_get_result info)
+                writeIntegers vector (replicate (fromIntegral count) 1)
+        R.registerScalarFunction connection "managed_log" (scalarSignature []) [] (R.scalarCallbacks logged)
+        void $ execute_ connection "CALL enable_logging(); SET logging_storage = 'context_log'"
+        query_ connection "SELECT managed_log()" >>= (@?= [Only (1 :: Int64)])
+        void $ execute_ connection "SET logging_storage = 'memory'"
+    received <- filter ((== "HaskellContext") . Logging.logEntryType) <$> readIORef entries
+    map Logging.logEntryMessage received @?= ["from a callback"]
+    map Logging.logEntryScope received @?= [DuckDBV2LogScopeConnection]
 
 testErrors :: Assertion
 testErrors = withConnection ":memory:" \connection -> do

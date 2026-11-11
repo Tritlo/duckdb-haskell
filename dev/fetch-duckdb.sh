@@ -23,7 +23,10 @@ esac
 mkdir -p "$output_dir/native"
 fetch() {
   local expected release archive digest
-  read -r expected release < <(grep "/$1-$platform.tar.gz\$" "$repo_dir/duckdb-ffi/native.sha256")
+  read -r expected release < <(grep "/$1-$platform.tar.gz\$" "$repo_dir/duckdb-ffi/native.sha256") || {
+    echo "duckdb-ffi/native.sha256 has no $1 archive for $platform." >&2
+    exit 1
+  }
   archive="$output_dir/$(basename "$release")"
   if [ ! -f "$archive" ]; then
     curl --fail --location --proto '=https' --proto-redir '=https' --retry 2 \
@@ -36,7 +39,7 @@ fetch() {
     digest=$(shasum -a 256 < "$archive")
   fi
   if [ "${digest%% *}" != "$expected" ]; then
-    echo "DuckDB archive checksum mismatch: $archive" >&2
+    echo "DuckDB archive checksum mismatch: $archive. Remove the file and run this script again." >&2
     exit 1
   fi
   tar -xzf "$archive" -C "$output_dir/native"

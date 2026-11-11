@@ -13,8 +13,9 @@ Cancellation also interrupts native chunk fetching. Prompt interruption requires
 @-threaded@ and waits for native code and Haskell callbacks to return.
 
 Serialize connection use for the entire cursor or fold. Another query on the
-same connection fails while its stream is active. Close or reset an abandoned
-statement to release its result.
+same connection fails while its stream is active. Call @closeStatement@ or
+@clearStatementBindings@ from @Database.DuckDB.Simple@ on an abandoned statement
+to release its result.
 -}
 module Database.DuckDB.Simple.Streaming (
     fold,
@@ -61,9 +62,11 @@ nextRow :: (FromRow r) => Statement -> IO (Maybe r)
 nextRow = nextRowWith fromRow
 
 {- | Fetch a row with a custom parser, requesting streaming on the first fetch.
-  The active result retains its execution mode until reset. Switching between
-  this module and the default @Database.DuckDB.Simple.nextRow@ does not restart
-  or change an active result. EOF remains exhausted until an explicit reset.
+  The active result retains its execution mode until @bind@, @bindNamed@,
+  @clearStatementBindings@, or @executeStatement@ from @Database.DuckDB.Simple@
+  releases it. Switching between this module and the default
+  @Database.DuckDB.Simple.nextRow@ does not restart or change an active result.
+  After EOF, this function returns 'Nothing' until one of those functions runs.
 -}
 nextRowWith :: RowParser r -> Statement -> IO (Maybe r)
 nextRowWith = Result.nextRowWith StreamingResult

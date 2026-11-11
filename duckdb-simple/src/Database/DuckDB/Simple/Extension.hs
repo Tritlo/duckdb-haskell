@@ -1,9 +1,9 @@
 {-# LANGUAGE BlockArguments #-}
 
 {- | Entry support for a loadable V2 Haskell extension.
-Build duckdb-ffi with its @extension@ flag. The C entrypoint must first call
-@duckdb_haskell_extension_init_api@, then initialize the threaded GHC runtime,
-then call the Haskell export. See @dev/extensions/@ in the repository.
+Enable the @extension@ flag of duckdb-ffi and of duckdb-simple. The C entry
+point calls @duckdb_haskell_extension_load@ with the foreign export of an
+'ExtensionEntry'. See @dev/extensions/@ in the repository.
 -}
 module Database.DuckDB.Simple.Extension (
     Extension,
@@ -19,7 +19,7 @@ module Database.DuckDB.Simple.Extension (
 ) where
 
 import Data.Text (Text)
-import Database.DuckDB.FFI.V2 (DuckDBV2ContextHandle, DuckDBV2ErrorInfoHandle, DuckDBV2ExtensionHandle)
+import Database.DuckDB.FFI.V2 (DuckDBV2ContextHandle (..), DuckDBV2ExtensionHandle (..))
 import Database.DuckDB.Simple.Callback (runCallback)
 import Database.DuckDB.Simple.Config (CustomOption)
 import qualified Database.DuckDB.Simple.Config as Config
@@ -31,7 +31,7 @@ import Database.DuckDB.Simple.Native (DuckDBV2MacroFunctionType, c_duckdb_v2_pra
 import Database.DuckDB.Simple.Pragma (PragmaCallback)
 import qualified Database.DuckDB.Simple.Pragma as Pragma
 import Database.DuckDB.Simple.Registration (FunctionParameter, FunctionSignature (..), RegistrationTarget (ExtensionTarget), configureFunctionSignatureWithFactory)
-import Foreign.Ptr (Ptr)
+import Foreign.Ptr (Ptr, castPtr)
 
 {- | The borrowed registration target and context for one extension load.
 Use this value only inside the action passed to 'runExtension'. Do not retain it
@@ -39,8 +39,11 @@ in registered callbacks or application state.
 -}
 data Extension = Extension DuckDBV2ExtensionHandle DuckDBV2ContextHandle
 
--- | The Haskell entrypoint called by the native load shim.
-type ExtensionEntry = DuckDBV2ExtensionHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+{- | The Haskell entry that @duckdb_haskell_extension_load@ calls. Its arguments
+are the extension handle, the borrowed context, and the error slot of the load.
+The plain pointers let a @foreign export@ use this type with no other import.
+-}
+type ExtensionEntry = Ptr () -> Ptr () -> Ptr () -> IO ()
 
 {- | Run registration and report exceptions through the borrowed load error slot.
 The extension is valid only during this call. Registered functions own their
@@ -48,7 +51,7 @@ callback resources after this call returns.
 -}
 runExtension :: (Extension -> IO ()) -> ExtensionEntry
 runExtension initialize extension context err =
-    runCallback err (initialize (Extension extension context))
+    runCallback (castPtr err) (initialize (Extension (DuckDBV2ExtensionHandle (castPtr extension)) (DuckDBV2ContextHandle (castPtr context))))
 
 -- | Register a typed Haskell function with the loading DuckDB host.
 createFunction :: (Function f) => Extension -> Text -> f -> IO ()

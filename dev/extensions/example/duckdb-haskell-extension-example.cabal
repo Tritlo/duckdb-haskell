@@ -22,10 +22,4 @@ foreign-library haskell_demo
     base >=4.18 && <4.23,
     duckdb-ffi >=2.0.0.0 && <2.1,
     duckdb-simple >=0.4.0.0 && <0.5,
-    hs-bindgen-runtime >=1.0.0.0 && <1.1,
     text >=2.0 && <2.2,
-
-  if os(linux) || os(osx)
-    extra-libraries: pthread
-  else
-    buildable: False

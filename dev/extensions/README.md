@@ -15,17 +15,21 @@ native-library installation and does not link `libduckdb`. A forced C include
 uses DuckDB's official function-table macros in the existing hs-bindgen C
 wrappers. The generated bindings remain unchanged and outside Git.
 
-`duckdb_haskell_extension_init_api` negotiates the table before Haskell starts.
-It copies the borrowed table into the FFI library and publishes it once under
-a mutex. This mode supports one DuckDB implementation per process. Generated
-C wrappers, the table, and managed callback helpers have hidden visibility.
-The initializer and the demo's native entrypoint remain exported.
+The C entry point of an extension calls `duckdb_haskell_extension_load` and
+does nothing else. See [entry.c](example/cbits/entry.c). The function
+negotiates the table before Haskell starts. It copies the borrowed table into
+the FFI library and publishes it once under a mutex. This mode supports one
+DuckDB implementation per process. Generated C wrappers, the table, and
+managed callback helpers have hidden visibility. The load function and the
+demo's native entrypoint remain exported.
 Extension mode omits interface unfoldings. This keeps calls to private C
 wrappers inside the FFI shared library when a client uses optimization.
 
-The demo initializes the threaded RTS once. It uses private arguments, ignores
-`GHCRTS`, and disables the RTS signal handlers. It keeps the RTS alive for the
-process lifetime. Do not call `hs_exit` after registration or database close.
+The load function then initializes the threaded RTS once. It uses private
+arguments, ignores `GHCRTS`, and disables the RTS signal handlers. The load
+fails with an error when the extension is not linked with `-threaded`. The
+function keeps the RTS alive for the process lifetime. Do not call `hs_exit`
+after registration or database close.
 DuckDB can still own Haskell callbacks, state, and destructor addresses.
 
 The RTS runs with `-N1`, so callbacks from all DuckDB worker threads share one
@@ -65,8 +69,7 @@ register extension = do
     Extension.createFunction extension "add" ((+) :: Int64 -> Int64 -> Int64)
 ```
 
-See [Demo.hs](example/src/Demo.hs) for the complete entrypoint. GHC requires
-the two native handle constructors in scope at its foreign export. Application
+See [Demo.hs](example/src/Demo.hs) for the complete entrypoint. Application
 functions do not need native handles, vectors, or allocation calls.
 
 ## Build and load

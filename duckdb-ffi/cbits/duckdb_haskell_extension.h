@@ -16,10 +16,19 @@ DUCKDB_EXTENSION_EXTERN
 #pragma GCC visibility pop
 #endif
 
-/* Negotiate and copy the host table before starting Haskell. Only this
- * function is for use outside duckdb-ffi. The table is hidden in the duckdb-ffi
- * library, so other C code cannot call DuckDB through the redirected names. */
-DUCKDB_EXTENSION_API int duckdb_haskell_extension_init_api(struct duckdb_v2_extension_input *input);
+/* The Haskell registration action of an extension. It receives the extension
+ * handle, the borrowed context, and the error slot of the load. */
+typedef void (*duckdb_haskell_extension_entry)(void *extension, void *context, void *err);
+
+/* Load a Haskell extension. Call this function from the C entry point
+ * NAME_init_c_api_v2 with the foreign export of the registration action. It
+ * negotiates and copies the host table, starts the threaded GHC runtime once
+ * for the process, and calls the entry. It reports a failure through
+ * input->err. Only this function is for use outside duckdb-ffi. The table is
+ * hidden in the duckdb-ffi library, so other C code cannot call DuckDB through
+ * the redirected names. */
+DUCKDB_EXTENSION_API void duckdb_haskell_extension_load(struct duckdb_v2_extension_input *input,
+                                                        duckdb_haskell_extension_entry entry);
 
 DUCKDB_EXTENSION_EXTERN_C_GUARD_CLOSE
 

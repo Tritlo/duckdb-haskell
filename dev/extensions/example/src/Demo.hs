@@ -9,7 +9,7 @@ import Control.Exception (throwIO)
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Data.Text (Text)
-import Database.DuckDB.FFI.V2 (DuckDBV2ContextHandle (..), DuckDBV2ExtensionHandle (..), c_duckdb_v2_value_create_bigint, pattern DuckDBV2LogicalTypeIdAny, pattern DuckDBV2MacroFunctionTypeScalar, pattern DuckDBV2MacroFunctionTypeTable)
+import Database.DuckDB.FFI.V2 (c_duckdb_v2_value_create_bigint, pattern DuckDBV2LogicalTypeIdAny, pattern DuckDBV2MacroFunctionTypeScalar, pattern DuckDBV2MacroFunctionTypeTable)
 import qualified Database.DuckDB.Simple.Config as Config
 import Database.DuckDB.Simple.Extension (Extension, ExtensionEntry)
 import qualified Database.DuckDB.Simple.Extension as Extension

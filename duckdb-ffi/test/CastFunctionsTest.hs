@@ -89,8 +89,8 @@ withTestCast conn action = do
     castFunPtr <- mkCastFun (castCallback modeRef extraSeenRef prefixStable)
     result <-
         withCastFunction \castFun ->
-            withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \sourceType ->
-                withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeVarchar)) \targetType -> do
+            withLogicalType (c_duckdb_create_logical_type (DuckDBTypeAlias DuckDBTypeInteger)) \sourceType ->
+                withLogicalType (c_duckdb_create_logical_type (DuckDBTypeAlias DuckDBTypeVarchar)) \targetType -> do
                     c_duckdb_cast_function_set_source_type castFun sourceType
                     c_duckdb_cast_function_set_target_type castFun targetType
                     c_duckdb_cast_function_set_implicit_cast_cost castFun 0

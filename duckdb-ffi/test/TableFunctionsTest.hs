@@ -37,7 +37,7 @@ tableFunctionLifecycle =
     testCase "table function lifecycle covers core callbacks" $
         runInBoundThread do
             withDatabase \db ->
-                withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeBigInt)) \bigint ->
+                withLogicalType (c_duckdb_create_logical_type (DuckDBTypeAlias DuckDBTypeBigInt)) \bigint ->
                     withHarness bigint \harness@TableHarness{} -> do
                         (bindError, execError, initError) <-
                             withConnection db \conn ->

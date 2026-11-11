@@ -35,14 +35,14 @@ import Utils (
 
 data ExpressionHarness = ExpressionHarness
     { ehFoldable :: IO (Maybe Bool)
-    , ehReturnType :: IO (Maybe DUCKDB_TYPE)
+    , ehReturnType :: IO (Maybe DuckDBType)
     , ehFoldedValue :: IO (Maybe String)
     , ehFoldError :: IO (Maybe String)
     }
 
 data ExpressionState = ExpressionState
     { esFoldable :: IORef (Maybe Bool)
-    , esReturnType :: IORef (Maybe DUCKDB_TYPE)
+    , esReturnType :: IORef (Maybe DuckDBType)
     , esFoldValue :: IORef (Maybe String)
     , esFoldError :: IORef (Maybe String)
     }
@@ -93,7 +93,7 @@ withExpressionFunction conn funcName action = do
     result <-
         withScalarFunction $ \scalarFun -> do
             withConstCString funcName $ \name -> c_duckdb_scalar_function_set_name scalarFun name
-            withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) $ \intType -> do
+            withLogicalType (c_duckdb_create_logical_type (DuckDBTypeAlias DuckDBTypeInteger)) $ \intType -> do
                 c_duckdb_scalar_function_add_parameter scalarFun intType
                 c_duckdb_scalar_function_set_return_type scalarFun intType
                 c_duckdb_scalar_function_set_bind scalarFun bindPtr

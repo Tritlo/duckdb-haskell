@@ -167,10 +167,10 @@ withArrowOptions conn action =
             release _ = c_duckdb_destroy_arrow_options optsPtr
         bracket acquire release action
 
-withLogicalTypes :: [DUCKDB_TYPE] -> ([DuckDBLogicalType] -> IO a) -> IO a
+withLogicalTypes :: [DuckDBType] -> ([DuckDBLogicalType] -> IO a) -> IO a
 withLogicalTypes [] action = action []
 withLogicalTypes (t : ts) action =
-    bracket (c_duckdb_create_logical_type (DuckDBType t)) destroyLogicalType \lt ->
+    bracket (c_duckdb_create_logical_type (DuckDBTypeAlias t)) destroyLogicalType \lt ->
         withLogicalTypes ts \rest -> action (lt : rest)
 
 withColumnNames :: [String] -> (Ptr (ConstPtr CChar) -> IO a) -> IO a

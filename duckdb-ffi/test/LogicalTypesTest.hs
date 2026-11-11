@@ -43,7 +43,7 @@ primitiveLogicalTypes :: TestTree
 primitiveLogicalTypes =
     testCase "primitive logical types report their ids" $
         forM_ primitives \(duckType, expected) ->
-            withLogicalType (c_duckdb_create_logical_type (DuckDBType duckType)) \lt -> do
+            withLogicalType (c_duckdb_create_logical_type (DuckDBTypeAlias duckType)) \lt -> do
                 typeId <- (fmap (getField @"unwrap") . c_duckdb_get_type_id) lt
                 typeId @?= expected
   where
@@ -112,7 +112,7 @@ compositeLogicalTypes :: TestTree
 compositeLogicalTypes =
     testCase "composite logical types expose nesting metadata" $ do
         -- List type
-        withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \child -> do
+        withLogicalType (c_duckdb_create_logical_type (DuckDBTypeAlias DuckDBTypeInteger)) \child -> do
             listType <- c_duckdb_create_list_type child
             withLogicalType (pure listType) \lt -> do
                 c_duckdb_get_type_id lt
@@ -121,7 +121,7 @@ compositeLogicalTypes =
                 withLogicalType (pure listChild) ((fmap (getField @"unwrap") . c_duckdb_get_type_id) >=> (@?= DuckDBTypeInteger))
 
         -- Array type
-        withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \arrayChild -> do
+        withLogicalType (c_duckdb_create_logical_type (DuckDBTypeAlias DuckDBTypeInteger)) \arrayChild -> do
             arrayType <- c_duckdb_create_array_type arrayChild 5
             withLogicalType (pure arrayType) \lt -> do
                 c_duckdb_get_type_id lt
@@ -131,8 +131,8 @@ compositeLogicalTypes =
                 c_duckdb_array_type_array_size lt >>= (@?= 5)
 
         -- Map type
-        withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeVarchar)) \keyType ->
-            withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \valType -> do
+        withLogicalType (c_duckdb_create_logical_type (DuckDBTypeAlias DuckDBTypeVarchar)) \keyType ->
+            withLogicalType (c_duckdb_create_logical_type (DuckDBTypeAlias DuckDBTypeInteger)) \valType -> do
                 mapType <- c_duckdb_create_map_type keyType valType
                 withLogicalType (pure mapType) \lt -> do
                     c_duckdb_get_type_id lt
@@ -143,8 +143,8 @@ compositeLogicalTypes =
                     withLogicalType (pure mapVal) ((fmap (getField @"unwrap") . c_duckdb_get_type_id) >=> (@?= DuckDBTypeInteger))
 
         -- Struct type
-        withMany withConstCString ["id", "name"] \fieldNames -> withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \idType ->
-            withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeVarchar)) \nameType ->
+        withMany withConstCString ["id", "name"] \fieldNames -> withLogicalType (c_duckdb_create_logical_type (DuckDBTypeAlias DuckDBTypeInteger)) \idType ->
+            withLogicalType (c_duckdb_create_logical_type (DuckDBTypeAlias DuckDBTypeVarchar)) \nameType ->
                 withArray [idType, nameType] \childArray ->
                     withArray fieldNames \namesArray -> do
                         structType <- c_duckdb_create_struct_type childArray namesArray 2
@@ -160,8 +160,8 @@ compositeLogicalTypes =
                             withLogicalType (pure structChild1) ((fmap (getField @"unwrap") . c_duckdb_get_type_id) >=> (@?= DuckDBTypeVarchar))
 
         -- Union type
-        withMany withConstCString ["int_member", "text_member"] \memberNames -> withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \intMember ->
-            withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeVarchar)) \textMember ->
+        withMany withConstCString ["int_member", "text_member"] \memberNames -> withLogicalType (c_duckdb_create_logical_type (DuckDBTypeAlias DuckDBTypeInteger)) \intMember ->
+            withLogicalType (c_duckdb_create_logical_type (DuckDBTypeAlias DuckDBTypeVarchar)) \textMember ->
                 withArray [intMember, textMember] \memberArray ->
                     withArray memberNames \nameArray -> do
                         unionType <- c_duckdb_create_union_type memberArray nameArray 2
@@ -179,7 +179,7 @@ compositeLogicalTypes =
 aliasRoundtrip :: TestTree
 aliasRoundtrip =
     testCase "logical type aliases can be set and retrieved" $
-        withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \lt -> do
+        withLogicalType (c_duckdb_create_logical_type (DuckDBTypeAlias DuckDBTypeInteger)) \lt -> do
             aliasBefore <- c_duckdb_logical_type_get_alias lt
             aliasBefore @?= nullPtr
             withConstCString "custom_alias" $ \alias -> c_duckdb_logical_type_set_alias lt alias
@@ -195,7 +195,7 @@ registerLogicalType =
     testCase "registered logical type alias is accepted in SQL" $
         withDatabase \db ->
             withConnection db \conn ->
-                withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \lt -> do
+                withLogicalType (c_duckdb_create_logical_type (DuckDBTypeAlias DuckDBTypeInteger)) \lt -> do
                     let aliasName = "custom_int_alias"
                     withConstCString aliasName $ \aliasPtr ->
                         c_duckdb_logical_type_set_alias lt aliasPtr
@@ -227,7 +227,7 @@ geometryTypeCrs =
                         assertBool "plain GEOMETRY has no CRS" (crs == nullPtr)
 
                 -- Types other than GEOMETRY never have a CRS.
-                withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \lt -> do
+                withLogicalType (c_duckdb_create_logical_type (DuckDBTypeAlias DuckDBTypeInteger)) \lt -> do
                     crs <- c_duckdb_geometry_type_get_crs lt
                     assertBool "INTEGER has no CRS" (crs == nullPtr)
 

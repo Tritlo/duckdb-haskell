@@ -156,8 +156,8 @@ appenderDataChunkInsert =
                 withTableAppenderExt conn "chunk_demo" \app -> do
                     c_duckdb_appender_column_count app >>= (@?= 2)
 
-                    withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \intType ->
-                        withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeVarchar)) \textType ->
+                    withLogicalType (c_duckdb_create_logical_type (DuckDBTypeAlias DuckDBTypeInteger)) \intType ->
+                        withLogicalType (c_duckdb_create_logical_type (DuckDBTypeAlias DuckDBTypeVarchar)) \textType ->
                             withArray [intType, textType] \typeArray ->
                                 withDataChunk (c_duckdb_create_data_chunk typeArray 2) \chunk -> do
                                     intVec <- c_duckdb_data_chunk_get_vector chunk 0
@@ -187,8 +187,8 @@ appenderQueryAppender =
             withConnection db \conn -> do
                 runStatement conn "CREATE TABLE query_target(id INTEGER, label VARCHAR)"
 
-                withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \intType ->
-                    withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeVarchar)) \textType -> do
+                withLogicalType (c_duckdb_create_logical_type (DuckDBTypeAlias DuckDBTypeInteger)) \intType ->
+                    withLogicalType (c_duckdb_create_logical_type (DuckDBTypeAlias DuckDBTypeVarchar)) \textType -> do
                         let types = [intType, textType]
                         withQueryAppender conn "INSERT INTO query_target SELECT * FROM appended_data" types \app -> do
                             c_duckdb_appender_column_count app >>= (@?= 2)
@@ -400,8 +400,8 @@ appenderChunkDefaults =
                 withTableAppender conn "chunk_defaults_demo" \app -> do
                     c_duckdb_appender_column_count app >>= (@?= 2)
 
-                    withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)) \intType ->
-                        withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeVarchar)) \textType ->
+                    withLogicalType (c_duckdb_create_logical_type (DuckDBTypeAlias DuckDBTypeInteger)) \intType ->
+                        withLogicalType (c_duckdb_create_logical_type (DuckDBTypeAlias DuckDBTypeVarchar)) \textType ->
                             withArray [intType, textType] \typeArray ->
                                 withDataChunk (c_duckdb_create_data_chunk typeArray 2) \chunk -> do
                                     intVec <- c_duckdb_data_chunk_get_vector chunk 0
@@ -530,7 +530,7 @@ assignStrings vec values =
         withConstCString val $ \str ->
             c_duckdb_vector_assign_string_element vec (fromIntegral @Integer idx) str
 
-checkColumnType :: DuckDBAppender -> DuckDBIdx -> DUCKDB_TYPE -> IO ()
+checkColumnType :: DuckDBAppender -> DuckDBIdx -> DuckDBType -> IO ()
 checkColumnType app idx expected =
     do
         logicalType <- c_duckdb_appender_column_type app idx

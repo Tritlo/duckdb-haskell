@@ -84,10 +84,10 @@ including empty members. The standalone WKB codec retains mixed layouts.
 ## Getting Started
 
 ```haskell
+{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 import Database.DuckDB.Simple
-import Database.DuckDB.Simple.Types (Only (..))
 
 main :: IO ()
 main =
@@ -120,7 +120,6 @@ main =
 
 ```haskell
 import Database.DuckDB.Simple
-import Database.DuckDB.Simple.Types (Only (..))
 
 fetchNames :: Connection -> IO [Maybe String]
 fetchNames conn = do
@@ -142,11 +141,10 @@ effects must roll back together.
 
 duckdb-simple supports both positional (`?`) and named parameters. Named
 parameters are bound with the `(:=)` helper exported from
-`Database.DuckDB.Simple.ToField`.
+`Database.DuckDB.Simple`.
 
 ```haskell
 import Database.DuckDB.Simple
-import Database.DuckDB.Simple.ToField (NamedParam ((:=)))
 
 insertNamed :: Connection -> IO Int
 insertNamed conn =
@@ -178,7 +176,10 @@ monadic/Applicative style and even derived generically for product types:
 ```haskell
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE OverloadedStrings #-}
 
+import Data.Text (Text)
 import Database.DuckDB.Simple
 import GHC.Generics (Generic)
 
@@ -397,8 +398,9 @@ small query then takes about 1.2 to 1.3 times as long as from an unbound
 thread. Run code with many small queries in a thread made with `forkIO`, or
 wrap the main action in `Control.Concurrent.runInUnboundThread`.
 
-Close or reset an abandoned statement to release its result. DuckDB can retain
-native result buffers until that result is destroyed.
+Call `closeStatement` or `clearStatementBindings` on an abandoned statement to
+release its result. DuckDB can retain native result buffers until that result
+is destroyed.
 Use `withStatement` for manual iteration. `fold` releases the result after
 success or an exception. The accumulator determines Haskell memory use.
 
@@ -418,7 +420,7 @@ cursor before row delivery. A row callback can run another query on the same
 connection.
 
 ```haskell
-import Database.DuckDB.Simple.Types (Only (..))
+import Database.DuckDB.Simple
 
 sumValues :: Connection -> IO Int
 sumValues conn =
@@ -452,8 +454,10 @@ This module uses V2 execution and incremental chunk fetching. DuckDB can still
 materialize some queries. Streaming does not bound the memory used by query
 operators.
 
-The first cursor fetch selects the execution mode until an explicit reset.
-Switching between default and streaming `nextRow` calls retains that mode.
+The first cursor fetch selects the execution mode. The mode stays until
+`bind`, `bindNamed`, `clearStatementBindings`, or `executeStatement` releases
+the result. Switching between default and streaming `nextRow` calls retains
+that mode.
 Keep the connection dedicated to the active stream. Until the stream is
 complete, DuckDB rejects other statements on that connection with a
 `RESOURCE_IN_USE` error. If you close an incomplete stream, DuckDB aborts its
@@ -681,10 +685,11 @@ SQL expressions. Argument and result types reuse the existing `FromField` and
 box.
 
 ```haskell
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+
 import Data.Int (Int64)
 import Database.DuckDB.Simple
-import Database.DuckDB.Simple.Function (createFunction)
-import Database.DuckDB.Simple.Types (Only (..))
 
 registerAndUse :: Connection -> IO [Only Int64]
 registerAndUse conn = do

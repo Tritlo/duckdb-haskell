@@ -121,8 +121,8 @@ cabal build all -fsystemlib --extra-lib-dirs=/tmp/duckdb-2.0-native/native
 DUCKDB_TEST_VERSION=2.0.0 cabal test all -fsystemlib --extra-lib-dirs=/tmp/duckdb-2.0-native/native --test-show-details=direct
 ```
 
-The `.github/workflows/duckdb-2.0.yml` job and Docker use the release
-archives. Nix builds the same source pin with explicit version 2.0.0:
+The `bindings` job of `.github/workflows/bindings.yml` and Docker use the
+release archives. Nix builds the same source pin with explicit version 2.0.0:
 
 ```sh
 nix-build dev/nix/ci.nix --no-out-link

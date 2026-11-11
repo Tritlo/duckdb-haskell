@@ -28,7 +28,7 @@ nix-shell dev/nix/generate.nix --run 'dev/bindings/generate-bindings.sh --check'
 The ignored `duckdb-ffi/generated/` directory contains the Haskell modules and
 C ABI assertions. Keep it outside Git. The checksum file and generator are
 tracked. Run the generator without `--check` after an intentional input change.
-Review the new checksums and run the coverage audit.
+Review the new checksums.
 
 `dev/release.sh` generates and verifies both APIs before it builds the
 Hackage source archives and documentation. It then uploads the selected

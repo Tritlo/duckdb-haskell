@@ -340,6 +340,9 @@ publicTypeName cName callback
         , ("duckdb_uhugeint", "DuckDBUHugeInt")
         , ("idx_t", "DuckDBIdx")
         , ("sel_t", "DuckDBSel")
+        , -- The enum has the type tag patterns. The typedef duckdb_type wraps it.
+          ("DUCKDB_TYPE", "DuckDBType")
+        , ("duckdb_type", "DuckDBTypeAlias")
         ]
 
 -- | Collect C expressions, optional generated values, and exported functions.

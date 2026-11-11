@@ -20,10 +20,11 @@ function names stay the same. Many of their types change.
 - Add `hs-bindgen-runtime` to your dependencies to use `toFunPtr`,
   `fromFunPtr`, and the generated record fields.
 - Enum types are newtypes over `CUInt` with one field, `unwrap`. The pattern
-  names stay the same. Logical type tags have the type `DUCKDB_TYPE`.
-  Functions take and return its wrapper `DuckDBType`. For example,
+  names stay the same. Logical type tags keep the type `DuckDBType`.
+  Functions take and return its wrapper `DuckDBTypeAlias`, because the C
+  header declares `duckdb_type` as an alias of the enum. For example,
   `c_duckdb_create_logical_type DuckDBTypeInteger` becomes
-  `c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger)`.
+  `c_duckdb_create_logical_type (DuckDBTypeAlias DuckDBTypeInteger)`.
 - Handles are newtypes over `Ptr`. `DuckDBIdx` and `DuckDBSel` are newtypes
   over `Word64` and `Word32`. Write a null handle as, for example,
   `DuckDBDataChunk nullPtr`.

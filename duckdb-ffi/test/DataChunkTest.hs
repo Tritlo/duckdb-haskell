@@ -64,7 +64,7 @@ dataChunkReset =
 -- Helpers -------------------------------------------------------------------
 
 withIntegerLogicalType :: (DuckDBLogicalType -> IO a) -> IO a
-withIntegerLogicalType = withLogicalType (c_duckdb_create_logical_type (DuckDBType DuckDBTypeInteger))
+withIntegerLogicalType = withLogicalType (c_duckdb_create_logical_type (DuckDBTypeAlias DuckDBTypeInteger))
 
 withDataChunk :: IO DuckDBDataChunk -> (DuckDBDataChunk -> IO a) -> IO a
 withDataChunk acquire = bracket acquire destroyChunk

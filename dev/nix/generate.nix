@@ -7,14 +7,18 @@ let
   loaderPath = pkgs.lib.makeLibraryPath [ clang.libclang pkgs.stdenv.cc.cc ];
   haskellPackages = pkgs.haskell.packages.ghc9141.override {
     overrides = self: super: {
-      hs-bindgen = (pkgs.haskell.lib.overrideCabal (self.callHackageDirect {
+      # This package set only builds the generator. generated.sha256 checks its
+      # output. Do not build tests, documentation, or profiling libraries.
+      mkDerivation = args: super.mkDerivation (args // {
+        doCheck = false;
+        doHaddock = false;
+        enableLibraryProfiling = false;
+      });
+      hs-bindgen = (self.callHackageDirect {
         pkg = "hs-bindgen";
         ver = "1.0.0.0";
         sha256 = "0k0mq38w9s1swvs30ibw5a11lc7szbp9dg7rr29jrqm8d7fb42dc";
-      } { }) (old: {
-        # These two fixture groups require a Cabal project environment file.
-        testFlags = (old.testFlags or [ ]) ++ [ "--pattern=!/th-fixtures/ && !/pp-fixtures/" ];
-      })).overrideAttrs (old: {
+      } { }).overrideAttrs (old: {
         nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ clang.clang clang.llvm pkgs.doxygen ];
         C_INCLUDE_PATH = systemIncludePath;
         LD_LIBRARY_PATH = loaderPath;
@@ -52,12 +56,7 @@ let
       } { };
       debruijn = pkgs.haskell.lib.doJailbreak super.debruijn;
       dec = pkgs.haskell.lib.doJailbreak super.dec;
-      # GHC 9.14 changes the Core that the fin inspection suite compares.
-      fin = pkgs.haskell.lib.dontCheck (pkgs.haskell.lib.doJailbreak super.fin);
-      # Run the Optics properties. Its Core inspection checks fail with GHC 9.14.
-      optics = pkgs.haskell.lib.overrideCabal super.optics (old: {
-        testFlags = (old.testFlags or [ ]) ++ [ "--pattern=properties" ];
-      });
+      fin = pkgs.haskell.lib.doJailbreak super.fin;
       skew-list = pkgs.haskell.lib.doJailbreak super.skew-list;
       vec = pkgs.haskell.lib.doJailbreak super.vec;
     };

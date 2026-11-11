@@ -18,7 +18,7 @@ cd -- "$package_dir"
 sha256sum --check --quiet vendor/upstream.sha256
 
 if [[ -z ${HS_BINDGEN_VERSION:-} || $(ghc-pkg field hs-bindgen version --simple-output) != "$HS_BINDGEN_VERSION" ]]; then
-  echo "Run this script in dev/nix/generate.nix." >&2
+  echo "Run: nix-shell dev/nix/generate.nix --run 'dev/bindings/generate-bindings.sh'" >&2
   exit 1
 fi
 
@@ -35,7 +35,10 @@ ghc -hide-all-packages -package base -package aeson -package bytestring \
 "$scratch_dir/generate" "$scratch_dir"
 outputs=(generated/Database/DuckDB/FFI.hs generated/Database/DuckDB/FFI/V2.hs generated/abi-checks.c generated/abi-checks-v2.c)
 if "$check"; then
-  (cd -- "$scratch_dir" && sha256sum --check "$package_dir/generated.sha256")
+  if ! (cd -- "$scratch_dir" && sha256sum --check "$package_dir/generated.sha256"); then
+    echo "The generated files do not match generated.sha256. After an intentional input change, run this script without --check and review the new checksums." >&2
+    exit 1
+  fi
 fi
 mkdir -p generated/Database/DuckDB/FFI
 for output in "${outputs[@]}"; do

@@ -20,7 +20,10 @@ case "$(uname -s):$(uname -m)" in
   Darwin:x86_64|Darwin:arm64) platform=osx-universal ;;
   *) echo "Supported platforms: glibc Linux amd64/arm64 and macOS." >&2; exit 2 ;;
 esac
-read -r expected release < <(grep "/duckdb-shared-libs-$platform.tar.gz\$" "$repo_dir/duckdb-ffi/native.sha256")
+read -r expected release < <(grep "/duckdb-shared-libs-$platform.tar.gz\$" "$repo_dir/duckdb-ffi/native.sha256") || {
+  echo "duckdb-ffi/native.sha256 has no archive for $platform." >&2
+  exit 1
+}
 
 archive="$output_dir/$(basename "$release")"
 mkdir -p "$output_dir/native"
@@ -35,7 +38,7 @@ else
   digest=$(shasum -a 256 < "$archive")
 fi
 if [ "${digest%% *}" != "$expected" ]; then
-  echo "DuckDB archive checksum mismatch: $archive" >&2
+  echo "DuckDB archive checksum mismatch: $archive. Remove the file and run this script again." >&2
   exit 1
 fi
 tar -xzf "$archive" -C "$output_dir/native"

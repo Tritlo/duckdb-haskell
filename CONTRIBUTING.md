@@ -72,8 +72,8 @@ with GHC 9.14.1.
 Run the same build locally with `nix-build dev/nix/ci.nix --no-out-link`.
 
 The separate DataFrame integration suite checks Arrow export with
-`dataframe-arrow-bridge`. It runs in the optimized Cabal CI jobs on Linux and
-macOS. Enable it locally with:
+`dataframe-arrow-bridge`. It runs in each Cabal CI job on Linux and macOS.
+Enable it locally with:
 
 ```sh
 cabal build duckdb-simple-dataframe-test -fdataframe-tests

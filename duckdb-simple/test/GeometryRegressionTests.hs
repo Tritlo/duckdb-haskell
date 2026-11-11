@@ -22,7 +22,7 @@ import Database.DuckDB.FFI.V2 (DuckDBV2Error, pattern DuckDBV2ErrorInputInvalid,
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (FieldValue (..), StructValue (..), UnionValue (..))
 import Database.DuckDB.Simple.Geometry (RawGeometry (..), fromRawGeometry, toRawGeometry)
-import Database.DuckDB.Simple.Internal (withConnectionHandle)
+import Database.DuckDB.Simple.Internal (withConnectionFactory, withConnectionHandle)
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), UnionMemberType (..), destroyLogicalType, logicalTypeFromRep, logicalTypeToRep)
 import qualified Database.DuckDB.Simple.Streaming as Streaming
 import GHC.Float (castWord64ToDouble)
@@ -337,9 +337,9 @@ tests =
             withConnectionWithOptions ":memory:" options \conn ->
                 (query_ conn "SELECT current_setting('threads')" :: IO [Only Int64]) >>= (@?= [Only 1])
         , testCase "logical type construction preserves CRS" $
-            withConnection ":memory:" \conn -> withConnectionHandle conn \native -> do
+            withConnection ":memory:" \conn -> withConnectionHandle conn \native -> withConnectionFactory native \factory -> do
                 let logical = LogicalTypeList (LogicalTypeGeometry (Just "OGC:CRS84"))
-                bracket (logicalTypeFromRep native logical) destroyLogicalType logicalTypeToRep >>= (@?= logical)
+                bracket (logicalTypeFromRep factory logical) destroyLogicalType logicalTypeToRep >>= (@?= logical)
         , testGroup
             "folds cross chunk boundaries and preserve CRS"
             [ testCase mode $

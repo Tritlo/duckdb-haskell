@@ -188,9 +188,9 @@ tests =
                     when (i == 0) (bind stmt [toField (Variant (FieldInt64 42))])
                     pure (acc + i)
                 total @?= (sum [0 .. 99999] :: Int64)
-        , testCase "VARIANT type construction uses the supplied connection" $ withConnection ":memory:" \conn ->
-            withConnectionHandle conn \native ->
-                bracket (logicalTypeFromRep native (LogicalTypeScalar DuckDBV2LogicalTypeIdVariant)) destroyLogicalType \logical ->
+        , testCase "VARIANT type construction uses the supplied factory" $ withConnection ":memory:" \conn ->
+            withConnectionHandle conn \native -> withConnectionFactory native \factory ->
+                bracket (logicalTypeFromRep factory (LogicalTypeScalar DuckDBV2LogicalTypeIdVariant)) destroyLogicalType \logical ->
                     logicalTypeToRep logical >>= (@?= LogicalTypeScalar DuckDBV2LogicalTypeIdVariant)
         , testCase "VARIANT payloads and GEOMETRY CRS metadata bind together" $ withConnection ":memory:" \conn -> do
             [Only value] <- query_ conn "SELECT {'payload': 42::VARIANT, 'shape': NULL::GEOMETRY('OGC:CRS84')}" :: IO [Only (StructValue FieldValue)]

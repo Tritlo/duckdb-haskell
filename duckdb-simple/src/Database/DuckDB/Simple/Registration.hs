@@ -1,7 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 {- |
@@ -52,9 +51,7 @@ module Database.DuckDB.Simple.Registration (
     setCallbackState,
     getCallbackState,
     withTypeDeclaration,
-    withTypeDeclarationWithFactory,
     configureFunctionSignature,
-    configureFunctionSignatureWithFactory,
     checked,
     output,
     destroy,
@@ -65,7 +62,7 @@ module Database.DuckDB.Simple.Registration (
     readIdentifier,
 ) where
 
-import Control.Exception (bracket, throwIO)
+import Control.Exception (bracket)
 import Control.Monad (forM_, when)
 import Data.Dynamic (dynTypeRep, fromDynamic, toDyn)
 import Data.Int (Int64)
@@ -76,7 +73,7 @@ import Data.Typeable (Typeable, typeRep)
 import Data.Void (Void)
 import Database.DuckDB.Simple.Callback (RegistrationTarget (..), attachOpaque, guardContext, install, installOptional, readCallbackState, runCallback, transferCallbackState, withCallbackResources, withTarget)
 import Database.DuckDB.Simple.Internal (Connection, Instance, withConnectionHandle, withInstanceHandle)
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep, logicalTypeFromRep, logicalTypeFromRepWithFactory)
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep, logicalTypeFromRep)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
 import Foreign.Ptr (Ptr)
@@ -93,20 +90,16 @@ withRegistrationFactory target action = case target of
 data TypeDeclaration = StructuredType LogicalTypeRep | TypeExpression Text
     deriving (Eq, Show)
 
-{- | Construct an owned native default value. Registration releases the value.
-Use 'FactoryDefaultValue' for extension signatures. The connection constructor
-also supports SQL-derived values through 'defaultValue'.
+{- | Construct an owned native default value through the borrowed factory of
+the registration target. Registration releases the value.
 -}
-data DefaultValue
-    = DefaultValue (DuckDBV2ConnectionHandle -> IO DuckDBV2ValueHandle)
-    | FactoryDefaultValue (DuckDBV2FactoryHandle -> IO DuckDBV2ValueHandle)
+newtype DefaultValue = DefaultValue (DuckDBV2FactoryHandle -> IO DuckDBV2ValueHandle)
 
-{- | Use a typed Haskell value as a parameter default. The value needs a
-connection, so registration on an 'ExtensionTarget' raises 'SQLError'. Use
-'FactoryDefaultValue' there.
+{- | Use a typed Haskell value as a default. It works on a connection target and
+on an extension target.
 -}
 defaultValue :: (ToDuckValue a) => a -> DefaultValue
-defaultValue value = DefaultValue (\connection -> toDuckValue connection value)
+defaultValue value = DefaultValue (\factory -> toDuckValue factory value)
 
 -- | One parameter. Native V2 validates parameter order, names, and defaults.
 data FunctionParameter = FunctionParameter
@@ -199,12 +192,12 @@ Set an ANY return type only when the resolve-types callback supplies a concrete 
 registerScalarFunction :: Connection -> Text -> FunctionSignature -> FunctionProperties -> ScalarCallbacks -> IO ()
 registerScalarFunction connection name signature properties callbacks = do
     validateName name
-    withConnectionHandle connection \native ->
+    withConnectionHandle connection \native -> withConnectionFactory native \factory ->
         registerScalarFunctionWith
             (ConnectionTarget connection)
             ( \function -> do
                 withIdentifier name $ checked . c_duckdb_v2_scalar_function_set_name function
-                output (c_duckdb_v2_scalar_function_get_signature function) >>= configureFunctionSignature native signature
+                output (c_duckdb_v2_scalar_function_get_signature function) >>= configureFunctionSignature factory signature
                 forM_ properties $ \(key, value) -> checked (c_duckdb_v2_scalar_function_set_property function key value)
             )
             callbacks
@@ -244,12 +237,12 @@ State memory and its size follow the native V2 aggregate contract.
 registerAggregateFunction :: Connection -> Text -> FunctionSignature -> FunctionProperties -> AggregateCallbacks -> IO ()
 registerAggregateFunction connection name signature properties callbacks = do
     validateName name
-    withConnectionHandle connection \native ->
+    withConnectionHandle connection \native -> withConnectionFactory native \factory ->
         registerAggregateFunctionWith
             (ConnectionTarget connection)
             ( \function -> do
                 withIdentifier name $ checked . c_duckdb_v2_aggregate_function_set_name function
-                output (c_duckdb_v2_aggregate_function_get_signature function) >>= configureFunctionSignature native signature
+                output (c_duckdb_v2_aggregate_function_get_signature function) >>= configureFunctionSignature factory signature
                 forM_ properties $ \(key, value) -> checked (c_duckdb_v2_aggregate_function_set_property function key value)
             )
             callbacks
@@ -290,12 +283,12 @@ registerAggregateFunctionWith target configure callbacks =
 registerTableFunction :: Connection -> Text -> [FunctionParameter] -> TableCallbacks -> IO ()
 registerTableFunction connection name parameters callbacks = do
     validateName name
-    withConnectionHandle connection \native ->
+    withConnectionHandle connection \native -> withConnectionFactory native \factory ->
         registerTableFunctionWith
             (ConnectionTarget connection)
             ( \function -> do
                 withIdentifier name $ checked . c_duckdb_v2_table_function_set_name function
-                output (c_duckdb_v2_table_function_get_signature function) >>= configureFunctionSignature native (FunctionSignature parameters Nothing)
+                output (c_duckdb_v2_table_function_get_signature function) >>= configureFunctionSignature factory (FunctionSignature parameters Nothing)
             )
             callbacks
 
@@ -339,12 +332,12 @@ The callback must inspect the native cast mode to implement TRY_CAST behavior.
 -}
 registerCast :: Connection -> TypeDeclaration -> TypeDeclaration -> Maybe Int64 -> ContextCallback DuckDBV2CastFunctionExecInfoHandle -> IO ()
 registerCast connection source target implicitCost execute =
-    withConnectionHandle connection \native ->
+    withConnectionHandle connection \native -> withConnectionFactory native \factory ->
         registerCastWith
             (ConnectionTarget connection)
             ( \function -> do
-                withTypeDeclaration native source $ checked . c_duckdb_v2_cast_function_set_source_type function
-                withTypeDeclaration native target $ checked . c_duckdb_v2_cast_function_set_target_type function
+                withTypeDeclaration factory source $ checked . c_duckdb_v2_cast_function_set_source_type function
+                withTypeDeclaration factory target $ checked . c_duckdb_v2_cast_function_set_target_type function
                 forM_ implicitCost $ checked . c_duckdb_v2_cast_function_set_implicit_cast_cost function
             )
             execute
@@ -367,10 +360,10 @@ registerCastWith target configure execute =
 registerCustomType :: Connection -> Text -> TypeDeclaration -> IO ()
 registerCustomType connection name baseType = do
     validateName name
-    withConnectionHandle connection \native ->
+    withConnectionHandle connection \native -> withConnectionFactory native \factory ->
         registerCustomTypeWith (ConnectionTarget connection) \custom -> do
             withIdentifier name $ checked . c_duckdb_v2_custom_type_set_name custom
-            withTypeDeclaration native baseType $ checked . c_duckdb_v2_custom_type_set_base_type custom
+            withTypeDeclaration factory baseType $ checked . c_duckdb_v2_custom_type_set_base_type custom
 
 {- | Configure and register a custom type on a connection or extension.
 The configuration action borrows the builder.
@@ -421,55 +414,32 @@ getCallbackState getter = do
             throwInvalidArgument $
                 "callback state has type " <> Text.pack (show (dynTypeRep stored)) <> ", not " <> Text.pack (show (typeRep (Proxy :: Proxy a)))
 
--- | Construct a type, borrow it for an action, and release it on every exit path.
-withTypeDeclaration :: DuckDBV2ConnectionHandle -> TypeDeclaration -> (DuckDBV2LogicalTypeHandle -> IO a) -> IO a
-withTypeDeclaration connection declaration action = case declaration of
-    StructuredType rep -> bracket (logicalTypeFromRep connection rep) (destroy c_duckdb_v2_logical_type_destroy) action
-    TypeExpression sql -> withConnectionFactory connection $ \factory -> withTypeDeclarationWithFactory factory (TypeExpression sql) action
-
--- | Construct a type through a borrowed factory. This also supports extension contexts.
-withTypeDeclarationWithFactory :: DuckDBV2FactoryHandle -> TypeDeclaration -> (DuckDBV2LogicalTypeHandle -> IO a) -> IO a
-withTypeDeclarationWithFactory factory declaration = bracket acquire (destroy c_duckdb_v2_logical_type_destroy)
+{- | Construct a type through a borrowed factory, borrow it for an action, and
+release it on every exit path. The factory can come from a connection or from
+an extension context.
+-}
+withTypeDeclaration :: DuckDBV2FactoryHandle -> TypeDeclaration -> (DuckDBV2LogicalTypeHandle -> IO a) -> IO a
+withTypeDeclaration factory declaration = bracket acquire (destroy c_duckdb_v2_logical_type_destroy)
   where
     acquire = case declaration of
-        StructuredType rep -> logicalTypeFromRepWithFactory factory rep
+        StructuredType rep -> logicalTypeFromRep factory rep
         TypeExpression sql -> withText sql (output . c_duckdb_v2_factory_create_type_from_text factory)
 
--- | Add parameters and an optional return type to a borrowed native signature.
-configureFunctionSignature :: DuckDBV2ConnectionHandle -> FunctionSignature -> DuckDBV2FunctionSignatureHandle -> IO ()
-configureFunctionSignature connection declaration signature =
-    withConnectionFactory connection $ \factory ->
-        configureSignature (withTypeDeclaration connection) (makeDefault factory) declaration signature
-  where
-    makeDefault _ (DefaultValue make) = make connection
-    makeDefault factory (FactoryDefaultValue make) = make factory
-
-{- | Add a signature through a borrowed factory. Defaults must use
-'FactoryDefaultValue'. The action does not need a connection and can run in an
-extension load callback.
+{- | Add parameters and an optional return type to a borrowed native signature.
+Types and defaults use the borrowed factory. The factory can come from a
+connection or from an extension context.
 -}
-configureFunctionSignatureWithFactory :: DuckDBV2FactoryHandle -> FunctionSignature -> DuckDBV2FunctionSignatureHandle -> IO ()
-configureFunctionSignatureWithFactory factory = configureSignature (withTypeDeclarationWithFactory factory) makeDefault
-  where
-    makeDefault (FactoryDefaultValue make) = make factory
-    makeDefault (DefaultValue _) = throwIO (SQLError "duckdb-simple: extension defaults require FactoryDefaultValue" Nothing Nothing)
-
-configureSignature ::
-    (forall a. TypeDeclaration -> (DuckDBV2LogicalTypeHandle -> IO a) -> IO a) ->
-    (DefaultValue -> IO DuckDBV2ValueHandle) ->
-    FunctionSignature ->
-    DuckDBV2FunctionSignatureHandle ->
-    IO ()
-configureSignature withType makeDefault FunctionSignature{signatureParameters, signatureReturnType} signature = do
+configureFunctionSignature :: DuckDBV2FactoryHandle -> FunctionSignature -> DuckDBV2FunctionSignatureHandle -> IO ()
+configureFunctionSignature factory FunctionSignature{signatureParameters, signatureReturnType} signature = do
     forM_ signatureParameters $ \FunctionParameter{parameterName, parameterType, parameterDefault, parameterKind} ->
         withIdentifier parameterName $ \name ->
-            withType parameterType $ \dtype ->
+            withTypeDeclaration factory parameterType $ \dtype ->
                 case parameterDefault of
                     Nothing -> checked (c_duckdb_v2_function_signature_add_parameter signature name dtype nullHandle parameterKind)
-                    Just value -> bracket (makeDefault value) (destroy c_duckdb_v2_value_destroy) $ \native ->
+                    Just (DefaultValue make) -> bracket (make factory) (destroy c_duckdb_v2_value_destroy) $ \native ->
                         checked (c_duckdb_v2_function_signature_add_parameter signature name dtype native parameterKind)
     forM_ signatureReturnType $ \dtype ->
-        withType dtype $ checked . c_duckdb_v2_function_signature_set_return_type signature
+        withTypeDeclaration factory dtype $ checked . c_duckdb_v2_function_signature_set_return_type signature
 
 configureScan :: ContextCallback DuckDBV2ReplacementScanInfoHandle -> DuckDBV2ReplacementScanHandle -> IO () -> IO ()
 configureScan callback scan register =

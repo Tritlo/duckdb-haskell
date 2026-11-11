@@ -544,8 +544,10 @@ and VARIANT decoder metadata. It caches the GEOMETRY types, the parsed VARIANT
 metadata statement, and the types for VARIANT casts. It batches VARIANT
 metadata queries. It constructs VARIANT types directly through the native
 factory. This preserves an active stream on the caller's connection. Low-level
-`ToDuckValue.toDuckValue` and `logicalTypeFromRep` require a V2 connection handle.
-Keep owned values and logical types within that connection's lifetime.
+`ToDuckValue.toDuckValue` and `logicalTypeFromRep` take a V2 factory handle.
+Get the factory of a connection with `withConnectionHandle` and
+`withConnectionFactory` from `Database.DuckDB.Simple.Internal`. Keep owned
+values and logical types within the lifetime of the factory's owner.
 
 Keep the connection dedicated to the active stream; another query on that
 connection receives a native resource-in-use error. Cancellation interrupts native chunk fetching

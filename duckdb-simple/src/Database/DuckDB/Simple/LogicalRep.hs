@@ -20,7 +20,6 @@ module Database.DuckDB.Simple.LogicalRep (
     logicalTypeToRep,
     logicalTypeFromRep,
     logicalTypeFromRepWith,
-    logicalTypeFromRepWithFactory,
     destroyLogicalType,
 ) where
 
@@ -149,25 +148,19 @@ logicalTypeToRep logical = do
             LogicalTypeEnum . listArray (0, size - 1) <$> mapM (string . fromIntegral) [0 .. size - 1]
         _ -> pure (LogicalTypeScalar dtype)
 
-{- | Construct an owned logical type in the supplied connection.
+{- | Construct an owned logical type through a borrowed native factory.
+Keep the owner of the factory alive until you destroy the type.
 CRS labels must be recognized by the native type constructor. Use the resolver
 in 'logicalTypeFromRepWith' for SQL-derived types with arbitrary CRS labels.
 -}
-logicalTypeFromRep :: DuckDBV2ConnectionHandle -> LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle
-logicalTypeFromRep conn = logicalTypeFromRepWith conn (const (pure Nothing))
+logicalTypeFromRep :: DuckDBV2FactoryHandle -> LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle
+logicalTypeFromRep factory = logicalTypeFromRepWith factory (const (pure Nothing))
 
--- | Construct a type tree. Use the resolver for owned native leaf types.
-logicalTypeFromRepWith :: DuckDBV2ConnectionHandle -> (LogicalTypeRep -> IO (Maybe DuckDBV2LogicalTypeHandle)) -> LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle
-logicalTypeFromRepWith conn resolve rep =
-    withConnectionFactory conn \factory -> logicalTypeFromFactory factory resolve rep
-
--- | Construct an owned type through a borrowed native factory.
-logicalTypeFromRepWithFactory :: DuckDBV2FactoryHandle -> LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle
-logicalTypeFromRepWithFactory factory = logicalTypeFromFactory factory (const (pure Nothing))
-
--- | Resolve native leaf types before constructing their parent types.
-logicalTypeFromFactory :: DuckDBV2FactoryHandle -> (LogicalTypeRep -> IO (Maybe DuckDBV2LogicalTypeHandle)) -> LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle
-logicalTypeFromFactory factory resolve = create
+{- | Construct a type tree through a borrowed native factory. Use the resolver
+for owned native leaf types. It runs before the parent types are constructed.
+-}
+logicalTypeFromRepWith :: DuckDBV2FactoryHandle -> (LogicalTypeRep -> IO (Maybe DuckDBV2LogicalTypeHandle)) -> LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle
+logicalTypeFromRepWith factory resolve = create
   where
     boxed rep = bracket (create rep) destroyLogicalType (output . c_duckdb_v2_value_create_type factory)
     text value = withText value (output . c_duckdb_v2_value_create_varchar factory)

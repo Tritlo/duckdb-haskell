@@ -45,10 +45,10 @@ instance DuckDBColumnType NativeTimestamp where
     duckdbColumnTypeFor _ = "TIMESTAMP"
 
 instance ToDuckValue NativeTimestamp where
-    toDuckValue conn (Seconds value) = withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_timestamp_sec nativeFactory value))
-    toDuckValue conn (Milliseconds value) = withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_timestamp_ms nativeFactory value))
-    toDuckValue conn (Microseconds value) = withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_timestamp nativeFactory value))
-    toDuckValue conn (Nanoseconds value) = withConnectionFactory conn (\nativeFactory -> output (c_duckdb_v2_value_create_timestamp_ns nativeFactory value))
+    toDuckValue factory (Seconds value) = output (c_duckdb_v2_value_create_timestamp_sec factory value)
+    toDuckValue factory (Milliseconds value) = output (c_duckdb_v2_value_create_timestamp_ms factory value)
+    toDuckValue factory (Microseconds value) = output (c_duckdb_v2_value_create_timestamp factory value)
+    toDuckValue factory (Nanoseconds value) = output (c_duckdb_v2_value_create_timestamp_ns factory value)
 
 instance ToField NativeTimestamp
 
@@ -61,7 +61,7 @@ instance DuckDBColumnType DelegatedInteger where
 instance ToField DelegatedInteger where
     toField (DelegatedInteger value) = toField value
 
--- | Bind an array through a value built with the explicit connection.
+-- | Bind an array through a value built with the explicit factory.
 newtype Scores = Scores (Array Int Int64)
     deriving (Show)
 
@@ -69,7 +69,7 @@ instance DuckDBColumnType Scores where
     duckdbColumnTypeFor _ = "BIGINT[]"
 
 instance ToDuckValue Scores where
-    toDuckValue conn (Scores values) = toDuckValue conn values
+    toDuckValue factory (Scores values) = toDuckValue factory values
 
 instance ToField Scores
 
@@ -146,7 +146,7 @@ valueRegressionTests =
                     forM_ [[Nothing, Just first, Just second], [Just second, Nothing, Just first]] \elements -> do
                         let values = listArray (0 :: Int, 2) elements
                         assertFailureIO (query conn "SELECT ?" (Only values) :: IO [Only FieldValue])
-                        withConnectionHandle conn \native -> assertFailureIO (bracket (toDuckValue native values) destroyValue (const (pure ())))
+                        withConnectionHandle conn \native -> withConnectionFactory native \factory -> assertFailureIO (bracket (toDuckValue factory values) destroyValue (const (pure ())))
             (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
         , testCase "GEOMETRY decodes as well-known binary" $ withConnection ":memory:" \conn -> do
             [Only bytes] <- query_ conn "SELECT 'POINT(1 2)'::GEOMETRY" :: IO [Only BS.ByteString]
@@ -289,8 +289,8 @@ valueRegressionTests =
             (query_ conn "SELECT row(), [row()]" :: IO [(TupleValue FieldValue, [TupleValue FieldValue])]) >>= (@?= [(tuple, [tuple])])
             (query conn "SELECT typeof(?), ?" (tuple, tuple) :: IO [(Text, TupleValue FieldValue)]) >>= (@?= [("TUPLE", tuple)])
             (query conn "SELECT typeof(?), ?" (struct, struct) :: IO [(Text, StructValue FieldValue)]) >>= (@?= [("STRUCT", struct)])
-            withConnectionHandle conn \native ->
-                bracket (logicalTypeFromRep native (tupleValueTypeRep tuple)) destroyLogicalType \logical ->
+            withConnectionHandle conn \native -> withConnectionFactory native \factory ->
+                bracket (logicalTypeFromRep factory (tupleValueTypeRep tuple)) destroyLogicalType \logical ->
                     logicalTypeToRep logical >>= (@?= tupleValueTypeRep tuple)
             assertIOError (query conn "SELECT ?" (Only tuple{tupleValueFields = listArray (4, 4) [FieldNull]}) :: IO [Only FieldValue])
         , testCase "filtered tuple cursors retain positional fields" $ withConnection ":memory:" \conn -> do
@@ -305,15 +305,15 @@ valueRegressionTests =
             (query conn "SELECT ?" (Only original) :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only original])
             [Only tuple] <- query_ conn "SELECT row('A' COLLATE nocase)" :: IO [Only (TupleValue FieldValue)]
             (query conn "SELECT value[1]='a' FROM (SELECT ? AS value)" (Only tuple) :: IO [Only Bool]) >>= (@?= [Only True])
-            withConnectionHandle conn \native ->
-                bracket (logicalTypeFromRep native collated) destroyLogicalType \logical -> logicalTypeToRep logical >>= (@?= collated)
-        , testCase "logical type Unicode names round trip" $ withConnection ":memory:" \conn -> withConnectionHandle conn \native -> do
+            withConnectionHandle conn \native -> withConnectionFactory native \factory ->
+                bracket (logicalTypeFromRep factory collated) destroyLogicalType \logical -> logicalTypeToRep logical >>= (@?= collated)
+        , testCase "logical type Unicode names round trip" $ withConnection ":memory:" \conn -> withConnectionHandle conn \native -> withConnectionFactory native \factory -> do
             let logical = LogicalTypeStruct (listArray (0, 0) [StructField "íslenska_λ_😀" (LogicalTypeScalar DuckDBV2LogicalTypeIdBigInt)])
-            bracket (logicalTypeFromRep native logical) destroyLogicalType \handle ->
+            bracket (logicalTypeFromRep factory logical) destroyLogicalType \handle ->
                 logicalTypeToRep handle >>= (@?= logical)
-        , testCase "logical type names reject embedded NUL" $ withConnection ":memory:" \conn -> withConnectionHandle conn \native -> do
+        , testCase "logical type names reject embedded NUL" $ withConnection ":memory:" \conn -> withConnectionHandle conn \native -> withConnectionFactory native \factory -> do
             let logical = LogicalTypeStruct (listArray (0, 0) [StructField "before\0after" (LogicalTypeScalar DuckDBV2LogicalTypeIdBigInt)])
-            assertIOError (bracket (logicalTypeFromRep native logical) destroyLogicalType (const (pure ())))
+            assertIOError (bracket (logicalTypeFromRep factory logical) destroyLogicalType (const (pure ())))
         , testCase "invalid native composite constructor returns controlled error" $ withConnection ":memory:" \conn -> do
             let struct = singleField (LogicalTypeMap (LogicalTypeScalar DuckDBV2LogicalTypeIdBigInt) (LogicalTypeScalar DuckDBV2LogicalTypeIdBigInt)) (FieldMap [(FieldNull, FieldInt64 1)])
             result <- try (query conn "SELECT ?" (Only struct) :: IO [Only FieldValue])

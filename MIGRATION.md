@@ -74,10 +74,14 @@ The SQL workflow stays the same. These changes can affect your code:
   `DuckDBErrorInvalidInput` becomes `DuckDBV2ErrorInputInvalid`, and
   `DuckDBErrorInterrupt` becomes `DuckDBV2ErrorRuntimeInterrupt`.
   `DuckDBV2ErrorResourceInUse` is new.
-- `ToDuckValue.toDuckValue` takes a `DuckDBV2ConnectionHandle` and returns a
-  `DuckDBV2ValueHandle`. Keep the connection alive until you destroy the value.
-  `logicalTypeFromRep` also takes the connection.
-- `logicalTypeFromRepWith` takes the connection, and its resolver returns
+- `ToDuckValue.toDuckValue` takes a `DuckDBV2FactoryHandle` and returns a
+  `DuckDBV2ValueHandle`. `logicalTypeFromRep` also takes the factory. To get
+  the factory of a `Connection`, call `withConnectionHandle` and then
+  `withConnectionFactory` from `Database.DuckDB.Simple.Internal`. Create and
+  destroy the value inside `withConnectionHandle`. `withConnectionFactory`
+  does not keep the connection alive. Registration code gets the factory of
+  its target from `withRegistrationFactory`.
+- `logicalTypeFromRepWith` takes the factory, and its resolver returns
   `Maybe` a native type. `Nothing` selects the default construction.
 - `LogicalTypeScalar`, `Function.argumentTypes`, and
   `CopyBindInfo.copyBindColumnTypes` use `DuckDBV2LogicalTypeId`. For example,

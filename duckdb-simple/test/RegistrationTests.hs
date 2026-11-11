@@ -67,10 +67,20 @@ scalarSum info _ = do
 testScalar :: Assertion
 testScalar = withConnection ":memory:" \connection -> do
     let left = (R.parameter "left" bigint){R.parameterDefault = Just (R.defaultValue (7 :: Int64))}
-        right = (R.parameter "right" bigint){R.parameterDefault = Just (R.FactoryDefaultValue (\factory -> R.output (c_duckdb_v2_value_create_bigint factory 35))), R.parameterKind = DuckDBV2FunctionParameterKindNamedOnly}
+        right = (R.parameter "right" bigint){R.parameterDefault = Just (R.DefaultValue (\factory -> R.output (c_duckdb_v2_value_create_bigint factory 35))), R.parameterKind = DuckDBV2FunctionParameterKindNamedOnly}
     R.registerScalarFunction connection "managed_default" (scalarSignature [left, right]) [] (R.scalarCallbacks scalarSum)
     query_ connection "SELECT managed_default()" >>= (@?= [Only (42 :: Int64)])
     query_ connection "SELECT managed_default(right := 5, left := 3)" >>= (@?= [Only (8 :: Int64)])
+    let target = R.ConnectionTarget connection
+    R.withRegistrationFactory target \factory ->
+        R.registerScalarFunctionWith
+            target
+            ( \function -> do
+                R.withIdentifier "managed_target_default" (R.checked . c_duckdb_v2_scalar_function_set_name function)
+                R.output (c_duckdb_v2_scalar_function_get_signature function) >>= R.configureFunctionSignature factory (scalarSignature [left])
+            )
+            (R.scalarCallbacks scalarSum)
+    query_ connection "SELECT managed_target_default()" >>= (@?= [Only (7 :: Int64)])
     let positional = (R.parameter "first" bigint){R.parameterKind = DuckDBV2FunctionParameterKindPositionalOnly}
         standard = R.parameter "second" bigint
         rest = (R.parameter "rest" bigint){R.parameterKind = DuckDBV2FunctionParameterKindPositionalVariadic}
@@ -110,7 +120,7 @@ testScalarResolution = withConnection ":memory:" \connection -> do
             target
             ( \function -> do
                 R.withIdentifier "managed_resolved" (R.checked . c_duckdb_v2_scalar_function_set_name function)
-                R.output (c_duckdb_v2_scalar_function_get_signature function) >>= R.configureFunctionSignatureWithFactory factory signature
+                R.output (c_duckdb_v2_scalar_function_get_signature function) >>= R.configureFunctionSignature factory signature
                 docs <- R.output (c_duckdb_v2_scalar_function_get_docs function)
                 Docs.setFunctionDocs docs (Docs.FunctionDocs (Just "Preserve the input type.") [("Example", "SELECT managed_resolved(42)")] ["test"])
             )

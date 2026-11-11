@@ -44,7 +44,7 @@
 - Read GEOMETRY results through a native cast to BLOB. DuckDB 2.0 rejects WKB
   with mixed Z/M member layouts.
 - `ToDuckValue.toDuckValue`, `logicalTypeFromRep`, and `logicalTypeFromRepWith`
-  take a V2 connection. Composite parameters keep GEOMETRY CRS metadata. A CRS
+  take a V2 factory. Composite parameters keep GEOMETRY CRS metadata. A CRS
   that DuckDB does not recognize raises `SQLError` instead of being dropped.
 - Empty `Array` parameters raise `SQLError`. Use an SQL empty LIST.
 - Allow session variables to supply omitted named parameters. Only too many

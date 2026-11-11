@@ -130,8 +130,14 @@ generateModule scratchDirectory moduleName headers outputPath checksPath = do
     writeFile probePath probe
     parsed <- run target Nothing (directives <> [C.DirectiveHashInclude (fromString probePath)]) (FrontendPassA ParsePass)
     (values, nativeFunctions) <- either die pure (parseABIProbe parsed)
-    unless (Set.fromList functions == Set.fromList nativeFunctions) $
-        die "Generated bindings do not contain every native function."
+    let generated = Set.fromList functions
+        native = Set.fromList nativeFunctions
+    unless (generated == native)
+        $ die
+        $ "Generated bindings do not contain every native function. Missing: "
+            <> show (Set.toList (native `Set.difference` generated))
+            <> ". Not in the native API: "
+            <> show (Set.toList (generated `Set.difference` native))
     assertions <- sequence [assertion values index check | (index, check) <- zip [0 ..] checks]
     createDirectoryIfMissing True (scratchDirectory </> "generated/Database/DuckDB/FFI")
     writeFile (scratchDirectory </> outputPath) bindings

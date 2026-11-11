@@ -87,7 +87,10 @@ checkCode code =
 checked :: (Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO ()
 checked action = mask_ $ alloca $ \slot -> do
     poke slot nullHandle
-    let release = c_duckdb_v2_error_info_destroy slot >>= checkCode
+    -- A successful call leaves the slot null. Destroy only a handle in the slot.
+    let release = do
+            info <- peek slot
+            unless (info == nullHandle) (c_duckdb_v2_error_info_destroy slot >>= checkCode)
     flip finally release $ do
         code <- action slot
         unless (code == DuckDBV2ErrorNone) $ do

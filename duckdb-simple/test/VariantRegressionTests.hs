@@ -52,9 +52,13 @@ tests =
         [ testGroup
             "scalar payloads decode like native values"
             [ testCase (Text.unpack sql) $ withConnection ":memory:" \conn -> do
-                [(Variant actual, native)] <- query_ conn (Query ("SELECT (" <> sql <> ")::VARIANT, " <> sql)) :: IO [(Variant, FieldValue)]
-                actual @?= native
-                roundTrip conn native
+                -- Two rows with one tag use the list cast. The round trip uses the cast of one value.
+                rows <- query_ conn (Query ("SELECT (" <> sql <> ")::VARIANT, {'v': " <> sql <> "}::VARIANT, " <> sql <> " FROM range(2)")) :: IO [(Variant, Variant, FieldValue)]
+                length rows @?= 2
+                forM_ rows \(Variant actual, Variant object, native) -> do
+                    actual @?= native
+                    object @?= variantObject [("v", native)]
+                    roundTrip conn native
             | sql <- scalarCases
             ]
         , testCase "explicit casts bind plain parameters" $ withConnection ":memory:" \conn -> do
@@ -94,9 +98,11 @@ tests =
                     _ -> assertFailure (show actual)
         , testCase "TIMETZ offsets decode like native values" $ withConnection ":memory:" \conn -> do
             forM_ ["'12:00:00+01:23'::TIMETZ", "'23:59:59.999999-15:59'::TIMETZ", "'00:00:00+00'::TIMETZ"] \sql -> do
-                [(Variant actual, native)] <- query_ conn (Query ("SELECT (" <> sql <> ")::VARIANT, " <> sql)) :: IO [(Variant, FieldValue)]
-                actual @?= native
-                roundTrip conn native
+                rows <- query_ conn (Query ("SELECT (" <> sql <> ")::VARIANT, " <> sql <> " FROM range(2)")) :: IO [(Variant, FieldValue)]
+                length rows @?= 2
+                forM_ rows \(Variant actual, native) -> do
+                    actual @?= native
+                    roundTrip conn native
             assertFailureIO (query_ conn "SELECT '12:00:00+01:23:45'::TIMETZ::VARIANT" :: IO [Only Variant])
         , testCase "wide finite timestamp payloads round trip without losing digits" $ withConnection ":memory:" \conn -> do
             void (execute_ conn "CREATE TABLE wide_timestamps (seconds TIMESTAMP_S, millis TIMESTAMP_MS)")
@@ -219,6 +225,63 @@ tests =
                 count @?= 5000
             | (mode, foldRows) <- [("materialized", fold_), ("native streaming", Streaming.fold_)]
             ]
+        , testCase "one column with many payload tags decodes each row exactly" $ withConnection ":memory:" \conn -> do
+            rows <-
+                query_
+                    conn
+                    "SELECT i, CASE i % 12 WHEN 0 THEN NULL WHEN 1 THEN (i % 24 = 1)::VARIANT WHEN 2 THEN (i % 100)::TINYINT::VARIANT WHEN 3 THEN i::VARIANT WHEN 4 THEN (i * 0.5)::DOUBLE::VARIANT WHEN 5 THEN i::DECIMAL(9,2)::VARIANT WHEN 6 THEN ('t' || i)::VARIANT WHEN 7 THEN [i, NULL, i + 1]::VARIANT WHEN 8 THEN {'n': i, 'xs': [i]}::VARIANT WHEN 9 THEN {'k': {'deep': 't' || i}}::VARIANT WHEN 10 THEN []::VARIANT ELSE i::UBIGINT::VARIANT END FROM range(5000) t(i)" ::
+                    IO [(Int64, Maybe Variant)]
+            let text n = FieldText ("t" <> Text.pack (show n))
+                expected n = case n `mod` 12 of
+                    0 -> Nothing
+                    1 -> Just (FieldBool (n `mod` 24 == 1))
+                    2 -> Just (FieldInt8 (fromIntegral (n `mod` 100)))
+                    3 -> Just (FieldInt64 n)
+                    4 -> Just (FieldDouble (fromIntegral n * 0.5))
+                    5 -> Just (FieldDecimal (DecimalValue 9 2 (toInteger n * 100)))
+                    6 -> Just (text n)
+                    7 -> Just (FieldList [FieldInt64 n, FieldNull, FieldInt64 (n + 1)])
+                    8 -> Just (variantObject [("n", FieldInt64 n), ("xs", FieldList [FieldInt64 n])])
+                    9 -> Just (variantObject [("k", variantObject [("deep", text n)])])
+                    10 -> Just (FieldList [])
+                    _ -> Just (FieldWord64 (fromIntegral n))
+            length rows @?= 5000
+            forM_ rows \(n, actual) -> fmap variantPayload actual @?= expected n
+        , testCase "GEOMETRY, BLOB and BIGNUM payloads in one column decode like native values" $ withConnection ":memory:" \conn -> do
+            rows <-
+                query_
+                    conn
+                    "SELECT i, CASE i % 3 WHEN 0 THEN g::VARIANT WHEN 1 THEN b::VARIANT ELSE n::VARIANT END, g, b, n FROM (SELECT i, ('POINT (' || i || ' ' || (i + 1) || ')')::GEOMETRY AS g, encode('b' || i) AS b, (i::VARCHAR || '12345678901234567890')::BIGNUM AS n FROM range(5000) t(i))" ::
+                    IO [(Int64, Variant, FieldValue, FieldValue, FieldValue)]
+            length rows @?= 5000
+            forM_ rows \(n, Variant actual, geometry, blob, bignum) ->
+                actual @?= case n `mod` 3 of
+                    0 -> geometry
+                    1 -> blob
+                    _ -> bignum
+        , testCase "objects with many key layouts and many keys decode exactly" $ withConnection ":memory:" \conn -> do
+            let digits = Text.pack . show :: Int64 -> Text
+            layouts <- query_ conn "SELECT i, json_object('k' || i::VARCHAR, i)::VARIANT FROM range(3000) t(i)" :: IO [(Int64, Variant)]
+            length layouts @?= 3000
+            forM_ layouts \(n, Variant actual) -> actual @?= variantObject [("k" <> digits n, FieldWord64 (fromIntegral n))]
+            (query_ conn "SELECT json_group_object('k' || lpad(i::VARCHAR, 3, '0'), i)::VARIANT FROM range(300) t(i)" :: IO [Only Variant])
+                >>= (@?= [Only (Variant (variantObject [("k" <> Text.justifyRight 3 '0' (digits n), FieldWord64 (fromIntegral n)) | n <- [0 .. 299]]))])
+        , testCase "one column mixes object layouts with special keys" $ withConnection ":memory:" \conn -> do
+            rows <-
+                query_
+                    conn
+                    "SELECT i, CASE i % 4 WHEN 0 THEN json_object('A', i, 'a', i + 1)::VARIANT WHEN 1 THEN json_object('', i, 'n', i + 1)::VARIANT WHEN 2 THEN json_object('É', i, 'é', i + 1, 'a\"b', i + 2, 'it''s λ', i + 3)::VARIANT ELSE json_object('n', i, 'a', i + 1)::VARIANT END FROM range(3000) t(i)" ::
+                    IO [(Int64, Variant)]
+            -- Decoded objects list their keys in DuckDB's lexicographic order.
+            let expected n = variantObject [(key, FieldWord64 (fromIntegral (n + offset))) | (key, offset) <- layout]
+                  where
+                    layout = case n `mod` 4 of
+                        0 -> [("A", 0), ("a", 1)]
+                        1 -> [("", 0), ("n", 1)]
+                        2 -> [("a\"b", 2), ("it's λ", 3), ("É", 0), ("é", 1)]
+                        _ -> [("a", 1), ("n", 0)]
+            length rows @?= 3000
+            forM_ rows \(n, Variant actual) -> actual @?= expected n
         , testCase "filtered and reordered rows use the right child offsets" $ withConnection ":memory:" \conn -> do
             rows <- query_ conn "SELECT {'n': i, 'xs': [i, i + 1]}::VARIANT FROM range(10000) t(i) WHERE i % 97 = 0 ORDER BY i DESC LIMIT 40"
             let expected = [Only (Variant (variantObject [("n", FieldInt64 n), ("xs", FieldList [FieldInt64 n, FieldInt64 (n + 1)])])) | n <- take 40 (reverse [0, 97 .. 9999])]

@@ -44,10 +44,13 @@ absent.
 ## Design notes
 
 The pinned V2 API has no structural VARIANT accessor. The decoder uses batched
-SQL type metadata, native extraction, and casts. Object extraction binds exact
-keys, including empty strings and interior NUL bytes. It does not cast objects
-to MAP values. Object keys use DuckDB's native lexicographic order. Arrays
-retain element order. Native factories construct VARIANT types directly.
+SQL type metadata and native casts. A native cast to a STRUCT with VARIANT
+fields extracts the fields of the objects that have the same keys. A STRUCT
+type cannot hold an empty key, a key with a NUL byte, or two keys that are
+equal after ASCII case folding. For those objects, an extraction query binds
+the exact keys. The decoder does not cast objects to MAP values. Object keys
+use DuckDB's native lexicographic order. Arrays retain element order. Native
+factories construct VARIANT types directly.
 
 GEOMETRY has no committed vector layout. The reader casts each GEOMETRY vector
 to BLOB with the factory of the result's connection and copies the WKB rows.

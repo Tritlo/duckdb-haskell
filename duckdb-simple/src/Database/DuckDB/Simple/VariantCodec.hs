@@ -14,10 +14,11 @@ import Data.Array (elems, listArray, (!))
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.FromField (FieldValue (..))
-import Database.DuckDB.Simple.LogicalRep (StructField (..), StructValue (..))
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), StructValue (..), logicalTypeFromRep)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Variant (variantObject)
 import Foreign.C.ConstPtr (ConstPtr (..))
@@ -28,8 +29,9 @@ import Foreign.Ptr (nullPtr)
 metadata connection. It must remain exclusively borrowed until this function
 returns. The callback decodes a value that contains no VARIANT.
 Each level batches type and key metadata. Scalars with the same tag share
-one native cast. Objects with the same keys share one extraction query.
-Keys remain bound values, including empty and NUL keys.
+one native cast. Objects with the same keys share one native STRUCT cast. If a
+key cannot be a STRUCT field name, the objects share one extraction query. That
+query binds the keys as values, so empty and NUL keys stay exact.
 -}
 prepareVariantDecoder :: (DuckDBV2ConnectionHandle -> DuckDBV2ValueHandle -> IO FieldValue) -> DuckDBV2ConnectionHandle -> DuckDBV2VectorHandle -> IO (Int -> IO FieldValue)
 prepareVariantDecoder plain connection vector = do
@@ -93,36 +95,66 @@ decodeValues plain connection statement castTypes values = do
                             FieldList decoded | length decoded == length rows -> pure (zip (map fst rows) (map ScalarNode decoded))
                             _ -> codecError "scalar cast returned an unexpected value"
 
-{- | Extract objects with one key layout as a native VARIANT[][] value.
-The binder needs constant extraction keys. Bind each key once and apply the
-extractions to all objects with that layout. This avoids per-row queries and
-preserves keys that cannot be SQL identifiers.
+{- | Extract the children of objects with one key layout. One native cast or
+one extraction query extracts the children of all objects. Each object gets one
+child for each key, in key order. Check the object count and the child count of
+each object.
 -}
 queryObjectGroup :: DuckDBV2ConnectionHandle -> CastTypes -> [Text] -> [(Int, DuckDBV2ValueHandle)] -> IO [(Int, VariantNode)]
 queryObjectGroup _ _ [] rows = pure [(index, ObjectNode []) | (index, _) <- rows]
 queryObjectGroup connection castTypes keys rows =
     withVariantList connection castTypes (map snd rows) \list ->
+        withObjectChildren connection keys list \objects -> do
+            count <- output (c_duckdb_v2_value_get_child_count objects)
+            unless (toInteger count == toInteger (length rows)) (codecError "object extraction returned an unexpected row count")
+            acquireItems
+                (releaseNode . snd)
+                [ bracket (output (c_duckdb_v2_value_get_child objects i)) destroyValue \children -> do
+                    childCount <- output (c_duckdb_v2_value_get_child_count children)
+                    unless (toInteger childCount == toInteger (length keys)) (codecError "object extraction returned an unexpected child count")
+                    owned <- acquireItems destroyValue [output (c_duckdb_v2_value_get_child children j) | j <- indices childCount]
+                    pure (index, ObjectNode (zip keys owned))
+                | (i, (index, _)) <- zip [0 ..] rows
+                ]
+
+{- | Borrow one value for each object in a VARIANT list. Each value has one
+child for each key, in key order. If the keys are valid STRUCT field names, a
+native cast to a STRUCT list makes the values. Otherwise an extraction query
+makes them. The binder needs constant extraction keys. The query binds each
+key once and applies the extractions to all objects. The bound keys can be
+empty or contain NUL.
+-}
+withObjectChildren :: DuckDBV2ConnectionHandle -> [Text] -> DuckDBV2ValueHandle -> (DuckDBV2ValueHandle -> IO a) -> IO a
+withObjectChildren connection keys list action
+    | validStructFields keys =
+        -- The cast is lenient. It matches a key and a field name without
+        -- regard to ASCII case. It gives NULL for a missing key. It ignores an
+        -- extra key. Thus a wrong field list does not cause an error. The
+        -- result is exact only because the fields are the keys of each object
+        -- and 'validStructFields' accepts them. Do not relax that predicate.
+        bracket (logicalTypeFromRep connection structList) destroyLogicalType \logical ->
+            bracket (factoryOutput connection (\factory -> c_duckdb_v2_value_cast factory list logical)) destroyValue action
+    | otherwise =
         withConnectionFactory connection \factory ->
             bracket
                 (acquireItems destroyValue [withText key (output . c_duckdb_v2_value_create_varchar factory) | key <- keys])
                 (releaseItems destroyValue)
                 \keyValues ->
                     withSQLStatement connection sql \statement ->
-                        withStatementValue connection statement (list : keyValues) \objects -> do
-                            count <- output (c_duckdb_v2_value_get_child_count objects)
-                            unless (toInteger count == toInteger (length rows)) (codecError "object extraction returned an unexpected row count")
-                            acquireItems
-                                (releaseNode . snd)
-                                [ bracket (output (c_duckdb_v2_value_get_child objects i)) destroyValue \children -> do
-                                    childCount <- output (c_duckdb_v2_value_get_child_count children)
-                                    unless (toInteger childCount == toInteger (length keys)) (codecError "object extraction returned an unexpected child count")
-                                    owned <- acquireItems destroyValue [output (c_duckdb_v2_value_get_child children j) | j <- indices childCount]
-                                    pure (index, ObjectNode (zip keys owned))
-                                | (i, (index, _)) <- zip [0 ..] rows
-                                ]
+                        withStatementValue connection statement (list : keyValues) action
   where
+    structList = LogicalTypeList (LogicalTypeStruct (listArray (0, length keys - 1) [StructField key (LogicalTypeScalar DuckDBV2LogicalTypeIdVariant) | key <- keys]))
     sql = "SELECT system.main.list_transform($1::VARIANT[], lambda value: system.main.list_value(" <> Text.intercalate "," extracts <> ")) AS payload"
     extracts = ["system.main.variant_extract(value,$" <> Text.pack (show index) <> "::VARCHAR)" | index <- [2 .. length keys + 1]]
+
+{- | Tell if the keys can be the field names of one STRUCT type. A name must
+not be empty and must not contain NUL. Two names must not be equal after ASCII
+case folding.
+-}
+validStructFields :: [Text] -> Bool
+validStructFields keys =
+    all (\key -> not (Text.null key || Text.any (== '\0') key)) keys
+        && Set.size (Set.fromList (map foldIdentifier keys)) == length keys
 
 -- | Rebuild a level from its copied children in their native order.
 assemble :: [VariantNode] -> [FieldValue] -> IO [FieldValue]

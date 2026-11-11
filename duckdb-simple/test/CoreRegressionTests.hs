@@ -210,6 +210,8 @@ coreRegressionTests =
                                 query conn "SELECT ? + ?" (worker, i) >>= (@?= [Only (worker + i)])
                                 execute conn "INSERT INTO shared_rows VALUES (?, ?)" (worker, i) >>= (@?= 1)
                                 query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+                                -- The threads share the VARIANT decoder state of the connection.
+                                query conn "SELECT ?::VARIANT, [?, ?]::VARIANT" (worker + i, worker, i) >>= (@?= [(worker + i, [worker, i])])
                                 fold_ conn "SELECT i FROM range(3) t(i)" (0 :: Int64) (\acc (Only n) -> pure (acc + n)) >>= (@?= 3)
                                 execute_ conn "UPDATE shared_rows SET i = i WHERE worker = 0" >>= (@?= 0)
                     putMVar start ()

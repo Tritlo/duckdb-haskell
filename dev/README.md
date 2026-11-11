@@ -20,13 +20,8 @@ checks, client headers, and upstream license.
   the archive checksums and compares the release headers with the vendored
   headers.
 
-Generate and check the bindings from a checkout:
-
-```sh
-nix-shell dev/nix/generate.nix --run 'dev/bindings/generate-bindings.sh --check'
-```
-
-Package users do not need these tools, Nix, LLVM, or hs-bindgen.
+See [CONTRIBUTING.md](../CONTRIBUTING.md) for the generation command and the
+release steps.
 
 CI caches the generated files by generator, toolchain, headers, and expected
 checksums. An exact cache hit skips Nix setup and generation. Every run checks

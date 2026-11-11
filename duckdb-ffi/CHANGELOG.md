@@ -23,7 +23,9 @@
   time.
 - Add an opt-in `extension` mode for loadable V2 extensions on Linux and macOS.
   It uses the host's function table and does not link another DuckDB library.
-  This mode exposes only the V2 module and requires entrypoint initialization.
+  This mode exposes only the V2 module. The C entry point of an extension calls
+  `duckdb_haskell_extension_load`, which negotiates the function table and
+  starts the threaded GHC runtime.
 - Install `duckdb_extension_v2.h` and `duckdb_haskell_extension.h`.
 
 ## 1.5.6.0

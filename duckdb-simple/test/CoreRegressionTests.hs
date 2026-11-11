@@ -16,7 +16,7 @@ import qualified Data.Text as Text
 import qualified Database.DuckDB.FFI.V2 as Raw
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (FieldValue)
-import Database.DuckDB.Simple.Internal (DuckDBV2ResultHandle (..), Statement (statementStream), StatementStream (statementStreamResult), StatementStreamState (..), checked, executePreparedResult, nullHandle, output, withConnectionFactory, withConnectionHandle)
+import Database.DuckDB.Simple.Internal (DuckDBV2ResultHandle (..), Statement (statementStream), StatementStream (statementStreamResult), StatementStreamState (..), checked, executePreparedResult, nullHandle, output, withCollectionStatement, withConnectionFactory, withConnectionHandle)
 import qualified Database.DuckDB.Simple.Internal as Internal
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (withArray)

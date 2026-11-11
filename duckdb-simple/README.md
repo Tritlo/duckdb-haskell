@@ -67,8 +67,9 @@ existing convenience behavior.
   has no connection target; use SQL `CREATE MACRO` on a connection.
 - `FunctionDocs` sets descriptions, examples, and categories on function builders.
 - `QueryMetrics` enables profiling and copies query and operator metric trees.
-- `withCollectionStatement` binds native column collections as named table inputs
-  for one scoped prepared-statement action. The caller retains the collections.
+- `Internal.withCollectionStatement` binds native column collections as named
+  table inputs for one scoped prepared-statement action. The caller retains the
+  collections.
 
 The pinned V2 API does not expose custom file-system registration or
 collation lookup. Fixed ARRAY types with zero elements are

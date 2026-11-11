@@ -172,7 +172,7 @@ testCopyFrom = withConnection ":memory:" \connection -> do
                 , Copy.copyFromInitLocalCallback = Just initializeLocal
                 , Copy.copyFromProgressCallback = Just progress
                 }
-    Copy.registerCopyFromFunction connection "managed_input" callbacks
+    Copy.registerCopyFromCallbacks connection "managed_input" callbacks
     void (execute_ connection "CREATE TABLE imported (value BIGINT)")
     void (execute_ connection "COPY imported FROM 'unused' (FORMAT managed_input)")
     query_ connection "SELECT value FROM imported ORDER BY value" >>= (@?= map Only ([7, 8, 9] :: [Int64]))
@@ -182,7 +182,7 @@ testCopyFrom = withConnection ":memory:" \connection -> do
 -- | Contain exceptions from native COPY callbacks.
 testCopyFailure :: Assertion
 testCopyFailure = withConnection ":memory:" \connection -> do
-    Copy.registerCopyFromFunction connection "managed_failure" (Copy.copyFromCallbacks (\_ _ -> pure ()) (\_ _ -> ioError (userError "managed COPY failure")))
+    Copy.registerCopyFromCallbacks connection "managed_failure" (Copy.copyFromCallbacks (\_ _ -> pure ()) (\_ _ -> ioError (userError "managed COPY failure")))
     void (execute_ connection "CREATE TABLE failed_import (value BIGINT)")
     result <- try (execute_ connection "COPY failed_import FROM 'unused' (FORMAT managed_failure)")
     case result of

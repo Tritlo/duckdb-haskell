@@ -47,7 +47,7 @@ module Database.DuckDB.Simple.Registration (
     registerCustomType,
     registerCustomTypeWith,
     registerReplacementScan,
-    registerReplacementScanWith,
+    registerReplacementScanOn,
     registerInstanceReplacementScan,
     setCallbackState,
     getCallbackState,
@@ -382,13 +382,13 @@ registerCustomTypeWith target configure =
 
 -- | Register a connection-local replacement scan. It precedes instance scans.
 registerReplacementScan :: Connection -> ContextCallback DuckDBV2ReplacementScanInfoHandle -> IO ()
-registerReplacementScan connection = registerReplacementScanWith (ConnectionTarget connection)
+registerReplacementScan connection = registerReplacementScanOn (ConnectionTarget connection)
 
 {- | Register a managed replacement scan on a connection or loading extension.
 Extension scans belong to the instance.
 -}
-registerReplacementScanWith :: RegistrationTarget -> ContextCallback DuckDBV2ReplacementScanInfoHandle -> IO ()
-registerReplacementScanWith target callback =
+registerReplacementScanOn :: RegistrationTarget -> ContextCallback DuckDBV2ReplacementScanInfoHandle -> IO ()
+registerReplacementScanOn target callback =
     withTarget target c_duckdb_v2_replacement_scan_create c_duckdb_v2_replacement_scan_destroy c_duckdb_v2_connection_register_replacement_scan c_duckdb_v2_extension_register_replacement_scan (configureScan callback)
 
 -- | Register an instance-wide replacement scan. It is shared by its connections.

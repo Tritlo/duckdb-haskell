@@ -7,7 +7,7 @@
 module ExtensionRegressionTests (main, extensionRegressionTests) where
 
 import Control.Exception (AsyncException (ThreadKilled), ErrorCall, Exception (..), SomeException, bracket, bracket_, finally, throwIO, try)
-import Control.Monad (forM_, replicateM_, void, when)
+import Control.Monad (forM, forM_, replicateM_, void, when)
 import qualified Data.ByteString as BS
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
@@ -22,6 +22,7 @@ import qualified Database.DuckDB.Simple.Catalog as Catalog
 import qualified Database.DuckDB.Simple.Config as Config
 import qualified Database.DuckDB.Simple.Copy as Copy
 import qualified Database.DuckDB.Simple.FileSystem as FileSystem
+import Database.DuckDB.Simple.FromField (FieldValue (..))
 import qualified Database.DuckDB.Simple.Logging as Logging
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..))
 import qualified Database.DuckDB.Simple.Registration as Registration
@@ -288,6 +289,19 @@ extensionRegressionTests =
                 Config.getConfigOption conn "NO_SUCH_CONFIG_OPTION" >>= (@?= Nothing)
                 close conn
                 assertSqlError $ Config.getConfigOption conn "threads"
+        , testCase "typed reads copy the value of every listed option" $
+            withConnection ":memory:" \conn -> do
+                options <- Config.listConfigOptions conn
+                assertBool "options are listed" (not (null options))
+                failures <- forM options \option -> do
+                    let name = Config.configOptionName option
+                    outcome <- try (Config.getConfigValue conn name)
+                    pure case outcome of
+                        Left (err :: SomeException) -> [(name, displayException err)]
+                        Right _ -> []
+                concat failures @?= []
+                assertSqlError $ Config.getConfigValue conn "NO_SUCH_CONFIG_OPTION"
+                assertSqlError $ Config.getConfigDefaultValue conn "NO_SUCH_CONFIG_OPTION"
         , testCase "custom options retain typed defaults scopes and callback errors" $
             withConnection ":memory:" \conn -> do
                 let option =
@@ -302,12 +316,9 @@ extensionRegressionTests =
                                     when (number < 0) $ throwIO (userError "limit must be nonnegative")
                             }
                 Config.registerCustomOption conn option
-                Config.withConfigOptionDefaultValue conn "haskell_limit" \value ->
-                    Registration.output (c_duckdb_v2_value_get_bigint value) >>= (@?= 3)
+                Config.getConfigDefaultValue conn "haskell_limit" >>= (@?= FieldInt64 3)
                 Config.setConfigValue conn DuckDBV2SettingScopeSession "haskell_limit" (7 :: Int64)
-                Config.withConfigOptionValue conn "haskell_limit" \value scope -> do
-                    Registration.output (c_duckdb_v2_value_get_bigint value) >>= (@?= 7)
-                    scope @?= DuckDBV2SettingScopeSession
+                Config.getConfigValue conn "haskell_limit" >>= (@?= (FieldInt64 7, DuckDBV2SettingScopeSession))
                 assertSqlErrorContaining "limit must be nonnegative" $ Config.setConfigValue conn DuckDBV2SettingScopeSession "haskell_limit" (-1 :: Int64)
                 void $ execute_ conn "RESET haskell_limit"
                 fmap Config.configValueText <$> Config.getConfigOption conn "haskell_limit" >>= (@?= Just "3")

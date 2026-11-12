@@ -9,8 +9,12 @@
   later DuckDB version is outside the dependency bound. Creating an
   environment raises `SQLError` for another library version. Use the earlier
   release with DuckDB 1.5.
-- Raw handles, logical type IDs, callback handles, and error codes use V2
-  types. `sqlErrorType` is `Maybe DuckDBV2Error`. See MIGRATION.md.
+- Raw handles, logical type IDs, callback handles, and the error codes of raw
+  calls use V2 types. `sqlErrorType` is `Maybe ErrorType`. See MIGRATION.md.
+- Add `SettingScope`, `LogLevel`, `LogScope`, `TokenType`,
+  `MacroFunctionType`, and `ErrorType`. The configuration, logging, tokenizer,
+  macro, and error APIs use these types instead of the generated V2 enum
+  types, so a later C API version does not change these APIs.
 - Add `Database.DuckDB.Simple.Extension` for loadable Haskell extensions.
   Enable the `extension` flags of both packages. See `dev/extensions/`.
 - Add shared environments and instances, attachment management, option

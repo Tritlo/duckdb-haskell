@@ -113,7 +113,12 @@ updateWithValue :: (FieldValue -> IO ()) -> ContextCallback DuckDBV2CustomOption
 updateWithValue update info context = withContextFactory context \factory ->
     bracket (output (c_duckdb_v2_custom_option_update_get_value info)) (destroy c_duckdb_v2_value_destroy) (materializeValue unexpectedVariant factory) >>= update
 
--- | List built-in configuration flags using a temporary connection.
+{- | List the configuration flags of a new in-memory database. DuckDB 2.0
+gives its options only from an instance or a connection, so the function opens
+a temporary connection. The list does not have the options of an extension that
+the new database does not load. Version 0.3 listed those options also. Use
+'listConfigOptions' for the options of a connection that you have.
+-}
 listConfigFlags :: IO [ConfigFlag]
 listConfigFlags = withConnection ":memory:" \conn ->
     map (\option -> ConfigFlag (configOptionName option) (configOptionDescription option)) <$> listConfigOptions conn

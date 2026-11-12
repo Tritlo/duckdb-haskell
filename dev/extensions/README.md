@@ -187,10 +187,14 @@ The plain CLI cannot load an extension that requires the newer glibc.
 Each test case starts a plain native CLI process, loads the packaged
 extension, and compares the CSV rows. Each registration kind has a case that
 uses the registered object in SQL. The cases also check scalar results, 10,000
-input rows, NULLs, callback errors, overflow, and connection reuse after
-errors. One case runs a second `LOAD` in the same process. DuckDB records the
-extension name at the first `LOAD` and skips a later `LOAD` of the same name,
-so the entrypoint runs once in each process.
+input rows, NULLs, and overflow. Error cases make a Haskell callback fail in the
+scalar functions, the aggregate update and combine, the table function bind,
+the cast, the replacement scan, COPY TO, COPY FROM, and the file readers. After
+each error, a valid statement runs in the same process. `TRY_CAST` keeps the
+NULL that the cast callback writes before it reports the error. One case runs
+a second `LOAD` in the same process. DuckDB records the extension name at the
+first `LOAD` and skips a later `LOAD` of the same name, so the entrypoint runs
+once in each process.
 The suite does not link DuckDB. Each CLI process must finish in 60 seconds,
 including process exit and output collection. A timeout kills and reaps the
 CLI child.

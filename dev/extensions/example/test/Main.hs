@@ -201,6 +201,70 @@ tests paths =
                 ]
                 [["fresh_process", "42"], ["after_callback_error", "42"], ["after_overflow_error", "42"]]
                 ["Haskell callback failure", "Haskell BIGINT overflow"]
+        , testCase "callback errors in the aggregate, table function, cast, and replacement scan" $
+            checkProcess
+                paths
+                [ "SELECT haskell_sum(v) FROM (VALUES (9223372036854775807), (1)) AS t(v);"
+                , "SELECT 'after_update_error', 42;"
+                , -- The frame of row 0 has 32 rows. DuckDB 2.0.0 adds rows 0 to 15 and rows 16 to 31
+                  -- in separate update calls. Then the combine callback adds the two sums. No row has
+                  -- the value 2, so only the combine callback can report the second overflow.
+                  "SELECT haskell_sum(v) OVER (ORDER BY i ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) FROM (SELECT i, CASE WHEN i = 0 THEN 9223372036854775807 WHEN i IN (16, 17) THEN 1 ELSE 0 END AS v FROM range(32) AS t(i));"
+                , "SELECT 'after_combine_error', 42;"
+                , "SELECT * FROM haskell_squares(-1);"
+                , "SELECT 'after_bind_error', 42;"
+                , "SELECT CAST(9223372036854775800::BIGINT AS haskell_shifted);"
+                , "SELECT 'after_cast_error', 42;"
+                , "SELECT 'try_cast_overflow', TRY_CAST(v AS haskell_shifted)::BIGINT FROM (VALUES (1), (9223372036854775800)) AS t(v);"
+                , "SELECT * FROM haskell_reserved;"
+                , "SELECT 'after_replacement_error', 42;"
+                ]
+                [ ["after_update_error", "42"]
+                , ["after_combine_error", "42"]
+                , ["after_bind_error", "42"]
+                , ["after_cast_error", "42"]
+                , ["try_cast_overflow", "101"]
+                , ["try_cast_overflow", "NULL"]
+                , ["after_replacement_error", "42"]
+                ]
+                [ "haskell_sum: BIGINT overflow in 9223372036854775807 + 1"
+                , "haskell_sum: BIGINT overflow in 9223372036854775807 + 2"
+                , "haskell_squares: the count is negative: -1"
+                , "haskell_shifted: BIGINT overflow in 9223372036854775800 + 100"
+                , "haskell_reserved: the table name is reserved"
+                ]
+        , testCase "callback errors for files with a bad line" $ withDirectory $ \directory -> do
+            writeFile (directory </> "good.lines") "7\n"
+            writeFile (directory </> "copy.lines") "1\ncopy_from\n"
+            writeFile (directory </> "single.lines") "2\nsingle_file\n"
+            writeFile (directory </> "first.lines") "first_file\n"
+            writeFile (directory </> "later.lines") "3\nlater_file\n"
+            good <- sqlLiteral (directory </> "good.lines")
+            copy <- sqlLiteral (directory </> "copy.lines")
+            single <- sqlLiteral (directory </> "single.lines")
+            first <- sqlLiteral (directory </> "first.lines")
+            later <- sqlLiteral (directory </> "later.lines")
+            -- An aggregate gives no row before the scan ends, so a failed scan gives no row.
+            checkProcess
+                paths
+                [ "CREATE TABLE copied (value BIGINT);"
+                , "COPY copied FROM " <> copy <> " (FORMAT haskell_lines);"
+                , "SELECT 'after_copy_from_error', count(*) FROM copied;"
+                , "SELECT sum(value) FROM haskell_read_line_file(" <> single <> ");"
+                , "SELECT 'after_single_file_error', 42;"
+                , -- DuckDB binds the first file before the scan.
+                  "SELECT sum(value) FROM haskell_read_lines([" <> first <> ", " <> good <> "]);"
+                , "SELECT 'after_first_file_error', 42;"
+                , -- DuckDB opens a later file during the scan.
+                  "SELECT sum(value) FROM haskell_read_lines([" <> good <> ", " <> later <> "]);"
+                , "SELECT 'after_later_file_error', 42;"
+                ]
+                [["after_copy_from_error", "0"], ["after_single_file_error", "42"], ["after_first_file_error", "42"], ["after_later_file_error", "42"]]
+                [ "haskell_lines: the line is not a BIGINT: copy_from"
+                , "haskell_lines: the line is not a BIGINT: single_file"
+                , "haskell_lines: the line is not a BIGINT: first_file"
+                , "haskell_lines: the line is not a BIGINT: later_file"
+                ]
         ]
 
 -- | Quote a path as a SQL string without changing its contents.

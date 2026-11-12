@@ -74,7 +74,7 @@ NULL for each failed row and the results for the other rows.
 
 DuckDB casts each result to the target type with its default cast. The target
 type can be a custom type whose base type is the type of @b@, for example a
-type from 'Database.DuckDB.Simple.V2.Registration.registerCustomType'.
+type from 'Database.DuckDB.Simple.Registration.registerCustomType'.
 
 > createCast conn (TypeExpression "BIGINT") (TypeExpression "shifted") \(value :: Int64) ->
 >     if value > maxBound - 100 then Left "BIGINT overflow" else Right (value + 100)

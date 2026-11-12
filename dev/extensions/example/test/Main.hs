@@ -111,7 +111,7 @@ tests paths =
                 ]
                 [["groups", "1", "10"], ["groups", "2", "12"], ["groups", "3", "0"], ["rows", "49995000"], ["no_rows", "0"]]
                 []
-        , testCase "table function with projection pushdown" $
+        , testCase "table function" $
             checkProcess
                 paths
                 [ "SELECT 'square', square FROM haskell_squares(4);"

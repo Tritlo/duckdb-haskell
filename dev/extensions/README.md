@@ -60,9 +60,8 @@ its headers. A rebuild against the same headers does not help.
 The example registers typed scalar functions, scalar and table macros, a
 PRAGMA, a typed custom option, and a log sink. They exercise native results,
 batch inputs, NULLs, Unicode text, overflow, and callback errors. The example
-also registers an aggregate function, a table function with projection
-pushdown, a custom type with a typed cast, a replacement scan, a COPY format, and a
-multi-file reader. Together, the registrations use all twelve V2 extension
+also registers an aggregate function, a table function, a custom type with a
+typed cast, a replacement scan, a COPY format, and a multi-file reader. Together, the registrations use all twelve V2 extension
 registration calls. The entrypoint is
 `haskell_demo_init_c_api_v2`. DuckDB derives the entrypoint name from the
 file name, so the packaged file must be `haskell_demo.duckdb_extension`.

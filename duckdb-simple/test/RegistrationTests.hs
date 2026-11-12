@@ -14,10 +14,10 @@ import qualified Data.Text as Text
 import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple hiding (bind, execute)
 import Database.DuckDB.Simple.FromField (FieldValue (..))
-import qualified Database.DuckDB.Simple.FunctionDocs as Docs
 import qualified Database.DuckDB.Simple.Logging as Logging
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..))
 import qualified Database.DuckDB.Simple.QueryMetrics as Metrics
+import qualified Database.DuckDB.Simple.V2.FunctionDocs as Docs
 import qualified Database.DuckDB.Simple.V2.Pragma as Pragma
 import qualified Database.DuckDB.Simple.V2.Registration as R
 import Foreign.C.ConstPtr (ConstPtr (..))

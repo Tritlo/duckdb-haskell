@@ -57,7 +57,6 @@ library
     Database.DuckDB.Simple.FromField
     Database.DuckDB.Simple.FromRow
     Database.DuckDB.Simple.Function
-    Database.DuckDB.Simple.FunctionDocs
     Database.DuckDB.Simple.Generic
     Database.DuckDB.Simple.Geometry
     Database.DuckDB.Simple.Internal
@@ -75,6 +74,7 @@ library
     Database.DuckDB.Simple.Types
     Database.DuckDB.Simple.V2.Config
     Database.DuckDB.Simple.V2.Copy
+    Database.DuckDB.Simple.V2.FunctionDocs
     Database.DuckDB.Simple.V2.Pragma
     Database.DuckDB.Simple.V2.Registration
     Database.DuckDB.Simple.Variant

@@ -2,7 +2,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 
 -- | Documentation attached to scalar, aggregate, table, macro, and pragma functions.
-module Database.DuckDB.Simple.FunctionDocs (
+module Database.DuckDB.Simple.V2.FunctionDocs (
     FunctionDocs (..),
     defaultFunctionDocs,
     setFunctionDocs,

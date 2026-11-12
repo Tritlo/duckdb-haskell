@@ -480,6 +480,30 @@ extensionRegressionTests =
                     FileSystem.fileHandleTell handle >>= (@?= 1)
                     FileSystem.fileHandleSeek handle 0
                     FileSystem.readFileHandleChunk handle 8 >>= (@?= BS.pack [8, 9, 3, 4])
+        , testCase "file flags of the other file tests create read and write a file" $
+            withTemporaryFile \path -> withConnection ":memory:" \conn -> do
+                removeFile path
+                FileSystem.withFileHandle conn path [FileSystem.FileFlagCreate, FileSystem.FileFlagWrite] \handle ->
+                    FileSystem.writeFileHandleBytes handle (BS.pack [1, 2, 3]) >>= (@?= 3)
+                FileSystem.withFileHandle conn path [FileSystem.FileFlagWrite] \handle ->
+                    FileSystem.writeFileHandleBytes handle (BS.pack [4]) >>= (@?= 1)
+                FileSystem.withFileHandle conn path [FileSystem.FileFlagRead] \handle ->
+                    FileSystem.readFileHandleChunk handle 8 >>= (@?= BS.pack [4, 2, 3])
+                FileSystem.withFileHandle conn path [FileSystem.FileFlagRead, FileSystem.FileFlagWrite] \handle -> do
+                    FileSystem.readFileHandleChunk handle 8 >>= (@?= BS.pack [4, 2, 3])
+                    FileSystem.writeFileHandleBytes handle (BS.pack [5]) >>= (@?= 1)
+                    FileSystem.fileHandleSize handle >>= (@?= 4)
+        , testCase "file flags truncate a file and refuse to create an existing file" $
+            withTemporaryFile \path -> withConnection ":memory:" \conn -> do
+                BS.writeFile path (BS.pack [1, 2, 3])
+                FileSystem.withFileHandle conn path [FileSystem.FileFlagWrite, FileSystem.FileFlagCreateNew] FileSystem.fileHandleSize >>= (@?= 0)
+                let exclusive = [FileSystem.FileFlagWrite, FileSystem.FileFlagCreate, FileSystem.FileFlagExclusiveCreate]
+                assertSqlError $ FileSystem.withFileHandle conn path exclusive (\_ -> pure ())
+                removeFile path
+                FileSystem.withFileHandle conn path exclusive \handle ->
+                    FileSystem.writeFileHandleBytes handle (BS.pack [7]) >>= (@?= 1)
+                FileSystem.withFileHandle conn path [FileSystem.FileFlagRead] \handle ->
+                    FileSystem.readFileHandleChunk handle 8 >>= (@?= BS.pack [7])
         , testCase "file paths support expansion glob movement and removal" $
             withTemporaryFile \path -> withConnection ":memory:" \conn -> do
                 FileSystem.pathExists conn path >>= (@?= True)

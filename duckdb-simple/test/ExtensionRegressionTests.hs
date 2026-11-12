@@ -9,7 +9,7 @@
 module ExtensionRegressionTests (main, extensionRegressionTests) where
 
 import Control.Exception (AsyncException (ThreadKilled), ErrorCall, Exception (..), SomeException, bracket, bracket_, finally, throwIO, try)
-import Control.Monad (forM, forM_, replicateM_, void, when)
+import Control.Monad (forM, forM_, replicateM_, void)
 import qualified Data.ByteString as BS
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
@@ -347,10 +347,9 @@ extensionRegressionTests =
                             , Config.customOptionDescription = "A Haskell option"
                             , Config.customOptionDefaultScope = Config.SettingScopeSession
                             , Config.customOptionScopes = [Config.SettingScopeGlobal, Config.SettingScopeSession]
-                            , Config.customOptionUpdate = Just \info _ ->
-                                bracket (Registration.output (c_duckdb_v2_custom_option_update_get_value info)) (Registration.destroy c_duckdb_v2_value_destroy) \value -> do
-                                    number <- Registration.output (c_duckdb_v2_value_get_bigint value)
-                                    when (number < 0) $ throwIO (userError "limit must be nonnegative")
+                            , Config.customOptionUpdate = Just \value -> case value of
+                                FieldInt64 number | number < 0 -> throwIO (userError "limit must be nonnegative")
+                                _ -> pure ()
                             }
                 Config.registerCustomOption conn option
                 Config.getConfigDefaultValue conn "haskell_limit" >>= (@?= FieldInt64 3)

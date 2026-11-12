@@ -258,7 +258,7 @@ takes the rows from the list one chunk at a time, so the list can be lazy. A
 row must have one column for each column of the table, in the same order. An
 exception from the function or from a row fails the statement.
 
-> registerCopyFromFunction conn "lines" \info -> map Only . lines <$> readFile (copyFromPath info)
+> registerCopyFromFunction conn "lines" \info -> map Only . Text.lines <$> TextIO.readFile (copyFromPath info)
 -}
 registerCopyFromFunction :: (TypedRow row) => Connection -> Text -> (CopyFromInfo -> IO [row]) -> IO ()
 registerCopyFromFunction = registerCopyFromFunctionOn . ConnectionTarget

@@ -1,7 +1,7 @@
-module V2TableFunctionTest (deliberateFailure, statementError, tests) where
+module V2TableFunctionTest (tests) where
 
-import Control.Exception (bracket, finally, onException, throwIO)
-import Control.Monad (forM, forM_, unless, void, when)
+import Control.Exception (bracket, onException)
+import Control.Monad (forM, forM_, unless, when)
 import Data.Coerce (coerce)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int64)
@@ -20,8 +20,8 @@ import Foreign.Storable (Storable, peek, peekElemOff, poke, pokeElemOff)
 import HsBindgen.Runtime.Prelude (ToFunPtr, toFunPtr)
 import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase, (@?=))
-import V2Test (borrowedOpaque, callbackGuard, checked, consume, output, readIntegers, readView, record, removeTestFile, withConnection, withFactory, withHandle, withResult, withStatement, withType, withView)
+import Test.Tasty.HUnit (assertBool, assertEqual, testCase, (@?=))
+import V2Test (borrowedOpaque, callbackGuard, checked, consume, failOnPurpose, output, readIntegers, readView, record, removeTestFile, statementError, statementFails, withConnection, withFactory, withHandle, withResult, withType, withView)
 
 tests :: TestTree
 tests =
@@ -37,36 +37,6 @@ tests =
         , testCase "a callback that reports an error fails the statement, and DuckDB destroys the states set before" testFailingCallbacks
         , testCase "registration refuses an incomplete table or multi-file function and a function of another database" testRegistration
         ]
-
-{- | Run a statement that must fail, and return the code and the text of its error.
-The execution runs the query lazily, so the error can come from the execution or from a later fetch.
--}
-statementError :: DuckDBV2ConnectionHandle -> String -> IO (DuckDBV2Error, String)
-statementError conn sql = withStatement conn sql $ \statement -> alloca $ \result -> alloca $ \err -> do
-    poke result (coerce nullPtr)
-    poke err (coerce nullPtr)
-    let fetch = alloca $ \chunk -> do
-            poke chunk (coerce nullPtr)
-            live <- peek result
-            code <- c_duckdb_v2_result_fetch_chunk live chunk err
-            next <- peek chunk
-            void (c_duckdb_v2_data_chunk_destroy chunk)
-            if code == DuckDBV2ErrorNone && next /= coerce nullPtr then fetch else pure code
-    flip finally (c_duckdb_v2_result_destroy result >> c_duckdb_v2_error_info_destroy err) $ do
-        executed <- c_duckdb_v2_statement_execute conn statement (coerce nullPtr) (coerce nullPtr) 0 result err
-        code <- if executed == DuckDBV2ErrorNone then fetch else pure executed
-        when (code == DuckDBV2ErrorNone) $ assertFailure ("the statement succeeds: " <> sql)
-        info <- peek err
-        text <- alloca $ \view -> do
-            c_duckdb_v2_error_info_get_text info view >>= (@?= DuckDBV2ErrorNone)
-            peek view >>= readView
-        pure (code, text)
-
-{- | Throw the deliberate failure of a callback. The callback guard records it as the text "user error (TEXT)", and
-gives the same text to DuckDB.
--}
-deliberateFailure :: String -> IO ()
-deliberateFailure text = throwIO (userError text)
 
 -- | Create a function pointer for the duration of the action.
 withFunPtr :: (ToFunPtr a) => a -> (FunPtr a -> IO b) -> IO b
@@ -507,7 +477,7 @@ testPartitioning = do
                                 -- data callback returns.
                                 forM_ ["v2_unindexed", "v2_decreasing", "v2_unchanged"] $ \name -> do
                                     writeIORef next 0
-                                    void (statementError conn (query name))
+                                    statementFails conn (query name)
     readIORef failures >>= (@?= [])
     asked <- readIORef candidates
     assertBool "the partitioning callback was invoked" (not (null asked))
@@ -868,7 +838,7 @@ testFailingCallbacks = do
                 let opaque = DuckDBV2Opaque (castPtr cells) (DuckDBV2OpaqueDestroyFn destroyPtr) (DuckDBV2OpaqueEqualsFn nullFunPtr)
                 with opaque (checked . setter) `onException` free cells
             phaseOf state = (failingPhases !!) . fromIntegral <$> peekElemOff (castPtr state :: Ptr Int64) 1
-            failIn phase name = when (phase == name) $ deliberateFailure ("v2 deliberate " <> name <> " failure")
+            failIn phase name = when (phase == name) $ failOnPurpose name
             bind info result context err = callbackGuard failures err $ do
                 phase <- withHandle (c_duckdb_v2_function_bind_get_arg_value info 0) c_duckdb_v2_value_destroy (\value -> output (c_duckdb_v2_value_get_varchar value) >>= readView)
                 -- The function has one parameter, so the index 1 is out of bounds.
@@ -912,11 +882,10 @@ testFailingCallbacks = do
                                 takeDestroyed >>= (@?= [1, 2])
                             -- The statement fails with the text of each recorded failure, and DuckDB destroyed the states of the given kinds.
                             -- Then the same statement without a failure succeeds on the same connection.
-                            -- A callback reports the code API. DuckDB has no exception type for API, so the statement fails with
-                            -- INPUT_INVALID. The header names no code for the other failures.
+                            -- The header names no code for these failures, so the test checks only that the statement fails.
                             fails phase recorded kinds = do
                                 (code, text) <- statementError conn (query phase)
-                                unless (null recorded) $ code @?= DuckDBV2ErrorInputInvalid
+                                assertBool (query phase <> " fails") (code /= DuckDBV2ErrorNone)
                                 forM_ recorded $ \failure -> assertBool ("the error contains the text of the callback: " <> text) (failure `isInfixOf` text)
                                 atomicModifyIORef' failures (\seen -> ([], seen)) >>= (@?= map (\failure -> "user error (" <> failure <> ")") recorded)
                                 takeDestroyed >>= assertEqual ("the destroyed states after " <> query phase) kinds

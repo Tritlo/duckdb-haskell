@@ -22,6 +22,7 @@ module V2Test (
     record,
     removeTestFile,
     statementError,
+    statementFails,
     tests,
     withBytes,
     withConnection,
@@ -381,6 +382,10 @@ callbackGuard failures err action =
         info <- peek err
         void (c_duckdb_v2_error_info_set_code info DuckDBV2ErrorApi)
         withView (show failure) $ \message -> void (c_duckdb_v2_error_info_set_text info message)
+
+-- | Run a statement that must fail. Use it where the header names no code for the failure.
+statementFails :: (HasCallStack) => DuckDBV2ConnectionHandle -> String -> IO ()
+statementFails conn sql = statementError conn sql >>= \(code, _) -> assertBool (sql <> " fails") (code /= DuckDBV2ErrorNone)
 
 -- | Fail a callback on purpose at a stage. 'callbackGuard' records the failure and reports it to DuckDB.
 failOnPurpose :: String -> IO ()

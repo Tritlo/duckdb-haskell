@@ -4,7 +4,7 @@
 module V2ReplacementScanTest (tests) where
 
 import Control.Exception (bracket)
-import Control.Monad (forM_, void, when)
+import Control.Monad (forM_, when)
 import Data.Coerce (coerce)
 import Data.IORef (atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int64)
@@ -20,8 +20,7 @@ import GHC.Records (getField)
 import HsBindgen.Runtime.Prelude (toFunPtr)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
-import V2TableFunctionTest (deliberateFailure, statementError)
-import V2Test (borrowedOpaque, callbackGuard, checked, output, readIntegers, readView, withConnection, withFactory, withHandle, withResult, withType, withView)
+import V2Test (borrowedOpaque, callbackGuard, checked, failOnPurpose, output, readIntegers, readView, statementError, statementFails, withConnection, withFactory, withHandle, withResult, withType, withView)
 
 tests :: TestTree
 tests =
@@ -98,7 +97,7 @@ testReplacementScan = do
                             refused "a function name after a collection" (c_duckdb_v2_replacement_scan_set_function_name info function)
                     -- The scan does not resolve the name, so the claim succeeds and the statement fails later.
                     "v2_unknown" -> setFunction info "v2_absent_function"
-                    "v2_failing" -> deliberateFailure "v2 deliberate replacement scan failure"
+                    "v2_failing" -> failOnPurpose "replacement scan"
                     _ -> pure ()
                 atomicModifyIORef' claimed (\names -> (name : names, ()))
             plain info context err = callbackGuard failures err $ do
@@ -142,12 +141,11 @@ testReplacementScan = do
                         append 40 1
                         withResult conn "SELECT col1 FROM v2_default" $ \result -> readIntegers result >>= (@?= [Just 10, Just 20, Just 30, Just 40])
                         withResult conn "SELECT * FROM v2_plain" $ \result -> readIntegers result >>= (@?= [Just 0, Just 1])
-                        void (statementError conn "SELECT * FROM v2_unknown")
+                        statementFails conn "SELECT * FROM v2_unknown"
                         -- The statement fails with the text of the callback, and the next statement on the connection works.
-                        -- The callback reports the code API. DuckDB has no exception type for API, so the statement fails
-                        -- with INPUT_INVALID.
+                        -- The header names no code for this failure.
                         (code, text) <- statementError conn "SELECT * FROM v2_failing"
-                        code @?= DuckDBV2ErrorInputInvalid
+                        assertBool "the statement of the failing scan fails" (code /= DuckDBV2ErrorNone)
                         assertBool ("the error contains the text of the callback: " <> text) ("v2 deliberate replacement scan failure" `isInfixOf` text)
                         atomicModifyIORef' failures (\seen -> ([], seen)) >>= (@?= ["user error (v2 deliberate replacement scan failure)"])
                         withResult conn "SELECT * FROM v2_repeat" $ \result -> readIntegers result >>= (@?= replicate 3 (Just 7))

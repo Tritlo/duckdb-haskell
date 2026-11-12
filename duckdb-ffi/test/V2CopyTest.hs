@@ -24,8 +24,7 @@ import HsBindgen.Runtime.Prelude (toFunPtr)
 import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase, (@?=))
-import V2TableFunctionTest (deliberateFailure, statementError)
-import V2Test (borrowedOpaque, callbackGuard, checked, consume, output, readIntegers, readView, record, removeTestFile, withConnection, withFactory, withHandle, withResult, withView)
+import V2Test (borrowedOpaque, callbackGuard, checked, consume, failOnPurpose, output, readIntegers, readView, record, removeTestFile, statementError, statementFails, withConnection, withFactory, withHandle, withResult, withView)
 
 tests :: TestTree
 tests =
@@ -206,7 +205,7 @@ testCopyTo = do
                                             assertBool ("each file name has the extension of the function: " <> show paths) (not (null paths) && all (".v2out" `isSuffixOf`) paths)
                                         -- The function has no COPY FROM side, so a COPY FROM statement fails.
                                         withResult conn "CREATE TABLE v2_sink (amount BIGINT, part INTEGER)" consume
-                                        void (statementError conn "COPY v2_sink FROM 'v2-absent.probe' (FORMAT v2_writer)")
+                                        statementFails conn "COPY v2_sink FROM 'v2-absent.probe' (FORMAT v2_writer)"
     readIORef failures >>= (@?= [])
     reverse <$> readIORef boundPaths >>= (@?= [path, directory])
     readIORef batchRows >>= (@?= [5000, 5000])
@@ -296,7 +295,7 @@ testCopyFrom = do
                                     readIORef rows >>= \given -> inserted @?= [Just given]
                                 -- The function has no COPY TO side, so a COPY TO statement fails.
                                 path <- freshPath "duckdb-v2-copy-from-only"
-                                void (statementError conn ("COPY v2_target TO '" <> path <> "' (FORMAT v2_reader)"))
+                                statementFails conn ("COPY v2_target TO '" <> path <> "' (FORMAT v2_reader)")
     readIORef failures >>= (@?= [])
     readIORef boundPaths >>= (@?= ["v2-absent/*.probe"])
     given <- readIORef rows
@@ -330,7 +329,7 @@ testFailingCopy = do
                 pokeArray cells [kind, fromIntegral (fromMaybe (-1) (elemIndex phase copyPhases)) :: Int64]
                 with (DuckDBV2Opaque (castPtr cells) destroyPtr (DuckDBV2OpaqueEqualsFn nullFunPtr)) (checked . setter) `onException` free cells
             phaseOf state = (copyPhases !!) . fromIntegral <$> peekElemOff (castPtr state :: Ptr Int64) 1
-            failIn phase name = when (phase == name) $ deliberateFailure ("v2 deliberate " <> name <> " failure")
+            failIn phase name = when (phase == name) $ failOnPurpose name
             -- Read the phase from the option fail and set it as the bind data. The bind data exists before the
             -- callback fails, so DuckDB owns the bind data and must destroy it.
             bindPhase getName getValue setBindData = do
@@ -394,11 +393,10 @@ testFailingCopy = do
                                             takeDestroyed >>= (@?= [1])
                                         -- The statement fails with the text of each recorded failure, and DuckDB destroyed the states of the
                                         -- given kinds. Then the statements without a failure succeed on the same connection.
-                                        -- A callback reports the code API. DuckDB has no exception type for API, so the statement fails with
-                                        -- INPUT_INVALID. The header names no code for the other failures.
+                                        -- The header names no code for these failures, so the test checks only that the statement fails.
                                         fails sql recorded kinds = do
                                             (code, text) <- statementError conn sql
-                                            unless (null recorded) $ code @?= DuckDBV2ErrorInputInvalid
+                                            assertBool (sql <> " fails") (code /= DuckDBV2ErrorNone)
                                             forM_ recorded $ \failure -> assertBool ("the error contains the text of the callback: " <> text) (failure `isInfixOf` text)
                                             atomicModifyIORef' failures (\seen -> ([], seen)) >>= (@?= map (\failure -> "user error (" <> failure <> ")") recorded)
                                             takeDestroyed >>= assertEqual ("the destroyed states after " <> sql) kinds

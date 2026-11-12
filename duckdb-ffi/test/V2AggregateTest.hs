@@ -4,7 +4,7 @@
 module V2AggregateTest (tests) where
 
 import Control.Exception (bracket)
-import Control.Monad (forM, forM_, unless, when)
+import Control.Monad (forM_, unless, when)
 import Data.Coerce (coerce)
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
@@ -19,7 +19,7 @@ import GHC.Records (getField)
 import HsBindgen.Runtime.Prelude (toFunPtr)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
-import V2Test (argCounts, borrowedOpaque, callbackGuard, checked, countCall, eachPartRequired, expectCallbackFailure, failOnPurpose, fillDocs, output, readIntegers, withConnection, withFactory, withHandle, withInstance, withResult, withType, withView)
+import V2Test (argCounts, borrowedOpaque, callbackGuard, checked, countCall, eachPartRequired, expectCallbackFailure, failOnPurpose, fillDocs, output, readArgument, readIntegers, withConnection, withFactory, withHandle, withInstance, withResult, withType, withView)
 
 tests :: TestTree
 tests =
@@ -164,15 +164,6 @@ testAggregateCallbacks = do
     forM_ ["bind", "size", "init", "update", "combine", "finalize", "destroy"] $ \name ->
         assertBool ("the " <> name <> " callback was invoked") (name `elem` names)
     readIORef destroyedStates >>= assertBool "the destroy callback received states" . (> 0)
-
--- | Read every BIGINT of a vector. The function flattens the vector first.
-readArgument :: DuckDBIdx -> DuckDBV2VectorHandle -> IO [Int64]
-readArgument count vector = do
-    checked (c_duckdb_v2_vector_flatten vector)
-    view <- output (c_duckdb_v2_vector_get_view vector)
-    forM [0 .. fromIntegral count - 1] $ \i -> do
-        index <- if getField @"sel" view == coerce nullPtr then pure i else fromIntegral <$> peekElemOff (coerce (getField @"sel" view) :: Ptr DuckDBV2SelT) i
-        peekElemOff (coerce (getField @"data'" view)) index
 
 {- | The aggregate v2_fail_sum(stage, x) sums x. The constant stage selects the callback that fails on purpose:
 1 fails the bind, 2 fails the update for the input 5, and 3 fails the finalize. The bind data holds the stage.

@@ -16,6 +16,7 @@ module V2Test (
     failOnPurpose,
     fillDocs,
     output,
+    readArgument,
     readIntegers,
     readView,
     record,
@@ -187,6 +188,15 @@ readIntegers result = alloca $ \chunkSlot -> do
                     `finally` (c_duckdb_v2_data_chunk_destroy chunkSlot >>= (@?= DuckDBV2ErrorNone))
             rest <- readIntegers result
             pure (rows <> rest)
+
+-- | Read every BIGINT of a vector. The function flattens the vector first.
+readArgument :: DuckDBIdx -> DuckDBV2VectorHandle -> IO [Int64]
+readArgument count vector = do
+    checked (c_duckdb_v2_vector_flatten vector)
+    view <- output (c_duckdb_v2_vector_get_view vector)
+    forM [0 .. fromIntegral count - 1] $ \i -> do
+        index <- if getField @"sel" view == coerce nullPtr then pure i else fromIntegral <$> peekElemOff (coerce (getField @"sel" view) :: Ptr DuckDBV2SelT) i
+        peekElemOff (coerce (getField @"data'" view)) index
 
 -- | Fetch and destroy every chunk of the result.
 consume :: DuckDBV2ResultHandle -> IO ()

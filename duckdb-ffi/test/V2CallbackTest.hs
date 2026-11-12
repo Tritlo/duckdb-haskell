@@ -4,7 +4,7 @@
 module V2CallbackTest (tests) where
 
 import Control.Exception (bracket, finally)
-import Control.Monad (forM, forM_, unless, when, zipWithM_)
+import Control.Monad (forM_, unless, when, zipWithM_)
 import Data.Bits (clearBit)
 import Data.Coerce (coerce)
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
@@ -21,7 +21,7 @@ import HsBindgen.Runtime.Prelude (toFunPtr)
 import System.Environment (getExecutablePath)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
-import V2Test (argCounts, borrowedOpaque, callbackGuard, checked, consume, countCall, eachPartRequired, expectCallbackFailure, failOnPurpose, output, readIntegers, readView, withConnection, withFactory, withHandle, withInstance, withResult, withStatement, withType, withView)
+import V2Test (argCounts, borrowedOpaque, callbackGuard, checked, consume, countCall, eachPartRequired, expectCallbackFailure, failOnPurpose, output, readArgument, readIntegers, readView, withConnection, withFactory, withHandle, withInstance, withResult, withStatement, withType, withView)
 
 tests :: TestTree
 tests =
@@ -249,15 +249,6 @@ testCustomOption = do
                     checked (c_duckdb_v2_config_set_option_value config (coerce name) value DuckDBV2SettingScopeDefault)
                 expect (DuckDBV2SettingScopeSession, CBool 0, 4) 40
     readIORef failures >>= (@?= [])
-
--- | Read every BIGINT of a vector. The function flattens the vector first.
-readArgument :: DuckDBIdx -> DuckDBV2VectorHandle -> IO [Int64]
-readArgument count vector = do
-    checked (c_duckdb_v2_vector_flatten vector)
-    view <- output (c_duckdb_v2_vector_get_view vector)
-    forM [0 .. fromIntegral count - 1] $ \i -> do
-        index <- if getField @"sel" view == coerce nullPtr then pure i else fromIntegral <$> peekElemOff (coerce (getField @"sel" view) :: Ptr DuckDBV2SelT) i
-        peekElemOff (coerce (getField @"data'" view)) index
 
 {- | The function v2_fail(stage, x) returns x. The constant stage selects the callback that fails on purpose:
 1 fails the bind, 2 fails the init, and 3 fails the exec for the input 2. The bind data holds the stage.

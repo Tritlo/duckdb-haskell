@@ -84,6 +84,7 @@ library
     Database.DuckDB.Simple.Native
     Database.DuckDB.Simple.Result
     Database.DuckDB.Simple.TypeCache
+    Database.DuckDB.Simple.Typed
     Database.DuckDB.Simple.VariantCodec
 
   hs-source-dirs: src

@@ -25,6 +25,7 @@ module Database.DuckDB.Simple.Extension (
     registerLogSink,
     registerCopyToFunction,
     registerCopyFromFunction,
+    registerCopyFunction,
 ) where
 
 import Control.Exception (bracket)
@@ -32,7 +33,7 @@ import Data.Text (Text)
 import Database.DuckDB.Simple.Callback (runCallback)
 import Database.DuckDB.Simple.Config (CustomOption)
 import qualified Database.DuckDB.Simple.Config as Config
-import Database.DuckDB.Simple.Copy (CopyBindInfo, CopyFinalizeInfo, CopyFromInfo, CopyInitInfo, CopySinkInfo, MultiFileOptions, registerMultiFileFunctionOn)
+import Database.DuckDB.Simple.Copy (CopyBindInfo, CopyFinalizeInfo, CopyFromInfo, CopyInitInfo, CopySinkInfo, CopyTo, MultiFileOptions, registerMultiFileFunctionOn)
 import qualified Database.DuckDB.Simple.Copy as Copy
 import Database.DuckDB.Simple.FromField (Field, FromField)
 import Database.DuckDB.Simple.FromRow (FromRow)
@@ -182,3 +183,11 @@ rules of 'Database.DuckDB.Simple.Copy.registerCopyFromFunction' apply.
 -}
 registerCopyFromFunction :: (TypedRow row) => Extension -> Text -> (CopyFromInfo -> IO [row]) -> IO ()
 registerCopyFromFunction = Copy.registerCopyFromFunctionOn . extensionTarget
+
+{- | Register a format with a COPY TO side and a COPY FROM side with the
+loading DuckDB host. The rules of
+'Database.DuckDB.Simple.Copy.registerCopyFunction' apply. The COPY TO side
+cannot read a VARIANT column.
+-}
+registerCopyFunction :: (TypedRow row) => Extension -> Text -> CopyTo bindState globalState -> (CopyFromInfo -> IO [row]) -> IO ()
+registerCopyFunction = Copy.registerCopyFunctionOn . extensionTarget

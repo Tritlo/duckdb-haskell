@@ -110,7 +110,13 @@ The SQL workflow stays the same. These changes can affect your code:
   database does not load.
 - `CatalogEntry.catalogEntryType` and `lookupCatalogEntry` use the new
   `CatalogEntryType`. V2 metadata cannot look up collations.
-- File system functions use `DuckDBV2FileFlag` and `DuckDBV2FileHandle`.
+- `withFileHandle` takes `[FileFlag]` instead of `[DuckDBFileFlag]`. It gives
+  its action an opaque `FileHandle` instead of `DuckDBFileHandle`, and the
+  other handle functions take `FileHandle`.
+  `Database.DuckDB.Simple.FileSystem` exports both types. For example,
+  `DuckDBFileFlagRead` becomes `FileFlagRead`. `DuckDBFileFlagInvalid` has no
+  replacement. You cannot get the native handle from a `FileHandle`. To use a
+  native file function, open the file with `Database.DuckDB.FFI.V2`.
 - The Arrow release helpers moved from `duckdb-ffi` to
   `Database.DuckDB.Simple.Arrow`. These helpers and the `foldArrow` callbacks
   use the V2 `ArrowSchema` and `ArrowArray` types.

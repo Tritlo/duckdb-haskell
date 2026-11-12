@@ -88,6 +88,7 @@ library
     Database.DuckDB.Simple.Function.Internal
     Database.DuckDB.Simple.Materialize
     Database.DuckDB.Simple.Native
+    Database.DuckDB.Simple.Pragma.Internal
     Database.DuckDB.Simple.Result
     Database.DuckDB.Simple.TypeCache
     Database.DuckDB.Simple.Typed

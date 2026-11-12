@@ -20,6 +20,7 @@ module Database.DuckDB.Simple.Function (
     deleteFunction,
     TypeDeclaration (..),
     createCast,
+    TypedRow,
 ) where
 
 import Data.Text (Text)
@@ -42,7 +43,7 @@ import Database.DuckDB.Simple.Internal (
  )
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.ToField (ToDuckValue)
-import Database.DuckDB.Simple.Typed (createCastOn)
+import Database.DuckDB.Simple.Typed (TypedRow, createCastOn)
 import Database.DuckDB.Simple.V2.Registration (TypeDeclaration (..))
 
 -- | Register a Haskell function under the supplied name.

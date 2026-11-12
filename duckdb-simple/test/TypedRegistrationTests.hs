@@ -22,7 +22,8 @@ import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..))
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.Simple
-import Database.DuckDB.Simple.FromField (BigNum (..), bsFromBool)
+import Database.DuckDB.Simple.Config (CustomOption (..), SettingScope (..), customOption, getConfigValue, registerCustomOption, setConfigValue)
+import Database.DuckDB.Simple.FromField (BigNum (..), FieldValue (..), bsFromBool)
 import Database.DuckDB.Simple.Pragma (PragmaCallback (..), registerPragmaFunction)
 import Database.DuckDB.Simple.Registration (FunctionParameter (..), Replacement (..), TypeDeclaration (..), defaultValue, parameter, registerCustomType, registerInstanceReplacementScan, registerReplacementScan)
 import Database.DuckDB.Simple.Time (Unbounded (..))
@@ -54,6 +55,8 @@ typedRegistrationTests =
         , testCase "exec pragma counts its calls" testPragmaExec
         , testCase "pragma argument rows that do not decode" testPragmaDecodeErrors
         , testCase "pragma exceptions become SQL errors" testPragmaExceptions
+        , testCase "custom option update accepts and rejects BIGINT values" testOptionUpdate
+        , testCase "custom option update gets VARCHAR values and NULL" testOptionText
         ]
 
 -- | Cast BIGINT values and NULLs to a custom type over more than one chunk.
@@ -220,6 +223,51 @@ testPragmaExceptions = withConnection ":memory:" \conn -> do
     registerPragmaFunction conn "typed_exec_failure" [] (ExecPragma \() -> throwIO (userError "typed exec pragma failure"))
     assertSqlError "typed exec pragma failure" (execute_ conn "PRAGMA typed_exec_failure")
     query_ conn "SELECT 43" >>= (@?= [Only (43 :: Int64)])
+
+{- | Accept and reject the values of a BIGINT option from SET, RESET, and
+'setConfigValue'. The function gets each value after the cast to BIGINT. A
+rejected value does not change the option.
+-}
+testOptionUpdate :: Assertion
+testOptionUpdate = withConnection ":memory:" \conn -> do
+    seen <- newIORef []
+    registerCustomOption
+        conn
+        (customOption "typed_limit" (TypeExpression "BIGINT"))
+            { customOptionDefault = Just (defaultValue (3 :: Int64))
+            , customOptionUpdate = Just \value -> do
+                modifyIORef' seen (value :)
+                case value of
+                    FieldInt64 number | number < 0 -> throwIO (userError "typed_limit must not be negative")
+                    _ -> pure ()
+            }
+    let current = fst <$> getConfigValue conn "typed_limit"
+    void (execute_ conn "SET typed_limit = 7")
+    current >>= (@?= FieldInt64 7)
+    void (execute_ conn "SET typed_limit = '5'")
+    current >>= (@?= FieldInt64 5)
+    assertSqlError "typed_limit must not be negative" (execute_ conn "SET typed_limit = -1")
+    current >>= (@?= FieldInt64 5)
+    void (execute_ conn "RESET typed_limit")
+    current >>= (@?= FieldInt64 3)
+    setConfigValue conn SettingScopeDefault "typed_limit" (11 :: Int64)
+    current >>= (@?= FieldInt64 11)
+    assertSqlError "typed_limit must not be negative" (setConfigValue conn SettingScopeDefault "typed_limit" (-2 :: Int64))
+    current >>= (@?= FieldInt64 11)
+    readIORef seen >>= (@?= reverse (map FieldInt64 [7, 5, -1, 3, 11, -2]))
+
+{- | Give the values of a VARCHAR option to the function. A RESET of an option
+without a default gives NULL.
+-}
+testOptionText :: Assertion
+testOptionText = withConnection ":memory:" \conn -> do
+    seen <- newIORef []
+    registerCustomOption conn (customOption "typed_option_label" (TypeExpression "VARCHAR")){customOptionUpdate = Just \value -> modifyIORef' seen (value :)}
+    void (execute_ conn "SET typed_option_label = 'liður'")
+    void (execute_ conn "SET typed_option_label = 42")
+    setConfigValue conn SettingScopeDefault "typed_option_label" ("set" :: Text)
+    void (execute_ conn "RESET typed_option_label")
+    readIORef seen >>= (@?= reverse [FieldText "liður", FieldText "42", FieldText "set", FieldNull])
 
 {- | Register a custom type on the column type of the values. Cast a row number
 to each value. Require the same values from the custom type.

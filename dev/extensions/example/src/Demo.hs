@@ -5,6 +5,7 @@
 -- | Register typed Haskell functions with the loading DuckDB host.
 module Demo where
 
+import qualified Advanced
 import Control.Exception (throwIO)
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
@@ -23,7 +24,9 @@ initialize = Extension.runExtension register
 
 foreign export ccall "duckdb_haskell_demo_register" initialize :: ExtensionEntry
 
--- | Register typed callbacks, macros, a PRAGMA, a custom option, and a log sink.
+{- | Register typed callbacks, macros, a PRAGMA, a custom option, and a log sink.
+Then register the functions with native callbacks in "Advanced".
+-}
 register :: Extension -> IO ()
 register extension = do
     logEntries <- newIORef (0 :: Int64)
@@ -41,6 +44,7 @@ register extension = do
         Pragma.QueryPragma (\_ _ -> pure "SELECT 'pragma', current_setting('haskell_multiplier')::BIGINT")
     Extension.registerLogSink extension "haskell_sink" (\_ -> atomicModifyIORef' logEntries (\count -> (count + 1, ()))) (pure ())
     Extension.createFunction extension "haskell_log_entries" (readIORef logEntries)
+    Advanced.register extension
 
 -- | Increment a BIGINT argument. Keep NULL values and report overflow.
 addOne :: Maybe Int64 -> IO (Maybe Int64)

@@ -2,93 +2,52 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-{- | Register functions with native V2 callbacks on the loading DuckDB host.
-These registrations use the 'RegistrationTarget' of the extension. The
-aggregate reads and writes vectors one row at a time. This is simple but slow.
-All other registrations use the typed functions of 'Extension'.
+{- | Register SQL objects with typed Haskell functions on the loading DuckDB
+host. Each registration uses a function of "Database.DuckDB.Simple.Extension".
+The module makes no native V2 call.
 -}
 module Advanced (register) where
 
-import Control.Exception (bracket, throwIO)
-import Control.Monad (forM, forM_, unless, when)
+import Control.Exception (throwIO)
+import Control.Monad (unless, when)
 import Data.Int (Int64)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
 import qualified Data.Text.Read as TextRead
-import Database.DuckDB.FFI.V2
-import Database.DuckDB.Simple (Only (..))
+import Database.DuckDB.Simple (Aggregate (..), Only (..))
 import qualified Database.DuckDB.Simple.Copy as Copy
 import Database.DuckDB.Simple.Extension (Extension)
 import qualified Database.DuckDB.Simple.Extension as Extension
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..))
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (LogicalTypeScalar))
-import Database.DuckDB.Simple.Registration (Replacement (..))
-import Database.DuckDB.Simple.V2.Registration (RegistrationTarget, TypeDeclaration (..), checked, destroy, output)
-import qualified Database.DuckDB.Simple.V2.Registration as Registration
-import Foreign.Ptr (castPtr)
-import Foreign.Storable (peek, peekElemOff, poke, pokeElemOff, sizeOf)
+import Database.DuckDB.Simple.Registration (Replacement (..), TypeDeclaration (..))
 
 {- | Register an aggregate, a table function, a custom type and its cast, a
 replacement scan, a COPY format, and a multi-file reader.
 -}
 register :: Extension -> IO ()
 register extension = do
-    Registration.withRegistrationFactory target (registerSum target)
+    registerSum extension
     registerSquares extension
     registerShifted extension
     Extension.registerReplacementScan extension replaceMissing
     registerLines extension
     registerLineFiles extension
-  where
-    target = Extension.extensionTarget extension
-
--- | The BIGINT type of all values in this module.
-bigint :: TypeDeclaration
-bigint = StructuredType (LogicalTypeScalar DuckDBV2LogicalTypeIdBigInt)
 
 {- | Register the aggregate @haskell_sum(value)@. It adds the values that are
-not NULL. The update and combine callbacks report overflow.
+not NULL. The step and the combine functions report overflow.
 -}
-registerSum :: RegistrationTarget -> DuckDBV2FactoryHandle -> IO ()
-registerSum target factory =
-    Registration.registerAggregateFunctionWith target configure (Registration.aggregateCallbacks stateSize initialize update combine finalize)
-  where
-    configure function = do
-        Registration.withIdentifier "haskell_sum" (checked . c_duckdb_v2_aggregate_function_set_name function)
-        output (c_duckdb_v2_aggregate_function_get_signature function)
-            >>= Registration.configureFunctionSignature factory (Registration.FunctionSignature [Registration.parameter "value" bigint] (Just bigint))
-    stateSize info = checked (c_duckdb_v2_aggregate_function_size_set_state_size info (fromIntegral (sizeOf (0 :: Int64))))
-    initialize info = do
-        count <- output (c_duckdb_v2_aggregate_function_init_get_state_count info)
-        states <- output (c_duckdb_v2_aggregate_function_init_get_states info)
-        forM_ [0 .. fromIntegral count - 1] \index -> peekElemOff states index >>= \state -> poke (castPtr state) (0 :: Int64)
-    update info = do
-        count <- output (c_duckdb_v2_aggregate_function_update_get_row_count info)
-        states <- output (c_duckdb_v2_aggregate_function_update_get_states info)
-        values <- output (c_duckdb_v2_aggregate_function_update_get_arg info 0) >>= readColumn count
-        forM_ (zip [0 ..] values) \(index, value) -> forM_ value \number -> do
-            state <- castPtr <$> peekElemOff states index
-            total <- peek state
-            addOrThrow "haskell_sum" total number >>= poke state
-    combine info = do
-        count <- output (c_duckdb_v2_aggregate_function_combine_get_state_count info)
-        sources <- output (c_duckdb_v2_aggregate_function_combine_get_sources info)
-        targets <- output (c_duckdb_v2_aggregate_function_combine_get_targets info)
-        forM_ [0 .. fromIntegral count - 1] \index -> do
-            source <- peekElemOff sources index >>= peek . castPtr
-            state <- castPtr <$> peekElemOff targets index
-            total <- peek state
-            addOrThrow "haskell_sum" total source >>= poke state
-    finalize info = do
-        count <- output (c_duckdb_v2_aggregate_function_finalize_get_state_count info)
-        states <- output (c_duckdb_v2_aggregate_function_finalize_get_states info)
-        offset <- output (c_duckdb_v2_aggregate_function_finalize_get_result_offset info)
-        result <- output (c_duckdb_v2_aggregate_function_finalize_get_result info)
-        raw <- output (c_duckdb_v2_vector_get_data_mutable result)
-        forM_ [0 .. fromIntegral count - 1] \index -> do
-            total <- peekElemOff states index >>= peek . castPtr
-            pokeElemOff (castPtr raw) (fromIntegral offset + index) (total :: Int64)
+registerSum :: Extension -> IO ()
+registerSum extension =
+    Extension.createAggregate
+        extension
+        "haskell_sum"
+        Aggregate
+            { aggregateInitial = 0 :: Int64
+            , aggregateStep = \total (Only value) -> addOrThrow "haskell_sum" total value
+            , aggregateCombine = addOrThrow "haskell_sum"
+            , aggregateResult = pure
+            }
 
 {- | Register the table function @haskell_squares(count)@ with the columns @n@
 and @square@. A negative count is an error. DuckDB reads the list one chunk at
@@ -168,11 +127,3 @@ addBigInt a b
 -- | Add two BIGINT values. Report overflow as an error of the SQL object @name@.
 addOrThrow :: String -> Int64 -> Int64 -> IO Int64
 addOrThrow name a b = maybe (throwIO (userError (name <> ": BIGINT overflow in " <> show a <> " + " <> show b))) pure (addBigInt a b)
-
--- | Read the first rows of a BIGINT vector. A NULL row becomes 'Nothing'.
-readColumn :: DuckDBIdx -> DuckDBV2VectorHandle -> IO [Maybe Int64]
-readColumn count vector =
-    forM (takeWhile (< count) [0 ..]) \row ->
-        bracket (output (c_duckdb_v2_vector_get_value vector row)) (destroy c_duckdb_v2_value_destroy) \value -> do
-            isNull <- output (c_duckdb_v2_value_is_null value)
-            if isNull /= 0 then pure Nothing else Just <$> output (c_duckdb_v2_value_get_bigint value)

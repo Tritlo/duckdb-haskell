@@ -16,6 +16,7 @@ module Database.DuckDB.Simple.Extension (
     registerReplacementScan,
     registerCustomType,
     registerMultiFileFunction,
+    createTableFunction,
     MacroFunctionType (..),
     registerMacroFunction,
     registerMacroFunctionWith,
@@ -39,7 +40,8 @@ import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Pragma (PragmaCallback)
 import qualified Database.DuckDB.Simple.Pragma as Pragma
 import Database.DuckDB.Simple.ToField (ToDuckValue)
-import Database.DuckDB.Simple.Typed (Replacement, createCastOn, replacementScanCallback)
+import Database.DuckDB.Simple.Typed (Replacement, TypedRow, createCastOn, replacementScanCallback)
+import Database.DuckDB.Simple.Typed.Table (createTableFunctionOn)
 import Database.DuckDB.Simple.V2.Registration (FunctionParameter, FunctionSignature (..), RegistrationTarget (ExtensionTarget), TypeDeclaration, configureFunctionSignature, registerCustomTypeOn, registerReplacementScanOn)
 import Foreign.Ptr (Ptr, castPtr)
 
@@ -107,6 +109,11 @@ rules of 'Database.DuckDB.Simple.Copy.registerMultiFileFunction' apply.
 -}
 registerMultiFileFunction :: Extension -> Text -> Text -> MultiFileOptions -> IO ()
 registerMultiFileFunction = registerMultiFileFunctionOn . extensionTarget
+{- | Register a typed table function with the loading DuckDB host. The rules of
+'Database.DuckDB.Simple.Function.createTableFunction' apply.
+-}
+createTableFunction :: (FromRow params, TypedRow params, TypedRow row) => Extension -> Text -> [Text] -> (params -> IO [row]) -> IO ()
+createTableFunction = createTableFunctionOn . extensionTarget
 
 {- | Register a scalar expression or a table SELECT as a macro of the loading
 extension. The V2 API registers a macro only for an extension. Use SQL

@@ -41,6 +41,9 @@
 - `customOptionUpdate` of `Config.CustomOption` is a function that gets the new
   value as a `FieldValue`. An exception in the function rejects the value.
   `registerCustomOptionWith` is in `Database.DuckDB.Simple.V2.Config`.
+- Add `createTableFunction` for connections and extensions. It registers a
+  Haskell function that gives the rows of a table function as a list. DuckDB
+  reads the list one chunk at a time.
 - Add scoped named collection inputs and prepared dynamic PIVOT with a deferred
   output schema. Native expanding statements cannot have parameters.
 - Rename `Database.DuckDB.Simple.Deprecated.Streaming` to

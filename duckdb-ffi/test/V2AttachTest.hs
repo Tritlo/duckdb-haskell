@@ -17,6 +17,7 @@ tests =
     testGroup
         "DuckDB V2 attach options"
         [ testCase "attach options pass READ_ONLY to the attach, and an unknown option fails it" testAttachOptions
+        , testCase "an attach fails for an attached path or name, and a detach fails for a name that is not attached" testAttachConflicts
         ]
 
 -- | Set one attach option from text.
@@ -57,4 +58,40 @@ testAttachOptions =
                         code <- c_duckdb_v2_instance_attach instanceHandle (coerce name) file options (CBool 0) nullPtr
                         assertBool "an unknown option fails the attach" (code /= DuckDBV2ErrorNone)
                     readOnly "v2_unknown" >>= (@?= [])
+                -- READ_ONLY takes a boolean. The text "maybe" does not cast to one.
+                withHandle (c_duckdb_v2_attach_options_create instanceHandle) c_duckdb_v2_attach_options_destroy $ \options -> do
+                    setOption options "READ_ONLY" "maybe"
+                    withView "v2_ill_typed" $ \name -> do
+                        code <- c_duckdb_v2_instance_attach instanceHandle (coerce name) file options (CBool 0) nullPtr
+                        assertBool "an ill-typed option fails the attach" (code /= DuckDBV2ErrorNone)
+                    readOnly "v2_ill_typed" >>= (@?= [])
+        )
+
+testAttachConflicts :: IO ()
+testAttachConflicts =
+    bracket
+        ( do
+            (path, handle) <- openBinaryTempFile "." "duckdb-v2-conflict"
+            hClose handle
+            withCString path $ \name -> removeTestFile name >>= (@?= 0)
+            pure path
+        )
+        (\path -> withCString path (void . removeTestFile))
+        ( \path -> withInstance $ \instanceHandle -> withView path $ \file -> withView ":memory:" $ \memory -> do
+            let attach name target = withView name $ \view -> c_duckdb_v2_instance_attach instanceHandle (coerce view) target (coerce nullPtr) (CBool 0) nullPtr
+                detach name = withView name $ \view -> c_duckdb_v2_instance_detach instanceHandle (coerce view) nullPtr
+            attach "v2_first" file >>= (@?= DuckDBV2ErrorNone)
+            attach "v2_second" file >>= (@?= DuckDBV2ErrorResourceInUse)
+            attach "v2_second" memory >>= (@?= DuckDBV2ErrorNone)
+            attach "v2_first" memory >>= \code -> assertBool ("an attached name fails the attach: " <> show code) (code /= DuckDBV2ErrorNone)
+            detach "v2_second" >>= (@?= DuckDBV2ErrorNone)
+            detach "v2_first" >>= (@?= DuckDBV2ErrorNone)
+            detach "v2_first" >>= (@?= DuckDBV2ErrorInputInvalid)
+            -- Attach options belong to the instance that created them.
+            withInstance $ \other -> do
+                let attachWith owner = withHandle (c_duckdb_v2_attach_options_create owner) c_duckdb_v2_attach_options_destroy $ \options ->
+                        withView "v2_owned" $ \name -> c_duckdb_v2_instance_attach instanceHandle (coerce name) memory options (CBool 0) nullPtr
+                attachWith other >>= \code -> assertBool ("options of another instance fail the attach: " <> show code) (code /= DuckDBV2ErrorNone)
+                attachWith instanceHandle >>= (@?= DuckDBV2ErrorNone)
+                detach "v2_owned" >>= (@?= DuckDBV2ErrorNone)
         )

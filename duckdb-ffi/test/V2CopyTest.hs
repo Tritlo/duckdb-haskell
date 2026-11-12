@@ -78,14 +78,19 @@ expectOptions getCount getName getValue = do
     mapM (fmap (map toLower) . readName getName) [0, 1, 2] >>= (@?= ["flag", "pair", "tag"])
     let value index = withHandle (getValue index) c_duckdb_v2_value_destroy
         text handle = output (c_duckdb_v2_value_get_varchar handle) >>= readView
+        childFails handle index = alloca $ \slot -> do
+            poke slot (coerce nullPtr)
+            (c_duckdb_v2_value_get_child handle index slot nullPtr >>= (@?= DuckDBV2ErrorInputInvalid)) `finally` c_duckdb_v2_value_destroy slot
     -- A bare option is the BOOLEAN true.
     value 0 (output . c_duckdb_v2_value_get_bool) >>= (@?= CBool 1)
-    -- A list is a tuple with one child for each element, in order.
+    -- A list is a tuple with one child for each element, in order. An index after the last child is rejected.
     value 1 $ \pair -> do
         output (c_duckdb_v2_value_get_child_count pair) >>= (@?= 2)
         withHandle (c_duckdb_v2_value_get_child pair 0) c_duckdb_v2_value_destroy (output . c_duckdb_v2_value_get_bigint) >>= (@?= 1)
         withHandle (c_duckdb_v2_value_get_child pair 1) c_duckdb_v2_value_destroy text >>= (@?= "two")
-    value 2 text >>= (@?= "x")
+        childFails pair 2
+    -- A VARCHAR has no children, so the index 0 is rejected.
+    value 2 $ \tag -> text tag >>= (@?= "x") >> childFails tag 0
     alloca $ \name -> expectFailure "an option name after the last option" (getName 3 name)
     alloca $ \slot -> do
         poke slot (coerce nullPtr)
@@ -290,7 +295,8 @@ testCopyFrom = do
                                     inserted <- readIntegers result
                                     readIORef rows >>= \given -> inserted @?= [Just given]
                                 -- The function has no COPY TO side, so a COPY TO statement fails.
-                                void (statementError conn "COPY v2_target TO 'v2-absent/never.probe' (FORMAT v2_reader)")
+                                path <- freshPath "duckdb-v2-copy-from-only"
+                                void (statementError conn ("COPY v2_target TO '" <> path <> "' (FORMAT v2_reader)"))
     readIORef failures >>= (@?= [])
     readIORef boundPaths >>= (@?= ["v2-absent/*.probe"])
     given <- readIORef rows

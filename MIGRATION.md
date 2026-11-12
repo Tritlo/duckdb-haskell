@@ -84,9 +84,17 @@ The SQL workflow stays the same. These changes can affect your code:
   its target from `withRegistrationFactory`.
 - `logicalTypeFromRepWith` takes the factory, and its resolver returns
   `Maybe` a native type. `Nothing` selects the default construction.
+- `logicalTypeToRep`, `logicalTypeFromRep`, `logicalTypeFromRepWith`, and
+  `destroyLogicalType` moved from `Database.DuckDB.Simple.LogicalRep` to
+  `Database.DuckDB.Simple.V2.LogicalRep`. Import them from the new module.
 - `LogicalTypeScalar`, `Function.argumentTypes`, and
-  `CopyBindInfo.copyBindColumnTypes` use `DuckDBV2LogicalTypeId`. For example,
-  `DuckDBTypeBigInt` becomes `DuckDBV2LogicalTypeIdBigInt`.
+  `CopyBindInfo.copyBindColumnTypes` use `LogicalTypeId` instead of
+  `DuckDBType`. `Database.DuckDB.Simple`, `Database.DuckDB.Simple.LogicalRep`,
+  `FromField`, `Function`, and `Copy` export `LogicalTypeId`. Replace the prefix
+  `DuckDBType` of each pattern with `LogicalTypeId`. For example,
+  `DuckDBTypeBigInt` becomes `LogicalTypeIdBigInt`. `DuckDBTypeTimestampS`
+  becomes `LogicalTypeIdTimestampSec`. `DuckDBTypeIntegerLiteral` and
+  `DuckDBTypeStringLiteral` have no replacement.
 - SQL TUPLE values decode as `FieldTuple` with a `TupleValue`. `LogicalTypeRep`
   adds `LogicalTypeTuple` and `LogicalTypeCollatedVarchar`. Update exhaustive
   matches.

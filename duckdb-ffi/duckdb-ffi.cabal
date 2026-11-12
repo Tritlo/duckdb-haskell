@@ -88,6 +88,7 @@ test-suite duckdb-ffi-v2-test
   other-modules:
     V2ChunkTest
     V2FileSystemTest
+    V2FunctionDocsTest
     V2StatementTest
     V2Test
     V2TypeTest

@@ -11,7 +11,6 @@ module Database.DuckDB.Simple.Logging (
     registerLogSink,
     registerInstanceLogSink,
     registerLogSinkOn,
-    logMessage,
     logConnectionMessage,
     logInstanceMessage,
 ) where
@@ -123,12 +122,6 @@ levelName = \case
     LogLevelWarning -> "WARNING"
     LogLevelError -> "ERROR"
     LogLevelFatal -> "FATAL"
-
--- | Emit a message from a native callback's borrowed context.
-logMessage :: DuckDBV2ContextHandle -> LogLevel -> Text -> Text -> IO ()
-logMessage context level category message =
-    withText category \kind -> withText message \body ->
-        checked (c_duckdb_v2_context_log context (logLevelToNative level) kind body)
 
 -- | Emit a connection-scoped message through its current logging configuration.
 logConnectionMessage :: Connection -> LogLevel -> Text -> Text -> IO ()

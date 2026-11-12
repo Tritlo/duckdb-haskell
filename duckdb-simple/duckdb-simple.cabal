@@ -75,6 +75,7 @@ library
     Database.DuckDB.Simple.V2.Config
     Database.DuckDB.Simple.V2.Copy
     Database.DuckDB.Simple.V2.FunctionDocs
+    Database.DuckDB.Simple.V2.Logging
     Database.DuckDB.Simple.V2.Pragma
     Database.DuckDB.Simple.V2.Registration
     Database.DuckDB.Simple.Variant

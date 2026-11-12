@@ -18,6 +18,7 @@ import qualified Database.DuckDB.Simple.Logging as Logging
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..))
 import qualified Database.DuckDB.Simple.QueryMetrics as Metrics
 import qualified Database.DuckDB.Simple.V2.FunctionDocs as Docs
+import qualified Database.DuckDB.Simple.V2.Logging as V2Logging
 import qualified Database.DuckDB.Simple.V2.Pragma as Pragma
 import qualified Database.DuckDB.Simple.V2.Registration as R
 import Foreign.C.ConstPtr (ConstPtr (..))
@@ -286,7 +287,7 @@ testContextLog = do
     withConnection ":memory:" \connection -> do
         Logging.registerLogSink connection "context_log" (\entry -> atomicModifyIORef' entries (\values -> (entry : values, ()))) (pure ())
         let logged info context = do
-                Logging.logMessage context Logging.LogLevelWarning "HaskellContext" "from a callback"
+                V2Logging.logMessage context Logging.LogLevelWarning "HaskellContext" "from a callback"
                 count <- R.output (c_duckdb_v2_scalar_function_exec_get_row_count info)
                 vector <- R.output (c_duckdb_v2_scalar_function_exec_get_result info)
                 writeIntegers vector (replicate (fromIntegral count) 1)

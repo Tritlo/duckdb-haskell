@@ -132,6 +132,7 @@ testCopyTo = do
                 expectOptions (c_duckdb_v2_copy_to_bind_get_option_count info) (c_duckdb_v2_copy_to_bind_get_option_name info) (c_duckdb_v2_copy_to_bind_get_option_value info)
                 with (borrowedOpaque bound) $ \opaque -> checked (c_duckdb_v2_copy_to_bind_set_bind_data info opaque)
             batchSize info _context err = callbackGuard failures err $ do
+                -- The engine invokes this callback because the statements do not set BATCH_SIZE.
                 note "batch size"
                 expectData (c_duckdb_v2_copy_to_batch_size_get_user_data info) (c_duckdb_v2_copy_to_batch_size_get_bind_data info)
                 -- The target is larger than the input, so each file gets one batch.
@@ -240,8 +241,8 @@ testCopyFrom = do
                 record progressAt given
                 expectData (c_duckdb_v2_copy_from_progress_get_user_data info) (c_duckdb_v2_copy_from_progress_get_bind_data info)
                 output (c_duckdb_v2_copy_from_progress_get_global_state info) >>= (@?= global)
-                -- The read reports no progress until it has given a row.
-                checked (c_duckdb_v2_copy_from_progress_set_progress info (if given > 0 then 0.5 else 0))
+                -- The callback reports progress only after the read has given a row. Before that, the read has no progress.
+                when (given > 0) $ checked (c_duckdb_v2_copy_from_progress_set_progress info 0.5)
             -- The read gives one row for each call until the progress callback runs after the first row. Then the read ends.
             execute info _context err = callbackGuard failures err $ do
                 note "exec"

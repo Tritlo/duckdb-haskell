@@ -56,7 +56,7 @@ typedRegistrationTests =
         , testCase "pragma argument rows that do not decode" testPragmaDecodeErrors
         , testCase "pragma exceptions become SQL errors" testPragmaExceptions
         , testCase "custom option update accepts and rejects BIGINT values" testOptionUpdate
-        , testCase "custom option update gets VARCHAR values and NULL" testOptionText
+        , testCase "custom option update gets VARCHAR values and can reject RESET" testOptionText
         ]
 
 -- | Cast BIGINT values and NULLs to a custom type over more than one chunk.
@@ -193,14 +193,19 @@ testPragmaRow = withConnection ":memory:" \conn -> do
     query_ conn "PRAGMA typed_pair(label = 'named', amount = 4)" >>= (@?= [(4 :: Int64, "named" :: Text)])
     query_ conn "PRAGMA typed_pair(5)" >>= (@?= [(5 :: Int64, "none" :: Text)])
 
--- | Run the action of an exec pragma once for each statement.
+{- | Run the action of an exec pragma once for each statement. The action gets
+the argument or the default value.
+-}
 testPragmaExec :: Assertion
 testPragmaExec = withConnection ":memory:" \conn -> do
-    calls <- newIORef (0 :: Int)
-    registerPragmaFunction conn "typed_count" [] (ExecPragma \() -> modifyIORef' calls (+ 1))
+    calls <- newIORef (0 :: Int64)
+    let step = (parameter "step" (TypeExpression "BIGINT")){parameterDefault = Just (defaultValue (1 :: Int64))}
+    registerPragmaFunction conn "typed_count" [step] (ExecPragma \(Only increment) -> modifyIORef' calls (+ increment))
     void (execute_ conn "PRAGMA typed_count")
     void (execute_ conn "PRAGMA typed_count")
     readIORef calls >>= (@?= 2)
+    void (execute_ conn "PRAGMA typed_count(5)")
+    readIORef calls >>= (@?= 7)
 
 -- | Name the pragma when the row has another type, another size, or a NULL.
 testPragmaDecodeErrors :: Assertion
@@ -257,7 +262,7 @@ testOptionUpdate = withConnection ":memory:" \conn -> do
     readIORef seen >>= (@?= reverse (map FieldInt64 [7, 5, -1, 3, 11, -2]))
 
 {- | Give the values of a VARCHAR option to the function. A RESET of an option
-without a default gives NULL.
+without a default gives NULL. A function that rejects NULL rejects the RESET.
 -}
 testOptionText :: Assertion
 testOptionText = withConnection ":memory:" \conn -> do
@@ -268,6 +273,13 @@ testOptionText = withConnection ":memory:" \conn -> do
     setConfigValue conn SettingScopeDefault "typed_option_label" ("set" :: Text)
     void (execute_ conn "RESET typed_option_label")
     readIORef seen >>= (@?= reverse [FieldText "liður", FieldText "42", FieldText "set", FieldNull])
+    let required value = case value of
+            FieldNull -> throwIO (userError "typed_option_required must have a value")
+            _ -> pure ()
+    registerCustomOption conn (customOption "typed_option_required" (TypeExpression "VARCHAR")){customOptionUpdate = Just required}
+    void (execute_ conn "SET typed_option_required = 'kept'")
+    assertSqlError "typed_option_required must have a value" (execute_ conn "RESET typed_option_required")
+    fst <$> getConfigValue conn "typed_option_required" >>= (@?= FieldText "kept")
 
 {- | Register a custom type on the column type of the values. Cast a row number
 to each value. Require the same values from the custom type.

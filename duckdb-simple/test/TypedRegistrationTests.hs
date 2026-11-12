@@ -262,5 +262,9 @@ assertSqlError :: Text -> IO a -> Assertion
 assertSqlError expected action = do
     outcome <- try action
     case outcome of
-        Left (err :: SQLError) -> assertBool (Text.unpack (sqlErrorMessage err)) (expected `Text.isInfixOf` sqlErrorMessage err)
+        Left (err :: SQLError) -> do
+            let message = sqlErrorMessage err
+            assertBool (Text.unpack message) (expected `Text.isInfixOf` message)
+            -- The SQL error has the plain message of the Haskell exception.
+            assertBool (Text.unpack message) (not (any (`Text.isInfixOf` message) ["user error", "SQLError {"]))
         Right _ -> assertFailure "expected an SQL error"

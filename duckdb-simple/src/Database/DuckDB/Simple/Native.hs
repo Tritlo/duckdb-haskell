@@ -24,6 +24,9 @@ module Database.DuckDB.Simple.Native (
     tokenTypeFromNative,
     MacroFunctionType (..),
     macroFunctionTypeToNative,
+    LogicalTypeId (..),
+    logicalTypeIdToNative,
+    logicalTypeIdFromNative,
     checked,
     checkCode,
     output,
@@ -458,6 +461,153 @@ macroFunctionTypeToNative :: MacroFunctionType -> DuckDBV2MacroFunctionType
 macroFunctionTypeToNative = \case
     MacroFunctionTypeScalar -> DuckDBV2MacroFunctionTypeScalar
     MacroFunctionTypeTable -> DuckDBV2MacroFunctionTypeTable
+
+{- | The id of a logical type. The id gives the kind of the type, for example
+BIGINT or STRUCT. It does not give the parameters of the type.
+-}
+data LogicalTypeId
+    = LogicalTypeIdInvalid
+    | LogicalTypeIdSQLNull
+    | LogicalTypeIdUnknown
+    | LogicalTypeIdAny
+    | LogicalTypeIdType
+    | LogicalTypeIdBoolean
+    | LogicalTypeIdTinyInt
+    | LogicalTypeIdSmallInt
+    | LogicalTypeIdInteger
+    | LogicalTypeIdBigInt
+    | LogicalTypeIdDate
+    | LogicalTypeIdTime
+    | LogicalTypeIdTimestampSec
+    | LogicalTypeIdTimestampMs
+    | LogicalTypeIdTimestamp
+    | LogicalTypeIdTimestampNs
+    | LogicalTypeIdDecimal
+    | LogicalTypeIdFloat
+    | LogicalTypeIdDouble
+    | LogicalTypeIdVarchar
+    | LogicalTypeIdBlob
+    | LogicalTypeIdInterval
+    | LogicalTypeIdUTinyInt
+    | LogicalTypeIdUSmallInt
+    | LogicalTypeIdUInteger
+    | LogicalTypeIdUBigInt
+    | LogicalTypeIdTimestampTz
+    | LogicalTypeIdTimestampTzNs
+    | LogicalTypeIdTimeTz
+    | LogicalTypeIdTimeNs
+    | LogicalTypeIdBit
+    | LogicalTypeIdBigNum
+    | LogicalTypeIdUHugeInt
+    | LogicalTypeIdHugeInt
+    | LogicalTypeIdUUID
+    | LogicalTypeIdGeometry
+    | LogicalTypeIdStruct
+    | LogicalTypeIdList
+    | LogicalTypeIdMap
+    | LogicalTypeIdEnum
+    | LogicalTypeIdUnion
+    | LogicalTypeIdArray
+    | LogicalTypeIdVariant
+    | LogicalTypeIdTuple
+    deriving (Eq, Ord, Show, Read, Enum, Bounded)
+
+-- | Convert a logical type id to its native value.
+logicalTypeIdToNative :: LogicalTypeId -> DuckDBV2LogicalTypeId
+logicalTypeIdToNative = \case
+    LogicalTypeIdInvalid -> DuckDBV2LogicalTypeIdInvalid
+    LogicalTypeIdSQLNull -> DuckDBV2LogicalTypeIdSQLNull
+    LogicalTypeIdUnknown -> DuckDBV2LogicalTypeIdUnknown
+    LogicalTypeIdAny -> DuckDBV2LogicalTypeIdAny
+    LogicalTypeIdType -> DuckDBV2LogicalTypeIdType
+    LogicalTypeIdBoolean -> DuckDBV2LogicalTypeIdBoolean
+    LogicalTypeIdTinyInt -> DuckDBV2LogicalTypeIdTinyInt
+    LogicalTypeIdSmallInt -> DuckDBV2LogicalTypeIdSmallInt
+    LogicalTypeIdInteger -> DuckDBV2LogicalTypeIdInteger
+    LogicalTypeIdBigInt -> DuckDBV2LogicalTypeIdBigInt
+    LogicalTypeIdDate -> DuckDBV2LogicalTypeIdDate
+    LogicalTypeIdTime -> DuckDBV2LogicalTypeIdTime
+    LogicalTypeIdTimestampSec -> DuckDBV2LogicalTypeIdTimestampSec
+    LogicalTypeIdTimestampMs -> DuckDBV2LogicalTypeIdTimestampMs
+    LogicalTypeIdTimestamp -> DuckDBV2LogicalTypeIdTimestamp
+    LogicalTypeIdTimestampNs -> DuckDBV2LogicalTypeIdTimestampNs
+    LogicalTypeIdDecimal -> DuckDBV2LogicalTypeIdDecimal
+    LogicalTypeIdFloat -> DuckDBV2LogicalTypeIdFloat
+    LogicalTypeIdDouble -> DuckDBV2LogicalTypeIdDouble
+    LogicalTypeIdVarchar -> DuckDBV2LogicalTypeIdVarchar
+    LogicalTypeIdBlob -> DuckDBV2LogicalTypeIdBlob
+    LogicalTypeIdInterval -> DuckDBV2LogicalTypeIdInterval
+    LogicalTypeIdUTinyInt -> DuckDBV2LogicalTypeIdUTinyInt
+    LogicalTypeIdUSmallInt -> DuckDBV2LogicalTypeIdUSmallInt
+    LogicalTypeIdUInteger -> DuckDBV2LogicalTypeIdUInteger
+    LogicalTypeIdUBigInt -> DuckDBV2LogicalTypeIdUBigInt
+    LogicalTypeIdTimestampTz -> DuckDBV2LogicalTypeIdTimestampTz
+    LogicalTypeIdTimestampTzNs -> DuckDBV2LogicalTypeIdTimestampTzNs
+    LogicalTypeIdTimeTz -> DuckDBV2LogicalTypeIdTimeTz
+    LogicalTypeIdTimeNs -> DuckDBV2LogicalTypeIdTimeNs
+    LogicalTypeIdBit -> DuckDBV2LogicalTypeIdBit
+    LogicalTypeIdBigNum -> DuckDBV2LogicalTypeIdBigNum
+    LogicalTypeIdUHugeInt -> DuckDBV2LogicalTypeIdUHugeInt
+    LogicalTypeIdHugeInt -> DuckDBV2LogicalTypeIdHugeInt
+    LogicalTypeIdUUID -> DuckDBV2LogicalTypeIdUUID
+    LogicalTypeIdGeometry -> DuckDBV2LogicalTypeIdGeometry
+    LogicalTypeIdStruct -> DuckDBV2LogicalTypeIdStruct
+    LogicalTypeIdList -> DuckDBV2LogicalTypeIdList
+    LogicalTypeIdMap -> DuckDBV2LogicalTypeIdMap
+    LogicalTypeIdEnum -> DuckDBV2LogicalTypeIdEnum
+    LogicalTypeIdUnion -> DuckDBV2LogicalTypeIdUnion
+    LogicalTypeIdArray -> DuckDBV2LogicalTypeIdArray
+    LogicalTypeIdVariant -> DuckDBV2LogicalTypeIdVariant
+    LogicalTypeIdTuple -> DuckDBV2LogicalTypeIdTuple
+
+-- | Convert a native logical type id. An unknown value raises 'SQLError'.
+logicalTypeIdFromNative :: DuckDBV2LogicalTypeId -> IO LogicalTypeId
+logicalTypeIdFromNative = \case
+    DuckDBV2LogicalTypeIdInvalid -> pure LogicalTypeIdInvalid
+    DuckDBV2LogicalTypeIdSQLNull -> pure LogicalTypeIdSQLNull
+    DuckDBV2LogicalTypeIdUnknown -> pure LogicalTypeIdUnknown
+    DuckDBV2LogicalTypeIdAny -> pure LogicalTypeIdAny
+    DuckDBV2LogicalTypeIdType -> pure LogicalTypeIdType
+    DuckDBV2LogicalTypeIdBoolean -> pure LogicalTypeIdBoolean
+    DuckDBV2LogicalTypeIdTinyInt -> pure LogicalTypeIdTinyInt
+    DuckDBV2LogicalTypeIdSmallInt -> pure LogicalTypeIdSmallInt
+    DuckDBV2LogicalTypeIdInteger -> pure LogicalTypeIdInteger
+    DuckDBV2LogicalTypeIdBigInt -> pure LogicalTypeIdBigInt
+    DuckDBV2LogicalTypeIdDate -> pure LogicalTypeIdDate
+    DuckDBV2LogicalTypeIdTime -> pure LogicalTypeIdTime
+    DuckDBV2LogicalTypeIdTimestampSec -> pure LogicalTypeIdTimestampSec
+    DuckDBV2LogicalTypeIdTimestampMs -> pure LogicalTypeIdTimestampMs
+    DuckDBV2LogicalTypeIdTimestamp -> pure LogicalTypeIdTimestamp
+    DuckDBV2LogicalTypeIdTimestampNs -> pure LogicalTypeIdTimestampNs
+    DuckDBV2LogicalTypeIdDecimal -> pure LogicalTypeIdDecimal
+    DuckDBV2LogicalTypeIdFloat -> pure LogicalTypeIdFloat
+    DuckDBV2LogicalTypeIdDouble -> pure LogicalTypeIdDouble
+    DuckDBV2LogicalTypeIdVarchar -> pure LogicalTypeIdVarchar
+    DuckDBV2LogicalTypeIdBlob -> pure LogicalTypeIdBlob
+    DuckDBV2LogicalTypeIdInterval -> pure LogicalTypeIdInterval
+    DuckDBV2LogicalTypeIdUTinyInt -> pure LogicalTypeIdUTinyInt
+    DuckDBV2LogicalTypeIdUSmallInt -> pure LogicalTypeIdUSmallInt
+    DuckDBV2LogicalTypeIdUInteger -> pure LogicalTypeIdUInteger
+    DuckDBV2LogicalTypeIdUBigInt -> pure LogicalTypeIdUBigInt
+    DuckDBV2LogicalTypeIdTimestampTz -> pure LogicalTypeIdTimestampTz
+    DuckDBV2LogicalTypeIdTimestampTzNs -> pure LogicalTypeIdTimestampTzNs
+    DuckDBV2LogicalTypeIdTimeTz -> pure LogicalTypeIdTimeTz
+    DuckDBV2LogicalTypeIdTimeNs -> pure LogicalTypeIdTimeNs
+    DuckDBV2LogicalTypeIdBit -> pure LogicalTypeIdBit
+    DuckDBV2LogicalTypeIdBigNum -> pure LogicalTypeIdBigNum
+    DuckDBV2LogicalTypeIdUHugeInt -> pure LogicalTypeIdUHugeInt
+    DuckDBV2LogicalTypeIdHugeInt -> pure LogicalTypeIdHugeInt
+    DuckDBV2LogicalTypeIdUUID -> pure LogicalTypeIdUUID
+    DuckDBV2LogicalTypeIdGeometry -> pure LogicalTypeIdGeometry
+    DuckDBV2LogicalTypeIdStruct -> pure LogicalTypeIdStruct
+    DuckDBV2LogicalTypeIdList -> pure LogicalTypeIdList
+    DuckDBV2LogicalTypeIdMap -> pure LogicalTypeIdMap
+    DuckDBV2LogicalTypeIdEnum -> pure LogicalTypeIdEnum
+    DuckDBV2LogicalTypeIdUnion -> pure LogicalTypeIdUnion
+    DuckDBV2LogicalTypeIdArray -> pure LogicalTypeIdArray
+    DuckDBV2LogicalTypeIdVariant -> pure LogicalTypeIdVariant
+    DuckDBV2LogicalTypeIdTuple -> pure LogicalTypeIdTuple
+    DuckDBV2LogicalTypeId value -> throwUnknownNative "logical type id" value
 
 -- | Raise 'SQLError' for a native enum value that has no Haskell constructor.
 throwUnknownNative :: Text -> CUInt -> IO a

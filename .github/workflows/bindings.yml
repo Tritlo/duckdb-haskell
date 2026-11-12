@@ -59,6 +59,11 @@ jobs:
             ghc: '9.14.1'
             optimization: '1'
             download: true
+          # native.sha256 pins the Linux aarch64 archives. This row tests them.
+          - os: ubuntu-24.04-arm
+            ghc: '9.14.1'
+            optimization: '1'
+            download: true
           - os: ubuntu-latest
             ghc: '9.14.1'
             optimization: '0'

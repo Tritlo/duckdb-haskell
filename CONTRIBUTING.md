@@ -114,10 +114,11 @@ library. Set `extra-lib-dirs` to an absolute path to select
 a library in another directory. See the `cabal.project` example in the README.
 Nix builds use the library supplied by Nix and do not download it.
 
-CI tests the pinned 2.0.0 release with all supported compilers on Linux and
-GHC 9.14.1 on macOS. The V2 API requires exactly DuckDB 2.0.0. Set
-`DUCKDB_TEST_VERSION` to the exact expected version, such as `2.0.0`, to detect
-loader configuration errors. Run the full suite after each native pin update.
+CI tests the pinned 2.0.0 release with all supported compilers on Linux x86_64,
+and with GHC 9.14.1 on Linux aarch64 and on macOS. The V2 API requires exactly
+DuckDB 2.0.0. Set `DUCKDB_TEST_VERSION` to the exact expected version, such as
+`2.0.0`, to detect loader configuration errors. Run the full suite after each
+native pin update.
 
 CI also builds and tests with `--enable-optimization=0` on GHC 9.14.1 and
 DuckDB 2.0. Floating-point conversion must preserve special values without

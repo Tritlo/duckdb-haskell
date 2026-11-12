@@ -21,12 +21,14 @@ module Database.DuckDB.Simple.Function (
     TypeDeclaration (..),
     createCast,
     TypedRow,
+    createTableFunction,
 ) where
 
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.Callback (RegistrationTarget (ConnectionTarget))
 import Database.DuckDB.Simple.FromField (FromField)
+import Database.DuckDB.Simple.FromRow (FromRow)
 import Database.DuckDB.Simple.Function.Internal (
     Function (..),
     FunctionArg,
@@ -44,6 +46,7 @@ import Database.DuckDB.Simple.Internal (
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.ToField (ToDuckValue)
 import Database.DuckDB.Simple.Typed (TypedRow, createCastOn)
+import Database.DuckDB.Simple.Typed.Table (createTableFunctionOn)
 import Database.DuckDB.Simple.V2.Registration (TypeDeclaration (..))
 
 -- | Register a Haskell function under the supplied name.
@@ -75,6 +78,35 @@ type from 'Database.DuckDB.Simple.V2.Registration.registerCustomType'.
 -}
 createCast :: (FromField a, ToDuckValue b) => Connection -> TypeDeclaration -> TypeDeclaration -> (a -> Either Text b) -> IO ()
 createCast conn = createCastOn (ConnectionTarget conn)
+
+{- | Register a table function. The function gives the rows of one scan as a
+list. The list of names gives the names of the result columns. 'TypedRow' of
+@row@ gives the column types. A different number of names and columns, or a
+row with no column, is an error at registration. A @Maybe@ column gives NULL
+for 'Nothing'.
+
+'TypedRow' of @params@ gives the parameter types. Use @()@ for no parameter.
+The parameters are positional only. DuckDB casts each argument to its
+parameter type. Then 'FromRow' converts the arguments. An argument that does
+not convert is an SQL error that names the function. A NULL argument converts
+only to a @Maybe@ field.
+
+DuckDB converts the arguments when it plans the query. Thus an argument that
+does not convert also fails the preparation of a statement. The function runs
+one time for each scan, when the execution of the statement starts. It does not
+run at preparation. A query that reads the function two times runs it two
+times. A prepared statement runs it at each execution.
+
+DuckDB reads the list one chunk at a time, in one thread. It reads only the
+rows that the query needs, so the list can be long or infinite, for example
+with @LIMIT@. An exception in the function or in a row is an SQL error. DuckDB
+releases the list when the scan ends.
+
+> createTableFunction conn "haskell_squares" ["n", "square"] \(Only count) ->
+>     pure [(n, n * n) | n <- [0 .. count - 1 :: Int64]]
+-}
+createTableFunction :: (FromRow params, TypedRow params, TypedRow row) => Connection -> Text -> [Text] -> (params -> IO [row]) -> IO ()
+createTableFunction conn = createTableFunctionOn (ConnectionTarget conn)
 
 {- | Run @DROP FUNCTION IF EXISTS@ and report native errors.
 DuckDB does not permit deletion of functions registered through the C API.

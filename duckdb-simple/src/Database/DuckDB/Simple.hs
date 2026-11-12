@@ -96,6 +96,7 @@ module Database.DuckDB.Simple (
     createFunctionWithState,
     deleteFunction,
     createCast,
+    createTableFunction,
 ) where
 
 import Control.Exception (SomeException, bracket, finally, mask, mask_, onException, throwIO, try)
@@ -109,7 +110,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.FromField (Field (..), FieldParser, FromField (..), ResultError (..))
 import Database.DuckDB.Simple.FromRow (FromRow (..), RowParser, field, fieldWith, numFieldsRemaining, parseRow, rowErrorsToSqlError)
-import Database.DuckDB.Simple.Function (Function (..), createCast, createFunction, createFunctionWithState, deleteFunction)
+import Database.DuckDB.Simple.Function (Function (..), createCast, createFunction, createFunctionWithState, createTableFunction, deleteFunction)
 import Database.DuckDB.Simple.Internal
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.Result (collectRows, resetStatementStream)

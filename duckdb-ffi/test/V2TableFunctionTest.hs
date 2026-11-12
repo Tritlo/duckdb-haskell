@@ -3,7 +3,7 @@ module V2TableFunctionTest (tests) where
 import Control.Exception (bracket, onException)
 import Control.Monad (forM, forM_)
 import Data.Coerce (coerce)
-import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int64)
 import Data.List (nub, sort)
 import Data.Void (Void)
@@ -25,6 +25,7 @@ tests =
         "DuckDB V2 table function callbacks"
         [ testCase "init and exec callbacks read the data of their call and the declared column of each scanned column" testColumns
         , testCase "claim batch callbacks hand out batches until a claim fails" testClaimBatch
+        , testCase "order preservation and batch indexes decide whether a scan runs in parallel" testParallelScan
         ]
 
 -- | Create a function pointer for the duration of the action.
@@ -261,3 +262,101 @@ testClaimBatch = do
     length <$> readIORef locals >>= (@?= 1)
     reverse <$> readIORef events
         >>= (@?= ["claim 0", "rows 0", "empty 0", "claim 1", "rows 1", "empty 1", "claim 2", "rows 2", "empty 2", "claim none"])
+
+{- | Each exec call takes the next of eight batches of three rows from a shared counter, with at most two threads.
+The functions take the order preservation as their argument: 0 is NO_ORDER and 1 is INSERTION_ORDER.
+The test instance has two threads, so the engine starts two scan tasks when the scan can run in parallel.
+-}
+testParallelScan :: IO ()
+testParallelScan = do
+    failures <- newIORef []
+    next <- newIORef (0 :: Int64)
+    binds <- newIORef [] -- (user data, bind data) of each bound call
+    globals <- newIORef [] -- (bind data, global state) of each scan
+    locals <- newIORef [] -- (global state, local state) of each thread
+    requests <- newIORef [] -- (batch index, partition columns, partition column count) that each partition data call requires
+    let bind info result context err = callbackGuard failures err $ do
+            user <- output (c_duckdb_v2_function_bind_get_user_data info)
+            order <- withHandle (c_duckdb_v2_function_bind_get_arg_value info 0) c_duckdb_v2_value_destroy (output . c_duckdb_v2_value_get_bigint)
+            c_duckdb_v2_table_function_bind_set_order_preservation result (DuckDBV2OrderPreservation 99) nullPtr >>= (@?= DuckDBV2ErrorInputInvalid)
+            checked (c_duckdb_v2_table_function_bind_set_order_preservation result (DuckDBV2OrderPreservation (fromIntegral order)))
+            addColumns result context ["value"]
+            bound <- give [0] (c_duckdb_v2_function_bind_set_bind_data info)
+            record binds (user, bound)
+        initGlobal info _context err = callbackGuard failures err $ do
+            bound <- output (c_duckdb_v2_table_function_init_global_get_bind_data info)
+            global <- give [0] (c_duckdb_v2_table_function_init_global_set_global_state info)
+            record globals (bound, global)
+            checked (c_duckdb_v2_table_function_init_global_set_max_threads info 2)
+        -- The local state holds the batch of the last chunk that the thread wrote.
+        initLocal info _context err = callbackGuard failures err $ do
+            global <- output (c_duckdb_v2_table_function_init_local_get_global_state info)
+            local <- give [-1] (c_duckdb_v2_table_function_init_local_set_local_state info)
+            record locals (global, local)
+        execute info _context err = callbackGuard failures err $ do
+            local <- output (c_duckdb_v2_table_function_exec_get_local_state info)
+            batch <- atomicModifyIORef' next $ \value -> (value + 1, value)
+            chunk <- output (c_duckdb_v2_table_function_exec_get_output_chunk info)
+            if batch < 8
+                then do
+                    writeColumn chunk 0 [10 * batch + row | row <- [0 .. 2]]
+                    setRows chunk 3
+                    poke (castPtr local) batch
+                else setRows chunk 0
+        partitionData info _context err = callbackGuard failures err $ do
+            user <- output (c_duckdb_v2_table_function_partition_data_get_user_data info)
+            bound <- output (c_duckdb_v2_table_function_partition_data_get_bind_data info)
+            global <- output (c_duckdb_v2_table_function_partition_data_get_global_state info)
+            local <- output (c_duckdb_v2_table_function_partition_data_get_local_state info)
+            expectRecorded "partition data reads the user data and the bind data of its call" (user, bound) binds
+            expectRecorded "partition data reads the global state of its scan" (bound, global) globals
+            expectRecorded "partition data reads the local state of the thread that wrote the chunk" (global, local) locals
+            batchIndex <- output (c_duckdb_v2_table_function_partition_data_requires_batch_index info)
+            partitionColumns <- output (c_duckdb_v2_table_function_partition_data_requires_partition_columns info)
+            count <- output (c_duckdb_v2_table_function_partition_data_get_partition_column_count info)
+            record requests (batchIndex, partitionColumns, count)
+            code <- alloca $ \slot -> c_duckdb_v2_table_function_partition_data_get_partition_column_index info count slot nullPtr
+            assertBool "partition data rejects the index that equals the partition column count" (code /= DuckDBV2ErrorNone)
+            c_duckdb_v2_table_function_partition_data_set_batch_index info (10 ^ (14 :: Int)) nullPtr >>= (@?= DuckDBV2ErrorInputInvalid)
+            batch <- peek (castPtr local :: Ptr Int64)
+            checked (c_duckdb_v2_table_function_partition_data_set_batch_index info (fromIntegral batch))
+    with (3 :: Int64) $ \user ->
+        withFunPtr (DuckDBV2TableFunctionBindCallbackFn_Aux bind) $ \bindPtr ->
+            withFunPtr (DuckDBV2TableFunctionInitGlobalCallbackFn_Aux initGlobal) $ \initGlobalPtr ->
+                withFunPtr (DuckDBV2TableFunctionInitLocalCallbackFn_Aux initLocal) $ \initLocalPtr ->
+                    withFunPtr (DuckDBV2TableFunctionExecCallbackFn_Aux execute) $ \executePtr ->
+                        withFunPtr (DuckDBV2TableFunctionPartitionDataCallbackFn_Aux partitionData) $ \partitionDataPtr -> withConnection $ \conn -> do
+                            let register name configure = registerTable conn name $ \function -> do
+                                    lend user (checked . c_duckdb_v2_table_function_set_user_data function)
+                                    withFactory conn $ \factory -> withType factory "BIGINT" $ \ty -> withView "order" $ \parameter -> do
+                                        signature <- output (c_duckdb_v2_table_function_get_signature function)
+                                        checked (c_duckdb_v2_function_signature_add_parameter signature (coerce parameter) ty (coerce nullPtr) DuckDBV2FunctionParameterKindStandard)
+                                    checked (c_duckdb_v2_table_function_set_bind_callback function (DuckDBV2TableFunctionBindCallbackFn bindPtr))
+                                    checked (c_duckdb_v2_table_function_set_init_global_callback function (DuckDBV2TableFunctionInitGlobalCallbackFn initGlobalPtr))
+                                    checked (c_duckdb_v2_table_function_set_init_local_callback function (DuckDBV2TableFunctionInitLocalCallbackFn initLocalPtr))
+                                    checked (c_duckdb_v2_table_function_set_exec_callback function (DuckDBV2TableFunctionExecCallbackFn executePtr))
+                                    configure function
+                                -- Return the rows of the query and the number of local states that the scan created.
+                                scan sql = do
+                                    writeIORef next 0
+                                    before <- length <$> readIORef locals
+                                    rows <- withResult conn sql readIntegers
+                                    after <- length <$> readIORef locals
+                                    pure (rows, after - before)
+                                expected = map Just [10 * batch + row | batch <- [0 .. 7], row <- [0 .. 2]]
+                            register "v2_scan" (\_ -> pure ())
+                            register "v2_batched" $ \function ->
+                                checked (c_duckdb_v2_table_function_set_partition_data_callback function (DuckDBV2TableFunctionPartitionDataCallbackFn partitionDataPtr))
+                            (unordered, unorderedThreads) <- scan "SELECT value FROM v2_scan(0)"
+                            sort unordered @?= expected
+                            assertBool "NO_ORDER lets the scan run on more than one thread" (unorderedThreads > 1)
+                            (ordered, orderedThreads) <- scan "SELECT value FROM v2_scan(1)"
+                            ordered @?= expected
+                            orderedThreads @?= 1
+                            (batched, batchedThreads) <- scan "SELECT value FROM v2_batched(1)"
+                            batched @?= expected
+                            assertBool "batch indexes let an ordered scan run on more than one thread" (batchedThreads > 1)
+    readIORef failures >>= (@?= [])
+    seen <- readIORef requests
+    assertBool "the partition data callback was invoked" (not (null seen))
+    nub seen @?= [(CBool 1, CBool 0, 0)]

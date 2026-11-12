@@ -20,6 +20,9 @@ module Database.DuckDB.Simple.Copy (
     CopyFromInfo (..),
     registerCopyFromFunction,
     registerCopyFromFunctionOn,
+    CopyTo (..),
+    registerCopyFunction,
+    registerCopyFunctionOn,
     TypedRow,
     MultiFileOptions (..),
     defaultMultiFileOptions,
@@ -72,7 +75,11 @@ data CopyFinalizeInfo bindState globalState = CopyFinalizeInfo
     , copyFinalizeGlobalState :: !globalState
     }
 
--- | Register row-oriented COPY TO callbacks. Native batch buffers are copied.
+{- | Register row-oriented COPY TO callbacks. Native batch buffers are copied.
+Use 'registerCopyFunction' for a format with a COPY FROM side too. DuckDB keeps
+the first registration of a format name. A later registration of the same name
+has no effect and gives no error.
+-}
 registerCopyToFunction ::
     Connection ->
     Text ->
@@ -288,6 +295,33 @@ copyFromSide name readRows = (copyFromCallbacks bind execute){copyFromInitGlobal
         remaining <- readCallbackState (c_duckdb_v2_copy_from_exec_get_global_state info) :: IO (IORef [row])
         chunk <- output (c_duckdb_v2_copy_from_exec_get_output_chunk info)
         readIORef remaining >>= writeRows factory chunk >>= writeIORef remaining
+
+{- | The COPY TO side of a format. The four functions have the roles of the
+four functions of 'registerCopyToFunction'.
+-}
+data CopyTo bindState globalState = CopyTo
+    { copyToBind :: CopyBindInfo -> IO bindState
+    , copyToInit :: CopyInitInfo bindState -> IO globalState
+    , copyToSink :: CopySinkInfo bindState globalState -> [[Field]] -> IO ()
+    , copyToFinalize :: CopyFinalizeInfo bindState globalState -> IO ()
+    }
+
+{- | Register a format with a COPY TO side and a COPY FROM side under one
+name. The rules of 'registerCopyToFunction' apply to the COPY TO side. The
+rules of 'registerCopyFromFunction' apply to the COPY FROM side. Two
+registrations of one name do not give a format with the two sides, because
+DuckDB keeps the first registration.
+-}
+registerCopyFunction :: (TypedRow row) => Connection -> Text -> CopyTo bindState globalState -> (CopyFromInfo -> IO [row]) -> IO ()
+registerCopyFunction = registerCopyFunctionOn . ConnectionTarget
+
+{- | Register a format with the two sides on a connection or a loading
+extension. The rules of 'registerCopyFunction' apply.
+-}
+registerCopyFunctionOn :: (TypedRow row) => RegistrationTarget -> Text -> CopyTo bindState globalState -> (CopyFromInfo -> IO [row]) -> IO ()
+registerCopyFunctionOn target name (CopyTo bindFn initFn sinkFn finalizeFn) readRows =
+    withVariantReader target \readVariant ->
+        registerCopyOn target name (Just (copyToSide readVariant bindFn initFn sinkFn finalizeFn)) (Just (copyFromSide name readRows))
 
 -- | Options supplied to DuckDB's multi-file wrapper.
 data MultiFileOptions = MultiFileOptions

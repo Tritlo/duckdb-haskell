@@ -23,6 +23,7 @@ module Database.DuckDB.Simple.Extension (
     registerPragmaFunction,
     registerCustomOption,
     registerLogSink,
+    registerCopyToFunction,
 ) where
 
 import Control.Exception (bracket)
@@ -30,8 +31,9 @@ import Data.Text (Text)
 import Database.DuckDB.Simple.Callback (runCallback)
 import Database.DuckDB.Simple.Config (CustomOption)
 import qualified Database.DuckDB.Simple.Config as Config
-import Database.DuckDB.Simple.Copy (MultiFileOptions, registerMultiFileFunctionOn)
-import Database.DuckDB.Simple.FromField (FromField)
+import Database.DuckDB.Simple.Copy (CopyBindInfo, CopyFinalizeInfo, CopyInitInfo, CopySinkInfo, MultiFileOptions, registerMultiFileFunctionOn)
+import qualified Database.DuckDB.Simple.Copy as Copy
+import Database.DuckDB.Simple.FromField (Field, FromField)
 import Database.DuckDB.Simple.FromRow (FromRow)
 import Database.DuckDB.Simple.Function.Internal (Function, createFunctionOn, createFunctionWithStateOn)
 import Database.DuckDB.Simple.Logging (LogEntry)
@@ -109,6 +111,7 @@ rules of 'Database.DuckDB.Simple.Copy.registerMultiFileFunction' apply.
 -}
 registerMultiFileFunction :: Extension -> Text -> Text -> MultiFileOptions -> IO ()
 registerMultiFileFunction = registerMultiFileFunctionOn . extensionTarget
+
 {- | Register a typed table function with the loading DuckDB host. The rules of
 'Database.DuckDB.Simple.Function.createTableFunction' apply.
 -}
@@ -158,3 +161,17 @@ Callbacks can run concurrently. They must not log or change logging settings.
 -}
 registerLogSink :: Extension -> Text -> (LogEntry -> IO ()) -> IO () -> IO ()
 registerLogSink = Logging.registerLogSinkOn . extensionTarget
+
+{- | Register row-oriented COPY TO callbacks with the loading DuckDB host. The
+rules of 'Database.DuckDB.Simple.Copy.registerCopyToFunction' apply. The
+callbacks cannot read a VARIANT column.
+-}
+registerCopyToFunction ::
+    Extension ->
+    Text ->
+    (CopyBindInfo -> IO bindState) ->
+    (CopyInitInfo bindState -> IO globalState) ->
+    (CopySinkInfo bindState globalState -> [[Field]] -> IO ()) ->
+    (CopyFinalizeInfo bindState globalState -> IO ()) ->
+    IO ()
+registerCopyToFunction = Copy.registerCopyToFunctionOn . extensionTarget

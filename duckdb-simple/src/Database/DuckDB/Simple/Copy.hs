@@ -16,13 +16,14 @@ module Database.DuckDB.Simple.Copy (
     CopySinkInfo (..),
     CopyFinalizeInfo (..),
     registerCopyToFunction,
+    registerCopyToFunctionOn,
     MultiFileOptions (..),
     defaultMultiFileOptions,
     registerMultiFileFunction,
     registerMultiFileFunctionOn,
 ) where
 
-import Control.Exception (bracket, finally, mask, mask_, onException)
+import Control.Exception (bracket, finally, mask, mask_, onException, throwIO)
 import Control.Monad (forM, forM_, when)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -32,7 +33,7 @@ import Database.DuckDB.Simple.FromField (Field (..))
 import Database.DuckDB.Simple.Internal (Connection, withDatabaseHandle)
 import Database.DuckDB.Simple.Materialize (VariantReader, castReader, prepareVariantReader, prepareVectorReader)
 import Database.DuckDB.Simple.Native
-import Database.DuckDB.Simple.V2.Copy (CopyToCallbacks (..), RegistrationTarget (ConnectionTarget), copyToCallbacks, registerCopyToCallbacks, registerMultiFileFunctionWith)
+import Database.DuckDB.Simple.V2.Copy (CopyFromCallbacks, CopyToCallbacks (..), RegistrationTarget (..), copyToCallbacks, registerCopyFunctionWith, registerMultiFileFunctionWith)
 import Database.DuckDB.Simple.VariantCodec (destroyVariantState, newVariantState)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (withArray)
@@ -65,7 +66,6 @@ data CopyFinalizeInfo bindState globalState = CopyFinalizeInfo
 
 -- | Register row-oriented COPY TO callbacks. Native batch buffers are copied.
 registerCopyToFunction ::
-    forall bindState globalState.
     Connection ->
     Text ->
     (CopyBindInfo -> IO bindState) ->
@@ -73,15 +73,59 @@ registerCopyToFunction ::
     (CopySinkInfo bindState globalState -> [[Field]] -> IO ()) ->
     (CopyFinalizeInfo bindState globalState -> IO ()) ->
     IO ()
-registerCopyToFunction connection name bindFn initFn sinkFn finalizeFn = withDatabaseHandle connection \instanceHandle ->
-    registerCopyToCallbacks
-        connection
-        name
-        (copyToCallbacks (batch instanceHandle) flush)
-            { copyToBindCallback = Just bind
-            , copyToInitCallback = Just initialize
-            , copyToFinalizeCallback = Just finalize
-            }
+registerCopyToFunction = registerCopyToFunctionOn . ConnectionTarget
+
+{- | Register row-oriented COPY TO callbacks on a connection or a loading
+extension. The rules of 'registerCopyToFunction' apply. A COPY TO function of
+an extension cannot read a VARIANT column.
+-}
+registerCopyToFunctionOn ::
+    RegistrationTarget ->
+    Text ->
+    (CopyBindInfo -> IO bindState) ->
+    (CopyInitInfo bindState -> IO globalState) ->
+    (CopySinkInfo bindState globalState -> [[Field]] -> IO ()) ->
+    (CopyFinalizeInfo bindState globalState -> IO ()) ->
+    IO ()
+registerCopyToFunctionOn target name bindFn initFn sinkFn finalizeFn =
+    withVariantReader target \readVariant ->
+        registerCopyOn target name (Just (copyToSide readVariant bindFn initFn sinkFn finalizeFn)) Nothing
+
+-- | Check the format name and register the native callbacks of each side.
+registerCopyOn :: RegistrationTarget -> Text -> Maybe CopyToCallbacks -> Maybe CopyFromCallbacks -> IO ()
+registerCopyOn target name to from = do
+    when (Text.null name || Text.any (== '\0') name) $ throwInvalidArgument "invalid copy function name"
+    registerCopyFunctionWith target (\function -> withIdentifier name (checked . c_duckdb_v2_copy_function_set_name function)) to from
+
+{- | Give the VARIANT reader of a registration target to an action. On a
+connection, the reader decodes VARIANT through a helper connection of the
+database. An extension target has no instance handle, so its reader raises an
+error.
+-}
+withVariantReader :: RegistrationTarget -> (VariantReader -> IO a) -> IO a
+withVariantReader target action = case target of
+    ConnectionTarget connection -> withDatabaseHandle connection (action . readVariant)
+    ExtensionTarget _ _ -> action \_ -> throwIO (userError "duckdb-simple: a COPY TO function of an extension cannot read VARIANT")
+  where
+    readVariant instanceHandle vector =
+        bracket (output (c_duckdb_v2_connection_create instanceHandle)) (destroy c_duckdb_v2_connection_destroy) \helper ->
+            bracket newVariantState destroyVariantState \state -> prepareVariantReader helper state vector
+
+-- | The native COPY TO callbacks of the row-oriented functions.
+copyToSide ::
+    forall bindState globalState.
+    VariantReader ->
+    (CopyBindInfo -> IO bindState) ->
+    (CopyInitInfo bindState -> IO globalState) ->
+    (CopySinkInfo bindState globalState -> [[Field]] -> IO ()) ->
+    (CopyFinalizeInfo bindState globalState -> IO ()) ->
+    CopyToCallbacks
+copyToSide readVariant bindFn initFn sinkFn finalizeFn =
+    (copyToCallbacks batch flush)
+        { copyToBindCallback = Just bind
+        , copyToInitCallback = Just initialize
+        , copyToFinalizeCallback = Just finalize
+        }
   where
     bind info _ = mask \restore -> do
         count <- output (c_duckdb_v2_copy_to_bind_get_column_count info)
@@ -97,13 +141,10 @@ registerCopyToFunction connection name bindFn initFn sinkFn finalizeFn = withDat
         path <- output (c_duckdb_v2_copy_to_init_get_file_path info) >>= readText
         global <- initFn (CopyInitInfo state (Text.unpack path))
         transferCallbackState (attachOpaque (c_duckdb_v2_copy_to_init_set_init_data info)) global
-    batch instanceHandle info context = withContextFactory context $ \factory -> do
+    batch info context = withContextFactory context $ \factory -> do
         (_, types) <- readCopyBinding (c_duckdb_v2_copy_to_batch_get_bind_data info) :: IO (bindState, [DuckDBV2LogicalTypeHandle])
-        rows <- bracket (output (c_duckdb_v2_copy_to_batch_take_input info)) (destroy c_duckdb_v2_column_data_collection_destroy) (materializeCollection factory (readVariant instanceHandle) types)
+        rows <- bracket (output (c_duckdb_v2_copy_to_batch_take_input info)) (destroy c_duckdb_v2_column_data_collection_destroy) (materializeCollection factory readVariant types)
         transferCallbackState (attachOpaque (c_duckdb_v2_copy_to_batch_set_batch_data info)) rows
-    readVariant instanceHandle vector =
-        bracket (output (c_duckdb_v2_connection_create instanceHandle)) (destroy c_duckdb_v2_connection_destroy) \helper ->
-            bracket newVariantState destroyVariantState \state -> prepareVariantReader helper state vector
     flush info _ = do
         (state, _) <- readCopyBinding (c_duckdb_v2_copy_to_flush_get_bind_data info)
         global <- readCallbackState (c_duckdb_v2_copy_to_flush_get_init_data info)

@@ -85,6 +85,8 @@ import GHC.Generics (Generic)
 import qualified GeometryRegressionTests
 import Numeric.Natural (Natural)
 import Properties (roundTripTests)
+
+import qualified SqlFeatureTests
 import StreamingTests (nativeStreamingTests)
 import System.Directory (doesFileExist, removeFile)
 import Test.Tasty (TestTree, defaultMain, testGroup)
@@ -215,13 +217,14 @@ tests =
         , VariantRegressionTests.tests
         , valueRegressionTests
         , timeTests
+        , SqlFeatureTests.tests
         , withConnectionTests
         , statementTests
         , roundTripTests
         , typeTests
         , streamingTests
         , functionsTests
-        , v15Tests
+        , v20Tests
         , transactionTests
         ]
 
@@ -245,10 +248,10 @@ connectionTests =
                 Just value -> Config.configValueText value @?= "1"
         ]
 
-v15Tests :: TestTree
-v15Tests =
+v20Tests :: TestTree
+v20Tests =
     testGroup
-        "DuckDB 1.5 wrappers"
+        "DuckDB 2.0 wrappers"
         [ testCase "lists config flags" $ do
             flags <- Config.listConfigFlags
             assertBool "expected at least one config flag" (not (null flags))
@@ -625,7 +628,7 @@ duckdbCastCases =
     , successCase "UUID" (quoted $ UUID.toText uuid) "UUID" (ExpectEquals (FieldUUID uuid))
     , successCase "BIT" (quoted $ Text.pack $ show bits) "BIT" (ExpectEquals (FieldBit bits))
     , successCase "ARRAY" (quoted "[1,2,3]") "INTEGER[3]" (ExpectEquals (FieldArray arrayElements))
-    , -- This one is broken upstream, instead of a DuckDBTypeTimeNs, we get a DuckDBType 0
+    , -- This one is broken upstream, instead of a DuckDBTypeTimeNs, we get a DuckDBTypeAlias 0
       successCase "TIME_NS" (quoted "03:04:05.123456789") "TIME_NS" (ExpectEquals (FieldTime (TimeOfDay 3 4 5.123456789)))
     , successDirect "STRUCT" "{'a': 1, 'b': 2}" (expectStruct structFields)
     , successDirect "UNION" "CAST(union_value(a := 42) AS UNION(a INTEGER, b VARCHAR))" (expectUnion 0 (Text.pack "a") (FieldInt32 42))

@@ -257,7 +257,7 @@ checkCancellation :: Int -> IO ()
 checkCancellation batches =
     withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
         void (execute_ conn "SET streaming_buffer_size = '64KB'")
-        let cancel action = do
+        let run mayFinish action = do
                 started <- newEmptyMVar
                 done <- newEmptyMVar
                 let signal = void (tryPutMVar started ())
@@ -269,9 +269,15 @@ checkCancellation batches =
                 case outcome of
                     Left err | fromException err == Just ThreadKilled -> pure ()
                     Left err -> fail ("unexpected cancellation error: " <> show err)
-                    Right () -> fail "query completed before cancellation"
+                    Right ()
+                        | mayFinish -> pure ()
+                        | otherwise -> fail "query completed before cancellation"
                 rows <- query_ conn "SELECT 42"
                 unless (rows == [Only (42 :: Int64)]) (fail "connection failed after cancellation")
+            -- These queries block or run until the thread is killed.
+            cancel = run False
+            -- These finite queries can finish before the interrupt reaches them.
+            interrupt = run True
             batch = forM_ [1 .. 10 :: Int] \_ -> do
                 cancel \signal -> do
                     createFunction conn "leak_cancel_started" (signal >> pure (1 :: Int64))
@@ -283,7 +289,7 @@ checkCancellation batches =
                             \FROM started, range(1000000) a(i), range(1000000) b(j)" ::
                             IO [Only Double]
                         )
-                cancel \signal -> do
+                interrupt \signal -> do
                     signal
                     void (query_ conn "SELECT {'x': i, 'values': [i, i + 1]} FROM range(100000) t(i)" :: IO [Only FieldValue])
                 cancel \signal -> do
@@ -301,7 +307,7 @@ checkCancellation batches =
                     if arrow
                         then Streaming.foldArrow_ conn sql () (\() _ _ -> delivered)
                         else Streaming.fold_ conn sql () (\() (Only (_ :: Int64)) -> delivered)
-                cancel \signal -> do
+                interrupt \signal -> do
                     signal
                     void (query_ conn "SELECT {'x': i, 'values': [i, i + 1]}::VARIANT FROM range(100000) t(i)" :: IO [Only Variant])
                 cancel \signal -> do
@@ -314,7 +320,7 @@ checkCancellation batches =
             batch
             performMajorGC
             after <- readUsage
-            reportOptional ("open connection, " <> show (n * 70) <> " cancellations") before after
+            reportOptional ("open connection, " <> show (n * 70) <> " cancellation attempts") before after
 
 -- | Report native counters when the operating system provides them.
 reportOptional :: String -> Maybe Usage -> Maybe Usage -> IO ()

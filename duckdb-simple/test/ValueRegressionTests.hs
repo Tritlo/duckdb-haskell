@@ -30,14 +30,14 @@ import Database.DuckDB.Simple.Internal (destroyValue, withConnectionHandle)
 import Database.DuckDB.Simple.LogicalRep
 import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
-import Foreign.C.String (withCString)
+import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (nullPtr)
 import Foreign.Storable (peek, poke)
 import GHC.Generics (Generic)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit
-import TestUtils (assertFailureIO)
+import TestUtils (assertFailureIO, withConstCString)
 
 -- | Native timestamps used to test the full storage range.
 data NativeTimestamp = Seconds Int64 | Milliseconds Int64 | Microseconds Int64 | Nanoseconds Int64
@@ -324,9 +324,9 @@ appendTimestamp conn dtype createValue = do
     _ <- execute_ conn (fromString ("CREATE TABLE native_timestamp(value " <> dtype <> ")"))
     withConnectionHandle conn \handle ->
         alloca \appenderPtr -> do
-            poke appenderPtr nullPtr
-            withCString "native_timestamp" \table ->
-                c_duckdb_appender_create handle nullPtr table appenderPtr >>= (@?= DuckDBSuccess)
+            poke appenderPtr (DuckDBAppender nullPtr)
+            withConstCString "native_timestamp" \table ->
+                c_duckdb_appender_create handle (ConstPtr nullPtr) table appenderPtr >>= (@?= DuckDBSuccess)
             bracket (peek appenderPtr) (const (c_duckdb_appender_destroy appenderPtr >> pure ())) \appender -> do
                 bracket createValue (\value -> alloca \ptr -> poke ptr value >> c_duckdb_destroy_value ptr) \value ->
                     c_duckdb_append_value appender value >>= (@?= DuckDBSuccess)

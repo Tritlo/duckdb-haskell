@@ -17,6 +17,9 @@ This type has no @ToField@ instance. Bind 'rawGeometryWKB' with
 @ST_GeomFromWKB(?)@. Apply 'rawGeometryCRS' with @ST_SetCRS(..., ?)@.
 Omit @ST_SetCRS@ when the CRS is 'Nothing'. SQL NULL propagates to the geometry.
 DuckDB can normalize the byte order and CRS definition during import.
+The pinned native API requires the same Z/M dimensions for all collection
+members, including empty members. Native import rejects mixed member layouts.
+The standalone WKB codec preserves these layouts.
 Derived equality compares the bytes and CRS, not spatial equivalence.
 -}
 data RawGeometry = RawGeometry
@@ -34,7 +37,8 @@ fromRawGeometry = decodeWKB . rawGeometryWKB
 
 {- | Encode a shape as ISO WKB with no CRS. Set 'rawGeometryCRS' on the result
 to supply a CRS definition for explicit SQL import. This does not transform
-the coordinates.
+the coordinates. The standalone codec can encode mixed collection layouts
+that the pinned native API rejects during import.
 -}
 toRawGeometry :: G.Geometry -> Either String RawGeometry
 toRawGeometry shape = (`RawGeometry` Nothing) <$> encodeWKB shape

@@ -16,7 +16,8 @@ import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
 import Database.DuckDB.FFI
 import Database.DuckDB.Simple.Internal (Connection, peekUtf8CString, throwRegistrationError, withClientContext)
-import Foreign.C.String (CString)
+import Foreign.C.ConstPtr (ConstPtr (..))
+import Foreign.C.Types (CChar)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (nullPtr)
 import Foreign.Storable (poke)
@@ -35,9 +36,9 @@ catalogTypeName conn catalogName
     | otherwise =
         withClientContext conn \ctx ->
             TextForeign.withCString catalogName \cName ->
-                withMaybeCatalog ctx cName \catalog -> do
+                withMaybeCatalog ctx (ConstPtr cName) \catalog -> do
                     namePtr <- c_duckdb_catalog_get_type_name catalog
-                    if namePtr == nullPtr
+                    if namePtr == ConstPtr nullPtr
                         then pure Nothing
                         else Just <$> peekUtf8CString namePtr
 
@@ -52,11 +53,11 @@ lookupCatalogEntry conn catalogName schemaName entryName entryType
             TextForeign.withCString catalogName \cCatalog ->
                 TextForeign.withCString schemaName \cSchema ->
                     TextForeign.withCString entryName \cEntry ->
-                        withMaybeCatalog ctx cCatalog \catalog ->
-                            withMaybeCatalogEntry catalog ctx entryType cSchema cEntry \entry -> do
+                        withMaybeCatalog ctx (ConstPtr cCatalog) \catalog ->
+                            withMaybeCatalogEntry catalog ctx entryType (ConstPtr cSchema) (ConstPtr cEntry) \entry -> do
                                 typ <- c_duckdb_catalog_entry_get_type entry
                                 namePtr <- c_duckdb_catalog_entry_get_name entry
-                                if namePtr == nullPtr
+                                if namePtr == ConstPtr nullPtr
                                     then pure Nothing
                                     else do
                                         name <- peekUtf8CString namePtr
@@ -70,19 +71,19 @@ destroyCatalogEntry :: DuckDBCatalogEntry -> IO ()
 destroyCatalogEntry entry =
     alloca \ptr -> poke ptr entry >> c_duckdb_destroy_catalog_entry ptr
 
-withMaybeCatalog :: DuckDBClientContext -> CString -> (DuckDBCatalog -> IO (Maybe a)) -> IO (Maybe a)
+withMaybeCatalog :: DuckDBClientContext -> ConstPtr CChar -> (DuckDBCatalog -> IO (Maybe a)) -> IO (Maybe a)
 withMaybeCatalog ctx name action =
     bracket (c_duckdb_client_context_get_catalog ctx name) destroyCatalog \catalog ->
-        if catalog == nullPtr then pure Nothing else action catalog
+        if catalog == DuckDBCatalog nullPtr then pure Nothing else action catalog
 
 withMaybeCatalogEntry ::
     DuckDBCatalog ->
     DuckDBClientContext ->
     DuckDBCatalogEntryType ->
-    CString ->
-    CString ->
+    ConstPtr CChar ->
+    ConstPtr CChar ->
     (DuckDBCatalogEntry -> IO (Maybe a)) ->
     IO (Maybe a)
 withMaybeCatalogEntry catalog ctx entryType schemaName entryName action =
     bracket (c_duckdb_catalog_get_entry catalog ctx entryType schemaName entryName) destroyCatalogEntry \entry ->
-        if entry == nullPtr then pure Nothing else action entry
+        if entry == DuckDBCatalogEntry nullPtr then pure Nothing else action entry

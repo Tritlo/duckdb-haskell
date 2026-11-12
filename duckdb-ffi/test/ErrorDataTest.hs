@@ -2,14 +2,17 @@
 
 module ErrorDataTest (tests) where
 
+import Data.Coerce (coerce)
 import Database.DuckDB.FFI
-import Foreign.C.String (peekCString, withCString)
+import Foreign.C.ConstPtr (ConstPtr (..))
+import Foreign.C.String (peekCString)
 import Foreign.C.Types (CBool (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (nullPtr)
 import Foreign.Storable (poke)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
+import Utils (withConstCString)
 
 tests :: TestTree
 tests =
@@ -20,15 +23,15 @@ tests =
 createInspectDestroy :: TestTree
 createInspectDestroy =
     testCase "create error data, inspect properties, destroy" $
-        withCString "synthetic failure" \message -> do
+        withConstCString "synthetic failure" \message -> do
             errData <- c_duckdb_create_error_data DuckDBErrorInvalid message
-            assertBool "error data pointer should not be null" (errData /= nullPtr)
+            assertBool "error data pointer should not be null" (errData /= coerce nullPtr)
 
             errType <- c_duckdb_error_data_error_type errData
             errType @?= DuckDBErrorInvalid
 
             retrievedMessagePtr <- c_duckdb_error_data_message errData
-            retrievedMessage <- peekCString retrievedMessagePtr
+            retrievedMessage <- peekCString (coerce retrievedMessagePtr)
             retrievedMessage @?= "synthetic failure"
 
             hasErr <- c_duckdb_error_data_has_error errData
@@ -36,4 +39,12 @@ createInspectDestroy =
 
             alloca \ptr -> do
                 poke ptr errData
+                c_duckdb_destroy_error_data ptr
+
+            corruption <- c_duckdb_create_error_data DuckDBErrorDataCorruption message
+            assertBool "data corruption error pointer should not be null" (corruption /= coerce nullPtr)
+            c_duckdb_error_data_error_type corruption >>= (@?= DuckDBErrorDataCorruption)
+            c_duckdb_error_data_has_error corruption >>= (@?= CBool 1)
+            alloca \ptr -> do
+                poke ptr corruption
                 c_duckdb_destroy_error_data ptr

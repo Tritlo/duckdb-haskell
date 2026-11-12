@@ -1,7 +1,10 @@
 dist-newstyle
+duckdb-ffi/generated/
 *.so*
 
 reference
 
 api.md
 **/venv
+
+dev/ci-logs/

@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 {- |
@@ -7,19 +8,37 @@ Description : Shared ownership and conversion for Arrow result batches.
 -}
 module Database.DuckDB.Simple.Arrow.Internal (
     foldArrowWith,
+    releaseArrowSchema,
+    releaseArrowArray,
+    releaseArrowStream,
 ) where
 
-import Control.Exception (bracket, bracket_, throwIO)
+import Control.Exception (bracket, bracket_, mask_, throwIO)
 import Control.Monad (forM, when)
 import Database.DuckDB.FFI
 import Database.DuckDB.Simple (bind, withStatement)
-import Database.DuckDB.Simple.Internal (Connection, Query, ResultMode, SQLError (..), destroyDataChunk, destroyLogicalType, executePreparedResult, fetchResultChunk, peekUtf8CString, throwResultError, withResult, withStatementHandle)
+import Database.DuckDB.Simple.Internal (
+    Connection,
+    Query,
+    ResultMode,
+    SQLError (..),
+    destroyDataChunk,
+    destroyLogicalType,
+    executePreparedResult,
+    fetchResultChunk,
+    peekUtf8CString,
+    throwResultError,
+    withResult,
+    withStatementHandle,
+ )
 import Database.DuckDB.Simple.ToRow (ToRow (..))
+import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Array (withArray)
 import Foreign.Marshal.Utils (fillBytes, withMany)
-import Foreign.Ptr (Ptr, nullPtr)
-import Foreign.Storable (Storable (sizeOf), poke)
+import Foreign.Ptr (Ptr, nullFunPtr, nullPtr)
+import Foreign.Storable (Storable (sizeOf), peek, poke)
+import HsBindgen.Runtime.Support.FunPtr (fromFunPtr)
 
 -- | Fold over Arrow batches with the selected native execution mode.
 foldArrowWith :: (ToRow q) => ResultMode -> Connection -> Query -> q -> a -> (a -> Ptr ArrowSchema -> Ptr ArrowArray -> IO a) -> IO a
@@ -33,7 +52,7 @@ foldArrowWith mode conn queryText params initial step =
   where
     loop result options acc = do
         next <- bracket (fetchResultChunk mode conn result) destroyDataChunk \chunk ->
-            if chunk == nullPtr
+            if chunk == DuckDBDataChunk nullPtr
                 then do
                     throwResultError queryText result
                     pure Nothing
@@ -74,11 +93,11 @@ withArrowArray action =
 checkArrowError :: Query -> IO DuckDBErrorData -> IO ()
 checkArrowError queryText makeError =
     bracket makeError destroyError \err ->
-        when (err /= nullPtr) do
+        when (err /= DuckDBErrorData nullPtr) do
             failed <- c_duckdb_error_data_has_error err
             when (failed /= 0) do
                 messagePtr <- c_duckdb_error_data_message err
-                message <- if messagePtr == nullPtr then pure "DuckDB Arrow conversion failed" else peekUtf8CString messagePtr
+                message <- if messagePtr == ConstPtr nullPtr then pure "DuckDB Arrow conversion failed" else peekUtf8CString messagePtr
                 errorType <- c_duckdb_error_data_error_type err
                 throwIO (SQLError message (Just errorType) (Just queryText))
 
@@ -89,3 +108,27 @@ destroyArrowOptions options = alloca \ptr -> poke ptr options >> c_duckdb_destro
 -- | Destroy an Arrow conversion error handle.
 destroyError :: DuckDBErrorData -> IO ()
 destroyError err = alloca \ptr -> poke ptr err >> c_duckdb_destroy_error_data ptr
+
+{- | Release an Arrow schema unless its release callback is null.
+The structure must be initialized. The structure itself stays allocated.
+-}
+releaseArrowSchema :: Ptr ArrowSchema -> IO ()
+releaseArrowSchema ptr = mask_ do
+    schema <- peek ptr
+    when (schema.release /= nullFunPtr) $ fromFunPtr schema.release ptr
+
+{- | Release an Arrow array unless its release callback is null.
+The structure must be initialized. The structure itself stays allocated.
+-}
+releaseArrowArray :: Ptr ArrowArray -> IO ()
+releaseArrowArray ptr = mask_ do
+    array <- peek ptr
+    when (array.release /= nullFunPtr) $ fromFunPtr array.release ptr
+
+{- | Release an Arrow stream unless its release callback is null.
+The structure must be initialized. The structure itself stays allocated.
+-}
+releaseArrowStream :: Ptr ArrowArrayStream -> IO ()
+releaseArrowStream ptr = mask_ do
+    stream <- peek ptr
+    when (stream.release /= nullFunPtr) $ fromFunPtr stream.release ptr

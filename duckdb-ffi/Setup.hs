@@ -3,22 +3,25 @@
 
 import Control.Exception (IOException, catch, throwIO)
 import Control.Monad (filterM, unless, when)
-import Data.List (intercalate, isPrefixOf, nub, stripPrefix)
+import Data.List (intercalate, isPrefixOf, isSuffixOf, nub, stripPrefix)
 import Data.Maybe (isJust, isNothing)
 import Distribution.PackageDescription
 import Distribution.Simple
 import Distribution.Simple.Setup (ConfigFlags, configConfigurationsFlags, configConfigureArgs, configExtraLibDirs)
+
 #if MIN_VERSION_Cabal(3,14,0)
 import Distribution.Utils.Path (getSymbolicPath, makeSymbolicPath)
+
 #endif
 import System.Directory
 import System.Environment (lookupEnv)
 import System.FilePath (isAbsolute, (</>))
 import System.IO.Temp (withTempDirectory)
 import System.Info (arch, os)
-import System.Process (callProcess, readProcess)
+import System.Process (CreateProcess (..), callProcess, proc, readCreateProcess)
 
 #if !MIN_VERSION_Cabal(3,14,0)
+
 -- | Cabal versions before 3.14 use plain file paths.
 makeSymbolicPath :: FilePath -> FilePath
 makeSymbolicPath = id
@@ -26,9 +29,10 @@ makeSymbolicPath = id
 -- | Read a plain file path with Cabal versions before 3.14.
 getSymbolicPath :: FilePath -> FilePath
 getSymbolicPath = id
+
 #endif
 
--- | Save the native library directory in the package description.
+-- | Set native library paths when Cabal configures the package.
 main :: IO ()
 main = defaultMainWithHooks simpleUserHooks{confHook = configure}
   where
@@ -44,7 +48,7 @@ main = defaultMainWithHooks simpleUserHooks{confHook = configure}
                                         <> ldOptions info
                                 }
                         }
-            updated = description{condLibrary = fmap (fmap addLibrary) (condLibrary description)}
+            updated = description{condLibrary = fmap (\tree -> tree{condTreeData = addLibrary (condTreeData tree)}) (condLibrary description)}
             updatedFlags =
                 if null nativeDirs
                     then flags
@@ -68,22 +72,26 @@ nativeLibraryDirs flags = do
                     pure (nub supplied)
                 else (: []) <$> installNativeLibrary flags
 
-{- | Pin the download to the release verified by the checksums below.
-The Haskell package version can differ from the native library version.
--}
-nativeVersion :: String
-nativeVersion = "1.5.6"
+-- | Name the release platform and the shared library for this system.
+nativePlatform :: IO (String, FilePath)
+nativePlatform = case (os, arch) of
+    ("linux", "x86_64") -> pure ("linux-amd64", "libduckdb.so")
+    ("linux", "aarch64") -> pure ("linux-arm64", "libduckdb.so")
+    ("darwin", cpu) | cpu `elem` ["x86_64", "aarch64"] -> pure ("osx-universal", "libduckdb.dylib")
+    _ -> fail "duckdb-ffi supports glibc Linux and macOS on x86_64 and aarch64."
 
--- | Select an official archive and its release checksum.
-nativeArchive :: IO (String, String, FilePath)
-nativeArchive = case (os, arch) of
-    ("linux", "x86_64") -> pure ("linux-amd64", "b845005f5132a7d8180057c35e14a7626632258782f871a90861b19c1c03841b", "libduckdb.so")
-    ("linux", "aarch64") -> pure ("linux-arm64", "b72ed9f05003f5e9d2015f7ceada6416b377d9dd33169cdde3c9e33897856eee", "libduckdb.so")
-    ("darwin", "x86_64") -> mac
-    ("darwin", "aarch64") -> mac
-    _ -> fail "Automatic DuckDB installation supports glibc Linux and macOS. Supply DuckDB >= 1.5.3 and < 1.6 with -fsystemlib and --extra-lib-dirs."
-  where
-    mac = pure ("osx-universal", "e0bc007d9b0094c0970ac1847a8601d10aad07cbd2910ce586ec810f77b638d6", "libduckdb.dylib")
+{- | Read the release path and checksum for one platform from @native.sha256@.
+Each line has a checksum and a release path, for example
+@v2.0.0/duckdb-shared-libs-linux-amd64.tar.gz@.
+-}
+nativeArchive :: String -> IO (FilePath, String)
+nativeArchive platform = do
+    pinned <- doesFileExist "native.sha256"
+    unless pinned $ fail "native.sha256 is missing. The package must list it in extra-source-files."
+    pins <- readFile "native.sha256"
+    case [(path, checksum) | [checksum, path] <- map words (lines pins), ("/duckdb-shared-libs-" <> platform <> ".tar.gz") `isSuffixOf` path] of
+        [archive] -> pure archive
+        _ -> fail ("native.sha256 must contain one archive for " <> platform <> ".")
 
 -- | Download into a temporary directory. Publish the verified library atomically.
 installNativeLibrary :: ConfigFlags -> IO FilePath
@@ -95,8 +103,10 @@ installNativeLibrary flags = do
             , isAbsolute directory ->
                 pure directory
         _ -> fail "Pass --configure-option=--duckdb-install-dir=/absolute/path once, with an absolute directory."
-    (platform, checksum, libraryName) <- nativeArchive
-    let root = base </> nativeVersion
+    (platform, libraryName) <- nativePlatform
+    (release, checksum) <- nativeArchive platform
+    let version = drop 1 (takeWhile (/= '/') release)
+        root = base </> version
         destination = root </> platform
         complete dir = do
             libraryExists <- doesFileExist (dir </> libraryName)
@@ -108,24 +118,27 @@ installNativeLibrary flags = do
     ready <- complete destination
     unless ready $ do
         when exists $ fail ("Incomplete DuckDB installation: remove " <> destination <> " and retry.")
-        let programs = ["curl", "unzip", if os == "darwin" then "shasum" else "sha256sum"]
+        let programs = ["curl", "tar", if os == "darwin" then "shasum" else "sha256sum"]
         missing <- filterM (\program -> isNothing <$> findExecutable program) programs
         unless (null missing) $
             fail ("DuckDB installation requires these programs on PATH: " <> intercalate ", " missing <> ". Install them, or supply DuckDB with -fsystemlib and --extra-lib-dirs. See README.md for details.")
         createDirectoryIfMissing True root
         withTempDirectory root ".download-" $ \staging -> do
-            let archive = staging </> "duckdb.zip"
+            let archiveName = "duckdb.tar.gz"
+                archive = staging </> archiveName
                 extracted = staging </> "library"
-                url = "https://github.com/duckdb/duckdb/releases/download/v" <> nativeVersion <> "/libduckdb-" <> platform <> ".zip"
-            putStrLn ("Downloading DuckDB " <> nativeVersion <> " to " <> destination)
+                url = "https://github.com/duckdb/duckdb/releases/download/" <> release
+                hash = if os == "darwin" then proc "shasum" ["-a", "256", archiveName] else proc "sha256sum" [archiveName]
+            putStrLn ("Downloading DuckDB " <> version <> " to " <> destination)
             callProcess "curl" ["--fail", "--location", "--proto", "=https", "--proto-redir", "=https", "--tlsv1.2", "--retry", "2", "--output", archive, url]
-            digest <-
-                if os == "darwin"
-                    then readProcess "shasum" ["-a", "256", archive] ""
-                    else readProcess "sha256sum" [archive] ""
+            -- Hash a plain relative name. Hash tools escape other names in their output.
+            digest <- readCreateProcess hash{cwd = Just staging} ""
             unless (takeWhile (/= ' ') digest == checksum) $ fail "DuckDB archive checksum mismatch."
             createDirectory extracted
-            callProcess "unzip" ["-q", archive, libraryName, "-d", extracted]
+            -- Keep the shared-library symlinks and their versioned targets together.
+            callProcess "tar" ["-xzf", archive, "-C", extracted]
+            libraryPresent <- doesFileExist (extracted </> libraryName)
+            unless libraryPresent $ fail "DuckDB archive does not contain the expected shared library and its symlink targets."
             writeFile (extracted </> "SHA256") (checksum <> "\n")
             -- Another build can publish the same verified archive first.
             renameDirectory extracted destination `catch` \(err :: IOException) -> do

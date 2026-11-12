@@ -11,10 +11,11 @@ import Data.IORef (readIORef)
 import Data.Int (Int64)
 import Data.List (isInfixOf)
 import Data.Text (Text)
-import Database.DuckDB.FFI.Deprecated (c_duckdb_result_is_streaming)
+import Database.DuckDB.FFI (c_duckdb_result_is_streaming)
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (FieldValue)
 import Database.DuckDB.Simple.Internal (Statement (statementStream), StatementStream (statementStreamResult), StatementStreamState (..))
+import Foreign.Storable (peek)
 import System.Mem (performMajorGC)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
@@ -35,7 +36,7 @@ coreRegressionTests =
                     state <- readIORef (statementStream stmt)
                     case state of
                         StatementStreamActive stream -> do
-                            streaming <- c_duckdb_result_is_streaming (statementStreamResult stream)
+                            streaming <- (peek (statementStreamResult stream) >>= \rawValue -> c_duckdb_result_is_streaming rawValue)
                             assertBool "expected a materialized native result" (streaming == 0)
                         _ -> assertFailure "expected an active cursor"
         , testCase "stream metadata preserves 64-bit values" $
@@ -121,11 +122,16 @@ coreRegressionTests =
                     assertThrows (namedParameterIndex stmt "value\0suffix")
         , testCase "duplicate named bindings are rejected" $
             withConnection ":memory:" $ \conn ->
-                withStatement conn "SELECT $a + $b" $ \stmt -> do
-                    result <- try (bindNamed stmt ["a" := (1 :: Int64), "$a" := (2 :: Int64)])
-                    case result of
-                        Left (_ :: FormatError) -> pure ()
-                        Right () -> assertFailure "expected duplicate binding error before execution"
+                withStatement conn "SELECT $foo + $bar" $ \stmt ->
+                    forM_ ["$foo", "FOO"] $ \duplicate -> do
+                        result <- try (bindNamed stmt ["foo" := (1 :: Int64), duplicate := (2 :: Int64)])
+                        case result of
+                            Left (_ :: FormatError) -> pure ()
+                            Right () -> assertFailure "expected duplicate binding error before execution"
+        , testCase "named bindings retain distinct Unicode names" $
+            withConnection ":memory:" $ \conn ->
+                (queryNamed conn "SELECT $Straße::BIGINT, $STRASSE::BIGINT" ["Straße" := (1 :: Int64), "STRASSE" := (2 :: Int64)] :: IO [(Int64, Int64)])
+                    >>= (@?= [(1, 2)])
         , testCase "transaction preserves the original exception if rollback fails" $
             withConnection ":memory:" $ \conn -> do
                 result <- try $ withTransaction conn $ do

@@ -1,0 +1,50 @@
+name: Generate bindings
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Cache generated bindings
+        id: bindings-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: duckdb-ffi/generated/
+          key: >-
+            duckdb-generated-${{ runner.os }}-${{ runner.arch }}-${{
+              hashFiles(
+                'dev/bindings/GenerateBindings.hs',
+                'dev/bindings/generate-bindings.sh',
+                'dev/nix/generate.nix',
+                'dev/nix/pins.nix',
+                'duckdb-ffi/generated.sha256',
+                'duckdb-ffi/vendor/upstream.sha256',
+                'duckdb-ffi/cbits/duckdb.h',
+                'duckdb-ffi/cbits/duckdb_arrow.h',
+                'duckdb-ffi/cbits/duckdb_v2.h',
+                'duckdb-ffi/cbits/duckdb-LICENSE'
+              ) }}
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        if: steps.bindings-cache.outputs.cache-hit != 'true'
+      - name: Generate and check both C APIs
+        if: steps.bindings-cache.outputs.cache-hit != 'true'
+        run: >-
+          nix-shell dev/nix/generate.nix --max-jobs 2 --cores 2
+          --run 'dev/bindings/generate-bindings.sh --check'
+      - name: Verify the vendored headers and generated bindings
+        working-directory: duckdb-ffi
+        run: |
+          sha256sum --check vendor/upstream.sha256
+          sha256sum --check generated.sha256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: duckdb-generated
+          path: duckdb-ffi/generated/
+          if-no-files-found: error

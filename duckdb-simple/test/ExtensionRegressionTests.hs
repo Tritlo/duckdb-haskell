@@ -56,6 +56,16 @@ extensionRegressionTests =
                 createFunction conn "duplicate_scalar" (42 :: Int64)
                 replicateM_ 32 $ createFunction conn "duplicate_scalar" (7 :: Int64)
                 query_ conn "SELECT duplicate_scalar()" >>= (@?= [Only (7 :: Int64)])
+        , testCase "scalar deletion refusal keeps function and connection usable" $
+            withConnection ":memory:" \conn -> do
+                createFunction conn "retained_scalar" (42 :: Int64)
+                assertSqlErrorContaining "Cannot drop internal catalog entry" $ deleteFunction conn "retained_scalar"
+                query_ conn "SELECT retained_scalar()" >>= (@?= [Only (42 :: Int64)])
+                query_ conn "SELECT 7" >>= (@?= [Only (7 :: Int64)])
+        , testCase "absent scalar deletion succeeds" $
+            withConnection ":memory:" \conn -> do
+                deleteFunction conn "absent_scalar"
+                query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
         , testCase "stateful replacement registration cleanup" $
             withConnection ":memory:" \conn -> do
                 createFunctionWithState conn "duplicate_state" (pure ()) (\() -> (42 :: Int64))

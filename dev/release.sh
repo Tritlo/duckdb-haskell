@@ -1,0 +1,75 @@
+#!/bin/bash
+set -euo pipefail
+
+usage() {
+  echo "Usage: $0 [--publish] <package>"
+  echo ""
+  echo "Packages: duckdb-ffi, duckdb-simple, all"
+  echo ""
+  echo "Without --publish, uploads as a package candidate."
+  echo "With --publish, uploads as a published release."
+  exit 1
+}
+
+publish_flag=""
+package=""
+for arg in "$@"; do
+  case "$arg" in
+    --publish) publish_flag="--publish" ;;
+    -h|--help) usage ;;
+    *) package="$arg" ;;
+  esac
+done
+
+if [ -z "$package" ]; then
+  usage
+fi
+
+case "$package" in
+  duckdb-ffi|duckdb-simple|all) ;;
+  *) echo "Error: unknown package '$package'. Must be duckdb-ffi, duckdb-simple, or all." ; exit 1 ;;
+esac
+
+repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+cd -- "$repo_dir"
+nix-shell dev/nix/generate.nix --run 'dev/bindings/generate-bindings.sh --check'
+
+case "$package" in
+  all) packages=(duckdb-ffi duckdb-simple) ;;
+  *) packages=("$package") ;;
+esac
+
+# Cabal looks for dependency interfaces in the ordinary documentation directory.
+# The Hackage build writes to a separate directory with the package version.
+if [ "$package" = "duckdb-simple" ] || [ "$package" = "all" ]; then
+  cabal haddock duckdb-ffi
+fi
+
+# Build each archive before the first upload. A build failure uploads nothing.
+for name in "${packages[@]}"; do
+  echo ""
+  echo "=== Building $name ==="
+
+  # Use [0-9] so package prefixes do not cross-match.
+  rm -rf dist-newstyle/"$name"-[0-9]*-docs.tar.gz
+  rm -rf dist-newstyle/sdist/"$name"-[0-9]*.tar.gz
+  # Haddock does not remove the pages of a module that the package no longer
+  # has. Remove the old documentation, or the archive contains these pages.
+  rm -rf dist-newstyle/build/*/*/"$name"-[0-9]*/doc/html/"$name"-[0-9]*-docs
+  cabal haddock --haddock-for-hackage "$name"
+  cabal sdist "$name"
+done
+
+# All archives exist at this point. Stop here for a rehearsal without an upload.
+echo ""
+read -p "Username: " username
+read -sp "Password: " password
+echo ""
+
+for name in "${packages[@]}"; do
+  echo ""
+  echo "=== Uploading $name ==="
+  cabal upload $publish_flag -u "$username" -p "$password" dist-newstyle/sdist/"$name"-[0-9]*.tar.gz
+  cabal upload $publish_flag -d -u "$username" -p "$password" dist-newstyle/"$name"-[0-9]*-docs.tar.gz
+  echo "=== Done: $name ==="
+done

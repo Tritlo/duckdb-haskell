@@ -89,13 +89,13 @@ createTableFunctionOn target name columns function = do
         chunk <- output (c_duckdb_v2_table_function_exec_get_output_chunk info)
         readIORef remaining >>= writeRows factory chunk >>= writeIORef remaining
 
-{- | Write the first rows of a list to the vectors of an output chunk. Give the
-rows after the capacity of the chunk. The function does not evaluate those rows.
-The chunk must have one vector for each column of the row, in order. The values
-come from the borrowed factory. The function destroys each value after it
-writes it. The size of each vector becomes the number of written rows. An empty
-list writes no row. In the exec callback of a table function, no row ends the
-scan.
+{- | Write the first rows of a list to the vectors of an output chunk. Return
+the rows that do not fit in the chunk. The function does not evaluate those
+rows. The chunk must have one vector for each column of the row, in order. The
+values come from the borrowed factory. The function destroys each value after
+it writes it. The size of each vector becomes the number of written rows. An
+empty list writes no row. In the exec callback of a table function, no row ends
+the scan.
 -}
 writeRows :: forall row. (TypedRow row) => DuckDBV2FactoryHandle -> DuckDBV2DataChunkHandle -> [row] -> IO [row]
 writeRows factory chunk rows = do

@@ -99,8 +99,9 @@ times. A prepared statement runs it at each execution.
 
 DuckDB reads the list one chunk at a time, in one thread. It reads only the
 rows that the query needs, so the list can be long or infinite, for example
-with @LIMIT@. An exception in the function or in a row is an SQL error. DuckDB
-releases the list when the scan ends.
+with @LIMIT@. It reads all columns of each row that it reads, also the columns
+that the query does not use. An exception in the function or in a row is an SQL
+error. DuckDB releases the list when the scan ends.
 
 > createTableFunction conn "haskell_squares" ["n", "square"] \(Only count) ->
 >     pure [(n, n * n) | n <- [0 .. count - 1 :: Int64]]

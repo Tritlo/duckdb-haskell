@@ -282,7 +282,7 @@ copyFromSide name readRows = (copyFromCallbacks bind execute){copyFromInitGlobal
         path <- output (c_duckdb_v2_copy_from_bind_get_file_path info) >>= readText
         count <- output (c_duckdb_v2_copy_from_bind_get_column_count info)
         when (fromIntegral count /= width) $
-            throwIO (userError ("duckdb-simple: the COPY FROM rows of " <> Text.unpack name <> " have " <> show width <> " columns, but the table has " <> show count))
+            throwIO (userError ("duckdb-simple: the table of COPY FROM has " <> show (fromIntegral count :: Int) <> " columns, but a row of " <> Text.unpack name <> " has " <> show width))
         let columns = takeWhile (< count) [0 ..]
         names <- forM columns \index -> output (c_duckdb_v2_copy_from_bind_get_column_name info index) >>= readIdentifier
         types <- forM columns \index -> bracket (output (c_duckdb_v2_copy_from_bind_get_column_type info index)) destroyLogicalType (output . c_duckdb_v2_logical_type_get_id)

@@ -44,6 +44,7 @@ module Database.DuckDB.Simple.V2.Registration (
     registerCast,
     registerCastWith,
     registerCustomType,
+    registerCustomTypeOn,
     registerCustomTypeWith,
     registerReplacementScan,
     registerReplacementScanOn,
@@ -356,10 +357,16 @@ registerCastWith target configure execute =
 
 -- | Register a custom type with a native base type. Casts are registered separately.
 registerCustomType :: Connection -> Text -> TypeDeclaration -> IO ()
-registerCustomType connection name baseType = do
+registerCustomType connection = registerCustomTypeOn (ConnectionTarget connection)
+
+{- | Register a custom type with a native base type on a connection or a
+loading extension. The name must not be empty and must not contain NUL.
+-}
+registerCustomTypeOn :: RegistrationTarget -> Text -> TypeDeclaration -> IO ()
+registerCustomTypeOn target name baseType = do
     validateName name
-    withConnectionHandle connection \native -> withConnectionFactory native \factory ->
-        registerCustomTypeWith (ConnectionTarget connection) \custom -> do
+    withRegistrationFactory target \factory ->
+        registerCustomTypeWith target \custom -> do
             withIdentifier name $ checked . c_duckdb_v2_custom_type_set_name custom
             withTypeDeclaration factory baseType $ checked . c_duckdb_v2_custom_type_set_base_type custom
 

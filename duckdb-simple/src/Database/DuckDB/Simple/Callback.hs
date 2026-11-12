@@ -21,7 +21,7 @@ module Database.DuckDB.Simple.Callback (
     attachOpaque,
 ) where
 
-import Control.Exception (SomeException, bracket, catch, displayException, finally, mask, mask_, onException, try)
+import Control.Exception (SomeException, bracket, catch, displayException, finally, fromException, mask, mask_, onException, try)
 import Control.Monad (when)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import qualified Data.Text as Text
@@ -33,6 +33,7 @@ import Foreign.Ptr (FunPtr, Ptr, castFunPtr, castPtr, freeHaskellFunPtr, nullFun
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deRefStablePtr, freeStablePtr, newStablePtr)
 import Foreign.Storable (Storable, peek)
 import HsBindgen.Runtime.Support.FunPtr (ToFunPtr, toFunPtr)
+import System.IO.Error (ioeGetErrorString, isUserError)
 
 {- | A registration target. Extension handles are borrowed from an extension load
 callback and must not escape it. Configure extension types and values with
@@ -149,8 +150,19 @@ runCallback err action = mask \restore -> do
                                 c_duckdb_v2_error_info_set_code info DuckDBV2ErrorApi >>= checkCode
                                 withText (Text.pack "Haskell callback failed") $ \message ->
                                     c_duckdb_v2_error_info_set_text info message >>= checkCode
-                                withText (Text.pack (displayException failure)) $ \message ->
+                                withText (Text.pack (failureText failure)) $ \message ->
                                     c_duckdb_v2_error_info_set_text info message >>= checkCode
+
+{- | The text of a callback exception in the SQL error. An 'SQLError' gives its
+message, and a 'userError' gives its text. Thus the SQL error does not show a
+Haskell record or the words \"user error\". Each other exception gives its
+'displayException' text.
+-}
+failureText :: SomeException -> String
+failureText failure
+    | Just sqlError <- fromException failure = Text.unpack (sqlErrorMessage sqlError)
+    | Just ioError' <- fromException failure, isUserError ioError' = ioeGetErrorString ioError'
+    | otherwise = displayException failure
 
 -- | Transfer an opaque resource to a checked V2 setter.
 attachOpaque ::

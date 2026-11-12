@@ -33,6 +33,8 @@
   registers replacement scans, custom types, and multi-file functions with
   `registerReplacementScan`, `registerCustomType`, and
   `registerMultiFileFunction` in `Database.DuckDB.Simple.Extension`.
+- The SQL error of a failed Haskell callback has the plain message of the
+  exception. It showed `user error (...)` or a Haskell record of `SQLError`.
 - Add scoped named collection inputs and prepared dynamic PIVOT with a deferred
   output schema. Native expanding statements cannot have parameters.
 - Rename `Database.DuckDB.Simple.Deprecated.Streaming` to

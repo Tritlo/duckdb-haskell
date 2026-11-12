@@ -23,7 +23,7 @@ module Database.DuckDB.Simple.Typed (
 import Control.Applicative ((<|>))
 import Control.Exception (SomeException, bracket, catch, displayException, fromException, throwIO, try)
 import Control.Monad (forM_, when)
-import Data.IORef (modifyIORef', newIORef, readIORef)
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (intercalate)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
@@ -157,11 +157,12 @@ castRows convert info context = withContextFactory context \factory -> do
     checked (c_duckdb_v2_vector_set_size vector (fromIntegral count))
     checked (c_duckdb_v2_vector_flatten vector)
     vectorType <- vectorElementType vector
+    useText <- newIORef False
     let setNull row = checked (c_duckdb_v2_vector_set_null vector (fromIntegral row))
         castRow row =
             readArgument row
                 >>= traverse (either (throwIO . userError . Text.unpack) pure . convert)
-                >>= maybe (setNull row) (writeCastValue factory vectorType vector row)
+                >>= maybe (setNull row) (writeCastValue factory useText vectorType vector row)
     -- Use a loop with a constant stack. The runtime reads the stack of the
     -- thread at each native call, so a deep stack makes each call slow.
     firstFailure <- newIORef Nothing
@@ -179,16 +180,22 @@ BIGNUM, BIT, BLOB, DATE, TIME, TIMESTAMP, TIMESTAMPTZ, or UUID value to a custom
 type with the same base type. It casts VARCHAR to such a type. When the default
 cast fails for a value of the base type of the vector, write the text of the
 value. That text comes from the default cast to VARCHAR, which does not read
-the settings of the session.
+the settings of the session. The flag then selects the text for the subsequent
+values of the call, because each failed write costs one native error.
 -}
-writeCastValue :: (ToDuckValue b) => DuckDBV2FactoryHandle -> DuckDBV2LogicalTypeId -> DuckDBV2VectorHandle -> Int -> b -> IO ()
-writeCastValue factory vectorType vector row value =
+writeCastValue :: (ToDuckValue b) => DuckDBV2FactoryHandle -> IORef Bool -> DuckDBV2LogicalTypeId -> DuckDBV2VectorHandle -> Int -> b -> IO ()
+writeCastValue factory useText vectorType vector row value =
     bracket (toDuckValue factory value) destroyValue \native ->
-        write native `catch` \(failure :: SQLError) -> do
-            valueType <- bracket (output (c_duckdb_v2_value_get_logical_type native)) destroyLogicalType (output . c_duckdb_v2_logical_type_get_id)
-            when (valueType /= vectorType) $ throwIO failure
-            text <- valueText native
-            written <- try (bracket (toDuckValue factory text) destroyValue write)
-            either (\(_ :: SQLError) -> throwIO failure) pure written
+        readIORef useText >>= \case
+            True -> do
+                -- A NULL value has no text. DuckDB writes it without a cast.
+                isNull <- output (c_duckdb_v2_value_is_null native)
+                if isNull /= 0 then write native else writeText native
+            False ->
+                write native `catch` \(failure :: SQLError) -> do
+                    valueType <- bracket (output (c_duckdb_v2_value_get_logical_type native)) destroyLogicalType (output . c_duckdb_v2_logical_type_get_id)
+                    when (valueType /= vectorType) $ throwIO failure
+                    try (writeText native) >>= either (\(_ :: SQLError) -> throwIO failure) (\() -> writeIORef useText True)
   where
     write = checked . c_duckdb_v2_vector_set_value vector (fromIntegral row)
+    writeText native = valueText native >>= \text -> bracket (toDuckValue factory text) destroyValue write

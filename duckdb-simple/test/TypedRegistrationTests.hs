@@ -25,7 +25,7 @@ import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.Config (CustomOption (..), SettingScope (..), customOption, getConfigValue, registerCustomOption, setConfigValue)
-import Database.DuckDB.Simple.Copy (CopyBindInfo (..), CopyFromInfo (..), CopyInitInfo (..), CopySinkInfo (..), CopyTo (..), registerCopyFromFunction, registerCopyFunction, registerCopyToFunction)
+import Database.DuckDB.Simple.Copy (CopyBindInfo (..), CopyFromInfo (..), CopyInitInfo (..), CopySinkInfo (..), CopyTo (..), defaultMultiFileOptions, registerCopyFromFunction, registerCopyFunction, registerCopyToFunction, registerMultiFileFunction)
 import Database.DuckDB.Simple.FromField (BigNum (..), Field (..), FieldValue (..), bsFromBool)
 import Database.DuckDB.Simple.Function (TypedRow)
 import Database.DuckDB.Simple.Pragma (PragmaCallback (..), registerPragmaFunction)
@@ -76,6 +76,7 @@ typedRegistrationTests =
         , testCase "table function registration and argument errors" testTableArgumentErrors
         , testCase "table function exceptions become SQL errors" testTableExceptions
         , testCase "table function releases the list of each scan" testTableRelease
+        , testCase "multi-file function gives each row of a typed table function one time" testTableMultiFile
         , testCase "COPY format with both directions under one name" testCopyBothDirections
         , testCase "COPY keeps the first registration of a format name" testCopyFirstRegistration
         , testCase "COPY errors in each function fail only their statement" testCopyErrors
@@ -683,6 +684,21 @@ registerFailingFormat conn phase =
     failIn name = when (phase == name) (ioError (userError ("typed_copy_error: " <> Text.unpack name)))
     failing = CopyTo (\_ -> failIn "bind") (\info -> failIn "init" >> writeFile (copyInitFilePath info) "") (\_ _ -> failIn "sink") (\_ -> failIn "finalize")
     rows = [Only (if phase == "row" && i == 2500 then error "typed_copy_error: row" else i) | i <- [0 .. 2999 :: Int64]]
+
+{- | Read 20 files through a multi-file function over a typed table function.
+DuckDB runs exec callbacks of one scan at the same time for a multi-file
+function. Each row must come one time.
+-}
+testTableMultiFile :: Assertion
+testTableMultiFile = withDirectory \directory -> withConnection ":memory:" \conn -> do
+    createTableFunction conn "typed_numbers" ["value"] \(Only path) ->
+        map (Only . read) . lines <$> readFile (Text.unpack path) :: IO [Only Int64]
+    registerMultiFileFunction conn "typed_all_numbers" "typed_numbers" defaultMultiFileOptions
+    let numbers file = [file * 1000 + row | row <- [0 .. 99]] :: [Int64]
+    forM_ [0 .. 19] \file -> writeFile (directory </> ("numbers" <> show file <> ".txt")) (unlines (map show (numbers file)))
+    forM_ [1 :: Int .. 5] \_ ->
+        query conn "SELECT value FROM typed_all_numbers(?) ORDER BY value" (Only (Text.pack (directory </> "numbers*.txt")))
+            >>= (@?= map Only (concatMap numbers [0 .. 19]))
 
 -- | Create and remove a unique directory for the files of a test.
 withDirectory :: (FilePath -> IO a) -> IO a

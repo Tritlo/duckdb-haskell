@@ -20,10 +20,11 @@ module Database.DuckDB.Simple.Typed (
     createCastOn,
 ) where
 
+import Control.Applicative ((<|>))
 import Control.Exception (SomeException, bracket, catch, displayException, fromException, throwIO, try)
-import Control.Monad (forM, when)
+import Control.Monad (forM_, when)
+import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.List (intercalate)
-import Data.Maybe (catMaybes)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -161,13 +162,16 @@ castRows convert info context = withContextFactory context \factory -> do
             readArgument row
                 >>= traverse (either (throwIO . userError . Text.unpack) pure . convert)
                 >>= maybe (setNull row) (writeCastValue factory vectorType vector row)
-    failures <- forM [0 .. count - 1] \row ->
+    -- Use a loop with a constant stack. The runtime reads the stack of the
+    -- thread at each native call, so a deep stack makes each call slow.
+    firstFailure <- newIORef Nothing
+    forM_ [0 .. count - 1] \row ->
         try (castRow row) >>= \case
-            Right () -> pure Nothing
-            Left (failure :: SomeException) -> Just failure <$ setNull row
-    case catMaybes failures of
-        failure : _ -> throwIO failure
-        [] -> pure ()
+            Right () -> pure ()
+            Left (failure :: SomeException) -> do
+                setNull row
+                modifyIORef' firstFailure (<|> Just failure)
+    readIORef firstFailure >>= mapM_ throwIO
 
 {- | Write one value of a cast result. DuckDB casts the value to the type of
 the vector with its default cast. DuckDB 2.0.0 has no default cast from a

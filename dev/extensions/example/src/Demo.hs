@@ -10,7 +10,7 @@ import Control.Exception (throwIO)
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Data.Text (Text)
-import Database.DuckDB.FFI.V2 (pattern DuckDBV2LogicalTypeIdAny, pattern DuckDBV2MacroFunctionTypeScalar, pattern DuckDBV2MacroFunctionTypeTable)
+import Database.DuckDB.FFI.V2 (pattern DuckDBV2LogicalTypeIdAny)
 import qualified Database.DuckDB.Simple.Config as Config
 import Database.DuckDB.Simple.Extension (Extension, ExtensionEntry)
 import qualified Database.DuckDB.Simple.Extension as Extension
@@ -34,8 +34,8 @@ register extension = do
     Extension.createFunction extension "haskell_add_one" addOne
     Extension.createFunction extension "haskell_greet" (("Hello " <>) :: Text -> Text)
     Extension.createFunction extension "haskell_fail" (throwIO (userError "Haskell callback failure") :: IO Int64)
-    Extension.registerMacroFunction extension "haskell_twice" DuckDBV2MacroFunctionTypeScalar [Registration.parameter "value" (Registration.StructuredType (LogicalTypeScalar DuckDBV2LogicalTypeIdAny))] "value + value"
-    Extension.registerMacroFunction extension "haskell_table" DuckDBV2MacroFunctionTypeTable [] "SELECT 42::BIGINT AS answer"
+    Extension.registerMacroFunction extension "haskell_twice" Extension.MacroFunctionTypeScalar [Registration.parameter "value" (Registration.StructuredType (LogicalTypeScalar DuckDBV2LogicalTypeIdAny))] "value + value"
+    Extension.registerMacroFunction extension "haskell_table" Extension.MacroFunctionTypeTable [] "SELECT 42::BIGINT AS answer"
     Extension.registerCustomOption extension $
         (Config.customOption "haskell_multiplier" (Registration.TypeExpression "BIGINT"))
             { Config.customOptionDefault = Just (Registration.defaultValue (7 :: Int64))

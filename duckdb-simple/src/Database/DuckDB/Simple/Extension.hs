@@ -12,6 +12,7 @@ module Database.DuckDB.Simple.Extension (
     extensionTarget,
     createFunction,
     createFunctionWithState,
+    MacroFunctionType (..),
     registerMacroFunction,
     registerMacroFunctionWith,
     registerPragmaFunction,
@@ -77,7 +78,7 @@ untyped parameter and 'Database.DuckDB.Simple.Registration.defaultValue' for a
 default. DuckDB validates the body and the signature. It resolves the body
 when the macro runs.
 -}
-registerMacroFunction :: Extension -> Text -> DuckDBV2MacroFunctionType -> [FunctionParameter] -> Text -> IO ()
+registerMacroFunction :: Extension -> Text -> MacroFunctionType -> [FunctionParameter] -> Text -> IO ()
 registerMacroFunction extension@(Extension _ context) name kind parameters body =
     withContextFactory context \factory ->
         registerMacroFunctionWith extension kind \function -> do
@@ -90,10 +91,10 @@ registerMacroFunction extension@(Extension _ context) name kind parameters body 
 action borrows the builder. It can set the name, the body, the signature, and
 the documentation. DuckDB keeps copies after this action returns.
 -}
-registerMacroFunctionWith :: Extension -> DuckDBV2MacroFunctionType -> (DuckDBV2MacroFunctionHandle -> IO ()) -> IO ()
+registerMacroFunctionWith :: Extension -> MacroFunctionType -> (DuckDBV2MacroFunctionHandle -> IO ()) -> IO ()
 registerMacroFunctionWith (Extension extension context) kind configure =
     withContextFactory context \factory ->
-        bracket (output (c_duckdb_v2_macro_function_create factory kind)) (destroy c_duckdb_v2_macro_function_destroy) \function -> do
+        bracket (output (c_duckdb_v2_macro_function_create factory (macroFunctionTypeToNative kind))) (destroy c_duckdb_v2_macro_function_destroy) \function -> do
             configure function
             checked (c_duckdb_v2_extension_register_macro_function extension function)
 

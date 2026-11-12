@@ -21,6 +21,9 @@ module Database.DuckDB.Simple.Native (
     TokenType (..),
     tokenTypeToNative,
     tokenTypeFromNative,
+    MacroFunctionType (..),
+    macroFunctionTypeToNative,
+    macroFunctionTypeFromNative,
     checked,
     checkCode,
     output,
@@ -338,6 +341,25 @@ tokenTypeFromNative = \case
     DuckDBV2TokenTypeTerminator -> pure TokenTypeTerminator
     DuckDBV2TokenTypeEndOfInput -> pure TokenTypeEndOfInput
     DuckDBV2TokenType value -> throwUnknownNative "token type" value
+
+-- | The kind of a macro: a scalar expression or a table SELECT.
+data MacroFunctionType
+    = MacroFunctionTypeScalar
+    | MacroFunctionTypeTable
+    deriving (Eq, Ord, Show, Read, Enum, Bounded)
+
+-- | Convert a macro kind to its native value.
+macroFunctionTypeToNative :: MacroFunctionType -> DuckDBV2MacroFunctionType
+macroFunctionTypeToNative = \case
+    MacroFunctionTypeScalar -> DuckDBV2MacroFunctionTypeScalar
+    MacroFunctionTypeTable -> DuckDBV2MacroFunctionTypeTable
+
+-- | Convert a native macro kind. An unknown value raises 'SQLError'.
+macroFunctionTypeFromNative :: DuckDBV2MacroFunctionType -> IO MacroFunctionType
+macroFunctionTypeFromNative = \case
+    DuckDBV2MacroFunctionTypeScalar -> pure MacroFunctionTypeScalar
+    DuckDBV2MacroFunctionTypeTable -> pure MacroFunctionTypeTable
+    DuckDBV2MacroFunctionType value -> throwUnknownNative "macro function type" value
 
 -- | Raise 'SQLError' for a native enum value that has no Haskell constructor.
 throwUnknownNative :: Text -> CUInt -> IO a

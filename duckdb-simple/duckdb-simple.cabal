@@ -138,6 +138,7 @@ test-suite duckdb-simple-test
     StreamingTests
     TestUtils
     TimeTests
+    TypedRegistrationTests
     ValueRegressionTests
     VariantRegressionTests
 

@@ -27,6 +27,8 @@ module Database.DuckDB.Simple.Native (
     LogicalTypeId (..),
     logicalTypeIdToNative,
     logicalTypeIdFromNative,
+    FileFlag (..),
+    fileFlagToNative,
     checked,
     checkCode,
     output,
@@ -608,6 +610,40 @@ logicalTypeIdFromNative = \case
     DuckDBV2LogicalTypeIdVariant -> pure LogicalTypeIdVariant
     DuckDBV2LogicalTypeIdTuple -> pure LogicalTypeIdTuple
     DuckDBV2LogicalTypeId value -> throwUnknownNative "logical type id" value
+
+{- | A behaviour of a file open. The flags are not a bitmask. Each flag in the
+list adds one behaviour.
+-}
+data FileFlag
+    = -- | Open the file for reading.
+      FileFlagRead
+    | -- | Open the file for writing.
+      FileFlagWrite
+    | -- | Create the file if it does not exist. Keep the contents of an existing file.
+      FileFlagCreate
+    | -- | Create the file if it does not exist. Truncate an existing file to empty.
+      FileFlagCreateNew
+    | -- | Open the file in append mode.
+      FileFlagAppend
+    | -- | Fail if the file exists. Use it only together with 'FileFlagCreate'.
+      FileFlagExclusiveCreate
+    | -- | Read and write at explicit offsets from more than one thread at the same time.
+      FileFlagParallelAccess
+    | -- | Read the file through the external file cache of DuckDB. Use it only for reading.
+      FileFlagExternalFileCache
+    deriving (Eq, Ord, Show, Read, Enum, Bounded)
+
+-- | Convert a file flag to its native value.
+fileFlagToNative :: FileFlag -> DuckDBV2FileFlag
+fileFlagToNative = \case
+    FileFlagRead -> DuckDBV2FileFlagRead
+    FileFlagWrite -> DuckDBV2FileFlagWrite
+    FileFlagCreate -> DuckDBV2FileFlagCreate
+    FileFlagCreateNew -> DuckDBV2FileFlagCreateNew
+    FileFlagAppend -> DuckDBV2FileFlagAppend
+    FileFlagExclusiveCreate -> DuckDBV2FileFlagExclusiveCreate
+    FileFlagParallelAccess -> DuckDBV2FileFlagParallelAccess
+    FileFlagExternalFileCache -> DuckDBV2FileFlagExternalFileCache
 
 -- | Raise 'SQLError' for a native enum value that has no Haskell constructor.
 throwUnknownNative :: Text -> CUInt -> IO a

@@ -3,6 +3,7 @@
 
 -- | Checked file operations through the V2 file system.
 module Database.DuckDB.Simple.FileSystem (
+    FileFlag (..),
     withFileHandle,
     readFileHandleChunk,
     writeFileHandleBytes,
@@ -35,13 +36,13 @@ import Foreign.Storable (peek)
 import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
 
 -- | Open a file for one action. Release its handle on every exit path.
-withFileHandle :: Connection -> FilePath -> [DuckDBV2FileFlag] -> (DuckDBV2FileHandle -> IO a) -> IO a
+withFileHandle :: Connection -> FilePath -> [FileFlag] -> (DuckDBV2FileHandle -> IO a) -> IO a
 withFileHandle conn path flags action
     | '\0' `elem` path = fileError "file path contains NUL"
     | otherwise = withConnectionHandle conn \handle -> do
         fs <- output (c_duckdb_v2_connection_get_file_system handle)
         bracket (output (c_duckdb_v2_file_open_options_create fs)) (destroy c_duckdb_v2_file_open_options_destroy) \options -> do
-            mapM_ (checked . c_duckdb_v2_file_open_options_set_flag options) flags
+            mapM_ (checked . c_duckdb_v2_file_open_options_set_flag options . fileFlagToNative) flags
             withText (Text.pack path) \name ->
                 bracket (output (c_duckdb_v2_file_system_open fs name options)) (destroy c_duckdb_v2_file_destroy) action
 

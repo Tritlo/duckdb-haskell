@@ -252,21 +252,21 @@ extensionRegressionTests =
         , testCase "filesystem action exceptions release handles" $
             withTemporaryFile \path ->
                 withConnection ":memory:" \conn -> do
-                    outcome <- try $ FileSystem.withFileHandle conn path [DuckDBV2FileFlagWrite] \_ -> throwIO (userError "file action failure")
+                    outcome <- try $ FileSystem.withFileHandle conn path [FileSystem.FileFlagWrite] \_ -> throwIO (userError "file action failure")
                     case outcome :: Either SomeException () of
                         Left _ -> pure ()
                         Right () -> assertFailure "expected file action exception"
-                    FileSystem.withFileHandle conn path [DuckDBV2FileFlagWrite] \handle -> do
+                    FileSystem.withFileHandle conn path [FileSystem.FileFlagWrite] \handle -> do
                         FileSystem.writeFileHandleBytes handle (BS.pack [0, 255]) >>= (@?= 2)
                         FileSystem.fileHandleSync handle
-                    FileSystem.withFileHandle conn path [DuckDBV2FileFlagRead] \handle -> do
+                    FileSystem.withFileHandle conn path [FileSystem.FileFlagRead] \handle -> do
                         FileSystem.readFileHandleChunk handle 0 >>= (@?= BS.empty)
                         FileSystem.readFileHandleChunk handle 8 >>= (@?= BS.pack [0, 255])
         , testCase "filesystem errors remain controlled" $
             withConnection ":memory:" \conn -> do
-                assertSqlError $ FileSystem.withFileHandle conn "/tmp/duckdb-review-missing-dir/no-file" [DuckDBV2FileFlagRead] (\_ -> pure ())
+                assertSqlError $ FileSystem.withFileHandle conn "/tmp/duckdb-review-missing-dir/no-file" [FileSystem.FileFlagRead] (\_ -> pure ())
                 withTemporaryFile \path ->
-                    assertSqlError $ FileSystem.withFileHandle conn (path <> "\0suffix") [DuckDBV2FileFlagRead] (\_ -> pure ())
+                    assertSqlError $ FileSystem.withFileHandle conn (path <> "\0suffix") [FileSystem.FileFlagRead] (\_ -> pure ())
         , testCase "catalog and config NUL names fail safely" $
             withConnection ":memory:" \conn -> do
                 assertSqlError $ Config.getConfigOption conn "threads\0suffix"
@@ -471,7 +471,7 @@ extensionRegressionTests =
             map errorTypeFromNative [DuckDBV2ErrorNone, DuckDBV2ErrorMaxEnum] @?= [Nothing, Nothing]
         , testCase "positioned file operations preserve the sequential position" $
             withTemporaryFile \path -> withConnection ":memory:" \conn ->
-                FileSystem.withFileHandle conn path [DuckDBV2FileFlagRead, DuckDBV2FileFlagWrite] \handle -> do
+                FileSystem.withFileHandle conn path [FileSystem.FileFlagRead, FileSystem.FileFlagWrite] \handle -> do
                     FileSystem.writeFileHandleBytes handle (BS.pack [1, 2, 3, 4]) >>= (@?= 4)
                     FileSystem.fileHandleSeek handle 1
                     FileSystem.readFileHandleAt handle 2 2 >>= (@?= BS.pack [3, 4])

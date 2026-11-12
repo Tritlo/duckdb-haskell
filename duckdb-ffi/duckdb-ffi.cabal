@@ -87,6 +87,7 @@ test-suite duckdb-ffi-v2-test
   main-is: V2Main.hs
   other-modules:
     V2ChunkTest
+    V2StatementTest
     V2Test
     V2TypeTest
     V2ValueTest

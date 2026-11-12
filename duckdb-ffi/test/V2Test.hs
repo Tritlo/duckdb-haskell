@@ -11,12 +11,15 @@ module V2Test (
     checked,
     consume,
     countCall,
+    expectCallbackFailure,
+    failOnPurpose,
     fillDocs,
     output,
     readIntegers,
     readView,
     record,
     removeTestFile,
+    statementError,
     tests,
     withBytes,
     withConnection,
@@ -29,7 +32,7 @@ module V2Test (
     withView,
 ) where
 
-import Control.Exception (SomeException, bracket, catch, finally)
+import Control.Exception (SomeException, bracket, catch, finally, throwIO)
 import Control.Monad (forM, forM_, unless, void)
 import Data.Bits (testBit)
 import Data.Coerce (Coercible, coerce)
@@ -194,6 +197,36 @@ consume result = alloca $ \chunk -> do
         c_duckdb_v2_data_chunk_destroy chunk >>= (@?= DuckDBV2ErrorNone)
         consume result
 
+{- | Run a statement and return the code and the text of its error.
+Execution is lazy, so the error can come from the execution or from a later fetch.
+A statement that does not fail gives 'DuckDBV2ErrorNone' and an empty text.
+-}
+statementError :: DuckDBV2ConnectionHandle -> String -> IO (DuckDBV2Error, String)
+statementError conn sql = withStatement conn sql $ \statement -> alloca $ \result -> alloca $ \err -> do
+    poke result (coerce nullPtr)
+    poke err (coerce nullPtr)
+    let fetch = alloca $ \chunk -> do
+            poke chunk (coerce nullPtr)
+            code <- peek result >>= \live -> c_duckdb_v2_result_fetch_chunk live chunk err
+            next <- peek chunk
+            if code /= DuckDBV2ErrorNone || next == coerce nullPtr
+                then pure code
+                else c_duckdb_v2_data_chunk_destroy chunk >>= (@?= DuckDBV2ErrorNone) >> fetch
+        cleanUp = do
+            c_duckdb_v2_result_destroy result >>= (@?= DuckDBV2ErrorNone)
+            c_duckdb_v2_error_info_destroy err >>= (@?= DuckDBV2ErrorNone)
+    flip finally cleanUp $ do
+        executed <- c_duckdb_v2_statement_execute conn statement (coerce nullPtr) (coerce nullPtr) 0 result err
+        code <- if executed == DuckDBV2ErrorNone then fetch else pure executed
+        info <- peek err
+        message <-
+            if code == DuckDBV2ErrorNone || info == coerce nullPtr
+                then pure ""
+                else alloca $ \text -> do
+                    c_duckdb_v2_error_info_get_text info text >>= (@?= DuckDBV2ErrorNone)
+                    peek text >>= readView
+        pure (code, message)
+
 testEnvironment :: IO ()
 testEnvironment = alloca $ \envSlot -> do
     poke envSlot (coerce nullPtr)
@@ -337,6 +370,22 @@ callbackGuard failures err action =
         info <- peek err
         void (c_duckdb_v2_error_info_set_code info DuckDBV2ErrorApi)
         withView (show failure) $ \message -> void (c_duckdb_v2_error_info_set_text info message)
+
+-- | Fail a callback on purpose at a stage. 'callbackGuard' records the failure and reports it to DuckDB.
+failOnPurpose :: String -> IO ()
+failOnPurpose stage = throwIO (userError ("v2 deliberate " <> stage <> " failure"))
+
+{- | Run a statement that a callback fails on purpose at a stage.
+The statement must fail with the text of the callback, and the failure list must hold only that failure.
+The function clears the failure list.
+-}
+expectCallbackFailure :: (HasCallStack) => IORef [String] -> DuckDBV2ConnectionHandle -> String -> String -> IO ()
+expectCallbackFailure failures conn sql stage = do
+    (code, message) <- statementError conn sql
+    let expected = show (userError ("v2 deliberate " <> stage <> " failure"))
+    assertBool (sql <> " fails") (code /= DuckDBV2ErrorNone)
+    assertBool ("the error has the text of the callback: " <> message) (expected `isInfixOf` message)
+    atomicModifyIORef' failures (\seen -> ([], seen)) >>= (@?= [expected])
 
 testScalar :: IO ()
 testScalar = do

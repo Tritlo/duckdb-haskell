@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -7,11 +8,11 @@
 module TypedRegistrationTests (typedRegistrationTests) where
 
 import Control.Exception (throwIO, try)
-import Control.Monad (void)
+import Control.Monad (forM_, void, when)
 import qualified Data.ByteString as BS
-import Data.IORef (modifyIORef', newIORef, readIORef)
+import Data.IORef (mkWeakIORef, modifyIORef', newIORef, readIORef)
 import Data.Int (Int16, Int32, Int64, Int8)
-import Data.Maybe (mapMaybe)
+import Data.Maybe (isNothing, mapMaybe)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -24,11 +25,16 @@ import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.Config (CustomOption (..), SettingScope (..), customOption, getConfigValue, registerCustomOption, setConfigValue)
 import Database.DuckDB.Simple.FromField (BigNum (..), FieldValue (..), bsFromBool)
+import Database.DuckDB.Simple.Function (TypedRow)
 import Database.DuckDB.Simple.Pragma (PragmaCallback (..), registerPragmaFunction)
 import Database.DuckDB.Simple.Registration (FunctionParameter (..), Replacement (..), TypeDeclaration (..), defaultValue, parameter, registerCustomType, registerInstanceReplacementScan, registerReplacementScan)
 import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue)
+import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
+import System.IO.Unsafe (unsafeInterleaveIO)
+import System.Mem (performMajorGC)
+import System.Mem.Weak (deRefWeak)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase, (@?=))
 
@@ -57,6 +63,14 @@ typedRegistrationTests =
         , testCase "pragma exceptions become SQL errors" testPragmaExceptions
         , testCase "custom option update accepts and rejects BIGINT values" testOptionUpdate
         , testCase "custom option update gets VARCHAR values and can reject RESET" testOptionText
+        , testCase "table function with one parameter over several chunks" testTableSquares
+        , testCase "table function with no, two, and NULL parameters" testTableParameters
+        , testCase "table function columns of several types and a record row" testTableTypes
+        , testCase "table function runs one time for each scan" testTableRuns
+        , testCase "table function reads an infinite list with LIMIT" testTableLazy
+        , testCase "table function registration and argument errors" testTableArgumentErrors
+        , testCase "table function exceptions become SQL errors" testTableExceptions
+        , testCase "table function releases the list of each scan" testTableRelease
         ]
 
 -- | Cast BIGINT values and NULLs to a custom type over more than one chunk.
@@ -398,3 +412,141 @@ assertSqlError expected action = do
             -- The SQL error has the plain message of the Haskell exception.
             assertBool (Text.unpack message) (not (any (`Text.isInfixOf` message) ["user error", "SQLError {"]))
         Right _ -> assertFailure "expected an SQL error"
+
+-- | Read one column, both columns, and more than one chunk of the example.
+testTableSquares :: Assertion
+testTableSquares = withConnection ":memory:" \conn -> do
+    createTableFunction conn "typed_squares" ["n", "square"] \(Only count) ->
+        pure [(n, n * n) | n <- [0 .. count - 1 :: Int64]]
+    query_ conn "SELECT * FROM typed_squares(3)" >>= (@?= [(0 :: Int64, 0 :: Int64), (1, 1), (2, 4)])
+    query_ conn "SELECT square FROM typed_squares(3)" >>= (@?= map Only [0, 1, 4 :: Int64])
+    query_ conn "SELECT * FROM typed_squares(0)" >>= (@?= ([] :: [(Int64, Int64)]))
+    -- A chunk has at most 2048 rows. Thus 5000 rows need three chunks.
+    query_ conn "SELECT n, square FROM typed_squares(5000)" >>= (@?= [(n, n * n) | n <- [0 .. 4999 :: Int64]])
+
+-- | Call table functions with no parameter, two parameters, and NULL.
+testTableParameters :: Assertion
+testTableParameters = withConnection ":memory:" \conn -> do
+    createTableFunction conn "typed_words" ["word"] \() -> pure (map Only ["eitt", "tvö" :: Text])
+    query_ conn "SELECT word FROM typed_words()" >>= (@?= map Only ["eitt", "tvö" :: Text])
+    createTableFunction conn "typed_labels" ["label", "n"] \(prefix :: Text, start :: Int64) ->
+        pure [(prefix <> Text.pack (show n), n) | n <- [start .. start + 2]]
+    query_ conn "SELECT * FROM typed_labels('x', 5)" >>= (@?= [("x5" :: Text, 5 :: Int64), ("x6", 6), ("x7", 7)])
+    -- DuckDB casts an argument to the parameter type.
+    query_ conn "SELECT n FROM typed_labels('y', 1::INTEGER)" >>= (@?= map Only [1, 2, 3 :: Int64])
+    -- A NULL argument converts to Nothing.
+    createTableFunction conn "typed_optional" ["value"] \(Only (value :: Maybe Int64)) -> pure [Only value]
+    query_ conn "SELECT value FROM typed_optional(NULL)" >>= (@?= [Only (Nothing :: Maybe Int64)])
+    query_ conn "SELECT value FROM typed_optional(4)" >>= (@?= [Only (Just 4 :: Maybe Int64)])
+
+-- | A row type with a 'Generic' instance.
+data Reading = Reading
+    { readingStation :: Text
+    , readingValue :: Double
+    , readingDay :: Day
+    , readingNote :: Maybe Text
+    }
+    deriving (Generic)
+
+instance TypedRow Reading
+
+-- | Write columns of several types and NULLs from tuples and from a record.
+testTableTypes :: Assertion
+testTableTypes = withConnection ":memory:" \conn -> do
+    let start = fromGregorian 2026 11 12
+        mixed = [("a" :: Text, 0.5 :: Double, start, Just (1 :: Int64)), ("liður", -1.25, addDays 1 start, Nothing)]
+    createTableFunction conn "typed_mixed" ["label", "value", "day", "amount"] \() -> pure mixed
+    query_ conn "SELECT * FROM typed_mixed()" >>= (@?= mixed)
+    query_ conn "SELECT typeof(label), typeof(value), typeof(day), typeof(amount) FROM typed_mixed() LIMIT 1"
+        >>= (@?= [("VARCHAR" :: Text, "DOUBLE" :: Text, "DATE" :: Text, "BIGINT" :: Text)])
+    createTableFunction conn "typed_readings" ["station", "value", "day", "note"] \(Only count) ->
+        pure [Reading ("s" <> Text.pack (show n)) (fromIntegral n / 2) (addDays (fromIntegral n) start) (if even n then Nothing else Just "odd") | n <- [0 .. count - 1 :: Int64]]
+    query_ conn "SELECT * FROM typed_readings(3)"
+        >>= (@?= [("s0" :: Text, 0 :: Double, start, Nothing :: Maybe Text), ("s1", 0.5, addDays 1 start, Just "odd"), ("s2", 1, addDays 2 start, Nothing)])
+    query_ conn "SELECT count(*) FROM typed_readings(3000) WHERE note IS NULL" >>= (@?= [Only (1500 :: Int64)])
+
+-- | Run the function for each scan. Do not run it at registration or preparation.
+testTableRuns :: Assertion
+testTableRuns = withConnection ":memory:" \conn -> do
+    calls <- newIORef (0 :: Int)
+    createTableFunction conn "typed_counted" ["n"] \(Only count) -> do
+        modifyIORef' calls (+ 1)
+        pure (map Only [1 .. count :: Int64])
+    readIORef calls >>= (@?= 0)
+    withStatement conn "SELECT n FROM typed_counted(2)" \statement -> do
+        readIORef calls >>= (@?= 0)
+        _ <- executeStatement statement
+        readIORef calls >>= (@?= 1)
+        _ <- executeStatement statement
+        readIORef calls >>= (@?= 2)
+    query_ conn "SELECT a.n, b.n FROM typed_counted(2) a JOIN typed_counted(3) b ON a.n = b.n ORDER BY a.n"
+        >>= (@?= [(1 :: Int64, 1 :: Int64), (2, 2)])
+    readIORef calls >>= (@?= 4)
+
+-- | Read the first rows of an infinite list.
+testTableLazy :: Assertion
+testTableLazy = withConnection ":memory:" \conn -> do
+    createTableFunction conn "typed_naturals" ["n"] \() -> pure (map Only [0 :: Int64 ..])
+    query_ conn "SELECT n FROM typed_naturals() LIMIT 3" >>= (@?= map Only [0, 1, 2 :: Int64])
+    -- 10000 rows need more than one chunk.
+    query_ conn "SELECT sum(n)::BIGINT FROM (SELECT n FROM typed_naturals() LIMIT 10000)" >>= (@?= [Only (49995000 :: Int64)])
+
+-- | Reject wrong column names at registration. Fail a query with an argument that does not convert.
+testTableArgumentErrors :: Assertion
+testTableArgumentErrors = withConnection ":memory:" \conn -> do
+    assertSqlError "1 column names for 2 result columns" (createTableFunction conn "typed_bad_names" ["a"] \() -> pure [(1 :: Int64, 2 :: Int64)])
+    assertSqlError "at least one result column" (createTableFunction conn "typed_no_columns" [] \() -> pure [()])
+    -- DuckDB casts the argument to BIGNUM. A negative BIGNUM does not convert to Natural.
+    createTableFunction conn "typed_natural" ["n"] \(Only (value :: Natural)) -> pure [Only (fromIntegral value :: Int64)]
+    query_ conn "SELECT n FROM typed_natural(7)" >>= (@?= [Only (7 :: Int64)])
+    assertSqlError "typed_natural: cannot convert argument arg1" (query_ conn "SELECT n FROM typed_natural(-7)" :: IO [Only Int64])
+    assertSqlError "typed_natural: argument arg1 is NULL" (query_ conn "SELECT n FROM typed_natural(NULL)" :: IO [Only Int64])
+    query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+
+-- | Fail a query with an exception in the function and in a row of the second chunk.
+testTableExceptions :: Assertion
+testTableExceptions = withConnection ":memory:" \conn -> do
+    createTableFunction conn "typed_checked" ["n"] \(Only count) ->
+        if count < 0 then throwIO (userError "typed_checked: the count is negative") else pure (map Only [1 .. count :: Int64])
+    assertSqlError "typed_checked: the count is negative" (query_ conn "SELECT n FROM typed_checked(-1)" :: IO [Only Int64])
+    query_ conn "SELECT n FROM typed_checked(2)" >>= (@?= map Only [1, 2 :: Int64])
+    -- Row 3000 is in the second chunk.
+    createTableFunction conn "typed_partial" ["n"] \() ->
+        pure [Only (if n == 3000 then error "typed_partial: row 3000 fails" else n) | n <- [0 :: Int64 ..]]
+    assertSqlError "typed_partial: row 3000 fails" (query_ conn "SELECT count(*) FROM typed_partial()" :: IO [Only Int64])
+    query_ conn "SELECT n FROM typed_partial() LIMIT 2" >>= (@?= map Only [0, 1 :: Int64])
+    query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+
+{- | Release the list of each scan after a full scan, after LIMIT, and after an
+error. Each call makes a token. The rows that the scan did not read refer to
+the token. Release the function when the connection closes.
+-}
+testTableRelease :: Assertion
+testTableRelease = do
+    closure <- withConnection ":memory:" \conn -> do
+        tokens <- newIORef []
+        offset <- newIORef (0 :: Int64)
+        offsetWeak <- mkWeakIORef offset (pure ())
+        createTableFunction conn "typed_tokens" ["n"] \(count :: Int64, failure :: Int64) -> do
+            token <- readIORef offset >>= newIORef
+            weak <- mkWeakIORef token (pure ())
+            modifyIORef' tokens (weak :)
+            let rowsFrom n
+                    | n == count = pure []
+                    | otherwise = unsafeInterleaveIO do
+                        value <- readIORef token
+                        when (n == failure) $ throwIO (userError "typed_tokens: the row fails")
+                        (Only (value + n) :) <$> rowsFrom (n + 1)
+            rowsFrom 0
+        query_ conn "SELECT count(*) FROM typed_tokens(3000, -1)" >>= (@?= [Only (3000 :: Int64)])
+        query_ conn "SELECT n FROM typed_tokens(-1, -1) LIMIT 3" >>= (@?= map Only [0, 1, 2 :: Int64])
+        assertSqlError "typed_tokens: the row fails" (query_ conn "SELECT count(*) FROM typed_tokens(-1, 2500)" :: IO [Only Int64])
+        performMajorGC
+        performMajorGC
+        scans <- readIORef tokens
+        length scans @?= 3
+        forM_ scans \weak -> deRefWeak weak >>= assertBool "a scan keeps its list after the scan ends" . isNothing
+        pure offsetWeak
+    performMajorGC
+    performMajorGC
+    deRefWeak closure >>= assertBool "the table function remains after the connection closes" . isNothing

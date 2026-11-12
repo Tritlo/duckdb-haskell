@@ -13,7 +13,7 @@ import Control.Monad (forM, forM_, replicateM_, void, when)
 import qualified Data.ByteString as BS
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
-import Data.List (find)
+import Data.List (find, sort)
 import Data.Proxy (Proxy (..))
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
@@ -25,6 +25,20 @@ import qualified Database.DuckDB.Simple.Config as Config
 import qualified Database.DuckDB.Simple.Copy as Copy
 import qualified Database.DuckDB.Simple.FileSystem as FileSystem
 import Database.DuckDB.Simple.FromField (FieldValue (..))
+import Database.DuckDB.Simple.Internal (
+    errorTypeCodes,
+    errorTypeFromNative,
+    logLevelFromNative,
+    logLevelToNative,
+    logScopeFromNative,
+    logScopeToNative,
+    macroFunctionTypeFromNative,
+    macroFunctionTypeToNative,
+    settingScopeFromNative,
+    settingScopeToNative,
+    tokenTypeFromNative,
+    tokenTypeToNative,
+ )
 import qualified Database.DuckDB.Simple.Logging as Logging
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..))
 import qualified Database.DuckDB.Simple.Registration as Registration
@@ -369,6 +383,81 @@ extensionRegressionTests =
                 assertBool "comment token" (any ((== Tokenizer.TokenTypeComment) . Tokenizer.tokenType) (Tokenizer.tokenizationTokens parsed))
                 unfinished <- Tokenizer.tokenize conn "SELECT 'unclosed"
                 Tokenizer.tokenizationUnterminated unfinished @?= True
+        , testCase "tokenization reports the type of each token" $
+            withConnection ":memory:" \conn -> do
+                parsed <- Tokenizer.tokenize conn "SELECT amount, 'text', 42 + 1; -- note\n"
+                [(Tokenizer.tokenType token, Tokenizer.tokenBytes token) | token <- Tokenizer.tokenizationTokens parsed]
+                    @?= [ (Tokenizer.TokenTypeKeyword, "SELECT")
+                        , (Tokenizer.TokenTypeIdentifier, "amount")
+                        , (Tokenizer.TokenTypeOperator, ",")
+                        , (Tokenizer.TokenTypeStringLiteral, "'text'")
+                        , (Tokenizer.TokenTypeOperator, ",")
+                        , (Tokenizer.TokenTypeNumberLiteral, "42")
+                        , (Tokenizer.TokenTypeOperator, "+")
+                        , (Tokenizer.TokenTypeNumberLiteral, "1")
+                        , (Tokenizer.TokenTypeTerminator, ";")
+                        , (Tokenizer.TokenTypeComment, "-- note\n")
+                        ]
+        , testCase "configuration writes and reads each setting scope" $
+            withConnection ":memory:" \conn -> do
+                let option name scope =
+                        (Config.customOption name (Registration.StructuredType (LogicalTypeScalar DuckDBV2LogicalTypeIdBigInt)))
+                            { Config.customOptionDefault = Just (Registration.defaultValue (0 :: Int64))
+                            , Config.customOptionDefaultScope = scope
+                            , Config.customOptionScopes = [Config.SettingScopeGlobal, Config.SettingScopeSession]
+                            }
+                Config.registerCustomOption conn (option "haskell_global_scope" Config.SettingScopeGlobal)
+                Config.registerCustomOption conn (option "haskell_session_scope" Config.SettingScopeSession)
+                Config.setConfigValue conn Config.SettingScopeDefault "haskell_global_scope" (1 :: Int64)
+                Config.getConfigValue conn "haskell_global_scope" >>= (@?= (FieldInt64 1, Config.SettingScopeGlobal))
+                Config.setConfigOption conn Config.SettingScopeDefault "haskell_session_scope" "2"
+                Config.getConfigValue conn "haskell_session_scope" >>= (@?= (FieldInt64 2, Config.SettingScopeSession))
+                Config.setConfigValue conn Config.SettingScopeGlobal "haskell_global_scope" (3 :: Int64)
+                Config.getConfigValue conn "haskell_global_scope" >>= (@?= (FieldInt64 3, Config.SettingScopeGlobal))
+                Config.setConfigOption conn Config.SettingScopeSession "haskell_global_scope" "4"
+                Config.getConfigValue conn "haskell_global_scope" >>= (@?= (FieldInt64 4, Config.SettingScopeSession))
+                fmap Config.configValueScope <$> Config.getConfigOption conn "haskell_global_scope" >>= (@?= Just Config.SettingScopeSession)
+                options <- Config.listConfigOptions conn
+                sort [(Config.configOptionName descriptor, Config.configOptionScope descriptor, Config.configOptionScopes descriptor) | descriptor <- options, "haskell_" `Text.isPrefixOf` Config.configOptionName descriptor]
+                    @?= [ ("haskell_global_scope", Config.SettingScopeGlobal, [Config.SettingScopeGlobal, Config.SettingScopeSession])
+                        , ("haskell_session_scope", Config.SettingScopeSession, [Config.SettingScopeGlobal, Config.SettingScopeSession])
+                        ]
+        , testCase "log sinks receive each log level and its scope" do
+            entries <- newIORef []
+            withConnection ":memory:" \conn -> do
+                Logging.registerLogSink conn "level_log" (\entry -> atomicModifyIORef' entries (\values -> (entry : values, ()))) (pure ())
+                void $ execute_ conn "CALL enable_logging(level := 'trace'); SET logging_storage = 'level_log'"
+                forM_ [minBound .. maxBound] \level -> Logging.logConnectionMessage conn level "HaskellLevels" (Text.pack (show level))
+                void $ execute_ conn "SET logging_storage = 'memory'"
+            received <- filter ((== "HaskellLevels") . Logging.logEntryType) <$> readIORef entries
+            sort [(Logging.logEntrySeverity entry, Logging.logEntryLevel entry, Logging.logEntryMessage entry) | entry <- received]
+                @?= [ (level, name, Text.pack (show level))
+                    | (level, name) <- zip [minBound .. maxBound] ["TRACE", "DEBUG", "INFO", "WARNING", "ERROR", "FATAL"]
+                    ]
+            map Logging.logEntryScope received @?= replicate 6 Logging.LogScopeConnection
+        , testCase "native errors report their error type" $
+            withConnection ":memory:" \conn ->
+                forM_
+                    [ ("SELEC 1", ErrorTypeQueryParser)
+                    , ("SELECT * FROM no_such_table", ErrorTypeDatabaseCatalog)
+                    , ("SELECT no_such_column", ErrorTypeQueryBinder)
+                    , ("SELECT 'abc'::INTEGER", ErrorTypeTypeConversion)
+                    ]
+                    \(sql, expected) -> do
+                        outcome <- try (execute_ conn sql)
+                        case outcome of
+                            Left (err :: SQLError) -> sqlErrorType err @?= Just expected
+                            Right _ -> assertFailure ("expected an error from " <> show sql)
+        , testCase "each enum value converts to its native value and back" do
+            assertNativeRoundTrip settingScopeToNative settingScopeFromNative DuckDBV2SettingScopeMaxEnum
+            assertNativeRoundTrip logLevelToNative logLevelFromNative DuckDBV2LogLevelMaxEnum
+            assertNativeRoundTrip logScopeToNative logScopeFromNative DuckDBV2LogScopeMaxEnum
+            assertNativeRoundTrip macroFunctionTypeToNative macroFunctionTypeFromNative DuckDBV2MacroFunctionTypeMaxEnum
+            assertNativeRoundTrip tokenTypeToNative tokenTypeFromNative DuckDBV2TokenTypeMaxEnum
+            let errorTypes = [minBound .. maxBound] :: [ErrorType]
+            map (\errorType -> lookup errorType errorTypeCodes >>= errorTypeFromNative) errorTypes @?= map Just errorTypes
+            map (fmap show . (`lookup` errorTypeCodes)) errorTypes @?= map (Just . ("DuckDBV2Error" <>) . drop (length ("ErrorType" :: String)) . show) errorTypes
+            map errorTypeFromNative [DuckDBV2ErrorNone, DuckDBV2ErrorMaxEnum] @?= [Nothing, Nothing]
         , testCase "positioned file operations preserve the sequential position" $
             withTemporaryFile \path -> withConnection ":memory:" \conn ->
                 FileSystem.withFileHandle conn path [DuckDBV2FileFlagRead, DuckDBV2FileFlagWrite] \handle -> do
@@ -454,6 +543,16 @@ assertSqlErrorContaining expected action = do
             assertBool ("expected SQL error containing " <> show expected <> ", got " <> show err) $
                 expected `Text.isInfixOf` sqlErrorMessage err
         Right () -> assertFailure "expected SQL error"
+
+{- | Convert each value to its native value and back. The native value must have
+the pattern name of the value. The native sentinel must raise 'SQLError'.
+-}
+assertNativeRoundTrip :: (Bounded a, Enum a, Eq a, Show a, Show native) => (a -> native) -> (native -> IO a) -> native -> Assertion
+assertNativeRoundTrip toNative fromNative sentinel = do
+    let values = [minBound .. maxBound]
+    mapM (fromNative . toNative) values >>= (@?= values)
+    map (show . toNative) values @?= map (("DuckDBV2" <>) . show) values
+    assertSqlErrorContaining "unknown native" (fromNative sentinel)
 
 -- | Remove a temporary file after the action.
 withTemporaryFile :: (FilePath -> IO a) -> IO a

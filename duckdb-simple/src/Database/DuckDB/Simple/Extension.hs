@@ -17,6 +17,7 @@ module Database.DuckDB.Simple.Extension (
     registerCustomType,
     registerMultiFileFunction,
     createTableFunction,
+    createAggregate,
     MacroFunctionType (..),
     registerMacroFunction,
     registerMacroFunctionWith,
@@ -37,7 +38,7 @@ import Database.DuckDB.Simple.Copy (CopyBindInfo, CopyFinalizeInfo, CopyFromInfo
 import qualified Database.DuckDB.Simple.Copy as Copy
 import Database.DuckDB.Simple.FromField (Field, FromField)
 import Database.DuckDB.Simple.FromRow (FromRow)
-import Database.DuckDB.Simple.Function.Internal (Function, createFunctionOn, createFunctionWithStateOn)
+import Database.DuckDB.Simple.Function.Internal (Function, FunctionResult, createFunctionOn, createFunctionWithStateOn)
 import Database.DuckDB.Simple.Logging (LogEntry)
 import qualified Database.DuckDB.Simple.Logging as Logging
 import Database.DuckDB.Simple.Native
@@ -45,6 +46,7 @@ import Database.DuckDB.Simple.Pragma (PragmaCallback)
 import qualified Database.DuckDB.Simple.Pragma as Pragma
 import Database.DuckDB.Simple.ToField (ToDuckValue)
 import Database.DuckDB.Simple.Typed (Replacement, TypedRow, createCastOn, replacementScanCallback)
+import Database.DuckDB.Simple.Typed.Aggregate (Aggregate, createAggregateOn)
 import Database.DuckDB.Simple.Typed.Table (createTableFunctionOn)
 import Database.DuckDB.Simple.V2.Registration (FunctionParameter, FunctionSignature (..), RegistrationTarget (ExtensionTarget), TypeDeclaration, configureFunctionSignature, registerCustomTypeOn, registerReplacementScanOn)
 import Foreign.Ptr (Ptr, castPtr)
@@ -119,6 +121,12 @@ registerMultiFileFunction = registerMultiFileFunctionOn . extensionTarget
 -}
 createTableFunction :: (FromRow params, TypedRow params, TypedRow row) => Extension -> Text -> [Text] -> (params -> IO [row]) -> IO ()
 createTableFunction = createTableFunctionOn . extensionTarget
+
+{- | Register an aggregate function with the loading DuckDB host. The rules of
+'Database.DuckDB.Simple.Function.createAggregate' apply.
+-}
+createAggregate :: (FromRow args, TypedRow args, FunctionResult result) => Extension -> Text -> Aggregate state args result -> IO ()
+createAggregate = createAggregateOn . extensionTarget
 
 {- | Register a scalar expression or a table SELECT as a macro of the loading
 extension. The V2 API registers a macro only for an extension. Use SQL

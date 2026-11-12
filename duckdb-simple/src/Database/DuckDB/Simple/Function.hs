@@ -22,6 +22,8 @@ module Database.DuckDB.Simple.Function (
     createCast,
     TypedRow,
     createTableFunction,
+    Aggregate (..),
+    createAggregate,
 ) where
 
 import Data.Text (Text)
@@ -46,6 +48,7 @@ import Database.DuckDB.Simple.Internal (
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.ToField (ToDuckValue)
 import Database.DuckDB.Simple.Typed (TypedRow, createCastOn)
+import Database.DuckDB.Simple.Typed.Aggregate (Aggregate (..), createAggregateOn)
 import Database.DuckDB.Simple.Typed.Table (createTableFunctionOn)
 import Database.DuckDB.Simple.V2.Registration (TypeDeclaration (..))
 
@@ -110,6 +113,42 @@ scan ends.
 -}
 createTableFunction :: (FromRow params, TypedRow params, TypedRow row) => Connection -> Text -> [Text] -> (params -> IO [row]) -> IO ()
 createTableFunction conn = createTableFunctionOn (ConnectionTarget conn)
+
+{- | Register an aggregate function. The function folds the rows of each group
+into a state.
+
+'aggregateStep' adds one row to a state. The step does not run for a row that
+has NULL in an argument. A group with no other rows gets the result of
+'aggregateInitial'. DuckDB can split a group into partial states, for example
+over threads or for a window frame. 'aggregateCombine' merges two partial
+states. DuckDB also merges a partial state into a new state, so
+'aggregateCombine' must give the other state when one state is
+'aggregateInitial'. Each new state is evaluated to weak head normal form.
+
+The arguments decode with 'Database.DuckDB.Simple.FromRow.FromRow'. The SQL
+type of each argument is the 'Database.DuckDB.Simple.ToField.duckdbColumnType'
+of its column in 'TypedRow'. The SQL return type comes from 'FunctionResult':
+BIGINT for 'Int', 'Data.Int.Int16', 'Data.Int.Int32', 'Data.Int.Int64',
+'Data.Word.Word16', and 'Data.Word.Word32'; UBIGINT for 'Word' and
+'Data.Word.Word64'; DOUBLE for 'Double' and 'Float'; BOOLEAN for 'Bool'; and
+VARCHAR for 'Text' and 'String'. A 'Maybe' result has the SQL type of its
+value, and 'Nothing' gives NULL. Thus an @Int32@ argument is INTEGER, but an
+@Int32@ result is BIGINT.
+
+An exception in a function fails the query. DuckDB can run the functions on
+more than one thread at one time, but not on the same state. The aggregate
+function works with GROUP BY, with DISTINCT, FILTER, and ORDER BY, and as a
+window function.
+
+> createAggregate conn "haskell_sum" Aggregate
+>     { aggregateInitial = 0 :: Int64
+>     , aggregateStep = \total (Only value) -> pure (total + value)
+>     , aggregateCombine = \a b -> pure (a + b)
+>     , aggregateResult = pure
+>     }
+-}
+createAggregate :: (FromRow args, TypedRow args, FunctionResult result) => Connection -> Text -> Aggregate state args result -> IO ()
+createAggregate conn = createAggregateOn (ConnectionTarget conn)
 
 {- | Run @DROP FUNCTION IF EXISTS@ and report native errors.
 DuckDB does not permit deletion of functions registered through the C API.

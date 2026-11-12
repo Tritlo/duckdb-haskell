@@ -79,14 +79,11 @@ DuckDB 2.0.0 does not run the destroy callback on these states. In each case
 the table releases them:
 
 1. The states of a finalize call that fails, in a hash aggregate and in a
-   window. One probe: 613 of 10000 states with 1 thread, and 100 of 108
-   states for a sliding window frame.
+   window.
 2. The states that no finalize call gets when LIMIT stops a parallel hash
-   aggregate. One probe: 1808 of 10000 states with 4 threads.
-3. The states after a combine call fails in a parallel hash aggregate. One
-   probe: 140 of 250 states with 4 threads.
-4. The states after a finalize call fails in a parallel hash aggregate. One
-   probe: 12566 of 25000 states with 4 threads.
+   aggregate.
+3. The states after a combine call fails in a parallel hash aggregate.
+4. The states after a finalize call fails in a parallel hash aggregate.
 -}
 type StateTable = IORef IntSet.IntSet
 

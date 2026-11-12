@@ -6,8 +6,10 @@
 -- | Integration checks for typed registration through SQL.
 module TypedRegistrationTests (typedRegistrationTests) where
 
-import Control.Exception (try)
+import Control.Exception (throwIO, try)
+import Control.Monad (void)
 import qualified Data.ByteString as BS
+import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.Maybe (mapMaybe)
 import Data.Proxy (Proxy (..))
@@ -21,14 +23,15 @@ import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (BigNum (..), bsFromBool)
-import Database.DuckDB.Simple.Registration (Replacement (..), TypeDeclaration (..), registerCustomType, registerInstanceReplacementScan, registerReplacementScan)
+import Database.DuckDB.Simple.Pragma (PragmaCallback (..), registerPragmaFunction)
+import Database.DuckDB.Simple.Registration (FunctionParameter (..), Replacement (..), TypeDeclaration (..), defaultValue, parameter, registerCustomType, registerInstanceReplacementScan, registerReplacementScan)
 import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue)
 import Numeric.Natural (Natural)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase, (@?=))
 
--- | Check typed casts and typed replacement scans through SQL.
+-- | Check the typed registrations through SQL.
 typedRegistrationTests :: TestTree
 typedRegistrationTests =
     testGroup
@@ -45,6 +48,12 @@ typedRegistrationTests =
         , testCase "connection replacement scan serves only its connection" testReplacementConnectionScope
         , testCase "instance replacement scan serves each connection" testReplacementInstance
         , testCase "replacement scans run in the order of registration" testReplacementOrder
+        , testCase "query pragma with no parameter" testPragmaNoParameter
+        , testCase "query pragma with a default parameter" testPragmaDefault
+        , testCase "pragma row has the order of the declaration" testPragmaRow
+        , testCase "exec pragma counts its calls" testPragmaExec
+        , testCase "pragma argument rows that do not decode" testPragmaDecodeErrors
+        , testCase "pragma exceptions become SQL errors" testPragmaExceptions
         ]
 
 -- | Cast BIGINT values and NULLs to a custom type over more than one chunk.
@@ -150,6 +159,67 @@ testCastBaseTypes = withConnection ":memory:" \conn -> do
     roundTrip conn "unbounded_day" [NegInfinity, Finite day, PosInfinity]
     roundTrip conn "unbounded_local" [NegInfinity, Finite (LocalTime day time), PosInfinity]
     roundTrip conn "unbounded_utc" [NegInfinity, Finite instant, PosInfinity]
+
+-- | Run the SQL of a query pragma without a parameter.
+testPragmaNoParameter :: Assertion
+testPragmaNoParameter = withConnection ":memory:" \conn -> do
+    registerPragmaFunction conn "typed_answer" [] (QueryPragma \() -> pure "SELECT 42::BIGINT")
+    query_ conn "PRAGMA typed_answer" >>= (@?= [Only (42 :: Int64)])
+
+-- | Give the default value to the callback when the call omits the argument.
+testPragmaDefault :: Assertion
+testPragmaDefault = withConnection ":memory:" \conn -> do
+    let amount = (parameter "amount" (TypeExpression "BIGINT")){parameterDefault = Just (defaultValue (42 :: Int64))}
+    registerPragmaFunction conn "typed_amount" [amount] $
+        QueryPragma \(Only (value :: Maybe Int64)) -> pure (maybe "SELECT NULL::BIGINT" (\number -> "SELECT " <> Text.pack (show number) <> "::BIGINT") value)
+    query_ conn "PRAGMA typed_amount" >>= (@?= [Only (Just (42 :: Int64))])
+    query_ conn "PRAGMA typed_amount(7)" >>= (@?= [Only (Just (7 :: Int64))])
+    query_ conn "PRAGMA typed_amount(amount = 9)" >>= (@?= [Only (Just (9 :: Int64))])
+    query_ conn "PRAGMA typed_amount(NULL)" >>= (@?= [Only (Nothing :: Maybe Int64)])
+
+{- | Decode two parameters of different types as a tuple. The row has the order
+of the declaration when the call gives the arguments by name in another order.
+An omitted argument has its default value.
+-}
+testPragmaRow :: Assertion
+testPragmaRow = withConnection ":memory:" \conn -> do
+    let label = (parameter "label" (TypeExpression "VARCHAR")){parameterDefault = Just (defaultValue ("none" :: Text))}
+    registerPragmaFunction conn "typed_pair" [parameter "amount" (TypeExpression "BIGINT"), label] $
+        QueryPragma \(amount :: Int64, text :: Text) -> pure ("SELECT " <> Text.pack (show amount) <> "::BIGINT, '" <> Text.replace "'" "''" text <> "'")
+    query_ conn "PRAGMA typed_pair(3, 'liður ''x''')" >>= (@?= [(3 :: Int64, "liður 'x'" :: Text)])
+    query_ conn "PRAGMA typed_pair(label = 'named', amount = 4)" >>= (@?= [(4 :: Int64, "named" :: Text)])
+    query_ conn "PRAGMA typed_pair(5)" >>= (@?= [(5 :: Int64, "none" :: Text)])
+
+-- | Run the action of an exec pragma once for each statement.
+testPragmaExec :: Assertion
+testPragmaExec = withConnection ":memory:" \conn -> do
+    calls <- newIORef (0 :: Int)
+    registerPragmaFunction conn "typed_count" [] (ExecPragma \() -> modifyIORef' calls (+ 1))
+    void (execute_ conn "PRAGMA typed_count")
+    void (execute_ conn "PRAGMA typed_count")
+    readIORef calls >>= (@?= 2)
+
+-- | Name the pragma when the row has another type, another size, or a NULL.
+testPragmaDecodeErrors :: Assertion
+testPragmaDecodeErrors = withConnection ":memory:" \conn -> do
+    let amount = parameter "amount" (TypeExpression "BIGINT")
+    registerPragmaFunction conn "typed_text" [parameter "label" (TypeExpression "VARCHAR")] (QueryPragma \(Only (_ :: Int64)) -> pure "SELECT 1")
+    assertSqlError "cannot decode the arguments of pragma typed_text: column label has type" (query_ conn "PRAGMA typed_text('x')" :: IO [Only Int64])
+    registerPragmaFunction conn "typed_size" [amount] (QueryPragma \() -> pure "SELECT 1")
+    assertSqlError "cannot decode the arguments of pragma typed_size" (query_ conn "PRAGMA typed_size(1)" :: IO [Only Int64])
+    registerPragmaFunction conn "typed_strict" [amount] (ExecPragma \(Only (_ :: Int64)) -> pure ())
+    assertSqlError "cannot decode the arguments of pragma typed_strict: column amount is NULL" (execute_ conn "PRAGMA typed_strict(NULL)")
+    query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+
+-- | Make an SQL error from an exception of each callback kind.
+testPragmaExceptions :: Assertion
+testPragmaExceptions = withConnection ":memory:" \conn -> do
+    registerPragmaFunction conn "typed_query_failure" [] (QueryPragma \() -> throwIO (userError "typed query pragma failure"))
+    assertSqlError "typed query pragma failure" (query_ conn "PRAGMA typed_query_failure" :: IO [Only Int64])
+    query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+    registerPragmaFunction conn "typed_exec_failure" [] (ExecPragma \() -> throwIO (userError "typed exec pragma failure"))
+    assertSqlError "typed exec pragma failure" (execute_ conn "PRAGMA typed_exec_failure")
+    query_ conn "SELECT 43" >>= (@?= [Only (43 :: Int64)])
 
 {- | Register a custom type on the column type of the values. Cast a row number
 to each value. Require the same values from the custom type.

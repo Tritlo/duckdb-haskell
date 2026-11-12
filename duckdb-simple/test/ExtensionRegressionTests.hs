@@ -26,18 +26,16 @@ import qualified Database.DuckDB.Simple.Copy as Copy
 import qualified Database.DuckDB.Simple.FileSystem as FileSystem
 import Database.DuckDB.Simple.FromField (FieldValue (..))
 import Database.DuckDB.Simple.Internal (
+    MacroFunctionType,
     errorTypeCodes,
     errorTypeFromNative,
     logLevelFromNative,
     logLevelToNative,
     logScopeFromNative,
-    logScopeToNative,
-    macroFunctionTypeFromNative,
     macroFunctionTypeToNative,
     settingScopeFromNative,
     settingScopeToNative,
     tokenTypeFromNative,
-    tokenTypeToNative,
  )
 import qualified Database.DuckDB.Simple.Logging as Logging
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..))
@@ -438,25 +436,39 @@ extensionRegressionTests =
         , testCase "native errors report their error type" $
             withConnection ":memory:" \conn ->
                 forM_
-                    [ ("SELEC 1", ErrorTypeQueryParser)
-                    , ("SELECT * FROM no_such_table", ErrorTypeDatabaseCatalog)
-                    , ("SELECT no_such_column", ErrorTypeQueryBinder)
-                    , ("SELECT 'abc'::INTEGER", ErrorTypeTypeConversion)
+                    [ ("SELEC 1", ErrorQueryParser)
+                    , ("SELECT * FROM no_such_table", ErrorDatabaseCatalog)
+                    , ("SELECT no_such_column", ErrorQueryBinder)
+                    , ("SELECT 'abc'::INTEGER", ErrorTypeConversion)
                     ]
                     \(sql, expected) -> do
                         outcome <- try (execute_ conn sql)
                         case outcome of
                             Left (err :: SQLError) -> sqlErrorType err @?= Just expected
                             Right _ -> assertFailure ("expected an error from " <> show sql)
-        , testCase "each enum value converts to its native value and back" do
+        , testCase "each enum value has the name of its native value" do
             assertNativeRoundTrip settingScopeToNative settingScopeFromNative DuckDBV2SettingScopeMaxEnum
             assertNativeRoundTrip logLevelToNative logLevelFromNative DuckDBV2LogLevelMaxEnum
-            assertNativeRoundTrip logScopeToNative logScopeFromNative DuckDBV2LogScopeMaxEnum
-            assertNativeRoundTrip macroFunctionTypeToNative macroFunctionTypeFromNative DuckDBV2MacroFunctionTypeMaxEnum
-            assertNativeRoundTrip tokenTypeToNative tokenTypeFromNative DuckDBV2TokenTypeMaxEnum
+            -- The package converts these three types in one direction only.
+            assertFromNative logScopeFromNative [DuckDBV2LogScopeDatabase, DuckDBV2LogScopeConnection, DuckDBV2LogScopeThread] DuckDBV2LogScopeMaxEnum
+            assertFromNative
+                tokenTypeFromNative
+                [ DuckDBV2TokenTypeInvalid
+                , DuckDBV2TokenTypeKeyword
+                , DuckDBV2TokenTypeIdentifier
+                , DuckDBV2TokenTypeStringLiteral
+                , DuckDBV2TokenTypeNumberLiteral
+                , DuckDBV2TokenTypeOperator
+                , DuckDBV2TokenTypeComment
+                , DuckDBV2TokenTypeTerminator
+                , DuckDBV2TokenTypeEndOfInput
+                ]
+                DuckDBV2TokenTypeMaxEnum
+            let macroTypes = [minBound .. maxBound] :: [MacroFunctionType]
+            map (show . macroFunctionTypeToNative) macroTypes @?= map (("DuckDBV2" <>) . show) macroTypes
             let errorTypes = [minBound .. maxBound] :: [ErrorType]
             map (\errorType -> lookup errorType errorTypeCodes >>= errorTypeFromNative) errorTypes @?= map Just errorTypes
-            map (fmap show . (`lookup` errorTypeCodes)) errorTypes @?= map (Just . ("DuckDBV2Error" <>) . drop (length ("ErrorType" :: String)) . show) errorTypes
+            map (fmap show . (`lookup` errorTypeCodes)) errorTypes @?= map (Just . ("DuckDBV2" <>) . show) errorTypes
             map errorTypeFromNative [DuckDBV2ErrorNone, DuckDBV2ErrorMaxEnum] @?= [Nothing, Nothing]
         , testCase "positioned file operations preserve the sequential position" $
             withTemporaryFile \path -> withConnection ":memory:" \conn ->
@@ -552,6 +564,17 @@ assertNativeRoundTrip toNative fromNative sentinel = do
     let values = [minBound .. maxBound]
     mapM (fromNative . toNative) values >>= (@?= values)
     map (show . toNative) values @?= map (("DuckDBV2" <>) . show) values
+    assertSqlErrorContaining "unknown native" (fromNative sentinel)
+
+{- | Check that the native values convert to all constructors in order, and that
+each constructor has the pattern name of its native value. The native sentinel
+must raise 'SQLError'.
+-}
+assertFromNative :: (Bounded a, Enum a, Eq a, Show a, Show native) => (native -> IO a) -> [native] -> native -> Assertion
+assertFromNative fromNative natives sentinel = do
+    values <- mapM fromNative natives
+    values @?= [minBound .. maxBound]
+    map show natives @?= map (("DuckDBV2" <>) . show) values
     assertSqlErrorContaining "unknown native" (fromNative sentinel)
 
 -- | Remove a temporary file after the action.

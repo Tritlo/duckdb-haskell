@@ -162,9 +162,9 @@ tests =
                 fromRawGeometry raw @?= Right geometry
                 (fromRawGeometry raw >>= toRawGeometry) @?= Right raw
                 assertFailureIO (query conn "SELECT ?" (Only geometry) :: IO [Only G.Geometry])
-                assertMixedLayoutFailure ErrorTypeInputInvalid (importRaw conn raw)
-                assertMixedLayoutFailure ErrorTypeInputInvalid (query conn "SELECT system.main.ST_GeomFromWKB(?)" (Only (rawGeometryWKB raw)) :: IO [Only G.Geometry])
-                assertMixedLayoutFailure ErrorTypeTypeConversion (query conn "SELECT ?::GEOMETRY" (Only (rawGeometryWKB raw)) :: IO [Only RawGeometry])
+                assertMixedLayoutFailure ErrorInputInvalid (importRaw conn raw)
+                assertMixedLayoutFailure ErrorInputInvalid (query conn "SELECT system.main.ST_GeomFromWKB(?)" (Only (rawGeometryWKB raw)) :: IO [Only G.Geometry])
+                assertMixedLayoutFailure ErrorTypeConversion (query conn "SELECT ?::GEOMETRY" (Only (rawGeometryWKB raw)) :: IO [Only RawGeometry])
                 (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
         , testCase "mixed multipoint layouts promote missing ordinates to NaN" $
             withConnection ":memory:" \conn -> do
@@ -201,8 +201,8 @@ tests =
                 raw <- either assertFailure pure (toRawGeometry shape)
                 fromRawGeometry raw @?= Right shape
                 (fromRawGeometry raw >>= toRawGeometry) @?= Right raw
-                assertMixedLayoutFailure ErrorTypeInputInvalid (importRaw conn raw)
-                assertMixedLayoutFailure ErrorTypeInputInvalid (query conn "SELECT system.main.ST_GeomFromWKB(?)" (Only (rawGeometryWKB raw)) :: IO [Only G.Geometry])
+                assertMixedLayoutFailure ErrorInputInvalid (importRaw conn raw)
+                assertMixedLayoutFailure ErrorInputInvalid (query conn "SELECT system.main.ST_GeomFromWKB(?)" (Only (rawGeometryWKB raw)) :: IO [Only G.Geometry])
                 (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
         , testCase "decoded polygon writing normalizes all-empty rings" $
             withConnection ":memory:" \conn -> do

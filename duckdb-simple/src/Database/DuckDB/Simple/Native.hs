@@ -19,14 +19,11 @@ module Database.DuckDB.Simple.Native (
     logLevelToNative,
     logLevelFromNative,
     LogScope (..),
-    logScopeToNative,
     logScopeFromNative,
     TokenType (..),
-    tokenTypeToNative,
     tokenTypeFromNative,
     MacroFunctionType (..),
     macroFunctionTypeToNative,
-    macroFunctionTypeFromNative,
     checked,
     checkCode,
     output,
@@ -97,109 +94,109 @@ instance Exception SQLError
 has no error type.
 -}
 data ErrorType
-    = ErrorTypeApi
-    | ErrorTypeIOFileNotFound
-    | ErrorTypeIOReadFailure
-    | ErrorTypeIOEof
-    | ErrorTypeIOGeneral
-    | ErrorTypeIONetwork
-    | ErrorTypeIOHTTP
-    | ErrorTypeInputInvalid
-    | ErrorTypeInputParameterInvalid
-    | ErrorTypeInputOutOfRange
-    | ErrorTypeInputObjectSize
-    | ErrorTypeInputMetadataDeferred
-    | ErrorTypeResourceInUse
-    | ErrorTypeResourceOutOfMemory
-    | ErrorTypeResourceConnection
-    | ErrorTypeResourceDependency
-    | ErrorTypeResourceMissingExtension
-    | ErrorTypeResourceAutoload
-    | ErrorTypeTypeConversion
-    | ErrorTypeTypeUnknown
-    | ErrorTypeTypeInvalid
-    | ErrorTypeTypeMismatch
-    | ErrorTypeTypeDecimal
-    | ErrorTypeTypeDivideByZero
-    | ErrorTypeQueryParser
-    | ErrorTypeQuerySyntax
-    | ErrorTypeQueryBinder
-    | ErrorTypeQueryPlanner
-    | ErrorTypeQueryOptimizer
-    | ErrorTypeQueryExpression
-    | ErrorTypeQueryExecutor
-    | ErrorTypeQueryScheduler
-    | ErrorTypeQueryNotImplemented
-    | ErrorTypeQueryParameterNotResolved
-    | ErrorTypeQueryParameterNotAllowed
-    | ErrorTypeDatabaseCatalog
-    | ErrorTypeDatabaseTransaction
-    | ErrorTypeDatabaseConstraint
-    | ErrorTypeDatabaseIndex
-    | ErrorTypeDatabaseSequence
-    | ErrorTypeDatabaseStatistics
-    | ErrorTypeDatabaseSerialization
-    | ErrorTypeConfigurationSettings
-    | ErrorTypeConfigurationInvalid
-    | ErrorTypeConfigurationPermission
-    | ErrorTypeRuntimeInternal
-    | ErrorTypeRuntimeFatal
-    | ErrorTypeRuntimeInterrupt
-    | ErrorTypeRuntimeNullPointer
+    = ErrorApi
+    | ErrorIOFileNotFound
+    | ErrorIOReadFailure
+    | ErrorIOEof
+    | ErrorIOGeneral
+    | ErrorIONetwork
+    | ErrorIOHTTP
+    | ErrorInputInvalid
+    | ErrorInputParameterInvalid
+    | ErrorInputOutOfRange
+    | ErrorInputObjectSize
+    | ErrorInputMetadataDeferred
+    | ErrorResourceInUse
+    | ErrorResourceOutOfMemory
+    | ErrorResourceConnection
+    | ErrorResourceDependency
+    | ErrorResourceMissingExtension
+    | ErrorResourceAutoload
+    | ErrorTypeConversion
+    | ErrorTypeUnknown
+    | ErrorTypeInvalid
+    | ErrorTypeMismatch
+    | ErrorTypeDecimal
+    | ErrorTypeDivideByZero
+    | ErrorQueryParser
+    | ErrorQuerySyntax
+    | ErrorQueryBinder
+    | ErrorQueryPlanner
+    | ErrorQueryOptimizer
+    | ErrorQueryExpression
+    | ErrorQueryExecutor
+    | ErrorQueryScheduler
+    | ErrorQueryNotImplemented
+    | ErrorQueryParameterNotResolved
+    | ErrorQueryParameterNotAllowed
+    | ErrorDatabaseCatalog
+    | ErrorDatabaseTransaction
+    | ErrorDatabaseConstraint
+    | ErrorDatabaseIndex
+    | ErrorDatabaseSequence
+    | ErrorDatabaseStatistics
+    | ErrorDatabaseSerialization
+    | ErrorConfigurationSettings
+    | ErrorConfigurationInvalid
+    | ErrorConfigurationPermission
+    | ErrorRuntimeInternal
+    | ErrorRuntimeFatal
+    | ErrorRuntimeInterrupt
+    | ErrorRuntimeNullPointer
     deriving (Eq, Ord, Show, Read, Enum, Bounded)
 
 -- | Each error type and its native error code.
 errorTypeCodes :: [(ErrorType, DuckDBV2Error)]
 errorTypeCodes =
-    [ (ErrorTypeApi, DuckDBV2ErrorApi)
-    , (ErrorTypeIOFileNotFound, DuckDBV2ErrorIOFileNotFound)
-    , (ErrorTypeIOReadFailure, DuckDBV2ErrorIOReadFailure)
-    , (ErrorTypeIOEof, DuckDBV2ErrorIOEof)
-    , (ErrorTypeIOGeneral, DuckDBV2ErrorIOGeneral)
-    , (ErrorTypeIONetwork, DuckDBV2ErrorIONetwork)
-    , (ErrorTypeIOHTTP, DuckDBV2ErrorIOHTTP)
-    , (ErrorTypeInputInvalid, DuckDBV2ErrorInputInvalid)
-    , (ErrorTypeInputParameterInvalid, DuckDBV2ErrorInputParameterInvalid)
-    , (ErrorTypeInputOutOfRange, DuckDBV2ErrorInputOutOfRange)
-    , (ErrorTypeInputObjectSize, DuckDBV2ErrorInputObjectSize)
-    , (ErrorTypeInputMetadataDeferred, DuckDBV2ErrorInputMetadataDeferred)
-    , (ErrorTypeResourceInUse, DuckDBV2ErrorResourceInUse)
-    , (ErrorTypeResourceOutOfMemory, DuckDBV2ErrorResourceOutOfMemory)
-    , (ErrorTypeResourceConnection, DuckDBV2ErrorResourceConnection)
-    , (ErrorTypeResourceDependency, DuckDBV2ErrorResourceDependency)
-    , (ErrorTypeResourceMissingExtension, DuckDBV2ErrorResourceMissingExtension)
-    , (ErrorTypeResourceAutoload, DuckDBV2ErrorResourceAutoload)
-    , (ErrorTypeTypeConversion, DuckDBV2ErrorTypeConversion)
-    , (ErrorTypeTypeUnknown, DuckDBV2ErrorTypeUnknown)
-    , (ErrorTypeTypeInvalid, DuckDBV2ErrorTypeInvalid)
-    , (ErrorTypeTypeMismatch, DuckDBV2ErrorTypeMismatch)
-    , (ErrorTypeTypeDecimal, DuckDBV2ErrorTypeDecimal)
-    , (ErrorTypeTypeDivideByZero, DuckDBV2ErrorTypeDivideByZero)
-    , (ErrorTypeQueryParser, DuckDBV2ErrorQueryParser)
-    , (ErrorTypeQuerySyntax, DuckDBV2ErrorQuerySyntax)
-    , (ErrorTypeQueryBinder, DuckDBV2ErrorQueryBinder)
-    , (ErrorTypeQueryPlanner, DuckDBV2ErrorQueryPlanner)
-    , (ErrorTypeQueryOptimizer, DuckDBV2ErrorQueryOptimizer)
-    , (ErrorTypeQueryExpression, DuckDBV2ErrorQueryExpression)
-    , (ErrorTypeQueryExecutor, DuckDBV2ErrorQueryExecutor)
-    , (ErrorTypeQueryScheduler, DuckDBV2ErrorQueryScheduler)
-    , (ErrorTypeQueryNotImplemented, DuckDBV2ErrorQueryNotImplemented)
-    , (ErrorTypeQueryParameterNotResolved, DuckDBV2ErrorQueryParameterNotResolved)
-    , (ErrorTypeQueryParameterNotAllowed, DuckDBV2ErrorQueryParameterNotAllowed)
-    , (ErrorTypeDatabaseCatalog, DuckDBV2ErrorDatabaseCatalog)
-    , (ErrorTypeDatabaseTransaction, DuckDBV2ErrorDatabaseTransaction)
-    , (ErrorTypeDatabaseConstraint, DuckDBV2ErrorDatabaseConstraint)
-    , (ErrorTypeDatabaseIndex, DuckDBV2ErrorDatabaseIndex)
-    , (ErrorTypeDatabaseSequence, DuckDBV2ErrorDatabaseSequence)
-    , (ErrorTypeDatabaseStatistics, DuckDBV2ErrorDatabaseStatistics)
-    , (ErrorTypeDatabaseSerialization, DuckDBV2ErrorDatabaseSerialization)
-    , (ErrorTypeConfigurationSettings, DuckDBV2ErrorConfigurationSettings)
-    , (ErrorTypeConfigurationInvalid, DuckDBV2ErrorConfigurationInvalid)
-    , (ErrorTypeConfigurationPermission, DuckDBV2ErrorConfigurationPermission)
-    , (ErrorTypeRuntimeInternal, DuckDBV2ErrorRuntimeInternal)
-    , (ErrorTypeRuntimeFatal, DuckDBV2ErrorRuntimeFatal)
-    , (ErrorTypeRuntimeInterrupt, DuckDBV2ErrorRuntimeInterrupt)
-    , (ErrorTypeRuntimeNullPointer, DuckDBV2ErrorRuntimeNullPointer)
+    [ (ErrorApi, DuckDBV2ErrorApi)
+    , (ErrorIOFileNotFound, DuckDBV2ErrorIOFileNotFound)
+    , (ErrorIOReadFailure, DuckDBV2ErrorIOReadFailure)
+    , (ErrorIOEof, DuckDBV2ErrorIOEof)
+    , (ErrorIOGeneral, DuckDBV2ErrorIOGeneral)
+    , (ErrorIONetwork, DuckDBV2ErrorIONetwork)
+    , (ErrorIOHTTP, DuckDBV2ErrorIOHTTP)
+    , (ErrorInputInvalid, DuckDBV2ErrorInputInvalid)
+    , (ErrorInputParameterInvalid, DuckDBV2ErrorInputParameterInvalid)
+    , (ErrorInputOutOfRange, DuckDBV2ErrorInputOutOfRange)
+    , (ErrorInputObjectSize, DuckDBV2ErrorInputObjectSize)
+    , (ErrorInputMetadataDeferred, DuckDBV2ErrorInputMetadataDeferred)
+    , (ErrorResourceInUse, DuckDBV2ErrorResourceInUse)
+    , (ErrorResourceOutOfMemory, DuckDBV2ErrorResourceOutOfMemory)
+    , (ErrorResourceConnection, DuckDBV2ErrorResourceConnection)
+    , (ErrorResourceDependency, DuckDBV2ErrorResourceDependency)
+    , (ErrorResourceMissingExtension, DuckDBV2ErrorResourceMissingExtension)
+    , (ErrorResourceAutoload, DuckDBV2ErrorResourceAutoload)
+    , (ErrorTypeConversion, DuckDBV2ErrorTypeConversion)
+    , (ErrorTypeUnknown, DuckDBV2ErrorTypeUnknown)
+    , (ErrorTypeInvalid, DuckDBV2ErrorTypeInvalid)
+    , (ErrorTypeMismatch, DuckDBV2ErrorTypeMismatch)
+    , (ErrorTypeDecimal, DuckDBV2ErrorTypeDecimal)
+    , (ErrorTypeDivideByZero, DuckDBV2ErrorTypeDivideByZero)
+    , (ErrorQueryParser, DuckDBV2ErrorQueryParser)
+    , (ErrorQuerySyntax, DuckDBV2ErrorQuerySyntax)
+    , (ErrorQueryBinder, DuckDBV2ErrorQueryBinder)
+    , (ErrorQueryPlanner, DuckDBV2ErrorQueryPlanner)
+    , (ErrorQueryOptimizer, DuckDBV2ErrorQueryOptimizer)
+    , (ErrorQueryExpression, DuckDBV2ErrorQueryExpression)
+    , (ErrorQueryExecutor, DuckDBV2ErrorQueryExecutor)
+    , (ErrorQueryScheduler, DuckDBV2ErrorQueryScheduler)
+    , (ErrorQueryNotImplemented, DuckDBV2ErrorQueryNotImplemented)
+    , (ErrorQueryParameterNotResolved, DuckDBV2ErrorQueryParameterNotResolved)
+    , (ErrorQueryParameterNotAllowed, DuckDBV2ErrorQueryParameterNotAllowed)
+    , (ErrorDatabaseCatalog, DuckDBV2ErrorDatabaseCatalog)
+    , (ErrorDatabaseTransaction, DuckDBV2ErrorDatabaseTransaction)
+    , (ErrorDatabaseConstraint, DuckDBV2ErrorDatabaseConstraint)
+    , (ErrorDatabaseIndex, DuckDBV2ErrorDatabaseIndex)
+    , (ErrorDatabaseSequence, DuckDBV2ErrorDatabaseSequence)
+    , (ErrorDatabaseStatistics, DuckDBV2ErrorDatabaseStatistics)
+    , (ErrorDatabaseSerialization, DuckDBV2ErrorDatabaseSerialization)
+    , (ErrorConfigurationSettings, DuckDBV2ErrorConfigurationSettings)
+    , (ErrorConfigurationInvalid, DuckDBV2ErrorConfigurationInvalid)
+    , (ErrorConfigurationPermission, DuckDBV2ErrorConfigurationPermission)
+    , (ErrorRuntimeInternal, DuckDBV2ErrorRuntimeInternal)
+    , (ErrorRuntimeFatal, DuckDBV2ErrorRuntimeFatal)
+    , (ErrorRuntimeInterrupt, DuckDBV2ErrorRuntimeInterrupt)
+    , (ErrorRuntimeNullPointer, DuckDBV2ErrorRuntimeNullPointer)
     ]
 
 {- | Find the error type of a native error code. The success code and an unknown
@@ -405,13 +402,6 @@ data LogScope
     | LogScopeThread
     deriving (Eq, Ord, Show, Read, Enum, Bounded)
 
--- | Convert a log scope to its native value.
-logScopeToNative :: LogScope -> DuckDBV2LogScope
-logScopeToNative = \case
-    LogScopeDatabase -> DuckDBV2LogScopeDatabase
-    LogScopeConnection -> DuckDBV2LogScopeConnection
-    LogScopeThread -> DuckDBV2LogScopeThread
-
 -- | Convert a native log scope. An unknown value raises 'SQLError'.
 logScopeFromNative :: DuckDBV2LogScope -> IO LogScope
 logScopeFromNative = \case
@@ -432,19 +422,6 @@ data TokenType
     | TokenTypeTerminator
     | TokenTypeEndOfInput
     deriving (Eq, Ord, Show, Read, Enum, Bounded)
-
--- | Convert a token type to its native value.
-tokenTypeToNative :: TokenType -> DuckDBV2TokenType
-tokenTypeToNative = \case
-    TokenTypeInvalid -> DuckDBV2TokenTypeInvalid
-    TokenTypeKeyword -> DuckDBV2TokenTypeKeyword
-    TokenTypeIdentifier -> DuckDBV2TokenTypeIdentifier
-    TokenTypeStringLiteral -> DuckDBV2TokenTypeStringLiteral
-    TokenTypeNumberLiteral -> DuckDBV2TokenTypeNumberLiteral
-    TokenTypeOperator -> DuckDBV2TokenTypeOperator
-    TokenTypeComment -> DuckDBV2TokenTypeComment
-    TokenTypeTerminator -> DuckDBV2TokenTypeTerminator
-    TokenTypeEndOfInput -> DuckDBV2TokenTypeEndOfInput
 
 -- | Convert a native token type. An unknown value raises 'SQLError'.
 tokenTypeFromNative :: DuckDBV2TokenType -> IO TokenType
@@ -471,13 +448,6 @@ macroFunctionTypeToNative :: MacroFunctionType -> DuckDBV2MacroFunctionType
 macroFunctionTypeToNative = \case
     MacroFunctionTypeScalar -> DuckDBV2MacroFunctionTypeScalar
     MacroFunctionTypeTable -> DuckDBV2MacroFunctionTypeTable
-
--- | Convert a native macro kind. An unknown value raises 'SQLError'.
-macroFunctionTypeFromNative :: DuckDBV2MacroFunctionType -> IO MacroFunctionType
-macroFunctionTypeFromNative = \case
-    DuckDBV2MacroFunctionTypeScalar -> pure MacroFunctionTypeScalar
-    DuckDBV2MacroFunctionTypeTable -> pure MacroFunctionTypeTable
-    DuckDBV2MacroFunctionType value -> throwUnknownNative "macro function type" value
 
 -- | Raise 'SQLError' for a native enum value that has no Haskell constructor.
 throwUnknownNative :: Text -> CUInt -> IO a

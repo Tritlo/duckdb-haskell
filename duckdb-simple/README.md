@@ -775,7 +775,8 @@ aggregateExample conn = do
 ```
 
 `createTableFunction` registers a table function that gives its rows as a
-list. DuckDB reads all columns of each row.
+list. DuckDB reads all columns of each row, also the columns that the query
+does not use.
 
 ```haskell
 tableExample :: Connection -> IO [(Int64, Int64)]

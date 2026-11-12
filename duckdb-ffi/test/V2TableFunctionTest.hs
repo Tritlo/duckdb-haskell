@@ -871,6 +871,8 @@ testFailingCallbacks = do
             failIn phase name = when (phase == name) $ deliberateFailure ("v2 deliberate " <> name <> " failure")
             bind info result context err = callbackGuard failures err $ do
                 phase <- withHandle (c_duckdb_v2_function_bind_get_arg_value info 0) c_duckdb_v2_value_destroy (\value -> output (c_duckdb_v2_value_get_varchar value) >>= readView)
+                -- The function has one parameter, so the index 1 is out of bounds.
+                rejected "get_arg_value rejects the index that equals the argument count" (\slot slotErr -> c_duckdb_v2_function_bind_get_arg_value info 1 slot slotErr <* c_duckdb_v2_value_destroy slot)
                 -- The callback sets the bind data before it fails, so DuckDB owns the bind data and must destroy it.
                 own 1 phase (c_duckdb_v2_function_bind_set_bind_data info)
                 failIn phase "bind"

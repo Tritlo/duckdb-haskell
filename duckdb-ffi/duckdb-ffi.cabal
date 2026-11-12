@@ -85,7 +85,23 @@ test-suite duckdb-ffi-v2-test
   type: exitcode-stdio-1.0
   hs-source-dirs: test
   main-is: V2Main.hs
-  other-modules: V2Test
+  other-modules:
+    V2AggregateTest
+    V2ArrowTest
+    V2AttachTest
+    V2CallbackTest
+    V2ChunkTest
+    V2CopyTest
+    V2FileSystemTest
+    V2FunctionDocsTest
+    V2MacroTest
+    V2ReplacementScanTest
+    V2StatementTest
+    V2TableFunctionTest
+    V2Test
+    V2TypeTest
+    V2ValueTest
+
   default-language: Haskell2010
   ghc-options: -threaded
   build-depends:

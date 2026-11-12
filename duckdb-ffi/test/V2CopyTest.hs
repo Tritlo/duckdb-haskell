@@ -4,10 +4,11 @@
 module V2CopyTest (tests) where
 
 import Control.Exception (bracket, finally)
-import Control.Monad (forM, void)
+import Control.Monad (forM, unless, void, when)
 import Data.Char (toLower)
 import Data.Coerce (coerce)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
+import Data.Int (Int32, Int64)
 import Data.List (isSuffixOf)
 import Database.DuckDB.FFI.V2
 import Foreign.C.String (withCString)
@@ -20,14 +21,15 @@ import GHC.Records (getField)
 import HsBindgen.Runtime.Prelude (toFunPtr)
 import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertBool, testCase, (@?=))
-import V2Test (borrowedOpaque, callbackGuard, checked, consume, output, readView, removeTestFile, withConnection, withFactory, withHandle, withResult, withView)
+import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
+import V2Test (borrowedOpaque, callbackGuard, checked, consume, output, readIntegers, readView, removeTestFile, withConnection, withFactory, withHandle, withResult, withView)
 
 tests :: TestTree
 tests =
     testGroup
         "DuckDB V2 COPY functions"
         [ testCase "COPY TO callbacks read the user data, the bind data, the init data and the statement" testCopyTo
+        , testCase "COPY FROM callbacks read the user data, the bind data, the global state and the statement" testCopyFrom
         ]
 
 -- | Read the name that a getter writes at an index.
@@ -96,6 +98,12 @@ freshPath template = do
     hClose handle
     withCString path $ \name -> removeTestFile name >>= (@?= 0)
     pure path
+
+-- | Read the percentage of the query that runs on a connection.
+queryProgress :: DuckDBV2ConnectionHandle -> IO Double
+queryProgress conn = alloca $ \percentage -> alloca $ \processed -> alloca $ \total -> do
+    checked (c_duckdb_v2_connection_progress_get conn percentage processed total)
+    realToFrac <$> peek percentage
 
 testCopyTo :: IO ()
 testCopyTo = do
@@ -193,3 +201,96 @@ testCopyTo = do
     readIORef failures >>= (@?= [])
     reverse <$> readIORef boundPaths >>= (@?= [path, directory])
     readIORef batchRows >>= (@?= [5000, 5000])
+
+testCopyFrom :: IO ()
+testCopyFrom = do
+    failures <- newIORef []
+    invoked <- newIORef []
+    boundPaths <- newIORef []
+    rows <- newIORef (0 :: Int64)
+    -- The progress callback records how many rows the read has given at each call.
+    progressAt <- newIORef []
+    -- The exec callback records the progress of the query on the connection, which the test opens later.
+    connection <- newIORef Nothing
+    percentages <- newIORef []
+    -- The user data, the bind data and the global state point to three different cells, so an accessor that
+    -- returns another one fails.
+    allocaBytes 1 $ \user -> allocaBytes 1 $ \bound -> allocaBytes 1 $ \global -> do
+        let note name = record invoked name
+            expectData getUser getBind = do
+                output getUser >>= (@?= user)
+                output getBind >>= (@?= bound)
+            bind info _context err = callbackGuard failures err $ do
+                note "bind"
+                output (c_duckdb_v2_copy_from_bind_get_user_data info) >>= (@?= user)
+                output (c_duckdb_v2_copy_from_bind_get_file_path info) >>= readView >>= record boundPaths
+                expectColumns (c_duckdb_v2_copy_from_bind_get_column_count info) (c_duckdb_v2_copy_from_bind_get_column_name info) (c_duckdb_v2_copy_from_bind_get_column_type info)
+                expectOptions (c_duckdb_v2_copy_from_bind_get_option_count info) (c_duckdb_v2_copy_from_bind_get_option_name info) (c_duckdb_v2_copy_from_bind_get_option_value info)
+                with (borrowedOpaque bound) $ \opaque -> checked (c_duckdb_v2_copy_from_bind_set_bind_data info opaque)
+            initGlobal info _context err = callbackGuard failures err $ do
+                note "init global"
+                expectData (c_duckdb_v2_copy_from_init_global_get_user_data info) (c_duckdb_v2_copy_from_init_global_get_bind_data info)
+                with (borrowedOpaque global) $ \opaque -> checked (c_duckdb_v2_copy_from_init_global_set_global_state info opaque)
+            initLocal info _context err = callbackGuard failures err $ do
+                note "init local"
+                expectData (c_duckdb_v2_copy_from_init_local_get_user_data info) (c_duckdb_v2_copy_from_init_local_get_bind_data info)
+                output (c_duckdb_v2_copy_from_init_local_get_global_state info) >>= (@?= global)
+            progress info _context err = callbackGuard failures err $ do
+                given <- readIORef rows
+                record progressAt given
+                expectData (c_duckdb_v2_copy_from_progress_get_user_data info) (c_duckdb_v2_copy_from_progress_get_bind_data info)
+                output (c_duckdb_v2_copy_from_progress_get_global_state info) >>= (@?= global)
+                -- The read reports no progress until it has given a row.
+                checked (c_duckdb_v2_copy_from_progress_set_progress info (if given > 0 then 0.5 else 0))
+            -- The read gives one row for each call until the progress callback runs after the first row. Then the read ends.
+            execute info _context err = callbackGuard failures err $ do
+                note "exec"
+                expectData (c_duckdb_v2_copy_from_exec_get_user_data info) (c_duckdb_v2_copy_from_exec_get_bind_data info)
+                readIORef connection >>= mapM_ (\conn -> queryProgress conn >>= record percentages)
+                reported <- any (> 0) <$> readIORef progressAt
+                given <- readIORef rows
+                when (given >= 1000) $ assertFailure "the progress callback did not run during 1000 rows of the read"
+                unless reported $ do
+                    chunk <- output (c_duckdb_v2_copy_from_exec_get_output_chunk info)
+                    amounts <- output (c_duckdb_v2_data_chunk_get_vector chunk 0)
+                    parts <- output (c_duckdb_v2_data_chunk_get_vector chunk 1)
+                    output (c_duckdb_v2_vector_get_data_mutable amounts) >>= \raw -> poke (coerce raw) given
+                    output (c_duckdb_v2_vector_get_data_mutable parts) >>= \raw -> poke (coerce raw) (fromIntegral given :: Int32)
+                    checked (c_duckdb_v2_vector_set_size amounts 1)
+                    writeIORef rows (given + 1)
+        bracket (DuckDBV2CopyFromBindCallbackFn <$> toFunPtr (DuckDBV2CopyFromBindCallbackFn_Aux bind)) (freeHaskellFunPtr . getField @"unwrap") $ \bindPtr ->
+            bracket (DuckDBV2CopyFromInitGlobalCallbackFn <$> toFunPtr (DuckDBV2CopyFromInitGlobalCallbackFn_Aux initGlobal)) (freeHaskellFunPtr . getField @"unwrap") $ \initGlobalPtr ->
+                bracket (DuckDBV2CopyFromInitLocalCallbackFn <$> toFunPtr (DuckDBV2CopyFromInitLocalCallbackFn_Aux initLocal)) (freeHaskellFunPtr . getField @"unwrap") $ \initLocalPtr ->
+                    bracket (DuckDBV2CopyFromExecCallbackFn <$> toFunPtr (DuckDBV2CopyFromExecCallbackFn_Aux execute)) (freeHaskellFunPtr . getField @"unwrap") $ \executePtr ->
+                        bracket (DuckDBV2CopyFromProgressCallbackFn <$> toFunPtr (DuckDBV2CopyFromProgressCallbackFn_Aux progress)) (freeHaskellFunPtr . getField @"unwrap") $ \progressPtr ->
+                            withConnection $ \conn -> withFactory conn $ \factory -> do
+                                withHandle (c_duckdb_v2_copy_function_create factory) c_duckdb_v2_copy_function_destroy $ \function -> do
+                                    withView "v2_reader" $ \name -> checked (c_duckdb_v2_copy_function_set_name function (coerce name))
+                                    with (borrowedOpaque user) $ \opaque -> checked (c_duckdb_v2_copy_function_set_user_data function opaque)
+                                    checked (c_duckdb_v2_copy_from_set_bind_callback function bindPtr)
+                                    checked (c_duckdb_v2_copy_from_set_init_global_callback function initGlobalPtr)
+                                    checked (c_duckdb_v2_copy_from_set_init_local_callback function initLocalPtr)
+                                    checked (c_duckdb_v2_copy_from_set_exec_callback function executePtr)
+                                    checked (c_duckdb_v2_copy_from_set_progress_callback function progressPtr)
+                                    checked (c_duckdb_v2_connection_register_copy_function conn function)
+                                writeIORef connection (Just conn)
+                                withResult conn "CREATE TABLE v2_target (amount BIGINT, part INTEGER)" consume
+                                -- The engine asks for progress only with the progress bar on. The thread that steps the result asks
+                                -- after each partial execution of a task. With one thread, that thread also runs the read, so it
+                                -- asks while the read runs.
+                                withResult conn "SET threads = 1" consume
+                                withResult conn "SET enable_progress_bar = true" consume
+                                withResult conn "SET enable_progress_bar_print = false" consume
+                                -- The engine does not expand the glob and does not look for the file.
+                                withResult conn "COPY v2_target FROM 'v2-absent/*.probe' (FORMAT v2_reader, tag 'x', pair (1, 'two'), flag)" $ \result -> do
+                                    inserted <- readIntegers result
+                                    readIORef rows >>= \given -> inserted @?= [Just given]
+    readIORef failures >>= (@?= [])
+    readIORef boundPaths >>= (@?= ["v2-absent/*.probe"])
+    given <- readIORef rows
+    -- One thread reads, so the exec callback runs once for each row and once more for the empty batch at the end.
+    reverse <$> readIORef invoked >>= (@?= ["bind", "init global", "init local"] <> replicate (fromIntegral given + 1) "exec")
+    readIORef progressAt >>= \seen -> assertBool ("the progress callback ran after the read gave rows: " <> show seen) (any (> 0) seen)
+    -- The query shows no progress before the read reports progress, and shows progress after the read reports 0.5.
+    reverse <$> readIORef percentages >>= \seen ->
+        assertBool ("the query progress follows the reported progress: " <> show seen) (not (null seen) && all (<= 0) (take 1 seen) && all (> 0) (take 1 (reverse seen)))

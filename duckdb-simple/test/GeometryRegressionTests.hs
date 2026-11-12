@@ -1,6 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE PatternSynonyms #-}
 
 module GeometryRegressionTests (tests) where
 
@@ -18,7 +17,6 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as U
-import Database.DuckDB.FFI.V2 (pattern DuckDBV2LogicalTypeIdBigInt, pattern DuckDBV2LogicalTypeIdVarchar)
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (FieldValue (..), StructValue (..), UnionValue (..))
 import Database.DuckDB.Simple.Geometry (RawGeometry (..), fromRawGeometry, toRawGeometry)
@@ -378,8 +376,8 @@ nestedNullShapes crs =
     geometry = LogicalTypeGeometry (Just crs)
     list = LogicalTypeList geometry
     array = LogicalTypeArray geometry 2
-    mapping = LogicalTypeMap (LogicalTypeScalar DuckDBV2LogicalTypeIdVarchar) geometry
-    members = listArray (0, 1) [UnionMemberType "number" (LogicalTypeScalar DuckDBV2LogicalTypeIdBigInt), UnionMemberType "shape" geometry]
+    mapping = LogicalTypeMap (LogicalTypeScalar LogicalTypeIdVarchar) geometry
+    members = listArray (0, 1) [UnionMemberType "number" (LogicalTypeScalar LogicalTypeIdBigInt), UnionMemberType "shape" geometry]
     inactive = UnionValue 0 "number" (FieldInt64 42) members
     shape = nullShape crs
     fields =

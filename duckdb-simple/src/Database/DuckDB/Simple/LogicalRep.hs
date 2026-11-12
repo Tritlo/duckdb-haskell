@@ -14,6 +14,7 @@ module Database.DuckDB.Simple.LogicalRep (
     UnionMemberType (..),
     UnionValue (..),
     LogicalTypeRep (..),
+    LogicalTypeId (..),
     structValueTypeRep,
     tupleValueTypeRep,
     unionValueTypeRep,
@@ -39,7 +40,7 @@ import Foreign.Storable (peek)
 
 -- | A Haskell description of a DuckDB logical type tree.
 data LogicalTypeRep
-    = LogicalTypeScalar DuckDBV2LogicalTypeId
+    = LogicalTypeScalar LogicalTypeId
     | LogicalTypeDecimal !Word8 !Word8
     | LogicalTypeCollatedVarchar !Text
     | LogicalTypeGeometry !(Maybe Text)
@@ -131,7 +132,7 @@ logicalTypeToRep logical = do
         DuckDBV2LogicalTypeIdTuple -> LogicalTypeTuple <$> fields (\_ rep -> rep)
         DuckDBV2LogicalTypeIdVarchar -> do
             size <- count
-            if size == 0 then pure (LogicalTypeScalar dtype) else LogicalTypeCollatedVarchar <$> string 0
+            if size == 0 then pure (LogicalTypeScalar LogicalTypeIdVarchar) else LogicalTypeCollatedVarchar <$> string 0
         DuckDBV2LogicalTypeIdUnion -> LogicalTypeUnion <$> fields UnionMemberType
         DuckDBV2LogicalTypeIdList -> LogicalTypeList <$> child 0
         DuckDBV2LogicalTypeIdArray -> do
@@ -146,7 +147,7 @@ logicalTypeToRep logical = do
         DuckDBV2LogicalTypeIdEnum -> do
             size <- count
             LogicalTypeEnum . listArray (0, size - 1) <$> mapM (string . fromIntegral) [0 .. size - 1]
-        _ -> pure (LogicalTypeScalar dtype)
+        _ -> LogicalTypeScalar <$> logicalTypeIdFromNative dtype
 
 {- | Construct an owned logical type through a borrowed native factory.
 Keep the owner of the factory alive until you destroy the type.
@@ -176,10 +177,10 @@ logicalTypeFromRepWith factory resolve = create
                         output (c_duckdb_v2_factory_create_type_from_id factory dtype (ConstPtr namePtr) (ConstPtr valuePtr) (fromIntegral (length values)))
     create rep = resolve rep >>= maybe (constructRep rep) pure
     constructRep = \case
-        LogicalTypeScalar DuckDBV2LogicalTypeIdVariant -> fromText (Text.pack "VARIANT")
-        LogicalTypeScalar DuckDBV2LogicalTypeIdGeometry -> fromText (Text.pack "GEOMETRY")
-        LogicalTypeScalar DuckDBV2LogicalTypeIdSQLNull -> fromText (Text.pack "\"NULL\"")
-        LogicalTypeScalar dtype -> construct dtype [] []
+        LogicalTypeScalar LogicalTypeIdVariant -> fromText (Text.pack "VARIANT")
+        LogicalTypeScalar LogicalTypeIdGeometry -> fromText (Text.pack "GEOMETRY")
+        LogicalTypeScalar LogicalTypeIdSQLNull -> fromText (Text.pack "\"NULL\"")
+        LogicalTypeScalar dtype -> construct (logicalTypeIdToNative dtype) [] []
         LogicalTypeCollatedVarchar collation -> construct DuckDBV2LogicalTypeIdVarchar [Text.pack "collation"] [text collation]
         LogicalTypeGeometry Nothing -> fromText (Text.pack "GEOMETRY")
         LogicalTypeGeometry (Just crs) -> mask_ do

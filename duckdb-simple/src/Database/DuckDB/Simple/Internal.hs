@@ -710,45 +710,45 @@ preparedParameterType stmt idx = do
             else Just <$> logicalTypeToRep dtype
 
 -- | Column type names and the logical types that they denote.
-duckDBTypeNames :: [(Text, DuckDBV2LogicalTypeId)]
+duckDBTypeNames :: [(Text, LogicalTypeId)]
 duckDBTypeNames =
-    [ ("BOOLEAN", DuckDBV2LogicalTypeIdBoolean)
-    , ("TINYINT", DuckDBV2LogicalTypeIdTinyInt)
-    , ("SMALLINT", DuckDBV2LogicalTypeIdSmallInt)
-    , ("INTEGER", DuckDBV2LogicalTypeIdInteger)
-    , ("BIGINT", DuckDBV2LogicalTypeIdBigInt)
-    , ("HUGEINT", DuckDBV2LogicalTypeIdHugeInt)
-    , ("UTINYINT", DuckDBV2LogicalTypeIdUTinyInt)
-    , ("USMALLINT", DuckDBV2LogicalTypeIdUSmallInt)
-    , ("UINTEGER", DuckDBV2LogicalTypeIdUInteger)
-    , ("UBIGINT", DuckDBV2LogicalTypeIdUBigInt)
-    , ("UHUGEINT", DuckDBV2LogicalTypeIdUHugeInt)
-    , ("FLOAT", DuckDBV2LogicalTypeIdFloat)
-    , ("DOUBLE", DuckDBV2LogicalTypeIdDouble)
-    , ("DATE", DuckDBV2LogicalTypeIdDate)
-    , ("TIME", DuckDBV2LogicalTypeIdTime)
-    , ("TIMETZ", DuckDBV2LogicalTypeIdTimeTz)
-    , ("TIMESTAMP", DuckDBV2LogicalTypeIdTimestamp)
-    , ("TIMESTAMPTZ", DuckDBV2LogicalTypeIdTimestampTz)
-    , ("TIMESTAMPTZ_NS", DuckDBV2LogicalTypeIdTimestampTzNs)
-    , ("TIMESTAMP_NS WITH TIME ZONE", DuckDBV2LogicalTypeIdTimestampTzNs)
-    , ("INTERVAL", DuckDBV2LogicalTypeIdInterval)
-    , ("TEXT", DuckDBV2LogicalTypeIdVarchar)
-    , ("BLOB", DuckDBV2LogicalTypeIdBlob)
-    , ("GEOMETRY", DuckDBV2LogicalTypeIdGeometry)
-    , ("VARIANT", DuckDBV2LogicalTypeIdVariant)
-    , ("UUID", DuckDBV2LogicalTypeIdUUID)
-    , ("BIT", DuckDBV2LogicalTypeIdBit)
-    , ("BIGNUM", DuckDBV2LogicalTypeIdBigNum)
+    [ ("BOOLEAN", LogicalTypeIdBoolean)
+    , ("TINYINT", LogicalTypeIdTinyInt)
+    , ("SMALLINT", LogicalTypeIdSmallInt)
+    , ("INTEGER", LogicalTypeIdInteger)
+    , ("BIGINT", LogicalTypeIdBigInt)
+    , ("HUGEINT", LogicalTypeIdHugeInt)
+    , ("UTINYINT", LogicalTypeIdUTinyInt)
+    , ("USMALLINT", LogicalTypeIdUSmallInt)
+    , ("UINTEGER", LogicalTypeIdUInteger)
+    , ("UBIGINT", LogicalTypeIdUBigInt)
+    , ("UHUGEINT", LogicalTypeIdUHugeInt)
+    , ("FLOAT", LogicalTypeIdFloat)
+    , ("DOUBLE", LogicalTypeIdDouble)
+    , ("DATE", LogicalTypeIdDate)
+    , ("TIME", LogicalTypeIdTime)
+    , ("TIMETZ", LogicalTypeIdTimeTz)
+    , ("TIMESTAMP", LogicalTypeIdTimestamp)
+    , ("TIMESTAMPTZ", LogicalTypeIdTimestampTz)
+    , ("TIMESTAMPTZ_NS", LogicalTypeIdTimestampTzNs)
+    , ("TIMESTAMP_NS WITH TIME ZONE", LogicalTypeIdTimestampTzNs)
+    , ("INTERVAL", LogicalTypeIdInterval)
+    , ("TEXT", LogicalTypeIdVarchar)
+    , ("BLOB", LogicalTypeIdBlob)
+    , ("GEOMETRY", LogicalTypeIdGeometry)
+    , ("VARIANT", LogicalTypeIdVariant)
+    , ("UUID", LogicalTypeIdUUID)
+    , ("BIT", LogicalTypeIdBit)
+    , ("BIGNUM", LogicalTypeIdBigNum)
     , -- NULL gives an element type to Maybe values without data.
-      ("NULL", DuckDBV2LogicalTypeIdSQLNull)
+      ("NULL", LogicalTypeIdSQLNull)
     ]
 
 -- | Find the type that a column type name denotes.
-duckDBTypeFromName :: Text -> Maybe DuckDBV2LogicalTypeId
+duckDBTypeFromName :: Text -> Maybe LogicalTypeId
 duckDBTypeFromName name = lookup name duckDBTypeNames
 
 -- | Find the column type name of a type. Other types use their 'Show' text.
-duckDBTypeToName :: DuckDBV2LogicalTypeId -> Text
+duckDBTypeToName :: LogicalTypeId -> Text
 duckDBTypeToName dtype =
     maybe (Text.pack (show dtype)) fst (find ((== dtype) . snd) duckDBTypeNames)

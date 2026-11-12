@@ -190,8 +190,8 @@ tests =
                 total @?= (sum [0 .. 99999] :: Int64)
         , testCase "VARIANT type construction uses the supplied factory" $ withConnection ":memory:" \conn ->
             withConnectionHandle conn \native -> withConnectionFactory native \factory ->
-                bracket (logicalTypeFromRep factory (LogicalTypeScalar DuckDBV2LogicalTypeIdVariant)) destroyLogicalType \logical ->
-                    logicalTypeToRep logical >>= (@?= LogicalTypeScalar DuckDBV2LogicalTypeIdVariant)
+                bracket (logicalTypeFromRep factory (LogicalTypeScalar LogicalTypeIdVariant)) destroyLogicalType \logical ->
+                    logicalTypeToRep logical >>= (@?= LogicalTypeScalar LogicalTypeIdVariant)
         , testCase "VARIANT payloads and GEOMETRY CRS metadata bind together" $ withConnection ":memory:" \conn -> do
             [Only value] <- query_ conn "SELECT {'payload': 42::VARIANT, 'shape': NULL::GEOMETRY('OGC:CRS84')}" :: IO [Only (StructValue FieldValue)]
             (query conn "SELECT typeof(?)" (Only value) :: IO [Only Text]) >>= (@?= [Only "STRUCT(payload VARIANT, shape GEOMETRY('OGC:CRS84'))"])

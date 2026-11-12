@@ -342,7 +342,7 @@ extensionRegressionTests =
         , testCase "custom options retain typed defaults scopes and callback errors" $
             withConnection ":memory:" \conn -> do
                 let option =
-                        (Config.customOption "haskell_limit" (Registration.StructuredType (LogicalTypeScalar DuckDBV2LogicalTypeIdBigInt)))
+                        (Config.customOption "haskell_limit" (Registration.StructuredType (LogicalTypeScalar LogicalTypeIdBigInt)))
                             { Config.customOptionDefault = Just (Registration.defaultValue (3 :: Int64))
                             , Config.customOptionDescription = "A Haskell option"
                             , Config.customOptionDefaultScope = Config.SettingScopeSession
@@ -398,7 +398,7 @@ extensionRegressionTests =
         , testCase "configuration writes and reads each setting scope" $
             withConnection ":memory:" \conn -> do
                 let option name scope =
-                        (Config.customOption name (Registration.StructuredType (LogicalTypeScalar DuckDBV2LogicalTypeIdBigInt)))
+                        (Config.customOption name (Registration.StructuredType (LogicalTypeScalar LogicalTypeIdBigInt)))
                             { Config.customOptionDefault = Just (Registration.defaultValue (0 :: Int64))
                             , Config.customOptionDefaultScope = scope
                             , Config.customOptionScopes = [Config.SettingScopeGlobal, Config.SettingScopeSession]

@@ -176,7 +176,7 @@ withObjectChildren connection keys list action
                     withSQLStatement connection sql \statement ->
                         withStatementValue connection statement (list : keyValues) action
   where
-    structList = LogicalTypeList (LogicalTypeStruct (listArray (0, length keys - 1) [StructField key (LogicalTypeScalar DuckDBV2LogicalTypeIdVariant) | key <- keys]))
+    structList = LogicalTypeList (LogicalTypeStruct (listArray (0, length keys - 1) [StructField key (LogicalTypeScalar LogicalTypeIdVariant) | key <- keys]))
     sql = "SELECT system.main.list_transform($1::VARIANT[], lambda value: system.main.list_value(" <> Text.intercalate "," extracts <> ")) AS payload"
     extracts = ["system.main.variant_extract(value,$" <> Text.pack (show index) <> "::VARCHAR)" | index <- [2 .. length keys + 1]]
 

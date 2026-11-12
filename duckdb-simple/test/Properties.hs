@@ -3,7 +3,6 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Properties (roundTripTests) where
@@ -22,19 +21,13 @@ import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), timeOfDayToTime)
 import Data.UUID (UUID)
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
-import Database.DuckDB.FFI.V2 (
-    pattern DuckDBV2LogicalTypeIdBlob,
-    pattern DuckDBV2LogicalTypeIdBoolean,
-    pattern DuckDBV2LogicalTypeIdDouble,
-    pattern DuckDBV2LogicalTypeIdInteger,
-    pattern DuckDBV2LogicalTypeIdVarchar,
- )
 import Database.DuckDB.Simple (Connection, close, open, query)
 import Database.DuckDB.Simple.FromField (
     BigNum (..),
     BitString (..),
     FieldValue (..),
     FromField,
+    LogicalTypeId (..),
     LogicalTypeRep (..),
     StructField (..),
     StructValue (..),
@@ -376,11 +369,11 @@ genSimpleType =
 
 simpleTypeRep :: SimpleType -> LogicalTypeRep
 simpleTypeRep = \case
-    SimpleBool -> LogicalTypeScalar DuckDBV2LogicalTypeIdBoolean
-    SimpleInt32 -> LogicalTypeScalar DuckDBV2LogicalTypeIdInteger
-    SimpleDouble -> LogicalTypeScalar DuckDBV2LogicalTypeIdDouble
-    SimpleText -> LogicalTypeScalar DuckDBV2LogicalTypeIdVarchar
-    SimpleBlob -> LogicalTypeScalar DuckDBV2LogicalTypeIdBlob
+    SimpleBool -> LogicalTypeScalar LogicalTypeIdBoolean
+    SimpleInt32 -> LogicalTypeScalar LogicalTypeIdInteger
+    SimpleDouble -> LogicalTypeScalar LogicalTypeIdDouble
+    SimpleText -> LogicalTypeScalar LogicalTypeIdVarchar
+    SimpleBlob -> LogicalTypeScalar LogicalTypeIdBlob
 
 simpleTypeValue :: SimpleType -> Gen FieldValue
 simpleTypeValue = \case

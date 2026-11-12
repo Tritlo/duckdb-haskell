@@ -49,7 +49,7 @@ registrationTests =
         ]
 
 bigint :: R.TypeDeclaration
-bigint = R.StructuredType (LogicalTypeScalar DuckDBV2LogicalTypeIdBigInt)
+bigint = R.StructuredType (LogicalTypeScalar LogicalTypeIdBigInt)
 
 scalarSignature :: [R.FunctionParameter] -> R.FunctionSignature
 scalarSignature parameters = R.FunctionSignature parameters (Just bigint)
@@ -113,7 +113,7 @@ testScalarResolution = withConnection ":memory:" \connection -> do
             forM_ (takeWhile (< count) [0 ..]) $ \index ->
                 bracket (R.output (c_duckdb_v2_vector_get_value argument index)) (R.destroy c_duckdb_v2_value_destroy) $ \value ->
                     R.checked (c_duckdb_v2_vector_set_value result index value)
-        anyType = R.StructuredType (LogicalTypeScalar DuckDBV2LogicalTypeIdAny)
+        anyType = R.StructuredType (LogicalTypeScalar LogicalTypeIdAny)
         signature = R.FunctionSignature [R.parameter "value" anyType] (Just anyType)
         target = R.ConnectionTarget connection
     R.withRegistrationFactory target $ \factory ->

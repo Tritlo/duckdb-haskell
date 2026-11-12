@@ -2,6 +2,7 @@ module Main (main) where
 
 import Test.Tasty (defaultMain, testGroup)
 import qualified V2AggregateTest
+import qualified V2AttachTest
 import qualified V2CallbackTest
 import qualified V2ChunkTest
 import qualified V2FileSystemTest
@@ -27,4 +28,5 @@ main =
             , V2CallbackTest.tests
             , V2AggregateTest.tests
             , V2MacroTest.tests
+            , V2AttachTest.tests
             ]

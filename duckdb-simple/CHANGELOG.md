@@ -22,16 +22,15 @@
 - Add typed registrations. Their signatures have no native handle.
   `Database.DuckDB.Simple.Function` has `createCast`, `createAggregate`,
   `createTableFunction`, and the row class `TypedRow`. `Database.DuckDB.Simple`
-  exports the three functions and `Aggregate`.
+  exports the three functions, `Aggregate`, and `TypedRow`.
 - `createCast` registers a pure Haskell function as an explicit cast.
 - `createAggregate` registers an aggregate function as a fold over Haskell
   values. The record `Aggregate` has the initial state and the step, combine,
   and result functions. DuckDB gives the aggregate callbacks no context, so the
   result types are the result types of `createFunction`.
 - `createTableFunction` registers a Haskell function that gives the rows of a
-  table function as a list. DuckDB reads the list one chunk at a time, in one
-  thread. It reads all columns of each row, also the columns that the query
-  does not use.
+  table function as a list. DuckDB reads the list one chunk at a time. It reads
+  all columns of each row, also the columns that the query does not use.
 - `Database.DuckDB.Simple.Registration` has `TypeDeclaration`, `parameter`,
   `defaultValue`, `registerCustomType`, and typed replacement scans.
   `registerReplacementScan` and `registerInstanceReplacementScan` give the

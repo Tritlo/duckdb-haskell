@@ -72,9 +72,9 @@ runExtension initialize extension context err =
     runCallback (castPtr err) (initialize (Extension (DuckDBV2ExtensionHandle (castPtr extension)) (DuckDBV2ContextHandle (castPtr context))))
 
 {- | The registration target of the loading extension. Pass it to the
-registration functions that take a 'RegistrationTarget', for example for an
-aggregate function, a table function, or a COPY function. The target is valid
-only during 'runExtension'.
+registration functions of the V2 modules, which take a 'RegistrationTarget'.
+The typed functions of this module do not need it. The target is valid only
+during 'runExtension'.
 -}
 extensionTarget :: Extension -> RegistrationTarget
 extensionTarget (Extension extension context) = ExtensionTarget extension context
@@ -132,7 +132,7 @@ createAggregate = createAggregateOn . extensionTarget
 extension. The V2 API registers a macro only for an extension. Use SQL
 @CREATE MACRO@ on a connection. Parameters must use the standard parameter
 kind. Use @StructuredType (LogicalTypeScalar DuckDBV2LogicalTypeIdAny)@ for an
-untyped parameter and 'Database.DuckDB.Simple.V2.Registration.defaultValue' for a
+untyped parameter and 'Database.DuckDB.Simple.Registration.defaultValue' for a
 default. DuckDB validates the body and the signature. It resolves the body
 when the macro runs.
 -}

@@ -194,7 +194,7 @@ Each test case starts a plain native CLI process, loads the packaged
 extension, and compares the CSV rows. Each registration kind has a case that
 uses the registered object in SQL. The cases also check scalar results, 10,000
 input rows, NULLs, and overflow. Error cases make a Haskell callback fail in the
-scalar functions, the aggregate update and combine, the table function, the
+scalar functions, the aggregate step and combine, the table function, the
 cast, the replacement scan, COPY TO, COPY FROM, and the file readers. After
 each error, a valid statement runs in the same process. `TRY_CAST` keeps the
 NULL that the cast callback writes before it reports the error. One case runs

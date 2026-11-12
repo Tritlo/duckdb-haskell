@@ -292,7 +292,7 @@ extensionRegressionTests =
                     Catalog.lookupCatalogEntry conn "memory" "main" "no_such_table" Catalog.CatalogTable >>= (@?= Nothing)
         , testCase "configuration descriptors remain usable after connection close" $
             withConnection ":memory:" \conn -> do
-                Config.setConfigOption conn DuckDBV2SettingScopeGlobal "threads" "1"
+                Config.setConfigOption conn Config.SettingScopeGlobal "threads" "1"
                 options <- Config.listConfigOptions conn
                 fmap Config.configValueText <$> Config.getConfigOption conn "threads" >>= (@?= Just "1")
                 close conn
@@ -308,7 +308,7 @@ extensionRegressionTests =
                 fmap Config.configOptionSetting (find ((== "threads") . Config.configOptionName) options) @?= Just "1"
         , testCase "configuration values resolve case-insensitive names and aliases" $
             withConnection ":memory:" \conn -> do
-                Config.setConfigOption conn DuckDBV2SettingScopeGlobal "threads" "1"
+                Config.setConfigOption conn Config.SettingScopeGlobal "threads" "1"
                 forM_ ["threads", "THREADS", "worker_threads", "WORKER_THREADS"] \name ->
                     fmap Config.configValueText <$> Config.getConfigOption conn name >>= (@?= Just "1")
                 Config.getConfigOption conn "NO_SUCH_CONFIG_OPTION" >>= (@?= Nothing)
@@ -333,8 +333,8 @@ extensionRegressionTests =
                         (Config.customOption "haskell_limit" (Registration.StructuredType (LogicalTypeScalar DuckDBV2LogicalTypeIdBigInt)))
                             { Config.customOptionDefault = Just (Registration.defaultValue (3 :: Int64))
                             , Config.customOptionDescription = "A Haskell option"
-                            , Config.customOptionDefaultScope = DuckDBV2SettingScopeSession
-                            , Config.customOptionScopes = [DuckDBV2SettingScopeGlobal, DuckDBV2SettingScopeSession]
+                            , Config.customOptionDefaultScope = Config.SettingScopeSession
+                            , Config.customOptionScopes = [Config.SettingScopeGlobal, Config.SettingScopeSession]
                             , Config.customOptionUpdate = Just \info _ ->
                                 bracket (Registration.output (c_duckdb_v2_custom_option_update_get_value info)) (Registration.destroy c_duckdb_v2_value_destroy) \value -> do
                                     number <- Registration.output (c_duckdb_v2_value_get_bigint value)
@@ -342,9 +342,9 @@ extensionRegressionTests =
                             }
                 Config.registerCustomOption conn option
                 Config.getConfigDefaultValue conn "haskell_limit" >>= (@?= FieldInt64 3)
-                Config.setConfigValue conn DuckDBV2SettingScopeSession "haskell_limit" (7 :: Int64)
-                Config.getConfigValue conn "haskell_limit" >>= (@?= (FieldInt64 7, DuckDBV2SettingScopeSession))
-                assertSqlErrorContaining "limit must be nonnegative" $ Config.setConfigValue conn DuckDBV2SettingScopeSession "haskell_limit" (-1 :: Int64)
+                Config.setConfigValue conn Config.SettingScopeSession "haskell_limit" (7 :: Int64)
+                Config.getConfigValue conn "haskell_limit" >>= (@?= (FieldInt64 7, Config.SettingScopeSession))
+                assertSqlErrorContaining "limit must be nonnegative" $ Config.setConfigValue conn Config.SettingScopeSession "haskell_limit" (-1 :: Int64)
                 void $ execute_ conn "RESET haskell_limit"
                 fmap Config.configValueText <$> Config.getConfigOption conn "haskell_limit" >>= (@?= Just "3")
                 assertSqlError $ Config.registerCustomOption conn option

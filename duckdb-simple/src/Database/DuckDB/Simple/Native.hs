@@ -1,5 +1,6 @@
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -8,6 +9,9 @@ module Database.DuckDB.Simple.Native (
     module Database.DuckDB.FFI.V2,
     Query (..),
     SQLError (..),
+    SettingScope (..),
+    settingScopeToNative,
+    settingScopeFromNative,
     checked,
     checkCode,
     output,
@@ -47,6 +51,7 @@ import qualified Data.Text.Encoding as Text
 import qualified Data.Text.Foreign as TextForeign
 import Database.DuckDB.FFI.V2
 import Foreign.C.ConstPtr (ConstPtr (..))
+import Foreign.C.Types (CUInt)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Array (withArray)
 import Foreign.Marshal.Utils (fillBytes, with, withMany)
@@ -209,3 +214,29 @@ withContextFactory context action = output (c_duckdb_v2_context_get_factory cont
 -- | Borrow an instance factory for built-in types, casts, and allocations.
 withInstanceFactory :: DuckDBV2InstanceHandle -> (DuckDBV2FactoryHandle -> IO a) -> IO a
 withInstanceFactory instance_ action = output (c_duckdb_v2_instance_get_factory instance_) >>= action
+
+-- | The scope of a configuration value. The default scope selects the scope that the option declares.
+data SettingScope
+    = SettingScopeDefault
+    | SettingScopeGlobal
+    | SettingScopeSession
+    deriving (Eq, Ord, Show, Read, Enum, Bounded)
+
+-- | Convert a setting scope to its native value.
+settingScopeToNative :: SettingScope -> DuckDBV2SettingScope
+settingScopeToNative = \case
+    SettingScopeDefault -> DuckDBV2SettingScopeDefault
+    SettingScopeGlobal -> DuckDBV2SettingScopeGlobal
+    SettingScopeSession -> DuckDBV2SettingScopeSession
+
+-- | Convert a native setting scope. An unknown value raises 'SQLError'.
+settingScopeFromNative :: DuckDBV2SettingScope -> IO SettingScope
+settingScopeFromNative = \case
+    DuckDBV2SettingScopeDefault -> pure SettingScopeDefault
+    DuckDBV2SettingScopeGlobal -> pure SettingScopeGlobal
+    DuckDBV2SettingScopeSession -> pure SettingScopeSession
+    DuckDBV2SettingScope value -> throwUnknownNative "setting scope" value
+
+-- | Raise 'SQLError' for a native enum value that has no Haskell constructor.
+throwUnknownNative :: Text -> CUInt -> IO a
+throwUnknownNative kind value = throwIO (SQLError ("duckdb-simple: unknown native " <> kind <> " " <> Text.pack (show value)) Nothing Nothing)

@@ -366,7 +366,7 @@ extensionRegressionTests =
                 Tokenizer.tokenizationUnterminated parsed @?= False
                 forM_ (Tokenizer.tokenizationTokens parsed) \token ->
                     BS.take (BS.length (Tokenizer.tokenBytes token)) (BS.drop (Tokenizer.tokenOffset token) bytes) @?= Tokenizer.tokenBytes token
-                assertBool "comment token" (any ((== DuckDBV2TokenTypeComment) . Tokenizer.tokenType) (Tokenizer.tokenizationTokens parsed))
+                assertBool "comment token" (any ((== Tokenizer.TokenTypeComment) . Tokenizer.tokenType) (Tokenizer.tokenizationTokens parsed))
                 unfinished <- Tokenizer.tokenize conn "SELECT 'unclosed"
                 Tokenizer.tokenizationUnterminated unfinished @?= True
         , testCase "positioned file operations preserve the sequential position" $

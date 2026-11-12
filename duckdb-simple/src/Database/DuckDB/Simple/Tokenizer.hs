@@ -3,6 +3,7 @@
 -- | SQL tokenization using the grammar of a V2 connection.
 module Database.DuckDB.Simple.Tokenizer (
     Token (..),
+    TokenType (..),
     Tokenization (..),
     tokenize,
 ) where
@@ -18,7 +19,7 @@ import Foreign.Storable (peek)
 
 -- | A token and its location in the UTF-8 source bytes.
 data Token = Token
-    { tokenType :: !DuckDBV2TokenType
+    { tokenType :: !TokenType
     , tokenOffset :: !Int
     , tokenBytes :: !BS.ByteString
     }
@@ -44,9 +45,10 @@ tokenize conn sql = withConnectionHandle conn \handle ->
                             if typ == DuckDBV2TokenTypeEndOfInput
                                 then pure (reverse acc)
                                 else do
+                                    tokenKind <- tokenTypeFromNative typ
                                     offset <- fromIntegral <$> peek start
                                     size <- fromIntegral <$> peek count
-                                    collect (Token typ offset (BS.take size (BS.drop offset bytes)) : acc)
+                                    collect (Token tokenKind offset (BS.take size (BS.drop offset bytes)) : acc)
                      in collect []
                 unfinished <- output (c_duckdb_v2_token_iterator_ends_unterminated iterator)
                 pure (Tokenization tokens (unfinished /= 0))

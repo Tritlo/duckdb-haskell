@@ -18,6 +18,9 @@ module Database.DuckDB.Simple.Native (
     LogScope (..),
     logScopeToNative,
     logScopeFromNative,
+    TokenType (..),
+    tokenTypeToNative,
+    tokenTypeFromNative,
     checked,
     checkCode,
     output,
@@ -295,6 +298,46 @@ logScopeFromNative = \case
     DuckDBV2LogScopeConnection -> pure LogScopeConnection
     DuckDBV2LogScopeThread -> pure LogScopeThread
     DuckDBV2LogScope value -> throwUnknownNative "log scope" value
+
+-- | The kind of a SQL token.
+data TokenType
+    = TokenTypeInvalid
+    | TokenTypeKeyword
+    | TokenTypeIdentifier
+    | TokenTypeStringLiteral
+    | TokenTypeNumberLiteral
+    | TokenTypeOperator
+    | TokenTypeComment
+    | TokenTypeTerminator
+    | TokenTypeEndOfInput
+    deriving (Eq, Ord, Show, Read, Enum, Bounded)
+
+-- | Convert a token type to its native value.
+tokenTypeToNative :: TokenType -> DuckDBV2TokenType
+tokenTypeToNative = \case
+    TokenTypeInvalid -> DuckDBV2TokenTypeInvalid
+    TokenTypeKeyword -> DuckDBV2TokenTypeKeyword
+    TokenTypeIdentifier -> DuckDBV2TokenTypeIdentifier
+    TokenTypeStringLiteral -> DuckDBV2TokenTypeStringLiteral
+    TokenTypeNumberLiteral -> DuckDBV2TokenTypeNumberLiteral
+    TokenTypeOperator -> DuckDBV2TokenTypeOperator
+    TokenTypeComment -> DuckDBV2TokenTypeComment
+    TokenTypeTerminator -> DuckDBV2TokenTypeTerminator
+    TokenTypeEndOfInput -> DuckDBV2TokenTypeEndOfInput
+
+-- | Convert a native token type. An unknown value raises 'SQLError'.
+tokenTypeFromNative :: DuckDBV2TokenType -> IO TokenType
+tokenTypeFromNative = \case
+    DuckDBV2TokenTypeInvalid -> pure TokenTypeInvalid
+    DuckDBV2TokenTypeKeyword -> pure TokenTypeKeyword
+    DuckDBV2TokenTypeIdentifier -> pure TokenTypeIdentifier
+    DuckDBV2TokenTypeStringLiteral -> pure TokenTypeStringLiteral
+    DuckDBV2TokenTypeNumberLiteral -> pure TokenTypeNumberLiteral
+    DuckDBV2TokenTypeOperator -> pure TokenTypeOperator
+    DuckDBV2TokenTypeComment -> pure TokenTypeComment
+    DuckDBV2TokenTypeTerminator -> pure TokenTypeTerminator
+    DuckDBV2TokenTypeEndOfInput -> pure TokenTypeEndOfInput
+    DuckDBV2TokenType value -> throwUnknownNative "token type" value
 
 -- | Raise 'SQLError' for a native enum value that has no Haskell constructor.
 throwUnknownNative :: Text -> CUInt -> IO a

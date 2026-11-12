@@ -39,3 +39,4 @@ package duckdb-simple
     "--ignore-link-symbol=Database.DuckDB.Simple.FromRow.RowParseRO"
     "--ignore-link-symbol=Database.DuckDB.Simple.Typed.rowColumnTypes"
     "--ignore-link-symbol=Database.DuckDB.Simple.Typed.rowColumnValues"
+    "--ignore-link-symbol=Database.DuckDB.Simple.Typed.ColumnValue"

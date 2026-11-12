@@ -26,6 +26,13 @@
   `enableProfiling` collects metrics without printing a profile.
 - Add `createCast` for connections and extensions. It registers a pure Haskell
   function as an explicit cast.
+- Add typed replacement scans. `registerReplacementScan` and
+  `registerInstanceReplacementScan` in `Database.DuckDB.Simple.Registration`
+  give the parts of an unknown table name to a Haskell function. The function
+  can return a SELECT statement that DuckDB reads instead. An extension
+  registers replacement scans, custom types, and multi-file functions with
+  `registerReplacementScan`, `registerCustomType`, and
+  `registerMultiFileFunction` in `Database.DuckDB.Simple.Extension`.
 - Add scoped named collection inputs and prepared dynamic PIVOT with a deferred
   output schema. Native expanding statements cannot have parameters.
 - Rename `Database.DuckDB.Simple.Deprecated.Streaming` to

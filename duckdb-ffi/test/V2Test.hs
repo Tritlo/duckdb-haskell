@@ -5,11 +5,13 @@
 {-# LANGUAGE TypeApplications #-}
 
 module V2Test (
+    argCounts,
     borrowedOpaque,
     callbackGuard,
     checked,
     consume,
     countCall,
+    fillDocs,
     output,
     readIntegers,
     readView,
@@ -295,6 +297,25 @@ testError = withConnection $ \conn -> withStatement conn "SELECT absent_column" 
         assertBool "error identifies the missing column" ("absent_column" `isInfixOf` message)
     c_duckdb_v2_error_info_destroy err >>= (@?= DuckDBV2ErrorNone)
     peek err >>= (@?= coerce nullPtr)
+
+-- | Read the sizes of the four parts of an argument list through one getter.
+argCounts :: (Ptr DuckDBIdx -> Ptr DuckDBIdx -> Ptr DuckDBIdx -> Ptr DuckDBIdx -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO (DuckDBIdx, DuckDBIdx, DuckDBIdx, DuckDBIdx)
+argCounts getter = alloca $ \fixed -> alloca $ \variadic -> alloca $ \named -> alloca $ \kwargs -> do
+    checked (getter fixed variadic named kwargs)
+    (,,,) <$> peek fixed <*> peek variadic <*> peek named <*> peek kwargs
+
+{- | Fill in borrowed documentation with a description, two examples and a category.
+The second description replaces the first, and the second example has no title.
+-}
+fillDocs :: DuckDBV2FunctionDocsHandle -> IO ()
+fillDocs docs = do
+    assertBool "the documentation is non-null" (docs /= coerce nullPtr)
+    withView "Adds one." $ \description -> checked (c_duckdb_v2_function_docs_set_description docs description)
+    withView "Replaces the description." $ \description -> checked (c_duckdb_v2_function_docs_set_description docs description)
+    withView "basic" $ \title -> withView "SELECT v2_plus_one(1)" $ \example ->
+        checked (c_duckdb_v2_function_docs_add_example docs title example)
+    withView "SELECT v2_plus_one(2)" $ \example -> checked (c_duckdb_v2_function_docs_add_example docs (ConstPtr nullPtr) example)
+    withView "numeric" $ \category -> checked (c_duckdb_v2_function_docs_add_category docs category)
 
 -- | Wrap a pointer that the test owns. The engine does not destroy it.
 borrowedOpaque :: Ptr Void -> DuckDBV2Opaque

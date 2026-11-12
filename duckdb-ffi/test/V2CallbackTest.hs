@@ -20,7 +20,7 @@ import HsBindgen.Runtime.Prelude (toFunPtr)
 import System.Environment (getExecutablePath)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
-import V2Test (borrowedOpaque, callbackGuard, checked, consume, countCall, output, readIntegers, readView, withConnection, withFactory, withHandle, withResult, withStatement, withType, withView)
+import V2Test (argCounts, borrowedOpaque, callbackGuard, checked, consume, countCall, output, readIntegers, readView, withConnection, withFactory, withHandle, withResult, withStatement, withType, withView)
 
 tests :: TestTree
 tests =
@@ -30,12 +30,6 @@ tests =
         , testCase "only a cast with a non-negative cost applies implicitly, and the cast reads its user data" testCastCallbacks
         , testCase "custom option updates report the scope and the reset, and can replace the value" testCustomOption
         ]
-
--- | Read the sizes of the four parts of the argument list.
-argCounts :: DuckDBV2FunctionBindInfoHandle -> IO (DuckDBIdx, DuckDBIdx, DuckDBIdx, DuckDBIdx)
-argCounts info = alloca $ \fixed -> alloca $ \variadic -> alloca $ \named -> alloca $ \kwargs -> do
-    checked (c_duckdb_v2_function_bind_get_arg_count info fixed variadic named kwargs)
-    (,,,) <$> peek fixed <*> peek variadic <*> peek named <*> peek kwargs
 
 -- | Read the name of an argument.
 argName :: DuckDBV2FunctionBindInfoHandle -> DuckDBIdx -> IO String
@@ -75,7 +69,7 @@ testScalarCallbacks = do
                 countCall binds
                 output (c_duckdb_v2_function_bind_get_user_data info) >>= (@?= user)
                 -- The query calls v2_probe(i, 2, 3, extra := 5): one standard, two *args, one omitted named-only and one **kwargs argument.
-                argCounts info >>= (@?= (1, 2, 1, 1))
+                argCounts (c_duckdb_v2_function_bind_get_arg_count info) >>= (@?= (1, 2, 1, 1))
                 checked (c_duckdb_v2_function_bind_get_arg_count info nullPtr nullPtr nullPtr nullPtr)
                 mapM (argName info) [0 .. 4] >>= (@?= ["x", "", "", "n", "extra"])
                 alloca $ \name -> do

@@ -19,6 +19,7 @@ module V2Test (
     withInstance,
     withResult,
     withStatement,
+    withType,
     withView,
 ) where
 
@@ -116,6 +117,11 @@ withConnection action = withInstance $ \instanceHandle ->
 -- | Borrow a factory for the lifetime of its connection.
 withFactory :: DuckDBV2ConnectionHandle -> (DuckDBV2FactoryHandle -> IO a) -> IO a
 withFactory conn action = output (c_duckdb_v2_connection_get_factory conn) >>= action
+
+-- | Create a logical type from its SQL text.
+withType :: DuckDBV2FactoryHandle -> String -> (DuckDBV2LogicalTypeHandle -> IO a) -> IO a
+withType factory text action = withView text $ \view ->
+    withHandle (c_duckdb_v2_factory_create_type_from_text factory view) c_duckdb_v2_logical_type_destroy action
 
 withView :: String -> (PtrConst DuckDBV2Str -> IO a) -> IO a
 withView text action = withCStringLen text $ \(ptr, len) -> with (DuckDBV2Str (ConstPtr ptr) (fromIntegral len)) (action . ConstPtr)

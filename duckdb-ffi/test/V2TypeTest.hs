@@ -15,7 +15,7 @@ import Foreign.Storable (Storable (..))
 import HsBindgen.Runtime.PtrConst (PtrConst)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
-import V2Test (checked, consume, output, readView, withBytes, withConnection, withFactory, withHandle, withResult, withView)
+import V2Test (checked, consume, output, readView, withBytes, withConnection, withFactory, withHandle, withResult, withType, withView)
 
 tests :: TestTree
 tests =
@@ -28,10 +28,6 @@ tests =
         , testCase "identifiers are quoted only where SQL requires it" testIdentifier
         , testCase "UTF-8 validation checks every byte of the view" testUtf8
         ]
-
-withType :: DuckDBV2FactoryHandle -> String -> (DuckDBV2LogicalTypeHandle -> IO a) -> IO a
-withType factory text action = withView text $ \view ->
-    withHandle (c_duckdb_v2_factory_create_type_from_text factory view) c_duckdb_v2_logical_type_destroy action
 
 isEqual :: DuckDBV2LogicalTypeHandle -> DuckDBV2LogicalTypeHandle -> IO Bool
 isEqual left right = (/= 0) <$> output (c_duckdb_v2_logical_type_is_equal left right)

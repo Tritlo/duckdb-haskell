@@ -1,6 +1,7 @@
 module Main (main) where
 
 import Test.Tasty (defaultMain, testGroup)
+import qualified V2ChunkTest
 import qualified V2Test
 import qualified V2TypeTest
 import qualified V2ValueTest
@@ -13,4 +14,5 @@ main =
             [ V2Test.tests
             , V2ValueTest.tests
             , V2TypeTest.tests
+            , V2ChunkTest.tests
             ]

@@ -329,6 +329,8 @@ testParallelScan = do
             bound <- output (c_duckdb_v2_table_function_init_global_get_bind_data info)
             global <- give [0] (c_duckdb_v2_table_function_init_global_set_global_state info)
             record globals (bound, global)
+            -- The maximum number of threads must be at least 1.
+            c_duckdb_v2_table_function_init_global_set_max_threads info 0 nullPtr >>= assertBool "a maximum of 0 threads is rejected" . (/= DuckDBV2ErrorNone)
             checked (c_duckdb_v2_table_function_init_global_set_max_threads info 2)
         -- The local state holds the batch of the last chunk that the thread wrote.
         initLocal info _context err = callbackGuard failures err $ do

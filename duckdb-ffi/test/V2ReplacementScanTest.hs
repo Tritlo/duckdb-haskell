@@ -4,7 +4,7 @@
 module V2ReplacementScanTest (tests) where
 
 import Control.Exception (bracket)
-import Control.Monad (forM_, when)
+import Control.Monad (forM_, void, when)
 import Data.Coerce (coerce)
 import Data.IORef (atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int64)
@@ -49,8 +49,8 @@ addArgument :: DuckDBV2FactoryHandle -> DuckDBV2ReplacementScanInfoHandle -> Int
 addArgument factory info number = withHandle (c_duckdb_v2_value_create_bigint factory number) c_duckdb_v2_value_destroy $ \value ->
     checked (c_duckdb_v2_replacement_scan_add_argument info value)
 
-{- | The first scan claims the names v2_range, v2_repeat, v2_named and v2_default, and fails on purpose for
-v2_failing. It declines all other names. The second scan has no user data and claims v2_plain.
+{- | The first scan claims the names v2_range, v2_repeat, v2_named, v2_default and v2_unknown, and fails on purpose
+for v2_failing. It declines all other names. The second scan has no user data and claims v2_plain.
 -}
 testReplacementScan :: IO ()
 testReplacementScan = do
@@ -96,6 +96,8 @@ testReplacementScan = do
                         checked (c_duckdb_v2_replacement_scan_set_collection info collection (coerce nullPtr) 0)
                         withView "range" $ \text -> withHandle (c_duckdb_v2_qname_parse text) c_duckdb_v2_qname_destroy $ \function ->
                             refused "a function name after a collection" (c_duckdb_v2_replacement_scan_set_function_name info function)
+                    -- The scan does not resolve the name, so the claim succeeds and the statement fails later.
+                    "v2_unknown" -> setFunction info "v2_absent_function"
                     "v2_failing" -> deliberateFailure "v2 deliberate replacement scan failure"
                     _ -> pure ()
                 atomicModifyIORef' claimed (\names -> (name : names, ()))
@@ -140,6 +142,7 @@ testReplacementScan = do
                         append 40 1
                         withResult conn "SELECT col1 FROM v2_default" $ \result -> readIntegers result >>= (@?= [Just 10, Just 20, Just 30, Just 40])
                         withResult conn "SELECT * FROM v2_plain" $ \result -> readIntegers result >>= (@?= [Just 0, Just 1])
+                        void (statementError conn "SELECT * FROM v2_unknown")
                         -- The statement fails with the text of the callback, and the next statement on the connection works.
                         -- The callback reports the code API. DuckDB has no exception type for API, so the statement fails
                         -- with INPUT_INVALID.

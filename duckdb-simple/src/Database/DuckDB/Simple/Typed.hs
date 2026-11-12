@@ -1,16 +1,21 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE DefaultSignatures #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeOperators #-}
 
 {- |
 Module      : Database.DuckDB.Simple.Typed
 Description : Read and write callback vectors as typed Haskell values.
 
 Typed registrations use these helpers. An argument reader converts the rows of
-a borrowed vector with 'FromField'. The module also registers typed casts on a
-connection or on a loading extension.
+a borrowed vector with 'FromField'. 'TypedRow' gives the column types and the
+column values of a row. The module also registers typed casts on a connection
+or on a loading extension.
 -}
 module Database.DuckDB.Simple.Typed (
+    TypedRow (..),
     prepareArgumentReader,
     createCastOn,
 ) where
@@ -19,6 +24,7 @@ import Control.Exception (SomeException, bracket, catch, displayException, fromE
 import Control.Monad (forM, when)
 import Data.List (intercalate)
 import Data.Maybe (catMaybes)
+import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.Element (vectorElementType)
@@ -26,8 +32,72 @@ import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), FromField 
 import Database.DuckDB.Simple.Materialize (prepareVectorReader)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
-import Database.DuckDB.Simple.ToField (ToDuckValue (..))
+import Database.DuckDB.Simple.ToField (ToDuckValue (..), duckdbColumnType)
+import Database.DuckDB.Simple.Types (Only (..))
 import Database.DuckDB.Simple.V2.Registration (RegistrationTarget, TypeDeclaration, registerCastWith, withRegistrationFactory, withTypeDeclaration)
+import GHC.Generics
+
+{- | A row with a fixed list of typed columns. A typed registration uses the
+column types in the signature of the SQL object, and writes the column values
+to DuckDB. 'Only', tuples of 2 to 7 columns, and @()@ are rows. A record with a
+'Generic' instance is a row when each field has a 'ToDuckValue' instance:
+
+> data Point = Point {x :: Double, y :: Double} deriving (Generic)
+> instance TypedRow Point
+
+A @Maybe@ column can hold NULL.
+-}
+class TypedRow r where
+    -- | The DuckDB type of each column, from 'duckdbColumnType'.
+    rowColumnTypes :: Proxy r -> [Text]
+    default rowColumnTypes :: (GTypedRow (Rep r)) => Proxy r -> [Text]
+    rowColumnTypes _ = gRowColumnTypes (Proxy :: Proxy (Rep r))
+
+    {- | One action for each column. The action makes an owned native value
+    through a borrowed factory. The caller destroys the value.
+    -}
+    rowColumnValues :: r -> [DuckDBV2FactoryHandle -> IO DuckDBV2ValueHandle]
+    default rowColumnValues :: (Generic r, GTypedRow (Rep r)) => r -> [DuckDBV2FactoryHandle -> IO DuckDBV2ValueHandle]
+    rowColumnValues = gRowColumnValues . from
+
+-- | The generic implementation of 'TypedRow' for a type with one constructor.
+class GTypedRow f where
+    gRowColumnTypes :: Proxy f -> [Text]
+    gRowColumnValues :: f p -> [DuckDBV2FactoryHandle -> IO DuckDBV2ValueHandle]
+
+instance GTypedRow U1 where
+    gRowColumnTypes _ = []
+    gRowColumnValues U1 = []
+
+instance (GTypedRow a) => GTypedRow (M1 i c a) where
+    gRowColumnTypes _ = gRowColumnTypes (Proxy :: Proxy a)
+    gRowColumnValues (M1 value) = gRowColumnValues value
+
+instance (ToDuckValue a) => GTypedRow (K1 i a) where
+    gRowColumnTypes _ = [duckdbColumnType (Proxy :: Proxy a)]
+    gRowColumnValues (K1 value) = [(`toDuckValue` value)]
+
+instance (GTypedRow a, GTypedRow b) => GTypedRow (a :*: b) where
+    gRowColumnTypes _ = gRowColumnTypes (Proxy :: Proxy a) <> gRowColumnTypes (Proxy :: Proxy b)
+    gRowColumnValues (left :*: right) = gRowColumnValues left <> gRowColumnValues right
+
+instance TypedRow ()
+
+instance (ToDuckValue a) => TypedRow (Only a) where
+    rowColumnTypes _ = [duckdbColumnType (Proxy :: Proxy a)]
+    rowColumnValues (Only value) = [(`toDuckValue` value)]
+
+instance (ToDuckValue a, ToDuckValue b) => TypedRow (a, b)
+
+instance (ToDuckValue a, ToDuckValue b, ToDuckValue c) => TypedRow (a, b, c)
+
+instance (ToDuckValue a, ToDuckValue b, ToDuckValue c, ToDuckValue d) => TypedRow (a, b, c, d)
+
+instance (ToDuckValue a, ToDuckValue b, ToDuckValue c, ToDuckValue d, ToDuckValue e) => TypedRow (a, b, c, d, e)
+
+instance (ToDuckValue a, ToDuckValue b, ToDuckValue c, ToDuckValue d, ToDuckValue e, ToDuckValue f) => TypedRow (a, b, c, d, e, f)
+
+instance (ToDuckValue a, ToDuckValue b, ToDuckValue c, ToDuckValue d, ToDuckValue e, ToDuckValue f, ToDuckValue g) => TypedRow (a, b, c, d, e, f, g)
 
 {- | Prepare a reader for the rows of an argument vector. The first argument is
 the position of the argument, from 0. A NULL row gives 'Nothing'. A value that

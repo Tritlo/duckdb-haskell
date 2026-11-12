@@ -40,10 +40,17 @@ are not tested. If the RTS cannot start, the process ends.
 
 `Extension.runExtension` passes an opaque `Extension` to the registration action.
 `Extension.createFunction` and `Extension.createFunctionWithState` use the same
-typed argument and result conversions as the connection API.
-`Extension.extensionTarget` gives the registration target for the functions
-that take a `RegistrationTarget`, such as the aggregate, table, and COPY
-registration functions. The target must not escape the entrypoint.
+typed argument and result conversions as the connection API. `Extension` also
+has the typed registrations of the connection API: `createCast`,
+`createAggregate`, `createTableFunction`, `registerReplacementScan`,
+`registerCustomType`, `registerMultiFileFunction`, `registerCopyToFunction`,
+`registerCopyFromFunction`, and `registerCopyFunction`. These functions take
+the `Extension` value. A COPY TO function of an extension cannot read a VARIANT
+column. A replacement scan of an extension belongs to the instance.
+`Extension.extensionTarget` gives the `RegistrationTarget` for the functions of
+the V2 modules, for example
+`Database.DuckDB.Simple.V2.Registration.registerAggregateFunctionWith`. Use it
+only with those functions. The target must not escape the entrypoint.
 Initialization and callback exceptions become native errors. Managed
 registration retains callback resources after the entrypoint returns.
 
@@ -60,8 +67,8 @@ its headers. A rebuild against the same headers does not help.
 The example registers typed scalar functions, scalar and table macros, a
 PRAGMA, a typed custom option, and a log sink. They exercise native results,
 batch inputs, NULLs, Unicode text, overflow, and callback errors. The example
-also registers an aggregate function, a table function with projection
-pushdown, a custom type with a cast, a replacement scan, a COPY format, and a
+also registers an aggregate function, a table function, a custom type with a
+typed cast, a replacement scan, a COPY format with both directions, and a
 multi-file reader. Together, the registrations use all twelve V2 extension
 registration calls. The entrypoint is
 `haskell_demo_init_c_api_v2`. DuckDB derives the entrypoint name from the
@@ -77,9 +84,8 @@ register extension = do
 
 See [Demo.hs](example/src/Demo.hs) for the complete entrypoint. Application
 functions do not need native handles, vectors, or allocation calls.
-[Advanced.hs](example/src/Advanced.hs) uses the registration functions that
-take `Extension.extensionTarget`. Their callbacks use native handles and
-vectors.
+[Advanced.hs](example/src/Advanced.hs) has the other registrations of the
+example.
 
 ## Build and load
 
@@ -188,8 +194,8 @@ Each test case starts a plain native CLI process, loads the packaged
 extension, and compares the CSV rows. Each registration kind has a case that
 uses the registered object in SQL. The cases also check scalar results, 10,000
 input rows, NULLs, and overflow. Error cases make a Haskell callback fail in the
-scalar functions, the aggregate update and combine, the table function bind,
-the cast, the replacement scan, COPY TO, COPY FROM, and the file readers. After
+scalar functions, the aggregate step and combine, the table function, the
+cast, the replacement scan, COPY TO, COPY FROM, and the file readers. After
 each error, a valid statement runs in the same process. `TRY_CAST` keeps the
 NULL that the cast callback writes before it reports the error. One case runs
 a second `LOAD` in the same process. DuckDB records the extension name at the

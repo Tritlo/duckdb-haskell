@@ -42,7 +42,7 @@ register extension = do
             { Config.customOptionDefault = Just (Registration.defaultValue (7 :: Int64))
             }
     Extension.registerPragmaFunction extension "haskell_demo" [] $
-        Pragma.QueryPragma (\_ _ -> pure "SELECT 'pragma', current_setting('haskell_multiplier')::BIGINT")
+        Pragma.QueryPragma (\() -> pure "SELECT 'pragma', current_setting('haskell_multiplier')::BIGINT")
     Extension.registerLogSink extension "haskell_sink" (\_ -> atomicModifyIORef' logEntries (\count -> (count + 1, ()))) (pure ())
     Extension.createFunction extension "haskell_log_entries" (readIORef logEntries)
     Advanced.register extension

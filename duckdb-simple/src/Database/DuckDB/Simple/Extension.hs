@@ -31,6 +31,7 @@ import Database.DuckDB.Simple.Config (CustomOption)
 import qualified Database.DuckDB.Simple.Config as Config
 import Database.DuckDB.Simple.Copy (MultiFileOptions, registerMultiFileFunctionOn)
 import Database.DuckDB.Simple.FromField (FromField)
+import Database.DuckDB.Simple.FromRow (FromRow)
 import Database.DuckDB.Simple.Function.Internal (Function, createFunctionOn, createFunctionWithStateOn)
 import Database.DuckDB.Simple.Logging (LogEntry)
 import qualified Database.DuckDB.Simple.Logging as Logging
@@ -135,8 +136,10 @@ registerMacroFunctionWith (Extension extension context) kind configure =
             configure function
             checked (c_duckdb_v2_extension_register_macro_function extension function)
 
--- | Register a managed PRAGMA callback on the loading extension.
-registerPragmaFunction :: Extension -> Text -> [FunctionParameter] -> PragmaCallback -> IO ()
+{- | Register a typed PRAGMA callback on the loading extension. The rules of
+'Database.DuckDB.Simple.Pragma.registerPragmaFunction' apply.
+-}
+registerPragmaFunction :: (FromRow args) => Extension -> Text -> [FunctionParameter] -> PragmaCallback args -> IO ()
 registerPragmaFunction = Pragma.registerPragmaFunctionOn . extensionTarget
 
 -- | Register a typed option during extension initialization.

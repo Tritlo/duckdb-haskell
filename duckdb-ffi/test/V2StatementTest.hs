@@ -115,8 +115,8 @@ executeWith conn factory sql name count = withStatement conn sql $ \statement ->
     withHandle (c_duckdb_v2_value_create_bigint factory 7) c_duckdb_v2_value_destroy $ \value -> withArray [value] $ \values -> alloca $ \result -> do
         poke result (coerce nullPtr)
         flip finally (c_duckdb_v2_result_destroy result) $ do
-            let names action = maybe (action (coerce nullPtr)) (\text -> withView text (action . coerce)) name
-            code <- names $ \keys -> c_duckdb_v2_statement_execute conn statement keys (ConstPtr values) (fromIntegral count) result nullPtr
+            let execute keys = c_duckdb_v2_statement_execute conn statement keys (ConstPtr values) (fromIntegral count) result nullPtr
+            code <- maybe (execute (coerce nullPtr)) (\text -> withView text (execute . coerce)) name
             rows <- if code == DuckDBV2ErrorNone then peek result >>= readIntegers else pure []
             pure (code, rows)
 

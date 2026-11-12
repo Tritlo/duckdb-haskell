@@ -143,53 +143,53 @@ instance (FunctionResult a) => FunctionResult (Maybe a) where
 
 -- | Argument types supported by the scalar function machinery.
 class FunctionArg a where
-    argumentType :: Proxy a -> DuckDBV2LogicalTypeId
+    argumentType :: Proxy a -> LogicalTypeId
 
 instance FunctionArg Int where
-    argumentType _ = DuckDBV2LogicalTypeIdBigInt
+    argumentType _ = LogicalTypeIdBigInt
 
 instance FunctionArg Int16 where
-    argumentType _ = DuckDBV2LogicalTypeIdSmallInt
+    argumentType _ = LogicalTypeIdSmallInt
 
 instance FunctionArg Int32 where
-    argumentType _ = DuckDBV2LogicalTypeIdInteger
+    argumentType _ = LogicalTypeIdInteger
 
 instance FunctionArg Int64 where
-    argumentType _ = DuckDBV2LogicalTypeIdBigInt
+    argumentType _ = LogicalTypeIdBigInt
 
 instance FunctionArg Word where
-    argumentType _ = DuckDBV2LogicalTypeIdUBigInt
+    argumentType _ = LogicalTypeIdUBigInt
 
 instance FunctionArg Word16 where
-    argumentType _ = DuckDBV2LogicalTypeIdUSmallInt
+    argumentType _ = LogicalTypeIdUSmallInt
 
 instance FunctionArg Word32 where
-    argumentType _ = DuckDBV2LogicalTypeIdUInteger
+    argumentType _ = LogicalTypeIdUInteger
 
 instance FunctionArg Word64 where
-    argumentType _ = DuckDBV2LogicalTypeIdUBigInt
+    argumentType _ = LogicalTypeIdUBigInt
 
 instance FunctionArg Double where
-    argumentType _ = DuckDBV2LogicalTypeIdDouble
+    argumentType _ = LogicalTypeIdDouble
 
 instance FunctionArg Float where
-    argumentType _ = DuckDBV2LogicalTypeIdFloat
+    argumentType _ = LogicalTypeIdFloat
 
 instance FunctionArg Bool where
-    argumentType _ = DuckDBV2LogicalTypeIdBoolean
+    argumentType _ = LogicalTypeIdBoolean
 
 instance FunctionArg Text where
-    argumentType _ = DuckDBV2LogicalTypeIdVarchar
+    argumentType _ = LogicalTypeIdVarchar
 
 instance FunctionArg String where
-    argumentType _ = DuckDBV2LogicalTypeIdVarchar
+    argumentType _ = LogicalTypeIdVarchar
 
 instance (FunctionArg a) => FunctionArg (Maybe a) where
     argumentType _ = argumentType (Proxy :: Proxy a)
 
 -- | Typeclass describing Haskell functions that can be exposed to DuckDB.
 class Function a where
-    argumentTypes :: Proxy a -> [DuckDBV2LogicalTypeId]
+    argumentTypes :: Proxy a -> [LogicalTypeId]
     returnType :: Proxy a -> ScalarType
     isVolatile :: Proxy a -> Bool
     applyFunction :: [Field] -> a -> IO ScalarValue
@@ -263,17 +263,17 @@ registerScalarFunction target name proxy acquire = do
                     register
 
 -- | Release each owned logical type after the signature copies it.
-withLogicalType :: DuckDBV2FactoryHandle -> DuckDBV2LogicalTypeId -> (DuckDBV2LogicalTypeHandle -> IO a) -> IO a
+withLogicalType :: DuckDBV2FactoryHandle -> LogicalTypeId -> (DuckDBV2LogicalTypeHandle -> IO a) -> IO a
 withLogicalType factory dtype =
-    bracket (output (c_duckdb_v2_factory_create_type_from_id factory dtype (ConstPtr nullPtr) (ConstPtr nullPtr) 0)) destroyLogicalType
+    bracket (output (c_duckdb_v2_factory_create_type_from_id factory (logicalTypeIdToNative dtype) (ConstPtr nullPtr) (ConstPtr nullPtr) 0)) destroyLogicalType
 
-duckTypeForScalar :: ScalarType -> DuckDBV2LogicalTypeId
+duckTypeForScalar :: ScalarType -> LogicalTypeId
 duckTypeForScalar = \case
-    ScalarTypeBoolean -> DuckDBV2LogicalTypeIdBoolean
-    ScalarTypeBigInt -> DuckDBV2LogicalTypeIdBigInt
-    ScalarTypeUBigInt -> DuckDBV2LogicalTypeIdUBigInt
-    ScalarTypeDouble -> DuckDBV2LogicalTypeIdDouble
-    ScalarTypeVarchar -> DuckDBV2LogicalTypeIdVarchar
+    ScalarTypeBoolean -> LogicalTypeIdBoolean
+    ScalarTypeBigInt -> LogicalTypeIdBigInt
+    ScalarTypeUBigInt -> LogicalTypeIdUBigInt
+    ScalarTypeDouble -> LogicalTypeIdDouble
+    ScalarTypeVarchar -> LogicalTypeIdVarchar
 
 scalarFunctionHandler :: forall f. (Function f) => f -> DuckDBV2ScalarFunctionExecInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
 scalarFunctionHandler fn info context err = runCallback err (executeScalarFunction fn info context)

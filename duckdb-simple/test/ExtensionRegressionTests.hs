@@ -520,7 +520,7 @@ instance Function BrokenSignature where
 data InvalidSignature = InvalidSignature
 
 instance Function InvalidSignature where
-    argumentTypes _ = [DuckDBV2LogicalTypeIdInvalid]
+    argumentTypes _ = [LogicalTypeIdInvalid]
     returnType _ = returnType (Proxy :: Proxy Int64)
     isVolatile _ = False
     applyFunction _ _ = error "unregistered function"

@@ -92,6 +92,7 @@ module Database.DuckDB.Simple (
 
     -- * User-defined scalar functions and casts
     Function (..),
+    LogicalTypeId (..),
     createFunction,
     createFunctionWithState,
     deleteFunction,

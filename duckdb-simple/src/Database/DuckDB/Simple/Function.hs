@@ -15,6 +15,7 @@ module Database.DuckDB.Simple.Function (
     FunctionArg (),
     FunctionResult (),
     Function (..),
+    LogicalTypeId (..),
     createFunction,
     createFunctionWithState,
     deleteFunction,

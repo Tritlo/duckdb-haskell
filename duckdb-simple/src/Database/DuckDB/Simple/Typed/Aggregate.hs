@@ -103,7 +103,7 @@ createAggregateOn target name aggregate = do
     configure factory function = do
         withIdentifier name (checked . c_duckdb_v2_aggregate_function_set_name function)
         signature <- output (c_duckdb_v2_aggregate_function_get_signature function)
-        configureFunctionSignature factory (FunctionSignature parameters (Just (StructuredType (LogicalTypeScalar (duckTypeForScalar resultType))))) signature
+        configureFunctionSignature factory (FunctionSignature parameters (Just (StructuredType (LogicalTypeScalar (logicalTypeIdToNative (duckTypeForScalar resultType)))))) signature
         checked (c_duckdb_v2_aggregate_function_set_property function DuckDBV2FunctionPropertyNullHandling DuckDBV2FunctionPropertyNullHandlingSpecial)
     callbacks =
         (aggregateCallbacks setStateSize (initializeStates aggregate) (updateStates aggregate (length columnTypes)) (combineStates aggregate) (finalizeStates aggregate resultType))

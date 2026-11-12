@@ -91,7 +91,7 @@ testReplacementScan = do
                         with (borrowedOpaque user) $ \opaque -> checked (c_duckdb_v2_replacement_scan_set_user_data scan opaque)
                         checked (c_duckdb_v2_connection_register_replacement_scan conn scan)
                     -- The query names the alias, so it binds only if the scan sets the alias.
-                    withResult conn "SELECT v2_alias.range FROM v2_range" $ \result -> readIntegers result >>= (@?= [Just 2, Just 5, Just 8])
+                    withResult conn "SELECT v2_alias.* FROM v2_range" $ \result -> readIntegers result >>= (@?= [Just 2, Just 5, Just 8])
                     withResult conn "SELECT * FROM v2_repeat" $ \result -> readIntegers result >>= (@?= replicate 3 (Just 7))
                     withResult conn "SELECT amount FROM v2_named" $ \result -> readIntegers result >>= (@?= [Just 10, Just 20, Just 30])
                     -- The scan borrows the collection, so a later query reads the rows appended since.

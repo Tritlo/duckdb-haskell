@@ -28,7 +28,6 @@ import Database.DuckDB.Simple
 import Database.DuckDB.Simple.Config (CustomOption (..), SettingScope (..), customOption, getConfigValue, registerCustomOption, setConfigValue)
 import Database.DuckDB.Simple.Copy (CopyBindInfo (..), CopyFromInfo (..), CopyInitInfo (..), CopySinkInfo (..), CopyTo (..), defaultMultiFileOptions, registerCopyFromFunction, registerCopyFunction, registerCopyToFunction, registerMultiFileFunction)
 import Database.DuckDB.Simple.FromField (BigNum (..), Field (..), FieldValue (..), bsFromBool)
-import Database.DuckDB.Simple.Function (TypedRow)
 import Database.DuckDB.Simple.Pragma (PragmaCallback (..), registerPragmaFunction)
 import Database.DuckDB.Simple.Registration (FunctionParameter (..), Replacement (..), TypeDeclaration (..), defaultValue, parameter, registerCustomType, registerInstanceReplacementScan, registerReplacementScan)
 import Database.DuckDB.Simple.Time (Unbounded (..))

@@ -19,7 +19,6 @@ module Database.DuckDB.Simple.Config (
     customOption,
     registerCustomOption,
     registerCustomOptionOn,
-    registerCustomOptionWith,
 ) where
 
 import Control.Exception (bracket, catch, throwIO)
@@ -63,7 +62,13 @@ data ConfigOption = ConfigOption
     }
     deriving (Eq, Show)
 
--- | A custom setting. The optional update callback may validate or replace values.
+{- | A custom setting. The optional update function gets each new value of the
+option before DuckDB stores it. The value has the type of the option. An
+exception in the function rejects the value. The text of the exception is the
+SQL error. A RESET gives the default value to the function, or
+'Database.DuckDB.Simple.FromField.FieldNull' for an option without a default.
+Thus the function must accept the default value.
+-}
 data CustomOption = CustomOption
     { customOptionName :: !Text
     , customOptionType :: !TypeDeclaration
@@ -71,15 +76,15 @@ data CustomOption = CustomOption
     , customOptionDescription :: !Text
     , customOptionDefaultScope :: !SettingScope
     , customOptionScopes :: ![SettingScope]
-    , customOptionUpdate :: Maybe (ContextCallback DuckDBV2CustomOptionUpdateInfoHandle)
+    , customOptionUpdate :: Maybe (FieldValue -> IO ())
     }
 
--- | Declare a global option without a default value or an update callback.
+-- | Declare a global option without a default value or an update function.
 customOption :: Text -> TypeDeclaration -> CustomOption
 customOption name dtype = CustomOption name dtype Nothing "" SettingScopeGlobal [SettingScopeGlobal] Nothing
 
 {- | Register a typed custom option on the connection's database.
-Update callbacks must not write options. They borrow their native handles.
+The update function must not write options.
 -}
 registerCustomOption :: Connection -> CustomOption -> IO ()
 registerCustomOption conn = registerCustomOptionOn (ConnectionTarget conn)
@@ -101,7 +106,12 @@ registerCustomOptionOn target option = do
             mapM_ (\scope -> checked (c_duckdb_v2_custom_option_set_supports_scope handle (settingScopeToNative scope) (if scope `elem` customOptionScopes option then 1 else 0))) [SettingScopeGlobal, SettingScopeSession]
             checked (c_duckdb_v2_custom_option_set_default_scope handle (settingScopeToNative (customOptionDefaultScope option)))
         )
-        (customOptionUpdate option)
+        (updateWithValue <$> customOptionUpdate option)
+
+-- | Copy the new value of an option update. Then give it to the update function.
+updateWithValue :: (FieldValue -> IO ()) -> ContextCallback DuckDBV2CustomOptionUpdateInfoHandle
+updateWithValue update info context = withContextFactory context \factory ->
+    bracket (output (c_duckdb_v2_custom_option_update_get_value info)) (destroy c_duckdb_v2_value_destroy) (materializeValue unexpectedVariant factory) >>= update
 
 -- | List built-in configuration flags using a temporary connection.
 listConfigFlags :: IO [ConfigFlag]

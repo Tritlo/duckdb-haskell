@@ -38,6 +38,9 @@
 - `registerPragmaFunction` of `Pragma` and of `Extension` takes a typed
   callback. The callback gets the arguments of the call as a `FromRow` row.
   `Database.DuckDB.Simple.V2.Pragma` has the callbacks with native handles.
+- `customOptionUpdate` of `Config.CustomOption` is a function that gets the new
+  value as a `FieldValue`. An exception in the function rejects the value.
+  `registerCustomOptionWith` is in `Database.DuckDB.Simple.V2.Config`.
 - Add scoped named collection inputs and prepared dynamic PIVOT with a deferred
   output schema. Native expanding statements cannot have parameters.
 - Rename `Database.DuckDB.Simple.Deprecated.Streaming` to

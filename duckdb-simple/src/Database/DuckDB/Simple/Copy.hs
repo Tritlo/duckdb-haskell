@@ -6,6 +6,7 @@ function. "Database.DuckDB.Simple.V2.Copy" has the native callback interface.
 -}
 module Database.DuckDB.Simple.Copy (
     CopyBindInfo (..),
+    LogicalTypeId (..),
     CopyInitInfo (..),
     CopySinkInfo (..),
     CopyFinalizeInfo (..),
@@ -27,6 +28,7 @@ import Database.DuckDB.Simple.Copy.Internal (
     CopyInitInfo (..),
     CopySinkInfo (..),
     CopyTo (..),
+    LogicalTypeId (..),
     MultiFileOptions (..),
     TypedRow,
     defaultMultiFileOptions,

@@ -102,7 +102,7 @@ testPartitionedCopy = withDirectory \directory -> withConnection ":memory:" \con
     Copy.registerCopyToFunction
         connection
         "managed_partitions"
-        (\info -> Copy.copyBindColumnTypes info @?= [DuckDBV2LogicalTypeIdBigInt])
+        (\info -> Copy.copyBindColumnTypes info @?= [Copy.LogicalTypeIdBigInt])
         ( \info -> do
             let path = Copy.copyInitFilePath info
             writeFile path ""
@@ -129,7 +129,7 @@ testVariantCopy = withDirectory \directory -> withEnvironment \environment -> wi
         Copy.registerCopyToFunction
             connection
             "managed_variant"
-            (\info -> Copy.copyBindColumnTypes info @?= [DuckDBV2LogicalTypeIdVariant])
+            (\info -> Copy.copyBindColumnTypes info @?= [Copy.LogicalTypeIdVariant])
             (\info -> writeFile (Copy.copyInitFilePath info) "")
             (\_ rows -> atomicModifyIORef' received (\previous -> (previous <> [fieldValue entry | [entry] <- rows], ())))
             (const (pure ()))

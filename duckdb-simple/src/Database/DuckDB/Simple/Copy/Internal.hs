@@ -13,6 +13,7 @@ The functions with the suffix @On@ take a registration target.
 -}
 module Database.DuckDB.Simple.Copy.Internal (
     CopyBindInfo (..),
+    LogicalTypeId (..),
     CopyInitInfo (..),
     CopySinkInfo (..),
     CopyFinalizeInfo (..),
@@ -54,7 +55,7 @@ import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deR
 
 -- | Bind-phase metadata for a custom COPY TO function.
 data CopyBindInfo = CopyBindInfo
-    { copyBindColumnTypes :: ![DuckDBV2LogicalTypeId]
+    { copyBindColumnTypes :: ![LogicalTypeId]
     }
     deriving (Eq, Show)
 
@@ -146,7 +147,7 @@ copyToSide readVariant bindFn initFn sinkFn finalizeFn =
     bind info _ = mask \restore -> do
         count <- output (c_duckdb_v2_copy_to_bind_get_column_count info)
         types <- acquireTypes info count [] 0
-        state <- restore (mapM (output . c_duckdb_v2_logical_type_get_id) types >>= bindFn . CopyBindInfo) `onException` mapM_ destroyLogicalType types
+        state <- restore (mapM (\logical -> output (c_duckdb_v2_logical_type_get_id logical) >>= logicalTypeIdFromNative) types >>= bindFn . CopyBindInfo) `onException` mapM_ destroyLogicalType types
         stable <- newStablePtr state `onException` mapM_ destroyLogicalType types
         let release = freeStablePtr stable >> mapM_ destroyLogicalType types
         storage <- newStablePtr (CopyBindingStorage (castStablePtrToPtr stable) types) `onException` release
@@ -245,7 +246,7 @@ the types are the columns of the target table, in order.
 data CopyFromInfo = CopyFromInfo
     { copyFromPath :: !FilePath
     , copyFromColumnNames :: ![Text]
-    , copyFromColumnTypes :: ![DuckDBV2LogicalTypeId]
+    , copyFromColumnTypes :: ![LogicalTypeId]
     }
     deriving (Eq, Show)
 
@@ -286,7 +287,7 @@ copyFromSide name readRows = (copyFromCallbacks bind execute){copyFromInitGlobal
             throwIO (userError ("duckdb-simple: the table of COPY FROM has " <> show (fromIntegral count :: Int) <> " columns, but a row of " <> Text.unpack name <> " has " <> show width))
         let columns = takeWhile (< count) [0 ..]
         names <- forM columns \index -> output (c_duckdb_v2_copy_from_bind_get_column_name info index) >>= readIdentifier
-        types <- forM columns \index -> bracket (output (c_duckdb_v2_copy_from_bind_get_column_type info index)) destroyLogicalType (output . c_duckdb_v2_logical_type_get_id)
+        types <- forM columns \index -> bracket (output (c_duckdb_v2_copy_from_bind_get_column_type info index)) destroyLogicalType (\logical -> output (c_duckdb_v2_logical_type_get_id logical) >>= logicalTypeIdFromNative)
         transferCallbackState (attachOpaque (c_duckdb_v2_copy_from_bind_set_bind_data info)) (readRows (CopyFromInfo (Text.unpack path) names types))
     initialize info _ = do
         scan <- readCallbackState (c_duckdb_v2_copy_from_init_global_get_bind_data info)

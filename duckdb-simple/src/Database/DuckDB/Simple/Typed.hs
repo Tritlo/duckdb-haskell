@@ -12,17 +12,20 @@ Description : Read and write callback vectors as typed Haskell values.
 Typed registrations use these helpers. An argument reader converts the rows of
 a borrowed vector with 'FromField'. 'TypedRow' gives the column types and the
 column values of a row. The module also registers typed casts on a connection
-or on a loading extension.
+or on a loading extension. It converts a typed replacement function to a native
+replacement scan callback.
 -}
 module Database.DuckDB.Simple.Typed (
     TypedRow (..),
     prepareArgumentReader,
     createCastOn,
+    Replacement (..),
+    replacementScanCallback,
 ) where
 
 import Control.Applicative ((<|>))
 import Control.Exception (SomeException, bracket, catch, displayException, fromException, throwIO, try)
-import Control.Monad (forM_, when)
+import Control.Monad (forM, forM_, when)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (intercalate)
 import Data.Proxy (Proxy (..))
@@ -35,7 +38,7 @@ import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue (..), duckdbColumnType)
 import Database.DuckDB.Simple.Types (Only (..))
-import Database.DuckDB.Simple.V2.Registration (RegistrationTarget, TypeDeclaration, registerCastWith, withRegistrationFactory, withTypeDeclaration)
+import Database.DuckDB.Simple.V2.Registration (ContextCallback, RegistrationTarget, TypeDeclaration, registerCastWith, withRegistrationFactory, withTypeDeclaration)
 import GHC.Generics
 
 {- | A row with a fixed list of typed columns. A typed registration uses the
@@ -199,3 +202,25 @@ writeCastValue factory useText vectorType vector row value =
   where
     write = checked . c_duckdb_v2_vector_set_value vector (fromIntegral row)
     writeText native = valueText native >>= \text -> bracket (toDuckValue factory text) destroyValue write
+
+{- | What DuckDB reads in place of an unknown table. DuckDB reads the result
+under the name of the table, unless the query gives an alias.
+-}
+data Replacement
+    = {- | Read the rows of a query. The text must contain exactly one SELECT
+      statement. Other text fails the query with an SQL error.
+      -}
+      ReplaceWithQuery Text
+    deriving (Eq, Show, Read)
+
+{- | Convert a typed replacement function to a native replacement scan
+callback. The callback reads the parts of the unknown name and gives them to the
+function. 'Nothing' declines the name.
+-}
+replacementScanCallback :: ([Text] -> IO (Maybe Replacement)) -> ContextCallback DuckDBV2ReplacementScanInfoHandle
+replacementScanCallback replace info _ = do
+    parts <- bracket (output (c_duckdb_v2_replacement_scan_get_name info)) (destroy c_duckdb_v2_qname_destroy) \name -> do
+        count <- output (c_duckdb_v2_qname_get_part_count name)
+        forM [0 .. fromIntegral count - 1 :: Int] \index -> output (c_duckdb_v2_qname_get_part name (fromIntegral index)) >>= readIdentifier
+    replace parts >>= mapM_ \case
+        ReplaceWithQuery sql -> withText sql (checked . c_duckdb_v2_replacement_scan_set_subquery info)

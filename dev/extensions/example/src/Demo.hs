@@ -25,7 +25,8 @@ initialize = Extension.runExtension register
 foreign export ccall "duckdb_haskell_demo_register" initialize :: ExtensionEntry
 
 {- | Register typed callbacks, macros, a PRAGMA, a custom option, and a log sink.
-Then register the functions with native callbacks in "Advanced".
+Then register the functions with native callbacks and the typed cast in
+"Advanced".
 -}
 register :: Extension -> IO ()
 register extension = do

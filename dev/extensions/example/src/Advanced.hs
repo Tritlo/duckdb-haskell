@@ -5,6 +5,7 @@
 {- | Register functions with native V2 callbacks on the loading DuckDB host.
 These registrations use the 'RegistrationTarget' of the extension. The
 callbacks read and write vectors one row at a time. This is simple but slow.
+The cast of the custom type uses the typed 'Extension.createCast'.
 -}
 module Advanced (register) where
 
@@ -12,7 +13,6 @@ import Control.Exception (bracket, throwIO)
 import Control.Monad (forM, forM_, unless, when)
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import Data.Int (Int64)
-import Data.Maybe (catMaybes)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
@@ -37,7 +37,7 @@ register extension =
     Registration.withRegistrationFactory target \factory -> do
         registerSum target factory
         registerSquares target factory
-        registerShifted target factory
+        registerShifted extension factory
         Registration.registerReplacementScanOn target replaceMissing
         registerLines target
         registerLineFiles target factory
@@ -132,26 +132,16 @@ registerSquares target factory =
             writeColumn vector [Just (if column == 0 then n else n * n) | n <- numbers]
 
 {- | Register the custom type @haskell_shifted@ with the base type BIGINT. Then
-register a cast from BIGINT to @haskell_shifted@ that adds 100. The cast writes
-NULL for a value that overflows, and then reports the overflow. CAST fails with
-the error. TRY_CAST ignores the error and keeps the NULL.
+register a typed cast from BIGINT to @haskell_shifted@ that adds 100. An
+overflow fails CAST. TRY_CAST gives NULL for the overflow.
 -}
-registerShifted :: RegistrationTarget -> DuckDBV2FactoryHandle -> IO ()
-registerShifted target factory = do
-    Registration.registerCustomTypeWith target \custom -> do
+registerShifted :: Extension -> DuckDBV2FactoryHandle -> IO ()
+registerShifted extension factory = do
+    Registration.registerCustomTypeWith (Extension.extensionTarget extension) \custom -> do
         Registration.withIdentifier "haskell_shifted" (checked . c_duckdb_v2_custom_type_set_name custom)
         Registration.withTypeDeclaration factory bigint (checked . c_duckdb_v2_custom_type_set_base_type custom)
-    Registration.registerCastWith target configure shift
-  where
-    configure function = do
-        Registration.withTypeDeclaration factory bigint (checked . c_duckdb_v2_cast_function_set_source_type function)
-        Registration.withTypeDeclaration factory (TypeExpression "haskell_shifted") (checked . c_duckdb_v2_cast_function_set_target_type function)
-    shift info _ = do
-        count <- output (c_duckdb_v2_cast_function_exec_get_row_count info)
-        values <- output (c_duckdb_v2_cast_function_exec_get_input info) >>= readColumn count
-        result <- output (c_duckdb_v2_cast_function_exec_get_output info)
-        writeColumn result (map (>>= \value -> addBigInt value 100) values)
-        forM_ (catMaybes values) \value -> addOrThrow "haskell_shifted" value 100
+    Extension.createCast extension bigint (TypeExpression "haskell_shifted") \value ->
+        maybe (Left ("haskell_shifted: BIGINT overflow in " <> Text.pack (show value) <> " + 100")) Right (addBigInt value 100)
 
 {- | Replace the unknown table @haskell_missing@ with a query. Reject the
 reserved name @haskell_reserved@. Ignore all other names.

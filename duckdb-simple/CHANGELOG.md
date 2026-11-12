@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.0.0 (unreleased)
+## 0.4.0.0
 
 - Target DuckDB 2.0 with `duckdb-ffi >= 2.0.0.0`. Support DuckDB 2.0.x
   releases.

@@ -327,17 +327,27 @@ testResults = withConnection $ \conn -> do
         alloca $ \kind -> c_duckdb_v2_arrow_result_get_result_type result kind nullPtr >>= (@?= DuckDBV2ErrorInputMetadataDeferred)
         concat <$> stepArrays result >>= (@?= [1])
         output (c_duckdb_v2_arrow_result_get_result_type result) >>= (@?= DuckDBV2ResultTypeQueryResult)
-    withFactory conn $ \factory -> withHandle (c_duckdb_v2_value_create_bigint factory 7) c_duckdb_v2_value_destroy $ \value -> withArray [value] $ \values -> do
-        let refused sql names expected = withStatement conn sql $ \statement -> alloca $ \slot -> do
+    withFactory conn $ \factory -> withHandle (c_duckdb_v2_value_create_bigint factory 7) c_duckdb_v2_value_destroy $ \value -> withArray [value, value] $ \values -> do
+        -- Execute the statement with the first count values and their names. The execution must fail with INPUT_INVALID.
+        let refused sql names count = withStatement conn sql $ \statement -> alloca $ \slot -> do
                 poke slot (coerce nullPtr)
-                c_duckdb_v2_statement_execute_arrow conn statement names (ConstPtr values) 1 0 slot nullPtr >>= assertEqual sql expected
+                c_duckdb_v2_statement_execute_arrow conn statement names (ConstPtr values) count 0 slot nullPtr >>= assertEqual sql DuckDBV2ErrorInputInvalid
                 peek slot >>= (@?= coerce nullPtr)
-        refused "PIVOT v2_amounts ON amount" (coerce nullPtr) DuckDBV2ErrorInputInvalid
-        -- A name for a positional parameter is rejected. A {NULL, 0} name keeps the value positional.
-        withView "amount" $ \name -> refused "SELECT $1::BIGINT" (coerce name) DuckDBV2ErrorInputInvalid
-        with (DuckDBV2IdentifierT (DuckDBV2Str (ConstPtr nullPtr) 0)) $ \name -> withStatement conn "SELECT $1::BIGINT" $ \statement ->
-            withHandle (c_duckdb_v2_statement_execute_arrow conn statement (ConstPtr name) (ConstPtr values) 1 0) c_duckdb_v2_arrow_result_destroy $ \result ->
-                stepArrays result >>= (@?= [[7]])
+            -- Execute the statement with the first value and its name, and read the value back.
+            accepted sql names = withStatement conn sql $ \statement ->
+                withHandle (c_duckdb_v2_statement_execute_arrow conn statement names (ConstPtr values) 1 0) c_duckdb_v2_arrow_result_destroy $ \result ->
+                    stepArrays result >>= (@?= [[7]])
+            positional = DuckDBV2IdentifierT (DuckDBV2Str (ConstPtr nullPtr) 0)
+        refused "PIVOT v2_amounts ON amount" (coerce nullPtr) 1
+        -- A name for a positional parameter is rejected, and so is a positional value for a named parameter. A {NULL, 0}
+        -- name keeps the value positional. Named and positional keys cannot be mixed.
+        withView "amount" $ \amount -> do
+            refused "SELECT $1::BIGINT" (coerce amount) 1
+            accepted "SELECT $amount::BIGINT" (coerce amount)
+            named <- peek (coerce amount)
+            withArray [DuckDBV2IdentifierT named, positional] $ \names -> refused "SELECT $amount::BIGINT" (ConstPtr names) 2
+        refused "SELECT $amount::BIGINT" (coerce nullPtr) 1
+        with positional $ \name -> accepted "SELECT $1::BIGINT" (ConstPtr name)
     -- A statement that fails to bind gives no result.
     withStatement conn "SELECT absent_column" $ \statement -> alloca $ \slot -> do
         poke slot (coerce nullPtr)

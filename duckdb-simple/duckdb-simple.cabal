@@ -73,6 +73,7 @@ library
     Database.DuckDB.Simple.Tokenizer
     Database.DuckDB.Simple.ToRow
     Database.DuckDB.Simple.Types
+    Database.DuckDB.Simple.V2.Pragma
     Database.DuckDB.Simple.V2.Registration
     Database.DuckDB.Simple.Variant
 

@@ -69,6 +69,7 @@ module Database.DuckDB.Simple (
 
     -- * Errors and conversions
     SQLError (..),
+    ErrorType (..),
     FormatError (..),
     ResultError (..),
     FieldParser,

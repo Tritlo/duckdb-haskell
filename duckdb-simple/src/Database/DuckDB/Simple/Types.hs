@@ -5,7 +5,7 @@ Module      : Database.DuckDB.Simple.Types
 Description : Shared data types for the duckdb-simple public surface.
 
 This module defines 'Null', 'Only', @(:.)@, and 'FormatError'. It re-exports
-'Connection', 'Statement', 'Query', and 'SQLError' from
+'Connection', 'Statement', 'Query', 'SQLError', and 'ErrorType' from
 @Database.DuckDB.Simple.Internal@. This module and @Database.DuckDB.Simple@
 export 'Connection' and 'Statement' without their constructors. They export
 the other types with their constructors.
@@ -15,6 +15,7 @@ module Database.DuckDB.Simple.Types (
     Statement,
     Query (..),
     SQLError (..),
+    ErrorType (..),
     FormatError (..),
     Null (..),
     Only (..),
@@ -28,6 +29,7 @@ import qualified Data.Text as Text
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), FromField (..), ResultError (..), returnError)
 import Database.DuckDB.Simple.Internal (
     Connection,
+    ErrorType (..),
     Query (..),
     SQLError (..),
     Statement,

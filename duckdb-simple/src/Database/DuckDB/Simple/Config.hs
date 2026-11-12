@@ -148,7 +148,7 @@ getConfigOption conn name = do
     when (Text.any (== '\0') name) $ throwInvalidArgument "config option name contains NUL"
     (withConfigOptionValue conn name \value scope -> Just . (`ConfigValue` scope) <$> valueText value)
         `catch` \err ->
-            if sqlErrorType err == Just DuckDBV2ErrorInputInvalid
+            if sqlErrorType err == Just ErrorTypeInputInvalid
                 then pure Nothing
                 else throwIO err
 

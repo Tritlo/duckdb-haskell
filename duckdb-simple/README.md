@@ -732,9 +732,10 @@ example with `-Wno-error=deprecations`.
 ## Typed registration
 
 These functions register SQL objects with Haskell values. Their signatures have
-no native handle. An exception in a Haskell function gives an SQL error with
-the message of the exception. `TRY_CAST` gives NULL instead. The examples use
-these imports:
+no native handle. `Database.DuckDB.Simple.Extension` has the same functions for
+a loadable extension. An exception in a Haskell function gives an SQL error
+with the message of the exception. `TRY_CAST` gives NULL instead. The examples
+use these imports:
 
 ```haskell
 {-# LANGUAGE BlockArguments #-}

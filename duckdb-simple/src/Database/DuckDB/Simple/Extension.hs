@@ -12,25 +12,41 @@ module Database.DuckDB.Simple.Extension (
     extensionTarget,
     createFunction,
     createFunctionWithState,
+    createCast,
+    registerReplacementScan,
+    registerCustomType,
+    registerMultiFileFunction,
+    createTableFunction,
+    createAggregate,
     MacroFunctionType (..),
     registerMacroFunction,
     registerPragmaFunction,
     registerCustomOption,
     registerLogSink,
+    registerCopyToFunction,
+    registerCopyFromFunction,
+    registerCopyFunction,
 ) where
 
 import Data.Text (Text)
 import Database.DuckDB.Simple.Callback (runCallback)
 import Database.DuckDB.Simple.Config.Internal (CustomOption)
 import qualified Database.DuckDB.Simple.Config.Internal as Config
+import Database.DuckDB.Simple.Copy.Internal (CopyBindInfo, CopyFinalizeInfo, CopyFromInfo, CopyInitInfo, CopySinkInfo, CopyTo, MultiFileOptions, registerMultiFileFunctionOn)
+import qualified Database.DuckDB.Simple.Copy.Internal as Copy
+import Database.DuckDB.Simple.FromField (Field, FromField)
 import Database.DuckDB.Simple.FromRow (FromRow)
-import Database.DuckDB.Simple.Function.Internal (Function, createFunctionOn, createFunctionWithStateOn)
+import Database.DuckDB.Simple.Function.Internal (Function, FunctionResult, createFunctionOn, createFunctionWithStateOn)
 import Database.DuckDB.Simple.Logging.Internal (LogEntry)
 import qualified Database.DuckDB.Simple.Logging.Internal as Logging
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Pragma.Internal (PragmaCallback)
 import qualified Database.DuckDB.Simple.Pragma.Internal as Pragma
-import Database.DuckDB.Simple.V2.Registration (FunctionParameter, FunctionSignature (..), RegistrationTarget (ExtensionTarget), configureFunctionSignature, registerMacroFunctionWith)
+import Database.DuckDB.Simple.ToField (ToDuckValue)
+import Database.DuckDB.Simple.Typed (Replacement, TypedRow, createCastOn, replacementScanCallback)
+import Database.DuckDB.Simple.Typed.Aggregate (Aggregate, createAggregateOn)
+import Database.DuckDB.Simple.Typed.Table (createTableFunctionOn)
+import Database.DuckDB.Simple.V2.Registration (FunctionParameter, FunctionSignature (..), RegistrationTarget (ExtensionTarget), TypeDeclaration, configureFunctionSignature, registerCustomTypeOn, registerMacroFunctionWith, registerReplacementScanOn)
 import Foreign.Ptr (Ptr, castPtr)
 
 {- | The borrowed registration target and context for one extension load.
@@ -69,6 +85,47 @@ createFunction = createFunctionOn . extensionTarget
 createFunctionWithState :: (Function f) => Extension -> Text -> IO s -> (s -> f) -> IO ()
 createFunctionWithState = createFunctionWithStateOn . extensionTarget
 
+{- | Register an explicit typed cast with the loading DuckDB host. The rules of
+'Database.DuckDB.Simple.Function.createCast' apply.
+-}
+createCast :: (FromField a, ToDuckValue b) => Extension -> TypeDeclaration -> TypeDeclaration -> (a -> Either Text b) -> IO ()
+createCast = createCastOn . extensionTarget
+
+{- | Register a replacement scan with the loading DuckDB host. The scan belongs
+to the instance. Each connection of the instance uses it until the instance
+closes. No function removes a scan. DuckDB asks the scans of a connection
+before the scans of the instance. It asks the scans of the instance in the
+order of registration. The function can run on several connections at the same
+time. 'Database.DuckDB.Simple.Registration.registerReplacementScan' gives the
+rules for the function.
+-}
+registerReplacementScan :: Extension -> ([Text] -> IO (Maybe Replacement)) -> IO ()
+registerReplacementScan extension = registerReplacementScanOn (extensionTarget extension) . replacementScanCallback
+
+{- | Register a custom type with the loading DuckDB host. The rules of
+'Database.DuckDB.Simple.Registration.registerCustomType' apply.
+-}
+registerCustomType :: Extension -> Text -> TypeDeclaration -> IO ()
+registerCustomType = registerCustomTypeOn . extensionTarget
+
+{- | Register a multi-file table function with the loading DuckDB host. The
+rules of 'Database.DuckDB.Simple.Copy.registerMultiFileFunction' apply.
+-}
+registerMultiFileFunction :: Extension -> Text -> Text -> MultiFileOptions -> IO ()
+registerMultiFileFunction = registerMultiFileFunctionOn . extensionTarget
+
+{- | Register a typed table function with the loading DuckDB host. The rules of
+'Database.DuckDB.Simple.Function.createTableFunction' apply.
+-}
+createTableFunction :: (FromRow params, TypedRow params, TypedRow row) => Extension -> Text -> [Text] -> (params -> IO [row]) -> IO ()
+createTableFunction = createTableFunctionOn . extensionTarget
+
+{- | Register an aggregate function with the loading DuckDB host. The rules of
+'Database.DuckDB.Simple.Function.createAggregate' apply.
+-}
+createAggregate :: (FromRow args, TypedRow args, FunctionResult result) => Extension -> Text -> Aggregate state args result -> IO ()
+createAggregate = createAggregateOn . extensionTarget
+
 {- | Register a scalar expression or a table SELECT as a macro of the loading
 extension. The V2 API registers a macro only for an extension. Use SQL
 @CREATE MACRO@ on a connection. Parameters must use the standard parameter
@@ -101,3 +158,31 @@ Callbacks can run concurrently. They must not log or change logging settings.
 -}
 registerLogSink :: Extension -> Text -> (LogEntry -> IO ()) -> IO () -> IO ()
 registerLogSink = Logging.registerLogSinkOn . extensionTarget
+
+{- | Register row-oriented COPY TO callbacks with the loading DuckDB host. The
+rules of 'Database.DuckDB.Simple.Copy.registerCopyToFunction' apply. The
+callbacks cannot read a VARIANT column.
+-}
+registerCopyToFunction ::
+    Extension ->
+    Text ->
+    (CopyBindInfo -> IO bindState) ->
+    (CopyInitInfo bindState -> IO globalState) ->
+    (CopySinkInfo bindState globalState -> [[Field]] -> IO ()) ->
+    (CopyFinalizeInfo bindState globalState -> IO ()) ->
+    IO ()
+registerCopyToFunction = Copy.registerCopyToFunctionOn . extensionTarget
+
+{- | Register the COPY FROM side of a format with the loading DuckDB host. The
+rules of 'Database.DuckDB.Simple.Copy.registerCopyFromFunction' apply.
+-}
+registerCopyFromFunction :: (TypedRow row) => Extension -> Text -> (CopyFromInfo -> IO [row]) -> IO ()
+registerCopyFromFunction = Copy.registerCopyFromFunctionOn . extensionTarget
+
+{- | Register a format with a COPY TO side and a COPY FROM side with the
+loading DuckDB host. The rules of
+'Database.DuckDB.Simple.Copy.registerCopyFunction' apply. The COPY TO side
+cannot read a VARIANT column.
+-}
+registerCopyFunction :: (TypedRow row) => Extension -> Text -> CopyTo bindState globalState -> (CopyFromInfo -> IO [row]) -> IO ()
+registerCopyFunction = Copy.registerCopyFunctionOn . extensionTarget

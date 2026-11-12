@@ -49,6 +49,13 @@
 - Add custom options to `Database.DuckDB.Simple.Config`. `customOptionUpdate`
   is a function that gets the new value as a `FieldValue`. An exception in the
   function rejects the value.
+- `Database.DuckDB.Simple.Extension` has the same typed registrations for a
+  loadable extension: `createCast`, `createAggregate`, `createTableFunction`,
+  `registerReplacementScan`, `registerCustomType`,
+  `registerMultiFileFunction`, `registerCopyToFunction`,
+  `registerCopyFromFunction`, `registerCopyFunction`,
+  `registerPragmaFunction`, and `registerCustomOption`. A COPY TO function of
+  an extension cannot read a VARIANT column.
 - A typed registration costs more for each row than raw vector access. Use the
   V2 modules for speed. Use them also for projection and filter pushdown,
   parallel table scans, and scalar functions with a bind callback or variadic

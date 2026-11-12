@@ -20,10 +20,9 @@ import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (BigNum (..), bsFromBool)
-import Database.DuckDB.Simple.Function (TypeDeclaration (..))
+import Database.DuckDB.Simple.Registration (TypeDeclaration (..), registerCustomType)
 import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue)
-import Database.DuckDB.Simple.V2.Registration (registerCustomType)
 import Numeric.Natural (Natural)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase, (@?=))

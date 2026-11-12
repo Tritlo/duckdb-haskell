@@ -16,5 +16,8 @@ package duckdb-ffi
 package duckdb-simple
   flags: +extension
 
+package duckdb-haskell-extension-example
+  tests: True
+
 program-options
   ghc-options: -Wall -Werror

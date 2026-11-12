@@ -397,6 +397,22 @@ testCustomOptionFailure = do
             current >>= (@?= [Just 12])
     readIORef failures >>= (@?= [])
 
+-- | The signature rules that a registration checks. 'parametersWithout' breaks one rule for each of them.
+signatureRules :: [String]
+signatureRules = ["unique parameter names", "single *args", "defaults last", "*args without default"]
+
+-- | The parameters of the scalar function in the registration test: a name, a kind, and whether the parameter has a default.
+parametersWithout :: String -> [(String, DuckDBV2FunctionParameterKind, Bool)]
+parametersWithout omitted = case omitted of
+    "unique parameter names" -> [("x", standard, False), ("x", standard, False)]
+    "single *args" -> [("x", standard, False), ("rest", variadic, False), ("more", variadic, False)]
+    "defaults last" -> [("x", standard, True), ("y", standard, False)]
+    "*args without default" -> [("rest", variadic, True)]
+    _ -> [("x", standard, False), ("y", standard, True), ("rest", variadic, False)]
+  where
+    standard = DuckDBV2FunctionParameterKindStandard
+    variadic = DuckDBV2FunctionParameterKindPositionalVariadic
+
 {- | Each registration leaves out one part that the header requires, or uses ANY where the header requires a concrete
 type. The last registration of each kind has every part. The test never calls the functions.
 -}
@@ -413,13 +429,16 @@ testRegistrationFailures = do
                     otherFactory <- output (c_duckdb_v2_instance_get_factory other)
                     let concrete omitted = if omitted == "concrete type" then anyType else ty
                         creator omitted = if omitted == "own factory" then otherFactory else factory
-                    eachPartRequired ["name", "exec callback", "return type", "concrete type", "own factory"] $ \omitted ->
-                        withHandle (c_duckdb_v2_scalar_function_create (creator omitted)) c_duckdb_v2_scalar_function_destroy $ \function -> do
-                            unless (omitted == "name") $ withView "v2_registered" $ \name -> checked (c_duckdb_v2_scalar_function_set_name function (coerce name))
-                            unless (omitted == "exec callback") $ checked (c_duckdb_v2_scalar_function_set_exec_callback function executePtr)
-                            signature <- output (c_duckdb_v2_scalar_function_get_signature function)
-                            unless (omitted == "return type") $ checked (c_duckdb_v2_function_signature_set_return_type signature (concrete omitted))
-                            c_duckdb_v2_connection_register_scalar_function conn function nullPtr
+                    eachPartRequired (["name", "exec callback", "return type", "concrete type", "own factory"] <> signatureRules) $ \omitted ->
+                        withHandle (c_duckdb_v2_value_create_bigint factory 1) c_duckdb_v2_value_destroy $ \one ->
+                            withHandle (c_duckdb_v2_scalar_function_create (creator omitted)) c_duckdb_v2_scalar_function_destroy $ \function -> do
+                                unless (omitted == "name") $ withView "v2_registered" $ \name -> checked (c_duckdb_v2_scalar_function_set_name function (coerce name))
+                                unless (omitted == "exec callback") $ checked (c_duckdb_v2_scalar_function_set_exec_callback function executePtr)
+                                signature <- output (c_duckdb_v2_scalar_function_get_signature function)
+                                unless (omitted == "return type") $ checked (c_duckdb_v2_function_signature_set_return_type signature (concrete omitted))
+                                forM_ (parametersWithout omitted) $ \(name, kind, defaulted) -> withView name $ \view ->
+                                    checked (c_duckdb_v2_function_signature_add_parameter signature (coerce view) ty (if defaulted then one else coerce nullPtr) kind)
+                                c_duckdb_v2_connection_register_scalar_function conn function nullPtr
                     withView "v2_registered_type" $ \name -> do
                         withHandle (c_duckdb_v2_factory_create_type_with_alias factory ty (coerce name)) c_duckdb_v2_logical_type_destroy $ \alias ->
                             eachPartRequired ["source type", "target type", "exec callback", "concrete type", "own factory"] $ \omitted ->

@@ -390,7 +390,7 @@ testCustomOptionFailure = do
 
 -- | The signature rules that a registration checks. 'parametersWithout' breaks one rule for each of them.
 signatureRules :: [String]
-signatureRules = ["unique parameter names", "single *args", "defaults last", "*args without default"]
+signatureRules = ["unique parameter names", "single *args", "single **kwargs", "defaults last", "*args without default", "**kwargs without default"]
 
 -- | The parameters of the scalar function in the registration test: a name, a kind, and whether the parameter has a default.
 parametersWithout :: String -> [(String, DuckDBV2FunctionParameterKind, Bool)]
@@ -398,11 +398,14 @@ parametersWithout omitted = case omitted of
     "unique parameter names" -> [("x", standard, False), ("x", standard, False)]
     "single *args" -> [("x", standard, False), ("rest", variadic, False), ("more", variadic, False)]
     "defaults last" -> [("x", standard, True), ("y", standard, False)]
+    "single **kwargs" -> [("x", standard, False), ("options", named, False), ("more", named, False)]
     "*args without default" -> [("rest", variadic, True)]
+    "**kwargs without default" -> [("options", named, True)]
     _ -> [("x", standard, False), ("y", standard, True), ("rest", variadic, False)]
   where
     standard = DuckDBV2FunctionParameterKindStandard
     variadic = DuckDBV2FunctionParameterKindPositionalVariadic
+    named = DuckDBV2FunctionParameterKindNamedVariadic
 
 {- | Each registration leaves out one part that the header requires, or uses ANY where the header requires a concrete
 type. The last registration of each kind has every part. The test never calls the functions.

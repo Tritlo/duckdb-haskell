@@ -127,8 +127,10 @@ testParameterRejection = withConnection $ \conn -> withFactory conn $ \factory -
     execute "SELECT $1::BIGINT" (Just "amount") 1 >>= (@?= (DuckDBV2ErrorInputInvalid, []))
     execute "SELECT $amount::BIGINT" (Just "amount") 1 >>= (@?= (DuckDBV2ErrorNone, [Just 7]))
     execute "SELECT $amount::BIGINT" Nothing 1 >>= (@?= (DuckDBV2ErrorInputInvalid, []))
-    -- A PIVOT without an IN list expands into a group of statements.
+    -- A PIVOT without an IN list expands into a group of statements. A value for a statement without parameters is a
+    -- binder error, so the code of the PIVOT comes from the expansion.
     let pivot = "PIVOT (SELECT 1::BIGINT AS k, 2::BIGINT AS v) ON k USING max(v)"
+    execute "SELECT 2::BIGINT" Nothing 1 >>= (@?= (DuckDBV2ErrorQueryBinder, []))
     execute pivot Nothing 1 >>= (@?= (DuckDBV2ErrorInputInvalid, []))
     withResult conn pivot $ \result -> do
         alloca $ \schema -> do

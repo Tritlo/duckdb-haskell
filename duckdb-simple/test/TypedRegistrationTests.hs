@@ -8,7 +8,7 @@
 module TypedRegistrationTests (typedRegistrationTests) where
 
 import Control.Exception (throwIO, try)
-import Control.Monad (forM_, void, when)
+import Control.Monad (void, when)
 import qualified Data.ByteString as BS
 import Data.IORef (mkWeakIORef, modifyIORef', newIORef, readIORef)
 import Data.Int (Int16, Int32, Int64, Int8)
@@ -538,14 +538,21 @@ testTableRelease = do
                         when (n == failure) $ throwIO (userError "typed_tokens: the row fails")
                         (Only (value + n) :) <$> rowsFrom (n + 1)
             rowsFrom 0
+        -- Check the token of the last scan before the next statement.
+        let released scan = do
+                performMajorGC
+                performMajorGC
+                scans <- readIORef tokens
+                case scans of
+                    weak : _ -> deRefWeak weak >>= assertBool (scan <> " keeps its list after the scan ends") . isNothing
+                    [] -> assertFailure (scan <> " did not run the function")
         query_ conn "SELECT count(*) FROM typed_tokens(3000, -1)" >>= (@?= [Only (3000 :: Int64)])
+        released "a full scan"
         query_ conn "SELECT n FROM typed_tokens(-1, -1) LIMIT 3" >>= (@?= map Only [0, 1, 2 :: Int64])
+        released "a scan with LIMIT"
         assertSqlError "typed_tokens: the row fails" (query_ conn "SELECT count(*) FROM typed_tokens(-1, 2500)" :: IO [Only Int64])
-        performMajorGC
-        performMajorGC
-        scans <- readIORef tokens
-        length scans @?= 3
-        forM_ scans \weak -> deRefWeak weak >>= assertBool "a scan keeps its list after the scan ends" . isNothing
+        released "a failed scan"
+        readIORef tokens >>= (@?= 3) . length
         pure offsetWeak
     performMajorGC
     performMajorGC

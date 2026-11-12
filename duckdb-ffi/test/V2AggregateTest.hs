@@ -19,7 +19,7 @@ import GHC.Records (getField)
 import HsBindgen.Runtime.Prelude (toFunPtr)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
-import V2Test (argCounts, borrowedOpaque, callbackGuard, checked, countCall, eachPartRequired, expectCallbackFailure, failOnPurpose, fillDocs, output, readIntegers, withConnection, withFactory, withHandle, withResult, withType, withView)
+import V2Test (argCounts, borrowedOpaque, callbackGuard, checked, countCall, eachPartRequired, expectCallbackFailure, failOnPurpose, fillDocs, output, readIntegers, withConnection, withFactory, withHandle, withInstance, withResult, withType, withView)
 
 tests :: TestTree
 tests =
@@ -285,10 +285,12 @@ testAggregateRegistration = do
             bracket (DuckDBV2AggregateFunctionUpdateCallbackFn <$> toFunPtr (DuckDBV2AggregateFunctionUpdateCallbackFn_Aux update)) (freeHaskellFunPtr . getField @"unwrap") $ \updatePtr ->
                 bracket (DuckDBV2AggregateFunctionCombineCallbackFn <$> toFunPtr (DuckDBV2AggregateFunctionCombineCallbackFn_Aux combine)) (freeHaskellFunPtr . getField @"unwrap") $ \combinePtr ->
                     bracket (DuckDBV2AggregateFunctionFinalizeCallbackFn <$> toFunPtr (DuckDBV2AggregateFunctionFinalizeCallbackFn_Aux finalize)) (freeHaskellFunPtr . getField @"unwrap") $ \finalizePtr ->
-                        withConnection $ \conn -> withFactory conn $ \factory -> withType factory "BIGINT" $ \ty ->
-                            withHandle (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdAny (coerce nullPtr) (coerce nullPtr) 0) c_duckdb_v2_logical_type_destroy $ \anyType ->
-                                eachPartRequired ["name", "size callback", "init callback", "update callback", "combine callback", "finalize callback", "return type", "concrete type"] $ \omitted ->
-                                    withHandle (c_duckdb_v2_aggregate_function_create factory) c_duckdb_v2_aggregate_function_destroy $ \function -> do
+                        withInstance $ \other -> withConnection $ \conn -> withFactory conn $ \factory -> withType factory "BIGINT" $ \ty ->
+                            withHandle (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdAny (coerce nullPtr) (coerce nullPtr) 0) c_duckdb_v2_logical_type_destroy $ \anyType -> do
+                                -- The part "own factory" creates the function through the factory of another instance.
+                                otherFactory <- output (c_duckdb_v2_instance_get_factory other)
+                                eachPartRequired ["name", "size callback", "init callback", "update callback", "combine callback", "finalize callback", "return type", "concrete type", "own factory"] $ \omitted ->
+                                    withHandle (c_duckdb_v2_aggregate_function_create (if omitted == "own factory" then otherFactory else factory)) c_duckdb_v2_aggregate_function_destroy $ \function -> do
                                         let unlessOmitted part = unless (omitted == part) . checked
                                         unless (omitted == "name") $ withView "v2_registered_sum" $ \name -> checked (c_duckdb_v2_aggregate_function_set_name function (coerce name))
                                         unlessOmitted "size callback" (c_duckdb_v2_aggregate_function_set_size_callback function sizePtr)

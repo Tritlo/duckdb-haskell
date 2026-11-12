@@ -278,9 +278,15 @@ testScalarFailures = do
                     code <- c_duckdb_v2_function_bind_get_arg_value info 1 value nullPtr
                     c_duckdb_v2_value_destroy value >>= (@?= DuckDBV2ErrorNone)
                     assertBool "a column argument does not fold to a constant" (code /= DuckDBV2ErrorNone)
+                    outside <- c_duckdb_v2_function_bind_get_arg_value info 2 value nullPtr
+                    c_duckdb_v2_value_destroy value >>= (@?= DuckDBV2ErrorNone)
+                    assertBool "an index after the last argument fails" (outside /= DuckDBV2ErrorNone)
                 -- The bind sets the bind data first, so DuckDB must release it also when the bind fails.
                 state <- malloc
                 poke state (stage :: Int64)
+                -- A scalar function sets its bind data through its own setter only.
+                with (borrowedOpaque nullPtr) $ \opaque ->
+                    c_duckdb_v2_function_bind_set_bind_data info opaque nullPtr >>= assertBool "the generic bind data setter fails for a scalar function" . (/= DuckDBV2ErrorNone)
                 with (DuckDBV2Opaque (coerce state) releasePtr (DuckDBV2OpaqueEqualsFn nullFunPtr)) $ \opaque ->
                     checked (c_duckdb_v2_scalar_function_bind_set_bind_data result opaque)
                 when (stage == 1) (failOnPurpose "bind")
@@ -400,12 +406,15 @@ testRegistrationFailures = do
         cast _info _context _err = pure ()
     bracket (DuckDBV2ScalarFunctionExecCallbackFn <$> toFunPtr (DuckDBV2ScalarFunctionExecCallbackFn_Aux execute)) (freeHaskellFunPtr . getField @"unwrap") $ \executePtr ->
         bracket (DuckDBV2CastFunctionExecCallbackFn <$> toFunPtr (DuckDBV2CastFunctionExecCallbackFn_Aux cast)) (freeHaskellFunPtr . getField @"unwrap") $ \castPtr ->
-            withConnection $ \conn -> withFactory conn $ \factory -> withType factory "BIGINT" $ \ty ->
+            withInstance $ \other -> withConnection $ \conn -> withFactory conn $ \factory -> withType factory "BIGINT" $ \ty ->
                 withHandle (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdAny (coerce nullPtr) (coerce nullPtr) 0) c_duckdb_v2_logical_type_destroy $ \anyType -> do
-                    -- The part "concrete type" replaces BIGINT with ANY.
+                    -- The part "concrete type" replaces BIGINT with ANY. The part "own factory" creates the object through
+                    -- the factory of another instance.
+                    otherFactory <- output (c_duckdb_v2_instance_get_factory other)
                     let concrete omitted = if omitted == "concrete type" then anyType else ty
-                    eachPartRequired ["name", "exec callback", "return type", "concrete type"] $ \omitted ->
-                        withHandle (c_duckdb_v2_scalar_function_create factory) c_duckdb_v2_scalar_function_destroy $ \function -> do
+                        creator omitted = if omitted == "own factory" then otherFactory else factory
+                    eachPartRequired ["name", "exec callback", "return type", "concrete type", "own factory"] $ \omitted ->
+                        withHandle (c_duckdb_v2_scalar_function_create (creator omitted)) c_duckdb_v2_scalar_function_destroy $ \function -> do
                             unless (omitted == "name") $ withView "v2_registered" $ \name -> checked (c_duckdb_v2_scalar_function_set_name function (coerce name))
                             unless (omitted == "exec callback") $ checked (c_duckdb_v2_scalar_function_set_exec_callback function executePtr)
                             signature <- output (c_duckdb_v2_scalar_function_get_signature function)
@@ -413,19 +422,19 @@ testRegistrationFailures = do
                             c_duckdb_v2_connection_register_scalar_function conn function nullPtr
                     withView "v2_registered_type" $ \name -> do
                         withHandle (c_duckdb_v2_factory_create_type_with_alias factory ty (coerce name)) c_duckdb_v2_logical_type_destroy $ \alias ->
-                            eachPartRequired ["source type", "target type", "exec callback", "concrete type"] $ \omitted ->
-                                withHandle (c_duckdb_v2_cast_function_create factory) c_duckdb_v2_cast_function_destroy $ \function -> do
+                            eachPartRequired ["source type", "target type", "exec callback", "concrete type", "own factory"] $ \omitted ->
+                                withHandle (c_duckdb_v2_cast_function_create (creator omitted)) c_duckdb_v2_cast_function_destroy $ \function -> do
                                     unless (omitted == "source type") $ checked (c_duckdb_v2_cast_function_set_source_type function (concrete omitted))
                                     unless (omitted == "target type") $ checked (c_duckdb_v2_cast_function_set_target_type function alias)
                                     unless (omitted == "exec callback") $ checked (c_duckdb_v2_cast_function_set_exec_callback function castPtr)
                                     c_duckdb_v2_connection_register_cast_function conn function nullPtr
-                        eachPartRequired ["name", "base type", "concrete type"] $ \omitted ->
-                            withHandle (c_duckdb_v2_custom_type_create factory) c_duckdb_v2_custom_type_destroy $ \custom -> do
+                        eachPartRequired ["name", "base type", "concrete type", "own factory"] $ \omitted ->
+                            withHandle (c_duckdb_v2_custom_type_create (creator omitted)) c_duckdb_v2_custom_type_destroy $ \custom -> do
                                 unless (omitted == "name") $ checked (c_duckdb_v2_custom_type_set_name custom (coerce name))
                                 unless (omitted == "base type") $ checked (c_duckdb_v2_custom_type_set_base_type custom (concrete omitted))
                                 c_duckdb_v2_connection_register_custom_type conn custom nullPtr
                     -- Registration casts the text of the default value to BIGINT. The part "default value that casts" gives a text that does not cast.
-                    let option omitted = withHandle (c_duckdb_v2_custom_option_create factory) c_duckdb_v2_custom_option_destroy $ \custom -> do
+                    let option omitted = withHandle (c_duckdb_v2_custom_option_create (creator omitted)) c_duckdb_v2_custom_option_destroy $ \custom -> do
                             unless (omitted == "name") $ withView "v2_registered_option" $ \name -> checked (c_duckdb_v2_custom_option_set_name custom (coerce name))
                             unless (omitted == "type or default value") $ do
                                 checked (c_duckdb_v2_custom_option_set_type custom ty)
@@ -433,7 +442,7 @@ testRegistrationFailures = do
                                     withHandle (c_duckdb_v2_value_create_varchar factory text) c_duckdb_v2_value_destroy $ \value ->
                                         checked (c_duckdb_v2_custom_option_set_default_value custom value)
                             c_duckdb_v2_connection_register_custom_option conn custom nullPtr
-                    eachPartRequired ["name", "type or default value", "default value that casts"] option
+                    eachPartRequired ["name", "type or default value", "default value that casts", "own factory"] option
                     option "" >>= assertBool "a second option with the same name fails" . (/= DuckDBV2ErrorNone)
                     withResult conn "SELECT current_setting('v2_registered_option')::BIGINT" $ \result -> readIntegers result >>= (@?= [Just 5])
 
@@ -457,6 +466,13 @@ testConfigFailures = withInstance $ \instanceHandle ->
         write config "v2_no_such_option" "2" DuckDBV2SettingScopeGlobal >>= rejected
         write config "preserve_insertion_order" "true" DuckDBV2SettingScopeGlobal >>= (@?= DuckDBV2ErrorNone)
         write config "allow_unsigned_extensions" "true" DuckDBV2SettingScopeGlobal >>= rejected
+        -- The write casts the value to the type of the option.
+        factory <- output (c_duckdb_v2_connection_get_factory conn)
+        let writeValue setting = withView "threads" $ \name -> withView setting $ \text ->
+                withHandle (c_duckdb_v2_value_create_varchar factory text) c_duckdb_v2_value_destroy $ \value ->
+                    c_duckdb_v2_config_set_option_value config (coerce name) value DuckDBV2SettingScopeGlobal nullPtr
+        writeValue "3" >>= (@?= DuckDBV2ErrorNone)
+        writeValue "three" >>= rejected
         readOption config "TimeZone" >>= (@?= ("UTC", DuckDBV2SettingScopeGlobal))
         withView "v2_no_such_option" $ \name -> alloca $ \value -> alloca $ \scope -> do
             poke value (coerce nullPtr)

@@ -7,7 +7,7 @@ import Control.Exception (bracket, finally)
 import Control.Monad (forM, unless, void, when)
 import Data.Char (toLower)
 import Data.Coerce (coerce)
-import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
+import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Int (Int32, Int64)
 import Data.List (isSuffixOf)
 import Database.DuckDB.FFI.V2
@@ -22,7 +22,7 @@ import HsBindgen.Runtime.Prelude (toFunPtr)
 import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
-import V2Test (borrowedOpaque, callbackGuard, checked, consume, output, readIntegers, readView, removeTestFile, withConnection, withFactory, withHandle, withResult, withView)
+import V2Test (borrowedOpaque, callbackGuard, checked, consume, output, readIntegers, readView, record, removeTestFile, withConnection, withFactory, withHandle, withResult, withView)
 
 tests :: TestTree
 tests =
@@ -86,10 +86,6 @@ expectOptions getCount getName getValue = do
     alloca $ \slot -> do
         poke slot (coerce nullPtr)
         expectFailure "an option value after the last option" (getValue 3 slot) `finally` c_duckdb_v2_value_destroy slot
-
--- | Add a value to the front of a list. Callbacks can run on more than one thread.
-record :: IORef [a] -> a -> IO ()
-record ref value = atomicModifyIORef' ref (\values -> (value : values, ()))
 
 -- | Get a path that does not exist yet: the name of a new temporary file, which the function removes.
 freshPath :: String -> IO String

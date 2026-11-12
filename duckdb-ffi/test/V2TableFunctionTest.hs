@@ -20,7 +20,7 @@ import HsBindgen.Runtime.Prelude (ToFunPtr, toFunPtr)
 import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
-import V2Test (callbackGuard, checked, consume, output, readIntegers, readView, removeTestFile, withConnection, withFactory, withHandle, withResult, withType, withView)
+import V2Test (borrowedOpaque, callbackGuard, checked, consume, output, readIntegers, readView, record, removeTestFile, withConnection, withFactory, withHandle, withResult, withType, withView)
 
 tests :: TestTree
 tests =
@@ -56,7 +56,7 @@ addColumns result context names = do
 
 -- | Pass a pointer as an opaque handle without a destructor. The caller keeps the memory.
 lend :: Ptr a -> (Ptr DuckDBV2Opaque -> IO b) -> IO b
-lend cells = with (DuckDBV2Opaque (castPtr cells) (DuckDBV2OpaqueDestroyFn nullFunPtr) (DuckDBV2OpaqueEqualsFn nullFunPtr))
+lend cells = with (borrowedOpaque (castPtr cells))
 
 {- | Allocate cells with the given values and give them to DuckDB through the setter.
 The opaque handle frees the cells with the C @free@ when DuckDB destroys it.
@@ -68,10 +68,6 @@ give values setter = do
     let opaque = DuckDBV2Opaque (castPtr cells) (DuckDBV2OpaqueDestroyFn (castFunPtr finalizerFree)) (DuckDBV2OpaqueEqualsFn nullFunPtr)
     with opaque (checked . setter) `onException` free cells
     pure (castPtr cells)
-
--- | Add a value to a list that callbacks on several threads share.
-record :: IORef [a] -> a -> IO ()
-record ref value = atomicModifyIORef' ref $ \values -> (value : values, ())
 
 -- | Assert that a callback reads a value that an earlier callback recorded.
 expectRecorded :: (Eq a) => String -> a -> IORef [a] -> IO ()

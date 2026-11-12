@@ -15,6 +15,7 @@ module V2Test (
     output,
     readIntegers,
     readView,
+    record,
     removeTestFile,
     tests,
     withBytes,
@@ -324,6 +325,10 @@ borrowedOpaque ptr = DuckDBV2Opaque ptr (DuckDBV2OpaqueDestroyFn nullFunPtr) (Du
 -- | Count one invocation of a callback. Callbacks can run on more than one thread.
 countCall :: IORef Int -> IO ()
 countCall calls = atomicModifyIORef' calls (\count -> (count + 1, ()))
+
+-- | Add a value to the front of a list. Callbacks can run on more than one thread.
+record :: IORef [a] -> a -> IO ()
+record ref value = atomicModifyIORef' ref (\values -> (value : values, ()))
 
 callbackGuard :: IORef [String] -> Ptr DuckDBV2ErrorInfoHandle -> IO () -> IO ()
 callbackGuard failures err action =

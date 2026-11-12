@@ -22,6 +22,7 @@ import qualified Database.DuckDB.Simple.Copy as Copy
 import Database.DuckDB.Simple.Extension (Extension)
 import qualified Database.DuckDB.Simple.Extension as Extension
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (LogicalTypeScalar))
+import Database.DuckDB.Simple.Registration (Replacement (..))
 import Database.DuckDB.Simple.V2.Registration (RegistrationTarget, TypeDeclaration (..), checked, destroy, getCallbackState, output, setCallbackState)
 import qualified Database.DuckDB.Simple.V2.Registration as Registration
 import Foreign.C.ConstPtr (ConstPtr (..))
@@ -37,8 +38,8 @@ register extension =
     Registration.withRegistrationFactory target \factory -> do
         registerSum target factory
         registerSquares target factory
-        registerShifted extension factory
-        Registration.registerReplacementScanOn target replaceMissing
+        registerShifted extension
+        Extension.registerReplacementScan extension replaceMissing
         registerLines target
         registerLineFiles target factory
   where
@@ -135,27 +136,20 @@ registerSquares target factory =
 register a typed cast from BIGINT to @haskell_shifted@ that adds 100. An
 overflow fails CAST. TRY_CAST gives NULL for the overflow.
 -}
-registerShifted :: Extension -> DuckDBV2FactoryHandle -> IO ()
-registerShifted extension factory = do
-    Registration.registerCustomTypeWith (Extension.extensionTarget extension) \custom -> do
-        Registration.withIdentifier "haskell_shifted" (checked . c_duckdb_v2_custom_type_set_name custom)
-        Registration.withTypeDeclaration factory bigint (checked . c_duckdb_v2_custom_type_set_base_type custom)
-    Extension.createCast extension bigint (TypeExpression "haskell_shifted") \value ->
+registerShifted :: Extension -> IO ()
+registerShifted extension = do
+    Extension.registerCustomType extension "haskell_shifted" (TypeExpression "BIGINT")
+    Extension.createCast extension (TypeExpression "BIGINT") (TypeExpression "haskell_shifted") \value ->
         maybe (Left ("haskell_shifted: BIGINT overflow in " <> Text.pack (show value) <> " + 100")) Right (addBigInt value 100)
 
 {- | Replace the unknown table @haskell_missing@ with a query. Reject the
 reserved name @haskell_reserved@. Ignore all other names.
 -}
-replaceMissing :: Registration.ContextCallback DuckDBV2ReplacementScanInfoHandle
-replaceMissing info _ =
-    bracket (output (c_duckdb_v2_replacement_scan_get_name info)) (destroy c_duckdb_v2_qname_destroy) \name -> do
-        parts <- output (c_duckdb_v2_qname_get_part_count name)
-        when (parts == 1) do
-            part <- output (c_duckdb_v2_qname_get_part name 0) >>= Registration.readIdentifier
-            when (part == "haskell_missing") $
-                Registration.withText "SELECT 42::BIGINT AS amount" (checked . c_duckdb_v2_replacement_scan_set_subquery info)
-            when (part == "haskell_reserved") $
-                throwIO (userError "haskell_reserved: the table name is reserved")
+replaceMissing :: [Text] -> IO (Maybe Replacement)
+replaceMissing name = case name of
+    ["haskell_missing"] -> pure (Just (ReplaceWithQuery "SELECT 42::BIGINT AS amount"))
+    ["haskell_reserved"] -> throwIO (userError "haskell_reserved: the table name is reserved")
+    _ -> pure Nothing
 
 {- | Register the COPY format @haskell_lines@ in both directions. A file has one
 BIGINT value on each line. An empty line is NULL.

@@ -44,6 +44,17 @@
 - Add `createTableFunction` for connections and extensions. It registers a
   Haskell function that gives the rows of a table function as a list. DuckDB
   reads the list one chunk at a time.
+- Add `registerCopyFromFunction` and `registerCopyFunction` to
+  `Database.DuckDB.Simple.Copy`. The first registers a COPY FROM side that
+  gives a list of typed rows. The second registers a format with a COPY TO side
+  and a COPY FROM side under one name. DuckDB keeps the first registration of a
+  format name and ignores a later one. `Database.DuckDB.Simple.Extension` has
+  these functions and `registerCopyToFunction` for a loading extension.
+- Move the native COPY callback interface (`CopyToCallbacks`,
+  `CopyFromCallbacks`, the raw `registerCopyFunction`,
+  `registerCopyFunctionWith`, `registerCopyToCallbacks`,
+  `registerCopyFromCallbacks`, and `registerMultiFileFunctionWith`) to
+  `Database.DuckDB.Simple.V2.Copy`.
 - Add scoped named collection inputs and prepared dynamic PIVOT with a deferred
   output schema. Native expanding statements cannot have parameters.
 - Rename `Database.DuckDB.Simple.Deprecated.Streaming` to

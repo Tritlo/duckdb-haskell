@@ -5,8 +5,11 @@
 {-# LANGUAGE TypeApplications #-}
 
 module V2Test (
+    borrowedOpaque,
+    callbackGuard,
     checked,
     consume,
+    countCall,
     output,
     readIntegers,
     readView,
@@ -292,6 +295,14 @@ testError = withConnection $ \conn -> withStatement conn "SELECT absent_column" 
         assertBool "error identifies the missing column" ("absent_column" `isInfixOf` message)
     c_duckdb_v2_error_info_destroy err >>= (@?= DuckDBV2ErrorNone)
     peek err >>= (@?= coerce nullPtr)
+
+-- | Wrap a pointer that the test owns. The engine does not destroy it.
+borrowedOpaque :: Ptr Void -> DuckDBV2Opaque
+borrowedOpaque ptr = DuckDBV2Opaque ptr (DuckDBV2OpaqueDestroyFn nullFunPtr) (DuckDBV2OpaqueEqualsFn nullFunPtr)
+
+-- | Count one invocation of a callback. Callbacks can run on more than one thread.
+countCall :: IORef Int -> IO ()
+countCall calls = atomicModifyIORef' calls (\count -> (count + 1, ()))
 
 callbackGuard :: IORef [String] -> Ptr DuckDBV2ErrorInfoHandle -> IO () -> IO ()
 callbackGuard failures err action =

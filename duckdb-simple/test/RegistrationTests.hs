@@ -17,8 +17,8 @@ import Database.DuckDB.Simple.FromField (FieldValue (..))
 import qualified Database.DuckDB.Simple.FunctionDocs as Docs
 import qualified Database.DuckDB.Simple.Logging as Logging
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..))
-import qualified Database.DuckDB.Simple.Pragma as Pragma
 import qualified Database.DuckDB.Simple.QueryMetrics as Metrics
+import qualified Database.DuckDB.Simple.V2.Pragma as Pragma
 import qualified Database.DuckDB.Simple.V2.Registration as R
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (advancePtr, allocaArray, peekArray)
@@ -134,7 +134,7 @@ testScalarResolution = withConnection ":memory:" \connection -> do
 testPragma :: Assertion
 testPragma = withConnection ":memory:" \connection -> do
     let amount = (R.parameter "amount" bigint){R.parameterDefault = Just (R.defaultValue (42 :: Int64))}
-    Pragma.registerPragmaFunction connection "managed_query" [amount] $ Pragma.QueryPragma $ \info _ -> do
+    Pragma.registerPragmaFunctionOn (R.ConnectionTarget connection) "managed_query" [amount] $ Pragma.QueryPragma $ \info _ -> do
         value <- bracket (R.output (c_duckdb_v2_function_bind_get_arg_value info 0)) (R.destroy c_duckdb_v2_value_destroy) (R.output . c_duckdb_v2_value_get_bigint)
         pure ("SELECT " <> Text.pack (show value) <> "::BIGINT")
     query_ connection "PRAGMA managed_query" >>= (@?= [Only (42 :: Int64)])
@@ -150,7 +150,7 @@ testPragma = withConnection ":memory:" \connection -> do
         (Pragma.ExecPragma (\_ _ -> modifyIORef' calls (+ 1)))
     void (execute_ connection "PRAGMA managed_exec")
     readIORef calls >>= (@?= 1)
-    Pragma.registerPragmaFunction connection "managed_pragma_error" [] (Pragma.QueryPragma (\_ _ -> throwIO (userError "managed callback failure")))
+    Pragma.registerPragmaFunctionOn (R.ConnectionTarget connection) "managed_pragma_error" [] (Pragma.QueryPragma (\_ _ -> throwIO (userError "managed callback failure")))
     assertSqlError (query_ connection "PRAGMA managed_pragma_error" :: IO [Only Int64])
     query_ connection "SELECT 1::BIGINT" >>= (@?= [Only (1 :: Int64)])
 
@@ -333,7 +333,7 @@ testRelease = do
         assertBool "state initialized" (not (null stateRefs))
         pragmaClosure <- newIORef (7 :: Int64)
         pragmaWeak <- mkWeakIORef pragmaClosure (pure ())
-        Pragma.registerPragmaFunction connection "managed_pragma_release" [] (Pragma.ExecPragma (\_ _ -> void (readIORef pragmaClosure)))
+        Pragma.registerPragmaFunctionOn (R.ConnectionTarget connection) "managed_pragma_release" [] (Pragma.ExecPragma (\_ _ -> void (readIORef pragmaClosure)))
         void (execute_ connection "PRAGMA managed_pragma_release")
         failed <- failedRegistration connection
         pure (closureWeak : pragmaWeak : failed : stateRefs)

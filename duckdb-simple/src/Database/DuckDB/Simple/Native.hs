@@ -12,6 +12,12 @@ module Database.DuckDB.Simple.Native (
     SettingScope (..),
     settingScopeToNative,
     settingScopeFromNative,
+    LogLevel (..),
+    logLevelToNative,
+    logLevelFromNative,
+    LogScope (..),
+    logScopeToNative,
+    logScopeFromNative,
     checked,
     checkCode,
     output,
@@ -236,6 +242,59 @@ settingScopeFromNative = \case
     DuckDBV2SettingScopeGlobal -> pure SettingScopeGlobal
     DuckDBV2SettingScopeSession -> pure SettingScopeSession
     DuckDBV2SettingScope value -> throwUnknownNative "setting scope" value
+
+-- | The severity of a log entry.
+data LogLevel
+    = LogLevelTrace
+    | LogLevelDebug
+    | LogLevelInfo
+    | LogLevelWarning
+    | LogLevelError
+    | LogLevelFatal
+    deriving (Eq, Ord, Show, Read, Enum, Bounded)
+
+-- | Convert a log level to its native value.
+logLevelToNative :: LogLevel -> DuckDBV2LogLevel
+logLevelToNative = \case
+    LogLevelTrace -> DuckDBV2LogLevelTrace
+    LogLevelDebug -> DuckDBV2LogLevelDebug
+    LogLevelInfo -> DuckDBV2LogLevelInfo
+    LogLevelWarning -> DuckDBV2LogLevelWarning
+    LogLevelError -> DuckDBV2LogLevelError
+    LogLevelFatal -> DuckDBV2LogLevelFatal
+
+-- | Convert a native log level. An unknown value raises 'SQLError'.
+logLevelFromNative :: DuckDBV2LogLevel -> IO LogLevel
+logLevelFromNative = \case
+    DuckDBV2LogLevelTrace -> pure LogLevelTrace
+    DuckDBV2LogLevelDebug -> pure LogLevelDebug
+    DuckDBV2LogLevelInfo -> pure LogLevelInfo
+    DuckDBV2LogLevelWarning -> pure LogLevelWarning
+    DuckDBV2LogLevelError -> pure LogLevelError
+    DuckDBV2LogLevelFatal -> pure LogLevelFatal
+    DuckDBV2LogLevel value -> throwUnknownNative "log level" value
+
+-- | The context of a log entry: the database, a connection, or a thread.
+data LogScope
+    = LogScopeDatabase
+    | LogScopeConnection
+    | LogScopeThread
+    deriving (Eq, Ord, Show, Read, Enum, Bounded)
+
+-- | Convert a log scope to its native value.
+logScopeToNative :: LogScope -> DuckDBV2LogScope
+logScopeToNative = \case
+    LogScopeDatabase -> DuckDBV2LogScopeDatabase
+    LogScopeConnection -> DuckDBV2LogScopeConnection
+    LogScopeThread -> DuckDBV2LogScopeThread
+
+-- | Convert a native log scope. An unknown value raises 'SQLError'.
+logScopeFromNative :: DuckDBV2LogScope -> IO LogScope
+logScopeFromNative = \case
+    DuckDBV2LogScopeDatabase -> pure LogScopeDatabase
+    DuckDBV2LogScopeConnection -> pure LogScopeConnection
+    DuckDBV2LogScopeThread -> pure LogScopeThread
+    DuckDBV2LogScope value -> throwUnknownNative "log scope" value
 
 -- | Raise 'SQLError' for a native enum value that has no Haskell constructor.
 throwUnknownNative :: Text -> CUInt -> IO a

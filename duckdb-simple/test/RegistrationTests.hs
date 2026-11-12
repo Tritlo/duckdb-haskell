@@ -286,7 +286,7 @@ testContextLog = do
     withConnection ":memory:" \connection -> do
         Logging.registerLogSink connection "context_log" (\entry -> atomicModifyIORef' entries (\values -> (entry : values, ()))) (pure ())
         let logged info context = do
-                Logging.logMessage context DuckDBV2LogLevelWarning "HaskellContext" "from a callback"
+                Logging.logMessage context Logging.LogLevelWarning "HaskellContext" "from a callback"
                 count <- R.output (c_duckdb_v2_scalar_function_exec_get_row_count info)
                 vector <- R.output (c_duckdb_v2_scalar_function_exec_get_result info)
                 writeIntegers vector (replicate (fromIntegral count) 1)
@@ -296,7 +296,7 @@ testContextLog = do
         void $ execute_ connection "SET logging_storage = 'memory'"
     received <- filter ((== "HaskellContext") . Logging.logEntryType) <$> readIORef entries
     map Logging.logEntryMessage received @?= ["from a callback"]
-    map Logging.logEntryScope received @?= [DuckDBV2LogScopeConnection]
+    map Logging.logEntryScope received @?= [Logging.LogScopeConnection]
 
 testErrors :: Assertion
 testErrors = withConnection ":memory:" \connection -> do

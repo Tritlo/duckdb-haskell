@@ -1,5 +1,6 @@
 module V2ValueTest (tests) where
 
+import Control.Monad (forM_)
 import Data.Bits (shiftL, (.|.))
 import Data.Coerce (coerce)
 import Data.Int (Int16, Int32, Int64, Int8)
@@ -148,6 +149,8 @@ testRejection = withConnection $ \conn -> withFactory conn $ \factory -> do
                 ]
             alloca $ \width -> alloca $ \scale -> alloca $ \out ->
                 c_duckdb_v2_value_get_decimal value out width scale nullPtr >>= (@?= DuckDBV2ErrorInputInvalid)
+    withView "7" $ \text -> withHandle (c_duckdb_v2_value_create_varchar factory text) c_duckdb_v2_value_destroy $ \value ->
+        output (c_duckdb_v2_value_get_varchar value) >>= readView >>= (@?= "7")
     -- BLOB, UUID and DECIMAL getters do not convert, so another type id is invalid.
     withHandle (c_duckdb_v2_value_create_bigint factory 7) c_duckdb_v2_value_destroy $ \value -> do
         output (c_duckdb_v2_value_get_bigint value) >>= (@?= 7)
@@ -190,11 +193,13 @@ testCreationRejection = withConnection $ \conn -> withFactory conn $ \factory ->
     -- DuckDB reports an internal error, so the test checks only that the call fails.
     decimal 32767 4 0 >>= (@?= DuckDBV2ErrorNone)
     decimal 32768 4 0 >>= \code -> assertBool ("a value too wide for 16 bits fails: " <> show code) (code /= DuckDBV2ErrorNone)
-    let nullOf typeId = withHandle (c_duckdb_v2_factory_create_type_from_id factory typeId (coerce nullPtr) (coerce nullPtr) 0) c_duckdb_v2_logical_type_destroy $ \ty ->
+    -- A NULL value and a TYPE value carry a type, and ANY has no physical layout.
+    let valueOf create typeId = withHandle (c_duckdb_v2_factory_create_type_from_id factory typeId (coerce nullPtr) (coerce nullPtr) 0) c_duckdb_v2_logical_type_destroy $ \ty ->
             alloca $ \out -> do
                 poke out (coerce nullPtr)
-                code <- c_duckdb_v2_value_create_null factory ty out nullPtr
+                code <- create factory ty out nullPtr
                 c_duckdb_v2_value_destroy out >>= (@?= DuckDBV2ErrorNone)
                 pure code
-    nullOf DuckDBV2LogicalTypeIdBigInt >>= (@?= DuckDBV2ErrorNone)
-    nullOf DuckDBV2LogicalTypeIdAny >>= assertBool "a NULL of type ANY is rejected" . (/= DuckDBV2ErrorNone)
+    forM_ [c_duckdb_v2_value_create_null, c_duckdb_v2_value_create_type] $ \create -> do
+        valueOf create DuckDBV2LogicalTypeIdBigInt >>= (@?= DuckDBV2ErrorNone)
+        valueOf create DuckDBV2LogicalTypeIdAny >>= assertBool "a value of type ANY is rejected" . (/= DuckDBV2ErrorNone)

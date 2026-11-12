@@ -236,6 +236,12 @@ testTypeIdRejection = withConnection $ \conn -> withFactory conn $ \factory -> d
         , DuckDBV2LogicalTypeIdList
         , DuckDBV2LogicalTypeIdStruct
         , DuckDBV2LogicalTypeIdEnum
+        , DuckDBV2LogicalTypeIdMap
+        , DuckDBV2LogicalTypeIdArray
+        , DuckDBV2LogicalTypeIdUnion
+        , DuckDBV2LogicalTypeIdTuple
+        , DuckDBV2LogicalTypeIdVariant
+        , DuckDBV2LogicalTypeIdGeometry
         , DuckDBV2LogicalTypeIdSQLNull
         , DuckDBV2LogicalTypeIdUnknown
         , DuckDBV2LogicalTypeIdType

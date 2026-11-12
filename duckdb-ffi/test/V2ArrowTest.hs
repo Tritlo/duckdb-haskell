@@ -130,36 +130,43 @@ drain importer = alloca $ \slot -> do
             rows <- readRows chunk `finally` c_duckdb_v2_data_chunk_destroy slot
             (rows :) <$> drain importer
 
-{- | Move the arrays of the exporter into the importer, and return the rows of each imported chunk.
-The exporter makes arrays of 2 rows and the importer makes chunks of 3 rows.
+{- | Move the arrays of the exporter into a new importer, and return the rows of each imported chunk.
+The exporter makes arrays of 3 rows and the importer makes chunks of 2 rows.
 -}
-transfer :: DuckDBV2ArrowExporterHandle -> DuckDBV2ArrowImporterHandle -> IO [[(Maybe Int64, Maybe String)]]
-transfer exporter importer =
-    withArrowArray $ \first -> withArrowArray $ \second -> withArrowArray $ \third -> withArrowArray $ \none -> do
-        -- The 5 rows fill two arrays. The last row waits for more rows or a flush.
-        nextArray exporter first >>= (@?= 2)
-        nextArray exporter second >>= (@?= 2)
-        checked (c_duckdb_v2_arrow_exporter_next_array exporter none)
-        released none >>= assertBool "no third array before the flush"
-        checked (c_duckdb_v2_arrow_exporter_append exporter nullPtr (CBool 0) (CBool 1))
-        nextArray exporter third >>= (@?= 1)
-        checked (c_duckdb_v2_arrow_exporter_next_array exporter none)
-        released none >>= assertBool "no array after the flushed array"
-        drain importer >>= (@?= [])
-        -- With consume, the importer takes the array and clears its release callback.
-        checked (c_duckdb_v2_arrow_importer_append importer first (CBool 1) (CBool 0))
-        released first >>= assertBool "the consumed array has no release callback"
-        -- The importer did not read the first array yet, so it refuses another array.
-        c_duckdb_v2_arrow_importer_append importer second (CBool 0) (CBool 0) nullPtr >>= (@?= DuckDBV2ErrorInputInvalid)
-        -- Two rows do not fill a chunk of 3, so the importer holds them back.
-        held <- drain importer
-        -- Without consume, the caller keeps the array and releases it.
-        checked (c_duckdb_v2_arrow_importer_append importer second (CBool 0) (CBool 0))
-        released second >>= assertBool "the kept array has its release callback" . not
-        joined <- drain importer
-        checked (c_duckdb_v2_arrow_importer_append importer third (CBool 0) (CBool 1))
-        flushed <- drain importer
-        pure (held <> joined <> flushed)
+transfer :: DuckDBV2ContextHandle -> Ptr ArrowSchema -> DuckDBV2ArrowExporterHandle -> IO [[(Maybe Int64, Maybe String)]]
+transfer context schema exporter =
+    withArrowArray $ \first -> withArrowArray $ \second -> withArrowArray $ \none -> alloca $ \kept -> do
+        poke kept (coerce nullPtr)
+        flip finally (c_duckdb_v2_data_chunk_destroy kept) $ do
+            -- The 5 rows fill one array. The last 2 rows wait for more rows or a flush.
+            nextArray exporter first >>= (@?= 3)
+            checked (c_duckdb_v2_arrow_exporter_next_array exporter none)
+            released none >>= assertBool "no second array before the flush"
+            checked (c_duckdb_v2_arrow_exporter_append exporter nullPtr (CBool 0) (CBool 1))
+            nextArray exporter second >>= (@?= 2)
+            checked (c_duckdb_v2_arrow_exporter_next_array exporter none)
+            released none >>= assertBool "no array after the flushed array"
+            -- The importer reads the schema and does not consume it.
+            rest <- withHandle (c_duckdb_v2_arrow_importer_create context schema 2) c_duckdb_v2_arrow_importer_destroy $ \importer -> do
+                withHandle (c_duckdb_v2_arrow_importer_get_schema importer) c_duckdb_v2_schema_destroy $ \resolved ->
+                    schemaFields resolved >>= (@?= [("amount", DuckDBV2LogicalTypeIdBigInt), ("label", DuckDBV2LogicalTypeIdVarchar)])
+                drain importer >>= (@?= [])
+                -- With consume, the importer takes the array and clears its release callback.
+                checked (c_duckdb_v2_arrow_importer_append importer first (CBool 1) (CBool 0))
+                released first >>= assertBool "the consumed array has no release callback"
+                -- The importer did not read the first array yet, so it refuses another array.
+                c_duckdb_v2_arrow_importer_append importer second (CBool 0) (CBool 0) nullPtr >>= (@?= DuckDBV2ErrorInputInvalid)
+                -- The first chunk references the buffers of the consumed array. The test reads it after the importer is destroyed.
+                checked (c_duckdb_v2_arrow_importer_next_chunk importer kept)
+                peek kept >>= assertBool "the consumed array gives a chunk" . (/= coerce nullPtr)
+                -- The third row does not fill a chunk of 2, so the importer holds it back.
+                drain importer >>= (@?= [])
+                -- Without consume, the caller keeps the array and releases it.
+                checked (c_duckdb_v2_arrow_importer_append importer second (CBool 0) (CBool 1))
+                released second >>= assertBool "the kept array has its release callback" . not
+                drain importer
+            firstRows <- peek kept >>= readRows
+            pure (firstRows : rest)
 
 testRoundTrip :: IO ()
 testRoundTrip = do
@@ -173,18 +180,14 @@ testRoundTrip = do
                 withView "amount" $ \amount -> withView "label" $ \label -> do
                     names <- mapM (peek . coerce) [amount, label]
                     withArray names $ \columns ->
-                        withHandle (c_duckdb_v2_arrow_exporter_create context (ConstPtr types) (ConstPtr columns) 2 2) c_duckdb_v2_arrow_exporter_destroy $ \exporter ->
+                        withHandle (c_duckdb_v2_arrow_exporter_create context (ConstPtr types) (ConstPtr columns) 2 3) c_duckdb_v2_arrow_exporter_destroy $ \exporter ->
                             withArrowSchema $ \schema -> do
                                 checked (c_duckdb_v2_arrow_exporter_get_schema exporter schema)
                                 columnFormats <- arrowColumns schema
                                 map fst columnFormats @?= ["amount", "label"]
                                 lookup "amount" columnFormats @?= Just "l"
-                                -- The importer reads the schema and does not consume it.
-                                withHandle (c_duckdb_v2_arrow_importer_create context schema 3) c_duckdb_v2_arrow_importer_destroy $ \importer -> do
-                                    withHandle (c_duckdb_v2_arrow_importer_get_schema importer) c_duckdb_v2_schema_destroy $ \resolved ->
-                                        schemaFields resolved >>= (@?= [("amount", DuckDBV2LogicalTypeIdBigInt), ("label", DuckDBV2LogicalTypeIdVarchar)])
-                                    exportRows factory types exporter
-                                    transfer exporter importer >>= (@?= [take 3 sourceRows, drop 3 sourceRows])
+                                exportRows factory types exporter
+                                transfer context schema exporter >>= (@?= [take 2 sourceRows, take 2 (drop 2 sourceRows), drop 4 sourceRows])
         execute info _context err = callbackGuard failures err $ do
             rows <- output (c_duckdb_v2_scalar_function_exec_get_row_count info)
             vector <- output (c_duckdb_v2_scalar_function_exec_get_result info)

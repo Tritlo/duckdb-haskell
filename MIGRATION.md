@@ -96,6 +96,10 @@ The SQL workflow stays the same. These changes can affect your code:
 - `ConfigValue.configValueScope` is `SettingScope` instead of
   `Maybe DuckDBConfigOptionScope`. `Database.DuckDB.Simple.Config` exports
   `SettingScope`.
+- `listConfigFlags` lists the options of a temporary in-memory database.
+  With DuckDB 2.0.0 the list has 201 names, where version 0.3 gave 377. The
+  names that are not in the list are options of extensions that the new
+  database does not load.
 - `CatalogEntry.catalogEntryType` and `lookupCatalogEntry` use the new
   `CatalogEntryType`. V2 metadata cannot look up collations.
 - File system functions use `DuckDBV2FileFlag` and `DuckDBV2FileHandle`.

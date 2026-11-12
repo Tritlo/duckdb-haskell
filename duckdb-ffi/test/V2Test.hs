@@ -4,7 +4,22 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
-module V2Test (tests) where
+module V2Test (
+    checked,
+    output,
+    readIntegers,
+    readView,
+    removeTestFile,
+    tests,
+    withBytes,
+    withConnection,
+    withFactory,
+    withHandle,
+    withInstance,
+    withResult,
+    withStatement,
+    withView,
+) where
 
 import Control.Exception (SomeException, bracket, catch, finally)
 import Control.Monad (forM, forM_, unless, void)
@@ -14,15 +29,15 @@ import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (isInfixOf)
 import Data.Void (Void)
-import Data.Word (Word64)
+import Data.Word (Word64, Word8)
 import Database.DuckDB.FFI.V2
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (CString, peekCStringLen, withCString, withCStringLen)
 import Foreign.C.Types (CBool (..), CInt (..))
 import Foreign.Marshal.Alloc (alloca, allocaBytes, free, malloc)
-import Foreign.Marshal.Array (withArray)
+import Foreign.Marshal.Array (withArray, withArrayLen)
 import Foreign.Marshal.Utils (fillBytes, with)
-import Foreign.Ptr (Ptr, freeHaskellFunPtr, nullFunPtr, nullPtr)
+import Foreign.Ptr (Ptr, castPtr, freeHaskellFunPtr, nullFunPtr, nullPtr)
 import Foreign.Storable (Storable (..))
 import GHC.Records (getField)
 import GHC.Stack (HasCallStack)
@@ -81,8 +96,9 @@ withHandle create destroy action = alloca $ \slot -> do
     assertBool "created handle is non-null" (handle /= coerce nullPtr)
     action handle `finally` (destroy slot >>= (@?= DuckDBV2ErrorNone))
 
-withConnection :: (DuckDBV2ConnectionHandle -> IO a) -> IO a
-withConnection action =
+-- | Open an instance with two threads and an attached in-memory database.
+withInstance :: (DuckDBV2InstanceHandle -> IO a) -> IO a
+withInstance action =
     withHandle c_duckdb_v2_environment_create c_duckdb_v2_environment_destroy $ \env ->
         withHandle (c_duckdb_v2_instance_create env) c_duckdb_v2_instance_destroy $ \instanceHandle -> do
             config <- output (c_duckdb_v2_instance_get_config instanceHandle)
@@ -90,7 +106,11 @@ withConnection action =
                 checked (c_duckdb_v2_config_set_option_text config (coerce name) setting DuckDBV2SettingScopeDefault)
             withView ":memory:" $ \path ->
                 checked (c_duckdb_v2_instance_attach instanceHandle (coerce nullPtr) path (coerce nullPtr) (CBool 1))
-            withHandle (c_duckdb_v2_connection_create instanceHandle) c_duckdb_v2_connection_destroy action
+            action instanceHandle
+
+withConnection :: (DuckDBV2ConnectionHandle -> IO a) -> IO a
+withConnection action = withInstance $ \instanceHandle ->
+    withHandle (c_duckdb_v2_connection_create instanceHandle) c_duckdb_v2_connection_destroy action
 
 -- | Borrow a factory for the lifetime of its connection.
 withFactory :: DuckDBV2ConnectionHandle -> (DuckDBV2FactoryHandle -> IO a) -> IO a
@@ -98,6 +118,10 @@ withFactory conn action = output (c_duckdb_v2_connection_get_factory conn) >>= a
 
 withView :: String -> (PtrConst DuckDBV2Str -> IO a) -> IO a
 withView text action = withCStringLen text $ \(ptr, len) -> with (DuckDBV2Str (ConstPtr ptr) (fromIntegral len)) (action . ConstPtr)
+
+-- | Pass raw bytes as a view, without a text encoding.
+withBytes :: [Word8] -> (PtrConst DuckDBV2Str -> IO a) -> IO a
+withBytes bytes action = withArrayLen bytes $ \len ptr -> with (DuckDBV2Str (ConstPtr (castPtr ptr)) (fromIntegral len)) (action . ConstPtr)
 
 readView :: DuckDBV2Str -> IO String
 readView (DuckDBV2Str ptr len)

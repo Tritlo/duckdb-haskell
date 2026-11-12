@@ -48,7 +48,7 @@ import Database.DuckDB.Simple.FromField (Field (..))
 import Database.DuckDB.Simple.Internal (Connection, withDatabaseHandle)
 import Database.DuckDB.Simple.Materialize (VariantReader, castReader, prepareVariantReader, prepareVectorReader)
 import Database.DuckDB.Simple.Native
-import Database.DuckDB.Simple.Registration (ContextCallback, RegistrationTarget (..), getCallbackState, setCallbackState)
+import Database.DuckDB.Simple.V2.Registration (ContextCallback, RegistrationTarget (..), getCallbackState, setCallbackState)
 import Database.DuckDB.Simple.VariantCodec (destroyVariantState, newVariantState)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (withArray)

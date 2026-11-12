@@ -26,8 +26,8 @@ import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), FromField 
 import Database.DuckDB.Simple.Materialize (prepareVectorReader)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
-import Database.DuckDB.Simple.Registration (RegistrationTarget, TypeDeclaration, registerCastWith, withRegistrationFactory, withTypeDeclaration)
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
+import Database.DuckDB.Simple.V2.Registration (RegistrationTarget, TypeDeclaration, registerCastWith, withRegistrationFactory, withTypeDeclaration)
 
 {- | Prepare a reader for the rows of an argument vector. The first argument is
 the position of the argument, from 0. A NULL row gives 'Nothing'. A value that

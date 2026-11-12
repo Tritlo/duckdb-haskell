@@ -12,7 +12,7 @@ import Data.Text (Text)
 import Database.DuckDB.Simple.Callback (attachOpaque, runCallback, withCallbackResources, withTarget)
 import Database.DuckDB.Simple.Internal (Connection)
 import Database.DuckDB.Simple.Native
-import Database.DuckDB.Simple.Registration (ContextCallback, FunctionParameter, FunctionSignature (..), RegistrationTarget (..), configureFunctionSignature, withRegistrationFactory)
+import Database.DuckDB.Simple.V2.Registration (ContextCallback, FunctionParameter, FunctionSignature (..), RegistrationTarget (..), configureFunctionSignature, withRegistrationFactory)
 import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
 
 {- | A query callback returns SQL to run in place of the PRAGMA statement.

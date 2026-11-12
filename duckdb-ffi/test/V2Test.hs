@@ -11,6 +11,7 @@ module V2Test (
     checked,
     consume,
     countCall,
+    eachPartRequired,
     expectCallbackFailure,
     failOnPurpose,
     fillDocs,
@@ -386,6 +387,15 @@ expectCallbackFailure failures conn sql stage = do
     assertBool (sql <> " fails") (code /= DuckDBV2ErrorNone)
     assertBool ("the error has the text of the callback: " <> message) (expected `isInfixOf` message)
     atomicModifyIORef' failures (\seen -> ([], seen)) >>= (@?= [expected])
+
+{- | Register a builder once without each required part, and then once with every part.
+The register function receives the name of the part to leave out, or an empty name for none.
+Each registration without a part must fail, and the last registration must succeed.
+-}
+eachPartRequired :: (HasCallStack) => [String] -> (String -> IO DuckDBV2Error) -> IO ()
+eachPartRequired parts register = do
+    forM_ parts $ \part -> register part >>= \code -> assertBool ("a registration without the " <> part <> " fails") (code /= DuckDBV2ErrorNone)
+    register "" >>= (@?= DuckDBV2ErrorNone)
 
 testScalar :: IO ()
 testScalar = do

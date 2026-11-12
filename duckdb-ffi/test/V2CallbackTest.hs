@@ -4,23 +4,24 @@
 module V2CallbackTest (tests) where
 
 import Control.Exception (bracket, finally)
-import Control.Monad (forM_, unless)
+import Control.Monad (forM, forM_, unless, when, zipWithM_)
+import Data.Bits (clearBit)
 import Data.Coerce (coerce)
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Database.DuckDB.FFI.V2
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.Types (CBool (..))
-import Foreign.Marshal.Alloc (alloca, allocaBytes)
+import Foreign.Marshal.Alloc (alloca, allocaBytes, free, malloc)
 import Foreign.Marshal.Utils (with)
-import Foreign.Ptr (Ptr, freeHaskellFunPtr, nullPtr)
+import Foreign.Ptr (Ptr, freeHaskellFunPtr, nullFunPtr, nullPtr)
 import Foreign.Storable (Storable (..))
 import GHC.Records (getField)
 import HsBindgen.Runtime.Prelude (toFunPtr)
 import System.Environment (getExecutablePath)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
-import V2Test (argCounts, borrowedOpaque, callbackGuard, checked, consume, countCall, output, readIntegers, readView, withConnection, withFactory, withHandle, withResult, withStatement, withType, withView)
+import V2Test (argCounts, borrowedOpaque, callbackGuard, checked, consume, countCall, eachPartRequired, expectCallbackFailure, failOnPurpose, output, readIntegers, readView, withConnection, withFactory, withHandle, withInstance, withResult, withStatement, withType, withView)
 
 tests :: TestTree
 tests =
@@ -29,6 +30,11 @@ tests =
         [ testCase "scalar callbacks read the user data, the bind data and the arguments of the call" testScalarCallbacks
         , testCase "only a cast with a non-negative cost applies implicitly, and the cast reads its user data" testCastCallbacks
         , testCase "custom option updates report the scope and the reset, and can replace the value" testCustomOption
+        , testCase "a scalar bind, init or exec callback fails its statement and leaves the connection usable" testScalarFailures
+        , testCase "a failing cast callback fails CAST, and TRY_CAST keeps the output of the callback" testCastFailure
+        , testCase "a failing option update callback fails the SET and keeps the old value" testCustomOptionFailure
+        , testCase "registration rejects a scalar function, a cast, a custom type or a custom option without a required part" testRegistrationFailures
+        , testCase "config writes reject an unknown option, an unsupported scope and a startup option" testConfigFailures
         ]
 
 -- | Read the name of an argument.
@@ -243,3 +249,217 @@ testCustomOption = do
                     checked (c_duckdb_v2_config_set_option_value config (coerce name) value DuckDBV2SettingScopeDefault)
                 expect (DuckDBV2SettingScopeSession, CBool 0, 4) 40
     readIORef failures >>= (@?= [])
+
+-- | Read every BIGINT of a vector. The function flattens the vector first.
+readArgument :: DuckDBIdx -> DuckDBV2VectorHandle -> IO [Int64]
+readArgument count vector = do
+    checked (c_duckdb_v2_vector_flatten vector)
+    view <- output (c_duckdb_v2_vector_get_view vector)
+    forM [0 .. fromIntegral count - 1] $ \i -> do
+        index <- if getField @"sel" view == coerce nullPtr then pure i else fromIntegral <$> peekElemOff (coerce (getField @"sel" view) :: Ptr DuckDBV2SelT) i
+        peekElemOff (coerce (getField @"data'" view)) index
+
+{- | The function v2_fail(stage, x) returns x. The constant stage selects the callback that fails on purpose:
+1 fails the bind, 2 fails the init, and 3 fails the exec for the input 2. The bind data holds the stage.
+-}
+testScalarFailures :: IO ()
+testScalarFailures = do
+    failures <- newIORef []
+    binds <- newIORef 0
+    released <- newIORef 0
+    let release ptr = free ptr >> countCall released
+    bracket (DuckDBV2OpaqueDestroyFn <$> toFunPtr (DuckDBV2OpaqueDestroyFn_Aux release)) (freeHaskellFunPtr . getField @"unwrap") $ \releasePtr -> do
+        let bind info result _context err = callbackGuard failures err $ do
+                countCall binds
+                stage <- withHandle (c_duckdb_v2_function_bind_get_arg_value info 0) c_duckdb_v2_value_destroy (output . c_duckdb_v2_value_get_bigint)
+                -- The argument x is a column, so it does not fold to a constant.
+                alloca $ \value -> do
+                    poke value (coerce nullPtr)
+                    code <- c_duckdb_v2_function_bind_get_arg_value info 1 value nullPtr
+                    c_duckdb_v2_value_destroy value >>= (@?= DuckDBV2ErrorNone)
+                    assertBool "a column argument does not fold to a constant" (code /= DuckDBV2ErrorNone)
+                -- The bind sets the bind data first, so DuckDB must release it also when the bind fails.
+                state <- malloc
+                poke state (stage :: Int64)
+                with (DuckDBV2Opaque (coerce state) releasePtr (DuckDBV2OpaqueEqualsFn nullFunPtr)) $ \opaque ->
+                    checked (c_duckdb_v2_scalar_function_bind_set_bind_data result opaque)
+                when (stage == 1) (failOnPurpose "bind")
+            initialize info _context err = callbackGuard failures err $ do
+                stage <- output (c_duckdb_v2_scalar_function_init_get_bind_data info) >>= peek . coerce
+                when (stage == (2 :: Int64)) (failOnPurpose "init")
+            execute info _context err = callbackGuard failures err $ do
+                stage <- output (c_duckdb_v2_scalar_function_exec_get_bind_data info) >>= peek . coerce
+                count <- output (c_duckdb_v2_scalar_function_exec_get_row_count info)
+                values <- output (c_duckdb_v2_scalar_function_exec_get_arg info 1) >>= readArgument count
+                alloca $ \vector -> c_duckdb_v2_scalar_function_exec_get_arg info 2 vector nullPtr >>= assertBool "an index after the last argument fails" . (/= DuckDBV2ErrorNone)
+                when (stage == (3 :: Int64) && 2 `elem` values) (failOnPurpose "exec")
+                result <- output (c_duckdb_v2_scalar_function_exec_get_result info)
+                raw <- output (c_duckdb_v2_vector_get_data_mutable result)
+                zipWithM_ (pokeElemOff (coerce raw)) [0 ..] values
+        bracket (DuckDBV2ScalarFunctionBindCallbackFn <$> toFunPtr (DuckDBV2ScalarFunctionBindCallbackFn_Aux bind)) (freeHaskellFunPtr . getField @"unwrap") $ \bindPtr ->
+            bracket (DuckDBV2ScalarFunctionInitCallbackFn <$> toFunPtr (DuckDBV2ScalarFunctionInitCallbackFn_Aux initialize)) (freeHaskellFunPtr . getField @"unwrap") $ \initializePtr ->
+                bracket (DuckDBV2ScalarFunctionExecCallbackFn <$> toFunPtr (DuckDBV2ScalarFunctionExecCallbackFn_Aux execute)) (freeHaskellFunPtr . getField @"unwrap") $ \executePtr ->
+                    withConnection $ \conn -> withFactory conn $ \factory -> do
+                        withType factory "BIGINT" $ \ty ->
+                            withHandle (c_duckdb_v2_scalar_function_create factory) c_duckdb_v2_scalar_function_destroy $ \function -> do
+                                withView "v2_fail" $ \name -> checked (c_duckdb_v2_scalar_function_set_name function (coerce name))
+                                signature <- output (c_duckdb_v2_scalar_function_get_signature function)
+                                forM_ ["stage", "x"] $ \name -> withView name $ \view ->
+                                    checked (c_duckdb_v2_function_signature_add_parameter signature (coerce view) ty (coerce nullPtr) DuckDBV2FunctionParameterKindStandard)
+                                checked (c_duckdb_v2_function_signature_set_return_type signature ty)
+                                checked (c_duckdb_v2_scalar_function_set_bind_callback function bindPtr)
+                                checked (c_duckdb_v2_scalar_function_set_init_callback function initializePtr)
+                                checked (c_duckdb_v2_scalar_function_set_exec_callback function executePtr)
+                                checked (c_duckdb_v2_connection_register_scalar_function conn function)
+                        let passes = withResult conn "SELECT v2_fail(0, i) FROM range(3) t(i)" $ \result -> readIntegers result >>= (@?= [Just 0, Just 1, Just 2])
+                        passes
+                        expectCallbackFailure failures conn "SELECT v2_fail(1, i) FROM range(3) t(i)" "bind"
+                        passes
+                        expectCallbackFailure failures conn "SELECT v2_fail(2, i) FROM range(3) t(i)" "init"
+                        passes
+                        withResult conn "SELECT v2_fail(3, i) FROM range(2) t(i)" $ \result -> readIntegers result >>= (@?= [Just 0, Just 1])
+                        expectCallbackFailure failures conn "SELECT v2_fail(3, i) FROM range(3) t(i)" "exec"
+                        passes
+    readIORef failures >>= (@?= [])
+    bound <- readIORef binds
+    assertBool "the bind callback was invoked" (bound > 0)
+    readIORef released >>= (@?= bound)
+
+{- | A cast from BIGINT to the alias v2_guarded fails on purpose when the input holds 2.
+The callback writes NULL for the input 2 before it fails.
+-}
+testCastFailure :: IO ()
+testCastFailure = do
+    failures <- newIORef []
+    let cast info _context err = callbackGuard failures err $ do
+            count <- output (c_duckdb_v2_cast_function_exec_get_row_count info)
+            values <- output (c_duckdb_v2_cast_function_exec_get_input info) >>= readArgument count
+            result <- output (c_duckdb_v2_cast_function_exec_get_output info)
+            raw <- output (c_duckdb_v2_vector_get_data_mutable result)
+            zipWithM_ (pokeElemOff (coerce raw)) [0 ..] values
+            validity <- output (c_duckdb_v2_vector_flat_get_validity_mutable result)
+            forM_ (zip [0 ..] values) $ \(row, value) ->
+                when (value == 2) (peekElemOff validity (row `div` 64) >>= pokeElemOff validity (row `div` 64) . (`clearBit` (row `mod` 64)))
+            when (2 `elem` values) (failOnPurpose "cast")
+    bracket (DuckDBV2CastFunctionExecCallbackFn <$> toFunPtr (DuckDBV2CastFunctionExecCallbackFn_Aux cast)) (freeHaskellFunPtr . getField @"unwrap") $ \castPtr ->
+        withConnection $ \conn -> withFactory conn $ \factory -> withType factory "BIGINT" $ \ty -> withView "v2_guarded" $ \name -> do
+            withHandle (c_duckdb_v2_custom_type_create factory) c_duckdb_v2_custom_type_destroy $ \custom -> do
+                checked (c_duckdb_v2_custom_type_set_name custom (coerce name))
+                checked (c_duckdb_v2_custom_type_set_base_type custom ty)
+                checked (c_duckdb_v2_connection_register_custom_type conn custom)
+            withHandle (c_duckdb_v2_factory_create_type_with_alias factory ty (coerce name)) c_duckdb_v2_logical_type_destroy $ \alias ->
+                withHandle (c_duckdb_v2_cast_function_create factory) c_duckdb_v2_cast_function_destroy $ \function -> do
+                    checked (c_duckdb_v2_cast_function_set_source_type function ty)
+                    checked (c_duckdb_v2_cast_function_set_target_type function alias)
+                    checked (c_duckdb_v2_cast_function_set_exec_callback function castPtr)
+                    checked (c_duckdb_v2_connection_register_cast_function conn function)
+            let casts sql = withResult conn sql readIntegers
+            casts "SELECT CAST(i AS v2_guarded)::BIGINT FROM range(2) t(i)" >>= (@?= [Just 0, Just 1])
+            expectCallbackFailure failures conn "SELECT CAST(i AS v2_guarded)::BIGINT FROM range(3) t(i)" "cast"
+            casts "SELECT CAST(i AS v2_guarded)::BIGINT FROM range(2) t(i)" >>= (@?= [Just 0, Just 1])
+            -- TRY_CAST ignores the error of the callback.
+            casts "SELECT TRY_CAST(i AS v2_guarded)::BIGINT FROM range(3) t(i)" >>= (@?= [Just 0, Just 1, Nothing])
+            atomicModifyIORef' failures (\seen -> ([], seen)) >>= (@?= [show (userError "v2 deliberate cast failure")])
+    readIORef failures >>= (@?= [])
+
+{- | The update callback of the option v2_guarded_option refuses the value 13.
+Each update also replaces the value with its own text, after a replacement that does not cast to BIGINT fails.
+-}
+testCustomOptionFailure :: IO ()
+testCustomOptionFailure = do
+    failures <- newIORef []
+    let update info context err = callbackGuard failures err $ do
+            value <- withHandle (c_duckdb_v2_custom_option_update_get_value info) c_duckdb_v2_value_destroy (output . c_duckdb_v2_value_get_bigint)
+            factory <- output (c_duckdb_v2_context_get_factory context)
+            let replace text = withView text $ \view -> withHandle (c_duckdb_v2_value_create_varchar factory view) c_duckdb_v2_value_destroy $ \replacement ->
+                    c_duckdb_v2_custom_option_update_set_value info replacement nullPtr
+            replace "not a number" >>= assertBool "a replacement that does not cast to BIGINT fails" . (/= DuckDBV2ErrorNone)
+            replace (show value) >>= (@?= DuckDBV2ErrorNone)
+            when (value == 13) (failOnPurpose "update")
+    bracket (DuckDBV2CustomOptionUpdateCallbackFn <$> toFunPtr (DuckDBV2CustomOptionUpdateCallbackFn_Aux update)) (freeHaskellFunPtr . getField @"unwrap") $ \updatePtr ->
+        withConnection $ \conn -> withFactory conn $ \factory -> do
+            withHandle (c_duckdb_v2_custom_option_create factory) c_duckdb_v2_custom_option_destroy $ \option -> do
+                withView "v2_guarded_option" $ \name -> checked (c_duckdb_v2_custom_option_set_name option (coerce name))
+                withHandle (c_duckdb_v2_value_create_bigint factory 1) c_duckdb_v2_value_destroy $ \value ->
+                    checked (c_duckdb_v2_custom_option_set_default_value option value)
+                checked (c_duckdb_v2_custom_option_set_update_callback option updatePtr)
+                checked (c_duckdb_v2_connection_register_custom_option conn option)
+            let current = withResult conn "SELECT current_setting('v2_guarded_option')::BIGINT" readIntegers
+            withResult conn "SET v2_guarded_option = 12" consume
+            current >>= (@?= [Just 12])
+            expectCallbackFailure failures conn "SET v2_guarded_option = 13" "update"
+            current >>= (@?= [Just 12])
+    readIORef failures >>= (@?= [])
+
+{- | Each registration leaves out one part that the header requires, or uses ANY where the header requires a concrete
+type. The last registration of each kind has every part. The test never calls the functions.
+-}
+testRegistrationFailures :: IO ()
+testRegistrationFailures = do
+    let execute _info _context _err = pure ()
+        cast _info _context _err = pure ()
+    bracket (DuckDBV2ScalarFunctionExecCallbackFn <$> toFunPtr (DuckDBV2ScalarFunctionExecCallbackFn_Aux execute)) (freeHaskellFunPtr . getField @"unwrap") $ \executePtr ->
+        bracket (DuckDBV2CastFunctionExecCallbackFn <$> toFunPtr (DuckDBV2CastFunctionExecCallbackFn_Aux cast)) (freeHaskellFunPtr . getField @"unwrap") $ \castPtr ->
+            withConnection $ \conn -> withFactory conn $ \factory -> withType factory "BIGINT" $ \ty ->
+                withHandle (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdAny (coerce nullPtr) (coerce nullPtr) 0) c_duckdb_v2_logical_type_destroy $ \anyType -> do
+                    -- The part "concrete type" replaces BIGINT with ANY.
+                    let concrete omitted = if omitted == "concrete type" then anyType else ty
+                    eachPartRequired ["name", "exec callback", "return type", "concrete type"] $ \omitted ->
+                        withHandle (c_duckdb_v2_scalar_function_create factory) c_duckdb_v2_scalar_function_destroy $ \function -> do
+                            unless (omitted == "name") $ withView "v2_registered" $ \name -> checked (c_duckdb_v2_scalar_function_set_name function (coerce name))
+                            unless (omitted == "exec callback") $ checked (c_duckdb_v2_scalar_function_set_exec_callback function executePtr)
+                            signature <- output (c_duckdb_v2_scalar_function_get_signature function)
+                            unless (omitted == "return type") $ checked (c_duckdb_v2_function_signature_set_return_type signature (concrete omitted))
+                            c_duckdb_v2_connection_register_scalar_function conn function nullPtr
+                    withView "v2_registered_type" $ \name -> do
+                        withHandle (c_duckdb_v2_factory_create_type_with_alias factory ty (coerce name)) c_duckdb_v2_logical_type_destroy $ \alias ->
+                            eachPartRequired ["source type", "target type", "exec callback", "concrete type"] $ \omitted ->
+                                withHandle (c_duckdb_v2_cast_function_create factory) c_duckdb_v2_cast_function_destroy $ \function -> do
+                                    unless (omitted == "source type") $ checked (c_duckdb_v2_cast_function_set_source_type function (concrete omitted))
+                                    unless (omitted == "target type") $ checked (c_duckdb_v2_cast_function_set_target_type function alias)
+                                    unless (omitted == "exec callback") $ checked (c_duckdb_v2_cast_function_set_exec_callback function castPtr)
+                                    c_duckdb_v2_connection_register_cast_function conn function nullPtr
+                        eachPartRequired ["name", "base type", "concrete type"] $ \omitted ->
+                            withHandle (c_duckdb_v2_custom_type_create factory) c_duckdb_v2_custom_type_destroy $ \custom -> do
+                                unless (omitted == "name") $ checked (c_duckdb_v2_custom_type_set_name custom (coerce name))
+                                unless (omitted == "base type") $ checked (c_duckdb_v2_custom_type_set_base_type custom (concrete omitted))
+                                c_duckdb_v2_connection_register_custom_type conn custom nullPtr
+                    -- Registration casts the text of the default value to BIGINT. The part "default value that casts" gives a text that does not cast.
+                    let option omitted = withHandle (c_duckdb_v2_custom_option_create factory) c_duckdb_v2_custom_option_destroy $ \custom -> do
+                            unless (omitted == "name") $ withView "v2_registered_option" $ \name -> checked (c_duckdb_v2_custom_option_set_name custom (coerce name))
+                            unless (omitted == "type or default value") $ do
+                                checked (c_duckdb_v2_custom_option_set_type custom ty)
+                                withView (if omitted == "default value that casts" then "five" else "5") $ \text ->
+                                    withHandle (c_duckdb_v2_value_create_varchar factory text) c_duckdb_v2_value_destroy $ \value ->
+                                        checked (c_duckdb_v2_custom_option_set_default_value custom value)
+                            c_duckdb_v2_connection_register_custom_option conn custom nullPtr
+                    eachPartRequired ["name", "type or default value", "default value that casts"] option
+                    option "" >>= assertBool "a second option with the same name fails" . (/= DuckDBV2ErrorNone)
+                    withResult conn "SELECT current_setting('v2_registered_option')::BIGINT" $ \result -> readIntegers result >>= (@?= [Just 5])
+
+{- | A connection config rejects an unknown option, a SESSION write of the GLOBAL option threads and a write of the
+startup option allow_unsigned_extensions. An instance config has no SESSION scope.
+-}
+testConfigFailures :: IO ()
+testConfigFailures = withInstance $ \instanceHandle ->
+    withHandle (c_duckdb_v2_connection_create instanceHandle) c_duckdb_v2_connection_destroy $ \conn -> do
+        instanceConfig <- output (c_duckdb_v2_instance_get_config instanceHandle)
+        config <- output (c_duckdb_v2_connection_get_config conn)
+        let write target name setting scope = withView name $ \view -> withView setting $ \text ->
+                c_duckdb_v2_config_set_option_text target (coerce view) text scope nullPtr
+            rejected code = assertBool ("the write fails: " <> show code) (code /= DuckDBV2ErrorNone)
+        write config "threads" "2" DuckDBV2SettingScopeGlobal >>= (@?= DuckDBV2ErrorNone)
+        -- The header names ERROR_INPUT_INVALID for a scope that the option does not support. DuckDB reports a catalog
+        -- error, so the test checks only that the write fails.
+        write config "threads" "2" DuckDBV2SettingScopeSession >>= rejected
+        write instanceConfig "TimeZone" "UTC" DuckDBV2SettingScopeGlobal >>= (@?= DuckDBV2ErrorNone)
+        write instanceConfig "TimeZone" "UTC" DuckDBV2SettingScopeSession >>= (@?= DuckDBV2ErrorInputInvalid)
+        write config "v2_no_such_option" "2" DuckDBV2SettingScopeGlobal >>= rejected
+        write config "preserve_insertion_order" "true" DuckDBV2SettingScopeGlobal >>= (@?= DuckDBV2ErrorNone)
+        write config "allow_unsigned_extensions" "true" DuckDBV2SettingScopeGlobal >>= rejected
+        readOption config "TimeZone" >>= (@?= ("UTC", DuckDBV2SettingScopeGlobal))
+        withView "v2_no_such_option" $ \name -> alloca $ \value -> alloca $ \scope -> do
+            poke value (coerce nullPtr)
+            code <- c_duckdb_v2_config_get_option_value config (coerce name) value scope nullPtr
+            c_duckdb_v2_value_destroy value >>= (@?= DuckDBV2ErrorNone)
+            code @?= DuckDBV2ErrorInputInvalid

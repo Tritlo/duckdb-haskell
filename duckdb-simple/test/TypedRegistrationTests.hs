@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -20,14 +21,14 @@ import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (BigNum (..), bsFromBool)
-import Database.DuckDB.Simple.Registration (TypeDeclaration (..), registerCustomType)
+import Database.DuckDB.Simple.Registration (Replacement (..), TypeDeclaration (..), registerCustomType, registerInstanceReplacementScan, registerReplacementScan)
 import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue)
 import Numeric.Natural (Natural)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase, (@?=))
 
--- | Check typed casts with values, NULLs, failures, and errors.
+-- | Check typed casts and typed replacement scans through SQL.
 typedRegistrationTests :: TestTree
 typedRegistrationTests =
     testGroup
@@ -37,6 +38,13 @@ typedRegistrationTests =
         , testCase "cast to custom aliases of DATE and VARCHAR" testCastTypes
         , testCase "cast exceptions and conversion errors fail CAST" testCastErrors
         , testCase "cast to a custom type on each scalar base type" testCastBaseTypes
+        , testCase "replacement scan reads the rows of a query" testReplacementQuery
+        , testCase "replacement scan that declines gives the unknown table error" testReplacementDecline
+        , testCase "replacement scan gets the name parts as written" testReplacementNames
+        , testCase "replacement scan errors fail the query" testReplacementErrors
+        , testCase "connection replacement scan serves only its connection" testReplacementConnectionScope
+        , testCase "instance replacement scan serves each connection" testReplacementInstance
+        , testCase "replacement scans run in the order of registration" testReplacementOrder
         ]
 
 -- | Cast BIGINT values and NULLs to a custom type over more than one chunk.
@@ -153,6 +161,101 @@ roundTrip conn label values = do
     createCast conn (TypeExpression "BIGINT") (TypeExpression name) \(row :: Int64) -> Right (values !! fromIntegral row)
     rows <- query_ conn (Query ("SELECT CAST(i AS " <> name <> ") FROM range(" <> Text.pack (show (length values)) <> ") t(i) ORDER BY i"))
     assertEqual (Text.unpack name) values (map fromOnly rows)
+
+-- | Replace one name with a query. Read the rows under the table name and an alias.
+testReplacementQuery :: Assertion
+testReplacementQuery = withConnection ":memory:" \conn -> do
+    _ <- execute_ conn "CREATE TABLE typed_present AS SELECT 9::BIGINT AS amount"
+    registerReplacementScan conn \parts ->
+        pure (if parts `elem` [["typed_missing"], ["typed_present"]] then Just (ReplaceWithQuery "SELECT i AS amount FROM range(3) t(i)") else Nothing)
+    query_ conn "SELECT amount FROM typed_missing ORDER BY amount" >>= (@?= map Only [0, 1, 2 :: Int64])
+    query_ conn "SELECT typed_missing.amount FROM typed_missing ORDER BY 1" >>= (@?= map Only [0, 1, 2 :: Int64])
+    query_ conn "SELECT x.amount FROM typed_missing AS x ORDER BY 1" >>= (@?= map Only [0, 1, 2 :: Int64])
+    -- DuckDB does not call the scan for a table that the catalog has.
+    query_ conn "SELECT amount FROM typed_present" >>= (@?= [Only (9 :: Int64)])
+
+-- | Decline a name. Require the same error as on a connection with no scan.
+testReplacementDecline :: Assertion
+testReplacementDecline = withConnection ":memory:" \conn -> do
+    before <- sqlErrorOf (query_ conn "SELECT * FROM typed_unknown" :: IO [Only Int64])
+    assertBool (Text.unpack before) ("Table with name typed_unknown does not exist" `Text.isInfixOf` before)
+    registerReplacementScan conn \_ -> pure Nothing
+    sqlErrorOf (query_ conn "SELECT * FROM typed_unknown" :: IO [Only Int64]) >>= (@?= before)
+
+-- | Return the parts of each name. Compare them with the query text.
+testReplacementNames :: Assertion
+testReplacementNames = withConnection ":memory:" \conn -> do
+    registerReplacementScan conn \parts ->
+        pure (Just (ReplaceWithQuery ("SELECT '" <> Text.replace "'" "''" (Text.intercalate "|" parts) <> "' AS parts")))
+    let check name expected = query_ conn (Query ("SELECT parts FROM " <> name)) >>= assertEqual (Text.unpack name) [Only (Text.intercalate "|" expected)]
+    check "MiXeD" ["MiXeD"]
+    check "\"Quoted Name\"" ["Quoted Name"]
+    check "\"has.dot\"" ["has.dot"]
+    check "\"a\"\"b\"" ["a\"b"]
+    -- The catalog "memory" and the schema "main" exist. The others do not.
+    check "main.typed_t" ["main", "typed_t"]
+    check "MAIN.Typed_T" ["MAIN", "Typed_T"]
+    check "typed_schema.typed_t" ["typed_schema", "typed_t"]
+    check "memory.main.typed_t" ["memory", "main", "typed_t"]
+    check "typed_catalog.main.typed_t" ["typed_catalog", "main", "typed_t"]
+    check "'typed file.csv'" ["typed file.csv"]
+    check "'typed''quote.parquet'" ["typed'quote.parquet"]
+
+-- | Fail the query with an exception and with query text that is not one SELECT.
+testReplacementErrors :: Assertion
+testReplacementErrors = withConnection ":memory:" \conn -> do
+    registerReplacementScan conn \case
+        ["typed_reserved"] -> ioError (userError "typed_reserved: the table name is reserved")
+        ["typed_two"] -> pure (Just (ReplaceWithQuery "SELECT 1; SELECT 2"))
+        ["typed_create"] -> pure (Just (ReplaceWithQuery "CREATE TABLE typed_created (i BIGINT)"))
+        _ -> pure Nothing
+    assertSqlError "typed_reserved: the table name is reserved" (query_ conn "SELECT * FROM typed_reserved" :: IO [Only Int64])
+    query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+    assertSqlError "exactly one SELECT statement" (query_ conn "SELECT * FROM typed_two" :: IO [Only Int64])
+    assertSqlError "must be a SELECT statement" (query_ conn "SELECT * FROM typed_create" :: IO [Only Int64])
+    query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+
+{- | Register a scan on one connection of an instance. The other connection does
+not use it. The scan replaces a file path before the built-in file scan.
+-}
+testReplacementConnectionScope :: Assertion
+testReplacementConnectionScope = withEnvironment \environment -> withInstance environment [] \instance' ->
+    withConnectionOn instance' \first -> withConnectionOn instance' \second -> do
+        registerReplacementScan first \parts ->
+            pure (if parts `elem` [["typed_scoped"], ["typed_missing.csv"]] then Just (ReplaceWithQuery "SELECT 'first' AS source") else Nothing)
+        query_ first "SELECT source FROM typed_scoped" >>= (@?= [Only ("first" :: Text)])
+        assertSqlError "Table with name typed_scoped does not exist" (query_ second "SELECT source FROM typed_scoped" :: IO [Only Text])
+        query_ first "SELECT source FROM 'typed_missing.csv'" >>= (@?= [Only ("first" :: Text)])
+        assertSqlError "No files found" (query_ second "SELECT source FROM 'typed_missing.csv'" :: IO [Only Text])
+
+{- | Register a scan on an instance before its connections. Each connection uses
+it. A connection scan comes first and passes a declined name to it.
+-}
+testReplacementInstance :: Assertion
+testReplacementInstance = withEnvironment \environment -> withInstance environment [] \instance' -> do
+    registerInstanceReplacementScan instance' \parts -> pure (if parts `elem` [["typed_shared"], ["typed_instance"]] then Just (ReplaceWithQuery "SELECT 'instance' AS source") else Nothing)
+    withConnectionOn instance' \first -> withConnectionOn instance' \second -> do
+        query_ first "SELECT source FROM typed_shared" >>= (@?= [Only ("instance" :: Text)])
+        query_ second "SELECT source FROM typed_shared" >>= (@?= [Only ("instance" :: Text)])
+        registerReplacementScan first \parts -> pure (if parts == ["typed_shared"] then Just (ReplaceWithQuery "SELECT 'connection' AS source") else Nothing)
+        query_ first "SELECT source FROM typed_shared" >>= (@?= [Only ("connection" :: Text)])
+        query_ first "SELECT source FROM typed_instance" >>= (@?= [Only ("instance" :: Text)])
+        query_ second "SELECT source FROM typed_shared" >>= (@?= [Only ("instance" :: Text)])
+
+-- | Register two scans on one connection. The first scan that replaces a name wins.
+testReplacementOrder :: Assertion
+testReplacementOrder = withConnection ":memory:" \conn -> do
+    registerReplacementScan conn \parts -> pure (if parts == ["typed_both"] then Just (ReplaceWithQuery "SELECT 'first' AS source") else Nothing)
+    registerReplacementScan conn \parts -> pure (if parts `elem` [["typed_both"], ["typed_later"]] then Just (ReplaceWithQuery "SELECT 'second' AS source") else Nothing)
+    query_ conn "SELECT source FROM typed_both" >>= (@?= [Only ("first" :: Text)])
+    query_ conn "SELECT source FROM typed_later" >>= (@?= [Only ("second" :: Text)])
+
+-- | Require an 'SQLError' and return its message.
+sqlErrorOf :: IO a -> IO Text
+sqlErrorOf action =
+    try action >>= \case
+        Left (err :: SQLError) -> pure (sqlErrorMessage err)
+        Right _ -> assertFailure "expected an SQL error"
 
 -- | Require an 'SQLError' with a message that contains the text.
 assertSqlError :: Text -> IO a -> Assertion

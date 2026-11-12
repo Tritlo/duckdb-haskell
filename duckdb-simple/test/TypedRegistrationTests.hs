@@ -7,8 +7,8 @@
 -- | Integration checks for typed registration through SQL.
 module TypedRegistrationTests (typedRegistrationTests) where
 
-import Control.Exception (throwIO, try)
-import Control.Monad (void, when)
+import Control.Exception (bracket, throwIO, try)
+import Control.Monad (forM_, void, when)
 import qualified Data.ByteString as BS
 import Data.IORef (mkWeakIORef, modifyIORef', newIORef, readIORef)
 import Data.Int (Int16, Int32, Int64, Int8)
@@ -16,6 +16,7 @@ import Data.Maybe (isNothing, mapMaybe)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Text.IO as TextIO
 import Data.Time (UTCTime (..))
 import Data.Time.Calendar (Day, addDays, fromGregorian)
 import Data.Time.Format (defaultTimeLocale, parseTimeM)
@@ -24,7 +25,8 @@ import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.Config (CustomOption (..), SettingScope (..), customOption, getConfigValue, registerCustomOption, setConfigValue)
-import Database.DuckDB.Simple.FromField (BigNum (..), FieldValue (..), bsFromBool)
+import Database.DuckDB.Simple.Copy (CopyBindInfo (..), CopyFromInfo (..), CopyInitInfo (..), CopySinkInfo (..), CopyTo (..), registerCopyFromFunction, registerCopyFunction, registerCopyToFunction)
+import Database.DuckDB.Simple.FromField (BigNum (..), Field (..), FieldValue (..), bsFromBool)
 import Database.DuckDB.Simple.Function (TypedRow)
 import Database.DuckDB.Simple.Pragma (PragmaCallback (..), registerPragmaFunction)
 import Database.DuckDB.Simple.Registration (FunctionParameter (..), Replacement (..), TypeDeclaration (..), defaultValue, parameter, registerCustomType, registerInstanceReplacementScan, registerReplacementScan)
@@ -32,6 +34,9 @@ import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
+import System.Directory (createDirectory, getTemporaryDirectory, removeFile, removePathForcibly)
+import System.FilePath ((</>))
+import System.IO (hClose, openTempFile)
 import System.IO.Unsafe (unsafeInterleaveIO)
 import System.Mem (performMajorGC)
 import System.Mem.Weak (deRefWeak)
@@ -71,6 +76,10 @@ typedRegistrationTests =
         , testCase "table function registration and argument errors" testTableArgumentErrors
         , testCase "table function exceptions become SQL errors" testTableExceptions
         , testCase "table function releases the list of each scan" testTableRelease
+        , testCase "COPY format with both directions under one name" testCopyBothDirections
+        , testCase "COPY keeps the first registration of a format name" testCopyFirstRegistration
+        , testCase "COPY errors in each function fail only their statement" testCopyErrors
+        , testCase "COPY format on two connections of one database" testCopySharedDatabase
         ]
 
 -- | Cast BIGINT values and NULLs to a custom type over more than one chunk.
@@ -557,3 +566,132 @@ testTableRelease = do
     performMajorGC
     performMajorGC
     deRefWeak closure >>= assertBool "the table function remains after the connection closes" . isNothing
+
+{- | Write 3000 rows with NULLs to a file and read them back with one format.
+The rows need more than one chunk in each direction.
+-}
+testCopyBothDirections :: Assertion
+testCopyBothDirections = withDirectory \directory -> withConnection ":memory:" \conn -> do
+    calls <- newIORef ([] :: [CopyFromInfo])
+    registerCopyFunction conn "typed_lines" linesTo \info -> do
+        modifyIORef' calls (info :)
+        readLines (copyFromPath info)
+    let file = directory </> "lines.txt"
+        expected = [if i `mod` 1000 == 7 then Nothing else Just i | i <- [0 .. 2999 :: Int64]]
+    void (execute conn "COPY (SELECT CASE WHEN i % 1000 = 7 THEN NULL ELSE i END AS value FROM range(3000) t(i)) TO ? (FORMAT typed_lines)" (Only (Text.pack file)))
+    readFile file >>= (@?= unlines (map (maybe "" show) expected))
+    void (execute_ conn "CREATE TABLE typed_copied (value BIGINT)")
+    -- The function runs one time for each run of a COPY FROM statement.
+    forM_ [1 :: Int, 2] \_ -> void (execute conn "COPY typed_copied FROM ? (FORMAT typed_lines)" (Only (Text.pack file)))
+    query_ conn "SELECT value FROM typed_copied ORDER BY rowid" >>= (@?= map Only (expected <> expected))
+    infos <- readIORef calls
+    length infos @?= 2
+    forM_ infos \info -> do
+        copyFromPath info @?= file
+        copyFromColumnNames info @?= ["value"]
+        length (copyFromColumnTypes info) @?= 1
+
+{- | DuckDB keeps the first registration of a format name. A later
+registration has no effect, so it does not add a COPY FROM side.
+-}
+testCopyFirstRegistration :: Assertion
+testCopyFirstRegistration = withDirectory \directory -> withConnection ":memory:" \conn -> do
+    sinks <- newIORef ([] :: [Text])
+    let file = Text.pack (directory </> "first.txt")
+        register label = registerCopyToFunction conn "typed_first" (\_ -> pure ()) (\info -> writeFile (copyInitFilePath info) "") (\_ _ -> modifyIORef' sinks (label :)) (\_ -> pure ())
+    register "first"
+    register "second"
+    registerCopyFromFunction conn "typed_first" \_ -> pure [Only (1 :: Int64)]
+    void (execute conn "COPY (SELECT 1) TO ? (FORMAT typed_first)" (Only file))
+    readIORef sinks >>= (@?= ["first"])
+    void (execute_ conn "CREATE TABLE typed_first_rows (value BIGINT)")
+    assertSqlError "COPY FROM is not supported for FORMAT \"typed_first\"" (execute conn "COPY typed_first_rows FROM ? (FORMAT typed_first)" (Only file))
+    -- A format with a COPY FROM side only rejects COPY TO.
+    registerCopyFromFunction conn "typed_from_only" \_ -> pure [Only (2 :: Int64)]
+    void (execute conn "COPY typed_first_rows FROM ? (FORMAT typed_from_only)" (Only file))
+    query_ conn "SELECT value FROM typed_first_rows" >>= (@?= [Only (2 :: Int64)])
+    assertSqlError "COPY TO is not supported for FORMAT \"typed_from_only\"" (execute conn "COPY (SELECT 1) TO ? (FORMAT typed_from_only)" (Only file))
+    query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+
+{- | Raise an error in each COPY TO function, in the COPY FROM function, and in
+a lazy row after the first chunk. Each error fails its statement. The next
+statement runs.
+-}
+testCopyErrors :: Assertion
+testCopyErrors = withDirectory \directory -> withConnection ":memory:" \conn -> do
+    let file = Text.pack (directory </> "errors.txt")
+    void (execute_ conn "CREATE TABLE typed_failed (value BIGINT)")
+    forM_ ["bind", "init", "sink", "finalize"] \phase -> do
+        registerFailingFormat conn phase
+        assertSqlError ("typed_copy_error: " <> phase) (execute conn (Query ("COPY (SELECT 1) TO ? (FORMAT typed_error_" <> phase <> ")")) (Only file))
+        query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+    forM_ ["from", "row"] \phase -> do
+        registerFailingFormat conn phase
+        assertSqlError ("typed_copy_error: " <> phase) (execute conn (Query ("COPY typed_failed FROM ? (FORMAT typed_error_" <> phase <> ")")) (Only file))
+        query_ conn "SELECT count(*) FROM typed_failed" >>= (@?= [Only (0 :: Int64)])
+    -- The rows of a format must have one column for each column of the table.
+    void (execute_ conn "CREATE TABLE typed_wide (a BIGINT, b BIGINT)")
+    registerFailingFormat conn "none"
+    assertSqlError "the table of COPY FROM has 2 columns, but a row of typed_error_none has 1" (execute conn "COPY typed_wide FROM ? (FORMAT typed_error_none)" (Only file))
+    void (execute conn "COPY typed_failed FROM ? (FORMAT typed_error_none)" (Only file))
+    query_ conn "SELECT count(*) FROM typed_failed" >>= (@?= [Only (3000 :: Int64)])
+
+-- | Register a format on one connection. Use it from another connection.
+testCopySharedDatabase :: Assertion
+testCopySharedDatabase = withDirectory \directory -> withEnvironment \environment -> withInstance environment [] \instance' -> do
+    attachDatabase instance' ":memory:" "typed_shared" []
+    setDefaultDatabase instance' "typed_shared"
+    let file = Text.pack (directory </> "shared.txt")
+    withConnectionOn instance' \first -> withConnectionOn instance' \second -> do
+        registerCopyFunction first "typed_shared_lines" linesTo (readLines . copyFromPath)
+        registerCopyFunction second "typed_shared_lines" linesTo \_ -> ioError (userError "the second registration runs") :: IO [Only Int64]
+        void (execute second "COPY (SELECT i FROM range(5) t(i)) TO ? (FORMAT typed_shared_lines)" (Only file))
+        void (execute_ first "CREATE TABLE typed_shared_rows (value BIGINT)")
+        void (execute second "COPY typed_shared_rows FROM ? (FORMAT typed_shared_lines)" (Only file))
+        void (execute first "COPY typed_shared_rows FROM ? (FORMAT typed_shared_lines)" (Only file))
+        query_ first "SELECT value FROM typed_shared_rows ORDER BY rowid" >>= (@?= map (Only . Just) ([0 .. 4] <> [0 .. 4 :: Int64]))
+
+-- | A COPY TO side that writes one BIGINT column as lines. A NULL is an empty line.
+linesTo :: CopyTo () FilePath
+linesTo =
+    CopyTo
+        { copyToBind = \info -> when (length (copyBindColumnTypes info) /= 1) (ioError (userError "typed_lines writes one column"))
+        , copyToInit = \info -> writeFile (copyInitFilePath info) "" >> pure (copyInitFilePath info)
+        , copyToSink = \info rows -> appendFile (copySinkGlobalState info) (unlines (map line rows))
+        , copyToFinalize = \_ -> pure ()
+        }
+  where
+    line [Field{fieldValue = FieldInt64 value}] = show value
+    line [Field{fieldValue = FieldNull}] = ""
+    line row = error ("typed_lines: unexpected row " <> show row)
+
+-- | Read a file of 'linesTo'. An empty line is NULL.
+readLines :: FilePath -> IO [Only (Maybe Int64)]
+readLines path = map (Only . parse . Text.unpack) . Text.lines <$> TextIO.readFile path
+  where
+    parse "" = Nothing
+    parse line = Just (read line)
+
+{- | Register the format @typed_error_@ with the phase as suffix. The function
+of that phase raises an error. The phase @row@ makes the row at index 2500 raise
+an error. That row is in the second chunk.
+-}
+registerFailingFormat :: Connection -> Text -> IO ()
+registerFailingFormat conn phase =
+    registerCopyFunction conn ("typed_error_" <> phase) failing \_ -> failIn "from" >> pure rows
+  where
+    failIn name = when (phase == name) (ioError (userError ("typed_copy_error: " <> Text.unpack name)))
+    failing = CopyTo (\_ -> failIn "bind") (\info -> failIn "init" >> writeFile (copyInitFilePath info) "") (\_ _ -> failIn "sink") (\_ -> failIn "finalize")
+    rows = [Only (if phase == "row" && i == 2500 then error "typed_copy_error: row" else i) | i <- [0 .. 2999 :: Int64]]
+
+-- | Create and remove a unique directory for the files of a test.
+withDirectory :: (FilePath -> IO a) -> IO a
+withDirectory = bracket create removePathForcibly
+  where
+    create = do
+        root <- getTemporaryDirectory
+        (path, handle) <- openTempFile root "duckdb-typed-copy"
+        hClose handle
+        removeFile path
+        createDirectory path
+        pure path

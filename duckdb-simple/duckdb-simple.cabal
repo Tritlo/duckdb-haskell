@@ -83,6 +83,7 @@ library
   other-modules:
     Database.DuckDB.Simple.Arrow.Internal
     Database.DuckDB.Simple.Callback
+    Database.DuckDB.Simple.Copy.Internal
     Database.DuckDB.Simple.Element
     Database.DuckDB.Simple.Function.Internal
     Database.DuckDB.Simple.Materialize

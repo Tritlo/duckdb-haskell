@@ -68,16 +68,18 @@ testScalarCallbacks = do
         let bind info result context err = callbackGuard failures err $ do
                 countCall binds
                 output (c_duckdb_v2_function_bind_get_user_data info) >>= (@?= user)
-                -- The query calls v2_probe(i, 2, 3, extra := 5): one standard, two *args, one omitted named-only and one **kwargs argument.
-                argCounts (c_duckdb_v2_function_bind_get_arg_count info) >>= (@?= (1, 2, 1, 1))
+                -- The query calls v2_probe(i, 1, 2, 3, extra := 5, p := 6): one positional-only, one standard, two *args,
+                -- one omitted named-only and two **kwargs arguments. The name p goes to **kwargs, because p is positional-only.
+                argCounts (c_duckdb_v2_function_bind_get_arg_count info) >>= (@?= (2, 2, 1, 2))
                 checked (c_duckdb_v2_function_bind_get_arg_count info nullPtr nullPtr nullPtr nullPtr)
-                mapM (argName info) [0 .. 4] >>= (@?= ["x", "", "", "n", "extra"])
+                mapM (argName info) [0 .. 6] >>= (@?= ["p", "x", "", "", "n", "extra", "p"])
                 alloca $ \name -> do
-                    code <- c_duckdb_v2_function_bind_get_arg_name info 5 name nullPtr
+                    code <- c_duckdb_v2_function_bind_get_arg_name info 7 name nullPtr
                     assertBool "an index after the last argument fails" (code /= DuckDBV2ErrorNone)
-                argIndex info "X" >>= (@?= (CBool 1, 0))
-                argIndex info "N" >>= (@?= (CBool 1, 3))
-                argIndex info "Extra" >>= (@?= (CBool 1, 4))
+                argIndex info "X" >>= (@?= (CBool 1, 1))
+                argIndex info "N" >>= (@?= (CBool 1, 4))
+                argIndex info "Extra" >>= (@?= (CBool 1, 5))
+                argIndex info "P" >>= (@?= (CBool 1, 6))
                 argIndex info "args" >>= (@?= (CBool 0, 99))
                 argIndex info "absent" >>= (@?= (CBool 0, 99))
                 with (borrowedOpaque bound) $ \opaque -> checked (c_duckdb_v2_scalar_function_bind_set_bind_data result opaque)
@@ -107,6 +109,7 @@ testScalarCallbacks = do
                                 signature <- output (c_duckdb_v2_scalar_function_get_signature function)
                                 let parameter name value kind = withView name $ \view ->
                                         checked (c_duckdb_v2_function_signature_add_parameter signature (coerce view) ty value kind)
+                                parameter "p" (coerce nullPtr) DuckDBV2FunctionParameterKindPositionalOnly
                                 parameter "x" (coerce nullPtr) DuckDBV2FunctionParameterKindStandard
                                 parameter "args" (coerce nullPtr) DuckDBV2FunctionParameterKindPositionalVariadic
                                 withHandle (c_duckdb_v2_value_create_bigint factory 10) c_duckdb_v2_value_destroy $ \value ->
@@ -123,7 +126,7 @@ testScalarCallbacks = do
                         withView "default_order" $ \name -> withView "desc" $ \setting ->
                             checked (c_duckdb_v2_config_set_option_text config (coerce name) setting DuckDBV2SettingScopeSession)
                         -- The argument i is a column, so the engine cannot fold the call into a constant.
-                        withResult conn "SELECT v2_probe(i, 2, 3, extra := 5) FROM range(3) t(i)" $ \result ->
+                        withResult conn "SELECT v2_probe(i, 1, 2, 3, extra := 5, p := 6) FROM range(3) t(i)" $ \result ->
                             readIntegers result >>= (@?= replicate 3 (Just 42))
                         session <- readOption config "default_order"
                         snd session @?= DuckDBV2SettingScopeSession

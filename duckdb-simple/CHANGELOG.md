@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.0.0 (unreleased)
+## 0.4.0.0
 
 - Target DuckDB 2.0 with `duckdb-ffi >= 2.0.0.0`. The backend uses the
   generated V2 C API. Upstream marks the V2 API as unstable ("The C API v2 is

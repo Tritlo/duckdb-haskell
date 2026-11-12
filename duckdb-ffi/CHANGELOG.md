@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.0.0.0 (unreleased)
+## 2.0.0.0
 
 - Target DuckDB 2.0. The retained API supports DuckDB 2.0.x releases. Use the
   earlier package release with DuckDB 1.5.

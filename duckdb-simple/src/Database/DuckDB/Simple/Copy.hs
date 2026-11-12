@@ -17,6 +17,10 @@ module Database.DuckDB.Simple.Copy (
     CopyFinalizeInfo (..),
     registerCopyToFunction,
     registerCopyToFunctionOn,
+    CopyFromInfo (..),
+    registerCopyFromFunction,
+    registerCopyFromFunctionOn,
+    TypedRow,
     MultiFileOptions (..),
     defaultMultiFileOptions,
     registerMultiFileFunction,
@@ -25,6 +29,8 @@ module Database.DuckDB.Simple.Copy (
 
 import Control.Exception (bracket, finally, mask, mask_, onException, throwIO)
 import Control.Monad (forM, forM_, when)
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Void (Void)
@@ -33,7 +39,9 @@ import Database.DuckDB.Simple.FromField (Field (..))
 import Database.DuckDB.Simple.Internal (Connection, withDatabaseHandle)
 import Database.DuckDB.Simple.Materialize (VariantReader, castReader, prepareVariantReader, prepareVectorReader)
 import Database.DuckDB.Simple.Native
-import Database.DuckDB.Simple.V2.Copy (CopyFromCallbacks, CopyToCallbacks (..), RegistrationTarget (..), copyToCallbacks, registerCopyFunctionWith, registerMultiFileFunctionWith)
+import Database.DuckDB.Simple.Typed (TypedRow (..))
+import Database.DuckDB.Simple.Typed.Table (writeRows)
+import Database.DuckDB.Simple.V2.Copy (CopyFromCallbacks (..), CopyToCallbacks (..), RegistrationTarget (..), copyFromCallbacks, copyToCallbacks, registerCopyFunctionWith, registerMultiFileFunctionWith)
 import Database.DuckDB.Simple.VariantCodec (destroyVariantState, newVariantState)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (withArray)
@@ -221,6 +229,65 @@ materializeChunkRows variantReader chunk = do
         pure \row -> Field (Text.pack ("column" <> show index)) index <$> readValue row
     rows <- output (c_duckdb_v2_data_chunk_get_size chunk)
     forM [0 .. fromIntegral rows - 1] \row -> mapM ($ row) readers
+
+{- | The inputs of the COPY FROM side for one statement. The path is the text
+of the statement. DuckDB does not expand a glob pattern in it. The names and
+the types are the columns of the target table, in order.
+-}
+data CopyFromInfo = CopyFromInfo
+    { copyFromPath :: !FilePath
+    , copyFromColumnNames :: ![Text]
+    , copyFromColumnTypes :: ![DuckDBV2LogicalTypeId]
+    }
+    deriving (Eq, Show)
+
+{- | Register the COPY FROM side of a format. Use 'registerCopyFunction' for a
+format with the two sides. DuckDB keeps the first registration of a format
+name. A later registration of the same name has no effect and gives no error.
+
+The function gets the path and the columns of the target table. It gives the
+rows to insert. It runs one time for each run of a COPY FROM statement. DuckDB
+takes the rows from the list one chunk at a time, so the list can be lazy. A
+row must have one column for each column of the table, in the same order. An
+exception from the function or from a row fails the statement.
+
+> registerCopyFromFunction conn "lines" \info -> map Only . lines <$> readFile (copyFromPath info)
+-}
+registerCopyFromFunction :: (TypedRow row) => Connection -> Text -> (CopyFromInfo -> IO [row]) -> IO ()
+registerCopyFromFunction = registerCopyFromFunctionOn . ConnectionTarget
+
+{- | Register the COPY FROM side of a format on a connection or a loading
+extension. The rules of 'registerCopyFromFunction' apply.
+-}
+registerCopyFromFunctionOn :: (TypedRow row) => RegistrationTarget -> Text -> (CopyFromInfo -> IO [row]) -> IO ()
+registerCopyFromFunctionOn target name readRows = registerCopyOn target name Nothing (Just (copyFromSide name readRows))
+
+{- | The native COPY FROM callbacks of a typed reader. The bind callback reads
+the inputs and keeps the read action as the bind data. The global init callback
+runs the action and keeps the list in the global state. The exec callback
+writes the next rows of the list. DuckDB uses one thread for the exec callback.
+-}
+copyFromSide :: forall row. (TypedRow row) => Text -> (CopyFromInfo -> IO [row]) -> CopyFromCallbacks
+copyFromSide name readRows = (copyFromCallbacks bind execute){copyFromInitGlobalCallback = Just initialize}
+  where
+    width = length (rowColumnTypes (Proxy :: Proxy row))
+    bind info _ = do
+        path <- output (c_duckdb_v2_copy_from_bind_get_file_path info) >>= readText
+        count <- output (c_duckdb_v2_copy_from_bind_get_column_count info)
+        when (fromIntegral count /= width) $
+            throwIO (userError ("duckdb-simple: the COPY FROM rows of " <> Text.unpack name <> " have " <> show width <> " columns, but the table has " <> show count))
+        let columns = takeWhile (< count) [0 ..]
+        names <- forM columns \index -> output (c_duckdb_v2_copy_from_bind_get_column_name info index) >>= readIdentifier
+        types <- forM columns \index -> bracket (output (c_duckdb_v2_copy_from_bind_get_column_type info index)) destroyLogicalType (output . c_duckdb_v2_logical_type_get_id)
+        transferCallbackState (attachOpaque (c_duckdb_v2_copy_from_bind_set_bind_data info)) (readRows (CopyFromInfo (Text.unpack path) names types))
+    initialize info _ = do
+        scan <- readCallbackState (c_duckdb_v2_copy_from_init_global_get_bind_data info)
+        remaining <- scan >>= newIORef :: IO (IORef [row])
+        transferCallbackState (attachOpaque (c_duckdb_v2_copy_from_init_global_set_global_state info)) remaining
+    execute info context = withContextFactory context \factory -> do
+        remaining <- readCallbackState (c_duckdb_v2_copy_from_exec_get_global_state info) :: IO (IORef [row])
+        chunk <- output (c_duckdb_v2_copy_from_exec_get_output_chunk info)
+        readIORef remaining >>= writeRows factory chunk >>= writeIORef remaining
 
 -- | Options supplied to DuckDB's multi-file wrapper.
 data MultiFileOptions = MultiFileOptions

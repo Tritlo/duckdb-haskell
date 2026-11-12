@@ -24,6 +24,8 @@
   sinks, macro and pragma registration, function documentation, query metrics,
   and file path operations. Expose table bind metadata for multi-file readers.
   `enableProfiling` collects metrics without printing a profile.
+- Add `createCast` for connections and extensions. It registers a pure Haskell
+  function as an explicit cast.
 - Add scoped named collection inputs and prepared dynamic PIVOT with a deferred
   output schema. Native expanding statements cannot have parameters.
 - Rename `Database.DuckDB.Simple.Deprecated.Streaming` to

@@ -12,6 +12,7 @@ module Database.DuckDB.Simple.Extension (
     extensionTarget,
     createFunction,
     createFunctionWithState,
+    createCast,
     MacroFunctionType (..),
     registerMacroFunction,
     registerMacroFunctionWith,
@@ -25,13 +26,16 @@ import Data.Text (Text)
 import Database.DuckDB.Simple.Callback (runCallback)
 import Database.DuckDB.Simple.Config (CustomOption)
 import qualified Database.DuckDB.Simple.Config as Config
+import Database.DuckDB.Simple.FromField (FromField)
 import Database.DuckDB.Simple.Function.Internal (Function, createFunctionOn, createFunctionWithStateOn)
 import Database.DuckDB.Simple.Logging (LogEntry)
 import qualified Database.DuckDB.Simple.Logging as Logging
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Pragma (PragmaCallback)
 import qualified Database.DuckDB.Simple.Pragma as Pragma
-import Database.DuckDB.Simple.Registration (FunctionParameter, FunctionSignature (..), RegistrationTarget (ExtensionTarget), configureFunctionSignature)
+import Database.DuckDB.Simple.Registration (FunctionParameter, FunctionSignature (..), RegistrationTarget (ExtensionTarget), TypeDeclaration, configureFunctionSignature)
+import Database.DuckDB.Simple.ToField (ToDuckValue)
+import Database.DuckDB.Simple.Typed (createCastOn)
 import Foreign.Ptr (Ptr, castPtr)
 
 {- | The borrowed registration target and context for one extension load.
@@ -69,6 +73,12 @@ createFunction = createFunctionOn . extensionTarget
 -- | Register a typed function with per-worker state owned by DuckDB.
 createFunctionWithState :: (Function f) => Extension -> Text -> IO s -> (s -> f) -> IO ()
 createFunctionWithState = createFunctionWithStateOn . extensionTarget
+
+{- | Register an explicit typed cast with the loading DuckDB host. The rules of
+'Database.DuckDB.Simple.Function.createCast' apply.
+-}
+createCast :: (FromField a, ToDuckValue b) => Extension -> TypeDeclaration -> TypeDeclaration -> (a -> Either Text b) -> IO ()
+createCast = createCastOn . extensionTarget
 
 {- | Register a scalar expression or a table SELECT as a macro of the loading
 extension. The V2 API registers a macro only for an extension. Use SQL

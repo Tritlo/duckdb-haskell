@@ -3,25 +3,28 @@
 
 module V2CopyTest (tests) where
 
-import Control.Exception (bracket, finally)
-import Control.Monad (forM, unless, void, when)
+import Control.Exception (bracket, finally, onException)
+import Control.Monad (forM, forM_, unless, void, when)
 import Data.Char (toLower)
 import Data.Coerce (coerce)
-import Data.IORef (newIORef, readIORef, writeIORef)
+import Data.IORef (atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int32, Int64)
-import Data.List (isSuffixOf)
+import Data.List (elemIndex, isInfixOf, isSuffixOf, sort)
+import Data.Maybe (fromMaybe)
 import Database.DuckDB.FFI.V2
 import Foreign.C.String (withCString)
 import Foreign.C.Types (CBool (..))
-import Foreign.Marshal.Alloc (alloca, allocaBytes)
+import Foreign.Marshal.Alloc (alloca, allocaBytes, free)
+import Foreign.Marshal.Array (mallocArray, pokeArray)
 import Foreign.Marshal.Utils (with)
-import Foreign.Ptr (Ptr, freeHaskellFunPtr, nullPtr)
+import Foreign.Ptr (Ptr, castPtr, freeHaskellFunPtr, nullFunPtr, nullPtr)
 import Foreign.Storable (Storable (..))
 import GHC.Records (getField)
 import HsBindgen.Runtime.Prelude (toFunPtr)
 import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
+import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase, (@?=))
+import V2TableFunctionTest (deliberateFailure, statementError)
 import V2Test (borrowedOpaque, callbackGuard, checked, consume, output, readIntegers, readView, record, removeTestFile, withConnection, withFactory, withHandle, withResult, withView)
 
 tests :: TestTree
@@ -30,6 +33,7 @@ tests =
         "DuckDB V2 COPY functions"
         [ testCase "COPY TO callbacks read the user data, the bind data, the init data and the statement" testCopyTo
         , testCase "COPY FROM callbacks read the user data, the bind data, the global state and the statement" testCopyFrom
+        , testCase "a COPY callback that reports an error fails the statement, and registration refuses an incomplete function" testFailingCopy
         ]
 
 -- | Read the name that a getter writes at an index.
@@ -195,6 +199,9 @@ testCopyTo = do
                                                 >>= (@?= ["bind", "batch size", "init", "batch", "flush", "finalize"])
                                         readIORef filePaths >>= \paths ->
                                             assertBool ("each file name has the extension of the function: " <> show paths) (not (null paths) && all (".v2out" `isSuffixOf`) paths)
+                                        -- The function has no COPY FROM side, so a COPY FROM statement fails.
+                                        withResult conn "CREATE TABLE v2_sink (amount BIGINT, part INTEGER)" consume
+                                        void (statementError conn "COPY v2_sink FROM 'v2-absent.probe' (FORMAT v2_writer)")
     readIORef failures >>= (@?= [])
     reverse <$> readIORef boundPaths >>= (@?= [path, directory])
     readIORef batchRows >>= (@?= [5000, 5000])
@@ -282,6 +289,8 @@ testCopyFrom = do
                                 withResult conn "COPY v2_target FROM 'v2-absent/*.probe' (FORMAT v2_reader, tag 'x', pair (1, 'two'), flag)" $ \result -> do
                                     inserted <- readIntegers result
                                     readIORef rows >>= \given -> inserted @?= [Just given]
+                                -- The function has no COPY TO side, so a COPY TO statement fails.
+                                void (statementError conn "COPY v2_target TO 'v2-absent/never.probe' (FORMAT v2_reader)")
     readIORef failures >>= (@?= [])
     readIORef boundPaths >>= (@?= ["v2-absent/*.probe"])
     given <- readIORef rows
@@ -291,3 +300,111 @@ testCopyFrom = do
     -- The query shows no progress before the read reports progress, and shows progress after the read reports 0.5.
     reverse <$> readIORef percentages >>= \seen ->
         assertBool ("the query progress follows the reported progress: " <> show seen) (not (null seen) && all (<= 0) (take 1 seen) && all (> 0) (take 1 (reverse seen)))
+
+-- | The phases of v2_failing_copy, in the order of the index that its states hold.
+copyPhases :: [String]
+copyPhases = ["none", "bind", "target", "batch", "flush", "exec"]
+
+{- | The option fail of a statement names the callback of v2_failing_copy that reports an error: bind (the bind
+callback of either side), batch, flush or exec. With target, the batch size callback sets the target 0. With none, no
+callback fails. The bind data and the batch data hold their kind (1 or 2) and the index of the phase. Their destructor
+records the kind, so the test sees which states DuckDB destroyed.
+-}
+testFailingCopy :: IO ()
+testFailingCopy = do
+    path <- freshPath "duckdb-v2-copy-failing"
+    failures <- newIORef []
+    destroyed <- newIORef []
+    let destroy ptr = peek (castPtr ptr :: Ptr Int64) >>= record destroyed >> free ptr
+    bracket (DuckDBV2OpaqueDestroyFn <$> toFunPtr (DuckDBV2OpaqueDestroyFn_Aux destroy)) (freeHaskellFunPtr . getField @"unwrap") $ \destroyPtr -> do
+        let
+            -- Give DuckDB cells that hold the kind and the phase index, with the destructor that records the kind.
+            own kind phase setter = do
+                cells <- mallocArray 2
+                pokeArray cells [kind, fromIntegral (fromMaybe (-1) (elemIndex phase copyPhases)) :: Int64]
+                with (DuckDBV2Opaque (castPtr cells) destroyPtr (DuckDBV2OpaqueEqualsFn nullFunPtr)) (checked . setter) `onException` free cells
+            phaseOf state = (copyPhases !!) . fromIntegral <$> peekElemOff (castPtr state :: Ptr Int64) 1
+            failIn phase name = when (phase == name) $ deliberateFailure ("v2 deliberate " <> name <> " failure")
+            -- Read the phase from the option fail and set it as the bind data. The bind data exists before the
+            -- callback fails, so DuckDB owns the bind data and must destroy it.
+            bindPhase getName getValue setBindData = do
+                readName getName 0 >>= (@?= "fail")
+                phase <- withHandle (getValue 0) c_duckdb_v2_value_destroy (\value -> output (c_duckdb_v2_value_get_varchar value) >>= readView)
+                own 1 phase setBindData
+                failIn phase "bind"
+            toBind info _context err =
+                callbackGuard failures err $
+                    bindPhase (c_duckdb_v2_copy_to_bind_get_option_name info) (c_duckdb_v2_copy_to_bind_get_option_value info) (c_duckdb_v2_copy_to_bind_set_bind_data info)
+            batchSize info _context err = callbackGuard failures err $ do
+                phase <- output (c_duckdb_v2_copy_to_batch_size_get_bind_data info) >>= phaseOf
+                when (phase == "target") $ checked (c_duckdb_v2_copy_to_batch_size_set_target info 0)
+            batch info _context err = callbackGuard failures err $ do
+                phase <- output (c_duckdb_v2_copy_to_batch_get_bind_data info) >>= phaseOf
+                own 2 phase (c_duckdb_v2_copy_to_batch_set_batch_data info)
+                failIn phase "batch"
+            flush info _context err =
+                callbackGuard failures err $
+                    output (c_duckdb_v2_copy_to_flush_get_bind_data info) >>= phaseOf >>= (`failIn` "flush")
+            fromBind info _context err =
+                callbackGuard failures err $
+                    bindPhase (c_duckdb_v2_copy_from_bind_get_option_name info) (c_duckdb_v2_copy_from_bind_get_option_value info) (c_duckdb_v2_copy_from_bind_set_bind_data info)
+            -- The output chunk stays empty, so the read ends after the first call.
+            execute info _context err =
+                callbackGuard failures err $
+                    output (c_duckdb_v2_copy_from_exec_get_bind_data info) >>= phaseOf >>= (`failIn` "exec")
+        bracket (DuckDBV2CopyToBindCallbackFn <$> toFunPtr (DuckDBV2CopyToBindCallbackFn_Aux toBind)) (freeHaskellFunPtr . getField @"unwrap") $ \toBindPtr ->
+            bracket (DuckDBV2CopyToBatchSizeCallbackFn <$> toFunPtr (DuckDBV2CopyToBatchSizeCallbackFn_Aux batchSize)) (freeHaskellFunPtr . getField @"unwrap") $ \batchSizePtr ->
+                bracket (DuckDBV2CopyToBatchCallbackFn <$> toFunPtr (DuckDBV2CopyToBatchCallbackFn_Aux batch)) (freeHaskellFunPtr . getField @"unwrap") $ \batchPtr ->
+                    bracket (DuckDBV2CopyToFlushCallbackFn <$> toFunPtr (DuckDBV2CopyToFlushCallbackFn_Aux flush)) (freeHaskellFunPtr . getField @"unwrap") $ \flushPtr ->
+                        bracket (DuckDBV2CopyFromBindCallbackFn <$> toFunPtr (DuckDBV2CopyFromBindCallbackFn_Aux fromBind)) (freeHaskellFunPtr . getField @"unwrap") $ \fromBindPtr ->
+                            bracket (DuckDBV2CopyFromExecCallbackFn <$> toFunPtr (DuckDBV2CopyFromExecCallbackFn_Aux execute)) (freeHaskellFunPtr . getField @"unwrap") $ \executePtr ->
+                                withConnection $ \conn -> withConnection $ \other -> do
+                                    -- Register the function with both sides, with the change applied.
+                                    let register change = withFactory (if change == "another database" then other else conn) $ \factory ->
+                                            withHandle (c_duckdb_v2_copy_function_create factory) c_duckdb_v2_copy_function_destroy $ \function -> do
+                                                unless (change == "no name") $ withView "v2_failing_copy" $ \name -> checked (c_duckdb_v2_copy_function_set_name function (coerce name))
+                                                unless (change == "no side") $ do
+                                                    checked (c_duckdb_v2_copy_to_set_bind_callback function toBindPtr)
+                                                    checked (c_duckdb_v2_copy_to_set_batch_size_callback function batchSizePtr)
+                                                    unless (change == "no batch callback") $ checked (c_duckdb_v2_copy_to_set_batch_callback function batchPtr)
+                                                    unless (change == "no flush callback") $ checked (c_duckdb_v2_copy_to_set_flush_callback function flushPtr)
+                                                    unless (change == "no bind callback") $ checked (c_duckdb_v2_copy_from_set_bind_callback function fromBindPtr)
+                                                    unless (change == "no exec callback") $ checked (c_duckdb_v2_copy_from_set_exec_callback function executePtr)
+                                                c_duckdb_v2_connection_register_copy_function conn function nullPtr
+                                    forM_ ["no name", "no side", "no batch callback", "no flush callback", "no bind callback", "no exec callback", "another database"] $ \change ->
+                                        register change >>= \code -> assertBool ("registration refuses a copy function with " <> change <> ": " <> show code) (code /= DuckDBV2ErrorNone)
+                                    register "" >>= (@?= DuckDBV2ErrorNone)
+                                    -- One thread writes and reads, so each callback runs once for each statement.
+                                    withResult conn "SET threads = 1" consume
+                                    withResult conn "CREATE TABLE v2_target (amount BIGINT)" consume
+                                    let copyTo phase options = "COPY (SELECT i::BIGINT AS amount FROM range(3) t(i)) TO '" <> path <> "' (FORMAT v2_failing_copy, USE_TMP_FILE FALSE, fail '" <> phase <> "'" <> options <> ")"
+                                        copyFrom phase = "COPY v2_target FROM 'v2-absent/*.probe' (FORMAT v2_failing_copy, fail '" <> phase <> "')"
+                                        -- Return the kinds of the states that DuckDB destroyed since the last call.
+                                        takeDestroyed = sort <$> atomicModifyIORef' destroyed (\kinds -> ([], kinds))
+                                        succeeds = do
+                                            withResult conn (copyTo "none" "") readIntegers >>= (@?= [Just 3])
+                                            takeDestroyed >>= (@?= [1, 2])
+                                            withResult conn (copyFrom "none") readIntegers >>= (@?= [Just 0])
+                                            takeDestroyed >>= (@?= [1])
+                                        -- The statement fails with the text of each recorded failure, and DuckDB destroyed the states of the
+                                        -- given kinds. Then the statements without a failure succeed on the same connection.
+                                        -- A callback reports the code API. DuckDB has no exception type for API, so the statement fails with
+                                        -- INPUT_INVALID. The header names no code for the other failures.
+                                        fails sql recorded kinds = do
+                                            (code, text) <- statementError conn sql
+                                            unless (null recorded) $ code @?= DuckDBV2ErrorInputInvalid
+                                            forM_ recorded $ \failure -> assertBool ("the error contains the text of the callback: " <> text) (failure `isInfixOf` text)
+                                            atomicModifyIORef' failures (\seen -> ([], seen)) >>= (@?= map (\failure -> "user error (" <> failure <> ")") recorded)
+                                            takeDestroyed >>= assertEqual ("the destroyed states after " <> sql) kinds
+                                            succeeds
+                                    succeeds
+                                    fails (copyTo "bind" "") ["v2 deliberate bind failure"] [1]
+                                    fails (copyTo "target" "") [] [1]
+                                    fails (copyTo "batch" "") ["v2 deliberate batch failure"] [1, 2]
+                                    fails (copyTo "flush" "") ["v2 deliberate flush failure"] [1, 2]
+                                    fails (copyFrom "bind") ["v2 deliberate bind failure"] [1]
+                                    fails (copyFrom "exec") ["v2 deliberate exec failure"] [1]
+                                    -- The function has no statistics callback, so it rejects RETURN_STATS. DuckDB rejects the option
+                                    -- before it calls the bind callback, so no state exists.
+                                    fails (copyTo "none" ", RETURN_STATS") [] []
+    readIORef failures >>= (@?= [])

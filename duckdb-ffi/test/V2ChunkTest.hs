@@ -25,6 +25,7 @@ tests =
         , testCase "nested vectors report their child count" testChildCount
         , testCase "referenced vectors alias the data of their source" testReference
         , testCase "column data collections combine, reset and clear their rows" testCollection
+        , testCase "chunks, vectors and collections reject a bad index, a bad type and a bad representation" testChunkRejection
         ]
 
 withChunk :: DuckDBV2FactoryHandle -> [DuckDBV2LogicalTypeHandle] -> (DuckDBV2DataChunkHandle -> IO a) -> IO a
@@ -172,3 +173,66 @@ testCollection = withConnection $ \conn -> withFactory conn $ \factory -> withTy
         rowCount target >>= (@?= 0)
         append target [9]
         rowCount target >>= (@?= 1)
+
+-- | Check that a call fails. The header names no error code for it.
+failed :: DuckDBV2Error -> IO ()
+failed code = assertBool ("the call fails: " <> show code) (code /= DuckDBV2ErrorNone)
+
+testChunkRejection :: IO ()
+testChunkRejection = withConnection $ \conn -> withFactory conn $ \factory ->
+    withType factory "BIGINT" $ \integer -> withType factory "VARCHAR" $ \text -> do
+        withHandle (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdAny (coerce nullPtr) (coerce nullPtr) 0) c_duckdb_v2_logical_type_destroy $ \anyType ->
+            withArray [anyType] $ \types -> alloca $ \out -> do
+                poke out (coerce nullPtr)
+                code <- c_duckdb_v2_data_chunk_create factory (ConstPtr types) 1 out nullPtr
+                c_duckdb_v2_data_chunk_destroy out >>= (@?= DuckDBV2ErrorNone)
+                failed code
+        withChunk factory [integer] $ \chunk -> do
+            vector <- vectorAt chunk 0
+            alloca $ \out -> c_duckdb_v2_data_chunk_get_vector chunk 1 out nullPtr >>= (@?= DuckDBV2ErrorInputInvalid)
+            -- A SEQUENCE vector has no data pointer until it is flat.
+            checked (c_duckdb_v2_vector_make_sequence vector 1 1 3)
+            alloca $ \out -> c_duckdb_v2_vector_get_data_mutable vector out nullPtr >>= (@?= DuckDBV2ErrorInputInvalid)
+            checked (c_duckdb_v2_vector_flatten vector)
+            _ <- output (c_duckdb_v2_vector_get_data_mutable vector)
+            -- The row index of a read and of a write is checked against the size 3.
+            withHandle (c_duckdb_v2_vector_get_value vector 2) c_duckdb_v2_value_destroy $ \value -> output (c_duckdb_v2_value_get_bigint value) >>= (@?= 3)
+            alloca $ \out -> do
+                poke out (coerce nullPtr)
+                code <- c_duckdb_v2_vector_get_value vector 3 out nullPtr
+                c_duckdb_v2_value_destroy out >>= (@?= DuckDBV2ErrorNone)
+                failed code
+            let write row setting = withView setting $ \view -> withHandle (c_duckdb_v2_value_create_varchar factory view) c_duckdb_v2_value_destroy $ \value ->
+                    c_duckdb_v2_vector_set_value vector row value nullPtr
+            write 2 "30" >>= (@?= DuckDBV2ErrorNone)
+            write 3 "30" >>= failed
+            write 2 "thirty" >>= failed
+            readBigints vector >>= (@?= [1, 2, 30])
+            -- A constant vector takes a value of its own type only, and it is not row-addressable.
+            withHandle (c_duckdb_v2_value_create_bigint factory 7) c_duckdb_v2_value_destroy $ \value ->
+                checked (c_duckdb_v2_vector_make_constant vector value 3)
+            withView "7" $ \view -> withHandle (c_duckdb_v2_value_create_varchar factory view) c_duckdb_v2_value_destroy $ \value ->
+                c_duckdb_v2_vector_make_constant vector value 3 nullPtr >>= (@?= DuckDBV2ErrorInputInvalid)
+            write 0 "30" >>= failed
+            readBigints vector >>= (@?= [7, 7, 7])
+        withArray [integer] $ \types -> do
+            let create count = alloca $ \out -> do
+                    poke out (coerce nullPtr)
+                    code <- c_duckdb_v2_column_data_collection_create factory (ConstPtr types) count out nullPtr
+                    c_duckdb_v2_column_data_collection_destroy out >>= (@?= DuckDBV2ErrorNone)
+                    pure code
+            create 1 >>= (@?= DuckDBV2ErrorNone)
+            create 0 >>= (@?= DuckDBV2ErrorInputInvalid)
+            withHandle (c_duckdb_v2_column_data_collection_create factory (ConstPtr types) 1) c_duckdb_v2_column_data_collection_destroy $ \collection ->
+                withHandle (c_duckdb_v2_column_data_collection_append_state_create collection) c_duckdb_v2_column_data_collection_append_state_destroy $ \state -> do
+                    let append ty = withChunk factory [ty] $ \chunk -> do
+                            c_duckdb_v2_column_data_collection_append collection state chunk nullPtr
+                    append integer >>= (@?= DuckDBV2ErrorNone)
+                    append text >>= (@?= DuckDBV2ErrorInputInvalid)
+                    -- Combine refuses a source with other column types and leaves the source alive.
+                    withArray [text] $ \textTypes -> alloca $ \sourceSlot -> do
+                        poke sourceSlot (coerce nullPtr)
+                        flip finally (c_duckdb_v2_column_data_collection_destroy sourceSlot) $ do
+                            checked (c_duckdb_v2_column_data_collection_create factory (ConstPtr textTypes) 1 sourceSlot)
+                            c_duckdb_v2_column_data_collection_combine collection sourceSlot nullPtr >>= failed
+                            peek sourceSlot >>= \source -> assertBool "the refused source stays alive" (source /= coerce nullPtr)

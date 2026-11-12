@@ -6,6 +6,7 @@ import qualified V2CallbackTest
 import qualified V2ChunkTest
 import qualified V2FileSystemTest
 import qualified V2FunctionDocsTest
+import qualified V2MacroTest
 import qualified V2StatementTest
 import qualified V2Test
 import qualified V2TypeTest
@@ -25,4 +26,5 @@ main =
             , V2FunctionDocsTest.tests
             , V2CallbackTest.tests
             , V2AggregateTest.tests
+            , V2MacroTest.tests
             ]

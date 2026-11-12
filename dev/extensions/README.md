@@ -181,6 +181,9 @@ packaged file has no signature:
   -c "LOAD 'dev/extensions/dist/haskell_demo.duckdb_extension'; SELECT haskell_answer();"
 ```
 
+If you created the `duckdb-nix` wrapper, use it here too, inside the Nix shell.
+The plain CLI cannot load an extension that requires the newer glibc.
+
 Each test case starts a plain native CLI process, loads the packaged
 extension, and compares the CSV rows. Each registration kind has a case that
 uses the registered object in SQL. The cases also check scalar results, 10,000

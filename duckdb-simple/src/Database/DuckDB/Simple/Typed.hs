@@ -17,6 +17,7 @@ replacement scan callback.
 -}
 module Database.DuckDB.Simple.Typed (
     TypedRow (..),
+    ColumnValue (..),
     prepareArgumentReader,
     createCastOn,
     Replacement (..),
@@ -59,17 +60,20 @@ class TypedRow r where
     default rowColumnTypes :: (GTypedRow (Rep r)) => Proxy r -> [Text]
     rowColumnTypes _ = gRowColumnTypes (Proxy :: Proxy (Rep r))
 
-    {- | One action for each column. The action makes an owned native value
-    through a borrowed factory. The caller destroys the value.
-    -}
-    rowColumnValues :: r -> [DuckDBV2FactoryHandle -> IO DuckDBV2ValueHandle]
-    default rowColumnValues :: (Generic r, GTypedRow (Rep r)) => r -> [DuckDBV2FactoryHandle -> IO DuckDBV2ValueHandle]
+    -- | The value of each column.
+    rowColumnValues :: r -> [ColumnValue]
+    default rowColumnValues :: (Generic r, GTypedRow (Rep r)) => r -> [ColumnValue]
     rowColumnValues = gRowColumnValues . from
+
+{- | The value of one column of a row. The action makes an owned native value
+through a borrowed factory. The caller destroys the value.
+-}
+newtype ColumnValue = ColumnValue (DuckDBV2FactoryHandle -> IO DuckDBV2ValueHandle)
 
 -- | The generic implementation of 'TypedRow' for a type with one constructor.
 class GTypedRow f where
     gRowColumnTypes :: Proxy f -> [Text]
-    gRowColumnValues :: f p -> [DuckDBV2FactoryHandle -> IO DuckDBV2ValueHandle]
+    gRowColumnValues :: f p -> [ColumnValue]
 
 instance GTypedRow U1 where
     gRowColumnTypes _ = []
@@ -81,7 +85,7 @@ instance (GTypedRow a) => GTypedRow (M1 i c a) where
 
 instance (ToDuckValue a) => GTypedRow (K1 i a) where
     gRowColumnTypes _ = [duckdbColumnType (Proxy :: Proxy a)]
-    gRowColumnValues (K1 value) = [(`toDuckValue` value)]
+    gRowColumnValues (K1 value) = [ColumnValue (`toDuckValue` value)]
 
 instance (GTypedRow a, GTypedRow b) => GTypedRow (a :*: b) where
     gRowColumnTypes _ = gRowColumnTypes (Proxy :: Proxy a) <> gRowColumnTypes (Proxy :: Proxy b)
@@ -91,7 +95,7 @@ instance TypedRow ()
 
 instance (ToDuckValue a) => TypedRow (Only a) where
     rowColumnTypes _ = [duckdbColumnType (Proxy :: Proxy a)]
-    rowColumnValues (Only value) = [(`toDuckValue` value)]
+    rowColumnValues (Only value) = [ColumnValue (`toDuckValue` value)]
 
 instance (ToDuckValue a, ToDuckValue b) => TypedRow (a, b)
 

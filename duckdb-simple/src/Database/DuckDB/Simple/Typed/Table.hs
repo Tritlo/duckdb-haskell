@@ -28,7 +28,7 @@ import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow)
 import Database.DuckDB.Simple.Materialize (materializeValue)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
-import Database.DuckDB.Simple.Typed (TypedRow (..))
+import Database.DuckDB.Simple.Typed (ColumnValue (..), TypedRow (..))
 import Database.DuckDB.Simple.V2.Registration (
     FunctionParameter (..),
     FunctionSignature (..),
@@ -118,7 +118,7 @@ writeRows factory chunk rows = do
             -- Use loops with a constant stack. The runtime reads the stack of
             -- the thread at each native call, so a deep stack makes each call slow.
             forM_ (zip [0 ..] now) \(index, row) ->
-                zipWithM_ (\vector make -> bracket (make factory) destroyValue (checked . c_duckdb_v2_vector_set_value vector index)) vectors (rowColumnValues row)
+                zipWithM_ (\vector (ColumnValue make) -> bracket (make factory) destroyValue (checked . c_duckdb_v2_vector_set_value vector index)) vectors (rowColumnValues row)
             pure later
 
 {- | Split a list after at most the given number of elements. Evaluate the

@@ -46,6 +46,7 @@ module Database.DuckDB.Simple.V2.Registration (
     registerCustomType,
     registerCustomTypeOn,
     registerCustomTypeWith,
+    registerMacroFunctionWith,
     registerReplacementScan,
     registerReplacementScanOn,
     registerInstanceReplacementScan,
@@ -377,6 +378,21 @@ registerCustomTypeWith :: RegistrationTarget -> (DuckDBV2CustomTypeHandle -> IO 
 registerCustomTypeWith target configure =
     withTarget target c_duckdb_v2_custom_type_create c_duckdb_v2_custom_type_destroy c_duckdb_v2_connection_register_custom_type c_duckdb_v2_extension_register_custom_type \custom register ->
         configure custom >> register
+
+{- | Configure and register a macro of a loading extension. The configuration
+action borrows the builder. It can set the name, the body, the signature, and
+the documentation. DuckDB keeps copies after this action returns. The V2 API
+registers a macro only for an extension. A connection target raises an
+@SQLError@ before a native call. Use SQL @CREATE MACRO@ on a connection.
+-}
+registerMacroFunctionWith :: RegistrationTarget -> MacroFunctionType -> (DuckDBV2MacroFunctionHandle -> IO ()) -> IO ()
+registerMacroFunctionWith target kind configure = case target of
+    ConnectionTarget _ -> throwInvalidArgument "the V2 API registers a macro only for an extension; use CREATE MACRO on a connection"
+    ExtensionTarget extension context ->
+        withContextFactory context \factory ->
+            bracket (output (c_duckdb_v2_macro_function_create factory (macroFunctionTypeToNative kind))) (destroy c_duckdb_v2_macro_function_destroy) \function -> do
+                configure function
+                checked (c_duckdb_v2_extension_register_macro_function extension function)
 
 -- | Register a connection-local replacement scan. It precedes instance scans.
 registerReplacementScan :: Connection -> ContextCallback DuckDBV2ReplacementScanInfoHandle -> IO ()

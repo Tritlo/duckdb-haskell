@@ -106,12 +106,15 @@ writeRows factory chunk rows = do
         throwInvalidArgument ("the output chunk has " <> Text.pack (show vectorCount) <> " vectors for " <> Text.pack (show width) <> " row columns")
     case splitRows capacity rows of
         (now, later) -> do
+            let size = fromIntegral (length now)
             vectors <- forM (take width [0 ..]) \index -> do
                 vector <- output (c_duckdb_v2_data_chunk_get_vector chunk index)
                 -- The set operation checks the row against the size. Flatten after the size changes.
-                checked (c_duckdb_v2_vector_set_size vector (fromIntegral (length now)))
+                checked (c_duckdb_v2_vector_set_size vector size)
                 checked (c_duckdb_v2_vector_flatten vector)
                 pure vector
+            -- Use loops with a constant stack. The runtime reads the stack of
+            -- the thread at each native call, so a deep stack makes each call slow.
             forM_ (zip [0 ..] now) \(index, row) ->
                 zipWithM_ (\vector make -> bracket (make factory) destroyValue (checked . c_duckdb_v2_vector_set_value vector index)) vectors (rowColumnValues row)
             pure later

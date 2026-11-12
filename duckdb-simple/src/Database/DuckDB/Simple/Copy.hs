@@ -336,7 +336,13 @@ data MultiFileOptions = MultiFileOptions
 defaultMultiFileOptions :: MultiFileOptions
 defaultMultiFileOptions = MultiFileOptions Nothing Nothing
 
--- | Register globbing, file lists, filename columns, and hive partition support.
+{- | Register globbing, file lists, filename columns, and hive partition
+support for a registered single-file table function. The second name is that
+table function. DuckDB can run the exec callback of the single-file function on
+more than one thread at the same time for one scan. A function from
+'Database.DuckDB.Simple.Function.createTableFunction' permits that. A table
+function with native callbacks must synchronize its scan state.
+-}
 registerMultiFileFunction :: Connection -> Text -> Text -> MultiFileOptions -> IO ()
 registerMultiFileFunction connection = registerMultiFileFunctionOn (ConnectionTarget connection)
 

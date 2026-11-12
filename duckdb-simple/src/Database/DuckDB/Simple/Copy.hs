@@ -31,6 +31,7 @@ module Database.DuckDB.Simple.Copy (
     MultiFileOptions (..),
     defaultMultiFileOptions,
     registerMultiFileFunction,
+    registerMultiFileFunctionOn,
     registerMultiFileFunctionWith,
     RegistrationTarget (..),
     ContextCallback,
@@ -292,9 +293,16 @@ defaultMultiFileOptions = MultiFileOptions Nothing Nothing
 
 -- | Register globbing, file lists, filename columns, and hive partition support.
 registerMultiFileFunction :: Connection -> Text -> Text -> MultiFileOptions -> IO ()
-registerMultiFileFunction connection name singleFile MultiFileOptions{multiFileReaderType, multiFileExtension} = do
+registerMultiFileFunction connection = registerMultiFileFunctionOn (ConnectionTarget connection)
+
+{- | Register a multi-file wrapper on a connection or a loading extension. The
+second name is the registered single-file table function. Both names must not
+be empty and must not contain NUL.
+-}
+registerMultiFileFunctionOn :: RegistrationTarget -> Text -> Text -> MultiFileOptions -> IO ()
+registerMultiFileFunctionOn target name singleFile MultiFileOptions{multiFileReaderType, multiFileExtension} = do
     when (any (\value -> Text.null value || Text.any (== '\0') value) [name, singleFile]) $ throwInvalidArgument "invalid multi-file function name"
-    registerMultiFileFunctionWith (ConnectionTarget connection) \function -> do
+    registerMultiFileFunctionWith target \function -> do
         withText name (\(ConstPtr view) -> checked (c_duckdb_v2_multi_file_function_set_name function view))
         withText singleFile (\(ConstPtr view) -> checked (c_duckdb_v2_multi_file_function_set_single_file_function function view))
         forM_ multiFileReaderType \value -> withText value (\(ConstPtr view) -> checked (c_duckdb_v2_multi_file_function_set_reader_type function view))

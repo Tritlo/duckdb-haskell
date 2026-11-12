@@ -53,6 +53,9 @@ for name in "${packages[@]}"; do
   # Use [0-9] so package prefixes do not cross-match.
   rm -rf dist-newstyle/"$name"-[0-9]*-docs.tar.gz
   rm -rf dist-newstyle/sdist/"$name"-[0-9]*.tar.gz
+  # Haddock does not remove the pages of a module that the package no longer
+  # has. Remove the old documentation, or the archive contains these pages.
+  rm -rf dist-newstyle/build/*/*/"$name"-[0-9]*/doc/html/"$name"-[0-9]*-docs
   cabal haddock --haddock-for-hackage "$name"
   cabal sdist "$name"
 done

@@ -1,13 +1,14 @@
 # Changelog
 
-## 0.4.0.0 (unreleased)
+## 0.4.0.0
 
-- Target DuckDB 2.0 with `duckdb-ffi >= 2.0.0.0`. The backend uses the
+- Target DuckDB 2.0 with `duckdb-ffi` 2.0.0.x. The backend uses the
   generated V2 C API. Upstream marks the V2 API as unstable ("The C API v2 is
   not yet stable. Its interface may change in upcoming releases."), so this
-  release requires exactly DuckDB 2.0.0. Creating an environment raises
-  `SQLError` for another library version. Use the earlier release with
-  DuckDB 1.5.
+  release requires exactly DuckDB 2.0.0, and the `duckdb-ffi` release for a
+  later DuckDB version is outside the dependency bound. Creating an
+  environment raises `SQLError` for another library version. Use the earlier
+  release with DuckDB 1.5.
 - Raw handles, logical type IDs, callback handles, and error codes use V2
   types. `sqlErrorType` is `Maybe DuckDBV2Error`. See MIGRATION.md.
 - Add `Database.DuckDB.Simple.Extension` for loadable Haskell extensions.

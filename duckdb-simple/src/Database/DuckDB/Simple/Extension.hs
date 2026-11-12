@@ -86,8 +86,11 @@ createCast = createCastOn . extensionTarget
 
 {- | Register a replacement scan with the loading DuckDB host. The scan belongs
 to the instance. Each connection of the instance uses it until the instance
-closes. The rules of
-'Database.DuckDB.Simple.Registration.registerInstanceReplacementScan' apply.
+closes. No function removes a scan. DuckDB asks the scans of a connection
+before the scans of the instance. It asks the scans of the instance in the
+order of registration. The function can run on several connections at the same
+time. 'Database.DuckDB.Simple.Registration.registerReplacementScan' gives the
+rules for the function.
 -}
 registerReplacementScan :: Extension -> ([Text] -> IO (Maybe Replacement)) -> IO ()
 registerReplacementScan extension = registerReplacementScanOn (extensionTarget extension) . replacementScanCallback

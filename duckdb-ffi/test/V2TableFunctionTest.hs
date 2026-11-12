@@ -26,6 +26,7 @@ tests =
         [ testCase "init and exec callbacks read the data of their call and the declared column of each scanned column" testColumns
         , testCase "claim batch callbacks hand out batches until a claim fails" testClaimBatch
         , testCase "order preservation and batch indexes decide whether a scan runs in parallel" testParallelScan
+        , testCase "partitioning callbacks let a grouped aggregate take its groups from partition values" testPartitioning
         ]
 
 -- | Create a function pointer for the duration of the action.
@@ -360,3 +361,99 @@ testParallelScan = do
     seen <- readIORef requests
     assertBool "the partition data callback was invoked" (not (null seen))
     nub seen @?= [(CBool 1, CBool 0, 0)]
+
+{- | The function declares the columns pad, v and k, with projection pushdown. Batch b holds b + 1 rows with k = b.
+The query does not read pad, so the scan position of k is not its declared column 2.
+In DuckDB 2.0.0 only an aggregate with a cluster update, such as count(v), can use the partitioned aggregate.
+-}
+testPartitioning :: IO ()
+testPartitioning = do
+    failures <- newIORef []
+    next <- newIORef (0 :: Int64)
+    binds <- newIORef [] -- (user data, bind data) of each bound call
+    globals <- newIORef [] -- (bind data, global state) of each scan
+    locals <- newIORef [] -- (global state, local state) of each thread
+    candidates <- newIORef [] -- the declared columns of each candidate GROUP BY column set
+    requests <- newIORef [] -- (partition columns required, declared partition columns) of each partition data call
+    let bind info result context err = callbackGuard failures err $ do
+            user <- output (c_duckdb_v2_function_bind_get_user_data info)
+            addColumns result context ["pad", "v", "k"]
+            bound <- give [0] (c_duckdb_v2_function_bind_set_bind_data info)
+            record binds (user, bound)
+        initGlobal info _context err = callbackGuard failures err $ do
+            bound <- output (c_duckdb_v2_table_function_init_global_get_bind_data info)
+            global <- give [0] (c_duckdb_v2_table_function_init_global_set_global_state info)
+            record globals (bound, global)
+        -- The local state holds the batch of the last chunk that the thread wrote.
+        initLocal info _context err = callbackGuard failures err $ do
+            global <- output (c_duckdb_v2_table_function_init_local_get_global_state info)
+            local <- give [-1] (c_duckdb_v2_table_function_init_local_set_local_state info)
+            record locals (global, local)
+        execute info _context err = callbackGuard failures err $ do
+            local <- output (c_duckdb_v2_table_function_exec_get_local_state info)
+            indexes <- declaredColumns "exec" (c_duckdb_v2_table_function_exec_get_column_count info) (c_duckdb_v2_table_function_exec_get_column_index info)
+            batch <- atomicModifyIORef' next $ \value -> (value + 1, value)
+            chunk <- output (c_duckdb_v2_table_function_exec_get_output_chunk info)
+            let value declared row = case declared of
+                    1 -> 10 * batch + row
+                    2 -> batch
+                    _ -> -1
+            if batch < 3
+                then do
+                    forM_ (zip [0 ..] indexes) $ \(position, declared) -> writeColumn chunk position [value declared row | row <- [0 .. batch]]
+                    setRows chunk (fromIntegral batch + 1)
+                    poke (castPtr local) batch
+                else setRows chunk 0
+        partitioning info _context err = callbackGuard failures err $ do
+            user <- output (c_duckdb_v2_table_function_partitioning_get_user_data info)
+            bound <- output (c_duckdb_v2_table_function_partitioning_get_bind_data info)
+            expectRecorded "partitioning reads the user data and the bind data of its call" (user, bound) binds
+            indexes <- declaredColumns "partitioning" (c_duckdb_v2_table_function_partitioning_get_partition_column_count info) (c_duckdb_v2_table_function_partitioning_get_partition_column_index info)
+            record candidates indexes
+            c_duckdb_v2_table_function_partitioning_set_partition_info info (DuckDBV2TablePartitionInfo 99) nullPtr >>= (@?= DuckDBV2ErrorInputInvalid)
+            checked . c_duckdb_v2_table_function_partitioning_set_partition_info info $
+                if indexes == [2] then DuckDBV2TablePartitionInfoSingleValuePartitions else DuckDBV2TablePartitionInfoNotPartitioned
+        partitionData info context err = callbackGuard failures err $ do
+            user <- output (c_duckdb_v2_table_function_partition_data_get_user_data info)
+            bound <- output (c_duckdb_v2_table_function_partition_data_get_bind_data info)
+            global <- output (c_duckdb_v2_table_function_partition_data_get_global_state info)
+            local <- output (c_duckdb_v2_table_function_partition_data_get_local_state info)
+            expectRecorded "partition data reads the user data and the bind data of its call" (user, bound) binds
+            expectRecorded "partition data reads the global state of its scan" (bound, global) globals
+            expectRecorded "partition data reads the local state of the thread that wrote the chunk" (global, local) locals
+            required <- output (c_duckdb_v2_table_function_partition_data_requires_partition_columns info)
+            indexes <- declaredColumns "partition data" (c_duckdb_v2_table_function_partition_data_get_partition_column_count info) (c_duckdb_v2_table_function_partition_data_get_partition_column_index info)
+            record requests (required, indexes)
+            batch <- peek (castPtr local :: Ptr Int64)
+            checked (c_duckdb_v2_table_function_partition_data_set_batch_index info (fromIntegral batch))
+            factory <- output (c_duckdb_v2_context_get_factory context)
+            withView "text" $ \text -> withHandle (c_duckdb_v2_value_create_varchar factory text) c_duckdb_v2_value_destroy $ \wrong ->
+                c_duckdb_v2_table_function_partition_data_set_partition_value info 0 wrong nullPtr >>= (@?= DuckDBV2ErrorInputInvalid)
+            withHandle (c_duckdb_v2_value_create_bigint factory batch) c_duckdb_v2_value_destroy $ \partition -> do
+                c_duckdb_v2_table_function_partition_data_set_partition_value info (fromIntegral (length indexes)) partition nullPtr >>= (@?= DuckDBV2ErrorInputInvalid)
+                checked (c_duckdb_v2_table_function_partition_data_set_partition_value info 0 partition)
+    with (4 :: Int64) $ \user ->
+        withFunPtr (DuckDBV2TableFunctionBindCallbackFn_Aux bind) $ \bindPtr ->
+            withFunPtr (DuckDBV2TableFunctionInitGlobalCallbackFn_Aux initGlobal) $ \initGlobalPtr ->
+                withFunPtr (DuckDBV2TableFunctionInitLocalCallbackFn_Aux initLocal) $ \initLocalPtr ->
+                    withFunPtr (DuckDBV2TableFunctionExecCallbackFn_Aux execute) $ \executePtr ->
+                        withFunPtr (DuckDBV2TableFunctionPartitioningCallbackFn_Aux partitioning) $ \partitioningPtr ->
+                            withFunPtr (DuckDBV2TableFunctionPartitionDataCallbackFn_Aux partitionData) $ \partitionDataPtr -> withConnection $ \conn -> do
+                                registerTable conn "v2_partitioned" $ \function -> do
+                                    lend user (checked . c_duckdb_v2_table_function_set_user_data function)
+                                    checked (c_duckdb_v2_table_function_set_bind_callback function (DuckDBV2TableFunctionBindCallbackFn bindPtr))
+                                    checked (c_duckdb_v2_table_function_set_init_global_callback function (DuckDBV2TableFunctionInitGlobalCallbackFn initGlobalPtr))
+                                    checked (c_duckdb_v2_table_function_set_init_local_callback function (DuckDBV2TableFunctionInitLocalCallbackFn initLocalPtr))
+                                    checked (c_duckdb_v2_table_function_set_exec_callback function (DuckDBV2TableFunctionExecCallbackFn executePtr))
+                                    checked (c_duckdb_v2_table_function_set_partitioning_callback function (DuckDBV2TableFunctionPartitioningCallbackFn partitioningPtr))
+                                    checked (c_duckdb_v2_table_function_set_partition_data_callback function (DuckDBV2TableFunctionPartitionDataCallbackFn partitionDataPtr))
+                                    checked (c_duckdb_v2_table_function_set_projection_pushdown function (CBool 1))
+                                withResult conn "SELECT k * 100 + count(v) FROM v2_partitioned() GROUP BY k ORDER BY k" $ \result ->
+                                    readIntegers result >>= (@?= map Just [1, 102, 203])
+    readIORef failures >>= (@?= [])
+    asked <- readIORef candidates
+    assertBool "the partitioning callback was invoked" (not (null asked))
+    nub asked @?= [[2]]
+    seen <- readIORef requests
+    assertBool "the partition data callback was invoked" (not (null seen))
+    nub seen @?= [(CBool 1, [2])]

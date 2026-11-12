@@ -9,6 +9,7 @@ import qualified V2ChunkTest
 import qualified V2FileSystemTest
 import qualified V2FunctionDocsTest
 import qualified V2MacroTest
+import qualified V2ReplacementScanTest
 import qualified V2StatementTest
 import qualified V2TableFunctionTest
 import qualified V2Test
@@ -33,4 +34,5 @@ main =
             , V2AttachTest.tests
             , V2TableFunctionTest.tests
             , V2ArrowTest.tests
+            , V2ReplacementScanTest.tests
             ]

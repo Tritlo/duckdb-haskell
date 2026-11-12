@@ -1,7 +1,7 @@
 module V2TableFunctionTest (tests) where
 
 import Control.Exception (bracket, onException)
-import Control.Monad (forM, forM_)
+import Control.Monad (forM, forM_, unless, when)
 import Data.Coerce (coerce)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int64)
@@ -11,16 +11,16 @@ import Database.DuckDB.FFI.V2
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (withCString)
 import Foreign.C.Types (CBool (..))
-import Foreign.Marshal.Alloc (alloca, finalizerFree, free)
+import Foreign.Marshal.Alloc (alloca, calloc, finalizerFree, free)
 import Foreign.Marshal.Array (mallocArray, pokeArray)
 import Foreign.Marshal.Utils (with)
 import Foreign.Ptr (FunPtr, Ptr, castFunPtr, castPtr, freeHaskellFunPtr, nullFunPtr, nullPtr)
-import Foreign.Storable (peek, peekElemOff, poke, pokeElemOff)
+import Foreign.Storable (Storable, peek, peekElemOff, poke, pokeElemOff)
 import HsBindgen.Runtime.Prelude (ToFunPtr, toFunPtr)
 import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
-import V2Test (callbackGuard, checked, consume, output, readIntegers, removeTestFile, withConnection, withFactory, withHandle, withResult, withType, withView)
+import V2Test (callbackGuard, checked, consume, output, readIntegers, readView, removeTestFile, withConnection, withFactory, withHandle, withResult, withType, withView)
 
 tests :: TestTree
 tests =
@@ -32,6 +32,7 @@ tests =
         , testCase "partitioning callbacks let a grouped aggregate take its groups from partition values" testPartitioning
         , testCase "progress callbacks give the progress of the running query" testProgress
         , testCase "a multi-file function asks the function it wraps for the bind info of each file" testBindInfo
+        , testCase "filter pushdown callbacks read the predicates of the query, and an accepted predicate leaves the query" testFilterPushdown
         ]
 
 -- | Create a function pointer for the duration of the action.
@@ -598,3 +599,195 @@ testBindInfo =
                                 seen <- readIORef users
                                 assertBool "the get bind info callback was invoked" (not (null seen))
                                 nub seen @?= [castPtr user]
+
+-- | A node of a filter predicate, as the expression functions report it.
+data Node = Node DuckDBV2ExpressionType DuckDBV2LogicalTypeId Detail [Node]
+    deriving (Eq, Ord, Show)
+
+{- | What the accessor of the node type reads: the declared column of a column reference, the value of a constant,
+the qualified name of a function call, or the mode of a cast.
+-}
+data Detail = Column DuckDBIdx | Constant (Maybe Int64) | Function [String] | Cast DuckDBV2CastMode | Other
+    deriving (Eq, Ord, Show)
+
+-- | Assert that a call with an output slot fails. The slot starts as zero bytes, thus as a null handle.
+rejected :: (Storable a) => String -> (Ptr a -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO ()
+rejected what call = bracket calloc free $ \slot -> call slot nullPtr >>= assertBool what . (/= DuckDBV2ErrorNone)
+
+-- | Return the declared columns that the column references of a predicate point at.
+columnsOf :: Node -> [DuckDBIdx]
+columnsOf (Node _ _ detail children) = [column | Column column <- [detail]] <> concatMap columnsOf children
+
+{- | Read the qualified name of the function that a node calls, and check that its last part is the name of the function.
+The test reads the borrowed name after it destroys the qualified name, so that Valgrind checks the lifetime of the name.
+-}
+functionName :: DuckDBV2ExpressionHandle -> IO [String]
+functionName node = do
+    name <- output (c_duckdb_v2_expression_function_get_name node)
+    parts <- withHandle (c_duckdb_v2_expression_function_get_qname node) c_duckdb_v2_qname_destroy $ \qname -> do
+        count <- output (c_duckdb_v2_qname_get_part_count qname)
+        forM (take (fromIntegral count) [0 ..]) $ \index -> output (c_duckdb_v2_qname_get_part qname index) >>= readView . coerce
+    text <- readView (coerce name)
+    assertBool ("the qualified name " <> show parts <> " ends with the name " <> text) (drop (length parts - 1) parts == [text])
+    pure parts
+
+{- | Read a predicate node and its children through the expression functions.
+The walk also checks that each accessor rejects a node of a type that it does not apply to.
+-}
+readNode :: DuckDBV2TableFunctionFilterPushdownInfoHandle -> DuckDBV2ExpressionHandle -> IO Node
+readNode info node = do
+    kind <- output (c_duckdb_v2_expression_get_type node)
+    returned <- withHandle (c_duckdb_v2_expression_get_return_type node) c_duckdb_v2_logical_type_destroy (output . c_duckdb_v2_logical_type_get_id)
+    count <- output (c_duckdb_v2_expression_get_child_count node)
+    children <- forM (take (fromIntegral count) [0 ..]) $ \index -> output (c_duckdb_v2_expression_get_child node index) >>= readNode info
+    rejected "get_child rejects the index that equals the child count" (c_duckdb_v2_expression_get_child node count)
+    let comparisons =
+            [ DuckDBV2ExpressionTypeCompareEqual
+            , DuckDBV2ExpressionTypeCompareNotequal
+            , DuckDBV2ExpressionTypeCompareLessthan
+            , DuckDBV2ExpressionTypeCompareGreaterthan
+            , DuckDBV2ExpressionTypeCompareLessthanorequalto
+            , DuckDBV2ExpressionTypeCompareGreaterthanorequalto
+            , DuckDBV2ExpressionTypeCompareDistinctFrom
+            , DuckDBV2ExpressionTypeCompareNotDistinctFrom
+            ]
+        calls = DuckDBV2ExpressionTypeBoundFunction : DuckDBV2ExpressionTypeCompareBetween : DuckDBV2ExpressionTypeOperatorCast : comparisons
+    unless (kind == DuckDBV2ExpressionTypeBoundColumnRef) $
+        rejected "column_ref_get_index rejects a node that is not a column reference" (c_duckdb_v2_expression_column_ref_get_index node)
+    -- The call destroys a value that constant_get_value creates all the same.
+    unless (kind == DuckDBV2ExpressionTypeValueConstant) $
+        rejected "constant_get_value rejects a node that is not a constant" (\slot err -> c_duckdb_v2_expression_constant_get_value node slot err <* c_duckdb_v2_value_destroy slot)
+    unless (kind == DuckDBV2ExpressionTypeOperatorCast) $
+        rejected "cast_get_mode rejects a node that is not a cast" (c_duckdb_v2_expression_cast_get_mode node)
+    -- The header does not tell if IN is a comparison. Thus the walk does not examine the name functions on IN.
+    unless (kind `elem` calls || kind == DuckDBV2ExpressionTypeCompareIn) $ do
+        rejected "function_get_name rejects a node that is not a function call" (c_duckdb_v2_expression_function_get_name node)
+        rejected "function_get_qname rejects a node that is not a function call" (\slot err -> c_duckdb_v2_expression_function_get_qname node slot err <* c_duckdb_v2_qname_destroy slot)
+    name <- if kind `elem` calls then functionName node else pure []
+    detail <- case kind of
+        DuckDBV2ExpressionTypeBoundColumnRef -> do
+            index <- output (c_duckdb_v2_expression_column_ref_get_index node)
+            Column <$> output (c_duckdb_v2_table_function_filter_pushdown_get_column_index info index)
+        DuckDBV2ExpressionTypeValueConstant ->
+            withHandle (c_duckdb_v2_expression_constant_get_value node) c_duckdb_v2_value_destroy $ \value -> do
+                isNull <- output (c_duckdb_v2_value_is_null value)
+                if isNull /= 0 then pure (Constant Nothing) else Constant . Just <$> output (c_duckdb_v2_value_get_bigint value)
+        DuckDBV2ExpressionTypeOperatorCast -> Cast <$> output (c_duckdb_v2_expression_cast_get_mode node)
+        -- The name of BETWEEN is internal.
+        _
+            | kind `elem` calls && kind /= DuckDBV2ExpressionTypeCompareBetween -> pure (Function name)
+            | otherwise -> pure Other
+    pure (Node kind returned detail children)
+
+{- | Two functions declare the columns a, b and c, with projection pushdown. The exec callback writes
+100 * (declared column) + (row) into each scanned column, for five rows, and applies no filter.
+The user data holds the declared column whose predicates the filter pushdown callback accepts:
+-1 for v2_declining and 2 for v2_accepting.
+-}
+testFilterPushdown :: IO ()
+testFilterPushdown = do
+    failures <- newIORef []
+    binds <- newIORef [] -- (user data, bind data) of each bound call
+    offers <- newIORef [] -- (declared columns, predicates) of each filter pushdown call
+    scans <- newIORef [] -- the number of filter pushdown calls that each scan reads from its bind data
+    let bind info result context err = callbackGuard failures err $ do
+            user <- output (c_duckdb_v2_function_bind_get_user_data info)
+            addColumns result context ["a", "b", "c"]
+            bound <- give [0] (c_duckdb_v2_function_bind_set_bind_data info)
+            record binds (user, bound)
+        -- The global state holds whether exec wrote the rows. Only one thread writes rows.
+        initGlobal info _context err = callbackGuard failures err $ do
+            bound <- output (c_duckdb_v2_table_function_init_global_get_bind_data info)
+            peek (castPtr bound :: Ptr Int64) >>= record scans
+            () <$ give [0] (c_duckdb_v2_table_function_init_global_set_global_state info)
+        execute info _context err = callbackGuard failures err $ do
+            global <- castPtr <$> output (c_duckdb_v2_table_function_exec_get_global_state info)
+            written <- peek global
+            indexes <- declaredColumns "exec" (c_duckdb_v2_table_function_exec_get_column_count info) (c_duckdb_v2_table_function_exec_get_column_index info)
+            chunk <- output (c_duckdb_v2_table_function_exec_get_output_chunk info)
+            if written == (0 :: Int64)
+                then do
+                    forM_ (zip [0 ..] indexes) $ \(position, declared) -> writeColumn chunk position [100 * fromIntegral declared + row | row <- [0 .. 4]]
+                    setRows chunk 5
+                    poke global 1
+                else setRows chunk 0
+        pushdown info _context err = callbackGuard failures err $ do
+            user <- output (c_duckdb_v2_table_function_filter_pushdown_get_user_data info)
+            bound <- output (c_duckdb_v2_table_function_filter_pushdown_get_bind_data info)
+            expectRecorded "filter pushdown reads the user data and the bind data of its call" (user, bound) binds
+            -- Count the call in the bind data. The init callback reads the count from its own bind data.
+            peek (castPtr bound) >>= poke (castPtr bound) . (+ (1 :: Int64))
+            columns <- declaredColumns "filter pushdown" (c_duckdb_v2_table_function_filter_pushdown_get_column_count info) (c_duckdb_v2_table_function_filter_pushdown_get_column_index info)
+            count <- output (c_duckdb_v2_table_function_filter_pushdown_get_filter_count info)
+            rejected "get_filter rejects the index that equals the filter count" (c_duckdb_v2_table_function_filter_pushdown_get_filter info count)
+            c_duckdb_v2_table_function_filter_pushdown_accept info count nullPtr >>= assertBool "accept rejects the index that equals the filter count" . (/= DuckDBV2ErrorNone)
+            predicates <- forM (take (fromIntegral count) [0 ..]) $ \index ->
+                output (c_duckdb_v2_table_function_filter_pushdown_get_filter info index) >>= readNode info
+            accepted <- peek (castPtr user :: Ptr Int64)
+            forM_ (zip [0 ..] predicates) $ \(index, predicate) ->
+                when (accepted `elem` map fromIntegral (columnsOf predicate)) $ checked (c_duckdb_v2_table_function_filter_pushdown_accept info index)
+            record offers (sort columns, sort predicates)
+    with (-1 :: Int64) $ \declining -> with (2 :: Int64) $ \accepting ->
+        withFunPtr (DuckDBV2TableFunctionBindCallbackFn_Aux bind) $ \bindPtr ->
+            withFunPtr (DuckDBV2TableFunctionInitGlobalCallbackFn_Aux initGlobal) $ \initGlobalPtr ->
+                withFunPtr (DuckDBV2TableFunctionExecCallbackFn_Aux execute) $ \executePtr ->
+                    withFunPtr (DuckDBV2TableFunctionFilterPushdownCallbackFn_Aux pushdown) $ \pushdownPtr -> withConnection $ \conn -> do
+                        let register name user = registerTable conn name $ \function -> do
+                                lend user (checked . c_duckdb_v2_table_function_set_user_data function)
+                                checked (c_duckdb_v2_table_function_set_bind_callback function (DuckDBV2TableFunctionBindCallbackFn bindPtr))
+                                checked (c_duckdb_v2_table_function_set_init_global_callback function (DuckDBV2TableFunctionInitGlobalCallbackFn initGlobalPtr))
+                                checked (c_duckdb_v2_table_function_set_exec_callback function (DuckDBV2TableFunctionExecCallbackFn executePtr))
+                                checked (c_duckdb_v2_table_function_set_filter_pushdown_callback function (DuckDBV2TableFunctionFilterPushdownCallbackFn pushdownPtr))
+                                checked (c_duckdb_v2_table_function_set_projection_pushdown function (CBool 1))
+                            -- Return the values of a and the different (declared columns, predicates) of the filter pushdown calls.
+                            query name condition = do
+                                writeIORef offers []
+                                writeIORef scans []
+                                rows <- withResult conn ("SELECT a FROM " <> name <> "()" <> condition) readIntegers
+                                seen <- readIORef offers
+                                readIORef scans >>= (@?= [fromIntegral (length seen)])
+                                pure (rows, nub seen)
+                            -- The engine applies each predicate that the callback does not accept.
+                            declined condition rows columns predicates =
+                                query "v2_declining" (" WHERE " <> condition) >>= (@?= (map Just rows, [(columns, sort predicates)]))
+                            -- The engine does not apply an accepted predicate, and the scan does not apply it either.
+                            accepted condition rows columns predicates = do
+                                (result, seen) <- query "v2_accepting" (" WHERE " <> condition)
+                                result @?= map Just rows
+                                assertBool ("the filter pushdown callback reads the predicates of " <> condition) ((columns, sort predicates) `elem` seen)
+                            column declared = Node DuckDBV2ExpressionTypeBoundColumnRef DuckDBV2LogicalTypeIdBigInt (Column declared) []
+                            constant ty value = Node DuckDBV2ExpressionTypeValueConstant ty (Constant value) []
+                            bigint value = constant DuckDBV2LogicalTypeIdBigInt (Just value)
+                            boolean kind = Node kind DuckDBV2LogicalTypeIdBoolean
+                            comparison kind name left right = boolean kind (Function [name]) [left, right]
+                            equal = comparison DuckDBV2ExpressionTypeCompareEqual "="
+                            less = comparison DuckDBV2ExpressionTypeCompareLessthan "<"
+                            greater = comparison DuckDBV2ExpressionTypeCompareGreaterthan ">"
+                            call name = Node DuckDBV2ExpressionTypeBoundFunction DuckDBV2LogicalTypeIdBigInt (Function ["system", "main", name])
+                            cast ty mode child = Node DuckDBV2ExpressionTypeOperatorCast ty (Cast mode) [child]
+                        register "v2_declining" declining
+                        register "v2_accepting" accepting
+                        -- The engine does not call the callback for a query without a predicate.
+                        query "v2_declining" "" >>= (@?= (map Just [0 .. 4], []))
+                        declined "c > 202" [3, 4] [0, 2] [greater (column 2) (bigint 202)]
+                        -- The engine splits a conjunction at the top into separate predicates.
+                        declined "c > 201 AND a < 4" [2, 3] [0, 2] [greater (column 2) (bigint 201), less (column 0) (bigint 4)]
+                        declined "greatest_common_divisor(b - 100, 4) = 2" [2] [0, 1] [equal (call "greatest_common_divisor" [call "-" [column 1, bigint 100], bigint 4]) (bigint 2)]
+                        declined "CAST(c AS INTEGER) = 203" [3] [0, 2] [equal (cast DuckDBV2LogicalTypeIdInteger DuckDBV2CastModeNormal (column 2)) (constant DuckDBV2LogicalTypeIdInteger (Just 203))]
+                        declined "TRY_CAST(c AS VARCHAR) = '203'" [3] [0, 2] [equal (cast DuckDBV2LogicalTypeIdVarchar DuckDBV2CastModeTry (column 2)) (constant DuckDBV2LogicalTypeIdVarchar (Just 203))]
+                        declined
+                            "(a = 1 AND c = 201) OR b = 103"
+                            [1, 3]
+                            [0, 1, 2]
+                            [boolean DuckDBV2ExpressionTypeConjunctionOr Other [boolean DuckDBV2ExpressionTypeConjunctionAnd Other [equal (column 0) (bigint 1), equal (column 2) (bigint 201)], equal (column 1) (bigint 103)]]
+                        declined "c BETWEEN 201 AND 203" [1, 2, 3] [0, 2] [boolean DuckDBV2ExpressionTypeCompareBetween Other [column 2, bigint 201, bigint 203]]
+                        declined "c IN (201, 203)" [1, 3] [0, 2] [boolean DuckDBV2ExpressionTypeCompareIn Other [column 2, bigint 201, bigint 203]]
+                        declined
+                            "CASE WHEN a = 1 THEN NULL ELSE c END IS NULL"
+                            [1]
+                            [0, 2]
+                            [boolean DuckDBV2ExpressionTypeOperatorIsNull Other [Node DuckDBV2ExpressionTypeCaseExpr DuckDBV2LogicalTypeIdBigInt Other [equal (column 0) (bigint 1), constant DuckDBV2LogicalTypeIdBigInt Nothing, column 2]]]
+                        accepted "c > 202" [0 .. 4] [0, 2] [greater (column 2) (bigint 202)]
+                        accepted "c > 201 AND a < 4" [0 .. 3] [0, 2] [greater (column 2) (bigint 201), less (column 0) (bigint 4)]
+                        accepted "a < 4 AND c > 201" [0 .. 3] [0, 2] [less (column 0) (bigint 4), greater (column 2) (bigint 201)]
+    readIORef failures >>= (@?= [])

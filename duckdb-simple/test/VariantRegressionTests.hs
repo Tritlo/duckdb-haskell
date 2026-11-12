@@ -337,7 +337,7 @@ tests =
             mixedRaw <- either assertFailure pure (toRawGeometry mixed)
             outcome <- try (query conn "SELECT system.main.ST_GeomFromWKB(?)::VARIANT" (Only (rawGeometryWKB mixedRaw)) :: IO [Only Variant])
             case outcome of
-                Left (err :: SQLError) -> sqlErrorType err @?= Just ErrorTypeInputInvalid
+                Left (err :: SQLError) -> sqlErrorType err @?= Just ErrorInputInvalid
                 Right _ -> assertFailure "native GEOMETRY must reject mixed Z/M dimensions"
             (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
         , testCase "invalid values fail before binding and connection reuse succeeds" $ withConnection ":memory:" \conn -> do

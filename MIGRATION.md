@@ -68,13 +68,13 @@ The SQL workflow stays the same. These changes can affect your code:
   retained API types in `Database.DuckDB.FFI`.
 - `SQLError.sqlErrorType` is `Maybe ErrorType`. `Database.DuckDB.Simple`
   exports `ErrorType`, which has one constructor for each native error code.
-  For example, `DuckDBErrorConstraint` becomes `ErrorTypeDatabaseConstraint`,
-  `DuckDBErrorCatalog` becomes `ErrorTypeDatabaseCatalog`,
-  `DuckDBErrorBinder` becomes `ErrorTypeQueryBinder`,
-  `DuckDBErrorConversion` becomes `ErrorTypeTypeConversion`,
-  `DuckDBErrorInvalidInput` becomes `ErrorTypeInputInvalid`, and
-  `DuckDBErrorInterrupt` becomes `ErrorTypeRuntimeInterrupt`.
-  `ErrorTypeResourceInUse` is new.
+  For example, `DuckDBErrorConstraint` becomes `ErrorDatabaseConstraint`,
+  `DuckDBErrorCatalog` becomes `ErrorDatabaseCatalog`,
+  `DuckDBErrorBinder` becomes `ErrorQueryBinder`,
+  `DuckDBErrorConversion` becomes `ErrorTypeConversion`,
+  `DuckDBErrorInvalidInput` becomes `ErrorInputInvalid`, and
+  `DuckDBErrorInterrupt` becomes `ErrorRuntimeInterrupt`.
+  `ErrorResourceInUse` is new.
 - `ToDuckValue.toDuckValue` takes a `DuckDBV2FactoryHandle` and returns a
   `DuckDBV2ValueHandle`. `logicalTypeFromRep` also takes the factory. To get
   the factory of a `Connection`, call `withConnectionHandle` and then

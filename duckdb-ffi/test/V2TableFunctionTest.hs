@@ -1,11 +1,12 @@
-module V2TableFunctionTest (tests) where
+module V2TableFunctionTest (deliberateFailure, statementError, tests) where
 
-import Control.Exception (bracket, onException)
-import Control.Monad (forM, forM_, unless, when)
+import Control.Exception (bracket, finally, onException, throwIO)
+import Control.Monad (forM, forM_, unless, void, when)
 import Data.Coerce (coerce)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int64)
-import Data.List (nub, sort)
+import Data.List (elemIndex, isInfixOf, nub, sort)
+import Data.Maybe (fromMaybe)
 import Data.Void (Void)
 import Database.DuckDB.FFI.V2
 import Foreign.C.ConstPtr (ConstPtr (..))
@@ -19,8 +20,8 @@ import Foreign.Storable (Storable, peek, peekElemOff, poke, pokeElemOff)
 import HsBindgen.Runtime.Prelude (ToFunPtr, toFunPtr)
 import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertBool, testCase, (@?=))
-import V2Test (borrowedOpaque, callbackGuard, checked, consume, output, readIntegers, readView, record, removeTestFile, withConnection, withFactory, withHandle, withResult, withType, withView)
+import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
+import V2Test (borrowedOpaque, callbackGuard, checked, consume, output, readIntegers, readView, record, removeTestFile, withConnection, withFactory, withHandle, withResult, withStatement, withType, withView)
 
 tests :: TestTree
 tests =
@@ -33,7 +34,39 @@ tests =
         , testCase "progress callbacks give the progress of the running query" testProgress
         , testCase "a multi-file function asks the function it wraps for the bind info of each file" testBindInfo
         , testCase "filter pushdown callbacks read the predicates of the query, and an accepted predicate leaves the query" testFilterPushdown
+        , testCase "a callback that reports an error fails the statement, and DuckDB destroys the states set before" testFailingCallbacks
+        , testCase "registration refuses an incomplete table or multi-file function and a function of another database" testRegistration
         ]
+
+{- | Run a statement that must fail, and return the code and the text of its error.
+The execution runs the query lazily, so the error can come from the execution or from a later fetch.
+-}
+statementError :: DuckDBV2ConnectionHandle -> String -> IO (DuckDBV2Error, String)
+statementError conn sql = withStatement conn sql $ \statement -> alloca $ \result -> alloca $ \err -> do
+    poke result (coerce nullPtr)
+    poke err (coerce nullPtr)
+    let fetch = alloca $ \chunk -> do
+            poke chunk (coerce nullPtr)
+            live <- peek result
+            code <- c_duckdb_v2_result_fetch_chunk live chunk err
+            next <- peek chunk
+            void (c_duckdb_v2_data_chunk_destroy chunk)
+            if code == DuckDBV2ErrorNone && next /= coerce nullPtr then fetch else pure code
+    flip finally (c_duckdb_v2_result_destroy result >> c_duckdb_v2_error_info_destroy err) $ do
+        executed <- c_duckdb_v2_statement_execute conn statement (coerce nullPtr) (coerce nullPtr) 0 result err
+        code <- if executed == DuckDBV2ErrorNone then fetch else pure executed
+        when (code == DuckDBV2ErrorNone) $ assertFailure ("the statement succeeds: " <> sql)
+        info <- peek err
+        text <- alloca $ \view -> do
+            c_duckdb_v2_error_info_get_text info view >>= (@?= DuckDBV2ErrorNone)
+            peek view >>= readView
+        pure (code, text)
+
+{- | Throw the deliberate failure of a callback. The callback guard records it as the text "user error (TEXT)", and
+gives the same text to DuckDB.
+-}
+deliberateFailure :: String -> IO ()
+deliberateFailure text = throwIO (userError text)
 
 -- | Create a function pointer for the duration of the action.
 withFunPtr :: (ToFunPtr a) => a -> (FunPtr a -> IO b) -> IO b
@@ -109,6 +142,12 @@ testColumns = do
     columns <- newIORef [] -- (phase, user data, declared column of each scanned column)
     let bind info result context err = callbackGuard failures err $ do
             user <- output (c_duckdb_v2_function_bind_get_user_data info)
+            -- A result column carries data, so the type ANY is rejected. The next call adds the column as a BIGINT.
+            factory <- output (c_duckdb_v2_context_get_factory context)
+            withHandle (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdAny (coerce nullPtr) (coerce nullPtr) 0) c_duckdb_v2_logical_type_destroy $ \ty ->
+                withView "a" $ \name ->
+                    c_duckdb_v2_table_function_bind_add_result_column result (coerce name) ty nullPtr
+                        >>= assertBool "a result column of type ANY is rejected" . (/= DuckDBV2ErrorNone)
             addColumns result context ["a", "b", "c"]
             bound <- give [0] (c_duckdb_v2_function_bind_set_bind_data info)
             record binds (user, bound)
@@ -367,6 +406,7 @@ testParallelScan = do
 {- | The function declares the columns pad, v and k, with projection pushdown. Batch b holds b + 1 rows with k = b.
 The query does not read pad, so the scan position of k is not its declared column 2.
 In DuckDB 2.0.0 only an aggregate with a cluster update, such as count(v), can use the partitioned aggregate.
+Four functions share the callbacks. Their user data holds the mode of the partition data callback.
 -}
 testPartitioning :: IO ()
 testPartitioning = do
@@ -427,31 +467,45 @@ testPartitioning = do
             indexes <- declaredColumns "partition data" (c_duckdb_v2_table_function_partition_data_get_partition_column_count info) (c_duckdb_v2_table_function_partition_data_get_partition_column_index info)
             record requests (required, indexes)
             batch <- peek (castPtr local :: Ptr Int64)
-            checked (c_duckdb_v2_table_function_partition_data_set_batch_index info (fromIntegral batch))
+            -- The user data holds the mode of the function. Mode 0 obeys the rules of the batch index. Mode 1 sets no
+            -- batch index, mode 2 sets a decreasing batch index, and mode 3 keeps the batch index while the partition
+            -- value changes.
+            mode <- peek (castPtr user :: Ptr Int64)
+            case mode of
+                1 -> pure ()
+                2 -> checked (c_duckdb_v2_table_function_partition_data_set_batch_index info (fromIntegral (10 - batch)))
+                3 -> checked (c_duckdb_v2_table_function_partition_data_set_batch_index info 0)
+                _ -> checked (c_duckdb_v2_table_function_partition_data_set_batch_index info (fromIntegral batch))
             factory <- output (c_duckdb_v2_context_get_factory context)
             withView "text" $ \text -> withHandle (c_duckdb_v2_value_create_varchar factory text) c_duckdb_v2_value_destroy $ \wrong ->
                 c_duckdb_v2_table_function_partition_data_set_partition_value info 0 wrong nullPtr >>= (@?= DuckDBV2ErrorInputInvalid)
             withHandle (c_duckdb_v2_value_create_bigint factory batch) c_duckdb_v2_value_destroy $ \partition -> do
                 c_duckdb_v2_table_function_partition_data_set_partition_value info (fromIntegral (length indexes)) partition nullPtr >>= (@?= DuckDBV2ErrorInputInvalid)
                 checked (c_duckdb_v2_table_function_partition_data_set_partition_value info 0 partition)
-    with (4 :: Int64) $ \user ->
+    with (0 :: Int64) $ \valid -> with (1 :: Int64) $ \unindexed -> with (2 :: Int64) $ \decreasing -> with (3 :: Int64) $ \unchanged ->
         withFunPtr (DuckDBV2TableFunctionBindCallbackFn_Aux bind) $ \bindPtr ->
             withFunPtr (DuckDBV2TableFunctionInitGlobalCallbackFn_Aux initGlobal) $ \initGlobalPtr ->
                 withFunPtr (DuckDBV2TableFunctionInitLocalCallbackFn_Aux initLocal) $ \initLocalPtr ->
                     withFunPtr (DuckDBV2TableFunctionExecCallbackFn_Aux execute) $ \executePtr ->
                         withFunPtr (DuckDBV2TableFunctionPartitioningCallbackFn_Aux partitioning) $ \partitioningPtr ->
                             withFunPtr (DuckDBV2TableFunctionPartitionDataCallbackFn_Aux partitionData) $ \partitionDataPtr -> withConnection $ \conn -> do
-                                registerTable conn "v2_partitioned" $ \function -> do
-                                    lend user (checked . c_duckdb_v2_table_function_set_user_data function)
-                                    checked (c_duckdb_v2_table_function_set_bind_callback function (DuckDBV2TableFunctionBindCallbackFn bindPtr))
-                                    checked (c_duckdb_v2_table_function_set_init_global_callback function (DuckDBV2TableFunctionInitGlobalCallbackFn initGlobalPtr))
-                                    checked (c_duckdb_v2_table_function_set_init_local_callback function (DuckDBV2TableFunctionInitLocalCallbackFn initLocalPtr))
-                                    checked (c_duckdb_v2_table_function_set_exec_callback function (DuckDBV2TableFunctionExecCallbackFn executePtr))
-                                    checked (c_duckdb_v2_table_function_set_partitioning_callback function (DuckDBV2TableFunctionPartitioningCallbackFn partitioningPtr))
-                                    checked (c_duckdb_v2_table_function_set_partition_data_callback function (DuckDBV2TableFunctionPartitionDataCallbackFn partitionDataPtr))
-                                    checked (c_duckdb_v2_table_function_set_projection_pushdown function (CBool 1))
-                                withResult conn "SELECT k * 100 + count(v) FROM v2_partitioned() GROUP BY k ORDER BY k" $ \result ->
-                                    readIntegers result >>= (@?= map Just [1, 102, 203])
+                                let register name user = registerTable conn name $ \function -> do
+                                        lend user (checked . c_duckdb_v2_table_function_set_user_data function)
+                                        checked (c_duckdb_v2_table_function_set_bind_callback function (DuckDBV2TableFunctionBindCallbackFn bindPtr))
+                                        checked (c_duckdb_v2_table_function_set_init_global_callback function (DuckDBV2TableFunctionInitGlobalCallbackFn initGlobalPtr))
+                                        checked (c_duckdb_v2_table_function_set_init_local_callback function (DuckDBV2TableFunctionInitLocalCallbackFn initLocalPtr))
+                                        checked (c_duckdb_v2_table_function_set_exec_callback function (DuckDBV2TableFunctionExecCallbackFn executePtr))
+                                        checked (c_duckdb_v2_table_function_set_partitioning_callback function (DuckDBV2TableFunctionPartitioningCallbackFn partitioningPtr))
+                                        checked (c_duckdb_v2_table_function_set_partition_data_callback function (DuckDBV2TableFunctionPartitionDataCallbackFn partitionDataPtr))
+                                        checked (c_duckdb_v2_table_function_set_projection_pushdown function (CBool 1))
+                                    query name = "SELECT k * 100 + count(v) FROM " <> name <> "() GROUP BY k ORDER BY k"
+                                forM_ [("v2_partitioned", valid), ("v2_unindexed", unindexed), ("v2_decreasing", decreasing), ("v2_unchanged", unchanged)] (uncurry register)
+                                withResult conn (query "v2_partitioned") $ \result -> readIntegers result >>= (@?= map Just [1, 102, 203])
+                                -- Each other function breaks one rule of the batch index, so the query fails after its partition
+                                -- data callback returns.
+                                forM_ ["v2_unindexed", "v2_decreasing", "v2_unchanged"] $ \name -> do
+                                    writeIORef next 0
+                                    void (statementError conn (query name))
     readIORef failures >>= (@?= [])
     asked <- readIORef candidates
     assertBool "the partitioning callback was invoked" (not (null asked))
@@ -787,3 +841,129 @@ testFilterPushdown = do
                         accepted "c > 201 AND a < 4" [0 .. 3] [0, 2] [greater (column 2) (bigint 201), less (column 0) (bigint 4)]
                         accepted "a < 4 AND c > 201" [0 .. 3] [0, 2] [less (column 0) (bigint 4), greater (column 2) (bigint 201)]
     readIORef failures >>= (@?= [])
+
+-- | The phases of v2_failing, in the order of the index that its states hold.
+failingPhases :: [String]
+failingPhases = ["none", "bind", "columns", "pushdown", "init", "exec"]
+
+{- | The argument of v2_failing names the callback that reports an error: bind, pushdown (the filter pushdown
+callback), init (the global init callback) or exec. With columns, the bind callback declares no result column. With
+none, no callback fails and the query returns the rows 2 and 3.
+The bind data and the global state hold their kind (1 or 2) and the index of the phase. Their destructor records the
+kind, so the test sees which states DuckDB destroyed.
+-}
+testFailingCallbacks :: IO ()
+testFailingCallbacks = do
+    failures <- newIORef []
+    destroyed <- newIORef []
+    let destroy ptr = peek (castPtr ptr :: Ptr Int64) >>= record destroyed >> free ptr
+    withFunPtr (DuckDBV2OpaqueDestroyFn_Aux destroy) $ \destroyPtr -> do
+        let
+            -- Give DuckDB cells that hold the kind, the phase index and a flag, with the destructor that records the kind.
+            own kind phase setter = do
+                cells <- mallocArray 3
+                pokeArray cells [kind, fromIntegral (fromMaybe (-1) (elemIndex phase failingPhases)), 0 :: Int64]
+                let opaque = DuckDBV2Opaque (castPtr cells) (DuckDBV2OpaqueDestroyFn destroyPtr) (DuckDBV2OpaqueEqualsFn nullFunPtr)
+                with opaque (checked . setter) `onException` free cells
+            phaseOf state = (failingPhases !!) . fromIntegral <$> peekElemOff (castPtr state :: Ptr Int64) 1
+            failIn phase name = when (phase == name) $ deliberateFailure ("v2 deliberate " <> name <> " failure")
+            bind info result context err = callbackGuard failures err $ do
+                phase <- withHandle (c_duckdb_v2_function_bind_get_arg_value info 0) c_duckdb_v2_value_destroy (\value -> output (c_duckdb_v2_value_get_varchar value) >>= readView)
+                -- The callback sets the bind data before it fails, so DuckDB owns the bind data and must destroy it.
+                own 1 phase (c_duckdb_v2_function_bind_set_bind_data info)
+                failIn phase "bind"
+                unless (phase == "columns") $ addColumns result context ["value"]
+            pushdown info _context err =
+                callbackGuard failures err $
+                    output (c_duckdb_v2_table_function_filter_pushdown_get_bind_data info) >>= phaseOf >>= (`failIn` "pushdown")
+            initGlobal info _context err = callbackGuard failures err $ do
+                phase <- output (c_duckdb_v2_table_function_init_global_get_bind_data info) >>= phaseOf
+                own 2 phase (c_duckdb_v2_table_function_init_global_set_global_state info)
+                failIn phase "init"
+            execute info _context err = callbackGuard failures err $ do
+                output (c_duckdb_v2_table_function_exec_get_bind_data info) >>= phaseOf >>= (`failIn` "exec")
+                global <- castPtr <$> output (c_duckdb_v2_table_function_exec_get_global_state info)
+                written <- peekElemOff global 2
+                chunk <- output (c_duckdb_v2_table_function_exec_get_output_chunk info)
+                if written == (0 :: Int64)
+                    then writeColumn chunk 0 [1, 2, 3] >> setRows chunk 3 >> pokeElemOff global 2 1
+                    else setRows chunk 0
+        withFunPtr (DuckDBV2TableFunctionBindCallbackFn_Aux bind) $ \bindPtr ->
+            withFunPtr (DuckDBV2TableFunctionFilterPushdownCallbackFn_Aux pushdown) $ \pushdownPtr ->
+                withFunPtr (DuckDBV2TableFunctionInitGlobalCallbackFn_Aux initGlobal) $ \initGlobalPtr ->
+                    withFunPtr (DuckDBV2TableFunctionExecCallbackFn_Aux execute) $ \executePtr -> withConnection $ \conn -> do
+                        registerTable conn "v2_failing" $ \function -> do
+                            withFactory conn $ \factory -> withType factory "VARCHAR" $ \ty -> withView "phase" $ \parameter -> do
+                                signature <- output (c_duckdb_v2_table_function_get_signature function)
+                                checked (c_duckdb_v2_function_signature_add_parameter signature (coerce parameter) ty (coerce nullPtr) DuckDBV2FunctionParameterKindStandard)
+                            checked (c_duckdb_v2_table_function_set_bind_callback function (DuckDBV2TableFunctionBindCallbackFn bindPtr))
+                            checked (c_duckdb_v2_table_function_set_filter_pushdown_callback function (DuckDBV2TableFunctionFilterPushdownCallbackFn pushdownPtr))
+                            checked (c_duckdb_v2_table_function_set_init_global_callback function (DuckDBV2TableFunctionInitGlobalCallbackFn initGlobalPtr))
+                            checked (c_duckdb_v2_table_function_set_exec_callback function (DuckDBV2TableFunctionExecCallbackFn executePtr))
+                        let query phase = "SELECT value FROM v2_failing('" <> phase <> "') WHERE value > 1"
+                            -- Return the kinds of the states that DuckDB destroyed since the last call.
+                            takeDestroyed = sort <$> atomicModifyIORef' destroyed (\kinds -> ([], kinds))
+                            succeeds = do
+                                withResult conn (query "none") readIntegers >>= (@?= [Just 2, Just 3])
+                                takeDestroyed >>= (@?= [1, 2])
+                            -- The statement fails with the text of each recorded failure, and DuckDB destroyed the states of the given kinds.
+                            -- Then the same statement without a failure succeeds on the same connection.
+                            fails phase recorded kinds = do
+                                (code, text) <- statementError conn (query phase)
+                                code @?= DuckDBV2ErrorInputInvalid
+                                forM_ recorded $ \failure -> assertBool ("the error contains the text of the callback: " <> text) (failure `isInfixOf` text)
+                                atomicModifyIORef' failures (\seen -> ([], seen)) >>= (@?= map (\failure -> "user error (" <> failure <> ")") recorded)
+                                takeDestroyed >>= (@?= kinds)
+                                succeeds
+                        succeeds
+                        fails "bind" ["v2 deliberate bind failure"] [1]
+                        fails "columns" [] [1]
+                        fails "pushdown" ["v2 deliberate pushdown failure"] [1]
+                        fails "init" ["v2 deliberate init failure"] [1, 2]
+                        fails "exec" ["v2 deliberate exec failure"] [1, 2]
+    readIORef failures >>= (@?= [])
+
+{- | Each change makes a table function incomplete: no name, no bind callback, no exec callback, a partitioning
+callback without a partition data callback, a return type, or the factory of another database. Each change makes a
+multi-file function incomplete: no name, no single-file function, or the factory of another database. A multi-file
+function also needs a single-file function that is registered and takes a path. The function without a change
+registers.
+-}
+testRegistration :: IO ()
+testRegistration =
+    withFunPtr (DuckDBV2TableFunctionBindCallbackFn_Aux (\_ _ _ _ -> pure ())) $ \bindPtr ->
+        withFunPtr (DuckDBV2TableFunctionExecCallbackFn_Aux (\_ _ _ -> pure ())) $ \executePtr ->
+            withFunPtr (DuckDBV2TableFunctionPartitioningCallbackFn_Aux (\_ _ _ -> pure ())) $ \partitioningPtr ->
+                withFunPtr (DuckDBV2TableFunctionPartitionDataCallbackFn_Aux (\_ _ _ -> pure ())) $ \partitionDataPtr ->
+                    withConnection $ \conn -> withConnection $ \other -> do
+                        let factoryFor change = if change == "another database" then other else conn
+                            -- Register a table function with one parameter of the given type, with the change applied.
+                            registerFunction name parameter change = withFactory (factoryFor change) $ \factory ->
+                                withHandle (c_duckdb_v2_table_function_create factory) c_duckdb_v2_table_function_destroy $ \function -> do
+                                    unless (change == "no name") $ withView name $ \view -> checked (c_duckdb_v2_table_function_set_name function (coerce view))
+                                    signature <- output (c_duckdb_v2_table_function_get_signature function)
+                                    withType factory parameter $ \ty -> withView "input" $ \view ->
+                                        checked (c_duckdb_v2_function_signature_add_parameter signature (coerce view) ty (coerce nullPtr) DuckDBV2FunctionParameterKindStandard)
+                                    when (change == "a return type") $ withType factory "BIGINT" (checked . c_duckdb_v2_function_signature_set_return_type signature)
+                                    unless (change == "no bind callback") $ checked (c_duckdb_v2_table_function_set_bind_callback function (DuckDBV2TableFunctionBindCallbackFn bindPtr))
+                                    unless (change == "no exec callback") $ checked (c_duckdb_v2_table_function_set_exec_callback function (DuckDBV2TableFunctionExecCallbackFn executePtr))
+                                    checked (c_duckdb_v2_table_function_set_partitioning_callback function (DuckDBV2TableFunctionPartitioningCallbackFn partitioningPtr))
+                                    unless (change == "no partition data callback") $
+                                        checked (c_duckdb_v2_table_function_set_partition_data_callback function (DuckDBV2TableFunctionPartitionDataCallbackFn partitionDataPtr))
+                                    c_duckdb_v2_connection_register_table_function conn function nullPtr
+                            -- Register a multi-file function that wraps the single-file function, with the change applied.
+                            registerFiles single change = withFactory (factoryFor change) $ \factory ->
+                                withHandle (c_duckdb_v2_multi_file_function_create factory) c_duckdb_v2_multi_file_function_destroy $ \files -> do
+                                    unless (change == "no name") $ withView "v2_files" $ \view -> checked (c_duckdb_v2_multi_file_function_set_name files (coerce view))
+                                    unless (change == "no single-file function") $
+                                        withView single $
+                                            \view -> checked (c_duckdb_v2_multi_file_function_set_single_file_function files (coerce view))
+                                    c_duckdb_v2_connection_register_multi_file_function conn files nullPtr
+                            refused what code = assertBool (what <> " is refused: " <> show code) (code /= DuckDBV2ErrorNone)
+                        forM_ ["no name", "no bind callback", "no exec callback", "no partition data callback", "a return type", "another database"] $ \change ->
+                            registerFunction "v2_refused" "VARCHAR" change >>= refused ("a table function with " <> change)
+                        registerFunction "v2_path" "VARCHAR" "" >>= (@?= DuckDBV2ErrorNone)
+                        registerFunction "v2_number" "BIGINT" "" >>= (@?= DuckDBV2ErrorNone)
+                        forM_ [("v2_path", "no name"), ("v2_path", "no single-file function"), ("v2_absent", ""), ("v2_number", ""), ("v2_path", "another database")] $ \(single, change) ->
+                            registerFiles single change >>= refused ("a multi-file function over " <> single <> " with " <> show change)
+                        registerFiles "v2_path" "" >>= (@?= DuckDBV2ErrorNone)

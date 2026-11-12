@@ -24,6 +24,7 @@ module Database.DuckDB.Simple.Extension (
     registerCustomOption,
     registerLogSink,
     registerCopyToFunction,
+    registerCopyFromFunction,
 ) where
 
 import Control.Exception (bracket)
@@ -31,7 +32,7 @@ import Data.Text (Text)
 import Database.DuckDB.Simple.Callback (runCallback)
 import Database.DuckDB.Simple.Config (CustomOption)
 import qualified Database.DuckDB.Simple.Config as Config
-import Database.DuckDB.Simple.Copy (CopyBindInfo, CopyFinalizeInfo, CopyInitInfo, CopySinkInfo, MultiFileOptions, registerMultiFileFunctionOn)
+import Database.DuckDB.Simple.Copy (CopyBindInfo, CopyFinalizeInfo, CopyFromInfo, CopyInitInfo, CopySinkInfo, MultiFileOptions, registerMultiFileFunctionOn)
 import qualified Database.DuckDB.Simple.Copy as Copy
 import Database.DuckDB.Simple.FromField (Field, FromField)
 import Database.DuckDB.Simple.FromRow (FromRow)
@@ -175,3 +176,9 @@ registerCopyToFunction ::
     (CopyFinalizeInfo bindState globalState -> IO ()) ->
     IO ()
 registerCopyToFunction = Copy.registerCopyToFunctionOn . extensionTarget
+
+{- | Register the COPY FROM side of a format with the loading DuckDB host. The
+rules of 'Database.DuckDB.Simple.Copy.registerCopyFromFunction' apply.
+-}
+registerCopyFromFunction :: (TypedRow row) => Extension -> Text -> (CopyFromInfo -> IO [row]) -> IO ()
+registerCopyFromFunction = Copy.registerCopyFromFunctionOn . extensionTarget

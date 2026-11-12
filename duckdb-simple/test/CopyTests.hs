@@ -18,6 +18,7 @@ import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple hiding (bind)
 import qualified Database.DuckDB.Simple.Copy as Copy
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..))
+import qualified Database.DuckDB.Simple.V2.Copy as V2Copy
 import qualified Database.DuckDB.Simple.V2.Registration as R
 import Database.DuckDB.Simple.Variant (variantObject)
 import Foreign.C.ConstPtr (ConstPtr (..))
@@ -75,14 +76,14 @@ testCopyTo = withDirectory \directory -> withConnection ":memory:" \connection -
             R.checked (c_duckdb_v2_copy_to_statistics_set_row_count info count)
             R.checked (c_duckdb_v2_copy_to_statistics_set_file_size info 17)
         callbacks =
-            (Copy.copyToCallbacks batch flush)
-                { Copy.copyToBindCallback = Just bind
-                , Copy.copyToBatchSizeCallback = Just batchSize
-                , Copy.copyToInitCallback = Just initialize
-                , Copy.copyToFinalizeCallback = Just finalize
-                , Copy.copyToStatisticsCallback = Just statistics
+            (V2Copy.copyToCallbacks batch flush)
+                { V2Copy.copyToBindCallback = Just bind
+                , V2Copy.copyToBatchSizeCallback = Just batchSize
+                , V2Copy.copyToInitCallback = Just initialize
+                , V2Copy.copyToFinalizeCallback = Just finalize
+                , V2Copy.copyToStatisticsCallback = Just statistics
                 }
-    Copy.registerCopyToCallbacks connection "managed_output" callbacks
+    V2Copy.registerCopyToCallbacks connection "managed_output" callbacks
     rows <- query connection "COPY (SELECT i FROM range(5000) t(i)) TO ? (FORMAT managed_output, RETURN_STATS)" (Only (Text.pack (directory </> "stats"))) :: IO [[FieldValue]]
     readIORef total >>= (@?= 5000)
     phases <- readIORef seen
@@ -167,12 +168,12 @@ testCopyFrom = withConnection ":memory:" \connection -> do
         -- registration and does not require a call.
         progress info _ = R.checked (c_duckdb_v2_copy_from_progress_set_progress info 0.5)
         callbacks =
-            (Copy.copyFromCallbacks bind executeRows)
-                { Copy.copyFromInitGlobalCallback = Just initializeGlobal
-                , Copy.copyFromInitLocalCallback = Just initializeLocal
-                , Copy.copyFromProgressCallback = Just progress
+            (V2Copy.copyFromCallbacks bind executeRows)
+                { V2Copy.copyFromInitGlobalCallback = Just initializeGlobal
+                , V2Copy.copyFromInitLocalCallback = Just initializeLocal
+                , V2Copy.copyFromProgressCallback = Just progress
                 }
-    Copy.registerCopyFromCallbacks connection "managed_input" callbacks
+    V2Copy.registerCopyFromCallbacks connection "managed_input" callbacks
     void (execute_ connection "CREATE TABLE imported (value BIGINT)")
     void (execute_ connection "COPY imported FROM 'unused' (FORMAT managed_input)")
     query_ connection "SELECT value FROM imported ORDER BY value" >>= (@?= map Only ([7, 8, 9] :: [Int64]))
@@ -182,7 +183,7 @@ testCopyFrom = withConnection ":memory:" \connection -> do
 -- | Contain exceptions from native COPY callbacks.
 testCopyFailure :: Assertion
 testCopyFailure = withConnection ":memory:" \connection -> do
-    Copy.registerCopyFromCallbacks connection "managed_failure" (Copy.copyFromCallbacks (\_ _ -> pure ()) (\_ _ -> ioError (userError "managed COPY failure")))
+    V2Copy.registerCopyFromCallbacks connection "managed_failure" (V2Copy.copyFromCallbacks (\_ _ -> pure ()) (\_ _ -> ioError (userError "managed COPY failure")))
     void (execute_ connection "CREATE TABLE failed_import (value BIGINT)")
     result <- try (execute_ connection "COPY failed_import FROM 'unused' (FORMAT managed_failure)")
     case result of

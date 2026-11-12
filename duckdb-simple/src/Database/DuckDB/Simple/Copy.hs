@@ -30,9 +30,9 @@ module Database.DuckDB.Simple.Copy (
     registerMultiFileFunctionOn,
 ) where
 
+import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar)
 import Control.Exception (bracket, finally, mask, mask_, onException, throwIO)
 import Control.Monad (forM, forM_, when)
-import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -289,12 +289,14 @@ copyFromSide name readRows = (copyFromCallbacks bind execute){copyFromInitGlobal
         transferCallbackState (attachOpaque (c_duckdb_v2_copy_from_bind_set_bind_data info)) (readRows (CopyFromInfo (Text.unpack path) names types))
     initialize info _ = do
         scan <- readCallbackState (c_duckdb_v2_copy_from_init_global_get_bind_data info)
-        remaining <- scan >>= newIORef :: IO (IORef [row])
+        remaining <- scan >>= newMVar :: IO (MVar [row])
         transferCallbackState (attachOpaque (c_duckdb_v2_copy_from_init_global_set_global_state info)) remaining
     execute info context = withContextFactory context \factory -> do
-        remaining <- readCallbackState (c_duckdb_v2_copy_from_exec_get_global_state info) :: IO (IORef [row])
+        remaining <- readCallbackState (c_duckdb_v2_copy_from_exec_get_global_state info) :: IO (MVar [row])
         chunk <- output (c_duckdb_v2_copy_from_exec_get_output_chunk info)
-        readIORef remaining >>= writeRows factory chunk >>= writeIORef remaining
+        -- DuckDB can run exec callbacks of one scan at the same time, for example for a
+        -- multi-file function. The lock gives each row to one call only.
+        modifyMVar_ remaining (writeRows factory chunk)
 
 {- | The COPY TO side of a format. The four functions have the roles of the
 four functions of 'registerCopyToFunction'.

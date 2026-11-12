@@ -15,9 +15,9 @@ module Database.DuckDB.Simple.Typed.Table (
     writeRows,
 ) where
 
+import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar)
 import Control.Exception (SomeException, bracket, displayException, fromException, throwIO)
 import Control.Monad (forM, forM_, when, zipWithM_)
-import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.List (intercalate)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
@@ -82,12 +82,14 @@ createTableFunctionOn target name columns function = do
         transferCallbackState (attachOpaque (c_duckdb_v2_function_bind_set_bind_data input)) (function params)
     initialize info _ = do
         scan <- readCallbackState (c_duckdb_v2_table_function_init_global_get_bind_data info)
-        remaining <- scan >>= newIORef :: IO (IORef [row])
+        remaining <- scan >>= newMVar :: IO (MVar [row])
         transferCallbackState (attachOpaque (c_duckdb_v2_table_function_init_global_set_global_state info)) remaining
     execute info context = withContextFactory context \factory -> do
-        remaining <- readCallbackState (c_duckdb_v2_table_function_exec_get_global_state info) :: IO (IORef [row])
+        remaining <- readCallbackState (c_duckdb_v2_table_function_exec_get_global_state info) :: IO (MVar [row])
         chunk <- output (c_duckdb_v2_table_function_exec_get_output_chunk info)
-        readIORef remaining >>= writeRows factory chunk >>= writeIORef remaining
+        -- DuckDB can run exec callbacks of one scan at the same time, for example for a
+        -- multi-file function. The lock gives each row to one call only.
+        modifyMVar_ remaining (writeRows factory chunk)
 
 {- | Write the first rows of a list to the vectors of an output chunk. Return
 the rows that do not fit in the chunk. The function does not evaluate those

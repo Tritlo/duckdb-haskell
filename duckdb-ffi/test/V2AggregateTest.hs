@@ -4,28 +4,30 @@
 module V2AggregateTest (tests) where
 
 import Control.Exception (bracket)
-import Control.Monad (forM_)
+import Control.Monad (forM, forM_, unless, when)
 import Data.Coerce (coerce)
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Data.Void (Void)
 import Database.DuckDB.FFI.V2
 import Foreign.C.ConstPtr (ConstPtr (..))
-import Foreign.Marshal.Alloc (alloca, allocaBytes)
+import Foreign.Marshal.Alloc (alloca, allocaBytes, free, malloc)
 import Foreign.Marshal.Utils (with)
-import Foreign.Ptr (Ptr, castPtr, freeHaskellFunPtr, nullPtr)
+import Foreign.Ptr (Ptr, castPtr, freeHaskellFunPtr, nullFunPtr, nullPtr)
 import Foreign.Storable (Storable (..))
 import GHC.Records (getField)
 import HsBindgen.Runtime.Prelude (toFunPtr)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
-import V2Test (argCounts, borrowedOpaque, callbackGuard, checked, fillDocs, output, readIntegers, withConnection, withFactory, withHandle, withResult, withType, withView)
+import V2Test (argCounts, borrowedOpaque, callbackGuard, checked, countCall, eachPartRequired, expectCallbackFailure, failOnPurpose, fillDocs, output, readIntegers, withConnection, withFactory, withHandle, withResult, withType, withView)
 
 tests :: TestTree
 tests =
     testGroup
         "DuckDB V2 aggregate functions"
         [ testCase "each aggregate callback reads the user data and the bind data, and the catalog shows the documentation" testAggregateCallbacks
+        , testCase "an aggregate bind, update or finalize callback fails its statement and DuckDB still destroys the states" testAggregateFailures
+        , testCase "registration rejects an aggregate function without a required part" testAggregateRegistration
         ]
 
 {- | A state holds a tag at index 0 and a total at index 1.
@@ -162,3 +164,138 @@ testAggregateCallbacks = do
     forM_ ["bind", "size", "init", "update", "combine", "finalize", "destroy"] $ \name ->
         assertBool ("the " <> name <> " callback was invoked") (name `elem` names)
     readIORef destroyedStates >>= assertBool "the destroy callback received states" . (> 0)
+
+-- | Read every BIGINT of a vector. The function flattens the vector first.
+readArgument :: DuckDBIdx -> DuckDBV2VectorHandle -> IO [Int64]
+readArgument count vector = do
+    checked (c_duckdb_v2_vector_flatten vector)
+    view <- output (c_duckdb_v2_vector_get_view vector)
+    forM [0 .. fromIntegral count - 1] $ \i -> do
+        index <- if getField @"sel" view == coerce nullPtr then pure i else fromIntegral <$> peekElemOff (coerce (getField @"sel" view) :: Ptr DuckDBV2SelT) i
+        peekElemOff (coerce (getField @"data'" view)) index
+
+{- | The aggregate v2_fail_sum(stage, x) sums x. The constant stage selects the callback that fails on purpose:
+1 fails the bind, 2 fails the update for the input 5, and 3 fails the finalize. The bind data holds the stage.
+-}
+testAggregateFailures :: IO ()
+testAggregateFailures = do
+    failures <- newIORef []
+    binds <- newIORef 0
+    released <- newIORef 0
+    initializedStates <- newIORef 0
+    destroyedStates <- newIORef 0
+    let release ptr = free ptr >> countCall released
+        add ref count = atomicModifyIORef' ref (\total -> (total + count, ()))
+    bracket (DuckDBV2OpaqueDestroyFn <$> toFunPtr (DuckDBV2OpaqueDestroyFn_Aux release)) (freeHaskellFunPtr . getField @"unwrap") $ \releasePtr -> do
+        let bind info _result _context err = callbackGuard failures err $ do
+                countCall binds
+                stage <- withHandle (c_duckdb_v2_function_bind_get_arg_value info 0) c_duckdb_v2_value_destroy (output . c_duckdb_v2_value_get_bigint)
+                -- The bind sets the bind data first, so DuckDB must release it also when the bind fails.
+                state <- malloc
+                poke state (stage :: Int64)
+                with (DuckDBV2Opaque (coerce state) releasePtr (DuckDBV2OpaqueEqualsFn nullFunPtr)) $ \opaque ->
+                    checked (c_duckdb_v2_function_bind_set_bind_data info opaque)
+                when (stage == 1) (failOnPurpose "bind")
+            size info err =
+                callbackGuard failures err $
+                    checked (c_duckdb_v2_aggregate_function_size_set_state_size info (fromIntegral (sizeOf (0 :: Int64))))
+            initialize info err = callbackGuard failures err $ do
+                states <- output (c_duckdb_v2_aggregate_function_init_get_states info)
+                count <- output (c_duckdb_v2_aggregate_function_init_get_state_count info)
+                forM_ [0 .. fromIntegral count - 1] $ \i -> stateAt states i >>= \state -> poke state 0
+                add initializedStates count
+            update info err = callbackGuard failures err $ do
+                stage <- output (c_duckdb_v2_aggregate_function_update_get_bind_data info) >>= peek . castPtr
+                states <- output (c_duckdb_v2_aggregate_function_update_get_states info)
+                count <- output (c_duckdb_v2_aggregate_function_update_get_row_count info)
+                values <- output (c_duckdb_v2_aggregate_function_update_get_arg info 1) >>= readArgument count
+                alloca $ \vector -> c_duckdb_v2_aggregate_function_update_get_arg info 2 vector nullPtr >>= assertBool "an index after the last argument fails" . (/= DuckDBV2ErrorNone)
+                when (stage == (2 :: Int64) && 5 `elem` values) (failOnPurpose "update")
+                forM_ (zip [0 ..] values) $ \(i, value) -> stateAt states i >>= \state -> peek state >>= poke state . (+ value)
+            combine info err = callbackGuard failures err $ do
+                sources <- output (c_duckdb_v2_aggregate_function_combine_get_sources info)
+                targets <- output (c_duckdb_v2_aggregate_function_combine_get_targets info)
+                count <- output (c_duckdb_v2_aggregate_function_combine_get_state_count info)
+                forM_ [0 .. fromIntegral count - 1] $ \i -> do
+                    total <- stateAt sources i >>= peek
+                    stateAt targets i >>= \target -> peek target >>= poke target . (+ total)
+            finalize info err = callbackGuard failures err $ do
+                stage <- output (c_duckdb_v2_aggregate_function_finalize_get_bind_data info) >>= peek . castPtr
+                when (stage == (3 :: Int64)) (failOnPurpose "finalize")
+                states <- output (c_duckdb_v2_aggregate_function_finalize_get_states info)
+                count <- output (c_duckdb_v2_aggregate_function_finalize_get_state_count info)
+                offset <- output (c_duckdb_v2_aggregate_function_finalize_get_result_offset info)
+                raw <- output (c_duckdb_v2_aggregate_function_finalize_get_result info) >>= output . c_duckdb_v2_vector_get_data_mutable
+                forM_ [0 .. fromIntegral count - 1] $ \i -> stateAt states i >>= peek >>= pokeElemOff (castPtr raw) (fromIntegral offset + i)
+            destroy info err =
+                callbackGuard failures err $
+                    output (c_duckdb_v2_aggregate_function_destroy_get_state_count info) >>= add destroyedStates
+        bracket (DuckDBV2AggregateFunctionBindCallbackFn <$> toFunPtr (DuckDBV2AggregateFunctionBindCallbackFn_Aux bind)) (freeHaskellFunPtr . getField @"unwrap") $ \bindPtr ->
+            bracket (DuckDBV2AggregateFunctionSizeCallbackFn <$> toFunPtr (DuckDBV2AggregateFunctionSizeCallbackFn_Aux size)) (freeHaskellFunPtr . getField @"unwrap") $ \sizePtr ->
+                bracket (DuckDBV2AggregateFunctionInitCallbackFn <$> toFunPtr (DuckDBV2AggregateFunctionInitCallbackFn_Aux initialize)) (freeHaskellFunPtr . getField @"unwrap") $ \initializePtr ->
+                    bracket (DuckDBV2AggregateFunctionUpdateCallbackFn <$> toFunPtr (DuckDBV2AggregateFunctionUpdateCallbackFn_Aux update)) (freeHaskellFunPtr . getField @"unwrap") $ \updatePtr ->
+                        bracket (DuckDBV2AggregateFunctionCombineCallbackFn <$> toFunPtr (DuckDBV2AggregateFunctionCombineCallbackFn_Aux combine)) (freeHaskellFunPtr . getField @"unwrap") $ \combinePtr ->
+                            bracket (DuckDBV2AggregateFunctionFinalizeCallbackFn <$> toFunPtr (DuckDBV2AggregateFunctionFinalizeCallbackFn_Aux finalize)) (freeHaskellFunPtr . getField @"unwrap") $ \finalizePtr ->
+                                bracket (DuckDBV2AggregateFunctionDestroyCallbackFn <$> toFunPtr (DuckDBV2AggregateFunctionDestroyCallbackFn_Aux destroy)) (freeHaskellFunPtr . getField @"unwrap") $ \destroyPtr ->
+                                    withConnection $ \conn -> withFactory conn $ \factory -> do
+                                        withType factory "BIGINT" $ \ty ->
+                                            withHandle (c_duckdb_v2_aggregate_function_create factory) c_duckdb_v2_aggregate_function_destroy $ \function -> do
+                                                withView "v2_fail_sum" $ \name -> checked (c_duckdb_v2_aggregate_function_set_name function (coerce name))
+                                                signature <- output (c_duckdb_v2_aggregate_function_get_signature function)
+                                                forM_ ["stage", "x"] $ \name -> withView name $ \view ->
+                                                    checked (c_duckdb_v2_function_signature_add_parameter signature (coerce view) ty (coerce nullPtr) DuckDBV2FunctionParameterKindStandard)
+                                                checked (c_duckdb_v2_function_signature_set_return_type signature ty)
+                                                checked (c_duckdb_v2_aggregate_function_set_bind_callback function bindPtr)
+                                                checked (c_duckdb_v2_aggregate_function_set_size_callback function sizePtr)
+                                                checked (c_duckdb_v2_aggregate_function_set_init_callback function initializePtr)
+                                                checked (c_duckdb_v2_aggregate_function_set_update_callback function updatePtr)
+                                                checked (c_duckdb_v2_aggregate_function_set_combine_callback function combinePtr)
+                                                checked (c_duckdb_v2_aggregate_function_set_finalize_callback function finalizePtr)
+                                                checked (c_duckdb_v2_aggregate_function_set_destroy_callback function destroyPtr)
+                                                checked (c_duckdb_v2_connection_register_aggregate_function conn function)
+                                        let passes = withResult conn "SELECT v2_fail_sum(0, i) FROM range(4) t(i)" $ \result -> readIntegers result >>= (@?= [Just 6])
+                                        passes
+                                        expectCallbackFailure failures conn "SELECT v2_fail_sum(1, i) FROM range(4) t(i)" "bind"
+                                        passes
+                                        withResult conn "SELECT v2_fail_sum(2, i) FROM range(5) t(i)" $ \result -> readIntegers result >>= (@?= [Just 10])
+                                        expectCallbackFailure failures conn "SELECT v2_fail_sum(2, i) FROM range(6) t(i)" "update"
+                                        passes
+                                        expectCallbackFailure failures conn "SELECT v2_fail_sum(3, i) FROM range(4) t(i)" "finalize"
+                                        passes
+    readIORef failures >>= (@?= [])
+    bound <- readIORef binds
+    assertBool "the bind callback was invoked" (bound > 0)
+    readIORef released >>= (@?= bound)
+    initializedCount <- readIORef initializedStates
+    assertBool "the init callback received states" (initializedCount > 0)
+    readIORef destroyedStates >>= (@?= initializedCount)
+
+{- | Each registration leaves out one part that the header requires. The part "concrete type" sets an ANY return type
+without a bind callback. The last registration has every part. The test never calls the function.
+-}
+testAggregateRegistration :: IO ()
+testAggregateRegistration = do
+    let size _info _err = pure ()
+        initialize _info _err = pure ()
+        update _info _err = pure ()
+        combine _info _err = pure ()
+        finalize _info _err = pure ()
+    bracket (DuckDBV2AggregateFunctionSizeCallbackFn <$> toFunPtr (DuckDBV2AggregateFunctionSizeCallbackFn_Aux size)) (freeHaskellFunPtr . getField @"unwrap") $ \sizePtr ->
+        bracket (DuckDBV2AggregateFunctionInitCallbackFn <$> toFunPtr (DuckDBV2AggregateFunctionInitCallbackFn_Aux initialize)) (freeHaskellFunPtr . getField @"unwrap") $ \initializePtr ->
+            bracket (DuckDBV2AggregateFunctionUpdateCallbackFn <$> toFunPtr (DuckDBV2AggregateFunctionUpdateCallbackFn_Aux update)) (freeHaskellFunPtr . getField @"unwrap") $ \updatePtr ->
+                bracket (DuckDBV2AggregateFunctionCombineCallbackFn <$> toFunPtr (DuckDBV2AggregateFunctionCombineCallbackFn_Aux combine)) (freeHaskellFunPtr . getField @"unwrap") $ \combinePtr ->
+                    bracket (DuckDBV2AggregateFunctionFinalizeCallbackFn <$> toFunPtr (DuckDBV2AggregateFunctionFinalizeCallbackFn_Aux finalize)) (freeHaskellFunPtr . getField @"unwrap") $ \finalizePtr ->
+                        withConnection $ \conn -> withFactory conn $ \factory -> withType factory "BIGINT" $ \ty ->
+                            withHandle (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdAny (coerce nullPtr) (coerce nullPtr) 0) c_duckdb_v2_logical_type_destroy $ \anyType ->
+                                eachPartRequired ["name", "size callback", "init callback", "update callback", "combine callback", "finalize callback", "return type", "concrete type"] $ \omitted ->
+                                    withHandle (c_duckdb_v2_aggregate_function_create factory) c_duckdb_v2_aggregate_function_destroy $ \function -> do
+                                        let unlessOmitted part = unless (omitted == part) . checked
+                                        unless (omitted == "name") $ withView "v2_registered_sum" $ \name -> checked (c_duckdb_v2_aggregate_function_set_name function (coerce name))
+                                        unlessOmitted "size callback" (c_duckdb_v2_aggregate_function_set_size_callback function sizePtr)
+                                        unlessOmitted "init callback" (c_duckdb_v2_aggregate_function_set_init_callback function initializePtr)
+                                        unlessOmitted "update callback" (c_duckdb_v2_aggregate_function_set_update_callback function updatePtr)
+                                        unlessOmitted "combine callback" (c_duckdb_v2_aggregate_function_set_combine_callback function combinePtr)
+                                        unlessOmitted "finalize callback" (c_duckdb_v2_aggregate_function_set_finalize_callback function finalizePtr)
+                                        signature <- output (c_duckdb_v2_aggregate_function_get_signature function)
+                                        unlessOmitted "return type" (c_duckdb_v2_function_signature_set_return_type signature (if omitted == "concrete type" then anyType else ty))
+                                        c_duckdb_v2_connection_register_aggregate_function conn function nullPtr

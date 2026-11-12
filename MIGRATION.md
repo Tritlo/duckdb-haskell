@@ -66,14 +66,15 @@ The SQL workflow stays the same. These changes can affect your code:
 
 - Raw types come from `Database.DuckDB.FFI.V2`. They are distinct from the
   retained API types in `Database.DuckDB.FFI`.
-- `SQLError.sqlErrorType` is `Maybe DuckDBV2Error`. For example,
-  `DuckDBErrorConstraint` becomes `DuckDBV2ErrorDatabaseConstraint`,
-  `DuckDBErrorCatalog` becomes `DuckDBV2ErrorDatabaseCatalog`,
-  `DuckDBErrorBinder` becomes `DuckDBV2ErrorQueryBinder`,
-  `DuckDBErrorConversion` becomes `DuckDBV2ErrorTypeConversion`,
-  `DuckDBErrorInvalidInput` becomes `DuckDBV2ErrorInputInvalid`, and
-  `DuckDBErrorInterrupt` becomes `DuckDBV2ErrorRuntimeInterrupt`.
-  `DuckDBV2ErrorResourceInUse` is new.
+- `SQLError.sqlErrorType` is `Maybe ErrorType`. `Database.DuckDB.Simple`
+  exports `ErrorType`, which has one constructor for each native error code.
+  For example, `DuckDBErrorConstraint` becomes `ErrorTypeDatabaseConstraint`,
+  `DuckDBErrorCatalog` becomes `ErrorTypeDatabaseCatalog`,
+  `DuckDBErrorBinder` becomes `ErrorTypeQueryBinder`,
+  `DuckDBErrorConversion` becomes `ErrorTypeTypeConversion`,
+  `DuckDBErrorInvalidInput` becomes `ErrorTypeInputInvalid`, and
+  `DuckDBErrorInterrupt` becomes `ErrorTypeRuntimeInterrupt`.
+  `ErrorTypeResourceInUse` is new.
 - `ToDuckValue.toDuckValue` takes a `DuckDBV2FactoryHandle` and returns a
   `DuckDBV2ValueHandle`. `logicalTypeFromRep` also takes the factory. To get
   the factory of a `Connection`, call `withConnectionHandle` and then
@@ -90,8 +91,11 @@ The SQL workflow stays the same. These changes can affect your code:
   adds `LogicalTypeTuple` and `LogicalTypeCollatedVarchar`. Update exhaustive
   matches.
 - `LogEntry` has six new fields. Use record syntax to construct or match it.
-- `ConfigValue.configValueScope` is `DuckDBV2SettingScope` instead of
-  `Maybe DuckDBConfigOptionScope`.
+  `logEntrySeverity` has the type `LogLevel`, and `logEntryScope` has the type
+  `LogScope`. `Database.DuckDB.Simple.Logging` exports both types.
+- `ConfigValue.configValueScope` is `SettingScope` instead of
+  `Maybe DuckDBConfigOptionScope`. `Database.DuckDB.Simple.Config` exports
+  `SettingScope`.
 - `CatalogEntry.catalogEntryType` and `lookupCatalogEntry` use the new
   `CatalogEntryType`. V2 metadata cannot look up collations.
 - File system functions use `DuckDBV2FileFlag` and `DuckDBV2FileHandle`.

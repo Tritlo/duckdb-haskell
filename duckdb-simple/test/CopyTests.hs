@@ -16,8 +16,9 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple hiding (bind)
+import qualified Database.DuckDB.Simple.Catalog as Catalog
 import qualified Database.DuckDB.Simple.Copy as Copy
-import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..))
+import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), LogicalTypeRep (..))
 import qualified Database.DuckDB.Simple.V2.Copy as V2Copy
 import qualified Database.DuckDB.Simple.V2.Registration as R
 import Database.DuckDB.Simple.Variant (variantObject)
@@ -41,6 +42,7 @@ copyTests =
         , testCase "COPY FROM runs bind global local and exec callbacks" testCopyFrom
         , testCase "callback exceptions become SQL errors and permit reuse" testCopyFailure
         , testCase "multi-file wrappers support lists globs filename and hive columns" testMultiFile
+        , testCase "COPY TO and table descriptions report the logical type id of each column type" testColumnTypeIds
         ]
 
 -- | Run every COPY TO callback and check the reported file statistics.
@@ -136,6 +138,78 @@ testVariantCopy = withDirectory \directory -> withEnvironment \environment -> wi
     withConnectionOn instance' \connection -> do
         void (execute connection "COPY (SELECT {'n': i, 'values': [i, NULL]}::VARIANT FROM range(3) t(i)) TO ? (FORMAT managed_variant)" (Only (Text.pack (directory </> "variant"))))
         readIORef received >>= (@?= [variantObject [("n", FieldInt64 i), ("values", FieldList [FieldInt64 i, FieldNull])] | i <- [0 .. 2]])
+
+{- | Create a column of each type that DuckDB permits. Check the id that the
+COPY TO bind info reports for each column. Check the id in the table
+description of each column that has a scalar type.
+-}
+testColumnTypeIds :: Assertion
+testColumnTypeIds = withDirectory \directory -> withConnection ":memory:" \connection -> do
+    reported <- newIORef []
+    Copy.registerCopyToFunction
+        connection
+        "column_types"
+        (writeIORef reported . Copy.copyBindColumnTypes)
+        (\info -> writeFile (Copy.copyInitFilePath info) "")
+        (\_ _ -> pure ())
+        (const (pure ()))
+    let named = zip [Text.pack ("c" <> show index) | index <- [0 :: Int ..]] tableColumns
+    void (execute_ connection (Query ("CREATE TABLE typed (" <> Text.intercalate ", " [name <> " " <> sql | (name, (sql, _)) <- named] <> ")")))
+    -- A table cannot have a TYPE column. A query can.
+    void (execute connection "COPY (SELECT NULL::TYPE, * FROM typed) TO ? (FORMAT column_types)" (Only (Text.pack (directory </> "types"))))
+    readIORef reported >>= (@?= LogicalTypeIdType : map snd tableColumns)
+    sort (LogicalTypeIdType : map snd tableColumns) @?= filter (`notElem` unreachable) [minBound .. maxBound]
+    description <- Catalog.describeTable connection "typed"
+    [(name, ident) | Catalog.ColumnDescription{Catalog.columnDescriptionName = name, Catalog.columnDescriptionType = LogicalTypeScalar ident} <- Catalog.tableDescriptionColumns description]
+        @?= [(name, ident) | (name, (_, ident)) <- named, ident `notElem` nested]
+  where
+    -- DuckDB uses these ids for an unset type, an unresolved parameter, and a
+    -- function parameter of any type. SQL cannot declare a column of these types.
+    unreachable = [LogicalTypeIdInvalid, LogicalTypeIdUnknown, LogicalTypeIdAny]
+    -- LogicalTypeRep has a constructor with the type parameters for these ids.
+    nested = [LogicalTypeIdDecimal, LogicalTypeIdGeometry, LogicalTypeIdStruct, LogicalTypeIdList, LogicalTypeIdMap, LogicalTypeIdEnum, LogicalTypeIdUnion, LogicalTypeIdArray, LogicalTypeIdTuple]
+    tableColumns =
+        [ ("\"NULL\"", LogicalTypeIdSQLNull)
+        , ("BOOLEAN", LogicalTypeIdBoolean)
+        , ("TINYINT", LogicalTypeIdTinyInt)
+        , ("SMALLINT", LogicalTypeIdSmallInt)
+        , ("INTEGER", LogicalTypeIdInteger)
+        , ("BIGINT", LogicalTypeIdBigInt)
+        , ("DATE", LogicalTypeIdDate)
+        , ("TIME", LogicalTypeIdTime)
+        , ("TIMESTAMP_S", LogicalTypeIdTimestampSec)
+        , ("TIMESTAMP_MS", LogicalTypeIdTimestampMs)
+        , ("TIMESTAMP", LogicalTypeIdTimestamp)
+        , ("TIMESTAMP_NS", LogicalTypeIdTimestampNs)
+        , ("DECIMAL(10, 2)", LogicalTypeIdDecimal)
+        , ("FLOAT", LogicalTypeIdFloat)
+        , ("DOUBLE", LogicalTypeIdDouble)
+        , ("VARCHAR", LogicalTypeIdVarchar)
+        , ("BLOB", LogicalTypeIdBlob)
+        , ("INTERVAL", LogicalTypeIdInterval)
+        , ("UTINYINT", LogicalTypeIdUTinyInt)
+        , ("USMALLINT", LogicalTypeIdUSmallInt)
+        , ("UINTEGER", LogicalTypeIdUInteger)
+        , ("UBIGINT", LogicalTypeIdUBigInt)
+        , ("TIMESTAMPTZ", LogicalTypeIdTimestampTz)
+        , ("TIMESTAMPTZ_NS", LogicalTypeIdTimestampTzNs)
+        , ("TIMETZ", LogicalTypeIdTimeTz)
+        , ("TIME_NS", LogicalTypeIdTimeNs)
+        , ("BIT", LogicalTypeIdBit)
+        , ("BIGNUM", LogicalTypeIdBigNum)
+        , ("UHUGEINT", LogicalTypeIdUHugeInt)
+        , ("HUGEINT", LogicalTypeIdHugeInt)
+        , ("UUID", LogicalTypeIdUUID)
+        , ("GEOMETRY", LogicalTypeIdGeometry)
+        , ("STRUCT(a INTEGER)", LogicalTypeIdStruct)
+        , ("INTEGER[]", LogicalTypeIdList)
+        , ("MAP(INTEGER, VARCHAR)", LogicalTypeIdMap)
+        , ("ENUM('a', 'b')", LogicalTypeIdEnum)
+        , ("UNION(a INTEGER, b VARCHAR)", LogicalTypeIdUnion)
+        , ("INTEGER[2]", LogicalTypeIdArray)
+        , ("VARIANT", LogicalTypeIdVariant)
+        , ("TUPLE(INTEGER, VARCHAR)", LogicalTypeIdTuple)
+        ]
 
 -- | Fill one output vector from state created in each native COPY FROM phase.
 testCopyFrom :: Assertion

@@ -23,6 +23,7 @@ tests =
         [ testCase "typed getters return the payload of their own type" testRoundTrip
         , testCase "converting getters cast a copy and leave the value unchanged" testConversion
         , testCase "getters reject NULL values and unsupported conversions" testRejection
+        , testCase "creation rejects a DECIMAL width, scale or value out of range, and a NULL of type ANY" testCreationRejection
         ]
 
 type Create a = DuckDBV2FactoryHandle -> a -> Ptr DuckDBV2ValueHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error
@@ -142,11 +143,15 @@ testRejection = withConnection $ \conn -> withFactory conn $ \factory -> do
                 , rejects c_duckdb_v2_value_get_timestamp_tz_ns
                 , rejects c_duckdb_v2_value_get_blob
                 , rejects c_duckdb_v2_value_get_uuid
+                , rejects c_duckdb_v2_value_get_bigint
+                , rejects c_duckdb_v2_value_get_varchar
                 ]
             alloca $ \width -> alloca $ \scale -> alloca $ \out ->
                 c_duckdb_v2_value_get_decimal value out width scale nullPtr >>= (@?= DuckDBV2ErrorInputInvalid)
     -- BLOB, UUID and DECIMAL getters do not convert, so another type id is invalid.
     withHandle (c_duckdb_v2_value_create_bigint factory 7) c_duckdb_v2_value_destroy $ \value -> do
+        output (c_duckdb_v2_value_get_bigint value) >>= (@?= 7)
+        rejects c_duckdb_v2_value_get_varchar value
         rejects c_duckdb_v2_value_get_blob value
         rejects c_duckdb_v2_value_get_uuid value
         alloca $ \width -> alloca $ \scale -> alloca $ \out ->
@@ -160,3 +165,36 @@ testRejection = withConnection $ \conn -> withFactory conn $ \factory -> do
             , rejects c_duckdb_v2_value_get_date
             , rejects c_duckdb_v2_value_get_timestamp
             ]
+
+testCreationRejection :: IO ()
+testCreationRejection = withConnection $ \conn -> withFactory conn $ \factory -> do
+    let decimal integer width scale = with (hugeint integer) $ \ptr -> alloca $ \out -> do
+            poke out (coerce nullPtr)
+            code <- c_duckdb_v2_value_create_decimal factory (ConstPtr ptr) width scale out nullPtr
+            c_duckdb_v2_value_destroy out >>= (@?= DuckDBV2ErrorNone)
+            pure code
+    decimal 1 1 0 >>= (@?= DuckDBV2ErrorNone)
+    decimal 1 0 0 >>= (@?= DuckDBV2ErrorInputInvalid)
+    decimal 1 38 0 >>= (@?= DuckDBV2ErrorNone)
+    decimal 1 39 0 >>= (@?= DuckDBV2ErrorInputInvalid)
+    decimal 1 4 4 >>= (@?= DuckDBV2ErrorNone)
+    decimal 1 4 5 >>= (@?= DuckDBV2ErrorInputInvalid)
+    -- A width of 18 selects 64-bit storage, and a width of 4 selects 16-bit storage.
+    decimal maxBound 18 0 >>= (@?= DuckDBV2ErrorNone)
+    with (DuckDBV2HugeintT 0x8000000000000000 0) $ \ptr -> alloca $ \out -> do
+        poke out (coerce nullPtr)
+        code <- c_duckdb_v2_value_create_decimal factory (ConstPtr ptr) 18 0 out nullPtr
+        c_duckdb_v2_value_destroy out >>= (@?= DuckDBV2ErrorNone)
+        code @?= DuckDBV2ErrorInputInvalid
+    -- The header names ERROR_INPUT_INVALID for a value too wide for the storage tier. For the 16-bit and the 32-bit tier
+    -- DuckDB reports an internal error, so the test checks only that the call fails.
+    decimal 32767 4 0 >>= (@?= DuckDBV2ErrorNone)
+    decimal 32768 4 0 >>= \code -> assertBool ("a value too wide for 16 bits fails: " <> show code) (code /= DuckDBV2ErrorNone)
+    let nullOf typeId = withHandle (c_duckdb_v2_factory_create_type_from_id factory typeId (coerce nullPtr) (coerce nullPtr) 0) c_duckdb_v2_logical_type_destroy $ \ty ->
+            alloca $ \out -> do
+                poke out (coerce nullPtr)
+                code <- c_duckdb_v2_value_create_null factory ty out nullPtr
+                c_duckdb_v2_value_destroy out >>= (@?= DuckDBV2ErrorNone)
+                pure code
+    nullOf DuckDBV2LogicalTypeIdBigInt >>= (@?= DuckDBV2ErrorNone)
+    nullOf DuckDBV2LogicalTypeIdAny >>= assertBool "a NULL of type ANY is rejected" . (/= DuckDBV2ErrorNone)

@@ -6,6 +6,7 @@ import qualified V2ArrowTest
 import qualified V2AttachTest
 import qualified V2CallbackTest
 import qualified V2ChunkTest
+import qualified V2CopyTest
 import qualified V2FileSystemTest
 import qualified V2FunctionDocsTest
 import qualified V2MacroTest
@@ -35,4 +36,5 @@ main =
             , V2TableFunctionTest.tests
             , V2ArrowTest.tests
             , V2ReplacementScanTest.tests
+            , V2CopyTest.tests
             ]

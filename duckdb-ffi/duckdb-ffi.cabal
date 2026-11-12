@@ -91,6 +91,7 @@ test-suite duckdb-ffi-v2-test
     V2AttachTest
     V2CallbackTest
     V2ChunkTest
+    V2CopyTest
     V2FileSystemTest
     V2FunctionDocsTest
     V2MacroTest

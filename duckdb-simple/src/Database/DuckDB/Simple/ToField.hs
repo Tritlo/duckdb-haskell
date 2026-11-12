@@ -16,6 +16,8 @@ delegating to the DuckDB C API under the hood.
 module Database.DuckDB.Simple.ToField (
     FieldBinding,
     ToDuckValue (..),
+    ValueFactory,
+    NativeValue,
     ToField (..),
     DuckDBColumnType (..),
     NamedParam (..),
@@ -89,14 +91,14 @@ data FieldBinding = FieldBinding
     , fieldBindingDisplay :: !String
     }
 
--- | Low-level class for values that can be marshalled directly into `DuckDBV2ValueHandle`s.
+-- | Low-level class for values that convert directly to a 'NativeValue'.
 class (DuckDBColumnType a) => ToDuckValue a where
     {- | Construct an owned value through a borrowed native factory. Keep the
     owner of the factory (a connection, a callback context, or an instance)
     alive until you destroy the value. Use 'ToField' to resolve arbitrary CRS
     labels from connection options.
     -}
-    toDuckValue :: DuckDBV2FactoryHandle -> a -> IO DuckDBV2ValueHandle
+    toDuckValue :: ValueFactory -> a -> IO NativeValue
 
 valueBinding :: String -> (DuckDBV2FactoryHandle -> IO DuckDBV2ValueHandle) -> FieldBinding
 valueBinding display make = cacheValueBinding display \cache -> withConnectionFactory (typeCacheConnection cache) make

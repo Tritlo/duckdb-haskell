@@ -55,6 +55,8 @@ module Database.DuckDB.Simple.Native (
     withSQLStatement,
     withContextFactory,
     withInstanceFactory,
+    ValueFactory,
+    NativeValue,
 ) where
 
 import Control.Exception (Exception, bracket, finally, mask_, throwIO)
@@ -356,6 +358,17 @@ withContextFactory context action = output (c_duckdb_v2_context_get_factory cont
 -- | Borrow an instance factory for built-in types, casts, and allocations.
 withInstanceFactory :: DuckDBV2InstanceHandle -> (DuckDBV2FactoryHandle -> IO a) -> IO a
 withInstanceFactory instance_ action = output (c_duckdb_v2_instance_get_factory instance_) >>= action
+
+{- | The native factory that makes values and types. A connection, a callback
+context, and an instance each lend one. The name has no C API version: a later
+version changes only this synonym.
+-}
+type ValueFactory = DuckDBV2FactoryHandle
+
+{- | An owned native value. Destroy it after use. The name has no C API
+version: a later version changes only this synonym.
+-}
+type NativeValue = DuckDBV2ValueHandle
 
 -- | The scope of a configuration value. The default scope selects the scope that the option declares.
 data SettingScope

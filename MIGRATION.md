@@ -75,7 +75,9 @@ The SQL workflow stays the same. These changes can affect your code:
   `DuckDBErrorInvalidInput` becomes `ErrorInputInvalid`, and
   `DuckDBErrorInterrupt` becomes `ErrorRuntimeInterrupt`.
   `ErrorResourceInUse` is new.
-- `ToDuckValue.toDuckValue` takes a `DuckDBV2FactoryHandle` and returns a
+- `ToDuckValue.toDuckValue` takes a `ValueFactory` and returns a
+  `NativeValue`. `Database.DuckDB.Simple.ToField` exports the two names. They
+  are synonyms of the V2 handles `DuckDBV2FactoryHandle` and
   `DuckDBV2ValueHandle`. `logicalTypeFromRep` also takes the factory. To get
   the factory of a `Connection`, call `withConnectionHandle` and then
   `withConnectionFactory` from `Database.DuckDB.Simple.Internal`. Create and

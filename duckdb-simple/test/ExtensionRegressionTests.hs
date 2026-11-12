@@ -213,8 +213,8 @@ extensionRegressionTests =
                 void $ execute_ conn "CALL enable_logging(); SET logging_storage = 'captured_log'; SELECT write_log('Matti λ', level := 'warning', log_type := 'HaskellTest'); SET logging_storage = 'memory'"
             received <- filter ((== "HaskellTest") . Logging.logEntryType) <$> readIORef entries
             map Logging.logEntryMessage received @?= ["Matti λ"]
-            map Logging.logEntrySeverity received @?= [DuckDBV2LogLevelWarning]
-            map Logging.logEntryScope received @?= [DuckDBV2LogScopeConnection]
+            map Logging.logEntrySeverity received @?= [Logging.LogLevelWarning]
+            map Logging.logEntryScope received @?= [Logging.LogScopeConnection]
             assertBool "entry has a timestamp" (all ((/= Nothing) . Logging.logEntryTimestamp) received)
             assertBool "entry has a connection id" (all ((/= Nothing) . Logging.logEntryConnectionId) received)
             readIORef flushes >>= assertBool "flush and final cleanup ran" . (>= 2)
@@ -226,16 +226,16 @@ extensionRegressionTests =
                 Logging.registerInstanceLogSink instance_ "instance_log" (\entry -> atomicModifyIORef' entries (\values -> (entry : values, ()))) (pure ())
                 withConnectionOn instance_ \conn -> do
                     void $ execute_ conn "CALL enable_logging(); SET logging_storage = 'instance_log'"
-                    Logging.logConnectionMessage conn DuckDBV2LogLevelWarning "HaskellConnection" "from a connection"
-                    Logging.logInstanceMessage instance_ DuckDBV2LogLevelWarning "HaskellInstance" "from an instance"
+                    Logging.logConnectionMessage conn Logging.LogLevelWarning "HaskellConnection" "from a connection"
+                    Logging.logInstanceMessage instance_ Logging.LogLevelWarning "HaskellInstance" "from an instance"
                     void $ execute_ conn "SET logging_storage = 'memory'"
             received <- readIORef entries
             let ofType kind = filter ((== kind) . Logging.logEntryType) received
             map Logging.logEntryMessage (ofType "HaskellConnection") @?= ["from a connection"]
-            map Logging.logEntryScope (ofType "HaskellConnection") @?= [DuckDBV2LogScopeConnection]
+            map Logging.logEntryScope (ofType "HaskellConnection") @?= [Logging.LogScopeConnection]
             assertBool "connection entry has a connection id" (all ((/= Nothing) . Logging.logEntryConnectionId) (ofType "HaskellConnection"))
             map Logging.logEntryMessage (ofType "HaskellInstance") @?= ["from an instance"]
-            map Logging.logEntryScope (ofType "HaskellInstance") @?= [DuckDBV2LogScopeDatabase]
+            map Logging.logEntryScope (ofType "HaskellInstance") @?= [Logging.LogScopeDatabase]
             map Logging.logEntryConnectionId (ofType "HaskellInstance") @?= [Nothing]
         , testCase "filesystem action exceptions release handles" $
             withTemporaryFile \path ->

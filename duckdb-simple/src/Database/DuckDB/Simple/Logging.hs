@@ -5,6 +5,8 @@
 -- | V2 log sinks with managed callbacks and copied log entries.
 module Database.DuckDB.Simple.Logging (
     LogEntry (..),
+    LogLevel (..),
+    LogScope (..),
     registerLogStorage,
     registerLogSink,
     registerInstanceLogSink,
@@ -38,8 +40,8 @@ data LogEntry = LogEntry
     , logEntryLevel :: !Text
     , logEntryType :: !Text
     , logEntryMessage :: !Text
-    , logEntrySeverity :: !DuckDBV2LogLevel
-    , logEntryScope :: !DuckDBV2LogScope
+    , logEntrySeverity :: !LogLevel
+    , logEntryScope :: !LogScope
     , logEntryConnectionId :: !(Maybe Word64)
     , logEntryTransactionId :: !(Maybe Word64)
     , logEntryQueryId :: !(Maybe Word64)
@@ -91,8 +93,10 @@ registerSink factory register name write flush = do
                     transaction <- optionalId (c_duckdb_v2_log_sink_write_info_get_transaction_id info)
                     query <- optionalId (c_duckdb_v2_log_sink_write_info_get_query_id info)
                     thread <- optionalId (c_duckdb_v2_log_sink_write_info_get_thread_id info)
+                    severity <- logLevelFromNative level
+                    origin <- logScopeFromNative scope
                     let time = posixSecondsToUTCTime (fromRational (toInteger timestamp % 1000000))
-                    write (LogEntry (Just time) (levelName level) category body level scope connection transaction query thread)
+                    write (LogEntry (Just time) (levelName severity) category body severity origin connection transaction query thread)
                 flusher <- allocate $ toFunPtr $ DuckDBV2LogSinkFlushCallbackFn_Aux \_ _ err -> runCallback err flush
                 pure (DuckDBV2LogSinkWriteCallbackFn writer, DuckDBV2LogSinkFlushCallbackFn flusher)
             )
@@ -111,30 +115,29 @@ optionalId getter = alloca \present -> do
     pure (if exists == 0 then Nothing else Just (fromIntegral value))
 
 -- | Retain the textual severity names of the log-storage interface.
-levelName :: DuckDBV2LogLevel -> Text
+levelName :: LogLevel -> Text
 levelName = \case
-    DuckDBV2LogLevelTrace -> "TRACE"
-    DuckDBV2LogLevelDebug -> "DEBUG"
-    DuckDBV2LogLevelInfo -> "INFO"
-    DuckDBV2LogLevelWarning -> "WARNING"
-    DuckDBV2LogLevelError -> "ERROR"
-    DuckDBV2LogLevelFatal -> "FATAL"
-    level -> Text.pack (show level)
+    LogLevelTrace -> "TRACE"
+    LogLevelDebug -> "DEBUG"
+    LogLevelInfo -> "INFO"
+    LogLevelWarning -> "WARNING"
+    LogLevelError -> "ERROR"
+    LogLevelFatal -> "FATAL"
 
 -- | Emit a message from a native callback's borrowed context.
-logMessage :: DuckDBV2ContextHandle -> DuckDBV2LogLevel -> Text -> Text -> IO ()
+logMessage :: DuckDBV2ContextHandle -> LogLevel -> Text -> Text -> IO ()
 logMessage context level category message =
     withText category \kind -> withText message \body ->
-        checked (c_duckdb_v2_context_log context level kind body)
+        checked (c_duckdb_v2_context_log context (logLevelToNative level) kind body)
 
 -- | Emit a connection-scoped message through its current logging configuration.
-logConnectionMessage :: Connection -> DuckDBV2LogLevel -> Text -> Text -> IO ()
+logConnectionMessage :: Connection -> LogLevel -> Text -> Text -> IO ()
 logConnectionMessage conn level category message = withConnectionHandle conn \native ->
     withText category \kind -> withText message \body ->
-        checked (c_duckdb_v2_connection_log native level kind body)
+        checked (c_duckdb_v2_connection_log native (logLevelToNative level) kind body)
 
 -- | Emit a database-scoped message on an explicit instance.
-logInstanceMessage :: Instance -> DuckDBV2LogLevel -> Text -> Text -> IO ()
+logInstanceMessage :: Instance -> LogLevel -> Text -> Text -> IO ()
 logInstanceMessage instance_ level category message = withInstanceHandle instance_ \native ->
     withText category \kind -> withText message \body ->
-        checked (c_duckdb_v2_instance_log native level kind body)
+        checked (c_duckdb_v2_instance_log native (logLevelToNative level) kind body)

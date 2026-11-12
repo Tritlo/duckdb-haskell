@@ -75,9 +75,10 @@ import Data.Typeable (Typeable, typeRep)
 import Data.Void (Void)
 import Database.DuckDB.Simple.Callback (RegistrationTarget (..), attachOpaque, guardContext, install, installOptional, readCallbackState, runCallback, transferCallbackState, withCallbackResources, withRegistrationFactory, withTarget)
 import Database.DuckDB.Simple.Internal (Connection, Instance, withConnectionHandle, withInstanceHandle)
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep, logicalTypeFromRep)
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
+import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeFromRep)
 import Foreign.Ptr (Ptr)
 
 -- | A structured type or a SQL type expression, including a registered alias.

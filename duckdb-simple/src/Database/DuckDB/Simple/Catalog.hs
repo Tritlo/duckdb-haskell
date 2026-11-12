@@ -17,8 +17,9 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple (Only (..), query)
 import Database.DuckDB.Simple.Internal (Connection, withConnectionHandle)
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep, logicalTypeToRep)
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep)
 import Database.DuckDB.Simple.Native
+import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
 
 {- | Entry kinds that DuckDB exposes through catalog metadata. V2 metadata
 cannot look up collations.

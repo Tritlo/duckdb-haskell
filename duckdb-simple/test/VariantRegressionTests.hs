@@ -24,8 +24,9 @@ import Database.DuckDB.Simple.FromField (BitString (..), DecimalValue (..), Fiel
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..))
 import Database.DuckDB.Simple.Geometry (RawGeometry (..), toRawGeometry)
 import Database.DuckDB.Simple.Internal (withConnectionFactory, withConnectionHandle, withStatementHandle)
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), destroyLogicalType, logicalTypeFromRep, logicalTypeToRep)
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..))
 import qualified Database.DuckDB.Simple.Streaming as Streaming
+import Database.DuckDB.Simple.V2.LogicalRep (destroyLogicalType, logicalTypeFromRep, logicalTypeToRep)
 import Database.DuckDB.Simple.V2.Registration (destroy, output)
 import Database.DuckDB.Simple.Variant
 import Foreign.C.ConstPtr (ConstPtr (..))

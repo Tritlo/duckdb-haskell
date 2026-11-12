@@ -21,8 +21,9 @@ import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (FieldValue (..), StructValue (..), UnionValue (..))
 import Database.DuckDB.Simple.Geometry (RawGeometry (..), fromRawGeometry, toRawGeometry)
 import Database.DuckDB.Simple.Internal (withConnectionFactory, withConnectionHandle)
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), UnionMemberType (..), destroyLogicalType, logicalTypeFromRep, logicalTypeToRep)
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), UnionMemberType (..))
 import qualified Database.DuckDB.Simple.Streaming as Streaming
+import Database.DuckDB.Simple.V2.LogicalRep (destroyLogicalType, logicalTypeFromRep, logicalTypeToRep)
 import GHC.Float (castWord64ToDouble)
 import System.Mem (performMajorGC)
 import Test.Tasty (TestTree, testGroup)

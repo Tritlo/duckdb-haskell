@@ -82,9 +82,10 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
 import qualified Data.Text.Foreign as TextForeign
 import Database.DuckDB.Simple.FromField (FieldValue)
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep, logicalTypeToRep)
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.TypeCache (TypeCache, createTypeCache, destroyTypeCache)
+import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (CString)
 import Foreign.C.Types (CChar)

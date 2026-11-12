@@ -32,6 +32,7 @@ import Database.DuckDB.Simple.LogicalRep
 import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
+import Database.DuckDB.Simple.V2.LogicalRep (destroyLogicalType, logicalTypeFromRep, logicalTypeToRep)
 import GHC.Generics (Generic)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit

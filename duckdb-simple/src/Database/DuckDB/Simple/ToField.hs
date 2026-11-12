@@ -57,8 +57,6 @@ import Database.DuckDB.Simple.LogicalRep (
     TupleValue (..),
     UnionMemberType (..),
     UnionValue (..),
-    logicalTypeFromRep,
-    logicalTypeToRep,
     structValueTypeRep,
     tupleValueTypeRep,
     unionValueTypeRep,
@@ -67,6 +65,7 @@ import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
 import Database.DuckDB.Simple.TypeCache (TypeCache, cachedLogicalType, typeCacheConnection)
 import Database.DuckDB.Simple.Types (Null (..))
+import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeFromRep, logicalTypeToRep)
 import Database.DuckDB.Simple.Variant (Variant (..))
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.Types (CDouble (..), CFloat (..))

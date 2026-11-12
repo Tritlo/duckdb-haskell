@@ -23,8 +23,9 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
 import Database.DuckDB.Simple.FromField (FieldValue (..))
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), StructValue (..), logicalTypeFromRep)
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), StructValue (..))
 import Database.DuckDB.Simple.Native
+import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeFromRep)
 import Database.DuckDB.Simple.Variant (variantObject)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (withArray)

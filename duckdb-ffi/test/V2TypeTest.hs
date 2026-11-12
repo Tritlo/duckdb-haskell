@@ -15,7 +15,7 @@ import Foreign.Storable (Storable (..))
 import HsBindgen.Runtime.PtrConst (PtrConst)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
-import V2Test (checked, consume, output, readView, withBytes, withConnection, withFactory, withHandle, withResult, withType, withView)
+import V2Test (checked, consume, output, readView, withBytes, withConnection, withFactory, withHandle, withInstance, withResult, withType, withView)
 
 tests :: TestTree
 tests =
@@ -27,6 +27,8 @@ tests =
         , testCase "qualified names compare and hash without regard to case" testQualifiedName
         , testCase "identifiers are quoted only where SQL requires it" testIdentifier
         , testCase "UTF-8 validation checks every byte of the view" testUtf8
+        , testCase "type ids that need parameters or exist only at bind time do not construct" testTypeIdRejection
+        , testCase "an instance factory resolves only unqualified built-in type names" testInstanceTypeName
         ]
 
 isEqual :: DuckDBV2LogicalTypeHandle -> DuckDBV2LogicalTypeHandle -> IO Bool
@@ -110,6 +112,11 @@ testTypeName = withConnection $ \conn -> withFactory conn $ \factory -> do
     withType factory "INTEGER" $ \base -> withView "v2_alias" $ \alias ->
         withHandle (c_duckdb_v2_factory_create_type_with_alias factory base (coerce alias)) c_duckdb_v2_logical_type_destroy $ \aliased ->
             nameOf aliased >>= (@?= "v2_alias")
+    withType factory "INTEGER" $ \base -> withView "" $ \alias -> alloca $ \out -> do
+        poke out (coerce nullPtr)
+        code <- c_duckdb_v2_factory_create_type_with_alias factory base (coerce alias) out nullPtr
+        c_duckdb_v2_logical_type_destroy out >>= (@?= DuckDBV2ErrorNone)
+        code @?= DuckDBV2ErrorInputInvalid
     -- A qualified name resolves in the schema that it names.
     withResult conn "CREATE TYPE v2_mood AS ENUM ('sad', 'ok')" consume
     withType factory "v2_mood" $ \mood ->
@@ -122,6 +129,12 @@ testTypeName = withConnection $ \conn -> withFactory conn $ \factory -> do
     rejected ["v2_no_such_schema", "integer"] []
     rejected ["v2_no_such_type"] []
     withHandle (c_duckdb_v2_value_create_utinyint factory 1) c_duckdb_v2_value_destroy $ \value -> rejected ["integer"] [value]
+    -- DECIMAL takes a width and a scale, as the resolution of DECIMAL(18,3) above shows.
+    withHandle (c_duckdb_v2_value_create_utinyint factory 18) c_duckdb_v2_value_destroy $ \width ->
+        withHandle (c_duckdb_v2_value_create_utinyint factory 3) c_duckdb_v2_value_destroy $ \scale -> do
+            rejected ["decimal"] [width, scale, scale]
+            withView "wide" $ \text -> withHandle (c_duckdb_v2_value_create_varchar factory text) c_duckdb_v2_value_destroy $ \word ->
+                rejected ["decimal"] [word, scale]
 
 testCommonType :: IO ()
 testCommonType = withConnection $ \conn -> withFactory conn $ \factory -> do
@@ -168,6 +181,21 @@ testQualifiedName = do
     rejected []
     rejected ["a", "b", "c", "d"]
     rejected ["main", ""]
+    let parse bytes = withBytes bytes $ \view -> alloca $ \out -> do
+            poke out (coerce nullPtr)
+            code <- c_duckdb_v2_qname_parse view out nullPtr
+            c_duckdb_v2_qname_destroy out >>= (@?= DuckDBV2ErrorNone)
+            pure code
+        text = map (fromIntegral . fromEnum)
+        failed code = assertBool ("the parse fails: " <> show code) (code /= DuckDBV2ErrorNone)
+    parse (text "a.b.c") >>= (@?= DuckDBV2ErrorNone)
+    -- The parser reports more than three parts and an unterminated quote with its own error code.
+    parse (text "a.b.c.d") >>= failed
+    parse (text "\"a\"") >>= (@?= DuckDBV2ErrorNone)
+    parse (text "\"a") >>= failed
+    parse (text "a") >>= (@?= DuckDBV2ErrorNone)
+    parse [0xff] >>= (@?= DuckDBV2ErrorInputInvalid)
+    parse [] >>= (@?= DuckDBV2ErrorInputInvalid)
 
 testIdentifier :: IO ()
 testIdentifier = do
@@ -181,6 +209,7 @@ testIdentifier = do
         withView text $ \view -> withHandle (c_duckdb_v2_qname_parse view) c_duckdb_v2_qname_destroy $ \parsed -> do
             output (c_duckdb_v2_qname_get_part_count parsed) >>= (@?= 1)
             output (c_duckdb_v2_qname_get_part parsed 0) >>= readView . coerce >>= (@?= name)
+            alloca $ \part -> c_duckdb_v2_qname_get_part parsed 1 part nullPtr >>= (@?= DuckDBV2ErrorInputOutOfRange)
 
 testUtf8 :: IO ()
 testUtf8 = do
@@ -193,3 +222,42 @@ testUtf8 = do
     with (DuckDBV2Str (ConstPtr nullPtr) 0) $ \view -> c_duckdb_v2_validate_utf8 (ConstPtr view) nullPtr >>= (@?= DuckDBV2ErrorNone)
     with (DuckDBV2Str (ConstPtr nullPtr) 1) $ \view -> c_duckdb_v2_validate_utf8 (ConstPtr view) nullPtr >>= (@?= DuckDBV2ErrorInputInvalid)
     c_duckdb_v2_validate_utf8 (ConstPtr nullPtr) nullPtr >>= (@?= DuckDBV2ErrorInputInvalid)
+
+testTypeIdRejection :: IO ()
+testTypeIdRejection = withConnection $ \conn -> withFactory conn $ \factory -> do
+    let fromId typeId = alloca $ \out -> do
+            poke out (coerce nullPtr)
+            code <- c_duckdb_v2_factory_create_type_from_id factory typeId (coerce nullPtr) (coerce nullPtr) 0 out nullPtr
+            c_duckdb_v2_logical_type_destroy out >>= (@?= DuckDBV2ErrorNone)
+            pure code
+    forM_ [DuckDBV2LogicalTypeIdBigInt, DuckDBV2LogicalTypeIdAny] $ \typeId -> fromId typeId >>= (@?= DuckDBV2ErrorNone)
+    forM_
+        [ DuckDBV2LogicalTypeIdDecimal
+        , DuckDBV2LogicalTypeIdList
+        , DuckDBV2LogicalTypeIdStruct
+        , DuckDBV2LogicalTypeIdEnum
+        , DuckDBV2LogicalTypeIdSQLNull
+        , DuckDBV2LogicalTypeIdUnknown
+        , DuckDBV2LogicalTypeIdType
+        , DuckDBV2LogicalTypeIdInvalid
+        ]
+        $ \typeId -> fromId typeId >>= \code -> assertBool (show typeId <> " does not construct without parameters") (code == DuckDBV2ErrorInputInvalid)
+
+{- | The instance factory has no catalog. The connection factory of the same instance resolves the catalog type
+v2_weather.
+-}
+testInstanceTypeName :: IO ()
+testInstanceTypeName = withInstance $ \instanceHandle ->
+    withHandle (c_duckdb_v2_connection_create instanceHandle) c_duckdb_v2_connection_destroy $ \conn -> do
+        withResult conn "CREATE TYPE v2_weather AS ENUM ('rain', 'sun')" consume
+        instanceFactory <- output (c_duckdb_v2_instance_get_factory instanceHandle)
+        connectionFactory <- output (c_duckdb_v2_connection_get_factory conn)
+        let fromName factory parts = withQName parts $ \qname -> alloca $ \out -> do
+                poke out (coerce nullPtr)
+                code <- c_duckdb_v2_factory_create_type_from_name factory qname (coerce nullPtr) (ConstPtr nullPtr) 0 out nullPtr
+                c_duckdb_v2_logical_type_destroy out >>= (@?= DuckDBV2ErrorNone)
+                pure code
+        fromName instanceFactory ["integer"] >>= (@?= DuckDBV2ErrorNone)
+        fromName instanceFactory ["main", "integer"] >>= (@?= DuckDBV2ErrorInputInvalid)
+        fromName connectionFactory ["v2_weather"] >>= (@?= DuckDBV2ErrorNone)
+        fromName instanceFactory ["v2_weather"] >>= (@?= DuckDBV2ErrorInputInvalid)

@@ -14,7 +14,8 @@ checks, client headers, and upstream license.
 - `nix/` contains pinned development, generation, and CI environments.
 - `v2-migration.md` describes the V2 backend contracts and native limits.
 - `extensions/` prepares a loadable Haskell extension for the pinned release.
-  Its packer and smoke tools use `runghc` with GHC's bundled packages.
+  Its packer uses `runghc` with GHC's bundled packages. Its test suite
+  starts the DuckDB CLI with the packaged extension.
 - `fetch-duckdb.sh` downloads the release library and CLI from
   `duckdb-ffi/native.sha256` for local, CI, and Docker validation. It verifies
   the archive checksums and compares the release headers with the vendored

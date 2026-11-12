@@ -59,7 +59,11 @@ its headers. A rebuild against the same headers does not help.
 
 The example registers typed scalar functions, scalar and table macros, a
 PRAGMA, a typed custom option, and a log sink. They exercise native results,
-batch inputs, NULLs, Unicode text, overflow, and callback errors. The entrypoint is
+batch inputs, NULLs, Unicode text, overflow, and callback errors. The example
+also registers an aggregate function, a table function with projection
+pushdown, a custom type with a cast, a replacement scan, a COPY format, and a
+multi-file reader. Together, the registrations use all twelve V2 extension
+registration calls. The entrypoint is
 `haskell_demo_init_c_api_v2`. DuckDB derives the entrypoint name from the
 file name, so the packaged file must be `haskell_demo.duckdb_extension`.
 
@@ -73,6 +77,9 @@ register extension = do
 
 See [Demo.hs](example/src/Demo.hs) for the complete entrypoint. Application
 functions do not need native handles, vectors, or allocation calls.
+[Advanced.hs](example/src/Advanced.hs) uses the registration functions that
+take `Extension.extensionTarget`. Their callbacks use native handles and
+vectors.
 
 ## Build and load
 
@@ -127,7 +134,7 @@ from `duckdb-ffi/cbits/duckdb_v2.h`, so run it from the repository root. See
 
 On Linux, Nix's GHC can require a newer glibc than the host CLI uses.
 `nix-shell` does not replace the downloaded CLI's ELF interpreter. In that
-case, create this wrapper and use its path for `--duckdb` in the smoke command.
+case, create this wrapper and use its path for `DUCKDB_CLI` in the test command.
 Run it inside the same Nix shell as the extension build:
 
 ```sh
@@ -150,11 +157,20 @@ nix-shell dev/nix/shell.nix --run 'GHC_ENVIRONMENT=- runghc \
   dev/extensions/Pack.hs /absolute/path/to/libhaskell_demo.so \
   --output dev/extensions/dist/haskell_demo.duckdb_extension \
   --platform linux_amd64 --extension-version 0.1.0'
+```
 
-nix-shell dev/nix/shell.nix --run 'GHC_ENVIRONMENT=- runghc \
-  dev/extensions/Smoke.hs \
-  --duckdb /tmp/duckdb-extension-native/native/duckdb \
-  dev/extensions/dist/haskell_demo.duckdb_extension'
+Run the test suite in the same project and build directory. `DUCKDB_CLI`
+names the CLI, and `DUCKDB_HASKELL_DEMO_EXTENSION` names the packaged
+extension. The suite fails when a variable is missing. Use absolute paths,
+because `cabal test` runs the suite in the package directory:
+
+```sh
+nix-shell dev/nix/shell.nix --run '(cd dev/extensions && \
+  DUCKDB_CLI=/tmp/duckdb-extension-native/native/duckdb \
+  DUCKDB_HASKELL_DEMO_EXTENSION="$PWD/dist/haskell_demo.duckdb_extension" \
+  GHC_ENVIRONMENT=- cabal test --project-file=cabal.project \
+  --builddir=../../dist-newstyle-extensions --with-compiler=ghc \
+  --test-show-details=direct duckdb-haskell-extension-example:test:haskell-demo-test)'
 ```
 
 To load the packaged extension by hand, start the CLI with `-unsigned`. The
@@ -165,18 +181,20 @@ packaged file has no signature:
   -c "LOAD 'dev/extensions/dist/haskell_demo.duckdb_extension'; SELECT haskell_answer();"
 ```
 
-The smoke script starts two plain native CLI processes. It checks a second
-`LOAD` of the loaded extension, which DuckDB skips, scalar results, 10,000
+Each test case starts a plain native CLI process, loads the packaged
+extension, and compares the CSV rows. Each registration kind has a case that
+uses the registered object in SQL. The cases also check scalar results, 10,000
 input rows, NULLs, callback errors, overflow, and connection reuse after
-errors. It also checks both macro kinds, PRAGMA results before and after an
-option update, and that the Haskell log sink receives entries. The entrypoint
-runs once in each process.
-It does not use a Haskell host executable. The timeout includes process exit
-and output collection. A timeout kills and reaps the CLI child.
+errors. One case runs a second `LOAD` in the same process. DuckDB records the
+extension name at the first `LOAD` and skips a later `LOAD` of the same name,
+so the entrypoint runs once in each process.
+The suite does not link DuckDB. Each CLI process must finish in 60 seconds,
+including process exit and output collection. A timeout kills and reaps the
+CLI child.
 
-The CI matrix builds and loads the example on Linux and macOS with
-GHC 9.14.1 at optimization level 1. Each job uses a fresh extension build
-directory and the matching native CLI.
+The CI matrix builds the example, packs it, and runs the test suite on Linux
+and macOS with GHC 9.14.1 at optimization level 1. Each job uses a fresh
+extension build directory and the matching native CLI.
 
 ## Deployment
 

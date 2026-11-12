@@ -130,7 +130,7 @@ jobs:
           cabal test duckdb-simple-dataframe-test -fdataframe-tests --with-compiler=ghc --disable-documentation --enable-optimization=${{ matrix.optimization }} --test-show-details=direct
           cabal haddock all --with-compiler=ghc --enable-optimization=${{ matrix.optimization }}
           cabal sdist all
-      - name: Build and load the Haskell extension
+      - name: Build and test the Haskell extension
         if: matrix.ghc == '9.14.1' && matrix.optimization == '1'
         env:
           GHC_ENVIRONMENT: '-'
@@ -153,7 +153,12 @@ jobs:
           # Pack.hs takes the DuckDB version from the pinned header, not the CLI.
           runghc dev/extensions/Pack.hs "$library" --output "$extension_file" \
             --platform "$platform" --extension-version 0.1.0
-          runghc dev/extensions/Smoke.hs --duckdb "$native/duckdb" "$extension_file"
+          export DUCKDB_CLI="$native/duckdb"
+          export DUCKDB_HASKELL_DEMO_EXTENSION="$extension_file"
+          cd dev/extensions
+          cabal test --project-file=cabal.project --builddir="$extension_build" \
+            --with-compiler=ghc --disable-documentation -j2 --test-show-details=direct \
+            duckdb-haskell-extension-example:test:haskell-demo-test
       - name: Check high-level allocation cleanup
         if: matrix.os == 'ubuntu-latest' && matrix.ghc == '9.12.4'
         env:

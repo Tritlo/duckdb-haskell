@@ -37,6 +37,7 @@ module Database.DuckDB.Simple.Native (
     withText,
     withTextArray,
     readText,
+    valueText,
     withBytes,
     readBytes,
     withIdentifier,
@@ -52,7 +53,7 @@ module Database.DuckDB.Simple.Native (
 ) where
 
 import Control.Exception (Exception, bracket, finally, mask_, throwIO)
-import Control.Monad (unless)
+import Control.Monad (unless, when)
 import qualified Data.ByteString as BS
 import Data.Char (isAsciiUpper, toLower)
 import Data.Coerce (Coercible, coerce)
@@ -64,7 +65,7 @@ import qualified Data.Text.Foreign as TextForeign
 import Database.DuckDB.FFI.V2
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.Types (CUInt)
-import Foreign.Marshal.Alloc (alloca)
+import Foreign.Marshal.Alloc (alloca, allocaBytes)
 import Foreign.Marshal.Array (withArray)
 import Foreign.Marshal.Utils (fillBytes, with, withMany)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
@@ -287,6 +288,15 @@ withTextArray values action =
 -- | Copy a borrowed UTF-8 view.
 readText :: DuckDBV2Str -> IO Text
 readText view = Text.decodeUtf8 <$> readBytes view
+
+-- | Copy the native text of a value.
+valueText :: DuckDBV2ValueHandle -> IO Text
+valueText value = do
+    count <- output (c_duckdb_v2_value_to_string value nullPtr 0)
+    when (toInteger count >= toInteger (maxBound :: Int)) $ throwInvalidArgument "value text exceeds Int range"
+    allocaBytes (fromIntegral count + 1) $ \buffer -> do
+        _ <- output (c_duckdb_v2_value_to_string value buffer (count + 1))
+        Text.decodeUtf8 <$> BS.packCStringLen (buffer, fromIntegral count)
 
 -- | Borrow bytes through a length-delimited native view.
 withBytes :: BS.ByteString -> (ConstPtr DuckDBV2Str -> IO a) -> IO a

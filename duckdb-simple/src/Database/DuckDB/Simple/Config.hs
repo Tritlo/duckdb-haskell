@@ -24,10 +24,8 @@ module Database.DuckDB.Simple.Config (
 
 import Control.Exception (bracket, catch, throwIO)
 import Control.Monad (filterM, forM, when)
-import qualified Data.ByteString as BS
 import Data.Text (Text)
 import qualified Data.Text as Text
-import qualified Data.Text.Encoding as Text
 import Database.DuckDB.Simple (withConnection)
 import Database.DuckDB.Simple.Callback (attachOpaque, runCallback, withCallbackResources, withTarget)
 import Database.DuckDB.Simple.FromField (FieldValue)
@@ -36,8 +34,7 @@ import Database.DuckDB.Simple.Materialize (materializeValue)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Registration (ContextCallback, DefaultValue (..), RegistrationTarget (..), TypeDeclaration, withRegistrationFactory, withTypeDeclaration)
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
-import Foreign.Marshal.Alloc (alloca, allocaBytes)
-import Foreign.Ptr (nullPtr)
+import Foreign.Marshal.Alloc (alloca)
 import Foreign.Storable (peek)
 import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
 
@@ -227,12 +224,3 @@ withOptionValue config name action = withIdentifier name \key -> alloca \scope -
         (output (\value -> c_duckdb_v2_config_get_option_value config key value scope))
         (destroy c_duckdb_v2_value_destroy)
         \value -> peek scope >>= settingScopeFromNative >>= action value
-
--- | Copy the native diagnostic text of a configuration value.
-valueText :: DuckDBV2ValueHandle -> IO Text
-valueText value = do
-    count <- output (c_duckdb_v2_value_to_string value nullPtr 0)
-    when (toInteger count >= toInteger (maxBound :: Int)) $ throwInvalidArgument "configuration value exceeds Int range"
-    allocaBytes (fromIntegral count + 1) \buffer -> do
-        _ <- output (c_duckdb_v2_value_to_string value buffer (count + 1))
-        Text.decodeUtf8 <$> BS.packCStringLen (buffer, fromIntegral count)

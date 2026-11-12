@@ -17,7 +17,7 @@ import Foreign.Storable (peek, peekElemOff, poke, pokeElemOff)
 import HsBindgen.Runtime.Prelude (ToFunPtr, toFunPtr)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
-import V2Test (callbackGuard, checked, output, readIntegers, withConnection, withFactory, withHandle, withResult, withType, withView)
+import V2Test (callbackGuard, checked, consume, output, readIntegers, withConnection, withFactory, withHandle, withResult, withType, withView)
 
 tests :: TestTree
 tests =
@@ -27,6 +27,7 @@ tests =
         , testCase "claim batch callbacks hand out batches until a claim fails" testClaimBatch
         , testCase "order preservation and batch indexes decide whether a scan runs in parallel" testParallelScan
         , testCase "partitioning callbacks let a grouped aggregate take its groups from partition values" testPartitioning
+        , testCase "progress callbacks give the progress of the running query" testProgress
         ]
 
 -- | Create a function pointer for the duration of the action.
@@ -457,3 +458,87 @@ testPartitioning = do
     seen <- readIORef requests
     assertBool "the partition data callback was invoked" (not (null seen))
     nub seen @?= [(CBool 1, [2])]
+
+{- | The function takes a percentage and reports it as the progress of its scan. The scan writes one row in each of
+20 chunks. The test reads the progress of the connection after the first chunk of each result.
+The connection publishes progress only when the enable_progress_bar option is set.
+-}
+testProgress :: IO ()
+testProgress = do
+    failures <- newIORef []
+    calls <- newIORef (0 :: Int)
+    binds <- newIORef [] -- (user data, bind data) of each bound call
+    globals <- newIORef [] -- (bind data, global state) of each scan
+    let bind info result context err = callbackGuard failures err $ do
+            user <- output (c_duckdb_v2_function_bind_get_user_data info)
+            percent <- withHandle (c_duckdb_v2_function_bind_get_arg_value info 0) c_duckdb_v2_value_destroy (output . c_duckdb_v2_value_get_bigint)
+            addColumns result context ["value"]
+            bound <- give [percent] (c_duckdb_v2_function_bind_set_bind_data info)
+            record binds (user, bound)
+        -- The global state holds the number of rows written. Only one thread writes rows.
+        initGlobal info _context err = callbackGuard failures err $ do
+            bound <- output (c_duckdb_v2_table_function_init_global_get_bind_data info)
+            global <- give [0] (c_duckdb_v2_table_function_init_global_set_global_state info)
+            record globals (bound, global)
+        execute info _context err = callbackGuard failures err $ do
+            global <- castPtr <$> output (c_duckdb_v2_table_function_exec_get_global_state info)
+            written <- peek global
+            chunk <- output (c_duckdb_v2_table_function_exec_get_output_chunk info)
+            if written < (20 :: Int64)
+                then writeColumn chunk 0 [written] >> setRows chunk 1 >> poke global (written + 1)
+                else setRows chunk 0
+        progress info _context err = callbackGuard failures err $ do
+            atomicModifyIORef' calls $ \count -> (count + 1, ())
+            user <- output (c_duckdb_v2_table_function_progress_get_user_data info)
+            bound <- output (c_duckdb_v2_table_function_progress_get_bind_data info)
+            global <- output (c_duckdb_v2_table_function_progress_get_global_state info)
+            expectRecorded "progress reads the user data and the bind data of its call" (user, bound) binds
+            expectRecorded "progress reads the global state of its scan" (bound, global) globals
+            percent <- peek (castPtr bound :: Ptr Int64)
+            checked (c_duckdb_v2_table_function_progress_set_progress info (fromIntegral percent / 100))
+    with (5 :: Int64) $ \user ->
+        withFunPtr (DuckDBV2TableFunctionBindCallbackFn_Aux bind) $ \bindPtr ->
+            withFunPtr (DuckDBV2TableFunctionInitGlobalCallbackFn_Aux initGlobal) $ \initGlobalPtr ->
+                withFunPtr (DuckDBV2TableFunctionExecCallbackFn_Aux execute) $ \executePtr ->
+                    withFunPtr (DuckDBV2TableFunctionProgressCallbackFn_Aux progress) $ \progressPtr -> withConnection $ \conn -> do
+                        registerTable conn "v2_progress" $ \function -> do
+                            lend user (checked . c_duckdb_v2_table_function_set_user_data function)
+                            withFactory conn $ \factory -> withType factory "BIGINT" $ \ty -> withView "percent" $ \parameter -> do
+                                signature <- output (c_duckdb_v2_table_function_get_signature function)
+                                checked (c_duckdb_v2_function_signature_add_parameter signature (coerce parameter) ty (coerce nullPtr) DuckDBV2FunctionParameterKindStandard)
+                            checked (c_duckdb_v2_table_function_set_bind_callback function (DuckDBV2TableFunctionBindCallbackFn bindPtr))
+                            checked (c_duckdb_v2_table_function_set_init_global_callback function (DuckDBV2TableFunctionInitGlobalCallbackFn initGlobalPtr))
+                            checked (c_duckdb_v2_table_function_set_exec_callback function (DuckDBV2TableFunctionExecCallbackFn executePtr))
+                            checked (c_duckdb_v2_table_function_set_progress_callback function (DuckDBV2TableFunctionProgressCallbackFn progressPtr))
+                        let current = alloca $ \percentage -> alloca $ \processed -> alloca $ \total -> do
+                                checked (c_duckdb_v2_connection_progress_get conn percentage processed total)
+                                (,,) <$> peek percentage <*> peek processed <*> peek total
+                            -- Read the progress after the first chunk, while the query is active.
+                            during percent = withResult conn ("SELECT value FROM v2_progress(" <> show (percent :: Int) <> ")") $ \result -> do
+                                alloca $ \chunk -> do
+                                    poke chunk (coerce nullPtr)
+                                    checked (c_duckdb_v2_result_fetch_chunk result chunk)
+                                    peek chunk >>= assertBool "the query returns a first chunk" . (/= coerce nullPtr)
+                                    c_duckdb_v2_data_chunk_destroy chunk >>= (@?= DuckDBV2ErrorNone)
+                                sample <- current
+                                consume result
+                                pure sample
+                            checkRows (value, processed, total) = do
+                                assertBool ("rows processed " <> show processed <> " exceed the total " <> show total) (processed <= total)
+                                pure value
+                        current >>= (@?= (-1, 0, 0))
+                        during 25 >>= (@?= (-1, 0, 0))
+                        withResult conn "SET enable_progress_bar_print = false" consume
+                        withResult conn "SET enable_progress_bar = true" consume
+                        -- Executor::GetPipelinesProgress adds the progress of all pipelines of the query. Thus the test
+                        -- does not expect the percentage of the scan, only a higher query progress for a higher scan progress.
+                        none <- during 0 >>= checkRows
+                        quarter <- during 25 >>= checkRows
+                        full <- during 100 >>= checkRows
+                        assertBool ("the query progress grows with the scan progress: " <> show [none, quarter, full]) (0 <= none && none < quarter && quarter < full && full <= 100)
+                        -- The engine clamps a fraction outside [0, 1].
+                        during 400 >>= checkRows >>= (@?= full)
+                        during (-300) >>= checkRows >>= (@?= none)
+                        current >>= (@?= (-1, 0, 0))
+    readIORef failures >>= (@?= [])
+    readIORef calls >>= assertBool "the progress callback was invoked" . (> 0)

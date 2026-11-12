@@ -141,6 +141,8 @@ testReplacementScan = do
                         withResult conn "SELECT col1 FROM v2_default" $ \result -> readIntegers result >>= (@?= [Just 10, Just 20, Just 30, Just 40])
                         withResult conn "SELECT * FROM v2_plain" $ \result -> readIntegers result >>= (@?= [Just 0, Just 1])
                         -- The statement fails with the text of the callback, and the next statement on the connection works.
+                        -- The callback reports the code API. DuckDB has no exception type for API, so the statement fails
+                        -- with INPUT_INVALID.
                         (code, text) <- statementError conn "SELECT * FROM v2_failing"
                         code @?= DuckDBV2ErrorInputInvalid
                         assertBool ("the error contains the text of the callback: " <> text) ("v2 deliberate replacement scan failure" `isInfixOf` text)

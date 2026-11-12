@@ -20,7 +20,7 @@ import Foreign.Storable (Storable, peek, peekElemOff, poke, pokeElemOff)
 import HsBindgen.Runtime.Prelude (ToFunPtr, toFunPtr)
 import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
+import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase, (@?=))
 import V2Test (borrowedOpaque, callbackGuard, checked, consume, output, readIntegers, readView, record, removeTestFile, withConnection, withFactory, withHandle, withResult, withStatement, withType, withView)
 
 tests :: TestTree
@@ -908,12 +908,14 @@ testFailingCallbacks = do
                                 takeDestroyed >>= (@?= [1, 2])
                             -- The statement fails with the text of each recorded failure, and DuckDB destroyed the states of the given kinds.
                             -- Then the same statement without a failure succeeds on the same connection.
+                            -- A callback reports the code API. DuckDB has no exception type for API, so the statement fails with
+                            -- INPUT_INVALID. The header names no code for the other failures.
                             fails phase recorded kinds = do
                                 (code, text) <- statementError conn (query phase)
-                                code @?= DuckDBV2ErrorInputInvalid
+                                unless (null recorded) $ code @?= DuckDBV2ErrorInputInvalid
                                 forM_ recorded $ \failure -> assertBool ("the error contains the text of the callback: " <> text) (failure `isInfixOf` text)
                                 atomicModifyIORef' failures (\seen -> ([], seen)) >>= (@?= map (\failure -> "user error (" <> failure <> ")") recorded)
-                                takeDestroyed >>= (@?= kinds)
+                                takeDestroyed >>= assertEqual ("the destroyed states after " <> query phase) kinds
                                 succeeds
                         succeeds
                         fails "bind" ["v2 deliberate bind failure"] [1]

@@ -49,7 +49,9 @@ to DuckDB. 'Only', tuples of 2 to 7 columns, and @()@ are rows. A record with a
 > data Point = Point {x :: Double, y :: Double} deriving (Generic)
 > instance TypedRow Point
 
-A @Maybe@ column can hold NULL.
+A @Maybe@ column can hold NULL. A row of arguments has the same rule as a row
+of results: each column type needs a 'ToDuckValue' instance, because that
+instance gives the SQL type of the column.
 -}
 class TypedRow r where
     -- | The DuckDB type of each column, from 'duckdbColumnType'.

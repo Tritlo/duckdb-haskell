@@ -2,6 +2,7 @@ module Main (main) where
 
 import Test.Tasty (defaultMain, testGroup)
 import qualified V2Test
+import qualified V2TypeTest
 import qualified V2ValueTest
 
 main :: IO ()
@@ -11,4 +12,5 @@ main =
             "DuckDB V2 C API"
             [ V2Test.tests
             , V2ValueTest.tests
+            , V2TypeTest.tests
             ]

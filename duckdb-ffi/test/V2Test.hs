@@ -6,6 +6,7 @@
 
 module V2Test (
     checked,
+    consume,
     output,
     readIntegers,
     readView,
@@ -170,6 +171,16 @@ readIntegers result = alloca $ \chunkSlot -> do
                     `finally` (c_duckdb_v2_data_chunk_destroy chunkSlot >>= (@?= DuckDBV2ErrorNone))
             rest <- readIntegers result
             pure (rows <> rest)
+
+-- | Fetch and destroy every chunk of the result.
+consume :: DuckDBV2ResultHandle -> IO ()
+consume result = alloca $ \chunk -> do
+    poke chunk (coerce nullPtr)
+    checked (c_duckdb_v2_result_fetch_chunk result chunk)
+    next <- peek chunk
+    unless (next == coerce nullPtr) $ do
+        c_duckdb_v2_data_chunk_destroy chunk >>= (@?= DuckDBV2ErrorNone)
+        consume result
 
 testEnvironment :: IO ()
 testEnvironment = alloca $ \envSlot -> do
@@ -652,14 +663,7 @@ testFileSystem =
 testLogging :: IO ()
 testLogging = do
     failures <- newIORef []
-    let consume result = alloca $ \chunk -> do
-            poke chunk (coerce nullPtr)
-            checked (c_duckdb_v2_result_fetch_chunk result chunk)
-            next <- peek chunk
-            unless (next == coerce nullPtr) $ do
-                c_duckdb_v2_data_chunk_destroy chunk >>= (@?= DuckDBV2ErrorNone)
-                consume result
-        execute info context err = callbackGuard failures err $ do
+    let execute info context err = callbackGuard failures err $ do
             withView "" $ \logType -> withView "v2 callback message" $ \message ->
                 checked (c_duckdb_v2_context_log context DuckDBV2LogLevelInfo logType message)
             vector <- output (c_duckdb_v2_scalar_function_exec_get_result info)

@@ -167,6 +167,12 @@ aggregateCallbacks size initialize update combine finalize =
 
 {- | All table callbacks and the projection-pushdown setting.
 The claim-batch callback is part of the pinned unstable V2 API.
+
+A filter pushdown callback must not accept a BETWEEN predicate. DuckDB 2.0
+merges two range comparisons on one column into one BETWEEN node, and the C API
+has no call that reads whether a bound is inclusive
+(<https://github.com/duckdb/duckdb/issues/25391 DuckDB issue 25391>). DuckDB
+removes an accepted predicate from the query, so the scan returns wrong rows.
 -}
 data TableCallbacks = TableCallbacks
     { tableBindCallback :: BindCallback DuckDBV2TableFunctionBindInfoHandle

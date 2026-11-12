@@ -12,6 +12,7 @@ import Control.Exception (bracket, throwIO)
 import Control.Monad (forM, forM_, unless, when)
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import Data.Int (Int64)
+import Data.Maybe (catMaybes)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
@@ -47,7 +48,9 @@ register extension =
 bigint :: TypeDeclaration
 bigint = StructuredType (LogicalTypeScalar DuckDBV2LogicalTypeIdBigInt)
 
--- | Register the aggregate @haskell_sum(value)@. It adds the values that are not NULL.
+{- | Register the aggregate @haskell_sum(value)@. It adds the values that are
+not NULL. The update and combine callbacks report overflow.
+-}
 registerSum :: RegistrationTarget -> DuckDBV2FactoryHandle -> IO ()
 registerSum target factory =
     Registration.registerAggregateFunctionWith target configure (Registration.aggregateCallbacks stateSize initialize update combine finalize)
@@ -68,7 +71,7 @@ registerSum target factory =
         forM_ (zip [0 ..] values) \(index, value) -> forM_ value \number -> do
             state <- castPtr <$> peekElemOff states index
             total <- peek state
-            poke state (total + number :: Int64)
+            addOrThrow "haskell_sum" total number >>= poke state
     combine info = do
         count <- output (c_duckdb_v2_aggregate_function_combine_get_state_count info)
         sources <- output (c_duckdb_v2_aggregate_function_combine_get_sources info)
@@ -77,7 +80,7 @@ registerSum target factory =
             source <- peekElemOff sources index >>= peek . castPtr
             state <- castPtr <$> peekElemOff targets index
             total <- peek state
-            poke state (total + source :: Int64)
+            addOrThrow "haskell_sum" total source >>= poke state
     finalize info = do
         count <- output (c_duckdb_v2_aggregate_function_finalize_get_state_count info)
         states <- output (c_duckdb_v2_aggregate_function_finalize_get_states info)
@@ -90,7 +93,7 @@ registerSum target factory =
 
 {- | Register the table function @haskell_squares(count)@ with the columns @n@
 and @square@. It uses projection pushdown, so it writes only the requested
-columns.
+columns. A negative count is an error.
 -}
 registerSquares :: RegistrationTarget -> DuckDBV2FactoryHandle -> IO ()
 registerSquares target factory =
@@ -108,6 +111,7 @@ registerSquares target factory =
             >>= Registration.configureFunctionSignature factory (Registration.FunctionSignature [Registration.parameter "count" bigint] Nothing)
     bind input result context = do
         count <- bracket (output (c_duckdb_v2_function_bind_get_arg_value input 0)) (destroy c_duckdb_v2_value_destroy) (output . c_duckdb_v2_value_get_bigint)
+        when (count < 0) $ throwIO (userError ("haskell_squares: the count is negative: " <> show count))
         setCallbackState (c_duckdb_v2_function_bind_set_bind_data input) (count :: Int64)
         addColumn result context "n"
         addColumn result context "square"
@@ -128,7 +132,9 @@ registerSquares target factory =
             writeColumn vector [Just (if column == 0 then n else n * n) | n <- numbers]
 
 {- | Register the custom type @haskell_shifted@ with the base type BIGINT. Then
-register a cast from BIGINT to @haskell_shifted@ that adds 100.
+register a cast from BIGINT to @haskell_shifted@ that adds 100. The cast writes
+NULL for a value that overflows, and then reports the overflow. CAST fails with
+the error. TRY_CAST ignores the error and keeps the NULL.
 -}
 registerShifted :: RegistrationTarget -> DuckDBV2FactoryHandle -> IO ()
 registerShifted target factory = do
@@ -144,9 +150,12 @@ registerShifted target factory = do
         count <- output (c_duckdb_v2_cast_function_exec_get_row_count info)
         values <- output (c_duckdb_v2_cast_function_exec_get_input info) >>= readColumn count
         result <- output (c_duckdb_v2_cast_function_exec_get_output info)
-        writeColumn result (map (fmap (+ 100)) values)
+        writeColumn result (map (>>= \value -> addBigInt value 100) values)
+        forM_ (catMaybes values) \value -> addOrThrow "haskell_shifted" value 100
 
--- | Replace the unknown table @haskell_missing@ with a query. Ignore all other names.
+{- | Replace the unknown table @haskell_missing@ with a query. Reject the
+reserved name @haskell_reserved@. Ignore all other names.
+-}
 replaceMissing :: Registration.ContextCallback DuckDBV2ReplacementScanInfoHandle
 replaceMissing info _ =
     bracket (output (c_duckdb_v2_replacement_scan_get_name info)) (destroy c_duckdb_v2_qname_destroy) \name -> do
@@ -155,6 +164,8 @@ replaceMissing info _ =
             part <- output (c_duckdb_v2_qname_get_part name 0) >>= Registration.readIdentifier
             when (part == "haskell_missing") $
                 Registration.withText "SELECT 42::BIGINT AS amount" (checked . c_duckdb_v2_replacement_scan_set_subquery info)
+            when (part == "haskell_reserved") $
+                throwIO (userError "haskell_reserved: the table name is reserved")
 
 {- | Register the COPY format @haskell_lines@ in both directions. A file has one
 BIGINT value on each line. An empty line is NULL.
@@ -238,6 +249,17 @@ readLines path = TextIO.readFile path >>= mapM parse . Text.lines
         | otherwise = case TextRead.signed TextRead.decimal line of
             Right (value, rest) | Text.null rest -> pure (Just value)
             _ -> throwIO (userError ("haskell_lines: the line is not a BIGINT: " <> Text.unpack line))
+
+-- | Add two BIGINT values. Overflow gives 'Nothing'.
+addBigInt :: Int64 -> Int64 -> Maybe Int64
+addBigInt a b
+    | b > 0 && a > maxBound - b = Nothing
+    | b < 0 && a < minBound - b = Nothing
+    | otherwise = Just (a + b)
+
+-- | Add two BIGINT values. Report overflow as an error of the SQL object @name@.
+addOrThrow :: String -> Int64 -> Int64 -> IO Int64
+addOrThrow name a b = maybe (throwIO (userError (name <> ": BIGINT overflow in " <> show a <> " + " <> show b))) pure (addBigInt a b)
 
 -- | Read the first rows of a BIGINT vector. A NULL row becomes 'Nothing'.
 readColumn :: DuckDBIdx -> DuckDBV2VectorHandle -> IO [Maybe Int64]

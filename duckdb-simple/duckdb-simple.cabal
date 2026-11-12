@@ -72,13 +72,13 @@ library
     Database.DuckDB.Simple.Ok
     Database.DuckDB.Simple.Pragma
     Database.DuckDB.Simple.QueryMetrics
-    Database.DuckDB.Simple.Registration
     Database.DuckDB.Simple.Streaming
     Database.DuckDB.Simple.Time
     Database.DuckDB.Simple.ToField
     Database.DuckDB.Simple.Tokenizer
     Database.DuckDB.Simple.ToRow
     Database.DuckDB.Simple.Types
+    Database.DuckDB.Simple.V2.Registration
     Database.DuckDB.Simple.Variant
 
   other-modules:

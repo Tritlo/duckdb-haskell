@@ -18,7 +18,7 @@ import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple hiding (bind)
 import qualified Database.DuckDB.Simple.Copy as Copy
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..))
-import qualified Database.DuckDB.Simple.Registration as R
+import qualified Database.DuckDB.Simple.V2.Registration as R
 import Database.DuckDB.Simple.Variant (variantObject)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Ptr (castPtr, nullPtr)

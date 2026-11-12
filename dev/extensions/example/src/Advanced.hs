@@ -22,8 +22,8 @@ import qualified Database.DuckDB.Simple.Copy as Copy
 import Database.DuckDB.Simple.Extension (Extension)
 import qualified Database.DuckDB.Simple.Extension as Extension
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (LogicalTypeScalar))
-import Database.DuckDB.Simple.Registration (RegistrationTarget, TypeDeclaration (..), checked, destroy, getCallbackState, output, setCallbackState)
-import qualified Database.DuckDB.Simple.Registration as Registration
+import Database.DuckDB.Simple.V2.Registration (RegistrationTarget, TypeDeclaration (..), checked, destroy, getCallbackState, output, setCallbackState)
+import qualified Database.DuckDB.Simple.V2.Registration as Registration
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (withArray)
 import Foreign.Ptr (castPtr)

@@ -33,9 +33,9 @@ import qualified Database.DuckDB.Simple.Logging as Logging
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Pragma (PragmaCallback)
 import qualified Database.DuckDB.Simple.Pragma as Pragma
-import Database.DuckDB.Simple.Registration (FunctionParameter, FunctionSignature (..), RegistrationTarget (ExtensionTarget), TypeDeclaration, configureFunctionSignature)
 import Database.DuckDB.Simple.ToField (ToDuckValue)
 import Database.DuckDB.Simple.Typed (createCastOn)
+import Database.DuckDB.Simple.V2.Registration (FunctionParameter, FunctionSignature (..), RegistrationTarget (ExtensionTarget), TypeDeclaration, configureFunctionSignature)
 import Foreign.Ptr (Ptr, castPtr)
 
 {- | The borrowed registration target and context for one extension load.
@@ -84,7 +84,7 @@ createCast = createCastOn . extensionTarget
 extension. The V2 API registers a macro only for an extension. Use SQL
 @CREATE MACRO@ on a connection. Parameters must use the standard parameter
 kind. Use @StructuredType (LogicalTypeScalar DuckDBV2LogicalTypeIdAny)@ for an
-untyped parameter and 'Database.DuckDB.Simple.Registration.defaultValue' for a
+untyped parameter and 'Database.DuckDB.Simple.V2.Registration.defaultValue' for a
 default. DuckDB validates the body and the signature. It resolves the body
 when the macro runs.
 -}

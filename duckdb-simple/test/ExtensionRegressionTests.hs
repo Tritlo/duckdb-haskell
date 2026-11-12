@@ -39,8 +39,8 @@ import Database.DuckDB.Simple.Internal (
  )
 import qualified Database.DuckDB.Simple.Logging as Logging
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..))
-import qualified Database.DuckDB.Simple.Registration as Registration
 import qualified Database.DuckDB.Simple.Tokenizer as Tokenizer
+import qualified Database.DuckDB.Simple.V2.Registration as Registration
 import System.Directory (getHomeDirectory, removeFile)
 import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, defaultMain, testGroup)

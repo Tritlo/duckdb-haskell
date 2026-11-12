@@ -19,7 +19,7 @@ import qualified Database.DuckDB.Simple.Logging as Logging
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..))
 import qualified Database.DuckDB.Simple.Pragma as Pragma
 import qualified Database.DuckDB.Simple.QueryMetrics as Metrics
-import qualified Database.DuckDB.Simple.Registration as R
+import qualified Database.DuckDB.Simple.V2.Registration as R
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (advancePtr, allocaArray, peekArray)
 import Foreign.Ptr (castPtr, nullPtr)

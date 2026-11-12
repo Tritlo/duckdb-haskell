@@ -41,9 +41,9 @@ import Database.DuckDB.Simple.Internal (
     withParsedStatements,
  )
 import Database.DuckDB.Simple.Native
-import Database.DuckDB.Simple.Registration (TypeDeclaration (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue)
 import Database.DuckDB.Simple.Typed (createCastOn)
+import Database.DuckDB.Simple.V2.Registration (TypeDeclaration (..))
 
 -- | Register a Haskell function under the supplied name.
 createFunction :: (Function f) => Connection -> Text -> f -> IO ()
@@ -67,7 +67,7 @@ NULL for each failed row and the results for the other rows.
 
 DuckDB casts each result to the target type with its default cast. The target
 type can be a custom type whose base type is the type of @b@, for example a
-type from 'Database.DuckDB.Simple.Registration.registerCustomType'.
+type from 'Database.DuckDB.Simple.V2.Registration.registerCustomType'.
 
 > createCast conn (TypeExpression "BIGINT") (TypeExpression "shifted") \(value :: Int64) ->
 >     if value > maxBound - 100 then Left "BIGINT overflow" else Right (value + 100)

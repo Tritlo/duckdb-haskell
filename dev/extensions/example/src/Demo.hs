@@ -16,7 +16,7 @@ import Database.DuckDB.Simple.Extension (Extension, ExtensionEntry)
 import qualified Database.DuckDB.Simple.Extension as Extension
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (LogicalTypeScalar))
 import qualified Database.DuckDB.Simple.Pragma as Pragma
-import qualified Database.DuckDB.Simple.Registration as Registration
+import qualified Database.DuckDB.Simple.V2.Registration as Registration
 
 -- | Export the registration action called by the C load entrypoint.
 initialize :: ExtensionEntry

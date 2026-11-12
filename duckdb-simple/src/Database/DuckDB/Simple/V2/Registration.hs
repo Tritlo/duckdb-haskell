@@ -17,7 +17,7 @@ Synchronize access to state that DuckDB shares between workers.
 The pinned V2 API has no custom file-system registration API. Use
 @Database.DuckDB.Simple.Logging@ for managed log-sink registration.
 -}
-module Database.DuckDB.Simple.Registration (
+module Database.DuckDB.Simple.V2.Registration (
     RegistrationTarget (..),
     withRegistrationFactory,
     TypeDeclaration (..),

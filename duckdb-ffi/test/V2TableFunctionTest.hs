@@ -13,7 +13,7 @@ import Foreign.Marshal.Alloc (alloca, finalizerFree, free)
 import Foreign.Marshal.Array (mallocArray, pokeArray)
 import Foreign.Marshal.Utils (with)
 import Foreign.Ptr (FunPtr, Ptr, castFunPtr, castPtr, freeHaskellFunPtr, nullFunPtr, nullPtr)
-import Foreign.Storable (peek, poke, pokeElemOff)
+import Foreign.Storable (peek, peekElemOff, poke, pokeElemOff)
 import HsBindgen.Runtime.Prelude (ToFunPtr, toFunPtr)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
@@ -24,6 +24,7 @@ tests =
     testGroup
         "DuckDB V2 table function callbacks"
         [ testCase "init and exec callbacks read the data of their call and the declared column of each scanned column" testColumns
+        , testCase "claim batch callbacks hand out batches until a claim fails" testClaimBatch
         ]
 
 -- | Create a function pointer for the duration of the action.
@@ -180,3 +181,83 @@ testColumns = do
                         length projected @?= 1
                         map sort projected @?= [[0, 2]]
                         nub (map snd (phasesOf unprojectedUser)) @?= [[0, 1, 2]]
+
+{- | One thread scans three batches of two rows each. The log records each claim and each exec call.
+The header describes the sequence for a thread: a claim before the first exec, a claim after each empty chunk,
+and the end of the scan after a failed claim.
+-}
+testClaimBatch :: IO ()
+testClaimBatch = do
+    failures <- newIORef []
+    events <- newIORef []
+    binds <- newIORef [] -- (user data, bind data) of each bound call
+    globals <- newIORef [] -- (bind data, global state) of each scan
+    locals <- newIORef [] -- (global state, local state) of each thread
+    let bind info result context err = callbackGuard failures err $ do
+            user <- output (c_duckdb_v2_function_bind_get_user_data info)
+            addColumns result context ["value"]
+            bound <- give [0] (c_duckdb_v2_function_bind_set_bind_data info)
+            record binds (user, bound)
+        -- The global state holds the number of the next batch. Only one thread claims batches, so it needs no lock.
+        initGlobal info _context err = callbackGuard failures err $ do
+            bound <- output (c_duckdb_v2_table_function_init_global_get_bind_data info)
+            global <- give [0] (c_duckdb_v2_table_function_init_global_set_global_state info)
+            record globals (bound, global)
+        -- The local state holds the claimed batch, or -1, and whether exec wrote the rows of the batch.
+        initLocal info _context err = callbackGuard failures err $ do
+            global <- output (c_duckdb_v2_table_function_init_local_get_global_state info)
+            local <- give [-1, 0] (c_duckdb_v2_table_function_init_local_set_local_state info)
+            record locals (global, local)
+        claim info _context err = callbackGuard failures err $ do
+            user <- output (c_duckdb_v2_table_function_claim_batch_get_user_data info)
+            bound <- output (c_duckdb_v2_table_function_claim_batch_get_bind_data info)
+            global <- output (c_duckdb_v2_table_function_claim_batch_get_global_state info)
+            local <- output (c_duckdb_v2_table_function_claim_batch_get_local_state info)
+            expectRecorded "claim batch reads the user data and the bind data of its call" (user, bound) binds
+            expectRecorded "claim batch reads the global state of its scan" (bound, global) globals
+            expectRecorded "claim batch reads the local state of its thread" (global, local) locals
+            next <- peek (castPtr global :: Ptr Int64)
+            if next < 3
+                then do
+                    poke (castPtr global) (next + 1)
+                    pokeArray (castPtr local) [next, 0 :: Int64]
+                    checked (c_duckdb_v2_table_function_claim_batch_set_claimed info (CBool 1))
+                    record events ("claim " <> show next)
+                else do
+                    -- A callback that does not call set_claimed claims nothing.
+                    pokeArray (castPtr local) [-1, 0 :: Int64]
+                    record events "claim none"
+        execute info _context err = callbackGuard failures err $ do
+            local <- castPtr <$> output (c_duckdb_v2_table_function_exec_get_local_state info)
+            batch <- peekElemOff local 0
+            written <- peekElemOff local 1
+            chunk <- output (c_duckdb_v2_table_function_exec_get_output_chunk info)
+            if batch >= 0 && written == 0
+                then do
+                    writeColumn chunk 0 [10 * batch, 10 * batch + 1 :: Int64]
+                    setRows chunk 2
+                    pokeElemOff local 1 (1 :: Int64)
+                    record events ("rows " <> show batch)
+                else do
+                    setRows chunk 0
+                    record events ("empty " <> show batch)
+    with (7 :: Int64) $ \user ->
+        withFunPtr (DuckDBV2TableFunctionBindCallbackFn_Aux bind) $ \bindPtr ->
+            withFunPtr (DuckDBV2TableFunctionInitGlobalCallbackFn_Aux initGlobal) $ \initGlobalPtr ->
+                withFunPtr (DuckDBV2TableFunctionInitLocalCallbackFn_Aux initLocal) $ \initLocalPtr ->
+                    withFunPtr (DuckDBV2TableFunctionClaimBatchCallbackFn_Aux claim) $ \claimPtr ->
+                        withFunPtr (DuckDBV2TableFunctionExecCallbackFn_Aux execute) $ \executePtr -> withConnection $ \conn -> do
+                            registerTable conn "v2_batches" $ \function -> do
+                                lend user (checked . c_duckdb_v2_table_function_set_user_data function)
+                                checked (c_duckdb_v2_table_function_set_bind_callback function (DuckDBV2TableFunctionBindCallbackFn bindPtr))
+                                checked (c_duckdb_v2_table_function_set_init_global_callback function (DuckDBV2TableFunctionInitGlobalCallbackFn initGlobalPtr))
+                                checked (c_duckdb_v2_table_function_set_init_local_callback function (DuckDBV2TableFunctionInitLocalCallbackFn initLocalPtr))
+                                checked (c_duckdb_v2_table_function_set_claim_batch_callback function (DuckDBV2TableFunctionClaimBatchCallbackFn claimPtr))
+                                checked (c_duckdb_v2_table_function_set_exec_callback function (DuckDBV2TableFunctionExecCallbackFn executePtr))
+                            withResult conn "SELECT value FROM v2_batches()" $ \result ->
+                                readIntegers result >>= (@?= map Just [0, 1, 10, 11, 20, 21])
+    readIORef failures >>= (@?= [])
+    -- The default maximum of one thread gives one local state.
+    length <$> readIORef locals >>= (@?= 1)
+    reverse <$> readIORef events
+        >>= (@?= ["claim 0", "rows 0", "empty 0", "claim 1", "rows 1", "empty 1", "claim 2", "rows 2", "empty 2", "claim none"])

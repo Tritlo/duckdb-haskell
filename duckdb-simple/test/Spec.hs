@@ -95,6 +95,7 @@ import Test.Tasty.ExpectedFailure (expectFailBecause)
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck (testProperty, (===))
 import TimeTests (timeTests)
+import TypedRegistrationTests (typedRegistrationTests)
 import ValueRegressionTests (valueRegressionTests)
 import qualified VariantRegressionTests
 
@@ -215,6 +216,7 @@ tests =
         , nativeStreamingTests
         , extensionRegressionTests
         , registrationTests
+        , typedRegistrationTests
         , copyTests
         , GeometryRegressionTests.tests
         , VariantRegressionTests.tests

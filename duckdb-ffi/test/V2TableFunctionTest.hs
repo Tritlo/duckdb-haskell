@@ -8,6 +8,8 @@ import Data.Int (Int64)
 import Data.List (nub, sort)
 import Data.Void (Void)
 import Database.DuckDB.FFI.V2
+import Foreign.C.ConstPtr (ConstPtr (..))
+import Foreign.C.String (withCString)
 import Foreign.C.Types (CBool (..))
 import Foreign.Marshal.Alloc (alloca, finalizerFree, free)
 import Foreign.Marshal.Array (mallocArray, pokeArray)
@@ -15,9 +17,10 @@ import Foreign.Marshal.Utils (with)
 import Foreign.Ptr (FunPtr, Ptr, castFunPtr, castPtr, freeHaskellFunPtr, nullFunPtr, nullPtr)
 import Foreign.Storable (peek, peekElemOff, poke, pokeElemOff)
 import HsBindgen.Runtime.Prelude (ToFunPtr, toFunPtr)
+import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
-import V2Test (callbackGuard, checked, consume, output, readIntegers, withConnection, withFactory, withHandle, withResult, withType, withView)
+import V2Test (callbackGuard, checked, consume, output, readIntegers, removeTestFile, withConnection, withFactory, withHandle, withResult, withType, withView)
 
 tests :: TestTree
 tests =
@@ -28,6 +31,7 @@ tests =
         , testCase "order preservation and batch indexes decide whether a scan runs in parallel" testParallelScan
         , testCase "partitioning callbacks let a grouped aggregate take its groups from partition values" testPartitioning
         , testCase "progress callbacks give the progress of the running query" testProgress
+        , testCase "a multi-file function asks the function it wraps for the bind info of each file" testBindInfo
         ]
 
 -- | Create a function pointer for the duration of the action.
@@ -542,3 +546,55 @@ testProgress = do
                         current >>= (@?= (-1, 0, 0))
     readIORef failures >>= (@?= [])
     readIORef calls >>= assertBool "the progress callback was invoked" . (> 0)
+
+-- | A multi-file function wraps a function that reads one file. The wrapped function writes one row for each file.
+testBindInfo :: IO ()
+testBindInfo =
+    bracket
+        ( do
+            (path, handle) <- openBinaryTempFile "." "duckdb-v2-table"
+            hClose handle
+            pure path
+        )
+        (\path -> withCString path $ \name -> removeTestFile name >>= (@?= 0))
+        $ \path -> do
+            failures <- newIORef []
+            users <- newIORef [] -- the user data that each get bind info call read
+            let bind _info result context err = callbackGuard failures err (addColumns result context ["value"])
+                -- The global state of the scan of a file holds whether exec wrote the row of the file.
+                initGlobal info _context err = callbackGuard failures err (() <$ give [0] (c_duckdb_v2_table_function_init_global_set_global_state info))
+                execute info _context err = callbackGuard failures err $ do
+                    global <- castPtr <$> output (c_duckdb_v2_table_function_exec_get_global_state info)
+                    written <- peek global
+                    chunk <- output (c_duckdb_v2_table_function_exec_get_output_chunk info)
+                    if written == (0 :: Int64)
+                        then writeColumn chunk 0 [42] >> setRows chunk 1 >> poke global 1
+                        else setRows chunk 0
+                getBindInfo info _context err =
+                    callbackGuard failures err $
+                        output (c_duckdb_v2_table_function_get_bind_info_get_user_data info) >>= record users
+            with (6 :: Int64) $ \user ->
+                withFunPtr (DuckDBV2TableFunctionBindCallbackFn_Aux bind) $ \bindPtr ->
+                    withFunPtr (DuckDBV2TableFunctionInitGlobalCallbackFn_Aux initGlobal) $ \initGlobalPtr ->
+                        withFunPtr (DuckDBV2TableFunctionExecCallbackFn_Aux execute) $ \executePtr ->
+                            withFunPtr (DuckDBV2TableFunctionGetBindInfoCallbackFn_Aux getBindInfo) $ \getBindInfoPtr -> do
+                                withConnection $ \conn -> do
+                                    registerTable conn "v2_file" $ \function -> do
+                                        lend user (checked . c_duckdb_v2_table_function_set_user_data function)
+                                        withFactory conn $ \factory -> withType factory "VARCHAR" $ \ty -> withView "path" $ \parameter -> do
+                                            signature <- output (c_duckdb_v2_table_function_get_signature function)
+                                            checked (c_duckdb_v2_function_signature_add_parameter signature (coerce parameter) ty (coerce nullPtr) DuckDBV2FunctionParameterKindStandard)
+                                        checked (c_duckdb_v2_table_function_set_bind_callback function (DuckDBV2TableFunctionBindCallbackFn bindPtr))
+                                        checked (c_duckdb_v2_table_function_set_init_global_callback function (DuckDBV2TableFunctionInitGlobalCallbackFn initGlobalPtr))
+                                        checked (c_duckdb_v2_table_function_set_exec_callback function (DuckDBV2TableFunctionExecCallbackFn executePtr))
+                                        checked (c_duckdb_v2_table_function_set_get_bind_info_callback function (DuckDBV2TableFunctionGetBindInfoCallbackFn getBindInfoPtr))
+                                    withFactory conn $ \factory ->
+                                        withHandle (c_duckdb_v2_multi_file_function_create factory) c_duckdb_v2_multi_file_function_destroy $ \files -> do
+                                            withView "v2_files" $ \name -> checked (c_duckdb_v2_multi_file_function_set_name files (coerce name))
+                                            withView "v2_file" $ \name -> checked (c_duckdb_v2_multi_file_function_set_single_file_function files (coerce name))
+                                            checked (c_duckdb_v2_connection_register_multi_file_function conn files)
+                                    withResult conn ("SELECT value FROM v2_files('" <> path <> "')") $ \result -> readIntegers result >>= (@?= [Just 42])
+                                readIORef failures >>= (@?= [])
+                                seen <- readIORef users
+                                assertBool "the get bind info callback was invoked" (not (null seen))
+                                nub seen @?= [castPtr user]

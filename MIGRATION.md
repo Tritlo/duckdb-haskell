@@ -128,12 +128,27 @@ The SQL workflow stays the same. These changes can affect your code:
   function, register the name again. Each use of `deleteFunction` causes a
   compile-time warning. A build with `-Werror` must allow that warning, for
   example with `-Wno-error=deprecations`.
+- The SQL error of a failed Haskell callback has the plain message of the
+  exception. This applies, for example, to a function from `createFunction`
+  and to the callbacks of `registerCopyToFunction`. For a `userError`, version
+  0.3 gave `user error (...)`. For an `SQLError`, it gave the `Show` text of
+  the record. Update code that compares the text of these errors.
+- `Database.DuckDB.Simple` also exports `createCast`, `createTableFunction`,
+  `createAggregate`, and `Aggregate` with its fields. These names can clash
+  with your own names when you import the module without a list. Hide these
+  names in the import, or import the module qualified.
 - Empty `Array` parameters raise `SQLError`. Use an SQL empty LIST.
 - A composite parameter with a GEOMETRY CRS that DuckDB does not recognize
   raises `SQLError`. Version 0.3 bound it without the CRS. Configure custom CRS
   names through `connectionGeometryCRS`.
 - DuckDB 2.0 rejects WKB with mixed Z/M member layouts.
 - Decoded VARIANT objects list their keys in DuckDB's lexicographic order.
+
+The typed registrations are new in 0.4. Version 0.3 had no `Registration`,
+`Pragma`, or `Extension` module and no custom options. Its `Copy` module had
+only `registerCopyToFunction`. The arguments of that function do not change,
+except for the type of `copyBindColumnTypes` above. See
+[typed registration](duckdb-simple/README.md#typed-registration).
 
 A repository checkout must generate the ignored build artefacts before it
 builds. CI does this too. Source archives include those artefacts. See the

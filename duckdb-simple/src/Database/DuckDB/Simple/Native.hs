@@ -9,6 +9,9 @@ module Database.DuckDB.Simple.Native (
     module Database.DuckDB.FFI.V2,
     Query (..),
     SQLError (..),
+    ErrorType (..),
+    errorTypeCodes,
+    errorTypeFromNative,
     SettingScope (..),
     settingScopeToNative,
     settingScopeFromNative,
@@ -83,12 +86,127 @@ instance IsString Query where
 -- | A native V2 error or an error reported by duckdb-simple.
 data SQLError = SQLError
     { sqlErrorMessage :: Text
-    , sqlErrorType :: Maybe DuckDBV2Error
+    , sqlErrorType :: Maybe ErrorType
     , sqlErrorQuery :: Maybe Query
     }
     deriving stock (Eq, Show)
 
 instance Exception SQLError
+
+{- | The category of a native DuckDB error. An error that duckdb-simple reports
+has no error type.
+-}
+data ErrorType
+    = ErrorTypeApi
+    | ErrorTypeIOFileNotFound
+    | ErrorTypeIOReadFailure
+    | ErrorTypeIOEof
+    | ErrorTypeIOGeneral
+    | ErrorTypeIONetwork
+    | ErrorTypeIOHTTP
+    | ErrorTypeInputInvalid
+    | ErrorTypeInputParameterInvalid
+    | ErrorTypeInputOutOfRange
+    | ErrorTypeInputObjectSize
+    | ErrorTypeInputMetadataDeferred
+    | ErrorTypeResourceInUse
+    | ErrorTypeResourceOutOfMemory
+    | ErrorTypeResourceConnection
+    | ErrorTypeResourceDependency
+    | ErrorTypeResourceMissingExtension
+    | ErrorTypeResourceAutoload
+    | ErrorTypeTypeConversion
+    | ErrorTypeTypeUnknown
+    | ErrorTypeTypeInvalid
+    | ErrorTypeTypeMismatch
+    | ErrorTypeTypeDecimal
+    | ErrorTypeTypeDivideByZero
+    | ErrorTypeQueryParser
+    | ErrorTypeQuerySyntax
+    | ErrorTypeQueryBinder
+    | ErrorTypeQueryPlanner
+    | ErrorTypeQueryOptimizer
+    | ErrorTypeQueryExpression
+    | ErrorTypeQueryExecutor
+    | ErrorTypeQueryScheduler
+    | ErrorTypeQueryNotImplemented
+    | ErrorTypeQueryParameterNotResolved
+    | ErrorTypeQueryParameterNotAllowed
+    | ErrorTypeDatabaseCatalog
+    | ErrorTypeDatabaseTransaction
+    | ErrorTypeDatabaseConstraint
+    | ErrorTypeDatabaseIndex
+    | ErrorTypeDatabaseSequence
+    | ErrorTypeDatabaseStatistics
+    | ErrorTypeDatabaseSerialization
+    | ErrorTypeConfigurationSettings
+    | ErrorTypeConfigurationInvalid
+    | ErrorTypeConfigurationPermission
+    | ErrorTypeRuntimeInternal
+    | ErrorTypeRuntimeFatal
+    | ErrorTypeRuntimeInterrupt
+    | ErrorTypeRuntimeNullPointer
+    deriving (Eq, Ord, Show, Read, Enum, Bounded)
+
+-- | Each error type and its native error code.
+errorTypeCodes :: [(ErrorType, DuckDBV2Error)]
+errorTypeCodes =
+    [ (ErrorTypeApi, DuckDBV2ErrorApi)
+    , (ErrorTypeIOFileNotFound, DuckDBV2ErrorIOFileNotFound)
+    , (ErrorTypeIOReadFailure, DuckDBV2ErrorIOReadFailure)
+    , (ErrorTypeIOEof, DuckDBV2ErrorIOEof)
+    , (ErrorTypeIOGeneral, DuckDBV2ErrorIOGeneral)
+    , (ErrorTypeIONetwork, DuckDBV2ErrorIONetwork)
+    , (ErrorTypeIOHTTP, DuckDBV2ErrorIOHTTP)
+    , (ErrorTypeInputInvalid, DuckDBV2ErrorInputInvalid)
+    , (ErrorTypeInputParameterInvalid, DuckDBV2ErrorInputParameterInvalid)
+    , (ErrorTypeInputOutOfRange, DuckDBV2ErrorInputOutOfRange)
+    , (ErrorTypeInputObjectSize, DuckDBV2ErrorInputObjectSize)
+    , (ErrorTypeInputMetadataDeferred, DuckDBV2ErrorInputMetadataDeferred)
+    , (ErrorTypeResourceInUse, DuckDBV2ErrorResourceInUse)
+    , (ErrorTypeResourceOutOfMemory, DuckDBV2ErrorResourceOutOfMemory)
+    , (ErrorTypeResourceConnection, DuckDBV2ErrorResourceConnection)
+    , (ErrorTypeResourceDependency, DuckDBV2ErrorResourceDependency)
+    , (ErrorTypeResourceMissingExtension, DuckDBV2ErrorResourceMissingExtension)
+    , (ErrorTypeResourceAutoload, DuckDBV2ErrorResourceAutoload)
+    , (ErrorTypeTypeConversion, DuckDBV2ErrorTypeConversion)
+    , (ErrorTypeTypeUnknown, DuckDBV2ErrorTypeUnknown)
+    , (ErrorTypeTypeInvalid, DuckDBV2ErrorTypeInvalid)
+    , (ErrorTypeTypeMismatch, DuckDBV2ErrorTypeMismatch)
+    , (ErrorTypeTypeDecimal, DuckDBV2ErrorTypeDecimal)
+    , (ErrorTypeTypeDivideByZero, DuckDBV2ErrorTypeDivideByZero)
+    , (ErrorTypeQueryParser, DuckDBV2ErrorQueryParser)
+    , (ErrorTypeQuerySyntax, DuckDBV2ErrorQuerySyntax)
+    , (ErrorTypeQueryBinder, DuckDBV2ErrorQueryBinder)
+    , (ErrorTypeQueryPlanner, DuckDBV2ErrorQueryPlanner)
+    , (ErrorTypeQueryOptimizer, DuckDBV2ErrorQueryOptimizer)
+    , (ErrorTypeQueryExpression, DuckDBV2ErrorQueryExpression)
+    , (ErrorTypeQueryExecutor, DuckDBV2ErrorQueryExecutor)
+    , (ErrorTypeQueryScheduler, DuckDBV2ErrorQueryScheduler)
+    , (ErrorTypeQueryNotImplemented, DuckDBV2ErrorQueryNotImplemented)
+    , (ErrorTypeQueryParameterNotResolved, DuckDBV2ErrorQueryParameterNotResolved)
+    , (ErrorTypeQueryParameterNotAllowed, DuckDBV2ErrorQueryParameterNotAllowed)
+    , (ErrorTypeDatabaseCatalog, DuckDBV2ErrorDatabaseCatalog)
+    , (ErrorTypeDatabaseTransaction, DuckDBV2ErrorDatabaseTransaction)
+    , (ErrorTypeDatabaseConstraint, DuckDBV2ErrorDatabaseConstraint)
+    , (ErrorTypeDatabaseIndex, DuckDBV2ErrorDatabaseIndex)
+    , (ErrorTypeDatabaseSequence, DuckDBV2ErrorDatabaseSequence)
+    , (ErrorTypeDatabaseStatistics, DuckDBV2ErrorDatabaseStatistics)
+    , (ErrorTypeDatabaseSerialization, DuckDBV2ErrorDatabaseSerialization)
+    , (ErrorTypeConfigurationSettings, DuckDBV2ErrorConfigurationSettings)
+    , (ErrorTypeConfigurationInvalid, DuckDBV2ErrorConfigurationInvalid)
+    , (ErrorTypeConfigurationPermission, DuckDBV2ErrorConfigurationPermission)
+    , (ErrorTypeRuntimeInternal, DuckDBV2ErrorRuntimeInternal)
+    , (ErrorTypeRuntimeFatal, DuckDBV2ErrorRuntimeFatal)
+    , (ErrorTypeRuntimeInterrupt, DuckDBV2ErrorRuntimeInterrupt)
+    , (ErrorTypeRuntimeNullPointer, DuckDBV2ErrorRuntimeNullPointer)
+    ]
+
+{- | Find the error type of a native error code. The success code and an unknown
+code give 'Nothing'.
+-}
+errorTypeFromNative :: DuckDBV2Error -> Maybe ErrorType
+errorTypeFromNative code = lookup code [(native, errorType) | (errorType, native) <- errorTypeCodes]
 
 -- | A null pointer represented by an opaque native handle.
 nullHandle :: (Coercible (Ptr ()) a) => a
@@ -98,7 +216,7 @@ nullHandle = coerce (nullPtr :: Ptr ())
 checkCode :: DuckDBV2Error -> IO ()
 checkCode code =
     unless (code == DuckDBV2ErrorNone) $
-        throwIO (SQLError (Text.pack (show code)) (Just code) Nothing)
+        throwIO (SQLError (Text.pack (show code)) (errorTypeFromNative code) Nothing)
 
 -- | Copy a native diagnostic and release its error-info handle.
 checked :: (Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO ()
@@ -120,7 +238,7 @@ checked action = mask_ $ alloca $ \slot -> do
                         if rc == DuckDBV2ErrorNone
                             then peek view >>= readText
                             else pure (Text.pack (show code))
-            throwIO (SQLError message (Just code) Nothing)
+            throwIO (SQLError message (errorTypeFromNative code) Nothing)
 
 -- | Read one checked native output. Initialize its storage before the call.
 output :: forall a. (Storable a) => (Ptr a -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO a

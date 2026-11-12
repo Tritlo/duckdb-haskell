@@ -318,7 +318,7 @@ valueRegressionTests =
             let struct = singleField (LogicalTypeMap (LogicalTypeScalar DuckDBV2LogicalTypeIdBigInt) (LogicalTypeScalar DuckDBV2LogicalTypeIdBigInt)) (FieldMap [(FieldNull, FieldInt64 1)])
             result <- try (query conn "SELECT ?" (Only struct) :: IO [Only FieldValue])
             case result of
-                Left SQLError{sqlErrorType} -> sqlErrorType @?= Just DuckDBV2ErrorInputInvalid
+                Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorTypeInputInvalid
                 Right _ -> assertFailure "expected a V2 native constructor error"
         , testCase "BIT padding preserves SQL bit_count" $ withConnection ":memory:" \conn -> do
             let bits = bsFromBool [True, False, True]

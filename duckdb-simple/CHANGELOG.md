@@ -55,6 +55,9 @@
   `registerCopyFunctionWith`, `registerCopyToCallbacks`,
   `registerCopyFromCallbacks`, and `registerMultiFileFunctionWith`) to
   `Database.DuckDB.Simple.V2.Copy`.
+- Add `createAggregate` for connections and extensions. It registers an
+  aggregate function as a fold over Haskell values, with no native handle in
+  the API.
 - Add scoped named collection inputs and prepared dynamic PIVOT with a deferred
   output schema. Native expanding statements cannot have parameters.
 - Rename `Database.DuckDB.Simple.Deprecated.Streaming` to

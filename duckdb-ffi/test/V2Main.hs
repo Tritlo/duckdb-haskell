@@ -9,6 +9,7 @@ import qualified V2FileSystemTest
 import qualified V2FunctionDocsTest
 import qualified V2MacroTest
 import qualified V2StatementTest
+import qualified V2TableFunctionTest
 import qualified V2Test
 import qualified V2TypeTest
 import qualified V2ValueTest
@@ -29,4 +30,5 @@ main =
             , V2AggregateTest.tests
             , V2MacroTest.tests
             , V2AttachTest.tests
+            , V2TableFunctionTest.tests
             ]

@@ -735,6 +735,11 @@ function, a table function, a COPY format, a replacement scan, or a pragma.
 of the connection while DuckDB runs these callbacks. The lock is not
 reentrant, so a statement in the callback waits and does not return.
 
+A callback that refers to a connection keeps that connection and its instance
+reachable while DuckDB keeps the callback, possibly until the database closes.
+Thus the garbage collector does not close them, and the program must close
+them.
+
 ## Typed registration
 
 These functions register SQL objects with Haskell values. Their signatures have

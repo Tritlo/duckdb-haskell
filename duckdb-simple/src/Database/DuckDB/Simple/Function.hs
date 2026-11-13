@@ -20,6 +20,11 @@ while 'Database.DuckDB.Simple.query', 'Database.DuckDB.Simple.execute', or a
 default fold runs a statement. DuckDB can run a callback in each of these
 steps. The lock is not reentrant. Thus a statement in the callback waits for
 the lock and does not return.
+
+A callback that refers to a connection keeps that connection and its instance
+reachable while DuckDB keeps the callback, possibly until the database closes.
+Thus the garbage collector does not close them, and the program must close
+them.
 -}
 module Database.DuckDB.Simple.Function (
     ScalarType,
@@ -113,13 +118,15 @@ one time for each scan, when the execution of the statement starts. It does not
 run at preparation. A query that reads the function two times runs it two
 times. A prepared statement runs it at each execution.
 
-DuckDB reads the list one chunk at a time, in one thread. It stops when the
-query needs no more rows, so the list can be long or infinite, for example with
-@LIMIT@. It reads a full chunk, and it can read more chunks than the query
-needs. Thus it can read rows after the @LIMIT@. It reads all columns of each
-row that it reads, also the columns that the query does not use. An exception
-in the function or in a row is an SQL error. DuckDB releases the list when the
-scan ends.
+DuckDB reads the list one chunk at a time. It can run two exec callbacks of
+one scan at the same time, for example for a multi-file function. Each exec
+callback takes its rows from the list under a lock, so two exec callbacks never
+read the list at the same time. DuckDB stops when the query needs no more rows,
+so the list can be long or infinite, for example with @LIMIT@. It reads a full
+chunk, and it can read more chunks than the query needs. Thus it can read rows
+after the @LIMIT@. It reads all columns of each row that it reads, also the
+columns that the query does not use. An exception in the function or in a row
+is an SQL error. DuckDB releases the list when the scan ends.
 
 > createTableFunction conn "haskell_squares" ["n", "square"] \(Only count) ->
 >     pure [(n, n * n) | n <- [0 .. count - 1 :: Int64]]

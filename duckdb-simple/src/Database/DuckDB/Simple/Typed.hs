@@ -12,9 +12,9 @@ Description : Read and write callback vectors as typed Haskell values.
 Typed registrations use these helpers. An argument reader gives the rows of a
 borrowed vector as fields with the names from 'argumentName'.
 'conversionMessage' describes the arguments that do not convert. 'TypedRow'
-gives the column types and the column values of a row. The module also registers typed casts on a connection
-or on a loading extension. It converts a typed replacement function to a native
-replacement scan callback.
+gives the column types and the column values of a row. The module also
+registers typed casts on a connection or on a loading extension. It converts a
+typed replacement function to a native replacement scan callback.
 -}
 module Database.DuckDB.Simple.Typed (
     TypedRow (..),

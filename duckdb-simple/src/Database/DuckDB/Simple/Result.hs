@@ -104,7 +104,8 @@ startStatementStream includeChangedRows mode stmt = withQueryError (statementQue
 startResultStream :: Bool -> ResultMode -> Connection -> DuckDBV2ResultHandle -> IO (Maybe StatementStream)
 startResultStream includeChangedRows mode conn result = mask_ do
     owned <- newIORef []
-    let release = (readIORef owned >>= mapM_ destroyDataChunk) `finally` destroy c_duckdb_v2_result_destroy result
+    -- Take the chunks out before their release, so that a second call releases no chunk again.
+    let release = (atomicModifyIORef' owned ([],) >>= mapM_ destroyDataChunk) `finally` destroy c_duckdb_v2_result_destroy result
         fetch = fetchResultChunk conn result
         gather = do
             chunk <- fetch

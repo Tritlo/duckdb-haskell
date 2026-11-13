@@ -1,6 +1,9 @@
 {-# LANGUAGE DeriveFunctor #-}
 
--- | Dates and timestamps that can represent DuckDB's infinities.
+{- |
+Module      : Database.DuckDB.Simple.Time
+Description : Dates and timestamps that can represent DuckDB's infinities.
+-}
 module Database.DuckDB.Simple.Time (
     Unbounded (..),
     Date,

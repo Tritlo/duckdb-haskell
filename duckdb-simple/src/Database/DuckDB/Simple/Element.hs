@@ -3,8 +3,12 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TypeApplications #-}
 
-{- | Decoders for one native DuckDB element in vector memory. Result decoding
-uses them for the types whose element needs no logical type metadata.
+{- |
+Module      : Database.DuckDB.Simple.Element
+Description : Decoders for one native DuckDB element in vector memory.
+
+Result decoding uses them for the types whose element needs no logical type
+metadata.
 -}
 module Database.DuckDB.Simple.Element (
     chunkIsRowValid,

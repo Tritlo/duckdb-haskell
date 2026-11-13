@@ -4,7 +4,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- | Lossless VARIANT decoding through public V2 values and SQL type metadata.
+{- |
+Module      : Database.DuckDB.Simple.VariantCodec
+Description : Lossless VARIANT decoding through public V2 values and SQL type metadata.
+-}
 module Database.DuckDB.Simple.VariantCodec (
     VariantState,
     newVariantState,

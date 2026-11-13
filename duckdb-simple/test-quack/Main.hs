@@ -2,7 +2,10 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Check authenticated Quack connections with local extension artifacts.
+{- |
+Module      : Main
+Description : Check authenticated Quack connections with local extension artifacts.
+-}
 module Main (main) where
 
 import Control.Exception (finally, try)

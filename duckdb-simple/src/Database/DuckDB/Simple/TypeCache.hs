@@ -2,7 +2,10 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Connection-scoped construction of native logical types.
+{- |
+Module      : Database.DuckDB.Simple.TypeCache
+Description : Connection-scoped construction of native logical types.
+-}
 module Database.DuckDB.Simple.TypeCache (
     TypeCache,
     typeCacheConnection,

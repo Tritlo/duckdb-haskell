@@ -2,10 +2,12 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-{- | Regression check for leaked DuckDB handles.
+{- |
+Module      : Main
+Description : Regression check for leaked DuckDB handles.
 
-The handles live in C memory, so the GHC heap statistics cannot see them.
-The open/close check counts native threads and resident memory. The sustained
+The handles live in C memory, so the GHC heap statistics cannot see them. The
+open/close check counts native threads and resident memory. The sustained
 checks keep one connection open through repeated queries, failures, cursor
 resets, callback replacement, and cancellation. Weak references check callback
 state release independently of resident memory.

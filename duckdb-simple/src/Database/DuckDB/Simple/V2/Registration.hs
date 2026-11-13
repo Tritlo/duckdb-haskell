@@ -4,10 +4,13 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 {- |
-Advanced V2 registration with Haskell callbacks. The library owns the callback
-pointers. DuckDB releases them when it releases the registered object. Callback
-info and context handles are borrowed and must not escape the callback. Use
-@Database.DuckDB.FFI.V2@ operations with 'checked' and 'output' in callbacks.
+Module      : Database.DuckDB.Simple.V2.Registration
+Description : Advanced V2 registration with Haskell callbacks.
+
+The library owns the callback pointers. DuckDB releases them when it releases
+the registered object. Callback info and context handles are borrowed and must
+not escape the callback. Use @Database.DuckDB.FFI.V2@ operations with 'checked'
+and 'output' in callbacks.
 
 The registration user-data slot is reserved for callback cleanup. Use Haskell
 closures for registration data and 'setCallbackState' for bind or execution

@@ -5,6 +5,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
+{- |
+Module      : Properties
+Description : Round-trip properties for parameters and results of each column type.
+-}
 module Properties (roundTripTests) where
 
 import Control.Monad (forM)

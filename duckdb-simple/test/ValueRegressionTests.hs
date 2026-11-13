@@ -5,7 +5,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- | Regression tests for exact values and controlled conversion failures.
+{- |
+Module      : ValueRegressionTests
+Description : Regression tests for exact values and controlled conversion failures.
+-}
 module ValueRegressionTests (main, valueRegressionTests) where
 
 import Control.Exception (IOException, bracket, try)

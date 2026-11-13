@@ -1,6 +1,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Catalog inspection through V2 queries and native table descriptions.
+{- |
+Module      : Database.DuckDB.Simple.Catalog
+Description : Catalog inspection through V2 queries and native table descriptions.
+-}
 module Database.DuckDB.Simple.Catalog (
     CatalogEntryType (..),
     CatalogEntry (..),

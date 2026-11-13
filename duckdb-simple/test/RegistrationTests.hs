@@ -2,7 +2,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- | Native integration checks for managed V2 registration.
+{- |
+Module      : RegistrationTests
+Description : Native integration checks for managed V2 registration.
+-}
 module RegistrationTests (registrationTests) where
 
 import Control.Exception (bracket, throwIO, try)

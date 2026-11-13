@@ -5,7 +5,10 @@
 -- The tests call deleteFunction on purpose, so its warning does not apply.
 {-# OPTIONS_GHC -Wno-deprecations #-}
 
--- | Regression tests for extension callbacks and native handle ownership.
+{- |
+Module      : ExtensionRegressionTests
+Description : Regression tests for extension callbacks and native handle ownership.
+-}
 module ExtensionRegressionTests (main, extensionRegressionTests) where
 
 import Control.Exception (AsyncException (ThreadKilled), ErrorCall, Exception (..), SomeException, bracket, bracket_, finally, throwIO, try)

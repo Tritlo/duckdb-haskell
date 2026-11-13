@@ -3,7 +3,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- | Native integration checks for managed COPY and multi-file callbacks.
+{- |
+Module      : CopyTests
+Description : Native integration checks for managed COPY and multi-file callbacks.
+-}
 module CopyTests (copyTests) where
 
 import Control.Exception (bracket, try)

@@ -7,7 +7,10 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 
--- | Native V2 ownership and execution used by the public API.
+{- |
+Module      : Database.DuckDB.Simple.Internal
+Description : Native V2 ownership and execution used by the public API.
+-}
 module Database.DuckDB.Simple.Internal (
     module Database.DuckDB.Simple.Native,
     Environment (..),

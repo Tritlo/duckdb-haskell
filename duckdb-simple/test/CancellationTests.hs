@@ -3,7 +3,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- | Cancellation during native execution must finish before handles are released.
+{- |
+Module      : CancellationTests
+Description : Cancellation during native execution must finish before handles are released.
+-}
 module CancellationTests (cancellationTests) where
 
 import Control.Concurrent (MVar, ThreadId, forkIOWithUnmask, newEmptyMVar, putMVar, readMVar, rtsSupportsBoundThreads, threadDelay, throwTo, tryPutMVar, tryReadMVar)

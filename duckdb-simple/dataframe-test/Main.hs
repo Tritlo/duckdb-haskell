@@ -5,7 +5,10 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
--- | Consume DuckDB Arrow batches with the dataframe library.
+{- |
+Module      : Main
+Description : Consume DuckDB Arrow batches with the dataframe library.
+-}
 module Main (main) where
 
 import Control.Exception (ErrorCall, displayException, try)

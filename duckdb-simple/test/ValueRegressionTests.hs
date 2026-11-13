@@ -337,6 +337,10 @@ valueRegressionTests =
             assertIOError (query_ conn "SELECT '12:00:00+01:23:45'::TIMETZ" :: IO [Only TimeWithZone])
         , testCase "ENUM payload index must be in its dictionary" $ withConnection ":memory:" \conn ->
             assertIOError (query conn "SELECT ?" (Only (singleField (LogicalTypeEnum (listArray (0, 1) ["a", "b"])) (FieldEnum 2))) :: IO [Only FieldValue])
+        , testCase "ENUM payload index binds the label of its dictionary" $ withConnection ":memory:" \conn -> do
+            let struct = singleField (LogicalTypeEnum (listArray (0, 2) ["a", "b", "c"])) (FieldEnum 1)
+            (query conn "SELECT typeof((?).value), (?).value::VARCHAR, ?" (struct, struct, struct) :: IO [(Text, Text, StructValue FieldValue)])
+                >>= (@?= [("ENUM('a', 'b', 'c')", "b", struct)])
         , testCase "TIMETZ input offset overflow fails before native use" $ withConnection ":memory:" \conn -> do
             let value = TimeWithZone (TimeOfDay 12 0 0) (minutesToTimeZone maxBound)
                 struct = singleField (LogicalTypeScalar LogicalTypeIdTimeTz) (FieldTimeTZ value)

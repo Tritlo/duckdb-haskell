@@ -83,6 +83,8 @@
 - Export Arrow release helpers from `Database.DuckDB.Simple.Arrow`.
 - The default `query`, `fold`, and Arrow folds collect the result before the
   first callback, so a callback can query the same connection.
+- `sqlErrorQuery` gives the query that failed. For a query in the callback of
+  an Arrow fold, it gives the query of the callback, not the query of the fold.
 - While an explicit stream is incomplete, DuckDB rejects other statements on
   its connection. Closing an incomplete stream aborts its statement.
 - Each connection serializes statement preparation and its open native result.

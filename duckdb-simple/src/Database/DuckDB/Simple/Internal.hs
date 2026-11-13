@@ -80,6 +80,7 @@ import Data.Coerce (Coercible, coerce)
 import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, newIORef, readIORef, writeIORef)
 import qualified Data.IntMap.Strict as IntMap
 import Data.List (find, intercalate, partition)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
@@ -537,9 +538,11 @@ withStatementHandle owner@Statement{statementState, statementConnection, stateme
             StatementClosed -> throwIO (statementClosedError owner)
             StatementOpen{statementHandle} -> action statementHandle
 
--- | Attach the SQL text to errors from native calls.
+{- | Attach the SQL text to errors from native calls. An error that already has
+SQL text keeps it, so an error from a nested query reports that query.
+-}
 withQueryError :: Query -> IO a -> IO a
-withQueryError query action = action `catch` \err -> throwIO err{sqlErrorQuery = Just query}
+withQueryError query action = action `catch` \err -> throwIO err{sqlErrorQuery = Just (fromMaybe query (sqlErrorQuery err))}
 
 -- | Borrow SQL as a NUL-terminated UTF-8 string.
 withQueryCString :: Query -> (ConstPtr CChar -> IO a) -> IO a

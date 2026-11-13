@@ -16,46 +16,46 @@ import Utils (withConnection, withConstCString, withDatabase)
 
 tests :: TestTree
 tests =
-    testGroup
-        "Result Functions"
-        [ chunkIntrospection
-        ]
+  testGroup
+    "Result Functions"
+    [ chunkIntrospection
+    ]
 
 chunkIntrospection :: TestTree
 chunkIntrospection =
-    testCase "result chunk information and streaming state" $
-        withDatabase \db ->
-            withConnection db \conn -> do
-                let createSQL = "CREATE TABLE items(id INTEGER);"
-                    insertSQL =
-                        "INSERT INTO items VALUES (1), (2), (3), (4), (5);"
-                forM_ [createSQL, insertSQL] \sql ->
-                    withConstCString sql \cSql ->
-                        alloca \resPtr -> do
-                            st <- c_duckdb_query conn cSql resPtr
-                            st @?= DuckDBSuccess
-                            c_duckdb_destroy_result resPtr
+  testCase "result chunk information and streaming state" $
+    withDatabase \db ->
+      withConnection db \conn -> do
+        let createSQL = "CREATE TABLE items(id INTEGER);"
+            insertSQL =
+              "INSERT INTO items VALUES (1), (2), (3), (4), (5);"
+        forM_ [createSQL, insertSQL] \sql ->
+          withConstCString sql \cSql ->
+            alloca \resPtr -> do
+              st <- c_duckdb_query conn cSql resPtr
+              st @?= DuckDBSuccess
+              c_duckdb_destroy_result resPtr
 
-                withConstCString "SELECT * FROM items" \selectSQL ->
-                    alloca \resPtr -> do
-                        st <- c_duckdb_query conn selectSQL resPtr
-                        st @?= DuckDBSuccess
+        withConstCString "SELECT * FROM items" \selectSQL ->
+          alloca \resPtr -> do
+            st <- c_duckdb_query conn selectSQL resPtr
+            st @?= DuckDBSuccess
 
-                        chunkCount <- peek resPtr >>= \rawValue -> c_duckdb_result_chunk_count rawValue
-                        assertBool "chunk count should be positive" (chunkCount > 0)
+            chunkCount <- peek resPtr >>= \rawValue -> c_duckdb_result_chunk_count rawValue
+            assertBool "chunk count should be positive" (chunkCount > 0)
 
-                        returnType <- peek resPtr >>= \rawValue -> c_duckdb_result_return_type rawValue
-                        returnType @?= DuckDBResultTypeQueryResult
+            returnType <- peek resPtr >>= \rawValue -> c_duckdb_result_return_type rawValue
+            returnType @?= DuckDBResultTypeQueryResult
 
-                        streamingFlag <- peek resPtr >>= \rawValue -> c_duckdb_result_is_streaming rawValue
-                        streamingFlag @?= CBool 0
+            streamingFlag <- peek resPtr >>= \rawValue -> c_duckdb_result_is_streaming rawValue
+            streamingFlag @?= CBool 0
 
-                        -- Retrieve first chunk if available
-                        when (chunkCount > 0) $ do
-                            chunk0 <- peek resPtr >>= \rawValue -> c_duckdb_result_get_chunk rawValue 0
-                            assertBool "first chunk should not be null" (chunk0 /= coerce nullPtr)
-                            -- Requesting beyond the available chunk count should return null
-                            chunkInvalid <- peek resPtr >>= \rawValue -> c_duckdb_result_get_chunk rawValue chunkCount
-                            assertBool "out-of-range chunk should be null" (chunkInvalid == coerce nullPtr)
+            -- Retrieve first chunk if available
+            when (chunkCount > 0) $ do
+              chunk0 <- peek resPtr >>= \rawValue -> c_duckdb_result_get_chunk rawValue 0
+              assertBool "first chunk should not be null" (chunk0 /= coerce nullPtr)
+              -- Requesting beyond the available chunk count should return null
+              chunkInvalid <- peek resPtr >>= \rawValue -> c_duckdb_result_get_chunk rawValue chunkCount
+              assertBool "out-of-range chunk should be null" (chunkInvalid == coerce nullPtr)
 
-                        c_duckdb_destroy_result resPtr
+            c_duckdb_destroy_result resPtr

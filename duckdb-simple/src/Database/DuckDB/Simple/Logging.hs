@@ -1,13 +1,12 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
-{- |
-Module      : Database.DuckDB.Simple.Logging
-Description : High-level wrappers for DuckDB custom log storage.
--}
+-- |
+-- Module      : Database.DuckDB.Simple.Logging
+-- Description : High-level wrappers for DuckDB custom log storage.
 module Database.DuckDB.Simple.Logging (
-    LogEntry (..),
-    registerLogStorage,
+  LogEntry (..),
+  registerLogStorage,
 ) where
 
 import Control.Exception (bracket, mask_)
@@ -31,63 +30,63 @@ import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
 
 -- | A single log event delivered through DuckDB's log-storage callback.
 data LogEntry = LogEntry
-    { logEntryTimestamp :: !(Maybe UTCTime)
-    , logEntryLevel :: !Text
-    , logEntryType :: !Text
-    , logEntryMessage :: !Text
-    }
-    deriving (Eq, Show)
+  { logEntryTimestamp :: !(Maybe UTCTime)
+  , logEntryLevel :: !Text
+  , logEntryType :: !Text
+  , logEntryMessage :: !Text
+  }
+  deriving (Eq, Show)
 
 -- | Register a custom log storage callback on the database behind a connection.
 registerLogStorage :: Connection -> Text -> (LogEntry -> IO ()) -> IO ()
 registerLogStorage conn name callback = do
-    when (Text.null name || Text.any (== '\0') name) $
-        throwRegistrationError "invalid log storage name"
-    bracket c_duckdb_create_log_storage destroyLogStorage \storage -> do
-        when (storage == DuckDBLogStorage nullPtr) $ throwRegistrationError "allocate log storage"
-        withCallbackResources
-            (\allocate -> DuckDBLoggerWriteLogEntryFun <$> allocate (toFunPtr (DuckDBLoggerWriteLogEntryFun_Aux (logStorageHandler callback))))
-            (c_duckdb_log_storage_set_extra_data storage)
-            \writeCb -> do
-                TextForeign.withCString name $ c_duckdb_log_storage_set_name storage . ConstPtr
-                c_duckdb_log_storage_set_write_log_entry storage writeCb
-                withDatabaseHandle conn \db -> mask_ do
-                    rc <- c_duckdb_register_log_storage db storage
-                    -- DuckDB consumes extra data on duplicate-name failure.
-                    -- Clear the wrapper to prevent a second destruction.
-                    c_duckdb_log_storage_set_extra_data storage nullPtr (DuckDBDeleteCallback nullFunPtr)
-                    when (rc /= DuckDBSuccess) $ throwRegistrationError "register log storage"
+  when (Text.null name || Text.any (== '\0') name) $
+    throwRegistrationError "invalid log storage name"
+  bracket c_duckdb_create_log_storage destroyLogStorage \storage -> do
+    when (storage == DuckDBLogStorage nullPtr) $ throwRegistrationError "allocate log storage"
+    withCallbackResources
+      (\allocate -> DuckDBLoggerWriteLogEntryFun <$> allocate (toFunPtr (DuckDBLoggerWriteLogEntryFun_Aux (logStorageHandler callback))))
+      (c_duckdb_log_storage_set_extra_data storage)
+      \writeCb -> do
+        TextForeign.withCString name $ c_duckdb_log_storage_set_name storage . ConstPtr
+        c_duckdb_log_storage_set_write_log_entry storage writeCb
+        withDatabaseHandle conn \db -> mask_ do
+          rc <- c_duckdb_register_log_storage db storage
+          -- DuckDB consumes extra data on duplicate-name failure.
+          -- Clear the wrapper to prevent a second destruction.
+          c_duckdb_log_storage_set_extra_data storage nullPtr (DuckDBDeleteCallback nullFunPtr)
+          when (rc /= DuckDBSuccess) $ throwRegistrationError "register log storage"
 
-logStorageHandler ::
-    (LogEntry -> IO ()) ->
-    Ptr Void ->
-    Ptr DuckDBTimestamp ->
-    ConstPtr CChar ->
-    ConstPtr CChar ->
-    ConstPtr CChar ->
-    IO ()
+logStorageHandler
+  :: (LogEntry -> IO ())
+  -> Ptr Void
+  -> Ptr DuckDBTimestamp
+  -> ConstPtr CChar
+  -> ConstPtr CChar
+  -> ConstPtr CChar
+  -> IO ()
 logStorageHandler callback _ timestampPtr levelPtr logTypePtr messagePtr =
-    ignoreCallbackExceptions do
-        entry <- do
-            logEntryTimestamp <- readTimestamp timestampPtr
-            logEntryLevel <- readCStringText levelPtr
-            logEntryType <- readCStringText logTypePtr
-            logEntryMessage <- readCStringText messagePtr
-            pure LogEntry{logEntryTimestamp, logEntryLevel, logEntryType, logEntryMessage}
-        callback entry
+  ignoreCallbackExceptions do
+    entry <- do
+      logEntryTimestamp <- readTimestamp timestampPtr
+      logEntryLevel <- readCStringText levelPtr
+      logEntryType <- readCStringText logTypePtr
+      logEntryMessage <- readCStringText messagePtr
+      pure LogEntry{logEntryTimestamp, logEntryLevel, logEntryType, logEntryMessage}
+    callback entry
 
 readTimestamp :: Ptr DuckDBTimestamp -> IO (Maybe UTCTime)
 readTimestamp ptr
-    | ptr == nullPtr = pure Nothing
-    | otherwise = do
-        DuckDBTimestamp micros <- peek ptr
-        pure (Just (posixSecondsToUTCTime (fromRational (toInteger micros % 1000000))))
+  | ptr == nullPtr = pure Nothing
+  | otherwise = do
+      DuckDBTimestamp micros <- peek ptr
+      pure (Just (posixSecondsToUTCTime (fromRational (toInteger micros % 1000000))))
 
 readCStringText :: ConstPtr CChar -> IO Text
 readCStringText ptr
-    | ptr == ConstPtr nullPtr = pure Text.empty
-    | otherwise = peekUtf8CString ptr
+  | ptr == ConstPtr nullPtr = pure Text.empty
+  | otherwise = peekUtf8CString ptr
 
 destroyLogStorage :: DuckDBLogStorage -> IO ()
 destroyLogStorage storage =
-    alloca \ptr -> poke ptr storage >> c_duckdb_destroy_log_storage ptr
+  alloca \ptr -> poke ptr storage >> c_duckdb_destroy_log_storage ptr

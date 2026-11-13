@@ -35,38 +35,38 @@ import qualified VectorTest
 
 main :: IO ()
 main =
-    defaultMain $
-        testGroup
-            "DuckDB FFI"
-            [ OpenConnectTest.tests
-            , ErrorDataTest.tests
-            , ConfigurationTest.tests
-            , PreparedStatementsTest.tests
-            , BindValuesTest.tests
-            , ExecutePreparedStatementsTest.tests
-            , ExtractStatementsTest.tests
-            , LogicalTypesTest.tests
-            , DataChunkTest.tests
-            , VectorTest.tests
-            , ValidityMaskTest.tests
-            , ScalarFunctionsTest.tests
-            , AggregateFunctionsTest.tests
-            , TableFunctionsTest.tests
-            , ProfilingInfoTest.tests
-            , SelectionVectorTest.tests
-            , PendingResultTest.tests
-            , ValueInterfaceTest.tests
-            , QueryExecutionTest.tests
-            , ResultFunctionsTest.tests
-            , SafeFetchTest.tests
-            , HelpersTest.tests
-            , TableDescriptionTest.tests
-            , AppenderTest.tests
-            , CastFunctionsTest.tests
-            , ExpressionTest.tests
-            , ReplacementScansTest.tests
-            , ArrowInterfaceDeprecatedTests.tests
-            , ArrowInterfaceTest.tests
-            , StreamingResultTest.tests
-            , ThreadingTest.tests
-            ]
+  defaultMain $
+    testGroup
+      "DuckDB FFI"
+      [ OpenConnectTest.tests
+      , ErrorDataTest.tests
+      , ConfigurationTest.tests
+      , PreparedStatementsTest.tests
+      , BindValuesTest.tests
+      , ExecutePreparedStatementsTest.tests
+      , ExtractStatementsTest.tests
+      , LogicalTypesTest.tests
+      , DataChunkTest.tests
+      , VectorTest.tests
+      , ValidityMaskTest.tests
+      , ScalarFunctionsTest.tests
+      , AggregateFunctionsTest.tests
+      , TableFunctionsTest.tests
+      , ProfilingInfoTest.tests
+      , SelectionVectorTest.tests
+      , PendingResultTest.tests
+      , ValueInterfaceTest.tests
+      , QueryExecutionTest.tests
+      , ResultFunctionsTest.tests
+      , SafeFetchTest.tests
+      , HelpersTest.tests
+      , TableDescriptionTest.tests
+      , AppenderTest.tests
+      , CastFunctionsTest.tests
+      , ExpressionTest.tests
+      , ReplacementScansTest.tests
+      , ArrowInterfaceDeprecatedTests.tests
+      , ArrowInterfaceTest.tests
+      , StreamingResultTest.tests
+      , ThreadingTest.tests
+      ]

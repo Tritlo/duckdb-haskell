@@ -24,90 +24,90 @@ import Utils (withConnection, withConstCString, withDatabase, withResult, withVa
 
 tests :: TestTree
 tests =
-    testGroup
-        "Replacement Scans"
-        [ replacementScanRewritesAndErrors
-        ]
+  testGroup
+    "Replacement Scans"
+    [ replacementScanRewritesAndErrors
+    ]
 
 replacementScanRewritesAndErrors :: TestTree
 replacementScanRewritesAndErrors =
-    testCase "replacement scan rewrites table name and can report errors" $
-        runInBoundThread do
-            seenTablesRef <- newIORef []
+  testCase "replacement scan rewrites table name and can report errors" $
+    runInBoundThread do
+      seenTablesRef <- newIORef []
 
-            let startValue = 5
-                countValue = 4
-                endValue = startValue + countValue
+      let startValue = 5
+          countValue = 4
+          endValue = startValue + countValue
 
-            withReplacementCallback seenTablesRef startValue endValue \callback -> do
-                withDatabase \db -> do
-                    c_duckdb_add_replacement_scan db callback nullPtr (coerce nullFunPtr)
-                    withConnection db \conn -> do
-                        assertReplacementQuery conn startValue countValue
-                        assertReplacementError conn
+      withReplacementCallback seenTablesRef startValue endValue \callback -> do
+        withDatabase \db -> do
+          c_duckdb_add_replacement_scan db callback nullPtr (coerce nullFunPtr)
+          withConnection db \conn -> do
+            assertReplacementQuery conn startValue countValue
+            assertReplacementError conn
 
-            seenTables <- readIORef seenTablesRef
-            assertBool "replacement callback should run for rewrite target" ("haskell_magic" `elem` seenTables)
-            assertBool "replacement callback should run for error target" ("failing_magic" `elem` seenTables)
+      seenTables <- readIORef seenTablesRef
+      assertBool "replacement callback should run for rewrite target" ("haskell_magic" `elem` seenTables)
+      assertBool "replacement callback should run for error target" ("failing_magic" `elem` seenTables)
 
-withReplacementCallback ::
-    IORef [String] ->
-    Int64 ->
-    Int64 ->
-    (DuckDBReplacementCallback -> IO a) ->
-    IO a
+withReplacementCallback
+  :: IORef [String]
+  -> Int64
+  -> Int64
+  -> (DuckDBReplacementCallback -> IO a)
+  -> IO a
 withReplacementCallback seenTablesRef startValue endValue =
-    bracket acquire (freeHaskellFunPtr . coerce)
+  bracket acquire (freeHaskellFunPtr . coerce)
   where
     acquire =
-        mkReplacementCallback (replacementCallback seenTablesRef startValue endValue)
+      mkReplacementCallback (replacementCallback seenTablesRef startValue endValue)
 
-replacementCallback ::
-    IORef [String] ->
-    Int64 ->
-    Int64 ->
-    DuckDBReplacementScanInfo ->
-    ConstPtr CChar ->
-    Ptr Void ->
-    IO ()
+replacementCallback
+  :: IORef [String]
+  -> Int64
+  -> Int64
+  -> DuckDBReplacementScanInfo
+  -> ConstPtr CChar
+  -> Ptr Void
+  -> IO ()
 replacementCallback seenTablesRef startValue endValue info tableName _extra = do
-    name <- peekCString (coerce tableName)
-    modifyIORef' seenTablesRef (name :)
-    case name of
-        "haskell_magic" -> do
-            withConstCString "range" $ \fn ->
-                c_duckdb_replacement_scan_set_function_name info fn
-            withValue (c_duckdb_create_int64 startValue) $ \startVal ->
-                c_duckdb_replacement_scan_add_parameter info startVal
-            withValue (c_duckdb_create_int64 endValue) $ \endVal ->
-                c_duckdb_replacement_scan_add_parameter info endVal
-        "failing_magic" ->
-            withConstCString "replacement rejected by test callback" $ \msg ->
-                c_duckdb_replacement_scan_set_error info msg
-        _ ->
-            pure ()
+  name <- peekCString (coerce tableName)
+  modifyIORef' seenTablesRef (name :)
+  case name of
+    "haskell_magic" -> do
+      withConstCString "range" $ \fn ->
+        c_duckdb_replacement_scan_set_function_name info fn
+      withValue (c_duckdb_create_int64 startValue) $ \startVal ->
+        c_duckdb_replacement_scan_add_parameter info startVal
+      withValue (c_duckdb_create_int64 endValue) $ \endVal ->
+        c_duckdb_replacement_scan_add_parameter info endVal
+    "failing_magic" ->
+      withConstCString "replacement rejected by test callback" $ \msg ->
+        c_duckdb_replacement_scan_set_error info msg
+    _ ->
+      pure ()
 
 assertReplacementQuery :: DuckDBConnection -> Int64 -> Int64 -> IO ()
 assertReplacementQuery conn startValue countValue =
-    withResult conn "SELECT range FROM haskell_magic ORDER BY range" \resPtr -> do
-        rowCount <- c_duckdb_row_count resPtr
-        rowCount @?= fromIntegral countValue
-        forM_ [0 .. countValue - 1] \idx -> do
-            value <- c_duckdb_value_int64 resPtr 0 (fromIntegral idx)
-            value @?= startValue + idx
+  withResult conn "SELECT range FROM haskell_magic ORDER BY range" \resPtr -> do
+    rowCount <- c_duckdb_row_count resPtr
+    rowCount @?= fromIntegral countValue
+    forM_ [0 .. countValue - 1] \idx -> do
+      value <- c_duckdb_value_int64 resPtr 0 (fromIntegral idx)
+      value @?= startValue + idx
 
 assertReplacementError :: DuckDBConnection -> IO ()
 assertReplacementError conn =
-    withConstCString "SELECT * FROM failing_magic" \sql ->
-        alloca \resPtr -> do
-            state <- c_duckdb_query conn sql resPtr
-            state @?= DuckDBError
-            errPtr <- c_duckdb_result_error resPtr
-            errMsg <- peekCString (coerce errPtr)
-            assertBool "replacement error message should surface" ("rejected" `isInfixOf` errMsg)
-            c_duckdb_destroy_result resPtr
+  withConstCString "SELECT * FROM failing_magic" \sql ->
+    alloca \resPtr -> do
+      state <- c_duckdb_query conn sql resPtr
+      state @?= DuckDBError
+      errPtr <- c_duckdb_result_error resPtr
+      errMsg <- peekCString (coerce errPtr)
+      assertBool "replacement error message should surface" ("rejected" `isInfixOf` errMsg)
+      c_duckdb_destroy_result resPtr
 
-mkReplacementCallback ::
-    (DuckDBReplacementScanInfo -> ConstPtr CChar -> Ptr Void -> IO ()) ->
-    IO DuckDBReplacementCallback
+mkReplacementCallback
+  :: (DuckDBReplacementScanInfo -> ConstPtr CChar -> Ptr Void -> IO ())
+  -> IO DuckDBReplacementCallback
 mkReplacementCallback = fmap DuckDBReplacementCallback . toFunPtr . DuckDBReplacementCallback_Aux

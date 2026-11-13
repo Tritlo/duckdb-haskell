@@ -160,8 +160,8 @@ The SQL workflow stays the same. These changes can affect your code:
 - DuckDB 2.0 rejects WKB with mixed Z/M member layouts.
 - Decoded VARIANT objects list their keys in DuckDB's lexicographic order.
 
-The typed registrations are new in 0.4. Version 0.3 had no `Registration`,
-`Pragma`, or `Extension` module and no custom options. Its `Copy` module had
+The typed registrations are new in 0.4. Version 0.3 had no `Registration`
+or `Pragma` module and no custom options. Its `Copy` module had
 only `registerCopyToFunction`. The arguments of that function do not change,
 except for the type of `copyBindColumnTypes` above. See
 [typed registration](duckdb-simple/README.md#typed-registration).

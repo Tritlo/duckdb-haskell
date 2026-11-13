@@ -9,15 +9,73 @@
   later DuckDB version is outside the dependency bound. Creating an
   environment raises `SQLError` for another library version. Use the earlier
   release with DuckDB 1.5.
-- Raw handles, logical type IDs, callback handles, and error codes use V2
-  types. `sqlErrorType` is `Maybe DuckDBV2Error`. See MIGRATION.md.
+- Raw handles, callback handles, and the error codes of raw calls use V2
+  types. `sqlErrorType` is `Maybe ErrorType`. See MIGRATION.md.
 - Add shared environments and instances, attachment management, option
-  discovery, table descriptions, SQL tokenization, positioned file I/O,
-  managed function and type registration, replacement scans, and COPY callbacks.
-- Add custom configuration options, typed values and defaults, managed log
-  sinks, macro and pragma registration, function documentation, query metrics,
-  and file path operations. Expose table bind metadata for multi-file readers.
+  discovery, table descriptions, SQL tokenization, and positioned file I/O.
+- Add typed configuration values and defaults, managed log sinks, macro
+  registration, function documentation, query metrics, and file path
+  operations. Expose table bind metadata for multi-file readers.
   `enableProfiling` collects metrics without printing a profile.
+- Add typed registrations. Their signatures have no native handle.
+  `Database.DuckDB.Simple.Function` has `createCast`, `createAggregate`,
+  `createTableFunction`, and the row class `TypedRow`. `Database.DuckDB.Simple`
+  exports the three functions, `Aggregate`, and `TypedRow`.
+- `createCast` registers a pure Haskell function as an explicit cast.
+- `createAggregate` registers an aggregate function as a fold over Haskell
+  values. The record `Aggregate` has the initial state and the step, combine,
+  and result functions. DuckDB gives the aggregate callbacks no context, so the
+  result types are the result types of `createFunction`.
+- `createTableFunction` registers a Haskell function that gives the rows of a
+  table function as a list. DuckDB reads the list one chunk at a time. It reads
+  all columns of each row, also the columns that the query does not use.
+- `Database.DuckDB.Simple.Registration` has `TypeDeclaration`, `parameter`,
+  `defaultValue`, `registerCustomType`, and typed replacement scans.
+  `registerReplacementScan` and `registerInstanceReplacementScan` give the
+  parts of an unknown table name to a Haskell function. The function can return
+  a SELECT statement that DuckDB reads instead.
+- Add `registerCopyFromFunction`, `registerCopyFunction` with the record
+  `CopyTo`, `CopyFromInfo`, and `registerMultiFileFunction` to
+  `Database.DuckDB.Simple.Copy`. `registerCopyFromFunction` registers a COPY
+  FROM side that gives a list of typed rows. `registerCopyFunction` registers a
+  COPY TO side and a COPY FROM side under one name. DuckDB keeps the first
+  registration of a format name and ignores a later one. Thus a format with two
+  directions needs `registerCopyFunction`.
+- Add `Database.DuckDB.Simple.Pragma`. `registerPragmaFunction` takes a typed
+  callback `PragmaCallback args`. The callback gets the arguments of the call
+  as a `FromRow` row.
+- Add custom options to `Database.DuckDB.Simple.Config`. `customOptionUpdate`
+  is a function that gets the new value as a `FieldValue`. An exception in the
+  function rejects the value.
+- A typed registration costs more for each row than raw vector access. Use the
+  V2 modules for speed. Use them also for projection and filter pushdown,
+  parallel table scans, and scalar functions with a bind callback or variadic
+  parameters.
+- Add `SettingScope`, `LogLevel`, `LogScope`, `TokenType`, `MacroFunctionType`,
+  `ErrorType`, and `LogicalTypeId`. The configuration, logging, tokenizer,
+  macro, error, and logical type APIs use these types instead of the generated
+  V2 enum types, so a later C API version does not change these APIs. The file
+  system API uses `FileFlag` and the opaque `FileHandle` instead of the
+  generated V2 types. `ToDuckValue.toDuckValue` uses the synonyms
+  `ValueFactory` and `NativeValue` for the two native handles in its signature.
+- The functions with native handles are in modules with `V2` in the name.
+  `Database.DuckDB.Simple.V2.Registration` has the scalar, aggregate, table,
+  and cast registrations and the replacement scans with native callbacks. It
+  also has `registerMacroFunctionWith`, which gives the native macro builder to
+  an action. `Database.DuckDB.Simple.V2.Copy` has the native COPY callback
+  interface: `CopyToCallbacks`, `CopyFromCallbacks`, the raw
+  `registerCopyFunction`, `registerCopyFunctionWith`,
+  `registerCopyToCallbacks`, `registerCopyFromCallbacks`, and
+  `registerMultiFileFunctionWith`. `Database.DuckDB.Simple.V2.Pragma` has the
+  pragma callbacks with native handles. `Database.DuckDB.Simple.V2.Config` has
+  `registerCustomOptionWith`. `Database.DuckDB.Simple.V2.FunctionDocs` has
+  `setFunctionDocs`. `Database.DuckDB.Simple.V2.Logging` has `logMessage`,
+  which writes a message through the context of a native callback.
+  `Database.DuckDB.Simple.V2.LogicalRep` has `logicalTypeToRep`,
+  `logicalTypeFromRep`, `logicalTypeFromRepWith`, and `destroyLogicalType`.
+- The SQL error of a failed Haskell callback has the plain message of the
+  exception. Version 0.3 gave `user error (...)` for a `userError` and the
+  Haskell record for an `SQLError`.
 - Add scoped named collection inputs and prepared dynamic PIVOT with a deferred
   output schema. Native expanding statements cannot have parameters.
 - Rename `Database.DuckDB.Simple.Deprecated.Streaming` to

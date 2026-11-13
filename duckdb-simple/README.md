@@ -43,29 +43,40 @@ existing convenience behavior.
 
 - `Config` lists options with effective values, typed defaults, aliases, and
   supported scopes. It reads and writes typed values and registers custom
-  options with managed update callbacks.
+  options. The update function of a custom option gets the new value as a
+  `FieldValue`. `V2.Config` registers custom options with native builders.
 - `Catalog.describeTable` copies resolved names, column types, default flags,
   generated-column flags, and catalog read-only status.
 - `Tokenizer.tokenize` returns token kinds, UTF-8 byte offsets, token bytes, and
   the native indication of an unterminated final token.
-- `Registration` supports scalar, aggregate, table, cast, and custom-type
+- `Function` registers scalar, cast, aggregate, and table functions with
+  Haskell values. `Registration` registers custom types and replacement scans,
+  and has the type and parameter declarations. See
+  [Typed registration](#typed-registration).
+- `V2.Registration` supports scalar, aggregate, table, cast, and custom-type
   registration, replacement scans, function properties, and parameter kinds,
   names, and defaults. Haskell callbacks use typed V2 info handles. The library
   retains their function pointers and contains callback exceptions. The advanced
   extension builders accept a borrowed native extension handle and context.
   Scalar type resolution runs before binding. Table callbacks can report
   multi-file column identifiers and metadata after binding.
-- `Copy` supports managed COPY TO and COPY FROM callbacks. The native interfaces
-  include batch transfer, flush, statistics, progress, and multi-file setup.
+- `Copy` registers COPY formats and multi-file table functions with Haskell
+  values. `V2.Copy` has the native COPY callbacks, with batch transfer, flush,
+  statistics, progress, and multi-file setup.
 - `FileSystem` supports sequential and positioned reads and writes, file size,
   position, seek, sync, path tests, expansion, globbing, movement, and removal.
 - `Logging` registers native log sinks with managed write and flush callbacks.
   It copies timestamps, severity, scope, and available context identifiers.
   Callbacks can run concurrently. They must not log or change logging settings.
-- `Pragma` registers query and execution callbacks. `Macro` registers scalar
-  and table macros during extension initialization. The native macro builder
-  has no connection target; use SQL `CREATE MACRO` on a connection.
-- `FunctionDocs` sets descriptions, examples, and categories on function builders.
+  `V2.Logging` writes a message through the context of a native callback.
+- `Pragma` registers query and execution callbacks. A callback gets the
+  arguments of the call as a `FromRow` row. `V2.Pragma` has the callbacks that
+  get native handles.
+- `V2.Registration.registerMacroFunctionWith` gives the native macro builder
+  to a configuration action during extension initialization. The native macro
+  builder has no connection target; use SQL `CREATE MACRO` on a connection.
+- `V2.FunctionDocs` sets descriptions, examples, and categories on function
+  builders.
 - `QueryMetrics` enables profiling and copies query and operator metric trees.
 - `Internal.withCollectionStatement` binds native column collections as named
   table inputs for one scoped prepared-statement action. The caller retains the
@@ -114,7 +125,11 @@ main =
 - `Database.DuckDB.Simple.Types` – shared types (`Query`, `Null`, `Only`,
   `(:.)`, `SQLError`).
 - `Database.DuckDB.Simple.Function` – register scalar Haskell functions that
-  can be invoked directly from SQL.
+  can be invoked directly from SQL, and casts, aggregate functions, and table
+  functions.
+- `Database.DuckDB.Simple.Registration`, `Copy`, `Pragma`, and `Config` –
+  register custom types, replacement scans, COPY formats, pragmas, and custom
+  options with Haskell values.
 
 ## Querying Data
 
@@ -544,7 +559,9 @@ and VARIANT decoder metadata. It caches the GEOMETRY types, the parsed VARIANT
 metadata statement, and the types for VARIANT casts. It batches VARIANT
 metadata queries. It constructs VARIANT types directly through the native
 factory. This preserves an active stream on the caller's connection. Low-level
-`ToDuckValue.toDuckValue` and `logicalTypeFromRep` take a V2 factory handle.
+`ToDuckValue.toDuckValue` takes a `ValueFactory`, which is the V2 factory
+handle, and `logicalTypeFromRep` takes the same handle.
+`Database.DuckDB.Simple.V2.LogicalRep` has `logicalTypeFromRep`.
 Get the factory of a connection with `withConnectionHandle` and
 `withConnectionFactory` from `Database.DuckDB.Simple.Internal`. Keep owned
 values and logical types within the lifetime of the factory's owner.
@@ -676,6 +693,8 @@ supported families, construction checks, and codec normalization rules.
 - Row decoding via `FromField`/`FromRow`, with generic deriving for product types.
 - User-defined scalar functions backed by Haskell functions (including IO and
   nullable arguments).
+- Typed casts, aggregate functions, table functions, replacement scans, COPY
+  formats, and pragmas. See [Typed registration](#typed-registration).
 - Transaction helpers (`withTransaction`) and metadata accessors (`columnCount`,
   `columnName`).
 
@@ -707,6 +726,122 @@ Deleting an absent name succeeds. To replace a function, register the name
 again. `deleteFunction` has a GHC `WARNING` pragma, so each use causes a
 compile-time warning. A build with `-Werror` must allow that warning, for
 example with `-Wno-error=deprecations`.
+
+## Typed registration
+
+These functions register SQL objects with Haskell values. Their signatures have
+no native handle. An exception in a Haskell function gives an SQL error with
+the message of the exception. `TRY_CAST` gives NULL instead. The examples use
+these imports:
+
+```haskell
+{-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+
+import Data.Int (Int64)
+import Data.Text (Text)
+import qualified Data.Text as Text
+import qualified Data.Text.IO as TextIO
+import Database.DuckDB.Simple
+import Database.DuckDB.Simple.Copy
+import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..))
+import Database.DuckDB.Simple.Pragma (PragmaCallback (..), registerPragmaFunction)
+import Database.DuckDB.Simple.Registration
+```
+
+`createCast` registers an explicit cast. `Left` fails the cast with a message.
+
+```haskell
+castExample :: Connection -> IO [Only Int64]
+castExample conn = do
+  registerCustomType conn "shifted" (TypeExpression "BIGINT")
+  createCast conn (TypeExpression "BIGINT") (TypeExpression "shifted") \(value :: Int64) ->
+    if value > maxBound - 100 then Left "BIGINT overflow" else Right (value + 100)
+  query_ conn "SELECT CAST(1::BIGINT AS shifted)::BIGINT" -- [Only 101]
+```
+
+`createAggregate` registers an aggregate function as a fold. The result type
+is a result type of `createFunction`.
+
+```haskell
+aggregateExample :: Connection -> IO [Only Int64]
+aggregateExample conn = do
+  createAggregate conn "haskell_sum" Aggregate
+    { aggregateInitial = 0 :: Int64
+    , aggregateStep = \total (Only value) -> pure (total + value)
+    , aggregateCombine = \a b -> pure (a + b)
+    , aggregateResult = pure
+    }
+  query_ conn "SELECT haskell_sum(i) FROM range(10) t(i)" -- [Only 45]
+```
+
+`createTableFunction` registers a table function that gives its rows as a
+list. DuckDB reads all columns of each row, also the columns that the query
+does not use.
+
+```haskell
+tableExample :: Connection -> IO [(Int64, Int64)]
+tableExample conn = do
+  createTableFunction conn "squares" ["n", "square"] \(Only count) ->
+    pure [(n, n * n) | n <- [0 .. count - 1 :: Int64]]
+  query_ conn "SELECT n, square FROM squares(3)" -- [(0, 0), (1, 1), (2, 4)]
+```
+
+`registerReplacementScan` gives the parts of an unknown table name to the
+function. The function can give a SELECT statement that DuckDB reads instead.
+
+```haskell
+scanExample :: Connection -> IO [Only Int64]
+scanExample conn = do
+  registerReplacementScan conn \parts ->
+    pure (if parts == ["numbers"] then Just (ReplaceWithQuery "SELECT i FROM range(3) t(i)") else Nothing)
+  query_ conn "SELECT i FROM numbers ORDER BY i" -- [Only 0, Only 1, Only 2]
+```
+
+`registerCopyFunction` registers a COPY format with a COPY TO side and a COPY
+FROM side. DuckDB keeps the first registration of a format name. Thus register
+a format with two directions in one call.
+
+```haskell
+copyExample :: Connection -> Text -> IO [Only Text]
+copyExample conn path = do
+  registerCopyFunction conn "haskell_lines" linesTo \info ->
+    map Only . Text.lines <$> TextIO.readFile (copyFromPath info)
+  _ <- execute conn "COPY (SELECT i::VARCHAR AS line FROM range(3) t(i)) TO ? (FORMAT haskell_lines)" (Only path)
+  _ <- execute_ conn "CREATE TABLE copied (line VARCHAR)"
+  _ <- execute conn "COPY copied FROM ? (FORMAT haskell_lines)" (Only path)
+  query_ conn "SELECT line FROM copied ORDER BY line" -- [Only "0", Only "1", Only "2"]
+
+linesTo :: CopyTo () FilePath
+linesTo =
+  CopyTo
+    { copyToBind = \_ -> pure ()
+    , copyToInit = \info -> TextIO.writeFile (copyInitFilePath info) "" >> pure (copyInitFilePath info)
+    , copyToSink = \info rows -> TextIO.appendFile (copySinkGlobalState info) (Text.unlines (map line rows))
+    , copyToFinalize = \_ -> pure ()
+    }
+  where
+    line [Field{fieldValue = FieldText text}] = text
+    line _ = error "haskell_lines: each row must have one VARCHAR value"
+```
+
+`registerPragmaFunction` gives the arguments of the call to the callback as a
+`FromRow` row. A `QueryPragma` callback gives SQL that DuckDB runs in place of
+the PRAGMA statement.
+
+```haskell
+pragmaExample :: Connection -> IO [Only Int64]
+pragmaExample conn = do
+  registerPragmaFunction conn "repeat_answer" [parameter "times" (TypeExpression "BIGINT")] $
+    QueryPragma \(Only (times :: Int64)) -> pure ("SELECT 42::BIGINT FROM range(" <> Text.pack (show times) <> ")")
+  query_ conn "PRAGMA repeat_answer(2)" -- [Only 42, Only 42]
+```
+
+A typed registration costs more for each row than raw vector access. Use
+`Database.DuckDB.Simple.V2.Registration`, `V2.Copy`, `V2.Pragma`, and
+`V2.Config` for speed, and for projection and filter pushdown, parallel table
+scans, and scalar functions with a bind callback or variadic parameters.
 
 ## Tests
 

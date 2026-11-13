@@ -104,7 +104,7 @@ fileHandleSeek (FileHandle handle) position
 fileHandleSync :: FileHandle -> IO ()
 fileHandleSync (FileHandle handle) = checked (c_duckdb_v2_file_sync handle)
 
--- | Test whether a file or directory exists in DuckDB's file system.
+-- | Test whether a file exists in DuckDB's file system. A directory gives 'False'.
 pathExists :: Connection -> FilePath -> IO Bool
 pathExists conn path = withPath conn path \fs name ->
     (/= 0) <$> output (c_duckdb_v2_file_system_path_exists fs name)

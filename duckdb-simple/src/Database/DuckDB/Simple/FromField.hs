@@ -8,31 +8,30 @@
 {-# LANGUAGE StrictData #-}
 {-# LANGUAGE ViewPatterns #-}
 
-{- |
-Module      : Database.DuckDB.Simple.FromField
-Description : Conversion from DuckDB column values to Haskell types.
--}
+-- |
+-- Module      : Database.DuckDB.Simple.FromField
+-- Description : Conversion from DuckDB column values to Haskell types.
 module Database.DuckDB.Simple.FromField (
-    Field (..),
-    FieldValue (..),
-    RawGeometry (..),
-    StructField (..),
-    StructValue (..),
-    UnionMemberType (..),
-    UnionValue (..),
-    LogicalTypeRep (..),
-    BitString (..),
-    bsFromBool,
-    BigNum (..),
-    fromBigNumBytes,
-    toBigNumBytes,
-    DecimalValue (..),
-    IntervalValue (..),
-    TimeWithZone (..),
-    ResultError (..),
-    FieldParser,
-    FromField (..),
-    returnError,
+  Field (..),
+  FieldValue (..),
+  RawGeometry (..),
+  StructField (..),
+  StructValue (..),
+  UnionMemberType (..),
+  UnionValue (..),
+  LogicalTypeRep (..),
+  BitString (..),
+  bsFromBool,
+  BigNum (..),
+  fromBigNumBytes,
+  toBigNumBytes,
+  DecimalValue (..),
+  IntervalValue (..),
+  TimeWithZone (..),
+  ResultError (..),
+  FieldParser,
+  FromField (..),
+  returnError,
 ) where
 
 import Control.Exception (Exception, SomeException (..))
@@ -51,22 +50,22 @@ import qualified Data.Text.Encoding as TextEncoding
 import Data.Time.Calendar (Day)
 import Data.Time.Clock (UTCTime (..))
 import Data.Time.LocalTime (
-    LocalTime (..),
-    TimeOfDay (..),
-    TimeZone (..),
-    localTimeToUTC,
-    utc,
-    utcToLocalTime,
+  LocalTime (..),
+  TimeOfDay (..),
+  TimeZone (..),
+  localTimeToUTC,
+  utc,
+  utcToLocalTime,
  )
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.Simple.Geometry (RawGeometry (..), fromRawGeometry)
 import Database.DuckDB.Simple.LogicalRep (
-    LogicalTypeRep (..),
-    StructField (..),
-    StructValue (..),
-    UnionMemberType (..),
-    UnionValue (..),
+  LogicalTypeRep (..),
+  StructField (..),
+  StructValue (..),
+  UnionMemberType (..),
+  UnionValue (..),
  )
 import Database.DuckDB.Simple.Ok
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
@@ -74,145 +73,142 @@ import GHC.Float (double2Float, float2Double)
 import GHC.Num.Integer (integerFromWordList)
 import Numeric.Natural (Natural)
 
-{- | Internal representation of a column value.
-'FieldGeometry' contains raw WKB and CRS metadata. Generic parameters that
-contain a non-NULL geometry require explicit SQL import.
--}
+-- | Internal representation of a column value.
+-- 'FieldGeometry' contains raw WKB and CRS metadata. Generic parameters that
+-- contain a non-NULL geometry require explicit SQL import.
 data FieldValue
-    = FieldNull
-    | FieldInt8 Int8
-    | FieldInt16 Int16
-    | FieldInt32 Int32
-    | FieldInt64 Int64
-    | FieldWord8 Word8
-    | FieldWord16 Word16
-    | FieldWord32 Word32
-    | FieldWord64 Word64
-    | FieldUUID UUID.UUID
-    | FieldFloat Float
-    | FieldDouble Double
-    | FieldText Text
-    | FieldBool Bool
-    | FieldBlob BS.ByteString
-    | FieldGeometry RawGeometry
-    | FieldDate Date
-    | FieldTime TimeOfDay
-    | FieldTimestamp LocalTimestamp
-    | FieldInterval IntervalValue
-    | FieldHugeInt Integer
-    | FieldUHugeInt Integer
-    | FieldDecimal DecimalValue
-    | FieldTimestampTZ UTCTimestamp
-    | FieldTimeTZ TimeWithZone
-    | FieldBit BitString
-    | FieldBigNum BigNum
-    | FieldEnum Word32
-    | FieldArray (Array Int FieldValue)
-    | FieldList [FieldValue]
-    | FieldMap [(FieldValue, FieldValue)]
-    | FieldStruct (StructValue FieldValue)
-    | FieldUnion (UnionValue FieldValue)
-    deriving (Eq, Show)
+  = FieldNull
+  | FieldInt8 Int8
+  | FieldInt16 Int16
+  | FieldInt32 Int32
+  | FieldInt64 Int64
+  | FieldWord8 Word8
+  | FieldWord16 Word16
+  | FieldWord32 Word32
+  | FieldWord64 Word64
+  | FieldUUID UUID.UUID
+  | FieldFloat Float
+  | FieldDouble Double
+  | FieldText Text
+  | FieldBool Bool
+  | FieldBlob BS.ByteString
+  | FieldGeometry RawGeometry
+  | FieldDate Date
+  | FieldTime TimeOfDay
+  | FieldTimestamp LocalTimestamp
+  | FieldInterval IntervalValue
+  | FieldHugeInt Integer
+  | FieldUHugeInt Integer
+  | FieldDecimal DecimalValue
+  | FieldTimestampTZ UTCTimestamp
+  | FieldTimeTZ TimeWithZone
+  | FieldBit BitString
+  | FieldBigNum BigNum
+  | FieldEnum Word32
+  | FieldArray (Array Int FieldValue)
+  | FieldList [FieldValue]
+  | FieldMap [(FieldValue, FieldValue)]
+  | FieldStruct (StructValue FieldValue)
+  | FieldUnion (UnionValue FieldValue)
+  deriving (Eq, Show)
 
 -- | Exact-width decimal payload plus its declared width and scale.
 data DecimalValue = DecimalValue
-    { decimalWidth :: !Word8
-    , decimalScale :: !Word8
-    , decimalInteger :: !Integer
-    }
-    deriving (Eq, Show)
+  { decimalWidth :: !Word8
+  , decimalScale :: !Word8
+  , decimalInteger :: !Integer
+  }
+  deriving (Eq, Show)
 
 -- | DuckDB interval payload split into months, days, and microseconds.
 data IntervalValue = IntervalValue
-    { intervalMonths :: !Int32
-    , intervalDays :: !Int32
-    , intervalMicros :: !Int64
-    }
-    deriving (Eq, Show)
+  { intervalMonths :: !Int32
+  , intervalDays :: !Int32
+  , intervalMicros :: !Int64
+  }
+  deriving (Eq, Show)
 
 -- | Arbitrary-precision integer wrapper used for DuckDB's BIGNUM type.
 newtype BigNum = BigNum Integer
-    deriving stock (Eq, Show)
-    deriving (Num) via Integer
+  deriving stock (Eq, Show)
+  deriving (Num) via Integer
 
-{- | Decode DuckDB’s BIGNUM blob (3-byte header + big-endian payload where negative magnitudes are
-bitwise complemented) back into a Haskell @Integer@. We undo the complement when needed, then chunk
-the remaining bytes into machine-word limbs (MSB chunk first) for @integerFromWordList@.
--}
+-- | Decode DuckDB’s BIGNUM blob (3-byte header + big-endian payload where negative magnitudes are
+-- bitwise complemented) back into a Haskell @Integer@. We undo the complement when needed, then chunk
+-- the remaining bytes into machine-word limbs (MSB chunk first) for @integerFromWordList@.
 fromBigNumBytes :: [Word8] -> Integer
 fromBigNumBytes bytes =
-    let header = take 3 bytes
-        payloadRaw = drop 3 bytes
-        isNeg = case header of
-            (h : _) -> h .&. 0x80 == 0
-            [] -> False
-        payload = if isNeg then map complement payloadRaw else payloadRaw
-        bytesPerWord = finiteBitSize (0 :: Word) `div` 8 -- 8 on 64-bit, 4 on 32-bit
-        len = length payload
-        (firstChunk, rest) = splitAt (len `mod` bytesPerWord) payload
+  let header = take 3 bytes
+      payloadRaw = drop 3 bytes
+      isNeg = case header of
+        (h : _) -> h .&. 0x80 == 0
+        [] -> False
+      payload = if isNeg then map complement payloadRaw else payloadRaw
+      bytesPerWord = finiteBitSize (0 :: Word) `div` 8 -- 8 on 64-bit, 4 on 32-bit
+      len = length payload
+      (firstChunk, rest) = splitAt (len `mod` bytesPerWord) payload
 
-        chunkWords [] = []
-        chunkWords xs =
-            let (chunk, remainder) = splitAt bytesPerWord xs
-             in chunk : chunkWords remainder
+      chunkWords [] = []
+      chunkWords xs =
+        let (chunk, remainder) = splitAt bytesPerWord xs
+        in  chunk : chunkWords remainder
 
-        toWord = foldl (\acc b -> (acc `shiftL` 8) .|. fromIntegral b) 0
-        limbs = (if null firstChunk then id else (firstChunk :)) (chunkWords rest)
-     in integerFromWordList isNeg (map toWord limbs)
+      toWord = foldl (\acc b -> (acc `shiftL` 8) .|. fromIntegral b) 0
+      limbs = (if null firstChunk then id else (firstChunk :)) (chunkWords rest)
+  in  integerFromWordList isNeg (map toWord limbs)
 
-{- | Encode an @Integer@ into DuckDB’s BIGNUM blob layout: emit the 3-byte header
-  (sign bit plus payload length) followed by the magnitude bytes in the same
-  big-endian / complemented-on-negative form that DuckDB stores internally.
--}
+-- | Encode an @Integer@ into DuckDB’s BIGNUM blob layout: emit the 3-byte header
+--   (sign bit plus payload length) followed by the magnitude bytes in the same
+--   big-endian / complemented-on-negative form that DuckDB stores internally.
 toBigNumBytes :: Integer -> [Word8]
 toBigNumBytes value =
-    let isNeg = value < 0
-        magnitude = if isNeg then negate value else value
-        payloadBE
-            | magnitude == 0 = [0]
-            | otherwise = go magnitude []
-          where
-            go 0 acc = acc
-            go n acc =
-                let (q, r) = quotRem n 256
-                 in go q (fromIntegral r : acc)
+  let isNeg = value < 0
+      magnitude = if isNeg then negate value else value
+      payloadBE
+        | magnitude == 0 = [0]
+        | otherwise = go magnitude []
+        where
+          go 0 acc = acc
+          go n acc =
+            let (q, r) = quotRem n 256
+            in  go q (fromIntegral r : acc)
 
-        headerBase :: Word32
-        headerBase = (fromIntegral (length payloadBE) .|. 0x00800000)
-        headerVal :: Word32
-        headerVal = if isNeg then complement headerBase else headerBase
-        headerMasked = headerVal .&. 0x00FFFFFF
-        headerBytes =
-            [ fromIntegral ((headerMasked `shiftR` 16) .&. 0xFF)
-            , fromIntegral ((headerMasked `shiftR` 8) .&. 0xFF)
-            , fromIntegral (headerMasked .&. 0xFF)
-            ]
-        payloadBytes = if isNeg then map complement payloadBE else payloadBE
-     in headerBytes <> payloadBytes
+      headerBase :: Word32
+      headerBase = (fromIntegral (length payloadBE) .|. 0x00800000)
+      headerVal :: Word32
+      headerVal = if isNeg then complement headerBase else headerBase
+      headerMasked = headerVal .&. 0x00FFFFFF
+      headerBytes =
+        [ fromIntegral ((headerMasked `shiftR` 16) .&. 0xFF)
+        , fromIntegral ((headerMasked `shiftR` 8) .&. 0xFF)
+        , fromIntegral (headerMasked .&. 0xFF)
+        ]
+      payloadBytes = if isNeg then map complement payloadBE else payloadBE
+  in  headerBytes <> payloadBytes
 
 -- | DuckDB BIT value represented as raw bytes plus left-padding bit count.
 data BitString = BitString
-    { padding :: !Word8
-    , bits :: !BS.ByteString
-    }
-    deriving stock (Eq)
+  { padding :: !Word8
+  , bits :: !BS.ByteString
+  }
+  deriving stock (Eq)
 
 instance Show BitString where
-    show (BitString padding bits) =
-        drop (fromIntegral padding) $ concatMap word8ToString $ BS.unpack bits
-      where
-        word8ToString :: Word8 -> String
-        word8ToString w = map (\n -> if testBit w n then '1' else '0') [7, 6 .. 0]
+  show (BitString padding bits) =
+    drop (fromIntegral padding) $ concatMap word8ToString $ BS.unpack bits
+    where
+      word8ToString :: Word8 -> String
+      word8ToString w = map (\n -> if testBit w n then '1' else '0') [7, 6 .. 0]
 
 -- | Construct a @BitString@ from a list of @Bool@s, where the first element
 bsFromBool :: [Bool] -> BitString
 bsFromBool bits =
-    let totalBits = length bits
-        padding = (8 - (totalBits `mod` 8)) `mod` 8
-        paddedBits = replicate padding False ++ bits
-        byteChunks = chunk 8 paddedBits
-        byteValues = map bitsToWord8 byteChunks
-     in BitString (fromIntegral padding) (BS.pack byteValues)
+  let totalBits = length bits
+      padding = (8 - (totalBits `mod` 8)) `mod` 8
+      paddedBits = replicate padding False ++ bits
+      byteChunks = chunk 8 paddedBits
+      byteValues = map bitsToWord8 byteChunks
+  in  BitString (fromIntegral padding) (BS.pack byteValues)
   where
     chunk _ [] = []
     chunk n xs = take n xs : chunk n (drop n xs)
@@ -222,10 +218,10 @@ bsFromBool bits =
 
 -- | Time-of-day paired with its associated timezone offset.
 data TimeWithZone = TimeWithZone
-    { timeWithZoneTime :: !TimeOfDay
-    , timeWithZoneZone :: !TimeZone
-    }
-    deriving (Eq, Show)
+  { timeWithZoneTime :: !TimeOfDay
+  , timeWithZoneZone :: !TimeZone
+  }
+  deriving (Eq, Show)
 
 -- | Match signed values without narrowing to the machine word size.
 pattern FieldInt :: Int64 -> FieldValue
@@ -255,491 +251,487 @@ fieldValueToWord _ = Nothing
 
 -- | Metadata for a single column in a row.
 data Field = Field
-    { fieldName :: Text
-    , fieldIndex :: Int
-    , fieldValue :: FieldValue
-    }
-    deriving (Eq, Show)
+  { fieldName :: Text
+  , fieldIndex :: Int
+  , fieldValue :: FieldValue
+  }
+  deriving (Eq, Show)
 
-{- | Exception thrown if conversion from a SQL value to a Haskell
-value fails.
--}
+-- | Exception thrown if conversion from a SQL value to a Haskell
+-- value fails.
 data ResultError
-    = -- | The SQL and Haskell types are not compatible.
-      Incompatible
-        { errSQLType :: Text
-        , errSQLField :: Text
-        , errHaskellType :: Text
-        , errMessage :: Text
-        }
-    | {- | A SQL @NULL@ was encountered when the Haskell
-      type did not permit it.
-      -}
-      UnexpectedNull
-        { errSQLType :: Text
-        , errSQLField :: Text
-        , errHaskellType :: Text
-        , errMessage :: Text
-        }
-    | {- | The SQL value could not be parsed, or could not
-      be represented as a valid Haskell value, or an
-      unexpected low-level error occurred (e.g. mismatch
-      between metadata and actual data in a row).
-      -}
-      ConversionFailed
-        { errSQLType :: Text
-        , errSQLField :: Text
-        , errHaskellType :: Text
-        , errMessage :: Text
-        }
-    deriving (Eq, Show)
+  = -- | The SQL and Haskell types are not compatible.
+    Incompatible
+      { errSQLType :: Text
+      , errSQLField :: Text
+      , errHaskellType :: Text
+      , errMessage :: Text
+      }
+  | -- | A SQL @NULL@ was encountered when the Haskell
+    --       type did not permit it.
+    UnexpectedNull
+      { errSQLType :: Text
+      , errSQLField :: Text
+      , errHaskellType :: Text
+      , errMessage :: Text
+      }
+  | -- | The SQL value could not be parsed, or could not
+    --       be represented as a valid Haskell value, or an
+    --       unexpected low-level error occurred (e.g. mismatch
+    --       between metadata and actual data in a row).
+    ConversionFailed
+      { errSQLType :: Text
+      , errSQLField :: Text
+      , errHaskellType :: Text
+      , errMessage :: Text
+      }
+  deriving (Eq, Show)
 
 instance Exception ResultError
 
-{- | Parser used by @FromField@ instances and utilities such as
-@Database.DuckDB.Simple.FromRow.fieldWith@. The supplied @Field@ contains
-column metadata and an already-decoded @FieldValue@; callers should return
-@Ok@ on success or @Errors@ (typically wrapping a @ResultError@) when the
-conversion fails.
--}
+-- | Parser used by @FromField@ instances and utilities such as
+-- @Database.DuckDB.Simple.FromRow.fieldWith@. The supplied @Field@ contains
+-- column metadata and an already-decoded @FieldValue@; callers should return
+-- @Ok@ on success or @Errors@ (typically wrapping a @ResultError@) when the
+-- conversion fails.
 type FieldParser a = Field -> Ok a
 
 -- | Types that can be constructed from a DuckDB column.
 class FromField a where
-    fromField :: FieldParser a
+  fromField :: FieldParser a
 
 instance FromField FieldValue where
-    fromField Field{fieldValue} = Ok fieldValue
+  fromField Field{fieldValue} = Ok fieldValue
 
 instance FromField RawGeometry where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldGeometry value -> Ok value
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f "expected GEOMETRY"
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldGeometry value -> Ok value
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f "expected GEOMETRY"
 
 -- | Decode the shape without CRS metadata. Use t'RawGeometry' to retain the CRS.
 instance FromField G.Geometry where
-    fromField f@Field{fieldValue} = case fieldValue of
-        FieldGeometry raw -> either (returnError ConversionFailed f . Text.pack) pure (fromRawGeometry raw)
-        FieldNull -> returnError UnexpectedNull f ""
-        _ -> returnError Incompatible f "expected GEOMETRY"
+  fromField f@Field{fieldValue} = case fieldValue of
+    FieldGeometry raw -> either (returnError ConversionFailed f . Text.pack) pure (fromRawGeometry raw)
+    FieldNull -> returnError UnexpectedNull f ""
+    _ -> returnError Incompatible f "expected GEOMETRY"
 
 instance FromField (StructValue FieldValue) where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldStruct structVal -> Ok structVal
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f "expected STRUCT"
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldStruct structVal -> Ok structVal
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f "expected STRUCT"
 
 instance FromField (UnionValue FieldValue) where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldUnion unionVal -> Ok unionVal
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f "expected UNION"
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldUnion unionVal -> Ok unionVal
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f "expected UNION"
 
 instance FromField UUID.UUID where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldText t ->
-                case UUID.fromText t of
-                    Just uuid -> Ok uuid
-                    Nothing -> returnError ConversionFailed f "invalid UUID format"
-            FieldUUID uuid -> Ok uuid
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f ""
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldText t ->
+        case UUID.fromText t of
+          Just uuid -> Ok uuid
+          Nothing -> returnError ConversionFailed f "invalid UUID format"
+      FieldUUID uuid -> Ok uuid
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f ""
 
 instance FromField Bool where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldBool b -> Ok b
-            FieldInt i -> Ok (i /= 0)
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f ""
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldBool b -> Ok b
+      FieldInt i -> Ok (i /= 0)
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f ""
 
 instance FromField Int8 where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldInt i -> boundedIntegral f i
-            FieldHugeInt value -> boundedFromInteger f value
-            FieldUHugeInt value -> boundedFromInteger f value
-            FieldEnum value -> boundedFromInteger f (fromIntegral value)
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f ""
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldInt i -> boundedIntegral f i
+      FieldHugeInt value -> boundedFromInteger f value
+      FieldUHugeInt value -> boundedFromInteger f value
+      FieldEnum value -> boundedFromInteger f (fromIntegral value)
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f ""
 
 instance FromField Int64 where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldInt i -> Ok i
-            FieldHugeInt value -> boundedFromInteger f value
-            FieldUHugeInt value -> boundedFromInteger f value
-            FieldEnum value -> Ok (fromIntegral value)
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f ""
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldInt i -> Ok i
+      FieldHugeInt value -> boundedFromInteger f value
+      FieldUHugeInt value -> boundedFromInteger f value
+      FieldEnum value -> Ok (fromIntegral value)
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f ""
 
 instance FromField Int32 where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldInt i -> boundedIntegral f i
-            FieldHugeInt value -> boundedFromInteger f value
-            FieldUHugeInt value -> boundedFromInteger f value
-            FieldEnum value -> boundedFromInteger f (fromIntegral value)
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f ""
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldInt i -> boundedIntegral f i
+      FieldHugeInt value -> boundedFromInteger f value
+      FieldUHugeInt value -> boundedFromInteger f value
+      FieldEnum value -> boundedFromInteger f (fromIntegral value)
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f ""
 
 instance FromField Int16 where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldInt i -> boundedIntegral f i
-            FieldHugeInt value -> boundedFromInteger f value
-            FieldUHugeInt value -> boundedFromInteger f value
-            FieldEnum value -> boundedFromInteger f (fromIntegral value)
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f ""
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldInt i -> boundedIntegral f i
+      FieldHugeInt value -> boundedFromInteger f value
+      FieldUHugeInt value -> boundedFromInteger f value
+      FieldEnum value -> boundedFromInteger f (fromIntegral value)
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f ""
 
 instance FromField Int where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldInt i -> boundedIntegral f i
-            FieldHugeInt value -> boundedFromInteger f value
-            FieldUHugeInt value -> boundedFromInteger f value
-            FieldEnum value -> boundedFromInteger f (fromIntegral value)
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f ""
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldInt i -> boundedIntegral f i
+      FieldHugeInt value -> boundedFromInteger f value
+      FieldUHugeInt value -> boundedFromInteger f value
+      FieldEnum value -> boundedFromInteger f (fromIntegral value)
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f ""
 
 instance FromField Integer where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldInt i -> Ok (fromIntegral i)
-            FieldWord w -> Ok (fromIntegral w)
-            FieldBigNum (BigNum big) -> Ok big
-            FieldHugeInt value -> Ok value
-            FieldUHugeInt value -> Ok value
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f ""
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldInt i -> Ok (fromIntegral i)
+      FieldWord w -> Ok (fromIntegral w)
+      FieldBigNum (BigNum big) -> Ok big
+      FieldHugeInt value -> Ok value
+      FieldUHugeInt value -> Ok value
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f ""
 
 instance FromField Natural where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldInt i
-                | i >= 0 -> Ok (fromIntegral i)
-                | otherwise ->
-                    returnError ConversionFailed f "negative value cannot be converted to Natural"
-            FieldWord w -> Ok (fromIntegral w)
-            FieldHugeInt value
-                | value >= 0 -> Ok (fromIntegral value)
-                | otherwise ->
-                    returnError ConversionFailed f "negative value cannot be converted to Natural"
-            FieldUHugeInt value -> Ok (fromIntegral value)
-            FieldBigNum (BigNum big) ->
-                if big >= 0
-                    then Ok $ fromIntegral big
-                    else returnError ConversionFailed f "negative value cannot be converted to Natural"
-            FieldEnum value -> Ok (fromIntegral value)
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f ""
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldInt i
+        | i >= 0 -> Ok (fromIntegral i)
+        | otherwise ->
+            returnError ConversionFailed f "negative value cannot be converted to Natural"
+      FieldWord w -> Ok (fromIntegral w)
+      FieldHugeInt value
+        | value >= 0 -> Ok (fromIntegral value)
+        | otherwise ->
+            returnError ConversionFailed f "negative value cannot be converted to Natural"
+      FieldUHugeInt value -> Ok (fromIntegral value)
+      FieldBigNum (BigNum big) ->
+        if big >= 0
+          then Ok $ fromIntegral big
+          else returnError ConversionFailed f "negative value cannot be converted to Natural"
+      FieldEnum value -> Ok (fromIntegral value)
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f ""
 
 instance FromField Word64 where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldInt i
-                | i >= 0 -> Ok (fromIntegral i)
-                | otherwise ->
-                    returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
-            FieldWord w -> Ok w
-            FieldHugeInt value
-                | value >= 0 -> boundedFromInteger f value
-                | otherwise ->
-                    returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
-            FieldUHugeInt value -> boundedFromInteger f value
-            FieldEnum value -> Ok (fromIntegral value)
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f ""
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldInt i
+        | i >= 0 -> Ok (fromIntegral i)
+        | otherwise ->
+            returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
+      FieldWord w -> Ok w
+      FieldHugeInt value
+        | value >= 0 -> boundedFromInteger f value
+        | otherwise ->
+            returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
+      FieldUHugeInt value -> boundedFromInteger f value
+      FieldEnum value -> Ok (fromIntegral value)
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f ""
 
 instance FromField Word32 where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldInt i
-                | i >= 0 -> boundedIntegral f i
-                | otherwise ->
-                    returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
-            FieldWord w -> boundedFromInteger f (toInteger w)
-            FieldHugeInt value
-                | value >= 0 -> boundedFromInteger f value
-                | otherwise ->
-                    returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
-            FieldUHugeInt value -> boundedFromInteger f value
-            FieldEnum value -> Ok value
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f ""
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldInt i
+        | i >= 0 -> boundedIntegral f i
+        | otherwise ->
+            returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
+      FieldWord w -> boundedFromInteger f (toInteger w)
+      FieldHugeInt value
+        | value >= 0 -> boundedFromInteger f value
+        | otherwise ->
+            returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
+      FieldUHugeInt value -> boundedFromInteger f value
+      FieldEnum value -> Ok value
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f ""
 
 instance FromField Word16 where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldInt i
-                | i >= 0 -> boundedIntegral f i
-                | otherwise ->
-                    returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
-            FieldWord w -> boundedFromInteger f (toInteger w)
-            FieldHugeInt value
-                | value >= 0 -> boundedFromInteger f value
-                | otherwise ->
-                    returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
-            FieldUHugeInt value -> boundedFromInteger f value
-            FieldEnum value -> boundedFromInteger f (fromIntegral value)
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f ""
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldInt i
+        | i >= 0 -> boundedIntegral f i
+        | otherwise ->
+            returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
+      FieldWord w -> boundedFromInteger f (toInteger w)
+      FieldHugeInt value
+        | value >= 0 -> boundedFromInteger f value
+        | otherwise ->
+            returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
+      FieldUHugeInt value -> boundedFromInteger f value
+      FieldEnum value -> boundedFromInteger f (fromIntegral value)
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f ""
 
 instance FromField Word8 where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldInt i
-                | i >= 0 -> boundedIntegral f i
-                | otherwise ->
-                    returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
-            FieldWord w -> boundedFromInteger f (toInteger w)
-            FieldHugeInt value
-                | value >= 0 -> boundedFromInteger f value
-                | otherwise ->
-                    returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
-            FieldUHugeInt value -> boundedFromInteger f value
-            FieldEnum value -> boundedFromInteger f (fromIntegral value)
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f ""
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldInt i
+        | i >= 0 -> boundedIntegral f i
+        | otherwise ->
+            returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
+      FieldWord w -> boundedFromInteger f (toInteger w)
+      FieldHugeInt value
+        | value >= 0 -> boundedFromInteger f value
+        | otherwise ->
+            returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
+      FieldUHugeInt value -> boundedFromInteger f value
+      FieldEnum value -> boundedFromInteger f (fromIntegral value)
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f ""
 
 instance FromField Word where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldInt i
-                | i >= 0 -> boundedFromInteger f (fromIntegral i)
-                | otherwise ->
-                    returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
-            FieldWord w -> boundedFromInteger f (toInteger w)
-            FieldHugeInt value
-                | value >= 0 -> boundedFromInteger f value
-                | otherwise ->
-                    returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
-            FieldUHugeInt value -> boundedFromInteger f value
-            FieldEnum value -> boundedFromInteger f (fromIntegral value)
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f ""
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldInt i
+        | i >= 0 -> boundedFromInteger f (fromIntegral i)
+        | otherwise ->
+            returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
+      FieldWord w -> boundedFromInteger f (toInteger w)
+      FieldHugeInt value
+        | value >= 0 -> boundedFromInteger f value
+        | otherwise ->
+            returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
+      FieldUHugeInt value -> boundedFromInteger f value
+      FieldEnum value -> boundedFromInteger f (fromIntegral value)
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f ""
 
 instance FromField Double where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldDouble d -> Ok d
-            FieldFloat value -> Ok (float2Double value)
-            FieldInt i -> Ok (fromIntegral i)
-            FieldDecimal DecimalValue{decimalInteger, decimalScale} ->
-                Ok (realToFrac decimalInteger / 10 ^ decimalScale)
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f ""
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldDouble d -> Ok d
+      FieldFloat value -> Ok (float2Double value)
+      FieldInt i -> Ok (fromIntegral i)
+      FieldDecimal DecimalValue{decimalInteger, decimalScale} ->
+        Ok (realToFrac decimalInteger / 10 ^ decimalScale)
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f ""
 
 instance FromField Float where
-    fromField field =
-        case (fromField field :: Ok Double) of
-            Errors err -> Errors err
-            Ok d
-                | not (isInfinite d || isNaN d) && isInfinite (double2Float d) ->
-                    returnError ConversionFailed field "floating-point value out of bounds"
-                | otherwise -> Ok (double2Float d)
+  fromField field =
+    case (fromField field :: Ok Double) of
+      Errors err -> Errors err
+      Ok d
+        | not (isInfinite d || isNaN d) && isInfinite (double2Float d) ->
+            returnError ConversionFailed field "floating-point value out of bounds"
+        | otherwise -> Ok (double2Float d)
 
 instance FromField Text where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldText t -> Ok t
-            FieldInt i -> Ok (Text.pack (show i))
-            FieldFloat value -> Ok (Text.pack (show value))
-            FieldDouble d -> Ok (Text.pack (show d))
-            FieldBool b -> Ok (if b then Text.pack "1" else Text.pack "0")
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f ""
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldText t -> Ok t
+      FieldInt i -> Ok (Text.pack (show i))
+      FieldFloat value -> Ok (Text.pack (show value))
+      FieldDouble d -> Ok (Text.pack (show d))
+      FieldBool b -> Ok (if b then Text.pack "1" else Text.pack "0")
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f ""
 
 instance FromField String where
-    fromField field = Text.unpack <$> fromField field
+  fromField field = Text.unpack <$> fromField field
 
 instance FromField BS.ByteString where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldBlob bs -> Ok bs
-            FieldGeometry RawGeometry{rawGeometryWKB} -> Ok rawGeometryWKB
-            FieldText t -> Ok (TextEncoding.encodeUtf8 t)
-            FieldBit (BitString _ bits) -> Ok bits
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f ""
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldBlob bs -> Ok bs
+      FieldGeometry RawGeometry{rawGeometryWKB} -> Ok rawGeometryWKB
+      FieldText t -> Ok (TextEncoding.encodeUtf8 t)
+      FieldBit (BitString _ bits) -> Ok bits
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f ""
 
 instance FromField BitString where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldBit b -> Ok b
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f ""
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldBit b -> Ok b
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f ""
 
 instance FromField BigNum where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldBigNum big -> Ok big
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f ""
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldBigNum big -> Ok big
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f ""
 
 instance {-# OVERLAPPABLE #-} (Typeable a, FromField a) => FromField [a] where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldList entries ->
-                traverse (uncurry parseElement) (zip [0 :: Int ..] entries)
-            FieldArray arr ->
-                traverse (uncurry parseElement) (assocs arr)
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f ""
-      where
-        parseElement idx value =
-            fromField
-                Field
-                    { fieldName = fieldNameWithIndex idx
-                    , fieldIndex = fieldIndex f
-                    , fieldValue = value
-                    }
-        fieldNameWithIndex idx =
-            let base = fieldName f
-                idxText = Text.pack (show idx)
-             in base <> Text.pack "[" <> idxText <> Text.pack "]"
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldList entries ->
+        traverse (uncurry parseElement) (zip [0 :: Int ..] entries)
+      FieldArray arr ->
+        traverse (uncurry parseElement) (assocs arr)
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f ""
+    where
+      parseElement idx value =
+        fromField
+          Field
+            { fieldName = fieldNameWithIndex idx
+            , fieldIndex = fieldIndex f
+            , fieldValue = value
+            }
+      fieldNameWithIndex idx =
+        let base = fieldName f
+            idxText = Text.pack (show idx)
+        in  base <> Text.pack "[" <> idxText <> Text.pack "]"
 
 instance (Typeable a, FromField a) => FromField (Array Int a) where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldArray arr -> do
-                converted <- traverse (traverseElement arr) (range (bounds arr))
-                pure (listArray (bounds arr) converted)
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f ""
-      where
-        traverseElement arr idx =
-            fromField
-                Field
-                    { fieldName = fieldNameWithIndex idx
-                    , fieldIndex = fieldIndex f
-                    , fieldValue = arr ! idx
-                    }
-        fieldNameWithIndex idx =
-            let idxText = Text.pack (show idx)
-             in fieldName f <> Text.pack "[" <> idxText <> Text.pack "]"
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldArray arr -> do
+        converted <- traverse (traverseElement arr) (range (bounds arr))
+        pure (listArray (bounds arr) converted)
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f ""
+    where
+      traverseElement arr idx =
+        fromField
+          Field
+            { fieldName = fieldNameWithIndex idx
+            , fieldIndex = fieldIndex f
+            , fieldValue = arr ! idx
+            }
+      fieldNameWithIndex idx =
+        let idxText = Text.pack (show idx)
+        in  fieldName f <> Text.pack "[" <> idxText <> Text.pack "]"
 
 instance (Ord k, Typeable k, Typeable v, FromField k, FromField v) => FromField (Map k v) where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldMap pairs -> Map.fromList <$> traverse (uncurry parsePair) (zip [0 :: Int ..] pairs)
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f ""
-      where
-        parsePair idx (keyValue, valValue) = do
-            key <-
-                fromField
-                    Field
-                        { fieldName = fieldName f <> suffix idx ".key"
-                        , fieldIndex = fieldIndex f
-                        , fieldValue = keyValue
-                        }
-            value <-
-                fromField
-                    Field
-                        { fieldName = fieldName f <> suffix idx ".value"
-                        , fieldIndex = fieldIndex f
-                        , fieldValue = valValue
-                        }
-            pure (key, value)
-        suffix idx label =
-            let idxText = Text.pack (show idx)
-             in Text.pack "[" <> idxText <> Text.pack "]" <> Text.pack label
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldMap pairs -> Map.fromList <$> traverse (uncurry parsePair) (zip [0 :: Int ..] pairs)
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f ""
+    where
+      parsePair idx (keyValue, valValue) = do
+        key <-
+          fromField
+            Field
+              { fieldName = fieldName f <> suffix idx ".key"
+              , fieldIndex = fieldIndex f
+              , fieldValue = keyValue
+              }
+        value <-
+          fromField
+            Field
+              { fieldName = fieldName f <> suffix idx ".value"
+              , fieldIndex = fieldIndex f
+              , fieldValue = valValue
+              }
+        pure (key, value)
+      suffix idx label =
+        let idxText = Text.pack (show idx)
+        in  Text.pack "[" <> idxText <> Text.pack "]" <> Text.pack label
 
 instance FromField DecimalValue where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldDecimal dec -> Ok dec
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f ""
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldDecimal dec -> Ok dec
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f ""
 
 instance FromField Day where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldDate day -> finiteField f day
-            FieldTimestamp timestamp -> finiteField f (localDay <$> timestamp)
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f ""
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldDate day -> finiteField f day
+      FieldTimestamp timestamp -> finiteField f (localDay <$> timestamp)
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f ""
 
 instance FromField (Unbounded Day) where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldDate day -> Ok day
-            FieldTimestamp timestamp -> Ok (localDay <$> timestamp)
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f ""
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldDate day -> Ok day
+      FieldTimestamp timestamp -> Ok (localDay <$> timestamp)
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f ""
 
 instance FromField TimeOfDay where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldTime tod -> Ok tod
-            FieldTimestamp timestamp -> finiteField f (localTimeOfDay <$> timestamp)
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f ""
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldTime tod -> Ok tod
+      FieldTimestamp timestamp -> finiteField f (localTimeOfDay <$> timestamp)
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f ""
 
 instance FromField TimeWithZone where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldTimeTZ tz -> Ok tz
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f ""
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldTimeTZ tz -> Ok tz
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f ""
 
 instance FromField LocalTime where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldTimestamp ts -> finiteField f ts
-            FieldDate day -> finiteField f ((\value -> LocalTime value midnight) <$> day)
-            FieldTimestampTZ utcTime -> finiteField f (utcToLocalTime utc <$> utcTime)
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f ""
-      where
-        midnight = TimeOfDay 0 0 0
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldTimestamp ts -> finiteField f ts
+      FieldDate day -> finiteField f ((\value -> LocalTime value midnight) <$> day)
+      FieldTimestampTZ utcTime -> finiteField f (utcToLocalTime utc <$> utcTime)
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f ""
+    where
+      midnight = TimeOfDay 0 0 0
 
 instance FromField (Unbounded LocalTime) where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldTimestamp ts -> Ok ts
-            FieldDate day -> Ok ((\value -> LocalTime value midnight) <$> day)
-            FieldTimestampTZ utcTime -> Ok (utcToLocalTime utc <$> utcTime)
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f ""
-      where
-        midnight = TimeOfDay 0 0 0
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldTimestamp ts -> Ok ts
+      FieldDate day -> Ok ((\value -> LocalTime value midnight) <$> day)
+      FieldTimestampTZ utcTime -> Ok (utcToLocalTime utc <$> utcTime)
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f ""
+    where
+      midnight = TimeOfDay 0 0 0
 
 instance FromField IntervalValue where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldInterval interval -> Ok interval
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f ""
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldInterval interval -> Ok interval
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f ""
 
 instance FromField UTCTime where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldTimestamp ts -> finiteField f (localTimeToUTC utc <$> ts)
-            FieldTimestampTZ utcTime -> finiteField f utcTime
-            FieldDate day -> finiteField f ((\value -> localTimeToUTC utc (LocalTime value midnight)) <$> day)
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f ""
-      where
-        midnight = TimeOfDay 0 0 0
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldTimestamp ts -> finiteField f (localTimeToUTC utc <$> ts)
+      FieldTimestampTZ utcTime -> finiteField f utcTime
+      FieldDate day -> finiteField f ((\value -> localTimeToUTC utc (LocalTime value midnight)) <$> day)
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f ""
+    where
+      midnight = TimeOfDay 0 0 0
 
 instance FromField (Unbounded UTCTime) where
-    fromField f@Field{fieldValue} =
-        case fieldValue of
-            FieldTimestamp ts -> Ok (localTimeToUTC utc <$> ts)
-            FieldTimestampTZ utcTime -> Ok utcTime
-            FieldDate day -> Ok ((\value -> localTimeToUTC utc (LocalTime value midnight)) <$> day)
-            FieldNull -> returnError UnexpectedNull f ""
-            _ -> returnError Incompatible f ""
-      where
-        midnight = TimeOfDay 0 0 0
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldTimestamp ts -> Ok (localTimeToUTC utc <$> ts)
+      FieldTimestampTZ utcTime -> Ok utcTime
+      FieldDate day -> Ok ((\value -> localTimeToUTC utc (LocalTime value midnight)) <$> day)
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f ""
+    where
+      midnight = TimeOfDay 0 0 0
 
 -- | Reject infinity when the requested Haskell type holds only finite values.
 finiteField :: (Typeable a) => Field -> Unbounded a -> Ok a
@@ -747,8 +739,8 @@ finiteField _ (Finite value) = Ok value
 finiteField field _ = returnError ConversionFailed field "infinity requires an Unbounded date or timestamp"
 
 instance (FromField a) => FromField (Maybe a) where
-    fromField Field{fieldValue = FieldNull} = Ok Nothing
-    fromField field = Just <$> fromField field
+  fromField Field{fieldValue = FieldNull} = Ok Nothing
+  fromField field = Just <$> fromField field
 
 -- | Helper for bounded integral conversions.
 boundedIntegral :: forall a. (Integral a, Bounded a, Typeable a) => Field -> Int64 -> Ok a
@@ -756,58 +748,57 @@ boundedIntegral f = boundedFromInteger f . toInteger
 
 boundedFromInteger :: forall a. (Integral a, Bounded a, Typeable a) => Field -> Integer -> Ok a
 boundedFromInteger f@Field{} value
-    | value < toInteger (minBound :: a) =
-        returnError ConversionFailed f "integer value out of bounds"
-    | value > toInteger (maxBound :: a) =
-        returnError ConversionFailed f "integer value out of bounds"
-    | otherwise = Ok (fromInteger value)
+  | value < toInteger (minBound :: a) =
+      returnError ConversionFailed f "integer value out of bounds"
+  | value > toInteger (maxBound :: a) =
+      returnError ConversionFailed f "integer value out of bounds"
+  | otherwise = Ok (fromInteger value)
 
-{- | Helper to construct a ResultError with field context.
-based on postgresql-simple's implementation
--}
+-- | Helper to construct a ResultError with field context.
+-- based on postgresql-simple's implementation
 returnError :: forall b. (Typeable b) => (Text -> Text -> Text -> Text -> ResultError) -> Field -> Text -> Ok b
 returnError mkError Field{fieldValue, fieldName} msg =
-    Errors
-        [ SomeException $
-            mkError
-                (fieldValueTypeName fieldValue)
-                fieldName
-                (Text.pack $ show (typeRep (Proxy :: Proxy b)))
-                msg
-        ]
+  Errors
+    [ SomeException $
+        mkError
+          (fieldValueTypeName fieldValue)
+          fieldName
+          (Text.pack $ show (typeRep (Proxy :: Proxy b)))
+          msg
+    ]
 
 fieldValueTypeName :: FieldValue -> Text
 fieldValueTypeName = \case
-    FieldNull -> "NULL"
-    FieldInt8{} -> "INT1"
-    FieldInt16{} -> "INT2"
-    FieldInt32{} -> "INT4"
-    FieldInt64{} -> "INT8"
-    FieldWord8{} -> "UTINYINT"
-    FieldWord16{} -> "USMALLINT"
-    FieldWord32{} -> "UINTEGER"
-    FieldWord64{} -> "UBIGINT"
-    FieldFloat{} -> "FLOAT"
-    FieldDouble{} -> "DOUBLE"
-    FieldText{} -> "TEXT"
-    FieldBool{} -> "BOOLEAN"
-    FieldBlob{} -> "BLOB"
-    FieldGeometry{} -> "GEOMETRY"
-    FieldDate{} -> "DATE"
-    FieldTime{} -> "TIME"
-    FieldTimestamp{} -> "TIMESTAMP"
-    FieldInterval{} -> "INTERVAL"
-    FieldHugeInt{} -> "HUGEINT"
-    FieldUHugeInt{} -> "UHUGEINT"
-    FieldDecimal{} -> "DECIMAL"
-    FieldTimestampTZ{} -> "TIMESTAMP_TZ"
-    FieldTimeTZ{} -> "TIME_TZ"
-    FieldBit{} -> "BIT"
-    FieldBigNum{} -> "BIGNUM"
-    FieldEnum{} -> "ENUM"
-    FieldArray{} -> "ARRAY"
-    FieldList{} -> "LIST"
-    FieldMap{} -> "MAP"
-    FieldUUID{} -> "UUID"
-    FieldStruct{} -> "STRUCT"
-    FieldUnion{} -> "UNION"
+  FieldNull -> "NULL"
+  FieldInt8{} -> "INT1"
+  FieldInt16{} -> "INT2"
+  FieldInt32{} -> "INT4"
+  FieldInt64{} -> "INT8"
+  FieldWord8{} -> "UTINYINT"
+  FieldWord16{} -> "USMALLINT"
+  FieldWord32{} -> "UINTEGER"
+  FieldWord64{} -> "UBIGINT"
+  FieldFloat{} -> "FLOAT"
+  FieldDouble{} -> "DOUBLE"
+  FieldText{} -> "TEXT"
+  FieldBool{} -> "BOOLEAN"
+  FieldBlob{} -> "BLOB"
+  FieldGeometry{} -> "GEOMETRY"
+  FieldDate{} -> "DATE"
+  FieldTime{} -> "TIME"
+  FieldTimestamp{} -> "TIMESTAMP"
+  FieldInterval{} -> "INTERVAL"
+  FieldHugeInt{} -> "HUGEINT"
+  FieldUHugeInt{} -> "UHUGEINT"
+  FieldDecimal{} -> "DECIMAL"
+  FieldTimestampTZ{} -> "TIMESTAMP_TZ"
+  FieldTimeTZ{} -> "TIME_TZ"
+  FieldBit{} -> "BIT"
+  FieldBigNum{} -> "BIGNUM"
+  FieldEnum{} -> "ENUM"
+  FieldArray{} -> "ARRAY"
+  FieldList{} -> "LIST"
+  FieldMap{} -> "MAP"
+  FieldUUID{} -> "UUID"
+  FieldStruct{} -> "STRUCT"
+  FieldUnion{} -> "UNION"

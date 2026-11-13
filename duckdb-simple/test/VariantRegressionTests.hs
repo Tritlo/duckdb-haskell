@@ -24,9 +24,10 @@ import Database.DuckDB.Simple.FromField (BitString (..), DecimalValue (..), Fiel
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..))
 import Database.DuckDB.Simple.Geometry (RawGeometry (..), toRawGeometry)
 import Database.DuckDB.Simple.Internal (withConnectionFactory, withConnectionHandle, withStatementHandle)
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), destroyLogicalType, logicalTypeFromRep, logicalTypeToRep)
-import Database.DuckDB.Simple.Registration (destroy, output)
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..))
 import qualified Database.DuckDB.Simple.Streaming as Streaming
+import Database.DuckDB.Simple.V2.LogicalRep (destroyLogicalType, logicalTypeFromRep, logicalTypeToRep)
+import Database.DuckDB.Simple.V2.Registration (destroy, output)
 import Database.DuckDB.Simple.Variant
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (withArray)
@@ -190,8 +191,8 @@ tests =
                 total @?= (sum [0 .. 99999] :: Int64)
         , testCase "VARIANT type construction uses the supplied factory" $ withConnection ":memory:" \conn ->
             withConnectionHandle conn \native -> withConnectionFactory native \factory ->
-                bracket (logicalTypeFromRep factory (LogicalTypeScalar DuckDBV2LogicalTypeIdVariant)) destroyLogicalType \logical ->
-                    logicalTypeToRep logical >>= (@?= LogicalTypeScalar DuckDBV2LogicalTypeIdVariant)
+                bracket (logicalTypeFromRep factory (LogicalTypeScalar LogicalTypeIdVariant)) destroyLogicalType \logical ->
+                    logicalTypeToRep logical >>= (@?= LogicalTypeScalar LogicalTypeIdVariant)
         , testCase "VARIANT payloads and GEOMETRY CRS metadata bind together" $ withConnection ":memory:" \conn -> do
             [Only value] <- query_ conn "SELECT {'payload': 42::VARIANT, 'shape': NULL::GEOMETRY('OGC:CRS84')}" :: IO [Only (StructValue FieldValue)]
             (query conn "SELECT typeof(?)" (Only value) :: IO [Only Text]) >>= (@?= [Only "STRUCT(payload VARIANT, shape GEOMETRY('OGC:CRS84'))"])
@@ -337,7 +338,7 @@ tests =
             mixedRaw <- either assertFailure pure (toRawGeometry mixed)
             outcome <- try (query conn "SELECT system.main.ST_GeomFromWKB(?)::VARIANT" (Only (rawGeometryWKB mixedRaw)) :: IO [Only Variant])
             case outcome of
-                Left (err :: SQLError) -> sqlErrorType err @?= Just DuckDBV2ErrorInputInvalid
+                Left (err :: SQLError) -> sqlErrorType err @?= Just ErrorInputInvalid
                 Right _ -> assertFailure "native GEOMETRY must reject mixed Z/M dimensions"
             (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
         , testCase "invalid values fail before binding and connection reuse succeeds" $ withConnection ":memory:" \conn -> do

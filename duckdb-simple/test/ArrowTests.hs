@@ -180,7 +180,7 @@ arrowModeTests streaming =
                         then do
                             outcome <- try (query_ conn "SELECT 42" :: IO [Only Int64])
                             case outcome of
-                                Left (err :: SQLError) -> sqlErrorType err @?= Just DuckDBV2ErrorResourceInUse
+                                Left (err :: SQLError) -> sqlErrorType err @?= Just ErrorResourceInUse
                                 Right _ -> assertFailure "expected a busy streaming connection"
                         else query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
                     pure (acc + 1)

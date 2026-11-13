@@ -16,9 +16,11 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple hiding (bind)
+import qualified Database.DuckDB.Simple.Catalog as Catalog
 import qualified Database.DuckDB.Simple.Copy as Copy
-import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..))
-import qualified Database.DuckDB.Simple.Registration as R
+import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), LogicalTypeRep (..))
+import qualified Database.DuckDB.Simple.V2.Copy as V2Copy
+import qualified Database.DuckDB.Simple.V2.Registration as R
 import Database.DuckDB.Simple.Variant (variantObject)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Ptr (castPtr, nullPtr)
@@ -40,6 +42,7 @@ copyTests =
         , testCase "COPY FROM runs bind global local and exec callbacks" testCopyFrom
         , testCase "callback exceptions become SQL errors and permit reuse" testCopyFailure
         , testCase "multi-file wrappers support lists globs filename and hive columns" testMultiFile
+        , testCase "COPY TO and table descriptions report the logical type id of each column type" testColumnTypeIds
         ]
 
 -- | Run every COPY TO callback and check the reported file statistics.
@@ -75,14 +78,14 @@ testCopyTo = withDirectory \directory -> withConnection ":memory:" \connection -
             R.checked (c_duckdb_v2_copy_to_statistics_set_row_count info count)
             R.checked (c_duckdb_v2_copy_to_statistics_set_file_size info 17)
         callbacks =
-            (Copy.copyToCallbacks batch flush)
-                { Copy.copyToBindCallback = Just bind
-                , Copy.copyToBatchSizeCallback = Just batchSize
-                , Copy.copyToInitCallback = Just initialize
-                , Copy.copyToFinalizeCallback = Just finalize
-                , Copy.copyToStatisticsCallback = Just statistics
+            (V2Copy.copyToCallbacks batch flush)
+                { V2Copy.copyToBindCallback = Just bind
+                , V2Copy.copyToBatchSizeCallback = Just batchSize
+                , V2Copy.copyToInitCallback = Just initialize
+                , V2Copy.copyToFinalizeCallback = Just finalize
+                , V2Copy.copyToStatisticsCallback = Just statistics
                 }
-    Copy.registerCopyToCallbacks connection "managed_output" callbacks
+    V2Copy.registerCopyToCallbacks connection "managed_output" callbacks
     rows <- query connection "COPY (SELECT i FROM range(5000) t(i)) TO ? (FORMAT managed_output, RETURN_STATS)" (Only (Text.pack (directory </> "stats"))) :: IO [[FieldValue]]
     readIORef total >>= (@?= 5000)
     phases <- readIORef seen
@@ -101,7 +104,7 @@ testPartitionedCopy = withDirectory \directory -> withConnection ":memory:" \con
     Copy.registerCopyToFunction
         connection
         "managed_partitions"
-        (\info -> Copy.copyBindColumnTypes info @?= [DuckDBV2LogicalTypeIdBigInt])
+        (\info -> Copy.copyBindColumnTypes info @?= [Copy.LogicalTypeIdBigInt])
         ( \info -> do
             let path = Copy.copyInitFilePath info
             writeFile path ""
@@ -128,13 +131,85 @@ testVariantCopy = withDirectory \directory -> withEnvironment \environment -> wi
         Copy.registerCopyToFunction
             connection
             "managed_variant"
-            (\info -> Copy.copyBindColumnTypes info @?= [DuckDBV2LogicalTypeIdVariant])
+            (\info -> Copy.copyBindColumnTypes info @?= [Copy.LogicalTypeIdVariant])
             (\info -> writeFile (Copy.copyInitFilePath info) "")
             (\_ rows -> atomicModifyIORef' received (\previous -> (previous <> [fieldValue entry | [entry] <- rows], ())))
             (const (pure ()))
     withConnectionOn instance' \connection -> do
         void (execute connection "COPY (SELECT {'n': i, 'values': [i, NULL]}::VARIANT FROM range(3) t(i)) TO ? (FORMAT managed_variant)" (Only (Text.pack (directory </> "variant"))))
         readIORef received >>= (@?= [variantObject [("n", FieldInt64 i), ("values", FieldList [FieldInt64 i, FieldNull])] | i <- [0 .. 2]])
+
+{- | Create a column of each type that DuckDB permits. Check the id that the
+COPY TO bind info reports for each column. Check the id in the table
+description of each column that has a scalar type.
+-}
+testColumnTypeIds :: Assertion
+testColumnTypeIds = withDirectory \directory -> withConnection ":memory:" \connection -> do
+    reported <- newIORef []
+    Copy.registerCopyToFunction
+        connection
+        "column_types"
+        (writeIORef reported . Copy.copyBindColumnTypes)
+        (\info -> writeFile (Copy.copyInitFilePath info) "")
+        (\_ _ -> pure ())
+        (const (pure ()))
+    let named = zip [Text.pack ("c" <> show index) | index <- [0 :: Int ..]] tableColumns
+    void (execute_ connection (Query ("CREATE TABLE typed (" <> Text.intercalate ", " [name <> " " <> sql | (name, (sql, _)) <- named] <> ")")))
+    -- A table cannot have a TYPE column. A query can.
+    void (execute connection "COPY (SELECT NULL::TYPE, * FROM typed) TO ? (FORMAT column_types)" (Only (Text.pack (directory </> "types"))))
+    readIORef reported >>= (@?= LogicalTypeIdType : map snd tableColumns)
+    sort (LogicalTypeIdType : map snd tableColumns) @?= filter (`notElem` unreachable) [minBound .. maxBound]
+    description <- Catalog.describeTable connection "typed"
+    [(name, ident) | Catalog.ColumnDescription{Catalog.columnDescriptionName = name, Catalog.columnDescriptionType = LogicalTypeScalar ident} <- Catalog.tableDescriptionColumns description]
+        @?= [(name, ident) | (name, (_, ident)) <- named, ident `notElem` nested]
+  where
+    -- DuckDB uses these ids for an unset type, an unresolved parameter, and a
+    -- function parameter of any type. SQL cannot declare a column of these types.
+    unreachable = [LogicalTypeIdInvalid, LogicalTypeIdUnknown, LogicalTypeIdAny]
+    -- LogicalTypeRep has a constructor with the type parameters for these ids.
+    nested = [LogicalTypeIdDecimal, LogicalTypeIdGeometry, LogicalTypeIdStruct, LogicalTypeIdList, LogicalTypeIdMap, LogicalTypeIdEnum, LogicalTypeIdUnion, LogicalTypeIdArray, LogicalTypeIdTuple]
+    tableColumns =
+        [ ("\"NULL\"", LogicalTypeIdSQLNull)
+        , ("BOOLEAN", LogicalTypeIdBoolean)
+        , ("TINYINT", LogicalTypeIdTinyInt)
+        , ("SMALLINT", LogicalTypeIdSmallInt)
+        , ("INTEGER", LogicalTypeIdInteger)
+        , ("BIGINT", LogicalTypeIdBigInt)
+        , ("DATE", LogicalTypeIdDate)
+        , ("TIME", LogicalTypeIdTime)
+        , ("TIMESTAMP_S", LogicalTypeIdTimestampSec)
+        , ("TIMESTAMP_MS", LogicalTypeIdTimestampMs)
+        , ("TIMESTAMP", LogicalTypeIdTimestamp)
+        , ("TIMESTAMP_NS", LogicalTypeIdTimestampNs)
+        , ("DECIMAL(10, 2)", LogicalTypeIdDecimal)
+        , ("FLOAT", LogicalTypeIdFloat)
+        , ("DOUBLE", LogicalTypeIdDouble)
+        , ("VARCHAR", LogicalTypeIdVarchar)
+        , ("BLOB", LogicalTypeIdBlob)
+        , ("INTERVAL", LogicalTypeIdInterval)
+        , ("UTINYINT", LogicalTypeIdUTinyInt)
+        , ("USMALLINT", LogicalTypeIdUSmallInt)
+        , ("UINTEGER", LogicalTypeIdUInteger)
+        , ("UBIGINT", LogicalTypeIdUBigInt)
+        , ("TIMESTAMPTZ", LogicalTypeIdTimestampTz)
+        , ("TIMESTAMPTZ_NS", LogicalTypeIdTimestampTzNs)
+        , ("TIMETZ", LogicalTypeIdTimeTz)
+        , ("TIME_NS", LogicalTypeIdTimeNs)
+        , ("BIT", LogicalTypeIdBit)
+        , ("BIGNUM", LogicalTypeIdBigNum)
+        , ("UHUGEINT", LogicalTypeIdUHugeInt)
+        , ("HUGEINT", LogicalTypeIdHugeInt)
+        , ("UUID", LogicalTypeIdUUID)
+        , ("GEOMETRY", LogicalTypeIdGeometry)
+        , ("STRUCT(a INTEGER)", LogicalTypeIdStruct)
+        , ("INTEGER[]", LogicalTypeIdList)
+        , ("MAP(INTEGER, VARCHAR)", LogicalTypeIdMap)
+        , ("ENUM('a', 'b')", LogicalTypeIdEnum)
+        , ("UNION(a INTEGER, b VARCHAR)", LogicalTypeIdUnion)
+        , ("INTEGER[2]", LogicalTypeIdArray)
+        , ("VARIANT", LogicalTypeIdVariant)
+        , ("TUPLE(INTEGER, VARCHAR)", LogicalTypeIdTuple)
+        ]
 
 -- | Fill one output vector from state created in each native COPY FROM phase.
 testCopyFrom :: Assertion
@@ -167,12 +242,12 @@ testCopyFrom = withConnection ":memory:" \connection -> do
         -- registration and does not require a call.
         progress info _ = R.checked (c_duckdb_v2_copy_from_progress_set_progress info 0.5)
         callbacks =
-            (Copy.copyFromCallbacks bind executeRows)
-                { Copy.copyFromInitGlobalCallback = Just initializeGlobal
-                , Copy.copyFromInitLocalCallback = Just initializeLocal
-                , Copy.copyFromProgressCallback = Just progress
+            (V2Copy.copyFromCallbacks bind executeRows)
+                { V2Copy.copyFromInitGlobalCallback = Just initializeGlobal
+                , V2Copy.copyFromInitLocalCallback = Just initializeLocal
+                , V2Copy.copyFromProgressCallback = Just progress
                 }
-    Copy.registerCopyFromCallbacks connection "managed_input" callbacks
+    V2Copy.registerCopyFromCallbacks connection "managed_input" callbacks
     void (execute_ connection "CREATE TABLE imported (value BIGINT)")
     void (execute_ connection "COPY imported FROM 'unused' (FORMAT managed_input)")
     query_ connection "SELECT value FROM imported ORDER BY value" >>= (@?= map Only ([7, 8, 9] :: [Int64]))
@@ -182,7 +257,7 @@ testCopyFrom = withConnection ":memory:" \connection -> do
 -- | Contain exceptions from native COPY callbacks.
 testCopyFailure :: Assertion
 testCopyFailure = withConnection ":memory:" \connection -> do
-    Copy.registerCopyFromCallbacks connection "managed_failure" (Copy.copyFromCallbacks (\_ _ -> pure ()) (\_ _ -> ioError (userError "managed COPY failure")))
+    V2Copy.registerCopyFromCallbacks connection "managed_failure" (V2Copy.copyFromCallbacks (\_ _ -> pure ()) (\_ _ -> ioError (userError "managed COPY failure")))
     void (execute_ connection "CREATE TABLE failed_import (value BIGINT)")
     result <- try (execute_ connection "COPY failed_import FROM 'unused' (FORMAT managed_failure)")
     case result of

@@ -21,8 +21,9 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), logicalTypeFromRepWith, logicalTypeToRep)
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..))
 import Database.DuckDB.Simple.Native
+import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeFromRepWith, logicalTypeToRep)
 import Database.DuckDB.Simple.VariantCodec (VariantState, destroyVariantState, newVariantState)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (withArray)

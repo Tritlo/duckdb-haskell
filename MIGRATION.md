@@ -66,15 +66,18 @@ The SQL workflow stays the same. These changes can affect your code:
 
 - Raw types come from `Database.DuckDB.FFI.V2`. They are distinct from the
   retained API types in `Database.DuckDB.FFI`.
-- `SQLError.sqlErrorType` is `Maybe DuckDBV2Error`. For example,
-  `DuckDBErrorConstraint` becomes `DuckDBV2ErrorDatabaseConstraint`,
-  `DuckDBErrorCatalog` becomes `DuckDBV2ErrorDatabaseCatalog`,
-  `DuckDBErrorBinder` becomes `DuckDBV2ErrorQueryBinder`,
-  `DuckDBErrorConversion` becomes `DuckDBV2ErrorTypeConversion`,
-  `DuckDBErrorInvalidInput` becomes `DuckDBV2ErrorInputInvalid`, and
-  `DuckDBErrorInterrupt` becomes `DuckDBV2ErrorRuntimeInterrupt`.
-  `DuckDBV2ErrorResourceInUse` is new.
-- `ToDuckValue.toDuckValue` takes a `DuckDBV2FactoryHandle` and returns a
+- `SQLError.sqlErrorType` is `Maybe ErrorType`. `Database.DuckDB.Simple`
+  exports `ErrorType`, which has one constructor for each native error code.
+  For example, `DuckDBErrorConstraint` becomes `ErrorDatabaseConstraint`,
+  `DuckDBErrorCatalog` becomes `ErrorDatabaseCatalog`,
+  `DuckDBErrorBinder` becomes `ErrorQueryBinder`,
+  `DuckDBErrorConversion` becomes `ErrorTypeConversion`,
+  `DuckDBErrorInvalidInput` becomes `ErrorInputInvalid`, and
+  `DuckDBErrorInterrupt` becomes `ErrorRuntimeInterrupt`.
+  `ErrorResourceInUse` is new.
+- `ToDuckValue.toDuckValue` takes a `ValueFactory` and returns a
+  `NativeValue`. `Database.DuckDB.Simple.ToField` exports the two names. They
+  are synonyms of the V2 handles `DuckDBV2FactoryHandle` and
   `DuckDBV2ValueHandle`. `logicalTypeFromRep` also takes the factory. To get
   the factory of a `Connection`, call `withConnectionHandle` and then
   `withConnectionFactory` from `Database.DuckDB.Simple.Internal`. Create and
@@ -83,18 +86,39 @@ The SQL workflow stays the same. These changes can affect your code:
   its target from `withRegistrationFactory`.
 - `logicalTypeFromRepWith` takes the factory, and its resolver returns
   `Maybe` a native type. `Nothing` selects the default construction.
+- `logicalTypeToRep`, `logicalTypeFromRep`, `logicalTypeFromRepWith`, and
+  `destroyLogicalType` moved from `Database.DuckDB.Simple.LogicalRep` to
+  `Database.DuckDB.Simple.V2.LogicalRep`. Import them from the new module.
 - `LogicalTypeScalar`, `Function.argumentTypes`, and
-  `CopyBindInfo.copyBindColumnTypes` use `DuckDBV2LogicalTypeId`. For example,
-  `DuckDBTypeBigInt` becomes `DuckDBV2LogicalTypeIdBigInt`.
+  `CopyBindInfo.copyBindColumnTypes` use `LogicalTypeId` instead of
+  `DuckDBType`. `Database.DuckDB.Simple`, `Database.DuckDB.Simple.LogicalRep`,
+  `FromField`, `Function`, and `Copy` export `LogicalTypeId`. Replace the prefix
+  `DuckDBType` of each pattern with `LogicalTypeId`. For example,
+  `DuckDBTypeBigInt` becomes `LogicalTypeIdBigInt`. `DuckDBTypeTimestampS`
+  becomes `LogicalTypeIdTimestampSec`. `DuckDBTypeIntegerLiteral` and
+  `DuckDBTypeStringLiteral` have no replacement.
 - SQL TUPLE values decode as `FieldTuple` with a `TupleValue`. `LogicalTypeRep`
   adds `LogicalTypeTuple` and `LogicalTypeCollatedVarchar`. Update exhaustive
   matches.
 - `LogEntry` has six new fields. Use record syntax to construct or match it.
-- `ConfigValue.configValueScope` is `DuckDBV2SettingScope` instead of
-  `Maybe DuckDBConfigOptionScope`.
+  `logEntrySeverity` has the type `LogLevel`, and `logEntryScope` has the type
+  `LogScope`. `Database.DuckDB.Simple.Logging` exports both types.
+- `ConfigValue.configValueScope` is `SettingScope` instead of
+  `Maybe DuckDBConfigOptionScope`. `Database.DuckDB.Simple.Config` exports
+  `SettingScope`.
+- `listConfigFlags` lists the options of a temporary in-memory database.
+  With DuckDB 2.0.0 the list has 201 names, where version 0.3 gave 377. The
+  names that are not in the list are options of extensions that the new
+  database does not load.
 - `CatalogEntry.catalogEntryType` and `lookupCatalogEntry` use the new
   `CatalogEntryType`. V2 metadata cannot look up collations.
-- File system functions use `DuckDBV2FileFlag` and `DuckDBV2FileHandle`.
+- `withFileHandle` takes `[FileFlag]` instead of `[DuckDBFileFlag]`. It gives
+  its action an opaque `FileHandle` instead of `DuckDBFileHandle`, and the
+  other handle functions take `FileHandle`.
+  `Database.DuckDB.Simple.FileSystem` exports both types. For example,
+  `DuckDBFileFlagRead` becomes `FileFlagRead`. `DuckDBFileFlagInvalid` has no
+  replacement. You cannot get the native handle from a `FileHandle`. To use a
+  native file function, open the file with `Database.DuckDB.FFI.V2`.
 - The Arrow release helpers moved from `duckdb-ffi` to
   `Database.DuckDB.Simple.Arrow`. These helpers and the `foldArrow` callbacks
   use the V2 `ArrowSchema` and `ArrowArray` types.
@@ -120,12 +144,27 @@ The SQL workflow stays the same. These changes can affect your code:
   function, register the name again. Each use of `deleteFunction` causes a
   compile-time warning. A build with `-Werror` must allow that warning, for
   example with `-Wno-error=deprecations`.
+- The SQL error of a failed Haskell callback has the plain message of the
+  exception. This applies, for example, to a function from `createFunction`
+  and to the callbacks of `registerCopyToFunction`. For a `userError`, version
+  0.3 gave `user error (...)`. For an `SQLError`, it gave the `Show` text of
+  the record. Update code that compares the text of these errors.
+- `Database.DuckDB.Simple` also exports `createCast`, `createTableFunction`,
+  `createAggregate`, and `Aggregate` with its fields. These names can clash
+  with your own names when you import the module without a list. Hide these
+  names in the import, or import the module qualified.
 - Empty `Array` parameters raise `SQLError`. Use an SQL empty LIST.
 - A composite parameter with a GEOMETRY CRS that DuckDB does not recognize
   raises `SQLError`. Version 0.3 bound it without the CRS. Configure custom CRS
   names through `connectionGeometryCRS`.
 - DuckDB 2.0 rejects WKB with mixed Z/M member layouts.
 - Decoded VARIANT objects list their keys in DuckDB's lexicographic order.
+
+The typed registrations are new in 0.4. Version 0.3 had no `Registration`,
+`Pragma`, or `Extension` module and no custom options. Its `Copy` module had
+only `registerCopyToFunction`. The arguments of that function do not change,
+except for the type of `copyBindColumnTypes` above. See
+[typed registration](duckdb-simple/README.md#typed-registration).
 
 A repository checkout must generate the ignored build artefacts before it
 builds. CI does this too. Source archives include those artefacts. See the

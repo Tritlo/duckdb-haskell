@@ -162,11 +162,11 @@ build and its installed extensions.
 | Timezones, collations, extension repositories | SQL |
 | Environment, instances, connections, attachment options, schemas, catalog | `duckdb-simple`, `Config`, `Catalog`, and raw V2 |
 | SQL tokenization, statements, prepared statements, expressions, result cursors, Arrow results and streams | `Tokenizer`, query and streaming APIs, `Arrow`, and raw V2 expression operations |
-| Values, logical and custom types, vectors, data chunks, arenas, column collections | Typed conversions, `LogicalRep`, `Registration`, and raw V2 vector operations |
-| Scalar, aggregate, table, cast, and COPY functions and signatures | Managed `Registration` and `Copy` callbacks, typed signatures, and raw V2 |
-| Multi-file functions, table partitioning, batch claiming | Managed `Copy` multi-file setup and `Registration.TableCallbacks` |
-| Replacement scans, file systems, logging, extension entry points | Managed `Registration`, `FileSystem`, `Logging`, and `Extension`. V2 has no custom file-system registration. See [the extension recipe](../dev/extensions/README.md). |
-| Custom options, macro and pragma functions, function documentation, query profiles | `Config`, `Extension`, `Pragma`, `FunctionDocs`, and `QueryMetrics` |
+| Values, logical and custom types, vectors, data chunks, arenas, column collections | Typed conversions, `LogicalRep`, `V2.LogicalRep`, `Registration`, and raw V2 vector operations |
+| Scalar, aggregate, table, cast, and COPY functions and signatures | Typed `Function` and `Copy` registrations, `V2.Registration` and `V2.Copy` callbacks, and raw V2 |
+| Multi-file functions, table partitioning, batch claiming | `Copy.registerMultiFileFunction`, `V2.Copy`, and `V2.Registration.TableCallbacks` |
+| Replacement scans, file systems, logging, extension entry points | Typed `Registration`, `V2.Registration`, `FileSystem`, `Logging`, `V2.Logging`, and `Extension`. V2 has no custom file-system registration. See [the extension recipe](../dev/extensions/README.md). |
+| Custom options, macro and pragma functions, function documentation, query profiles | `Config`, `V2.Config`, `Extension`, `V2.Registration`, `Pragma`, `V2.Pragma`, `V2.FunctionDocs`, and `QueryMetrics` |
 
 Appender access uses the retained API.
 

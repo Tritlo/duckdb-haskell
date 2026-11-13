@@ -9,11 +9,11 @@
 module ExtensionRegressionTests (main, extensionRegressionTests) where
 
 import Control.Exception (AsyncException (ThreadKilled), ErrorCall, Exception (..), SomeException, bracket, bracket_, finally, throwIO, try)
-import Control.Monad (forM, forM_, replicateM_, void, when)
+import Control.Monad (forM, forM_, replicateM_, void)
 import qualified Data.ByteString as BS
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
-import Data.List (find)
+import Data.List (find, sort)
 import Data.Proxy (Proxy (..))
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
@@ -25,10 +25,22 @@ import qualified Database.DuckDB.Simple.Config as Config
 import qualified Database.DuckDB.Simple.Copy as Copy
 import qualified Database.DuckDB.Simple.FileSystem as FileSystem
 import Database.DuckDB.Simple.FromField (FieldValue (..))
+import Database.DuckDB.Simple.Internal (
+    MacroFunctionType,
+    errorTypeCodes,
+    errorTypeFromNative,
+    logLevelFromNative,
+    logLevelToNative,
+    logScopeFromNative,
+    macroFunctionTypeToNative,
+    settingScopeFromNative,
+    settingScopeToNative,
+    tokenTypeFromNative,
+ )
 import qualified Database.DuckDB.Simple.Logging as Logging
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..))
-import qualified Database.DuckDB.Simple.Registration as Registration
 import qualified Database.DuckDB.Simple.Tokenizer as Tokenizer
+import qualified Database.DuckDB.Simple.V2.Registration as Registration
 import System.Directory (getHomeDirectory, removeFile)
 import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, defaultMain, testGroup)
@@ -213,8 +225,8 @@ extensionRegressionTests =
                 void $ execute_ conn "CALL enable_logging(); SET logging_storage = 'captured_log'; SELECT write_log('Matti λ', level := 'warning', log_type := 'HaskellTest'); SET logging_storage = 'memory'"
             received <- filter ((== "HaskellTest") . Logging.logEntryType) <$> readIORef entries
             map Logging.logEntryMessage received @?= ["Matti λ"]
-            map Logging.logEntrySeverity received @?= [DuckDBV2LogLevelWarning]
-            map Logging.logEntryScope received @?= [DuckDBV2LogScopeConnection]
+            map Logging.logEntrySeverity received @?= [Logging.LogLevelWarning]
+            map Logging.logEntryScope received @?= [Logging.LogScopeConnection]
             assertBool "entry has a timestamp" (all ((/= Nothing) . Logging.logEntryTimestamp) received)
             assertBool "entry has a connection id" (all ((/= Nothing) . Logging.logEntryConnectionId) received)
             readIORef flushes >>= assertBool "flush and final cleanup ran" . (>= 2)
@@ -226,35 +238,35 @@ extensionRegressionTests =
                 Logging.registerInstanceLogSink instance_ "instance_log" (\entry -> atomicModifyIORef' entries (\values -> (entry : values, ()))) (pure ())
                 withConnectionOn instance_ \conn -> do
                     void $ execute_ conn "CALL enable_logging(); SET logging_storage = 'instance_log'"
-                    Logging.logConnectionMessage conn DuckDBV2LogLevelWarning "HaskellConnection" "from a connection"
-                    Logging.logInstanceMessage instance_ DuckDBV2LogLevelWarning "HaskellInstance" "from an instance"
+                    Logging.logConnectionMessage conn Logging.LogLevelWarning "HaskellConnection" "from a connection"
+                    Logging.logInstanceMessage instance_ Logging.LogLevelWarning "HaskellInstance" "from an instance"
                     void $ execute_ conn "SET logging_storage = 'memory'"
             received <- readIORef entries
             let ofType kind = filter ((== kind) . Logging.logEntryType) received
             map Logging.logEntryMessage (ofType "HaskellConnection") @?= ["from a connection"]
-            map Logging.logEntryScope (ofType "HaskellConnection") @?= [DuckDBV2LogScopeConnection]
+            map Logging.logEntryScope (ofType "HaskellConnection") @?= [Logging.LogScopeConnection]
             assertBool "connection entry has a connection id" (all ((/= Nothing) . Logging.logEntryConnectionId) (ofType "HaskellConnection"))
             map Logging.logEntryMessage (ofType "HaskellInstance") @?= ["from an instance"]
-            map Logging.logEntryScope (ofType "HaskellInstance") @?= [DuckDBV2LogScopeDatabase]
+            map Logging.logEntryScope (ofType "HaskellInstance") @?= [Logging.LogScopeDatabase]
             map Logging.logEntryConnectionId (ofType "HaskellInstance") @?= [Nothing]
         , testCase "filesystem action exceptions release handles" $
             withTemporaryFile \path ->
                 withConnection ":memory:" \conn -> do
-                    outcome <- try $ FileSystem.withFileHandle conn path [DuckDBV2FileFlagWrite] \_ -> throwIO (userError "file action failure")
+                    outcome <- try $ FileSystem.withFileHandle conn path [FileSystem.FileFlagWrite] \_ -> throwIO (userError "file action failure")
                     case outcome :: Either SomeException () of
                         Left _ -> pure ()
                         Right () -> assertFailure "expected file action exception"
-                    FileSystem.withFileHandle conn path [DuckDBV2FileFlagWrite] \handle -> do
+                    FileSystem.withFileHandle conn path [FileSystem.FileFlagWrite] \handle -> do
                         FileSystem.writeFileHandleBytes handle (BS.pack [0, 255]) >>= (@?= 2)
                         FileSystem.fileHandleSync handle
-                    FileSystem.withFileHandle conn path [DuckDBV2FileFlagRead] \handle -> do
+                    FileSystem.withFileHandle conn path [FileSystem.FileFlagRead] \handle -> do
                         FileSystem.readFileHandleChunk handle 0 >>= (@?= BS.empty)
                         FileSystem.readFileHandleChunk handle 8 >>= (@?= BS.pack [0, 255])
         , testCase "filesystem errors remain controlled" $
             withConnection ":memory:" \conn -> do
-                assertSqlError $ FileSystem.withFileHandle conn "/tmp/duckdb-review-missing-dir/no-file" [DuckDBV2FileFlagRead] (\_ -> pure ())
+                assertSqlError $ FileSystem.withFileHandle conn "/tmp/duckdb-review-missing-dir/no-file" [FileSystem.FileFlagRead] (\_ -> pure ())
                 withTemporaryFile \path ->
-                    assertSqlError $ FileSystem.withFileHandle conn (path <> "\0suffix") [DuckDBV2FileFlagRead] (\_ -> pure ())
+                    assertSqlError $ FileSystem.withFileHandle conn (path <> "\0suffix") [FileSystem.FileFlagRead] (\_ -> pure ())
         , testCase "catalog and config NUL names fail safely" $
             withConnection ":memory:" \conn -> do
                 assertSqlError $ Config.getConfigOption conn "threads\0suffix"
@@ -292,7 +304,7 @@ extensionRegressionTests =
                     Catalog.lookupCatalogEntry conn "memory" "main" "no_such_table" Catalog.CatalogTable >>= (@?= Nothing)
         , testCase "configuration descriptors remain usable after connection close" $
             withConnection ":memory:" \conn -> do
-                Config.setConfigOption conn DuckDBV2SettingScopeGlobal "threads" "1"
+                Config.setConfigOption conn Config.SettingScopeGlobal "threads" "1"
                 options <- Config.listConfigOptions conn
                 fmap Config.configValueText <$> Config.getConfigOption conn "threads" >>= (@?= Just "1")
                 close conn
@@ -308,7 +320,7 @@ extensionRegressionTests =
                 fmap Config.configOptionSetting (find ((== "threads") . Config.configOptionName) options) @?= Just "1"
         , testCase "configuration values resolve case-insensitive names and aliases" $
             withConnection ":memory:" \conn -> do
-                Config.setConfigOption conn DuckDBV2SettingScopeGlobal "threads" "1"
+                Config.setConfigOption conn Config.SettingScopeGlobal "threads" "1"
                 forM_ ["threads", "THREADS", "worker_threads", "WORKER_THREADS"] \name ->
                     fmap Config.configValueText <$> Config.getConfigOption conn name >>= (@?= Just "1")
                 Config.getConfigOption conn "NO_SUCH_CONFIG_OPTION" >>= (@?= Nothing)
@@ -330,21 +342,20 @@ extensionRegressionTests =
         , testCase "custom options retain typed defaults scopes and callback errors" $
             withConnection ":memory:" \conn -> do
                 let option =
-                        (Config.customOption "haskell_limit" (Registration.StructuredType (LogicalTypeScalar DuckDBV2LogicalTypeIdBigInt)))
+                        (Config.customOption "haskell_limit" (Registration.StructuredType (LogicalTypeScalar LogicalTypeIdBigInt)))
                             { Config.customOptionDefault = Just (Registration.defaultValue (3 :: Int64))
                             , Config.customOptionDescription = "A Haskell option"
-                            , Config.customOptionDefaultScope = DuckDBV2SettingScopeSession
-                            , Config.customOptionScopes = [DuckDBV2SettingScopeGlobal, DuckDBV2SettingScopeSession]
-                            , Config.customOptionUpdate = Just \info _ ->
-                                bracket (Registration.output (c_duckdb_v2_custom_option_update_get_value info)) (Registration.destroy c_duckdb_v2_value_destroy) \value -> do
-                                    number <- Registration.output (c_duckdb_v2_value_get_bigint value)
-                                    when (number < 0) $ throwIO (userError "limit must be nonnegative")
+                            , Config.customOptionDefaultScope = Config.SettingScopeSession
+                            , Config.customOptionScopes = [Config.SettingScopeGlobal, Config.SettingScopeSession]
+                            , Config.customOptionUpdate = Just \value -> case value of
+                                FieldInt64 number | number < 0 -> throwIO (userError "limit must be nonnegative")
+                                _ -> pure ()
                             }
                 Config.registerCustomOption conn option
                 Config.getConfigDefaultValue conn "haskell_limit" >>= (@?= FieldInt64 3)
-                Config.setConfigValue conn DuckDBV2SettingScopeSession "haskell_limit" (7 :: Int64)
-                Config.getConfigValue conn "haskell_limit" >>= (@?= (FieldInt64 7, DuckDBV2SettingScopeSession))
-                assertSqlErrorContaining "limit must be nonnegative" $ Config.setConfigValue conn DuckDBV2SettingScopeSession "haskell_limit" (-1 :: Int64)
+                Config.setConfigValue conn Config.SettingScopeSession "haskell_limit" (7 :: Int64)
+                Config.getConfigValue conn "haskell_limit" >>= (@?= (FieldInt64 7, Config.SettingScopeSession))
+                assertSqlErrorContaining "limit must be nonnegative" $ Config.setConfigValue conn Config.SettingScopeSession "haskell_limit" (-1 :: Int64)
                 void $ execute_ conn "RESET haskell_limit"
                 fmap Config.configValueText <$> Config.getConfigOption conn "haskell_limit" >>= (@?= Just "3")
                 assertSqlError $ Config.registerCustomOption conn option
@@ -366,12 +377,101 @@ extensionRegressionTests =
                 Tokenizer.tokenizationUnterminated parsed @?= False
                 forM_ (Tokenizer.tokenizationTokens parsed) \token ->
                     BS.take (BS.length (Tokenizer.tokenBytes token)) (BS.drop (Tokenizer.tokenOffset token) bytes) @?= Tokenizer.tokenBytes token
-                assertBool "comment token" (any ((== DuckDBV2TokenTypeComment) . Tokenizer.tokenType) (Tokenizer.tokenizationTokens parsed))
+                assertBool "comment token" (any ((== Tokenizer.TokenTypeComment) . Tokenizer.tokenType) (Tokenizer.tokenizationTokens parsed))
                 unfinished <- Tokenizer.tokenize conn "SELECT 'unclosed"
                 Tokenizer.tokenizationUnterminated unfinished @?= True
+        , testCase "tokenization reports the type of each token" $
+            withConnection ":memory:" \conn -> do
+                parsed <- Tokenizer.tokenize conn "SELECT amount, 'text', 42 + 1; -- note\n"
+                [(Tokenizer.tokenType token, Tokenizer.tokenBytes token) | token <- Tokenizer.tokenizationTokens parsed]
+                    @?= [ (Tokenizer.TokenTypeKeyword, "SELECT")
+                        , (Tokenizer.TokenTypeIdentifier, "amount")
+                        , (Tokenizer.TokenTypeOperator, ",")
+                        , (Tokenizer.TokenTypeStringLiteral, "'text'")
+                        , (Tokenizer.TokenTypeOperator, ",")
+                        , (Tokenizer.TokenTypeNumberLiteral, "42")
+                        , (Tokenizer.TokenTypeOperator, "+")
+                        , (Tokenizer.TokenTypeNumberLiteral, "1")
+                        , (Tokenizer.TokenTypeTerminator, ";")
+                        , (Tokenizer.TokenTypeComment, "-- note\n")
+                        ]
+        , testCase "configuration writes and reads each setting scope" $
+            withConnection ":memory:" \conn -> do
+                let option name scope =
+                        (Config.customOption name (Registration.StructuredType (LogicalTypeScalar LogicalTypeIdBigInt)))
+                            { Config.customOptionDefault = Just (Registration.defaultValue (0 :: Int64))
+                            , Config.customOptionDefaultScope = scope
+                            , Config.customOptionScopes = [Config.SettingScopeGlobal, Config.SettingScopeSession]
+                            }
+                Config.registerCustomOption conn (option "haskell_global_scope" Config.SettingScopeGlobal)
+                Config.registerCustomOption conn (option "haskell_session_scope" Config.SettingScopeSession)
+                Config.setConfigValue conn Config.SettingScopeDefault "haskell_global_scope" (1 :: Int64)
+                Config.getConfigValue conn "haskell_global_scope" >>= (@?= (FieldInt64 1, Config.SettingScopeGlobal))
+                Config.setConfigOption conn Config.SettingScopeDefault "haskell_session_scope" "2"
+                Config.getConfigValue conn "haskell_session_scope" >>= (@?= (FieldInt64 2, Config.SettingScopeSession))
+                Config.setConfigValue conn Config.SettingScopeGlobal "haskell_global_scope" (3 :: Int64)
+                Config.getConfigValue conn "haskell_global_scope" >>= (@?= (FieldInt64 3, Config.SettingScopeGlobal))
+                Config.setConfigOption conn Config.SettingScopeSession "haskell_global_scope" "4"
+                Config.getConfigValue conn "haskell_global_scope" >>= (@?= (FieldInt64 4, Config.SettingScopeSession))
+                fmap Config.configValueScope <$> Config.getConfigOption conn "haskell_global_scope" >>= (@?= Just Config.SettingScopeSession)
+                options <- Config.listConfigOptions conn
+                sort [(Config.configOptionName descriptor, Config.configOptionScope descriptor, Config.configOptionScopes descriptor) | descriptor <- options, "haskell_" `Text.isPrefixOf` Config.configOptionName descriptor]
+                    @?= [ ("haskell_global_scope", Config.SettingScopeGlobal, [Config.SettingScopeGlobal, Config.SettingScopeSession])
+                        , ("haskell_session_scope", Config.SettingScopeSession, [Config.SettingScopeGlobal, Config.SettingScopeSession])
+                        ]
+        , testCase "log sinks receive each log level and its scope" do
+            entries <- newIORef []
+            withConnection ":memory:" \conn -> do
+                Logging.registerLogSink conn "level_log" (\entry -> atomicModifyIORef' entries (\values -> (entry : values, ()))) (pure ())
+                void $ execute_ conn "CALL enable_logging(level := 'trace'); SET logging_storage = 'level_log'"
+                forM_ [minBound .. maxBound] \level -> Logging.logConnectionMessage conn level "HaskellLevels" (Text.pack (show level))
+                void $ execute_ conn "SET logging_storage = 'memory'"
+            received <- filter ((== "HaskellLevels") . Logging.logEntryType) <$> readIORef entries
+            sort [(Logging.logEntrySeverity entry, Logging.logEntryLevel entry, Logging.logEntryMessage entry) | entry <- received]
+                @?= [ (level, name, Text.pack (show level))
+                    | (level, name) <- zip [minBound .. maxBound] ["TRACE", "DEBUG", "INFO", "WARNING", "ERROR", "FATAL"]
+                    ]
+            map Logging.logEntryScope received @?= replicate 6 Logging.LogScopeConnection
+        , testCase "native errors report their error type" $
+            withConnection ":memory:" \conn ->
+                forM_
+                    [ ("SELEC 1", ErrorQueryParser)
+                    , ("SELECT * FROM no_such_table", ErrorDatabaseCatalog)
+                    , ("SELECT no_such_column", ErrorQueryBinder)
+                    , ("SELECT 'abc'::INTEGER", ErrorTypeConversion)
+                    ]
+                    \(sql, expected) -> do
+                        outcome <- try (execute_ conn sql)
+                        case outcome of
+                            Left (err :: SQLError) -> sqlErrorType err @?= Just expected
+                            Right _ -> assertFailure ("expected an error from " <> show sql)
+        , testCase "each enum value has the name of its native value" do
+            assertNativeRoundTrip settingScopeToNative settingScopeFromNative DuckDBV2SettingScopeMaxEnum
+            assertNativeRoundTrip logLevelToNative logLevelFromNative DuckDBV2LogLevelMaxEnum
+            -- The package converts these three types in one direction only.
+            assertFromNative logScopeFromNative [DuckDBV2LogScopeDatabase, DuckDBV2LogScopeConnection, DuckDBV2LogScopeThread] DuckDBV2LogScopeMaxEnum
+            assertFromNative
+                tokenTypeFromNative
+                [ DuckDBV2TokenTypeInvalid
+                , DuckDBV2TokenTypeKeyword
+                , DuckDBV2TokenTypeIdentifier
+                , DuckDBV2TokenTypeStringLiteral
+                , DuckDBV2TokenTypeNumberLiteral
+                , DuckDBV2TokenTypeOperator
+                , DuckDBV2TokenTypeComment
+                , DuckDBV2TokenTypeTerminator
+                , DuckDBV2TokenTypeEndOfInput
+                ]
+                DuckDBV2TokenTypeMaxEnum
+            let macroTypes = [minBound .. maxBound] :: [MacroFunctionType]
+            map (show . macroFunctionTypeToNative) macroTypes @?= map (("DuckDBV2" <>) . show) macroTypes
+            let errorTypes = [minBound .. maxBound] :: [ErrorType]
+            map (\errorType -> lookup errorType errorTypeCodes >>= errorTypeFromNative) errorTypes @?= map Just errorTypes
+            map (fmap show . (`lookup` errorTypeCodes)) errorTypes @?= map (Just . ("DuckDBV2" <>) . show) errorTypes
+            map errorTypeFromNative [DuckDBV2ErrorNone, DuckDBV2ErrorMaxEnum] @?= [Nothing, Nothing]
         , testCase "positioned file operations preserve the sequential position" $
             withTemporaryFile \path -> withConnection ":memory:" \conn ->
-                FileSystem.withFileHandle conn path [DuckDBV2FileFlagRead, DuckDBV2FileFlagWrite] \handle -> do
+                FileSystem.withFileHandle conn path [FileSystem.FileFlagRead, FileSystem.FileFlagWrite] \handle -> do
                     FileSystem.writeFileHandleBytes handle (BS.pack [1, 2, 3, 4]) >>= (@?= 4)
                     FileSystem.fileHandleSeek handle 1
                     FileSystem.readFileHandleAt handle 2 2 >>= (@?= BS.pack [3, 4])
@@ -380,6 +480,30 @@ extensionRegressionTests =
                     FileSystem.fileHandleTell handle >>= (@?= 1)
                     FileSystem.fileHandleSeek handle 0
                     FileSystem.readFileHandleChunk handle 8 >>= (@?= BS.pack [8, 9, 3, 4])
+        , testCase "file flags of the other file tests create read and write a file" $
+            withTemporaryFile \path -> withConnection ":memory:" \conn -> do
+                removeFile path
+                FileSystem.withFileHandle conn path [FileSystem.FileFlagCreate, FileSystem.FileFlagWrite] \handle ->
+                    FileSystem.writeFileHandleBytes handle (BS.pack [1, 2, 3]) >>= (@?= 3)
+                FileSystem.withFileHandle conn path [FileSystem.FileFlagWrite] \handle ->
+                    FileSystem.writeFileHandleBytes handle (BS.pack [4]) >>= (@?= 1)
+                FileSystem.withFileHandle conn path [FileSystem.FileFlagRead] \handle ->
+                    FileSystem.readFileHandleChunk handle 8 >>= (@?= BS.pack [4, 2, 3])
+                FileSystem.withFileHandle conn path [FileSystem.FileFlagRead, FileSystem.FileFlagWrite] \handle -> do
+                    FileSystem.readFileHandleChunk handle 8 >>= (@?= BS.pack [4, 2, 3])
+                    FileSystem.writeFileHandleBytes handle (BS.pack [5]) >>= (@?= 1)
+                    FileSystem.fileHandleSize handle >>= (@?= 4)
+        , testCase "file flags truncate a file and refuse to create an existing file" $
+            withTemporaryFile \path -> withConnection ":memory:" \conn -> do
+                BS.writeFile path (BS.pack [1, 2, 3])
+                FileSystem.withFileHandle conn path [FileSystem.FileFlagWrite, FileSystem.FileFlagCreateNew] FileSystem.fileHandleSize >>= (@?= 0)
+                let exclusive = [FileSystem.FileFlagWrite, FileSystem.FileFlagCreate, FileSystem.FileFlagExclusiveCreate]
+                assertSqlError $ FileSystem.withFileHandle conn path exclusive (\_ -> pure ())
+                removeFile path
+                FileSystem.withFileHandle conn path exclusive \handle ->
+                    FileSystem.writeFileHandleBytes handle (BS.pack [7]) >>= (@?= 1)
+                FileSystem.withFileHandle conn path [FileSystem.FileFlagRead] \handle ->
+                    FileSystem.readFileHandleChunk handle 8 >>= (@?= BS.pack [7])
         , testCase "file paths support expansion glob movement and removal" $
             withTemporaryFile \path -> withConnection ":memory:" \conn -> do
                 FileSystem.pathExists conn path >>= (@?= True)
@@ -420,7 +544,7 @@ instance Function BrokenSignature where
 data InvalidSignature = InvalidSignature
 
 instance Function InvalidSignature where
-    argumentTypes _ = [DuckDBV2LogicalTypeIdInvalid]
+    argumentTypes _ = [LogicalTypeIdInvalid]
     returnType _ = returnType (Proxy :: Proxy Int64)
     isVolatile _ = False
     applyFunction _ _ = error "unregistered function"
@@ -454,6 +578,27 @@ assertSqlErrorContaining expected action = do
             assertBool ("expected SQL error containing " <> show expected <> ", got " <> show err) $
                 expected `Text.isInfixOf` sqlErrorMessage err
         Right () -> assertFailure "expected SQL error"
+
+{- | Convert each value to its native value and back. The native value must have
+the pattern name of the value. The native sentinel must raise 'SQLError'.
+-}
+assertNativeRoundTrip :: (Bounded a, Enum a, Eq a, Show a, Show native) => (a -> native) -> (native -> IO a) -> native -> Assertion
+assertNativeRoundTrip toNative fromNative sentinel = do
+    let values = [minBound .. maxBound]
+    mapM (fromNative . toNative) values >>= (@?= values)
+    map (show . toNative) values @?= map (("DuckDBV2" <>) . show) values
+    assertSqlErrorContaining "unknown native" (fromNative sentinel)
+
+{- | Check that the native values convert to all constructors in order, and that
+each constructor has the pattern name of its native value. The native sentinel
+must raise 'SQLError'.
+-}
+assertFromNative :: (Bounded a, Enum a, Eq a, Show a, Show native) => (native -> IO a) -> [native] -> native -> Assertion
+assertFromNative fromNative natives sentinel = do
+    values <- mapM fromNative natives
+    values @?= [minBound .. maxBound]
+    map show natives @?= map (("DuckDBV2" <>) . show) values
+    assertSqlErrorContaining "unknown native" (fromNative sentinel)
 
 -- | Remove a temporary file after the action.
 withTemporaryFile :: (FilePath -> IO a) -> IO a

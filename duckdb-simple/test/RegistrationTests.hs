@@ -14,12 +14,13 @@ import qualified Data.Text as Text
 import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple hiding (bind, execute)
 import Database.DuckDB.Simple.FromField (FieldValue (..))
-import qualified Database.DuckDB.Simple.FunctionDocs as Docs
 import qualified Database.DuckDB.Simple.Logging as Logging
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..))
-import qualified Database.DuckDB.Simple.Pragma as Pragma
 import qualified Database.DuckDB.Simple.QueryMetrics as Metrics
-import qualified Database.DuckDB.Simple.Registration as R
+import qualified Database.DuckDB.Simple.V2.FunctionDocs as Docs
+import qualified Database.DuckDB.Simple.V2.Logging as V2Logging
+import qualified Database.DuckDB.Simple.V2.Pragma as Pragma
+import qualified Database.DuckDB.Simple.V2.Registration as R
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (advancePtr, allocaArray, peekArray)
 import Foreign.Ptr (castPtr, nullPtr)
@@ -48,7 +49,7 @@ registrationTests =
         ]
 
 bigint :: R.TypeDeclaration
-bigint = R.StructuredType (LogicalTypeScalar DuckDBV2LogicalTypeIdBigInt)
+bigint = R.StructuredType (LogicalTypeScalar LogicalTypeIdBigInt)
 
 scalarSignature :: [R.FunctionParameter] -> R.FunctionSignature
 scalarSignature parameters = R.FunctionSignature parameters (Just bigint)
@@ -112,7 +113,7 @@ testScalarResolution = withConnection ":memory:" \connection -> do
             forM_ (takeWhile (< count) [0 ..]) $ \index ->
                 bracket (R.output (c_duckdb_v2_vector_get_value argument index)) (R.destroy c_duckdb_v2_value_destroy) $ \value ->
                     R.checked (c_duckdb_v2_vector_set_value result index value)
-        anyType = R.StructuredType (LogicalTypeScalar DuckDBV2LogicalTypeIdAny)
+        anyType = R.StructuredType (LogicalTypeScalar LogicalTypeIdAny)
         signature = R.FunctionSignature [R.parameter "value" anyType] (Just anyType)
         target = R.ConnectionTarget connection
     R.withRegistrationFactory target $ \factory ->
@@ -134,7 +135,7 @@ testScalarResolution = withConnection ":memory:" \connection -> do
 testPragma :: Assertion
 testPragma = withConnection ":memory:" \connection -> do
     let amount = (R.parameter "amount" bigint){R.parameterDefault = Just (R.defaultValue (42 :: Int64))}
-    Pragma.registerPragmaFunction connection "managed_query" [amount] $ Pragma.QueryPragma $ \info _ -> do
+    Pragma.registerPragmaFunctionOn (R.ConnectionTarget connection) "managed_query" [amount] $ Pragma.QueryPragma $ \info _ -> do
         value <- bracket (R.output (c_duckdb_v2_function_bind_get_arg_value info 0)) (R.destroy c_duckdb_v2_value_destroy) (R.output . c_duckdb_v2_value_get_bigint)
         pure ("SELECT " <> Text.pack (show value) <> "::BIGINT")
     query_ connection "PRAGMA managed_query" >>= (@?= [Only (42 :: Int64)])
@@ -150,7 +151,7 @@ testPragma = withConnection ":memory:" \connection -> do
         (Pragma.ExecPragma (\_ _ -> modifyIORef' calls (+ 1)))
     void (execute_ connection "PRAGMA managed_exec")
     readIORef calls >>= (@?= 1)
-    Pragma.registerPragmaFunction connection "managed_pragma_error" [] (Pragma.QueryPragma (\_ _ -> throwIO (userError "managed callback failure")))
+    Pragma.registerPragmaFunctionOn (R.ConnectionTarget connection) "managed_pragma_error" [] (Pragma.QueryPragma (\_ _ -> throwIO (userError "managed callback failure")))
     assertSqlError (query_ connection "PRAGMA managed_pragma_error" :: IO [Only Int64])
     query_ connection "SELECT 1::BIGINT" >>= (@?= [Only (1 :: Int64)])
 
@@ -286,7 +287,7 @@ testContextLog = do
     withConnection ":memory:" \connection -> do
         Logging.registerLogSink connection "context_log" (\entry -> atomicModifyIORef' entries (\values -> (entry : values, ()))) (pure ())
         let logged info context = do
-                Logging.logMessage context DuckDBV2LogLevelWarning "HaskellContext" "from a callback"
+                V2Logging.logMessage context Logging.LogLevelWarning "HaskellContext" "from a callback"
                 count <- R.output (c_duckdb_v2_scalar_function_exec_get_row_count info)
                 vector <- R.output (c_duckdb_v2_scalar_function_exec_get_result info)
                 writeIntegers vector (replicate (fromIntegral count) 1)
@@ -296,7 +297,7 @@ testContextLog = do
         void $ execute_ connection "SET logging_storage = 'memory'"
     received <- filter ((== "HaskellContext") . Logging.logEntryType) <$> readIORef entries
     map Logging.logEntryMessage received @?= ["from a callback"]
-    map Logging.logEntryScope received @?= [DuckDBV2LogScopeConnection]
+    map Logging.logEntryScope received @?= [Logging.LogScopeConnection]
 
 testErrors :: Assertion
 testErrors = withConnection ":memory:" \connection -> do
@@ -333,7 +334,7 @@ testRelease = do
         assertBool "state initialized" (not (null stateRefs))
         pragmaClosure <- newIORef (7 :: Int64)
         pragmaWeak <- mkWeakIORef pragmaClosure (pure ())
-        Pragma.registerPragmaFunction connection "managed_pragma_release" [] (Pragma.ExecPragma (\_ _ -> void (readIORef pragmaClosure)))
+        Pragma.registerPragmaFunctionOn (R.ConnectionTarget connection) "managed_pragma_release" [] (Pragma.ExecPragma (\_ _ -> void (readIORef pragmaClosure)))
         void (execute_ connection "PRAGMA managed_pragma_release")
         failed <- failedRegistration connection
         pure (closureWeak : pragmaWeak : failed : stateRefs)

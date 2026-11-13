@@ -18,10 +18,12 @@ module Database.DuckDB.Simple.Function.Internal (
     ScalarType,
     ScalarValue,
     FunctionArg (),
-    FunctionResult (),
+    FunctionResult (..),
     Function (..),
     createFunctionOn,
     createFunctionWithStateOn,
+    duckTypeForScalar,
+    prepareResultWriter,
 ) where
 
 import Control.Exception (
@@ -35,6 +37,8 @@ import Data.Int (Int16, Int32, Int64)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Text.Foreign as TextForeign
+import Data.Void (Void)
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.Simple.Callback (Allocator, RegistrationTarget, attachOpaque, runCallback, transferCallbackState, withCallbackResources, withRegistrationFactory, withTarget)
 import Database.DuckDB.Simple.FromField (
@@ -46,9 +50,10 @@ import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (advancePtr, allocaArray, peekArray)
-import Foreign.Ptr (Ptr, castPtr, nullPtr)
+import Foreign.Marshal.Utils (copyBytes, fillBytes)
+import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, deRefStablePtr)
-import Foreign.Storable (peekElemOff, pokeElemOff)
+import Foreign.Storable (peekElemOff, pokeByteOff, pokeElemOff, sizeOf)
 import GHC.Float (float2Double)
 import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
 
@@ -138,53 +143,53 @@ instance (FunctionResult a) => FunctionResult (Maybe a) where
 
 -- | Argument types supported by the scalar function machinery.
 class FunctionArg a where
-    argumentType :: Proxy a -> DuckDBV2LogicalTypeId
+    argumentType :: Proxy a -> LogicalTypeId
 
 instance FunctionArg Int where
-    argumentType _ = DuckDBV2LogicalTypeIdBigInt
+    argumentType _ = LogicalTypeIdBigInt
 
 instance FunctionArg Int16 where
-    argumentType _ = DuckDBV2LogicalTypeIdSmallInt
+    argumentType _ = LogicalTypeIdSmallInt
 
 instance FunctionArg Int32 where
-    argumentType _ = DuckDBV2LogicalTypeIdInteger
+    argumentType _ = LogicalTypeIdInteger
 
 instance FunctionArg Int64 where
-    argumentType _ = DuckDBV2LogicalTypeIdBigInt
+    argumentType _ = LogicalTypeIdBigInt
 
 instance FunctionArg Word where
-    argumentType _ = DuckDBV2LogicalTypeIdUBigInt
+    argumentType _ = LogicalTypeIdUBigInt
 
 instance FunctionArg Word16 where
-    argumentType _ = DuckDBV2LogicalTypeIdUSmallInt
+    argumentType _ = LogicalTypeIdUSmallInt
 
 instance FunctionArg Word32 where
-    argumentType _ = DuckDBV2LogicalTypeIdUInteger
+    argumentType _ = LogicalTypeIdUInteger
 
 instance FunctionArg Word64 where
-    argumentType _ = DuckDBV2LogicalTypeIdUBigInt
+    argumentType _ = LogicalTypeIdUBigInt
 
 instance FunctionArg Double where
-    argumentType _ = DuckDBV2LogicalTypeIdDouble
+    argumentType _ = LogicalTypeIdDouble
 
 instance FunctionArg Float where
-    argumentType _ = DuckDBV2LogicalTypeIdFloat
+    argumentType _ = LogicalTypeIdFloat
 
 instance FunctionArg Bool where
-    argumentType _ = DuckDBV2LogicalTypeIdBoolean
+    argumentType _ = LogicalTypeIdBoolean
 
 instance FunctionArg Text where
-    argumentType _ = DuckDBV2LogicalTypeIdVarchar
+    argumentType _ = LogicalTypeIdVarchar
 
 instance FunctionArg String where
-    argumentType _ = DuckDBV2LogicalTypeIdVarchar
+    argumentType _ = LogicalTypeIdVarchar
 
 instance (FunctionArg a) => FunctionArg (Maybe a) where
     argumentType _ = argumentType (Proxy :: Proxy a)
 
 -- | Typeclass describing Haskell functions that can be exposed to DuckDB.
 class Function a where
-    argumentTypes :: Proxy a -> [DuckDBV2LogicalTypeId]
+    argumentTypes :: Proxy a -> [LogicalTypeId]
     returnType :: Proxy a -> ScalarType
     isVolatile :: Proxy a -> Bool
     applyFunction :: [Field] -> a -> IO ScalarValue
@@ -258,17 +263,17 @@ registerScalarFunction target name proxy acquire = do
                     register
 
 -- | Release each owned logical type after the signature copies it.
-withLogicalType :: DuckDBV2FactoryHandle -> DuckDBV2LogicalTypeId -> (DuckDBV2LogicalTypeHandle -> IO a) -> IO a
+withLogicalType :: DuckDBV2FactoryHandle -> LogicalTypeId -> (DuckDBV2LogicalTypeHandle -> IO a) -> IO a
 withLogicalType factory dtype =
-    bracket (output (c_duckdb_v2_factory_create_type_from_id factory dtype (ConstPtr nullPtr) (ConstPtr nullPtr) 0)) destroyLogicalType
+    bracket (output (c_duckdb_v2_factory_create_type_from_id factory (logicalTypeIdToNative dtype) (ConstPtr nullPtr) (ConstPtr nullPtr) 0)) destroyLogicalType
 
-duckTypeForScalar :: ScalarType -> DuckDBV2LogicalTypeId
+duckTypeForScalar :: ScalarType -> LogicalTypeId
 duckTypeForScalar = \case
-    ScalarTypeBoolean -> DuckDBV2LogicalTypeIdBoolean
-    ScalarTypeBigInt -> DuckDBV2LogicalTypeIdBigInt
-    ScalarTypeUBigInt -> DuckDBV2LogicalTypeIdUBigInt
-    ScalarTypeDouble -> DuckDBV2LogicalTypeIdDouble
-    ScalarTypeVarchar -> DuckDBV2LogicalTypeIdVarchar
+    ScalarTypeBoolean -> LogicalTypeIdBoolean
+    ScalarTypeBigInt -> LogicalTypeIdBigInt
+    ScalarTypeUBigInt -> LogicalTypeIdUBigInt
+    ScalarTypeDouble -> LogicalTypeIdDouble
+    ScalarTypeVarchar -> LogicalTypeIdVarchar
 
 scalarFunctionHandler :: forall f. (Function f) => f -> DuckDBV2ScalarFunctionExecInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
 scalarFunctionHandler fn info context err = runCallback err (executeScalarFunction fn info context)
@@ -326,31 +331,81 @@ writeResults context resultType values outVec = do
     checked (c_duckdb_v2_vector_flatten outVec)
     dataPtr <- output (c_duckdb_v2_vector_get_data_mutable outVec)
     validityPtr <- output (c_duckdb_v2_vector_flat_get_validity_mutable outVec)
-    forM_ (zip [0 ..] values) \(idx, val) ->
-        case (resultType, val) of
-            (_, ScalarNull) ->
-                markInvalid validityPtr idx
-            (ScalarTypeBoolean, ScalarBoolean flag) -> do
-                markValid validityPtr idx
-                pokeElemOff (castPtr dataPtr :: Ptr Word8) idx (if flag then 1 else 0)
-            (ScalarTypeBigInt, ScalarInteger intval) -> do
-                markValid validityPtr idx
-                pokeElemOff (castPtr dataPtr :: Ptr Int64) idx intval
-            (ScalarTypeUBigInt, ScalarUnsigned intval) -> do
-                markValid validityPtr idx
-                pokeElemOff (castPtr dataPtr :: Ptr Word64) idx intval
-            (ScalarTypeDouble, ScalarDouble dbl) -> do
-                markValid validityPtr idx
-                pokeElemOff (castPtr dataPtr :: Ptr Double) idx dbl
-            (ScalarTypeVarchar, ScalarText txt) ->
-                bracket
-                    (withContextFactory context \factory -> withText txt (output . c_duckdb_v2_value_create_varchar factory))
-                    (destroy c_duckdb_v2_value_destroy)
-                    \value -> checked (c_duckdb_v2_vector_set_value outVec (fromIntegral idx) value)
-            _ ->
-                throwIO
-                    $ functionInvocationError
-                    $ Text.pack "duckdb-simple: result type mismatch when materialising scalar function output"
+    let writeText idx txt =
+            bracket
+                (withContextFactory context \factory -> withText txt (output . c_duckdb_v2_value_create_varchar factory))
+                (destroy c_duckdb_v2_value_destroy)
+                \value -> checked (c_duckdb_v2_vector_set_value outVec (fromIntegral idx) value)
+    forM_ (zip [0 ..] values) \(idx, val) -> writeScalarValue writeText dataPtr validityPtr resultType idx val
+
+{- | Write one value at a row of a flat vector. The data and validity pointers
+belong to the vector. The text action writes a VARCHAR value and its validity.
+-}
+writeScalarValue :: (Int -> Text -> IO ()) -> Ptr Void -> Ptr Word64 -> ScalarType -> Int -> ScalarValue -> IO ()
+writeScalarValue writeText dataPtr validityPtr resultType idx val =
+    case (resultType, val) of
+        (_, ScalarNull) ->
+            markInvalid validityPtr idx
+        (ScalarTypeBoolean, ScalarBoolean flag) -> do
+            markValid validityPtr idx
+            pokeElemOff (castPtr dataPtr :: Ptr Word8) idx (if flag then 1 else 0)
+        (ScalarTypeBigInt, ScalarInteger intval) -> do
+            markValid validityPtr idx
+            pokeElemOff (castPtr dataPtr :: Ptr Int64) idx intval
+        (ScalarTypeUBigInt, ScalarUnsigned intval) -> do
+            markValid validityPtr idx
+            pokeElemOff (castPtr dataPtr :: Ptr Word64) idx intval
+        (ScalarTypeDouble, ScalarDouble dbl) -> do
+            markValid validityPtr idx
+            pokeElemOff (castPtr dataPtr :: Ptr Double) idx dbl
+        (ScalarTypeVarchar, ScalarText txt) ->
+            writeText idx txt
+        _ ->
+            throwIO
+                $ functionInvocationError
+                $ Text.pack "duckdb-simple: result type mismatch when materialising scalar function output"
+
+{- | Prepare a writer for the rows of a flat result vector. The writer does not
+change the size of the vector, and it needs no factory: it writes a VARCHAR
+value to the arena of the vector. An aggregate finalize callback has no
+factory, and its result vector can report a size of 0. A vector that is not
+flat raises an error.
+-}
+prepareResultWriter :: ScalarType -> DuckDBV2VectorHandle -> IO (Int -> ScalarValue -> IO ())
+prepareResultWriter resultType vector = do
+    kind <- output (c_duckdb_v2_vector_get_vector_type vector)
+    when (kind /= DuckDBV2VectorTypeFlat) $
+        throwIO (functionInvocationError (Text.pack ("duckdb-simple: the result vector is not flat: " <> show kind)))
+    dataPtr <- output (c_duckdb_v2_vector_get_data_mutable vector)
+    validityPtr <- output (c_duckdb_v2_vector_flat_get_validity_mutable vector)
+    let writeText idx txt = do
+            markValid validityPtr idx
+            writeArenaText vector dataPtr idx txt
+    pure (writeScalarValue writeText dataPtr validityPtr resultType)
+
+{- | Write a VARCHAR value at a row of a flat vector without a factory. The
+16-byte slot has the byte length at byte 0. A value of at most 12 bytes follows
+the length. A longer value goes to the arena of the vector. The slot then holds
+the first 4 bytes of the value at byte 4 and the address of the value at byte 8.
+-}
+writeArenaText :: DuckDBV2VectorHandle -> Ptr Void -> Int -> Text -> IO ()
+writeArenaText vector dataPtr idx txt = do
+    let len = TextForeign.lengthWord8 txt
+        size = sizeOf (undefined :: DuckDBV2Bytes)
+        slot = dataPtr `plusPtr` (idx * size)
+    when (len > fromIntegral (maxBound :: Word32)) $
+        throwIO (functionInvocationError "duckdb-simple: a VARCHAR result is longer than 4 GiB")
+    -- DuckDB compares the unused inline bytes. They must be zero.
+    fillBytes slot 0 size
+    pokeByteOff slot 0 (fromIntegral len :: Word32)
+    if len <= 12
+        then TextForeign.unsafeCopyToPtr txt (slot `plusPtr` 4)
+        else do
+            arena <- output (c_duckdb_v2_vector_get_arena vector)
+            bytes <- output (c_duckdb_v2_arena_allocate arena (fromIntegral len))
+            TextForeign.unsafeCopyToPtr txt bytes
+            copyBytes (slot `plusPtr` 4) bytes 4
+            pokeByteOff slot 8 bytes
 
 markInvalid :: Ptr Word64 -> Int -> IO ()
 markInvalid validity idx = do

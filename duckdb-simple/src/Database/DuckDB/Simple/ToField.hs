@@ -16,6 +16,8 @@ delegating to the DuckDB C API under the hood.
 module Database.DuckDB.Simple.ToField (
     FieldBinding,
     ToDuckValue (..),
+    ValueFactory,
+    NativeValue,
     ToField (..),
     DuckDBColumnType (..),
     NamedParam (..),
@@ -57,8 +59,6 @@ import Database.DuckDB.Simple.LogicalRep (
     TupleValue (..),
     UnionMemberType (..),
     UnionValue (..),
-    logicalTypeFromRep,
-    logicalTypeToRep,
     structValueTypeRep,
     tupleValueTypeRep,
     unionValueTypeRep,
@@ -67,6 +67,7 @@ import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
 import Database.DuckDB.Simple.TypeCache (TypeCache, cachedLogicalType, typeCacheConnection)
 import Database.DuckDB.Simple.Types (Null (..))
+import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeFromRep, logicalTypeToRep)
 import Database.DuckDB.Simple.Variant (Variant (..))
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.Types (CDouble (..), CFloat (..))
@@ -90,14 +91,14 @@ data FieldBinding = FieldBinding
     , fieldBindingDisplay :: !String
     }
 
--- | Low-level class for values that can be marshalled directly into `DuckDBV2ValueHandle`s.
+-- | Low-level class for values that convert directly to a 'NativeValue'.
 class (DuckDBColumnType a) => ToDuckValue a where
     {- | Construct an owned value through a borrowed native factory. Keep the
     owner of the factory (a connection, a callback context, or an instance)
     alive until you destroy the value. Use 'ToField' to resolve arbitrary CRS
     labels from connection options.
     -}
-    toDuckValue :: DuckDBV2FactoryHandle -> a -> IO DuckDBV2ValueHandle
+    toDuckValue :: ValueFactory -> a -> IO NativeValue
 
 valueBinding :: String -> (DuckDBV2FactoryHandle -> IO DuckDBV2ValueHandle) -> FieldBinding
 valueBinding display make = cacheValueBinding display \cache -> withConnectionFactory (typeCacheConnection cache) make
@@ -134,8 +135,8 @@ collectionChildType _ = Nothing
 -- | Promote only UTC leaves that correspond to nanosecond parameter leaves.
 timestampTypeForTarget :: Maybe LogicalTypeRep -> LogicalTypeRep -> LogicalTypeRep
 timestampTypeForTarget target source = case (target, source) of
-    (Just (LogicalTypeScalar DuckDBV2LogicalTypeIdTimestampTzNs), LogicalTypeScalar DuckDBV2LogicalTypeIdTimestampTz) ->
-        LogicalTypeScalar DuckDBV2LogicalTypeIdTimestampTzNs
+    (Just (LogicalTypeScalar LogicalTypeIdTimestampTzNs), LogicalTypeScalar LogicalTypeIdTimestampTz) ->
+        LogicalTypeScalar LogicalTypeIdTimestampTzNs
     (_, LogicalTypeList child) ->
         maybe source (\expected -> LogicalTypeList (timestampTypeForTarget (Just expected) child)) (collectionChildType target)
     (_, LogicalTypeArray child size) ->
@@ -251,11 +252,11 @@ instance ToField Variant where
             withConnectionFactory (typeCacheConnection cache) \factory -> variantDuckValue (cachedLogicalType cache) factory (variantPayload value)
 
 instance ToField UTCTime where
-    toField value = temporalValueBinding (show value) (LogicalTypeScalar DuckDBV2LogicalTypeIdTimestampTz) (FieldTimestampTZ (Finite value)) (\cache -> withConnectionFactory (typeCacheConnection cache) \factory -> utcTimeDuckValue factory value)
+    toField value = temporalValueBinding (show value) (LogicalTypeScalar LogicalTypeIdTimestampTz) (FieldTimestampTZ (Finite value)) (\cache -> withConnectionFactory (typeCacheConnection cache) \factory -> utcTimeDuckValue factory value)
 instance ToField (Unbounded Day)
 instance ToField (Unbounded LocalTime)
 instance ToField (Unbounded UTCTime) where
-    toField value = temporalValueBinding (show value) (LogicalTypeScalar DuckDBV2LogicalTypeIdTimestampTz) (FieldTimestampTZ value) (\cache -> withConnectionFactory (typeCacheConnection cache) \factory -> utcTimestampDuckValue factory value)
+    toField value = temporalValueBinding (show value) (LogicalTypeScalar LogicalTypeIdTimestampTz) (FieldTimestampTZ value) (\cache -> withConnectionFactory (typeCacheConnection cache) \factory -> utcTimestampDuckValue factory value)
 
 instance ToField BigNum where
     toField big@(BigNum n) = valueBinding (show n) (\factory -> bigNumDuckValue factory big)
@@ -411,7 +412,7 @@ nullBinding :: String -> FieldBinding
 nullBinding repr = valueBinding repr nullDuckValue
 
 nullDuckValue :: DuckDBV2FactoryHandle -> IO DuckDBV2ValueHandle
-nullDuckValue factory = bracket (logicalTypeFromRep factory (LogicalTypeScalar DuckDBV2LogicalTypeIdSQLNull)) destroyLogicalType (\logical -> output (c_duckdb_v2_value_create_null factory logical))
+nullDuckValue factory = bracket (logicalTypeFromRep factory (LogicalTypeScalar LogicalTypeIdSQLNull)) destroyLogicalType (\logical -> output (c_duckdb_v2_value_create_null factory logical))
 
 boolDuckValue :: DuckDBV2FactoryHandle -> Bool -> IO DuckDBV2ValueHandle
 boolDuckValue factory value = output (c_duckdb_v2_value_create_bool factory (if value then 1 else 0))
@@ -615,7 +616,7 @@ fieldValueWithTypeDuckValue :: (LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle) 
 fieldValueWithTypeDuckValue makeType factory rep FieldNull = bracket (makeType rep) destroyLogicalType \logical ->
     output (c_duckdb_v2_value_create_null factory logical)
 fieldValueWithTypeDuckValue makeType factory rep value = case (rep, value) of
-    (LogicalTypeScalar DuckDBV2LogicalTypeIdVariant, _) -> variantDuckValue makeType factory value
+    (LogicalTypeScalar LogicalTypeIdVariant, _) -> variantDuckValue makeType factory value
     (LogicalTypeScalar dtype, _) -> scalarFieldValueDuckValue factory dtype value
     (LogicalTypeCollatedVarchar _, FieldText text) -> textDuckValue factory text
     (LogicalTypeGeometry _, FieldGeometry{}) -> unsupportedRawGeometryBinding
@@ -644,43 +645,43 @@ fieldValueWithTypeDuckValue makeType factory rep value = case (rep, value) of
         withCreatedValues (map (fieldValueWithTypeDuckValue makeType factory child) values) \native -> withArray native \ptr ->
             output (create factory logical (ConstPtr ptr) (fromIntegral (length native)))
 
-scalarFieldValueDuckValue :: DuckDBV2FactoryHandle -> DuckDBV2LogicalTypeId -> FieldValue -> IO DuckDBV2ValueHandle
+scalarFieldValueDuckValue :: DuckDBV2FactoryHandle -> LogicalTypeId -> FieldValue -> IO DuckDBV2ValueHandle
 scalarFieldValueDuckValue factory dtype value = case (dtype, value) of
-    (DuckDBV2LogicalTypeIdBoolean, FieldBool b) -> boolDuckValue factory b
-    (DuckDBV2LogicalTypeIdTinyInt, FieldInt8 i) -> int8DuckValue factory i
-    (DuckDBV2LogicalTypeIdSmallInt, FieldInt16 i) -> int16DuckValue factory i
-    (DuckDBV2LogicalTypeIdInteger, FieldInt32 i) -> int32DuckValue factory i
-    (DuckDBV2LogicalTypeIdBigInt, FieldInt64 i) -> int64DuckValue factory i
-    (DuckDBV2LogicalTypeIdUTinyInt, FieldWord8 w) -> uint8DuckValue factory w
-    (DuckDBV2LogicalTypeIdUSmallInt, FieldWord16 w) -> uint16DuckValue factory w
-    (DuckDBV2LogicalTypeIdUInteger, FieldWord32 w) -> uint32DuckValue factory w
-    (DuckDBV2LogicalTypeIdUBigInt, FieldWord64 w) -> uint64DuckValue factory w
-    (DuckDBV2LogicalTypeIdFloat, FieldFloat f) -> floatDuckValue factory f
-    (DuckDBV2LogicalTypeIdDouble, FieldDouble d) -> doubleDuckValue factory d
-    (DuckDBV2LogicalTypeIdVarchar, FieldText t) -> textDuckValue factory t
-    (DuckDBV2LogicalTypeIdBlob, FieldBlob b) -> blobDuckValue factory b
-    (DuckDBV2LogicalTypeIdGeometry, FieldGeometry{}) -> unsupportedRawGeometryBinding
-    (DuckDBV2LogicalTypeIdUUID, FieldUUID u) -> uuidDuckValue factory u
-    (DuckDBV2LogicalTypeIdBit, FieldBit bits) -> bitDuckValue factory bits
-    (DuckDBV2LogicalTypeIdDate, FieldDate d) -> dateDuckValue factory d
-    (DuckDBV2LogicalTypeIdTime, FieldTime t) -> timeOfDayDuckValue factory t
-    (DuckDBV2LogicalTypeIdTimeNs, FieldTime t) ->
+    (LogicalTypeIdBoolean, FieldBool b) -> boolDuckValue factory b
+    (LogicalTypeIdTinyInt, FieldInt8 i) -> int8DuckValue factory i
+    (LogicalTypeIdSmallInt, FieldInt16 i) -> int16DuckValue factory i
+    (LogicalTypeIdInteger, FieldInt32 i) -> int32DuckValue factory i
+    (LogicalTypeIdBigInt, FieldInt64 i) -> int64DuckValue factory i
+    (LogicalTypeIdUTinyInt, FieldWord8 w) -> uint8DuckValue factory w
+    (LogicalTypeIdUSmallInt, FieldWord16 w) -> uint16DuckValue factory w
+    (LogicalTypeIdUInteger, FieldWord32 w) -> uint32DuckValue factory w
+    (LogicalTypeIdUBigInt, FieldWord64 w) -> uint64DuckValue factory w
+    (LogicalTypeIdFloat, FieldFloat f) -> floatDuckValue factory f
+    (LogicalTypeIdDouble, FieldDouble d) -> doubleDuckValue factory d
+    (LogicalTypeIdVarchar, FieldText t) -> textDuckValue factory t
+    (LogicalTypeIdBlob, FieldBlob b) -> blobDuckValue factory b
+    (LogicalTypeIdGeometry, FieldGeometry{}) -> unsupportedRawGeometryBinding
+    (LogicalTypeIdUUID, FieldUUID u) -> uuidDuckValue factory u
+    (LogicalTypeIdBit, FieldBit bits) -> bitDuckValue factory bits
+    (LogicalTypeIdDate, FieldDate d) -> dateDuckValue factory d
+    (LogicalTypeIdTime, FieldTime t) -> timeOfDayDuckValue factory t
+    (LogicalTypeIdTimeNs, FieldTime t) ->
         timeOfDayUnits 1000000000 t >>= (\encoded -> output (c_duckdb_v2_value_create_time_ns factory encoded)) . fromInteger
-    (DuckDBV2LogicalTypeIdTimeTz, FieldTimeTZ tz) -> timeWithZoneDuckValue factory tz
-    (DuckDBV2LogicalTypeIdTimestamp, FieldTimestamp ts) -> localTimestampDuckValue factory ts
-    (DuckDBV2LogicalTypeIdTimestampSec, FieldTimestamp ts) ->
+    (LogicalTypeIdTimeTz, FieldTimeTZ tz) -> timeWithZoneDuckValue factory tz
+    (LogicalTypeIdTimestamp, FieldTimestamp ts) -> localTimestampDuckValue factory ts
+    (LogicalTypeIdTimestampSec, FieldTimestamp ts) ->
         encodeUnbounded (encodeTimestampUnits 1) ts >>= (\encoded -> output (c_duckdb_v2_value_create_timestamp_sec factory encoded))
-    (DuckDBV2LogicalTypeIdTimestampMs, FieldTimestamp ts) ->
+    (LogicalTypeIdTimestampMs, FieldTimestamp ts) ->
         encodeUnbounded (encodeTimestampUnits 1000) ts >>= (\encoded -> output (c_duckdb_v2_value_create_timestamp_ms factory encoded))
-    (DuckDBV2LogicalTypeIdTimestampNs, FieldTimestamp ts) ->
+    (LogicalTypeIdTimestampNs, FieldTimestamp ts) ->
         encodeUnbounded (encodeTimestampUnits 1000000000) ts >>= (\encoded -> output (c_duckdb_v2_value_create_timestamp_ns factory encoded))
-    (DuckDBV2LogicalTypeIdTimestampTz, FieldTimestampTZ ts) -> utcTimestampDuckValue factory ts
-    (DuckDBV2LogicalTypeIdTimestampTzNs, FieldTimestampTZ ts) -> utcTimestampNsDuckValue factory ts
-    (DuckDBV2LogicalTypeIdInterval, FieldInterval iv) -> intervalDuckValue factory iv
-    (DuckDBV2LogicalTypeIdHugeInt, FieldHugeInt i) -> hugeIntDuckValue factory i
-    (DuckDBV2LogicalTypeIdUHugeInt, FieldUHugeInt i) -> uhugeIntDuckValue factory i
-    (DuckDBV2LogicalTypeIdBigNum, FieldBigNum big) -> bigNumDuckValue factory big
-    (DuckDBV2LogicalTypeIdSQLNull, _) -> nullDuckValue factory
+    (LogicalTypeIdTimestampTz, FieldTimestampTZ ts) -> utcTimestampDuckValue factory ts
+    (LogicalTypeIdTimestampTzNs, FieldTimestampTZ ts) -> utcTimestampNsDuckValue factory ts
+    (LogicalTypeIdInterval, FieldInterval iv) -> intervalDuckValue factory iv
+    (LogicalTypeIdHugeInt, FieldHugeInt i) -> hugeIntDuckValue factory i
+    (LogicalTypeIdUHugeInt, FieldUHugeInt i) -> uhugeIntDuckValue factory i
+    (LogicalTypeIdBigNum, FieldBigNum big) -> bigNumDuckValue factory big
+    (LogicalTypeIdSQLNull, _) -> nullDuckValue factory
     _ ->
         case value of
             FieldNull -> nullDuckValue factory
@@ -754,7 +755,7 @@ unsupportedRawGeometryBinding = throwIO (userError "duckdb-simple: raw GEOMETRY 
 variantDuckValue :: (LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle) -> DuckDBV2FactoryHandle -> FieldValue -> IO DuckDBV2ValueHandle
 variantDuckValue makeType factory value = do
     (rep, payload) <- variantPayloadType value
-    bracket (makeType (LogicalTypeScalar DuckDBV2LogicalTypeIdVariant)) destroyLogicalType \logical ->
+    bracket (makeType (LogicalTypeScalar LogicalTypeIdVariant)) destroyLogicalType \logical ->
         bracket (fieldValueWithTypeDuckValue makeType factory rep payload) destroyValue \native ->
             output (c_duckdb_v2_value_cast factory native logical)
 
@@ -782,40 +783,40 @@ DuckDB 2.0 treats that STRUCT type as a tuple and casts it to a VARIANT array.
 variantPayloadType :: FieldValue -> IO (LogicalTypeRep, FieldValue)
 variantPayloadType value = case value of
     FieldNull -> pure (variant, value)
-    FieldBool{} -> scalar DuckDBV2LogicalTypeIdBoolean
-    FieldInt8{} -> scalar DuckDBV2LogicalTypeIdTinyInt
-    FieldInt16{} -> scalar DuckDBV2LogicalTypeIdSmallInt
-    FieldInt32{} -> scalar DuckDBV2LogicalTypeIdInteger
-    FieldInt64{} -> scalar DuckDBV2LogicalTypeIdBigInt
-    FieldWord8{} -> scalar DuckDBV2LogicalTypeIdUTinyInt
-    FieldWord16{} -> scalar DuckDBV2LogicalTypeIdUSmallInt
-    FieldWord32{} -> scalar DuckDBV2LogicalTypeIdUInteger
-    FieldWord64{} -> scalar DuckDBV2LogicalTypeIdUBigInt
-    FieldHugeInt{} -> scalar DuckDBV2LogicalTypeIdHugeInt
-    FieldUHugeInt{} -> scalar DuckDBV2LogicalTypeIdUHugeInt
-    FieldFloat{} -> scalar DuckDBV2LogicalTypeIdFloat
-    FieldDouble{} -> scalar DuckDBV2LogicalTypeIdDouble
+    FieldBool{} -> scalar LogicalTypeIdBoolean
+    FieldInt8{} -> scalar LogicalTypeIdTinyInt
+    FieldInt16{} -> scalar LogicalTypeIdSmallInt
+    FieldInt32{} -> scalar LogicalTypeIdInteger
+    FieldInt64{} -> scalar LogicalTypeIdBigInt
+    FieldWord8{} -> scalar LogicalTypeIdUTinyInt
+    FieldWord16{} -> scalar LogicalTypeIdUSmallInt
+    FieldWord32{} -> scalar LogicalTypeIdUInteger
+    FieldWord64{} -> scalar LogicalTypeIdUBigInt
+    FieldHugeInt{} -> scalar LogicalTypeIdHugeInt
+    FieldUHugeInt{} -> scalar LogicalTypeIdUHugeInt
+    FieldFloat{} -> scalar LogicalTypeIdFloat
+    FieldDouble{} -> scalar LogicalTypeIdDouble
     FieldDecimal DecimalValue{decimalWidth, decimalScale} -> pure (LogicalTypeDecimal decimalWidth decimalScale, value)
-    FieldText{} -> scalar DuckDBV2LogicalTypeIdVarchar
-    FieldBlob{} -> scalar DuckDBV2LogicalTypeIdBlob
-    FieldUUID{} -> scalar DuckDBV2LogicalTypeIdUUID
-    FieldDate{} -> scalar DuckDBV2LogicalTypeIdDate
+    FieldText{} -> scalar LogicalTypeIdVarchar
+    FieldBlob{} -> scalar LogicalTypeIdBlob
+    FieldUUID{} -> scalar LogicalTypeIdUUID
+    FieldDate{} -> scalar LogicalTypeIdDate
     FieldTime time
-        | hasNanos time -> scalar DuckDBV2LogicalTypeIdTimeNs
-        | otherwise -> scalar DuckDBV2LogicalTypeIdTime
+        | hasNanos time -> scalar LogicalTypeIdTimeNs
+        | otherwise -> scalar LogicalTypeIdTime
     FieldTimestamp (Finite LocalTime{localDay, localTimeOfDay})
-        | hasNanos localTimeOfDay -> scalar DuckDBV2LogicalTypeIdTimestampNs
-        | inFiniteRange (minBound :: Int64) maxBound micros -> scalar DuckDBV2LogicalTypeIdTimestamp
-        | micros `rem` 1000 == 0 && inFiniteRange (minBound :: Int64) maxBound (micros `div` 1000) -> scalar DuckDBV2LogicalTypeIdTimestampMs
-        | micros `rem` 1000000 == 0 && inFiniteRange (minBound :: Int64) maxBound (micros `div` 1000000) -> scalar DuckDBV2LogicalTypeIdTimestampSec
+        | hasNanos localTimeOfDay -> scalar LogicalTypeIdTimestampNs
+        | inFiniteRange (minBound :: Int64) maxBound micros -> scalar LogicalTypeIdTimestamp
+        | micros `rem` 1000 == 0 && inFiniteRange (minBound :: Int64) maxBound (micros `div` 1000) -> scalar LogicalTypeIdTimestampMs
+        | micros `rem` 1000000 == 0 && inFiniteRange (minBound :: Int64) maxBound (micros `div` 1000000) -> scalar LogicalTypeIdTimestampSec
       where
         micros = diffDays localDay (fromGregorian 1970 1 1) * 86400 * 1000000 + diffTimeToPicoseconds (timeOfDayToTime localTimeOfDay) `div` 1000000
-    FieldTimestamp{} -> scalar DuckDBV2LogicalTypeIdTimestamp
+    FieldTimestamp{} -> scalar LogicalTypeIdTimestamp
     FieldTimestampTZ instant -> scalar (variantUtcTimestampType instant)
-    FieldTimeTZ{} -> scalar DuckDBV2LogicalTypeIdTimeTz
-    FieldInterval{} -> scalar DuckDBV2LogicalTypeIdInterval
-    FieldBigNum{} -> scalar DuckDBV2LogicalTypeIdBigNum
-    FieldBit{} -> scalar DuckDBV2LogicalTypeIdBit
+    FieldTimeTZ{} -> scalar LogicalTypeIdTimeTz
+    FieldInterval{} -> scalar LogicalTypeIdInterval
+    FieldBigNum{} -> scalar LogicalTypeIdBigNum
+    FieldBit{} -> scalar LogicalTypeIdBit
     FieldList{} -> pure (LogicalTypeList variant, value)
     FieldArray items -> pure (LogicalTypeList variant, FieldList (elems items))
     FieldTuple TupleValue{tupleValueFields} -> pure (LogicalTypeList variant, FieldList (elems tupleValueFields))
@@ -832,15 +833,15 @@ variantPayloadType value = case value of
     FieldMap{} -> throwIO (userError "duckdb-simple: VARIANT payloads cannot contain MAP values")
     FieldEnum{} -> throwIO (userError "duckdb-simple: VARIANT payloads cannot contain ENUM values")
   where
-    variant = LogicalTypeScalar DuckDBV2LogicalTypeIdVariant
+    variant = LogicalTypeScalar LogicalTypeIdVariant
     scalar dtype = pure (LogicalTypeScalar dtype, value)
     hasNanos time = snd (properFraction (todSec time * 1000000) :: (Integer, Pico)) /= 0
 
 -- | Choose nanosecond storage for a precise UTC VARIANT payload.
-variantUtcTimestampType :: UTCTimestamp -> DuckDBV2LogicalTypeId
+variantUtcTimestampType :: UTCTimestamp -> LogicalTypeId
 variantUtcTimestampType (Finite instant)
-    | snd (properFraction (todSec (localTimeOfDay (utcToLocalTime utc instant)) * 1000000) :: (Integer, Pico)) /= 0 = DuckDBV2LogicalTypeIdTimestampTzNs
-variantUtcTimestampType _ = DuckDBV2LogicalTypeIdTimestampTz
+    | snd (properFraction (todSec (localTimeOfDay (utcToLocalTime utc instant)) * 1000000) :: (Integer, Pico)) /= 0 = LogicalTypeIdTimestampTzNs
+variantUtcTimestampType _ = LogicalTypeIdTimestampTz
 
 instance ToDuckValue Null where
     toDuckValue factory _ = nullDuckValue factory

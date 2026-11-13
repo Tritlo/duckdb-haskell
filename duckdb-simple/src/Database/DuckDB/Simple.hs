@@ -69,6 +69,7 @@ module Database.DuckDB.Simple (
 
     -- * Errors and conversions
     SQLError (..),
+    ErrorType (..),
     FormatError (..),
     ResultError (..),
     FieldParser,
@@ -89,11 +90,21 @@ module Database.DuckDB.Simple (
     Only (..),
     (:.) (..),
 
-    -- * User-defined scalar functions
+    -- * User-defined scalar functions and casts
     Function (..),
+    LogicalTypeId (..),
     createFunction,
     createFunctionWithState,
     deleteFunction,
+    createCast,
+
+    -- * User-defined table functions
+    TypedRow,
+    createTableFunction,
+
+    -- * User-defined aggregate functions
+    Aggregate (..),
+    createAggregate,
 ) where
 
 import Control.Exception (SomeException, bracket, finally, mask, mask_, onException, throwIO, try)
@@ -107,7 +118,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.FromField (Field (..), FieldParser, FromField (..), ResultError (..))
 import Database.DuckDB.Simple.FromRow (FromRow (..), RowParser, field, fieldWith, numFieldsRemaining, parseRow, rowErrorsToSqlError)
-import Database.DuckDB.Simple.Function (Function (..), createFunction, createFunctionWithState, deleteFunction)
+import Database.DuckDB.Simple.Function (Aggregate (..), Function (..), TypedRow, createAggregate, createCast, createFunction, createFunctionWithState, createTableFunction, deleteFunction)
 import Database.DuckDB.Simple.Internal
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.Result (collectRows, resetStatementStream)

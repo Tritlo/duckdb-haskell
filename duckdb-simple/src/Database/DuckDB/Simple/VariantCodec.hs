@@ -23,8 +23,9 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Foreign as TextForeign
 import Database.DuckDB.Simple.FromField (FieldValue (..))
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), StructValue (..), logicalTypeFromRep)
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), StructValue (..))
 import Database.DuckDB.Simple.Native
+import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeFromRep)
 import Database.DuckDB.Simple.Variant (variantObject)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (withArray)
@@ -176,7 +177,7 @@ withObjectChildren connection keys list action
                     withSQLStatement connection sql \statement ->
                         withStatementValue connection statement (list : keyValues) action
   where
-    structList = LogicalTypeList (LogicalTypeStruct (listArray (0, length keys - 1) [StructField key (LogicalTypeScalar DuckDBV2LogicalTypeIdVariant) | key <- keys]))
+    structList = LogicalTypeList (LogicalTypeStruct (listArray (0, length keys - 1) [StructField key (LogicalTypeScalar LogicalTypeIdVariant) | key <- keys]))
     sql = "SELECT system.main.list_transform($1::VARIANT[], lambda value: system.main.list_value(" <> Text.intercalate "," extracts <> ")) AS payload"
     extracts = ["system.main.variant_extract(value,$" <> Text.pack (show index) <> "::VARCHAR)" | index <- [2 .. length keys + 1]]
 

@@ -16,7 +16,6 @@ import Data.Ratio ((%))
 import qualified Data.Text as Text
 import Data.Time (Day, LocalTime (..), TimeOfDay (..), UTCTime, fromGregorian, localTimeToUTC, utc)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
-import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), returnError)
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..))
@@ -151,9 +150,9 @@ nanosecondTimeTests =
     , testCase "nanosecond targets preserve matching STRUCT MAP and UNION leaves" $ withConnection ":memory:" $ \conn -> do
         let precise = Finite (posixSecondsToUTCTime 0.123456789)
             coarse = Finite (localTimeToUTC utc (LocalTime (fromGregorian 5000 1 1) (TimeOfDay 0 0 0)))
-            utcType = LogicalTypeScalar DuckDBV2LogicalTypeIdTimestampTz
+            utcType = LogicalTypeScalar LogicalTypeIdTimestampTz
             fields = listArray (0, 3) [StructField "Precise" (FieldTimestampTZ precise), StructField "Coarse" (FieldTimestampTZ coarse), StructField "items" (FieldList [FieldTimestampTZ precise, FieldNull, FieldTimestampTZ NegInfinity]), StructField "lookup" (FieldMap [(FieldInt64 1, FieldTimestampTZ precise)])]
-            types = listArray (0, 3) [StructField "Precise" utcType, StructField "Coarse" utcType, StructField "items" (LogicalTypeList utcType), StructField "lookup" (LogicalTypeMap (LogicalTypeScalar DuckDBV2LogicalTypeIdBigInt) utcType)]
+            types = listArray (0, 3) [StructField "Precise" utcType, StructField "Coarse" utcType, StructField "items" (LogicalTypeList utcType), StructField "lookup" (LogicalTypeMap (LogicalTypeScalar LogicalTypeIdBigInt) utcType)]
             struct = StructValue fields types (Map.fromList [("Precise", 0), ("Coarse", 1), ("items", 2), ("lookup", 3)])
             sql = "WITH bound AS (SELECT ?::STRUCT(coarse TIMESTAMPTZ, items TIMESTAMPTZ_NS[], lookup MAP(BIGINT, TIMESTAMPTZ_NS), precise TIMESTAMPTZ_NS) AS value) SELECT value.precise, value.coarse, value.items, map_values(value.lookup) FROM bound"
         (query conn sql (Only struct) :: IO [(UTCTimestamp, UTCTimestamp, [Maybe UTCTimestamp], [UTCTimestamp])]) >>= (@?= [(precise, coarse, [Just precise, Nothing, Just NegInfinity], [precise])])
@@ -163,7 +162,7 @@ nanosecondTimeTests =
         assertIOException (query conn "SELECT ?::UNION(value TIMESTAMPTZ_NS)" (Only union{unionValueLabel = "wrong"}) :: IO [Only FieldValue])
     , testCase "nanosecond tuple targets match positional fields" $ withConnection ":memory:" $ \conn -> do
         let precise = Finite (posixSecondsToUTCTime 0.123456789)
-            utcType = LogicalTypeScalar DuckDBV2LogicalTypeIdTimestampTz
+            utcType = LogicalTypeScalar LogicalTypeIdTimestampTz
             structure names = StructValue (listArray (3, 5) (zipWith StructField names [FieldTimestampTZ precise, FieldTimestampTZ precise, FieldNull])) (listArray (7, 9) [StructField name utcType | name <- names]) (Map.fromList (zip names [0 ..]))
             tuple = TupleValue (listArray (3, 5) [FieldTimestampTZ precise, FieldTimestampTZ precise, FieldNull]) (listArray (7, 9) (replicate 3 utcType))
             named = structure ["first", "second", "optional"]
@@ -177,7 +176,7 @@ nanosecondTimeTests =
             Right _ -> assertFailure "expected tuple arity mismatch"
     , testCase "nested tuple lists retain independent temporal field metadata" $ withConnection ":memory:" $ \conn -> do
         let precise = Finite (posixSecondsToUTCTime 0.123456789)
-            utcType = LogicalTypeScalar DuckDBV2LogicalTypeIdTimestampTz
+            utcType = LogicalTypeScalar LogicalTypeIdTimestampTz
             innerTypes = listArray (4, 4) [StructField "value" utcType]
             inner = StructValue (listArray (2, 2) [StructField "value" (FieldTimestampTZ precise)]) innerTypes (Map.singleton "value" 0)
             tuple = TupleValue (listArray (3, 4) (replicate 2 (FieldStruct inner))) (listArray (6, 7) (replicate 2 (LogicalTypeStruct innerTypes)))

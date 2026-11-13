@@ -22,6 +22,7 @@ module Database.DuckDB.Simple.FromField (
     UnionMemberType (..),
     UnionValue (..),
     LogicalTypeRep (..),
+    LogicalTypeId (..),
     BitString (..),
     bsFromBool,
     BigNum (..),
@@ -63,6 +64,7 @@ import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.Simple.Geometry (RawGeometry (..), fromRawGeometry)
 import Database.DuckDB.Simple.LogicalRep (
+    LogicalTypeId (..),
     LogicalTypeRep (..),
     StructField (..),
     StructValue (..),

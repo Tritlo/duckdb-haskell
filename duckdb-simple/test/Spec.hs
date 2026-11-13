@@ -5,7 +5,6 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeOperators #-}
 
@@ -42,11 +41,6 @@ import Data.Time.LocalTime (
  )
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
-import Database.DuckDB.FFI.V2 (
-    pattern DuckDBV2FileFlagCreate,
-    pattern DuckDBV2FileFlagRead,
-    pattern DuckDBV2FileFlagWrite,
- )
 import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Catalog as Catalog
 import qualified Database.DuckDB.Simple.Config as Config
@@ -95,6 +89,7 @@ import Test.Tasty.ExpectedFailure (expectFailBecause)
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck (testProperty, (===))
 import TimeTests (timeTests)
+import TypedRegistrationTests (typedRegistrationTests)
 import ValueRegressionTests (valueRegressionTests)
 import qualified VariantRegressionTests
 
@@ -215,6 +210,7 @@ tests =
         , nativeStreamingTests
         , extensionRegressionTests
         , registrationTests
+        , typedRegistrationTests
         , copyTests
         , GeometryRegressionTests.tests
         , VariantRegressionTests.tests
@@ -275,11 +271,11 @@ v20Tests =
             exists <- doesFileExist path
             when exists (removeFile path)
             withConnection ":memory:" \conn -> do
-                FileSystem.withFileHandle conn path [DuckDBV2FileFlagCreate, DuckDBV2FileFlagWrite] \handle -> do
+                FileSystem.withFileHandle conn path [FileSystem.FileFlagCreate, FileSystem.FileFlagWrite] \handle -> do
                     written <- FileSystem.writeFileHandleBytes handle payload
                     written @?= fromIntegral (BS.length payload)
                     FileSystem.fileHandleSync handle
-                FileSystem.withFileHandle conn path [DuckDBV2FileFlagRead] \handle -> do
+                FileSystem.withFileHandle conn path [FileSystem.FileFlagRead] \handle -> do
                     size <- FileSystem.fileHandleSize handle
                     size @?= fromIntegral (BS.length payload)
                     bytes <- FileSystem.readFileHandleChunk handle 32

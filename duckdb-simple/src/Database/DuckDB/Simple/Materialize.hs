@@ -42,9 +42,9 @@ import Database.DuckDB.Simple.LogicalRep (
     TupleValue (..),
     UnionMemberType (..),
     UnionValue (..),
-    logicalTypeToRep,
  )
 import Database.DuckDB.Simple.Native
+import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
 import qualified Database.DuckDB.Simple.VariantCodec as VariantCodec
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (withArray)

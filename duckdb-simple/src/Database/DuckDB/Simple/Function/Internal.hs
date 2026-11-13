@@ -314,7 +314,7 @@ type ColumnReader = Int -> IO Field
 
 makeColumnReader :: DuckDBV2ScalarFunctionExecInfoHandle -> Int -> IO ColumnReader
 makeColumnReader info columnIndex = do
-    readValue <- output (c_duckdb_v2_scalar_function_exec_get_arg info (fromIntegral columnIndex)) >>= prepareVectorReader (\_ -> throwIO (functionInvocationError "duckdb-simple: scalar function arguments must use ScalarType"))
+    readValue <- output (c_duckdb_v2_scalar_function_exec_get_arg info (fromIntegral columnIndex)) >>= prepareVectorReader (\_ -> throwIO (functionInvocationError "duckdb-simple: the type of a scalar function argument cannot be or contain VARIANT or GEOMETRY"))
     let name = Text.pack ("arg" <> show columnIndex)
     pure \rowIdx -> do
         value <- readValue rowIdx

@@ -16,19 +16,18 @@ module Database.DuckDB.Simple.Typed.Table (
 ) where
 
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar)
-import Control.Exception (SomeException, bracket, displayException, fromException, throwIO)
+import Control.Exception (bracket, throwIO)
 import Control.Monad (forM, forM_, when, zipWithM_)
-import Data.List (intercalate)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.Callback (attachOpaque, readCallbackState, transferCallbackState)
-import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), ResultError (..))
+import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..))
 import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow)
 import Database.DuckDB.Simple.Materialize (materializeValue)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
-import Database.DuckDB.Simple.Typed (ColumnValue (..), TypedRow (..))
+import Database.DuckDB.Simple.Typed (ColumnValue (..), TypedRow (..), argumentName, conversionMessage)
 import Database.DuckDB.Simple.V2.Registration (
     FunctionParameter (..),
     FunctionSignature (..),
@@ -145,26 +144,6 @@ readArguments name count factory input = do
                 <$> if isNull /= 0 then pure FieldNull else materializeValue unexpectedVariant factory value
     case parseRow fromRow fields of
         Ok params -> pure params
-        Errors failures -> throwIO (userError (argumentMessage name failures))
+        Errors failures -> throwIO (userError ("duckdb-simple: " <> Text.unpack name <> ": " <> conversionMessage failures))
   where
-    unexpectedVariant _ = pure \_ -> throwIO (userError "duckdb-simple: a table function argument cannot be VARIANT")
-
--- | The name of a parameter. The first parameter, at index 0, is @arg1@.
-argumentName :: Int -> Text
-argumentName index = "arg" <> Text.pack (show (index + 1))
-
--- | Describe the arguments that 'FromRow' cannot convert. The text names the table function.
-argumentMessage :: Text -> [SomeException] -> String
-argumentMessage name failures = "duckdb-simple: " <> Text.unpack name <> ": " <> intercalate "; " (map describe failures)
-  where
-    describe failure = case fromException failure of
-        Just result@UnexpectedNull{} -> "argument " <> Text.unpack (errSQLField result) <> " is NULL, but " <> Text.unpack (errHaskellType result) <> " cannot hold NULL"
-        Just result ->
-            "cannot convert argument "
-                <> Text.unpack (errSQLField result)
-                <> " from "
-                <> Text.unpack (errSQLType result)
-                <> " to "
-                <> Text.unpack (errHaskellType result)
-                <> if Text.null (errMessage result) then "" else ": " <> Text.unpack (errMessage result)
-        Nothing -> displayException failure
+    unexpectedVariant _ = pure \_ -> throwIO (userError "duckdb-simple: the type of a table function argument cannot be or contain VARIANT")

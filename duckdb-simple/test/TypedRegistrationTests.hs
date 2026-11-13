@@ -149,12 +149,12 @@ testCastErrors = withConnection ":memory:" \conn -> do
     registerCustomType conn "typed_small" (TypeExpression "BIGINT")
     createCast conn (TypeExpression "BIGINT") (TypeExpression "typed_small") \(value :: Int8) -> Right (fromIntegral value :: Int64)
     query_ conn "SELECT CAST(5::BIGINT AS typed_small)::BIGINT" >>= (@?= [Only (5 :: Int64)])
-    assertSqlError "cannot convert argument 1 from INT8 to Int8" (query_ conn "SELECT CAST(300::BIGINT AS typed_small)::BIGINT" :: IO [Only Int64])
+    assertSqlError "cannot convert argument arg0 from INT8 to Int8" (query_ conn "SELECT CAST(300::BIGINT AS typed_small)::BIGINT" :: IO [Only Int64])
     -- A VARCHAR value does not convert to Int64. The function does not get NULL.
     registerCustomType conn "typed_number" (TypeExpression "BIGINT")
     createCast conn (TypeExpression "VARCHAR") (TypeExpression "typed_number") \(value :: Int64) -> Right value
     query_ conn "SELECT CAST(NULL::VARCHAR AS typed_number)::BIGINT" >>= (@?= [Only (Nothing :: Maybe Int64)])
-    assertSqlError "cannot convert argument 1 from TEXT to Int64" (query_ conn "SELECT CAST('7'::VARCHAR AS typed_number)::BIGINT" :: IO [Only Int64])
+    assertSqlError "cannot convert argument arg0 from TEXT to Int64" (query_ conn "SELECT CAST('7'::VARCHAR AS typed_number)::BIGINT" :: IO [Only Int64])
     -- TRY_CAST gives NULL for these failed rows.
     query_ conn "SELECT TRY_CAST(13::BIGINT AS typed_partial)::BIGINT, TRY_CAST('7'::VARCHAR AS typed_number)::BIGINT"
         >>= (@?= [(Nothing :: Maybe Int64, Nothing :: Maybe Int64)])
@@ -505,8 +505,8 @@ testAggregateTypes = withConnection ":memory:" \conn -> do
     -- An Int32 argument is INTEGER, but an Int32 result is BIGINT.
     query_ conn "SELECT typeof(typed_any_odd(1)), typeof(typed_mean(1)), typeof(typed_count(1)), typeof(typed_small(1)), typeof(typed_label('x'))"
         >>= (@?= [("BOOLEAN" :: Text, "DOUBLE" :: Text, "UBIGINT" :: Text, "BIGINT" :: Text, "VARCHAR" :: Text)])
-    query_ conn "SELECT function_name, parameter_types::VARCHAR FROM duckdb_functions() WHERE function_name IN ('typed_small', 'typed_tally') ORDER BY function_name"
-        >>= (@?= [("typed_small" :: Text, "[INTEGER]" :: Text), ("typed_tally", "[VARCHAR, BIGINT]")])
+    query_ conn "SELECT function_name, parameters::VARCHAR, parameter_types::VARCHAR FROM duckdb_functions() WHERE function_name IN ('typed_small', 'typed_tally') ORDER BY function_name"
+        >>= (@?= [("typed_small" :: Text, "[arg0]" :: Text, "[INTEGER]" :: Text), ("typed_tally", "[arg0, arg1]", "[VARCHAR, BIGINT]")])
 
 -- | Fail the query for an exception in each function. The next query works.
 testAggregateErrors :: Assertion
@@ -522,6 +522,11 @@ testAggregateErrors = withConnection ":memory:" \conn -> do
     -- states. Then it combines them.
     createAggregate conn "typed_bad_combine" sumAggregate{aggregateCombine = \_ _ -> throwIO (userError "typed_bad_combine: combine")}
     assertSqlError "typed_bad_combine: combine" (query_ conn "SELECT typed_bad_combine(i) OVER (ORDER BY i ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) FROM range(32) t(i)" :: IO [Only Int64])
+    query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+    -- A negative BIGNUM does not convert to Natural. The error names the argument.
+    createAggregate conn "typed_natural_sum" Aggregate{aggregateInitial = 0, aggregateStep = \total (value :: Int64, extra :: Natural) -> pure (total + value + fromIntegral extra), aggregateCombine = \a b -> pure (a + b), aggregateResult = pure :: Int64 -> IO Int64}
+    query_ conn "SELECT typed_natural_sum(i, i) FROM range(10) t(i)" >>= (@?= [Only (90 :: Int64)])
+    assertSqlError "cannot convert argument arg1 from BIGNUM to Natural" (query_ conn "SELECT typed_natural_sum(i, i - 5) FROM range(10) t(i)" :: IO [Only Int64])
     query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
     createAggregate conn "typed_bad_result" sumAggregate{aggregateResult = \total -> if total > 100 then throwIO (userError "typed_bad_result: too large") else pure total}
     query_ conn "SELECT typed_bad_result(i) FROM range(10) t(i)" >>= (@?= [Only (45 :: Int64)])
@@ -650,6 +655,7 @@ testTableParameters = withConnection ":memory:" \conn -> do
     query_ conn "SELECT * FROM typed_labels('x', 5)" >>= (@?= [("x5" :: Text, 5 :: Int64), ("x6", 6), ("x7", 7)])
     -- DuckDB casts an argument to the parameter type.
     query_ conn "SELECT n FROM typed_labels('y', 1::INTEGER)" >>= (@?= map Only [1, 2, 3 :: Int64])
+    query_ conn "SELECT parameters::VARCHAR FROM duckdb_functions() WHERE function_name = 'typed_labels'" >>= (@?= [Only ("[arg0, arg1]" :: Text)])
     -- A NULL argument converts to Nothing.
     createTableFunction conn "typed_optional" ["value"] \(Only (value :: Maybe Int64)) -> pure [Only value]
     query_ conn "SELECT value FROM typed_optional(NULL)" >>= (@?= [Only (Nothing :: Maybe Int64)])
@@ -715,8 +721,8 @@ testTableArgumentErrors = withConnection ":memory:" \conn -> do
     -- DuckDB casts the argument to BIGNUM. A negative BIGNUM does not convert to Natural.
     createTableFunction conn "typed_natural" ["n"] \(Only (value :: Natural)) -> pure [Only (fromIntegral value :: Int64)]
     query_ conn "SELECT n FROM typed_natural(7)" >>= (@?= [Only (7 :: Int64)])
-    assertSqlError "typed_natural: cannot convert argument arg1" (query_ conn "SELECT n FROM typed_natural(-7)" :: IO [Only Int64])
-    assertSqlError "typed_natural: argument arg1 is NULL" (query_ conn "SELECT n FROM typed_natural(NULL)" :: IO [Only Int64])
+    assertSqlError "typed_natural: cannot convert argument arg0" (query_ conn "SELECT n FROM typed_natural(-7)" :: IO [Only Int64])
+    assertSqlError "typed_natural: argument arg0 is NULL" (query_ conn "SELECT n FROM typed_natural(NULL)" :: IO [Only Int64])
     query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
 
 -- | Fail a query with an exception in the function and in a row of the second chunk.

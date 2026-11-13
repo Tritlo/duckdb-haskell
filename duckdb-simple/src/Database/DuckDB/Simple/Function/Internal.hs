@@ -216,7 +216,7 @@ instance {-# OVERLAPPABLE #-} (FromField a, FunctionArg a, Function r) => Functi
         throwIO (functionInvocationError (Text.pack "insufficient arguments supplied"))
     applyFunction (field : rest) fn =
         case fromField field of
-            Errors err -> throwIO (argumentConversionError (fieldIndex field) err)
+            Errors err -> throwIO (argumentConversionError (fieldName field) err)
             Ok value -> applyFunction rest (fn value)
 
 -- | Register a typed function on a connection or a loading extension.
@@ -419,12 +419,12 @@ markValid validity idx = do
     word <- peekElemOff validity wordIndex
     pokeElemOff validity wordIndex (setBit word bitIndex)
 
-argumentConversionError :: Int -> [SomeException] -> SQLError
-argumentConversionError idx err =
+argumentConversionError :: Text -> [SomeException] -> SQLError
+argumentConversionError name err =
     let message =
             Text.concat
-                [ Text.pack "duckdb-simple: unable to convert argument #"
-                , Text.pack (show (idx + 1))
+                [ Text.pack "duckdb-simple: unable to convert argument "
+                , name
                 , Text.pack ": "
                 , Text.pack (show err)
                 ]

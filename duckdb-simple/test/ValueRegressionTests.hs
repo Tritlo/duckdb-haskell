@@ -155,6 +155,13 @@ valueRegressionTests =
                         assertFailureIO (query conn "SELECT ?" (Only values) :: IO [Only FieldValue])
                         withConnectionHandle conn \native -> withConnectionFactory native \factory -> assertFailureIO (bracket (toDuckValue factory values) destroyValue (const (pure ())))
             (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
+        , testCase "a LIST parameter fails at an element of the wrong type after earlier elements" $ withConnection ":memory:" \conn -> do
+            let struct = singleField (LogicalTypeList (LogicalTypeScalar LogicalTypeIdBigInt)) (FieldList [FieldInt64 1, FieldInt64 2, FieldText "x", FieldInt64 4])
+            result <- try (query conn "SELECT ?" (Only struct) :: IO [Only FieldValue])
+            case result of
+                Left (err :: IOException) -> assertBool (show err) ("unsupported scalar conversion for LogicalTypeIdBigInt from FieldText \"x\"" `Text.isInfixOf` Text.pack (show err))
+                Right _ -> assertFailure "expected a conversion error for the third element"
+            (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
         , testCase "GEOMETRY decodes as well-known binary" $ withConnection ":memory:" \conn -> do
             [Only bytes] <- query_ conn "SELECT 'POINT(1 2)'::GEOMETRY" :: IO [Only BS.ByteString]
             BS.length bytes @?= 21

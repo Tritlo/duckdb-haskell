@@ -285,9 +285,12 @@ releaseItems release items = foldM step (Nothing :: Maybe SomeException) items >
   where
     step failure item = either (\err -> failure <|> Just err) (const failure) <$!> try (release item)
 
--- | Release temporary values after construction or failure.
+{- | Create the values in list order, and give them to the action. Destroy the
+values in reverse order of creation after the action or after a failure. One
+'bracket' covers the whole list.
+-}
 withCreatedValues :: [IO DuckDBV2ValueHandle] -> ([DuckDBV2ValueHandle] -> IO a) -> IO a
-withCreatedValues = withMany (\create -> bracket create destroyValue)
+withCreatedValues creates = bracket (acquireItems destroyValue creates) (releaseItems destroyValue . reverse)
 
 -- | List the indices below a native count without unsigned underflow.
 indices :: DuckDBIdx -> [DuckDBIdx]

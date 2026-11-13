@@ -10,6 +10,16 @@ Register pure and IO scalar functions with the managed argument and result
 conversions. Register pure casts with the same argument conversion. Register
 table functions and aggregate functions that convert their arguments with
 'FromRow'.
+
+A callback must not run a statement on the connection that runs the callback.
+Use another connection of the same instance. This rule applies to each
+registered callback, for example of a scalar function, a cast, an aggregate
+function, a table function, a COPY format, a replacement scan, or a pragma.
+The library holds the lock of a connection while it prepares a statement, and
+while 'Database.DuckDB.Simple.query', 'Database.DuckDB.Simple.execute', or a
+default fold runs a statement. DuckDB can run a callback in each of these
+steps. The lock is not reentrant. Thus a statement in the callback waits for
+the lock and does not return.
 -}
 module Database.DuckDB.Simple.Function (
     ScalarType,

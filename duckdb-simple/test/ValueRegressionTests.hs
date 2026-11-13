@@ -135,8 +135,11 @@ valueRegressionTests =
             (query conn "SELECT typeof(?), ?" (pairs, pairs) :: IO [(Text, Array Int (Maybe Pair))]) >>= (@?= [("STRUCT(pairName VARCHAR, pairValue BIGINT)[3]", pairs)])
             let nested = listArray (0, 1) [listArray (0, 1) [1, 2], listArray (0, 1) [3, 4]] :: Array Int (Array Int Int64)
             (query conn "SELECT typeof(?), ?" (nested, nested) :: IO [(Text, Array Int (Array Int Int64))]) >>= (@?= [("BIGINT[2][2]", nested)])
-        , testCase "empty arrays of record elements report the V2 limit" $ withConnection ":memory:" \conn ->
-            assertFailureIO (query conn "SELECT ?" (Only (listArray (0, -1) [] :: Array Int Pair)) :: IO [Only Text])
+        , testCase "empty arrays of record elements report the V2 limit" $ withConnection ":memory:" \conn -> do
+            result <- try (query conn "SELECT ?" (Only (listArray (0, -1) [] :: Array Int Pair)))
+            case result of
+                Left SQLError{sqlErrorMessage} -> assertBool (Text.unpack sqlErrorMessage) ("duckdb-simple: empty ARRAY parameters are unavailable" `Text.isInfixOf` sqlErrorMessage)
+                Right (_ :: [Only Text]) -> assertFailure "expected the V2 empty ARRAY limit"
         , testCase "composite arrays reject schemas that would discard fields or digits" $ withConnection ":memory:" \conn -> do
             forM_
                 [ ("SELECT {'a': 1::INTEGER}", "SELECT {'a': 2::INTEGER, 'b': 3::INTEGER}")

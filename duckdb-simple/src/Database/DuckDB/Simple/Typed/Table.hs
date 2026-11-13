@@ -114,8 +114,11 @@ writeRows factory chunk rows = do
                 checked (c_duckdb_v2_vector_set_size vector size)
                 checked (c_duckdb_v2_vector_flatten vector)
                 pure vector
-            -- Use loops with a constant stack. The runtime reads the stack of
-            -- the thread at each native call, so a deep stack makes each call slow.
+            -- Use loops with a constant stack. Each c_duckdb_v2 binding is a
+            -- safe foreign call. At a safe call, the GHC runtime (threadPaused)
+            -- reads the frames of the current stack chunk. A loop that keeps a
+            -- frame for each row thus makes each native call slower as the
+            -- number of rows grows.
             forM_ (zip [0 ..] now) \(index, row) ->
                 zipWithM_ (\vector (ColumnValue make) -> bracket (make factory) destroyValue (checked . c_duckdb_v2_vector_set_value vector index)) vectors (rowColumnValues row)
             pure later

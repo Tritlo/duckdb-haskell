@@ -62,8 +62,8 @@ library
     Database.DuckDB.Simple.Geometry
     Database.DuckDB.Simple.Internal
     Database.DuckDB.Simple.Logging
-    Database.DuckDB.Simple.LogicalRep
     Database.DuckDB.Simple.Macro
+    Database.DuckDB.Simple.LogicalRep
     Database.DuckDB.Simple.Ok
     Database.DuckDB.Simple.Pragma
     Database.DuckDB.Simple.QueryMetrics
@@ -80,6 +80,7 @@ library
     Database.DuckDB.Simple.Arrow.Internal
     Database.DuckDB.Simple.Callback
     Database.DuckDB.Simple.Element
+    Database.DuckDB.Simple.Function.Internal
     Database.DuckDB.Simple.Materialize
     Database.DuckDB.Simple.Native
     Database.DuckDB.Simple.Result

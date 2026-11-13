@@ -14,6 +14,14 @@ tests are in `duckdb-simple/test`, and its leak test is in `duckdb-simple/leakte
 The pure geometry types and codecs are maintained in
 [geometry-simple](https://github.com/Tritlo/geometry-simple).
 
+## Design principle
+
+The motto of `duckdb-simple` is "least surprise". The library does not add
+hidden behavior. One input gives the same result in each function that accepts
+it, and a function gives the result that DuckDB gives. When two functions treat
+one input in different ways, make them the same, unless a documented reason
+requires the difference.
+
 ## Testing guidelines
 
 Test new behavior through the database where possible. Add regressions for

@@ -104,6 +104,9 @@
   first callback, so a callback can query the same connection.
 - `sqlErrorQuery` gives the query that failed. For a query in the callback of
   an Arrow fold, it gives the query of the callback, not the query of the fold.
+- The message of a native error is decoded with replacement characters. A
+  native error text that is not valid UTF-8 does not raise when the error is
+  shown.
 - While an explicit stream is incomplete, DuckDB rejects other statements on
   its connection. Closing an incomplete stream aborts its statement.
 - Each connection serializes statement preparation and its open native result.

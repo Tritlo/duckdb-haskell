@@ -38,6 +38,8 @@ module Database.DuckDB.Simple.Native (
     destroy,
     destroyValue,
     destroyLogicalType,
+    acquireItems,
+    releaseItems,
     withCreatedValues,
     nullHandle,
     indices,
@@ -61,8 +63,9 @@ module Database.DuckDB.Simple.Native (
     NativeValue,
 ) where
 
-import Control.Exception (Exception, bracket, finally, mask_, throwIO)
-import Control.Monad (unless, when)
+import Control.Applicative ((<|>))
+import Control.Exception (Exception, SomeException, bracket, finally, mask_, onException, throwIO, try)
+import Control.Monad (foldM, unless, when, (<$!>))
 import qualified Data.ByteString as BS
 import Data.Char (isAsciiUpper, toLower)
 import Data.Coerce (Coercible, coerce)
@@ -265,6 +268,22 @@ destroyValue = destroy c_duckdb_v2_value_destroy
 -- | Release an owned native logical type.
 destroyLogicalType :: DuckDBV2LogicalTypeHandle -> IO ()
 destroyLogicalType = destroy c_duckdb_v2_logical_type_destroy
+
+{- | Run the acquire actions in list order under 'mask_', and give the items in
+list order. If an acquire action raises an error, release the items that the
+earlier actions gave, from the last to the first, and raise that error. The
+fold keeps a constant stack.
+-}
+acquireItems :: (a -> IO ()) -> [IO a] -> IO [a]
+acquireItems release = mask_ . fmap reverse . foldM (\owned acquire -> (: owned) <$> acquire `onException` releaseItems release owned) []
+
+{- | Release each item in list order, also when a release raises an error.
+Raise the first error after the last release. The fold keeps a constant stack.
+-}
+releaseItems :: (a -> IO ()) -> [a] -> IO ()
+releaseItems release items = foldM step (Nothing :: Maybe SomeException) items >>= mapM_ throwIO
+  where
+    step failure item = either (\err -> failure <|> Just err) (const failure) <$!> try (release item)
 
 -- | Release temporary values after construction or failure.
 withCreatedValues :: [IO DuckDBV2ValueHandle] -> ([DuckDBV2ValueHandle] -> IO a) -> IO a

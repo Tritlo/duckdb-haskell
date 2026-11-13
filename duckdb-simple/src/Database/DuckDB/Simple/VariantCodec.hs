@@ -15,7 +15,7 @@ module Database.DuckDB.Simple.VariantCodec (
     prepareVariantDecoder,
 ) where
 
-import Control.Exception (SomeException, bracket, evaluate, mask_, onException, throwIO, try)
+import Control.Exception (bracket, evaluate, mask_, throwIO)
 import Control.Monad (forM, unless)
 import Data.Array (elems, listArray, (!))
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
@@ -323,27 +323,6 @@ scalarType tag = case tag of
         | tag `elem` ["FLOAT", "DOUBLE", "VARCHAR", "BLOB", "UUID", "DATE", "INTERVAL", "BIGNUM", "GEOMETRY"] -> pure tag
         | "DECIMAL(" `Text.isPrefixOf` tag && ")" `Text.isSuffixOf` tag -> pure tag
         | otherwise -> codecError ("unsupported scalar tag " <> tag)
-
--- | Acquire owned items without an asynchronous exception between transfers.
-acquireItems :: (a -> IO ()) -> [IO a] -> IO [a]
-acquireItems release = mask_ . go []
-  where
-    go owned [] = pure (reverse owned)
-    go owned (acquire : rest) = do
-        item <- acquire `onException` releaseItems release owned
-        go (item : owned) rest
-
-{- | Release every owned item even if one destructor reports an error. Raise
-the first error after the last release. The loop keeps the stack flat.
--}
-releaseItems :: forall a. (a -> IO ()) -> [a] -> IO ()
-releaseItems release = go Nothing
-  where
-    go :: Maybe SomeException -> [a] -> IO ()
-    go failure [] = mapM_ throwIO failure
-    go failure (item : rest) = do
-        outcome <- try (release item)
-        go (either (\err -> Just (maybe err id failure)) (const failure) outcome) rest
 
 -- | List a node's owned children in their native order.
 nodeChildren :: VariantNode -> [DuckDBV2ValueHandle]

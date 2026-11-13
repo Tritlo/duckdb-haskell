@@ -279,7 +279,7 @@ createInstance environment@Environment{environmentState} settings = keepAlive en
         (deferredSettings, startupSettings) = partition needsInstance settings
         (runtimeSettings, externalAccessSettings) = partition ((/= "enable_external_access") . Text.toLower . fst) deferredSettings
     raw <- withTextArray (map fst startupSettings) \names -> withTextArray (map snd startupSettings) \values ->
-        output (c_duckdb_v2_instance_create_with_options rawEnvironment (ConstPtr names) (ConstPtr values) (fromIntegral (length startupSettings)))
+        output (c_duckdb_v2_instance_create_with_options rawEnvironment (ConstPtr (if null startupSettings then nullPtr else names)) (ConstPtr (if null startupSettings then nullPtr else values)) (fromIntegral (length startupSettings)))
     flip onException (destroy c_duckdb_v2_instance_destroy raw) do
         config <- output (c_duckdb_v2_instance_get_config raw)
         -- Set the whitelist before external access can be disabled.

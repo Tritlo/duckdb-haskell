@@ -329,6 +329,16 @@ extensionRegressionTests =
             withEnvironment \environment -> withInstance environment [("threads", "1")] \instance_ -> do
                 options <- Config.listInstanceOptions instance_
                 fmap Config.configOptionSetting (find ((== "threads") . Config.configOptionName) options) @?= Just "1"
+        , testCase "connection options set a session option on one connection only" $
+            withEnvironment \environment -> withInstance environment [] \instance_ -> do
+                attachDatabase instance_ ":memory:" "shared" []
+                setDefaultDatabase instance_ "shared"
+                -- DuckDB gives progress_bar_time the session scope by default.
+                let options = defaultConnectionOptions{connectionConfig = [("progress_bar_time", "1234")]}
+                bracket (connectWithOptions instance_ options) close \configured ->
+                    withConnectionOn instance_ \other -> do
+                        query_ configured "SELECT current_setting('progress_bar_time')" >>= (@?= [Only (1234 :: Int64)])
+                        query_ other "SELECT current_setting('progress_bar_time')" >>= (@?= [Only (2000 :: Int64)])
         , testCase "configuration values resolve case-insensitive names and aliases" $
             withConnection ":memory:" \conn -> do
                 Config.setConfigOption conn Config.SettingScopeGlobal "threads" "1"

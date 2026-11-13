@@ -4,9 +4,38 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
-module V2Test (tests) where
+module V2Test (
+    argCounts,
+    borrowedOpaque,
+    callbackGuard,
+    checked,
+    consume,
+    countCall,
+    eachPartRequired,
+    expectCallbackFailure,
+    failOnPurpose,
+    fillDocs,
+    output,
+    readArgument,
+    readIntegers,
+    readView,
+    record,
+    removeTestFile,
+    statementError,
+    statementFails,
+    tests,
+    withBytes,
+    withConnection,
+    withFactory,
+    withHandle,
+    withInstance,
+    withResult,
+    withStatement,
+    withType,
+    withView,
+) where
 
-import Control.Exception (SomeException, bracket, catch, finally)
+import Control.Exception (SomeException, bracket, catch, finally, throwIO)
 import Control.Monad (forM, forM_, unless, void)
 import Data.Bits (testBit)
 import Data.Coerce (Coercible, coerce)
@@ -14,15 +43,15 @@ import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (isInfixOf)
 import Data.Void (Void)
-import Data.Word (Word64)
+import Data.Word (Word64, Word8)
 import Database.DuckDB.FFI.V2
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (CString, peekCStringLen, withCString, withCStringLen)
 import Foreign.C.Types (CBool (..), CInt (..))
 import Foreign.Marshal.Alloc (alloca, allocaBytes, free, malloc)
-import Foreign.Marshal.Array (withArray)
+import Foreign.Marshal.Array (withArray, withArrayLen)
 import Foreign.Marshal.Utils (fillBytes, with)
-import Foreign.Ptr (Ptr, freeHaskellFunPtr, nullFunPtr, nullPtr)
+import Foreign.Ptr (Ptr, castPtr, freeHaskellFunPtr, nullFunPtr, nullPtr)
 import Foreign.Storable (Storable (..))
 import GHC.Records (getField)
 import GHC.Stack (HasCallStack)
@@ -81,8 +110,9 @@ withHandle create destroy action = alloca $ \slot -> do
     assertBool "created handle is non-null" (handle /= coerce nullPtr)
     action handle `finally` (destroy slot >>= (@?= DuckDBV2ErrorNone))
 
-withConnection :: (DuckDBV2ConnectionHandle -> IO a) -> IO a
-withConnection action =
+-- | Open an instance with two threads and an attached in-memory database.
+withInstance :: (DuckDBV2InstanceHandle -> IO a) -> IO a
+withInstance action =
     withHandle c_duckdb_v2_environment_create c_duckdb_v2_environment_destroy $ \env ->
         withHandle (c_duckdb_v2_instance_create env) c_duckdb_v2_instance_destroy $ \instanceHandle -> do
             config <- output (c_duckdb_v2_instance_get_config instanceHandle)
@@ -90,14 +120,27 @@ withConnection action =
                 checked (c_duckdb_v2_config_set_option_text config (coerce name) setting DuckDBV2SettingScopeDefault)
             withView ":memory:" $ \path ->
                 checked (c_duckdb_v2_instance_attach instanceHandle (coerce nullPtr) path (coerce nullPtr) (CBool 1))
-            withHandle (c_duckdb_v2_connection_create instanceHandle) c_duckdb_v2_connection_destroy action
+            action instanceHandle
+
+withConnection :: (DuckDBV2ConnectionHandle -> IO a) -> IO a
+withConnection action = withInstance $ \instanceHandle ->
+    withHandle (c_duckdb_v2_connection_create instanceHandle) c_duckdb_v2_connection_destroy action
 
 -- | Borrow a factory for the lifetime of its connection.
 withFactory :: DuckDBV2ConnectionHandle -> (DuckDBV2FactoryHandle -> IO a) -> IO a
 withFactory conn action = output (c_duckdb_v2_connection_get_factory conn) >>= action
 
+-- | Create a logical type from its SQL text.
+withType :: DuckDBV2FactoryHandle -> String -> (DuckDBV2LogicalTypeHandle -> IO a) -> IO a
+withType factory text action = withView text $ \view ->
+    withHandle (c_duckdb_v2_factory_create_type_from_text factory view) c_duckdb_v2_logical_type_destroy action
+
 withView :: String -> (PtrConst DuckDBV2Str -> IO a) -> IO a
 withView text action = withCStringLen text $ \(ptr, len) -> with (DuckDBV2Str (ConstPtr ptr) (fromIntegral len)) (action . ConstPtr)
+
+-- | Pass raw bytes as a view, without a text encoding.
+withBytes :: [Word8] -> (PtrConst DuckDBV2Str -> IO a) -> IO a
+withBytes bytes action = withArrayLen bytes $ \len ptr -> with (DuckDBV2Str (ConstPtr (castPtr ptr)) (fromIntegral len)) (action . ConstPtr)
 
 readView :: DuckDBV2Str -> IO String
 readView (DuckDBV2Str ptr len)
@@ -146,6 +189,55 @@ readIntegers result = alloca $ \chunkSlot -> do
                     `finally` (c_duckdb_v2_data_chunk_destroy chunkSlot >>= (@?= DuckDBV2ErrorNone))
             rest <- readIntegers result
             pure (rows <> rest)
+
+-- | Read every BIGINT of a vector. The function flattens the vector first.
+readArgument :: DuckDBIdx -> DuckDBV2VectorHandle -> IO [Int64]
+readArgument count vector = do
+    checked (c_duckdb_v2_vector_flatten vector)
+    view <- output (c_duckdb_v2_vector_get_view vector)
+    forM [0 .. fromIntegral count - 1] $ \i -> do
+        index <- if getField @"sel" view == coerce nullPtr then pure i else fromIntegral <$> peekElemOff (coerce (getField @"sel" view) :: Ptr DuckDBV2SelT) i
+        peekElemOff (coerce (getField @"data'" view)) index
+
+-- | Fetch and destroy every chunk of the result.
+consume :: DuckDBV2ResultHandle -> IO ()
+consume result = alloca $ \chunk -> do
+    poke chunk (coerce nullPtr)
+    checked (c_duckdb_v2_result_fetch_chunk result chunk)
+    next <- peek chunk
+    unless (next == coerce nullPtr) $ do
+        c_duckdb_v2_data_chunk_destroy chunk >>= (@?= DuckDBV2ErrorNone)
+        consume result
+
+{- | Run a statement and return the code and the text of its error.
+Execution is lazy, so the error can come from the execution or from a later fetch.
+A statement that does not fail gives 'DuckDBV2ErrorNone' and an empty text.
+-}
+statementError :: DuckDBV2ConnectionHandle -> String -> IO (DuckDBV2Error, String)
+statementError conn sql = withStatement conn sql $ \statement -> alloca $ \result -> alloca $ \err -> do
+    poke result (coerce nullPtr)
+    poke err (coerce nullPtr)
+    let fetch = alloca $ \chunk -> do
+            poke chunk (coerce nullPtr)
+            code <- peek result >>= \live -> c_duckdb_v2_result_fetch_chunk live chunk err
+            next <- peek chunk
+            if code /= DuckDBV2ErrorNone || next == coerce nullPtr
+                then pure code
+                else c_duckdb_v2_data_chunk_destroy chunk >>= (@?= DuckDBV2ErrorNone) >> fetch
+        cleanUp = do
+            c_duckdb_v2_result_destroy result >>= (@?= DuckDBV2ErrorNone)
+            c_duckdb_v2_error_info_destroy err >>= (@?= DuckDBV2ErrorNone)
+    flip finally cleanUp $ do
+        executed <- c_duckdb_v2_statement_execute conn statement (coerce nullPtr) (coerce nullPtr) 0 result err
+        code <- if executed == DuckDBV2ErrorNone then fetch else pure executed
+        info <- peek err
+        message <-
+            if code == DuckDBV2ErrorNone || info == coerce nullPtr
+                then pure ""
+                else alloca $ \text -> do
+                    c_duckdb_v2_error_info_get_text info text >>= (@?= DuckDBV2ErrorNone)
+                    peek text >>= readView
+        pure (code, message)
 
 testEnvironment :: IO ()
 testEnvironment = alloca $ \envSlot -> do
@@ -252,6 +344,37 @@ testError = withConnection $ \conn -> withStatement conn "SELECT absent_column" 
     c_duckdb_v2_error_info_destroy err >>= (@?= DuckDBV2ErrorNone)
     peek err >>= (@?= coerce nullPtr)
 
+-- | Read the sizes of the four parts of an argument list through one getter.
+argCounts :: (Ptr DuckDBIdx -> Ptr DuckDBIdx -> Ptr DuckDBIdx -> Ptr DuckDBIdx -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO (DuckDBIdx, DuckDBIdx, DuckDBIdx, DuckDBIdx)
+argCounts getter = alloca $ \fixed -> alloca $ \variadic -> alloca $ \named -> alloca $ \kwargs -> do
+    checked (getter fixed variadic named kwargs)
+    (,,,) <$> peek fixed <*> peek variadic <*> peek named <*> peek kwargs
+
+{- | Fill in borrowed documentation with a description, two examples and a category.
+The second description replaces the first, and the second example has no title.
+-}
+fillDocs :: DuckDBV2FunctionDocsHandle -> IO ()
+fillDocs docs = do
+    assertBool "the documentation is non-null" (docs /= coerce nullPtr)
+    withView "Adds one." $ \description -> checked (c_duckdb_v2_function_docs_set_description docs description)
+    withView "Replaces the description." $ \description -> checked (c_duckdb_v2_function_docs_set_description docs description)
+    withView "basic" $ \title -> withView "SELECT v2_plus_one(1)" $ \example ->
+        checked (c_duckdb_v2_function_docs_add_example docs title example)
+    withView "SELECT v2_plus_one(2)" $ \example -> checked (c_duckdb_v2_function_docs_add_example docs (ConstPtr nullPtr) example)
+    withView "numeric" $ \category -> checked (c_duckdb_v2_function_docs_add_category docs category)
+
+-- | Wrap a pointer that the test owns. The engine does not destroy it.
+borrowedOpaque :: Ptr Void -> DuckDBV2Opaque
+borrowedOpaque ptr = DuckDBV2Opaque ptr (DuckDBV2OpaqueDestroyFn nullFunPtr) (DuckDBV2OpaqueEqualsFn nullFunPtr)
+
+-- | Count one invocation of a callback. Callbacks can run on more than one thread.
+countCall :: IORef Int -> IO ()
+countCall calls = atomicModifyIORef' calls (\count -> (count + 1, ()))
+
+-- | Add a value to the front of a list. Callbacks can run on more than one thread.
+record :: IORef [a] -> a -> IO ()
+record ref value = atomicModifyIORef' ref (\values -> (value : values, ()))
+
 callbackGuard :: IORef [String] -> Ptr DuckDBV2ErrorInfoHandle -> IO () -> IO ()
 callbackGuard failures err action =
     action `catch` \(failure :: SomeException) -> do
@@ -259,6 +382,35 @@ callbackGuard failures err action =
         info <- peek err
         void (c_duckdb_v2_error_info_set_code info DuckDBV2ErrorApi)
         withView (show failure) $ \message -> void (c_duckdb_v2_error_info_set_text info message)
+
+-- | Run a statement that must fail. Use it where the header names no code for the failure.
+statementFails :: (HasCallStack) => DuckDBV2ConnectionHandle -> String -> IO ()
+statementFails conn sql = statementError conn sql >>= \(code, _) -> assertBool (sql <> " fails") (code /= DuckDBV2ErrorNone)
+
+-- | Fail a callback on purpose at a stage. 'callbackGuard' records the failure and reports it to DuckDB.
+failOnPurpose :: String -> IO ()
+failOnPurpose stage = throwIO (userError ("v2 deliberate " <> stage <> " failure"))
+
+{- | Run a statement that a callback fails on purpose at a stage.
+The statement must fail with the text of the callback, and the failure list must hold only that failure.
+The function clears the failure list.
+-}
+expectCallbackFailure :: (HasCallStack) => IORef [String] -> DuckDBV2ConnectionHandle -> String -> String -> IO ()
+expectCallbackFailure failures conn sql stage = do
+    (code, message) <- statementError conn sql
+    let expected = show (userError ("v2 deliberate " <> stage <> " failure"))
+    assertBool (sql <> " fails") (code /= DuckDBV2ErrorNone)
+    assertBool ("the error has the text of the callback: " <> message) (expected `isInfixOf` message)
+    atomicModifyIORef' failures (\seen -> ([], seen)) >>= (@?= [expected])
+
+{- | Register a builder once without each required part, and then once with every part.
+The register function receives the name of the part to leave out, or an empty name for none.
+Each registration without a part must fail, and the last registration must succeed.
+-}
+eachPartRequired :: (HasCallStack) => [String] -> (String -> IO DuckDBV2Error) -> IO ()
+eachPartRequired parts register = do
+    forM_ parts $ \part -> register part >>= \code -> assertBool ("a registration without the " <> part <> " fails") (code /= DuckDBV2ErrorNone)
+    register "" >>= (@?= DuckDBV2ErrorNone)
 
 testScalar :: IO ()
 testScalar = do
@@ -628,14 +780,7 @@ testFileSystem =
 testLogging :: IO ()
 testLogging = do
     failures <- newIORef []
-    let consume result = alloca $ \chunk -> do
-            poke chunk (coerce nullPtr)
-            checked (c_duckdb_v2_result_fetch_chunk result chunk)
-            next <- peek chunk
-            unless (next == coerce nullPtr) $ do
-                c_duckdb_v2_data_chunk_destroy chunk >>= (@?= DuckDBV2ErrorNone)
-                consume result
-        execute info context err = callbackGuard failures err $ do
+    let execute info context err = callbackGuard failures err $ do
             withView "" $ \logType -> withView "v2 callback message" $ \message ->
                 checked (c_duckdb_v2_context_log context DuckDBV2LogLevelInfo logType message)
             vector <- output (c_duckdb_v2_scalar_function_exec_get_result info)

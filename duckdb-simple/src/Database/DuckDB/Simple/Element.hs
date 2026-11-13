@@ -12,8 +12,6 @@ metadata.
 -}
 module Database.DuckDB.Simple.Element (
     chunkIsRowValid,
-    bitStringFromBytes,
-    chunkDecodeBlob,
     decodeElement,
     duckDBHugeIntToInteger,
     vectorElementType,

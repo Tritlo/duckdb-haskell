@@ -9,16 +9,19 @@
 Module      : Database.DuckDB.Simple.Typed
 Description : Read and write callback vectors as typed Haskell values.
 
-Typed registrations use these helpers. An argument reader converts the rows of
-a borrowed vector with 'FromField'. 'TypedRow' gives the column types and the
-column values of a row. The module also registers typed casts on a connection
-or on a loading extension. It converts a typed replacement function to a native
-replacement scan callback.
+Typed registrations use these helpers. An argument reader gives the rows of a
+borrowed vector as fields with the names from 'argumentName'.
+'conversionMessage' describes the arguments that do not convert. 'TypedRow'
+gives the column types and the column values of a row. The module also
+registers typed casts on a connection or on a loading extension. It converts a
+typed replacement function to a native replacement scan callback.
 -}
 module Database.DuckDB.Simple.Typed (
     TypedRow (..),
     ColumnValue (..),
+    argumentName,
     prepareArgumentReader,
+    conversionMessage,
     createCastOn,
     Replacement (..),
     replacementScanCallback,
@@ -109,30 +112,33 @@ instance (ToDuckValue a, ToDuckValue b, ToDuckValue c, ToDuckValue d, ToDuckValu
 
 instance (ToDuckValue a, ToDuckValue b, ToDuckValue c, ToDuckValue d, ToDuckValue e, ToDuckValue f, ToDuckValue g) => TypedRow (a, b, c, d, e, f, g)
 
-{- | Prepare a reader for the rows of an argument vector. The first argument is
-the position of the argument, from 0. A NULL row gives 'Nothing'. A value that
-'FromField' cannot convert raises an error. The error names the argument, the
-SQL type, and the Haskell type. A VARIANT or GEOMETRY row raises an error. The
-reader must not outlive the vector.
--}
-prepareArgumentReader :: (FromField a) => Int -> DuckDBV2VectorHandle -> IO (Int -> IO (Maybe a))
-prepareArgumentReader index vector = do
-    readValue <- prepareVectorReader (\_ -> pure \_ -> throwIO (userError "duckdb-simple: a typed argument cannot be VARIANT or GEOMETRY")) vector
-    pure \row ->
-        readValue row >>= \case
-            FieldNull -> pure Nothing
-            value -> case fromField (Field (Text.pack ("arg" <> show index)) index value) of
-                Ok converted -> pure (Just converted)
-                Errors failures -> throwIO (userError (conversionMessage index failures))
+-- | The name of the argument at an index, from 0: @arg0@, @arg1@, and so on.
+argumentName :: Int -> Text
+argumentName index = Text.pack ("arg" <> show index)
 
--- | Describe the errors of an argument that 'FromField' cannot convert.
-conversionMessage :: Int -> [SomeException] -> String
-conversionMessage index failures =
-    "duckdb-simple: cannot convert argument " <> show (index + 1) <> " " <> intercalate "; " (map describe failures)
+{- | Prepare a reader for the rows of an argument vector. The first argument is
+the index of the argument, from 0. The reader gives the field of a row, with
+the name from 'argumentName'. A NULL row gives 'FieldNull'. A row of a type
+that is or contains VARIANT or GEOMETRY raises an error. The reader must not
+outlive the vector.
+-}
+prepareArgumentReader :: Int -> DuckDBV2VectorHandle -> IO (Int -> IO Field)
+prepareArgumentReader index vector = do
+    readValue <- prepareVectorReader (\_ -> pure \_ -> throwIO (userError "duckdb-simple: the type of a typed argument cannot be or contain VARIANT or GEOMETRY")) vector
+    pure \row -> Field (argumentName index) index <$> readValue row
+
+{- | Describe the arguments that 'FromField' or @FromRow@ cannot convert. The
+text names each argument with the name of its field.
+-}
+conversionMessage :: [SomeException] -> String
+conversionMessage failures = intercalate "; " (map describe failures)
   where
     describe failure = case fromException failure of
+        Just result@UnexpectedNull{} -> "argument " <> Text.unpack (errSQLField result) <> " is NULL, but " <> Text.unpack (errHaskellType result) <> " cannot hold NULL"
         Just result ->
-            "from "
+            "cannot convert argument "
+                <> Text.unpack (errSQLField result)
+                <> " from "
                 <> Text.unpack (errSQLType result)
                 <> " to "
                 <> Text.unpack (errHaskellType result)
@@ -169,13 +175,21 @@ castRows convert info context = withContextFactory context \factory -> do
     useText <- newIORef False
     let setNull row = checked (c_duckdb_v2_vector_set_null vector (fromIntegral row))
         castRow row =
-            readArgument row
-                >>= traverse (either (throwIO . userError . Text.unpack) pure . convert)
-                >>= maybe (setNull row) (writeCastValue factory useText vectorType vector row)
+            readArgument row >>= \case
+                Field{fieldValue = FieldNull} -> setNull row
+                field -> case fromField field of
+                    Errors failures -> throwIO (userError ("duckdb-simple: " <> conversionMessage failures))
+                    Ok value -> either (throwIO . userError . Text.unpack) (writeCastValue factory useText vectorType vector row) (convert value)
     -- Use a loop with a constant stack. The runtime reads the stack of the
     -- thread at each native call, so a deep stack makes each call slow.
     firstFailure <- newIORef Nothing
     forM_ [0 .. count - 1] \row ->
+        -- Catch each exception, also an asynchronous one, and write NULL to the
+        -- failed row. For a try cast, the header of
+        -- duckdb_v2_cast_function_exec_get_mode says that "the engine discards
+        -- the error and keeps whatever the callback left in the output". Thus
+        -- the callback must write each row of the output vector before it
+        -- returns.
         try (castRow row) >>= \case
             Right () -> pure ()
             Left (failure :: SomeException) -> do

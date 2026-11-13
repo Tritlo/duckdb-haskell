@@ -409,7 +409,10 @@ registerReplacementScanOn :: RegistrationTarget -> ContextCallback DuckDBV2Repla
 registerReplacementScanOn target callback =
     withTarget target c_duckdb_v2_replacement_scan_create c_duckdb_v2_replacement_scan_destroy c_duckdb_v2_connection_register_replacement_scan c_duckdb_v2_extension_register_replacement_scan (configureScan callback)
 
--- | Register an instance-wide replacement scan. It is shared by its connections.
+{- | Register an instance-wide replacement scan. It is shared by its connections.
+Register the scan before a connection runs a query. Registration while another
+connection binds a query is not thread safe.
+-}
 registerInstanceReplacementScan :: Instance -> ContextCallback DuckDBV2ReplacementScanInfoHandle -> IO ()
 registerInstanceReplacementScan instance' callback = withInstanceHandle instance' $ \native ->
     withInstanceFactory native $ \factory ->
@@ -466,6 +469,9 @@ configureFunctionSignature factory FunctionSignature{signatureParameters, signat
     forM_ signatureReturnType $ \dtype ->
         withTypeDeclaration factory dtype $ checked . c_duckdb_v2_function_signature_set_return_type signature
 
+{- | Set the callback of a replacement scan builder, and then run the
+registration action. The user data of the scan releases the callback pointer.
+-}
 configureScan :: ContextCallback DuckDBV2ReplacementScanInfoHandle -> DuckDBV2ReplacementScanHandle -> IO () -> IO ()
 configureScan callback scan register =
     withCallbackResources
@@ -473,12 +479,15 @@ configureScan callback scan register =
         (attachOpaque (c_duckdb_v2_replacement_scan_set_user_data scan))
         \installCallback -> installCallback >> register
 
+-- | Run a callback that gets no context. An exception becomes a native error.
 guardCallback :: (info -> IO ()) -> info -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
 guardCallback action info err = runCallback err (action info)
 
+-- | Run a bind callback. An exception becomes a native error.
 guardBind :: BindCallback result -> DuckDBV2FunctionBindInfoHandle -> result -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
 guardBind action info result context err = runCallback err (action info result context)
 
+-- | Reject an empty registration name and a name that contains NUL.
 validateName :: Text -> IO ()
 validateName name =
     when (Text.null name || Text.any (== '\0') name) $

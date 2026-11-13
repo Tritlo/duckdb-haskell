@@ -331,8 +331,11 @@ tests =
                         Streaming.nextRow stmt >>= (@?= Just (Only (1 :: Int64)))
                     nextRow parameter >>= (@?= Just (Only (nullShape crs)))
         , testCase "unknown CRS cannot silently drop metadata" $
-            withConnectionWithConfig ":memory:" [("ignore_unknown_crs", "true")] \conn ->
-                assertFailureIO (query conn "SELECT ?" (Only (nullShape "local grid")) :: IO [Only (StructValue FieldValue)])
+            withConnectionWithConfig ":memory:" [("ignore_unknown_crs", "true")] \conn -> do
+                result <- try (query conn "SELECT ?" (Only (nullShape "local grid"))) :: IO (Either SQLError [Only (StructValue FieldValue)])
+                case result of
+                    Left err -> assertBool (show err) ("duckdb-simple: DuckDB did not preserve the requested GEOMETRY CRS" `Text.isInfixOf` sqlErrorMessage err)
+                    Right _ -> assertFailure "expected the unknown CRS to fail"
         , testCase "connection options validate CRS definitions and pass configuration flags" $ do
             forM_ ["", "OGC:CRS84\0bad"] \crs ->
                 assertFailureIO (withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = [crs]} (const (pure ())))

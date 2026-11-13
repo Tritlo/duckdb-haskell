@@ -135,8 +135,11 @@ valueRegressionTests =
             (query conn "SELECT typeof(?), ?" (pairs, pairs) :: IO [(Text, Array Int (Maybe Pair))]) >>= (@?= [("STRUCT(pairName VARCHAR, pairValue BIGINT)[3]", pairs)])
             let nested = listArray (0, 1) [listArray (0, 1) [1, 2], listArray (0, 1) [3, 4]] :: Array Int (Array Int Int64)
             (query conn "SELECT typeof(?), ?" (nested, nested) :: IO [(Text, Array Int (Array Int Int64))]) >>= (@?= [("BIGINT[2][2]", nested)])
-        , testCase "empty arrays of record elements report the V2 limit" $ withConnection ":memory:" \conn ->
-            assertFailureIO (query conn "SELECT ?" (Only (listArray (0, -1) [] :: Array Int Pair)) :: IO [Only Text])
+        , testCase "empty arrays of record elements report the V2 limit" $ withConnection ":memory:" \conn -> do
+            result <- try (query conn "SELECT ?" (Only (listArray (0, -1) [] :: Array Int Pair)))
+            case result of
+                Left SQLError{sqlErrorMessage} -> assertBool (Text.unpack sqlErrorMessage) ("duckdb-simple: empty ARRAY parameters are unavailable" `Text.isInfixOf` sqlErrorMessage)
+                Right (_ :: [Only Text]) -> assertFailure "expected the V2 empty ARRAY limit"
         , testCase "composite arrays reject schemas that would discard fields or digits" $ withConnection ":memory:" \conn -> do
             forM_
                 [ ("SELECT {'a': 1::INTEGER}", "SELECT {'a': 2::INTEGER, 'b': 3::INTEGER}")
@@ -334,6 +337,10 @@ valueRegressionTests =
             assertIOError (query_ conn "SELECT '12:00:00+01:23:45'::TIMETZ" :: IO [Only TimeWithZone])
         , testCase "ENUM payload index must be in its dictionary" $ withConnection ":memory:" \conn ->
             assertIOError (query conn "SELECT ?" (Only (singleField (LogicalTypeEnum (listArray (0, 1) ["a", "b"])) (FieldEnum 2))) :: IO [Only FieldValue])
+        , testCase "ENUM payload index binds the label of its dictionary" $ withConnection ":memory:" \conn -> do
+            let struct = singleField (LogicalTypeEnum (listArray (0, 2) ["a", "b", "c"])) (FieldEnum 1)
+            (query conn "SELECT typeof((?).value), (?).value::VARCHAR, ?" (struct, struct, struct) :: IO [(Text, Text, StructValue FieldValue)])
+                >>= (@?= [("ENUM('a', 'b', 'c')", "b", struct)])
         , testCase "TIMETZ input offset overflow fails before native use" $ withConnection ":memory:" \conn -> do
             let value = TimeWithZone (TimeOfDay 12 0 0) (minutesToTimeZone maxBound)
                 struct = singleField (LogicalTypeScalar LogicalTypeIdTimeTz) (FieldTimeTZ value)

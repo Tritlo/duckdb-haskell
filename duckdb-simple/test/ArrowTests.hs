@@ -13,7 +13,7 @@ module ArrowTests (arrowTests) where
 
 import Control.Concurrent (forkIO, killThread, newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (AsyncException (ThreadKilled), IOException, SomeException, bracket, bracket_, fromException, mask_, throwIO, try)
-import Control.Monad (forM, forM_, when)
+import Control.Monad (forM, forM_, void, when)
 import Data.Bits (testBit)
 import Data.Coerce (coerce)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
@@ -188,6 +188,19 @@ arrowModeTests streaming =
                         else query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
                     pure (acc + 1)
                 assertBool "expected multiple callbacks" (count > 1)
+        , testCase "SQL errors report the query that failed" $
+            withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
+                let outer = "SELECT error('Arrow query failed')"
+                    inner = "SELECT error('callback query failed')"
+                failed <- try $ foldArrow_ conn outer () \_ _ _ -> assertFailure "unexpected batch"
+                case failed of
+                    Left (err :: SQLError) -> sqlErrorQuery err @?= Just outer
+                    Right () -> assertFailure "expected query error"
+                nested <- try $ foldArrow_ conn "SELECT 42" () \_ _ _ -> void (query_ conn inner :: IO [Only Int64])
+                case nested of
+                    Left (err :: SQLError) -> sqlErrorQuery err @?= Just inner
+                    Right () -> assertFailure "expected callback query error"
+                assertConnectionUsable conn
         , testCase "closing the connection stops further batch callbacks" $
             withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
                 withReleaseCounters \schemaReleases arrayReleases observe -> do

@@ -35,6 +35,7 @@ import Database.DuckDB.Simple.Pragma (PragmaCallback (..), registerPragmaFunctio
 import Database.DuckDB.Simple.Registration (FunctionParameter (..), Replacement (..), TypeDeclaration (..), defaultValue, parameter, registerCustomType, registerInstanceReplacementScan, registerReplacementScan)
 import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue)
+import Database.DuckDB.Simple.Variant (Variant)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import System.Directory (createDirectory, getTemporaryDirectory, removeFile, removePathForcibly)
@@ -43,7 +44,7 @@ import System.IO (hClose, openTempFile)
 import System.IO.Unsafe (unsafeInterleaveIO)
 import System.Mem (performMajorGC)
 import System.Mem.Weak (Weak, deRefWeak)
-import Test.Tasty (TestTree, testGroup)
+import Test.Tasty (TestTree, localOption, mkTimeout, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase, (@?=))
 
 -- | Check the typed registrations through SQL.
@@ -75,7 +76,9 @@ typedRegistrationTests =
         , testCase "table function with no, two, and NULL parameters" testTableParameters
         , testCase "table function columns of several types and a record row" testTableTypes
         , testCase "table function runs one time for each scan" testTableRuns
-        , testCase "table function reads an infinite list with LIMIT" testTableLazy
+        , -- A defect can make the scan run without end. Then the time limit fails
+          -- the case. The limit is long, because the suite also runs under Valgrind.
+          localOption (mkTimeout (10 * 60 * 1000000)) (testCase "table function reads an infinite list with LIMIT" testTableLazy)
         , testCase "table function registration and argument errors" testTableArgumentErrors
         , testCase "table function exceptions become SQL errors" testTableExceptions
         , testCase "table function releases the list of each scan" testTableRelease
@@ -149,12 +152,16 @@ testCastErrors = withConnection ":memory:" \conn -> do
     registerCustomType conn "typed_small" (TypeExpression "BIGINT")
     createCast conn (TypeExpression "BIGINT") (TypeExpression "typed_small") \(value :: Int8) -> Right (fromIntegral value :: Int64)
     query_ conn "SELECT CAST(5::BIGINT AS typed_small)::BIGINT" >>= (@?= [Only (5 :: Int64)])
-    assertSqlError "cannot convert argument 1 from INT8 to Int8" (query_ conn "SELECT CAST(300::BIGINT AS typed_small)::BIGINT" :: IO [Only Int64])
+    assertSqlError "cannot convert argument arg0 from INT8 to Int8" (query_ conn "SELECT CAST(300::BIGINT AS typed_small)::BIGINT" :: IO [Only Int64])
     -- A VARCHAR value does not convert to Int64. The function does not get NULL.
     registerCustomType conn "typed_number" (TypeExpression "BIGINT")
     createCast conn (TypeExpression "VARCHAR") (TypeExpression "typed_number") \(value :: Int64) -> Right value
     query_ conn "SELECT CAST(NULL::VARCHAR AS typed_number)::BIGINT" >>= (@?= [Only (Nothing :: Maybe Int64)])
-    assertSqlError "cannot convert argument 1 from TEXT to Int64" (query_ conn "SELECT CAST('7'::VARCHAR AS typed_number)::BIGINT" :: IO [Only Int64])
+    assertSqlError "cannot convert argument arg0 from TEXT to Int64" (query_ conn "SELECT CAST('7'::VARCHAR AS typed_number)::BIGINT" :: IO [Only Int64])
+    -- A typed argument cannot be VARIANT.
+    registerCustomType conn "typed_from_variant" (TypeExpression "BIGINT")
+    createCast conn (TypeExpression "VARIANT") (TypeExpression "typed_from_variant") \(value :: Int64) -> Right value
+    assertSqlError "the type of a typed argument cannot be or contain VARIANT or GEOMETRY" (query_ conn "SELECT CAST(1::VARIANT AS typed_from_variant)::BIGINT" :: IO [Only Int64])
     -- TRY_CAST gives NULL for these failed rows.
     query_ conn "SELECT TRY_CAST(13::BIGINT AS typed_partial)::BIGINT, TRY_CAST('7'::VARCHAR AS typed_number)::BIGINT"
         >>= (@?= [(Nothing :: Maybe Int64, Nothing :: Maybe Int64)])
@@ -250,6 +257,8 @@ testPragmaDecodeErrors = withConnection ":memory:" \conn -> do
     assertSqlError "cannot decode the arguments of pragma typed_size" (query_ conn "PRAGMA typed_size(1)" :: IO [Only Int64])
     registerPragmaFunction conn "typed_strict" [amount] (ExecPragma \(Only (_ :: Int64)) -> pure ())
     assertSqlError "cannot decode the arguments of pragma typed_strict: column amount is NULL" (execute_ conn "PRAGMA typed_strict(NULL)")
+    registerPragmaFunction conn "typed_variant" [parameter "value" (TypeExpression "VARIANT")] (QueryPragma \(Only (_ :: Variant)) -> pure "SELECT 1")
+    assertSqlError "the type of a pragma argument cannot be or contain VARIANT" (query_ conn "PRAGMA typed_variant(1::VARIANT)" :: IO [Only Int64])
     query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
 
 -- | Make an SQL error from an exception of each callback kind.
@@ -440,7 +449,8 @@ assertColumnsEqual conn sql = do
 -- | Fold one group and many groups, also with partial states from 4 threads.
 testAggregateGroups :: Assertion
 testAggregateGroups = withConnection ":memory:" \conn -> do
-    createAggregate conn "typed_sum" sumAggregate
+    combines <- newIORef (0 :: Int)
+    createAggregate conn "typed_sum" sumAggregate{aggregateCombine = \a b -> atomicModifyIORef' combines (\count -> (count + 1, ())) >> pure (a + b)}
     query_ conn "SELECT typed_sum(i) FROM range(10) t(i)" >>= (@?= [Only (45 :: Int64)])
     -- A chunk has at most 2048 rows. Thus 5000 rows need more than one update call.
     assertColumnsEqual conn "SELECT typed_sum(i), sum(i)::BIGINT FROM range(5000) t(i) GROUP BY i % 50"
@@ -449,7 +459,11 @@ testAggregateGroups = withConnection ":memory:" \conn -> do
     void (execute_ conn "SET threads = 4")
     void (execute_ conn "CREATE TABLE typed_numbers AS SELECT i FROM range(300000) t(i)")
     assertColumnsEqual conn "SELECT typed_sum(i), sum(i)::BIGINT FROM typed_numbers GROUP BY i % 1000"
+    -- An ungrouped aggregate combines the state of each thread into one state.
+    -- Thus the combine function runs at least one time.
+    writeIORef combines 0
     assertColumnsEqual conn "SELECT typed_sum(i), sum(i)::BIGINT FROM typed_numbers"
+    readIORef combines >>= \count -> assertBool ("combine calls: " <> show count) (count > 0)
     query_ conn "SELECT typed_sum(i), typed_sum(i + 1) FROM range(10) t(i)" >>= (@?= [(45 :: Int64, 55 :: Int64)])
 
 -- | Skip the rows with NULL. A group without other rows gives the initial result.
@@ -505,8 +519,8 @@ testAggregateTypes = withConnection ":memory:" \conn -> do
     -- An Int32 argument is INTEGER, but an Int32 result is BIGINT.
     query_ conn "SELECT typeof(typed_any_odd(1)), typeof(typed_mean(1)), typeof(typed_count(1)), typeof(typed_small(1)), typeof(typed_label('x'))"
         >>= (@?= [("BOOLEAN" :: Text, "DOUBLE" :: Text, "UBIGINT" :: Text, "BIGINT" :: Text, "VARCHAR" :: Text)])
-    query_ conn "SELECT function_name, parameter_types::VARCHAR FROM duckdb_functions() WHERE function_name IN ('typed_small', 'typed_tally') ORDER BY function_name"
-        >>= (@?= [("typed_small" :: Text, "[INTEGER]" :: Text), ("typed_tally", "[VARCHAR, BIGINT]")])
+    query_ conn "SELECT function_name, parameters::VARCHAR, parameter_types::VARCHAR FROM duckdb_functions() WHERE function_name IN ('typed_small', 'typed_tally') ORDER BY function_name"
+        >>= (@?= [("typed_small" :: Text, "[arg0]" :: Text, "[INTEGER]" :: Text), ("typed_tally", "[arg0, arg1]", "[VARCHAR, BIGINT]")])
 
 -- | Fail the query for an exception in each function. The next query works.
 testAggregateErrors :: Assertion
@@ -522,6 +536,11 @@ testAggregateErrors = withConnection ":memory:" \conn -> do
     -- states. Then it combines them.
     createAggregate conn "typed_bad_combine" sumAggregate{aggregateCombine = \_ _ -> throwIO (userError "typed_bad_combine: combine")}
     assertSqlError "typed_bad_combine: combine" (query_ conn "SELECT typed_bad_combine(i) OVER (ORDER BY i ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) FROM range(32) t(i)" :: IO [Only Int64])
+    query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+    -- A negative BIGNUM does not convert to Natural. The error names the argument.
+    createAggregate conn "typed_natural_sum" Aggregate{aggregateInitial = 0, aggregateStep = \total (value :: Int64, extra :: Natural) -> pure (total + value + fromIntegral extra), aggregateCombine = \a b -> pure (a + b), aggregateResult = pure :: Int64 -> IO Int64}
+    query_ conn "SELECT typed_natural_sum(i, i) FROM range(10) t(i)" >>= (@?= [Only (90 :: Int64)])
+    assertSqlError "typed_natural_sum: cannot convert argument arg1 from BIGNUM to Natural" (query_ conn "SELECT typed_natural_sum(i, i - 5) FROM range(10) t(i)" :: IO [Only Int64])
     query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
     createAggregate conn "typed_bad_result" sumAggregate{aggregateResult = \total -> if total > 100 then throwIO (userError "typed_bad_result: too large") else pure total}
     query_ conn "SELECT typed_bad_result(i) FROM range(10) t(i)" >>= (@?= [Only (45 :: Int64)])
@@ -650,6 +669,7 @@ testTableParameters = withConnection ":memory:" \conn -> do
     query_ conn "SELECT * FROM typed_labels('x', 5)" >>= (@?= [("x5" :: Text, 5 :: Int64), ("x6", 6), ("x7", 7)])
     -- DuckDB casts an argument to the parameter type.
     query_ conn "SELECT n FROM typed_labels('y', 1::INTEGER)" >>= (@?= map Only [1, 2, 3 :: Int64])
+    query_ conn "SELECT parameters::VARCHAR FROM duckdb_functions() WHERE function_name = 'typed_labels'" >>= (@?= [Only ("[arg0, arg1]" :: Text)])
     -- A NULL argument converts to Nothing.
     createTableFunction conn "typed_optional" ["value"] \(Only (value :: Maybe Int64)) -> pure [Only value]
     query_ conn "SELECT value FROM typed_optional(NULL)" >>= (@?= [Only (Nothing :: Maybe Int64)])
@@ -715,8 +735,10 @@ testTableArgumentErrors = withConnection ":memory:" \conn -> do
     -- DuckDB casts the argument to BIGNUM. A negative BIGNUM does not convert to Natural.
     createTableFunction conn "typed_natural" ["n"] \(Only (value :: Natural)) -> pure [Only (fromIntegral value :: Int64)]
     query_ conn "SELECT n FROM typed_natural(7)" >>= (@?= [Only (7 :: Int64)])
-    assertSqlError "typed_natural: cannot convert argument arg1" (query_ conn "SELECT n FROM typed_natural(-7)" :: IO [Only Int64])
-    assertSqlError "typed_natural: argument arg1 is NULL" (query_ conn "SELECT n FROM typed_natural(NULL)" :: IO [Only Int64])
+    assertSqlError "typed_natural: cannot convert argument arg0" (query_ conn "SELECT n FROM typed_natural(-7)" :: IO [Only Int64])
+    assertSqlError "typed_natural: argument arg0 is NULL" (query_ conn "SELECT n FROM typed_natural(NULL)" :: IO [Only Int64])
+    createTableFunction conn "typed_variant" ["n"] \(Only (_ :: Variant)) -> pure [Only (1 :: Int64)]
+    assertSqlError "the type of a table function argument cannot be or contain VARIANT" (query_ conn "SELECT n FROM typed_variant(1::VARIANT)" :: IO [Only Int64])
     query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
 
 -- | Fail a query with an exception in the function and in a row of the second chunk.
@@ -893,10 +915,12 @@ registerFailingFormat conn phase =
 
 {- | Read 20 files through a multi-file function over a typed table function.
 DuckDB runs exec callbacks of one scan at the same time for a multi-file
-function. Each row must come one time.
+function. Each row must come one time. The case sets 4 threads, so that it
+does not use the default number of threads of the machine.
 -}
 testTableMultiFile :: Assertion
 testTableMultiFile = withDirectory \directory -> withConnection ":memory:" \conn -> do
+    void (execute_ conn "SET threads = 4")
     createTableFunction conn "typed_numbers" ["value"] \(Only path) ->
         map (Only . read) . lines <$> readFile (Text.unpack path) :: IO [Only Int64]
     registerMultiFileFunction conn "typed_all_numbers" "typed_numbers" defaultMultiFileOptions

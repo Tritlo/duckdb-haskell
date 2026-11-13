@@ -81,19 +81,21 @@ coreRegressionTests =
         , testCase "DML cursor executes only once" $
             withConnection ":memory:" $ \conn -> do
                 void $ execute_ conn "CREATE TABLE once_probe(x INTEGER)"
-                withStatement conn "INSERT INTO once_probe VALUES (1)" $ \stmt ->
+                withStatement conn "INSERT INTO once_probe VALUES (1)" $ \stmt -> do
+                    nextRow stmt >>= (@?= Just (Only (1 :: Int64)))
                     replicateM_ 3 $ nextRow stmt >>= (@?= (Nothing :: Maybe (Only Int64)))
                 query_ conn "SELECT count(*) FROM once_probe" >>= (@?= [Only (1 :: Int64)])
-        , testCase "eager queries retain native changed-row results" $
+        , testCase "queries and folds give the changed-row count of a DML statement" $
             withConnection ":memory:" $ \conn -> do
                 void (execute_ conn "CREATE TABLE changed_rows(value BIGINT)")
                 (query_ conn "INSERT INTO changed_rows VALUES (1),(2)" :: IO [Only Int64]) >>= (@?= [Only 2])
                 (query conn "INSERT INTO changed_rows VALUES (?)" (Only (3 :: Int64)) :: IO [Only Int64]) >>= (@?= [Only 1])
                 (queryNamed conn "UPDATE changed_rows SET value=value+10 WHERE value<=$limit" ["limit" := (2 :: Int64)] :: IO [Only Int64]) >>= (@?= [Only 2])
                 (query_ conn "DELETE FROM changed_rows WHERE false" :: IO [Only Int64]) >>= (@?= [Only 0])
-                calls <- fold_ conn "INSERT INTO changed_rows VALUES (4)" (0 :: Int) $ \count (Only (_ :: Int64)) -> pure (count + 1)
-                calls @?= 0
-                query_ conn "SELECT count(*) FROM changed_rows" >>= (@?= [Only (4 :: Int64)])
+                fold_ conn "INSERT INTO changed_rows VALUES (4)" [] collect >>= (@?= [Only (1 :: Int64)])
+                fold conn "INSERT INTO changed_rows VALUES (?)" (Only (5 :: Int64)) [] collect >>= (@?= [Only (1 :: Int64)])
+                foldNamed conn "UPDATE changed_rows SET value=value+10 WHERE value<=$limit" ["limit" := (4 :: Int64)] [] collect >>= (@?= [Only (2 :: Int64)])
+                query_ conn "SELECT value FROM changed_rows ORDER BY value" >>= (@?= map Only [5, 11, 12, 13, 14 :: Int64])
         , testCase "rebinding resets an exhausted cursor" $
             withConnection ":memory:" $ \conn ->
                 withStatement conn "SELECT ?::BIGINT" $ \stmt -> do
@@ -281,6 +283,23 @@ coreRegressionTests =
                     assertThrows (query_ conn "SELECT x FROM side.probe" :: IO [Only Int64])
                     query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
                 assertThrows (detachDatabase instance_ "side")
+        , testCase "NUL in attach options and aliases is rejected" $
+            withEnvironment $ \environment -> withInstance environment [] $ \instance_ -> do
+                attachDatabase instance_ ":memory:" "shared" []
+                setDefaultDatabase instance_ "shared"
+                forM_
+                    [ attachDatabase instance_ ":memory:" "side" [("read_only\0suffix", "false")]
+                    , attachDatabase instance_ ":memory:" "side" [("read_only", "false\0suffix")]
+                    , detachDatabase instance_ "shared\0suffix"
+                    , setDefaultDatabase instance_ "shared\0suffix"
+                    ]
+                    $ \action -> do
+                        result <- try action
+                        case result of
+                            Left (err :: SQLError) -> assertBool "NUL diagnostic" ("contains NUL" `Text.isInfixOf` sqlErrorMessage err)
+                            Right () -> assertFailure "expected a NUL error"
+                withConnectionOn instance_ $ \conn ->
+                    query_ conn "SELECT current_database(), count(*) FILTER (WHERE database_name = 'side') FROM duckdb_databases()" >>= (@?= [("shared" :: Text, 0 :: Int64)])
         , testCase "parent close releases concurrently created children" $
             bracket getNumCapabilities setNumCapabilities $ \capabilities -> do
                 setNumCapabilities (max 2 capabilities)

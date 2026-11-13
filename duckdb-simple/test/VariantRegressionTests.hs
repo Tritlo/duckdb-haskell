@@ -11,7 +11,7 @@ Description : Lossless VARIANT binding and result conversion through the V2 API.
 -}
 module VariantRegressionTests (tests) where
 
-import Control.Exception (SomeException, bracket, displayException, try)
+import Control.Exception (IOException, SomeException, bracket, displayException, try)
 import Control.Monad (forM_, void, when)
 import Data.Array (Array, elems, listArray)
 import qualified Data.ByteString as BS
@@ -151,6 +151,11 @@ tests =
             case sole of
                 Left err -> assertBool (displayException err) ("only an empty key" `isInfixOf` displayException err)
                 Right _ -> assertFailure "expected the native constructor limit for an object with only an empty key"
+        , testCase "objects with two empty keys fail the unique key check" $ withConnection ":memory:" \conn -> do
+            result <- try (query conn "SELECT ?" (Only (Variant (variantObject [("", FieldInt64 1), ("", FieldInt64 2)])))) :: IO (Either IOException [Only Variant])
+            case result of
+                Left err -> assertBool (displayException err) ("duckdb-simple: VARIANT objects need unique keys" `isInfixOf` displayException err)
+                Right _ -> assertFailure "expected the unique key check to reject two empty keys"
         , testCase "metadata conversion ignores shadowing macros" $ withConnection ":memory:" \conn -> do
             -- The connection keeps the parsed metadata statement of the first decode.
             (query_ conn "SELECT {'a': 42::TINYINT}::VARIANT" :: IO [Only Variant]) >>= (@?= [Only (Variant (variantObject [("a", FieldInt8 42)]))])

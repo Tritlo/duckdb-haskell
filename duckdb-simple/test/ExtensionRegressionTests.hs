@@ -20,6 +20,7 @@ import Data.List (find, sort)
 import Data.Proxy (Proxy (..))
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
+import Data.Time.Clock (addUTCTime, getCurrentTime)
 import Data.Word (Word64)
 import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple
@@ -45,6 +46,7 @@ import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..))
 import qualified Database.DuckDB.Simple.Tokenizer as Tokenizer
 import qualified Database.DuckDB.Simple.V2.Registration as Registration
 import System.Directory (getHomeDirectory, removeFile)
+import System.FilePath (takeDirectory)
 import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertFailure, testCase, (@?=))
@@ -219,6 +221,7 @@ extensionRegressionTests =
         , testCase "log sinks copy entries and flush when released" do
             entries <- newIORef []
             flushes <- newIORef (0 :: Int)
+            start <- getCurrentTime
             withConnection ":memory:" \conn -> do
                 Logging.registerLogSink
                     conn
@@ -226,11 +229,17 @@ extensionRegressionTests =
                     (\entry -> atomicModifyIORef' entries (\values -> (entry : values, ())))
                     (atomicModifyIORef' flushes (\count -> (count + 1, ())))
                 void $ execute_ conn "CALL enable_logging(); SET logging_storage = 'captured_log'; SELECT write_log('Matti λ', level := 'warning', log_type := 'HaskellTest'); SET logging_storage = 'memory'"
+            end <- getCurrentTime
             received <- filter ((== "HaskellTest") . Logging.logEntryType) <$> readIORef entries
             map Logging.logEntryMessage received @?= ["Matti λ"]
             map Logging.logEntrySeverity received @?= [Logging.LogLevelWarning]
             map Logging.logEntryScope received @?= [Logging.LogScopeConnection]
             assertBool "entry has a timestamp" (all ((/= Nothing) . Logging.logEntryTimestamp) received)
+            -- A timestamp in the wrong unit is far from the clock of the test.
+            let nearClock time = addUTCTime (-300) start <= time && time <= addUTCTime 300 end
+            assertBool
+                ("timestamps " <> show (map Logging.logEntryTimestamp received) <> " are within five minutes of " <> show (start, end))
+                (all (maybe False nearClock . Logging.logEntryTimestamp) received)
             assertBool "entry has a connection id" (all ((/= Nothing) . Logging.logEntryConnectionId) received)
             readIORef flushes >>= assertBool "flush and final cleanup ran" . (>= 2)
         , testCase "instance log sinks receive connection and instance messages" do
@@ -321,6 +330,16 @@ extensionRegressionTests =
             withEnvironment \environment -> withInstance environment [("threads", "1")] \instance_ -> do
                 options <- Config.listInstanceOptions instance_
                 fmap Config.configOptionSetting (find ((== "threads") . Config.configOptionName) options) @?= Just "1"
+        , testCase "connection options set a session option on one connection only" $
+            withEnvironment \environment -> withInstance environment [] \instance_ -> do
+                attachDatabase instance_ ":memory:" "shared" []
+                setDefaultDatabase instance_ "shared"
+                -- DuckDB gives progress_bar_time the session scope by default.
+                let options = defaultConnectionOptions{connectionConfig = [("progress_bar_time", "1234")]}
+                bracket (connectWithOptions instance_ options) close \configured ->
+                    withConnectionOn instance_ \other -> do
+                        query_ configured "SELECT current_setting('progress_bar_time')" >>= (@?= [Only (1234 :: Int64)])
+                        query_ other "SELECT current_setting('progress_bar_time')" >>= (@?= [Only (2000 :: Int64)])
         , testCase "configuration values resolve case-insensitive names and aliases" $
             withConnection ":memory:" \conn -> do
                 Config.setConfigOption conn Config.SettingScopeGlobal "threads" "1"
@@ -510,6 +529,8 @@ extensionRegressionTests =
         , testCase "file paths support expansion glob movement and removal" $
             withTemporaryFile \path -> withConnection ":memory:" \conn -> do
                 FileSystem.pathExists conn path >>= (@?= True)
+                -- A directory is not a file.
+                FileSystem.pathExists conn (takeDirectory path) >>= (@?= False)
                 home <- getHomeDirectory
                 FileSystem.expandPath conn "~/duckdb-simple-path" >>= (@?= home <> "/duckdb-simple-path")
                 FileSystem.globPaths conn (path <> "*") >>= (@?= [path])

@@ -729,6 +729,19 @@ again. `deleteFunction` has a GHC `WARNING` pragma, so each use causes a
 compile-time warning. A build with `-Werror` must allow that warning, for
 example with `-Wno-error=deprecations`.
 
+A callback must not run a statement on the connection that runs the callback.
+Use another connection of the same instance. This rule applies to each
+registered callback, for example of a scalar function, a cast, an aggregate
+function, a table function, a COPY format, a replacement scan, or a pragma.
+`query`, `execute`, the default folds, and statement preparation hold the lock
+of the connection while DuckDB runs these callbacks. The lock is not
+reentrant, so a statement in the callback waits and does not return.
+
+A callback that refers to a connection keeps that connection and its instance
+reachable while DuckDB keeps the callback, possibly until the database closes.
+Thus the garbage collector does not close them, and the program must close
+them.
+
 ## Typed registration
 
 These functions register SQL objects with Haskell values. Their signatures have

@@ -41,6 +41,7 @@ registrationTests =
         [ testCase "scalar named defaults and all parameter kinds" testScalar
         , testCase "scalar type resolution bind state and documentation" testScalarResolution
         , testCase "pragma query execution errors and documentation" testPragma
+        , testCase "pragma names must be nonempty and must not contain NUL" testPragmaNames
         , testCase "query metric snapshots copy values and survive later queries" testMetrics
         , testCase "aggregate grouped and window execution" testAggregate
         , testCase "table state and typed default parameter" testTable
@@ -156,6 +157,15 @@ testPragma = withConnection ":memory:" \connection -> do
     readIORef calls >>= (@?= 1)
     Pragma.registerPragmaFunctionOn (R.ConnectionTarget connection) "managed_pragma_error" [] (Pragma.QueryPragma (\_ _ -> throwIO (userError "managed callback failure")))
     assertSqlError (query_ connection "PRAGMA managed_pragma_error" :: IO [Only Int64])
+    query_ connection "SELECT 1::BIGINT" >>= (@?= [Only (1 :: Int64)])
+
+testPragmaNames :: Assertion
+testPragmaNames = withConnection ":memory:" \connection -> do
+    forM_ ["", "managed\0pragma"] \name -> do
+        outcome <- try (Pragma.registerPragmaFunctionOn (R.ConnectionTarget connection) name [] (Pragma.ExecPragma (\_ _ -> pure ())))
+        case outcome of
+            Left (err :: SQLError) -> assertBool "name diagnostic" ("pragma function name" `Text.isInfixOf` sqlErrorMessage err)
+            Right () -> assertFailure "expected SQL error"
     query_ connection "SELECT 1::BIGINT" >>= (@?= [Only (1 :: Int64)])
 
 testMetrics :: Assertion

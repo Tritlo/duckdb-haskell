@@ -15,6 +15,8 @@
   Enable the `extension` flags of both packages. See `dev/extensions/`.
 - Add shared environments and instances, attachment management, option
   discovery, table descriptions, SQL tokenization, and positioned file I/O.
+- `attachDatabase` rejects an attach option that contains NUL.
+  `detachDatabase` and `setDefaultDatabase` reject an alias that contains NUL.
 - Add typed configuration values and defaults, managed log sinks, macro
   registration, function documentation, query metrics, and file path
   operations. Expose table bind metadata for multi-file readers.
@@ -46,6 +48,8 @@
 - Add `Database.DuckDB.Simple.Pragma`. `registerPragmaFunction` takes a typed
   callback `PragmaCallback args`. The callback gets the arguments of the call
   as a `FromRow` row.
+- The pragma registrations reject an empty name and a name that contains NUL,
+  as the other registrations do.
 - Add custom options to `Database.DuckDB.Simple.Config`. `customOptionUpdate`
   is a function that gets the new value as a `FieldValue`. An exception in the
   function rejects the value.
@@ -86,6 +90,9 @@
 - The SQL error of a failed Haskell callback has the plain message of the
   exception. Version 0.3 gave `user error (...)` for a `userError` and the
   Haskell record for an `SQLError`.
+  The error of an argument that does not convert names the argument (`arg0`,
+  `arg1`, and so on). It has one form for scalar functions, casts, table
+  functions, and aggregate functions.
 - Add scoped named collection inputs and prepared dynamic PIVOT with a deferred
   output schema. Native expanding statements cannot have parameters.
 - Rename `Database.DuckDB.Simple.Deprecated.Streaming` to
@@ -93,12 +100,17 @@
 - Export Arrow release helpers from `Database.DuckDB.Simple.Arrow`.
 - The default `query`, `fold`, and Arrow folds collect the result before the
   first callback, so a callback can query the same connection.
+- `sqlErrorQuery` gives the query that failed. For a query in the callback of
+  an Arrow fold, it gives the query of the callback, not the query of the fold.
 - While an explicit stream is incomplete, DuckDB rejects other statements on
   its connection. Closing an incomplete stream aborts its statement.
 - Each connection serializes statement preparation and its open native result.
   Threads that share a connection wait for each other in the default query
   functions. Serialize transactions and explicit streams in the application.
 - `query_` and `execute_` parse all statements before they run any.
+- An INSERT, UPDATE, or DELETE without RETURNING gives one row with the number
+  of changed rows in each function that reads rows, also in `fold`, `nextRow`,
+  and the same functions of `Database.DuckDB.Simple.Streaming`.
 - Decode and bind TUPLE values with `TupleValue`, `FieldTuple`, and
   `LogicalTypeTuple`.
 - Preserve composite VARCHAR collations with `LogicalTypeCollatedVarchar`.

@@ -12,15 +12,13 @@ metadata.
 -}
 module Database.DuckDB.Simple.Element (
     chunkIsRowValid,
-    bitStringFromBytes,
-    chunkDecodeBlob,
     decodeElement,
     duckDBHugeIntToInteger,
     vectorElementType,
     withVectorType,
 ) where
 
-import Control.Exception (bracket, throwIO)
+import Control.Exception (bracket, throwIO, try)
 import Control.Monad (when)
 import Data.Bits (clearBit, shiftL, shiftR, testBit, xor, (.&.), (.|.))
 import qualified Data.ByteString as BS
@@ -207,11 +205,20 @@ duckDBUHugeIntToInteger (DuckDBV2UhugeintT lower upper) = (fromIntegral upper `s
 decodeBigNum :: BS.ByteString -> IO Integer
 decodeBigNum bytes = BS.useAsCStringLen bytes \(raw, len) -> alloca \lengthSlot -> alloca \signSlot -> do
     let decode ptr capacity = checked (c_duckdb_v2_bignum_decode (ConstPtr (castPtr raw)) (fromIntegral len) ptr capacity lengthSlot signSlot)
-    decode nullPtr 0
-    count <- peek lengthSlot
-    allocaBytes (fromIntegral count) \magnitude -> do
-        decode magnitude count
-        digits <- BS.packCStringLen (castPtr magnitude, fromIntegral count)
-        negative <- peek signSlot
-        let value = BS.foldl' (\acc byte -> acc * 256 + fromIntegral byte) 0 digits
-        pure (if negative == 0 then value else negate value)
+        finish magnitude = do
+            count <- peek lengthSlot
+            digits <- BS.packCStringLen (castPtr magnitude, fromIntegral count)
+            negative <- peek signSlot
+            let value = BS.foldl' (\acc byte -> acc * 256 + fromIntegral byte) 0 digits
+            pure (if negative == 0 then value else negate value)
+    -- A buffer of the storage size usually holds the magnitude. If the buffer is
+    -- too short, DuckDB gives the required size, and a second call decodes the value.
+    allocaBytes len \first -> do
+        outcome <- try (decode first (fromIntegral len))
+        case outcome of
+            Right () -> finish first
+            Left err
+                | sqlErrorType err == Just ErrorInputObjectSize -> do
+                    count <- peek lengthSlot
+                    allocaBytes (fromIntegral count) \magnitude -> decode magnitude count >> finish magnitude
+                | otherwise -> throwIO err

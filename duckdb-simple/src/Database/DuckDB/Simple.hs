@@ -147,6 +147,8 @@ attachCatalog :: Instance -> FilePath -> Text -> [(Text, Text)] -> Bool -> IO ()
 attachCatalog instance_ path alias settings makeDefault = withInstanceHandle instance_ \raw -> do
     when ('\0' `elem` path || Text.any (== '\0') alias) $
         throwIO (SQLError (Text.pack "duckdb-simple: database path or alias contains NUL") Nothing Nothing)
+    when (any (\(key, value) -> Text.any (== '\0') key || Text.any (== '\0') value) settings) $
+        throwIO (SQLError (Text.pack "duckdb-simple: attach option contains NUL") Nothing Nothing)
     bracket (output (c_duckdb_v2_attach_options_create raw)) (destroy c_duckdb_v2_attach_options_destroy) \options -> do
         forM_ settings \(key, value) -> withIdentifier key \name -> withText value \text ->
             checked (c_duckdb_v2_attach_options_set options name text)
@@ -155,19 +157,27 @@ attachCatalog instance_ path alias settings makeDefault = withInstanceHandle ins
 
 -- | Detach a catalog from an instance.
 detachDatabase :: Instance -> Text -> IO ()
-detachDatabase instance_ alias = withInstanceHandle instance_ \raw -> withIdentifier alias \name ->
-    checked (c_duckdb_v2_instance_detach raw name)
+detachDatabase instance_ alias = withInstanceHandle instance_ \raw -> do
+    when (Text.any (== '\0') alias) $
+        throwIO (SQLError (Text.pack "duckdb-simple: database alias contains NUL") Nothing Nothing)
+    withIdentifier alias \name -> checked (c_duckdb_v2_instance_detach raw name)
 
 -- | Select the default catalog for new connections to an instance.
 setDefaultDatabase :: Instance -> Text -> IO ()
-setDefaultDatabase instance_ alias = withInstanceHandle instance_ \raw -> withIdentifier alias \name ->
-    checked (c_duckdb_v2_instance_set_default raw name)
+setDefaultDatabase instance_ alias = withInstanceHandle instance_ \raw -> do
+    when (Text.any (== '\0') alias) $
+        throwIO (SQLError (Text.pack "duckdb-simple: database alias contains NUL") Nothing Nothing)
+    withIdentifier alias \name -> checked (c_duckdb_v2_instance_set_default raw name)
 
 -- | Open a connection to a shared instance.
 connect :: Instance -> IO Connection
 connect instance_ = connectWithOptions instance_ defaultConnectionOptions
 
--- | Open a connection with options. Configuration uses DuckDB's default scope.
+{- | Open a connection with options. The function writes each option with its
+default scope, as a bare SQL @SET@ does. An option whose default scope is
+GLOBAL thus changes the instance. This change applies to all connections of
+the instance.
+-}
 connectWithOptions :: Instance -> ConnectionOptions -> IO Connection
 connectWithOptions instance_ ConnectionOptions{connectionConfig, connectionGeometryCRS} = mask_ do
     when (any (\(name, value) -> Text.any (== '\0') name || Text.any (== '\0') value) connectionConfig) $
@@ -199,7 +209,9 @@ data ConnectionOptions = ConnectionOptions
     {- ^ DuckDB configuration flags. 'openWithOptions' applies them when it
     creates the instance, as 'openWithConfig' does. 'connectWithOptions' applies
     them to a new connection of a running instance, so options that DuckDB
-    accepts only at startup fail there.
+    accepts only at startup fail there. 'connectWithOptions' writes each option
+    with its default scope. An option whose default scope is GLOBAL thus changes
+    the instance. This change applies to all connections of the instance.
     -}
     , connectionGeometryCRS :: [Text]
     {- ^ CRS definitions to preserve in composite parameters. A helper
@@ -397,7 +409,10 @@ executeNamed conn queryText params =
         bindNamed stmt params
         executeStatement stmt
 
--- | Run a parameterised query and decode every resulting row eagerly.
+{- | Run a parameterised query and decode every resulting row eagerly.
+An INSERT, UPDATE, or DELETE without RETURNING gives one row with one BIGINT
+column: the number of changed rows.
+-}
 query :: (ToRow q, FromRow r) => Connection -> Query -> q -> IO [r]
 query = queryWith fromRow
 
@@ -443,6 +458,8 @@ withAdHocStatement conn queryText action empty = withParsedStatements conn query
 {- | Fold a parameterised result without constructing a complete Haskell row list.
   The fold collects all owned native chunks before decoding starts. Native
   memory use depends on the result size. The step function controls Haskell memory use.
+  An INSERT, UPDATE, or DELETE without RETURNING gives one row with one BIGINT
+  column: the number of changed rows.
 -}
 fold :: (FromRow row, ToRow params) => Connection -> Query -> params -> a -> (a -> row -> IO a) -> IO a
 fold conn queryText params initial step =
@@ -466,7 +483,10 @@ foldNamed conn queryText params initial step =
         bindNamed stmt params
         Result.foldStatementWith MaterializedResult fromRow stmt initial step
 
--- | Fetch the next row. The first call collects all owned native chunks.
+{- | Fetch the next row. The first call collects all owned native chunks.
+An INSERT, UPDATE, or DELETE without RETURNING gives one row with one BIGINT
+column: the number of changed rows.
+-}
 nextRow :: (FromRow r) => Statement -> IO (Maybe r)
 nextRow = nextRowWith fromRow
 

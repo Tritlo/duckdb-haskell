@@ -9,8 +9,10 @@ Module      : Database.DuckDB.Simple.Typed.Aggregate
 Description : Register an aggregate function as a fold over Haskell values.
 
 The Haskell state of a group lives outside DuckDB. The native state holds a
-'StablePtr' to an 'IORef' with the Haskell state. The native state does not
-change after init, because DuckDB can move a native state with a byte copy.
+'StablePtr' to an 'IORef' with the Haskell state. DuckDB can move a native
+state with a byte copy. Thus the update and combine callbacks change only the
+'IORef'. After init, only a release changes the native state: it writes null
+to the native state.
 
 The bind data of each call site holds a state table with the live stable
 pointers. A release removes the stable pointer from the table, and only the
@@ -24,24 +26,22 @@ module Database.DuckDB.Simple.Typed.Aggregate (
     createAggregateOn,
 ) where
 
-import Control.Exception (SomeException, displayException, evaluate, finally, fromException, mask_, onException, throwIO)
+import Control.Exception (evaluate, finally, mask_, onException, throwIO)
 import Control.Monad (forM_, unless, when)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.IntSet as IntSet
-import Data.List (intercalate)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Void (Void)
 import Database.DuckDB.Simple.Callback (attachOpaque, ignoreCallbackExceptions)
-import Database.DuckDB.Simple.FromField (Field (..), FieldValue (FieldNull), ResultError (..))
+import Database.DuckDB.Simple.FromField (Field (..), FieldValue (FieldNull))
 import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow)
 import Database.DuckDB.Simple.Function.Internal (FunctionResult (..), ScalarType, duckTypeForScalar, prepareResultWriter)
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (LogicalTypeScalar))
-import Database.DuckDB.Simple.Materialize (prepareVectorReader)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
-import Database.DuckDB.Simple.Typed (TypedRow (..))
+import Database.DuckDB.Simple.Typed (TypedRow (..), argumentName, conversionMessage, prepareArgumentReader)
 import Database.DuckDB.Simple.V2.Registration (
     AggregateCallbacks (..),
     BindCallback,
@@ -97,8 +97,8 @@ createAggregateOn target name aggregate = do
     columnTypes = rowColumnTypes (Proxy :: Proxy args)
     resultType = scalarReturnType (Proxy :: Proxy result)
     parameters =
-        [ (parameter (Text.pack ("arg" <> show index)) (TypeExpression columnType)){parameterKind = DuckDBV2FunctionParameterKindPositionalOnly}
-        | (index, columnType) <- zip [1 :: Int ..] columnTypes
+        [ (parameter (argumentName index) (TypeExpression columnType)){parameterKind = DuckDBV2FunctionParameterKindPositionalOnly}
+        | (index, columnType) <- zip [0 ..] columnTypes
         ]
     configure factory function = do
         withIdentifier name (checked . c_duckdb_v2_aggregate_function_set_name function)
@@ -106,7 +106,7 @@ createAggregateOn target name aggregate = do
         configureFunctionSignature factory (FunctionSignature parameters (Just (StructuredType (LogicalTypeScalar (duckTypeForScalar resultType))))) signature
         checked (c_duckdb_v2_aggregate_function_set_property function DuckDBV2FunctionPropertyNullHandling DuckDBV2FunctionPropertyNullHandlingSpecial)
     callbacks =
-        (aggregateCallbacks setStateSize (initializeStates aggregate) (updateStates aggregate (length columnTypes)) (combineStates aggregate) (finalizeStates aggregate resultType))
+        (aggregateCallbacks setStateSize (initializeStates aggregate) (updateStates name aggregate (length columnTypes)) (combineStates aggregate) (finalizeStates aggregate resultType))
             { aggregateBindCallback = Just bindStateTable
             , aggregateDestroyCallback = Just destroyStates
             }
@@ -145,19 +145,20 @@ initializeStates Aggregate{aggregateInitial} info = do
             poke (castPtr slot) stable
 
 {- | Add each row to its state. A row with NULL in an argument does not change
-its state.
+its state. A row that does not convert raises an error that names the
+aggregate function.
 -}
-updateStates :: (FromRow args) => Aggregate state args result -> Int -> DuckDBV2AggregateFunctionUpdateInfoHandle -> IO ()
-updateStates Aggregate{aggregateStep} columns info = do
+updateStates :: (FromRow args) => Text -> Aggregate state args result -> Int -> DuckDBV2AggregateFunctionUpdateInfoHandle -> IO ()
+updateStates name Aggregate{aggregateStep} columns info = do
     count <- fromIntegral <$> output (c_duckdb_v2_aggregate_function_update_get_row_count info)
     states <- output (c_duckdb_v2_aggregate_function_update_get_states info)
-    readers <- mapM (\index -> output (c_duckdb_v2_aggregate_function_update_get_arg info (fromIntegral index)) >>= fieldReader index) [0 .. columns - 1]
+    readers <- mapFlat (\index -> output (c_duckdb_v2_aggregate_function_update_get_arg info (fromIntegral index)) >>= prepareArgumentReader index) [0 .. columns - 1]
     forM_ [0 .. count - 1] \row -> do
         fields <- mapM ($ row) readers
         unless (any ((== FieldNull) . fieldValue) fields) do
             arguments <- case parseRow fromRow fields of
                 Ok arguments -> pure arguments
-                Errors failures -> throwIO (userError (conversionMessage failures))
+                Errors failures -> throwIO (userError ("duckdb-simple: " <> Text.unpack name <> ": " <> conversionMessage failures))
             cell <- peekElemOff states row >>= stateCell
             readIORef cell >>= (`aggregateStep` arguments) >>= evaluate >>= writeIORef cell
 
@@ -242,27 +243,3 @@ foreign import ccall "&duckdb_simple_release_aggregate_states"
 -- | Use the generated callback type for the static state table destructor.
 stateTableDestructor :: DuckDBV2OpaqueDestroyFn
 stateTableDestructor = DuckDBV2OpaqueDestroyFn (castFunPtr stateTableDestructorAddress)
-
-{- | Prepare a reader of an argument vector. The reader gives the field of a row.
-The field name is @argN@, from 1.
--}
-fieldReader :: Int -> DuckDBV2VectorHandle -> IO (Int -> IO Field)
-fieldReader index vector = do
-    readValue <- prepareVectorReader (\_ -> pure \_ -> throwIO (userError "duckdb-simple: a typed argument cannot be VARIANT or GEOMETRY")) vector
-    let name = Text.pack ("arg" <> show (index + 1))
-    pure \row -> Field name index <$> readValue row
-
--- | Describe the errors of an argument row that 'FromRow' cannot convert.
-conversionMessage :: [SomeException] -> String
-conversionMessage failures =
-    "duckdb-simple: cannot convert the aggregate arguments: " <> intercalate "; " (map describe failures)
-  where
-    describe failure = case fromException failure of
-        Just result ->
-            Text.unpack (errSQLField result)
-                <> " from "
-                <> Text.unpack (errSQLType result)
-                <> " to "
-                <> Text.unpack (errHaskellType result)
-                <> if Text.null (errMessage result) then "" else ": " <> Text.unpack (errMessage result)
-        Nothing -> displayException failure

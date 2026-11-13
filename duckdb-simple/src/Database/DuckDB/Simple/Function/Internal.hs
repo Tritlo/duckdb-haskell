@@ -48,6 +48,7 @@ import Database.DuckDB.Simple.FromField (
 import Database.DuckDB.Simple.Materialize (prepareVectorReader)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
+import Database.DuckDB.Simple.Typed (conversionMessage)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (advancePtr, allocaArray, peekArray)
 import Foreign.Marshal.Utils (copyBytes, fillBytes)
@@ -216,7 +217,7 @@ instance {-# OVERLAPPABLE #-} (FromField a, FunctionArg a, Function r) => Functi
         throwIO (functionInvocationError (Text.pack "insufficient arguments supplied"))
     applyFunction (field : rest) fn =
         case fromField field of
-            Errors err -> throwIO (argumentConversionError (fieldIndex field) err)
+            Errors err -> throwIO (argumentConversionError err)
             Ok value -> applyFunction rest (fn value)
 
 -- | Register a typed function on a connection or a loading extension.
@@ -314,7 +315,7 @@ type ColumnReader = Int -> IO Field
 
 makeColumnReader :: DuckDBV2ScalarFunctionExecInfoHandle -> Int -> IO ColumnReader
 makeColumnReader info columnIndex = do
-    readValue <- output (c_duckdb_v2_scalar_function_exec_get_arg info (fromIntegral columnIndex)) >>= prepareVectorReader (\_ -> throwIO (functionInvocationError "duckdb-simple: scalar function arguments must use ScalarType"))
+    readValue <- output (c_duckdb_v2_scalar_function_exec_get_arg info (fromIntegral columnIndex)) >>= prepareVectorReader (\_ -> throwIO (functionInvocationError "duckdb-simple: the type of a scalar function argument cannot be or contain VARIANT or GEOMETRY"))
     let name = Text.pack ("arg" <> show columnIndex)
     pure \rowIdx -> do
         value <- readValue rowIdx
@@ -419,16 +420,8 @@ markValid validity idx = do
     word <- peekElemOff validity wordIndex
     pokeElemOff validity wordIndex (setBit word bitIndex)
 
-argumentConversionError :: Int -> [SomeException] -> SQLError
-argumentConversionError idx err =
-    let message =
-            Text.concat
-                [ Text.pack "duckdb-simple: unable to convert argument #"
-                , Text.pack (show (idx + 1))
-                , Text.pack ": "
-                , Text.pack (show err)
-                ]
-     in functionInvocationError message
+argumentConversionError :: [SomeException] -> SQLError
+argumentConversionError err = functionInvocationError (Text.pack ("duckdb-simple: " <> conversionMessage err))
 
 functionInvocationError :: Text -> SQLError
 functionInvocationError message =

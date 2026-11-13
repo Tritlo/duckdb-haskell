@@ -92,9 +92,12 @@ nativeStreamingTests =
                 Streaming.nextRow stmt >>= (@?= Just (Only (8 :: Int64)))
         , testCase "a DML cursor does not execute again after EOF" $ withDb \conn -> do
             void $ execute_ conn "CREATE TABLE stream_once(x BIGINT)"
-            withStatement conn "INSERT INTO stream_once VALUES (1)" \stmt ->
+            withStatement conn "INSERT INTO stream_once VALUES (1)" \stmt -> do
+                Streaming.nextRow stmt >>= (@?= Just (Only (1 :: Int64)))
                 replicateM_ 3 $ Streaming.nextRow stmt >>= (@?= (Nothing :: Maybe (Only Int64)))
             query_ conn "SELECT count(*) FROM stream_once" >>= (@?= [Only (1 :: Int64)])
+            Streaming.fold_ conn "INSERT INTO stream_once VALUES (2)" [] (\acc row -> pure (row : acc)) >>= (@?= [Only (1 :: Int64)])
+            query_ conn "SELECT count(*) FROM stream_once" >>= (@?= [Only (2 :: Int64)])
         , testCase "nextRowWith runs the supplied parser" $ withDb \conn ->
             withStatement conn "SELECT 20, 22" \stmt ->
                 Streaming.nextRowWith ((+) <$> field <*> field) stmt >>= (@?= Just (42 :: Int64))

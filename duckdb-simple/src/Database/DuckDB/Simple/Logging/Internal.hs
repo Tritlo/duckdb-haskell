@@ -64,14 +64,17 @@ registerLogStorage conn name write = registerLogSink conn name write (pure ())
 {- | Register an instance log sink through a live connection.
 Callbacks can run concurrently on native threads. They must not log or change
 logging settings. Native logging discards callback errors after containment.
-The flush action also runs when DuckDB releases the sink.
+The flush action also runs when DuckDB releases the sink. If the registration
+fails after the name check, the flush action runs one time.
 -}
 registerLogSink :: Connection -> Text -> (LogEntry -> IO ()) -> IO () -> IO ()
 registerLogSink conn name write flush = withDatabaseHandle conn \instance_ ->
     withInstanceFactory instance_ \factory ->
         registerSink factory (checked . c_duckdb_v2_instance_register_log_sink instance_) name write flush
 
--- | Register a log sink on an explicitly managed instance.
+{- | Register a log sink on an explicitly managed instance. If the registration
+fails after the name check, the flush action runs one time.
+-}
 registerInstanceLogSink :: Instance -> Text -> (LogEntry -> IO ()) -> IO () -> IO ()
 registerInstanceLogSink instance_ name write flush = withInstanceHandle instance_ \native ->
     withInstanceFactory native \factory ->

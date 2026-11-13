@@ -138,7 +138,8 @@ The SQL workflow stays the same. These changes can affect your code:
   INSERT, UPDATE, or DELETE without RETURNING: the number of changed rows.
   This applies to `query`, `query_`, `queryNamed`, `fold`, `fold_`,
   `foldNamed`, `nextRow`, `nextRowWith`, and the same functions of
-  `Database.DuckDB.Simple.Streaming`.
+  `Database.DuckDB.Simple.Streaming`. Version 0.3 gave this row only from
+  `query`, `query_`, and `queryNamed`. The folds and `nextRow` gave no row.
 - A session variable can supply a named parameter that you omit. DuckDB
   raises an error when no variable has that name. Only too many named
   parameters raise `FormatError`.

@@ -48,7 +48,7 @@ nextRowWith mode parser stmt@Statement{statementStream} =
         case state of
             StatementStreamExhausted -> pure Nothing
             StatementStreamIdle -> do
-                newStream <- startStatementStream False mode stmt
+                newStream <- startStatementStream mode stmt
                 case newStream of
                     Nothing -> writeIORef statementStream StatementStreamExhausted >> pure Nothing
                     Just stream -> do
@@ -94,15 +94,17 @@ exhaustStatementStream ref = mask_ do
         StatementStreamActive stream -> finalizeStream stream
         _ -> pure ()
 
-startStatementStream :: Bool -> ResultMode -> Statement -> IO (Maybe StatementStream)
-startStatementStream includeChangedRows mode stmt = withQueryError (statementQuery stmt) . withResultWindow (statementConnection stmt) (mapM_ finalizeStream) $ mask_ do
+startStatementStream :: ResultMode -> Statement -> IO (Maybe StatementStream)
+startStatementStream mode stmt = withQueryError (statementQuery stmt) . withResultWindow (statementConnection stmt) (mapM_ finalizeStream) $ mask_ do
     -- A materialized result closes here. A stream stays open after the lock is released.
     result <- executePreparedResult stmt
-    startResultStream includeChangedRows mode (statementConnection stmt) result
+    startResultStream mode (statementConnection stmt) result
 
--- | Take ownership of a cursor and retain its chunks in the selected mode.
-startResultStream :: Bool -> ResultMode -> Connection -> DuckDBV2ResultHandle -> IO (Maybe StatementStream)
-startResultStream includeChangedRows mode conn result = mask_ do
+{- | Take ownership of a cursor and retain its chunks in the selected mode.
+A changed-row result gives its row with the count, as a query result gives its rows.
+-}
+startResultStream :: ResultMode -> Connection -> DuckDBV2ResultHandle -> IO (Maybe StatementStream)
+startResultStream mode conn result = mask_ do
     owned <- newIORef []
     cursor <- newIORef result
     -- Take each handle out before its release, so that a second call releases no handle again.
@@ -120,7 +122,7 @@ startResultStream includeChangedRows mode conn result = mask_ do
         when (first /= nullHandle) $
             atomicModifyIORef' owned (\chunks -> (first : chunks, ()))
         resultType <- output (c_duckdb_v2_result_get_result_type result)
-        if resultType /= DuckDBV2ResultTypeQueryResult && not (includeChangedRows && resultType == DuckDBV2ResultTypeChangedRows)
+        if resultType /= DuckDBV2ResultTypeQueryResult && resultType /= DuckDBV2ResultTypeChangedRows
             then do
                 _ <- runInterruptibleQuery conn (output (c_duckdb_v2_result_drain result))
                 release
@@ -177,13 +179,13 @@ finalizeChunk StatementStreamChunk{statementStreamChunkPtr} = destroyDataChunk s
 
 -- | Decode all rows after the statement has materialized its native chunks.
 collectRows :: Statement -> IO [[Field]]
-collectRows stmt = collectStreamRows (statementConnection stmt) (statementQuery stmt) (startStatementStream True MaterializedResult stmt)
+collectRows stmt = collectStreamRows (statementConnection stmt) (statementQuery stmt) (startStatementStream MaterializedResult stmt)
 
 -- | Execute a parsed statement directly and materialize its owned native chunks.
 collectParsedRows :: Connection -> Query -> DuckDBV2SqlStatementHandle -> IO [[Field]]
 collectParsedRows conn query parsed = collectStreamRows conn query . withResultWindow conn (mapM_ finalizeStream) $ mask_ do
     result <- executeParsedResult conn query parsed
-    startResultStream True MaterializedResult conn result
+    startResultStream MaterializedResult conn result
 
 -- | Decode owned materialized chunks and release them on every exit path.
 collectStreamRows :: Connection -> Query -> IO (Maybe StatementStream) -> IO [[Field]]

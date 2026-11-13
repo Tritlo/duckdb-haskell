@@ -95,6 +95,9 @@
   Threads that share a connection wait for each other in the default query
   functions. Serialize transactions and explicit streams in the application.
 - `query_` and `execute_` parse all statements before they run any.
+- An INSERT, UPDATE, or DELETE without RETURNING gives one row with the number
+  of changed rows in each function that reads rows, also in `fold`, `nextRow`,
+  and the same functions of `Database.DuckDB.Simple.Streaming`.
 - Decode and bind TUPLE values with `TupleValue`, `FieldTuple`, and
   `LogicalTypeTuple`.
 - Preserve composite VARCHAR collations with `LogicalTypeCollatedVarchar`.

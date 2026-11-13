@@ -409,7 +409,10 @@ executeNamed conn queryText params =
         bindNamed stmt params
         executeStatement stmt
 
--- | Run a parameterised query and decode every resulting row eagerly.
+{- | Run a parameterised query and decode every resulting row eagerly.
+An INSERT, UPDATE, or DELETE without RETURNING gives one row with one BIGINT
+column: the number of changed rows.
+-}
 query :: (ToRow q, FromRow r) => Connection -> Query -> q -> IO [r]
 query = queryWith fromRow
 
@@ -455,6 +458,8 @@ withAdHocStatement conn queryText action empty = withParsedStatements conn query
 {- | Fold a parameterised result without constructing a complete Haskell row list.
   The fold collects all owned native chunks before decoding starts. Native
   memory use depends on the result size. The step function controls Haskell memory use.
+  An INSERT, UPDATE, or DELETE without RETURNING gives one row with one BIGINT
+  column: the number of changed rows.
 -}
 fold :: (FromRow row, ToRow params) => Connection -> Query -> params -> a -> (a -> row -> IO a) -> IO a
 fold conn queryText params initial step =
@@ -478,7 +483,10 @@ foldNamed conn queryText params initial step =
         bindNamed stmt params
         Result.foldStatementWith MaterializedResult fromRow stmt initial step
 
--- | Fetch the next row. The first call collects all owned native chunks.
+{- | Fetch the next row. The first call collects all owned native chunks.
+An INSERT, UPDATE, or DELETE without RETURNING gives one row with one BIGINT
+column: the number of changed rows.
+-}
 nextRow :: (FromRow r) => Statement -> IO (Maybe r)
 nextRow = nextRowWith fromRow
 

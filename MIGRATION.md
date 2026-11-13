@@ -134,6 +134,11 @@ The SQL workflow stays the same. These changes can affect your code:
   connection waits for this lock and does not return.
 - `query_` and `execute_` parse all statements before they run any. A syntax
   error stops earlier statements in the same input from running.
+- Each function that reads rows gives one row with one BIGINT column for an
+  INSERT, UPDATE, or DELETE without RETURNING: the number of changed rows.
+  This applies to `query`, `query_`, `queryNamed`, `fold`, `fold_`,
+  `foldNamed`, `nextRow`, `nextRowWith`, and the same functions of
+  `Database.DuckDB.Simple.Streaming`.
 - A session variable can supply a named parameter that you omit. DuckDB
   raises an error when no variable has that name. Only too many named
   parameters raise `FormatError`.

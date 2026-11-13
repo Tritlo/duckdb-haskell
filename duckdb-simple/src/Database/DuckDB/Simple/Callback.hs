@@ -6,6 +6,7 @@
 -- | Manage callback resources and registration builders at the DuckDB ownership boundary.
 module Database.DuckDB.Simple.Callback (
     RegistrationTarget (..),
+    withRegistrationFactory,
     withTarget,
     Allocator,
     install,
@@ -38,6 +39,14 @@ callback and must not escape it. Configure extension types and values with
 the context supplied to that callback.
 -}
 data RegistrationTarget = ConnectionTarget Connection | ExtensionTarget DuckDBV2ExtensionHandle DuckDBV2ContextHandle
+
+{- | Borrow the factory of a registration target. The factory must not escape
+this action. Use it to construct signature types and values in a configuration action.
+-}
+withRegistrationFactory :: RegistrationTarget -> (DuckDBV2FactoryHandle -> IO a) -> IO a
+withRegistrationFactory target action = case target of
+    ConnectionTarget connection -> withConnectionHandle connection $ \native -> withConnectionFactory native action
+    ExtensionTarget _ context -> withContextFactory context action
 
 -- | Keep the target alive while borrowing its factory and registration builder.
 withTarget ::

@@ -4,14 +4,15 @@
 module Database.DuckDB.Simple.Pragma (
     PragmaCallback (..),
     registerPragmaFunction,
+    registerPragmaFunctionOn,
     registerPragmaFunctionWith,
 ) where
 
 import Data.Text (Text)
 import Database.DuckDB.Simple.Callback (attachOpaque, runCallback, withCallbackResources, withTarget)
-import Database.DuckDB.Simple.Internal (Connection, withConnectionHandle)
+import Database.DuckDB.Simple.Internal (Connection)
 import Database.DuckDB.Simple.Native
-import Database.DuckDB.Simple.Registration (ContextCallback, FunctionParameter, FunctionSignature (..), RegistrationTarget (..), configureFunctionSignature)
+import Database.DuckDB.Simple.Registration (ContextCallback, FunctionParameter, FunctionSignature (..), RegistrationTarget (..), configureFunctionSignature, withRegistrationFactory)
 import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
 
 {- | A query callback returns SQL to run in place of the PRAGMA statement.
@@ -24,10 +25,14 @@ data PragmaCallback
 
 -- | Register a pragma with named, default, or variadic parameters and no return type.
 registerPragmaFunction :: Connection -> Text -> [FunctionParameter] -> PragmaCallback -> IO ()
-registerPragmaFunction connection name parameters callback =
-    withConnectionHandle connection \native -> withConnectionFactory native \factory ->
+registerPragmaFunction = registerPragmaFunctionOn . ConnectionTarget
+
+-- | Register a pragma on a connection or a loading extension.
+registerPragmaFunctionOn :: RegistrationTarget -> Text -> [FunctionParameter] -> PragmaCallback -> IO ()
+registerPragmaFunctionOn target name parameters callback =
+    withRegistrationFactory target \factory ->
         registerPragmaFunctionWith
-            (ConnectionTarget connection)
+            target
             ( \function -> do
                 withIdentifier name (checked . c_duckdb_v2_pragma_function_set_name function)
                 signature <- output (c_duckdb_v2_pragma_function_get_signature function)

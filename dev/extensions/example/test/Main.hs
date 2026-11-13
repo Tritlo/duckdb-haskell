@@ -1,8 +1,11 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-{- | Load the packaged Haskell demo extension into DuckDB CLI processes and
-check the SQL results. Each case starts a fresh CLI process.
+{- |
+Module      : Main
+Description : Load the packaged Haskell demo extension into DuckDB CLI processes and check the SQL results.
+
+Each case starts a fresh CLI process.
 -}
 module Main (main) where
 

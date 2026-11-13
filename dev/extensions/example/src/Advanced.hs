@@ -2,9 +2,12 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-{- | Register SQL objects with typed Haskell functions on the loading DuckDB
-host. Each registration uses a function of "Database.DuckDB.Simple.Extension".
-The module makes no native V2 call.
+{- |
+Module      : Advanced
+Description : Register SQL objects with typed Haskell functions on the loading DuckDB host.
+
+Each registration uses a function of "Database.DuckDB.Simple.Extension". The
+module makes no native V2 call.
 -}
 module Advanced (register) where
 

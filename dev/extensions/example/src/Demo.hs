@@ -1,7 +1,10 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Register typed Haskell functions with the loading DuckDB host.
+{- |
+Module      : Demo
+Description : Register typed Haskell functions with the loading DuckDB host.
+-}
 module Demo where
 
 import qualified Advanced

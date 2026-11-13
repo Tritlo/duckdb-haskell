@@ -1,6 +1,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Copy the demo library and append unsigned DuckDB V2 metadata.
+{- |
+Module      : Main
+Description : Copy the demo library and append unsigned DuckDB V2 metadata.
+-}
 module Main where
 
 import Control.Exception (IOException, bracket, catch, finally)

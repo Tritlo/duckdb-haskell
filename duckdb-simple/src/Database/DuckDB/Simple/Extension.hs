@@ -1,6 +1,9 @@
 {-# LANGUAGE BlockArguments #-}
 
-{- | Entry support for a loadable V2 Haskell extension.
+{- |
+Module      : Database.DuckDB.Simple.Extension
+Description : Entry point and typed registrations for a loadable Haskell extension.
+
 Enable the @extension@ flag of duckdb-ffi and of duckdb-simple. The C entry
 point calls @duckdb_haskell_extension_load@ with the foreign export of an
 'ExtensionEntry'. See @dev/extensions/@ in the repository.

@@ -35,6 +35,7 @@ import Database.DuckDB.Simple.Pragma (PragmaCallback (..), registerPragmaFunctio
 import Database.DuckDB.Simple.Registration (FunctionParameter (..), Replacement (..), TypeDeclaration (..), defaultValue, parameter, registerCustomType, registerInstanceReplacementScan, registerReplacementScan)
 import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue)
+import Database.DuckDB.Simple.Variant (Variant)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import System.Directory (createDirectory, getTemporaryDirectory, removeFile, removePathForcibly)
@@ -157,6 +158,10 @@ testCastErrors = withConnection ":memory:" \conn -> do
     createCast conn (TypeExpression "VARCHAR") (TypeExpression "typed_number") \(value :: Int64) -> Right value
     query_ conn "SELECT CAST(NULL::VARCHAR AS typed_number)::BIGINT" >>= (@?= [Only (Nothing :: Maybe Int64)])
     assertSqlError "cannot convert argument arg0 from TEXT to Int64" (query_ conn "SELECT CAST('7'::VARCHAR AS typed_number)::BIGINT" :: IO [Only Int64])
+    -- A typed argument cannot be VARIANT.
+    registerCustomType conn "typed_from_variant" (TypeExpression "BIGINT")
+    createCast conn (TypeExpression "VARIANT") (TypeExpression "typed_from_variant") \(value :: Int64) -> Right value
+    assertSqlError "the type of a typed argument cannot be or contain VARIANT or GEOMETRY" (query_ conn "SELECT CAST(1::VARIANT AS typed_from_variant)::BIGINT" :: IO [Only Int64])
     -- TRY_CAST gives NULL for these failed rows.
     query_ conn "SELECT TRY_CAST(13::BIGINT AS typed_partial)::BIGINT, TRY_CAST('7'::VARCHAR AS typed_number)::BIGINT"
         >>= (@?= [(Nothing :: Maybe Int64, Nothing :: Maybe Int64)])
@@ -730,6 +735,8 @@ testTableArgumentErrors = withConnection ":memory:" \conn -> do
     query_ conn "SELECT n FROM typed_natural(7)" >>= (@?= [Only (7 :: Int64)])
     assertSqlError "typed_natural: cannot convert argument arg0" (query_ conn "SELECT n FROM typed_natural(-7)" :: IO [Only Int64])
     assertSqlError "typed_natural: argument arg0 is NULL" (query_ conn "SELECT n FROM typed_natural(NULL)" :: IO [Only Int64])
+    createTableFunction conn "typed_variant" ["n"] \(Only (_ :: Variant)) -> pure [Only (1 :: Int64)]
+    assertSqlError "the type of a table function argument cannot be or contain VARIANT" (query_ conn "SELECT n FROM typed_variant(1::VARIANT)" :: IO [Only Int64])
     query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
 
 -- | Fail a query with an exception in the function and in a row of the second chunk.

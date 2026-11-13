@@ -9,9 +9,10 @@
 Module      : Database.DuckDB.Simple.Typed
 Description : Read and write callback vectors as typed Haskell values.
 
-Typed registrations use these helpers. An argument reader converts the rows of
-a borrowed vector with 'FromField'. 'TypedRow' gives the column types and the
-column values of a row. The module also registers typed casts on a connection
+Typed registrations use these helpers. An argument reader gives the rows of a
+borrowed vector as fields with the names from 'argumentName'.
+'conversionMessage' describes the arguments that do not convert. 'TypedRow'
+gives the column types and the column values of a row. The module also registers typed casts on a connection
 or on a loading extension. It converts a typed replacement function to a native
 replacement scan callback.
 -}

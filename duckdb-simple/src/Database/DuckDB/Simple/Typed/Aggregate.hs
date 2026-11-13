@@ -9,8 +9,10 @@ Module      : Database.DuckDB.Simple.Typed.Aggregate
 Description : Register an aggregate function as a fold over Haskell values.
 
 The Haskell state of a group lives outside DuckDB. The native state holds a
-'StablePtr' to an 'IORef' with the Haskell state. The native state does not
-change after init, because DuckDB can move a native state with a byte copy.
+'StablePtr' to an 'IORef' with the Haskell state. DuckDB can move a native
+state with a byte copy. Thus the update and combine callbacks change only the
+'IORef'. After init, only a release changes the native state: it writes null
+to the native state.
 
 The bind data of each call site holds a state table with the live stable
 pointers. A release removes the stable pointer from the table, and only the

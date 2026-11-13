@@ -176,6 +176,12 @@ castRows convert info context = withContextFactory context \factory -> do
     -- thread at each native call, so a deep stack makes each call slow.
     firstFailure <- newIORef Nothing
     forM_ [0 .. count - 1] \row ->
+        -- Catch each exception, also an asynchronous one, and write NULL to the
+        -- failed row. For a try cast, the header of
+        -- duckdb_v2_cast_function_exec_get_mode says that "the engine discards
+        -- the error and keeps whatever the callback left in the output". Thus
+        -- the callback must write each row of the output vector before it
+        -- returns.
         try (castRow row) >>= \case
             Right () -> pure ()
             Left (failure :: SomeException) -> do

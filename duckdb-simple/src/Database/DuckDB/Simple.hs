@@ -173,7 +173,11 @@ setDefaultDatabase instance_ alias = withInstanceHandle instance_ \raw -> do
 connect :: Instance -> IO Connection
 connect instance_ = connectWithOptions instance_ defaultConnectionOptions
 
--- | Open a connection with options. Configuration uses DuckDB's default scope.
+{- | Open a connection with options. The function writes each option with its
+default scope, as a bare SQL @SET@ does. An option whose default scope is
+GLOBAL thus changes the instance. This change applies to all connections of
+the instance.
+-}
 connectWithOptions :: Instance -> ConnectionOptions -> IO Connection
 connectWithOptions instance_ ConnectionOptions{connectionConfig, connectionGeometryCRS} = mask_ do
     when (any (\(name, value) -> Text.any (== '\0') name || Text.any (== '\0') value) connectionConfig) $
@@ -205,7 +209,9 @@ data ConnectionOptions = ConnectionOptions
     {- ^ DuckDB configuration flags. 'openWithOptions' applies them when it
     creates the instance, as 'openWithConfig' does. 'connectWithOptions' applies
     them to a new connection of a running instance, so options that DuckDB
-    accepts only at startup fail there.
+    accepts only at startup fail there. 'connectWithOptions' writes each option
+    with its default scope. An option whose default scope is GLOBAL thus changes
+    the instance. This change applies to all connections of the instance.
     -}
     , connectionGeometryCRS :: [Text]
     {- ^ CRS definitions to preserve in composite parameters. A helper

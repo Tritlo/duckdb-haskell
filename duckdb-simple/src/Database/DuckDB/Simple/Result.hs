@@ -189,10 +189,17 @@ collectStreamRows conn query acquire = withQueryError query $
     bracket acquire (mapM_ finalizeStream) \case
         Nothing -> pure []
         Just owned -> do
-            rows <- forM (statementStreamPendingChunks owned) \chunk -> do
+            -- Both loops have a constant stack. A native call in a reader costs
+            -- more on a deep stack.
+            rows <- flip mapFlat (statementStreamPendingChunks owned) \chunk -> do
                 rowCount <- fromIntegral <$> output (c_duckdb_v2_data_chunk_get_size chunk)
                 readers <- prepareChunkReaders conn chunk (statementStreamColumns owned)
-                mapM (buildMaterializedRow (statementStreamColumns owned) readers) [0 .. rowCount - 1]
+                -- Read the rows from the last to the first, and put each row in
+                -- front of the list. The list then needs no reverse.
+                let readFrom row decoded
+                        | row < 0 = pure decoded
+                        | otherwise = buildMaterializedRow (statementStreamColumns owned) readers row >>= \fields -> readFrom (row - 1) (fields : decoded)
+                readFrom (rowCount - 1) []
             pure (concat rows)
 
 collectResultColumns :: DuckDBV2ResultHandle -> IO [StatementStreamColumn]

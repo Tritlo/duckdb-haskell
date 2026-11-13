@@ -41,7 +41,6 @@ module Database.DuckDB.Simple.Native (
     withCreatedValues,
     nullHandle,
     indices,
-    mapFlat,
     withText,
     withTextArray,
     readText,
@@ -274,17 +273,6 @@ withCreatedValues = withMany (\create -> bracket create destroyValue)
 -- | List the indices below a native count without unsigned underflow.
 indices :: DuckDBIdx -> [DuckDBIdx]
 indices count = if count == 0 then [] else [0 .. count - 1]
-
-{- | Map a list in IO without a stack frame for each element. The runtime
-scans the stack of a thread at each native call, and 'mapM' keeps one frame
-for each element. A native call in a 'mapM' over 2000 elements then takes
-about 20 times as long as in this loop.
--}
-mapFlat :: (a -> IO b) -> [a] -> IO [b]
-mapFlat action = go []
-  where
-    go done [] = pure (reverse done)
-    go done (item : rest) = action item >>= \result -> go (result : done) rest
 
 -- | Borrow UTF-8 text for the duration of a native call.
 withText :: Text -> (ConstPtr DuckDBV2Str -> IO a) -> IO a

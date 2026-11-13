@@ -16,35 +16,35 @@ import Utils (withConstCString)
 
 tests :: TestTree
 tests =
-    testGroup
-        "Error Data"
-        [createInspectDestroy]
+  testGroup
+    "Error Data"
+    [createInspectDestroy]
 
 createInspectDestroy :: TestTree
 createInspectDestroy =
-    testCase "create error data, inspect properties, destroy" $
-        withConstCString "synthetic failure" \message -> do
-            errData <- c_duckdb_create_error_data DuckDBErrorInvalid message
-            assertBool "error data pointer should not be null" (errData /= coerce nullPtr)
+  testCase "create error data, inspect properties, destroy" $
+    withConstCString "synthetic failure" \message -> do
+      errData <- c_duckdb_create_error_data DuckDBErrorInvalid message
+      assertBool "error data pointer should not be null" (errData /= coerce nullPtr)
 
-            errType <- c_duckdb_error_data_error_type errData
-            errType @?= DuckDBErrorInvalid
+      errType <- c_duckdb_error_data_error_type errData
+      errType @?= DuckDBErrorInvalid
 
-            retrievedMessagePtr <- c_duckdb_error_data_message errData
-            retrievedMessage <- peekCString (coerce retrievedMessagePtr)
-            retrievedMessage @?= "synthetic failure"
+      retrievedMessagePtr <- c_duckdb_error_data_message errData
+      retrievedMessage <- peekCString (coerce retrievedMessagePtr)
+      retrievedMessage @?= "synthetic failure"
 
-            hasErr <- c_duckdb_error_data_has_error errData
-            hasErr @?= CBool 1
+      hasErr <- c_duckdb_error_data_has_error errData
+      hasErr @?= CBool 1
 
-            alloca \ptr -> do
-                poke ptr errData
-                c_duckdb_destroy_error_data ptr
+      alloca \ptr -> do
+        poke ptr errData
+        c_duckdb_destroy_error_data ptr
 
-            corruption <- c_duckdb_create_error_data DuckDBErrorDataCorruption message
-            assertBool "data corruption error pointer should not be null" (corruption /= coerce nullPtr)
-            c_duckdb_error_data_error_type corruption >>= (@?= DuckDBErrorDataCorruption)
-            c_duckdb_error_data_has_error corruption >>= (@?= CBool 1)
-            alloca \ptr -> do
-                poke ptr corruption
-                c_duckdb_destroy_error_data ptr
+      corruption <- c_duckdb_create_error_data DuckDBErrorDataCorruption message
+      assertBool "data corruption error pointer should not be null" (corruption /= coerce nullPtr)
+      c_duckdb_error_data_error_type corruption >>= (@?= DuckDBErrorDataCorruption)
+      c_duckdb_error_data_has_error corruption >>= (@?= CBool 1)
+      alloca \ptr -> do
+        poke ptr corruption
+        c_duckdb_destroy_error_data ptr

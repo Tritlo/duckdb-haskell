@@ -5,10 +5,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-{- |
-Module      : VariantRegressionTests
-Description : Lossless VARIANT binding and result conversion through the V2 API.
--}
+-- |
+-- Module      : VariantRegressionTests
+-- Description : Lossless VARIANT binding and result conversion through the V2 API.
 module VariantRegressionTests (tests) where
 
 import Control.Exception (IOException, SomeException, bracket, displayException, try)
@@ -45,344 +44,409 @@ import TestUtils (assertFailureIO)
 
 -- | A generic record checks the bridge to composite type metadata.
 newtype VariantRecord = VariantRecord {payload :: Variant}
-    deriving stock (Eq, Show, Generic)
-    deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB VariantRecord)
+  deriving stock (Eq, Show, Generic)
+  deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB VariantRecord)
 
 -- | Check VARIANT payloads against native decoding and parameter round trips.
 tests :: TestTree
 tests =
-    testGroup
-        "variant integration"
-        [ testGroup
-            "scalar payloads decode like native values"
-            [ testCase (Text.unpack sql) $ withConnection ":memory:" \conn -> do
-                -- Two rows with one tag use the list cast. The round trip uses the cast of one value.
-                rows <- query_ conn (Query ("SELECT (" <> sql <> ")::VARIANT, {'v': " <> sql <> "}::VARIANT, " <> sql <> " FROM range(2)")) :: IO [(Variant, Variant, FieldValue)]
-                length rows @?= 2
-                forM_ rows \(Variant actual, Variant object, native) -> do
-                    actual @?= native
-                    object @?= variantObject [("v", native)]
-                    roundTrip conn native
-            | sql <- scalarCases
-            ]
-        , testCase "explicit casts bind plain parameters" $ withConnection ":memory:" \conn -> do
-            [Only record] <- query_ conn "SELECT {'a': 1, 'b': 'x'}" :: IO [Only (StructValue FieldValue)]
-            (query conn "SELECT ?::VARIANT, ?::VARIANT, ?::VARIANT, ?::VARIANT" (42 :: Int64, "two" :: Text, record, listArray (0, 1) [1, 2] :: Array Int Int64) :: IO [(Variant, Variant, Variant, Variant)])
-                >>= (@?= [(Variant (FieldInt64 42), Variant (FieldText "two"), Variant (variantObject [("a", FieldInt32 1), ("b", FieldText "x")]), Variant (FieldList [FieldInt64 1, FieldInt64 2]))])
-            (query conn "SELECT [NULL::VARIANT, ?::VARIANT, ?::VARIANT]" (42 :: Int64, "two" :: Text) :: IO [Only [Variant]])
-                >>= (@?= [Only [Variant FieldNull, Variant (FieldInt64 42), Variant (FieldText "two")]])
-            _ <- execute_ conn "CREATE TABLE variants (v VARIANT)"
-            _ <- executeMany conn "INSERT INTO variants VALUES (?)" [Only (7 :: Int64), Only 8]
-            _ <- execute conn "INSERT INTO variants VALUES (?)" (Only record)
-            (query_ conn "SELECT v FROM variants" :: IO [Only Variant])
-                >>= (@?= [Only (Variant (FieldInt64 7)), Only (Variant (FieldInt64 8)), Only (Variant (variantObject [("a", FieldInt32 1), ("b", FieldText "x")]))])
-        , testCase "existing FromField instances read VARIANT payloads" $ withConnection ":memory:" \conn -> do
-            (query_ conn "SELECT 42::BIGINT::VARIANT, 'x'::VARIANT, [1, 2, 3]::VARIANT" :: IO [(Int64, Text, [Int64])])
-                >>= (@?= [(42, "x", [1, 2, 3])])
-            (query_ conn "SELECT {'payload': {'x': 18446744073709551615::UBIGINT}::VARIANT}" :: IO [Only VariantRecord])
-                >>= (@?= [Only (VariantRecord (Variant (variantObject [("x", FieldWord64 maxBound)])))])
-        , testCase "bound payloads keep integer widths and decimal scale" $ withConnection ":memory:" \conn ->
-            forM_ [("'-128'::TINYINT", FieldInt8 minBound), ("12.34::DECIMAL(4,2)", FieldDecimal (DecimalValue 4 2 1234)), ("255::UTINYINT", FieldWord8 maxBound)] \(sql, value) ->
-                (query conn (Query ("SELECT variant_typeof(?) = variant_typeof((" <> sql <> ")::VARIANT)")) (Only (Variant value)) :: IO [Only Bool])
-                    >>= (@?= [Only True])
-        , testCase "floating special values retain type and bits" $ withConnection ":memory:" \conn -> do
-            forM_ [0, -0.0, 1 / 0, -1 / 0, 0 / 0] \value -> do
-                [Only (Variant actual)] <- query conn "SELECT ?" (Only (Variant (FieldDouble value)))
-                case actual of
-                    FieldDouble decoded
-                        | isNaN value -> assertBool "expected Double NaN" (isNaN decoded)
-                        | otherwise -> castDoubleToWord64 decoded @?= castDoubleToWord64 value
-                    _ -> assertFailure (show actual)
-            forM_ [0, -0.0, 1 / 0, -1 / 0, 0 / 0] \value -> do
-                [Only (Variant actual)] <- query conn "SELECT ?" (Only (Variant (FieldFloat value)))
-                case actual of
-                    FieldFloat decoded
-                        | isNaN value -> assertBool "expected Float NaN" (isNaN decoded)
-                        | otherwise -> castFloatToWord32 decoded @?= castFloatToWord32 value
-                    _ -> assertFailure (show actual)
-        , testCase "TIMETZ offsets decode like native values" $ withConnection ":memory:" \conn -> do
-            forM_ ["'12:00:00+01:23'::TIMETZ", "'23:59:59.999999-15:59'::TIMETZ", "'00:00:00+00'::TIMETZ"] \sql -> do
-                rows <- query_ conn (Query ("SELECT (" <> sql <> ")::VARIANT, " <> sql <> " FROM range(2)")) :: IO [(Variant, FieldValue)]
-                length rows @?= 2
-                forM_ rows \(Variant actual, native) -> do
-                    actual @?= native
-                    roundTrip conn native
-            assertFailureIO (query_ conn "SELECT '12:00:00+01:23:45'::TIMETZ::VARIANT" :: IO [Only Variant])
-        , testCase "wide finite timestamp payloads round trip without losing digits" $ withConnection ":memory:" \conn -> do
-            void (execute_ conn "CREATE TABLE wide_timestamps (seconds TIMESTAMP_S, millis TIMESTAMP_MS)")
-            appendWideTimestamps conn [(30000000000000, 30000000000000001), (-30000000000000, -30000000000000001), (maxBound - 1, maxBound - 1), (minBound, minBound)]
-            rows <- query_ conn "SELECT seconds::VARIANT, seconds, millis::VARIANT, millis FROM wide_timestamps" :: IO [(Variant, FieldValue, Variant, FieldValue)]
-            length rows @?= 4
-            forM_ rows \(seconds, nativeSeconds, millis, nativeMillis) ->
-                forM_ [(seconds, nativeSeconds), (millis, nativeMillis)] \(Variant actual, native) -> do
-                    actual @?= native
-                    roundTrip conn actual
-        , testCase "text and binary values preserve embedded NUL" $ withConnection ":memory:" \conn -> do
-            roundTrip conn (FieldText "before\0after íslenska λ 😀")
-            roundTrip conn (FieldBlob (BS.pack [0, 1, 127, 128, 255, 0]))
-        , testCase "objects preserve case-sensitive names and heterogeneous children" $ withConnection ":memory:" \conn -> do
-            let value =
-                    variantObject
-                        [ ("Case", FieldInt64 9007199254740993)
-                        , ("case", FieldDecimal (DecimalValue 38 9 1234567890123456789))
-                        , ("quote' íslenska λ", FieldList [FieldNull, FieldText "x", FieldList [], variantObject []])
-                        ]
-            roundTrip conn value
-            (query conn "SELECT variant_extract(?, 'Case')::BIGINT, variant_extract(?, 'case')::DECIMAL(38,9)::VARCHAR" (Variant value, Variant value) :: IO [(Int64, Text)])
-                >>= (@?= [(9007199254740993, "1234567890.123456789")])
-        , testCase "native objects use lexical key order and arrays retain element order" $ withConnection ":memory:" \conn ->
-            (query_ conn "SELECT {'z':1, 'a':2, 'm':[3,1,2]}::VARIANT" :: IO [Only Variant])
-                >>= (@?= [Only (Variant (variantObject [("a", FieldInt32 2), ("m", FieldList [FieldInt32 3, FieldInt32 1, FieldInt32 2]), ("z", FieldInt32 1)]))])
-        , testCase "empty containers and NULL stay distinct" $ withConnection ":memory:" \conn -> do
-            forM_ [FieldNull, FieldList [], variantObject [], FieldList [FieldNull], variantObject [("x", FieldNull)]] (roundTrip conn)
-            (query_ conn "SELECT NULL::VARIANT" :: IO [Only (Maybe Variant)]) >>= (@?= [Only Nothing])
-            (query conn "SELECT ?" (Only (Variant FieldNull)) :: IO [Only FieldValue]) >>= (@?= [Only FieldNull])
-        , testCase "native objects preserve empty and embedded NUL keys" $ withConnection ":memory:" \conn -> do
-            (query_ conn "SELECT '{\"\":42}'::JSON::VARIANT" :: IO [Only Variant])
-                >>= (@?= [Only (Variant (variantObject [("", FieldWord64 42)]))])
-            (query_ conn "SELECT '{\"A\":1,\"a\":2,\"a\\u0000b\":3}'::JSON::VARIANT" :: IO [Only Variant])
-                >>= (@?= [Only (Variant (variantObject [("A", FieldWord64 1), ("a", FieldWord64 2), ("a\0b", FieldWord64 3)]))])
-        , testCase "empty object keys survive parameter binding" $ withConnection ":memory:" \conn -> do
-            [Only value] <- query_ conn "SELECT '{\"named\": 1, \"\": 42}'::JSON::VARIANT" :: IO [Only Variant]
-            query conn "SELECT ?" (Only value) >>= (@?= [Only value])
-            -- Decoded objects list their keys in DuckDB's lexicographic order.
-            roundTrip conn (variantObject [("", FieldList [FieldNull, variantObject [("", FieldText "λ"), ("named", FieldInt64 1)]]), ("named", FieldBool True)])
-            sole <- try (query conn "SELECT ?" (Only (Variant (variantObject [("", FieldInt64 42)])))) :: IO (Either SomeException [Only Variant])
-            case sole of
-                Left err -> assertBool (displayException err) ("only an empty key" `isInfixOf` displayException err)
-                Right _ -> assertFailure "expected the native constructor limit for an object with only an empty key"
-        , testCase "objects with two empty keys fail the unique key check" $ withConnection ":memory:" \conn -> do
-            result <- try (query conn "SELECT ?" (Only (Variant (variantObject [("", FieldInt64 1), ("", FieldInt64 2)])))) :: IO (Either IOException [Only Variant])
-            case result of
-                Left err -> assertBool (displayException err) ("duckdb-simple: VARIANT objects need unique keys" `isInfixOf` displayException err)
-                Right _ -> assertFailure "expected the unique key check to reject two empty keys"
-        , testCase "metadata conversion ignores shadowing macros" $ withConnection ":memory:" \conn -> do
-            -- The connection keeps the parsed metadata statement of the first decode.
-            (query_ conn "SELECT {'a': 42::TINYINT}::VARIANT" :: IO [Only Variant]) >>= (@?= [Only (Variant (variantObject [("a", FieldInt8 42)]))])
-            void (execute_ conn "CREATE MACRO variant_typeof(x) AS 'VARCHAR'")
-            void (execute_ conn "CREATE MACRO list_transform(x,y) AS [42]")
-            void (execute_ conn "CREATE MACRO variant_keys(x) AS ['wrong']")
-            (query_ conn "SELECT [42::TINYINT::VARIANT, 'two'::VARIANT]::VARIANT" :: IO [Only Variant])
-                >>= (@?= [Only (Variant (FieldList [FieldInt8 42, FieldText "two"]))])
-            (query_ conn "SELECT {'a': 42::TINYINT}::VARIANT" :: IO [Only Variant]) >>= (@?= [Only (Variant (variantObject [("a", FieldInt8 42)]))])
-        , testCase "deep native arrays decode without a library depth limit" $ withConnection ":memory:" \conn ->
-            forM_ [128, 256 :: Int] \depth -> do
-                let expected = Variant (foldr (const (FieldList . pure)) (FieldWord64 7) [1 .. depth])
-                (query conn "SELECT (repeat('[', ?) || '7' || repeat(']', ?))::JSON::VARIANT AS payload" (depth, depth) :: IO [Only Variant])
-                    >>= (@?= [Only expected])
-                let object = Variant (variantObject [("nested", variantPayload expected)])
-                (query conn "SELECT ('{\"nested\":' || repeat('[', ?) || '7' || repeat(']', ?) || '}')::JSON::VARIANT AS payload" (depth, depth) :: IO [Only Variant])
-                    >>= (@?= [Only object])
-        , testCase "ARRAY parameters and generic records contain VARIANT" $ withConnection ":memory:" \conn -> do
-            let array = listArray (0, 2) [Variant (FieldInt8 1), Variant (FieldText "two"), Variant FieldNull]
-            (query conn "SELECT ?" (Only array) :: IO [Only (Array Int Variant)]) >>= (@?= [Only array])
-            let record = VariantRecord (Variant (variantObject [("x", FieldWord64 maxBound)]))
-            (query conn "SELECT ?" (Only record) :: IO [Only VariantRecord]) >>= (@?= [Only record])
-        , testCase "nullable ARRAY parameters preserve heterogeneous VARIANT values" $ withConnection ":memory:" \conn -> do
-            let values = listArray (0, 3) [Nothing, Just (Variant (FieldInt64 42)), Just (Variant (FieldText "two")), Just (Variant (variantObject [("xs", FieldList [FieldNull, FieldBool True])]))]
-            (query conn "SELECT typeof(?), ?" (values, values) :: IO [(Text, Array Int (Maybe Variant))]) >>= (@?= [("VARIANT[4]", values)])
-        , testCase "empty ARRAY parameters report the V2 limit" $ withConnection ":memory:" \conn -> do
-            let values = listArray (0, -1) [] :: Array Int (Maybe Variant)
-            result <- try (query conn "SELECT typeof(?)" (Only values))
-            case result of
-                Left SQLError{sqlErrorMessage} -> assertBool "must identify empty ARRAY" ("empty ARRAY" `Text.isInfixOf` sqlErrorMessage)
-                Right (_ :: [Only Text]) -> assertFailure "expected the V2 empty ARRAY limit"
-        , testCase "parameter binding supplies a complete VARIANT type" $ withConnection ":memory:" \conn -> do
-            let value = variantObject [("xs", FieldList [FieldNull, FieldInt64 42])]
-            roundTrip conn value
-            (query conn "SELECT typeof(?)" (Only (Variant value)) :: IO [Only Text]) >>= (@?= [Only "VARIANT"])
-        , testCase "the first VARIANT parameter does not end a streaming result" $ withConnection ":memory:" \conn ->
-            withStatement conn "SELECT ?" \stmt -> do
-                total <- Streaming.fold_ conn "SELECT i FROM range(100000) t(i)" 0 \acc (Only i) -> do
-                    when (i == 0) (bind stmt [toField (Variant (FieldInt64 42))])
-                    pure (acc + i)
-                total @?= (sum [0 .. 99999] :: Int64)
-        , testCase "VARIANT type construction uses the supplied factory" $ withConnection ":memory:" \conn ->
-            withConnectionHandle conn \native -> withConnectionFactory native \factory ->
-                bracket (logicalTypeFromRep factory (LogicalTypeScalar LogicalTypeIdVariant)) destroyLogicalType \logical ->
-                    logicalTypeToRep logical >>= (@?= LogicalTypeScalar LogicalTypeIdVariant)
-        , testCase "VARIANT payloads and GEOMETRY CRS metadata bind together" $ withConnection ":memory:" \conn -> do
-            [Only value] <- query_ conn "SELECT {'payload': 42::VARIANT, 'shape': NULL::GEOMETRY('OGC:CRS84')}" :: IO [Only (StructValue FieldValue)]
-            (query conn "SELECT typeof(?)" (Only value) :: IO [Only Text]) >>= (@?= [Only "STRUCT(payload VARIANT, shape GEOMETRY('OGC:CRS84'))"])
-            (query conn "SELECT ?" (Only value) :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only value])
-        , testCase "inactive VARIANT UNION members have complete types" $ withConnection ":memory:" \conn -> do
-            [Only value] <- query_ conn "SELECT union_value(number := 42::BIGINT)::UNION(number BIGINT, payload VARIANT)" :: IO [Only (UnionValue FieldValue)]
-            (query conn "SELECT ?" (Only value) :: IO [Only (UnionValue FieldValue)]) >>= (@?= [Only value])
-        , testCase "native LIST, ARRAY, MAP and STRUCT metadata round trip" $ withConnection ":memory:" \conn -> do
-            [Only value] <-
-                query_
-                    conn
-                    "SELECT {'xs': [1::VARIANT, 'two'::VARIANT, NULL], 'fixed': [42::VARIANT]::VARIANT[1], 'map': MAP {'x': {'a': 9}::VARIANT}}" ::
-                    IO [Only (StructValue FieldValue)]
-            (query conn "SELECT ?" (Only value) :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only value])
-        , testCase "UNION payloads retain VARIANT type, including NULL" $ withConnection ":memory:" \conn ->
-            forM_ ["SELECT union_value(v := {'a': 42}::VARIANT)", "SELECT union_value(v := NULL::VARIANT)"] \sql -> do
-                [Only value] <- query_ conn sql :: IO [Only (UnionValue FieldValue)]
-                (query conn "SELECT ?" (Only value) :: IO [Only (UnionValue FieldValue)]) >>= (@?= [Only value])
-        , testGroup
-            "heterogeneous folds cross chunk boundaries"
-            [ testCase mode $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
-                count <- foldRows
-                    conn
-                    "SELECT CASE WHEN i % 3 = 0 THEN i::VARIANT WHEN i % 3 = 1 THEN 'text'::VARIANT ELSE {'n': i, 'xs': [NULL, i]}::VARIANT END FROM range(5000) t(i)"
-                    (0 :: Int64)
-                    \n (Only (Variant actual)) -> do
-                        let expected = case n `mod` 3 of
-                                0 -> FieldInt64 n
-                                1 -> FieldText "text"
-                                _ -> variantObject [("n", FieldInt64 n), ("xs", FieldList [FieldNull, FieldInt64 n])]
-                        actual @?= expected
-                        pure (n + 1)
-                count @?= 5000
-            | (mode, foldRows) <- [("materialized", fold_), ("native streaming", Streaming.fold_)]
-            ]
-        , testCase "one column with many payload tags decodes each row exactly" $ withConnection ":memory:" \conn -> do
+  testGroup
+    "variant integration"
+    [ testGroup
+        "scalar payloads decode like native values"
+        [ testCase (Text.unpack sql) $ withConnection ":memory:" \conn -> do
+            -- Two rows with one tag use the list cast. The round trip uses the cast of one value.
             rows <-
-                query_
-                    conn
-                    "SELECT i, CASE i % 12 WHEN 0 THEN NULL WHEN 1 THEN (i % 24 = 1)::VARIANT WHEN 2 THEN (i % 100)::TINYINT::VARIANT WHEN 3 THEN i::VARIANT WHEN 4 THEN (i * 0.5)::DOUBLE::VARIANT WHEN 5 THEN i::DECIMAL(9,2)::VARIANT WHEN 6 THEN ('t' || i)::VARIANT WHEN 7 THEN [i, NULL, i + 1]::VARIANT WHEN 8 THEN {'n': i, 'xs': [i]}::VARIANT WHEN 9 THEN {'k': {'deep': 't' || i}}::VARIANT WHEN 10 THEN []::VARIANT ELSE i::UBIGINT::VARIANT END FROM range(5000) t(i)" ::
-                    IO [(Int64, Maybe Variant)]
-            let text n = FieldText ("t" <> Text.pack (show n))
-                expected n = case n `mod` 12 of
-                    0 -> Nothing
-                    1 -> Just (FieldBool (n `mod` 24 == 1))
-                    2 -> Just (FieldInt8 (fromIntegral (n `mod` 100)))
-                    3 -> Just (FieldInt64 n)
-                    4 -> Just (FieldDouble (fromIntegral n * 0.5))
-                    5 -> Just (FieldDecimal (DecimalValue 9 2 (toInteger n * 100)))
-                    6 -> Just (text n)
-                    7 -> Just (FieldList [FieldInt64 n, FieldNull, FieldInt64 (n + 1)])
-                    8 -> Just (variantObject [("n", FieldInt64 n), ("xs", FieldList [FieldInt64 n])])
-                    9 -> Just (variantObject [("k", variantObject [("deep", text n)])])
-                    10 -> Just (FieldList [])
-                    _ -> Just (FieldWord64 (fromIntegral n))
-            length rows @?= 5000
-            forM_ rows \(n, actual) -> fmap variantPayload actual @?= expected n
-        , testCase "GEOMETRY, BLOB and BIGNUM payloads in one column decode like native values" $ withConnection ":memory:" \conn -> do
-            rows <-
-                query_
-                    conn
-                    "SELECT i, CASE i % 3 WHEN 0 THEN g::VARIANT WHEN 1 THEN b::VARIANT ELSE n::VARIANT END, g, b, n FROM (SELECT i, ('POINT (' || i || ' ' || (i + 1) || ')')::GEOMETRY AS g, encode('b' || i) AS b, (i::VARCHAR || '12345678901234567890')::BIGNUM AS n FROM range(5000) t(i))" ::
-                    IO [(Int64, Variant, FieldValue, FieldValue, FieldValue)]
-            length rows @?= 5000
-            forM_ rows \(n, Variant actual, geometry, blob, bignum) ->
-                actual @?= case n `mod` 3 of
-                    0 -> geometry
-                    1 -> blob
-                    _ -> bignum
-        , testCase "objects with many key layouts and many keys decode exactly" $ withConnection ":memory:" \conn -> do
-            let digits = Text.pack . show :: Int64 -> Text
-            layouts <- query_ conn "SELECT i, json_object('k' || i::VARCHAR, i)::VARIANT FROM range(3000) t(i)" :: IO [(Int64, Variant)]
-            length layouts @?= 3000
-            forM_ layouts \(n, Variant actual) -> actual @?= variantObject [("k" <> digits n, FieldWord64 (fromIntegral n))]
-            (query_ conn "SELECT json_group_object('k' || lpad(i::VARCHAR, 3, '0'), i)::VARIANT FROM range(300) t(i)" :: IO [Only Variant])
-                >>= (@?= [Only (Variant (variantObject [("k" <> Text.justifyRight 3 '0' (digits n), FieldWord64 (fromIntegral n)) | n <- [0 .. 299]]))])
-        , testCase "one column mixes object layouts with special keys" $ withConnection ":memory:" \conn -> do
-            rows <-
-                query_
-                    conn
-                    "SELECT i, CASE i % 4 WHEN 0 THEN json_object('A', i, 'a', i + 1)::VARIANT WHEN 1 THEN json_object('', i, 'n', i + 1)::VARIANT WHEN 2 THEN json_object('É', i, 'é', i + 1, 'a\"b', i + 2, 'it''s λ', i + 3)::VARIANT ELSE json_object('n', i, 'a', i + 1)::VARIANT END FROM range(3000) t(i)" ::
-                    IO [(Int64, Variant)]
-            -- Decoded objects list their keys in DuckDB's lexicographic order.
-            let expected n = variantObject [(key, FieldWord64 (fromIntegral (n + offset))) | (key, offset) <- layout]
-                  where
-                    layout = case n `mod` 4 of
-                        0 -> [("A", 0), ("a", 1)]
-                        1 -> [("", 0), ("n", 1)]
-                        2 -> [("a\"b", 2), ("it's λ", 3), ("É", 0), ("é", 1)]
-                        _ -> [("a", 1), ("n", 0)]
-            length rows @?= 3000
-            forM_ rows \(n, Variant actual) -> actual @?= expected n
-        , testCase "filtered and reordered rows use the right child offsets" $ withConnection ":memory:" \conn -> do
-            rows <- query_ conn "SELECT {'n': i, 'xs': [i, i + 1]}::VARIANT FROM range(10000) t(i) WHERE i % 97 = 0 ORDER BY i DESC LIMIT 40"
-            let expected = [Only (Variant (variantObject [("n", FieldInt64 n), ("xs", FieldList [FieldInt64 n, FieldInt64 (n + 1)])])) | n <- take 40 (reverse [0, 97 .. 9999])]
-            rows @?= expected
-        , testCase "file-backed values survive checkpoint and reopen" $
-            bracket newDatabase removeDatabase \path -> do
-                withConnectionWithConfig path [("storage_compatibility_version", "v1.5.0")] \conn -> do
-                    void (execute_ conn "CREATE TABLE stored AS SELECT i, {'n': i, 'xs': [i, NULL], 'text': i::VARCHAR}::VARIANT AS value, 'POINT (1 2)'::GEOMETRY('OGC:CRS84') AS geometry FROM range(10000) t(i)")
-                    void (execute_ conn "CHECKPOINT")
-                withConnectionWithConfig path [("storage_compatibility_version", "v1.5.0")] \conn -> do
-                    rows <- query_ conn "SELECT value FROM stored WHERE i % 97 = 0 ORDER BY i DESC LIMIT 40" :: IO [Only Variant]
-                    let expected =
-                            [ Only (Variant (variantObject [("n", FieldInt64 n), ("text", FieldText (Text.pack (show n))), ("xs", FieldList [FieldInt64 n, FieldNull])]))
-                            | n <- take 40 (reverse [0, 97 .. 9999])
-                            ]
-                    rows @?= expected
-                    [Only nativeKeys] <- query_ conn "SELECT system.main.variant_keys(value) FROM stored LIMIT 1" :: IO [Only [Text]]
-                    nativeKeys @?= ["n", "text", "xs"]
-                    forM_ rows \(Only (Variant payloadValue)) -> case payloadValue of
-                        FieldStruct object -> map structFieldName (elems (structValueFields object)) @?= nativeKeys
-                        other -> assertFailure (show other)
-                    [Only geometry] <- query_ conn "SELECT geometry FROM stored LIMIT 1" :: IO [Only RawGeometry]
-                    rawGeometryCRS geometry @?= Just "OGC:CRS84"
-                    BS.length (rawGeometryWKB geometry) @?= 21
-        , testCase "geometry payload keeps WKB; native VARIANT does not retain CRS" $ withConnection ":memory:" \conn -> do
-            [Only geometry] <- query_ conn "SELECT 'POINT ZM (1 2 3 4)'::GEOMETRY('OGC:CRS84')" :: IO [Only RawGeometry]
-            [Only value] <- query_ conn "SELECT 'POINT ZM (1 2 3 4)'::GEOMETRY('OGC:CRS84')::VARIANT" :: IO [Only Variant]
-            value @?= geometryPayload (rawGeometryWKB geometry)
-            (query conn "SELECT system.main.ST_GeomFromWKB(?)::VARIANT" (Only (rawGeometryWKB geometry)) :: IO [Only Variant]) >>= (@?= [Only value])
-            (query conn "SELECT system.main.ST_CRS((system.main.ST_GeomFromWKB(?)::VARIANT)::GEOMETRY)" (Only (rawGeometryWKB geometry)) :: IO [Only (Maybe Text)]) >>= (@?= [Only Nothing])
-            forM_ [variantPayload value, FieldList [variantPayload value], variantObject [("shape", variantPayload value)]] \input -> do
-                result <- try (query conn "SELECT ?" (Only (Variant input)) :: IO [Only Variant]) :: IO (Either SomeException [Only Variant])
-                case result of
-                    Left err -> assertBool (displayException err) ("raw GEOMETRY binding requires explicit" `isInfixOf` displayException err)
-                    Right _ -> assertFailure "expected raw geometry binding rejection"
-            (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
-        , testCase "geometry payload retains empty layout tags and native NaN points" $ withConnection ":memory:" \conn ->
-            forM_ ["GEOMETRYCOLLECTION ZM EMPTY", "MULTIPOLYGON M EMPTY", "POINT Z (NaN NaN 7)"] \wkt -> do
-                [Only geometry] <- query conn "SELECT ?::GEOMETRY" (Only (wkt :: Text)) :: IO [Only RawGeometry]
-                (query conn "SELECT system.main.ST_GeomFromWKB(?)::VARIANT" (Only (rawGeometryWKB geometry)) :: IO [Only Variant]) >>= (@?= [Only (geometryPayload (rawGeometryWKB geometry))])
-        , testCase "geometry payload conversion ignores user macros with built-in names" $ withConnection ":memory:" \conn -> do
-            [Only geometry] <- query_ conn "SELECT 'POINT (1 2)'::GEOMETRY" :: IO [Only RawGeometry]
-            _ <- execute_ conn "CREATE MACRO ST_AsText(x) AS 42"
-            _ <- execute_ conn "CREATE MACRO ST_GeomFromWKB(x) AS 'POINT (9 9)'::GEOMETRY"
-            (query conn "SELECT system.main.ST_GeomFromWKB(?)::VARIANT" (Only (rawGeometryWKB geometry)) :: IO [Only Variant]) >>= (@?= [Only (geometryPayload (rawGeometryWKB geometry))])
-        , testCase "binary geometry preserves NaN bits and rejects mixed member layouts" $ withConnection ":memory:" \conn -> do
-            let nanPoint = G.PointGeometry (G.PointXYZ (G.XYZ (castWord64ToDouble 0x7ff8000000000001) (castWord64ToDouble 0x7ff8000000000002) 7))
-            raw <- either assertFailure pure (toRawGeometry nanPoint)
-            (query conn "SELECT system.main.ST_GeomFromWKB(?)::VARIANT" (Only (rawGeometryWKB raw)) :: IO [Only Variant]) >>= (@?= [Only (geometryPayload (rawGeometryWKB raw))])
-            let mixed = G.GeometryCollection (V.fromList [G.PointGeometry (G.PointXY (G.XY 1 2)), G.PointGeometry (G.PointXYZ (G.XYZ 3 4 5))])
-            mixedRaw <- either assertFailure pure (toRawGeometry mixed)
-            outcome <- try (query conn "SELECT system.main.ST_GeomFromWKB(?)::VARIANT" (Only (rawGeometryWKB mixedRaw)) :: IO [Only Variant])
-            case outcome of
-                Left (err :: SQLError) -> sqlErrorType err @?= Just ErrorInputInvalid
-                Right _ -> assertFailure "native GEOMETRY must reject mixed Z/M dimensions"
-            (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
-        , testCase "invalid values fail before binding and connection reuse succeeds" $ withConnection ":memory:" \conn -> do
-            forM_
-                [ FieldHugeInt (2 ^ (127 :: Int))
-                , FieldUHugeInt (-1)
-                , FieldUHugeInt (2 ^ (128 :: Int))
-                , FieldDecimal (DecimalValue 0 0 0)
-                , FieldDecimal (DecimalValue 5 6 1)
-                , FieldDecimal (DecimalValue 3 0 1000)
-                , FieldBit (BitString 8 (BS.singleton 0))
-                , variantObject [("same", FieldNull), ("same", FieldBool True)]
-                , variantObject [("", FieldBool True)]
-                , variantObject [("before\0after", FieldNull)]
-                ]
-                \value -> assertFailureIO (query conn "SELECT ?" (Only (Variant value)) :: IO [Only Variant])
-            (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
+              query_ conn (Query ("SELECT (" <> sql <> ")::VARIANT, {'v': " <> sql <> "}::VARIANT, " <> sql <> " FROM range(2)"))
+                :: IO [(Variant, Variant, FieldValue)]
+            length rows @?= 2
+            forM_ rows \(Variant actual, Variant object, native) -> do
+              actual @?= native
+              object @?= variantObject [("v", native)]
+              roundTrip conn native
+        | sql <- scalarCases
         ]
+    , testCase "explicit casts bind plain parameters" $ withConnection ":memory:" \conn -> do
+        [Only record] <- query_ conn "SELECT {'a': 1, 'b': 'x'}" :: IO [Only (StructValue FieldValue)]
+        ( query
+            conn
+            "SELECT ?::VARIANT, ?::VARIANT, ?::VARIANT, ?::VARIANT"
+            (42 :: Int64, "two" :: Text, record, listArray (0, 1) [1, 2] :: Array Int Int64)
+            :: IO [(Variant, Variant, Variant, Variant)]
+          )
+          >>= ( @?=
+                  [
+                    ( Variant (FieldInt64 42)
+                    , Variant (FieldText "two")
+                    , Variant (variantObject [("a", FieldInt32 1), ("b", FieldText "x")])
+                    , Variant (FieldList [FieldInt64 1, FieldInt64 2])
+                    )
+                  ]
+              )
+        (query conn "SELECT [NULL::VARIANT, ?::VARIANT, ?::VARIANT]" (42 :: Int64, "two" :: Text) :: IO [Only [Variant]])
+          >>= (@?= [Only [Variant FieldNull, Variant (FieldInt64 42), Variant (FieldText "two")]])
+        _ <- execute_ conn "CREATE TABLE variants (v VARIANT)"
+        _ <- executeMany conn "INSERT INTO variants VALUES (?)" [Only (7 :: Int64), Only 8]
+        _ <- execute conn "INSERT INTO variants VALUES (?)" (Only record)
+        (query_ conn "SELECT v FROM variants" :: IO [Only Variant])
+          >>= ( @?=
+                  [Only (Variant (FieldInt64 7)), Only (Variant (FieldInt64 8)), Only (Variant (variantObject [("a", FieldInt32 1), ("b", FieldText "x")]))]
+              )
+    , testCase "existing FromField instances read VARIANT payloads" $ withConnection ":memory:" \conn -> do
+        (query_ conn "SELECT 42::BIGINT::VARIANT, 'x'::VARIANT, [1, 2, 3]::VARIANT" :: IO [(Int64, Text, [Int64])])
+          >>= (@?= [(42, "x", [1, 2, 3])])
+        (query_ conn "SELECT {'payload': {'x': 18446744073709551615::UBIGINT}::VARIANT}" :: IO [Only VariantRecord])
+          >>= (@?= [Only (VariantRecord (Variant (variantObject [("x", FieldWord64 maxBound)])))])
+    , testCase "bound payloads keep integer widths and decimal scale" $ withConnection ":memory:" \conn ->
+        forM_
+          [ ("'-128'::TINYINT", FieldInt8 minBound)
+          , ("12.34::DECIMAL(4,2)", FieldDecimal (DecimalValue 4 2 1234))
+          , ("255::UTINYINT", FieldWord8 maxBound)
+          ]
+          \(sql, value) ->
+            (query conn (Query ("SELECT variant_typeof(?) = variant_typeof((" <> sql <> ")::VARIANT)")) (Only (Variant value)) :: IO [Only Bool])
+              >>= (@?= [Only True])
+    , testCase "floating special values retain type and bits" $ withConnection ":memory:" \conn -> do
+        forM_ [0, -0.0, 1 / 0, -1 / 0, 0 / 0] \value -> do
+          [Only (Variant actual)] <- query conn "SELECT ?" (Only (Variant (FieldDouble value)))
+          case actual of
+            FieldDouble decoded
+              | isNaN value -> assertBool "expected Double NaN" (isNaN decoded)
+              | otherwise -> castDoubleToWord64 decoded @?= castDoubleToWord64 value
+            _ -> assertFailure (show actual)
+        forM_ [0, -0.0, 1 / 0, -1 / 0, 0 / 0] \value -> do
+          [Only (Variant actual)] <- query conn "SELECT ?" (Only (Variant (FieldFloat value)))
+          case actual of
+            FieldFloat decoded
+              | isNaN value -> assertBool "expected Float NaN" (isNaN decoded)
+              | otherwise -> castFloatToWord32 decoded @?= castFloatToWord32 value
+            _ -> assertFailure (show actual)
+    , testCase "TIMETZ offsets decode like native values" $ withConnection ":memory:" \conn -> do
+        forM_ ["'12:00:00+01:23'::TIMETZ", "'23:59:59.999999-15:59'::TIMETZ", "'00:00:00+00'::TIMETZ"] \sql -> do
+          rows <- query_ conn (Query ("SELECT (" <> sql <> ")::VARIANT, " <> sql <> " FROM range(2)")) :: IO [(Variant, FieldValue)]
+          length rows @?= 2
+          forM_ rows \(Variant actual, native) -> do
+            actual @?= native
+            roundTrip conn native
+        assertFailureIO (query_ conn "SELECT '12:00:00+01:23:45'::TIMETZ::VARIANT" :: IO [Only Variant])
+    , testCase "wide finite timestamp payloads round trip without losing digits" $ withConnection ":memory:" \conn -> do
+        void (execute_ conn "CREATE TABLE wide_timestamps (seconds TIMESTAMP_S, millis TIMESTAMP_MS)")
+        appendWideTimestamps
+          conn
+          [(30000000000000, 30000000000000001), (-30000000000000, -30000000000000001), (maxBound - 1, maxBound - 1), (minBound, minBound)]
+        rows <-
+          query_ conn "SELECT seconds::VARIANT, seconds, millis::VARIANT, millis FROM wide_timestamps"
+            :: IO [(Variant, FieldValue, Variant, FieldValue)]
+        length rows @?= 4
+        forM_ rows \(seconds, nativeSeconds, millis, nativeMillis) ->
+          forM_ [(seconds, nativeSeconds), (millis, nativeMillis)] \(Variant actual, native) -> do
+            actual @?= native
+            roundTrip conn actual
+    , testCase "text and binary values preserve embedded NUL" $ withConnection ":memory:" \conn -> do
+        roundTrip conn (FieldText "before\0after íslenska λ 😀")
+        roundTrip conn (FieldBlob (BS.pack [0, 1, 127, 128, 255, 0]))
+    , testCase "objects preserve case-sensitive names and heterogeneous children" $ withConnection ":memory:" \conn -> do
+        let value =
+              variantObject
+                [ ("Case", FieldInt64 9007199254740993)
+                , ("case", FieldDecimal (DecimalValue 38 9 1234567890123456789))
+                , ("quote' íslenska λ", FieldList [FieldNull, FieldText "x", FieldList [], variantObject []])
+                ]
+        roundTrip conn value
+        ( query conn "SELECT variant_extract(?, 'Case')::BIGINT, variant_extract(?, 'case')::DECIMAL(38,9)::VARCHAR" (Variant value, Variant value)
+            :: IO [(Int64, Text)]
+          )
+          >>= (@?= [(9007199254740993, "1234567890.123456789")])
+    , testCase "native objects use lexical key order and arrays retain element order" $ withConnection ":memory:" \conn ->
+        (query_ conn "SELECT {'z':1, 'a':2, 'm':[3,1,2]}::VARIANT" :: IO [Only Variant])
+          >>= (@?= [Only (Variant (variantObject [("a", FieldInt32 2), ("m", FieldList [FieldInt32 3, FieldInt32 1, FieldInt32 2]), ("z", FieldInt32 1)]))])
+    , testCase "empty containers and NULL stay distinct" $ withConnection ":memory:" \conn -> do
+        forM_ [FieldNull, FieldList [], variantObject [], FieldList [FieldNull], variantObject [("x", FieldNull)]] (roundTrip conn)
+        (query_ conn "SELECT NULL::VARIANT" :: IO [Only (Maybe Variant)]) >>= (@?= [Only Nothing])
+        (query conn "SELECT ?" (Only (Variant FieldNull)) :: IO [Only FieldValue]) >>= (@?= [Only FieldNull])
+    , testCase "native objects preserve empty and embedded NUL keys" $ withConnection ":memory:" \conn -> do
+        (query_ conn "SELECT '{\"\":42}'::JSON::VARIANT" :: IO [Only Variant])
+          >>= (@?= [Only (Variant (variantObject [("", FieldWord64 42)]))])
+        (query_ conn "SELECT '{\"A\":1,\"a\":2,\"a\\u0000b\":3}'::JSON::VARIANT" :: IO [Only Variant])
+          >>= (@?= [Only (Variant (variantObject [("A", FieldWord64 1), ("a", FieldWord64 2), ("a\0b", FieldWord64 3)]))])
+    , testCase "empty object keys survive parameter binding" $ withConnection ":memory:" \conn -> do
+        [Only value] <- query_ conn "SELECT '{\"named\": 1, \"\": 42}'::JSON::VARIANT" :: IO [Only Variant]
+        query conn "SELECT ?" (Only value) >>= (@?= [Only value])
+        -- Decoded objects list their keys in DuckDB's lexicographic order.
+        roundTrip
+          conn
+          (variantObject [("", FieldList [FieldNull, variantObject [("", FieldText "λ"), ("named", FieldInt64 1)]]), ("named", FieldBool True)])
+        sole <- try (query conn "SELECT ?" (Only (Variant (variantObject [("", FieldInt64 42)])))) :: IO (Either SomeException [Only Variant])
+        case sole of
+          Left err -> assertBool (displayException err) ("only an empty key" `isInfixOf` displayException err)
+          Right _ -> assertFailure "expected the native constructor limit for an object with only an empty key"
+    , testCase "objects with two empty keys fail the unique key check" $ withConnection ":memory:" \conn -> do
+        result <-
+          try (query conn "SELECT ?" (Only (Variant (variantObject [("", FieldInt64 1), ("", FieldInt64 2)]))))
+            :: IO (Either IOException [Only Variant])
+        case result of
+          Left err -> assertBool (displayException err) ("duckdb-simple: VARIANT objects need unique keys" `isInfixOf` displayException err)
+          Right _ -> assertFailure "expected the unique key check to reject two empty keys"
+    , testCase "metadata conversion ignores shadowing macros" $ withConnection ":memory:" \conn -> do
+        -- The connection keeps the parsed metadata statement of the first decode.
+        (query_ conn "SELECT {'a': 42::TINYINT}::VARIANT" :: IO [Only Variant]) >>= (@?= [Only (Variant (variantObject [("a", FieldInt8 42)]))])
+        void (execute_ conn "CREATE MACRO variant_typeof(x) AS 'VARCHAR'")
+        void (execute_ conn "CREATE MACRO list_transform(x,y) AS [42]")
+        void (execute_ conn "CREATE MACRO variant_keys(x) AS ['wrong']")
+        (query_ conn "SELECT [42::TINYINT::VARIANT, 'two'::VARIANT]::VARIANT" :: IO [Only Variant])
+          >>= (@?= [Only (Variant (FieldList [FieldInt8 42, FieldText "two"]))])
+        (query_ conn "SELECT {'a': 42::TINYINT}::VARIANT" :: IO [Only Variant]) >>= (@?= [Only (Variant (variantObject [("a", FieldInt8 42)]))])
+    , testCase "deep native arrays decode without a library depth limit" $ withConnection ":memory:" \conn ->
+        forM_ [128, 256 :: Int] \depth -> do
+          let expected = Variant (foldr (const (FieldList . pure)) (FieldWord64 7) [1 .. depth])
+          (query conn "SELECT (repeat('[', ?) || '7' || repeat(']', ?))::JSON::VARIANT AS payload" (depth, depth) :: IO [Only Variant])
+            >>= (@?= [Only expected])
+          let object = Variant (variantObject [("nested", variantPayload expected)])
+          ( query conn "SELECT ('{\"nested\":' || repeat('[', ?) || '7' || repeat(']', ?) || '}')::JSON::VARIANT AS payload" (depth, depth)
+              :: IO [Only Variant]
+            )
+            >>= (@?= [Only object])
+    , testCase "ARRAY parameters and generic records contain VARIANT" $ withConnection ":memory:" \conn -> do
+        let array = listArray (0, 2) [Variant (FieldInt8 1), Variant (FieldText "two"), Variant FieldNull]
+        (query conn "SELECT ?" (Only array) :: IO [Only (Array Int Variant)]) >>= (@?= [Only array])
+        let record = VariantRecord (Variant (variantObject [("x", FieldWord64 maxBound)]))
+        (query conn "SELECT ?" (Only record) :: IO [Only VariantRecord]) >>= (@?= [Only record])
+    , testCase "nullable ARRAY parameters preserve heterogeneous VARIANT values" $ withConnection ":memory:" \conn -> do
+        let values =
+              listArray
+                (0, 3)
+                [ Nothing
+                , Just (Variant (FieldInt64 42))
+                , Just (Variant (FieldText "two"))
+                , Just (Variant (variantObject [("xs", FieldList [FieldNull, FieldBool True])]))
+                ]
+        (query conn "SELECT typeof(?), ?" (values, values) :: IO [(Text, Array Int (Maybe Variant))]) >>= (@?= [("VARIANT[4]", values)])
+    , testCase "empty ARRAY parameters report the V2 limit" $ withConnection ":memory:" \conn -> do
+        let values = listArray (0, -1) [] :: Array Int (Maybe Variant)
+        result <- try (query conn "SELECT typeof(?)" (Only values))
+        case result of
+          Left SQLError{sqlErrorMessage} -> assertBool "must identify empty ARRAY" ("empty ARRAY" `Text.isInfixOf` sqlErrorMessage)
+          Right (_ :: [Only Text]) -> assertFailure "expected the V2 empty ARRAY limit"
+    , testCase "parameter binding supplies a complete VARIANT type" $ withConnection ":memory:" \conn -> do
+        let value = variantObject [("xs", FieldList [FieldNull, FieldInt64 42])]
+        roundTrip conn value
+        (query conn "SELECT typeof(?)" (Only (Variant value)) :: IO [Only Text]) >>= (@?= [Only "VARIANT"])
+    , testCase "the first VARIANT parameter does not end a streaming result" $ withConnection ":memory:" \conn ->
+        withStatement conn "SELECT ?" \stmt -> do
+          total <- Streaming.fold_ conn "SELECT i FROM range(100000) t(i)" 0 \acc (Only i) -> do
+            when (i == 0) (bind stmt [toField (Variant (FieldInt64 42))])
+            pure (acc + i)
+          total @?= (sum [0 .. 99999] :: Int64)
+    , testCase "VARIANT type construction uses the supplied factory" $ withConnection ":memory:" \conn ->
+        withConnectionHandle conn \native -> withConnectionFactory native \factory ->
+          bracket (logicalTypeFromRep factory (LogicalTypeScalar LogicalTypeIdVariant)) destroyLogicalType \logical ->
+            logicalTypeToRep logical >>= (@?= LogicalTypeScalar LogicalTypeIdVariant)
+    , testCase "VARIANT payloads and GEOMETRY CRS metadata bind together" $ withConnection ":memory:" \conn -> do
+        [Only value] <- query_ conn "SELECT {'payload': 42::VARIANT, 'shape': NULL::GEOMETRY('OGC:CRS84')}" :: IO [Only (StructValue FieldValue)]
+        (query conn "SELECT typeof(?)" (Only value) :: IO [Only Text]) >>= (@?= [Only "STRUCT(payload VARIANT, shape GEOMETRY('OGC:CRS84'))"])
+        (query conn "SELECT ?" (Only value) :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only value])
+    , testCase "inactive VARIANT UNION members have complete types" $ withConnection ":memory:" \conn -> do
+        [Only value] <-
+          query_ conn "SELECT union_value(number := 42::BIGINT)::UNION(number BIGINT, payload VARIANT)" :: IO [Only (UnionValue FieldValue)]
+        (query conn "SELECT ?" (Only value) :: IO [Only (UnionValue FieldValue)]) >>= (@?= [Only value])
+    , testCase "native LIST, ARRAY, MAP and STRUCT metadata round trip" $ withConnection ":memory:" \conn -> do
+        [Only value] <-
+          query_
+            conn
+            "SELECT {'xs': [1::VARIANT, 'two'::VARIANT, NULL], 'fixed': [42::VARIANT]::VARIANT[1], 'map': MAP {'x': {'a': 9}::VARIANT}}"
+            :: IO [Only (StructValue FieldValue)]
+        (query conn "SELECT ?" (Only value) :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only value])
+    , testCase "UNION payloads retain VARIANT type, including NULL" $ withConnection ":memory:" \conn ->
+        forM_ ["SELECT union_value(v := {'a': 42}::VARIANT)", "SELECT union_value(v := NULL::VARIANT)"] \sql -> do
+          [Only value] <- query_ conn sql :: IO [Only (UnionValue FieldValue)]
+          (query conn "SELECT ?" (Only value) :: IO [Only (UnionValue FieldValue)]) >>= (@?= [Only value])
+    , testGroup
+        "heterogeneous folds cross chunk boundaries"
+        [ testCase mode $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
+            count <- foldRows
+              conn
+              "SELECT CASE WHEN i % 3 = 0 THEN i::VARIANT WHEN i % 3 = 1 THEN 'text'::VARIANT ELSE {'n': i, 'xs': [NULL, i]}::VARIANT END FROM range(5000) t(i)"
+              (0 :: Int64)
+              \n (Only (Variant actual)) -> do
+                let expected = case n `mod` 3 of
+                      0 -> FieldInt64 n
+                      1 -> FieldText "text"
+                      _ -> variantObject [("n", FieldInt64 n), ("xs", FieldList [FieldNull, FieldInt64 n])]
+                actual @?= expected
+                pure (n + 1)
+            count @?= 5000
+        | (mode, foldRows) <- [("materialized", fold_), ("native streaming", Streaming.fold_)]
+        ]
+    , testCase "one column with many payload tags decodes each row exactly" $ withConnection ":memory:" \conn -> do
+        rows <-
+          query_
+            conn
+            "SELECT i, CASE i % 12 WHEN 0 THEN NULL WHEN 1 THEN (i % 24 = 1)::VARIANT WHEN 2 THEN (i % 100)::TINYINT::VARIANT WHEN 3 THEN i::VARIANT WHEN 4 THEN (i * 0.5)::DOUBLE::VARIANT WHEN 5 THEN i::DECIMAL(9,2)::VARIANT WHEN 6 THEN ('t' || i)::VARIANT WHEN 7 THEN [i, NULL, i + 1]::VARIANT WHEN 8 THEN {'n': i, 'xs': [i]}::VARIANT WHEN 9 THEN {'k': {'deep': 't' || i}}::VARIANT WHEN 10 THEN []::VARIANT ELSE i::UBIGINT::VARIANT END FROM range(5000) t(i)"
+            :: IO [(Int64, Maybe Variant)]
+        let text n = FieldText ("t" <> Text.pack (show n))
+            expected n = case n `mod` 12 of
+              0 -> Nothing
+              1 -> Just (FieldBool (n `mod` 24 == 1))
+              2 -> Just (FieldInt8 (fromIntegral (n `mod` 100)))
+              3 -> Just (FieldInt64 n)
+              4 -> Just (FieldDouble (fromIntegral n * 0.5))
+              5 -> Just (FieldDecimal (DecimalValue 9 2 (toInteger n * 100)))
+              6 -> Just (text n)
+              7 -> Just (FieldList [FieldInt64 n, FieldNull, FieldInt64 (n + 1)])
+              8 -> Just (variantObject [("n", FieldInt64 n), ("xs", FieldList [FieldInt64 n])])
+              9 -> Just (variantObject [("k", variantObject [("deep", text n)])])
+              10 -> Just (FieldList [])
+              _ -> Just (FieldWord64 (fromIntegral n))
+        length rows @?= 5000
+        forM_ rows \(n, actual) -> fmap variantPayload actual @?= expected n
+    , testCase "GEOMETRY, BLOB and BIGNUM payloads in one column decode like native values" $ withConnection ":memory:" \conn -> do
+        rows <-
+          query_
+            conn
+            "SELECT i, CASE i % 3 WHEN 0 THEN g::VARIANT WHEN 1 THEN b::VARIANT ELSE n::VARIANT END, g, b, n FROM (SELECT i, ('POINT (' || i || ' ' || (i + 1) || ')')::GEOMETRY AS g, encode('b' || i) AS b, (i::VARCHAR || '12345678901234567890')::BIGNUM AS n FROM range(5000) t(i))"
+            :: IO [(Int64, Variant, FieldValue, FieldValue, FieldValue)]
+        length rows @?= 5000
+        forM_ rows \(n, Variant actual, geometry, blob, bignum) ->
+          actual @?= case n `mod` 3 of
+            0 -> geometry
+            1 -> blob
+            _ -> bignum
+    , testCase "objects with many key layouts and many keys decode exactly" $ withConnection ":memory:" \conn -> do
+        let digits = Text.pack . show :: Int64 -> Text
+        layouts <- query_ conn "SELECT i, json_object('k' || i::VARCHAR, i)::VARIANT FROM range(3000) t(i)" :: IO [(Int64, Variant)]
+        length layouts @?= 3000
+        forM_ layouts \(n, Variant actual) -> actual @?= variantObject [("k" <> digits n, FieldWord64 (fromIntegral n))]
+        (query_ conn "SELECT json_group_object('k' || lpad(i::VARCHAR, 3, '0'), i)::VARIANT FROM range(300) t(i)" :: IO [Only Variant])
+          >>= (@?= [Only (Variant (variantObject [("k" <> Text.justifyRight 3 '0' (digits n), FieldWord64 (fromIntegral n)) | n <- [0 .. 299]]))])
+    , testCase "one column mixes object layouts with special keys" $ withConnection ":memory:" \conn -> do
+        rows <-
+          query_
+            conn
+            "SELECT i, CASE i % 4 WHEN 0 THEN json_object('A', i, 'a', i + 1)::VARIANT WHEN 1 THEN json_object('', i, 'n', i + 1)::VARIANT WHEN 2 THEN json_object('É', i, 'é', i + 1, 'a\"b', i + 2, 'it''s λ', i + 3)::VARIANT ELSE json_object('n', i, 'a', i + 1)::VARIANT END FROM range(3000) t(i)"
+            :: IO [(Int64, Variant)]
+        -- Decoded objects list their keys in DuckDB's lexicographic order.
+        let expected n = variantObject [(key, FieldWord64 (fromIntegral (n + offset))) | (key, offset) <- layout]
+              where
+                layout = case n `mod` 4 of
+                  0 -> [("A", 0), ("a", 1)]
+                  1 -> [("", 0), ("n", 1)]
+                  2 -> [("a\"b", 2), ("it's λ", 3), ("É", 0), ("é", 1)]
+                  _ -> [("a", 1), ("n", 0)]
+        length rows @?= 3000
+        forM_ rows \(n, Variant actual) -> actual @?= expected n
+    , testCase "filtered and reordered rows use the right child offsets" $ withConnection ":memory:" \conn -> do
+        rows <- query_ conn "SELECT {'n': i, 'xs': [i, i + 1]}::VARIANT FROM range(10000) t(i) WHERE i % 97 = 0 ORDER BY i DESC LIMIT 40"
+        let expected =
+              [ Only (Variant (variantObject [("n", FieldInt64 n), ("xs", FieldList [FieldInt64 n, FieldInt64 (n + 1)])]))
+              | n <- take 40 (reverse [0, 97 .. 9999])
+              ]
+        rows @?= expected
+    , testCase "file-backed values survive checkpoint and reopen" $
+        bracket newDatabase removeDatabase \path -> do
+          withConnectionWithConfig path [("storage_compatibility_version", "v1.5.0")] \conn -> do
+            void
+              ( execute_
+                  conn
+                  "CREATE TABLE stored AS SELECT i, {'n': i, 'xs': [i, NULL], 'text': i::VARCHAR}::VARIANT AS value, 'POINT (1 2)'::GEOMETRY('OGC:CRS84') AS geometry FROM range(10000) t(i)"
+              )
+            void (execute_ conn "CHECKPOINT")
+          withConnectionWithConfig path [("storage_compatibility_version", "v1.5.0")] \conn -> do
+            rows <- query_ conn "SELECT value FROM stored WHERE i % 97 = 0 ORDER BY i DESC LIMIT 40" :: IO [Only Variant]
+            let expected =
+                  [ Only (Variant (variantObject [("n", FieldInt64 n), ("text", FieldText (Text.pack (show n))), ("xs", FieldList [FieldInt64 n, FieldNull])]))
+                  | n <- take 40 (reverse [0, 97 .. 9999])
+                  ]
+            rows @?= expected
+            [Only nativeKeys] <- query_ conn "SELECT system.main.variant_keys(value) FROM stored LIMIT 1" :: IO [Only [Text]]
+            nativeKeys @?= ["n", "text", "xs"]
+            forM_ rows \(Only (Variant payloadValue)) -> case payloadValue of
+              FieldStruct object -> map structFieldName (elems (structValueFields object)) @?= nativeKeys
+              other -> assertFailure (show other)
+            [Only geometry] <- query_ conn "SELECT geometry FROM stored LIMIT 1" :: IO [Only RawGeometry]
+            rawGeometryCRS geometry @?= Just "OGC:CRS84"
+            BS.length (rawGeometryWKB geometry) @?= 21
+    , testCase "geometry payload keeps WKB; native VARIANT does not retain CRS" $ withConnection ":memory:" \conn -> do
+        [Only geometry] <- query_ conn "SELECT 'POINT ZM (1 2 3 4)'::GEOMETRY('OGC:CRS84')" :: IO [Only RawGeometry]
+        [Only value] <- query_ conn "SELECT 'POINT ZM (1 2 3 4)'::GEOMETRY('OGC:CRS84')::VARIANT" :: IO [Only Variant]
+        value @?= geometryPayload (rawGeometryWKB geometry)
+        (query conn "SELECT system.main.ST_GeomFromWKB(?)::VARIANT" (Only (rawGeometryWKB geometry)) :: IO [Only Variant]) >>= (@?= [Only value])
+        ( query conn "SELECT system.main.ST_CRS((system.main.ST_GeomFromWKB(?)::VARIANT)::GEOMETRY)" (Only (rawGeometryWKB geometry))
+            :: IO [Only (Maybe Text)]
+          )
+          >>= (@?= [Only Nothing])
+        forM_ [variantPayload value, FieldList [variantPayload value], variantObject [("shape", variantPayload value)]] \input -> do
+          result <- try (query conn "SELECT ?" (Only (Variant input)) :: IO [Only Variant]) :: IO (Either SomeException [Only Variant])
+          case result of
+            Left err -> assertBool (displayException err) ("raw GEOMETRY binding requires explicit" `isInfixOf` displayException err)
+            Right _ -> assertFailure "expected raw geometry binding rejection"
+        (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
+    , testCase "geometry payload retains empty layout tags and native NaN points" $ withConnection ":memory:" \conn ->
+        forM_ ["GEOMETRYCOLLECTION ZM EMPTY", "MULTIPOLYGON M EMPTY", "POINT Z (NaN NaN 7)"] \wkt -> do
+          [Only geometry] <- query conn "SELECT ?::GEOMETRY" (Only (wkt :: Text)) :: IO [Only RawGeometry]
+          (query conn "SELECT system.main.ST_GeomFromWKB(?)::VARIANT" (Only (rawGeometryWKB geometry)) :: IO [Only Variant])
+            >>= (@?= [Only (geometryPayload (rawGeometryWKB geometry))])
+    , testCase "geometry payload conversion ignores user macros with built-in names" $ withConnection ":memory:" \conn -> do
+        [Only geometry] <- query_ conn "SELECT 'POINT (1 2)'::GEOMETRY" :: IO [Only RawGeometry]
+        _ <- execute_ conn "CREATE MACRO ST_AsText(x) AS 42"
+        _ <- execute_ conn "CREATE MACRO ST_GeomFromWKB(x) AS 'POINT (9 9)'::GEOMETRY"
+        (query conn "SELECT system.main.ST_GeomFromWKB(?)::VARIANT" (Only (rawGeometryWKB geometry)) :: IO [Only Variant])
+          >>= (@?= [Only (geometryPayload (rawGeometryWKB geometry))])
+    , testCase "binary geometry preserves NaN bits and rejects mixed member layouts" $ withConnection ":memory:" \conn -> do
+        let nanPoint = G.PointGeometry (G.PointXYZ (G.XYZ (castWord64ToDouble 0x7ff8000000000001) (castWord64ToDouble 0x7ff8000000000002) 7))
+        raw <- either assertFailure pure (toRawGeometry nanPoint)
+        (query conn "SELECT system.main.ST_GeomFromWKB(?)::VARIANT" (Only (rawGeometryWKB raw)) :: IO [Only Variant])
+          >>= (@?= [Only (geometryPayload (rawGeometryWKB raw))])
+        let mixed = G.GeometryCollection (V.fromList [G.PointGeometry (G.PointXY (G.XY 1 2)), G.PointGeometry (G.PointXYZ (G.XYZ 3 4 5))])
+        mixedRaw <- either assertFailure pure (toRawGeometry mixed)
+        outcome <- try (query conn "SELECT system.main.ST_GeomFromWKB(?)::VARIANT" (Only (rawGeometryWKB mixedRaw)) :: IO [Only Variant])
+        case outcome of
+          Left (err :: SQLError) -> sqlErrorType err @?= Just ErrorInputInvalid
+          Right _ -> assertFailure "native GEOMETRY must reject mixed Z/M dimensions"
+        (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
+    , testCase "invalid values fail before binding and connection reuse succeeds" $ withConnection ":memory:" \conn -> do
+        forM_
+          [ FieldHugeInt (2 ^ (127 :: Int))
+          , FieldUHugeInt (-1)
+          , FieldUHugeInt (2 ^ (128 :: Int))
+          , FieldDecimal (DecimalValue 0 0 0)
+          , FieldDecimal (DecimalValue 5 6 1)
+          , FieldDecimal (DecimalValue 3 0 1000)
+          , FieldBit (BitString 8 (BS.singleton 0))
+          , variantObject [("same", FieldNull), ("same", FieldBool True)]
+          , variantObject [("", FieldBool True)]
+          , variantObject [("before\0after", FieldNull)]
+          ]
+          \value -> assertFailureIO (query conn "SELECT ?" (Only (Variant value)) :: IO [Only Variant])
+        (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
+    ]
 
 -- | Bind a payload as VARIANT without a cast and read it back.
 roundTrip :: Connection -> FieldValue -> Assertion
 roundTrip conn expected =
-    (query conn "SELECT typeof(?) AS kind, ? AS value" (Variant expected, Variant expected) :: IO [(Text, Variant)]) >>= (@?= [("VARIANT", Variant expected)])
+  (query conn "SELECT typeof(?) AS kind, ? AS value" (Variant expected, Variant expected) :: IO [(Text, Variant)])
+    >>= (@?= [("VARIANT", Variant expected)])
 
 -- | Insert exact native timestamp units without changing their logical types.
 appendWideTimestamps :: Connection -> [(Int64, Int64)] -> IO ()
 appendWideTimestamps conn rows =
-    withConnectionHandle conn \native ->
-        withStatement conn "INSERT INTO wide_timestamps VALUES (?, ?)" \statement ->
-            withStatementHandle statement \prepared ->
-                forM_ rows \(seconds, millis) ->
-                    bracket (withConnectionFactory native (\nativeFactory -> output (c_duckdb_v2_value_create_timestamp_sec nativeFactory (fromIntegral seconds)))) (destroy c_duckdb_v2_value_destroy) \secondsValue ->
-                        bracket (withConnectionFactory native (\nativeFactory -> output (c_duckdb_v2_value_create_timestamp_ms nativeFactory (fromIntegral millis)))) (destroy c_duckdb_v2_value_destroy) \millisValue ->
-                            withArray [secondsValue, millisValue] \values ->
-                                bracket (output (c_duckdb_v2_prepared_statement_execute prepared (ConstPtr nullPtr) (ConstPtr values) 2)) (destroy c_duckdb_v2_result_destroy) \result ->
-                                    void (output (c_duckdb_v2_result_drain result))
+  withConnectionHandle conn \native ->
+    withStatement conn "INSERT INTO wide_timestamps VALUES (?, ?)" \statement ->
+      withStatementHandle statement \prepared ->
+        forM_ rows \(seconds, millis) ->
+          bracket
+            (withConnectionFactory native (\nativeFactory -> output (c_duckdb_v2_value_create_timestamp_sec nativeFactory (fromIntegral seconds))))
+            (destroy c_duckdb_v2_value_destroy)
+            \secondsValue ->
+              bracket
+                (withConnectionFactory native (\nativeFactory -> output (c_duckdb_v2_value_create_timestamp_ms nativeFactory (fromIntegral millis))))
+                (destroy c_duckdb_v2_value_destroy)
+                \millisValue ->
+                  withArray [secondsValue, millisValue] \values ->
+                    bracket
+                      (output (c_duckdb_v2_prepared_statement_execute prepared (ConstPtr nullPtr) (ConstPtr values) 2))
+                      (destroy c_duckdb_v2_result_destroy)
+                      \result ->
+                        void (output (c_duckdb_v2_result_drain result))
 
 -- | A raw geometry payload has no CRS inside a VARIANT.
 geometryPayload :: BS.ByteString -> Variant
@@ -391,59 +455,59 @@ geometryPayload wkb = Variant (FieldGeometry (RawGeometry wkb Nothing))
 -- | SQL constructors for each scalar payload tag.
 scalarCases :: [Text]
 scalarCases =
-    [ "NULL"
-    , "TRUE"
-    , "FALSE"
-    , "'-128'::TINYINT"
-    , "'-32768'::SMALLINT"
-    , "'-2147483648'::INTEGER"
-    , "9007199254740993::BIGINT"
-    , "'-170141183460469231731687303715884105728'::HUGEINT"
-    , "255::UTINYINT"
-    , "65535::USMALLINT"
-    , "4294967295::UINTEGER"
-    , "18446744073709551615::UBIGINT"
-    , "'340282366920938463463374607431768211455'::UHUGEINT"
-    , "1.25::FLOAT"
-    , "1.25::DOUBLE"
-    , "12.34::DECIMAL(4,2)"
-    , "-1234.56::DECIMAL(9,2)"
-    , "123456789012.345::DECIMAL(18,3)"
-    , "1234567890.123456789::DECIMAL(38,9)"
-    , "'text λ'::VARCHAR"
-    , "'\\x00\\xFF'::BLOB"
-    , "'01234567-89ab-cdef-fedc-ba9876543210'::UUID"
-    , "DATE '1970-01-02'"
-    , "DATE 'infinity'"
-    , "DATE '-infinity'"
-    , "TIME '01:02:03.456789'"
-    , "'01:02:03.456789012'::TIME_NS"
-    , "'1970-01-01 00:00:01'::TIMESTAMP_S"
-    , "'1969-12-31 23:59:59.999'::TIMESTAMP_MS"
-    , "'1970-01-01 00:00:01.234567'::TIMESTAMP"
-    , "'1970-01-01 00:00:01.234567891'::TIMESTAMP_NS"
-    , "'infinity'::TIMESTAMP_NS"
-    , "'1970-01-01 00:00:01.234567+00'::TIMESTAMPTZ"
-    , "'1970-01-01 00:00:01.234567891+00'::TIMESTAMPTZ_NS"
-    , "INTERVAL '-4 MONTHS 8 DAYS 123456789 MICROSECONDS'"
-    , "'12345678901234567890123456789012345678901234567890'::BIGNUM"
-    , "'-12345678901234567890123456789012345678901234567890'::BIGNUM"
-    , "0::BIGNUM"
-    , "'10101'::BIT"
-    ]
+  [ "NULL"
+  , "TRUE"
+  , "FALSE"
+  , "'-128'::TINYINT"
+  , "'-32768'::SMALLINT"
+  , "'-2147483648'::INTEGER"
+  , "9007199254740993::BIGINT"
+  , "'-170141183460469231731687303715884105728'::HUGEINT"
+  , "255::UTINYINT"
+  , "65535::USMALLINT"
+  , "4294967295::UINTEGER"
+  , "18446744073709551615::UBIGINT"
+  , "'340282366920938463463374607431768211455'::UHUGEINT"
+  , "1.25::FLOAT"
+  , "1.25::DOUBLE"
+  , "12.34::DECIMAL(4,2)"
+  , "-1234.56::DECIMAL(9,2)"
+  , "123456789012.345::DECIMAL(18,3)"
+  , "1234567890.123456789::DECIMAL(38,9)"
+  , "'text λ'::VARCHAR"
+  , "'\\x00\\xFF'::BLOB"
+  , "'01234567-89ab-cdef-fedc-ba9876543210'::UUID"
+  , "DATE '1970-01-02'"
+  , "DATE 'infinity'"
+  , "DATE '-infinity'"
+  , "TIME '01:02:03.456789'"
+  , "'01:02:03.456789012'::TIME_NS"
+  , "'1970-01-01 00:00:01'::TIMESTAMP_S"
+  , "'1969-12-31 23:59:59.999'::TIMESTAMP_MS"
+  , "'1970-01-01 00:00:01.234567'::TIMESTAMP"
+  , "'1970-01-01 00:00:01.234567891'::TIMESTAMP_NS"
+  , "'infinity'::TIMESTAMP_NS"
+  , "'1970-01-01 00:00:01.234567+00'::TIMESTAMPTZ"
+  , "'1970-01-01 00:00:01.234567891+00'::TIMESTAMPTZ_NS"
+  , "INTERVAL '-4 MONTHS 8 DAYS 123456789 MICROSECONDS'"
+  , "'12345678901234567890123456789012345678901234567890'::BIGNUM"
+  , "'-12345678901234567890123456789012345678901234567890'::BIGNUM"
+  , "0::BIGNUM"
+  , "'10101'::BIT"
+  ]
 
 -- | Reserve a unique path and let DuckDB create its file.
 newDatabase :: IO FilePath
 newDatabase = do
-    directory <- getTemporaryDirectory
-    (path, handle) <- openBinaryTempFile directory "duckdb-variant"
-    hClose handle
-    removeFile path
-    pure path
+  directory <- getTemporaryDirectory
+  (path, handle) <- openBinaryTempFile directory "duckdb-variant"
+  hClose handle
+  removeFile path
+  pure path
 
 -- | Remove files created by this test after DuckDB closes them.
 removeDatabase :: FilePath -> IO ()
 removeDatabase path =
-    forM_ [path, path <> ".wal"] \file -> do
-        exists <- doesFileExist file
-        when exists (removeFile file)
+  forM_ [path, path <> ".wal"] \file -> do
+    exists <- doesFileExist file
+    when exists (removeFile file)

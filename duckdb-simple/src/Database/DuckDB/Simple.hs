@@ -3,108 +3,107 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TupleSections #-}
 
-{- |
-Module      : Database.DuckDB.Simple
-Description : High-level DuckDB API in the duckdb-simple style.
-
-The API mirrors the ergonomics of @sqlite-simple@ while being backed by the
-DuckDB C API. It supports connection management, parameter binding, execution,
-and typed result decoding. See @README.md@ for usage examples.
--}
+-- |
+-- Module      : Database.DuckDB.Simple
+-- Description : High-level DuckDB API in the duckdb-simple style.
+--
+-- The API mirrors the ergonomics of @sqlite-simple@ while being backed by the
+-- DuckDB C API. It supports connection management, parameter binding, execution,
+-- and typed result decoding. See @README.md@ for usage examples.
 module Database.DuckDB.Simple (
-    -- * Connections
-    Environment,
-    createEnvironment,
-    closeEnvironment,
-    withEnvironment,
-    Instance,
-    createInstance,
-    closeInstance,
-    withInstance,
-    attachDatabase,
-    detachDatabase,
-    setDefaultDatabase,
-    connect,
-    connectWithOptions,
-    withConnectionOn,
-    Connection,
-    open,
-    openWithConfig,
-    ConnectionOptions (..),
-    defaultConnectionOptions,
-    openWithOptions,
-    close,
-    withConnection,
-    withConnectionWithConfig,
-    withConnectionWithOptions,
+  -- * Connections
+  Environment,
+  createEnvironment,
+  closeEnvironment,
+  withEnvironment,
+  Instance,
+  createInstance,
+  closeInstance,
+  withInstance,
+  attachDatabase,
+  detachDatabase,
+  setDefaultDatabase,
+  connect,
+  connectWithOptions,
+  withConnectionOn,
+  Connection,
+  open,
+  openWithConfig,
+  ConnectionOptions (..),
+  defaultConnectionOptions,
+  openWithOptions,
+  close,
+  withConnection,
+  withConnectionWithConfig,
+  withConnectionWithOptions,
 
-    -- * Queries and statements
-    Query (..),
-    Statement,
-    openStatement,
-    closeStatement,
-    withStatement,
-    clearStatementBindings,
-    namedParameterIndex,
-    columnCount,
-    columnName,
-    executeStatement,
-    execute,
-    executeMany,
-    execute_,
-    bind,
-    bindNamed,
-    executeNamed,
-    queryNamed,
-    fold,
-    fold_,
-    foldNamed,
-    withTransaction,
-    query,
-    queryWith,
-    query_,
-    queryWith_,
-    nextRow,
-    nextRowWith,
+  -- * Queries and statements
+  Query (..),
+  Statement,
+  openStatement,
+  closeStatement,
+  withStatement,
+  clearStatementBindings,
+  namedParameterIndex,
+  columnCount,
+  columnName,
+  executeStatement,
+  execute,
+  executeMany,
+  execute_,
+  bind,
+  bindNamed,
+  executeNamed,
+  queryNamed,
+  fold,
+  fold_,
+  foldNamed,
+  withTransaction,
+  query,
+  queryWith,
+  query_,
+  queryWith_,
+  nextRow,
+  nextRowWith,
 
-    -- * Errors and conversions
-    SQLError (..),
-    ErrorType (..),
-    FormatError (..),
-    ResultError (..),
-    FieldParser,
-    FromField (..),
-    FromRow (..),
-    RowParser,
-    field,
-    fieldWith,
-    numFieldsRemaining,
-    -- Re-export parameter helper types.
-    ToField (..),
-    ToRow (..),
-    FieldBinding,
-    NamedParam (..),
-    DuckDBColumnType (..),
-    duckdbColumnType,
-    Null (..),
-    Only (..),
-    (:.) (..),
+  -- * Errors and conversions
+  SQLError (..),
+  ErrorType (..),
+  FormatError (..),
+  ResultError (..),
+  FieldParser,
+  FromField (..),
+  FromRow (..),
+  RowParser,
+  field,
+  fieldWith,
+  numFieldsRemaining,
+  -- Re-export parameter helper types.
+  ToField (..),
+  ToRow (..),
+  FieldBinding,
+  NamedParam (..),
+  DuckDBColumnType (..),
+  duckdbColumnType,
+  Null (..),
+  Only (..),
+  (:.) (..),
 
-    -- * User-defined scalar functions and casts
-    Function (..),
-    LogicalTypeId (..),
-    createFunction,
-    createFunctionWithState,
-    deleteFunction,
-    createCast,
+  -- * User-defined scalar functions and casts
+  Function (..),
+  LogicalTypeId (..),
+  createFunction,
+  createFunctionWithState,
+  deleteFunction,
+  createCast,
 
-    -- * User-defined table functions
-    TypedRow,
-    createTableFunction,
+  -- * User-defined table functions
+  TypedRow,
+  createTableFunction,
 
-    -- * User-defined aggregate functions
-    Aggregate (..),
-    createAggregate,
+  -- * User-defined aggregate functions
+  Aggregate (..),
+  createAggregate,
 ) where
 
 import Control.Exception (SomeException, bracket, finally, mask, mask_, onException, throwIO, try)
@@ -118,12 +117,30 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.FromField (Field (..), FieldParser, FromField (..), ResultError (..))
 import Database.DuckDB.Simple.FromRow (FromRow (..), RowParser, field, fieldWith, numFieldsRemaining, parseRow, rowErrorsToSqlError)
-import Database.DuckDB.Simple.Function (Aggregate (..), Function (..), TypedRow, createAggregate, createCast, createFunction, createFunctionWithState, createTableFunction, deleteFunction)
+import Database.DuckDB.Simple.Function (
+  Aggregate (..),
+  Function (..),
+  TypedRow,
+  createAggregate,
+  createCast,
+  createFunction,
+  createFunctionWithState,
+  createTableFunction,
+  deleteFunction,
+ )
 import Database.DuckDB.Simple.Internal
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.Result (collectRows, resetStatementStream)
 import qualified Database.DuckDB.Simple.Result as Result
-import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), FieldBinding, NamedParam (..), ToField (..), bindFieldBinding, duckdbColumnType, renderFieldBinding)
+import Database.DuckDB.Simple.ToField (
+  DuckDBColumnType (..),
+  FieldBinding,
+  NamedParam (..),
+  ToField (..),
+  bindFieldBinding,
+  duckdbColumnType,
+  renderFieldBinding,
+ )
 import Database.DuckDB.Simple.ToRow (ToRow (..))
 import Database.DuckDB.Simple.TypeCache (defaultGeometryCRS)
 import Database.DuckDB.Simple.Types (FormatError (..), Null (..), Only (..), (:.) (..))
@@ -145,51 +162,50 @@ attachDatabase instance_ path alias settings = attachCatalog instance_ path alia
 -- | Attach a catalog and optionally select it in the same native call.
 attachCatalog :: Instance -> FilePath -> Text -> [(Text, Text)] -> Bool -> IO ()
 attachCatalog instance_ path alias settings makeDefault = withInstanceHandle instance_ \raw -> do
-    when ('\0' `elem` path || Text.any (== '\0') alias) $
-        throwIO (SQLError (Text.pack "duckdb-simple: database path or alias contains NUL") Nothing Nothing)
-    when (any (\(key, value) -> Text.any (== '\0') key || Text.any (== '\0') value) settings) $
-        throwIO (SQLError (Text.pack "duckdb-simple: attach option contains NUL") Nothing Nothing)
-    bracket (output (c_duckdb_v2_attach_options_create raw)) (destroy c_duckdb_v2_attach_options_destroy) \options -> do
-        forM_ settings \(key, value) -> withIdentifier key \name -> withText value \text ->
-            checked (c_duckdb_v2_attach_options_set options name text)
-        withText (Text.pack path) \file -> withIdentifier alias \name ->
-            checked (c_duckdb_v2_instance_attach raw name file options (if makeDefault then 1 else 0))
+  when ('\0' `elem` path || Text.any (== '\0') alias) $
+    throwIO (SQLError (Text.pack "duckdb-simple: database path or alias contains NUL") Nothing Nothing)
+  when (any (\(key, value) -> Text.any (== '\0') key || Text.any (== '\0') value) settings) $
+    throwIO (SQLError (Text.pack "duckdb-simple: attach option contains NUL") Nothing Nothing)
+  bracket (output (c_duckdb_v2_attach_options_create raw)) (destroy c_duckdb_v2_attach_options_destroy) \options -> do
+    forM_ settings \(key, value) -> withIdentifier key \name -> withText value \text ->
+      checked (c_duckdb_v2_attach_options_set options name text)
+    withText (Text.pack path) \file -> withIdentifier alias \name ->
+      checked (c_duckdb_v2_instance_attach raw name file options (if makeDefault then 1 else 0))
 
 -- | Detach a catalog from an instance.
 detachDatabase :: Instance -> Text -> IO ()
 detachDatabase instance_ alias = withInstanceHandle instance_ \raw -> do
-    when (Text.any (== '\0') alias) $
-        throwIO (SQLError (Text.pack "duckdb-simple: database alias contains NUL") Nothing Nothing)
-    withIdentifier alias \name -> checked (c_duckdb_v2_instance_detach raw name)
+  when (Text.any (== '\0') alias) $
+    throwIO (SQLError (Text.pack "duckdb-simple: database alias contains NUL") Nothing Nothing)
+  withIdentifier alias \name -> checked (c_duckdb_v2_instance_detach raw name)
 
 -- | Select the default catalog for new connections to an instance.
 setDefaultDatabase :: Instance -> Text -> IO ()
 setDefaultDatabase instance_ alias = withInstanceHandle instance_ \raw -> do
-    when (Text.any (== '\0') alias) $
-        throwIO (SQLError (Text.pack "duckdb-simple: database alias contains NUL") Nothing Nothing)
-    withIdentifier alias \name -> checked (c_duckdb_v2_instance_set_default raw name)
+  when (Text.any (== '\0') alias) $
+    throwIO (SQLError (Text.pack "duckdb-simple: database alias contains NUL") Nothing Nothing)
+  withIdentifier alias \name -> checked (c_duckdb_v2_instance_set_default raw name)
 
 -- | Open a connection to a shared instance.
 connect :: Instance -> IO Connection
 connect instance_ = connectWithOptions instance_ defaultConnectionOptions
 
-{- | Open a connection with options. The function writes each option with its
-default scope, as a bare SQL @SET@ does. An option whose default scope is
-GLOBAL thus changes the instance. This change applies to all connections of
-the instance.
--}
+-- | Open a connection with options. The function writes each option with its
+-- default scope, as a bare SQL @SET@ does. An option whose default scope is
+-- GLOBAL thus changes the instance. This change applies to all connections of
+-- the instance.
 connectWithOptions :: Instance -> ConnectionOptions -> IO Connection
 connectWithOptions instance_ ConnectionOptions{connectionConfig, connectionGeometryCRS} = mask_ do
-    when (any (\(name, value) -> Text.any (== '\0') name || Text.any (== '\0') value) connectionConfig) $
-        throwIO (SQLError (Text.pack "duckdb-simple: configuration contains NUL") Nothing Nothing)
-    conn <- createConnection instance_ connectionGeometryCRS (pure ())
-    flip onException (close conn) do
-        withConnectionHandle conn \raw -> do
-            config <- output (c_duckdb_v2_connection_get_config raw)
-            forM_ connectionConfig \(key, value) ->
-                withIdentifier key \name -> withText value \text ->
-                    checked (c_duckdb_v2_config_set_option_text config name text DuckDBV2SettingScopeDefault)
-        pure conn
+  when (any (\(name, value) -> Text.any (== '\0') name || Text.any (== '\0') value) connectionConfig) $
+    throwIO (SQLError (Text.pack "duckdb-simple: configuration contains NUL") Nothing Nothing)
+  conn <- createConnection instance_ connectionGeometryCRS (pure ())
+  flip onException (close conn) do
+    withConnectionHandle conn \raw -> do
+      config <- output (c_duckdb_v2_connection_get_config raw)
+      forM_ connectionConfig \(key, value) ->
+        withIdentifier key \name -> withText value \text ->
+          checked (c_duckdb_v2_config_set_option_text config name text DuckDBV2SettingScopeDefault)
+    pure conn
 
 -- | Run an action with a connection to a shared instance.
 withConnectionOn :: Instance -> (Connection -> IO a) -> IO a
@@ -205,40 +221,38 @@ openWithConfig path settings = openWithOptions path defaultConnectionOptions{con
 
 -- | Settings that duckdb-simple applies when it opens a connection.
 data ConnectionOptions = ConnectionOptions
-    { connectionConfig :: [(Text, Text)]
-    {- ^ DuckDB configuration flags. 'openWithOptions' applies them when it
-    creates the instance, as 'openWithConfig' does. 'connectWithOptions' applies
-    them to a new connection of a running instance, so options that DuckDB
-    accepts only at startup fail there. 'connectWithOptions' writes each option
-    with its default scope. An option whose default scope is GLOBAL thus changes
-    the instance. This change applies to all connections of the instance.
-    -}
-    , connectionGeometryCRS :: [Text]
-    {- ^ CRS definitions to preserve in composite parameters. A helper
-    connection reads and caches their SQL-derived types on first use.
-    The default is @OGC:CRS84@. Include custom CRS names in this list.
-    -}
-    }
-    deriving (Eq, Show)
+  { connectionConfig :: [(Text, Text)]
+  -- ^ DuckDB configuration flags. 'openWithOptions' applies them when it
+  --     creates the instance, as 'openWithConfig' does. 'connectWithOptions' applies
+  --     them to a new connection of a running instance, so options that DuckDB
+  --     accepts only at startup fail there. 'connectWithOptions' writes each option
+  --     with its default scope. An option whose default scope is GLOBAL thus changes
+  --     the instance. This change applies to all connections of the instance.
+  , connectionGeometryCRS :: [Text]
+  -- ^ CRS definitions to preserve in composite parameters. A helper
+  --     connection reads and caches their SQL-derived types on first use.
+  --     The default is @OGC:CRS84@. Include custom CRS names in this list.
+  }
+  deriving (Eq, Show)
 
 -- | No configuration flags, and the CRS @OGC:CRS84@.
 defaultConnectionOptions :: ConnectionOptions
 defaultConnectionOptions =
-    ConnectionOptions
-        { connectionConfig = []
-        , connectionGeometryCRS = defaultGeometryCRS
-        }
+  ConnectionOptions
+    { connectionConfig = []
+    , connectionGeometryCRS = defaultGeometryCRS
+    }
 
 -- | Open a database with a private environment and instance.
 openWithOptions :: FilePath -> ConnectionOptions -> IO Connection
 openWithOptions path ConnectionOptions{connectionConfig, connectionGeometryCRS} = mask_ do
-    environment <- createEnvironment
-    instance_ <- createInstance environment connectionConfig `onException` closeEnvironment environment
-    let release = closeInstance instance_ `finally` closeEnvironment environment
-    flip onException release do
-        -- An empty alias lets DuckDB derive the catalog name from the path.
-        attachCatalog instance_ (if null path then ":memory:" else path) Text.empty [] True
-        createConnection instance_ connectionGeometryCRS release
+  environment <- createEnvironment
+  instance_ <- createInstance environment connectionConfig `onException` closeEnvironment environment
+  let release = closeInstance instance_ `finally` closeEnvironment environment
+  flip onException release do
+    -- An empty alias lets DuckDB derive the catalog name from the path.
+    attachCatalog instance_ (if null path then ":memory:" else path) Text.empty [] True
+    createConnection instance_ connectionGeometryCRS release
 
 -- | Close a connection and its statements. The operation is idempotent.
 close :: Connection -> IO ()
@@ -259,10 +273,10 @@ withConnectionWithOptions path options = bracket (openWithOptions path options) 
 -- | Prepare a SQL statement for execution.
 openStatement :: Connection -> Query -> IO Statement
 openStatement conn queryText = withParsedStatements conn queryText \parsed ->
-    case parsed of
-        [statement] -> createStatementFromParsed conn queryText statement
-        [] -> throwIO (mkPrepareError queryText (Text.pack "duckdb-simple: SQL query contains no statement"))
-        _ -> throwIO (mkPrepareError queryText (Text.pack "duckdb-simple: prepared SQL contains more than one statement"))
+  case parsed of
+    [statement] -> createStatementFromParsed conn queryText statement
+    [] -> throwIO (mkPrepareError queryText (Text.pack "duckdb-simple: SQL query contains no statement"))
+    _ -> throwIO (mkPrepareError queryText (Text.pack "duckdb-simple: prepared SQL contains more than one statement"))
 
 -- | Finalize a prepared statement. The operation is idempotent.
 closeStatement :: Statement -> IO ()
@@ -275,128 +289,133 @@ withStatement conn sql = bracket (openStatement conn sql) closeStatement
 -- | Bind positional parameters to a prepared statement, replacing any previous bindings.
 bind :: Statement -> [FieldBinding] -> IO ()
 bind stmt fields = do
-    resetStatementStream stmt
-    withStatementHandle stmt \_ -> do
-        let actual = length fields
-            expected = length (statementParameterNames stmt)
-        when (actual /= expected) $
-            throwFormatErrorBindings stmt (parameterCountMessage expected actual) fields
-        let parameterNames = fetchParameterNames stmt
-        when (any isJust parameterNames) $
-            throwFormatErrorBindings stmt (Text.pack "duckdb-simple: statement defines named parameters; use executeNamed or bindNamed") fields
-    clearStatementBindings stmt
-    zipWithM_ apply [1 ..] fields
+  resetStatementStream stmt
+  withStatementHandle stmt \_ -> do
+    let actual = length fields
+        expected = length (statementParameterNames stmt)
+    when (actual /= expected) $
+      throwFormatErrorBindings stmt (parameterCountMessage expected actual) fields
+    let parameterNames = fetchParameterNames stmt
+    when (any isJust parameterNames) $
+      throwFormatErrorBindings stmt (Text.pack "duckdb-simple: statement defines named parameters; use executeNamed or bindNamed") fields
+  clearStatementBindings stmt
+  zipWithM_ apply [1 ..] fields
   where
     parameterCountMessage expected actual =
-        Text.pack $
-            "duckdb-simple: SQL query contains "
-                <> show expected
-                <> " parameter(s), but "
-                <> show actual
-                <> " argument(s) were supplied"
+      Text.pack $
+        "duckdb-simple: SQL query contains "
+          <> show expected
+          <> " parameter(s), but "
+          <> show actual
+          <> " argument(s) were supplied"
 
     apply :: Int -> FieldBinding -> IO ()
     apply idx = bindFieldBinding stmt (fromIntegral idx :: DuckDBIdx)
 
-{- | Bind named parameters to a prepared statement.
-Session variables can supply omitted named parameters.
--}
+-- | Bind named parameters to a prepared statement.
+-- Session variables can supply omitted named parameters.
 bindNamed :: Statement -> [NamedParam] -> IO ()
 bindNamed stmt params =
-    let bindings = fmap (\(name := value) -> (name, toField value)) params
-        parameterCountMessage expected actual =
-            Text.pack $
-                "duckdb-simple: SQL query contains "
-                    <> show expected
-                    <> " named parameter(s), but "
-                    <> show actual
-                    <> " argument(s) were supplied"
-        unknownNameMessage name =
-            Text.concat
-                [ Text.pack "duckdb-simple: unknown named parameter "
-                , name
-                ]
-        -- One lookup table serves all bindings of this call.
-        positions = Map.fromList (zip (map normalizeName (elems (statementParameterNames stmt))) [1 :: Int ..])
-        apply (name, binding) = do
-            when (Text.any (== '\0') name) $
-                throwIO (mkPrepareError (statementQuery stmt) (Text.pack "duckdb-simple: parameter name contains NUL"))
-            case Map.lookup (normalizeName name) positions of
-                Nothing ->
-                    throwFormatErrorNamed stmt (unknownNameMessage name) bindings
-                Just idx -> bindFieldBinding stmt (fromIntegral idx :: DuckDBIdx) binding
-     in do
-            resetStatementStream stmt
-            let names = map (normalizeName . fst) bindings
-            when (Set.size (Set.fromList names) /= length names) $
-                throwFormatErrorNamed stmt (Text.pack "duckdb-simple: duplicate named parameter") bindings
-            withStatementHandle stmt \_ -> do
-                let actual = length bindings
-                    expected = length (statementParameterNames stmt)
-                when (actual > expected) $
-                    throwFormatErrorNamed stmt (parameterCountMessage expected actual) bindings
-                let parameterNames = fetchParameterNames stmt
-                when (all isNothing parameterNames && expected > 0) $
-                    throwFormatErrorNamed stmt (Text.pack "duckdb-simple: statement does not define named parameters; use positional bindings or adjust the SQL") bindings
-            clearStatementBindings stmt
-            mapM_ apply bindings
+  let bindings = fmap (\(name := value) -> (name, toField value)) params
+      parameterCountMessage expected actual =
+        Text.pack $
+          "duckdb-simple: SQL query contains "
+            <> show expected
+            <> " named parameter(s), but "
+            <> show actual
+            <> " argument(s) were supplied"
+      unknownNameMessage name =
+        Text.concat
+          [ Text.pack "duckdb-simple: unknown named parameter "
+          , name
+          ]
+      -- One lookup table serves all bindings of this call.
+      positions = Map.fromList (zip (map normalizeName (elems (statementParameterNames stmt))) [1 :: Int ..])
+      apply (name, binding) = do
+        when (Text.any (== '\0') name) $
+          throwIO (mkPrepareError (statementQuery stmt) (Text.pack "duckdb-simple: parameter name contains NUL"))
+        case Map.lookup (normalizeName name) positions of
+          Nothing ->
+            throwFormatErrorNamed stmt (unknownNameMessage name) bindings
+          Just idx -> bindFieldBinding stmt (fromIntegral idx :: DuckDBIdx) binding
+  in  do
+        resetStatementStream stmt
+        let names = map (normalizeName . fst) bindings
+        when (Set.size (Set.fromList names) /= length names) $
+          throwFormatErrorNamed stmt (Text.pack "duckdb-simple: duplicate named parameter") bindings
+        withStatementHandle stmt \_ -> do
+          let actual = length bindings
+              expected = length (statementParameterNames stmt)
+          when (actual > expected) $
+            throwFormatErrorNamed stmt (parameterCountMessage expected actual) bindings
+          let parameterNames = fetchParameterNames stmt
+          when (all isNothing parameterNames && expected > 0) $
+            throwFormatErrorNamed
+              stmt
+              (Text.pack "duckdb-simple: statement does not define named parameters; use positional bindings or adjust the SQL")
+              bindings
+        clearStatementBindings stmt
+        mapM_ apply bindings
 
 fetchParameterNames :: Statement -> [Maybe Text]
-fetchParameterNames stmt = zipWith (\idx name -> if normalizeName name == Text.pack (show idx) then Nothing else Just name) [1 :: Int ..] (elems (statementParameterNames stmt))
+fetchParameterNames stmt =
+  zipWith
+    (\idx name -> if normalizeName name == Text.pack (show idx) then Nothing else Just name)
+    [1 :: Int ..]
+    (elems (statementParameterNames stmt))
 
 -- | Remove all parameter bindings and release an active result.
 clearStatementBindings :: Statement -> IO ()
 clearStatementBindings stmt = withStatementHandle stmt \_ -> do
-    resetStatementStream stmt
-    clearBoundValues (statementBindings stmt)
+  resetStatementStream stmt
+  clearBoundValues (statementBindings stmt)
 
 -- | Look up the 1-based index of a named placeholder.
 namedParameterIndex :: Statement -> Text -> IO (Maybe Int)
 namedParameterIndex stmt name = withStatementHandle stmt \_ -> do
-    when (Text.any (== '\0') name) $
-        throwIO (mkPrepareError (statementQuery stmt) (Text.pack "duckdb-simple: parameter name contains NUL"))
-    pure ((+ 1) <$> findIndex ((== normalizeName name) . normalizeName) (elems (statementParameterNames stmt)))
+  when (Text.any (== '\0') name) $
+    throwIO (mkPrepareError (statementQuery stmt) (Text.pack "duckdb-simple: parameter name contains NUL"))
+  pure ((+ 1) <$> findIndex ((== normalizeName name) . normalizeName) (elems (statementParameterNames stmt)))
 
 -- | Retrieve the number of columns produced by the supplied prepared statement.
 columnCount :: Statement -> IO Int
 columnCount stmt = do
-    (schema, _) <- statementSchemas stmt
-    fromIntegral <$> output (c_duckdb_v2_schema_get_count schema)
+  (schema, _) <- statementSchemas stmt
+  fromIntegral <$> output (c_duckdb_v2_schema_get_count schema)
 
 -- | Look up the zero-based column name of a prepared statement result.
 columnName :: Statement -> Int -> IO Text
 columnName stmt columnIndex
-    | columnIndex < 0 = throwIO (columnIndexError stmt columnIndex Nothing)
-    | otherwise = do
-        total <- columnCount stmt
-        when (columnIndex >= total) $ throwIO (columnIndexError stmt columnIndex (Just total))
-        (schema, _) <- statementSchemas stmt
-        alloca \name -> do
-            _ <- output (c_duckdb_v2_schema_get_field schema (fromIntegral columnIndex) name)
-            peek name >>= readIdentifier
+  | columnIndex < 0 = throwIO (columnIndexError stmt columnIndex Nothing)
+  | otherwise = do
+      total <- columnCount stmt
+      when (columnIndex >= total) $ throwIO (columnIndexError stmt columnIndex (Just total))
+      (schema, _) <- statementSchemas stmt
+      alloca \name -> do
+        _ <- output (c_duckdb_v2_schema_get_field schema (fromIntegral columnIndex) name)
+        peek name >>= readIdentifier
 
-{- | Execute a prepared statement and return the number of affected rows.
-  Resets any active result stream before running and raises an @SQLError@
-  if DuckDB reports a failure.
--}
+-- | Execute a prepared statement and return the number of affected rows.
+--   Resets any active result stream before running and raises an @SQLError@
+--   if DuckDB reports a failure.
 executeStatement :: Statement -> IO Int
 executeStatement stmt = do
-    resetStatementStream stmt
-    withQueryError (statementQuery stmt) . withResultWindow (statementConnection stmt) (const (pure ())) $ withResult stmt \result ->
-        fromIntegral <$> runInterruptibleQuery (statementConnection stmt) (output (c_duckdb_v2_result_drain result))
+  resetStatementStream stmt
+  withQueryError (statementQuery stmt) . withResultWindow (statementConnection stmt) (const (pure ())) $ withResult stmt \result ->
+    fromIntegral <$> runInterruptibleQuery (statementConnection stmt) (output (c_duckdb_v2_result_drain result))
 
 -- | Execute a query with positional parameters and return the affected row count.
 execute :: (ToRow q) => Connection -> Query -> q -> IO Int
 execute conn queryText params =
-    withStatement conn queryText \stmt -> do
-        bind stmt (toRow params)
-        executeStatement stmt
+  withStatement conn queryText \stmt -> do
+    bind stmt (toRow params)
+    executeStatement stmt
 
 -- | Execute the same query multiple times with different parameter sets.
 executeMany :: (ToRow q) => Connection -> Query -> [q] -> IO Int
 executeMany conn queryText rows =
-    withStatement conn queryText \stmt -> do
-        sum <$> mapM (\row -> bind stmt (toRow row) >> executeStatement stmt) rows
+  withStatement conn queryText \stmt -> do
+    sum <$> mapM (\row -> bind stmt (toRow row) >> executeStatement stmt) rows
 
 -- | Execute an ad-hoc query without parameters and return the affected row count.
 execute_ :: Connection -> Query -> IO Int
@@ -405,30 +424,29 @@ execute_ conn queryText = withAdHocStatement conn queryText (executeParsedStatem
 -- | Execute a query that uses named parameters.
 executeNamed :: Connection -> Query -> [NamedParam] -> IO Int
 executeNamed conn queryText params =
-    withStatement conn queryText \stmt -> do
-        bindNamed stmt params
-        executeStatement stmt
+  withStatement conn queryText \stmt -> do
+    bindNamed stmt params
+    executeStatement stmt
 
-{- | Run a parameterised query and decode every resulting row eagerly.
-An INSERT, UPDATE, or DELETE without RETURNING gives one row with one BIGINT
-column: the number of changed rows.
--}
+-- | Run a parameterised query and decode every resulting row eagerly.
+-- An INSERT, UPDATE, or DELETE without RETURNING gives one row with one BIGINT
+-- column: the number of changed rows.
 query :: (ToRow q, FromRow r) => Connection -> Query -> q -> IO [r]
 query = queryWith fromRow
 
 -- | Run a parameterised query with a custom row parser.
 queryWith :: (ToRow q) => RowParser r -> Connection -> Query -> q -> IO [r]
 queryWith parser conn queryText params =
-    withStatement conn queryText \stmt -> do
-        bind stmt (toRow params)
-        collectRows stmt >>= convertRowsWith parser queryText
+  withStatement conn queryText \stmt -> do
+    bind stmt (toRow params)
+    collectRows stmt >>= convertRowsWith parser queryText
 
 -- | Run a query that uses named parameters and decode all rows eagerly.
 queryNamed :: (FromRow r) => Connection -> Query -> [NamedParam] -> IO [r]
 queryNamed conn queryText params =
-    withStatement conn queryText \stmt -> do
-        bindNamed stmt params
-        collectRows stmt >>= convertRows queryText
+  withStatement conn queryText \stmt -> do
+    bindNamed stmt params
+    collectRows stmt >>= convertRows queryText
 
 -- | Run a query without supplying parameters and decode all rows eagerly.
 query_ :: (FromRow r) => Connection -> Query -> IO [r]
@@ -437,56 +455,54 @@ query_ = queryWith_ fromRow
 -- | Run a query without parameters using a custom row parser.
 queryWith_ :: RowParser r -> Connection -> Query -> IO [r]
 queryWith_ parser conn queryText =
-    withAdHocStatement
-        conn
-        queryText
-        (\parsed -> Result.collectParsedRows conn queryText parsed >>= convertRowsWith parser queryText)
-        (pure [])
+  withAdHocStatement
+    conn
+    queryText
+    (\parsed -> Result.collectParsedRows conn queryText parsed >>= convertRowsWith parser queryText)
+    (pure [])
 
 -- | Execute preceding statements before returning the final statement's result.
 withAdHocStatement :: Connection -> Query -> (DuckDBV2SqlStatementHandle -> IO a) -> IO a -> IO a
 withAdHocStatement conn queryText action empty = withParsedStatements conn queryText \statements ->
-    let run [] = empty
-        run [parsed] = action parsed
-        run (parsed : rest) = do
-            void (executeParsedStatement conn queryText parsed)
-            run rest
-     in run statements
+  let run [] = empty
+      run [parsed] = action parsed
+      run (parsed : rest) = do
+        void (executeParsedStatement conn queryText parsed)
+        run rest
+  in  run statements
 
 -- Cursors and folds ---------------------------------------------------------
 
-{- | Fold a parameterised result without constructing a complete Haskell row list.
-  The fold collects all owned native chunks before decoding starts. Native
-  memory use depends on the result size. The step function controls Haskell memory use.
-  An INSERT, UPDATE, or DELETE without RETURNING gives one row with one BIGINT
-  column: the number of changed rows.
--}
+-- | Fold a parameterised result without constructing a complete Haskell row list.
+--   The fold collects all owned native chunks before decoding starts. Native
+--   memory use depends on the result size. The step function controls Haskell memory use.
+--   An INSERT, UPDATE, or DELETE without RETURNING gives one row with one BIGINT
+--   column: the number of changed rows.
 fold :: (FromRow row, ToRow params) => Connection -> Query -> params -> a -> (a -> row -> IO a) -> IO a
 fold conn queryText params initial step =
-    withStatement conn queryText \stmt -> do
-        resetStatementStream stmt
-        bind stmt (toRow params)
-        Result.foldStatementWith MaterializedResult fromRow stmt initial step
+  withStatement conn queryText \stmt -> do
+    resetStatementStream stmt
+    bind stmt (toRow params)
+    Result.foldStatementWith MaterializedResult fromRow stmt initial step
 
 -- | Fold a parameterless result. Native materialization follows 'fold'.
 fold_ :: (FromRow row) => Connection -> Query -> a -> (a -> row -> IO a) -> IO a
 fold_ conn queryText initial step =
-    withStatement conn queryText \stmt -> do
-        resetStatementStream stmt
-        Result.foldStatementWith MaterializedResult fromRow stmt initial step
+  withStatement conn queryText \stmt -> do
+    resetStatementStream stmt
+    Result.foldStatementWith MaterializedResult fromRow stmt initial step
 
 -- | Fold a result with named parameters. Native materialization follows 'fold'.
 foldNamed :: (FromRow row) => Connection -> Query -> [NamedParam] -> a -> (a -> row -> IO a) -> IO a
 foldNamed conn queryText params initial step =
-    withStatement conn queryText \stmt -> do
-        resetStatementStream stmt
-        bindNamed stmt params
-        Result.foldStatementWith MaterializedResult fromRow stmt initial step
+  withStatement conn queryText \stmt -> do
+    resetStatementStream stmt
+    bindNamed stmt params
+    Result.foldStatementWith MaterializedResult fromRow stmt initial step
 
-{- | Fetch the next row. The first call collects all owned native chunks.
-An INSERT, UPDATE, or DELETE without RETURNING gives one row with one BIGINT
-column: the number of changed rows.
--}
+-- | Fetch the next row. The first call collects all owned native chunks.
+-- An INSERT, UPDATE, or DELETE without RETURNING gives one row with one BIGINT
+-- column: the number of changed rows.
 nextRow :: (FromRow r) => Statement -> IO (Maybe r)
 nextRow = nextRowWith fromRow
 
@@ -497,12 +513,12 @@ nextRowWith = Result.nextRowWith MaterializedResult
 -- | Run an action inside a transaction.
 withTransaction :: Connection -> IO a -> IO a
 withTransaction conn action =
-    mask \restore -> do
-        void (execute_ conn begin)
-        let rollbackAction = void (try (execute_ conn rollback) :: IO (Either SomeException Int))
-        result <- restore action `onException` rollbackAction
-        void (execute_ conn commit) `onException` rollbackAction
-        pure result
+  mask \restore -> do
+    void (execute_ conn begin)
+    let rollbackAction = void (try (execute_ conn rollback) :: IO (Either SomeException Int))
+    result <- restore action `onException` rollbackAction
+    void (execute_ conn commit) `onException` rollbackAction
+    pure result
   where
     begin = Query (Text.pack "BEGIN TRANSACTION")
     commit = Query (Text.pack "COMMIT")
@@ -512,62 +528,62 @@ withTransaction conn action =
 
 throwFormatError :: Statement -> Text -> [String] -> IO a
 throwFormatError Statement{statementQuery} message params =
-    throwIO
-        FormatError
-            { formatErrorMessage = message
-            , formatErrorQuery = statementQuery
-            , formatErrorParams = params
-            }
+  throwIO
+    FormatError
+      { formatErrorMessage = message
+      , formatErrorQuery = statementQuery
+      , formatErrorParams = params
+      }
 
 throwFormatErrorBindings :: Statement -> Text -> [FieldBinding] -> IO a
 throwFormatErrorBindings stmt message bindings =
-    throwFormatError stmt message (map renderFieldBinding bindings)
+  throwFormatError stmt message (map renderFieldBinding bindings)
 
 throwFormatErrorNamed :: Statement -> Text -> [(Text, FieldBinding)] -> IO a
 throwFormatErrorNamed stmt message bindings =
-    throwFormatError stmt message (map renderNamed bindings)
+  throwFormatError stmt message (map renderNamed bindings)
   where
     renderNamed (name, binding) =
-        Text.unpack name <> " := " <> renderFieldBinding binding
+      Text.unpack name <> " := " <> renderFieldBinding binding
 
 columnIndexError :: Statement -> Int -> Maybe Int -> SQLError
 columnIndexError stmt idx total =
-    let base =
+  let base =
+        Text.concat
+          [ Text.pack "duckdb-simple: column index "
+          , Text.pack (show idx)
+          , Text.pack " out of bounds"
+          ]
+      message =
+        case total of
+          Nothing -> base
+          Just count ->
             Text.concat
-                [ Text.pack "duckdb-simple: column index "
-                , Text.pack (show idx)
-                , Text.pack " out of bounds"
-                ]
-        message =
-            case total of
-                Nothing -> base
-                Just count ->
-                    Text.concat
-                        [ base
-                        , Text.pack " (column count: "
-                        , Text.pack (show count)
-                        , Text.pack ")"
-                        ]
-     in SQLError
-            { sqlErrorMessage = message
-            , sqlErrorType = Nothing
-            , sqlErrorQuery = Just (statementQuery stmt)
-            }
+              [ base
+              , Text.pack " (column count: "
+              , Text.pack (show count)
+              , Text.pack ")"
+              ]
+  in  SQLError
+        { sqlErrorMessage = message
+        , sqlErrorType = Nothing
+        , sqlErrorQuery = Just (statementQuery stmt)
+        }
 
 -- | Use DuckDB's ASCII case rules for parameter names.
 normalizeName :: Text -> Text
 normalizeName name =
-    foldIdentifier $
-        case Text.uncons name of
-            Just (prefix, rest)
-                | prefix == ':' || prefix == '$' || prefix == '@' -> rest
-            _ -> name
+  foldIdentifier $
+    case Text.uncons name of
+      Just (prefix, rest)
+        | prefix == ':' || prefix == '$' || prefix == '@' -> rest
+      _ -> name
 
 convertRows :: (FromRow r) => Query -> [[Field]] -> IO [r]
 convertRows = convertRowsWith fromRow
 
 convertRowsWith :: RowParser r -> Query -> [[Field]] -> IO [r]
 convertRowsWith parser queryText rows =
-    case traverse (parseRow parser) rows of
-        Errors err -> throwIO (rowErrorsToSqlError queryText err)
-        Ok ok -> pure ok
+  case traverse (parseRow parser) rows of
+    Errors err -> throwIO (rowErrorsToSqlError queryText err)
+    Ok ok -> pure ok

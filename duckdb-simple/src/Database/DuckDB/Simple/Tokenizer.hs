@@ -1,14 +1,13 @@
 {-# LANGUAGE BlockArguments #-}
 
-{- |
-Module      : Database.DuckDB.Simple.Tokenizer
-Description : SQL tokenization using the grammar of a V2 connection.
--}
+-- |
+-- Module      : Database.DuckDB.Simple.Tokenizer
+-- Description : SQL tokenization using the grammar of a V2 connection.
 module Database.DuckDB.Simple.Tokenizer (
-    Token (..),
-    TokenType (..),
-    Tokenization (..),
-    tokenize,
+  Token (..),
+  TokenType (..),
+  Tokenization (..),
+  tokenize,
 ) where
 
 import Control.Exception (bracket)
@@ -22,36 +21,36 @@ import Foreign.Storable (peek)
 
 -- | A token and its location in the UTF-8 source bytes.
 data Token = Token
-    { tokenType :: !TokenType
-    , tokenOffset :: !Int
-    , tokenBytes :: !BS.ByteString
-    }
-    deriving (Eq, Show)
+  { tokenType :: !TokenType
+  , tokenOffset :: !Int
+  , tokenBytes :: !BS.ByteString
+  }
+  deriving (Eq, Show)
 
 -- | Tokens and the native indication of an unclosed final token.
 data Tokenization = Tokenization
-    { tokenizationTokens :: ![Token]
-    , tokenizationUnterminated :: !Bool
-    }
-    deriving (Eq, Show)
+  { tokenizationTokens :: ![Token]
+  , tokenizationUnterminated :: !Bool
+  }
+  deriving (Eq, Show)
 
 -- | Tokenize text, including comments and interior NUL bytes.
 tokenize :: Connection -> Text -> IO Tokenization
 tokenize conn sql = withConnectionHandle conn \handle ->
-    let bytes = Text.encodeUtf8 sql
-     in withBytes bytes \source ->
-            bracket (output (c_duckdb_v2_tokenize_sql handle source)) (destroy c_duckdb_v2_token_iterator_destroy) \iterator -> do
-                tokens <- alloca \kind -> alloca \start -> alloca \count ->
-                    let collect acc = do
-                            checked (c_duckdb_v2_token_iterator_next iterator kind start count)
-                            typ <- peek kind
-                            if typ == DuckDBV2TokenTypeEndOfInput
-                                then pure (reverse acc)
-                                else do
-                                    tokenKind <- tokenTypeFromNative typ
-                                    offset <- fromIntegral <$> peek start
-                                    size <- fromIntegral <$> peek count
-                                    collect (Token tokenKind offset (BS.take size (BS.drop offset bytes)) : acc)
-                     in collect []
-                unfinished <- output (c_duckdb_v2_token_iterator_ends_unterminated iterator)
-                pure (Tokenization tokens (unfinished /= 0))
+  let bytes = Text.encodeUtf8 sql
+  in  withBytes bytes \source ->
+        bracket (output (c_duckdb_v2_tokenize_sql handle source)) (destroy c_duckdb_v2_token_iterator_destroy) \iterator -> do
+          tokens <- alloca \kind -> alloca \start -> alloca \count ->
+            let collect acc = do
+                  checked (c_duckdb_v2_token_iterator_next iterator kind start count)
+                  typ <- peek kind
+                  if typ == DuckDBV2TokenTypeEndOfInput
+                    then pure (reverse acc)
+                    else do
+                      tokenKind <- tokenTypeFromNative typ
+                      offset <- fromIntegral <$> peek start
+                      size <- fromIntegral <$> peek count
+                      collect (Token tokenKind offset (BS.take size (BS.drop offset bytes)) : acc)
+            in  collect []
+          unfinished <- output (c_duckdb_v2_token_iterator_ends_unterminated iterator)
+          pure (Tokenization tokens (unfinished /= 0))

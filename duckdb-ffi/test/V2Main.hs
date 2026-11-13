@@ -19,22 +19,22 @@ import qualified V2ValueTest
 
 main :: IO ()
 main =
-    defaultMain $
-        testGroup
-            "DuckDB V2 C API"
-            [ V2Test.tests
-            , V2ValueTest.tests
-            , V2TypeTest.tests
-            , V2ChunkTest.tests
-            , V2StatementTest.tests
-            , V2FileSystemTest.tests
-            , V2FunctionDocsTest.tests
-            , V2CallbackTest.tests
-            , V2AggregateTest.tests
-            , V2MacroTest.tests
-            , V2AttachTest.tests
-            , V2TableFunctionTest.tests
-            , V2ArrowTest.tests
-            , V2ReplacementScanTest.tests
-            , V2CopyTest.tests
-            ]
+  defaultMain $
+    testGroup
+      "DuckDB V2 C API"
+      [ V2Test.tests
+      , V2ValueTest.tests
+      , V2TypeTest.tests
+      , V2ChunkTest.tests
+      , V2StatementTest.tests
+      , V2FileSystemTest.tests
+      , V2FunctionDocsTest.tests
+      , V2CallbackTest.tests
+      , V2AggregateTest.tests
+      , V2MacroTest.tests
+      , V2AttachTest.tests
+      , V2TableFunctionTest.tests
+      , V2ArrowTest.tests
+      , V2ReplacementScanTest.tests
+      , V2CopyTest.tests
+      ]

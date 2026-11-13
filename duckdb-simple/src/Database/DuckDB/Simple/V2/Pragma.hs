@@ -13,7 +13,9 @@ module Database.DuckDB.Simple.V2.Pragma (
     registerPragmaFunctionWith,
 ) where
 
+import Control.Monad (when)
 import Data.Text (Text)
+import qualified Data.Text as Text
 import Database.DuckDB.Simple.Callback (attachOpaque, runCallback, withCallbackResources, withTarget)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.V2.Registration (ContextCallback, FunctionParameter, FunctionSignature (..), RegistrationTarget (..), configureFunctionSignature, withRegistrationFactory)
@@ -27,9 +29,12 @@ data PragmaCallback
     = QueryPragma (DuckDBV2FunctionBindInfoHandle -> DuckDBV2ContextHandle -> IO Text)
     | ExecPragma (ContextCallback DuckDBV2FunctionBindInfoHandle)
 
--- | Register a pragma on a connection or a loading extension.
+{- | Register a pragma on a connection or a loading extension. The name must not
+be empty and must not contain NUL.
+-}
 registerPragmaFunctionOn :: RegistrationTarget -> Text -> [FunctionParameter] -> PragmaCallback -> IO ()
-registerPragmaFunctionOn target name parameters callback =
+registerPragmaFunctionOn target name parameters callback = do
+    when (Text.null name || Text.any (== '\0') name) $ throwInvalidArgument (Text.pack "pragma function name must be nonempty and must not contain NUL")
     withRegistrationFactory target \factory ->
         registerPragmaFunctionWith
             target

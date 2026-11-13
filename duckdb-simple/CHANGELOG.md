@@ -44,6 +44,8 @@
 - Add `Database.DuckDB.Simple.Pragma`. `registerPragmaFunction` takes a typed
   callback `PragmaCallback args`. The callback gets the arguments of the call
   as a `FromRow` row.
+- The pragma registrations reject an empty name and a name that contains NUL,
+  as the other registrations do.
 - Add custom options to `Database.DuckDB.Simple.Config`. `customOptionUpdate`
   is a function that gets the new value as a `FieldValue`. An exception in the
   function rejects the value.

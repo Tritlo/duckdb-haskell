@@ -112,15 +112,21 @@ withCallbackResourcesFinally finalizer acquire attach action = mask \restore -> 
         pure ptr
   resources <- acquire allocate `onException` cleanup
   stable <- newStablePtr cleanup `onException` cleanup
+  -- A setter that fails has not taken the pointer, so this handler frees it.
+  -- The header does not state this. It is the behaviour of DuckDB 2.0.0.
   attach (castPtr (castStablePtrToPtr stable)) callbackResourcesDestructor
     `onException` (freeStablePtr stable >> cleanup)
   restore (action resources)
 
 -- | Transfer one state value to a DuckDB callback state slot.
--- Use each slot once. Native init and batch setters do not release replaced values.
+-- Use each slot once. In DuckDB 2.0.0, a setter for init data, batch data, global
+-- state, or local state does not release a value that it replaces. The header
+-- does not state this behaviour.
 transferCallbackState :: (Ptr Void -> DuckDBV2OpaqueDestroyFn -> IO ()) -> a -> IO ()
 transferCallbackState attach state = mask_ do
   stable <- newStablePtr state
+  -- A setter that fails has not taken the pointer, so this handler frees it.
+  -- See the same handler in 'withCallbackResourcesFinally'.
   attach (castPtr (castStablePtrToPtr stable)) callbackStateDestructor
     `onException` freeStablePtr stable
 

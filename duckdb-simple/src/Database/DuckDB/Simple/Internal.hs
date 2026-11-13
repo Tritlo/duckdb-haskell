@@ -393,7 +393,17 @@ withParsedStatements conn query action = withQueryError query $ withConnectionHa
 createStatementFromParsed :: Connection -> Query -> DuckDBV2SqlStatementHandle -> IO Statement
 createStatementFromParsed parent query parsed = createStatementFromParsedWithCollections parent query parsed []
 
--- | Prepare SQL and retain its collection bindings in the metadata copy.
+{- | Prepare a borrowed parsed statement with named input collections. A
+collection is a DuckDB column data collection: rows in memory that the caller
+owns. @duckdb_v2_statement_add_collection@ binds a collection to a statement
+under a name, and the SQL of the statement reads it as a table with that name.
+Each triple is the name, the collection handle, and the column names. An empty
+list of column names selects the default names @col1@ to @colN@.
+The function binds the collections to the parsed statement that it prepares,
+and to the copy that it keeps for parameter names and schemas. The caller must
+keep each collection alive and unchanged until the statement closes and the
+caller destroys the parsed statement.
+-}
 createStatementFromParsedWithCollections :: Connection -> Query -> DuckDBV2SqlStatementHandle -> [(Text, DuckDBV2ColumnDataCollectionHandle, [Text])] -> IO Statement
 createStatementFromParsedWithCollections parent query parsed collections = withQueryError query $ withConnectionHandle parent \raw -> mask_ do
     addCollections parsed

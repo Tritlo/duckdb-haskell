@@ -505,7 +505,7 @@ localTimestampDuckValue factory value = encodeUnbounded (encodeTimestampUnits 10
 utcTimestampDuckValue :: DuckDBV2FactoryHandle -> UTCTimestamp -> IO DuckDBV2ValueHandle
 utcTimestampDuckValue factory value = encodeUnbounded (encodeTimestampUnits 1000000 . utcToLocalTime utc) value >>= (\encoded -> output (c_duckdb_v2_value_create_timestamp_tz factory encoded))
 
--- | Construct an ARRAY value and retain its element type for empty arrays.
+-- | Construct an ARRAY value. An empty array raises 'SQLError'.
 arrayDuckValue :: forall a. (DuckDBColumnType a) => (LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle) -> DuckDBV2FactoryHandle -> Maybe LogicalTypeRep -> (a -> IO DuckDBV2ValueHandle) -> Array Int a -> IO DuckDBV2ValueHandle
 arrayDuckValue makeType factory target elementValue array = do
     when (null (elems array)) $

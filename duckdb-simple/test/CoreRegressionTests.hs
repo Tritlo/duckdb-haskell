@@ -281,6 +281,23 @@ coreRegressionTests =
                     assertThrows (query_ conn "SELECT x FROM side.probe" :: IO [Only Int64])
                     query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
                 assertThrows (detachDatabase instance_ "side")
+        , testCase "NUL in attach options and aliases is rejected" $
+            withEnvironment $ \environment -> withInstance environment [] $ \instance_ -> do
+                attachDatabase instance_ ":memory:" "shared" []
+                setDefaultDatabase instance_ "shared"
+                forM_
+                    [ attachDatabase instance_ ":memory:" "side" [("read_only\0suffix", "false")]
+                    , attachDatabase instance_ ":memory:" "side" [("read_only", "false\0suffix")]
+                    , detachDatabase instance_ "shared\0suffix"
+                    , setDefaultDatabase instance_ "shared\0suffix"
+                    ]
+                    $ \action -> do
+                        result <- try action
+                        case result of
+                            Left (err :: SQLError) -> assertBool "NUL diagnostic" ("contains NUL" `Text.isInfixOf` sqlErrorMessage err)
+                            Right () -> assertFailure "expected a NUL error"
+                withConnectionOn instance_ $ \conn ->
+                    query_ conn "SELECT current_database(), count(*) FILTER (WHERE database_name = 'side') FROM duckdb_databases()" >>= (@?= [("shared" :: Text, 0 :: Int64)])
         , testCase "parent close releases concurrently created children" $
             bracket getNumCapabilities setNumCapabilities $ \capabilities -> do
                 setNumCapabilities (max 2 capabilities)

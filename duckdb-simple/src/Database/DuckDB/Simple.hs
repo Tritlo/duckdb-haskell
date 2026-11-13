@@ -147,6 +147,8 @@ attachCatalog :: Instance -> FilePath -> Text -> [(Text, Text)] -> Bool -> IO ()
 attachCatalog instance_ path alias settings makeDefault = withInstanceHandle instance_ \raw -> do
     when ('\0' `elem` path || Text.any (== '\0') alias) $
         throwIO (SQLError (Text.pack "duckdb-simple: database path or alias contains NUL") Nothing Nothing)
+    when (any (\(key, value) -> Text.any (== '\0') key || Text.any (== '\0') value) settings) $
+        throwIO (SQLError (Text.pack "duckdb-simple: attach option contains NUL") Nothing Nothing)
     bracket (output (c_duckdb_v2_attach_options_create raw)) (destroy c_duckdb_v2_attach_options_destroy) \options -> do
         forM_ settings \(key, value) -> withIdentifier key \name -> withText value \text ->
             checked (c_duckdb_v2_attach_options_set options name text)
@@ -155,13 +157,17 @@ attachCatalog instance_ path alias settings makeDefault = withInstanceHandle ins
 
 -- | Detach a catalog from an instance.
 detachDatabase :: Instance -> Text -> IO ()
-detachDatabase instance_ alias = withInstanceHandle instance_ \raw -> withIdentifier alias \name ->
-    checked (c_duckdb_v2_instance_detach raw name)
+detachDatabase instance_ alias = withInstanceHandle instance_ \raw -> do
+    when (Text.any (== '\0') alias) $
+        throwIO (SQLError (Text.pack "duckdb-simple: database alias contains NUL") Nothing Nothing)
+    withIdentifier alias \name -> checked (c_duckdb_v2_instance_detach raw name)
 
 -- | Select the default catalog for new connections to an instance.
 setDefaultDatabase :: Instance -> Text -> IO ()
-setDefaultDatabase instance_ alias = withInstanceHandle instance_ \raw -> withIdentifier alias \name ->
-    checked (c_duckdb_v2_instance_set_default raw name)
+setDefaultDatabase instance_ alias = withInstanceHandle instance_ \raw -> do
+    when (Text.any (== '\0') alias) $
+        throwIO (SQLError (Text.pack "duckdb-simple: database alias contains NUL") Nothing Nothing)
+    withIdentifier alias \name -> checked (c_duckdb_v2_instance_set_default raw name)
 
 -- | Open a connection to a shared instance.
 connect :: Instance -> IO Connection

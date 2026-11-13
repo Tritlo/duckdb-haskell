@@ -13,6 +13,8 @@
   types. `sqlErrorType` is `Maybe ErrorType`. See MIGRATION.md.
 - Add shared environments and instances, attachment management, option
   discovery, table descriptions, SQL tokenization, and positioned file I/O.
+- `attachDatabase` rejects an attach option that contains NUL.
+  `detachDatabase` and `setDefaultDatabase` reject an alias that contains NUL.
 - Add typed configuration values and defaults, managed log sinks, macro
   registration, function documentation, query metrics, and file path
   operations. Expose table bind metadata for multi-file readers.

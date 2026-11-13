@@ -20,6 +20,7 @@ import Data.List (find, sort)
 import Data.Proxy (Proxy (..))
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
+import Data.Time.Clock (addUTCTime, getCurrentTime)
 import Data.Word (Word64)
 import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple
@@ -219,6 +220,7 @@ extensionRegressionTests =
         , testCase "log sinks copy entries and flush when released" do
             entries <- newIORef []
             flushes <- newIORef (0 :: Int)
+            start <- getCurrentTime
             withConnection ":memory:" \conn -> do
                 Logging.registerLogSink
                     conn
@@ -226,11 +228,17 @@ extensionRegressionTests =
                     (\entry -> atomicModifyIORef' entries (\values -> (entry : values, ())))
                     (atomicModifyIORef' flushes (\count -> (count + 1, ())))
                 void $ execute_ conn "CALL enable_logging(); SET logging_storage = 'captured_log'; SELECT write_log('Matti λ', level := 'warning', log_type := 'HaskellTest'); SET logging_storage = 'memory'"
+            end <- getCurrentTime
             received <- filter ((== "HaskellTest") . Logging.logEntryType) <$> readIORef entries
             map Logging.logEntryMessage received @?= ["Matti λ"]
             map Logging.logEntrySeverity received @?= [Logging.LogLevelWarning]
             map Logging.logEntryScope received @?= [Logging.LogScopeConnection]
             assertBool "entry has a timestamp" (all ((/= Nothing) . Logging.logEntryTimestamp) received)
+            -- A timestamp in the wrong unit is far from the clock of the test.
+            let nearClock time = addUTCTime (-300) start <= time && time <= addUTCTime 300 end
+            assertBool
+                ("timestamps " <> show (map Logging.logEntryTimestamp received) <> " are within five minutes of " <> show (start, end))
+                (all (maybe False nearClock . Logging.logEntryTimestamp) received)
             assertBool "entry has a connection id" (all ((/= Nothing) . Logging.logEntryConnectionId) received)
             readIORef flushes >>= assertBool "flush and final cleanup ran" . (>= 2)
         , testCase "instance log sinks receive connection and instance messages" do

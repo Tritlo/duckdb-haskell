@@ -579,10 +579,21 @@ runInterruptible conn release action = do
         let wait =
                 tryReadMVar done >>= \case
                     Just outcome -> pure outcome
-                    Nothing -> void (c_duckdb_v2_connection_interrupt handle nullPtr) >> threadDelay 10000 >> wait
+                    -- The header says that duckdb_v2_connection_interrupt is "A
+                    -- no-op when no query is active". An interrupt that arrives
+                    -- before the query starts is thus lost. Repeat the interrupt
+                    -- until the work returns.
+                    Nothing -> void (c_duckdb_v2_connection_interrupt handle nullPtr) >> threadDelay interruptRetryDelayMicros >> wait
             stop = uninterruptibleMask_ (wait >>= either (const (pure ())) release)
         outcome <- restore (readMVar done) `onException` stop
         either throwIO pure outcome
+
+{- | Repeat the interrupt at most 100 times each second while the native work
+finishes. The interval prevents a busy loop. It can add up to one interval to
+the time at which the caller sees the end of the work.
+-}
+interruptRetryDelayMicros :: Int
+interruptRetryDelayMicros = 10 * 1000
 
 -- | Execute a borrowed parsed statement. The caller owns the returned cursor.
 executeParsedResult :: Connection -> Query -> DuckDBV2SqlStatementHandle -> IO DuckDBV2ResultHandle

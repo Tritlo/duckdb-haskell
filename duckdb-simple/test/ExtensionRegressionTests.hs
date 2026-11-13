@@ -46,6 +46,7 @@ import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..))
 import qualified Database.DuckDB.Simple.Tokenizer as Tokenizer
 import qualified Database.DuckDB.Simple.V2.Registration as Registration
 import System.Directory (getHomeDirectory, removeFile)
+import System.FilePath (takeDirectory)
 import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertFailure, testCase, (@?=))
@@ -528,6 +529,8 @@ extensionRegressionTests =
         , testCase "file paths support expansion glob movement and removal" $
             withTemporaryFile \path -> withConnection ":memory:" \conn -> do
                 FileSystem.pathExists conn path >>= (@?= True)
+                -- A directory is not a file.
+                FileSystem.pathExists conn (takeDirectory path) >>= (@?= False)
                 home <- getHomeDirectory
                 FileSystem.expandPath conn "~/duckdb-simple-path" >>= (@?= home <> "/duckdb-simple-path")
                 FileSystem.globPaths conn (path <> "*") >>= (@?= [path])

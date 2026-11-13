@@ -48,6 +48,7 @@ import Database.DuckDB.Simple.FromField (
 import Database.DuckDB.Simple.Materialize (prepareVectorReader)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
+import Database.DuckDB.Simple.Typed (conversionMessage)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (advancePtr, allocaArray, peekArray)
 import Foreign.Marshal.Utils (copyBytes, fillBytes)
@@ -216,7 +217,7 @@ instance {-# OVERLAPPABLE #-} (FromField a, FunctionArg a, Function r) => Functi
         throwIO (functionInvocationError (Text.pack "insufficient arguments supplied"))
     applyFunction (field : rest) fn =
         case fromField field of
-            Errors err -> throwIO (argumentConversionError (fieldName field) err)
+            Errors err -> throwIO (argumentConversionError err)
             Ok value -> applyFunction rest (fn value)
 
 -- | Register a typed function on a connection or a loading extension.
@@ -419,16 +420,8 @@ markValid validity idx = do
     word <- peekElemOff validity wordIndex
     pokeElemOff validity wordIndex (setBit word bitIndex)
 
-argumentConversionError :: Text -> [SomeException] -> SQLError
-argumentConversionError name err =
-    let message =
-            Text.concat
-                [ Text.pack "duckdb-simple: unable to convert argument "
-                , name
-                , Text.pack ": "
-                , Text.pack (show err)
-                ]
-     in functionInvocationError message
+argumentConversionError :: [SomeException] -> SQLError
+argumentConversionError err = functionInvocationError (Text.pack ("duckdb-simple: " <> conversionMessage err))
 
 functionInvocationError :: Text -> SQLError
 functionInvocationError message =

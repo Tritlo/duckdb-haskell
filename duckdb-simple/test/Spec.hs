@@ -1197,6 +1197,12 @@ functionsTests =
                     query_ conn "SELECT hs_optional(x) FROM (VALUES (NULL), (41)) AS t(x)" ::
                         IO [Only (Maybe Int64)]
                 assertEqual "optional results" [Only Nothing, Only (Just 42)] rows
+        , testCase "names the argument that does not convert" $
+            withConnection ":memory:" \conn -> do
+                createFunction conn "hs_sum" (\(x :: Int64) (y :: Int64) -> x + y)
+                assertThrows
+                    (query_ conn "SELECT hs_sum(1, NULL)" :: IO [Only Int64])
+                    (Text.isInfixOf "duckdb-simple: argument arg1 is NULL, but Int64 cannot hold NULL" . sqlErrorMessage)
         , testCase "supports IO-based functions" $
             withConnection ":memory:" \conn -> do
                 ref <- newIORef (0 :: Int)

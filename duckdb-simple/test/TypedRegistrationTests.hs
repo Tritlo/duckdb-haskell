@@ -57,7 +57,6 @@ typedRegistrationTests =
         , testCase "cast to custom aliases of DATE and VARCHAR" testCastTypes
         , testCase "cast exceptions and conversion errors fail CAST" testCastErrors
         , testCase "cast to a custom type on each scalar base type" testCastBaseTypes
-        , testCase "scalar function error names the argument that does not convert" testScalarArgumentError
         , testCase "replacement scan reads the rows of a query" testReplacementQuery
         , testCase "replacement scan that declines gives the unknown table error" testReplacementDecline
         , testCase "replacement scan gets the name parts as written" testReplacementNames
@@ -203,16 +202,6 @@ testCastBaseTypes = withConnection ":memory:" \conn -> do
     roundTrip conn "unbounded_day" [NegInfinity, Finite day, PosInfinity]
     roundTrip conn "unbounded_local" [NegInfinity, Finite (LocalTime day time), PosInfinity]
     roundTrip conn "unbounded_utc" [NegInfinity, Finite instant, PosInfinity]
-
-{- | Give NULL to a scalar function argument that cannot hold NULL. The error
-names the argument.
--}
-testScalarArgumentError :: Assertion
-testScalarArgumentError = withConnection ":memory:" \conn -> do
-    createFunction conn "typed_scalar_sum" \(x :: Int64) (y :: Int64) -> x + y
-    query_ conn "SELECT typed_scalar_sum(1, 2)" >>= (@?= [Only (3 :: Int64)])
-    assertSqlError "unable to convert argument arg1: " (query_ conn "SELECT typed_scalar_sum(1, NULL)" :: IO [Only Int64])
-    query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
 
 -- | Run the SQL of a query pragma without a parameter.
 testPragmaNoParameter :: Assertion

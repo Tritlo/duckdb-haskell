@@ -342,6 +342,28 @@ coreRegressionTests =
             close conn
             closeInstance instance_
             closeEnvironment environment
+        , testCase "a refused environment close keeps the environment open" $ do
+            environment <- createEnvironment
+            state <- readIORef (Internal.environmentState environment)
+            raw <- case state of
+                Internal.EnvironmentOpen raw _ -> pure raw
+                Internal.EnvironmentClosed -> assertFailure "a new environment is closed"
+            -- The library does not track this instance, so it does not close it.
+            untracked <- output (Raw.c_duckdb_v2_instance_create raw)
+            refused <- try (closeEnvironment environment)
+            case refused of
+                Left (err :: SQLError) -> sqlErrorType err @?= Just ErrorResourceInUse
+                Right () -> assertFailure "expected a refused close"
+            -- Keep this instance open. The second close must find it in the child registry.
+            instance_ <- createInstance environment []
+            withConnectionOn instance_ $ \conn -> query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+            Internal.destroy Raw.c_duckdb_v2_instance_destroy untracked
+            closeEnvironment environment
+            assertThrows (connect instance_)
+            closed <- try (createInstance environment [])
+            case closed of
+                Left (err :: SQLError) -> sqlErrorMessage err @?= "duckdb-simple: environment is closed"
+                Right _ -> assertFailure "expected a closed environment"
         , testCase "GC releases an unclosed convenience connection" $ do
             directory <- getTemporaryDirectory
             (path, file) <- openBinaryTempFile directory "duckdb-v2-gc.duckdb"

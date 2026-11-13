@@ -77,7 +77,7 @@ import Control.Monad (forM, forM_, join, unless, void, when)
 import Data.Array (Array, bounds, inRange, listArray, (!))
 import qualified Data.ByteString as BS
 import Data.Coerce (Coercible, coerce)
-import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, newIORef, readIORef, writeIORef)
+import Data.IORef (IORef, atomicModifyIORef', atomicWriteIORef, mkWeakIORef, newIORef, readIORef, writeIORef)
 import qualified Data.IntMap.Strict as IntMap
 import Data.List (find, intercalate, partition)
 import Data.Maybe (fromMaybe)
@@ -253,17 +253,38 @@ checkLibraryVersion = do
   where
     expected = Text.pack ('v' : intercalate "." (map show [dUCKDB_V2_API_VERSION_MAJOR, dUCKDB_V2_API_VERSION_MINOR, dUCKDB_V2_API_VERSION_PATCH]))
 
-{- | Close an environment and its instances and connections. This is idempotent.
+{- | Close an environment and its instances and connections.
 Wait for child creation and all descendant operations to finish before closing.
+DuckDB refuses to destroy the environment while an instance is alive that
+'createInstance' did not create. In this case, this function closes the
+instances from 'createInstance' and their connections, raises an 'SQLError'
+with the type 'ErrorResourceInUse', and keeps the environment open.
+Destroy the other instance, then close the environment again.
+After a successful close, a second close has no effect.
 -}
 closeEnvironment :: Environment -> IO ()
 closeEnvironment Environment{environmentState} = closeEnvironmentState environmentState
 
--- | Mark the environment closed before releasing its native state.
+{- | Mark the environment closed before releasing its native state, so that no
+instance registers during the close. If the native destroy refuses with
+@ERROR_RESOURCE_IN_USE@, the native environment is still alive. In this case,
+put back the open state with the same child registry, and raise the error.
+'closeChildren' empties the registry, and a later 'createInstance' can register
+in it. After a different error, the state stays closed, because the header does
+not say that the handle stays valid.
+-}
 closeEnvironmentState :: IORef EnvironmentState -> IO ()
 closeEnvironmentState ref = mask_ $ joinCleanup ref \case
     EnvironmentClosed -> (EnvironmentClosed, pure ())
-    EnvironmentOpen raw children -> (EnvironmentClosed, cleanupAll [closeChildren children, destroy c_duckdb_v2_environment_destroy raw])
+    EnvironmentOpen raw children ->
+        ( EnvironmentClosed
+        , cleanupAll
+            [ closeChildren children
+            , destroy c_duckdb_v2_environment_destroy raw `catch` \(err :: SQLError) -> do
+                when (sqlErrorType err == Just ErrorResourceInUse) (atomicWriteIORef ref (EnvironmentOpen raw children))
+                throwIO err
+            ]
+        )
 
 -- | Create an instance with configuration applied before its first connection.
 createInstance :: Environment -> [(Text, Text)] -> IO Instance

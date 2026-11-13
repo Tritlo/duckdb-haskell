@@ -4,10 +4,12 @@
 
 {- |
 Module      : Database.DuckDB.Simple.Function
-Description : Register scalar Haskell functions and casts with DuckDB connections.
+Description : Register Haskell scalar functions, casts, table functions, and aggregate functions with DuckDB connections.
 
-Register pure and IO functions with the managed argument and result conversions.
-Register pure casts with the same argument conversion.
+Register pure and IO scalar functions with the managed argument and result
+conversions. Register pure casts with the same argument conversion. Register
+table functions and aggregate functions that convert their arguments with
+'FromRow'.
 -}
 module Database.DuckDB.Simple.Function (
     ScalarType,

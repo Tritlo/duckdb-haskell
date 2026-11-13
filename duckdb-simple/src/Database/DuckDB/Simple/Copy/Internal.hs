@@ -124,6 +124,14 @@ withVariantReader target action = case target of
     ConnectionTarget connection -> withDatabaseHandle connection (action . readVariant)
     ExtensionTarget _ _ -> action \_ -> throwIO (userError "duckdb-simple: a COPY TO function of an extension cannot read VARIANT")
   where
+    -- Keep the raw instance handle, not the 'Instance' value. DuckDB registers
+    -- the COPY function on the database, and it can keep the callbacks until
+    -- the database closes. A callback that holds the 'Instance' value keeps the
+    -- state of the instance reachable. Then the finalizer of an instance that
+    -- the program dropped does not run. The handle is valid in each COPY
+    -- statement, because the statement runs on a connection of the instance.
+    -- The close of an instance closes its connections before it destroys the
+    -- handle.
     readVariant instanceHandle vector =
         bracket (output (c_duckdb_v2_connection_create instanceHandle)) (destroy c_duckdb_v2_connection_destroy) \helper ->
             bracket newVariantState destroyVariantState \state -> prepareVariantReader helper state vector
@@ -274,7 +282,8 @@ registerCopyFromFunctionOn target name readRows = registerCopyOn target name Not
 {- | The native COPY FROM callbacks of a typed reader. The bind callback reads
 the inputs and keeps the read action as the bind data. The global init callback
 runs the action and keeps the list in the global state. The exec callback
-writes the next rows of the list. DuckDB uses one thread for the exec callback.
+writes the next rows of the list. DuckDB can run exec callbacks of one scan at
+the same time. Thus the exec callback takes the rows from the list under a lock.
 -}
 copyFromSide :: forall row. (TypedRow row) => Text -> (CopyFromInfo -> IO [row]) -> CopyFromCallbacks
 copyFromSide name readRows = (copyFromCallbacks bind execute){copyFromInitGlobalCallback = Just initialize}

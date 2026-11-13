@@ -41,13 +41,13 @@ foldArrowWith mode conn queryText params initial step = withStatement conn query
             StreamingResult ->
                 -- Serialize the execution call. The stream stays open after it.
                 bracket (withConnectionLock conn (executePreparedArrowResult stmt)) (const (clearArrowResult stmt)) \result ->
-                    let stream acc = withStatementHandle stmt \_ -> do
-                            next <- fetchBatch stmt result
-                            case next of
-                                Nothing -> pure acc
-                                Just batch -> do
-                                    acc' <- deliver acc batch `finally` releaseBatch batch
-                                    stream acc'
+                    -- Recurse outside the handle scope, so that the stack does not grow for each batch.
+                    let stream acc = do
+                            next <- withStatementHandle stmt \_ ->
+                                fetchBatch stmt result >>= \case
+                                    Nothing -> pure Nothing
+                                    Just batch -> Just <$> (deliver acc batch `finally` releaseBatch batch)
+                            maybe (pure acc) stream next
                      in stream initial
             MaterializedResult -> do
                 owned <- newIORef []

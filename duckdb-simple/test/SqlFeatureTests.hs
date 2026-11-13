@@ -1,7 +1,10 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Integration checks for DuckDB 2.0 SQL features.
+{- |
+Module      : SqlFeatureTests
+Description : Integration checks for DuckDB 2.0 SQL features.
+-}
 module SqlFeatureTests (tests) where
 
 import Control.Exception (bracket)

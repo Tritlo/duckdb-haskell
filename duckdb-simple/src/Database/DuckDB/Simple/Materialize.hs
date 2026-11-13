@@ -4,6 +4,10 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TypeApplications #-}
 
+{- |
+Module      : Database.DuckDB.Simple.Materialize
+Description : Readers that copy native vectors and values to field values.
+-}
 module Database.DuckDB.Simple.Materialize (
     VariantReader,
     castReader,

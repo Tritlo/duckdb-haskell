@@ -1,7 +1,10 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- | V2 configuration values, declared scopes, defaults, and aliases.
+{- |
+Module      : Database.DuckDB.Simple.Config
+Description : V2 configuration values, declared scopes, defaults, and aliases.
+-}
 module Database.DuckDB.Simple.Config (
     ConfigFlag (..),
     ConfigValue (..),

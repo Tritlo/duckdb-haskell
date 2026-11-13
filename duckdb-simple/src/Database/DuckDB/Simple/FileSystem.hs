@@ -1,7 +1,10 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Checked file operations through the V2 file system.
+{- |
+Module      : Database.DuckDB.Simple.FileSystem
+Description : Checked file operations through the V2 file system.
+-}
 module Database.DuckDB.Simple.FileSystem (
     FileFlag (..),
     FileHandle,

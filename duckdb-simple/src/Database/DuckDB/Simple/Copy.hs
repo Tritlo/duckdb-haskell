@@ -1,5 +1,8 @@
-{- | Register COPY formats and multi-file table functions with Haskell
-functions. The functions get and give Haskell values. Batch preparation can run
+{- |
+Module      : Database.DuckDB.Simple.Copy
+Description : Register COPY formats and multi-file table functions with Haskell functions.
+
+The functions get and give Haskell values. Batch preparation can run
 concurrently. The sink calls for one output file run one at a time. A
 multi-file function uses the callbacks of a registered single-file table
 function. "Database.DuckDB.Simple.V2.Copy" has the native callback interface.

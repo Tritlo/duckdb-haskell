@@ -1,6 +1,9 @@
 {-# LANGUAGE BlockArguments #-}
 
--- | SQL tokenization using the grammar of a V2 connection.
+{- |
+Module      : Database.DuckDB.Simple.Tokenizer
+Description : SQL tokenization using the grammar of a V2 connection.
+-}
 module Database.DuckDB.Simple.Tokenizer (
     Token (..),
     TokenType (..),

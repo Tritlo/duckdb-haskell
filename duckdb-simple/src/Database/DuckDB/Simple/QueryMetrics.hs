@@ -1,7 +1,12 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Copied query profiles. Returned values do not retain native snapshot handles.
+{- |
+Module      : Database.DuckDB.Simple.QueryMetrics
+Description : Copied query profiles.
+
+Returned values do not retain native snapshot handles.
+-}
 module Database.DuckDB.Simple.QueryMetrics (
     QueryMetrics (..),
     enableProfiling,

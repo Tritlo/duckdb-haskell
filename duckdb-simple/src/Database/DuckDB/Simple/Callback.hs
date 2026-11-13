@@ -3,7 +3,10 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- | Manage callback resources and registration builders at the DuckDB ownership boundary.
+{- |
+Module      : Database.DuckDB.Simple.Callback
+Description : Manage callback resources and registration builders at the DuckDB ownership boundary.
+-}
 module Database.DuckDB.Simple.Callback (
     RegistrationTarget (..),
     withRegistrationFactory,

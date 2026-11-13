@@ -1,4 +1,7 @@
--- | Raw geometry values and conversion to 'G.Geometry' from @geometry-simple@.
+{- |
+Module      : Database.DuckDB.Simple.Geometry
+Description : Raw geometry values and conversion to 'G.Geometry' from @geometry-simple@.
+-}
 module Database.DuckDB.Simple.Geometry (
     RawGeometry (..),
     fromRawGeometry,

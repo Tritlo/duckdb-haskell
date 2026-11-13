@@ -4,7 +4,10 @@
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Generate and verify release bindings from typed hs-bindgen declarations.
+{- |
+Module      : Main
+Description : Generate and verify release bindings from typed hs-bindgen declarations.
+-}
 module Main (main) where
 
 import Control.Monad (forM_, unless)

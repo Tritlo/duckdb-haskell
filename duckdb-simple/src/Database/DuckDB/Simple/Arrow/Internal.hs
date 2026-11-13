@@ -3,7 +3,10 @@
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 
--- | V2 Arrow execution and ownership of exported schemas and arrays.
+{- |
+Module      : Database.DuckDB.Simple.Arrow.Internal
+Description : V2 Arrow execution and ownership of exported schemas and arrays.
+-}
 module Database.DuckDB.Simple.Arrow.Internal (
     foldArrowWith,
     releaseArrowSchema,

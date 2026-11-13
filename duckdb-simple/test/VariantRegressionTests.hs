@@ -5,7 +5,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- | Lossless VARIANT binding and result conversion through the V2 API.
+{- |
+Module      : VariantRegressionTests
+Description : Lossless VARIANT binding and result conversion through the V2 API.
+-}
 module VariantRegressionTests (tests) where
 
 import Control.Exception (SomeException, bracket, displayException, try)

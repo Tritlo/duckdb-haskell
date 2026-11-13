@@ -1,6 +1,10 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE OverloadedStrings #-}
 
+{- |
+Module      : GeometryRegressionTests
+Description : Regression tests for GEOMETRY construction, metadata, nesting, and streaming.
+-}
 module GeometryRegressionTests (tests) where
 
 import Control.Exception (SomeException, bracket, displayException, try)

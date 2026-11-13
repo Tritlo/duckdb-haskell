@@ -1,7 +1,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- | Regression tests for result metadata, cursor state, and handle lifetime.
+{- |
+Module      : CoreRegressionTests
+Description : Regression tests for result metadata, cursor state, and handle lifetime.
+-}
 module CoreRegressionTests (coreRegressionTests) where
 
 import Control.Concurrent (forkFinally, getNumCapabilities, newEmptyMVar, putMVar, readMVar, setNumCapabilities, takeMVar, threadDelay)

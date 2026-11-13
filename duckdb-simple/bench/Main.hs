@@ -1,7 +1,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- | Repeatable end-to-end benchmarks with checked results.
+{- |
+Module      : Main
+Description : Repeatable end-to-end benchmarks with checked results.
+-}
 module Main (main) where
 
 import Control.Exception (evaluate)

@@ -1,4 +1,7 @@
--- | Assertions that several test modules share.
+{- |
+Module      : TestUtils
+Description : Assertions that several test modules share.
+-}
 module TestUtils (assertFailureIO, withConstCString) where
 
 import Control.Exception (SomeException, try)

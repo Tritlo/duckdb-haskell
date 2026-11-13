@@ -4,7 +4,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- | Shared V2 error handling and borrowed UTF-8 views.
+{- |
+Module      : Database.DuckDB.Simple.Native
+Description : Shared V2 error handling and borrowed UTF-8 views.
+-}
 module Database.DuckDB.Simple.Native (
     module Database.DuckDB.FFI.V2,
     Query (..),

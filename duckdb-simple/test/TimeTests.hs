@@ -4,7 +4,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- | Round trips for finite dates and native temporal infinities.
+{- |
+Module      : TimeTests
+Description : Round trips for finite dates and native temporal infinities.
+-}
 module TimeTests (timeTests) where
 
 import Control.Exception (IOException, try)

@@ -3,7 +3,10 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TupleSections #-}
 
--- | Shared result decoding and cursor ownership for both execution modes.
+{- |
+Module      : Database.DuckDB.Simple.Result
+Description : Shared result decoding and cursor ownership for both execution modes.
+-}
 module Database.DuckDB.Simple.Result (
     collectRows,
     collectParsedRows,

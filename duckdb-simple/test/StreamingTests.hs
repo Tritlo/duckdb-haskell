@@ -2,7 +2,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- | Check the explicit native streaming API and its cursor ownership.
+{- |
+Module      : StreamingTests
+Description : Check the explicit native streaming API and its cursor ownership.
+-}
 module StreamingTests (nativeStreamingTests) where
 
 import Control.Exception (IOException, throwIO, try)

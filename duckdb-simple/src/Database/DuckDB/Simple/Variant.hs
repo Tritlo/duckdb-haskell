@@ -1,6 +1,9 @@
 {-# LANGUAGE NamedFieldPuns #-}
 
--- | DuckDB VARIANT values.
+{- |
+Module      : Database.DuckDB.Simple.Variant
+Description : DuckDB VARIANT values.
+-}
 module Database.DuckDB.Simple.Variant (
     Variant (..),
     variantObject,

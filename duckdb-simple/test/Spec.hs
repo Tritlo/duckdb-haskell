@@ -8,7 +8,10 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeOperators #-}
 
--- | Tasty-based test suite for duckdb-simple.
+{- |
+Module      : Main
+Description : Tasty-based test suite for duckdb-simple.
+-}
 module Main (main) where
 
 import ArrowTests (arrowTests)

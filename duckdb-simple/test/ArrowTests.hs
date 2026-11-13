@@ -5,7 +5,10 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
--- | Integration tests for scoped Arrow batches and their native ownership.
+{- |
+Module      : ArrowTests
+Description : Integration tests for scoped Arrow batches and their native ownership.
+-}
 module ArrowTests (arrowTests) where
 
 import Control.Concurrent (forkIO, killThread, newEmptyMVar, putMVar, takeMVar)

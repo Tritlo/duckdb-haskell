@@ -4,7 +4,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- | Integration checks for typed registration through SQL.
+{- |
+Module      : TypedRegistrationTests
+Description : Integration checks for typed registration through SQL.
+-}
 module TypedRegistrationTests (typedRegistrationTests) where
 
 import Control.Exception (bracket, throwIO, try)

@@ -80,6 +80,9 @@
 - The SQL error of a failed Haskell callback has the plain message of the
   exception. Version 0.3 gave `user error (...)` for a `userError` and the
   Haskell record for an `SQLError`.
+  The error of an argument that does not convert names the argument (`arg0`,
+  `arg1`, and so on). It has one form for scalar functions, casts, table
+  functions, and aggregate functions.
 - Add scoped named collection inputs and prepared dynamic PIVOT with a deferred
   output schema. Native expanding statements cannot have parameters.
 - Rename `Database.DuckDB.Simple.Deprecated.Streaming` to

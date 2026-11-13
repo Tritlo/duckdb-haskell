@@ -6,7 +6,7 @@
 
 {- |
 Module      : Database.DuckDB.Simple.Native
-Description : Shared V2 error handling and borrowed UTF-8 views.
+Description : Shared V2 error handling and UTF-8 views.
 -}
 module Database.DuckDB.Simple.Native (
     module Database.DuckDB.FFI.V2,
@@ -274,16 +274,18 @@ withCreatedValues = withMany (\create -> bracket create destroyValue)
 indices :: DuckDBIdx -> [DuckDBIdx]
 indices count = if count == 0 then [] else [0 .. count - 1]
 
--- | Borrow UTF-8 text for the duration of a native call.
+-- | Lend UTF-8 text to DuckDB for the duration of the action.
 withText :: Text -> (ConstPtr DuckDBV2Str -> IO a) -> IO a
 withText value = withBytes (Text.encodeUtf8 value)
 
--- | Borrow an array of UTF-8 views for the duration of a native call.
+-- | Lend an array of UTF-8 views to DuckDB for the duration of the action.
 withTextArray :: [Text] -> (Ptr DuckDBV2Str -> IO a) -> IO a
 withTextArray values action =
     withMany withText values $ \views -> mapM (\(ConstPtr view) -> peek view) views >>= (`withArray` action)
 
--- | Copy a borrowed UTF-8 view.
+{- | Copy the bytes of a UTF-8 view whose memory DuckDB owns. The result stays
+valid after DuckDB frees that memory.
+-}
 readText :: DuckDBV2Str -> IO Text
 readText view = Text.decodeUtf8 <$> readBytes view
 
@@ -296,26 +298,30 @@ valueText value = do
         _ <- output (c_duckdb_v2_value_to_string value buffer (count + 1))
         Text.decodeUtf8 <$> BS.packCStringLen (buffer, fromIntegral count)
 
--- | Borrow bytes through a length-delimited native view.
+-- | Lend bytes to DuckDB through a length-delimited view for the duration of the action.
 withBytes :: BS.ByteString -> (ConstPtr DuckDBV2Str -> IO a) -> IO a
 withBytes value action = BS.useAsCStringLen value $ \(ptr, count) ->
     with (DuckDBV2Str (ConstPtr ptr) (fromIntegral count)) (action . ConstPtr)
 
--- | Copy bytes from a borrowed native view, including interior NUL bytes.
+{- | Copy the bytes of a view whose memory DuckDB owns, including interior NUL
+bytes. The result stays valid after DuckDB frees that memory.
+-}
 readBytes :: DuckDBV2Str -> IO BS.ByteString
 readBytes (DuckDBV2Str (ConstPtr ptr) count)
     | count == 0 = pure BS.empty
     | otherwise = BS.packCStringLen (ptr, fromIntegral count)
 
--- | Borrow a UTF-8 native identifier.
+-- | Lend a UTF-8 identifier to DuckDB for the duration of the action.
 withIdentifier :: Text -> (ConstPtr DuckDBV2IdentifierT -> IO a) -> IO a
 withIdentifier value action = withText value (action . coerce)
 
--- | Borrow an array of UTF-8 native identifiers.
+-- | Lend an array of UTF-8 identifiers to DuckDB for the duration of the action.
 withIdentifierArray :: [Text] -> (Ptr DuckDBV2IdentifierT -> IO a) -> IO a
 withIdentifierArray values action = withTextArray values (action . castPtr)
 
--- | Copy a borrowed native identifier.
+{- | Copy the bytes of an identifier whose memory DuckDB owns. The result stays
+valid after DuckDB frees that memory.
+-}
 readIdentifier :: DuckDBV2IdentifierT -> IO Text
 readIdentifier = readText . coerce
 

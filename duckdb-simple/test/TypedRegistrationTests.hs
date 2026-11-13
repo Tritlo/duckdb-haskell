@@ -268,6 +268,8 @@ testPragmaDecodeErrors = withConnection ":memory:" \conn -> do
     assertSqlError "cannot decode the arguments of pragma typed_size" (query_ conn "PRAGMA typed_size(1)" :: IO [Only Int64])
     registerPragmaFunction conn "typed_strict" [amount] (ExecPragma \(Only (_ :: Int64)) -> pure ())
     assertSqlError "cannot decode the arguments of pragma typed_strict: column amount is NULL" (execute_ conn "PRAGMA typed_strict(NULL)")
+    registerPragmaFunction conn "typed_variant" [parameter "value" (TypeExpression "VARIANT")] (QueryPragma \(Only (_ :: Variant)) -> pure "SELECT 1")
+    assertSqlError "the type of a pragma argument cannot be or contain VARIANT" (query_ conn "PRAGMA typed_variant(1::VARIANT)" :: IO [Only Int64])
     query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
 
 -- | Make an SQL error from an exception of each callback kind.
@@ -549,7 +551,7 @@ testAggregateErrors = withConnection ":memory:" \conn -> do
     -- A negative BIGNUM does not convert to Natural. The error names the argument.
     createAggregate conn "typed_natural_sum" Aggregate{aggregateInitial = 0, aggregateStep = \total (value :: Int64, extra :: Natural) -> pure (total + value + fromIntegral extra), aggregateCombine = \a b -> pure (a + b), aggregateResult = pure :: Int64 -> IO Int64}
     query_ conn "SELECT typed_natural_sum(i, i) FROM range(10) t(i)" >>= (@?= [Only (90 :: Int64)])
-    assertSqlError "cannot convert argument arg1 from BIGNUM to Natural" (query_ conn "SELECT typed_natural_sum(i, i - 5) FROM range(10) t(i)" :: IO [Only Int64])
+    assertSqlError "typed_natural_sum: cannot convert argument arg1 from BIGNUM to Natural" (query_ conn "SELECT typed_natural_sum(i, i - 5) FROM range(10) t(i)" :: IO [Only Int64])
     query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
     createAggregate conn "typed_bad_result" sumAggregate{aggregateResult = \total -> if total > 100 then throwIO (userError "typed_bad_result: too large") else pure total}
     query_ conn "SELECT typed_bad_result(i) FROM range(10) t(i)" >>= (@?= [Only (45 :: Int64)])

@@ -87,4 +87,4 @@ pragmaArguments name info context = withContextFactory context \factory -> do
         argument <- output (c_duckdb_v2_function_bind_get_arg_name info index) >>= readIdentifier
         value <- bracket (output (c_duckdb_v2_function_bind_get_arg_value info index)) (destroy c_duckdb_v2_value_destroy) (materializeValue noVariant factory)
         pure (Field argument (fromIntegral index) value)
-    noVariant _ = throwIO (userError "duckdb-simple: a pragma argument cannot be VARIANT")
+    noVariant _ = throwIO (userError "duckdb-simple: the type of a pragma argument cannot be or contain VARIANT")

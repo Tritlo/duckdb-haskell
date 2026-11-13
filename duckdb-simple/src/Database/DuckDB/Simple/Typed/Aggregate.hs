@@ -106,7 +106,7 @@ createAggregateOn target name aggregate = do
         configureFunctionSignature factory (FunctionSignature parameters (Just (StructuredType (LogicalTypeScalar (duckTypeForScalar resultType))))) signature
         checked (c_duckdb_v2_aggregate_function_set_property function DuckDBV2FunctionPropertyNullHandling DuckDBV2FunctionPropertyNullHandlingSpecial)
     callbacks =
-        (aggregateCallbacks setStateSize (initializeStates aggregate) (updateStates aggregate (length columnTypes)) (combineStates aggregate) (finalizeStates aggregate resultType))
+        (aggregateCallbacks setStateSize (initializeStates aggregate) (updateStates name aggregate (length columnTypes)) (combineStates aggregate) (finalizeStates aggregate resultType))
             { aggregateBindCallback = Just bindStateTable
             , aggregateDestroyCallback = Just destroyStates
             }
@@ -145,10 +145,11 @@ initializeStates Aggregate{aggregateInitial} info = do
             poke (castPtr slot) stable
 
 {- | Add each row to its state. A row with NULL in an argument does not change
-its state.
+its state. A row that does not convert raises an error that names the
+aggregate function.
 -}
-updateStates :: (FromRow args) => Aggregate state args result -> Int -> DuckDBV2AggregateFunctionUpdateInfoHandle -> IO ()
-updateStates Aggregate{aggregateStep} columns info = do
+updateStates :: (FromRow args) => Text -> Aggregate state args result -> Int -> DuckDBV2AggregateFunctionUpdateInfoHandle -> IO ()
+updateStates name Aggregate{aggregateStep} columns info = do
     count <- fromIntegral <$> output (c_duckdb_v2_aggregate_function_update_get_row_count info)
     states <- output (c_duckdb_v2_aggregate_function_update_get_states info)
     readers <- mapFlat (\index -> output (c_duckdb_v2_aggregate_function_update_get_arg info (fromIntegral index)) >>= prepareArgumentReader index) [0 .. columns - 1]
@@ -157,7 +158,7 @@ updateStates Aggregate{aggregateStep} columns info = do
         unless (any ((== FieldNull) . fieldValue) fields) do
             arguments <- case parseRow fromRow fields of
                 Ok arguments -> pure arguments
-                Errors failures -> throwIO (userError ("duckdb-simple: " <> conversionMessage failures))
+                Errors failures -> throwIO (userError ("duckdb-simple: " <> Text.unpack name <> ": " <> conversionMessage failures))
             cell <- peekElemOff states row >>= stateCell
             readIORef cell >>= (`aggregateStep` arguments) >>= evaluate >>= writeIORef cell
 

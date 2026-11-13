@@ -43,7 +43,7 @@ import System.IO (hClose, openTempFile)
 import System.IO.Unsafe (unsafeInterleaveIO)
 import System.Mem (performMajorGC)
 import System.Mem.Weak (Weak, deRefWeak)
-import Test.Tasty (TestTree, testGroup)
+import Test.Tasty (TestTree, localOption, mkTimeout, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase, (@?=))
 
 -- | Check the typed registrations through SQL.
@@ -75,7 +75,9 @@ typedRegistrationTests =
         , testCase "table function with no, two, and NULL parameters" testTableParameters
         , testCase "table function columns of several types and a record row" testTableTypes
         , testCase "table function runs one time for each scan" testTableRuns
-        , testCase "table function reads an infinite list with LIMIT" testTableLazy
+        , -- A defect can make the scan run without end. Then the time limit fails
+          -- the case. The limit is long, because the suite also runs under Valgrind.
+          localOption (mkTimeout (10 * 60 * 1000000)) (testCase "table function reads an infinite list with LIMIT" testTableLazy)
         , testCase "table function registration and argument errors" testTableArgumentErrors
         , testCase "table function exceptions become SQL errors" testTableExceptions
         , testCase "table function releases the list of each scan" testTableRelease
@@ -440,7 +442,8 @@ assertColumnsEqual conn sql = do
 -- | Fold one group and many groups, also with partial states from 4 threads.
 testAggregateGroups :: Assertion
 testAggregateGroups = withConnection ":memory:" \conn -> do
-    createAggregate conn "typed_sum" sumAggregate
+    combines <- newIORef (0 :: Int)
+    createAggregate conn "typed_sum" sumAggregate{aggregateCombine = \a b -> atomicModifyIORef' combines (\count -> (count + 1, ())) >> pure (a + b)}
     query_ conn "SELECT typed_sum(i) FROM range(10) t(i)" >>= (@?= [Only (45 :: Int64)])
     -- A chunk has at most 2048 rows. Thus 5000 rows need more than one update call.
     assertColumnsEqual conn "SELECT typed_sum(i), sum(i)::BIGINT FROM range(5000) t(i) GROUP BY i % 50"
@@ -449,7 +452,11 @@ testAggregateGroups = withConnection ":memory:" \conn -> do
     void (execute_ conn "SET threads = 4")
     void (execute_ conn "CREATE TABLE typed_numbers AS SELECT i FROM range(300000) t(i)")
     assertColumnsEqual conn "SELECT typed_sum(i), sum(i)::BIGINT FROM typed_numbers GROUP BY i % 1000"
+    -- An ungrouped aggregate combines the state of each thread into one state.
+    -- Thus the combine function runs at least one time.
+    writeIORef combines 0
     assertColumnsEqual conn "SELECT typed_sum(i), sum(i)::BIGINT FROM typed_numbers"
+    readIORef combines >>= \count -> assertBool ("combine calls: " <> show count) (count > 0)
     query_ conn "SELECT typed_sum(i), typed_sum(i + 1) FROM range(10) t(i)" >>= (@?= [(45 :: Int64, 55 :: Int64)])
 
 -- | Skip the rows with NULL. A group without other rows gives the initial result.
@@ -899,10 +906,12 @@ registerFailingFormat conn phase =
 
 {- | Read 20 files through a multi-file function over a typed table function.
 DuckDB runs exec callbacks of one scan at the same time for a multi-file
-function. Each row must come one time.
+function. Each row must come one time. The case sets 4 threads, so that it
+does not use the default number of threads of the machine.
 -}
 testTableMultiFile :: Assertion
 testTableMultiFile = withDirectory \directory -> withConnection ":memory:" \conn -> do
+    void (execute_ conn "SET threads = 4")
     createTableFunction conn "typed_numbers" ["value"] \(Only path) ->
         map (Only . read) . lines <$> readFile (Text.unpack path) :: IO [Only Int64]
     registerMultiFileFunction conn "typed_all_numbers" "typed_numbers" defaultMultiFileOptions

@@ -152,7 +152,7 @@ updateStates :: (FromRow args) => Text -> Aggregate state args result -> Int -> 
 updateStates name Aggregate{aggregateStep} columns info = do
     count <- fromIntegral <$> output (c_duckdb_v2_aggregate_function_update_get_row_count info)
     states <- output (c_duckdb_v2_aggregate_function_update_get_states info)
-    readers <- mapFlat (\index -> output (c_duckdb_v2_aggregate_function_update_get_arg info (fromIntegral index)) >>= prepareArgumentReader index) [0 .. columns - 1]
+    readers <- mapM (\index -> output (c_duckdb_v2_aggregate_function_update_get_arg info (fromIntegral index)) >>= prepareArgumentReader index) [0 .. columns - 1]
     forM_ [0 .. count - 1] \row -> do
         fields <- mapM ($ row) readers
         unless (any ((== FieldNull) . fieldValue) fields) do

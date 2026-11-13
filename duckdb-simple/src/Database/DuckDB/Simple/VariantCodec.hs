@@ -93,7 +93,7 @@ decodeValues plain connection state values = do
         grouped key select = Map.toList (Map.fromListWith (++) [(key node, [(index, value)]) | (index, node@(tag, _), value) <- indexed, select tag])
         nulls = [(index, ScalarNode FieldNull) | (index, (tag, _), _) <- indexed, isNull tag]
         releaseIndexed = releaseNode . snd
-    scalars <- mapFlat (uncurry decodeScalars) (grouped fst (\tag -> not (isNull tag || isArray tag || isObject tag)))
+    scalars <- mapM (uncurry decodeScalars) (grouped fst (\tag -> not (isNull tag || isArray tag || isObject tag)))
     bracket
         (acquireItems releaseIndexed [(,) index <$> decodeArray value | (index, (tag, _), value) <- indexed, isArray tag])
         (releaseItems releaseIndexed)

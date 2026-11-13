@@ -127,7 +127,7 @@ prepareArgumentReader index vector = do
     readValue <- prepareVectorReader (\_ -> pure \_ -> throwIO (userError "duckdb-simple: the type of a typed argument cannot be or contain VARIANT or GEOMETRY")) vector
     pure \row -> Field (argumentName index) index <$> readValue row
 
-{- | Describe the arguments that 'FromField' or 'FromRow' cannot convert. The
+{- | Describe the arguments that 'FromField' or @FromRow@ cannot convert. The
 text names each argument with the name of its field.
 -}
 conversionMessage :: [SomeException] -> String

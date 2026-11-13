@@ -17,7 +17,7 @@ module Database.DuckDB.Simple.Result (
 ) where
 
 import Control.Exception (bracket, evaluate, finally, mask, mask_, onException, throwIO)
-import Control.Monad (forM, when, zipWithM)
+import Control.Monad (foldM, forM, when, zipWithM)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue)
 import Database.DuckDB.Simple.FromRow (RowParser, parseRow, rowErrorsToSqlError)
@@ -195,16 +195,18 @@ collectStreamRows conn query acquire = withQueryError query $
         Just owned -> do
             -- Both loops have a constant stack. A native call in a reader costs
             -- more on a deep stack.
-            rows <- flip mapFlat (statementStreamPendingChunks owned) \chunk -> do
-                rowCount <- fromIntegral <$> output (c_duckdb_v2_data_chunk_get_size chunk)
-                readers <- prepareChunkReaders conn chunk (statementStreamColumns owned)
-                -- Read the rows from the last to the first, and put each row in
-                -- front of the list. The list then needs no reverse.
-                let readFrom row decoded
-                        | row < 0 = pure decoded
-                        | otherwise = buildMaterializedRow (statementStreamColumns owned) readers row >>= \fields -> readFrom (row - 1) (fields : decoded)
-                readFrom (rowCount - 1) []
-            pure (concat rows)
+            let readChunk done chunk = do
+                    rowCount <- fromIntegral <$> output (c_duckdb_v2_data_chunk_get_size chunk)
+                    readers <- prepareChunkReaders conn chunk (statementStreamColumns owned)
+                    -- Read the rows from the last to the first, and put each row in
+                    -- front of the list. The list then needs no reverse.
+                    let readFrom row decoded
+                            | row < 0 = pure decoded
+                            | otherwise = buildMaterializedRow (statementStreamColumns owned) readers row >>= \fields -> readFrom (row - 1) (fields : decoded)
+                    (: done) <$> readFrom (rowCount - 1) []
+            -- The fold gives the chunks from the last to the first.
+            rows <- foldM readChunk [] (statementStreamPendingChunks owned)
+            pure (concat (reverse rows))
 
 collectResultColumns :: DuckDBV2ResultHandle -> IO [StatementStreamColumn]
 collectResultColumns result = bracket (output (c_duckdb_v2_result_get_schema result)) (destroy c_duckdb_v2_schema_destroy) \schema -> do

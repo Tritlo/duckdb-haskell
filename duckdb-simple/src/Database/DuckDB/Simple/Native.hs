@@ -40,6 +40,7 @@ module Database.DuckDB.Simple.Native (
   acquireItems,
   releaseItems,
   withCreatedValues,
+  withOwnedVector,
   nullHandle,
   indices,
   withText,
@@ -288,6 +289,16 @@ releaseItems release items = foldM step (Nothing :: Maybe SomeException) items >
 -- 'bracket' covers the whole list.
 withCreatedValues :: [IO DuckDBV2ValueHandle] -> ([DuckDBV2ValueHandle] -> IO a) -> IO a
 withCreatedValues creates = bracket (acquireItems destroyValue creates) (releaseItems destroyValue . reverse)
+
+-- | Run an action with a new vector of the given type. The V2 API creates a
+-- vector only as a column of a data chunk, so this function creates a chunk
+-- with one column. The function destroys the chunk after the action, so the
+-- vector must not be used after the action returns.
+withOwnedVector :: DuckDBV2FactoryHandle -> DuckDBV2LogicalTypeHandle -> (DuckDBV2VectorHandle -> IO a) -> IO a
+withOwnedVector factory logicalType action =
+  with logicalType $ \types ->
+    bracket (output (c_duckdb_v2_data_chunk_create factory (ConstPtr types) 1)) (destroy c_duckdb_v2_data_chunk_destroy) $ \chunk ->
+      output (c_duckdb_v2_data_chunk_get_vector chunk 0) >>= action
 
 -- | List the indices below a native count without unsigned underflow.
 indices :: DuckDBIdx -> [DuckDBIdx]

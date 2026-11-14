@@ -637,12 +637,10 @@ declaredCompositeValue
   -> IO DuckDBV2ValueHandle
 declaredCompositeValue _ _ rep create | not (hasCollation rep) = create
 declaredCompositeValue makeType factory rep create = bracket create destroyValue \value ->
-  bracket (makeType rep) destroyLogicalType \logical -> withArray [logical] \types ->
-    bracket (output (c_duckdb_v2_data_chunk_create factory (ConstPtr types) 1)) (destroy c_duckdb_v2_data_chunk_destroy) \chunk -> do
-      vector <- output (c_duckdb_v2_data_chunk_get_vector chunk 0)
-      checked (c_duckdb_v2_vector_set_size vector 1)
-      checked (c_duckdb_v2_vector_set_value vector 0 value)
-      output (c_duckdb_v2_vector_get_value vector 0)
+  bracket (makeType rep) destroyLogicalType \logical -> withOwnedVector factory logical \vector -> do
+    checked (c_duckdb_v2_vector_set_size vector 1)
+    checked (c_duckdb_v2_vector_set_value vector 0 value)
+    output (c_duckdb_v2_vector_get_value vector 0)
 
 -- | Test whether a type tree contains a VARCHAR collation.
 hasCollation :: LogicalTypeRep -> Bool
@@ -666,22 +664,20 @@ unionValueDuckValue makeType factory UnionValue{unionValueIndex, unionValueLabel
   let UnionMemberType name rep = members !! index
   when (name /= unionValueLabel) $ throwIO (userError "duckdb-simple: union tag and member name mismatch")
   bracket (makeType (LogicalTypeUnion unionValueMembers)) destroyLogicalType \logical ->
-    withArray [logical] \typePtr ->
-      bracket (output (c_duckdb_v2_data_chunk_create factory (ConstPtr typePtr) 1)) (destroy c_duckdb_v2_data_chunk_destroy) \chunk -> do
-        vector <- output (c_duckdb_v2_data_chunk_get_vector chunk 0)
-        checked (c_duckdb_v2_vector_set_size vector 1)
-        tag <- output (c_duckdb_v2_vector_get_child vector 0)
-        checked (c_duckdb_v2_vector_set_size tag 1)
-        bracket (uint8DuckValue factory (fromIntegral index)) destroyValue \value ->
-          checked (c_duckdb_v2_vector_set_value tag 0 value)
-        forM_ [0 .. length members - 1] \memberIndex -> do
-          member <- output (c_duckdb_v2_vector_get_child vector (fromIntegral memberIndex + 1))
-          checked (c_duckdb_v2_vector_set_size member 1)
-          if memberIndex == index
-            then bracket (fieldValueWithTypeDuckValue makeType factory rep unionValuePayload) destroyValue \value ->
-              checked (c_duckdb_v2_vector_set_value member 0 value)
-            else checked (c_duckdb_v2_vector_set_null member 0)
-        output (c_duckdb_v2_vector_get_value vector 0)
+    withOwnedVector factory logical \vector -> do
+      checked (c_duckdb_v2_vector_set_size vector 1)
+      tag <- output (c_duckdb_v2_vector_get_child vector 0)
+      checked (c_duckdb_v2_vector_set_size tag 1)
+      bracket (uint8DuckValue factory (fromIntegral index)) destroyValue \value ->
+        checked (c_duckdb_v2_vector_set_value tag 0 value)
+      forM_ [0 .. length members - 1] \memberIndex -> do
+        member <- output (c_duckdb_v2_vector_get_child vector (fromIntegral memberIndex + 1))
+        checked (c_duckdb_v2_vector_set_size member 1)
+        if memberIndex == index
+          then bracket (fieldValueWithTypeDuckValue makeType factory rep unionValuePayload) destroyValue \value ->
+            checked (c_duckdb_v2_vector_set_value member 0 value)
+          else checked (c_duckdb_v2_vector_set_null member 0)
+      output (c_duckdb_v2_vector_get_value vector 0)
 
 -- | Construct a value with explicit logical metadata, including typed NULL.
 fieldValueWithTypeDuckValue

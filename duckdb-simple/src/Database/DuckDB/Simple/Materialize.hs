@@ -50,7 +50,6 @@ import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
 import qualified Database.DuckDB.Simple.VariantCodec as VariantCodec
 import Foreign.C.ConstPtr (ConstPtr (..))
-import Foreign.Marshal.Array (withArray)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (Storable (..), peekElemOff)
 import GHC.Records (getField)
@@ -83,12 +82,10 @@ materializePlainValue connection value = withConnectionFactory connection \facto
 materializeValue :: VariantReader -> DuckDBV2FactoryHandle -> DuckDBV2ValueHandle -> IO FieldValue
 materializeValue variantReader factory value =
   bracket (output (c_duckdb_v2_value_get_logical_type value)) (destroy c_duckdb_v2_logical_type_destroy) \logical ->
-    withArray [logical] \types ->
-      bracket (output (c_duckdb_v2_data_chunk_create factory (ConstPtr types) 1)) (destroy c_duckdb_v2_data_chunk_destroy) \chunk -> do
-        vector <- output (c_duckdb_v2_data_chunk_get_vector chunk 0)
-        checked (c_duckdb_v2_vector_set_size vector 1)
-        checked (c_duckdb_v2_vector_set_value vector 0 value)
-        prepareVectorReader (castReader factory variantReader) vector >>= ($ 0)
+    withOwnedVector factory logical \vector -> do
+      checked (c_duckdb_v2_vector_set_size vector 1)
+      checked (c_duckdb_v2_vector_set_value vector 0 value)
+      prepareVectorReader (castReader factory variantReader) vector >>= ($ 0)
 
 -- | Read the type, data, and validity of a vector, and prepare its reader.
 prepareVectorReader :: VariantReader -> DuckDBV2VectorHandle -> IO (Int -> IO FieldValue)
@@ -156,12 +153,10 @@ prepareGeometryReader factory vector = do
       (output (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdBlob (ConstPtr nullPtr) (ConstPtr nullPtr) 0))
       destroyLogicalType
       \blob ->
-        withArray [blob] \types ->
-          bracket (output (c_duckdb_v2_data_chunk_create factory (ConstPtr types) 1)) (destroy c_duckdb_v2_data_chunk_destroy) \chunk -> do
-            target <- output (c_duckdb_v2_data_chunk_get_vector chunk 0)
-            checked (c_duckdb_v2_vector_cast factory vector target DuckDBV2CastModeNormal nullPtr nullPtr)
-            readBlob <- prepareVectorReader (\_ -> throwIO (userError "duckdb-simple: expected a BLOB vector")) target
-            forM [0 .. count - 1] readBlob
+        withOwnedVector factory blob \target -> do
+          checked (c_duckdb_v2_vector_cast factory vector target DuckDBV2CastModeNormal nullPtr nullPtr)
+          readBlob <- prepareVectorReader (\_ -> throwIO (userError "duckdb-simple: expected a BLOB vector")) target
+          forM [0 .. count - 1] readBlob
   let rows = listArray (0, count - 1) blobs :: Array Int FieldValue
   pure \row -> case rows ! row of
     FieldBlob bytes -> pure (FieldGeometry (RawGeometry bytes crs))

@@ -123,8 +123,8 @@ prepareValueReader variantReader dtype vector dataPtr validity = case dtype of
   DuckDBV2LogicalTypeIdTuple -> whenValid FieldTuple <$> prepareTupleDecoder variantReader vector
   DuckDBV2LogicalTypeIdUnion -> whenValid FieldUnion <$> prepareUnionDecoder variantReader vector
   DuckDBV2LogicalTypeIdDecimal -> do
-    (width, scale) <- withVectorType vector \logical ->
-      logicalTypeToRep logical >>= \case
+    (width, scale) <-
+      withVectorType vector logicalTypeToRep >>= \case
         LogicalTypeDecimal width scale -> pure (width, scale)
         _ -> throwIO (userError "duckdb-simple: invalid DECIMAL type")
     pure (whenValid (FieldDecimal . DecimalValue width scale) (decimalStorage dataPtr width))
@@ -142,9 +142,8 @@ prepareValueReader variantReader dtype vector dataPtr validity = case dtype of
 -- no committed vector layout, so a native cast to BLOB reads the rows.
 prepareGeometryReader :: DuckDBV2FactoryHandle -> DuckDBV2VectorHandle -> IO (Int -> IO FieldValue)
 prepareGeometryReader factory vector = do
-  crs <- withVectorType vector \logical -> do
-    rep <- logicalTypeToRep logical
-    case rep of
+  crs <-
+    withVectorType vector logicalTypeToRep >>= \case
       LogicalTypeGeometry value -> pure value
       _ -> throwIO (userError "duckdb-simple: invalid GEOMETRY type")
   count <- fromIntegral <$> output (c_duckdb_v2_vector_get_size vector)
@@ -181,11 +180,9 @@ enumStorage dataPtr count rowIdx
 prepareArrayDecoder :: VariantReader -> DuckDBV2VectorHandle -> IO (Int -> IO (Array Int FieldValue))
 prepareArrayDecoder variantReader vector = do
   arraySize <-
-    withVectorType vector \logical -> do
-      rep <- logicalTypeToRep logical
-      case rep of
-        LogicalTypeArray _ size -> ensureWithinIntRange (Text.pack "array size") size
-        _ -> throwIO (userError "duckdb-simple: invalid ARRAY type")
+    withVectorType vector logicalTypeToRep >>= \case
+      LogicalTypeArray _ size -> ensureWithinIntRange (Text.pack "array size") size
+      _ -> throwIO (userError "duckdb-simple: invalid ARRAY type")
   readChild <- vectorChild vector 0 >>= prepareVectorReader variantReader
   pure \rowIdx -> do
     let baseIdx = rowIdx * arraySize
@@ -217,48 +214,46 @@ prepareMapDecoder variantReader vector dataPtr = do
 -- | Read the STRUCT type and prepare a reader for each child once for a vector.
 -- The decoder reads a valid row. It must not outlive its chunk.
 prepareStructDecoder :: VariantReader -> DuckDBV2VectorHandle -> IO (Int -> IO (StructValue FieldValue))
-prepareStructDecoder variantReader vector =
-  withVectorType vector \logical -> do
-    structTypeRep <- logicalTypeToRep logical
-    structFields <-
-      case structTypeRep of
-        LogicalTypeStruct typeArray -> pure typeArray
-        other ->
-          throwIO
-            ( userError
-                ( "duckdb-simple: expected STRUCT logical type, but saw "
-                    <> show other
-                )
-            )
-    let typeList = elems structFields
-        count = length typeList
-        indexMap =
-          Map.fromList (zip (map structFieldName typeList) [0 ..])
-    childReaders <-
-      forM (zip [0 .. count - 1] typeList) \(childIdx, StructField{structFieldName}) -> do
-        readChild <- vectorChild vector (fromIntegral childIdx) >>= prepareVectorReader variantReader
-        pure (structFieldName, readChild)
-    pure \rowIdx -> do
-      valueFields <-
-        forM childReaders \(name, readChild) -> do
-          value <- readChild rowIdx
-          pure StructField{structFieldName = name, structFieldValue = value}
-      let fieldArray =
-            listArray (0, count - 1) valueFields
-      pure
-        StructValue
-          { structValueFields = fieldArray
-          , structValueTypes = structFields
-          , structValueIndex = indexMap
-          }
+prepareStructDecoder variantReader vector = do
+  structFields <-
+    withVectorType vector logicalTypeToRep >>= \case
+      LogicalTypeStruct typeArray -> pure typeArray
+      other ->
+        throwIO
+          ( userError
+              ( "duckdb-simple: expected STRUCT logical type, but saw "
+                  <> show other
+              )
+          )
+  let typeList = elems structFields
+      count = length typeList
+      indexMap =
+        Map.fromList (zip (map structFieldName typeList) [0 ..])
+  childReaders <-
+    forM (zip [0 .. count - 1] typeList) \(childIdx, StructField{structFieldName}) -> do
+      readChild <- vectorChild vector (fromIntegral childIdx) >>= prepareVectorReader variantReader
+      pure (structFieldName, readChild)
+  pure \rowIdx -> do
+    valueFields <-
+      forM childReaders \(name, readChild) -> do
+        value <- readChild rowIdx
+        pure StructField{structFieldName = name, structFieldValue = value}
+    let fieldArray =
+          listArray (0, count - 1) valueFields
+    pure
+      StructValue
+        { structValueFields = fieldArray
+        , structValueTypes = structFields
+        , structValueIndex = indexMap
+        }
 
 -- | Read positional field metadata and prepare readers that borrow the tuple.
 prepareTupleDecoder :: VariantReader -> DuckDBV2VectorHandle -> IO (Int -> IO (TupleValue FieldValue))
-prepareTupleDecoder variantReader vector = withVectorType vector \logical -> do
-  rep <- logicalTypeToRep logical
-  types <- case rep of
-    LogicalTypeTuple fields -> pure fields
-    _ -> throwIO (userError "duckdb-simple: invalid TUPLE type")
+prepareTupleDecoder variantReader vector = do
+  types <-
+    withVectorType vector logicalTypeToRep >>= \case
+      LogicalTypeTuple fields -> pure fields
+      _ -> throwIO (userError "duckdb-simple: invalid TUPLE type")
   let count = length (elems types)
   readers <- forM [0 .. count - 1] \index ->
     vectorChild vector (fromIntegral index) >>= prepareVectorReader variantReader
@@ -269,47 +264,45 @@ prepareTupleDecoder variantReader vector = withVectorType vector \logical -> do
 -- | Read the UNION type and prepare the tag reader and a reader for each member
 -- once for a vector. The decoder reads a valid row. It must not outlive its chunk.
 prepareUnionDecoder :: VariantReader -> DuckDBV2VectorHandle -> IO (Int -> IO (UnionValue FieldValue))
-prepareUnionDecoder variantReader vector =
-  withVectorType vector \logical -> do
-    unionTypeRep <- logicalTypeToRep logical
-    membersArray <-
-      case unionTypeRep of
-        LogicalTypeUnion members -> pure members
-        other ->
-          throwIO
-            ( userError
-                ( "duckdb-simple: expected UNION logical type, but saw "
-                    <> show other
-                )
-            )
-    let membersList = elems membersArray
-        memberCount = length membersList
-    readTag <- vectorChild vector 0 >>= prepareVectorReader variantReader
-    memberReaders <-
-      forM [1 .. memberCount] \childIdx -> do
-        memberVec <- vectorChild vector (fromIntegral childIdx)
-        prepared <- newIORef Nothing
-        pure \row -> do
-          cached <- readIORef prepared
-          readMember <- case cached of
-            Just reader -> pure reader
-            Nothing -> do
-              reader <- prepareVectorReader variantReader memberVec
-              writeIORef prepared (Just reader)
-              pure reader
-          readMember row
-    pure \rowIdx -> do
-      memberIdx <- readTag rowIdx >>= unionTagIndex
-      when (memberIdx < 0 || memberIdx >= memberCount) $
-        throwIO (userError "duckdb-simple: union tag out of range")
-      payload <- (memberReaders !! memberIdx) rowIdx
-      pure
-        UnionValue
-          { unionValueIndex = fromIntegral memberIdx
-          , unionValueLabel = unionMemberName (membersList !! memberIdx)
-          , unionValuePayload = payload
-          , unionValueMembers = membersArray
-          }
+prepareUnionDecoder variantReader vector = do
+  membersArray <-
+    withVectorType vector logicalTypeToRep >>= \case
+      LogicalTypeUnion members -> pure members
+      other ->
+        throwIO
+          ( userError
+              ( "duckdb-simple: expected UNION logical type, but saw "
+                  <> show other
+              )
+          )
+  let membersList = elems membersArray
+      memberCount = length membersList
+  readTag <- vectorChild vector 0 >>= prepareVectorReader variantReader
+  memberReaders <-
+    forM [1 .. memberCount] \childIdx -> do
+      memberVec <- vectorChild vector (fromIntegral childIdx)
+      prepared <- newIORef Nothing
+      pure \row -> do
+        cached <- readIORef prepared
+        readMember <- case cached of
+          Just reader -> pure reader
+          Nothing -> do
+            reader <- prepareVectorReader variantReader memberVec
+            writeIORef prepared (Just reader)
+            pure reader
+        readMember row
+  pure \rowIdx -> do
+    memberIdx <- readTag rowIdx >>= unionTagIndex
+    when (memberIdx < 0 || memberIdx >= memberCount) $
+      throwIO (userError "duckdb-simple: union tag out of range")
+    payload <- (memberReaders !! memberIdx) rowIdx
+    pure
+      UnionValue
+        { unionValueIndex = fromIntegral memberIdx
+        , unionValueLabel = unionMemberName (membersList !! memberIdx)
+        , unionValuePayload = payload
+        , unionValueMembers = membersArray
+        }
 
 -- | Convert a decoded UNION tag to a member index.
 unionTagIndex :: FieldValue -> IO Int

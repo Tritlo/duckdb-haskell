@@ -90,7 +90,14 @@ materializeValue variantReader factory value =
 -- | Read the type, data, and validity of a vector, and prepare its reader.
 prepareVectorReader :: VariantReader -> DuckDBV2VectorHandle -> IO (Int -> IO FieldValue)
 prepareVectorReader variantReader vector = do
-  -- Flatten before borrowing buffers. Nested children then use physical row indices.
+  -- The header of @duckdb_v2_vector_get_view@ says: "Rejects VECTOR_TYPE_OTHER;
+  -- call vector_flatten first." The flatten also changes a CONSTANT or
+  -- DICTIONARY vector to FLAT. In DuckDB 2.0.0 the view of a FLAT vector has no
+  -- selection (@duckdb_v2_vector_get_view@ in
+  -- @src/main/capi/v2/capi_v2_vector.cpp@; the header does not say this). Then
+  -- the physical row is the logical row. The readers of VARIANT and GEOMETRY
+  -- need this, because they read logical rows. The flatten changes the buffers
+  -- of the vector, so it runs before the view is read.
   checked (c_duckdb_v2_vector_flatten vector)
   dtype <- vectorElementType vector
   view <- output (c_duckdb_v2_vector_get_view vector)

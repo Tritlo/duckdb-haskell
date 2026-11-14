@@ -2,6 +2,7 @@
 {-# LANGUAGE DefaultSignatures #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE MagicHash #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -84,6 +85,8 @@ import Foreign.Marshal.Array (withArray)
 import Foreign.Marshal.Utils (with)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (peek)
+import GHC.Exts (Ptr (..))
+import GHC.Num.Integer (integerLog2, integerToAddr)
 import Numeric.Natural (Natural)
 
 -- | Represents a named parameter binding using the @:=@ operator.
@@ -520,11 +523,8 @@ bitDuckValue factory (BitString padding bits) = do
   withBytes payload (\bytes -> output (c_duckdb_v2_value_create_bit factory bytes))
 
 bigNumDuckValue :: DuckDBV2FactoryHandle -> BigNum -> IO DuckDBV2ValueHandle
-bigNumDuckValue factory (BigNum value) = do
-  let magnitude = BS.pack (reverse (bytes (abs value)))
-      bytes 0 = [0]
-      bytes n = fromIntegral n : if n < 256 then [] else bytes (n `shiftR` 8)
-  BS.useAsCStringLen magnitude \(raw, len) -> alloca \lengthSlot -> do
+bigNumDuckValue factory (BigNum value) =
+  withBigEndianMagnitude (abs value) \raw len -> alloca \lengthSlot -> do
     let encode ptr capacity = checked (c_duckdb_v2_bignum_encode (ConstPtr (castPtr raw)) (fromIntegral len) (fromBool (value < 0)) ptr capacity lengthSlot)
     encode nullPtr 0
     size <- peek lengthSlot
@@ -532,6 +532,15 @@ bigNumDuckValue factory (BigNum value) = do
       encode storage size
       payload <- BS.packCStringLen (castPtr storage, fromIntegral size)
       withBytes payload (\encoded -> output (c_duckdb_v2_value_create_bignum factory encoded))
+
+-- | Write the unsigned big-endian magnitude of a non-negative number into a
+-- buffer in linear time, and give the buffer and its length to the action. The
+-- magnitude has no leading zero byte. Zero is one zero byte.
+withBigEndianMagnitude :: Integer -> (Ptr Word8 -> Int -> IO a) -> IO a
+withBigEndianMagnitude 0 action = with 0 \buffer -> action buffer 1
+withBigEndianMagnitude magnitude action = allocaBytes size \buffer@(Ptr addr) -> integerToAddr magnitude addr 1# >> action buffer size
+  where
+    size = fromIntegral (integerLog2 magnitude `quot` 8) + 1
 
 dayDuckValue :: DuckDBV2FactoryHandle -> Day -> IO DuckDBV2ValueHandle
 dayDuckValue factory value = encodeDay value >>= (\encoded -> output (c_duckdb_v2_value_create_date factory encoded))

@@ -52,6 +52,7 @@ import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
 import qualified Database.DuckDB.Simple.VariantCodec as VariantCodec
 import Foreign.C.ConstPtr (ConstPtr (..))
+import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (Storable (..), peekElemOff)
 import GHC.Records (getField)
@@ -197,12 +198,15 @@ enumStorage dataPtr count rowIdx
   | count <= 65535 = fromIntegral <$> peekElemOff (castPtr dataPtr :: Ptr Word16) rowIdx
   | otherwise = peekElemOff (castPtr dataPtr :: Ptr Word32) rowIdx
 
+-- | Read the ARRAY size and prepare the element reader once for a vector. The
+-- size gives the layout of the elements, so it comes from the type of this
+-- vector. Parameter 1 of an ARRAY type is the size, as 'logicalTypeToRep' reads
+-- it. The decoder does not convert the element type.
 prepareArrayDecoder :: FallbackReaders -> DuckDBV2VectorHandle -> IO (Int -> IO (Array Int FieldValue))
 prepareArrayDecoder readers vector = do
-  arraySize <-
-    withVectorType vector logicalTypeToRep >>= \case
-      LogicalTypeArray _ size -> ensureWithinIntRange (Text.pack "array size") size
-      _ -> throwIO (userError "duckdb-simple: invalid ARRAY type")
+  size <- withVectorType vector \logical -> alloca \name ->
+    bracket (output (c_duckdb_v2_logical_type_get_param logical 1 name)) destroyValue (output . c_duckdb_v2_value_get_bigint)
+  arraySize <- ensureWithinIntRange (Text.pack "array size") (fromIntegral size)
   readChild <- vectorChild vector 0 >>= prepareVectorReader readers
   pure \rowIdx -> do
     let baseIdx = rowIdx * arraySize

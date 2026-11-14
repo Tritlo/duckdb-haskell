@@ -41,7 +41,13 @@ import Data.Void (Void)
 import Database.DuckDB.Simple.Callback (attachOpaque, ignoreCallbackExceptions, readCallbackState, transferCallbackState)
 import Database.DuckDB.Simple.FromField (Field (..))
 import Database.DuckDB.Simple.Internal (Connection, withDatabaseHandle)
-import Database.DuckDB.Simple.Materialize (VariantReader, castReader, prepareVariantReader, prepareVectorReader)
+import Database.DuckDB.Simple.Materialize (
+  FallbackReaders (..),
+  VectorReader,
+  prepareGeometryReader,
+  prepareVariantReader,
+  prepareVectorReader,
+ )
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Typed (TypedRow (..))
 import Database.DuckDB.Simple.Typed.Table (writeRows)
@@ -123,7 +129,7 @@ registerCopyOn target name to from = do
 -- connection, the reader decodes VARIANT through a helper connection of the
 -- database. An extension target has no instance handle, so its reader raises an
 -- error.
-withVariantReader :: RegistrationTarget -> (VariantReader -> IO a) -> IO a
+withVariantReader :: RegistrationTarget -> (VectorReader -> IO a) -> IO a
 withVariantReader target action = case target of
   ConnectionTarget connection -> withDatabaseHandle connection (action . readVariant)
   ExtensionTarget _ _ -> action \_ -> throwIO (userError "duckdb-simple: a COPY TO function of an extension cannot read VARIANT")
@@ -143,7 +149,7 @@ withVariantReader target action = case target of
 -- | The native COPY TO callbacks of the row-oriented functions.
 copyToSide
   :: forall bindState globalState
-   . VariantReader
+   . VectorReader
   -> (CopyBindInfo -> IO bindState)
   -> (CopyInitInfo bindState -> IO globalState)
   -> (CopySinkInfo bindState globalState -> [[Field]] -> IO ())
@@ -233,8 +239,8 @@ copyBindingDestructor = DuckDBV2OpaqueDestroyFn (castFunPtr copyBindingDestructo
 
 -- | Copy each scanned chunk before the scan invalidates its borrowed buffers.
 materializeCollection
-  :: DuckDBV2FactoryHandle -> VariantReader -> [DuckDBV2LogicalTypeHandle] -> DuckDBV2ColumnDataCollectionHandle -> IO [[Field]]
-materializeCollection factory variantReader types collection =
+  :: DuckDBV2FactoryHandle -> VectorReader -> [DuckDBV2LogicalTypeHandle] -> DuckDBV2ColumnDataCollectionHandle -> IO [[Field]]
+materializeCollection factory readVariant types collection =
   withArray types \typePtr ->
     bracket
       (output (c_duckdb_v2_data_chunk_create factory (ConstPtr typePtr) (fromIntegral (length types))))
@@ -253,20 +259,20 @@ materializeCollection factory variantReader types collection =
                       if produced == 0
                         then pure (concat (reverse groups))
                         else do
-                          rows <- materializeChunkRows (castReader factory variantReader) chunk
+                          rows <- materializeChunkRows (FallbackReaders readVariant (prepareGeometryReader factory)) chunk
                           loop (rows : groups)
                 in  loop []
 
 -- | Copy a complete chunk before its collection scan advances.
-materializeChunkRows :: VariantReader -> DuckDBV2DataChunkHandle -> IO [[Field]]
-materializeChunkRows variantReader chunk = do
+materializeChunkRows :: FallbackReaders -> DuckDBV2DataChunkHandle -> IO [[Field]]
+materializeChunkRows readers chunk = do
   columns <- output (c_duckdb_v2_data_chunk_get_vector_count chunk)
-  readers <- forM [0 .. fromIntegral columns - 1] \index -> do
+  columnReaders <- forM [0 .. fromIntegral columns - 1] \index -> do
     vector <- output (c_duckdb_v2_data_chunk_get_vector chunk (fromIntegral (index :: Int)))
-    readValue <- prepareVectorReader variantReader vector
+    readValue <- prepareVectorReader readers vector
     pure \row -> Field (Text.pack ("column" <> show index)) index <$> readValue row
   rows <- output (c_duckdb_v2_data_chunk_get_size chunk)
-  forM [0 .. fromIntegral rows - 1] \row -> mapM ($ row) readers
+  forM [0 .. fromIntegral rows - 1] \row -> mapM ($ row) columnReaders
 
 -- | The inputs of the COPY FROM side for one statement. The path is the text
 -- of the statement. DuckDB does not expand a glob pattern in it. The names and

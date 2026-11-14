@@ -21,7 +21,7 @@ import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue)
 import Database.DuckDB.Simple.FromRow (RowParser, parseRow, rowErrorsToSqlError)
 import Database.DuckDB.Simple.Internal
-import Database.DuckDB.Simple.Materialize (castReader, prepareVariantReader, prepareVectorReader)
+import Database.DuckDB.Simple.Materialize (FallbackReaders (..), prepareGeometryReader, prepareVariantReader, prepareVectorReader)
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.TypeCache (withTypeConnection)
 import Foreign.Marshal.Alloc (alloca)
@@ -167,7 +167,7 @@ prepareChunkReaders conn chunk columns = withTypeCache conn \cache -> withConnec
   let readVariant vector = withTypeConnection cache (\helper state -> prepareVariantReader helper state vector)
   forM columns \StatementStreamColumn{statementStreamColumnIndex} ->
     output (c_duckdb_v2_data_chunk_get_vector chunk (fromIntegral statementStreamColumnIndex))
-      >>= prepareVectorReader (castReader factory readVariant)
+      >>= prepareVectorReader (FallbackReaders readVariant (prepareGeometryReader factory))
 
 finalizeStream :: StatementStream -> IO ()
 finalizeStream StatementStream{statementStreamResult, statementStreamChunk, statementStreamPendingChunks} =

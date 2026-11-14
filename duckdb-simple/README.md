@@ -767,8 +767,6 @@ wait and not return:
   Then the statement goes into DuckDB on the same connection.
 - The statement runs in a thread that the callback starts. The library marks
   only the thread of the callback.
-- The callback changes the label of its own thread with `labelThread`. The mark
-  of the library is the label of the thread.
 - The statement runs inside `uninterruptibleMask`.
 - The statement runs in the flush function of a log sink when DuckDB destroys
   the sink.

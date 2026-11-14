@@ -35,8 +35,7 @@
 -- a callback that DuckDB runs while the library holds no lock of the
 -- connection, for example a log sink for a message of
 -- 'Database.DuckDB.Simple.Logging.logConnectionMessage'. It also does not apply
--- to a statement in a thread that the callback starts, to a callback that
--- labels its own thread, to a statement inside
+-- to a statement in a thread that the callback starts, to a statement inside
 -- 'Control.Exception.uninterruptibleMask', and to a statement in the flush
 -- function of a log sink when DuckDB destroys the sink.
 --

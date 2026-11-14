@@ -7,6 +7,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StrictData #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE UnliftedFFITypes #-}
 
 -- |
 -- Module      : Database.DuckDB.Simple.Internal
@@ -90,7 +91,7 @@ import Control.Concurrent (
   withMVar,
  )
 import Control.Exception (SomeException, bracket, bracket_, catch, finally, mask, mask_, onException, throwIO, try, uninterruptibleMask_)
-import Control.Monad (forM, forM_, join, unless, void, when)
+import Control.Monad (forM, forM_, join, replicateM, unless, void, when)
 import Data.Array (Array, bounds, inRange, listArray, (!))
 import qualified Data.ByteString as BS
 import Data.Coerce (Coercible, coerce)
@@ -109,15 +110,16 @@ import Database.DuckDB.Simple.TypeCache (TypeCache, createTypeCache, destroyType
 import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (CString)
-import Foreign.C.Types (CChar)
+import Foreign.C.Types (CChar, CULLong (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Array (withArray)
 import Foreign.Ptr (nullPtr)
 import Foreign.Storable (peek, poke)
-import GHC.Conc.Sync (labelThread, threadLabel)
-import GHC.Exts (keepAlive#)
+import GHC.Conc (ThreadId (ThreadId))
+import GHC.Exts (ThreadId#, keepAlive#)
 import GHC.IO (IO (..))
 import GHC.Weak.Finalize (getFinalizerExceptionHandler)
+import System.IO.Unsafe (unsafePerformIO)
 import System.Mem.Weak (Weak, deRefWeak, finalize)
 import System.Timeout (timeout)
 
@@ -584,7 +586,7 @@ withConnectionLock Connection{connectionLock, connectionLockBound} action = do
   bound <- case connectionLockBound of
     Nothing -> pure Nothing
     Just micros -> do
-      inside <- (== Just callbackLabel) <$> (myThreadId >>= threadLabel)
+      inside <- hasCallbackMark
       pure (if inside then Just micros else Nothing)
   case bound of
     Nothing -> withMVar connectionLock (const action)
@@ -617,28 +619,59 @@ callbackLockWaitError micros =
     digits = dropWhileEnd (== '0') (let text = show fraction in replicate (6 - length text) '0' <> text)
     seconds = show whole <> (if null digits then "" else '.' : digits)
 
--- | The label of a Haskell thread inside a DuckDB callback. DuckDB calls each
--- callback in a new bound Haskell thread. A label of the thread marks it
--- without a write to shared state, so callbacks on several threads do not wait
--- for each other.
-callbackLabel :: String
-callbackLabel = "duckdb-simple: DuckDB callback"
+-- | The threads inside a DuckDB callback, with the number of marks of each
+-- thread. DuckDB calls each callback in a new bound Haskell thread. The key of
+-- a thread is its number ('threadNumber'). The stripe of a thread is its number
+-- modulo the number of stripes. New threads get consecutive numbers, so
+-- callbacks that run at the same time seldom change the same 'IORef'.
+--
+-- The key is not the 'ThreadId'. A 'ThreadId' in the table keeps its thread
+-- reachable. Then the GHC runtime does not raise @BlockedIndefinitelyOnMVar@
+-- in a callback that waits for a value that no thread can supply.
+--
+-- The mark is not a thread label. @threadLabel@ of GHC can make the garbage
+-- collector crash for a thread without a label (GHC issue 27618).
+callbackMarks :: Array Int (IORef (IntMap.IntMap Int))
+callbackMarks =
+  unsafePerformIO (listArray (0, callbackMarkStripes - 1) <$> replicateM callbackMarkStripes (newIORef IntMap.empty))
+{-# NOINLINE callbackMarks #-}
+
+-- | The number of stripes in 'callbackMarks'.
+callbackMarkStripes :: Int
+callbackMarkStripes = 64
+
+-- | The number of a Haskell thread. The GHC runtime gives each thread a
+-- different number. @fromThreadId@ of base gives the same number, but base 4.18
+-- does not have that function.
+foreign import ccall unsafe "rts_getThreadId" threadNumber :: ThreadId# -> CULLong
+
+-- | The stripe of 'callbackMarks' for the current thread, and the key of the
+-- thread in that stripe.
+callbackMarkStripe :: IO (IORef (IntMap.IntMap Int), Int)
+callbackMarkStripe = do
+  ThreadId thread <- myThreadId
+  let key = fromIntegral (threadNumber thread)
+  pure (callbackMarks ! (key `mod` callbackMarkStripes), key)
 
 -- | Mark the current thread as a thread inside a DuckDB callback for the time
--- of the action: label the thread with @callbackLabel@. Then
--- 'withConnectionLock' bounds the waits of the thread. Each exit gives the
--- thread its previous label again, or an empty label. A thread that already
--- has the mark keeps it after the action. The action removes the mark if it
--- labels its own thread.
+-- of the action. Then 'withConnectionLock' bounds the waits of the thread. The
+-- entry adds 1 to the marks of the thread, and each exit subtracts 1. A thread
+-- that already has the mark thus keeps it after the action. A thread that the
+-- action starts has no mark.
 withCallbackMark :: IO a -> IO a
 withCallbackMark action = mask \restore -> do
-  self <- myThreadId
-  previous <- threadLabel self
-  if previous == Just callbackLabel
-    then restore action
-    else do
-      labelThread self callbackLabel
-      restore action `finally` labelThread self (fromMaybe "" previous)
+  (stripe, key) <- callbackMarkStripe
+  atomicModifyIORef' stripe \marks -> (IntMap.insertWith (+) key 1 marks, ())
+  restore action `finally` atomicModifyIORef' stripe \marks -> (IntMap.update unmark key marks, ())
+  where
+    unmark :: Int -> Maybe Int
+    unmark count = if count > 1 then Just (count - 1) else Nothing
+
+-- | Tell if 'withCallbackMark' marks the current thread.
+hasCallbackMark :: IO Bool
+hasCallbackMark = do
+  (stripe, key) <- callbackMarkStripe
+  IntMap.member key <$> readIORef stripe
 
 -- | Run the native calls of one result as one unit. Hold the connection lock,
 -- and run the calls in one helper thread. Each interruptible native call uses a

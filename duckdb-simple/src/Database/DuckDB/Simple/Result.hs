@@ -41,6 +41,7 @@ foldStatementWith mode parser stmt initial step =
   in  loop initial `finally` resetStatementStream stmt
 
 -- | Read one row. The first fetch selects execution until the cursor resets.
+-- See Note [Statement cursor] in "Database.DuckDB.Simple.Internal".
 nextRowWith :: ResultMode -> RowParser r -> Statement -> IO (Maybe r)
 nextRowWith mode parser stmt@Statement{statementStream} =
   withStatementHandle stmt \_ -> mask \restore -> do
@@ -88,6 +89,7 @@ consumeStream streamRef parser stmt stream = mask \restore -> do
           pure (Just value)
 
 -- | Release the cursor and retain its exhausted state until an explicit reset.
+-- See Note [Statement cursor] in "Database.DuckDB.Simple.Internal".
 exhaustStatementStream :: IORef StatementStreamState -> IO ()
 exhaustStatementStream ref = mask_ do
   state <- atomicModifyIORef' ref (StatementStreamExhausted,)
@@ -98,6 +100,7 @@ exhaustStatementStream ref = mask_ do
 startStatementStream :: ResultMode -> Statement -> IO (Maybe StatementStream)
 startStatementStream mode stmt = withQueryError (statementQuery stmt) . withResultWindow (statementConnection stmt) (mapM_ finalizeStream) $ mask_ do
   -- A materialized result closes here. A stream stays open after the lock is released.
+  -- See Note [Result window] in "Database.DuckDB.Simple.Internal".
   result <- executePreparedResult stmt
   startResultStream mode (statementConnection stmt) result
 
@@ -144,20 +147,16 @@ fetchChunk ref conn queryText stream = withQueryError queryText $ mask \restore 
   (chunk, remaining) <- case statementStreamPendingChunks stream of
     next : rest -> pure (next, rest)
     [] | statementStreamResult stream == nullHandle -> pure (nullHandle, [])
-    -- The fetch of an explicit stream holds the connection lock. The header
-    -- says that a result has a single consumer, and that a bind runs at the
-    -- same time only on a second connection. Without the lock, another thread
-    -- can start a statement when the stream is finished in DuckDB but still
-    -- has buffered chunks. A cancellation of this fetch then interrupts the
-    -- query that runs on the connection, which is the query of the other
-    -- thread. This call is not in the result window, so this thread does not
-    -- hold the lock here. The lock is not reentrant.
+    -- The fetch of an explicit stream holds the connection lock. This call is
+    -- not in the result window, so this thread does not hold the lock here.
+    -- See Note [Connection lock] in "Database.DuckDB.Simple.Internal".
     [] -> (,[]) <$> withConnectionLock conn (fetchResultChunk conn (statementStreamResult stream))
   let nextStream = stream{statementStreamPendingChunks = remaining}
   if chunk == nullHandle
     then pure nextStream
     else do
       -- Transfer ownership before native metadata or reader setup can fail.
+      -- See Note [Statement cursor] in "Database.DuckDB.Simple.Internal".
       let owned = nextStream{statementStreamChunk = Just (StatementStreamChunk chunk 0 0 [])}
       writeIORef ref (StatementStreamActive owned)
       rowCount <- fromIntegral <$> output (c_duckdb_v2_data_chunk_get_size chunk)
@@ -171,19 +170,14 @@ fetchChunk ref conn queryText stream = withQueryError queryText $ mask \restore 
           pure nextStream{statementStreamChunk = Just (StatementStreamChunk chunk rowCount 0 readers)}
 
 -- | Prepare readers that borrow the vectors in an owned chunk. A reader takes
--- each layout parameter, such as the width of a DECIMAL, from the type of its
--- own vector. The header of @duckdb_v2_vector_get_view@ says that the data has
--- the layout that the logical type of the vector implies. A description, such as
--- the field names and field types of a STRUCT, comes from the type tree of the
--- column. The tree is converted from the vector of the first chunk that needs
--- it, and it lives for one execution. The readers do not use the result schema.
--- The header of @duckdb_v2_result_get_schema@ calls the schema the authoritative
--- source of the column types, and says that vectors do not carry their own type.
--- But the header of @duckdb_v2_vector_get_logical_type@ says that a vector has
--- the type that was set on creation, and the layout follows the type of the
--- vector. So the vector type is the source of each type.
+-- each layout parameter from the type of its own vector, and each description
+-- from the type tree of the column. The tree is converted from the vector of
+-- the first chunk that needs it, and it lives for one execution. The readers
+-- do not use the result schema. See Note [Type trees] in
+-- "Database.DuckDB.Simple.Materialize".
 prepareChunkReaders :: Connection -> DuckDBV2DataChunkHandle -> [StatementStreamColumn] -> IO [Int -> IO FieldValue]
 prepareChunkReaders conn chunk columns = withTypeCache conn \cache -> withConnectionHandle conn \native -> withConnectionFactory native \factory -> do
+  -- See Note [VARIANT decoding] in "Database.DuckDB.Simple.VariantCodec".
   let readVariant vector = withVariantState cache (`prepareVariantReader` vector)
       readers = FallbackReaders readVariant (prepareGeometryReader factory)
   forM columns \StatementStreamColumn{statementStreamColumnIndex, statementStreamColumnTree} -> do
@@ -202,6 +196,7 @@ collectRows :: Statement -> IO [[Field]]
 collectRows stmt = collectStreamRows (statementConnection stmt) (statementQuery stmt) (startStatementStream MaterializedResult stmt)
 
 -- | Execute a parsed statement directly and materialize its owned native chunks.
+-- See Note [Result window] in "Database.DuckDB.Simple.Internal".
 collectParsedRows :: Connection -> Query -> DuckDBV2SqlStatementHandle -> IO [[Field]]
 collectParsedRows conn query parsed = collectStreamRows conn query . withResultWindow conn (mapM_ finalizeStream) $ mask_ do
   result <- executeParsedResult conn query parsed
@@ -214,11 +209,8 @@ collectStreamRows conn query acquire = withQueryError query $
   bracket (acquire >>= traverse adopt) (mapM_ release) \case
     Nothing -> pure []
     Just (owned, pending) -> do
-      -- Both loops keep a constant stack. Each c_duckdb_v2 binding is a
-      -- safe foreign call. At a safe call, the GHC runtime (threadPaused)
-      -- reads the frames of the current stack chunk. A loop that keeps a
-      -- frame for each element thus makes each native call slower as the
-      -- list grows.
+      -- Both loops keep a constant stack. See
+      -- Note [Constant stack at safe calls] in "Database.DuckDB.Simple.Native".
       --
       -- The chunk loop must keep a constant stack, because the code for
       -- each chunk makes native calls.

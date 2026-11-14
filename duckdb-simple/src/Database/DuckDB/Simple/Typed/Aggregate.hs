@@ -345,7 +345,8 @@ stableKey = fromIntegral . ptrToIntPtr . castStablePtrToPtr
 
 -- | Free the stable pointers that remain in a state table, and then the table.
 -- DuckDB calls this when it drops the bind data of a call site. See
--- Note [Aggregate state life cycle].
+-- Note [Aggregate state life cycle], and Note [Callback ownership] in
+-- "Database.DuckDB.Simple.Callback" for the rules of a destructor.
 releaseStateTable :: Ptr Void -> IO ()
 releaseStateTable raw =
   mask_ $ ignoreCallbackExceptions $ unless (raw == nullPtr) do

@@ -208,7 +208,9 @@ readCopyBinding getter = do
   state <- deRefStablePtr (castPtrToStablePtr raw)
   pure (state, types)
 
--- | Release native bind descriptors before their database closes.
+-- | Release native bind descriptors before their database closes. See
+-- Note [Callback ownership] in "Database.DuckDB.Simple.Callback" for the rules
+-- of a destructor.
 releaseCopyBinding :: Ptr Void -> IO ()
 releaseCopyBinding raw =
   mask_

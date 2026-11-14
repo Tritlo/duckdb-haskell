@@ -270,15 +270,44 @@ destroyValue = destroy c_duckdb_v2_value_destroy
 destroyLogicalType :: DuckDBV2LogicalTypeHandle -> IO ()
 destroyLogicalType = destroy c_duckdb_v2_logical_type_destroy
 
+{- Note [Constant stack at safe calls]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Each c_duckdb_v2 binding is a safe foreign call. At a safe call, the GHC
+runtime (threadPaused) reads the frames of the current stack chunk. A loop that
+keeps a frame for each element thus makes each native call slower as the list
+grows. A loop that keeps a frame for each row makes each native call slower as
+the number of rows grows.
+
+Thus a loop whose steps make native calls keeps a constant stack. The rule
+applies to a loop over the rows of a chunk, over the chunks of a result, and
+over a list of native items. It applies also when only some steps make a native
+call, as in the row loop of collectStreamRows in
+"Database.DuckDB.Simple.Result".
+
+The code uses these forms:
+
+- forM_ for a loop that gives no result (writeRows in
+  "Database.DuckDB.Simple.Typed.Table").
+
+- foldM with an accumulator. A fold that builds a list puts each element in
+  front of the list, and then reverses the list (acquireItems). A fold can also
+  keep one value, as the first error in releaseItems.
+
+- A loop that reads the elements from the last to the first, and puts each
+  element in front of the list. The list then needs no reverse (the row loop of
+  collectStreamRows).
+-}
+
 -- | Run the acquire actions in list order under 'mask_', and give the items in
 -- list order. If an acquire action raises an error, release the items that the
 -- earlier actions gave, from the last to the first, and raise that error. The
--- fold keeps a constant stack.
+-- fold keeps a constant stack. See Note [Constant stack at safe calls].
 acquireItems :: (a -> IO ()) -> [IO a] -> IO [a]
 acquireItems release = mask_ . fmap reverse . foldM (\owned acquire -> (: owned) <$> acquire `onException` releaseItems release owned) []
 
 -- | Release each item in list order, also when a release raises an error.
 -- Raise the first error after the last release. The fold keeps a constant stack.
+-- See Note [Constant stack at safe calls].
 releaseItems :: (a -> IO ()) -> [a] -> IO ()
 releaseItems release items = foldM step (Nothing :: Maybe SomeException) items >>= mapM_ throwIO
   where

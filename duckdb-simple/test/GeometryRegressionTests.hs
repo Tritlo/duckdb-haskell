@@ -398,7 +398,16 @@ tests =
         withConnection ":memory:" \conn -> do
           assertFailureIO (query conn "SELECT system.main.ST_GeomFromWKB(?)" (Only (BS.pack [1, 1, 0, 0, 0])) :: IO [Only RawGeometry])
           (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
+    , testCase "configured recognized, custom, and complete CRS names bind with their CRS" $ do
+        let names = ["OGC:CRS84", "local' íslenska λ", localGridWKT2]
+        withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = names} \conn ->
+          forM_ names \crs -> (query conn "SELECT ?" (Only (nullShape crs))) >>= (@?= [Only (nullShape crs)])
     ]
+
+-- | A complete WKT2 definition that no DuckDB catalog entry identifies.
+localGridWKT2 :: Text
+localGridWKT2 =
+  "ENGCRS[\"Local grid\",EDATUM[\"Local datum\"],CS[Cartesian,2],AXIS[\"x\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"y\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]"
 
 -- | A one-field STRUCT with a NULL GEOMETRY of the given CRS.
 nullShape :: Text -> StructValue FieldValue

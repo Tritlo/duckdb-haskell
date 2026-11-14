@@ -155,6 +155,18 @@
   a manual STRUCT, TUPLE, or UNION parameter no longer runs the DuckDB binder
   again. A column type that changes during the call does not change how the
   later rows of that call bind.
+- An `Integer` or a `Natural` parameter binds as a HUGEINT value when the value
+  is in the HUGEINT range. Before, it bound as a BIGNUM value in each case. In
+  DuckDB 2.0.0 the casts from BIGNUM to the integer types have defects: a
+  HUGEINT, UHUGEINT, or DECIMAL target failed, a negative value for an unsigned
+  target was stored as a wrapped value, and a value of 2^128 or more was stored
+  modulo 2^128. DuckDB checks the range of a HUGEINT value for its target. A
+  value outside the HUGEINT range binds as BIGNUM, or as UHUGEINT for a
+  UHUGEINT parameter that can hold it. For each other integer or DECIMAL
+  parameter, such a value raises an `SQLError` of the type
+  `ErrorInputOutOfRange`. `typeof(?)` is thus HUGEINT for an `Integer` in the
+  HUGEINT range. Bind a `BigNum` to bind a BIGNUM value in each case. An
+  `Array` of `Integer` values still has BIGNUM elements.
 - A generic record with an `Array` field that has elements can be bound. The
   value gives the ARRAY size. DuckDB rejects the record when no value gives the
   size: an `Array` field with the value `Nothing`, an `Array` inside a LIST,

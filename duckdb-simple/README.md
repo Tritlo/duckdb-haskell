@@ -148,6 +148,20 @@ fetchNames conn = do
 The execution helpers return the number of affected rows (`Int`) so callers can
 assert on data changes when needed.
 
+An `Integer` or a `Natural` parameter binds as a HUGEINT value when the value is
+in the HUGEINT range (-2^127 to 2^127 - 1). DuckDB then checks that the value
+fits its target. For example, a negative value for an unsigned column raises an
+error. A value outside the HUGEINT range binds as a BIGNUM value. If the
+parameter has an integer type or a DECIMAL type, such a value raises an
+`SQLError` of the type `ErrorInputOutOfRange`, except for a UHUGEINT parameter
+that can hold it. Bind a `BigNum` to bind a BIGNUM value in each case.
+
+In DuckDB 2.0.0 the casts from BIGNUM to the integer types have defects: some
+fail, and some store a wrong value with no error
+([issue 41](https://github.com/Tritlo/duckdb-haskell/issues/41)). An `Array` of
+`Integer` values has BIGNUM elements, so it has these defects for an array
+column of an integer type.
+
 `query_` and `execute_` parse all input statements before execution. A syntax
 error prevents every statement in that input from running. An execution error
 can leave effects from earlier statements. Use `withTransaction` when those

@@ -81,9 +81,38 @@ data Aggregate state args result = Aggregate
   -- ^ Give the result of a group.
   }
 
+{- Note [State table stripes]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A state table holds the keys of the live states of one call site. Each new
+state adds its key, and each release removes it. DuckDB makes and releases
+states on several threads at the same time.
+
+A stripe is one part of the table: an IORef with a set of keys. The table is an
+array of stateTableStripes stripes, and the key of a state selects its stripe
+(stateStripe). Thus two threads change the same IORef only when their keys
+select the same stripe.
+
+\* Why the table has stripes. A change uses atomicModifyIORef', which stores a
+  value that is not evaluated. If the runtime stops a thread during that
+  evaluation, each thread that needs the value waits. With one IORef for all
+  states, the DuckDB threads of a query with many groups waited for each other
+  for most of the run time.
+
+\* Why the number is 64. It is larger than the number of DuckDB threads on most
+  machines, so few threads share a stripe. A stripe costs one small IORef for
+  each call site. No result depends on the number: it changes only how often
+  two threads use the same stripe.
+
+\* Why the number is not an option. No measured query needed another value, and
+  an option for each registration would be one more thing that a user must
+  know.
+
+The destructor of the table reads all stripes (releaseStateTable).
+-}
+
 -- | The live states of one call site, as the keys of their stable pointers.
 -- The table has 'stateTableStripes' stripes, and 'stateStripe' gives the stripe
--- of a key.
+-- of a key. See Note [State table stripes].
 --
 -- DuckDB 2.0.0 does not run the destroy callback on these states. In each case
 -- the table releases them:
@@ -96,10 +125,7 @@ data Aggregate state args result = Aggregate
 -- 4. The states after a finalize call fails in a parallel hash aggregate.
 type StateTable = Array Int (IORef IntSet.IntSet)
 
--- | The number of stripes in a state table. Each stripe is a separate 'IORef'.
--- Thus DuckDB threads that make or release states at the same time seldom
--- change the same 'IORef'. With one 'IORef' for all states, these threads wait
--- for each other.
+-- | The number of stripes in a state table. See Note [State table stripes].
 stateTableStripes :: Int
 stateTableStripes = 64
 
@@ -107,7 +133,8 @@ stateTableStripes = 64
 -- one more than its index in the stable pointer table of the runtime
 -- (@rts\/include\/rts\/StablePtr.h@). Thus consecutive keys go to different
 -- stripes. The table is correct for each distribution of the keys. The
--- distribution changes only how often two threads use the same stripe.
+-- distribution changes only how often two threads use the same stripe. See
+-- Note [State table stripes].
 stateStripe :: StateTable -> Int -> IORef IntSet.IntSet
 stateStripe table key = table ! (key `mod` stateTableStripes)
 

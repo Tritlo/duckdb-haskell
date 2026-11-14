@@ -411,9 +411,10 @@ prepareResultWriter resultType vector = do
   pure (writeScalarValue writeText dataPtr validityPtr resultType)
 
 -- | Write a VARCHAR value at a row of a flat vector without a factory. The
--- 16-byte slot has the byte length at byte 0. A value of at most 12 bytes follows
--- the length. A longer value goes to the arena of the vector. The slot then holds
--- the first 4 bytes of the value at byte 4 and the address of the value at byte 8.
+-- 16-byte slot has the byte length at byte 0. A value of at most
+-- @DUCKDB_V2_BYTES_INLINE_LENGTH@ (12) bytes follows the length. A longer
+-- value goes to the arena of the vector. The slot then holds the first 4 bytes
+-- of the value at byte 4 and the address of the value at byte 8.
 writeArenaText :: DuckDBV2VectorHandle -> Ptr Void -> Int -> Text -> IO ()
 writeArenaText vector dataPtr idx txt = do
   let len = TextForeign.lengthWord8 txt
@@ -424,7 +425,7 @@ writeArenaText vector dataPtr idx txt = do
   -- DuckDB compares the unused inline bytes. They must be zero.
   fillBytes slot 0 size
   pokeByteOff slot 0 (fromIntegral len :: Word32)
-  if len <= 12
+  if len <= fromIntegral dUCKDB_V2_BYTES_INLINE_LENGTH
     then TextForeign.unsafeCopyToPtr txt (slot `plusPtr` 4)
     else do
       arena <- output (c_duckdb_v2_vector_get_arena vector)

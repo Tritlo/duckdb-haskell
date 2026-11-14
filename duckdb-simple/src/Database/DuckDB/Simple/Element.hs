@@ -58,7 +58,9 @@ chunkIsRowValid validity row
   | validity == nullPtr = pure True
   | otherwise = (\word -> testBit word (fromIntegral (row `rem` 64))) <$> peekElemOff validity (fromIntegral (row `div` 64))
 
--- | Copy one generated V2 byte value, including interior NUL bytes.
+-- | Copy one generated V2 byte value, including interior NUL bytes. The header
+-- type @duckdb_v2_bytes@ holds the bytes inline when the length is at most
+-- @DUCKDB_V2_BYTES_INLINE_LENGTH@, and behind its pointer otherwise.
 chunkDecodeBlob :: Ptr Void -> DuckDBIdx -> IO BS.ByteString
 chunkDecodeBlob dataPtr row = do
   let ptr = castPtr dataPtr `plusPtr` (fromIntegral row * sizeOf (undefined :: DuckDBV2Bytes)) :: Ptr DuckDBV2Bytes
@@ -66,7 +68,7 @@ chunkDecodeBlob dataPtr row = do
   let payload = getField @"value" bytes
       len = getField @"length" (getField @"inlined" payload)
       source =
-        if len <= 12
+        if len <= fromIntegral dUCKDB_V2_BYTES_INLINE_LENGTH
           then coerce (getField @"inlined" (getField @"inlined" (getField @"value" ptr)))
           else getField @"ptr" (getField @"pointer" payload)
   if len == 0 then pure BS.empty else BS.packCStringLen (source, fromIntegral len)

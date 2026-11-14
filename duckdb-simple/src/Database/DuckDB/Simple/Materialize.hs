@@ -281,8 +281,10 @@ prepareTupleDecoder readers vector = do
     fields <- mapM ($ row) fieldReaders
     pure (TupleValue (listArray (0, count - 1) fields) types)
 
--- | Read the UNION type and prepare the tag reader and a reader for each member
--- once for a vector. The decoder reads a valid row. It must not outlive its chunk.
+-- | Read the UNION type and prepare the tag reader once for a vector. Prepare
+-- the reader of a member at the first row that selects the member, so that a
+-- member that no row selects makes no native call. The decoder reads a valid
+-- row. It must not outlive its chunk.
 prepareUnionDecoder :: FallbackReaders -> DuckDBV2VectorHandle -> IO (Int -> IO (UnionValue FieldValue))
 prepareUnionDecoder readers vector = do
   membersArray <-

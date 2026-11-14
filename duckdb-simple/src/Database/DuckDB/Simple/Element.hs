@@ -68,14 +68,15 @@ chunkIsRowValid validity row
 -- @DUCKDB_V2_BYTES_INLINE_LENGTH@, and behind its pointer otherwise.
 chunkDecodeBlob :: Ptr Void -> DuckDBIdx -> IO BS.ByteString
 chunkDecodeBlob dataPtr row = do
+  -- Read each field through its generated field pointer. A getField on the
+  -- union value calls the bindings package. That call copies the union.
   let ptr = castPtr dataPtr `plusPtr` (fromIntegral row * sizeOf (undefined :: DuckDBV2Bytes)) :: Ptr DuckDBV2Bytes
-  bytes <- peek ptr
-  let payload = getField @"value" bytes
-      len = getField @"length" (getField @"inlined" payload)
-      source =
-        if len <= fromIntegral dUCKDB_V2_BYTES_INLINE_LENGTH
-          then coerce (getField @"inlined" (getField @"inlined" (getField @"value" ptr)))
-          else getField @"ptr" (getField @"pointer" payload)
+      value = getField @"value" ptr
+  len <- peek (getField @"length" (getField @"inlined" value))
+  source <-
+    if len <= fromIntegral dUCKDB_V2_BYTES_INLINE_LENGTH
+      then pure (coerce (getField @"inlined" (getField @"inlined" value)))
+      else peek (getField @"ptr" (getField @"pointer" value))
   if len == 0 then pure BS.empty else BS.packCStringLen (source, fromIntegral len)
 
 -- | Decode DuckDB's BIT bytes: a padding count, then the data bytes. Clear the

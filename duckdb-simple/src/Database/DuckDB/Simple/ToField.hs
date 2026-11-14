@@ -73,7 +73,7 @@ import Database.DuckDB.Simple.LogicalRep (
  )
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
-import Database.DuckDB.Simple.TypeCache (TypeCache, cachedLogicalType, typeCacheConnection)
+import Database.DuckDB.Simple.TypeCache (cachedLogicalType, typeCacheConnection)
 import Database.DuckDB.Simple.Types (Null (..))
 import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeFromRep, logicalTypeToRep)
 import Database.DuckDB.Simple.Variant (Variant (..))
@@ -97,9 +97,20 @@ infixr 3 :=
 
 -- | Encapsulates the action required to bind a single positional parameter, together with a textual description used in diagnostics.
 data FieldBinding = FieldBinding
-  { fieldBindingValue :: !(TypeCache -> IO (Maybe LogicalTypeRep) -> IO DuckDBV2ValueHandle)
+  { fieldBindingValue :: !(ValueBuilder -> IO (Maybe LogicalTypeRep) -> IO DuckDBV2ValueHandle)
   , fieldBindingDisplay :: !String
   }
+
+-- | A factory and a type constructor of the same scope. The builder of a
+-- statement resolves the configured CRS types of its connection.
+data ValueBuilder = ValueBuilder
+  { builderFactory :: !DuckDBV2FactoryHandle
+  , builderType :: !(LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle)
+  }
+
+-- | A builder that constructs each type directly through the factory.
+plainBuilder :: DuckDBV2FactoryHandle -> ValueBuilder
+plainBuilder factory = ValueBuilder factory (logicalTypeFromRep factory)
 
 -- | Low-level class for values that convert directly to a 'NativeValue'.
 class (DuckDBColumnType a) => ToDuckValue a where
@@ -110,15 +121,15 @@ class (DuckDBColumnType a) => ToDuckValue a where
   toDuckValue :: ValueFactory -> a -> IO NativeValue
 
 valueBinding :: String -> (DuckDBV2FactoryHandle -> IO DuckDBV2ValueHandle) -> FieldBinding
-valueBinding display make = cacheValueBinding display \cache -> withConnectionFactory (typeCacheConnection cache) make
+valueBinding display make = builderValueBinding display (make . builderFactory)
 
--- | Construct a value with the type cache of the statement's connection.
-cacheValueBinding :: String -> (TypeCache -> IO DuckDBV2ValueHandle) -> FieldBinding
-cacheValueBinding display makeValue =
-  targetValueBinding display (\cache _ -> makeValue cache)
+-- | Construct a value with the builder of the statement's connection.
+builderValueBinding :: String -> (ValueBuilder -> IO DuckDBV2ValueHandle) -> FieldBinding
+builderValueBinding display makeValue =
+  targetValueBinding display (\builder _ -> makeValue builder)
 
 -- | Construct a value with the prepared parameter type, when it is available.
-targetValueBinding :: String -> (TypeCache -> IO (Maybe LogicalTypeRep) -> IO DuckDBV2ValueHandle) -> FieldBinding
+targetValueBinding :: String -> (ValueBuilder -> IO (Maybe LogicalTypeRep) -> IO DuckDBV2ValueHandle) -> FieldBinding
 targetValueBinding display makeValue =
   FieldBinding
     { fieldBindingValue = makeValue
@@ -126,14 +137,14 @@ targetValueBinding display makeValue =
     }
 
 -- | Preserve UTC nanoseconds where the prepared parameter requires them.
-temporalValueBinding :: String -> LogicalTypeRep -> FieldValue -> (TypeCache -> IO DuckDBV2ValueHandle) -> FieldBinding
+temporalValueBinding :: String -> LogicalTypeRep -> FieldValue -> (ValueBuilder -> IO DuckDBV2ValueHandle) -> FieldBinding
 temporalValueBinding display source value makeDefault =
-  targetValueBinding display \cache readTarget -> do
+  targetValueBinding display \builder readTarget -> do
     target <- readTarget
     let precise = timestampTypeForTarget target source
     if precise == source
-      then makeDefault cache
-      else withConnectionFactory (typeCacheConnection cache) \factory -> fieldValueWithTypeDuckValue (cachedLogicalType cache) factory precise (valueWithTypeMetadata precise value)
+      then makeDefault builder
+      else fieldValueWithTypeDuckValue builder precise (valueWithTypeMetadata precise value)
 
 -- | Read the element type of a prepared LIST or ARRAY parameter.
 collectionChildType :: Maybe LogicalTypeRep -> Maybe LogicalTypeRep
@@ -214,11 +225,12 @@ class DuckDBColumnType a where
 duckdbColumnType :: forall a. (DuckDBColumnType a) => Proxy a -> Text
 duckdbColumnType = duckdbColumnTypeFor
 
--- | Apply a @FieldBinding@ to the given statement/index.
+-- | Apply a @FieldBinding@ to the given statement/index. The builder takes its
+-- factory and its CRS types from the type cache of the statement's connection.
 bindFieldBinding :: Statement -> DuckDBIdx -> FieldBinding -> IO ()
 bindFieldBinding stmt idx FieldBinding{fieldBindingValue} =
-  withTypeCache (statementConnection stmt) \cache ->
-    bindDuckValue stmt idx (fieldBindingValue cache (preparedParameterType stmt idx))
+  withTypeCache (statementConnection stmt) \cache -> withConnectionFactory (typeCacheConnection cache) \factory ->
+    bindDuckValue stmt idx (fieldBindingValue (ValueBuilder factory (cachedLogicalType cache)) (preparedParameterType stmt idx))
 
 -- | Render a bound parameter for error reporting.
 renderFieldBinding :: FieldBinding -> String
@@ -283,8 +295,7 @@ instance ToField G.Geometry
 -- | Bind the payload as a VARIANT with the type cache of the connection.
 instance ToField Variant where
   toField value =
-    cacheValueBinding (show value) \cache ->
-      withConnectionFactory (typeCacheConnection cache) \factory -> variantDuckValue (cachedLogicalType cache) factory (variantPayload value)
+    builderValueBinding (show value) \builder -> variantDuckValue builder (variantPayload value)
 
 instance ToField UTCTime where
   toField value =
@@ -292,7 +303,7 @@ instance ToField UTCTime where
       (show value)
       (LogicalTypeScalar LogicalTypeIdTimestampTz)
       (FieldTimestampTZ (Finite value))
-      (\cache -> withConnectionFactory (typeCacheConnection cache) \factory -> utcTimeDuckValue factory value)
+      (\builder -> utcTimeDuckValue (builderFactory builder) value)
 
 instance ToField (Unbounded Day)
 
@@ -304,26 +315,23 @@ instance ToField (Unbounded UTCTime) where
       (show value)
       (LogicalTypeScalar LogicalTypeIdTimestampTz)
       (FieldTimestampTZ value)
-      (\cache -> withConnectionFactory (typeCacheConnection cache) \factory -> utcTimestampDuckValue factory value)
+      (\builder -> utcTimestampDuckValue (builderFactory builder) value)
 
 instance ToField BigNum where
   toField big@(BigNum n) = valueBinding (show n) (\factory -> bigNumDuckValue factory big)
 
 instance ToField (StructValue FieldValue) where
   toField structVal =
-    temporalValueBinding "<struct>" (structValueTypeRep structVal) (FieldStruct structVal) \cache ->
-      withConnectionFactory (typeCacheConnection cache) \factory -> structValueDuckValue (cachedLogicalType cache) factory structVal
+    temporalValueBinding "<struct>" (structValueTypeRep structVal) (FieldStruct structVal) (`structValueDuckValue` structVal)
 
 instance ToField (TupleValue FieldValue) where
   toField tuple =
-    temporalValueBinding "<tuple>" (tupleValueTypeRep tuple) (FieldTuple tuple) \cache ->
-      withConnectionFactory (typeCacheConnection cache) \factory -> tupleValueDuckValue (cachedLogicalType cache) factory tuple
+    temporalValueBinding "<tuple>" (tupleValueTypeRep tuple) (FieldTuple tuple) (`tupleValueDuckValue` tuple)
 
 instance ToField (UnionValue FieldValue) where
   toField unionVal =
     let label = Text.unpack (unionValueLabel unionVal)
-    in  temporalValueBinding ("<union " <> label <> ">") (unionValueTypeRep unionVal) (FieldUnion unionVal) \cache ->
-          withConnectionFactory (typeCacheConnection cache) \factory -> unionValueDuckValue (cachedLogicalType cache) factory unionVal
+    in  temporalValueBinding ("<union " <> label <> ">") (unionValueTypeRep unionVal) (FieldUnion unionVal) (`unionValueDuckValue` unionVal)
 
 instance DuckDBColumnType BitString where
   duckdbColumnTypeFor _ = "BIT"
@@ -338,10 +346,10 @@ instance (DuckDBColumnType a, ToField a) => ToField (Array Int a) where
   toField arr =
     targetValueBinding
       ("<array length=" <> show (length (elems arr)) <> ">")
-      \cache readTarget -> do
+      \builder readTarget -> do
         target <- readTarget
         let childTarget = collectionChildType target
-        withConnectionFactory (typeCacheConnection cache) \factory -> arrayDuckValue (cachedLogicalType cache) factory childTarget (\value -> fieldBindingValue (toField value) cache (pure childTarget)) arr
+        arrayDuckValue builder childTarget (\value -> fieldBindingValue (toField value) builder (pure childTarget)) arr
 
 instance (ToField a) => ToField (Maybe a) where
   toField Nothing = nullBinding "Nothing"
@@ -569,13 +577,12 @@ utcTimestampDuckValue factory value =
 arrayDuckValue
   :: forall a
    . (DuckDBColumnType a)
-  => (LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle)
-  -> DuckDBV2FactoryHandle
+  => ValueBuilder
   -> Maybe LogicalTypeRep
   -> (a -> IO DuckDBV2ValueHandle)
   -> Array Int a
   -> IO DuckDBV2ValueHandle
-arrayDuckValue makeType factory target elementValue array = do
+arrayDuckValue ValueBuilder{builderFactory = factory, builderType = makeType} target elementValue array = do
   when (null (elems array)) $
     throwIO
       (SQLError "duckdb-simple: empty ARRAY parameters are unavailable in DuckDB's V2 API; use an explicit SQL empty LIST" Nothing Nothing)
@@ -609,43 +616,42 @@ arrayDuckValue makeType factory target elementValue array = do
 
 -- | Construct named fields. The native call copies the field values.
 structValueDuckValue
-  :: (LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle) -> DuckDBV2FactoryHandle -> StructValue FieldValue -> IO DuckDBV2ValueHandle
-structValueDuckValue makeType factory StructValue{structValueFields, structValueTypes} = do
+  :: ValueBuilder -> StructValue FieldValue -> IO DuckDBV2ValueHandle
+structValueDuckValue builder@ValueBuilder{builderFactory = factory} StructValue{structValueFields, structValueTypes} = do
   let fields = elems structValueFields
       types = elems structValueTypes
       names = map structFieldName fields
   when (names /= map structFieldName types) $
     throwIO (userError "duckdb-simple: struct value/type fields mismatch")
   withCreatedValues
-    (zipWith (\field logical -> fieldValueWithTypeDuckValue makeType factory (structFieldValue logical) (structFieldValue field)) fields types)
+    (zipWith (\field logical -> fieldValueWithTypeDuckValue builder (structFieldValue logical) (structFieldValue field)) fields types)
     \values ->
       withIdentifiers names \namePtr -> withArray values \valuePtr ->
-        declaredCompositeValue makeType factory (LogicalTypeStruct structValueTypes) $
+        declaredCompositeValue builder (LogicalTypeStruct structValueTypes) $
           output (c_duckdb_v2_value_create_struct factory (ConstPtr namePtr) (ConstPtr valuePtr) (fromIntegral (length values)))
 
 -- | Construct positional fields without inferring a TUPLE from field names.
 tupleValueDuckValue
-  :: (LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle) -> DuckDBV2FactoryHandle -> TupleValue FieldValue -> IO DuckDBV2ValueHandle
-tupleValueDuckValue makeType factory TupleValue{tupleValueFields, tupleValueTypes} = do
+  :: ValueBuilder -> TupleValue FieldValue -> IO DuckDBV2ValueHandle
+tupleValueDuckValue builder@ValueBuilder{builderFactory = factory} TupleValue{tupleValueFields, tupleValueTypes} = do
   let fields = elems tupleValueFields
       types = elems tupleValueTypes
   when (length fields /= length types) $
     throwIO (userError "duckdb-simple: tuple value/type fields mismatch")
-  withCreatedValues (zipWith (fieldValueWithTypeDuckValue makeType factory) types fields) \values ->
+  withCreatedValues (zipWith (fieldValueWithTypeDuckValue builder) types fields) \values ->
     withArray values \valuePtr ->
-      declaredCompositeValue makeType factory (LogicalTypeTuple tupleValueTypes) $
+      declaredCompositeValue builder (LogicalTypeTuple tupleValueTypes) $
         output (c_duckdb_v2_value_create_tuple factory (ConstPtr valuePtr) (fromIntegral (length values)))
 
 -- | Preserve declared field types through an owned vector. Scalar VARCHAR
 -- values do not retain collations, but their enclosing composite type does.
 declaredCompositeValue
-  :: (LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle)
-  -> DuckDBV2FactoryHandle
+  :: ValueBuilder
   -> LogicalTypeRep
   -> IO DuckDBV2ValueHandle
   -> IO DuckDBV2ValueHandle
-declaredCompositeValue _ _ rep create | not (hasCollation rep) = create
-declaredCompositeValue makeType factory rep create = bracket create destroyValue \value ->
+declaredCompositeValue _ rep create | not (hasCollation rep) = create
+declaredCompositeValue ValueBuilder{builderFactory = factory, builderType = makeType} rep create = bracket create destroyValue \value ->
   bracket (makeType rep) destroyLogicalType \logical -> withOwnedVector factory logical \vector -> do
     checked (c_duckdb_v2_vector_set_size vector 1)
     checked (c_duckdb_v2_vector_set_value vector 0 value)
@@ -665,8 +671,8 @@ hasCollation rep = case rep of
 
 -- | Build one UNION row through its public tag and member vectors.
 unionValueDuckValue
-  :: (LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle) -> DuckDBV2FactoryHandle -> UnionValue FieldValue -> IO DuckDBV2ValueHandle
-unionValueDuckValue makeType factory UnionValue{unionValueIndex, unionValueLabel, unionValuePayload, unionValueMembers} = do
+  :: ValueBuilder -> UnionValue FieldValue -> IO DuckDBV2ValueHandle
+unionValueDuckValue builder@ValueBuilder{builderFactory = factory, builderType = makeType} UnionValue{unionValueIndex, unionValueLabel, unionValuePayload, unionValueMembers} = do
   let members = elems unionValueMembers
       index = fromIntegral unionValueIndex
   when (index >= length members) $ throwIO (userError "duckdb-simple: union value tag out of range")
@@ -683,18 +689,18 @@ unionValueDuckValue makeType factory UnionValue{unionValueIndex, unionValueLabel
         member <- output (c_duckdb_v2_vector_get_child vector (fromIntegral memberIndex + 1))
         checked (c_duckdb_v2_vector_set_size member 1)
         if memberIndex == index
-          then bracket (fieldValueWithTypeDuckValue makeType factory rep unionValuePayload) destroyValue \value ->
+          then bracket (fieldValueWithTypeDuckValue builder rep unionValuePayload) destroyValue \value ->
             checked (c_duckdb_v2_vector_set_value member 0 value)
           else checked (c_duckdb_v2_vector_set_null member 0)
       output (c_duckdb_v2_vector_get_value vector 0)
 
 -- | Construct a value with explicit logical metadata, including typed NULL.
 fieldValueWithTypeDuckValue
-  :: (LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle) -> DuckDBV2FactoryHandle -> LogicalTypeRep -> FieldValue -> IO DuckDBV2ValueHandle
-fieldValueWithTypeDuckValue makeType factory rep FieldNull = bracket (makeType rep) destroyLogicalType \logical ->
+  :: ValueBuilder -> LogicalTypeRep -> FieldValue -> IO DuckDBV2ValueHandle
+fieldValueWithTypeDuckValue ValueBuilder{builderFactory = factory, builderType = makeType} rep FieldNull = bracket (makeType rep) destroyLogicalType \logical ->
   output (c_duckdb_v2_value_create_null factory logical)
-fieldValueWithTypeDuckValue makeType factory rep value = case (rep, value) of
-  (LogicalTypeScalar LogicalTypeIdVariant, _) -> variantDuckValue makeType factory value
+fieldValueWithTypeDuckValue builder@ValueBuilder{builderFactory = factory, builderType = makeType} rep value = case (rep, value) of
+  (LogicalTypeScalar LogicalTypeIdVariant, _) -> variantDuckValue builder value
   (LogicalTypeScalar dtype, _) -> scalarFieldValueDuckValue factory dtype value
   (LogicalTypeCollatedVarchar _, FieldText text) -> textDuckValue factory text
   (LogicalTypeGeometry _, FieldGeometry{}) -> unsupportedRawGeometryBinding
@@ -706,21 +712,21 @@ fieldValueWithTypeDuckValue makeType factory rep value = case (rep, value) of
   (LogicalTypeMap keyRep valueRep, FieldMap pairs) ->
     bracket (makeType keyRep) destroyLogicalType \keyType ->
       bracket (makeType valueRep) destroyLogicalType \valueType ->
-        withCreatedValues (map (fieldValueWithTypeDuckValue makeType factory keyRep . fst) pairs) \keys ->
-          withCreatedValues (map (fieldValueWithTypeDuckValue makeType factory valueRep . snd) pairs) \values ->
+        withCreatedValues (map (fieldValueWithTypeDuckValue builder keyRep . fst) pairs) \keys ->
+          withCreatedValues (map (fieldValueWithTypeDuckValue builder valueRep . snd) pairs) \values ->
             withArray keys \keyPtr -> withArray values \valuePtr ->
               output (c_duckdb_v2_value_create_map factory keyType valueType (ConstPtr keyPtr) (ConstPtr valuePtr) (fromIntegral (length pairs)))
   (LogicalTypeStruct _, FieldStruct struct)
-    | rep == structValueTypeRep struct -> structValueDuckValue makeType factory struct
+    | rep == structValueTypeRep struct -> structValueDuckValue builder struct
   (LogicalTypeTuple _, FieldTuple tuple)
-    | rep == tupleValueTypeRep tuple -> tupleValueDuckValue makeType factory tuple
+    | rep == tupleValueTypeRep tuple -> tupleValueDuckValue builder tuple
   (LogicalTypeUnion _, FieldUnion union)
-    | rep == unionValueTypeRep union -> unionValueDuckValue makeType factory union
+    | rep == unionValueTypeRep union -> unionValueDuckValue builder union
   (LogicalTypeEnum entries, FieldEnum index) -> enumDuckValue factory entries index
   _ -> typeMismatch (show rep) value
   where
     sequenceValue create child values = bracket (makeType child) destroyLogicalType \logical ->
-      withCreatedValues (map (fieldValueWithTypeDuckValue makeType factory child) values) \native -> withArray native \ptr ->
+      withCreatedValues (map (fieldValueWithTypeDuckValue builder child) values) \native -> withArray native \ptr ->
         output (create factory logical (ConstPtr ptr) (fromIntegral (length native)))
 
 scalarFieldValueDuckValue :: DuckDBV2FactoryHandle -> LogicalTypeId -> FieldValue -> IO DuckDBV2ValueHandle
@@ -837,11 +843,11 @@ unsupportedRawGeometryBinding :: IO a
 unsupportedRawGeometryBinding = throwIO (userError "duckdb-simple: raw GEOMETRY binding requires explicit ST_GeomFromWKB and ST_SetCRS parameters")
 
 -- | Cast the payload to VARIANT through the supplied native factory.
-variantDuckValue :: (LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle) -> DuckDBV2FactoryHandle -> FieldValue -> IO DuckDBV2ValueHandle
-variantDuckValue makeType factory value = do
+variantDuckValue :: ValueBuilder -> FieldValue -> IO DuckDBV2ValueHandle
+variantDuckValue builder@ValueBuilder{builderFactory = factory, builderType = makeType} value = do
   (rep, payload) <- variantPayloadType value
   bracket (makeType (LogicalTypeScalar LogicalTypeIdVariant)) destroyLogicalType \logical ->
-    bracket (fieldValueWithTypeDuckValue makeType factory rep payload) destroyValue \native ->
+    bracket (fieldValueWithTypeDuckValue builder rep payload) destroyValue \native ->
       output (c_duckdb_v2_value_cast factory native logical)
 
 -- | Construct a UTC nanosecond value without losing sub-microsecond digits.
@@ -858,7 +864,7 @@ instance ToDuckValue G.Geometry where
         output (c_duckdb_v2_value_cast factory value logical)
 
 instance ToDuckValue Variant where
-  toDuckValue factory = variantDuckValue (logicalTypeFromRep factory) factory . variantPayload
+  toDuckValue factory = variantDuckValue (plainBuilder factory) . variantPayload
 
 -- | Choose the native type of a VARIANT payload. Containers get VARIANT
 -- elements and fields. Time values with sub-microsecond digits use nanosecond
@@ -1017,17 +1023,17 @@ instance ToDuckValue (Unbounded UTCTime) where
   toDuckValue = utcTimestampDuckValue
 
 instance ToDuckValue (StructValue FieldValue) where
-  toDuckValue factory = structValueDuckValue (logicalTypeFromRep factory) factory
+  toDuckValue = structValueDuckValue . plainBuilder
 
 instance ToDuckValue (TupleValue FieldValue) where
-  toDuckValue factory = tupleValueDuckValue (logicalTypeFromRep factory) factory
+  toDuckValue = tupleValueDuckValue . plainBuilder
 
 instance ToDuckValue (UnionValue FieldValue) where
-  toDuckValue factory = unionValueDuckValue (logicalTypeFromRep factory) factory
+  toDuckValue = unionValueDuckValue . plainBuilder
 
 -- | Construct an array through the supplied factory with the element type of @a@.
 instance (DuckDBColumnType a, ToDuckValue a) => ToDuckValue (Array Int a) where
-  toDuckValue factory = arrayDuckValue (logicalTypeFromRep factory) factory Nothing (toDuckValue factory)
+  toDuckValue factory = arrayDuckValue (plainBuilder factory) Nothing (toDuckValue factory)
 
 instance (ToDuckValue a) => ToDuckValue (Maybe a) where
   toDuckValue factory Nothing = nullDuckValue factory

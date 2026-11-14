@@ -301,10 +301,10 @@ duckTypeForScalar = \case
 
 scalarFunctionHandler
   :: forall f. (Function f) => f -> DuckDBV2ScalarFunctionExecInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
-scalarFunctionHandler fn info context err = runCallback err (executeScalarFunction fn info context)
+scalarFunctionHandler fn info _context err = runCallback err (executeScalarFunction fn info)
 
-executeScalarFunction :: forall f. (Function f) => f -> DuckDBV2ScalarFunctionExecInfoHandle -> DuckDBV2ContextHandle -> IO ()
-executeScalarFunction fn info context = do
+executeScalarFunction :: forall f. (Function f) => f -> DuckDBV2ScalarFunctionExecInfoHandle -> IO ()
+executeScalarFunction fn info = do
   let expected = length (argumentTypes (Proxy :: Proxy f))
   columnCount <- allocaArray 4 $ \counts -> do
     checked (c_duckdb_v2_scalar_function_exec_get_arg_count info counts (advancePtr counts 1) (advancePtr counts 2) (advancePtr counts 3))
@@ -320,17 +320,17 @@ executeScalarFunction fn info context = do
   rows <- forM [0 .. rowCount - 1] $ \row -> forM readers ($ row)
   results <- mapM (`applyFunction` fn) rows
   outVec <- output (c_duckdb_v2_scalar_function_exec_get_result info)
-  writeResults context (returnType (Proxy :: Proxy f)) results outVec
+  writeResults (returnType (Proxy :: Proxy f)) results outVec
 
 scalarFunctionHandlerWithState
   :: forall s f
    . (Function f) => (s -> f) -> DuckDBV2ScalarFunctionExecInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
-scalarFunctionHandlerWithState mkFn info context err = runCallback err do
+scalarFunctionHandlerWithState mkFn info _context err = runCallback err do
   statePtr <- output (c_duckdb_v2_scalar_function_exec_get_init_data info)
   when (statePtr == nullPtr) $
     throwIO (functionInvocationError "duckdb-simple: scalar function state was not initialised")
   state <- deRefStablePtr (castPtrToStablePtr (castPtr statePtr) :: StablePtr s)
-  executeScalarFunction (mkFn state) info context
+  executeScalarFunction (mkFn state) info
 
 scalarFunctionInitHandler :: IO s -> DuckDBV2ScalarFunctionInitInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
 scalarFunctionInitHandler initState info _context err = runCallback err do
@@ -357,23 +357,18 @@ makeColumnReader info columnIndex = do
         , fieldValue = value
         }
 
-writeResults :: DuckDBV2ContextHandle -> ScalarType -> [ScalarValue] -> DuckDBV2VectorHandle -> IO ()
-writeResults context resultType values outVec = do
+writeResults :: ScalarType -> [ScalarValue] -> DuckDBV2VectorHandle -> IO ()
+writeResults resultType values outVec = do
   checked (c_duckdb_v2_vector_set_size outVec (fromIntegral (length values)))
   checked (c_duckdb_v2_vector_flatten outVec)
   dataPtr <- output (c_duckdb_v2_vector_get_data_mutable outVec)
   validityPtr <- output (c_duckdb_v2_vector_flat_get_validity_mutable outVec)
-  let writeText idx txt =
-        bracket
-          (withContextFactory context \factory -> withText txt (output . c_duckdb_v2_value_create_varchar factory))
-          (destroy c_duckdb_v2_value_destroy)
-          \value -> checked (c_duckdb_v2_vector_set_value outVec (fromIntegral idx) value)
-  forM_ (zip [0 ..] values) \(idx, val) -> writeScalarValue writeText dataPtr validityPtr resultType idx val
+  forM_ (zip [0 ..] values) \(idx, val) -> writeScalarValue outVec dataPtr validityPtr resultType idx val
 
 -- | Write one value at a row of a flat vector. The data and validity pointers
--- belong to the vector. The text action writes a VARCHAR value and its validity.
-writeScalarValue :: (Int -> Text -> IO ()) -> Ptr Void -> Ptr Word64 -> ScalarType -> Int -> ScalarValue -> IO ()
-writeScalarValue writeText dataPtr validityPtr resultType idx val =
+-- belong to the vector. A VARCHAR value goes to the arena of the vector.
+writeScalarValue :: DuckDBV2VectorHandle -> Ptr Void -> Ptr Word64 -> ScalarType -> Int -> ScalarValue -> IO ()
+writeScalarValue vector dataPtr validityPtr resultType idx val =
   case (resultType, val) of
     (_, ScalarNull) ->
       markInvalid validityPtr idx
@@ -389,8 +384,9 @@ writeScalarValue writeText dataPtr validityPtr resultType idx val =
     (ScalarTypeDouble, ScalarDouble dbl) -> do
       markValid validityPtr idx
       pokeElemOff (castPtr dataPtr :: Ptr Double) idx dbl
-    (ScalarTypeVarchar, ScalarText txt) ->
-      writeText idx txt
+    (ScalarTypeVarchar, ScalarText txt) -> do
+      markValid validityPtr idx
+      writeArenaText vector dataPtr idx txt
     _ ->
       throwIO
         $ functionInvocationError
@@ -408,10 +404,7 @@ prepareResultWriter resultType vector = do
     throwIO (functionInvocationError (Text.pack ("duckdb-simple: the result vector is not flat: " <> show kind)))
   dataPtr <- output (c_duckdb_v2_vector_get_data_mutable vector)
   validityPtr <- output (c_duckdb_v2_vector_flat_get_validity_mutable vector)
-  let writeText idx txt = do
-        markValid validityPtr idx
-        writeArenaText vector dataPtr idx txt
-  pure (writeScalarValue writeText dataPtr validityPtr resultType)
+  pure (writeScalarValue vector dataPtr validityPtr resultType)
 
 -- | Write a VARCHAR value at a row of a flat vector without a factory. The
 -- 16-byte slot has the byte length at byte 0. A value of at most

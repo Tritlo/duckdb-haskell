@@ -280,6 +280,7 @@ openWithOptions path ConnectionOptions{connectionConfig, connectionGeometryCRS, 
   callbackLockWait <- checkCallbackLockWait connectionCallbackLockWait
   environment <- createEnvironment
   instance_ <- createInstance environment connectionConfig `onException` closeEnvironment environment
+  -- See Note [Native handle ownership] in "Database.DuckDB.Simple.Internal".
   let release = closeInstance instance_ `finally` closeEnvironment environment
   flip onException release do
     -- An empty alias lets DuckDB derive the catalog name from the path.
@@ -437,6 +438,7 @@ columnName stmt columnIndex
 executeStatement :: Statement -> IO Int
 executeStatement stmt = do
   resetStatementStream stmt
+  -- See Note [Result window] in "Database.DuckDB.Simple.Internal".
   withQueryError (statementQuery stmt) . withResultWindow (statementConnection stmt) (const (pure ())) $ withResult stmt \result ->
     fromIntegral <$> runInterruptibleQuery (statementConnection stmt) (output (c_duckdb_v2_result_drain result))
 

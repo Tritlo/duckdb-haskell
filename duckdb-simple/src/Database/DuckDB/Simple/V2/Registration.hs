@@ -543,8 +543,9 @@ registerInstanceReplacementScan instance' callback = withInstanceHandle instance
 -- This helper uses native default equality. Use raw opaque callbacks for custom equality.
 -- Transfer a value at most once to each native state slot. In DuckDB 2.0.0, a
 -- setter for init data, batch data, global state, or local state does not release
--- a pointer that it replaces. The header does not state this behaviour. Store an
--- @IORef@ or another mutable state cell when the callback must change its state.
+-- a pointer that it replaces. See Note [Callback ownership] in
+-- "Database.DuckDB.Simple.Callback". Store an @IORef@ or another mutable state
+-- cell when the callback must change its state.
 setCallbackState :: (Typeable a) => (Ptr DuckDBV2Opaque -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> a -> IO ()
 setCallbackState setter = transferCallbackState (attachOpaque setter) . toDyn
 

@@ -7,11 +7,9 @@
 -- Module      : Database.DuckDB.Simple.TypeCache
 -- Description : Connection-scoped construction of native logical types.
 --
--- DuckDB constructs a GEOMETRY type with a recognized CRS or a complete CRS
--- definition directly. The type binder rejects a custom CRS name, but the SQL
--- function @ST_SetCRS@ keeps it. The cache holds one type for each configured
--- name: the type of direct construction, or a SQL-derived type for a name that
--- direct construction does not keep. A bind copies the type.
+-- The type cache of a connection holds one GEOMETRY type for each configured
+-- CRS name. It also holds the helper connection for VARIANT reads. See
+-- Note [CRS types of a connection].
 module Database.DuckDB.Simple.TypeCache (
   TypeCache,
   typeCacheConnection,
@@ -49,10 +47,12 @@ data TypeCache = TypeCache
   }
 
 -- | The helper connection for VARIANT reads and the VARIANT decoder state that
--- borrows it. They open at the first read. The cache owns the connection.
+-- borrows it. They open at the first read. The cache owns the connection. See
+-- Note [VARIANT decoding] in "Database.DuckDB.Simple.VariantCodec".
 data CacheState = Unopened | Open DuckDBV2ConnectionHandle VariantState | Closed
 
--- | Keep each owned type once. CRS aliases can refer to the same type.
+-- | Keep each owned type once. CRS aliases can refer to the same type. See
+-- Note [CRS types of a connection].
 data NativeTypes = NativeTypes
   { nativeGeometry :: Map Text DuckDBV2LogicalTypeHandle
   , nativeOwned :: [DuckDBV2LogicalTypeHandle]
@@ -62,12 +62,50 @@ data NativeTypes = NativeTypes
 defaultGeometryCRS :: [Text]
 defaultGeometryCRS = ["OGC:CRS84"]
 
+{- Note [CRS types of a connection]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A GEOMETRY type can have a CRS. The connection option connectionGeometryCRS
+gives a list of CRS names, and defaultGeometryCRS is the default list. The type
+cache of a connection holds one type for each configured name: the type of
+direct construction, or a SQL-derived type for a name that direct construction
+does not keep.
+
+- Direct construction (directGeometry). DuckDB constructs a GEOMETRY type with
+  a recognized CRS or a complete CRS definition directly. For another name, the
+  construction raises SQLError, because DuckDB rejects the name or drops the
+  CRS. The type binder rejects a custom CRS name.
+
+- The query (readNativeTypes). The SQL function ST_SetCRS keeps a custom CRS
+  name. One statement reads the types of the names that direct construction
+  does not keep: it applies ST_SetCRS to an empty point for each name. The
+  statement runs on the new caller connection when the connection opens,
+  before any statement of the caller runs. A connection whose names DuckDB
+  constructs directly runs no statement. The default list OGC:CRS84 is such a
+  list. geometryTypes raises an error if a type has no CRS. A name that DuckDB
+  drops, for example a blank name, fails the open.
+
+- What the cache keeps (NativeTypes). The map has an entry for each configured
+  name, and an entry for the CRS text that DuckDB reports for its type. Thus
+  two names can refer to the same type, and the cache keeps each owned type
+  once. The map does not change after createTypeCache, so cachedLogicalType
+  reads it without a lock. destroyTypeCache destroys each owned type once.
+
+- The use (cachedLogicalType). The resolver of cachedLogicalType copies a
+  configured CRS type at each depth of a type tree (logicalTypeFromRepWith).
+  The builder of a statement uses this resolver (ValueBuilder and
+  bindFieldBinding), and a bind copies the type. A type with a CRS that is not
+  in the list uses direct construction.
+
+The helper connection of the cache serves VARIANT reads only. Its opening runs
+no CRS query.
+-}
+
 -- | Create the cache on a new caller connection, before any statement of the
 -- caller runs. Construct each configured CRS directly, and keep each type that
 -- has the CRS. For the other names, query the types on the caller connection.
 -- If a step fails, destroy the types that the earlier steps took. The caller
 -- keeps the instance and connection alive. The helper connection opens later,
--- at the first VARIANT read.
+-- at the first VARIANT read. See Note [CRS types of a connection].
 createTypeCache :: DuckDBV2InstanceHandle -> DuckDBV2ConnectionHandle -> [Text] -> IO TypeCache
 createTypeCache instance_ connection crss = do
   when (any Text.null crss || any (Text.any (== '\0')) crss) $
@@ -84,7 +122,8 @@ createTypeCache instance_ connection crss = do
 
 -- | Construct a GEOMETRY type with a CRS directly. Give 'Nothing' when DuckDB
 -- rejects the name or drops the CRS. The construction raises 'SQLError' in
--- both cases, and it destroys a type that lost its CRS.
+-- both cases, and it destroys a type that lost its CRS. See
+-- Note [CRS types of a connection].
 directGeometry :: DuckDBV2ConnectionHandle -> Text -> IO (Maybe DuckDBV2LogicalTypeHandle)
 directGeometry connection crs = withConnectionFactory connection \factory ->
   either (const Nothing) Just
@@ -103,7 +142,8 @@ destroyTypeCache TypeCache{typeCacheGeometry, typeCacheState} = uninterruptibleM
     Closed -> pure ()
 
 -- | Construct an owned type. Resolve configured CRS leaves at every depth.
--- Copy a configured CRS type from the immutable map, without a lock.
+-- Copy a configured CRS type from the immutable map, without a lock. See
+-- Note [CRS types of a connection].
 cachedLogicalType :: TypeCache -> LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle
 cachedLogicalType TypeCache{typeCacheConnection, typeCacheGeometry = NativeTypes{nativeGeometry}} rep =
   withConnectionFactory typeCacheConnection \factory -> logicalTypeFromRepWith factory resolve rep
@@ -114,7 +154,8 @@ cachedLogicalType TypeCache{typeCacheConnection, typeCacheGeometry = NativeTypes
 
 -- | Borrow the VARIANT decoder state of the persistent helper connection. Open
 -- the connection once, and keep it after an action throws. Calls execute in
--- sequence. Do not enter this cache again from the supplied action.
+-- sequence. Do not enter this cache again from the supplied action. See
+-- Note [VARIANT decoding] in "Database.DuckDB.Simple.VariantCodec".
 withVariantState :: TypeCache -> (VariantState -> IO a) -> IO a
 withVariantState TypeCache{typeCacheInstance, typeCacheState} action = mask \restore -> do
   outcome <- modifyMVarMasked typeCacheState \state -> do
@@ -129,7 +170,7 @@ withVariantState TypeCache{typeCacheInstance, typeCacheState} action = mask \res
   either (throwIO :: SomeException -> IO a) pure outcome
 
 -- | Read the SQL-derived GEOMETRY types of custom CRS names. Run no statement
--- for an empty list.
+-- for an empty list. See Note [CRS types of a connection].
 readNativeTypes :: DuckDBV2ConnectionHandle -> [Text] -> IO NativeTypes
 readNativeTypes _ [] = pure (NativeTypes Map.empty [])
 readNativeTypes connection crss = do
@@ -148,7 +189,7 @@ readNativeTypes connection crss = do
 
 -- | Map each configured name, and the CRS text that DuckDB reports for its
 -- type, to the type. Raise an error if a type has no CRS. The caller keeps the
--- ownership of the types.
+-- ownership of the types. See Note [CRS types of a connection].
 geometryTypes :: [Text] -> [DuckDBV2LogicalTypeHandle] -> IO NativeTypes
 geometryTypes crss owned = do
   reported <- mapM logicalTypeToRep owned

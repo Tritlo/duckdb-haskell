@@ -137,3 +137,20 @@ compiler rewrite rules.
 
 Document exported functions and types with Haddock comments.
 Build the documentation with `cabal haddock all`.
+
+Explain a concept that more than one definition depends on in a Note, in the
+style of GHC. Put the Note next to the definition that owns the concept:
+
+```haskell
+{- Note [Callback marks]
+~~~~~~~~~~~~~~~~~~~~~~~~
+The text of the Note.
+-}
+```
+
+At each other place that depends on the concept, refer to the Note: `See
+Note [Callback marks]`. Add the module name when the Note is in another module.
+Keep the Haddock comment of a definition short. Put the reasons that connect
+several definitions in the Note, and do not repeat them at the other places.
+Start each item of a list in a Note with `-`. `fourmolu` changes a `*` at the
+start of a line to `\*`.

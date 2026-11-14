@@ -38,12 +38,12 @@ foldArrowWith mode conn queryText params initial step = withStatement conn query
           next `seq` pure next
     case mode of
       StreamingResult ->
-        -- Serialize the execution call. The stream stays open after it.
+        -- Serialize the execution call. The stream stays open after it. See
+        -- Note [Connection lock] in "Database.DuckDB.Simple.Internal".
         bracket (withConnectionLock conn (executePreparedArrowResult stmt)) (const (clearArrowResult stmt)) \result ->
           -- Recurse outside the handle scope, so that the stack does not grow for each batch.
-          -- Each fetch holds the connection lock, for the reason that
-          -- 'Database.DuckDB.Simple.Result' gives for the fetch of a stream.
-          -- The step runs after the fetch, without the lock.
+          -- Each fetch holds the connection lock. The step runs after the
+          -- fetch, without the lock.
           let stream acc = do
                 next <- withStatementHandle stmt \_ ->
                   withConnectionLock conn (fetchBatch stmt result) >>= \case
@@ -66,12 +66,14 @@ foldArrowWith mode conn queryText params initial step = withStatement conn query
             release = readIORef owned >>= mapM_ releaseBatch
         flip finally release do
           -- Hold the lock until the native result closes. The callbacks run after that.
-          -- The batches are in storage that this thread releases.
+          -- The batches are in storage that this thread releases. See
+          -- Note [Result window] in "Database.DuckDB.Simple.Internal".
           withResultWindow conn (const (pure ())) (withArrowResult stmt gather)
           atomicModifyIORef' owned (\batches -> (reverse batches, ()))
           consume initial
 
--- | Fetch one owned nonempty batch and its independent schema.
+-- | Fetch one owned nonempty batch and its independent schema. See
+-- Note [Interruptible native calls] in "Database.DuckDB.Simple.Internal".
 fetchBatch :: Statement -> DuckDBV2ArrowResultHandle -> IO (Maybe ArrowBatch)
 fetchBatch stmt result = mask_ do
   schema <- malloc

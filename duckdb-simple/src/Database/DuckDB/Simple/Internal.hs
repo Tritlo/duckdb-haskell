@@ -7,7 +7,6 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StrictData #-}
 {-# LANGUAGE TupleSections #-}
-{-# LANGUAGE UnliftedFFITypes #-}
 
 -- |
 -- Module      : Database.DuckDB.Simple.Internal
@@ -54,7 +53,6 @@ module Database.DuckDB.Simple.Internal (
   withDatabaseHandle,
   withConnectionHandle,
   withConnectionLock,
-  withCallbackMark,
   withResultWindow,
   withTypeCache,
   withStatementHandle,
@@ -91,7 +89,7 @@ import Control.Concurrent (
   withMVar,
  )
 import Control.Exception (SomeException, bracket, bracket_, catch, finally, mask, mask_, onException, throwIO, try, uninterruptibleMask_)
-import Control.Monad (forM, forM_, join, replicateM, unless, void, when)
+import Control.Monad (forM, forM_, join, unless, void, when)
 import Data.Array (Array, bounds, inRange, listArray, (!))
 import qualified Data.ByteString as BS
 import Data.Coerce (Coercible, coerce)
@@ -103,6 +101,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
 import qualified Data.Text.Foreign as TextForeign
+import Database.DuckDB.Simple.CallbackMark (hasCallbackMark)
 import Database.DuckDB.Simple.FromField (FieldValue)
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep)
 import Database.DuckDB.Simple.Native
@@ -110,20 +109,69 @@ import Database.DuckDB.Simple.TypeCache (TypeCache, createTypeCache, destroyType
 import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (CString)
-import Foreign.C.Types (CChar, CULLong (..))
+import Foreign.C.Types (CChar)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Array (withArray)
 import Foreign.Ptr (nullPtr)
 import Foreign.Storable (peek, poke)
-import GHC.Conc (ThreadId (ThreadId))
-import GHC.Exts (ThreadId#, keepAlive#)
+import GHC.Exts (keepAlive#)
 import GHC.IO (IO (..))
 import GHC.Weak.Finalize (getFinalizerExceptionHandler)
-import System.IO.Unsafe (unsafePerformIO)
 import System.Mem.Weak (Weak, deRefWeak, finalize)
 import System.Timeout (timeout)
 
--- | Track child finalizers without retaining live children.
+{- Note [Native handle ownership]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The native handles form a tree. An environment owns its instances, an instance
+owns its connections, and a connection owns its prepared statements. The open
+state of each parent holds a registry of its children (Children). Each child
+value also holds its parent: instanceEnvironment, connectionInstance, and
+statementConnection.
+
+A registry entry is a weak pointer and an MVar. The key of the weak pointer is
+the state IORef of the child, so the registry does not keep a live child
+reachable. The finalizer of the weak pointer runs the cleanup of the child, and
+then it puts the MVar (registerChild). The cleanup closes the state of the
+child, and it keeps the parent alive until the cleanup ends (keepAlive). A
+child thus closes in one of three ways: by an explicit close, by the close of
+its parent, or by the finalizer after the child becomes unreachable. A close
+first replaces the state with the closed state
+(joinCleanup). A close of a closed state has no effect. Thus a finalizer after
+an explicit close has no effect.
+
+A parent closes its children before it destroys its own native handle
+(closeChildren). Thus the close order is statement, connection, instance, and
+environment. finishChild runs the finalizer of one child, and it waits for the
+MVar of that child. The MVar tells that the cleanup is complete, also when the
+cleanup runs in another thread. A parent marks its state closed before it
+closes its children. A create function raises an error when the state of its
+parent is closed. A close must not start while the parent creates a child (see
+closeEnvironment and closeInstance).
+
+The garbage collector releases a child first. The finalizer of a parent runs
+after the references to the parent drop. The collector runs the finalizers of
+one collection in sequence in one thread, and a parent waits for its children.
+A cleanup in that thread can wait for a child finalizer that is behind it.
+Thus the finalizers of instances and connections run in new threads
+(forkFinalizer). A statement has no children, so its finalizer runs in the
+thread of the collector.
+
+The environment has no parent and no registry entry. createEnvironment gives
+its state a weak pointer of its own, with a finalizer in a new thread.
+
+openWithOptions makes a private environment and instance for one connection.
+The connection keeps an action that closes them (connectionReleaseParent). An
+explicit close of the connection runs this action, and the finalizer of the
+connection does not. Then the finalizers of the private instance and
+environment close them.
+
+A function that borrows a native handle, for example withConnectionHandle, runs
+its action under keepAlive of the owner. Thus the finalizer of the owner does
+not destroy the handle while the action uses it.
+-}
+
+-- | Track child finalizers without retaining live children. See
+-- Note [Native handle ownership].
 newtype Children a = Children (IORef [(Weak (IORef a), MVar ())])
 
 -- | Create an empty child registry.
@@ -132,6 +180,7 @@ newChildren = Children <$> newIORef []
 
 -- | Register a child and remove completed entries. The first argument runs
 -- the finalizer of the child. Use 'forkFinalizer' for a child that has children.
+-- See Note [Native handle ownership].
 registerChild :: (IO () -> IO ()) -> (a -> Bool) -> Children a -> IORef a -> IO () -> IO ()
 registerChild runFinalizer isOpen (Children children) child cleanup = mask_ do
   previous <- readIORef children
@@ -148,21 +197,20 @@ registerChild runFinalizer isOpen (Children children) child cleanup = mask_ do
   atomicModifyIORef' children $ \current ->
     ((weak, done) : filter (\(_, completed) -> completed `notElem` finished) current, ())
 
--- | Run a finalizer in a new thread. The collector runs the finalizers of one
--- collection in sequence in one thread, and a parent waits for its children. A
--- cleanup in that thread can wait for a child finalizer that is behind it.
--- Report an exception as the collector reports it for a finalizer.
--- A statement has no children, so its finalizer runs in the collector's thread.
+-- | Run a finalizer in a new thread. Report an exception as the collector
+-- reports it for a finalizer. See Note [Native handle ownership].
 forkFinalizer :: IO () -> IO ()
 forkFinalizer cleanup =
   void . forkIO $
     cleanup `catch` \(err :: SomeException) -> getFinalizerExceptionHandler >>= ($ err)
 
--- | Run a child finalizer and wait for its completion.
+-- | Run a child finalizer and wait for its completion. See
+-- Note [Native handle ownership].
 finishChild :: (Weak (IORef a), MVar ()) -> IO ()
 finishChild (weak, done) = uninterruptibleMask_ (finalize weak `finally` readMVar done)
 
--- | Complete child finalizers before their parent closes.
+-- | Complete child finalizers before their parent closes. See
+-- Note [Native handle ownership].
 closeChildren :: Children a -> IO ()
 closeChildren (Children children) = atomicModifyIORef' children ([],) >>= cleanupAll . map finishChild
 
@@ -189,9 +237,10 @@ data Connection = Connection
   , connectionLock :: MVar ()
   -- ^ Held while a native result of this connection runs, and for each fetch
   -- of an explicit stream. A DuckDB callback waits for it at most
-  -- 'connectionLockBound'. See 'withConnectionLock'.
+  -- 'connectionLockBound'. See 'withConnectionLock' and Note [Connection lock].
   , connectionWindow :: IORef (Maybe ThreadId)
-  -- ^ The helper thread that runs the current result. See 'withResultWindow'.
+  -- ^ The helper thread that runs the current result. See 'withResultWindow'
+  -- and Note [Result window].
   , connectionLockBound :: Maybe Int
   -- ^ The longest wait in microseconds of a DuckDB callback for
   -- 'connectionLock'. 'Nothing' sets no bound.
@@ -228,10 +277,43 @@ data StatementState
       , statementSchemaCache :: IORef (Maybe (DuckDBV2SchemaHandle, DuckDBV2SchemaHandle))
       }
 
+{- Note [Statement cursor]
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+The cursor of a statement (statementStream) is in one of three states.
+
+- StatementStreamIdle. The statement has no result. The next fetch
+  (nextRowWith in "Database.DuckDB.Simple.Result") executes the statement in
+  the mode of that fetch, and the cursor becomes active. A result that is not a
+  query result or a count of changed rows gives no rows, and the cursor becomes
+  exhausted.
+
+- StatementStreamActive. The cursor owns a result. Each next fetch reads from
+  this result in the mode of the result, also when the fetch asks for the
+  other mode. A materialized result has all its chunks in
+  statementStreamPendingChunks, and its result handle is null. A streaming
+  result keeps its result handle open, and it fetches each next chunk from
+  DuckDB.
+
+- StatementStreamExhausted. The cursor has no result, and each fetch gives no
+  row. A fetch that raises an error while it reads from an active cursor also
+  makes the cursor exhausted.
+
+Only a reset makes the cursor idle again: resetStatementStream, or the close of
+the statement (closeStatementState). Both release an active result with
+cleanupStatementStreamRef.
+
+The cursor owns each native chunk that it holds. fetchChunk writes a new chunk
+to the cursor before it reads the metadata of the chunk or makes the readers.
+Thus a release of the cursor also releases the chunk. finalizeStream releases
+the current chunk, the pending chunks, and the result, in that order.
+-}
+
 -- | Cursor state. Exhaustion persists until the caller resets the statement.
+-- See Note [Statement cursor].
 data StatementStreamState = StatementStreamIdle | StatementStreamExhausted | StatementStreamActive StatementStream
 
--- | An execution cursor or an owned collection of materialized chunks.
+-- | An execution cursor or an owned collection of materialized chunks. See
+-- Note [Statement cursor].
 data StatementStream = StatementStream
   { statementStreamResult :: DuckDBV2ResultHandle
   , statementStreamColumns :: [StatementStreamColumn]
@@ -249,7 +331,7 @@ data StatementStreamColumn = StatementStreamColumn
   , statementStreamColumnTree :: IORef (Maybe LogicalTypeRep)
   -- ^ The type tree of the column, converted from the vector of the first chunk
   -- that needs it. Each execution makes new columns, so the tree lives for one
-  -- execution.
+  -- execution. See Note [Type trees] in "Database.DuckDB.Simple.Materialize".
   }
 
 -- | One owned chunk and the readers that borrow its vectors.
@@ -260,7 +342,8 @@ data StatementStreamChunk = StatementStreamChunk
   , statementStreamChunkReaders :: [Int -> IO FieldValue]
   }
 
--- | Create an environment. Close it after all related work finishes.
+-- | Create an environment. Close it after all related work finishes. See
+-- Note [Native handle ownership].
 createEnvironment :: IO Environment
 createEnvironment = mask_ do
   checkLibraryVersion
@@ -291,8 +374,11 @@ checkLibraryVersion = do
 closeEnvironment :: Environment -> IO ()
 closeEnvironment Environment{environmentState} = closeEnvironmentState environmentState
 
--- | Mark the environment closed before releasing its native state, so that no
--- instance registers during the close. If the native destroy refuses with
+-- | Mark the environment closed before releasing its native state, so that a
+-- 'createInstance' that starts after the mark raises an error. A
+-- 'createInstance' that read the open state before the mark can still register
+-- its instance. Thus the caller must wait for child creation before the close
+-- (see 'closeEnvironment'). If the native destroy refuses with
 -- @ERROR_RESOURCE_IN_USE@, the native environment is still alive. In this case,
 -- put back the open state with the same child registry, and raise the error.
 -- 'closeChildren' empties the registry, and a later 'createInstance' can register
@@ -375,6 +461,7 @@ createConnection parent@Instance{instanceState} crss callbackLockWait releasePar
       InstanceClosed -> throwIO (SQLError "duckdb-simple: instance is closed" Nothing Nothing)
       InstanceOpen raw children -> pure (raw, children)
   raw <- output (c_duckdb_v2_connection_create rawInstance)
+  -- See Note [CRS types of a connection] in "Database.DuckDB.Simple.TypeCache".
   cache <- createTypeCache rawInstance raw crss `onException` destroy c_duckdb_v2_connection_destroy raw
   flip onException (destroyTypeCache cache `finally` destroy c_duckdb_v2_connection_destroy raw) do
     statements <- newChildren
@@ -386,7 +473,9 @@ createConnection parent@Instance{instanceState} crss callbackLockWait releasePar
 closeConnection :: Connection -> IO ()
 closeConnection Connection{connectionState} = closeConnectionState True connectionState
 
--- | GC releases the child first. Parent finalizers run after their references drop.
+-- | Close the state of a connection. The first argument tells whether to run
+-- 'connectionReleaseParent'. An explicit close gives 'True', and the finalizer
+-- gives 'False'. See Note [Native handle ownership].
 closeConnectionState :: Bool -> IORef ConnectionState -> IO ()
 closeConnectionState releaseParents ref = mask_ $ joinCleanup ref \case
   ConnectionClosed -> (ConnectionClosed, pure ())
@@ -400,7 +489,8 @@ closeConnectionState releaseParents ref = mask_ $ joinCleanup ref \case
         ]
     )
 
--- | Replace lifecycle state before running its cleanup action.
+-- | Replace lifecycle state before running its cleanup action. See
+-- Note [Native handle ownership].
 joinCleanup :: IORef a -> (a -> (a, IO ())) -> IO ()
 joinCleanup ref action = join (atomicModifyIORef' ref action)
 
@@ -462,7 +552,8 @@ createStatementFromParsedWithCollections parent query parsed collections = withQ
   handle <- alloca \slot -> do
     poke slot nullHandle
     flip onException (peek slot >>= destroy c_duckdb_v2_prepared_statement_destroy) do
-      -- DuckDB also rejects preparation while another result is open.
+      -- DuckDB also rejects preparation while another result is open. See
+      -- Note [Connection lock].
       withConnectionLock parent (runInterruptibleQuery parent (checked (c_duckdb_v2_prepared_statement_create raw parsed 0 slot)))
       peek slot
   flip onException (destroy c_duckdb_v2_prepared_statement_destroy handle) do
@@ -485,6 +576,7 @@ createStatementFromParsedWithCollections parent query parsed collections = withQ
           ConnectionClosed -> throwIO connectionClosedError
           ConnectionOpen{connectionStatements} -> pure connectionStatements
       -- The finalizer does not keep its weak key alive through this closure.
+      -- See Note [Native handle ownership].
       registerChild id (\case StatementOpen{} -> True; _ -> False) children ref (keepAlive parent (closeStatementState statement))
       pure statement
   where
@@ -541,7 +633,8 @@ mkPrepareError queryText msg =
     , sqlErrorQuery = Just queryText
     }
 
--- | Keep a Haskell owner reachable until an action finishes.
+-- | Keep a Haskell owner reachable until an action finishes. See
+-- Note [Native handle ownership].
 keepAlive :: a -> IO b -> IO b
 keepAlive owner (IO action) = IO \state -> keepAlive# owner state action
 
@@ -565,18 +658,66 @@ withConnectionHandle owner@Connection{connectionState} action =
       ConnectionClosed -> throwIO connectionClosedError
       ConnectionOpen{connectionHandle} -> action connectionHandle
 
--- | Serialize the native calls of one result. DuckDB permits one open result
--- for each connection and rejects a second execution. Hold the lock from the
--- execution until the result closes, so that threads which share a connection
--- wait for each other. An explicit stream keeps its result open between
--- fetches. It holds the lock for its execution and for each fetch. Do not run
--- user callbacks under this lock. The lock is not reentrant.
---
--- DuckDB runs callbacks while a native call holds the lock. A callback that
--- runs a statement on the same connection thus waits for its own caller. A
--- thread that 'withCallbackMark' marks waits for the lock at most the bound of
--- the connection ('connectionLockBound'), and then raises an 'SQLError' of the
--- type 'ErrorResourceInUse'. Each other thread waits without a bound.
+{- Note [Connection lock]
+~~~~~~~~~~~~~~~~~~~~~~~~~
+DuckDB permits one open result for each connection, and it rejects a second
+execution. DuckDB also rejects a preparation while another result is open.
+Thus connectionLock serializes these native calls of a connection, and the
+threads that share a connection wait for each other. withConnectionLock takes
+the lock.
+
+These calls take the lock:
+
+- The preparation of a statement (createStatementFromParsedWithCollections).
+
+- The metadata bind of a statement (statementSchemas).
+
+- The native calls of one result in the result window (withResultWindow). A
+  materialized result holds the lock from its execution until it closes. See
+  Note [Result window].
+
+- Each fetch of an explicit stream after the result window (fetchChunk in
+  "Database.DuckDB.Simple.Result").
+
+- The execution of an explicit Arrow stream, and each fetch of a batch
+  (foldArrowWith in "Database.DuckDB.Simple.Arrow.Internal").
+
+An explicit stream keeps its result open between two fetches. It holds the
+lock for its execution and for each fetch, but not between two fetches. A
+statement of another thread on the connection can then take the lock, and
+DuckDB rejects that statement while the result is open.
+
+Each fetch of an explicit stream holds the lock for this reason. The header
+says that a result has a single consumer, and that a bind runs at the same time
+only on a second connection. Without the lock, another thread can start a
+statement when the stream is finished in DuckDB but still has buffered chunks.
+A cancellation of the fetch then interrupts the query that runs on the
+connection, which is the query of the other thread.
+
+The lock is not reentrant. A thread that holds the lock must not take it again.
+Thus:
+
+- A call in the result window does not take the lock. A fetch of an explicit
+  stream after the result window takes the lock, because its thread does not
+  hold the lock then.
+
+- No step function runs under the lock. A step function is a function of the
+  user that a fold calls for each row or for each Arrow batch. It can run a
+  statement on the same connection, and that statement takes the lock. The
+  folds call a step function after the fetch, or after the result closes.
+
+DuckDB callbacks run while a native call holds the lock. withConnectionLock
+gives a bound to the wait of a thread that is inside a callback. See
+Note [Callback marks] in "Database.DuckDB.Simple.CallbackMark".
+-}
+
+-- | Run an action with the lock of the connection. The lock is not reentrant.
+-- Do not run a function of the user, such as the step of a fold, in the
+-- action. A thread with a callback mark waits for the lock at most the bound
+-- of the connection ('connectionLockBound'), and then raises an 'SQLError' of
+-- the type 'ErrorResourceInUse'. Each other thread waits without a bound. See
+-- Note [Connection lock], and Note [Callback marks] in
+-- "Database.DuckDB.Simple.CallbackMark".
 --
 -- The take of the lock is masked. The timeout of the bound can thus arrive only
 -- while 'takeMVar' blocks, and then the take has not occurred. After the take,
@@ -619,68 +760,52 @@ callbackLockWaitError micros =
     digits = dropWhileEnd (== '0') (let text = show fraction in replicate (6 - length text) '0' <> text)
     seconds = show whole <> (if null digits then "" else '.' : digits)
 
--- | The threads inside a DuckDB callback, with the number of marks of each
--- thread. DuckDB calls each callback in a new bound Haskell thread. The key of
--- a thread is its number ('threadNumber'). The stripe of a thread is its number
--- modulo the number of stripes. New threads get consecutive numbers, so
--- callbacks that run at the same time seldom change the same 'IORef'.
---
--- The key is not the 'ThreadId'. A 'ThreadId' in the table keeps its thread
--- reachable. Then the GHC runtime does not raise @BlockedIndefinitelyOnMVar@
--- in a callback that waits for a value that no thread can supply.
---
--- The mark is not a thread label. @threadLabel@ of GHC can make the garbage
--- collector crash for a thread without a label (GHC issue 27618).
-callbackMarks :: Array Int (IORef (IntMap.IntMap Int))
-callbackMarks =
-  unsafePerformIO (listArray (0, callbackMarkStripes - 1) <$> replicateM callbackMarkStripes (newIORef IntMap.empty))
-{-# NOINLINE callbackMarks #-}
+{- Note [Result window]
+~~~~~~~~~~~~~~~~~~~~~~~
+Each interruptible native call uses a helper thread. A bound caller, such as
+the main thread, changes operating system threads to wait for one. A result
+needs several native calls, for example its execution and its fetches. Thus
+withResultWindow runs the native calls of one result as one unit, in one helper
+thread. The caller changes threads once for the result, and not once for each
+call. The result window is the time in which this helper thread runs the
+action.
 
--- | The number of stripes in 'callbackMarks'.
-callbackMarkStripes :: Int
-callbackMarkStripes = 64
+withResultWindow takes the connection lock, and it runs the action with
+runInterruptible. The helper thread writes its ThreadId to connectionWindow
+before the action, and it writes Nothing after the action. runInterruptible
+compares connectionWindow with the current thread. If they are equal, it runs
+the work directly. Thus each interruptible call in the action, for example in
+executePreparedResult or fetchResultChunk, runs in the helper thread of the
+window. The connection lock lets a connection have at most one window at a
+time.
 
--- | The number of a Haskell thread. The GHC runtime gives each thread a
--- different number. @fromThreadId@ of base gives the same number, but base 4.18
--- does not have that function.
-foreign import ccall unsafe "rts_getThreadId" threadNumber :: ThreadId# -> CULLong
+The helper thread is interruptible as one unit. A cancellation interrupts
+DuckDB until the whole action returns. The caller can be cancelled after the
+helper thread has made its result. The release action of withResultWindow then
+releases that result. See Note [Interruptible native calls].
 
--- | The stripe of 'callbackMarks' for the current thread, and the key of the
--- thread in that stripe.
-callbackMarkStripe :: IO (IORef (IntMap.IntMap Int), Int)
-callbackMarkStripe = do
-  ThreadId thread <- myThreadId
-  let key = fromIntegral (threadNumber thread)
-  pure (callbackMarks ! (key `mod` callbackMarkStripes), key)
+These functions use a result window:
 
--- | Mark the current thread as a thread inside a DuckDB callback for the time
--- of the action. Then 'withConnectionLock' bounds the waits of the thread. The
--- entry adds 1 to the marks of the thread, and each exit subtracts 1. A thread
--- that already has the mark thus keeps it after the action. A thread that the
--- action starts has no mark.
-withCallbackMark :: IO a -> IO a
-withCallbackMark action = mask \restore -> do
-  (stripe, key) <- callbackMarkStripe
-  atomicModifyIORef' stripe \marks -> (IntMap.insertWith (+) key 1 marks, ())
-  restore action `finally` atomicModifyIORef' stripe \marks -> (IntMap.update unmark key marks, ())
-  where
-    unmark :: Int -> Maybe Int
-    unmark count = if count > 1 then Just (count - 1) else Nothing
+- executeParsedStatement.
 
--- | Tell if 'withCallbackMark' marks the current thread.
-hasCallbackMark :: IO Bool
-hasCallbackMark = do
-  (stripe, key) <- callbackMarkStripe
-  IntMap.member key <$> readIORef stripe
+- executeStatement in "Database.DuckDB.Simple".
 
--- | Run the native calls of one result as one unit. Hold the connection lock,
--- and run the calls in one helper thread. Each interruptible native call uses a
--- helper thread, and a bound caller, such as the main thread, changes operating
--- system threads to wait for one. With this function the caller changes threads
--- once for the result and not once for each call.
---
--- The caller can be cancelled after the helper thread has made its result. The
--- first argument releases that result. Do not run user callbacks in the action.
+- startStatementStream and collectParsedRows in "Database.DuckDB.Simple.Result".
+
+- foldArrowWith in "Database.DuckDB.Simple.Arrow.Internal", for a materialized
+  result.
+
+A row stream runs its execution and its first fetch in the window. Each later
+fetch is outside the window: it takes the connection lock and a helper thread
+of its own. An Arrow stream does not use a window. See Note [Connection lock].
+
+The action holds the connection lock. Thus no step function runs in the action.
+-}
+
+-- | Run the native calls of one result in one helper thread, and hold the
+-- connection lock. The first argument releases the result of the action when
+-- the caller is cancelled after the helper thread has made that result. Do not
+-- run a function of the user in the action. See Note [Result window].
 withResultWindow :: Connection -> (a -> IO ()) -> IO a -> IO a
 withResultWindow conn@Connection{connectionWindow} release action =
   withConnectionLock conn . runInterruptible conn release $ do
@@ -718,15 +843,56 @@ withQueryCString query@(Query text) action = do
 peekUtf8CString :: (Coercible a CString) => a -> IO Text
 peekUtf8CString ptr = Text.decodeUtf8 <$> BS.packCString (coerce ptr)
 
+{- Note [Interruptible native calls]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Native work that can run for a long time runs in a helper thread, so that an
+asynchronous exception can interrupt it. An asynchronous exception does not
+interrupt a thread that is in a foreign call: the documentation of throwTo says
+that the exception is not raised until the call has completed. Thus the caller
+does not make the call itself. runInterruptible starts the helper thread, and
+the caller waits for the outcome of the work. An asynchronous exception that
+the caller gets during this wait is a cancellation.
+
+On a cancellation, the caller does these steps:
+
+- It interrupts DuckDB with duckdb_v2_connection_interrupt until the work
+  returns. The header says that the interrupt is "A no-op when no query is
+  active". An interrupt that arrives before the query starts is thus lost, and
+  the caller repeats the interrupt.
+
+- It waits interruptRetryDelayMicros between two interrupts, so that the loop
+  is not a busy loop.
+
+- If the work gives a result, the caller releases it with the release action
+  of runInterruptible, because the caller does not return that result. If the
+  work raises an error, the caller ignores that error.
+
+- It raises the cancellation again.
+
+These steps are uninterruptible (uninterruptibleMask_). Thus the caller
+releases its inputs, such as the arrays that withBoundValues lends, only after
+the native work returns. Cancellation is cooperative: the native code, and each
+DuckDB callback that it runs, must return before the cleanup can finish.
+
+runInterruptibleQuery gives no release action. Its work must keep each native
+result in storage that the caller releases. For example, executeParsedResult
+gives the work a slot for the result handle. If an exception occurs, the caller
+destroys the handle in the slot.
+
+A call from the helper thread of the result window runs the work directly,
+without a new helper thread. See Note [Result window].
+-}
+
 -- | Run native work with cancellation and wait for it before releasing inputs.
 -- The work must keep its native results in storage that the caller releases.
+-- See Note [Interruptible native calls].
 runInterruptibleQuery :: Connection -> IO a -> IO a
 runInterruptibleQuery conn = runInterruptible conn (const (pure ()))
 
 -- | Run native work in a helper thread. On cancellation, interrupt DuckDB
 -- until the work returns, and release a result that the caller does not receive.
--- The helper thread of 'withResultWindow' is interruptible as one unit, so a call
--- from that thread runs the work directly.
+-- A call from the helper thread of 'withResultWindow' runs the work directly.
+-- See Note [Interruptible native calls] and Note [Result window].
 runInterruptible :: forall a. Connection -> (a -> IO ()) -> IO a -> IO a
 runInterruptible conn release action = do
   self <- myThreadId
@@ -741,10 +907,8 @@ runInterruptible conn release action = do
       let wait =
             tryReadMVar done >>= \case
               Just outcome -> pure outcome
-              -- The header says that duckdb_v2_connection_interrupt is "A
-              -- no-op when no query is active". An interrupt that arrives
-              -- before the query starts is thus lost. Repeat the interrupt
-              -- until the work returns.
+              -- Repeat the interrupt until the work returns. See
+              -- Note [Interruptible native calls].
               Nothing -> void (c_duckdb_v2_connection_interrupt handle nullPtr) >> threadDelay interruptRetryDelayMicros >> wait
           stop = uninterruptibleMask_ (wait >>= either (const (pure ())) release)
       outcome <- restore (readMVar done) `onException` stop
@@ -752,11 +916,13 @@ runInterruptible conn release action = do
 
 -- | Repeat the interrupt at most 100 times each second while the native work
 -- finishes. The interval prevents a busy loop. It can add up to one interval to
--- the time at which the caller sees the end of the work.
+-- the time at which the caller sees the end of the work. See
+-- Note [Interruptible native calls].
 interruptRetryDelayMicros :: Int
 interruptRetryDelayMicros = 10 * 1000
 
 -- | Execute a borrowed parsed statement. The caller owns the returned cursor.
+-- See Note [Interruptible native calls].
 executeParsedResult :: Connection -> Query -> DuckDBV2SqlStatementHandle -> IO DuckDBV2ResultHandle
 executeParsedResult conn query parsed = withQueryError query $ withConnectionHandle conn \raw -> mask_ $ alloca \slot -> do
   poke slot nullHandle
@@ -765,13 +931,15 @@ executeParsedResult conn query parsed = withQueryError query $ withConnectionHan
       checked (c_duckdb_v2_statement_execute raw parsed (ConstPtr nullPtr) (ConstPtr nullPtr) 0 slot)
     peek slot
 
--- | Execute a parsed statement directly and drain all its side effects.
+-- | Execute a parsed statement directly and drain all its side effects. See
+-- Note [Result window].
 executeParsedStatement :: Connection -> Query -> DuckDBV2SqlStatementHandle -> IO Int
 executeParsedStatement conn queryText parsed = withQueryError queryText . withResultWindow conn (const (pure ())) $
   bracket (executeParsedResult conn queryText parsed) (destroy c_duckdb_v2_result_destroy) \result ->
     fromIntegral <$> runInterruptibleQuery conn (output (c_duckdb_v2_result_drain result))
 
--- | Execute a prepared statement. The caller owns the returned result.
+-- | Execute a prepared statement. The caller owns the returned result. See
+-- Note [Interruptible native calls].
 executePreparedResult :: Statement -> IO DuckDBV2ResultHandle
 executePreparedResult stmt = withStatementHandle stmt \handle -> mask_ $ alloca \slot -> do
   poke slot nullHandle
@@ -791,6 +959,7 @@ withBoundValues stmt action = do
     action (ConstPtr namesPtr) (ConstPtr valuesPtr) (fromIntegral (length bindings))
 
 -- | Execute a prepared Arrow result and register it for statement cleanup.
+-- See Note [Interruptible native calls].
 executePreparedArrowResult :: Statement -> IO DuckDBV2ArrowResultHandle
 executePreparedArrowResult stmt = withStatementHandle stmt \handle -> mask_ $ alloca \slot -> do
   poke slot nullHandle
@@ -820,7 +989,8 @@ clearArrowResultRef ref =
 withResult :: Statement -> (DuckDBV2ResultHandle -> IO a) -> IO a
 withResult stmt = bracket (executePreparedResult stmt) (destroy c_duckdb_v2_result_destroy)
 
--- | Fetch one owned chunk. A null handle denotes completion.
+-- | Fetch one owned chunk. A null handle denotes completion. See
+-- Note [Interruptible native calls].
 fetchResultChunk :: Connection -> DuckDBV2ResultHandle -> IO DuckDBV2DataChunkHandle
 fetchResultChunk conn result = mask_ $ alloca \slot -> do
   poke slot nullHandle
@@ -832,7 +1002,8 @@ fetchResultChunk conn result = mask_ $ alloca \slot -> do
 destroyDataChunk :: DuckDBV2DataChunkHandle -> IO ()
 destroyDataChunk = destroy c_duckdb_v2_data_chunk_destroy
 
--- | Release the active cursor and return to the idle state.
+-- | Release the active cursor and return to the idle state. See
+-- Note [Statement cursor].
 cleanupStatementStreamRef :: IORef StatementStreamState -> IO ()
 cleanupStatementStreamRef ref = mask_ do
   state <- atomicModifyIORef' ref (StatementStreamIdle,)

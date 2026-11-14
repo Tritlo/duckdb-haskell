@@ -9,7 +9,7 @@
 -- Description : Round trips for finite dates and native temporal infinities.
 module TimeTests (timeTests) where
 
-import Control.Exception (IOException, try)
+import Control.Exception (IOException, fromException, try)
 import Control.Monad (forM_, void)
 import Data.Array (Array, listArray)
 import Data.Int (Int64)
@@ -29,6 +29,7 @@ import Database.DuckDB.Simple.LogicalRep (
   UnionMemberType (..),
   UnionValue (..),
  )
+import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.Time
 import Database.DuckDB.Simple.Variant (Variant (..))
 import GHC.Generics (Generic)
@@ -93,6 +94,18 @@ timeTests =
           assertConversionError (query_ conn "SELECT 'infinity'::TIMESTAMPTZ" :: IO [Only UTCTime])
           assertConversionError (query_ conn "SELECT 'infinity'::TIMESTAMP" :: IO [Only TimeOfDay])
           (query_ conn "SELECT 42" :: IO [Only Int]) >>= (@?= [Only 42])
+      , testCase "a conversion error gives the DuckDB names TIMESTAMPTZ and TIMETZ" $ withConnection ":memory:" $ \conn -> do
+          [(timestamp, time)] <- query_ conn "SELECT TIMESTAMPTZ '2000-01-02 03:04:05+00', TIMETZ '03:04:05+00'"
+          forM_ [(timestamp, "TIMESTAMPTZ"), (time, "TIMETZ")] $ \(value, name) ->
+            case fromField Field{fieldName = "value", fieldIndex = 0, fieldValue = value} :: Ok Int64 of
+              Errors errors -> map (fmap errSQLType . fromException) errors @?= [Just name]
+              Ok number -> assertFailure ("expected a conversion error, got " <> show number)
+          -- The message of a query has the same name.
+          forM_ [("SELECT TIMESTAMPTZ '2000-01-02 03:04:05+00'", " has type TIMESTAMPTZ "), ("SELECT TIMETZ '03:04:05+00'", " has type TIMETZ ")] $ \(sql, expected) -> do
+            result <- try (query_ conn sql :: IO [Only Int64])
+            case result of
+              Left SQLError{sqlErrorMessage = message} -> assertBool (Text.unpack message) (expected `Text.isInfixOf` message)
+              Right rows -> assertFailure ("expected a conversion error, got " <> show rows)
       , testCase "custom FromField receives native infinity" $ withConnection ":memory:" $ \conn ->
           ( query_ conn "SELECT value FROM (VALUES ('-infinity'::DATE), (DATE '2000-01-02'), ('infinity'::DATE)) t(value) ORDER BY value"
               :: IO [Only InfinitySign]

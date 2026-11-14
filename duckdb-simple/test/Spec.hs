@@ -1249,6 +1249,31 @@ functionsTests =
         rows <- query_ conn "SELECT hs_stateful_counter() FROM range(3)" :: IO [Only Int]
         close conn
         assertEqual "stateful rows" [Only 1, Only 2, Only 3] rows
+    , testCase "returns text rows of each length over more than one chunk" $
+        withConnection ":memory:" \conn -> do
+          let texts =
+                [ Just "a"
+                , Nothing
+                , Just "b"
+                , Just ""
+                , Just "a\0b"
+                , Just "123456789012"
+                , Just "1234567890123"
+                , Just (Text.replicate 4000 "abcdefghijklmnopqrstuvwxy")
+                , Just "liður ð þ ✓ 😀"
+                ]
+              pick (i :: Int64) = texts !! fromIntegral (i `mod` 9) :: Maybe Text.Text
+          createFunction conn "hs_pick" pick
+          createFunction conn "hs_echo" (\(text :: Maybe Text.Text) -> text)
+          -- 5000 rows fill more than one chunk. A NULL row is between two text rows.
+          rows <- query_ conn "SELECT hs_pick(i) FROM range(5000) t(i) ORDER BY i"
+          assertEqual "text rows" (map (Only . pick) [0 .. 4999]) rows
+          -- DuckDB compares the bytes in the vector, also the inline bytes after a short text.
+          query_
+            conn
+            "SELECT bool_and(hs_pick(i) IS NOT DISTINCT FROM CASE i % 9 WHEN 0 THEN 'a' WHEN 1 THEN NULL WHEN 2 THEN 'b' WHEN 3 THEN '' WHEN 4 THEN 'a' || chr(0) || 'b' WHEN 5 THEN '123456789012' WHEN 6 THEN '1234567890123' WHEN 7 THEN repeat('abcdefghijklmnopqrstuvwxy', 4000) ELSE 'liður ð þ ✓ 😀' END) FROM range(5000) t(i)"
+            >>= (@?= [Only True])
+          query_ conn "SELECT hs_echo('x'), hs_echo(NULL)" >>= (@?= [(Just "x" :: Maybe Text.Text, Nothing :: Maybe Text.Text)])
     ]
 
 transactionTests :: TestTree

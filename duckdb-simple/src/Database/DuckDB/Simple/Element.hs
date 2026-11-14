@@ -51,21 +51,52 @@ import GHC.Exts (Ptr (..), Word (W#))
 import GHC.Num.Integer (integerFromAddr)
 import GHC.Records (getField)
 
--- | Read a validity bit of a mask from @duckdb_v2_vector_get_view@. Each
--- @uint64_t@ word covers 64 rows: bit N of word W is row W*64+N, and a set bit
--- means valid. The header gives this layout in the comment of
--- @duckdb_v2_vector_flat_get_validity_mutable@. The V2 API has no call that
--- reads the validity of one row, so this function reads the mask memory. The
--- header does not say what a null mask pointer means. In DuckDB 2.0.0 a null
--- pointer means that the vector has no mask, and then every row is valid.
+{- Note [Vector memory layouts]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Some readers and writers use the memory of a vector directly. These are the
+layouts that they use.
+
+The validity mask. Each uint64_t word covers 64 rows: bit N of word W is row
+W*64+N, and a set bit means valid. The header gives this layout in the comment
+of duckdb_v2_vector_flat_get_validity_mutable.
+
+- Read (chunkIsRowValid). The V2 API has no call that reads the validity of
+  one row, so the reader reads the mask memory from duckdb_v2_vector_get_view.
+  The header does not say what a null mask pointer means. In DuckDB 2.0.0 a
+  null pointer means that the vector has no mask, and then every row is valid.
+
+- Write (markValid and markInvalid). The writer sets or clears one bit of the
+  mask from duckdb_v2_vector_flat_get_validity_mutable. The header says that
+  this call allocates the mask on first use, so the pointer is never null. The
+  header also says that a raw mask write marks only the rows of this vector,
+  and that a NULL STRUCT or ARRAY row needs duckdb_v2_vector_set_null. The
+  writer writes only the scalar types of ScalarType.
+
+The bytes slot. A VARCHAR, BLOB, BIT, or BIGNUM element is a 16-byte
+duckdb_v2_bytes value. The byte length is a uint32_t at byte 0. A value of at
+most DUCKDB_V2_BYTES_INLINE_LENGTH (12) bytes follows the length, at byte 4.
+For a longer value, the slot holds the first 4 bytes of the value at byte 4 and
+the address of the value at byte 8. The header defines the slot in the comment
+of struct duckdb_v2_bytes.
+
+- Read (chunkDecodeBlob). The reader reads the generated fields of the union.
+
+- Write (writeArenaText). The writer needs no factory. It writes the length and
+  the bytes at their offsets. A longer value goes to the arena of the vector.
+
+The storage of a DECIMAL or ENUM element depends on the type (decimalStorage and
+enumStorage). The header of duckdb_v2_vector_get_view gives both mappings.
+-}
+
+-- | Read a validity bit of a mask from @duckdb_v2_vector_get_view@. A null
+-- mask pointer gives 'True' for each row. See Note [Vector memory layouts].
 chunkIsRowValid :: Ptr Word64 -> DuckDBIdx -> IO Bool
 chunkIsRowValid validity row
   | validity == nullPtr = pure True
   | otherwise = (\word -> testBit word (fromIntegral (row `rem` 64))) <$> peekElemOff validity (fromIntegral (row `div` 64))
 
--- | Copy one generated V2 byte value, including interior NUL bytes. The header
--- type @duckdb_v2_bytes@ holds the bytes inline when the length is at most
--- @DUCKDB_V2_BYTES_INLINE_LENGTH@, and behind its pointer otherwise.
+-- | Copy one generated V2 byte value, including interior NUL bytes. See
+-- Note [Vector memory layouts].
 chunkDecodeBlob :: Ptr Void -> DuckDBIdx -> IO BS.ByteString
 chunkDecodeBlob dataPtr row = do
   -- Read each field through its generated field pointer. A getField on the

@@ -89,6 +89,11 @@ data Pair = Pair {pairName :: Text, pairValue :: Int64}
   deriving stock (Eq, Show, Generic)
   deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB Pair)
 
+-- | A generic record with an ARRAY field.
+data Scored = Scored {scoredName :: Text, scoredValues :: Array Int Int32}
+  deriving stock (Eq, Show, Generic)
+  deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB Scored)
+
 -- | Generic nullary constructors retain their existing UNION schema.
 data Colour = Red | Blue
   deriving stock (Eq, Show, Generic)
@@ -139,6 +144,20 @@ valueRegressionTests =
           >>= (@?= [("STRUCT(pairName VARCHAR, pairValue BIGINT)[3]", pairs)])
         let nested = listArray (0, 1) [listArray (0, 1) [1, 2], listArray (0, 1) [3, 4]] :: Array Int (Array Int Int64)
         (query conn "SELECT typeof(?), ?" (nested, nested) :: IO [(Text, Array Int (Array Int Int64))]) >>= (@?= [("BIGINT[2][2]", nested)])
+    , testCase "generic records with ARRAY fields bind with the size of the value" $ withConnection ":memory:" \conn -> do
+        let first = Scored "x" (listArray (0, 2) [1, 2, 3])
+            second = Scored "y" (listArray (0, 2) [4, 5, 6])
+            rowType = "STRUCT(scoredName VARCHAR, scoredValues INTEGER[3])"
+        (query conn "SELECT typeof(?), ?" (first, first) :: IO [(Text, Scored)]) >>= (@?= [(rowType, first)])
+        _ <- execute_ conn "CREATE TABLE scored (s STRUCT(scoredName VARCHAR, scoredValues INTEGER[3]))"
+        _ <- executeMany conn "INSERT INTO scored VALUES (?)" [Only first, Only second]
+        (query_ conn "SELECT s FROM scored ORDER BY s.scoredName" :: IO [Only Scored]) >>= (@?= [Only first, Only second])
+        let records = listArray (0, 1) [first, second]
+        (query conn "SELECT typeof(?), ?" (records, records) :: IO [(Text, Array Int Scored)]) >>= (@?= [(rowType <> "[2]", records)])
+        result <- try (query conn "SELECT ?" (Only (Scored "z" (listArray (0, -1) []))))
+        case result of
+          Left SQLError{sqlErrorMessage} -> assertBool (Text.unpack sqlErrorMessage) ("an ARRAY must have at least one element" `Text.isInfixOf` sqlErrorMessage)
+          Right (_ :: [Only Text]) -> assertFailure "expected the DuckDB empty ARRAY error"
     , testCase "empty arrays of record elements report the V2 limit" $ withConnection ":memory:" \conn -> do
         result <- try (query conn "SELECT ?" (Only (listArray (0, -1) [] :: Array Int Pair)))
         case result of
@@ -168,6 +187,16 @@ valueRegressionTests =
             assertBool (show err) ("unsupported scalar conversion for LogicalTypeIdBigInt from FieldText \"x\"" `Text.isInfixOf` Text.pack (show err))
           Right _ -> assertFailure "expected a conversion error for the third element"
         (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
+    , testCase "a declared NULL type binds NULL and rejects a value that is not NULL" $ withConnection ":memory:" \conn -> do
+        let sqlNull = LogicalTypeScalar LogicalTypeIdSQLNull
+            nullStruct = singleField sqlNull FieldNull
+        (query conn "SELECT typeof(?), CAST(? AS VARCHAR)" (nullStruct, nullStruct) :: IO [(Text, Text)])
+          >>= (@?= [("STRUCT(\"value\" \"NULL\")", "{'value': NULL}")])
+        result <- try (query conn "SELECT ?" (Only (singleField sqlNull (FieldInt32 7))) :: IO [Only FieldValue])
+        case result of
+          Left (err :: IOException) ->
+            assertBool (show err) ("unsupported scalar conversion for LogicalTypeIdSQLNull from FieldInt32 7" `Text.isInfixOf` Text.pack (show err))
+          Right _ -> assertFailure "expected a conversion error for a value that is not NULL"
     , testCase "GEOMETRY decodes as well-known binary" $ withConnection ":memory:" \conn -> do
         [Only bytes] <- query_ conn "SELECT 'POINT(1 2)'::GEOMETRY" :: IO [Only BS.ByteString]
         BS.length bytes @?= 21

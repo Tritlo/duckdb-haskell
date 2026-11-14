@@ -158,6 +158,19 @@
   each type, and a bind copies it. A name that DuckDB drops, for example a blank
   name, fails the open.
 - Empty `Array` parameters raise `SQLError`. Use an SQL empty LIST.
+- A generic record with an `Array` field that has elements can be bound. The
+  value gives the ARRAY size. DuckDB rejects the record when no value gives the
+  size: an `Array` field with the value `Nothing`, an `Array` inside a LIST,
+  ARRAY, or MAP field, and a sum type with an `Array` constructor fail with
+  "ARRAY type size must be at least 1".
+- A value that is not NULL with the declared type SQLNULL raises a conversion
+  error. Before, it was bound as NULL with no error. This applies to a manual
+  `StructValue`, `TupleValue`, or `UnionValue`, to a LIST of that type, and to
+  a `Variant` that holds such a value.
+- `errSQLType` of a `ResultError`, and the `SQLError` message of a failed
+  conversion, give the DuckDB type names `TIMESTAMPTZ` and `TIMETZ`. Earlier
+  versions gave `TIMESTAMP_TZ` and `TIME_TZ`, which DuckDB does not accept as
+  type names.
 - Allow session variables to supply omitted named parameters. Only too many
   named parameters raise `FormatError`.
 - Reject duplicate named parameters with DuckDB's ASCII case rules. Keep

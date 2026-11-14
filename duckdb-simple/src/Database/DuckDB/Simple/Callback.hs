@@ -28,7 +28,8 @@ import Control.Monad (when)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import qualified Data.Text as Text
 import Data.Void (Void)
-import Database.DuckDB.Simple.Internal (Connection, withCallbackMark, withConnectionHandle)
+import Database.DuckDB.Simple.CallbackMark (withCallbackMark)
+import Database.DuckDB.Simple.Internal (Connection, withConnectionHandle)
 import Database.DuckDB.Simple.Native
 import Foreign.Marshal.Utils (with)
 import Foreign.Ptr (FunPtr, Ptr, castFunPtr, castPtr, freeHaskellFunPtr, nullFunPtr, nullPtr)
@@ -85,8 +86,50 @@ installOptional value action = maybe (pure (pure ())) action value
 guardContext :: (info -> DuckDBV2ContextHandle -> IO ()) -> info -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
 guardContext callback info context err = runCallback err (callback info context)
 
+{- Note [Callback ownership]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The library gives two kinds of Haskell values to DuckDB. DuckDB holds each
+value as a stable pointer with a destructor, in an opaque structure
+(attachOpaque). After a setter takes the pointer, DuckDB owns it, and only the
+destructor frees it.
+
+- Callback resources. withCallbackResourcesFinally collects the cleanup of the
+  function pointers of one registration, and its final action, in one IO
+  action. It gives a stable pointer to this action to the user data of the
+  registered object, with the destructor
+  duckdb_simple_release_callback_resources. This destructor runs the action and
+  frees the stable pointer.
+
+- Callback state. transferCallbackState gives a stable pointer to one value to
+  a state slot, for example the bind data, the init data, or the global state.
+  The destructor duckdb_simple_release_callback_state frees only the stable
+  pointer. readCallbackState reads the slot and dereferences the pointer. The
+  caller supplies the type, so it must be the type of the value in the slot.
+
+These two rules are the behaviour of DuckDB 2.0.0. The header does not state
+them.
+
+- A setter that fails has not taken the pointer. Thus the handlers of
+  withCallbackResourcesFinally and transferCallbackState free it.
+
+- A setter for init data, batch data, global state, or local state does not
+  release a value that it replaces. Thus give one value to each slot.
+
+The two destructors are foreign exports, and DuckDB gets their static
+addresses. A static address needs no release. A function pointer of a wrapper
+import must be freed with freeHaskellFunPtr after its last call. The destructor
+is the last call for its object, so no later call could free such a pointer.
+The destructors mask asynchronous exceptions (mask_). They have no error
+channel, so they contain each exception (ignoreCallbackExceptions). Other
+modules attach destructors of their own with attachOpaque, for example
+duckdb_simple_release_aggregate_states in
+"Database.DuckDB.Simple.Typed.Aggregate" and duckdb_simple_release_copy_binding
+in "Database.DuckDB.Simple.Copy.Internal".
+-}
+
 -- | Acquire callbacks and transfer their cleanup to a DuckDB object.
--- The object must be non-null. Its destructor must run after the action.
+-- The object must be non-null. Its destructor must run after the action. See
+-- Note [Callback ownership].
 withCallbackResources
   :: (Allocator -> IO r)
   -> (Ptr Void -> DuckDBV2OpaqueDestroyFn -> IO ())
@@ -113,24 +156,23 @@ withCallbackResourcesFinally finalizer acquire attach action = mask \restore -> 
   resources <- acquire allocate `onException` cleanup
   stable <- newStablePtr cleanup `onException` cleanup
   -- A setter that fails has not taken the pointer, so this handler frees it.
-  -- The header does not state this. It is the behaviour of DuckDB 2.0.0.
+  -- See Note [Callback ownership].
   attach (castPtr (castStablePtrToPtr stable)) callbackResourcesDestructor
     `onException` (freeStablePtr stable >> cleanup)
   restore (action resources)
 
 -- | Transfer one state value to a DuckDB callback state slot.
--- Use each slot once. In DuckDB 2.0.0, a setter for init data, batch data, global
--- state, or local state does not release a value that it replaces. The header
--- does not state this behaviour.
+-- Use each slot once. See Note [Callback ownership].
 transferCallbackState :: (Ptr Void -> DuckDBV2OpaqueDestroyFn -> IO ()) -> a -> IO ()
 transferCallbackState attach state = mask_ do
   stable <- newStablePtr state
   -- A setter that fails has not taken the pointer, so this handler frees it.
-  -- See the same handler in 'withCallbackResourcesFinally'.
+  -- See Note [Callback ownership].
   attach (castPtr (castStablePtrToPtr stable)) callbackStateDestructor
     `onException` freeStablePtr stable
 
 -- | Read state stored with 'transferCallbackState'. The caller supplies its type.
+-- See Note [Callback ownership].
 readCallbackState :: (Ptr (Ptr Void) -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO a
 readCallbackState getter = do
   ptr <- output getter
@@ -140,9 +182,10 @@ readCallbackState getter = do
 -- | Convert callback exceptions to native V2 diagnostics. Mark the thread as a
 -- thread inside a DuckDB callback for the time of the action, so that its
 -- waits for a connection lock have the bound of the connection. See
--- 'Database.DuckDB.Simple.Internal.withConnectionLock'. Each DuckDB callback
--- with user code runs through this function, except the flush function of a
--- log sink when DuckDB destroys the sink.
+-- 'Database.DuckDB.Simple.Internal.withConnectionLock' and
+-- Note [Callback marks] in "Database.DuckDB.Simple.CallbackMark". Each DuckDB
+-- callback with user code runs through this function, except the flush function
+-- of a log sink when DuckDB destroys the sink.
 runCallback :: Ptr DuckDBV2ErrorInfoHandle -> IO () -> IO ()
 runCallback err action = mask \restore -> do
   outcome <- try (withCallbackMark (restore action))
@@ -173,7 +216,8 @@ failureText failure
   | Just ioError' <- fromException failure, isUserError ioError' = ioeGetErrorString ioError'
   | otherwise = displayException failure
 
--- | Transfer an opaque resource to a checked V2 setter.
+-- | Transfer an opaque resource to a checked V2 setter. See
+-- Note [Callback ownership].
 attachOpaque
   :: (Ptr DuckDBV2Opaque -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error)
   -> Ptr Void
@@ -188,7 +232,8 @@ ignoreCallbackExceptions :: IO () -> IO ()
 ignoreCallbackExceptions action = mask \restore ->
   restore action `catch` \(_ :: SomeException) -> pure ()
 
--- | Release object-owned callbacks through a static C entry point.
+-- | Release object-owned callbacks through a static C entry point. See
+-- Note [Callback ownership].
 releaseCallbackResources :: Ptr Void -> IO ()
 releaseCallbackResources raw =
   mask_
@@ -199,7 +244,8 @@ releaseCallbackResources raw =
         let stable = castPtrToStablePtr (castPtr raw) :: StablePtr (IO ())
         (deRefStablePtr stable >>= id) `finally` freeStablePtr stable
 
--- | Release callback state independently of the registered function.
+-- | Release callback state independently of the registered function. See
+-- Note [Callback ownership].
 releaseCallbackState :: Ptr Void -> IO ()
 releaseCallbackState raw =
   mask_

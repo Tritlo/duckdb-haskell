@@ -166,7 +166,10 @@
   parameter, such a value raises an `SQLError` of the type
   `ErrorInputOutOfRange`. `typeof(?)` is thus HUGEINT for an `Integer` in the
   HUGEINT range. Bind a `BigNum` to bind a BIGNUM value in each case. An
-  `Array` of `Integer` values still has BIGNUM elements.
+  `Array` of `Integer` or `Natural` values takes the element type of its
+  target when that type is an integer type or DECIMAL, so DuckDB checks the
+  range of each element. Before, a negative element for an unsigned array
+  column was stored as a wrapped value.
 - A generic record with an `Array` field that has elements can be bound. The
   value gives the ARRAY size. DuckDB rejects the record when no value gives the
   size: an `Array` field with the value `Nothing`, an `Array` inside a LIST,

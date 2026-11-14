@@ -159,8 +159,10 @@ that can hold it. Bind a `BigNum` to bind a BIGNUM value in each case.
 In DuckDB 2.0.0 the casts from BIGNUM to the integer types have defects: some
 fail, and some store a wrong value with no error
 ([issue 41](https://github.com/Tritlo/duckdb-haskell/issues/41)). An `Array` of
-`Integer` values has BIGNUM elements, so it has these defects for an array
-column of an integer type.
+`Integer` or `Natural` values takes the element type of its target when that
+type is an integer type or DECIMAL, so DuckDB checks each element. A `BigNum`
+value, and an `Array` of `BigNum` values, still have these defects for an
+integer target.
 
 `query_` and `execute_` parse all input statements before execution. A syntax
 error prevents every statement in that input from running. An execution error

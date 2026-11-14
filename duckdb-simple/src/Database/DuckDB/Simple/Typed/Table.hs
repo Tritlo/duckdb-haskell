@@ -21,7 +21,7 @@ import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.Callback (attachOpaque, readCallbackState, transferCallbackState)
-import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..))
+import Database.DuckDB.Simple.FromField (Field (..))
 import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow)
 import Database.DuckDB.Simple.Materialize (materializeValue, rejectRows)
 import Database.DuckDB.Simple.Native
@@ -141,10 +141,8 @@ splitRows = go []
 readArguments :: (FromRow params) => Text -> Int -> DuckDBV2FactoryHandle -> DuckDBV2FunctionBindInfoHandle -> IO params
 readArguments name count factory input = do
   fields <- forM (take count [0 ..]) \index ->
-    bracket (output (c_duckdb_v2_function_bind_get_arg_value input (fromIntegral index))) destroyValue \value -> do
-      isNull <- output (c_duckdb_v2_value_is_null value)
-      Field (argumentName index) index
-        <$> if isNull /= 0 then pure FieldNull else materializeValue unexpectedVariant factory value
+    bracket (output (c_duckdb_v2_function_bind_get_arg_value input (fromIntegral index))) destroyValue \value ->
+      Field (argumentName index) index <$> materializeValue unexpectedVariant factory value
   case parseRow fromRow fields of
     Ok params -> pure params
     Errors failures -> throwIO (userError ("duckdb-simple: " <> Text.unpack name <> ": " <> conversionMessage failures))

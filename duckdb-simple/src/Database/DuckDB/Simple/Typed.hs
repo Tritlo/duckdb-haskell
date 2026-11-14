@@ -122,9 +122,9 @@ argumentName index = Text.pack ("arg" <> show index)
 
 -- | Prepare a reader for the rows of an argument vector. The first argument is
 -- the index of the argument, from 0. The reader gives the field of a row, with
--- the name from 'argumentName'. A NULL row gives 'FieldNull'. A row of a type
--- that is or contains VARIANT or GEOMETRY raises an error. The reader must not
--- outlive the vector.
+-- the name from 'argumentName'. A NULL row gives 'FieldNull', also a NULL
+-- VARIANT or GEOMETRY row. A row that holds a VARIANT or GEOMETRY value raises
+-- an error. The reader must not outlive the vector.
 prepareArgumentReader :: Int -> DuckDBV2VectorHandle -> IO (Int -> IO Field)
 prepareArgumentReader index vector = do
   let unsupported = rejectRows (throwIO (userError "duckdb-simple: the type of a typed argument cannot be or contain VARIANT or GEOMETRY"))

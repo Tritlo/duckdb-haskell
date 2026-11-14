@@ -71,13 +71,20 @@ data FallbackReaders = FallbackReaders
   , geometryReader :: VectorReader
   }
 
--- | A reader for a type that the caller cannot read. It raises the error when a
--- row is read, not when the vector is prepared. Thus a value of a nested type
--- with no row of that type, such as an empty VARIANT list or a NULL STRUCT, gives
--- its value, and each row of that type raises the same error. A NULL row of
--- that type raises too.
+-- | A reader for a type that the caller cannot read. It reads each row when the
+-- row is read, not when the vector is prepared. A NULL row gives 'FieldNull',
+-- and a row that holds a value raises the error. Thus a value of a nested type
+-- with no value of that type, such as an empty VARIANT list or a NULL STRUCT,
+-- gives its value. The header commits to no view layout for VARIANT and
+-- GEOMETRY, so the reader reads each row with @duckdb_v2_vector_get_value@,
+-- whose row is logical. 'prepareVectorReaderWith' flattens the vector, so the
+-- row that the reader gets is the logical row. The reader creates and destroys
+-- one native value for each row.
 rejectRows :: IO FieldValue -> VectorReader
-rejectRows raise _ = pure (const raise)
+rejectRows raise vector = pure \row ->
+  bracket (output (c_duckdb_v2_vector_get_value vector (fromIntegral row))) destroyValue \value -> do
+    isNull <- output (c_duckdb_v2_value_is_null value)
+    if isNull /= 0 then pure FieldNull else raise
 
 -- | Copy VARIANT rows before releasing the borrowed metadata connection. The
 -- state belongs to that connection.

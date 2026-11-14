@@ -11,6 +11,7 @@ module TypedRegistrationTests (typedRegistrationTests) where
 
 import Control.Exception (bracket, throwIO, try)
 import Control.Monad (forM_, void, when)
+import Data.Array (elems)
 import qualified Data.ByteString as BS
 import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int16, Int32, Int64, Int8)
@@ -48,6 +49,7 @@ import Database.DuckDB.Simple.Copy (
   registerMultiFileFunction,
  )
 import Database.DuckDB.Simple.FromField (BigNum (..), Field (..), FieldValue (..), bsFromBool)
+import Database.DuckDB.Simple.LogicalRep (StructField (..), StructValue (..))
 import Database.DuckDB.Simple.Pragma (PragmaCallback (..), registerPragmaFunction)
 import Database.DuckDB.Simple.Registration (
   FunctionParameter (..),
@@ -95,7 +97,7 @@ typedRegistrationTests =
     , testCase "pragma row has the order of the declaration" testPragmaRow
     , testCase "exec pragma counts its calls" testPragmaExec
     , testCase "pragma argument rows that do not decode" testPragmaDecodeErrors
-    , testCase "pragma arguments with VARIANT types decode when no row holds a VARIANT" testPragmaVariantRows
+    , testCase "pragma arguments with VARIANT types give NULL rows and reject VARIANT values" testPragmaVariantRows
     , testCase "pragma exceptions become SQL errors" testPragmaExceptions
     , testCase "custom option update accepts and rejects BIGINT values" testOptionUpdate
     , testCase "custom option update gets VARCHAR values and can reject RESET" testOptionText
@@ -192,12 +194,14 @@ testCastErrors = withConnection ":memory:" \conn -> do
   assertSqlError
     "cannot convert argument arg0 from TEXT to Int64"
     (query_ conn "SELECT CAST('7'::VARCHAR AS typed_number)::BIGINT" :: IO [Only Int64])
-  -- A typed argument cannot be VARIANT.
+  -- A typed argument cannot be a VARIANT value. A NULL VARIANT row gives NULL.
   registerCustomType conn "typed_from_variant" (TypeExpression "BIGINT")
   createCast conn (TypeExpression "VARIANT") (TypeExpression "typed_from_variant") \(value :: Int64) -> Right value
   assertSqlError
     "the type of a typed argument cannot be or contain VARIANT or GEOMETRY"
     (query_ conn "SELECT CAST(1::VARIANT AS typed_from_variant)::BIGINT" :: IO [Only Int64])
+  query_ conn "SELECT CAST(v AS typed_from_variant)::BIGINT FROM (VALUES (NULL::VARIANT)) t(v)"
+    >>= (@?= [Only (Nothing :: Maybe Int64)])
   -- TRY_CAST gives NULL for these failed rows.
   query_ conn "SELECT TRY_CAST(13::BIGINT AS typed_partial)::BIGINT, TRY_CAST('7'::VARCHAR AS typed_number)::BIGINT"
     >>= (@?= [(Nothing :: Maybe Int64, Nothing :: Maybe Int64)])
@@ -314,23 +318,31 @@ testPragmaDecodeErrors = withConnection ":memory:" \conn -> do
   query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
 
 -- | Decode a pragma argument whose type contains VARIANT when no row of the
--- argument holds a VARIANT: an empty VARIANT list and a NULL STRUCT. A VARIANT
--- row raises the error of the pragma argument, also a NULL VARIANT row.
+-- argument holds a VARIANT value: an empty VARIANT list, a NULL STRUCT, and NULL
+-- VARIANT rows. A row that holds a VARIANT value raises the error of the pragma
+-- argument.
 testPragmaVariantRows :: Assertion
 testPragmaVariantRows = withConnection ":memory:" \conn -> do
+  seen <- newIORef FieldNull
   let register name declaration =
         registerPragmaFunction conn name [parameter "value" (TypeExpression declaration)] $
-          QueryPragma \(Only (value :: FieldValue)) -> pure ("SELECT '" <> Text.pack (show value) <> "'")
+          QueryPragma \(Only value) -> writeIORef seen value >> pure "SELECT 1"
+      decoded sql = do
+        query_ conn sql >>= (@?= [Only (1 :: Int64)])
+        readIORef seen
+  register "typed_variant_scalar" "VARIANT"
   register "typed_variant_list" "VARIANT[]"
   register "typed_variant_struct" "STRUCT(v VARIANT)"
-  query_ conn "PRAGMA typed_variant_list([]::VARIANT[])" >>= (@?= [Only ("FieldList []" :: Text)])
-  query_ conn "PRAGMA typed_variant_struct(NULL::STRUCT(v VARIANT))" >>= (@?= [Only ("FieldNull" :: Text)])
+  decoded "PRAGMA typed_variant_scalar(NULL::VARIANT)" >>= (@?= FieldNull)
+  decoded "PRAGMA typed_variant_list([]::VARIANT[])" >>= (@?= FieldList [])
+  decoded "PRAGMA typed_variant_list([NULL]::VARIANT[])" >>= (@?= FieldList [FieldNull])
+  decoded "PRAGMA typed_variant_struct(NULL::STRUCT(v VARIANT))" >>= (@?= FieldNull)
+  decoded "PRAGMA typed_variant_struct({'v': NULL}::STRUCT(v VARIANT))" >>= \case
+    FieldStruct struct -> map structFieldValue (elems (structValueFields struct)) @?= [FieldNull]
+    other -> assertFailure ("expected a STRUCT value, got " <> show other)
   assertSqlError
     "the type of a pragma argument cannot be or contain VARIANT"
-    (query_ conn "PRAGMA typed_variant_list([1::VARIANT])" :: IO [Only Text])
-  assertSqlError
-    "the type of a pragma argument cannot be or contain VARIANT"
-    (query_ conn "PRAGMA typed_variant_list([NULL]::VARIANT[])" :: IO [Only Text])
+    (query_ conn "PRAGMA typed_variant_list([1::VARIANT])" :: IO [Only Int64])
 
 -- | Make an SQL error from an exception of each callback kind.
 testPragmaExceptions :: Assertion
@@ -934,6 +946,8 @@ testTableArgumentErrors = withConnection ":memory:" \conn -> do
   assertSqlError
     "the type of a table function argument cannot be or contain VARIANT"
     (query_ conn "SELECT n FROM typed_variant(1::VARIANT)" :: IO [Only Int64])
+  createTableFunction conn "typed_maybe_variant" ["missing"] \(Only (value :: Maybe Variant)) -> pure [Only (isNothing value)]
+  query_ conn "SELECT missing FROM typed_maybe_variant(NULL::VARIANT)" >>= (@?= [Only True])
   query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
 
 -- | Fail a query with an exception in the function and in a row of the second chunk.

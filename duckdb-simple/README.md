@@ -629,7 +629,8 @@ without decoding coordinates. Its `rawGeometryWKB` and `rawGeometryCRS` fields
 own their data. They remain usable after the connection closes. Existing
 `ByteString` result decoding also returns WKB.
 
-`RawGeometry` has no `ToField` instance. Import its bytes explicitly:
+`RawGeometry` has no `ToField` instance. Import its bytes explicitly, or put it
+in a composite parameter as `FieldGeometry` (see below):
 
 ```haskell
 import Database.DuckDB.Simple.Geometry
@@ -665,10 +666,16 @@ and mixed collection layouts. DuckDB 2.0 also rejects WKB with mixed Z/M member
 layouts. Explicit WKB import preserves native NaN payload bits that WKT cannot
 retain.
 
-`FieldGeometry` contains a raw result. Generic STRUCT and UNION parameters
-that contain non-NULL raw geometry raise an error. Construct those values in
-SQL with explicit WKB import. Their result decoding retains WKB and CRS,
-including inside LIST, ARRAY, MAP, STRUCT, and UNION values.
+`FieldGeometry` contains a raw result. Result decoding retains WKB and CRS,
+including inside LIST, ARRAY, MAP, STRUCT, and UNION values. A STRUCT, TUPLE,
+or UNION parameter binds each `FieldGeometry` as a `GEOMETRY` with the same
+WKB bytes and CRS, also inside LIST, ARRAY, and MAP values. Thus a value that
+a query returns binds again without a change. The CRS of the value must be
+equal to the CRS of its declared type. A mismatch raises `SQLError` with the
+type `ErrorInputInvalid`, for example for a value with the CRS `OGC:CRS84` in
+a field of type `GEOMETRY`. A `Variant` parameter binds a `FieldGeometry`
+without a CRS as a `GEOMETRY` payload. A VARIANT does not keep the CRS of a
+GEOMETRY, so a `FieldGeometry` with a CRS in a `Variant` raises `SQLError`.
 
 `LogicalTypeGeometry` describes CRS metadata. Composite parameters retain CRS
 metadata for typed NULLs, empty collections, and inactive UNION members.

@@ -149,6 +149,13 @@
   on the new connection, so the default list runs no query. The connection keeps
   each type, and a bind copies it. A name that DuckDB drops, for example a blank
   name, fails the open.
+- A STRUCT, TUPLE, or UNION parameter binds a `FieldGeometry` value as a
+  GEOMETRY with the same WKB bytes and CRS, through DuckDB's cast from BLOB.
+  A value whose CRS is not the CRS of its declared type raises `SQLError` with
+  the type `ErrorInputInvalid`. A `Variant` parameter binds a `FieldGeometry`
+  value without a CRS. One with a CRS raises `SQLError`, because a VARIANT does
+  not keep the CRS. Version 0.3 raised an error for each such value, because
+  DuckDB 1.5 has no cast from BLOB to GEOMETRY.
 - Empty `Array` parameters raise `SQLError`. Use an SQL empty LIST.
 - `executeMany` reads the parameter types one time for each call, not one time
   for each row. A row with a `UTCTime`, an `Unbounded UTCTime`, an `Array`, or

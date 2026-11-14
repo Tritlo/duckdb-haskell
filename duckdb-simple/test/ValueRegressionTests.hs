@@ -101,6 +101,31 @@ data Colour = Red | Blue
   deriving stock (Eq, Show, Generic)
   deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB Colour)
 
+-- | A generic record with an optional ARRAY field.
+data OptionalScores = OptionalScores {optionalScores :: Maybe (Array Int Int32)}
+  deriving stock (Generic)
+  deriving (DuckDBColumnType, ToField) via (ViaDuckDB OptionalScores)
+
+-- | A generic record with a LIST field of ARRAY elements.
+data ListedScores = ListedScores {listedScores :: [Array Int Int32]}
+  deriving stock (Generic)
+  deriving (DuckDBColumnType, ToField) via (ViaDuckDB ListedScores)
+
+-- | A generic record with an ARRAY field of ARRAY elements.
+data NestedScores = NestedScores {nestedScores :: Array Int (Array Int Int32)}
+  deriving stock (Generic)
+  deriving (DuckDBColumnType, ToField) via (ViaDuckDB NestedScores)
+
+-- | A generic record with a MAP field of ARRAY values.
+data MappedScores = MappedScores {mappedScores :: Map.Map Text (Array Int Int32)}
+  deriving stock (Generic)
+  deriving (DuckDBColumnType, ToField) via (ViaDuckDB MappedScores)
+
+-- | A generic sum with a constructor that has an ARRAY field.
+data ChosenScores = SomeScores (Array Int Int32) | NoScores
+  deriving stock (Generic)
+  deriving (DuckDBColumnType, ToField) via (ViaDuckDB ChosenScores)
+
 -- | Run this module without the main integration suite.
 main :: IO ()
 main = defaultMain valueRegressionTests
@@ -124,6 +149,21 @@ valueRegressionTests =
                 [UnionMemberType "number" (LogicalTypeScalar LogicalTypeIdBigInt), UnionMemberType "text" (LogicalTypeScalar LogicalTypeIdVarchar)]
             original = UnionValue 0 "number" FieldNull members
         (query conn "SELECT ?" (Only original) :: IO [Only (UnionValue FieldValue)]) >>= (@?= [Only original])
+    , testCase "a UNION value binds the member of its tag up to the member limit of DuckDB" $ withConnection ":memory:" \conn -> do
+        let lastMember :: Int -> UnionValue FieldValue
+            lastMember count =
+              let name index = "m" <> Text.pack (show index)
+                  members = listArray (0, count - 1) [UnionMemberType (name index) (LogicalTypeScalar LogicalTypeIdInteger) | index <- [0 .. count - 1]]
+              in  UnionValue (fromIntegral (count - 1)) (name (count - 1)) (FieldInt32 7) members
+            accepted = lastMember 255
+        (query conn "SELECT union_tag(?)::VARCHAR, ?" (accepted, accepted) :: IO [(Text, UnionValue FieldValue)]) >>= (@?= [("m254", accepted)])
+        -- DuckDB 2.0.0 permits at most 255 members in a UNION type.
+        forM_ [256, 300] \count ->
+          try (query conn "SELECT ?" (Only (lastMember count)) :: IO [Only (UnionValue FieldValue)]) >>= \case
+            Left SQLError{sqlErrorMessage, sqlErrorType} -> do
+              sqlErrorMessage @?= "Binder Error: UNION type supports at most 255 type modifiers"
+              sqlErrorType @?= Just ErrorQueryBinder
+            Right rows -> assertFailure (show count <> " members: expected the DuckDB member limit error, got " <> show rows)
     , testCase "array elements need only a ToField instance" $ withConnection ":memory:" \conn -> do
         let values = listArray (0 :: Int, 2) [Nothing, Just (DelegatedInteger 41), Just (DelegatedInteger 99)]
             expected = listArray (0, 2) [Nothing, Just 41, Just 99] :: Array Int (Maybe Int64)
@@ -160,6 +200,23 @@ valueRegressionTests =
         case result of
           Left SQLError{sqlErrorMessage} -> assertBool (Text.unpack sqlErrorMessage) ("an ARRAY must have at least one element" `Text.isInfixOf` sqlErrorMessage)
           Right (_ :: [Only Text]) -> assertFailure "expected the DuckDB empty ARRAY error"
+    , testCase "generic records with an ARRAY field that has no size raise the error of DuckDB" $ withConnection ":memory:" \conn -> do
+        let scores = listArray (0, 1) [1, 2] :: Array Int Int32
+            rejected :: (ToField a) => String -> a -> Assertion
+            rejected label value =
+              try (query conn "SELECT ?::VARCHAR" (Only value) :: IO [Only Text]) >>= \case
+                Left SQLError{sqlErrorMessage, sqlErrorType} -> do
+                  assertEqual label "Binder Error: ARRAY type size must be at least 1" sqlErrorMessage
+                  assertEqual label (Just ErrorQueryBinder) sqlErrorType
+                Right rows -> assertFailure (label <> ": expected the DuckDB ARRAY size error, got " <> show rows)
+        rejected "Maybe field with Nothing" (OptionalScores Nothing)
+        rejected "LIST field" (ListedScores [scores])
+        rejected "empty LIST field" (ListedScores [])
+        rejected "ARRAY field" (NestedScores (listArray (0, 0) [scores]))
+        rejected "MAP field" (MappedScores (Map.singleton "a" scores))
+        rejected "empty MAP field" (MappedScores Map.empty)
+        rejected "sum constructor with the ARRAY field" (SomeScores scores)
+        rejected "sum constructor without the ARRAY field" NoScores
     , testCase "empty arrays of record elements report the V2 limit" $ withConnection ":memory:" \conn -> do
         result <- try (query conn "SELECT ?" (Only (listArray (0, -1) [] :: Array Int Pair)))
         case result of
@@ -344,6 +401,7 @@ valueRegressionTests =
         forM_ ["BIGNUM[2]", "VARCHAR[2]"] \dtype ->
           store dtype (pair 5 huge) "[5, 340282366920938463463374607431768211463]"
         store "BIGINT[2][2]" (listArray (0, 1) [pair 1 2, pair 3 (-4)] :: Array Int (Array Int Integer)) "[[1, 2], [3, -4]]"
+        store "BIGINT[]" (pair 5 6) "[5, 6]"
     , testCase "an array of Integer values with an element that its target cannot hold raises an error and stores no row" $ withConnection ":memory:" \conn -> do
         let insert :: Text -> Integer -> IO SQLError
             insert dtype second = do
@@ -354,7 +412,7 @@ valueRegressionTests =
               either pure (\_ -> assertFailure ("expected an error for " <> label)) result
             huge = 2 ^ (128 :: Int) + 7 :: Integer
         -- DuckDB checks the range of each element when it builds the array.
-        forM_ ([(dtype, -6) | dtype <- ["UTINYINT[2]", "UBIGINT[2]", "UHUGEINT[2]"]] <> [("TINYINT[2]", 300)]) \(dtype, second) -> do
+        forM_ ([(dtype, -6) | dtype <- ["UTINYINT[2]", "UBIGINT[2]", "UHUGEINT[2]", "UBIGINT[]"]] <> [("TINYINT[2]", 300)]) \(dtype, second) -> do
           SQLError{sqlErrorMessage, sqlErrorType} <- insert dtype second
           assertBool (Text.unpack sqlErrorMessage) ("is out of range for the destination type" `Text.isInfixOf` sqlErrorMessage)
           sqlErrorType @?= Just ErrorInputInvalid
@@ -585,6 +643,16 @@ valueRegressionTests =
         let struct = singleField (LogicalTypeEnum (listArray (0, 2) ["a", "b", "c"])) (FieldEnum 1)
         (query conn "SELECT typeof((?).value), (?).value::VARCHAR, ?" (struct, struct, struct) :: IO [(Text, Text, StructValue FieldValue)])
           >>= (@?= [("ENUM('a', 'b', 'c')", "b", struct)])
+    , testCase "ENUM values of each dictionary size bind their labels" $ withConnection ":memory:" \conn ->
+        -- DuckDB stores the index of a dictionary of 200, 300, and 70000 entries
+        -- in 8, 16, and 32 bits.
+        forM_ [200, 300, 70000 :: Int] \size -> do
+          let label index = "v" <> Text.pack (show index)
+              entries = listArray (0, size - 1) (map label [0 .. size - 1])
+          forM_ [0, size - 1] \index -> do
+            let struct = singleField (LogicalTypeEnum entries) (FieldEnum (fromIntegral index))
+            (query conn "SELECT (?).value::VARCHAR, ?" (struct, struct) :: IO [(Text, StructValue FieldValue)])
+              >>= assertEqual (show size <> " " <> show index) [(label index, struct)]
     , testCase "TIMETZ input offset overflow fails before native use" $ withConnection ":memory:" \conn -> do
         let value = TimeWithZone (TimeOfDay 12 0 0) (minutesToTimeZone maxBound)
             struct = singleField (LogicalTypeScalar LogicalTypeIdTimeTz) (FieldTimeTZ value)

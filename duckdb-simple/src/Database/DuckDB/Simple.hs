@@ -31,6 +31,7 @@ module Database.DuckDB.Simple (
   openWithConfig,
   ConnectionOptions (..),
   defaultConnectionOptions,
+  defaultCallbackLockWait,
   openWithOptions,
   close,
   withConnection,
@@ -106,7 +107,7 @@ module Database.DuckDB.Simple (
   createAggregate,
 ) where
 
-import Control.Exception (SomeException, bracket, finally, mask, mask_, onException, throwIO, try)
+import Control.Exception (SomeException, bracket, evaluate, finally, mask, mask_, onException, throwIO, try)
 import Control.Monad (forM_, void, when, zipWithM_)
 import Data.Array (elems)
 import Data.List (findIndex)
@@ -195,10 +196,11 @@ connect instance_ = connectWithOptions instance_ defaultConnectionOptions
 -- GLOBAL thus changes the instance. This change applies to all connections of
 -- the instance.
 connectWithOptions :: Instance -> ConnectionOptions -> IO Connection
-connectWithOptions instance_ ConnectionOptions{connectionConfig, connectionGeometryCRS} = mask_ do
+connectWithOptions instance_ ConnectionOptions{connectionConfig, connectionGeometryCRS, connectionCallbackLockWait} = mask_ do
   when (any (\(name, value) -> Text.any (== '\0') name || Text.any (== '\0') value) connectionConfig) $
     throwIO (SQLError (Text.pack "duckdb-simple: configuration contains NUL") Nothing Nothing)
-  conn <- createConnection instance_ connectionGeometryCRS (pure ())
+  callbackLockWait <- checkCallbackLockWait connectionCallbackLockWait
+  conn <- createConnection instance_ connectionGeometryCRS callbackLockWait (pure ())
   flip onException (close conn) do
     withConnectionHandle conn \raw -> do
       config <- output (c_duckdb_v2_connection_get_config raw)
@@ -235,27 +237,48 @@ data ConnectionOptions = ConnectionOptions
   --     when it opens, and a name that DuckDB drops fails the open. The
   --     connection keeps each type, and a bind copies it. The default is
   --     @OGC:CRS84@. Include custom CRS names in this list.
+  , connectionCallbackLockWait :: Maybe Int
+  -- ^ The longest time in microseconds that a DuckDB callback waits for the
+  --     lock of this connection. A callback that waits longer gets an
+  --     'SQLError'. 'Nothing' sets no bound. The default is
+  --     'defaultCallbackLockWait'. The open rejects a negative value.
   }
   deriving (Eq, Show)
 
--- | No configuration flags, and the CRS @OGC:CRS84@.
+-- | No configuration flags, the CRS @OGC:CRS84@, and the default bound for a
+-- callback that waits for the connection lock.
 defaultConnectionOptions :: ConnectionOptions
 defaultConnectionOptions =
   ConnectionOptions
     { connectionConfig = []
     , connectionGeometryCRS = defaultGeometryCRS
+    , connectionCallbackLockWait = Just defaultCallbackLockWait
     }
+
+-- | The default of 'connectionCallbackLockWait': 10 seconds, in microseconds.
+defaultCallbackLockWait :: Int
+defaultCallbackLockWait = 10000000
+
+-- | Evaluate the bound of 'connectionCallbackLockWait' and reject a negative
+-- bound. The fields of 'ConnectionOptions' are lazy, so an error in the field
+-- occurs here and not in a later wait.
+checkCallbackLockWait :: Maybe Int -> IO (Maybe Int)
+checkCallbackLockWait bound = case bound of
+  Just micros
+    | micros < 0 -> throwIO (SQLError (Text.pack "duckdb-simple: connectionCallbackLockWait is negative") Nothing Nothing)
+  _ -> evaluate bound
 
 -- | Open a database with a private environment and instance.
 openWithOptions :: FilePath -> ConnectionOptions -> IO Connection
-openWithOptions path ConnectionOptions{connectionConfig, connectionGeometryCRS} = mask_ do
+openWithOptions path ConnectionOptions{connectionConfig, connectionGeometryCRS, connectionCallbackLockWait} = mask_ do
+  callbackLockWait <- checkCallbackLockWait connectionCallbackLockWait
   environment <- createEnvironment
   instance_ <- createInstance environment connectionConfig `onException` closeEnvironment environment
   let release = closeInstance instance_ `finally` closeEnvironment environment
   flip onException release do
     -- An empty alias lets DuckDB derive the catalog name from the path.
     attachCatalog instance_ (if null path then ":memory:" else path) Text.empty [] True
-    createConnection instance_ connectionGeometryCRS release
+    createConnection instance_ connectionGeometryCRS callbackLockWait release
 
 -- | Close a connection and its statements. The operation is idempotent.
 close :: Connection -> IO ()

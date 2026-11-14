@@ -172,6 +172,9 @@ data Connection = Connection
   -- of an explicit stream. See 'withConnectionLock'.
   , connectionWindow :: IORef (Maybe ThreadId)
   -- ^ The helper thread that runs the current result. See 'withResultWindow'.
+  , connectionLockBound :: Maybe Int
+  -- ^ The longest wait in microseconds of a DuckDB callback for
+  -- 'connectionLock'. 'Nothing' sets no bound.
   }
 
 -- | Internal connection state.
@@ -343,9 +346,10 @@ closeInstanceState ref = mask_ $ joinCleanup ref \case
   InstanceClosed -> (InstanceClosed, pure ())
   InstanceOpen raw children -> (InstanceClosed, cleanupAll [closeChildren children, destroy c_duckdb_v2_instance_destroy raw])
 
--- | Create a connection. The final action releases private convenience parents.
-createConnection :: Instance -> [Text] -> IO () -> IO Connection
-createConnection parent@Instance{instanceState} crss releaseParent = keepAlive parent $ mask_ do
+-- | Create a connection with its CRS names and the bound of a callback that
+-- waits for its lock. The final action releases private convenience parents.
+createConnection :: Instance -> [Text] -> Maybe Int -> IO () -> IO Connection
+createConnection parent@Instance{instanceState} crss callbackLockWait releaseParent = keepAlive parent $ mask_ do
   (rawInstance, children) <-
     readIORef instanceState >>= \case
       InstanceClosed -> throwIO (SQLError "duckdb-simple: instance is closed" Nothing Nothing)
@@ -356,7 +360,7 @@ createConnection parent@Instance{instanceState} crss releaseParent = keepAlive p
     statements <- newChildren
     ref <- newIORef (ConnectionOpen raw cache statements releaseParent)
     registerChild forkFinalizer (\case ConnectionOpen{} -> True; _ -> False) children ref (keepAlive parent (closeConnectionState False ref))
-    Connection ref parent <$> newMVar () <*> newIORef Nothing
+    Connection ref parent <$> newMVar () <*> newIORef Nothing <*> pure callbackLockWait
 
 -- | Close a connection and every prepared statement that belongs to it.
 closeConnection :: Connection -> IO ()

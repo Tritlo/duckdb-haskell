@@ -186,11 +186,12 @@ collectParsedRows conn query parsed = collectStreamRows conn query . withResultW
   startResultStream MaterializedResult conn result
 
 -- | Decode owned materialized chunks and release them on every exit path.
+-- Destroy each chunk after its rows are decoded.
 collectStreamRows :: Connection -> Query -> IO (Maybe StatementStream) -> IO [[Field]]
 collectStreamRows conn query acquire = withQueryError query $
-  bracket acquire (mapM_ finalizeStream) \case
+  bracket (acquire >>= traverse adopt) (mapM_ release) \case
     Nothing -> pure []
-    Just owned -> do
+    Just (owned, pending) -> do
       -- Both loops keep a constant stack. Each c_duckdb_v2 binding is a
       -- safe foreign call. At a safe call, the GHC runtime (threadPaused)
       -- reads the frames of the current stack chunk. A loop that keeps a
@@ -199,7 +200,13 @@ collectStreamRows conn query acquire = withQueryError query $
       --
       -- The chunk loop must keep a constant stack, because the code for
       -- each chunk makes native calls.
-      let readChunk done chunk = do
+      --
+      -- The reference holds the chunks that the fold has not reached, in
+      -- the order of the fold. Each step takes its chunk out of the
+      -- reference and destroys that chunk after its rows. The bracket of
+      -- the step thus owns the chunk while its rows are decoded, and the
+      -- release of this function destroys only the chunks in the reference.
+      let readChunk done expected = bracket (takeChunk pending expected) destroyDataChunk \chunk -> do
             rowCount <- fromIntegral <$> output (c_duckdb_v2_data_chunk_get_size chunk)
             readers <- prepareChunkReaders conn chunk (statementStreamColumns owned)
             -- The row loop reads the rows from the last to the first, and
@@ -214,6 +221,17 @@ collectStreamRows conn query acquire = withQueryError query $
       -- The fold gives the chunks from the last to the first.
       rows <- foldM readChunk [] (statementStreamPendingChunks owned)
       pure (concat (reverse rows))
+  where
+    adopt stream = (,) stream <$> newIORef (statementStreamPendingChunks stream)
+    release (stream, pending) = do
+      remaining <- atomicModifyIORef' pending ([],)
+      finalizeStream stream{statementStreamPendingChunks = remaining}
+    -- Take the first chunk out of the reference. It must be the chunk of the
+    -- fold step. Otherwise leave the reference as it is, so that the release
+    -- destroys each chunk in it.
+    takeChunk pending expected =
+      atomicModifyIORef' pending (\case chunk : rest | chunk == expected -> (rest, Just chunk); chunks -> (chunks, Nothing))
+        >>= maybe (throwIO (userError "duckdb-simple: internal error: the owned chunks do not match the chunk fold")) pure
 
 collectResultColumns :: DuckDBV2ResultHandle -> IO [StatementStreamColumn]
 collectResultColumns result = bracket (output (c_duckdb_v2_result_get_schema result)) (destroy c_duckdb_v2_schema_destroy) \schema -> do

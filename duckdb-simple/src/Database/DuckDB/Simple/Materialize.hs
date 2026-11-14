@@ -71,7 +71,10 @@ castReader factory variant vector =
 prepareVariantReader :: DuckDBV2ConnectionHandle -> VariantCodec.VariantState -> VariantReader
 prepareVariantReader = VariantCodec.prepareVariantDecoder materializePlainValue
 
--- | Decode a value from the VARIANT decoder. The value contains no VARIANT.
+-- | Decode a value that contains no VARIANT. The VARIANT decoder calls this
+-- function with its helper connection. 'materializeValue' needs a factory to
+-- create a vector and to cast GEOMETRY. The connection owns the factory, so
+-- this function does not destroy it.
 materializePlainValue :: DuckDBV2ConnectionHandle -> DuckDBV2ValueHandle -> IO FieldValue
 materializePlainValue connection value = withConnectionFactory connection \factory ->
   materializeValue (\_ -> throwIO (userError "duckdb-simple: expected a value without VARIANT")) factory value

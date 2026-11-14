@@ -171,6 +171,18 @@ nanosecondTimeTests =
         bind stmt [toField precise]
         void $ executeStatement stmt
       (query_ conn "SELECT epoch_ns(value) FROM utc_rebind ORDER BY value" :: IO [Only Int64]) >>= (@?= [Only 123456000, Only 123456789])
+  , testCase "executeMany stores the same UTC values as single execute calls" $ withConnection ":memory:" $ \conn -> do
+      let rows = [(t, t, t) | t <- map posixSecondsToUTCTime [0.123456789, 1.5, -0.000000001]]
+          columns = " (tz TIMESTAMPTZ, ts TIMESTAMP, ns TIMESTAMPTZ_NS)"
+          readBack table = query_ conn (Query ("SELECT epoch_ns(tz), epoch_ns(ts), epoch_ns(ns) FROM " <> table <> " ORDER BY ns")) :: IO [(Int64, Int64, Int64)]
+      void $ execute_ conn (Query ("CREATE TABLE utc_many" <> columns))
+      void $ execute_ conn (Query ("CREATE TABLE utc_single" <> columns))
+      executeMany conn "INSERT INTO utc_many VALUES (?, ?, ?)" rows >>= (@?= 3)
+      forM_ rows (void . execute conn "INSERT INTO utc_single VALUES (?, ?, ?)")
+      many <- readBack "utc_many"
+      readBack "utc_single" >>= (@?= many)
+      -- The rows after the first row keep their nanoseconds with the kept parameter types.
+      map (\(_, _, ns) -> ns) many @?= [-1, 123456789, 1500000000]
   , testCase "nanosecond UTC arrays retain NULLs and reject empty arrays" $ withConnection ":memory:" $ \conn -> do
       let precise = posixSecondsToUTCTime 0.123456789
           negative = posixSecondsToUTCTime (-0.000000001)

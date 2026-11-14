@@ -39,6 +39,7 @@ module Database.DuckDB.Simple.Internal (
   withCollectionStatement,
   statementSchemas,
   clearStatementSchemas,
+  withKeptParameterTypes,
   preparedParameterType,
   storeBoundValue,
   clearBoundValues,
@@ -93,7 +94,7 @@ import Control.Monad (forM, forM_, join, unless, void, when)
 import Data.Array (Array, bounds, inRange, listArray, (!))
 import qualified Data.ByteString as BS
 import Data.Coerce (Coercible, coerce)
-import Data.IORef (IORef, atomicModifyIORef', atomicWriteIORef, mkWeakIORef, newIORef, readIORef, writeIORef)
+import Data.IORef (IORef, atomicModifyIORef', atomicWriteIORef, mkWeakIORef, modifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.IntMap.Strict as IntMap
 import Data.List (dropWhileEnd, find, intercalate, partition)
 import Data.Maybe (fromMaybe, isJust)
@@ -266,6 +267,9 @@ data Statement = Statement
   , statementBindings :: IORef (IntMap.IntMap DuckDBV2ValueHandle)
   , statementParameterNames :: Array Int Text
   -- ^ The parameter names in binding order. The first index is 1.
+  , statementParameterTypes :: IORef (Maybe (IntMap.IntMap (Maybe LogicalTypeRep)))
+  -- ^ The kept parameter types while 'withKeptParameterTypes' runs. Otherwise
+  -- Nothing. See Note [Statement schemas].
   }
 
 -- | Internal prepared statement state.
@@ -517,11 +521,20 @@ releaseSchemas ref =
     destroy c_duckdb_v2_schema_destroy result `finally` destroy c_duckdb_v2_schema_destroy parameters
 
 -- | Release cached metadata before binding or executing the statement again.
+-- See Note [Statement schemas].
 clearStatementSchemas :: Statement -> IO ()
 clearStatementSchemas Statement{statementState} = mask_ do
   readIORef statementState >>= \case
     StatementClosed -> pure ()
     StatementOpen{statementSchemaCache} -> releaseSchemas statementSchemaCache
+
+-- | Keep the parameter types that the action reads until the action ends. The
+-- first read of a parameter type runs the binder. Each later read of that type
+-- in the action uses the kept type, also after a column type changes. See
+-- Note [Statement schemas].
+withKeptParameterTypes :: Statement -> IO a -> IO a
+withKeptParameterTypes Statement{statementParameterTypes} =
+  bracket_ (writeIORef statementParameterTypes (Just IntMap.empty)) (writeIORef statementParameterTypes Nothing)
 
 -- | Parse SQL and borrow the resulting statements for one action.
 withParsedStatements :: Connection -> Query -> ([DuckDBV2SqlStatementHandle] -> IO a) -> IO a
@@ -569,8 +582,9 @@ createStatementFromParsedWithCollections parent query parsed collections = withQ
       bindings <- newIORef IntMap.empty
       stream <- newIORef StatementStreamIdle
       arrow <- newIORef nullHandle
+      kept <- newIORef Nothing
       ref <- newIORef (StatementOpen handle copied schemas)
-      let statement = Statement ref parent query stream arrow bindings (listArray (1, count) names)
+      let statement = Statement ref parent query stream arrow bindings (listArray (1, count) names) kept
       children <-
         readIORef (connectionState parent) >>= \case
           ConnectionClosed -> throwIO connectionClosedError
@@ -1037,8 +1051,49 @@ storeBoundValue stmt index value = withStatementHandle stmt \_ -> mask_ do
 clearBoundValues :: IORef (IntMap.IntMap DuckDBV2ValueHandle) -> IO ()
 clearBoundValues ref = atomicModifyIORef' ref (IntMap.empty,) >>= releaseItems destroyValue . IntMap.elems
 
+{- Note [Statement schemas]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+An open statement keeps a cache of two schemas (statementSchemaCache): the
+schema of its result and the schema of its parameters. statementSchemas fills
+the cache on its first call. It runs the metadata bind
+(duckdb_v2_statement_bind) on the parsed copy of the statement under the
+connection lock, and it stores both handles. The next calls give the same
+handles until the cache is empty again. columnCount and columnName in
+"Database.DuckDB.Simple" read the result schema, and preparedParameterType
+reads the type of one parameter.
+
+clearStatementSchemas releases both handles and empties the cache.
+resetStatementStream in "Database.DuckDB.Simple.Result" calls it. Thus each
+call of bind, bindNamed, clearStatementBindings, and executeStatement clears
+the cache first. Each fold of "Database.DuckDB.Simple" clears it before its
+first row and after its last row. closeStatementState releases the handles
+when the statement closes.
+
+- Why each bind clears the cache. A statement that the caller keeps must see a
+  change of the catalog between two binds, for example an ALTER TABLE that
+  changes the type of a column. A binding that depends on the type of its
+  parameter then builds its value for the new type. With a type from before the
+  change, a UTCTime for a column that became TIMESTAMPTZ_NS loses its
+  nanoseconds.
+
+- The cost. The first read of a parameter type after a bind runs the binder of
+  DuckDB again. Only a binding that reads the type of its parameter has this
+  cost: a UTCTime, an Unbounded UTCTime, an Array, and a manual STRUCT, TUPLE,
+  or UNION value.
+
+- The exception is executeMany. One executeMany call binds many rows on one
+  statement that no caller can reach. withKeptParameterTypes keeps the decoded
+  type of each parameter (statementParameterTypes) from the first row that
+  reads it to the end of the call. Thus the binder runs one time for the call,
+  and not one time for each row. The schemas are still cleared for each row.
+  If the type of a column changes during the call, the later rows of the call
+  bind for the old type. Another connection can make such a change, and also
+  another thread that uses the same connection.
+-}
+
 -- | Bind SQL metadata and borrow the cached output and parameter schemas.
--- The handles remain valid until the statement resets, rebinds, or closes.
+-- The handles remain valid until the statement resets, rebinds, or closes. See
+-- Note [Statement schemas].
 statementSchemas :: Statement -> IO (DuckDBV2SchemaHandle, DuckDBV2SchemaHandle)
 statementSchemas stmt = withStatementHandle stmt \_ -> mask_ do
   state <- readIORef (statementState stmt)
@@ -1060,15 +1115,27 @@ statementSchemas stmt = withStatementHandle stmt \_ -> mask_ do
             pure schemas
 
 -- | Read a parameter type when the binder can determine it without values.
+-- While 'withKeptParameterTypes' runs, read each type one time. See
+-- Note [Statement schemas].
 preparedParameterType :: Statement -> DuckDBIdx -> IO (Maybe LogicalTypeRep)
 preparedParameterType stmt idx = do
-  (_, schema) <- statementSchemas stmt
-  alloca \name -> do
-    dtype <- output (c_duckdb_v2_schema_get_field schema (idx - 1) name)
-    ident <- output (c_duckdb_v2_logical_type_get_id dtype)
-    if ident == DuckDBV2LogicalTypeIdUnknown || ident == DuckDBV2LogicalTypeIdSQLNull
-      then pure Nothing
-      else Just <$> logicalTypeToRep dtype
+  kept <- readIORef (statementParameterTypes stmt)
+  case kept >>= IntMap.lookup (fromIntegral idx) of
+    Just rep -> pure rep
+    Nothing -> do
+      rep <- readParameterType
+      -- Outside 'withKeptParameterTypes' the value is Nothing, and the insert does nothing.
+      modifyIORef' (statementParameterTypes stmt) (fmap (IntMap.insert (fromIntegral idx) rep))
+      pure rep
+  where
+    readParameterType = do
+      (_, schema) <- statementSchemas stmt
+      alloca \name -> do
+        dtype <- output (c_duckdb_v2_schema_get_field schema (idx - 1) name)
+        ident <- output (c_duckdb_v2_logical_type_get_id dtype)
+        if ident == DuckDBV2LogicalTypeIdUnknown || ident == DuckDBV2LogicalTypeIdSQLNull
+          then pure Nothing
+          else Just <$> logicalTypeToRep dtype
 
 -- | Column type names and the logical types that they denote.
 duckDBTypeNames :: [(Text, LogicalTypeId)]

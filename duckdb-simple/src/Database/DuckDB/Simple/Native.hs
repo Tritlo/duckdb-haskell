@@ -72,6 +72,7 @@ import Data.String (IsString (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
+import Data.Text.Encoding.Error (lenientDecode)
 import qualified Data.Text.Foreign as TextForeign
 import Database.DuckDB.FFI.V2
 import Foreign.C.ConstPtr (ConstPtr (..))
@@ -225,7 +226,9 @@ checkCode code =
   unless (code == DuckDBV2ErrorNone) $
     throwIO (SQLError (Text.pack (show code)) (errorTypeFromNative code) Nothing)
 
--- | Copy a native diagnostic and release its error-info handle.
+-- | Copy a native diagnostic and release its error-info handle. Decode the
+-- error text with replacement characters, so that a native text that is not
+-- valid UTF-8 cannot raise when the error is shown.
 checked :: (Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO ()
 checked action = mask_ $ alloca $ \slot -> do
   poke slot nullHandle
@@ -243,7 +246,7 @@ checked action = mask_ $ alloca $ \slot -> do
           else alloca $ \view -> do
             rc <- c_duckdb_v2_error_info_get_text info view
             if rc == DuckDBV2ErrorNone
-              then peek view >>= readText
+              then Text.decodeUtf8With lenientDecode <$> (peek view >>= readBytes)
               else pure (Text.pack (show code))
       throwIO (SQLError message (errorTypeFromNative code) Nothing)
 

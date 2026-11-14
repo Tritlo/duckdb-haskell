@@ -7,7 +7,7 @@
 -- Description : Native integration checks for managed V2 registration.
 module RegistrationTests (registrationTests) where
 
-import Control.Exception (bracket, throwIO, try)
+import Control.Exception (bracket, evaluate, throwIO, try)
 import Control.Monad (forM, forM_, void, when)
 import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, modifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
@@ -16,6 +16,7 @@ import qualified Data.Text as Text
 import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple hiding (bind, execute)
 import Database.DuckDB.Simple.FromField (FieldValue (..))
+import Database.DuckDB.Simple.Internal (withBytes, withConnectionFactory, withConnectionHandle)
 import qualified Database.DuckDB.Simple.Logging as Logging
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..))
 import qualified Database.DuckDB.Simple.QueryMetrics as Metrics
@@ -25,8 +26,9 @@ import qualified Database.DuckDB.Simple.V2.Pragma as Pragma
 import qualified Database.DuckDB.Simple.V2.Registration as R
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (advancePtr, allocaArray, peekArray)
-import Foreign.Ptr (castPtr, nullPtr)
+import Foreign.Ptr (castPtr, freeHaskellFunPtr, nullPtr)
 import Foreign.Storable (peek, peekElemOff, poke, pokeElemOff, sizeOf)
+import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
 import System.Mem (performMajorGC)
 import System.Mem.Weak (Weak, deRefWeak)
 import Test.Tasty (TestTree, testGroup)
@@ -48,6 +50,7 @@ registrationTests =
     , testCase "connection scans precede instance scans" testReplacement
     , testCase "callback contexts write log entries" testContextLog
     , testCase "callback failures become SQL errors" testErrors
+    , testCase "a native error text that is not valid UTF-8 gives a readable SQL error" testInvalidErrorText
     , testCase "callback closures and query states are released" testRelease
     ]
 
@@ -353,6 +356,31 @@ testErrors = withConnection ":memory:" \connection -> do
   assertSqlError (query_ connection "SELECT * FROM managed_error_table()" :: IO [Only Int64])
   R.registerReplacementScan connection (\_ _ -> failure)
   assertSqlError (query_ connection "SELECT * FROM managed_unknown" :: IO [Only Int64])
+
+-- | A raw exec callback writes an error text with the byte 0xff, which is not
+-- valid UTF-8. The query must fail with an SQL error that can be shown.
+testInvalidErrorText :: Assertion
+testInvalidErrorText =
+  bracket (toFunPtr (DuckDBV2ScalarFunctionExecCallbackFn_Aux invalidText)) freeHaskellFunPtr \exec ->
+    withConnection ":memory:" \connection -> do
+      withConnectionHandle connection \native -> withConnectionFactory native \factory ->
+        bracket (R.output (c_duckdb_v2_scalar_function_create factory)) (R.destroy c_duckdb_v2_scalar_function_destroy) \function -> do
+          R.withIdentifier "invalid_error_text" (R.checked . c_duckdb_v2_scalar_function_set_name function)
+          R.output (c_duckdb_v2_scalar_function_get_signature function) >>= R.configureFunctionSignature factory (scalarSignature [])
+          R.checked (c_duckdb_v2_scalar_function_set_exec_callback function (DuckDBV2ScalarFunctionExecCallbackFn exec))
+          R.checked (c_duckdb_v2_connection_register_scalar_function native function)
+      outcome <- try (query_ connection "SELECT invalid_error_text()" :: IO [Only Int64])
+      case outcome of
+        Left (err :: SQLError) -> do
+          assertBool "replacement character" ("bad \xFFFD message" `Text.isInfixOf` sqlErrorMessage err)
+          sqlErrorQuery err @?= Just "SELECT invalid_error_text()"
+          void (evaluate (length (show err)))
+        Right _ -> assertFailure "expected SQL error"
+  where
+    invalidText _ _ err = do
+      info <- peek err
+      void (c_duckdb_v2_error_info_set_code info DuckDBV2ErrorInputInvalid)
+      withBytes "bad \xff message" (void . c_duckdb_v2_error_info_set_text info)
 
 testRelease :: Assertion
 testRelease = do

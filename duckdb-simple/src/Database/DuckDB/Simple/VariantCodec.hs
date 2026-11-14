@@ -80,9 +80,9 @@ prepareVariantDecoder plain connection state vector = do
 
 -- | A decoded node owns the child values needed at the next nesting level.
 data VariantNode
-  = ScalarNode FieldValue
-  | ListNode [DuckDBV2ValueHandle]
-  | ObjectNode [(Text, DuckDBV2ValueHandle)]
+  = ScalarNode !FieldValue
+  | ListNode ![DuckDBV2ValueHandle]
+  | ObjectNode ![(Text, DuckDBV2ValueHandle)]
 
 -- | Decode all siblings together before reconstructing their parent nodes.
 decodeValues

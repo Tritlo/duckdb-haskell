@@ -36,6 +36,7 @@ module Database.DuckDB.Simple.Typed.Aggregate (
 
 import Control.Exception (evaluate, finally, mask_, onException, throwIO)
 import Control.Monad (forM_, unless, when)
+import Data.Array (Array, elems, listArray, (!))
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.IntSet as IntSet
 import Data.Proxy (Proxy (..))
@@ -81,6 +82,8 @@ data Aggregate state args result = Aggregate
   }
 
 -- | The live states of one call site, as the keys of their stable pointers.
+-- The table has 'stateTableStripes' stripes, and 'stateStripe' gives the stripe
+-- of a key.
 --
 -- DuckDB 2.0.0 does not run the destroy callback on these states. In each case
 -- the table releases them:
@@ -91,7 +94,22 @@ data Aggregate state args result = Aggregate
 --    aggregate.
 -- 3. The states after a combine call fails in a parallel hash aggregate.
 -- 4. The states after a finalize call fails in a parallel hash aggregate.
-type StateTable = IORef IntSet.IntSet
+type StateTable = Array Int (IORef IntSet.IntSet)
+
+-- | The number of stripes in a state table. Each stripe is a separate 'IORef'.
+-- Thus DuckDB threads that make or release states at the same time seldom
+-- change the same 'IORef'. With one 'IORef' for all states, these threads wait
+-- for each other.
+stateTableStripes :: Int
+stateTableStripes = 64
+
+-- | The stripe that holds a key. In GHC 9.14 the key of a stable pointer is
+-- one more than its index in the stable pointer table of the runtime
+-- (@rts\/include\/rts\/StablePtr.h@). Thus consecutive keys go to different
+-- stripes. The table is correct for each distribution of the keys. The
+-- distribution changes only how often two threads use the same stripe.
+stateStripe :: StateTable -> Int -> IORef IntSet.IntSet
+stateStripe table key = table ! (key `mod` stateTableStripes)
 
 -- | Register a typed aggregate function on a connection or a loading extension.
 createAggregateOn
@@ -136,7 +154,10 @@ setStateSize info = checked (c_duckdb_v2_aggregate_function_size_set_state_size 
 -- | Make an empty state table and transfer it to the bind data of the call site.
 bindStateTable :: BindCallback DuckDBV2AggregateFunctionBindInfoHandle
 bindStateTable input _ _ = mask_ do
-  stable <- newIORef IntSet.empty >>= newStablePtr
+  stripes <- mapM (const (newIORef IntSet.empty)) [1 .. stateTableStripes]
+  -- Build the array here, so that no callback thread evaluates it.
+  table <- evaluate (listArray (0, stateTableStripes - 1) stripes :: StateTable)
+  stable <- newStablePtr table
   attachOpaque (c_duckdb_v2_function_bind_set_bind_data input) (castPtr (castStablePtrToPtr stable)) stateTableDestructor
     `onException` freeStablePtr stable
 
@@ -158,7 +179,8 @@ initializeStates Aggregate{aggregateInitial} info = do
     slot <- peekElemOff states index
     mask_ do
       stable <- newIORef aggregateInitial >>= newStablePtr
-      forM_ table \keys -> atomicModifyIORef' keys \live -> (IntSet.insert (stableKey stable) live, ())
+      let key = stableKey stable
+      forM_ table \keys -> atomicModifyIORef' (stateStripe keys key) \live -> (IntSet.insert key live, ())
       poke (castPtr slot) stable
 
 -- | Add each row to its state. A row with NULL in an argument does not change
@@ -238,9 +260,10 @@ releaseState table slot = mask_ do
   stable <- peek (castPtr slot) :: IO (StablePtr ())
   unless (castStablePtrToPtr stable == nullPtr) do
     poke (castPtr slot) (nullPtr :: Ptr ())
+    let key = stableKey stable
     owner <- case table of
       Nothing -> pure True
-      Just keys -> atomicModifyIORef' keys \live -> (IntSet.delete (stableKey stable) live, IntSet.member (stableKey stable) live)
+      Just keys -> atomicModifyIORef' (stateStripe keys key) \live -> (IntSet.delete key live, IntSet.member key live)
     when owner (freeStablePtr stable)
 
 -- | The key of a stable pointer in a state table.
@@ -260,7 +283,7 @@ releaseStateTable :: Ptr Void -> IO ()
 releaseStateTable raw =
   mask_ $ ignoreCallbackExceptions $ unless (raw == nullPtr) do
     let stable = castPtrToStablePtr (castPtr raw) :: StablePtr StateTable
-    remaining <- deRefStablePtr stable >>= readIORef
+    remaining <- deRefStablePtr stable >>= fmap IntSet.unions . mapM readIORef . elems
     forM_ (IntSet.toList remaining) (freeStablePtr . castPtrToStablePtr . intPtrToPtr . fromIntegral)
       `finally` freeStablePtr stable
 

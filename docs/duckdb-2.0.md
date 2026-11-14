@@ -18,8 +18,8 @@ The headers and license are unmodified upstream files.
 source archive that Nix builds.
 
 Builds use the checked-in headers directly. Cabal installs both client headers,
-`duckdb_arrow.h`, and `duckdb-LICENSE` with the library. Package users do not
-need LLVM or hs-bindgen. The pin update and download scripts are maintainer
+`duckdb_arrow.h`, the two extension headers, and `duckdb-LICENSE` with the
+library. Package users do not need LLVM or hs-bindgen. The pin update and download scripts are maintainer
 tools outside the Hackage packages.
 
 The retained header declares 548 functions. Compared with the 1.5.6 header, it adds
@@ -94,8 +94,9 @@ function tables. Ordinary clients link exported functions.
 ## Pin updates
 
 `dev/update-duckdb.sh` pins a release tag. It resolves the tag to a full commit
-SHA before it downloads files. It replaces the client headers and the upstream
-license. It writes new digests to `vendor/upstream.sha256`, `native.sha256`, and
+SHA before it downloads files. It replaces the client headers, the V2 extension
+header, and the upstream license. It writes new digests to
+`vendor/upstream.sha256`, `native.sha256` (library and CLI archives), and
 `vendor/duckdb-api.json`. Regenerate with the pinned Nix toolchain and review
 the diff:
 
@@ -107,6 +108,19 @@ git diff
 
 `generate-bindings.sh` checks the vendored files against
 `vendor/upstream.sha256` before it runs. CI repeats this check.
+
+Then do these steps:
+
+1. Review signature, enum, callback, and ownership changes. Update the
+   function counts in this document.
+2. Keep untested platforms out of `duckdb-ffi/native.sha256`.
+3. Update `DUCKDB_TEST_VERSION` in the CI workflow and the Dockerfile. Nix
+   reads its source pin and version from `vendor/duckdb-api.json`.
+4. Run the full suites, the leak suite, and Haddock on all supported compilers.
+   Rebuild loadable extensions, because V2 has no cross-version ABI guarantee.
+5. Build source archives with `cabal sdist all`. Check that they contain the
+   generated modules, C checks, client headers, license, and manifest.
+6. Release with `dev/release.sh`. See [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ## Native runtime
 
@@ -151,8 +165,8 @@ build and its installed extensions.
 | Values, logical and custom types, vectors, data chunks, arenas, column collections | Typed conversions, `LogicalRep`, `V2.LogicalRep`, `Registration`, and raw V2 vector operations |
 | Scalar, aggregate, table, cast, and COPY functions and signatures | Typed `Function` and `Copy` registrations, `V2.Registration` and `V2.Copy` callbacks, and raw V2 |
 | Multi-file functions, table partitioning, batch claiming | `Copy.registerMultiFileFunction`, `V2.Copy`, and `V2.Registration.TableCallbacks` |
-| Replacement scans, file systems, logging, extension entry points | Typed `Registration`, `V2.Registration`, `FileSystem`, `Logging`, `V2.Logging`, and extension-target builders. V2 has no custom file-system registration. See [the extension recipe](../dev/extensions/README.md). |
-| Custom options, macro and pragma functions, function documentation, query profiles | `Config`, `V2.Config`, `V2.Registration`, `Pragma`, `V2.Pragma`, `V2.FunctionDocs`, and `QueryMetrics` |
+| Replacement scans, file systems, logging, extension entry points | Typed `Registration`, `V2.Registration`, `FileSystem`, `Logging`, `V2.Logging`, and `Extension`. V2 has no custom file-system registration. See [the extension recipe](../dev/extensions/README.md). |
+| Custom options, macro and pragma functions, function documentation, query profiles | `Config`, `V2.Config`, `Extension`, `V2.Registration`, `Pragma`, `V2.Pragma`, `V2.FunctionDocs`, and `QueryMetrics` |
 
 Appender access uses the retained API.
 
@@ -170,18 +184,3 @@ DUCKDB_HTTPFS_EXTENSION=/absolute/path/to/httpfs.duckdb_extension \
 DUCKDB_QUACK_EXTENSION=/absolute/path/to/quack.duckdb_extension \
 cabal test duckdb-simple:duckdb-simple-quack-test -fquack-tests -fsystemlib --extra-lib-dirs=/absolute/path/to/native --test-show-details=direct
 ```
-
-## Native pin update
-
-1. Run `dev/update-duckdb.sh` with the release tag and regenerate both APIs.
-   Review signature, enum, callback, and ownership changes. Update the
-   function counts in this document.
-2. Keep untested platforms out of `duckdb-ffi/native.sha256`.
-3. Update `DUCKDB_TEST_VERSION` in the CI workflow and the Dockerfile. Nix
-   reads its source pin and version from `vendor/duckdb-api.json`.
-4. Run the full suites, the leak suite, and Haddock on all supported compilers.
-5. Build source archives with `cabal sdist all`. Check that they contain the
-   generated modules, C checks, client headers, license, and manifest.
-6. `dev/release.sh` regenerates both APIs and verifies the header digests and
-   generated checksums before it builds and uploads the Hackage archives. It uploads
-   package candidates even without `--publish`.

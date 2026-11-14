@@ -7,6 +7,7 @@
 --
 -- 'registerCustomOptionOn' takes a registration target.
 -- "Database.DuckDB.Simple.Config" gives the connection form.
+-- "Database.DuckDB.Simple.Extension" gives the extension form.
 module Database.DuckDB.Simple.Config.Internal (
   CustomOption (..),
   registerCustomOptionOn,

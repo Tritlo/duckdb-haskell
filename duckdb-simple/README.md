@@ -72,9 +72,11 @@ existing convenience behavior.
 - `Pragma` registers query and execution callbacks. A callback gets the
   arguments of the call as a `FromRow` row. `V2.Pragma` has the callbacks that
   get native handles.
-- `V2.Registration.registerMacroFunctionWith` gives the native macro builder
-  to a configuration action during extension initialization. The native macro
-  builder has no connection target; use SQL `CREATE MACRO` on a connection.
+- `Extension` has the typed registrations for a loadable extension. It also
+  registers scalar and table macros during extension initialization. The
+  native macro builder has no connection target; use SQL `CREATE MACRO` on a
+  connection. `V2.Registration.registerMacroFunctionWith` gives the native
+  macro builder to a configuration action.
 - `V2.FunctionDocs` sets descriptions, examples, and categories on function
   builders.
 - `QueryMetrics` enables profiling and copies query and operator metric trees.
@@ -779,9 +781,10 @@ them.
 ## Typed registration
 
 These functions register SQL objects with Haskell values. Their signatures have
-no native handle. An exception in a Haskell function gives an SQL error with
-the message of the exception. `TRY_CAST` gives NULL instead. The examples use
-these imports:
+no native handle. `Database.DuckDB.Simple.Extension` has the same functions for
+a loadable extension. An exception in a Haskell function gives an SQL error
+with the message of the exception. `TRY_CAST` gives NULL instead. The examples
+use these imports:
 
 ```haskell
 {-# LANGUAGE BlockArguments #-}

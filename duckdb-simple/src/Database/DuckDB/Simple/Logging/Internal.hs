@@ -9,6 +9,7 @@
 --
 -- 'registerLogSinkOn' takes a registration target.
 -- "Database.DuckDB.Simple.Logging" gives the connection and instance forms.
+-- "Database.DuckDB.Simple.Extension" gives the extension form.
 module Database.DuckDB.Simple.Logging.Internal (
   LogEntry (..),
   LogLevel (..),

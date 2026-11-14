@@ -1,4 +1,5 @@
 dist-newstyle
+dist-newstyle-extensions/
 duckdb-ffi/generated/
 *.so*
 
@@ -8,4 +9,5 @@ api.md
 **/venv
 
 dev/ci-logs/
+dev/extensions/dist/
 *_stub.h

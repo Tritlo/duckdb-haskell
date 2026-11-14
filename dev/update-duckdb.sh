@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Pin a DuckDB release tag. Copy its client headers and license into
-# duckdb-ffi/cbits/. Record the checksums of these files, the source archive,
-# and the release library archives. Review the diff after a run.
+# Pin a DuckDB release tag. Copy its client and extension headers and license
+# into duckdb-ffi/cbits/. Record the checksums of these files, the source
+# archive, and the release library and CLI archives. Review the diff after a run.
 set -euo pipefail
 
 if [ "$#" -ne 1 ]; then
@@ -36,18 +36,22 @@ trap 'rm -rf -- "$scratch"' EXIT
 raw=https://raw.githubusercontent.com/duckdb/duckdb/$commit
 fetch "$raw/src/include/duckdb.h" "$scratch/duckdb.h"
 fetch "$raw/src/include/duckdb_v2.h" "$scratch/duckdb_v2.h"
+fetch "$raw/src/include/duckdb_extension_v2.h" "$scratch/duckdb_extension_v2.h"
 fetch "$raw/LICENSE" "$scratch/duckdb-LICENSE"
 fetch "https://codeload.github.com/duckdb/duckdb/tar.gz/$commit" "$scratch/source.tar.gz"
 for platform in "${platforms[@]}"; do
-  fetch "$upstream/releases/download/$tag/duckdb-shared-libs-$platform.tar.gz" \
-    "$scratch/duckdb-shared-libs-$platform.tar.gz"
+  for archive in duckdb-shared-libs duckdb-cli; do
+    fetch "$upstream/releases/download/$tag/$archive-$platform.tar.gz" "$scratch/$archive-$platform.tar.gz"
+  done
 done
 
-cp "$scratch/duckdb.h" "$scratch/duckdb_v2.h" "$scratch/duckdb-LICENSE" "$package_dir/cbits/"
-(cd "$package_dir" && sha256 cbits/duckdb.h cbits/duckdb_v2.h cbits/duckdb-LICENSE > vendor/upstream.sha256)
-for platform in "${platforms[@]}"; do
-  digest=$(sha256 < "$scratch/duckdb-shared-libs-$platform.tar.gz")
-  printf '%s  %s\n' "${digest%% *}" "$tag/duckdb-shared-libs-$platform.tar.gz"
+cp "$scratch/duckdb.h" "$scratch/duckdb_v2.h" "$scratch/duckdb_extension_v2.h" "$scratch/duckdb-LICENSE" "$package_dir/cbits/"
+(cd "$package_dir" && sha256 cbits/duckdb.h cbits/duckdb_v2.h cbits/duckdb_extension_v2.h cbits/duckdb-LICENSE > vendor/upstream.sha256)
+for archive in duckdb-shared-libs duckdb-cli; do
+  for platform in "${platforms[@]}"; do
+    digest=$(sha256 < "$scratch/$archive-$platform.tar.gz")
+    printf '%s  %s\n' "${digest%% *}" "$tag/$archive-$platform.tar.gz"
+  done
 done > "$package_dir/native.sha256"
 source_digest=$(sha256 < "$scratch/source.tar.gz")
 cat > "$package_dir/vendor/duckdb-api.json" <<JSON

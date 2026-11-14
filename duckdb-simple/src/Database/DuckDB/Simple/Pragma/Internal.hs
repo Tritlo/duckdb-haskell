@@ -7,6 +7,7 @@
 --
 -- 'registerPragmaFunctionOn' takes a registration target.
 -- "Database.DuckDB.Simple.Pragma" gives the connection form.
+-- "Database.DuckDB.Simple.Extension" gives the extension form.
 module Database.DuckDB.Simple.Pragma.Internal (
   PragmaCallback (..),
   registerPragmaFunction,

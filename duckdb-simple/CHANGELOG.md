@@ -11,6 +11,8 @@
   release with DuckDB 1.5.
 - Raw handles, callback handles, and the error codes of raw calls use V2
   types. `sqlErrorType` is `Maybe ErrorType`. See MIGRATION.md.
+- Add `Database.DuckDB.Simple.Extension` for loadable Haskell extensions.
+  Enable the `extension` flags of both packages. See `dev/extensions/`.
 - Add shared environments and instances, attachment management, option
   discovery, table descriptions, SQL tokenization, and positioned file I/O.
 - `attachDatabase` rejects an attach option that contains NUL.
@@ -51,6 +53,13 @@
 - Add custom options to `Database.DuckDB.Simple.Config`. `customOptionUpdate`
   is a function that gets the new value as a `FieldValue`. An exception in the
   function rejects the value.
+- `Database.DuckDB.Simple.Extension` has the same typed registrations for a
+  loadable extension: `createCast`, `createAggregate`, `createTableFunction`,
+  `registerReplacementScan`, `registerCustomType`,
+  `registerMultiFileFunction`, `registerCopyToFunction`,
+  `registerCopyFromFunction`, `registerCopyFunction`,
+  `registerPragmaFunction`, and `registerCustomOption`. A COPY TO function of
+  an extension cannot read a VARIANT column.
 - A typed registration costs more for each row than raw vector access. Use the
   V2 modules for speed. Use them also for projection and filter pushdown,
   parallel table scans, and scalar functions with a bind callback or variadic
@@ -66,8 +75,9 @@
   `Database.DuckDB.Simple.V2.Registration` has the scalar, aggregate, table,
   and cast registrations and the replacement scans with native callbacks. It
   also has `registerMacroFunctionWith`, which gives the native macro builder to
-  an action. `Database.DuckDB.Simple.V2.Copy` has the native COPY callback
-  interface: `CopyToCallbacks`, `CopyFromCallbacks`, the raw
+  an action. It takes the `RegistrationTarget` from
+  `Extension.extensionTarget`. `Database.DuckDB.Simple.V2.Copy` has the native
+  COPY callback interface: `CopyToCallbacks`, `CopyFromCallbacks`, the raw
   `registerCopyFunction`, `registerCopyFunctionWith`,
   `registerCopyToCallbacks`, `registerCopyFromCallbacks`, and
   `registerMultiFileFunctionWith`. `Database.DuckDB.Simple.V2.Pragma` has the

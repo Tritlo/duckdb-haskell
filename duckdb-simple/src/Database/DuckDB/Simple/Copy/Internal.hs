@@ -10,6 +10,7 @@
 --
 -- The functions with the suffix @On@ take a registration target.
 -- "Database.DuckDB.Simple.Copy" gives the connection forms.
+-- "Database.DuckDB.Simple.Extension" gives the extension forms.
 module Database.DuckDB.Simple.Copy.Internal (
   CopyBindInfo (..),
   LogicalTypeId (..),

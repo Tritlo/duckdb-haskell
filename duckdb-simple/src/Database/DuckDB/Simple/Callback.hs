@@ -28,7 +28,8 @@ import Control.Monad (when)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import qualified Data.Text as Text
 import Data.Void (Void)
-import Database.DuckDB.Simple.Internal (Connection, withCallbackMark, withConnectionHandle)
+import Database.DuckDB.Simple.CallbackMark (withCallbackMark)
+import Database.DuckDB.Simple.Internal (Connection, withConnectionHandle)
 import Database.DuckDB.Simple.Native
 import Foreign.Marshal.Utils (with)
 import Foreign.Ptr (FunPtr, Ptr, castFunPtr, castPtr, freeHaskellFunPtr, nullFunPtr, nullPtr)
@@ -140,9 +141,10 @@ readCallbackState getter = do
 -- | Convert callback exceptions to native V2 diagnostics. Mark the thread as a
 -- thread inside a DuckDB callback for the time of the action, so that its
 -- waits for a connection lock have the bound of the connection. See
--- 'Database.DuckDB.Simple.Internal.withConnectionLock'. Each DuckDB callback
--- with user code runs through this function, except the flush function of a
--- log sink when DuckDB destroys the sink.
+-- 'Database.DuckDB.Simple.Internal.withConnectionLock' and
+-- Note [Callback marks] in "Database.DuckDB.Simple.CallbackMark". Each DuckDB
+-- callback with user code runs through this function, except the flush function
+-- of a log sink when DuckDB destroys the sink.
 runCallback :: Ptr DuckDBV2ErrorInfoHandle -> IO () -> IO ()
 runCallback err action = mask \restore -> do
   outcome <- try (withCallbackMark (restore action))

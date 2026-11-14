@@ -7,9 +7,9 @@
 module GeometryRegressionTests (tests) where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (IOException, SomeException, bracket, displayException, try)
-import Control.Monad (forM_, when)
-import Data.Array (Array, listArray)
+import Control.Exception (IOException, bracket, displayException, try)
+import Control.Monad (forM, forM_, when)
+import Data.Array (Array, elems, listArray)
 import qualified Data.ByteString as BS
 import qualified Data.Geometry as G
 import qualified Data.Geometry.WKB as WKB
@@ -308,22 +308,57 @@ tests =
               :: IO [Only (Array Int (Maybe RawGeometry))]
             )
             >>= (@?= [Only values])
-    , testCase "nested LIST, ARRAY and MAP results preserve CRS and reject implicit raw binding" $
+    , testCase "nested STRUCT, LIST, ARRAY and MAP results bind again with their bytes and CRS" $
         withConnection ":memory:" \conn -> do
-          [Only value] <-
-            query_
-              conn
-              "SELECT {'xs': ['POINT (1 2)'::GEOMETRY('OGC:CRS84'), NULL], 'fixed': ['POINT EMPTY'::GEOMETRY('OGC:CRS84')]::GEOMETRY('OGC:CRS84')[1], 'map': MAP {'one': 'POINT (3 4)'::GEOMETRY('OGC:CRS84')}}"
-              :: IO [Only (StructValue FieldValue)]
-          assertRawBindingFailure (query conn "SELECT ?" (Only value) :: IO [Only (StructValue FieldValue)])
-          (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
-    , testCase "UNION geometry results retain CRS and reject implicit raw binding" $
+          wkbs <- shapeBytes conn
+          forM_ [("GEOMETRY", Nothing), ("GEOMETRY('OGC:CRS84')", Just "OGC:CRS84")] \(geometryType, crs) ->
+            forM_ wkbs \wkb -> do
+              [(value, valueType)] <-
+                query
+                  conn
+                  ( Query
+                      ( "SELECT v, typeof(v) FROM (SELECT {'shape': g, 'xs': [g, NULL], 'fixed': [g]::"
+                          <> geometryType
+                          <> "[1], 'map': MAP {'one': g}} AS v FROM (SELECT system.main.ST_GeomFromWKB(?)::"
+                          <> geometryType
+                          <> " AS g))"
+                      )
+                  )
+                  (Only wkb)
+                  :: IO [(StructValue FieldValue, Text)]
+              take 1 (elems (structValueFields value)) @?= [StructField "shape" (FieldGeometry (RawGeometry wkb crs))]
+              (query conn "SELECT ?, typeof(?)" (value, value)) >>= (@?= [(value, valueType)])
+    , testCase "UNION geometry results retain CRS and bind again" $
         withConnection ":memory:" \conn -> do
-          [Only value] <- query_ conn "SELECT union_value(shape := 'POINT (1 2)'::GEOMETRY('OGC:CRS84'))" :: IO [Only (UnionValue FieldValue)]
-          assertRawBindingFailure (query conn "SELECT ?" (Only value) :: IO [Only (UnionValue FieldValue)])
+          [(value, valueType)] <-
+            query_ conn "SELECT u, typeof(u) FROM (SELECT union_value(shape := 'POINT (1 2)'::GEOMETRY('OGC:CRS84')) AS u)"
+              :: IO [(UnionValue FieldValue, Text)]
+          (query conn "SELECT ?, typeof(?)" (value, value)) >>= (@?= [(value, valueType)])
           [Only nullValue] <- query_ conn "SELECT union_value(shape := NULL::GEOMETRY('OGC:CRS84'))" :: IO [Only (UnionValue FieldValue)]
           (query conn "SELECT ?" (Only nullValue) :: IO [Only (UnionValue FieldValue)]) >>= (@?= [Only nullValue])
           (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
+    , testCase "a raw geometry binds only as a GEOMETRY with the same CRS" $
+        withConnection ":memory:" \conn -> do
+          [Only raw] <- query_ conn "SELECT 'POINT (1 2)'::GEOMETRY('OGC:CRS84')" :: IO [Only RawGeometry]
+          let plain = raw{rawGeometryCRS = Nothing}
+              fromCRS = "duckdb-simple: a GEOMETRY value with the CRS 'OGC:CRS84' cannot bind as a GEOMETRY with no CRS"
+              toCRS = "duckdb-simple: a GEOMETRY value with no CRS cannot bind as a GEOMETRY with the CRS 'OGC:CRS84'"
+          forM_
+            [ ("GEOMETRY", LogicalTypeGeometry Nothing, raw, fromCRS)
+            , ("GEOMETRY", LogicalTypeScalar LogicalTypeIdGeometry, raw, fromCRS)
+            , ("GEOMETRY('OGC:CRS84')", LogicalTypeGeometry (Just "OGC:CRS84"), plain, toCRS)
+            ]
+            \(columnType, declared, value, message) -> do
+              _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE stored (v STRUCT(shape " <> columnType <> "))"))
+              result <- try (execute conn "INSERT INTO stored VALUES (?)" (Only (geometryStruct declared (FieldGeometry value))))
+              case result of
+                Left err -> do
+                  sqlErrorMessage err @?= message
+                  sqlErrorType err @?= Just ErrorInputInvalid
+                Right _ -> assertFailure "expected a CRS mismatch error"
+              (query_ conn "SELECT count(*) FROM stored" :: IO [Only Int64]) >>= (@?= [Only 0])
+          (query conn "SELECT ?" (Only (geometryStruct (LogicalTypeScalar LogicalTypeIdGeometry) (FieldGeometry plain))))
+            >>= (@?= [Only (geometryStruct (LogicalTypeGeometry Nothing) (FieldGeometry plain))])
     , testCase "inactive UNION geometry members keep the CRS of their declared type" $
         withConnection ":memory:" \conn -> do
           [Only value] <-
@@ -472,10 +507,14 @@ localGridWKT2 =
 
 -- | A one-field STRUCT with a NULL GEOMETRY of the given CRS.
 nullShape :: Text -> StructValue FieldValue
-nullShape crs =
+nullShape crs = geometryStruct (LogicalTypeGeometry (Just crs)) FieldNull
+
+-- | A one-field STRUCT with a value of the given declared GEOMETRY type.
+geometryStruct :: LogicalTypeRep -> FieldValue -> StructValue FieldValue
+geometryStruct logical value =
   StructValue
-    { structValueFields = listArray (0, 0) [StructField "shape" FieldNull]
-    , structValueTypes = listArray (0, 0) [StructField "shape" (LogicalTypeGeometry (Just crs))]
+    { structValueFields = listArray (0, 0) [StructField "shape" value]
+    , structValueTypes = listArray (0, 0) [StructField "shape" logical]
     , structValueIndex = Map.singleton "shape" 0
     }
 
@@ -559,13 +598,18 @@ assertMixedLayoutFailure expectedCode action = do
       assertBool (show err) ("inconsistent Z/M dimensions" `Text.isInfixOf` sqlErrorMessage err)
     Right () -> assertFailure "expected native mixed-layout geometry rejection"
 
--- | Check that generic values cannot silently normalize raw geometry.
-assertRawBindingFailure :: IO a -> Assertion
-assertRawBindingFailure action = do
-  result <- try (action >> pure ()) :: IO (Either SomeException ())
-  case result of
-    Left err -> assertBool (displayException err) ("raw GEOMETRY binding requires explicit" `isInfixOf` displayException err)
-    Right () -> assertFailure "expected raw geometry binding rejection"
+-- | The WKB bytes of each native shape and of a point with NaN payload bits.
+shapeBytes :: Connection -> IO [BS.ByteString]
+shapeBytes conn = do
+  native <- forM shapes \wkt -> do
+    [Only raw] <- query conn "SELECT ?::GEOMETRY" (Only wkt) :: IO [Only RawGeometry]
+    pure (rawGeometryWKB raw)
+  nanPoint <-
+    either
+      assertFailure
+      pure
+      (WKB.encodeWKB (G.PointGeometry (G.PointXYZ (G.XYZ (castWord64ToDouble 0x7ff8000000000001) (castWord64ToDouble 0x7ff8000000000002) 7))))
+  pure (native <> [nanPoint])
 
 -- | Native shapes cover all families, dimensions, empty children, and exact doubles.
 shapes :: [Text]

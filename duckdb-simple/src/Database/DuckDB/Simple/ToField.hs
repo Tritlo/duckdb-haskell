@@ -53,6 +53,7 @@ import Database.DuckDB.Simple.FromField (
   IntervalValue (..),
   TimeWithZone (..),
  )
+import Database.DuckDB.Simple.Geometry (RawGeometry (..))
 import Database.DuckDB.Simple.Internal (
   Statement (..),
   duckDBTypeFromName,
@@ -824,7 +825,7 @@ fieldValueWithTypeDuckValue builder@ValueBuilder{builderFactory = factory, build
   (LogicalTypeScalar LogicalTypeIdVariant, _) -> variantDuckValue builder value
   (LogicalTypeScalar dtype, _) -> scalarFieldValueDuckValue factory dtype value
   (LogicalTypeCollatedVarchar _, FieldText text) -> textDuckValue factory text
-  (LogicalTypeGeometry _, FieldGeometry{}) -> unsupportedRawGeometryBinding
+  (LogicalTypeGeometry crs, FieldGeometry raw) -> rawGeometryDuckValue builder crs raw
   (LogicalTypeDecimal width scale, FieldDecimal decimal@DecimalValue{decimalWidth, decimalScale})
     | width == decimalWidth && scale == decimalScale -> decimalDuckValue factory decimal
   (LogicalTypeList child, FieldList values) -> sequenceValue c_duckdb_v2_value_create_list child values
@@ -866,7 +867,8 @@ scalarFieldValueDuckValue factory dtype value = case (dtype, value) of
   (LogicalTypeIdDouble, FieldDouble d) -> doubleDuckValue factory d
   (LogicalTypeIdVarchar, FieldText t) -> textDuckValue factory t
   (LogicalTypeIdBlob, FieldBlob b) -> blobDuckValue factory b
-  (LogicalTypeIdGeometry, FieldGeometry{}) -> unsupportedRawGeometryBinding
+  -- The type id has no CRS. See Note [Raw GEOMETRY parameters].
+  (LogicalTypeIdGeometry, FieldGeometry raw) -> rawGeometryDuckValue (plainBuilder factory) Nothing raw
   (LogicalTypeIdUUID, FieldUUID u) -> uuidDuckValue factory u
   (LogicalTypeIdBit, FieldBit bits) -> bitDuckValue factory bits
   (LogicalTypeIdDate, FieldDate d) -> dateDuckValue factory d
@@ -956,9 +958,80 @@ withIdentifiers names action = do
 typeMismatch :: String -> FieldValue -> IO a
 typeMismatch expected actual = throwIO (userError ("duckdb-simple: cannot encode " <> show actual <> " as " <> expected))
 
--- | Raw WKB binding requires an explicit geometry conversion.
-unsupportedRawGeometryBinding :: IO a
-unsupportedRawGeometryBinding = throwIO (userError "duckdb-simple: raw GEOMETRY binding requires explicit ST_GeomFromWKB and ST_SetCRS parameters")
+-- | Construct a GEOMETRY value of the declared CRS from a raw geometry. See
+-- Note [Raw GEOMETRY parameters].
+rawGeometryDuckValue :: ValueBuilder -> Maybe Text -> RawGeometry -> IO DuckDBV2ValueHandle
+rawGeometryDuckValue ValueBuilder{builderFactory = factory, builderType = makeType} crs RawGeometry{rawGeometryWKB, rawGeometryCRS} = do
+  when (rawGeometryCRS /= crs) $
+    throwIO
+      SQLError
+        { sqlErrorMessage =
+            "duckdb-simple: a GEOMETRY value with " <> describeCRS rawGeometryCRS <> " cannot bind as a GEOMETRY with " <> describeCRS crs
+        , sqlErrorType = Just ErrorInputInvalid
+        , sqlErrorQuery = Nothing
+        }
+  bracket (makeType (LogicalTypeGeometry crs)) destroyLogicalType \logical ->
+    bracket (blobDuckValue factory rawGeometryWKB) destroyValue \blob ->
+      output (c_duckdb_v2_value_cast factory blob logical)
+  where
+    describeCRS = maybe "no CRS" (("the CRS " <>) . quotedCRS)
+
+-- | Put a CRS between single quotes for an error message.
+quotedCRS :: Text -> Text
+quotedCRS crs = "'" <> crs <> "'"
+
+{- Note [Raw GEOMETRY parameters]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A raw geometry is a FieldGeometry value. It holds a RawGeometry: WKB bytes
+and an optional CRS. A result gives a raw geometry for a GEOMETRY value in a
+STRUCT, a TUPLE, a UNION, a LIST, an ARRAY, a MAP, or a VARIANT. A user can
+also construct a raw geometry. A STRUCT, TUPLE, UNION, or Variant parameter
+binds each raw geometry that it contains with this rule:
+
+- The CRS of the value must be equal to the CRS of the declared GEOMETRY
+  type. A value without a CRS agrees only with a type without a CRS. If
+  the two are different, rawGeometryDuckValue raises an SQLError with the
+  type ErrorInputInvalid.
+- rawGeometryDuckValue makes a BLOB value from the WKB bytes. Then it casts
+  the BLOB value to the declared GEOMETRY type with duckdb_v2_value_cast.
+  The builder of the statement supplies a type with a configured CRS. See
+  Note [CRS types of a connection] in "Database.DuckDB.Simple.TypeCache".
+- A declared type that is only the type id GEOMETRY has no CRS. The binding
+  uses the plain builder of the factory for it.
+- A VARIANT accepts a raw geometry without a CRS. The payload is a GEOMETRY
+  without a CRS. A raw geometry with a CRS in a VARIANT raises an SQLError
+  with the type ErrorInputInvalid.
+- The factory of an instance cannot construct a GEOMETRY type with a CRS.
+  DuckDB raises "Binder Error: Cannot create GEOMETRY type with coordinate
+  system without a connection". Thus toDuckValue with the factory of an
+  instance raises this error for a raw geometry with a CRS. It also raises
+  this error for a typed NULL with a CRS. The factory of a connection does
+  not have this limit.
+
+- Why the bytes do not change. DuckDB 2.0.0 stores a GEOMETRY value as WKB.
+  The cast from BLOB to GEOMETRY reads the bytes with Geometry::FromBinary.
+  ST_GeomFromWKB uses the same function (src/function/cast/geo_casts.cpp and
+  src/function/scalar/geometry/geometry_functions.cpp). The cast from
+  GEOMETRY to BLOB copies the stored bytes (Geometry::ToBinary in
+  src/common/types/geometry.cpp). The result reader uses that cast
+  (prepareGeometryReader in "Database.DuckDB.Simple.Materialize"). Thus the
+  bytes of a result bind again with no change. The cast changes bytes that
+  DuckDB does not write: it writes big-endian WKB and EWKB as little-endian
+  ISO WKB. The cast rejects WKB that DuckDB cannot store, for example a
+  collection with members of different Z/M layouts.
+
+- Why a CRS mismatch is an error. A BLOB value has no CRS. The cast gives
+  the CRS of the declared type to the value. Without the check, a value
+  could get a different CRS or lose its CRS, and no error would occur.
+
+- Why a VARIANT accepts only a value without a CRS. A VARIANT keeps a
+  GEOMETRY without its CRS. DuckDB removes the CRS when it casts a GEOMETRY
+  with a CRS to VARIANT, and it gives no error.
+
+- Why earlier versions raised an error. DuckDB 1.5 does not have a cast from
+  BLOB to GEOMETRY. Thus duckdb-simple 0.3 raised an error for each raw
+  geometry parameter.
+-}
 
 -- | Cast the payload to VARIANT through the supplied native factory.
 variantDuckValue :: ValueBuilder -> FieldValue -> IO DuckDBV2ValueHandle
@@ -990,6 +1063,8 @@ instance ToDuckValue Variant where
 -- value and fit the native range.
 -- The C API cannot construct a nonempty object whose keys are all empty.
 -- DuckDB 2.0 treats that STRUCT type as a tuple and casts it to a VARIANT array.
+-- A raw geometry without a CRS uses GEOMETRY. A raw geometry with a CRS raises
+-- an error. See Note [Raw GEOMETRY parameters].
 variantPayloadType :: FieldValue -> IO (LogicalTypeRep, FieldValue)
 variantPayloadType value = case value of
   FieldNull -> pure (variant, value)
@@ -1039,7 +1114,17 @@ variantPayloadType value = case value of
     let types = fmap (\field -> field{structFieldValue = variant}) structValueTypes
     pure (LogicalTypeStruct types, FieldStruct structValue{structValueTypes = types})
   FieldUnion unionValue -> pure (unionValueTypeRep unionValue, value)
-  FieldGeometry{} -> unsupportedRawGeometryBinding
+  FieldGeometry RawGeometry{rawGeometryCRS = Just crs} ->
+    throwIO
+      SQLError
+        { sqlErrorMessage =
+            "duckdb-simple: a VARIANT does not keep the CRS of a GEOMETRY, so the GEOMETRY value with the CRS "
+              <> quotedCRS crs
+              <> " cannot bind as a VARIANT"
+        , sqlErrorType = Just ErrorInputInvalid
+        , sqlErrorQuery = Nothing
+        }
+  FieldGeometry{} -> pure (LogicalTypeGeometry Nothing, value)
   FieldMap{} -> throwIO (userError "duckdb-simple: VARIANT payloads cannot contain MAP values")
   FieldEnum{} -> throwIO (userError "duckdb-simple: VARIANT payloads cannot contain ENUM values")
   where

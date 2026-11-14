@@ -46,7 +46,13 @@ import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.Storable (Storable (..), peekElemOff)
 import GHC.Records (getField)
 
--- | Read a validity bit. A null mask means that every row is valid.
+-- | Read a validity bit of a mask from @duckdb_v2_vector_get_view@. Each
+-- @uint64_t@ word covers 64 rows: bit N of word W is row W*64+N, and a set bit
+-- means valid. The header gives this layout in the comment of
+-- @duckdb_v2_vector_flat_get_validity_mutable@. The V2 API has no call that
+-- reads the validity of one row, so this function reads the mask memory. The
+-- header does not say what a null mask pointer means. In DuckDB 2.0.0 a null
+-- pointer means that the vector has no mask, and then every row is valid.
 chunkIsRowValid :: Ptr Word64 -> DuckDBIdx -> IO Bool
 chunkIsRowValid validity row
   | validity == nullPtr = pure True

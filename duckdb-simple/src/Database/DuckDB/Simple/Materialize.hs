@@ -186,10 +186,7 @@ prepareArrayDecoder variantReader vector = do
       case rep of
         LogicalTypeArray _ size -> ensureWithinIntRange (Text.pack "array size") size
         _ -> throwIO (userError "duckdb-simple: invalid ARRAY type")
-  childVec <- vectorChild vector 0
-  when (childVec == nullHandle) $
-    throwIO (userError "duckdb-simple: array child vector is null")
-  readChild <- prepareVectorReader variantReader childVec
+  readChild <- vectorChild vector 0 >>= prepareVectorReader variantReader
   pure \rowIdx -> do
     let baseIdx = rowIdx * arraySize
     values <- forM [0 .. arraySize - 1] \delta -> readChild (baseIdx + delta)
@@ -197,10 +194,7 @@ prepareArrayDecoder variantReader vector = do
 
 prepareListDecoder :: VariantReader -> DuckDBV2VectorHandle -> Ptr Void -> IO (Int -> IO [FieldValue])
 prepareListDecoder variantReader vector dataPtr = do
-  childVec <- vectorChild vector 0
-  when (childVec == nullHandle) $
-    throwIO (userError "duckdb-simple: list child vector is null")
-  readChild <- prepareVectorReader variantReader childVec
+  readChild <- vectorChild vector 0 >>= prepareVectorReader variantReader
   pure \rowIdx -> do
     entry <- peekElemOff (castPtr dataPtr :: Ptr DuckDBV2ListEntry) rowIdx
     (baseIdx, len) <- listEntryBounds (Text.pack "list") entry
@@ -208,15 +202,9 @@ prepareListDecoder variantReader vector dataPtr = do
 
 prepareMapDecoder :: VariantReader -> DuckDBV2VectorHandle -> Ptr Void -> IO (Int -> IO [(FieldValue, FieldValue)])
 prepareMapDecoder variantReader vector dataPtr = do
-  structVec <- vectorChild vector 0
-  when (structVec == nullHandle) $
-    throwIO (userError "duckdb-simple: map struct vector is null")
-  keyVec <- vectorChild structVec 0
-  valueVec <- vectorChild structVec 1
-  when (keyVec == nullHandle || valueVec == nullHandle) $
-    throwIO (userError "duckdb-simple: map child vectors are null")
-  readKey <- prepareVectorReader variantReader keyVec
-  readValue <- prepareVectorReader variantReader valueVec
+  entries <- vectorChild vector 0
+  readKey <- vectorChild entries 0 >>= prepareVectorReader variantReader
+  readValue <- vectorChild entries 1 >>= prepareVectorReader variantReader
   pure \rowIdx -> do
     entry <- peekElemOff (castPtr dataPtr :: Ptr DuckDBV2ListEntry) rowIdx
     (baseIdx, len) <- listEntryBounds (Text.pack "map") entry
@@ -248,10 +236,7 @@ prepareStructDecoder variantReader vector =
           Map.fromList (zip (map structFieldName typeList) [0 ..])
     childReaders <-
       forM (zip [0 .. count - 1] typeList) \(childIdx, StructField{structFieldName}) -> do
-        childVec <- vectorChild vector (fromIntegral childIdx)
-        when (childVec == nullHandle) $
-          throwIO (userError "duckdb-simple: struct child vector is null")
-        readChild <- prepareVectorReader variantReader childVec
+        readChild <- vectorChild vector (fromIntegral childIdx) >>= prepareVectorReader variantReader
         pure (structFieldName, readChild)
     pure \rowIdx -> do
       valueFields <-
@@ -299,15 +284,10 @@ prepareUnionDecoder variantReader vector =
             )
     let membersList = elems membersArray
         memberCount = length membersList
-    tagVec <- vectorChild vector 0
-    when (tagVec == nullHandle) $
-      throwIO (userError "duckdb-simple: union tag vector is null")
-    readTag <- prepareVectorReader variantReader tagVec
+    readTag <- vectorChild vector 0 >>= prepareVectorReader variantReader
     memberReaders <-
       forM [1 .. memberCount] \childIdx -> do
         memberVec <- vectorChild vector (fromIntegral childIdx)
-        when (memberVec == nullHandle) $
-          throwIO (userError "duckdb-simple: union member vector is null")
         prepared <- newIORef Nothing
         pure \row -> do
           cached <- readIORef prepared

@@ -303,7 +303,7 @@ withStatementValue connection statement parameters action =
       (destroy c_duckdb_v2_result_destroy)
       \result ->
         bracket (output (c_duckdb_v2_result_fetch_chunk result)) (destroy c_duckdb_v2_data_chunk_destroy) \chunk -> do
-          unless (chunk /= nullHandle) (codecError "metadata query returned no rows")
+          unless (chunk /= nullHandle) (codecError "helper query returned no rows")
           vector <- output (c_duckdb_v2_data_chunk_get_vector chunk 0)
           bracket (output (c_duckdb_v2_vector_get_value vector 0)) destroyValue action
 

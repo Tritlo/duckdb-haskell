@@ -291,6 +291,7 @@ bind :: Statement -> [FieldBinding] -> IO ()
 bind stmt fields = do
   resetStatementStream stmt
   withStatementHandle stmt \_ -> do
+    -- The handle is not used. withStatementHandle raises the error for a closed statement or connection.
     let actual = length fields
         expected = length (statementParameterNames stmt)
     when (actual /= expected) $
@@ -344,6 +345,7 @@ bindNamed stmt params =
         when (Set.size (Set.fromList names) /= length names) $
           throwFormatErrorNamed stmt (Text.pack "duckdb-simple: duplicate named parameter") bindings
         withStatementHandle stmt \_ -> do
+          -- The handle is not used. withStatementHandle raises the error for a closed statement or connection.
           let actual = length bindings
               expected = length (statementParameterNames stmt)
           when (actual > expected) $
@@ -367,12 +369,14 @@ fetchParameterNames stmt =
 -- | Remove all parameter bindings and release an active result.
 clearStatementBindings :: Statement -> IO ()
 clearStatementBindings stmt = withStatementHandle stmt \_ -> do
+  -- The handle is not used. withStatementHandle raises the error for a closed statement or connection.
   resetStatementStream stmt
   clearBoundValues (statementBindings stmt)
 
 -- | Look up the 1-based index of a named placeholder.
 namedParameterIndex :: Statement -> Text -> IO (Maybe Int)
 namedParameterIndex stmt name = withStatementHandle stmt \_ -> do
+  -- The handle is not used. withStatementHandle raises the error for a closed statement or connection.
   when (Text.any (== '\0') name) $
     throwIO (mkPrepareError (statementQuery stmt) (Text.pack "duckdb-simple: parameter name contains NUL"))
   pure ((+ 1) <$> findIndex ((== normalizeName name) . normalizeName) (elems (statementParameterNames stmt)))

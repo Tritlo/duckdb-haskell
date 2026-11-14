@@ -767,17 +767,14 @@ scalarFieldValueDuckValue factory dtype value = case (dtype, value) of
   (LogicalTypeIdBigNum, FieldBigNum big) -> bigNumDuckValue factory big
   (LogicalTypeIdSQLNull, _) -> nullDuckValue factory
   _ ->
-    case value of
-      FieldNull -> nullDuckValue factory
-      other ->
-        throwIO
-          ( userError
-              ( "duckdb-simple: unsupported scalar conversion for "
-                  <> show dtype
-                  <> " from "
-                  <> show other
-              )
+    throwIO
+      ( userError
+          ( "duckdb-simple: unsupported scalar conversion for "
+              <> show dtype
+              <> " from "
+              <> show value
           )
+      )
 
 enumDuckValue :: DuckDBV2FactoryHandle -> Array Int Text -> Word32 -> IO DuckDBV2ValueHandle
 enumDuckValue factory entries index = do

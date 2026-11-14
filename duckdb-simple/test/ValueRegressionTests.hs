@@ -390,6 +390,12 @@ valueRegressionTests =
           assertIOError (query conn "SELECT ?" (Only bits) :: IO [Only BitString])
     , testCase "TIMETZ second offsets fail without rounding" $ withConnection ":memory:" \conn ->
         assertIOError (query_ conn "SELECT '12:00:00+01:23:45'::TIMETZ" :: IO [Only TimeWithZone])
+    , testCase "a decode failure in a later chunk releases each chunk" $ withConnection ":memory:" \conn -> do
+        assertIOError
+          ( query_ conn "SELECT CASE WHEN i = 9000 THEN '12:00:00+01:23:45'::TIMETZ ELSE '12:00:00+01:00'::TIMETZ END FROM range(10000) t(i)"
+              :: IO [Only FieldValue]
+          )
+        (query_ conn "SELECT 42" :: IO [Only Int]) >>= (@?= [Only 42])
     , testCase "ENUM payload index must be in its dictionary" $ withConnection ":memory:" \conn ->
         assertIOError
           (query conn "SELECT ?" (Only (singleField (LogicalTypeEnum (listArray (0, 1) ["a", "b"])) (FieldEnum 2))) :: IO [Only FieldValue])

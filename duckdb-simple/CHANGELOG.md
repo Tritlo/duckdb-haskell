@@ -187,6 +187,15 @@
   target when that type is an integer type or DECIMAL, so DuckDB checks the
   range of each element. Before, a negative element for an unsigned array
   column was stored as a wrapped value.
+- `toDuckValue` for an `Integer` or a `Natural` gives a HUGEINT value when the
+  value is in the HUGEINT range, and a BIGNUM value for each other value.
+  Before, it gave a BIGNUM value in each case. DuckDB checks the range when it
+  casts a HUGEINT value. Thus `setConfigValue` with -5 for an unsigned option
+  raises an error, and a default value from `defaultValue` that its parameter
+  cannot hold raises an error at a call that omits the argument. A value
+  outside the HUGEINT range keeps the BIGNUM casts of DuckDB: `setConfigValue`
+  with 2^128 + 5 for an unsigned option sets 5. The column type of an
+  `Integer` or a `Natural` in a typed row stays BIGNUM.
 - A generic record with an `Array` field that has elements can be bound. The
   value gives the ARRAY size. DuckDB rejects the record when no value gives the
   size: an `Array` field with the value `Nothing`, an `Array` inside a LIST,

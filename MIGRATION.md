@@ -164,7 +164,9 @@ The SQL workflow stays the same. These changes can affect your code:
   and no longer as `BigNum`. Arithmetic on the parameter in SQL has the range
   of HUGEINT. A negative value for an unsigned column now raises an error;
   version 0.3 stored a wrapped value. Bind a `BigNum` for the BIGNUM value of
-  version 0.3.
+  version 0.3. `toDuckValue` uses the same rule: an `Integer` or a `Natural`
+  in the HUGEINT range gives a HUGEINT value, where version 0.3 gave a BIGNUM
+  value.
 - Each function that reads rows gives one row with one BIGINT column for an
   INSERT, UPDATE, or DELETE without RETURNING: the number of changed rows.
   This applies to `query`, `query_`, `queryNamed`, `fold`, `fold_`,

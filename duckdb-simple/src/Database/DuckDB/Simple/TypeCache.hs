@@ -155,13 +155,12 @@ readNativeTypes connection crss = do
                   , nativeOwned = owned
                   }
 
--- | Take owned vector types. Destroy earlier types if an accessor fails.
+-- | Take the owned type of each of the first vectors. Destroy the earlier
+-- types if an accessor fails.
 columnTypes :: DuckDBV2DataChunkHandle -> Int -> IO [DuckDBV2LogicalTypeHandle]
-columnTypes chunk count = go 0
-  where
-    go index
-      | index == count = pure []
-      | otherwise = do
-          vector <- output (c_duckdb_v2_data_chunk_get_vector chunk (fromIntegral index))
-          logical <- output (c_duckdb_v2_vector_get_logical_type vector)
-          (logical :) <$> go (index + 1) `onException` destroyLogicalType logical
+columnTypes chunk count =
+  acquireItems
+    destroyLogicalType
+    [ output (c_duckdb_v2_data_chunk_get_vector chunk (fromIntegral index)) >>= output . c_duckdb_v2_vector_get_logical_type
+    | index <- [0 .. count - 1]
+    ]

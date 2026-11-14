@@ -129,7 +129,8 @@ registerCopyOn target name to from = do
 -- | Give the VARIANT reader of a registration target to an action. On a
 -- connection, the reader decodes VARIANT through a helper connection of the
 -- database. An extension target has no instance handle, so its reader raises an
--- error for each VARIANT row.
+-- error for each VARIANT row. See Note [VARIANT decoding] in
+-- "Database.DuckDB.Simple.VariantCodec".
 withVariantReader :: RegistrationTarget -> (VectorReader -> IO a) -> IO a
 withVariantReader target action = case target of
   ConnectionTarget connection -> withDatabaseHandle connection (action . readVariant)
@@ -297,10 +298,8 @@ registerCopyFromFunctionOn :: (TypedRow row) => RegistrationTarget -> Text -> (C
 registerCopyFromFunctionOn target name readRows = registerCopyOn target name Nothing (Just (copyFromSide name readRows))
 
 -- | The native COPY FROM callbacks of a typed reader. The bind callback reads
--- the inputs and keeps the read action as the bind data. The global init callback
--- runs the action and keeps the list in the global state. The exec callback
--- writes the next rows of the list. DuckDB can run exec callbacks of one scan at
--- the same time. Thus the exec callback takes the rows from the list under a lock.
+-- the path and the columns of the target table. See
+-- Note [Row lists of typed scans] in "Database.DuckDB.Simple.Typed.Table".
 copyFromSide :: forall row. (TypedRow row) => Text -> (CopyFromInfo -> IO [row]) -> CopyFromCallbacks
 copyFromSide name readRows = (copyFromCallbacks bind execute){copyFromInitGlobalCallback = Just initialize}
   where
@@ -336,8 +335,8 @@ copyFromSide name readRows = (copyFromCallbacks bind execute){copyFromInitGlobal
     execute info context = withContextFactory context \factory -> do
       remaining <- readCallbackState (c_duckdb_v2_copy_from_exec_get_global_state info) :: IO (MVar [row])
       chunk <- output (c_duckdb_v2_copy_from_exec_get_output_chunk info)
-      -- DuckDB can run exec callbacks of one scan at the same time, for example for a
-      -- multi-file function. The lock gives each row to one call only.
+      -- The lock gives each row to one call only. See
+      -- Note [Row lists of typed scans] in "Database.DuckDB.Simple.Typed.Table".
       modifyMVar_ remaining (writeRows factory chunk)
 
 -- | The COPY TO side of a format. The four functions have the roles of the

@@ -169,7 +169,8 @@ castRows convert info context = withContextFactory context \factory -> do
   count <- fromIntegral <$> output (c_duckdb_v2_cast_function_exec_get_row_count info)
   readArgument <- output (c_duckdb_v2_cast_function_exec_get_input info) >>= prepareArgumentReader 0
   vector <- output (c_duckdb_v2_cast_function_exec_get_output info)
-  -- The set operations check the row against the size. Flatten after the size changes.
+  -- Flatten after the size changes. See Note [Vector flatten] in
+  -- "Database.DuckDB.Simple.Materialize".
   checked (c_duckdb_v2_vector_set_size vector (fromIntegral count))
   checked (c_duckdb_v2_vector_flatten vector)
   vectorType <- vectorElementType vector
@@ -181,10 +182,8 @@ castRows convert info context = withContextFactory context \factory -> do
           field -> case fromField field of
             Errors failures -> throwIO (userError ("duckdb-simple: " <> conversionMessage failures))
             Ok value -> either (throwIO . userError . Text.unpack) (writeCastValue factory useText vectorType vector row) (convert value)
-  -- Use a loop with a constant stack. Each c_duckdb_v2 binding is a safe
-  -- foreign call. At a safe call, the GHC runtime (threadPaused) reads the
-  -- frames of the current stack chunk. A loop that keeps a frame for each
-  -- row thus makes each native call slower as the number of rows grows.
+  -- Use a loop with a constant stack. See Note [Constant stack at safe calls] in
+  -- "Database.DuckDB.Simple.Native".
   firstFailure <- newIORef Nothing
   forM_ [0 .. count - 1] \row ->
     -- Catch each exception, also an asynchronous one, and write NULL to the

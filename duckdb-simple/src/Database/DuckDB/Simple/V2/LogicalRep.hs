@@ -70,7 +70,8 @@ logicalTypeToRep logical = do
     DuckDBV2LogicalTypeIdEnum -> do
       size <- count
       -- A dictionary can have many entries, and each entry makes native
-      -- calls. The fold keeps a constant stack.
+      -- calls. The fold keeps a constant stack. See
+      -- Note [Constant stack at safe calls] in "Database.DuckDB.Simple.Native".
       LogicalTypeEnum . listArray (0, size - 1) . reverse
         <$> foldM (\entries index -> (: entries) <$> string (fromIntegral index)) [] [0 .. size - 1]
     _ -> LogicalTypeScalar <$> logicalTypeIdFromNative dtype
@@ -100,6 +101,9 @@ logicalTypeFromRepWith factory resolve = create
             then output (c_duckdb_v2_factory_create_type_from_id factory dtype (ConstPtr nullPtr) (ConstPtr valuePtr) (fromIntegral (length values)))
             else withIdentifierArray names \namePtr ->
               output (c_duckdb_v2_factory_create_type_from_id factory dtype (ConstPtr namePtr) (ConstPtr valuePtr) (fromIntegral (length values)))
+    -- The type cache of a connection gives a resolver for configured CRS
+    -- types. See Note [CRS types of a connection] in
+    -- "Database.DuckDB.Simple.TypeCache".
     create rep = resolve rep >>= maybe (constructRep rep) pure
     constructRep = \case
       LogicalTypeScalar LogicalTypeIdVariant -> fromText (Text.pack "VARIANT")

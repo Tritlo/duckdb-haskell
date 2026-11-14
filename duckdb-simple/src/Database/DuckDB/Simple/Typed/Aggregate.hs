@@ -9,26 +9,9 @@
 -- Description : Register an aggregate function as a fold over Haskell values.
 --
 -- The Haskell state of a group lives outside DuckDB. The native state holds a
--- 'StablePtr' to an 'IORef' with the Haskell state. DuckDB can move a native
--- state with a byte copy. Thus the update and combine callbacks change only the
--- 'IORef'. After init, only a release changes the native state: it writes null
--- to the native state.
---
--- The bind data of each call site holds a state table with the live stable
--- pointers. A release removes the stable pointer from the table, and only the
--- caller that removes it frees it. The destructor of the bind data frees the
--- stable pointers that remain. The registration always sets a bind callback, so
--- each call site has bind data. The code still reads the table as optional:
--- without bind data, only the destroy callback and a failed finalize release
--- the states.
---
--- DuckDB 2.0.0 runs the destroy callback on finalized states too: a hash
--- aggregate destroys each chunk of states after it finalizes them, and an
--- ungrouped aggregate and a window destroy their states after finalize
--- (@radix_partitioned_hashtable.cpp@, @physical_ungrouped_aggregate.cpp@, and
--- @window_segment_tree.cpp@). The header says that the callback runs on states
--- that are discarded without being finalized. The table releases the states
--- that DuckDB does not destroy (see 'StateTable').
+-- 'StablePtr' to an 'IORef' with the Haskell state. The bind data of each call
+-- site holds a state table with the live stable pointers. See
+-- Note [Aggregate state life cycle].
 module Database.DuckDB.Simple.Typed.Aggregate (
   Aggregate (..),
   createAggregateOn,
@@ -81,6 +64,74 @@ data Aggregate state args result = Aggregate
   -- ^ Give the result of a group.
   }
 
+{- Note [Aggregate state life cycle]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The Haskell state of a group lives outside DuckDB. The native state of a group
+has the size of one pointer (setStateSize). It holds a StablePtr to an IORef,
+and the IORef holds the Haskell state.
+
+These are the steps in the life of a state.
+
+- Init (initializeStates). The callback first writes null to all native states
+  of the call, so that an error leaves no native state uninitialized. Then for
+  each state it makes the IORef and the StablePtr, adds the key of the
+  StablePtr to the state table, and writes the StablePtr to the native state.
+
+- Update and combine (updateStates and combineStates). DuckDB can move a native
+  state with a byte copy. Thus these callbacks change only the IORef.
+
+- Release (releaseState). After init, only a release changes the native state:
+  it writes null to the native state. A release does not change a null native
+  state. Thus the null write stops a second release of one native state. A read
+  of a released native state raises an error (stateCell).
+
+The bind data of each call site holds a state table with the keys of the live
+stable pointers (StateTable and bindStateTable). A release removes the key from
+the table, and only the caller that removes it frees the stable pointer. This
+check stops a second free of a stable pointer that a byte copy of the native
+state also holds. It does not stop the release of a byte copy after the runtime
+has given its stable pointer to a new state. DuckDB 2.0.0 destroys each state at
+one location. The destructor of the state table frees the stable pointers that
+remain (releaseStateTable).
+
+The registration always sets a bind callback, so each call site has bind data.
+The code still reads the table as optional (readStateTable). Without bind data,
+only the destroy callback and a failed finalize release the states, and a
+release frees each stable pointer that it reads.
+
+These are the states that DuckDB 2.0.0 destroys and does not destroy.
+
+- The header says that the destroy callback runs on states that are discarded
+  without being finalized. DuckDB 2.0.0 runs the destroy callback on finalized
+  states too: a hash aggregate destroys each chunk of states after it finalizes
+  them, and an ungrouped aggregate and a window destroy their states after
+  finalize (radix_partitioned_hashtable.cpp, physical_ungrouped_aggregate.cpp,
+  and window_segment_tree.cpp).
+
+- DuckDB 2.0.0 does not run the destroy callback on these states:
+
+  - The states of a finalize call that fails, in a hash aggregate and in a
+    window.
+  - The states that no finalize call gets when LIMIT stops a parallel hash
+    aggregate.
+  - The states after a combine call fails in a parallel hash aggregate.
+  - The states after a finalize call fails in a parallel hash aggregate.
+
+  The exception handler of finalizeStates releases the states of the finalize
+  call that fails. The destructor of the state table frees the stable pointers
+  of the other states.
+
+DuckDB runs the destructor of the state table when it drops the bind data of a
+call site. In DuckDB 2.0.0 a hash table and an ungrouped aggregate each hold a
+copy of the bind data, and each copy shares the holder of the state table
+through a shared pointer (CV2AggregateFunctionData::Copy and CV2UserData). Each
+of them runs the destroy callback on its states before it drops its copy
+(~GroupedAggregateHashTable and ~UngroupedAggregateState). Thus the destructor
+runs after the last destroy callback of these owners that gets this bind data.
+
+See Note [State table stripes] for the form of the table.
+-}
+
 {- Note [State table stripes]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 A state table holds the keys of the live states of one call site. Each new
@@ -114,15 +165,8 @@ The destructor of the table reads all stripes (releaseStateTable).
 -- The table has 'stateTableStripes' stripes, and 'stateStripe' gives the stripe
 -- of a key. See Note [State table stripes].
 --
--- DuckDB 2.0.0 does not run the destroy callback on these states. In each case
--- the table releases them:
---
--- 1. The states of a finalize call that fails, in a hash aggregate and in a
---    window.
--- 2. The states that no finalize call gets when LIMIT stops a parallel hash
---    aggregate.
--- 3. The states after a combine call fails in a parallel hash aggregate.
--- 4. The states after a finalize call fails in a parallel hash aggregate.
+-- With the table, the library frees the states that DuckDB 2.0.0 does not
+-- destroy. See Note [Aggregate state life cycle].
 type StateTable = Array Int (IORef IntSet.IntSet)
 
 -- | The number of stripes in a state table. See Note [State table stripes].
@@ -174,11 +218,13 @@ createAggregateOn target name aggregate = do
         , aggregateDestroyCallback = Just destroyStates
         }
 
--- | Make a native state the size of one pointer.
+-- | Make a native state the size of one pointer. See
+-- Note [Aggregate state life cycle].
 setStateSize :: DuckDBV2AggregateFunctionSizeInfoHandle -> IO ()
 setStateSize info = checked (c_duckdb_v2_aggregate_function_size_set_state_size info (fromIntegral (sizeOf (nullPtr :: Ptr ()))))
 
 -- | Make an empty state table and transfer it to the bind data of the call site.
+-- See Note [Aggregate state life cycle].
 bindStateTable :: BindCallback DuckDBV2AggregateFunctionBindInfoHandle
 bindStateTable input _ _ = mask_ do
   stripes <- mapM (const (newIORef IntSet.empty)) [1 .. stateTableStripes]
@@ -189,13 +235,15 @@ bindStateTable input _ _ = mask_ do
     `onException` freeStablePtr stable
 
 -- | Read the state table from the bind data. Without bind data, give 'Nothing'.
+-- See Note [Aggregate state life cycle].
 readStateTable :: (Ptr (Ptr Void) -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO (Maybe StateTable)
 readStateTable getter = do
   raw <- output getter
   if raw == nullPtr then pure Nothing else Just <$> deRefStablePtr (castPtrToStablePtr (castPtr raw))
 
 -- | Give each new native state the initial Haskell state. First set all native
--- states to null, so that an error leaves no native state uninitialized.
+-- states to null, so that an error leaves no native state uninitialized. See
+-- Note [Aggregate state life cycle].
 initializeStates :: Aggregate state args result -> DuckDBV2AggregateFunctionInitInfoHandle -> IO ()
 initializeStates Aggregate{aggregateInitial} info = do
   table <- readStateTable (c_duckdb_v2_aggregate_function_init_get_bind_data info)
@@ -212,7 +260,7 @@ initializeStates Aggregate{aggregateInitial} info = do
 
 -- | Add each row to its state. A row with NULL in an argument does not change
 -- its state. A row that does not convert raises an error that names the
--- aggregate function.
+-- aggregate function. See Note [Aggregate state life cycle].
 updateStates :: (FromRow args) => Text -> Aggregate state args result -> Int -> DuckDBV2AggregateFunctionUpdateInfoHandle -> IO ()
 updateStates name Aggregate{aggregateStep} columns info = do
   count <- fromIntegral <$> output (c_duckdb_v2_aggregate_function_update_get_row_count info)
@@ -231,6 +279,7 @@ updateStates name Aggregate{aggregateStep} columns info = do
       readIORef cell >>= (`aggregateStep` arguments) >>= evaluate >>= writeIORef cell
 
 -- | Merge each source state into its target state. Do not change the source.
+-- Change only the cell of the target. See Note [Aggregate state life cycle].
 combineStates :: Aggregate state args result -> DuckDBV2AggregateFunctionCombineInfoHandle -> IO ()
 combineStates Aggregate{aggregateCombine} info = do
   count <- fromIntegral <$> output (c_duckdb_v2_aggregate_function_combine_get_state_count info)
@@ -244,6 +293,7 @@ combineStates Aggregate{aggregateCombine} info = do
 
 -- | Write the result of each state at its row of the result vector. DuckDB does
 -- not destroy the states of a finalize call that fails, so release them here.
+-- See Note [Aggregate state life cycle].
 finalizeStates
   :: (FunctionResult result) => Aggregate state args result -> ScalarType -> DuckDBV2AggregateFunctionFinalizeInfoHandle -> IO ()
 finalizeStates Aggregate{aggregateResult} resultType info = do
@@ -257,7 +307,7 @@ finalizeStates Aggregate{aggregateResult} resultType info = do
           peekElemOff states index >>= stateCell >>= readIORef >>= aggregateResult >>= toScalarValue >>= write (offset + index)
   finalize `onException` forM_ [0 .. count - 1] \index -> peekElemOff states index >>= releaseState table
 
--- | Release each state.
+-- | Release each state. See Note [Aggregate state life cycle].
 destroyStates :: DuckDBV2AggregateFunctionDestroyInfoHandle -> IO ()
 destroyStates info = do
   table <- readStateTable (c_duckdb_v2_aggregate_function_destroy_get_bind_data info)
@@ -266,6 +316,7 @@ destroyStates info = do
   forM_ [0 .. count - 1 :: Int] \index -> peekElemOff states index >>= releaseState table
 
 -- | Read the cell of a native state. A released native state raises an error.
+-- See Note [Aggregate state life cycle].
 stateCell :: Ptr Void -> IO (IORef state)
 stateCell slot = do
   stable <- peek (castPtr slot)
@@ -275,13 +326,8 @@ stateCell slot = do
 
 -- | Release the Haskell state of a native state, and set the native state to
 -- null. A null native state does not change. With a table, only the caller that
--- removes the key from the table frees the stable pointer.
---
--- The null write stops a second release of one native state. The table check
--- stops a second free of a stable pointer that a byte copy of the native state
--- also holds. It does not stop the release of a byte copy after the runtime has
--- given its stable pointer to a new state. DuckDB 2.0.0 destroys each state at
--- one location.
+-- removes the key from the table frees the stable pointer. See
+-- Note [Aggregate state life cycle].
 releaseState :: Maybe StateTable -> Ptr Void -> IO ()
 releaseState table slot = mask_ do
   stable <- peek (castPtr slot) :: IO (StablePtr ())
@@ -298,14 +344,8 @@ stableKey :: StablePtr a -> Int
 stableKey = fromIntegral . ptrToIntPtr . castStablePtrToPtr
 
 -- | Free the stable pointers that remain in a state table, and then the table.
--- DuckDB calls this when it drops the bind data of a call site. In DuckDB 2.0.0
--- a hash table and an ungrouped aggregate each hold a copy of the bind data,
--- and each copy shares the holder of this table through a shared pointer
--- (@CV2AggregateFunctionData::Copy@ and @CV2UserData@). Each of them runs the
--- destroy callback on its states before it drops its copy
--- (@~GroupedAggregateHashTable@ and @~UngroupedAggregateState@). Thus this
--- function runs after the last destroy callback of these owners that gets this
--- bind data.
+-- DuckDB calls this when it drops the bind data of a call site. See
+-- Note [Aggregate state life cycle].
 releaseStateTable :: Ptr Void -> IO ()
 releaseStateTable raw =
   mask_ $ ignoreCallbackExceptions $ unless (raw == nullPtr) do

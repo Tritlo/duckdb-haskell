@@ -102,7 +102,8 @@ data FieldBinding = FieldBinding
   }
 
 -- | A factory and a type constructor of the same scope. The builder of a
--- statement resolves the configured CRS types of its connection.
+-- statement resolves the configured CRS types of its connection. See
+-- Note [CRS types of a connection] in "Database.DuckDB.Simple.TypeCache".
 data ValueBuilder = ValueBuilder
   { builderFactory :: !DuckDBV2FactoryHandle
   , builderType :: !(LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle)
@@ -227,6 +228,7 @@ duckdbColumnType = duckdbColumnTypeFor
 
 -- | Apply a @FieldBinding@ to the given statement/index. The builder takes its
 -- factory and its CRS types from the type cache of the statement's connection.
+-- See Note [CRS types of a connection] in "Database.DuckDB.Simple.TypeCache".
 bindFieldBinding :: Statement -> DuckDBIdx -> FieldBinding -> IO ()
 bindFieldBinding stmt idx FieldBinding{fieldBindingValue} =
   withTypeCache (statementConnection stmt) \cache -> withConnectionFactory (typeCacheConnection cache) \factory ->
@@ -596,7 +598,8 @@ arrayDuckValue ValueBuilder{builderFactory = factory, builderType = makeType} ta
       Just dtype -> bracket (makeType (timestampTypeForTarget target (LogicalTypeScalar dtype))) destroyLogicalType action
       Nothing -> do
         -- Keep the values that are not NULL, in list order. The fold keeps a
-        -- constant stack.
+        -- constant stack. See Note [Constant stack at safe calls] in
+        -- "Database.DuckDB.Simple.Native".
         let keep kept value = output (c_duckdb_v2_value_is_null value) >>= \flag -> if flag == 0 then pure (value : kept) else pure kept
         present <- reverse <$> foldM keep [] values
         case present of

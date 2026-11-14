@@ -34,11 +34,69 @@ import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (withArray)
 import Foreign.Ptr (nullPtr)
 
+{- Note [VARIANT decoding]
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+The decoder copies each VARIANT row of a vector to a FieldValue with the native
+type of the stored value. It uses SQL metadata and native casts on a helper
+connection. It does not read the private payload format of DuckDB.
+
+- Why SQL. The header commits to no view layout for VARIANT, so the decoder
+  reads each row with duckdb_v2_vector_get_value. V2 has no accessor for the
+  children of a VARIANT value. SQL functions and native casts give the tag, the
+  keys, and the children of a value.
+
+- The metadata statement (metadataStatement). One statement gives the tag
+  (variant_typeof) and the object keys (variant_keys) of each value in a
+  VARIANT list. The state keeps the parsed statement.
+
+- The casts. The tag of a scalar is the text of variant_typeof. scalarType
+  gives the type text of the exact cast target of each tag. The scalars with
+  the same tag share one cast to a list of the target type. A tag with one
+  scalar gets a direct cast of that scalar. Each array gets its own cast to a
+  VARIANT list. The state keeps each parsed type (castType).
+
+- The objects (withObjectChildren). The objects with the same keys share one
+  extraction. If the keys can be STRUCT field names (validStructFields), one
+  cast to a STRUCT list extracts the children. Otherwise one extraction query
+  binds the keys as values, so empty and NUL keys stay exact. An object without
+  keys needs no extraction (queryObjectGroup).
+
+- The levels (decodeValues). The decoder reads the metadata of all values of
+  one nesting level together. Then it decodes the children of all nodes of the
+  level together, and then it builds the nodes of the level (assemble).
+
+The helper connection. The queries of the decoder do not run on the caller
+connection. An explicit stream keeps its result open on the caller connection
+between two fetches, and the decoder reads the rows of each chunk while that
+result is open (fetchChunk in "Database.DuckDB.Simple.Result"). DuckDB permits
+one open result for each connection, and it rejects a second execution. Thus
+the queries of the decoder run on a helper connection, so that the decode does
+not interrupt the stream. See Note [Connection lock] in
+"Database.DuckDB.Simple.Internal". A materialized result closes before its rows
+are decoded, but it uses the same reader.
+
+VariantState holds the helper connection, the parsed statement, and the cast
+types. The owner of the helper connection destroys the state before the
+connection.
+
+- A caller connection (CacheState and withVariantState). The type cache of the
+  connection opens the helper connection and the state at the first VARIANT
+  read, and keeps them until the cache closes. The calls run in sequence.
+
+- COPY TO (withVariantReader). The reader opens a helper connection of the
+  database for each vector, and keeps the state for one decode. An extension
+  target has no instance handle, so its reader raises an error for each
+  VARIANT row.
+
+The decoder decodes each value that contains no VARIANT, such as a cast result,
+with the factory of the helper connection (materializePlainValue).
+-}
+
 -- | The helper connection of the VARIANT decoder, and the native objects that
 -- the decoder keeps for it: the parsed metadata statement and the types for
 -- casts and VARIANT lists. The state borrows the connection. The owner destroys
 -- the state with 'destroyVariantState' before it destroys the connection. Use
--- the state from one thread at a time.
+-- the state from one thread at a time. See Note [VARIANT decoding].
 data VariantState = VariantState
   { variantConnection :: DuckDBV2ConnectionHandle
   , variantStatement :: IORef (Maybe DuckDBV2SqlStatementHandle)
@@ -62,13 +120,9 @@ destroyVariantState VariantState{variantStatement, variantTypes} = mask_ do
   releaseItems id (map (destroy c_duckdb_v2_sql_statement_destroy) (maybe [] pure statement) <> map destroyLogicalType (Map.elems types))
 
 -- | Copy a vector before returning its row reader. The connection of the state
--- is a dedicated metadata connection. It must remain exclusively borrowed until
+-- is a dedicated helper connection. It must remain exclusively borrowed until
 -- this function returns. The callback decodes a value that contains no VARIANT.
--- Each level batches type and key metadata. Scalars with the same tag share
--- one native cast. Objects with the same keys share one native STRUCT cast. If a
--- key cannot be a STRUCT field name, the objects share one extraction query. That
--- query binds the keys as values, so empty and NUL keys stay exact. Each array
--- gets its own cast to a VARIANT list.
+-- Each level batches type and key metadata. See Note [VARIANT decoding].
 prepareVariantDecoder
   :: (DuckDBV2ConnectionHandle -> DuckDBV2ValueHandle -> IO FieldValue)
   -> VariantState
@@ -89,6 +143,7 @@ data VariantNode
   | ObjectNode [(Text, DuckDBV2ValueHandle)]
 
 -- | Decode all siblings together before reconstructing their parent nodes.
+-- See Note [VARIANT decoding].
 decodeValues
   :: (DuckDBV2ConnectionHandle -> DuckDBV2ValueHandle -> IO FieldValue)
   -> VariantState
@@ -168,7 +223,7 @@ queryObjectGroup state keys rows =
 -- key once and applies the extractions to all objects. The bound keys can be
 -- empty or contain NUL. V2 has no accessor for the children of a VARIANT value.
 -- The STRUCT cast is the fast path. The query is the only exact path for the
--- other key lists.
+-- other key lists. See Note [VARIANT decoding].
 withObjectChildren :: VariantState -> [Text] -> DuckDBV2ValueHandle -> (DuckDBV2ValueHandle -> IO a) -> IO a
 withObjectChildren VariantState{variantConnection = connection} keys list action
   | validStructFields keys =
@@ -244,7 +299,7 @@ castType VariantState{variantConnection = connection, variantTypes = castTypes} 
 
 -- | Borrow the metadata statement. Parse it on first use and keep it in the
 -- state. The statement stays valid after its iterator is destroyed, and an
--- execution does not consume it.
+-- execution does not consume it. See Note [VARIANT decoding].
 metadataStatement :: VariantState -> IO DuckDBV2SqlStatementHandle
 metadataStatement VariantState{variantConnection = connection, variantStatement} =
   readIORef variantStatement >>= \case
@@ -316,6 +371,7 @@ withStatementValue connection statement parameters action =
 -- | Map every native VARIANT scalar tag to its exact cast target. The tags are
 -- the text of variant_typeof. The result is type text, because a DECIMAL tag
 -- holds its width and scale. 'castType' parses each text once for each state.
+-- See Note [VARIANT decoding].
 scalarType :: Text -> IO Text
 scalarType tag = case tag of
   "BOOL_TRUE" -> pure "BOOLEAN"

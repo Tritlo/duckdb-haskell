@@ -65,7 +65,8 @@ type VectorReader = DuckDBV2VectorHandle -> IO (Int -> IO FieldValue)
 -- | The readers for the two types that have no committed vector layout. A
 -- vector view cannot read these types, and a vector does not carry what their
 -- readers need. The VARIANT reader needs a helper connection, and the GEOMETRY
--- reader needs a factory. So the caller supplies both readers.
+-- reader needs a factory. So the caller supplies both readers. See
+-- Note [VARIANT decoding] in "Database.DuckDB.Simple.VariantCodec".
 data FallbackReaders = FallbackReaders
   { variantReader :: VectorReader
   , geometryReader :: VectorReader
@@ -78,23 +79,26 @@ data FallbackReaders = FallbackReaders
 -- gives its value. The header commits to no view layout for VARIANT and
 -- GEOMETRY, so the reader reads each row with @duckdb_v2_vector_get_value@,
 -- whose row is logical. 'prepareVectorReaderWith' flattens the vector, so the
--- row that the reader gets is the logical row. The reader creates and destroys
--- one native value for each row.
+-- row that the reader gets is the logical row. See Note [Vector flatten]. The
+-- reader creates and destroys one native value for each row.
 rejectRows :: IO FieldValue -> VectorReader
 rejectRows raise vector = pure \row ->
   bracket (output (c_duckdb_v2_vector_get_value vector (fromIntegral row))) destroyValue \value -> do
     isNull <- output (c_duckdb_v2_value_is_null value)
     if isNull /= 0 then pure FieldNull else raise
 
--- | Copy VARIANT rows before releasing the borrowed metadata connection. The
--- state belongs to that connection.
+-- | Copy VARIANT rows before releasing the borrowed helper connection. The
+-- state belongs to that connection. The decoder reads logical rows. See
+-- Note [Vector flatten] and Note [VARIANT decoding] in
+-- "Database.DuckDB.Simple.VariantCodec".
 prepareVariantReader :: VariantCodec.VariantState -> VectorReader
 prepareVariantReader = VariantCodec.prepareVariantDecoder materializePlainValue
 
 -- | Decode a value that contains no VARIANT. The VARIANT decoder calls this
 -- function with its helper connection. 'materializeValue' needs a factory to
 -- create a vector and to cast GEOMETRY. The connection owns the factory, so
--- this function does not destroy it.
+-- this function does not destroy it. See Note [VARIANT decoding] in
+-- "Database.DuckDB.Simple.VariantCodec".
 materializePlainValue :: DuckDBV2ConnectionHandle -> DuckDBV2ValueHandle -> IO FieldValue
 materializePlainValue connection value = withConnectionFactory connection \factory ->
   materializeValue (rejectRows (throwIO (userError "duckdb-simple: expected a value without VARIANT"))) factory value
@@ -110,38 +114,111 @@ materializeValue readVariant factory value =
       checked (c_duckdb_v2_vector_set_value vector 0 value)
       prepareVectorReader (FallbackReaders readVariant (prepareGeometryReader factory)) vector >>= ($ 0)
 
+{- Note [Type trees]
+~~~~~~~~~~~~~~~~~~~~
+A reader of a vector uses two kinds of type information.
+
+- A layout parameter gives the layout of the bytes, for example the width of a
+  DECIMAL, the size of an ARRAY, or the size of an ENUM dictionary. A decoder
+  takes each layout parameter from the type of its own vector, because that
+  type gives the layout of the bytes. The header of duckdb_v2_vector_get_view
+  says that the data has the layout that the logical type of the vector
+  implies.
+
+- A description is the field names and field types of a STRUCT or TUPLE, or
+  the members of a UNION. A decoder takes a description from a type tree: the
+  LogicalTypeRep that an action of type TypeTree gives. A decoder runs the
+  action only when it needs a description.
+
+Thus a wrong tree gives an error or a wrong description, but it does not change
+how bytes are read. checkChildCount raises an error when a tree gives another
+child count than the vector has.
+
+These are the sources of a tree.
+
+- prepareVectorReader converts the type of the vector.
+- A caller of prepareVectorReaderWith gives the action. A result converts the
+  tree of a column from the vector of the first chunk that needs it, and keeps
+  the tree for one execution (prepareChunkReaders).
+- A nested decoder gives each child an action that takes the tree of the child
+  from its own tree (elementTree, prepareStructDecoder, prepareTupleDecoder, and
+  prepareUnionDecoder). The action of a child runs the action of the parent
+  only when the child needs its tree.
+- The MAP decoder gives its key reader and its value reader no tree, and the
+  UNION decoder gives its tag reader no tree. Each of these readers converts
+  the type of its own vector when it needs a description.
+
+The readers do not use the result schema. The header of
+duckdb_v2_result_get_schema calls the schema the authoritative source of the
+column types, and says that vectors do not carry their own type. But the header
+of duckdb_v2_vector_get_logical_type says that a vector has the type that was
+set on creation, and the layout follows the type of the vector. So the vector
+type is the source of each type.
+-}
+
 -- | An action that gives the type tree of one vector. A decoder runs it only
--- when it needs a description: the field names and field types of a STRUCT or
--- TUPLE, or the members of a UNION. A decoder takes each layout parameter, such
--- as the width of a DECIMAL or the size of an ARRAY, from the type of its own
--- vector, because that type gives the layout of the bytes. A wrong tree thus
--- gives an error or a wrong description, but it does not change how bytes are
--- read.
+-- when it needs a description. See Note [Type trees].
 type TypeTree = IO LogicalTypeRep
 
 -- | Read the type, data, and validity of a vector, and prepare its reader. A
--- decoder that needs the type tree converts the type of the vector.
+-- decoder that needs the type tree converts the type of the vector. See
+-- Note [Type trees].
 prepareVectorReader :: FallbackReaders -> DuckDBV2VectorHandle -> IO (Int -> IO FieldValue)
 prepareVectorReader readers vector = prepareVectorReaderWith readers (withVectorType vector logicalTypeToRep) vector
 
+{- Note [Vector flatten]
+~~~~~~~~~~~~~~~~~~~~~~~~
+A flatten changes a vector to the FLAT representation in place. The reader of
+prepareVectorReaderWith flattens each vector before it reads the view. A writer
+of a callback output vector flattens the vector before it writes rows.
+
+Read (prepareVectorReaderWith). The reader flattens each vector, and then reads
+the view of the vector.
+
+- The header of duckdb_v2_vector_get_view says: "Rejects VECTOR_TYPE_OTHER;
+  call vector_flatten first." The flatten also changes a CONSTANT or DICTIONARY
+  vector to FLAT.
+
+- In DuckDB 2.0.0 the view of a FLAT vector has no selection
+  (duckdb_v2_vector_get_view in src/main/capi/v2/capi_v2_vector.cpp). The header
+  does not say this. Then the physical row is the logical row. The readers of
+  VARIANT and GEOMETRY need this, because they read logical rows (rejectRows,
+  prepareVariantReader, and prepareGeometryReader). The reader still applies
+  the selection of a view that has one.
+
+- The flatten changes the buffers of the vector, so it runs before the view is
+  read.
+
+- In DuckDB 2.0.0 the flatten is recursive: it also flattens the child of a
+  LIST or MAP vector and the fields of a STRUCT vector (VectorListBuffer::Flatten
+  and VectorStructBuffer::Flatten). The header does not say this. The MAP
+  decoder (prepareMapDecoder) depends on this, because it takes the key and
+  value vectors from the entry STRUCT and does not flatten that STRUCT itself.
+
+Write. A writer of a callback output vector sets the size of the vector, and
+then flattens the vector (castRows, writeRows, and writeResults). A writer of an
+owned vector from withOwnedVector does not flatten (materializeValue, and the
+writers of one-row vectors in "Database.DuckDB.Simple.ToField").
+
+- The set operations check the row against the size. The header of
+  duckdb_v2_vector_set_value and duckdb_v2_vector_set_null says that each call
+  requires a FLAT vector and checks the row against vector_get_size.
+
+- writeResults reads the data pointer and the validity pointer after the
+  flatten. The header of duckdb_v2_vector_get_data_mutable says that the storage
+  shape of the vector must not change while the pointer is in use.
+
+- prepareResultWriter does not change the size and does not flatten. It raises
+  an error for a vector that is not FLAT.
+-}
+
 -- | Read the type, data, and validity of a vector, and prepare its reader. The
 -- action gives the type tree of the vector. A nested decoder gives each child
--- an action that takes the tree of the child from this tree.
+-- an action that takes the tree of the child from this tree. The function
+-- flattens the vector first. See Note [Vector flatten] and Note [Type trees].
 prepareVectorReaderWith :: FallbackReaders -> TypeTree -> DuckDBV2VectorHandle -> IO (Int -> IO FieldValue)
 prepareVectorReaderWith readers tree vector = do
-  -- The header of @duckdb_v2_vector_get_view@ says: "Rejects VECTOR_TYPE_OTHER;
-  -- call vector_flatten first." The flatten also changes a CONSTANT or
-  -- DICTIONARY vector to FLAT. In DuckDB 2.0.0 the view of a FLAT vector has no
-  -- selection (@duckdb_v2_vector_get_view@ in
-  -- @src/main/capi/v2/capi_v2_vector.cpp@; the header does not say this). Then
-  -- the physical row is the logical row. The readers of VARIANT and GEOMETRY
-  -- need this, because they read logical rows. The flatten changes the buffers
-  -- of the vector, so it runs before the view is read. In DuckDB 2.0.0 the
-  -- flatten is recursive: it also flattens the child of a LIST or MAP vector and
-  -- the fields of a STRUCT vector (@VectorListBuffer::Flatten@ and
-  -- @VectorStructBuffer::Flatten@). The MAP decoder depends on this, because it
-  -- takes the key and value vectors from the entry STRUCT and does not flatten
-  -- that STRUCT itself. The header does not say this.
+  -- Flatten before the view is read. See Note [Vector flatten].
   checked (c_duckdb_v2_vector_flatten vector)
   dtype <- vectorElementType vector
   view <- output (c_duckdb_v2_vector_get_view vector)
@@ -179,12 +256,14 @@ prepareValueReader readers tree dtype vector dataPtr validity = case dtype of
   DuckDBV2LogicalTypeIdSQLNull -> pure \_ -> pure FieldNull
   _ -> pure (whenValid id (decodeElement dtype dataPtr))
   where
+    -- See Note [Vector memory layouts] in "Database.DuckDB.Simple.Element".
     whenValid wrap decode row = do
       valid <- chunkIsRowValid validity (fromIntegral row)
       if valid then wrap <$> decode row else pure FieldNull
 
 -- | Copy the WKB bytes and CRS of every GEOMETRY row in a vector. GEOMETRY has
--- no committed vector layout, so a native cast to BLOB reads the rows.
+-- no committed vector layout, so a native cast to BLOB reads the rows. The
+-- reader takes logical rows. See Note [Vector flatten].
 prepareGeometryReader :: DuckDBV2FactoryHandle -> DuckDBV2VectorHandle -> IO (Int -> IO FieldValue)
 prepareGeometryReader factory vector = do
   crs <-
@@ -209,6 +288,7 @@ prepareGeometryReader factory vector = do
     _ -> throwIO (userError "duckdb-simple: GEOMETRY cast did not produce a BLOB")
 
 -- | Read a DECIMAL. DuckDB stores it in the smallest integer type for its width.
+-- See Note [Vector memory layouts] in "Database.DuckDB.Simple.Element".
 decimalStorage :: Ptr Void -> Word8 -> Int -> IO Integer
 decimalStorage dataPtr width rowIdx
   | width <= 4 = toInteger <$> peekElemOff (castPtr dataPtr :: Ptr Int16) rowIdx
@@ -217,6 +297,7 @@ decimalStorage dataPtr width rowIdx
   | otherwise = duckDBHugeIntToInteger <$> peekElemOff (castPtr dataPtr :: Ptr DuckDBV2HugeintT) rowIdx
 
 -- | Read an ENUM index. DuckDB stores it in the smallest unsigned type for the dictionary size.
+-- See Note [Vector memory layouts] in "Database.DuckDB.Simple.Element".
 enumStorage :: Ptr Void -> DuckDBIdx -> Int -> IO Word32
 enumStorage dataPtr count rowIdx
   | count <= 255 = fromIntegral <$> peekElemOff (castPtr dataPtr :: Ptr Word8) rowIdx
@@ -227,7 +308,7 @@ enumStorage dataPtr count rowIdx
 -- size gives the layout of the elements, so it comes from the type of this
 -- vector. Parameter 1 of an ARRAY type is the size, as 'logicalTypeToRep' reads
 -- it. The decoder does not convert the element type. The element reader takes
--- its tree from the tree of the ARRAY.
+-- its tree from the tree of the ARRAY. See Note [Type trees].
 prepareArrayDecoder :: FallbackReaders -> TypeTree -> DuckDBV2VectorHandle -> IO (Int -> IO (Array Int FieldValue))
 prepareArrayDecoder readers tree vector = do
   size <- withVectorType vector \logical -> alloca \name ->
@@ -240,7 +321,7 @@ prepareArrayDecoder readers tree vector = do
     pure (listArray (0, arraySize - 1) values)
 
 -- | Prepare the element reader once for a LIST vector. The element reader
--- takes its tree from the tree of the LIST.
+-- takes its tree from the tree of the LIST. See Note [Type trees].
 prepareListDecoder :: FallbackReaders -> TypeTree -> DuckDBV2VectorHandle -> Ptr Void -> IO (Int -> IO [FieldValue])
 prepareListDecoder readers tree vector dataPtr = do
   readChild <- vectorChild vector 0 >>= prepareVectorReaderWith readers (elementTree tree)
@@ -253,7 +334,9 @@ prepareListDecoder readers tree vector dataPtr = do
 -- decoder gives them no type tree. Each converts the type of its own vector when
 -- it needs a description. A tree of the MAP holds the key type and the value
 -- type together. A value reader that took its tree from it would thus also
--- convert the key type, for example the dictionary of a large ENUM.
+-- convert the key type, for example the dictionary of a large ENUM. The
+-- decoder does not flatten the entry STRUCT. See Note [Vector flatten] and
+-- Note [Type trees].
 prepareMapDecoder :: FallbackReaders -> DuckDBV2VectorHandle -> Ptr Void -> IO (Int -> IO [(FieldValue, FieldValue)])
 prepareMapDecoder readers vector dataPtr = do
   entries <- vectorChild vector 0
@@ -269,7 +352,8 @@ prepareMapDecoder readers vector dataPtr = do
       pure (keyValue, valueValue)
 
 -- | Read the STRUCT type and prepare a reader for each child once for a vector.
--- The decoder reads a valid row. It must not outlive its chunk.
+-- The decoder reads a valid row. It must not outlive its chunk. See
+-- Note [Type trees].
 prepareStructDecoder :: FallbackReaders -> TypeTree -> DuckDBV2VectorHandle -> IO (Int -> IO (StructValue FieldValue))
 prepareStructDecoder readers tree vector = do
   structFields <-
@@ -306,6 +390,7 @@ prepareStructDecoder readers tree vector = do
         }
 
 -- | Read positional field metadata and prepare readers that borrow the tuple.
+-- See Note [Type trees].
 prepareTupleDecoder :: FallbackReaders -> TypeTree -> DuckDBV2VectorHandle -> IO (Int -> IO (TupleValue FieldValue))
 prepareTupleDecoder readers tree vector = do
   types <-
@@ -324,7 +409,7 @@ prepareTupleDecoder readers tree vector = do
 -- | Read the UNION type and prepare the tag reader once for a vector. Prepare
 -- the reader of a member at the first row that selects the member, so that a
 -- member that no row selects makes no native call. The decoder reads a valid
--- row. It must not outlive its chunk.
+-- row. It must not outlive its chunk. See Note [Type trees].
 prepareUnionDecoder :: FallbackReaders -> TypeTree -> DuckDBV2VectorHandle -> IO (Int -> IO (UnionValue FieldValue))
 prepareUnionDecoder readers tree vector = do
   membersArray <-
@@ -425,7 +510,8 @@ ensureWithinIntRange context value =
         else throwIO (userError ("duckdb-simple: " <> Text.unpack context <> " exceeds Int range"))
 
 -- | Take the element tree from the tree of a LIST or ARRAY. The action runs the
--- action of the parent only when the element reader needs its tree.
+-- action of the parent only when the element reader needs its tree. See
+-- Note [Type trees].
 elementTree :: TypeTree -> TypeTree
 elementTree tree =
   tree >>= \case
@@ -435,7 +521,7 @@ elementTree tree =
 
 -- | Raise an error when the type tree of a STRUCT, TUPLE, or UNION vector gives
 -- another child count than the vector has. The tree can come from the type of a
--- parent vector, and the decoder must not drop a child.
+-- parent vector, and the decoder must not drop a child. See Note [Type trees].
 checkChildCount :: String -> DuckDBV2VectorHandle -> Int -> IO ()
 checkChildCount kind vector expected = do
   actual <- output (c_duckdb_v2_vector_get_child_count vector)

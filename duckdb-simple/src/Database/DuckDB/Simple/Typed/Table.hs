@@ -8,7 +8,7 @@
 --
 -- A typed table function converts its arguments with 'FromRow'. It gives the rows
 -- of a scan as a Haskell list of 'TypedRow' values. The exec callback writes the
--- list to DuckDB one output chunk at a time.
+-- list to DuckDB one output chunk at a time. See Note [Row lists of typed scans].
 module Database.DuckDB.Simple.Typed.Table (
   createTableFunctionOn,
   writeRows,
@@ -41,13 +41,38 @@ import Database.DuckDB.Simple.V2.Registration (
   withTypeDeclaration,
  )
 
+{- Note [Row lists of typed scans]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A typed table function (createTableFunctionOn) and the COPY FROM side of a
+typed format (copyFromSide) give the rows of a scan as a Haskell list of
+TypedRow values. The two use the same callbacks.
+
+- The bind callback reads the inputs of the call. Its bind data is the action
+  that gives the list.
+
+- The global init callback runs the action, and keeps the list in an MVar in
+  the global state. The action runs one time for each scan.
+
+- The exec callback takes the list from the MVar, writes the first rows to the
+  output chunk (writeRows), and puts the other rows back. In the exec callback
+  of a table function, a call that writes no row ends the scan.
+
+DuckDB can run exec callbacks of one scan at the same time, for example for a
+multi-file function (registerMultiFileFunction). The lock of the MVar gives
+each row to one call only.
+
+writeRows evaluates only the spine of the rows that fit in the chunk
+(splitRows). It does not evaluate the other rows. The list that it gives back
+is the list after the written rows, not a reference to the whole list. DuckDB
+takes the rows one chunk at a time, so the list can be lazy. DuckDB stops when
+the query needs no more rows, so the list can be long or infinite.
+-}
+
 -- | Register a typed table function on a connection or a loading extension.
 -- 'Database.DuckDB.Simple.Function.createTableFunction' gives the rules.
 --
--- The bind callback converts the arguments and declares the result columns. Its
--- bind data is the scan action of the call. The global init callback runs the
--- scan action and keeps the list in the global state. The exec callback writes
--- the next rows of the list.
+-- The bind callback converts the arguments and declares the result columns.
+-- See Note [Row lists of typed scans].
 createTableFunctionOn
   :: forall params row. (FromRow params, TypedRow params, TypedRow row) => RegistrationTarget -> Text -> [Text] -> (params -> IO [row]) -> IO ()
 createTableFunctionOn target name columns function = do
@@ -85,8 +110,8 @@ createTableFunctionOn target name columns function = do
     execute info context = withContextFactory context \factory -> do
       remaining <- readCallbackState (c_duckdb_v2_table_function_exec_get_global_state info) :: IO (MVar [row])
       chunk <- output (c_duckdb_v2_table_function_exec_get_output_chunk info)
-      -- DuckDB can run exec callbacks of one scan at the same time, for example for a
-      -- multi-file function. The lock gives each row to one call only.
+      -- The lock gives each row to one call only. See
+      -- Note [Row lists of typed scans].
       modifyMVar_ remaining (writeRows factory chunk)
 
 -- | Write the first rows of a list to the vectors of an output chunk. Return
@@ -95,7 +120,7 @@ createTableFunctionOn target name columns function = do
 -- values come from the borrowed factory. The function destroys each value after
 -- it writes it. The size of each vector becomes the number of written rows. An
 -- empty list writes no row. In the exec callback of a table function, no row ends
--- the scan.
+-- the scan. See Note [Row lists of typed scans].
 writeRows :: forall row. (TypedRow row) => DuckDBV2FactoryHandle -> DuckDBV2DataChunkHandle -> [row] -> IO [row]
 writeRows factory chunk rows = do
   capacity <- fromIntegral <$> output (c_duckdb_v2_data_chunk_get_capacity chunk)
@@ -109,15 +134,13 @@ writeRows factory chunk rows = do
       let size = fromIntegral (length now)
       vectors <- forM (take width [0 ..]) \index -> do
         vector <- output (c_duckdb_v2_data_chunk_get_vector chunk index)
-        -- The set operation checks the row against the size. Flatten after the size changes.
+        -- Flatten after the size changes. See Note [Vector flatten] in
+        -- "Database.DuckDB.Simple.Materialize".
         checked (c_duckdb_v2_vector_set_size vector size)
         checked (c_duckdb_v2_vector_flatten vector)
         pure vector
-      -- Use loops with a constant stack. Each c_duckdb_v2 binding is a
-      -- safe foreign call. At a safe call, the GHC runtime (threadPaused)
-      -- reads the frames of the current stack chunk. A loop that keeps a
-      -- frame for each row thus makes each native call slower as the
-      -- number of rows grows.
+      -- Use loops with a constant stack. See Note [Constant stack at safe calls]
+      -- in "Database.DuckDB.Simple.Native".
       forM_ (zip [0 ..] now) \(index, row) ->
         zipWithM_
           (\vector (ColumnValue make) -> bracket (make factory) destroyValue (checked . c_duckdb_v2_vector_set_value vector index))
@@ -127,7 +150,8 @@ writeRows factory chunk rows = do
 
 -- | Split a list after at most the given number of elements. Evaluate the
 -- spine of the first part only. The second part is the list after those
--- elements, not a reference to the whole list.
+-- elements, not a reference to the whole list. See
+-- Note [Row lists of typed scans].
 splitRows :: Int -> [a] -> ([a], [a])
 splitRows = go []
   where

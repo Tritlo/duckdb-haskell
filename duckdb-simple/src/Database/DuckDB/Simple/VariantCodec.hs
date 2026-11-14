@@ -77,6 +77,7 @@ prepareVariantDecoder plain connection state vector = do
   bracket (acquireItems destroyValue [output (c_duckdb_v2_vector_get_value vector i) | i <- indices count]) (releaseItems destroyValue) \values -> do
     decoded <- decodeValues plain connection state values
     let rows = listArray (0, length decoded - 1) decoded
+    -- Give the element, not a thunk that keeps the array alive.
     pure (evaluate . (rows !))
 
 -- | A decoded node owns the child values needed at the next nesting level.
@@ -164,7 +165,9 @@ queryObjectGroup connection castTypes keys rows =
 -- native cast to a STRUCT list makes the values. Otherwise an extraction query
 -- makes them. The binder needs constant extraction keys. The query binds each
 -- key once and applies the extractions to all objects. The bound keys can be
--- empty or contain NUL.
+-- empty or contain NUL. V2 has no accessor for the children of a VARIANT value.
+-- The STRUCT cast is the fast path. The query is the only exact path for the
+-- other key lists.
 withObjectChildren :: DuckDBV2ConnectionHandle -> [Text] -> DuckDBV2ValueHandle -> (DuckDBV2ValueHandle -> IO a) -> IO a
 withObjectChildren connection keys list action
   | validStructFields keys =
@@ -211,6 +214,8 @@ assemble (node : rest) children = do
         ObjectNode entries -> (length entries, variantObject . zip (map fst entries))
       (ownChildren, remaining) = splitAt count children
   unless (length ownChildren == count) (codecError "decoded child count is smaller than its parent count")
+  -- Build the constructor of this node now. This reads no native value and
+  -- cannot fail.
   value <- evaluate (build ownChildren)
   (value :) <$> assemble rest remaining
 
@@ -308,7 +313,9 @@ withStatementValue connection statement parameters action =
           vector <- output (c_duckdb_v2_data_chunk_get_vector chunk 0)
           bracket (output (c_duckdb_v2_vector_get_value vector 0)) destroyValue action
 
--- | Map every native VARIANT scalar tag to its exact cast target.
+-- | Map every native VARIANT scalar tag to its exact cast target. The tags are
+-- the text of variant_typeof. The result is type text, because a DECIMAL tag
+-- holds its width and scale. 'castType' parses each text once for each state.
 scalarType :: Text -> IO Text
 scalarType tag = case tag of
   "BOOL_TRUE" -> pure "BOOLEAN"

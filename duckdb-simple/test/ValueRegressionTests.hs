@@ -187,6 +187,16 @@ valueRegressionTests =
             assertBool (show err) ("unsupported scalar conversion for LogicalTypeIdBigInt from FieldText \"x\"" `Text.isInfixOf` Text.pack (show err))
           Right _ -> assertFailure "expected a conversion error for the third element"
         (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
+    , testCase "a declared NULL type binds NULL and rejects a value that is not NULL" $ withConnection ":memory:" \conn -> do
+        let sqlNull = LogicalTypeScalar LogicalTypeIdSQLNull
+            nullStruct = singleField sqlNull FieldNull
+        (query conn "SELECT typeof(?), CAST(? AS VARCHAR)" (nullStruct, nullStruct) :: IO [(Text, Text)])
+          >>= (@?= [("STRUCT(\"value\" \"NULL\")", "{'value': NULL}")])
+        result <- try (query conn "SELECT ?" (Only (singleField sqlNull (FieldInt32 7))) :: IO [Only FieldValue])
+        case result of
+          Left (err :: IOException) ->
+            assertBool (show err) ("unsupported scalar conversion for LogicalTypeIdSQLNull from FieldInt32 7" `Text.isInfixOf` Text.pack (show err))
+          Right _ -> assertFailure "expected a conversion error for a value that is not NULL"
     , testCase "GEOMETRY decodes as well-known binary" $ withConnection ":memory:" \conn -> do
         [Only bytes] <- query_ conn "SELECT 'POINT(1 2)'::GEOMETRY" :: IO [Only BS.ByteString]
         BS.length bytes @?= 21

@@ -770,7 +770,6 @@ scalarFieldValueDuckValue factory dtype value = case (dtype, value) of
   (LogicalTypeIdHugeInt, FieldHugeInt i) -> hugeIntDuckValue factory i
   (LogicalTypeIdUHugeInt, FieldUHugeInt i) -> uhugeIntDuckValue factory i
   (LogicalTypeIdBigNum, FieldBigNum big) -> bigNumDuckValue factory big
-  (LogicalTypeIdSQLNull, _) -> nullDuckValue factory
   _ ->
     throwIO
       ( userError

@@ -184,13 +184,17 @@ instance DuckValue Int64 where
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdBigInt
 
 -- | A field of a generic record has the type HUGEINT. A value outside that range
--- raises an error. A top-level parameter of this type is BIGNUM.
+-- raises an error. A top-level parameter of this type also binds as HUGEINT
+-- when the value is in that range. See Note [Integer parameters] in
+-- "Database.DuckDB.Simple.ToField".
 instance DuckValue Integer where
   duckToField = FieldHugeInt
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdHugeInt
 
 -- | A field of a generic record has the type UHUGEINT. A value outside that range
--- raises an error. A top-level parameter of this type is BIGNUM.
+-- raises an error. A top-level parameter of this type binds as HUGEINT when the
+-- value is in the HUGEINT range. See Note [Integer parameters] in
+-- "Database.DuckDB.Simple.ToField".
 instance DuckValue Natural where
   duckToField = FieldUHugeInt . toInteger
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdUHugeInt

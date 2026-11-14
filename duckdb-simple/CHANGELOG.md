@@ -102,6 +102,15 @@
 - Export Arrow release helpers from `Database.DuckDB.Simple.Arrow`.
 - The default `query`, `fold`, and Arrow folds collect the result before the
   first callback, so a callback can query the same connection.
+- A DuckDB callback that waits for the lock of a connection waits at most the
+  bound of that connection. Add `connectionCallbackLockWait` to
+  `ConnectionOptions`, in microseconds, with the default
+  `defaultCallbackLockWait` (10 seconds). `Nothing` sets no bound, and the open
+  rejects a negative bound. A statement of a callback on the connection that
+  runs the callback thus raises an `SQLError` of the type `ErrorResourceInUse`
+  after the bound. For most callbacks, the outer statement then fails. Before,
+  neither call returned. The README gives the cases that the bound does not
+  cover.
 - `sqlErrorQuery` gives the query that failed. For a query in the callback of
   an Arrow fold, it gives the query of the callback, not the query of the fold.
 - The message of a native error is decoded with replacement characters. A

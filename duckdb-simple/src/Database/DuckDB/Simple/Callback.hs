@@ -140,7 +140,9 @@ readCallbackState getter = do
 -- | Convert callback exceptions to native V2 diagnostics. Mark the thread as a
 -- thread inside a DuckDB callback for the time of the action, so that its
 -- waits for a connection lock have the bound of the connection. See
--- 'withConnectionLock'.
+-- 'Database.DuckDB.Simple.Internal.withConnectionLock'. Each DuckDB callback
+-- with user code runs through this function, except the flush function of a
+-- log sink when DuckDB destroys the sink.
 runCallback :: Ptr DuckDBV2ErrorInfoHandle -> IO () -> IO ()
 runCallback err action = mask \restore -> do
   outcome <- try (withCallbackMark (restore action))

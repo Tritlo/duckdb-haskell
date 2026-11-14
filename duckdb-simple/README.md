@@ -399,7 +399,9 @@ in the application:
 
 A callback must not execute another query on its active connection or close
 that connection. With the default API, such a query waits for the lock of the
-active query and does not return.
+active query. After the bound of `connectionCallbackLockWait` (10 seconds by
+default), it raises an `SQLError`. See
+[User-Defined Functions](#user-defined-functions) for the rule and its limits.
 
 Link your executable with `ghc-options: -threaded` to allow prompt cancellation
 of native queries, including Ctrl-C. On cancellation, the library interrupts
@@ -736,11 +738,40 @@ example with `-Wno-error=deprecations`.
 A callback must not run a statement on the connection that runs the callback.
 Use another connection of the same instance. This rule applies to each
 registered callback, for example of a scalar function, a cast, an aggregate
-function, a table function, a COPY format, a replacement scan, or a pragma.
-`query`, `execute`, the default folds, statement preparation, and each fetch
-of an explicit stream hold the lock of the connection while DuckDB runs these
-callbacks. The lock is not reentrant, so a statement in the callback waits and
-does not return.
+function, a table function, a COPY format, a replacement scan, a pragma, or a
+log sink. `query`, `execute`, the default folds, statement preparation, and
+each fetch of an explicit stream hold the lock of the connection while DuckDB
+runs these callbacks. The lock is not reentrant, so a statement in the callback
+waits for the lock. With more than one DuckDB thread, DuckDB can also run a
+callback of an explicit stream between two fetches, while no fetch holds the
+lock. Then a statement in the callback on the same connection fails at once
+with the `ErrorResourceInUse` error of DuckDB, because the stream has an open
+result.
+
+That wait has a bound. `connectionCallbackLockWait` in `ConnectionOptions`
+sets it in microseconds. The default is `defaultCallbackLockWait`, 10 seconds,
+and `Nothing` sets no bound. When the bound ends, the statement in the callback
+raises an `SQLError` of the type `ErrorResourceInUse`, and its text gives the
+rule. If the callback does not catch the error, DuckDB fails the outer
+statement with the text of that error, and the connection can run the next
+statement. DuckDB ignores the error of a log sink. The bound applies to each wait of a
+callback for the lock of a connection. It applies also to another connection
+that a different statement uses. If callbacks share a connection that runs slow
+statements, set a larger bound or `Nothing` for that connection.
+
+In these cases the bound does not apply, and a statement in the callback can
+wait and not return:
+
+- DuckDB runs the callback during a call that does not hold the lock of the
+  connection, for example a log sink for a message of `logConnectionMessage`.
+  Then the statement goes into DuckDB on the same connection.
+- The statement runs in a thread that the callback starts. The library marks
+  only the thread of the callback.
+- The callback changes the label of its own thread with `labelThread`. The mark
+  of the library is the label of the thread.
+- The statement runs inside `uninterruptibleMask`.
+- The statement runs in the flush function of a log sink when DuckDB destroys
+  the sink.
 
 A callback that refers to a connection keeps that connection and its instance
 reachable while DuckDB keeps the callback, possibly until the database closes.

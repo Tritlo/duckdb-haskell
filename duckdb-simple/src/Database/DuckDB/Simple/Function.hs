@@ -14,12 +14,31 @@
 -- A callback must not run a statement on the connection that runs the callback.
 -- Use another connection of the same instance. This rule applies to each
 -- registered callback, for example of a scalar function, a cast, an aggregate
--- function, a table function, a COPY format, a replacement scan, or a pragma.
--- The library holds the lock of a connection while it prepares a statement,
--- while 'Database.DuckDB.Simple.query', 'Database.DuckDB.Simple.execute', or a
--- default fold runs a statement, and while it fetches a chunk of an explicit
--- stream. DuckDB can run a callback in each of these steps. The lock is not reentrant. Thus a statement in the callback waits for
--- the lock and does not return.
+-- function, a table function, a COPY format, a replacement scan, a pragma, or a
+-- log sink. The library holds the lock of a connection while it prepares a
+-- statement, while 'Database.DuckDB.Simple.query',
+-- 'Database.DuckDB.Simple.execute', or a default fold runs a statement, and
+-- while it fetches a chunk of an explicit stream. DuckDB can run a callback in
+-- each of these steps. The lock is not reentrant. Thus a statement in the
+-- callback waits for the lock. With more than one DuckDB thread, DuckDB can also
+-- run a callback of an explicit stream between two fetches, while no fetch holds
+-- the lock. Then a statement in the callback on the same connection fails at
+-- once with the error of DuckDB for a connection with an open result.
+--
+-- The wait has the bound 'Database.DuckDB.Simple.connectionCallbackLockWait' of
+-- the connection: 10 seconds by default, and no bound for 'Nothing'. After the
+-- bound, the statement raises an 'Database.DuckDB.Simple.SQLError' of the type
+-- 'Database.DuckDB.Simple.ErrorResourceInUse'. For most callbacks, the outer
+-- statement then fails. DuckDB ignores the error of a log sink. The bound
+-- applies to each wait of a callback for a connection lock, also for a second
+-- connection that another statement uses. The bound does not apply to
+-- a callback that DuckDB runs while the library holds no lock of the
+-- connection, for example a log sink for a message of
+-- 'Database.DuckDB.Simple.Logging.logConnectionMessage'. It also does not apply
+-- to a statement in a thread that the callback starts, to a callback that
+-- labels its own thread, to a statement inside
+-- 'Control.Exception.uninterruptibleMask', and to a statement in the flush
+-- function of a log sink when DuckDB destroys the sink.
 --
 -- A callback that refers to a connection keeps that connection and its instance
 -- reachable while DuckDB keeps the callback, possibly until the database closes.

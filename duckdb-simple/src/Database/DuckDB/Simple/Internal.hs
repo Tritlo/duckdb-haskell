@@ -186,7 +186,8 @@ data Connection = Connection
   , connectionInstance :: Instance
   , connectionLock :: MVar ()
   -- ^ Held while a native result of this connection runs, and for each fetch
-  -- of an explicit stream. See 'withConnectionLock'.
+  -- of an explicit stream. A DuckDB callback waits for it at most
+  -- 'connectionLockBound'. See 'withConnectionLock'.
   , connectionWindow :: IORef (Maybe ThreadId)
   -- ^ The helper thread that runs the current result. See 'withResultWindow'.
   , connectionLockBound :: Maybe Int

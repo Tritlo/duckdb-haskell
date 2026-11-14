@@ -132,7 +132,15 @@ The SQL workflow stays the same. These changes can affect your code:
   connection wait for each other in the default query functions. Serialize a
   transaction, a shared `Statement`, and an explicit stream in the
   application. A callback that queries its active connection waits for this
-  lock and does not return.
+  lock. After the bound of `connectionCallbackLockWait` in `ConnectionOptions`
+  (10 seconds by default), the query raises an `SQLError` of the type
+  `ErrorResourceInUse`. For most callbacks, the outer statement then fails.
+  `Nothing` sets no bound.
+  The bound applies also to a callback that waits for a second connection.
+  With more than one DuckDB thread, DuckDB can run a callback of an explicit
+  stream between two fetches. Then the query fails at once with the
+  `RESOURCE_IN_USE` error of DuckDB. The README gives the cases that the bound
+  does not cover.
 - `query_` and `execute_` parse all statements before they run any. A syntax
   error stops earlier statements in the same input from running.
 - Each function that reads rows gives one row with one BIGINT column for an

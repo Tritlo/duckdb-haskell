@@ -239,9 +239,15 @@ data ConnectionOptions = ConnectionOptions
   --     @OGC:CRS84@. Include custom CRS names in this list.
   , connectionCallbackLockWait :: Maybe Int
   -- ^ The longest time in microseconds that a DuckDB callback waits for the
-  --     lock of this connection. A callback that waits longer gets an
-  --     'SQLError'. 'Nothing' sets no bound. The default is
+  --     lock of this connection. A statement of a callback on the connection
+  --     that runs the callback waits for this lock. After the bound, the
+  --     statement raises an 'SQLError' of the type 'ErrorResourceInUse'. For
+  --     most callbacks, the outer statement then fails. The bound applies
+  --     also to a callback that uses this connection while another statement
+  --     runs on it. 'Nothing' sets no bound. The default is
   --     'defaultCallbackLockWait'. The open rejects a negative value.
+  --     "Database.DuckDB.Simple.Function" gives the cases that the bound does
+  --     not cover.
   }
   deriving (Eq, Show)
 

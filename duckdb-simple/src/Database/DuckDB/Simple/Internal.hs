@@ -43,6 +43,8 @@ module Database.DuckDB.Simple.Internal (
   storeBoundValue,
   clearBoundValues,
   cleanupStatementStreamRef,
+  finalizeStream,
+  finalizeChunk,
   connectionClosedError,
   statementClosedError,
   mkPrepareError,
@@ -706,10 +708,19 @@ cleanupStatementStreamRef :: IORef StatementStreamState -> IO ()
 cleanupStatementStreamRef ref = mask_ do
   state <- atomicModifyIORef' ref (StatementStreamIdle,)
   case state of
-    StatementStreamActive StatementStream{statementStreamResult, statementStreamPendingChunks, statementStreamChunk} ->
-      maybe (pure ()) (destroyDataChunk . statementStreamChunkPtr) statementStreamChunk
-        `finally` (mapM_ destroyDataChunk statementStreamPendingChunks `finally` destroy c_duckdb_v2_result_destroy statementStreamResult)
+    StatementStreamActive stream -> finalizeStream stream
     _ -> pure ()
+
+-- | Release the native state of a stream in this order: the current chunk, the
+-- pending chunks, and the result.
+finalizeStream :: StatementStream -> IO ()
+finalizeStream StatementStream{statementStreamResult, statementStreamChunk, statementStreamPendingChunks} =
+  maybe (pure ()) finalizeChunk statementStreamChunk
+    `finally` (mapM_ destroyDataChunk statementStreamPendingChunks `finally` destroy c_duckdb_v2_result_destroy statementStreamResult)
+
+-- | Release the native chunk of a stream chunk.
+finalizeChunk :: StatementStreamChunk -> IO ()
+finalizeChunk StatementStreamChunk{statementStreamChunkPtr} = destroyDataChunk statementStreamChunkPtr
 
 -- | Transfer ownership of one successfully constructed parameter value.
 storeBoundValue :: Statement -> DuckDBIdx -> DuckDBV2ValueHandle -> IO ()

@@ -12,7 +12,6 @@ module Database.DuckDB.Simple.Result (
   foldStatementWith,
   nextRowWith,
   resetStatementStream,
-  cleanupStatementStreamRef,
 ) where
 
 import Control.Exception (bracket, evaluate, finally, mask, mask_, onException, throwIO)
@@ -168,14 +167,6 @@ prepareChunkReaders conn chunk columns = withTypeCache conn \cache -> withConnec
   forM columns \StatementStreamColumn{statementStreamColumnIndex} ->
     output (c_duckdb_v2_data_chunk_get_vector chunk (fromIntegral statementStreamColumnIndex))
       >>= prepareVectorReader (FallbackReaders readVariant (prepareGeometryReader factory))
-
-finalizeStream :: StatementStream -> IO ()
-finalizeStream StatementStream{statementStreamResult, statementStreamChunk, statementStreamPendingChunks} =
-  maybe (pure ()) finalizeChunk statementStreamChunk
-    `finally` (mapM_ destroyDataChunk statementStreamPendingChunks `finally` destroy c_duckdb_v2_result_destroy statementStreamResult)
-
-finalizeChunk :: StatementStreamChunk -> IO ()
-finalizeChunk StatementStreamChunk{statementStreamChunkPtr} = destroyDataChunk statementStreamChunkPtr
 
 -- | Decode all rows after the statement has materialized its native chunks.
 collectRows :: Statement -> IO [[Field]]

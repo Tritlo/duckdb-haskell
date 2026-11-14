@@ -143,6 +143,11 @@ The SQL workflow stays the same. These changes can affect your code:
   does not cover.
 - `query_` and `execute_` parse all statements before they run any. A syntax
   error stops earlier statements in the same input from running.
+- A conversion error names the types `TIMESTAMPTZ` and `TIMETZ`, in
+  `errSQLType` and in the message of the `SQLError`. Version 0.3 gave
+  `TIMESTAMP_TZ` and `TIME_TZ`. Change code that matches the old texts.
+- A value with the declared type SQLNULL must be `FieldNull`. Each other value
+  raises a conversion error. Version 0.3 bound it as NULL with no error.
 - Each function that reads rows gives one row with one BIGINT column for an
   INSERT, UPDATE, or DELETE without RETURNING: the number of changed rows.
   This applies to `query`, `query_`, `queryNamed`, `fold`, `fold_`,

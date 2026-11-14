@@ -19,7 +19,7 @@ import Control.Monad (when)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.FromField (FieldValue)
-import Database.DuckDB.Simple.Materialize (materializeValue)
+import Database.DuckDB.Simple.Materialize (VectorReader, materializeValue, rejectRows)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.V2.Config (registerCustomOptionWith)
 import Database.DuckDB.Simple.V2.Registration (
@@ -81,5 +81,5 @@ updateWithValue update info context = withContextFactory context \factory ->
     >>= update
 
 -- | Raise an @SQLError@ for a VARIANT value. Configuration reads do not decode VARIANT.
-unexpectedVariant :: DuckDBV2VectorHandle -> IO a
-unexpectedVariant _ = throwIO (SQLError "duckdb-simple: configuration values must not contain VARIANT" Nothing Nothing)
+unexpectedVariant :: VectorReader
+unexpectedVariant = rejectRows (throwIO (SQLError "duckdb-simple: configuration values must not contain VARIANT" Nothing Nothing))

@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE StrictData #-}
 
 -- |
 -- Module      : Database.DuckDB.Simple.Tokenizer
@@ -21,16 +22,16 @@ import Foreign.Storable (peek)
 
 -- | A token and its location in the UTF-8 source bytes.
 data Token = Token
-  { tokenType :: !TokenType
-  , tokenOffset :: !Int
-  , tokenBytes :: !BS.ByteString
+  { tokenType :: TokenType
+  , tokenOffset :: Int
+  , tokenBytes :: BS.ByteString
   }
   deriving (Eq, Show)
 
 -- | Tokens and the native indication of an unclosed final token.
 data Tokenization = Tokenization
-  { tokenizationTokens :: ![Token]
-  , tokenizationUnterminated :: !Bool
+  { tokenizationTokens :: [Token]
+  , tokenizationUnterminated :: Bool
   }
   deriving (Eq, Show)
 

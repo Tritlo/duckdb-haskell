@@ -6,16 +6,19 @@
 -- Description : Regression tests for GEOMETRY construction, metadata, nesting, and streaming.
 module GeometryRegressionTests (tests) where
 
-import Control.Exception (SomeException, bracket, displayException, try)
-import Control.Monad (forM_)
+import Control.Concurrent (threadDelay)
+import Control.Exception (IOException, SomeException, bracket, displayException, try)
+import Control.Monad (forM_, when)
 import Data.Array (Array, listArray)
 import qualified Data.ByteString as BS
 import qualified Data.Geometry as G
 import qualified Data.Geometry.WKB as WKB
 import qualified Data.Geometry.WKT as WKT
+import Data.IORef (mkWeakIORef, newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (isInfixOf)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (isJust)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Vector as V
@@ -27,8 +30,10 @@ import Database.DuckDB.Simple.Internal (withConnectionFactory, withConnectionHan
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), UnionMemberType (..))
 import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Database.DuckDB.Simple.V2.LogicalRep (destroyLogicalType, logicalTypeFromRep, logicalTypeToRep)
+import Database.DuckDB.Simple.Variant (Variant (..))
 import GHC.Float (castWord64ToDouble)
 import System.Mem (performMajorGC)
+import System.Mem.Weak (deRefWeak)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
 import TestUtils (assertFailureIO)
@@ -357,7 +362,7 @@ tests =
             nextRow stmt >>= (@?= Just (Only value))
             bind stmt [toField value]
             nextRow stmt >>= (@?= Just (Only value))
-    , testCase "lazy CRS lookup leaves an active caller stream usable" $ do
+    , testCase "a configured CRS bind leaves an active caller stream usable" $ do
         let crs = "local' íslenska λ"
         withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = [crs]} \conn ->
           withStatement conn "SELECT ?" \parameter -> do
@@ -374,7 +379,7 @@ tests =
             Left err -> assertBool (show err) ("duckdb-simple: DuckDB did not preserve the requested GEOMETRY CRS" `Text.isInfixOf` sqlErrorMessage err)
             Right _ -> assertFailure "expected the unknown CRS to fail"
     , testCase "connection options validate CRS definitions and pass configuration flags" $ do
-        forM_ ["", "OGC:CRS84\0bad"] \crs ->
+        forM_ ["", "OGC:CRS84\0bad", " "] \crs ->
           assertFailureIO (withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = [crs]} (const (pure ())))
         let options = defaultConnectionOptions{connectionConfig = [("threads", "1")], connectionGeometryCRS = ["local grid", "OGC:CRS84", "OGC:CRS84"]}
         withConnectionWithOptions ":memory:" options \conn ->
@@ -398,7 +403,72 @@ tests =
         withConnection ":memory:" \conn -> do
           assertFailureIO (query conn "SELECT system.main.ST_GeomFromWKB(?)" (Only (BS.pack [1, 1, 0, 0, 0])) :: IO [Only RawGeometry])
           (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
+    , testCase "configured recognized, custom, and complete CRS names bind with their CRS" $ do
+        let names = ["OGC:CRS84", "local' íslenska λ", localGridWKT2]
+        withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = names} \conn ->
+          forM_ names \crs -> (query conn "SELECT ?" (Only (nullShape crs))) >>= (@?= [Only (nullShape crs)])
+    , testCase "a default connection runs no CRS query, also for a VARIANT read" $
+        withLoggedInstance \inst countQueries -> withConnectionOn inst \conn -> do
+          (query conn "SELECT ?" (Only (nullShape "OGC:CRS84"))) >>= (@?= [Only (nullShape "OGC:CRS84")])
+          (query_ conn "SELECT 42::VARIANT" :: IO [Only Variant]) >>= (@?= [Only (Variant (FieldInt32 42))])
+          countQueries crsQuery >>= (@?= 0)
+          -- The log also records the queries of the helper connection.
+          countQueries "variant_typeof" >>= (@?= 1)
+    , testCase "a custom CRS runs one CRS query when the connection opens, and a VARIANT read runs none" $
+        withLoggedInstance \inst countQueries ->
+          bracket (connectWithOptions inst defaultConnectionOptions{connectionGeometryCRS = ["local grid"]}) close \conn -> do
+            countQueries crsQuery >>= (@?= 1)
+            (query conn "SELECT ?" (Only (nullShape "local grid"))) >>= (@?= [Only (nullShape "local grid")])
+            (query_ conn "SELECT 42::VARIANT" :: IO [Only Variant]) >>= (@?= [Only (Variant (FieldInt32 42))])
+            countQueries crsQuery >>= (@?= 1)
+            countQueries "variant_typeof" >>= (@?= 1)
+    , testCase "a configured recognized CRS binds in either spelling" $
+        withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = ["ogc:crs84"]} \conn ->
+          forM_ ["ogc:crs84", "OGC:CRS84"] \crs -> (query conn "SELECT ?" (Only (nullShape crs))) >>= (@?= [Only (nullShape "OGC:CRS84")])
+    , testCase "a configured CRS that DuckDB drops fails the open and releases its connection" $
+        withEnvironment \env -> do
+          inst <- createInstance env []
+          -- The database keeps the function, and the function keeps the token.
+          weak <- withConnectionOn inst \conn -> do
+            token <- newIORef (42 :: Int64)
+            createFunction conn "crs_token" (readIORef token)
+            mkWeakIORef token (pure ())
+          -- The open keeps the type of the first name before the second name fails.
+          result <- try (connectWithOptions inst defaultConnectionOptions{connectionGeometryCRS = ["OGC:CRS84", " "]})
+          case result of
+            Left err -> assertBool (displayException err) ("did not preserve a configured GEOMETRY CRS" `isInfixOf` displayException (err :: IOException))
+            Right conn -> close conn >> assertFailure "expected the open to fail"
+          -- DuckDB destroys the instance and the function after the last native
+          -- connection. A connection that the failed open kept would keep the token.
+          closeInstance inst
+          waitForRelease weak (500 :: Int)
     ]
+  where
+    crsQuery = "system.main.ST_SetCRS('POINT EMPTY'"
+    waitForRelease weak attempts
+      | attempts == 0 = assertFailure "the failed open kept a native connection"
+      | otherwise = do
+          performMajorGC
+          alive <- isJust <$> deRefWeak weak
+          when alive (threadDelay 10000 >> waitForRelease weak (attempts - 1))
+
+-- | Run an action on an instance that logs each query. The second argument
+-- counts the logged queries whose text contains a part. The count query binds
+-- the part as a value, so its own text does not match.
+withLoggedInstance :: (Instance -> (Text -> IO Int64) -> IO a) -> IO a
+withLoggedInstance action = withEnvironment \env -> withInstance env [] \inst -> withConnectionOn inst \logger -> do
+  _ <- execute_ logger "CALL enable_logging(level := 'info')"
+  let countQueries part = do
+        rows <- query logger "SELECT count(*) FROM duckdb_logs() WHERE type = 'QueryLog' AND contains(message, ?)" (Only part)
+        case rows of
+          [Only count] -> pure count
+          _ -> assertFailure "expected one count"
+  action inst countQueries
+
+-- | A complete WKT2 definition that no DuckDB catalog entry identifies.
+localGridWKT2 :: Text
+localGridWKT2 =
+  "ENGCRS[\"Local grid\",EDATUM[\"Local datum\"],CS[Cartesian,2],AXIS[\"x\",east,ORDER[1],LENGTHUNIT[\"metre\",1]],AXIS[\"y\",north,ORDER[2],LENGTHUNIT[\"metre\",1]]]"
 
 -- | A one-field STRUCT with a NULL GEOMETRY of the given CRS.
 nullShape :: Text -> StructValue FieldValue

@@ -42,7 +42,14 @@ import Data.Void (Void)
 import Database.DuckDB.Simple.Callback (attachOpaque, ignoreCallbackExceptions, readCallbackState, transferCallbackState)
 import Database.DuckDB.Simple.FromField (Field (..))
 import Database.DuckDB.Simple.Internal (Connection, withDatabaseHandle)
-import Database.DuckDB.Simple.Materialize (VariantReader, castReader, prepareVariantReader, prepareVectorReader)
+import Database.DuckDB.Simple.Materialize (
+  FallbackReaders (..),
+  VectorReader,
+  prepareGeometryReader,
+  prepareVariantReader,
+  prepareVectorReader,
+  rejectRows,
+ )
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Typed (TypedRow (..))
 import Database.DuckDB.Simple.Typed.Table (writeRows)
@@ -101,7 +108,7 @@ registerCopyToFunction = registerCopyToFunctionOn . ConnectionTarget
 
 -- | Register row-oriented COPY TO callbacks on a connection or a loading
 -- extension. The rules of 'registerCopyToFunction' apply. A COPY TO function of
--- an extension cannot read a VARIANT column.
+-- an extension cannot read a VARIANT value.
 registerCopyToFunctionOn
   :: RegistrationTarget
   -> Text
@@ -123,11 +130,11 @@ registerCopyOn target name to from = do
 -- | Give the VARIANT reader of a registration target to an action. On a
 -- connection, the reader decodes VARIANT through a helper connection of the
 -- database. An extension target has no instance handle, so its reader raises an
--- error.
-withVariantReader :: RegistrationTarget -> (VariantReader -> IO a) -> IO a
+-- error for each VARIANT row.
+withVariantReader :: RegistrationTarget -> (VectorReader -> IO a) -> IO a
 withVariantReader target action = case target of
   ConnectionTarget connection -> withDatabaseHandle connection (action . readVariant)
-  ExtensionTarget _ _ -> action \_ -> throwIO (userError "duckdb-simple: a COPY TO function of an extension cannot read VARIANT")
+  ExtensionTarget _ _ -> action (rejectRows (throwIO (userError "duckdb-simple: a COPY TO function of an extension cannot read VARIANT")))
   where
     -- Keep the raw instance handle, not the 'Instance' value. DuckDB registers
     -- the COPY function on the database, and it can keep the callbacks until
@@ -139,12 +146,12 @@ withVariantReader target action = case target of
     -- handle.
     readVariant instanceHandle vector =
       bracket (output (c_duckdb_v2_connection_create instanceHandle)) (destroy c_duckdb_v2_connection_destroy) \helper ->
-        bracket newVariantState destroyVariantState \state -> prepareVariantReader helper state vector
+        bracket (newVariantState helper) destroyVariantState (`prepareVariantReader` vector)
 
 -- | The native COPY TO callbacks of the row-oriented functions.
 copyToSide
   :: forall bindState globalState
-   . VariantReader
+   . VectorReader
   -> (CopyBindInfo -> IO bindState)
   -> (CopyInitInfo bindState -> IO globalState)
   -> (CopySinkInfo bindState globalState -> [[Field]] -> IO ())
@@ -159,12 +166,12 @@ copyToSide readVariant bindFn initFn sinkFn finalizeFn =
   where
     bind info _ = mask \restore -> do
       count <- output (c_duckdb_v2_copy_to_bind_get_column_count info)
-      types <- acquireTypes info count [] 0
+      types <- acquireItems destroyLogicalType [output (c_duckdb_v2_copy_to_bind_get_column_type info index) | index <- indices count]
       state <-
         restore (mapM (\logical -> output (c_duckdb_v2_logical_type_get_id logical) >>= logicalTypeIdFromNative) types >>= bindFn . CopyBindInfo)
-          `onException` mapM_ destroyLogicalType types
-      stable <- newStablePtr state `onException` mapM_ destroyLogicalType types
-      let release = freeStablePtr stable >> mapM_ destroyLogicalType types
+          `onException` releaseItems destroyLogicalType types
+      stable <- newStablePtr state `onException` releaseItems destroyLogicalType types
+      let release = freeStablePtr stable >> releaseItems destroyLogicalType types
       storage <- newStablePtr (CopyBindingStorage (castStablePtrToPtr stable) types) `onException` release
       attachOpaque (c_duckdb_v2_copy_to_bind_set_bind_data info) (castPtr (castStablePtrToPtr storage)) copyBindingDestructor
         `onException` (freeStablePtr storage >> release)
@@ -194,14 +201,6 @@ copyToSide readVariant bindFn initFn sinkFn finalizeFn =
 -- | A bind state and its owned logical descriptors share one native lifetime.
 data CopyBindingStorage = CopyBindingStorage !(Ptr ()) ![DuckDBV2LogicalTypeHandle]
 
--- | Retain the owned bind descriptors and release them on acquisition failure.
-acquireTypes :: DuckDBV2CopyToBindInfoHandle -> DuckDBIdx -> [DuckDBV2LogicalTypeHandle] -> DuckDBIdx -> IO [DuckDBV2LogicalTypeHandle]
-acquireTypes info count taken index
-  | index == count = pure (reverse taken)
-  | otherwise = do
-      logical <- output (c_duckdb_v2_copy_to_bind_get_column_type info index) `onException` mapM_ destroyLogicalType taken
-      acquireTypes info count (logical : taken) (index + 1)
-
 -- | Read the row wrapper state with its retained logical descriptors.
 readCopyBinding :: (Ptr (Ptr Void) -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO (a, [DuckDBV2LogicalTypeHandle])
 readCopyBinding getter = do
@@ -220,7 +219,7 @@ releaseCopyBinding raw =
         let storage = castPtrToStablePtr (castPtr raw) :: StablePtr CopyBindingStorage
         ( do
             CopyBindingStorage state types <- deRefStablePtr storage
-            mapM_ destroyLogicalType types `finally` freeStablePtr (castPtrToStablePtr state)
+            releaseItems destroyLogicalType types `finally` freeStablePtr (castPtrToStablePtr state)
           )
           `finally` freeStablePtr storage
 
@@ -234,8 +233,8 @@ copyBindingDestructor = DuckDBV2OpaqueDestroyFn (castFunPtr copyBindingDestructo
 
 -- | Copy each scanned chunk before the scan invalidates its borrowed buffers.
 materializeCollection
-  :: DuckDBV2FactoryHandle -> VariantReader -> [DuckDBV2LogicalTypeHandle] -> DuckDBV2ColumnDataCollectionHandle -> IO [[Field]]
-materializeCollection factory variantReader types collection =
+  :: DuckDBV2FactoryHandle -> VectorReader -> [DuckDBV2LogicalTypeHandle] -> DuckDBV2ColumnDataCollectionHandle -> IO [[Field]]
+materializeCollection factory readVariant types collection =
   withArray types \typePtr ->
     bracket
       (output (c_duckdb_v2_data_chunk_create factory (ConstPtr typePtr) (fromIntegral (length types))))
@@ -254,20 +253,20 @@ materializeCollection factory variantReader types collection =
                       if produced == 0
                         then pure (concat (reverse groups))
                         else do
-                          rows <- materializeChunkRows (castReader factory variantReader) chunk
+                          rows <- materializeChunkRows (FallbackReaders readVariant (prepareGeometryReader factory)) chunk
                           loop (rows : groups)
                 in  loop []
 
 -- | Copy a complete chunk before its collection scan advances.
-materializeChunkRows :: VariantReader -> DuckDBV2DataChunkHandle -> IO [[Field]]
-materializeChunkRows variantReader chunk = do
+materializeChunkRows :: FallbackReaders -> DuckDBV2DataChunkHandle -> IO [[Field]]
+materializeChunkRows readers chunk = do
   columns <- output (c_duckdb_v2_data_chunk_get_vector_count chunk)
-  readers <- forM [0 .. fromIntegral columns - 1] \index -> do
+  columnReaders <- forM [0 .. fromIntegral columns - 1] \index -> do
     vector <- output (c_duckdb_v2_data_chunk_get_vector chunk (fromIntegral (index :: Int)))
-    readValue <- prepareVectorReader variantReader vector
+    readValue <- prepareVectorReader readers vector
     pure \row -> Field (Text.pack ("column" <> show index)) index <$> readValue row
   rows <- output (c_duckdb_v2_data_chunk_get_size chunk)
-  forM [0 .. fromIntegral rows - 1] \row -> mapM ($ row) readers
+  forM [0 .. fromIntegral rows - 1] \row -> mapM ($ row) columnReaders
 
 -- | The inputs of the COPY FROM side for one statement. The path is the text
 -- of the statement. DuckDB does not expand a glob pattern in it. The names and

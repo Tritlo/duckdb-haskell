@@ -14,7 +14,7 @@
 module Main (main) where
 
 import ArrowTests (arrowTests)
-import CancellationTests (cancellationTests)
+import CancellationTests (callbackLockTests, cancellationTests)
 import Control.Applicative ((<|>))
 import Control.Exception (ErrorCall, Exception, SomeException, displayException, fromException, try)
 import Control.Monad (forM_, replicateM_, void, when)
@@ -209,6 +209,7 @@ tests =
     , coreRegressionTests
     , arrowTests
     , cancellationTests
+    , callbackLockTests
     , nativeStreamingTests
     , extensionRegressionTests
     , registrationTests
@@ -897,26 +898,15 @@ typeTests =
     , testCase "selects BIGNUM values as BigNum" $
         withConnection ":memory:" \conn -> do
           _ <- execute_ conn "CREATE TABLE bignums (val BIGNUM)"
-          let bigValues :: [Integer]
-              bigValues =
-                [ (2 ^ (200 :: Int)) + 8675309
-                , 0
-                , negate ((2 ^ (180 :: Int)) + 12345)
-                ]
-          rows <- concat <$> mapM (\bv -> query_ conn $ fromString $ "SELECT CAST('" <> show bv <> "' AS BIGNUM)") bigValues
+          rows <- concat <$> mapM (\bv -> query_ conn $ fromString $ "SELECT CAST('" <> show bv <> "' AS BIGNUM)") bigNumValues
           --  query_ conn "SELECT val FROM bignums ORDER BY rowid" :: IO [Only BigNum]
-          assertEqual "BIGNUM results" (fmap (Only . BigNum) bigValues) rows
+          assertEqual "BIGNUM results" (fmap (Only . BigNum) bigNumValues) rows
     , testCase "round-trips BIGNUM values through the database" $
         withConnection ":memory:" \conn -> do
           _ <- execute_ conn "CREATE TABLE bignum_roundtrip (val BIGNUM)"
-          let ints =
-                [ (2 ^ (200 :: Int)) + 8675309
-                , 0
-                , negate ((2 ^ (180 :: Int)) + 12345)
-                ]
-          _ <- executeMany conn "INSERT INTO bignum_roundtrip VALUES (?)" (fmap (Only . BigNum) ints)
+          _ <- executeMany conn "INSERT INTO bignum_roundtrip VALUES (?)" (fmap (Only . BigNum) bigNumValues)
           rows <- query_ conn "SELECT val FROM bignum_roundtrip ORDER BY rowid" :: IO [Only Integer]
-          assertEqual "BIGNUM round-trip" (fmap Only ints) rows
+          assertEqual "BIGNUM round-trip" (fmap Only bigNumValues) rows
     , testCase "duckdbColumnType reports BIGNUM for Integer" $
         assertEqual
           "duckdbColumnType Integer"
@@ -1104,6 +1094,13 @@ typeTests =
         case genericToFieldValue EmptyStruct of
           FieldNull -> pure ()
           other -> assertFailure ("expected FieldNull for empty struct, got " <> show other)
+    , testCase "empty struct binds as a STRUCT without fields" $
+        withConnection ":memory:" \conn -> do
+          query conn "SELECT typeof(?)" (Only EmptyStruct) >>= (@?= [Only (Text.pack "STRUCT")])
+          rows <- query conn "SELECT ?" (Only EmptyStruct) :: IO [Only FieldValue]
+          case rows of
+            [Only (FieldStruct structVal)] -> elems (structValueFields structVal) @?= []
+            other -> assertFailure ("expected a STRUCT without fields, got " <> show other)
     , testCase "struct with Maybe fields" $ do
         let withJust = OptionalFields (Just 42) (Just (Text.pack "text"))
             withNothing = OptionalFields Nothing Nothing
@@ -1153,6 +1150,22 @@ typeTests =
               assertBool "error mentions tag or index" (Text.pack "tag" `Text.isInfixOf` Text.pack err || Text.pack "99" `Text.isInfixOf` Text.pack err)
             Right _ -> assertFailure "expected decode error for wrong tag"
     ]
+  where
+    -- 7 ^ 2900 has 1,018 magnitude bytes. A value of at most 9 magnitude bytes
+    -- has inline storage.
+    bigNumValues :: [Integer]
+    bigNumValues =
+      [ (2 ^ (200 :: Int)) + 8675309
+      , 0
+      , negate ((2 ^ (180 :: Int)) + 12345)
+      , 7 ^ (2900 :: Int)
+      , negate (7 ^ (2900 :: Int))
+      , 1
+      , -1
+      , 255
+      , 256
+      , -256
+      ]
 
 streamingTests :: TestTree
 streamingTests =

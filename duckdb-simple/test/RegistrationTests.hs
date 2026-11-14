@@ -33,6 +33,7 @@ import System.Mem (performMajorGC)
 import System.Mem.Weak (Weak, deRefWeak)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertFailure, testCase, (@?=))
+import TestUtils (writeIntegers)
 
 -- | Check registration, callback errors, typed signatures, and resource release.
 registrationTests :: TestTree
@@ -447,10 +448,3 @@ readIntegers count vector = do
   R.checked (c_duckdb_v2_vector_flatten vector)
   raw <- R.output (c_duckdb_v2_vector_get_data_mutable vector)
   mapM (peekElemOff (castPtr raw)) [0 .. count - 1]
-
-writeIntegers :: DuckDBV2VectorHandle -> [Int64] -> IO ()
-writeIntegers vector values = do
-  R.checked (c_duckdb_v2_vector_set_size vector (fromIntegral (length values)))
-  R.checked (c_duckdb_v2_vector_flatten vector)
-  raw <- R.output (c_duckdb_v2_vector_get_data_mutable vector)
-  forM_ (zip [0 ..] values) \(index, value) -> pokeElemOff (castPtr raw) index value

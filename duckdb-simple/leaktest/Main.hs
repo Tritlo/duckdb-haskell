@@ -267,6 +267,8 @@ checkCallbacks batches =
       (\_ -> fail "COPY init failure" :: IO ())
       (\_ _ -> pure ())
       (\_ -> pure ())
+    -- Register leak_log once, so that the registration in each cycle fails and
+    -- the test can check that the rejected callback is released.
     Logging.registerLogStorage conn "leak_log" (\_ -> pure ())
     let cycleCallback = do
           retained <- newIORef (42 :: Int64)

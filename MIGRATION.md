@@ -127,11 +127,20 @@ The SQL workflow stays the same. These changes can affect your code:
 - While an explicit stream is incomplete, DuckDB rejects other statements on
   its connection with a `RESOURCE_IN_USE` error. Closing an incomplete stream
   aborts its statement. In autocommit mode, DuckDB rolls back its writes.
-- Each connection has a lock for statement preparation and for its open native
-  result. Threads that share a connection wait for each other in the default
-  query functions. Serialize a transaction, a shared `Statement`, and an
-  explicit stream in the application. A callback that queries its active
-  connection waits for this lock and does not return.
+- Each connection has a lock for statement preparation, for its open native
+  result, and for each fetch of an explicit stream. Threads that share a
+  connection wait for each other in the default query functions. Serialize a
+  transaction, a shared `Statement`, and an explicit stream in the
+  application. A callback that queries its active connection waits for this
+  lock. After the bound of `connectionCallbackLockWait` in `ConnectionOptions`
+  (10 seconds by default), the query raises an `SQLError` of the type
+  `ErrorResourceInUse`. For most callbacks, the outer statement then fails.
+  `Nothing` sets no bound.
+  The bound applies also to a callback that waits for a second connection.
+  With more than one DuckDB thread, DuckDB can run a callback of an explicit
+  stream between two fetches. Then the query fails at once with the
+  `RESOURCE_IN_USE` error of DuckDB. The README gives the cases that the bound
+  does not cover.
 - `query_` and `execute_` parse all statements before they run any. A syntax
   error stops earlier statements in the same input from running.
 - Each function that reads rows gives one row with one BIGINT column for an
@@ -163,6 +172,10 @@ The SQL workflow stays the same. These changes can affect your code:
 - A composite parameter with a GEOMETRY CRS that DuckDB does not recognize
   raises `SQLError`. Version 0.3 bound it without the CRS. Configure custom CRS
   names through `connectionGeometryCRS`.
+- A name in `connectionGeometryCRS` that DuckDB drops, for example a blank
+  name, fails when the connection opens. Version 0.3 read the configured types
+  the first time a parameter needed one, and did not check that a type kept its
+  CRS.
 - DuckDB 2.0 rejects WKB with mixed Z/M member layouts.
 - Decoded VARIANT objects list their keys in DuckDB's lexicographic order.
 

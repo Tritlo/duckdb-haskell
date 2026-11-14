@@ -36,7 +36,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.Element (vectorElementType)
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), FromField (..), ResultError (..))
-import Database.DuckDB.Simple.Materialize (prepareVectorReader)
+import Database.DuckDB.Simple.Materialize (FallbackReaders (..), prepareVectorReader, rejectRows)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue (..), duckdbColumnType)
@@ -122,15 +122,13 @@ argumentName index = Text.pack ("arg" <> show index)
 
 -- | Prepare a reader for the rows of an argument vector. The first argument is
 -- the index of the argument, from 0. The reader gives the field of a row, with
--- the name from 'argumentName'. A NULL row gives 'FieldNull'. A row of a type
--- that is or contains VARIANT or GEOMETRY raises an error. The reader must not
--- outlive the vector.
+-- the name from 'argumentName'. A NULL row gives 'FieldNull', also a NULL
+-- VARIANT or GEOMETRY row. A row that holds a VARIANT or GEOMETRY value raises
+-- an error. The reader must not outlive the vector.
 prepareArgumentReader :: Int -> DuckDBV2VectorHandle -> IO (Int -> IO Field)
 prepareArgumentReader index vector = do
-  readValue <-
-    prepareVectorReader
-      (\_ -> pure \_ -> throwIO (userError "duckdb-simple: the type of a typed argument cannot be or contain VARIANT or GEOMETRY"))
-      vector
+  let unsupported = rejectRows (throwIO (userError "duckdb-simple: the type of a typed argument cannot be or contain VARIANT or GEOMETRY"))
+  readValue <- prepareVectorReader (FallbackReaders unsupported unsupported) vector
   pure \row -> Field (argumentName index) index <$> readValue row
 
 -- | Describe the arguments that 'FromField' or @FromRow@ cannot convert. The

@@ -7,6 +7,7 @@
 -- Description : Check the explicit native streaming API and its cursor ownership.
 module StreamingTests (nativeStreamingTests) where
 
+import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (IOException, throwIO, try)
 import Control.Monad (forM_, replicateM_, void, when)
 import Data.IORef (atomicWriteIORef, newIORef, readIORef, writeIORef)
@@ -25,6 +26,7 @@ import Database.DuckDB.Simple.Internal (
   nullHandle,
  )
 import qualified Database.DuckDB.Simple.Streaming as Streaming
+import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
 
@@ -147,6 +149,27 @@ nativeStreamingTests =
         case outcome of
           Left (err :: IOException) -> assertBool "original callback error" ("stream step failure" `isInfixOf` show err)
           Right _ -> assertFailure "expected the callback to fail"
+        assertReusable conn
+    , testCase "a query of another thread during an explicit stream fails and the stream continues" $ withDb \conn -> do
+        -- The case needs a statement that still runs after the first row, so
+        -- the stream reads a large result.
+        finished <- timeout 120000000 $ withStatement conn "SELECT i FROM range(1000000) t(i)" \stmt -> do
+          Streaming.nextRow stmt >>= (@?= Just (Only (0 :: Int64)))
+          other <- newEmptyMVar
+          _ <- forkIO (try (query_ conn "SELECT 42" :: IO [Only Int64]) >>= putMVar other)
+          outcome <- takeMVar other
+          case outcome of
+            Left (err :: SQLError) -> sqlErrorType err @?= Just ErrorResourceInUse
+            Right _ -> assertFailure "expected a busy connection during the stream"
+          let readFrom expected = do
+                row <- Streaming.nextRow stmt
+                case row of
+                  Nothing -> pure expected
+                  Just (Only value) -> do
+                    when (value /= expected) $ assertFailure ("expected row " <> show expected <> ", got " <> show value)
+                    readFrom (expected + 1)
+          readFrom (1 :: Int64) >>= (@?= 1000000)
+        finished @?= Just ()
         assertReusable conn
     ]
 

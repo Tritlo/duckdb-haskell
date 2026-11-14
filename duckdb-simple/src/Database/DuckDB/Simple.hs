@@ -31,6 +31,7 @@ module Database.DuckDB.Simple (
   openWithConfig,
   ConnectionOptions (..),
   defaultConnectionOptions,
+  defaultCallbackLockWait,
   openWithOptions,
   close,
   withConnection,
@@ -106,7 +107,7 @@ module Database.DuckDB.Simple (
   createAggregate,
 ) where
 
-import Control.Exception (SomeException, bracket, finally, mask, mask_, onException, throwIO, try)
+import Control.Exception (SomeException, bracket, evaluate, finally, mask, mask_, onException, throwIO, try)
 import Control.Monad (forM_, void, when, zipWithM_)
 import Data.Array (elems)
 import Data.List (findIndex)
@@ -195,10 +196,11 @@ connect instance_ = connectWithOptions instance_ defaultConnectionOptions
 -- GLOBAL thus changes the instance. This change applies to all connections of
 -- the instance.
 connectWithOptions :: Instance -> ConnectionOptions -> IO Connection
-connectWithOptions instance_ ConnectionOptions{connectionConfig, connectionGeometryCRS} = mask_ do
+connectWithOptions instance_ ConnectionOptions{connectionConfig, connectionGeometryCRS, connectionCallbackLockWait} = mask_ do
   when (any (\(name, value) -> Text.any (== '\0') name || Text.any (== '\0') value) connectionConfig) $
     throwIO (SQLError (Text.pack "duckdb-simple: configuration contains NUL") Nothing Nothing)
-  conn <- createConnection instance_ connectionGeometryCRS (pure ())
+  callbackLockWait <- checkCallbackLockWait connectionCallbackLockWait
+  conn <- createConnection instance_ connectionGeometryCRS callbackLockWait (pure ())
   flip onException (close conn) do
     withConnectionHandle conn \raw -> do
       config <- output (c_duckdb_v2_connection_get_config raw)
@@ -229,30 +231,60 @@ data ConnectionOptions = ConnectionOptions
   --     with its default scope. An option whose default scope is GLOBAL thus changes
   --     the instance. This change applies to all connections of the instance.
   , connectionGeometryCRS :: [Text]
-  -- ^ CRS definitions to preserve in composite parameters. A helper
-  --     connection reads and caches their SQL-derived types on first use.
-  --     The default is @OGC:CRS84@. Include custom CRS names in this list.
+  -- ^ CRS definitions to preserve in composite parameters. DuckDB constructs
+  --     a recognized name, such as @OGC:CRS84@, and a complete definition
+  --     directly. For each other name, the connection reads a SQL-derived type
+  --     when it opens, and a name that DuckDB drops fails the open. The
+  --     connection keeps each type, and a bind copies it. The default is
+  --     @OGC:CRS84@. Include custom CRS names in this list.
+  , connectionCallbackLockWait :: Maybe Int
+  -- ^ The longest time in microseconds that a DuckDB callback waits for the
+  --     lock of this connection. A statement of a callback on the connection
+  --     that runs the callback waits for this lock. After the bound, the
+  --     statement raises an 'SQLError' of the type 'ErrorResourceInUse'. For
+  --     most callbacks, the outer statement then fails. The bound applies
+  --     also to a callback that uses this connection while another statement
+  --     runs on it. 'Nothing' sets no bound. The default is
+  --     'defaultCallbackLockWait'. The open rejects a negative value.
+  --     "Database.DuckDB.Simple.Function" gives the cases that the bound does
+  --     not cover.
   }
   deriving (Eq, Show)
 
--- | No configuration flags, and the CRS @OGC:CRS84@.
+-- | No configuration flags, the CRS @OGC:CRS84@, and the default bound for a
+-- callback that waits for the connection lock.
 defaultConnectionOptions :: ConnectionOptions
 defaultConnectionOptions =
   ConnectionOptions
     { connectionConfig = []
     , connectionGeometryCRS = defaultGeometryCRS
+    , connectionCallbackLockWait = Just defaultCallbackLockWait
     }
+
+-- | The default of 'connectionCallbackLockWait': 10 seconds, in microseconds.
+defaultCallbackLockWait :: Int
+defaultCallbackLockWait = 10000000
+
+-- | Evaluate the bound of 'connectionCallbackLockWait' and reject a negative
+-- bound. The fields of 'ConnectionOptions' are lazy, so an error in the field
+-- occurs here and not in a later wait.
+checkCallbackLockWait :: Maybe Int -> IO (Maybe Int)
+checkCallbackLockWait bound = case bound of
+  Just micros
+    | micros < 0 -> throwIO (SQLError (Text.pack "duckdb-simple: connectionCallbackLockWait is negative") Nothing Nothing)
+  _ -> evaluate bound
 
 -- | Open a database with a private environment and instance.
 openWithOptions :: FilePath -> ConnectionOptions -> IO Connection
-openWithOptions path ConnectionOptions{connectionConfig, connectionGeometryCRS} = mask_ do
+openWithOptions path ConnectionOptions{connectionConfig, connectionGeometryCRS, connectionCallbackLockWait} = mask_ do
+  callbackLockWait <- checkCallbackLockWait connectionCallbackLockWait
   environment <- createEnvironment
   instance_ <- createInstance environment connectionConfig `onException` closeEnvironment environment
   let release = closeInstance instance_ `finally` closeEnvironment environment
   flip onException release do
     -- An empty alias lets DuckDB derive the catalog name from the path.
     attachCatalog instance_ (if null path then ":memory:" else path) Text.empty [] True
-    createConnection instance_ connectionGeometryCRS release
+    createConnection instance_ connectionGeometryCRS callbackLockWait release
 
 -- | Close a connection and its statements. The operation is idempotent.
 close :: Connection -> IO ()
@@ -291,6 +323,7 @@ bind :: Statement -> [FieldBinding] -> IO ()
 bind stmt fields = do
   resetStatementStream stmt
   withStatementHandle stmt \_ -> do
+    -- The handle is not used. withStatementHandle raises the error for a closed statement or connection.
     let actual = length fields
         expected = length (statementParameterNames stmt)
     when (actual /= expected) $
@@ -344,6 +377,7 @@ bindNamed stmt params =
         when (Set.size (Set.fromList names) /= length names) $
           throwFormatErrorNamed stmt (Text.pack "duckdb-simple: duplicate named parameter") bindings
         withStatementHandle stmt \_ -> do
+          -- The handle is not used. withStatementHandle raises the error for a closed statement or connection.
           let actual = length bindings
               expected = length (statementParameterNames stmt)
           when (actual > expected) $
@@ -367,12 +401,14 @@ fetchParameterNames stmt =
 -- | Remove all parameter bindings and release an active result.
 clearStatementBindings :: Statement -> IO ()
 clearStatementBindings stmt = withStatementHandle stmt \_ -> do
+  -- The handle is not used. withStatementHandle raises the error for a closed statement or connection.
   resetStatementStream stmt
   clearBoundValues (statementBindings stmt)
 
 -- | Look up the 1-based index of a named placeholder.
 namedParameterIndex :: Statement -> Text -> IO (Maybe Int)
 namedParameterIndex stmt name = withStatementHandle stmt \_ -> do
+  -- The handle is not used. withStatementHandle raises the error for a closed statement or connection.
   when (Text.any (== '\0') name) $
     throwIO (mkPrepareError (statementQuery stmt) (Text.pack "duckdb-simple: parameter name contains NUL"))
   pure ((+ 1) <$> findIndex ((== normalizeName name) . normalizeName) (elems (statementParameterNames stmt)))

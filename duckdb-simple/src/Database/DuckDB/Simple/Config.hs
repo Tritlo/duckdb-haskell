@@ -1,5 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE StrictData #-}
 
 -- |
 -- Module      : Database.DuckDB.Simple.Config
@@ -39,27 +40,27 @@ import Foreign.Storable (peek)
 
 -- | The canonical name and description of a configuration option.
 data ConfigFlag = ConfigFlag
-  { configFlagName :: !Text
-  , configFlagDescription :: !Text
+  { configFlagName :: Text
+  , configFlagDescription :: Text
   }
   deriving (Eq, Show)
 
 -- | An effective option value and the scope that supplied it.
 data ConfigValue = ConfigValue
-  { configValueText :: !Text
-  , configValueScope :: !SettingScope
+  { configValueText :: Text
+  , configValueScope :: SettingScope
   }
   deriving (Eq, Show)
 
 -- | A copied option descriptor. Native defaults and aliases can be empty.
 data ConfigOption = ConfigOption
-  { configOptionName :: !Text
-  , configOptionDescription :: !Text
-  , configOptionSetting :: !Text
-  , configOptionDefault :: !Text
-  , configOptionScope :: !SettingScope
-  , configOptionScopes :: ![SettingScope]
-  , configOptionAliases :: ![Text]
+  { configOptionName :: Text
+  , configOptionDescription :: Text
+  , configOptionSetting :: Text
+  , configOptionDefault :: Text
+  , configOptionScope :: SettingScope
+  , configOptionScopes :: [SettingScope]
+  , configOptionAliases :: [Text]
   }
   deriving (Eq, Show)
 

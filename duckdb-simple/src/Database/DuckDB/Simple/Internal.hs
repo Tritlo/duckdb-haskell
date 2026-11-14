@@ -7,6 +7,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StrictData #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE UnliftedFFITypes #-}
 
 -- |
 -- Module      : Database.DuckDB.Simple.Internal
@@ -43,6 +44,8 @@ module Database.DuckDB.Simple.Internal (
   storeBoundValue,
   clearBoundValues,
   cleanupStatementStreamRef,
+  finalizeStream,
+  finalizeChunk,
   connectionClosedError,
   statementClosedError,
   mkPrepareError,
@@ -51,6 +54,7 @@ module Database.DuckDB.Simple.Internal (
   withDatabaseHandle,
   withConnectionHandle,
   withConnectionLock,
+  withCallbackMark,
   withResultWindow,
   withTypeCache,
   withStatementHandle,
@@ -71,16 +75,30 @@ module Database.DuckDB.Simple.Internal (
   destroyDataChunk,
 ) where
 
-import Control.Concurrent (MVar, ThreadId, forkIO, myThreadId, newEmptyMVar, newMVar, putMVar, readMVar, threadDelay, tryReadMVar, withMVar)
+import Control.Concurrent (
+  MVar,
+  ThreadId,
+  forkIO,
+  myThreadId,
+  newEmptyMVar,
+  newMVar,
+  putMVar,
+  readMVar,
+  takeMVar,
+  threadDelay,
+  tryReadMVar,
+  tryTakeMVar,
+  withMVar,
+ )
 import Control.Exception (SomeException, bracket, bracket_, catch, finally, mask, mask_, onException, throwIO, try, uninterruptibleMask_)
-import Control.Monad (forM, forM_, join, unless, void, when)
+import Control.Monad (forM, forM_, join, replicateM, unless, void, when)
 import Data.Array (Array, bounds, inRange, listArray, (!))
 import qualified Data.ByteString as BS
 import Data.Coerce (Coercible, coerce)
 import Data.IORef (IORef, atomicModifyIORef', atomicWriteIORef, mkWeakIORef, newIORef, readIORef, writeIORef)
 import qualified Data.IntMap.Strict as IntMap
-import Data.List (find, intercalate, partition)
-import Data.Maybe (fromMaybe)
+import Data.List (dropWhileEnd, find, intercalate, partition)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
@@ -92,15 +110,18 @@ import Database.DuckDB.Simple.TypeCache (TypeCache, createTypeCache, destroyType
 import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (CString)
-import Foreign.C.Types (CChar)
+import Foreign.C.Types (CChar, CULLong (..))
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Array (withArray)
 import Foreign.Ptr (nullPtr)
 import Foreign.Storable (peek, poke)
-import GHC.Exts (keepAlive#)
+import GHC.Conc (ThreadId (ThreadId))
+import GHC.Exts (ThreadId#, keepAlive#)
 import GHC.IO (IO (..))
 import GHC.Weak.Finalize (getFinalizerExceptionHandler)
+import System.IO.Unsafe (unsafePerformIO)
 import System.Mem.Weak (Weak, deRefWeak, finalize)
+import System.Timeout (timeout)
 
 -- | Track child finalizers without retaining live children.
 newtype Children a = Children (IORef [(Weak (IORef a), MVar ())])
@@ -166,9 +187,14 @@ data Connection = Connection
   { connectionState :: IORef ConnectionState
   , connectionInstance :: Instance
   , connectionLock :: MVar ()
-  -- ^ Held while a native result of this connection is open. See 'withConnectionLock'.
+  -- ^ Held while a native result of this connection runs, and for each fetch
+  -- of an explicit stream. A DuckDB callback waits for it at most
+  -- 'connectionLockBound'. See 'withConnectionLock'.
   , connectionWindow :: IORef (Maybe ThreadId)
   -- ^ The helper thread that runs the current result. See 'withResultWindow'.
+  , connectionLockBound :: Maybe Int
+  -- ^ The longest wait in microseconds of a DuckDB callback for
+  -- 'connectionLock'. 'Nothing' sets no bound.
   }
 
 -- | Internal connection state.
@@ -220,6 +246,10 @@ data ResultMode = MaterializedResult | StreamingResult deriving (Eq, Show)
 data StatementStreamColumn = StatementStreamColumn
   { statementStreamColumnIndex :: Int
   , statementStreamColumnName :: Text
+  , statementStreamColumnTree :: IORef (Maybe LogicalTypeRep)
+  -- ^ The type tree of the column, converted from the vector of the first chunk
+  -- that needs it. Each execution makes new columns, so the tree lives for one
+  -- execution.
   }
 
 -- | One owned chunk and the readers that borrow its vectors.
@@ -336,9 +366,10 @@ closeInstanceState ref = mask_ $ joinCleanup ref \case
   InstanceClosed -> (InstanceClosed, pure ())
   InstanceOpen raw children -> (InstanceClosed, cleanupAll [closeChildren children, destroy c_duckdb_v2_instance_destroy raw])
 
--- | Create a connection. The final action releases private convenience parents.
-createConnection :: Instance -> [Text] -> IO () -> IO Connection
-createConnection parent@Instance{instanceState} crss releaseParent = keepAlive parent $ mask_ do
+-- | Create a connection with its CRS names and the bound of a callback that
+-- waits for its lock. The final action releases private convenience parents.
+createConnection :: Instance -> [Text] -> Maybe Int -> IO () -> IO Connection
+createConnection parent@Instance{instanceState} crss callbackLockWait releaseParent = keepAlive parent $ mask_ do
   (rawInstance, children) <-
     readIORef instanceState >>= \case
       InstanceClosed -> throwIO (SQLError "duckdb-simple: instance is closed" Nothing Nothing)
@@ -349,7 +380,7 @@ createConnection parent@Instance{instanceState} crss releaseParent = keepAlive p
     statements <- newChildren
     ref <- newIORef (ConnectionOpen raw cache statements releaseParent)
     registerChild forkFinalizer (\case ConnectionOpen{} -> True; _ -> False) children ref (keepAlive parent (closeConnectionState False ref))
-    Connection ref parent <$> newMVar () <*> newIORef Nothing
+    Connection ref parent <$> newMVar () <*> newIORef Nothing <*> pure callbackLockWait
 
 -- | Close a connection and every prepared statement that belongs to it.
 closeConnection :: Connection -> IO ()
@@ -537,10 +568,110 @@ withConnectionHandle owner@Connection{connectionState} action =
 -- | Serialize the native calls of one result. DuckDB permits one open result
 -- for each connection and rejects a second execution. Hold the lock from the
 -- execution until the result closes, so that threads which share a connection
--- wait for each other. Do not run user callbacks under this lock. The lock is
--- not reentrant.
+-- wait for each other. An explicit stream keeps its result open between
+-- fetches. It holds the lock for its execution and for each fetch. Do not run
+-- user callbacks under this lock. The lock is not reentrant.
+--
+-- DuckDB runs callbacks while a native call holds the lock. A callback that
+-- runs a statement on the same connection thus waits for its own caller. A
+-- thread that 'withCallbackMark' marks waits for the lock at most the bound of
+-- the connection ('connectionLockBound'), and then raises an 'SQLError' of the
+-- type 'ErrorResourceInUse'. Each other thread waits without a bound.
+--
+-- The take of the lock is masked. The timeout of the bound can thus arrive only
+-- while 'takeMVar' blocks, and then the take has not occurred. After the take,
+-- the same handlers as in 'withMVar' put the lock back.
 withConnectionLock :: Connection -> IO a -> IO a
-withConnectionLock Connection{connectionLock} = withMVar connectionLock . const
+withConnectionLock Connection{connectionLock, connectionLockBound} action = do
+  bound <- case connectionLockBound of
+    Nothing -> pure Nothing
+    Just micros -> do
+      inside <- hasCallbackMark
+      pure (if inside then Just micros else Nothing)
+  case bound of
+    Nothing -> withMVar connectionLock (const action)
+    Just micros -> mask \restore -> do
+      -- A free lock needs no timer. 'timeout' with a bound of 0 does not run
+      -- its action, so the bound 0 also takes a free lock.
+      taken <-
+        tryTakeMVar connectionLock >>= \case
+          Just () -> pure True
+          Nothing -> isJust <$> timeout micros (takeMVar connectionLock)
+      unless taken $ throwIO (callbackLockWaitError micros)
+      result <- restore action `onException` putMVar connectionLock ()
+      putMVar connectionLock ()
+      pure result
+
+-- | The error of a callback that waited for a connection lock for its bound.
+callbackLockWaitError :: Int -> SQLError
+callbackLockWaitError micros =
+  SQLError
+    ( Text.pack
+        ( "duckdb-simple: a callback waited "
+            <> seconds
+            <> " s for a connection that runs a statement. A callback must not run a statement on the connection that runs the callback. Use another connection of the same instance, or change connectionCallbackLockWait."
+        )
+    )
+    (Just ErrorResourceInUse)
+    Nothing
+  where
+    (whole, fraction) = micros `quotRem` 1000000
+    digits = dropWhileEnd (== '0') (let text = show fraction in replicate (6 - length text) '0' <> text)
+    seconds = show whole <> (if null digits then "" else '.' : digits)
+
+-- | The threads inside a DuckDB callback, with the number of marks of each
+-- thread. DuckDB calls each callback in a new bound Haskell thread. The key of
+-- a thread is its number ('threadNumber'). The stripe of a thread is its number
+-- modulo the number of stripes. New threads get consecutive numbers, so
+-- callbacks that run at the same time seldom change the same 'IORef'.
+--
+-- The key is not the 'ThreadId'. A 'ThreadId' in the table keeps its thread
+-- reachable. Then the GHC runtime does not raise @BlockedIndefinitelyOnMVar@
+-- in a callback that waits for a value that no thread can supply.
+--
+-- The mark is not a thread label. @threadLabel@ of GHC can make the garbage
+-- collector crash for a thread without a label (GHC issue 27618).
+callbackMarks :: Array Int (IORef (IntMap.IntMap Int))
+callbackMarks =
+  unsafePerformIO (listArray (0, callbackMarkStripes - 1) <$> replicateM callbackMarkStripes (newIORef IntMap.empty))
+{-# NOINLINE callbackMarks #-}
+
+-- | The number of stripes in 'callbackMarks'.
+callbackMarkStripes :: Int
+callbackMarkStripes = 64
+
+-- | The number of a Haskell thread. The GHC runtime gives each thread a
+-- different number. @fromThreadId@ of base gives the same number, but base 4.18
+-- does not have that function.
+foreign import ccall unsafe "rts_getThreadId" threadNumber :: ThreadId# -> CULLong
+
+-- | The stripe of 'callbackMarks' for the current thread, and the key of the
+-- thread in that stripe.
+callbackMarkStripe :: IO (IORef (IntMap.IntMap Int), Int)
+callbackMarkStripe = do
+  ThreadId thread <- myThreadId
+  let key = fromIntegral (threadNumber thread)
+  pure (callbackMarks ! (key `mod` callbackMarkStripes), key)
+
+-- | Mark the current thread as a thread inside a DuckDB callback for the time
+-- of the action. Then 'withConnectionLock' bounds the waits of the thread. The
+-- entry adds 1 to the marks of the thread, and each exit subtracts 1. A thread
+-- that already has the mark thus keeps it after the action. A thread that the
+-- action starts has no mark.
+withCallbackMark :: IO a -> IO a
+withCallbackMark action = mask \restore -> do
+  (stripe, key) <- callbackMarkStripe
+  atomicModifyIORef' stripe \marks -> (IntMap.insertWith (+) key 1 marks, ())
+  restore action `finally` atomicModifyIORef' stripe \marks -> (IntMap.update unmark key marks, ())
+  where
+    unmark :: Int -> Maybe Int
+    unmark count = if count > 1 then Just (count - 1) else Nothing
+
+-- | Tell if 'withCallbackMark' marks the current thread.
+hasCallbackMark :: IO Bool
+hasCallbackMark = do
+  (stripe, key) <- callbackMarkStripe
+  IntMap.member key <$> readIORef stripe
 
 -- | Run the native calls of one result as one unit. Hold the connection lock,
 -- and run the calls in one helper thread. Each interruptible native call uses a
@@ -706,10 +837,20 @@ cleanupStatementStreamRef :: IORef StatementStreamState -> IO ()
 cleanupStatementStreamRef ref = mask_ do
   state <- atomicModifyIORef' ref (StatementStreamIdle,)
   case state of
-    StatementStreamActive StatementStream{statementStreamResult, statementStreamPendingChunks, statementStreamChunk} ->
-      maybe (pure ()) (destroyDataChunk . statementStreamChunkPtr) statementStreamChunk
-        `finally` (mapM_ destroyDataChunk statementStreamPendingChunks `finally` destroy c_duckdb_v2_result_destroy statementStreamResult)
+    StatementStreamActive stream -> finalizeStream stream
     _ -> pure ()
+
+-- | Release the native state of a stream in this order: the current chunk, the
+-- pending chunks, and the result. Each release runs also when an earlier
+-- release raises an error.
+finalizeStream :: StatementStream -> IO ()
+finalizeStream StatementStream{statementStreamResult, statementStreamChunk, statementStreamPendingChunks} =
+  maybe (pure ()) finalizeChunk statementStreamChunk
+    `finally` (releaseItems destroyDataChunk statementStreamPendingChunks `finally` destroy c_duckdb_v2_result_destroy statementStreamResult)
+
+-- | Release the native chunk of a stream chunk.
+finalizeChunk :: StatementStreamChunk -> IO ()
+finalizeChunk StatementStreamChunk{statementStreamChunkPtr} = destroyDataChunk statementStreamChunkPtr
 
 -- | Transfer ownership of one successfully constructed parameter value.
 storeBoundValue :: Statement -> DuckDBIdx -> DuckDBV2ValueHandle -> IO ()
@@ -723,7 +864,7 @@ storeBoundValue stmt index value = withStatementHandle stmt \_ -> mask_ do
 
 -- | Release all owned parameter values.
 clearBoundValues :: IORef (IntMap.IntMap DuckDBV2ValueHandle) -> IO ()
-clearBoundValues ref = atomicModifyIORef' ref (IntMap.empty,) >>= mapM_ destroyValue
+clearBoundValues ref = atomicModifyIORef' ref (IntMap.empty,) >>= releaseItems destroyValue . IntMap.elems
 
 -- | Bind SQL metadata and borrow the cached output and parameter schemas.
 -- The handles remain valid until the statement resets, rebinds, or closes.

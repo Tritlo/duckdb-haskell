@@ -1,5 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE MagicHash #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TypeApplications #-}
 
@@ -13,6 +14,8 @@ module Database.DuckDB.Simple.Element (
   chunkIsRowValid,
   decodeElement,
   duckDBHugeIntToInteger,
+  timeTzMaxOffsetSeconds,
+  timeTzOffsetBits,
   vectorElementType,
   withVectorType,
 ) where
@@ -44,25 +47,36 @@ import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Alloc (alloca, allocaBytes)
 import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.Storable (Storable (..), peekElemOff)
+import GHC.Exts (Ptr (..), Word (W#))
+import GHC.Num.Integer (integerFromAddr)
 import GHC.Records (getField)
 
--- | Read a validity bit. A null mask means that every row is valid.
+-- | Read a validity bit of a mask from @duckdb_v2_vector_get_view@. Each
+-- @uint64_t@ word covers 64 rows: bit N of word W is row W*64+N, and a set bit
+-- means valid. The header gives this layout in the comment of
+-- @duckdb_v2_vector_flat_get_validity_mutable@. The V2 API has no call that
+-- reads the validity of one row, so this function reads the mask memory. The
+-- header does not say what a null mask pointer means. In DuckDB 2.0.0 a null
+-- pointer means that the vector has no mask, and then every row is valid.
 chunkIsRowValid :: Ptr Word64 -> DuckDBIdx -> IO Bool
 chunkIsRowValid validity row
   | validity == nullPtr = pure True
   | otherwise = (\word -> testBit word (fromIntegral (row `rem` 64))) <$> peekElemOff validity (fromIntegral (row `div` 64))
 
--- | Copy one generated V2 byte value, including interior NUL bytes.
+-- | Copy one generated V2 byte value, including interior NUL bytes. The header
+-- type @duckdb_v2_bytes@ holds the bytes inline when the length is at most
+-- @DUCKDB_V2_BYTES_INLINE_LENGTH@, and behind its pointer otherwise.
 chunkDecodeBlob :: Ptr Void -> DuckDBIdx -> IO BS.ByteString
 chunkDecodeBlob dataPtr row = do
+  -- Read each field through its generated field pointer. A getField on the
+  -- union value calls the bindings package. That call copies the union.
   let ptr = castPtr dataPtr `plusPtr` (fromIntegral row * sizeOf (undefined :: DuckDBV2Bytes)) :: Ptr DuckDBV2Bytes
-  bytes <- peek ptr
-  let payload = getField @"value" bytes
-      len = getField @"length" (getField @"inlined" payload)
-      source =
-        if len <= 12
-          then coerce (getField @"inlined" (getField @"inlined" (getField @"value" ptr)))
-          else getField @"ptr" (getField @"pointer" payload)
+      value = getField @"value" ptr
+  len <- peek (getField @"length" (getField @"inlined" value))
+  source <-
+    if len <= fromIntegral dUCKDB_V2_BYTES_INLINE_LENGTH
+      then pure (coerce (getField @"inlined" (getField @"inlined" value)))
+      else peek (getField @"ptr" (getField @"pointer" value))
   if len == 0 then pure BS.empty else BS.packCStringLen (source, fromIntegral len)
 
 -- | Decode DuckDB's BIT bytes: a padding count, then the data bytes. Clear the
@@ -163,13 +177,30 @@ decodeTimeUnits units value =
 decodeDuckDBTimeNs :: Int64 -> TimeOfDay
 decodeDuckDBTimeNs = decodeTimeUnits 1000000000
 
+-- | The largest UTC offset of a TIMETZ value in seconds: 15:59:59. DuckDB 2.0.0
+-- defines it as @dtime_tz_t::MAX_OFFSET@ in
+-- @src/include/duckdb/common/types/datetime.hpp@. The low 24 bits of a TIMETZ
+-- value hold this maximum minus the offset (@encode_offset@ and
+-- @decode_offset@ in that file). The V2 header says only "micros in the high
+-- 40 bits, a biased offset in the low 24" (the comment of
+-- @duckdb_v2_value_get_time_tz@). The header does not give the value of the
+-- bias.
+timeTzMaxOffsetSeconds :: Int
+timeTzMaxOffsetSeconds = 16 * 60 * 60 - 1
+
+-- | The number of low bits of a TIMETZ value that hold the biased offset. The
+-- high 40 bits hold the time of day in microseconds. DuckDB 2.0.0 names the two
+-- widths @dtime_tz_t::OFFSET_BITS@ and @dtime_tz_t::TIME_BITS@.
+timeTzOffsetBits :: Int
+timeTzOffsetBits = 24
+
 decodeDuckDBTimeTz :: Word64 -> IO TimeWithZone
 decodeDuckDBTimeTz raw = do
-  let offset = 57599 - fromIntegral (raw .&. 0xFFFFFF) :: Int
+  let offset = timeTzMaxOffsetSeconds - fromIntegral (raw .&. (1 `shiftL` timeTzOffsetBits - 1)) :: Int
   when (offset `rem` 60 /= 0) $ throwIO (userError "duckdb-simple: TIMETZ offset cannot be represented in whole minutes")
   pure
     TimeWithZone
-      { timeWithZoneTime = decodeTimeUnits 1000000 (fromIntegral (raw `shiftR` 24))
+      { timeWithZoneTime = decodeTimeUnits 1000000 (fromIntegral (raw `shiftR` timeTzOffsetBits))
       , timeWithZoneZone = minutesToTimeZone (offset `div` 60)
       }
 
@@ -204,10 +235,9 @@ decodeBigNum bytes = BS.useAsCStringLen bytes \(raw, len) -> alloca \lengthSlot 
   let decode ptr capacity = checked (c_duckdb_v2_bignum_decode (ConstPtr (castPtr raw)) (fromIntegral len) ptr capacity lengthSlot signSlot)
       finish magnitude = do
         count <- peek lengthSlot
-        digits <- BS.packCStringLen (castPtr magnitude, fromIntegral count)
         negative <- peek signSlot
-        let value = BS.foldl' (\acc byte -> acc * 256 + fromIntegral byte) 0 digits
-        pure (if negative == 0 then value else negate value)
+        value <- bigEndianInteger magnitude count
+        pure $! if negative == 0 then value else negate value
   -- A buffer of the storage size usually holds the magnitude. If the buffer is
   -- too short, DuckDB gives the required size, and a second call decodes the value.
   allocaBytes len \first -> do
@@ -219,3 +249,7 @@ decodeBigNum bytes = BS.useAsCStringLen bytes \(raw, len) -> alloca \lengthSlot 
             count <- peek lengthSlot
             allocaBytes (fromIntegral count) \magnitude -> decode magnitude count >> finish magnitude
         | otherwise -> throwIO err
+
+-- | Read an unsigned big-endian magnitude in linear time.
+bigEndianInteger :: Ptr Word8 -> DuckDBIdx -> IO Integer
+bigEndianInteger (Ptr addr) count = case fromIntegral count of W# size -> integerFromAddr size addr 1#

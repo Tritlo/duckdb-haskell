@@ -88,8 +88,9 @@ The pinned V2 API does not expose custom file-system registration or
 collation lookup. Fixed ARRAY types with zero elements are
 not supported by this native API. Empty LIST values remain supported.
 Prepared dynamic PIVOT supports repeated execution with a changing schema. It
-does not support parameters or a cacheable plan. VARIANT decoding and configured
-GEOMETRY CRS names use SQL metadata and native casts on a helper connection.
+does not support parameters or a cacheable plan. VARIANT decoding uses SQL
+metadata and native casts on a helper connection. A configured custom GEOMETRY
+CRS name uses one SQL query when the connection opens.
 GEOMETRY results use a native cast to BLOB.
 Native GEOMETRY collections require the same Z/M dimensions on every member,
 including empty members. The standalone WKB codec retains mixed layouts.
@@ -392,14 +393,17 @@ in the application:
 
 - A transaction. Statements of other threads run inside it.
 - One `Statement` that two threads use.
-- An explicit stream from `Database.DuckDB.Simple.Streaming`. Its result stays
-  open between calls, and another query on that connection fails until the
-  stream is complete or closed.
+- An explicit stream from `Database.DuckDB.Simple.Streaming`. Each fetch of
+  the stream holds the lock, but its result stays open between calls, and
+  another query on that connection fails until the stream is complete or
+  closed.
 - `close`. Wait for all operations on the connection before you close it.
 
 A callback must not execute another query on its active connection or close
 that connection. With the default API, such a query waits for the lock of the
-active query and does not return.
+active query. After the bound of `connectionCallbackLockWait` (10 seconds by
+default), it raises an `SQLError`. See
+[User-Defined Functions](#user-defined-functions) for the rule and its limits.
 
 Link your executable with `ghc-options: -threaded` to allow prompt cancellation
 of native queries, including Ctrl-C. On cancellation, the library interrupts
@@ -556,9 +560,9 @@ also raises an error because DuckDB treats its STRUCT type as a tuple.
 DuckDB 2.0 permits an empty key with other named keys. You can also bind a plain
 value and cast it in SQL, as in `?::VARIANT`.
 
-The library uses a separate helper connection for configured GEOMETRY types
-and VARIANT decoder metadata. It caches the GEOMETRY types, the parsed VARIANT
-metadata statement, and the types for VARIANT casts. It batches VARIANT
+The library uses a separate helper connection for VARIANT decoder metadata.
+It caches the parsed VARIANT metadata statement and the types for VARIANT
+casts. It batches VARIANT
 metadata queries. It constructs VARIANT types directly through the native
 factory. This preserves an active stream on the caller's connection. Low-level
 `ToDuckValue.toDuckValue` takes a `ValueFactory`, which is the V2 factory
@@ -653,8 +657,12 @@ including inside LIST, ARRAY, MAP, STRUCT, and UNION values.
 `LogicalTypeGeometry` describes CRS metadata. Composite parameters retain CRS
 metadata for typed NULLs, empty collections, and inactive UNION members.
 Set `connectionGeometryCRS` in `ConnectionOptions` to preserve arbitrary custom
-CRS names in these parameters. The list defaults to `OGC:CRS84`. The library
-reads the configured types through SQL on a helper connection and caches them.
+CRS names in these parameters. The list defaults to `OGC:CRS84`. When a
+connection opens, DuckDB constructs a recognized name, such as `OGC:CRS84`, and
+a complete definition directly. For each other name, the library reads the
+type through SQL on the new connection. The connection caches each type, and a
+bind copies it. A name that DuckDB drops, for example a blank name, fails the
+open.
 
 CRS definitions outside the configured list use direct V2 type construction.
 This requires a recognized identifier or a complete WKT2/PROJJSON definition.
@@ -732,10 +740,38 @@ example with `-Wno-error=deprecations`.
 A callback must not run a statement on the connection that runs the callback.
 Use another connection of the same instance. This rule applies to each
 registered callback, for example of a scalar function, a cast, an aggregate
-function, a table function, a COPY format, a replacement scan, or a pragma.
-`query`, `execute`, the default folds, and statement preparation hold the lock
-of the connection while DuckDB runs these callbacks. The lock is not
-reentrant, so a statement in the callback waits and does not return.
+function, a table function, a COPY format, a replacement scan, a pragma, or a
+log sink. `query`, `execute`, the default folds, statement preparation, and
+each fetch of an explicit stream hold the lock of the connection while DuckDB
+runs these callbacks. The lock is not reentrant, so a statement in the callback
+waits for the lock. With more than one DuckDB thread, DuckDB can also run a
+callback of an explicit stream between two fetches, while no fetch holds the
+lock. Then a statement in the callback on the same connection fails at once
+with the `ErrorResourceInUse` error of DuckDB, because the stream has an open
+result.
+
+That wait has a bound. `connectionCallbackLockWait` in `ConnectionOptions`
+sets it in microseconds. The default is `defaultCallbackLockWait`, 10 seconds,
+and `Nothing` sets no bound. When the bound ends, the statement in the callback
+raises an `SQLError` of the type `ErrorResourceInUse`, and its text gives the
+rule. If the callback does not catch the error, DuckDB fails the outer
+statement with the text of that error, and the connection can run the next
+statement. DuckDB ignores the error of a log sink. The bound applies to each wait of a
+callback for the lock of a connection. It applies also to another connection
+that a different statement uses. If callbacks share a connection that runs slow
+statements, set a larger bound or `Nothing` for that connection.
+
+In these cases the bound does not apply, and a statement in the callback can
+wait and not return:
+
+- DuckDB runs the callback during a call that does not hold the lock of the
+  connection, for example a log sink for a message of `logConnectionMessage`.
+  Then the statement goes into DuckDB on the same connection.
+- The statement runs in a thread that the callback starts. The library marks
+  only the thread of the callback.
+- The statement runs inside `uninterruptibleMask`.
+- The statement runs in the flush function of a log sink when DuckDB destroys
+  the sink.
 
 A callback that refers to a connection keeps that connection and its instance
 reachable while DuckDB keeps the callback, possibly until the database closes.

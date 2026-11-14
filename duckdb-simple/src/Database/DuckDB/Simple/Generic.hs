@@ -36,9 +36,8 @@
 -- > data User = User { userId :: Int64, userName :: Text }
 -- >   deriving stock (Generic)
 -- >
--- > instance DuckValue User
--- >
--- > toField (genericToFieldValue user) -- Struct {"userId" := ..., ...}
+-- > genericToFieldValue (User 1 "alice")
+-- > -- A FieldStruct with the fields userId = FieldInt64 1 and userName = FieldText "alice".
 --
 -- For sum types:
 --
@@ -47,11 +46,10 @@
 -- >   | Rectangle Double Double
 -- >   | Origin
 -- >   deriving stock (Generic)
--- >
--- > instance DuckValue Shape
 --
--- Constructors are turned into a union with members @Circle{radius}@,
--- @Rectangle{width,height}@, and @Origin@ (null payload).
+-- Constructors are turned into a union with the members @Circle@ (a STRUCT with
+-- the field @field1@), @Rectangle@ (a STRUCT with the fields @field1@ and
+-- @field2@), and @Origin@ (a NULL payload).
 --
 -- You can also lean on @DerivingVia@ using the exported @ViaDuckDB@ newtype:
 --
@@ -185,10 +183,14 @@ instance DuckValue Int64 where
   duckToField = FieldInt64
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdBigInt
 
+-- | A field of a generic record has the type HUGEINT. A value outside that range
+-- raises an error. A top-level parameter of this type is BIGNUM.
 instance DuckValue Integer where
   duckToField = FieldHugeInt
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdHugeInt
 
+-- | A field of a generic record has the type UHUGEINT. A value outside that range
+-- raises an error. A top-level parameter of this type is BIGNUM.
 instance DuckValue Natural where
   duckToField = FieldUHugeInt . toInteger
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdUHugeInt
@@ -288,17 +290,16 @@ instance (DuckValue a) => DuckValue [a] where
   duckFromField (FieldList fvs) = traverse duckFromField fvs
   duckFromField other = Left ("duckdb-simple: expected LIST, got " <> show other)
 
--- | Array values encode as DuckDB ARRAY (fixed-length).
--- Note: Arrays must have consistent bounds to work correctly with DuckDB.
+-- | Array values encode as DuckDB ARRAY values. A type has no size, so the
+-- instance declares the size 0. A generic record with an Array field can be
+-- read. It cannot be bound: a value with elements has a size other than 0, and
+-- DuckDB rejects an ARRAY without elements.
 instance (DuckValue a) => DuckValue (Array Int a) where
   duckToField arr =
     let values = elems arr
         (low, high) = (0, length values - 1)
     in  FieldArray (listArray (low, high) (map duckToField values))
-  duckLogicalType _ =
-    -- We can't determine array size at the type level, so this is approximate.
-    -- The actual size will be determined at runtime from the array bounds.
-    LogicalTypeArray (duckLogicalType (Proxy :: Proxy a)) 0
+  duckLogicalType _ = LogicalTypeArray (duckLogicalType (Proxy :: Proxy a)) 0
   duckFromField (FieldArray arr) = do
     let values = elems arr
     decoded <- traverse duckFromField values
@@ -360,15 +361,18 @@ genericToStructValue :: forall a. (Generic a, GToField (Rep a)) => a -> Maybe (S
 genericToStructValue value =
   case gToField (from value) of
     EncodedStruct sv _ -> Just sv
-    EncodedNull -> Just emptyStruct
+    EncodedNull -> Just emptyStructValue
     _ -> Nothing
-  where
-    emptyStruct =
-      StructValue
-        { structValueFields = listArray (0, -1) []
-        , structValueTypes = listArray (0, -1) []
-        , structValueIndex = Map.empty
-        }
+
+-- | The STRUCT value without fields. It is the value of a product type with no
+-- fields, which the generic encoding gives as 'EncodedNull'.
+emptyStructValue :: StructValue FieldValue
+emptyStructValue =
+  StructValue
+    { structValueFields = listArray (0, -1) []
+    , structValueTypes = listArray (0, -1) []
+    , structValueIndex = Map.empty
+    }
 
 -- | Extract a UNION-shaped generic encoding directly when one is produced.
 genericToUnionValue :: forall a. (Generic a, GToField (Rep a)) => a -> Maybe (UnionValue FieldValue)
@@ -466,10 +470,9 @@ data FieldComponent a = FieldComponent
   , fcValue :: a
   }
 
-resolveNames :: [(Int, Maybe Text)] -> [Text]
-
 -- | Assign canonical names to struct fields.  We preserve any selector names
 -- provided by GHC.Generics and fall back to @fieldN@ for positional products.
+resolveNames :: [(Int, Maybe Text)] -> [Text]
 resolveNames =
   map pick
   where
@@ -696,22 +699,14 @@ instance (Generic a, GToField (Rep a)) => DuckDBColumnType (ViaDuckDB a) where
       LogicalTypeGeometry{} -> Text.pack "GEOMETRY"
       LogicalTypeCollatedVarchar{} -> Text.pack "VARCHAR"
 
--- | Deriving-via @ToField@ instance. We reuse the helpers above to decide
--- whether the top-level representation is a union, struct, or scalar and then
--- delegate to the existing @ToField@ instances for those composite types.
+-- | Deriving-via @ToField@ instance. A sum type binds as a UNION and a product
+-- type as a STRUCT, through the @ToField@ instances of those values. A product
+-- type with no fields binds as a STRUCT without fields.
 instance (Generic a, GToField (Rep a)) => ToField (ViaDuckDB a) where
-  toField (ViaDuckDB x) =
-    case genericToUnionValue x of
-      Just unionVal -> toField unionVal
-      Nothing ->
-        case genericToStructValue x of
-          Just structVal -> toField structVal
-          Nothing ->
-            case genericToFieldValue x of
-              FieldUnion uv -> toField uv
-              FieldStruct sv -> toField sv
-              FieldNull -> toField (Nothing :: Maybe Int)
-              other -> error ("duckdb-simple: unsupported generic encoding " <> show other)
+  toField (ViaDuckDB x) = case gToField (from x) of
+    EncodedUnion unionVal -> toField unionVal
+    EncodedStruct structVal _ -> toField structVal
+    EncodedNull -> toField emptyStructValue
 
 -- | Deriving-via @FromField@ instance. Errors are rewrapped using the existing
 -- @returnError@ helper so callers receive a proper @ResultError@.

@@ -5,6 +5,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StrictData #-}
 {-# LANGUAGE UndecidableInstances #-}
 
 -- |
@@ -53,7 +54,7 @@ import Database.DuckDB.Simple.FromField (
   Field (..),
   FromField (..),
  )
-import Database.DuckDB.Simple.Materialize (prepareVectorReader)
+import Database.DuckDB.Simple.Materialize (FallbackReaders (..), prepareVectorReader, rejectRows)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.Typed (conversionMessage)
@@ -67,8 +68,8 @@ import GHC.Float (float2Double)
 import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
 
 data ScalarFunctionResources = ScalarFunctionResources
-  { scalarFunctionExecPtr :: !DuckDBV2ScalarFunctionExecCallbackFn
-  , scalarFunctionInitPtr :: !(Maybe DuckDBV2ScalarFunctionInitCallbackFn)
+  { scalarFunctionExecPtr :: DuckDBV2ScalarFunctionExecCallbackFn
+  , scalarFunctionInitPtr :: Maybe DuckDBV2ScalarFunctionInitCallbackFn
   }
 
 -- | Tag DuckDB logical types we support for scalar return values.
@@ -82,11 +83,11 @@ data ScalarType
 -- | Runtime representation of values returned to DuckDB.
 data ScalarValue
   = ScalarNull
-  | ScalarBoolean !Bool
-  | ScalarInteger !Int64
-  | ScalarUnsigned !Word64
-  | ScalarDouble !Double
-  | ScalarText !Text
+  | ScalarBoolean Bool
+  | ScalarInteger Int64
+  | ScalarUnsigned Word64
+  | ScalarDouble Double
+  | ScalarText Text
 
 -- | Class of scalar results that can be produced by user-defined functions.
 class FunctionResult a where
@@ -340,10 +341,12 @@ type ColumnReader = Int -> IO Field
 
 makeColumnReader :: DuckDBV2ScalarFunctionExecInfoHandle -> Int -> IO ColumnReader
 makeColumnReader info columnIndex = do
+  let unsupported =
+        rejectRows
+          (throwIO (functionInvocationError "duckdb-simple: the type of a scalar function argument cannot be or contain VARIANT or GEOMETRY"))
   readValue <-
     output (c_duckdb_v2_scalar_function_exec_get_arg info (fromIntegral columnIndex))
-      >>= prepareVectorReader
-        (\_ -> throwIO (functionInvocationError "duckdb-simple: the type of a scalar function argument cannot be or contain VARIANT or GEOMETRY"))
+      >>= prepareVectorReader (FallbackReaders unsupported unsupported)
   let name = Text.pack ("arg" <> show columnIndex)
   pure \rowIdx -> do
     value <- readValue rowIdx
@@ -411,9 +414,10 @@ prepareResultWriter resultType vector = do
   pure (writeScalarValue writeText dataPtr validityPtr resultType)
 
 -- | Write a VARCHAR value at a row of a flat vector without a factory. The
--- 16-byte slot has the byte length at byte 0. A value of at most 12 bytes follows
--- the length. A longer value goes to the arena of the vector. The slot then holds
--- the first 4 bytes of the value at byte 4 and the address of the value at byte 8.
+-- 16-byte slot has the byte length at byte 0. A value of at most
+-- @DUCKDB_V2_BYTES_INLINE_LENGTH@ (12) bytes follows the length. A longer
+-- value goes to the arena of the vector. The slot then holds the first 4 bytes
+-- of the value at byte 4 and the address of the value at byte 8.
 writeArenaText :: DuckDBV2VectorHandle -> Ptr Void -> Int -> Text -> IO ()
 writeArenaText vector dataPtr idx txt = do
   let len = TextForeign.lengthWord8 txt
@@ -424,7 +428,7 @@ writeArenaText vector dataPtr idx txt = do
   -- DuckDB compares the unused inline bytes. They must be zero.
   fillBytes slot 0 size
   pokeByteOff slot 0 (fromIntegral len :: Word32)
-  if len <= 12
+  if len <= fromIntegral dUCKDB_V2_BYTES_INLINE_LENGTH
     then TextForeign.unsafeCopyToPtr txt (slot `plusPtr` 4)
     else do
       arena <- output (c_duckdb_v2_vector_get_arena vector)

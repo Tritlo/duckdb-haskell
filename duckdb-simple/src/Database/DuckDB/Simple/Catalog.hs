@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE StrictData #-}
 
 -- |
 -- Module      : Database.DuckDB.Simple.Catalog
@@ -30,25 +31,25 @@ data CatalogEntryType = CatalogTable | CatalogView | CatalogIndex | CatalogSeque
 
 -- | A copied catalog entry name and kind.
 data CatalogEntry = CatalogEntry
-  { catalogEntryName :: !Text
-  , catalogEntryType :: !CatalogEntryType
+  { catalogEntryName :: Text
+  , catalogEntryType :: CatalogEntryType
   }
   deriving (Eq, Show)
 
 -- | A table's qualified name, access mode, and columns.
 data TableDescription = TableDescription
-  { tableDescriptionName :: ![Text]
-  , tableDescriptionReadonly :: !Bool
-  , tableDescriptionColumns :: ![ColumnDescription]
+  { tableDescriptionName :: [Text]
+  , tableDescriptionReadonly :: Bool
+  , tableDescriptionColumns :: [ColumnDescription]
   }
   deriving (Eq, Show)
 
 -- | A copied column description. Native handles remain inside the call.
 data ColumnDescription = ColumnDescription
-  { columnDescriptionName :: !Text
-  , columnDescriptionType :: !LogicalTypeRep
-  , columnDescriptionHasDefault :: !Bool
-  , columnDescriptionGenerated :: !Bool
+  { columnDescriptionName :: Text
+  , columnDescriptionType :: LogicalTypeRep
+  , columnDescriptionHasDefault :: Bool
+  , columnDescriptionGenerated :: Bool
   }
   deriving (Eq, Show)
 

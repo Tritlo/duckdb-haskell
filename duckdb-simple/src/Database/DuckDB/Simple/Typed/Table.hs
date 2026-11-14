@@ -21,9 +21,9 @@ import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.Callback (attachOpaque, readCallbackState, transferCallbackState)
-import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..))
+import Database.DuckDB.Simple.FromField (Field (..))
 import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow)
-import Database.DuckDB.Simple.Materialize (materializeValue)
+import Database.DuckDB.Simple.Materialize (materializeValue, rejectRows)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.Typed (ColumnValue (..), TypedRow (..), argumentName, conversionMessage)
@@ -136,17 +136,15 @@ splitRows = go []
     go taken limit (row : rest) = go (row : taken) (limit - 1) rest
 
 -- | Read the constant arguments of one call and convert them with 'FromRow'.
--- A NULL argument is 'FieldNull'. An argument that does not convert raises an
+-- A NULL argument is @FieldNull@. An argument that does not convert raises an
 -- error that names the table function.
 readArguments :: (FromRow params) => Text -> Int -> DuckDBV2FactoryHandle -> DuckDBV2FunctionBindInfoHandle -> IO params
 readArguments name count factory input = do
   fields <- forM (take count [0 ..]) \index ->
-    bracket (output (c_duckdb_v2_function_bind_get_arg_value input (fromIntegral index))) destroyValue \value -> do
-      isNull <- output (c_duckdb_v2_value_is_null value)
-      Field (argumentName index) index
-        <$> if isNull /= 0 then pure FieldNull else materializeValue unexpectedVariant factory value
+    bracket (output (c_duckdb_v2_function_bind_get_arg_value input (fromIntegral index))) destroyValue \value ->
+      Field (argumentName index) index <$> materializeValue unexpectedVariant factory value
   case parseRow fromRow fields of
     Ok params -> pure params
     Errors failures -> throwIO (userError ("duckdb-simple: " <> Text.unpack name <> ": " <> conversionMessage failures))
   where
-    unexpectedVariant _ = pure \_ -> throwIO (userError "duckdb-simple: the type of a table function argument cannot be or contain VARIANT")
+    unexpectedVariant = rejectRows (throwIO (userError "duckdb-simple: the type of a table function argument cannot be or contain VARIANT"))

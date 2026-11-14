@@ -3,6 +3,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StrictData #-}
 
 -- |
 -- Module      : Database.DuckDB.Simple.VariantCodec
@@ -33,18 +34,21 @@ import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (withArray)
 import Foreign.Ptr (nullPtr)
 
--- | Native objects that the VARIANT decoder keeps for one helper connection:
--- the parsed metadata statement and the types for casts and VARIANT lists. The
--- owner destroys them with 'destroyVariantState' before it destroys the
--- connection. Use the state from one thread at a time.
+-- | The helper connection of the VARIANT decoder, and the native objects that
+-- the decoder keeps for it: the parsed metadata statement and the types for
+-- casts and VARIANT lists. The state borrows the connection. The owner destroys
+-- the state with 'destroyVariantState' before it destroys the connection. Use
+-- the state from one thread at a time.
 data VariantState = VariantState
-  { variantStatement :: !(IORef (Maybe DuckDBV2SqlStatementHandle))
-  , variantTypes :: !CastTypes
+  { variantConnection :: DuckDBV2ConnectionHandle
+  , variantStatement :: IORef (Maybe DuckDBV2SqlStatementHandle)
+  , variantTypes :: CastTypes
   }
 
--- | Make an empty state. This allocates no native object.
-newVariantState :: IO VariantState
-newVariantState = VariantState <$> newIORef Nothing <*> newIORef Map.empty
+-- | Make an empty state for a helper connection. This allocates no native
+-- object.
+newVariantState :: DuckDBV2ConnectionHandle -> IO VariantState
+newVariantState connection = VariantState connection <$> newIORef Nothing <*> newIORef Map.empty
 
 -- | Destroy the statement and every cached type. Release every item even if
 -- one destructor fails, and raise the first error after the last release. The
@@ -57,43 +61,42 @@ destroyVariantState VariantState{variantStatement, variantTypes} = mask_ do
   writeIORef variantTypes Map.empty
   releaseItems id (map (destroy c_duckdb_v2_sql_statement_destroy) (maybe [] pure statement) <> map destroyLogicalType (Map.elems types))
 
--- | Copy a vector before returning its row reader. The connection is a dedicated
--- metadata connection. It must remain exclusively borrowed until this function
--- returns. The state belongs to that connection. The callback decodes a value
--- that contains no VARIANT.
+-- | Copy a vector before returning its row reader. The connection of the state
+-- is a dedicated metadata connection. It must remain exclusively borrowed until
+-- this function returns. The callback decodes a value that contains no VARIANT.
 -- Each level batches type and key metadata. Scalars with the same tag share
 -- one native cast. Objects with the same keys share one native STRUCT cast. If a
 -- key cannot be a STRUCT field name, the objects share one extraction query. That
--- query binds the keys as values, so empty and NUL keys stay exact.
+-- query binds the keys as values, so empty and NUL keys stay exact. Each array
+-- gets its own cast to a VARIANT list.
 prepareVariantDecoder
   :: (DuckDBV2ConnectionHandle -> DuckDBV2ValueHandle -> IO FieldValue)
-  -> DuckDBV2ConnectionHandle
   -> VariantState
   -> DuckDBV2VectorHandle
   -> IO (Int -> IO FieldValue)
-prepareVariantDecoder plain connection state vector = do
+prepareVariantDecoder plain state vector = do
   count <- output (c_duckdb_v2_vector_get_size vector)
   bracket (acquireItems destroyValue [output (c_duckdb_v2_vector_get_value vector i) | i <- indices count]) (releaseItems destroyValue) \values -> do
-    decoded <- decodeValues plain connection state values
+    decoded <- decodeValues plain state values
     let rows = listArray (0, length decoded - 1) decoded
+    -- Give the element, not a thunk that keeps the array alive.
     pure (evaluate . (rows !))
 
 -- | A decoded node owns the child values needed at the next nesting level.
 data VariantNode
-  = ScalarNode !FieldValue
-  | ListNode ![DuckDBV2ValueHandle]
-  | ObjectNode ![(Text, DuckDBV2ValueHandle)]
+  = ScalarNode FieldValue
+  | ListNode [DuckDBV2ValueHandle]
+  | ObjectNode [(Text, DuckDBV2ValueHandle)]
 
 -- | Decode all siblings together before reconstructing their parent nodes.
 decodeValues
   :: (DuckDBV2ConnectionHandle -> DuckDBV2ValueHandle -> IO FieldValue)
-  -> DuckDBV2ConnectionHandle
   -> VariantState
   -> [DuckDBV2ValueHandle]
   -> IO [FieldValue]
-decodeValues _ _ _ [] = pure []
-decodeValues plain connection state values = do
-  metadata <- queryMetadata plain connection state values
+decodeValues _ _ [] = pure []
+decodeValues plain state values = do
+  metadata <- queryMetadata plain state values
   unless (length metadata == length values) (codecError "metadata query returned an unexpected number of nodes")
   let indexed = zip3 [0 ..] metadata values
       grouped key select = Map.toList (Map.fromListWith (++) [(key node, [(index, value)]) | (index, node@(tag, _), value) <- indexed, select tag])
@@ -105,21 +108,21 @@ decodeValues plain connection state values = do
     (releaseItems releaseIndexed)
     \arrays ->
       bracket
-        (acquireItems (releaseItems releaseIndexed) [queryObjectGroup connection castTypes keys rows | (keys, rows) <- grouped snd isObject])
+        (acquireItems (releaseItems releaseIndexed) [queryObjectGroup state keys rows | (keys, rows) <- grouped snd isObject])
         (releaseItems (releaseItems releaseIndexed))
         \objectGroups -> do
           let indexedNodes = IntMap.fromList (nulls <> concat scalars <> arrays <> concat objectGroups)
           nodes <- forM [0 .. length values - 1] \index ->
             maybe (codecError "object extraction omitted a node") pure (IntMap.lookup index indexedNodes)
-          children <- decodeValues plain connection state (concatMap nodeChildren nodes)
+          children <- decodeValues plain state (concatMap nodeChildren nodes)
           assemble nodes children
   where
-    castTypes = variantTypes state
+    connection = variantConnection state
     isNull = (== "VARIANT_NULL")
     isArray = Text.isPrefixOf "ARRAY("
     isObject = Text.isPrefixOf "OBJECT("
     decodeArray value =
-      withCast connection castTypes value "VARIANT[]" \list -> do
+      withCast state value "VARIANT[]" \list -> do
         count <- output (c_duckdb_v2_value_get_child_count list)
         ListNode <$> acquireItems destroyValue [output (c_duckdb_v2_value_get_child list i) | i <- indices count]
     -- Cast the scalars of one tag as one list. The cast keeps the exact type.
@@ -127,12 +130,12 @@ decodeValues plain connection state values = do
     decodeScalars tag rows = do
       target <- scalarType tag
       case rows of
-        [(index, value)] -> withCast connection castTypes value target \cast -> do
+        [(index, value)] -> withCast state value target \cast -> do
           decoded <- plain connection cast
           pure [(index, ScalarNode decoded)]
         _ ->
-          withVariantList connection castTypes (map snd rows) \list ->
-            withCast connection castTypes list (target <> "[]") \cast ->
+          withVariantList state (map snd rows) \list ->
+            withCast state list (target <> "[]") \cast ->
               plain connection cast >>= \case
                 FieldList decoded | length decoded == length rows -> pure (zip (map fst rows) (map ScalarNode decoded))
                 _ -> codecError "scalar cast returned an unexpected value"
@@ -141,11 +144,11 @@ decodeValues plain connection state values = do
 -- one extraction query extracts the children of all objects. Each object gets one
 -- child for each key, in key order. Check the object count and the child count of
 -- each object.
-queryObjectGroup :: DuckDBV2ConnectionHandle -> CastTypes -> [Text] -> [(Int, DuckDBV2ValueHandle)] -> IO [(Int, VariantNode)]
-queryObjectGroup _ _ [] rows = pure [(index, ObjectNode []) | (index, _) <- rows]
-queryObjectGroup connection castTypes keys rows =
-  withVariantList connection castTypes (map snd rows) \list ->
-    withObjectChildren connection keys list \objects -> do
+queryObjectGroup :: VariantState -> [Text] -> [(Int, DuckDBV2ValueHandle)] -> IO [(Int, VariantNode)]
+queryObjectGroup _ [] rows = pure [(index, ObjectNode []) | (index, _) <- rows]
+queryObjectGroup state keys rows =
+  withVariantList state (map snd rows) \list ->
+    withObjectChildren state keys list \objects -> do
       count <- output (c_duckdb_v2_value_get_child_count objects)
       unless (toInteger count == toInteger (length rows)) (codecError "object extraction returned an unexpected row count")
       acquireItems
@@ -163,9 +166,11 @@ queryObjectGroup connection castTypes keys rows =
 -- native cast to a STRUCT list makes the values. Otherwise an extraction query
 -- makes them. The binder needs constant extraction keys. The query binds each
 -- key once and applies the extractions to all objects. The bound keys can be
--- empty or contain NUL.
-withObjectChildren :: DuckDBV2ConnectionHandle -> [Text] -> DuckDBV2ValueHandle -> (DuckDBV2ValueHandle -> IO a) -> IO a
-withObjectChildren connection keys list action
+-- empty or contain NUL. V2 has no accessor for the children of a VARIANT value.
+-- The STRUCT cast is the fast path. The query is the only exact path for the
+-- other key lists.
+withObjectChildren :: VariantState -> [Text] -> DuckDBV2ValueHandle -> (DuckDBV2ValueHandle -> IO a) -> IO a
+withObjectChildren VariantState{variantConnection = connection} keys list action
   | validStructFields keys =
       -- The cast is lenient. It matches a key and a field name without
       -- regard to ASCII case. It gives NULL for a missing key. It ignores an
@@ -210,6 +215,8 @@ assemble (node : rest) children = do
         ObjectNode entries -> (length entries, variantObject . zip (map fst entries))
       (ownChildren, remaining) = splitAt count children
   unless (length ownChildren == count) (codecError "decoded child count is smaller than its parent count")
+  -- Build the constructor of this node now. This reads no native value and
+  -- cannot fail.
   value <- evaluate (build ownChildren)
   (value :) <$> assemble rest remaining
 
@@ -220,14 +227,14 @@ assemble (node : rest) children = do
 type CastTypes = IORef (Map.Map Text DuckDBV2LogicalTypeHandle)
 
 -- | Borrow the native cast result while copying its payload.
-withCast :: DuckDBV2ConnectionHandle -> CastTypes -> DuckDBV2ValueHandle -> Text -> (DuckDBV2ValueHandle -> IO a) -> IO a
-withCast connection castTypes value target action = do
-  logical <- castType connection castTypes target
-  bracket (factoryOutput connection (\factory -> c_duckdb_v2_value_cast factory value logical)) destroyValue action
+withCast :: VariantState -> DuckDBV2ValueHandle -> Text -> (DuckDBV2ValueHandle -> IO a) -> IO a
+withCast state value target action = do
+  logical <- castType state target
+  bracket (factoryOutput (variantConnection state) (\factory -> c_duckdb_v2_value_cast factory value logical)) destroyValue action
 
 -- | Borrow a type from the cache. Parse the type text on its first use.
-castType :: DuckDBV2ConnectionHandle -> CastTypes -> Text -> IO DuckDBV2LogicalTypeHandle
-castType connection castTypes target =
+castType :: VariantState -> Text -> IO DuckDBV2LogicalTypeHandle
+castType VariantState{variantConnection = connection, variantTypes = castTypes} target =
   Map.lookup target <$> readIORef castTypes >>= \case
     Just cached -> pure cached
     Nothing -> mask_ do
@@ -238,8 +245,8 @@ castType connection castTypes target =
 -- | Borrow the metadata statement. Parse it on first use and keep it in the
 -- state. The statement stays valid after its iterator is destroyed, and an
 -- execution does not consume it.
-metadataStatement :: DuckDBV2ConnectionHandle -> VariantState -> IO DuckDBV2SqlStatementHandle
-metadataStatement connection VariantState{variantStatement} =
+metadataStatement :: VariantState -> IO DuckDBV2SqlStatementHandle
+metadataStatement VariantState{variantConnection = connection, variantStatement} =
   readIORef variantStatement >>= \case
     Just statement -> pure statement
     -- Store the statement before the iterator is destroyed, so that the
@@ -256,14 +263,13 @@ metadataStatement connection VariantState{variantStatement} =
 -- | Read exact scalar tags and object keys without serializing payloads.
 queryMetadata
   :: (DuckDBV2ConnectionHandle -> DuckDBV2ValueHandle -> IO FieldValue)
-  -> DuckDBV2ConnectionHandle
   -> VariantState
   -> [DuckDBV2ValueHandle]
   -> IO [(Text, [Text])]
-queryMetadata plain connection state values = withVariantList connection (variantTypes state) values \list -> do
-  statement <- metadataStatement connection state
-  withStatementValue connection statement [list] \metadata ->
-    plain connection metadata >>= maybe (codecError "metadata query returned an unexpected value") pure . metadataNodes
+queryMetadata plain state values = withVariantList state values \list -> do
+  statement <- metadataStatement state
+  withStatementValue (variantConnection state) statement [list] \metadata ->
+    plain (variantConnection state) metadata >>= maybe (codecError "metadata query returned an unexpected value") pure . metadataNodes
 
 -- | Read the tag and the object keys of each metadata node. A NULL key list
 -- gives no keys. Return 'Nothing' for an unexpected shape.
@@ -286,10 +292,10 @@ metadataNodes = \case
       _ -> Nothing
 
 -- | Borrow an owned VARIANT list that copies all supplied values.
-withVariantList :: DuckDBV2ConnectionHandle -> CastTypes -> [DuckDBV2ValueHandle] -> (DuckDBV2ValueHandle -> IO a) -> IO a
-withVariantList connection castTypes values action = do
-  logical <- castType connection castTypes "VARIANT"
-  withConnectionFactory connection \factory ->
+withVariantList :: VariantState -> [DuckDBV2ValueHandle] -> (DuckDBV2ValueHandle -> IO a) -> IO a
+withVariantList state values action = do
+  logical <- castType state "VARIANT"
+  withConnectionFactory (variantConnection state) \factory ->
     withArray values \items ->
       bracket (output (c_duckdb_v2_value_create_list factory logical (ConstPtr items) (fromIntegral (length values)))) destroyValue action
 
@@ -303,11 +309,13 @@ withStatementValue connection statement parameters action =
       (destroy c_duckdb_v2_result_destroy)
       \result ->
         bracket (output (c_duckdb_v2_result_fetch_chunk result)) (destroy c_duckdb_v2_data_chunk_destroy) \chunk -> do
-          unless (chunk /= nullHandle) (codecError "metadata query returned no rows")
+          unless (chunk /= nullHandle) (codecError "helper query returned no rows")
           vector <- output (c_duckdb_v2_data_chunk_get_vector chunk 0)
           bracket (output (c_duckdb_v2_vector_get_value vector 0)) destroyValue action
 
--- | Map every native VARIANT scalar tag to its exact cast target.
+-- | Map every native VARIANT scalar tag to its exact cast target. The tags are
+-- the text of variant_typeof. The result is type text, because a DECIMAL tag
+-- holds its width and scale. 'castType' parses each text once for each state.
 scalarType :: Text -> IO Text
 scalarType tag = case tag of
   "BOOL_TRUE" -> pure "BOOLEAN"

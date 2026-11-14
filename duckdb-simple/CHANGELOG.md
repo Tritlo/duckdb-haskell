@@ -98,7 +98,7 @@
   `StatementOpen` adds `statementParsed` and `statementSchemaCache`.
   `StatementStream` has no `statementStreamMode` and adds
   `statementStreamPendingChunks`. `StatementStreamColumn` has no
-  `statementStreamColumnType`.
+  `statementStreamColumnType` and adds `statementStreamColumnTree`.
 - The SQL error of a failed Haskell callback has the plain message of the
   exception. Version 0.3 gave `user error (...)` for a `userError` and the
   Haskell record for an `SQLError`.
@@ -112,6 +112,15 @@
 - Export Arrow release helpers from `Database.DuckDB.Simple.Arrow`.
 - The default `query`, `fold`, and Arrow folds collect the result before the
   first callback, so a callback can query the same connection.
+- A DuckDB callback that waits for the lock of a connection waits at most the
+  bound of that connection. Add `connectionCallbackLockWait` to
+  `ConnectionOptions`, in microseconds, with the default
+  `defaultCallbackLockWait` (10 seconds). `Nothing` sets no bound, and the open
+  rejects a negative bound. A statement of a callback on the connection that
+  runs the callback thus raises an `SQLError` of the type `ErrorResourceInUse`
+  after the bound. For most callbacks, the outer statement then fails. Before,
+  neither call returned. The README gives the cases that the bound does not
+  cover.
 - `sqlErrorQuery` gives the query that failed. For a query in the callback of
   an Arrow fold, it gives the query of the callback, not the query of the fold.
 - The message of a native error is decoded with replacement characters. A
@@ -119,9 +128,10 @@
   shown.
 - While an explicit stream is incomplete, DuckDB rejects other statements on
   its connection. Closing an incomplete stream aborts its statement.
-- Each connection serializes statement preparation and its open native result.
-  Threads that share a connection wait for each other in the default query
-  functions. Serialize transactions and explicit streams in the application.
+- Each connection serializes statement preparation, its open native result,
+  and each fetch of an explicit stream. Threads that share a connection wait
+  for each other in the default query functions. Serialize transactions and
+  explicit streams in the application.
 - `query_` and `execute_` parse all statements before they run any.
 - An INSERT, UPDATE, or DELETE without RETURNING gives one row with the number
   of changed rows in each function that reads rows, also in `fold`, `nextRow`,
@@ -142,6 +152,11 @@
 - `ToDuckValue.toDuckValue`, `logicalTypeFromRep`, and `logicalTypeFromRepWith`
   take a V2 factory. Composite parameters keep GEOMETRY CRS metadata. A CRS
   that DuckDB does not recognize raises `SQLError` instead of being dropped.
+- A connection constructs each name of `connectionGeometryCRS` directly when it
+  opens. It queries a SQL-derived type only for a name that DuckDB does not keep,
+  on the new connection, so the default list runs no query. The connection keeps
+  each type, and a bind copies it. A name that DuckDB drops, for example a blank
+  name, fails the open.
 - Empty `Array` parameters raise `SQLError`. Use an SQL empty LIST.
 - Allow session variables to supply omitted named parameters. Only too many
   named parameters raise `FormatError`.

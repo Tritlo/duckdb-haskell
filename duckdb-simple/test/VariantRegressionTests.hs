@@ -221,12 +221,12 @@ tests =
                 , Just (Variant (variantObject [("xs", FieldList [FieldNull, FieldBool True])]))
                 ]
         (query conn "SELECT typeof(?), ?" (values, values) :: IO [(Text, Array Int (Maybe Variant))]) >>= (@?= [("VARIANT[4]", values)])
-    , testCase "empty ARRAY parameters report the V2 limit" $ withConnection ":memory:" \conn -> do
+    , testCase "empty ARRAY parameters raise an error" $ withConnection ":memory:" \conn -> do
         let values = listArray (0, -1) [] :: Array Int (Maybe Variant)
         result <- try (query conn "SELECT typeof(?)" (Only values))
         case result of
           Left SQLError{sqlErrorMessage} -> assertBool "must identify empty ARRAY" ("empty ARRAY" `Text.isInfixOf` sqlErrorMessage)
-          Right (_ :: [Only Text]) -> assertFailure "expected the V2 empty ARRAY limit"
+          Right (_ :: [Only Text]) -> assertFailure "expected the empty ARRAY error"
     , testCase "parameter binding supplies a complete VARIANT type" $ withConnection ":memory:" \conn -> do
         let value = variantObject [("xs", FieldList [FieldNull, FieldInt64 42])]
         roundTrip conn value

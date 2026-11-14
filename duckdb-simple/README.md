@@ -319,7 +319,8 @@ A Haskell list reads a LIST result. Lists have no parameter instance, so bind
 an `Array`. DuckDB casts the array to the LIST column type.
 
 An array parameter with scalar elements takes its element type from the
-column type name of the element, so an empty array keeps its type. An array
+column type name of the element. An empty array raises an `SQLError`, because
+a DuckDB ARRAY has at least one element. Use an SQL empty LIST. An array
 of STRUCT values, UNION values, generic records, or arrays takes the type of
 its first element that is not NULL. All other non-NULL elements must have the
 same type, including field names, decimal precision and scale, and nested

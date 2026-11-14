@@ -14,7 +14,7 @@
 module Main (main) where
 
 import ArrowTests (arrowTests)
-import CancellationTests (cancellationTests)
+import CancellationTests (callbackLockTests, cancellationTests)
 import Control.Applicative ((<|>))
 import Control.Exception (ErrorCall, Exception, SomeException, displayException, fromException, try)
 import Control.Monad (forM_, replicateM_, void, when)
@@ -209,6 +209,7 @@ tests =
     , coreRegressionTests
     , arrowTests
     , cancellationTests
+    , callbackLockTests
     , nativeStreamingTests
     , extensionRegressionTests
     , registrationTests

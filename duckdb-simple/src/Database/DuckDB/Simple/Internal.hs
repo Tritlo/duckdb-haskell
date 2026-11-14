@@ -53,6 +53,7 @@ module Database.DuckDB.Simple.Internal (
   withDatabaseHandle,
   withConnectionHandle,
   withConnectionLock,
+  withCallbackMark,
   withResultWindow,
   withTypeCache,
   withStatementHandle,
@@ -73,7 +74,21 @@ module Database.DuckDB.Simple.Internal (
   destroyDataChunk,
 ) where
 
-import Control.Concurrent (MVar, ThreadId, forkIO, myThreadId, newEmptyMVar, newMVar, putMVar, readMVar, threadDelay, tryReadMVar, withMVar)
+import Control.Concurrent (
+  MVar,
+  ThreadId,
+  forkIO,
+  myThreadId,
+  newEmptyMVar,
+  newMVar,
+  putMVar,
+  readMVar,
+  takeMVar,
+  threadDelay,
+  tryReadMVar,
+  tryTakeMVar,
+  withMVar,
+ )
 import Control.Exception (SomeException, bracket, bracket_, catch, finally, mask, mask_, onException, throwIO, try, uninterruptibleMask_)
 import Control.Monad (forM, forM_, join, unless, void, when)
 import Data.Array (Array, bounds, inRange, listArray, (!))
@@ -81,8 +96,8 @@ import qualified Data.ByteString as BS
 import Data.Coerce (Coercible, coerce)
 import Data.IORef (IORef, atomicModifyIORef', atomicWriteIORef, mkWeakIORef, newIORef, readIORef, writeIORef)
 import qualified Data.IntMap.Strict as IntMap
-import Data.List (find, intercalate, partition)
-import Data.Maybe (fromMaybe)
+import Data.List (dropWhileEnd, find, intercalate, partition)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
@@ -99,10 +114,12 @@ import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Array (withArray)
 import Foreign.Ptr (nullPtr)
 import Foreign.Storable (peek, poke)
+import GHC.Conc.Sync (labelThread, threadLabel)
 import GHC.Exts (keepAlive#)
 import GHC.IO (IO (..))
 import GHC.Weak.Finalize (getFinalizerExceptionHandler)
 import System.Mem.Weak (Weak, deRefWeak, finalize)
+import System.Timeout (timeout)
 
 -- | Track child finalizers without retaining live children.
 newtype Children a = Children (IORef [(Weak (IORef a), MVar ())])
@@ -551,8 +568,76 @@ withConnectionHandle owner@Connection{connectionState} action =
 -- wait for each other. An explicit stream keeps its result open between
 -- fetches. It holds the lock for its execution and for each fetch. Do not run
 -- user callbacks under this lock. The lock is not reentrant.
+--
+-- DuckDB runs callbacks while a native call holds the lock. A callback that
+-- runs a statement on the same connection thus waits for its own caller. A
+-- thread that 'withCallbackMark' marks waits for the lock at most the bound of
+-- the connection ('connectionLockBound'), and then raises an 'SQLError' of the
+-- type 'ErrorResourceInUse'. Each other thread waits without a bound.
+--
+-- The take of the lock is masked. The timeout of the bound can thus arrive only
+-- while 'takeMVar' blocks, and then the take has not occurred. After the take,
+-- the same handlers as in 'withMVar' put the lock back.
 withConnectionLock :: Connection -> IO a -> IO a
-withConnectionLock Connection{connectionLock} = withMVar connectionLock . const
+withConnectionLock Connection{connectionLock, connectionLockBound} action = do
+  bound <- case connectionLockBound of
+    Nothing -> pure Nothing
+    Just micros -> do
+      inside <- (== Just callbackLabel) <$> (myThreadId >>= threadLabel)
+      pure (if inside then Just micros else Nothing)
+  case bound of
+    Nothing -> withMVar connectionLock (const action)
+    Just micros -> mask \restore -> do
+      -- A free lock needs no timer. 'timeout' with a bound of 0 does not run
+      -- its action, so the bound 0 also takes a free lock.
+      taken <-
+        tryTakeMVar connectionLock >>= \case
+          Just () -> pure True
+          Nothing -> isJust <$> timeout micros (takeMVar connectionLock)
+      unless taken $ throwIO (callbackLockWaitError micros)
+      result <- restore action `onException` putMVar connectionLock ()
+      putMVar connectionLock ()
+      pure result
+
+-- | The error of a callback that waited for a connection lock for its bound.
+callbackLockWaitError :: Int -> SQLError
+callbackLockWaitError micros =
+  SQLError
+    ( Text.pack
+        ( "duckdb-simple: a callback waited "
+            <> seconds
+            <> " s for a connection that runs a statement. A callback must not run a statement on the connection that runs the callback. Use another connection of the same instance, or change connectionCallbackLockWait."
+        )
+    )
+    (Just ErrorResourceInUse)
+    Nothing
+  where
+    (whole, fraction) = micros `quotRem` 1000000
+    digits = dropWhileEnd (== '0') (let text = show fraction in replicate (6 - length text) '0' <> text)
+    seconds = show whole <> (if null digits then "" else '.' : digits)
+
+-- | The label of a Haskell thread inside a DuckDB callback. DuckDB calls each
+-- callback in a new bound Haskell thread. A label of the thread marks it
+-- without a write to shared state, so callbacks on several threads do not wait
+-- for each other.
+callbackLabel :: String
+callbackLabel = "duckdb-simple: DuckDB callback"
+
+-- | Mark the current thread as a thread inside a DuckDB callback for the time
+-- of the action: label the thread with 'callbackLabel'. Then
+-- 'withConnectionLock' bounds the waits of the thread. Each exit gives the
+-- thread its previous label again, or an empty label. A thread that already
+-- has the mark keeps it after the action. The action removes the mark if it
+-- labels its own thread.
+withCallbackMark :: IO a -> IO a
+withCallbackMark action = mask \restore -> do
+  self <- myThreadId
+  previous <- threadLabel self
+  if previous == Just callbackLabel
+    then restore action
+    else do
+      labelThread self callbackLabel
+      restore action `finally` labelThread self (fromMaybe "" previous)
 
 -- | Run the native calls of one result as one unit. Hold the connection lock,
 -- and run the calls in one helper thread. Each interruptible native call uses a

@@ -1,5 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE MagicHash #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TypeApplications #-}
 
@@ -46,6 +47,8 @@ import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Alloc (alloca, allocaBytes)
 import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
 import Foreign.Storable (Storable (..), peekElemOff)
+import GHC.Exts (Ptr (..), Word (W#))
+import GHC.Num.Integer (integerFromAddr)
 import GHC.Records (getField)
 
 -- | Read a validity bit of a mask from @duckdb_v2_vector_get_view@. Each
@@ -231,10 +234,9 @@ decodeBigNum bytes = BS.useAsCStringLen bytes \(raw, len) -> alloca \lengthSlot 
   let decode ptr capacity = checked (c_duckdb_v2_bignum_decode (ConstPtr (castPtr raw)) (fromIntegral len) ptr capacity lengthSlot signSlot)
       finish magnitude = do
         count <- peek lengthSlot
-        digits <- BS.packCStringLen (castPtr magnitude, fromIntegral count)
         negative <- peek signSlot
-        let value = BS.foldl' (\acc byte -> acc * 256 + fromIntegral byte) 0 digits
-        pure (if negative == 0 then value else negate value)
+        value <- bigEndianInteger magnitude count
+        pure $! if negative == 0 then value else negate value
   -- A buffer of the storage size usually holds the magnitude. If the buffer is
   -- too short, DuckDB gives the required size, and a second call decodes the value.
   allocaBytes len \first -> do
@@ -246,3 +248,7 @@ decodeBigNum bytes = BS.useAsCStringLen bytes \(raw, len) -> alloca \lengthSlot 
             count <- peek lengthSlot
             allocaBytes (fromIntegral count) \magnitude -> decode magnitude count >> finish magnitude
         | otherwise -> throwIO err
+
+-- | Read an unsigned big-endian magnitude in linear time.
+bigEndianInteger :: Ptr Word8 -> DuckDBIdx -> IO Integer
+bigEndianInteger (Ptr addr) count = case fromIntegral count of W# size -> integerFromAddr size addr 1#

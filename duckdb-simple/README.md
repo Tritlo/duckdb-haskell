@@ -282,12 +282,13 @@ storeShape :: Connection -> Shape -> IO [Shape]
 storeShape conn shape = do
   _ <- execute_ conn
     "CREATE TABLE shapes (s UNION(Circle STRUCT(field1 DOUBLE), \
-    \Rectangle STRUCT(field1 DOUBLE, field2 DOUBLE), Point STRUCT()))"
+    \Rectangle STRUCT(field1 DOUBLE, field2 DOUBLE), Point STRUCT))"
   _ <- execute conn "INSERT INTO shapes VALUES (?)" (Only shape)
   fmap fromOnly <$> query_ conn "SELECT s FROM shapes"
 ```
 
-Nullary constructors (like `Point`) are encoded with a null payload.
+A constructor without fields (like `Point`) has the STRUCT without fields as
+its payload. DuckDB shows this payload as `{}`, and it is not NULL.
 Non-record constructors use positional field names (`field1`, `field2`, etc.).
 
 ### Arrays and Lists

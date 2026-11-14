@@ -182,6 +182,14 @@
   size: an `Array` field with the value `Nothing`, an `Array` inside a LIST,
   ARRAY, or MAP field, and a sum type with an `Array` constructor fail with
   "ARRAY type size must be at least 1".
+- A product type with no fields has one encoding: the STRUCT without fields,
+  which DuckDB shows as `{}`. `genericToFieldValue` gives this STRUCT, as the
+  `ViaDuckDB` binding and `genericToStructValue` did before. A constructor with
+  no fields in a sum type has this STRUCT as its payload. This includes each
+  constructor of an enum-like sum type, such as `data Colour = Red | Blue`.
+  Version 0.3 gave `FieldNull` in these two places, so `Just x` and `Nothing`
+  of such a type were the same value in a field. The decoders accept
+  `FieldNull` and the STRUCT without fields.
 - A value that is not NULL with the declared type SQLNULL raises a conversion
   error. Before, it was bound as NULL with no error. This applies to a manual
   `StructValue`, `TupleValue`, or `UnionValue`, to a LIST of that type, and to

@@ -17,9 +17,18 @@
 -- The bind data of each call site holds a state table with the live stable
 -- pointers. A release removes the stable pointer from the table, and only the
 -- caller that removes it frees it. The destructor of the bind data frees the
--- stable pointers that remain. A call site without bind data has no table. Its
--- states then work, but only the destroy callback and a failed finalize release
--- them.
+-- stable pointers that remain. The registration always sets a bind callback, so
+-- each call site has bind data. The code still reads the table as optional:
+-- without bind data, only the destroy callback and a failed finalize release
+-- the states.
+--
+-- DuckDB 2.0.0 runs the destroy callback on finalized states too: a hash
+-- aggregate destroys each chunk of states after it finalizes them, and an
+-- ungrouped aggregate and a window destroy their states after finalize
+-- (@radix_partitioned_hashtable.cpp@, @physical_ungrouped_aggregate.cpp@, and
+-- @window_segment_tree.cpp@). The header says that the callback runs on states
+-- that are discarded without being finalized. The table releases the states
+-- that DuckDB does not destroy (see 'StateTable').
 module Database.DuckDB.Simple.Typed.Aggregate (
   Aggregate (..),
   createAggregateOn,
@@ -218,6 +227,12 @@ stateCell slot = do
 -- | Release the Haskell state of a native state, and set the native state to
 -- null. A null native state does not change. With a table, only the caller that
 -- removes the key from the table frees the stable pointer.
+--
+-- The null write stops a second release of one native state. The table check
+-- stops a second free of a stable pointer that a byte copy of the native state
+-- also holds. It does not stop the release of a byte copy after the runtime has
+-- given its stable pointer to a new state. DuckDB 2.0.0 destroys each state at
+-- one location.
 releaseState :: Maybe StateTable -> Ptr Void -> IO ()
 releaseState table slot = mask_ do
   stable <- peek (castPtr slot) :: IO (StablePtr ())
@@ -233,7 +248,14 @@ stableKey :: StablePtr a -> Int
 stableKey = fromIntegral . ptrToIntPtr . castStablePtrToPtr
 
 -- | Free the stable pointers that remain in a state table, and then the table.
--- DuckDB calls this when it drops the bind data of a call site.
+-- DuckDB calls this when it drops the bind data of a call site. In DuckDB 2.0.0
+-- a hash table and an ungrouped aggregate each hold a copy of the bind data,
+-- and each copy shares the holder of this table through a shared pointer
+-- (@CV2AggregateFunctionData::Copy@ and @CV2UserData@). Each of them runs the
+-- destroy callback on its states before it drops its copy
+-- (@~GroupedAggregateHashTable@ and @~UngroupedAggregateState@). Thus this
+-- function runs after the last destroy callback of these owners that gets this
+-- bind data.
 releaseStateTable :: Ptr Void -> IO ()
 releaseStateTable raw =
   mask_ $ ignoreCallbackExceptions $ unless (raw == nullPtr) do

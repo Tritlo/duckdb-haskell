@@ -17,7 +17,7 @@ module Database.DuckDB.Simple.TypeCache (
   createTypeCache,
   destroyTypeCache,
   cachedLogicalType,
-  withTypeConnection,
+  withVariantState,
 ) where
 
 import Control.Concurrent.MVar (MVar, modifyMVarMasked, newMVar)
@@ -44,14 +44,12 @@ data TypeCache = TypeCache
   , typeCacheGeometry :: !NativeTypes
   -- ^ The SQL-derived types of the configured custom CRS names. The map does
   --     not change after 'createTypeCache'.
-  , typeCacheVariant :: !VariantState
-  -- ^ The VARIANT decoder state of the helper connection. Use it only inside
-  --     'withHelperConnection', which holds the cache 'MVar'.
   , typeCacheState :: !(MVar CacheState)
   }
 
--- | The helper connection for VARIANT reads. It opens at the first read.
-data CacheState = Unopened | Open !DuckDBV2ConnectionHandle | Closed
+-- | The helper connection for VARIANT reads and the VARIANT decoder state that
+-- borrows it. They open at the first read. The cache owns the connection.
+data CacheState = Unopened | Open !DuckDBV2ConnectionHandle !VariantState | Closed
 
 -- | Keep each owned type once. CRS aliases can refer to the same type.
 data NativeTypes = NativeTypes
@@ -75,7 +73,7 @@ createTypeCache instance_ connection crss = do
   custom <- filterM (fmap not . keepsCRS connection) (nub crss)
   geometry <- readNativeTypes connection custom
   flip onException (releaseItems destroyLogicalType (nativeOwned geometry)) $
-    TypeCache connection instance_ geometry <$> newVariantState <*> newMVar Unopened
+    TypeCache connection instance_ geometry <$> newMVar Unopened
 
 -- | Tell if direct type construction keeps a CRS. Destroy the type at once.
 -- The construction raises 'SQLError' when DuckDB rejects the name, and also
@@ -89,18 +87,13 @@ keepsCRS connection crs = withConnectionFactory connection \factory ->
 -- the helper connection. Destroy each cached type once, also if a destroy
 -- raises an error. A second call does nothing.
 destroyTypeCache :: TypeCache -> IO ()
-destroyTypeCache TypeCache{typeCacheGeometry, typeCacheVariant, typeCacheState} = uninterruptibleMask_ do
+destroyTypeCache TypeCache{typeCacheGeometry, typeCacheState} = uninterruptibleMask_ do
   previous <- modifyMVarMasked typeCacheState (\state -> pure (Closed, state))
   let releaseTypes = releaseItems destroyLogicalType (nativeOwned typeCacheGeometry)
   case previous of
-    Open helper -> ((destroyVariantState typeCacheVariant `finally` destroy c_duckdb_v2_connection_destroy helper) `finally` releaseTypes)
+    Open helper variant -> ((destroyVariantState variant `finally` destroy c_duckdb_v2_connection_destroy helper) `finally` releaseTypes)
     Unopened -> releaseTypes
     Closed -> pure ()
-
--- | Borrow the persistent helper connection and its VARIANT state. Calls
--- execute in sequence. Do not enter this cache again from the supplied action.
-withTypeConnection :: TypeCache -> (DuckDBV2ConnectionHandle -> VariantState -> IO a) -> IO a
-withTypeConnection cache@TypeCache{typeCacheVariant} action = withHelperConnection cache (`action` typeCacheVariant)
 
 -- | Construct an owned type. Resolve configured CRS leaves at every depth.
 -- Read the immutable map of custom CRS types without a lock.
@@ -112,16 +105,20 @@ cachedLogicalType TypeCache{typeCacheConnection, typeCacheGeometry = NativeTypes
     resolve (LogicalTypeGeometry (Just crs)) = maybe (pure Nothing) copy (Map.lookup crs nativeGeometry)
     resolve _ = pure Nothing
 
--- | Open the helper connection once. Keep it after an action throws.
-withHelperConnection :: TypeCache -> (DuckDBV2ConnectionHandle -> IO a) -> IO a
-withHelperConnection TypeCache{typeCacheInstance, typeCacheState} action = mask \restore -> do
+-- | Borrow the VARIANT decoder state of the persistent helper connection. Open
+-- the connection once, and keep it after an action throws. Calls execute in
+-- sequence. Do not enter this cache again from the supplied action.
+withVariantState :: TypeCache -> (VariantState -> IO a) -> IO a
+withVariantState TypeCache{typeCacheInstance, typeCacheState} action = mask \restore -> do
   outcome <- modifyMVarMasked typeCacheState \state -> do
-    helper <- case state of
+    (helper, variant) <- case state of
       Closed -> throwIO (SQLError "duckdb-simple: type cache is closed" Nothing Nothing)
-      Open helper -> pure helper
-      Unopened -> output (c_duckdb_v2_connection_create typeCacheInstance)
-    result <- try (restore (action helper))
-    pure (Open helper, result)
+      Open helper variant -> pure (helper, variant)
+      Unopened -> do
+        helper <- output (c_duckdb_v2_connection_create typeCacheInstance)
+        (,) helper <$> newVariantState helper
+    result <- try (restore (action variant))
+    pure (Open helper variant, result)
   either (throwIO :: SomeException -> IO a) pure outcome
 
 -- | Read the SQL-derived GEOMETRY types of custom CRS names. Run no statement

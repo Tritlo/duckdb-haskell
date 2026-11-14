@@ -81,7 +81,7 @@ rejectRows raise _ = pure (const raise)
 
 -- | Copy VARIANT rows before releasing the borrowed metadata connection. The
 -- state belongs to that connection.
-prepareVariantReader :: DuckDBV2ConnectionHandle -> VariantCodec.VariantState -> VectorReader
+prepareVariantReader :: VariantCodec.VariantState -> VectorReader
 prepareVariantReader = VariantCodec.prepareVariantDecoder materializePlainValue
 
 -- | Decode a value that contains no VARIANT. The VARIANT decoder calls this

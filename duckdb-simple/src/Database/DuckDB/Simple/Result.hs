@@ -23,7 +23,7 @@ import Database.DuckDB.Simple.FromRow (RowParser, parseRow, rowErrorsToSqlError)
 import Database.DuckDB.Simple.Internal
 import Database.DuckDB.Simple.Materialize (FallbackReaders (..), prepareGeometryReader, prepareVariantReader, prepareVectorReaderWith)
 import Database.DuckDB.Simple.Ok (Ok (..))
-import Database.DuckDB.Simple.TypeCache (withTypeConnection)
+import Database.DuckDB.Simple.TypeCache (withVariantState)
 import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Storable (peek)
@@ -184,7 +184,7 @@ fetchChunk ref conn queryText stream = withQueryError queryText $ mask \restore 
 -- vector. So the vector type is the source of each type.
 prepareChunkReaders :: Connection -> DuckDBV2DataChunkHandle -> [StatementStreamColumn] -> IO [Int -> IO FieldValue]
 prepareChunkReaders conn chunk columns = withTypeCache conn \cache -> withConnectionHandle conn \native -> withConnectionFactory native \factory -> do
-  let readVariant vector = withTypeConnection cache (\helper state -> prepareVariantReader helper state vector)
+  let readVariant vector = withVariantState cache (`prepareVariantReader` vector)
       readers = FallbackReaders readVariant (prepareGeometryReader factory)
   forM columns \StatementStreamColumn{statementStreamColumnIndex, statementStreamColumnTree} -> do
     vector <- output (c_duckdb_v2_data_chunk_get_vector chunk (fromIntegral statementStreamColumnIndex))

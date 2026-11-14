@@ -296,10 +296,10 @@ assertConversionError action = do
       assertBool "error must identify infinity" ("infinity" `Text.isInfixOf` message)
     Right _ -> assertFailure "expected a conversion error"
 
--- | Require the explicit V2 limit for zero-length ARRAY parameters.
+-- | Require the error of the library for an ARRAY parameter with no elements.
 assertEmptyArrayUnavailable :: IO a -> Assertion
 assertEmptyArrayUnavailable action = do
   result <- try action
   case result of
     Left SQLError{sqlErrorMessage = message} -> assertBool "must identify empty ARRAY" ("empty ARRAY" `Text.isInfixOf` message)
-    Right _ -> assertFailure "expected the V2 empty ARRAY limit"
+    Right _ -> assertFailure "expected the empty ARRAY error"

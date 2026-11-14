@@ -717,7 +717,11 @@ arrayDuckValue
 arrayDuckValue ValueBuilder{builderFactory = factory, builderType = makeType} target elementValue array = do
   when (null (elems array)) $
     throwIO
-      (SQLError "duckdb-simple: empty ARRAY parameters are unavailable in DuckDB's V2 API; use an explicit SQL empty LIST" Nothing Nothing)
+      ( SQLError
+          "duckdb-simple: an empty ARRAY parameter is not possible, because a DuckDB ARRAY has at least one element; use an explicit SQL empty LIST"
+          Nothing
+          Nothing
+      )
   withCreatedValues (map elementValue (elems array)) \values ->
     withElementType values \elementType ->
       withArray values \ptr ->

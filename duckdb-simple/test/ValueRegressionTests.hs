@@ -217,11 +217,11 @@ valueRegressionTests =
         rejected "empty MAP field" (MappedScores Map.empty)
         rejected "sum constructor with the ARRAY field" (SomeScores scores)
         rejected "sum constructor without the ARRAY field" NoScores
-    , testCase "empty arrays of record elements report the V2 limit" $ withConnection ":memory:" \conn -> do
+    , testCase "empty arrays of record elements raise the empty ARRAY error" $ withConnection ":memory:" \conn -> do
         result <- try (query conn "SELECT ?" (Only (listArray (0, -1) [] :: Array Int Pair)))
         case result of
-          Left SQLError{sqlErrorMessage} -> assertBool (Text.unpack sqlErrorMessage) ("duckdb-simple: empty ARRAY parameters are unavailable" `Text.isInfixOf` sqlErrorMessage)
-          Right (_ :: [Only Text]) -> assertFailure "expected the V2 empty ARRAY limit"
+          Left SQLError{sqlErrorMessage} -> assertBool (Text.unpack sqlErrorMessage) ("duckdb-simple: an empty ARRAY parameter is not possible" `Text.isInfixOf` sqlErrorMessage)
+          Right (_ :: [Only Text]) -> assertFailure "expected the empty ARRAY error"
     , testCase "composite arrays reject schemas that would discard fields or digits" $ withConnection ":memory:" \conn -> do
         forM_
           [ ("SELECT {'a': 1::INTEGER}", "SELECT {'a': 2::INTEGER, 'b': 3::INTEGER}")

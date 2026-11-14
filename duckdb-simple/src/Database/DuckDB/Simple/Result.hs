@@ -60,7 +60,9 @@ nextRowWith mode parser stmt@Statement{statementStream} =
         restore (consumeStream statementStream parser stmt stream)
           `onException` exhaustStatementStream statementStream
 
--- | Release an active cursor and allow the statement to execute again.
+-- | Release an active cursor and allow the statement to execute again. Then
+-- clear the schema cache of the statement. See Note [Statement schemas] in
+-- "Database.DuckDB.Simple.Internal".
 resetStatementStream :: Statement -> IO ()
 resetStatementStream stmt@Statement{statementStream} =
   cleanupStatementStreamRef statementStream `finally` clearStatementSchemas stmt

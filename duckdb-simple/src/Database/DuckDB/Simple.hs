@@ -450,9 +450,13 @@ execute conn queryText params =
     executeStatement stmt
 
 -- | Execute the same query multiple times with different parameter sets.
+-- The call reads the parameter types one time, for the first row that needs
+-- them. A column type that changes during the call does not change how the
+-- later rows bind. See Note [Statement schemas] in
+-- "Database.DuckDB.Simple.Internal".
 executeMany :: (ToRow q) => Connection -> Query -> [q] -> IO Int
 executeMany conn queryText rows =
-  withStatement conn queryText \stmt -> do
+  withStatement conn queryText \stmt -> withKeptParameterTypes stmt do
     sum <$> mapM (\row -> bind stmt (toRow row) >> executeStatement stmt) rows
 
 -- | Execute an ad-hoc query without parameters and return the affected row count.

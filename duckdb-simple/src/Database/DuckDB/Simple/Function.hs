@@ -15,10 +15,10 @@
 -- Use another connection of the same instance. This rule applies to each
 -- registered callback, for example of a scalar function, a cast, an aggregate
 -- function, a table function, a COPY format, a replacement scan, or a pragma.
--- The library holds the lock of a connection while it prepares a statement, and
+-- The library holds the lock of a connection while it prepares a statement,
 -- while 'Database.DuckDB.Simple.query', 'Database.DuckDB.Simple.execute', or a
--- default fold runs a statement. DuckDB can run a callback in each of these
--- steps. The lock is not reentrant. Thus a statement in the callback waits for
+-- default fold runs a statement, and while it fetches a chunk of an explicit
+-- stream. DuckDB can run a callback in each of these steps. The lock is not reentrant. Thus a statement in the callback waits for
 -- the lock and does not return.
 --
 -- A callback that refers to a connection keeps that connection and its instance

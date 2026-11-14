@@ -142,7 +142,15 @@ fetchChunk ref conn queryText stream = withQueryError queryText $ mask \restore 
   (chunk, remaining) <- case statementStreamPendingChunks stream of
     next : rest -> pure (next, rest)
     [] | statementStreamResult stream == nullHandle -> pure (nullHandle, [])
-    [] -> (,[]) <$> fetchResultChunk conn (statementStreamResult stream)
+    -- The fetch of an explicit stream holds the connection lock. The header
+    -- says that a result has a single consumer, and that a bind runs at the
+    -- same time only on a second connection. Without the lock, another thread
+    -- can start a statement when the stream is finished in DuckDB but still
+    -- has buffered chunks. A cancellation of this fetch then interrupts the
+    -- query that runs on the connection, which is the query of the other
+    -- thread. This call is not in the result window, so this thread does not
+    -- hold the lock here. The lock is not reentrant.
+    [] -> (,[]) <$> withConnectionLock conn (fetchResultChunk conn (statementStreamResult stream))
   let nextStream = stream{statementStreamPendingChunks = remaining}
   if chunk == nullHandle
     then pure nextStream

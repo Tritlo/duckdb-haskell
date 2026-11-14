@@ -168,7 +168,8 @@ data Connection = Connection
   { connectionState :: IORef ConnectionState
   , connectionInstance :: Instance
   , connectionLock :: MVar ()
-  -- ^ Held while a native result of this connection is open. See 'withConnectionLock'.
+  -- ^ Held while a native result of this connection runs, and for each fetch
+  -- of an explicit stream. See 'withConnectionLock'.
   , connectionWindow :: IORef (Maybe ThreadId)
   -- ^ The helper thread that runs the current result. See 'withResultWindow'.
   }
@@ -539,8 +540,9 @@ withConnectionHandle owner@Connection{connectionState} action =
 -- | Serialize the native calls of one result. DuckDB permits one open result
 -- for each connection and rejects a second execution. Hold the lock from the
 -- execution until the result closes, so that threads which share a connection
--- wait for each other. Do not run user callbacks under this lock. The lock is
--- not reentrant.
+-- wait for each other. An explicit stream keeps its result open between
+-- fetches. It holds the lock for its execution and for each fetch. Do not run
+-- user callbacks under this lock. The lock is not reentrant.
 withConnectionLock :: Connection -> IO a -> IO a
 withConnectionLock Connection{connectionLock} = withMVar connectionLock . const
 

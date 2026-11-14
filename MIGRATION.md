@@ -127,11 +127,12 @@ The SQL workflow stays the same. These changes can affect your code:
 - While an explicit stream is incomplete, DuckDB rejects other statements on
   its connection with a `RESOURCE_IN_USE` error. Closing an incomplete stream
   aborts its statement. In autocommit mode, DuckDB rolls back its writes.
-- Each connection has a lock for statement preparation and for its open native
-  result. Threads that share a connection wait for each other in the default
-  query functions. Serialize a transaction, a shared `Statement`, and an
-  explicit stream in the application. A callback that queries its active
-  connection waits for this lock and does not return.
+- Each connection has a lock for statement preparation, for its open native
+  result, and for each fetch of an explicit stream. Threads that share a
+  connection wait for each other in the default query functions. Serialize a
+  transaction, a shared `Statement`, and an explicit stream in the
+  application. A callback that queries its active connection waits for this
+  lock and does not return.
 - `query_` and `execute_` parse all statements before they run any. A syntax
   error stops earlier statements in the same input from running.
 - Each function that reads rows gives one row with one BIGINT column for an

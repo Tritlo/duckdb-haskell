@@ -41,9 +41,12 @@ foldArrowWith mode conn queryText params initial step = withStatement conn query
         -- Serialize the execution call. The stream stays open after it.
         bracket (withConnectionLock conn (executePreparedArrowResult stmt)) (const (clearArrowResult stmt)) \result ->
           -- Recurse outside the handle scope, so that the stack does not grow for each batch.
+          -- Each fetch holds the connection lock, for the reason that
+          -- 'Database.DuckDB.Simple.Result' gives for the fetch of a stream.
+          -- The step runs after the fetch, without the lock.
           let stream acc = do
                 next <- withStatementHandle stmt \_ ->
-                  fetchBatch stmt result >>= \case
+                  withConnectionLock conn (fetchBatch stmt result) >>= \case
                     Nothing -> pure Nothing
                     Just batch -> Just <$> (deliver acc batch `finally` releaseBatch batch)
                 maybe (pure acc) stream next

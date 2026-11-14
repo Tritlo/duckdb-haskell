@@ -109,9 +109,10 @@
   shown.
 - While an explicit stream is incomplete, DuckDB rejects other statements on
   its connection. Closing an incomplete stream aborts its statement.
-- Each connection serializes statement preparation and its open native result.
-  Threads that share a connection wait for each other in the default query
-  functions. Serialize transactions and explicit streams in the application.
+- Each connection serializes statement preparation, its open native result,
+  and each fetch of an explicit stream. Threads that share a connection wait
+  for each other in the default query functions. Serialize transactions and
+  explicit streams in the application.
 - `query_` and `execute_` parse all statements before they run any.
 - An INSERT, UPDATE, or DELETE without RETURNING gives one row with the number
   of changed rows in each function that reads rows, also in `fold`, `nextRow`,

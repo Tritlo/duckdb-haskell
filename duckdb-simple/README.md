@@ -390,9 +390,10 @@ in the application:
 
 - A transaction. Statements of other threads run inside it.
 - One `Statement` that two threads use.
-- An explicit stream from `Database.DuckDB.Simple.Streaming`. Its result stays
-  open between calls, and another query on that connection fails until the
-  stream is complete or closed.
+- An explicit stream from `Database.DuckDB.Simple.Streaming`. Each fetch of
+  the stream holds the lock, but its result stays open between calls, and
+  another query on that connection fails until the stream is complete or
+  closed.
 - `close`. Wait for all operations on the connection before you close it.
 
 A callback must not execute another query on its active connection or close
@@ -731,9 +732,10 @@ A callback must not run a statement on the connection that runs the callback.
 Use another connection of the same instance. This rule applies to each
 registered callback, for example of a scalar function, a cast, an aggregate
 function, a table function, a COPY format, a replacement scan, or a pragma.
-`query`, `execute`, the default folds, and statement preparation hold the lock
-of the connection while DuckDB runs these callbacks. The lock is not
-reentrant, so a statement in the callback waits and does not return.
+`query`, `execute`, the default folds, statement preparation, and each fetch
+of an explicit stream hold the lock of the connection while DuckDB runs these
+callbacks. The lock is not reentrant, so a statement in the callback waits and
+does not return.
 
 A callback that refers to a connection keeps that connection and its instance
 reachable while DuckDB keeps the callback, possibly until the database closes.

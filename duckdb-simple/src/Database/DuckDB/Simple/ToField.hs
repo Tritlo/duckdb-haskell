@@ -312,10 +312,21 @@ integerBinding binds an Integer or a Natural parameter with this rule:
     in SELECT ?, binds as a BIGNUM. A cast that DuckDB adds later can still
     have the defects above.
   - A BigNum always binds as a BIGNUM.
-  - An Array of Integer values declares the element type BIGNUM. DuckDB casts
-    each element to the declared element type when it builds the array. Thus
-    each element is a BIGNUM, and a cast of the array to an array of an
-    integer type can have the defects above.
+  - An Array of Integer values for a target with no known type, or for a
+    target with an element type that is not an integer type or a DECIMAL
+    type, has BIGNUM elements. A cast that DuckDB adds later can still have
+    the defects above.
+
+- Arrays. DuckDB casts each element of an array to the declared element type
+  when it builds the array. The DuckDBColumnType of Integer, Natural, and
+  BigNum is BIGNUM. For an ARRAY or LIST target with an integer or DECIMAL
+  element type, arrayDuckValue declares that element type in place of BIGNUM.
+  Each Integer element is a HUGEINT or a UHUGEINT value, so DuckDB checks the
+  range of the cast of each element. For example, [5, -6] for a UBIGINT[2]
+  column raises an error. An Array of BigNum values also takes the element
+  type of the target, but each element is a BIGNUM value. DuckDB casts each
+  element with the casts from BIGNUM, so the result for an Array of BigNum
+  values does not improve.
 
 Issue 41 of duckdb-haskell tracks the defects.
 -}
@@ -333,18 +344,6 @@ integerBinding value
         Just (LogicalTypeDecimal width scale) -> outOfRange ("DECIMAL(" <> Text.pack (show width) <> "," <> Text.pack (show scale) <> ")")
         _ -> bigNumDuckValue factory (BigNum value)
   where
-    integerTypes =
-      [ LogicalTypeIdTinyInt
-      , LogicalTypeIdSmallInt
-      , LogicalTypeIdInteger
-      , LogicalTypeIdBigInt
-      , LogicalTypeIdHugeInt
-      , LogicalTypeIdUTinyInt
-      , LogicalTypeIdUSmallInt
-      , LogicalTypeIdUInteger
-      , LogicalTypeIdUBigInt
-      , LogicalTypeIdUHugeInt
-      ]
     outOfRange typeName =
       throwIO
         SQLError
@@ -352,6 +351,21 @@ integerBinding value
           , sqlErrorType = Just ErrorInputOutOfRange
           , sqlErrorQuery = Nothing
           }
+
+-- | The integer types, from TINYINT to UHUGEINT. See Note [Integer parameters].
+integerTypes :: [LogicalTypeId]
+integerTypes =
+  [ LogicalTypeIdTinyInt
+  , LogicalTypeIdSmallInt
+  , LogicalTypeIdInteger
+  , LogicalTypeIdBigInt
+  , LogicalTypeIdHugeInt
+  , LogicalTypeIdUTinyInt
+  , LogicalTypeIdUSmallInt
+  , LogicalTypeIdUInteger
+  , LogicalTypeIdUBigInt
+  , LogicalTypeIdUHugeInt
+  ]
 
 instance ToField UUID.UUID
 
@@ -665,7 +679,10 @@ utcTimestampDuckValue factory value =
   encodeUnbounded (encodeTimestampUnits 1000000 . utcToLocalTime utc) value
     >>= (\encoded -> output (c_duckdb_v2_value_create_timestamp_tz factory encoded))
 
--- | Construct an ARRAY value. An empty array raises 'SQLError'.
+-- | Construct an ARRAY value. An empty array raises 'SQLError'. The target is
+-- the element type of the parameter. When the declared element type is BIGNUM
+-- and the target is an integer type or a DECIMAL type, the array takes the
+-- target as its element type. See Note [Integer parameters].
 arrayDuckValue
   :: forall a
    . (DuckDBColumnType a)
@@ -685,7 +702,7 @@ arrayDuckValue ValueBuilder{builderFactory = factory, builderType = makeType} ta
   where
     typeName = duckdbColumnType (Proxy :: Proxy a)
     withElementType values action = case duckDBTypeFromName typeName of
-      Just dtype -> bracket (makeType (timestampTypeForTarget target (LogicalTypeScalar dtype))) destroyLogicalType action
+      Just dtype -> bracket (makeType (declaredType dtype)) destroyLogicalType action
       Nothing -> do
         -- Keep the values that are not NULL, in list order. The fold keeps a
         -- constant stack. See Note [Constant stack at safe calls] in
@@ -706,6 +723,11 @@ arrayDuckValue ValueBuilder{builderFactory = factory, builderType = makeType} ta
                 , sqlErrorType = Nothing
                 , sqlErrorQuery = Nothing
                 }
+    -- See Note [Integer parameters].
+    declaredType LogicalTypeIdBigNum
+      | Just rep@(LogicalTypeScalar dtype) <- target, dtype `elem` integerTypes = rep
+      | Just rep@LogicalTypeDecimal{} <- target = rep
+    declaredType dtype = timestampTypeForTarget target (LogicalTypeScalar dtype)
 
 -- | Construct named fields. The native call copies the field values.
 structValueDuckValue

@@ -107,7 +107,7 @@ startResultStream mode conn result = mask_ do
   cursor <- newIORef result
   -- Take each handle out before its release, so that a second call releases no handle again.
   let destroyResult = atomicModifyIORef' cursor (nullHandle,) >>= destroy c_duckdb_v2_result_destroy
-      release = (atomicModifyIORef' owned ([],) >>= mapM_ destroyDataChunk) `finally` destroyResult
+      release = (atomicModifyIORef' owned ([],) >>= releaseItems destroyDataChunk) `finally` destroyResult
       fetch = fetchResultChunk conn result
       gather = do
         chunk <- fetch

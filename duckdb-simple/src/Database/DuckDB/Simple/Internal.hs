@@ -712,11 +712,12 @@ cleanupStatementStreamRef ref = mask_ do
     _ -> pure ()
 
 -- | Release the native state of a stream in this order: the current chunk, the
--- pending chunks, and the result.
+-- pending chunks, and the result. Each release runs also when an earlier
+-- release raises an error.
 finalizeStream :: StatementStream -> IO ()
 finalizeStream StatementStream{statementStreamResult, statementStreamChunk, statementStreamPendingChunks} =
   maybe (pure ()) finalizeChunk statementStreamChunk
-    `finally` (mapM_ destroyDataChunk statementStreamPendingChunks `finally` destroy c_duckdb_v2_result_destroy statementStreamResult)
+    `finally` (releaseItems destroyDataChunk statementStreamPendingChunks `finally` destroy c_duckdb_v2_result_destroy statementStreamResult)
 
 -- | Release the native chunk of a stream chunk.
 finalizeChunk :: StatementStreamChunk -> IO ()

@@ -669,7 +669,11 @@ hasCollation rep = case rep of
   LogicalTypeUnion members -> any (hasCollation . unionMemberType) (elems members)
   _ -> False
 
--- | Build one UNION row through its public tag and member vectors.
+-- | Build one UNION row through its public tag and member vectors. V2 has no
+-- constructor for a UNION value. A cast of the member value to the UNION type
+-- chooses the member by the type of the value, so it fails when two members have
+-- the same type, as in a generic sum type whose constructors have equal fields.
+-- The vectors keep the tag of the value.
 unionValueDuckValue
   :: ValueBuilder -> UnionValue FieldValue -> IO DuckDBV2ValueHandle
 unionValueDuckValue builder@ValueBuilder{builderFactory = factory, builderType = makeType} UnionValue{unionValueIndex, unionValueLabel, unionValuePayload, unionValueMembers} = do

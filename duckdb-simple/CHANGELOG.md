@@ -88,7 +88,7 @@
   `StatementOpen` adds `statementParsed` and `statementSchemaCache`.
   `StatementStream` has no `statementStreamMode` and adds
   `statementStreamPendingChunks`. `StatementStreamColumn` has no
-  `statementStreamColumnType`.
+  `statementStreamColumnType` and adds `statementStreamColumnTree`.
 - The SQL error of a failed Haskell callback has the plain message of the
   exception. Version 0.3 gave `user error (...)` for a `userError` and the
   Haskell record for an `SQLError`.

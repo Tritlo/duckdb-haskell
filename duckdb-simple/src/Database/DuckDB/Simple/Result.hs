@@ -17,12 +17,14 @@ module Database.DuckDB.Simple.Result (
 import Control.Exception (bracket, evaluate, finally, mask, mask_, onException, throwIO)
 import Control.Monad (foldM, forM, when, zipWithM)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
+import Database.DuckDB.Simple.Element (withVectorType)
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue)
 import Database.DuckDB.Simple.FromRow (RowParser, parseRow, rowErrorsToSqlError)
 import Database.DuckDB.Simple.Internal
-import Database.DuckDB.Simple.Materialize (FallbackReaders (..), prepareGeometryReader, prepareVariantReader, prepareVectorReader)
+import Database.DuckDB.Simple.Materialize (FallbackReaders (..), prepareGeometryReader, prepareVariantReader, prepareVectorReaderWith)
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.TypeCache (withTypeConnection)
+import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Storable (peek)
 
@@ -168,20 +170,32 @@ fetchChunk ref conn queryText stream = withQueryError queryText $ mask \restore 
           readers <- restore (prepareChunkReaders conn chunk (statementStreamColumns stream))
           pure nextStream{statementStreamChunk = Just (StatementStreamChunk chunk rowCount 0 readers)}
 
--- | Prepare readers that borrow the vectors in an owned chunk. The readers read
--- each type from its vector. The header of @duckdb_v2_result_get_schema@ calls
--- the result schema the authoritative source of the column types, and says that
--- vectors do not carry their own type. But the header of
--- @duckdb_v2_vector_get_logical_type@ says that a vector has the type that was
--- set on creation, and the header of @duckdb_v2_vector_get_view@ says that the
--- data has the layout that the logical type of the vector implies. So the
--- readers use the vector type.
+-- | Prepare readers that borrow the vectors in an owned chunk. A reader takes
+-- each layout parameter, such as the width of a DECIMAL, from the type of its
+-- own vector. The header of @duckdb_v2_vector_get_view@ says that the data has
+-- the layout that the logical type of the vector implies. A description, such as
+-- the field names and field types of a STRUCT, comes from the type tree of the
+-- column. The tree is converted from the vector of the first chunk that needs
+-- it, and it lives for one execution. The readers do not use the result schema.
+-- The header of @duckdb_v2_result_get_schema@ calls the schema the authoritative
+-- source of the column types, and says that vectors do not carry their own type.
+-- But the header of @duckdb_v2_vector_get_logical_type@ says that a vector has
+-- the type that was set on creation, and the layout follows the type of the
+-- vector. So the vector type is the source of each type.
 prepareChunkReaders :: Connection -> DuckDBV2DataChunkHandle -> [StatementStreamColumn] -> IO [Int -> IO FieldValue]
 prepareChunkReaders conn chunk columns = withTypeCache conn \cache -> withConnectionHandle conn \native -> withConnectionFactory native \factory -> do
   let readVariant vector = withTypeConnection cache (\helper state -> prepareVariantReader helper state vector)
-  forM columns \StatementStreamColumn{statementStreamColumnIndex} ->
-    output (c_duckdb_v2_data_chunk_get_vector chunk (fromIntegral statementStreamColumnIndex))
-      >>= prepareVectorReader (FallbackReaders readVariant (prepareGeometryReader factory))
+      readers = FallbackReaders readVariant (prepareGeometryReader factory)
+  forM columns \StatementStreamColumn{statementStreamColumnIndex, statementStreamColumnTree} -> do
+    vector <- output (c_duckdb_v2_data_chunk_get_vector chunk (fromIntegral statementStreamColumnIndex))
+    let tree =
+          readIORef statementStreamColumnTree >>= \case
+            Just rep -> pure rep
+            Nothing -> do
+              rep <- withVectorType vector logicalTypeToRep
+              writeIORef statementStreamColumnTree (Just rep)
+              pure rep
+    prepareVectorReaderWith readers tree vector
 
 -- | Decode all rows after the statement has materialized its native chunks.
 collectRows :: Statement -> IO [[Field]]
@@ -247,7 +261,7 @@ collectResultColumns result = bracket (output (c_duckdb_v2_result_get_schema res
   forM [0 .. count - 1] \idx -> alloca \name -> do
     _ <- output (c_duckdb_v2_schema_get_field schema (fromIntegral idx) name)
     columnName <- peek name >>= readIdentifier
-    pure (StatementStreamColumn idx columnName)
+    StatementStreamColumn idx columnName <$> newIORef Nothing
 
 buildMaterializedRow :: [StatementStreamColumn] -> [Int -> IO FieldValue] -> Int -> IO [Field]
 buildMaterializedRow columns readers rowIdx =

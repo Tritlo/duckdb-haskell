@@ -223,6 +223,10 @@ data ResultMode = MaterializedResult | StreamingResult deriving (Eq, Show)
 data StatementStreamColumn = StatementStreamColumn
   { statementStreamColumnIndex :: Int
   , statementStreamColumnName :: Text
+  , statementStreamColumnTree :: IORef (Maybe LogicalTypeRep)
+  -- ^ The type tree of the column, converted from the vector of the first chunk
+  -- that needs it. Each execution makes new columns, so the tree lives for one
+  -- execution.
   }
 
 -- | One owned chunk and the readers that borrow its vectors.

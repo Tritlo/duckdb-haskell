@@ -8,8 +8,9 @@
 --
 -- DuckDB constructs a GEOMETRY type with a recognized CRS or a complete CRS
 -- definition directly. The type binder rejects a custom CRS name, but the SQL
--- function @ST_SetCRS@ keeps it. The cache therefore holds a SQL-derived type
--- only for each configured name that direct construction does not keep.
+-- function @ST_SetCRS@ keeps it. The cache holds one type for each configured
+-- name: the type of direct construction, or a SQL-derived type for a name that
+-- direct construction does not keep. A bind copies the type.
 module Database.DuckDB.Simple.TypeCache (
   TypeCache,
   typeCacheConnection,
@@ -22,8 +23,7 @@ module Database.DuckDB.Simple.TypeCache (
 
 import Control.Concurrent.MVar (MVar, modifyMVarMasked, newMVar)
 import Control.Exception (SomeException, bracket, finally, mask, onException, throwIO, try, uninterruptibleMask_)
-import Control.Monad (filterM, when)
-import Data.Either (isRight)
+import Control.Monad (when)
 import Data.List (nub)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -42,8 +42,8 @@ data TypeCache = TypeCache
   { typeCacheConnection :: !DuckDBV2ConnectionHandle
   , typeCacheInstance :: !DuckDBV2InstanceHandle
   , typeCacheGeometry :: !NativeTypes
-  -- ^ The SQL-derived types of the configured custom CRS names. The map does
-  --     not change after 'createTypeCache'.
+  -- ^ The types of the configured CRS names. The map does not change after
+  --     'createTypeCache'.
   , typeCacheState :: !(MVar CacheState)
   }
 
@@ -62,26 +62,32 @@ defaultGeometryCRS :: [Text]
 defaultGeometryCRS = ["OGC:CRS84"]
 
 -- | Create the cache on a new caller connection, before any statement of the
--- caller runs. Construct each configured CRS directly. For the names that
--- direct construction does not keep, query the types on the caller connection.
--- The caller keeps the instance and connection alive. The helper connection
--- opens later, at the first VARIANT read.
+-- caller runs. Construct each configured CRS directly, and keep each type that
+-- has the CRS. For the other names, query the types on the caller connection.
+-- If a step fails, destroy the types that the earlier steps took. The caller
+-- keeps the instance and connection alive. The helper connection opens later,
+-- at the first VARIANT read.
 createTypeCache :: DuckDBV2InstanceHandle -> DuckDBV2ConnectionHandle -> [Text] -> IO TypeCache
 createTypeCache instance_ connection crss = do
   when (any Text.null crss || any (Text.any (== '\0')) crss) $
     throwIO (userError "duckdb-simple: a GEOMETRY CRS must be nonempty and must not contain NUL")
-  custom <- filterM (fmap not . keepsCRS connection) (nub crss)
-  geometry <- readNativeTypes connection custom
-  flip onException (releaseItems destroyLogicalType (nativeOwned geometry)) $
-    TypeCache connection instance_ geometry <$> newMVar Unopened
+  let names = nub crss
+  direct <- acquireItems (mapM_ destroyLogicalType) [directGeometry connection crs | crs <- names]
+  let kept = [(crs, logical) | (crs, Just logical) <- zip names direct]
+  flip onException (releaseItems destroyLogicalType (map snd kept)) do
+    keptTypes <- geometryTypes (map fst kept) (map snd kept)
+    queried <- readNativeTypes connection [crs | (crs, Nothing) <- zip names direct]
+    flip onException (releaseItems destroyLogicalType (nativeOwned queried)) do
+      let geometry = NativeTypes (nativeGeometry keptTypes <> nativeGeometry queried) (nativeOwned keptTypes <> nativeOwned queried)
+      TypeCache connection instance_ geometry <$> newMVar Unopened
 
--- | Tell if direct type construction keeps a CRS. Destroy the type at once.
--- The construction raises 'SQLError' when DuckDB rejects the name, and also
--- when DuckDB drops the CRS.
-keepsCRS :: DuckDBV2ConnectionHandle -> Text -> IO Bool
-keepsCRS connection crs = withConnectionFactory connection \factory ->
-  isRight
-    <$> (try (bracket (logicalTypeFromRep factory (LogicalTypeGeometry (Just crs))) destroyLogicalType (const (pure ()))) :: IO (Either SQLError ()))
+-- | Construct a GEOMETRY type with a CRS directly. Give 'Nothing' when DuckDB
+-- rejects the name or drops the CRS. The construction raises 'SQLError' in
+-- both cases, and it destroys a type that lost its CRS.
+directGeometry :: DuckDBV2ConnectionHandle -> Text -> IO (Maybe DuckDBV2LogicalTypeHandle)
+directGeometry connection crs = withConnectionFactory connection \factory ->
+  either (const Nothing) Just
+    <$> (try (logicalTypeFromRep factory (LogicalTypeGeometry (Just crs))) :: IO (Either SQLError DuckDBV2LogicalTypeHandle))
 
 -- | Close the helper after all users finish. Destroy the VARIANT state before
 -- the helper connection. Destroy each cached type once, also if a destroy
@@ -96,7 +102,7 @@ destroyTypeCache TypeCache{typeCacheGeometry, typeCacheState} = uninterruptibleM
     Closed -> pure ()
 
 -- | Construct an owned type. Resolve configured CRS leaves at every depth.
--- Read the immutable map of custom CRS types without a lock.
+-- Copy a configured CRS type from the immutable map, without a lock.
 cachedLogicalType :: TypeCache -> LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle
 cachedLogicalType TypeCache{typeCacheConnection, typeCacheGeometry = NativeTypes{nativeGeometry}} rep =
   withConnectionFactory typeCacheConnection \factory -> logicalTypeFromRepWith factory resolve rep
@@ -137,20 +143,26 @@ readNativeTypes connection crss = do
           bracket (output (c_duckdb_v2_result_fetch_chunk result)) (destroy c_duckdb_v2_data_chunk_destroy) \chunk -> do
             when (chunk == nullHandle) $ throwIO (userError "duckdb-simple: the type query returned no row")
             owned <- columnTypes chunk (length crss)
-            flip onException (releaseItems destroyLogicalType owned) do
-              reported <- mapM logicalTypeToRep owned
-              when (any (\rep -> case rep of LogicalTypeGeometry (Just _) -> False; _ -> True) reported) $
-                throwIO (userError "duckdb-simple: the type query did not preserve a configured GEOMETRY CRS")
-              pure
-                NativeTypes
-                  { nativeGeometry =
-                      Map.fromList
-                        ( concat
-                            [ (crs, logical) : [(normalized, logical) | LogicalTypeGeometry (Just normalized) <- [rep]] | (crs, rep, logical) <- zip3 crss reported owned
-                            ]
-                        )
-                  , nativeOwned = owned
-                  }
+            geometryTypes crss owned `onException` releaseItems destroyLogicalType owned
+
+-- | Map each configured name, and the CRS text that DuckDB reports for its
+-- type, to the type. Raise an error if a type has no CRS. The caller keeps the
+-- ownership of the types.
+geometryTypes :: [Text] -> [DuckDBV2LogicalTypeHandle] -> IO NativeTypes
+geometryTypes crss owned = do
+  reported <- mapM logicalTypeToRep owned
+  when (any (\rep -> case rep of LogicalTypeGeometry (Just _) -> False; _ -> True) reported) $
+    throwIO (userError "duckdb-simple: the type query did not preserve a configured GEOMETRY CRS")
+  pure
+    NativeTypes
+      { nativeGeometry =
+          Map.fromList
+            ( concat
+                [ (crs, logical) : [(normalized, logical) | LogicalTypeGeometry (Just normalized) <- [rep]] | (crs, rep, logical) <- zip3 crss reported owned
+                ]
+            )
+      , nativeOwned = owned
+      }
 
 -- | Take the owned type of each of the first vectors. Destroy the earlier
 -- types if an accessor fails.

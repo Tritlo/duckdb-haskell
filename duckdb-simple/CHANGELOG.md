@@ -135,8 +135,9 @@
   that DuckDB does not recognize raises `SQLError` instead of being dropped.
 - A connection constructs each name of `connectionGeometryCRS` directly when it
   opens. It queries a SQL-derived type only for a name that DuckDB does not keep,
-  on the new connection, so the default list runs no query. A name that DuckDB
-  drops, for example a blank name, fails the open.
+  on the new connection, so the default list runs no query. The connection keeps
+  each type, and a bind copies it. A name that DuckDB drops, for example a blank
+  name, fails the open.
 - Empty `Array` parameters raise `SQLError`. Use an SQL empty LIST.
 - Allow session variables to supply omitted named parameters. Only too many
   named parameters raise `FormatError`.

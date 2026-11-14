@@ -656,8 +656,9 @@ Set `connectionGeometryCRS` in `ConnectionOptions` to preserve arbitrary custom
 CRS names in these parameters. The list defaults to `OGC:CRS84`. When a
 connection opens, DuckDB constructs a recognized name, such as `OGC:CRS84`, and
 a complete definition directly. For each other name, the library reads the
-type through SQL on the new connection and caches it. A name that DuckDB drops,
-for example a blank name, fails the open.
+type through SQL on the new connection. The connection caches each type, and a
+bind copies it. A name that DuckDB drops, for example a blank name, fails the
+open.
 
 CRS definitions outside the configured list use direct V2 type construction.
 This requires a recognized identifier or a complete WKT2/PROJJSON definition.

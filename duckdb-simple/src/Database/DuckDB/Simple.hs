@@ -232,8 +232,9 @@ data ConnectionOptions = ConnectionOptions
   -- ^ CRS definitions to preserve in composite parameters. DuckDB constructs
   --     a recognized name, such as @OGC:CRS84@, and a complete definition
   --     directly. For each other name, the connection reads a SQL-derived type
-  --     when it opens, and a name that DuckDB drops fails the open. The default
-  --     is @OGC:CRS84@. Include custom CRS names in this list.
+  --     when it opens, and a name that DuckDB drops fails the open. The
+  --     connection keeps each type, and a bind copies it. The default is
+  --     @OGC:CRS84@. Include custom CRS names in this list.
   }
   deriving (Eq, Show)
 

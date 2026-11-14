@@ -422,6 +422,9 @@ tests =
             (query_ conn "SELECT 42::VARIANT" :: IO [Only Variant]) >>= (@?= [Only (Variant (FieldInt32 42))])
             countQueries crsQuery >>= (@?= 1)
             countQueries "variant_typeof" >>= (@?= 1)
+    , testCase "a configured recognized CRS binds in either spelling" $
+        withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = ["ogc:crs84"]} \conn ->
+          forM_ ["ogc:crs84", "OGC:CRS84"] \crs -> (query conn "SELECT ?" (Only (nullShape crs))) >>= (@?= [Only (nullShape "OGC:CRS84")])
     , testCase "a configured CRS that DuckDB drops fails the open and releases its connection" $
         withEnvironment \env -> do
           inst <- createInstance env []
@@ -430,7 +433,8 @@ tests =
             token <- newIORef (42 :: Int64)
             createFunction conn "crs_token" (readIORef token)
             mkWeakIORef token (pure ())
-          result <- try (connectWithOptions inst defaultConnectionOptions{connectionGeometryCRS = [" "]})
+          -- The open keeps the type of the first name before the second name fails.
+          result <- try (connectWithOptions inst defaultConnectionOptions{connectionGeometryCRS = ["OGC:CRS84", " "]})
           case result of
             Left err -> assertBool (displayException err) ("did not preserve a configured GEOMETRY CRS" `isInfixOf` displayException (err :: IOException))
             Right conn -> close conn >> assertFailure "expected the open to fail"

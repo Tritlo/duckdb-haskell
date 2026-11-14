@@ -352,7 +352,7 @@ instance FromField (TupleValue FieldValue) where
     case fieldValue of
       FieldTuple tuple -> Ok tuple
       FieldNull -> returnError UnexpectedNull f ""
-      _ -> returnError Incompatible f ""
+      _ -> returnError Incompatible f "expected TUPLE"
 
 instance FromField Bool where
   fromField f@Field{fieldValue} =

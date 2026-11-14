@@ -17,7 +17,7 @@ module Database.DuckDB.Simple.Result (
 ) where
 
 import Control.Exception (bracket, evaluate, finally, mask, mask_, onException, throwIO)
-import Control.Monad (forM, when, zipWithM)
+import Control.Monad (foldM, forM, when, zipWithM)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue)
 import Database.DuckDB.Simple.FromRow (RowParser, parseRow, rowErrorsToSqlError)
@@ -193,18 +193,29 @@ collectStreamRows conn query acquire = withQueryError query $
     bracket acquire (mapM_ finalizeStream) \case
         Nothing -> pure []
         Just owned -> do
-            -- Both loops have a constant stack. A native call in a reader costs
-            -- more on a deep stack.
-            rows <- flip mapFlat (statementStreamPendingChunks owned) \chunk -> do
-                rowCount <- fromIntegral <$> output (c_duckdb_v2_data_chunk_get_size chunk)
-                readers <- prepareChunkReaders conn chunk (statementStreamColumns owned)
-                -- Read the rows from the last to the first, and put each row in
-                -- front of the list. The list then needs no reverse.
-                let readFrom row decoded
-                        | row < 0 = pure decoded
-                        | otherwise = buildMaterializedRow (statementStreamColumns owned) readers row >>= \fields -> readFrom (row - 1) (fields : decoded)
-                readFrom (rowCount - 1) []
-            pure (concat rows)
+            -- Both loops keep a constant stack. Each c_duckdb_v2 binding is a
+            -- safe foreign call. At a safe call, the GHC runtime (threadPaused)
+            -- reads the frames of the current stack chunk. A loop that keeps a
+            -- frame for each element thus makes each native call slower as the
+            -- list grows.
+            --
+            -- The chunk loop must keep a constant stack, because the code for
+            -- each chunk makes native calls.
+            let readChunk done chunk = do
+                    rowCount <- fromIntegral <$> output (c_duckdb_v2_data_chunk_get_size chunk)
+                    readers <- prepareChunkReaders conn chunk (statementStreamColumns owned)
+                    -- The row loop reads the rows from the last to the first, and
+                    -- puts each row in front of the list. The list then needs no
+                    -- reverse. The constant stack of this loop is necessary for a
+                    -- reader that makes a native call for each row: a BIGNUM
+                    -- column, and the first use of a UNION member.
+                    let readFrom row decoded
+                            | row < 0 = pure decoded
+                            | otherwise = buildMaterializedRow (statementStreamColumns owned) readers row >>= \fields -> readFrom (row - 1) (fields : decoded)
+                    (: done) <$> readFrom (rowCount - 1) []
+            -- The fold gives the chunks from the last to the first.
+            rows <- foldM readChunk [] (statementStreamPendingChunks owned)
+            pure (concat (reverse rows))
 
 collectResultColumns :: DuckDBV2ResultHandle -> IO [StatementStreamColumn]
 collectResultColumns result = bracket (output (c_duckdb_v2_result_get_schema result)) (destroy c_duckdb_v2_schema_destroy) \schema -> do

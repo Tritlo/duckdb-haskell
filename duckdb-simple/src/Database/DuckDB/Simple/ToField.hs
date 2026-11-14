@@ -27,7 +27,7 @@ module Database.DuckDB.Simple.ToField (
 ) where
 
 import Control.Exception (bracket, mask_, onException, throwIO)
-import Control.Monad (filterM, forM_, unless, when)
+import Control.Monad (foldM, forM_, unless, when)
 import Data.Array (Array, bounds, elems, listArray)
 import Data.Bits (complement, shiftL, shiftR, xor, (.|.))
 import qualified Data.ByteString as BS
@@ -519,7 +519,10 @@ arrayDuckValue makeType factory target elementValue array = do
     withElementType values action = case duckDBTypeFromName typeName of
         Just dtype -> bracket (makeType (timestampTypeForTarget target (LogicalTypeScalar dtype))) destroyLogicalType action
         Nothing -> do
-            present <- filterM (fmap (== 0) . output . c_duckdb_v2_value_is_null) values
+            -- Keep the values that are not NULL, in list order. The fold keeps a
+            -- constant stack.
+            let keep kept value = output (c_duckdb_v2_value_is_null value) >>= \flag -> if flag == 0 then pure (value : kept) else pure kept
+            present <- reverse <$> foldM keep [] values
             case present of
                 value : rest -> bracket (output (c_duckdb_v2_value_get_logical_type value)) destroyLogicalType \logical -> do
                     expected <- logicalTypeToRep logical

@@ -180,8 +180,10 @@ castRows convert info context = withContextFactory context \factory -> do
                 field -> case fromField field of
                     Errors failures -> throwIO (userError ("duckdb-simple: " <> conversionMessage failures))
                     Ok value -> either (throwIO . userError . Text.unpack) (writeCastValue factory useText vectorType vector row) (convert value)
-    -- Use a loop with a constant stack. The runtime reads the stack of the
-    -- thread at each native call, so a deep stack makes each call slow.
+    -- Use a loop with a constant stack. Each c_duckdb_v2 binding is a safe
+    -- foreign call. At a safe call, the GHC runtime (threadPaused) reads the
+    -- frames of the current stack chunk. A loop that keeps a frame for each
+    -- row thus makes each native call slower as the number of rows grows.
     firstFailure <- newIORef Nothing
     forM_ [0 .. count - 1] \row ->
         -- Catch each exception, also an asynchronous one, and write NULL to the

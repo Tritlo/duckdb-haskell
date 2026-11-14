@@ -77,7 +77,7 @@ import Control.Monad (forM, forM_, join, unless, void, when)
 import Data.Array (Array, bounds, inRange, listArray, (!))
 import qualified Data.ByteString as BS
 import Data.Coerce (Coercible, coerce)
-import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, newIORef, readIORef, writeIORef)
+import Data.IORef (IORef, atomicModifyIORef', atomicWriteIORef, mkWeakIORef, newIORef, readIORef, writeIORef)
 import qualified Data.IntMap.Strict as IntMap
 import Data.List (find, intercalate, partition)
 import Data.Maybe (fromMaybe)
@@ -253,17 +253,38 @@ checkLibraryVersion = do
   where
     expected = Text.pack ('v' : intercalate "." (map show [dUCKDB_V2_API_VERSION_MAJOR, dUCKDB_V2_API_VERSION_MINOR, dUCKDB_V2_API_VERSION_PATCH]))
 
-{- | Close an environment and its instances and connections. This is idempotent.
+{- | Close an environment and its instances and connections.
 Wait for child creation and all descendant operations to finish before closing.
+DuckDB refuses to destroy the environment while an instance is alive that
+'createInstance' did not create. In this case, this function closes the
+instances from 'createInstance' and their connections, raises an 'SQLError'
+with the type 'ErrorResourceInUse', and keeps the environment open.
+Destroy the other instance, then close the environment again.
+After a successful close, a second close has no effect.
 -}
 closeEnvironment :: Environment -> IO ()
 closeEnvironment Environment{environmentState} = closeEnvironmentState environmentState
 
--- | Mark the environment closed before releasing its native state.
+{- | Mark the environment closed before releasing its native state, so that no
+instance registers during the close. If the native destroy refuses with
+@ERROR_RESOURCE_IN_USE@, the native environment is still alive. In this case,
+put back the open state with the same child registry, and raise the error.
+'closeChildren' empties the registry, and a later 'createInstance' can register
+in it. After a different error, the state stays closed, because the header does
+not say that the handle stays valid.
+-}
 closeEnvironmentState :: IORef EnvironmentState -> IO ()
 closeEnvironmentState ref = mask_ $ joinCleanup ref \case
     EnvironmentClosed -> (EnvironmentClosed, pure ())
-    EnvironmentOpen raw children -> (EnvironmentClosed, cleanupAll [closeChildren children, destroy c_duckdb_v2_environment_destroy raw])
+    EnvironmentOpen raw children ->
+        ( EnvironmentClosed
+        , cleanupAll
+            [ closeChildren children
+            , destroy c_duckdb_v2_environment_destroy raw `catch` \(err :: SQLError) -> do
+                when (sqlErrorType err == Just ErrorResourceInUse) (atomicWriteIORef ref (EnvironmentOpen raw children))
+                throwIO err
+            ]
+        )
 
 -- | Create an instance with configuration applied before its first connection.
 createInstance :: Environment -> [(Text, Text)] -> IO Instance
@@ -393,7 +414,17 @@ withParsedStatements conn query action = withQueryError query $ withConnectionHa
 createStatementFromParsed :: Connection -> Query -> DuckDBV2SqlStatementHandle -> IO Statement
 createStatementFromParsed parent query parsed = createStatementFromParsedWithCollections parent query parsed []
 
--- | Prepare SQL and retain its collection bindings in the metadata copy.
+{- | Prepare a borrowed parsed statement with named input collections. A
+collection is a DuckDB column data collection: rows in memory that the caller
+owns. @duckdb_v2_statement_add_collection@ binds a collection to a statement
+under a name, and the SQL of the statement reads it as a table with that name.
+Each triple is the name, the collection handle, and the column names. An empty
+list of column names selects the default names @col1@ to @colN@.
+The function binds the collections to the parsed statement that it prepares,
+and to the copy that it keeps for parameter names and schemas. The caller must
+keep each collection alive and unchanged until the statement closes and the
+caller destroys the parsed statement.
+-}
 createStatementFromParsedWithCollections :: Connection -> Query -> DuckDBV2SqlStatementHandle -> [(Text, DuckDBV2ColumnDataCollectionHandle, [Text])] -> IO Statement
 createStatementFromParsedWithCollections parent query parsed collections = withQueryError query $ withConnectionHandle parent \raw -> mask_ do
     addCollections parsed
@@ -579,10 +610,21 @@ runInterruptible conn release action = do
         let wait =
                 tryReadMVar done >>= \case
                     Just outcome -> pure outcome
-                    Nothing -> void (c_duckdb_v2_connection_interrupt handle nullPtr) >> threadDelay 10000 >> wait
+                    -- The header says that duckdb_v2_connection_interrupt is "A
+                    -- no-op when no query is active". An interrupt that arrives
+                    -- before the query starts is thus lost. Repeat the interrupt
+                    -- until the work returns.
+                    Nothing -> void (c_duckdb_v2_connection_interrupt handle nullPtr) >> threadDelay interruptRetryDelayMicros >> wait
             stop = uninterruptibleMask_ (wait >>= either (const (pure ())) release)
         outcome <- restore (readMVar done) `onException` stop
         either throwIO pure outcome
+
+{- | Repeat the interrupt at most 100 times each second while the native work
+finishes. The interval prevents a busy loop. It can add up to one interval to
+the time at which the caller sees the end of the work.
+-}
+interruptRetryDelayMicros :: Int
+interruptRetryDelayMicros = 10 * 1000
 
 -- | Execute a borrowed parsed statement. The caller owns the returned cursor.
 executeParsedResult :: Connection -> Query -> DuckDBV2SqlStatementHandle -> IO DuckDBV2ResultHandle

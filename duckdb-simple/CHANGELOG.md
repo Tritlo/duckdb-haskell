@@ -87,6 +87,18 @@
   which writes a message through the context of a native callback.
   `Database.DuckDB.Simple.V2.LogicalRep` has `logicalTypeToRep`,
   `logicalTypeFromRep`, `logicalTypeFromRepWith`, and `destroyLogicalType`.
+- `Database.DuckDB.Simple.Internal` changes. It re-exports the native helper
+  layer. It no longer exports `toSQLError`, `fetchPrepareError`,
+  `fetchResultError`, `throwResultError`, `mkExecuteError`,
+  `throwRegistrationError`, `withClientContext`, and `destroyClientContext`.
+  `Connection` adds `connectionInstance`, `connectionLock`, and
+  `connectionWindow`. `ConnectionOpen` has no `connectionDatabase` and adds
+  `connectionStatements` and `connectionReleaseParent`. `Statement` adds
+  `statementArrowResult`, `statementBindings`, and `statementParameterNames`.
+  `StatementOpen` adds `statementParsed` and `statementSchemaCache`.
+  `StatementStream` has no `statementStreamMode` and adds
+  `statementStreamPendingChunks`. `StatementStreamColumn` has no
+  `statementStreamColumnType`.
 - The SQL error of a failed Haskell callback has the plain message of the
   exception. Version 0.3 gave `user error (...)` for a `userError` and the
   Haskell record for an `SQLError`.

@@ -6,7 +6,7 @@
 
 {- |
 Module      : Database.DuckDB.Simple.Native
-Description : Shared V2 error handling and borrowed UTF-8 views.
+Description : Shared V2 error handling and UTF-8 views.
 -}
 module Database.DuckDB.Simple.Native (
     module Database.DuckDB.FFI.V2,
@@ -38,10 +38,11 @@ module Database.DuckDB.Simple.Native (
     destroy,
     destroyValue,
     destroyLogicalType,
+    acquireItems,
+    releaseItems,
     withCreatedValues,
     nullHandle,
     indices,
-    mapFlat,
     withText,
     withTextArray,
     readText,
@@ -62,8 +63,9 @@ module Database.DuckDB.Simple.Native (
     NativeValue,
 ) where
 
-import Control.Exception (Exception, bracket, finally, mask_, throwIO)
-import Control.Monad (unless, when)
+import Control.Applicative ((<|>))
+import Control.Exception (Exception, SomeException, bracket, finally, mask_, onException, throwIO, try)
+import Control.Monad (foldM, unless, when, (<$!>))
 import qualified Data.ByteString as BS
 import Data.Char (isAsciiUpper, toLower)
 import Data.Coerce (Coercible, coerce)
@@ -267,35 +269,45 @@ destroyValue = destroy c_duckdb_v2_value_destroy
 destroyLogicalType :: DuckDBV2LogicalTypeHandle -> IO ()
 destroyLogicalType = destroy c_duckdb_v2_logical_type_destroy
 
--- | Release temporary values after construction or failure.
+{- | Run the acquire actions in list order under 'mask_', and give the items in
+list order. If an acquire action raises an error, release the items that the
+earlier actions gave, from the last to the first, and raise that error. The
+fold keeps a constant stack.
+-}
+acquireItems :: (a -> IO ()) -> [IO a] -> IO [a]
+acquireItems release = mask_ . fmap reverse . foldM (\owned acquire -> (: owned) <$> acquire `onException` releaseItems release owned) []
+
+{- | Release each item in list order, also when a release raises an error.
+Raise the first error after the last release. The fold keeps a constant stack.
+-}
+releaseItems :: (a -> IO ()) -> [a] -> IO ()
+releaseItems release items = foldM step (Nothing :: Maybe SomeException) items >>= mapM_ throwIO
+  where
+    step failure item = either (\err -> failure <|> Just err) (const failure) <$!> try (release item)
+
+{- | Create the values in list order, and give them to the action. Destroy the
+values in reverse order of creation after the action or after a failure. One
+'bracket' covers the whole list.
+-}
 withCreatedValues :: [IO DuckDBV2ValueHandle] -> ([DuckDBV2ValueHandle] -> IO a) -> IO a
-withCreatedValues = withMany (\create -> bracket create destroyValue)
+withCreatedValues creates = bracket (acquireItems destroyValue creates) (releaseItems destroyValue . reverse)
 
 -- | List the indices below a native count without unsigned underflow.
 indices :: DuckDBIdx -> [DuckDBIdx]
 indices count = if count == 0 then [] else [0 .. count - 1]
 
-{- | Map a list in IO without a stack frame for each element. The runtime
-scans the stack of a thread at each native call, and 'mapM' keeps one frame
-for each element. A native call in a 'mapM' over 2000 elements then takes
-about 20 times as long as in this loop.
--}
-mapFlat :: (a -> IO b) -> [a] -> IO [b]
-mapFlat action = go []
-  where
-    go done [] = pure (reverse done)
-    go done (item : rest) = action item >>= \result -> go (result : done) rest
-
--- | Borrow UTF-8 text for the duration of a native call.
+-- | Lend UTF-8 text to DuckDB for the duration of the action.
 withText :: Text -> (ConstPtr DuckDBV2Str -> IO a) -> IO a
 withText value = withBytes (Text.encodeUtf8 value)
 
--- | Borrow an array of UTF-8 views for the duration of a native call.
+-- | Lend an array of UTF-8 views to DuckDB for the duration of the action.
 withTextArray :: [Text] -> (Ptr DuckDBV2Str -> IO a) -> IO a
 withTextArray values action =
     withMany withText values $ \views -> mapM (\(ConstPtr view) -> peek view) views >>= (`withArray` action)
 
--- | Copy a borrowed UTF-8 view.
+{- | Copy the bytes of a UTF-8 view whose memory DuckDB owns. The result stays
+valid after DuckDB frees that memory.
+-}
 readText :: DuckDBV2Str -> IO Text
 readText view = Text.decodeUtf8 <$> readBytes view
 
@@ -308,26 +320,30 @@ valueText value = do
         _ <- output (c_duckdb_v2_value_to_string value buffer (count + 1))
         Text.decodeUtf8 <$> BS.packCStringLen (buffer, fromIntegral count)
 
--- | Borrow bytes through a length-delimited native view.
+-- | Lend bytes to DuckDB through a length-delimited view for the duration of the action.
 withBytes :: BS.ByteString -> (ConstPtr DuckDBV2Str -> IO a) -> IO a
 withBytes value action = BS.useAsCStringLen value $ \(ptr, count) ->
     with (DuckDBV2Str (ConstPtr ptr) (fromIntegral count)) (action . ConstPtr)
 
--- | Copy bytes from a borrowed native view, including interior NUL bytes.
+{- | Copy the bytes of a view whose memory DuckDB owns, including interior NUL
+bytes. The result stays valid after DuckDB frees that memory.
+-}
 readBytes :: DuckDBV2Str -> IO BS.ByteString
 readBytes (DuckDBV2Str (ConstPtr ptr) count)
     | count == 0 = pure BS.empty
     | otherwise = BS.packCStringLen (ptr, fromIntegral count)
 
--- | Borrow a UTF-8 native identifier.
+-- | Lend a UTF-8 identifier to DuckDB for the duration of the action.
 withIdentifier :: Text -> (ConstPtr DuckDBV2IdentifierT -> IO a) -> IO a
 withIdentifier value action = withText value (action . coerce)
 
--- | Borrow an array of UTF-8 native identifiers.
+-- | Lend an array of UTF-8 identifiers to DuckDB for the duration of the action.
 withIdentifierArray :: [Text] -> (Ptr DuckDBV2IdentifierT -> IO a) -> IO a
 withIdentifierArray values action = withTextArray values (action . castPtr)
 
--- | Copy a borrowed native identifier.
+{- | Copy the bytes of an identifier whose memory DuckDB owns. The result stays
+valid after DuckDB frees that memory.
+-}
 readIdentifier :: DuckDBV2IdentifierT -> IO Text
 readIdentifier = readText . coerce
 

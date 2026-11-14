@@ -16,7 +16,7 @@ module Database.DuckDB.Simple.V2.LogicalRep (
 ) where
 
 import Control.Exception (bracket, mask_, onException, throwIO)
-import Control.Monad (forM, when)
+import Control.Monad (foldM, forM, when)
 import Data.Array (elems, listArray)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), UnionMemberType (..))
@@ -70,7 +70,9 @@ logicalTypeToRep logical = do
                 <*> parameter 1 (\_ value -> output (c_duckdb_v2_value_get_utinyint value))
         DuckDBV2LogicalTypeIdEnum -> do
             size <- count
-            LogicalTypeEnum . listArray (0, size - 1) <$> mapM (string . fromIntegral) [0 .. size - 1]
+            -- A dictionary can have many entries, and each entry makes native
+            -- calls. The fold keeps a constant stack.
+            LogicalTypeEnum . listArray (0, size - 1) . reverse <$> foldM (\entries index -> (: entries) <$> string (fromIntegral index)) [] [0 .. size - 1]
         _ -> LogicalTypeScalar <$> logicalTypeIdFromNative dtype
 
 {- | Construct an owned logical type through a borrowed native factory.

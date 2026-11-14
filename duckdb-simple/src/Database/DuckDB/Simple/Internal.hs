@@ -741,7 +741,7 @@ storeBoundValue stmt index value = withStatementHandle stmt \_ -> mask_ do
 
 -- | Release all owned parameter values.
 clearBoundValues :: IORef (IntMap.IntMap DuckDBV2ValueHandle) -> IO ()
-clearBoundValues ref = atomicModifyIORef' ref (IntMap.empty,) >>= mapM_ destroyValue
+clearBoundValues ref = atomicModifyIORef' ref (IntMap.empty,) >>= releaseItems destroyValue . IntMap.elems
 
 -- | Bind SQL metadata and borrow the cached output and parameter schemas.
 -- The handles remain valid until the statement resets, rebinds, or closes.

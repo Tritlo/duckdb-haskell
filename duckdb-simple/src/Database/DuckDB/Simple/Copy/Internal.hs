@@ -165,12 +165,12 @@ copyToSide readVariant bindFn initFn sinkFn finalizeFn =
   where
     bind info _ = mask \restore -> do
       count <- output (c_duckdb_v2_copy_to_bind_get_column_count info)
-      types <- acquireTypes info count [] 0
+      types <- acquireItems destroyLogicalType [output (c_duckdb_v2_copy_to_bind_get_column_type info index) | index <- indices count]
       state <-
         restore (mapM (\logical -> output (c_duckdb_v2_logical_type_get_id logical) >>= logicalTypeIdFromNative) types >>= bindFn . CopyBindInfo)
-          `onException` mapM_ destroyLogicalType types
-      stable <- newStablePtr state `onException` mapM_ destroyLogicalType types
-      let release = freeStablePtr stable >> mapM_ destroyLogicalType types
+          `onException` releaseItems destroyLogicalType types
+      stable <- newStablePtr state `onException` releaseItems destroyLogicalType types
+      let release = freeStablePtr stable >> releaseItems destroyLogicalType types
       storage <- newStablePtr (CopyBindingStorage (castStablePtrToPtr stable) types) `onException` release
       attachOpaque (c_duckdb_v2_copy_to_bind_set_bind_data info) (castPtr (castStablePtrToPtr storage)) copyBindingDestructor
         `onException` (freeStablePtr storage >> release)
@@ -200,14 +200,6 @@ copyToSide readVariant bindFn initFn sinkFn finalizeFn =
 -- | A bind state and its owned logical descriptors share one native lifetime.
 data CopyBindingStorage = CopyBindingStorage !(Ptr ()) ![DuckDBV2LogicalTypeHandle]
 
--- | Retain the owned bind descriptors and release them on acquisition failure.
-acquireTypes :: DuckDBV2CopyToBindInfoHandle -> DuckDBIdx -> [DuckDBV2LogicalTypeHandle] -> DuckDBIdx -> IO [DuckDBV2LogicalTypeHandle]
-acquireTypes info count taken index
-  | index == count = pure (reverse taken)
-  | otherwise = do
-      logical <- output (c_duckdb_v2_copy_to_bind_get_column_type info index) `onException` mapM_ destroyLogicalType taken
-      acquireTypes info count (logical : taken) (index + 1)
-
 -- | Read the row wrapper state with its retained logical descriptors.
 readCopyBinding :: (Ptr (Ptr Void) -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO (a, [DuckDBV2LogicalTypeHandle])
 readCopyBinding getter = do
@@ -226,7 +218,7 @@ releaseCopyBinding raw =
         let storage = castPtrToStablePtr (castPtr raw) :: StablePtr CopyBindingStorage
         ( do
             CopyBindingStorage state types <- deRefStablePtr storage
-            mapM_ destroyLogicalType types `finally` freeStablePtr (castPtrToStablePtr state)
+            releaseItems destroyLogicalType types `finally` freeStablePtr (castPtrToStablePtr state)
           )
           `finally` freeStablePtr storage
 

@@ -140,7 +140,7 @@ readNativeTypes connection crss = do
           bracket (output (c_duckdb_v2_result_fetch_chunk result)) (destroy c_duckdb_v2_data_chunk_destroy) \chunk -> do
             when (chunk == nullHandle) $ throwIO (userError "duckdb-simple: the type query returned no row")
             owned <- columnTypes chunk (length crss)
-            flip onException (mapM_ destroyLogicalType owned) do
+            flip onException (releaseItems destroyLogicalType owned) do
               reported <- mapM logicalTypeToRep owned
               when (any (\rep -> case rep of LogicalTypeGeometry (Just _) -> False; _ -> True) reported) $
                 throwIO (userError "duckdb-simple: the type query did not preserve a configured GEOMETRY CRS")

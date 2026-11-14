@@ -58,8 +58,13 @@ connection. It does not read the private payload format of DuckDB.
 - The objects (withObjectChildren). The objects with the same keys share one
   extraction. If the keys can be STRUCT field names (validStructFields), one
   cast to a STRUCT list extracts the children. Otherwise one extraction query
-  binds the keys as values, so empty and NUL keys stay exact. An object without
-  keys needs no extraction (queryObjectGroup).
+  binds the keys as values, so empty and NUL keys stay exact. The SQL text of
+  the query depends only on the key count. The state keeps the parsed
+  extraction statement of the last key count (extractionStatement). A group
+  with another key count replaces that statement. The state keeps one
+  extraction statement only. Thus the memory of the state does not grow with
+  the number of key counts in the data. An object without keys needs no
+  extraction (queryObjectGroup).
 
 - The levels (decodeValues). The decoder reads the metadata of all values of
   one nesting level together. Then it decodes the children of all nodes of the
@@ -75,9 +80,9 @@ not interrupt the stream. See Note [Connection lock] in
 "Database.DuckDB.Simple.Internal". A materialized result closes before its rows
 are decoded, but it uses the same reader.
 
-VariantState holds the helper connection, the parsed statement, and the cast
-types. The owner of the helper connection destroys the state before the
-connection.
+VariantState holds the helper connection, the parsed metadata statement, the
+parsed extraction statement of the last key count, and the cast types. The
+owner of the helper connection destroys the state before the connection.
 
 - A caller connection (CacheState and withVariantState). The type cache of the
   connection opens the helper connection and the state at the first VARIANT
@@ -93,31 +98,40 @@ with the factory of the helper connection (materializePlainValue).
 -}
 
 -- | The helper connection of the VARIANT decoder, and the native objects that
--- the decoder keeps for it: the parsed metadata statement and the types for
--- casts and VARIANT lists. The state borrows the connection. The owner destroys
+-- the decoder keeps for it: the parsed metadata statement, the parsed
+-- extraction statement of the last key count, and the types for casts and
+-- VARIANT lists. The state borrows the connection. The owner destroys
 -- the state with 'destroyVariantState' before it destroys the connection. Use
 -- the state from one thread at a time. See Note [VARIANT decoding].
 data VariantState = VariantState
   { variantConnection :: DuckDBV2ConnectionHandle
   , variantStatement :: IORef (Maybe DuckDBV2SqlStatementHandle)
+  , variantExtraction :: IORef (Maybe (Int, DuckDBV2SqlStatementHandle))
   , variantTypes :: CastTypes
   }
 
 -- | Make an empty state for a helper connection. This allocates no native
 -- object.
 newVariantState :: DuckDBV2ConnectionHandle -> IO VariantState
-newVariantState connection = VariantState connection <$> newIORef Nothing <*> newIORef Map.empty
+newVariantState connection = VariantState connection <$> newIORef Nothing <*> newIORef Nothing <*> newIORef Map.empty
 
--- | Destroy the statement and every cached type. Release every item even if
--- one destructor fails, and raise the first error after the last release. The
--- state is empty afterwards, so a second call does nothing.
+-- | Destroy the metadata statement, the extraction statement, and every cached
+-- type. Release every item even if one destructor fails, and raise the first
+-- error after the last release. The state is empty afterwards, so a second call
+-- does nothing.
 destroyVariantState :: VariantState -> IO ()
-destroyVariantState VariantState{variantStatement, variantTypes} = mask_ do
+destroyVariantState VariantState{variantStatement, variantExtraction, variantTypes} = mask_ do
   statement <- readIORef variantStatement
+  extraction <- readIORef variantExtraction
   types <- readIORef variantTypes
   writeIORef variantStatement Nothing
+  writeIORef variantExtraction Nothing
   writeIORef variantTypes Map.empty
-  releaseItems id (map (destroy c_duckdb_v2_sql_statement_destroy) (maybe [] pure statement) <> map destroyLogicalType (Map.elems types))
+  releaseItems
+    id
+    ( map (destroy c_duckdb_v2_sql_statement_destroy) (maybe [] pure statement <> maybe [] (pure . snd) extraction)
+        <> map destroyLogicalType (Map.elems types)
+    )
 
 -- | Copy a vector before returning its row reader. The connection of the state
 -- is a dedicated helper connection. It must remain exclusively borrowed until
@@ -221,11 +235,13 @@ queryObjectGroup state keys rows =
 -- native cast to a STRUCT list makes the values. Otherwise an extraction query
 -- makes them. The binder needs constant extraction keys. The query binds each
 -- key once and applies the extractions to all objects. The bound keys can be
--- empty or contain NUL. V2 has no accessor for the children of a VARIANT value.
--- The STRUCT cast is the fast path. The query is the only exact path for the
--- other key lists. See Note [VARIANT decoding].
+-- empty or contain NUL. The state keeps the parsed extraction statement of the
+-- last key count ('extractionStatement'). A group with another key count
+-- replaces it. V2 has no accessor for the children of a VARIANT value. The
+-- STRUCT cast is the fast path. The query is the only exact path for the other
+-- key lists. See Note [VARIANT decoding].
 withObjectChildren :: VariantState -> [Text] -> DuckDBV2ValueHandle -> (DuckDBV2ValueHandle -> IO a) -> IO a
-withObjectChildren VariantState{variantConnection = connection} keys list action
+withObjectChildren state@VariantState{variantConnection = connection} keys list action
   | validStructFields keys =
       -- The cast is lenient. It matches a key and a field name without
       -- regard to ASCII case. It gives NULL for a missing key. It ignores an
@@ -240,16 +256,13 @@ withObjectChildren VariantState{variantConnection = connection} keys list action
         bracket
           (acquireItems destroyValue [withText key (output . c_duckdb_v2_value_create_varchar factory) | key <- keys])
           (releaseItems destroyValue)
-          \keyValues ->
-            withSQLStatement connection sql \statement ->
-              withStatementValue connection statement (list : keyValues) action
+          \keyValues -> do
+            statement <- extractionStatement state (length keys)
+            withStatementValue connection statement (list : keyValues) action
   where
     structList =
       LogicalTypeList
         (LogicalTypeStruct (listArray (0, length keys - 1) [StructField key (LogicalTypeScalar LogicalTypeIdVariant) | key <- keys]))
-    sql =
-      "SELECT system.main.list_transform($1::VARIANT[], lambda value: system.main.list_value(" <> Text.intercalate "," extracts <> ")) AS payload"
-    extracts = ["system.main.variant_extract(value,$" <> Text.pack (show index) <> "::VARCHAR)" | index <- [2 .. length keys + 1]]
 
 -- | Tell if the keys can be the field names of one STRUCT type. A name must
 -- not be empty and must not contain NUL. Two names must not be equal after ASCII
@@ -304,16 +317,44 @@ metadataStatement :: VariantState -> IO DuckDBV2SqlStatementHandle
 metadataStatement VariantState{variantConnection = connection, variantStatement} =
   readIORef variantStatement >>= \case
     Just statement -> pure statement
-    -- Store the statement before the iterator is destroyed, so that the
-    -- state owns it even if that destroy call fails.
-    Nothing -> mask_ $ TextForeign.withCString sql \source ->
-      bracket (output (c_duckdb_v2_parse_sql connection (ConstPtr source))) (destroy c_duckdb_v2_statement_iterator_destroy) \iterator -> do
-        statement <- output (c_duckdb_v2_statement_iterator_next iterator)
-        writeIORef variantStatement (Just statement)
-        pure statement
+    Nothing -> mask_ (parseKept connection sql (writeIORef variantStatement . Just))
   where
     sql =
       "SELECT system.main.list_transform(?::VARIANT[], lambda value: system.main.struct_pack(tag := system.main.variant_typeof(value), keys := system.main.variant_keys(value))) AS metadata"
+
+-- | Borrow the extraction statement for a key count. The state keeps the
+-- statement of the last key count. A call with another key count parses a new
+-- statement and destroys the old statement. The statement is valid until the
+-- next call of this function or 'destroyVariantState'. See
+-- Note [VARIANT decoding].
+extractionStatement :: VariantState -> Int -> IO DuckDBV2SqlStatementHandle
+extractionStatement VariantState{variantConnection = connection, variantExtraction} count =
+  readIORef variantExtraction >>= \case
+    Just (kept, statement) | kept == count -> pure statement
+    previous ->
+      -- Store the new statement before the old statement is destroyed. If the
+      -- parse fails, the slot keeps the old statement. If the destroy of the
+      -- old statement fails, the error propagates. Then the slot holds the new
+      -- statement. Nothing destroys the old statement again, as in
+      -- 'destroyVariantState'.
+      mask_ $ parseKept connection sql \statement -> do
+        writeIORef variantExtraction (Just (count, statement))
+        mapM_ (destroy c_duckdb_v2_sql_statement_destroy . snd) previous
+  where
+    sql =
+      "SELECT system.main.list_transform($1::VARIANT[], lambda value: system.main.list_value(" <> Text.intercalate "," extracts <> ")) AS payload"
+    extracts = ["system.main.variant_extract(value,$" <> Text.pack (show index) <> "::VARCHAR)" | index <- [2 .. count + 1]]
+
+-- | Parse trusted SQL and return its first statement. Give the statement to the
+-- keep action before the iterator is destroyed, so that the state owns the
+-- statement even if that destroy call fails. Call this function under 'mask_'.
+parseKept :: DuckDBV2ConnectionHandle -> Text -> (DuckDBV2SqlStatementHandle -> IO ()) -> IO DuckDBV2SqlStatementHandle
+parseKept connection sql keep =
+  TextForeign.withCString sql \source ->
+    bracket (output (c_duckdb_v2_parse_sql connection (ConstPtr source))) (destroy c_duckdb_v2_statement_iterator_destroy) \iterator -> do
+      statement <- output (c_duckdb_v2_statement_iterator_next iterator)
+      keep statement
+      pure statement
 
 -- | Read exact scalar tags and object keys without serializing payloads.
 queryMetadata

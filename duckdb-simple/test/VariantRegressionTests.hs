@@ -334,6 +334,31 @@ tests =
                   _ -> [("a", 1), ("n", 0)]
         length rows @?= 3000
         forM_ rows \(n, Variant actual) -> actual @?= expected n
+    , testCase "VARIANT objects with keys that a STRUCT cannot name decode in each chunk" $
+        withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
+          -- The empty key needs the extraction query. The result has three chunks.
+          let sql = "SELECT i, json_object('', i, 'n', i + 1)::VARIANT FROM range(5000) t(i)" :: Query
+              expected n = variantObject [("", FieldWord64 (fromIntegral n)), ("n", FieldWord64 (fromIntegral (n + 1)))]
+          rows <- query_ conn sql :: IO [(Int64, Variant)]
+          rows @?= [(n, Variant (expected n)) | n <- [0 .. 4999]]
+          count <- fold_ conn sql (0 :: Int64) \n (i, Variant actual) -> do
+            (i, actual) @?= (n, expected n)
+            pure (n + 1)
+          count @?= 5000
+    , testCase "VARIANT objects with different key counts decode after each other" $ withConnection ":memory:" \conn -> do
+        -- Each object has an empty key, so each object group uses the extraction
+        -- query. The key count changes between the queries and in the last query.
+        let two n = variantObject [("", FieldWord64 n), ("n", FieldWord64 (n + 1))]
+            three n = variantObject [("", FieldWord64 n), ("a", FieldWord64 (n + 1)), ("b", FieldWord64 (n + 2))]
+            twoKeys = "SELECT json_object('', i, 'n', i + 1)::VARIANT FROM range(3) t(i)"
+            threeKeys = "SELECT json_object('', i, 'a', i + 1, 'b', i + 2)::VARIANT FROM range(3) t(i)"
+            check sql expected = (query_ conn sql :: IO [Only Variant]) >>= (@?= map (Only . Variant) expected)
+        check twoKeys (map two [0 .. 2])
+        check threeKeys (map three [0 .. 2])
+        check twoKeys (map two [0 .. 2])
+        check
+          "SELECT CASE WHEN i % 2 = 0 THEN json_object('', i, 'n', i + 1) ELSE json_object('', i, 'a', i + 1, 'b', i + 2) END::VARIANT FROM range(4) t(i)"
+          [two 0, three 1, two 2, three 3]
     , testCase "filtered and reordered rows use the right child offsets" $ withConnection ":memory:" \conn -> do
         rows <- query_ conn "SELECT {'n': i, 'xs': [i, i + 1]}::VARIANT FROM range(10000) t(i) WHERE i % 97 = 0 ORDER BY i DESC LIMIT 40"
         let expected =

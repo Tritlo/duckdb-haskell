@@ -229,9 +229,11 @@ data ConnectionOptions = ConnectionOptions
   --     with its default scope. An option whose default scope is GLOBAL thus changes
   --     the instance. This change applies to all connections of the instance.
   , connectionGeometryCRS :: [Text]
-  -- ^ CRS definitions to preserve in composite parameters. A helper
-  --     connection reads and caches their SQL-derived types on first use.
-  --     The default is @OGC:CRS84@. Include custom CRS names in this list.
+  -- ^ CRS definitions to preserve in composite parameters. DuckDB constructs
+  --     a recognized name, such as @OGC:CRS84@, and a complete definition
+  --     directly. For each other name, the connection reads a SQL-derived type
+  --     when it opens, and a name that DuckDB drops fails the open. The default
+  --     is @OGC:CRS84@. Include custom CRS names in this list.
   }
   deriving (Eq, Show)
 

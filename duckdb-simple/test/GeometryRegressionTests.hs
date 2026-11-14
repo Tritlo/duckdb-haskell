@@ -357,7 +357,7 @@ tests =
             nextRow stmt >>= (@?= Just (Only value))
             bind stmt [toField value]
             nextRow stmt >>= (@?= Just (Only value))
-    , testCase "lazy CRS lookup leaves an active caller stream usable" $ do
+    , testCase "a configured CRS bind leaves an active caller stream usable" $ do
         let crs = "local' íslenska λ"
         withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = [crs]} \conn ->
           withStatement conn "SELECT ?" \parameter -> do

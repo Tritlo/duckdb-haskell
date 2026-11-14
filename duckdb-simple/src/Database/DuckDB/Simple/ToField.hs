@@ -56,6 +56,7 @@ import Database.DuckDB.Simple.FromField (
 import Database.DuckDB.Simple.Internal (
   Statement (..),
   duckDBTypeFromName,
+  duckDBTypeToName,
   preparedParameterType,
   storeBoundValue,
   withTypeCache,
@@ -259,9 +260,98 @@ instance ToField Int32
 
 instance ToField Int64
 
-instance ToField Integer
+-- | A value from -2^127 to 2^127 - 1 binds as a HUGEINT. A value outside this
+-- range binds as a UHUGEINT for a UHUGEINT parameter that can hold it, and as a
+-- BIGNUM for a parameter that has no known type or is not an integer or DECIMAL
+-- type. For another integer or DECIMAL parameter, such a value raises
+-- 'SQLError'. Bind a t'BigNum' to bind a BIGNUM value in each case. See
+-- Note [Integer parameters].
+instance ToField Integer where
+  toField = integerBinding
 
-instance ToField Natural
+-- | A value from 0 to 2^127 - 1 binds as a HUGEINT. A larger value binds as a
+-- UHUGEINT for a UHUGEINT parameter that can hold it, and as a BIGNUM for a
+-- parameter that has no known type or is not an integer or DECIMAL type. For
+-- another integer or DECIMAL parameter, such a value raises 'SQLError'. Bind a
+-- t'BigNum' to bind a BIGNUM value in each case. See Note [Integer parameters].
+instance ToField Natural where
+  toField = integerBinding . toInteger
+
+{- Note [Integer parameters]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+integerBinding binds an Integer or a Natural parameter with this rule:
+
+- A value from -2^127 to 2^127 - 1 binds as a HUGEINT. The binding does not
+  read the parameter type.
+- A value outside this range makes the binding read the parameter type. A
+  UHUGEINT parameter that can hold the value gets a UHUGEINT value. Another
+  integer parameter (TINYINT to UHUGEINT) or a DECIMAL parameter gets an
+  SQLError with the type ErrorInputOutOfRange. Each other parameter, and a
+  parameter with no known type, gets a BIGNUM value.
+
+- Why a HUGEINT. In DuckDB 2.0.0, the casts from BIGNUM to the integer types
+  have defects (Bignum::BignumToInt in
+  src/include/duckdb/common/types/bignum.hpp):
+  - A cast to HUGEINT or UHUGEINT fails for each value except 0 and -1.
+  - A cast of a negative value to an unsigned type gives a wrapped value and
+    no error. For example, -5 for a UBIGINT gives 18446744073709551611.
+  - A cast reduces a value of 2^128 or more modulo 2^128 before it checks the
+    range. For example, 2^128 + 5 for a BIGINT gives 5.
+  DuckDB 2.0.0 has no cast from BIGNUM to DECIMAL. DuckDB checks the range of
+  each cast from HUGEINT and UHUGEINT. For TINYINT to UBIGINT, DOUBLE,
+  VARCHAR, BIGNUM, JSON, and VARIANT, the cast from HUGEINT gives the same
+  result as the cast from BIGNUM where the cast from BIGNUM has no defect.
+
+- Why the binding reads the parameter type only outside the HUGEINT range. A
+  read of the parameter type runs the binder of DuckDB. See
+  Note [Statement schemas] in "Database.DuckDB.Simple.Internal". A value in the
+  HUGEINT range does not have this cost.
+
+- What stays BIGNUM:
+  - A value outside the HUGEINT range for a parameter with no known type, as
+    in SELECT ?, binds as a BIGNUM. A cast that DuckDB adds later can still
+    have the defects above.
+  - A BigNum always binds as a BIGNUM.
+  - An Array of Integer values declares the element type BIGNUM. DuckDB casts
+    each element to the declared element type when it builds the array. Thus
+    each element is a BIGNUM, and a cast of the array to an array of an
+    integer type can have the defects above.
+
+Issue 41 of duckdb-haskell tracks the defects.
+-}
+
+-- | Bind an integer as a HUGEINT, a UHUGEINT, or a BIGNUM value. See
+-- Note [Integer parameters].
+integerBinding :: Integer -> FieldBinding
+integerBinding value
+  | value >= negate (1 `shiftL` 127) && value < 1 `shiftL` 127 = valueBinding (show value) (`hugeIntDuckValue` value)
+  | otherwise = targetValueBinding (show value) \ValueBuilder{builderFactory = factory} readTarget -> do
+      target <- readTarget
+      case target of
+        Just (LogicalTypeScalar LogicalTypeIdUHugeInt) | value >= 0 && value < 1 `shiftL` 128 -> uhugeIntDuckValue factory value
+        Just (LogicalTypeScalar dtype) | dtype `elem` integerTypes -> outOfRange (duckDBTypeToName dtype)
+        Just (LogicalTypeDecimal width scale) -> outOfRange ("DECIMAL(" <> Text.pack (show width) <> "," <> Text.pack (show scale) <> ")")
+        _ -> bigNumDuckValue factory (BigNum value)
+  where
+    integerTypes =
+      [ LogicalTypeIdTinyInt
+      , LogicalTypeIdSmallInt
+      , LogicalTypeIdInteger
+      , LogicalTypeIdBigInt
+      , LogicalTypeIdHugeInt
+      , LogicalTypeIdUTinyInt
+      , LogicalTypeIdUSmallInt
+      , LogicalTypeIdUInteger
+      , LogicalTypeIdUBigInt
+      , LogicalTypeIdUHugeInt
+      ]
+    outOfRange typeName =
+      throwIO
+        SQLError
+          { sqlErrorMessage = "duckdb-simple: the value " <> Text.pack (show value) <> " is out of range for a parameter of the type " <> typeName
+          , sqlErrorType = Just ErrorInputOutOfRange
+          , sqlErrorQuery = Nothing
+          }
 
 instance ToField UUID.UUID
 

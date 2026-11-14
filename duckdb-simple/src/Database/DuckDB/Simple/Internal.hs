@@ -1078,8 +1078,9 @@ when the statement closes.
 
 - The cost. The first read of a parameter type after a bind runs the binder of
   DuckDB again. Only a binding that reads the type of its parameter has this
-  cost: a UTCTime, an Unbounded UTCTime, an Array, and a manual STRUCT, TUPLE,
-  or UNION value.
+  cost: a UTCTime, an Unbounded UTCTime, an Array, a manual STRUCT, TUPLE, or
+  UNION value, and an Integer or a Natural outside the HUGEINT range (see
+  Note [Integer parameters] in "Database.DuckDB.Simple.ToField").
 
 - The exception is executeMany. One executeMany call binds many rows on one
   statement that no caller can reach. withKeptParameterTypes keeps the decoded

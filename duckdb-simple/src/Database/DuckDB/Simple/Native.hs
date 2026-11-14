@@ -105,7 +105,9 @@ data SQLError = SQLError
 instance Exception SQLError
 
 -- | The category of a native DuckDB error. An error that duckdb-simple reports
--- has no error type.
+-- has no error type, with two exceptions. A callback that waits too long for a
+-- connection lock gets 'ErrorResourceInUse'. An integer parameter that its
+-- target cannot hold gets 'ErrorInputOutOfRange'.
 data ErrorType
   = ErrorApi
   | ErrorIOFileNotFound

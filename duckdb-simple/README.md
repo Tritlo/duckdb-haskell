@@ -735,6 +735,15 @@ again. `deleteFunction` has a GHC `WARNING` pragma, so each use causes a
 compile-time warning. A build with `-Werror` must allow that warning, for
 example with `-Wno-error=deprecations`.
 
+DuckDB runs callbacks on its own threads. Each call of a callback needs a
+capability of the GHC runtime. With one capability, which is the default, a
+callback from a second DuckDB thread waits until the capability is free, and
+the operating system switches threads for each such call. A query that makes
+many callbacks on several DuckDB threads is then much slower. Give the program
+as many capabilities as DuckDB has threads, for example with
+`ghc-options: -threaded -rtsopts "-with-rtsopts=-N"`, or set the DuckDB setting
+`threads` to 1.
+
 A callback must not run a statement on the connection that runs the callback.
 Use another connection of the same instance. This rule applies to each
 registered callback, for example of a scalar function, a cast, an aggregate

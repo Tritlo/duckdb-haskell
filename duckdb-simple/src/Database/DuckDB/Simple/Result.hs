@@ -160,7 +160,14 @@ fetchChunk ref conn queryText stream = withQueryError queryText $ mask \restore 
           readers <- restore (prepareChunkReaders conn chunk (statementStreamColumns stream))
           pure nextStream{statementStreamChunk = Just (StatementStreamChunk chunk rowCount 0 readers)}
 
--- | Prepare readers that borrow the vectors in an owned chunk.
+-- | Prepare readers that borrow the vectors in an owned chunk. The readers read
+-- each type from its vector. The header of @duckdb_v2_result_get_schema@ calls
+-- the result schema the authoritative source of the column types, and says that
+-- vectors do not carry their own type. But the header of
+-- @duckdb_v2_vector_get_logical_type@ says that a vector has the type that was
+-- set on creation, and the header of @duckdb_v2_vector_get_view@ says that the
+-- data has the layout that the logical type of the vector implies. So the
+-- readers use the vector type.
 prepareChunkReaders :: Connection -> DuckDBV2DataChunkHandle -> [StatementStreamColumn] -> IO [Int -> IO FieldValue]
 prepareChunkReaders conn chunk columns = withTypeCache conn \cache -> withConnectionHandle conn \native -> withConnectionFactory native \factory -> do
   let readVariant vector = withTypeConnection cache (\helper state -> prepareVariantReader helper state vector)

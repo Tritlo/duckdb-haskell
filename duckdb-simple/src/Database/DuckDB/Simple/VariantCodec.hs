@@ -64,7 +64,8 @@ destroyVariantState VariantState{variantStatement, variantTypes} = mask_ do
 -- Each level batches type and key metadata. Scalars with the same tag share
 -- one native cast. Objects with the same keys share one native STRUCT cast. If a
 -- key cannot be a STRUCT field name, the objects share one extraction query. That
--- query binds the keys as values, so empty and NUL keys stay exact.
+-- query binds the keys as values, so empty and NUL keys stay exact. Each array
+-- gets its own cast to a VARIANT list.
 prepareVariantDecoder
   :: (DuckDBV2ConnectionHandle -> DuckDBV2ValueHandle -> IO FieldValue)
   -> DuckDBV2ConnectionHandle

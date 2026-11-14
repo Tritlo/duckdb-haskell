@@ -101,7 +101,12 @@ prepareVectorReader readers vector = do
   -- @src/main/capi/v2/capi_v2_vector.cpp@; the header does not say this). Then
   -- the physical row is the logical row. The readers of VARIANT and GEOMETRY
   -- need this, because they read logical rows. The flatten changes the buffers
-  -- of the vector, so it runs before the view is read.
+  -- of the vector, so it runs before the view is read. In DuckDB 2.0.0 the
+  -- flatten is recursive: it also flattens the child of a LIST or MAP vector and
+  -- the fields of a STRUCT vector (@VectorListBuffer::Flatten@ and
+  -- @VectorStructBuffer::Flatten@). The MAP decoder depends on this, because it
+  -- takes the key and value vectors from the entry STRUCT and does not flatten
+  -- that STRUCT itself. The header does not say this.
   checked (c_duckdb_v2_vector_flatten vector)
   dtype <- vectorElementType vector
   view <- output (c_duckdb_v2_vector_get_view vector)

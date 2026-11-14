@@ -45,7 +45,8 @@ import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Alloc (alloca, allocaBytes)
-import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
+import Foreign.Marshal.Array (advancePtr)
+import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (Storable (..), peekElemOff)
 import GHC.Exts (Ptr (..), Word (W#))
 import GHC.Num.Integer (integerFromAddr)
@@ -101,7 +102,7 @@ chunkDecodeBlob :: Ptr Void -> DuckDBIdx -> IO BS.ByteString
 chunkDecodeBlob dataPtr row = do
   -- Read each field through its generated field pointer. A getField on the
   -- union value calls the bindings package. That call copies the union.
-  let ptr = castPtr dataPtr `plusPtr` (fromIntegral row * sizeOf (undefined :: DuckDBV2Bytes)) :: Ptr DuckDBV2Bytes
+  let ptr = advancePtr @DuckDBV2Bytes (castPtr dataPtr) (fromIntegral row)
       value = getField @"value" ptr
   len <- peek (getField @"length" (getField @"inlined" value))
   source <-

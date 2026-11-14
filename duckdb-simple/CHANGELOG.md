@@ -159,17 +159,47 @@
   on the new connection, so the default list runs no query. The connection keeps
   each type, and a bind copies it. A name that DuckDB drops, for example a blank
   name, fails the open.
+- A STRUCT, TUPLE, or UNION parameter binds a `FieldGeometry` value as a
+  GEOMETRY with the same WKB bytes and CRS, through DuckDB's cast from BLOB.
+  A value whose CRS is not the CRS of its declared type raises `SQLError` with
+  the type `ErrorInputInvalid`. A `Variant` parameter binds a `FieldGeometry`
+  value without a CRS. One with a CRS raises `SQLError`, because a VARIANT does
+  not keep the CRS. Version 0.3 raised an error for each such value, because
+  DuckDB 1.5 has no cast from BLOB to GEOMETRY.
 - Empty `Array` parameters raise `SQLError`. Use an SQL empty LIST.
 - `executeMany` reads the parameter types one time for each call, not one time
   for each row. A row with a `UTCTime`, an `Unbounded UTCTime`, an `Array`, or
   a manual STRUCT, TUPLE, or UNION parameter no longer runs the DuckDB binder
   again. A column type that changes during the call does not change how the
   later rows of that call bind.
+- An `Integer` or a `Natural` parameter binds as a HUGEINT value when the value
+  is in the HUGEINT range. Before, it bound as a BIGNUM value in each case. In
+  DuckDB 2.0.0 the casts from BIGNUM to the integer types have defects: a
+  HUGEINT, UHUGEINT, or DECIMAL target failed, a negative value for an unsigned
+  target was stored as a wrapped value, and a value of 2^128 or more was stored
+  modulo 2^128. DuckDB checks the range of a HUGEINT value for its target. A
+  value outside the HUGEINT range binds as BIGNUM, or as UHUGEINT for a
+  UHUGEINT parameter that can hold it. For each other integer or DECIMAL
+  parameter, such a value raises an `SQLError` of the type
+  `ErrorInputOutOfRange`. `typeof(?)` is thus HUGEINT for an `Integer` in the
+  HUGEINT range. Bind a `BigNum` to bind a BIGNUM value in each case. An
+  `Array` of `Integer` or `Natural` values takes the element type of its
+  target when that type is an integer type or DECIMAL, so DuckDB checks the
+  range of each element. Before, a negative element for an unsigned array
+  column was stored as a wrapped value.
 - A generic record with an `Array` field that has elements can be bound. The
   value gives the ARRAY size. DuckDB rejects the record when no value gives the
   size: an `Array` field with the value `Nothing`, an `Array` inside a LIST,
   ARRAY, or MAP field, and a sum type with an `Array` constructor fail with
   "ARRAY type size must be at least 1".
+- A product type with no fields has one encoding: the STRUCT without fields,
+  which DuckDB shows as `{}`. `genericToFieldValue` gives this STRUCT, as the
+  `ViaDuckDB` binding and `genericToStructValue` did before. A constructor with
+  no fields in a sum type has this STRUCT as its payload. This includes each
+  constructor of an enum-like sum type, such as `data Colour = Red | Blue`.
+  Version 0.3 gave `FieldNull` in these two places, so `Just x` and `Nothing`
+  of such a type were the same value in a field. The decoders accept
+  `FieldNull` and the STRUCT without fields.
 - A value that is not NULL with the declared type SQLNULL raises a conversion
   error. Before, it was bound as NULL with no error. This applies to a manual
   `StructValue`, `TupleValue`, or `UnionValue`, to a LIST of that type, and to

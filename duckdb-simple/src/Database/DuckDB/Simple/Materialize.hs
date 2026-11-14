@@ -207,10 +207,15 @@ writers of one-row vectors in "Database.DuckDB.Simple.ToField").
   memory only for a vector that is already FLAT. Thus after this order the
   vector is FLAT and has the new number of rows. The header gives no order.
 
-- In DuckDB 2.0.0 a new vector of a data chunk is FLAT. DataChunk::Initialize
-  makes each vector from a vector cache (src/common/types/data_chunk.cpp). The
-  header does not say this. Thus the writer of an owned vector needs no
-  flatten.
+- A new vector of a data chunk is FLAT. The header of
+  duckdb_v2_data_chunk_create says: "Allocates one FLAT vector per element of
+  the types array". Thus the writer of an owned vector needs no flatten. In
+  DuckDB 2.0.0 the children of such a vector are FLAT too: the vector cache
+  resets each child of a LIST, ARRAY, or STRUCT vector to FLAT
+  (VectorCacheEntry::ResetFromCache in src/common/types/vector_cache.cpp). The
+  header does not say this for the children. The writer of a UNION value writes
+  the child vectors of a new vector (unionValueDuckValue in
+  "Database.DuckDB.Simple.ToField").
 
 - The set operations check the row against the size. The header of
   duckdb_v2_vector_set_value and duckdb_v2_vector_set_null says that each call

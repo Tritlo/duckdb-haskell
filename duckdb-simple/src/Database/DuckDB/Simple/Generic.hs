@@ -24,7 +24,8 @@
 --   are encoded as STRUCT values.  Record fields retain their selector name;
 --   positional products fall back to @field1@, @field2@, …
 -- * /Sum types/ (:+:) become UNION values.  Each constructor becomes a union
---   member; payloads are encoded as structs (or @NULL@ for nullary constructors).
+--   member; payloads are encoded as structs (a STRUCT without fields for a
+--   constructor without fields).
 --
 -- Recursive types are supported as long as every payload is itself encodable
 -- through @DuckValue@. Note that sum types must have constructor fields that are
@@ -49,7 +50,7 @@
 --
 -- Constructors are turned into a union with the members @Circle@ (a STRUCT with
 -- the field @field1@), @Rectangle@ (a STRUCT with the fields @field1@ and
--- @field2@), and @Origin@ (a NULL payload).
+-- @field2@), and @Origin@ (a STRUCT without fields).
 --
 -- You can also lean on @DerivingVia@ using the exported @ViaDuckDB@ newtype:
 --
@@ -184,13 +185,17 @@ instance DuckValue Int64 where
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdBigInt
 
 -- | A field of a generic record has the type HUGEINT. A value outside that range
--- raises an error. A top-level parameter of this type is BIGNUM.
+-- raises an error. A top-level parameter of this type also binds as HUGEINT
+-- when the value is in that range. See Note [Integer parameters] in
+-- "Database.DuckDB.Simple.ToField".
 instance DuckValue Integer where
   duckToField = FieldHugeInt
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdHugeInt
 
 -- | A field of a generic record has the type UHUGEINT. A value outside that range
--- raises an error. A top-level parameter of this type is BIGNUM.
+-- raises an error. A top-level parameter of this type binds as HUGEINT when the
+-- value is in the HUGEINT range. See Note [Integer parameters] in
+-- "Database.DuckDB.Simple.ToField".
 instance DuckValue Natural where
   duckToField = FieldUHugeInt . toInteger
   duckLogicalType _ = LogicalTypeScalar LogicalTypeIdUHugeInt
@@ -340,13 +345,11 @@ instance (Ord k, DuckValue k, DuckValue v) => DuckValue (Map.Map k v) where
 data Encoded
   = EncodedStruct (StructValue FieldValue) (Array Int (StructField LogicalTypeRep))
   | EncodedUnion (UnionValue FieldValue)
-  | EncodedNull
 
 encodedValue :: Encoded -> FieldValue
 encodedValue = \case
   EncodedStruct sv _ -> FieldStruct sv
   EncodedUnion uv -> FieldUnion uv
-  EncodedNull -> FieldNull
 
 -- | Convert a Haskell value (using its generic representation) into a DuckDB @FieldValue@.
 genericToFieldValue :: forall a. (Generic a, GToField (Rep a)) => a -> FieldValue
@@ -365,18 +368,7 @@ genericToStructValue :: forall a. (Generic a, GToField (Rep a)) => a -> Maybe (S
 genericToStructValue value =
   case gToField (from value) of
     EncodedStruct sv _ -> Just sv
-    EncodedNull -> Just emptyStructValue
     _ -> Nothing
-
--- | The STRUCT value without fields. It is the value of a product type with no
--- fields, which the generic encoding gives as 'EncodedNull'.
-emptyStructValue :: StructValue FieldValue
-emptyStructValue =
-  StructValue
-    { structValueFields = listArray (0, -1) []
-    , structValueTypes = listArray (0, -1) []
-    , structValueIndex = Map.empty
-    }
 
 -- | Extract a UNION-shaped generic encoding directly when one is produced.
 genericToUnionValue :: forall a. (Generic a, GToField (Rep a)) => a -> Maybe (UnionValue FieldValue)
@@ -418,25 +410,40 @@ class GToField' (isSum :: Bool) f where
 
 -- Products (single constructor records)
 
--- | Product encoding: single-constructor datatypes become STRUCT values.
+{- Note [Types without fields]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A product type with no fields encodes as the STRUCT without fields. The payload
+of a constructor with no fields in a sum type is also the STRUCT without fields,
+and the type of its UNION member is the STRUCT type without fields. DuckDB shows
+this value as {}. The value is not NULL.
+
+- Why not NULL. NULL is the encoding of Nothing in a field of the type Maybe a.
+  If a value without fields encodes as NULL, then Just x and Nothing are the
+  same value in a field.
+
+- The decoders also accept NULL for a product type with no fields and for the
+  payload of a constructor with no fields. In version 0.3, genericToFieldValue
+  gave NULL for a product type with no fields, and the payload of a
+  constructor with no fields was NULL.
+-}
+
+-- | Product encoding: single-constructor datatypes become STRUCT values. See
+-- Note [Types without fields].
 instance (GStruct f) => GToField' 'False (M1 D meta (M1 C c f)) where
   gToField' _ (M1 (M1 inner)) =
     let comps = gStructValues inner
         typeComps = gStructTypes (Proxy :: Proxy (f p))
-    in  case comps of
-          [] -> EncodedNull
-          _ ->
-            let names = resolveNames (zip progIndices (map fcName comps))
-                valueArray = listArrayFrom names (map fcValue comps)
-                typeArray = listArrayFrom names (map fcValue typeComps)
-                indexMap = Map.fromList (zip names [0 ..])
-            in  EncodedStruct
-                  StructValue
-                    { structValueFields = valueArray
-                    , structValueTypes = typeArray
-                    , structValueIndex = indexMap
-                    }
-                  typeArray
+        names = resolveNames (zip progIndices (map fcName comps))
+        valueArray = listArrayFrom names (map fcValue comps)
+        typeArray = listArrayFrom names (map fcValue typeComps)
+        indexMap = Map.fromList (zip names [0 ..])
+    in  EncodedStruct
+          StructValue
+            { structValueFields = valueArray
+            , structValueTypes = typeArray
+            , structValueIndex = indexMap
+            }
+          typeArray
     where
       progIndices = [0 :: Int ..]
   gLogicalType' _ _ =
@@ -557,20 +564,21 @@ instance (Constructor c, GStruct f, GStructDecode f) => GSum (M1 C c f) where
             in  LogicalTypeStruct (listArrayFrom names (map fcValue typeComps))
         }
     ]
+
+  -- See Note [Types without fields].
   gSumEncode (M1 x) =
-    case gStructValues x of
-      [] -> (0, FieldNull)
-      comps ->
-        let typeComps = gStructTypes (Proxy :: Proxy (f p))
-            names = resolveNames (zip [0 :: Int ..] (map fcName comps))
-            valueArray = listArrayFrom names (map fcValue comps)
-            typeArray = listArrayFrom names (map fcValue typeComps)
-            indexMap = Map.fromList (zip names [0 ..])
-        in  (0, FieldStruct StructValue{structValueFields = valueArray, structValueTypes = typeArray, structValueIndex = indexMap})
+    let comps = gStructValues x
+        typeComps = gStructTypes (Proxy :: Proxy (f p))
+        names = resolveNames (zip [0 :: Int ..] (map fcName comps))
+        valueArray = listArrayFrom names (map fcValue comps)
+        typeArray = listArrayFrom names (map fcValue typeComps)
+        indexMap = Map.fromList (zip names [0 ..])
+    in  (0, FieldStruct StructValue{structValueFields = valueArray, structValueTypes = typeArray, structValueIndex = indexMap})
   gSumDecode idx payload
     | idx /= 0 = Left ("duckdb-simple: union tag mismatch (expected 0, got " <> show idx <> ")")
     | otherwise =
         case payload of
+          -- Version 0.3 wrote this payload. See Note [Types without fields].
           FieldNull -> M1 . fst <$> gStructDecodeList (Proxy :: Proxy (f p)) []
           FieldStruct structVal -> do
             ordered <- orderStructFields (gStructTypes (Proxy :: Proxy (f p))) structVal
@@ -656,6 +664,7 @@ class GFromField' (isSum :: Bool) f where
 
 instance (GStruct f, GStructDecode f) => GFromField' 'False (M1 D meta (M1 C c f)) where
   gFromField' _ = \case
+    -- Version 0.3 wrote this value. See Note [Types without fields].
     FieldNull -> M1 . M1 . fst <$> gStructDecodeList (Proxy :: Proxy (f p)) []
     FieldStruct sv -> do
       ordered <- orderStructFields (gStructTypes (Proxy :: Proxy (f p))) sv
@@ -705,12 +714,12 @@ instance (Generic a, GToField (Rep a)) => DuckDBColumnType (ViaDuckDB a) where
 
 -- | Deriving-via @ToField@ instance. A sum type binds as a UNION and a product
 -- type as a STRUCT, through the @ToField@ instances of those values. A product
--- type with no fields binds as a STRUCT without fields.
+-- type with no fields binds as a STRUCT without fields. See
+-- Note [Types without fields].
 instance (Generic a, GToField (Rep a)) => ToField (ViaDuckDB a) where
   toField (ViaDuckDB x) = case gToField (from x) of
     EncodedUnion unionVal -> toField unionVal
     EncodedStruct structVal _ -> toField structVal
-    EncodedNull -> toField emptyStructValue
 
 -- | Deriving-via @FromField@ instance. Errors are rewrapped using the existing
 -- @returnError@ helper so callers receive a proper @ResultError@.

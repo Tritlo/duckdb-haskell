@@ -62,8 +62,10 @@ import Database.DuckDB.Simple.FromField (
   toBigNumBytes,
  )
 import Database.DuckDB.Simple.Generic (
+  DuckValue (..),
   ViaDuckDB (..),
   genericFromFieldValue,
+  genericLogicalType,
   genericToFieldValue,
   genericToStructValue,
  )
@@ -150,6 +152,35 @@ data LargeSumType
 data EmptyStruct = EmptyStruct
   deriving stock (Eq, Show, Generic)
   deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB EmptyStruct)
+
+-- | A field of the type EmptyStruct uses the generic encoding.
+instance DuckValue EmptyStruct where
+  duckToField = genericToFieldValue
+  duckFromField = genericFromFieldValue
+  duckLogicalType = genericLogicalType
+
+-- | A record with two optional fields of a type without fields.
+data OptionalEmpty = OptionalEmpty
+  { oeFirst :: Maybe EmptyStruct
+  , oeSecond :: Maybe EmptyStruct
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB OptionalEmpty)
+
+-- | A record with a field of a type without fields.
+data WithEmpty = WithEmpty
+  { weId :: Int64
+  , weEmpty :: EmptyStruct
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB WithEmpty)
+
+-- | A sum with a constructor that has a field and a constructor without fields.
+data Tally
+  = Counted Int64
+  | Uncounted
+  deriving stock (Eq, Show, Generic)
+  deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB Tally)
 
 data OptionalFields = OptionalFields
   { ofInt :: Maybe Int
@@ -1069,10 +1100,10 @@ typeTests =
           _ <- executeMany conn "INSERT INTO via_shapes VALUES (?)" (map Only shapes)
           rows <- query_ conn "SELECT shape FROM via_shapes ORDER BY rowid" :: IO [Only ViaShape]
           rows @?= map Only shapes
-    , testCase "generic enum null payload" $ do
+    , testCase "generic enum payload is a STRUCT without fields" $ do
         case genericToFieldValue EnumRed of
           FieldUnion uv -> do
-            unionValuePayload uv @?= FieldNull
+            unionValuePayload uv @?= FieldStruct (StructValue (listArray (0, -1) []) (listArray (0, -1) []) Map.empty)
             genericFromFieldValue (FieldUnion uv) @?= Right EnumRed
           other -> assertFailure ("expected FieldUnion, got " <> show other)
     , -- Edge case tests
@@ -1090,10 +1121,12 @@ typeTests =
             FieldUnion uv -> do
               genericFromFieldValue (FieldUnion uv) @?= Right val
             other -> assertFailure ("expected FieldUnion, got " <> show other)
-    , testCase "empty struct encodes as null" $ do
+    , testCase "empty struct encodes as a STRUCT without fields" $ do
         case genericToFieldValue EmptyStruct of
-          FieldNull -> pure ()
-          other -> assertFailure ("expected FieldNull for empty struct, got " <> show other)
+          FieldStruct structVal -> do
+            elems (structValueFields structVal) @?= []
+            genericFromFieldValue (FieldStruct structVal) @?= Right EmptyStruct
+          other -> assertFailure ("expected a STRUCT without fields for empty struct, got " <> show other)
     , testCase "empty struct binds as a STRUCT without fields" $
         withConnection ":memory:" \conn -> do
           query conn "SELECT typeof(?)" (Only EmptyStruct) >>= (@?= [Only (Text.pack "STRUCT")])
@@ -1101,6 +1134,54 @@ typeTests =
           case rows of
             [Only (FieldStruct structVal)] -> elems (structValueFields structVal) @?= []
             other -> assertFailure ("expected a STRUCT without fields, got " <> show other)
+    , testCase "Just and Nothing of a type without fields stay different in a record" $
+        withConnection ":memory:" \conn -> do
+          let value = OptionalEmpty (Just EmptyStruct) Nothing
+          _ <- execute_ conn "CREATE TABLE optional_empty (r STRUCT(oeFirst STRUCT, oeSecond STRUCT))"
+          _ <- execute conn "INSERT INTO optional_empty VALUES (?)" (Only value)
+          (query_ conn "SELECT r::VARCHAR, r.oeFirst IS NULL, r.oeSecond IS NULL, r FROM optional_empty" :: IO [(Text.Text, Bool, Bool, OptionalEmpty)])
+            >>= (@?= [(Text.pack "{'oeFirst': {}, 'oeSecond': NULL}", False, True, value)])
+    , testCase "a constructor without fields binds the STRUCT without fields as its payload" $
+        withConnection ":memory:" \conn -> do
+          forM_ [(Counted 5, Text.pack "Counted"), (Uncounted, Text.pack "Uncounted")] \(value, tag) ->
+            query conn "SELECT union_tag(?)::VARCHAR" (Only value) >>= (@?= [Only tag])
+          _ <- execute_ conn "CREATE TABLE tallies (s UNION(Counted STRUCT(field1 BIGINT), Uncounted STRUCT))"
+          _ <- executeMany conn "INSERT INTO tallies VALUES (?)" [Only (Counted 5), Only Uncounted]
+          (query_ conn "SELECT union_tag(s)::VARCHAR, s::VARCHAR, s FROM tallies ORDER BY rowid" :: IO [(Text.Text, Text.Text, Tally)])
+            >>= (@?= [(Text.pack "Counted", Text.pack "{'field1': 5}", Counted 5), (Text.pack "Uncounted", Text.pack "{}", Uncounted)])
+    , testCase "the NULL of version 0.3 for a type without fields decodes but does not equal a new parameter" $
+        withConnection ":memory:" \conn -> do
+          -- Version 0.3 wrote NULL in place of the STRUCT without fields.
+          genericFromFieldValue FieldNull @?= Right EmptyStruct
+          case genericToFieldValue Uncounted of
+            FieldUnion uv -> do
+              let oldValue = uv{unionValuePayload = FieldNull}
+              genericFromFieldValue (FieldUnion oldValue) @?= Right Uncounted
+              _ <- execute_ conn "CREATE TABLE old_tallies (v UNION(Counted STRUCT(field1 BIGINT), Uncounted STRUCT))"
+              _ <- execute conn "INSERT INTO old_tallies VALUES (?)" (Only oldValue)
+              (query_ conn "SELECT v FROM old_tallies" :: IO [Only Tally]) >>= (@?= [Only Uncounted])
+              (query conn "SELECT count(*) FROM old_tallies WHERE v = ?" (Only Uncounted) :: IO [Only Int64]) >>= (@?= [Only 0])
+              _ <- execute conn "INSERT INTO old_tallies VALUES (?)" (Only Uncounted)
+              (query conn "SELECT count(*) FROM old_tallies WHERE v = ?" (Only Uncounted) :: IO [Only Int64]) >>= (@?= [Only 1])
+            other -> assertFailure ("expected FieldUnion, got " <> show other)
+          case genericToFieldValue (WithEmpty 7 EmptyStruct) of
+            FieldStruct sv -> do
+              let oldField item = if structFieldName item == Text.pack "weEmpty" then item{structFieldValue = FieldNull} else item
+                  oldValue = sv{structValueFields = fmap oldField (structValueFields sv)}
+              _ <- execute_ conn "CREATE TABLE old_with_empty (r STRUCT(weId BIGINT, weEmpty STRUCT))"
+              _ <- execute conn "INSERT INTO old_with_empty VALUES (?)" (Only oldValue)
+              (query_ conn "SELECT r FROM old_with_empty" :: IO [Only WithEmpty]) >>= (@?= [Only (WithEmpty 7 EmptyStruct)])
+              (query conn "SELECT count(*) FROM old_with_empty WHERE r = ?" (Only (WithEmpty 7 EmptyStruct)) :: IO [Only Int64]) >>= (@?= [Only 0])
+              _ <- execute conn "INSERT INTO old_with_empty VALUES (?)" (Only (WithEmpty 7 EmptyStruct))
+              (query conn "SELECT count(*) FROM old_with_empty WHERE r = ?" (Only (WithEmpty 7 EmptyStruct)) :: IO [Only Int64]) >>= (@?= [Only 1])
+            other -> assertFailure ("expected FieldStruct, got " <> show other)
+    , testCase "a record field of a type without fields round trips" $
+        withConnection ":memory:" \conn -> do
+          let value = WithEmpty 7 EmptyStruct
+          _ <- execute_ conn "CREATE TABLE with_empty (r STRUCT(weId BIGINT, weEmpty STRUCT))"
+          _ <- execute conn "INSERT INTO with_empty VALUES (?)" (Only value)
+          (query_ conn "SELECT r::VARCHAR, r FROM with_empty" :: IO [(Text.Text, WithEmpty)])
+            >>= (@?= [(Text.pack "{'weId': 7, 'weEmpty': {}}", value)])
     , testCase "struct with Maybe fields" $ do
         let withJust = OptionalFields (Just 42) (Just (Text.pack "text"))
             withNothing = OptionalFields Nothing Nothing

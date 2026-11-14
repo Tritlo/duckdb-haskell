@@ -53,9 +53,11 @@ import Database.DuckDB.Simple.FromField (
   IntervalValue (..),
   TimeWithZone (..),
  )
+import Database.DuckDB.Simple.Geometry (RawGeometry (..))
 import Database.DuckDB.Simple.Internal (
   Statement (..),
   duckDBTypeFromName,
+  duckDBTypeToName,
   preparedParameterType,
   storeBoundValue,
   withTypeCache,
@@ -117,8 +119,10 @@ plainBuilder factory = ValueBuilder factory (logicalTypeFromRep factory)
 class (DuckDBColumnType a) => ToDuckValue a where
   -- | Construct an owned value through a borrowed native factory. Keep the
   --     owner of the factory (a connection, a callback context, or an instance)
-  --     alive until you destroy the value. Use 'ToField' to resolve arbitrary CRS
-  --     labels from connection options.
+  --     alive until you destroy the value. This is a rule of the library. The
+  --     header says that a factory is valid for as long as its owner is. The
+  --     header gives no rule for a value after the owner of its factory ends.
+  --     Use 'ToField' to resolve arbitrary CRS labels from connection options.
   toDuckValue :: ValueFactory -> a -> IO NativeValue
 
 valueBinding :: String -> (DuckDBV2FactoryHandle -> IO DuckDBV2ValueHandle) -> FieldBinding
@@ -259,9 +263,112 @@ instance ToField Int32
 
 instance ToField Int64
 
-instance ToField Integer
+-- | A value from -2^127 to 2^127 - 1 binds as a HUGEINT. A value outside this
+-- range binds as a UHUGEINT for a UHUGEINT parameter that can hold it, and as a
+-- BIGNUM for a parameter that has no known type or is not an integer or DECIMAL
+-- type. For another integer or DECIMAL parameter, such a value raises
+-- 'SQLError'. Bind a t'BigNum' to bind a BIGNUM value in each case. See
+-- Note [Integer parameters].
+instance ToField Integer where
+  toField = integerBinding
 
-instance ToField Natural
+-- | A value from 0 to 2^127 - 1 binds as a HUGEINT. A larger value binds as a
+-- UHUGEINT for a UHUGEINT parameter that can hold it, and as a BIGNUM for a
+-- parameter that has no known type or is not an integer or DECIMAL type. For
+-- another integer or DECIMAL parameter, such a value raises 'SQLError'. Bind a
+-- t'BigNum' to bind a BIGNUM value in each case. See Note [Integer parameters].
+instance ToField Natural where
+  toField = integerBinding . toInteger
+
+{- Note [Integer parameters]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+integerBinding binds an Integer or a Natural parameter with this rule:
+
+- A value from -2^127 to 2^127 - 1 binds as a HUGEINT. The binding does not
+  read the parameter type.
+- A value outside this range makes the binding read the parameter type. A
+  UHUGEINT parameter that can hold the value gets a UHUGEINT value. Another
+  integer parameter (TINYINT to UHUGEINT) or a DECIMAL parameter gets an
+  SQLError with the type ErrorInputOutOfRange. Each other parameter, and a
+  parameter with no known type, gets a BIGNUM value.
+
+- Why a HUGEINT. In DuckDB 2.0.0, the casts from BIGNUM to the integer types
+  have defects (Bignum::BignumToInt in
+  src/include/duckdb/common/types/bignum.hpp):
+  - A cast to HUGEINT or UHUGEINT fails for each value except 0 and -1.
+  - A cast of a negative value to an unsigned type gives a wrapped value and
+    no error. For example, -5 for a UBIGINT gives 18446744073709551611.
+  - A cast reduces a value of 2^128 or more modulo 2^128 before it checks the
+    range. For example, 2^128 + 5 for a BIGINT gives 5.
+  DuckDB 2.0.0 has no cast from BIGNUM to DECIMAL. DuckDB checks the range of
+  each cast from HUGEINT and UHUGEINT. For TINYINT to UBIGINT, DOUBLE,
+  VARCHAR, BIGNUM, JSON, and VARIANT, the cast from HUGEINT gives the same
+  result as the cast from BIGNUM where the cast from BIGNUM has no defect.
+
+- Why the binding reads the parameter type only outside the HUGEINT range. A
+  read of the parameter type runs the binder of DuckDB. See
+  Note [Statement schemas] in "Database.DuckDB.Simple.Internal". A value in the
+  HUGEINT range does not have this cost.
+
+- What stays BIGNUM:
+  - A value outside the HUGEINT range for a parameter with no known type, as
+    in SELECT ?, binds as a BIGNUM. A cast that DuckDB adds later can still
+    have the defects above.
+  - A BigNum always binds as a BIGNUM.
+  - An Array of Integer values for a target with no known type, or for a
+    target with an element type that is not an integer type or a DECIMAL
+    type, has BIGNUM elements. A cast that DuckDB adds later can still have
+    the defects above.
+
+- Arrays. DuckDB casts each element of an array to the declared element type
+  when it builds the array. The DuckDBColumnType of Integer, Natural, and
+  BigNum is BIGNUM. For an ARRAY or LIST target with an integer or DECIMAL
+  element type, arrayDuckValue declares that element type in place of BIGNUM.
+  Each Integer element is a HUGEINT or a UHUGEINT value, so DuckDB checks the
+  range of the cast of each element. For example, [5, -6] for a UBIGINT[2]
+  column raises an error. An Array of BigNum values also takes the element
+  type of the target, but each element is a BIGNUM value. DuckDB casts each
+  element with the casts from BIGNUM, so the result for an Array of BigNum
+  values does not improve.
+
+Issue 41 of duckdb-haskell tracks the defects.
+-}
+
+-- | Bind an integer as a HUGEINT, a UHUGEINT, or a BIGNUM value. See
+-- Note [Integer parameters].
+integerBinding :: Integer -> FieldBinding
+integerBinding value
+  | value >= negate (1 `shiftL` 127) && value < 1 `shiftL` 127 = valueBinding (show value) (`hugeIntDuckValue` value)
+  | otherwise = targetValueBinding (show value) \ValueBuilder{builderFactory = factory} readTarget -> do
+      target <- readTarget
+      case target of
+        Just (LogicalTypeScalar LogicalTypeIdUHugeInt) | value >= 0 && value < 1 `shiftL` 128 -> uhugeIntDuckValue factory value
+        Just (LogicalTypeScalar dtype) | dtype `elem` integerTypes -> outOfRange (duckDBTypeToName dtype)
+        Just (LogicalTypeDecimal width scale) -> outOfRange ("DECIMAL(" <> Text.pack (show width) <> "," <> Text.pack (show scale) <> ")")
+        _ -> bigNumDuckValue factory (BigNum value)
+  where
+    outOfRange typeName =
+      throwIO
+        SQLError
+          { sqlErrorMessage = "duckdb-simple: the value " <> Text.pack (show value) <> " is out of range for a parameter of the type " <> typeName
+          , sqlErrorType = Just ErrorInputOutOfRange
+          , sqlErrorQuery = Nothing
+          }
+
+-- | The integer types, from TINYINT to UHUGEINT. See Note [Integer parameters].
+integerTypes :: [LogicalTypeId]
+integerTypes =
+  [ LogicalTypeIdTinyInt
+  , LogicalTypeIdSmallInt
+  , LogicalTypeIdInteger
+  , LogicalTypeIdBigInt
+  , LogicalTypeIdHugeInt
+  , LogicalTypeIdUTinyInt
+  , LogicalTypeIdUSmallInt
+  , LogicalTypeIdUInteger
+  , LogicalTypeIdUBigInt
+  , LogicalTypeIdUHugeInt
+  ]
 
 instance ToField UUID.UUID
 
@@ -575,7 +682,10 @@ utcTimestampDuckValue factory value =
   encodeUnbounded (encodeTimestampUnits 1000000 . utcToLocalTime utc) value
     >>= (\encoded -> output (c_duckdb_v2_value_create_timestamp_tz factory encoded))
 
--- | Construct an ARRAY value. An empty array raises 'SQLError'.
+-- | Construct an ARRAY value. An empty array raises 'SQLError'. The target is
+-- the element type of the parameter. When the declared element type is BIGNUM
+-- and the target is an integer type or a DECIMAL type, the array takes the
+-- target as its element type. See Note [Integer parameters].
 arrayDuckValue
   :: forall a
    . (DuckDBColumnType a)
@@ -595,7 +705,7 @@ arrayDuckValue ValueBuilder{builderFactory = factory, builderType = makeType} ta
   where
     typeName = duckdbColumnType (Proxy :: Proxy a)
     withElementType values action = case duckDBTypeFromName typeName of
-      Just dtype -> bracket (makeType (timestampTypeForTarget target (LogicalTypeScalar dtype))) destroyLogicalType action
+      Just dtype -> bracket (makeType (declaredType dtype)) destroyLogicalType action
       Nothing -> do
         -- Keep the values that are not NULL, in list order. The fold keeps a
         -- constant stack. See Note [Constant stack at safe calls] in
@@ -616,6 +726,11 @@ arrayDuckValue ValueBuilder{builderFactory = factory, builderType = makeType} ta
                 , sqlErrorType = Nothing
                 , sqlErrorQuery = Nothing
                 }
+    -- See Note [Integer parameters].
+    declaredType LogicalTypeIdBigNum
+      | Just rep@(LogicalTypeScalar dtype) <- target, dtype `elem` integerTypes = rep
+      | Just rep@LogicalTypeDecimal{} <- target = rep
+    declaredType dtype = timestampTypeForTarget target (LogicalTypeScalar dtype)
 
 -- | Construct named fields. The native call copies the field values.
 structValueDuckValue
@@ -710,7 +825,7 @@ fieldValueWithTypeDuckValue builder@ValueBuilder{builderFactory = factory, build
   (LogicalTypeScalar LogicalTypeIdVariant, _) -> variantDuckValue builder value
   (LogicalTypeScalar dtype, _) -> scalarFieldValueDuckValue factory dtype value
   (LogicalTypeCollatedVarchar _, FieldText text) -> textDuckValue factory text
-  (LogicalTypeGeometry _, FieldGeometry{}) -> unsupportedRawGeometryBinding
+  (LogicalTypeGeometry crs, FieldGeometry raw) -> rawGeometryDuckValue builder crs raw
   (LogicalTypeDecimal width scale, FieldDecimal decimal@DecimalValue{decimalWidth, decimalScale})
     | width == decimalWidth && scale == decimalScale -> decimalDuckValue factory decimal
   (LogicalTypeList child, FieldList values) -> sequenceValue c_duckdb_v2_value_create_list child values
@@ -752,7 +867,8 @@ scalarFieldValueDuckValue factory dtype value = case (dtype, value) of
   (LogicalTypeIdDouble, FieldDouble d) -> doubleDuckValue factory d
   (LogicalTypeIdVarchar, FieldText t) -> textDuckValue factory t
   (LogicalTypeIdBlob, FieldBlob b) -> blobDuckValue factory b
-  (LogicalTypeIdGeometry, FieldGeometry{}) -> unsupportedRawGeometryBinding
+  -- The type id has no CRS. See Note [Raw GEOMETRY parameters].
+  (LogicalTypeIdGeometry, FieldGeometry raw) -> rawGeometryDuckValue (plainBuilder factory) Nothing raw
   (LogicalTypeIdUUID, FieldUUID u) -> uuidDuckValue factory u
   (LogicalTypeIdBit, FieldBit bits) -> bitDuckValue factory bits
   (LogicalTypeIdDate, FieldDate d) -> dateDuckValue factory d
@@ -842,9 +958,80 @@ withIdentifiers names action = do
 typeMismatch :: String -> FieldValue -> IO a
 typeMismatch expected actual = throwIO (userError ("duckdb-simple: cannot encode " <> show actual <> " as " <> expected))
 
--- | Raw WKB binding requires an explicit geometry conversion.
-unsupportedRawGeometryBinding :: IO a
-unsupportedRawGeometryBinding = throwIO (userError "duckdb-simple: raw GEOMETRY binding requires explicit ST_GeomFromWKB and ST_SetCRS parameters")
+-- | Construct a GEOMETRY value of the declared CRS from a raw geometry. See
+-- Note [Raw GEOMETRY parameters].
+rawGeometryDuckValue :: ValueBuilder -> Maybe Text -> RawGeometry -> IO DuckDBV2ValueHandle
+rawGeometryDuckValue ValueBuilder{builderFactory = factory, builderType = makeType} crs RawGeometry{rawGeometryWKB, rawGeometryCRS} = do
+  when (rawGeometryCRS /= crs) $
+    throwIO
+      SQLError
+        { sqlErrorMessage =
+            "duckdb-simple: a GEOMETRY value with " <> describeCRS rawGeometryCRS <> " cannot bind as a GEOMETRY with " <> describeCRS crs
+        , sqlErrorType = Just ErrorInputInvalid
+        , sqlErrorQuery = Nothing
+        }
+  bracket (makeType (LogicalTypeGeometry crs)) destroyLogicalType \logical ->
+    bracket (blobDuckValue factory rawGeometryWKB) destroyValue \blob ->
+      output (c_duckdb_v2_value_cast factory blob logical)
+  where
+    describeCRS = maybe "no CRS" (("the CRS " <>) . quotedCRS)
+
+-- | Put a CRS between single quotes for an error message.
+quotedCRS :: Text -> Text
+quotedCRS crs = "'" <> crs <> "'"
+
+{- Note [Raw GEOMETRY parameters]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A raw geometry is a FieldGeometry value. It holds a RawGeometry: WKB bytes
+and an optional CRS. A result gives a raw geometry for a GEOMETRY value in a
+STRUCT, a TUPLE, a UNION, a LIST, an ARRAY, a MAP, or a VARIANT. A user can
+also construct a raw geometry. A STRUCT, TUPLE, UNION, or Variant parameter
+binds each raw geometry that it contains with this rule:
+
+- The CRS of the value must be equal to the CRS of the declared GEOMETRY
+  type. A value without a CRS agrees only with a type without a CRS. If
+  the two are different, rawGeometryDuckValue raises an SQLError with the
+  type ErrorInputInvalid.
+- rawGeometryDuckValue makes a BLOB value from the WKB bytes. Then it casts
+  the BLOB value to the declared GEOMETRY type with duckdb_v2_value_cast.
+  The builder of the statement supplies a type with a configured CRS. See
+  Note [CRS types of a connection] in "Database.DuckDB.Simple.TypeCache".
+- A declared type that is only the type id GEOMETRY has no CRS. The binding
+  uses the plain builder of the factory for it.
+- A VARIANT accepts a raw geometry without a CRS. The payload is a GEOMETRY
+  without a CRS. A raw geometry with a CRS in a VARIANT raises an SQLError
+  with the type ErrorInputInvalid.
+- The factory of an instance cannot construct a GEOMETRY type with a CRS.
+  DuckDB raises "Binder Error: Cannot create GEOMETRY type with coordinate
+  system without a connection". Thus toDuckValue with the factory of an
+  instance raises this error for a raw geometry with a CRS. It also raises
+  this error for a typed NULL with a CRS. The factory of a connection does
+  not have this limit.
+
+- Why the bytes do not change. DuckDB 2.0.0 stores a GEOMETRY value as WKB.
+  The cast from BLOB to GEOMETRY reads the bytes with Geometry::FromBinary.
+  ST_GeomFromWKB uses the same function (src/function/cast/geo_casts.cpp and
+  src/function/scalar/geometry/geometry_functions.cpp). The cast from
+  GEOMETRY to BLOB copies the stored bytes (Geometry::ToBinary in
+  src/common/types/geometry.cpp). The result reader uses that cast
+  (prepareGeometryReader in "Database.DuckDB.Simple.Materialize"). Thus the
+  bytes of a result bind again with no change. The cast changes bytes that
+  DuckDB does not write: it writes big-endian WKB and EWKB as little-endian
+  ISO WKB. The cast rejects WKB that DuckDB cannot store, for example a
+  collection with members of different Z/M layouts.
+
+- Why a CRS mismatch is an error. A BLOB value has no CRS. The cast gives
+  the CRS of the declared type to the value. Without the check, a value
+  could get a different CRS or lose its CRS, and no error would occur.
+
+- Why a VARIANT accepts only a value without a CRS. A VARIANT keeps a
+  GEOMETRY without its CRS. DuckDB removes the CRS when it casts a GEOMETRY
+  with a CRS to VARIANT, and it gives no error.
+
+- Why earlier versions raised an error. DuckDB 1.5 does not have a cast from
+  BLOB to GEOMETRY. Thus duckdb-simple 0.3 raised an error for each raw
+  geometry parameter.
+-}
 
 -- | Cast the payload to VARIANT through the supplied native factory.
 variantDuckValue :: ValueBuilder -> FieldValue -> IO DuckDBV2ValueHandle
@@ -876,6 +1063,8 @@ instance ToDuckValue Variant where
 -- value and fit the native range.
 -- The C API cannot construct a nonempty object whose keys are all empty.
 -- DuckDB 2.0 treats that STRUCT type as a tuple and casts it to a VARIANT array.
+-- A raw geometry without a CRS uses GEOMETRY. A raw geometry with a CRS raises
+-- an error. See Note [Raw GEOMETRY parameters].
 variantPayloadType :: FieldValue -> IO (LogicalTypeRep, FieldValue)
 variantPayloadType value = case value of
   FieldNull -> pure (variant, value)
@@ -925,7 +1114,17 @@ variantPayloadType value = case value of
     let types = fmap (\field -> field{structFieldValue = variant}) structValueTypes
     pure (LogicalTypeStruct types, FieldStruct structValue{structValueTypes = types})
   FieldUnion unionValue -> pure (unionValueTypeRep unionValue, value)
-  FieldGeometry{} -> unsupportedRawGeometryBinding
+  FieldGeometry RawGeometry{rawGeometryCRS = Just crs} ->
+    throwIO
+      SQLError
+        { sqlErrorMessage =
+            "duckdb-simple: a VARIANT does not keep the CRS of a GEOMETRY, so the GEOMETRY value with the CRS "
+              <> quotedCRS crs
+              <> " cannot bind as a VARIANT"
+        , sqlErrorType = Just ErrorInputInvalid
+        , sqlErrorQuery = Nothing
+        }
+  FieldGeometry{} -> pure (LogicalTypeGeometry Nothing, value)
   FieldMap{} -> throwIO (userError "duckdb-simple: VARIANT payloads cannot contain MAP values")
   FieldEnum{} -> throwIO (userError "duckdb-simple: VARIANT payloads cannot contain ENUM values")
   where

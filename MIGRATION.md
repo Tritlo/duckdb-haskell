@@ -148,6 +148,23 @@ The SQL workflow stays the same. These changes can affect your code:
   `TIMESTAMP_TZ` and `TIME_TZ`. Change code that matches the old texts.
 - A value with the declared type SQLNULL must be `FieldNull`. Each other value
   raises a conversion error. Version 0.3 bound it as NULL with no error.
+- `genericToFieldValue` gives the STRUCT without fields (`{}` in DuckDB) for a
+  product type with no fields. A constructor with no fields in a sum type has
+  this STRUCT as its payload. This includes each constructor of an enum-like
+  sum type, such as `data Colour = Red | Blue`. Version 0.3 gave `FieldNull`
+  in both places. Change code that matches `FieldNull` for such a value. The
+  decoders accept `FieldNull` and the STRUCT without fields, so data that
+  version 0.3 wrote still reads. A UNION payload or a STRUCT field that
+  version 0.3 stored keeps NULL in place of `{}`, so `WHERE v = ?` with a new
+  parameter of the same Haskell value does not find that row.
+- An `Integer` or a `Natural` parameter binds as HUGEINT when the value is in
+  the HUGEINT range. Version 0.3 bound BIGNUM in each case. `typeof(?)` gives
+  HUGEINT, and a parameter that is stored in a VARIANT column holds a HUGEINT.
+  A result of such a parameter, for example of `SELECT ?`, reads as `Integer`
+  and no longer as `BigNum`. Arithmetic on the parameter in SQL has the range
+  of HUGEINT. A negative value for an unsigned column now raises an error;
+  version 0.3 stored a wrapped value. Bind a `BigNum` for the BIGNUM value of
+  version 0.3.
 - Each function that reads rows gives one row with one BIGINT column for an
   INSERT, UPDATE, or DELETE without RETURNING: the number of changed rows.
   This applies to `query`, `query_`, `queryNamed`, `fold`, `fold_`,

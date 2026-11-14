@@ -78,8 +78,10 @@ import GHC.Num.Integer (integerFromWordList)
 import Numeric.Natural (Natural)
 
 -- | Internal representation of a column value.
--- 'FieldGeometry' contains raw WKB and CRS metadata. Generic parameters that
--- contain a non-NULL geometry require explicit SQL import.
+-- 'FieldGeometry' contains raw WKB and CRS metadata. A STRUCT, TUPLE, or UNION
+-- parameter binds it as a GEOMETRY with the same CRS. A VARIANT parameter
+-- binds it only when it has no CRS. See Note [Raw GEOMETRY parameters] in
+-- "Database.DuckDB.Simple.ToField".
 data FieldValue
   = FieldNull
   | FieldInt8 Int8

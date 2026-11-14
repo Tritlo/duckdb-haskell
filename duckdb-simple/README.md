@@ -150,6 +150,22 @@ fetchNames conn = do
 The execution helpers return the number of affected rows (`Int`) so callers can
 assert on data changes when needed.
 
+An `Integer` or a `Natural` parameter binds as a HUGEINT value when the value is
+in the HUGEINT range (-2^127 to 2^127 - 1). DuckDB then checks that the value
+fits its target. For example, a negative value for an unsigned column raises an
+error. A value outside the HUGEINT range binds as a BIGNUM value. If the
+parameter has an integer type or a DECIMAL type, such a value raises an
+`SQLError` of the type `ErrorInputOutOfRange`, except for a UHUGEINT parameter
+that can hold it. Bind a `BigNum` to bind a BIGNUM value in each case.
+
+In DuckDB 2.0.0 the casts from BIGNUM to the integer types have defects: some
+fail, and some store a wrong value with no error
+([issue 41](https://github.com/Tritlo/duckdb-haskell/issues/41)). An `Array` of
+`Integer` or `Natural` values takes the element type of its target when that
+type is an integer type or DECIMAL, so DuckDB checks each element. A `BigNum`
+value, and an `Array` of `BigNum` values, still have these defects for an
+integer target.
+
 `query_` and `execute_` parse all input statements before execution. A syntax
 error prevents every statement in that input from running. An execution error
 can leave effects from earlier statements. Use `withTransaction` when those
@@ -268,12 +284,13 @@ storeShape :: Connection -> Shape -> IO [Shape]
 storeShape conn shape = do
   _ <- execute_ conn
     "CREATE TABLE shapes (s UNION(Circle STRUCT(field1 DOUBLE), \
-    \Rectangle STRUCT(field1 DOUBLE, field2 DOUBLE), Point STRUCT()))"
+    \Rectangle STRUCT(field1 DOUBLE, field2 DOUBLE), Point STRUCT))"
   _ <- execute conn "INSERT INTO shapes VALUES (?)" (Only shape)
   fmap fromOnly <$> query_ conn "SELECT s FROM shapes"
 ```
 
-Nullary constructors (like `Point`) are encoded with a null payload.
+A constructor without fields (like `Point`) has the STRUCT without fields as
+its payload. DuckDB shows this payload as `{}`, and it is not NULL.
 Non-record constructors use positional field names (`field1`, `field2`, etc.).
 
 ### Arrays and Lists
@@ -615,7 +632,8 @@ without decoding coordinates. Its `rawGeometryWKB` and `rawGeometryCRS` fields
 own their data. They remain usable after the connection closes. Existing
 `ByteString` result decoding also returns WKB.
 
-`RawGeometry` has no `ToField` instance. Import its bytes explicitly:
+`RawGeometry` has no `ToField` instance. Import its bytes explicitly, or put it
+in a composite parameter as `FieldGeometry` (see below):
 
 ```haskell
 import Database.DuckDB.Simple.Geometry
@@ -651,10 +669,16 @@ and mixed collection layouts. DuckDB 2.0 also rejects WKB with mixed Z/M member
 layouts. Explicit WKB import preserves native NaN payload bits that WKT cannot
 retain.
 
-`FieldGeometry` contains a raw result. Generic STRUCT and UNION parameters
-that contain non-NULL raw geometry raise an error. Construct those values in
-SQL with explicit WKB import. Their result decoding retains WKB and CRS,
-including inside LIST, ARRAY, MAP, STRUCT, and UNION values.
+`FieldGeometry` contains a raw result. Result decoding retains WKB and CRS,
+including inside LIST, ARRAY, MAP, STRUCT, and UNION values. A STRUCT, TUPLE,
+or UNION parameter binds each `FieldGeometry` as a `GEOMETRY` with the same
+WKB bytes and CRS, also inside LIST, ARRAY, and MAP values. Thus a value that
+a query returns binds again without a change. The CRS of the value must be
+equal to the CRS of its declared type. A mismatch raises `SQLError` with the
+type `ErrorInputInvalid`, for example for a value with the CRS `OGC:CRS84` in
+a field of type `GEOMETRY`. A `Variant` parameter binds a `FieldGeometry`
+without a CRS as a `GEOMETRY` payload. A VARIANT does not keep the CRS of a
+GEOMETRY, so a `FieldGeometry` with a CRS in a `Variant` raises `SQLError`.
 
 `LogicalTypeGeometry` describes CRS metadata. Composite parameters retain CRS
 metadata for typed NULLs, empty collections, and inactive UNION members.

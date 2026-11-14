@@ -1,6 +1,7 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingVia #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -27,7 +28,7 @@ import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), minutesToTimeZone, u
 import Data.Word (Word16, Word32, Word8)
 import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple
-import Database.DuckDB.Simple.FromField (BitString (..), DecimalValue (..), FieldValue (..), TimeWithZone (..), bsFromBool)
+import Database.DuckDB.Simple.FromField (BigNum (..), BitString (..), DecimalValue (..), FieldValue (..), TimeWithZone (..), bsFromBool)
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..), genericFromFieldValue, genericToStructValue)
 import Database.DuckDB.Simple.Internal (destroyValue, output, withConnectionFactory, withConnectionHandle)
 import Database.DuckDB.Simple.LogicalRep
@@ -36,6 +37,7 @@ import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
 import Database.DuckDB.Simple.V2.LogicalRep (destroyLogicalType, logicalTypeFromRep, logicalTypeToRep)
 import GHC.Generics (Generic)
+import Numeric.Natural (Natural)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit
 import TestUtils (assertFailureIO)
@@ -99,6 +101,31 @@ data Colour = Red | Blue
   deriving stock (Eq, Show, Generic)
   deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB Colour)
 
+-- | A generic record with an optional ARRAY field.
+data OptionalScores = OptionalScores {optionalScores :: Maybe (Array Int Int32)}
+  deriving stock (Generic)
+  deriving (DuckDBColumnType, ToField) via (ViaDuckDB OptionalScores)
+
+-- | A generic record with a LIST field of ARRAY elements.
+data ListedScores = ListedScores {listedScores :: [Array Int Int32]}
+  deriving stock (Generic)
+  deriving (DuckDBColumnType, ToField) via (ViaDuckDB ListedScores)
+
+-- | A generic record with an ARRAY field of ARRAY elements.
+data NestedScores = NestedScores {nestedScores :: Array Int (Array Int Int32)}
+  deriving stock (Generic)
+  deriving (DuckDBColumnType, ToField) via (ViaDuckDB NestedScores)
+
+-- | A generic record with a MAP field of ARRAY values.
+data MappedScores = MappedScores {mappedScores :: Map.Map Text (Array Int Int32)}
+  deriving stock (Generic)
+  deriving (DuckDBColumnType, ToField) via (ViaDuckDB MappedScores)
+
+-- | A generic sum with a constructor that has an ARRAY field.
+data ChosenScores = SomeScores (Array Int Int32) | NoScores
+  deriving stock (Generic)
+  deriving (DuckDBColumnType, ToField) via (ViaDuckDB ChosenScores)
+
 -- | Run this module without the main integration suite.
 main :: IO ()
 main = defaultMain valueRegressionTests
@@ -122,6 +149,21 @@ valueRegressionTests =
                 [UnionMemberType "number" (LogicalTypeScalar LogicalTypeIdBigInt), UnionMemberType "text" (LogicalTypeScalar LogicalTypeIdVarchar)]
             original = UnionValue 0 "number" FieldNull members
         (query conn "SELECT ?" (Only original) :: IO [Only (UnionValue FieldValue)]) >>= (@?= [Only original])
+    , testCase "a UNION value binds the member of its tag up to the member limit of DuckDB" $ withConnection ":memory:" \conn -> do
+        let lastMember :: Int -> UnionValue FieldValue
+            lastMember count =
+              let name index = "m" <> Text.pack (show index)
+                  members = listArray (0, count - 1) [UnionMemberType (name index) (LogicalTypeScalar LogicalTypeIdInteger) | index <- [0 .. count - 1]]
+              in  UnionValue (fromIntegral (count - 1)) (name (count - 1)) (FieldInt32 7) members
+            accepted = lastMember 255
+        (query conn "SELECT union_tag(?)::VARCHAR, ?" (accepted, accepted) :: IO [(Text, UnionValue FieldValue)]) >>= (@?= [("m254", accepted)])
+        -- DuckDB 2.0.0 permits at most 255 members in a UNION type.
+        forM_ [256, 300] \count ->
+          try (query conn "SELECT ?" (Only (lastMember count)) :: IO [Only (UnionValue FieldValue)]) >>= \case
+            Left SQLError{sqlErrorMessage, sqlErrorType} -> do
+              sqlErrorMessage @?= "Binder Error: UNION type supports at most 255 type modifiers"
+              sqlErrorType @?= Just ErrorQueryBinder
+            Right rows -> assertFailure (show count <> " members: expected the DuckDB member limit error, got " <> show rows)
     , testCase "array elements need only a ToField instance" $ withConnection ":memory:" \conn -> do
         let values = listArray (0 :: Int, 2) [Nothing, Just (DelegatedInteger 41), Just (DelegatedInteger 99)]
             expected = listArray (0, 2) [Nothing, Just 41, Just 99] :: Array Int (Maybe Int64)
@@ -158,6 +200,23 @@ valueRegressionTests =
         case result of
           Left SQLError{sqlErrorMessage} -> assertBool (Text.unpack sqlErrorMessage) ("an ARRAY must have at least one element" `Text.isInfixOf` sqlErrorMessage)
           Right (_ :: [Only Text]) -> assertFailure "expected the DuckDB empty ARRAY error"
+    , testCase "generic records with an ARRAY field that has no size raise the error of DuckDB" $ withConnection ":memory:" \conn -> do
+        let scores = listArray (0, 1) [1, 2] :: Array Int Int32
+            rejected :: (ToField a) => String -> a -> Assertion
+            rejected label value =
+              try (query conn "SELECT ?::VARCHAR" (Only value) :: IO [Only Text]) >>= \case
+                Left SQLError{sqlErrorMessage, sqlErrorType} -> do
+                  assertEqual label "Binder Error: ARRAY type size must be at least 1" sqlErrorMessage
+                  assertEqual label (Just ErrorQueryBinder) sqlErrorType
+                Right rows -> assertFailure (label <> ": expected the DuckDB ARRAY size error, got " <> show rows)
+        rejected "Maybe field with Nothing" (OptionalScores Nothing)
+        rejected "LIST field" (ListedScores [scores])
+        rejected "empty LIST field" (ListedScores [])
+        rejected "ARRAY field" (NestedScores (listArray (0, 0) [scores]))
+        rejected "MAP field" (MappedScores (Map.singleton "a" scores))
+        rejected "empty MAP field" (MappedScores Map.empty)
+        rejected "sum constructor with the ARRAY field" (SomeScores scores)
+        rejected "sum constructor without the ARRAY field" NoScores
     , testCase "empty arrays of record elements report the V2 limit" $ withConnection ":memory:" \conn -> do
         result <- try (query conn "SELECT ?" (Only (listArray (0, -1) [] :: Array Int Pair)))
         case result of
@@ -241,6 +300,138 @@ valueRegressionTests =
         assertConversionError (query_ conn "SELECT 256::USMALLINT" :: IO [Only Word8])
         assertConversionError (query_ conn "SELECT 65536::UINTEGER" :: IO [Only Word16])
         assertConversionError (query_ conn "SELECT 4294967296::UBIGINT" :: IO [Only Word32])
+    , testCase "Integer and Natural parameters store exact values for each numeric target" $ withConnection ":memory:" \conn -> do
+        let store :: (Show a, ToField a) => Text -> a -> Text -> Assertion
+            store dtype value expected = do
+              let label = Text.unpack dtype <> " " <> show value
+              _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE exact_value (v " <> dtype <> ")"))
+              _ <- execute conn "INSERT INTO exact_value VALUES (?)" (Only value)
+              (query_ conn "SELECT v::VARCHAR FROM exact_value" :: IO [Only Text]) >>= assertEqual label [Only expected]
+              (query conn "SELECT count(*) FROM exact_value WHERE v = ?" (Only value) :: IO [Only Int64]) >>= assertEqual label [Only 1]
+            huge = 2 ^ (128 :: Int) + 5 :: Integer
+        forM_ ["TINYINT", "SMALLINT", "INTEGER", "BIGINT", "UBIGINT", "HUGEINT", "UHUGEINT", "DECIMAL(38,0)", "DOUBLE", "VARCHAR", "BIGNUM"] \dtype -> do
+          let expected = if dtype == "DOUBLE" then "5.0" else "5"
+          store dtype (5 :: Integer) expected
+          store dtype (5 :: Natural) expected
+        forM_ ["TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT", "DECIMAL(38,0)", "DOUBLE", "VARCHAR", "BIGNUM"] \dtype ->
+          store dtype (-5 :: Integer) (if dtype == "DOUBLE" then "-5.0" else "-5")
+        forM_ ["HUGEINT", "UHUGEINT", "DECIMAL(38,0)", "BIGNUM", "VARCHAR"] \dtype ->
+          store dtype (2 ^ (100 :: Int) :: Integer) "1267650600228229401496703205376"
+        store "HUGEINT" (negate (2 ^ (127 :: Int)) :: Integer) "-170141183460469231731687303715884105728"
+        store "HUGEINT" (2 ^ (127 :: Int) - 1 :: Integer) "170141183460469231731687303715884105727"
+        forM_ ["UHUGEINT", "BIGNUM"] \dtype -> do
+          store dtype (2 ^ (127 :: Int) :: Integer) "170141183460469231731687303715884105728"
+          store dtype (2 ^ (127 :: Int) :: Natural) "170141183460469231731687303715884105728"
+          store dtype (2 ^ (128 :: Int) - 1 :: Integer) "340282366920938463463374607431768211455"
+          store dtype (2 ^ (128 :: Int) - 1 :: Natural) "340282366920938463463374607431768211455"
+        forM_ ["BIGNUM", "VARCHAR"] \dtype -> forM_ [huge, negate huge] \value ->
+          store dtype value (Text.pack (show value))
+    , testCase "an Integer parameter that its target cannot hold raises an error and stores no row" $ withConnection ":memory:" \conn -> do
+        let insertValue :: (Show a, ToField a) => Text -> a -> IO (Either SQLError Int)
+            insertValue dtype value = do
+              _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE rejected_value (v " <> dtype <> ")"))
+              result <- try (execute conn "INSERT INTO rejected_value VALUES (?)" (Only value))
+              (query_ conn "SELECT count(*) FROM rejected_value" :: IO [Only Int64]) >>= assertEqual (Text.unpack dtype <> " " <> show value) [Only 0]
+              pure result
+            insert :: Text -> Integer -> IO (Either SQLError Int)
+            insert = insertValue
+            huge = 2 ^ (128 :: Int) + 5 :: Integer
+        -- DuckDB checks the range of a cast from HUGEINT.
+        forM_
+          ( [(dtype, -5) | dtype <- ["UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT", "UHUGEINT"]]
+              <> [("BIGINT", 2 ^ (70 :: Int)), ("DECIMAL(10,0)", 2 ^ (100 :: Int))]
+          )
+          \(dtype, value) ->
+            insert dtype value >>= \case
+              Left SQLError{sqlErrorMessage, sqlErrorType} -> do
+                assertBool (Text.unpack sqlErrorMessage) (not ("duckdb-simple:" `Text.isPrefixOf` sqlErrorMessage))
+                sqlErrorType @?= Just ErrorTypeConversion
+              Right _ -> assertFailure ("expected a DuckDB error for " <> Text.unpack dtype <> " " <> show value)
+        -- duckdb-simple checks the range of a value outside the HUGEINT range.
+        forM_
+          ( [("HUGEINT", 2 ^ (127 :: Int)), ("BIGINT", 2 ^ (127 :: Int)), ("UHUGEINT", 2 ^ (128 :: Int))]
+              <> [(dtype, value) | dtype <- ["TINYINT", "BIGINT", "UBIGINT", "HUGEINT", "UHUGEINT", "DECIMAL(38,0)"], value <- [huge, negate huge]]
+          )
+          \(dtype, value) ->
+            insert dtype value >>= \case
+              Left SQLError{sqlErrorMessage, sqlErrorType} -> do
+                sqlErrorType @?= Just ErrorInputOutOfRange
+                sqlErrorMessage @?= "duckdb-simple: the value " <> Text.pack (show value) <> " is out of range for a parameter of the type " <> dtype
+              Right _ -> assertFailure ("expected the duckdb-simple range error for " <> Text.unpack dtype <> " " <> show value)
+        insertValue "BIGINT" (2 ^ (128 :: Int) + 5 :: Natural) >>= \case
+          Left SQLError{sqlErrorMessage, sqlErrorType} -> do
+            sqlErrorType @?= Just ErrorInputOutOfRange
+            sqlErrorMessage @?= "duckdb-simple: the value 340282366920938463463374607431768211461 is out of range for a parameter of the type BIGINT"
+          Right _ -> assertFailure "expected the duckdb-simple range error for a Natural BIGINT value"
+        _ <- execute_ conn "CREATE TABLE wrapped_value (v UBIGINT)"
+        _ <- execute_ conn "INSERT INTO wrapped_value VALUES (18446744073709551611), (5)"
+        (query conn "SELECT count(*) FROM wrapped_value WHERE v = ?" (Only (-5 :: Integer)) :: IO [Only Int64]) >>= (@?= [Only 0])
+    , testCase "the SQL type of an Integer parameter follows its range" $ withConnection ":memory:" \conn -> do
+        let typed :: (ToField a) => a -> Integer -> Text -> Assertion
+            typed value expected dtype = (query conn "SELECT typeof(?), ?" (value, value) :: IO [(Text, Integer)]) >>= (@?= [(dtype, expected)])
+        typed (5 :: Integer) 5 "HUGEINT"
+        typed (negate (2 ^ (127 :: Int)) :: Integer) (negate (2 ^ (127 :: Int))) "HUGEINT"
+        typed (5 :: Natural) 5 "HUGEINT"
+        typed (2 ^ (127 :: Int) :: Integer) (2 ^ (127 :: Int)) "BIGNUM"
+        typed (2 ^ (130 :: Int) :: Integer) (2 ^ (130 :: Int)) "BIGNUM"
+        typed (BigNum 5) 5 "BIGNUM"
+    , testCase "executeMany stores Integer rows of each range" $ withConnection ":memory:" \conn ->
+        forM_ [("BIGNUM", [5, 2 ^ (127 :: Int), 2 ^ (130 :: Int)]), ("HUGEINT", [5, 2 ^ (100 :: Int)])] \(dtype, values :: [Integer]) -> do
+          _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE many_values (v " <> dtype <> ")"))
+          _ <- executeMany conn "INSERT INTO many_values VALUES (?)" (map Only values)
+          (query_ conn "SELECT v FROM many_values ORDER BY rowid" :: IO [Only Integer]) >>= (@?= map Only values)
+    , testCase "an array of Integer values binds BIGNUM elements" $ withConnection ":memory:" \conn ->
+        forM_ [listArray (0, 1) [5, 2 ^ (130 :: Int)], listArray (0, 1) [5, 6]] \(values :: Array Int Integer) ->
+          (query conn "SELECT typeof(?), ?" (values, values) :: IO [(Text, Array Int Integer)]) >>= (@?= [("BIGNUM[2]", values)])
+    , testCase "an array of Integer values takes the element type of its target" $ withConnection ":memory:" \conn -> do
+        let store :: (Show a, ToField a) => Text -> a -> Text -> Assertion
+            store dtype value expected = do
+              _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE array_value (v " <> dtype <> ")"))
+              _ <- execute conn "INSERT INTO array_value VALUES (?)" (Only value)
+              (query_ conn "SELECT v::VARCHAR FROM array_value" :: IO [Only Text])
+                >>= assertEqual (Text.unpack dtype <> " " <> show value) [Only expected]
+            pair :: Integer -> Integer -> Array Int Integer
+            pair first second = listArray (0, 1) [first, second]
+            huge = 2 ^ (128 :: Int) + 7 :: Integer
+        forM_ ["BIGINT[2]", "UBIGINT[2]", "HUGEINT[2]", "UHUGEINT[2]", "DECIMAL(38,0)[2]", "BIGNUM[2]", "VARCHAR[2]"] \dtype ->
+          store dtype (pair 5 6) "[5, 6]"
+        forM_ ["BIGINT[2]", "HUGEINT[2]", "BIGNUM[2]"] \dtype ->
+          store dtype (pair 5 (-6)) "[5, -6]"
+        store "UHUGEINT[2]" (listArray (0, 1) [5, 2 ^ (127 :: Int)] :: Array Int Natural) "[5, 170141183460469231731687303715884105728]"
+        forM_ ["BIGNUM[2]", "VARCHAR[2]"] \dtype ->
+          store dtype (pair 5 huge) "[5, 340282366920938463463374607431768211463]"
+        store "BIGINT[2][2]" (listArray (0, 1) [pair 1 2, pair 3 (-4)] :: Array Int (Array Int Integer)) "[[1, 2], [3, -4]]"
+        store "BIGINT[]" (pair 5 6) "[5, 6]"
+    , testCase "an array of Integer values with an element that its target cannot hold raises an error and stores no row" $ withConnection ":memory:" \conn -> do
+        let insert :: Text -> Integer -> IO SQLError
+            insert dtype second = do
+              let label = Text.unpack dtype <> " [5, " <> show second <> "]"
+              _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE rejected_array (v " <> dtype <> ")"))
+              result <- try (execute conn "INSERT INTO rejected_array VALUES (?)" (Only (listArray (0, 1) [5, second] :: Array Int Integer)))
+              (query_ conn "SELECT count(*) FROM rejected_array" :: IO [Only Int64]) >>= assertEqual label [Only 0]
+              either pure (\_ -> assertFailure ("expected an error for " <> label)) result
+            huge = 2 ^ (128 :: Int) + 7 :: Integer
+        -- DuckDB checks the range of each element when it builds the array.
+        forM_ ([(dtype, -6) | dtype <- ["UTINYINT[2]", "UBIGINT[2]", "UHUGEINT[2]", "UBIGINT[]"]] <> [("TINYINT[2]", 300)]) \(dtype, second) -> do
+          SQLError{sqlErrorMessage, sqlErrorType} <- insert dtype second
+          assertBool (Text.unpack sqlErrorMessage) ("is out of range for the destination type" `Text.isInfixOf` sqlErrorMessage)
+          sqlErrorType @?= Just ErrorInputInvalid
+        -- duckdb-simple checks the range of an element outside the HUGEINT range.
+        forM_ [(dtype, second) | dtype <- ["BIGINT[2]", "UBIGINT[2]", "HUGEINT[2]", "DECIMAL(38,0)[2]"], second <- [huge, negate huge]] \(dtype, second) -> do
+          SQLError{sqlErrorType} <- insert dtype second
+          sqlErrorType @?= Just ErrorInputOutOfRange
+    , testCase "an array of BigNum values keeps the BIGNUM casts of DuckDB" $ withConnection ":memory:" \conn -> do
+        -- DuckDB 2.0.0 casts the BIGNUM -6 to UBIGINT as a wrapped value with no
+        -- error. See Note [Integer parameters] in "Database.DuckDB.Simple.ToField".
+        forM_
+          [ ("BIGINT[2]", [BigNum 5, BigNum 6], "[5, 6]")
+          , ("BIGNUM[2]", [BigNum 5, BigNum 6], "[5, 6]")
+          , ("UBIGINT[2]", [BigNum 5, BigNum (-6)], "[5, 18446744073709551610]")
+          ]
+          \(dtype, values, expected) -> do
+            _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE bignum_array (v " <> dtype <> ")"))
+            _ <- execute conn "INSERT INTO bignum_array VALUES (?)" (Only (listArray (0, 1) values :: Array Int BigNum))
+            (query_ conn "SELECT v::VARCHAR FROM bignum_array" :: IO [Only Text]) >>= assertEqual (Text.unpack dtype) [Only expected]
     , testCase "finite timestamp extrema preserve all units" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
         forM_
           [ (Seconds, 1, "TIMESTAMP_S")
@@ -452,6 +643,16 @@ valueRegressionTests =
         let struct = singleField (LogicalTypeEnum (listArray (0, 2) ["a", "b", "c"])) (FieldEnum 1)
         (query conn "SELECT typeof((?).value), (?).value::VARCHAR, ?" (struct, struct, struct) :: IO [(Text, Text, StructValue FieldValue)])
           >>= (@?= [("ENUM('a', 'b', 'c')", "b", struct)])
+    , testCase "ENUM values of each dictionary size bind their labels" $ withConnection ":memory:" \conn ->
+        -- DuckDB stores the index of a dictionary of 200, 300, and 70000 entries
+        -- in 8, 16, and 32 bits.
+        forM_ [200, 300, 70000 :: Int] \size -> do
+          let label index = "v" <> Text.pack (show index)
+              entries = listArray (0, size - 1) (map label [0 .. size - 1])
+          forM_ [0, size - 1] \index -> do
+            let struct = singleField (LogicalTypeEnum entries) (FieldEnum (fromIntegral index))
+            (query conn "SELECT (?).value::VARCHAR, ?" (struct, struct) :: IO [(Text, StructValue FieldValue)])
+              >>= assertEqual (show size <> " " <> show index) [(label index, struct)]
     , testCase "TIMETZ input offset overflow fails before native use" $ withConnection ":memory:" \conn -> do
         let value = TimeWithZone (TimeOfDay 12 0 0) (minutesToTimeZone maxBound)
             struct = singleField (LogicalTypeScalar LogicalTypeIdTimeTz) (FieldTimeTZ value)

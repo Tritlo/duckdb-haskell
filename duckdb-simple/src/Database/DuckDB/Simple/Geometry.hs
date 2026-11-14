@@ -20,6 +20,9 @@ import Data.Text (Text)
 -- This type has no @ToField@ instance. Bind 'rawGeometryWKB' with
 -- @ST_GeomFromWKB(?)@. Apply 'rawGeometryCRS' with @ST_SetCRS(..., ?)@.
 -- Omit @ST_SetCRS@ when the CRS is 'Nothing'. SQL NULL propagates to the geometry.
+-- A STRUCT, TUPLE, or UNION parameter binds a @FieldGeometry@ value with its
+-- CRS. A VARIANT parameter binds one only when it has no CRS. See
+-- Note [Raw GEOMETRY parameters] in "Database.DuckDB.Simple.ToField".
 -- DuckDB can normalize the byte order and CRS definition during import.
 -- The pinned native API requires the same Z/M dimensions for all collection
 -- members, including empty members. Native import rejects mixed member layouts.

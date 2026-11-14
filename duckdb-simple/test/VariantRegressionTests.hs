@@ -11,7 +11,7 @@
 module VariantRegressionTests (tests) where
 
 import Control.Exception (IOException, SomeException, bracket, displayException, try)
-import Control.Monad (forM_, void, when)
+import Control.Monad (forM, forM_, void, when)
 import Data.Array (Array, elems, listArray)
 import qualified Data.ByteString as BS
 import qualified Data.Geometry as G
@@ -334,6 +334,31 @@ tests =
                   _ -> [("a", 1), ("n", 0)]
         length rows @?= 3000
         forM_ rows \(n, Variant actual) -> actual @?= expected n
+    , testCase "VARIANT objects with keys that a STRUCT cannot name decode in each chunk" $
+        withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
+          -- The empty key needs the extraction query. The result has three chunks.
+          let sql = "SELECT i, json_object('', i, 'n', i + 1)::VARIANT FROM range(5000) t(i)" :: Query
+              expected n = variantObject [("", FieldWord64 (fromIntegral n)), ("n", FieldWord64 (fromIntegral (n + 1)))]
+          rows <- query_ conn sql :: IO [(Int64, Variant)]
+          rows @?= [(n, Variant (expected n)) | n <- [0 .. 4999]]
+          count <- fold_ conn sql (0 :: Int64) \n (i, Variant actual) -> do
+            (i, actual) @?= (n, expected n)
+            pure (n + 1)
+          count @?= 5000
+    , testCase "VARIANT objects with different key counts decode after each other" $ withConnection ":memory:" \conn -> do
+        -- Each object has an empty key, so each object group uses the extraction
+        -- query. The key count changes between the queries and in the last query.
+        let two n = variantObject [("", FieldWord64 n), ("n", FieldWord64 (n + 1))]
+            three n = variantObject [("", FieldWord64 n), ("a", FieldWord64 (n + 1)), ("b", FieldWord64 (n + 2))]
+            twoKeys = "SELECT json_object('', i, 'n', i + 1)::VARIANT FROM range(3) t(i)"
+            threeKeys = "SELECT json_object('', i, 'a', i + 1, 'b', i + 2)::VARIANT FROM range(3) t(i)"
+            check sql expected = (query_ conn sql :: IO [Only Variant]) >>= (@?= map (Only . Variant) expected)
+        check twoKeys (map two [0 .. 2])
+        check threeKeys (map three [0 .. 2])
+        check twoKeys (map two [0 .. 2])
+        check
+          "SELECT CASE WHEN i % 2 = 0 THEN json_object('', i, 'n', i + 1) ELSE json_object('', i, 'a', i + 1, 'b', i + 2) END::VARIANT FROM range(4) t(i)"
+          [two 0, three 1, two 2, three 3]
     , testCase "filtered and reordered rows use the right child offsets" $ withConnection ":memory:" \conn -> do
         rows <- query_ conn "SELECT {'n': i, 'xs': [i, i + 1]}::VARIANT FROM range(10000) t(i) WHERE i % 97 = 0 ORDER BY i DESC LIMIT 40"
         let expected =
@@ -374,11 +399,27 @@ tests =
             :: IO [Only (Maybe Text)]
           )
           >>= (@?= [Only Nothing])
-        forM_ [variantPayload value, FieldList [variantPayload value], variantObject [("shape", variantPayload value)]] \input -> do
-          result <- try (query conn "SELECT ?" (Only (Variant input)) :: IO [Only Variant]) :: IO (Either SomeException [Only Variant])
+        forM_ [variantPayload value, FieldList [variantPayload value], variantObject [("shape", variantPayload value)]] (roundTrip conn)
+    , testCase "raw geometry without a CRS binds in a VARIANT, and a CRS raises an error" $ withConnection ":memory:" \conn -> do
+        nanPoint <-
+          either assertFailure pure $
+            toRawGeometry (G.PointGeometry (G.PointXYZ (G.XYZ (castWord64ToDouble 0x7ff8000000000001) (castWord64ToDouble 0x7ff8000000000002) 7)))
+        native <- forM ["GEOMETRYCOLLECTION ZM EMPTY", "MULTIPOLYGON M EMPTY", "POINT Z (NaN NaN 7)", "POLYGON ((0 0, 1 0, 1 1, 0 0))"] \wkt -> do
+          [Only geometry] <- query conn "SELECT ?::GEOMETRY" (Only (wkt :: Text)) :: IO [Only RawGeometry]
+          pure geometry
+        forM_ (map rawGeometryWKB (nanPoint : native)) \wkb -> do
+          let value = geometryPayload wkb
+          roundTrip conn (variantPayload value)
+          (query conn "SELECT variant_typeof(?), (?)::GEOMETRY::BLOB" (value, value) :: IO [(Text, BS.ByteString)]) >>= (@?= [("GEOMETRY", wkb)])
+        [Only withCRS] <- query_ conn "SELECT 'POINT (1 2)'::GEOMETRY('OGC:CRS84')" :: IO [Only RawGeometry]
+        forM_ [FieldGeometry withCRS, FieldList [FieldGeometry withCRS], variantObject [("shape", FieldGeometry withCRS)]] \input -> do
+          result <- try (query conn "SELECT ?" (Only (Variant input)) :: IO [Only Variant])
           case result of
-            Left err -> assertBool (displayException err) ("raw GEOMETRY binding requires explicit" `isInfixOf` displayException err)
-            Right _ -> assertFailure "expected raw geometry binding rejection"
+            Left err -> do
+              sqlErrorMessage err
+                @?= "duckdb-simple: a VARIANT does not keep the CRS of a GEOMETRY, so the GEOMETRY value with the CRS 'OGC:CRS84' cannot bind as a VARIANT"
+              sqlErrorType err @?= Just ErrorInputInvalid
+            Right _ -> assertFailure "expected a VARIANT CRS error"
         (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
     , testCase "geometry payload retains empty layout tags and native NaN points" $ withConnection ":memory:" \conn ->
         forM_ ["GEOMETRYCOLLECTION ZM EMPTY", "MULTIPOLYGON M EMPTY", "POINT Z (NaN NaN 7)"] \wkt -> do

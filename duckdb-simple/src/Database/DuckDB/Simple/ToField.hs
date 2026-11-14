@@ -118,8 +118,10 @@ plainBuilder factory = ValueBuilder factory (logicalTypeFromRep factory)
 class (DuckDBColumnType a) => ToDuckValue a where
   -- | Construct an owned value through a borrowed native factory. Keep the
   --     owner of the factory (a connection, a callback context, or an instance)
-  --     alive until you destroy the value. Use 'ToField' to resolve arbitrary CRS
-  --     labels from connection options.
+  --     alive until you destroy the value. This is a rule of the library. The
+  --     header says that a factory is valid for as long as its owner is. The
+  --     header gives no rule for a value after the owner of its factory ends.
+  --     Use 'ToField' to resolve arbitrary CRS labels from connection options.
   toDuckValue :: ValueFactory -> a -> IO NativeValue
 
 valueBinding :: String -> (DuckDBV2FactoryHandle -> IO DuckDBV2ValueHandle) -> FieldBinding

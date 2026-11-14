@@ -374,8 +374,11 @@ checkLibraryVersion = do
 closeEnvironment :: Environment -> IO ()
 closeEnvironment Environment{environmentState} = closeEnvironmentState environmentState
 
--- | Mark the environment closed before releasing its native state, so that no
--- instance registers during the close. If the native destroy refuses with
+-- | Mark the environment closed before releasing its native state, so that a
+-- 'createInstance' that starts after the mark raises an error. A
+-- 'createInstance' that read the open state before the mark can still register
+-- its instance. Thus the caller must wait for child creation before the close
+-- (see 'closeEnvironment'). If the native destroy refuses with
 -- @ERROR_RESOURCE_IN_USE@, the native environment is still alive. In this case,
 -- put back the open state with the same child registry, and raise the error.
 -- 'closeChildren' empties the registry, and a later 'createInstance' can register
@@ -843,9 +846,12 @@ peekUtf8CString ptr = Text.decodeUtf8 <$> BS.packCString (coerce ptr)
 {- Note [Interruptible native calls]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Native work that can run for a long time runs in a helper thread, so that an
-asynchronous exception can interrupt it. runInterruptible starts the helper
-thread, and the caller waits for the outcome of the work. An asynchronous
-exception that the caller gets during this wait is a cancellation.
+asynchronous exception can interrupt it. An asynchronous exception does not
+interrupt a thread that is in a foreign call: the documentation of throwTo says
+that the exception is not raised until the call has completed. Thus the caller
+does not make the call itself. runInterruptible starts the helper thread, and
+the caller waits for the outcome of the work. An asynchronous exception that
+the caller gets during this wait is a cancellation.
 
 On a cancellation, the caller does these steps:
 

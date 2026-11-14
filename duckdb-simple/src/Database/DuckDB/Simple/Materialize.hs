@@ -200,6 +200,18 @@ then flattens the vector (castRows, writeRows, and writeResults). A writer of an
 owned vector from withOwnedVector does not flatten (materializeValue, and the
 writers of one-row vectors in "Database.DuckDB.Simple.ToField").
 
+- The writer sets the size before the flatten. In DuckDB 2.0.0,
+  duckdb_v2_vector_flatten flattens the rows of the current size of the vector:
+  it calls Vector::Flatten without a row count
+  (src/main/capi/v2/capi_v2_vector.cpp). duckdb_v2_vector_set_size reserves
+  memory only for a vector that is already FLAT. Thus after this order the
+  vector is FLAT and has the new number of rows. The header gives no order.
+
+- In DuckDB 2.0.0 a new vector of a data chunk is FLAT. DataChunk::Initialize
+  makes each vector from a vector cache (src/common/types/data_chunk.cpp). The
+  header does not say this. Thus the writer of an owned vector needs no
+  flatten.
+
 - The set operations check the row against the size. The header of
   duckdb_v2_vector_set_value and duckdb_v2_vector_set_null says that each call
   requires a FLAT vector and checks the row against vector_get_size.

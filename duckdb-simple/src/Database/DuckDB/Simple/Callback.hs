@@ -116,7 +116,10 @@ them.
   release a value that it replaces. Thus give one value to each slot.
 
 The two destructors are foreign exports, and DuckDB gets their static
-addresses. They mask asynchronous exceptions (mask_). They have no error
+addresses. A static address needs no release. A function pointer of a wrapper
+import must be freed with freeHaskellFunPtr after its last call. The destructor
+is the last call for its object, so no later call could free such a pointer.
+The destructors mask asynchronous exceptions (mask_). They have no error
 channel, so they contain each exception (ignoreCallbackExceptions). Other
 modules attach destructors of their own with attachOpaque, for example
 duckdb_simple_release_aggregate_states in

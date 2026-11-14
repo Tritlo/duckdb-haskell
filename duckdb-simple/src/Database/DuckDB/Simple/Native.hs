@@ -296,6 +296,24 @@ The code uses these forms:
 - A loop that reads the elements from the last to the first, and puts each
   element in front of the list. The list then needs no reverse (the row loop of
   collectStreamRows).
+
+These loops keep a frame for each element, and they stay as they are, because
+the list is short in practice or the operation is rare:
+
+- The element loops of a LIST, ARRAY, or MAP value in
+  "Database.DuckDB.Simple.Materialize", and the row loop of materializeChunkRows
+  in "Database.DuckDB.Simple.Copy.Internal". Only a BIGNUM element, the first
+  row of a UNION member, and a rejectRows reader make a native call for each
+  row there.
+
+- The row loop of executeScalarFunction in
+  "Database.DuckDB.Simple.Function.Internal", for the same readers.
+
+- withParsedStatements, which nests one bracket for each statement of a script,
+  and cleanupAll, for a connection with many open statements, in
+  "Database.DuckDB.Simple.Internal".
+
+- The option loop in "Database.DuckDB.Simple.Config".
 -}
 
 -- | Run the acquire actions in list order under 'mask_', and give the items in

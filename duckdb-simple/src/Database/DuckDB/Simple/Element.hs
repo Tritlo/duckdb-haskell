@@ -13,6 +13,8 @@ module Database.DuckDB.Simple.Element (
   chunkIsRowValid,
   decodeElement,
   duckDBHugeIntToInteger,
+  timeTzMaxOffsetSeconds,
+  timeTzOffsetBits,
   vectorElementType,
   withVectorType,
 ) where
@@ -171,13 +173,30 @@ decodeTimeUnits units value =
 decodeDuckDBTimeNs :: Int64 -> TimeOfDay
 decodeDuckDBTimeNs = decodeTimeUnits 1000000000
 
+-- | The largest UTC offset of a TIMETZ value in seconds: 15:59:59. DuckDB 2.0.0
+-- defines it as @dtime_tz_t::MAX_OFFSET@ in
+-- @src/include/duckdb/common/types/datetime.hpp@. The low 24 bits of a TIMETZ
+-- value hold this maximum minus the offset (@encode_offset@ and
+-- @decode_offset@ in that file). The V2 header says only "micros in the high
+-- 40 bits, a biased offset in the low 24" (the comment of
+-- @duckdb_v2_value_get_time_tz@). The header does not give the value of the
+-- bias.
+timeTzMaxOffsetSeconds :: Int
+timeTzMaxOffsetSeconds = 16 * 60 * 60 - 1
+
+-- | The number of low bits of a TIMETZ value that hold the biased offset. The
+-- high 40 bits hold the time of day in microseconds. DuckDB 2.0.0 names the two
+-- widths @dtime_tz_t::OFFSET_BITS@ and @dtime_tz_t::TIME_BITS@.
+timeTzOffsetBits :: Int
+timeTzOffsetBits = 24
+
 decodeDuckDBTimeTz :: Word64 -> IO TimeWithZone
 decodeDuckDBTimeTz raw = do
-  let offset = 57599 - fromIntegral (raw .&. 0xFFFFFF) :: Int
+  let offset = timeTzMaxOffsetSeconds - fromIntegral (raw .&. (1 `shiftL` timeTzOffsetBits - 1)) :: Int
   when (offset `rem` 60 /= 0) $ throwIO (userError "duckdb-simple: TIMETZ offset cannot be represented in whole minutes")
   pure
     TimeWithZone
-      { timeWithZoneTime = decodeTimeUnits 1000000 (fromIntegral (raw `shiftR` 24))
+      { timeWithZoneTime = decodeTimeUnits 1000000 (fromIntegral (raw `shiftR` timeTzOffsetBits))
       , timeWithZoneZone = minutesToTimeZone (offset `div` 60)
       }
 

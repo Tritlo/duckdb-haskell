@@ -43,6 +43,7 @@ import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds)
 import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), TimeZone (..), timeOfDayToTime, timeZoneMinutes, utc, utcToLocalTime)
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
+import Database.DuckDB.Simple.Element (timeTzMaxOffsetSeconds, timeTzOffsetBits)
 import Database.DuckDB.Simple.FromField (
   BigNum (..),
   BitString (..),
@@ -799,8 +800,12 @@ timeWithZoneDuckValue :: DuckDBV2FactoryHandle -> TimeWithZone -> IO DuckDBV2Val
 timeWithZoneDuckValue factory TimeWithZone{timeWithZoneTime, timeWithZoneZone} = do
   micros <- timeOfDayUnits 1000000 timeWithZoneTime
   let offset = toInteger (timeZoneMinutes timeWithZoneZone) * 60
-  when (abs offset > 57599) $ throwIO (userError "duckdb-simple: TIME WITH TIME ZONE offset out of range")
-  output (c_duckdb_v2_value_create_time_tz factory ((fromIntegral micros `shiftL` 24) .|. fromIntegral (57599 - offset)))
+  when (abs offset > toInteger timeTzMaxOffsetSeconds) $ throwIO (userError "duckdb-simple: TIME WITH TIME ZONE offset out of range")
+  output
+    ( c_duckdb_v2_value_create_time_tz
+        factory
+        ((fromIntegral micros `shiftL` timeTzOffsetBits) .|. fromIntegral (toInteger timeTzMaxOffsetSeconds - offset))
+    )
 
 integerToHugeInt :: Integer -> IO DuckDBV2HugeintT
 integerToHugeInt value = do

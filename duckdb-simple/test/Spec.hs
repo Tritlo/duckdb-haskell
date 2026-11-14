@@ -1093,6 +1093,13 @@ typeTests =
         case genericToFieldValue EmptyStruct of
           FieldNull -> pure ()
           other -> assertFailure ("expected FieldNull for empty struct, got " <> show other)
+    , testCase "empty struct binds as a STRUCT without fields" $
+        withConnection ":memory:" \conn -> do
+          query conn "SELECT typeof(?)" (Only EmptyStruct) >>= (@?= [Only (Text.pack "STRUCT")])
+          rows <- query conn "SELECT ?" (Only EmptyStruct) :: IO [Only FieldValue]
+          case rows of
+            [Only (FieldStruct structVal)] -> elems (structValueFields structVal) @?= []
+            other -> assertFailure ("expected a STRUCT without fields, got " <> show other)
     , testCase "struct with Maybe fields" $ do
         let withJust = OptionalFields (Just 42) (Just (Text.pack "text"))
             withNothing = OptionalFields Nothing Nothing

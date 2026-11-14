@@ -360,15 +360,18 @@ genericToStructValue :: forall a. (Generic a, GToField (Rep a)) => a -> Maybe (S
 genericToStructValue value =
   case gToField (from value) of
     EncodedStruct sv _ -> Just sv
-    EncodedNull -> Just emptyStruct
+    EncodedNull -> Just emptyStructValue
     _ -> Nothing
-  where
-    emptyStruct =
-      StructValue
-        { structValueFields = listArray (0, -1) []
-        , structValueTypes = listArray (0, -1) []
-        , structValueIndex = Map.empty
-        }
+
+-- | The STRUCT value without fields. It is the value of a product type with no
+-- fields, which the generic encoding gives as 'EncodedNull'.
+emptyStructValue :: StructValue FieldValue
+emptyStructValue =
+  StructValue
+    { structValueFields = listArray (0, -1) []
+    , structValueTypes = listArray (0, -1) []
+    , structValueIndex = Map.empty
+    }
 
 -- | Extract a UNION-shaped generic encoding directly when one is produced.
 genericToUnionValue :: forall a. (Generic a, GToField (Rep a)) => a -> Maybe (UnionValue FieldValue)
@@ -696,22 +699,14 @@ instance (Generic a, GToField (Rep a)) => DuckDBColumnType (ViaDuckDB a) where
       LogicalTypeGeometry{} -> Text.pack "GEOMETRY"
       LogicalTypeCollatedVarchar{} -> Text.pack "VARCHAR"
 
--- | Deriving-via @ToField@ instance. We reuse the helpers above to decide
--- whether the top-level representation is a union, struct, or scalar and then
--- delegate to the existing @ToField@ instances for those composite types.
+-- | Deriving-via @ToField@ instance. A sum type binds as a UNION and a product
+-- type as a STRUCT, through the @ToField@ instances of those values. A product
+-- type with no fields binds as a STRUCT without fields.
 instance (Generic a, GToField (Rep a)) => ToField (ViaDuckDB a) where
-  toField (ViaDuckDB x) =
-    case genericToUnionValue x of
-      Just unionVal -> toField unionVal
-      Nothing ->
-        case genericToStructValue x of
-          Just structVal -> toField structVal
-          Nothing ->
-            case genericToFieldValue x of
-              FieldUnion uv -> toField uv
-              FieldStruct sv -> toField sv
-              FieldNull -> toField (Nothing :: Maybe Int)
-              other -> error ("duckdb-simple: unsupported generic encoding " <> show other)
+  toField (ViaDuckDB x) = case gToField (from x) of
+    EncodedUnion unionVal -> toField unionVal
+    EncodedStruct structVal _ -> toField structVal
+    EncodedNull -> toField emptyStructValue
 
 -- | Deriving-via @FromField@ instance. Errors are rewrapped using the existing
 -- @returnError@ helper so callers receive a proper @ResultError@.

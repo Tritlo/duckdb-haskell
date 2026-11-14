@@ -711,8 +711,9 @@ fieldValueWithTypeDuckValue builder@ValueBuilder{builderFactory = factory, build
   (LogicalTypeDecimal width scale, FieldDecimal decimal@DecimalValue{decimalWidth, decimalScale})
     | width == decimalWidth && scale == decimalScale -> decimalDuckValue factory decimal
   (LogicalTypeList child, FieldList values) -> sequenceValue c_duckdb_v2_value_create_list child values
+  -- The generic ARRAY type declares the size 0. The value then gives the size.
   (LogicalTypeArray child size, FieldArray array)
-    | fromIntegral (length (elems array)) == size -> sequenceValue c_duckdb_v2_value_create_array child (elems array)
+    | size == 0 || fromIntegral (length (elems array)) == size -> sequenceValue c_duckdb_v2_value_create_array child (elems array)
   (LogicalTypeMap keyRep valueRep, FieldMap pairs) ->
     bracket (makeType keyRep) destroyLogicalType \keyType ->
       bracket (makeType valueRep) destroyLogicalType \valueType ->

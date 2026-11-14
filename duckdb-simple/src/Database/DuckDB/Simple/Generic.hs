@@ -291,9 +291,13 @@ instance (DuckValue a) => DuckValue [a] where
   duckFromField other = Left ("duckdb-simple: expected LIST, got " <> show other)
 
 -- | Array values encode as DuckDB ARRAY values. A type has no size, so the
--- instance declares the size 0. A generic record with an Array field can be
--- read. It cannot be bound: a value with elements has a size other than 0, and
--- DuckDB rejects an ARRAY without elements.
+-- instance declares the size 0. When a generic record binds, the value of an
+-- Array field gives the size. DuckDB rejects an ARRAY without elements. DuckDB
+-- also rejects the declared size 0 in these cases: an Array field with the value
+-- Nothing, a LIST, ARRAY, or MAP field with an Array in its element, key, or
+-- value type (also when the field has no elements), and each constructor of a
+-- sum type that has an Array field. The error is "ARRAY type size must be at
+-- least 1".
 instance (DuckValue a) => DuckValue (Array Int a) where
   duckToField arr =
     let values = elems arr

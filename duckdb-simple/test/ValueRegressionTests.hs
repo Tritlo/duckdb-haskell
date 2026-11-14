@@ -184,6 +184,26 @@ valueRegressionTests =
     , testCase "embedded NUL and Unicode Text round trip" $ withConnection ":memory:" \conn -> do
         let value = "before\0after íslenska λ 😀" :: Text
         (query conn "SELECT ?" (Only value) :: IO [Only Text]) >>= (@?= [Only value])
+    , testCase "VARCHAR, BLOB, and BIT values on both sides of the inline length read back" $ withConnection ":memory:" \conn -> do
+        -- DuckDB keeps a value of at most 12 bytes inline and a longer value
+        -- behind a pointer. A BIT value has one more byte for its padding count.
+        let lengths = [0, 1, 11, 12, 13, 64]
+            texts = [Text.pack (take n (cycle ['a' .. 'z'])) | n <- lengths]
+            blobs = [BS.pack (take n (cycle [0, 255, 1, 128])) | n <- lengths]
+            bits = [bsFromBool (take n (cycle [True, False, False])) | n <- [1, 8, 87, 88, 89, 200]]
+            present = [(Just text, Just blob, Just bit) | (text, blob, bit) <- zip3 texts blobs bits]
+            -- The NULL row is between the values of 11 and 12 bytes.
+            rows = take 3 present <> [(Nothing, Nothing, Nothing)] <> drop 3 present
+        _ <- execute_ conn "CREATE TABLE inline_boundary (i INTEGER, t VARCHAR, b BLOB, bits BIT)"
+        _ <-
+          executeMany
+            conn
+            "INSERT INTO inline_boundary VALUES (?, ?, ?, ?)"
+            [(i, text, blob, bit) | (i, (text, blob, bit)) <- zip [0 :: Int32 ..] rows]
+        (query_ conn "SELECT t, b, bits FROM inline_boundary ORDER BY i" :: IO [(Maybe Text, Maybe BS.ByteString, Maybe BitString)])
+          >>= (@?= rows)
+        (query_ conn "SELECT list(t ORDER BY i) FROM inline_boundary" :: IO [Only [Maybe Text]])
+          >>= (@?= [Only [text | (text, _, _) <- rows]])
     , testCase "Int8 rejects both overflow directions" $ withConnection ":memory:" \conn -> do
         forM_ ["SELECT 128::BIGINT", "SELECT -129::SMALLINT"] \sql ->
           assertConversionError (query_ conn sql :: IO [Only Int8])

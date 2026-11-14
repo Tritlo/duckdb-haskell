@@ -7,6 +7,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StrictData #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE UnboxedTuples #-}
 {-# LANGUAGE UnliftedFFITypes #-}
 
 -- |
@@ -90,7 +91,20 @@ import Control.Concurrent (
   tryTakeMVar,
   withMVar,
  )
-import Control.Exception (SomeException, bracket, bracket_, catch, finally, mask, mask_, onException, throwIO, try, uninterruptibleMask_)
+import Control.Exception (
+  SomeException,
+  bracket,
+  bracket_,
+  catch,
+  evaluate,
+  finally,
+  mask,
+  mask_,
+  onException,
+  throwIO,
+  try,
+  uninterruptibleMask_,
+ )
 import Control.Monad (forM, forM_, join, replicateM, unless, void, when)
 import Data.Array (Array, bounds, inRange, listArray, (!))
 import qualified Data.ByteString as BS
@@ -116,8 +130,10 @@ import Foreign.Marshal.Array (withArray)
 import Foreign.Ptr (nullPtr)
 import Foreign.Storable (peek, poke)
 import GHC.Conc (ThreadId (ThreadId))
-import GHC.Exts (ThreadId#, keepAlive#)
+import GHC.Exts (ThreadId#, casMutVar#, keepAlive#)
 import GHC.IO (IO (..))
+import GHC.IORef (IORef (..))
+import GHC.STRef (STRef (..))
 import GHC.Weak.Finalize (getFinalizerExceptionHandler)
 import System.IO.Unsafe (unsafePerformIO)
 import System.Mem.Weak (Weak, deRefWeak, finalize)
@@ -624,6 +640,7 @@ callbackLockWaitError micros =
 -- a thread is its number ('threadNumber'). The stripe of a thread is its number
 -- modulo the number of stripes. New threads get consecutive numbers, so
 -- callbacks that run at the same time seldom change the same 'IORef'.
+-- 'changeCallbackMarks' makes each change.
 --
 -- The key is not the 'ThreadId'. A 'ThreadId' in the table keeps its thread
 -- reachable. Then the GHC runtime does not raise @BlockedIndefinitelyOnMVar@
@@ -661,11 +678,29 @@ callbackMarkStripe = do
 withCallbackMark :: IO a -> IO a
 withCallbackMark action = mask \restore -> do
   (stripe, key) <- callbackMarkStripe
-  atomicModifyIORef' stripe \marks -> (IntMap.insertWith (+) key 1 marks, ())
-  restore action `finally` atomicModifyIORef' stripe \marks -> (IntMap.update unmark key marks, ())
+  changeCallbackMarks stripe (IntMap.insertWith (+) key 1)
+  restore action `finally` changeCallbackMarks stripe (IntMap.update unmark key)
   where
     unmark :: Int -> Maybe Int
     unmark count = if count > 1 then Just (count - 1) else Nothing
+
+-- | Change a stripe of 'callbackMarks' with compare-and-swap. Read the map,
+-- evaluate the new map, and store it if the stripe still holds the map that was
+-- read. If another thread changed the stripe, do the change again. The stripe
+-- thus holds only evaluated maps, and no thread waits for a change of another
+-- thread. 'atomicModifyIORef'' stores a value that is not evaluated, and it
+-- allocates more for each change.
+--
+-- The swap compares pointers. A map is a value of a type with more than one
+-- constructor, so GHC keeps its pointer and does not make a new box for it.
+changeCallbackMarks :: IORef (IntMap.IntMap Int) -> (IntMap.IntMap Int -> IntMap.IntMap Int) -> IO ()
+changeCallbackMarks stripe@(IORef (STRef var)) change = do
+  old <- readIORef stripe
+  new <- evaluate (change old)
+  swapped <- IO \s -> case casMutVar# var old new s of
+    (# s', 0#, _ #) -> (# s', True #)
+    (# s', _, _ #) -> (# s', False #)
+  unless swapped (changeCallbackMarks stripe change)
 
 -- | Tell if 'withCallbackMark' marks the current thread.
 hasCallbackMark :: IO Bool

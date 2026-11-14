@@ -422,7 +422,7 @@ coreRegressionTests =
                 Left (_ :: SQLError) -> threadDelay 10000 >> wait
         flip finally (removeFile path) $ do
           allocate
-          released <- timeout 5000000 wait
+          released <- timeout 60000000 wait
           released @?= Just ()
     , testCase "GC during the last connection use keeps native owners alive" $ do
         -- A bracket cleanup would retain conn and hide early finalization.

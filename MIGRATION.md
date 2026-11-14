@@ -166,7 +166,8 @@ The SQL workflow stays the same. These changes can affect your code:
   names through `connectionGeometryCRS`.
 - A name in `connectionGeometryCRS` that DuckDB drops, for example a blank
   name, fails when the connection opens. Version 0.3 read the configured types
-  the first time a parameter needed one, and failed there.
+  the first time a parameter needed one, and did not check that a type kept its
+  CRS.
 - DuckDB 2.0 rejects WKB with mixed Z/M member layouts.
 - Decoded VARIANT objects list their keys in DuckDB's lexicographic order.
 

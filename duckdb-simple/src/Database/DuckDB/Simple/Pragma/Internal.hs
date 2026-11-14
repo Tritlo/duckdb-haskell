@@ -20,7 +20,7 @@ import qualified Data.Text as Text
 import Database.DuckDB.Simple.FromField (Field (..))
 import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow, rowErrorsToSqlError)
 import Database.DuckDB.Simple.Internal (Connection)
-import Database.DuckDB.Simple.Materialize (materializeValue)
+import Database.DuckDB.Simple.Materialize (materializeValue, rejectRows)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import qualified Database.DuckDB.Simple.V2.Pragma as V2
@@ -91,4 +91,4 @@ pragmaArguments name info context = withContextFactory context \factory -> do
           (destroy c_duckdb_v2_value_destroy)
           (materializeValue noVariant factory)
       pure (Field argument (fromIntegral index) value)
-    noVariant _ = throwIO (userError "duckdb-simple: the type of a pragma argument cannot be or contain VARIANT")
+    noVariant = rejectRows (throwIO (userError "duckdb-simple: the type of a pragma argument cannot be or contain VARIANT"))

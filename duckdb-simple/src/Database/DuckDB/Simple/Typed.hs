@@ -36,7 +36,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.Element (vectorElementType)
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), FromField (..), ResultError (..))
-import Database.DuckDB.Simple.Materialize (FallbackReaders (..), prepareVectorReader)
+import Database.DuckDB.Simple.Materialize (FallbackReaders (..), prepareVectorReader, rejectRows)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue (..), duckdbColumnType)
@@ -127,7 +127,7 @@ argumentName index = Text.pack ("arg" <> show index)
 -- outlive the vector.
 prepareArgumentReader :: Int -> DuckDBV2VectorHandle -> IO (Int -> IO Field)
 prepareArgumentReader index vector = do
-  let unsupported _ = pure \_ -> throwIO (userError "duckdb-simple: the type of a typed argument cannot be or contain VARIANT or GEOMETRY")
+  let unsupported = rejectRows (throwIO (userError "duckdb-simple: the type of a typed argument cannot be or contain VARIANT or GEOMETRY"))
   readValue <- prepareVectorReader (FallbackReaders unsupported unsupported) vector
   pure \row -> Field (argumentName index) index <$> readValue row
 

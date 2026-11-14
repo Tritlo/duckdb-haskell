@@ -95,6 +95,7 @@ typedRegistrationTests =
     , testCase "pragma row has the order of the declaration" testPragmaRow
     , testCase "exec pragma counts its calls" testPragmaExec
     , testCase "pragma argument rows that do not decode" testPragmaDecodeErrors
+    , testCase "pragma arguments with VARIANT types decode when no row holds a VARIANT" testPragmaVariantRows
     , testCase "pragma exceptions become SQL errors" testPragmaExceptions
     , testCase "custom option update accepts and rejects BIGINT values" testOptionUpdate
     , testCase "custom option update gets VARCHAR values and can reject RESET" testOptionText
@@ -311,6 +312,25 @@ testPragmaDecodeErrors = withConnection ":memory:" \conn -> do
     "the type of a pragma argument cannot be or contain VARIANT"
     (query_ conn "PRAGMA typed_variant(1::VARIANT)" :: IO [Only Int64])
   query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+
+-- | Decode a pragma argument whose type contains VARIANT when no row of the
+-- argument holds a VARIANT: an empty VARIANT list and a NULL STRUCT. A VARIANT
+-- row raises the error of the pragma argument, also a NULL VARIANT row.
+testPragmaVariantRows :: Assertion
+testPragmaVariantRows = withConnection ":memory:" \conn -> do
+  let register name declaration =
+        registerPragmaFunction conn name [parameter "value" (TypeExpression declaration)] $
+          QueryPragma \(Only (value :: FieldValue)) -> pure ("SELECT '" <> Text.pack (show value) <> "'")
+  register "typed_variant_list" "VARIANT[]"
+  register "typed_variant_struct" "STRUCT(v VARIANT)"
+  query_ conn "PRAGMA typed_variant_list([]::VARIANT[])" >>= (@?= [Only ("FieldList []" :: Text)])
+  query_ conn "PRAGMA typed_variant_struct(NULL::STRUCT(v VARIANT))" >>= (@?= [Only ("FieldNull" :: Text)])
+  assertSqlError
+    "the type of a pragma argument cannot be or contain VARIANT"
+    (query_ conn "PRAGMA typed_variant_list([1::VARIANT])" :: IO [Only Text])
+  assertSqlError
+    "the type of a pragma argument cannot be or contain VARIANT"
+    (query_ conn "PRAGMA typed_variant_list([NULL]::VARIANT[])" :: IO [Only Text])
 
 -- | Make an SQL error from an exception of each callback kind.
 testPragmaExceptions :: Assertion

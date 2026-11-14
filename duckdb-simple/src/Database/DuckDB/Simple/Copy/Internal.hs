@@ -47,6 +47,7 @@ import Database.DuckDB.Simple.Materialize (
   prepareGeometryReader,
   prepareVariantReader,
   prepareVectorReader,
+  rejectRows,
  )
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Typed (TypedRow (..))
@@ -106,7 +107,7 @@ registerCopyToFunction = registerCopyToFunctionOn . ConnectionTarget
 
 -- | Register row-oriented COPY TO callbacks on a connection or a loading
 -- extension. The rules of 'registerCopyToFunction' apply. A COPY TO function of
--- an extension cannot read a VARIANT column.
+-- an extension cannot read a VARIANT value.
 registerCopyToFunctionOn
   :: RegistrationTarget
   -> Text
@@ -128,11 +129,11 @@ registerCopyOn target name to from = do
 -- | Give the VARIANT reader of a registration target to an action. On a
 -- connection, the reader decodes VARIANT through a helper connection of the
 -- database. An extension target has no instance handle, so its reader raises an
--- error.
+-- error for each VARIANT row.
 withVariantReader :: RegistrationTarget -> (VectorReader -> IO a) -> IO a
 withVariantReader target action = case target of
   ConnectionTarget connection -> withDatabaseHandle connection (action . readVariant)
-  ExtensionTarget _ _ -> action \_ -> throwIO (userError "duckdb-simple: a COPY TO function of an extension cannot read VARIANT")
+  ExtensionTarget _ _ -> action (rejectRows (throwIO (userError "duckdb-simple: a COPY TO function of an extension cannot read VARIANT")))
   where
     -- Keep the raw instance handle, not the 'Instance' value. DuckDB registers
     -- the COPY function on the database, and it can keep the callbacks until

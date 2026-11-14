@@ -17,7 +17,7 @@ import Control.Monad (forM, when)
 import Data.Text (Text)
 import Database.DuckDB.Simple.FromField (FieldValue)
 import Database.DuckDB.Simple.Internal (Connection, withConnectionHandle)
-import Database.DuckDB.Simple.Materialize (materializeValue)
+import Database.DuckDB.Simple.Materialize (materializeValue, rejectRows)
 import Database.DuckDB.Simple.Native
 
 -- | One query or operator node. Metric order is unspecified. Any metric or
@@ -52,7 +52,7 @@ queryMetrics connection = withConnectionHandle connection \native ->
       root <- output (c_duckdb_v2_query_metrics_get_root snapshot)
       copyNode (materializeValue unexpectedVariant factory) root
   where
-    unexpectedVariant _ = throwIO (SQLError "duckdb-simple: query metrics must be numeric" Nothing Nothing)
+    unexpectedVariant = rejectRows (throwIO (SQLError "duckdb-simple: query metrics must be numeric" Nothing Nothing))
     copyNode readValue node = do
       name <- output (c_duckdb_v2_query_metrics_node_get_name node) >>= readText
       metricCount <- output (c_duckdb_v2_query_metrics_node_get_metric_count node)

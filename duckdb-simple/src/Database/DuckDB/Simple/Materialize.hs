@@ -10,6 +10,7 @@
 module Database.DuckDB.Simple.Materialize (
   VectorReader,
   FallbackReaders (..),
+  rejectRows,
   prepareVariantReader,
   prepareGeometryReader,
   materializeValue,
@@ -67,6 +68,14 @@ data FallbackReaders = FallbackReaders
   , geometryReader :: VectorReader
   }
 
+-- | A reader for a type that the caller cannot read. It raises the error when a
+-- row is read, not when the vector is prepared. Thus a value of a nested type
+-- with no row of that type, such as an empty VARIANT list or a NULL STRUCT, gives
+-- its value, and each row of that type raises the same error. A NULL row of
+-- that type raises too.
+rejectRows :: IO FieldValue -> VectorReader
+rejectRows raise _ = pure (const raise)
+
 -- | Copy VARIANT rows before releasing the borrowed metadata connection. The
 -- state belongs to that connection.
 prepareVariantReader :: DuckDBV2ConnectionHandle -> VariantCodec.VariantState -> VectorReader
@@ -78,7 +87,7 @@ prepareVariantReader = VariantCodec.prepareVariantDecoder materializePlainValue
 -- this function does not destroy it.
 materializePlainValue :: DuckDBV2ConnectionHandle -> DuckDBV2ValueHandle -> IO FieldValue
 materializePlainValue connection value = withConnectionFactory connection \factory ->
-  materializeValue (\_ -> throwIO (userError "duckdb-simple: expected a value without VARIANT")) factory value
+  materializeValue (rejectRows (throwIO (userError "duckdb-simple: expected a value without VARIANT"))) factory value
 
 -- | Copy one value through an owned vector. The caller retains the factory owner.
 -- The first argument reads VARIANT. 'prepareGeometryReader' reads GEOMETRY with
@@ -164,7 +173,7 @@ prepareGeometryReader factory vector = do
       \blob ->
         withOwnedVector factory blob \target -> do
           checked (c_duckdb_v2_vector_cast factory vector target DuckDBV2CastModeNormal nullPtr nullPtr)
-          let notBlob _ = throwIO (userError "duckdb-simple: expected a BLOB vector")
+          let notBlob = rejectRows (throwIO (userError "duckdb-simple: expected a BLOB vector"))
           readBlob <- prepareVectorReader (FallbackReaders notBlob notBlob) target
           forM [0 .. count - 1] readBlob
   let rows = listArray (0, count - 1) blobs :: Array Int FieldValue

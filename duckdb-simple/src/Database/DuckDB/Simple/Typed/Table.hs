@@ -23,7 +23,7 @@ import qualified Data.Text as Text
 import Database.DuckDB.Simple.Callback (attachOpaque, readCallbackState, transferCallbackState)
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..))
 import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow)
-import Database.DuckDB.Simple.Materialize (materializeValue)
+import Database.DuckDB.Simple.Materialize (materializeValue, rejectRows)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.Typed (ColumnValue (..), TypedRow (..), argumentName, conversionMessage)
@@ -149,4 +149,4 @@ readArguments name count factory input = do
     Ok params -> pure params
     Errors failures -> throwIO (userError ("duckdb-simple: " <> Text.unpack name <> ": " <> conversionMessage failures))
   where
-    unexpectedVariant _ = pure \_ -> throwIO (userError "duckdb-simple: the type of a table function argument cannot be or contain VARIANT")
+    unexpectedVariant = rejectRows (throwIO (userError "duckdb-simple: the type of a table function argument cannot be or contain VARIANT"))

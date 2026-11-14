@@ -53,7 +53,7 @@ import Database.DuckDB.Simple.FromField (
   Field (..),
   FromField (..),
  )
-import Database.DuckDB.Simple.Materialize (FallbackReaders (..), prepareVectorReader)
+import Database.DuckDB.Simple.Materialize (FallbackReaders (..), prepareVectorReader, rejectRows)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.Typed (conversionMessage)
@@ -340,7 +340,9 @@ type ColumnReader = Int -> IO Field
 
 makeColumnReader :: DuckDBV2ScalarFunctionExecInfoHandle -> Int -> IO ColumnReader
 makeColumnReader info columnIndex = do
-  let unsupported _ = throwIO (functionInvocationError "duckdb-simple: the type of a scalar function argument cannot be or contain VARIANT or GEOMETRY")
+  let unsupported =
+        rejectRows
+          (throwIO (functionInvocationError "duckdb-simple: the type of a scalar function argument cannot be or contain VARIANT or GEOMETRY"))
   readValue <-
     output (c_duckdb_v2_scalar_function_exec_get_arg info (fromIntegral columnIndex))
       >>= prepareVectorReader (FallbackReaders unsupported unsupported)

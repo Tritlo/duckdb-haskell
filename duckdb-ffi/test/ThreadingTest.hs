@@ -18,127 +18,126 @@ import Utils (withConnection, withConstCString)
 
 tests :: TestTree
 tests =
-    testGroup
-        "Threading Information"
-        [ executeTasksCompletesPendingQuery
-        , taskStateControlsExecutionLifecycle
-        ]
+  testGroup
+    "Threading Information"
+    [ executeTasksCompletesPendingQuery
+    , taskStateControlsExecutionLifecycle
+    ]
 
-{- | Open a database that has no worker threads. Without this, the
-worker threads of DuckDB start a pending query immediately, and the
-test races them. With one thread, only 'duckdb_execute_tasks' can
-make progress, so the checks are deterministic.
--}
+-- | Open a database that has no worker threads. Without this, the
+-- worker threads of DuckDB start a pending query immediately, and the
+-- test races them. With one thread, only 'duckdb_execute_tasks' can
+-- make progress, so the checks are deterministic.
 withSingleThreadedDatabase :: (DuckDBDatabase -> IO a) -> IO a
 withSingleThreadedDatabase action =
-    withConstCString ":memory:" \path ->
-        alloca \configPtr -> do
-            c_duckdb_create_config configPtr >>= (@?= DuckDBSuccess)
-            config <- peek configPtr
-            withConstCString "threads" \flag ->
-                withConstCString "1" \value ->
-                    c_duckdb_set_config config flag value >>= (@?= DuckDBSuccess)
-            alloca \dbPtr -> do
-                st <- c_duckdb_open_ext path dbPtr config nullPtr
-                c_duckdb_destroy_config configPtr
-                st @?= DuckDBSuccess
-                db <- peek dbPtr
-                result <- action db
-                c_duckdb_close dbPtr
-                pure result
+  withConstCString ":memory:" \path ->
+    alloca \configPtr -> do
+      c_duckdb_create_config configPtr >>= (@?= DuckDBSuccess)
+      config <- peek configPtr
+      withConstCString "threads" \flag ->
+        withConstCString "1" \value ->
+          c_duckdb_set_config config flag value >>= (@?= DuckDBSuccess)
+      alloca \dbPtr -> do
+        st <- c_duckdb_open_ext path dbPtr config nullPtr
+        c_duckdb_destroy_config configPtr
+        st @?= DuckDBSuccess
+        db <- peek dbPtr
+        result <- action db
+        c_duckdb_close dbPtr
+        pure result
 
 executeTasksCompletesPendingQuery :: TestTree
 executeTasksCompletesPendingQuery =
-    testCase "execute_tasks drives pending query to completion" $
-        withSingleThreadedDatabase \db ->
-            withConnection db \conn -> do
-                setupAggTable conn
+  testCase "execute_tasks drives pending query to completion" $
+    withSingleThreadedDatabase \db ->
+      withConnection db \conn -> do
+        setupAggTable conn
 
-                -- INSERT retains its result before execution. A SELECT result
-                -- can wait for its consumer after the scheduler runs its tasks.
-                withConstCString "INSERT INTO threading_numbers SELECT SUM(val) FROM threading_numbers;" \querySql ->
-                    alloca \stmtPtr -> do
-                        stPrepare <- c_duckdb_prepare conn querySql stmtPtr
-                        stPrepare @?= DuckDBSuccess
-                        stmt <- peek stmtPtr
-                        assertBool "prepared statement should not be null" (stmt /= coerce nullPtr)
+        -- INSERT retains its result before execution. A SELECT result
+        -- can wait for its consumer after the scheduler runs its tasks.
+        withConstCString "INSERT INTO threading_numbers SELECT SUM(val) FROM threading_numbers;" \querySql ->
+          alloca \stmtPtr -> do
+            stPrepare <- c_duckdb_prepare conn querySql stmtPtr
+            stPrepare @?= DuckDBSuccess
+            stmt <- peek stmtPtr
+            assertBool "prepared statement should not be null" (stmt /= coerce nullPtr)
 
-                        alloca \pendingPtr -> do
-                            stPending <- c_duckdb_pending_prepared stmt pendingPtr
-                            stPending @?= DuckDBSuccess
-                            pending <- peek pendingPtr
-                            assertBool "pending result should not be null" (pending /= coerce nullPtr)
+            alloca \pendingPtr -> do
+              stPending <- c_duckdb_pending_prepared stmt pendingPtr
+              stPending @?= DuckDBSuccess
+              pending <- peek pendingPtr
+              assertBool "pending result should not be null" (pending /= coerce nullPtr)
 
-                            finishedBefore <- c_duckdb_execution_is_finished conn
-                            finishedBefore @?= CBool 0
+              finishedBefore <- c_duckdb_execution_is_finished conn
+              finishedBefore @?= CBool 0
 
-                            driveTasks db conn
+              driveTasks db conn
 
-                            alloca \resPtr -> do
-                                stExec <- c_duckdb_execute_pending pending resPtr
-                                stExec @?= DuckDBSuccess
-                                c_duckdb_rows_changed resPtr >>= (@?= 1)
-                                c_duckdb_destroy_result resPtr
+              alloca \resPtr -> do
+                stExec <- c_duckdb_execute_pending pending resPtr
+                stExec @?= DuckDBSuccess
+                c_duckdb_rows_changed resPtr >>= (@?= 1)
+                c_duckdb_destroy_result resPtr
 
-                            c_duckdb_destroy_pending pendingPtr
+              c_duckdb_destroy_pending pendingPtr
 
-                        c_duckdb_destroy_prepare stmtPtr
+            c_duckdb_destroy_prepare stmtPtr
 
-                withConstCString "SELECT SUM(val) FROM threading_numbers;" \querySql ->
-                    alloca \resPtr -> do
-                        c_duckdb_query conn querySql resPtr >>= (@?= DuckDBSuccess)
-                        sumVal <- c_duckdb_value_int64 resPtr 0 0
-                        (sumVal :: Int64) @?= 30
-                        c_duckdb_destroy_result resPtr
+        withConstCString "SELECT SUM(val) FROM threading_numbers;" \querySql ->
+          alloca \resPtr -> do
+            c_duckdb_query conn querySql resPtr >>= (@?= DuckDBSuccess)
+            sumVal <- c_duckdb_value_int64 resPtr 0 0
+            (sumVal :: Int64) @?= 30
+            c_duckdb_destroy_result resPtr
 
 taskStateControlsExecutionLifecycle :: TestTree
 taskStateControlsExecutionLifecycle =
-    testCase "task state executes batches and finishes on request" $
-        withSingleThreadedDatabase \db ->
-            withConnection db \conn -> do
-                setupAggTable conn
+  testCase "task state executes batches and finishes on request" $
+    withSingleThreadedDatabase \db ->
+      withConnection db \conn -> do
+        setupAggTable conn
 
-                taskState <- c_duckdb_create_task_state db
-                assertBool "task state should not be null" (taskState /= coerce nullPtr)
+        taskState <- c_duckdb_create_task_state db
+        assertBool "task state should not be null" (taskState /= coerce nullPtr)
 
-                doneVar <- newEmptyMVar
-                _ <- forkFinally (c_duckdb_execute_tasks_state taskState) (const (putMVar doneVar ()))
+        doneVar <- newEmptyMVar
+        _ <- forkFinally (c_duckdb_execute_tasks_state taskState) (const (putMVar doneVar ()))
 
-                executed <- c_duckdb_execute_n_tasks_state taskState 0
-                assertBool "execute_n_tasks_state should not report negative work" (executed >= 0)
+        executed <- c_duckdb_execute_n_tasks_state taskState 0
+        assertBool "execute_n_tasks_state should not report negative work" (executed >= 0)
 
-                isFinishedBefore <- c_duckdb_task_state_is_finished taskState
-                isFinishedBefore @?= CBool 0
+        isFinishedBefore <- c_duckdb_task_state_is_finished taskState
+        isFinishedBefore @?= CBool 0
 
-                c_duckdb_finish_execution taskState
+        c_duckdb_finish_execution taskState
 
-                isFinishedAfter <- c_duckdb_task_state_is_finished taskState
-                isFinishedAfter @?= CBool 1
+        isFinishedAfter <- c_duckdb_task_state_is_finished taskState
+        isFinishedAfter @?= CBool 1
 
-                takeMVar doneVar
-                c_duckdb_destroy_task_state taskState
+        takeMVar doneVar
+        c_duckdb_destroy_task_state taskState
 
 setupAggTable :: DuckDBConnection -> IO ()
 setupAggTable conn = do
-    withConstCString "CREATE TABLE threading_numbers(val INTEGER);" $ \createSql ->
-        execStatement conn createSql
-    withConstCString "INSERT INTO threading_numbers VALUES (1), (2), (3), (4), (5);" $ \insertSql ->
-        execStatement conn insertSql
+  withConstCString "CREATE TABLE threading_numbers(val INTEGER);" $ \createSql ->
+    execStatement conn createSql
+  withConstCString "INSERT INTO threading_numbers VALUES (1), (2), (3), (4), (5);" $ \insertSql ->
+    execStatement conn insertSql
 
 -- | Run scheduler tasks until the pending query finishes, with a bounded retry.
 driveTasks :: DuckDBDatabase -> DuckDBConnection -> IO ()
 driveTasks db conn = go (0 :: Int)
   where
     go attempts
-        | attempts > 10 = assertFailure "execute_tasks did not finish the query within 10 rounds"
-        | otherwise = do
-            c_duckdb_execute_tasks db 1000
-            finished <- c_duckdb_execution_is_finished conn
-            if finished == CBool 1 then pure () else go (attempts + 1)
+      | attempts > 10 = assertFailure "execute_tasks did not finish the query within 10 rounds"
+      | otherwise = do
+          c_duckdb_execute_tasks db 1000
+          finished <- c_duckdb_execution_is_finished conn
+          if finished == CBool 1 then pure () else go (attempts + 1)
 
 execStatement :: DuckDBConnection -> ConstPtr CChar -> IO ()
 execStatement conn sql =
-    alloca \resPtr -> do
-        st <- c_duckdb_query conn sql resPtr
-        st @?= DuckDBSuccess
-        c_duckdb_destroy_result resPtr
+  alloca \resPtr -> do
+    st <- c_duckdb_query conn sql resPtr
+    st @?= DuckDBSuccess
+    c_duckdb_destroy_result resPtr

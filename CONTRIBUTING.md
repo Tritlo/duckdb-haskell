@@ -95,7 +95,8 @@ set. The ordinary suite checks Arrow ownership without those dependencies.
 
 ## Code style
 
-Format Haskell code with `fourmolu` before committing.
+Format Haskell code with `fourmolu` before committing. The file `fourmolu.yaml`
+sets the style and the column limit.
 Format Cabal files with `cabal-gild`. Keep names consistent with the surrounding
 module.
 

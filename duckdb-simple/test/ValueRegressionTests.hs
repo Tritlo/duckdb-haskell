@@ -409,6 +409,57 @@ valueRegressionTests =
         assertIOError (query conn "SELECT ?" (Only struct) :: IO [Only FieldValue])
     , testCase "invalid TIME input returns controlled error" $ withConnection ":memory:" \conn ->
         assertIOError (query conn "SELECT ?" (Only (TimeOfDay 1000000000 0 0)) :: IO [Only TimeOfDay])
+    , testCase "nested types decode the same in each chunk and each read mode" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
+        _ <- execute_ conn "CREATE TYPE mood AS ENUM ('calm', 'busy', 'tired')"
+        let sql =
+              "SELECT st, [st, st] AS l, [st, st]::STRUCT(n BIGINT, e mood)[2] AS a, tiers, [tiers, tiers] AS tl, \
+              \CASE WHEN i % 2 = 0 THEN union_value(d := ((i % 1000) / 10)::DECIMAL(9, 2))::UNION(d DECIMAL(9, 2), s STRUCT(n BIGINT, e mood)) \
+              \ELSE union_value(s := st)::UNION(d DECIMAL(9, 2), s STRUCT(n BIGINT, e mood)) END AS u, \
+              \map([st.e], [((i % 1000) / 10)::DECIMAL(9, 2)]) AS m, i::DECIMAL(18, 3) AS d \
+              \FROM (SELECT i, {'n': i, 'e': (['calm', 'busy', 'tired'])[i % 3 + 1]::mood} AS st, \
+              \{'small': ((i % 1000) / 10)::DECIMAL(4, 1), 'large': (i * 1000 + 7)::DECIMAL(18, 3)} AS tiers FROM range(5000) r(i))"
+            mood = LogicalTypeEnum (listArray (0, 2) ["calm", "busy", "tired"])
+            bigint = LogicalTypeScalar LogicalTypeIdBigInt
+            stType = LogicalTypeStruct (listArray (0, 1) [StructField "n" bigint, StructField "e" mood])
+            members = listArray (0, 1) [UnionMemberType "d" (LogicalTypeDecimal 9 2), UnionMemberType "s" stType]
+            decimal width scale integer = FieldDecimal (DecimalValue width scale integer)
+            expected :: Int64 -> [FieldValue]
+            expected i =
+              let st = FieldStruct (structOf [("n", FieldInt64 i, bigint), ("e", FieldEnum (fromIntegral (i `mod` 3)), mood)])
+                  tenths = toInteger (i `mod` 1000)
+                  tiers =
+                    FieldStruct
+                      ( structOf
+                          [ ("small", decimal 4 1 tenths, LogicalTypeDecimal 4 1)
+                          , ("large", decimal 18 3 ((toInteger i * 1000 + 7) * 1000), LogicalTypeDecimal 18 3)
+                          ]
+                      )
+                  union
+                    | even i = UnionValue 0 "d" (decimal 9 2 (tenths * 10)) members
+                    | otherwise = UnionValue 1 "s" st members
+              in  [ st
+                  , FieldList [st, st]
+                  , FieldArray (listArray (0, 1) [st, st])
+                  , tiers
+                  , FieldList [tiers, tiers]
+                  , FieldUnion union
+                  , FieldMap [(FieldEnum (fromIntegral (i `mod` 3)), decimal 9 2 (tenths * 10))]
+                  , decimal 18 3 (toInteger i * 1000)
+                  ]
+        materialized <- query_ conn sql :: IO [[FieldValue]]
+        cursor <- withStatement conn sql (readAllRows nextRow)
+        streamed <- withStatement conn sql (readAllRows Streaming.nextRow)
+        length materialized @?= 5000
+        cursor @?= materialized
+        streamed @?= materialized
+        forM_ [0, 2047, 2048, 4095, 4999 :: Int] \i -> (materialized !! i) @?= expected (fromIntegral i)
+    , testCase "a statement that runs again with another type reads the new type" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
+        withStatement conn "SELECT ? AS s FROM range(3000) r(i)" \stmt ->
+          forM_ ([nextRow, Streaming.nextRow] :: [Statement -> IO (Maybe (Only (StructValue FieldValue)))]) \next ->
+            forM_ [DecimalValue 4 1 123, DecimalValue 18 3 123456789012, DecimalValue 4 1 (-45)] \value -> do
+              let struct = singleField (LogicalTypeDecimal (decimalWidth value) (decimalScale value)) (FieldDecimal value)
+              bind stmt [toField struct]
+              readAllRows next stmt >>= (@?= replicate 3000 (Only struct))
     ]
       <> [ testCase ("composite temporal round trip: " <> dtype) $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
              forM_ ("NULL" : map (\value -> "'" <> value <> "'") values) \value ->
@@ -445,6 +496,20 @@ appendTimestamp conn dtype value = do
   _ <- execute_ conn (fromString ("CREATE TABLE native_timestamp(value " <> dtype <> ")"))
   _ <- execute conn "INSERT INTO native_timestamp VALUES (?)" (Only value)
   pure ()
+
+-- | Build a struct from the name, the value, and the type of each field.
+structOf :: [(Text, FieldValue, LogicalTypeRep)] -> StructValue FieldValue
+structOf fields =
+  StructValue
+    (listArray (0, length fields - 1) [StructField name value | (name, value, _) <- fields])
+    (listArray (0, length fields - 1) [StructField name logical | (name, _, logical) <- fields])
+    (Map.fromList (zip [name | (name, _, _) <- fields] [0 ..]))
+
+-- | Read the rows of a statement until the cursor gives no row.
+readAllRows :: (Statement -> IO (Maybe row)) -> Statement -> IO [row]
+readAllRows next stmt = go []
+  where
+    go rows = next stmt >>= maybe (pure (reverse rows)) (\row -> go (row : rows))
 
 -- | Build a single-field struct for nested binding tests.
 singleField :: LogicalTypeRep -> FieldValue -> StructValue FieldValue

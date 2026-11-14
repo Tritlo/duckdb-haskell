@@ -164,6 +164,9 @@ The SQL workflow stays the same. These changes can affect your code:
 - A composite parameter with a GEOMETRY CRS that DuckDB does not recognize
   raises `SQLError`. Version 0.3 bound it without the CRS. Configure custom CRS
   names through `connectionGeometryCRS`.
+- A name in `connectionGeometryCRS` that DuckDB drops, for example a blank
+  name, fails when the connection opens. Version 0.3 read the configured types
+  the first time a parameter needed one, and failed there.
 - DuckDB 2.0 rejects WKB with mixed Z/M member layouts.
 - Decoded VARIANT objects list their keys in DuckDB's lexicographic order.
 

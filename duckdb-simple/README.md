@@ -86,8 +86,9 @@ The pinned V2 API does not expose custom file-system registration or
 collation lookup. Fixed ARRAY types with zero elements are
 not supported by this native API. Empty LIST values remain supported.
 Prepared dynamic PIVOT supports repeated execution with a changing schema. It
-does not support parameters or a cacheable plan. VARIANT decoding and configured
-GEOMETRY CRS names use SQL metadata and native casts on a helper connection.
+does not support parameters or a cacheable plan. VARIANT decoding uses SQL
+metadata and native casts on a helper connection. A configured custom GEOMETRY
+CRS name uses one SQL query when the connection opens.
 GEOMETRY results use a native cast to BLOB.
 Native GEOMETRY collections require the same Z/M dimensions on every member,
 including empty members. The standalone WKB codec retains mixed layouts.
@@ -555,9 +556,9 @@ also raises an error because DuckDB treats its STRUCT type as a tuple.
 DuckDB 2.0 permits an empty key with other named keys. You can also bind a plain
 value and cast it in SQL, as in `?::VARIANT`.
 
-The library uses a separate helper connection for configured GEOMETRY types
-and VARIANT decoder metadata. It caches the GEOMETRY types, the parsed VARIANT
-metadata statement, and the types for VARIANT casts. It batches VARIANT
+The library uses a separate helper connection for VARIANT decoder metadata.
+It caches the parsed VARIANT metadata statement and the types for VARIANT
+casts. It batches VARIANT
 metadata queries. It constructs VARIANT types directly through the native
 factory. This preserves an active stream on the caller's connection. Low-level
 `ToDuckValue.toDuckValue` takes a `ValueFactory`, which is the V2 factory
@@ -652,8 +653,11 @@ including inside LIST, ARRAY, MAP, STRUCT, and UNION values.
 `LogicalTypeGeometry` describes CRS metadata. Composite parameters retain CRS
 metadata for typed NULLs, empty collections, and inactive UNION members.
 Set `connectionGeometryCRS` in `ConnectionOptions` to preserve arbitrary custom
-CRS names in these parameters. The list defaults to `OGC:CRS84`. The library
-reads the configured types through SQL on a helper connection and caches them.
+CRS names in these parameters. The list defaults to `OGC:CRS84`. When a
+connection opens, DuckDB constructs a recognized name, such as `OGC:CRS84`, and
+a complete definition directly. For each other name, the library reads the
+type through SQL on the new connection and caches it. A name that DuckDB drops,
+for example a blank name, fails the open.
 
 CRS definitions outside the configured list use direct V2 type construction.
 This requires a recognized identifier or a complete WKT2/PROJJSON definition.

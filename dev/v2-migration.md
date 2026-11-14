@@ -55,11 +55,14 @@ factories construct VARIANT types directly.
 GEOMETRY has no committed vector layout. The reader casts each GEOMETRY vector
 to BLOB with the factory of the result's connection and copies the WKB rows.
 
-A helper connection caches SQL-derived GEOMETRY types for the CRS names in
-`connectionGeometryCRS`. These names remain available in nested parameters,
-including typed NULLs and empty collections. Helper queries do not interrupt
-the caller's active stream. The backend does not read private payload layouts
-or convert handles between the retained and V2 APIs.
+A connection keeps the CRS names in `connectionGeometryCRS` available in
+nested parameters, including typed NULLs and empty collections. When the
+connection opens, it constructs each name directly. DuckDB keeps a recognized
+name and a complete definition. For each other name, the connection reads a
+SQL-derived type with `ST_SetCRS` before the caller can run a statement, and
+caches the type. A default connection runs no query. Helper queries for VARIANT
+do not interrupt the caller's active stream. The backend does not read private
+payload layouts or convert handles between the retained and V2 APIs.
 
 `Database.DuckDB.Simple.Streaming` provides V2 row and Arrow streaming. The
 advanced opaque equality callback remains available through the raw API.

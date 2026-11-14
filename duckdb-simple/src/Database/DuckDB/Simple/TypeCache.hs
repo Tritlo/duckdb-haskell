@@ -1,6 +1,7 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE StrictData #-}
 
 -- |
 -- Module      : Database.DuckDB.Simple.TypeCache
@@ -39,22 +40,22 @@ import Foreign.Ptr (nullPtr)
 
 -- | Owned helper state. The caller connection owns this cache.
 data TypeCache = TypeCache
-  { typeCacheConnection :: !DuckDBV2ConnectionHandle
-  , typeCacheInstance :: !DuckDBV2InstanceHandle
-  , typeCacheGeometry :: !NativeTypes
+  { typeCacheConnection :: DuckDBV2ConnectionHandle
+  , typeCacheInstance :: DuckDBV2InstanceHandle
+  , typeCacheGeometry :: NativeTypes
   -- ^ The types of the configured CRS names. The map does not change after
   --     'createTypeCache'.
-  , typeCacheState :: !(MVar CacheState)
+  , typeCacheState :: MVar CacheState
   }
 
 -- | The helper connection for VARIANT reads and the VARIANT decoder state that
 -- borrows it. They open at the first read. The cache owns the connection.
-data CacheState = Unopened | Open !DuckDBV2ConnectionHandle !VariantState | Closed
+data CacheState = Unopened | Open DuckDBV2ConnectionHandle VariantState | Closed
 
 -- | Keep each owned type once. CRS aliases can refer to the same type.
 data NativeTypes = NativeTypes
-  { nativeGeometry :: !(Map Text DuckDBV2LogicalTypeHandle)
-  , nativeOwned :: ![DuckDBV2LogicalTypeHandle]
+  { nativeGeometry :: Map Text DuckDBV2LogicalTypeHandle
+  , nativeOwned :: [DuckDBV2LogicalTypeHandle]
   }
 
 -- | The default CRS used by connection options.

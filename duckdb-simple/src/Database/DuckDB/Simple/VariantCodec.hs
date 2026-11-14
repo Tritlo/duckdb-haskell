@@ -3,6 +3,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StrictData #-}
 
 -- |
 -- Module      : Database.DuckDB.Simple.VariantCodec
@@ -39,9 +40,9 @@ import Foreign.Ptr (nullPtr)
 -- the state with 'destroyVariantState' before it destroys the connection. Use
 -- the state from one thread at a time.
 data VariantState = VariantState
-  { variantConnection :: !DuckDBV2ConnectionHandle
-  , variantStatement :: !(IORef (Maybe DuckDBV2SqlStatementHandle))
-  , variantTypes :: !CastTypes
+  { variantConnection :: DuckDBV2ConnectionHandle
+  , variantStatement :: IORef (Maybe DuckDBV2SqlStatementHandle)
+  , variantTypes :: CastTypes
   }
 
 -- | Make an empty state for a helper connection. This allocates no native
@@ -83,9 +84,9 @@ prepareVariantDecoder plain state vector = do
 
 -- | A decoded node owns the child values needed at the next nesting level.
 data VariantNode
-  = ScalarNode !FieldValue
-  | ListNode ![DuckDBV2ValueHandle]
-  | ObjectNode ![(Text, DuckDBV2ValueHandle)]
+  = ScalarNode FieldValue
+  | ListNode [DuckDBV2ValueHandle]
+  | ObjectNode [(Text, DuckDBV2ValueHandle)]
 
 -- | Decode all siblings together before reconstructing their parent nodes.
 decodeValues

@@ -5,6 +5,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StrictData #-}
 {-# LANGUAGE UndecidableInstances #-}
 
 -- |
@@ -67,8 +68,8 @@ import GHC.Float (float2Double)
 import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
 
 data ScalarFunctionResources = ScalarFunctionResources
-  { scalarFunctionExecPtr :: !DuckDBV2ScalarFunctionExecCallbackFn
-  , scalarFunctionInitPtr :: !(Maybe DuckDBV2ScalarFunctionInitCallbackFn)
+  { scalarFunctionExecPtr :: DuckDBV2ScalarFunctionExecCallbackFn
+  , scalarFunctionInitPtr :: Maybe DuckDBV2ScalarFunctionInitCallbackFn
   }
 
 -- | Tag DuckDB logical types we support for scalar return values.
@@ -82,11 +83,11 @@ data ScalarType
 -- | Runtime representation of values returned to DuckDB.
 data ScalarValue
   = ScalarNull
-  | ScalarBoolean !Bool
-  | ScalarInteger !Int64
-  | ScalarUnsigned !Word64
-  | ScalarDouble !Double
-  | ScalarText !Text
+  | ScalarBoolean Bool
+  | ScalarInteger Int64
+  | ScalarUnsigned Word64
+  | ScalarDouble Double
+  | ScalarText Text
 
 -- | Class of scalar results that can be produced by user-defined functions.
 class FunctionResult a where

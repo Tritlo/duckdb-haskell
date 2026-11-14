@@ -1,6 +1,7 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE StrictData #-}
 
 -- |
 -- Module      : Database.DuckDB.Simple.Logging.Internal
@@ -40,16 +41,16 @@ import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
 
 -- | A copied log event. Native context identifiers are absent outside their scope.
 data LogEntry = LogEntry
-  { logEntryTimestamp :: !(Maybe UTCTime)
-  , logEntryLevel :: !Text
-  , logEntryType :: !Text
-  , logEntryMessage :: !Text
-  , logEntrySeverity :: !LogLevel
-  , logEntryScope :: !LogScope
-  , logEntryConnectionId :: !(Maybe Word64)
-  , logEntryTransactionId :: !(Maybe Word64)
-  , logEntryQueryId :: !(Maybe Word64)
-  , logEntryThreadId :: !(Maybe Word64)
+  { logEntryTimestamp :: Maybe UTCTime
+  , logEntryLevel :: Text
+  , logEntryType :: Text
+  , logEntryMessage :: Text
+  , logEntrySeverity :: LogLevel
+  , logEntryScope :: LogScope
+  , logEntryConnectionId :: Maybe Word64
+  , logEntryTransactionId :: Maybe Word64
+  , logEntryQueryId :: Maybe Word64
+  , logEntryThreadId :: Maybe Word64
   }
   deriving (Eq, Show)
 

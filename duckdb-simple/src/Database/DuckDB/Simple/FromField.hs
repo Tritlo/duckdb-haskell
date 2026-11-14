@@ -119,17 +119,17 @@ data FieldValue
 
 -- | Exact-width decimal payload plus its declared width and scale.
 data DecimalValue = DecimalValue
-  { decimalWidth :: !Word8
-  , decimalScale :: !Word8
-  , decimalInteger :: !Integer
+  { decimalWidth :: Word8
+  , decimalScale :: Word8
+  , decimalInteger :: Integer
   }
   deriving (Eq, Show)
 
 -- | DuckDB interval payload split into months, days, and microseconds.
 data IntervalValue = IntervalValue
-  { intervalMonths :: !Int32
-  , intervalDays :: !Int32
-  , intervalMicros :: !Int64
+  { intervalMonths :: Int32
+  , intervalDays :: Int32
+  , intervalMicros :: Int64
   }
   deriving (Eq, Show)
 
@@ -197,8 +197,8 @@ toBigNumBytes value =
 
 -- | DuckDB BIT value represented as raw bytes plus left-padding bit count.
 data BitString = BitString
-  { padding :: !Word8
-  , bits :: !BS.ByteString
+  { padding :: Word8
+  , bits :: BS.ByteString
   }
   deriving stock (Eq)
 
@@ -229,8 +229,8 @@ bsFromBool bits =
 
 -- | Time-of-day paired with its associated timezone offset.
 data TimeWithZone = TimeWithZone
-  { timeWithZoneTime :: !TimeOfDay
-  , timeWithZoneZone :: !TimeZone
+  { timeWithZoneTime :: TimeOfDay
+  , timeWithZoneZone :: TimeZone
   }
   deriving (Eq, Show)
 

@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE StrictData #-}
 
 -- |
 -- Module      : Database.DuckDB.Simple.Time
@@ -15,7 +16,7 @@ import Data.Time (Day, LocalTime, UTCTime)
 -- | A finite value or either infinity, as in @postgresql-simple@.
 data Unbounded a
   = NegInfinity
-  | Finite !a
+  | Finite a
   | PosInfinity
   deriving (Eq, Ord, Show, Read, Functor)
 

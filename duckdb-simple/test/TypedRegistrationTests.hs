@@ -94,6 +94,7 @@ typedRegistrationTests =
     , testCase "replacement scans run in the order of registration" testReplacementOrder
     , testCase "query pragma with no parameter" testPragmaNoParameter
     , testCase "query pragma with a default parameter" testPragmaDefault
+    , testCase "query pragma with an Integer default for each integer type" testPragmaIntegerDefault
     , testCase "pragma row has the order of the declaration" testPragmaRow
     , testCase "exec pragma counts its calls" testPragmaExec
     , testCase "pragma argument rows that do not decode" testPragmaDecodeErrors
@@ -104,6 +105,7 @@ typedRegistrationTests =
     , testCase "table function with one parameter over several chunks" testTableSquares
     , testCase "table function with no, two, and NULL parameters" testTableParameters
     , testCase "table function columns of several types and a record row" testTableTypes
+    , testCase "table function with Integer and Natural columns" testTableIntegers
     , testCase "table function runs one time for each scan" testTableRuns
     , -- A defect can make the scan run without end. Then the time limit fails
       -- the case. The limit is long, because the suite also runs under Valgrind.
@@ -265,6 +267,26 @@ testPragmaDefault = withConnection ":memory:" \conn -> do
   query_ conn "PRAGMA typed_amount(7)" >>= (@?= [Only (Just (7 :: Int64))])
   query_ conn "PRAGMA typed_amount(amount = 9)" >>= (@?= [Only (Just (9 :: Int64))])
   query_ conn "PRAGMA typed_amount(NULL)" >>= (@?= [Only (Nothing :: Maybe Int64)])
+
+-- | Give an Integer default to parameters of several integer types. DuckDB
+-- casts the default to the type of the parameter and checks the range.
+testPragmaIntegerDefault :: Assertion
+testPragmaIntegerDefault = withConnection ":memory:" \conn -> do
+  seen <- newIORef FieldNull
+  let register name dtype (value :: Integer) =
+        registerPragmaFunction conn name [(parameter "amount" (TypeExpression dtype)){parameterDefault = Just (defaultValue value)}] $
+          QueryPragma \(Only received) -> writeIORef seen received >> pure "SELECT 1::BIGINT"
+      omitted name = do
+        query_ conn (Query ("PRAGMA " <> name)) >>= (@?= [Only (1 :: Int64)])
+        readIORef seen
+  register "typed_default_bigint" "BIGINT" 42
+  omitted "typed_default_bigint" >>= (@?= FieldInt64 42)
+  register "typed_default_hugeint" "HUGEINT" 42
+  omitted "typed_default_hugeint" >>= (@?= FieldHugeInt 42)
+  register "typed_default_bignum" "BIGNUM" 42
+  omitted "typed_default_bignum" >>= (@?= FieldBigNum (BigNum 42))
+  register "typed_default_unsigned" "UBIGINT" (-5)
+  assertSqlError "out of range for the destination type UINT64" (query_ conn "PRAGMA typed_default_unsigned" :: IO [Only Int64])
 
 -- | Decode two parameters of different types as a tuple. The row has the order
 -- of the declaration when the call gives the arguments by name in another order.
@@ -903,6 +925,18 @@ testTableTypes = withConnection ":memory:" \conn -> do
             [("s0" :: Text, 0 :: Double, start, Nothing :: Maybe Text), ("s1", 0.5, addDays 1 start, Just "odd"), ("s2", 1, addDays 2 start, Nothing)]
         )
   query_ conn "SELECT count(*) FROM typed_readings(3000) WHERE note IS NULL" >>= (@?= [Only (1500 :: Int64)])
+
+-- | Give Integer and Natural columns. The declared column type is BIGNUM. A
+-- value in the HUGEINT range is a HUGEINT value, and DuckDB casts it to BIGNUM.
+testTableIntegers :: Assertion
+testTableIntegers = withConnection ":memory:" \conn -> do
+  let integers = [5, -5, 2 ^ (100 :: Int), 2 ^ (130 :: Int) :: Integer]
+  createTableFunction conn "typed_integers" ["v"] \() -> pure (map Only integers)
+  query_ conn "SELECT typeof(v), v FROM typed_integers()" >>= (@?= [("BIGNUM" :: Text, value) | value <- integers])
+  let naturals = [("small" :: Text, 7 :: Natural), ("large", 2 ^ (128 :: Int))]
+  createTableFunction conn "typed_naturals" ["label", "v"] \() -> pure naturals
+  query_ conn "SELECT label, typeof(v), v FROM typed_naturals()"
+    >>= (@?= [(label, "BIGNUM" :: Text, value) | (label, value) <- naturals])
 
 -- | Run the function for each scan. Do not run it at registration or preparation.
 testTableRuns :: Assertion

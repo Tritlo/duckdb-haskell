@@ -319,6 +319,19 @@ integerBinding binds an Integer or a Natural parameter with this rule:
     target with an element type that is not an integer type or a DECIMAL
     type, has BIGNUM elements. A cast that DuckDB adds later can still have
     the defects above.
+  - toDuckValue gives a BIGNUM value for a value outside the HUGEINT range.
+    See the item about toDuckValue.
+
+- toDuckValue. ToDuckValue Integer and ToDuckValue Natural use the same range
+  rule (hugeIntInRange): a value from -2^127 to 2^127 - 1 gives a HUGEINT
+  value. toDuckValue has no target type. Thus each other value gives a BIGNUM
+  value, and a cast of it to an integer type can have the defects above. For
+  example, setConfigValue with 2^128 + 5 for a UBIGINT option sets 5. The
+  callers of toDuckValue are setConfigValue, defaultValue, the typed rows of
+  table functions and COPY FROM, and the writer of a typed cast. The
+  DuckDBColumnType of Integer and Natural stays BIGNUM, so a typed row declares
+  a BIGNUM column for them. DuckDB casts each HUGEINT value to that BIGNUM
+  column with no defect.
 
 - Arrays. DuckDB casts each element of an array to the declared element type
   when it builds the array. The DuckDBColumnType of Integer, Natural, and
@@ -337,15 +350,15 @@ Issue 41 of duckdb-haskell tracks the defects.
 -- | Bind an integer as a HUGEINT, a UHUGEINT, or a BIGNUM value. See
 -- Note [Integer parameters].
 integerBinding :: Integer -> FieldBinding
-integerBinding value
-  | value >= negate (1 `shiftL` 127) && value < 1 `shiftL` 127 = valueBinding (show value) (`hugeIntDuckValue` value)
-  | otherwise = targetValueBinding (show value) \ValueBuilder{builderFactory = factory} readTarget -> do
-      target <- readTarget
-      case target of
-        Just (LogicalTypeScalar LogicalTypeIdUHugeInt) | value >= 0 && value < 1 `shiftL` 128 -> uhugeIntDuckValue factory value
-        Just (LogicalTypeScalar dtype) | dtype `elem` integerTypes -> outOfRange (duckDBTypeToName dtype)
-        Just (LogicalTypeDecimal width scale) -> outOfRange ("DECIMAL(" <> Text.pack (show width) <> "," <> Text.pack (show scale) <> ")")
-        _ -> bigNumDuckValue factory (BigNum value)
+integerBinding value = case hugeIntInRange value of
+  Just make -> valueBinding (show value) make
+  Nothing -> targetValueBinding (show value) \ValueBuilder{builderFactory = factory} readTarget -> do
+    target <- readTarget
+    case target of
+      Just (LogicalTypeScalar LogicalTypeIdUHugeInt) | value >= 0 && value < 1 `shiftL` 128 -> uhugeIntDuckValue factory value
+      Just (LogicalTypeScalar dtype) | dtype `elem` integerTypes -> outOfRange (duckDBTypeToName dtype)
+      Just (LogicalTypeDecimal width scale) -> outOfRange ("DECIMAL(" <> Text.pack (show width) <> "," <> Text.pack (show scale) <> ")")
+      _ -> bigNumDuckValue factory (BigNum value)
   where
     outOfRange typeName =
       throwIO
@@ -354,6 +367,13 @@ integerBinding value
           , sqlErrorType = Just ErrorInputOutOfRange
           , sqlErrorQuery = Nothing
           }
+
+-- | Construct a HUGEINT value for an integer from -2^127 to 2^127 - 1. Give
+-- Nothing for each other integer. See Note [Integer parameters].
+hugeIntInRange :: Integer -> Maybe (DuckDBV2FactoryHandle -> IO DuckDBV2ValueHandle)
+hugeIntInRange value
+  | value >= negate (1 `shiftL` 127) && value < 1 `shiftL` 127 = Just (`hugeIntDuckValue` value)
+  | otherwise = Nothing
 
 -- | The integer types, from TINYINT to UHUGEINT. See Note [Integer parameters].
 integerTypes :: [LogicalTypeId]
@@ -1165,11 +1185,17 @@ instance ToDuckValue BigNum where
 instance ToDuckValue UUID.UUID where
   toDuckValue = uuidDuckValue
 
+-- | A value from -2^127 to 2^127 - 1 gives a HUGEINT value. Each other value
+-- gives a BIGNUM value. See Note [Integer parameters].
 instance ToDuckValue Integer where
-  toDuckValue factory = bigNumDuckValue factory . BigNum
+  toDuckValue factory value = case hugeIntInRange value of
+    Just make -> make factory
+    Nothing -> bigNumDuckValue factory (BigNum value)
 
+-- | A value from 0 to 2^127 - 1 gives a HUGEINT value. Each larger value gives
+-- a BIGNUM value. See Note [Integer parameters].
 instance ToDuckValue Natural where
-  toDuckValue factory = bigNumDuckValue factory . BigNum . toInteger
+  toDuckValue factory = toDuckValue factory . toInteger
 
 instance ToDuckValue Word where
   toDuckValue factory = uint64DuckValue factory . fromIntegral

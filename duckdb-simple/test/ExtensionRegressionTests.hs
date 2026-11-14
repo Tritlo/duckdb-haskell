@@ -44,6 +44,7 @@ import qualified Database.DuckDB.Simple.Logging as Logging
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..))
 import qualified Database.DuckDB.Simple.Tokenizer as Tokenizer
 import qualified Database.DuckDB.Simple.V2.Registration as Registration
+import Numeric.Natural (Natural)
 import System.Directory (getHomeDirectory, removeFile)
 import System.FilePath (takeDirectory)
 import System.IO (hClose, openBinaryTempFile)
@@ -383,6 +384,25 @@ extensionRegressionTests =
           void $ execute_ conn "RESET haskell_limit"
           fmap Config.configValueText <$> Config.getConfigOption conn "haskell_limit" >>= (@?= Just "3")
           assertSqlError $ Config.registerCustomOption conn option
+    , testCase "setConfigValue with an Integer or a Natural checks the range of an unsigned option" $
+        withConnection ":memory:" \conn -> do
+          -- DuckDB 2.0.0 gives asof_loop_join_threshold the type UBIGINT.
+          let option = "asof_loop_join_threshold"
+              current = fst <$> Config.getConfigValue conn option
+          Config.setConfigValue conn Config.SettingScopeSession option (9 :: Integer)
+          current >>= (@?= FieldWord64 9)
+          assertSqlErrorContaining "out of range for the destination type UINT64" $
+            Config.setConfigValue conn Config.SettingScopeSession option (-5 :: Integer)
+          current >>= (@?= FieldWord64 9)
+          Config.setConfigValue conn Config.SettingScopeSession option (11 :: Natural)
+          current >>= (@?= FieldWord64 11)
+    , testCase "setConfigValue with an Integer outside the HUGEINT range keeps the BIGNUM casts of DuckDB" $
+        withConnection ":memory:" \conn -> do
+          -- The value is a BIGNUM value. DuckDB 2.0.0 reduces it modulo 2^128
+          -- and gives no error. See Note [Integer parameters] in
+          -- "Database.DuckDB.Simple.ToField".
+          Config.setConfigValue conn Config.SettingScopeSession "asof_loop_join_threshold" (2 ^ (128 :: Int) + 5 :: Integer)
+          fst <$> Config.getConfigValue conn "asof_loop_join_threshold" >>= (@?= FieldWord64 5)
     , testCase "table descriptions resolve names and copy borrowed column types" $
         withConnection ":memory:" \conn -> do
           void $ execute_ conn "CREATE TABLE \"\955\" (id BIGINT DEFAULT 7, twice BIGINT GENERATED ALWAYS AS (id * 2))"

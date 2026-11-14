@@ -1,12 +1,13 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# OPTIONS_GHC -Wno-deprecations #-}
 
--- | Regression check for leaked DuckDB handles.
+-- |
+-- Module      : Main
+-- Description : Regression check for leaked DuckDB handles.
 --
--- The handles live in C memory, so the GHC heap statistics cannot see them.
--- The open/close check counts native threads and resident memory. The sustained
+-- The handles live in C memory, so the GHC heap statistics cannot see them. The
+-- open/close check counts native threads and resident memory. The sustained
 -- checks keep one connection open through repeated queries, failures, cursor
 -- resets, callback replacement, and cancellation. Weak references check callback
 -- state release independently of resident memory.
@@ -17,21 +18,31 @@
 module Main (main) where
 
 import Control.Concurrent (forkFinally, killThread, newEmptyMVar, putMVar, takeMVar, threadDelay, tryPutMVar)
-import Control.Exception (AsyncException (ThreadKilled), IOException, SomeException, evaluate, fromException, try)
-import Control.Monad (forM_, replicateM, unless, void, when)
+import Control.Exception (
+  AsyncException (ThreadKilled),
+  BlockedIndefinitelyOnMVar (..),
+  IOException,
+  SomeException,
+  evaluate,
+  finally,
+  fromException,
+  try,
+ )
+import Control.Monad (forM_, replicateM, replicateM_, unless, void, when)
 import qualified Data.ByteString as BS
 import qualified Data.Geometry as G
 import Data.IORef (atomicModifyIORef', atomicWriteIORef, mkWeakIORef, newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (isPrefixOf)
-import Data.Maybe (catMaybes, listToMaybe)
+import Data.Maybe (catMaybes, isJust, listToMaybe)
 import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Copy as Copy
-import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
 import Database.DuckDB.Simple.FromField (DecimalValue (..), FieldValue (..))
 import Database.DuckDB.Simple.Geometry (RawGeometry (..), fromRawGeometry)
 import qualified Database.DuckDB.Simple.Logging as Logging
+import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Database.DuckDB.Simple.Variant (Variant (..))
+import GHC.Weak.Finalize (getFinalizerExceptionHandler, setFinalizerExceptionHandler)
 import System.Environment (getArgs, lookupEnv)
 import System.Exit (exitFailure)
 import System.Mem (performMajorGC)
@@ -83,8 +94,8 @@ openCloseCycle = do
   stmt <- openStatement conn "SELECT 42"
   closeStatement stmt
   _ <- query_ conn "SELECT 42" :: IO [Only Int64]
-  -- The first VARIANT parameter fills the type cache. Close must destroy it.
-  _ <- query conn "SELECT ?" (Only (Variant (FieldInt64 42))) :: IO [Only Variant]
+  values <- query conn "SELECT ?" (Only (Variant (FieldInt64 42)))
+  unless (values == [Only (Variant (FieldInt64 42))]) (fail "wrong VARIANT payload")
   -- A TIMETZ offset with seconds fails during result materialization.
   -- The result and connection must still be destroyed.
   rejected <-
@@ -103,14 +114,56 @@ main = do
         [name] -> (name, 10)
         [name, n] | Just count <- readMaybe n, count > 0 -> (name, count)
         _ -> ("invalid", 0)
-  unless (mode `elem` ["all", "open-close", "long-lived", "callbacks", "cancel", "decode-failure", "new-types"]) $
-    fail "Expected [all|open-close|long-lived|callbacks|cancel|decode-failure|new-types] [positive batch count]"
+  unless (mode `elem` ["all", "open-close", "dropped-handles", "long-lived", "callbacks", "cancel", "decode-failure", "new-types"]) $
+    fail "Expected [all|open-close|dropped-handles|long-lived|callbacks|cancel|decode-failure|new-types] [positive batch count]"
   when (mode `elem` ["all", "open-close"]) checkOpenClose
+  when (mode `elem` ["all", "dropped-handles"]) checkDroppedHandles
   when (mode `elem` ["all", "long-lived"]) (checkLongLived batches)
   when (mode `elem` ["all", "callbacks"]) (checkCallbacks batches)
   when (mode `elem` ["all", "cancel"]) (checkCancellation batches)
   when (mode == "decode-failure") checkDecodeFailure
   when (mode `elem` ["all", "new-types"]) (checkNewTypes batches)
+
+-- | Drop a connection and one of its statements without closing them. The
+-- statement is younger than the connection, so the collector can run the
+-- finalizer of the connection first. Cleanup must still release the database,
+-- and no finalizer may wait for a finalizer that runs after it.
+checkDroppedHandles :: IO ()
+checkDroppedHandles = do
+  blocked <- newIORef (0 :: Int)
+  previous <- getFinalizerExceptionHandler
+  let record err = do
+        case fromException err of
+          Just BlockedIndefinitelyOnMVar -> atomicModifyIORef' blocked (\count -> (count + 1, ()))
+          Nothing -> pure ()
+        previous err
+      -- The database owns the callback, and the callback retains the token.
+      allocate before after = do
+        token <- newIORef (42 :: Int64)
+        weak <- mkWeakIORef token (pure ())
+        conn <- open ":memory:"
+        createFunction conn "dropped_token" (readIORef token)
+        -- A VARIANT result gives the type cache native state to release.
+        values <- query conn "SELECT ?" (Only (Variant (FieldInt64 42)))
+        unless (values == [Only (Variant (FieldInt64 42))]) (fail "wrong VARIANT payload before the drop")
+        replicateM_ before performMajorGC
+        stmt <- openStatement conn "SELECT dropped_token()"
+        replicateM_ after performMajorGC
+        row <- nextRow stmt
+        unless (row == Just (Only (42 :: Int64))) (fail "wrong row before the drop")
+        pure weak
+      released weak attempts
+        | attempts == (0 :: Int) = fail "a dropped connection kept its database open"
+        | otherwise = do
+            performMajorGC
+            token <- deRefWeak weak
+            when (isJust token) (threadDelay 10000 >> released weak (attempts - 1))
+  flip finally (setFinalizerExceptionHandler previous) do
+    setFinalizerExceptionHandler record
+    forM_ [(before, after) | before <- [0 .. 3 :: Int], after <- [0, 1 :: Int]] \(before, after) ->
+      allocate before after >>= \weak -> released weak 500
+    count <- readIORef blocked
+    unless (count == 0) (fail ("a finalizer waited for a later finalizer " <> show count <> " time(s)"))
 
 -- | Import raw WKB and release native values after failed nested construction.
 checkNewTypes :: Int -> IO ()
@@ -200,7 +253,6 @@ checkDecodeFailure =
 checkCallbacks :: Int -> IO ()
 checkCallbacks batches =
   withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
-    Logging.registerLogStorage conn "leak_log" (\_ -> pure ())
     copyStates <- newIORef []
     let newCopyState = do
           state <- newIORef (7 :: Int64)
@@ -215,6 +267,9 @@ checkCallbacks batches =
       (\_ -> fail "COPY init failure" :: IO ())
       (\_ _ -> pure ())
       (\_ -> pure ())
+    -- Register leak_log once, so that the registration in each cycle fails and
+    -- the test can check that the rejected callback is released.
+    Logging.registerLogStorage conn "leak_log" (\_ -> pure ())
     let cycleCallback = do
           retained <- newIORef (42 :: Int64)
           weak <- mkWeakIORef retained (pure ())
@@ -329,7 +384,7 @@ checkCancellation batches =
               else Streaming.fold_ conn sql () (\() (Only (_ :: Int64)) -> delivered)
           interrupt \signal -> do
             signal
-            void (query_ conn "SELECT {'x': i, 'values': [i, i + 1]}::VARIANT FROM range(100000) t(i)" :: IO [Only Variant])
+            void (query_ conn "SELECT {'x': i, 'values': [i, i + 1]}::VARIANT FROM range(100000) t(i)" :: IO [Only FieldValue])
           cancel \signal -> do
             blocked <- newEmptyMVar
             void

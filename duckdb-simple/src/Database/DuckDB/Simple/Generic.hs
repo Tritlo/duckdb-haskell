@@ -36,9 +36,8 @@
 -- > data User = User { userId :: Int64, userName :: Text }
 -- >   deriving stock (Generic)
 -- >
--- > instance DuckValue User
--- >
--- > toField (genericToFieldValue user) -- Struct {"userId" := ..., ...}
+-- > genericToFieldValue (User 1 "alice")
+-- > -- A FieldStruct with the fields userId = FieldInt64 1 and userName = FieldText "alice".
 --
 -- For sum types:
 --
@@ -47,11 +46,10 @@
 -- >   | Rectangle Double Double
 -- >   | Origin
 -- >   deriving stock (Generic)
--- >
--- > instance DuckValue Shape
 --
--- Constructors are turned into a union with members @Circle{radius}@,
--- @Rectangle{width,height}@, and @Origin@ (null payload).
+-- Constructors are turned into a union with the members @Circle@ (a STRUCT with
+-- the field @field1@), @Rectangle@ (a STRUCT with the fields @field1@ and
+-- @field2@), and @Origin@ (a NULL payload).
 --
 -- You can also lean on @DerivingVia@ using the exported @ViaDuckDB@ newtype:
 --
@@ -107,7 +105,6 @@ import Data.Time.LocalTime (LocalTime, TimeOfDay)
 import Data.Typeable (Typeable)
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
-import Database.DuckDB.FFI
 import Database.DuckDB.Simple.FromField (
   Field (..),
   FieldValue (..),
@@ -125,6 +122,7 @@ import Database.DuckDB.Simple.LogicalRep (
   UnionMemberType (..),
   UnionValue (..),
  )
+import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToField (..))
@@ -159,120 +157,124 @@ class DuckValue a where
 
 instance DuckValue Variant where
   duckToField = variantPayload
-  duckLogicalType _ = LogicalTypeScalar DuckDBTypeVariant
+  duckLogicalType _ = LogicalTypeScalar LogicalTypeIdVariant
 
 instance DuckValue Bool where
   duckToField = FieldBool
-  duckLogicalType _ = LogicalTypeScalar DuckDBTypeBoolean
+  duckLogicalType _ = LogicalTypeScalar LogicalTypeIdBoolean
 
 instance DuckValue Int where
   duckToField = FieldInt64 . fromIntegral
-  duckLogicalType _ = LogicalTypeScalar DuckDBTypeBigInt
+  duckLogicalType _ = LogicalTypeScalar LogicalTypeIdBigInt
 
 instance DuckValue Int8 where
   duckToField = FieldInt8
-  duckLogicalType _ = LogicalTypeScalar DuckDBTypeTinyInt
+  duckLogicalType _ = LogicalTypeScalar LogicalTypeIdTinyInt
 
 instance DuckValue Int16 where
   duckToField = FieldInt16
-  duckLogicalType _ = LogicalTypeScalar DuckDBTypeSmallInt
+  duckLogicalType _ = LogicalTypeScalar LogicalTypeIdSmallInt
 
 instance DuckValue Int32 where
   duckToField = FieldInt32
-  duckLogicalType _ = LogicalTypeScalar DuckDBTypeInteger
+  duckLogicalType _ = LogicalTypeScalar LogicalTypeIdInteger
 
 instance DuckValue Int64 where
   duckToField = FieldInt64
-  duckLogicalType _ = LogicalTypeScalar DuckDBTypeBigInt
+  duckLogicalType _ = LogicalTypeScalar LogicalTypeIdBigInt
 
+-- | A field of a generic record has the type HUGEINT. A value outside that range
+-- raises an error. A top-level parameter of this type is BIGNUM.
 instance DuckValue Integer where
   duckToField = FieldHugeInt
-  duckLogicalType _ = LogicalTypeScalar DuckDBTypeHugeInt
+  duckLogicalType _ = LogicalTypeScalar LogicalTypeIdHugeInt
 
+-- | A field of a generic record has the type UHUGEINT. A value outside that range
+-- raises an error. A top-level parameter of this type is BIGNUM.
 instance DuckValue Natural where
   duckToField = FieldUHugeInt . toInteger
-  duckLogicalType _ = LogicalTypeScalar DuckDBTypeUHugeInt
+  duckLogicalType _ = LogicalTypeScalar LogicalTypeIdUHugeInt
 
 instance DuckValue Word where
   duckToField = FieldWord64 . fromIntegral
-  duckLogicalType _ = LogicalTypeScalar DuckDBTypeUBigInt
+  duckLogicalType _ = LogicalTypeScalar LogicalTypeIdUBigInt
 
 instance DuckValue Word8 where
   duckToField = FieldWord8
-  duckLogicalType _ = LogicalTypeScalar DuckDBTypeUTinyInt
+  duckLogicalType _ = LogicalTypeScalar LogicalTypeIdUTinyInt
 
 instance DuckValue Word16 where
   duckToField = FieldWord16
-  duckLogicalType _ = LogicalTypeScalar DuckDBTypeUSmallInt
+  duckLogicalType _ = LogicalTypeScalar LogicalTypeIdUSmallInt
 
 instance DuckValue Word32 where
   duckToField = FieldWord32
-  duckLogicalType _ = LogicalTypeScalar DuckDBTypeUInteger
+  duckLogicalType _ = LogicalTypeScalar LogicalTypeIdUInteger
 
 instance DuckValue Word64 where
   duckToField = FieldWord64
-  duckLogicalType _ = LogicalTypeScalar DuckDBTypeUBigInt
+  duckLogicalType _ = LogicalTypeScalar LogicalTypeIdUBigInt
 
 instance DuckValue Float where
   duckToField = FieldFloat
-  duckLogicalType _ = LogicalTypeScalar DuckDBTypeFloat
+  duckLogicalType _ = LogicalTypeScalar LogicalTypeIdFloat
 
 instance DuckValue Double where
   duckToField = FieldDouble
-  duckLogicalType _ = LogicalTypeScalar DuckDBTypeDouble
+  duckLogicalType _ = LogicalTypeScalar LogicalTypeIdDouble
 
 instance DuckValue Text where
   duckToField = FieldText
-  duckLogicalType _ = LogicalTypeScalar DuckDBTypeVarchar
+  duckLogicalType _ = LogicalTypeScalar LogicalTypeIdVarchar
 
 instance DuckValue String where
   duckToField = FieldText . Text.pack
-  duckLogicalType _ = LogicalTypeScalar DuckDBTypeVarchar
+  duckLogicalType _ = LogicalTypeScalar LogicalTypeIdVarchar
   duckFromField fv = Text.unpack <$> duckFromField fv
 
 instance DuckValue BS.ByteString where
   duckToField = FieldBlob
-  duckLogicalType _ = LogicalTypeScalar DuckDBTypeBlob
+  duckLogicalType _ = LogicalTypeScalar LogicalTypeIdBlob
 
 instance DuckValue Day where
   duckToField = FieldDate . Finite
-  duckLogicalType _ = LogicalTypeScalar DuckDBTypeDate
+  duckLogicalType _ = LogicalTypeScalar LogicalTypeIdDate
 
 instance DuckValue TimeOfDay where
   duckToField = FieldTime
-  duckLogicalType _ = LogicalTypeScalar DuckDBTypeTime
+  duckLogicalType _ = LogicalTypeScalar LogicalTypeIdTime
 
 instance DuckValue LocalTime where
   duckToField = FieldTimestamp . Finite
-  duckLogicalType _ = LogicalTypeScalar DuckDBTypeTimestamp
+  duckLogicalType _ = LogicalTypeScalar LogicalTypeIdTimestamp
 
 instance DuckValue UTCTime where
   duckToField = FieldTimestampTZ . Finite
-  duckLogicalType _ = LogicalTypeScalar DuckDBTypeTimestampTz
+  duckLogicalType _ = LogicalTypeScalar LogicalTypeIdTimestampTz
 
 instance DuckValue (Unbounded Day) where
   duckToField = FieldDate
-  duckLogicalType _ = LogicalTypeScalar DuckDBTypeDate
+  duckLogicalType _ = LogicalTypeScalar LogicalTypeIdDate
 
 instance DuckValue (Unbounded LocalTime) where
   duckToField = FieldTimestamp
-  duckLogicalType _ = LogicalTypeScalar DuckDBTypeTimestamp
+  duckLogicalType _ = LogicalTypeScalar LogicalTypeIdTimestamp
 
 instance DuckValue (Unbounded UTCTime) where
   duckToField = FieldTimestampTZ
-  duckLogicalType _ = LogicalTypeScalar DuckDBTypeTimestampTz
+  duckLogicalType _ = LogicalTypeScalar LogicalTypeIdTimestampTz
 
 instance DuckValue UUID.UUID where
   duckToField = FieldUUID
-  duckLogicalType _ = LogicalTypeScalar DuckDBTypeUUID
+  duckLogicalType _ = LogicalTypeScalar LogicalTypeIdUUID
 
 instance DuckValue IntervalValue where
   duckToField = FieldInterval
-  duckLogicalType _ = LogicalTypeScalar DuckDBTypeInterval
+  duckLogicalType _ = LogicalTypeScalar LogicalTypeIdInterval
 
 instance DuckValue TimeWithZone where
   duckToField = FieldTimeTZ
-  duckLogicalType _ = LogicalTypeScalar DuckDBTypeTimeTz
+  duckLogicalType _ = LogicalTypeScalar LogicalTypeIdTimeTz
 
 instance (DuckValue a) => DuckValue (Maybe a) where
   duckToField (Just x) = duckToField x
@@ -288,17 +290,16 @@ instance (DuckValue a) => DuckValue [a] where
   duckFromField (FieldList fvs) = traverse duckFromField fvs
   duckFromField other = Left ("duckdb-simple: expected LIST, got " <> show other)
 
--- | Array values encode as DuckDB ARRAY (fixed-length).
--- Note: Arrays must have consistent bounds to work correctly with DuckDB.
+-- | Array values encode as DuckDB ARRAY values. A type has no size, so the
+-- instance declares the size 0. A generic record with an Array field can be
+-- read. It cannot be bound: a value with elements has a size other than 0, and
+-- DuckDB rejects an ARRAY without elements.
 instance (DuckValue a) => DuckValue (Array Int a) where
   duckToField arr =
     let values = elems arr
         (low, high) = (0, length values - 1)
     in  FieldArray (listArray (low, high) (map duckToField values))
-  duckLogicalType _ =
-    -- We can't determine array size at the type level, so this is approximate.
-    -- The actual size will be determined at runtime from the array bounds.
-    LogicalTypeArray (duckLogicalType (Proxy :: Proxy a)) 0
+  duckLogicalType _ = LogicalTypeArray (duckLogicalType (Proxy :: Proxy a)) 0
   duckFromField (FieldArray arr) = do
     let values = elems arr
     decoded <- traverse duckFromField values
@@ -360,15 +361,18 @@ genericToStructValue :: forall a. (Generic a, GToField (Rep a)) => a -> Maybe (S
 genericToStructValue value =
   case gToField (from value) of
     EncodedStruct sv _ -> Just sv
-    EncodedNull -> Just emptyStruct
+    EncodedNull -> Just emptyStructValue
     _ -> Nothing
-  where
-    emptyStruct =
-      StructValue
-        { structValueFields = listArray (0, -1) []
-        , structValueTypes = listArray (0, -1) []
-        , structValueIndex = Map.empty
-        }
+
+-- | The STRUCT value without fields. It is the value of a product type with no
+-- fields, which the generic encoding gives as 'EncodedNull'.
+emptyStructValue :: StructValue FieldValue
+emptyStructValue =
+  StructValue
+    { structValueFields = listArray (0, -1) []
+    , structValueTypes = listArray (0, -1) []
+    , structValueIndex = Map.empty
+    }
 
 -- | Extract a UNION-shaped generic encoding directly when one is produced.
 genericToUnionValue :: forall a. (Generic a, GToField (Rep a)) => a -> Maybe (UnionValue FieldValue)
@@ -466,10 +470,9 @@ data FieldComponent a = FieldComponent
   , fcValue :: a
   }
 
-resolveNames :: [(Int, Maybe Text)] -> [Text]
-
 -- | Assign canonical names to struct fields.  We preserve any selector names
 -- provided by GHC.Generics and fall back to @fieldN@ for positional products.
+resolveNames :: [(Int, Maybe Text)] -> [Text]
 resolveNames =
   map pick
   where
@@ -685,6 +688,7 @@ instance (Generic a, GToField (Rep a)) => DuckDBColumnType (ViaDuckDB a) where
   duckdbColumnTypeFor _ =
     case genericLogicalType (Proxy :: Proxy a) of
       LogicalTypeStruct{} -> Text.pack "STRUCT"
+      LogicalTypeTuple{} -> Text.pack "TUPLE"
       LogicalTypeUnion{} -> Text.pack "UNION"
       LogicalTypeList{} -> Text.pack "LIST"
       LogicalTypeArray{} -> Text.pack "ARRAY"
@@ -693,23 +697,16 @@ instance (Generic a, GToField (Rep a)) => DuckDBColumnType (ViaDuckDB a) where
       LogicalTypeDecimal{} -> Text.pack "DECIMAL"
       LogicalTypeEnum{} -> Text.pack "ENUM"
       LogicalTypeGeometry{} -> Text.pack "GEOMETRY"
+      LogicalTypeCollatedVarchar{} -> Text.pack "VARCHAR"
 
--- | Deriving-via @ToField@ instance. We reuse the helpers above to decide
--- whether the top-level representation is a union, struct, or scalar and then
--- delegate to the existing @ToField@ instances for those composite types.
+-- | Deriving-via @ToField@ instance. A sum type binds as a UNION and a product
+-- type as a STRUCT, through the @ToField@ instances of those values. A product
+-- type with no fields binds as a STRUCT without fields.
 instance (Generic a, GToField (Rep a)) => ToField (ViaDuckDB a) where
-  toField (ViaDuckDB x) =
-    case genericToUnionValue x of
-      Just unionVal -> toField unionVal
-      Nothing ->
-        case genericToStructValue x of
-          Just structVal -> toField structVal
-          Nothing ->
-            case genericToFieldValue x of
-              FieldUnion uv -> toField uv
-              FieldStruct sv -> toField sv
-              FieldNull -> toField (Nothing :: Maybe Int)
-              other -> error ("duckdb-simple: unsupported generic encoding " <> show other)
+  toField (ViaDuckDB x) = case gToField (from x) of
+    EncodedUnion unionVal -> toField unionVal
+    EncodedStruct structVal _ -> toField structVal
+    EncodedNull -> toField emptyStructValue
 
 -- | Deriving-via @FromField@ instance. Errors are rewrapped using the existing
 -- @returnError@ helper so callers receive a proper @ResultError@.
@@ -719,8 +716,3 @@ instance (Generic a, GFromField (Rep a), Typeable a) => FromField (ViaDuckDB a) 
       Right value -> pure (ViaDuckDB value)
       Left err ->
         returnError ConversionFailed f (Text.pack err)
-
---------------------------------------------------------------------------------
--- DuckDB type constructors (re-exported patterns)
-
--- These pattern synonyms come from duckdb-ffi; re-exporting to avoid users having to import it.

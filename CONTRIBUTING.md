@@ -14,6 +14,14 @@ tests are in `duckdb-simple/test`, and its leak test is in `duckdb-simple/leakte
 The pure geometry types and codecs are maintained in
 [geometry-simple](https://github.com/Tritlo/geometry-simple).
 
+## Design principle
+
+The motto of `duckdb-simple` is "least surprise". The library does not add
+hidden behavior. One input gives the same result in each function that accepts
+it, and a function gives the result that DuckDB gives. When two functions treat
+one input in different ways, make them the same, unless a documented reason
+requires the difference.
+
 ## Testing guidelines
 
 Test new behavior through the database where possible. Add regressions for
@@ -91,9 +99,11 @@ sets the style and the column limit.
 Format Cabal files with `cabal-gild`. Keep names consistent with the surrounding
 module.
 
-Build parameter types with the type cache of the statement's connection. The
-cache reads its types on a separate connection the first time a parameter
-needs one. Do not run queries on the statement's connection during binding.
+Build parameter values with the V2 handle of the statement's connection.
+Use the managed type cache for configured GEOMETRY types. Run VARIANT metadata
+queries on its helper connection so decoding does not interrupt an active
+stream. Use public V2 operations and SQL metadata.
+Do not read private payload layouts or convert handles between the two APIs.
 
 ## Native library configuration
 

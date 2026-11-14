@@ -1,25 +1,22 @@
 {-# LANGUAGE BlockArguments #-}
 
 -- |
--- Module      : Database.DuckDB.Simple.Deprecated.Streaming
--- Description : Optional native streaming through DuckDB's deprecated execution API.
+-- Module      : Database.DuckDB.Simple.Streaming
+-- Description : Optional streaming through the native V2 execution API.
 --
--- Import this module qualified to request native streaming. DuckDB can still
--- materialize a result, and operators such as sorting can buffer data. Streaming
--- reduces result storage when the query supports it; it does not bound all query
--- memory. The default @Database.DuckDB.Simple@ API materializes native results.
+-- Import this module qualified to request native streaming. Operators such as
+-- sorting can buffer data. Streaming reduces result storage when the query
+-- supports it. It does not bound query memory. The default @Database.DuckDB.Simple@ API materializes native results.
 --
 -- Rows and Arrow batches use the same decoders and cleanup as the default API.
 -- Cancellation also interrupts native chunk fetching. Prompt interruption requires
 -- @-threaded@ and waits for native code and Haskell callbacks to return.
 --
 -- Serialize connection use for the entire cursor or fold. Another query on the
--- same connection can invalidate an active stream. Close or reset an abandoned
--- statement to release its result.
-module Database.DuckDB.Simple.Deprecated.Streaming
-  {-# DEPRECATED
-    "Uses DuckDB's deprecated streaming execution API. Prefer Database.DuckDB.Simple or Database.DuckDB.Simple.Arrow when materialization is acceptable."
-    #-} (
+-- same connection fails while its stream is active. Call @closeStatement@ or
+-- @clearStatementBindings@ from @Database.DuckDB.Simple@ on an abandoned statement
+-- to release its result.
+module Database.DuckDB.Simple.Streaming (
   fold,
   fold_,
   foldNamed,
@@ -29,7 +26,7 @@ module Database.DuckDB.Simple.Deprecated.Streaming
   foldArrow_,
 ) where
 
-import Database.DuckDB.FFI (ArrowArray, ArrowSchema)
+import Database.DuckDB.FFI.V2 (ArrowArray, ArrowSchema)
 import Database.DuckDB.Simple (bind, bindNamed, withStatement)
 import qualified Database.DuckDB.Simple.Arrow.Internal as Arrow
 import Database.DuckDB.Simple.FromRow (FromRow (..), RowParser)
@@ -64,9 +61,11 @@ nextRow :: (FromRow r) => Statement -> IO (Maybe r)
 nextRow = nextRowWith fromRow
 
 -- | Fetch a row with a custom parser, requesting streaming on the first fetch.
---   The active result retains its execution mode until reset. Switching between
---   this module and the default @Database.DuckDB.Simple.nextRow@ does not restart
---   or change an active result. EOF remains exhausted until an explicit reset.
+--   The active result retains its execution mode until @bind@, @bindNamed@,
+--   @clearStatementBindings@, or @executeStatement@ from @Database.DuckDB.Simple@
+--   releases it. Switching between this module and the default
+--   @Database.DuckDB.Simple.nextRow@ does not restart or change an active result.
+--   After EOF, this function returns 'Nothing' until one of those functions runs.
 nextRowWith :: RowParser r -> Statement -> IO (Maybe r)
 nextRowWith = Result.nextRowWith StreamingResult
 
@@ -75,8 +74,8 @@ nextRowWith = Result.nextRowWith StreamingResult
 --   or move them under the Arrow C Data Interface. The pointers themselves are
 --   valid during the callback only. See @Database.DuckDB.Simple.Arrow@ for the
 --   ownership rules.
---   Arrow conversion uses the supported API; query execution uses the deprecated
---   streaming entry point. The fold releases contents that the consumer has not
+--   Query execution and Arrow export use the native V2 API.
+--   The fold releases contents that the consumer has not
 --   released or moved. The consumer owns any moved contents.
 foldArrow :: (ToRow params) => Connection -> Query -> params -> a -> (a -> Ptr ArrowSchema -> Ptr ArrowArray -> IO a) -> IO a
 foldArrow = Arrow.foldArrowWith StreamingResult

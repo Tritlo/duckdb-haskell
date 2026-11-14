@@ -5,39 +5,40 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- | Regression tests for exact values and controlled conversion failures.
+-- |
+-- Module      : ValueRegressionTests
+-- Description : Regression tests for exact values and controlled conversion failures.
 module ValueRegressionTests (main, valueRegressionTests) where
 
 import Control.Exception (IOException, bracket, try)
 import Control.Monad (forM_)
-import Data.Array (Array, listArray)
+import Data.Array (Array, elems, listArray)
 import qualified Data.ByteString as BS
 import Data.Int (Int32, Int64, Int8)
 import qualified Data.Map.Strict as Map
 import Data.Ratio ((%))
 import Data.String (fromString)
 import Data.Text (Text)
+import qualified Data.Text as Text
 import Data.Time.Calendar (Day, addDays, fromGregorian)
 import Data.Time.Clock (UTCTime (..))
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), minutesToTimeZone, utc, utcToLocalTime)
 import Data.Word (Word16, Word32, Word8)
-import Database.DuckDB.FFI
+import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (BitString (..), DecimalValue (..), FieldValue (..), TimeWithZone (..), bsFromBool)
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..), genericFromFieldValue, genericToStructValue)
-import Database.DuckDB.Simple.Internal (destroyValue, withConnectionHandle)
+import Database.DuckDB.Simple.Internal (destroyValue, output, withConnectionFactory, withConnectionHandle)
 import Database.DuckDB.Simple.LogicalRep
+import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
-import Foreign.C.ConstPtr (ConstPtr (..))
-import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (nullPtr)
-import Foreign.Storable (peek, poke)
+import Database.DuckDB.Simple.V2.LogicalRep (destroyLogicalType, logicalTypeFromRep, logicalTypeToRep)
 import GHC.Generics (Generic)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit
-import TestUtils (assertFailureIO, withConstCString)
+import TestUtils (assertFailureIO)
 
 -- | Native timestamps used to test the full storage range.
 data NativeTimestamp = Seconds Int64 | Milliseconds Int64 | Microseconds Int64 | Nanoseconds Int64
@@ -47,10 +48,10 @@ instance DuckDBColumnType NativeTimestamp where
   duckdbColumnTypeFor _ = "TIMESTAMP"
 
 instance ToDuckValue NativeTimestamp where
-  toDuckValue (Seconds value) = c_duckdb_create_timestamp_s (DuckDBTimestampS value)
-  toDuckValue (Milliseconds value) = c_duckdb_create_timestamp_ms (DuckDBTimestampMs value)
-  toDuckValue (Microseconds value) = c_duckdb_create_timestamp (DuckDBTimestamp value)
-  toDuckValue (Nanoseconds value) = c_duckdb_create_timestamp_ns (DuckDBTimestampNs value)
+  toDuckValue factory (Seconds value) = output (c_duckdb_v2_value_create_timestamp_sec factory value)
+  toDuckValue factory (Milliseconds value) = output (c_duckdb_v2_value_create_timestamp_ms factory value)
+  toDuckValue factory (Microseconds value) = output (c_duckdb_v2_value_create_timestamp factory value)
+  toDuckValue factory (Nanoseconds value) = output (c_duckdb_v2_value_create_timestamp_ns factory value)
 
 instance ToField NativeTimestamp
 
@@ -63,7 +64,7 @@ instance DuckDBColumnType DelegatedInteger where
 instance ToField DelegatedInteger where
   toField (DelegatedInteger value) = toField value
 
--- | Bind an array through its connection-free value.
+-- | Bind an array through a value built with the explicit factory.
 newtype Scores = Scores (Array Int Int64)
   deriving (Show)
 
@@ -71,7 +72,7 @@ instance DuckDBColumnType Scores where
   duckdbColumnTypeFor _ = "BIGINT[]"
 
 instance ToDuckValue Scores where
-  toDuckValue (Scores values) = toDuckValue values
+  toDuckValue factory (Scores values) = toDuckValue factory values
 
 instance ToField Scores
 
@@ -113,7 +114,7 @@ valueRegressionTests =
         let members =
               listArray
                 (0, 1)
-                [UnionMemberType "number" (LogicalTypeScalar DuckDBTypeBigInt), UnionMemberType "text" (LogicalTypeScalar DuckDBTypeVarchar)]
+                [UnionMemberType "number" (LogicalTypeScalar LogicalTypeIdBigInt), UnionMemberType "text" (LogicalTypeScalar LogicalTypeIdVarchar)]
             original = UnionValue 0 "number" FieldNull members
         (query conn "SELECT ?" (Only original) :: IO [Only (UnionValue FieldValue)]) >>= (@?= [Only original])
     , testCase "array elements need only a ToField instance" $ withConnection ":memory:" \conn -> do
@@ -125,7 +126,7 @@ valueRegressionTests =
             values = listArray (0 :: Int, 2) (map Microseconds units)
             expected = listArray (0, 2) (map (utcToLocalTime utc . posixSecondsToUTCTime . fromRational . (% 1000000) . toInteger) units)
         (query conn "SELECT ?" (Only values) :: IO [Only (Array Int LocalTime)]) >>= (@?= [Only expected])
-    , testCase "arrays bind through ToDuckValue without a connection" $ withConnection ":memory:" \conn -> do
+    , testCase "arrays bind through ToDuckValue with an explicit connection" $ withConnection ":memory:" \conn -> do
         let values = listArray (0, 2) [1, -2, 3]
         (query conn "SELECT typeof(?), ?" (Scores values, Scores values) :: IO [(Text, Array Int Int64)]) >>= (@?= [("BIGINT[3]", values)])
     , testCase "arrays of STRUCT, record, and ARRAY elements take the type of a present element" $ withConnection ":memory:" \conn -> do
@@ -138,8 +139,11 @@ valueRegressionTests =
           >>= (@?= [("STRUCT(pairName VARCHAR, pairValue BIGINT)[3]", pairs)])
         let nested = listArray (0, 1) [listArray (0, 1) [1, 2], listArray (0, 1) [3, 4]] :: Array Int (Array Int Int64)
         (query conn "SELECT typeof(?), ?" (nested, nested) :: IO [(Text, Array Int (Array Int Int64))]) >>= (@?= [("BIGINT[2][2]", nested)])
-    , testCase "empty arrays of record elements have no element type" $ withConnection ":memory:" \conn ->
-        assertFailureIO (query conn "SELECT ?" (Only (listArray (0, -1) [] :: Array Int Pair)) :: IO [Only Text])
+    , testCase "empty arrays of record elements report the V2 limit" $ withConnection ":memory:" \conn -> do
+        result <- try (query conn "SELECT ?" (Only (listArray (0, -1) [] :: Array Int Pair)))
+        case result of
+          Left SQLError{sqlErrorMessage} -> assertBool (Text.unpack sqlErrorMessage) ("duckdb-simple: empty ARRAY parameters are unavailable" `Text.isInfixOf` sqlErrorMessage)
+          Right (_ :: [Only Text]) -> assertFailure "expected the V2 empty ARRAY limit"
     , testCase "composite arrays reject schemas that would discard fields or digits" $ withConnection ":memory:" \conn -> do
         forM_
           [ ("SELECT {'a': 1::INTEGER}", "SELECT {'a': 2::INTEGER, 'b': 3::INTEGER}")
@@ -153,7 +157,16 @@ valueRegressionTests =
             forM_ [[Nothing, Just first, Just second], [Just second, Nothing, Just first]] \elements -> do
               let values = listArray (0 :: Int, 2) elements
               assertFailureIO (query conn "SELECT ?" (Only values) :: IO [Only FieldValue])
-              assertFailureIO (bracket (toDuckValue values) destroyValue (const (pure ())))
+              withConnectionHandle conn \native -> withConnectionFactory native \factory -> assertFailureIO (bracket (toDuckValue factory values) destroyValue (const (pure ())))
+        (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
+    , testCase "a LIST parameter fails at an element of the wrong type after earlier elements" $ withConnection ":memory:" \conn -> do
+        let struct =
+              singleField (LogicalTypeList (LogicalTypeScalar LogicalTypeIdBigInt)) (FieldList [FieldInt64 1, FieldInt64 2, FieldText "x", FieldInt64 4])
+        result <- try (query conn "SELECT ?" (Only struct) :: IO [Only FieldValue])
+        case result of
+          Left (err :: IOException) ->
+            assertBool (show err) ("unsupported scalar conversion for LogicalTypeIdBigInt from FieldText \"x\"" `Text.isInfixOf` Text.pack (show err))
+          Right _ -> assertFailure "expected a conversion error for the third element"
         (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
     , testCase "GEOMETRY decodes as well-known binary" $ withConnection ":memory:" \conn -> do
         [Only bytes] <- query_ conn "SELECT 'POINT(1 2)'::GEOMETRY" :: IO [Only BS.ByteString]
@@ -171,6 +184,26 @@ valueRegressionTests =
     , testCase "embedded NUL and Unicode Text round trip" $ withConnection ":memory:" \conn -> do
         let value = "before\0after íslenska λ 😀" :: Text
         (query conn "SELECT ?" (Only value) :: IO [Only Text]) >>= (@?= [Only value])
+    , testCase "VARCHAR, BLOB, and BIT values on both sides of the inline length read back" $ withConnection ":memory:" \conn -> do
+        -- DuckDB keeps a value of at most 12 bytes inline and a longer value
+        -- behind a pointer. A BIT value has one more byte for its padding count.
+        let lengths = [0, 1, 11, 12, 13, 64]
+            texts = [Text.pack (take n (cycle ['a' .. 'z'])) | n <- lengths]
+            blobs = [BS.pack (take n (cycle [0, 255, 1, 128])) | n <- lengths]
+            bits = [bsFromBool (take n (cycle [True, False, False])) | n <- [1, 8, 87, 88, 89, 200]]
+            present = [(Just text, Just blob, Just bit) | (text, blob, bit) <- zip3 texts blobs bits]
+            -- The NULL row is between the values of 11 and 12 bytes.
+            rows = take 3 present <> [(Nothing, Nothing, Nothing)] <> drop 3 present
+        _ <- execute_ conn "CREATE TABLE inline_boundary (i INTEGER, t VARCHAR, b BLOB, bits BIT)"
+        _ <-
+          executeMany
+            conn
+            "INSERT INTO inline_boundary VALUES (?, ?, ?, ?)"
+            [(i, text, blob, bit) | (i, (text, blob, bit)) <- zip [0 :: Int32 ..] rows]
+        (query_ conn "SELECT t, b, bits FROM inline_boundary ORDER BY i" :: IO [(Maybe Text, Maybe BS.ByteString, Maybe BitString)])
+          >>= (@?= rows)
+        (query_ conn "SELECT list(t ORDER BY i) FROM inline_boundary" :: IO [Only [Maybe Text]])
+          >>= (@?= [Only [text | (text, _, _) <- rows]])
     , testCase "Int8 rejects both overflow directions" $ withConnection ":memory:" \conn -> do
         forM_ ["SELECT 128::BIGINT", "SELECT -129::SMALLINT"] \sql ->
           assertConversionError (query_ conn sql :: IO [Only Int8])
@@ -189,7 +222,7 @@ valueRegressionTests =
           \(constructor, units, dtype) ->
             forM_ [minBound, negate (maxBound :: Int64) + 1, -1, 0, maxBound - 1] \value -> do
               let expected = utcToLocalTime utc (posixSecondsToUTCTime (fromRational (toInteger value % units)))
-              appendTimestamp conn dtype (toDuckValue (constructor value))
+              appendTimestamp conn dtype (constructor value)
               (query_ conn "SELECT value FROM native_timestamp" :: IO [Only LocalTime]) >>= (@?= [Only expected])
               [Only original] <- query_ conn "SELECT {'value': value} FROM native_timestamp" :: IO [Only (StructValue FieldValue)]
               -- DuckDB needs an explicit parameter type for extreme S/MS values.
@@ -197,28 +230,40 @@ valueRegressionTests =
               _ <- execute_ conn "DROP TABLE native_timestamp"
               pure ()
     , testCase "composite timestamps reject infinity and storage overflow" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
-        forM_ [(DuckDBTypeTimestampS, 1), (DuckDBTypeTimestampMs, 1000), (DuckDBTypeTimestamp, 1000000), (DuckDBTypeTimestampNs, 1000000000)] \(dtype, units) ->
-          forM_
-            [ toInteger (minBound :: Int64) - 1
-            , negate (toInteger (maxBound :: Int64))
-            , toInteger (maxBound :: Int64)
-            , toInteger (maxBound :: Int64) + 1
-            ]
-            \value -> do
-              let timestamp = utcToLocalTime utc (posixSecondsToUTCTime (fromRational (value % units)))
-                  struct = singleField (LogicalTypeScalar dtype) (FieldTimestamp (Finite timestamp))
-              assertIOError (query conn "SELECT ?" (Only struct) :: IO [Only FieldValue])
+        forM_
+          [ (LogicalTypeIdTimestampSec, 1)
+          , (LogicalTypeIdTimestampMs, 1000)
+          , (LogicalTypeIdTimestamp, 1000000)
+          , (LogicalTypeIdTimestampNs, 1000000000)
+          ]
+          \(dtype, units) ->
+            forM_
+              [ toInteger (minBound :: Int64) - 1
+              , negate (toInteger (maxBound :: Int64))
+              , toInteger (maxBound :: Int64)
+              , toInteger (maxBound :: Int64) + 1
+              ]
+              \value -> do
+                let timestamp = utcToLocalTime utc (posixSecondsToUTCTime (fromRational (value % units)))
+                    struct = singleField (LogicalTypeScalar dtype) (FieldTimestamp (Finite timestamp))
+                assertIOError (query conn "SELECT ?" (Only struct) :: IO [Only FieldValue])
     , testCase "composite timestamps floor fractional units before the epoch" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
-        forM_ [(DuckDBTypeTimestampS, 1), (DuckDBTypeTimestampMs, 1000), (DuckDBTypeTimestamp, 1000000), (DuckDBTypeTimestampNs, 1000000000)] \(dtype, units) -> do
-          let timestamp = utcToLocalTime utc (posixSecondsToUTCTime (fromRational ((-1) % (2 * units))))
-              expected = utcToLocalTime utc (posixSecondsToUTCTime (fromRational ((-1) % units)))
-              struct = singleField (LogicalTypeScalar dtype) (FieldTimestamp (Finite timestamp))
-          (query conn "SELECT (?).value" (Only struct) :: IO [Only LocalTime]) >>= (@?= [Only expected])
+        forM_
+          [ (LogicalTypeIdTimestampSec, 1)
+          , (LogicalTypeIdTimestampMs, 1000)
+          , (LogicalTypeIdTimestamp, 1000000)
+          , (LogicalTypeIdTimestampNs, 1000000000)
+          ]
+          \(dtype, units) -> do
+            let timestamp = utcToLocalTime utc (posixSecondsToUTCTime (fromRational ((-1) % (2 * units))))
+                expected = utcToLocalTime utc (posixSecondsToUTCTime (fromRational ((-1) % units)))
+                struct = singleField (LogicalTypeScalar dtype) (FieldTimestamp (Finite timestamp))
+            (query conn "SELECT (?).value" (Only struct) :: IO [Only LocalTime]) >>= (@?= [Only expected])
     , testCase "composite TIME_NS rejects invalid clock components" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
         forM_
           [TimeOfDay (-1) 0 0, TimeOfDay 25 0 0, TimeOfDay 0 60 0, TimeOfDay 0 0 (-1), TimeOfDay 24 0 0.000000001, TimeOfDay 23 59 60.000000001]
           \value ->
-            assertIOError (query conn "SELECT ?" (Only (singleField (LogicalTypeScalar DuckDBTypeTimeNs) (FieldTime value))) :: IO [Only FieldValue])
+            assertIOError (query conn "SELECT ?" (Only (singleField (LogicalTypeScalar LogicalTypeIdTimeNs) (FieldTime value))) :: IO [Only FieldValue])
     , testCase "microsecond timestamps retain finite extrema" $ withConnection ":memory:" \conn ->
         forM_ [minBound, negate (maxBound :: Int64) + 1, -1, 0, maxBound - 1] \value -> do
           let expected = utcToLocalTime utc (posixSecondsToUTCTime (fromRational (toInteger value % 1000000)))
@@ -255,6 +300,24 @@ valueRegressionTests =
             struct = singleField (LogicalTypeDecimal 38 9) (FieldDecimal decimal)
         [Only result] <- query conn "SELECT ?" (Only struct) :: IO [Only (StructValue FieldValue)]
         structValueFields result @?= structValueFields struct
+    , testCase "DECIMAL and ENUM columns decode at each storage width" $ withConnection ":memory:" \conn -> do
+        -- Each column has a NULL between values, so one reader serves valid and invalid rows.
+        forM_ [(4, 1), (9, 3), (18, 3), (38, 9)] \(width, scale) -> do
+          let dtype = "DECIMAL(" <> Text.pack (show width) <> "," <> Text.pack (show scale) <> ")"
+              decimal units = FieldDecimal (DecimalValue width scale (units * 10 ^ scale))
+          rows <-
+            query_ conn (Query ("SELECT CASE WHEN i = 1 THEN NULL ELSE (i - 2)::" <> dtype <> " END FROM range(4) t(i)")) :: IO [Only FieldValue]
+          rows @?= map Only [decimal (-2), FieldNull, decimal 0, decimal 1]
+        forM_ [200, 300, 70000 :: Int] \size -> do
+          let label index = "v" <> Text.pack (show index)
+              dtype = "enum_width_" <> Text.pack (show size)
+          _ <-
+            execute_
+              conn
+              (Query ("CREATE TYPE " <> dtype <> " AS ENUM (" <> Text.intercalate "," ["'" <> label index <> "'" | index <- [0 .. size - 1]] <> ")"))
+          rows <-
+            query_ conn (Query ("SELECT x::" <> dtype <> " FROM (VALUES ('v0'), (NULL), ('" <> label (size - 1) <> "')) t(x)")) :: IO [Only FieldValue]
+          rows @?= map Only [FieldEnum 0, FieldNull, FieldEnum (fromIntegral (size - 1))]
     , testCase "invalid DECIMAL width scale and magnitude are rejected" $ withConnection ":memory:" \conn ->
         forM_ [DecimalValue 0 0 0, DecimalValue 39 0 0, DecimalValue 2 3 1, DecimalValue 2 0 100, DecimalValue 2 0 (-100)] \decimal ->
           assertIOError
@@ -267,7 +330,7 @@ valueRegressionTests =
         (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
     , testCase "generic NULL product and payload return Left" $ do
         assertLeft (genericFromFieldValue FieldNull :: Either String NamedRecord)
-        let member = UnionMemberType "DataMember" (LogicalTypeScalar DuckDBTypeBigInt)
+        let member = UnionMemberType "DataMember" (LogicalTypeScalar LogicalTypeIdBigInt)
             union = UnionValue 0 "DataMember" FieldNull (listArray (0, 0) [member])
         assertLeft (genericFromFieldValue (FieldUnion union) :: Either String NullableSum)
     , testCase "generic records decode by name" $ withConnection ":memory:" \conn -> do
@@ -277,7 +340,7 @@ valueRegressionTests =
         [Only union] <- query_ conn "SELECT union_value(DataMember := {'field1': 42::BIGINT})" :: IO [Only (UnionValue FieldValue)]
         genericFromFieldValue (FieldUnion union) @?= Right (DataMember 42)
     , testCase "union binding rejects inconsistent member name" $ withConnection ":memory:" \conn -> do
-        let member = UnionMemberType "right" (LogicalTypeScalar DuckDBTypeBigInt)
+        let member = UnionMemberType "right" (LogicalTypeScalar LogicalTypeIdBigInt)
             union = UnionValue 0 "wrong" (FieldInt64 42) (listArray (0, 0) [member])
         assertIOError (query conn "SELECT ?" (Only union) :: IO [Only FieldValue])
     , testCase "generic records reject wrong names" $ do
@@ -286,19 +349,59 @@ valueRegressionTests =
           Just struct -> do
             let fields = listArray (0, 1) [StructField "wrong" (FieldInt64 1), StructField "secondValue" (FieldInt64 2)]
             assertLeft (genericFromFieldValue (FieldStruct struct{structValueFields = fields}) :: Either String NamedRecord)
-    , testCase "logical type Unicode names round trip" $ do
-        let logical = LogicalTypeStruct (listArray (0, 0) [StructField "íslenska_λ_😀" (LogicalTypeScalar DuckDBTypeBigInt)])
-        bracket (logicalTypeFromRep logical) destroyLogicalType \handle ->
+    , testCase "unnamed tuples preserve scalar and nested fields on round trip" $ withConnection ":memory:" \conn -> do
+        let tuple =
+              TupleValue
+                (listArray (0, 1) [FieldInt64 42, FieldText "λ"])
+                (listArray (0, 1) [LogicalTypeScalar LogicalTypeIdBigInt, LogicalTypeScalar LogicalTypeIdVarchar])
+        (query_ conn "SELECT row(42::BIGINT, 'λ')" :: IO [Only (TupleValue FieldValue)]) >>= (@?= [Only tuple])
+        (query_ conn "SELECT [row(42::BIGINT, 'λ')]" :: IO [Only [TupleValue FieldValue]]) >>= (@?= [Only [tuple]])
+        (query conn "SELECT ?" (Only tuple) :: IO [Only (TupleValue FieldValue)]) >>= (@?= [Only tuple])
+    , testCase "empty tuples retain their type independently of empty structs" $ withConnection ":memory:" \conn -> do
+        let tuple = TupleValue (listArray (0, -1) []) (listArray (0, -1) []) :: TupleValue FieldValue
+            struct = StructValue (listArray (0, -1) []) (listArray (0, -1) []) Map.empty :: StructValue FieldValue
+        (query_ conn "SELECT row(), [row()]" :: IO [(TupleValue FieldValue, [TupleValue FieldValue])]) >>= (@?= [(tuple, [tuple])])
+        (query conn "SELECT typeof(?), ?" (tuple, tuple) :: IO [(Text, TupleValue FieldValue)]) >>= (@?= [("TUPLE", tuple)])
+        (query conn "SELECT typeof(?), ?" (struct, struct) :: IO [(Text, StructValue FieldValue)]) >>= (@?= [("STRUCT", struct)])
+        withConnectionHandle conn \native -> withConnectionFactory native \factory ->
+          bracket (logicalTypeFromRep factory (tupleValueTypeRep tuple)) destroyLogicalType \logical ->
+            logicalTypeToRep logical >>= (@?= tupleValueTypeRep tuple)
+        assertIOError (query conn "SELECT ?" (Only tuple{tupleValueFields = listArray (4, 4) [FieldNull]}) :: IO [Only FieldValue])
+    , testCase "filtered tuple cursors retain positional fields" $ withConnection ":memory:" \conn -> do
+        rows <- Streaming.fold_ conn "SELECT row(i::BIGINT, 'λ') FROM range(6) t(i) WHERE i % 2 = 1" [] $ \values (Only tuple) ->
+          pure (values <> [elems (tupleValueFields tuple)])
+        rows @?= [[FieldInt64 value, FieldText "λ"] | value <- [1, 3, 5]]
+    , testCase "composite VARCHAR collations retain native comparison semantics" $ withConnection ":memory:" \conn -> do
+        let collated = LogicalTypeCollatedVarchar "nocase"
+        [Only original] <-
+          query_ conn "SELECT {'text':'A' COLLATE nocase,'items':['B' COLLATE nocase], 'optional':NULL::VARCHAR COLLATE nocase}"
+            :: IO [Only (StructValue FieldValue)]
+        map structFieldValue (elems (structValueTypes original)) @?= [collated, LogicalTypeList collated, collated]
+        ( query conn "SELECT value.text='a', value.items[1]='b', value.optional IS NULL FROM (SELECT ? AS value)" (Only original)
+            :: IO [(Bool, Bool, Bool)]
+          )
+          >>= (@?= [(True, True, True)])
+        (query conn "SELECT ?" (Only original) :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only original])
+        [Only tuple] <- query_ conn "SELECT row('A' COLLATE nocase)" :: IO [Only (TupleValue FieldValue)]
+        (query conn "SELECT value[1]='a' FROM (SELECT ? AS value)" (Only tuple) :: IO [Only Bool]) >>= (@?= [Only True])
+        withConnectionHandle conn \native -> withConnectionFactory native \factory ->
+          bracket (logicalTypeFromRep factory collated) destroyLogicalType \logical -> logicalTypeToRep logical >>= (@?= collated)
+    , testCase "logical type Unicode names round trip" $ withConnection ":memory:" \conn -> withConnectionHandle conn \native -> withConnectionFactory native \factory -> do
+        let logical = LogicalTypeStruct (listArray (0, 0) [StructField "íslenska_λ_😀" (LogicalTypeScalar LogicalTypeIdBigInt)])
+        bracket (logicalTypeFromRep factory logical) destroyLogicalType \handle ->
           logicalTypeToRep handle >>= (@?= logical)
-    , testCase "logical type names reject embedded NUL" $ do
-        let logical = LogicalTypeStruct (listArray (0, 0) [StructField "before\0after" (LogicalTypeScalar DuckDBTypeBigInt)])
-        assertIOError (bracket (logicalTypeFromRep logical) destroyLogicalType (const (pure ())))
+    , testCase "logical type names reject embedded NUL" $ withConnection ":memory:" \conn -> withConnectionHandle conn \native -> withConnectionFactory native \factory -> do
+        let logical = LogicalTypeStruct (listArray (0, 0) [StructField "before\0after" (LogicalTypeScalar LogicalTypeIdBigInt)])
+        assertIOError (bracket (logicalTypeFromRep factory logical) destroyLogicalType (const (pure ())))
     , testCase "invalid native composite constructor returns controlled error" $ withConnection ":memory:" \conn -> do
         let struct =
               singleField
-                (LogicalTypeMap (LogicalTypeScalar DuckDBTypeBigInt) (LogicalTypeScalar DuckDBTypeBigInt))
+                (LogicalTypeMap (LogicalTypeScalar LogicalTypeIdBigInt) (LogicalTypeScalar LogicalTypeIdBigInt))
                 (FieldMap [(FieldNull, FieldInt64 1)])
-        assertIOError (query conn "SELECT ?" (Only struct) :: IO [Only FieldValue])
+        result <- try (query conn "SELECT ?" (Only struct) :: IO [Only FieldValue])
+        case result of
+          Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorInputInvalid
+          Right _ -> assertFailure "expected a V2 native constructor error"
     , testCase "BIT padding preserves SQL bit_count" $ withConnection ":memory:" \conn -> do
         let bits = bsFromBool [True, False, True]
         (query conn "SELECT bit_count(?), ?" (bits, bits) :: IO [(Int64, BitString)]) >>= (@?= [(2, bits)])
@@ -307,15 +410,76 @@ valueRegressionTests =
           assertIOError (query conn "SELECT ?" (Only bits) :: IO [Only BitString])
     , testCase "TIMETZ second offsets fail without rounding" $ withConnection ":memory:" \conn ->
         assertIOError (query_ conn "SELECT '12:00:00+01:23:45'::TIMETZ" :: IO [Only TimeWithZone])
+    , testCase "a decode failure in a later chunk releases each chunk" $ withConnection ":memory:" \conn -> do
+        assertIOError
+          ( query_ conn "SELECT CASE WHEN i = 9000 THEN '12:00:00+01:23:45'::TIMETZ ELSE '12:00:00+01:00'::TIMETZ END FROM range(10000) t(i)"
+              :: IO [Only FieldValue]
+          )
+        (query_ conn "SELECT 42" :: IO [Only Int]) >>= (@?= [Only 42])
     , testCase "ENUM payload index must be in its dictionary" $ withConnection ":memory:" \conn ->
         assertIOError
           (query conn "SELECT ?" (Only (singleField (LogicalTypeEnum (listArray (0, 1) ["a", "b"])) (FieldEnum 2))) :: IO [Only FieldValue])
+    , testCase "ENUM payload index binds the label of its dictionary" $ withConnection ":memory:" \conn -> do
+        let struct = singleField (LogicalTypeEnum (listArray (0, 2) ["a", "b", "c"])) (FieldEnum 1)
+        (query conn "SELECT typeof((?).value), (?).value::VARCHAR, ?" (struct, struct, struct) :: IO [(Text, Text, StructValue FieldValue)])
+          >>= (@?= [("ENUM('a', 'b', 'c')", "b", struct)])
     , testCase "TIMETZ input offset overflow fails before native use" $ withConnection ":memory:" \conn -> do
         let value = TimeWithZone (TimeOfDay 12 0 0) (minutesToTimeZone maxBound)
-            struct = singleField (LogicalTypeScalar DuckDBTypeTimeTz) (FieldTimeTZ value)
+            struct = singleField (LogicalTypeScalar LogicalTypeIdTimeTz) (FieldTimeTZ value)
         assertIOError (query conn "SELECT ?" (Only struct) :: IO [Only FieldValue])
     , testCase "invalid TIME input returns controlled error" $ withConnection ":memory:" \conn ->
         assertIOError (query conn "SELECT ?" (Only (TimeOfDay 1000000000 0 0)) :: IO [Only TimeOfDay])
+    , testCase "nested types decode the same in each chunk and each read mode" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
+        _ <- execute_ conn "CREATE TYPE mood AS ENUM ('calm', 'busy', 'tired')"
+        let sql =
+              "SELECT st, [st, st] AS l, [st, st]::STRUCT(n BIGINT, e mood)[2] AS a, tiers, [tiers, tiers] AS tl, \
+              \CASE WHEN i % 2 = 0 THEN union_value(d := ((i % 1000) / 10)::DECIMAL(9, 2))::UNION(d DECIMAL(9, 2), s STRUCT(n BIGINT, e mood)) \
+              \ELSE union_value(s := st)::UNION(d DECIMAL(9, 2), s STRUCT(n BIGINT, e mood)) END AS u, \
+              \map([st.e], [((i % 1000) / 10)::DECIMAL(9, 2)]) AS m, i::DECIMAL(18, 3) AS d \
+              \FROM (SELECT i, {'n': i, 'e': (['calm', 'busy', 'tired'])[i % 3 + 1]::mood} AS st, \
+              \{'small': ((i % 1000) / 10)::DECIMAL(4, 1), 'large': (i * 1000 + 7)::DECIMAL(18, 3)} AS tiers FROM range(5000) r(i))"
+            mood = LogicalTypeEnum (listArray (0, 2) ["calm", "busy", "tired"])
+            bigint = LogicalTypeScalar LogicalTypeIdBigInt
+            stType = LogicalTypeStruct (listArray (0, 1) [StructField "n" bigint, StructField "e" mood])
+            members = listArray (0, 1) [UnionMemberType "d" (LogicalTypeDecimal 9 2), UnionMemberType "s" stType]
+            decimal width scale integer = FieldDecimal (DecimalValue width scale integer)
+            expected :: Int64 -> [FieldValue]
+            expected i =
+              let st = FieldStruct (structOf [("n", FieldInt64 i, bigint), ("e", FieldEnum (fromIntegral (i `mod` 3)), mood)])
+                  tenths = toInteger (i `mod` 1000)
+                  tiers =
+                    FieldStruct
+                      ( structOf
+                          [ ("small", decimal 4 1 tenths, LogicalTypeDecimal 4 1)
+                          , ("large", decimal 18 3 ((toInteger i * 1000 + 7) * 1000), LogicalTypeDecimal 18 3)
+                          ]
+                      )
+                  union
+                    | even i = UnionValue 0 "d" (decimal 9 2 (tenths * 10)) members
+                    | otherwise = UnionValue 1 "s" st members
+              in  [ st
+                  , FieldList [st, st]
+                  , FieldArray (listArray (0, 1) [st, st])
+                  , tiers
+                  , FieldList [tiers, tiers]
+                  , FieldUnion union
+                  , FieldMap [(FieldEnum (fromIntegral (i `mod` 3)), decimal 9 2 (tenths * 10))]
+                  , decimal 18 3 (toInteger i * 1000)
+                  ]
+        materialized <- query_ conn sql :: IO [[FieldValue]]
+        cursor <- withStatement conn sql (readAllRows nextRow)
+        streamed <- withStatement conn sql (readAllRows Streaming.nextRow)
+        length materialized @?= 5000
+        cursor @?= materialized
+        streamed @?= materialized
+        forM_ [0, 2047, 2048, 4095, 4999 :: Int] \i -> (materialized !! i) @?= expected (fromIntegral i)
+    , testCase "a statement that runs again with another type reads the new type" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
+        withStatement conn "SELECT ? AS s FROM range(3000) r(i)" \stmt ->
+          forM_ ([nextRow, Streaming.nextRow] :: [Statement -> IO (Maybe (Only (StructValue FieldValue)))]) \next ->
+            forM_ [DecimalValue 4 1 123, DecimalValue 18 3 123456789012, DecimalValue 4 1 (-45)] \value -> do
+              let struct = singleField (LogicalTypeDecimal (decimalWidth value) (decimalScale value)) (FieldDecimal value)
+              bind stmt [toField struct]
+              readAllRows next stmt >>= (@?= replicate 3000 (Only struct))
     ]
       <> [ testCase ("composite temporal round trip: " <> dtype) $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
              forM_ ("NULL" : map (\value -> "'" <> value <> "'") values) \value ->
@@ -346,20 +510,26 @@ assertTemporalRoundTrip conn dtype expression = do
   [original] <- query_ conn (fromString sql) :: IO [(StructValue FieldValue, UnionValue FieldValue)]
   query conn "SELECT ?, ?" original >>= (@?= [original])
 
--- | Store raw timestamp units without the prepared-parameter type conversion.
-appendTimestamp :: Connection -> String -> IO DuckDBValue -> IO ()
-appendTimestamp conn dtype createValue = do
+-- | Store raw V2 timestamp units through the parameter API.
+appendTimestamp :: Connection -> String -> NativeTimestamp -> IO ()
+appendTimestamp conn dtype value = do
   _ <- execute_ conn (fromString ("CREATE TABLE native_timestamp(value " <> dtype <> ")"))
-  withConnectionHandle conn \handle ->
-    alloca \appenderPtr -> do
-      poke appenderPtr (DuckDBAppender nullPtr)
-      withConstCString "native_timestamp" \table ->
-        c_duckdb_appender_create handle (ConstPtr nullPtr) table appenderPtr >>= (@?= DuckDBSuccess)
-      bracket (peek appenderPtr) (const (c_duckdb_appender_destroy appenderPtr >> pure ())) \appender -> do
-        bracket createValue (\value -> alloca \ptr -> poke ptr value >> c_duckdb_destroy_value ptr) \value ->
-          c_duckdb_append_value appender value >>= (@?= DuckDBSuccess)
-        c_duckdb_appender_end_row appender >>= (@?= DuckDBSuccess)
-        c_duckdb_appender_flush appender >>= (@?= DuckDBSuccess)
+  _ <- execute conn "INSERT INTO native_timestamp VALUES (?)" (Only value)
+  pure ()
+
+-- | Build a struct from the name, the value, and the type of each field.
+structOf :: [(Text, FieldValue, LogicalTypeRep)] -> StructValue FieldValue
+structOf fields =
+  StructValue
+    (listArray (0, length fields - 1) [StructField name value | (name, value, _) <- fields])
+    (listArray (0, length fields - 1) [StructField name logical | (name, _, logical) <- fields])
+    (Map.fromList (zip [name | (name, _, _) <- fields] [0 ..]))
+
+-- | Read the rows of a statement until the cursor gives no row.
+readAllRows :: (Statement -> IO (Maybe row)) -> Statement -> IO [row]
+readAllRows next stmt = go []
+  where
+    go rows = next stmt >>= maybe (pure (reverse rows)) (\row -> go (row : rows))
 
 -- | Build a single-field struct for nested binding tests.
 singleField :: LogicalTypeRep -> FieldValue -> StructValue FieldValue

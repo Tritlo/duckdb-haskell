@@ -5,18 +5,20 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeOperators #-}
 
--- | Tasty-based test suite for duckdb-simple.
+-- |
+-- Module      : Main
+-- Description : Tasty-based test suite for duckdb-simple.
 module Main (main) where
 
 import ArrowTests (arrowTests)
-import CancellationTests (cancellationTests)
+import CancellationTests (callbackLockTests, cancellationTests)
 import Control.Applicative ((<|>))
 import Control.Exception (ErrorCall, Exception, SomeException, displayException, fromException, try)
-import Control.Monad (forM_, replicateM_, when)
+import Control.Monad (forM_, replicateM_, void, when)
+import CopyTests (copyTests)
 import CoreRegressionTests (coreRegressionTests)
 import Data.Array (Array, elems, listArray)
 import qualified Data.ByteString as BS
@@ -41,12 +43,6 @@ import Data.Time.LocalTime (
  )
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
-import Database.DuckDB.FFI (
-  pattern DuckDBCatalogEntryTypeTable,
-  pattern DuckDBFileFlagCreate,
-  pattern DuckDBFileFlagRead,
-  pattern DuckDBFileFlagWrite,
- )
 import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Catalog as Catalog
 import qualified Database.DuckDB.Simple.Config as Config
@@ -85,6 +81,7 @@ import GHC.Generics (Generic)
 import qualified GeometryRegressionTests
 import Numeric.Natural (Natural)
 import Properties (roundTripTests)
+import RegistrationTests (registrationTests)
 import qualified SqlFeatureTests
 import StreamingTests (nativeStreamingTests)
 import System.Directory (doesFileExist, removeFile)
@@ -93,6 +90,7 @@ import Test.Tasty.ExpectedFailure (expectFailBecause)
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck (testProperty, (===))
 import TimeTests (timeTests)
+import TypedRegistrationTests (typedRegistrationTests)
 import ValueRegressionTests (valueRegressionTests)
 import qualified VariantRegressionTests
 
@@ -211,8 +209,12 @@ tests =
     , coreRegressionTests
     , arrowTests
     , cancellationTests
+    , callbackLockTests
     , nativeStreamingTests
     , extensionRegressionTests
+    , registrationTests
+    , typedRegistrationTests
+    , copyTests
     , GeometryRegressionTests.tests
     , VariantRegressionTests.tests
     , valueRegressionTests
@@ -262,7 +264,7 @@ v20Tests =
           withTransaction conn $ do
             mType <- Catalog.catalogTypeName conn "memory"
             assertBool "expected catalog type name" (mType /= Nothing)
-            mEntry <- Catalog.lookupCatalogEntry conn "memory" "main" "catalog_probe" DuckDBCatalogEntryTypeTable
+            mEntry <- Catalog.lookupCatalogEntry conn "memory" "main" "catalog_probe" Catalog.CatalogTable
             case mEntry of
               Nothing -> assertFailure "expected catalog entry"
               Just entry -> Catalog.catalogEntryName entry @?= "catalog_probe"
@@ -272,11 +274,11 @@ v20Tests =
         exists <- doesFileExist path
         when exists (removeFile path)
         withConnection ":memory:" \conn -> do
-          FileSystem.withFileHandle conn path [DuckDBFileFlagCreate, DuckDBFileFlagWrite] \handle -> do
+          FileSystem.withFileHandle conn path [FileSystem.FileFlagCreate, FileSystem.FileFlagWrite] \handle -> do
             written <- FileSystem.writeFileHandleBytes handle payload
             written @?= fromIntegral (BS.length payload)
             FileSystem.fileHandleSync handle
-          FileSystem.withFileHandle conn path [DuckDBFileFlagRead] \handle -> do
+          FileSystem.withFileHandle conn path [FileSystem.FileFlagRead] \handle -> do
             size <- FileSystem.fileHandleSize handle
             size @?= fromIntegral (BS.length payload)
             bytes <- FileSystem.readFileHandleChunk handle 32
@@ -309,14 +311,12 @@ v20Tests =
           filePath <- readIORef pathRef
           captured @?= [1, 2, 3]
           filePath @?= Just "/tmp/duckdb-simple-copy.out"
-    , testCase "logging wrapper registers a log sink" $
+    , testCase "custom log storage registers a native sink" do
+        calls <- newIORef (0 :: Int)
         withConnection ":memory:" \conn -> do
-          entriesRef <- newIORef ([] :: [Logging.LogEntry])
-          Logging.registerLogStorage conn "hs_log_capture" \entry ->
-            atomicModifyIORef' entriesRef \entries -> (entry : entries, ())
-          _ <- execute_ conn "SELECT write_log('duckdb-simple logging wrapper', level := 'INFO', scope := 'connection')"
-          _ <- readIORef entriesRef
-          pure ()
+          Logging.registerLogStorage conn "hs_log_capture" (\_ -> atomicModifyIORef' calls (\n -> (n + 1, ())))
+          void $ execute_ conn "CALL enable_logging(); SET logging_storage = 'hs_log_capture'; SELECT write_log('registered')"
+        readIORef calls >>= assertBool "the sink received an entry" . (> 0)
     ]
 
 fieldInt :: [Field] -> IO Int
@@ -898,26 +898,15 @@ typeTests =
     , testCase "selects BIGNUM values as BigNum" $
         withConnection ":memory:" \conn -> do
           _ <- execute_ conn "CREATE TABLE bignums (val BIGNUM)"
-          let bigValues :: [Integer]
-              bigValues =
-                [ (2 ^ (200 :: Int)) + 8675309
-                , 0
-                , negate ((2 ^ (180 :: Int)) + 12345)
-                ]
-          rows <- concat <$> mapM (\bv -> query_ conn $ fromString $ "SELECT CAST('" <> show bv <> "' AS BIGNUM)") bigValues
+          rows <- concat <$> mapM (\bv -> query_ conn $ fromString $ "SELECT CAST('" <> show bv <> "' AS BIGNUM)") bigNumValues
           --  query_ conn "SELECT val FROM bignums ORDER BY rowid" :: IO [Only BigNum]
-          assertEqual "BIGNUM results" (fmap (Only . BigNum) bigValues) rows
+          assertEqual "BIGNUM results" (fmap (Only . BigNum) bigNumValues) rows
     , testCase "round-trips BIGNUM values through the database" $
         withConnection ":memory:" \conn -> do
           _ <- execute_ conn "CREATE TABLE bignum_roundtrip (val BIGNUM)"
-          let ints =
-                [ (2 ^ (200 :: Int)) + 8675309
-                , 0
-                , negate ((2 ^ (180 :: Int)) + 12345)
-                ]
-          _ <- executeMany conn "INSERT INTO bignum_roundtrip VALUES (?)" (fmap (Only . BigNum) ints)
+          _ <- executeMany conn "INSERT INTO bignum_roundtrip VALUES (?)" (fmap (Only . BigNum) bigNumValues)
           rows <- query_ conn "SELECT val FROM bignum_roundtrip ORDER BY rowid" :: IO [Only Integer]
-          assertEqual "BIGNUM round-trip" (fmap Only ints) rows
+          assertEqual "BIGNUM round-trip" (fmap Only bigNumValues) rows
     , testCase "duckdbColumnType reports BIGNUM for Integer" $
         assertEqual
           "duckdbColumnType Integer"
@@ -1105,6 +1094,13 @@ typeTests =
         case genericToFieldValue EmptyStruct of
           FieldNull -> pure ()
           other -> assertFailure ("expected FieldNull for empty struct, got " <> show other)
+    , testCase "empty struct binds as a STRUCT without fields" $
+        withConnection ":memory:" \conn -> do
+          query conn "SELECT typeof(?)" (Only EmptyStruct) >>= (@?= [Only (Text.pack "STRUCT")])
+          rows <- query conn "SELECT ?" (Only EmptyStruct) :: IO [Only FieldValue]
+          case rows of
+            [Only (FieldStruct structVal)] -> elems (structValueFields structVal) @?= []
+            other -> assertFailure ("expected a STRUCT without fields, got " <> show other)
     , testCase "struct with Maybe fields" $ do
         let withJust = OptionalFields (Just 42) (Just (Text.pack "text"))
             withNothing = OptionalFields Nothing Nothing
@@ -1154,6 +1150,22 @@ typeTests =
               assertBool "error mentions tag or index" (Text.pack "tag" `Text.isInfixOf` Text.pack err || Text.pack "99" `Text.isInfixOf` Text.pack err)
             Right _ -> assertFailure "expected decode error for wrong tag"
     ]
+  where
+    -- 7 ^ 2900 has 1,018 magnitude bytes. A value of at most 9 magnitude bytes
+    -- has inline storage.
+    bigNumValues :: [Integer]
+    bigNumValues =
+      [ (2 ^ (200 :: Int)) + 8675309
+      , 0
+      , negate ((2 ^ (180 :: Int)) + 12345)
+      , 7 ^ (2900 :: Int)
+      , negate (7 ^ (2900 :: Int))
+      , 1
+      , -1
+      , 255
+      , 256
+      , -256
+      ]
 
 streamingTests :: TestTree
 streamingTests =
@@ -1211,6 +1223,12 @@ functionsTests =
             query_ conn "SELECT hs_optional(x) FROM (VALUES (NULL), (41)) AS t(x)"
               :: IO [Only (Maybe Int64)]
           assertEqual "optional results" [Only Nothing, Only (Just 42)] rows
+    , testCase "names the argument that does not convert" $
+        withConnection ":memory:" \conn -> do
+          createFunction conn "hs_sum" (\(x :: Int64) (y :: Int64) -> x + y)
+          assertThrows
+            (query_ conn "SELECT hs_sum(1, NULL)" :: IO [Only Int64])
+            (Text.isInfixOf "duckdb-simple: argument arg1 is NULL, but Int64 cannot hold NULL" . sqlErrorMessage)
     , testCase "supports IO-based functions" $
         withConnection ":memory:" \conn -> do
           ref <- newIORef (0 :: Int)

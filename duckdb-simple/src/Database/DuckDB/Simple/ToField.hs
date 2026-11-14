@@ -2,6 +2,7 @@
 {-# LANGUAGE DefaultSignatures #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE MagicHash #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -15,6 +16,8 @@
 module Database.DuckDB.Simple.ToField (
   FieldBinding,
   ToDuckValue (..),
+  ValueFactory,
+  NativeValue,
   ToField (..),
   DuckDBColumnType (..),
   NamedParam (..),
@@ -23,12 +26,11 @@ module Database.DuckDB.Simple.ToField (
   renderFieldBinding,
 ) where
 
-import Control.Exception (bracket, throwIO)
-import Control.Monad (filterM, forM_, when)
+import Control.Exception (bracket, mask_, onException, throwIO)
+import Control.Monad (foldM, forM_, unless, when)
 import Data.Array (Array, bounds, elems, listArray)
-import Data.Bits (complement, shiftL, shiftR, (.&.), (.|.))
+import Data.Bits (complement, shiftL, shiftR, xor, (.|.))
 import qualified Data.ByteString as BS
-import Data.Char (toLower)
 import Data.Fixed (Pico)
 import qualified Data.Geometry as G
 import qualified Data.Geometry.WKT as WKT
@@ -37,13 +39,12 @@ import qualified Data.List as List
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
-import qualified Data.Text.Encoding as TextEncoding
 import Data.Time.Calendar (Day, diffDays, fromGregorian)
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds)
 import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), TimeZone (..), timeOfDayToTime, timeZoneMinutes, utc, utcToLocalTime)
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
-import Database.DuckDB.FFI
+import Database.DuckDB.Simple.Element (timeTzMaxOffsetSeconds, timeTzOffsetBits)
 import Database.DuckDB.Simple.FromField (
   BigNum (..),
   BitString (..),
@@ -51,40 +52,41 @@ import Database.DuckDB.Simple.FromField (
   FieldValue (..),
   IntervalValue (..),
   TimeWithZone (..),
-  toBigNumBytes,
  )
 import Database.DuckDB.Simple.Internal (
-  SQLError (..),
   Statement (..),
-  destroyValue,
   duckDBTypeFromName,
-  fetchPrepareError,
-  withStatementHandle,
+  preparedParameterType,
+  storeBoundValue,
   withTypeCache,
  )
 import Database.DuckDB.Simple.LogicalRep (
   LogicalTypeRep (..),
   StructField (..),
   StructValue (..),
+  TupleValue (..),
   UnionMemberType (..),
   UnionValue (..),
-  destroyLogicalType,
-  logicalTypeFromRep,
-  logicalTypeFromRepWith,
-  logicalTypeToRep,
   structValueTypeRep,
+  tupleValueTypeRep,
   unionValueTypeRep,
  )
+import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
-import Database.DuckDB.Simple.TypeCache (TypeCache, cachedLogicalType)
+import Database.DuckDB.Simple.TypeCache (cachedLogicalType, typeCacheConnection)
 import Database.DuckDB.Simple.Types (Null (..))
+import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeFromRep, logicalTypeToRep)
 import Database.DuckDB.Simple.Variant (Variant (..))
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.Types (CDouble (..), CFloat (..))
 import Foreign.Marshal (fromBool)
+import Foreign.Marshal.Alloc (alloca, allocaBytes)
 import Foreign.Marshal.Array (withArray)
-import Foreign.Marshal.Utils (withMany)
+import Foreign.Marshal.Utils (with)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
+import Foreign.Storable (peek)
+import GHC.Exts (Ptr (..))
+import GHC.Num.Integer (integerLog2, integerToAddr)
 import Numeric.Natural (Natural)
 
 -- | Represents a named parameter binding using the @:=@ operator.
@@ -95,44 +97,54 @@ infixr 3 :=
 
 -- | Encapsulates the action required to bind a single positional parameter, together with a textual description used in diagnostics.
 data FieldBinding = FieldBinding
-  { fieldBindingValue :: !(TypeCache -> IO (Maybe LogicalTypeRep) -> IO DuckDBValue)
+  { fieldBindingValue :: !(ValueBuilder -> IO (Maybe LogicalTypeRep) -> IO DuckDBV2ValueHandle)
   , fieldBindingDisplay :: !String
   }
 
--- | Low-level class for values that can be marshalled directly into `DuckDBValue`s.
+-- | A factory and a type constructor of the same scope. The builder of a
+-- statement resolves the configured CRS types of its connection.
+data ValueBuilder = ValueBuilder
+  { builderFactory :: !DuckDBV2FactoryHandle
+  , builderType :: !(LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle)
+  }
+
+-- | A builder that constructs each type directly through the factory.
+plainBuilder :: DuckDBV2FactoryHandle -> ValueBuilder
+plainBuilder factory = ValueBuilder factory (logicalTypeFromRep factory)
+
+-- | Low-level class for values that convert directly to a 'NativeValue'.
 class (DuckDBColumnType a) => ToDuckValue a where
-  -- | Convert a Haskell value into an owned DuckDB boxed value.
-  toDuckValue :: a -> IO DuckDBValue
+  -- | Construct an owned value through a borrowed native factory. Keep the
+  --     owner of the factory (a connection, a callback context, or an instance)
+  --     alive until you destroy the value. Use 'ToField' to resolve arbitrary CRS
+  --     labels from connection options.
+  toDuckValue :: ValueFactory -> a -> IO NativeValue
 
-valueBinding :: String -> IO DuckDBValue -> FieldBinding
-valueBinding display = cacheValueBinding display . const
+valueBinding :: String -> (DuckDBV2FactoryHandle -> IO DuckDBV2ValueHandle) -> FieldBinding
+valueBinding display make = builderValueBinding display (make . builderFactory)
 
--- | Construct a value with the type cache of the statement's connection.
-cacheValueBinding :: String -> (TypeCache -> IO DuckDBValue) -> FieldBinding
-cacheValueBinding display makeValue =
-  targetValueBinding display (\cache _ -> makeValue cache)
+-- | Construct a value with the builder of the statement's connection.
+builderValueBinding :: String -> (ValueBuilder -> IO DuckDBV2ValueHandle) -> FieldBinding
+builderValueBinding display makeValue =
+  targetValueBinding display (\builder _ -> makeValue builder)
 
 -- | Construct a value with the prepared parameter type, when it is available.
-targetValueBinding :: String -> (TypeCache -> IO (Maybe LogicalTypeRep) -> IO DuckDBValue) -> FieldBinding
+targetValueBinding :: String -> (ValueBuilder -> IO (Maybe LogicalTypeRep) -> IO DuckDBV2ValueHandle) -> FieldBinding
 targetValueBinding display makeValue =
   FieldBinding
     { fieldBindingValue = makeValue
     , fieldBindingDisplay = display
     }
 
--- | Build types with the cached types for VARIANT and GEOMETRY with a CRS.
-cachedTypeFromRep :: TypeCache -> LogicalTypeRep -> IO DuckDBLogicalType
-cachedTypeFromRep = logicalTypeFromRepWith . cachedLogicalType
-
 -- | Preserve UTC nanoseconds where the prepared parameter requires them.
-temporalValueBinding :: String -> LogicalTypeRep -> FieldValue -> (TypeCache -> IO DuckDBValue) -> FieldBinding
+temporalValueBinding :: String -> LogicalTypeRep -> FieldValue -> (ValueBuilder -> IO DuckDBV2ValueHandle) -> FieldBinding
 temporalValueBinding display source value makeDefault =
-  targetValueBinding display \cache readTarget -> do
+  targetValueBinding display \builder readTarget -> do
     target <- readTarget
     let precise = timestampTypeForTarget target source
     if precise == source
-      then makeDefault cache
-      else fieldValueWithTypeDuckValue (cachedTypeFromRep cache) precise (valueWithTypeMetadata precise value)
+      then makeDefault builder
+      else fieldValueWithTypeDuckValue builder precise (valueWithTypeMetadata precise value)
 
 -- | Read the element type of a prepared LIST or ARRAY parameter.
 collectionChildType :: Maybe LogicalTypeRep -> Maybe LogicalTypeRep
@@ -143,8 +155,8 @@ collectionChildType _ = Nothing
 -- | Promote only UTC leaves that correspond to nanosecond parameter leaves.
 timestampTypeForTarget :: Maybe LogicalTypeRep -> LogicalTypeRep -> LogicalTypeRep
 timestampTypeForTarget target source = case (target, source) of
-  (Just (LogicalTypeScalar DuckDBTypeTimestampTzNs), LogicalTypeScalar DuckDBTypeTimestampTz) ->
-    LogicalTypeScalar DuckDBTypeTimestampTzNs
+  (Just (LogicalTypeScalar LogicalTypeIdTimestampTzNs), LogicalTypeScalar LogicalTypeIdTimestampTz) ->
+    LogicalTypeScalar LogicalTypeIdTimestampTzNs
   (_, LogicalTypeList child) ->
     maybe source (\expected -> LogicalTypeList (timestampTypeForTarget (Just expected) child)) (collectionChildType target)
   (_, LogicalTypeArray child size) ->
@@ -154,12 +166,17 @@ timestampTypeForTarget target source = case (target, source) of
   (Just (LogicalTypeStruct targetFields), LogicalTypeStruct fields) ->
     let sourceFields = elems fields
         targets = [(identifier name, rep) | StructField name rep <- elems targetFields]
-        matching
-          | all (Text.null . structFieldName) sourceFields || all (Text.null . structFieldName) (elems targetFields) =
-              map (Just . structFieldValue) (elems targetFields) <> repeat Nothing
-          | otherwise = [lookup (identifier (structFieldName field)) targets | field <- sourceFields]
+        matching = [lookup (identifier (structFieldName field)) targets | field <- sourceFields]
         updated = zipWith (\field expected -> field{structFieldValue = timestampTypeForTarget expected (structFieldValue field)}) sourceFields matching
     in  LogicalTypeStruct (listArray (bounds fields) updated)
+  (Just (LogicalTypeTuple targetFields), LogicalTypeStruct fields) ->
+    let matching = map Just (elems targetFields) <> repeat Nothing
+        updated = zipWith (\field expected -> field{structFieldValue = timestampTypeForTarget expected (structFieldValue field)}) (elems fields) matching
+    in  LogicalTypeStruct (listArray (bounds fields) updated)
+  (Just (LogicalTypeTuple targetFields), LogicalTypeTuple fields) ->
+    positionalTuple (elems targetFields) fields
+  (Just (LogicalTypeStruct targetFields), LogicalTypeTuple fields) ->
+    positionalTuple (map structFieldValue (elems targetFields)) fields
   (Just (LogicalTypeUnion targetMembers), LogicalTypeUnion members) ->
     let targets = [(identifier name, rep) | UnionMemberType name rep <- elems targetMembers]
     in  LogicalTypeUnion
@@ -170,7 +187,8 @@ timestampTypeForTarget target source = case (target, source) of
   _ -> source
   where
     -- DuckDB compares identifiers without ASCII case.
-    identifier = Text.map (\char -> if char >= 'A' && char <= 'Z' then toLower char else char)
+    identifier = foldIdentifier
+    positionalTuple targets fields = LogicalTypeTuple (listArray (bounds fields) (zipWith timestampTypeForTarget (map Just targets <> repeat Nothing) (elems fields)))
 
 -- | Copy adapted type metadata into nested values without changing their payloads.
 valueWithTypeMetadata :: LogicalTypeRep -> FieldValue -> FieldValue
@@ -182,15 +200,16 @@ valueWithTypeMetadata logical value = case (logical, value) of
   (LogicalTypeStruct types, FieldStruct struct) ->
     let sourceFields = elems (structValueFields struct)
         fields = [(structFieldName field, structFieldValue field) | field <- elems types]
-        matching
-          | all (Text.null . structFieldName) sourceFields || all (Text.null . structFieldName) (elems types) =
-              map (Just . structFieldValue) (elems types) <> repeat Nothing
-          | otherwise = [lookup (structFieldName field) fields | field <- sourceFields]
+        matching = [lookup (structFieldName field) fields | field <- sourceFields]
         update field expected = case expected of
           Nothing -> field
           Just rep -> field{structFieldValue = valueWithTypeMetadata rep (structFieldValue field)}
     in  FieldStruct
           struct{structValueTypes = types, structValueFields = listArray (bounds (structValueFields struct)) (zipWith update sourceFields matching)}
+  (LogicalTypeTuple types, FieldTuple tuple) ->
+    let update item expected = maybe item (`valueWithTypeMetadata` item) expected
+        fields = zipWith update (elems (tupleValueFields tuple)) (map Just (elems types) <> repeat Nothing)
+    in  FieldTuple tuple{tupleValueTypes = types, tupleValueFields = listArray (bounds (tupleValueFields tuple)) fields}
   (LogicalTypeUnion members, FieldUnion union) ->
     let payload = case drop (fromIntegral (unionValueIndex union)) (elems members) of
           member : _ -> valueWithTypeMetadata (unionMemberType member) (unionValuePayload union)
@@ -206,18 +225,12 @@ class DuckDBColumnType a where
 duckdbColumnType :: forall a. (DuckDBColumnType a) => Proxy a -> Text
 duckdbColumnType = duckdbColumnTypeFor
 
--- | Apply a @FieldBinding@ to the given statement/index.
+-- | Apply a @FieldBinding@ to the given statement/index. The builder takes its
+-- factory and its CRS types from the type cache of the statement's connection.
 bindFieldBinding :: Statement -> DuckDBIdx -> FieldBinding -> IO ()
 bindFieldBinding stmt idx FieldBinding{fieldBindingValue} =
-  withTypeCache (statementConnection stmt) \cache ->
-    bindDuckValue stmt idx (fieldBindingValue cache (preparedParameterType stmt idx))
-
--- | Read the logical type of a prepared parameter.
-preparedParameterType :: Statement -> DuckDBIdx -> IO (Maybe LogicalTypeRep)
-preparedParameterType stmt idx =
-  withStatementHandle stmt \handle ->
-    bracket (c_duckdb_param_logical_type handle idx) destroyLogicalType \logical ->
-      if logical == DuckDBLogicalType nullPtr then pure Nothing else Just <$> logicalTypeToRep logical
+  withTypeCache (statementConnection stmt) \cache -> withConnectionFactory (typeCacheConnection cache) \factory ->
+    bindDuckValue stmt idx (fieldBindingValue (ValueBuilder factory (cachedLogicalType cache)) (preparedParameterType stmt idx))
 
 -- | Render a bound parameter for error reporting.
 renderFieldBinding :: FieldBinding -> String
@@ -227,7 +240,7 @@ renderFieldBinding FieldBinding{fieldBindingDisplay} = fieldBindingDisplay
 class ToField a where
   toField :: a -> FieldBinding
   default toField :: (Show a, ToDuckValue a) => a -> FieldBinding
-  toField value = valueBinding (show value) (toDuckValue value)
+  toField value = valueBinding (show value) (\factory -> toDuckValue factory value)
 
 instance ToField Null where
   toField Null = nullBinding "NULL"
@@ -282,16 +295,15 @@ instance ToField G.Geometry
 -- | Bind the payload as a VARIANT with the type cache of the connection.
 instance ToField Variant where
   toField value =
-    cacheValueBinding (show value) \cache ->
-      variantDuckValue (cachedTypeFromRep cache) (variantPayload value)
+    builderValueBinding (show value) \builder -> variantDuckValue builder (variantPayload value)
 
 instance ToField UTCTime where
   toField value =
     temporalValueBinding
       (show value)
-      (LogicalTypeScalar DuckDBTypeTimestampTz)
+      (LogicalTypeScalar LogicalTypeIdTimestampTz)
       (FieldTimestampTZ (Finite value))
-      (const (utcTimeDuckValue value))
+      (\builder -> utcTimeDuckValue (builderFactory builder) value)
 
 instance ToField (Unbounded Day)
 
@@ -299,21 +311,27 @@ instance ToField (Unbounded LocalTime)
 
 instance ToField (Unbounded UTCTime) where
   toField value =
-    temporalValueBinding (show value) (LogicalTypeScalar DuckDBTypeTimestampTz) (FieldTimestampTZ value) (const (utcTimestampDuckValue value))
+    temporalValueBinding
+      (show value)
+      (LogicalTypeScalar LogicalTypeIdTimestampTz)
+      (FieldTimestampTZ value)
+      (\builder -> utcTimestampDuckValue (builderFactory builder) value)
 
 instance ToField BigNum where
-  toField big@(BigNum n) = valueBinding (show n) (bigNumDuckValue big)
+  toField big@(BigNum n) = valueBinding (show n) (\factory -> bigNumDuckValue factory big)
 
 instance ToField (StructValue FieldValue) where
   toField structVal =
-    temporalValueBinding "<struct>" (structValueTypeRep structVal) (FieldStruct structVal) \cache ->
-      structValueDuckValue (cachedTypeFromRep cache) structVal
+    temporalValueBinding "<struct>" (structValueTypeRep structVal) (FieldStruct structVal) (`structValueDuckValue` structVal)
+
+instance ToField (TupleValue FieldValue) where
+  toField tuple =
+    temporalValueBinding "<tuple>" (tupleValueTypeRep tuple) (FieldTuple tuple) (`tupleValueDuckValue` tuple)
 
 instance ToField (UnionValue FieldValue) where
   toField unionVal =
     let label = Text.unpack (unionValueLabel unionVal)
-    in  temporalValueBinding ("<union " <> label <> ">") (unionValueTypeRep unionVal) (FieldUnion unionVal) \cache ->
-          unionValueDuckValue (cachedTypeFromRep cache) unionVal
+    in  temporalValueBinding ("<union " <> label <> ">") (unionValueTypeRep unionVal) (FieldUnion unionVal) (`unionValueDuckValue` unionVal)
 
 instance DuckDBColumnType BitString where
   duckdbColumnTypeFor _ = "BIT"
@@ -322,16 +340,16 @@ instance ToField BS.ByteString where
   toField bs =
     valueBinding
       ("<blob length=" <> show (BS.length bs) <> ">")
-      (toDuckValue bs)
+      (\factory -> toDuckValue factory bs)
 
 instance (DuckDBColumnType a, ToField a) => ToField (Array Int a) where
   toField arr =
     targetValueBinding
       ("<array length=" <> show (length (elems arr)) <> ">")
-      \cache readTarget -> do
+      \builder readTarget -> do
         target <- readTarget
         let childTarget = collectionChildType target
-        arrayDuckValue (cachedTypeFromRep cache) childTarget (\value -> fieldBindingValue (toField value) cache (pure childTarget)) arr
+        arrayDuckValue builder childTarget (\value -> fieldBindingValue (toField value) builder (pure childTarget)) arr
 
 instance (ToField a) => ToField (Maybe a) where
   toField Nothing = nullBinding "Nothing"
@@ -434,6 +452,9 @@ instance DuckDBColumnType (Unbounded UTCTime) where
 instance DuckDBColumnType (StructValue FieldValue) where
   duckdbColumnTypeFor _ = "STRUCT"
 
+instance DuckDBColumnType (TupleValue FieldValue) where
+  duckdbColumnTypeFor _ = "TUPLE"
+
 instance DuckDBColumnType (UnionValue FieldValue) where
   duckdbColumnTypeFor _ = "UNION"
 
@@ -446,412 +467,405 @@ instance (DuckDBColumnType a) => DuckDBColumnType (Array Int a) where
 nullBinding :: String -> FieldBinding
 nullBinding repr = valueBinding repr nullDuckValue
 
-nullDuckValue :: IO DuckDBValue
-nullDuckValue = c_duckdb_create_null_value
+nullDuckValue :: DuckDBV2FactoryHandle -> IO DuckDBV2ValueHandle
+nullDuckValue factory =
+  bracket
+    (logicalTypeFromRep factory (LogicalTypeScalar LogicalTypeIdSQLNull))
+    destroyLogicalType
+    (\logical -> output (c_duckdb_v2_value_create_null factory logical))
 
-boolDuckValue :: Bool -> IO DuckDBValue
-boolDuckValue value = c_duckdb_create_bool (if value then 1 else 0)
+boolDuckValue :: DuckDBV2FactoryHandle -> Bool -> IO DuckDBV2ValueHandle
+boolDuckValue factory value = output (c_duckdb_v2_value_create_bool factory (if value then 1 else 0))
 
-int8DuckValue :: Int8 -> IO DuckDBValue
-int8DuckValue = c_duckdb_create_int8
+int8DuckValue :: DuckDBV2FactoryHandle -> Int8 -> IO DuckDBV2ValueHandle
+int8DuckValue factory value = output (c_duckdb_v2_value_create_tinyint factory value)
 
-int16DuckValue :: Int16 -> IO DuckDBValue
-int16DuckValue = c_duckdb_create_int16
+int16DuckValue :: DuckDBV2FactoryHandle -> Int16 -> IO DuckDBV2ValueHandle
+int16DuckValue factory value = output (c_duckdb_v2_value_create_smallint factory value)
 
-int32DuckValue :: Int32 -> IO DuckDBValue
-int32DuckValue = c_duckdb_create_int32
+int32DuckValue :: DuckDBV2FactoryHandle -> Int32 -> IO DuckDBV2ValueHandle
+int32DuckValue factory value = output (c_duckdb_v2_value_create_int factory value)
 
-int64DuckValue :: Int64 -> IO DuckDBValue
-int64DuckValue = c_duckdb_create_int64
+int64DuckValue :: DuckDBV2FactoryHandle -> Int64 -> IO DuckDBV2ValueHandle
+int64DuckValue factory value = output (c_duckdb_v2_value_create_bigint factory value)
 
-uint64DuckValue :: Word64 -> IO DuckDBValue
-uint64DuckValue = c_duckdb_create_uint64
+uint64DuckValue :: DuckDBV2FactoryHandle -> Word64 -> IO DuckDBV2ValueHandle
+uint64DuckValue factory value = output (c_duckdb_v2_value_create_ubigint factory value)
 
-uint32DuckValue :: Word32 -> IO DuckDBValue
-uint32DuckValue = c_duckdb_create_uint32
+uint32DuckValue :: DuckDBV2FactoryHandle -> Word32 -> IO DuckDBV2ValueHandle
+uint32DuckValue factory value = output (c_duckdb_v2_value_create_uint factory value)
 
-uint16DuckValue :: Word16 -> IO DuckDBValue
-uint16DuckValue = c_duckdb_create_uint16
+uint16DuckValue :: DuckDBV2FactoryHandle -> Word16 -> IO DuckDBV2ValueHandle
+uint16DuckValue factory value = output (c_duckdb_v2_value_create_usmallint factory value)
 
-uint8DuckValue :: Word8 -> IO DuckDBValue
-uint8DuckValue = c_duckdb_create_uint8
+uint8DuckValue :: DuckDBV2FactoryHandle -> Word8 -> IO DuckDBV2ValueHandle
+uint8DuckValue factory value = output (c_duckdb_v2_value_create_utinyint factory value)
 
-doubleDuckValue :: Double -> IO DuckDBValue
-doubleDuckValue = c_duckdb_create_double . CDouble
+doubleDuckValue :: DuckDBV2FactoryHandle -> Double -> IO DuckDBV2ValueHandle
+doubleDuckValue factory value = output (c_duckdb_v2_value_create_double factory (CDouble value))
 
-floatDuckValue :: Float -> IO DuckDBValue
-floatDuckValue = c_duckdb_create_float . CFloat
+floatDuckValue :: DuckDBV2FactoryHandle -> Float -> IO DuckDBV2ValueHandle
+floatDuckValue factory value = output (c_duckdb_v2_value_create_float factory (CFloat value))
 
-textDuckValue :: Text -> IO DuckDBValue
-textDuckValue txt =
-  BS.useAsCStringLen (TextEncoding.encodeUtf8 txt) \(ptr, len) ->
-    c_duckdb_create_varchar_length (ConstPtr ptr) (fromIntegral len)
+textDuckValue :: DuckDBV2FactoryHandle -> Text -> IO DuckDBV2ValueHandle
+textDuckValue factory value = withText value (\text -> output (c_duckdb_v2_value_create_varchar factory text))
 
-stringDuckValue :: String -> IO DuckDBValue
-stringDuckValue = textDuckValue . Text.pack
+stringDuckValue :: DuckDBV2FactoryHandle -> String -> IO DuckDBV2ValueHandle
+stringDuckValue factory = textDuckValue factory . Text.pack
 
-blobDuckValue :: BS.ByteString -> IO DuckDBValue
-blobDuckValue bs =
-  BS.useAsCStringLen bs \(ptr, len) ->
-    c_duckdb_create_blob (ConstPtr (castPtr ptr :: Ptr Word8)) (fromIntegral len)
+blobDuckValue :: DuckDBV2FactoryHandle -> BS.ByteString -> IO DuckDBV2ValueHandle
+blobDuckValue factory value = withBytes value (\bytes -> output (c_duckdb_v2_value_create_blob factory bytes))
 
-uuidDuckValue :: UUID.UUID -> IO DuckDBValue
-uuidDuckValue uuid =
+uuidDuckValue :: DuckDBV2FactoryHandle -> UUID.UUID -> IO DuckDBV2ValueHandle
+uuidDuckValue factory uuid =
   let (upper, lower) = UUID.toWords64 uuid
-  in  c_duckdb_create_uuid (DuckDBUHugeInt lower upper)
+      value = DuckDBV2HugeintT lower (fromIntegral (upper `xor` 0x8000000000000000))
+  in  with value (\ptr -> output (c_duckdb_v2_value_create_uuid factory (ConstPtr ptr)))
 
-bitDuckValue :: BitString -> IO DuckDBValue
-bitDuckValue (BitString padding bits) = do
+bitDuckValue :: DuckDBV2FactoryHandle -> BitString -> IO DuckDBV2ValueHandle
+bitDuckValue factory (BitString padding bits) = do
   when (BS.null bits || padding > 7) $
     throwIO (userError "duckdb-simple: BIT requires nonempty data and padding from 0 to 7")
   let nativePadding = complement ((1 `shiftL` (8 - fromIntegral padding)) - 1) :: Word8
       payload = BS.cons padding (BS.cons (BS.head bits .|. nativePadding) (BS.tail bits))
-  BS.useAsCStringLen payload \(rawPtr, len) ->
-    c_duckdb_create_bit (DuckDBBit (castPtr rawPtr) (fromIntegral len))
+  withBytes payload (\bytes -> output (c_duckdb_v2_value_create_bit factory bytes))
 
-bigNumDuckValue :: BigNum -> IO DuckDBValue
-bigNumDuckValue (BigNum big) =
-  let neg = fromBool (big < 0)
-      payload =
-        BS.pack $
-          if big < 0
-            then map complement (drop 3 $ toBigNumBytes big)
-            else drop 3 $ toBigNumBytes big
-  in  if BS.null payload
-        then c_duckdb_create_bignum (DuckDBBignum nullPtr 0 neg)
-        else BS.useAsCStringLen payload \(rawPtr, len) ->
-          c_duckdb_create_bignum (DuckDBBignum (castPtr rawPtr) (fromIntegral len) neg)
+bigNumDuckValue :: DuckDBV2FactoryHandle -> BigNum -> IO DuckDBV2ValueHandle
+bigNumDuckValue factory (BigNum value) =
+  withBigEndianMagnitude (abs value) \raw len -> alloca \lengthSlot -> do
+    let encode ptr capacity = checked (c_duckdb_v2_bignum_encode (ConstPtr (castPtr raw)) (fromIntegral len) (fromBool (value < 0)) ptr capacity lengthSlot)
+    encode nullPtr 0
+    size <- peek lengthSlot
+    allocaBytes (fromIntegral size) \storage -> do
+      encode storage size
+      payload <- BS.packCStringLen (castPtr storage, fromIntegral size)
+      withBytes payload (\encoded -> output (c_duckdb_v2_value_create_bignum factory encoded))
 
-dayDuckValue :: Day -> IO DuckDBValue
-dayDuckValue day = do
-  duckDate <- encodeDay day
-  c_duckdb_create_date duckDate
+-- | Write the unsigned big-endian magnitude of a non-negative number into a
+-- buffer in linear time, and give the buffer and its length to the action. The
+-- magnitude has no leading zero byte. Zero is one zero byte.
+withBigEndianMagnitude :: Integer -> (Ptr Word8 -> Int -> IO a) -> IO a
+withBigEndianMagnitude 0 action = with 0 \buffer -> action buffer 1
+withBigEndianMagnitude magnitude action = allocaBytes size \buffer@(Ptr addr) -> integerToAddr magnitude addr 1# >> action buffer size
+  where
+    size = fromIntegral (integerLog2 magnitude `quot` 8) + 1
 
-timeOfDayDuckValue :: TimeOfDay -> IO DuckDBValue
-timeOfDayDuckValue tod = do
-  duckTime <- encodeTimeOfDay tod
-  c_duckdb_create_time duckTime
+dayDuckValue :: DuckDBV2FactoryHandle -> Day -> IO DuckDBV2ValueHandle
+dayDuckValue factory value = encodeDay value >>= (\encoded -> output (c_duckdb_v2_value_create_date factory encoded))
 
-localTimeDuckValue :: LocalTime -> IO DuckDBValue
-localTimeDuckValue ts = do
-  duckTimestamp <- encodeLocalTime ts
-  c_duckdb_create_timestamp duckTimestamp
+timeOfDayDuckValue :: DuckDBV2FactoryHandle -> TimeOfDay -> IO DuckDBV2ValueHandle
+timeOfDayDuckValue factory value = encodeTimeOfDay value >>= (\encoded -> output (c_duckdb_v2_value_create_time factory encoded))
 
-utcTimeDuckValue :: UTCTime -> IO DuckDBValue
-utcTimeDuckValue utcTime =
-  encodeLocalTime (utcToLocalTime utc utcTime) >>= c_duckdb_create_timestamp_tz
+localTimeDuckValue :: DuckDBV2FactoryHandle -> LocalTime -> IO DuckDBV2ValueHandle
+localTimeDuckValue factory value = encodeLocalTime value >>= (\encoded -> output (c_duckdb_v2_value_create_timestamp factory encoded))
 
--- | Bind a date, including either infinity sentinel.
-dateDuckValue :: Date -> IO DuckDBValue
-dateDuckValue value =
-  encodeUnbounded (fmap (\(DuckDBDate days) -> days) . encodeDay) value >>= c_duckdb_create_date . DuckDBDate
+utcTimeDuckValue :: DuckDBV2FactoryHandle -> UTCTime -> IO DuckDBV2ValueHandle
+utcTimeDuckValue factory = utcTimestampDuckValue factory . Finite
 
--- | Bind a timestamp without a time zone, including infinity.
-localTimestampDuckValue :: LocalTimestamp -> IO DuckDBValue
-localTimestampDuckValue value =
-  encodeUnbounded (encodeTimestampUnits 1000000) value >>= c_duckdb_create_timestamp . DuckDBTimestamp
+dateDuckValue :: DuckDBV2FactoryHandle -> Date -> IO DuckDBV2ValueHandle
+dateDuckValue factory value = encodeUnbounded encodeDay value >>= (\encoded -> output (c_duckdb_v2_value_create_date factory encoded))
 
--- | Bind a timestamp with a time zone, including infinity.
-utcTimestampDuckValue :: UTCTimestamp -> IO DuckDBValue
-utcTimestampDuckValue value =
-  encodeUnbounded (encodeTimestampUnits 1000000 . utcToLocalTime utc) value >>= c_duckdb_create_timestamp_tz . DuckDBTimestamp
+localTimestampDuckValue :: DuckDBV2FactoryHandle -> LocalTimestamp -> IO DuckDBV2ValueHandle
+localTimestampDuckValue factory value = encodeUnbounded (encodeTimestampUnits 1000000) value >>= (\encoded -> output (c_duckdb_v2_value_create_timestamp factory encoded))
 
--- | Build an array value with a function for each element. A scalar element
--- type comes from the column type name of the element, so an empty array keeps
--- it. Other element types, such as STRUCT, UNION, and ARRAY, come from the
--- first element that is not NULL. All present elements must have the same type.
+utcTimestampDuckValue :: DuckDBV2FactoryHandle -> UTCTimestamp -> IO DuckDBV2ValueHandle
+utcTimestampDuckValue factory value =
+  encodeUnbounded (encodeTimestampUnits 1000000 . utcToLocalTime utc) value
+    >>= (\encoded -> output (c_duckdb_v2_value_create_timestamp_tz factory encoded))
+
+-- | Construct an ARRAY value. An empty array raises 'SQLError'.
 arrayDuckValue
   :: forall a
    . (DuckDBColumnType a)
-  => (LogicalTypeRep -> IO DuckDBLogicalType)
+  => ValueBuilder
   -> Maybe LogicalTypeRep
-  -> (a -> IO DuckDBValue)
+  -> (a -> IO DuckDBV2ValueHandle)
   -> Array Int a
-  -> IO DuckDBValue
-arrayDuckValue typeFromRep target elementValue arr =
-  withCreatedValues (map elementValue (elems arr)) \values ->
+  -> IO DuckDBV2ValueHandle
+arrayDuckValue ValueBuilder{builderFactory = factory, builderType = makeType} target elementValue array = do
+  when (null (elems array)) $
+    throwIO
+      (SQLError "duckdb-simple: empty ARRAY parameters are unavailable in DuckDB's V2 API; use an explicit SQL empty LIST" Nothing Nothing)
+  withCreatedValues (map elementValue (elems array)) \values ->
     withElementType values \elementType ->
-      withDuckValues values \ptr ->
-        checkedValue (c_duckdb_create_array_value elementType ptr (fromIntegral (length values)))
+      withArray values \ptr ->
+        output (c_duckdb_v2_value_create_array factory elementType (ConstPtr ptr) (fromIntegral (length values)))
   where
     typeName = duckdbColumnType (Proxy :: Proxy a)
-    withElementType values action =
-      case duckDBTypeFromName typeName of
-        Just dtype -> bracket (typeFromRep (timestampTypeForTarget target (LogicalTypeScalar dtype))) destroyLogicalType action
-        Nothing -> do
-          present <- filterM (fmap (== 0) . c_duckdb_is_null_value) values
-          case present of
-            -- The value owns this type.
-            value : rest -> do
-              logical <- c_duckdb_get_value_type value
-              expected <- logicalTypeToRep logical
-              forM_ rest \element -> do
-                actual <- c_duckdb_get_value_type element >>= logicalTypeToRep
-                when (actual /= expected) $
-                  throwIO (userError "duckdb-simple: array elements have different logical types")
-              action logical
-            [] ->
-              throwIO
-                SQLError
-                  { sqlErrorMessage = "duckdb-simple: an empty or all-NULL array of " <> typeName <> " elements has no element type"
-                  , sqlErrorType = Nothing
-                  , sqlErrorQuery = Nothing
-                  }
+    withElementType values action = case duckDBTypeFromName typeName of
+      Just dtype -> bracket (makeType (timestampTypeForTarget target (LogicalTypeScalar dtype))) destroyLogicalType action
+      Nothing -> do
+        -- Keep the values that are not NULL, in list order. The fold keeps a
+        -- constant stack.
+        let keep kept value = output (c_duckdb_v2_value_is_null value) >>= \flag -> if flag == 0 then pure (value : kept) else pure kept
+        present <- reverse <$> foldM keep [] values
+        case present of
+          value : rest -> bracket (output (c_duckdb_v2_value_get_logical_type value)) destroyLogicalType \logical -> do
+            expected <- logicalTypeToRep logical
+            forM_ rest \element -> do
+              actual <- bracket (output (c_duckdb_v2_value_get_logical_type element)) destroyLogicalType logicalTypeToRep
+              when (actual /= expected) $ throwIO (userError "duckdb-simple: array elements have different logical types")
+            action logical
+          [] ->
+            throwIO
+              SQLError
+                { sqlErrorMessage = "duckdb-simple: an empty or all-NULL array of " <> typeName <> " elements has no element type"
+                , sqlErrorType = Nothing
+                , sqlErrorQuery = Nothing
+                }
 
-structValueDuckValue :: (LogicalTypeRep -> IO DuckDBLogicalType) -> StructValue FieldValue -> IO DuckDBValue
-structValueDuckValue typeFromRep StructValue{structValueFields, structValueTypes, structValueIndex = _} = do
-  let valueFields = elems structValueFields
-      typeFields = elems structValueTypes
-      typeNames = map structFieldName typeFields
-      valueNames = map structFieldName valueFields
-  when (length valueFields /= length typeFields) $
-    throwIO (userError "duckdb-simple: struct value/type arity mismatch")
-  when (typeNames /= valueNames) $
-    throwIO (userError "duckdb-simple: struct value/type field names mismatch")
-  let actions =
-        zipWith
-          ( \StructField{structFieldValue = typeRep} StructField{structFieldValue = fieldVal} ->
-              fieldValueWithTypeDuckValue typeFromRep typeRep fieldVal
+-- | Construct named fields. The native call copies the field values.
+structValueDuckValue
+  :: ValueBuilder -> StructValue FieldValue -> IO DuckDBV2ValueHandle
+structValueDuckValue builder@ValueBuilder{builderFactory = factory} StructValue{structValueFields, structValueTypes} = do
+  let fields = elems structValueFields
+      types = elems structValueTypes
+      names = map structFieldName fields
+  when (names /= map structFieldName types) $
+    throwIO (userError "duckdb-simple: struct value/type fields mismatch")
+  withCreatedValues
+    (zipWith (\field logical -> fieldValueWithTypeDuckValue builder (structFieldValue logical) (structFieldValue field)) fields types)
+    \values ->
+      withIdentifiers names \namePtr -> withArray values \valuePtr ->
+        declaredCompositeValue builder (LogicalTypeStruct structValueTypes) $
+          output (c_duckdb_v2_value_create_struct factory (ConstPtr namePtr) (ConstPtr valuePtr) (fromIntegral (length values)))
+
+-- | Construct positional fields without inferring a TUPLE from field names.
+tupleValueDuckValue
+  :: ValueBuilder -> TupleValue FieldValue -> IO DuckDBV2ValueHandle
+tupleValueDuckValue builder@ValueBuilder{builderFactory = factory} TupleValue{tupleValueFields, tupleValueTypes} = do
+  let fields = elems tupleValueFields
+      types = elems tupleValueTypes
+  when (length fields /= length types) $
+    throwIO (userError "duckdb-simple: tuple value/type fields mismatch")
+  withCreatedValues (zipWith (fieldValueWithTypeDuckValue builder) types fields) \values ->
+    withArray values \valuePtr ->
+      declaredCompositeValue builder (LogicalTypeTuple tupleValueTypes) $
+        output (c_duckdb_v2_value_create_tuple factory (ConstPtr valuePtr) (fromIntegral (length values)))
+
+-- | Preserve declared field types through an owned vector. Scalar VARCHAR
+-- values do not retain collations, but their enclosing composite type does.
+declaredCompositeValue
+  :: ValueBuilder
+  -> LogicalTypeRep
+  -> IO DuckDBV2ValueHandle
+  -> IO DuckDBV2ValueHandle
+declaredCompositeValue _ rep create | not (hasCollation rep) = create
+declaredCompositeValue ValueBuilder{builderFactory = factory, builderType = makeType} rep create = bracket create destroyValue \value ->
+  bracket (makeType rep) destroyLogicalType \logical -> withOwnedVector factory logical \vector -> do
+    checked (c_duckdb_v2_vector_set_size vector 1)
+    checked (c_duckdb_v2_vector_set_value vector 0 value)
+    output (c_duckdb_v2_vector_get_value vector 0)
+
+-- | Test whether a type tree contains a VARCHAR collation.
+hasCollation :: LogicalTypeRep -> Bool
+hasCollation rep = case rep of
+  LogicalTypeCollatedVarchar _ -> True
+  LogicalTypeList child -> hasCollation child
+  LogicalTypeArray child _ -> hasCollation child
+  LogicalTypeMap key value -> hasCollation key || hasCollation value
+  LogicalTypeStruct fields -> any (hasCollation . structFieldValue) (elems fields)
+  LogicalTypeTuple fields -> any hasCollation (elems fields)
+  LogicalTypeUnion members -> any (hasCollation . unionMemberType) (elems members)
+  _ -> False
+
+-- | Build one UNION row through its public tag and member vectors. V2 has no
+-- constructor for a UNION value. A cast of the member value to the UNION type
+-- chooses the member by the type of the value, so it fails when two members have
+-- the same type, as in a generic sum type whose constructors have equal fields.
+-- The vectors keep the tag of the value.
+unionValueDuckValue
+  :: ValueBuilder -> UnionValue FieldValue -> IO DuckDBV2ValueHandle
+unionValueDuckValue builder@ValueBuilder{builderFactory = factory, builderType = makeType} UnionValue{unionValueIndex, unionValueLabel, unionValuePayload, unionValueMembers} = do
+  let members = elems unionValueMembers
+      index = fromIntegral unionValueIndex
+  when (index >= length members) $ throwIO (userError "duckdb-simple: union value tag out of range")
+  let UnionMemberType name rep = members !! index
+  when (name /= unionValueLabel) $ throwIO (userError "duckdb-simple: union tag and member name mismatch")
+  bracket (makeType (LogicalTypeUnion unionValueMembers)) destroyLogicalType \logical ->
+    withOwnedVector factory logical \vector -> do
+      checked (c_duckdb_v2_vector_set_size vector 1)
+      tag <- output (c_duckdb_v2_vector_get_child vector 0)
+      checked (c_duckdb_v2_vector_set_size tag 1)
+      bracket (uint8DuckValue factory (fromIntegral index)) destroyValue \value ->
+        checked (c_duckdb_v2_vector_set_value tag 0 value)
+      forM_ [0 .. length members - 1] \memberIndex -> do
+        member <- output (c_duckdb_v2_vector_get_child vector (fromIntegral memberIndex + 1))
+        checked (c_duckdb_v2_vector_set_size member 1)
+        if memberIndex == index
+          then bracket (fieldValueWithTypeDuckValue builder rep unionValuePayload) destroyValue \value ->
+            checked (c_duckdb_v2_vector_set_value member 0 value)
+          else checked (c_duckdb_v2_vector_set_null member 0)
+      output (c_duckdb_v2_vector_get_value vector 0)
+
+-- | Construct a value with explicit logical metadata, including typed NULL.
+fieldValueWithTypeDuckValue
+  :: ValueBuilder -> LogicalTypeRep -> FieldValue -> IO DuckDBV2ValueHandle
+fieldValueWithTypeDuckValue ValueBuilder{builderFactory = factory, builderType = makeType} rep FieldNull = bracket (makeType rep) destroyLogicalType \logical ->
+  output (c_duckdb_v2_value_create_null factory logical)
+fieldValueWithTypeDuckValue builder@ValueBuilder{builderFactory = factory, builderType = makeType} rep value = case (rep, value) of
+  (LogicalTypeScalar LogicalTypeIdVariant, _) -> variantDuckValue builder value
+  (LogicalTypeScalar dtype, _) -> scalarFieldValueDuckValue factory dtype value
+  (LogicalTypeCollatedVarchar _, FieldText text) -> textDuckValue factory text
+  (LogicalTypeGeometry _, FieldGeometry{}) -> unsupportedRawGeometryBinding
+  (LogicalTypeDecimal width scale, FieldDecimal decimal@DecimalValue{decimalWidth, decimalScale})
+    | width == decimalWidth && scale == decimalScale -> decimalDuckValue factory decimal
+  (LogicalTypeList child, FieldList values) -> sequenceValue c_duckdb_v2_value_create_list child values
+  (LogicalTypeArray child size, FieldArray array)
+    | fromIntegral (length (elems array)) == size -> sequenceValue c_duckdb_v2_value_create_array child (elems array)
+  (LogicalTypeMap keyRep valueRep, FieldMap pairs) ->
+    bracket (makeType keyRep) destroyLogicalType \keyType ->
+      bracket (makeType valueRep) destroyLogicalType \valueType ->
+        withCreatedValues (map (fieldValueWithTypeDuckValue builder keyRep . fst) pairs) \keys ->
+          withCreatedValues (map (fieldValueWithTypeDuckValue builder valueRep . snd) pairs) \values ->
+            withArray keys \keyPtr -> withArray values \valuePtr ->
+              output (c_duckdb_v2_value_create_map factory keyType valueType (ConstPtr keyPtr) (ConstPtr valuePtr) (fromIntegral (length pairs)))
+  (LogicalTypeStruct _, FieldStruct struct)
+    | rep == structValueTypeRep struct -> structValueDuckValue builder struct
+  (LogicalTypeTuple _, FieldTuple tuple)
+    | rep == tupleValueTypeRep tuple -> tupleValueDuckValue builder tuple
+  (LogicalTypeUnion _, FieldUnion union)
+    | rep == unionValueTypeRep union -> unionValueDuckValue builder union
+  (LogicalTypeEnum entries, FieldEnum index) -> enumDuckValue factory entries index
+  _ -> typeMismatch (show rep) value
+  where
+    sequenceValue create child values = bracket (makeType child) destroyLogicalType \logical ->
+      withCreatedValues (map (fieldValueWithTypeDuckValue builder child) values) \native -> withArray native \ptr ->
+        output (create factory logical (ConstPtr ptr) (fromIntegral (length native)))
+
+scalarFieldValueDuckValue :: DuckDBV2FactoryHandle -> LogicalTypeId -> FieldValue -> IO DuckDBV2ValueHandle
+scalarFieldValueDuckValue factory dtype value = case (dtype, value) of
+  (LogicalTypeIdBoolean, FieldBool b) -> boolDuckValue factory b
+  (LogicalTypeIdTinyInt, FieldInt8 i) -> int8DuckValue factory i
+  (LogicalTypeIdSmallInt, FieldInt16 i) -> int16DuckValue factory i
+  (LogicalTypeIdInteger, FieldInt32 i) -> int32DuckValue factory i
+  (LogicalTypeIdBigInt, FieldInt64 i) -> int64DuckValue factory i
+  (LogicalTypeIdUTinyInt, FieldWord8 w) -> uint8DuckValue factory w
+  (LogicalTypeIdUSmallInt, FieldWord16 w) -> uint16DuckValue factory w
+  (LogicalTypeIdUInteger, FieldWord32 w) -> uint32DuckValue factory w
+  (LogicalTypeIdUBigInt, FieldWord64 w) -> uint64DuckValue factory w
+  (LogicalTypeIdFloat, FieldFloat f) -> floatDuckValue factory f
+  (LogicalTypeIdDouble, FieldDouble d) -> doubleDuckValue factory d
+  (LogicalTypeIdVarchar, FieldText t) -> textDuckValue factory t
+  (LogicalTypeIdBlob, FieldBlob b) -> blobDuckValue factory b
+  (LogicalTypeIdGeometry, FieldGeometry{}) -> unsupportedRawGeometryBinding
+  (LogicalTypeIdUUID, FieldUUID u) -> uuidDuckValue factory u
+  (LogicalTypeIdBit, FieldBit bits) -> bitDuckValue factory bits
+  (LogicalTypeIdDate, FieldDate d) -> dateDuckValue factory d
+  (LogicalTypeIdTime, FieldTime t) -> timeOfDayDuckValue factory t
+  (LogicalTypeIdTimeNs, FieldTime t) ->
+    timeOfDayUnits 1000000000 t >>= (\encoded -> output (c_duckdb_v2_value_create_time_ns factory encoded)) . fromInteger
+  (LogicalTypeIdTimeTz, FieldTimeTZ tz) -> timeWithZoneDuckValue factory tz
+  (LogicalTypeIdTimestamp, FieldTimestamp ts) -> localTimestampDuckValue factory ts
+  (LogicalTypeIdTimestampSec, FieldTimestamp ts) ->
+    encodeUnbounded (encodeTimestampUnits 1) ts >>= (\encoded -> output (c_duckdb_v2_value_create_timestamp_sec factory encoded))
+  (LogicalTypeIdTimestampMs, FieldTimestamp ts) ->
+    encodeUnbounded (encodeTimestampUnits 1000) ts >>= (\encoded -> output (c_duckdb_v2_value_create_timestamp_ms factory encoded))
+  (LogicalTypeIdTimestampNs, FieldTimestamp ts) ->
+    encodeUnbounded (encodeTimestampUnits 1000000000) ts >>= (\encoded -> output (c_duckdb_v2_value_create_timestamp_ns factory encoded))
+  (LogicalTypeIdTimestampTz, FieldTimestampTZ ts) -> utcTimestampDuckValue factory ts
+  (LogicalTypeIdTimestampTzNs, FieldTimestampTZ ts) -> utcTimestampNsDuckValue factory ts
+  (LogicalTypeIdInterval, FieldInterval iv) -> intervalDuckValue factory iv
+  (LogicalTypeIdHugeInt, FieldHugeInt i) -> hugeIntDuckValue factory i
+  (LogicalTypeIdUHugeInt, FieldUHugeInt i) -> uhugeIntDuckValue factory i
+  (LogicalTypeIdBigNum, FieldBigNum big) -> bigNumDuckValue factory big
+  (LogicalTypeIdSQLNull, _) -> nullDuckValue factory
+  _ ->
+    throwIO
+      ( userError
+          ( "duckdb-simple: unsupported scalar conversion for "
+              <> show dtype
+              <> " from "
+              <> show value
           )
-          typeFields
-          valueFields
-  bracket (typeFromRep (LogicalTypeStruct structValueTypes)) destroyLogicalType \structLogical ->
-    withCreatedValues actions \childValues ->
-      withDuckValues childValues $ \ptr ->
-        checkedValue (c_duckdb_create_struct_value structLogical ptr)
+      )
 
-unionValueDuckValue :: (LogicalTypeRep -> IO DuckDBLogicalType) -> UnionValue FieldValue -> IO DuckDBValue
-unionValueDuckValue typeFromRep UnionValue{unionValueIndex, unionValueLabel, unionValuePayload, unionValueMembers} = do
-  let membersList = elems unionValueMembers
-      idx = fromIntegral unionValueIndex :: Int
-      memberCount = length membersList
-  when (idx < 0 || idx >= memberCount) $
-    throwIO (userError "duckdb-simple: union value tag out of range")
-  let UnionMemberType{unionMemberName, unionMemberType = memberType} = membersList !! idx
-  when (unionValueLabel /= unionMemberName) $
-    throwIO (userError "duckdb-simple: union tag and member name mismatch")
-  bracket (typeFromRep (LogicalTypeUnion unionValueMembers)) destroyLogicalType \unionLogical ->
-    bracket (checkedValue (fieldValueWithTypeDuckValue typeFromRep memberType unionValuePayload)) destroyValue \payloadValue ->
-      checkedValue (c_duckdb_create_union_value unionLogical (fromIntegral unionValueIndex) payloadValue)
+enumDuckValue :: DuckDBV2FactoryHandle -> Array Int Text -> Word32 -> IO DuckDBV2ValueHandle
+enumDuckValue factory entries index = do
+  let dictionary = elems entries
+  when (toInteger index >= toInteger (length dictionary)) $ throwIO (userError "duckdb-simple: ENUM index out of range")
+  bracket (logicalTypeFromRep factory (LogicalTypeEnum entries)) destroyLogicalType \logical ->
+    bracket (textDuckValue factory (dictionary !! fromIntegral index)) destroyValue \value ->
+      output (c_duckdb_v2_value_cast factory value logical)
 
-fieldValueWithTypeDuckValue :: (LogicalTypeRep -> IO DuckDBLogicalType) -> LogicalTypeRep -> FieldValue -> IO DuckDBValue
-fieldValueWithTypeDuckValue typeFromRep typeRep FieldNull =
-  bracket (typeFromRep typeRep) destroyLogicalType \logical ->
-    withCreatedValues [nullDuckValue] \values ->
-      withDuckValues values \ptr ->
-        bracket (checkedValue (c_duckdb_create_list_value logical ptr 1)) destroyValue \list ->
-          checkedValue (c_duckdb_get_list_child list 0)
-fieldValueWithTypeDuckValue typeFromRep rep value =
-  case rep of
-    LogicalTypeScalar DuckDBTypeVariant -> variantDuckValue typeFromRep value
-    LogicalTypeScalar dtype -> scalarFieldValueDuckValue dtype value
-    LogicalTypeGeometry _ ->
-      case value of
-        FieldGeometry{} -> unsupportedRawGeometryBinding
-        other -> typeMismatch "GEOMETRY" other
-    LogicalTypeDecimal width scale ->
-      case value of
-        FieldDecimal decVal@DecimalValue{decimalWidth, decimalScale}
-          | decimalWidth == width && decimalScale == scale -> decimalDuckValue decVal
-          | otherwise -> throwIO (userError "duckdb-simple: decimal value metadata mismatch")
-        other -> typeMismatch "DECIMAL" other
-    LogicalTypeList elemRep ->
-      case value of
-        FieldList elemsList ->
-          bracket (typeFromRep elemRep) destroyLogicalType \childLogical ->
-            withCreatedValues (map (fieldValueWithTypeDuckValue typeFromRep elemRep) elemsList) \values ->
-              withDuckValues values \ptr ->
-                checkedValue (c_duckdb_create_list_value childLogical ptr (fromIntegral (length values)))
-        other -> typeMismatch "LIST" other
-    LogicalTypeArray elemRep size ->
-      case value of
-        FieldArray arr -> do
-          let elemsList = elems arr
-              actualCount = length elemsList
-          when (fromIntegral actualCount /= size) $
-            throwIO (userError "duckdb-simple: array length mismatch")
-          bracket (typeFromRep elemRep) destroyLogicalType \childLogical ->
-            withCreatedValues (map (fieldValueWithTypeDuckValue typeFromRep elemRep) elemsList) \values ->
-              withDuckValues values \ptr ->
-                checkedValue (c_duckdb_create_array_value childLogical ptr (fromIntegral actualCount))
-        other -> typeMismatch "ARRAY" other
-    LogicalTypeMap keyRep valueRep ->
-      case value of
-        FieldMap pairs ->
-          bracket (typeFromRep (LogicalTypeMap keyRep valueRep)) destroyLogicalType \mapLogical ->
-            withCreatedValues (map (fieldValueWithTypeDuckValue typeFromRep keyRep . fst) pairs) \keyValues ->
-              withCreatedValues (map (fieldValueWithTypeDuckValue typeFromRep valueRep . snd) pairs) \valValues ->
-                withDuckValues keyValues \keyPtr ->
-                  withDuckValues valValues \valPtr ->
-                    checkedValue (c_duckdb_create_map_value mapLogical keyPtr valPtr (fromIntegral (length pairs)))
-        other -> typeMismatch "MAP" other
-    LogicalTypeStruct structRep ->
-      case value of
-        FieldStruct structVal
-          | structValueTypeRep structVal == LogicalTypeStruct structRep -> structValueDuckValue typeFromRep structVal
-          | otherwise -> throwIO (userError "duckdb-simple: struct value type mismatch")
-        other -> typeMismatch "STRUCT" other
-    LogicalTypeUnion unionRep ->
-      case value of
-        FieldUnion unionVal
-          | unionValueTypeRep unionVal == LogicalTypeUnion unionRep -> unionValueDuckValue typeFromRep unionVal
-          | otherwise -> throwIO (userError "duckdb-simple: union value type mismatch")
-        other -> typeMismatch "UNION" other
-    LogicalTypeEnum dict ->
-      case value of
-        FieldEnum enumIdx -> enumDuckValue dict enumIdx
-        other -> typeMismatch "ENUM" other
+hugeIntDuckValue :: DuckDBV2FactoryHandle -> Integer -> IO DuckDBV2ValueHandle
+hugeIntDuckValue factory value = integerToHugeInt value >>= \huge -> with huge (\ptr -> output (c_duckdb_v2_value_create_hugeint factory (ConstPtr ptr)))
 
-scalarFieldValueDuckValue :: DuckDBType -> FieldValue -> IO DuckDBValue
-scalarFieldValueDuckValue dtype value =
-  case (dtype, value) of
-    (DuckDBTypeBoolean, FieldBool b) -> boolDuckValue b
-    (DuckDBTypeTinyInt, FieldInt8 i) -> int8DuckValue i
-    (DuckDBTypeSmallInt, FieldInt16 i) -> int16DuckValue i
-    (DuckDBTypeInteger, FieldInt32 i) -> int32DuckValue i
-    (DuckDBTypeBigInt, FieldInt64 i) -> int64DuckValue i
-    (DuckDBTypeUTinyInt, FieldWord8 w) -> uint8DuckValue w
-    (DuckDBTypeUSmallInt, FieldWord16 w) -> uint16DuckValue w
-    (DuckDBTypeUInteger, FieldWord32 w) -> uint32DuckValue w
-    (DuckDBTypeUBigInt, FieldWord64 w) -> uint64DuckValue w
-    (DuckDBTypeFloat, FieldFloat f) -> floatDuckValue f
-    (DuckDBTypeDouble, FieldDouble d) -> doubleDuckValue d
-    (DuckDBTypeVarchar, FieldText t) -> textDuckValue t
-    (DuckDBTypeBlob, FieldBlob b) -> blobDuckValue b
-    (DuckDBTypeGeometry, FieldGeometry{}) -> unsupportedRawGeometryBinding
-    (DuckDBTypeUUID, FieldUUID u) -> uuidDuckValue u
-    (DuckDBTypeBit, FieldBit bits) -> bitDuckValue bits
-    (DuckDBTypeDate, FieldDate d) -> dateDuckValue d
-    (DuckDBTypeTime, FieldTime t) -> timeOfDayDuckValue t
-    (DuckDBTypeTimeNs, FieldTime t) ->
-      timeOfDayUnits 1000000000 t >>= c_duckdb_create_time_ns . DuckDBTimeNs . fromInteger
-    (DuckDBTypeTimeTz, FieldTimeTZ tz) -> timeWithZoneDuckValue tz
-    (DuckDBTypeTimestamp, FieldTimestamp ts) -> localTimestampDuckValue ts
-    (DuckDBTypeTimestampS, FieldTimestamp ts) ->
-      encodeUnbounded (encodeTimestampUnits 1) ts >>= c_duckdb_create_timestamp_s . DuckDBTimestampS
-    (DuckDBTypeTimestampMs, FieldTimestamp ts) ->
-      encodeUnbounded (encodeTimestampUnits 1000) ts >>= c_duckdb_create_timestamp_ms . DuckDBTimestampMs
-    (DuckDBTypeTimestampNs, FieldTimestamp ts) ->
-      encodeUnbounded (encodeTimestampUnits 1000000000) ts >>= c_duckdb_create_timestamp_ns . DuckDBTimestampNs
-    (DuckDBTypeTimestampTz, FieldTimestampTZ ts) -> utcTimestampDuckValue ts
-    (DuckDBTypeTimestampTzNs, FieldTimestampTZ ts) -> utcTimestampNsDuckValue ts
-    (DuckDBTypeInterval, FieldInterval iv) -> intervalDuckValue iv
-    (DuckDBTypeHugeInt, FieldHugeInt i) -> hugeIntDuckValue i
-    (DuckDBTypeUHugeInt, FieldUHugeInt i) -> uhugeIntDuckValue i
-    (DuckDBTypeBigNum, FieldBigNum big) -> bigNumDuckValue big
-    (DuckDBTypeSQLNull, _) -> nullDuckValue
-    _ ->
-      case value of
-        FieldNull -> nullDuckValue
-        other ->
-          throwIO
-            ( userError
-                ( "duckdb-simple: unsupported scalar conversion for "
-                    <> show dtype
-                    <> " from "
-                    <> show other
-                )
-            )
+uhugeIntDuckValue :: DuckDBV2FactoryHandle -> Integer -> IO DuckDBV2ValueHandle
+uhugeIntDuckValue factory value = integerToUHugeInt value >>= \huge -> with huge (\ptr -> output (c_duckdb_v2_value_create_uhugeint factory (ConstPtr ptr)))
 
-enumDuckValue :: Array Int Text -> Word32 -> IO DuckDBValue
-enumDuckValue dict idx = do
-  when (toInteger idx >= toInteger (length (elems dict))) $
-    throwIO (userError "duckdb-simple: ENUM index out of range")
-  bracket (logicalTypeFromRep (LogicalTypeEnum dict)) destroyLogicalType \enumLogical ->
-    checkedValue (c_duckdb_create_enum_value enumLogical (fromIntegral idx))
-
-hugeIntDuckValue :: Integer -> IO DuckDBValue
-hugeIntDuckValue value = integerToHugeInt value >>= c_duckdb_create_hugeint
-
-uhugeIntDuckValue :: Integer -> IO DuckDBValue
-uhugeIntDuckValue value = integerToUHugeInt value >>= c_duckdb_create_uhugeint
-
-decimalDuckValue :: DecimalValue -> IO DuckDBValue
-decimalDuckValue DecimalValue{decimalWidth, decimalScale, decimalInteger} = do
+decimalDuckValue :: DuckDBV2FactoryHandle -> DecimalValue -> IO DuckDBV2ValueHandle
+decimalDuckValue factory DecimalValue{decimalWidth, decimalScale, decimalInteger} = do
   when (decimalWidth < 1 || decimalWidth > 38 || decimalScale > decimalWidth) $
     throwIO (userError "duckdb-simple: invalid DECIMAL width or scale")
-  when (abs decimalInteger >= 10 ^ decimalWidth) $
-    throwIO (userError "duckdb-simple: DECIMAL value exceeds declared precision")
+  when (abs decimalInteger >= 10 ^ decimalWidth) $ throwIO (userError "duckdb-simple: DECIMAL value exceeds declared precision")
   huge <- integerToHugeInt decimalInteger
-  c_duckdb_create_decimal (DuckDBDecimal decimalWidth decimalScale huge)
+  with huge (\ptr -> output (c_duckdb_v2_value_create_decimal factory (ConstPtr ptr) decimalWidth decimalScale))
 
-intervalDuckValue :: IntervalValue -> IO DuckDBValue
-intervalDuckValue IntervalValue{intervalMonths, intervalDays, intervalMicros} =
-  c_duckdb_create_interval (DuckDBInterval intervalMonths intervalDays intervalMicros)
+intervalDuckValue :: DuckDBV2FactoryHandle -> IntervalValue -> IO DuckDBV2ValueHandle
+intervalDuckValue factory IntervalValue{intervalMonths, intervalDays, intervalMicros} =
+  with
+    (DuckDBV2IntervalT intervalMonths intervalDays intervalMicros)
+    (\ptr -> output (c_duckdb_v2_value_create_interval factory (ConstPtr ptr)))
 
-timeWithZoneDuckValue :: TimeWithZone -> IO DuckDBValue
-timeWithZoneDuckValue TimeWithZone{timeWithZoneTime, timeWithZoneZone} = do
-  totalMicros <- timeOfDayUnits 1000000 timeWithZoneTime
-  let offsetSeconds = toInteger (timeZoneMinutes timeWithZoneZone) * 60
-  when (abs offsetSeconds > 57599) $
-    throwIO (userError "duckdb-simple: TIME WITH TIME ZONE offset out of range")
-  tzValue <- c_duckdb_create_time_tz (fromIntegral totalMicros) (fromIntegral offsetSeconds)
-  c_duckdb_create_time_tz_value tzValue
-
-integerToHugeInt :: Integer -> IO DuckDBHugeInt
-integerToHugeInt value = do
-  let minVal = negate (1 `shiftL` 127)
-      maxVal = (1 `shiftL` 127) - 1
-  when (value < minVal || value > maxVal) $
-    throwIO (userError "duckdb-simple: HUGEINT value out of range")
-  let lowerMask = (1 `shiftL` 64) - 1
-      lower = fromIntegral (value .&. lowerMask)
-      upper = fromIntegral (value `shiftR` 64)
-  pure (DuckDBHugeInt lower upper)
-
-integerToUHugeInt :: Integer -> IO DuckDBUHugeInt
-integerToUHugeInt value = do
-  let minVal = 0
-      maxVal = (1 `shiftL` 128) - 1
-  when (value < minVal || value > maxVal) $
-    throwIO (userError "duckdb-simple: UHUGEINT value out of range")
-  let lowerMask = (1 `shiftL` 64) - 1
-      lower = fromIntegral (value .&. lowerMask)
-      upper = fromIntegral (value `shiftR` 64)
-  pure (DuckDBUHugeInt lower upper)
-
--- | Release every child handle when construction fails or completes.
-withCreatedValues :: [IO DuckDBValue] -> ([DuckDBValue] -> IO a) -> IO a
-withCreatedValues = withMany (\action -> bracket (checkedValue action) destroyValue)
-
--- | Reject failed native constructors before a handle is used.
-checkedValue :: IO DuckDBValue -> IO DuckDBValue
-checkedValue action = do
-  value <- action
-  when (value == DuckDBValue nullPtr) $
-    throwIO (userError "duckdb-simple: DuckDB value construction failed")
-  pure value
-
-withDuckValues :: [DuckDBValue] -> (Ptr DuckDBValue -> IO a) -> IO a
-withDuckValues xs action = withArray xs action
-
-typeMismatch :: String -> FieldValue -> IO a
-typeMismatch expected actual =
-  throwIO
-    ( userError
-        ( "duckdb-simple: cannot encode "
-            <> show actual
-            <> " as "
-            <> expected
-        )
+timeWithZoneDuckValue :: DuckDBV2FactoryHandle -> TimeWithZone -> IO DuckDBV2ValueHandle
+timeWithZoneDuckValue factory TimeWithZone{timeWithZoneTime, timeWithZoneZone} = do
+  micros <- timeOfDayUnits 1000000 timeWithZoneTime
+  let offset = toInteger (timeZoneMinutes timeWithZoneZone) * 60
+  when (abs offset > toInteger timeTzMaxOffsetSeconds) $ throwIO (userError "duckdb-simple: TIME WITH TIME ZONE offset out of range")
+  output
+    ( c_duckdb_v2_value_create_time_tz
+        factory
+        ((fromIntegral micros `shiftL` timeTzOffsetBits) .|. fromIntegral (toInteger timeTzMaxOffsetSeconds - offset))
     )
 
--- | Reject raw values that the C API cannot bind without format conversion.
-unsupportedRawGeometryBinding :: IO a
-unsupportedRawGeometryBinding =
-  throwIO (userError "duckdb-simple: raw GEOMETRY binding requires explicit ST_GeomFromWKB and ST_SetCRS parameters")
+integerToHugeInt :: Integer -> IO DuckDBV2HugeintT
+integerToHugeInt value = do
+  when (value < negate (1 `shiftL` 127) || value >= 1 `shiftL` 127) $ throwIO (userError "duckdb-simple: HUGEINT value out of range")
+  pure (DuckDBV2HugeintT (fromIntegral value) (fromIntegral (value `shiftR` 64)))
 
--- | Construct an owned VARIANT value. A scalar keeps its native type. Lists,
--- arrays, and STRUCT fields contain VARIANT values. The C API casts the payload
--- through a one-element VARIANT list.
-variantDuckValue :: (LogicalTypeRep -> IO DuckDBLogicalType) -> FieldValue -> IO DuckDBValue
-variantDuckValue typeFromRep value = do
+integerToUHugeInt :: Integer -> IO DuckDBV2UhugeintT
+integerToUHugeInt value = do
+  when (value < 0 || value >= 1 `shiftL` 128) $ throwIO (userError "duckdb-simple: UHUGEINT value out of range")
+  pure (DuckDBV2UhugeintT (fromIntegral value) (fromIntegral (value `shiftR` 64)))
+
+-- | Borrow generated identifier views and reject embedded NUL bytes.
+withIdentifiers :: [Text] -> (Ptr DuckDBV2IdentifierT -> IO a) -> IO a
+withIdentifiers names action = do
+  when (any (Text.any (== '\0')) names) $
+    throwIO (userError "duckdb-simple: logical type name contains NUL")
+  withIdentifierArray names action
+
+typeMismatch :: String -> FieldValue -> IO a
+typeMismatch expected actual = throwIO (userError ("duckdb-simple: cannot encode " <> show actual <> " as " <> expected))
+
+-- | Raw WKB binding requires an explicit geometry conversion.
+unsupportedRawGeometryBinding :: IO a
+unsupportedRawGeometryBinding = throwIO (userError "duckdb-simple: raw GEOMETRY binding requires explicit ST_GeomFromWKB and ST_SetCRS parameters")
+
+-- | Cast the payload to VARIANT through the supplied native factory.
+variantDuckValue :: ValueBuilder -> FieldValue -> IO DuckDBV2ValueHandle
+variantDuckValue builder@ValueBuilder{builderFactory = factory, builderType = makeType} value = do
   (rep, payload) <- variantPayloadType value
-  bracket (typeFromRep (LogicalTypeScalar DuckDBTypeVariant)) destroyLogicalType \variantType ->
-    withCreatedValues [fieldValueWithTypeDuckValue typeFromRep rep payload] \values ->
-      withDuckValues values \ptr ->
-        bracket (checkedValue (c_duckdb_create_list_value variantType ptr 1)) destroyValue \list ->
-          checkedValue (c_duckdb_get_list_child list 0)
+  bracket (makeType (LogicalTypeScalar LogicalTypeIdVariant)) destroyLogicalType \logical ->
+    bracket (fieldValueWithTypeDuckValue builder rep payload) destroyValue \native ->
+      output (c_duckdb_v2_value_cast factory native logical)
+
+-- | Construct a UTC nanosecond value without losing sub-microsecond digits.
+utcTimestampNsDuckValue :: DuckDBV2FactoryHandle -> UTCTimestamp -> IO DuckDBV2ValueHandle
+utcTimestampNsDuckValue factory value =
+  encodeUnbounded (encodeTimestampUnits 1000000000 . utcToLocalTime utc) value
+    >>= (\encoded -> output (c_duckdb_v2_value_create_timestamp_tz_ns factory encoded))
+
+instance ToDuckValue G.Geometry where
+  toDuckValue factory geometry = do
+    wkt <- either (throwIO . userError) pure (WKT.encodeWKT geometry)
+    bracket (logicalTypeFromRep factory (LogicalTypeGeometry Nothing)) destroyLogicalType \logical ->
+      bracket (textDuckValue factory wkt) destroyValue \value ->
+        output (c_duckdb_v2_value_cast factory value logical)
+
+instance ToDuckValue Variant where
+  toDuckValue factory = variantDuckValue (plainBuilder factory) . variantPayload
 
 -- | Choose the native type of a VARIANT payload. Containers get VARIANT
 -- elements and fields. Time values with sub-microsecond digits use nanosecond
@@ -862,42 +876,43 @@ variantDuckValue typeFromRep value = do
 variantPayloadType :: FieldValue -> IO (LogicalTypeRep, FieldValue)
 variantPayloadType value = case value of
   FieldNull -> pure (variant, value)
-  FieldBool{} -> scalar DuckDBTypeBoolean
-  FieldInt8{} -> scalar DuckDBTypeTinyInt
-  FieldInt16{} -> scalar DuckDBTypeSmallInt
-  FieldInt32{} -> scalar DuckDBTypeInteger
-  FieldInt64{} -> scalar DuckDBTypeBigInt
-  FieldWord8{} -> scalar DuckDBTypeUTinyInt
-  FieldWord16{} -> scalar DuckDBTypeUSmallInt
-  FieldWord32{} -> scalar DuckDBTypeUInteger
-  FieldWord64{} -> scalar DuckDBTypeUBigInt
-  FieldHugeInt{} -> scalar DuckDBTypeHugeInt
-  FieldUHugeInt{} -> scalar DuckDBTypeUHugeInt
-  FieldFloat{} -> scalar DuckDBTypeFloat
-  FieldDouble{} -> scalar DuckDBTypeDouble
+  FieldBool{} -> scalar LogicalTypeIdBoolean
+  FieldInt8{} -> scalar LogicalTypeIdTinyInt
+  FieldInt16{} -> scalar LogicalTypeIdSmallInt
+  FieldInt32{} -> scalar LogicalTypeIdInteger
+  FieldInt64{} -> scalar LogicalTypeIdBigInt
+  FieldWord8{} -> scalar LogicalTypeIdUTinyInt
+  FieldWord16{} -> scalar LogicalTypeIdUSmallInt
+  FieldWord32{} -> scalar LogicalTypeIdUInteger
+  FieldWord64{} -> scalar LogicalTypeIdUBigInt
+  FieldHugeInt{} -> scalar LogicalTypeIdHugeInt
+  FieldUHugeInt{} -> scalar LogicalTypeIdUHugeInt
+  FieldFloat{} -> scalar LogicalTypeIdFloat
+  FieldDouble{} -> scalar LogicalTypeIdDouble
   FieldDecimal DecimalValue{decimalWidth, decimalScale} -> pure (LogicalTypeDecimal decimalWidth decimalScale, value)
-  FieldText{} -> scalar DuckDBTypeVarchar
-  FieldBlob{} -> scalar DuckDBTypeBlob
-  FieldUUID{} -> scalar DuckDBTypeUUID
-  FieldDate{} -> scalar DuckDBTypeDate
+  FieldText{} -> scalar LogicalTypeIdVarchar
+  FieldBlob{} -> scalar LogicalTypeIdBlob
+  FieldUUID{} -> scalar LogicalTypeIdUUID
+  FieldDate{} -> scalar LogicalTypeIdDate
   FieldTime time
-    | hasNanos time -> scalar DuckDBTypeTimeNs
-    | otherwise -> scalar DuckDBTypeTime
+    | hasNanos time -> scalar LogicalTypeIdTimeNs
+    | otherwise -> scalar LogicalTypeIdTime
   FieldTimestamp (Finite LocalTime{localDay, localTimeOfDay})
-    | hasNanos localTimeOfDay -> scalar DuckDBTypeTimestampNs
-    | inFiniteRange (minBound :: Int64) maxBound micros -> scalar DuckDBTypeTimestamp
-    | micros `rem` 1000 == 0 && inFiniteRange (minBound :: Int64) maxBound (micros `div` 1000) -> scalar DuckDBTypeTimestampMs
-    | micros `rem` 1000000 == 0 && inFiniteRange (minBound :: Int64) maxBound (micros `div` 1000000) -> scalar DuckDBTypeTimestampS
+    | hasNanos localTimeOfDay -> scalar LogicalTypeIdTimestampNs
+    | inFiniteRange (minBound :: Int64) maxBound micros -> scalar LogicalTypeIdTimestamp
+    | micros `rem` 1000 == 0 && inFiniteRange (minBound :: Int64) maxBound (micros `div` 1000) -> scalar LogicalTypeIdTimestampMs
+    | micros `rem` 1000000 == 0 && inFiniteRange (minBound :: Int64) maxBound (micros `div` 1000000) -> scalar LogicalTypeIdTimestampSec
     where
       micros = diffDays localDay (fromGregorian 1970 1 1) * 86400 * 1000000 + diffTimeToPicoseconds (timeOfDayToTime localTimeOfDay) `div` 1000000
-  FieldTimestamp{} -> scalar DuckDBTypeTimestamp
+  FieldTimestamp{} -> scalar LogicalTypeIdTimestamp
   FieldTimestampTZ instant -> scalar (variantUtcTimestampType instant)
-  FieldTimeTZ{} -> scalar DuckDBTypeTimeTz
-  FieldInterval{} -> scalar DuckDBTypeInterval
-  FieldBigNum{} -> scalar DuckDBTypeBigNum
-  FieldBit{} -> scalar DuckDBTypeBit
+  FieldTimeTZ{} -> scalar LogicalTypeIdTimeTz
+  FieldInterval{} -> scalar LogicalTypeIdInterval
+  FieldBigNum{} -> scalar LogicalTypeIdBigNum
+  FieldBit{} -> scalar LogicalTypeIdBit
   FieldList{} -> pure (LogicalTypeList variant, value)
   FieldArray items -> pure (LogicalTypeList variant, FieldList (elems items))
+  FieldTuple TupleValue{tupleValueFields} -> pure (LogicalTypeList variant, FieldList (elems tupleValueFields))
   FieldStruct structValue@StructValue{structValueTypes} -> do
     let names = map structFieldName (elems structValueTypes)
     when (length names /= length (List.nub names)) $
@@ -911,38 +926,24 @@ variantPayloadType value = case value of
   FieldMap{} -> throwIO (userError "duckdb-simple: VARIANT payloads cannot contain MAP values")
   FieldEnum{} -> throwIO (userError "duckdb-simple: VARIANT payloads cannot contain ENUM values")
   where
-    variant = LogicalTypeScalar DuckDBTypeVariant
+    variant = LogicalTypeScalar LogicalTypeIdVariant
     scalar dtype = pure (LogicalTypeScalar dtype, value)
     hasNanos time = snd (properFraction (todSec time * 1000000) :: (Integer, Pico)) /= 0
 
 -- | Choose nanosecond storage for a precise UTC VARIANT payload.
-variantUtcTimestampType :: UTCTimestamp -> DuckDBType
+variantUtcTimestampType :: UTCTimestamp -> LogicalTypeId
 variantUtcTimestampType (Finite instant)
-  | snd (properFraction (todSec (localTimeOfDay (utcToLocalTime utc instant)) * 1000000) :: (Integer, Pico)) /= 0 = DuckDBTypeTimestampTzNs
-variantUtcTimestampType _ = DuckDBTypeTimestampTz
-
--- | Construct a UTC nanosecond value.
-utcTimestampNsDuckValue :: UTCTimestamp -> IO DuckDBValue
-utcTimestampNsDuckValue value =
-  encodeUnbounded (encodeTimestampUnits 1000000000 . utcToLocalTime utc) value >>= c_duckdb_create_timestamp_tz_ns . DuckDBTimestampNs
-
-instance ToDuckValue G.Geometry where
-  toDuckValue geometry = do
-    wkt <- either (throwIO . userError) pure (WKT.encodeWKT geometry)
-    bracket (logicalTypeFromRep (LogicalTypeGeometry Nothing)) destroyLogicalType \logical ->
-      withCreatedValues [textDuckValue wkt] \values ->
-        withDuckValues values \ptr ->
-          bracket (checkedValue (c_duckdb_create_list_value logical ptr 1)) destroyValue \list ->
-            checkedValue (c_duckdb_get_list_child list 0)
+  | snd (properFraction (todSec (localTimeOfDay (utcToLocalTime utc instant)) * 1000000) :: (Integer, Pico)) /= 0 = LogicalTypeIdTimestampTzNs
+variantUtcTimestampType _ = LogicalTypeIdTimestampTz
 
 instance ToDuckValue Null where
-  toDuckValue _ = nullDuckValue
+  toDuckValue factory _ = nullDuckValue factory
 
 instance ToDuckValue Bool where
   toDuckValue = boolDuckValue
 
 instance ToDuckValue Int where
-  toDuckValue = int64DuckValue . fromIntegral
+  toDuckValue factory = int64DuckValue factory . fromIntegral
 
 instance ToDuckValue Int8 where
   toDuckValue = int8DuckValue
@@ -963,13 +964,13 @@ instance ToDuckValue UUID.UUID where
   toDuckValue = uuidDuckValue
 
 instance ToDuckValue Integer where
-  toDuckValue = bigNumDuckValue . BigNum
+  toDuckValue factory = bigNumDuckValue factory . BigNum
 
 instance ToDuckValue Natural where
-  toDuckValue = bigNumDuckValue . BigNum . toInteger
+  toDuckValue factory = bigNumDuckValue factory . BigNum . toInteger
 
 instance ToDuckValue Word where
-  toDuckValue = uint64DuckValue . fromIntegral
+  toDuckValue factory = uint64DuckValue factory . fromIntegral
 
 instance ToDuckValue Word16 where
   toDuckValue = uint16DuckValue
@@ -1023,19 +1024,21 @@ instance ToDuckValue (Unbounded UTCTime) where
   toDuckValue = utcTimestampDuckValue
 
 instance ToDuckValue (StructValue FieldValue) where
-  toDuckValue = structValueDuckValue logicalTypeFromRep
+  toDuckValue = structValueDuckValue . plainBuilder
+
+instance ToDuckValue (TupleValue FieldValue) where
+  toDuckValue = tupleValueDuckValue . plainBuilder
 
 instance ToDuckValue (UnionValue FieldValue) where
-  toDuckValue = unionValueDuckValue logicalTypeFromRep
+  toDuckValue = unionValueDuckValue . plainBuilder
 
--- | Build an array without a connection. The elements need 'ToDuckValue', so
--- this instance does not accept t'Variant' elements. 'toField' binds those.
+-- | Construct an array through the supplied factory with the element type of @a@.
 instance (DuckDBColumnType a, ToDuckValue a) => ToDuckValue (Array Int a) where
-  toDuckValue = arrayDuckValue logicalTypeFromRep Nothing toDuckValue
+  toDuckValue factory = arrayDuckValue (plainBuilder factory) Nothing (toDuckValue factory)
 
 instance (ToDuckValue a) => ToDuckValue (Maybe a) where
-  toDuckValue Nothing = nullDuckValue
-  toDuckValue (Just value) = toDuckValue value
+  toDuckValue factory Nothing = nullDuckValue factory
+  toDuckValue factory (Just value) = toDuckValue factory value
 
 -- | Preserve infinity sentinels and validate finite values before narrowing.
 encodeUnbounded :: (Integral b, Bounded b) => (a -> IO b) -> Unbounded a -> IO b
@@ -1044,19 +1047,19 @@ encodeUnbounded _ PosInfinity = pure maxBound
 encodeUnbounded encode (Finite value) = encode value
 
 -- | Encode finite dates as days from the Unix epoch.
-encodeDay :: Day -> IO DuckDBDate
+encodeDay :: Day -> IO Int32
 encodeDay day = do
   let days = diffDays day (fromGregorian 1970 1 1)
   checkFiniteRange "DATE" (minBound :: Int32) maxBound days
-  pure (DuckDBDate (fromInteger days))
+  pure (fromInteger days)
 
 -- | Encode a time of day at DuckDB microsecond precision.
-encodeTimeOfDay :: TimeOfDay -> IO DuckDBTime
-encodeTimeOfDay tod = DuckDBTime . fromInteger <$> timeOfDayUnits 1000000 tod
+encodeTimeOfDay :: TimeOfDay -> IO Int64
+encodeTimeOfDay tod = fromInteger <$> timeOfDayUnits 1000000 tod
 
 -- | Encode finite timestamps without native calendar conversions.
-encodeLocalTime :: LocalTime -> IO DuckDBTimestamp
-encodeLocalTime ts = DuckDBTimestamp <$> encodeTimestampUnits 1000000 ts
+encodeLocalTime :: LocalTime -> IO Int64
+encodeLocalTime = encodeTimestampUnits 1000000
 
 -- | Encode finite timestamps in the requested number of units per second.
 encodeTimestampUnits :: Integer -> LocalTime -> IO Int64
@@ -1069,7 +1072,7 @@ encodeTimestampUnits units LocalTime{localDay, localTimeOfDay} = do
 -- | Check storage limits and the two DuckDB infinity sentinels.
 checkFiniteRange :: (Integral a) => String -> a -> a -> Integer -> IO ()
 checkFiniteRange label lower upper value =
-  when (not (inFiniteRange lower upper value)) $
+  unless (inFiniteRange lower upper value) $
     throwIO (userError ("duckdb-simple: " <> label <> " value out of finite range"))
 
 -- | Check storage limits without accepting the two infinity sentinels.
@@ -1088,20 +1091,8 @@ timeOfDayUnits units tod@(TimeOfDay hours minutes seconds) = do
     throwIO (userError "duckdb-simple: time of day out of range")
   pure value
 
-bindDuckValue :: Statement -> DuckDBIdx -> IO DuckDBValue -> IO ()
-bindDuckValue stmt idx makeValue =
-  withStatementHandle stmt \handle ->
-    bracket (checkedValue makeValue) destroyValue \value -> do
-      rc <- c_duckdb_bind_value handle idx value
-      when (rc /= DuckDBSuccess) $ do
-        err <- fetchPrepareError (Text.pack "duckdb-simple: parameter binding failed") handle
-        throwBindError stmt err
-
-throwBindError :: Statement -> Text -> IO a
-throwBindError Statement{statementQuery} msg =
-  throwIO
-    SQLError
-      { sqlErrorMessage = msg
-      , sqlErrorType = Nothing
-      , sqlErrorQuery = Just statementQuery
-      }
+-- | Transfer a newly constructed value to the statement on success.
+bindDuckValue :: Statement -> DuckDBIdx -> IO DuckDBV2ValueHandle -> IO ()
+bindDuckValue statement index make = mask_ do
+  value <- make
+  storeBoundValue statement index value `onException` destroyValue value

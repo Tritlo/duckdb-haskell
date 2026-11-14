@@ -2,29 +2,166 @@
 
 ## 0.4.0.0
 
-- Target DuckDB 2.0 with `duckdb-ffi >= 2.0.0.0`. Support DuckDB 2.0.x
-  releases.
-- Use the generated raw API from `hs-bindgen`. See MIGRATION.md.
+- Target DuckDB 2.0 with `duckdb-ffi` 2.0.0.x. The backend uses the
+  generated V2 C API. Upstream marks the V2 API as unstable ("The C API v2 is
+  not yet stable. Its interface may change in upcoming releases."), so this
+  release requires exactly DuckDB 2.0.0, and the `duckdb-ffi` release for a
+  later DuckDB version is outside the dependency bound. Creating an
+  environment raises `SQLError` for another library version. Use the earlier
+  release with DuckDB 1.5.
+- Raw handles, callback handles, and the error codes of raw calls use V2
+  types. `sqlErrorType` is `Maybe ErrorType`. See MIGRATION.md.
+- Add shared environments and instances, attachment management, option
+  discovery, table descriptions, SQL tokenization, and positioned file I/O.
+- `attachDatabase` rejects an attach option that contains NUL.
+  `detachDatabase` and `setDefaultDatabase` reject an alias that contains NUL.
+- Add typed configuration values and defaults, managed log sinks, macro
+  registration, function documentation, query metrics, and file path
+  operations. Expose table bind metadata for multi-file readers.
+  `enableProfiling` collects metrics without printing a profile.
+- Add typed registrations. Their signatures have no native handle.
+  `Database.DuckDB.Simple.Function` has `createCast`, `createAggregate`,
+  `createTableFunction`, and the row class `TypedRow`. `Database.DuckDB.Simple`
+  exports the three functions, `Aggregate`, and `TypedRow`.
+- `createCast` registers a pure Haskell function as an explicit cast.
+- `createAggregate` registers an aggregate function as a fold over Haskell
+  values. The record `Aggregate` has the initial state and the step, combine,
+  and result functions. DuckDB gives the aggregate callbacks no context, so the
+  result types are the result types of `createFunction`.
+- `createTableFunction` registers a Haskell function that gives the rows of a
+  table function as a list. DuckDB reads the list one chunk at a time. It reads
+  all columns of each row, also the columns that the query does not use.
+- `Database.DuckDB.Simple.Registration` has `TypeDeclaration`, `parameter`,
+  `defaultValue`, `registerCustomType`, and typed replacement scans.
+  `registerReplacementScan` and `registerInstanceReplacementScan` give the
+  parts of an unknown table name to a Haskell function. The function can return
+  a SELECT statement that DuckDB reads instead.
+- Add `registerCopyFromFunction`, `registerCopyFunction` with the record
+  `CopyTo`, `CopyFromInfo`, and `registerMultiFileFunction` to
+  `Database.DuckDB.Simple.Copy`. `registerCopyFromFunction` registers a COPY
+  FROM side that gives a list of typed rows. `registerCopyFunction` registers a
+  COPY TO side and a COPY FROM side under one name. DuckDB keeps the first
+  registration of a format name and ignores a later one. Thus a format with two
+  directions needs `registerCopyFunction`.
+- Add `Database.DuckDB.Simple.Pragma`. `registerPragmaFunction` takes a typed
+  callback `PragmaCallback args`. The callback gets the arguments of the call
+  as a `FromRow` row.
+- The pragma registrations reject an empty name and a name that contains NUL,
+  as the other registrations do.
+- Add custom options to `Database.DuckDB.Simple.Config`. `customOptionUpdate`
+  is a function that gets the new value as a `FieldValue`. An exception in the
+  function rejects the value.
+- A typed registration costs more for each row than raw vector access. Use the
+  V2 modules for speed. Use them also for projection and filter pushdown,
+  parallel table scans, and scalar functions with a bind callback or variadic
+  parameters.
+- Add `SettingScope`, `LogLevel`, `LogScope`, `TokenType`, `MacroFunctionType`,
+  `ErrorType`, and `LogicalTypeId`. The configuration, logging, tokenizer,
+  macro, error, and logical type APIs use these types instead of the generated
+  V2 enum types, so a later C API version does not change these APIs. The file
+  system API uses `FileFlag` and the opaque `FileHandle` instead of the
+  generated V2 types. `ToDuckValue.toDuckValue` uses the synonyms
+  `ValueFactory` and `NativeValue` for the two native handles in its signature.
+- The functions with native handles are in modules with `V2` in the name.
+  `Database.DuckDB.Simple.V2.Registration` has the scalar, aggregate, table,
+  and cast registrations and the replacement scans with native callbacks. It
+  also has `registerMacroFunctionWith`, which gives the native macro builder to
+  an action. `Database.DuckDB.Simple.V2.Copy` has the native COPY callback
+  interface: `CopyToCallbacks`, `CopyFromCallbacks`, the raw
+  `registerCopyFunction`, `registerCopyFunctionWith`,
+  `registerCopyToCallbacks`, `registerCopyFromCallbacks`, and
+  `registerMultiFileFunctionWith`. `Database.DuckDB.Simple.V2.Pragma` has the
+  pragma callbacks with native handles. `Database.DuckDB.Simple.V2.Config` has
+  `registerCustomOptionWith`. `Database.DuckDB.Simple.V2.FunctionDocs` has
+  `setFunctionDocs`. `Database.DuckDB.Simple.V2.Logging` has `logMessage`,
+  which writes a message through the context of a native callback.
+  `Database.DuckDB.Simple.V2.LogicalRep` has `logicalTypeToRep`,
+  `logicalTypeFromRep`, `logicalTypeFromRepWith`, and `destroyLogicalType`.
+- `Database.DuckDB.Simple.Internal` changes. It re-exports the native helper
+  layer. It no longer exports `toSQLError`, `fetchPrepareError`,
+  `fetchResultError`, `throwResultError`, `mkExecuteError`,
+  `throwRegistrationError`, `withClientContext`, and `destroyClientContext`.
+  `Connection` adds `connectionInstance`, `connectionLock`, and
+  `connectionWindow`. `ConnectionOpen` has no `connectionDatabase` and adds
+  `connectionStatements` and `connectionReleaseParent`. `Statement` adds
+  `statementArrowResult`, `statementBindings`, and `statementParameterNames`.
+  `StatementOpen` adds `statementParsed` and `statementSchemaCache`.
+  `StatementStream` has no `statementStreamMode` and adds
+  `statementStreamPendingChunks`. `StatementStreamColumn` has no
+  `statementStreamColumnType` and adds `statementStreamColumnTree`.
+- The SQL error of a failed Haskell callback has the plain message of the
+  exception. Version 0.3 gave `user error (...)` for a `userError` and the
+  Haskell record for an `SQLError`.
+  The error of an argument that does not convert names the argument (`arg0`,
+  `arg1`, and so on). It has one form for scalar functions, casts, table
+  functions, and aggregate functions.
+- Add scoped named collection inputs and prepared dynamic PIVOT with a deferred
+  output schema. Native expanding statements cannot have parameters.
+- Rename `Database.DuckDB.Simple.Deprecated.Streaming` to
+  `Database.DuckDB.Simple.Streaming`.
 - Export Arrow release helpers from `Database.DuckDB.Simple.Arrow`.
-- `sqlErrorType` can report the DuckDB 2.0 data-corruption and resource-in-use
-  error tags.
-- While a stream is incomplete, DuckDB rejects other statements on its
-  connection. Closing an incomplete stream aborts its statement.
-- DuckDB 2.0 rejects WKB with mixed Z/M member layouts.
+- The default `query`, `fold`, and Arrow folds collect the result before the
+  first callback, so a callback can query the same connection.
+- A DuckDB callback that waits for the lock of a connection waits at most the
+  bound of that connection. Add `connectionCallbackLockWait` to
+  `ConnectionOptions`, in microseconds, with the default
+  `defaultCallbackLockWait` (10 seconds). `Nothing` sets no bound, and the open
+  rejects a negative bound. A statement of a callback on the connection that
+  runs the callback thus raises an `SQLError` of the type `ErrorResourceInUse`
+  after the bound. For most callbacks, the outer statement then fails. Before,
+  neither call returned. The README gives the cases that the bound does not
+  cover.
+- `sqlErrorQuery` gives the query that failed. For a query in the callback of
+  an Arrow fold, it gives the query of the callback, not the query of the fold.
+- The message of a native error is decoded with replacement characters. A
+  native error text that is not valid UTF-8 does not raise when the error is
+  shown.
+- While an explicit stream is incomplete, DuckDB rejects other statements on
+  its connection. Closing an incomplete stream aborts its statement.
+- Each connection serializes statement preparation, its open native result,
+  and each fetch of an explicit stream. Threads that share a connection wait
+  for each other in the default query functions. Serialize transactions and
+  explicit streams in the application.
+- `query_` and `execute_` parse all statements before they run any.
+- An INSERT, UPDATE, or DELETE without RETURNING gives one row with the number
+  of changed rows in each function that reads rows, also in `fold`, `nextRow`,
+  and the same functions of `Database.DuckDB.Simple.Streaming`.
+- Decode and bind TUPLE values with `TupleValue`, `FieldTuple`, and
+  `LogicalTypeTuple`.
+- Preserve composite VARCHAR collations with `LogicalTypeCollatedVarchar`.
 - Decode nanosecond timezone timestamps in results and VARIANT values.
 - Preserve nanosecond timezone timestamp precision in VARIANT parameters and
   parameters whose prepared type requires `TIMESTAMPTZ_NS`. This includes UTC
   fields in collections, STRUCTs, MAPs, and UNIONs.
+- Decode VARIANT values through public V2 operations. Object keys use DuckDB's
+  lexicographic order.
+- Allow a VARIANT object to contain an empty key with other named keys. Reject
+  an object with only an empty key because the C API changes its shape.
+- Read GEOMETRY results through a native cast to BLOB. DuckDB 2.0 rejects WKB
+  with mixed Z/M member layouts.
+- `ToDuckValue.toDuckValue`, `logicalTypeFromRep`, and `logicalTypeFromRepWith`
+  take a V2 factory. Composite parameters keep GEOMETRY CRS metadata. A CRS
+  that DuckDB does not recognize raises `SQLError` instead of being dropped.
+- A connection constructs each name of `connectionGeometryCRS` directly when it
+  opens. It queries a SQL-derived type only for a name that DuckDB does not keep,
+  on the new connection, so the default list runs no query. The connection keeps
+  each type, and a bind copies it. A name that DuckDB drops, for example a blank
+  name, fails the open.
+- Empty `Array` parameters raise `SQLError`. Use an SQL empty LIST.
 - Allow session variables to supply omitted named parameters. Only too many
   named parameters raise `FormatError`.
+- Reject duplicate named parameters with DuckDB's ASCII case rules. Keep
+  distinct non-ASCII names separate. Preserve sparse numeric parameter names
+  such as `$3`.
+- Refresh statement metadata after reset or rebinding.
+- Resolve configuration names and aliases case-insensitively. Use DuckDB's
+  ASCII identifier rules for catalog names and top-level schemas.
 - `deleteFunction` reports the error from DuckDB. DuckDB does not permit
   deletion of functions registered through the C API, so the call raises
   `SQLError` for a function made with `createFunction`. Version 0.3 ignored
-  this error.
-- Reject duplicate named parameters with DuckDB's ASCII case rules. Keep
-  distinct non-ASCII names separate.
-- Allow a VARIANT object to contain an empty key with other named keys. Reject
-  an object with only an empty key because the C API changes its shape.
+  this error. A `WARNING` pragma on `deleteFunction` causes a compile-time
+  warning at each use. A build with `-Werror` must allow that warning, for
+  example with `-Wno-error=deprecations`.
 - Add the optional `quack-tests` suite for authenticated remote queries,
   parameter binding, writes, streaming, and nanosecond timestamps.
 

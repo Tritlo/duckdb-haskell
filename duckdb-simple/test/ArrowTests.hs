@@ -4,14 +4,15 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
-{-# OPTIONS_GHC -Wno-deprecations #-}
 
--- | Integration tests for scoped Arrow batches and their native ownership.
+-- |
+-- Module      : ArrowTests
+-- Description : Integration tests for scoped Arrow batches and their native ownership.
 module ArrowTests (arrowTests) where
 
 import Control.Concurrent (forkIO, killThread, newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (AsyncException (ThreadKilled), IOException, SomeException, bracket, bracket_, fromException, mask_, throwIO, try)
-import Control.Monad (forM, forM_, when)
+import Control.Monad (forM, forM_, void, when)
 import Data.Bits (testBit)
 import Data.Coerce (coerce)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
@@ -20,12 +21,12 @@ import Data.Proxy (Proxy (..))
 import qualified Data.Text as Text
 import Data.Void (Void)
 import Data.Word (Word8)
-import Database.DuckDB.FFI
+import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.Arrow (releaseArrowArray, releaseArrowSchema)
 import qualified Database.DuckDB.Simple.Arrow as Arrow
-import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
 import Database.DuckDB.Simple.Internal (peekUtf8CString)
+import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (peekCString)
 import Foreign.Marshal.Alloc (alloca)
@@ -47,7 +48,7 @@ arrowTests =
 arrowModeTests :: Bool -> TestTree
 arrowModeTests streaming =
   testGroup
-    (if streaming then "deprecated streaming" else "materialized")
+    (if streaming then "native streaming" else "materialized")
     [ testCase "parameters, Unicode names, NULLs and multiple batches" $
         withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
           (batches, chunks) <-
@@ -178,6 +179,31 @@ arrowModeTests streaming =
           case result of
             Left (err :: SQLError) -> assertBool "native error" ("Arrow query failed" `Text.isInfixOf` sqlErrorMessage err)
             Right () -> assertFailure "expected query error"
+          assertConnectionUsable conn
+    , testCase "callback connection use follows the execution mode" $
+        withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
+          count <- foldArrow_ conn "SELECT i FROM range(5000) t(i)" (0 :: Int) \acc _ _ -> do
+            if streaming
+              then do
+                outcome <- try (query_ conn "SELECT 42" :: IO [Only Int64])
+                case outcome of
+                  Left (err :: SQLError) -> sqlErrorType err @?= Just ErrorResourceInUse
+                  Right _ -> assertFailure "expected a busy streaming connection"
+              else query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+            pure (acc + 1)
+          assertBool "expected multiple callbacks" (count > 1)
+    , testCase "SQL errors report the query that failed" $
+        withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
+          let outer = "SELECT error('Arrow query failed')"
+              inner = "SELECT error('callback query failed')"
+          failed <- try $ foldArrow_ conn outer () \_ _ _ -> assertFailure "unexpected batch"
+          case failed of
+            Left (err :: SQLError) -> sqlErrorQuery err @?= Just outer
+            Right () -> assertFailure "expected query error"
+          nested <- try $ foldArrow_ conn "SELECT 42" () \_ _ _ -> void (query_ conn inner :: IO [Only Int64])
+          case nested of
+            Left (err :: SQLError) -> sqlErrorQuery err @?= Just inner
+            Right () -> assertFailure "expected callback query error"
           assertConnectionUsable conn
     , testCase "closing the connection stops further batch callbacks" $
         withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->

@@ -12,6 +12,7 @@ checks, client headers, and upstream license.
 - `build-ghc-matrix.sh` runs local Docker builds. Generate the bindings first.
   It writes logs to `ci-logs/`.
 - `nix/` contains pinned development, generation, and CI environments.
+- `v2-migration.md` describes the V2 backend contracts and native limits.
 - `fetch-duckdb.sh` downloads the release library from
   `duckdb-ffi/native.sha256` for local, CI, and Docker validation. It verifies
   the archive checksum and compares the release headers with the vendored

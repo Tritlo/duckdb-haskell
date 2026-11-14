@@ -1,4 +1,8 @@
--- | Raw geometry values and conversion to 'G.Geometry' from @geometry-simple@.
+{-# LANGUAGE StrictData #-}
+
+-- |
+-- Module      : Database.DuckDB.Simple.Geometry
+-- Description : Raw geometry values and conversion to 'G.Geometry' from @geometry-simple@.
 module Database.DuckDB.Simple.Geometry (
   RawGeometry (..),
   fromRawGeometry,
@@ -22,8 +26,8 @@ import Data.Text (Text)
 -- The standalone WKB codec preserves these layouts.
 -- Derived equality compares the bytes and CRS, not spatial equivalence.
 data RawGeometry = RawGeometry
-  { rawGeometryWKB :: !ByteString
-  , rawGeometryCRS :: !(Maybe Text)
+  { rawGeometryWKB :: ByteString
+  , rawGeometryCRS :: Maybe Text
   }
   deriving (Eq, Show, Read)
 

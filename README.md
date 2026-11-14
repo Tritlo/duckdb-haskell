@@ -98,8 +98,8 @@ When building this repository, you can also pass `-fsystemlib` and
 `--extra-lib-dirs=/absolute/path/to/duckdb` on the command line.
 Supplying `extra-lib-dirs` also skips the download without the flag.
 
-The supplied library must be a DuckDB 2.0.x release. The V2 API requires
-exactly DuckDB 2.0.0. In Nix builds and shells, Setup uses Cabal and Nix to
+The supplied library must be a DuckDB 2.0.x release. The V2 API, and
+`duckdb-simple` 0.4, which uses it, require exactly DuckDB 2.0.0. In Nix builds and shells, Setup uses Cabal and Nix to
 find the library and skips the download.
 
 `duckdb-ffi` builds on Linux and macOS on x86_64 and aarch64. The generated ABI

@@ -1,169 +1,176 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE StrictData #-}
 
--- | Native types that the C API cannot create. A connection reads them the
--- first time a parameter needs one, and destroys them when it closes.
+-- |
+-- Module      : Database.DuckDB.Simple.TypeCache
+-- Description : Connection-scoped construction of native logical types.
+--
+-- DuckDB constructs a GEOMETRY type with a recognized CRS or a complete CRS
+-- definition directly. The type binder rejects a custom CRS name, but the SQL
+-- function @ST_SetCRS@ keeps it. The cache holds one type for each configured
+-- name: the type of direct construction, or a SQL-derived type for a name that
+-- direct construction does not keep. A bind copies the type.
 module Database.DuckDB.Simple.TypeCache (
   TypeCache,
+  typeCacheConnection,
   defaultGeometryCRS,
   createTypeCache,
   destroyTypeCache,
   cachedLogicalType,
+  withVariantState,
 ) where
 
-import Control.Concurrent.MVar (MVar, modifyMVarMasked, modifyMVar_, newMVar)
-import Control.Exception (bracket, finally, mask_, onException, throwIO)
-import Control.Monad (forM_, when)
-import qualified Data.ByteString as BS
+import Control.Concurrent.MVar (MVar, modifyMVarMasked, newMVar)
+import Control.Exception (SomeException, bracket, finally, mask, onException, throwIO, try, uninterruptibleMask_)
+import Control.Monad (when)
 import Data.List (nub)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
-import qualified Data.Text.Encoding as TextEncoding
-import Database.DuckDB.FFI
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), destroyLogicalType, logicalTypeToRep)
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..))
+import Database.DuckDB.Simple.Native
+import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeFromRep, logicalTypeFromRepWith, logicalTypeToRep)
+import Database.DuckDB.Simple.VariantCodec (VariantState, destroyVariantState, newVariantState)
 import Foreign.C.ConstPtr (ConstPtr (..))
-import Foreign.Marshal.Alloc (alloca)
-import Foreign.Marshal.Utils (fillBytes)
-import Foreign.Ptr (Ptr, nullPtr)
-import Foreign.Storable (peek, poke, sizeOf)
+import Foreign.Marshal.Array (withArray)
+import Foreign.Ptr (nullPtr)
 
--- | The configured CRSs and the native types of a connection. The types are
--- absent until a parameter needs one. The connection owns the types.
+-- | Owned helper state. The caller connection owns this cache.
 data TypeCache = TypeCache
-  { typeCacheDatabase :: !DuckDBDatabase
-  , typeCacheCRS :: ![Text]
-  , typeCacheTypes :: !(MVar (Maybe NativeTypes))
+  { typeCacheConnection :: DuckDBV2ConnectionHandle
+  , typeCacheInstance :: DuckDBV2InstanceHandle
+  , typeCacheGeometry :: NativeTypes
+  -- ^ The types of the configured CRS names. The map does not change after
+  --     'createTypeCache'.
+  , typeCacheState :: MVar CacheState
   }
 
--- | The VARIANT type and the GEOMETRY types for the configured CRSs. Each
--- GEOMETRY type has two keys: the configured CRS text and the CRS text that
--- DuckDB reports for the type.
+-- | The helper connection for VARIANT reads and the VARIANT decoder state that
+-- borrows it. They open at the first read. The cache owns the connection.
+data CacheState = Unopened | Open DuckDBV2ConnectionHandle VariantState | Closed
+
+-- | Keep each owned type once. CRS aliases can refer to the same type.
 data NativeTypes = NativeTypes
-  { nativeVariant :: !DuckDBLogicalType
-  , nativeGeometry :: !(Map Text DuckDBLogicalType)
-  , nativeOwned :: ![DuckDBLogicalType]
+  { nativeGeometry :: Map Text DuckDBV2LogicalTypeHandle
+  , nativeOwned :: [DuckDBV2LogicalTypeHandle]
   }
 
--- | The CRS that a connection reads when the options do not give a list.
+-- | The default CRS used by connection options.
 defaultGeometryCRS :: [Text]
 defaultGeometryCRS = ["OGC:CRS84"]
 
--- | Make an empty cache for a database. The caller must destroy the cache. A
--- CRS must be nonempty and must not contain NUL.
-createTypeCache :: DuckDBDatabase -> [Text] -> IO TypeCache
-createTypeCache database crsList = do
-  let crss = nub crsList
+-- | Create the cache on a new caller connection, before any statement of the
+-- caller runs. Construct each configured CRS directly, and keep each type that
+-- has the CRS. For the other names, query the types on the caller connection.
+-- If a step fails, destroy the types that the earlier steps took. The caller
+-- keeps the instance and connection alive. The helper connection opens later,
+-- at the first VARIANT read.
+createTypeCache :: DuckDBV2InstanceHandle -> DuckDBV2ConnectionHandle -> [Text] -> IO TypeCache
+createTypeCache instance_ connection crss = do
   when (any Text.null crss || any (Text.any (== '\0')) crss) $
     throwIO (userError "duckdb-simple: a GEOMETRY CRS must be nonempty and must not contain NUL")
-  TypeCache database crss <$> newMVar Nothing
+  let names = nub crss
+  direct <- acquireItems (mapM_ destroyLogicalType) [directGeometry connection crs | crs <- names]
+  let kept = [(crs, logical) | (crs, Just logical) <- zip names direct]
+  flip onException (releaseItems destroyLogicalType (map snd kept)) do
+    keptTypes <- geometryTypes (map fst kept) (map snd kept)
+    queried <- readNativeTypes connection [crs | (crs, Nothing) <- zip names direct]
+    flip onException (releaseItems destroyLogicalType (nativeOwned queried)) do
+      let geometry = NativeTypes (nativeGeometry keptTypes <> nativeGeometry queried) (nativeOwned keptTypes <> nativeOwned queried)
+      TypeCache connection instance_ geometry <$> newMVar Unopened
 
--- | Destroy the types in the cache, if the connection read them.
+-- | Construct a GEOMETRY type with a CRS directly. Give 'Nothing' when DuckDB
+-- rejects the name or drops the CRS. The construction raises 'SQLError' in
+-- both cases, and it destroys a type that lost its CRS.
+directGeometry :: DuckDBV2ConnectionHandle -> Text -> IO (Maybe DuckDBV2LogicalTypeHandle)
+directGeometry connection crs = withConnectionFactory connection \factory ->
+  either (const Nothing) Just
+    <$> (try (logicalTypeFromRep factory (LogicalTypeGeometry (Just crs))) :: IO (Either SQLError DuckDBV2LogicalTypeHandle))
+
+-- | Close the helper after all users finish. Destroy the VARIANT state before
+-- the helper connection. Destroy each cached type once, also if a destroy
+-- raises an error. A second call does nothing.
 destroyTypeCache :: TypeCache -> IO ()
-destroyTypeCache TypeCache{typeCacheTypes} =
-  modifyMVar_ typeCacheTypes \types -> Nothing <$ mapM_ (mapM_ destroyLogicalType . nativeOwned) types
+destroyTypeCache TypeCache{typeCacheGeometry, typeCacheState} = uninterruptibleMask_ do
+  previous <- modifyMVarMasked typeCacheState (\state -> pure (Closed, state))
+  let releaseTypes = releaseItems destroyLogicalType (nativeOwned typeCacheGeometry)
+  case previous of
+    Open helper variant -> ((destroyVariantState variant `finally` destroy c_duckdb_v2_connection_destroy helper) `finally` releaseTypes)
+    Unopened -> releaseTypes
+    Closed -> pure ()
 
--- | Copy a cached type for a leaf that the C API cannot create. The caller
--- must destroy the copy. The first VARIANT leaf or GEOMETRY leaf with a CRS
--- reads the types. A GEOMETRY CRS that the cache does not hold gives GEOMETRY
--- without a CRS.
-cachedLogicalType :: TypeCache -> LogicalTypeRep -> IO DuckDBLogicalType
-cachedLogicalType cache = \case
-  LogicalTypeScalar DuckDBTypeVariant -> nativeTypes cache >>= copyLogicalType . nativeVariant
-  LogicalTypeGeometry (Just crs) -> do
-    NativeTypes{nativeGeometry} <- nativeTypes cache
-    maybe (c_duckdb_create_logical_type (DuckDBTypeAlias DuckDBTypeGeometry)) copyLogicalType (Map.lookup crs nativeGeometry)
-  LogicalTypeGeometry Nothing -> c_duckdb_create_logical_type (DuckDBTypeAlias DuckDBTypeGeometry)
-  other -> throwIO (userError ("duckdb-simple: the type cache cannot create " <> show other))
+-- | Construct an owned type. Resolve configured CRS leaves at every depth.
+-- Copy a configured CRS type from the immutable map, without a lock.
+cachedLogicalType :: TypeCache -> LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle
+cachedLogicalType TypeCache{typeCacheConnection, typeCacheGeometry = NativeTypes{nativeGeometry}} rep =
+  withConnectionFactory typeCacheConnection \factory -> logicalTypeFromRepWith factory resolve rep
+  where
+    copy = fmap Just . output . c_duckdb_v2_logical_type_copy
+    resolve (LogicalTypeGeometry (Just crs)) = maybe (pure Nothing) copy (Map.lookup crs nativeGeometry)
+    resolve _ = pure Nothing
 
--- | Get the native types. Read them on first use with a separate connection,
--- so the query does not run in the transaction of the caller. A failed read
--- leaves the cache empty.
-nativeTypes :: TypeCache -> IO NativeTypes
-nativeTypes TypeCache{typeCacheDatabase, typeCacheCRS, typeCacheTypes} =
-  modifyMVarMasked typeCacheTypes \cached -> do
-    types <- maybe (withTypeConnection typeCacheDatabase (`readNativeTypes` typeCacheCRS)) pure cached
-    pure (Just types, types)
+-- | Borrow the VARIANT decoder state of the persistent helper connection. Open
+-- the connection once, and keep it after an action throws. Calls execute in
+-- sequence. Do not enter this cache again from the supplied action.
+withVariantState :: TypeCache -> (VariantState -> IO a) -> IO a
+withVariantState TypeCache{typeCacheInstance, typeCacheState} action = mask \restore -> do
+  outcome <- modifyMVarMasked typeCacheState \state -> do
+    (helper, variant) <- case state of
+      Closed -> throwIO (SQLError "duckdb-simple: type cache is closed" Nothing Nothing)
+      Open helper variant -> pure (helper, variant)
+      Unopened -> do
+        helper <- output (c_duckdb_v2_connection_create typeCacheInstance)
+        (,) helper <$> newVariantState helper
+    result <- try (restore (action variant))
+    pure (Open helper variant, result)
+  either (throwIO :: SomeException -> IO a) pure outcome
 
--- | Read the VARIANT type and a GEOMETRY type for each CRS with one query.
-readNativeTypes :: DuckDBConnection -> [Text] -> IO NativeTypes
+-- | Read the SQL-derived GEOMETRY types of custom CRS names. Run no statement
+-- for an empty list.
+readNativeTypes :: DuckDBV2ConnectionHandle -> [Text] -> IO NativeTypes
+readNativeTypes _ [] = pure (NativeTypes Map.empty [])
 readNativeTypes connection crss = do
-  let sql = Text.concat ("SELECT NULL::VARIANT" : [", system.main.ST_SetCRS('POINT EMPTY'::GEOMETRY, ?)" | _ <- crss])
-  withTypeQuery connection sql crss \result -> mask_ do
-    owned <- columnTypes result (length crss + 1)
-    case owned of
-      [] -> throwIO (userError "duckdb-simple: the type query returned no columns")
-      variant : geometry -> do
-        reported <- mapM logicalTypeToRep geometry `onException` mapM_ destroyLogicalType owned
-        pure
-          NativeTypes
-            { nativeVariant = variant
-            , nativeGeometry =
-                Map.fromList
-                  ( concat
-                      [ (crs, logical) : [(reportedCRS, logical) | LogicalTypeGeometry (Just reportedCRS) <- [rep]]
-                      | (crs, rep, logical) <- zip3 crss reported geometry
-                      ]
-                  )
-            , nativeOwned = owned
-            }
+  let sql = "SELECT " <> Text.intercalate ", " ["system.main.ST_SetCRS('POINT EMPTY'::GEOMETRY, ?)" | _ <- crss]
+      textValue value = withText value (\text -> factoryOutput connection (\factory -> c_duckdb_v2_value_create_varchar factory text))
+  withSQLStatement connection sql \parsed ->
+    withCreatedValues (map textValue crss) \values -> withArray values \valuePtr ->
+      bracket
+        (output (c_duckdb_v2_statement_execute connection parsed (ConstPtr nullPtr) (ConstPtr valuePtr) (fromIntegral (length values))))
+        (destroy c_duckdb_v2_result_destroy)
+        \result ->
+          bracket (output (c_duckdb_v2_result_fetch_chunk result)) (destroy c_duckdb_v2_data_chunk_destroy) \chunk -> do
+            when (chunk == nullHandle) $ throwIO (userError "duckdb-simple: the type query returned no row")
+            owned <- columnTypes chunk (length crss)
+            geometryTypes crss owned `onException` releaseItems destroyLogicalType owned
 
--- | Take the types of the first columns. Destroy the taken types on failure.
-columnTypes :: Ptr DuckDBResult -> Int -> IO [DuckDBLogicalType]
-columnTypes result count = go [] 0
-  where
-    go taken column
-      | column == count = pure (reverse taken)
-      | otherwise = do
-          logical <- c_duckdb_column_logical_type result (fromIntegral column) `onException` mapM_ destroyLogicalType taken
-          when (logical == DuckDBLogicalType nullPtr) do
-            mapM_ destroyLogicalType taken
-            throwIO (userError "duckdb-simple: the type query returned no type")
-          go (logical : taken) (column + 1)
+-- | Map each configured name, and the CRS text that DuckDB reports for its
+-- type, to the type. Raise an error if a type has no CRS. The caller keeps the
+-- ownership of the types.
+geometryTypes :: [Text] -> [DuckDBV2LogicalTypeHandle] -> IO NativeTypes
+geometryTypes crss owned = do
+  reported <- mapM logicalTypeToRep owned
+  when (any (\rep -> case rep of LogicalTypeGeometry (Just _) -> False; _ -> True) reported) $
+    throwIO (userError "duckdb-simple: the type query did not preserve a configured GEOMETRY CRS")
+  pure
+    NativeTypes
+      { nativeGeometry =
+          Map.fromList
+            ( concat
+                [ (crs, logical) : [(normalized, logical) | LogicalTypeGeometry (Just normalized) <- [rep]] | (crs, rep, logical) <- zip3 crss reported owned
+                ]
+            )
+      , nativeOwned = owned
+      }
 
--- | Copy a type through a LIST type, because the C API has no copy function.
-copyLogicalType :: DuckDBLogicalType -> IO DuckDBLogicalType
-copyLogicalType logical =
-  -- TODO: use a copy function when the C API has one.
-  -- See https://github.com/Tritlo/duckdb-haskell/issues/30 and
-  -- https://github.com/duckdb/duckdb/issues/26664.
-  bracket (c_duckdb_create_list_type logical) destroyLogicalType c_duckdb_list_type_child_type
-
--- | Run an action with a new connection to the database. Disconnect after it.
-withTypeConnection :: DuckDBDatabase -> (DuckDBConnection -> IO a) -> IO a
-withTypeConnection database action =
-  alloca \connectionPtr -> do
-    connected <- c_duckdb_connect database connectionPtr
-    when (connected /= DuckDBSuccess) $
-      throwIO (userError "duckdb-simple: cannot connect to read the VARIANT and GEOMETRY types")
-    (peek connectionPtr >>= action) `finally` c_duckdb_disconnect connectionPtr
-
--- | Prepare and run a constant query with text parameters, and borrow its result.
-withTypeQuery :: DuckDBConnection -> Text -> [Text] -> (Ptr DuckDBResult -> IO a) -> IO a
-withTypeQuery connection sql parameters action =
-  BS.useAsCString (TextEncoding.encodeUtf8 sql) \sqlPtr ->
-    alloca \statementPtr -> do
-      poke statementPtr (DuckDBPreparedStatement nullPtr)
-      bracket (c_duckdb_prepare connection (ConstPtr sqlPtr) statementPtr) (const (c_duckdb_destroy_prepare statementPtr)) \prepared -> do
-        statement <- peek statementPtr
-        when (prepared /= DuckDBSuccess) do
-          ConstPtr errorPtr <- c_duckdb_prepare_error statement
-          message <- if errorPtr == nullPtr then pure "prepare failed" else TextEncoding.decodeUtf8 <$> BS.packCString errorPtr
-          queryFailed message
-        forM_ (zip [1 ..] parameters) \(index, parameter) ->
-          BS.useAsCStringLen (TextEncoding.encodeUtf8 parameter) \(ptr, len) -> do
-            bound <- c_duckdb_bind_varchar_length statement index (ConstPtr ptr) (fromIntegral len)
-            when (bound /= DuckDBSuccess) (queryFailed ("cannot bind CRS " <> parameter))
-        alloca \result -> do
-          fillBytes result 0 (sizeOf (undefined :: DuckDBResult))
-          bracket (c_duckdb_execute_prepared statement result) (const (c_duckdb_destroy_result result)) \executed -> do
-            when (executed /= DuckDBSuccess) do
-              ConstPtr errorPtr <- c_duckdb_result_error result
-              message <- if errorPtr == nullPtr then pure "execution failed" else TextEncoding.decodeUtf8 <$> BS.packCString errorPtr
-              queryFailed message
-            action result
-  where
-    queryFailed message = throwIO (userError ("duckdb-simple: cannot read the VARIANT and GEOMETRY types: " <> Text.unpack message))
+-- | Take the owned type of each of the first vectors. Destroy the earlier
+-- types if an accessor fails.
+columnTypes :: DuckDBV2DataChunkHandle -> Int -> IO [DuckDBV2LogicalTypeHandle]
+columnTypes chunk count =
+  acquireItems
+    destroyLogicalType
+    [ output (c_duckdb_v2_data_chunk_get_vector chunk (fromIntegral index)) >>= output . c_duckdb_v2_vector_get_logical_type
+    | index <- [0 .. count - 1]
+    ]

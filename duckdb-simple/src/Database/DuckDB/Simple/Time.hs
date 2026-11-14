@@ -1,6 +1,9 @@
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE StrictData #-}
 
--- | Dates and timestamps that can represent DuckDB's infinities.
+-- |
+-- Module      : Database.DuckDB.Simple.Time
+-- Description : Dates and timestamps that can represent DuckDB's infinities.
 module Database.DuckDB.Simple.Time (
   Unbounded (..),
   Date,
@@ -13,7 +16,7 @@ import Data.Time (Day, LocalTime, UTCTime)
 -- | A finite value or either infinity, as in @postgresql-simple@.
 data Unbounded a
   = NegInfinity
-  | Finite !a
+  | Finite a
   | PosInfinity
   deriving (Eq, Ord, Show, Read, Functor)
 

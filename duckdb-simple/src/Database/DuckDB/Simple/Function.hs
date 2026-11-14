@@ -1,442 +1,208 @@
 {-# LANGUAGE BlockArguments #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE UndecidableInstances #-}
 
 -- |
 -- Module      : Database.DuckDB.Simple.Function
--- Description : Register scalar Haskell functions with DuckDB connections.
+-- Description : Register Haskell scalar functions, casts, table functions, and aggregate functions with DuckDB connections.
 --
--- This module mirrors the high-level API provided by @sqlite-simple@ for user
--- defined functions, adapted to DuckDB's chunked execution model.  It allows
--- pure and 'IO'-based Haskell functions to be exposed to SQL while reusing the
--- existing field-decoding and result-marshalling machinery for arguments and
--- return values.
+-- Register pure and IO scalar functions with the managed argument and result
+-- conversions. Register pure casts with the same argument conversion. Register
+-- table functions and aggregate functions that convert their arguments with
+-- 'FromRow'.
+--
+-- A callback must not run a statement on the connection that runs the callback.
+-- Use another connection of the same instance. This rule applies to each
+-- registered callback, for example of a scalar function, a cast, an aggregate
+-- function, a table function, a COPY format, a replacement scan, a pragma, or a
+-- log sink. The library holds the lock of a connection while it prepares a
+-- statement, while 'Database.DuckDB.Simple.query',
+-- 'Database.DuckDB.Simple.execute', or a default fold runs a statement, and
+-- while it fetches a chunk of an explicit stream. DuckDB can run a callback in
+-- each of these steps. The lock is not reentrant. Thus a statement in the
+-- callback waits for the lock. With more than one DuckDB thread, DuckDB can also
+-- run a callback of an explicit stream between two fetches, while no fetch holds
+-- the lock. Then a statement in the callback on the same connection fails at
+-- once with the error of DuckDB for a connection with an open result.
+--
+-- The wait has the bound 'Database.DuckDB.Simple.connectionCallbackLockWait' of
+-- the connection: 10 seconds by default, and no bound for 'Nothing'. After the
+-- bound, the statement raises an 'Database.DuckDB.Simple.SQLError' of the type
+-- 'Database.DuckDB.Simple.ErrorResourceInUse'. For most callbacks, the outer
+-- statement then fails. DuckDB ignores the error of a log sink. The bound
+-- applies to each wait of a callback for a connection lock, also for a second
+-- connection that another statement uses. The bound does not apply to
+-- a callback that DuckDB runs while the library holds no lock of the
+-- connection, for example a log sink for a message of
+-- 'Database.DuckDB.Simple.Logging.logConnectionMessage'. It also does not apply
+-- to a statement in a thread that the callback starts, to a statement inside
+-- 'Control.Exception.uninterruptibleMask', and to a statement in the flush
+-- function of a log sink when DuckDB destroys the sink.
+--
+-- A callback that refers to a connection keeps that connection and its instance
+-- reachable while DuckDB keeps the callback, possibly until the database closes.
+-- Thus the garbage collector does not close them, and the program must close
+-- them.
 module Database.DuckDB.Simple.Function (
   ScalarType,
   ScalarValue,
   FunctionArg (),
   FunctionResult (),
   Function (..),
+  LogicalTypeId (..),
   createFunction,
   createFunctionWithState,
   deleteFunction,
+  TypeDeclaration (..),
+  createCast,
+  TypedRow,
+  createTableFunction,
+  Aggregate (..),
+  createAggregate,
 ) where
 
-import Control.Exception (
-  SomeException,
-  bracket,
-  throwIO,
- )
-import Control.Monad (forM, forM_, when)
-import Data.Int (Int16, Int32, Int64)
-import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
-import qualified Data.Text.Foreign as TextForeign
-import Data.Word (Word16, Word32, Word64, Word8)
-import Database.DuckDB.FFI
-import Database.DuckDB.Simple.Callback (runCallback, transferCallbackState, withCallbackResources)
-import Database.DuckDB.Simple.FromField (
-  Field (..),
-  FromField (..),
+import Database.DuckDB.Simple.Callback (RegistrationTarget (ConnectionTarget))
+import Database.DuckDB.Simple.FromField (FromField)
+import Database.DuckDB.Simple.FromRow (FromRow)
+import Database.DuckDB.Simple.Function.Internal (
+  Function (..),
+  FunctionArg,
+  FunctionResult,
+  ScalarType,
+  ScalarValue,
+  createFunctionOn,
+  createFunctionWithStateOn,
  )
 import Database.DuckDB.Simple.Internal (
   Connection,
-  Query (..),
-  SQLError (..),
-  destroyLogicalType,
-  withConnectionHandle,
-  withQueryCString,
-  withResult,
+  executeParsedStatement,
+  withParsedStatements,
  )
-import Database.DuckDB.Simple.Materialize (prepareVectorReader)
-import Database.DuckDB.Simple.Ok (Ok (..))
-import Foreign.C.ConstPtr (ConstPtr (..))
-import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (FunPtr, Ptr, castPtr, nullPtr)
-import Foreign.StablePtr (StablePtr, castPtrToStablePtr, deRefStablePtr)
-import Foreign.Storable (poke, pokeElemOff)
-import GHC.Float (float2Double)
-import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
-
-data ScalarFunctionResources = ScalarFunctionResources
-  { scalarFunctionExecPtr :: !DuckDBScalarFunctionFun
-  , scalarFunctionInitPtr :: !(Maybe DuckDBScalarFunctionInitFun)
-  }
-
--- | Tag DuckDB logical types we support for scalar return values.
-data ScalarType
-  = ScalarTypeBoolean
-  | ScalarTypeBigInt
-  | ScalarTypeUBigInt
-  | ScalarTypeDouble
-  | ScalarTypeVarchar
-
--- | Runtime representation of values returned to DuckDB.
-data ScalarValue
-  = ScalarNull
-  | ScalarBoolean !Bool
-  | ScalarInteger !Int64
-  | ScalarUnsigned !Word64
-  | ScalarDouble !Double
-  | ScalarText !Text
-
--- | Class of scalar results that can be produced by user-defined functions.
-class FunctionResult a where
-  scalarReturnType :: Proxy a -> ScalarType
-  toScalarValue :: a -> IO ScalarValue
-
-instance FunctionResult Int where
-  scalarReturnType _ = ScalarTypeBigInt
-  toScalarValue value = pure (ScalarInteger (fromIntegral value))
-
-instance FunctionResult Int16 where
-  scalarReturnType _ = ScalarTypeBigInt
-  toScalarValue value = pure (ScalarInteger (fromIntegral value))
-
-instance FunctionResult Int32 where
-  scalarReturnType _ = ScalarTypeBigInt
-  toScalarValue value = pure (ScalarInteger (fromIntegral value))
-
-instance FunctionResult Int64 where
-  scalarReturnType _ = ScalarTypeBigInt
-  toScalarValue value = pure (ScalarInteger value)
-
-instance FunctionResult Word where
-  scalarReturnType _ = ScalarTypeUBigInt
-  toScalarValue value = pure (ScalarUnsigned (fromIntegral value))
-
-instance FunctionResult Word16 where
-  scalarReturnType _ = ScalarTypeBigInt
-  toScalarValue value = pure (ScalarInteger (fromIntegral value))
-
-instance FunctionResult Word32 where
-  scalarReturnType _ = ScalarTypeBigInt
-  toScalarValue value = pure (ScalarInteger (fromIntegral value))
-
-instance FunctionResult Word64 where
-  scalarReturnType _ = ScalarTypeUBigInt
-  toScalarValue value = pure (ScalarUnsigned (fromIntegral value))
-
-instance FunctionResult Double where
-  scalarReturnType _ = ScalarTypeDouble
-  toScalarValue value = pure (ScalarDouble value)
-
-instance FunctionResult Float where
-  scalarReturnType _ = ScalarTypeDouble
-  toScalarValue value = pure (ScalarDouble (float2Double value))
-
-instance FunctionResult Bool where
-  scalarReturnType _ = ScalarTypeBoolean
-  toScalarValue value = pure (ScalarBoolean value)
-
-instance FunctionResult Text where
-  scalarReturnType _ = ScalarTypeVarchar
-  toScalarValue value = pure (ScalarText value)
-
-instance FunctionResult String where
-  scalarReturnType _ = ScalarTypeVarchar
-  toScalarValue value = pure (ScalarText (Text.pack value))
-
-instance (FunctionResult a) => FunctionResult (Maybe a) where
-  scalarReturnType _ = scalarReturnType (Proxy :: Proxy a)
-  toScalarValue Nothing = pure ScalarNull
-  toScalarValue (Just value) = toScalarValue value
-
--- | Argument types supported by the scalar function machinery.
-class FunctionArg a where
-  argumentType :: Proxy a -> DuckDBType
-
-instance FunctionArg Int where
-  argumentType _ = DuckDBTypeBigInt
-
-instance FunctionArg Int16 where
-  argumentType _ = DuckDBTypeSmallInt
-
-instance FunctionArg Int32 where
-  argumentType _ = DuckDBTypeInteger
-
-instance FunctionArg Int64 where
-  argumentType _ = DuckDBTypeBigInt
-
-instance FunctionArg Word where
-  argumentType _ = DuckDBTypeUBigInt
-
-instance FunctionArg Word16 where
-  argumentType _ = DuckDBTypeUSmallInt
-
-instance FunctionArg Word32 where
-  argumentType _ = DuckDBTypeUInteger
-
-instance FunctionArg Word64 where
-  argumentType _ = DuckDBTypeUBigInt
-
-instance FunctionArg Double where
-  argumentType _ = DuckDBTypeDouble
-
-instance FunctionArg Float where
-  argumentType _ = DuckDBTypeFloat
-
-instance FunctionArg Bool where
-  argumentType _ = DuckDBTypeBoolean
-
-instance FunctionArg Text where
-  argumentType _ = DuckDBTypeVarchar
-
-instance FunctionArg String where
-  argumentType _ = DuckDBTypeVarchar
-
-instance (FunctionArg a) => FunctionArg (Maybe a) where
-  argumentType _ = argumentType (Proxy :: Proxy a)
-
--- | Typeclass describing Haskell functions that can be exposed to DuckDB.
-class Function a where
-  argumentTypes :: Proxy a -> [DuckDBType]
-  returnType :: Proxy a -> ScalarType
-  isVolatile :: Proxy a -> Bool
-  applyFunction :: [Field] -> a -> IO ScalarValue
-
-instance {-# OVERLAPPABLE #-} (FunctionResult a) => Function a where
-  argumentTypes _ = []
-  returnType _ = scalarReturnType (Proxy :: Proxy a)
-  isVolatile _ = False
-  applyFunction [] value = toScalarValue value
-  applyFunction _ _ = throwIO (functionInvocationError (Text.pack "unexpected arguments supplied"))
-
-instance {-# OVERLAPPING #-} (FunctionResult a) => Function (IO a) where
-  argumentTypes _ = []
-  returnType _ = scalarReturnType (Proxy :: Proxy a)
-  isVolatile _ = True
-  applyFunction [] action = action >>= toScalarValue
-  applyFunction _ _ = throwIO (functionInvocationError (Text.pack "unexpected arguments supplied"))
-
-instance {-# OVERLAPPABLE #-} (FromField a, FunctionArg a, Function r) => Function (a -> r) where
-  argumentTypes _ = argumentType (Proxy :: Proxy a) : argumentTypes (Proxy :: Proxy r)
-  returnType _ = returnType (Proxy :: Proxy r)
-  isVolatile _ = isVolatile (Proxy :: Proxy r)
-  applyFunction [] _ =
-    throwIO (functionInvocationError (Text.pack "insufficient arguments supplied"))
-  applyFunction (field : rest) fn =
-    case fromField field of
-      Errors err -> throwIO (argumentConversionError (fieldIndex field) err)
-      Ok value -> applyFunction rest (fn value)
+import Database.DuckDB.Simple.Native
+import Database.DuckDB.Simple.ToField (ToDuckValue)
+import Database.DuckDB.Simple.Typed (TypedRow, createCastOn)
+import Database.DuckDB.Simple.Typed.Aggregate (Aggregate (..), createAggregateOn)
+import Database.DuckDB.Simple.Typed.Table (createTableFunctionOn)
+import Database.DuckDB.Simple.V2.Registration (TypeDeclaration (..))
 
 -- | Register a Haskell function under the supplied name.
-createFunction :: forall f. (Function f) => Connection -> Text -> f -> IO ()
-createFunction conn name fn =
-  registerScalarFunction conn name (Proxy :: Proxy f) \allocate -> do
-    scalarFunctionExecPtr <- DuckDBScalarFunctionFun <$> allocate (toFunPtr (DuckDBScalarFunctionFun_Aux (scalarFunctionHandler fn)))
-    pure ScalarFunctionResources{scalarFunctionExecPtr, scalarFunctionInitPtr = Nothing}
+createFunction :: (Function f) => Connection -> Text -> f -> IO ()
+createFunction conn = createFunctionOn (ConnectionTarget conn)
 
 -- | Register a scalar function with per-worker thread-local state.
-createFunctionWithState :: forall s f. (Function f) => Connection -> Text -> IO s -> (s -> f) -> IO ()
-createFunctionWithState conn name initState mkFn =
-  registerScalarFunction conn name (Proxy :: Proxy f) \allocate -> do
-    scalarFunctionExecPtr <- DuckDBScalarFunctionFun <$> allocate (toFunPtr (DuckDBScalarFunctionFun_Aux (scalarFunctionHandlerWithState mkFn)))
-    initPtr <- DuckDBScalarFunctionInitFun <$> allocate (toFunPtr (DuckDBScalarFunctionInitFun_Aux (scalarFunctionInitHandler initState)))
-    pure ScalarFunctionResources{scalarFunctionExecPtr, scalarFunctionInitPtr = Just initPtr}
+createFunctionWithState :: (Function f) => Connection -> Text -> IO s -> (s -> f) -> IO ()
+createFunctionWithState conn = createFunctionWithStateOn (ConnectionTarget conn)
 
--- | Configure a scalar function and transfer its callbacks to DuckDB.
-registerScalarFunction
-  :: (Function f) => Connection -> Text -> Proxy f -> ((forall a. IO (FunPtr a) -> IO (FunPtr a)) -> IO ScalarFunctionResources) -> IO ()
-registerScalarFunction conn name proxy acquire = do
-  when (Text.null name || Text.any (== '\0') name) $
-    throwIO (functionInvocationError "duckdb-simple: invalid scalar function name")
-  bracket c_duckdb_create_scalar_function cleanupScalarFunction \scalarFun -> do
-    when (scalarFun == DuckDBScalarFunction nullPtr) $
-      throwIO (functionInvocationError "duckdb-simple: failed to allocate scalar function")
-    withCallbackResources
-      acquire
-      (c_duckdb_scalar_function_set_extra_info scalarFun)
-      \ScalarFunctionResources{scalarFunctionExecPtr, scalarFunctionInitPtr} -> do
-        TextForeign.withCString name $ c_duckdb_scalar_function_set_name scalarFun . ConstPtr
-        forM_ (argumentTypes proxy) \dtype ->
-          withLogicalType dtype $ c_duckdb_scalar_function_add_parameter scalarFun
-        withLogicalType (duckTypeForScalar (returnType proxy)) $ c_duckdb_scalar_function_set_return_type scalarFun
-        when (isVolatile proxy) $ c_duckdb_scalar_function_set_volatile scalarFun
-        c_duckdb_scalar_function_set_special_handling scalarFun
-        c_duckdb_scalar_function_set_function scalarFun scalarFunctionExecPtr
-        forM_ scalarFunctionInitPtr $ c_duckdb_scalar_function_set_init scalarFun
-        withConnectionHandle conn \connPtr -> do
-          rc <- c_duckdb_register_scalar_function connPtr scalarFun
-          when (rc /= DuckDBSuccess) $
-            throwIO (functionInvocationError "duckdb-simple: registering function failed")
+-- | Register an explicit cast from the source type (the first type) to the
+-- target type (the second type). DuckDB uses the cast for @CAST@ and @TRY_CAST@.
+-- It does not use the cast implicitly. Register a cast again to replace it.
+--
+-- The function converts one value. 'Right' gives the result. 'Left' gives a
+-- failure message. A NULL value gives NULL. The function does not run for NULL.
+--
+-- A row fails when its value does not convert to @a@, when the function gives
+-- 'Left', or when the function or the result conversion raises an exception.
+-- @CAST@ then fails with the message of the first failed row. @TRY_CAST@ gives
+-- NULL for each failed row and the results for the other rows.
+--
+-- DuckDB casts each result to the target type with its default cast. The target
+-- type can be a custom type whose base type is the type of @b@, for example a
+-- type from 'Database.DuckDB.Simple.Registration.registerCustomType'.
+--
+-- > createCast conn (TypeExpression "BIGINT") (TypeExpression "shifted") \(value :: Int64) ->
+-- >     if value > maxBound - 100 then Left "BIGINT overflow" else Right (value + 100)
+createCast :: (FromField a, ToDuckValue b) => Connection -> TypeDeclaration -> TypeDeclaration -> (a -> Either Text b) -> IO ()
+createCast conn = createCastOn (ConnectionTarget conn)
+
+-- | Register a table function. The function gives the rows of one scan as a
+-- list. The list of names gives the names of the result columns. 'TypedRow' of
+-- @row@ gives the column types. A different number of names and columns, or a
+-- row with no column, is an error at registration. A @Maybe@ column gives NULL
+-- for 'Nothing'.
+--
+-- 'TypedRow' of @params@ gives the parameter types. Use @()@ for no parameter.
+-- The parameters are positional only. DuckDB casts each argument to its
+-- parameter type. Then 'FromRow' converts the arguments. An argument that does
+-- not convert is an SQL error that names the function. A NULL argument converts
+-- only to a @Maybe@ field.
+--
+-- DuckDB converts the arguments when it plans the query. Thus an argument that
+-- does not convert also fails the preparation of a statement. The function runs
+-- one time for each scan, when the execution of the statement starts. It does not
+-- run at preparation. A query that reads the function two times runs it two
+-- times. A prepared statement runs it at each execution.
+--
+-- DuckDB reads the list one chunk at a time. It can run two exec callbacks of
+-- one scan at the same time, for example for a multi-file function. Each exec
+-- callback takes its rows from the list under a lock, so two exec callbacks never
+-- read the list at the same time. DuckDB stops when the query needs no more rows,
+-- so the list can be long or infinite, for example with @LIMIT@. It reads a full
+-- chunk, and it can read more chunks than the query needs. Thus it can read rows
+-- after the @LIMIT@. It reads all columns of each row that it reads, also the
+-- columns that the query does not use. An exception in the function or in a row
+-- is an SQL error. DuckDB releases the list when the scan ends.
+--
+-- > createTableFunction conn "haskell_squares" ["n", "square"] \(Only count) ->
+-- >     pure [(n, n * n) | n <- [0 .. count - 1 :: Int64]]
+createTableFunction :: (FromRow params, TypedRow params, TypedRow row) => Connection -> Text -> [Text] -> (params -> IO [row]) -> IO ()
+createTableFunction conn = createTableFunctionOn (ConnectionTarget conn)
+
+-- | Register an aggregate function. The function folds the rows of each group
+-- into a state.
+--
+-- 'aggregateStep' adds one row to a state. The step does not run for a row that
+-- has NULL in an argument. A group with no other rows gets the result of
+-- 'aggregateInitial'. DuckDB can split a group into partial states, for example
+-- over threads or for a window frame. 'aggregateCombine' merges two partial
+-- states. DuckDB also merges a partial state into a new state, so
+-- 'aggregateCombine' must give the other state when one state is
+-- 'aggregateInitial'. Each new state is evaluated to weak head normal form.
+--
+-- The arguments decode with 'Database.DuckDB.Simple.FromRow.FromRow'. The SQL
+-- type of each argument is the 'Database.DuckDB.Simple.ToField.duckdbColumnType'
+-- of its column in 'TypedRow'. The SQL return type comes from 'FunctionResult':
+-- BIGINT for 'Int', 'Data.Int.Int16', 'Data.Int.Int32', 'Data.Int.Int64',
+-- 'Data.Word.Word16', and 'Data.Word.Word32'; UBIGINT for 'Word' and
+-- 'Data.Word.Word64'; DOUBLE for 'Double' and 'Float'; BOOLEAN for 'Bool'; and
+-- VARCHAR for 'Text' and 'String'. A 'Maybe' result has the SQL type of its
+-- value, and 'Nothing' gives NULL. Thus an @Int32@ argument is INTEGER, but an
+-- @Int32@ result is BIGINT.
+--
+-- An exception in a function fails the query. DuckDB can run the functions on
+-- more than one thread at one time, but not on the same state. The aggregate
+-- function works with GROUP BY, with DISTINCT, FILTER, and ORDER BY, and as a
+-- window function.
+--
+-- > createAggregate conn "haskell_sum" Aggregate
+-- >     { aggregateInitial = 0 :: Int64
+-- >     , aggregateStep = \total (Only value) -> pure (total + value)
+-- >     , aggregateCombine = \a b -> pure (a + b)
+-- >     , aggregateResult = pure
+-- >     }
+createAggregate :: (FromRow args, TypedRow args, FunctionResult result) => Connection -> Text -> Aggregate state args result -> IO ()
+createAggregate conn = createAggregateOn (ConnectionTarget conn)
 
 -- | Run @DROP FUNCTION IF EXISTS@ and report native errors.
 -- DuckDB does not permit deletion of functions registered through the C API.
+-- For a function from 'createFunction', this call raises 'SQLError' and the
+-- function stays registered. Register the name again to replace the function.
+-- GHC reports a warning at each use of this function. A build with @-Werror@
+-- must allow that warning, for example with @-Wno-error=deprecations@.
 deleteFunction :: Connection -> Text -> IO ()
-deleteFunction conn name =
-  withConnectionHandle conn \connPtr -> do
-    let dropQuery =
-          Query $
-            Text.concat
-              [ Text.pack "DROP FUNCTION IF EXISTS "
-              , qualifyIdentifier name
-              ]
-    withQueryCString dropQuery \sql ->
-      withResult conn dropQuery (c_duckdb_query connPtr sql) (const (pure ()))
+deleteFunction conn name = do
+  let dropQuery = Query ("DROP FUNCTION IF EXISTS " <> qualifyIdentifier name)
+  withParsedStatements conn dropQuery (mapM_ (executeParsedStatement conn dropQuery))
+{-# WARNING
+  deleteFunction
+  "DuckDB cannot drop a function that its C API registered. deleteFunction raises SQLError for a function from createFunction. Register the name again to replace the function."
+  #-}
 
-cleanupScalarFunction :: DuckDBScalarFunction -> IO ()
-cleanupScalarFunction scalarFun =
-  alloca \ptr -> do
-    poke ptr scalarFun
-    c_duckdb_destroy_scalar_function ptr
-
-withLogicalType :: DuckDBType -> (DuckDBLogicalType -> IO a) -> IO a
-withLogicalType dtype =
-  bracket
-    ( do
-        logical <- c_duckdb_create_logical_type (DuckDBTypeAlias dtype)
-        when (logical == DuckDBLogicalType nullPtr)
-          $ throwIO
-          $ functionInvocationError (Text.pack "duckdb-simple: failed to allocate logical type")
-        pure logical
-    )
-    destroyLogicalType
-
-duckTypeForScalar :: ScalarType -> DuckDBType
-duckTypeForScalar = \case
-  ScalarTypeBoolean -> DuckDBTypeBoolean
-  ScalarTypeBigInt -> DuckDBTypeBigInt
-  ScalarTypeUBigInt -> DuckDBTypeUBigInt
-  ScalarTypeDouble -> DuckDBTypeDouble
-  ScalarTypeVarchar -> DuckDBTypeVarchar
-
-scalarFunctionHandler :: forall f. (Function f) => f -> DuckDBFunctionInfo -> DuckDBDataChunk -> DuckDBVector -> IO ()
-scalarFunctionHandler fn info chunk outVec =
-  runCallback (c_duckdb_scalar_function_set_error info) do
-    rawColumnCount <- c_duckdb_data_chunk_get_column_count chunk
-    let columnCount = fromIntegral rawColumnCount :: Int
-        expected = length (argumentTypes (Proxy :: Proxy f))
-    when (columnCount /= expected)
-      $ throwIO
-      $ functionInvocationError
-      $ Text.concat
-        [ Text.pack "duckdb-simple: function expected "
-        , Text.pack (show expected)
-        , Text.pack " arguments but received "
-        , Text.pack (show columnCount)
-        ]
-    rawRowCount <- c_duckdb_data_chunk_get_size chunk
-    let rowCount = fromIntegral rawRowCount :: Int
-    readers <- mapM (makeColumnReader chunk) [0 .. expected - 1]
-    rows <-
-      forM [0 .. rowCount - 1] \row ->
-        forM readers \reader ->
-          reader (fromIntegral row)
-    results <- mapM (`applyFunction` fn) rows
-    writeResults (returnType (Proxy :: Proxy f)) results outVec
-
-scalarFunctionHandlerWithState :: forall s f. (Function f) => (s -> f) -> DuckDBFunctionInfo -> DuckDBDataChunk -> DuckDBVector -> IO ()
-scalarFunctionHandlerWithState mkFn info chunk outVec =
-  runCallback (c_duckdb_scalar_function_set_error info) do
-    statePtr <- c_duckdb_scalar_function_get_state info
-    when (statePtr == nullPtr) $
-      throwIO (functionInvocationError "duckdb-simple: scalar function state was not initialised")
-    state <- deRefStablePtr (castPtrToStablePtr (castPtr statePtr) :: StablePtr s)
-    scalarFunctionHandler (mkFn state) info chunk outVec
-
-scalarFunctionInitHandler :: IO s -> DuckDBInitInfo -> IO ()
-scalarFunctionInitHandler initState info =
-  runCallback (c_duckdb_scalar_function_init_set_error info) do
-    state <- initState
-    transferCallbackState (c_duckdb_scalar_function_init_set_state info) state
-
-type ColumnReader = DuckDBIdx -> IO Field
-
-makeColumnReader :: DuckDBDataChunk -> Int -> IO ColumnReader
-makeColumnReader chunk columnIndex = do
-  readValue <- c_duckdb_data_chunk_get_vector chunk (fromIntegral columnIndex) >>= prepareVectorReader
-  let name = Text.pack ("arg" <> show columnIndex)
-  pure \rowIdx -> do
-    value <- readValue (fromIntegral rowIdx)
-    pure
-      Field
-        { fieldName = name
-        , fieldIndex = columnIndex
-        , fieldValue = value
-        }
-
-writeResults :: ScalarType -> [ScalarValue] -> DuckDBVector -> IO ()
-writeResults resultType values outVec = do
-  let hasNulls = any isNullValue values
-  when hasNulls $
-    c_duckdb_vector_ensure_validity_writable outVec
-  dataPtr <- c_duckdb_vector_get_data outVec
-  validityPtr <- c_duckdb_vector_get_validity outVec
-  forM_ (zip [0 ..] values) \(idx, val) ->
-    case (resultType, val) of
-      (_, ScalarNull) ->
-        markInvalid validityPtr idx
-      (ScalarTypeBoolean, ScalarBoolean flag) -> do
-        markValid validityPtr idx
-        pokeElemOff (castPtr dataPtr :: Ptr Word8) idx (if flag then 1 else 0)
-      (ScalarTypeBigInt, ScalarInteger intval) -> do
-        markValid validityPtr idx
-        pokeElemOff (castPtr dataPtr :: Ptr Int64) idx intval
-      (ScalarTypeUBigInt, ScalarUnsigned intval) -> do
-        markValid validityPtr idx
-        pokeElemOff (castPtr dataPtr :: Ptr Word64) idx intval
-      (ScalarTypeDouble, ScalarDouble dbl) -> do
-        markValid validityPtr idx
-        pokeElemOff (castPtr dataPtr :: Ptr Double) idx dbl
-      (ScalarTypeVarchar, ScalarText txt) -> do
-        markValid validityPtr idx
-        TextForeign.withCStringLen txt \(ptr, len) ->
-          c_duckdb_vector_assign_string_element_len outVec (fromIntegral idx) (ConstPtr ptr) (fromIntegral len)
-      _ ->
-        throwIO
-          $ functionInvocationError
-          $ Text.pack "duckdb-simple: result type mismatch when materialising scalar function output"
-
-markInvalid :: Ptr Word64 -> Int -> IO ()
-markInvalid validity idx
-  | validity == nullPtr = pure ()
-  | otherwise = c_duckdb_validity_set_row_invalid validity (fromIntegral idx)
-
-markValid :: Ptr Word64 -> Int -> IO ()
-markValid validity idx
-  | validity == nullPtr = pure ()
-  | otherwise = c_duckdb_validity_set_row_valid validity (fromIntegral idx)
-
-isNullValue :: ScalarValue -> Bool
-isNullValue = \case
-  ScalarNull -> True
-  _ -> False
-
-argumentConversionError :: Int -> [SomeException] -> SQLError
-argumentConversionError idx err =
-  let message =
-        Text.concat
-          [ Text.pack "duckdb-simple: unable to convert argument #"
-          , Text.pack (show (idx + 1))
-          , Text.pack ": "
-          , Text.pack (show err)
-          ]
-  in  functionInvocationError message
-
-functionInvocationError :: Text -> SQLError
-functionInvocationError message =
-  SQLError
-    { sqlErrorMessage = message
-    , sqlErrorType = Nothing
-    , sqlErrorQuery = Nothing
-    }
-
+-- | Quote each dot-separated part of a function name.
 qualifyIdentifier :: Text -> Text
-qualifyIdentifier rawName =
-  let parts = Text.splitOn "." rawName
-  in  Text.intercalate (Text.pack ".") (map quoteIdent parts)
+qualifyIdentifier = Text.intercalate "." . map quoteIdent . Text.splitOn "."
 
+-- | Quote one SQL identifier.
 quoteIdent :: Text -> Text
-quoteIdent ident =
-  Text.concat
-    [ Text.pack "\""
-    , Text.replace (Text.pack "\"") (Text.pack "\"\"") ident
-    , Text.pack "\""
-    ]
+quoteIdent ident = "\"" <> Text.replace "\"" "\"\"" ident <> "\""

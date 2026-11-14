@@ -3,36 +3,108 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- | Manage callback resources at the DuckDB ownership boundary.
+-- |
+-- Module      : Database.DuckDB.Simple.Callback
+-- Description : Manage callback resources and registration builders at the DuckDB ownership boundary.
 module Database.DuckDB.Simple.Callback (
+  RegistrationTarget (..),
+  withRegistrationFactory,
+  withTarget,
+  Allocator,
+  install,
+  installOptional,
+  guardContext,
   withCallbackResources,
+  withCallbackResourcesFinally,
   transferCallbackState,
+  readCallbackState,
   runCallback,
   ignoreCallbackExceptions,
+  attachOpaque,
 ) where
 
-import Control.Exception (SomeException, catch, displayException, finally, mask, mask_, onException, try)
+import Control.Exception (SomeException, bracket, catch, displayException, finally, fromException, mask, mask_, onException, try)
+import Control.Monad (when)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import qualified Data.Text as Text
-import qualified Data.Text.Foreign as TextForeign
 import Data.Void (Void)
-import Database.DuckDB.FFI (DuckDBDeleteCallback (..))
-import Foreign.C.ConstPtr (ConstPtr (..))
-import Foreign.C.String (withCString)
-import Foreign.C.Types (CChar)
-import Foreign.Ptr (FunPtr, Ptr, castFunPtr, castPtr, freeHaskellFunPtr, nullPtr)
+import Database.DuckDB.Simple.Internal (Connection, withCallbackMark, withConnectionHandle)
+import Database.DuckDB.Simple.Native
+import Foreign.Marshal.Utils (with)
+import Foreign.Ptr (FunPtr, Ptr, castFunPtr, castPtr, freeHaskellFunPtr, nullFunPtr, nullPtr)
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deRefStablePtr, freeStablePtr, newStablePtr)
+import Foreign.Storable (Storable, peek)
+import HsBindgen.Runtime.Support.FunPtr (ToFunPtr, toFunPtr)
+import System.IO.Error (ioeGetErrorString, isUserError)
+
+-- | A registration target. Extension handles are borrowed from an extension load
+-- callback and must not escape it. Configure extension types and values with
+-- the context supplied to that callback.
+data RegistrationTarget = ConnectionTarget Connection | ExtensionTarget DuckDBV2ExtensionHandle DuckDBV2ContextHandle
+
+-- | Borrow the factory of a registration target. The factory must not escape
+-- this action. Use it to construct signature types and values in a configuration action.
+withRegistrationFactory :: RegistrationTarget -> (DuckDBV2FactoryHandle -> IO a) -> IO a
+withRegistrationFactory target action = case target of
+  ConnectionTarget connection -> withConnectionHandle connection $ \native -> withConnectionFactory native action
+  ExtensionTarget _ context -> withContextFactory context action
+
+-- | Keep the target alive while borrowing its factory and registration builder.
+withTarget
+  :: (Storable handle)
+  => RegistrationTarget
+  -> (DuckDBV2FactoryHandle -> Ptr handle -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error)
+  -> (Ptr handle -> IO DuckDBV2Error)
+  -> (DuckDBV2ConnectionHandle -> handle -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error)
+  -> (DuckDBV2ExtensionHandle -> handle -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error)
+  -> (handle -> IO () -> IO a)
+  -> IO a
+withTarget target create release registerConnection registerExtension action = case target of
+  ConnectionTarget connection -> withConnectionHandle connection $ \native ->
+    withConnectionFactory native $ \factory ->
+      bracket (output (create factory)) (destroy release) $ \handle -> action handle (checked (registerConnection native handle))
+  ExtensionTarget extension context -> withContextFactory context $ \factory ->
+    bracket (output (create factory)) (destroy release) $ \handle -> action handle (checked (registerExtension extension handle))
+
+-- | Allocate a callback pointer tracked by the native registration owner.
+type Allocator = forall a. IO (FunPtr a) -> IO (FunPtr a)
+
+-- | Allocate one generated callback and defer its checked setter.
+install
+  :: (ToFunPtr auxiliary)
+  => Allocator -> (FunPtr auxiliary -> callback) -> auxiliary -> (callback -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO (IO ())
+install allocate wrap callback setter = do
+  pointer <- wrap <$> allocate (toFunPtr callback)
+  pure (checked (setter pointer))
+
+-- | Allocate an optional callback when it is present.
+installOptional :: Maybe a -> (a -> IO (IO ())) -> IO (IO ())
+installOptional value action = maybe (pure (pure ())) action value
+
+-- | Translate a callback exception through its native error channel.
+guardContext :: (info -> DuckDBV2ContextHandle -> IO ()) -> info -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
+guardContext callback info context err = runCallback err (callback info context)
 
 -- | Acquire callbacks and transfer their cleanup to a DuckDB object.
 -- The object must be non-null. Its destructor must run after the action.
 withCallbackResources
-  :: ((forall a. IO (FunPtr a) -> IO (FunPtr a)) -> IO r)
-  -> (Ptr Void -> DuckDBDeleteCallback -> IO ())
+  :: (Allocator -> IO r)
+  -> (Ptr Void -> DuckDBV2OpaqueDestroyFn -> IO ())
   -> (r -> IO b)
   -> IO b
-withCallbackResources acquire attach action = mask \restore -> do
+withCallbackResources = withCallbackResourcesFinally (pure ())
+
+-- | Run a final action before the callback resources are released.
+-- This includes acquisition and registration failure. Contain final-action errors.
+withCallbackResourcesFinally
+  :: IO ()
+  -> (Allocator -> IO r)
+  -> (Ptr Void -> DuckDBV2OpaqueDestroyFn -> IO ())
+  -> (r -> IO b)
+  -> IO b
+withCallbackResourcesFinally finalizer acquire attach action = mask \restore -> do
   cleanups <- newIORef []
-  let cleanup = readIORef cleanups >>= sequence_
+  let cleanup = ignoreCallbackExceptions finalizer `finally` (readIORef cleanups >>= sequence_)
       allocate make = do
         ptr <- make
         modifyIORef' cleanups (freeHaskellFunPtr ptr :)
@@ -40,28 +112,76 @@ withCallbackResources acquire attach action = mask \restore -> do
         pure ptr
   resources <- acquire allocate `onException` cleanup
   stable <- newStablePtr cleanup `onException` cleanup
+  -- A setter that fails has not taken the pointer, so this handler frees it.
+  -- The header does not state this. It is the behaviour of DuckDB 2.0.0.
   attach (castPtr (castStablePtrToPtr stable)) callbackResourcesDestructor
     `onException` (freeStablePtr stable >> cleanup)
   restore (action resources)
 
 -- | Transfer one state value to a DuckDB callback state slot.
-transferCallbackState :: (Ptr Void -> DuckDBDeleteCallback -> IO ()) -> a -> IO ()
+-- Use each slot once. In DuckDB 2.0.0, a setter for init data, batch data, global
+-- state, or local state does not release a value that it replaces. The header
+-- does not state this behaviour.
+transferCallbackState :: (Ptr Void -> DuckDBV2OpaqueDestroyFn -> IO ()) -> a -> IO ()
 transferCallbackState attach state = mask_ do
   stable <- newStablePtr state
+  -- A setter that fails has not taken the pointer, so this handler frees it.
+  -- See the same handler in 'withCallbackResourcesFinally'.
   attach (castPtr (castStablePtrToPtr stable)) callbackStateDestructor
     `onException` freeStablePtr stable
 
--- | Convert callback exceptions to DuckDB errors.
-runCallback :: (ConstPtr CChar -> IO ()) -> IO () -> IO ()
-runCallback setError action = mask \restore -> do
-  outcome <- try (restore action)
+-- | Read state stored with 'transferCallbackState'. The caller supplies its type.
+readCallbackState :: (Ptr (Ptr Void) -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO a
+readCallbackState getter = do
+  ptr <- output getter
+  when (ptr == nullPtr) $ throwInvalidArgument (Text.pack "callback state is not initialized")
+  deRefStablePtr (castPtrToStablePtr (castPtr ptr))
+
+-- | Convert callback exceptions to native V2 diagnostics. Mark the thread as a
+-- thread inside a DuckDB callback for the time of the action, so that its
+-- waits for a connection lock have the bound of the connection. See
+-- 'Database.DuckDB.Simple.Internal.withConnectionLock'. Each DuckDB callback
+-- with user code runs through this function, except the flush function of a
+-- log sink when DuckDB destroys the sink.
+runCallback :: Ptr DuckDBV2ErrorInfoHandle -> IO () -> IO ()
+runCallback err action = mask \restore -> do
+  outcome <- try (withCallbackMark (restore action))
   case outcome of
     Right () -> pure ()
-    Left (err :: SomeException) ->
-      TextForeign.withCString (Text.pack (displayException err)) (setError . ConstPtr)
-        `catch` \(_ :: SomeException) ->
-          ignoreCallbackExceptions $
-            withCString "duckdb-simple: Haskell callback failed" (setError . ConstPtr)
+    Left (failure :: SomeException) ->
+      ignoreCallbackExceptions $
+        if err == nullPtr
+          then pure ()
+          else do
+            info <- peek err
+            if info == nullHandle
+              then pure ()
+              else do
+                c_duckdb_v2_error_info_set_code info DuckDBV2ErrorApi >>= checkCode
+                withText (Text.pack "Haskell callback failed") $ \message ->
+                  c_duckdb_v2_error_info_set_text info message >>= checkCode
+                withText (Text.pack (failureText failure)) $ \message ->
+                  c_duckdb_v2_error_info_set_text info message >>= checkCode
+
+-- | The text of a callback exception in the SQL error. An 'SQLError' gives its
+-- message, and a 'userError' gives its text. Thus the SQL error does not show a
+-- Haskell record or the words \"user error\". Each other exception gives its
+-- 'displayException' text.
+failureText :: SomeException -> String
+failureText failure
+  | Just sqlError <- fromException failure = Text.unpack (sqlErrorMessage sqlError)
+  | Just ioError' <- fromException failure, isUserError ioError' = ioeGetErrorString ioError'
+  | otherwise = displayException failure
+
+-- | Transfer an opaque resource to a checked V2 setter.
+attachOpaque
+  :: (Ptr DuckDBV2Opaque -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error)
+  -> Ptr Void
+  -> DuckDBV2OpaqueDestroyFn
+  -> IO ()
+attachOpaque setter ptr release =
+  with (DuckDBV2Opaque ptr release (DuckDBV2OpaqueEqualsFn nullFunPtr)) $ \opaque ->
+    checked (setter opaque)
 
 -- | Contain exceptions in callbacks which have no error channel.
 ignoreCallbackExceptions :: IO () -> IO ()
@@ -99,9 +219,9 @@ foreign import ccall "&duckdb_simple_release_callback_state"
   callbackStateDestructorAddress :: FunPtr (Ptr Void -> IO ())
 
 -- | Use the generated callback type for the static destructor address.
-callbackResourcesDestructor :: DuckDBDeleteCallback
-callbackResourcesDestructor = DuckDBDeleteCallback (castFunPtr callbackResourcesDestructorAddress)
+callbackResourcesDestructor :: DuckDBV2OpaqueDestroyFn
+callbackResourcesDestructor = DuckDBV2OpaqueDestroyFn (castFunPtr callbackResourcesDestructorAddress)
 
 -- | Use the generated callback type for the static state destructor address.
-callbackStateDestructor :: DuckDBDeleteCallback
-callbackStateDestructor = DuckDBDeleteCallback (castFunPtr callbackStateDestructorAddress)
+callbackStateDestructor :: DuckDBV2OpaqueDestroyFn
+callbackStateDestructor = DuckDBV2OpaqueDestroyFn (castFunPtr callbackStateDestructorAddress)

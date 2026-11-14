@@ -17,9 +17,11 @@ module Database.DuckDB.Simple.FromField (
   RawGeometry (..),
   StructField (..),
   StructValue (..),
+  TupleValue (..),
   UnionMemberType (..),
   UnionValue (..),
   LogicalTypeRep (..),
+  LogicalTypeId (..),
   BitString (..),
   bsFromBool,
   BigNum (..),
@@ -61,9 +63,11 @@ import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.Simple.Geometry (RawGeometry (..), fromRawGeometry)
 import Database.DuckDB.Simple.LogicalRep (
+  LogicalTypeId (..),
   LogicalTypeRep (..),
   StructField (..),
   StructValue (..),
+  TupleValue (..),
   UnionMemberType (..),
   UnionValue (..),
  )
@@ -109,22 +113,23 @@ data FieldValue
   | FieldList [FieldValue]
   | FieldMap [(FieldValue, FieldValue)]
   | FieldStruct (StructValue FieldValue)
+  | FieldTuple (TupleValue FieldValue)
   | FieldUnion (UnionValue FieldValue)
   deriving (Eq, Show)
 
 -- | Exact-width decimal payload plus its declared width and scale.
 data DecimalValue = DecimalValue
-  { decimalWidth :: !Word8
-  , decimalScale :: !Word8
-  , decimalInteger :: !Integer
+  { decimalWidth :: Word8
+  , decimalScale :: Word8
+  , decimalInteger :: Integer
   }
   deriving (Eq, Show)
 
 -- | DuckDB interval payload split into months, days, and microseconds.
 data IntervalValue = IntervalValue
-  { intervalMonths :: !Int32
-  , intervalDays :: !Int32
-  , intervalMicros :: !Int64
+  { intervalMonths :: Int32
+  , intervalDays :: Int32
+  , intervalMicros :: Int64
   }
   deriving (Eq, Show)
 
@@ -136,6 +141,8 @@ newtype BigNum = BigNum Integer
 -- | Decode DuckDB’s BIGNUM blob (3-byte header + big-endian payload where negative magnitudes are
 -- bitwise complemented) back into a Haskell @Integer@. We undo the complement when needed, then chunk
 -- the remaining bytes into machine-word limbs (MSB chunk first) for @integerFromWordList@.
+-- This is the BIGNUM storage of DuckDB 2.0.0. The V2 API does not commit to this
+-- layout, and this library does not use this function.
 fromBigNumBytes :: [Word8] -> Integer
 fromBigNumBytes bytes =
   let header = take 3 bytes
@@ -160,6 +167,8 @@ fromBigNumBytes bytes =
 -- | Encode an @Integer@ into DuckDB’s BIGNUM blob layout: emit the 3-byte header
 --   (sign bit plus payload length) followed by the magnitude bytes in the same
 --   big-endian / complemented-on-negative form that DuckDB stores internally.
+--   This is the BIGNUM storage of DuckDB 2.0.0. The V2 API does not commit to
+--   this layout, and this library does not use this function.
 toBigNumBytes :: Integer -> [Word8]
 toBigNumBytes value =
   let isNeg = value < 0
@@ -188,8 +197,8 @@ toBigNumBytes value =
 
 -- | DuckDB BIT value represented as raw bytes plus left-padding bit count.
 data BitString = BitString
-  { padding :: !Word8
-  , bits :: !BS.ByteString
+  { padding :: Word8
+  , bits :: BS.ByteString
   }
   deriving stock (Eq)
 
@@ -200,7 +209,9 @@ instance Show BitString where
       word8ToString :: Word8 -> String
       word8ToString w = map (\n -> if testBit w n then '1' else '0') [7, 6 .. 0]
 
--- | Construct a @BitString@ from a list of @Bool@s, where the first element
+-- | Construct a @BitString@ from a list of @Bool@ values. The first element is
+-- the first bit, and 'True' is a 1 bit. The function puts 0 bits in front of the
+-- first element to fill the first byte, and stores their count as the padding.
 bsFromBool :: [Bool] -> BitString
 bsFromBool bits =
   let totalBits = length bits
@@ -218,8 +229,8 @@ bsFromBool bits =
 
 -- | Time-of-day paired with its associated timezone offset.
 data TimeWithZone = TimeWithZone
-  { timeWithZoneTime :: !TimeOfDay
-  , timeWithZoneZone :: !TimeZone
+  { timeWithZoneTime :: TimeOfDay
+  , timeWithZoneZone :: TimeZone
   }
   deriving (Eq, Show)
 
@@ -341,6 +352,13 @@ instance FromField UUID.UUID where
       FieldUUID uuid -> Ok uuid
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
+
+instance FromField (TupleValue FieldValue) where
+  fromField f@Field{fieldValue} =
+    case fieldValue of
+      FieldTuple tuple -> Ok tuple
+      FieldNull -> returnError UnexpectedNull f ""
+      _ -> returnError Incompatible f "expected TUPLE"
 
 instance FromField Bool where
   fromField f@Field{fieldValue} =
@@ -801,4 +819,5 @@ fieldValueTypeName = \case
   FieldMap{} -> "MAP"
   FieldUUID{} -> "UUID"
   FieldStruct{} -> "STRUCT"
+  FieldTuple{} -> "TUPLE"
   FieldUnion{} -> "UNION"

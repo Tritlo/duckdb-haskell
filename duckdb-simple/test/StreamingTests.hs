@@ -1,11 +1,13 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# OPTIONS_GHC -Wno-deprecations #-}
 
--- | Check the explicit native streaming API and its cursor ownership.
+-- |
+-- Module      : StreamingTests
+-- Description : Check the explicit native streaming API and its cursor ownership.
 module StreamingTests (nativeStreamingTests) where
 
+import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (IOException, throwIO, try)
 import Control.Monad (forM_, replicateM_, void, when)
 import Data.IORef (atomicWriteIORef, newIORef, readIORef, writeIORef)
@@ -13,12 +15,18 @@ import Data.Int (Int64)
 import Data.List (isInfixOf)
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Database.DuckDB.FFI (c_duckdb_result_is_streaming, c_duckdb_vector_size)
+import qualified Database.DuckDB.FFI as Retained (c_duckdb_vector_size)
 import Database.DuckDB.Simple
-import qualified Database.DuckDB.Simple.Deprecated.Streaming as Streaming
 import Database.DuckDB.Simple.FromField (FieldValue)
-import Database.DuckDB.Simple.Internal (Statement (statementStream), StatementStream (statementStreamResult), StatementStreamState (..))
-import Foreign.Storable (peek)
+import Database.DuckDB.Simple.Internal (
+  DuckDBV2ResultHandle (..),
+  Statement (statementStream),
+  StatementStream (statementStreamResult),
+  StatementStreamState (..),
+  nullHandle,
+ )
+import qualified Database.DuckDB.Simple.Streaming as Streaming
+import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
 
@@ -33,8 +41,7 @@ nativeStreamingTests =
           state <- readIORef (statementStream stmt)
           case state of
             StatementStreamActive stream -> do
-              flag <- (peek (statementStreamResult stream) >>= \rawValue -> c_duckdb_result_is_streaming rawValue)
-              assertBool "expected a native streaming result" (flag /= 0)
+              assertBool "expected a live native cursor" (statementStreamResult stream /= nullHandle)
             _ -> assertFailure "expected an active cursor"
     , testCase "default execution remains materialized when cursor entry points change" $ withDb \conn ->
         withStatement conn "SELECT i FROM range(10000) t(i)" \stmt -> do
@@ -43,8 +50,7 @@ nativeStreamingTests =
           state <- readIORef (statementStream stmt)
           case state of
             StatementStreamActive stream -> do
-              flag <- (peek (statementStreamResult stream) >>= \rawValue -> c_duckdb_result_is_streaming rawValue)
-              flag @?= 0
+              assertBool "expected a released execution cursor" (statementStreamResult stream == nullHandle)
             _ -> assertFailure "expected an active cursor"
     , testCase "nested values survive chunk cleanup" $ withDb \conn ->
         forM_
@@ -93,9 +99,12 @@ nativeStreamingTests =
           Streaming.nextRow stmt >>= (@?= Just (Only (8 :: Int64)))
     , testCase "a DML cursor does not execute again after EOF" $ withDb \conn -> do
         void $ execute_ conn "CREATE TABLE stream_once(x BIGINT)"
-        withStatement conn "INSERT INTO stream_once VALUES (1)" \stmt ->
+        withStatement conn "INSERT INTO stream_once VALUES (1)" \stmt -> do
+          Streaming.nextRow stmt >>= (@?= Just (Only (1 :: Int64)))
           replicateM_ 3 $ Streaming.nextRow stmt >>= (@?= (Nothing :: Maybe (Only Int64)))
         query_ conn "SELECT count(*) FROM stream_once" >>= (@?= [Only (1 :: Int64)])
+        Streaming.fold_ conn "INSERT INTO stream_once VALUES (2)" [] (\acc row -> pure (row : acc)) >>= (@?= [Only (1 :: Int64)])
+        query_ conn "SELECT count(*) FROM stream_once" >>= (@?= [Only (2 :: Int64)])
     , testCase "nextRowWith runs the supplied parser" $ withDb \conn ->
         withStatement conn "SELECT 20, 22" \stmt ->
           Streaming.nextRowWith ((+) <$> field <*> field) stmt >>= (@?= Just (42 :: Int64))
@@ -103,7 +112,7 @@ nativeStreamingTests =
         void $ execute_ conn "SET streaming_buffer_size = '64KB'"
         failNext <- newIORef False
         delivered <- newIORef (0 :: Int)
-        batchSize <- fromIntegral <$> c_duckdb_vector_size
+        batchSize <- fromIntegral <$> Retained.c_duckdb_vector_size
         createFunction conn "late_stream_error" \(value :: Int64) -> do
           shouldFail <- readIORef failNext
           when shouldFail (throwIO (userError "late stream error"))
@@ -140,6 +149,27 @@ nativeStreamingTests =
         case outcome of
           Left (err :: IOException) -> assertBool "original callback error" ("stream step failure" `isInfixOf` show err)
           Right _ -> assertFailure "expected the callback to fail"
+        assertReusable conn
+    , testCase "a query of another thread during an explicit stream fails and the stream continues" $ withDb \conn -> do
+        -- The case needs a statement that still runs after the first row, so
+        -- the stream reads a large result.
+        finished <- timeout 120000000 $ withStatement conn "SELECT i FROM range(1000000) t(i)" \stmt -> do
+          Streaming.nextRow stmt >>= (@?= Just (Only (0 :: Int64)))
+          other <- newEmptyMVar
+          _ <- forkIO (try (query_ conn "SELECT 42" :: IO [Only Int64]) >>= putMVar other)
+          outcome <- takeMVar other
+          case outcome of
+            Left (err :: SQLError) -> sqlErrorType err @?= Just ErrorResourceInUse
+            Right _ -> assertFailure "expected a busy connection during the stream"
+          let readFrom expected = do
+                row <- Streaming.nextRow stmt
+                case row of
+                  Nothing -> pure expected
+                  Just (Only value) -> do
+                    when (value /= expected) $ assertFailure ("expected row " <> show expected <> ", got " <> show value)
+                    readFrom (expected + 1)
+          readFrom (1 :: Int64) >>= (@?= 1000000)
+        finished @?= Just ()
         assertReusable conn
     ]
 

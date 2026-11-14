@@ -25,13 +25,13 @@ import qualified Database.DuckDB.Simple.V2.Copy as V2Copy
 import qualified Database.DuckDB.Simple.V2.Registration as R
 import Database.DuckDB.Simple.Variant (variantObject)
 import Foreign.C.ConstPtr (ConstPtr (..))
-import Foreign.Ptr (castPtr, nullPtr)
-import Foreign.Storable (pokeElemOff)
+import Foreign.Ptr (nullPtr)
 import System.Directory (createDirectory, getTemporaryDirectory, removeFile, removePathForcibly)
 import System.FilePath ((</>))
 import System.IO (hClose, openTempFile)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
+import TestUtils (writeIntegers)
 
 -- | Exercise the available COPY directions and multi-file wrapper.
 copyTests :: TestTree
@@ -365,13 +365,6 @@ registerSingleFileReader connection = do
       chunk <- R.output (c_duckdb_v2_table_function_exec_get_output_chunk info)
       vector <- R.output (c_duckdb_v2_data_chunk_get_vector chunk 0)
       writeIntegers vector (maybe [] pure value)
-
--- | Fill native BIGINT vector storage and set the row count.
-writeIntegers :: DuckDBV2VectorHandle -> [Int64] -> IO ()
-writeIntegers vector values = do
-  R.checked (c_duckdb_v2_vector_set_size vector (fromIntegral (length values)))
-  raw <- R.output (c_duckdb_v2_vector_get_data_mutable vector)
-  forM_ (zip [0 ..] values) \(index, value) -> pokeElemOff (castPtr raw) index value
 
 -- | Read a nonnegative integer from native statistics.
 number :: FieldValue -> Integer

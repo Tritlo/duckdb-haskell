@@ -1095,6 +1095,8 @@ testCopyErrors = withDirectory \directory -> withConnection ":memory:" \conn -> 
 -- | Register a format on one connection. Use it from another connection.
 testCopySharedDatabase :: Assertion
 testCopySharedDatabase = withDirectory \directory -> withEnvironment \environment -> withInstance environment [] \instance' -> do
+  -- An instance starts with no database. The case creates a table, so it
+  -- attaches an in-memory database and makes it the default.
   attachDatabase instance' ":memory:" "typed_shared" []
   setDefaultDatabase instance' "typed_shared"
   let file = Text.pack (directory </> "shared.txt")

@@ -81,10 +81,12 @@
   layer. It no longer exports `toSQLError`, `fetchPrepareError`,
   `fetchResultError`, `throwResultError`, `mkExecuteError`,
   `throwRegistrationError`, `withClientContext`, and `destroyClientContext`.
-  `Connection` adds `connectionInstance`, `connectionLock`, and
-  `connectionWindow`. `ConnectionOpen` has no `connectionDatabase` and adds
-  `connectionStatements` and `connectionReleaseParent`. `Statement` adds
-  `statementArrowResult`, `statementBindings`, and `statementParameterNames`.
+  `Connection` adds `connectionInstance`, `connectionLock`,
+  `connectionWindow`, and `connectionLockBound`. `ConnectionOpen` has no
+  `connectionDatabase` and adds `connectionStatements` and
+  `connectionReleaseParent`. `Statement` adds `statementArrowResult`,
+  `statementBindings`, `statementParameterNames`, and
+  `statementParameterTypes`.
   `StatementOpen` adds `statementParsed` and `statementSchemaCache`.
   `StatementStream` has no `statementStreamMode` and adds
   `statementStreamPendingChunks`. `StatementStreamColumn` has no

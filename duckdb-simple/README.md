@@ -332,6 +332,8 @@ explicit cast, such as `SELECT ?::TIMESTAMPTZ_NS`, or a column with that type.
 UTC values inside collections, STRUCTs, MAPs, and UNIONs follow their target
 types. An untyped UTC parameter still binds as microsecond TIMESTAMPTZ.
 The library refreshes prepared metadata when it resets or rebinds a statement.
+One `executeMany` call reads the parameter types one time. A column type that
+changes during the call does not change how its later rows bind.
 Use separate parameters when one expression requires microseconds and another
 requires nanoseconds.
 

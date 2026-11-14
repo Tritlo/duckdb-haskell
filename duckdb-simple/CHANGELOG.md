@@ -148,6 +148,11 @@
   each type, and a bind copies it. A name that DuckDB drops, for example a blank
   name, fails the open.
 - Empty `Array` parameters raise `SQLError`. Use an SQL empty LIST.
+- `executeMany` reads the parameter types one time for each call, not one time
+  for each row. A row with a `UTCTime`, an `Unbounded UTCTime`, an `Array`, or
+  a manual STRUCT, TUPLE, or UNION parameter no longer runs the DuckDB binder
+  again. A column type that changes during the call does not change how the
+  later rows of that call bind.
 - A generic record with an `Array` field that has elements can be bound. The
   value gives the ARRAY size. DuckDB rejects the record when no value gives the
   size: an `Array` field with the value `Nothing`, an `Array` inside a LIST,

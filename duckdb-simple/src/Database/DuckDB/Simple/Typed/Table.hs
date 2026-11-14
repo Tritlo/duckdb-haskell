@@ -136,7 +136,7 @@ splitRows = go []
     go taken limit (row : rest) = go (row : taken) (limit - 1) rest
 
 -- | Read the constant arguments of one call and convert them with 'FromRow'.
--- A NULL argument is 'FieldNull'. An argument that does not convert raises an
+-- A NULL argument is @FieldNull@. An argument that does not convert raises an
 -- error that names the table function.
 readArguments :: (FromRow params) => Text -> Int -> DuckDBV2FactoryHandle -> DuckDBV2FunctionBindInfoHandle -> IO params
 readArguments name count factory input = do

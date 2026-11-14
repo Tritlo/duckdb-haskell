@@ -625,7 +625,7 @@ callbackLabel :: String
 callbackLabel = "duckdb-simple: DuckDB callback"
 
 -- | Mark the current thread as a thread inside a DuckDB callback for the time
--- of the action: label the thread with 'callbackLabel'. Then
+-- of the action: label the thread with @callbackLabel@. Then
 -- 'withConnectionLock' bounds the waits of the thread. Each exit gives the
 -- thread its previous label again, or an empty label. A thread that already
 -- has the mark keeps it after the action. The action removes the mark if it

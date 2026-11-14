@@ -46,32 +46,32 @@ with withCallbackMark, and withConnectionLock asks hasCallbackMark.
 The mark of a thread is an entry in callbackMarks, one table for the process.
 These are the reasons for its form.
 
-\* The table is a top-level value. A callback does not always have a connection.
+- The table is a top-level value. A callback does not always have a connection.
   For example, an aggregate callback gets no context. Thus the table cannot be
   a field of a connection.
 
-\* The mark is not a thread label. In GHC 9.6 to 9.14.1, threadLabel gives a
+- The mark is not a thread label. In GHC 9.6 to 9.14.1, threadLabel gives a
   null pointer for a thread without a label, and the garbage collector can
   crash on that pointer (GHC issue 27618). DuckDB calls each callback in a new
   thread without a label.
 
-\* The key is the number of the thread, not its ThreadId. A ThreadId in the
+- The key is the number of the thread, not its ThreadId. A ThreadId in the
   table keeps its thread reachable. Then the GHC runtime does not raise
   BlockedIndefinitelyOnMVar in a callback that waits for a value that no
   thread can supply, and the statement does not return. The runtime gives each
   thread a different number and does not use a number again.
 
-\* The value is a count of marks. A thread that already has a mark thus keeps
+- The value is a count of marks. A thread that already has a mark thus keeps
   it until the outer withCallbackMark ends.
 
-\* A change is a compare-and-swap (changeCallbackMarks). atomicModifyIORef'
+- A change is a compare-and-swap (changeCallbackMarks). atomicModifyIORef'
   stores a value that is not evaluated, and it allocates more. If the runtime
   stops a thread during that evaluation, each other thread that needs the value
   waits. With one capability, each such wait of a callback thread is a context
   switch of the operating system. With compare-and-swap, the table holds only
   evaluated maps, and no thread waits for another thread.
 
-\* The table is one IORef. Only the threads that are inside a callback at the
+- The table is one IORef. Only the threads that are inside a callback at the
   same time have an entry, so the map is small. Two threads that change the
   table at the same time cost one more attempt for one of them.
 -}

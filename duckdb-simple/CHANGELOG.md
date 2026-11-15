@@ -174,11 +174,11 @@
   value without a CRS. One with a CRS raises `SQLError`, because a VARIANT does
   not keep the CRS. Version 0.3 raised an error for each such value, because
   DuckDB 1.5 has no cast from BLOB to GEOMETRY.
-- Add a parameter instance for `RawGeometry`. It binds as a GEOMETRY with the
+- Add a `ToField` instance for `RawGeometry`. It binds as a GEOMETRY with the
   same WKB bytes and its own CRS, and DuckDB casts it to the type of the
   parameter as in SQL text: a value without a CRS takes the CRS of the target,
   a target without a CRS removes the CRS, and a target with another CRS raises
-  `SQLError`. Version 0.3 had only a result instance for `RawGeometry`. An
+  `SQLError`. Version 0.3 had only a `FromField` instance for `RawGeometry`. An
   `Array`, a list, or a typed row cannot hold a `RawGeometry`.
 - An empty `Array` parameter raises `SQLError`. Version 0.3 bound an empty
   `Array` of scalar elements. Bind an empty list for an empty LIST.
@@ -187,23 +187,24 @@
   `timeWithZoneOffsetSeconds :: Int32`. A TIMETZ with an offset that has
   seconds, for example `12:00:00+01:00:30`, now reads. Version 0.3 raised an
   error for it. Update code that uses the old field. See MIGRATION.md.
-- Add parameter instances for `IntervalValue`, `TimeWithZone`, and
-  `DecimalValue`. An `IntervalValue` binds as an INTERVAL and a `TimeWithZone`
+- Add `ToField` instances for `IntervalValue`, `TimeWithZone`, and
+  `DecimalValue`, and `ToDuckValue` instances for `IntervalValue` and
+  `TimeWithZone`. An `IntervalValue` binds as an INTERVAL and a `TimeWithZone`
   as a TIMETZ, also in an `Array`, a list, or a typed row. A `TimeWithZone`
   reads back equal to the bound value, except that a time loses its digits
   below one microsecond. An offset outside -15:59:59 to +15:59:59 raises an
-  error. A `DecimalValue` binds as a DECIMAL with its own width and scale. An `Array`, a list, or a typed row
-  cannot hold a `DecimalValue`. Version 0.3 had only result instances for these
-  types.
-- Add parameter instances for `Map`. A `Map` binds as a MAP value with its
+  error. A `DecimalValue` binds as a DECIMAL with its own width and scale. An
+  `Array`, a list, or a typed row cannot hold a `DecimalValue`. Version 0.3
+  had only `FromField` instances for these types.
+- Add `ToField` and `ToDuckValue` instances for `Map`. A `Map` binds as a MAP value with its
   pairs in ascending key order. The keys and the values follow the element
   rules of a list, and an empty `Map` binds as an empty MAP of its key and
-  value types. Version 0.3 had only a result instance for `Map`.
-- Add parameter instances for lists. A list binds as a LIST value with the
+  value types. Version 0.3 had only a `FromField` instance for `Map`.
+- Add `ToField` and `ToDuckValue` instances for lists. A list binds as a LIST value with the
   element rules of an `Array`, and an empty list binds as an empty LIST of its
   element type. A `String` stays one VARCHAR parameter, and a list as a row is
   still a row of parameters, so a list parameter is `Only [..]`. Version 0.3
-  had no list parameter instance.
+  had no `ToField` instance for lists.
 - Some parameters bind for the type that DuckDB gives the parameter: a time
   value with digits below a microsecond, an `Array`, a list, a `Map`, a manual
   STRUCT, TUPLE, or UNION value, and an `Integer` or a `Natural` outside the

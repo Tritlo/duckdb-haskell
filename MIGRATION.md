@@ -248,8 +248,8 @@ The SQL workflow stays the same. These changes can affect your code:
   qualified.
 - An empty `Array` parameter raises `SQLError`. Version 0.3 bound an empty
   `Array` of scalar elements. Bind an empty list for an empty LIST.
-- A list binds as a LIST parameter. Version 0.3 had no list parameter
-  instance, so code bound an `Array` and let DuckDB cast it. That code still
+- A list binds as a LIST parameter. Version 0.3 had no `ToField` instance for
+  lists, so code bound an `Array` and let DuckDB cast it. That code still
   works for an `Array` with elements. A `String` stays one VARCHAR parameter,
   and a list as a row is still a row of parameters, so put a list parameter in
   `Only`.
@@ -265,8 +265,8 @@ The SQL workflow stays the same. These changes can affect your code:
   the first time a parameter needed one, and did not check that a type kept its
   CRS.
 - DuckDB 2.0 rejects WKB with mixed Z/M member layouts.
-- `RawGeometry` has a parameter instance. It binds as a GEOMETRY with its own
-  CRS. Version 0.3 had only a result instance, so code imported the WKB with
+- `RawGeometry` has a `ToField` instance. It binds as a GEOMETRY with its own
+  CRS. Version 0.3 had only a `FromField` instance, so code imported the WKB with
   `ST_GeomFromWKB(?)` and the CRS with `ST_SetCRS`. That SQL still works.
 - Decoded VARIANT objects list their keys in DuckDB's lexicographic order.
 - A `Variant` parameter with a UNION payload, at any depth, raises `SQLError`
@@ -317,8 +317,8 @@ Free strings returned by the CRS accessor with `duckdb_free`.
 Use `Data.Geometry.Geometry` from the published `geometry-simple` package for
 decoded shapes. Use `RawGeometry` for WKB bytes and CRS metadata. The package's
 `Geometry` type has no CRS. It has parameter and result instances.
-In version 0.3, `RawGeometry` had only a result instance, so code imported its
-WKB and CRS with explicit SQL. Version 0.4 adds a parameter instance. See
+In version 0.3, `RawGeometry` had only a `FromField` instance, so code imported
+its WKB and CRS with explicit SQL. Version 0.4 adds a `ToField` instance. See
 [the Geometry notes](duckdb-simple/README.md#geometry) for examples and limits.
 
 `FieldValue` gains `FieldGeometry`, and `LogicalTypeRep` gains

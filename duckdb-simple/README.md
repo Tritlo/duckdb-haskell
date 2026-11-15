@@ -652,7 +652,7 @@ plan. Read its schema after execution starts.
 
 Use `Geometry` from `Data.Geometry` for decoded shapes. The `geometry-simple`
 package supplies the type and unboxed coordinate vectors. `duckdb-simple`
-supplies its parameter and result instances:
+supplies its `ToField` and `FromField` instances:
 
 ```haskell
 import qualified Data.Geometry as G

@@ -435,6 +435,22 @@ extensionRegressionTests =
           void $ execute_ conn "RESET haskell_limit"
           fmap Config.configValueText <$> Config.getConfigOption conn "haskell_limit" >>= (@?= Just "3")
           assertSqlError $ Config.registerCustomOption conn option
+    , testCase "typed reads of a VARIANT custom option give the value that it holds" $
+        withConnection ":memory:" \conn -> do
+          let variantType = Registration.TypeExpression "VARIANT"
+          Config.registerCustomOption
+            conn
+            (Config.customOption "haskell_variant" variantType){Config.customOptionDefault = Just (Registration.defaultValue (5 :: Int64))}
+          Config.getConfigDefaultValue conn "haskell_variant" >>= (@?= FieldInt64 5)
+          Config.setConfigValue conn Config.SettingScopeGlobal "haskell_variant" (7 :: Int64)
+          Config.getConfigValue conn "haskell_variant" >>= (@?= (FieldInt64 7, Config.SettingScopeGlobal))
+          -- A nested value gives the value of the same VARIANT in a result.
+          void $ execute_ conn "SET haskell_variant = {'a': 1, 'b': [1, 2]}"
+          [Only expected] <- query_ conn "SELECT {'a': 1, 'b': [1, 2]}::VARIANT" :: IO [Only FieldValue]
+          fst <$> Config.getConfigValue conn "haskell_variant" >>= (@?= expected)
+          -- The update callback gets no connection, so it rejects a VARIANT value.
+          Config.registerCustomOption conn (Config.customOption "haskell_variant_update" variantType){Config.customOptionUpdate = Just \_ -> pure ()}
+          assertSqlErrorContaining "configuration values must not contain VARIANT" $ execute_ conn "SET haskell_variant_update = 1"
     , testCase "setConfigValue with an Integer or a Natural checks the range of an unsigned option" $
         withConnection ":memory:" \conn -> do
           -- DuckDB 2.0.0 gives asof_loop_join_threshold the type UBIGINT.

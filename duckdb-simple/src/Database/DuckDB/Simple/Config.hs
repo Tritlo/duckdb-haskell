@@ -28,13 +28,13 @@ import Control.Monad (filterM, forM, when)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple (withConnection)
-import Database.DuckDB.Simple.Config.Internal (CustomOption (..), registerCustomOptionOn, unexpectedVariant)
+import Database.DuckDB.Simple.Config.Internal (CustomOption (..), registerCustomOptionOn)
 import Database.DuckDB.Simple.FromField (FieldValue)
 import Database.DuckDB.Simple.Internal (Connection, Instance, withConnectionHandle, withInstanceHandle, withTypeCache)
-import Database.DuckDB.Simple.Materialize (materializeValue)
+import Database.DuckDB.Simple.Materialize (VectorReader, materializeValue, prepareVariantReader)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
-import Database.DuckDB.Simple.TypeCache (typeCacheCasts)
+import Database.DuckDB.Simple.TypeCache (TypeCache, typeCacheCasts, withVariantState)
 import Database.DuckDB.Simple.V2.Registration (RegistrationTarget (..), TypeDeclaration)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Storable (peek)
@@ -121,10 +121,11 @@ withConfigOptionValue conn name action = withConnectionHandle conn \handle -> do
   withOptionValue config name action
 
 -- | Copy the effective typed value of an option and the scope of that value.
--- An unknown option name raises 'SQLError'. The function releases all native
--- handles before it returns. A GEOMETRY value reads with the factory of the
+-- An unknown option name raises 'SQLError'. A VARIANT value gives the value
+-- that it holds, as in a result. A GEOMETRY value reads with the factory of the
 -- instance. See Note [User casts and the casts of the library] in
--- "Database.DuckDB.Simple.Materialize".
+-- "Database.DuckDB.Simple.Materialize". The function releases all native
+-- handles before it returns.
 getConfigValue :: Connection -> Text -> IO (FieldValue, SettingScope)
 getConfigValue conn name = do
   checkOptionName name
@@ -132,12 +133,13 @@ getConfigValue conn name = do
     config <- output (c_duckdb_v2_connection_get_config handle)
     withTypeCache conn \cache ->
       withOptionValue config name \value scope -> do
-        copied <- materializeValue unexpectedVariant (typeCacheCasts cache) value
+        copied <- materializeValue (readVariant cache) (typeCacheCasts cache) value
         pure (copied, scope)
 
 -- | Copy the typed static default of an option. An unknown option name raises
--- 'SQLError'. The function releases all native handles before it returns. A
--- GEOMETRY value reads as 'getConfigValue' reads it.
+-- 'SQLError'. A VARIANT value gives the value that it holds, as in a result. A
+-- GEOMETRY value reads as 'getConfigValue' reads it. The function releases all
+-- native handles before it returns.
 getConfigDefaultValue :: Connection -> Text -> IO FieldValue
 getConfigDefaultValue conn name = do
   checkOptionName name
@@ -149,7 +151,13 @@ getConfigDefaultValue conn name = do
           bracket
             (output (c_duckdb_v2_option_get_default_value option))
             (destroy c_duckdb_v2_value_destroy)
-            (materializeValue unexpectedVariant (typeCacheCasts cache))
+            (materializeValue (readVariant cache) (typeCacheCasts cache))
+
+-- | Read a VARIANT value with the helper connection of the type cache, as a
+-- result does. See Note [VARIANT decoding] in
+-- "Database.DuckDB.Simple.VariantCodec".
+readVariant :: TypeCache -> VectorReader
+readVariant cache vector = withVariantState cache (`prepareVariantReader` vector)
 
 -- | Set an option from a typed Haskell value. Native code casts it to the option type.
 setConfigValue :: (ToDuckValue a) => Connection -> SettingScope -> Text -> a -> IO ()

@@ -513,6 +513,10 @@ Note [Errors that leave a callback] in "Database.DuckDB.Simple.Callback". The
 type ErrorRuntimeInternal, and ErrorRuntimeFatal, must never go into the error
 slot of a callback, because DuckDB 2.0.0 then invalidates the database, and
 each later statement raises "FATAL Error: ... database has been invalidated".
+This holds for a callback at execution time, for example a scalar function, a
+table function, a cast, or COPY FROM; at bind time, for example in a
+replacement scan or a query pragma, the database stays usable. The rule holds
+for each callback, so that it errs on the safe side.
 -}
 
 -- | Borrow a factory while its connection remains alive. Do not destroy it.

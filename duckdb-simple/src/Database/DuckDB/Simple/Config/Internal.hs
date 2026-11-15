@@ -40,10 +40,12 @@ import Database.DuckDB.Simple.V2.Registration (
 -- SQL error. A RESET gives the default value to the function, or
 -- 'Database.DuckDB.Simple.FromField.FieldNull' for an option without a default.
 -- Thus the function must accept the default value. The callback of DuckDB gets
--- no connection, so the library cannot decode a VARIANT value in it. Thus, for
--- an option with an update function, DuckDB rejects a new value that is or
--- contains a VARIANT value. An option without an update function stores such a
--- value, and 'Database.DuckDB.Simple.Config.getConfigValue' reads it.
+-- no connection, so the library cannot decode a VARIANT value in it. Each new
+-- value that is not NULL would fail. Thus the registration of an option with an
+-- update function raises an error when the type of the option is or contains
+-- VARIANT. An option without an update
+-- function can have such a type, and
+-- 'Database.DuckDB.Simple.Config.getConfigValue' reads its value.
 data CustomOption = CustomOption
   { customOptionName :: !Text
   , customOptionType :: !TypeDeclaration

@@ -60,7 +60,10 @@ data PragmaCallback args
 -- @PRAGMA p(1, label = 'x')@. The field is at the position of the parameter in
 -- both cases. When the call omits a parameter, the field has the default value of
 -- the parameter. A NULL argument needs a 'Maybe' field. When the row does not
--- decode, the call fails with an SQL error that names the pragma.
+-- decode, the call fails with an SQL error that names the pragma. A parameter
+-- type that is or contains VARIANT raises an error at registration: the
+-- argument reader reads no VARIANT, so each value that is not NULL would fail
+-- the call. A GEOMETRY parameter works.
 --
 -- > registerPragmaFunction conn "repeat_answer" [parameter "times" (TypeExpression "BIGINT")] $
 -- >     QueryPragma \(Only (times :: Int64)) -> pure ("SELECT 42 FROM range(" <> Text.pack (show times) <> ")")

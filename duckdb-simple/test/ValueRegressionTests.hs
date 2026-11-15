@@ -796,10 +796,27 @@ valueRegressionTests =
         typeOf ([5, 2 ^ (130 :: Int)] :: [Integer]) >>= (@?= [Only "BIGNUM[]"])
         typeOf ([] :: [Integer]) >>= (@?= [Only "\"NULL\"[]"])
         typeOf ([Nothing] :: [Maybe Integer]) >>= (@?= [Only "\"NULL\"[]"])
+        typeOf ([5, 2 ^ (64 :: Int)] :: [Natural]) >>= (@?= [Only "HUGEINT[]"])
+        typeOf (Map.fromList [(5, "a")] :: Map.Map Integer Text) >>= (@?= [Only "MAP(HUGEINT, VARCHAR)"])
+        typeOf ([[1], []] :: [[Integer]]) >>= (@?= [Only "HUGEINT[][]"])
+        typeOf ([[]] :: [[Integer]]) >>= (@?= [Only "\"NULL\"[][]"])
         -- An empty list for an integer target takes the element type of the target.
         _ <- execute_ conn "CREATE OR REPLACE TABLE empty_integers (v INTEGER[])"
         _ <- execute conn "INSERT INTO empty_integers VALUES (?)" (Only ([] :: [Integer]))
         (query_ conn "SELECT typeof(v), v::VARCHAR FROM empty_integers" :: IO [(Text, Text)]) >>= (@?= [("INTEGER[]", "[]")])
+        -- In a VARIANT, the elements keep the HUGEINT values, so a cast to an
+        -- unsigned type checks their range. A BIGNUM element gave
+        -- 18446744073709551611 for -5 with no error.
+        let variantCast :: (ToField a) => String -> a -> Text -> Assertion
+            variantCast label value target = do
+              _ <- execute_ conn "CREATE OR REPLACE TABLE variant_integers (v VARIANT)"
+              _ <- execute conn "INSERT INTO variant_integers VALUES (?)" (Only value)
+              try (query_ conn (Query ("SELECT (v::" <> target <> ")::VARCHAR FROM variant_integers")) :: IO [Only Text]) >>= \case
+                Left SQLError{sqlErrorType} -> assertEqual label (Just ErrorTypeConversion) sqlErrorType
+                Right rows -> assertFailure (label <> ": expected the error of the cast, got " <> show rows)
+        variantCast "[-5]" ([-5] :: [Integer]) "UBIGINT[]"
+        variantCast "Map {a: -5}" (Map.fromList [("a", -5)] :: Map.Map Text Integer) "MAP(VARCHAR, UBIGINT)"
+        variantCast "[[-5], []]" ([[-5], []] :: [[Integer]]) "UBIGINT[][]"
     , testCase "a list and an Array with the same elements store the same LIST value" $ withConnection ":memory:" \conn -> do
         let ints = [1, 2, 3] :: [Int64]
             arr = listArray (0, 2) ints :: Array Int Int64

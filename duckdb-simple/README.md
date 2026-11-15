@@ -1249,7 +1249,8 @@ registerAndUse conn = do
   query_ conn "SELECT hs_times_two(21)"
 ```
 
-Exceptions raised while the function executes become `SQLError` values.
+An exception of the function fails the statement with an `SQLError`:
+[Errors](#errors) gives its text.
 `deleteFunction` issues a `DROP FUNCTION IF EXISTS` statement and reports native
 errors. DuckDB registers C API scalar functions as internal entries and rejects
 their deletion. The function remains registered after this `SQLError`.

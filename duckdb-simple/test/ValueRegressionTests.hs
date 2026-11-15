@@ -54,7 +54,7 @@ import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit
-import TestUtils (NativeTimestamp (..))
+import TestUtils (NativeTimestamp (..), assertInputError)
 
 -- | An array element with a ToField instance and no ToDuckValue instance.
 newtype DelegatedInteger = DelegatedInteger Int64
@@ -1779,17 +1779,6 @@ singleField logical value =
     (listArray (0, 0) [StructField "value" value])
     (listArray (0, 0) [StructField "value" logical])
     (Map.singleton "value" 0)
-
--- | Assert a controlled input or materialization error.
-assertInputError :: IO a -> Assertion
-assertInputError action = do
-  result <- try action
-  case result of
-    Left SQLError{sqlErrorType, sqlErrorMessage} -> do
-      sqlErrorType @?= Just ErrorInputInvalid
-      -- The prefix shows that a check of the library raised the error, not DuckDB.
-      assertBool (Text.unpack sqlErrorMessage) ("duckdb-simple: " `Text.isPrefixOf` sqlErrorMessage)
-    Right _ -> assertFailure "expected an SQLError of the type ErrorInputInvalid"
 
 -- | The field of an ENUM row with the index and the label that DuckDB gives.
 enumField :: Maybe Int64 -> Maybe Text -> FieldValue

@@ -61,7 +61,7 @@ import System.FilePath (takeDirectory)
 import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase, (@?=))
-import TestUtils (assertReleasedAfter)
+import TestUtils (assertInputErrorContaining, assertReleasedAfter)
 
 -- | Run the extension regression tests as a standalone executable.
 main :: IO ()
@@ -819,18 +819,6 @@ registerCopy conn name failingPhase =
 -- | Require a controlled SQL exception.
 assertSqlError :: IO a -> Assertion
 assertSqlError = assertSqlErrorContaining Text.empty
-
--- | Require the error of an input check of the library, of the type
--- ErrorInputInvalid, which includes the expected message.
-assertInputErrorContaining :: Text.Text -> IO a -> Assertion
-assertInputErrorContaining expected action = do
-  outcome <- try (void action)
-  case outcome of
-    Left (err :: SQLError) -> do
-      sqlErrorType err @?= Just ErrorInputInvalid
-      assertBool ("expected an input error containing " <> show expected <> ", got " <> show err) $
-        ("duckdb-simple: " `Text.isPrefixOf` sqlErrorMessage err) && expected `Text.isInfixOf` sqlErrorMessage err
-    Right () -> assertFailure "expected the error of an input check"
 
 -- | Require a SQL exception which includes the expected message.
 assertSqlErrorContaining :: Text.Text -> IO a -> Assertion

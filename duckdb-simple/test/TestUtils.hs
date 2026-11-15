@@ -6,6 +6,8 @@
 module TestUtils (
   NativeTimestamp (..),
   assertFailureIO,
+  assertInputError,
+  assertInputErrorContaining,
   assertReleasedAfter,
   assertSqlErrorType,
   filteredQueries,
@@ -17,7 +19,7 @@ module TestUtils (
 
 import Control.Concurrent (getNumCapabilities, setNumCapabilities)
 import Control.Exception (SomeException, try)
-import Control.Monad (forM_, when)
+import Control.Monad (forM_, void, when)
 import Data.IORef (IORef, mkWeakIORef, newIORef)
 import Data.Int (Int64)
 import Data.Maybe (isNothing)
@@ -35,7 +37,7 @@ import Database.DuckDB.FFI.V2 (
   c_duckdb_v2_vector_get_data_mutable,
   c_duckdb_v2_vector_set_size,
  )
-import Database.DuckDB.Simple (ErrorType, Query, SQLError (..))
+import Database.DuckDB.Simple (ErrorType (..), Query, SQLError (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToDuckValue (..), ToField)
 import Database.DuckDB.Simple.V2.Registration (checked, output)
 import Foreign.C.ConstPtr (ConstPtr (..))
@@ -104,6 +106,24 @@ nativeLocalTime timestamp = utcToLocalTime utc (posixSecondsToUTCTime (fromRatio
       Milliseconds raw -> (raw, 1000)
       Microseconds raw -> (raw, 1000000)
       Nanoseconds raw -> (raw, 1000000000)
+
+-- | Require the error of an input check of the library: an 'SQLError' of the
+-- type 'ErrorInputInvalid' whose message starts with "duckdb-simple: ".
+assertInputError :: IO a -> Assertion
+assertInputError = assertInputErrorContaining Text.empty
+
+-- | Require the error of an input check of the library, of the type
+-- ErrorInputInvalid, which includes the expected message.
+assertInputErrorContaining :: Text.Text -> IO a -> Assertion
+assertInputErrorContaining expected action = do
+  outcome <- try (void action)
+  case outcome of
+    Left err -> do
+      sqlErrorType err @?= Just ErrorInputInvalid
+      -- The prefix shows that a check of the library raised the error, not DuckDB.
+      assertBool ("expected an input error containing " <> show expected <> ", got " <> show err) $
+        ("duckdb-simple: " `Text.isPrefixOf` sqlErrorMessage err) && expected `Text.isInfixOf` sqlErrorMessage err
+    Right () -> assertFailure "expected the error of an input check"
 
 -- | Require an 'SQLError' of DuckDB with the given type. An error of
 -- duckdb-simple, whose message starts with "duckdb-simple: ", fails the

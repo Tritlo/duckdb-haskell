@@ -36,6 +36,7 @@ import Database.DuckDB.Simple.Variant (Variant (..))
 import GHC.Generics (Generic)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
+import TestUtils (assertInputError)
 
 -- | Record fields exercise the generic scalar and collection instances.
 data TemporalRecord = TemporalRecord
@@ -635,17 +636,6 @@ nanosecondTimeTests =
       assertInputError (query conn "SELECT ?" (Only (UTCTime (fromGregorian 2016 12 31) 86400.5)) :: IO [Only UTCTime])
       assertInputError (query conn "SELECT ?::TIME_NS" (Only (TimeOfDay 23 59 60.000000001)) :: IO [Only TimeOfDay])
   ]
-
--- | Require a controlled encoding error before native value construction.
-assertInputError :: IO a -> Assertion
-assertInputError action = do
-  result <- try action
-  case result of
-    Left SQLError{sqlErrorType, sqlErrorMessage} -> do
-      sqlErrorType @?= Just ErrorInputInvalid
-      -- The prefix shows that a check of the library raised the error, not DuckDB.
-      assertBool (Text.unpack sqlErrorMessage) ("duckdb-simple: " `Text.isPrefixOf` sqlErrorMessage)
-    Right _ -> assertFailure "expected an SQLError of the type ErrorInputInvalid"
 
 -- | Require a field conversion error, rather than an unrelated exception.
 assertConversionError :: IO a -> Assertion

@@ -42,7 +42,7 @@ import System.Mem (performMajorGC)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
-import TestUtils (assertSqlErrorType, raiseCapabilities)
+import TestUtils (assertInputError, assertSqlErrorType, raiseCapabilities)
 
 -- | Exercise public operations against an in-memory database.
 coreRegressionTests :: TestTree
@@ -564,16 +564,6 @@ withConcurrentChildren count acquire release action =
       case partitionEithers outcomes of
         ([], children) -> pure children
         (failure : _, children) -> mapM_ release children >> throwIO failure
-
--- | Require the error of an input check of the library.
-assertInputError :: IO a -> Assertion
-assertInputError action = do
-  result <- try (void action)
-  case result of
-    Left (err :: SQLError) -> do
-      sqlErrorType err @?= Just ErrorInputInvalid
-      assertBool (Text.unpack (sqlErrorMessage err)) ("duckdb-simple: " `Text.isPrefixOf` sqlErrorMessage err)
-    Right () -> assertFailure "expected the error of an input check"
 
 -- | Require an exception without constraining its concrete type.
 assertThrows :: IO a -> Assertion

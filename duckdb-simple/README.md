@@ -416,9 +416,14 @@ Floating-point NaN and infinities remain valid `Float` and `Double` values.
 A `TimeOfDay`, a `LocalTime`, or a `UTCTime` parameter, and an `Unbounded`
 form, keeps its digits below a microsecond for a nanosecond parameter:
 `TIME_NS`, `TIMESTAMP_NS`, or `TIMESTAMPTZ_NS`. Use an explicit cast, such as
-`SELECT ?::TIMESTAMP_NS`, or a column with that type. Each other parameter, and
-a parameter with no known type, gets the microsecond value: the digits below a
-microsecond go away, as for the SQL literal. Only a value with such digits
+`SELECT ?::TIMESTAMP_NS`, or a column with that type. A `VARIANT` parameter
+also gets the nanosecond value, when the value fits the range of the nanosecond
+type, because a VARIANT holds `TIME_NS`, `TIMESTAMP_NS`, and `TIMESTAMPTZ_NS`
+values. Each other parameter, and a parameter with no known type, gets the
+microsecond value: the digits below a microsecond go away, as for the SQL
+literal. An element of a `VARIANT[]` list or a value of a MAP with `VARIANT`
+values also gets the microsecond value, because one list has one element type
+for all its elements. Only a value with such digits
 reads the parameter type. An explicit cast such as `?::TIMESTAMP_NS` makes a
 nanosecond parameter, so for a `TIMESTAMP` column DuckDB rounds the value to
 the microsecond, where a plain `?` cuts the digits. Values inside collections, STRUCTs, MAPs, and UNIONs follow their
@@ -498,13 +503,17 @@ nanoseconds.
 
 Some values bind with another type than the column that they came from. A
 `FieldTimestamp` binds as a `TIMESTAMP`, or as a `TIMESTAMP_NS` when it has
-digits below a microsecond and the parameter has the type `TIMESTAMP_NS` (see
-[Infinite dates and timestamps](#infinite-dates-and-timestamps)). The same
-holds for `FieldTime` and `FieldTimestampTZ`. A `FieldText` binds as a
+digits below a microsecond and the parameter has the type `TIMESTAMP_NS` or
+`VARIANT` (see [Infinite dates and timestamps](#infinite-dates-and-timestamps)).
+The same holds for `FieldTime` and `FieldTimestampTZ`. A `FieldText` binds as a
 `VARCHAR` with no collation, also when it came from a `JSON` value. A value
 from a `VARIANT` column binds as its payload. A `FieldEnum` binds its label as
 a `VARCHAR`. `FieldNull` binds as an untyped NULL. DuckDB casts each of these
-values to the type of a column with no loss.
+values to the type of a column with no loss, with one exception: a time value
+with digits below a microsecond in a `FieldList` or a `FieldMap` for a
+`VARIANT` parameter gets the microsecond value, so a `VARIANT` array of
+`TIMESTAMP_NS` values loses these digits when it binds back. A `VARIANT` object
+reads as a `FieldStruct` with `VARIANT` fields and keeps them.
 
 A `FieldList`, a `FieldArray`, or a `FieldMap` that is empty or has only
 `FieldNull` elements binds as the SQL list literal does: it takes the element

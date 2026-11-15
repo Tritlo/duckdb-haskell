@@ -364,6 +364,12 @@ The SQL workflow stays the same. These changes can affect your code:
   `SQLError`. For example, a STRUCT parameter with a MAP field that has a NULL
   key raises an `SQLError` with the type `ErrorInputInvalid`. Version 0.3
   raised an `IOException`. Catch `SQLError` for these errors.
+- A `TimeOfDay`, a `LocalTime`, or a `UTCTime` with digits below a microsecond
+  keeps them for a `VARIANT` parameter: it binds as `TIME_NS`, `TIMESTAMP_NS`,
+  or `TIMESTAMPTZ_NS`. Version 0.3 bound the microsecond value. A VARIANT of a
+  nanosecond value is not equal to a VARIANT of the microsecond value, so a row
+  that version 0.3 stored in a `VARIANT` column does not match `WHERE x = ?`
+  for the same Haskell value with such digits.
 - Each input check of the library raises an `SQLError` with the type
   `ErrorInputInvalid`. Version 0.3 raised an `IOException` (a `userError`) for
   a BIT, DECIMAL, ENUM, HUGEINT, UHUGEINT, TIMETZ, time of day, or timestamp

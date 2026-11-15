@@ -254,6 +254,14 @@
   logical types, and CRS names. The error for a scalar value that does not
   match its declared type names the SQL type, for example `NULL` in place of
   `LogicalTypeIdSQLNull`.
+- A `TimeOfDay`, a `LocalTime`, or a `UTCTime` with digits below a microsecond,
+  and a `FieldTime`, a `FieldTimestamp`, or a `FieldTimestampTZ` with such
+  digits, binds with the nanosecond type for a `VARIANT` parameter when it fits
+  the range of that type, so the VARIANT keeps the digits. A value with no such
+  digits binds as before, with no read of the parameter type. An element of a
+  `VARIANT` list or map keeps the microsecond value.
+- An empty `Array` and an empty `FieldArray` raise the same `SQLError`, of the
+  type `ErrorInputInvalid`.
 - Add a parameter instance for `FieldValue`, so a row read as `[FieldValue]`
   binds back. A scalar constructor binds as the DuckDB type of the
   constructor, and a `FieldList`, a `FieldArray`, or a `FieldMap` takes the

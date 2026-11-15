@@ -725,12 +725,13 @@ also raises an error because DuckDB treats its STRUCT type as a tuple.
 DuckDB 2.0 permits an empty key with other named keys. You can also bind a plain
 value and cast it in SQL, as in `?::VARIANT`.
 
-A `Variant` result reads a value that a VARIANT can hold: a VARIANT column, or a
-column of another type with the same shape, such as an INTEGER, a LIST, or a
+A `Variant` result reads a value that a VARIANT can hold: a VARIANT column, or
+a column of another type with the same shape, such as an INTEGER, a LIST, or a
 GEOMETRY with no CRS. A column that holds a UNION, a MAP, an ENUM, an ARRAY, a
-TUPLE, a STRUCT with a field that is not VARIANT, or a GEOMETRY with a CRS, at
-any depth, raises the error of an incompatible column, because the cast of
-DuckDB to VARIANT changes these values. Write `c::VARIANT` in SQL to read such a
+TUPLE, a STRUCT that is not in the form of a VARIANT object (each field of the
+type VARIANT, the keys in ascending order), or a GEOMETRY with a CRS, at any
+depth, raises the error of an incompatible column, because the cast of DuckDB
+to VARIANT changes these values. Write `c::VARIANT` in SQL to read such a
 column. One difference stays, because the reader does not know the type of a
 column: a JSON column reads as its text, as a VARCHAR column does, where
 `c::VARIANT` gives the parsed value.

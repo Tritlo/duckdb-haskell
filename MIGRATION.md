@@ -240,9 +240,10 @@ The SQL workflow stays the same. These changes can affect your code:
   and the error of a field of a `ViaDuckDB` record starts with the field name.
   Change code that matches the old texts.
 - A `Variant` read accepts only a value that a VARIANT can hold. A column that
-  holds an ENUM, a MAP, a UNION, an ARRAY, a TUPLE, a STRUCT with a field that
-  is not VARIANT, or a GEOMETRY with a CRS, at any depth, raises the error of an
-  incompatible column. Write `c::VARIANT` in SQL, or read `FieldValue` for the
+  holds an ENUM, a MAP, a UNION, an ARRAY, a TUPLE, a STRUCT that is not in the
+  form of a VARIANT object (each field of the type VARIANT, the keys in
+  ascending order), or a GEOMETRY with a CRS, at any depth, raises the error of
+  an incompatible column. Write `c::VARIANT` in SQL, or read `FieldValue` for the
   decoded value. A JSON column still reads as its text; write `c::VARIANT` for
   the parsed value.
 - `TimeWithZone` holds the offset as seconds east of UTC. The field

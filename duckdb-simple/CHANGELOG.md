@@ -406,9 +406,10 @@
   the field, for example
   `duckdb-simple: field stampedAt: a value has type TIMESTAMP but expected UTCTime`.
 - A `Variant` read accepts only a value that a VARIANT can hold. A column that
-  holds an ENUM, a MAP, a UNION, an ARRAY, a TUPLE, a STRUCT with a field that
-  is not VARIANT, or a GEOMETRY with a CRS, at any depth, raises the error of an
-  incompatible column. Earlier versions wrapped the value, which DuckDB's cast
+  holds an ENUM, a MAP, a UNION, an ARRAY, a TUPLE, a STRUCT that is not in the
+  form of a VARIANT object (each field of the type VARIANT, the keys in
+  ascending order), or a GEOMETRY with a CRS, at any depth, raises the error of
+  an incompatible column. Earlier versions wrapped the value, which DuckDB's cast
   to VARIANT changes. A JSON column reads as its text, where the cast gives the
   parsed value.
 - Allow session variables to supply omitted named parameters. Too few named

@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 -- The tests call deleteFunction on purpose, so its warning does not apply.
 {-# OPTIONS_GHC -Wno-deprecations #-}
 
@@ -775,7 +776,7 @@ newtype BrokenSignature = BrokenSignature (IORef Int64)
 
 instance Function BrokenSignature where
   argumentTypes _ = [Right (error "broken scalar signature")]
-  returnType _ = returnType (Proxy :: Proxy Int64)
+  returnType _ = returnType (Proxy @Int64)
   isVolatile _ = False
   applyFunction _ _ = error "unused function"
 
@@ -794,7 +795,7 @@ newtype InvalidSignature = InvalidSignature (IORef Int64)
 
 instance Function InvalidSignature where
   argumentTypes _ = [Right (Registration.TypeExpression "no_such_type")]
-  returnType _ = returnType (Proxy :: Proxy Int64)
+  returnType _ = returnType (Proxy @Int64)
   isVolatile _ = False
   applyFunction _ _ = error "unregistered function"
 

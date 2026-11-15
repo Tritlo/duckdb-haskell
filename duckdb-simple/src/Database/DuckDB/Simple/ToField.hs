@@ -6,6 +6,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 -- |
 -- Module      : Database.DuckDB.Simple.ToField
@@ -790,8 +791,8 @@ instance (DuckDBColumnType k, DuckDBColumnType v, ToField k, ToField v) => ToFie
       \builder readTarget -> do
         (keyTarget, valueTarget) <- mapPartTypes <$> readTarget
         mapDuckValue
-          (withElementType (Proxy :: Proxy k) builder keyTarget)
-          (withElementType (Proxy :: Proxy v) builder valueTarget)
+          (withElementType (Proxy @k) builder keyTarget)
+          (withElementType (Proxy @v) builder valueTarget)
           builder
           (\key -> fieldBindingValue (toField key) builder (pure (elementBindingTarget keyTarget)))
           (\value -> fieldBindingValue (toField value) builder (pure (elementBindingTarget valueTarget)))
@@ -1021,26 +1022,26 @@ instance DuckDBColumnType (UnionValue FieldValue) where
   duckdbTypeDeclaration _ = Left (noStaticFieldTypes "UnionValue")
 
 instance (DuckDBColumnType a) => DuckDBColumnType (Maybe a) where
-  duckdbColumnTypeFor _ = duckdbColumnTypeFor (Proxy :: Proxy a)
-  duckdbTypeDeclaration _ = duckdbTypeDeclaration (Proxy :: Proxy a)
+  duckdbColumnTypeFor _ = duckdbColumnTypeFor (Proxy @a)
+  duckdbTypeDeclaration _ = duckdbTypeDeclaration (Proxy @a)
 
 -- | A LIST of the element type. See Note [Type declarations].
 instance (DuckDBColumnType a) => DuckDBColumnType (Array Int a) where
-  duckdbColumnTypeFor _ = duckdbColumnTypeFor (Proxy :: Proxy a) <> Text.pack "[]"
-  duckdbTypeDeclaration _ = listDeclaration <$> duckdbTypeDeclaration (Proxy :: Proxy a)
+  duckdbColumnTypeFor _ = duckdbColumnTypeFor (Proxy @a) <> Text.pack "[]"
+  duckdbTypeDeclaration _ = listDeclaration <$> duckdbTypeDeclaration (Proxy @a)
 
 -- | See Note [Type declarations].
 instance (DuckDBColumnType k, DuckDBColumnType v) => DuckDBColumnType (Map.Map k v) where
-  duckdbColumnTypeFor _ = Text.pack "MAP(" <> duckdbColumnTypeFor (Proxy :: Proxy k) <> Text.pack ", " <> duckdbColumnTypeFor (Proxy :: Proxy v) <> Text.pack ")"
+  duckdbColumnTypeFor _ = Text.pack "MAP(" <> duckdbColumnTypeFor (Proxy @k) <> Text.pack ", " <> duckdbColumnTypeFor (Proxy @v) <> Text.pack ")"
   duckdbTypeDeclaration _ = do
-    key <- duckdbTypeDeclaration (Proxy :: Proxy k)
-    value <- duckdbTypeDeclaration (Proxy :: Proxy v)
+    key <- duckdbTypeDeclaration (Proxy @k)
+    value <- duckdbTypeDeclaration (Proxy @v)
     mapDeclaration key value
 
 -- | 'String' keeps its own instance. See Note [Type declarations].
 instance {-# OVERLAPPABLE #-} (DuckDBColumnType a) => DuckDBColumnType [a] where
-  duckdbColumnTypeFor _ = duckdbColumnTypeFor (Proxy :: Proxy a) <> Text.pack "[]"
-  duckdbTypeDeclaration _ = listDeclaration <$> duckdbTypeDeclaration (Proxy :: Proxy a)
+  duckdbColumnTypeFor _ = duckdbColumnTypeFor (Proxy @a) <> Text.pack "[]"
+  duckdbTypeDeclaration _ = listDeclaration <$> duckdbTypeDeclaration (Proxy @a)
 
 nullBinding :: String -> FieldBinding
 nullBinding repr = valueBinding repr nullDuckValue
@@ -1163,7 +1164,7 @@ arrayDuckValue
   -> IO DuckDBV2ValueHandle
 arrayDuckValue builder target elementValue array = do
   when (null (elems array)) emptyArrayError
-  sequenceDuckValue (withElementType (Proxy :: Proxy a) builder target) c_duckdb_v2_value_create_array builder elementValue (elems array)
+  sequenceDuckValue (withElementType (Proxy @a) builder target) c_duckdb_v2_value_create_array builder elementValue (elems array)
 
 -- | Raise the error for an ARRAY parameter with no element. An 'Array' and a
 -- 'FieldArray' raise this error.
@@ -1182,7 +1183,7 @@ listDuckValue
   -> (a -> IO DuckDBV2ValueHandle)
   -> [a]
   -> IO DuckDBV2ValueHandle
-listDuckValue builder target = sequenceDuckValue (withElementType (Proxy :: Proxy a) builder target) c_duckdb_v2_value_create_list builder
+listDuckValue builder target = sequenceDuckValue (withElementType (Proxy @a) builder target) c_duckdb_v2_value_create_list builder
 
 -- | Construct a LIST or an ARRAY value with the native constructor. The first
 -- argument gives the element type of the values to its action:
@@ -1919,8 +1920,8 @@ instance (DuckDBColumnType a, ToDuckValue a) => ToDuckValue (Array Int a) where
 instance (DuckDBColumnType k, DuckDBColumnType v, ToDuckValue k, ToDuckValue v) => ToDuckValue (Map.Map k v) where
   toDuckValue factory =
     mapDuckValue
-      (withElementType (Proxy :: Proxy k) builder Nothing)
-      (withElementType (Proxy :: Proxy v) builder Nothing)
+      (withElementType (Proxy @k) builder Nothing)
+      (withElementType (Proxy @v) builder Nothing)
       builder
       (toDuckValue factory)
       (toDuckValue factory)

@@ -3,6 +3,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 -- |
 -- Module      : Database.DuckDB.Simple.Copy.Internal
@@ -313,7 +314,7 @@ registerCopyFromFunctionOn target name readRows = registerCopyOn target name Not
 copyFromSide :: forall row. (TypedRow row) => Text -> (CopyFromInfo -> IO [row]) -> CopyFromCallbacks
 copyFromSide name readRows = (copyFromCallbacks bind execute){copyFromInitGlobalCallback = Just initialize}
   where
-    width = length (rowColumnDeclarations (Proxy :: Proxy row))
+    width = length (rowColumnDeclarations (Proxy @row))
     bind info _ = do
       path <- output (c_duckdb_v2_copy_from_bind_get_file_path info) >>= readText
       count <- output (c_duckdb_v2_copy_from_bind_get_column_count info)

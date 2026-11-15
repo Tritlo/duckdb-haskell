@@ -3,6 +3,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 
 -- |
@@ -73,7 +74,7 @@ class TypedRow r where
   -- Note [Type declarations] in "Database.DuckDB.Simple.ToField".
   rowColumnDeclarations :: Proxy r -> [Either Text TypeDeclaration]
   default rowColumnDeclarations :: (GTypedRow (Rep r)) => Proxy r -> [Either Text TypeDeclaration]
-  rowColumnDeclarations _ = gRowColumnDeclarations (Proxy :: Proxy (Rep r))
+  rowColumnDeclarations _ = gRowColumnDeclarations (Proxy @(Rep r))
 
   -- | The value of each column.
   rowColumnValues :: r -> [ColumnValue]
@@ -94,21 +95,21 @@ instance GTypedRow U1 where
   gRowColumnValues U1 = []
 
 instance (GTypedRow a) => GTypedRow (M1 i c a) where
-  gRowColumnDeclarations _ = gRowColumnDeclarations (Proxy :: Proxy a)
+  gRowColumnDeclarations _ = gRowColumnDeclarations (Proxy @a)
   gRowColumnValues (M1 value) = gRowColumnValues value
 
 instance (ToDuckValue a) => GTypedRow (K1 i a) where
-  gRowColumnDeclarations _ = [duckdbTypeDeclaration (Proxy :: Proxy a)]
+  gRowColumnDeclarations _ = [duckdbTypeDeclaration (Proxy @a)]
   gRowColumnValues (K1 value) = [ColumnValue (`toDuckValue` value)]
 
 instance (GTypedRow a, GTypedRow b) => GTypedRow (a :*: b) where
-  gRowColumnDeclarations _ = gRowColumnDeclarations (Proxy :: Proxy a) <> gRowColumnDeclarations (Proxy :: Proxy b)
+  gRowColumnDeclarations _ = gRowColumnDeclarations (Proxy @a) <> gRowColumnDeclarations (Proxy @b)
   gRowColumnValues (left :*: right) = gRowColumnValues left <> gRowColumnValues right
 
 instance TypedRow ()
 
 instance (ToDuckValue a) => TypedRow (Only a) where
-  rowColumnDeclarations _ = [duckdbTypeDeclaration (Proxy :: Proxy a)]
+  rowColumnDeclarations _ = [duckdbTypeDeclaration (Proxy @a)]
   rowColumnValues (Only value) = [ColumnValue (`toDuckValue` value)]
 
 instance (ToDuckValue a, ToDuckValue b) => TypedRow (a, b)

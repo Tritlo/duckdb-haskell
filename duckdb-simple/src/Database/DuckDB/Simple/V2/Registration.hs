@@ -2,6 +2,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 -- |
 -- Module      : Database.DuckDB.Simple.V2.Registration
@@ -760,7 +761,7 @@ getCallbackState getter = do
             ( "duckdb-simple: callback state has type "
                 <> Text.pack (show (dynTypeRep stored))
                 <> ", not "
-                <> Text.pack (show (typeRep (Proxy :: Proxy a)))
+                <> Text.pack (show (typeRep (Proxy @a)))
             )
             Nothing
             Nothing

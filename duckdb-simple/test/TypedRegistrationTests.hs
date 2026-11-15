@@ -5,6 +5,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 -- |
 -- Module      : TypedRegistrationTests
@@ -474,7 +475,7 @@ testOptionText = withConnection ":memory:" \conn -> do
 roundTrip :: forall a. (ToDuckValue a, FromField a, Eq a, Show a) => Connection -> Text -> [a] -> Assertion
 roundTrip conn label values = do
   let name = "typed_base_" <> label
-  registerCustomType conn name (TypeExpression (duckdbColumnType (Proxy :: Proxy a)))
+  registerCustomType conn name (TypeExpression (duckdbColumnType (Proxy @a)))
   createCast conn (TypeExpression "BIGINT") (TypeExpression name) \(row :: Int64) -> Right (values !! fromIntegral row)
   rows <- query_ conn (Query ("SELECT CAST(i AS " <> name <> ") FROM range(" <> Text.pack (show (length values)) <> ") t(i) ORDER BY i"))
   assertEqual (Text.unpack name) values (map fromOnly rows)

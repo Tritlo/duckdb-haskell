@@ -6,6 +6,7 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StrictData #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE ViewPatterns #-}
 
 -- |
@@ -999,7 +1000,7 @@ returnError mkError Field{fieldValue, fieldName} msg =
         mkError
           (fieldValueTypeName fieldValue)
           fieldName
-          (Text.pack $ show (typeRep (Proxy :: Proxy b)))
+          (Text.pack $ show (typeRep (Proxy @b)))
           msg
     ]
 

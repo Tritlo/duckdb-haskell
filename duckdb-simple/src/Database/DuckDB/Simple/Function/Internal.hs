@@ -223,7 +223,7 @@ class Function a where
 -- | A result value: a function with no argument. It is not volatile.
 instance {-# OVERLAPPABLE #-} (FunctionResult a) => Function a where
   argumentTypes _ = []
-  returnType _ = duckdbTypeDeclaration (Proxy :: Proxy a)
+  returnType _ = duckdbTypeDeclaration (Proxy @a)
   isVolatile _ = False
   applyFunction [] value = pure (scalarValue value)
   applyFunction _ _ = throwIO (functionInvocationError (Text.pack "unexpected arguments supplied"))
@@ -232,7 +232,7 @@ instance {-# OVERLAPPABLE #-} (FunctionResult a) => Function a where
 -- volatile, so DuckDB runs the action one time for each row.
 instance {-# OVERLAPPING #-} (FunctionResult a) => Function (IO a) where
   argumentTypes _ = []
-  returnType _ = duckdbTypeDeclaration (Proxy :: Proxy a)
+  returnType _ = duckdbTypeDeclaration (Proxy @a)
   isVolatile _ = True
   applyFunction [] action = scalarValue <$> action
   applyFunction _ _ = throwIO (functionInvocationError (Text.pack "unexpected arguments supplied"))
@@ -241,9 +241,9 @@ instance {-# OVERLAPPING #-} (FunctionResult a) => Function (IO a) where
 -- 'duckdbTypeDeclaration'. The function is volatile when its result is
 -- volatile. See Note [Type declarations] in "Database.DuckDB.Simple.ToField".
 instance {-# OVERLAPPABLE #-} (FromField a, DuckDBColumnType a, Function r) => Function (a -> r) where
-  argumentTypes _ = duckdbTypeDeclaration (Proxy :: Proxy a) : argumentTypes (Proxy :: Proxy r)
-  returnType _ = returnType (Proxy :: Proxy r)
-  isVolatile _ = isVolatile (Proxy :: Proxy r)
+  argumentTypes _ = duckdbTypeDeclaration (Proxy @a) : argumentTypes (Proxy @r)
+  returnType _ = returnType (Proxy @r)
+  isVolatile _ = isVolatile (Proxy @r)
   applyFunction [] _ =
     throwIO (functionInvocationError (Text.pack "insufficient arguments supplied"))
   applyFunction (field : rest) fn =
@@ -255,7 +255,7 @@ instance {-# OVERLAPPABLE #-} (FromField a, DuckDBColumnType a, Function r) => F
 createFunctionOn :: forall f. (Function f) => RegistrationTarget -> Text -> f -> IO ()
 createFunctionOn target name fn = do
   casts <- targetCastFactory target
-  registerScalarFunction target name (Proxy :: Proxy f) \allocate function ->
+  registerScalarFunction target name (Proxy @f) \allocate function ->
     [ install
         allocate
         DuckDBV2ScalarFunctionExecCallbackFn
@@ -267,7 +267,7 @@ createFunctionOn target name fn = do
 createFunctionWithStateOn :: forall s f. (Function f) => RegistrationTarget -> Text -> IO s -> (s -> f) -> IO ()
 createFunctionWithStateOn target name initState mkFn = do
   casts <- targetCastFactory target
-  registerScalarFunction target name (Proxy :: Proxy f) \allocate function ->
+  registerScalarFunction target name (Proxy @f) \allocate function ->
     [ install
         allocate
         DuckDBV2ScalarFunctionExecCallbackFn
@@ -332,7 +332,7 @@ scalarFunctionHandler casts fn info context err = runCallback err (executeScalar
 executeScalarFunction
   :: forall f. (Function f) => Maybe DuckDBV2FactoryHandle -> f -> DuckDBV2ScalarFunctionExecInfoHandle -> DuckDBV2ContextHandle -> IO ()
 executeScalarFunction casts fn info context = withContextFactory context \contextFactory -> do
-  let expected = length (argumentTypes (Proxy :: Proxy f))
+  let expected = length (argumentTypes (Proxy @f))
   columnCount <- allocaArray 4 $ \counts -> do
     checked (c_duckdb_v2_scalar_function_exec_get_arg_count info counts (advancePtr counts 1) (advancePtr counts 2) (advancePtr counts 3))
     fromIntegral . sum <$> peekArray 4 counts

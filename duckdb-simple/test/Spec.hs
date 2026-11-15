@@ -6,6 +6,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 
 -- |
@@ -970,12 +971,12 @@ typeTests =
         assertEqual
           "duckdbColumnType Integer"
           (Text.pack "BIGNUM")
-          (duckdbColumnType (Proxy :: Proxy Integer))
+          (duckdbColumnType (Proxy @Integer))
     , testCase "duckdbColumnType preserves Maybe parameter" $
         assertEqual
           "duckdbColumnType Maybe Word16"
           (Text.pack "USMALLINT")
-          (duckdbColumnType (Proxy :: Proxy (Maybe Word16)))
+          (duckdbColumnType (Proxy @(Maybe Word16)))
     , testCase "decodes interval components" $
         withConnection ":memory:" \conn -> do
           [Only intervalVal] <-

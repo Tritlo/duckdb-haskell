@@ -387,12 +387,14 @@ Notes:
    registration with such a type raises an error. Use a record with
    `ViaDuckDB`.
 10. A record binds as a STRUCT, and a sum type binds as a UNION. A typed
-    registration declares the STRUCT or UNION type of the record or the sum
-    type. In a record, an `Integer` field declares HUGEINT and a `Natural`
-    field declares UHUGEINT, and a value that this type cannot hold raises an
-    error. A bare `Integer` or `Natural` declares BIGNUM. A record with an
-    `Array` field raises an error at registration, because the
-    record type does not give the size of the ARRAY. See
+    registration declares the STRUCT or UNION type of a record or a sum type
+    that derives `DuckDBColumnType` and `ToDuckValue` via `ViaDuckDB`, also in a
+    list or a MAP. Each field type comes from `DuckValue`: an `Integer` field
+    declares HUGEINT and a `Natural` field declares UHUGEINT, and a value that
+    this type cannot hold raises an error. A bare `Integer` or `Natural`
+    declares BIGNUM. A record with an `Array` field raises an error at
+    registration, because the record type does not give the size of the
+    ARRAY. Use a list field. See
     [Generic Encoding with ViaDuckDB](#generic-encoding-with-viaduckdb).
 11. Each constructor binds as its SQL type, with these exceptions:
     - A `FieldEnum` binds its label as a VARCHAR.
@@ -1408,14 +1410,9 @@ tableExample conn = do
 ```
 
 The type of a column, a parameter, or an aggregate argument comes from
-`duckdbTypeDeclaration`. A record or a sum type that derives `DuckDBColumnType`
-and `ToDuckValue` via `ViaDuckDB` is a STRUCT or a UNION, also in a list or a
-MAP. Each field type comes from `DuckValue`: an `Integer` field is HUGEINT and
-a `Natural` field is UHUGEINT, but an `Integer` column is BIGNUM. The
-registration raises an error for an `Array` field, because its ARRAY type has
-no size. Use a list field. `StructValue`,
-`TupleValue`, and `UnionValue` have no static field types. The registration
-raises an error for them. An aggregate argument has the VARIANT and GEOMETRY
+`duckdbTypeDeclaration`: notes 9 and 10 of [Types](#types) give the types of
+records, sum types, and `StructValue`, `TupleValue`, and `UnionValue`. An
+aggregate argument has the VARIANT and GEOMETRY
 rules of [User-Defined Functions](#user-defined-functions).
 
 `registerReplacementScan` gives the parts of an unknown table name to the

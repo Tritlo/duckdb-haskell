@@ -13,12 +13,9 @@
   types. `sqlErrorType` is `Maybe ErrorType`. See MIGRATION.md.
 - Add shared environments and instances, attachment management, option
   discovery, table descriptions, SQL tokenization, and positioned file I/O.
-- `attachDatabase` rejects an attach option that contains NUL.
-  `detachDatabase` and `setDefaultDatabase` reject an alias that contains NUL.
 - Add typed configuration values and defaults, managed log sinks, macro
   registration, function documentation, query metrics, and file path
   operations. Expose table bind metadata for multi-file readers.
-  `enableProfiling` collects metrics without printing a profile.
 - Add typed registrations. Their signatures have no native handle.
   `Database.DuckDB.Simple.Function` has `createCast`, `createAggregate`,
   `createTableFunction`, and the row class `TypedRow`. `Database.DuckDB.Simple`
@@ -48,8 +45,6 @@
 - Add `Database.DuckDB.Simple.Pragma`. `registerPragmaFunction` takes a typed
   callback `PragmaCallback args`. The callback gets the arguments of the call
   as a `FromRow` row.
-- The pragma registrations reject an empty name and a name that contains NUL,
-  as the other registrations do.
 - Add custom options to `Database.DuckDB.Simple.Config`. `customOptionUpdate`
   is a function that gets the new value as a `FieldValue`. An exception in the
   function rejects the value.
@@ -104,19 +99,18 @@
 - Rename `Database.DuckDB.Simple.Deprecated.Streaming` to
   `Database.DuckDB.Simple.Streaming`.
 - Export Arrow release helpers from `Database.DuckDB.Simple.Arrow`.
-- The default `query`, `fold`, and Arrow folds collect the result before the
-  first callback, so a callback can query the same connection.
+- The default `fold`, `fold_`, `foldNamed`, `foldArrow`, and `foldArrow_`
+  collect the result before the first callback. Thus their callback can run a
+  query on the same connection. The README of version 0.3 forbade a query on
+  the active connection in a callback.
 - A DuckDB callback that waits for the lock of a connection waits at most the
   bound of that connection. Add `connectionCallbackLockWait` to
   `ConnectionOptions`, in microseconds, with the default
   `defaultCallbackLockWait` (10 seconds). `Nothing` sets no bound, and the open
   rejects a negative bound. A statement of a callback on the connection that
   runs the callback thus raises an `SQLError` of the type `ErrorResourceInUse`
-  after the bound. For most callbacks, the outer statement then fails. Before,
-  neither call returned. The README gives the cases that the bound does not
-  cover.
-- `sqlErrorQuery` gives the query that failed. For a query in the callback of
-  an Arrow fold, it gives the query of the callback, not the query of the fold.
+  after the bound. For most callbacks, the outer statement then fails. The
+  README gives the cases that the bound does not cover.
 - The message of a native error is decoded with replacement characters. A
   native error text that is not valid UTF-8 does not raise when the error is
   shown.
@@ -145,8 +139,8 @@
   microsecond value for each parameter.
 - Decode VARIANT values through public V2 operations. Object keys use DuckDB's
   lexicographic order.
-- Allow a VARIANT object to contain an empty key with other named keys. Reject
-  an object with only an empty key because the C API changes its shape.
+- Allow a VARIANT object to contain an empty key with other named keys.
+  Version 0.3 rejected such an object.
 - A `Variant` parameter with a UNION payload, at any depth, raises `SQLError`
   with the type `ErrorInputInvalid`, because a VARIANT keeps only the member
   value of a UNION. Version 0.3 bound such a value with no error. The
@@ -199,11 +193,12 @@
   element type. A `String` stays one VARCHAR parameter, and a list as a row is
   still a row of parameters, so a list parameter is `Only [..]`. Version 0.3
   had no list parameter instance.
-- `executeMany` reads the parameter types one time for each call, not one time
-  for each row. A row with a time value that has digits below a microsecond,
-  an `Array`, or a manual STRUCT, TUPLE, or UNION parameter no longer runs the
-  DuckDB binder again. A column type that changes during the call does not change how the
-  later rows of that call bind.
+- Some parameters bind for the type that DuckDB gives the parameter: a time
+  value with digits below a microsecond, an `Array`, a list, a `Map`, a manual
+  STRUCT, TUPLE, or UNION value, and an `Integer` or a `Natural` outside the
+  HUGEINT range. `executeMany` reads these types one time for each call. A
+  column type that changes during the call does not change how the later rows
+  of that call bind.
 - An `Integer` or a `Natural` parameter binds as a HUGEINT value when the value
   is in the HUGEINT range. Before, it bound as a BIGNUM value in each case. In
   DuckDB 2.0.0 the casts from BIGNUM to the integer types have defects: a
@@ -255,7 +250,6 @@
 - Reject duplicate named parameters with DuckDB's ASCII case rules. Keep
   distinct non-ASCII names separate. Preserve sparse numeric parameter names
   such as `$3`.
-- Refresh statement metadata after reset or rebinding.
 - Resolve configuration names and aliases case-insensitively. Use DuckDB's
   ASCII identifier rules for catalog names and top-level schemas.
 - `deleteFunction` reports the error from DuckDB. DuckDB does not permit

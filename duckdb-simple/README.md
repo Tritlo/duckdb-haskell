@@ -294,7 +294,7 @@ Each row gives a Haskell type and these facts:
 | `TimeWithZone` | TIMETZ | | TIMETZ | argument, result |
 | `IntervalValue` | INTERVAL | | INTERVAL | argument, result |
 | `[a]` | LIST | | LIST, ARRAY | argument, result |
-| `Array Int a` | ARRAY (8) | LIST | ARRAY | result (8) |
+| `Array Int a` | ARRAY (8) | none (8) | ARRAY | none (8) |
 | `Map k v` | MAP | | MAP | argument, result |
 | `StructValue FieldValue` | STRUCT (9) | none | STRUCT | none |
 | `TupleValue FieldValue` | TUPLE (9) | none | TUPLE | none |
@@ -374,12 +374,18 @@ Notes:
    dates and timestamps](#infinite-dates-and-timestamps) gives the full rule.
 8. An `Array` binds as an ARRAY with the size of the value. An empty `Array`
    raises an `SQLError` of the type `ErrorInputInvalid`, because a DuckDB ARRAY
-   has at least one element; bind an empty list for an empty LIST. A typed
-   registration declares a LIST for an `Array`. Thus an `Array` argument of
-   `createFunction` or `createAggregate`, and an `Array` parameter of
-   `createTableFunction`, get a LIST, which the `Array` instance does not read.
-   Each call with a value that is not NULL raises an `SQLError`. Use a list. The
-   library writes an `Array` result as a LIST.
+   has at least one element; bind an empty list for an empty LIST. A DuckDB
+   ARRAY type has a size, and the Haskell type has none, so a typed registration
+   has no declaration for an `Array`. An `Array` argument or result of
+   `createFunction` or `createAggregate`, and an `Array` parameter or column of
+   `createTableFunction`, raise an `SQLError` of the type `ErrorInputInvalid` at
+   registration, also inside a `Maybe`, a list, or a `Map`. Use a list for a
+   LIST. For an ARRAY, use a newtype of the `Array` with its own column type
+   name (`duckdbColumnTypeFor`) that gives the size, for example `BIGINT[3]`.
+   DuckDB then rejects an ARRAY of another size when it binds the call. It casts
+   a LIST of the same length to the ARRAY with no error, by its own implicit
+   cast, and a LIST of another length raises an `SQLError` when the statement
+   runs.
 9. A STRUCT, TUPLE, or UNION parameter binds with the types of its own fields
    or members. These values have no static field types, so a typed
    registration with such a type raises an error. Use a record with
@@ -392,7 +398,8 @@ Notes:
     this type cannot hold raises an error. A bare `Integer` or `Natural`
     declares BIGNUM. A record with an `Array` field raises an error at
     registration, because the record type does not give the size of the
-    ARRAY. Use a list field. See
+    ARRAY. Use a list field, or a field of a newtype of the `Array` with a
+    `DuckValue` instance that gives the size (see note 8). See
     [Generic Encoding with ViaDuckDB](#generic-encoding-with-viaduckdb).
 11. Each constructor binds as its SQL type, with these exceptions:
     - A `FieldEnum` binds its label as a VARCHAR.
@@ -1469,10 +1476,10 @@ tableExample conn = do
 ```
 
 The type of a column, a parameter, or an aggregate argument comes from
-`duckdbTypeDeclaration`: notes 9 and 10 of [Types](#types) give the rule for
-records, sum types, and `StructValue`, `TupleValue`, and `UnionValue`. An
-aggregate argument has the VARIANT and GEOMETRY rules of [User-Defined
-Functions](#user-defined-functions).
+`duckdbTypeDeclaration`: notes 8, 9, and 10 of [Types](#types) give the rule
+for an `Array`, records, sum types, and `StructValue`, `TupleValue`, and
+`UnionValue`. An aggregate argument has the VARIANT and GEOMETRY rules of
+[User-Defined Functions](#user-defined-functions).
 
 `registerReplacementScan` gives the parts of an unknown table name to the
 function. The function can give a SELECT statement that DuckDB reads instead.

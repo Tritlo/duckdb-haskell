@@ -58,7 +58,12 @@
   type that a typed table function and a typed aggregate function declare. A
   record or a sum type gets `ToDuckValue` and a STRUCT or UNION declaration
   through `ViaDuckDB`. `StructValue`, `TupleValue`, and `UnionValue` have no
-  declaration, and the registration raises an error for them.
+  declaration, and the registration raises an error for them. An `Array` has
+  no declaration, because its ARRAY type has no size, so a registration
+  refuses an `Array` argument, result, parameter, or column, also inside a
+  `Maybe`, a list, or a `Map`. A newtype of the `Array` with its own column
+  type name, for example `BIGINT[3]`, declares that ARRAY. DuckDB casts a LIST
+  of the same length to it with no error.
   `Database.DuckDB.Simple.LogicalRep` exports `TypeDeclaration`.
 - An argument of `createFunction` can have each type with `FromField` and
   `DuckDBColumnType`, for example a record through `ViaDuckDB`, a list, a

@@ -232,6 +232,15 @@
   binds again with its type. The readers and the binding of parameters convert
   with the base type. A column of a type from `CREATE TYPE name AS base` has the
   base type and no alias.
+- `Field` has the lazy field `fieldType`, the SQL type of the column, or of
+  the element, the key, or the value of a LIST, an ARRAY, or a MAP, with each
+  alias. A `FromField` instance can check a DECIMAL scale, a TIMESTAMP unit, an
+  ARRAY size, or JSON. The library converts the type at the first use of the
+  field, one time for each column and execution. A value in a VARIANT has the
+  type VARIANT. `DuckValue` has the new method `duckFromTypedField`, with a
+  default that runs `duckFromField`. `typedFromField` decodes through
+  `FromField` with the type, and the generic STRUCT and UNION decoders give
+  each field its type.
 - Decode nanosecond timezone timestamps in results and VARIANT values.
 - Preserve the digits below a microsecond of a `TimeOfDay`, a `LocalTime`, and
   a `UTCTime`, and of their `Unbounded` forms, for a nanosecond parameter

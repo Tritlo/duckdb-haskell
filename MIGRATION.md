@@ -137,6 +137,14 @@ The SQL workflow stays the same. These changes can affect your code:
 - SQL TUPLE values decode as `FieldTuple` with a `TupleValue`. `LogicalTypeRep`
   adds `LogicalTypeTuple` and `LogicalTypeCollatedVarchar`. Update exhaustive
   matches.
+- `Field` has the new field `fieldType`, the SQL type of the column or the
+  element. A positional construction or match of `Field` does not compile. A
+  record construction must give `fieldType`, for example
+  `Field{fieldName = "n", fieldIndex = 0, fieldValue = FieldInt64 1, fieldType = LogicalTypeScalar LogicalTypeIdBigInt}`.
+  Give `LogicalTypeScalar LogicalTypeIdVariant` when the type of the value
+  decides. A record pattern compiles with no change. A `DuckValue` instance
+  compiles with no change; define `duckFromTypedField = typedFromField` to give
+  `fieldType` to the `FromField` of a record field.
 - `LogicalTypeRep` adds `LogicalTypeAlias`. Update exhaustive matches. The
   `columnDescriptionType` of a JSON column is
   `LogicalTypeAlias "JSON" (LogicalTypeScalar LogicalTypeIdVarchar)`, also as a

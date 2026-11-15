@@ -268,6 +268,27 @@ A `FromField` instance reads the SQL type of its Haskell type, for example
 BIGINT for `Int64`, and other SQL types with the value of DuckDB's cast: the
 column "Reads" and notes 3 to 5 of [Types](#types) give them.
 
+The `fieldType` of a `Field` is the SQL type of the column, or of the element,
+the key, or the value of a LIST, an ARRAY, or a MAP, with each alias, for
+example JSON. The library converts the type at the first use of `fieldType`,
+one time for each column and execution, so a read that does not use it
+converts no type. A value in a VARIANT has the type VARIANT, and so does a
+`Field` that the library makes from a `FieldValue` alone: then the type of the
+value decides. An instance can check the type:
+
+```haskell
+newtype Cents = Cents DecimalValue
+
+instance FromField Cents where
+  fromField f@Field{fieldType} = case fieldType of
+    LogicalTypeDecimal _ 2 -> Cents <$> fromField f
+    _ -> returnError Incompatible f "expected a DECIMAL with the scale 2"
+```
+
+A field of a `ViaDuckDB` record reads with its type when its `DuckValue`
+instance sets `duckFromTypedField = typedFromField`. The instances of the
+library do this.
+
 ## Types
 
 Each row gives a Haskell type and these facts:

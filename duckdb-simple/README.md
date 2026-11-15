@@ -358,7 +358,8 @@ Notes:
    date of a timestamp, and `TimeOfDay` reads its time. A nanosecond type keeps
    its nanoseconds. An infinite value raises a conversion error of the
    library, an `SQLError` with no type, for `Day`, `TimeOfDay`, `LocalTime`,
-   and `UTCTime`. The `Unbounded` forms read it.
+   and `UTCTime`. The `Unbounded` forms read it. Use `Maybe Date` to
+   distinguish SQL NULL from infinity.
    `Date`, `LocalTimestamp`, and `UTCTimestamp` from
    `Database.DuckDB.Simple.Time` are the `Unbounded` forms.
 7. A value with digits below a microsecond keeps them for a nanosecond
@@ -711,9 +712,8 @@ infiniteDates :: Connection -> IO [Only Date]
 infiniteDates conn = query conn "SELECT ?::DATE" (Only (PosInfinity :: Date))
 ```
 
-The ordinary `Day`, `LocalTime`, and `UTCTime` instances reject infinity with a
-conversion error of the library, an `SQLError` with no type. Use `Maybe Date` to
-distinguish SQL NULL from infinity. Floating-point NaN and infinities remain
+The ordinary `Day`, `LocalTime`, and `UTCTime` instances reject infinity: note 6
+of [Types](#types). Floating-point NaN and infinities remain
 valid `Float` and `Double` values.
 
 A `TimeOfDay`, a `LocalTime`, or a `UTCTime` parameter, and an `Unbounded`

@@ -254,6 +254,8 @@ builds. CI does this too. Source archives include those artefacts. See the
 
 This guide covers the changes needed when upgrading this repository from the
 DuckDB 1.4 line to the DuckDB 1.5 line.
+This part describes `duckdb-ffi` 1.5.6.0 and `duckdb-simple` 0.3.0.0. The part
+[DuckDB 2.0](#duckdb-20) gives the changes of the later releases.
 
 The short version is:
 
@@ -264,16 +266,16 @@ The short version is:
 - New 1.5 functionality is exposed through additive modules and helpers; no
   wholesale rewrite is required.
 
-## Native DuckDB 1.5.6
+### Native DuckDB 1.5.6
 
-The default native download is DuckDB 1.5.6. Native DuckDB >= 1.5.3 and < 1.6
-remains supported. `duckdb-simple` uses a separate API version.
+The default native download was DuckDB 1.5.6. Native DuckDB >= 1.5.3 and < 1.6
+stayed supported. `duckdb-simple` uses a separate API version.
 
 The FFI adds the GEOMETRY and VARIANT type tags, the geometry CRS accessor,
 and the COPY_DATABASE, UPDATE_EXTENSIONS, and MERGE_INTO statement tags.
 Free strings returned by the CRS accessor with `duckdb_free`.
 
-## Geometry support
+### Geometry support
 
 `duckdb-simple-0.3.0.0` adds Geometry support.
 
@@ -287,15 +289,16 @@ WKB and CRS with explicit SQL. Version 0.4 adds a parameter instance. See
 `FieldValue` gains `FieldGeometry`, and `LogicalTypeRep` gains
 `LogicalTypeGeometry`. Update exhaustive matches.
 
-The C API cannot create a GEOMETRY type with a CRS. Each connection reads
-GEOMETRY types for a list of CRS definitions the first time a parameter needs
-one, and composite parameters use them. The list defaults to `OGC:CRS84`. Set
-it with `ConnectionOptions`, `openWithOptions`, or `withConnectionWithOptions`.
-A CRS outside the list binds without a CRS, and `logicalTypeFromRep` creates
-`GEOMETRY` with no CRS. To apply a CRS in these cases, insert the value into a
-column with that CRS, or cast it in SQL.
+The C API of DuckDB 1.5 cannot create a GEOMETRY type with a CRS. In version
+0.3, each connection read GEOMETRY types for a list of CRS definitions the first
+time a parameter needed one, and composite parameters used them. The list
+defaults to `OGC:CRS84`. Set it with `ConnectionOptions`, `openWithOptions`, or
+`withConnectionWithOptions`. In version 0.3, a CRS outside the list bound
+without a CRS, and `logicalTypeFromRep` created `GEOMETRY` with no CRS. To
+apply a CRS in these cases, version 0.3 needed an insert into a column with
+that CRS, or a cast in SQL.
 
-## VARIANT support
+### VARIANT support
 
 `duckdb-simple-0.3.0.0` adds VARIANT support. VARIANT results decode to the
 `FieldValue` of the stored value, so existing `FromField` instances read them.
@@ -306,17 +309,16 @@ VARIANT loses geometry CRS metadata. Import raw geometry payloads with
 notes](duckdb-simple/README.md#variant) for current decoding and
 persistent-storage requirements.
 
-`Variant` binds as a VARIANT parameter. The connection reads the VARIANT type
-the first time a parameter needs it, because the C API cannot create a usable
-VARIANT type.
-`Variant` has no `ToDuckValue` instance, and `logicalTypeFromRep` raises an
-error for VARIANT.
+`Variant` binds as a VARIANT parameter. In version 0.3, the connection read the
+VARIANT type the first time a parameter needed it, because the C API of DuckDB
+1.5 cannot create a usable VARIANT type. In version 0.3, `Variant` had no
+`ToDuckValue` instance, and `logicalTypeFromRep` raised an error for VARIANT.
 
 Array elements require `ToField` and `DuckDBColumnType`. Arrays use each
 element's `ToField` instance. If a custom element type only has `ToDuckValue`,
 add `instance ToField YourType`. The default implementation requires `Show`.
 
-## Binding fixes
+### Binding fixes
 
 - Default cursors and folds use DuckDB's supported materialized execution API. They
   decode one Haskell row at a time, but native result memory depends on the
@@ -347,7 +349,7 @@ add `instance ToField YourType`. The default implementation requires `Show`.
 - Rebuild applications that use the FFI directly. The corrected C adapters
   preserve Haskell types.
 
-## Who Needs to Change What
+### Who Needs to Change What
 
 If you use `duckdb-ffi` directly:
 
@@ -365,7 +367,7 @@ If you use `duckdb-simple`:
 - New 1.5 helpers are available from dedicated modules instead of being folded
   into the core query API.
 
-## Runtime Compatibility
+### Runtime Compatibility
 
 The biggest practical change is the runtime baseline.
 
@@ -397,11 +399,11 @@ LD_LIBRARY_PATH=/path/to/duckdb-1.5 \
   cabal test --extra-lib-dirs=/path/to/duckdb-1.5
 ```
 
-## `duckdb-ffi` Migration
+### `duckdb-ffi` Migration
 
-### Header and Symbol Surface
+#### Header and Symbol Surface
 
-The vendored `duckdb.h` now matches DuckDB 1.5.6.
+The vendored `duckdb.h` of `duckdb-ffi` 1.5.6.0 matched DuckDB 1.5.6.
 
 The 1.5 change is additive for the C API surface used here:
 
@@ -413,7 +415,7 @@ This means most direct FFI users do not need to rewrite existing code. Instead:
 - keep existing bindings for legacy 1.4 APIs
 - opt into the new 1.5 APIs where needed
 
-### New Raw Modules
+#### New Raw Modules
 
 The new 1.5 areas are exposed through these modules:
 
@@ -425,7 +427,7 @@ The new 1.5 areas are exposed through these modules:
 Use these when adopting new 1.5 functionality rather than trying to infer the
 symbols manually from the header.
 
-### New Types and Callbacks
+#### New Types and Callbacks
 
 DuckDB 1.5 introduces new opaque handles and enums that may affect your own FFI
 layer if you were maintaining local bindings. In this repository they are now
@@ -443,7 +445,7 @@ provided centrally, including:
 If you had local downstream bindings for any of these, delete them and import
 the shared versions from `Database.DuckDB.FFI.Types`.
 
-### Error-Handling Guidance
+#### Error-Handling Guidance
 
 DuckDB 1.5 adds more `duckdb_error_data`-style paths.
 
@@ -456,9 +458,9 @@ Recommended approach:
 
 That is the policy used in this repository.
 
-## `duckdb-simple` Migration
+### `duckdb-simple` Migration
 
-### Existing Query Code
+#### Existing Query Code
 
 Most `duckdb-simple` code should not need source changes.
 
@@ -470,7 +472,7 @@ The following remain source-compatible:
 - `ToField`/`FromField`-based row and parameter handling
 - existing scalar function registration with `createFunction`
 
-### New Modules
+#### New Modules
 
 DuckDB 1.5 features are exposed in additive modules:
 
@@ -483,7 +485,7 @@ DuckDB 1.5 features are exposed in additive modules:
 Import them only where needed. The main `Database.DuckDB.Simple` module stays
 focused on the core query interface.
 
-### Opening with Config
+#### Opening with Config
 
 If you previously created connections only with:
 
@@ -505,7 +507,7 @@ or:
 withConnectionWithConfig ":memory:" [("threads", "1")] $ \conn -> ...
 ```
 
-### Stateful Scalar Functions
+#### Stateful Scalar Functions
 
 DuckDB 1.5 adds scalar-function init/state hooks. In `duckdb-simple`, that is
 surfaced as `createFunctionWithState`.
@@ -532,7 +534,7 @@ createFunctionWithState conn "hs_counter" (newIORef (0 :: Int)) $ \ref -> do
 This is an additive feature. Existing `createFunction` users do not need to
 rewrite working code.
 
-### Copy Functions
+#### Copy Functions
 
 DuckDB 1.5 adds C APIs for custom `COPY` integrations. `duckdb-simple` now
 exposes `registerCopyToFunction` in `Database.DuckDB.Simple.Copy`.
@@ -553,7 +555,7 @@ The wrapper separates the callback phases:
 This mirrors DuckDB’s ownership model closely on purpose. If you had no custom
 COPY integration before, nothing changes for normal SQL `COPY` usage.
 
-### Logging
+#### Logging
 
 DuckDB 1.5 adds custom log storage registration. `duckdb-simple` now exposes
 `registerLogStorage` in `Database.DuckDB.Simple.Logging`.
@@ -561,9 +563,9 @@ DuckDB 1.5 adds custom log storage registration. `duckdb-simple` now exposes
 This is optional advanced functionality. Existing applications do not need to
 change anything unless they want to capture DuckDB log events.
 
-## Behavior Changes Worth Noting
+### Behavior Changes Worth Noting
 
-### `TIME_NS` Decoding
+#### `TIME_NS` Decoding
 
 The test suite was updated because DuckDB 1.5 now successfully decodes
 `TIME_NS`, where older expectations treated that as unsupported.
@@ -573,7 +575,7 @@ For most users this is a strict improvement:
 - code that already handled `FieldTime` continues to work
 - tests that expected a failure for `TIME_NS` should be updated
 
-### `duckdb_string_t` Handling
+#### `duckdb_string_t` Handling
 
 DuckDB 1.5 made it more obvious that `duckdb_string_t_data` must be consumed
 with its explicit length, not by assuming NUL termination.
@@ -592,7 +594,7 @@ peekCStringLen ...
 
 using `duckdb_string_t_length`.
 
-## Suggested Upgrade Steps
+### Suggested Upgrade Steps
 
 1. Upgrade the Haskell packages to:
    - `duckdb-ffi-1.5.6.0`

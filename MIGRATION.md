@@ -201,6 +201,9 @@ The SQL workflow stays the same. These changes can affect your code:
   the first time a parameter needed one, and did not check that a type kept its
   CRS.
 - DuckDB 2.0 rejects WKB with mixed Z/M member layouts.
+- `RawGeometry` has a parameter instance. It binds as a GEOMETRY with its own
+  CRS. Version 0.3 had only a result instance, so code imported the WKB with
+  `ST_GeomFromWKB(?)` and the CRS with `ST_SetCRS`. That SQL still works.
 - Decoded VARIANT objects list their keys in DuckDB's lexicographic order.
 
 The typed registrations are new in 0.4. Version 0.3 had no `Registration`
@@ -244,8 +247,9 @@ Free strings returned by the CRS accessor with `duckdb_free`.
 Use `Data.Geometry.Geometry` from the published `geometry-simple` package for
 decoded shapes. Use `RawGeometry` for WKB bytes and CRS metadata. The package's
 `Geometry` type has no CRS. It has parameter and result instances.
-`RawGeometry` has a result instance. Import its WKB and CRS with explicit SQL.
-See [the Geometry notes](duckdb-simple/README.md#geometry) for examples and limits.
+In version 0.3, `RawGeometry` had only a result instance, so code imported its
+WKB and CRS with explicit SQL. Version 0.4 adds a parameter instance. See
+[the Geometry notes](duckdb-simple/README.md#geometry) for examples and limits.
 
 `FieldValue` gains `FieldGeometry`, and `LogicalTypeRep` gains
 `LogicalTypeGeometry`. Update exhaustive matches.

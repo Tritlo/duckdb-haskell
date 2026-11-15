@@ -631,13 +631,25 @@ without decoding coordinates. Its `rawGeometryWKB` and `rawGeometryCRS` fields
 own their data. They remain usable after the connection closes. Existing
 `ByteString` result decoding also returns WKB.
 
-`RawGeometry` has no `ToField` instance. Import its bytes explicitly, or put it
-in a composite parameter as `FieldGeometry` (see below):
+A `RawGeometry` parameter binds as a `GEOMETRY` value with the same WKB bytes
+and its own CRS. DuckDB then casts it to the type of the parameter, as it casts
+a `GEOMETRY` value in SQL text. A value without a CRS takes the CRS of the
+target. A target without a CRS removes the CRS of the value, with no error. A
+target with another CRS raises `SQLError`. Use `Maybe RawGeometry` for SQL
+NULL. An `Array` and a typed row cannot hold a `RawGeometry`, because their
+`GEOMETRY` type would have no CRS. A composite parameter holds it as
+`FieldGeometry` (see below):
 
 ```haskell
 import Database.DuckDB.Simple.Geometry
 
 [Only raw] <- query_ conn "SELECT 'POINT Z (1 2 3)'::GEOMETRY('OGC:CRS84')"
+rows <- query conn "SELECT ?" (Only raw) :: IO [Only RawGeometry]
+```
+
+You can also import the bytes with explicit SQL:
+
+```haskell
 rows <- (case rawGeometryCRS raw of
     Nothing -> query conn
         "SELECT system.main.ST_GeomFromWKB(?)"

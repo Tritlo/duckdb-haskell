@@ -156,6 +156,12 @@
   value without a CRS. One with a CRS raises `SQLError`, because a VARIANT does
   not keep the CRS. Version 0.3 raised an error for each such value, because
   DuckDB 1.5 has no cast from BLOB to GEOMETRY.
+- Add a parameter instance for `RawGeometry`. It binds as a GEOMETRY with the
+  same WKB bytes and its own CRS, and DuckDB casts it to the type of the
+  parameter as in SQL text: a value without a CRS takes the CRS of the target,
+  a target without a CRS removes the CRS, and a target with another CRS raises
+  `SQLError`. Version 0.3 had only a result instance for `RawGeometry`. An
+  `Array` and a typed row cannot hold a `RawGeometry`.
 - Empty `Array` parameters raise `SQLError`. Use an SQL empty LIST.
 - `executeMany` reads the parameter types one time for each call, not one time
   for each row. A row with a `UTCTime`, an `Unbounded UTCTime`, an `Array`, or

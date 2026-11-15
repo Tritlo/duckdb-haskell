@@ -240,7 +240,10 @@ The SQL workflow stays the same. These changes can affect your code:
   and the error of a field of a `ViaDuckDB` record starts with the field name.
   The errors of the generic decoders name the SQL type of a value, not the
   value, for example `a value has type MAP but expected LIST or ARRAY` in place
-  of `expected LIST, got FieldMap [...]`. Change code that matches the old
+  of `expected LIST, got FieldMap [...]`. The bind errors
+  `cannot encode ... as ...` and `unsupported scalar conversion for ... from ...`
+  also name the SQL type of the value, for example `from a value of type
+  VARCHAR` in place of `from FieldText "x"`. Change code that matches the old
   texts.
 - A `Variant` read accepts only a value that a VARIANT can hold. A column that
   holds an ENUM, a MAP, a UNION, an ARRAY, a TUPLE, a STRUCT that is not in the

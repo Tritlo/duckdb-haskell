@@ -3,6 +3,7 @@
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
@@ -117,6 +118,7 @@ typedRegistrationTests =
     , testCase "table function with a MAP column" testTableMaps
     , testCase "table function and aggregate with record, list, map, and union types" testTableRecords
     , testCase "a record field of an alias type declares the alias" testAliasDeclaration
+    , testCase "a scalar function argument gives its type to FromField" testArgumentType
     , testCase "typed registration rejects a type with no declaration" testNoDeclaration
     , testCase "a newtype with a sized ARRAY type text declares an ARRAY in each position" testSizedArray
     , testCase "record field outside the range of its declared type" testRecordFieldRange
@@ -1329,6 +1331,21 @@ testTableRecords = withConnection ":memory:" \conn -> do
   _ <- execute_ conn "CREATE TABLE typed_short_peaks (ps STRUCT(peak VARCHAR, metres INTEGER)[])"
   _ <- execute conn "INSERT INTO typed_short_peaks VALUES (?), (?)" ([] :: [Peak], [Nothing :: Maybe Peak])
   query_ conn "SELECT len(ps) FROM typed_short_peaks ORDER BY len(ps)" >>= (@?= [Only (0 :: Int64), Only 1])
+
+-- | The type of a DECIMAL(4,1) argument, as its text.
+newtype ArgumentType = ArgumentType Text
+
+instance DuckDBColumnType ArgumentType where
+  duckdbColumnTypeFor _ = "DECIMAL(4,1)"
+
+instance FromField ArgumentType where
+  fromField Field{fieldType} = pure (ArgumentType (Text.pack (show fieldType)))
+
+-- | The argument of a scalar function gives the type of its vector.
+testArgumentType :: Assertion
+testArgumentType = withConnection ":memory:" \conn -> do
+  createFunction conn "argument_type" \(ArgumentType text) -> text
+  query_ conn "SELECT argument_type(1.5) FROM range(3000) t(i) LIMIT 1" >>= (@?= [Only ("LogicalTypeDecimal 4 1" :: Text)])
 
 -- | A record field of an alias type declares the alias in the STRUCT type of a
 -- table function column. A record parameter, a list of records, and a list of

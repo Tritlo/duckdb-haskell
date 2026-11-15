@@ -43,8 +43,9 @@ import Database.DuckDB.Simple.FromField (
   IntervalValue (..),
   TimeWithZone (..),
   bsFromBool,
+  returnError,
  )
-import Database.DuckDB.Simple.Generic (ViaDuckDB (..), genericFromFieldValue, genericToStructValue)
+import Database.DuckDB.Simple.Generic (DuckValue (..), ViaDuckDB (..), genericFromFieldValue, genericToStructValue, typedFromField)
 import Database.DuckDB.Simple.Internal (destroyValue, withConnectionFactory, withConnectionHandle)
 import Database.DuckDB.Simple.LogicalRep
 import Database.DuckDB.Simple.Ok (Ok (..))
@@ -56,9 +57,43 @@ import qualified Database.DuckDB.Simple.V2.Registration as R
 import GHC.Float (castDoubleToWord64, castFloatToWord32)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
+import System.Mem (getAllocationCounter, performMajorGC)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit
 import TestUtils (NativeTimestamp (..), assertInputError, assertRangeError)
+
+-- | The type of a field. The field of the constructor is lazy, so the read
+-- does not force the type.
+data FieldTypeOf = FieldTypeOf LogicalTypeRep
+  deriving (Eq, Show)
+
+instance FromField FieldTypeOf where
+  fromField Field{fieldType} = Ok (FieldTypeOf fieldType)
+
+-- | A value whose read checks the column type, as a user instance can: a
+-- DECIMAL with the scale 2, a TIMESTAMP_NS, an ARRAY of three elements, or
+-- JSON. The value names the accepted kind.
+newtype Checked = Checked Text
+  deriving (Eq, Ord, Show)
+
+instance FromField Checked where
+  fromField f@Field{fieldType} = case fieldType of
+    LogicalTypeDecimal _ 2 -> Ok (Checked "decimal")
+    LogicalTypeScalar LogicalTypeIdTimestampNs -> Ok (Checked "timestamp_ns")
+    LogicalTypeArray _ 3 -> Ok (Checked "array")
+    LogicalTypeAlias "JSON" _ -> Ok (Checked "json")
+    _ -> returnError Incompatible f "expected DECIMAL(_,2), TIMESTAMP_NS, an ARRAY of 3 elements, or JSON"
+
+-- | A record field reads with its type through 'typedFromField'.
+instance DuckValue Checked where
+  duckToField (Checked text) = FieldText text
+  duckLogicalType _ = LogicalTypeScalar LogicalTypeIdVarchar
+  duckFromTypedField = typedFromField
+
+-- | A record with a field that checks its type.
+newtype Priced = Priced {price :: Checked}
+  deriving (Eq, Show, Generic)
+  deriving (FromField) via (ViaDuckDB Priced)
 
 -- | An array element with a ToField instance and no ToDuckValue instance.
 newtype DelegatedInteger = DelegatedInteger Int64
@@ -1551,6 +1586,63 @@ valueRegressionTests =
               -- The type is the type that DuckDB gives for the type text.
               bracket (R.withText text (R.output . c_duckdb_v2_factory_create_type_from_text factory)) destroyLogicalType \parsed ->
                 R.output (c_duckdb_v2_logical_type_is_equal handle parsed) >>= (@?= 1)
+    , testCase "a user FromField checks the type of a column, an element, a MAP key and value, and a record field" $ withConnection ":memory:" \conn -> do
+        query_ conn "SELECT 1.25::DECIMAL(9,2), TIMESTAMP_NS '2024-01-02 03:04:05.123456789', [1, 2, 3]::INTEGER[3], '{\"a\": 1}'::JSON"
+          >>= (@?= [(Checked "decimal", Checked "timestamp_ns", Checked "array", Checked "json")])
+        forM_ ["1.25::DECIMAL(9,3)", "TIMESTAMP '2024-01-02 03:04:05'", "[1, 2]::INTEGER[2]", "'{}'::VARCHAR"] \value ->
+          try (query_ conn (Query ("SELECT " <> value)) :: IO [Only Checked]) >>= \case
+            Left SQLError{sqlErrorMessage} -> assertBool (Text.unpack sqlErrorMessage) ("expected DECIMAL(_,2)" `Text.isInfixOf` sqlErrorMessage)
+            Right rows -> assertFailure (Text.unpack value <> " reads as " <> show rows)
+        query_ conn "SELECT [1.25::DECIMAL(9,2)], MAP {TIMESTAMP_NS '2024-01-02': '{}'::JSON}, {'price': 2.5::DECIMAL(9,2)}"
+          >>= (@?= [([Checked "decimal"], Map.fromList [(Checked "timestamp_ns", Checked "json")], Priced (Checked "decimal"))])
+    , testCase "an element and a MAP value have the child type, and a value in a VARIANT has the type VARIANT" $ withConnection ":memory:" \conn -> do
+        let decimal = LogicalTypeDecimal 4 1
+            json = LogicalTypeAlias "JSON" (LogicalTypeScalar LogicalTypeIdVarchar)
+            variant = LogicalTypeScalar LogicalTypeIdVariant
+        query_ conn "SELECT [1.5::DECIMAL(4,1)], [1.5::DECIMAL(4,1)], MAP {'k': '{}'::JSON}, [1, 2]::VARIANT"
+          >>= ( @?=
+                  [
+                    ( FieldTypeOf (LogicalTypeList decimal)
+                    , [FieldTypeOf decimal]
+                    , Map.fromList [("k" :: Text, FieldTypeOf json)]
+                    , [FieldTypeOf variant, FieldTypeOf variant]
+                    )
+                  ]
+              )
+    , testCase "a column whose type no read forces converts no ENUM dictionary" $ withConnection ":memory:" \conn -> do
+        _ <- execute_ conn "CREATE TYPE wide AS ENUM (SELECT 'label' || i FROM range(100000) t(i))"
+        let readLabel = query_ conn "SELECT 'label7'::wide" :: IO [Only Text]
+            allocation action = do
+              before <- getAllocationCounter
+              result <- action
+              after <- getAllocationCounter
+              -- The counter counts down.
+              pure (result, before - after)
+        _ <- readLabel
+        (labels, withoutType) <- allocation readLabel
+        labels @?= [Only "label7"]
+        [Only (FieldTypeOf logical)] <- query_ conn "SELECT 'label7'::wide"
+        (size, conversion) <- allocation case logical of
+          LogicalTypeEnum entries -> pure (length (elems entries))
+          other -> assertFailure ("expected an ENUM type, got " <> take 100 (show other)) >> pure 0
+        size @?= 100000
+        -- Each of the 100,000 labels is a Text of at least 32 bytes.
+        assertBool ("the read without the type allocated " <> show withoutType <> " bytes") (withoutType < 1000000)
+        assertBool ("the conversion allocated " <> show conversion <> " bytes") (conversion > 3200000)
+    , testCase "a column type converts after its connection, instance, and environment close" $ do
+        let decimal = LogicalTypeDecimal 4 1
+            readType conn = do
+              [Only (FieldTypeOf logical)] <- query_ conn "SELECT 1.5::DECIMAL(4,1)"
+              pure logical
+        afterEnvironment <- withEnvironment \environment -> do
+          afterInstance <- withInstance environment [] \instance_ -> do
+            afterConnection <- withConnectionOn instance_ readType
+            afterConnection @?= decimal
+            withConnectionOn instance_ readType
+          afterInstance @?= decimal
+          withInstance environment [] \instance_ -> withConnectionOn instance_ readType
+        performMajorGC
+        afterEnvironment @?= decimal
     , testCase "logical type names reject embedded NUL" $ withConnection ":memory:" \conn -> withConnectionHandle conn \native -> withConnectionFactory native \factory -> do
         let logical = LogicalTypeStruct (listArray (0, 0) [StructField "before\0after" (LogicalTypeScalar LogicalTypeIdBigInt)])
         assertInputError (bracket (logicalTypeFromRep factory logical) destroyLogicalType (const (pure ())))

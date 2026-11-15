@@ -30,6 +30,7 @@ import Foreign.Ptr (nullPtr)
 import System.Directory (createDirectory, getTemporaryDirectory, removeFile, removePathForcibly)
 import System.FilePath ((</>))
 import System.IO (hClose, openTempFile)
+import System.Mem (performMajorGC)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
 import TestUtils (writeIntegers)
@@ -46,6 +47,7 @@ copyTests =
     , testCase "callback exceptions become SQL errors and permit reuse" testCopyFailure
     , testCase "multi-file wrappers support lists globs filename and hive columns" testMultiFile
     , testCase "COPY TO and table descriptions report the logical type id of each column type" testColumnTypeIds
+    , testCase "COPY TO rows give the type of each column after the statement ends" testCopyFieldTypes
     ]
 
 -- | Run every COPY TO callback and check the reported file statistics.
@@ -139,6 +141,28 @@ testPartitionedCopy = withDirectory \directory -> withConnection ":memory:" \con
   paths <- readIORef files
   length paths @?= 2
   assertBool "partition paths" (all (Text.isInfixOf "part=" . Text.pack) paths)
+
+-- | The rows of COPY TO give the type of each column. The type converts after
+-- the statement ends and its vectors are gone.
+testCopyFieldTypes :: Assertion
+testCopyFieldTypes = withDirectory \directory -> withConnection ":memory:" \connection -> do
+  received <- newIORef ([] :: [Field])
+  Copy.registerCopyToFunction
+    connection
+    "field_types"
+    (const (pure ()))
+    (\info -> writeFile (Copy.copyInitFilePath info) "")
+    (\_ rows -> atomicModifyIORef' received (\previous -> (previous <> concat rows, ())))
+    (const (pure ()))
+  void
+    ( execute
+        connection
+        "COPY (SELECT 1.5::DECIMAL(4,1) AS d, '{}'::JSON AS j) TO ? (FORMAT field_types)"
+        (Only (Text.pack (directory </> "types")))
+    )
+  performMajorGC
+  (map fieldType <$> readIORef received)
+    >>= (@?= [LogicalTypeDecimal 4 1, LogicalTypeAlias "JSON" (LogicalTypeScalar LogicalTypeIdVarchar)])
 
 -- | COPY registrations share the instance and copy nested VARIANT payloads.
 testVariantCopy :: Assertion

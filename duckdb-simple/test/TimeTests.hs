@@ -428,9 +428,13 @@ nanosecondTimeTests =
         duckdbError ErrorTypeConversion (show value) (insert "TIMESTAMP_NS" value)
       duckdbError ErrorTypeConversion "UTCTime with no digits" (insert "TIMESTAMPTZ_NS" (localTimeToUTC utc (moment 1600 1 2 3 4 5)))
       duckdbError ErrorTypeConversion "UTCTime" (insert "TIMESTAMPTZ_NS" (localTimeToUTC utc early))
-      duckdbError ErrorInputInvalid "list" (insert "TIMESTAMP_NS[]" [precise, early])
-      duckdbError ErrorInputInvalid "Array" (insert "TIMESTAMP_NS[2]" (listArray (0, 1) [precise, early] :: Array Int LocalTime))
-      duckdbError ErrorInputInvalid "Map" (insert "MAP(VARCHAR, TIMESTAMP_NS)" (Map.fromList [("a" :: Text.Text, precise), ("b", early)]))
+      -- For an element, the library checks the range before the constructor of
+      -- the list, the array, or the map casts the element.
+      encoderError "list" (insert "TIMESTAMP_NS[]" [precise, early])
+      encoderError "Array" (insert "TIMESTAMP_NS[2]" (listArray (0, 1) [precise, early] :: Array Int LocalTime))
+      encoderError "Map key" (insert "MAP(TIMESTAMP_NS, VARCHAR)" (Map.fromList [(moment 2300 1 1 0 0 0, "a" :: Text.Text)]))
+      encoderError "Map value" (insert "MAP(VARCHAR, TIMESTAMP_NS)" (Map.fromList [("a" :: Text.Text, precise), ("b", early)]))
+      encoderError "list of UTCTime with no digits" (insert "TIMESTAMPTZ_NS[]" [localTimeToUTC utc (moment 1600 1 2 3 4 5)])
       -- The encoder raises the error when the cast would cut the digits.
       encoderError "edge" (insert "TIMESTAMP_NS" edge)
       encoderError "edge list" (insert "TIMESTAMP_NS[]" [precise, edge])
@@ -445,10 +449,10 @@ nanosecondTimeTests =
       assertRangeError
         (query conn "SELECT TRY_CAST(? AS STRUCT(a TIMESTAMP_NS, b TIMESTAMP_NS))::VARCHAR" (Only (pair early)) :: IO [Only Text.Text])
       -- In TRY_CAST, DuckDB gives NULL for a parameter that it cannot cast, and
-      -- the constructor of a list raises its error first.
+      -- the check of a list element raises its error first.
       (query conn "SELECT TRY_CAST(? AS TIMESTAMP_NS) IS NULL" (Only early) :: IO [Only Bool]) >>= (@?= [Only True])
       try (query conn "SELECT TRY_CAST(? AS TIMESTAMP_NS[])::VARCHAR" (Only [precise, early]) :: IO [Only Text.Text]) >>= \case
-        Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorInputInvalid
+        Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorTypeConversion
         Right rows -> assertFailure ("TRY_CAST list: " <> show rows)
       -- The last values in the range keep their digits.
       insert "TIMESTAMP_NS[]" [moment 2262 4 11 23 47 16.854775806, moment 1677 9 21 0 12 43.145224500]
@@ -548,7 +552,7 @@ nanosecondTimeTests =
         utcList <- typeOf "TIMESTAMPTZ_NS[]" [instant]
         assertEqual (label "list element") localList utcList
         assertEqual (label "plain parameter type") (Just (Just ErrorTypeConversion)) utcPlain
-        assertEqual (label "list element type") (Just (Just (if year == 2300 then ErrorInputInvalid else ErrorTypeConversion))) utcList
+        assertEqual (label "list element type") (Just (Just ErrorTypeConversion)) utcList
       let rejects :: (ToField a) => String -> Text.Text -> a -> ErrorType -> Text.Text -> Assertion
           rejects position column value expectedType expectedText = do
             _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE stored (v " <> column <> ")"))
@@ -558,10 +562,21 @@ nanosecondTimeTests =
                 assertBool (position <> ": " <> Text.unpack sqlErrorMessage) (expectedText `Text.isInfixOf` sqlErrorMessage)
               Right _ -> assertFailure (position <> ": expected an error")
           late = localTimeToUTC utc (at 2300 digits)
-      -- A Map value, an Array element, and a FieldTimestampTZ also bind the
+      -- A Map value and an Array element get the range check of an element,
+      -- before the native constructor casts them. A FieldTimestampTZ binds the
       -- microsecond value, and DuckDB raises its error.
-      rejects "Map value" "MAP(VARCHAR, TIMESTAMPTZ_NS)" (Map.singleton ("k" :: Text.Text) late) ErrorInputInvalid "Failed to cast value"
-      rejects "Array element" "TIMESTAMPTZ_NS[1]" (listArray (0, 0) [late] :: Array Int UTCTime) ErrorInputInvalid "Failed to cast value"
+      rejects
+        "Map value"
+        "MAP(VARCHAR, TIMESTAMPTZ_NS)"
+        (Map.singleton ("k" :: Text.Text) late)
+        ErrorTypeConversion
+        "TIMESTAMP value out of finite range"
+      rejects
+        "Array element"
+        "TIMESTAMPTZ_NS[1]"
+        (listArray (0, 0) [late] :: Array Int UTCTime)
+        ErrorTypeConversion
+        "TIMESTAMP value out of finite range"
       rejects
         "FieldTimestampTZ"
         "TIMESTAMPTZ_NS"

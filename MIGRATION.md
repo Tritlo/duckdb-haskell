@@ -154,16 +154,15 @@ The SQL workflow stays the same. These changes can affect your code:
   00:00:00 to 294247-01-10 04:00:54.775806. The dates are in the notation of
   `Data.Time`. A target of the type TIMESTAMP_NS or TIMESTAMPTZ_NS is different.
   These types have a smaller range, about the years 1677 to 2262. A value
-  outside that range gets the type `ErrorTypeConversion` in each position but
-  one: an element in the range of DuckDB gets its Invalid Input Error. The error
-  comes from the library or from DuckDB by the position of the value:
+  outside that range also gets the type `ErrorTypeConversion`, in each position.
+  The error comes from the library or from DuckDB by the position of the value:
 
   - A parameter: the error of the library for a value outside the range of
     DuckDB, and the Conversion Error of DuckDB for each other such value, for
     example in the year 2300.
-  - An element of a list, an `Array`, or a `Map`: the error of the library for a
-    value outside the range of DuckDB, and the Invalid Input Error of DuckDB, of
-    the type `ErrorInputInvalid`, for each other such value.
+  - An element of a list, an `Array`, or a `Map`: the error of the library. For
+    a value in the range of DuckDB, its text is "TIMESTAMP value out of finite
+    range".
   - A field of a STRUCT, an element of a TUPLE, or a member of a UNION: the
     error of the library, "TIMESTAMP value out of finite range", also for a
     value outside the range of DuckDB.

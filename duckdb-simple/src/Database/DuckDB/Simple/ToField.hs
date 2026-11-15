@@ -222,9 +222,15 @@ would round or raise an error in some of them.
   * In the range of TIMESTAMP_NS (about the years 1677 to 2262): no error.
   * Outside the range, when DuckDB also cannot cast the microsecond value to
     TIMESTAMP_NS (outsideNanosecondRange): the value binds as a microsecond
-    value, and DuckDB raises its SQLError "Could not convert Timestamp to
-    higher precision" when it casts the value. The type is ErrorTypeConversion
-    for a parameter and ErrorInputInvalid for an element.
+    value. For a parameter, DuckDB raises its SQLError "Could not convert
+    Timestamp to higher precision", of the type ErrorTypeConversion, when it
+    casts the value. For an element, the native constructor of the LIST, the
+    ARRAY, or the MAP casts each element when the value binds, and it would
+    raise the ErrorInputInvalid "Failed to cast value". Before that cast,
+    checkNanosecondElements raises the SQLError of the library "duckdb-simple:
+    TIMESTAMP value out of finite range", of the type ErrorTypeConversion, for
+    each element that the cast cannot hold. Thus the element gets the type of
+    a parameter, and no element gets an error that the cast does not raise.
   * From 2262-04-11 23:47:16.854775807 to 23:47:16.854775999: DuckDB can cast
     the microsecond value, but the cast cuts the digits with no error. Thus
     the encoder raises the SQLError of the library "duckdb-simple: TIMESTAMP
@@ -1336,7 +1342,9 @@ withElementType
   -> (DuckDBV2LogicalTypeHandle -> IO b)
   -> IO b
 withElementType proxy builder@ValueBuilder{builderType = makeType} target values action = case duckDBTypeFromName typeName of
-  Just dtype -> bracket (makeType (declaredType dtype)) destroyLogicalType action
+  Just dtype -> do
+    checkNanosecondElements (declaredType dtype) values
+    bracket (makeType (declaredType dtype)) destroyLogicalType action
   Nothing -> withValueType builder elementTarget values action
   where
     typeName = duckdbColumnType proxy
@@ -1351,6 +1359,24 @@ withElementType proxy builder@ValueBuilder{builderType = makeType} target values
       | Just rep@(LogicalTypeScalar dtype) <- target, dtype `elem` integerTypes = rep
       | Just rep@LogicalTypeDecimal{} <- target = rep
     declaredType dtype = timestampTypeForTarget target (LogicalTypeScalar dtype)
+
+-- | Raise the range error of the library for each TIMESTAMP or TIMESTAMPTZ
+-- element that a TIMESTAMP_NS or TIMESTAMPTZ_NS element type cannot hold, before
+-- the native constructor casts the element. An infinity value and a NULL value
+-- pass, as in the cast. See Note [Nanosecond parameters].
+checkNanosecondElements :: LogicalTypeRep -> [DuckDBV2ValueHandle] -> IO ()
+checkNanosecondElements declared values = case declared of
+  LogicalTypeScalar LogicalTypeIdTimestampNs -> forM_ values (check LogicalTypeIdTimestamp c_duckdb_v2_value_get_timestamp)
+  LogicalTypeScalar LogicalTypeIdTimestampTzNs -> forM_ values (check LogicalTypeIdTimestampTz c_duckdb_v2_value_get_timestamp_tz)
+  _ -> pure ()
+  where
+    check source get value = do
+      isNull <- output (c_duckdb_v2_value_is_null value)
+      rep <- bracket (output (c_duckdb_v2_value_get_logical_type value)) destroyLogicalType logicalTypeToRep
+      when (isNull == 0 && rep == LogicalTypeScalar source) do
+        micros <- output (get value)
+        unless (micros == maxBound || micros == negate maxBound) $
+          checkFiniteRange "TIMESTAMP" (minBound :: Int64) maxBound (1000 * toInteger micros)
 
 -- | Give the element type that the values give to the action. The target is
 -- the element type of the parameter. See Note [Element types of a list].

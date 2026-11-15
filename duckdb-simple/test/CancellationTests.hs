@@ -41,6 +41,7 @@ import Database.DuckDB.Simple.Internal (
   runInterruptibleQuery,
   withConnectionHandle,
   withResult,
+  withResultWindow,
  )
 import qualified Database.DuckDB.Simple.Streaming as Streaming
 import GHC.Conc (BlockReason (..), ThreadStatus (..), threadStatus)
@@ -143,6 +144,27 @@ cancellationTests =
                  signal release
                  await "callback cancellation did not finish" (readMVar done) >>= assertAsync [UserInterrupt, ThreadKilled]
                  await "second interrupt sender did not finish" (readMVar secondSent) >>= assertSucceeded
+               assertReusable conn
+         , testCase "a cancellation in the result window releases the result that the window makes" $
+             withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
+               queued <- newEmptyMVar
+               gate <- newEmptyMVar
+               released <- newIORef []
+               -- The helper thread of the window makes its result only after the
+               -- caller is cancelled. The caller does not return that result, so
+               -- the release action of the window must get it.
+               let action = withResultWindow conn (\result -> modifyIORef' released (result :)) do
+                     signal queued
+                     readMVar gate
+                     pure (7 :: Int)
+               withCaller conn (signal gate) (void action) \caller done -> do
+                 await "result window did not start" (readMVar queued)
+                 (_, sent) <- startCaller (throwTo caller UserInterrupt)
+                 await "interrupt was not delivered" (readMVar sent) >>= assertSucceeded
+                 awaitCleanup caller
+                 signal gate
+                 await "cancelled result window did not finish" (readMVar done) >>= assertAsync [UserInterrupt]
+               readIORef released >>= (@?= [7])
                assertReusable conn
          ]
 

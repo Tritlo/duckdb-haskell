@@ -125,16 +125,30 @@ The SQL workflow stays the same. These changes can affect your code:
   NULL value" in `duckdb_get_varchar`.
 - A date or a timestamp outside the range of DuckDB raises an `SQLError` of the
   type `ErrorInputOutOfRange` when it binds, also inside a collection, a
-  STRUCT, or a VARIANT. Version 0.3 raised the `IOException` "DATE value out
-  of finite range" or "TIMESTAMP value out of finite range" for a value at an
-  infinity value or outside the storage, and bound the other values, for
-  example the `Day` at day -2147483648 from the Unix epoch (-5877641-06-23 in
-  the notation of `Data.Time`), and a `LocalTime` or a `UTCTime` from
-  -290308-12-21 19:59:05.224192 to 23:59:59.999999, except the -infinity value
-  at 19:59:05.224193. A stored TIMESTAMP of that time makes a cast to VARCHAR
-  raise an INTERNAL error in DuckDB 2.0.0. A VARIANT of a `LocalTime` whose
-  microseconds do not fit in INT64 bound as TIMESTAMP_S or TIMESTAMP_MS. It
-  now raises the range error, as such a `LocalTime` does as a parameter.
+  STRUCT, or a VARIANT. For a `Day`, that range is the range of DATE, from
+  -5877641-06-25 to 5881580-07-10. For a `LocalTime` or a `UTCTime` (in UTC),
+  it is the range of TIMESTAMP, TIMESTAMPTZ, TIMESTAMP_S, and TIMESTAMP_MS,
+  from -290308-12-22 00:00:00 to 294247-01-10 04:00:54.775806. The dates are
+  in the notation of `Data.Time`. TIMESTAMP_NS and TIMESTAMPTZ_NS have a
+  smaller range, about the years 1677 to 2262. For a parameter of such a
+  nanosecond type, a value in the range of DuckDB but outside the smaller range
+  gets another error: the conversion error of DuckDB, of the type
+  `ErrorTypeConversion` for a parameter and `ErrorInputInvalid` for an element.
+  A value with digits below a microsecond can instead get the
+  `ErrorInputInvalid` of the library: a `UTCTime`, and a `LocalTime` from
+  2262-04-11 23:47:16.854775807 to 23:47:16.854775999.
+- Version 0.3 raised the `IOException` "DATE value out of finite range" or
+  "TIMESTAMP value out of finite range" for a date or a timestamp at an
+  infinity value or outside the storage. It bound the other values outside the
+  range of DuckDB, for example the `Day` at day -2147483648 from the Unix epoch
+  (-5877641-06-23 in the notation of `Data.Time`), and a `LocalTime` or a
+  `UTCTime` from -290308-12-21 19:59:05.224192 to 23:59:59.999999, except the
+  -infinity value at 19:59:05.224193. A stored TIMESTAMP of that time makes a
+  cast to VARCHAR raise an INTERNAL error in DuckDB 2.0.0. Code that catches
+  the `IOException` must catch `SQLError`.
+- A VARIANT of a `LocalTime` whose microseconds do not fit in INT64 bound as
+  TIMESTAMP_S or TIMESTAMP_MS in version 0.3. It now raises the range error, as
+  such a `LocalTime` does as a parameter.
 - `listConfigFlags` takes a `Connection`. It lists the options of the
   database of that connection, also its custom options. Version 0.3 listed
   the options of the C API function `duckdb_get_config_flag`, which takes no
@@ -385,20 +399,20 @@ The SQL workflow stays the same. These changes can affect your code:
   that version 0.3 stored in a `VARIANT` column does not match `WHERE x = ?`
   for the same Haskell value with such digits.
 - Each input check of the library raises an `SQLError` with the type
-  `ErrorInputInvalid`, except an integer outside the range of its parameter
-  type and a date or a timestamp outside the range of DuckDB, which raise an
-  `SQLError` with the type `ErrorInputOutOfRange`, and a parameter count or
-  name that does not match the query, which raises a `FormatError`. A check in
-  the callback of a scalar function fails the query, as each other exception
-  of a callback does. Version 0.3 raised
-  an `IOException` (a `userError`) for
-  a BIT, DECIMAL, ENUM, HUGEINT, UHUGEINT, TIMETZ, time of day, or timestamp
-  value that does not fit its type, a STRUCT or UNION value whose fields do not
-  match its types, a VARIANT payload that a VARIANT does not keep, a NUL in a
-  logical type name, and a bad name in `connectionGeometryCRS`. Code that
-  catches `IOException` for these errors must catch `SQLError`. The error for a
-  scalar value that does not match its declared type names the SQL type, for
-  example `NULL` in place of `LogicalTypeIdSQLNull`.
+  `ErrorInputInvalid`. Two checks raise an `SQLError` with the type
+  `ErrorInputOutOfRange` instead: an integer outside the range of its
+  parameter type, and a date or a timestamp outside the range of DuckDB (see
+  the entry on that range above). A parameter count or a parameter name that
+  does not match the query raises a `FormatError`. A check in the callback of a
+  scalar function fails the query, as each other exception of a callback does.
+- Version 0.3 raised an `IOException` (a `userError`) for a BIT, DECIMAL, ENUM,
+  HUGEINT, UHUGEINT, TIMETZ, time of day, or timestamp value that does not fit
+  its type, a STRUCT or UNION value whose fields do not match its types, a
+  VARIANT payload that a VARIANT does not keep, a NUL in a logical type name,
+  and a bad name in `connectionGeometryCRS`. Code that catches `IOException`
+  for these errors must catch `SQLError`.
+- The error for a scalar value that does not match its declared type names the
+  SQL type, for example `NULL` in place of `LogicalTypeIdSQLNull`.
 - A name in `connectionGeometryCRS` that DuckDB drops, for example a blank
   name, fails when the connection opens. Version 0.3 read the configured types
   the first time a parameter needed one, and did not check that a type kept its

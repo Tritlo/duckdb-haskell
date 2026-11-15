@@ -664,13 +664,13 @@ size of the value. DuckDB casts a LIST or an ARRAY to the type of a LIST
 column. It casts a LIST to an ARRAY column only when the lengths are equal.
 
 A list or an array parameter with scalar elements takes its element type from
-the column type name of the element. Some elements take the element type of
-the target instead: `Integer`, `Natural`, and `BigNum` elements for an integer
-or DECIMAL element type (see above), and `TimeOfDay`, `LocalTime`, and
-`UTCTime` elements for a nanosecond element type (see
-[Infinite dates and timestamps](#infinite-dates-and-timestamps)). An empty list
-binds as an empty LIST of its element type. An empty array raises an error:
-note 8 of [Types](#types).
+the column type name (`duckdbColumnTypeFor`) of the element. Some elements take
+the element type of the target instead: `Integer`, `Natural`, and `BigNum`
+elements for an integer or DECIMAL element type (see above), and `TimeOfDay`,
+`LocalTime`, and `UTCTime` elements for a nanosecond element type (see [Infinite
+dates and timestamps](#infinite-dates-and-timestamps)). An empty list binds as
+an empty LIST of its element type. An empty array raises an error: note 8 of
+[Types](#types).
 
 A list or an array of STRUCT values, UNION values, generic records, lists, or
 arrays gets the type that DuckDB gives a SQL list literal of the same elements.
@@ -1224,8 +1224,8 @@ give an `IO` action.
 An argument type needs `FromField` and `DuckDBColumnType` instances. Its SQL
 type is the `duckdbTypeDeclaration` of the type, as for a column of a typed
 row. A
-newtype with its own `DuckDBColumnType` text, for example `DECIMAL(18,3)`,
-gives that text. An argument type that is or contains VARIANT raises an error
+newtype with its own column type name (`duckdbColumnTypeFor`), for example
+`DECIMAL(18,3)`, gives that text. An argument type that is or contains VARIANT raises an error
 at registration, because the argument reader does not read VARIANT. A GEOMETRY
 argument reads, also inside a list or a STRUCT, in a scalar function, in an
 aggregate, and as the source of a typed cast. On a connection, it reads as a

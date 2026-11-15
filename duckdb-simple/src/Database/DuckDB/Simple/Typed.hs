@@ -206,7 +206,9 @@ createCastOn target source destination convert = do
 
 -- | Convert the rows of one cast call. Write each row before an error leaves
 -- the callback, because TRY_CAST keeps the output and ignores the error. A failed
--- row gets NULL. Then raise the error of the first failed row.
+-- row gets NULL. Then raise the error of the first failed row. Each error of the
+-- call gets the type 'ErrorTypeMismatch'.
+-- See Note [The error code of a failed cast] in "Database.DuckDB.Simple.V2.Registration".
 castRows
   :: (FromField a, ToDuckValue b)
   => Maybe DuckDBV2FactoryHandle -> (a -> Either Text b) -> DuckDBV2CastFunctionExecInfoHandle -> DuckDBV2ContextHandle -> IO ()

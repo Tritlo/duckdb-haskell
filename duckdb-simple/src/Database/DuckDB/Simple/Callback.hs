@@ -21,6 +21,7 @@ module Database.DuckDB.Simple.Callback (
   transferCallbackState,
   readCallbackState,
   runCallback,
+  runCallbackWith,
   ignoreCallbackExceptions,
   attachOpaque,
 ) where
@@ -213,10 +214,18 @@ readCallbackState getter = do
 -- waits for a connection lock have the bound of the connection. See
 -- 'Database.DuckDB.Simple.Internal.withConnectionLock' and
 -- Note [Callback marks] in "Database.DuckDB.Simple.CallbackMark". Each DuckDB
--- callback with user code runs through this function, except the flush function
--- of a log sink when DuckDB destroys the sink.
+-- callback with user code runs through this function or 'runCallbackWith',
+-- except the flush function of a log sink when DuckDB destroys the sink. Each
+-- failure gets the native error code Api.
 runCallback :: Ptr DuckDBV2ErrorInfoHandle -> IO () -> IO ()
-runCallback err action = mask \restore -> do
+runCallback = runCallbackWith DuckDBV2ErrorApi
+
+-- | 'runCallback' with another native error code for each failure. The code
+-- replaces the type of each exception, also the type of an 'SQLError'. A cast
+-- callback uses it. See Note [The error code of a failed cast] in
+-- "Database.DuckDB.Simple.V2.Registration".
+runCallbackWith :: DuckDBV2Error -> Ptr DuckDBV2ErrorInfoHandle -> IO () -> IO ()
+runCallbackWith code err action = mask \restore -> do
   outcome <- try (withCallbackMark (restore action))
   case outcome of
     Right () -> pure ()
@@ -229,7 +238,7 @@ runCallback err action = mask \restore -> do
             if info == nullHandle
               then pure ()
               else do
-                c_duckdb_v2_error_info_set_code info DuckDBV2ErrorApi >>= checkCode
+                c_duckdb_v2_error_info_set_code info code >>= checkCode
                 withText (Text.pack "Haskell callback failed") $ \message ->
                   c_duckdb_v2_error_info_set_text info message >>= checkCode
                 withText (Text.pack (failureText failure)) $ \message ->

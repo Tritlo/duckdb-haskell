@@ -164,6 +164,8 @@ extensionRegressionTests =
           assertSqlError $ registerCopy conn "nul\0copy" Nothing
           assertSqlError $ Logging.registerLogStorage conn "nul\0log" (\_ -> pure ())
     , testCase "a scalar registration whose setup fails releases its callbacks at the failure" $
+        -- The registration forces the argument declaration after it acquires the callbacks.
+        -- If a change forces the declaration before the acquisition, this check cannot fail.
         withConnection ":memory:" \conn ->
           assertReleasedAfter "a scalar function whose setup fails" \token -> replicateM_ 32 do
             outcome <- try (createFunction conn "broken_signature" (BrokenSignature token)) :: IO (Either ErrorCall ())

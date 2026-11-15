@@ -166,7 +166,14 @@ fail, and some store a wrong value with no error
 or a list of `Integer` or `Natural` values takes the element type of its target
 when that type is an integer type or DECIMAL, so DuckDB checks each element. A
 `BigNum` value, and an `Array` or a list of `BigNum` values, still have these
-defects for an integer target.
+defects for an integer target. For each other target, and for a parameter with
+no known type, an `Array`, a list, or a `Map` of `Integer` or `Natural` values
+takes the type that its elements give, as a scalar `Integer` and a SQL list
+literal of the HUGEINT and BIGNUM values do: `[1, 2^64]` binds as `HUGEINT[]`,
+and `[1, 2^200]` as `BIGNUM[]`. An empty list and a list of only NULL elements
+get the type `"NULL"[]`, as `[]` and `[NULL]` in SQL, because an `Integer` has
+no fixed SQL type. The rule follows the column type name BIGNUM, so an all-NULL
+list of `BigNum` values with no target also gets `"NULL"[]`.
 
 An `IntervalValue` binds as an INTERVAL, and DuckDB keeps its months, days, and
 microseconds. DuckDB compares intervals with 30 days for each month, so
@@ -309,15 +316,15 @@ Each row gives a Haskell type and these facts:
 
 Notes:
 
-1. A value from -2^127 to 2^127 - 1 binds as a HUGEINT. DuckDB then checks
-   that the value fits its target: for example, a negative value for an
-   unsigned column raises an error. A value outside that range binds as a
-   UHUGEINT for a UHUGEINT parameter that can hold it. It binds as a BIGNUM for
-   a parameter that has no integer or DECIMAL type. For each other integer or
-   DECIMAL parameter, it raises an `SQLError` of the type
-   `ErrorTypeConversion`. Bind a `BigNum` to bind a BIGNUM value in each case.
-   [Querying Data](#querying-data) gives the defects of the casts from BIGNUM
-   in DuckDB 2.0.0.
+1. A value from -2^127 to 2^127 - 1 binds as a HUGEINT. DuckDB then checks that
+   the value fits its target: for example, a negative value for an unsigned
+   column raises an error. A value outside that range binds as a UHUGEINT for a
+   UHUGEINT parameter that can hold it. It binds as a BIGNUM for a parameter
+   that has no integer or DECIMAL type. For each other integer or DECIMAL
+   parameter, it raises an `SQLError` of the type `ErrorTypeConversion`. Bind a
+   `BigNum` to bind a BIGNUM value in each case. [Querying Data](#querying-data)
+   gives the defects of the casts from BIGNUM in DuckDB 2.0.0, and the rule for
+   a list, an `Array`, or a `Map` of `Integer` values.
 2. The value 0 reads as `False`, and each other value reads as `True`.
 3. "Each integer type" is TINYINT to UHUGEINT. A value that the Haskell type
    cannot hold raises a conversion error of the library, an `SQLError` with no
@@ -748,11 +755,13 @@ column. It casts a LIST to an ARRAY column only when the lengths are equal.
 A list or an array parameter with scalar elements takes its element type from
 the column type name (`duckdbColumnTypeFor`) of the element. Some elements take
 the element type of the target instead: `Integer`, `Natural`, and `BigNum`
-elements for an integer or DECIMAL element type (see above), and `TimeOfDay`,
-`LocalTime`, and `UTCTime` elements for a nanosecond element type (see [Infinite
-dates and timestamps](#infinite-dates-and-timestamps)). An empty list binds as
-an empty LIST of its element type. An empty array raises an error: note 8 of
-[Types](#types).
+elements for an integer or DECIMAL element type, and otherwise the type of their
+values (see above), and `TimeOfDay`, `LocalTime`, and `UTCTime` elements for a
+nanosecond element type (see [Infinite dates and
+timestamps](#infinite-dates-and-timestamps)). An empty list binds as an empty
+LIST of its element type, except an empty list of `Integer` or `Natural` values
+with no integer or DECIMAL target (see above). An empty array raises an error:
+note 8 of [Types](#types).
 
 A list or an array of STRUCT values, UNION values, generic records, lists, or
 arrays gets the type that DuckDB gives a SQL list literal of the same elements.

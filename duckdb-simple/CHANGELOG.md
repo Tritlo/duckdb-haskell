@@ -284,9 +284,10 @@
   key and value types. Version 0.3 had only a `FromField` instance for `Map`.
 - Add `ToField` and `ToDuckValue` instances for lists. A list binds as a LIST
   value with the element rules of an `Array`, and an empty list binds as an
-  empty LIST of its element type. A `String` stays one VARCHAR parameter, and a
-  list as a row is still a row of parameters, so a list parameter is
-  `Only [..]`. Version 0.3 had no `ToField` instance for lists.
+  empty LIST of its element type (for an empty list of `Integer` or `Natural`
+  values, see the entry on `Integer` parameters). A `String` stays one VARCHAR
+  parameter, and a list as a row is still a row of parameters, so a list
+  parameter is `Only [..]`. Version 0.3 had no `ToField` instance for lists.
 - Each input check of the library raises `SQLError` with the type
   `ErrorInputInvalid`: a parameter value that does not fit its type (for example
   a `BitString` with bad padding, a `UnionValue` with a tag out of range, or an
@@ -399,7 +400,13 @@
   of `Integer` or `Natural` values takes the element type of its target when
   that type is an integer type or DECIMAL, so DuckDB checks the range of each
   element. Before, a negative element for an unsigned array column was stored as
-  a wrapped value.
+  a wrapped value. For each other target, an `Array`, a list, or a `Map` of such
+  values takes the type that its elements give, as a SQL list literal of the
+  HUGEINT and BIGNUM values: `[1, 2^64]` is `HUGEINT[]`, `[1, 2^200]` is
+  `BIGNUM[]`, and an empty list or a list of only NULL elements is `"NULL"[]`.
+  The rule follows the column type name BIGNUM, so an all-NULL list of `BigNum`
+  values with no target is also `"NULL"[]` in place of `BIGNUM[]`, and a type
+  whose column type name is BIGNUM follows it too.
 - `toDuckValue` for an `Integer` or a `Natural` gives a HUGEINT value when the
   value is in the HUGEINT range, and a `Natural` up to 2^128 - 1 gives a
   UHUGEINT value. Each other value raises an `SQLError` of the type

@@ -336,20 +336,25 @@ The SQL workflow stays the same. These changes can affect your code:
   parameter of the same Haskell value does not find that row.
 - An `Integer` or a `Natural` parameter binds as HUGEINT when the value is in
   the HUGEINT range. Version 0.3 bound BIGNUM in each case. `typeof(?)` gives
-  HUGEINT, and a parameter that is stored in a VARIANT column holds a HUGEINT.
-  A result of such a parameter, for example of `SELECT ?`, reads as `Integer`
-  and no longer as `BigNum`. Arithmetic on the parameter in SQL has the range
-  of HUGEINT. A negative value for an unsigned column now raises an error;
-  version 0.3 stored a wrapped value. Bind a `BigNum` for the BIGNUM value of
-  version 0.3. `toDuckValue` uses the same rule: an `Integer` or a `Natural`
-  in the HUGEINT range gives a HUGEINT value, where version 0.3 gave a BIGNUM
-  value. A `Natural` up to 2^128 - 1 gives a UHUGEINT value. Each other value
-  raises an `SQLError` of the type `ErrorTypeConversion`, where version 0.3
-  gave a BIGNUM value. This applies to `setConfigValue`, `defaultValue`, the
-  typed rows of a table function and of COPY FROM, the result of a scalar
-  function, and a parameter of a newtype over `Integer` with the default
-  `toField`. Use `BigNum` for a larger value, and derive `ToField` with newtype
-  deriving to keep the parameter rule of `Integer`.
+  HUGEINT, and a parameter that is stored in a VARIANT column holds a HUGEINT. A
+  result of such a parameter, for example of `SELECT ?`, reads as `Integer` and
+  no longer as `BigNum`. Arithmetic on the parameter in SQL has the range of
+  HUGEINT. A negative value for an unsigned column now raises an error; version
+  0.3 stored a wrapped value. Bind a `BigNum` for the BIGNUM value of version
+  0.3. `toDuckValue` uses the same rule: an `Integer` or a `Natural` in the
+  HUGEINT range gives a HUGEINT value, where version 0.3 gave a BIGNUM value. A
+  `Natural` up to 2^128 - 1 gives a UHUGEINT value. Each other value raises an
+  `SQLError` of the type `ErrorTypeConversion`, where version 0.3 gave a BIGNUM
+  value. This applies to `setConfigValue`, `defaultValue`, the typed rows of a
+  table function and of COPY FROM, the result of a scalar function, and a
+  parameter of a newtype over `Integer` with the default `toField`. Use `BigNum`
+  for a larger value, and derive `ToField` with newtype deriving to keep the
+  parameter rule of `Integer`. An `Array` of such values with no integer or
+  DECIMAL target takes the type that its elements give, for example `HUGEINT[2]`
+  for 1 and 2, where version 0.3 gave `BIGNUM[2]`. A list and a `Map` of such
+  values follow the same rule. Stored in a VARIANT column, such a value keeps
+  the HUGEINT elements, so a later cast checks their range: `[-5]` cast to
+  `UBIGINT[]` raises an error, where a BIGNUM element gave 18446744073709551611.
 - A typed registration declares HUGEINT for an `Integer` and UHUGEINT for a
   `Natural`: a column of a typed row, an argument, and a result. The column type
   name (`duckdbColumnTypeFor`, also `duckdbColumnType`) still gives BIGNUM for

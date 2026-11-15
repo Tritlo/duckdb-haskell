@@ -620,18 +620,45 @@ registerTableFunctionWith target configure callbacks =
 -- the base type, so the cast is a cast to the base type. A type from
 -- 'registerCustomType' keeps its name. See 'TypeDeclaration'.
 --
+-- The cast replaces the cast of DuckDB for the pair of types on each
+-- connection of the instance. A second registration of the same pair returns
+-- with no error and has no effect, because DuckDB keeps the first cast.
+--
+-- Warning: DuckDB does not always run the callback. Three rules of the
+-- optimizer of DuckDB 2.0.0 use the two types of a cast and not the cast
+-- function:
+--
+-- * expression_rewriter (ComparisonSimplificationRule, with
+--   BoundCastExpression::CastIsInvertible) casts the constant of a comparison
+--   to the type of the column, and compares the column without the cast.
+-- * join_filter_pushdown makes a filter of a join from the values of the other
+--   side through an integral cast.
+-- * statistics_propagation decides a comparison, or gives min and max, from
+--   the statistics of the column through the cast.
+--
+-- In runs with DuckDB 2.0.0, a cast from INTEGER to BIGINT, from BIGINT to a
+-- custom type with the base type BIGINT, and from that type to BIGINT, with a
+-- callback that changes the value, gave wrong rows and no error. This occurred
+-- in a filter, a filter with a parameter, IN, BETWEEN, a comparison of two
+-- columns, a join, and min and max. The callback did not run on the column. A
+-- cast with VARCHAR or BLOB on one side gave the rows of the callback in each
+-- of these runs, with 10 and with 300000 rows. With a cast from INTEGER to
+-- BIGINT, DuckDB also converts each INTEGER literal that must be a BIGINT
+-- through the cast: @range(10)@ gave no row, and @LIMIT 5@ gave 10 rows. Use a
+-- scalar function for a conversion that changes the value.
+--
 -- The source type is the first type, and the target type is the second type. The example registers a cast
--- from BIGINT to a custom type. The callback adds 100 to each value.
+-- from BIGINT to a custom type. The callback copies each value.
 --
 -- > withConnection ":memory:" \connection -> do
--- >   R.registerCustomType connection "managed_shifted" bigint
--- >   R.registerCast connection bigint (R.TypeExpression "managed_shifted") Nothing \info _ -> do
+-- >   R.registerCustomType connection "managed_copy" bigint
+-- >   R.registerCast connection bigint (R.TypeExpression "managed_copy") Nothing \info _ -> do
 -- >     count <- R.output (c_duckdb_v2_cast_function_exec_get_row_count info)
 -- >     values <- R.output (c_duckdb_v2_cast_function_exec_get_input info) >>= readIntegers (fromIntegral count)
 -- >     result <- R.output (c_duckdb_v2_cast_function_exec_get_output info)
--- >     writeIntegers result (map (+ 100) values)
--- >   rows <- query_ connection "SELECT CAST(i::BIGINT AS managed_shifted)::BIGINT FROM range(3) t(i)"
--- >   print (map fromOnly rows :: [Int64]) -- [100,101,102]
+-- >     writeIntegers result values
+-- >   rows <- query_ connection "SELECT CAST(i::BIGINT AS managed_copy)::BIGINT FROM range(3) t(i)"
+-- >   print (map fromOnly rows :: [Int64]) -- [0,1,2]
 registerCast
   :: Connection -> TypeDeclaration -> TypeDeclaration -> Maybe Int64 -> ContextCallback DuckDBV2CastFunctionExecInfoHandle -> IO ()
 registerCast connection source target implicitCost execute =

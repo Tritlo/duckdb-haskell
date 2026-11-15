@@ -230,17 +230,21 @@ The SQL workflow stays the same. These changes can affect your code:
   Read `Text`, or write `encode(c)` for the UTF-8 bytes that version 0.3 gave.
 - An ENUM read as an integer type (`Int`, `Int8` to `Int64`, `Word`, `Word8` to
   `Word64`, or `Natural`) raises the error of an incompatible column. Write
-  `enum_code(c)` for the index that version 0.3 gave, or `c::INTEGER` for the
-  label as a number. An ENUM now reads as `Text` or `String` with its label.
+  `enum_code(c)::BIGINT` for the index that version 0.3 gave, or `c::INTEGER`
+  for the label as a number. Without the cast, `enum_code` gives an unsigned
+  type, which `Int` and `Int8` to `Int64` do not read. An ENUM now reads as `Text` or `String` with its label.
 - `FieldEnum` has a second field, the label: `FieldEnum Word32 Text`. Change
   each pattern and each construction. A `FieldEnum` inside a declared ENUM type
   binds its label.
 - `displayException` of a `ResultError` gives the rendered text of the error,
   and the error of a field of a `ViaDuckDB` record starts with the field name.
   Change code that matches the old texts.
-- A `Variant` read of a column that holds an ENUM, a MAP, a UNION, or a
-  GEOMETRY with a CRS at any depth raises the error of an incompatible column.
-  Write `c::VARIANT` in SQL, or read `FieldValue` for the decoded value.
+- A `Variant` read accepts only a value that a VARIANT can hold. A column that
+  holds an ENUM, a MAP, a UNION, an ARRAY, a TUPLE, a STRUCT with a field that
+  is not VARIANT, or a GEOMETRY with a CRS, at any depth, raises the error of an
+  incompatible column. Write `c::VARIANT` in SQL, or read `FieldValue` for the
+  decoded value. A JSON column still reads as its text; write `c::VARIANT` for
+  the parsed value.
 - `TimeWithZone` holds the offset as seconds east of UTC. The field
   `timeWithZoneZone :: TimeZone` is now `timeWithZoneOffsetSeconds :: Int32`.
   Convert a `TimeZone` with `fromIntegral (timeZoneMinutes zone) * 60`, and

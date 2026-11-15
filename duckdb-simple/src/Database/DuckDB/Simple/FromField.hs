@@ -371,8 +371,9 @@ type of its payload, and the error of a String names Text. These pairs are:
 - ByteString from VARCHAR. The cast to BLOB reads escape sequences such as \x41.
   Read a Text, or write encode(c) for the UTF-8 bytes.
 - Each integer type from ENUM. The cast to an integer type parses the label,
-  for example '20' gives 20. Write c::INTEGER for that value, or enum_code(c)
-  for the index.
+  for example '20' gives 20. Write c::INTEGER for that value, or
+  enum_code(c)::BIGINT for the index. enum_code gives an unsigned type, which
+  the signed integer types do not read.
 - Variant from a value that a VARIANT cannot hold (variantShape in
   "Database.DuckDB.Simple.Variant"): a FieldArray, a FieldTuple, a FieldStruct
   with a field of a type other than VARIANT, a FieldEnum, a FieldMap, a

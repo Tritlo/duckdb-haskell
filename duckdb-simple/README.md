@@ -260,10 +260,10 @@ raises the error of an incompatible column: a TIMESTAMP or a DATE as `UTCTime`,
 a TIMESTAMPTZ as `LocalTime`, a FLOAT or a DOUBLE as `Text`, a VARCHAR as
 `ByteString`, and an ENUM as an integer type. Write the cast in SQL for these
 values, for example `c::TIMESTAMP AT TIME ZONE 'UTC'`, `c::VARCHAR`,
-`encode(c)`, or `enum_code(c)`. An ENUM value reads as `Text` or `String` with
-its label, the text of `c::VARCHAR`, and a `FieldEnum` holds the index and the
-label. The Haddock of each `FromField` instance gives the SQL types that it
-reads.
+`encode(c)`, or `enum_code(c)::BIGINT`. An ENUM value reads as `Text` or
+`String` with its label, the text of `c::VARCHAR`, and a `FieldEnum` holds the
+index and the label. The Haddock of each `FromField` instance gives the SQL
+types that it reads.
 
 ## Generic Encoding with ViaDuckDB
 
@@ -725,11 +725,15 @@ also raises an error because DuckDB treats its STRUCT type as a tuple.
 DuckDB 2.0 permits an empty key with other named keys. You can also bind a plain
 value and cast it in SQL, as in `?::VARIANT`.
 
-A `Variant` result reads a VARIANT column, and wraps the value of a column of
-another type. A column that holds a UNION, a MAP, an ENUM, or a GEOMETRY with a
-CRS at any depth raises the error of an incompatible column, because the cast
-of DuckDB to VARIANT changes these values. Write `c::VARIANT` in SQL to read
-such a column. A GEOMETRY with no CRS reads.
+A `Variant` result reads a value that a VARIANT can hold: a VARIANT column, or a
+column of another type with the same shape, such as an INTEGER, a LIST, or a
+GEOMETRY with no CRS. A column that holds a UNION, a MAP, an ENUM, an ARRAY, a
+TUPLE, a STRUCT with a field that is not VARIANT, or a GEOMETRY with a CRS, at
+any depth, raises the error of an incompatible column, because the cast of
+DuckDB to VARIANT changes these values. Write `c::VARIANT` in SQL to read such a
+column. One difference stays, because the reader does not know the type of a
+column: a JSON column reads as its text, as a VARCHAR column does, where
+`c::VARIANT` gives the parsed value.
 
 The library uses a separate helper connection for VARIANT decoder metadata.
 It caches the parsed VARIANT metadata statement and the types for VARIANT

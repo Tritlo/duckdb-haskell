@@ -1243,6 +1243,14 @@ valueRegressionTests =
               enumAs (Proxy :: Proxy Word32) "Word32"
               enumAs (Proxy :: Proxy Word64) "Word64"
               enumAs (Proxy :: Proxy Word) "Word"
+              -- The SQL in place of the refused read: enum_code(c)::BIGINT gives
+              -- the index, and c::INTEGER parses the label.
+              ( query_
+                  conn
+                  "SELECT enum_code(c)::BIGINT, enum_code(c)::BIGINT, enum_code(c)::BIGINT, c::INTEGER FROM (VALUES ('20'::ENUM('10', '20'))) t(c)"
+                  :: IO [(Int8, Word8, Natural, Int32)]
+                )
+                >>= (@?= [(1, 1, 1, 20)])
               -- The SQL in place of each refused read, also for the year 1500,
               -- which a nanosecond value cannot hold.
               forM_ [2024, 1500] \year -> do

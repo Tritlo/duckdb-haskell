@@ -292,7 +292,7 @@ registerScalarFunction target name proxy installers = do
     throwInvalidArgument "invalid scalar function name"
   -- See Note [Type declarations] in "Database.DuckDB.Simple.ToField".
   parameters <- rowDeclarations name ["argument " <> argumentName index | index <- [0 ..]] (argumentTypes proxy)
-  result <- either (\reason -> throwInvalidArgument (name <> ": result: " <> reason)) pure (returnType proxy)
+  [result] <- rowDeclarations name ["result"] [returnType proxy]
   -- withTarget keeps its factory private. Borrow another one for the signature types.
   withRegistrationFactory target \factory ->
     withTarget

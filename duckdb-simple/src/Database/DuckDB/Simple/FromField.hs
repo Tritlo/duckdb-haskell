@@ -54,7 +54,6 @@ import Data.Time.Clock (UTCTime (..))
 import Data.Time.LocalTime (
   LocalTime (..),
   TimeOfDay (..),
-  TimeZone (..),
   localTimeToUTC,
   utc,
   utcToLocalTime,
@@ -235,14 +234,17 @@ bsFromBool bits =
     bitsToWord8 :: [Bool] -> Word8
     bitsToWord8 bs = foldl (\acc (b, i) -> if b then setBit acc i else acc) 0 (zip bs [7, 6 .. 0])
 
--- | Time-of-day paired with its associated timezone offset. DuckDB stores the
--- time and the offset in minutes. It does not store the name and the summer flag
--- of the t'TimeZone'. A value that is read has a t'TimeZone' from
--- @minutesToTimeZone@. Thus it is equal to the bound value only when the bound
--- zone has no name and no summer flag.
+-- | Time of day with its offset from UTC in seconds, as a TIMETZ stores it. A
+-- positive offset is east of UTC: @12:00:00+02@ has the offset 7200. DuckDB
+-- stores an offset from -57599 to 57599 seconds (-15:59:59 to +15:59:59) and the
+-- time in microseconds. A value with such an offset reads back equal to the
+-- bound value. A time with digits below one microsecond loses these digits, as
+-- in SQL text. Use @minutesToTimeZone (fromIntegral offset \`div\` 60)@ and
+-- @fromIntegral (timeZoneMinutes zone) * 60@ to convert to and from a
+-- @Data.Time@ zone.
 data TimeWithZone = TimeWithZone
   { timeWithZoneTime :: TimeOfDay
-  , timeWithZoneZone :: TimeZone
+  , timeWithZoneOffsetSeconds :: Int32
   }
   deriving (Eq, Show)
 

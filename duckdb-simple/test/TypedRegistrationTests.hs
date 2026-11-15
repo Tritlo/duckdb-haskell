@@ -24,7 +24,7 @@ import qualified Data.Text.IO as TextIO
 import Data.Time (UTCTime (..))
 import Data.Time.Calendar (Day, addDays, fromGregorian)
 import Data.Time.Format (defaultTimeLocale, parseTimeM)
-import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), minutesToTimeZone)
+import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..))
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.Simple
@@ -944,8 +944,8 @@ testTableIntegers = withConnection ":memory:" \conn -> do
 testTableIntervals :: Assertion
 testTableIntervals = withConnection ":memory:" \conn -> do
   let rows =
-        [ (IntervalValue 1 2 3, TimeWithZone (TimeOfDay 12 34 0) (minutesToTimeZone 330))
-        , (IntervalValue (-1) 0 0, TimeWithZone (TimeOfDay 0 0 0) (minutesToTimeZone 0))
+        [ (IntervalValue 1 2 3, TimeWithZone (TimeOfDay 12 34 0) 19800)
+        , (IntervalValue (-1) 0 0, TimeWithZone (TimeOfDay 0 0 0) 3630)
         ]
   createTableFunction conn "typed_intervals" ["duration", "moment"] \() -> pure rows
   query_ conn "SELECT typeof(duration), typeof(moment) FROM typed_intervals() LIMIT 1"

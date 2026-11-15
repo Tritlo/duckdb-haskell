@@ -24,7 +24,7 @@ import qualified Data.Text as Text
 import Data.Time.Calendar (Day, addDays, fromGregorian)
 import Data.Time.Clock (UTCTime (..))
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
-import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), minutesToTimeZone, timeZoneMinutes, utc, utcToLocalTime)
+import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), utc, utcToLocalTime)
 import Data.Word (Word16, Word32, Word8)
 import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple
@@ -40,6 +40,7 @@ import Database.DuckDB.Simple.FromField (
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..), genericFromFieldValue, genericToStructValue)
 import Database.DuckDB.Simple.Internal (destroyValue, output, withConnectionFactory, withConnectionHandle)
 import Database.DuckDB.Simple.LogicalRep
+import Database.DuckDB.Simple.Registration (TypeDeclaration (..))
 import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
@@ -533,44 +534,50 @@ valueRegressionTests =
           >>= (@?= [("INTERVAL[]", [value, negative])])
         let array = listArray (0, 1) [value, negative] :: Array Int IntervalValue
         (query conn "SELECT typeof(?), ?" (array, array) :: IO [(Text, [IntervalValue])]) >>= (@?= [("INTERVAL[2]", [value, negative])])
-    , testCase "a TimeWithZone binds as a TIMETZ with its time and offset" $ withConnection ":memory:" \conn -> do
-        let at hours minutes offset = TimeWithZone (TimeOfDay hours minutes 0) (minutesToTimeZone offset)
-            value = at 12 34 330
-            stored TimeWithZone{timeWithZoneTime, timeWithZoneZone} = (timeWithZoneTime, timeZoneMinutes timeWithZoneZone)
-            roundTrip time = (query conn "SELECT ?" (Only time) :: IO [Only TimeWithZone]) >>= \rows -> map (stored . fromOnly) rows @?= [stored time]
+    , testCase "a TimeWithZone binds as a TIMETZ with its time and offset in seconds" $ withConnection ":memory:" \conn -> do
+        let at hours minutes offset = TimeWithZone (TimeOfDay hours minutes 0) offset
+            value = at 12 34 19800
+            -- The offset +01:00:30.
+            seconds = at 12 0 3630
+            roundTrip time = (query conn "SELECT ?" (Only time) :: IO [Only TimeWithZone]) >>= (@?= [Only time])
         (query conn "SELECT typeof(?), ?" (value, value) :: IO [(Text, TimeWithZone)]) >>= (@?= [("TIME WITH TIME ZONE", value)])
+        -- An offset with seconds reads, binds, and prints exactly.
+        ( query_ conn "SELECT '12:00:00+01:00:30'::TIMETZ, '12:00:00-15:59:59'::TIMETZ, '24:00:00+15:59:59'::TIMETZ"
+            :: IO [(TimeWithZone, TimeWithZone, TimeWithZone)]
+          )
+          >>= (@?= [(seconds, at 12 0 (-57599), TimeWithZone (TimeOfDay 24 0 0) 57599)])
+        (query conn "SELECT ?::VARCHAR" (Only seconds) :: IO [Only Text]) >>= (@?= [Only "12:00:00+01:00:30"])
         mapM_
           roundTrip
-          [at 12 0 959, at 12 0 (-959), TimeWithZone (TimeOfDay 24 0 0) (minutesToTimeZone 0), TimeWithZone (TimeOfDay 23 59 59.999999) utc]
-        -- DuckDB does not store the name of the zone.
-        (query conn "SELECT ?" (Only (TimeWithZone (TimeOfDay 24 0 0) utc)) :: IO [Only TimeWithZone])
-          >>= (@?= [Only (TimeWithZone (TimeOfDay 24 0 0) (minutesToTimeZone 0))])
-        -- The encoder raises an error for an offset of 16 hours or more.
-        forM_ [960, -960] \offset ->
+          [seconds, at 12 0 57599, at 12 0 (-57599), TimeWithZone (TimeOfDay 24 0 0) 0, TimeWithZone (TimeOfDay 23 59 59.999999) (-3630)]
+        -- DuckDB stores an offset from -15:59:59 to +15:59:59.
+        forM_ [57600, -57600] \offset ->
           try (query conn "SELECT ?" (Only (at 12 0 offset)) :: IO [Only TimeWithZone]) >>= \case
-            Left (err :: IOException) -> assertBool (show err) ("duckdb-simple: TIME WITH TIME ZONE offset out of range" `Text.isInfixOf` Text.pack (show err))
+            Left (err :: IOException) ->
+              assertBool
+                (show err)
+                (("duckdb-simple: the TIMETZ offset " <> Text.pack (show offset) <> " seconds is out of range") `Text.isInfixOf` Text.pack (show err))
             Right rows -> assertFailure ("expected the offset error, got " <> show rows)
         -- A TIME column removes the offset and keeps the local time.
         _ <- execute_ conn "CREATE TABLE times (a TIMETZ, b TIME)"
-        _ <- execute conn "INSERT INTO times VALUES (?, ?)" (at 12 0 120, at 12 0 120)
-        (query_ conn "SELECT a, b FROM times" :: IO [(TimeWithZone, TimeOfDay)]) >>= (@?= [(at 12 0 120, TimeOfDay 12 0 0)])
-        -- DuckDB compares the time and the offset, not only the instant.
-        (query conn "SELECT count(*) FROM times WHERE a = ?" (Only (at 11 0 60)) :: IO [Only Int64]) >>= (@?= [Only 0])
-        (query conn "SELECT count(*) FROM times WHERE a = ?" (Only (at 12 0 120)) :: IO [Only Int64]) >>= (@?= [Only 1])
-        (query conn "SELECT count(*) FROM times WHERE a < ?" (Only (TimeWithZone (TimeOfDay 11 30 0) (minutesToTimeZone 60))) :: IO [Only Int64])
-          >>= (@?= [Only 1])
+        _ <- execute conn "INSERT INTO times VALUES (?, ?)" (seconds, seconds)
+        (query_ conn "SELECT a, b FROM times" :: IO [(TimeWithZone, TimeOfDay)]) >>= (@?= [(seconds, TimeOfDay 12 0 0)])
+        -- DuckDB compares the instant first, and then the offset.
+        (query conn "SELECT count(*) FROM times WHERE a = ?" (Only seconds) :: IO [Only Int64]) >>= (@?= [Only 1])
+        (query conn "SELECT count(*) FROM times WHERE a = ?" (Only (at 12 0 3631)) :: IO [Only Int64]) >>= (@?= [Only 0])
+        (query conn "SELECT count(*) FROM times WHERE ? < a" (Only (at 12 0 3631)) :: IO [Only Int64]) >>= (@?= [Only 1])
+        (query conn "SELECT count(*) FROM times WHERE a = ?" (Only (TimeWithZone (TimeOfDay 10 59 30) 0)) :: IO [Only Int64]) >>= (@?= [Only 0])
         -- The digits below one microsecond go away, as in SQL text.
-        (query conn "SELECT ?" (Only (at 1 2 0){timeWithZoneTime = TimeOfDay 1 2 3.0000005}) :: IO [Only TimeWithZone])
-          >>= (@?= [Only (at 1 2 0){timeWithZoneTime = TimeOfDay 1 2 3}])
+        (query conn "SELECT ?" (Only seconds{timeWithZoneTime = TimeOfDay 1 2 3.0000005}) :: IO [Only TimeWithZone])
+          >>= (@?= [Only seconds{timeWithZoneTime = TimeOfDay 1 2 3}])
         (query conn "SELECT ?" (Only (Nothing :: Maybe TimeWithZone)) :: IO [Only (Maybe TimeWithZone)]) >>= (@?= [Only Nothing])
-        let times = [value, at 0 0 0]
+        let times = [value, seconds, at 0 0 (-57599)]
         (query conn "SELECT typeof(?), ?" (times, times) :: IO [(Text, [TimeWithZone])]) >>= (@?= [("TIME WITH TIME ZONE[]", times)])
-        let array = listArray (0, 1) times :: Array Int TimeWithZone
-        (query conn "SELECT typeof(?), ?" (array, array) :: IO [(Text, [TimeWithZone])]) >>= (@?= [("TIME WITH TIME ZONE[2]", times)])
-        -- A TIMETZ field of a STRUCT parameter also loses the name of the zone.
-        let named = singleField (LogicalTypeScalar LogicalTypeIdTimeTz) (FieldTimeTZ (TimeWithZone (TimeOfDay 8 0 0) utc))
-            unnamed = singleField (LogicalTypeScalar LogicalTypeIdTimeTz) (FieldTimeTZ (TimeWithZone (TimeOfDay 8 0 0) (minutesToTimeZone 0)))
-        (query conn "SELECT ?" (Only named) :: IO [Only (StructValue FieldValue)]) >>= (@?= [Only unnamed])
+        let array = listArray (0, 2) times :: Array Int TimeWithZone
+        (query conn "SELECT typeof(?), ?" (array, array) :: IO [(Text, [TimeWithZone])]) >>= (@?= [("TIME WITH TIME ZONE[3]", times)])
+        let nested = singleField (LogicalTypeScalar LogicalTypeIdTimeTz) (FieldTimeTZ seconds)
+        (query conn "SELECT ?, (?).value::VARCHAR" (nested, nested) :: IO [(StructValue FieldValue, Text)])
+          >>= (@?= [(nested, "12:00:00+01:00:30")])
     , testCase "a DecimalValue binds as a DECIMAL with its own width and scale" $ withConnection ":memory:" \conn -> do
         let value = DecimalValue 5 3 2125
             roundTrip decimal = (query conn "SELECT ?" (Only decimal) :: IO [Only DecimalValue]) >>= (@?= [Only decimal])
@@ -888,13 +895,23 @@ valueRegressionTests =
     , testCase "unsupported BIT input fails before native use" $ withConnection ":memory:" \conn ->
         forM_ [BitString 0 BS.empty, BitString 8 (BS.singleton 1)] \bits ->
           assertIOError (query conn "SELECT ?" (Only bits) :: IO [Only BitString])
-    , testCase "TIMETZ second offsets fail without rounding" $ withConnection ":memory:" \conn ->
-        assertIOError (query_ conn "SELECT '12:00:00+01:23:45'::TIMETZ" :: IO [Only TimeWithZone])
-    , testCase "a decode failure in a later chunk releases each chunk" $ withConnection ":memory:" \conn -> do
-        assertIOError
-          ( query_ conn "SELECT CASE WHEN i = 9000 THEN '12:00:00+01:23:45'::TIMETZ ELSE '12:00:00+01:00'::TIMETZ END FROM range(10000) t(i)"
-              :: IO [Only FieldValue]
-          )
+    , testCase "TIMETZ offsets with seconds read without rounding" $ withConnection ":memory:" \conn ->
+        (query_ conn "SELECT '12:00:00+01:23:45'::TIMETZ" :: IO [Only TimeWithZone]) >>= (@?= [Only (TimeWithZone (TimeOfDay 12 0 0) 5025)])
+    , testCase "a failure of the reader of a later chunk releases each chunk" $ withConnection ":memory:" \conn -> do
+        -- No value from SQL fails in a result decoder. A user cast from GEOMETRY
+        -- to BLOB replaces the cast of the GEOMETRY reader, and a typed cast
+        -- rejects a GEOMETRY argument. See Note [User casts and the casts of the
+        -- library] in "Database.DuckDB.Simple.Materialize". This case needs a new
+        -- trigger when the reader no longer uses user casts.
+        createCast conn (TypeExpression "GEOMETRY") (TypeExpression "BLOB") \(bytes :: BS.ByteString) -> Right bytes
+        let rows (count :: Int) = Query ("SELECT CASE WHEN i = 9000 THEN 'POINT (1 2)'::GEOMETRY END FROM range(" <> Text.pack (show count) <> ") t(i)")
+        try (query_ conn (rows 10000) :: IO [Only FieldValue]) >>= \case
+          Left SQLError{sqlErrorMessage, sqlErrorType} -> do
+            assertBool (Text.unpack sqlErrorMessage) ("cannot be or contain VARIANT or GEOMETRY" `Text.isInfixOf` sqlErrorMessage)
+            sqlErrorType @?= Just ErrorInputInvalid
+          Right result -> assertFailure ("expected the error of the GEOMETRY reader, got " <> show (length result) <> " rows")
+        -- Rows that are all NULL read, so the failure is in the chunk of row 9000.
+        (length <$> (query_ conn (rows 5000) :: IO [Only FieldValue])) >>= (@?= 5000)
         (query_ conn "SELECT 42" :: IO [Only Int]) >>= (@?= [Only 42])
     , testCase "ENUM payload index must be in its dictionary" $ withConnection ":memory:" \conn ->
         assertIOError
@@ -914,7 +931,7 @@ valueRegressionTests =
             (query conn "SELECT (?).value::VARCHAR, ?" (struct, struct) :: IO [(Text, StructValue FieldValue)])
               >>= assertEqual (show size <> " " <> show index) [(label index, struct)]
     , testCase "TIMETZ input offset overflow fails before native use" $ withConnection ":memory:" \conn -> do
-        let value = TimeWithZone (TimeOfDay 12 0 0) (minutesToTimeZone maxBound)
+        let value = TimeWithZone (TimeOfDay 12 0 0) maxBound
             struct = singleField (LogicalTypeScalar LogicalTypeIdTimeTz) (FieldTimeTZ value)
         assertIOError (query conn "SELECT ?" (Only struct) :: IO [Only FieldValue])
     , testCase "invalid TIME input returns controlled error" $ withConnection ":memory:" \conn ->

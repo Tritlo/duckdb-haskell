@@ -122,13 +122,19 @@ tests =
               | otherwise -> castFloatToWord32 decoded @?= castFloatToWord32 value
             _ -> assertFailure (show actual)
     , testCase "TIMETZ offsets decode like native values" $ withConnection ":memory:" \conn -> do
-        forM_ ["'12:00:00+01:23'::TIMETZ", "'23:59:59.999999-15:59'::TIMETZ", "'00:00:00+00'::TIMETZ"] \sql -> do
-          rows <- query_ conn (Query ("SELECT (" <> sql <> ")::VARIANT, " <> sql <> " FROM range(2)")) :: IO [(Variant, FieldValue)]
-          length rows @?= 2
-          forM_ rows \(Variant actual, native) -> do
-            actual @?= native
-            roundTrip conn native
-        assertFailureIO (query_ conn "SELECT '12:00:00+01:23:45'::TIMETZ::VARIANT" :: IO [Only Variant])
+        forM_
+          [ "'12:00:00+01:23'::TIMETZ"
+          , "'23:59:59.999999-15:59'::TIMETZ"
+          , "'00:00:00+00'::TIMETZ"
+          , "'12:00:00+01:23:45'::TIMETZ"
+          , "'00:00:00-15:59:59'::TIMETZ"
+          ]
+          \sql -> do
+            rows <- query_ conn (Query ("SELECT (" <> sql <> ")::VARIANT, " <> sql <> " FROM range(2)")) :: IO [(Variant, FieldValue)]
+            length rows @?= 2
+            forM_ rows \(Variant actual, native) -> do
+              actual @?= native
+              roundTrip conn native
     , testCase "wide finite timestamp payloads round trip without losing digits" $ withConnection ":memory:" \conn -> do
         void (execute_ conn "CREATE TABLE wide_timestamps (seconds TIMESTAMP_S, millis TIMESTAMP_MS)")
         appendWideTimestamps

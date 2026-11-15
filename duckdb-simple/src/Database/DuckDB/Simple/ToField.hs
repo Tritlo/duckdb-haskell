@@ -42,7 +42,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Time.Calendar (Day, diffDays, fromGregorian)
 import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds)
-import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), TimeZone (..), timeOfDayToTime, timeZoneMinutes, utc, utcToLocalTime)
+import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), timeOfDayToTime, utc, utcToLocalTime)
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.Simple.Element (timeTzMaxOffsetSeconds, timeTzOffsetBits)
@@ -429,9 +429,9 @@ instance ToField LocalTime
 -- three fields.
 instance ToField IntervalValue
 
--- | Bind the time and its offset in minutes as a TIMETZ. The name and the
--- summer flag of the t'TimeZone' are not stored. An offset of 16 hours or more
--- raises an error.
+-- | Bind the time and its offset in seconds as a TIMETZ. An offset outside
+-- -57599 to 57599 seconds raises an error. A time with digits below one
+-- microsecond loses these digits, as in SQL text.
 instance ToField TimeWithZone
 
 -- | Bind the value as a DECIMAL with its own width and scale. DuckDB casts it
@@ -1131,10 +1131,17 @@ intervalDuckValue factory IntervalValue{intervalMonths, intervalDays, intervalMi
     (\ptr -> output (c_duckdb_v2_value_create_interval factory (ConstPtr ptr)))
 
 timeWithZoneDuckValue :: DuckDBV2FactoryHandle -> TimeWithZone -> IO DuckDBV2ValueHandle
-timeWithZoneDuckValue factory TimeWithZone{timeWithZoneTime, timeWithZoneZone} = do
+timeWithZoneDuckValue factory TimeWithZone{timeWithZoneTime, timeWithZoneOffsetSeconds} = do
   micros <- timeOfDayUnits 1000000 timeWithZoneTime
-  let offset = toInteger (timeZoneMinutes timeWithZoneZone) * 60
-  when (abs offset > toInteger timeTzMaxOffsetSeconds) $ throwIO (userError "duckdb-simple: TIME WITH TIME ZONE offset out of range")
+  let offset = toInteger timeWithZoneOffsetSeconds
+  when (abs offset > toInteger timeTzMaxOffsetSeconds) $
+    throwIO
+      ( userError
+          ( "duckdb-simple: the TIMETZ offset "
+              <> show offset
+              <> " seconds is out of range; DuckDB stores an offset from -57599 to 57599 seconds"
+          )
+      )
   output
     ( c_duckdb_v2_value_create_time_tz
         factory

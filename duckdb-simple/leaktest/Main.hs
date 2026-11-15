@@ -40,6 +40,7 @@ import qualified Database.DuckDB.Simple.Copy as Copy
 import Database.DuckDB.Simple.FromField (DecimalValue (..), FieldValue (..))
 import Database.DuckDB.Simple.Geometry (RawGeometry (..), fromRawGeometry)
 import qualified Database.DuckDB.Simple.Logging as Logging
+import Database.DuckDB.Simple.Registration (TypeDeclaration (..))
 import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Database.DuckDB.Simple.Variant (Variant (..))
 import GHC.Weak.Finalize (getFinalizerExceptionHandler, setFinalizerExceptionHandler)
@@ -96,14 +97,13 @@ openCloseCycle = do
   _ <- query_ conn "SELECT 42" :: IO [Only Int64]
   values <- query conn "SELECT ?" (Only (Variant (FieldInt64 42)))
   unless (values == [Only (Variant (FieldInt64 42))]) (fail "wrong VARIANT payload")
-  -- A TIMETZ offset with seconds fails during result materialization.
-  -- The result and connection must still be destroyed.
-  rejected <-
-    try (query_ conn "SELECT {'xs': [i, i + 1, i + 2, i + 3], 'bad': '12:00:00+01:23:45'::TIMETZ} FROM range(100000) t(i)")
-      :: IO (Either SomeException [Only FieldValue])
+  -- The reader of a GEOMETRY value fails while it reads the chunk. See
+  -- breakGeometryReads. The result and connection must still be destroyed.
+  breakGeometryReads conn
+  rejected <- try (query_ conn rejectedQuery) :: IO (Either SomeException [Only FieldValue])
   case rejected of
     Left _ -> pure ()
-    Right _ -> fail "expected TIMETZ offset conversion failure"
+    Right _ -> fail "expected the failure of the GEOMETRY reader"
   close conn
 
 main :: IO ()
@@ -212,13 +212,14 @@ checkOpenClose = do
 -- | Reuse one connection and statement through successful and failed operations.
 checkLongLived :: Int -> IO ()
 checkLongLived batches =
-  withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
+  withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
+    breakGeometryReads conn
     withStatement conn "SELECT ?::BIGINT FROM range(10000)" \stmt -> do
       let cycleQuery = do
             rows <- query_ conn "SELECT sum(i)::BIGINT FROM range(10000) t(i)"
             unless (rows == [Only (49995000 :: Int64)]) (fail "wrong query result")
             expectFailure
-              (query_ conn "SELECT {'xs': [i, i + 1, i + 2, i + 3], 'bad': '12:00:00+01:23:45'::TIMETZ} FROM range(10000) t(i)" :: IO [Only FieldValue])
+              (query_ conn "SELECT {'xs': [i, i + 1, i + 2, i + 3], 'bad': 'POINT (1 2)'::GEOMETRY} FROM range(10000) t(i)" :: IO [Only FieldValue])
             expectFailure (query_ conn "SELECT CAST('bad' AS BIGINT)" :: IO [Only Int64])
             bind stmt [toField (42 :: Int64)]
             nextRow stmt >>= \row -> unless (row == Just (Only (42 :: Int64))) (fail "wrong cursor result")
@@ -238,16 +239,15 @@ checkLongLived batches =
 checkDecodeFailure :: IO ()
 checkDecodeFailure =
   withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
-    let rejected =
-          expectFailure
-            (query_ conn "SELECT {'xs': [i, i + 1, i + 2, i + 3], 'bad': '12:00:00+01:23:45'::TIMETZ} FROM range(100000) t(i)" :: IO [Only FieldValue])
+    breakGeometryReads conn
+    let rejected = expectFailure (query_ conn rejectedQuery :: IO [Only FieldValue])
     rejected
     performMajorGC
     before <- readUsage
     forM_ [1 .. cycles] (const rejected)
     performMajorGC
     after <- readUsage
-    reportOptional ("open connection, " <> show cycles <> " decode failures") before after
+    reportOptional ("open connection, " <> show cycles <> " failed GEOMETRY reads") before after
 
 -- | Check that callback closures and query state are released before close.
 checkCallbacks :: Int -> IO ()
@@ -314,6 +314,20 @@ checkCallbacks batches =
       reportOptional ("open connection, " <> show (n * 100) <> " callback cycles") before after
 
 -- | Require an error without retaining the exception or its native resources.
+-- | Register a cast from GEOMETRY to BLOB on the database of the connection.
+-- The reader of a GEOMETRY result then calls this cast, and a typed cast
+-- rejects a GEOMETRY argument. Thus a result with a GEOMETRY value fails while
+-- the chunk is read. No value from SQL fails in a result decoder. See
+-- Note [User casts and the casts of the library] in
+-- "Database.DuckDB.Simple.Materialize". The checks need a new trigger when the
+-- reader no longer uses user casts.
+breakGeometryReads :: Connection -> IO ()
+breakGeometryReads conn = createCast conn (TypeExpression "GEOMETRY") (TypeExpression "BLOB") \(bytes :: BS.ByteString) -> Right bytes
+
+-- | A query whose result fails in the GEOMETRY reader after 'breakGeometryReads'.
+rejectedQuery :: Query
+rejectedQuery = "SELECT {'xs': [i, i + 1, i + 2, i + 3], 'bad': 'POINT (1 2)'::GEOMETRY} FROM range(100000) t(i)"
+
 expectFailure :: IO a -> IO ()
 expectFailure action = do
   outcome <- try (void action) :: IO (Either SomeException ())

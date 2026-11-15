@@ -21,7 +21,6 @@ module Database.DuckDB.Simple.Element (
 ) where
 
 import Control.Exception (bracket, throwIO, try)
-import Control.Monad (when)
 import Data.Bits (clearBit, shiftL, shiftR, testBit, xor, (.&.), (.|.))
 import qualified Data.ByteString as BS
 import Data.Coerce (coerce)
@@ -30,7 +29,7 @@ import Data.Ratio ((%))
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Time.Calendar (addDays, fromGregorian)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
-import Data.Time.LocalTime (TimeOfDay (..), minutesToTimeZone, utc, utcToLocalTime)
+import Data.Time.LocalTime (TimeOfDay (..), utc, utcToLocalTime)
 import qualified Data.UUID as UUID
 import Data.Void (Void)
 import Data.Word (Word64, Word8)
@@ -155,7 +154,7 @@ decodeElement dtype dataPtr rowIdx = case dtype of
   DuckDBV2LogicalTypeIdDate -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldDate . decodeDuckDBDate
   DuckDBV2LogicalTypeIdTime -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTime . decodeDuckDBTime
   DuckDBV2LogicalTypeIdTimeNs -> FieldTime . decodeDuckDBTimeNs <$> peekElemOff (castPtr dataPtr) rowIdx
-  DuckDBV2LogicalTypeIdTimeTz -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTimeTZ . decodeDuckDBTimeTz
+  DuckDBV2LogicalTypeIdTimeTz -> FieldTimeTZ . decodeDuckDBTimeTz <$> peekElemOff (castPtr dataPtr) rowIdx
   DuckDBV2LogicalTypeIdTimestamp -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTimestamp . decodeDuckDBTimestamp
   DuckDBV2LogicalTypeIdTimestampSec -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTimestamp . decodeDuckDBTimestampSeconds
   DuckDBV2LogicalTypeIdTimestampMs -> peekElemOff (castPtr dataPtr) rowIdx >>= fmap FieldTimestamp . decodeDuckDBTimestampMilliseconds
@@ -226,15 +225,13 @@ timeTzMaxOffsetSeconds = 16 * 60 * 60 - 1
 timeTzOffsetBits :: Int
 timeTzOffsetBits = 24
 
-decodeDuckDBTimeTz :: Word64 -> IO TimeWithZone
-decodeDuckDBTimeTz raw = do
-  let offset = timeTzMaxOffsetSeconds - fromIntegral (raw .&. (1 `shiftL` timeTzOffsetBits - 1)) :: Int
-  when (offset `rem` 60 /= 0) $ throwIO (userError "duckdb-simple: TIMETZ offset cannot be represented in whole minutes")
-  pure
-    TimeWithZone
-      { timeWithZoneTime = decodeTimeUnits 1000000 (fromIntegral (raw `shiftR` timeTzOffsetBits))
-      , timeWithZoneZone = minutesToTimeZone (offset `div` 60)
-      }
+-- | Decode the time of day and the offset in seconds of a TIMETZ value.
+decodeDuckDBTimeTz :: Word64 -> TimeWithZone
+decodeDuckDBTimeTz raw =
+  TimeWithZone
+    { timeWithZoneTime = decodeTimeUnits 1000000 (fromIntegral (raw `shiftR` timeTzOffsetBits))
+    , timeWithZoneOffsetSeconds = fromIntegral (timeTzMaxOffsetSeconds - fromIntegral (raw .&. (1 `shiftL` timeTzOffsetBits - 1)))
+    }
 
 decodeDuckDBTimestampSeconds :: Int64 -> IO LocalTimestamp
 decodeDuckDBTimestampSeconds = decodeTimestampUnits 1

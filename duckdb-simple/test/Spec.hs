@@ -37,7 +37,6 @@ import Data.Time.LocalTime (
   LocalTime (..),
   TimeOfDay (..),
   localTimeToUTC,
-  minutesToTimeZone,
   timeOfDayToTime,
   utc,
  )
@@ -812,7 +811,7 @@ duckdbCastCases =
     uuid :: UUID.UUID
     uuid = fromJust $ UUID.fromText "123e4567-e89b-12d3-a456-426614174000"
     timeWithZoneValue =
-      TimeWithZone{timeWithZoneTime = TimeOfDay 3 4 5, timeWithZoneZone = minutesToTimeZone 150}
+      TimeWithZone{timeWithZoneTime = TimeOfDay 3 4 5, timeWithZoneOffsetSeconds = 9000}
     timestampTzUtc =
       UTCTime timestampDay (secondsToDiffTime 2045)
     bigNumLiteral :: Integer
@@ -970,9 +969,8 @@ typeTests =
         withConnection ":memory:" \conn -> do
           [Only tzVal] <- query_ conn "SELECT TIMETZ '14:30:15+02:30'"
           let expectedTime = TimeOfDay 14 30 15
-              expectedZone = minutesToTimeZone 150
           assertEqual "timetz time" expectedTime (timeWithZoneTime tzVal)
-          assertEqual "timetz zone" expectedZone (timeWithZoneZone tzVal)
+          assertEqual "timetz offset" 9000 (timeWithZoneOffsetSeconds tzVal)
     , testCase "decodes list columns into Haskell lists" $
         withConnection ":memory:" \conn -> do
           [Only (listOut :: [Int])] <-

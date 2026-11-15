@@ -12,25 +12,19 @@
 -- Description : Integration checks for typed registration through SQL.
 module TypedRegistrationTests (typedRegistrationTests) where
 
-import Control.Exception (SomeException, bracket, displayException, throw, throwIO, try)
+import Control.Exception (SomeException, bracket, displayException, throwIO, try)
 import Control.Monad (forM, forM_, void, when)
 import Data.Array (Array, elems, listArray)
-import qualified Data.ByteString as BS
-import qualified Data.Geometry as G
 import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, modifyIORef', newIORef, readIORef, writeIORef)
-import Data.Int (Int16, Int32, Int64, Int8)
+import Data.Int (Int16, Int32, Int64)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (isJust, isNothing, mapMaybe)
-import Data.Proxy (Proxy (..))
+import Data.Maybe (isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
-import Data.Time (UTCTime (..))
 import Data.Time.Calendar (Day, addDays, fromGregorian)
-import Data.Time.Format (defaultTimeLocale, parseTimeM)
-import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..))
-import qualified Data.UUID as UUID
-import Data.Word (Word16, Word32, Word64, Word8)
+import Data.Time.LocalTime (TimeOfDay (..))
+import Data.Word (Word64)
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.Config (
   CustomOption (..),
@@ -52,7 +46,7 @@ import Database.DuckDB.Simple.Copy (
   registerCopyToFunction,
   registerMultiFileFunction,
  )
-import Database.DuckDB.Simple.FromField (BigNum (..), Field (..), FieldValue (..), IntervalValue (..), TimeWithZone (..), bsFromBool)
+import Database.DuckDB.Simple.FromField (BigNum (..), Field (..), FieldValue (..), IntervalValue (..), TimeWithZone (..))
 import Database.DuckDB.Simple.Function (FunctionResult)
 import Database.DuckDB.Simple.Generic (DuckValue (..), ViaDuckDB (..))
 import Database.DuckDB.Simple.Internal (Connection (..))
@@ -75,39 +69,27 @@ import Database.DuckDB.Simple.Registration (
   registerInstanceReplacementScan,
   registerReplacementScan,
  )
-import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
+import qualified Database.DuckDB.Simple.V2.Registration as R
 import Database.DuckDB.Simple.Variant (Variant)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import System.Directory (createDirectory, getTemporaryDirectory, removeFile, removePathForcibly)
 import System.FilePath ((</>))
 import System.IO (hClose, openTempFile)
-import System.IO.Unsafe (unsafeInterleaveIO, unsafePerformIO)
+import System.IO.Unsafe (unsafeInterleaveIO)
 import System.Mem (performMajorGC)
 import System.Mem.Weak (Weak, deRefWeak)
 import Test.Tasty (TestTree, localOption, mkTimeout, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase, (@?=))
-import TestUtils (assertInputErrorContaining, assertReleasedAfter)
+import TestUtils (assertInputErrorContaining, assertReleasedAfter, writeNullRows)
 
 -- | Check the typed registrations through SQL.
 typedRegistrationTests :: TestTree
 typedRegistrationTests =
   testGroup
     "typed registration"
-    [ testCase "cast from BIGINT to a custom type over several chunks" testCastChunks
-    , testCase "cast failure fails CAST and gives NULL in TRY_CAST" testCastFailure
-    , testCase "cast to custom aliases of DATE and VARCHAR" testCastTypes
-    , testCase "cast exceptions and conversion errors fail CAST" testCastErrors
-    , testCase "cast to a custom type on each scalar base type" testCastBaseTypes
-    , testCase "cast result of another type than the base type fails" testCastResultType
-    , testGroup "a failed cast gives a Mismatch Type error and keeps the database usable" $
-        [testCase (castPairName castPair) (testCastFailureCode castPair) | castPair <- castFailurePairs]
-          <> [ testCase "a query on another connection fails in the function" testCastFailureQuery
-             , testCase "an SQLError of the type Conversion, Invalid Input, or Out of Range in the function" testCastTypedErrors
-             ]
-    , testCase "a COMMIT after a failed cast stores no row" testCastFailureCommit
-    , testCase "replacement scan reads the rows of a query" testReplacementQuery
+    [ testCase "replacement scan reads the rows of a query" testReplacementQuery
     , testCase "replacement scan that declines gives the unknown table error" testReplacementDecline
     , testCase "replacement scan gets the name parts as written" testReplacementNames
     , testCase "replacement scan errors fail the query" testReplacementErrors
@@ -165,356 +147,6 @@ typedRegistrationTests =
         "the callback closure of each registration kind is released when its database closes"
         [testCase kind (assertReleasedAfter kind use) | (kind, use) <- closureKinds]
     ]
-
--- | Cast BIGINT values and NULLs to a custom type over more than one chunk.
-testCastChunks :: Assertion
-testCastChunks = withConnection ":memory:" \conn -> do
-  registerCustomType conn "typed_shifted" (TypeExpression "BIGINT")
-  createCast conn (TypeExpression "BIGINT") (TypeExpression "typed_shifted") \(value :: Int64) -> Right (value + 100)
-  query_ conn "SELECT CAST(i AS typed_shifted)::BIGINT FROM range(3) t(i) ORDER BY i" >>= (@?= map Only [100, 101, 102 :: Int64])
-  query_ conn "SELECT typeof(CAST(1::BIGINT AS typed_shifted))" >>= (@?= [Only ("typed_shifted" :: Text)])
-  query_ conn "SELECT CAST(NULL::BIGINT AS typed_shifted)::BIGINT" >>= (@?= [Only (Nothing :: Maybe Int64)])
-  -- A chunk has at most 2048 rows. Thus 3000 rows need more than one cast call.
-  rows <- query_ conn "SELECT CAST(CASE WHEN i % 1000 = 7 THEN NULL ELSE i END AS typed_shifted)::BIGINT FROM range(3000) t(i) ORDER BY i"
-  rows @?= [Only (if i `mod` 1000 == 7 then Nothing else Just (i + 100)) | i <- [0 .. 2999 :: Int64]]
-
--- | Fail CAST with a Left message. TRY_CAST gives NULL for that row only.
-testCastFailure :: Assertion
-testCastFailure = withConnection ":memory:" \conn -> do
-  registerCustomType conn "typed_positive" (TypeExpression "BIGINT")
-  createCast conn (TypeExpression "BIGINT") (TypeExpression "typed_positive") \(value :: Int64) ->
-    if value > 0 then Right value else Left ("typed_positive: " <> Text.pack (show value) <> " is not positive")
-  query_ conn "SELECT CAST(5::BIGINT AS typed_positive)::BIGINT" >>= (@?= [Only (5 :: Int64)])
-  assertSqlError "typed_positive: -5 is not positive" (query_ conn "SELECT CAST(-5::BIGINT AS typed_positive)::BIGINT" :: IO [Only Int64])
-  query_ conn "SELECT TRY_CAST(v AS typed_positive)::BIGINT FROM (VALUES (0, 1::BIGINT), (1, -2), (2, 3)) t(k, v) ORDER BY k"
-    >>= (@?= map Only [Just 1, Nothing, Just (3 :: Int64)])
-  query_ conn "SELECT CAST(6::BIGINT AS typed_positive)::BIGINT" >>= (@?= [Only (6 :: Int64)])
-  query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
-
--- | A cast result whose type is not the base type of the custom type fails.
--- The text of such a value is not a value of the base type, although DuckDB
--- can cast the text: '7'::BLOB is the byte 7, and '2026-11-12'::TIME is 00:00:00.
-testCastResultType :: Assertion
-testCastResultType = withConnection ":memory:" \conn -> do
-  registerCustomType conn "typed_blob_alias" (TypeExpression "BLOB")
-  createCast conn (TypeExpression "BIGINT") (TypeExpression "typed_blob_alias") \(value :: Int64) -> Right value
-  registerCustomType conn "typed_time_alias" (TypeExpression "TIME")
-  createCast conn (TypeExpression "BIGINT") (TypeExpression "typed_time_alias") \(value :: Int64) ->
-    Right (addDays (fromIntegral value) (fromGregorian 2026 11 12))
-  -- DuckDB has no cast from BIGINT to BLOB, and none from DATE to TIME. Its
-  -- error names the custom type.
-  assertSqlError
-    "Failed to cast value: Unimplemented type for cast (BIGINT -> typed_blob_alias)"
-    (query_ conn "SELECT CAST(7::BIGINT AS typed_blob_alias)" :: IO [Only BS.ByteString])
-  assertSqlError
-    "Failed to cast value: Unimplemented type for cast (DATE -> typed_time_alias)"
-    (query_ conn "SELECT CAST(0::BIGINT AS typed_time_alias)" :: IO [Only TimeOfDay])
-  query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
-
--- | A way for a cast to fail.
-data CastFailure = FailLeft | FailException | FailTypedError | FailNoConversion
-  deriving (Eq, Show)
-
--- | A pair of types for 'testCastFailureCode'. Each failure but
--- 'FailNoConversion' fails for each value. The argument type of
--- 'FailNoConversion' does not hold the values of that failure, or its reader
--- refuses them, as the Geometry reader refuses a LINESTRING with one
--- coordinate. The values are a constant and a column over @i@.
-data CastPair = CastPair
-  { castPairName :: String
-  , castPairSetup :: Connection -> IO ()
-  , castPairTarget :: Text
-  , castPairValues :: CastFailure -> (Text, Text)
-  , castPairRegister :: CastFailure -> Connection -> IO ()
-  }
-
--- | A record for the STRUCT(castStructA BIGINT) source of a cast.
-newtype CastStruct = CastStruct {castStructA :: Int64}
-  deriving stock (Show, Generic)
-  deriving (FromField) via (ViaDuckDB CastStruct)
-
--- | Register a cast that fails for each value. See 'CastFailure'.
-failingCast :: forall a b. (FromField a, ToDuckValue b) => Proxy a -> Proxy b -> Text -> Text -> CastFailure -> Connection -> IO ()
-failingCast _ _ source target failure conn = createCast conn (TypeExpression source) (TypeExpression target) \(_ :: a) -> case failure of
-  FailException -> error "typed cast raised an exception"
-  FailTypedError ->
-    throw
-      SQLError
-        { sqlErrorMessage = "typed cast raised a Conversion Error"
-        , sqlErrorType = Just ErrorTypeConversion
-        , sqlErrorQuery = Nothing
-        , sqlErrorBody = Nothing
-        }
-  _ -> Left "typed cast refused the value" :: Either Text b
-
--- | Register a cast whose argument type is the first type, and which gives the value.
-convertingCast :: forall n b. (FromField n, ToDuckValue b) => Proxy n -> b -> Text -> Text -> CastFailure -> Connection -> IO ()
-convertingCast _ value source target _ conn = createCast conn (TypeExpression source) (TypeExpression target) \(_ :: n) -> Right value
-
--- | The pairs of 'testCastFailureCode'. DuckDB plans a cast of each pair but the
--- last as a cast that cannot fail.
-castFailurePairs :: [CastPair]
-castFailurePairs =
-  [ pair "BIGINT to VARCHAR" "BIGINT" "VARCHAR" ("(-1)::BIGINT", "i::BIGINT") ("1000::BIGINT", "i + 1000") \failure ->
-      if failure == FailNoConversion then convertingCast (Proxy @Int8) ("x" :: Text) else failingCast (Proxy @Int64) (Proxy @Text)
-  , pair "INTEGER to BIGINT" "INTEGER" "BIGINT" ("(-1)::INTEGER", "i::INTEGER") ("1000::INTEGER", "(i + 1000)::INTEGER") \failure ->
-      if failure == FailNoConversion then convertingCast (Proxy @Int8) (0 :: Int64) else failingCast (Proxy @Int32) (Proxy @Int64)
-  , ( pair "ENUM to VARCHAR" "typed_mood" "VARCHAR" ("'sad'::typed_mood", mood) ("'sad'::typed_mood", mood) \failure ->
-        if failure == FailNoConversion then convertingCast (Proxy @Int8) ("x" :: Text) else failingCast (Proxy @Text) (Proxy @Text)
-    )
-      { castPairSetup = \conn -> void (execute_ conn "CREATE TYPE typed_mood AS ENUM ('sad', 'happy')")
-      }
-  , pair "BIGINT[] to VARCHAR" "BIGINT[]" "VARCHAR" ("[1, 2]::BIGINT[]", "[i, i + 1]::BIGINT[]") ("[1, NULL]::BIGINT[]", "[i, NULL]::BIGINT[]") \failure ->
-      if failure == FailNoConversion then convertingCast (Proxy @[Int64]) ("x" :: Text) else failingCast (Proxy @[Int64]) (Proxy @Text)
-  , pair
-      "STRUCT to VARCHAR"
-      "STRUCT(castStructA BIGINT)"
-      "VARCHAR"
-      ("{'castStructA': 1}::STRUCT(castStructA BIGINT)", "{'castStructA': i}::STRUCT(castStructA BIGINT)")
-      ("{'castStructA': NULL}::STRUCT(castStructA BIGINT)", "{'castStructA': NULL::BIGINT}::STRUCT(castStructA BIGINT)")
-      \failure ->
-        if failure == FailNoConversion then convertingCast (Proxy @CastStruct) ("x" :: Text) else failingCast (Proxy @CastStruct) (Proxy @Text)
-  , pair "FLOAT to DOUBLE" "FLOAT" "DOUBLE" ("1.5::FLOAT", "i::FLOAT") ("1000.5::FLOAT", "(i + 1000)::FLOAT") \failure ->
-      if failure == FailNoConversion then convertingCast (Proxy @Int8) (0 :: Double) else failingCast (Proxy @Float) (Proxy @Double)
-  , pair "GEOMETRY to VARCHAR" "GEOMETRY" "VARCHAR" (point, points) ("'LINESTRING(1 2)'::GEOMETRY", "('LINESTRING(' || i || ' 2)')::GEOMETRY") \failure ->
-      if failure == FailNoConversion then convertingCast (Proxy @G.Geometry) ("x" :: Text) else failingCast (Proxy @G.Geometry) (Proxy @Text)
-  , pair "GEOMETRY to VARCHAR with an Int64 argument" "GEOMETRY" "VARCHAR" (point, points) (point, points) \failure ->
-      if failure == FailNoConversion then convertingCast (Proxy @Int64) ("x" :: Text) else failingCast (Proxy @G.Geometry) (Proxy @Text)
-  , pair "BIGINT to INTEGER" "BIGINT" "INTEGER" ("(-1)::BIGINT", "i::BIGINT") ("1000::BIGINT", "i + 1000") \failure ->
-      if failure == FailNoConversion then convertingCast (Proxy @Int8) (0 :: Int32) else failingCast (Proxy @Int64) (Proxy @Int32)
-  ]
-  where
-    mood = "(CASE WHEN i % 2 = 0 THEN 'sad' ELSE 'happy' END)::typed_mood"
-    point = "'POINT(1 2)'::GEOMETRY"
-    points = "('POINT(' || i || ' 2)')::GEOMETRY"
-    pair name source target failing notConverting register =
-      CastPair
-        { castPairName = name
-        , castPairSetup = \_ -> pure ()
-        , castPairTarget = target
-        , castPairValues = \failure -> if failure == FailNoConversion then notConverting else failing
-        , castPairRegister = \failure -> register failure source target failure
-        }
-
--- | Fail a cast of a pair in each way, in a constant, in a column of 3000 rows,
--- in an INSERT with the assignment cast, and in an INSERT with CAST. DuckDB
--- plans a cast of most pairs as a cast that cannot fail. Each failure gives
--- 'ErrorTypeMismatch' with the text of the failure. Each connection of the
--- database runs a query after the failure. TRY_CAST gives NULL, and TRY(CAST)
--- raises the error. The type of an error from the function does not change
--- the type of the cast error. See Note [The error code of a failed cast] in
--- "Database.DuckDB.Simple.V2.Registration".
-testCastFailureCode :: CastPair -> Assertion
-testCastFailureCode castPair = withEnvironment \environment ->
-  forM_ [FailLeft, FailException, FailTypedError, FailNoConversion] \failure ->
-    forM_ ["constant", "column", "INSERT", "INSERT with CAST"] \form -> withCastDatabase environment castPair failure \instance' conn -> do
-      let target = castPairTarget castPair
-          constant = fst (castPairValues castPair failure)
-          label = castPairName castPair <> ", " <> show failure <> ", " <> form
-          statement = case form of
-            "constant" -> "SELECT CAST(" <> constant <> " AS " <> target <> ")"
-            "column" -> "SELECT CAST(c AS " <> target <> ") FROM src"
-            "INSERT" -> "INSERT INTO dst SELECT c FROM src"
-            _ -> "INSERT INTO dst SELECT CAST(c AS " <> target <> ") FROM src"
-      try (query_ conn (Query statement) :: IO [Only FieldValue]) >>= \case
-        Left (err :: SQLError) -> do
-          assertEqual label (Just ErrorTypeMismatch) (sqlErrorType err)
-          assertBool (label <> ": " <> Text.unpack (sqlErrorMessage err)) (failureText failure `Text.isInfixOf` sqlErrorMessage err)
-        Right _ -> assertFailure (label <> ": expected an SQL error")
-      query_ conn "SELECT 42" >>= assertEqual label [Only (42 :: Int64)]
-      withConnectionOn instance' \other -> query_ other "SELECT 42" >>= assertEqual label [Only (42 :: Int64)]
-      when (form == "constant") do
-        query_ conn (Query ("SELECT TRY_CAST(" <> constant <> " AS " <> target <> ") IS NULL")) >>= assertEqual label [Only True]
-        try (query_ conn (Query ("SELECT TRY(CAST(" <> constant <> " AS " <> target <> "))")) :: IO [Only FieldValue]) >>= \case
-          Left (err :: SQLError) -> assertEqual label (Just ErrorTypeMismatch) (sqlErrorType err)
-          Right _ -> assertFailure (label <> ": TRY(CAST) gave no error")
-  where
-    failureText = \case
-      FailLeft -> "typed cast refused the value"
-      FailException -> "typed cast raised an exception"
-      FailTypedError -> "typed cast raised a Conversion Error"
-      FailNoConversion -> "argument arg0"
-
--- | A query on another connection fails in the function of a cast with the type
--- Conversion. The cast error has the type of each cast error.
-testCastFailureQuery :: Assertion
-testCastFailureQuery = withEnvironment \environment ->
-  withCastInstance environment \instance' -> withConnectionOn instance' \conn -> withConnectionOn instance' \other -> do
-    createCast conn (TypeExpression "BIGINT") (TypeExpression "VARCHAR") \(_ :: Int64) ->
-      unsafePerformIO (query_ other "SELECT 'abc'::INTEGER" :: IO [Only Int32]) `seq` Right ("x" :: Text)
-    try (query_ conn "SELECT CAST(i AS VARCHAR) FROM range(10) t(i)" :: IO [Only Text]) >>= \case
-      Left (err :: SQLError) -> do
-        sqlErrorType err @?= Just ErrorTypeMismatch
-        assertBool (Text.unpack (sqlErrorMessage err)) ("Could not convert string 'abc' to INT32" `Text.isInfixOf` sqlErrorMessage err)
-      Right _ -> assertFailure "a failed query in a cast gave no error"
-    query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
-    query_ other "SELECT 42" >>= (@?= [Only (42 :: Int64)])
-
--- | An 'SQLError' of the type Conversion, Invalid Input, or Out of Range from
--- the function of a cast from BIGINT to VARCHAR gives 'ErrorTypeMismatch', and
--- the database stays usable. DuckDB plans this cast as a cast that cannot fail.
--- With the code of the type of the error, DuckDB would raise an INTERNAL error
--- and invalidate the database. See Note [The error code of a failed cast] in
--- "Database.DuckDB.Simple.V2.Registration".
-testCastTypedErrors :: Assertion
-testCastTypedErrors = withEnvironment \environment -> forM_ [ErrorTypeConversion, ErrorInputInvalid, ErrorInputOutOfRange] \errorType ->
-  withCastInstance environment \instance' -> withConnectionOn instance' \conn -> do
-    let label = show errorType
-        text = "typed cast raised " <> Text.pack label
-    void (execute_ conn "CREATE TABLE src AS SELECT i::BIGINT AS c FROM range(3000) t(i)")
-    createCast conn (TypeExpression "BIGINT") (TypeExpression "VARCHAR") \(_ :: Int64) ->
-      throw SQLError{sqlErrorMessage = text, sqlErrorType = Just errorType, sqlErrorQuery = Nothing, sqlErrorBody = Just text} :: Either Text Text
-    try (query_ conn "SELECT CAST(c AS VARCHAR) FROM src" :: IO [Only Text]) >>= \case
-      Left (err :: SQLError) -> do
-        assertEqual label (Just ErrorTypeMismatch) (sqlErrorType err)
-        assertBool (label <> ": " <> Text.unpack (sqlErrorMessage err)) (("Mismatch Type Error: " <> text) `Text.isPrefixOf` sqlErrorMessage err)
-      Right _ -> assertFailure (label <> ": expected an SQL error")
-    query_ conn "SELECT 42" >>= assertEqual label [Only (42 :: Int64)]
-    withConnectionOn instance' \other -> query_ other "SELECT 42" >>= assertEqual label [Only (42 :: Int64)]
-
--- | A COMMIT after a failed cast in an explicit transaction stores no row,
--- under each transaction invalidation policy. The last cast fails only for the
--- last chunk of 10000 rows, so that the INSERT writes rows before the failure.
-testCastFailureCommit :: Assertion
-testCastFailureCommit = withEnvironment \environment -> forM_ [Nothing, Just "SYNTACTIC_ERRORS_DO_NOT_INVALIDATE"] \policy -> do
-  let commitAfter label instance' conn failing = do
-        forM_ (policy :: Maybe Text) \name -> forM_ ["default", "current"] \scope ->
-          execute_ conn (Query ("SET " <> scope <> "_transaction_invalidation_policy = '" <> name <> "'"))
-        void (execute_ conn "CREATE TABLE marker (m INTEGER)")
-        void (execute_ conn "BEGIN TRANSACTION")
-        void (execute_ conn "INSERT INTO marker VALUES (1)")
-        try (execute_ conn failing) >>= \case
-          Left (err :: SQLError) -> assertEqual label (Just ErrorTypeMismatch) (sqlErrorType err)
-          Right _ -> assertFailure (label <> ": expected an SQL error")
-        void (try (execute_ conn "COMMIT") :: IO (Either SQLError Int))
-        withConnectionOn instance' \other ->
-          query_ other "SELECT (SELECT count(*) FROM marker) + (SELECT count(*) FROM dst)"
-            >>= assertEqual (label <> ", " <> show policy) [Only (0 :: Int64)]
-  forM_ castFailurePairs \castPair -> withCastDatabase environment castPair FailLeft \instance' conn ->
-    commitAfter (castPairName castPair) instance' conn (Query ("INSERT INTO dst SELECT CAST(c AS " <> castPairTarget castPair <> ") FROM src"))
-  withCastInstance environment \instance' -> withConnectionOn instance' \conn -> do
-    void (execute_ conn "CREATE TABLE src AS SELECT i::BIGINT AS c FROM range(10000) t(i)")
-    void (execute_ conn "CREATE TABLE dst (x VARCHAR)")
-    createCast conn (TypeExpression "BIGINT") (TypeExpression "VARCHAR") \(value :: Int64) ->
-      if value >= 9000 then Left "typed cast refused the value" else Right (Text.pack (show value))
-    commitAfter "BIGINT to VARCHAR over 10000 rows" instance' conn "INSERT INTO dst SELECT CAST(c AS VARCHAR) FROM src"
-
--- | Run an action with a new instance that has an in-memory database.
-withCastInstance :: Environment -> (Instance -> IO a) -> IO a
-withCastInstance environment action = withInstance environment [] \instance' -> do
-  attachDatabase instance' ":memory:" "typed_cast_failure" []
-  setDefaultDatabase instance' "typed_cast_failure"
-  action instance'
-
--- | Run an action with a new instance, the tables src and dst of a pair, and
--- the cast of the failure.
-withCastDatabase :: Environment -> CastPair -> CastFailure -> (Instance -> Connection -> IO a) -> IO a
-withCastDatabase environment castPair failure action = withCastInstance environment \instance' -> withConnectionOn instance' \conn -> do
-  castPairSetup castPair conn
-  void (execute_ conn (Query ("CREATE TABLE src AS SELECT " <> snd (castPairValues castPair failure) <> " AS c FROM range(3000) t(i)")))
-  void (execute_ conn (Query ("CREATE TABLE dst (x " <> castPairTarget castPair <> ")")))
-  castPairRegister castPair failure conn
-  action instance' conn
-
--- | Cast to custom types with the base types DATE and VARCHAR.
-testCastTypes :: Assertion
-testCastTypes = withConnection ":memory:" \conn -> do
-  registerCustomType conn "typed_day" (TypeExpression "DATE")
-  createCast conn (TypeExpression "VARCHAR") (TypeExpression "typed_day") \(text :: Text) ->
-    maybe
-      (Left ("typed_day: " <> text <> " is not a date"))
-      Right
-      (parseTimeM False defaultTimeLocale "%d.%m.%Y" (Text.unpack text) :: Maybe Day)
-  -- DuckDB 2.0.0 has no cast from a custom type to its base type DATE. Read the custom type.
-  query_ conn "SELECT CAST(v AS typed_day) FROM (VALUES (0, '12.11.2026'), (1, NULL), (2, '29.02.2000')) t(k, v) ORDER BY k"
-    >>= (@?= map Only [Just (fromGregorian 2026 11 12), Nothing, Just (fromGregorian 2000 2 29)])
-  query_ conn "SELECT typeof(CAST('1.1.2000'::VARCHAR AS typed_day))" >>= (@?= [Only ("typed_day" :: Text)])
-  -- A function result of Nothing gives NULL for a value that is not NULL.
-  createCast conn (TypeExpression "BIGINT") (TypeExpression "typed_day") \(value :: Int64) ->
-    Right (if value < 0 then Nothing else Just (addDays (fromIntegral value) (fromGregorian 2000 1 1)))
-  query_ conn "SELECT CAST(v AS typed_day) FROM (VALUES (0, 1::BIGINT), (1, -1)) t(k, v) ORDER BY k"
-    >>= (@?= map Only [Just (fromGregorian 2000 1 2), Nothing])
-  registerCustomType conn "typed_label" (TypeExpression "VARCHAR")
-  createCast conn (TypeExpression "BIGINT") (TypeExpression "typed_label") \(value :: Int64) -> Right ("liður " <> Text.pack (show value))
-  query_ conn "SELECT CAST(i AS typed_label)::VARCHAR FROM range(2) t(i) ORDER BY i" >>= (@?= map Only ["liður 0", "liður 1" :: Text])
-  query_ conn "SELECT typeof(CAST(1::BIGINT AS typed_label))" >>= (@?= [Only ("typed_label" :: Text)])
-
--- | Fail CAST with an exception and with arguments that do not convert.
-testCastErrors :: Assertion
-testCastErrors = withConnection ":memory:" \conn -> do
-  registerCustomType conn "typed_partial" (TypeExpression "BIGINT")
-  createCast conn (TypeExpression "BIGINT") (TypeExpression "typed_partial") \(value :: Int64) ->
-    if value == 13 then error "typed_partial: 13 raises an exception" else Right value
-  query_ conn "SELECT CAST(12::BIGINT AS typed_partial)::BIGINT" >>= (@?= [Only (12 :: Int64)])
-  assertSqlError "typed_partial: 13 raises an exception" (query_ conn "SELECT CAST(13::BIGINT AS typed_partial)::BIGINT" :: IO [Only Int64])
-  -- BIGINT 5 converts to Int8. BIGINT 300 does not.
-  registerCustomType conn "typed_small" (TypeExpression "BIGINT")
-  createCast conn (TypeExpression "BIGINT") (TypeExpression "typed_small") \(value :: Int8) -> Right (fromIntegral value :: Int64)
-  query_ conn "SELECT CAST(5::BIGINT AS typed_small)::BIGINT" >>= (@?= [Only (5 :: Int64)])
-  assertSqlError
-    "cannot convert argument arg0 from BIGINT to Int8"
-    (query_ conn "SELECT CAST(300::BIGINT AS typed_small)::BIGINT" :: IO [Only Int64])
-  -- A VARCHAR value does not convert to Int64. The function does not get NULL.
-  registerCustomType conn "typed_number" (TypeExpression "BIGINT")
-  createCast conn (TypeExpression "VARCHAR") (TypeExpression "typed_number") \(value :: Int64) -> Right value
-  query_ conn "SELECT CAST(NULL::VARCHAR AS typed_number)::BIGINT" >>= (@?= [Only (Nothing :: Maybe Int64)])
-  assertSqlError
-    "cannot convert argument arg0 from VARCHAR to Int64"
-    (query_ conn "SELECT CAST('7'::VARCHAR AS typed_number)::BIGINT" :: IO [Only Int64])
-  -- A typed argument cannot be a VARIANT value. A NULL VARIANT row gives NULL.
-  registerCustomType conn "typed_from_variant" (TypeExpression "BIGINT")
-  createCast conn (TypeExpression "VARIANT") (TypeExpression "typed_from_variant") \(value :: Int64) -> Right value
-  assertSqlError
-    "the type of a typed argument cannot be or contain VARIANT"
-    (query_ conn "SELECT CAST(1::VARIANT AS typed_from_variant)::BIGINT" :: IO [Only Int64])
-  query_ conn "SELECT CAST(v AS typed_from_variant)::BIGINT FROM (VALUES (NULL::VARIANT)) t(v)"
-    >>= (@?= [Only (Nothing :: Maybe Int64)])
-  -- TRY_CAST gives NULL for these failed rows.
-  query_ conn "SELECT TRY_CAST(13::BIGINT AS typed_partial)::BIGINT, TRY_CAST('7'::VARCHAR AS typed_number)::BIGINT"
-    >>= (@?= [(Nothing :: Maybe Int64, Nothing :: Maybe Int64)])
-  query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
-
--- | Cast to a custom type on each scalar base type and read the same values.
-testCastBaseTypes :: Assertion
-testCastBaseTypes = withConnection ":memory:" \conn -> do
-  -- The text of a TIMESTAMPTZ value depends on the time zone of the session.
-  _ <- execute_ conn "SET TimeZone = 'Pacific/Auckland'"
-  let day = fromGregorian 2026 11 12
-      time = TimeOfDay 23 59 59.000001
-      instant = UTCTime day 86399.999999
-  roundTrip conn "bool" [True, False]
-  roundTrip conn "int8" [minBound, 0, maxBound :: Int8]
-  roundTrip conn "int16" [minBound, 0, maxBound :: Int16]
-  roundTrip conn "int32" [minBound, 0, maxBound :: Int32]
-  roundTrip conn "int64" [minBound, 0, maxBound :: Int64]
-  roundTrip conn "int" [minBound, 0, maxBound :: Int]
-  roundTrip conn "word8" [0, maxBound :: Word8]
-  roundTrip conn "word16" [0, maxBound :: Word16]
-  roundTrip conn "word32" [0, maxBound :: Word32]
-  roundTrip conn "word64" [0, maxBound :: Word64]
-  roundTrip conn "word" [0, maxBound :: Word]
-  roundTrip conn "integer" [-(2 ^ (127 :: Int)), 0, 2 ^ (127 :: Int) - 1 :: Integer]
-  roundTrip conn "natural" [0, 2 ^ (128 :: Int) - 1 :: Natural]
-  roundTrip conn "bignum" [BigNum (-(10 ^ (40 :: Int))), 0, BigNum (10 ^ (40 :: Int))]
-  roundTrip conn "double" [-0.1, 0, 1 / 3 :: Double]
-  roundTrip conn "float" [-0.1, 0, 1 / 3 :: Float]
-  roundTrip conn "text" ["", "liður \\ ' \" \\x00" :: Text]
-  roundTrip conn "blob" [BS.empty, BS.pack [0x00, 0xFF, 0x5C, 0x27, 0x22, 0x78, 0x41], BS.pack [0 .. 255]]
-  roundTrip conn "bit" [bsFromBool [True], bsFromBool [True, False, False, True, False, True, True, False, True]]
-  roundTrip
-    conn
-    "uuid"
-    ( mapMaybe
-        UUID.fromString
-        ["00000000-0000-0000-0000-000000000000", "123e4567-e89b-12d3-a456-426614174000", "ffffffff-ffff-ffff-ffff-ffffffffffff"]
-    )
-  roundTrip conn "day" [fromGregorian 1 1 1, day, fromGregorian 9999 12 31]
-  roundTrip conn "time" [TimeOfDay 0 0 0, time]
-  roundTrip conn "local" [LocalTime (fromGregorian 1600 2 29) time, LocalTime day time]
-  roundTrip conn "utc" [UTCTime (fromGregorian 1600 2 29) 0.000001, instant]
-  roundTrip conn "unbounded_day" [NegInfinity, Finite day, PosInfinity]
-  roundTrip conn "unbounded_local" [NegInfinity, Finite (LocalTime day time), PosInfinity]
-  roundTrip conn "unbounded_utc" [NegInfinity, Finite instant, PosInfinity]
 
 -- | Run the SQL of a query pragma without a parameter.
 testPragmaNoParameter :: Assertion
@@ -673,8 +305,7 @@ testCallbackErrorTypes = withDirectory \directory -> withConnection ":memory:" \
   createTableFunction conn "error_init" ["n"] \() -> failing >> pure [Only (1 :: Int64)]
   createTableFunction conn "error_exec" ["n"] \() -> unsafeInterleaveIO (failing >> pure [Only (1 :: Int64)])
   registerCustomType conn "error_target" (TypeExpression "BIGINT")
-  createCast conn (TypeExpression "BIGINT") (TypeExpression "error_target") \(value :: Int64) ->
-    unsafePerformIO (failing >> pure (Right value :: Either Text Int64))
+  R.registerCast conn (TypeExpression "BIGINT") (TypeExpression "error_target") Nothing \_ _ -> failing
   registerPragmaFunction conn "error_query_pragma" [] (QueryPragma \() -> failing >> pure "SELECT 1")
   registerPragmaFunction conn "error_exec_pragma" [] (ExecPragma \() -> failing)
   registerCustomOption conn (customOption "error_option" (TypeExpression "BIGINT")){customOptionUpdate = Just \_ -> failing}
@@ -844,16 +475,6 @@ testOptionText = withConnection ":memory:" \conn -> do
   void (execute_ conn "SET typed_option_required = 'kept'")
   assertSqlError "typed_option_required must have a value" (execute_ conn "RESET typed_option_required")
   fst <$> getConfigValue conn "typed_option_required" >>= (@?= FieldText "kept")
-
--- | Register a custom type on the column type of the values. Cast a row number
--- to each value. Require the same values from the custom type.
-roundTrip :: forall a. (ToDuckValue a, FromField a, Eq a, Show a) => Connection -> Text -> [a] -> Assertion
-roundTrip conn label values = do
-  let name = "typed_base_" <> label
-  registerCustomType conn name (TypeExpression (duckdbColumnType (Proxy @a)))
-  createCast conn (TypeExpression "BIGINT") (TypeExpression name) \(row :: Int64) -> Right (values !! fromIntegral row)
-  rows <- query_ conn (Query ("SELECT CAST(i AS " <> name <> ") FROM range(" <> Text.pack (show (length values)) <> ") t(i) ORDER BY i"))
-  assertEqual (Text.unpack name) values (map fromOnly rows)
 
 -- | Replace one name with a query. Read the rows under the table name and an alias.
 testReplacementQuery :: Assertion
@@ -2140,13 +1761,13 @@ closureKinds =
         query_ conn "SELECT closure_sum(i) FROM range(10) t(i)" >>= (@?= [Only (45 :: Int64)])
     )
   ,
-    ( "typed cast"
+    ( "cast"
     , \token -> withConnection ":memory:" \conn -> do
         registerCustomType conn "closure_type" (TypeExpression "BIGINT")
-        -- A cast is pure. The cast reads the token in each call, so its closure keeps the token.
-        createCast conn (TypeExpression "BIGINT") (TypeExpression "closure_type") \(value :: Int64) ->
-          Right (unsafePerformIO ((+ value) <$> readIORef token))
-        query_ conn "SELECT CAST(41::BIGINT AS closure_type)::BIGINT" >>= (@?= [Only (42 :: Int64)])
+        -- The callback reads the token in each call, so its closure keeps the token.
+        R.registerCast conn (TypeExpression "BIGINT") (TypeExpression "closure_type") Nothing \info _ ->
+          readIORef token >> writeNullRows info
+        query_ conn "SELECT CAST(41::BIGINT AS closure_type) IS NULL" >>= (@?= [Only True])
     )
   ,
     ( "connection replacement scan"

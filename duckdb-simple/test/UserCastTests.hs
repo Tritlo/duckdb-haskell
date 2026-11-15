@@ -239,10 +239,11 @@ geometryArgumentTests =
           >>= (@?= [Only (fromIntegral (length kept) - 1 :: Int64)])
         -- A constant argument over FROM gives the function a CONSTANT vector.
         query_ conn "SELECT hs_point_x('POINT (7 8)'::GEOMETRY) FROM range(3)" >>= (@?= replicate 3 (Only (7 :: Double)))
-    , testCase "a typed registration cannot declare a custom CRS of the connection" $
+    , testCase "a registration cannot declare a custom CRS of the connection" $
         withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = ["local grid"]} \grid -> do
           try
-            (createCast grid (R.StructuredType (LogicalTypeGeometry (Just "local grid"))) (R.TypeExpression "BLOB") \raw -> Right (rawGeometryWKB raw))
+            ( R.registerCast grid (R.StructuredType (LogicalTypeGeometry (Just "local grid"))) (R.TypeExpression "BLOB") Nothing \info _ -> writeNullRows info
+            )
             >>= \case
               Left SQLError{sqlErrorMessage} ->
                 assertBool (show sqlErrorMessage) ("unrecognized coordinate system 'local grid'" `Text.isInfixOf` sqlErrorMessage)
@@ -282,27 +283,6 @@ geometryArgumentTests =
           query_ conn "SELECT hs_sum_x(g) FROM (VALUES (NULL::GEOMETRY), ('POINT (5 6)'::GEOMETRY)) t(g)" >>= (@?= [Only (5 :: Double)])
           query_ conn "SELECT hs_sum_x('POINT (7 8)'::GEOMETRY('OGC:CRS84'))" >>= (@?= [Only (7 :: Double)])
           readIORef calls >>= (@?= 0)
-    , testCase "a typed cast reads a GEOMETRY source as a Geometry and as a RawGeometry" $ withConnection ":memory:" \conn -> do
-        R.registerCustomType conn "point_x" (R.TypeExpression "DOUBLE")
-        createCast conn (R.TypeExpression "GEOMETRY") (R.TypeExpression "point_x") \g -> Right (pointX g)
-        R.registerCustomType conn "wkb_size" (R.TypeExpression "BIGINT")
-        createCast conn (R.StructuredType (LogicalTypeGeometry (Just "OGC:CRS84"))) (R.TypeExpression "wkb_size") \raw ->
-          if rawGeometryCRS raw == Just "OGC:CRS84" then Right (fromIntegral (BS.length (rawGeometryWKB raw)) :: Int64) else Left "no CRS"
-        calls <- nullCast conn (R.TypeExpression "GEOMETRY") (R.TypeExpression "BLOB")
-        query_ conn "SELECT CAST('POINT (1 2)'::GEOMETRY AS point_x)::DOUBLE" >>= (@?= [Only (1 :: Double)])
-        query_ conn "SELECT CAST(NULL::GEOMETRY AS point_x)::DOUBLE" >>= (@?= [Only (Nothing :: Maybe Double)])
-        query_ conn "SELECT CAST('POINT (1 2)'::GEOMETRY('OGC:CRS84') AS wkb_size)::BIGINT" >>= (@?= [Only (21 :: Int64)])
-        query_ conn "SELECT sum(CAST(('POINT (' || i || ' 0)')::GEOMETRY AS point_x)::DOUBLE) FROM range(5000) t(i)"
-          >>= (@?= [Only (12497500 :: Double)])
-        readIORef calls >>= (@?= 0)
-    , testCase "a typed cast from GEOMETRY to BLOB reads its argument and does not run itself" $ withConnection ":memory:" \conn -> do
-        createCast conn (R.TypeExpression "GEOMETRY") (R.TypeExpression "BLOB") \raw -> Right (rawGeometryWKB raw <> "x")
-        query_ conn "SELECT CAST('POINT (1 2)'::GEOMETRY AS BLOB)" >>= (@?= [Only (pointWKB <> "x")])
-        -- The reader of a GEOMETRY result does not use the cast.
-        query_ conn "SELECT 'POINT (1 2)'::GEOMETRY" >>= (@?= [Only point])
-    , testCase "a typed cast from VARCHAR to GEOMETRY that gives a Geometry does not run itself" $ withConnection ":memory:" \conn -> do
-        createCast conn (R.TypeExpression "VARCHAR") (R.TypeExpression "GEOMETRY") \(_ :: Text) -> Right shape
-        query_ conn "SELECT ST_AsText('any text'::VARCHAR::GEOMETRY)" >>= (@?= [Only ("POINT (1 2)" :: Text)])
     ]
 
 -- | The x coordinate of a point, or -1 for another shape.

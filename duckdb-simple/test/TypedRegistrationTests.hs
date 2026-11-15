@@ -221,14 +221,14 @@ testCastErrors = withConnection ":memory:" \conn -> do
   createCast conn (TypeExpression "BIGINT") (TypeExpression "typed_small") \(value :: Int8) -> Right (fromIntegral value :: Int64)
   query_ conn "SELECT CAST(5::BIGINT AS typed_small)::BIGINT" >>= (@?= [Only (5 :: Int64)])
   assertSqlError
-    "cannot convert argument arg0 from INT8 to Int8"
+    "cannot convert argument arg0 from BIGINT to Int8"
     (query_ conn "SELECT CAST(300::BIGINT AS typed_small)::BIGINT" :: IO [Only Int64])
   -- A VARCHAR value does not convert to Int64. The function does not get NULL.
   registerCustomType conn "typed_number" (TypeExpression "BIGINT")
   createCast conn (TypeExpression "VARCHAR") (TypeExpression "typed_number") \(value :: Int64) -> Right value
   query_ conn "SELECT CAST(NULL::VARCHAR AS typed_number)::BIGINT" >>= (@?= [Only (Nothing :: Maybe Int64)])
   assertSqlError
-    "cannot convert argument arg0 from TEXT to Int64"
+    "cannot convert argument arg0 from VARCHAR to Int64"
     (query_ conn "SELECT CAST('7'::VARCHAR AS typed_number)::BIGINT" :: IO [Only Int64])
   -- A typed argument cannot be a VARIANT value. A NULL VARIANT row gives NULL.
   registerCustomType conn "typed_from_variant" (TypeExpression "BIGINT")

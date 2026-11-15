@@ -1157,7 +1157,8 @@ preparedParameterType stmt idx = do
           then pure Nothing
           else Just <$> logicalTypeToRep dtype
 
--- | Column type names and the logical types that they denote.
+-- | Column type names and the logical types that they denote. When a type has
+-- more than one name, 'duckDBTypeToName' gives the first name.
 duckDBTypeNames :: [(Text, LogicalTypeId)]
 duckDBTypeNames =
   [ ("BOOLEAN", LogicalTypeIdBoolean)
@@ -1181,6 +1182,7 @@ duckDBTypeNames =
   , ("TIMESTAMPTZ_NS", LogicalTypeIdTimestampTzNs)
   , ("TIMESTAMP_NS WITH TIME ZONE", LogicalTypeIdTimestampTzNs)
   , ("INTERVAL", LogicalTypeIdInterval)
+  , ("VARCHAR", LogicalTypeIdVarchar)
   , ("TEXT", LogicalTypeIdVarchar)
   , ("BLOB", LogicalTypeIdBlob)
   , ("GEOMETRY", LogicalTypeIdGeometry)

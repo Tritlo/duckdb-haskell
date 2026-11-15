@@ -944,10 +944,10 @@ instance DuckDBColumnType Float where
   duckdbColumnTypeFor _ = "FLOAT"
 
 instance DuckDBColumnType Text where
-  duckdbColumnTypeFor _ = "TEXT"
+  duckdbColumnTypeFor _ = "VARCHAR"
 
 instance DuckDBColumnType String where
-  duckdbColumnTypeFor _ = "TEXT"
+  duckdbColumnTypeFor _ = "VARCHAR"
 
 instance DuckDBColumnType BS.ByteString where
   duckdbColumnTypeFor _ = "BLOB"

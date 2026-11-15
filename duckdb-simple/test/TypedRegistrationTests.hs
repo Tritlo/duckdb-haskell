@@ -12,7 +12,7 @@
 -- Description : Integration checks for typed registration through SQL.
 module TypedRegistrationTests (typedRegistrationTests) where
 
-import Control.Exception (SomeException, bracket, displayException, throwIO, try)
+import Control.Exception (SomeException, bracket, displayException, throw, throwIO, try)
 import Control.Monad (forM_, void, when)
 import Data.Array (Array, elems)
 import qualified Data.ByteString as BS
@@ -94,6 +94,8 @@ typedRegistrationTests =
     , testCase "cast exceptions and conversion errors fail CAST" testCastErrors
     , testCase "cast to a custom type on each scalar base type" testCastBaseTypes
     , testCase "cast result of another type than the base type fails" testCastResultType
+    , testCase "a failed cast gives a Mismatch Type error and keeps the database usable" testCastFailureCode
+    , testCase "a COMMIT after a failed cast stores no row" testCastFailureCommit
     , testCase "replacement scan reads the rows of a query" testReplacementQuery
     , testCase "replacement scan that declines gives the unknown table error" testReplacementDecline
     , testCase "replacement scan gets the name parts as written" testReplacementNames
@@ -194,6 +196,160 @@ testCastResultType = withConnection ":memory:" \conn -> do
     "Failed to cast value: Unimplemented type for cast (DATE -> typed_time_alias)"
     (query_ conn "SELECT CAST(0::BIGINT AS typed_time_alias)" :: IO [Only TimeOfDay])
   query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+
+-- | A way for a cast to fail.
+data CastFailure = FailLeft | FailException | FailTypedError | FailNoConversion
+  deriving (Eq, Show)
+
+-- | A pair of types for 'testCastFailureCode'. Each failure but
+-- 'FailNoConversion' fails for each value. The argument type of
+-- 'FailNoConversion' does not hold the values of that failure. The values are
+-- a constant and a column over @i@.
+data CastPair = CastPair
+  { castPairName :: String
+  , castPairSetup :: Connection -> IO ()
+  , castPairTarget :: Text
+  , castPairValues :: CastFailure -> (Text, Text)
+  , castPairRegister :: CastFailure -> Connection -> IO ()
+  }
+
+-- | A record for the STRUCT(castStructA BIGINT) source of a cast.
+newtype CastStruct = CastStruct {castStructA :: Int64}
+  deriving stock (Show, Generic)
+  deriving (FromField) via (ViaDuckDB CastStruct)
+
+-- | Register a cast that fails for each value. See 'CastFailure'.
+failingCast :: forall a b. (FromField a, ToDuckValue b) => Proxy a -> Proxy b -> Text -> Text -> CastFailure -> Connection -> IO ()
+failingCast _ _ source target failure conn = createCast conn (TypeExpression source) (TypeExpression target) \(_ :: a) -> case failure of
+  FailException -> error "typed cast raised an exception"
+  FailTypedError ->
+    throw SQLError{sqlErrorMessage = "typed cast raised a Conversion Error", sqlErrorType = Just ErrorTypeConversion, sqlErrorQuery = Nothing}
+  _ -> Left "typed cast refused the value" :: Either Text b
+
+-- | Register a cast whose argument type is the first type, and which gives the value.
+convertingCast :: forall n b. (FromField n, ToDuckValue b) => Proxy n -> b -> Text -> Text -> CastFailure -> Connection -> IO ()
+convertingCast _ value source target _ conn = createCast conn (TypeExpression source) (TypeExpression target) \(_ :: n) -> Right value
+
+-- | The pairs of 'testCastFailureCode'. DuckDB plans a cast of each pair but the
+-- last as a cast that cannot fail.
+castFailurePairs :: [CastPair]
+castFailurePairs =
+  [ pair "BIGINT to VARCHAR" "BIGINT" "VARCHAR" ("(-1)::BIGINT", "i::BIGINT") ("1000::BIGINT", "i + 1000") \failure ->
+      if failure == FailNoConversion then convertingCast (Proxy @Int8) ("x" :: Text) else failingCast (Proxy @Int64) (Proxy @Text)
+  , pair "INTEGER to BIGINT" "INTEGER" "BIGINT" ("(-1)::INTEGER", "i::INTEGER") ("1000::INTEGER", "(i + 1000)::INTEGER") \failure ->
+      if failure == FailNoConversion then convertingCast (Proxy @Int8) (0 :: Int64) else failingCast (Proxy @Int32) (Proxy @Int64)
+  , ( pair "ENUM to VARCHAR" "typed_mood" "VARCHAR" ("'sad'::typed_mood", mood) ("'sad'::typed_mood", mood) \failure ->
+        if failure == FailNoConversion then convertingCast (Proxy @Int8) ("x" :: Text) else failingCast (Proxy @Text) (Proxy @Text)
+    )
+      { castPairSetup = \conn -> void (execute_ conn "CREATE TYPE typed_mood AS ENUM ('sad', 'happy')")
+      }
+  , pair "BIGINT[] to VARCHAR" "BIGINT[]" "VARCHAR" ("[1, 2]::BIGINT[]", "[i, i + 1]::BIGINT[]") ("[1, NULL]::BIGINT[]", "[i, NULL]::BIGINT[]") \failure ->
+      if failure == FailNoConversion then convertingCast (Proxy @[Int64]) ("x" :: Text) else failingCast (Proxy @[Int64]) (Proxy @Text)
+  , pair
+      "STRUCT to VARCHAR"
+      "STRUCT(castStructA BIGINT)"
+      "VARCHAR"
+      ("{'castStructA': 1}::STRUCT(castStructA BIGINT)", "{'castStructA': i}::STRUCT(castStructA BIGINT)")
+      ("{'castStructA': NULL}::STRUCT(castStructA BIGINT)", "{'castStructA': NULL::BIGINT}::STRUCT(castStructA BIGINT)")
+      \failure ->
+        if failure == FailNoConversion then convertingCast (Proxy @CastStruct) ("x" :: Text) else failingCast (Proxy @CastStruct) (Proxy @Text)
+  , pair "FLOAT to DOUBLE" "FLOAT" "DOUBLE" ("1.5::FLOAT", "i::FLOAT") ("1000.5::FLOAT", "(i + 1000)::FLOAT") \failure ->
+      if failure == FailNoConversion then convertingCast (Proxy @Int8) (0 :: Double) else failingCast (Proxy @Float) (Proxy @Double)
+  , pair "BIGINT to INTEGER" "BIGINT" "INTEGER" ("(-1)::BIGINT", "i::BIGINT") ("1000::BIGINT", "i + 1000") \failure ->
+      if failure == FailNoConversion then convertingCast (Proxy @Int8) (0 :: Int32) else failingCast (Proxy @Int64) (Proxy @Int32)
+  ]
+  where
+    mood = "(CASE WHEN i % 2 = 0 THEN 'sad' ELSE 'happy' END)::typed_mood"
+    pair name source target failing notConverting register =
+      CastPair
+        { castPairName = name
+        , castPairSetup = \_ -> pure ()
+        , castPairTarget = target
+        , castPairValues = \failure -> if failure == FailNoConversion then notConverting else failing
+        , castPairRegister = \failure -> register failure source target failure
+        }
+
+-- | Fail a cast in each way, in a constant, in a column of 3000 rows, in an
+-- INSERT with the assignment cast, and in an INSERT with CAST. DuckDB plans a
+-- cast of most pairs as a cast that cannot fail. Each failure gives
+-- 'ErrorTypeMismatch' with the text of the failure. Each connection of the
+-- database runs a query after the failure. TRY_CAST gives NULL, and TRY(CAST)
+-- raises the error. See Note [The error code of a failed cast] in
+-- "Database.DuckDB.Simple.V2.Registration".
+testCastFailureCode :: Assertion
+testCastFailureCode = withEnvironment \environment ->
+  forM_ castFailurePairs \castPair -> forM_ [FailLeft, FailException, FailTypedError, FailNoConversion] \failure ->
+    forM_ ["constant", "column", "INSERT", "INSERT with CAST"] \form -> withCastDatabase environment castPair failure \instance' conn -> do
+      let target = castPairTarget castPair
+          constant = fst (castPairValues castPair failure)
+          label = castPairName castPair <> ", " <> show failure <> ", " <> form
+          statement = case form of
+            "constant" -> "SELECT CAST(" <> constant <> " AS " <> target <> ")"
+            "column" -> "SELECT CAST(c AS " <> target <> ") FROM src"
+            "INSERT" -> "INSERT INTO dst SELECT c FROM src"
+            _ -> "INSERT INTO dst SELECT CAST(c AS " <> target <> ") FROM src"
+      try (query_ conn (Query statement) :: IO [Only FieldValue]) >>= \case
+        Left (err :: SQLError) -> do
+          assertEqual label (Just ErrorTypeMismatch) (sqlErrorType err)
+          assertBool (label <> ": " <> Text.unpack (sqlErrorMessage err)) (failureText failure `Text.isInfixOf` sqlErrorMessage err)
+        Right _ -> assertFailure (label <> ": expected an SQL error")
+      query_ conn "SELECT 42" >>= assertEqual label [Only (42 :: Int64)]
+      withConnectionOn instance' \other -> query_ other "SELECT 42" >>= assertEqual label [Only (42 :: Int64)]
+      when (form == "constant") do
+        query_ conn (Query ("SELECT TRY_CAST(" <> constant <> " AS " <> target <> ") IS NULL")) >>= assertEqual label [Only True]
+        try (query_ conn (Query ("SELECT TRY(CAST(" <> constant <> " AS " <> target <> "))")) :: IO [Only FieldValue]) >>= \case
+          Left (err :: SQLError) -> assertEqual label (Just ErrorTypeMismatch) (sqlErrorType err)
+          Right _ -> assertFailure (label <> ": TRY(CAST) gave no error")
+  where
+    failureText = \case
+      FailLeft -> "typed cast refused the value"
+      FailException -> "typed cast raised an exception"
+      FailTypedError -> "typed cast raised a Conversion Error"
+      FailNoConversion -> "argument arg0"
+
+-- | A COMMIT after a failed cast in an explicit transaction stores no row,
+-- under each transaction invalidation policy. The last cast fails only for the
+-- last chunk of 10000 rows, so that the INSERT writes rows before the failure.
+testCastFailureCommit :: Assertion
+testCastFailureCommit = withEnvironment \environment -> forM_ [Nothing, Just "SYNTACTIC_ERRORS_DO_NOT_INVALIDATE"] \policy -> do
+  let commitAfter label instance' conn failing = do
+        forM_ (policy :: Maybe Text) \name -> forM_ ["default", "current"] \scope ->
+          execute_ conn (Query ("SET " <> scope <> "_transaction_invalidation_policy = '" <> name <> "'"))
+        void (execute_ conn "CREATE TABLE marker (m INTEGER)")
+        void (execute_ conn "BEGIN TRANSACTION")
+        void (execute_ conn "INSERT INTO marker VALUES (1)")
+        try (execute_ conn failing) >>= \case
+          Left (err :: SQLError) -> assertEqual label (Just ErrorTypeMismatch) (sqlErrorType err)
+          Right _ -> assertFailure (label <> ": expected an SQL error")
+        void (try (execute_ conn "COMMIT") :: IO (Either SQLError Int))
+        withConnectionOn instance' \other ->
+          query_ other "SELECT (SELECT count(*) FROM marker) + (SELECT count(*) FROM dst)"
+            >>= assertEqual (label <> ", " <> show policy) [Only (0 :: Int64)]
+  forM_ castFailurePairs \castPair -> withCastDatabase environment castPair FailLeft \instance' conn ->
+    commitAfter (castPairName castPair) instance' conn (Query ("INSERT INTO dst SELECT CAST(c AS " <> castPairTarget castPair <> ") FROM src"))
+  withCastInstance environment \instance' -> withConnectionOn instance' \conn -> do
+    void (execute_ conn "CREATE TABLE src AS SELECT i::BIGINT AS c FROM range(10000) t(i)")
+    void (execute_ conn "CREATE TABLE dst (x VARCHAR)")
+    createCast conn (TypeExpression "BIGINT") (TypeExpression "VARCHAR") \(value :: Int64) ->
+      if value >= 9000 then Left "typed cast refused the value" else Right (Text.pack (show value))
+    commitAfter "BIGINT to VARCHAR over 10000 rows" instance' conn "INSERT INTO dst SELECT CAST(c AS VARCHAR) FROM src"
+
+-- | Run an action with a new instance that has an in-memory database.
+withCastInstance :: Environment -> (Instance -> IO a) -> IO a
+withCastInstance environment action = withInstance environment [] \instance' -> do
+  attachDatabase instance' ":memory:" "typed_cast_failure" []
+  setDefaultDatabase instance' "typed_cast_failure"
+  action instance'
+
+-- | Run an action with a new instance, the tables src and dst of a pair, and
+-- the cast of the failure.
+withCastDatabase :: Environment -> CastPair -> CastFailure -> (Instance -> Connection -> IO a) -> IO a
+withCastDatabase environment castPair failure action = withCastInstance environment \instance' -> withConnectionOn instance' \conn -> do
+  castPairSetup castPair conn
+  void (execute_ conn (Query ("CREATE TABLE src AS SELECT " <> snd (castPairValues castPair failure) <> " AS c FROM range(3000) t(i)")))
+  void (execute_ conn (Query ("CREATE TABLE dst (x " <> castPairTarget castPair <> ")")))
+  castPairRegister castPair failure conn
+  action instance' conn
 
 -- | Cast to custom types with the base types DATE and VARCHAR.
 testCastTypes :: Assertion

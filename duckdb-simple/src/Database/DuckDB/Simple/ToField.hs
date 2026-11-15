@@ -698,16 +698,15 @@ instance ToField Variant where
   toField value =
     builderValueBinding (show value) \builder -> variantDuckValue builder (variantPayload value)
 
--- | Bind an instant as a TIMESTAMPTZ, or as a TIMESTAMPTZ_NS. See
--- Note [Nanosecond parameters]. An instant outside the range of the
--- t'LocalTime' instance, in UTC, raises an t'SQLError' of the type
--- 'ErrorInputOutOfRange'. For a TIMESTAMPTZ_NS target, an instant outside the
--- range of TIMESTAMPTZ_NS can get another error, also an instant outside the
--- range of DuckDB in a STRUCT, a TUPLE, or a UNION, as for a t'LocalTime'. See
--- Note [Nanosecond parameters]. A leap second of exactly
--- 60 seconds binds as the next second. A later time in a leap second, for
--- example 60.5 seconds, raises an t'SQLError' of the type 'ErrorInputInvalid'.
--- See Note [Time ranges].
+-- | Bind an instant as a TIMESTAMPTZ, or as a TIMESTAMPTZ_NS. An instant
+-- outside the range of the t'LocalTime' instance, in UTC, raises an
+-- t'SQLError' of the type 'ErrorInputOutOfRange'. For a TIMESTAMPTZ_NS target,
+-- an instant outside the range of TIMESTAMPTZ_NS can get another error, also
+-- an instant outside the range of DuckDB in a STRUCT, a TUPLE, or a UNION, as
+-- for a t'LocalTime'. See Note [Nanosecond parameters]. A leap second of
+-- exactly 60 seconds binds as the next second. A later time in a leap second,
+-- for example 60.5 seconds, raises an t'SQLError' of the type
+-- 'ErrorInputInvalid'. See Note [Time ranges].
 instance ToField UTCTime where
   toField value =
     timeValueBinding

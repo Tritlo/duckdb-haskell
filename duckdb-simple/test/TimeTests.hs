@@ -530,13 +530,32 @@ nanosecondTimeTests =
         assertEqual (label "list element") localList utcList
         assertEqual (label "plain parameter type") (Just (Just (if year == 2300 then ErrorTypeConversion else ErrorInputOutOfRange))) utcPlain
         assertEqual (label "list element type") (Just (Just (if year == 2300 then ErrorInputInvalid else ErrorInputOutOfRange))) utcList
-      -- The 2262 zone keeps the error of the encoder.
-      let zone = localTimeToUTC utc (LocalTime (fromGregorian 2262 4 11) (TimeOfDay 23 47 16.8547759))
-      try (execute_ conn "CREATE OR REPLACE TABLE stored (v TIMESTAMPTZ_NS)" >> execute conn "INSERT INTO stored VALUES (?)" (Only zone)) >>= \case
-        Left SQLError{sqlErrorType, sqlErrorMessage} -> do
-          sqlErrorType @?= Just ErrorInputInvalid
-          assertBool (Text.unpack sqlErrorMessage) ("TIMESTAMP value out of finite range" `Text.isInfixOf` sqlErrorMessage)
-        Right _ -> assertFailure "expected the error of the encoder for the 2262 zone"
+      let rejects :: (ToField a) => String -> Text.Text -> a -> ErrorType -> Text.Text -> Assertion
+          rejects position column value expectedType expectedText = do
+            _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE stored (v " <> column <> ")"))
+            try (execute conn "INSERT INTO stored VALUES (?)" (Only value)) >>= \case
+              Left SQLError{sqlErrorType, sqlErrorMessage} -> do
+                assertEqual (position <> " type") (Just expectedType) sqlErrorType
+                assertBool (position <> ": " <> Text.unpack sqlErrorMessage) (expectedText `Text.isInfixOf` sqlErrorMessage)
+              Right _ -> assertFailure (position <> ": expected an error")
+          late = localTimeToUTC utc (at 2300 digits)
+      -- A Map value, an Array element, and a FieldTimestampTZ also bind the
+      -- microsecond value, and DuckDB raises its error.
+      rejects "Map value" "MAP(VARCHAR, TIMESTAMPTZ_NS)" (Map.singleton ("k" :: Text.Text) late) ErrorInputInvalid "Failed to cast value"
+      rejects "Array element" "TIMESTAMPTZ_NS[1]" (listArray (0, 0) [late] :: Array Int UTCTime) ErrorInputInvalid "Failed to cast value"
+      rejects
+        "FieldTimestampTZ"
+        "TIMESTAMPTZ_NS"
+        (FieldTimestampTZ (Finite late))
+        ErrorTypeConversion
+        "Could not convert Timestamp to higher precision"
+      -- The 2262 zone keeps the error of the encoder, from its first to its last
+      -- nanosecond. The nanosecond before the zone binds with its digits.
+      let near nanos = localTimeToUTC utc (LocalTime (fromGregorian 2262 4 11) (TimeOfDay 23 47 nanos))
+      forM_ [16.854775807, 16.8547759, 16.854775999] $ \nanos ->
+        rejects ("2262 zone " <> show nanos) "TIMESTAMPTZ_NS" (near nanos) ErrorInputInvalid "TIMESTAMP value out of finite range"
+      _ <- execute conn "INSERT INTO stored VALUES (?)" (Only (near 16.854775806))
+      (query_ conn "SELECT epoch_ns(v) FROM stored" :: IO [Only Int64]) >>= (@?= [Only (maxBound - 1)])
       -- A microsecond target and a VARIANT keep their values.
       typeOf "TIMESTAMPTZ" (localTimeToUTC utc (at 2300 digits)) >>= (@?= Nothing)
       typeOf "VARIANT" (localTimeToUTC utc (at 2300 digits)) >>= (@?= Nothing)

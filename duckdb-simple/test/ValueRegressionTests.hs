@@ -19,7 +19,7 @@ import qualified Data.ByteString as BS
 import Data.Int (Int16, Int32, Int64, Int8)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust)
-import Data.Proxy (Proxy (..))
+import Data.Proxy (Proxy (..), asProxyTypeOf)
 import Data.Ratio ((%))
 import Data.String (fromString)
 import Data.Text (Text)
@@ -28,6 +28,7 @@ import Data.Time.Calendar (Day, addDays, fromGregorian)
 import Data.Time.Clock (UTCTime (..))
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), utc, utcToLocalTime)
+import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (
@@ -135,8 +136,9 @@ valueRegressionTests =
     [ testCase "REAL decodes to Float and Double" $ withConnection ":memory:" \conn -> do
         (query_ conn "SELECT 1.25::REAL" :: IO [Only Float]) >>= (@?= [Only 1.25])
         (query_ conn "SELECT 1.25::REAL" :: IO [Only Double]) >>= (@?= [Only 1.25])
-    , testCase "Float parameters still decode as Text" $ withConnection ":memory:" \conn ->
-        (query conn "SELECT ?" (Only (1.25 :: Float)) :: IO [Only Text]) >>= (@?= [Only "1.25"])
+    , testCase "a Float parameter does not read as Text, and its cast to VARCHAR does" $ withConnection ":memory:" \conn -> do
+        assertIncompatible conn "?::FLOAT" (Only (1.25 :: Float)) "FLOAT" (Proxy :: Proxy Text) "Text"
+        (query conn "SELECT ?::VARCHAR" (Only (1.25 :: Float)) :: IO [Only Text]) >>= (@?= [Only "1.25"])
     , testCase "BOOLEAN read as Text and String gives the cast to VARCHAR" $ withConnection ":memory:" \conn ->
         (query_ conn "SELECT b, b::VARCHAR, b FROM (VALUES (true), (false)) t(b)" :: IO [(Text, Text, String)])
           >>= (@?= [("true", "true", "true"), ("false", "false", "false")])
@@ -1080,6 +1082,105 @@ valueRegressionTests =
         -- -9007199254740994 and 3.3569516755834854e36.
         query_ conn "SELECT (-9007199254740994)::DECIMAL(19,0)::DOUBLE, 3356951675583485076575379654993209529::DECIMAL(38,0)::DOUBLE"
           >>= (@?= [(-9007199254740992 :: Double, 3.356951675583485e36 :: Double)])
+    , testCase "a read of another SQL type gives the value of the cast of DuckDB" $ withConnection ":memory:" \conn -> do
+        -- Each value reads as the Haskell type, next to its cast to the SQL
+        -- type of the Haskell type in the same row. See
+        -- Note [Reads of another SQL type] in "Database.DuckDB.Simple.FromField".
+        let signedValues = ["-100", "0", "7", "100"]
+            unsignedValues = ["0", "7", "100"]
+            signedSources = ["TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT"]
+            unsignedSources = ["UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT", "UHUGEINT"]
+            signedTarget :: (FromField a, Eq a, Show a) => Proxy a -> Text -> Assertion
+            signedTarget proxy target = do
+              forM_ signedSources \source -> assertReadsAsCast conn proxy source target signedValues
+              assertReadsAsCast conn proxy "UHUGEINT" target unsignedValues
+            unsignedTarget :: (FromField a, Eq a, Show a) => Proxy a -> Text -> Assertion
+            unsignedTarget proxy target = forM_ (signedSources <> unsignedSources) \source -> assertReadsAsCast conn proxy source target unsignedValues
+            timestamps = ["2024-01-02 03:04:05", "1969-12-31 23:59:59"]
+            timePairs = do
+              forM_ ["TIMESTAMP", "TIMESTAMP_S", "TIMESTAMP_MS", "TIMESTAMP_NS"] \source -> do
+                assertReadsAsCast conn (Proxy :: Proxy Day) source "DATE" timestamps
+                assertReadsAsCast conn (Proxy :: Proxy (Unbounded Day)) source "DATE" timestamps
+              assertReadsAsCast conn (Proxy :: Proxy (Unbounded Day)) "TIMESTAMP" "DATE" ["infinity", "-infinity"]
+              forM_ ["TIMESTAMP", "TIMESTAMP_S", "TIMESTAMP_MS"] \source -> assertReadsAsCast conn (Proxy :: Proxy TimeOfDay) source "TIME" timestamps
+              assertReadsAsCast conn (Proxy :: Proxy TimeOfDay) "TIMESTAMP" "TIME" ["2024-01-02 03:04:05.123456"]
+              assertReadsAsCast
+                conn
+                (Proxy :: Proxy TimeOfDay)
+                "TIMESTAMP_NS"
+                "TIME_NS"
+                ["2024-01-02 03:04:05.123456789", "1969-12-31 23:59:59.999999999"]
+              forM_ [("DATE", ["2024-01-02", "1969-12-31"]), ("TIMESTAMP_S", timestamps), ("TIMESTAMP_MS", timestamps)] \(source, values) -> do
+                assertReadsAsCast conn (Proxy :: Proxy LocalTime) source "TIMESTAMP" values
+                assertReadsAsCast conn (Proxy :: Proxy (Unbounded LocalTime)) source "TIMESTAMP" values
+              assertReadsAsCast conn (Proxy :: Proxy (Unbounded LocalTime)) "DATE" "TIMESTAMP" ["infinity", "-infinity"]
+        signedTarget (Proxy :: Proxy Int8) "TINYINT"
+        signedTarget (Proxy :: Proxy Int16) "SMALLINT"
+        signedTarget (Proxy :: Proxy Int32) "INTEGER"
+        signedTarget (Proxy :: Proxy Int64) "BIGINT"
+        signedTarget (Proxy :: Proxy Int) "BIGINT"
+        signedTarget (Proxy :: Proxy Integer) "BIGNUM"
+        forM_ unsignedSources \source -> assertReadsAsCast conn (Proxy :: Proxy Integer) source "BIGNUM" unsignedValues
+        unsignedTarget (Proxy :: Proxy Natural) "BIGNUM"
+        unsignedTarget (Proxy :: Proxy Word8) "UTINYINT"
+        unsignedTarget (Proxy :: Proxy Word16) "USMALLINT"
+        unsignedTarget (Proxy :: Proxy Word32) "UINTEGER"
+        unsignedTarget (Proxy :: Proxy Word64) "UBIGINT"
+        unsignedTarget (Proxy :: Proxy Word) "UBIGINT"
+        forM_ (take 4 signedSources) \source -> do
+          assertReadsAsCast conn (Proxy :: Proxy Bool) source "BOOLEAN" ["-2", "0", "1", "7"]
+          assertReadsAsCast conn (Proxy :: Proxy Double) source "DOUBLE" signedValues
+          assertReadsAsCast conn (Proxy :: Proxy Float) source "FLOAT" signedValues
+          assertReadsAsCast conn (Proxy :: Proxy Text) source "VARCHAR" signedValues
+          assertReadsAsCast conn (Proxy :: Proxy String) source "VARCHAR" signedValues
+        assertReadsAsCast conn (Proxy :: Proxy Double) "BIGINT" "DOUBLE" ["9007199254740993", "-9223372036854775808"]
+        assertReadsAsCast conn (Proxy :: Proxy Double) "FLOAT" "DOUBLE" ["1.25", "0.1", "-3.5"]
+        assertReadsAsCast conn (Proxy :: Proxy Float) "DOUBLE" "FLOAT" ["1.25", "0.1", "16777217"]
+        assertReadsAsCast conn (Proxy :: Proxy Text) "BOOLEAN" "VARCHAR" ["true", "false"]
+        assertReadsAsCast conn (Proxy :: Proxy String) "BOOLEAN" "VARCHAR" ["true", "false"]
+        assertReadsAsCast conn (Proxy :: Proxy BS.ByteString) "BIT" "BLOB" ["101", "10110011101", "00000000"]
+        assertReadsAsCast conn (Proxy :: Proxy BS.ByteString) "GEOMETRY" "BLOB" ["POINT (1 2)", "LINESTRING (0 0, 1 1)"]
+        assertReadsAsCast
+          conn
+          (Proxy :: Proxy UUID.UUID)
+          "VARCHAR"
+          "UUID"
+          ["00000000-0000-0000-0000-000000000000", "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"]
+        assertReadsAsCast conn (Proxy :: Proxy [Int32]) "INTEGER[3]" "INTEGER[]" ["[1, 2, 3]", "[-1, 2, 0]"]
+        -- The time pairs do not use the session time zone.
+        timePairs
+        _ <- execute_ conn "SET TimeZone = 'Pacific/Auckland'"
+        timePairs
+    , testCase "a read of another SQL type that needs the time zone or another text raises Incompatible" $ withConnection ":memory:" \conn -> do
+        -- See Note [Reads of another SQL type] in "Database.DuckDB.Simple.FromField".
+        let refusedPairs = do
+              forM_ ["TIMESTAMP", "TIMESTAMP_S", "TIMESTAMP_MS", "TIMESTAMP_NS"] \source -> do
+                assertIncompatible conn ("'2024-01-02 03:04:05'::" <> source) () "TIMESTAMP" (Proxy :: Proxy UTCTime) "UTCTime"
+                assertIncompatible conn ("'2024-01-02 03:04:05'::" <> source) () "TIMESTAMP" (Proxy :: Proxy (Unbounded UTCTime)) "Unbounded UTCTime"
+              assertIncompatible conn "DATE '2024-01-02'" () "DATE" (Proxy :: Proxy UTCTime) "UTCTime"
+              assertIncompatible conn "DATE '2024-01-02'" () "DATE" (Proxy :: Proxy (Unbounded UTCTime)) "Unbounded UTCTime"
+              forM_ ["TIMESTAMPTZ", "TIMESTAMPTZ_NS"] \source -> do
+                assertIncompatible conn ("'2024-01-02 03:04:05+00'::" <> source) () "TIMESTAMPTZ" (Proxy :: Proxy LocalTime) "LocalTime"
+                assertIncompatible
+                  conn
+                  ("'2024-01-02 03:04:05+00'::" <> source)
+                  ()
+                  "TIMESTAMPTZ"
+                  (Proxy :: Proxy (Unbounded LocalTime))
+                  "Unbounded LocalTime"
+              forM_ [("FLOAT", "0.01::FLOAT"), ("DOUBLE", "0.01::DOUBLE")] \(sqlName, expression) -> do
+                assertIncompatible conn expression () sqlName (Proxy :: Proxy Text) "Text"
+                assertIncompatible conn expression () sqlName (Proxy :: Proxy String) "Text"
+              assertIncompatible conn "'a\\x41'::VARCHAR" () "VARCHAR" (Proxy :: Proxy BS.ByteString) "ByteString"
+              -- The SQL in place of each refused read.
+              (query_ conn "SELECT TIMESTAMP '2024-01-02 03:04:05' AT TIME ZONE 'UTC', DATE '2024-01-02' AT TIME ZONE 'UTC'" :: IO [(UTCTime, UTCTime)])
+                >>= (@?= [(UTCTime (fromGregorian 2024 1 2) 11045, UTCTime (fromGregorian 2024 1 2) 0)])
+              (query_ conn "SELECT TIMESTAMPTZ '2024-01-02 03:04:05+00' AT TIME ZONE 'UTC'" :: IO [Only LocalTime])
+                >>= (@?= [Only (LocalTime (fromGregorian 2024 1 2) (TimeOfDay 3 4 5))])
+              (query_ conn "SELECT 0.01::DOUBLE::VARCHAR, encode('a\\x41')" :: IO [(Text, BS.ByteString)]) >>= (@?= [("0.01", "a\\x41")])
+        refusedPairs
+        _ <- execute_ conn "SET TimeZone = 'Pacific/Auckland'"
+        refusedPairs
     , testCase "invalid DECIMAL width scale and magnitude are rejected" $ withConnection ":memory:" \conn ->
         forM_ [DecimalValue 0 0 0, DecimalValue 39 0 0, DecimalValue 2 3 1, DecimalValue 2 0 100, DecimalValue 2 0 (-100)] \decimal ->
           assertIOError
@@ -1545,6 +1646,27 @@ decimalText scale v = Text.pack ((if v < 0 then "-" else "") <> whole <> "." <> 
     digits = show (abs v)
     padded = replicate (scale + 1 - length digits) '0' <> digits
     (whole, fraction) = splitAt (length padded - scale) padded
+
+-- | Assert that each text value, cast to the source type, reads as @a@ with the
+-- value of its cast from the source type to the target type. The target type is
+-- the SQL type of @a@. The two reads are in the same row.
+assertReadsAsCast :: (FromField a, Eq a, Show a) => Connection -> Proxy a -> Text -> Text -> [Text] -> Assertion
+assertReadsAsCast conn proxy source target values = do
+  rows <-
+    query conn (Query ("SELECT v, v::" <> source <> ", v::" <> source <> "::" <> target <> " FROM unnest(?::VARCHAR[]) t(v)")) (Only values)
+  length rows @?= length values
+  forM_ rows \(value, actual, cast) ->
+    assertEqual (Text.unpack ("'" <> value <> "'::" <> source <> " as " <> target)) (cast `asProxyTypeOf` proxy) actual
+
+-- | Assert that a read of an expression as @a@ raises Incompatible with the SQL
+-- type name and the Haskell type name. A String reads through Text, so its
+-- error names Text.
+assertIncompatible :: forall a q. (FromField a, Show a, ToRow q) => Connection -> Text -> q -> Text -> Proxy a -> Text -> Assertion
+assertIncompatible conn expression parameters sqlName _ haskellName =
+  try (query conn (Query ("SELECT " <> expression <> " AS c")) parameters :: IO [Only a]) >>= \case
+    Left SQLError{sqlErrorMessage} ->
+      sqlErrorMessage @?= "duckdb-simple: column c has type " <> sqlName <> " but expected " <> haskellName
+    Right rows -> assertFailure ("expected Incompatible for " <> Text.unpack expression <> ", got " <> show rows)
 
 -- | Assert rejection without forcing a partial generic value.
 assertLeft :: Either String a -> Assertion

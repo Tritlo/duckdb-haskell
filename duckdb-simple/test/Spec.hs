@@ -856,8 +856,12 @@ typeTests =
           assertEqual "date round-trip" dayVal dRes
           assertEqual "time round-trip" timeVal tRes
           assertEqual "timestamp round-trip" tsVal tsRes
-          [Only utcRes] <- query_ conn "SELECT ts FROM temporals" :: IO [Only UTCTime]
-          assertEqual "timestamp as UTC" (localTimeToUTC utc tsVal) utcRes
+          -- A TIMESTAMP does not read as UTCTime. AT TIME ZONE 'UTC' gives the instant in UTC.
+          [Only utcRes] <- query_ conn "SELECT ts AT TIME ZONE 'UTC' FROM temporals" :: IO [Only UTCTime]
+          assertEqual "timestamp at UTC" (localTimeToUTC utc tsVal) utcRes
+          (try (query_ conn "SELECT ts FROM temporals" :: IO [Only UTCTime])) >>= \case
+            Left SQLError{sqlErrorMessage} -> sqlErrorMessage @?= "duckdb-simple: column ts has type TIMESTAMP but expected UTCTime"
+            Right rows -> assertFailure ("expected Incompatible, got " <> show rows)
     , testCase "round-trips blob payloads" $
         withConnection ":memory:" \conn -> do
           _ <- execute_ conn "CREATE TABLE blobs (payload BLOB)"

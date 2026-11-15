@@ -3,10 +3,11 @@
 -- |
 -- Module      : TestUtils
 -- Description : Assertions that several test modules share.
-module TestUtils (NativeTimestamp (..), assertFailureIO, filteredQueries, nativeLocalTime, withConstCString, writeIntegers) where
+module TestUtils (NativeTimestamp (..), assertFailureIO, filteredQueries, nativeLocalTime, raiseCapabilities, withConstCString, writeIntegers) where
 
+import Control.Concurrent (getNumCapabilities, setNumCapabilities)
 import Control.Exception (SomeException, try)
-import Control.Monad (forM_)
+import Control.Monad (forM_, when)
 import Data.Int (Int64)
 import Data.Ratio ((%))
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
@@ -30,6 +31,28 @@ import Foreign.C.Types (CChar)
 import Foreign.Ptr (castPtr)
 import Foreign.Storable (pokeElemOff)
 import Test.Tasty.HUnit (Assertion, assertFailure)
+
+{- Note [Capabilities of the tests]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Some cases need more than one capability of the GHC runtime, for example to
+run several Haskell threads on one connection at the same time. Such a case
+raises the capability count with raiseCapabilities. No case lowers the count,
+also not to restore it after the case.
+
+The reason is a defect of the GHC runtime, seen with GHC 9.14.1. After
+setNumCapabilities lowers the count, the runtime keeps the other capabilities
+as disabled capabilities. A callback from a foreign thread, for example from
+a DuckDB worker thread, can then run on a disabled capability. A garbage
+collection can then lose the wake-up of that callback. The callback then
+waits for ever, and the test run does not end.
+-}
+
+-- | Raise the capability count of the GHC runtime to the given count. Do not
+-- lower it. See Note [Capabilities of the tests].
+raiseCapabilities :: Int -> IO ()
+raiseCapabilities wanted = do
+  current <- getNumCapabilities
+  when (wanted > current) (setNumCapabilities wanted)
 
 -- | Require an exception without depending on native error text.
 assertFailureIO :: IO a -> Assertion

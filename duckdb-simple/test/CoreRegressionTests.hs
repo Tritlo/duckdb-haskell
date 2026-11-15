@@ -6,7 +6,7 @@
 -- Description : Regression tests for result metadata, cursor state, and handle lifetime.
 module CoreRegressionTests (coreRegressionTests) where
 
-import Control.Concurrent (forkFinally, getNumCapabilities, newEmptyMVar, putMVar, readMVar, setNumCapabilities, takeMVar, threadDelay)
+import Control.Concurrent (forkFinally, newEmptyMVar, putMVar, readMVar, takeMVar, threadDelay)
 import Control.Exception (SomeException, bracket, finally, throwIO, try)
 import Control.Monad (forM_, replicateM, replicateM_, void)
 import Data.Either (partitionEithers)
@@ -42,6 +42,7 @@ import System.Mem (performMajorGC)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
+import TestUtils (raiseCapabilities)
 
 -- | Exercise public operations against an in-memory database.
 coreRegressionTests :: TestTree
@@ -229,8 +230,9 @@ coreRegressionTests =
             pure (acc + 1)
           count @?= 3
     , testCase "threads share a connection for default queries" $
-        bracket getNumCapabilities setNumCapabilities $ \capabilities -> do
-          setNumCapabilities (max 4 capabilities)
+        do
+          -- See Note [Capabilities of the tests] in "TestUtils".
+          raiseCapabilities 4
           withConnection ":memory:" $ \conn -> do
             void (execute_ conn "CREATE TABLE shared_rows(worker BIGINT, i BIGINT)")
             start <- newEmptyMVar
@@ -343,8 +345,9 @@ coreRegressionTests =
             query_ conn "SELECT current_database(), count(*) FILTER (WHERE database_name = 'side') FROM duckdb_databases()"
               >>= (@?= [("shared" :: Text, 0 :: Int64)])
     , testCase "parent close releases concurrently created children" $
-        bracket getNumCapabilities setNumCapabilities $ \capabilities -> do
-          setNumCapabilities (max 2 capabilities)
+        do
+          -- See Note [Capabilities of the tests] in "TestUtils".
+          raiseCapabilities 2
           withEnvironment $ \environment -> withInstance environment [("threads", "1"), ("async_threads", "1")] $ \instance_ ->
             withConcurrentChildren 64 (connect instance_) close $ \connections -> do
               closeInstance instance_

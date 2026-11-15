@@ -256,6 +256,11 @@ geometryArgumentTests =
         query_ conn "SELECT sum(CAST(('POINT (' || i || ' 0)')::GEOMETRY AS point_x)::DOUBLE) FROM range(5000) t(i)"
           >>= (@?= [Only (12497500 :: Double)])
         readIORef calls >>= (@?= 0)
+    , testCase "a typed cast from GEOMETRY to BLOB reads its argument and does not run itself" $ withConnection ":memory:" \conn -> do
+        createCast conn (R.TypeExpression "GEOMETRY") (R.TypeExpression "BLOB") \raw -> Right (rawGeometryWKB raw <> "x")
+        query_ conn "SELECT CAST('POINT (1 2)'::GEOMETRY AS BLOB)" >>= (@?= [Only (pointWKB <> "x")])
+        -- The reader of a GEOMETRY result does not use the cast.
+        query_ conn "SELECT 'POINT (1 2)'::GEOMETRY" >>= (@?= [Only point])
     , testCase "a typed cast from VARCHAR to GEOMETRY that gives a Geometry does not run itself" $ withConnection ":memory:" \conn -> do
         createCast conn (R.TypeExpression "VARCHAR") (R.TypeExpression "GEOMETRY") \(_ :: Text) -> Right shape
         query_ conn "SELECT ST_AsText('any text'::VARCHAR::GEOMETRY)" >>= (@?= [Only ("POINT (1 2)" :: Text)])

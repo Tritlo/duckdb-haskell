@@ -618,8 +618,11 @@ registerTableFunctionWith target configure callbacks =
 -- The callback must inspect the native cast mode to implement TRY_CAST behavior.
 -- An exception in the callback fails the cast with the error type
 -- 'ErrorTypeMismatch', whatever the type of the exception. With another error
--- code, DuckDB can invalidate the database. See the section /Errors/ of the
--- README and Note [The error code of a failed cast].
+-- code, DuckDB can invalidate the database. When DuckDB casts a constant
+-- through the cast while it binds the query, the error has the type
+-- 'ErrorInputInvalid' and the text @Failed to cast value: @ before the text of
+-- the exception. See the section /Errors/ of the README and
+-- Note [The error code of a failed cast].
 -- A target type from SQL @CREATE TYPE name AS base@ is only another name for
 -- the base type, so the cast is a cast to the base type. A type from
 -- 'registerCustomType' keeps its name. See 'TypeDeclaration'.
@@ -644,12 +647,16 @@ registerTableFunctionWith target configure callbacks =
 -- custom type with the base type BIGINT, and from that type to BIGINT, with a
 -- callback that changes the value, gave wrong rows and no error. This occurred
 -- in a filter, a filter with a parameter, IN, BETWEEN, a comparison of two
--- columns, a join, and min and max. The callback did not run on the column. A
--- cast with VARCHAR or BLOB on one side gave the rows of the callback in each
--- of these runs, with 10 and with 300000 rows. With a cast from INTEGER to
--- BIGINT, DuckDB also converts each INTEGER literal that must be a BIGINT
--- through the cast: @range(10)@ gave no row, and @LIMIT 5@ gave 10 rows. Use a
--- scalar function for a conversion that changes the value.
+-- columns, a join, and min and max. The callback did not run on the column,
+-- or, in a comparison of two columns, it ran on one side only. A cast with
+-- VARCHAR or BLOB on one side gave the same rows with the optimizer on and off
+-- in each of these runs: with 10 rows, and with 300000 rows except min and max
+-- of a cast from BLOB to a custom type with the base type BLOB, which did not
+-- run. For a custom target type, DuckDB also casts the constant of a
+-- comparison through the callback. With a cast from INTEGER to BIGINT, DuckDB
+-- also converts each INTEGER literal that must be a BIGINT through the cast:
+-- @range(10)@ gave no row, and @LIMIT 5@ gave 10 rows. Use a scalar function
+-- for a conversion that changes the value.
 --
 -- The source type is the first type, and the target type is the second type. The example registers a cast
 -- from BIGINT to a custom type. The callback copies each value.
@@ -760,8 +767,9 @@ explicit transaction:
 Do not replace the code without a run of each code in the column form and in
 an explicit transaction under each policy.
 
-In DUCKDB_V2_CAST_MODE_TRY, DuckDB discards the error, so TRY_CAST gives NULL
-for a failed row. TRY(...) catches only the Invalid Input, Out of Range, and
+In DUCKDB_V2_CAST_MODE_TRY, DuckDB discards the error and keeps what the
+callback wrote, so TRY_CAST gives NULL for a failed row only when the callback
+wrote NULL there. TRY(...) catches only the Invalid Input, Out of Range, and
 Conversion errors, so TRY(CAST(...)) raises the error of a failed cast.
 -}
 

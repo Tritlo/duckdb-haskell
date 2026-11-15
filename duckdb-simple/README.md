@@ -747,9 +747,9 @@ gets an error by its position:
 - A field of a STRUCT, an element of a TUPLE, or a member of a UNION: the
   `ErrorInputInvalid` of the library, "TIMESTAMP value out of finite range",
   also for a value outside the range of DuckDB.
-- In each position, a `UTCTime` with digits below a microsecond, and a
-  `LocalTime` from 2262-04-11 23:47:16.854775807 to 23:47:16.854775999, get that
-  `ErrorInputInvalid` of the library.
+- In each position, a `LocalTime` or a `UTCTime` (in UTC) from 2262-04-11
+  23:47:16.854775807 to 23:47:16.854775999 gets that `ErrorInputInvalid` of the
+  library.
 
 In the notation of `Data.Time`, the year -5877641 is 5877642 BC and the year
 -290308 is 290309 BC. The rule holds also for a finite `Unbounded` value. DuckDB

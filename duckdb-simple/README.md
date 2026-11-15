@@ -901,8 +901,12 @@ type is the `duckdbTypeDeclaration` of the type, as for a typed column. A
 newtype with its own `DuckDBColumnType` text, for example `DECIMAL(18,3)`,
 gives that text. An argument type that is or contains VARIANT raises an error
 at registration, because the argument reader does not read VARIANT. A GEOMETRY
-argument reads as a GEOMETRY result does, also inside a list or a record, in a
-scalar function, in an aggregate, and as the source of a typed cast.
+argument reads, also inside a list or a STRUCT, in a scalar function, in an
+aggregate, and as the source of a typed cast. On a connection, it reads as a
+GEOMETRY result does, so a registered cast does not change it. A function that
+an extension registers reads it with the casts of the session, and an aggregate
+function of an extension refuses a GEOMETRY argument at registration. See
+[Typed registration](#typed-registration).
 
 The SQL type of the result is the `duckdbTypeDeclaration` of the result type:
 an `Int16` result is SMALLINT, and a `Float` result is FLOAT. DuckDB computes
@@ -1034,8 +1038,11 @@ places still use registered casts:
 
 - The callbacks of a function that an extension registers. An extension has no
   instance, so these callbacks read a GEOMETRY value with the casts of the
-  session: the value of an option update, the arguments of a pragma or a table
-  function, and the rows of a COPY TO function.
+  session: the value of an option update, the arguments of a pragma, a scalar
+  function, a typed cast, or a table function, and the rows of a COPY TO
+  function. The update callback of an aggregate function has no context, so an
+  aggregate function of an extension refuses a GEOMETRY argument at
+  registration.
 - `setConfigValue` and `setConfigOption`. DuckDB casts the value to the type of
   the option, as SQL `SET` does.
 

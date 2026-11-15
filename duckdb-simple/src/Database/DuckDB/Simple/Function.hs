@@ -107,7 +107,7 @@ import Database.DuckDB.Simple.V2.Registration (TypeDeclaration (..))
 -- its type. An argument type with no declaration, or a type that is or
 -- contains VARIANT, raises an @SQLError@ at registration, because the argument
 -- reader does not read VARIANT. A GEOMETRY argument reads as a GEOMETRY result
--- does, also inside a list or a record, for example as a @Geometry@.
+-- does, also inside a list or a STRUCT, for example as a @Geometry@.
 createFunction :: (Function f) => Connection -> Text -> f -> IO ()
 createFunction conn = createFunctionOn (ConnectionTarget conn)
 
@@ -214,7 +214,9 @@ createTableFunction conn = createTableFunctionOn (ConnectionTarget conn)
 -- 'createTableFunction'. An argument type that is or contains VARIANT is also
 -- an error at registration, as for 'createFunction'. A GEOMETRY argument reads
 -- as for 'createFunction', also when DuckDB runs the update callback on several
--- threads. The SQL
+-- threads. An aggregate function of an extension refuses a GEOMETRY argument
+-- at registration, because its update callback has no factory to read the
+-- value. The SQL
 -- return type is the
 -- 'Database.DuckDB.Simple.ToField.duckdbTypeDeclaration' of the result type,
 -- for example SMALLINT for 'Data.Int.Int16' and FLOAT for 'Float'. A 'Maybe'

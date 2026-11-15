@@ -59,7 +59,9 @@
   `Map`, or a newtype with its own type text. `FunctionArg` is gone. An
   argument type that is or contains VARIANT raises an error at registration,
   also for `createAggregate`. A GEOMETRY argument reads, also in
-  `createAggregate` and as the source of `createCast`.
+  `createAggregate` and as the source of `createCast`. An aggregate function of
+  an extension refuses a GEOMETRY argument at registration, because its update
+  callback has no factory to read the value.
 - A result of `createFunction` can have each type with `ToDuckValue`. Its SQL
   type is the `duckdbTypeDeclaration` of the type: an `Int16` result is
   SMALLINT, a `Word16` result is USMALLINT, and a `Float` result is FLOAT, in

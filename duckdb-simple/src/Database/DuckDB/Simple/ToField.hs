@@ -414,7 +414,14 @@ class DuckDBColumnType a where
 
   -- | The SQL type that a typed registration declares for @a@, or the reason
   -- why @a@ has no declaration. The default is the text of
-  -- 'duckdbColumnTypeFor'. See Note [Type declarations].
+  -- 'duckdbColumnTypeFor'. An 'Array' gives a LIST, as a list does, and
+  -- 'Database.DuckDB.Simple.FromField.FromField' reads an 'Array' only from an
+  -- ARRAY. Thus an 'Array' argument of
+  -- 'Database.DuckDB.Simple.Function.createFunction',
+  -- 'Database.DuckDB.Simple.Function.createAggregate', or
+  -- 'Database.DuckDB.Simple.Function.createTableFunction', also inside a
+  -- @Maybe@ or a list, fails at each call with a value that is not NULL. Use a
+  -- list for such an argument. See Note [Type declarations].
   duckdbTypeDeclaration :: Proxy a -> Either Text TypeDeclaration
   duckdbTypeDeclaration proxy = Right (TypeExpression (duckdbColumnTypeFor proxy))
 

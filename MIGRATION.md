@@ -394,7 +394,7 @@ The SQL workflow stays the same. These changes can affect your code:
   an instance for each type with `ToDuckValue`, so a result can also be, for
   example, a record through `ViaDuckDB`, a list, a `Map`, or a `UUID`.
 - `Database.DuckDB.Simple` exports new names, for example `connect`,
-  `Environment`, `Instance`, `withInstance`, `attachDatabase`, `createCast`,
+  `Environment`, `Instance`, `withInstance`, `attachDatabase`,
   `createTableFunction`, `createAggregate`, `Aggregate` with its fields, and
   `TypedRow`. It also exports `ErrorType` and `LogicalTypeId` with their
   constructors. These names can clash with your own names when you import the

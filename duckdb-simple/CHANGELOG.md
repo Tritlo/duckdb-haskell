@@ -48,16 +48,16 @@
   registration, function documentation, query metrics, and file path
   operations. Expose table bind metadata for multi-file readers.
 - Add typed registrations. Their signatures have no native handle.
-  `Database.DuckDB.Simple.Function` has `createCast`, `createAggregate`,
+  `Database.DuckDB.Simple.Function` has `createAggregate`,
   `createTableFunction`, and the row class `TypedRow`. `Database.DuckDB.Simple`
-  exports the three functions, `Aggregate`, and `TypedRow`.
-- `createCast` registers a pure Haskell function as an explicit cast. A
-  registered cast does not change a value that the library reads or binds on a
-  connection. The exception is a GEOMETRY value that a callback of a function
-  of an extension reads (see the README). A failed cast gives an `SQLError` of
-  the type `ErrorTypeMismatch`, and so does an exception in the callback of
-  `registerCast`. `TRY_CAST` gives NULL for a failed row, and `TRY(CAST(...))`
-  raises the error. The section Errors of the README tells why.
+  exports the two functions, `Aggregate`, and `TypedRow`. There is no typed
+  cast: the README section "Typed registration" tells why.
+- A cast that `registerCast` registers does not change a value that the
+  library reads or binds on a connection. The exception is a GEOMETRY value
+  that a callback of a function of an extension reads (see the README). An
+  exception in the callback of `registerCast` gives an `SQLError` of the type
+  `ErrorTypeMismatch`, and `TRY(CAST(...))` raises the error. The section
+  Errors of the README tells why.
 - `createAggregate` registers an aggregate function as a fold over Haskell
   values. The record `Aggregate` has the initial state and the step, combine,
   and result functions. DuckDB gives the finalize callback no factory, so the
@@ -80,13 +80,12 @@
   of the same length to it with no error.
   `Database.DuckDB.Simple.LogicalRep` exports `TypeDeclaration`.
 - An argument of `createFunction` can have each type with `FromField` and
-  `DuckDBColumnType`, for example a record through `ViaDuckDB`, a list, a
-  `Map`, or a newtype with its own type text. `FunctionArg` is gone. An
-  argument type that is or contains VARIANT raises an error at registration,
-  also for `createAggregate`. A GEOMETRY argument reads, also in
-  `createAggregate` and as the source of `createCast`. An aggregate function of
-  an extension refuses a GEOMETRY argument at registration, because its update
-  callback has no factory to read the value.
+  `DuckDBColumnType`, for example a record through `ViaDuckDB`, a list, a `Map`,
+  or a newtype with its own type text. `FunctionArg` is gone. An argument type
+  that is or contains VARIANT raises an error at registration, also for
+  `createAggregate`. A GEOMETRY argument reads, also in `createAggregate`. An
+  aggregate function of an extension refuses a GEOMETRY argument at
+  registration, because its update callback has no factory to read the value.
 - A result of `createFunction` can have each type with `ToDuckValue`. Its SQL
   type is the `duckdbTypeDeclaration` of the type: an `Int16` result is
   SMALLINT, a `Word16` result is USMALLINT, and a `Float` result is FLOAT, in

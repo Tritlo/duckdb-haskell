@@ -582,33 +582,34 @@ aborts that transaction, also under the setting
 `SYNTACTIC_ERRORS_DO_NOT_INVALIDATE`: [User-Defined
 Functions](#user-defined-functions) gives what this means for a `COMMIT`.
 
-A failed cast of `createCast` gives an `SQLError` of the type
-`ErrorTypeMismatch`. Its message is `Mismatch Type Error: ` and the text of the
-failure: a `Left`, an argument that does not convert, or an exception of each
-type, also of an `SQLError` with another type. An exception in the callback of
-`registerCast` in `Database.DuckDB.Simple.V2.Registration` gives the same type.
-The type is the same for each pair of types, because of a property of DuckDB
-2.0.0. DuckDB plans a cast between some pairs of types as a cast that cannot
-fail, also when the cast is a registered cast. Examples are a cast to VARCHAR,
-also from an ENUM, a LIST, or a STRUCT, and a widening cast such as INTEGER to
-BIGINT or FLOAT to DOUBLE. For such a cast, DuckDB changes an error of the type
-`ErrorInputInvalid`, `ErrorInputOutOfRange`, or `ErrorTypeConversion` to an
-INTERNAL error. It does the same for an error type that it does not map, for
-example `ErrorApi`. An INTERNAL error during the execution of a query
-invalidates the database. Then each statement on each connection of the
-database fails until a new instance opens the database. An error of the type
-`ErrorTypeMismatch` keeps the database usable, and it aborts an explicit
-transaction. `TRY_CAST` gives NULL for a failed row. `TRY(CAST(...))` raises
-the error, because `TRY` catches only the types `ErrorInputInvalid`,
+An exception in the callback of `registerCast` in
+`Database.DuckDB.Simple.V2.Registration` fails the cast with an `SQLError` of
+the type `ErrorTypeMismatch`, also an `SQLError` with another type. Its message
+is `Mismatch Type Error: ` and the text of the exception. The type is the same
+for each pair of types, because of a property of DuckDB 2.0.0. DuckDB plans a
+cast between some pairs of types as a cast that cannot fail, also when the cast
+is a registered cast. Examples are a cast to VARCHAR, also from an ENUM, a LIST,
+or a STRUCT, and a widening cast such as INTEGER to BIGINT or FLOAT to DOUBLE.
+For such a cast, DuckDB changes an error of the type `ErrorInputInvalid`,
+`ErrorInputOutOfRange`, or `ErrorTypeConversion` to an INTERNAL error. It does
+the same for an error type that it does not map, for example `ErrorApi`. An
+INTERNAL error during the execution of a query invalidates the database. Then
+each statement on each connection of the database fails until a new instance
+opens the database. An error of the type `ErrorTypeMismatch` keeps the database
+usable, and it aborts an explicit transaction. In `TRY_CAST`, DuckDB discards
+the error and keeps the rows that the callback wrote, so the callback must write
+each row, for example NULL for a failed row. `TRY(CAST(...))` raises the error,
+because `TRY` catches only the types `ErrorInputInvalid`,
 `ErrorInputOutOfRange`, and `ErrorTypeConversion`. DuckDB still plans such a
 cast as one that cannot fail, so it can run the cast for a row that another
-condition of the query excludes, for example in `WHERE c < 2500 AND CAST(c AS
-VARCHAR) <> 'x'`. In DuckDB 2.0.0, only a guard in a CASE expression, for
-example `CASE WHEN d <> 0 THEN CAST(c AS VARCHAR) <> 'x' ELSE false END`, kept
-the cast from the excluded rows. A cast that a program registers with the
-native API of `duckdb-ffi` also gets the INTERNAL error for such a pair and
-such an error type. A V2 cast can report the code
-`DUCKDB_V2_ERROR_TYPE_MISMATCH` in their place.
+condition of the query excludes, for example in
+`WHERE c < 2500 AND CAST(c AS VARCHAR) <> 'x'`. In DuckDB 2.0.0, only a guard in
+a CASE expression, for example
+`CASE WHEN d <> 0 THEN CAST(c AS VARCHAR) <> 'x' ELSE false END`, kept the cast
+from the excluded rows. A cast that a program registers with the native API of
+`duckdb-ffi` also gets the INTERNAL error for such a pair and such an error
+type. A V2 cast can report the code `DUCKDB_V2_ERROR_TYPE_MISMATCH` in their
+place.
 
 An asynchronous exception, for example from `timeout` or Ctrl-C, cancels a
 running query. The library interrupts DuckDB, waits until the native call
@@ -1275,8 +1276,8 @@ supported families, construction checks, and codec normalization rules.
 - Row decoding via `FromField`/`FromRow`, with generic deriving for product types.
 - User-defined scalar functions backed by Haskell functions (including IO and
   nullable arguments).
-- Typed casts, aggregate functions, table functions, replacement scans, COPY
-  formats, and pragmas. See [Typed registration](#typed-registration).
+- Aggregate functions, table functions, replacement scans, COPY formats, and
+  pragmas. See [Typed registration](#typed-registration).
 - Transaction helpers (`withTransaction`) and metadata accessors (`columnCount`,
   `columnName`).
 
@@ -1293,7 +1294,7 @@ A newtype with its own column type name (`duckdbColumnTypeFor`), for example
 `DECIMAL(18,3)`, gives that text. An argument type that is or contains VARIANT
 raises an error at registration, because the argument reader does not read
 VARIANT. A GEOMETRY argument reads, also inside a list or a STRUCT, in a scalar
-function, in an aggregate, and as the source of a typed cast. On a connection,
+function and in an aggregate. On a connection,
 it reads as a GEOMETRY result does, so a registered cast does not change it. A
 function that an extension registers reads it with the casts of the session, and
 an aggregate function of an extension refuses a GEOMETRY argument at
@@ -1405,9 +1406,8 @@ them.
 
 These functions register SQL objects with Haskell values. Their signatures have
 no native handle. An exception in a Haskell function gives an SQL error with
-the message of the exception. For a cast, the error has the type
-`ErrorTypeMismatch`, and `TRY_CAST` gives NULL in its place (see
-[Errors](#errors)). The examples use these imports:
+the message of the exception (see [Errors](#errors)). The examples use these
+imports:
 
 ```haskell
 {-# LANGUAGE BlockArguments #-}
@@ -1425,33 +1425,17 @@ import Database.DuckDB.Simple.Pragma (PragmaCallback (..), registerPragmaFunctio
 import Database.DuckDB.Simple.Registration
 ```
 
-`createCast` registers an explicit cast. `Left` fails the cast with a message
-and the error type `ErrorTypeMismatch` (see [Errors](#errors)).
-
-```haskell
-castExample :: Connection -> IO [Only Int64]
-castExample conn = do
-  registerCustomType conn "shifted" (TypeExpression "BIGINT")
-  createCast conn (TypeExpression "BIGINT") (TypeExpression "shifted") \(value :: Int64) ->
-    if value > maxBound - 100 then Left "BIGINT overflow" else Right (value + 100)
-  query_ conn "SELECT CAST(1::BIGINT AS shifted)::BIGINT" -- [Only 101]
-```
-
-DuckDB uses a registered cast in place of its built-in cast for the same pair
-of types, on each connection of the instance, also on a connection that opened
-before the registration. A new instance of the same database file uses the
-built-in cast again. No function removes a registered cast. DuckDB runs the
-registered cast for `CAST` and `TRY_CAST`, and also where it casts the source
-type to the target type by itself. In DuckDB 2.0.0, an INSERT into a column of
-the target type and the DEFAULT of a column run it, also for a pair with no
-built-in cast, for example BIGINT to BLOB. UNION ALL, a list, a CASE
-expression, a CHECK, a comparison, and an operator run it for some pairs and
-expressions and not for others. A registered cast has no implicit cast cost, so
-DuckDB does not convert a function argument from the source type to the target
-type. For example, after a cast from INTEGER to BIGINT, `epoch_ms(c)` for an
-INTEGER column `c` and a function of `createFunction` with an `Int64` argument
-do not bind. Thus a cast between two built-in types changes the behaviour of
-plain SQL on the instance.
+The library has no typed cast in this release. A registered cast can give
+wrong rows with no error, because the optimizer of DuckDB 2.0.0 decides from
+the two types of a cast alone whether it can move the cast away from a column,
+for example in a filter, a join, or min and max. The cast function then does
+not run on that column. In runs with DuckDB 2.0.0, a cast between INTEGER and
+BIGINT, and between BIGINT and a custom type with the base type BIGINT, gave
+wrong rows when its function changed the value. `registerCast` in
+`Database.DuckDB.Simple.V2.Registration` registers a native cast, and its
+Haddock gives the warning. For a conversion that changes the value, register a
+scalar function with `createFunction` (see
+[User-Defined Functions](#user-defined-functions)).
 
 On a connection, a registered cast does not change a value that the library
 reads or binds. The library reads GEOMETRY and VARIANT values with the casts of
@@ -1463,8 +1447,7 @@ value that a query gives. Two places still use registered casts:
 - The callbacks of a function that an extension registers. An extension has no
   instance, so these callbacks read a GEOMETRY value with the casts of the
   session: the value of an option update, the arguments of a pragma, a scalar
-  function, a typed cast, or a table function, and the rows of a COPY TO
-  function. The update callback of an aggregate function has no context, so an
+  function, or a table function, and the rows of a COPY TO function. The update callback of an aggregate function has no context, so an
   aggregate function of an extension refuses a GEOMETRY argument at
   registration.
 - `setConfigValue` and `setConfigOption`. DuckDB casts the value to the type of

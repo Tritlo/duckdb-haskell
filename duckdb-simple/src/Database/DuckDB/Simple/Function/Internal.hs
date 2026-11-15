@@ -189,13 +189,36 @@ scalarValue value = case rawResult of
   Just raw -> raw value
   Nothing -> ScalarNative (`toDuckValue` value)
 
--- | Typeclass describing Haskell functions that can be exposed to DuckDB.
+-- | A Haskell function that DuckDB can call as a scalar function: a result
+-- value, an 'IO' action that gives a result, or a function of one more
+-- argument. 'ScalarValue' is abstract, so an instance outside the library can
+-- only use 'applyFunction' of another instance.
 class Function a where
+  -- | The SQL type of each argument, in order, or the reason why an argument
+  -- type has no SQL type. See Note [Type declarations] in
+  -- "Database.DuckDB.Simple.ToField".
   argumentTypes :: Proxy a -> [Either Text TypeDeclaration]
+
+  -- | The SQL type of the result, or the reason why the result type has no SQL
+  -- type.
   returnType :: Proxy a -> Either Text TypeDeclaration
+
+  -- | 'True' for an 'IO' result. The registration then sets the stability of
+  -- the function to VOLATILE: the result can be different for each row, and
+  -- DuckDB calls the function one time for each row. 'False' keeps the
+  -- default stability CONSISTENT: the function always gives the same result
+  -- for the same arguments. DuckDB then calls a function with constant
+  -- arguments one time for each call site, when it prepares the statement. It
+  -- calls the function one time for each row in each other case, also for an
+  -- argument with few different values.
   isVolatile :: Proxy a -> Bool
+
+  -- | Convert the fields of one row to the arguments, and give the result of
+  -- the function. A field that does not convert raises an error that names
+  -- the argument.
   applyFunction :: [Field] -> a -> IO ScalarValue
 
+-- | A result value: a function with no argument. It is not volatile.
 instance {-# OVERLAPPABLE #-} (FunctionResult a) => Function a where
   argumentTypes _ = []
   returnType _ = duckdbTypeDeclaration (Proxy :: Proxy a)
@@ -203,6 +226,8 @@ instance {-# OVERLAPPABLE #-} (FunctionResult a) => Function a where
   applyFunction [] value = pure (scalarValue value)
   applyFunction _ _ = throwIO (functionInvocationError (Text.pack "unexpected arguments supplied"))
 
+-- | An 'IO' action that gives a result: a function with no argument. It is
+-- volatile, so DuckDB runs the action one time for each row.
 instance {-# OVERLAPPING #-} (FunctionResult a) => Function (IO a) where
   argumentTypes _ = []
   returnType _ = duckdbTypeDeclaration (Proxy :: Proxy a)
@@ -210,8 +235,9 @@ instance {-# OVERLAPPING #-} (FunctionResult a) => Function (IO a) where
   applyFunction [] action = scalarValue <$> action
   applyFunction _ _ = throwIO (functionInvocationError (Text.pack "unexpected arguments supplied"))
 
--- | An argument has the SQL type of 'duckdbTypeDeclaration'. See
--- Note [Type declarations] in "Database.DuckDB.Simple.ToField".
+-- | A function of one more argument. The argument has the SQL type of
+-- 'duckdbTypeDeclaration'. The function is volatile when its result is
+-- volatile. See Note [Type declarations] in "Database.DuckDB.Simple.ToField".
 instance {-# OVERLAPPABLE #-} (FromField a, DuckDBColumnType a, Function r) => Function (a -> r) where
   argumentTypes _ = duckdbTypeDeclaration (Proxy :: Proxy a) : argumentTypes (Proxy :: Proxy r)
   returnType _ = returnType (Proxy :: Proxy r)
@@ -330,6 +356,9 @@ scalarFunctionHandlerWithState mkFn info context err = runCallback err do
   statePtr <- output (c_duckdb_v2_scalar_function_exec_get_init_data info)
   when (statePtr == nullPtr) $
     throwIO (functionInvocationError "duckdb-simple: scalar function state was not initialised")
+  -- The cast has no type check, and it is safe. createFunctionWithStateOn has
+  -- one signature for initState :: IO s and mkFn :: s -> f. Thus the init
+  -- callback stores a StablePtr of the same type s that this cast gives.
   state <- deRefStablePtr (castPtrToStablePtr (castPtr statePtr) :: StablePtr s)
   executeScalarFunction (mkFn state) info context
 

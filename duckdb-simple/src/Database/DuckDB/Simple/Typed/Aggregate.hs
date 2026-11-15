@@ -23,11 +23,12 @@ import Control.Monad (forM_, unless, when)
 import Data.Array (Array, elems, listArray, (!))
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.IntSet as IntSet
+import Data.Maybe (isJust)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Void (Void)
-import Database.DuckDB.Simple.Callback (attachOpaque, ignoreCallbackExceptions)
+import Database.DuckDB.Simple.Callback (attachOpaque, ignoreCallbackExceptions, targetCastFactory)
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (FieldNull))
 import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow)
 import Database.DuckDB.Simple.Function.Internal (FunctionResult (..), ScalarValue, prepareResultWriter)
@@ -203,6 +204,9 @@ createAggregateOn target name aggregate = do
   when (Text.null name || Text.any (== '\0') name) $
     throwInvalidArgument "aggregate function name must be nonempty and must not contain NUL"
   argumentTypes <- rowDeclarations name ["argument " <> argumentName index | index <- [0 ..]] columnTypes
+  -- The update callback has no context. It reads a GEOMETRY argument with the
+  -- factory of the instance, which only a connection target gives.
+  casts <- targetCastFactory target
   resultType <- either (\reason -> throwInvalidArgument (name <> ": result: " <> reason)) pure (duckdbTypeDeclaration (Proxy :: Proxy result))
   toRaw <- case rawResult of
     Just raw -> pure raw
@@ -222,7 +226,7 @@ createAggregateOn target name aggregate = do
         ( aggregateCallbacks
             setStateSize
             (initializeStates aggregate)
-            (updateStates name aggregate (length columnTypes))
+            (updateStates casts name aggregate (length columnTypes))
             (combineStates aggregate)
             (finalizeStates aggregate toRaw)
         )
@@ -230,9 +234,9 @@ createAggregateOn target name aggregate = do
           , aggregateDestroyCallback = Just destroyStates
           }
   withRegistrationFactory target \factory -> do
-    -- The argument reader reads neither VARIANT nor GEOMETRY. Thus reject such
-    -- a type before the registration.
-    forM_ (zip [0 ..] argumentTypes) \(index, argumentType) -> withTypeDeclaration factory argumentType (checkArgumentType name index)
+    -- The argument reader does not read VARIANT, and it reads GEOMETRY only with
+    -- a factory. Thus reject such a type before the registration.
+    forM_ (zip [0 ..] argumentTypes) \(index, argumentType) -> withTypeDeclaration factory argumentType (checkArgumentType (isJust casts) name index)
     registerAggregateFunctionWith target (configure parameters resultType factory) callbacks
   where
     columnTypes = rowColumnTypes (Proxy :: Proxy args)
@@ -293,14 +297,17 @@ initializeStates Aggregate{aggregateInitial} info = do
 
 -- | Add each row to its state. A row with NULL in an argument does not change
 -- its state. A row that does not convert raises an error that names the
--- aggregate function. See Note [Aggregate state life cycle].
-updateStates :: (FromRow args) => Text -> Aggregate state args result -> Int -> DuckDBV2AggregateFunctionUpdateInfoHandle -> IO ()
-updateStates name Aggregate{aggregateStep} columns info = do
+-- aggregate function. A GEOMETRY argument reads with the factory of
+-- 'targetCastFactory'. See Note [Aggregate state life cycle].
+updateStates
+  :: (FromRow args)
+  => Maybe DuckDBV2FactoryHandle -> Text -> Aggregate state args result -> Int -> DuckDBV2AggregateFunctionUpdateInfoHandle -> IO ()
+updateStates casts name Aggregate{aggregateStep} columns info = do
   count <- fromIntegral <$> output (c_duckdb_v2_aggregate_function_update_get_row_count info)
   states <- output (c_duckdb_v2_aggregate_function_update_get_states info)
   readers <-
     mapM
-      (\index -> output (c_duckdb_v2_aggregate_function_update_get_arg info (fromIntegral index)) >>= prepareArgumentReader index)
+      (\index -> output (c_duckdb_v2_aggregate_function_update_get_arg info (fromIntegral index)) >>= prepareArgumentReader casts index)
       [0 .. columns - 1]
   forM_ [0 .. count - 1] \row -> do
     fields <- mapM ($ row) readers

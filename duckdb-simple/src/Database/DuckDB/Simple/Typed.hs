@@ -33,13 +33,15 @@ import Control.Exception (SomeException, bracket, catch, displayException, fromE
 import Control.Monad (forM, forM_, when)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (intercalate)
+import Data.Maybe (fromMaybe)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Database.DuckDB.Simple.Callback (targetCastFactory)
 import Database.DuckDB.Simple.Element (vectorElementType)
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), FromField (..), ResultError (..))
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), UnionMemberType (..))
-import Database.DuckDB.Simple.Materialize (FallbackReaders (..), prepareVectorReader, rejectRows)
+import Database.DuckDB.Simple.Materialize (FallbackReaders (..), prepareGeometryReader, prepareVectorReader, rejectRows)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToDuckValue (..))
@@ -135,42 +137,51 @@ rowDeclarations name places declarations =
     either (\reason -> throwInvalidArgument (Text.intercalate (Text.pack ": ") [name, place, reason])) pure declaration
 
 -- | Raise an error before a registration when the resolved type of an
--- argument is or contains VARIANT or GEOMETRY. The argument reader of a scalar
--- function and of a typed aggregate function reads neither type
--- ('prepareArgumentReader'). The error names the registration and the index of
--- the argument.
-checkArgumentType :: Text -> Int -> DuckDBV2LogicalTypeHandle -> IO ()
-checkArgumentType name index logical = do
+-- argument is or contains VARIANT. The argument readers of a scalar function
+-- and of a typed aggregate function do not read VARIANT
+-- ('prepareArgumentReader'). When the first argument is False, also raise the
+-- error for a type that is or contains GEOMETRY: the callbacks of an aggregate
+-- function of an extension have no factory to read it. The error names the
+-- registration and the index of the argument.
+checkArgumentType :: Bool -> Text -> Int -> DuckDBV2LogicalTypeHandle -> IO ()
+checkArgumentType readsGeometry name index logical = do
   rep <- logicalTypeToRep logical
-  when (hasVariantOrGeometry rep) $
-    throwInvalidArgument
-      ( Text.intercalate
-          (Text.pack ": ")
-          [name, Text.pack "argument " <> argumentName index, Text.pack "the type of an argument cannot be or contain VARIANT or GEOMETRY"]
-      )
+  let refuse reason = throwInvalidArgument (Text.intercalate (Text.pack ": ") [name, Text.pack "argument " <> argumentName index, reason])
+  when (containsType isVariant rep) $
+    refuse (Text.pack "the type of an argument cannot be or contain VARIANT")
+  when (not readsGeometry && containsType isGeometry rep) $
+    refuse (Text.pack "the type of an argument of an aggregate function of an extension cannot be or contain GEOMETRY")
+  where
+    isVariant = (== LogicalTypeScalar LogicalTypeIdVariant)
+    isGeometry = \case
+      LogicalTypeGeometry _ -> True
+      _ -> False
 
--- | Test whether a type is or contains VARIANT or GEOMETRY.
-hasVariantOrGeometry :: LogicalTypeRep -> Bool
-hasVariantOrGeometry = \case
-  LogicalTypeScalar LogicalTypeIdVariant -> True
-  LogicalTypeGeometry _ -> True
-  LogicalTypeList child -> hasVariantOrGeometry child
-  LogicalTypeArray child _ -> hasVariantOrGeometry child
-  LogicalTypeMap key value -> hasVariantOrGeometry key || hasVariantOrGeometry value
-  LogicalTypeStruct fields -> any (hasVariantOrGeometry . structFieldValue) fields
-  LogicalTypeTuple fields -> any hasVariantOrGeometry fields
-  LogicalTypeUnion members -> any (hasVariantOrGeometry . unionMemberType) members
-  _ -> False
+-- | Test whether a type is or contains a type that the predicate accepts.
+containsType :: (LogicalTypeRep -> Bool) -> LogicalTypeRep -> Bool
+containsType accepts rep =
+  accepts rep || case rep of
+    LogicalTypeList child -> containsType accepts child
+    LogicalTypeArray child _ -> containsType accepts child
+    LogicalTypeMap key value -> containsType accepts key || containsType accepts value
+    LogicalTypeStruct fields -> any (containsType accepts . structFieldValue) fields
+    LogicalTypeTuple fields -> any (containsType accepts) fields
+    LogicalTypeUnion members -> any (containsType accepts . unionMemberType) members
+    _ -> False
 
--- | Prepare a reader for the rows of an argument vector. The first argument is
+-- | Prepare a reader for the rows of an argument vector. The second argument is
 -- the index of the argument, from 0. The reader gives the field of a row, with
 -- the name from 'argumentName'. A NULL row gives 'FieldNull', also a NULL
--- VARIANT or GEOMETRY row. A row that holds a VARIANT or GEOMETRY value raises
--- an error. The reader must not outlive the vector.
-prepareArgumentReader :: Int -> DuckDBV2VectorHandle -> IO (Int -> IO Field)
-prepareArgumentReader index vector = do
-  let unsupported = rejectRows (throwIO (userError "duckdb-simple: the type of a typed argument cannot be or contain VARIANT or GEOMETRY"))
-  readValue <- prepareVectorReader (FallbackReaders unsupported unsupported) vector
+-- VARIANT or GEOMETRY row. A row that holds a VARIANT value raises an error. A
+-- GEOMETRY value reads with the factory of the first argument, at each depth
+-- of the type. Without a factory, a row that holds a GEOMETRY value raises an
+-- error. See Note [User casts and the casts of the library] in
+-- "Database.DuckDB.Simple.Materialize". The reader must not outlive the vector.
+prepareArgumentReader :: Maybe DuckDBV2FactoryHandle -> Int -> DuckDBV2VectorHandle -> IO (Int -> IO Field)
+prepareArgumentReader casts index vector = do
+  let noVariant = rejectRows (throwIO (userError "duckdb-simple: the type of a typed argument cannot be or contain VARIANT"))
+      noGeometry = rejectRows (throwIO (userError "duckdb-simple: a typed argument of this callback cannot be or contain GEOMETRY"))
+  readValue <- prepareVectorReader (FallbackReaders noVariant (maybe noGeometry prepareGeometryReader casts)) vector
   pure \row -> Field (argumentName index) index <$> readValue row
 
 -- | Describe the arguments that 'FromField' or @FromRow@ cannot convert. The
@@ -193,7 +204,8 @@ conversionMessage failures = intercalate "; " (map describe failures)
 -- | Register an explicit typed cast on a connection or a loading extension.
 -- 'Database.DuckDB.Simple.Function.createCast' gives the rules for the rows.
 createCastOn :: (FromField a, ToDuckValue b) => RegistrationTarget -> TypeDeclaration -> TypeDeclaration -> (a -> Either Text b) -> IO ()
-createCastOn target source destination convert =
+createCastOn target source destination convert = do
+  casts <- targetCastFactory target
   withRegistrationFactory target \factory ->
     registerCastWith
       target
@@ -201,15 +213,19 @@ createCastOn target source destination convert =
           withTypeDeclaration factory source $ checked . c_duckdb_v2_cast_function_set_source_type function
           withTypeDeclaration factory destination $ checked . c_duckdb_v2_cast_function_set_target_type function
       )
-      (castRows convert)
+      (castRows casts convert)
 
 -- | Convert the rows of one cast call. Write each row before an error leaves
 -- the callback, because TRY_CAST keeps the output and ignores the error. A failed
--- row gets NULL. Then raise the error of the first failed row.
-castRows :: (FromField a, ToDuckValue b) => (a -> Either Text b) -> DuckDBV2CastFunctionExecInfoHandle -> DuckDBV2ContextHandle -> IO ()
-castRows convert info context = withContextFactory context \factory -> do
+-- row gets NULL. Then raise the error of the first failed row. A GEOMETRY
+-- argument reads with the factory of 'targetCastFactory', or with the factory
+-- of the context for an extension.
+castRows
+  :: (FromField a, ToDuckValue b)
+  => Maybe DuckDBV2FactoryHandle -> (a -> Either Text b) -> DuckDBV2CastFunctionExecInfoHandle -> DuckDBV2ContextHandle -> IO ()
+castRows casts convert info context = withContextFactory context \factory -> do
   count <- fromIntegral <$> output (c_duckdb_v2_cast_function_exec_get_row_count info)
-  readArgument <- output (c_duckdb_v2_cast_function_exec_get_input info) >>= prepareArgumentReader 0
+  readArgument <- output (c_duckdb_v2_cast_function_exec_get_input info) >>= prepareArgumentReader (Just (fromMaybe factory casts)) 0
   vector <- output (c_duckdb_v2_cast_function_exec_get_output info)
   -- Flatten after the size changes. See Note [Vector flatten] in
   -- "Database.DuckDB.Simple.Materialize".

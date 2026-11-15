@@ -15,7 +15,6 @@ import Control.Exception (SomeException, bracket, displayException, throwIO, try
 import Control.Monad (forM_, void, when)
 import Data.Array (Array, elems)
 import qualified Data.ByteString as BS
-import qualified Data.Geometry as G
 import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int16, Int32, Int64, Int8)
 import qualified Data.Map.Strict as Map
@@ -235,7 +234,7 @@ testCastErrors = withConnection ":memory:" \conn -> do
   registerCustomType conn "typed_from_variant" (TypeExpression "BIGINT")
   createCast conn (TypeExpression "VARIANT") (TypeExpression "typed_from_variant") \(value :: Int64) -> Right value
   assertSqlError
-    "the type of a typed argument cannot be or contain VARIANT or GEOMETRY"
+    "the type of a typed argument cannot be or contain VARIANT"
     (query_ conn "SELECT CAST(1::VARIANT AS typed_from_variant)::BIGINT" :: IO [Only Int64])
   query_ conn "SELECT CAST(v AS typed_from_variant)::BIGINT FROM (VALUES (NULL::VARIANT)) t(v)"
     >>= (@?= [Only (Nothing :: Maybe Int64)])
@@ -848,20 +847,17 @@ testAggregateResultTypes = withConnection ":memory:" \conn -> do
   assertSqlError
     "For a newtype over one of these types, derive FunctionResult with deriving newtype."
     (createAggregate conn "typed_years" sumAggregate{aggregateResult = pure . Years . fromIntegral})
-  -- The argument reader reads neither VARIANT nor GEOMETRY.
-  let unreadable = "argument arg0: the type of an argument cannot be or contain VARIANT or GEOMETRY"
+  -- The argument reader does not read VARIANT.
+  let unreadable = "argument arg0: the type of an argument cannot be or contain VARIANT"
   assertSqlError
     ("typed_variant_count: " <> unreadable)
     (createAggregate conn "typed_variant_count" countAggregate{aggregateStep = \count (Only (_ :: Variant)) -> pure (count + 1)})
   assertSqlError
     ("typed_variants_count: " <> unreadable)
     (createAggregate conn "typed_variants_count" countAggregate{aggregateStep = \count (Only (_ :: [Maybe Variant])) -> pure (count + 1)})
-  assertSqlError
-    ("typed_geometry_count: " <> unreadable)
-    (createAggregate conn "typed_geometry_count" countAggregate{aggregateStep = \count (Only (_ :: G.Geometry)) -> pure (count + 1)})
   query_
     conn
-    "SELECT count(*) FROM duckdb_functions() WHERE function_name IN ('typed_years', 'typed_variant_count', 'typed_variants_count', 'typed_geometry_count')"
+    "SELECT count(*) FROM duckdb_functions() WHERE function_name IN ('typed_years', 'typed_variant_count', 'typed_variants_count')"
     >>= (@?= [Only (0 :: Int64)])
   let limit = "result: the result type of an aggregate function must be BOOLEAN, TINYINT to BIGINT, UTINYINT to UBIGINT, FLOAT, DOUBLE, or VARCHAR"
   assertSqlError

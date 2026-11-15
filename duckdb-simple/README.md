@@ -256,11 +256,13 @@ the cast of DuckDB to the SQL type of the Haskell type, or an error where the
 value does not fit. For example, `Int8` reads a BIGINT that fits in a TINYINT,
 and `Double` reads a DECIMAL with the value of `c::DOUBLE`. A read that needs
 the TimeZone setting of the session, or another text than the cast gives,
-raises the error of an incompatible column: a TIMESTAMP or a DATE as
-`UTCTime`, a TIMESTAMPTZ as `LocalTime`, a FLOAT or a DOUBLE as `Text`, and a
-VARCHAR as `ByteString`. Write the cast in SQL for these values, for example
-`c AT TIME ZONE 'UTC'`, `c::VARCHAR`, or `encode(c)`. The Haddock of each
-`FromField` instance gives the SQL types that it reads.
+raises the error of an incompatible column: a TIMESTAMP or a DATE as `UTCTime`,
+a TIMESTAMPTZ as `LocalTime`, a FLOAT or a DOUBLE as `Text`, a VARCHAR as
+`ByteString`, and an ENUM as an integer type. Write the cast in SQL for these
+values, for example `c AT TIME ZONE 'UTC'`, `c::VARCHAR`, `encode(c)`, or
+`enum_code(c)`. An ENUM value reads as `Text` or `String` with its label, the
+text of `c::VARCHAR`, and a `FieldEnum` holds the index and the label. The
+Haddock of each `FromField` instance gives the SQL types that it reads.
 
 ## Generic Encoding with ViaDuckDB
 
@@ -500,20 +502,21 @@ digits below a microsecond and the parameter has the type `TIMESTAMP_NS` (see
 [Infinite dates and timestamps](#infinite-dates-and-timestamps)). The same
 holds for `FieldTime` and `FieldTimestampTZ`. A `FieldText` binds as a
 `VARCHAR` with no collation, also when it came from a `JSON` value. A value
-from a `VARIANT` column binds as its payload. `FieldNull` binds as an untyped
-NULL. DuckDB casts each of these values to the type of a column with no loss.
+from a `VARIANT` column binds as its payload. A `FieldEnum` binds its label as
+a `VARCHAR`. `FieldNull` binds as an untyped NULL. DuckDB casts each of these
+values to the type of a column with no loss.
 
-A `FieldEnum` raises an `SQLError` of the type `ErrorInputInvalid`, because it
-holds only the index of the ENUM value and not its ENUM type. A `FieldList`, a
-`FieldArray`, or a `FieldMap` with only `FieldNull` elements binds as the SQL
-list literal does, for example as `"NULL"[]` for a parameter with no known
-type. An empty `FieldList` or `FieldMap` takes the element type of a parameter
-with a known type, and raises the same error for a parameter with no known
-type. An empty `FieldArray` raises the same error, because a DuckDB ARRAY has at
-least one element. Inside a `FieldStruct`, a `FieldTuple`, or a `FieldUnion`,
-the declared type gives the ENUM type and the element type, so such a value
-binds. `FieldValue` has no `DuckDBColumnType` and no `ToDuckValue`
-instance, because no one DuckDB type holds each of its values.
+A `FieldList`, a `FieldArray`, or a `FieldMap` with only `FieldNull` elements
+binds as the SQL list literal does, for example as `"NULL"[]` for a parameter
+with no known type. An empty `FieldList` or `FieldMap` takes the element type
+of a parameter with a known type, and raises an `SQLError` of the type
+`ErrorInputInvalid` for a parameter with no known type. An empty `FieldArray`
+raises the same error, because a DuckDB ARRAY has at least one element. Inside
+a `FieldStruct`, a `FieldTuple`, or a `FieldUnion`, the declared type gives the
+element type, so such a value binds. A `FieldEnum` there binds its label to the
+declared ENUM type, and a label that is not in the dictionary raises an error.
+`FieldValue` has no `DuckDBColumnType` and no `ToDuckValue` instance, because
+no one DuckDB type holds each of its values.
 
 ### Resource Management
 

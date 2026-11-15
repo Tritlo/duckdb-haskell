@@ -221,6 +221,13 @@ The SQL workflow stays the same. These changes can affect your code:
   example `1.0e-2`.
 - A VARCHAR read as `ByteString` raises the error of an incompatible column.
   Read `Text`, or write `encode(c)` for the UTF-8 bytes that version 0.3 gave.
+- An ENUM read as an integer type (`Int`, `Int8` to `Int64`, `Word`, `Word8` to
+  `Word64`, or `Natural`) raises the error of an incompatible column. Write
+  `enum_code(c)` for the index that version 0.3 gave, or `c::INTEGER` for the
+  label as a number. An ENUM now reads as `Text` or `String` with its label.
+- `FieldEnum` has a second field, the label: `FieldEnum Word32 Text`. Change
+  each pattern and each construction. A `FieldEnum` inside a declared ENUM type
+  binds its label.
 - `TimeWithZone` holds the offset as seconds east of UTC. The field
   `timeWithZoneZone :: TimeZone` is now `timeWithZoneOffsetSeconds :: Int32`.
   Convert a `TimeZone` with `fromIntegral (timeZoneMinutes zone) * 60`, and

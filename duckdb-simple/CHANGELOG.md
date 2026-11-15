@@ -247,9 +247,9 @@
   binds back. A scalar constructor binds as the DuckDB type of the
   constructor, and a `FieldList`, a `FieldArray`, or a `FieldMap` takes the
   element type that its elements give, with the rule of a SQL list literal.
-  A `FieldEnum`, an empty `FieldArray`, and an empty `FieldList` or `FieldMap`
-  for a parameter with no known type raise `SQLError` with the type
-  `ErrorInputInvalid`. A `FieldTimestamp`, a `FieldTime`, and a
+  A `FieldEnum` binds its label as a VARCHAR. An empty `FieldArray`, and an
+  empty `FieldList` or `FieldMap` for a parameter with no known type, raise
+  `SQLError` with the type `ErrorInputInvalid`. A `FieldTimestamp`, a `FieldTime`, and a
   `FieldTimestampTZ` bind with the microsecond type, or with the nanosecond
   type when the value has digits below a microsecond and the parameter has the
   nanosecond type.
@@ -348,6 +348,15 @@
 - A VARCHAR read as `ByteString` raises the error of an incompatible column.
   Earlier versions gave the UTF-8 bytes, where the cast to BLOB reads escape
   sequences.
+- `FieldEnum` holds the index and the label of an ENUM value:
+  `FieldEnum Word32 Text`. An ENUM value reads as `Text` or `String` with its
+  label, as the cast to VARCHAR gives it. Earlier versions raised an error. An
+  ENUM value read as an integer type raises the error of an incompatible
+  column. Earlier versions gave the index, where the cast of DuckDB parses the
+  label. The reader reads each label of a query one time, through the
+  dictionary of the type, and does not cast.
+- A `FieldEnum` inside a value of a declared ENUM type binds its label, not its
+  index. A label that is not in the dictionary raises `SQLError`.
 - Allow session variables to supply omitted named parameters. Too few named
   parameters no longer raise `FormatError`. Too many named parameters still
   raise it.

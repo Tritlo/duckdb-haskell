@@ -32,7 +32,9 @@ data QueryMetrics = QueryMetrics
 
 -- | Enable or disable profiling for later queries on this connection.
 -- Enabling sets the native @enable_profiling@ option to @no_output@. DuckDB then
--- collects the metrics and does not print a profile.
+-- collects the metrics and does not print a profile. The option has the
+-- session scope, so another connection to the same database keeps its own
+-- setting.
 enableProfiling :: Connection -> Bool -> IO ()
 enableProfiling connection enabled = withConnectionHandle connection \native -> do
   when enabled do

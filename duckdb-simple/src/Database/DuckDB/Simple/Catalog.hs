@@ -61,7 +61,9 @@ data ColumnDescription = ColumnDescription
   }
   deriving (Eq, Show)
 
--- | Read the backend type of an attached database.
+-- | Read the backend type of an attached database, for example @duckdb@.
+-- DuckDB gives a type for each attached database, so the result is 'Nothing'
+-- only for a name that no attached database has.
 catalogTypeName :: Connection -> Text -> IO (Maybe Text)
 catalogTypeName conn name = do
   validateNames [name]

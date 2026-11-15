@@ -508,13 +508,14 @@ parameter cannot hold, a date or a timestamp outside the range of DATE or
 TIMESTAMP of DuckDB (note 7), a nanosecond timestamp outside its storage, a time
 of day that is not a TIME value, a TIMETZ offset outside -57599 to 57599
 seconds, an `Integer` or `Natural` field of a record outside HUGEINT or
-UHUGEINT, and a `DecimalValue` that its width cannot hold. Each other input
-check gives the type `ErrorInputInvalid`. This includes a value of the wrong
-shape or type, also where DuckDB gives another type for the same input, for
-example a UNION tag that is not a member, a leaf built from another type, a
-STRUCT field that does not match its type, or an unknown CRS. Examples are a
-VARIANT object with two equal keys, a registration with an argument type that
-the library cannot read, and a DECIMAL width above 38.
+UHUGEINT, a `DecimalValue` that its width cannot hold, and an ENUM label that is
+not in the dictionary of a declared ENUM type. Each other input check gives the
+type `ErrorInputInvalid`. This includes a value of the wrong shape or type, also
+where DuckDB gives another type for the same input, for example a UNION tag that
+is not a member, a leaf built from another type, a STRUCT field that does not
+match its type, or an unknown CRS. Examples are a VARIANT object with two equal
+keys, a registration with an argument type that the library cannot read, and a
+DECIMAL width above 38.
 
 A statement in a callback that waits for a lock of the connection longer than
 the time limit of `connectionCallbackLockWait` raises an `SQLError` of the type
@@ -926,8 +927,9 @@ reads as a `FieldStruct` with `VARIANT` fields and keeps them.
 An empty or all-NULL `FieldList`, `FieldArray`, or `FieldMap` follows note 11 of
 [Types](#types). Inside a `FieldStruct`, a `FieldTuple`, or a `FieldUnion`, a
 `FieldEnum` binds its label to the declared ENUM type, and a label that is not
-in the dictionary raises an error. `FieldValue` has no `DuckDBColumnType` and no
-`ToDuckValue` instance, because no one DuckDB type holds each of its values.
+in the dictionary raises an `SQLError` of the type `ErrorTypeConversion`, as the
+cast of DuckDB gives for that label. `FieldValue` has no `DuckDBColumnType` and
+no `ToDuckValue` instance, because no one DuckDB type holds each of its values.
 
 ### Resource Management
 

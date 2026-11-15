@@ -1586,13 +1586,14 @@ scalarFieldValueDuckValue factory dtype value = case (dtype, value) of
 -- | Construct an ENUM value by the default cast of the label to the ENUM type.
 -- The label of a 'FieldEnum' gives the value, not its index: an index of
 -- another dictionary would give another label with no error. A label that is
--- not in the dictionary raises an error. See
+-- not in the dictionary raises an 'SQLError' of the type 'ErrorTypeConversion',
+-- as the cast of DuckDB from VARCHAR does. See
 -- Note [User casts and the casts of the library] in
 -- "Database.DuckDB.Simple.Materialize".
 enumDuckValue :: DuckDBV2FactoryHandle -> Array Int Text -> Text -> IO DuckDBV2ValueHandle
 enumDuckValue factory entries label = do
   unless (label `elem` elems entries) $
-    throwInvalidArgument ("the ENUM label '" <> label <> "' is not in the dictionary of the type")
+    throwConversionError ("the ENUM label '" <> label <> "' is not in the dictionary of the type")
   bracket (logicalTypeFromRep factory (LogicalTypeEnum entries)) destroyLogicalType \logical ->
     bracket (textDuckValue factory label) destroyValue \value ->
       defaultCast factory value logical

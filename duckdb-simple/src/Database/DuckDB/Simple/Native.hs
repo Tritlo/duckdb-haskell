@@ -497,12 +497,13 @@ throwInvalidArgument message = throwIO (SQLError ("duckdb-simple: " <> message) 
 -- | Raise the error of an input check for a value that its SQL type cannot
 -- hold. The error is an 'SQLError' of the type 'ErrorTypeConversion' with no
 -- query, as the "Conversion Error" of DuckDB for the same value in SQL, for
--- example for @300::TINYINT@ or @'25:00:00'::TIME@. These checks use this
--- function: an integer outside its parameter type, a HUGEINT or UHUGEINT value
--- outside its type, a DECIMAL value that its width cannot hold, a date or a
--- timestamp outside the range of DuckDB, a nanosecond timestamp outside its
--- storage, a TIMETZ offset outside -57599 to 57599 seconds, and a time of day
--- that is not a TIME value.
+-- example for @300::TINYINT@, @'25:00:00'::TIME@, or @\'x\'::ENUM(\'a\', \'b\')@.
+-- These checks use this function: an integer outside its parameter type, a
+-- HUGEINT or UHUGEINT value outside its type, a DECIMAL value that its width
+-- cannot hold, a date or a timestamp outside the range of DuckDB, a nanosecond
+-- timestamp outside its storage, a TIMETZ offset outside -57599 to 57599
+-- seconds, a time of day that is not a TIME value, and an ENUM label that is
+-- not in the dictionary of its type.
 throwConversionError :: Text -> IO a
 throwConversionError message = throwIO (SQLError ("duckdb-simple: " <> message) (Just ErrorTypeConversion) Nothing Nothing)
 

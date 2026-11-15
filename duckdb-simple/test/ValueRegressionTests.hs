@@ -1542,12 +1542,16 @@ valueRegressionTests =
               then FieldEnum (if first == "x" then 0 else 1) first
               else FieldEnum (if second == "p" then 0 else if second == "q" then 1 else 2) second
           pairs @?= Map.singleton key second
-    , testCase "ENUM payload label must be in its dictionary" $ withConnection ":memory:" \conn ->
+    , testCase "ENUM payload label must be in its dictionary" $ withConnection ":memory:" \conn -> do
         try (query conn "SELECT ?" (Only (singleField (LogicalTypeEnum (listArray (0, 1) ["a", "b"])) (FieldEnum 0 "c"))) :: IO [Only FieldValue]) >>= \case
           Left SQLError{sqlErrorMessage, sqlErrorType} -> do
-            sqlErrorType @?= Just ErrorInputInvalid
+            sqlErrorType @?= Just ErrorTypeConversion
             sqlErrorMessage @?= "duckdb-simple: the ENUM label 'c' is not in the dictionary of the type"
           Right rows -> assertFailure ("expected the label error, got " <> show rows)
+        -- DuckDB gives the same type for the same label in SQL.
+        try (query_ conn "SELECT {'value': 'c'}::STRUCT(value ENUM('a', 'b'))" :: IO [Only FieldValue]) >>= \case
+          Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorTypeConversion
+          Right rows -> assertFailure ("expected the cast error of DuckDB, got " <> show rows)
     , testCase "ENUM payload binds its label, not its index" $ withConnection ":memory:" \conn -> do
         let struct = singleField (LogicalTypeEnum (listArray (0, 2) ["a", "b", "c"])) (FieldEnum 1 "b")
         (query conn "SELECT typeof((?).value), (?).value::VARCHAR, ?" (struct, struct, struct) :: IO [(Text, Text, StructValue FieldValue)])

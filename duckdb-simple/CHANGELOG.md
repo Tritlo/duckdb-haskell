@@ -307,25 +307,25 @@
   an infinity value as a STRUCT field, a TUPLE element, or a UNION member, a
   `FieldHugeInt` or a `FieldUHugeInt` outside its type, a TIMETZ offset outside
   -57599 to 57599 seconds, a time of day that is not a TIME value (a field
-  outside its own range, or a time after 24:00:00), and a `DecimalValue` that
-  its width cannot hold. For such a nanosecond timestamp in the range of DuckDB,
-  for example in the year 2300, DuckDB raises its own error in the other
-  positions: `ErrorTypeConversion` for a TIMESTAMP_NS or TIMESTAMPTZ_NS
-  parameter, and `ErrorInputInvalid` for an element of a list, an `Array`, or a
-  `Map`. A `LocalTime` or a `UTCTime` (in UTC) from 2262-04-11
-  23:47:16.854775807 to 23:47:16.854775999 gets the error of the library in each
-  position. A value of the wrong shape or type keeps `ErrorInputInvalid`, also
-  where DuckDB gives another type for the same input, for example a UNION tag
-  that is not a member, a leaf built from another type, a STRUCT field that does
-  not match its type, or an unknown CRS. A parameter count or a parameter name
-  that does not match the query keeps its `FormatError`. A check in a callback
-  fails the outer statement with the type of the check: such a value as the
-  result of a typed function or a row of a typed table function gives
-  `ErrorTypeConversion` and the text `Conversion Error: duckdb-simple: ...`.
-  Version 0.3 raised an `IOException` for the checks of parameter values,
-  logical types, and CRS names. The error for a scalar value that does not match
-  its declared type names the SQL type, for example `NULL` in place of
-  `LogicalTypeIdSQLNull`.
+  outside its own range, or a time after 24:00:00), an ENUM label that is not in
+  the dictionary of its type, and a `DecimalValue` that its width cannot hold.
+  For such a nanosecond timestamp in the range of DuckDB, for example in the
+  year 2300, DuckDB raises its own error in the other positions:
+  `ErrorTypeConversion` for a TIMESTAMP_NS or TIMESTAMPTZ_NS parameter, and
+  `ErrorInputInvalid` for an element of a list, an `Array`, or a `Map`. A
+  `LocalTime` or a `UTCTime` (in UTC) from 2262-04-11 23:47:16.854775807 to
+  23:47:16.854775999 gets the error of the library in each position. A value of
+  the wrong shape or type keeps `ErrorInputInvalid`, also where DuckDB gives
+  another type for the same input, for example a UNION tag that is not a member,
+  a leaf built from another type, a STRUCT field that does not match its type,
+  or an unknown CRS. A parameter count or a parameter name that does not match
+  the query keeps its `FormatError`. A check in a callback fails the outer
+  statement with the type of the check: such a value as the result of a typed
+  function or a row of a typed table function gives `ErrorTypeConversion` and
+  the text `Conversion Error: duckdb-simple: ...`. Version 0.3 raised an
+  `IOException` for the checks of parameter values, logical types, and CRS
+  names. The error for a scalar value that does not match its declared type
+  names the SQL type, for example `NULL` in place of `LogicalTypeIdSQLNull`.
 - A check of the state of the library, or of a vector, a type, or a value that
   DuckDB gave, raises `SQLError` with the type `ErrorRuntimeInternal`. Such an
   error means a defect of the library or of DuckDB. When a statement raises it,
@@ -470,7 +470,8 @@
   TO row read the labels again for each vector. A child of a STRUCT, a TUPLE,
   or a UNION reads the whole dictionary one time for each execution.
 - A `FieldEnum` inside a value of a declared ENUM type binds its label, not its
-  index. A label that is not in the dictionary raises `SQLError`.
+  index. A label that is not in the dictionary raises `SQLError` with the type
+  `ErrorTypeConversion`, as the cast of DuckDB gives for that label.
 - `displayException` of a `ResultError` gives the text of the error, with the
   column and the two types, as the `SQLError` of a column. Earlier versions
   gave the derived `show`. The error of a field of a `ViaDuckDB` record names

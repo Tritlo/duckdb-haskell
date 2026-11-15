@@ -441,16 +441,17 @@ The SQL workflow stays the same. These changes can affect your code:
   Conversion Error of DuckDB for the same value in SQL (an integer for its
   parameter type, a date or a timestamp for the range of DuckDB, a nanosecond
   timestamp for its storage, a HUGEINT or UHUGEINT field, a TIMETZ offset, a
-  time of day that is not a TIME value, or a `DecimalValue` for its width), and
-  a parameter count or a parameter name that does not match the query, which
-  raises a `FormatError`. A value of the wrong shape or type keeps
-  `ErrorInputInvalid`, also where DuckDB gives another type for the same input,
-  for example a UNION tag that is not a member, a leaf built from another type,
-  a STRUCT field that does not match its type, or an unknown CRS. A check in a
-  callback fails the outer statement with the type of the check: such a value as
-  the result of a typed function or a row of a typed table function gives
-  `ErrorTypeConversion` and the text `Conversion Error: duckdb-simple: ...` (see
-  the entry on a callback that raises an `SQLError`).
+  time of day that is not a TIME value, a `DecimalValue` for its width, or an
+  ENUM label for its dictionary), and a parameter count or a parameter name that
+  does not match the query, which raises a `FormatError`. A value of the wrong
+  shape or type keeps `ErrorInputInvalid`, also where DuckDB gives another type
+  for the same input, for example a UNION tag that is not a member, a leaf built
+  from another type, a STRUCT field that does not match its type, or an unknown
+  CRS. A check in a callback fails the outer statement with the type of the
+  check: such a value as the result of a typed function or a row of a typed
+  table function gives `ErrorTypeConversion` and the text
+  `Conversion Error: duckdb-simple: ...` (see the entry on a callback that
+  raises an `SQLError`).
 - Version 0.3 raised an `IOException` (a `userError`) for a BIT, DECIMAL, ENUM,
   HUGEINT, UHUGEINT, TIMETZ, time of day, or timestamp value that does not fit
   its type, a STRUCT or UNION value whose fields do not match its types, a

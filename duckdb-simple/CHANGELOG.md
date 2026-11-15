@@ -246,20 +246,24 @@
 - Each input check of the library raises `SQLError` with the type
   `ErrorInputInvalid`: a parameter value that does not fit its type (for
   example a `DecimalValue` outside its width, a `BitString` with bad padding, a
-  `UnionValue` with a tag out of range, a timestamp outside the range of its
+  `UnionValue` with a tag out of range, a timestamp outside the storage of its
   type, or an empty `Array`), a logical type with a NUL in a name or a bad
   DECIMAL width, a CRS name that DuckDB does not keep, a NUL in a database
   path, an alias, an attach option, a configuration, a query, or a parameter
-  name, a bad `ConnectionOptions` field, SQL text with no statement or with
+  name, a NUL in a file path, a negative file offset or read size, a file
+  range outside `Int64`, a bad `ConnectionOptions` field, SQL text with no
+  statement or with
   more than one statement, a parameter index or a column index out of bounds,
   a bad name or argument of a registration, a catalog lookup, a configuration
   option, or a log sink, the column count of a COPY FROM table, and a VARIANT
   argument of a typed function, a table function, a pragma, a COPY function,
   or a custom option. An error about a statement has the query of the
-  statement, and each other error has no query. Two groups of checks keep
-  their errors: `FormatError` for a parameter count or a parameter name that
-  does not match the query, and an `SQLError` with no type for the checks of
-  `Database.DuckDB.Simple.FileSystem` and of scalar functions. Version 0.3
+  statement, and each other error has no query. A date or a timestamp outside
+  the range of DuckDB, and an integer outside the range of its parameter type,
+  raise `SQLError` with the type `ErrorInputOutOfRange`. Two groups of checks
+  keep their errors: `FormatError` for a parameter count or a parameter name
+  that does not match the query, and an `SQLError` with no type for the checks
+  of scalar functions. Version 0.3
   raised an `IOException` for the checks of parameter values, logical types,
   and CRS names. The error for a scalar value that does not
   match its declared type names the SQL type, for example `NULL` in place of
@@ -268,8 +272,9 @@
   and a `FieldTime`, a `FieldTimestamp`, or a `FieldTimestampTZ` with such
   digits, binds with the nanosecond type for a `VARIANT` parameter when it fits
   the range of that type, so the VARIANT keeps the digits. A value with no such
-  digits binds as before, with no read of the parameter type. An element of a
-  `VARIANT` list or map keeps the microsecond value.
+  digits binds as before, with no read of the parameter type. A value outside
+  the range of the nanosecond type, and an element of a `VARIANT` list or map,
+  keep the microsecond value. A `Variant` payload follows the same rule.
 - An empty `Array` and an empty `FieldArray` raise the same `SQLError`, of the
   type `ErrorInputInvalid`.
 - Add a parameter instance for `FieldValue`, so a row read as `[FieldValue]`

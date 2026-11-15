@@ -529,7 +529,7 @@ tests =
           waitForRelease weak (500 :: Int)
     ]
   where
-    crsQuery = "system.main.ST_SetCRS('POINT EMPTY'"
+    crsQuery = "system.main.ST_SetCRS(system.main.ST_GeomFromWKB("
     waitForRelease weak attempts
       | attempts == 0 = assertFailure "the failed open kept a native connection"
       | otherwise = do

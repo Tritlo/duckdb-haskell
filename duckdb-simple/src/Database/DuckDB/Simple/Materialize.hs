@@ -296,6 +296,10 @@ of the instance, so a user cast does not change their result:
   GEOMETRY payload. It uses the factory of the instance of its helper
   connection (variantCasts).
 
+The type query of a connection with a custom CRS (readNativeTypes in
+"Database.DuckDB.Simple.TypeCache") has no cast: it binds the empty point as a
+BLOB value.
+
 These casts use the factory of a connection or of a callback context:
 
 - prepareGeometryReader in the callbacks of a registration on an extension. An
@@ -306,8 +310,6 @@ These casts use the factory of a connection or of a callback context:
   ("Database.DuckDB.Simple.ToField").
 - enumDuckValue casts a VARCHAR value to an ENUM type, and variantDuckValue
   casts a value to VARIANT (the same module).
-- readNativeTypes runs a statement that casts a text to GEOMETRY
-  ("Database.DuckDB.Simple.TypeCache").
 
 Thus a user cast for one of these pairs replaces the cast that the library
 expects, and the library gives the result of the user cast. For example, after

@@ -136,6 +136,16 @@ userCastTests =
           void (execute_ conn "COPY (SELECT 42::BIGINT::VARIANT AS v) TO 'unused' (FORMAT user_cast_variant_copy)")
           (map (map fieldValue) <$> readIORef rows) >>= (@?= [[FieldInt64 42]])
           readIORef calls >>= (@?= 0)
+    , testCase "a cast from VARCHAR to GEOMETRY does not run when a connection with a custom CRS opens" $
+        withEnvironment \environment -> withInstance environment [] \instance' -> withConnectionOn instance' \conn -> do
+          calls <- nullCast conn (R.TypeExpression "VARCHAR") (R.TypeExpression "GEOMETRY")
+          -- The open reads the GEOMETRY type of the custom CRS with a query.
+          other <- connectWithOptions instance' defaultConnectionOptions{connectionGeometryCRS = ["local grid"]}
+          readIORef calls >>= (@?= 0)
+          let grid = point{rawGeometryCRS = Just "local grid"}
+              struct = oneField "g" (LogicalTypeGeometry (Just "local grid")) (FieldGeometry grid)
+          query other "SELECT ?" (Only struct) >>= (@?= [Only struct])
+          close other
     ]
 
 -- | Register a cast that writes NULL for each row, and give its call count.

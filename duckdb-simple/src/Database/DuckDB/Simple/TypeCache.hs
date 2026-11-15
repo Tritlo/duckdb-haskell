@@ -24,6 +24,7 @@ module Database.DuckDB.Simple.TypeCache (
 import Control.Concurrent.MVar (MVar, modifyMVarMasked, newMVar)
 import Control.Exception (SomeException, bracket, finally, mask, onException, throwIO, try, uninterruptibleMask_)
 import Control.Monad (when)
+import qualified Data.ByteString as BS
 import Data.List (nub)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -177,18 +178,20 @@ withVariantState TypeCache{typeCacheInstance, typeCacheCasts, typeCacheState} ac
   either (throwIO :: SomeException -> IO a) pure outcome
 
 -- | Read the SQL-derived GEOMETRY types of custom CRS names. Run no statement
--- for an empty list. See Note [CRS types of a connection]. The statement casts
--- a text to GEOMETRY, and a user cast from VARCHAR to GEOMETRY replaces that
--- cast. See
+-- for an empty list. See Note [CRS types of a connection]. The statement binds
+-- the empty point as a BLOB value and each name as a VARCHAR value. Each value
+-- has the type of its parameter, so the statement has no cast, and a cast that
+-- a user registers does not run. See
 -- Note [User casts and the casts of the library] in
 -- "Database.DuckDB.Simple.Materialize".
 readNativeTypes :: DuckDBV2ConnectionHandle -> [Text] -> IO NativeTypes
 readNativeTypes _ [] = pure (NativeTypes Map.empty [])
 readNativeTypes connection crss = do
-  let sql = "SELECT " <> Text.intercalate ", " ["system.main.ST_SetCRS('POINT EMPTY'::GEOMETRY, ?)" | _ <- crss]
+  let sql = "SELECT " <> Text.intercalate ", " ["system.main.ST_SetCRS(system.main.ST_GeomFromWKB(?), ?)" | _ <- crss]
       textValue value = withText value (\text -> factoryOutput connection (\factory -> c_duckdb_v2_value_create_varchar factory text))
+      emptyPoint = withBytes emptyPointWKB (\bytes -> factoryOutput connection (\factory -> c_duckdb_v2_value_create_blob factory bytes))
   withSQLStatement connection sql \parsed ->
-    withCreatedValues (map textValue crss) \values -> withArray values \valuePtr ->
+    withCreatedValues (concat [[emptyPoint, textValue crs] | crs <- crss]) \values -> withArray values \valuePtr ->
       bracket
         (output (c_duckdb_v2_statement_execute connection parsed (ConstPtr nullPtr) (ConstPtr valuePtr) (fromIntegral (length values))))
         (destroy c_duckdb_v2_result_destroy)
@@ -197,6 +200,10 @@ readNativeTypes connection crss = do
             when (chunk == nullHandle) $ throwIO (userError "duckdb-simple: the type query returned no row")
             owned <- columnTypes chunk (length crss)
             geometryTypes crss owned `onException` releaseItems destroyLogicalType owned
+
+-- | The WKB of POINT EMPTY: a point with NaN coordinates.
+emptyPointWKB :: BS.ByteString
+emptyPointWKB = BS.pack [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 248, 127, 0, 0, 0, 0, 0, 0, 248, 127]
 
 -- | Map each configured name, and the CRS text that DuckDB reports for its
 -- type, to the type. Raise an error if a type has no CRS. The caller keeps the

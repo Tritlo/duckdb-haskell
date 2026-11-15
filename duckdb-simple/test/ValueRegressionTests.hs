@@ -346,13 +346,13 @@ valueRegressionTests =
                   assertEqual label (Just ErrorInputInvalid) sqlErrorType
                   assertBool (Text.unpack sqlErrorMessage) (part `Text.isInfixOf` sqlErrorMessage)
                 Right rows -> assertFailure (label <> ": " <> show rows)
-        untyped "empty list" (FieldList []) "an empty FieldList has no element type for a parameter with no known type"
-        untyped "empty inner list" (FieldList [FieldList [FieldInt32 1], FieldList []]) "an empty FieldList has no element type"
         untyped "empty array" (FieldArray (listArray (0, -1) [])) "an empty FieldArray has no element, and a DuckDB ARRAY has at least one"
-        untyped "empty map" (FieldMap []) "an empty FieldMap has no key type and no value type for a parameter with no known type"
-        -- NULL elements, and an empty value for a typed parameter, bind as the SQL literal does.
+        -- Empty values and NULL elements bind as the SQL literal does.
         forM_
-          [ ("NULL list", FieldList [FieldNull, FieldNull], "\"NULL\"[]", "[NULL, NULL]")
+          [ ("empty list", FieldList [], "\"NULL\"[]", "[]")
+          , ("empty inner list", FieldList [FieldList [FieldInt32 1], FieldList []], "INTEGER[][]", "[[1], []]")
+          , ("empty map", FieldMap [], "MAP(\"NULL\", \"NULL\")", "{}")
+          , ("NULL list", FieldList [FieldNull, FieldNull], "\"NULL\"[]", "[NULL, NULL]")
           , ("NULL array", FieldArray (listArray (0, 1) [FieldNull, FieldNull]), "\"NULL\"[2]", "[NULL, NULL]")
           , ("NULL map values", FieldMap [(FieldText "a", FieldNull)], "MAP(VARCHAR, \"NULL\")", "{a=NULL}")
           ]
@@ -728,16 +728,13 @@ valueRegressionTests =
         _ <- execute conn "INSERT INTO same_value VALUES (0, ?), (1, ?)" (ints, arr)
         (query_ conn "SELECT v FROM same_value ORDER BY i" :: IO [Only [Int64]]) >>= (@?= [Only ints, Only ints])
         (query_ conn "SELECT count(DISTINCT v) FROM same_value" :: IO [Only Int64]) >>= (@?= [Only 1])
-    , testCase "an empty list of composite elements has no element type" $ withConnection ":memory:" \conn -> do
-        let rejected :: (ToField a) => Text -> a -> Assertion
-            rejected typeName value =
-              try (query conn "SELECT ?" (Only value) :: IO [Only FieldValue]) >>= \case
-                Left SQLError{sqlErrorMessage} ->
-                  sqlErrorMessage
-                    @?= "duckdb-simple: an empty list or map of " <> typeName <> " elements has no element type for a parameter with no known type"
-                Right _ -> assertFailure ("expected the element type error for " <> Text.unpack typeName)
-        rejected "STRUCT" ([] :: [StructValue FieldValue])
-        rejected "BIGINT[]" ([] :: [[Int64]])
+    , testCase "an empty list of composite elements binds as the SQL literal []" $ withConnection ":memory:" \conn -> do
+        let literal :: (ToField a) => String -> a -> Assertion
+            literal label value =
+              (query conn "SELECT typeof(?), ?::VARCHAR, typeof([])" (value, value) :: IO [(Text, Text, Text)])
+                >>= assertEqual label [("\"NULL\"[]", "[]", "\"NULL\"[]")]
+        literal "STRUCT" ([] :: [StructValue FieldValue])
+        literal "BIGINT[]" ([] :: [[Int64]])
         -- An Array of NULL STRUCT values gets the type of array_value(NULL).
         let nullArray = listArray (0, 0) [Nothing] :: Array Int (Maybe (StructValue FieldValue))
         (query conn "SELECT typeof(?), ?::VARCHAR" (nullArray, nullArray) :: IO [(Text, Text)]) >>= (@?= [("\"NULL\"[1]", "[NULL]")])
@@ -925,11 +922,9 @@ valueRegressionTests =
         -- A UTC value keeps its nanoseconds for a nanosecond target.
         let times = Map.fromList [("t", posixSecondsToUTCTime 0.123456789)] :: Map.Map Text UTCTime
         (query conn "SELECT ?::MAP(VARCHAR, TIMESTAMPTZ_NS)" (Only times) :: IO [Only (Map.Map Text UTCTime)]) >>= (@?= [Only times])
-        -- An empty map of nested values has no value type.
-        try (query conn "SELECT ?" (Only (Map.empty :: Map.Map Text [Int64])) :: IO [Only FieldValue]) >>= \case
-          Left SQLError{sqlErrorMessage} ->
-            sqlErrorMessage @?= "duckdb-simple: an empty list or map of BIGINT[] elements has no element type for a parameter with no known type"
-          Right rows -> assertFailure ("expected the element type error, got " <> show rows)
+        -- An empty map of nested values has the value type NULL, as in MAP {}.
+        (query conn "SELECT typeof(?), ?::VARCHAR" (Map.empty :: Map.Map Text [Int64], Map.empty :: Map.Map Text [Int64]) :: IO [(Text, Text)])
+          >>= (@?= [("MAP(VARCHAR, \"NULL\")", "{}")])
     , testCase "an array of BigNum values keeps the BIGNUM casts of DuckDB" $ withConnection ":memory:" \conn -> do
         -- DuckDB 2.0.0 casts the BIGNUM -6 to UBIGINT as a wrapped value with no
         -- error. See Note [Integer parameters] in "Database.DuckDB.Simple.ToField".

@@ -543,6 +543,32 @@ for a scalar function. For an aggregate or a table function, the text names the
 function after the prefix, for example `duckdb-simple: tf_int: argument arg0
 ...`. DuckDB ignores an exception of a log sink.
 
+A failed cast of `createCast` gives an `SQLError` of the type
+`ErrorTypeMismatch`. Its message is `Mismatch Type Error: ` and the text of the
+failure: a `Left`, an argument that does not convert, or an exception of each
+type, also of an `SQLError` with another type. An exception in the callback of
+`registerCast` in `Database.DuckDB.Simple.V2.Registration` gives the same type.
+The type is the same for each pair of types, because of a property of DuckDB
+2.0.0. DuckDB plans a cast between some pairs of types as a cast that cannot
+fail, also when the cast is a registered cast. Examples are a cast to VARCHAR,
+a widening cast such as INTEGER to BIGINT or FLOAT to DOUBLE, and a cast from
+an ENUM, a LIST, or a STRUCT to VARCHAR. For such a cast, DuckDB changes an
+error of the type `ErrorInputInvalid`, `ErrorInputOutOfRange`, or
+`ErrorTypeConversion` to an INTERNAL error. It does the same for an error type
+that it does not map, for example `ErrorApi`. An INTERNAL error during the
+execution of a query invalidates the database. Then each statement on each
+connection of the database fails until a new instance opens the database. An
+error of the type `ErrorTypeMismatch` keeps the database usable, and it aborts
+an explicit transaction. `TRY_CAST` gives NULL for a failed row.
+`TRY(CAST(...))` raises the error, because `TRY` catches only the types
+`ErrorInputInvalid`, `ErrorInputOutOfRange`, and `ErrorTypeConversion`. DuckDB
+still plans such a cast as one that cannot fail. In DuckDB 2.0.0, a filter that
+excludes a row before the cast, for example `WHERE c < 2500 AND CAST(c AS
+VARCHAR) <> 'x'`, does not run the cast for that row. A cast that a program
+registers with the native API of `duckdb-ffi` also gets the INTERNAL error for
+such a pair and such an error type. A V2 cast can report the code
+`DUCKDB_V2_ERROR_TYPE_MISMATCH` in their place.
+
 An asynchronous exception, for example from `timeout` or Ctrl-C, cancels a
 running query. The library interrupts DuckDB, waits until the native call
 returns, and raises the same exception again. Catch that exception, not
@@ -1337,8 +1363,9 @@ them.
 
 These functions register SQL objects with Haskell values. Their signatures have
 no native handle. An exception in a Haskell function gives an SQL error with
-the message of the exception. `TRY_CAST` gives NULL instead. The examples use
-these imports:
+the message of the exception. For a cast, the error has the type
+`ErrorTypeMismatch`, and `TRY_CAST` gives NULL in its place (see
+[Errors](#errors)). The examples use these imports:
 
 ```haskell
 {-# LANGUAGE BlockArguments #-}
@@ -1356,7 +1383,8 @@ import Database.DuckDB.Simple.Pragma (PragmaCallback (..), registerPragmaFunctio
 import Database.DuckDB.Simple.Registration
 ```
 
-`createCast` registers an explicit cast. `Left` fails the cast with a message.
+`createCast` registers an explicit cast. `Left` fails the cast with a message
+and the error type `ErrorTypeMismatch` (see [Errors](#errors)).
 
 ```haskell
 castExample :: Connection -> IO [Only Int64]

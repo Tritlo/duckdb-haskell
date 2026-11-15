@@ -57,6 +57,14 @@ The generator does not manage ownership. Callers must still release native
 resources, keep callbacks alive for their required lifetime, and catch
 exceptions inside callbacks.
 
+DuckDB 2.0.0 plans a cast between some pairs of types as a cast that cannot
+fail, also a registered cast, for example a cast from INTEGER to VARCHAR. A
+registered cast of the V1 API or the V2 API that reports an error for such a
+pair gives an INTERNAL error, and during the execution of a query DuckDB then
+invalidates the database. The V1 API cannot choose the type of the error. A V2
+cast can report the code `DUCKDB_V2_ERROR_TYPE_MISMATCH`. The section Errors
+of the duckdb-simple README gives the details.
+
 ### duckdb-simple 0.3 to 0.4
 
 `duckdb-simple` 0.4 uses the V2 C API for connections, results, conversions,

@@ -135,8 +135,10 @@ createFunctionWithState conn = createFunctionWithStateOn (ConnectionTarget conn)
 --
 -- A row fails when its value does not convert to @a@, when the function gives
 -- 'Left', or when the function or the result conversion raises an exception.
--- @CAST@ then fails with the message of the first failed row. @TRY_CAST@ gives
--- NULL for each failed row and the results for the other rows.
+-- @CAST@ then fails with the message of the first failed row and the error type
+-- 'ErrorTypeMismatch'. @TRY_CAST@ gives NULL for each failed row and the results
+-- for the other rows. @TRY(CAST(...))@ raises the error. The section /Errors/
+-- of the README tells why.
 --
 -- DuckDB casts each result to the target type with its default cast. The target
 -- type can be a custom type whose base type is the type of @b@, for example a

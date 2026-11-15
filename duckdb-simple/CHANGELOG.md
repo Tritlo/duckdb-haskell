@@ -40,7 +40,10 @@
 - `createCast` registers a pure Haskell function as an explicit cast. A
   registered cast does not change a value that the library reads or binds on a
   connection. The exception is a GEOMETRY value that a callback of a function
-  of an extension reads (see the README).
+  of an extension reads (see the README). A failed cast gives an `SQLError` of
+  the type `ErrorTypeMismatch`, and so does an exception in the callback of
+  `registerCast`. `TRY_CAST` gives NULL for a failed row, and `TRY(CAST(...))`
+  raises the error. The section Errors of the README tells why.
 - `createAggregate` registers an aggregate function as a fold over Haskell
   values. The record `Aggregate` has the initial state and the step, combine,
   and result functions. DuckDB gives the finalize callback no factory, so the

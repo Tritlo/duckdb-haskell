@@ -1,18 +1,21 @@
 # duckdb-simple
 
-`duckdb-simple` provides a high-level Haskell interface to DuckDB inspired by
-the APIs of [`sqlite-simple`](https://hackage.haskell.org/package/sqlite-simple) and
+`duckdb-simple` is a Haskell interface to DuckDB. Its API is like the APIs of
+[`sqlite-simple`](https://hackage.haskell.org/package/sqlite-simple) and
 [`postgresql-simple`](https://hackage.haskell.org/package/postgresql-simple).
-It builds on the low-level bindings exposed by [`duckdb-ffi`](../duckdb-ffi) and
-provides a focused API for opening connections, running queries, binding
-parameters, and decoding typed results—including the full set of DuckDB scalar
-types (signed/unsigned integers, decimals, hugeints, intervals, precise and
-timezone-aware temporals, blobs, enums, bit strings, and bignums).
+It uses the bindings of [`duckdb-ffi`](../duckdb-ffi). It opens connections,
+runs queries, binds parameters, and decodes results into Haskell types. It
+supports the scalar types of DuckDB, for example signed and unsigned integers,
+decimals, HUGEINT and UHUGEINT, intervals, dates, times, and timestamps of each
+precision and with a time zone, blobs, enums, bit strings, and bignums.
 
 The backend uses the generated DuckDB V2 API. Upstream marks the complete V2
 API as unstable: "The C API v2 is not yet stable. Its interface may change in
 upcoming releases." This release therefore requires exactly DuckDB 2.0.0.
 Creating an environment raises `SQLError` for another library version.
+
+The examples use the `OverloadedStrings` extension for `Query` and `Text`
+literals.
 
 ## Shared environments and instances
 
@@ -35,6 +38,8 @@ withEnvironment $ \environment ->
 ```
 
 Closing an environment closes its instances, connections, and statements.
+DuckDB can keep alive an instance that `createInstance` did not create. Then
+`closeEnvironment` raises an `SQLError` and keeps the environment open.
 Closing an instance closes its connections and statements. Each close operation
 is idempotent. `open` and `withConnection` create private parents and retain their
 existing convenience behavior.
@@ -85,8 +90,8 @@ existing convenience behavior.
   collections.
 
 The pinned V2 API does not expose custom file-system registration or
-collation lookup. Fixed ARRAY types with zero elements are
-not supported by this native API. Empty LIST values remain supported.
+collation lookup. DuckDB 2.0 rejects an ARRAY type with zero elements. An
+empty LIST is valid.
 Prepared dynamic PIVOT supports repeated execution with a changing schema. It
 does not support parameters or a cacheable plan. VARIANT decoding uses SQL
 metadata and native casts on a helper connection. A configured custom GEOMETRY
@@ -128,8 +133,7 @@ main =
 - `Database.DuckDB.Simple.Types` – shared types (`Query`, `Null`, `Only`,
   `(:.)`, `SQLError`).
 - `Database.DuckDB.Simple.Function` – register scalar Haskell functions that
-  can be invoked directly from SQL, and casts, aggregate functions, and table
-  functions.
+  SQL can call, and casts, aggregate functions, and table functions.
 - `Database.DuckDB.Simple.Registration`, `Copy`, `Pragma`, and `Config` –
   register custom types, replacement scans, COPY formats, pragmas, and custom
   options with Haskell values.
@@ -185,9 +189,8 @@ effects must roll back together.
 
 ## Named Parameters
 
-duckdb-simple supports both positional (`?`) and named parameters. Named
-parameters are bound with the `(:=)` helper exported from
-`Database.DuckDB.Simple`.
+duckdb-simple supports both positional (`?`) and named parameters. Bind a
+named parameter with `(:=)` from `Database.DuckDB.Simple`.
 
 ```haskell
 import Database.DuckDB.Simple
@@ -210,14 +213,20 @@ can supply omitted named parameters. DuckDB rejects an omitted parameter
 that has no variable value.
 
 `duckdb-simple` raises a `FormatError` before it executes the query in these
-cases: the number of positional parameters does not match the placeholders,
-you supply more named parameters than the statement declares, or you bind named
-arguments to a statement with only positional placeholders.
+cases:
+
+- The number of positional parameters is not the number of placeholders.
+- You bind positional parameters to a statement with named placeholders.
+- You supply more named parameters than the statement declares.
+- You supply a name that the statement does not declare.
+- You supply one parameter two times, for example as `$amount` and `$AMOUNT`.
+- You bind named parameters to a statement with only positional placeholders.
 
 ### Decoding rows
 
-`FromRow` is powered by a `RowParser`, which means instances can be written in a
-monadic/Applicative style and even derived generically for product types:
+The method `fromRow` of a `FromRow` instance is a `RowParser`. Write it with
+`Applicative` or `Monad` functions, or derive the instance with `Generic` for a
+product type:
 
 ```haskell
 {-# LANGUAGE DeriveAnyClass #-}
@@ -361,6 +370,7 @@ These types support parameters, results, and fields in generic composites.
 `UTCTimestamp` binds as TIMESTAMPTZ.
 
 ```haskell
+import Database.DuckDB.Simple
 import Database.DuckDB.Simple.Time
 
 infiniteDates :: Connection -> IO [Only Date]
@@ -407,6 +417,7 @@ For more control, you can work directly with `StructValue` and `UnionValue`
 from `Database.DuckDB.Simple.LogicalRep`:
 
 ```haskell
+import Database.DuckDB.Simple
 import Database.DuckDB.Simple.LogicalRep (StructValue (..), UnionValue (..))
 import Database.DuckDB.Simple.FromField (FieldValue (..))
 
@@ -423,14 +434,21 @@ manualStruct conn = do
   query_ conn "SELECT s, u FROM composite"
 ```
 
+Low-level `ToDuckValue.toDuckValue` takes a `ValueFactory`, which is the V2
+factory handle, and `logicalTypeFromRep` takes the same handle.
+`Database.DuckDB.Simple.V2.LogicalRep` has `logicalTypeFromRep`.
+Get the factory of a connection with `withConnectionHandle` and
+`withConnectionFactory` from `Database.DuckDB.Simple.Internal`. Keep owned
+values and logical types within the lifetime of the factory's owner.
+
 ### Resource Management
 
 - `withConnection` and `withStatement` wrap the open/close lifecycle and guard
   against exceptions; use them whenever possible to avoid leaking C handles.
-- All intermediate DuckDB objects (results, prepared statements, values) are
-  released immediately after use. Query helpers return a Haskell list of all
-  rows. Folds and cursors decode rows incrementally from owned native chunks.
-  The default mode drains and closes the native cursor before row callbacks.
+- The query helpers release their results, prepared statements, and values after
+  use. Query helpers return a Haskell list of all rows. Folds and cursors decode
+  rows incrementally from owned native chunks. The default mode drains and
+  closes the native cursor before row callbacks.
 - `execute`/`query` variants reset statement bindings each run so prepared
   statements can be reused safely.
 
@@ -451,8 +469,8 @@ in the application:
 
 A callback must not execute another query on its active connection or close
 that connection. With the default API, such a query waits for the lock of the
-active query. After the bound of `connectionCallbackLockWait` (10 seconds by
-default), it raises an `SQLError`. See
+active query. After the time limit of `connectionCallbackLockWait` (10
+seconds by default), it raises an `SQLError`. See
 [User-Defined Functions](#user-defined-functions) for the rule and its limits.
 
 Link your executable with `ghc-options: -threaded` to allow prompt cancellation
@@ -464,8 +482,8 @@ Haskell callbacks must return before cleanup can finish.
 Native work that can run for a long time runs in a helper thread, so that an
 asynchronous exception can interrupt it. The default query functions run the
 native calls of one result in one helper thread. A bound thread, such as the
-main thread, changes operating system threads to wait for a helper thread. A
-small query then takes about 1.2 to 1.3 times as long as from an unbound
+main thread, changes operating system threads to wait for a helper thread.
+Thus a small query takes longer from a bound thread than from an unbound
 thread. Run code with many small queries in a thread made with `forkIO`, or
 wrap the main action in `Control.Concurrent.runInUnboundThread`.
 
@@ -513,6 +531,7 @@ with eager queries, cursors, and folds.
 Import it qualified:
 
 ```haskell
+import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Streaming as Streaming
 
 streamSum :: Connection -> IO Int
@@ -546,6 +565,10 @@ that consume the Arrow C Data Interface. Each callback receives a separate
 schema and array batch. It can read them or pass them to an Arrow consumer
 that releases or moves them. The fold releases any remaining contents on
 success, failure, or cancellation. The consumer owns any contents it moves.
+
+Each array has at most `connectionArrowBatchSize` rows. Set this option in
+`ConnectionOptions`. The default is `defaultArrowBatchSize`, 2048 rows. DuckDB
+can give shorter arrays. As in DuckDB, 0 means 131072.
 
 The original pointers are valid only during the callback. To retain contents,
 a consumer must move the root structs into its own storage and set the source
@@ -620,17 +643,7 @@ metadata queries. It constructs VARIANT types directly through the native
 factory. This preserves an active stream on the caller's connection. The
 helper connection has the settings of the database, not the session settings of
 the caller, so a GLOBAL `max_expression_depth` below 11 makes each VARIANT read
-fail with a Binder Error. Low-level
-`ToDuckValue.toDuckValue` takes a `ValueFactory`, which is the V2 factory
-handle, and `logicalTypeFromRep` takes the same handle.
-`Database.DuckDB.Simple.V2.LogicalRep` has `logicalTypeFromRep`.
-Get the factory of a connection with `withConnectionHandle` and
-`withConnectionFactory` from `Database.DuckDB.Simple.Internal`. Keep owned
-values and logical types within the lifetime of the factory's owner.
-
-Keep the connection dedicated to the active stream; another query on that
-connection receives a native resource-in-use error. Cancellation interrupts native chunk fetching
-as well as execution.
+fail with a Binder Error.
 
 New DuckDB 2.0 databases use storage format 2.0, which supports VARIANT columns.
 The library does not change an existing database's storage compatibility
@@ -645,7 +658,7 @@ plan. Read its schema after execution starts.
 
 Use `Geometry` from `Data.Geometry` for decoded shapes. The `geometry-simple`
 package supplies the type and unboxed coordinate vectors. `duckdb-simple`
-supplies its parameter and result instances:
+supplies its `ToField` and `FromField` instances:
 
 ```haskell
 import qualified Data.Geometry as G
@@ -681,7 +694,7 @@ their `GEOMETRY` type would have no CRS. A composite parameter holds it as
 ```haskell
 import Database.DuckDB.Simple.Geometry
 
-[Only raw] <- query_ conn "SELECT 'POINT Z (1 2 3)'::GEOMETRY('OGC:CRS84')"
+[Only raw] <- query_ conn "SELECT 'POINT Z (1 2 3)'::GEOMETRY('OGC:CRS84')" :: IO [Only RawGeometry]
 rows <- query conn "SELECT ?" (Only raw) :: IO [Only RawGeometry]
 ```
 
@@ -785,10 +798,10 @@ supported families, construction checks, and codec normalization rules.
 
 ## User-Defined Functions
 
-Scalar Haskell functions can be registered with DuckDB connections and used in
-SQL expressions. Argument and result types reuse the existing `FromField` and
-`FunctionResult` machinery, so `Maybe` values and `IO` actions work out of the
-box.
+Register a scalar Haskell function on a connection, and call it in SQL
+expressions. The arguments use `FromField`, and the result uses
+`FunctionResult`. Thus a function can take and give `Maybe` values, and it can
+give an `IO` action.
 
 ```haskell
 {-# LANGUAGE OverloadedStrings #-}
@@ -834,18 +847,19 @@ lock. Then a statement in the callback on the same connection fails at once
 with the `ErrorResourceInUse` error of DuckDB, because the stream has an open
 result.
 
-That wait has a bound. `connectionCallbackLockWait` in `ConnectionOptions`
-sets it in microseconds. The default is `defaultCallbackLockWait`, 10 seconds,
-and `Nothing` sets no bound. When the bound ends, the statement in the callback
-raises an `SQLError` of the type `ErrorResourceInUse`, and its text gives the
-rule. If the callback does not catch the error, DuckDB fails the outer
-statement with the text of that error, and the connection can run the next
-statement. DuckDB ignores the error of a log sink. The bound applies to each wait of a
-callback for the lock of a connection. It applies also to another connection
-that a different statement uses. If callbacks share a connection that runs slow
-statements, set a larger bound or `Nothing` for that connection.
+That wait has a time limit. `connectionCallbackLockWait` in
+`ConnectionOptions` sets it in microseconds. The default is
+`defaultCallbackLockWait`, 10 seconds, and `Nothing` sets no time limit. When
+the time limit ends, the statement in the callback raises an `SQLError` of the
+type `ErrorResourceInUse`, and its text gives the rule. If the callback does
+not catch the error, DuckDB fails the outer statement with the text of that
+error, and the connection can run the next statement. DuckDB ignores the error
+of a log sink. The time limit applies to each wait of a callback for the lock
+of a connection. It applies also to another connection that a different
+statement uses. If callbacks share a connection that runs slow statements, set
+a larger time limit or `Nothing` for that connection.
 
-In these cases the bound does not apply, and a statement in the callback can
+In these cases the time limit does not apply, and a statement in the callback can
 wait and not return:
 
 - DuckDB runs the callback during a call that does not hold the lock of the
@@ -898,17 +912,20 @@ castExample conn = do
 ```
 
 DuckDB uses a registered cast in place of its built-in cast for the same pair
-of types, on each connection of the database. The library reads GEOMETRY and
-VARIANT values with the built-in casts only, so a cast from GEOMETRY to BLOB
-changes the result of `CAST(g AS BLOB)`, but not a GEOMETRY value that a query
-gives. There is one exception: a GEOMETRY value that a callback of a function of
-an extension reads. An extension has no instance, so these callbacks read with
-the casts of the session. The library uses these built-in casts to bind values:
-BLOB to GEOMETRY, VARCHAR to GEOMETRY, VARCHAR to an ENUM type, and a type to
-VARIANT. Do not register a cast for one of these pairs, with `createCast` or
-with a native cast registration. The library then binds the result of that
-cast. For example, after a cast from VARCHAR to an ENUM type that gives NULL, an
-ENUM value in a STRUCT parameter is NULL, and no error occurs.
+of types, on each connection of the database. On a connection, a registered
+cast does not change a value that the library reads or binds. The library reads
+GEOMETRY and VARIANT values with the casts of the instance, which are the
+built-in casts, and it builds GEOMETRY, ENUM, and VARIANT values with the
+default cast of DuckDB. For example, a cast from GEOMETRY to BLOB changes the
+result of `CAST(g AS BLOB)`, but not a GEOMETRY value that a query gives. Two
+places still use registered casts:
+
+- The callbacks of a function that an extension registers. An extension has no
+  instance, so these callbacks read a GEOMETRY value with the casts of the
+  session: the value of an option update, the arguments of a pragma or a table
+  function, and the rows of a COPY TO function.
+- `setConfigValue` and `setConfigOption`. DuckDB casts the value to the type of
+  the option, as SQL `SET` does.
 
 `createAggregate` registers an aggregate function as a fold. The result type
 is a result type of `createFunction`.
@@ -925,9 +942,16 @@ aggregateExample conn = do
   query_ conn "SELECT haskell_sum(i) FROM range(10) t(i)" -- [Only 45]
 ```
 
+The library keeps the live aggregate states in a table with stripes. Two
+DuckDB threads wait for each other only when they change the same stripe.
+`connectionAggregateStripes` in `ConnectionOptions` sets the number of stripes
+for each aggregate that `createAggregate` registers through the connection.
+The default is `defaultAggregateStripes`, 64. No result depends on the number.
+
 `createTableFunction` registers a table function that gives its rows as a
-list. DuckDB reads all columns of each row, also the columns that the query
-does not use.
+list. DuckDB reads only the columns that the query uses, and one column for a
+query such as `SELECT count(*)`. The library does not evaluate the other
+columns of a row, so an exception in such a column does not fail the query.
 
 ```haskell
 tableExample :: Connection -> IO [(Int64, Int64)]

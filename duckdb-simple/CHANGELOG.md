@@ -9,32 +9,33 @@
   later DuckDB version is outside the dependency bound. Creating an
   environment raises `SQLError` for another library version. Use the earlier
   release with DuckDB 1.5.
+- Require `base` 4.18 or later, that is GHC 9.6 or later. Version 0.3 accepted
+  `base` 4.14.
 - Raw handles, callback handles, and the error codes of raw calls use V2
   types. `sqlErrorType` is `Maybe ErrorType`. See MIGRATION.md.
 - Add `Database.DuckDB.Simple.Extension` for loadable Haskell extensions.
   Enable the `extension` flags of both packages. See `dev/extensions/`.
 - Add shared environments and instances, attachment management, option
   discovery, table descriptions, SQL tokenization, and positioned file I/O.
-- `attachDatabase` rejects an attach option that contains NUL.
-  `detachDatabase` and `setDefaultDatabase` reject an alias that contains NUL.
 - Add typed configuration values and defaults, managed log sinks, macro
   registration, function documentation, query metrics, and file path
   operations. Expose table bind metadata for multi-file readers.
-  `enableProfiling` collects metrics without printing a profile.
 - Add typed registrations. Their signatures have no native handle.
   `Database.DuckDB.Simple.Function` has `createCast`, `createAggregate`,
   `createTableFunction`, and the row class `TypedRow`. `Database.DuckDB.Simple`
   exports the three functions, `Aggregate`, and `TypedRow`.
-- `createCast` registers a pure Haskell function as an explicit cast. A cast
-  for a pair of types whose built-in cast the library uses (see the README)
-  also changes what the library reads and binds.
+- `createCast` registers a pure Haskell function as an explicit cast. A
+  registered cast does not change a value that the library reads or binds on a
+  connection. The exception is a GEOMETRY value that a callback of a function
+  of an extension reads (see the README).
 - `createAggregate` registers an aggregate function as a fold over Haskell
   values. The record `Aggregate` has the initial state and the step, combine,
   and result functions. DuckDB gives the aggregate callbacks no context, so the
   result types are the result types of `createFunction`.
 - `createTableFunction` registers a Haskell function that gives the rows of a
   table function as a list. DuckDB reads the list one chunk at a time. It reads
-  all columns of each row, also the columns that the query does not use.
+  only the columns that the query uses, and one column for a query such as
+  `SELECT count(*)`. The library does not evaluate the other columns of a row.
 - `Database.DuckDB.Simple.Registration` has `TypeDeclaration`, `parameter`,
   `defaultValue`, `registerCustomType`, and typed replacement scans.
   `registerReplacementScan` and `registerInstanceReplacementScan` give the
@@ -50,8 +51,6 @@
 - Add `Database.DuckDB.Simple.Pragma`. `registerPragmaFunction` takes a typed
   callback `PragmaCallback args`. The callback gets the arguments of the call
   as a `FromRow` row.
-- The pragma registrations reject an empty name and a name that contains NUL,
-  as the other registrations do.
 - Add custom options to `Database.DuckDB.Simple.Config`. `customOptionUpdate`
   is a function that gets the new value as a `FieldValue`. An exception in the
   function rejects the value.
@@ -94,7 +93,8 @@
   `fetchResultError`, `throwResultError`, `mkExecuteError`,
   `throwRegistrationError`, `withClientContext`, and `destroyClientContext`.
   `Connection` adds `connectionInstance`, `connectionLock`,
-  `connectionWindow`, and `connectionLockBound`. `ConnectionOpen` has no
+  `connectionWindow`, `connectionLockBound`, `connectionStripes`, and
+  `connectionArrowBatch`. `ConnectionOpen` has no
   `connectionDatabase` and adds `connectionStatements` and
   `connectionReleaseParent`. `Statement` adds `statementArrowResult`,
   `statementBindings`, `statementParameterNames`, and
@@ -114,22 +114,28 @@
 - Rename `Database.DuckDB.Simple.Deprecated.Streaming` to
   `Database.DuckDB.Simple.Streaming`.
 - Export Arrow release helpers from `Database.DuckDB.Simple.Arrow`.
-- The default `query`, `fold`, and Arrow folds collect the result before the
-  first callback, so a callback can query the same connection.
 - A DuckDB callback that waits for the lock of a connection waits at most the
-  bound of that connection. Add `connectionCallbackLockWait` to
+  time limit of that connection. Add `connectionCallbackLockWait` to
   `ConnectionOptions`, in microseconds, with the default
-  `defaultCallbackLockWait` (10 seconds). `Nothing` sets no bound, and the open
-  rejects a negative bound. A statement of a callback on the connection that
-  runs the callback thus raises an `SQLError` of the type `ErrorResourceInUse`
-  after the bound. For most callbacks, the outer statement then fails. Before,
-  neither call returned. The README gives the cases that the bound does not
-  cover.
-- `sqlErrorQuery` gives the query that failed. For a query in the callback of
-  an Arrow fold, it gives the query of the callback, not the query of the fold.
-- The message of a native error is decoded with replacement characters. A
-  native error text that is not valid UTF-8 does not raise when the error is
-  shown.
+  `defaultCallbackLockWait` (10 seconds). `Nothing` sets no time limit, and the
+  open rejects a negative time limit. A statement of a callback on the
+  connection that runs the callback thus raises an `SQLError` of the type
+  `ErrorResourceInUse` after the time limit. For most callbacks, the outer
+  statement then fails. The README gives the cases that the time limit does
+  not cover.
+- Add `connectionAggregateStripes` to `ConnectionOptions`. It sets the number
+  of stripes in the state table of each typed aggregate that `createAggregate`
+  registers through the connection. The
+  default is `defaultAggregateStripes` (64). The open rejects a number that is
+  not positive. A registration on an extension uses the default.
+- Add `connectionArrowBatchSize` to `ConnectionOptions`. It sets the largest
+  number of rows in one Arrow array of an Arrow fold on the connection. The
+  default is `defaultArrowBatchSize` (2048 rows). As in DuckDB, 0 means 131072.
+  The open rejects a negative value.
+- The library decodes the message of a native error with replacement
+  characters. Thus `show` of such an `SQLError` does not raise for a text that
+  is not valid UTF-8. Version 0.3 decoded the text with `decodeUtf8`, which
+  raises for such a text.
 - While an explicit stream is incomplete, DuckDB rejects other statements on
   its connection. Closing an incomplete stream aborts its statement.
 - Each connection serializes statement preparation, its open native result,
@@ -155,8 +161,8 @@
   microsecond value for each parameter.
 - Decode VARIANT values through public V2 operations. Object keys use DuckDB's
   lexicographic order.
-- Allow a VARIANT object to contain an empty key with other named keys. Reject
-  an object with only an empty key because the C API changes its shape.
+- Allow a VARIANT object to contain an empty key with other named keys.
+  Version 0.3 rejected such an object.
 - A `Variant` parameter with a UNION payload, at any depth, raises `SQLError`
   with the type `ErrorInputInvalid`, because a VARIANT keeps only the member
   value of a UNION. Version 0.3 bound such a value with no error. The
@@ -167,6 +173,14 @@
 - `ToDuckValue.toDuckValue`, `logicalTypeFromRep`, and `logicalTypeFromRepWith`
   take a V2 factory. Composite parameters keep GEOMETRY CRS metadata. A CRS
   that DuckDB does not recognize raises `SQLError` instead of being dropped.
+- `logicalTypeFromRep` creates a VARIANT type, and a GEOMETRY type with a CRS
+  that DuckDB recognizes. Version 0.3 raised an error for VARIANT and created
+  GEOMETRY without the CRS.
+- Add a `ToDuckValue` instance for `Variant`. Version 0.3 had none.
+- A composite parameter that the native value constructor rejects raises an
+  `SQLError`. For example, a STRUCT parameter with a MAP field that has a NULL
+  key raises an `SQLError` with the type `ErrorInputInvalid`. Version 0.3
+  raised an `IOException`.
 - A connection constructs each name of `connectionGeometryCRS` directly when it
   opens. It queries a SQL-derived type only for a name that DuckDB does not keep,
   on the new connection, so the default list runs no query. The connection keeps
@@ -179,56 +193,58 @@
   value without a CRS. One with a CRS raises `SQLError`, because a VARIANT does
   not keep the CRS. Version 0.3 raised an error for each such value, because
   DuckDB 1.5 has no cast from BLOB to GEOMETRY.
-- Add a parameter instance for `RawGeometry`. It binds as a GEOMETRY with the
-  same WKB bytes and its own CRS, and DuckDB casts it to the type of the
-  parameter as in SQL text: a value without a CRS takes the CRS of the target,
-  a target without a CRS removes the CRS, and a target with another CRS raises
-  `SQLError`. Version 0.3 had only a result instance for `RawGeometry`. An
-  `Array` and a typed row cannot hold a `RawGeometry`.
-- Empty `Array` parameters raise `SQLError`. Bind an empty list for an empty
-  LIST.
+- Add a `ToField` instance for `RawGeometry`. It binds as a GEOMETRY with the
+  same WKB bytes and its own CRS. DuckDB casts it to the type of the parameter,
+  as in SQL text. A value without a CRS takes the CRS of the target. A target
+  without a CRS removes the CRS. A target with another CRS raises `SQLError`.
+  Version 0.3 had only a `FromField` instance for `RawGeometry`. An `Array`, a
+  list, or a typed row cannot hold a `RawGeometry`.
+- An empty `Array` parameter raises `SQLError`. Version 0.3 bound an empty
+  `Array` of scalar elements. Bind an empty list for an empty LIST.
 - `TimeWithZone` holds the offset in seconds east of UTC, as a TIMETZ stores
   it. The field `timeWithZoneZone :: TimeZone` of version 0.3 is now
   `timeWithZoneOffsetSeconds :: Int32`. A TIMETZ with an offset that has
   seconds, for example `12:00:00+01:00:30`, now reads. Version 0.3 raised an
   error for it. Update code that uses the old field. See MIGRATION.md.
-- Add parameter instances for `IntervalValue`, `TimeWithZone`, and
-  `DecimalValue`. An `IntervalValue` binds as an INTERVAL and a `TimeWithZone`
+- Add `ToField` instances for `IntervalValue`, `TimeWithZone`, and
+  `DecimalValue`, and `ToDuckValue` instances for `IntervalValue` and
+  `TimeWithZone`. An `IntervalValue` binds as an INTERVAL and a `TimeWithZone`
   as a TIMETZ, also in an `Array`, a list, or a typed row. A `TimeWithZone`
   reads back equal to the bound value, except that a time loses its digits
   below one microsecond. An offset outside -15:59:59 to +15:59:59 raises an
-  error. A `DecimalValue` binds as a DECIMAL with its own width and scale. An `Array`, a list, or a typed row
-  cannot hold a `DecimalValue`. Version 0.3 had only result instances for these
-  types.
-- Add parameter instances for `Map`. A `Map` binds as a MAP value with its
-  pairs in ascending key order. The keys and the values follow the element
-  rules of a list, and an empty `Map` binds as an empty MAP of its key and
-  value types. Version 0.3 had only a result instance for `Map`.
-- Add parameter instances for lists. A list binds as a LIST value with the
-  element rules of an `Array`, and an empty list binds as an empty LIST of its
-  element type. A `String` stays one VARCHAR parameter, and a list as a row is
-  still a row of parameters, so a list parameter is `Only [..]`. Version 0.3
-  had no list parameter instance.
-- `executeMany` reads the parameter types one time for each call, not one time
-  for each row. A row with a time value that has digits below a microsecond,
-  an `Array`, or a manual STRUCT, TUPLE, or UNION parameter no longer runs the
-  DuckDB binder again. A column type that changes during the call does not change how the
-  later rows of that call bind.
+  error. A `DecimalValue` binds as a DECIMAL with its own width and scale. An
+  `Array`, a list, or a typed row cannot hold a `DecimalValue`. Version 0.3
+  had only `FromField` instances for these types.
+- Add `ToField` and `ToDuckValue` instances for `Map`. A `Map` binds as a MAP
+  value with its pairs in ascending key order. The keys and the values follow
+  the element rules of a list, and an empty `Map` binds as an empty MAP of its
+  key and value types. Version 0.3 had only a `FromField` instance for `Map`.
+- Add `ToField` and `ToDuckValue` instances for lists. A list binds as a LIST
+  value with the element rules of an `Array`, and an empty list binds as an
+  empty LIST of its element type. A `String` stays one VARCHAR parameter, and a
+  list as a row is still a row of parameters, so a list parameter is
+  `Only [..]`. Version 0.3 had no `ToField` instance for lists.
+- Some parameters bind for the type that DuckDB gives the parameter: a time
+  value with digits below a microsecond, an `Array`, a list, a `Map`, a manual
+  STRUCT, TUPLE, or UNION value, and an `Integer` or a `Natural` outside the
+  HUGEINT range. `executeMany` reads these types one time for each call. A
+  column type that changes during the call does not change how the later rows
+  of that call bind.
 - An `Integer` or a `Natural` parameter binds as a HUGEINT value when the value
   is in the HUGEINT range. Before, it bound as a BIGNUM value in each case. In
-  DuckDB 2.0.0 the casts from BIGNUM to the integer types have defects: a
-  HUGEINT, UHUGEINT, or DECIMAL target failed, a negative value for an unsigned
-  target was stored as a wrapped value, and a value of 2^128 or more was stored
-  modulo 2^128. DuckDB checks the range of a HUGEINT value for its target. A
-  value outside the HUGEINT range binds as BIGNUM, or as UHUGEINT for a
-  UHUGEINT parameter that can hold it. For each other integer or DECIMAL
+  DuckDB 2.0.0 the casts from BIGNUM to the integer types have three defects. A
+  cast to HUGEINT, UHUGEINT, or DECIMAL fails. A cast of a negative value to an
+  unsigned type gives a wrapped value. A cast of a value of 2^128 or more gives
+  the value modulo 2^128. DuckDB checks the range of a HUGEINT value for its
+  target. A value outside the HUGEINT range binds as BIGNUM, or as UHUGEINT for
+  a UHUGEINT parameter that can hold it. For each other integer or DECIMAL
   parameter, such a value raises an `SQLError` of the type
   `ErrorInputOutOfRange`. `typeof(?)` is thus HUGEINT for an `Integer` in the
-  HUGEINT range. Bind a `BigNum` to bind a BIGNUM value in each case. An
-  `Array` of `Integer` or `Natural` values takes the element type of its
-  target when that type is an integer type or DECIMAL, so DuckDB checks the
-  range of each element. Before, a negative element for an unsigned array
-  column was stored as a wrapped value.
+  HUGEINT range. Bind a `BigNum` to bind a BIGNUM value in each case. An `Array`
+  of `Integer` or `Natural` values takes the element type of its target when
+  that type is an integer type or DECIMAL, so DuckDB checks the range of each
+  element. Before, a negative element for an unsigned array column was stored as
+  a wrapped value.
 - `toDuckValue` for an `Integer` or a `Natural` gives a HUGEINT value when the
   value is in the HUGEINT range, and a BIGNUM value for each other value.
   Before, it gave a BIGNUM value in each case. DuckDB checks the range when it
@@ -238,11 +254,11 @@
   outside the HUGEINT range keeps the BIGNUM casts of DuckDB: `setConfigValue`
   with 2^128 + 5 for an unsigned option sets 5. The column type of an
   `Integer` or a `Natural` in a typed row stays BIGNUM.
-- A generic record with an `Array` field that has elements can be bound. The
-  value gives the ARRAY size. DuckDB rejects the record when no value gives the
-  size: an `Array` field with the value `Nothing`, an `Array` inside a LIST,
-  ARRAY, or MAP field, and a sum type with an `Array` constructor fail with
-  "ARRAY type size must be at least 1".
+- A generic record with an `Array` field that has elements binds. The value
+  gives the ARRAY size. When no value gives the size, DuckDB rejects the record
+  with "ARRAY type size must be at least 1". Examples are an `Array` field with
+  the value `Nothing`, an `Array` inside a LIST, ARRAY, or MAP field, and a sum
+  type with an `Array` constructor.
 - A product type with no fields has one encoding: the STRUCT without fields,
   which DuckDB shows as `{}`. `genericToFieldValue` gives this STRUCT, as the
   `ViaDuckDB` binding and `genericToStructValue` did before. A constructor with
@@ -259,12 +275,12 @@
   conversion, give the DuckDB type names `TIMESTAMPTZ` and `TIMETZ`. Earlier
   versions gave `TIMESTAMP_TZ` and `TIME_TZ`, which DuckDB does not accept as
   type names.
-- Allow session variables to supply omitted named parameters. Only too many
-  named parameters raise `FormatError`.
+- Allow session variables to supply omitted named parameters. Too few named
+  parameters no longer raise `FormatError`. Too many named parameters still
+  raise it.
 - Reject duplicate named parameters with DuckDB's ASCII case rules. Keep
   distinct non-ASCII names separate. Preserve sparse numeric parameter names
   such as `$3`.
-- Refresh statement metadata after reset or rebinding.
 - Resolve configuration names and aliases case-insensitively. Use DuckDB's
   ASCII identifier rules for catalog names and top-level schemas.
 - `deleteFunction` reports the error from DuckDB. DuckDB does not permit

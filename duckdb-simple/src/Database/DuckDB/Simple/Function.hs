@@ -115,15 +115,15 @@ createFunctionWithState conn = createFunctionWithStateOn (ConnectionTarget conn)
 -- >     if value > maxBound - 100 then Left "BIGINT overflow" else Right (value + 100)
 --
 -- DuckDB uses a registered cast in place of its built-in cast for the same
--- pair of types, on each connection of the database. The library reads
--- GEOMETRY and VARIANT values with the built-in casts only, so a cast from
--- GEOMETRY to BLOB or from VARIANT to a type does not change them. There is
--- one exception: a GEOMETRY value that a callback of a function of an
--- extension reads. The library uses these built-in casts to bind values: BLOB
--- to GEOMETRY, VARCHAR to GEOMETRY, VARCHAR to an ENUM type, and a type to
--- VARIANT. Do not register a cast for one of these pairs. The
--- library then reads or binds the result of that cast, and it can give NULL
--- or another value with no error.
+-- pair of types, on each connection of the database. On a connection, a
+-- registered cast does not change a value that the library reads or binds:
+-- the library reads GEOMETRY and VARIANT values with the casts of the
+-- instance, which are the built-in casts, and it builds GEOMETRY, ENUM, and
+-- VARIANT values with the default cast of DuckDB. Thus a cast from GEOMETRY to
+-- BLOB changes the result of @CAST(g AS BLOB)@, but not a GEOMETRY value that a
+-- query gives. There is one exception: the callbacks of a function that an
+-- extension registers read a GEOMETRY value with the casts of the session,
+-- because an extension has no instance.
 createCast :: (FromField a, ToDuckValue b) => Connection -> TypeDeclaration -> TypeDeclaration -> (a -> Either Text b) -> IO ()
 createCast conn = createCastOn (ConnectionTarget conn)
 
@@ -151,9 +151,13 @@ createCast conn = createCastOn (ConnectionTarget conn)
 -- read the list at the same time. DuckDB stops when the query needs no more rows,
 -- so the list can be long or infinite, for example with @LIMIT@. It reads a full
 -- chunk, and it can read more chunks than the query needs. Thus it can read rows
--- after the @LIMIT@. It reads all columns of each row that it reads, also the
--- columns that the query does not use. An exception in the function or in a row
--- is an SQL error. DuckDB releases the list when the scan ends.
+-- after the @LIMIT@. DuckDB asks only for the columns that the query uses, and
+-- for one column when the query uses no column, as in @SELECT count(*)@. The
+-- library evaluates only the columns that DuckDB asks for. A column that the
+-- query does not use is not evaluated, so an exception in that column does not
+-- fail the query. An exception in the function, in the list, in a row, or in a
+-- column that the query uses is an SQL error. DuckDB releases the list when the
+-- scan ends.
 --
 -- > createTableFunction conn "haskell_squares" ["n", "square"] \(Only count) ->
 -- >     pure [(n, n * n) | n <- [0 .. count - 1 :: Int64]]

@@ -18,6 +18,7 @@ module Database.DuckDB.Simple.Internal (
   Instance (..),
   InstanceState (..),
   Connection (..),
+  defaultAggregateStripes,
   ConnectionState (..),
   Statement (..),
   StatementState (..),
@@ -245,7 +246,19 @@ data Connection = Connection
   , connectionLockBound :: Maybe Int
   -- ^ The longest wait in microseconds of a DuckDB callback for
   -- 'connectionLock'. 'Nothing' sets no bound.
+  , connectionStripes :: Int
+  -- ^ The number of stripes in the state table of a typed aggregate function.
+  -- See Note [State table stripes] in "Database.DuckDB.Simple.Typed.Aggregate".
+  , connectionArrowBatch :: Int
+  -- ^ The largest number of rows in one Arrow array of a result. 0 means
+  -- 131072. See 'executePreparedArrowResult'.
   }
+
+-- | The default of @connectionAggregateStripes@ in @ConnectionOptions@: 64
+-- stripes. See Note [State table stripes] in
+-- "Database.DuckDB.Simple.Typed.Aggregate".
+defaultAggregateStripes :: Int
+defaultAggregateStripes = 64
 
 -- | Internal connection state.
 data ConnectionState
@@ -456,10 +469,11 @@ closeInstanceState ref = mask_ $ joinCleanup ref \case
   InstanceClosed -> (InstanceClosed, pure ())
   InstanceOpen raw children -> (InstanceClosed, cleanupAll [closeChildren children, destroy c_duckdb_v2_instance_destroy raw])
 
--- | Create a connection with its CRS names and the bound of a callback that
--- waits for its lock. The final action releases private convenience parents.
-createConnection :: Instance -> [Text] -> Maybe Int -> IO () -> IO Connection
-createConnection parent@Instance{instanceState} crss callbackLockWait releaseParent = keepAlive parent $ mask_ do
+-- | Create a connection with its CRS names, the bound of a callback that waits
+-- for its lock, the number of stripes of a typed aggregate, and the Arrow batch
+-- size. The final action releases private convenience parents.
+createConnection :: Instance -> [Text] -> Maybe Int -> Int -> Int -> IO () -> IO Connection
+createConnection parent@Instance{instanceState} crss callbackLockWait stripes arrowBatch releaseParent = keepAlive parent $ mask_ do
   (rawInstance, children) <-
     readIORef instanceState >>= \case
       InstanceClosed -> throwIO (SQLError "duckdb-simple: instance is closed" Nothing Nothing)
@@ -471,7 +485,7 @@ createConnection parent@Instance{instanceState} crss callbackLockWait releasePar
     statements <- newChildren
     ref <- newIORef (ConnectionOpen raw cache statements releaseParent)
     registerChild forkFinalizer (\case ConnectionOpen{} -> True; _ -> False) children ref (keepAlive parent (closeConnectionState False ref))
-    Connection ref parent <$> newMVar () <*> newIORef Nothing <*> pure callbackLockWait
+    Connection ref parent <$> newMVar () <*> newIORef Nothing <*> pure callbackLockWait <*> pure stripes <*> pure arrowBatch
 
 -- | Close a connection and every prepared statement that belongs to it.
 closeConnection :: Connection -> IO ()
@@ -973,14 +987,16 @@ withBoundValues stmt action = do
     action (ConstPtr namesPtr) (ConstPtr valuesPtr) (fromIntegral (length bindings))
 
 -- | Execute a prepared Arrow result and register it for statement cleanup.
--- See Note [Interruptible native calls].
+-- Each array of the result has at most 'connectionArrowBatch' rows of the
+-- connection. See Note [Interruptible native calls].
 executePreparedArrowResult :: Statement -> IO DuckDBV2ArrowResultHandle
 executePreparedArrowResult stmt = withStatementHandle stmt \handle -> mask_ $ alloca \slot -> do
   poke slot nullHandle
   flip onException (peek slot >>= destroy c_duckdb_v2_arrow_result_destroy) $
     withBoundValues stmt \names values count -> do
+      let batch = fromIntegral (connectionArrowBatch (statementConnection stmt))
       runInterruptibleQuery (statementConnection stmt) $
-        checked (c_duckdb_v2_prepared_statement_execute_arrow handle names values count 2048 slot)
+        checked (c_duckdb_v2_prepared_statement_execute_arrow handle names values count batch slot)
       result <- peek slot
       writeIORef (statementArrowResult stmt) result
       pure result

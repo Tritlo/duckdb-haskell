@@ -8,6 +8,7 @@ import Control.Monad (forM_, unless, when)
 import Data.Coerce (coerce)
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
+import Data.Proxy (Proxy (..))
 import Data.Void (Void)
 import Database.DuckDB.FFI.V2
 import Foreign.C.ConstPtr (ConstPtr (..))
@@ -16,7 +17,7 @@ import Foreign.Marshal.Utils (with)
 import Foreign.Ptr (Ptr, castPtr, freeHaskellFunPtr, nullFunPtr, nullPtr)
 import Foreign.Storable (Storable (..))
 import GHC.Records (getField)
-import HsBindgen.Runtime.Prelude (toFunPtr)
+import HsBindgen.Runtime.Prelude (staticSizeOf, toFunPtr)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
 import V2Test (
@@ -88,7 +89,7 @@ testAggregateCallbacks = do
           withType factory "BIGINT" $ \ty -> checked (c_duckdb_v2_aggregate_function_bind_set_return_type result ty)
         size info err = callbackGuard failures err $ do
           expectData "size" (c_duckdb_v2_aggregate_function_size_get_user_data info) (c_duckdb_v2_aggregate_function_size_get_bind_data info)
-          checked (c_duckdb_v2_aggregate_function_size_set_state_size info (fromIntegral (2 * sizeOf (0 :: Int64))))
+          checked (c_duckdb_v2_aggregate_function_size_set_state_size info (fromIntegral (2 * staticSizeOf (Proxy @Int64))))
         initialize info err = callbackGuard failures err $ do
           expectData "init" (c_duckdb_v2_aggregate_function_init_get_user_data info) (c_duckdb_v2_aggregate_function_init_get_bind_data info)
           states <- output (c_duckdb_v2_aggregate_function_init_get_states info)
@@ -242,7 +243,7 @@ testAggregateFailures = do
           when (stage == 1) (failOnPurpose "bind")
         size info err =
           callbackGuard failures err $
-            checked (c_duckdb_v2_aggregate_function_size_set_state_size info (fromIntegral (sizeOf (0 :: Int64))))
+            checked (c_duckdb_v2_aggregate_function_size_set_state_size info (fromIntegral (staticSizeOf (Proxy @Int64))))
         initialize info err = callbackGuard failures err $ do
           states <- output (c_duckdb_v2_aggregate_function_init_get_states info)
           count <- output (c_duckdb_v2_aggregate_function_init_get_state_count info)

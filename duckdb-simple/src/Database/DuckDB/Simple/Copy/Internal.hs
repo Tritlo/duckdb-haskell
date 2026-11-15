@@ -348,7 +348,7 @@ copyFromSide name readRows = (copyFromCallbacks bind execute){copyFromInitGlobal
       chunk <- output (c_duckdb_v2_copy_from_exec_get_output_chunk info)
       -- The lock gives each row to one call only. See
       -- Note [Row lists of typed scans] in "Database.DuckDB.Simple.Typed.Table".
-      modifyMVar_ remaining (writeRows factory chunk)
+      modifyMVar_ remaining (writeRows factory chunk (take width [0 ..]))
 
 -- | The COPY TO side of a format. The four functions have the roles of the
 -- four functions of 'registerCopyToFunction'.

@@ -195,6 +195,7 @@ test-suite duckdb-simple-leak-test
     bytestring,
     duckdb-simple,
     geometry-simple >=0.1.1.0 && <0.2,
+    text,
 
 test-suite duckdb-simple-dataframe-test
   type: exitcode-stdio-1.0

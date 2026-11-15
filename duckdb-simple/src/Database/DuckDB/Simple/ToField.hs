@@ -1208,8 +1208,8 @@ scalarFieldValueDuckValue factory dtype value = case (dtype, value) of
           )
       )
 
--- | Construct an ENUM value by a cast of the entry text to the ENUM type. A
--- user cast from VARCHAR to that type replaces the cast. See
+-- | Construct an ENUM value by the default cast of the entry text to the ENUM
+-- type. A user cast from VARCHAR to that type does not apply. See
 -- Note [User casts and the casts of the library] in
 -- "Database.DuckDB.Simple.Materialize".
 enumDuckValue :: DuckDBV2FactoryHandle -> Array Int Text -> Word32 -> IO DuckDBV2ValueHandle
@@ -1218,7 +1218,19 @@ enumDuckValue factory entries index = do
   when (toInteger index >= toInteger (length dictionary)) $ throwIO (userError "duckdb-simple: ENUM index out of range")
   bracket (logicalTypeFromRep factory (LogicalTypeEnum entries)) destroyLogicalType \logical ->
     bracket (textDuckValue factory (dictionary !! fromIntegral index)) destroyValue \value ->
-      output (c_duckdb_v2_value_cast factory value logical)
+      defaultCast factory value logical
+
+-- | Cast a value to a type with the default cast of DuckDB. Write the value to
+-- a new vector of the type with one row, and read the row. The header says that
+-- duckdb_v2_vector_set_value casts "through the non-strict default cast", so a
+-- cast that a user registers does not apply, with each factory. The caller
+-- destroys the result. See Note [User casts and the casts of the library] in
+-- "Database.DuckDB.Simple.Materialize".
+defaultCast :: DuckDBV2FactoryHandle -> DuckDBV2ValueHandle -> DuckDBV2LogicalTypeHandle -> IO DuckDBV2ValueHandle
+defaultCast factory value logical = withOwnedVector factory logical \vector -> do
+  checked (c_duckdb_v2_vector_set_size vector 1)
+  checked (c_duckdb_v2_vector_set_value vector 0 value)
+  output (c_duckdb_v2_vector_get_value vector 0)
 
 hugeIntDuckValue :: DuckDBV2FactoryHandle -> Integer -> IO DuckDBV2ValueHandle
 hugeIntDuckValue factory value = integerToHugeInt value >>= \huge -> with huge (\ptr -> output (c_duckdb_v2_value_create_hugeint factory (ConstPtr ptr)))
@@ -1279,9 +1291,8 @@ typeMismatch :: String -> FieldValue -> IO a
 typeMismatch expected actual = throwIO (userError ("duckdb-simple: cannot encode " <> show actual <> " as " <> expected))
 
 -- | Construct a GEOMETRY value of the declared CRS from a raw geometry. See
--- Note [Raw GEOMETRY parameters]. A user cast from BLOB to GEOMETRY replaces
--- the cast. See
--- Note [User casts and the casts of the library] in
+-- Note [Raw GEOMETRY parameters]. A user cast from BLOB to GEOMETRY does not
+-- apply. See Note [User casts and the casts of the library] in
 -- "Database.DuckDB.Simple.Materialize".
 rawGeometryDuckValue :: ValueBuilder -> Maybe Text -> RawGeometry -> IO DuckDBV2ValueHandle
 rawGeometryDuckValue ValueBuilder{builderFactory = factory, builderType = makeType} crs RawGeometry{rawGeometryWKB, rawGeometryCRS} = do
@@ -1295,7 +1306,7 @@ rawGeometryDuckValue ValueBuilder{builderFactory = factory, builderType = makeTy
         }
   bracket (makeType (LogicalTypeGeometry crs)) destroyLogicalType \logical ->
     bracket (blobDuckValue factory rawGeometryWKB) destroyValue \blob ->
-      output (c_duckdb_v2_value_cast factory blob logical)
+      defaultCast factory blob logical
   where
     describeCRS = maybe "no CRS" (("the CRS " <>) . quotedCRS)
 
@@ -1335,7 +1346,8 @@ contains with this rule:
   the two are different, rawGeometryDuckValue raises an SQLError with the
   type ErrorInputInvalid.
 - rawGeometryDuckValue makes a BLOB value from the WKB bytes. Then it casts
-  the BLOB value to the declared GEOMETRY type with duckdb_v2_value_cast.
+  the BLOB value to the declared GEOMETRY type with the default cast of
+  DuckDB (defaultCast).
   The builder of the statement supplies a type with a configured CRS. See
   Note [CRS types of a connection] in "Database.DuckDB.Simple.TypeCache".
 - A declared type that is only the type id GEOMETRY has no CRS. The binding
@@ -1379,16 +1391,15 @@ contains with this rule:
   geometry parameter.
 -}
 
--- | Cast the payload to VARIANT through the supplied native factory. A user
--- cast to VARIANT replaces the cast. See
--- Note [User casts and the casts of the library] in
+-- | Cast the payload to VARIANT with the default cast of DuckDB. A user cast to
+-- VARIANT does not apply. See Note [User casts and the casts of the library] in
 -- "Database.DuckDB.Simple.Materialize".
 variantDuckValue :: ValueBuilder -> FieldValue -> IO DuckDBV2ValueHandle
 variantDuckValue builder@ValueBuilder{builderFactory = factory, builderType = makeType} value = do
   (rep, payload) <- variantPayloadType value
   bracket (makeType (LogicalTypeScalar LogicalTypeIdVariant)) destroyLogicalType \logical ->
     bracket (fieldValueWithTypeDuckValue builder rep payload) destroyValue \native ->
-      output (c_duckdb_v2_value_cast factory native logical)
+      defaultCast factory native logical
 
 -- | Construct a UTC nanosecond value without losing sub-microsecond digits.
 utcTimestampNsDuckValue :: DuckDBV2FactoryHandle -> UTCTimestamp -> IO DuckDBV2ValueHandle
@@ -1396,8 +1407,8 @@ utcTimestampNsDuckValue factory value =
   encodeUnbounded (encodeTimestampUnits 1000000000 . utcToLocalTime utc) value
     >>= (\encoded -> output (c_duckdb_v2_value_create_timestamp_tz_ns factory encoded))
 
--- | Cast the WKT text of the shape to GEOMETRY. A user cast from VARCHAR to
--- GEOMETRY replaces the cast. See
+-- | Cast the WKT text of the shape to GEOMETRY with the default cast of DuckDB.
+-- A user cast from VARCHAR to GEOMETRY does not apply. See
 -- Note [User casts and the casts of the library] in
 -- "Database.DuckDB.Simple.Materialize".
 instance ToDuckValue G.Geometry where
@@ -1405,7 +1416,7 @@ instance ToDuckValue G.Geometry where
     wkt <- either (throwIO . userError) pure (WKT.encodeWKT geometry)
     bracket (logicalTypeFromRep factory (LogicalTypeGeometry Nothing)) destroyLogicalType \logical ->
       bracket (textDuckValue factory wkt) destroyValue \value ->
-        output (c_duckdb_v2_value_cast factory value logical)
+        defaultCast factory value logical
 
 instance ToDuckValue Variant where
   toDuckValue factory = variantDuckValue (plainBuilder factory) . variantPayload

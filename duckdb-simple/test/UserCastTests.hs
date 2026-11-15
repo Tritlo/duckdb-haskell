@@ -1,4 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- |
@@ -12,6 +14,7 @@
 -- "Database.DuckDB.Simple.Materialize".
 module UserCastTests (userCastTests) where
 
+import Control.Exception (try)
 import Control.Monad (forM_, void)
 import Data.Array (listArray)
 import qualified Data.ByteString as BS
@@ -19,6 +22,7 @@ import qualified Data.Geometry as G
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
+import qualified Data.Text as Text
 import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Config as Config
@@ -146,6 +150,52 @@ userCastTests =
               struct = oneField "g" (LogicalTypeGeometry (Just "local grid")) (FieldGeometry grid)
           query other "SELECT ?" (Only struct) >>= (@?= [Only struct])
           close other
+    , testCase "a cast from BLOB to GEOMETRY does not change a bound raw geometry" $ withConnection ":memory:" \conn -> do
+        calls <- nullCast conn (R.TypeExpression "BLOB") (R.TypeExpression "GEOMETRY")
+        let struct = oneField "g" (LogicalTypeGeometry Nothing) (FieldGeometry point)
+        query conn "SELECT ?" (Only point) >>= (@?= [Only point])
+        query conn "SELECT ?" (Only struct) >>= (@?= [Only struct])
+        query conn "SELECT ?" (Only (Variant (FieldGeometry point))) >>= (@?= [Only (Variant (FieldGeometry point))])
+        readIORef calls >>= (@?= 0)
+    , testCase "a cast from BLOB to GEOMETRY('OGC:CRS84') does not change a bound raw geometry with that CRS" $
+        withConnection ":memory:" \conn -> do
+          let crs84 = LogicalTypeGeometry (Just "OGC:CRS84")
+              struct = oneField "g" crs84 (FieldGeometry point{rawGeometryCRS = Just "OGC:CRS84"})
+          calls <- nullCast conn (R.TypeExpression "BLOB") (R.StructuredType crs84)
+          query conn "SELECT ?" (Only struct) >>= (@?= [Only struct])
+          readIORef calls >>= (@?= 0)
+    , testCase "a cast from VARCHAR to GEOMETRY does not change a bound Geometry" $ withConnection ":memory:" \conn -> do
+        calls <- nullCast conn (R.TypeExpression "VARCHAR") (R.TypeExpression "GEOMETRY")
+        query conn "SELECT ?" (Only shape) >>= (@?= [Only shape])
+        query conn "SELECT ?" (Only [shape, shape]) >>= (@?= [Only [shape, shape]])
+        readIORef calls >>= (@?= 0)
+    , testCase "a cast from VARCHAR to an ENUM type does not change a bound ENUM value" $ withConnection ":memory:" \conn -> do
+        let entries = LogicalTypeEnum (listArray (0, 1) ["x", "y"])
+            struct = oneField "e" entries (FieldEnum 1)
+        calls <- nullCast conn (R.TypeExpression "VARCHAR") (R.StructuredType entries)
+        query conn "SELECT ?" (Only struct) >>= (@?= [Only struct])
+        readIORef calls >>= (@?= 0)
+    , testCase "a cast from BIGINT to VARIANT does not change a bound Variant" $ withConnection ":memory:" \conn -> do
+        calls <- nullCast conn (R.TypeExpression "BIGINT") (R.TypeExpression "VARIANT")
+        let list = Variant (FieldList [FieldInt64 1, FieldInt64 2])
+        query conn "SELECT ?" (Only (Variant (FieldInt64 5))) >>= (@?= [Only (Variant (FieldInt64 5))])
+        query conn "SELECT ?" (Only list) >>= (@?= [Only list])
+        readIORef calls >>= (@?= 0)
+    , testCase "a cast from VARCHAR to GEOMETRY does not change a Geometry row of a table function" $
+        withConnection ":memory:" \conn -> do
+          createTableFunction conn "user_cast_rows" ["g"] \() -> pure [Only shape]
+          calls <- nullCast conn (R.TypeExpression "VARCHAR") (R.TypeExpression "GEOMETRY")
+          query_ conn "SELECT g FROM user_cast_rows()" >>= (@?= [Only (Just shape)])
+          readIORef calls >>= (@?= 0)
+    , testCase "a bound raw geometry keeps its typed NULL and its error for bytes that are not WKB" $
+        withConnection ":memory:" \conn -> do
+          let crs84 = LogicalTypeGeometry (Just "OGC:CRS84")
+              struct = oneField "g" crs84 FieldNull
+          query conn "SELECT ?" (Only struct) >>= (@?= [Only struct])
+          try (query conn "SELECT ?" (Only (RawGeometry (BS.pack [1, 2, 3]) Nothing)) :: IO [Only RawGeometry]) >>= \case
+            Left SQLError{sqlErrorMessage} ->
+              assertBool (show sqlErrorMessage) ("Could not convert BLOB to GEOMETRY" `Text.isInfixOf` sqlErrorMessage)
+            Right rows -> assertFailure ("expected an error, got " <> show rows)
     ]
 
 -- | Register a cast that writes NULL for each row, and give its call count.

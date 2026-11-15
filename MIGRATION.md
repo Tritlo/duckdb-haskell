@@ -64,17 +64,28 @@ and callbacks. Upstream marks that API as unstable, so 0.4 requires exactly
 DuckDB 2.0.0. Creating an environment raises `SQLError` for another version.
 The SQL workflow stays the same. These changes can affect your code:
 
+- The package requires `base` 4.18 or later, that is GHC 9.6 or later.
+  Version 0.3 accepted `base` 4.14.
 - Raw types come from `Database.DuckDB.FFI.V2`. They are distinct from the
   retained API types in `Database.DuckDB.FFI`.
+- `Database.DuckDB.Simple.Internal` uses the V2 handles, and some of its
+  functions take other arguments. `withResult` and `executePreparedResult` take
+  a `Statement`. `fetchResultChunk` takes no `ResultMode`.
+  `runInterruptibleQuery` takes an `IO a` action, not an `IO DuckDBState`
+  action. `withDatabaseHandle` gives the native instance handle. The changelog lists
+  the removed names and the new record fields.
 - `SQLError.sqlErrorType` is `Maybe ErrorType`. `Database.DuckDB.Simple`
-  exports `ErrorType`, which has one constructor for each native error code.
-  For example, `DuckDBErrorConstraint` becomes `ErrorDatabaseConstraint`,
-  `DuckDBErrorCatalog` becomes `ErrorDatabaseCatalog`,
-  `DuckDBErrorBinder` becomes `ErrorQueryBinder`,
+  exports `ErrorType`. It has one constructor for each error code of the V2 C
+  API. The V2 codes are a different set from the codes of version 0.3. Thus
+  some codes of version 0.3 have no one-to-one replacement, for example
+  `DuckDBErrorIO` and `DuckDBErrorInvalid`. Some constructors are new, for
+  example `ErrorResourceInUse` and `ErrorApi`. Other codes have a direct
+  replacement. For example, `DuckDBErrorConstraint` becomes
+  `ErrorDatabaseConstraint`, `DuckDBErrorCatalog` becomes
+  `ErrorDatabaseCatalog`, `DuckDBErrorBinder` becomes `ErrorQueryBinder`,
   `DuckDBErrorConversion` becomes `ErrorTypeConversion`,
   `DuckDBErrorInvalidInput` becomes `ErrorInputInvalid`, and
   `DuckDBErrorInterrupt` becomes `ErrorRuntimeInterrupt`.
-  `ErrorResourceInUse` is new.
 - `ToDuckValue.toDuckValue` takes a `ValueFactory` and returns a
   `NativeValue`. `Database.DuckDB.Simple.ToField` exports the two names. They
   are synonyms of the V2 handles `DuckDBV2FactoryHandle` and
@@ -83,7 +94,8 @@ The SQL workflow stays the same. These changes can affect your code:
   `withConnectionFactory` from `Database.DuckDB.Simple.Internal`. Create and
   destroy the value inside `withConnectionHandle`. `withConnectionFactory`
   does not keep the connection alive. Registration code gets the factory of
-  its target from `withRegistrationFactory`.
+  its target from `withRegistrationFactory` in
+  `Database.DuckDB.Simple.V2.Registration`.
 - `logicalTypeFromRepWith` takes the factory, and its resolver returns
   `Maybe` a native type. `Nothing` selects the default construction.
 - `logicalTypeToRep`, `logicalTypeFromRep`, `logicalTypeFromRepWith`, and
@@ -111,7 +123,9 @@ The SQL workflow stays the same. These changes can affect your code:
   names that are not in the list are options of extensions that the new
   database does not load.
 - `CatalogEntry.catalogEntryType` and `lookupCatalogEntry` use the new
-  `CatalogEntryType`. V2 metadata cannot look up collations.
+  `CatalogEntryType`. For example, `DuckDBCatalogEntryTypeTable` becomes
+  `CatalogTable`. `DuckDBCatalogEntryTypeCollation` has no replacement, because
+  V2 metadata cannot look up collations.
 - `withFileHandle` takes `[FileFlag]` instead of `[DuckDBFileFlag]`. It gives
   its action an opaque `FileHandle` instead of `DuckDBFileHandle`, and the
   other handle functions take `FileHandle`.
@@ -132,15 +146,23 @@ The SQL workflow stays the same. These changes can affect your code:
   connection wait for each other in the default query functions. Serialize a
   transaction, a shared `Statement`, and an explicit stream in the
   application. A callback that queries its active connection waits for this
-  lock. After the bound of `connectionCallbackLockWait` in `ConnectionOptions`
-  (10 seconds by default), the query raises an `SQLError` of the type
-  `ErrorResourceInUse`. For most callbacks, the outer statement then fails.
-  `Nothing` sets no bound.
-  The bound applies also to a callback that waits for a second connection.
+  lock. After the time limit of `connectionCallbackLockWait` in
+  `ConnectionOptions` (10 seconds by default), the query raises an `SQLError`
+  of the type `ErrorResourceInUse`. For most callbacks, the outer statement
+  then fails. `Nothing` sets no time limit.
+  The time limit applies also to a callback that waits for a second
+  connection.
   With more than one DuckDB thread, DuckDB can run a callback of an explicit
   stream between two fetches. Then the query fails at once with the
-  `RESOURCE_IN_USE` error of DuckDB. The README gives the cases that the bound
-  does not cover.
+  `RESOURCE_IN_USE` error of DuckDB. The README gives the cases that the time
+  limit does not cover.
+- `ConnectionOptions` has new fields: `connectionCallbackLockWait`,
+  `connectionAggregateStripes`, and `connectionArrowBatchSize`. Code that
+  builds the record with only the fields of version 0.3 gets a warning from
+  GHC. The program then fails with a missing-field error when the library
+  reads such a field. Build options as a record update of
+  `defaultConnectionOptions`, for example
+  `defaultConnectionOptions {connectionGeometryCRS = ["OGC:CRS84"]}`.
 - `query_` and `execute_` parse all statements before they run any. A syntax
   error stops earlier statements in the same input from running.
 - A conversion error names the types `TIMESTAMPTZ` and `TIMETZ`, in
@@ -149,7 +171,8 @@ The SQL workflow stays the same. These changes can affect your code:
 - `TimeWithZone` holds the offset as seconds east of UTC. The field
   `timeWithZoneZone :: TimeZone` is now `timeWithZoneOffsetSeconds :: Int32`.
   Convert a `TimeZone` with `fromIntegral (timeZoneMinutes zone) * 60`, and
-  convert an offset with `minutesToTimeZone (fromIntegral offset \`div\` 60)`.
+  convert an offset with
+  ``minutesToTimeZone (fromIntegral (offset `quot` 60))``.
   The second conversion drops the seconds of an offset. A TIMETZ with an offset
   that has seconds, for example `12:00:00+01:00:30`, now reads. Version 0.3
   raised an error for it.
@@ -198,8 +221,8 @@ The SQL workflow stays the same. These changes can affect your code:
   `Database.DuckDB.Simple.Streaming`. Version 0.3 gave this row only from
   `query`, `query_`, and `queryNamed`. The folds and `nextRow` gave no row.
 - A session variable can supply a named parameter that you omit. DuckDB
-  raises an error when no variable has that name. Only too many named
-  parameters raise `FormatError`.
+  raises an error when no variable has that name. Too few named parameters no
+  longer raise `FormatError`. Too many named parameters still raise it.
 - `deleteFunction` raises `SQLError` for a function made with `createFunction`.
   DuckDB does not permit deletion of functions registered through the C API,
   and version 0.3 ignored that error. Remove the call, or catch the error. The
@@ -212,26 +235,39 @@ The SQL workflow stays the same. These changes can affect your code:
   and to the callbacks of `registerCopyToFunction`. For a `userError`, version
   0.3 gave `user error (...)`. For an `SQLError`, it gave the `Show` text of
   the record. Update code that compares the text of these errors.
-- `Database.DuckDB.Simple` also exports `createCast`, `createTableFunction`,
-  `createAggregate`, and `Aggregate` with its fields. These names can clash
-  with your own names when you import the module without a list. Hide these
-  names in the import, or import the module qualified.
-- Empty `Array` parameters raise `SQLError`. Bind an empty list for an empty
-  LIST.
-- A list binds as a LIST parameter. Version 0.3 had no list parameter
-  instance, so code bound an `Array` and let DuckDB cast it. That code still
-  works. A `String` stays one VARCHAR parameter, and a list as a row is still
-  a row of parameters, so put a list parameter in `Only`.
+- The error of an argument that does not convert names the argument `arg0`,
+  `arg1`, and so on, with numbers from 0. For example, the text contains
+  `argument arg1 is NULL, but Int64 cannot hold NULL`. Version 0.3 gave
+  `unable to convert argument #2: ...`, with numbers from 1. Update code that
+  compares these texts.
+- `Database.DuckDB.Simple` exports new names, for example `connect`,
+  `Environment`, `Instance`, `withInstance`, `attachDatabase`, `createCast`,
+  `createTableFunction`, `createAggregate`, `Aggregate` with its fields, and
+  `TypedRow`. It also exports `ErrorType` and `LogicalTypeId` with their
+  constructors. These names can clash with your own names when you import the
+  module without a list. Hide these names in the import, or import the module
+  qualified.
+- An empty `Array` parameter raises `SQLError`. Version 0.3 bound an empty
+  `Array` of scalar elements. Bind an empty list for an empty LIST.
+- A list binds as a LIST parameter. Version 0.3 had no `ToField` instance for
+  lists, so code bound an `Array` and let DuckDB cast it. That code still
+  works for an `Array` with elements. A `String` stays one VARCHAR parameter,
+  and a list as a row is still a row of parameters, so put a list parameter in
+  `Only`.
 - A composite parameter with a GEOMETRY CRS that DuckDB does not recognize
   raises `SQLError`. Version 0.3 bound it without the CRS. Configure custom CRS
   names through `connectionGeometryCRS`.
+- A composite parameter that the native value constructor rejects raises an
+  `SQLError`. For example, a STRUCT parameter with a MAP field that has a NULL
+  key raises an `SQLError` with the type `ErrorInputInvalid`. Version 0.3
+  raised an `IOException`. Catch `SQLError` for these errors.
 - A name in `connectionGeometryCRS` that DuckDB drops, for example a blank
   name, fails when the connection opens. Version 0.3 read the configured types
   the first time a parameter needed one, and did not check that a type kept its
   CRS.
 - DuckDB 2.0 rejects WKB with mixed Z/M member layouts.
-- `RawGeometry` has a parameter instance. It binds as a GEOMETRY with its own
-  CRS. Version 0.3 had only a result instance, so code imported the WKB with
+- `RawGeometry` has a `ToField` instance. It binds as a GEOMETRY with its own
+  CRS. Version 0.3 had only a `FromField` instance, so code imported the WKB with
   `ST_GeomFromWKB(?)` and the CRS with `ST_SetCRS`. That SQL still works.
 - Decoded VARIANT objects list their keys in DuckDB's lexicographic order.
 - A `Variant` parameter with a UNION payload, at any depth, raises `SQLError`
@@ -254,6 +290,8 @@ builds. CI does this too. Source archives include those artefacts. See the
 
 This guide covers the changes needed when upgrading this repository from the
 DuckDB 1.4 line to the DuckDB 1.5 line.
+This part describes `duckdb-ffi` 1.5.6.0 and `duckdb-simple` 0.3.0.0. The part
+[DuckDB 2.0](#duckdb-20) gives the changes of the later releases.
 
 The short version is:
 
@@ -264,38 +302,39 @@ The short version is:
 - New 1.5 functionality is exposed through additive modules and helpers; no
   wholesale rewrite is required.
 
-## Native DuckDB 1.5.6
+### Native DuckDB 1.5.6
 
-The default native download is DuckDB 1.5.6. Native DuckDB >= 1.5.3 and < 1.6
-remains supported. `duckdb-simple` uses a separate API version.
+The default native download was DuckDB 1.5.6. Native DuckDB >= 1.5.3 and < 1.6
+stayed supported. `duckdb-simple` uses a separate API version.
 
 The FFI adds the GEOMETRY and VARIANT type tags, the geometry CRS accessor,
 and the COPY_DATABASE, UPDATE_EXTENSIONS, and MERGE_INTO statement tags.
 Free strings returned by the CRS accessor with `duckdb_free`.
 
-## Geometry support
+### Geometry support
 
 `duckdb-simple-0.3.0.0` adds Geometry support.
 
 Use `Data.Geometry.Geometry` from the published `geometry-simple` package for
 decoded shapes. Use `RawGeometry` for WKB bytes and CRS metadata. The package's
 `Geometry` type has no CRS. It has parameter and result instances.
-In version 0.3, `RawGeometry` had only a result instance, so code imported its
-WKB and CRS with explicit SQL. Version 0.4 adds a parameter instance. See
+In version 0.3, `RawGeometry` had only a `FromField` instance, so code imported
+its WKB and CRS with explicit SQL. Version 0.4 adds a `ToField` instance. See
 [the Geometry notes](duckdb-simple/README.md#geometry) for examples and limits.
 
 `FieldValue` gains `FieldGeometry`, and `LogicalTypeRep` gains
 `LogicalTypeGeometry`. Update exhaustive matches.
 
-The C API cannot create a GEOMETRY type with a CRS. Each connection reads
-GEOMETRY types for a list of CRS definitions the first time a parameter needs
-one, and composite parameters use them. The list defaults to `OGC:CRS84`. Set
-it with `ConnectionOptions`, `openWithOptions`, or `withConnectionWithOptions`.
-A CRS outside the list binds without a CRS, and `logicalTypeFromRep` creates
-`GEOMETRY` with no CRS. To apply a CRS in these cases, insert the value into a
-column with that CRS, or cast it in SQL.
+The C API of DuckDB 1.5 cannot create a GEOMETRY type with a CRS. In version
+0.3, each connection read GEOMETRY types for a list of CRS definitions the first
+time a parameter needed one, and composite parameters used them. The list
+defaults to `OGC:CRS84`. Set it with `ConnectionOptions`, `openWithOptions`, or
+`withConnectionWithOptions`. In version 0.3, a CRS outside the list bound
+without a CRS, and `logicalTypeFromRep` created `GEOMETRY` with no CRS. To
+apply a CRS in these cases, version 0.3 needed an insert into a column with
+that CRS, or a cast in SQL.
 
-## VARIANT support
+### VARIANT support
 
 `duckdb-simple-0.3.0.0` adds VARIANT support. VARIANT results decode to the
 `FieldValue` of the stored value, so existing `FromField` instances read them.
@@ -306,17 +345,16 @@ VARIANT loses geometry CRS metadata. Import raw geometry payloads with
 notes](duckdb-simple/README.md#variant) for current decoding and
 persistent-storage requirements.
 
-`Variant` binds as a VARIANT parameter. The connection reads the VARIANT type
-the first time a parameter needs it, because the C API cannot create a usable
-VARIANT type.
-`Variant` has no `ToDuckValue` instance, and `logicalTypeFromRep` raises an
-error for VARIANT.
+`Variant` binds as a VARIANT parameter. In version 0.3, the connection read the
+VARIANT type the first time a parameter needed it, because the C API of DuckDB
+1.5 cannot create a usable VARIANT type. In version 0.3, `Variant` had no
+`ToDuckValue` instance, and `logicalTypeFromRep` raised an error for VARIANT.
 
 Array elements require `ToField` and `DuckDBColumnType`. Arrays use each
 element's `ToField` instance. If a custom element type only has `ToDuckValue`,
 add `instance ToField YourType`. The default implementation requires `Show`.
 
-## Binding fixes
+### Binding fixes
 
 - Default cursors and folds use DuckDB's supported materialized execution API. They
   decode one Haskell row at a time, but native result memory depends on the
@@ -347,7 +385,7 @@ add `instance ToField YourType`. The default implementation requires `Show`.
 - Rebuild applications that use the FFI directly. The corrected C adapters
   preserve Haskell types.
 
-## Who Needs to Change What
+### Who Needs to Change What
 
 If you use `duckdb-ffi` directly:
 
@@ -365,7 +403,7 @@ If you use `duckdb-simple`:
 - New 1.5 helpers are available from dedicated modules instead of being folded
   into the core query API.
 
-## Runtime Compatibility
+### Runtime Compatibility
 
 The biggest practical change is the runtime baseline.
 
@@ -397,11 +435,11 @@ LD_LIBRARY_PATH=/path/to/duckdb-1.5 \
   cabal test --extra-lib-dirs=/path/to/duckdb-1.5
 ```
 
-## `duckdb-ffi` Migration
+### `duckdb-ffi` Migration
 
-### Header and Symbol Surface
+#### Header and Symbol Surface
 
-The vendored `duckdb.h` now matches DuckDB 1.5.6.
+The vendored `duckdb.h` of `duckdb-ffi` 1.5.6.0 matched DuckDB 1.5.6.
 
 The 1.5 change is additive for the C API surface used here:
 
@@ -413,7 +451,7 @@ This means most direct FFI users do not need to rewrite existing code. Instead:
 - keep existing bindings for legacy 1.4 APIs
 - opt into the new 1.5 APIs where needed
 
-### New Raw Modules
+#### New Raw Modules
 
 The new 1.5 areas are exposed through these modules:
 
@@ -425,7 +463,7 @@ The new 1.5 areas are exposed through these modules:
 Use these when adopting new 1.5 functionality rather than trying to infer the
 symbols manually from the header.
 
-### New Types and Callbacks
+#### New Types and Callbacks
 
 DuckDB 1.5 introduces new opaque handles and enums that may affect your own FFI
 layer if you were maintaining local bindings. In this repository they are now
@@ -443,7 +481,7 @@ provided centrally, including:
 If you had local downstream bindings for any of these, delete them and import
 the shared versions from `Database.DuckDB.FFI.Types`.
 
-### Error-Handling Guidance
+#### Error-Handling Guidance
 
 DuckDB 1.5 adds more `duckdb_error_data`-style paths.
 
@@ -456,9 +494,9 @@ Recommended approach:
 
 That is the policy used in this repository.
 
-## `duckdb-simple` Migration
+### `duckdb-simple` Migration
 
-### Existing Query Code
+#### Existing Query Code
 
 Most `duckdb-simple` code should not need source changes.
 
@@ -470,7 +508,7 @@ The following remain source-compatible:
 - `ToField`/`FromField`-based row and parameter handling
 - existing scalar function registration with `createFunction`
 
-### New Modules
+#### New Modules
 
 DuckDB 1.5 features are exposed in additive modules:
 
@@ -483,7 +521,7 @@ DuckDB 1.5 features are exposed in additive modules:
 Import them only where needed. The main `Database.DuckDB.Simple` module stays
 focused on the core query interface.
 
-### Opening with Config
+#### Opening with Config
 
 If you previously created connections only with:
 
@@ -505,7 +543,7 @@ or:
 withConnectionWithConfig ":memory:" [("threads", "1")] $ \conn -> ...
 ```
 
-### Stateful Scalar Functions
+#### Stateful Scalar Functions
 
 DuckDB 1.5 adds scalar-function init/state hooks. In `duckdb-simple`, that is
 surfaced as `createFunctionWithState`.
@@ -532,7 +570,7 @@ createFunctionWithState conn "hs_counter" (newIORef (0 :: Int)) $ \ref -> do
 This is an additive feature. Existing `createFunction` users do not need to
 rewrite working code.
 
-### Copy Functions
+#### Copy Functions
 
 DuckDB 1.5 adds C APIs for custom `COPY` integrations. `duckdb-simple` now
 exposes `registerCopyToFunction` in `Database.DuckDB.Simple.Copy`.
@@ -553,7 +591,7 @@ The wrapper separates the callback phases:
 This mirrors DuckDB’s ownership model closely on purpose. If you had no custom
 COPY integration before, nothing changes for normal SQL `COPY` usage.
 
-### Logging
+#### Logging
 
 DuckDB 1.5 adds custom log storage registration. `duckdb-simple` now exposes
 `registerLogStorage` in `Database.DuckDB.Simple.Logging`.
@@ -561,9 +599,9 @@ DuckDB 1.5 adds custom log storage registration. `duckdb-simple` now exposes
 This is optional advanced functionality. Existing applications do not need to
 change anything unless they want to capture DuckDB log events.
 
-## Behavior Changes Worth Noting
+### Behavior Changes Worth Noting
 
-### `TIME_NS` Decoding
+#### `TIME_NS` Decoding
 
 The test suite was updated because DuckDB 1.5 now successfully decodes
 `TIME_NS`, where older expectations treated that as unsupported.
@@ -573,7 +611,7 @@ For most users this is a strict improvement:
 - code that already handled `FieldTime` continues to work
 - tests that expected a failure for `TIME_NS` should be updated
 
-### `duckdb_string_t` Handling
+#### `duckdb_string_t` Handling
 
 DuckDB 1.5 made it more obvious that `duckdb_string_t_data` must be consumed
 with its explicit length, not by assuming NUL termination.
@@ -592,7 +630,7 @@ peekCStringLen ...
 
 using `duckdb_string_t_length`.
 
-## Suggested Upgrade Steps
+### Suggested Upgrade Steps
 
 1. Upgrade the Haskell packages to:
    - `duckdb-ffi-1.5.6.0`

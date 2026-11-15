@@ -114,6 +114,7 @@ typedRegistrationTests =
       localOption (mkTimeout (10 * 60 * 1000000)) (testCase "table function reads an infinite list with LIMIT" testTableLazy)
     , testCase "table function registration and argument errors" testTableArgumentErrors
     , testCase "table function exceptions become SQL errors" testTableExceptions
+    , testCase "table function evaluates only the columns that the query uses" testTableProjection
     , testCase "table function releases the list of each scan" testTableRelease
     , testCase "multi-file function gives each row of a typed table function one time" testTableMultiFile
     , testCase "COPY format with both directions under one name" testCopyBothDirections
@@ -121,6 +122,7 @@ typedRegistrationTests =
     , testCase "COPY errors in each function fail only their statement" testCopyErrors
     , testCase "COPY format on two connections of one database" testCopySharedDatabase
     , testCase "aggregate over one group and over many groups" testAggregateGroups
+    , testCase "aggregate with one state table stripe" testAggregateStripes
     , testCase "aggregate skips NULL rows and gives the initial result" testAggregateNulls
     , testCase "aggregate arguments, states, and result types" testAggregateTypes
     , testCase "aggregate exceptions fail the query only" testAggregateErrors
@@ -574,6 +576,19 @@ testAggregateGroups = withConnection ":memory:" \conn -> do
   readIORef combines >>= \count -> assertBool ("combine calls: " <> show count) (count > 0)
   query_ conn "SELECT typed_sum(i), typed_sum(i + 1) FROM range(10) t(i)" >>= (@?= [(45 :: Int64, 55 :: Int64)])
 
+-- | One stripe gives the same results as the default stripes, also with
+-- partial states from 4 threads. A stripe count of 0 fails the open.
+testAggregateStripes :: Assertion
+testAggregateStripes = do
+  withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionAggregateStripes = 1} \conn -> do
+    createAggregate conn "typed_sum" sumAggregate
+    void (execute_ conn "SET threads = 4")
+    void (execute_ conn "CREATE TABLE typed_numbers AS SELECT i FROM range(300000) t(i)")
+    assertColumnsEqual conn "SELECT typed_sum(i), sum(i)::BIGINT FROM typed_numbers GROUP BY i % 1000"
+    assertColumnsEqual conn "SELECT typed_sum(i), sum(i)::BIGINT FROM typed_numbers"
+  message <- sqlErrorOf (withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionAggregateStripes = 0} (const (pure ())))
+  assertBool ("unexpected message: " <> Text.unpack message) ("connectionAggregateStripes" `Text.isInfixOf` message)
+
 -- | Skip the rows with NULL. A group without other rows gives the initial result.
 testAggregateNulls :: Assertion
 testAggregateNulls = withConnection ":memory:" \conn -> do
@@ -1021,6 +1036,20 @@ testTableExceptions = withConnection ":memory:" \conn -> do
   query_ conn "SELECT n FROM typed_partial() LIMIT 2" >>= (@?= map Only [0, 1 :: Int64])
   query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
 
+-- | Evaluate only the columns that the query uses. A column that the query does
+-- not use can raise an exception, and the query does not fail. SELECT * and
+-- count(*) read the rows as before.
+testTableProjection :: Assertion
+testTableProjection = withConnection ":memory:" \conn -> do
+  createTableFunction conn "typed_pairs" ["n", "failing"] \(Only count) ->
+    pure [(n, if n == 2500 then error "typed_pairs: the column fails" else n * 2) | n <- [0 .. count - 1 :: Int64]]
+  query_ conn "SELECT n FROM typed_pairs(3000) WHERE n % 1000 = 1" >>= (@?= map Only [1, 1001, 2001 :: Int64])
+  query_ conn "SELECT sum(n)::BIGINT FROM typed_pairs(3000)" >>= (@?= [Only (sum [0 .. 2999 :: Int64])])
+  assertSqlError "typed_pairs: the column fails" (query_ conn "SELECT failing FROM typed_pairs(3000)" :: IO [Only Int64])
+  query_ conn "SELECT failing FROM typed_pairs(3)" >>= (@?= map Only [0, 2, 4 :: Int64])
+  query_ conn "SELECT * FROM typed_pairs(3)" >>= (@?= ([(0, 0), (1, 2), (2, 4)] :: [(Int64, Int64)]))
+  query_ conn "SELECT count(*) FROM typed_pairs(2000)" >>= (@?= [Only (2000 :: Int64)])
+
 -- | Release the list of each scan after a full scan, after LIMIT, and after an
 -- error. Each call makes a token. The rows that the scan did not read refer to
 -- the token. Release the function when the connection closes.
@@ -1203,7 +1232,7 @@ registerFailingFormat conn phase =
         (\_ -> failIn "finalize")
     rows = [Only (if phase == "row" && i == 2500 then error "typed_copy_error: row" else i) | i <- [0 .. 2999 :: Int64]]
 
--- | Read 20 files through a multi-file function over a typed table function.
+-- | Read 8 files through a multi-file function over a typed table function.
 -- DuckDB runs exec callbacks of one scan at the same time for a multi-file
 -- function. Each row must come one time. The case sets 4 threads, so that it
 -- does not use the default number of threads of the machine.
@@ -1213,11 +1242,17 @@ testTableMultiFile = withDirectory \directory -> withConnection ":memory:" \conn
   createTableFunction conn "typed_numbers" ["value"] \(Only path) ->
     map (Only . read) . lines <$> readFile (Text.unpack path) :: IO [Only Int64]
   registerMultiFileFunction conn "typed_all_numbers" "typed_numbers" defaultMultiFileOptions
-  let numbers file = [file * 1000 + row | row <- [0 .. 99]] :: [Int64]
-  forM_ [0 .. 19] \file -> writeFile (directory </> ("numbers" <> show file <> ".txt")) (unlines (map show (numbers file)))
+  -- A file of 10000 rows needs 5 output chunks. The multi-file function can
+  -- then run more than one exec callback for the scan of one file.
+  let numbers file = [file * 100000 + row | row <- [0 .. 9999]] :: [Int64]
+  forM_ [0 .. 7] \file -> writeFile (directory </> ("numbers" <> show file <> ".txt")) (unlines (map show (numbers file)))
   forM_ [1 :: Int .. 5] \_ ->
     query conn "SELECT value FROM typed_all_numbers(?) ORDER BY value" (Only (Text.pack (directory </> "numbers*.txt")))
-      >>= (@?= map Only (concatMap numbers [0 .. 19]))
+      >>= (@?= map Only (concatMap numbers [0 .. 7]))
+  -- count(*) uses no column. The typed table function declares projection
+  -- pushdown, so the multi-file function can run it.
+  query conn "SELECT count(*) FROM typed_all_numbers(?)" (Only (Text.pack (directory </> "numbers*.txt")))
+    >>= (@?= [Only (80000 :: Int64)])
 
 -- | Create and remove a unique directory for the files of a test.
 withDirectory :: (FilePath -> IO a) -> IO a

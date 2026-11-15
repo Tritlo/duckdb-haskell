@@ -81,8 +81,8 @@ bindings. The migration uses the current API. It does not add native symbols.
 - V2 cannot register a custom file system. Native log-sink registration is
   available. Log callbacks can run concurrently and must not log or change the
   logging configuration. Native logging contains and discards callback errors.
-- V2 rejects fixed ARRAY types with zero elements. Empty LIST values remain
-  supported. The binding must not change one type into the other.
+- DuckDB 2.0 rejects an ARRAY type with zero elements, also in SQL. Empty LIST
+  values remain supported. The binding must not change one type into the other.
 - Native GEOMETRY collections require one Z/M layout for all members, including
   empty members. Mixed-layout WKB remains valid for the standalone codec, but
   native import raises `SQLError`. Do not promote or remove coordinates.

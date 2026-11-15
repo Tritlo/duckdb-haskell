@@ -239,9 +239,9 @@ bsFromBool bits =
 -- stores an offset from -57599 to 57599 seconds (-15:59:59 to +15:59:59) and the
 -- time in microseconds. A value with such an offset reads back equal to the
 -- bound value. A time with digits below one microsecond loses these digits, as
--- in SQL text. Use @minutesToTimeZone (fromIntegral offset \`div\` 60)@ and
+-- in SQL text. Use @minutesToTimeZone (fromIntegral (offset \`quot\` 60))@ and
 -- @fromIntegral (timeZoneMinutes zone) * 60@ to convert to and from a
--- @Data.Time@ zone.
+-- @Data.Time@ zone. The first conversion drops the seconds of an offset.
 data TimeWithZone = TimeWithZone
   { timeWithZoneTime :: TimeOfDay
   , timeWithZoneOffsetSeconds :: Int32

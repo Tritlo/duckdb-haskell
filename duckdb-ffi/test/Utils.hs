@@ -35,8 +35,9 @@ import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (withCString)
 import Foreign.C.Types (CChar)
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Ptr (Ptr, nullFunPtr, nullPtr, plusPtr)
-import Foreign.Storable (peek, poke, sizeOf)
+import Foreign.Marshal.Array (advancePtr)
+import Foreign.Ptr (Ptr, nullFunPtr, nullPtr)
+import Foreign.Storable (peek, poke)
 import HsBindgen.Runtime.Struct qualified as Struct
 import HsBindgen.Runtime.Support.FunPtr (fromFunPtr)
 import Test.Tasty.HUnit ((@?=))
@@ -131,7 +132,7 @@ clearValidityBit mask idx = do
   poke entryPtr (clearBit current bitIdx)
 
 plusWord :: Ptr Word64 -> Int -> Ptr Word64
-plusWord base idx = base `plusPtr` (idx * sizeOf (undefined :: Word64))
+plusWord = advancePtr
 
 destroyErrorData :: DuckDBErrorData -> IO ()
 destroyErrorData errData =

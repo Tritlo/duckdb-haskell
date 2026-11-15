@@ -279,11 +279,11 @@ header says: "A connection's or callback's factory casts with that client's
 cast functions and settings". It also says that the factory of an instance
 "supports only the built-in casts, with default settings".
 
-The library runs casts of DuckDB for its own work. These casts use the factory
-of the instance, so a user cast does not change their result:
+The library runs casts of DuckDB for its own work. A user cast does not change
+their result:
 
-- prepareGeometryReader casts a GEOMETRY vector to BLOB. A result, the value of
-  an option (getConfigValue), and the default value of an option
+- Reads. prepareGeometryReader casts a GEOMETRY vector to BLOB. A result, the
+  value of an option (getConfigValue), and the default value of an option
   (getConfigDefaultValue) read a GEOMETRY value with the factory of the
   instance. The type cache of the connection keeps that factory (typeCacheCasts
   in "Database.DuckDB.Simple.TypeCache"). The callbacks of a registration on a
@@ -295,27 +295,41 @@ of the instance, so a user cast does not change their result:
   payloads ("Database.DuckDB.Simple.VariantCodec"). The codec also reads a
   GEOMETRY payload. It uses the factory of the instance of its helper
   connection (variantCasts).
+- Values. rawGeometryDuckValue casts a BLOB value to GEOMETRY, the ToDuckValue
+  instance of Geometry casts a VARCHAR value to GEOMETRY, enumDuckValue casts a
+  VARCHAR value to an ENUM type, and variantDuckValue casts a value to VARIANT
+  ("Database.DuckDB.Simple.ToField"). Each of them writes the value to a vector
+  of the target type with one row, and reads the row (defaultCast). The header
+  says that duckdb_v2_vector_set_value casts "through the non-strict default
+  cast". Thus the value does not depend on the factory, and toDuckValue gives
+  the same value with the factory of a connection, of a callback context, or of
+  an instance.
+- The type query of a connection with a custom CRS (readNativeTypes in
+  "Database.DuckDB.Simple.TypeCache") binds the empty point as a BLOB value. Its
+  statement has no cast.
 
-The type query of a connection with a custom CRS (readNativeTypes in
-"Database.DuckDB.Simple.TypeCache") has no cast: it binds the empty point as a
-BLOB value.
+Why a vector for the values. For GEOMETRY and VARIANT, the header calls
+duckdb_v2_vector_set_value "the only way to write a cell". For an ENUM, the
+header calls a cast of a VARCHAR to an enum type with duckdb_v2_value_cast "the
+sanctioned way to build UNION and ENUM values", and that cast includes
+"registered custom casts". enumDuckValue does not use that cast, on purpose.
+The library builds an ENUM value from a dictionary index, and a user cast from
+VARCHAR to the ENUM type must not change that value. A UNION value is built
+through a vector for another reason. See Note [UNION values] in
+"Database.DuckDB.Simple.ToField".
 
-These casts use the factory of a connection or of a callback context:
+These casts still use the cast functions of the session, so a user cast for
+the same pair changes their result:
 
-- prepareGeometryReader in the callbacks of a registration on an extension. An
-  extension target has no instance, so these callbacks use the factory of the
-  context.
-- rawGeometryDuckValue casts a BLOB value to GEOMETRY, and the ToDuckValue
-  instance of Geometry casts a VARCHAR value to GEOMETRY
-  ("Database.DuckDB.Simple.ToField").
-- enumDuckValue casts a VARCHAR value to an ENUM type, and variantDuckValue
-  casts a value to VARIANT (the same module).
-
-Thus a user cast for one of these pairs replaces the cast that the library
-expects, and the library gives the result of the user cast. For example, after
-a user cast from VARCHAR to an ENUM type that gives NULL, an ENUM value that a
-STRUCT parameter holds is NULL, and no error occurs. A cast that is registered
-for GEOMETRY is not used for a GEOMETRY type that has a CRS.
+- An extension target has no instance. The callbacks that an extension
+  registers read a GEOMETRY value with the factory of the callback context: the
+  value of an option update, the arguments of a pragma or a table function, and
+  the rows of a COPY TO function. Thus a user cast from GEOMETRY to BLOB
+  changes a GEOMETRY value that these callbacks read.
+- setConfigValue and setConfigOption. DuckDB casts the value to the type of the
+  option as SQL SET does.
+- The casts of the SQL text. DuckDB runs them with the casts of the session.
+  The library does not choose them.
 -}
 
 -- | Copy the WKB bytes and CRS of every GEOMETRY row in a vector. GEOMETRY has

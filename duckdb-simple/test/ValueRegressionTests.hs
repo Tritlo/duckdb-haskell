@@ -14,6 +14,7 @@ module ValueRegressionTests (main, valueRegressionTests) where
 import Control.Exception (IOException, bracket, fromException, try)
 import Control.Monad (forM_)
 import Data.Array (Array, elems, listArray)
+import Data.Bits (shiftR, xor)
 import qualified Data.ByteString as BS
 import Data.Int (Int16, Int32, Int64, Int8)
 import qualified Data.Map.Strict as Map
@@ -47,6 +48,7 @@ import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
 import Database.DuckDB.Simple.V2.LogicalRep (destroyLogicalType, logicalTypeFromRep, logicalTypeToRep)
+import GHC.Float (castDoubleToWord64, castFloatToWord32)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import Test.Tasty (TestTree, defaultMain, testGroup)
@@ -135,6 +137,9 @@ valueRegressionTests =
         (query_ conn "SELECT 1.25::REAL" :: IO [Only Double]) >>= (@?= [Only 1.25])
     , testCase "Float parameters still decode as Text" $ withConnection ":memory:" \conn ->
         (query conn "SELECT ?" (Only (1.25 :: Float)) :: IO [Only Text]) >>= (@?= [Only "1.25"])
+    , testCase "BOOLEAN read as Text and String gives the cast to VARCHAR" $ withConnection ":memory:" \conn ->
+        (query_ conn "SELECT b, b::VARCHAR, b FROM (VALUES (true), (false)) t(b)" :: IO [(Text, Text, String)])
+          >>= (@?= [("true", "true", "true"), ("false", "false", "false")])
     , testCase "generic nullary UNION constructors round trip through DuckDB" $ withConnection ":memory:" \conn ->
         forM_ [Red, Blue] \colour ->
           (query conn "SELECT ?" (Only colour) :: IO [Only Colour]) >>= (@?= [Only colour])
@@ -1047,6 +1052,34 @@ valueRegressionTests =
           rows <-
             query_ conn (Query ("SELECT x::" <> dtype <> " FROM (VALUES ('v0'), (NULL), ('" <> label (size - 1) <> "')) t(x)")) :: IO [Only FieldValue]
           rows @?= map Only [FieldEnum 0, FieldNull, FieldEnum (fromIntegral (size - 1))]
+    , testCase "DECIMAL and BIGINT values read as Double and Float give the casts of DuckDB" $ withConnection ":memory:" \conn -> do
+        -- Each row has the read of v as Double and Float, and the casts of v
+        -- to DOUBLE and FLOAT read at their own types. The value lists are
+        -- fixed. See Note [DECIMAL as DOUBLE and FLOAT] in
+        -- "Database.DuckDB.Simple.FromField". For scale 0 and a width of 19
+        -- to 38, the library copies the cast of DuckDB 2.0.0, which is not
+        -- always the nearest value. If a later DuckDB version changes the
+        -- rounding of that cast, the rows of DECIMAL(19,0) and DECIMAL(38,0)
+        -- differ, and the last assertion shows the new values of DuckDB.
+        let bigints =
+              filter (\v -> v >= toInteger (minBound :: Int64) && v <= toInteger (maxBound :: Int64)) (toInteger (minBound :: Int64) : decimalIntegers 19)
+            kinds =
+              [("DECIMAL(" <> show width <> "," <> show scale <> ")", map (decimalText scale) (decimalIntegers width)) | (width, scale) <- decimalKinds]
+                <> [("BIGINT", map (Text.pack . show) bigints)]
+        forM_ kinds \(sqlType, texts) -> do
+          rows <-
+            query
+              conn
+              (fromString ("SELECT s, v, v::DOUBLE, v, v::FLOAT FROM (SELECT s, s::" <> sqlType <> " AS v FROM unnest(?::VARCHAR[]) t(s))"))
+              (Only texts)
+              :: IO [(Text, Double, Double, Float, Float)]
+          length rows @?= length texts
+          [(sqlType, text, value, cast) | (text, value, cast, _, _) <- rows, castDoubleToWord64 value /= castDoubleToWord64 cast] @?= []
+          [(sqlType, text, value, cast) | (text, _, _, value, cast) <- rows, castFloatToWord32 value /= castFloatToWord32 cast] @?= []
+        -- DuckDB 2.0.0 gives these values. The nearest values are
+        -- -9007199254740994 and 3.3569516755834854e36.
+        query_ conn "SELECT (-9007199254740994)::DECIMAL(19,0)::DOUBLE, 3356951675583485076575379654993209529::DECIMAL(38,0)::DOUBLE"
+          >>= (@?= [(-9007199254740992 :: Double, 3.356951675583485e36 :: Double)])
     , testCase "invalid DECIMAL width scale and magnitude are rejected" $ withConnection ":memory:" \conn ->
         forM_ [DecimalValue 0 0 0, DecimalValue 39 0 0, DecimalValue 2 3 1, DecimalValue 2 0 100, DecimalValue 2 0 (-100)] \decimal ->
           assertIOError
@@ -1461,6 +1494,57 @@ assertConversionError action = do
   case result of
     Left (_ :: SQLError) -> pure ()
     Right _ -> assertFailure "expected ResultError"
+
+-- | The DECIMAL widths and scales of the case on Double and Float reads. They
+-- have each storage type of a DECIMAL, each path of
+-- Note [DECIMAL as DOUBLE and FLOAT] in "Database.DuckDB.Simple.FromField",
+-- and the scales on both sides of the limits 10 and 22 of path 2.
+decimalKinds :: [(Int, Int)]
+decimalKinds =
+  [(4, 0), (4, 2), (4, 4), (9, 0), (9, 2), (9, 5), (9, 9), (18, 0), (18, 2), (18, 6), (18, 12), (18, 18)]
+    <> [(19, 0), (19, 4), (38, 0), (38, 2), (38, 10), (38, 11), (38, 20), (38, 22), (38, 23), (38, 30), (38, 38)]
+
+-- | A fixed sequence of 64-bit words: SplitMix64 with seed 1.
+splitMix64 :: [Word64]
+splitMix64 = map mix (drop 1 (iterate (+ 0x9e3779b97f4a7c15) 1))
+  where
+    mix z0 =
+      let z1 = (z0 `xor` (z0 `shiftR` 30)) * 0xbf58476d1ce4e5b9
+          z2 = (z1 `xor` (z1 `shiftR` 27)) * 0x94d049bb133111eb
+      in  z2 `xor` (z2 `shiftR` 31)
+
+-- | Unscaled integers that a DECIMAL of a width holds, with both signs: zero
+-- and the extremes; two values that DuckDB 2.0.0 does not cast to the nearest
+-- DOUBLE at scale 0; a value that two roundings change at scale 2; values next
+-- to each power of two and next to the DOUBLE and FLOAT midpoints above it; and
+-- 400 values of 'splitMix64' with 1 to width digits.
+decimalIntegers :: Int -> [Integer]
+decimalIntegers width = filter (\v -> abs v <= limit) (special <> near <> spread)
+  where
+    limit = 10 ^ width - 1
+    special = [0, limit, negate limit, -9007199254740994, 270628455292663770, 3356951675583485076575379654993209529]
+    near =
+      [ sign * (2 ^ k + base + delta)
+      | k <- [0 .. 127 :: Int]
+      , base <- 0 : [m * 2 ^ (k - 53) | k >= 53, m <- [1, 3]] <> [m * 2 ^ (k - 24) | k >= 24, m <- [1, 3]]
+      , delta <- [-1, 0, 1]
+      , sign <- [1, -1]
+      ]
+    spread =
+      [ (if odd n then negate else id) ((toInteger high * 2 ^ (64 :: Int) + toInteger low) `mod` (10 ^ (1 + n `mod` width)))
+      | (n, high, low) <- zip3 [0 .. 399 :: Int] (everyOther splitMix64) (everyOther (drop 1 splitMix64))
+      ]
+    everyOther (a : _ : rest) = a : everyOther rest
+    everyOther rest = rest
+
+-- | The text of an unscaled DECIMAL integer with a scale.
+decimalText :: Int -> Integer -> Text
+decimalText 0 v = Text.pack (show v)
+decimalText scale v = Text.pack ((if v < 0 then "-" else "") <> whole <> "." <> fraction)
+  where
+    digits = show (abs v)
+    padded = replicate (scale + 1 - length digits) '0' <> digits
+    (whole, fraction) = splitAt (length padded - scale) padded
 
 -- | Assert rejection without forcing a partial generic value.
 assertLeft :: Either String a -> Assertion

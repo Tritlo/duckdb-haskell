@@ -72,7 +72,7 @@ import Database.DuckDB.Simple.LogicalRep (
  )
 import Database.DuckDB.Simple.Ok
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
-import GHC.Float (double2Float, float2Double)
+import GHC.Float (double2Float, float2Double, int2Double, int2Float, rationalToDouble, rationalToFloat, word2Double)
 import GHC.Num.Integer (integerFromWordList)
 import Numeric.Natural (Natural)
 
@@ -555,19 +555,92 @@ instance FromField Double where
       FieldDouble d -> Ok d
       FieldFloat value -> Ok (float2Double value)
       FieldInt i -> Ok (fromIntegral i)
-      FieldDecimal DecimalValue{decimalInteger, decimalScale} ->
-        Ok (realToFrac decimalInteger / 10 ^ decimalScale)
+      FieldDecimal value -> Ok (decimalToDouble value)
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
 instance FromField Float where
-  fromField field =
-    case (fromField field :: Ok Double) of
-      Errors err -> Errors err
-      Ok d
-        | not (isInfinite d || isNaN d) && isInfinite (double2Float d) ->
-            returnError ConversionFailed field "floating-point value out of bounds"
-        | otherwise -> Ok (double2Float d)
+  fromField field@Field{fieldValue} =
+    case fieldValue of
+      -- DuckDB casts an integer to FLOAT with static_cast<float>, which
+      -- rounds one time to the nearest value, ties to even. int2Float rounds
+      -- in the same way.
+      FieldInt i -> Ok (int2Float (fromIntegral i))
+      FieldDecimal value -> Ok (decimalToFloat value)
+      _ -> case (fromField field :: Ok Double) of
+        Errors err -> Errors err
+        Ok d
+          | not (isInfinite d || isNaN d) && isInfinite (double2Float d) ->
+              returnError ConversionFailed field "floating-point value out of bounds"
+          | otherwise -> Ok (double2Float d)
+
+{- Note [DECIMAL as DOUBLE and FLOAT]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A DECIMAL that a Double or a Float reads gives the value of the cast of DuckDB
+2.0.0 to DOUBLE or FLOAT. The cast is TryCastDecimalToFloatingPoint in
+src/common/operator/cast_operators.cpp of DuckDB. decimalToDouble and
+decimalToFloat use the same three paths:
+
+1. Scale 0 and width 19 to 38. DuckDB stores the value as a HUGEINT and casts
+   it with CastBigintToFloating in src/common/types/hugeint.cpp:
+
+     case -1: result = -REAL_T(NumericLimits<uint64_t>::Maximum() - input.lower) - 1;
+     default: result = REAL_T(input.lower) + REAL_T(input.upper) * (REAL_T(NumericLimits<uint64_t>::Maximum()) + 1);
+
+   The case is the value of input.upper. A FLOAT result is this DOUBLE value
+   cast to float (Hugeint::TryCast for float). hugeIntToDouble copies the
+   formula. The formula rounds more than one time, so it does not always give
+   the nearest value. DuckDB casts -9007199254740994::DECIMAL(19,0) to
+   -9007199254740992.0, and 3356951675583485076575379654993209529::DECIMAL(38,0)
+   to 3.356951675583485e36. The nearest values are -9007199254740994.0 and
+   3.3569516755834854e36. This path exists only to give the value of the cast.
+2. Scale 0 with a width of at most 18, or an integer of at most 2^53 (2^24
+   for FLOAT) with a scale of at most 22 (10 for FLOAT). DuckDB converts the
+   integer to the floating-point type and divides it by the power of ten in
+   that type. Under the limits, the integer and the power of ten are exact in
+   the type, so only the division rounds. With scale 0, the division by 1 is
+   exact, so only the conversion of the integer rounds. Each step rounds one
+   time to the nearest value.
+3. Each other value. DuckDB converts the decimal digits with fast_float, which
+   gives the nearest value.
+
+Thus paths 2 and 3 give the nearest value, with ties to even. Under the limits,
+the library divides in the same way. For scale 0 with a larger integer, and for
+path 3, the library uses rationalToDouble or rationalToFloat. fromRational uses
+these functions too. They give the nearest value with ties to even, and they do
+not reduce the fraction first.
+-}
+
+-- | The value of the cast of DuckDB from a DECIMAL to DOUBLE.
+-- See Note [DECIMAL as DOUBLE and FLOAT].
+decimalToDouble :: DecimalValue -> Double
+decimalToDouble DecimalValue{decimalWidth, decimalScale, decimalInteger}
+  | decimalScale == 0 && decimalWidth > 18 = hugeIntToDouble decimalInteger
+  | decimalScale <= 22 && abs decimalInteger <= 9007199254740992 = fromInteger decimalInteger / 10 ^ decimalScale
+  | otherwise = rationalToDouble decimalInteger (10 ^ decimalScale)
+
+-- | The value of the cast of DuckDB from a DECIMAL to FLOAT.
+-- See Note [DECIMAL as DOUBLE and FLOAT].
+decimalToFloat :: DecimalValue -> Float
+decimalToFloat DecimalValue{decimalWidth, decimalScale, decimalInteger}
+  | decimalScale == 0 && decimalWidth > 18 = double2Float (hugeIntToDouble decimalInteger)
+  | decimalScale <= 10 && abs decimalInteger <= 16777216 = fromInteger decimalInteger / 10 ^ decimalScale
+  | otherwise = rationalToFloat decimalInteger (10 ^ decimalScale)
+
+-- | The cast of DuckDB from a HUGEINT to DOUBLE. It is not always the nearest
+-- value. See Note [DECIMAL as DOUBLE and FLOAT].
+hugeIntToDouble :: Integer -> Double
+hugeIntToDouble value
+  | upper == -1 = negate (word2Double (maxBound - lower)) - 1
+  | otherwise = word2Double lower + int2Double upper * 18446744073709551616
+  where
+    -- The two 64-bit halves of the HUGEINT in two's complement. word2Double
+    -- and int2Double round one time to the nearest value, ties to even, as
+    -- the C++ conversions of uint64_t and int64_t to double do. The C++
+    -- factor is 2^64 after its rounding, so the product is exact. The sum or
+    -- the difference rounds one time, as in C++.
+    upper = fromInteger (value `shiftR` 64) :: Int
+    lower = fromInteger value :: Word
 
 instance FromField Text where
   fromField f@Field{fieldValue} =
@@ -576,7 +649,7 @@ instance FromField Text where
       FieldInt i -> Ok (Text.pack (show i))
       FieldFloat value -> Ok (Text.pack (show value))
       FieldDouble d -> Ok (Text.pack (show d))
-      FieldBool b -> Ok (if b then Text.pack "1" else Text.pack "0")
+      FieldBool b -> Ok (if b then Text.pack "true" else Text.pack "false")
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 

@@ -17,7 +17,7 @@ import Data.Int (Int64)
 import qualified Data.Map.Strict as Map
 import Data.Ratio ((%))
 import qualified Data.Text as Text
-import Data.Time (Day, LocalTime (..), TimeOfDay (..), UTCTime, fromGregorian, localTimeToUTC, utc)
+import Data.Time (Day, LocalTime (..), TimeOfDay (..), UTCTime (..), addDays, fromGregorian, localTimeToUTC, utc, utcToLocalTime)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), returnError)
@@ -447,6 +447,69 @@ nanosecondTimeTests =
           assertIOException (query conn "SELECT ?::TIMESTAMPTZ_NS" (Only instant) :: IO [Only UTCTime])
           assertIOException (query conn "SELECT ?::TIMESTAMPTZ_NS" (Only (Finite instant)) :: IO [Only UTCTimestamp])
       (query_ conn "SELECT 42" :: IO [Only Int]) >>= (@?= [Only 42])
+  , testCase "dates and timestamps at the ends of the range of DuckDB bind, and a value outside raises an error" $ withConnection ":memory:" $ \conn -> do
+      -- See Note [Time ranges] in "Database.DuckDB.Simple.ToField".
+      let epoch = fromGregorian 1970 1 1
+          firstDay = addDays (-2147483646) epoch
+          -- Day -2147483647 is -infinity, so -2147483648 is the only INT32 day before the range.
+          beforeDay = addDays (-2147483648) epoch
+          local units count = utcToLocalTime utc (posixSecondsToUTCTime (fromRational (count % units)))
+          firstTime = local 1000000 (-9223372022400000000)
+          beforeTime = local 1000000 (-9223372022400000001)
+          structOf logical value =
+            StructValue
+              (listArray (0, 0) [StructField "a" value])
+              (listArray (0, 0) [StructField "a" (LogicalTypeScalar logical)])
+              (Map.fromList [("a", 0)])
+          create column = void (execute_ conn (Query ("CREATE OR REPLACE TABLE stored (v " <> column <> ")")))
+          stored :: forall a. (ToField a, FromField a, Eq a, Show a) => Text.Text -> a -> IO ()
+          stored column value = do
+            create column
+            void (execute conn "INSERT INTO stored VALUES (?)" (Only value))
+            (query_ conn "SELECT v FROM stored" :: IO [Only a]) >>= assertEqual (Text.unpack column) [Only value]
+          rejected :: (ToField a) => Text.Text -> a -> IO ()
+          rejected column value = do
+            create column
+            try (execute conn "INSERT INTO stored VALUES (?)" (Only value)) >>= \case
+              Left SQLError{sqlErrorType} -> assertEqual (Text.unpack column) (Just ErrorInputOutOfRange) sqlErrorType
+              Right _ -> assertFailure (Text.unpack column <> ": expected the range error")
+            (query_ conn "SELECT count(*) FROM stored" :: IO [Only Int64]) >>= assertEqual (Text.unpack column) [Only 0]
+      stored "DATE" firstDay
+      rejected "DATE" beforeDay
+      stored "DATE" (Finite firstDay :: Date)
+      rejected "DATE" (Finite beforeDay :: Date)
+      stored "DATE[]" [firstDay]
+      rejected "DATE[]" [firstDay, beforeDay]
+      stored "STRUCT(a DATE)" (structOf LogicalTypeIdDate (FieldDate (Finite firstDay)))
+      rejected "STRUCT(a DATE)" (structOf LogicalTypeIdDate (FieldDate (Finite beforeDay)))
+      stored "VARIANT" (Variant (FieldDate (Finite firstDay)))
+      rejected "VARIANT" (Variant (FieldDate (Finite beforeDay)))
+      stored "TIMESTAMP" firstTime
+      rejected "TIMESTAMP" beforeTime
+      stored "TIMESTAMP" (Finite firstTime :: LocalTimestamp)
+      rejected "TIMESTAMP" (Finite beforeTime :: LocalTimestamp)
+      stored "TIMESTAMP[]" [firstTime]
+      rejected "TIMESTAMP[]" [firstTime, beforeTime]
+      stored "STRUCT(a TIMESTAMP)" (structOf LogicalTypeIdTimestamp (FieldTimestamp (Finite firstTime)))
+      rejected "STRUCT(a TIMESTAMP)" (structOf LogicalTypeIdTimestamp (FieldTimestamp (Finite beforeTime)))
+      stored "VARIANT" (Variant (FieldTimestamp (Finite firstTime)))
+      rejected "VARIANT" (Variant (FieldTimestamp (Finite beforeTime)))
+      stored "TIMESTAMPTZ" (localTimeToUTC utc firstTime)
+      rejected "TIMESTAMPTZ" (localTimeToUTC utc beforeTime)
+      stored "TIMESTAMPTZ" (Finite (localTimeToUTC utc firstTime) :: UTCTimestamp)
+      rejected "TIMESTAMPTZ" (Finite (localTimeToUTC utc beforeTime) :: UTCTimestamp)
+      -- A second or a millisecond value has the range of a microsecond value at
+      -- both ends. A STRUCT field can have these types.
+      forM_
+        [ (LogicalTypeIdTimestampSec, "STRUCT(a TIMESTAMP_S)", 1, 9223372036854)
+        , (LogicalTypeIdTimestampMs, "STRUCT(a TIMESTAMP_MS)", 1000, 9223372036854775)
+        ]
+        $ \(logical, column, units, largest) -> do
+          let at count = structOf logical (FieldTimestamp (Finite (local units count)))
+          stored column (at (-9223372022400000000 * units `div` 1000000))
+          stored column (at largest)
+          rejected column (at (-9223372022400000000 * units `div` 1000000 - 1))
+          rejected column (at (largest + 1))
   ]
 
 -- | Require a controlled encoding error before native value construction.

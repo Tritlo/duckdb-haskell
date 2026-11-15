@@ -928,7 +928,7 @@ valueRegressionTests =
             _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE bignum_array (v " <> dtype <> ")"))
             _ <- execute conn "INSERT INTO bignum_array VALUES (?)" (Only (listArray (0, 1) values :: Array Int BigNum))
             (query_ conn "SELECT v::VARCHAR FROM bignum_array" :: IO [Only Text]) >>= assertEqual (Text.unpack dtype) [Only expected]
-    , testCase "finite timestamp extrema preserve all units" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
+    , testCase "native timestamp extrema read back in all units, and bind back only in the range of DuckDB" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
         forM_
           [ (Seconds, 1, "TIMESTAMP_S")
           , (Milliseconds, 1000, "TIMESTAMP_MS")
@@ -942,7 +942,14 @@ valueRegressionTests =
               (query_ conn "SELECT value FROM native_timestamp" :: IO [Only LocalTime]) >>= (@?= [Only expected])
               [Only original] <- query_ conn "SELECT {'value': value} FROM native_timestamp" :: IO [Only (StructValue FieldValue)]
               -- DuckDB needs an explicit parameter type for extreme S/MS values.
-              query conn (fromString ("SELECT ?::STRUCT(value " <> dtype <> ")")) (Only original) >>= (@?= [Only original])
+              let rebind = query conn (fromString ("SELECT ?::STRUCT(value " <> dtype <> ")")) (Only original)
+                  micros = toInteger value * 1000000 `div` units
+              -- A second, millisecond, or microsecond value outside the range of
+              -- DuckDB raises an error. See Note [Time ranges] in
+              -- "Database.DuckDB.Simple.ToField".
+              if units == 1000000000 || (micros >= -9223372022400000000 && micros <= 9223372036854775806)
+                then rebind >>= (@?= [Only original])
+                else assertOutsideTimeRange rebind
               _ <- execute_ conn "DROP TABLE native_timestamp"
               pure ()
     , testCase "composite timestamps reject infinity and storage overflow" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
@@ -980,24 +987,30 @@ valueRegressionTests =
           [TimeOfDay (-1) 0 0, TimeOfDay 25 0 0, TimeOfDay 0 60 0, TimeOfDay 0 0 (-1), TimeOfDay 24 0 0.000000001, TimeOfDay 23 59 60.000000001]
           \value ->
             assertIOError (query conn "SELECT ?" (Only (singleField (LogicalTypeScalar LogicalTypeIdTimeNs) (FieldTime value))) :: IO [Only FieldValue])
-    , testCase "microsecond timestamps retain finite extrema" $ withConnection ":memory:" \conn ->
-        forM_ [minBound, negate (maxBound :: Int64) + 1, -1, 0, maxBound - 1] \value -> do
-          let expected = utcToLocalTime utc (posixSecondsToUTCTime (fromRational (toInteger value % 1000000)))
+    , testCase "microsecond timestamps round trip at the ends of the range of DuckDB" $ withConnection ":memory:" \conn -> do
+        let local (micros :: Int64) = utcToLocalTime utc (posixSecondsToUTCTime (fromRational (toInteger micros % 1000000)))
+        forM_ [-9223372022400000000, -1, 0, maxBound - 1] \value -> do
           _ <- execute_ conn "CREATE TABLE microsecond_timestamp(value TIMESTAMP)"
-          _ <- execute conn "INSERT INTO microsecond_timestamp VALUES (?)" (Only expected)
-          (query_ conn "SELECT value FROM microsecond_timestamp" :: IO [Only LocalTime]) >>= (@?= [Only expected])
+          _ <- execute conn "INSERT INTO microsecond_timestamp VALUES (?)" (Only (local value))
+          (query_ conn "SELECT value FROM microsecond_timestamp" :: IO [Only LocalTime]) >>= (@?= [Only (local value)])
           _ <- execute_ conn "DROP TABLE microsecond_timestamp"
           pure ()
+        -- The INT64 storage also holds the four hours before the range, but
+        -- DuckDB does not accept them.
+        forM_ [minBound, negate (maxBound :: Int64) + 1, -9223372022400000001] \value ->
+          assertOutsideTimeRange (query conn "SELECT ?" (Only (local value)) :: IO [Only LocalTime])
     , testCase "out-of-range dates and timestamps fail without abort" $ withConnection ":memory:" \conn -> do
         let hugeDay = fromGregorian 10000000 1 1
             local = LocalTime hugeDay (TimeOfDay 0 0 0)
         assertIOError (query conn "SELECT ?" (Only hugeDay) :: IO [Only Day])
         assertIOError (query conn "SELECT ?" (Only local) :: IO [Only LocalTime])
         assertIOError (query conn "SELECT ?" (Only (UTCTime hugeDay 0)) :: IO [Only UTCTime])
-    , testCase "date finite storage extrema round trip" $ withConnection ":memory:" \conn ->
-        forM_ [minBound, negate (maxBound :: Int32) + 1, -1, 0, maxBound - 1] \value -> do
+    , testCase "dates round trip at the ends of the range of DuckDB" $ withConnection ":memory:" \conn -> do
+        forM_ [negate (maxBound :: Int32) + 1, -1, 0, maxBound - 1] \value -> do
           let day = addDays (toInteger value) (fromGregorian 1970 1 1)
           (query conn "SELECT ?" (Only day) :: IO [Only Day]) >>= (@?= [Only day])
+        -- The INT32 storage also holds day -2147483648, but DuckDB does not accept it.
+        assertOutsideTimeRange (query conn "SELECT ?" (Only (addDays (toInteger (minBound :: Int32)) (fromGregorian 1970 1 1))) :: IO [Only Day])
     , testCase "input infinity sentinels are rejected" $ withConnection ":memory:" \conn -> do
         forM_ [toInteger (maxBound :: Int32), negate (toInteger (maxBound :: Int32))] \days ->
           assertIOError (query conn "SELECT ?" (Only (addDays days (fromGregorian 1970 1 1))) :: IO [Only Day])
@@ -1431,6 +1444,16 @@ assertIOError action = do
 -- The field holds only the index.
 enumField :: Maybe Int64 -> Maybe Text -> FieldValue
 enumField index _ = maybe FieldNull (FieldEnum . fromIntegral) index
+
+-- | Require the range error of the library for a date or a timestamp outside
+-- the range of DuckDB. See Note [Time ranges] in "Database.DuckDB.Simple.ToField".
+assertOutsideTimeRange :: IO a -> Assertion
+assertOutsideTimeRange action =
+  try action >>= \case
+    Left SQLError{sqlErrorMessage, sqlErrorType} -> do
+      sqlErrorType @?= Just ErrorInputOutOfRange
+      assertBool (Text.unpack sqlErrorMessage) ("of DuckDB" `Text.isInfixOf` sqlErrorMessage)
+    Right _ -> assertFailure "expected the range error of the library"
 
 -- | Assert a controlled FromField conversion error.
 assertConversionError :: IO a -> Assertion

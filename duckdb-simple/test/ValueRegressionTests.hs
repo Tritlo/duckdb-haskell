@@ -346,13 +346,29 @@ valueRegressionTests =
         [Only enum] <- query_ conn "SELECT 'b'::ENUM('a', 'b')" :: IO [Only FieldValue]
         untyped "ENUM" enum "a FieldEnum holds the index of an ENUM value, but not its ENUM type"
         untyped "ENUM in a list" (FieldList [enum]) "a FieldEnum holds the index of an ENUM value"
-        untyped "empty list" (FieldList []) "a FieldList with no element that is not FieldNull has no element type"
-        untyped "NULL list" (FieldList [FieldNull, FieldNull]) "a FieldList with no element that is not FieldNull"
-        untyped "empty inner list" (FieldList [FieldList [FieldInt32 1], FieldList []]) "a FieldList with no element that is not FieldNull"
-        untyped "NULL array" (FieldArray (listArray (0, 1) [FieldNull, FieldNull])) "a FieldArray with no element that is not FieldNull"
-        untyped "empty array" (FieldArray (listArray (0, -1) [])) "a FieldArray with no element that is not FieldNull"
-        untyped "empty map" (FieldMap []) "a FieldMap with no key or no value that is not FieldNull"
-        untyped "NULL map values" (FieldMap [(FieldText "a", FieldNull)]) "a FieldMap with no key or no value that is not FieldNull"
+        untyped "empty list" (FieldList []) "an empty FieldList has no element type for a parameter with no known type"
+        untyped "empty inner list" (FieldList [FieldList [FieldInt32 1], FieldList []]) "an empty FieldList has no element type"
+        untyped "empty array" (FieldArray (listArray (0, -1) [])) "an empty FieldArray has no element, and a DuckDB ARRAY has at least one"
+        untyped "empty map" (FieldMap []) "an empty FieldMap has no key type and no value type for a parameter with no known type"
+        -- NULL elements, and an empty value for a typed parameter, bind as the SQL literal does.
+        forM_
+          [ ("NULL list", FieldList [FieldNull, FieldNull], "\"NULL\"[]", "[NULL, NULL]")
+          , ("NULL array", FieldArray (listArray (0, 1) [FieldNull, FieldNull]), "\"NULL\"[2]", "[NULL, NULL]")
+          , ("NULL map values", FieldMap [(FieldText "a", FieldNull)], "MAP(VARCHAR, \"NULL\")", "{a=NULL}")
+          ]
+          \(label, value, typeName, text) ->
+            (query conn "SELECT typeof(?), ?::VARCHAR" (value, value) :: IO [(Text, Text)]) >>= assertEqual label [(typeName, text)]
+        forM_
+          [ ("STRUCT(a INTEGER)[]", FieldList [], "[]")
+          , ("STRUCT(a INTEGER)[]", FieldList [FieldNull], "[NULL]")
+          , ("INTEGER[][]", FieldList [FieldList [FieldInt32 1], FieldList []], "[[1], []]")
+          , ("MAP(VARCHAR, STRUCT(a INTEGER))", FieldMap [], "{}")
+          , ("MAP(VARCHAR, STRUCT(a INTEGER))", FieldMap [(FieldText "k", FieldNull)], "{k=NULL}")
+          ]
+          \(sqlType, value, text) -> do
+            _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE typed (v " <> sqlType <> ")"))
+            _ <- execute conn "INSERT INTO typed VALUES (?)" (Only value)
+            (query_ conn "SELECT v::VARCHAR FROM typed" :: IO [Only Text]) >>= assertEqual (Text.unpack sqlType) [Only text]
         (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
     , testCase "a FieldList of scalar values with different types follows the SQL list literal" $ withConnection ":memory:" \conn -> do
         forM_
@@ -715,12 +731,14 @@ valueRegressionTests =
             rejected typeName value =
               try (query conn "SELECT ?" (Only value) :: IO [Only FieldValue]) >>= \case
                 Left SQLError{sqlErrorMessage} ->
-                  sqlErrorMessage @?= "duckdb-simple: an empty or all-NULL array of " <> typeName <> " elements has no element type"
+                  sqlErrorMessage
+                    @?= "duckdb-simple: an empty list or map of " <> typeName <> " elements has no element type for a parameter with no known type"
                 Right _ -> assertFailure ("expected the element type error for " <> Text.unpack typeName)
         rejected "STRUCT" ([] :: [StructValue FieldValue])
         rejected "BIGINT[]" ([] :: [[Int64]])
-        -- An Array of NULL STRUCT values raises the same error.
-        rejected "STRUCT" (listArray (0, 0) [Nothing] :: Array Int (Maybe (StructValue FieldValue)))
+        -- An Array of NULL STRUCT values gets the type of array_value(NULL).
+        let nullArray = listArray (0, 0) [Nothing] :: Array Int (Maybe (StructValue FieldValue))
+        (query conn "SELECT typeof(?), ?::VARCHAR" (nullArray, nullArray) :: IO [(Text, Text)]) >>= (@?= [("\"NULL\"[1]", "[NULL]")])
     , testCase "a list of NULL composite elements takes the element type of a typed column" $ withConnection ":memory:" \conn -> do
         let nulls = [Nothing, Nothing] :: [Maybe (StructValue FieldValue)]
         _ <- execute_ conn "CREATE TABLE null_list (v STRUCT(a INTEGER)[]); CREATE TABLE null_array (v STRUCT(a INTEGER)[2])"
@@ -729,10 +747,12 @@ valueRegressionTests =
         (query_ conn "SELECT typeof(v), v::VARCHAR FROM null_list UNION ALL SELECT typeof(v), v::VARCHAR FROM null_array" :: IO [(Text, Text)])
           >>= (@?= [("STRUCT(a INTEGER)[]", "[NULL, NULL]"), ("STRUCT(a INTEGER)[2]", "[NULL, NULL]")])
         (query conn "SELECT typeof(?::STRUCT(a INTEGER)[])" (Only nulls) :: IO [Only Text]) >>= (@?= [Only "STRUCT(a INTEGER)[]"])
-        -- An empty list has no element type, also for a typed column.
-        try (execute conn "INSERT INTO null_list VALUES (?)" (Only ([] :: [StructValue FieldValue]))) >>= \case
-          Left SQLError{sqlErrorMessage} -> sqlErrorMessage @?= "duckdb-simple: an empty or all-NULL array of STRUCT elements has no element type"
-          Right count -> assertFailure ("expected the element type error, stored " <> show count)
+        -- An empty list takes the element type of a typed column too.
+        _ <- execute_ conn "DELETE FROM null_list"
+        _ <- execute conn "INSERT INTO null_list VALUES (?)" (Only ([] :: [StructValue FieldValue]))
+        (query_ conn "SELECT v::VARCHAR FROM null_list" :: IO [Only Text]) >>= (@?= [Only "[]"])
+        -- With no known type, a list of NULL elements gets the type of the SQL literal [NULL, NULL].
+        (query conn "SELECT typeof(?)" (Only nulls) :: IO [Only Text]) >>= (@?= [Only "\"NULL\"[]"])
     , testCase "an IntervalValue binds as an INTERVAL and keeps its three fields" $ withConnection ":memory:" \conn -> do
         let value = IntervalValue 1 2 3
             negative = IntervalValue (-1) (-2) (-3)
@@ -904,7 +924,8 @@ valueRegressionTests =
         (query conn "SELECT ?::MAP(VARCHAR, TIMESTAMPTZ_NS)" (Only times) :: IO [Only (Map.Map Text UTCTime)]) >>= (@?= [Only times])
         -- An empty map of nested values has no value type.
         try (query conn "SELECT ?" (Only (Map.empty :: Map.Map Text [Int64])) :: IO [Only FieldValue]) >>= \case
-          Left SQLError{sqlErrorMessage} -> sqlErrorMessage @?= "duckdb-simple: an empty or all-NULL array of BIGINT[] elements has no element type"
+          Left SQLError{sqlErrorMessage} ->
+            sqlErrorMessage @?= "duckdb-simple: an empty list or map of BIGINT[] elements has no element type for a parameter with no known type"
           Right rows -> assertFailure ("expected the element type error, got " <> show rows)
     , testCase "an array of BigNum values keeps the BIGNUM casts of DuckDB" $ withConnection ":memory:" \conn -> do
         -- DuckDB 2.0.0 casts the BIGNUM -6 to UBIGINT as a wrapped value with no

@@ -674,11 +674,17 @@ instance (DuckDBColumnType k, DuckDBColumnType v, ToField k, ToField v) => ToFie
 --   a JSON value.
 -- * A value that came from a VARIANT binds as its payload.
 --
+-- A 'FieldList', a 'FieldArray', or a 'FieldMap' with only 'FieldNull' elements
+-- takes the element type of the parameter, or the type NULL for a parameter
+-- with no known type, as a SQL list literal does. An empty 'FieldList' or
+-- 'FieldMap' takes the element type of the parameter.
+--
 -- These values raise an 'SQLError' of the type 'ErrorInputInvalid', because no
 -- type is known for them: a 'FieldEnum', which holds only the index of an ENUM
--- value, and a 'FieldList', a 'FieldArray', or a 'FieldMap' with no element
--- that is not 'FieldNull'. Inside a 'FieldStruct', a 'FieldTuple', or a
--- 'FieldUnion', the declared type gives these types, so such a value binds.
+-- value, an empty 'FieldList' or 'FieldMap' for a parameter with no known type,
+-- and an empty 'FieldArray', because a DuckDB ARRAY has at least one element.
+-- Inside a 'FieldStruct', a 'FieldTuple', or a 'FieldUnion', the declared type
+-- gives the ENUM type and the element type, so such a value binds.
 --
 -- t'FieldValue' has no 'DuckDBColumnType' and no 'ToDuckValue' instance,
 -- because no one DuckDB type holds each of its values.
@@ -712,7 +718,9 @@ instance ToField FieldValue where
     FieldBit v -> toField v
     FieldBigNum v -> toField v
     FieldEnum{} -> valueBinding (show value) \_ -> untypedFieldValue "a FieldEnum holds the index of an ENUM value, but not its ENUM type"
-    FieldArray items -> fieldValueSequence "FieldArray" c_duckdb_v2_value_create_array (elems items)
+    FieldArray items
+      | null items -> valueBinding (show value) \_ -> untypedFieldValue "an empty FieldArray has no element, and a DuckDB ARRAY has at least one"
+      | otherwise -> fieldValueSequence "FieldArray" c_duckdb_v2_value_create_array (elems items)
     FieldList items -> fieldValueSequence "FieldList" c_duckdb_v2_value_create_list items
     FieldMap pairs -> fieldValueMap pairs
     FieldStruct v -> toField v
@@ -746,9 +754,9 @@ fieldValueSequence
   -> FieldBinding
 fieldValueSequence name create items =
   targetValueBinding ("<" <> Text.unpack name <> " length=" <> show (length items) <> ">") \builder@ValueBuilder{builderFactory = factory} readTarget -> do
-    when (all (== FieldNull) items) $
-      untypedFieldValue ("a " <> name <> " with no element that is not FieldNull has no element type")
     childTarget <- collectionChildType <$> readTarget
+    when (null items && null childTarget) $
+      untypedFieldValue ("an empty " <> name <> " has no element type for a parameter with no known type")
     withCreatedValues (map (\item -> fieldBindingValue (toField item) builder (pure childTarget)) items) \values ->
       withValueType builder childTarget name values \elementType ->
         withArray values \ptr ->
@@ -759,9 +767,9 @@ fieldValueSequence name create items =
 fieldValueMap :: [(FieldValue, FieldValue)] -> FieldBinding
 fieldValueMap pairs =
   targetValueBinding ("<FieldMap size=" <> show (length pairs) <> ">") \builder@ValueBuilder{builderFactory = factory} readTarget -> do
-    when (all ((== FieldNull) . fst) pairs || all ((== FieldNull) . snd) pairs) $
-      untypedFieldValue "a FieldMap with no key or no value that is not FieldNull has no key type or value type"
     (keyTarget, valueTarget) <- mapPartTypes <$> readTarget
+    when (null pairs && null keyTarget) $
+      untypedFieldValue "an empty FieldMap has no key type and no value type for a parameter with no known type"
     withCreatedValues (map (\(key, _) -> fieldBindingValue (toField key) builder (pure keyTarget)) pairs) \keys ->
       withCreatedValues (map (\(_, item) -> fieldBindingValue (toField item) builder (pure valueTarget)) pairs) \values ->
         withValueType builder keyTarget "FieldMap" keys \keyType ->
@@ -1115,11 +1123,19 @@ constructor:
 - The target does not change the type of these elements. In SQL, DuckDB also
   gives the list literal its type before it casts the list to the type of a
   column.
-- A list with only NULL elements of this kind takes the element type of the
-  target, when the parameter has a known type. DuckDB casts the list literal
-  [NULL, NULL] to the type of a column in the same way.
-- An empty list, and a list with only NULL elements for a parameter with no
-  known type, have no element type, and raise an error.
+- A list with no element or only NULL elements of this kind takes the element
+  type of the target, when the parameter has a known type. DuckDB casts the
+  list literal [] or [NULL, NULL] to the type of a column in the same way.
+- For a parameter with no known type, a list with only NULL elements names no
+  element type. The native constructor then gives the type of the SQL list
+  literal: "NULL"[] for a LIST, "NULL"[2] for an ARRAY of two NULL elements,
+  and MAP(VARCHAR, "NULL") for a MAP of VARCHAR keys and NULL values.
+- An empty list or map for a parameter with no known type raises an error. The
+  SQL literals [] and MAP {} have the types "NULL"[] and MAP("NULL", "NULL"),
+  but the native constructor gives no type to an empty list or map: it raises
+  "cannot resolve the element type of an empty set". An Array with no element
+  raises an error before this point, because a DuckDB ARRAY has at least one
+  element.
 -}
 
 -- | Give the element type of the values of a LIST, an ARRAY, or one part of a
@@ -1170,15 +1186,18 @@ withValueType ValueBuilder{builderType = makeType} target typeName values action
         (False, True) -> bracket (makeType promoted) destroyLogicalType action
         (False, False) -> action nullHandle
     -- See Note [Element types of a list].
-    []
-      | Just rep <- target, not (null values) -> bracket (makeType rep) destroyLogicalType action
-    [] ->
-      throwIO
-        SQLError
-          { sqlErrorMessage = "duckdb-simple: an empty or all-NULL array of " <> typeName <> " elements has no element type"
-          , sqlErrorType = Nothing
-          , sqlErrorQuery = Nothing
-          }
+    [] -> case target of
+      Just rep -> bracket (makeType rep) destroyLogicalType action
+      Nothing
+        | not (null values) -> action nullHandle
+        | otherwise ->
+            throwIO
+              SQLError
+                { sqlErrorMessage =
+                    "duckdb-simple: an empty list or map of " <> typeName <> " elements has no element type for a parameter with no known type"
+                , sqlErrorType = Nothing
+                , sqlErrorQuery = Nothing
+                }
 
 -- | Construct named fields. The native call copies the field values.
 structValueDuckValue

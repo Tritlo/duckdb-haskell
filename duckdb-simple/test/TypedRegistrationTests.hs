@@ -1217,7 +1217,7 @@ registerFailingFormat conn phase =
         (\_ -> failIn "finalize")
     rows = [Only (if phase == "row" && i == 2500 then error "typed_copy_error: row" else i) | i <- [0 .. 2999 :: Int64]]
 
--- | Read 20 files through a multi-file function over a typed table function.
+-- | Read 8 files through a multi-file function over a typed table function.
 -- DuckDB runs exec callbacks of one scan at the same time for a multi-file
 -- function. Each row must come one time. The case sets 4 threads, so that it
 -- does not use the default number of threads of the machine.
@@ -1227,11 +1227,13 @@ testTableMultiFile = withDirectory \directory -> withConnection ":memory:" \conn
   createTableFunction conn "typed_numbers" ["value"] \(Only path) ->
     map (Only . read) . lines <$> readFile (Text.unpack path) :: IO [Only Int64]
   registerMultiFileFunction conn "typed_all_numbers" "typed_numbers" defaultMultiFileOptions
-  let numbers file = [file * 1000 + row | row <- [0 .. 99]] :: [Int64]
-  forM_ [0 .. 19] \file -> writeFile (directory </> ("numbers" <> show file <> ".txt")) (unlines (map show (numbers file)))
+  -- A file of 10000 rows needs 5 output chunks. The multi-file function can
+  -- then run more than one exec callback for the scan of one file.
+  let numbers file = [file * 100000 + row | row <- [0 .. 9999]] :: [Int64]
+  forM_ [0 .. 7] \file -> writeFile (directory </> ("numbers" <> show file <> ".txt")) (unlines (map show (numbers file)))
   forM_ [1 :: Int .. 5] \_ ->
     query conn "SELECT value FROM typed_all_numbers(?) ORDER BY value" (Only (Text.pack (directory </> "numbers*.txt")))
-      >>= (@?= map Only (concatMap numbers [0 .. 19]))
+      >>= (@?= map Only (concatMap numbers [0 .. 7]))
 
 -- | Create and remove a unique directory for the files of a test.
 withDirectory :: (FilePath -> IO a) -> IO a

@@ -21,6 +21,7 @@ import Database.DuckDB.Simple hiding (bind)
 import qualified Database.DuckDB.Simple.Catalog as Catalog
 import qualified Database.DuckDB.Simple.Copy as Copy
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), LogicalTypeRep (..))
+import Database.DuckDB.Simple.LogicalRep (withoutAliases)
 import qualified Database.DuckDB.Simple.V2.Copy as V2Copy
 import qualified Database.DuckDB.Simple.V2.Registration as R
 import Database.DuckDB.Simple.Variant (variantObject)
@@ -162,7 +163,9 @@ testVariantCopy = withDirectory \directory -> withEnvironment \environment -> wi
 
 -- | Create a column of each type that DuckDB permits. Check the id that the
 -- COPY TO bind info reports for each column. Check the id in the table
--- description of each column that has a scalar type.
+-- description of each column that has a scalar type. Check that no column type
+-- in the table description has an alias, so the name of each id in
+-- logicalTypeIdName is the name that DuckDB gives.
 testColumnTypeIds :: Assertion
 testColumnTypeIds = withDirectory \directory -> withConnection ":memory:" \connection -> do
   reported <- newIORef []
@@ -185,6 +188,8 @@ testColumnTypeIds = withDirectory \directory -> withConnection ":memory:" \conne
         Catalog.tableDescriptionColumns description
     ]
     @?= [(name, ident) | (name, (_, ident)) <- named, ident `notElem` nested]
+  let types = map Catalog.columnDescriptionType (Catalog.tableDescriptionColumns description)
+  map withoutAliases types @?= types
   where
     -- DuckDB uses these ids for an unset type, an unresolved parameter, and a
     -- function parameter of any type. SQL cannot declare a column of these types.

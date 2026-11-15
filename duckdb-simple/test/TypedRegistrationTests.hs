@@ -116,6 +116,7 @@ typedRegistrationTests =
     , testCase "table function with INTERVAL and TIMETZ columns" testTableIntervals
     , testCase "table function with a MAP column" testTableMaps
     , testCase "table function and aggregate with record, list, map, and union types" testTableRecords
+    , testCase "a record field of an alias type declares the alias" testAliasDeclaration
     , testCase "typed registration rejects a type with no declaration" testNoDeclaration
     , testCase "a newtype with a sized ARRAY type text declares an ARRAY in each position" testSizedArray
     , testCase "record field outside the range of its declared type" testRecordFieldRange
@@ -1220,6 +1221,20 @@ data Peak = Peak {peak :: Text, metres :: Int32, remark :: String}
   deriving stock (Eq, Show, Generic)
   deriving (DuckDBColumnType, ToDuckValue, ToField, FromField) via (ViaDuckDB Peak)
 
+-- | A text of the type JSON. A record field of this type has the type JSON.
+newtype JsonText = JsonText Text
+  deriving newtype (Eq, Show, FromField, ToField)
+
+instance DuckValue JsonText where
+  duckToField (JsonText text) = duckToField text
+  duckFromField = fmap JsonText . duckFromField
+  duckLogicalType _ = LogicalTypeAlias "JSON" (LogicalTypeScalar LogicalTypeIdVarchar)
+
+-- | A record with a field of the type JSON.
+data Doc = Doc {serial :: Int64, body :: JsonText}
+  deriving stock (Eq, Show, Generic)
+  deriving (DuckDBColumnType, ToDuckValue, ToField, FromField) via (ViaDuckDB Doc)
+
 -- | A sum type for a UNION column.
 data Weather = Sunny | Rain Double
   deriving stock (Eq, Show, Generic)
@@ -1314,6 +1329,19 @@ testTableRecords = withConnection ":memory:" \conn -> do
   _ <- execute_ conn "CREATE TABLE typed_short_peaks (ps STRUCT(peak VARCHAR, metres INTEGER)[])"
   _ <- execute conn "INSERT INTO typed_short_peaks VALUES (?), (?)" ([] :: [Peak], [Nothing :: Maybe Peak])
   query_ conn "SELECT len(ps) FROM typed_short_peaks ORDER BY len(ps)" >>= (@?= [Only (0 :: Int64), Only 1])
+
+-- | A record field of an alias type declares the alias in the STRUCT type of a
+-- table function column, and in the element type of a list parameter of NULL
+-- records. A value of the field reads as its base type.
+testAliasDeclaration :: Assertion
+testAliasDeclaration = withConnection ":memory:" \conn -> do
+  let docs = [Doc 1 (JsonText "{\"a\": 1}"), Doc 2 (JsonText "[2]")]
+  createTableFunction conn "typed_docs" ["doc"] \() -> pure (map Only docs)
+  query_ conn "SELECT typeof(doc), typeof(doc.body) FROM typed_docs() LIMIT 1"
+    >>= (@?= [("STRUCT(serial BIGINT, body JSON)" :: Text, "JSON" :: Text)])
+  query_ conn "SELECT doc FROM typed_docs()" >>= (@?= map Only docs)
+  query conn "SELECT typeof(?)" (Only [Nothing :: Maybe Doc])
+    >>= (@?= [Only ("STRUCT(serial BIGINT, body JSON)[]" :: Text)])
 
 -- | Reject a column, a parameter, or an argument type with no declaration at
 -- registration, also inside a list, and a MAP of a type text and a record.

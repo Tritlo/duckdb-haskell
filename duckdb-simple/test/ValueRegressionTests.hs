@@ -31,7 +31,9 @@ import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), utc, utcToLocalTime)
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
+import Database.DuckDB.FFI.V2 (c_duckdb_v2_factory_create_type_from_text, c_duckdb_v2_logical_type_is_equal)
 import Database.DuckDB.Simple
+import qualified Database.DuckDB.Simple.Catalog as Catalog
 import Database.DuckDB.Simple.FromField (
   BigNum (..),
   BitString (..),
@@ -50,6 +52,7 @@ import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
 import Database.DuckDB.Simple.V2.LogicalRep (destroyLogicalType, logicalTypeFromRep, logicalTypeToRep)
+import qualified Database.DuckDB.Simple.V2.Registration as R
 import GHC.Float (castDoubleToWord64, castFloatToWord32)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
@@ -1481,6 +1484,69 @@ valueRegressionTests =
         let logical = LogicalTypeStruct (listArray (0, 0) [StructField "íslenska_λ_😀" (LogicalTypeScalar LogicalTypeIdBigInt)])
         bracket (logicalTypeFromRep factory logical) destroyLogicalType \handle ->
           logicalTypeToRep handle >>= (@?= logical)
+    , testCase "a column type keeps the alias JSON at each depth, and reads as its base type" $ withConnection ":memory:" \conn -> do
+        let json = LogicalTypeAlias "JSON" (LogicalTypeScalar LogicalTypeIdVarchar)
+        _ <- execute_ conn "CREATE TABLE aliased (j JSON, js JSON[], s STRUCT(k JSON), m MAP(VARCHAR, JSON))"
+        description <- Catalog.describeTable conn "aliased"
+        map Catalog.columnDescriptionType (Catalog.tableDescriptionColumns description)
+          @?= [ json
+              , LogicalTypeList json
+              , LogicalTypeStruct (listArray (0, 0) [StructField "k" json])
+              , LogicalTypeMap (LogicalTypeScalar LogicalTypeIdVarchar) json
+              ]
+        _ <- execute_ conn "INSERT INTO aliased VALUES ('{\"a\": 1}', ['[1]'], {'k': '2'}, MAP {'x': '3'})"
+        query_ conn "SELECT j, js, m FROM aliased"
+          >>= (@?= [("{\"a\": 1}" :: Text, ["[1]"] :: [Text], Map.fromList [("x" :: Text, "3" :: Text)])])
+        -- The value of a STRUCT holds the base types of its fields.
+        [Only struct] <- query_ conn "SELECT s FROM aliased" :: IO [Only (StructValue FieldValue)]
+        map structFieldValue (elems (structValueTypes struct)) @?= [LogicalTypeScalar LogicalTypeIdVarchar]
+        map structFieldValue (elems (structValueFields struct)) @?= [FieldText "2"]
+    , testCase "a column of a type from CREATE TYPE has the base type and no name" $ withConnection ":memory:" \conn -> do
+        _ <- execute_ conn "CREATE TYPE meters AS BIGINT"
+        _ <- execute_ conn "CREATE TYPE mood AS ENUM ('sad', 'happy')"
+        _ <- execute_ conn "CREATE TABLE created (m meters, mo mood)"
+        description <- Catalog.describeTable conn "created"
+        map Catalog.columnDescriptionType (Catalog.tableDescriptionColumns description)
+          @?= [LogicalTypeScalar LogicalTypeIdBigInt, LogicalTypeEnum (listArray (0, 1) ["sad", "happy"])]
+    , testCase "a registered custom type keeps its name, and reads and binds as its base type" $ withConnection ":memory:" \conn -> do
+        let decimal = LogicalTypeDecimal 9 2
+            point =
+              LogicalTypeStruct
+                (listArray (0, 1) [StructField "x" (LogicalTypeScalar LogicalTypeIdInteger), StructField "label" (LogicalTypeScalar LogicalTypeIdVarchar)])
+            custom =
+              [ ("money", decimal)
+              , ("point", point)
+              , ("tags", LogicalTypeList (LogicalTypeScalar LogicalTypeIdVarchar))
+              , ("level", LogicalTypeEnum (listArray (0, 1) ["low", "high"]))
+              , ("meters", LogicalTypeScalar LogicalTypeIdBigInt)
+              ]
+        forM_ custom \(name, base) -> R.registerCustomType conn name (StructuredType base)
+        _ <- execute_ conn "CREATE TABLE custom (a money, b point, c tags, d level, e meters, f money[])"
+        description <- Catalog.describeTable conn "custom"
+        map Catalog.columnDescriptionType (Catalog.tableDescriptionColumns description)
+          @?= [LogicalTypeAlias name base | (name, base) <- custom] <> [LogicalTypeList (LogicalTypeAlias "money" decimal)]
+        _ <- execute_ conn "INSERT INTO custom VALUES (1.25, {'x': 1, 'label': 'a'}, ['t'], 'high', 7, [2.5])"
+        query_ conn "SELECT a, c, d, e, f FROM custom"
+          >>= (@?= [(DecimalValue 9 2 125, ["t"] :: [Text], "high" :: Text, 7 :: Int64, [DecimalValue 9 2 250])])
+        [Only struct] <- query_ conn "SELECT b FROM custom" :: IO [Only (StructValue FieldValue)]
+        map structFieldValue (elems (structValueFields struct)) @?= [FieldInt32 1, FieldText "a"]
+        -- The binding uses the range of the base type.
+        try (execute conn "INSERT INTO custom (e) VALUES (?)" (Only (2 ^ (127 :: Int) :: Integer))) >>= \case
+          Left SQLError{sqlErrorMessage, sqlErrorType} -> do
+            sqlErrorType @?= Just ErrorTypeConversion
+            sqlErrorMessage @?= "duckdb-simple: the value 170141183460469231731687303715884105728 is out of range for a parameter of the type BIGINT"
+          Right _ -> assertFailure "expected the duckdb-simple range error for a custom type over BIGINT"
+    , testCase "an alias type round trips through a native type" $ withConnection ":memory:" \conn -> do
+        let json = LogicalTypeAlias "JSON" (LogicalTypeScalar LogicalTypeIdVarchar)
+            money = LogicalTypeAlias "money" (LogicalTypeDecimal 9 2)
+        R.registerCustomType conn "money" (StructuredType (LogicalTypeDecimal 9 2))
+        withConnectionHandle conn \native -> withConnectionFactory native \factory ->
+          forM_ [(json, "JSON"), (money, "money"), (LogicalTypeList json, "JSON[]")] \(logical, text) ->
+            bracket (logicalTypeFromRep factory logical) destroyLogicalType \handle -> do
+              logicalTypeToRep handle >>= (@?= logical)
+              -- The type is the type that DuckDB gives for the type text.
+              bracket (R.withText text (R.output . c_duckdb_v2_factory_create_type_from_text factory)) destroyLogicalType \parsed ->
+                R.output (c_duckdb_v2_logical_type_is_equal handle parsed) >>= (@?= 1)
     , testCase "logical type names reject embedded NUL" $ withConnection ":memory:" \conn -> withConnectionHandle conn \native -> withConnectionFactory native \factory -> do
         let logical = LogicalTypeStruct (listArray (0, 0) [StructField "before\0after" (LogicalTypeScalar LogicalTypeIdBigInt)])
         assertInputError (bracket (logicalTypeFromRep factory logical) destroyLogicalType (const (pure ())))

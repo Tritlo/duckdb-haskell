@@ -595,6 +595,25 @@ extensionRegressionTests =
             FileSystem.fileHandleTell handle >>= (@?= 1)
             FileSystem.fileHandleSeek handle 0
             FileSystem.readFileHandleChunk handle 8 >>= (@?= BS.pack [8, 9, 3, 4])
+    , testCase "file reads shorter than the file give the requested bytes" $
+        withTemporaryFile \path -> withConnection ":memory:" \conn -> do
+          let bytes = BS.pack [0 .. 15]
+          BS.writeFile path bytes
+          FileSystem.withFileHandle conn path [FileSystem.FileFlagRead] \handle -> do
+            FileSystem.readFileHandleChunk handle 4 >>= (@?= BS.take 4 bytes)
+            FileSystem.fileHandleTell handle >>= (@?= 4)
+            FileSystem.readFileHandleAt handle 8 4 >>= (@?= BS.take 4 (BS.drop 8 bytes))
+            -- A chunk read gives the bytes that remain after the position.
+            FileSystem.readFileHandleChunk handle 100 >>= (@?= BS.drop 4 bytes)
+    , testCase "positioned reads check the range against the file size" $
+        withTemporaryFile \path -> withConnection ":memory:" \conn -> do
+          BS.writeFile path (BS.pack [0 .. 15])
+          FileSystem.withFileHandle conn path [FileSystem.FileFlagRead] \handle -> do
+            assertSqlErrorContaining "file read range exceeds the file size" $ FileSystem.readFileHandleAt handle 14 4
+            assertSqlErrorContaining "file read range exceeds the file size" $ FileSystem.readFileHandleAt handle maxBound 1
+            -- A size of 0 gives no bytes, also past the end, as in DuckDB.
+            FileSystem.readFileHandleAt handle 20 0 >>= (@?= BS.empty)
+            FileSystem.readFileHandleAt handle 12 4 >>= (@?= BS.pack [12 .. 15])
     , testCase "file flags of the other file tests create read and write a file" $
         withTemporaryFile \path -> withConnection ":memory:" \conn -> do
           removeFile path

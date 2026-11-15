@@ -254,22 +254,8 @@ Helper combinators such as `field`, `fieldWith`, and `numFieldsRemaining` are
 available when a custom instance needs fine-grained control.
 
 A `FromField` instance reads the SQL type of its Haskell type, for example
-BIGINT for `Int64`. It also reads another SQL type when it gives the value of
-the cast of DuckDB to the SQL type of the Haskell type, or an error where the
-value does not fit. For example, `Int8` reads a BIGINT that fits in a TINYINT,
-and `Double` reads a DECIMAL with the value of `c::DOUBLE`. A read that needs
-the TimeZone setting of the session, or another text than the cast gives, raises
-the error of an incompatible column: a TIMESTAMP or a DATE as `UTCTime`, a
-TIMESTAMPTZ as `LocalTime`, a FLOAT or a DOUBLE as `Text`, a VARCHAR as
-`ByteString`, and an ENUM as an integer type. Write the SQL for these values in
-place of the column `c`: `c::TIMESTAMP AT TIME ZONE 'UTC'` for a TIMESTAMP or a
-DATE as `UTCTime` (`c AT TIME ZONE 'UTC'` for a TIMESTAMP_NS),
-`c AT TIME ZONE 'UTC'` for a TIMESTAMPTZ as `LocalTime`, `c::VARCHAR` for a
-FLOAT or a DOUBLE as `Text`, `encode(c)` for a VARCHAR as `ByteString`, and
-`enum_code(c)::BIGINT` for an ENUM as an integer type. An ENUM value reads as
-`Text` or `String` with its label, the text of `c::VARCHAR`, and a `FieldEnum`
-holds the index and the label. The Haddock of each `FromField` instance gives
-the SQL types that it reads.
+BIGINT for `Int64`, and other SQL types with the value of DuckDB's cast: the
+column "Reads" and notes 3 to 5 of [Types](#types) give them.
 
 ## Types
 
@@ -344,13 +330,19 @@ Notes:
    DECIMAL, and for a BIGINT read as `Float`. A finite value that `Float`
    cannot hold raises a conversion error of the library, an `SQLError` with no
    type.
-5. A read of another SQL type gives the value of DuckDB's cast, or an error.
-   Thus `Text` reads a BOOLEAN as `true` or `false`, and an ENUM as its label.
+5. A read of another SQL type gives the value of the cast of DuckDB to the SQL
+   type of the Haskell type, or an error where the value does not fit. For
+   example, `Int8` reads a BIGINT that fits in a TINYINT, and `Double` reads a
+   DECIMAL with the value of `c::DOUBLE`. Thus `Text` reads a BOOLEAN as `true`
+   or `false`, and `Text` and `String` read an ENUM as its label, the text of
+   `c::VARCHAR`; a `FieldEnum` holds the index and the label.
    `ByteString` reads a BIT or a GEOMETRY as the bytes of `c::BLOB`. `UUID`
    reads a VARCHAR in the form `a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11`, and
    another form that the cast reads, for example with braces, raises an error.
-   These reads raise the error of an incompatible column. For each one, write
-   the SQL in the parentheses in place of the column `c`:
+   A read that needs the TimeZone setting of the session, or another text than
+   the cast gives, raises the error of an incompatible column. For each such
+   read, write the SQL in the parentheses in place of the column `c` (note 3
+   gives the SQL for an ENUM read as an integer type):
    - `Text` from FLOAT or DOUBLE (`c::VARCHAR`).
    - `ByteString` from VARCHAR (`encode(c)`).
    - `LocalTime` from TIMESTAMPTZ or TIMESTAMPTZ_NS (`c AT TIME ZONE 'UTC'`).
@@ -358,7 +350,8 @@ Notes:
      (`c::TIMESTAMP AT TIME ZONE 'UTC'`), and from TIMESTAMP_NS
      (`c AT TIME ZONE 'UTC'`).
 
-   The `Unbounded` forms of `LocalTime` and `UTCTime` follow the same rule.
+   The `Unbounded` forms of `LocalTime` and `UTCTime` follow the same rule. The
+   Haddock of each `FromField` instance gives the SQL types that it reads.
 6. "Each timestamp type" is TIMESTAMP_S, TIMESTAMP_MS, TIMESTAMP, and
    TIMESTAMP_NS. TIMESTAMP alone is the type with microseconds. `Day` reads the
    date of a timestamp, and `TimeOfDay` reads its time. A nanosecond type keeps

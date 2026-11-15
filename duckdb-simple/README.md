@@ -1039,8 +1039,9 @@ The type of a column, a parameter, or an aggregate argument comes from
 `duckdbTypeDeclaration`. A record or a sum type that derives `DuckDBColumnType`
 and `ToDuckValue` via `ViaDuckDB` is a STRUCT or a UNION, also in a list or a
 MAP. Each field type comes from `DuckValue`: an `Integer` field is HUGEINT and
-a `Natural` field is UHUGEINT, but an `Integer` column is BIGNUM. DuckDB
-rejects an `Array` field, because its type has no size. `StructValue`,
+a `Natural` field is UHUGEINT, but an `Integer` column is BIGNUM. The
+registration raises an error for an `Array` field, because its ARRAY type has
+no size. Use a list field. `StructValue`,
 `TupleValue`, and `UnionValue` have no static field types. The registration
 raises an error for them. An aggregate argument that is or contains VARIANT or
 GEOMETRY also raises an error at registration, as for `createFunction`.

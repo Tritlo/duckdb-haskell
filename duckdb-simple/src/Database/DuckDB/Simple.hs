@@ -240,7 +240,14 @@ data ConnectionOptions = ConnectionOptions
   --     directly. For each other name, the connection reads a SQL-derived type
   --     when it opens, and a name that DuckDB drops fails the open. The
   --     connection keeps each type, and a bind copies it. The default is
-  --     @OGC:CRS84@. Include custom CRS names in this list.
+  --     @OGC:CRS84@. Include custom CRS names in this list. A typed
+  --     registration does not use this list. A declared GEOMETRY type with a
+  --     custom CRS name raises the DuckDB error "unrecognized coordinate
+  --     system" at registration: for an argument, a result, the source or the
+  --     target of a cast, a pragma parameter, and a column of a table function.
+  --     A plain GEOMETRY argument reads a value with a custom CRS without the
+  --     CRS, because DuckDB casts the value to the declared type. A query
+  --     column with a custom CRS reads with its CRS.
   , connectionCallbackLockWait :: Maybe Int
   -- ^ The longest time in microseconds that a DuckDB callback waits for the
   --     lock of this connection. A statement of a callback on the connection

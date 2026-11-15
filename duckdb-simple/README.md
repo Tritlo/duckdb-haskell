@@ -850,7 +850,8 @@ connection opens, DuckDB constructs a recognized name, such as `OGC:CRS84`, and
 a complete definition directly. For each other name, the library reads the
 type through SQL on the new connection. The connection caches each type, and a
 bind copies it. A name that DuckDB drops, for example a blank name, fails the
-open.
+open. For a custom CRS in a typed registration, see the Haddock of
+`connectionGeometryCRS`.
 
 CRS definitions outside the configured list use direct V2 type construction.
 This requires a recognized identifier or a complete WKT2/PROJJSON definition.
@@ -1103,8 +1104,8 @@ a `Natural` field is UHUGEINT, but an `Integer` column is BIGNUM. The
 registration raises an error for an `Array` field, because its ARRAY type has
 no size. Use a list field. `StructValue`,
 `TupleValue`, and `UnionValue` have no static field types. The registration
-raises an error for them. An aggregate argument that is or contains VARIANT or
-GEOMETRY also raises an error at registration, as for `createFunction`.
+raises an error for them. An aggregate argument has the VARIANT and GEOMETRY
+rules of [User-Defined Functions](#user-defined-functions).
 
 `registerReplacementScan` gives the parts of an unknown table name to the
 function. The function can give a SELECT statement that DuckDB reads instead.

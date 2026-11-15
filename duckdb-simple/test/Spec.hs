@@ -1539,6 +1539,11 @@ functionsTests =
             createFunction conn "hs_bad_variant" (\(_ :: Variant) -> True)
           rejects "hs_bad_variants: argument arg1: the type of an argument cannot be or contain VARIANT" $
             createFunction conn "hs_bad_variants" (\(_ :: Int64) (_ :: [Maybe Variant]) -> True)
+          -- The check visits the value type of a MAP, not only the element type of a LIST.
+          rejects "hs_bad_map: argument arg0: the type of an argument cannot be or contain VARIANT" $
+            createFunction conn "hs_bad_map" (\(_ :: Map.Map Text.Text Variant) -> True)
+          rejects "hs_bad_result: result: StructValue has no static field types" $
+            createFunction conn "hs_bad_result" (\(_ :: Int64) -> (undefined :: StructValue FieldValue))
           query_ conn "SELECT count(*) FROM duckdb_functions() WHERE function_name LIKE 'hs\\_bad\\_%' ESCAPE '\\'" >>= (@?= [Only (0 :: Int64)])
     , testCase "rejects an empty name or a name with NUL at registration" $
         withConnection ":memory:" \conn ->

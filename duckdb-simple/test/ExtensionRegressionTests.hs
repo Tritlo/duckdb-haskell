@@ -708,6 +708,9 @@ extensionRegressionTests =
               Right bytes -> assertFailure ("expected an IO error, got " <> show bytes)
             -- The library checks only that the end of the range fits in Int64.
             assertInputErrorContaining "file read range exceeds Int64 range" $ FileSystem.readFileHandleAt handle maxBound 1
+            assertInputErrorContaining "file offset is negative" $ FileSystem.readFileHandleAt handle (-1) 1
+            assertInputErrorContaining "file read size is negative" $ FileSystem.readFileHandleAt handle 0 (-1)
+            assertInputErrorContaining "file offset is negative" $ FileSystem.fileHandleSeek handle (-1)
             -- A size of 0 gives no bytes, also past the end, as in DuckDB.
             FileSystem.readFileHandleAt handle 20 0 >>= (@?= BS.empty)
             FileSystem.readFileHandleAt handle 12 4 >>= (@?= BS.pack [12 .. 15])
@@ -715,6 +718,7 @@ extensionRegressionTests =
         withTemporaryFile \path -> withConnection ":memory:" \conn ->
           FileSystem.withFileHandle conn path [FileSystem.FileFlagWrite] \handle -> do
             assertInputErrorContaining "file write range exceeds Int64 range" $ FileSystem.writeFileHandleAt handle (maxBound - 1) (BS.pack [1, 2])
+            assertInputErrorContaining "file offset is negative" $ FileSystem.writeFileHandleAt handle (-1) (BS.pack [1])
             FileSystem.fileHandleSize handle >>= (@?= 0)
     , testCase "file flags of the other file tests create read and write a file" $
         withTemporaryFile \path -> withConnection ":memory:" \conn -> do

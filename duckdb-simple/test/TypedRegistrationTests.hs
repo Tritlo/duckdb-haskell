@@ -81,7 +81,7 @@ import System.Mem (performMajorGC)
 import System.Mem.Weak (Weak, deRefWeak)
 import Test.Tasty (TestTree, localOption, mkTimeout, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase, (@?=))
-import TestUtils (assertReleasedAfter)
+import TestUtils (assertInputErrorContaining, assertReleasedAfter)
 
 -- | Check the typed registrations through SQL.
 typedRegistrationTests :: TestTree
@@ -903,6 +903,10 @@ testAggregateResultTypes = withConnection ":memory:" \conn -> do
     (createAggregate conn "typed_integer_result" sumAggregate{aggregateResult = pure . toInteger})
   query_ conn "SELECT count(*) FROM duckdb_functions() WHERE function_name IN ('typed_peak_result', 'typed_integer_result')"
     >>= (@?= [Only (0 :: Int64)])
+  assertSqlError
+    "typed_struct_result: result: StructValue has no static field types"
+    (createAggregate conn "typed_struct_result" sumAggregate{aggregateResult = \_ -> pure (undefined :: StructValue FieldValue)})
+  assertInputErrorContaining "aggregate function name must be nonempty" (createAggregate conn "" sumAggregate)
   -- The result check comes before the state of the connection.
   closed <- open ":memory:"
   close closed

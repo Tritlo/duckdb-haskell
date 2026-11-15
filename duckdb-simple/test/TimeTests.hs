@@ -363,6 +363,13 @@ nanosecondTimeTests =
           "INSERT INTO stored VALUES (?)"
           (Only (FieldMap [(FieldText "a", FieldTime (TimeOfDay 3 4 5)), (FieldText "b", FieldTime (TimeOfDay 3 4 5.123456789))]))
       (query_ conn "SELECT v::VARCHAR FROM stored" :: IO [Only Text.Text]) >>= (@?= [Only "{a='03:04:05', b='03:04:05.123456789'}"])
+      _ <- execute_ conn "CREATE TABLE stored_keys (v MAP(TIME_NS, VARCHAR))"
+      _ <-
+        execute
+          conn
+          "INSERT INTO stored_keys VALUES (?)"
+          (Only (FieldMap [(FieldTime (TimeOfDay 3 4 5), FieldText "a"), (FieldTime (TimeOfDay 3 4 5.123456789), FieldText "b")]))
+      (query_ conn "SELECT v::VARCHAR FROM stored_keys" :: IO [Only Text.Text]) >>= (@?= [Only "{'03:04:05'=a, '03:04:05.123456789'=b}"])
   , testCase "a FieldList with a microsecond element first keeps the nanosecond element" $ withConnection ":memory:" $ \conn -> do
       _ <- execute_ conn "CREATE TABLE stored (v TIME_NS[])"
       _ <- execute conn "INSERT INTO stored VALUES (?)" (Only (FieldList [FieldTime (TimeOfDay 3 4 5), FieldTime (TimeOfDay 3 4 5.123456789)]))

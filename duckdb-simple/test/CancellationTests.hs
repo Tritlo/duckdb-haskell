@@ -184,6 +184,55 @@ callbackLockTests =
           assertInnerErrors errors
           readIORef rows >>= \count -> assertBool "the callback ran before the fold received a row" (count > 0)
           assertReusable conn
+    , testCase "a callback that runs a statement on its own connection in a later Arrow fetch fails at the bound" $
+        withBoundedConnections "1" testLockWait \conn _ -> do
+          (threads, errors) <- registerStatementCallback conn conn
+          batches <- newIORef (0 :: Int)
+          void (execute_ conn "SET streaming_buffer_size = '16KB'")
+          outcome <- boundedOuterCall 30000000 threads $ Streaming.foldArrow_ conn laterFetchQuery () \() _ _ -> modifyIORef' batches (+ 1)
+          assertBoundError outcome
+          assertInnerErrors errors
+          readIORef batches >>= \count -> assertBool "the callback ran before the fold received a batch" (count > 0)
+          assertReusable conn
+    , testCase "a callback that runs a statement on its own connection when a streaming Arrow fold starts fails at the bound" $
+        withBoundedConnections "1" testLockWait \conn _ -> do
+          (threads, errors) <- registerStatementCallback conn conn
+          outcome <- boundedOuterCall 30000000 threads $ Streaming.foldArrow_ conn "SELECT own_statement(i) FROM range(3) t(i)" () \() _ _ -> pure ()
+          assertBoundError outcome
+          assertInnerErrors errors
+          assertReusable conn
+    , testCase "a callback that prepares a statement on its own connection fails at the bound" $
+        withBoundedConnections "1" testLockWait \conn _ -> do
+          -- The preparation is the only step of the callback that takes the connection lock.
+          (threads, errors) <- registerOwnStatement conn (withStatement conn "SELECT ?::BIGINT" (\_ -> pure ()))
+          outcome <- boundedOuterCall 30000000 threads (void (query_ conn "SELECT own_statement(i) FROM range(3) t(i)" :: IO [Only Int64]))
+          assertBoundError outcome
+          assertInnerErrors errors
+          assertReusable conn
+    , testCase "a callback that reads the column count of a statement on its own connection fails at the bound" $
+        withBoundedConnections "1" testLockWait \conn _ ->
+          -- The statement has no schemas yet. Thus the column count binds the
+          -- metadata of the statement, and that bind takes the connection lock.
+          withStatement conn "SELECT 1 AS a, 2 AS b" \pending -> do
+            (threads, errors) <- registerOwnStatement conn (void (columnCount pending))
+            outcome <- boundedOuterCall 30000000 threads (void (query_ conn "SELECT own_statement(i) FROM range(3) t(i)" :: IO [Only Int64]))
+            assertBoundError outcome
+            assertInnerErrors errors
+            columnCount pending >>= (@?= 2)
+            assertReusable conn
+    , testCase "a callback statement that fails on a second connection leaves the lock of that connection free" $
+        withBoundedConnections "1" testLockWait \conn other -> do
+          createFunction conn "failing_other" \(i :: Int64) -> do
+            inner <- try (query_ other "SELECT error('inner')" :: IO [Only Int64])
+            case inner of
+              Left (_ :: SQLError) -> pure ()
+              Right _ -> assertFailure "expected the inner error"
+            -- The failed statement held the lock of the second connection.
+            -- The next statement of the callback must get that lock at once.
+            query_ other "SELECT 1" >>= (@?= [Only (1 :: Int64)])
+            pure i
+          query_ conn "SELECT failing_other(i) FROM range(3) t(i)" >>= (@?= map Only [0, 1, 2 :: Int64])
+          timeout 5000000 (query_ other "SELECT 42") >>= (@?= Just [Only (42 :: Int64)])
     , testCase "callbacks on 4 DuckDB threads that run statements on their own connection each fail at the bound" $
         withBoundedConnections "4" testLockWait \conn _ -> do
           void (execute_ conn "CREATE TABLE callback_rows AS SELECT i FROM range(1000000) t(i)")

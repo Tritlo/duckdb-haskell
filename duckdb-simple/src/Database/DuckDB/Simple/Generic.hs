@@ -762,7 +762,8 @@ instance (Generic a, GToField (Rep a)) => ToDuckValue (ViaDuckDB a) where
     EncodedUnion unionVal -> toDuckValue factory unionVal
     EncodedStruct structVal _ -> toDuckValue factory structVal
 
--- | Deriving-via @FromField@ instance. Errors are rewrapped using the existing
+-- | Deriving-via @FromField@ instance. It reads a STRUCT for a product type and
+-- a UNION for a sum type. Errors are rewrapped using the existing
 -- @returnError@ helper so callers receive a proper @ResultError@.
 instance (Generic a, GFromField (Rep a), Typeable a) => FromField (ViaDuckDB a) where
   fromField f@Field{fieldValue} =

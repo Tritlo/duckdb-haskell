@@ -353,7 +353,10 @@ them.
 The instances do not read a pair whose cast needs data that the decoded value
 does not have, or whose value the library cannot give exactly. A read of such a
 pair raises Incompatible, as for each other pair that an instance does not
-read. These pairs are:
+read. The error names the SQL type of the decoded value, which is not always
+the name that typeof gives: a TIMESTAMP_S, TIMESTAMP_MS, or TIMESTAMP_NS value
+is TIMESTAMP, a TIMESTAMPTZ_NS value is TIMESTAMPTZ, a VARIANT value has the
+type of its payload, and the error of a String names Text. These pairs are:
 
 - UTCTime from TIMESTAMP, TIMESTAMP_S, TIMESTAMP_MS, TIMESTAMP_NS, and DATE, and
   LocalTime from TIMESTAMPTZ and TIMESTAMPTZ_NS. These casts use the TimeZone

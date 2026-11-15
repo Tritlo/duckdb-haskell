@@ -38,8 +38,9 @@ import Database.DuckDB.Simple.Ok (Ok (..))
 data Null = Null
   deriving (Eq, Ord, Show, Read)
 
--- | This instance is in this module because @Internal@ imports @FromField@.
--- An import of this module from @FromField@ would cause an import cycle.
+-- | Reads only a NULL value, of each SQL type. This instance is in this module
+-- because @Internal@ imports @FromField@. An import of this module from
+-- @FromField@ would cause an import cycle.
 instance FromField Null where
   fromField f = case fieldValue f of
     FieldNull -> Ok Null

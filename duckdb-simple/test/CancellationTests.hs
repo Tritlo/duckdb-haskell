@@ -216,12 +216,16 @@ callbackLockTests =
           assertInnerErrors errors
           readIORef batches >>= \count -> assertBool "the callback ran before the fold received a batch" (count > 0)
           assertReusable conn
-    , testCase "a callback that runs a statement on its own connection in the first Arrow fetch fails at the bound" $
+    , testCase "a callback that runs a statement on its own connection before the first Arrow batch fails at the bound" $
         withBoundedConnections "1" testLockWait \conn _ -> do
           (threads, errors) <- registerStatementCallback conn conn
-          outcome <- boundedOuterCall 30000000 threads $ Streaming.foldArrow_ conn "SELECT own_statement(i) FROM range(3) t(i)" () \() _ _ -> pure ()
+          batches <- newIORef (0 :: Int)
+          outcome <-
+            boundedOuterCall 30000000 threads $
+              Streaming.foldArrow_ conn "SELECT own_statement(i) FROM range(3) t(i)" () \() _ _ -> modifyIORef' batches (+ 1)
           assertBoundError outcome
           assertInnerErrors errors
+          readIORef batches >>= (@?= 0)
           assertReusable conn
     , testCase "a callback that prepares a statement on its own connection fails at the bound" $
         withBoundedConnections "1" testLockWait \conn _ -> do

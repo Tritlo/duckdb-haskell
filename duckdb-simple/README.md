@@ -868,9 +868,10 @@ give an `IO` action.
 An argument type needs `FromField` and `DuckDBColumnType` instances. Its SQL
 type is the `duckdbTypeDeclaration` of the type, as for a typed column. A
 newtype with its own `DuckDBColumnType` text, for example `DECIMAL(18,3)`,
-gives that text. An argument type that is or contains VARIANT or GEOMETRY
-raises an error at registration, because the argument reader reads neither
-type.
+gives that text. An argument type that is or contains VARIANT raises an error
+at registration, because the argument reader does not read VARIANT. A GEOMETRY
+argument reads as a GEOMETRY result does, also inside a list or a record, in a
+scalar function, in an aggregate, and as the source of a typed cast.
 
 The SQL type of the result is the `duckdbTypeDeclaration` of the result type:
 an `Int16` result is SMALLINT, and a `Float` result is FLOAT. DuckDB computes

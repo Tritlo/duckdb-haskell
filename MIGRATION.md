@@ -270,8 +270,9 @@ The SQL workflow stays the same. These changes can affect your code:
   `duckdbTypeDeclaration` of the type. The argument types of version 0.3 keep
   their SQL types. `Function.argumentTypes` gives
   `[Either Text TypeDeclaration]` in place of `[DuckDBType]`. An argument type
-  that is or contains VARIANT or GEOMETRY was a compile error. It is now an
-  `SQLError` at registration.
+  that is or contains VARIANT or GEOMETRY was a compile error. A VARIANT
+  argument is now an `SQLError` at registration, and a GEOMETRY argument
+  reads.
 - A result of `createFunction` has the SQL type of its Haskell type. In
   version 0.3, an `Int16`, `Int32`, `Word16`, or `Word32` result was BIGINT,
   and a `Float` result was DOUBLE. Now they are SMALLINT, INTEGER, USMALLINT,

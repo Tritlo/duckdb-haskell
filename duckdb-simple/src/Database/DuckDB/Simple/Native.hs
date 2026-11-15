@@ -117,11 +117,15 @@ instance Exception SQLError
 -- These errors of duckdb-simple have no error type: the use of a closed
 -- environment, instance, connection, statement, or type cache, a loaded DuckDB
 -- library of another version, and a result value that does not convert to its
--- Haskell type. A check of the state of the library, or of a vector, a type, or
--- a value that DuckDB gave, raises one of three exceptions, by the check: an
--- 'SQLError' with no error type, an @IOException@ (a @userError@), or an
--- @ErrorCall@. When such a check fails in a callback, the outer statement fails
--- with an 'SQLError'.
+-- Haskell type.
+--
+-- A failed check of the state of the library, or of a value that DuckDB gave,
+-- raises an 'Control.Exception.IOException' from 'userError', an 'SQLError'
+-- with no type, or an 'Control.Exception.ErrorCall' for an INVALID, ANY, or
+-- UNKNOWN type in a result. Inside a callback, such an error reaches the
+-- program as the 'SQLError' of the statement that runs the callback. Such an
+-- error is a defect of the library or of DuckDB, not an error of the input.
+-- Report it.
 data ErrorType
   = ErrorApi
   | ErrorIOFileNotFound

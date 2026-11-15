@@ -954,11 +954,43 @@ hasCollation rep = case rep of
   LogicalTypeUnion members -> any (hasCollation . unionMemberType) (elems members)
   _ -> False
 
--- | Build one UNION row through its public tag and member vectors. V2 has no
--- constructor for a UNION value. A cast of the member value to the UNION type
--- chooses the member by the type of the value, so it fails when two members have
--- the same type, as in a generic sum type whose constructors have equal fields.
--- The vectors keep the tag of the value.
+{- Note [UNION values]
+~~~~~~~~~~~~~~~~~~~~~~
+unionValueDuckValue builds a UNION value through a vector with one row. It
+writes the tag and the member into the child vectors, and reads the row as a
+value. The header documents the layout and the write: the children of a UNION
+vector are "[0] = the tag with [1..N] = the members", and a write of a value
+to a vector uses "the non-strict default cast". The write needs FLAT child
+vectors. In DuckDB 2.0.0 the children of a new vector are FLAT, but the header
+does not say this. See Note [Vector flatten] in
+"Database.DuckDB.Simple.Materialize".
+
+V2 has no constructor for a UNION value. These cast routes were run with
+DuckDB 2.0.0 and not taken:
+
+- The cast of the member value to the UNION type. The header calls it "the
+  sanctioned way to build UNION and ENUM values". DuckDB chooses the member
+  by the type of the value. Thus the cast is ambiguous when two members have
+  the same type, as in a generic sum type whose constructors have equal
+  fields.
+- The cast of the member value to a UNION with only that member, and then
+  the cast of that UNION to the full UNION. It gives the correct value for
+  two members of one type. It fails for a member that is a UNION with a
+  member name of the outer UNION ("The cast is ambiguous"), and for a STRUCT
+  member whose first field is a UTINYINT, which DuckDB reads as the tag of a
+  UNION.
+- The cast of a STRUCT with a UTINYINT tag field and one field for each
+  member. It gives the correct value in each of these cases. The header does
+  not document this cast.
+
+The vector route gives the correct value in each of these cases, and it keeps
+the tag of the value. Each route depends on one fact that the header does not
+state: the vector route on the FLAT child vectors, and the last cast route on
+the cast of a STRUCT to a UNION.
+-}
+
+-- | Build one UNION row through its tag and member vectors. See
+-- Note [UNION values].
 unionValueDuckValue
   :: ValueBuilder -> UnionValue FieldValue -> IO DuckDBV2ValueHandle
 unionValueDuckValue builder@ValueBuilder{builderFactory = factory, builderType = makeType} UnionValue{unionValueIndex, unionValueLabel, unionValuePayload, unionValueMembers} = do

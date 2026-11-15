@@ -74,13 +74,17 @@ tests paths =
           ]
           [["native_batches", "10000", "1", "10000", "50005000"], ["null", "preserved"], ["text", "true"]]
           []
-    , testCase "a GEOMETRY argument: a point and NULL" $
+    , testCase "a GEOMETRY argument and a user cast from GEOMETRY to BLOB" $
+        -- The cast of the extension appends one byte. A GEOMETRY argument reads the
+        -- bytes of the built-in cast.
         checkProcess
           paths
-          [ "SELECT 'point_x', haskell_point_x('POINT (1 2)'::GEOMETRY);"
+          [ "SELECT 'cast_blob', octet_length(b), right(hex(b), 2) FROM (SELECT CAST('POINT (1 2)'::GEOMETRY AS BLOB) AS b);"
+          , "SELECT 'point_x', haskell_point_x('POINT (1 2)'::GEOMETRY);"
           , "SELECT 'null_x', haskell_point_x(NULL::GEOMETRY) IS NULL;"
+          , "SELECT 'rows_x', count(*), sum(haskell_point_x(('POINT (' || i || ' 0)')::GEOMETRY)) FROM range(5000) AS t(i);"
           ]
-          [["point_x", "1.0"], ["null_x", "true"]]
+          [["cast_blob", "22", "78"], ["point_x", "1.0"], ["null_x", "true"], ["rows_x", "5000", "12497500.0"]]
           []
     , testCase "scalar and table macros" $
         checkProcess

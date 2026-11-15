@@ -70,7 +70,7 @@ PRAGMA, a typed custom option, and a log sink. They exercise native results,
 batch inputs, NULLs, Unicode text, a GEOMETRY argument, overflow, and callback
 errors. The example
 also registers an aggregate function, a table function, a custom type with a
-typed cast, a replacement scan, a COPY format with both directions, and a
+typed cast, a typed cast from GEOMETRY to BLOB, a replacement scan, a COPY format with both directions, and a
 multi-file reader. Together, the registrations use all twelve V2 extension
 registration calls. The entrypoint is
 `haskell_demo_init_c_api_v2`. DuckDB derives the entrypoint name from the

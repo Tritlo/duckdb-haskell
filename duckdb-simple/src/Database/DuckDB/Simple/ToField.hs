@@ -421,6 +421,15 @@ instance ToField LocalTime
 -- | Bind the shape as @GEOMETRY@ with no CRS.
 instance ToField G.Geometry
 
+-- | Bind the WKB bytes as a GEOMETRY value with the CRS of the raw geometry.
+-- DuckDB then casts the value to the type of the parameter. See
+-- Note [Raw GEOMETRY parameters].
+instance ToField RawGeometry where
+  toField raw@RawGeometry{rawGeometryWKB, rawGeometryCRS} =
+    builderValueBinding
+      ("<geometry length=" <> show (BS.length rawGeometryWKB) <> ">")
+      \builder -> rawGeometryDuckValue builder rawGeometryCRS raw
+
 -- | Bind the payload as a VARIANT with the type cache of the connection.
 instance ToField Variant where
   toField value =
@@ -1006,11 +1015,30 @@ quotedCRS crs = "'" <> crs <> "'"
 
 {- Note [Raw GEOMETRY parameters]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-A raw geometry is a FieldGeometry value. It holds a RawGeometry: WKB bytes
-and an optional CRS. A result gives a raw geometry for a GEOMETRY value in a
-STRUCT, a TUPLE, a UNION, a LIST, an ARRAY, a MAP, or a VARIANT. A user can
-also construct a raw geometry. A STRUCT, TUPLE, UNION, or Variant parameter
-binds each raw geometry that it contains with this rule:
+A raw geometry is a RawGeometry: WKB bytes and an optional CRS. A result
+gives a raw geometry for a GEOMETRY value, and a FieldGeometry value for a
+GEOMETRY value in a STRUCT, a TUPLE, a UNION, a LIST, an ARRAY, a MAP, or a
+VARIANT. A user can also construct a raw geometry.
+
+A top-level RawGeometry parameter (ToField RawGeometry) binds as a GEOMETRY
+value with the CRS of the raw geometry. It uses rawGeometryDuckValue with
+that CRS as the declared CRS, so the CRS check below always passes. DuckDB
+then casts the value to the type of the parameter, as it casts a GEOMETRY
+value in SQL text:
+
+- A value without a CRS takes the CRS of a target that has a CRS.
+- A target without a CRS removes the CRS of the value. No error occurs.
+- A target with another CRS raises "Binder Error: Cannot cast GEOMETRY with
+  CRS ... to GEOMETRY with different CRS ...". A comparison with = has the
+  same rule.
+
+RawGeometry has no DuckDBColumnType instance and no ToDuckValue instance.
+Thus an Array of raw geometries and a typed row cannot hold one. Their
+declared element type or column type would be GEOMETRY without a CRS, and
+DuckDB would remove the CRS of each value.
+
+A STRUCT, TUPLE, UNION, or Variant parameter binds each raw geometry that it
+contains with this rule:
 
 - The CRS of the value must be equal to the CRS of the declared GEOMETRY
   type. A value without a CRS agrees only with a type without a CRS. If
@@ -1047,6 +1075,10 @@ binds each raw geometry that it contains with this rule:
 - Why a CRS mismatch is an error. A BLOB value has no CRS. The cast gives
   the CRS of the declared type to the value. Without the check, a value
   could get a different CRS or lose its CRS, and no error would occur.
+
+- Why a top-level parameter has no such check. Its declared type is the type
+  of its own CRS. The casts after the bind are the casts of SQL text, and the
+  library adds no rule to them.
 
 - Why a VARIANT accepts only a value without a CRS. A VARIANT keeps a
   GEOMETRY without its CRS. DuckDB removes the CRS when it casts a GEOMETRY

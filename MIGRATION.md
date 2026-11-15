@@ -156,10 +156,11 @@ The SQL workflow stays the same. These changes can affect your code:
   stream between two fetches. Then the query fails at once with the
   `RESOURCE_IN_USE` error of DuckDB. The README gives the cases that the time
   limit does not cover.
-- `ConnectionOptions` has new fields, for example `connectionCallbackLockWait`.
-  Code that builds the record with only the fields of version 0.3 gets a
-  warning from GHC. The program then fails with a missing-field error when the
-  library reads such a field. Build options as a record update of
+- `ConnectionOptions` has new fields: `connectionCallbackLockWait`,
+  `connectionAggregateStripes`, and `connectionArrowBatchSize`. Code that
+  builds the record with only the fields of version 0.3 gets a warning from
+  GHC. The program then fails with a missing-field error when the library
+  reads such a field. Build options as a record update of
   `defaultConnectionOptions`, for example
   `defaultConnectionOptions {connectionGeometryCRS = ["OGC:CRS84"]}`.
 - `query_` and `execute_` parse all statements before they run any. A syntax

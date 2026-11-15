@@ -71,8 +71,8 @@ The SQL workflow stays the same. These changes can affect your code:
 - `Database.DuckDB.Simple.Internal` uses the V2 handles, and some of its
   functions take other arguments. `withResult` and `executePreparedResult` take
   a `Statement`. `fetchResultChunk` takes no `ResultMode`.
-  `runInterruptibleQuery` runs an action of each result type.
-  `withDatabaseHandle` gives the native instance handle. The changelog lists
+  `runInterruptibleQuery` takes an `IO a` action, not an `IO DuckDBState`
+  action. `withDatabaseHandle` gives the native instance handle. The changelog lists
   the removed names and the new record fields.
 - `SQLError.sqlErrorType` is `Maybe ErrorType`. `Database.DuckDB.Simple`
   exports `ErrorType`. It has one constructor for each error code of the V2 C

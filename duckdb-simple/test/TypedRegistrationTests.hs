@@ -1114,6 +1114,14 @@ testTableRecords = withConnection ":memory:" \conn -> do
     >>= (@?= [Only ("['STRUCT(peak VARCHAR, metres INTEGER, remark VARCHAR)']" :: Text)])
   query conn "SELECT ?, typeof(?)" ([] :: [Peak], [] :: [Peak])
     >>= (@?= [([] :: [Peak], "STRUCT(peak VARCHAR, metres INTEGER, remark VARCHAR)[]" :: Text)])
+  -- With no target type, a list of NULL records also takes the declaration.
+  -- With a target type, the empty list and the list of NULL records take the
+  -- target type, as for each element type.
+  query conn "SELECT typeof(?)" (Only [Nothing :: Maybe Peak])
+    >>= (@?= [Only ("STRUCT(peak VARCHAR, metres INTEGER, remark VARCHAR)[]" :: Text)])
+  _ <- execute_ conn "CREATE TABLE typed_short_peaks (ps STRUCT(peak VARCHAR, metres INTEGER)[])"
+  _ <- execute conn "INSERT INTO typed_short_peaks VALUES (?), (?)" ([] :: [Peak], [Nothing :: Maybe Peak])
+  query_ conn "SELECT len(ps) FROM typed_short_peaks ORDER BY len(ps)" >>= (@?= [Only (0 :: Int64), Only 1])
 
 -- | Reject a column, a parameter, or an argument type with no declaration at
 -- registration, also inside a list, and a MAP of a type text and a record.

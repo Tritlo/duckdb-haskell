@@ -214,6 +214,16 @@
   empty LIST of its element type. A `String` stays one VARCHAR parameter, and a
   list as a row is still a row of parameters, so a list parameter is
   `Only [..]`. Version 0.3 had no `ToField` instance for lists.
+- Add a parameter instance for `FieldValue`, so a row read as `[FieldValue]`
+  binds back. A scalar constructor binds as the DuckDB type of the
+  constructor, and a `FieldList`, a `FieldArray`, or a `FieldMap` takes the
+  element type that its elements give, with the rule of a SQL list literal.
+  A `FieldEnum`, and a `FieldList`, a `FieldArray`, or a `FieldMap` with no
+  element that is not `FieldNull`, raise `SQLError` with the type
+  `ErrorInputInvalid`. A `FieldTimestamp`, a `FieldTime`, and a
+  `FieldTimestampTZ` bind with the microsecond type, or with the nanosecond
+  type when the value has digits below a microsecond and the parameter has the
+  nanosecond type.
 - An `Array`, a list, or a `Map` of STRUCT values, UNION values, generic
   records, lists, or arrays with different element types gets the type that
   DuckDB gives a SQL list literal of the elements, for example

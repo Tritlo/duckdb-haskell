@@ -450,6 +450,35 @@ Get the factory of a connection with `withConnectionHandle` and
 `withConnectionFactory` from `Database.DuckDB.Simple.Internal`. Keep owned
 values and logical types within the lifetime of the factory's owner.
 
+### FieldValue parameters
+
+A `FieldValue` binds as a parameter, so a row that a query reads as
+`[FieldValue]` binds back as a row. A scalar constructor binds as the DuckDB
+type of the constructor, with the parameter instance of its payload.
+`FieldStruct`, `FieldTuple`, and `FieldUnion` bind with their own types, and
+`FieldGeometry` binds with its CRS. `FieldList`, `FieldArray`, and `FieldMap`
+take the element type that their elements give, with the rule of a SQL list
+literal (see [Arrays and Lists](#arrays-and-lists)). They read the parameter
+type, so that a list read from a `TIME_NS[]` column binds back with its
+nanoseconds.
+
+Some values bind with another type than the column that they came from. A
+`FieldTimestamp` binds as a `TIMESTAMP`, or as a `TIMESTAMP_NS` when it has
+digits below a microsecond and the parameter has the type `TIMESTAMP_NS` (see
+[Infinite dates and timestamps](#infinite-dates-and-timestamps)). The same
+holds for `FieldTime` and `FieldTimestampTZ`. A `FieldText` binds as a
+`VARCHAR` with no collation, also when it came from a `JSON` value. A value
+from a `VARIANT` column binds as its payload. `FieldNull` binds as an untyped
+NULL. DuckDB casts each of these values to the type of a column with no loss.
+
+A `FieldEnum` raises an `SQLError` of the type `ErrorInputInvalid`, because it
+holds only the index of the ENUM value and not its ENUM type. A `FieldList`, a
+`FieldArray`, or a `FieldMap` with no element that is not `FieldNull` raises the
+same error, because no element gives its type. Inside a `FieldStruct`, a
+`FieldTuple`, or a `FieldUnion`, the declared type gives these types, so such a
+value binds. `FieldValue` has no `DuckDBColumnType` and no `ToDuckValue`
+instance, because no one DuckDB type holds each of its values.
+
 ### Resource Management
 
 - `withConnection` and `withStatement` wrap the open/close lifecycle and guard

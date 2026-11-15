@@ -73,15 +73,25 @@ arrowModeTests streaming =
           assertBool "more than one native batch" (batches > 1)
           concat (reverse chunks) @?= [if i `rem` 3 == 0 then Nothing else Just i | i <- [0 .. 4999]]
     , testCase "the batch size option sets the rows of each batch" $ do
-        let run options = withConnectionWithOptions ":memory:" options{connectionConfig = [("threads", "1")]} \conn ->
-              foldArrow_ conn "SELECT i::BIGINT AS i FROM range(5) t(i)" (0 :: Int, []) \(count, acc) _ arrayPtr -> do
+        let run options count = withConnectionWithOptions ":memory:" options{connectionConfig = [("threads", "1")]} \conn ->
+              reverse <$> foldArrow conn "SELECT i::BIGINT AS i FROM range(?::BIGINT) t(i)" (Only (count :: Int64)) [] \acc _ arrayPtr -> do
                 values <- readInt64Batch arrayPtr
-                pure (count + 1, values : acc)
-        (defaultBatches, defaultRows) <- run defaultConnectionOptions
-        (singleBatches, singleRows) <- run defaultConnectionOptions{connectionArrowBatchSize = 1}
-        concat (reverse defaultRows) @?= map Just [0 .. 4]
-        concat (reverse singleRows) @?= concat (reverse defaultRows)
-        (defaultBatches, singleBatches) @?= (1, 5)
+                pure (values : acc)
+            -- Each array has at most the given number of rows. The arrays give
+            -- each row in order.
+            checkBatches size limit count = do
+              batches <- run defaultConnectionOptions{connectionArrowBatchSize = size} count
+              assertBool ("array lengths " <> show (map length batches)) (all ((<= limit) . length) batches)
+              concat batches @?= map Just [0 .. count - 1]
+        defaultRows <- run defaultConnectionOptions 5
+        singleRows <- run defaultConnectionOptions{connectionArrowBatchSize = 1} 5
+        concat defaultRows @?= map Just [0 .. 4]
+        concat singleRows @?= concat defaultRows
+        (length defaultRows, length singleRows) @?= (1, 5)
+        -- As in DuckDB, 0 means 131072 rows.
+        checkBatches 0 131072 300000
+        checkBatches 20000 20000 10000
+        checkBatches 3000 3000 10000
         negative <- try (withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionArrowBatchSize = -1} (const (pure ())))
         case negative of
           Left (err :: SQLError) -> do

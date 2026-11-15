@@ -826,7 +826,6 @@ testAggregateErrors = withConnection ":memory:" \conn -> do
   assertSqlError "typed_lazy_result: 0" (query_ conn "SELECT typed_lazy_result(i) FROM range(1) t(i)" :: IO [Only Int64])
   query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
 
--- | Compare window, DISTINCT, and FILTER uses with the built-in sum. Use ORDER BY in the call.
 -- | Declare the true type of a SMALLINT and a FLOAT result. Write them also in
 -- an ordered window, where the result vector of a finalize call has the size 0.
 -- Reject a result type that is not raw at registration.
@@ -914,6 +913,7 @@ countAggregate =
     , aggregateResult = pure
     }
 
+-- | Compare window, DISTINCT, and FILTER uses with the built-in sum. Use ORDER BY in the call.
 testAggregateModifiers :: Assertion
 testAggregateModifiers = withConnection ":memory:" \conn -> do
   createAggregate conn "typed_sum" sumAggregate

@@ -565,7 +565,6 @@ withConcurrentChildren count acquire release action =
         ([], children) -> pure children
         (failure : _, children) -> mapM_ release children >> throwIO failure
 
--- | Require an exception without constraining its concrete type.
 -- | Require the error of an input check of the library.
 assertInputError :: IO a -> Assertion
 assertInputError action = do
@@ -576,6 +575,7 @@ assertInputError action = do
       assertBool (Text.unpack (sqlErrorMessage err)) ("duckdb-simple: " `Text.isPrefixOf` sqlErrorMessage err)
     Right () -> assertFailure "expected the error of an input check"
 
+-- | Require an exception without constraining its concrete type.
 assertThrows :: IO a -> Assertion
 assertThrows action = do
   result <- try (void action)

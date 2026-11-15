@@ -834,7 +834,6 @@ assertReleasedAfter label action = do
 assertSqlError :: IO a -> Assertion
 assertSqlError = assertSqlErrorContaining Text.empty
 
--- | Require a SQL exception which includes the expected message.
 -- | Require the error of an input check of the library, of the type
 -- ErrorInputInvalid, which includes the expected message.
 assertInputErrorContaining :: Text.Text -> IO a -> Assertion
@@ -847,6 +846,7 @@ assertInputErrorContaining expected action = do
         ("duckdb-simple: " `Text.isPrefixOf` sqlErrorMessage err) && expected `Text.isInfixOf` sqlErrorMessage err
     Right () -> assertFailure "expected the error of an input check"
 
+-- | Require a SQL exception which includes the expected message.
 assertSqlErrorContaining :: Text.Text -> IO a -> Assertion
 assertSqlErrorContaining expected action = do
   outcome <- try (void action)

@@ -366,7 +366,7 @@ type of its payload, and the error of a String names Text. These pairs are:
   TIMESTAMP_MS, or DATE value, and c AT TIME ZONE 'UTC' for each other type.
   Without the cast to TIMESTAMP, DuckDB converts a DATE, TIMESTAMP_S, or
   TIMESTAMP_MS value to nanoseconds, which fails outside the years 1677 to
-  2262. The cast removes the nanoseconds of a TIMESTAMP_NS value.
+  2262. The cast rounds a TIMESTAMP_NS value to the microsecond.
 - Text and String from FLOAT and DOUBLE. The text of the cast differs from the
   text of show, for example 0.01 and 1.0e-2. Read a Double, or write c::VARCHAR.
 - ByteString from VARCHAR. The cast to BLOB reads escape sequences such as \x41.

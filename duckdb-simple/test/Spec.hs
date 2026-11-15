@@ -674,7 +674,7 @@ duckdbCastCases =
       (quoted "2024-01-02 03:04:05.123456789")
       "TIMESTAMP_NS"
       (ExpectEquals (FieldTimestamp (Finite timestampLocalTimeNanos)))
-  , successCase "ENUM" (quoted "beta") "ENUM('alpha','beta')" (ExpectEquals (FieldEnum 1))
+  , successCase "ENUM" (quoted "beta") "ENUM('alpha','beta')" (ExpectEquals (FieldEnum 1 "beta"))
   , successCase "LIST" (quoted "[1,2,3]") "INTEGER[]" (ExpectEquals (FieldList listElements))
   , successDirect "MAP" "MAP(['a','b'], [1,2])" (expectMapEntries mapPairs)
   , successCase "TIMETZ" (quoted "03:04:05+02:30") "TIME WITH TIME ZONE" (ExpectEquals (FieldTimeTZ timeWithZoneValue))

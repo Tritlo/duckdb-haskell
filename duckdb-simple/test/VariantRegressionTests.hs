@@ -450,7 +450,7 @@ tests =
               Right rows -> assertFailure ("expected the UNION error, got " <> show rows)
         forM_
           [ (FieldMap [(FieldText "k", FieldInt32 1)], "a VARIANT stores a MAP as a list of key and value objects")
-          , (FieldEnum 0, "a VARIANT stores an ENUM as its text")
+          , (FieldEnum 0 "a", "a VARIANT stores an ENUM as its text")
           ]
           \(payload, reason) -> forM_ (depths payload) \input -> do
             result <- try (query conn "SELECT ?" (Only (Variant input)) :: IO [Only Variant])

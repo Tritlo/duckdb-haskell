@@ -17,14 +17,16 @@ module Database.DuckDB.Simple.Materialize (
   prepareValueReader,
   prepareVectorReader,
   TypeTree,
+  EnumLabels,
   prepareVectorReaderWith,
 ) where
 
 import Control.Exception (bracket, throwIO)
 import Control.Monad (forM, when)
-import Data.Array (Array, elems, listArray, (!))
-import Data.IORef (newIORef, readIORef, writeIORef)
+import Data.Array (Array, bounds, elems, listArray, rangeSize, (!))
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int16, Int32, Int64)
+import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -156,7 +158,14 @@ type TypeTree = IO LogicalTypeRep
 -- decoder that needs the type tree converts the type of the vector. See
 -- Note [Type trees].
 prepareVectorReader :: FallbackReaders -> DuckDBV2VectorHandle -> IO (Int -> IO FieldValue)
-prepareVectorReader readers vector = prepareVectorReaderWith readers (withVectorType vector logicalTypeToRep) vector
+prepareVectorReader readers vector = do
+  -- The cache of ENUM labels lives as long as this reader. See Note [ENUM labels].
+  labels <- newIORef IntMap.empty
+  prepareVectorReaderWith readers (withVectorType vector logicalTypeToRep) (Just labels) vector
+
+-- | The labels of an ENUM type that readers read, by index. 'Nothing' means
+-- that the type tree holds the labels. See Note [ENUM labels].
+type EnumLabels = Maybe (IORef (IntMap.IntMap Text))
 
 {- Note [Vector flatten]
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -225,8 +234,8 @@ writers of one-row vectors in "Database.DuckDB.Simple.ToField").
 -- action gives the type tree of the vector. A nested decoder gives each child
 -- an action that takes the tree of the child from this tree. The function
 -- flattens the vector first. See Note [Vector flatten] and Note [Type trees].
-prepareVectorReaderWith :: FallbackReaders -> TypeTree -> DuckDBV2VectorHandle -> IO (Int -> IO FieldValue)
-prepareVectorReaderWith readers tree vector = do
+prepareVectorReaderWith :: FallbackReaders -> TypeTree -> EnumLabels -> DuckDBV2VectorHandle -> IO (Int -> IO FieldValue)
+prepareVectorReaderWith readers tree labels vector = do
   -- Flatten before the view is read. See Note [Vector flatten].
   checked (c_duckdb_v2_vector_flatten vector)
   dtype <- vectorElementType vector
@@ -234,21 +243,57 @@ prepareVectorReaderWith readers tree vector = do
   let ConstPtr dataPtr = getField @"data'" view
       ConstPtr validity = getField @"validity" view
       ConstPtr selection = getField @"sel" view
-  readValue <- prepareValueReader readers tree dtype vector dataPtr validity
+  readValue <- prepareValueReader readers tree labels dtype vector dataPtr validity
   pure \row -> do
     when (row < 0 || fromIntegral row >= getField @"count" view) $
       throwIO (userError "duckdb-simple: vector row index out of range")
     physical <- if selection == nullPtr then pure row else fromIntegral <$> peekElemOff selection row
     readValue physical
 
+{- Note [ENUM labels]
+~~~~~~~~~~~~~~~~~~~~
+A FieldEnum holds the index and the label of an ENUM value. The label is the
+text of the cast of DuckDB to VARCHAR. The reader does not cast the vector, so
+a user cast cannot change a label. The reader takes the label from one of two
+sources:
+
+- A cache (EnumLabels). The reader reads the label of an index through the
+  dictionary of the vector type (duckdb_v2_logical_type_get_param) at the first
+  row that has the index, and keeps it. Thus a query reads only the labels of
+  the values that it reads.
+- The type tree. A STRUCT, TUPLE, or UNION decoder converts the type of the
+  value, which reads the whole dictionary of each ENUM type in it (see
+  logicalTypeToRep). The reader of a child uses the labels of that tree, and it
+  raises an error when the tree has another dictionary size than the vector.
+
+A result column has one cache, which lives for one execution, as the tree of
+the column (statementStreamColumnLabels in "Database.DuckDB.Simple.Internal").
+The column reader gives the cache to the element reader of a LIST or an ARRAY,
+because one column has at most one ENUM type outside a STRUCT, a TUPLE, a
+UNION, and a MAP. prepareVectorReader makes a new cache for each reader. These
+readers use it: the key and value readers of a MAP, the tag reader of a UNION,
+the readers of typed arguments, function arguments, and COPY TO rows, and
+materializeValue. There the cache lives for one vector.
+
+Each index is checked against the parameter count of the vector type. An index
+out of range raises an error, so the reader cannot give a wrong label.
+-}
+
 -- | Prepare metadata once for a vector. The reader must not outlive its chunk.
 prepareValueReader
-  :: FallbackReaders -> TypeTree -> DuckDBV2LogicalTypeId -> DuckDBV2VectorHandle -> Ptr Void -> Ptr Word64 -> IO (Int -> IO FieldValue)
-prepareValueReader readers tree dtype vector dataPtr validity = case dtype of
+  :: FallbackReaders
+  -> TypeTree
+  -> EnumLabels
+  -> DuckDBV2LogicalTypeId
+  -> DuckDBV2VectorHandle
+  -> Ptr Void
+  -> Ptr Word64
+  -> IO (Int -> IO FieldValue)
+prepareValueReader readers tree labels dtype vector dataPtr validity = case dtype of
   DuckDBV2LogicalTypeIdVariant -> variantReader readers vector
   DuckDBV2LogicalTypeIdGeometry -> geometryReader readers vector
-  DuckDBV2LogicalTypeIdArray -> whenValid FieldArray <$> prepareArrayDecoder readers tree vector
-  DuckDBV2LogicalTypeIdList -> whenValid FieldList <$> prepareListDecoder readers tree vector dataPtr
+  DuckDBV2LogicalTypeIdArray -> whenValid FieldArray <$> prepareArrayDecoder readers tree labels vector
+  DuckDBV2LogicalTypeIdList -> whenValid FieldList <$> prepareListDecoder readers tree labels vector dataPtr
   DuckDBV2LogicalTypeIdMap -> whenValid FieldMap <$> prepareMapDecoder readers vector dataPtr
   DuckDBV2LogicalTypeIdStruct -> whenValid FieldStruct <$> prepareStructDecoder readers tree vector
   DuckDBV2LogicalTypeIdTuple -> whenValid FieldTuple <$> prepareTupleDecoder readers tree vector
@@ -260,11 +305,33 @@ prepareValueReader readers tree dtype vector dataPtr validity = case dtype of
         _ -> throwIO (userError "duckdb-simple: invalid DECIMAL type")
     pure (whenValid (FieldDecimal . DecimalValue width scale) (decimalStorage dataPtr width))
   DuckDBV2LogicalTypeIdEnum -> do
+    -- See Note [ENUM labels].
     count <- withVectorType vector (output . c_duckdb_v2_logical_type_get_param_count)
-    pure (whenValid FieldEnum (enumStorage dataPtr count))
+    label <- case labels of
+      Just cache -> pure (cachedLabel cache)
+      Nothing ->
+        tree >>= \case
+          LogicalTypeEnum entries | toInteger (rangeSize (bounds entries)) == toInteger count -> pure (pure . (entries !) . fromIntegral)
+          _ -> throwIO (userError "duckdb-simple: invalid ENUM type")
+    let readEnum row = do
+          index <- enumStorage dataPtr count row
+          when (toInteger index >= toInteger count) $ throwIO (userError "duckdb-simple: ENUM index out of range")
+          FieldEnum index <$> label index
+    pure (whenValid id readEnum)
   DuckDBV2LogicalTypeIdSQLNull -> pure \_ -> pure FieldNull
   _ -> pure (whenValid id (decodeElement dtype dataPtr))
   where
+    -- Read a label through the dictionary of the vector type at the first row
+    -- that needs it. See Note [ENUM labels].
+    cachedLabel cache index =
+      IntMap.lookup (fromIntegral index) <$> readIORef cache >>= \case
+        Just text -> pure text
+        Nothing -> do
+          text <- withVectorType vector \logical -> alloca \nameSlot ->
+            bracket (output (c_duckdb_v2_logical_type_get_param logical (fromIntegral index) nameSlot)) destroyValue \value ->
+              output (c_duckdb_v2_value_get_varchar value) >>= readText
+          modifyIORef' cache (IntMap.insert (fromIntegral index) text)
+          pure text
     -- See Note [Vector memory layouts] in "Database.DuckDB.Simple.Element".
     whenValid wrap decode row = do
       valid <- chunkIsRowValid validity (fromIntegral row)
@@ -387,12 +454,12 @@ enumStorage dataPtr count rowIdx
 -- vector. Parameter 1 of an ARRAY type is the size, as 'logicalTypeToRep' reads
 -- it. The decoder does not convert the element type. The element reader takes
 -- its tree from the tree of the ARRAY. See Note [Type trees].
-prepareArrayDecoder :: FallbackReaders -> TypeTree -> DuckDBV2VectorHandle -> IO (Int -> IO (Array Int FieldValue))
-prepareArrayDecoder readers tree vector = do
+prepareArrayDecoder :: FallbackReaders -> TypeTree -> EnumLabels -> DuckDBV2VectorHandle -> IO (Int -> IO (Array Int FieldValue))
+prepareArrayDecoder readers tree labels vector = do
   size <- withVectorType vector \logical -> alloca \name ->
     bracket (output (c_duckdb_v2_logical_type_get_param logical 1 name)) destroyValue (output . c_duckdb_v2_value_get_bigint)
   arraySize <- ensureWithinIntRange (Text.pack "array size") (fromIntegral size)
-  readChild <- vectorChild vector 0 >>= prepareVectorReaderWith readers (elementTree tree)
+  readChild <- vectorChild vector 0 >>= prepareVectorReaderWith readers (elementTree tree) labels
   pure \rowIdx -> do
     let baseIdx = rowIdx * arraySize
     values <- forM [0 .. arraySize - 1] \delta -> readChild (baseIdx + delta)
@@ -400,9 +467,9 @@ prepareArrayDecoder readers tree vector = do
 
 -- | Prepare the element reader once for a LIST vector. The element reader
 -- takes its tree from the tree of the LIST. See Note [Type trees].
-prepareListDecoder :: FallbackReaders -> TypeTree -> DuckDBV2VectorHandle -> Ptr Void -> IO (Int -> IO [FieldValue])
-prepareListDecoder readers tree vector dataPtr = do
-  readChild <- vectorChild vector 0 >>= prepareVectorReaderWith readers (elementTree tree)
+prepareListDecoder :: FallbackReaders -> TypeTree -> EnumLabels -> DuckDBV2VectorHandle -> Ptr Void -> IO (Int -> IO [FieldValue])
+prepareListDecoder readers tree labels vector dataPtr = do
+  readChild <- vectorChild vector 0 >>= prepareVectorReaderWith readers (elementTree tree) labels
   pure \rowIdx -> do
     entry <- peekElemOff (castPtr dataPtr :: Ptr DuckDBV2ListEntry) rowIdx
     (baseIdx, len) <- listEntryBounds (Text.pack "list") entry
@@ -451,7 +518,7 @@ prepareStructDecoder readers tree vector = do
   checkChildCount "STRUCT" vector count
   childReaders <-
     forM (zip [0 ..] typeList) \(childIdx, StructField{structFieldName, structFieldValue}) -> do
-      readChild <- vectorChild vector childIdx >>= prepareVectorReaderWith readers (pure structFieldValue)
+      readChild <- vectorChild vector childIdx >>= prepareVectorReaderWith readers (pure structFieldValue) Nothing
       pure (structFieldName, readChild)
   pure \rowIdx -> do
     valueFields <-
@@ -479,7 +546,7 @@ prepareTupleDecoder readers tree vector = do
       count = length typeList
   checkChildCount "TUPLE" vector count
   fieldReaders <- forM (zip [0 ..] typeList) \(index, fieldType) ->
-    vectorChild vector index >>= prepareVectorReaderWith readers (pure fieldType)
+    vectorChild vector index >>= prepareVectorReaderWith readers (pure fieldType) Nothing
   pure \row -> do
     fields <- mapM ($ row) fieldReaders
     pure (TupleValue (listArray (0, count - 1) fields) types)
@@ -515,7 +582,7 @@ prepareUnionDecoder readers tree vector = do
         readMember <- case cached of
           Just reader -> pure reader
           Nothing -> do
-            reader <- prepareVectorReaderWith readers (pure unionMemberType) memberVec
+            reader <- prepareVectorReaderWith readers (pure unionMemberType) Nothing memberVec
             writeIORef prepared (Just reader)
             pure reader
         readMember row

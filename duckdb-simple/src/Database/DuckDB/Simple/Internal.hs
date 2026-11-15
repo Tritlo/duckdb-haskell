@@ -349,6 +349,10 @@ data StatementStreamColumn = StatementStreamColumn
   -- ^ The type tree of the column, converted from the vector of the first chunk
   -- that needs it. Each execution makes new columns, so the tree lives for one
   -- execution. See Note [Type trees] in "Database.DuckDB.Simple.Materialize".
+  , statementStreamColumnLabels :: IORef (IntMap.IntMap Text)
+  -- ^ The ENUM labels that the readers of the column read, by index. They live
+  -- for one execution, as the tree. See Note [ENUM labels] in
+  -- "Database.DuckDB.Simple.Materialize".
   }
 
 -- | One owned chunk and the readers that borrow its vectors.

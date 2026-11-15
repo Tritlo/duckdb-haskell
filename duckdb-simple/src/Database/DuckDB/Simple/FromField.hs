@@ -106,7 +106,7 @@ data FieldValue
   | FieldTimeTZ TimeWithZone
   | FieldBit BitString
   | FieldBigNum BigNum
-  | FieldEnum Word32
+  | FieldEnum Word32 Text
   | FieldArray (Array Int FieldValue)
   | FieldList [FieldValue]
   | FieldMap [(FieldValue, FieldValue)]
@@ -348,6 +348,12 @@ read. These pairs are:
   text of show, for example 0.01 and 1.0e-2. Read a Double, or write c::VARCHAR.
 - ByteString from VARCHAR. The cast to BLOB reads escape sequences such as \x41.
   Read a Text, or write encode(c) for the UTF-8 bytes.
+- Each integer type from ENUM. The cast to an integer type parses the label,
+  for example '20' gives 20. Write c::INTEGER for that value, or enum_code(c)
+  for the index.
+
+Text and String read the label of an ENUM value, which is the text of the cast
+to VARCHAR. See Note [ENUM labels] in "Database.DuckDB.Simple.Materialize".
 
 See Note [DECIMAL as DOUBLE and FLOAT] for the floating-point value of a DECIMAL.
 -}
@@ -419,63 +425,58 @@ instance FromField Bool where
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
--- | Reads TINYINT, SMALLINT, INTEGER, BIGINT, HUGEINT, UHUGEINT, and the index
--- of an ENUM value. A value out of range raises 'ConversionFailed'.
+-- | Reads TINYINT, SMALLINT, INTEGER, BIGINT, HUGEINT, and UHUGEINT. A value out of
+-- range raises 'ConversionFailed'. It does not read ENUM.
 instance FromField Int8 where
   fromField f@Field{fieldValue} =
     case fieldValue of
       FieldInt i -> boundedIntegral f i
       FieldHugeInt value -> boundedFromInteger f value
       FieldUHugeInt value -> boundedFromInteger f value
-      FieldEnum value -> boundedFromInteger f (fromIntegral value)
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
--- | Reads BIGINT, TINYINT, SMALLINT, INTEGER, HUGEINT, UHUGEINT, and the index
--- of an ENUM value. A value out of range raises 'ConversionFailed'.
+-- | Reads BIGINT, TINYINT, SMALLINT, INTEGER, HUGEINT, and UHUGEINT. A value out of
+-- range raises 'ConversionFailed'. It does not read ENUM.
 instance FromField Int64 where
   fromField f@Field{fieldValue} =
     case fieldValue of
       FieldInt i -> Ok i
       FieldHugeInt value -> boundedFromInteger f value
       FieldUHugeInt value -> boundedFromInteger f value
-      FieldEnum value -> Ok (fromIntegral value)
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
--- | Reads INTEGER, TINYINT, SMALLINT, BIGINT, HUGEINT, UHUGEINT, and the index
--- of an ENUM value. A value out of range raises 'ConversionFailed'.
+-- | Reads INTEGER, TINYINT, SMALLINT, BIGINT, HUGEINT, and UHUGEINT. A value out of
+-- range raises 'ConversionFailed'. It does not read ENUM.
 instance FromField Int32 where
   fromField f@Field{fieldValue} =
     case fieldValue of
       FieldInt i -> boundedIntegral f i
       FieldHugeInt value -> boundedFromInteger f value
       FieldUHugeInt value -> boundedFromInteger f value
-      FieldEnum value -> boundedFromInteger f (fromIntegral value)
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
--- | Reads SMALLINT, TINYINT, INTEGER, BIGINT, HUGEINT, UHUGEINT, and the index
--- of an ENUM value. A value out of range raises 'ConversionFailed'.
+-- | Reads SMALLINT, TINYINT, INTEGER, BIGINT, HUGEINT, and UHUGEINT. A value out of
+-- range raises 'ConversionFailed'. It does not read ENUM.
 instance FromField Int16 where
   fromField f@Field{fieldValue} =
     case fieldValue of
       FieldInt i -> boundedIntegral f i
       FieldHugeInt value -> boundedFromInteger f value
       FieldUHugeInt value -> boundedFromInteger f value
-      FieldEnum value -> boundedFromInteger f (fromIntegral value)
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
--- | Reads BIGINT, TINYINT, SMALLINT, INTEGER, HUGEINT, UHUGEINT, and the index
--- of an ENUM value. A value out of range raises 'ConversionFailed'.
+-- | Reads BIGINT, TINYINT, SMALLINT, INTEGER, HUGEINT, and UHUGEINT. A value out of
+-- range raises 'ConversionFailed'. It does not read ENUM.
 instance FromField Int where
   fromField f@Field{fieldValue} =
     case fieldValue of
       FieldInt i -> boundedIntegral f i
       FieldHugeInt value -> boundedFromInteger f value
       FieldUHugeInt value -> boundedFromInteger f value
-      FieldEnum value -> boundedFromInteger f (fromIntegral value)
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
@@ -491,8 +492,8 @@ instance FromField Integer where
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
--- | Reads BIGNUM, TINYINT to BIGINT, UTINYINT to UBIGINT, HUGEINT, UHUGEINT, and
--- the index of an ENUM value. A negative value raises 'ConversionFailed'.
+-- | Reads BIGNUM, TINYINT to BIGINT, UTINYINT to UBIGINT, HUGEINT, and UHUGEINT.
+-- A negative value raises 'ConversionFailed'. It does not read ENUM.
 instance FromField Natural where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -510,13 +511,12 @@ instance FromField Natural where
         if big >= 0
           then Ok $ fromIntegral big
           else returnError ConversionFailed f "negative value cannot be converted to Natural"
-      FieldEnum value -> Ok (fromIntegral value)
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
--- | Reads UTINYINT to UBIGINT, TINYINT to BIGINT, HUGEINT, UHUGEINT, and the
--- index of an ENUM value. A negative value or a value out of range raises
--- 'ConversionFailed'.
+-- | Reads UTINYINT to UBIGINT, TINYINT to BIGINT, HUGEINT, and UHUGEINT. A
+-- negative value or a value out of range raises 'ConversionFailed'. It does not
+-- read ENUM.
 instance FromField Word64 where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -530,13 +530,12 @@ instance FromField Word64 where
         | otherwise ->
             returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
       FieldUHugeInt value -> boundedFromInteger f value
-      FieldEnum value -> Ok (fromIntegral value)
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
--- | Reads UTINYINT to UBIGINT, TINYINT to BIGINT, HUGEINT, UHUGEINT, and the
--- index of an ENUM value. A negative value or a value out of range raises
--- 'ConversionFailed'.
+-- | Reads UTINYINT to UBIGINT, TINYINT to BIGINT, HUGEINT, and UHUGEINT. A
+-- negative value or a value out of range raises 'ConversionFailed'. It does not
+-- read ENUM.
 instance FromField Word32 where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -550,13 +549,12 @@ instance FromField Word32 where
         | otherwise ->
             returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
       FieldUHugeInt value -> boundedFromInteger f value
-      FieldEnum value -> Ok value
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
--- | Reads UTINYINT to UBIGINT, TINYINT to BIGINT, HUGEINT, UHUGEINT, and the
--- index of an ENUM value. A negative value or a value out of range raises
--- 'ConversionFailed'.
+-- | Reads UTINYINT to UBIGINT, TINYINT to BIGINT, HUGEINT, and UHUGEINT. A
+-- negative value or a value out of range raises 'ConversionFailed'. It does not
+-- read ENUM.
 instance FromField Word16 where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -570,13 +568,12 @@ instance FromField Word16 where
         | otherwise ->
             returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
       FieldUHugeInt value -> boundedFromInteger f value
-      FieldEnum value -> boundedFromInteger f (fromIntegral value)
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
--- | Reads UTINYINT to UBIGINT, TINYINT to BIGINT, HUGEINT, UHUGEINT, and the
--- index of an ENUM value. A negative value or a value out of range raises
--- 'ConversionFailed'.
+-- | Reads UTINYINT to UBIGINT, TINYINT to BIGINT, HUGEINT, and UHUGEINT. A
+-- negative value or a value out of range raises 'ConversionFailed'. It does not
+-- read ENUM.
 instance FromField Word8 where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -590,13 +587,12 @@ instance FromField Word8 where
         | otherwise ->
             returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
       FieldUHugeInt value -> boundedFromInteger f value
-      FieldEnum value -> boundedFromInteger f (fromIntegral value)
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
--- | Reads UTINYINT to UBIGINT, TINYINT to BIGINT, HUGEINT, UHUGEINT, and the
--- index of an ENUM value. A negative value or a value out of range raises
--- 'ConversionFailed'.
+-- | Reads UTINYINT to UBIGINT, TINYINT to BIGINT, HUGEINT, and UHUGEINT. A
+-- negative value or a value out of range raises 'ConversionFailed'. It does not
+-- read ENUM.
 instance FromField Word where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -610,7 +606,6 @@ instance FromField Word where
         | otherwise ->
             returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
       FieldUHugeInt value -> boundedFromInteger f value
-      FieldEnum value -> boundedFromInteger f (fromIntegral value)
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
@@ -722,14 +717,16 @@ hugeIntToDouble value
     upper = fromInteger (value `shiftR` 64) :: Int
     lower = fromInteger value :: Word
 
--- | Reads VARCHAR, TINYINT to BIGINT as decimal digits, and BOOLEAN as @true@ or
--- @false@. It does not read FLOAT or DOUBLE. See Note [Reads of another SQL type].
+-- | Reads VARCHAR, TINYINT to BIGINT as decimal digits, BOOLEAN as @true@ or
+-- @false@, and the label of an ENUM value. It does not read FLOAT or DOUBLE. See
+-- Note [Reads of another SQL type].
 instance FromField Text where
   fromField f@Field{fieldValue} =
     case fieldValue of
       FieldText t -> Ok t
       FieldInt i -> Ok (Text.pack (show i))
       FieldBool b -> Ok (if b then Text.pack "true" else Text.pack "false")
+      FieldEnum _ label -> Ok label
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 

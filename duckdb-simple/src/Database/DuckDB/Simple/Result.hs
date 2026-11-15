@@ -17,6 +17,7 @@ module Database.DuckDB.Simple.Result (
 import Control.Exception (bracket, evaluate, finally, mask, mask_, onException, throwIO)
 import Control.Monad (foldM, forM, when, zipWithM)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
+import qualified Data.IntMap.Strict as IntMap
 import Database.DuckDB.Simple.Element (withVectorType)
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue)
 import Database.DuckDB.Simple.FromRow (RowParser, parseRow, rowErrorsToSqlError)
@@ -184,7 +185,7 @@ prepareChunkReaders conn chunk columns = withTypeCache conn \cache -> do
   -- "Database.DuckDB.Simple.Materialize".
   let readVariant vector = withVariantState cache (`prepareVariantReader` vector)
       readers = FallbackReaders readVariant (prepareGeometryReader (typeCacheCasts cache))
-  forM columns \StatementStreamColumn{statementStreamColumnIndex, statementStreamColumnTree} -> do
+  forM columns \StatementStreamColumn{statementStreamColumnIndex, statementStreamColumnTree, statementStreamColumnLabels} -> do
     vector <- output (c_duckdb_v2_data_chunk_get_vector chunk (fromIntegral statementStreamColumnIndex))
     let tree =
           readIORef statementStreamColumnTree >>= \case
@@ -193,7 +194,7 @@ prepareChunkReaders conn chunk columns = withTypeCache conn \cache -> do
               rep <- withVectorType vector logicalTypeToRep
               writeIORef statementStreamColumnTree (Just rep)
               pure rep
-    prepareVectorReaderWith readers tree vector
+    prepareVectorReaderWith readers tree (Just statementStreamColumnLabels) vector
 
 -- | Decode all rows after the statement has materialized its native chunks.
 collectRows :: Statement -> IO [[Field]]
@@ -257,7 +258,7 @@ collectResultColumns result = bracket (output (c_duckdb_v2_result_get_schema res
   forM [0 .. count - 1] \idx -> alloca \name -> do
     _ <- output (c_duckdb_v2_schema_get_field schema (fromIntegral idx) name)
     columnName <- peek name >>= readIdentifier
-    StatementStreamColumn idx columnName <$> newIORef Nothing
+    StatementStreamColumn idx columnName <$> newIORef Nothing <*> newIORef IntMap.empty
 
 buildMaterializedRow :: [StatementStreamColumn] -> [Int -> IO FieldValue] -> Int -> IO [Field]
 buildMaterializedRow columns readers rowIdx =

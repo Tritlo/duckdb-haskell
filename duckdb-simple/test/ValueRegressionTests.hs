@@ -18,7 +18,7 @@ import Data.Bits (shiftR, xor)
 import qualified Data.ByteString as BS
 import Data.Int (Int16, Int32, Int64, Int8)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (isJust)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Proxy (Proxy (..), asProxyTypeOf)
 import Data.Ratio ((%))
 import Data.String (fromString)
@@ -304,6 +304,8 @@ valueRegressionTests =
           , ("MAP(INTEGER[], STRUCT(x DOUBLE))", "MAP {[1]: {'x': 1.5}}", Nothing)
           , ("STRUCT(a INTEGER, b VARCHAR)", "{'a': 1, 'b': 'x'}", Nothing)
           , ("STRUCT(e ENUM('a', 'b'), n INTEGER[])", "{'e': 'b', 'n': []}", Nothing)
+          , ("ENUM('a', 'b')", "'b'", Just "VARCHAR")
+          , ("ENUM('a', 'b')[]", "['a', NULL, 'b']", Just "VARCHAR[]")
           , ("TUPLE(INTEGER, VARCHAR)", "(1, 'x')", Nothing)
           , ("UNION(a INTEGER, b VARCHAR)", "union_value(b := 'x')", Nothing)
           , ("STRUCT(a INTEGER)[]", "[{'a': 1}, NULL]", Nothing)
@@ -339,9 +341,6 @@ valueRegressionTests =
                   assertEqual label (Just ErrorInputInvalid) sqlErrorType
                   assertBool (Text.unpack sqlErrorMessage) (part `Text.isInfixOf` sqlErrorMessage)
                 Right rows -> assertFailure (label <> ": " <> show rows)
-        [Only enum] <- query_ conn "SELECT 'b'::ENUM('a', 'b')" :: IO [Only FieldValue]
-        untyped "ENUM" enum "a FieldEnum holds the index of an ENUM value, but not its ENUM type"
-        untyped "ENUM in a list" (FieldList [enum]) "a FieldEnum holds the index of an ENUM value"
         untyped "empty list" (FieldList []) "an empty FieldList has no element type for a parameter with no known type"
         untyped "empty inner list" (FieldList [FieldList [FieldInt32 1], FieldList []]) "an empty FieldList has no element type"
         untyped "empty array" (FieldArray (listArray (0, -1) [])) "an empty FieldArray has no element, and a DuckDB ARRAY has at least one"
@@ -1053,7 +1052,7 @@ valueRegressionTests =
               (Query ("CREATE TYPE " <> dtype <> " AS ENUM (" <> Text.intercalate "," ["'" <> label index <> "'" | index <- [0 .. size - 1]] <> ")"))
           rows <-
             query_ conn (Query ("SELECT x::" <> dtype <> " FROM (VALUES ('v0'), (NULL), ('" <> label (size - 1) <> "')) t(x)")) :: IO [Only FieldValue]
-          rows @?= map Only [FieldEnum 0, FieldNull, FieldEnum (fromIntegral (size - 1))]
+          rows @?= map Only [FieldEnum 0 (label (0 :: Int)), FieldNull, FieldEnum (fromIntegral (size - 1)) (label (size - 1))]
     , testCase "DECIMAL and BIGINT values read as Double and Float give the casts of DuckDB" $ withConnection ":memory:" \conn -> do
         -- Each row has the read of v as Double and Float, and the casts of v
         -- to DOUBLE and FLOAT read at their own types. The value lists are
@@ -1148,6 +1147,9 @@ valueRegressionTests =
           "UUID"
           ["00000000-0000-0000-0000-000000000000", "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"]
         assertReadsAsCast conn (Proxy :: Proxy [Int32]) "INTEGER[3]" "INTEGER[]" ["[1, 2, 3]", "[-1, 2, 0]"]
+        -- An ENUM value reads as its label, the text of the cast to VARCHAR.
+        assertReadsAsCast conn (Proxy :: Proxy Text) "ENUM('10', 'beta')" "VARCHAR" ["10", "beta"]
+        assertReadsAsCast conn (Proxy :: Proxy String) "ENUM('10', 'beta')" "VARCHAR" ["10", "beta"]
         -- The time pairs do not use the session time zone.
         timePairs
         _ <- execute_ conn "SET TimeZone = 'Pacific/Auckland'"
@@ -1173,6 +1175,22 @@ valueRegressionTests =
                 assertIncompatible conn expression () sqlName (Proxy :: Proxy Text) "Text"
                 assertIncompatible conn expression () sqlName (Proxy :: Proxy String) "Text"
               assertIncompatible conn "'a\\x41'::VARCHAR" () "VARCHAR" (Proxy :: Proxy BS.ByteString) "ByteString"
+              -- An integer type does not read an ENUM value. The cast of DuckDB
+              -- parses the label, and enum_code gives the index.
+              let enumAs :: (FromField a, Show a) => Proxy a -> Text -> Assertion
+                  enumAs = assertIncompatible conn "'10'::ENUM('10', '20')" () "ENUM"
+              enumAs (Proxy :: Proxy Int8) "Int8"
+              enumAs (Proxy :: Proxy Int16) "Int16"
+              enumAs (Proxy :: Proxy Int32) "Int32"
+              enumAs (Proxy :: Proxy Int64) "Int64"
+              enumAs (Proxy :: Proxy Int) "Int"
+              enumAs (Proxy :: Proxy Integer) "Integer"
+              enumAs (Proxy :: Proxy Natural) "Natural"
+              enumAs (Proxy :: Proxy Word8) "Word8"
+              enumAs (Proxy :: Proxy Word16) "Word16"
+              enumAs (Proxy :: Proxy Word32) "Word32"
+              enumAs (Proxy :: Proxy Word64) "Word64"
+              enumAs (Proxy :: Proxy Word) "Word"
               -- The SQL in place of each refused read.
               (query_ conn "SELECT TIMESTAMP '2024-01-02 03:04:05' AT TIME ZONE 'UTC', DATE '2024-01-02' AT TIME ZONE 'UTC'" :: IO [(UTCTime, UTCTime)])
                 >>= (@?= [(UTCTime (fromGregorian 2024 1 2) 11045, UTCTime (fromGregorian 2024 1 2) 0)])
@@ -1304,13 +1322,35 @@ valueRegressionTests =
               Left SQLError{sqlErrorMessage} -> assertBool (Text.unpack sqlErrorMessage) ("expression depth" `Text.isInfixOf` sqlErrorMessage)
               Right count -> assertFailure ("expected the error of the VARIANT reader, got " <> show count <> " rows")
             (query_ conn "SELECT 42" :: IO [Only Int]) >>= (@?= [Only 42])
-    , testCase "ENUM payload index must be in its dictionary" $ withConnection ":memory:" \conn ->
-        assertIOError
-          (query conn "SELECT ?" (Only (singleField (LogicalTypeEnum (listArray (0, 1) ["a", "b"])) (FieldEnum 2))) :: IO [Only FieldValue])
-    , testCase "ENUM payload index binds the label of its dictionary" $ withConnection ":memory:" \conn -> do
-        let struct = singleField (LogicalTypeEnum (listArray (0, 2) ["a", "b", "c"])) (FieldEnum 1)
+    , testCase "ENUM labels read as the cast to VARCHAR in each chunk, execution, list, and map key" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
+        -- 5000 rows are three chunks. Each row has another label of a large
+        -- dictionary. See Note [ENUM labels] in "Database.DuckDB.Simple.Materialize".
+        _ <- execute_ conn "CREATE TYPE wide_enum AS ENUM (SELECT 'v' || i FROM range(70000) t(i))"
+        let sql =
+              "SELECT e, [e, NULL], map([coalesce(e, 'v1'::wide_enum)], [i]), e::VARCHAR, [e, NULL]::VARCHAR[] \
+              \FROM (SELECT i, CASE WHEN i % 1000 = 999 THEN NULL ELSE ('v' || ((i * 7) % 70000))::wide_enum END AS e FROM range(5000) t(i))"
+            check :: [(Maybe Text, [Maybe Text], Map.Map Text Int64, Maybe Text, [Maybe Text])] -> Assertion
+            check rows = do
+              length rows @?= 5000
+              forM_ rows \(label, list, keys, cast, castList) -> do
+                label @?= cast
+                list @?= castList
+                Map.keys keys @?= [fromMaybe "v1" cast]
+        forM_ [1 :: Int, 2] \_ ->
+          query_ conn sql >>= check
+        withStatement conn sql (readAllRows Streaming.nextRow) >>= check
+    , testCase "ENUM payload label must be in its dictionary" $ withConnection ":memory:" \conn ->
+        try (query conn "SELECT ?" (Only (singleField (LogicalTypeEnum (listArray (0, 1) ["a", "b"])) (FieldEnum 0 "c"))) :: IO [Only FieldValue]) >>= \case
+          Left SQLError{sqlErrorMessage} -> sqlErrorMessage @?= "duckdb-simple: the ENUM label \"c\" is not in the dictionary of the type"
+          Right rows -> assertFailure ("expected the label error, got " <> show rows)
+    , testCase "ENUM payload binds its label, not its index" $ withConnection ":memory:" \conn -> do
+        let struct = singleField (LogicalTypeEnum (listArray (0, 2) ["a", "b", "c"])) (FieldEnum 1 "b")
         (query conn "SELECT typeof((?).value), (?).value::VARCHAR, ?" (struct, struct, struct) :: IO [(Text, Text, StructValue FieldValue)])
           >>= (@?= [("ENUM('a', 'b', 'c')", "b", struct)])
+        -- The index of another dictionary does not change the value.
+        let other = singleField (LogicalTypeEnum (listArray (0, 2) ["a", "b", "c"])) (FieldEnum 0 "c")
+        (query conn "SELECT (?).value::VARCHAR, ?" (other, other) :: IO [(Text, StructValue FieldValue)])
+          >>= (@?= [("c", singleField (LogicalTypeEnum (listArray (0, 2) ["a", "b", "c"])) (FieldEnum 2 "c"))])
     , testCase "ENUM values of each dictionary size bind their labels" $ withConnection ":memory:" \conn ->
         -- DuckDB stores the index of a dictionary of 200, 300, and 70000 entries
         -- in 8, 16, and 32 bits.
@@ -1318,7 +1358,7 @@ valueRegressionTests =
           let label index = "v" <> Text.pack (show index)
               entries = listArray (0, size - 1) (map label [0 .. size - 1])
           forM_ [0, size - 1] \index -> do
-            let struct = singleField (LogicalTypeEnum entries) (FieldEnum (fromIntegral index))
+            let struct = singleField (LogicalTypeEnum entries) (FieldEnum (fromIntegral index) (label index))
             (query conn "SELECT (?).value::VARCHAR, ?" (struct, struct) :: IO [(Text, StructValue FieldValue)])
               >>= assertEqual (show size <> " " <> show index) [(label index, struct)]
     , testCase "TIMETZ input offset overflow fails before native use" $ withConnection ":memory:" \conn -> do
@@ -1341,9 +1381,10 @@ valueRegressionTests =
             stType = LogicalTypeStruct (listArray (0, 1) [StructField "n" bigint, StructField "e" mood])
             members = listArray (0, 1) [UnionMemberType "d" (LogicalTypeDecimal 9 2), UnionMemberType "s" stType]
             decimal width scale integer = FieldDecimal (DecimalValue width scale integer)
+            moodValue i = FieldEnum (fromIntegral (i `mod` 3)) (["calm", "busy", "tired"] !! fromIntegral (i `mod` 3))
             expected :: Int64 -> [FieldValue]
             expected i =
-              let st = FieldStruct (structOf [("n", FieldInt64 i, bigint), ("e", FieldEnum (fromIntegral (i `mod` 3)), mood)])
+              let st = FieldStruct (structOf [("n", FieldInt64 i, bigint), ("e", moodValue i, mood)])
                   tenths = toInteger (i `mod` 1000)
                   tiers =
                     FieldStruct
@@ -1361,7 +1402,7 @@ valueRegressionTests =
                   , tiers
                   , FieldList [tiers, tiers]
                   , FieldUnion union
-                  , FieldMap [(FieldEnum (fromIntegral (i `mod` 3)), decimal 9 2 (tenths * 10))]
+                  , FieldMap [(moodValue i, decimal 9 2 (tenths * 10))]
                   , decimal 18 3 (toInteger i * 1000)
                   ]
         materialized <- query_ conn sql :: IO [[FieldValue]]
@@ -1575,9 +1616,9 @@ assertIOError action = do
     Right _ -> assertFailure "expected IOException"
 
 -- | The field of an ENUM row with the index and the label that DuckDB gives.
--- The field holds only the index.
 enumField :: Maybe Int64 -> Maybe Text -> FieldValue
-enumField index _ = maybe FieldNull (FieldEnum . fromIntegral) index
+enumField (Just index) (Just label) = FieldEnum (fromIntegral index) label
+enumField _ _ = FieldNull
 
 -- | Require the range error of the library for a date or a timestamp outside
 -- the range of DuckDB. See Note [Time ranges] in "Database.DuckDB.Simple.ToField".

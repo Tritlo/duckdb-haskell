@@ -173,7 +173,7 @@ userCastTests =
         readIORef calls >>= (@?= 0)
     , testCase "a cast from VARCHAR to an ENUM type does not change a bound ENUM value" $ withConnection ":memory:" \conn -> do
         let entries = LogicalTypeEnum (listArray (0, 1) ["x", "y"])
-            struct = oneField "e" entries (FieldEnum 1)
+            struct = oneField "e" entries (FieldEnum 1 "y")
         calls <- nullCast conn (R.TypeExpression "VARCHAR") (R.StructuredType entries)
         query conn "SELECT ?" (Only struct) >>= (@?= [Only struct])
         readIORef calls >>= (@?= 0)

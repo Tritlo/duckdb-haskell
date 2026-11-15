@@ -190,9 +190,9 @@ time elements also get the microsecond value. One LIST has one element type
 for all its elements. For a Haskell list, an Array, or a Map of TimeOfDay,
 LocalTime, or UTCTime values, withElementType declares the microsecond type of
 the element, for example TIMESTAMP for a LocalTime, so a nanosecond element
-would be cast to that type, and the cast rounds. A FieldList, a FieldMap, or a
-Haskell list of FieldValue values takes the type that its elements give, as the
-SQL list literal does (withValueType). TIME and TIME_NS elements, and
+would be cast to that type, and the cast rounds. A FieldList or a FieldMap
+takes the type that its elements give, as the SQL list literal does
+(withValueType). TIME and TIME_NS elements, and
 TIMESTAMPTZ and TIMESTAMPTZ_NS elements, have no common type, and DuckDB raises
 an error. TIMESTAMP and TIMESTAMP_NS elements give TIMESTAMP_NS[], but an
 element outside the range of TIMESTAMP_NS stays a TIMESTAMP (fitsNanoseconds),

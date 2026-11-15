@@ -204,7 +204,8 @@ stateStripe table key = table ! (key `mod` length table)
 -- check of a raw result come before the read of the state of the target, so
 -- their input errors win over a closed connection. The VARIANT and GEOMETRY
 -- checks ('checkArgumentType') need the resolved type of the argument, so they
--- come after the read of the state, and a closed connection wins over them.
+-- come after the read of the state. Thus a closed connection wins over the
+-- VARIANT check. The GEOMETRY check applies only to a loading extension.
 createAggregateOn
   :: forall state args result
    . (FromRow args, TypedRow args, FunctionResult result) => RegistrationTarget -> Text -> Aggregate state args result -> IO ()

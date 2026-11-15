@@ -12,13 +12,11 @@ import Control.Concurrent (
   MVar,
   ThreadId,
   forkIOWithUnmask,
-  getNumCapabilities,
   myThreadId,
   newEmptyMVar,
   putMVar,
   readMVar,
   rtsSupportsBoundThreads,
-  setNumCapabilities,
   threadDelay,
   throwTo,
   tryPutMVar,
@@ -48,6 +46,7 @@ import GHC.Conc (BlockReason (..), ThreadStatus (..), threadStatus)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
+import TestUtils (raiseCapabilities)
 
 -- | Exercise each native execution entry point and two cancellation races.
 cancellationTests :: TestTree
@@ -268,8 +267,9 @@ callbackLockTests =
           assertInnerErrors errors
           assertReusable conn
     , testCase "callbacks on 4 capabilities that are inside at the same time each fail at the bound" $
-        bracket getNumCapabilities setNumCapabilities \capabilities -> do
-          setNumCapabilities (max 4 capabilities)
+        do
+          -- See Note [Capabilities of the tests] in "TestUtils".
+          raiseCapabilities 4
           withBoundedConnections "4" testLockWait \conn _ -> do
             void (execute_ conn "CREATE TABLE callback_rows AS SELECT i FROM range(1000000) t(i)")
             inside <- newIORef (0 :: Int)

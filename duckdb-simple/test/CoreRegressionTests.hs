@@ -7,7 +7,7 @@
 module CoreRegressionTests (coreRegressionTests) where
 
 import Control.Concurrent (forkFinally, newEmptyMVar, putMVar, readMVar, takeMVar, threadDelay)
-import Control.Exception (SomeException, bracket, finally, throwIO, try)
+import Control.Exception (IOException, SomeException, bracket, finally, throwIO, try)
 import Control.Monad (forM_, replicateM, replicateM_, void)
 import Data.Either (partitionEithers)
 import Data.IORef (modifyIORef', newIORef, readIORef)
@@ -153,9 +153,19 @@ coreRegressionTests =
       testCase "composite fold failures raise their error and leave the connection usable" $
         withConnectionWithConfig ":memory:" [("threads", "1")] $ \conn -> do
           let sql = "SELECT {'n': i, 'values': [i, NULL]} FROM range(5000) t(i)"
-          assertThrows (fold_ conn sql () (\() (Only (_ :: Int64)) -> pure ()))
-          assertThrows $ fold_ conn sql (0 :: Int) $ \n (Only (_ :: FieldValue)) ->
+          -- A STRUCT does not convert to Int64. The conversion error names the
+          -- Haskell type and the query.
+          conversion <- try (fold_ conn sql () (\() (Only (_ :: Int64)) -> pure ()))
+          case conversion of
+            Left err -> do
+              assertBool (Text.unpack (sqlErrorMessage err)) ("Int64" `Text.isInfixOf` sqlErrorMessage err)
+              sqlErrorQuery err @?= Just sql
+            Right () -> assertFailure "expected the conversion error"
+          stepFailure <- try $ fold_ conn sql (0 :: Int) $ \n (Only (_ :: FieldValue)) ->
             if n == 2050 then throwIO (userError "composite fold failure") else pure (n + 1)
+          case stepFailure of
+            Left (err :: IOException) -> show err @?= "user error (composite fold failure)"
+            Right count -> assertFailure ("expected the step failure, got " <> show count)
           query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
     , testCase "closed connection rejects active cursor reads" $ do
         conn <- open ":memory:"
@@ -337,6 +347,8 @@ coreRegressionTests =
             query_ conn "SELECT count(*) FROM duckdb_databases() WHERE database_name = 'side'" >>= (@?= [Only (0 :: Int64)])
             assertSqlErrorType ErrorDatabaseCatalog (query_ conn "SELECT x FROM side.probe" :: IO [Only Int64])
             query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+          -- The native detach call gives this type. The SQL statement DETACH gives
+          -- a Binder Error.
           assertSqlErrorType ErrorInputInvalid (detachDatabase instance_ "side")
     , testCase "NUL in attach options and aliases is rejected" $
         withEnvironment $ \environment -> withInstance environment [] $ \instance_ -> do
@@ -385,7 +397,7 @@ coreRegressionTests =
         withConnectionWithConfig ":memory:" [("enable_external_access", "false"), ("allowed_paths", "['/tmp/duckdb-whitelist-probe']")] $ \conn ->
           query conn "SELECT current_setting('enable_external_access'), list_contains(current_setting('allowed_paths'), ?)" (Only path)
             >>= (@?= [(False, True)])
-    , testCase "environment close releases the live cursors of its connections" $ do
+    , testCase "environment close ends the live cursors of its connections" $ do
         environment <- createEnvironment
         instance_ <- createInstance environment []
         attachDatabase instance_ ":memory:" "shared" []

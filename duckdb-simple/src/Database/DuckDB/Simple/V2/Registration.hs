@@ -613,8 +613,9 @@ registerTableFunctionWith target configure callbacks =
 -- | Register a cast. Nothing keeps the native explicit-cast cost.
 -- The callback must inspect the native cast mode to implement TRY_CAST behavior.
 -- An exception in the callback fails the cast with the error type
--- 'ErrorTypeMismatch', whatever the type of the exception. See
--- Note [The error code of a failed cast].
+-- 'ErrorTypeMismatch', whatever the type of the exception. With another error
+-- code, DuckDB can invalidate the database. See the section /Errors/ of the
+-- README and Note [The error code of a failed cast].
 -- A target type from SQL @CREATE TYPE name AS base@ is only another name for
 -- the base type, so the cast is a cast to the base type. A type from
 -- 'registerCustomType' keeps its name. See 'TypeDeclaration'.
@@ -647,7 +648,9 @@ registerCast connection source target implicitCost execute =
 -- | Configure and register a managed cast on a connection or extension.
 -- The configuration action borrows the builder. Do not set callbacks or user data.
 -- An exception in the callback fails the cast with the error type
--- 'ErrorTypeMismatch'. See Note [The error code of a failed cast].
+-- 'ErrorTypeMismatch', whatever the type of the exception. With another error
+-- code, DuckDB can invalidate the database. See the section /Errors/ of the
+-- README and Note [The error code of a failed cast].
 registerCastWith
   :: RegistrationTarget -> (DuckDBV2CastFunctionHandle -> IO ()) -> ContextCallback DuckDBV2CastFunctionExecInfoHandle -> IO ()
 registerCastWith target configure execute =
@@ -697,19 +700,33 @@ through the error slot aborts the query." DuckDB does not keep this sentence.
 
 Thus each cast callback of the library writes the code
 DUCKDB_V2_ERROR_TYPE_MISMATCH for each failure (runCallbackWith in
-"Database.DuckDB.Simple.Callback"). This code replaces the type of an
-'SQLError' from the callback, because most other codes are not safe here.
-DuckDB rethrows an error of this type with no change. The
-statement fails with "Mismatch Type Error: " and the text of the failure. An
-explicit transaction is aborted under each transaction invalidation policy.
-The code is the same for a cast that DuckDB marks as fallible.
+"Database.DuckDB.Simple.Callback"). The code of a cast does not depend on the
+exception. It replaces the type of each 'SQLError' from the callback, also the
+type Conversion of a failed query in the callback. Thus a change of the code
+of runCallback does not change the code of a cast. DuckDB rethrows an error of
+this type with no change. The statement fails with "Mismatch Type Error: " and
+the text of the failure. An explicit transaction is aborted under each
+transaction invalidation policy. The code is the same for a cast that DuckDB
+marks as fallible.
+
+The 49 codes of 'ErrorType' give these results in the column form and in an
+explicit transaction:
+
+- 30 codes, ErrorTypeMismatch included, keep their type and the database, and
+  abort an explicit transaction under each policy.
+- 7 codes keep an explicit transaction open under the policy
+  SYNTACTIC_ERRORS_DO_NOT_INVALIDATE: ErrorQueryBinder, ErrorDatabaseCatalog,
+  ErrorResourceConnection, ErrorQueryParameterNotAllowed, ErrorQueryParser,
+  ErrorConfigurationPermission, and ErrorResourceInUse.
+- 11 codes invalidate the database. ErrorApi, ErrorIOFileNotFound,
+  ErrorIOReadFailure, ErrorIOEof, ErrorInputInvalid,
+  ErrorInputParameterInvalid, ErrorInputOutOfRange,
+  ErrorInputMetadataDeferred, ErrorTypeConversion, and ErrorRuntimeInternal
+  give an INTERNAL error. ErrorRuntimeFatal gives a FATAL error.
+- ErrorIONetwork keeps the database, but the error has the type ErrorApi.
 
 Do not replace the code without a run of each code in the column form and in
-an explicit transaction. The Invalid Input codes, Out of Range, Conversion,
-Internal, Fatal, and the codes with no exception type invalidate the
-database. Seven codes keep an explicit transaction open under the policy
-SYNTACTIC_ERRORS_DO_NOT_INVALIDATE: Binder, Catalog, Connection, Parameter
-Not Allowed, Parser, Permission, and Resource In Use.
+an explicit transaction under each policy.
 
 In DUCKDB_V2_CAST_MODE_TRY, DuckDB discards the error, so TRY_CAST gives NULL
 for a failed row. TRY(...) catches only the Invalid Input, Out of Range, and

@@ -16,6 +16,7 @@ import Control.Exception (SomeException, bracket, displayException, throw, throw
 import Control.Monad (forM_, void, when)
 import Data.Array (Array, elems)
 import qualified Data.ByteString as BS
+import qualified Data.Geometry as G
 import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int16, Int32, Int64, Int8)
 import qualified Data.Map.Strict as Map
@@ -203,8 +204,9 @@ data CastFailure = FailLeft | FailException | FailTypedError | FailNoConversion
 
 -- | A pair of types for 'testCastFailureCode'. Each failure but
 -- 'FailNoConversion' fails for each value. The argument type of
--- 'FailNoConversion' does not hold the values of that failure. The values are
--- a constant and a column over @i@.
+-- 'FailNoConversion' does not hold the values of that failure, or its reader
+-- refuses them, as the Geometry reader refuses a LINESTRING with one
+-- coordinate. The values are a constant and a column over @i@.
 data CastPair = CastPair
   { castPairName :: String
   , castPairSetup :: Connection -> IO ()
@@ -255,11 +257,17 @@ castFailurePairs =
         if failure == FailNoConversion then convertingCast (Proxy @CastStruct) ("x" :: Text) else failingCast (Proxy @CastStruct) (Proxy @Text)
   , pair "FLOAT to DOUBLE" "FLOAT" "DOUBLE" ("1.5::FLOAT", "i::FLOAT") ("1000.5::FLOAT", "(i + 1000)::FLOAT") \failure ->
       if failure == FailNoConversion then convertingCast (Proxy @Int8) (0 :: Double) else failingCast (Proxy @Float) (Proxy @Double)
+  , pair "GEOMETRY to VARCHAR" "GEOMETRY" "VARCHAR" (point, points) ("'LINESTRING(1 2)'::GEOMETRY", "('LINESTRING(' || i || ' 2)')::GEOMETRY") \failure ->
+      if failure == FailNoConversion then convertingCast (Proxy @G.Geometry) ("x" :: Text) else failingCast (Proxy @G.Geometry) (Proxy @Text)
+  , pair "GEOMETRY to VARCHAR with an Int64 argument" "GEOMETRY" "VARCHAR" (point, points) (point, points) \failure ->
+      if failure == FailNoConversion then convertingCast (Proxy @Int64) ("x" :: Text) else failingCast (Proxy @G.Geometry) (Proxy @Text)
   , pair "BIGINT to INTEGER" "BIGINT" "INTEGER" ("(-1)::BIGINT", "i::BIGINT") ("1000::BIGINT", "i + 1000") \failure ->
       if failure == FailNoConversion then convertingCast (Proxy @Int8) (0 :: Int32) else failingCast (Proxy @Int64) (Proxy @Int32)
   ]
   where
     mood = "(CASE WHEN i % 2 = 0 THEN 'sad' ELSE 'happy' END)::typed_mood"
+    point = "'POINT(1 2)'::GEOMETRY"
+    points = "('POINT(' || i || ' 2)')::GEOMETRY"
     pair name source target failing notConverting register =
       CastPair
         { castPairName = name

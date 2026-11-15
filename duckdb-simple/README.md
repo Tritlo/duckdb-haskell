@@ -360,7 +360,11 @@ field, so `9007199254740993` becomes `9007199254740992.0`, as in SQL. Elements
 with no common type, such as `{'a': 1}` and `{'a': 'x'}`, raise the `SQLError`
 of DuckDB. The column type of an `INSERT` does not change the type of the
 list: DuckDB casts the list to the column type after it gives the list its
-type. An empty or all-NULL list or array of such elements raises an error.
+type. A list or an array of such elements that are all NULL takes the element
+type of the parameter, when the parameter has a known type, as for
+`INSERT INTO t VALUES ([NULL, NULL])` in SQL. An empty list or array of such
+elements, and one with only NULL elements for a parameter with no known type,
+raise an error.
 
 A `Map` from `Data.Map` binds as a MAP parameter and reads a MAP result. The
 pairs go in ascending key order. The keys and the values follow the element

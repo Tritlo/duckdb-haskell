@@ -230,6 +230,9 @@
   `STRUCT(a INTEGER, b INTEGER)` for `{'a': 1}` and `{'b': 2}`. Elements with
   no common type raise the `SQLError` of DuckDB. Version 0.3 raised an error
   for each `Array` with different element types.
+- An `Array` or a list of such elements that are all NULL takes the element
+  type of the parameter when the parameter has a known type, for example for
+  an `INSERT` into a typed column. Version 0.3 raised an error for it.
 - Some parameters bind for the type that DuckDB gives the parameter: a time
   value with digits below a microsecond, an `Array`, a list, a `Map`, a manual
   STRUCT, TUPLE, or UNION value, and an `Integer` or a `Natural` outside the

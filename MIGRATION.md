@@ -259,7 +259,9 @@ The SQL workflow stays the same. These changes can affect your code:
   the elements. Version 0.3 raised an `IOException` for it. The common type can
   add fields with NULL values, and a `BIGINT` field with a `DOUBLE` field gives
   a `DOUBLE` field, which can round a large value. Elements with no common type
-  now raise the `SQLError` of DuckDB.
+  now raise the `SQLError` of DuckDB. Such an `Array` with only NULL elements
+  takes the element type of a parameter with a known type. Version 0.3 raised
+  an error for it.
 - A composite parameter with a GEOMETRY CRS that DuckDB does not recognize
   raises `SQLError`. Version 0.3 bound it without the CRS. Configure custom CRS
   names through `connectionGeometryCRS`.

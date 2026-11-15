@@ -855,21 +855,23 @@ holds each of its values.
 
 - `withConnection` and `withStatement` wrap the open/close lifecycle and guard
   against exceptions; use them whenever possible to avoid leaking C handles.
-- The query helpers release their results, prepared statements, and values after
-  use. Query helpers return a Haskell list of all rows. Folds and cursors decode
-  rows incrementally from owned native chunks. The default mode drains and
-  closes the native cursor before row callbacks.
+- The query functions release their results, prepared statements, and values
+  after use, and return a Haskell list of all rows. Folds and cursors decode
+  rows incrementally from owned native chunks. The materialized functions of
+  `Database.DuckDB.Simple` drain and close the native cursor before row
+  callbacks; the streaming functions of `Database.DuckDB.Simple.Streaming` do
+  not.
 - `execute`/`query` variants reset statement bindings each run so prepared
   statements can be reused safely.
 
-For concurrent workers, use a separate connection per worker. Threads can
-also share one connection. DuckDB permits one open result for each connection,
-so each connection has a lock. `query`, `execute`, and the default folds hold
+For concurrent workers, use a separate connection per worker. Threads can also
+share one connection. DuckDB permits one open result for each connection, so
+each connection has a lock. `query`, `execute`, and the materialized folds hold
 this lock from the execution of a statement until its native result closes.
-Statement preparation holds it only while DuckDB prepares the statement, and
-the metadata bind of a statement only while DuckDB binds it. A call from
-another thread waits. The lock does not cover these cases. Serialize them
-in the application:
+Statement preparation holds it only while DuckDB prepares the statement, and the
+metadata bind of a statement only while DuckDB binds it. A call from another
+thread waits. The lock does not cover these cases. Serialize them in the
+application:
 
 - A transaction. Statements of other threads run inside it.
 - One `Statement` that two threads use.
@@ -890,7 +892,7 @@ and propagates the exception. Cancellation is cooperative: native code and
 Haskell callbacks must return before cleanup can finish.
 
 Native work that can run for a long time runs in a helper thread, so that an
-asynchronous exception can interrupt it. The default query functions run the
+asynchronous exception can interrupt it. The materialized functions run the
 native calls of one result in one helper thread. A bound thread, such as the
 main thread, changes operating system threads to wait for a helper thread.
 Thus a small query takes longer from a bound thread than from an unbound
@@ -915,8 +917,8 @@ success or an exception. The accumulator determines Haskell memory use.
 `fold`, `fold_`, and `foldNamed` decode one row at a time from DuckDB's result
 chunks. This API materializes the native result before the first row is
 returned. These functions avoid a complete Haskell row list, but native memory
-use still depends on the result size. The default interface closes the native
-cursor before row delivery. A row callback can run another query on the same
+use still depends on the result size. The materialized functions close the
+native cursor before row delivery. A row callback can run another query on the same
 connection.
 
 ```haskell
@@ -931,9 +933,9 @@ sumValues conn =
 For manual cursor-style iteration, use `nextRow`/`nextRowWith` on an open
 `Statement` to pull rows one at a time and decide when to stop.
 
-Cursors support the same column types as eager queries, including STRUCT
+Cursors support the same column types as the query functions, including STRUCT
 and UNION values with nested collections and NULLs. GEOMETRY and VARIANT work
-with eager queries, cursors, and folds.
+with the query functions, cursors, and folds.
 
 #### Optional native streaming
 
@@ -957,8 +959,8 @@ operators.
 
 The first cursor fetch selects the execution mode. The mode stays until
 `bind`, `bindNamed`, `clearStatementBindings`, or `executeStatement` releases
-the result. Switching between default and streaming `nextRow` calls retains
-that mode.
+the result. Switching between materialized and streaming `nextRow` calls
+retains that mode.
 Keep the connection dedicated to the active stream. Until the stream is
 complete, DuckDB rejects other statements on that connection with the
 `ErrorResourceInUse` error of DuckDB. If you close an incomplete stream, DuckDB
@@ -1004,10 +1006,10 @@ The bridge currently imports signed 32-bit and 64-bit integers, Float, Double,
 and text columns. It is a test dependency of this repository; applications
 that use it must declare their own dependency on `dataframe-arrow-bridge`.
 
-Arrow export uses V2 Arrow results. The default interface retains owned batches
-and closes the native cursor before callbacks start. Its memory use depends on
-the result size. The streaming interface delivers each batch while the native
-cursor remains open.
+Arrow export uses V2 Arrow results. The materialized `foldArrow` retains owned
+batches and closes the native cursor before callbacks start. Its memory use
+depends on the result size. The streaming `foldArrow` delivers each batch while
+the native cursor remains open.
 
 ### VARIANT
 
@@ -1193,7 +1195,8 @@ supported families, construction checks, and codec normalization rules.
 ### Feature Coverage
 
 - Connections, prepared statements, positional/named parameter binding.
-- High-level execution (`execute*`) and eager queries (`query*`, `queryNamed`).
+- High-level execution (`execute*`) and the query functions (`query*`,
+  `queryNamed`).
 - Cursor and fold helpers (`fold`, `foldNamed`, `fold_`, `nextRow`) that decode
   native result chunks one row at a time.
 - Comprehensive scalar type support: signed/unsigned integers, HUGEINT/UHUGEINT,
@@ -1276,7 +1279,7 @@ and it must not close that connection.
 Use another connection of the same instance. This rule applies to each
 registered callback, for example of a scalar function, a cast, an aggregate
 function, a table function, a COPY format, a replacement scan, a pragma, or a
-log sink. `query`, `execute`, the default folds, statement preparation, and
+log sink. `query`, `execute`, the materialized folds, statement preparation, and
 each fetch of an explicit stream hold the lock of the connection while DuckDB
 runs these callbacks. The lock is not reentrant, so a statement in the callback
 waits for the lock. With more than one DuckDB thread, DuckDB can also run a

@@ -113,8 +113,6 @@ createTableFunctionOn target name columns function = do
       configure factory tableFunction = do
         withIdentifier name (checked . c_duckdb_v2_table_function_set_name tableFunction)
         output (c_duckdb_v2_table_function_get_signature tableFunction) >>= configureFunctionSignature factory signature
-      -- Read a GEOMETRY argument with the factory of 'targetCastFactory', or with
-      -- the factory of the context for an extension.
       bind input result context = withContextFactory context \factory -> do
         params <- readArguments name (length parameterTypes) (fromMaybe factory casts) input
         forM_ (zip columns columnTypes) \(column, dtype) ->

@@ -328,9 +328,7 @@ scalarFunctionHandler
   => Maybe DuckDBV2FactoryHandle -> f -> DuckDBV2ScalarFunctionExecInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()
 scalarFunctionHandler casts fn info context err = runCallback err (executeScalarFunction casts fn info context)
 
--- | Run one call of a scalar function. A GEOMETRY argument reads with the
--- factory of 'targetCastFactory', or with the factory of the context for an
--- extension.
+-- | Run one call of a scalar function.
 executeScalarFunction
   :: forall f. (Function f) => Maybe DuckDBV2FactoryHandle -> f -> DuckDBV2ScalarFunctionExecInfoHandle -> DuckDBV2ContextHandle -> IO ()
 executeScalarFunction casts fn info context = withContextFactory context \contextFactory -> do

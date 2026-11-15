@@ -205,9 +205,7 @@ createCastOn target source destination convert = do
 
 -- | Convert the rows of one cast call. Write each row before an error leaves
 -- the callback, because TRY_CAST keeps the output and ignores the error. A failed
--- row gets NULL. Then raise the error of the first failed row. A GEOMETRY
--- argument reads with the factory of 'targetCastFactory', or with the factory
--- of the context for an extension.
+-- row gets NULL. Then raise the error of the first failed row.
 castRows
   :: (FromField a, ToDuckValue b)
   => Maybe DuckDBV2FactoryHandle -> (a -> Either Text b) -> DuckDBV2CastFunctionExecInfoHandle -> DuckDBV2ContextHandle -> IO ()

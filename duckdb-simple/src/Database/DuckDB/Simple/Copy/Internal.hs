@@ -187,8 +187,6 @@ copyToSide casts readVariant bindFn initFn sinkFn finalizeFn =
       path <- output (c_duckdb_v2_copy_to_init_get_file_path info) >>= readText
       global <- initFn (CopyInitInfo state (Text.unpack path))
       transferCallbackState (attachOpaque (c_duckdb_v2_copy_to_init_set_init_data info)) global
-    -- Read GEOMETRY with the factory of 'targetCastFactory', or with the
-    -- factory of the context for an extension.
     batch info context = withContextFactory context $ \factory -> do
       (_, types) <- readCopyBinding (c_duckdb_v2_copy_to_batch_get_bind_data info) :: IO (bindState, [DuckDBV2LogicalTypeHandle])
       rows <-

@@ -87,16 +87,17 @@ existing convenience behavior.
   table inputs for one scoped prepared-statement action. The caller retains the
   collections.
 
-The pinned V2 API does not expose custom file-system registration or
-collation lookup. DuckDB 2.0 rejects an ARRAY type with zero elements. An
-empty LIST is valid.
-Prepared dynamic PIVOT supports repeated execution with a changing schema. It
-does not support parameters or a cacheable plan. VARIANT decoding uses SQL
-metadata and native casts on a helper connection. A configured custom GEOMETRY
-CRS name uses one SQL query when the connection opens.
-GEOMETRY results use a native cast to BLOB.
-Native GEOMETRY collections require the same Z/M dimensions on every member,
-including empty members. The standalone WKB codec retains mixed layouts.
+The pinned V2 API does not expose custom file-system registration or collation
+lookup. DuckDB 2.0 rejects an ARRAY type with zero elements. An empty LIST is
+valid. The direct `query_` and `execute_` paths support statements that expand
+during parsing, including dynamic PIVOT. Prepared dynamic PIVOT supports
+repeated execution with a changing schema. It does not support parameters or a
+cacheable plan. Read its schema after execution starts. VARIANT decoding uses
+SQL metadata and native casts on a helper connection. A configured custom
+GEOMETRY CRS name uses one SQL query when the connection opens. GEOMETRY results
+use a native cast to BLOB. Native GEOMETRY collections require the same Z/M
+dimensions on every member, including empty members. The standalone WKB codec
+retains mixed layouts.
 
 ## Getting Started
 
@@ -1062,11 +1063,6 @@ and each COPY TO of a VARIANT column, fail with a Binder Error.
 New DuckDB 2.0 databases use storage format 2.0, which supports VARIANT columns.
 The library does not change an existing database's storage compatibility
 setting. VARIANT columns require storage format `v1.5.0` or later.
-
-The direct `query_` and `execute_` paths support statements that expand during
-parsing, including dynamic PIVOT. Prepared dynamic PIVOT also supports repeated
-execution and schema changes. It cannot have parameters or require a cacheable
-plan. Read its schema after execution starts.
 
 ### GEOMETRY
 

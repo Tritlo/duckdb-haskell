@@ -11,12 +11,14 @@
 -- Description : Regression tests for exact values and controlled conversion failures.
 module ValueRegressionTests (main, valueRegressionTests) where
 
-import Control.Exception (IOException, bracket, try)
+import Control.Exception (IOException, bracket, fromException, try)
 import Control.Monad (forM_)
 import Data.Array (Array, elems, listArray)
 import qualified Data.ByteString as BS
-import Data.Int (Int32, Int64, Int8)
+import Data.Int (Int16, Int32, Int64, Int8)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (isJust)
+import Data.Proxy (Proxy (..))
 import Data.Ratio ((%))
 import Data.String (fromString)
 import Data.Text (Text)
@@ -25,13 +27,14 @@ import Data.Time.Calendar (Day, addDays, fromGregorian)
 import Data.Time.Clock (UTCTime (..))
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), utc, utcToLocalTime)
-import Data.Word (Word16, Word32, Word8)
+import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (
   BigNum (..),
   BitString (..),
   DecimalValue (..),
+  Field (..),
   FieldValue (..),
   IntervalValue (..),
   TimeWithZone (..),
@@ -40,6 +43,7 @@ import Database.DuckDB.Simple.FromField (
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..), genericFromFieldValue, genericToStructValue)
 import Database.DuckDB.Simple.Internal (destroyValue, output, withConnectionFactory, withConnectionHandle)
 import Database.DuckDB.Simple.LogicalRep
+import Database.DuckDB.Simple.Ok (Ok (..))
 import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
@@ -1242,6 +1246,135 @@ valueRegressionTests =
               let struct = singleField (LogicalTypeDecimal (decimalWidth value) (decimalScale value)) (FieldDecimal value)
               bind stmt [toField struct]
               readAllRows next stmt >>= (@?= replicate 3000 (Only struct))
+    , testCase "an Integer outside the HUGEINT range raises the range error for each integer type" $ withConnection ":memory:" \conn -> do
+        -- A BIGNUM value for these types stores a wrong value with no error.
+        -- See Note [Integer parameters] in "Database.DuckDB.Simple.ToField".
+        let huge = 2 ^ (128 :: Int) + 5 :: Integer
+            insert :: Text -> Integer -> IO (Either SQLError Int)
+            insert dtype value = do
+              _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE wide_integer (v " <> dtype <> ")"))
+              result <- try (execute conn "INSERT INTO wide_integer VALUES (?)" (Only value))
+              (query_ conn "SELECT count(*) FROM wide_integer" :: IO [Only Int64]) >>= assertEqual (Text.unpack dtype <> " " <> show value) [Only 0]
+              pure result
+        forM_ ["TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT", "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT", "UHUGEINT"] \dtype -> do
+          -- DuckDB also rejects the value for the type.
+          try (query_ conn (Query ("SELECT '" <> Text.pack (show huge) <> "'::" <> dtype)) :: IO [Only Text]) >>= \case
+            Left SQLError{sqlErrorMessage} ->
+              assertBool (Text.unpack sqlErrorMessage) ("Conversion Error: Could not convert string" `Text.isPrefixOf` sqlErrorMessage)
+            Right rows -> assertFailure ("DuckDB accepts " <> show huge <> " as " <> Text.unpack dtype <> ": " <> show rows)
+          forM_ [huge, negate huge] \value ->
+            insert dtype value >>= \case
+              Left SQLError{sqlErrorMessage, sqlErrorType} -> do
+                sqlErrorType @?= Just ErrorInputOutOfRange
+                sqlErrorMessage @?= "duckdb-simple: the value " <> Text.pack (show value) <> " is out of range for a parameter of the type " <> dtype
+              Right _ -> assertFailure ("expected the duckdb-simple range error for " <> Text.unpack dtype <> " " <> show value)
+        -- An element of an array takes the element type of its target. DuckDB
+        -- then checks the range of each element.
+        forM_ ["UTINYINT[2]", "USMALLINT[2]", "UINTEGER[2]", "UBIGINT[2]"] \dtype -> do
+          _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE wide_integer (v " <> dtype <> ")"))
+          result <- try (execute conn "INSERT INTO wide_integer VALUES (?)" (Only (listArray (0, 1) [5, -6] :: Array Int Integer)))
+          (query_ conn "SELECT count(*) FROM wide_integer" :: IO [Only Int64]) >>= assertEqual (Text.unpack dtype) [Only 0]
+          case result of
+            Left SQLError{sqlErrorMessage, sqlErrorType} -> do
+              assertBool
+                (Text.unpack sqlErrorMessage)
+                ("-6 can't be cast because the value is out of range for the destination type" `Text.isInfixOf` sqlErrorMessage)
+              sqlErrorType @?= Just ErrorInputInvalid
+            Right _ -> assertFailure ("expected the DuckDB range error for " <> Text.unpack dtype)
+    , testCase "DECIMAL columns decode the largest value at each storage boundary" $ withConnection ":memory:" \conn ->
+        -- DuckDB stores a DECIMAL of the width 1 to 4 in 16 bits, 5 to 9 in 32 bits,
+        -- 10 to 18 in 64 bits, and 19 to 38 in 128 bits. The text comes from DuckDB.
+        forM_ [4, 5, 9, 10, 18, 19, 38] \width -> do
+          let largest = 10 ^ width - 1 :: Integer
+              dtype = "DECIMAL(" <> Text.pack (show width) <> ",0)"
+              sql =
+                "SELECT x::"
+                  <> dtype
+                  <> ", x::"
+                  <> dtype
+                  <> "::VARCHAR FROM (VALUES ("
+                  <> Text.pack (show (negate largest))
+                  <> "), (NULL), ("
+                  <> Text.pack (show largest)
+                  <> ")) t(x)"
+          rows <- query_ conn (Query sql) :: IO [(FieldValue, Maybe Text)]
+          assertEqual
+            (Text.unpack dtype)
+            [ (FieldDecimal (DecimalValue width 0 (negate largest)), Just (Text.pack (show (negate largest))))
+            , (FieldNull, Nothing)
+            , (FieldDecimal (DecimalValue width 0 largest), Just (Text.pack (show largest)))
+            ]
+            rows
+    , testCase "ENUM columns decode the last label at each storage boundary" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
+        -- DuckDB stores the index of an ENUM with at most 255 labels in 8 bits, with
+        -- at most 65535 labels in 16 bits, and with more labels in 32 bits.
+        forM_ [255, 256, 65535, 65536 :: Int] \size -> do
+          let dtype = "enum_boundary_" <> Text.pack (show size)
+              lastLabel = "v" <> Text.pack (show (size - 1))
+          _ <- execute_ conn (Query ("CREATE TYPE " <> dtype <> " AS ENUM (SELECT 'v' || i FROM range(" <> Text.pack (show size) <> ") t(i))"))
+          rows <-
+            query_
+              conn
+              ( Query
+                  ( "SELECT x::"
+                      <> dtype
+                      <> ", enum_code(x::"
+                      <> dtype
+                      <> ")::BIGINT, x::"
+                      <> dtype
+                      <> "::VARCHAR FROM (VALUES ('v0'), (NULL), ('"
+                      <> lastLabel
+                      <> "')) t(x)"
+                  )
+              )
+              :: IO [(FieldValue, Maybe Int64, Maybe Text)]
+          -- DuckDB gives the index and the label of each row.
+          assertEqual
+            (Text.unpack dtype)
+            [(Just 0, Just "v0"), (Nothing, Nothing), (Just (fromIntegral (size - 1)), Just lastLabel)]
+            [(index, label) | (_, index, label) <- rows]
+          forM_ rows \(value, index, label) -> assertEqual (Text.unpack dtype) (enumField index label) value
+    , testCase "NULL TUPLE and UNION rows decode as NULL in each chunk" $ withConnection ":memory:" \conn -> do
+        rows <-
+          query_
+            conn
+            "SELECT t, u, t IS NULL, u IS NULL FROM (SELECT CASE WHEN i % 7 = 1 THEN NULL ELSE row(i, 'x') END AS t, CASE WHEN i % 7 = 2 THEN NULL ELSE union_value(n := i)::UNION(n BIGINT, s VARCHAR) END AS u FROM range(3000) r(i))"
+            :: IO [(FieldValue, FieldValue, Bool, Bool)]
+        length rows @?= 3000
+        -- DuckDB gives the NULL rows in the last two columns.
+        forM_ (zip [0 :: Int ..] rows) \(row, (tuple, member, tupleIsNull, memberIsNull)) -> do
+          assertEqual ("TUPLE row " <> show row) tupleIsNull (tuple == FieldNull)
+          assertEqual ("UNION row " <> show row) memberIsNull (member == FieldNull)
+    , testCase "narrowing reads reject the values that DuckDB rejects for the type" $ withConnection ":memory:" \conn -> do
+        let rejects :: forall a. (FromField a, Show a) => Proxy a -> Text -> Text -> Assertion
+            rejects _ value sqlType = do
+              -- DuckDB raises an error for the same cast.
+              try (query_ conn (Query ("SELECT (" <> value <> ")::" <> sqlType)) :: IO [Only Text]) >>= \case
+                Left SQLError{sqlErrorMessage} ->
+                  assertBool
+                    (Text.unpack sqlErrorMessage)
+                    ("can't be cast because the value is out of range for the destination type" `Text.isInfixOf` sqlErrorMessage)
+                Right rows -> assertFailure ("DuckDB accepts " <> Text.unpack value <> " as " <> Text.unpack sqlType <> ": " <> show rows)
+              -- The read raises the conversion error of the query.
+              let sql = Query ("SELECT " <> value)
+              try (query_ conn sql :: IO [Only a]) >>= \case
+                Left SQLError{sqlErrorType, sqlErrorQuery} -> do
+                  assertEqual (Text.unpack value) Nothing sqlErrorType
+                  assertEqual (Text.unpack value) (Just sql) sqlErrorQuery
+                Right rows -> assertFailure (Text.unpack value <> " decodes as " <> show rows)
+              -- The cause of that error is a ResultError.
+              [Only native] <- query_ conn sql :: IO [Only FieldValue]
+              case fromField Field{fieldName = "value", fieldIndex = 0, fieldValue = native} :: Ok a of
+                Errors errors ->
+                  assertBool ("expected a ResultError, got " <> show errors) (not (null errors) && all isResultError errors)
+                Ok decoded -> assertFailure (Text.unpack value <> " converts to " <> show decoded)
+            isResultError failure = isJust (fromException failure :: Maybe ResultError)
+        rejects (Proxy :: Proxy Word64) "-1::BIGINT" "UBIGINT"
+        rejects (Proxy :: Proxy Word) "-1::BIGINT" "UBIGINT"
+        rejects (Proxy :: Proxy Word32) "-1::INTEGER" "UINTEGER"
+        rejects (Proxy :: Proxy Int16) "32768::INTEGER" "SMALLINT"
+        rejects (Proxy :: Proxy Int32) "2147483648::BIGINT" "INTEGER"
+        rejects (Proxy :: Proxy Int64) "1180591620717411303424::HUGEINT" "BIGINT"
     ]
       <> [ testCase ("composite temporal round trip: " <> dtype) $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
              forM_ ("NULL" : map (\value -> "'" <> value <> "'") values) \value ->
@@ -1308,6 +1441,11 @@ assertIOError action = do
   case result of
     Left (_ :: IOException) -> pure ()
     Right _ -> assertFailure "expected IOException"
+
+-- | The field of an ENUM row with the index and the label that DuckDB gives.
+-- The field holds only the index.
+enumField :: Maybe Int64 -> Maybe Text -> FieldValue
+enumField index _ = maybe FieldNull (FieldEnum . fromIntegral) index
 
 -- | Assert a controlled FromField conversion error.
 assertConversionError :: IO a -> Assertion

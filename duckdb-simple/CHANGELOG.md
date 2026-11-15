@@ -101,10 +101,6 @@
 - Rename `Database.DuckDB.Simple.Deprecated.Streaming` to
   `Database.DuckDB.Simple.Streaming`.
 - Export Arrow release helpers from `Database.DuckDB.Simple.Arrow`.
-- The default `fold`, `fold_`, `foldNamed`, `foldArrow`, and `foldArrow_`
-  collect the result before the first callback. Thus their callback can run a
-  query on the same connection. The README of version 0.3 forbade a query on
-  the active connection in a callback.
 - A DuckDB callback that waits for the lock of a connection waits at most the
   time limit of that connection. Add `connectionCallbackLockWait` to
   `ConnectionOptions`, in microseconds, with the default

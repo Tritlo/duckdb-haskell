@@ -52,12 +52,18 @@ data ConfigValue = ConfigValue
   }
   deriving (Eq, Show)
 
--- | A copied option descriptor. Native defaults and aliases can be empty.
+-- | A copied option descriptor. The list of aliases can be empty.
+-- 'configOptionSetting' is the effective value. 'Nothing' means a NULL value,
+-- which the @value@ column of @duckdb_settings()@ also gives as NULL.
+-- 'configOptionDefault' is the static default of the declaration. 'Nothing'
+-- means that the declaration has no default. The value after @RESET@ can
+-- differ from the static default: @progress_bar_time@ has no static default,
+-- and DuckDB 2.0.0 gives 2000 after @RESET@.
 data ConfigOption = ConfigOption
   { configOptionName :: Text
   , configOptionDescription :: Text
-  , configOptionSetting :: Text
-  , configOptionDefault :: Text
+  , configOptionSetting :: Maybe Text
+  , configOptionDefault :: Maybe Text
   , configOptionScope :: SettingScope
   , configOptionScopes :: [SettingScope]
   , configOptionAliases :: [Text]
@@ -183,8 +189,8 @@ copyOption :: DuckDBV2ConfigHandle -> DuckDBV2OptionHandle -> IO ConfigOption
 copyOption config handle = do
   name <- output (c_duckdb_v2_option_get_name handle) >>= readIdentifier
   description <- output (c_duckdb_v2_option_get_description handle) >>= readText
-  setting <- withOptionValue config name \value _ -> valueText value
-  defaultSetting <- bracket (output (c_duckdb_v2_option_get_default_value handle)) (destroy c_duckdb_v2_value_destroy) valueText
+  setting <- withOptionValue config name \value _ -> nullableText value
+  defaultSetting <- bracket (output (c_duckdb_v2_option_get_default_value handle)) (destroy c_duckdb_v2_value_destroy) nullableText
   scope <- output (c_duckdb_v2_option_get_default_scope handle) >>= settingScopeFromNative
   scopes <-
     filterM
@@ -193,6 +199,12 @@ copyOption config handle = do
   count <- output (c_duckdb_v2_option_get_alias_count handle)
   aliases <- forM (indices count) \index -> output (c_duckdb_v2_option_get_alias handle index) >>= readIdentifier
   pure (ConfigOption name description setting defaultSetting scope scopes aliases)
+
+-- | Copy the text of a value, or 'Nothing' for a NULL value.
+nullableText :: DuckDBV2ValueHandle -> IO (Maybe Text)
+nullableText value = do
+  isNull <- output (c_duckdb_v2_value_is_null value)
+  if isNull /= 0 then pure Nothing else Just <$> valueText value
 
 -- | Release each owned option value after its action.
 withOptionValue :: DuckDBV2ConfigHandle -> Text -> (DuckDBV2ValueHandle -> SettingScope -> IO a) -> IO a

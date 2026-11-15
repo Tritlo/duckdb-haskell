@@ -386,7 +386,7 @@ extensionRegressionTests =
           case find ((== "threads") . Config.configOptionName) options of
             Nothing -> assertFailure "missing threads descriptor"
             Just option -> do
-              Config.configOptionSetting option @?= "1"
+              Config.configOptionSetting option @?= Just "1"
               Config.configOptionName option @?= "threads"
               assertBool "description is retained" (not (Text.null (Config.configOptionDescription option)))
     , testCase "listed options give the aliases of DuckDB" $
@@ -398,11 +398,27 @@ extensionRegressionTests =
           assertBool "DuckDB lists options with aliases" (not (null aliases))
           forM_ aliases \(name, expected) ->
             assertEqual (Text.unpack name) (Just (sort expected)) (sort . Config.configOptionAliases <$> option name)
-          Config.configOptionSetting <$> option "progress_bar_time" @?= Just "1234"
+          Config.configOptionSetting <$> option "progress_bar_time" @?= Just (Just "1234")
+    , testCase "option descriptors give Nothing for a NULL value and a missing default" $
+        withConnection ":memory:" \conn -> do
+          Config.registerCustomOption
+            conn
+            (Config.customOption "haskell_described" (Registration.TypeExpression "BIGINT"))
+              { Config.customOptionDefault = Just (Registration.defaultValue (3 :: Int64))
+              }
+          void $ execute_ conn "RESET progress_bar_time"
+          options <- Config.listConfigOptions conn
+          let described get name = get <$> find ((== name) . Config.configOptionName) options
+          described Config.configOptionDefault "haskell_described" @?= Just (Just "3")
+          -- progress_bar_time has no static default. After RESET its value is 2000.
+          described Config.configOptionDefault "progress_bar_time" @?= Just Nothing
+          described Config.configOptionSetting "progress_bar_time" @?= Just (Just "2000")
+          -- enable_profiling has a NULL value until a write.
+          described Config.configOptionSetting "enable_profiling" @?= Just Nothing
     , testCase "instance options list global values" $
         withEnvironment \environment -> withInstance environment [("threads", "1")] \instance_ -> do
           options <- Config.listInstanceOptions instance_
-          fmap Config.configOptionSetting (find ((== "threads") . Config.configOptionName) options) @?= Just "1"
+          fmap Config.configOptionSetting (find ((== "threads") . Config.configOptionName) options) @?= Just (Just "1")
     , testCase "connection options set a session option on one connection only" $
         withEnvironment \environment -> withInstance environment [] \instance_ -> do
           attachDatabase instance_ ":memory:" "shared" []

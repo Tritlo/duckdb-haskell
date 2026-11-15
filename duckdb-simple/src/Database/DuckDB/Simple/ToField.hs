@@ -647,8 +647,10 @@ instance ToField BitString
 instance ToField Day
 
 -- | Bind a time of day as a TIME, or as a TIME_NS. See
--- Note [Nanosecond parameters]. A time with 60 seconds (a leap second) binds as
--- the next second, as @make_time@ of DuckDB gives it. See Note [Time ranges].
+-- Note [Nanosecond parameters]. A time of exactly 60 seconds (a leap second)
+-- binds as the next second, as @make_time@ of DuckDB gives it: 23:59:60 binds as
+-- 24:00:00. A later time, for example 23:59:60.5, raises an @SQLError@. The
+-- section \"Errors\" of the README gives its type. See Note [Time ranges].
 instance ToField TimeOfDay where
   toField value =
     timeValueBinding (show value) (LogicalTypeScalar LogicalTypeIdTime) (FieldTime value) \builder -> timeOfDayDuckValue (builderFactory builder) value

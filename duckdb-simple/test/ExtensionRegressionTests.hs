@@ -24,10 +24,9 @@ import Control.Exception (
  )
 import Control.Monad (forM, forM_, replicateM_, void, when)
 import qualified Data.ByteString as BS
-import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, newIORef, readIORef)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (find, isInfixOf, nub, sort)
-import Data.Maybe (isNothing)
 import Data.Proxy (Proxy (..))
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
@@ -60,10 +59,9 @@ import Numeric.Natural (Natural)
 import System.Directory (doesFileExist, getHomeDirectory, getTemporaryDirectory, removeFile)
 import System.FilePath (takeDirectory)
 import System.IO (hClose, openBinaryTempFile)
-import System.Mem (performMajorGC)
-import System.Mem.Weak (deRefWeak)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase, (@?=))
+import TestUtils (assertReleasedAfter)
 
 -- | Run the extension regression tests as a standalone executable.
 main :: IO ()
@@ -815,20 +813,6 @@ registerCopy conn name failingPhase =
       if failingPhase == Just phase
         then throwIO (userError ("copy phase " <> show phase))
         else pure ()
-
--- | Run an action with a new token, and require that no value keeps the token
--- after the action and two major collections. The action gives the token to the
--- callbacks of a registration that fails, is replaced, or ends with its database.
-assertReleasedAfter :: String -> (IORef Int64 -> IO ()) -> Assertion
-assertReleasedAfter label action = do
-  weak <- do
-    token <- newIORef 1
-    weak <- mkWeakIORef token (pure ())
-    action token
-    pure weak
-  performMajorGC
-  performMajorGC
-  deRefWeak weak >>= assertBool (label <> " keeps its callback after the case") . isNothing
 
 -- | Require a controlled SQL exception.
 assertSqlError :: IO a -> Assertion

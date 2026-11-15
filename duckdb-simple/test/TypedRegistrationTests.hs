@@ -80,6 +80,7 @@ import System.Mem (performMajorGC)
 import System.Mem.Weak (Weak, deRefWeak)
 import Test.Tasty (TestTree, localOption, mkTimeout, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase, (@?=))
+import TestUtils (assertReleasedAfter)
 
 -- | Check the typed registrations through SQL.
 typedRegistrationTests :: TestTree
@@ -143,7 +144,7 @@ typedRegistrationTests =
     , testCase "aggregate states are released" testAggregateRelease
     , testGroup
         "the callback closure of each registration kind is released when its database closes"
-        [testCase kind (testClosureRelease use) | (kind, use) <- closureKinds]
+        [testCase kind (assertReleasedAfter kind use) | (kind, use) <- closureKinds]
     ]
 
 -- | Cast BIGINT values and NULLs to a custom type over more than one chunk.
@@ -1600,20 +1601,6 @@ withDirectory = bracket create removePathForcibly
       removeFile path
       createDirectory path
       pure path
-
--- | Run an action with a new token. The action registers a callback that reads
--- the token, runs the callback, and closes the database. Then no value may keep
--- the token.
-testClosureRelease :: (IORef Int64 -> IO ()) -> Assertion
-testClosureRelease use = do
-  weak <- do
-    token <- newIORef 1
-    weak <- mkWeakIORef token (pure ())
-    use token
-    pure weak
-  performMajorGC
-  performMajorGC
-  deRefWeak weak >>= assertBool "a value keeps the callback closure after the database closes" . isNothing
 
 -- | The registration kinds that have no other check of the release of their
 -- callback closure. Each action registers one callback that reads the token,

@@ -6,6 +6,7 @@
 module TestUtils (
   NativeTimestamp (..),
   assertFailureIO,
+  assertReleasedAfter,
   assertSqlErrorType,
   filteredQueries,
   nativeLocalTime,
@@ -17,7 +18,9 @@ module TestUtils (
 import Control.Concurrent (getNumCapabilities, setNumCapabilities)
 import Control.Exception (SomeException, try)
 import Control.Monad (forM_, when)
+import Data.IORef (IORef, mkWeakIORef, newIORef)
 import Data.Int (Int64)
+import Data.Maybe (isNothing)
 import Data.Ratio ((%))
 import qualified Data.Text as Text
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
@@ -40,6 +43,8 @@ import Foreign.C.String (withCString)
 import Foreign.C.Types (CChar)
 import Foreign.Ptr (castPtr)
 import Foreign.Storable (pokeElemOff)
+import System.Mem (performMajorGC)
+import System.Mem.Weak (deRefWeak)
 import Test.Tasty.HUnit (Assertion, assertBool, assertFailure, (@?=))
 
 {- Note [Capabilities of the tests]
@@ -113,6 +118,20 @@ assertSqlErrorType expected action = do
         (not ("duckdb-simple: " `Text.isPrefixOf` sqlErrorMessage err))
       sqlErrorType err @?= Just expected
     Right _ -> assertFailure ("expected an SQLError of the type " <> show expected)
+
+-- | Run an action with a new token, and require that no value keeps the token
+-- after the action and two major collections. The action gives the token to the
+-- callbacks of a registration that fails, is replaced, or ends with its database.
+assertReleasedAfter :: String -> (IORef Int64 -> IO ()) -> Assertion
+assertReleasedAfter label action = do
+  weak <- do
+    token <- newIORef 1
+    weak <- mkWeakIORef token (pure ())
+    action token
+    pure weak
+  performMajorGC
+  performMajorGC
+  deRefWeak weak >>= assertBool (label <> " keeps its callback after the case") . isNothing
 
 -- | Supply a constant C string for one native call.
 withConstCString :: String -> (ConstPtr CChar -> IO a) -> IO a

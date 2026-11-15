@@ -652,6 +652,123 @@ instance (DuckDBColumnType k, DuckDBColumnType v, ToField k, ToField v) => ToFie
           (\value -> fieldBindingValue (toField value) builder (pure valueTarget))
           (Map.toAscList pairs)
 
+-- | Bind a dynamic value, for example one that a query read as a t'FieldValue'.
+-- Each scalar constructor binds with the instance of its payload type, so it
+-- has the DuckDB type of the constructor. 'FieldHugeInt' and 'FieldUHugeInt'
+-- bind as HUGEINT and UHUGEINT. 'FieldNull' binds as NULL. 'FieldStruct',
+-- 'FieldTuple', and 'FieldUnion' bind with their own types. 'FieldGeometry'
+-- binds as a GEOMETRY with its CRS.
+--
+-- 'FieldList', 'FieldArray', and 'FieldMap' read the parameter type, and take
+-- the element type that their elements give. See
+-- Note [Element types of a list].
+--
+-- Some values lose their type:
+--
+-- * A 'FieldTimestamp' binds as a TIMESTAMP, or as a TIMESTAMP_NS when it has
+--   digits below a microsecond and the parameter has the type TIMESTAMP_NS,
+--   whatever the unit of the column it came from. The
+--   same holds for 'FieldTime' and 'FieldTimestampTZ'. See
+--   Note [Nanosecond parameters].
+-- * A 'FieldText' binds as a VARCHAR with no collation, also when it came from
+--   a JSON value.
+-- * A value that came from a VARIANT binds as its payload.
+--
+-- These values raise an 'SQLError' of the type 'ErrorInputInvalid', because no
+-- type is known for them: a 'FieldEnum', which holds only the index of an ENUM
+-- value, and a 'FieldList', a 'FieldArray', or a 'FieldMap' with no element
+-- that is not 'FieldNull'. Inside a 'FieldStruct', a 'FieldTuple', or a
+-- 'FieldUnion', the declared type gives these types, so such a value binds.
+--
+-- t'FieldValue' has no 'DuckDBColumnType' and no 'ToDuckValue' instance,
+-- because no one DuckDB type holds each of its values.
+instance ToField FieldValue where
+  toField value = case value of
+    FieldNull -> nullBinding "NULL"
+    FieldInt8 v -> toField v
+    FieldInt16 v -> toField v
+    FieldInt32 v -> toField v
+    FieldInt64 v -> toField v
+    FieldWord8 v -> toField v
+    FieldWord16 v -> toField v
+    FieldWord32 v -> toField v
+    FieldWord64 v -> toField v
+    FieldUUID v -> toField v
+    FieldFloat v -> toField v
+    FieldDouble v -> toField v
+    FieldText v -> toField v
+    FieldBool v -> toField v
+    FieldBlob v -> toField v
+    FieldGeometry v -> toField v
+    FieldDate v -> toField v
+    FieldTime v -> toField v
+    FieldTimestamp v -> toField v
+    FieldInterval v -> toField v
+    FieldHugeInt v -> valueBinding (show v) (`hugeIntDuckValue` v)
+    FieldUHugeInt v -> valueBinding (show v) (`uhugeIntDuckValue` v)
+    FieldDecimal v -> toField v
+    FieldTimestampTZ v -> toField v
+    FieldTimeTZ v -> toField v
+    FieldBit v -> toField v
+    FieldBigNum v -> toField v
+    FieldEnum{} -> valueBinding (show value) \_ -> untypedFieldValue "a FieldEnum holds the index of an ENUM value, but not its ENUM type"
+    FieldArray items -> fieldValueSequence "FieldArray" c_duckdb_v2_value_create_array (elems items)
+    FieldList items -> fieldValueSequence "FieldList" c_duckdb_v2_value_create_list items
+    FieldMap pairs -> fieldValueMap pairs
+    FieldStruct v -> toField v
+    FieldTuple v -> toField v
+    FieldUnion v -> toField v
+
+-- | Raise the error for a t'FieldValue' parameter that has no known type. The
+-- argument gives the reason.
+untypedFieldValue :: Text -> IO a
+untypedFieldValue reason =
+  throwIO
+    SQLError
+      { sqlErrorMessage = "duckdb-simple: " <> reason <> ", so the FieldValue cannot bind as a parameter"
+      , sqlErrorType = Just ErrorInputInvalid
+      , sqlErrorQuery = Nothing
+      }
+
+-- | Bind the elements of a 'FieldList' or a 'FieldArray' with the element type
+-- that they give. See Note [Element types of a list].
+fieldValueSequence
+  :: Text
+  -> ( DuckDBV2FactoryHandle
+       -> DuckDBV2LogicalTypeHandle
+       -> ConstPtr DuckDBV2ValueHandle
+       -> DuckDBIdx
+       -> Ptr DuckDBV2ValueHandle
+       -> Ptr DuckDBV2ErrorInfoHandle
+       -> IO DuckDBV2Error
+     )
+  -> [FieldValue]
+  -> FieldBinding
+fieldValueSequence name create items =
+  targetValueBinding ("<" <> Text.unpack name <> " length=" <> show (length items) <> ">") \builder@ValueBuilder{builderFactory = factory} readTarget -> do
+    when (all (== FieldNull) items) $
+      untypedFieldValue ("a " <> name <> " with no element that is not FieldNull has no element type")
+    childTarget <- collectionChildType <$> readTarget
+    withCreatedValues (map (\item -> fieldBindingValue (toField item) builder (pure childTarget)) items) \values ->
+      withValueType builder childTarget name values \elementType ->
+        withArray values \ptr ->
+          output (create factory elementType (ConstPtr ptr) (fromIntegral (length values)))
+
+-- | Bind the pairs of a 'FieldMap' in their order, with the key type and the
+-- value type that they give. See Note [Element types of a list].
+fieldValueMap :: [(FieldValue, FieldValue)] -> FieldBinding
+fieldValueMap pairs =
+  targetValueBinding ("<FieldMap size=" <> show (length pairs) <> ">") \builder@ValueBuilder{builderFactory = factory} readTarget -> do
+    when (all ((== FieldNull) . fst) pairs || all ((== FieldNull) . snd) pairs) $
+      untypedFieldValue "a FieldMap with no key or no value that is not FieldNull has no key type or value type"
+    (keyTarget, valueTarget) <- mapPartTypes <$> readTarget
+    withCreatedValues (map (\(key, _) -> fieldBindingValue (toField key) builder (pure keyTarget)) pairs) \keys ->
+      withCreatedValues (map (\(_, item) -> fieldBindingValue (toField item) builder (pure valueTarget)) pairs) \values ->
+        withValueType builder keyTarget "FieldMap" keys \keyType ->
+          withValueType builder valueTarget "FieldMap" values \valueType ->
+            withArray keys \keyPtr -> withArray values \valuePtr ->
+              output (c_duckdb_v2_value_create_map factory keyType valueType (ConstPtr keyPtr) (ConstPtr valuePtr) (fromIntegral (length pairs)))
+
 instance (ToField a) => ToField (Maybe a) where
   toField Nothing = nullBinding "Nothing"
   toField (Just value) =
@@ -965,8 +1082,9 @@ mapDuckValue builder@ValueBuilder{builderFactory = factory} keyTarget valueTarge
 
 {- Note [Element types of a list]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-withElementType gives the element type of a LIST or an ARRAY value, and the key
-type or the value type of a MAP value, to the native constructor:
+withElementType and withValueType give the element type of a LIST or an ARRAY
+value, and the key type or the value type of a MAP value, to the native
+constructor:
 
 - A scalar element type comes from the column type name of the element. Some
   elements take the element type of the target in place of that type: an
@@ -974,8 +1092,14 @@ type or the value type of a MAP value, to the native constructor:
   Note [Integer parameters]), and a TimeOfDay, a LocalTime, or a UTCTime
   element for a nanosecond target (see Note [Nanosecond parameters]).
 - Each other element, for example a STRUCT, a TUPLE, a UNION, a generic record,
-  a list, or an array, has no type name. When each element that is not NULL
-  has the type of the first one, that type is the element type.
+  a list, an array, or a FieldValue, has no type name. withValueType gives its
+  type. When each element that is not NULL has the type of the first one, that
+  type is the element type.
+- When the types are different, but timestampTypeForTarget gives each of them
+  the same nanosecond type for the target, that type is the element type. For
+  example, a FieldTime with digits below a microsecond binds as a TIME_NS for a
+  TIME_NS[] parameter, and one with no such digits binds as a TIME. DuckDB has
+  no common type for TIME and TIME_NS, or for TIMESTAMPTZ and TIMESTAMPTZ_NS.
 - When these types are different, the library names no element type. The
   native constructor then gives the type of a SQL list literal of the elements
   (duckdb_v2.h: "The child type is the common type of the elements, resolved by
@@ -1007,30 +1131,9 @@ withElementType
   -> [DuckDBV2ValueHandle]
   -> (DuckDBV2LogicalTypeHandle -> IO b)
   -> IO b
-withElementType proxy ValueBuilder{builderType = makeType} target values action = case duckDBTypeFromName typeName of
+withElementType proxy builder@ValueBuilder{builderType = makeType} target values action = case duckDBTypeFromName typeName of
   Just dtype -> bracket (makeType (declaredType dtype)) destroyLogicalType action
-  Nothing -> do
-    -- Keep the values that are not NULL, in list order. The fold keeps a
-    -- constant stack. See Note [Constant stack at safe calls] in
-    -- "Database.DuckDB.Simple.Native".
-    let keep kept value = output (c_duckdb_v2_value_is_null value) >>= \flag -> if flag == 0 then pure (value : kept) else pure kept
-    present <- reverse <$> foldM keep [] values
-    case present of
-      value : rest -> bracket (output (c_duckdb_v2_value_get_logical_type value)) destroyLogicalType \logical -> do
-        expected <- logicalTypeToRep logical
-        let sameType same element = do
-              actual <- bracket (output (c_duckdb_v2_value_get_logical_type element)) destroyLogicalType logicalTypeToRep
-              pure $! same && actual == expected
-        same <- foldM sameType True rest
-        -- See Note [Element types of a list].
-        if same then action logical else action nullHandle
-      [] ->
-        throwIO
-          SQLError
-            { sqlErrorMessage = "duckdb-simple: an empty or all-NULL array of " <> typeName <> " elements has no element type"
-            , sqlErrorType = Nothing
-            , sqlErrorQuery = Nothing
-            }
+  Nothing -> withValueType builder target typeName values action
   where
     typeName = duckdbColumnType proxy
     -- See Note [Integer parameters].
@@ -1038,6 +1141,38 @@ withElementType proxy ValueBuilder{builderType = makeType} target values action 
       | Just rep@(LogicalTypeScalar dtype) <- target, dtype `elem` integerTypes = rep
       | Just rep@LogicalTypeDecimal{} <- target = rep
     declaredType dtype = timestampTypeForTarget target (LogicalTypeScalar dtype)
+
+-- | Give the element type that the values give to the action. The target is
+-- the element type of the parameter, and the name is the element type in the
+-- error for values with no type. See Note [Element types of a list].
+withValueType :: ValueBuilder -> Maybe LogicalTypeRep -> Text -> [DuckDBV2ValueHandle] -> (DuckDBV2LogicalTypeHandle -> IO b) -> IO b
+withValueType ValueBuilder{builderType = makeType} target typeName values action = do
+  -- Keep the values that are not NULL, in list order. The fold keeps a
+  -- constant stack. See Note [Constant stack at safe calls] in
+  -- "Database.DuckDB.Simple.Native".
+  let keep kept value = output (c_duckdb_v2_value_is_null value) >>= \flag -> if flag == 0 then pure (value : kept) else pure kept
+  present <- reverse <$> foldM keep [] values
+  case present of
+    value : rest -> bracket (output (c_duckdb_v2_value_get_logical_type value)) destroyLogicalType \logical -> do
+      expected <- logicalTypeToRep logical
+      let promoted = timestampTypeForTarget target expected
+          sameTypes (same, samePromoted) element = do
+            actual <- bracket (output (c_duckdb_v2_value_get_logical_type element)) destroyLogicalType logicalTypeToRep
+            let same' = same && actual == expected
+                samePromoted' = samePromoted && timestampTypeForTarget target actual == promoted
+            same' `seq` samePromoted' `seq` pure (same', samePromoted')
+      (same, samePromoted) <- foldM sameTypes (True, True) rest
+      case (same, samePromoted) of
+        (True, _) -> action logical
+        (False, True) -> bracket (makeType promoted) destroyLogicalType action
+        (False, False) -> action nullHandle
+    [] ->
+      throwIO
+        SQLError
+          { sqlErrorMessage = "duckdb-simple: an empty or all-NULL array of " <> typeName <> " elements has no element type"
+          , sqlErrorType = Nothing
+          , sqlErrorQuery = Nothing
+          }
 
 -- | Construct named fields. The native call copies the field values.
 structValueDuckValue

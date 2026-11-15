@@ -251,6 +251,139 @@ valueRegressionTests =
                   rows -> assertFailure (show rows)
                 withConnectionHandle conn \native -> withConnectionFactory native \factory -> bracket (toDuckValue factory values) destroyValue (const (pure ()))
         (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
+    , testCase "a FieldValue binds back as the value that it was read from" $ withConnection ":memory:" \conn -> do
+        -- The third item is the type of the bound value for SELECT ?, when it
+        -- is not the type of the source.
+        forM_
+          [ ("BOOLEAN", "true", Nothing)
+          , ("TINYINT", "-7", Nothing)
+          , ("SMALLINT", "-300", Nothing)
+          , ("INTEGER", "-70000", Nothing)
+          , ("BIGINT", "-9007199254740993", Nothing)
+          , ("UTINYINT", "200", Nothing)
+          , ("USMALLINT", "60000", Nothing)
+          , ("UINTEGER", "4000000000", Nothing)
+          , ("UBIGINT", "18446744073709551615", Nothing)
+          , ("HUGEINT", "-170141183460469231731687303715884105728", Nothing)
+          , ("UHUGEINT", "5", Nothing)
+          , ("UHUGEINT", "340282366920938463463374607431768211455", Nothing)
+          , ("FLOAT", "1.25", Nothing)
+          , ("DOUBLE", "0.1", Nothing)
+          , ("DECIMAL(4,1)", "123.4", Nothing)
+          , ("DECIMAL(18,3)", "123456789012345.678", Nothing)
+          , ("DECIMAL(38,10)", "1234567890123456789012345678.0123456789", Nothing)
+          , ("VARCHAR", "'text'", Nothing)
+          , ("VARCHAR COLLATE NOCASE", "'Text'", Nothing)
+          , ("JSON", "'{\"a\": 1}'", Just "VARCHAR")
+          , ("BLOB", "'\\x00\\xFF'::BLOB", Nothing)
+          , ("UUID", "'00112233-4455-6677-8899-aabbccddeeff'", Nothing)
+          , ("BIT", "'10110'", Nothing)
+          , ("DATE", "'2026-01-02'", Nothing)
+          , ("DATE", "'infinity'", Nothing)
+          , ("TIME", "'03:04:05.123456'", Nothing)
+          , ("TIME_NS", "'03:04:05.123456789'", Just "TIME")
+          , ("TIMETZ", "'03:04:05+01:30:15'", Nothing)
+          , ("TIMESTAMP", "'2026-01-02 03:04:05.123456'", Nothing)
+          , ("TIMESTAMP", "'-infinity'", Nothing)
+          , ("TIMESTAMP_S", "'2026-01-02 03:04:05'", Just "TIMESTAMP")
+          , ("TIMESTAMP_MS", "'2026-01-02 03:04:05.123'", Just "TIMESTAMP")
+          , ("TIMESTAMP_NS", "'2026-01-02 03:04:05.123456789'", Just "TIMESTAMP")
+          , ("TIMESTAMPTZ", "'2026-01-02 03:04:05.123456+00'", Nothing)
+          , ("TIMESTAMPTZ_NS", "'2026-01-02 03:04:05.123456789+00'", Just "TIMESTAMP WITH TIME ZONE")
+          , ("INTERVAL", "INTERVAL '1 month 2 days 3 microseconds'", Nothing)
+          , ("BIGNUM", "'123456789012345678901234567890123456789012345678901234567890'", Nothing)
+          , ("GEOMETRY", "'POINT (1 2)'", Nothing)
+          , ("GEOMETRY('OGC:CRS84')", "'POINT (1 2)'", Nothing)
+          , ("VARIANT", "42::BIGINT", Just "BIGINT")
+          , ("VARIANT", "{'k': 1}", Just "STRUCT(k VARIANT)")
+          , ("INTEGER", "NULL", Just "\"NULL\"")
+          , ("INTEGER[]", "[1, NULL, 3]", Nothing)
+          , ("TIMESTAMP_NS[]", "['2026-01-02 03:04:05.123456789', '2026-01-02 03:04:05']", Just "TIMESTAMP[]")
+          , ("TIME_NS[]", "['03:04:05.123456789', '03:04:05']", Just "TIME[]")
+          , ("TIMESTAMPTZ_NS[]", "['2026-01-02 03:04:05.123456789+00', '2026-01-02 03:04:05+00']", Just "TIMESTAMP WITH TIME ZONE[]")
+          , ("DECIMAL(4,1)[]", "[1.5, 2.5]", Nothing)
+          , ("INTEGER[2]", "[1, 2]", Nothing)
+          , ("VARCHAR[2][]", "[['a', 'b'], ['c', NULL]]", Nothing)
+          , ("MAP(VARCHAR, INTEGER)", "MAP {'a': 1, 'b': NULL}", Nothing)
+          , ("MAP(INTEGER[], STRUCT(x DOUBLE))", "MAP {[1]: {'x': 1.5}}", Nothing)
+          , ("STRUCT(a INTEGER, b VARCHAR)", "{'a': 1, 'b': 'x'}", Nothing)
+          , ("STRUCT(e ENUM('a', 'b'), n INTEGER[])", "{'e': 'b', 'n': []}", Nothing)
+          , ("TUPLE(INTEGER, VARCHAR)", "(1, 'x')", Nothing)
+          , ("UNION(a INTEGER, b VARCHAR)", "union_value(b := 'x')", Nothing)
+          , ("STRUCT(a INTEGER)[]", "[{'a': 1}, NULL]", Nothing)
+          ]
+          \(sqlType, literal, boundType) -> do
+            let source = "(" <> literal <> ")::" <> sqlType
+                label = Text.unpack source
+            [Only value] <- query_ conn (Query ("SELECT " <> source)) :: IO [Only FieldValue]
+            rows <- query conn (Query ("SELECT typeof(?), typeof(" <> source <> "), ? IS NOT DISTINCT FROM " <> source)) (value, value)
+            case (rows, boundType) of
+              ([(actual, expected, same)], Nothing) -> do
+                assertEqual label expected actual
+                assertBool (label <> ": SELECT ? gives another value") same
+              ([(actual, _, _ :: Bool)], Just expected) -> assertEqual label expected (actual :: Text)
+              _ -> assertFailure (label <> ": " <> show rows)
+            _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE back (v " <> sqlType <> ")"))
+            _ <- execute conn "INSERT INTO back VALUES (?)" (Only value)
+            (query_ conn (Query ("SELECT v IS NOT DISTINCT FROM " <> source <> " FROM back")) :: IO [Only Bool]) >>= assertEqual label [Only True]
+        -- A row read as a list of FieldValue binds back as a row.
+        _ <-
+          execute_
+            conn
+            "CREATE TABLE source_row (i INTEGER, t VARCHAR, s STRUCT(a INTEGER), l DOUBLE[]); INSERT INTO source_row VALUES (1, 'x', {'a': 2}, [1.5, NULL]); CREATE TABLE copied AS FROM source_row LIMIT 0"
+        [row] <- query_ conn "SELECT * FROM source_row" :: IO [[FieldValue]]
+        _ <- execute conn "INSERT INTO copied VALUES (?, ?, ?, ?)" row
+        (query_ conn "SELECT (SELECT count(*) FROM copied), (SELECT count(*) FROM (FROM source_row EXCEPT FROM copied))" :: IO [(Int64, Int64)])
+          >>= (@?= [(1, 0)])
+    , testCase "a FieldValue with no known type raises an error" $ withConnection ":memory:" \conn -> do
+        let untyped :: String -> FieldValue -> Text -> IO ()
+            untyped label value part =
+              try (query conn "SELECT ?" (Only value) :: IO [Only FieldValue]) >>= \case
+                Left SQLError{sqlErrorType, sqlErrorMessage} -> do
+                  assertEqual label (Just ErrorInputInvalid) sqlErrorType
+                  assertBool (Text.unpack sqlErrorMessage) (part `Text.isInfixOf` sqlErrorMessage)
+                Right rows -> assertFailure (label <> ": " <> show rows)
+        [Only enum] <- query_ conn "SELECT 'b'::ENUM('a', 'b')" :: IO [Only FieldValue]
+        untyped "ENUM" enum "a FieldEnum holds the index of an ENUM value, but not its ENUM type"
+        untyped "ENUM in a list" (FieldList [enum]) "a FieldEnum holds the index of an ENUM value"
+        untyped "empty list" (FieldList []) "a FieldList with no element that is not FieldNull has no element type"
+        untyped "NULL list" (FieldList [FieldNull, FieldNull]) "a FieldList with no element that is not FieldNull"
+        untyped "empty inner list" (FieldList [FieldList [FieldInt32 1], FieldList []]) "a FieldList with no element that is not FieldNull"
+        untyped "NULL array" (FieldArray (listArray (0, 1) [FieldNull, FieldNull])) "a FieldArray with no element that is not FieldNull"
+        untyped "empty array" (FieldArray (listArray (0, -1) [])) "a FieldArray with no element that is not FieldNull"
+        untyped "empty map" (FieldMap []) "a FieldMap with no key or no value that is not FieldNull"
+        untyped "NULL map values" (FieldMap [(FieldText "a", FieldNull)]) "a FieldMap with no key or no value that is not FieldNull"
+        (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
+    , testCase "a FieldList of scalar values with different types follows the SQL list literal" $ withConnection ":memory:" \conn -> do
+        forM_
+          [ ([FieldInt32 1, FieldInt64 2], "[1::INTEGER, 2::BIGINT]", "BIGINT[]")
+          , ([FieldInt64 9007199254740993, FieldDouble 1.5], "[9007199254740993::BIGINT, 1.5::DOUBLE]", "DOUBLE[]")
+          , ([FieldList [FieldInt32 1], FieldList [FieldInt64 2]], "[[1::INTEGER], [2::BIGINT]]", "BIGINT[][]")
+          ]
+          \(items, literal, typeName) ->
+            ( query conn (Query ("SELECT typeof(?), ?::VARCHAR, (" <> literal <> ")::VARCHAR")) (FieldList items, FieldList items)
+                :: IO [(Text, Text, Text)]
+            )
+              >>= \case
+                [(actualType, text, literalText)] -> do
+                  assertEqual (Text.unpack literal) typeName actualType
+                  assertEqual (Text.unpack literal) literalText text
+                rows -> assertFailure (show rows)
+        (query conn "SELECT ?::VARCHAR" (Only (FieldList [FieldInt64 9007199254740993, FieldDouble 1.5])) :: IO [Only Text])
+          >>= (@?= [Only "[9007199254740992.0, 1.5]"])
+        [Only mixedVariant] <- query_ conn "SELECT [1::VARIANT, 'x'::VARIANT]::VARIANT" :: IO [Only FieldValue]
+        forM_
+          [ ("scalars", FieldList [FieldInt32 1, FieldText "a"], "Cannot combine types INTEGER and VARCHAR")
+          , ("lists", FieldList [FieldList [FieldInt32 1], FieldList [FieldText "a"]], "Cannot combine types INTEGER[] and VARCHAR[]")
+          , ("array", FieldArray (listArray (0, 1) [FieldInt32 1, FieldText "a"]), "Cannot combine types INTEGER and VARCHAR")
+          , ("VARIANT array", mixedVariant, "Cannot combine types INTEGER and VARCHAR")
+          ]
+          \(label, value, part) ->
+            try (query conn "SELECT ?" (Only value) :: IO [Only FieldValue]) >>= \case
+              Left SQLError{sqlErrorType, sqlErrorMessage} -> do
+                assertEqual label (Just ErrorQueryNotImplemented) sqlErrorType
+                assertBool (Text.unpack sqlErrorMessage) (part `Text.isInfixOf` sqlErrorMessage)
+              Right rows -> assertFailure (label <> ": " <> show rows)
     , testCase "a list or an Array of composite elements with different types follows the SQL list literal" $ withConnection ":memory:" \conn -> do
         let elementOf :: Text -> IO (Maybe (StructValue FieldValue))
             elementOf "NULL" = pure Nothing

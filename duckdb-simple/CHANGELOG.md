@@ -218,8 +218,8 @@
   binds back. A scalar constructor binds as the DuckDB type of the
   constructor, and a `FieldList`, a `FieldArray`, or a `FieldMap` takes the
   element type that its elements give, with the rule of a SQL list literal.
-  A `FieldEnum`, and a `FieldList`, a `FieldArray`, or a `FieldMap` with no
-  element that is not `FieldNull`, raise `SQLError` with the type
+  A `FieldEnum`, an empty `FieldArray`, and an empty `FieldList` or `FieldMap`
+  for a parameter with no known type raise `SQLError` with the type
   `ErrorInputInvalid`. A `FieldTimestamp`, a `FieldTime`, and a
   `FieldTimestampTZ` bind with the microsecond type, or with the nanosecond
   type when the value has digits below a microsecond and the parameter has the
@@ -230,9 +230,12 @@
   `STRUCT(a INTEGER, b INTEGER)` for `{'a': 1}` and `{'b': 2}`. Elements with
   no common type raise the `SQLError` of DuckDB. Version 0.3 raised an error
   for each `Array` with different element types.
-- An `Array` or a list of such elements that are all NULL takes the element
-  type of the parameter when the parameter has a known type, for example for
-  an `INSERT` into a typed column. Version 0.3 raised an error for it.
+- An `Array`, a list, or a `Map` of such elements that are all NULL takes the
+  element type of the parameter when the parameter has a known type, for
+  example for an `INSERT` into a typed column, and the type of the SQL list
+  literal, such as `"NULL"[]`, when it has none. An empty list or `Map` of such
+  elements takes the element type of a parameter with a known type. Version
+  0.3 raised an error for an `Array` of NULL elements.
 - Some parameters bind for the type that DuckDB gives the parameter: a time
   value with digits below a microsecond, an `Array`, a list, a `Map`, a manual
   STRUCT, TUPLE, or UNION value, and an `Integer` or a `Natural` outside the

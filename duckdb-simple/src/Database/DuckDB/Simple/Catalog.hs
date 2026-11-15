@@ -32,8 +32,9 @@ import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
 
--- | Entry kinds that DuckDB exposes through catalog metadata. V2 metadata
--- cannot look up collations.
+-- | Entry kinds that DuckDB exposes through catalog metadata. There is no
+-- collation kind: @pragma_collations()@ gives the name of each collation, but
+-- not its catalog and its schema.
 data CatalogEntryType = CatalogTable | CatalogView | CatalogIndex | CatalogSequence | CatalogType
   deriving (Eq, Ord, Show, Read)
 

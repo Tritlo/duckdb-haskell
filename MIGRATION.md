@@ -101,7 +101,7 @@ The SQL workflow stays the same. These changes can affect your code:
 - `logicalTypeToRep`, `logicalTypeFromRep`, `logicalTypeFromRepWith`, and
   `destroyLogicalType` moved from `Database.DuckDB.Simple.LogicalRep` to
   `Database.DuckDB.Simple.V2.LogicalRep`. Import them from the new module.
-- `LogicalTypeScalar`, `Function.argumentTypes`, and
+- `LogicalTypeScalar` and
   `CopyBindInfo.copyBindColumnTypes` use `LogicalTypeId` instead of
   `DuckDBType`. `Database.DuckDB.Simple`, `Database.DuckDB.Simple.LogicalRep`,
   `FromField`, `Function`, and `Copy` export `LogicalTypeId`. Replace the prefix
@@ -240,6 +240,13 @@ The SQL workflow stays the same. These changes can affect your code:
   `argument arg1 is NULL, but Int64 cannot hold NULL`. Version 0.3 gave
   `unable to convert argument #2: ...`, with numbers from 1. Update code that
   compares these texts.
+- `FunctionArg` is gone. An argument of `createFunction` can have each type
+  with `FromField` and `DuckDBColumnType` instances. Its SQL type is the
+  `duckdbTypeDeclaration` of the type. The argument types of version 0.3 keep
+  their SQL types. `Function.argumentTypes` gives
+  `[Either Text TypeDeclaration]` in place of `[DuckDBType]`. An argument type
+  that is or contains VARIANT or GEOMETRY was a compile error. It is now an
+  `SQLError` at registration.
 - `Database.DuckDB.Simple` exports new names, for example `connect`,
   `Environment`, `Instance`, `withInstance`, `attachDatabase`, `createCast`,
   `createTableFunction`, `createAggregate`, `Aggregate` with its fields, and

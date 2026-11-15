@@ -851,6 +851,13 @@ expressions. The arguments use `FromField`, and the result uses
 `FunctionResult`. Thus a function can take and give `Maybe` values, and it can
 give an `IO` action.
 
+An argument type needs `FromField` and `DuckDBColumnType` instances. Its SQL
+type is the `duckdbTypeDeclaration` of the type, as for a typed column. A
+newtype with its own `DuckDBColumnType` text, for example `DECIMAL(18,3)`,
+gives that text. An argument type that is or contains VARIANT or GEOMETRY
+raises an error at registration, because the argument reader reads neither
+type.
+
 ```haskell
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}

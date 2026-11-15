@@ -40,6 +40,11 @@
   through `ViaDuckDB`. `StructValue`, `TupleValue`, and `UnionValue` have no
   declaration, and the registration raises an error for them.
   `Database.DuckDB.Simple.LogicalRep` exports `TypeDeclaration`.
+- An argument of `createFunction` can have each type with `FromField` and
+  `DuckDBColumnType`, for example a record through `ViaDuckDB`, a list, a
+  `Map`, or a newtype with its own type text. `FunctionArg` is gone. An
+  argument type that is or contains VARIANT or GEOMETRY raises an error at
+  registration.
 - `Database.DuckDB.Simple.Registration` has `TypeDeclaration`, `parameter`,
   `defaultValue`, `registerCustomType`, and typed replacement scans.
   `registerReplacementScan` and `registerInstanceReplacementScan` give the

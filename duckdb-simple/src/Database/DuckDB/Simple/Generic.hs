@@ -111,7 +111,7 @@ import Data.Time.LocalTime (LocalTime, TimeOfDay)
 import Data.Typeable (Typeable)
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
-import Database.DuckDB.Simple.Element (valueTypeName)
+import Database.DuckDB.Simple.Element (containsType, valueTypeName)
 import Database.DuckDB.Simple.FromField (
   Field (..),
   FieldValue (..),
@@ -757,13 +757,8 @@ instance (Generic a, GToField (Rep a)) => ToField (ViaDuckDB a) where
 -- | Test whether a type is or contains an ARRAY type of the size 0. The
 -- 'DuckValue' instance of 'Array' declares that size.
 hasUnsizedArray :: LogicalTypeRep -> Bool
-hasUnsizedArray = \case
-  LogicalTypeArray child size -> size == 0 || hasUnsizedArray child
-  LogicalTypeList child -> hasUnsizedArray child
-  LogicalTypeMap key value -> hasUnsizedArray key || hasUnsizedArray value
-  LogicalTypeStruct fields -> any (hasUnsizedArray . structFieldValue) (elems fields)
-  LogicalTypeTuple fields -> any hasUnsizedArray (elems fields)
-  LogicalTypeUnion members -> any (hasUnsizedArray . unionMemberType) (elems members)
+hasUnsizedArray = containsType \case
+  LogicalTypeArray _ size -> size == 0
   _ -> False
 
 -- | Deriving-via @ToDuckValue@ instance. A sum type gives a UNION value and a

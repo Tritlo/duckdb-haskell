@@ -55,7 +55,7 @@ import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds)
 import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), timeOfDayToTime, utc, utcToLocalTime)
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
-import Database.DuckDB.Simple.Element (timeTzMaxOffsetSeconds, timeTzOffsetBits, valueTypeName)
+import Database.DuckDB.Simple.Element (containsType, timeTzMaxOffsetSeconds, timeTzOffsetBits, valueTypeName)
 import Database.DuckDB.Simple.FromField (
   BigNum (..),
   BitString (..),
@@ -1393,15 +1393,10 @@ declaredCompositeValue ValueBuilder{builderFactory = factory, builderType = make
 
 -- | Test whether a type tree contains a VARCHAR collation.
 hasCollation :: LogicalTypeRep -> Bool
-hasCollation rep = case rep of
-  LogicalTypeCollatedVarchar _ -> True
-  LogicalTypeList child -> hasCollation child
-  LogicalTypeArray child _ -> hasCollation child
-  LogicalTypeMap key value -> hasCollation key || hasCollation value
-  LogicalTypeStruct fields -> any (hasCollation . structFieldValue) (elems fields)
-  LogicalTypeTuple fields -> any hasCollation (elems fields)
-  LogicalTypeUnion members -> any (hasCollation . unionMemberType) (elems members)
-  _ -> False
+hasCollation = containsType isCollated
+  where
+    isCollated (LogicalTypeCollatedVarchar _) = True
+    isCollated _ = False
 
 {- Note [UNION values]
 ~~~~~~~~~~~~~~~~~~~~~~

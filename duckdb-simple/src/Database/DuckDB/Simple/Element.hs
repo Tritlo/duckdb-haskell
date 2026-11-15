@@ -12,6 +12,7 @@
 -- metadata.
 module Database.DuckDB.Simple.Element (
   chunkIsRowValid,
+  containsType,
   decodeElement,
   duckDBHugeIntToInteger,
   timeTzMaxOffsetSeconds,
@@ -46,6 +47,7 @@ import Database.DuckDB.Simple.FromField (
   TimeWithZone (..),
   returnError,
  )
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), UnionMemberType (..))
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
@@ -300,3 +302,18 @@ valueTypeName :: FieldValue -> Text
 valueTypeName value = case returnError Incompatible (Field Text.empty 0 value) Text.empty :: Ok () of
   Errors (err : _) | Just result <- fromException err -> errSQLType result
   _ -> Text.pack "an unknown type"
+
+-- | Test whether a type is or contains a type that the predicate accepts. The
+-- test visits the element type of a LIST and an ARRAY, the key type and the
+-- value type of a MAP, the field types of a STRUCT and a TUPLE, and the member
+-- types of a UNION.
+containsType :: (LogicalTypeRep -> Bool) -> LogicalTypeRep -> Bool
+containsType accepts rep =
+  accepts rep || case rep of
+    LogicalTypeList child -> containsType accepts child
+    LogicalTypeArray child _ -> containsType accepts child
+    LogicalTypeMap key value -> containsType accepts key || containsType accepts value
+    LogicalTypeStruct fields -> any (containsType accepts . structFieldValue) fields
+    LogicalTypeTuple fields -> any (containsType accepts) fields
+    LogicalTypeUnion members -> any (containsType accepts . unionMemberType) members
+    _ -> False

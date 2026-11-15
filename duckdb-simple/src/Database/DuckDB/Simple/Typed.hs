@@ -38,9 +38,9 @@ import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.Callback (targetCastFactory)
-import Database.DuckDB.Simple.Element (vectorElementType)
+import Database.DuckDB.Simple.Element (containsType, vectorElementType)
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), FromField (..), ResultError (..))
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), UnionMemberType (..))
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..))
 import Database.DuckDB.Simple.Materialize (FallbackReaders (..), prepareGeometryReader, prepareVectorReader, rejectRows)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
@@ -156,18 +156,6 @@ checkArgumentType readsGeometry name index logical = do
     isGeometry = \case
       LogicalTypeGeometry _ -> True
       _ -> False
-
--- | Test whether a type is or contains a type that the predicate accepts.
-containsType :: (LogicalTypeRep -> Bool) -> LogicalTypeRep -> Bool
-containsType accepts rep =
-  accepts rep || case rep of
-    LogicalTypeList child -> containsType accepts child
-    LogicalTypeArray child _ -> containsType accepts child
-    LogicalTypeMap key value -> containsType accepts key || containsType accepts value
-    LogicalTypeStruct fields -> any (containsType accepts . structFieldValue) fields
-    LogicalTypeTuple fields -> any (containsType accepts) fields
-    LogicalTypeUnion members -> any (containsType accepts . unionMemberType) members
-    _ -> False
 
 -- | Prepare a reader for the rows of an argument vector. The second argument is
 -- the index of the argument, from 0. The reader gives the field of a row, with

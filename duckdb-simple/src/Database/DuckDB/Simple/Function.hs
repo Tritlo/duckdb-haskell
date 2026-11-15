@@ -59,6 +59,8 @@ module Database.DuckDB.Simple.Function (
   createAggregate,
 ) where
 
+import Control.Exception (bracket)
+import Control.Monad (forM)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.Callback (RegistrationTarget (ConnectionTarget))
@@ -237,16 +239,29 @@ createAggregate conn = createAggregateOn (ConnectionTarget conn)
 -- function stays registered. Register the name again to replace the function.
 -- GHC reports a warning at each use of this function. A build with @-Werror@
 -- must allow that warning, for example with @-Wno-error=deprecations@.
+--
+-- The name follows the rules of DuckDB for a qualified name, as in
+-- 'Database.DuckDB.Simple.Catalog.describeTable'. A dot separates two parts,
+-- and a part in double quotes can contain a dot. Thus @\"a.b\"@ names the
+-- function @a.b@, and @s.f@ names the function @f@ in the schema @s@. A name
+-- with a quote inside a part that has no quotes, with an unterminated quote, or
+-- with more than three parts raises the t'SQLError' of the parser.
 deleteFunction :: Connection -> Text -> IO ()
 deleteFunction conn name = do
+  qualified <- qualifyIdentifier name
   -- See Note [SQL text of the library] in "Database.DuckDB.Simple.Native".
-  let dropQuery = Query ("DROP FUNCTION IF EXISTS " <> qualifyIdentifier name)
+  let dropQuery = Query ("DROP FUNCTION IF EXISTS " <> qualified)
   withParsedStatements conn dropQuery (mapM_ (executeParsedStatement conn dropQuery))
 {-# WARNING
   deleteFunction
   "DuckDB cannot drop a function that its C API registered. deleteFunction raises SQLError for a function from createFunction. Register the name again to replace the function."
   #-}
 
--- | Quote each dot-separated part of a function name.
-qualifyIdentifier :: Text -> Text
-qualifyIdentifier = Text.intercalate "." . map quoteIdentifier . Text.splitOn "."
+-- | Parse a qualified function name with @duckdb_v2_qname_parse@, and quote
+-- each part with 'quoteIdentifier'.
+qualifyIdentifier :: Text -> IO Text
+qualifyIdentifier name = withText name \text ->
+  bracket (output (c_duckdb_v2_qname_parse text)) (destroy c_duckdb_v2_qname_destroy) \qname -> do
+    count <- output (c_duckdb_v2_qname_get_part_count qname)
+    parts <- forM (indices count) \index -> output (c_duckdb_v2_qname_get_part qname index) >>= readIdentifier
+    pure (Text.intercalate "." (map quoteIdentifier parts))

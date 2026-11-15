@@ -91,6 +91,25 @@ extensionRegressionTests =
         withConnection ":memory:" \conn -> do
           deleteFunction conn "absent_scalar"
           query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+    , testCase "deleteFunction reads the name with the qualified-name rules of DuckDB" $
+        withConnection ":memory:" \conn -> do
+          let macroCount :: Text.Text -> Text.Text -> IO [Only Int64]
+              macroCount schema name = query conn "SELECT count(*) FROM duckdb_functions() WHERE schema_name = ? AND function_name = ?" (schema, name)
+          void $ execute_ conn "CREATE MACRO \"a.b\"(x) AS x + 1; CREATE SCHEMA s; CREATE MACRO s.f(x) AS x; CREATE MACRO s.g(x) AS x"
+          mapM (uncurry macroCount) [("main", "a.b"), ("s", "f"), ("s", "g")] >>= (@?= replicate 3 [Only 1])
+          deleteFunction conn "\"a.b\""
+          macroCount "main" "a.b" >>= (@?= [Only 0])
+          deleteFunction conn "s.f"
+          macroCount "s" "f" >>= (@?= [Only 0])
+          deleteFunction conn "memory.s.g"
+          macroCount "s" "g" >>= (@?= [Only 0])
+          -- The parser rejects a quote inside a part that has no quotes, so no
+          -- statement runs.
+          void $ execute_ conn "CREATE TABLE kept (i INTEGER)"
+          assertSqlErrorContaining "Unexpected quote" $ deleteFunction conn "x\"; DROP TABLE kept; --"
+          query_ conn "SELECT count(*) FROM duckdb_tables() WHERE table_name = 'kept'" >>= (@?= [Only (1 :: Int64)])
+          assertSqlErrorContaining "Unexpected quote" $ deleteFunction conn "a\"b"
+          assertSqlErrorContaining "between one and three parts" $ deleteFunction conn "a.b.c.d"
     , testCase "stateful replacement registration cleanup" $
         withConnection ":memory:" \conn -> do
           createFunctionWithState conn "duplicate_state" (pure ()) (\() -> (42 :: Int64))

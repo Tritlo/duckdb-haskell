@@ -437,8 +437,9 @@ Thus a value of a user cannot change the statement. These are the statements:
 
 - deleteFunction in "Database.DuckDB.Simple.Function": DROP FUNCTION IF EXISTS.
   This statement is the exception. DROP FUNCTION takes no parameter for the
-  name of the function, so the name goes into the text. quoteIdentifier quotes
-  each part of the name.
+  name of the function, so the name goes into the text. The library parses the
+  name with duckdb_v2_qname_parse, the rules of DuckDB for a qualified name,
+  and quoteIdentifier quotes each part of the result.
 
 quoteIdentifier puts an identifier in double quotes, and it doubles each double
 quote in the identifier. Thus DuckDB reads the identifier as one name, also

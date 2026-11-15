@@ -14,6 +14,9 @@ API as unstable: "The C API v2 is not yet stable. Its interface may change in
 upcoming releases." This release therefore requires exactly DuckDB 2.0.0.
 Creating an environment raises `SQLError` for another library version.
 
+The examples use the `OverloadedStrings` extension for `Query` and `Text`
+literals.
+
 ## Shared environments and instances
 
 Use an explicit instance when several connections must share catalogs and
@@ -366,6 +369,7 @@ These types support parameters, results, and fields in generic composites.
 `UTCTimestamp` binds as TIMESTAMPTZ.
 
 ```haskell
+import Database.DuckDB.Simple
 import Database.DuckDB.Simple.Time
 
 infiniteDates :: Connection -> IO [Only Date]
@@ -412,6 +416,7 @@ For more control, you can work directly with `StructValue` and `UnionValue`
 from `Database.DuckDB.Simple.LogicalRep`:
 
 ```haskell
+import Database.DuckDB.Simple
 import Database.DuckDB.Simple.LogicalRep (StructValue (..), UnionValue (..))
 import Database.DuckDB.Simple.FromField (FieldValue (..))
 
@@ -517,6 +522,7 @@ with eager queries, cursors, and folds.
 Import it qualified:
 
 ```haskell
+import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Streaming as Streaming
 
 streamSum :: Connection -> IO Int
@@ -685,7 +691,7 @@ their `GEOMETRY` type would have no CRS. A composite parameter holds it as
 ```haskell
 import Database.DuckDB.Simple.Geometry
 
-[Only raw] <- query_ conn "SELECT 'POINT Z (1 2 3)'::GEOMETRY('OGC:CRS84')"
+[Only raw] <- query_ conn "SELECT 'POINT Z (1 2 3)'::GEOMETRY('OGC:CRS84')" :: IO [Only RawGeometry]
 rows <- query conn "SELECT ?" (Only raw) :: IO [Only RawGeometry]
 ```
 

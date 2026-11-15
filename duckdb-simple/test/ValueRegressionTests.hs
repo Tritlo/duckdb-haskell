@@ -597,7 +597,7 @@ valueRegressionTests =
         assertConversionError (query_ conn "SELECT 256::USMALLINT" :: IO [Only Word8])
         assertConversionError (query_ conn "SELECT 65536::UINTEGER" :: IO [Only Word16])
         assertConversionError (query_ conn "SELECT 4294967296::UBIGINT" :: IO [Only Word32])
-    , testCase "a parameter for a column of an alias type follows the base type" $ withConnection ":memory:" \conn -> do
+    , testCase "a parameter for a column of a type from CREATE TYPE follows the base type" $ withConnection ":memory:" \conn -> do
         _ <- execute_ conn "CREATE TYPE tsns AS TIMESTAMP_NS; CREATE TYPE wide AS UHUGEINT; CREATE TABLE aliased (t tsns, w wide)"
         let precise = LocalTime (fromGregorian 2024 1 2) (TimeOfDay 3 4 5.123456789)
         _ <- execute conn "INSERT INTO aliased VALUES (?, ?)" (precise, 2 ^ (127 :: Int) + 5 :: Integer)

@@ -318,6 +318,13 @@
   conversion, give the DuckDB type names `TIMESTAMPTZ` and `TIMETZ`. Earlier
   versions gave `TIMESTAMP_TZ` and `TIME_TZ`, which DuckDB does not accept as
   type names.
+- `errSQLType` of a `ResultError`, and the `SQLError` message of a failed
+  conversion, give the type names of DuckDB's `typeof`: `TINYINT`, `SMALLINT`,
+  `INTEGER`, `BIGINT`, and `VARCHAR`. Earlier versions gave `INT1`, `INT2`,
+  `INT4`, `INT8`, and `TEXT`. The errors of DuckDB use `INT8` for the 8-bit
+  type, not for `BIGINT`.
+- `duckdbColumnType` gives `VARCHAR` for `Text` and `String`. Earlier versions
+  gave `TEXT`.
 - Allow session variables to supply omitted named parameters. Too few named
   parameters no longer raise `FormatError`. Too many named parameters still
   raise it.

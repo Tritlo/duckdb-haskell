@@ -193,6 +193,12 @@ The SQL workflow stays the same. These changes can affect your code:
 - A conversion error names the types `TIMESTAMPTZ` and `TIMETZ`, in
   `errSQLType` and in the message of the `SQLError`. Version 0.3 gave
   `TIMESTAMP_TZ` and `TIME_TZ`. Change code that matches the old texts.
+- A conversion error names the types `TINYINT`, `SMALLINT`, `INTEGER`,
+  `BIGINT`, and `VARCHAR`, in `errSQLType` and in the message of the
+  `SQLError`. Version 0.3 gave `INT1`, `INT2`, `INT4`, `INT8`, and `TEXT`.
+  Change code that matches the old texts.
+- `duckdbColumnType` gives `VARCHAR` for `Text` and `String`. Version 0.3 gave
+  `TEXT`. Change code that compares this text.
 - `TimeWithZone` holds the offset as seconds east of UTC. The field
   `timeWithZoneZone :: TimeZone` is now `timeWithZoneOffsetSeconds :: Int32`.
   Convert a `TimeZone` with `fromIntegral (timeZoneMinutes zone) * 60`, and

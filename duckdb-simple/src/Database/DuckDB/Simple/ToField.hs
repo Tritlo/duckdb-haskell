@@ -646,11 +646,15 @@ integerBinding binds an Integer or a Natural parameter with this rule:
   type of the target, but each element is a BIGNUM value. DuckDB casts each
   element with the casts from BIGNUM, so the result for BigNum elements does
   not improve. For each other target, and for a parameter with no known type,
-  a list with elements takes the type that its elements give (withValueType),
-  as a SQL list literal of the same values and as each scalar Integer: [5, 6]
-  gives HUGEINT[], and [5, 2^130] gives BIGNUM[]. An empty list keeps the
-  element type BIGNUM. A list of only NULL elements takes the element type of a
-  known target, and otherwise the type of [NULL].
+  a list takes the type that its elements give (withValueType), as each scalar
+  Integer and as a SQL list literal of the HUGEINT and BIGNUM values: [1, 2^64]
+  gives HUGEINT[], and [5, 2^130] gives BIGNUM[]. An Integer has no fixed SQL
+  type, so a list with no element, or with only NULL elements, takes the
+  element type of a known target, and otherwise the type NULL, as [] and
+  [NULL] in SQL. The test is on the column type name BIGNUM, so the rule also
+  holds for BigNum elements and for each type whose column type name is
+  BIGNUM, for example a newtype that derives its instances through Integer. A
+  BigNum element is a BIGNUM value in each case.
 
 Issue 41 of duckdb-haskell tracks the defects.
 -}
@@ -1395,7 +1399,7 @@ withElementType
   -> IO b
 withElementType proxy builder@ValueBuilder{builderType = makeType} target values action = case duckDBTypeFromName typeName of
   -- See Note [Integer parameters].
-  Just LogicalTypeIdBigNum | not integerTarget, not (null values) -> withValueType builder target values action
+  Just LogicalTypeIdBigNum | not integerTarget -> withValueType builder target values action
   Just dtype -> do
     checkNanosecondElements (declaredType dtype) values
     bracket (makeType (declaredType dtype)) destroyLogicalType action

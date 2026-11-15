@@ -787,11 +787,19 @@ valueRegressionTests =
           Right _ -> assertFailure "expected the duckdb-simple range error for 2^130"
         stored >>= (@?= [])
         -- With no integer target, a list takes the type that its elements give,
-        -- as [5, 6] and [5, 2^130] in SQL. An empty list keeps BIGNUM[].
-        (query conn "SELECT typeof(?)" (Only ([5, 6] :: [Integer])) :: IO [Only Text]) >>= (@?= [Only "HUGEINT[]"])
-        (query conn "SELECT typeof(?)" (Only ([5, 2 ^ (130 :: Int)] :: [Integer])) :: IO [Only Text]) >>= (@?= [Only "BIGNUM[]"])
-        (query conn "SELECT typeof(?)" (Only ([] :: [Integer])) :: IO [Only Text]) >>= (@?= [Only "BIGNUM[]"])
-        (query conn "SELECT typeof(?)" (Only ([Nothing] :: [Maybe Integer])) :: IO [Only Text]) >>= (@?= [Only "\"NULL\"[]"])
+        -- as a SQL list literal of the HUGEINT and BIGNUM values. A list with
+        -- no element, or with only NULL elements, gets the type NULL. See
+        -- Note [Integer parameters] in "Database.DuckDB.Simple.ToField".
+        let typeOf :: (ToField a) => a -> IO [Only Text]
+            typeOf value = query conn "SELECT typeof(?)" (Only value)
+        typeOf ([5, 6] :: [Integer]) >>= (@?= [Only "HUGEINT[]"])
+        typeOf ([5, 2 ^ (130 :: Int)] :: [Integer]) >>= (@?= [Only "BIGNUM[]"])
+        typeOf ([] :: [Integer]) >>= (@?= [Only "\"NULL\"[]"])
+        typeOf ([Nothing] :: [Maybe Integer]) >>= (@?= [Only "\"NULL\"[]"])
+        -- An empty list for an integer target takes the element type of the target.
+        _ <- execute_ conn "CREATE OR REPLACE TABLE empty_integers (v INTEGER[])"
+        _ <- execute conn "INSERT INTO empty_integers VALUES (?)" (Only ([] :: [Integer]))
+        (query_ conn "SELECT typeof(v), v::VARCHAR FROM empty_integers" :: IO [(Text, Text)]) >>= (@?= [("INTEGER[]", "[]")])
     , testCase "a list and an Array with the same elements store the same LIST value" $ withConnection ":memory:" \conn -> do
         let ints = [1, 2, 3] :: [Int64]
             arr = listArray (0, 2) ints :: Array Int Int64

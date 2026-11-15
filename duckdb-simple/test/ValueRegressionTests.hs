@@ -800,6 +800,9 @@ valueRegressionTests =
         typeOf (Map.fromList [(5, "a")] :: Map.Map Integer Text) >>= (@?= [Only "MAP(HUGEINT, VARCHAR)"])
         typeOf ([[1], []] :: [[Integer]]) >>= (@?= [Only "HUGEINT[][]"])
         typeOf ([[]] :: [[Integer]]) >>= (@?= [Only "\"NULL\"[][]"])
+        -- BigNum has the same column type name. Its elements are BIGNUM values.
+        typeOf [BigNum 5, BigNum 6] >>= (@?= [Only "BIGNUM[]"])
+        typeOf ([Nothing] :: [Maybe BigNum]) >>= (@?= [Only "\"NULL\"[]"])
         -- An empty list for an integer target takes the element type of the target.
         _ <- execute_ conn "CREATE OR REPLACE TABLE empty_integers (v INTEGER[])"
         _ <- execute conn "INSERT INTO empty_integers VALUES (?)" (Only ([] :: [Integer]))

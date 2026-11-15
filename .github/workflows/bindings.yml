@@ -137,7 +137,7 @@ jobs:
           DUCKDB_LEAK_RSS_CHECK: '0'
         run: |
           leak_test=$(cabal list-bin duckdb-simple-leak-test --with-compiler=ghc --disable-documentation --enable-optimization=${{ matrix.optimization }})
-          for mode in open-close callbacks cancel new-types typed; do
+          for mode in open-close dropped-handles long-lived callbacks cancel new-types typed; do
             valgrind --vgdb=no --fair-sched=yes --leak-check=full \
               --show-leak-kinds=definite,indirect,possible \
               --errors-for-leak-kinds=definite,indirect \

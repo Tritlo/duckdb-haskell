@@ -1401,42 +1401,52 @@ hasCollation = containsType isCollated
 
 {- Note [UNION values]
 ~~~~~~~~~~~~~~~~~~~~~~
-unionValueDuckValue builds a UNION value through a vector with one row. It
-writes the tag and the member into the child vectors, and reads the row as a
-value. The header documents the layout and the write: the children of a UNION
-vector are "[0] = the tag with [1..N] = the members", and a write of a value
-to a vector uses "the non-strict default cast". The write needs FLAT child
-vectors. In DuckDB 2.0.0 the children of a new vector are FLAT, but the header
-does not say this. See Note [Vector flatten] in
+unionValueDuckValue builds a UNION value through a vector with one row (route
+(a) below). It writes the tag and the member into the child vectors, and reads
+the row as a value. The header documents the layout and the write: the children
+of a UNION vector are "[0] = the tag with [1..N] = the members", and a write of
+a value to a vector uses "the non-strict default cast". The write needs FLAT
+child vectors. In DuckDB 2.0.0 the children of a new vector are FLAT, but the
+header does not say this. See Note [Vector flatten] in
 "Database.DuckDB.Simple.Materialize".
 
-V2 has no constructor for a UNION value. These cast routes were run with
-DuckDB 2.0.0 and not taken:
+V2 has no constructor for a UNION value. A run with DuckDB 2.0.0 tried four
+routes in eight cases: two BIGINT members with the tag of the first member, and
+with the tag of the second member; a NULL payload of two BIGINT members; 255
+INTEGER members; a member that is a UNION with a member name of the outer UNION;
+a STRUCT member with a UTINYINT field and a VARCHAR field with the name of the
+member; a collated VARCHAR member; and a GEOMETRY('OGC:CRS84') member.
 
-- The cast of the member value to the UNION type. The header calls it "the
-  sanctioned way to build UNION and ENUM values". DuckDB chooses the member
-  by the type of the value. Thus the cast is ambiguous when two members have
-  the same type, as in a generic sum type whose constructors have equal
-  fields, and for a member that is a UNION with a member name of the outer
-  UNION. With the factory of a connection or of a callback context, the cast
-  also runs the casts that a user registers.
-- The cast of the member value to a UNION with only that member, and then
-  the cast of that UNION to the full UNION. It gives the correct value for
-  two members of one type. It fails for a member that is a UNION with a
-  member name of the outer UNION ("The cast is ambiguous"), and for a STRUCT
-  member with exactly two fields, a UTINYINT and a VARCHAR field with the
-  name of the member, which DuckDB reads as the STRUCT form of the UNION.
-- The cast of a STRUCT with a UTINYINT tag field and one field for each
-  member. It gives the correct value in each of these cases. The header does
-  not document this cast. Written to a one-row vector of the UNION type with
-  the default cast, as defaultCast does, it runs no cast that a user
-  registers, but it takes about 27 to 51 percent more native instructions for
-  each value than the vector route (two members and 255 members).
+- (a) The vector route. It gives the correct value in each of the eight cases,
+  and it runs no cast that a user registers.
+- (b) The cast of a STRUCT with a UTINYINT tag field and one field for each
+  member, written to a one-row vector of the UNION type with the default cast,
+  as defaultCast does. It gives the correct value in each of the eight cases,
+  and it runs no cast that a user registers. The header does not document this
+  cast. It takes about 27 to 51 percent more native instructions for each value
+  than (a) (two members and 255 members).
+- (c) The cast of the member value to the UNION type. The header calls it "the
+  sanctioned way to build UNION and ENUM values". DuckDB chooses the member by
+  the type of the value. Thus the cast is ambiguous when two members have the
+  same type, as in a generic sum type whose constructors have equal fields, and
+  for a member that is a UNION with a member name of the outer UNION. It fails
+  in the first five cases. With the factory of a connection or of a callback
+  context, the cast also runs the casts that a user registers.
+- (c1) The cast of the member value to a UNION with only that member, and then
+  the cast of that UNION to the full UNION. It gives the correct value for two
+  members of one type. It fails for a member that is a UNION with a member name
+  of the outer UNION ("The cast is ambiguous"), and for the STRUCT member, which
+  DuckDB reads as the STRUCT form of the UNION.
 
-The vector route gives the correct value in each of these cases, and it keeps
-the tag of the value. Each route depends on one fact that the header does not
-state: the vector route on the FLAT child vectors, and the last cast route on
-the cast of a STRUCT to a UNION.
+Thus (a) is correct in each case, it uses the layout and the write that the
+header documents, and it costs less than (b). DuckDB does not document two
+facts: that the children of a new vector are FLAT, which (a) needs, and the cast
+of a STRUCT to a UNION, which (b) needs. If a later DuckDB gives a new vector
+other children, (a) can write a wrong value or fail. These cases bind a UNION
+value and compare the value that DuckDB gives back, so they show such a change:
+"a UNION value binds the member of its tag up to the member limit of DuckDB" and
+"UNION NULL payload retains its member type" in ValueRegressionTests.hs, and
+"round-trips struct and union parameters" in Spec.hs.
 -}
 
 -- | Build one UNION row through its tag and member vectors. See

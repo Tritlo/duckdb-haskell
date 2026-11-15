@@ -225,6 +225,9 @@
   on the new connection, so the default list runs no query. The connection keeps
   each type, and a bind copies it. A name that DuckDB drops, for example a blank
   name, fails the open.
+- A UNION parameter is built in a one-row UNION vector, because the V2 API has
+  no constructor for a UNION value; this needs flat child vectors, which DuckDB
+  2.0.0 gives a new vector, but its header does not state it.
 - A STRUCT, TUPLE, or UNION parameter binds a `FieldGeometry` value as a
   GEOMETRY with the same WKB bytes and CRS, through DuckDB's cast from BLOB.
   A value whose CRS is not the CRS of its declared type raises `SQLError` with

@@ -1,6 +1,7 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingVia #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -465,18 +466,21 @@ tests =
                 assertBool (Text.unpack sqlErrorMessage) (Text.pack reason `Text.isInfixOf` sqlErrorMessage)
               Right rows -> assertFailure ("expected the " <> reason <> " error, got " <> show rows)
         (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
-    , testCase "a column that holds an ENUM, a MAP, a UNION, or a GEOMETRY with a CRS does not read as Variant" $ withConnection ":memory:" \conn -> do
-        -- The cast to VARIANT changes these values, so the read raises the
-        -- error of an incompatible column at each depth.
+    , testCase "a Variant reads only a value that a VARIANT can hold" $ withConnection ":memory:" \conn -> do
+        -- The cast to VARIANT changes a value of another shape, so the read
+        -- raises the error of an incompatible column at each depth. The cast in
+        -- SQL reads.
         forM_
           [ ("'a'::ENUM('a', 'b')", "ENUM")
           , ("MAP {'k': 1}", "MAP")
           , ("union_value(n := 1)", "UNION")
-          , ("['a'::ENUM('a', 'b')]", "LIST")
-          , ("{'m': MAP {'k': 1}}", "STRUCT")
-          , ("[union_value(n := 1)]::UNION(n INTEGER)[1]", "ARRAY")
+          , ("{'b': 1, 'a': 2}", "STRUCT")
+          , ("[1, 2]::INTEGER[2]", "ARRAY")
+          , ("row(1, 'x')", "TUPLE")
           , ("'POINT (1 2)'::GEOMETRY('OGC:CRS84')", "GEOMETRY")
-          , ("['POINT (1 2)'::GEOMETRY('OGC:CRS84')]", "LIST")
+          , ("['a'::ENUM('a', 'b')]", "LIST")
+          , ("[{'a': 1}]", "LIST")
+          , ("{'v': 1::VARIANT, 'm': MAP {'k': 1}}", "STRUCT")
           ]
           \(expression, sqlName) -> do
             result <- try (query_ conn (Query ("SELECT " <> expression <> " AS c")) :: IO [Only Variant])
@@ -485,32 +489,36 @@ tests =
                 sqlErrorMessage
                   @?= "duckdb-simple: column c has type "
                     <> sqlName
-                    <> " but expected Variant: the cast to VARIANT changes an ENUM, a MAP, a UNION, or a GEOMETRY with a CRS; write c::VARIANT"
+                    <> " but expected Variant: a VARIANT does not hold a value of this shape; write c::VARIANT"
               Right rows -> assertFailure ("expected Incompatible for " <> Text.unpack expression <> ", got " <> show rows)
-        -- The cast in SQL gives a VARIANT column, which reads. So does a column
-        -- of another type, and a VARIANT with nested values.
-        ( query_ conn "SELECT ('a'::ENUM('a', 'b'))::VARIANT, (MAP {'k': 1})::VARIANT, 7::INTEGER, {'a': [1, 2]}::VARIANT"
+            (query_ conn (Query ("SELECT (" <> expression <> ")::VARIANT")) :: IO [Only Variant]) >>= \rows -> length rows @?= 1
+        ( query_ conn "SELECT ('a'::ENUM('a', 'b'))::VARIANT, (MAP {'k': 1})::VARIANT, {'b': 1, 'a': 2}::VARIANT, ([1, 2]::INTEGER[2])::VARIANT"
             :: IO [(Variant, Variant, Variant, Variant)]
           )
           >>= ( @?=
                   [
                     ( Variant (FieldText "a")
                     , Variant (FieldList [variantObject [("key", FieldText "k"), ("value", FieldInt32 1)]])
-                    , Variant (FieldInt32 7)
-                    , Variant (variantObject [("a", FieldList [FieldInt32 1, FieldInt32 2])])
+                    , Variant (variantObject [("a", FieldInt32 2), ("b", FieldInt32 1)])
+                    , Variant (FieldList [FieldInt32 1, FieldInt32 2])
                     )
                   ]
               )
-        -- The cast of a GEOMETRY with a CRS drops the CRS and reads. A GEOMETRY
-        -- with no CRS reads as Variant with the value of its cast.
-        [(withCrs, plain, plainCast, wkb)] <-
-          query_
-            conn
-            "SELECT g::VARIANT, h, h::VARIANT, ST_AsWKB(h) FROM (VALUES ('POINT (1 2)'::GEOMETRY('OGC:CRS84'), 'POINT (1 2)'::GEOMETRY)) t(g, h)"
-            :: IO [(Variant, Variant, Variant, BS.ByteString)]
+        -- A value of the VARIANT shape reads: a scalar, a LIST, a VARIANT in a
+        -- LIST or in a STRUCT field, and a VARIANT object. Each equals its cast.
+        forM_ ["7::INTEGER", "[1, 2]", "[1::VARIANT, 'x'::VARIANT]", "{'v': 1::VARIANT}", "{'a': [1, 2]}::VARIANT", "'POINT (1 2)'::GEOMETRY"] \expression ->
+          (query_ conn (Query ("SELECT " <> expression <> ", (" <> expression <> ")::VARIANT")) :: IO [(Variant, Variant)])
+            >>= \case
+              [(value, cast)] -> assertEqual (Text.unpack expression) cast value
+              rows -> assertFailure (show rows)
+        -- A JSON column decodes as its text, as a VARCHAR does, so it reads as
+        -- Variant with its text. The cast gives the parsed value.
+        (query_ conn "SELECT '{\"a\": 1}'::JSON, ('{\"a\": 1}'::JSON)::VARIANT" :: IO [(Variant, Variant)])
+          >>= (@?= [(Variant (FieldText "{\"a\": 1}"), Variant (variantObject [("a", FieldWord64 1)]))])
+        -- The cast of a GEOMETRY with a CRS drops the CRS.
+        [(withCrs, wkb)] <-
+          query_ conn "SELECT ('POINT (1 2)'::GEOMETRY('OGC:CRS84'))::VARIANT, ST_AsWKB('POINT (1 2)'::GEOMETRY)" :: IO [(Variant, BS.ByteString)]
         withCrs @?= geometryPayload wkb
-        plain @?= plainCast
-        plain @?= geometryPayload wkb
     , testCase "geometry payload retains empty layout tags and native NaN points" $ withConnection ":memory:" \conn ->
         forM_ ["GEOMETRYCOLLECTION ZM EMPTY", "MULTIPOLYGON M EMPTY", "POINT Z (NaN NaN 7)"] \wkt -> do
           [Only geometry] <- query conn "SELECT ?::GEOMETRY" (Only (wkt :: Text)) :: IO [Only RawGeometry]

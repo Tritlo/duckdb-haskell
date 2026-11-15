@@ -15,7 +15,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), FromField (..), ResultError (..), returnError)
 import Database.DuckDB.Simple.Geometry (RawGeometry (..))
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeId (..), LogicalTypeRep (..), StructField (..), StructValue (..), TupleValue (..))
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeId (..), LogicalTypeRep (..), StructField (..), StructValue (..))
 import Database.DuckDB.Simple.Ok (Ok (..))
 
 -- | A VARIANT value. The payload is a 'FieldValue' with the native type of the
@@ -40,29 +40,36 @@ variantObject entries =
       , structValueIndex = Map.fromList (zip (map fst entries) [0 ..])
       }
 
--- | Reads VARIANT, and wraps the decoded value of each other SQL type. A value
--- that holds an ENUM, a MAP, a UNION, or a GEOMETRY with a CRS at any depth
--- raises 'Incompatible', because the cast of DuckDB to VARIANT gives another
--- value: the label as a VARCHAR, a list of key and value objects, the member
--- value, or the GEOMETRY without its CRS. Write @c::VARIANT@ in SQL for such a
--- column. A VARIANT column does not decode to these values. See
--- Note [Reads of another SQL type] in "Database.DuckDB.Simple.FromField".
+-- | Reads a value that a VARIANT can hold (see 'variantShape'): the value of a
+-- VARIANT column, or a value of another SQL type with that shape. A value of
+-- another shape raises 'Incompatible', because the cast of DuckDB to VARIANT
+-- gives another value. Write @c::VARIANT@ in SQL for such a column. The
+-- library does not know the SQL type of a column here, so one difference
+-- stays: a JSON column reads as its text, as a VARCHAR column does, but
+-- @c::VARIANT@ gives the parsed value. See Note [Reads of another SQL type] in
+-- "Database.DuckDB.Simple.FromField".
 instance FromField Variant where
   fromField field@Field{fieldValue}
-    | changedByCast fieldValue =
-        returnError Incompatible field (Text.pack "the cast to VARIANT changes an ENUM, a MAP, a UNION, or a GEOMETRY with a CRS; write c::VARIANT")
-    | otherwise = Ok (Variant fieldValue)
+    | variantShape fieldValue = Ok (Variant fieldValue)
+    | otherwise =
+        returnError Incompatible field (Text.pack "a VARIANT does not hold a value of this shape; write c::VARIANT")
 
--- | Whether a decoded value holds an ENUM, a MAP, a UNION, or a GEOMETRY with a
--- CRS at any depth. A VARIANT keeps none of these.
-changedByCast :: FieldValue -> Bool
-changedByCast = \case
-  FieldEnum{} -> True
-  FieldGeometry RawGeometry{rawGeometryCRS = Just _} -> True
-  FieldMap{} -> True
-  FieldUnion{} -> True
-  FieldList values -> any changedByCast values
-  FieldArray values -> any changedByCast (elems values)
-  FieldStruct StructValue{structValueFields} -> any (changedByCast . structFieldValue) (elems structValueFields)
-  FieldTuple TupleValue{tupleValueFields} -> any changedByCast (elems tupleValueFields)
-  _ -> False
+-- | Whether a VARIANT can hold a decoded value. A VARIANT column decodes only to
+-- these values: a scalar that is not an ENUM, a GEOMETRY with no CRS, a
+-- 'FieldList' of such values, and a 'FieldStruct' whose fields have the type
+-- VARIANT and hold such values. Each other value has no VARIANT form: a
+-- 'FieldArray', a 'FieldTuple', a 'FieldStruct' with a field of another type, a
+-- 'FieldEnum', a 'FieldMap', a 'FieldUnion', and a GEOMETRY with a CRS.
+variantShape :: FieldValue -> Bool
+variantShape = \case
+  FieldEnum{} -> False
+  FieldGeometry RawGeometry{rawGeometryCRS = Just _} -> False
+  FieldMap{} -> False
+  FieldUnion{} -> False
+  FieldArray{} -> False
+  FieldTuple{} -> False
+  FieldList values -> all variantShape values
+  FieldStruct StructValue{structValueFields, structValueTypes} ->
+    all ((== LogicalTypeScalar LogicalTypeIdVariant) . structFieldValue) (elems structValueTypes)
+      && all (variantShape . structFieldValue) (elems structValueFields)
+  _ -> True

@@ -1061,12 +1061,17 @@ valueRegressionTests =
         -- "Database.DuckDB.Simple.FromField". For scale 0 and a width of 19
         -- to 38, the library copies the cast of DuckDB 2.0.0, which is not
         -- always the nearest value. If a later DuckDB version changes the
-        -- rounding of that cast, the rows of DECIMAL(19,0) and DECIMAL(38,0)
-        -- differ, and the last assertion shows the new values of DuckDB.
+        -- rounding of that cast, the first assertion fails and shows the new
+        -- values of DuckDB. DuckDB 2.0.0 gives these values. The nearest values
+        -- are -9007199254740994 and 3.3569516755834854e36.
+        query_ conn "SELECT (-9007199254740994)::DECIMAL(19,0)::DOUBLE, 3356951675583485076575379654993209529::DECIMAL(38,0)::DOUBLE"
+          >>= (@?= [(-9007199254740992 :: Double, 3.356951675583485e36 :: Double)])
         let bigints =
               filter (\v -> v >= toInteger (minBound :: Int64) && v <= toInteger (maxBound :: Int64)) (toInteger (minBound :: Int64) : decimalIntegers 19)
             kinds =
-              [("DECIMAL(" <> show width <> "," <> show scale <> ")", map (decimalText scale) (decimalIntegers width)) | (width, scale) <- decimalKinds]
+              [ ("DECIMAL(" <> show width <> "," <> show scale <> ")", map (decimalText scale) (decimalIntegers width <> roundingTies width scale))
+              | (width, scale) <- decimalKinds
+              ]
                 <> [("BIGINT", map (Text.pack . show) bigints)]
         forM_ kinds \(sqlType, texts) -> do
           rows <-
@@ -1078,10 +1083,6 @@ valueRegressionTests =
           length rows @?= length texts
           [(sqlType, text, value, cast) | (text, value, cast, _, _) <- rows, castDoubleToWord64 value /= castDoubleToWord64 cast] @?= []
           [(sqlType, text, value, cast) | (text, _, _, value, cast) <- rows, castFloatToWord32 value /= castFloatToWord32 cast] @?= []
-        -- DuckDB 2.0.0 gives these values. The nearest values are
-        -- -9007199254740994 and 3.3569516755834854e36.
-        query_ conn "SELECT (-9007199254740994)::DECIMAL(19,0)::DOUBLE, 3356951675583485076575379654993209529::DECIMAL(38,0)::DOUBLE"
-          >>= (@?= [(-9007199254740992 :: Double, 3.356951675583485e36 :: Double)])
     , testCase "a read of another SQL type gives the value of the cast of DuckDB" $ withConnection ":memory:" \conn -> do
         -- Each value reads as the Haskell type, next to its cast to the SQL
         -- type of the Haskell type in the same row. See
@@ -1603,7 +1604,7 @@ assertConversionError action = do
 decimalKinds :: [(Int, Int)]
 decimalKinds =
   [(4, 0), (4, 2), (4, 4), (9, 0), (9, 2), (9, 5), (9, 9), (18, 0), (18, 2), (18, 6), (18, 12), (18, 18)]
-    <> [(19, 0), (19, 4), (38, 0), (38, 2), (38, 10), (38, 11), (38, 20), (38, 22), (38, 23), (38, 30), (38, 38)]
+    <> [(19, 0), (19, 4), (38, 0), (38, 2), (38, 5), (38, 10), (38, 11), (38, 20), (38, 22), (38, 23), (38, 30), (38, 38)]
 
 -- | A fixed sequence of 64-bit words: SplitMix64 with seed 1.
 splitMix64 :: [Word64]
@@ -1637,6 +1638,15 @@ decimalIntegers width = filter (\v -> abs v <= limit) (special <> near <> spread
       ]
     everyOther (a : _ : rest) = a : everyOther rest
     everyOther rest = rest
+
+-- | Unscaled integers of path 3 in Note [DECIMAL as DOUBLE and FLOAT] whose
+-- value is a midpoint of two DOUBLE values (scale 5) or of two FLOAT values
+-- (scale 11), and the integers next to them, with both signs. A midpoint rounds
+-- to the even value.
+roundingTies :: Int -> Int -> [Integer]
+roundingTies 38 5 = [sign * ((2 ^ (100 :: Int) + 2 ^ (47 :: Int)) * 10 ^ (5 :: Int) + delta) | delta <- [-1, 0, 1], sign <- [1, -1]]
+roundingTies 38 11 = [sign * ((2 ^ (60 :: Int) + 2 ^ (36 :: Int)) * 10 ^ (11 :: Int) + delta) | delta <- [-1, 0, 1], sign <- [1, -1]]
+roundingTies _ _ = []
 
 -- | The text of an unscaled DECIMAL integer with a scale.
 decimalText :: Int -> Integer -> Text

@@ -682,13 +682,11 @@ int2Float, which round one time as the C++ conversion of int64_t does. In path
 functions too. They give the nearest value with ties to even, and they do not
 reduce the fraction first.
 
-Path 3 applies to a Double with a scale above 0 when the unscaled integer is
-above 2^53 or the scale is above 22: at scale 2 for an absolute value above
-9.0e13, and at scale 10 above 9.0e5. It applies to a Float with a scale above 0
-when the unscaled integer is above 2^24 or the scale is above 10. With GHC
-9.14.1 on x86-64, the conversion of a DECIMAL(18,2) value to Double counted 119
-instructions in path 2 and 2973 instructions in path 3 (inscount, 100,000
-values).
+Path 3 is slower than path 2. It applies to a Double with a scale above 0 when
+the unscaled integer is above 2^53 or the scale is above 22: at scale 2 for an
+absolute value above 9.0e13, and at scale 10 above 9.0e5. It applies to a Float
+with a scale above 0 when the unscaled integer is above 2^24 or the scale is
+above 10.
 -}
 
 -- | The value of the cast of DuckDB from a DECIMAL to DOUBLE.

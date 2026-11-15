@@ -20,7 +20,6 @@ import System.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertFailure, testCase, (@?=))
-import TestUtils (assertFailureIO)
 
 -- | Exercise the public query, binding, cursor, and fold operations.
 tests :: TestTree
@@ -34,7 +33,10 @@ tests =
           void (execute_ conn "CREATE TRIGGER record_insert AFTER INSERT ON target FOR EACH ROW INSERT INTO audit VALUES (NEW.id, NEW.label)")
           void (executeMany conn "INSERT INTO target VALUES (?, ?)" [(1 :: Int64, "first" :: Text), (2, "O'Reilly")])
           query_ conn "SELECT * FROM audit ORDER BY id" >>= (@?= [(1 :: Int64, "first" :: Text), (2, "O'Reilly")])
-          assertFailureIO (execute conn "INSERT INTO target VALUES (?, ?)" (1 :: Int64, "duplicate" :: Text))
+          assertDuckDBError
+            ErrorDatabaseConstraint
+            "Constraint Error: Duplicate key \"id: 1\" violates primary key constraint."
+            (execute conn "INSERT INTO target VALUES (?, ?)" (1 :: Int64, "duplicate" :: Text))
           query_ conn "SELECT count(*) FROM target" >>= (@?= [Only (2 :: Int64)])
     , testCase "DML CTEs bind values and deliver RETURNING rows to folds" $
         withConnection ":memory:" \conn -> do
@@ -62,12 +64,18 @@ tests =
           queryNamed conn "SELECT $session_value + 1" ["session_value" := (9 :: Int64)] >>= (@?= [Only (10 :: Int64)])
           queryNamed conn "SELECT $session_value + $amount" ["amount" := (1 :: Int64)] >>= (@?= [Only (42 :: Int64)])
           queryNamed conn "SELECT $session_value" [] >>= (@?= [Only (41 :: Int64)])
-          assertFailureIO (queryNamed conn "SELECT $session_value + $missing" [] :: IO [Only Int64])
+          assertDuckDBError
+            ErrorInputInvalid
+            "Invalid Input Error: Values were not provided for the following parameters: missing"
+            (queryNamed conn "SELECT $session_value + $missing" [] :: IO [Only Int64])
           void (execute_ conn "SET VARIABLE session_value = 83")
           total <- fold_ conn "SELECT $session_value + 1" (0 :: Int64) \acc (Only value) -> pure (acc + value)
           total @?= 84
           void (execute_ conn "RESET VARIABLE session_value")
-          assertFailureIO (query_ conn "SELECT $session_value" :: IO [Only Int64])
+          assertDuckDBError
+            ErrorInputInvalid
+            "Invalid Input Error: Values were not provided for the following parameters: session_value"
+            (query_ conn "SELECT $session_value" :: IO [Only Int64])
     , testCase "FETCH FIRST and OFFSET work with bound counts" $
         withConnection ":memory:" \conn ->
           query conn "SELECT i FROM range(10) t(i) ORDER BY i OFFSET ? ROWS FETCH FIRST ? ROWS ONLY" (3 :: Int64, 2 :: Int64)

@@ -362,10 +362,10 @@
   gave the derived `show`. The error of a field of a `ViaDuckDB` record names
   the field, for example
   `field stampedAt: duckdb-simple: a value has type TIMESTAMP but expected UTCTime`.
-- A `Variant` read of a column that holds an ENUM, a MAP, or a UNION at any
-  depth raises the error of an incompatible column. Earlier versions wrapped
-  the value, which DuckDB's cast to VARIANT changes and which a `Variant`
-  parameter does not bind.
+- A `Variant` read of a column that holds an ENUM, a MAP, a UNION, or a
+  GEOMETRY with a CRS at any depth raises the error of an incompatible column.
+  Earlier versions wrapped the value, which DuckDB's cast to VARIANT changes
+  and which a `Variant` parameter does not bind.
 - Allow session variables to supply omitted named parameters. Too few named
   parameters no longer raise `FormatError`. Too many named parameters still
   raise it.

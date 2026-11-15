@@ -715,9 +715,10 @@ DuckDB 2.0 permits an empty key with other named keys. You can also bind a plain
 value and cast it in SQL, as in `?::VARIANT`.
 
 A `Variant` result reads a VARIANT column, and wraps the value of a column of
-another type. A column that holds a UNION, a MAP, or an ENUM at any depth raises
-the error of an incompatible column, because the cast of DuckDB to VARIANT
-changes these values. Write `c::VARIANT` in SQL to read such a column.
+another type. A column that holds a UNION, a MAP, an ENUM, or a GEOMETRY with a
+CRS at any depth raises the error of an incompatible column, because the cast
+of DuckDB to VARIANT changes these values. Write `c::VARIANT` in SQL to read
+such a column. A GEOMETRY with no CRS reads.
 
 The library uses a separate helper connection for VARIANT decoder metadata.
 It caches the parsed VARIANT metadata statement and the types for VARIANT

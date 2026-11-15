@@ -236,9 +236,9 @@ The SQL workflow stays the same. These changes can affect your code:
 - `displayException` of a `ResultError` gives the rendered text of the error,
   and the error of a field of a `ViaDuckDB` record starts with the field name.
   Change code that matches the old texts.
-- A `Variant` read of a column that holds an ENUM, a MAP, or a UNION at any
-  depth raises the error of an incompatible column. Write `c::VARIANT` in SQL,
-  or read `FieldValue` for the decoded value.
+- A `Variant` read of a column that holds an ENUM, a MAP, a UNION, or a
+  GEOMETRY with a CRS at any depth raises the error of an incompatible column.
+  Write `c::VARIANT` in SQL, or read `FieldValue` for the decoded value.
 - `TimeWithZone` holds the offset as seconds east of UTC. The field
   `timeWithZoneZone :: TimeZone` is now `timeWithZoneOffsetSeconds :: Int32`.
   Convert a `TimeZone` with `fromIntegral (timeZoneMinutes zone) * 60`, and

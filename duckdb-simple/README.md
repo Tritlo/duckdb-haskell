@@ -341,15 +341,26 @@ size of the value. DuckDB casts a LIST or an ARRAY to the type of a LIST
 column. It casts a LIST to an ARRAY column only when the lengths are equal.
 
 A list or an array parameter with scalar elements takes its element type from
-the column type name of the element. An empty list binds as an empty LIST of
-that type. An empty array raises an `SQLError`, because a DuckDB ARRAY has at
-least one element. Bind an empty list for an empty LIST. A list or an array of
-STRUCT values, UNION values, generic records, lists, or arrays takes the type
-of its first element that is not NULL. All other non-NULL elements must have
-the same type, including field names, decimal precision and scale, and nested
-types. Different types raise an error before DuckDB can cast away fields or
-round values. An empty or all-NULL list or array of such elements raises an
-error.
+the column type name of the element. Some elements take the element type of
+the target instead: `Integer`, `Natural`, and `BigNum` elements for an integer
+or DECIMAL element type (see above), and `TimeOfDay`, `LocalTime`, and
+`UTCTime` elements for a nanosecond element type (see
+[Infinite dates and timestamps](#infinite-dates-and-timestamps)). An empty list
+binds as an empty LIST of its element type. An empty array raises an
+`SQLError`, because a DuckDB ARRAY has at least one element. Bind an empty list
+for an empty LIST.
+
+A list or an array of STRUCT values, UNION values, generic records, lists, or
+arrays gets the type that DuckDB gives a SQL list literal of the same elements.
+When the elements that are not NULL have one type, the list has that type.
+When their types are different, DuckDB uses their common type: `{'a': 1}` and
+`{'b': 2}` give `STRUCT(a INTEGER, b INTEGER)[]`, with NULL for a field that an
+element does not have. A `BIGINT` field and a `DOUBLE` field give a `DOUBLE`
+field, so `9007199254740993` becomes `9007199254740992.0`, as in SQL. Elements
+with no common type, such as `{'a': 1}` and `{'a': 'x'}`, raise the `SQLError`
+of DuckDB. The column type of an `INSERT` does not change the type of the
+list: DuckDB casts the list to the column type after it gives the list its
+type. An empty or all-NULL list or array of such elements raises an error.
 
 A `Map` from `Data.Map` binds as a MAP parameter and reads a MAP result. The
 pairs go in ascending key order. The keys and the values follow the element

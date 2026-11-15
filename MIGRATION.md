@@ -254,6 +254,12 @@ The SQL workflow stays the same. These changes can affect your code:
   works for an `Array` with elements. A `String` stays one VARCHAR parameter,
   and a list as a row is still a row of parameters, so put a list parameter in
   `Only`.
+- An `Array` of STRUCT values, UNION values, generic records, or arrays with
+  different element types gets the type that DuckDB gives a SQL list literal of
+  the elements. Version 0.3 raised an `IOException` for it. The common type can
+  add fields with NULL values, and a `BIGINT` field with a `DOUBLE` field gives
+  a `DOUBLE` field, which can round a large value. Elements with no common type
+  now raise the `SQLError` of DuckDB.
 - A composite parameter with a GEOMETRY CRS that DuckDB does not recognize
   raises `SQLError`. Version 0.3 bound it without the CRS. Configure custom CRS
   names through `connectionGeometryCRS`.

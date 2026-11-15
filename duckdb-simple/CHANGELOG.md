@@ -214,6 +214,12 @@
   empty LIST of its element type. A `String` stays one VARCHAR parameter, and a
   list as a row is still a row of parameters, so a list parameter is
   `Only [..]`. Version 0.3 had no `ToField` instance for lists.
+- An `Array`, a list, or a `Map` of STRUCT values, UNION values, generic
+  records, lists, or arrays with different element types gets the type that
+  DuckDB gives a SQL list literal of the elements, for example
+  `STRUCT(a INTEGER, b INTEGER)` for `{'a': 1}` and `{'b': 2}`. Elements with
+  no common type raise the `SQLError` of DuckDB. Version 0.3 raised an error
+  for each `Array` with different element types.
 - Some parameters bind for the type that DuckDB gives the parameter: a time
   value with digits below a microsecond, an `Array`, a list, a `Map`, a manual
   STRUCT, TUPLE, or UNION value, and an `Integer` or a `Natural` outside the

@@ -355,6 +355,18 @@ nanosecondTimeTests =
       stored "STRUCT(v TIMESTAMP)" localStruct >>= (@?= [Only "{'v': '2026-01-02 03:04:05.123456'}"])
       stored "STRUCT(v TIME_NS)" timeStruct >>= (@?= [Only "{'v': '03:04:05.123456999'}"])
       stored "STRUCT(v TIME)" timeStruct >>= (@?= [Only "{'v': '03:04:05.123456'}"])
+  , testCase "a FieldMap gives its key target to its keys and its value target to its values" $ withConnection ":memory:" $ \conn -> do
+      _ <- execute_ conn "CREATE TABLE stored (v MAP(VARCHAR, TIME_NS))"
+      _ <-
+        execute
+          conn
+          "INSERT INTO stored VALUES (?)"
+          (Only (FieldMap [(FieldText "a", FieldTime (TimeOfDay 3 4 5)), (FieldText "b", FieldTime (TimeOfDay 3 4 5.123456789))]))
+      (query_ conn "SELECT v::VARCHAR FROM stored" :: IO [Only Text.Text]) >>= (@?= [Only "{a='03:04:05', b='03:04:05.123456789'}"])
+  , testCase "a FieldList with a microsecond element first keeps the nanosecond element" $ withConnection ":memory:" $ \conn -> do
+      _ <- execute_ conn "CREATE TABLE stored (v TIME_NS[])"
+      _ <- execute conn "INSERT INTO stored VALUES (?)" (Only (FieldList [FieldTime (TimeOfDay 3 4 5), FieldTime (TimeOfDay 3 4 5.123456789)]))
+      (query_ conn "SELECT v::VARCHAR FROM stored" :: IO [Only Text.Text]) >>= (@?= [Only "['03:04:05', '03:04:05.123456789']"])
   , testCase "executeMany binds time rows with and without digits below a microsecond" $ withConnection ":memory:" $ \conn -> do
       let day = fromGregorian 2026 1 2
           rows =
@@ -559,6 +571,18 @@ nanosecondTimeTests =
       -- A microsecond target and a VARIANT keep their values.
       typeOf "TIMESTAMPTZ" (localTimeToUTC utc (at 2300 digits)) >>= (@?= Nothing)
       typeOf "VARIANT" (localTimeToUTC utc (at 2300 digits)) >>= (@?= Nothing)
+  , testCase "a FieldList or a FieldMap of time values for VARIANT elements binds microsecond elements" $ withConnection ":memory:" $ \conn -> do
+      let precise = FieldTimestamp (Finite (LocalTime (fromGregorian 2026 1 2) (TimeOfDay 3 4 5.123456789)))
+      (query conn "SELECT [variant_typeof(e) FOR e IN ?::VARIANT[]]" (Only (FieldList [precise])) :: IO [Only [Text.Text]])
+        >>= (@?= [Only ["TIMESTAMP_MICROS"]])
+      (query conn "SELECT variant_typeof((?::MAP(VARCHAR, VARIANT))['a'])" (Only (FieldMap [(FieldText "a", precise)])) :: IO [Only Text.Text])
+        >>= (@?= [Only "TIMESTAMP_MICROS"])
+  , testCase "a Map or an Array of time values for VARIANT elements binds microsecond values" $ withConnection ":memory:" $ \conn -> do
+      let precise = LocalTime (fromGregorian 2026 1 2) (TimeOfDay 3 4 5.123456789)
+      (query conn "SELECT (?::MAP(VARCHAR, VARIANT))::VARCHAR" (Only (Map.singleton ("a" :: Text.Text) precise)) :: IO [Only Text.Text])
+        >>= (@?= [Only "{a=2026-01-02 03:04:05.123456}"])
+      (query conn "SELECT (?::VARIANT[1])::VARCHAR" (Only (listArray (0, 0) [precise] :: Array Int LocalTime)) :: IO [Only Text.Text])
+        >>= (@?= [Only "[2026-01-02 03:04:05.123456]"])
   , testCase "nanosecond UTC targets reject finite overflow and sentinel collisions" $ withConnection ":memory:" $ \conn -> do
       forM_
         [ toInteger (minBound :: Int64) - 1

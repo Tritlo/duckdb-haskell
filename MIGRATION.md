@@ -238,7 +238,10 @@ The SQL workflow stays the same. These changes can affect your code:
   binds its label.
 - `displayException` of a `ResultError` gives the rendered text of the error,
   and the error of a field of a `ViaDuckDB` record starts with the field name.
-  Change code that matches the old texts.
+  The errors of the generic decoders name the SQL type of a value, not the
+  value, for example `a value has type MAP but expected LIST or ARRAY` in place
+  of `expected LIST, got FieldMap [...]`. Change code that matches the old
+  texts.
 - A `Variant` read accepts only a value that a VARIANT can hold. A column that
   holds an ENUM, a MAP, a UNION, an ARRAY, a TUPLE, a STRUCT that is not in the
   form of a VARIANT object (each field of the type VARIANT, the keys in

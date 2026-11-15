@@ -23,7 +23,7 @@ import Database.DuckDB.Simple.Callback (targetCastFactory)
 import Database.DuckDB.Simple.FromField (Field (..))
 import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow, rowErrorsToSqlError)
 import Database.DuckDB.Simple.Internal (Connection)
-import Database.DuckDB.Simple.Materialize (materializeValue, rejectRows)
+import Database.DuckDB.Simple.Materialize (callbackReadFactory, materializeValue, rejectRows)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import qualified Database.DuckDB.Simple.V2.Pragma as V2
@@ -75,7 +75,7 @@ pragmaArguments
 pragmaArguments casts name info context = withContextFactory context \contextFactory -> do
   -- Read GEOMETRY with the factory of 'targetCastFactory', or with the factory
   -- of the context for an extension.
-  let factory = fromMaybe contextFactory casts
+  let factory = callbackReadFactory casts contextFactory
   count <- allocaArray 4 \counts -> do
     checked (c_duckdb_v2_function_bind_get_arg_count info counts (advancePtr counts 1) (advancePtr counts 2) (advancePtr counts 3))
     sum <$> peekArray 4 counts

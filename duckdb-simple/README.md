@@ -911,12 +911,11 @@ type is the `duckdbTypeDeclaration` of the type, as for a typed column. A
 newtype with its own `DuckDBColumnType` text, for example `DECIMAL(18,3)`,
 gives that text. An argument type that is or contains VARIANT raises an error
 at registration, because the argument reader does not read VARIANT. A GEOMETRY
-argument reads, also inside a list or a STRUCT, in a scalar function, in an
-aggregate, and as the source of a typed cast. On a connection, it reads as a
-GEOMETRY result does, so a registered cast does not change it. A function that
-an extension registers reads it with the casts of the session, and an aggregate
-function of an extension refuses a GEOMETRY argument at registration. See
-[Typed registration](#typed-registration).
+argument reads as a GEOMETRY result does, also inside a list or a STRUCT, in a
+scalar function, in an aggregate, and as the source of a typed cast. A
+registered cast does not change it. See [Typed registration](#typed-registration).
+An aggregate function of an extension refuses a GEOMETRY argument at
+registration, because its update callback has no factory to read the value.
 
 The SQL type of the result is the `duckdbTypeDeclaration` of the result type:
 an `Int16` result is SMALLINT, and a `Float` result is FLOAT. DuckDB computes
@@ -1039,23 +1038,15 @@ castExample conn = do
 ```
 
 DuckDB uses a registered cast in place of its built-in cast for the same pair
-of types, on each connection of the database. On a connection, a registered
-cast does not change a value that the library reads or binds. The library reads
-GEOMETRY and VARIANT values with the casts of the instance, which are the
+of types, on each connection of the database. A registered cast does not change
+a value that the library reads or binds, on a connection and in the callbacks
+of an extension. The library reads GEOMETRY and VARIANT values with the
 built-in casts, and it builds GEOMETRY, ENUM, and VARIANT values with the
 default cast of DuckDB. For example, a cast from GEOMETRY to BLOB changes the
-result of `CAST(g AS BLOB)`, but not a GEOMETRY value that a query gives. Two
-places still use registered casts:
-
-- The callbacks of a function that an extension registers. An extension has no
-  instance, so these callbacks read a GEOMETRY value with the casts of the
-  session: the value of an option update, the arguments of a pragma, a scalar
-  function, a typed cast, or a table function, and the rows of a COPY TO
-  function. The update callback of an aggregate function has no context, so an
-  aggregate function of an extension refuses a GEOMETRY argument at
-  registration.
-- `setConfigValue` and `setConfigOption`. DuckDB casts the value to the type of
-  the option, as SQL `SET` does.
+result of `CAST(g AS BLOB)`, but not a GEOMETRY value that a query gives or
+that a callback reads. Only `setConfigValue` and `setConfigOption` use
+registered casts: DuckDB casts the value to the type of the option, as SQL
+`SET` does.
 
 `createAggregate` registers an aggregate function as a fold. The result type
 must be BOOLEAN, TINYINT to BIGINT, UTINYINT to UBIGINT, FLOAT, DOUBLE, or

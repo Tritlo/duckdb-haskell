@@ -16,12 +16,11 @@ module Database.DuckDB.Simple.Config.Internal (
 
 import Control.Exception (bracket)
 import Control.Monad (when)
-import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.Callback (targetCastFactory)
 import Database.DuckDB.Simple.FromField (FieldValue)
-import Database.DuckDB.Simple.Materialize (VectorReader, materializeValue, rejectRows)
+import Database.DuckDB.Simple.Materialize (VectorReader, callbackReadFactory, materializeValue, rejectRows)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.V2.Config (registerCustomOptionWith)
 import Database.DuckDB.Simple.V2.Registration (
@@ -86,7 +85,7 @@ updateWithValue casts update info context = withContextFactory context \factory 
   bracket
     (output (c_duckdb_v2_custom_option_update_get_value info))
     (destroy c_duckdb_v2_value_destroy)
-    (materializeValue unexpectedVariant (fromMaybe factory casts))
+    (materializeValue unexpectedVariant (callbackReadFactory casts factory))
     >>= update
 
 -- | Raise an @SQLError@ for a VARIANT value. The update function of a custom

@@ -36,7 +36,6 @@ module Database.DuckDB.Simple.Copy.Internal (
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar)
 import Control.Exception (bracket, finally, mask, mask_, onException)
 import Control.Monad (forM, forM_, when)
-import Data.Maybe (fromMaybe)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -46,10 +45,13 @@ import Database.DuckDB.Simple.FromField (Field (..))
 import Database.DuckDB.Simple.Internal (Connection, withDatabaseHandle)
 import Database.DuckDB.Simple.Materialize (
   FallbackReaders (..),
+  ReadFactory,
   VectorReader,
+  callbackReadFactory,
   prepareGeometryReader,
   prepareVariantReader,
   prepareVectorReader,
+  readFactoryHandle,
   rejectRows,
  )
 import Database.DuckDB.Simple.Native
@@ -195,7 +197,7 @@ copyToSide casts readVariant bindFn initFn sinkFn finalizeFn =
         bracket
           (output (c_duckdb_v2_copy_to_batch_take_input info))
           (destroy c_duckdb_v2_column_data_collection_destroy)
-          (materializeCollection (fromMaybe factory casts) readVariant types)
+          (materializeCollection (callbackReadFactory casts factory) readVariant types)
       transferCallbackState (attachOpaque (c_duckdb_v2_copy_to_batch_set_batch_data info)) rows
     flush info _ = do
       (state, _) <- readCopyBinding (c_duckdb_v2_copy_to_flush_get_bind_data info)
@@ -245,11 +247,11 @@ copyBindingDestructor = DuckDBV2OpaqueDestroyFn (castFunPtr copyBindingDestructo
 -- | Copy each scanned chunk before the scan invalidates its borrowed buffers.
 -- The factory makes the chunk and reads GEOMETRY.
 materializeCollection
-  :: DuckDBV2FactoryHandle -> VectorReader -> [DuckDBV2LogicalTypeHandle] -> DuckDBV2ColumnDataCollectionHandle -> IO [[Field]]
-materializeCollection factory readVariant types collection =
+  :: ReadFactory -> VectorReader -> [DuckDBV2LogicalTypeHandle] -> DuckDBV2ColumnDataCollectionHandle -> IO [[Field]]
+materializeCollection readFactory readVariant types collection =
   withArray types \typePtr ->
     bracket
-      (output (c_duckdb_v2_data_chunk_create factory (ConstPtr typePtr) (fromIntegral (length types))))
+      (output (c_duckdb_v2_data_chunk_create (readFactoryHandle readFactory) (ConstPtr typePtr) (fromIntegral (length types))))
       (destroy c_duckdb_v2_data_chunk_destroy)
       \chunk ->
         bracket
@@ -265,7 +267,7 @@ materializeCollection factory readVariant types collection =
                       if produced == 0
                         then pure (concat (reverse groups))
                         else do
-                          rows <- materializeChunkRows (FallbackReaders readVariant (prepareGeometryReader factory)) chunk
+                          rows <- materializeChunkRows (FallbackReaders readVariant (prepareGeometryReader readFactory)) chunk
                           loop (rows : groups)
                 in  loop []
 

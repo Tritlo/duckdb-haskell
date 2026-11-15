@@ -12,6 +12,9 @@ module Database.DuckDB.Simple.Materialize (
   FallbackReaders (..),
   rejectRows,
   prepareVariantReader,
+  ReadFactory (..),
+  callbackReadFactory,
+  readFactoryHandle,
   prepareGeometryReader,
   materializeValue,
   prepareValueReader,
@@ -95,15 +98,37 @@ rejectRows raise vector = pure \row ->
 -- "Database.DuckDB.Simple.VariantCodec".
 prepareVariantReader :: VariantCodec.VariantState -> VectorReader
 prepareVariantReader =
-  VariantCodec.prepareVariantDecoder (materializeValue (rejectRows (throwIO (userError "duckdb-simple: expected a value without VARIANT"))))
+  VariantCodec.prepareVariantDecoder
+    (materializeValue (rejectRows (throwIO (userError "duckdb-simple: expected a value without VARIANT"))) . InstanceFactory)
+
+-- | The factory of a read, and its kind. The kind decides how
+-- 'prepareGeometryReader' casts GEOMETRY to BLOB. See
+-- Note [User casts and the casts of the library].
+data ReadFactory
+  = -- | The factory of an instance. Its casts are the built-in casts.
+    InstanceFactory DuckDBV2FactoryHandle
+  | -- | The factory of a callback context. Its casts include the casts that a
+    -- user registers.
+    ContextFactory DuckDBV2FactoryHandle
+
+-- | The factory of a read in a callback: the factory of the instance from
+-- 'Database.DuckDB.Simple.Callback.targetCastFactory', or the factory of the
+-- context for an extension target, which has no instance.
+callbackReadFactory :: Maybe DuckDBV2FactoryHandle -> DuckDBV2FactoryHandle -> ReadFactory
+callbackReadFactory casts context = maybe (ContextFactory context) InstanceFactory casts
+
+-- | The handle of a read factory.
+readFactoryHandle :: ReadFactory -> DuckDBV2FactoryHandle
+readFactoryHandle (InstanceFactory factory) = factory
+readFactoryHandle (ContextFactory factory) = factory
 
 -- | Copy one value through an owned vector. The caller retains the factory owner.
 -- The first argument reads VARIANT. 'prepareGeometryReader' reads GEOMETRY with
 -- the factory.
-materializeValue :: VectorReader -> DuckDBV2FactoryHandle -> DuckDBV2ValueHandle -> IO FieldValue
+materializeValue :: VectorReader -> ReadFactory -> DuckDBV2ValueHandle -> IO FieldValue
 materializeValue readVariant factory value =
   bracket (output (c_duckdb_v2_value_get_logical_type value)) (destroy c_duckdb_v2_logical_type_destroy) \logical ->
-    withOwnedVector factory logical \vector -> do
+    withOwnedVector (readFactoryHandle factory) logical \vector -> do
       checked (c_duckdb_v2_vector_set_size vector 1)
       checked (c_duckdb_v2_vector_set_value vector 0 value)
       prepareVectorReader (FallbackReaders readVariant (prepareGeometryReader factory)) vector >>= ($ 0)
@@ -358,7 +383,16 @@ their result:
   update, the arguments of a pragma, a scalar function, a typed aggregate, a
   typed cast, or a table function, and the rows of a COPY TO function. The
   registration takes the factory (targetCastFactory in
-  "Database.DuckDB.Simple.Callback").
+  "Database.DuckDB.Simple.Callback"). An extension target has no instance, so
+  the same callbacks of an extension read with the factory of the callback
+  context (ContextFactory). The casts of that factory include the user casts.
+  Thus prepareGeometryReader does not cast the vector with it. It writes each
+  row to a BLOB vector with the default cast (withDefaultCastVector in
+  "Database.DuckDB.Simple.Native"), as the values below do. Without this rule,
+  a typed cast from GEOMETRY to BLOB on an extension calls itself without end:
+  its reader runs the cast. The update callback of an aggregate function has
+  no context and thus no factory, so a typed aggregate of an extension refuses
+  a GEOMETRY argument at registration.
 - withObjectChildren and withCast cast VARIANT values to the types of their
   payloads ("Database.DuckDB.Simple.VariantCodec"). The codec also reads a
   GEOMETRY payload. It uses the factory of the instance of its helper
@@ -390,13 +424,6 @@ through a vector for another reason. See Note [UNION values] in
 These casts still use the cast functions of the session, so a user cast for
 the same pair changes their result:
 
-- An extension target has no instance. The callbacks that an extension
-  registers read a GEOMETRY value with the factory of the callback context: the
-  value of an option update, the arguments of a pragma, a scalar function, a
-  typed cast, or a table function, and the rows of a COPY TO function. Thus a
-  user cast from GEOMETRY to BLOB changes a GEOMETRY value that these callbacks
-  read. The update callback of an aggregate function has no context, so a
-  typed aggregate of an extension refuses a GEOMETRY argument at registration.
 - setConfigValue and setConfigOption. DuckDB casts the value to the type of the
   option as SQL SET does.
 - The casts of the SQL text. DuckDB runs them with the casts of the session.
@@ -404,28 +431,39 @@ the same pair changes their result:
 -}
 
 -- | Copy the WKB bytes and CRS of every GEOMETRY row in a vector. GEOMETRY has
--- no committed vector layout, so a native cast to BLOB reads the rows. The
--- reader takes logical rows. See Note [Vector flatten]. The cast uses the
--- factory that the caller gives. With the factory of the instance, a user cast
--- from GEOMETRY to BLOB does not replace it. See
--- Note [User casts and the casts of the library].
-prepareGeometryReader :: DuckDBV2FactoryHandle -> DuckDBV2VectorHandle -> IO (Int -> IO FieldValue)
-prepareGeometryReader factory vector = do
+-- no committed vector layout, so a cast to BLOB reads the rows. The reader takes
+-- logical rows. See Note [Vector flatten]. With the factory of an instance, one
+-- native cast casts the vector. With the factory of a context, the default cast
+-- of 'withDefaultCastVector' casts each row. A user cast from GEOMETRY to BLOB
+-- applies to neither. See Note [User casts and the casts of the library].
+prepareGeometryReader :: ReadFactory -> DuckDBV2VectorHandle -> IO (Int -> IO FieldValue)
+prepareGeometryReader readFactory vector = do
   crs <-
     withVectorType vector logicalTypeToRep >>= \case
       LogicalTypeGeometry value -> pure value
       _ -> throwIO (userError "duckdb-simple: invalid GEOMETRY type")
-  count <- fromIntegral <$> output (c_duckdb_v2_vector_get_size vector)
+  size <- output (c_duckdb_v2_vector_get_size vector)
+  let count = fromIntegral size
+      factory = readFactoryHandle readFactory
+      readBlobs target = do
+        let notBlob = rejectRows (throwIO (userError "duckdb-simple: expected a BLOB vector"))
+        readBlob <- prepareVectorReader (FallbackReaders notBlob notBlob) target
+        forM [0 .. count - 1] readBlob
   blobs <-
     bracket
       (output (c_duckdb_v2_factory_create_type_from_id factory DuckDBV2LogicalTypeIdBlob (ConstPtr nullPtr) (ConstPtr nullPtr) 0))
       destroyLogicalType
-      \blob ->
-        withOwnedVector factory blob \target -> do
+      \blob -> case readFactory of
+        InstanceFactory _ -> withOwnedVector factory blob \target -> do
           checked (c_duckdb_v2_vector_cast factory vector target DuckDBV2CastModeNormal nullPtr nullPtr)
-          let notBlob = rejectRows (throwIO (userError "duckdb-simple: expected a BLOB vector"))
-          readBlob <- prepareVectorReader (FallbackReaders notBlob notBlob) target
-          forM [0 .. count - 1] readBlob
+          readBlobs target
+        ContextFactory _ ->
+          withDefaultCastVector
+            factory
+            blob
+            size
+            (\row write -> bracket (output (c_duckdb_v2_vector_get_value vector row)) destroyValue write)
+            readBlobs
   let rows = listArray (0, count - 1) blobs :: Array Int FieldValue
   pure \row -> case rows ! row of
     FieldBlob bytes -> pure (FieldGeometry (RawGeometry bytes crs))

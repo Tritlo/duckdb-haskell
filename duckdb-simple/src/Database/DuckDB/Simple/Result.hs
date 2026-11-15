@@ -22,7 +22,13 @@ import Database.DuckDB.Simple.Element (withVectorType)
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue)
 import Database.DuckDB.Simple.FromRow (RowParser, parseRow, rowErrorsToSqlError)
 import Database.DuckDB.Simple.Internal
-import Database.DuckDB.Simple.Materialize (FallbackReaders (..), prepareGeometryReader, prepareVariantReader, prepareVectorReaderWith)
+import Database.DuckDB.Simple.Materialize (
+  FallbackReaders (..),
+  ReadFactory (..),
+  prepareGeometryReader,
+  prepareVariantReader,
+  prepareVectorReaderWith,
+ )
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.TypeCache (typeCacheCasts, withVariantState)
 import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
@@ -184,7 +190,7 @@ prepareChunkReaders conn chunk columns = withTypeCache conn \cache -> do
   -- Note [User casts and the casts of the library] in
   -- "Database.DuckDB.Simple.Materialize".
   let readVariant vector = withVariantState cache (`prepareVariantReader` vector)
-      readers = FallbackReaders readVariant (prepareGeometryReader (typeCacheCasts cache))
+      readers = FallbackReaders readVariant (prepareGeometryReader (InstanceFactory (typeCacheCasts cache)))
   forM columns \StatementStreamColumn{statementStreamColumnIndex, statementStreamColumnTree, statementStreamColumnLabels} -> do
     vector <- output (c_duckdb_v2_data_chunk_get_vector chunk (fromIntegral statementStreamColumnIndex))
     let tree =

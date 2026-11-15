@@ -37,7 +37,6 @@ import Control.Exception (
 import Control.Monad (forM, forM_, when)
 import Data.Bits (clearBit, setBit)
 import Data.Int (Int16, Int32, Int64, Int8)
-import Data.Maybe (fromMaybe)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -64,7 +63,14 @@ import Database.DuckDB.Simple.FromField (
  )
 import Database.DuckDB.Simple.Internal (duckDBTypeToName)
 import Database.DuckDB.Simple.LogicalRep (TypeDeclaration)
-import Database.DuckDB.Simple.Materialize (FallbackReaders (..), prepareGeometryReader, prepareVectorReader, rejectRows)
+import Database.DuckDB.Simple.Materialize (
+  FallbackReaders (..),
+  ReadFactory,
+  callbackReadFactory,
+  prepareGeometryReader,
+  prepareVectorReader,
+  rejectRows,
+ )
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToDuckValue (..))
@@ -345,7 +351,7 @@ executeScalarFunction casts fn info context = withContextFactory context \contex
       )
   rawRowCount <- output (c_duckdb_v2_scalar_function_exec_get_row_count info)
   let rowCount = fromIntegral rawRowCount :: Int
-  readers <- mapM (makeColumnReader (fromMaybe contextFactory casts) info) [0 .. expected - 1]
+  readers <- mapM (makeColumnReader (callbackReadFactory casts contextFactory) info) [0 .. expected - 1]
   rows <- forM [0 .. rowCount - 1] $ \row -> forM readers ($ row)
   results <- mapM (`applyFunction` fn) rows
   outVec <- output (c_duckdb_v2_scalar_function_exec_get_result info)
@@ -379,7 +385,7 @@ type ColumnReader = Int -> IO Field
 
 -- | Prepare the reader of one argument. A GEOMETRY value reads with the
 -- factory, at each depth of the type.
-makeColumnReader :: DuckDBV2FactoryHandle -> DuckDBV2ScalarFunctionExecInfoHandle -> Int -> IO ColumnReader
+makeColumnReader :: ReadFactory -> DuckDBV2ScalarFunctionExecInfoHandle -> Int -> IO ColumnReader
 makeColumnReader factory info columnIndex = do
   let noVariant =
         rejectRows

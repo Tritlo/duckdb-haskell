@@ -1558,17 +1558,11 @@ enumDuckValue factory entries label = do
     bracket (textDuckValue factory label) destroyValue \value ->
       defaultCast factory value logical
 
--- | Cast a value to a type with the default cast of DuckDB. Write the value to
--- a new vector of the type with one row, and read the row. The header says that
--- duckdb_v2_vector_set_value casts "through the non-strict default cast", so a
--- cast that a user registers does not apply, with each factory. The caller
--- destroys the result. See Note [User casts and the casts of the library] in
--- "Database.DuckDB.Simple.Materialize".
+-- | Cast a value to a type with the default cast of DuckDB
+-- ('withDefaultCastVector' with one row). The caller destroys the result.
 defaultCast :: DuckDBV2FactoryHandle -> DuckDBV2ValueHandle -> DuckDBV2LogicalTypeHandle -> IO DuckDBV2ValueHandle
-defaultCast factory value logical = withOwnedVector factory logical \vector -> do
-  checked (c_duckdb_v2_vector_set_size vector 1)
-  checked (c_duckdb_v2_vector_set_value vector 0 value)
-  output (c_duckdb_v2_vector_get_value vector 0)
+defaultCast factory value logical =
+  withDefaultCastVector factory logical 1 (\_ write -> write value) \vector -> output (c_duckdb_v2_vector_get_value vector 0)
 
 hugeIntDuckValue :: DuckDBV2FactoryHandle -> Integer -> IO DuckDBV2ValueHandle
 hugeIntDuckValue factory value = integerToHugeInt value >>= \huge -> with huge (\ptr -> output (c_duckdb_v2_value_create_hugeint factory (ConstPtr ptr)))

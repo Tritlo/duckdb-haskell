@@ -17,7 +17,7 @@ import Control.Monad (forM, when)
 import Data.Text (Text)
 import Database.DuckDB.Simple.FromField (FieldValue)
 import Database.DuckDB.Simple.Internal (Connection, withConnectionHandle, withTypeCache)
-import Database.DuckDB.Simple.Materialize (materializeValue, rejectRows)
+import Database.DuckDB.Simple.Materialize (ReadFactory (..), materializeValue, rejectRows)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.TypeCache (typeCacheCasts)
 
@@ -53,7 +53,7 @@ queryMetrics connection = withConnectionHandle connection \native ->
   bracket (output (c_duckdb_v2_connection_get_query_metrics native)) (destroy c_duckdb_v2_query_metrics_destroy) \snapshot ->
     withTypeCache connection \cache -> do
       root <- output (c_duckdb_v2_query_metrics_get_root snapshot)
-      copyNode (materializeValue unexpectedVariant (typeCacheCasts cache)) root
+      copyNode (materializeValue unexpectedVariant (InstanceFactory (typeCacheCasts cache))) root
   where
     unexpectedVariant = rejectRows (throwIO (SQLError "duckdb-simple: query metrics must be numeric" Nothing Nothing))
     copyNode readValue node = do

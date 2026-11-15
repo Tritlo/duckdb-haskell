@@ -33,6 +33,7 @@ import Database.DuckDB.Simple.FromField (Field (..), FieldValue (FieldNull))
 import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow)
 import Database.DuckDB.Simple.Function.Internal (FunctionResult (..), ScalarValue, prepareResultWriter)
 import Database.DuckDB.Simple.Internal (Connection (..), defaultAggregateStripes)
+import Database.DuckDB.Simple.Materialize (ReadFactory (..))
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..))
@@ -312,7 +313,9 @@ updateStates casts name Aggregate{aggregateStep} columns info = do
   states <- output (c_duckdb_v2_aggregate_function_update_get_states info)
   readers <-
     mapM
-      (\index -> output (c_duckdb_v2_aggregate_function_update_get_arg info (fromIntegral index)) >>= prepareArgumentReader casts index)
+      ( \index ->
+          output (c_duckdb_v2_aggregate_function_update_get_arg info (fromIntegral index)) >>= prepareArgumentReader (InstanceFactory <$> casts) index
+      )
       [0 .. columns - 1]
   forM_ [0 .. count - 1] \row -> do
     fields <- mapM ($ row) readers

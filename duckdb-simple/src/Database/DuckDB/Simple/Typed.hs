@@ -33,7 +33,6 @@ import Control.Exception (SomeException, bracket, catch, displayException, fromE
 import Control.Monad (forM, forM_, when)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (intercalate)
-import Data.Maybe (fromMaybe)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -41,7 +40,14 @@ import Database.DuckDB.Simple.Callback (targetCastFactory)
 import Database.DuckDB.Simple.Element (vectorElementType)
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), FromField (..), ResultError (..))
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), UnionMemberType (..))
-import Database.DuckDB.Simple.Materialize (FallbackReaders (..), prepareGeometryReader, prepareVectorReader, rejectRows)
+import Database.DuckDB.Simple.Materialize (
+  FallbackReaders (..),
+  ReadFactory,
+  callbackReadFactory,
+  prepareGeometryReader,
+  prepareVectorReader,
+  rejectRows,
+ )
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToDuckValue (..))
@@ -177,7 +183,7 @@ containsType accepts rep =
 -- of the type. Without a factory, a row that holds a GEOMETRY value raises an
 -- error. See Note [User casts and the casts of the library] in
 -- "Database.DuckDB.Simple.Materialize". The reader must not outlive the vector.
-prepareArgumentReader :: Maybe DuckDBV2FactoryHandle -> Int -> DuckDBV2VectorHandle -> IO (Int -> IO Field)
+prepareArgumentReader :: Maybe ReadFactory -> Int -> DuckDBV2VectorHandle -> IO (Int -> IO Field)
 prepareArgumentReader casts index vector = do
   let noVariant = rejectRows (throwInvalidArgument (Text.pack "the type of a typed argument cannot be or contain VARIANT"))
       noGeometry = rejectRows (throwInvalidArgument (Text.pack "a typed argument of this callback cannot be or contain GEOMETRY"))
@@ -225,7 +231,8 @@ castRows
   => Maybe DuckDBV2FactoryHandle -> (a -> Either Text b) -> DuckDBV2CastFunctionExecInfoHandle -> DuckDBV2ContextHandle -> IO ()
 castRows casts convert info context = withContextFactory context \factory -> do
   count <- fromIntegral <$> output (c_duckdb_v2_cast_function_exec_get_row_count info)
-  readArgument <- output (c_duckdb_v2_cast_function_exec_get_input info) >>= prepareArgumentReader (Just (fromMaybe factory casts)) 0
+  readArgument <-
+    output (c_duckdb_v2_cast_function_exec_get_input info) >>= prepareArgumentReader (Just (callbackReadFactory casts factory)) 0
   vector <- output (c_duckdb_v2_cast_function_exec_get_output info)
   -- Flatten after the size changes. See Note [Vector flatten] in
   -- "Database.DuckDB.Simple.Materialize".

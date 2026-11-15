@@ -42,6 +42,7 @@ module Database.DuckDB.Simple.Native (
   releaseItems,
   withCreatedValues,
   withOwnedVector,
+  withDefaultCastVector,
   nullHandle,
   indices,
   withText,
@@ -68,7 +69,7 @@ module Database.DuckDB.Simple.Native (
 
 import Control.Applicative ((<|>))
 import Control.Exception (Exception, SomeException, bracket, finally, mask_, onException, throwIO, try)
-import Control.Monad (foldM, unless, when, (<$!>))
+import Control.Monad (foldM, forM_, unless, when, (<$!>))
 import qualified Data.ByteString as BS
 import Data.Char (isAsciiUpper, toLower)
 import Data.Coerce (Coercible, coerce)
@@ -351,6 +352,27 @@ withOwnedVector factory logicalType action =
   with logicalType $ \types ->
     bracket (output (c_duckdb_v2_data_chunk_create factory (ConstPtr types) 1)) (destroy c_duckdb_v2_data_chunk_destroy) $ \chunk ->
       output (c_duckdb_v2_data_chunk_get_vector chunk 0) >>= action
+
+-- | Cast values with the default cast of DuckDB. The function makes a new
+-- vector of the type with the given number of rows (withOwnedVector). For each
+-- row, the writer gives a borrowed value to its second argument, and
+-- duckdb_v2_vector_set_value writes the value to the row. The header says that
+-- this call casts "through the non-strict default cast", so a cast that a user
+-- registers does not apply, with each factory. Then the action reads the
+-- vector. See Note [User casts and the casts of the library] in
+-- "Database.DuckDB.Simple.Materialize".
+withDefaultCastVector
+  :: DuckDBV2FactoryHandle
+  -> DuckDBV2LogicalTypeHandle
+  -> DuckDBIdx
+  -> (DuckDBIdx -> (DuckDBV2ValueHandle -> IO ()) -> IO ())
+  -> (DuckDBV2VectorHandle -> IO a)
+  -> IO a
+withDefaultCastVector factory logicalType count writeRow action =
+  withOwnedVector factory logicalType $ \vector -> do
+    checked (c_duckdb_v2_vector_set_size vector count)
+    forM_ (indices count) $ \row -> writeRow row (checked . c_duckdb_v2_vector_set_value vector row)
+    action vector
 
 -- | List the indices below a native count without unsigned underflow.
 indices :: DuckDBIdx -> [DuckDBIdx]

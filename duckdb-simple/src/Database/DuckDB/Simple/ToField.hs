@@ -1965,10 +1965,11 @@ encodeLocalTime = encodeTimestampUnits 1000000
 -- | Encode finite timestamps in the requested number of units per second.
 -- See Note [Time ranges].
 encodeTimestampUnits :: Integer -> LocalTime -> IO Int64
-encodeTimestampUnits units value@LocalTime{localDay, localTimeOfDay} = do
-  time <- timeOfDayUnits units localTimeOfDay
+encodeTimestampUnits units value@LocalTime{localTimeOfDay} = do
+  -- timeOfDayUnits checks the time of day.
+  _ <- timeOfDayUnits units localTimeOfDay
   checkTimestampRange units value
-  let total = diffDays localDay (fromGregorian 1970 1 1) * 86400 * units + time
+  let total = timestampUnits units value
   -- Only a nanosecond value reaches this check with a value outside the
   -- storage or at an infinity value. See Note [Time ranges].
   checkFiniteRange "TIMESTAMP" (minBound :: Int64) maxBound total

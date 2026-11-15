@@ -134,9 +134,15 @@
   `LogicalTypeTuple`.
 - Preserve composite VARCHAR collations with `LogicalTypeCollatedVarchar`.
 - Decode nanosecond timezone timestamps in results and VARIANT values.
-- Preserve nanosecond timezone timestamp precision in VARIANT parameters and
-  parameters whose prepared type requires `TIMESTAMPTZ_NS`. This includes UTC
-  fields in collections, STRUCTs, MAPs, and UNIONs.
+- Preserve the digits below a microsecond of a `TimeOfDay`, a `LocalTime`, and
+  a `UTCTime`, and of their `Unbounded` forms, for a nanosecond parameter
+  (`TIME_NS`, `TIMESTAMP_NS`, or `TIMESTAMPTZ_NS`), also in collections,
+  STRUCTs, MAPs, UNIONs, and VARIANT parameters. Only a value with such digits
+  reads the parameter type. Each other parameter gets the microsecond value,
+  as for the SQL literal. An explicit cast such as `?::TIMESTAMP_NS` makes a
+  nanosecond parameter, so for a `TIMESTAMP` column DuckDB rounds the value to
+  the microsecond, where a plain `?` cuts the digits. Version 0.3 bound the
+  microsecond value for each parameter.
 - Decode VARIANT values through public V2 operations. Object keys use DuckDB's
   lexicographic order.
 - Allow a VARIANT object to contain an empty key with other named keys. Reject
@@ -189,9 +195,9 @@
   still a row of parameters, so a list parameter is `Only [..]`. Version 0.3
   had no list parameter instance.
 - `executeMany` reads the parameter types one time for each call, not one time
-  for each row. A row with a `UTCTime`, an `Unbounded UTCTime`, an `Array`, or
-  a manual STRUCT, TUPLE, or UNION parameter no longer runs the DuckDB binder
-  again. A column type that changes during the call does not change how the
+  for each row. A row with a time value that has digits below a microsecond,
+  an `Array`, or a manual STRUCT, TUPLE, or UNION parameter no longer runs the
+  DuckDB binder again. A column type that changes during the call does not change how the
   later rows of that call bind.
 - An `Integer` or a `Natural` parameter binds as a HUGEINT value when the value
   is in the HUGEINT range. Before, it bound as a BIGNUM value in each case. In

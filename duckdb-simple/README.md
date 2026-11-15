@@ -369,12 +369,17 @@ The ordinary `Day`, `LocalTime`, and `UTCTime` instances reject infinity with
 a conversion error. Use `Maybe Date` to distinguish SQL NULL from infinity.
 Floating-point NaN and infinities remain valid `Float` and `Double` values.
 
-`UTCTime` and `UTCTimestamp` parameters preserve
-nanoseconds when the prepared parameter type is `TIMESTAMPTZ_NS`. Use an
-explicit cast, such as `SELECT ?::TIMESTAMPTZ_NS`, or a column with that type.
-UTC values inside collections, STRUCTs, MAPs, and UNIONs follow their target
-types. An untyped UTC parameter still binds as microsecond TIMESTAMPTZ.
-The library refreshes prepared metadata when it resets or rebinds a statement.
+A `TimeOfDay`, a `LocalTime`, or a `UTCTime` parameter, and an `Unbounded`
+form, keeps its digits below a microsecond for a nanosecond parameter:
+`TIME_NS`, `TIMESTAMP_NS`, or `TIMESTAMPTZ_NS`. Use an explicit cast, such as
+`SELECT ?::TIMESTAMP_NS`, or a column with that type. Each other parameter, and
+a parameter with no known type, gets the microsecond value: the digits below a
+microsecond go away, as for the SQL literal. Only a value with such digits
+reads the parameter type. An explicit cast such as `?::TIMESTAMP_NS` makes a
+nanosecond parameter, so for a `TIMESTAMP` column DuckDB rounds the value to
+the microsecond, where a plain `?` cuts the digits. Values inside collections, STRUCTs, MAPs, and UNIONs follow their
+target types. The library refreshes prepared metadata when it resets or
+rebinds a statement.
 One `executeMany` call reads the parameter types one time. A column type that
 changes during the call does not change how its later rows bind.
 Use separate parameters when one expression requires microseconds and another

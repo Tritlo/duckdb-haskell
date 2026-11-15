@@ -120,7 +120,10 @@ data FieldValue
   | FieldUnion (UnionValue FieldValue)
   deriving (Eq, Show)
 
--- | Exact-width decimal payload plus its declared width and scale.
+-- | Exact-width decimal payload plus its declared width and scale. A parameter
+-- of this type binds as a DECIMAL with this width and scale. An @Array@, a
+-- list, or a typed row cannot hold it, because its column type name has no
+-- width and scale.
 data DecimalValue = DecimalValue
   { decimalWidth :: Word8
   , decimalScale :: Word8
@@ -128,7 +131,9 @@ data DecimalValue = DecimalValue
   }
   deriving (Eq, Show)
 
--- | DuckDB interval payload split into months, days, and microseconds.
+-- | DuckDB interval payload split into months, days, and microseconds. A
+-- parameter of this type binds as an INTERVAL, and DuckDB keeps the three
+-- fields.
 data IntervalValue = IntervalValue
   { intervalMonths :: Int32
   , intervalDays :: Int32
@@ -230,7 +235,11 @@ bsFromBool bits =
     bitsToWord8 :: [Bool] -> Word8
     bitsToWord8 bs = foldl (\acc (b, i) -> if b then setBit acc i else acc) 0 (zip bs [7, 6 .. 0])
 
--- | Time-of-day paired with its associated timezone offset.
+-- | Time-of-day paired with its associated timezone offset. DuckDB stores the
+-- time and the offset in minutes. It does not store the name and the summer flag
+-- of the t'TimeZone'. A value that is read has a t'TimeZone' from
+-- @minutesToTimeZone@. Thus it is equal to the bound value only when the bound
+-- zone has no name and no summer flag.
 data TimeWithZone = TimeWithZone
   { timeWithZoneTime :: TimeOfDay
   , timeWithZoneZone :: TimeZone

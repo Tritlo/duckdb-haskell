@@ -418,6 +418,21 @@ instance ToField TimeOfDay
 
 instance ToField LocalTime
 
+-- | Bind the months, days, and microseconds as an INTERVAL. DuckDB keeps the
+-- three fields.
+instance ToField IntervalValue
+
+-- | Bind the time and its offset in minutes as a TIMETZ. The name and the
+-- summer flag of the t'TimeZone' are not stored. An offset of 16 hours or more
+-- raises an error.
+instance ToField TimeWithZone
+
+-- | Bind the value as a DECIMAL with its own width and scale. DuckDB casts it
+-- to the type of the parameter. A width outside 1 to 38, a scale larger than
+-- the width, or an integer that the width cannot hold raises an error.
+instance ToField DecimalValue where
+  toField value = valueBinding (show value) (`decimalDuckValue` value)
+
 -- | Bind the shape as @GEOMETRY@ with no CRS.
 instance ToField G.Geometry
 
@@ -587,6 +602,12 @@ instance DuckDBColumnType TimeOfDay where
 
 instance DuckDBColumnType LocalTime where
   duckdbColumnTypeFor _ = "TIMESTAMP"
+
+instance DuckDBColumnType IntervalValue where
+  duckdbColumnTypeFor _ = "INTERVAL"
+
+instance DuckDBColumnType TimeWithZone where
+  duckdbColumnTypeFor _ = "TIMETZ"
 
 instance DuckDBColumnType UTCTime where
   duckdbColumnTypeFor _ = "TIMESTAMPTZ"
@@ -1325,6 +1346,12 @@ instance ToDuckValue TimeOfDay where
 
 instance ToDuckValue LocalTime where
   toDuckValue = localTimeDuckValue
+
+instance ToDuckValue IntervalValue where
+  toDuckValue = intervalDuckValue
+
+instance ToDuckValue TimeWithZone where
+  toDuckValue = timeWithZoneDuckValue
 
 instance ToDuckValue UTCTime where
   toDuckValue = utcTimeDuckValue

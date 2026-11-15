@@ -24,7 +24,7 @@ import qualified Data.Text.IO as TextIO
 import Data.Time (UTCTime (..))
 import Data.Time.Calendar (Day, addDays, fromGregorian)
 import Data.Time.Format (defaultTimeLocale, parseTimeM)
-import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..))
+import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), minutesToTimeZone)
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.Simple
@@ -48,7 +48,7 @@ import Database.DuckDB.Simple.Copy (
   registerCopyToFunction,
   registerMultiFileFunction,
  )
-import Database.DuckDB.Simple.FromField (BigNum (..), Field (..), FieldValue (..), bsFromBool)
+import Database.DuckDB.Simple.FromField (BigNum (..), Field (..), FieldValue (..), IntervalValue (..), TimeWithZone (..), bsFromBool)
 import Database.DuckDB.Simple.LogicalRep (StructField (..), StructValue (..))
 import Database.DuckDB.Simple.Pragma (PragmaCallback (..), registerPragmaFunction)
 import Database.DuckDB.Simple.Registration (
@@ -106,6 +106,7 @@ typedRegistrationTests =
     , testCase "table function with no, two, and NULL parameters" testTableParameters
     , testCase "table function columns of several types and a record row" testTableTypes
     , testCase "table function with Integer and Natural columns" testTableIntegers
+    , testCase "table function with INTERVAL and TIMETZ columns" testTableIntervals
     , testCase "table function runs one time for each scan" testTableRuns
     , -- A defect can make the scan run without end. Then the time limit fails
       -- the case. The limit is long, because the suite also runs under Valgrind.
@@ -937,6 +938,18 @@ testTableIntegers = withConnection ":memory:" \conn -> do
   createTableFunction conn "typed_naturals" ["label", "v"] \() -> pure naturals
   query_ conn "SELECT label, typeof(v), v FROM typed_naturals()"
     >>= (@?= [(label, "BIGNUM" :: Text, value) | (label, value) <- naturals])
+
+-- | Give IntervalValue and TimeWithZone columns.
+testTableIntervals :: Assertion
+testTableIntervals = withConnection ":memory:" \conn -> do
+  let rows =
+        [ (IntervalValue 1 2 3, TimeWithZone (TimeOfDay 12 34 0) (minutesToTimeZone 330))
+        , (IntervalValue (-1) 0 0, TimeWithZone (TimeOfDay 0 0 0) (minutesToTimeZone 0))
+        ]
+  createTableFunction conn "typed_intervals" ["duration", "moment"] \() -> pure rows
+  query_ conn "SELECT typeof(duration), typeof(moment) FROM typed_intervals() LIMIT 1"
+    >>= (@?= [("INTERVAL" :: Text, "TIME WITH TIME ZONE" :: Text)])
+  query_ conn "SELECT duration, moment FROM typed_intervals()" >>= (@?= rows)
 
 -- | Run the function for each scan. Do not run it at registration or preparation.
 testTableRuns :: Assertion

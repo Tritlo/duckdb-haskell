@@ -23,7 +23,7 @@ import Database.DuckDB.Simple.FromRow (RowParser, parseRow, rowErrorsToSqlError)
 import Database.DuckDB.Simple.Internal
 import Database.DuckDB.Simple.Materialize (FallbackReaders (..), prepareGeometryReader, prepareVariantReader, prepareVectorReaderWith)
 import Database.DuckDB.Simple.Ok (Ok (..))
-import Database.DuckDB.Simple.TypeCache (withVariantState)
+import Database.DuckDB.Simple.TypeCache (typeCacheCasts, withVariantState)
 import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Storable (peek)
@@ -178,10 +178,12 @@ fetchChunk ref conn queryText stream = withQueryError queryText $ mask \restore 
 -- do not use the result schema. See Note [Type trees] in
 -- "Database.DuckDB.Simple.Materialize".
 prepareChunkReaders :: Connection -> DuckDBV2DataChunkHandle -> [StatementStreamColumn] -> IO [Int -> IO FieldValue]
-prepareChunkReaders conn chunk columns = withTypeCache conn \cache -> withConnectionHandle conn \native -> withConnectionFactory native \factory -> do
-  -- See Note [VARIANT decoding] in "Database.DuckDB.Simple.VariantCodec".
+prepareChunkReaders conn chunk columns = withTypeCache conn \cache -> do
+  -- See Note [VARIANT decoding] in "Database.DuckDB.Simple.VariantCodec" and
+  -- Note [User casts and the casts of the library] in
+  -- "Database.DuckDB.Simple.Materialize".
   let readVariant vector = withVariantState cache (`prepareVariantReader` vector)
-      readers = FallbackReaders readVariant (prepareGeometryReader factory)
+      readers = FallbackReaders readVariant (prepareGeometryReader (typeCacheCasts cache))
   forM columns \StatementStreamColumn{statementStreamColumnIndex, statementStreamColumnTree} -> do
     vector <- output (c_duckdb_v2_data_chunk_get_vector chunk (fromIntegral statementStreamColumnIndex))
     let tree =

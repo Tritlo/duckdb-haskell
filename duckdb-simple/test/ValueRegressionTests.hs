@@ -898,18 +898,18 @@ valueRegressionTests =
     , testCase "TIMETZ offsets with seconds read without rounding" $ withConnection ":memory:" \conn ->
         (query_ conn "SELECT '12:00:00+01:23:45'::TIMETZ" :: IO [Only TimeWithZone]) >>= (@?= [Only (TimeWithZone (TimeOfDay 12 0 0) 5025)])
     , testCase "a failure of the reader of a later chunk releases each chunk" $ withConnection ":memory:" \conn -> do
-        -- No value from SQL fails in a result decoder. A user cast from GEOMETRY
-        -- to BLOB replaces the cast of the GEOMETRY reader, and a typed cast
-        -- rejects a GEOMETRY argument. See Note [User casts and the casts of the
+        -- No value from SQL fails in a result decoder. A user cast from VARIANT
+        -- to BIGINT replaces a cast of the VARIANT reader, and a typed cast
+        -- rejects a VARIANT argument. See Note [User casts and the casts of the
         -- library] in "Database.DuckDB.Simple.Materialize". This case needs a new
-        -- trigger when the reader no longer uses user casts.
-        createCast conn (TypeExpression "GEOMETRY") (TypeExpression "BLOB") \(bytes :: BS.ByteString) -> Right bytes
-        let rows (count :: Int) = Query ("SELECT CASE WHEN i = 9000 THEN 'POINT (1 2)'::GEOMETRY END FROM range(" <> Text.pack (show count) <> ") t(i)")
+        -- trigger when the VARIANT reader no longer uses user casts.
+        createCast conn (TypeExpression "VARIANT") (TypeExpression "BIGINT") \(value :: Int64) -> Right value
+        let rows (count :: Int) = Query ("SELECT CASE WHEN i = 9000 THEN 42::BIGINT::VARIANT END FROM range(" <> Text.pack (show count) <> ") t(i)")
         try (query_ conn (rows 10000) :: IO [Only FieldValue]) >>= \case
           Left SQLError{sqlErrorMessage, sqlErrorType} -> do
             assertBool (Text.unpack sqlErrorMessage) ("cannot be or contain VARIANT or GEOMETRY" `Text.isInfixOf` sqlErrorMessage)
             sqlErrorType @?= Just ErrorInputInvalid
-          Right result -> assertFailure ("expected the error of the GEOMETRY reader, got " <> show (length result) <> " rows")
+          Right result -> assertFailure ("expected the error of the VARIANT reader, got " <> show (length result) <> " rows")
         -- Rows that are all NULL read, so the failure is in the chunk of row 9000.
         (length <$> (query_ conn (rows 5000) :: IO [Only FieldValue])) >>= (@?= 5000)
         (query_ conn "SELECT 42" :: IO [Only Int]) >>= (@?= [Only 42])

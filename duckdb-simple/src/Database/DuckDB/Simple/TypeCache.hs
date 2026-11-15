@@ -13,6 +13,7 @@
 module Database.DuckDB.Simple.TypeCache (
   TypeCache,
   typeCacheConnection,
+  typeCacheCasts,
   defaultGeometryCRS,
   createTypeCache,
   destroyTypeCache,
@@ -40,6 +41,11 @@ import Foreign.Ptr (nullPtr)
 data TypeCache = TypeCache
   { typeCacheConnection :: DuckDBV2ConnectionHandle
   , typeCacheInstance :: DuckDBV2InstanceHandle
+  , typeCacheCasts :: DuckDBV2FactoryHandle
+  -- ^ The factory of the instance. The library runs its own casts with it,
+  --     because it knows only the built-in casts. It is valid for as long as
+  --     the instance is. See Note [User casts and the casts of the library] in
+  --     "Database.DuckDB.Simple.Materialize".
   , typeCacheGeometry :: NativeTypes
   -- ^ The types of the configured CRS names. The map does not change after
   --     'createTypeCache'.
@@ -111,6 +117,7 @@ createTypeCache instance_ connection crss = do
   when (any Text.null crss || any (Text.any (== '\0')) crss) $
     throwIO (userError "duckdb-simple: a GEOMETRY CRS must be nonempty and must not contain NUL")
   let names = nub crss
+  casts <- withInstanceFactory instance_ pure
   direct <- acquireItems (mapM_ destroyLogicalType) [directGeometry connection crs | crs <- names]
   let kept = [(crs, logical) | (crs, Just logical) <- zip names direct]
   flip onException (releaseItems destroyLogicalType (map snd kept)) do
@@ -118,7 +125,7 @@ createTypeCache instance_ connection crss = do
     queried <- readNativeTypes connection [crs | (crs, Nothing) <- zip names direct]
     flip onException (releaseItems destroyLogicalType (nativeOwned queried)) do
       let geometry = NativeTypes (nativeGeometry keptTypes <> nativeGeometry queried) (nativeOwned keptTypes <> nativeOwned queried)
-      TypeCache connection instance_ geometry <$> newMVar Unopened
+      TypeCache connection instance_ casts geometry <$> newMVar Unopened
 
 -- | Construct a GEOMETRY type with a CRS directly. Give 'Nothing' when DuckDB
 -- rejects the name or drops the CRS. The construction raises 'SQLError' in

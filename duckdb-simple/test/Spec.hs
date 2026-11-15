@@ -92,6 +92,7 @@ import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck (testProperty, (===))
 import TimeTests (timeTests)
 import TypedRegistrationTests (typedRegistrationTests)
+import UserCastTests (userCastTests)
 import ValueRegressionTests (valueRegressionTests)
 import qualified VariantRegressionTests
 
@@ -247,6 +248,7 @@ tests =
     , copyTests
     , GeometryRegressionTests.tests
     , VariantRegressionTests.tests
+    , userCastTests
     , valueRegressionTests
     , timeTests
     , SqlFeatureTests.tests

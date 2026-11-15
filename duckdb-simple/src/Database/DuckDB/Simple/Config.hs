@@ -30,10 +30,11 @@ import qualified Data.Text as Text
 import Database.DuckDB.Simple (withConnection)
 import Database.DuckDB.Simple.Config.Internal (CustomOption (..), registerCustomOptionOn, unexpectedVariant)
 import Database.DuckDB.Simple.FromField (FieldValue)
-import Database.DuckDB.Simple.Internal (Connection, Instance, withConnectionHandle, withInstanceHandle)
+import Database.DuckDB.Simple.Internal (Connection, Instance, withConnectionHandle, withInstanceHandle, withTypeCache)
 import Database.DuckDB.Simple.Materialize (materializeValue)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
+import Database.DuckDB.Simple.TypeCache (typeCacheCasts)
 import Database.DuckDB.Simple.V2.Registration (RegistrationTarget (..), TypeDeclaration)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Storable (peek)
@@ -119,27 +120,30 @@ withConfigOptionValue conn name action = withConnectionHandle conn \handle -> do
 
 -- | Copy the effective typed value of an option and the scope of that value.
 -- An unknown option name raises 'SQLError'. The function releases all native
--- handles before it returns.
+-- handles before it returns. A GEOMETRY value reads with the factory of the
+-- instance. See Note [User casts and the casts of the library] in
+-- "Database.DuckDB.Simple.Materialize".
 getConfigValue :: Connection -> Text -> IO (FieldValue, SettingScope)
 getConfigValue conn name = withConnectionHandle conn \handle -> do
   config <- output (c_duckdb_v2_connection_get_config handle)
-  withConnectionFactory handle \factory ->
+  withTypeCache conn \cache ->
     withOptionValue config name \value scope -> do
-      copied <- materializeValue unexpectedVariant factory value
+      copied <- materializeValue unexpectedVariant (typeCacheCasts cache) value
       pure (copied, scope)
 
 -- | Copy the typed static default of an option. An unknown option name raises
--- 'SQLError'. The function releases all native handles before it returns.
+-- 'SQLError'. The function releases all native handles before it returns. A
+-- GEOMETRY value reads as 'getConfigValue' reads it.
 getConfigDefaultValue :: Connection -> Text -> IO FieldValue
 getConfigDefaultValue conn name = withConnectionHandle conn \handle -> do
   config <- output (c_duckdb_v2_connection_get_config handle)
-  withConnectionFactory handle \factory ->
+  withTypeCache conn \cache ->
     withIdentifier name \key ->
       bracket (output (c_duckdb_v2_config_get_option_by_name config key)) (destroy c_duckdb_v2_option_destroy) \option ->
         bracket
           (output (c_duckdb_v2_option_get_default_value option))
           (destroy c_duckdb_v2_value_destroy)
-          (materializeValue unexpectedVariant factory)
+          (materializeValue unexpectedVariant (typeCacheCasts cache))
 
 -- | Set an option from a typed Haskell value. Native code casts it to the option type.
 setConfigValue :: (ToDuckValue a) => Connection -> SettingScope -> Text -> a -> IO ()

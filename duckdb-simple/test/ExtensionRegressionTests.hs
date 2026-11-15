@@ -61,7 +61,7 @@ import System.FilePath (takeDirectory)
 import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase, (@?=))
-import TestUtils (assertInputErrorContaining, assertReleasedAfter)
+import TestUtils (assertInputErrorContaining, assertReleasedAfter, assertSqlErrorContaining)
 
 -- | Run the extension regression tests as a standalone executable.
 main :: IO ()
@@ -819,16 +819,6 @@ registerCopy conn name failingPhase =
 -- | Require a controlled SQL exception.
 assertSqlError :: IO a -> Assertion
 assertSqlError = assertSqlErrorContaining Text.empty
-
--- | Require a SQL exception which includes the expected message.
-assertSqlErrorContaining :: Text.Text -> IO a -> Assertion
-assertSqlErrorContaining expected action = do
-  outcome <- try (void action)
-  case outcome of
-    Left (err :: SQLError) ->
-      assertBool ("expected SQL error containing " <> show expected <> ", got " <> show err) $
-        expected `Text.isInfixOf` sqlErrorMessage err
-    Right () -> assertFailure "expected SQL error"
 
 -- | Convert each value to its native value and back. The native value must have
 -- the pattern name of the value. The native sentinel must raise 'SQLError'.

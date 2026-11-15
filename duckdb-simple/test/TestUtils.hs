@@ -9,6 +9,7 @@ module TestUtils (
   assertInputError,
   assertInputErrorContaining,
   assertReleasedAfter,
+  assertSqlErrorContaining,
   assertSqlErrorType,
   filteredQueries,
   nativeLocalTime,
@@ -124,6 +125,16 @@ assertInputErrorContaining expected action = do
       assertBool ("expected an input error containing " <> show expected <> ", got " <> show err) $
         ("duckdb-simple: " `Text.isPrefixOf` sqlErrorMessage err) && expected `Text.isInfixOf` sqlErrorMessage err
     Right () -> assertFailure "expected the error of an input check"
+
+-- | Require a SQL exception which includes the expected message.
+assertSqlErrorContaining :: Text.Text -> IO a -> Assertion
+assertSqlErrorContaining expected action = do
+  outcome <- try (void action)
+  case outcome of
+    Left err ->
+      assertBool ("expected SQL error containing " <> show expected <> ", got " <> show err) $
+        expected `Text.isInfixOf` sqlErrorMessage err
+    Right () -> assertFailure "expected SQL error"
 
 -- | Require an 'SQLError' of DuckDB with the given type. An error of
 -- duckdb-simple, whose message starts with "duckdb-simple: ", fails the

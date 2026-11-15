@@ -238,7 +238,8 @@ testPragmaDecodeErrors = withConnection ":memory:" \conn -> do
 
 -- | Reject a pragma parameter whose type is or contains VARIANT at
 -- registration, because the argument reader reads no VARIANT. A GEOMETRY
--- parameter registers, because the reader reads GEOMETRY.
+-- parameter registers, because the reader reads GEOMETRY. A parameter of the
+-- type ANY registers, and a VARIANT value fails the call.
 testPragmaVariantParameters :: Assertion
 testPragmaVariantParameters = withConnection ":memory:" \conn -> do
   let register name declaration =
@@ -248,6 +249,14 @@ testPragmaVariantParameters = withConnection ":memory:" \conn -> do
     assertInputError (name <> ": parameter value: the type of an argument cannot be or contain VARIANT") (register name declaration)
   register "typed_geometry_parameter" "GEOMETRY"
   query_ conn "PRAGMA typed_geometry_parameter('POINT (1 2)'::GEOMETRY)" >>= (@?= [Only (1 :: Int64)])
+  -- The check sees only the declared type. A parameter of the type ANY
+  -- registers, and a VARIANT value fails the call.
+  registerPragmaFunction conn "typed_any_parameter" [parameter "value" (StructuredType (LogicalTypeScalar LogicalTypeIdAny))] $
+    QueryPragma \(Only (_ :: FieldValue)) -> pure "SELECT 1"
+  query_ conn "PRAGMA typed_any_parameter(1)" >>= (@?= [Only (1 :: Int64)])
+  assertSqlError
+    "the type of a pragma argument cannot be or contain VARIANT"
+    (query_ conn "PRAGMA typed_any_parameter(1::VARIANT)" :: IO [Only Int64])
 
 -- | Raise the input error of an empty pragma name, also on a closed
 -- connection. The name check comes before the read of the state of the

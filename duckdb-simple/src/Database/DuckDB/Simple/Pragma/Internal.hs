@@ -18,6 +18,7 @@ import Control.Exception (bracket, throwIO)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Database.DuckDB.Simple.Callback (targetCastFactory)
 import Database.DuckDB.Simple.FromField (Field (..))
 import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow, rowErrorsToSqlError)
 import Database.DuckDB.Simple.Internal (Connection)
@@ -60,15 +61,20 @@ registerPragmaFunction = registerPragmaFunctionOn . ConnectionTarget
 -- | Register a pragma on a connection or a loading extension.
 -- 'registerPragmaFunction' gives the rules for the argument row.
 registerPragmaFunctionOn :: (FromRow args) => RegistrationTarget -> Text -> [FunctionParameter] -> PragmaCallback args -> IO ()
-registerPragmaFunctionOn target name parameters callback =
+registerPragmaFunctionOn target name parameters callback = do
+  casts <- targetCastFactory target
   V2.registerPragmaFunctionOn target name parameters case callback of
-    QueryPragma action -> V2.QueryPragma \info context -> pragmaArguments name info context >>= action
-    ExecPragma action -> V2.ExecPragma \info context -> pragmaArguments name info context >>= action
+    QueryPragma action -> V2.QueryPragma \info context -> pragmaArguments casts name info context >>= action
+    ExecPragma action -> V2.ExecPragma \info context -> pragmaArguments casts name info context >>= action
 
 -- | Copy the arguments of a pragma call and decode them as one row. The first
 -- argument is the name of the pragma for the error message.
-pragmaArguments :: (FromRow args) => Text -> DuckDBV2FunctionBindInfoHandle -> DuckDBV2ContextHandle -> IO args
-pragmaArguments name info context = withContextFactory context \factory -> do
+pragmaArguments
+  :: (FromRow args) => Maybe DuckDBV2FactoryHandle -> Text -> DuckDBV2FunctionBindInfoHandle -> DuckDBV2ContextHandle -> IO args
+pragmaArguments casts name info context = withContextFactory context \contextFactory -> do
+  -- Read GEOMETRY with the factory of 'targetCastFactory', or with the factory
+  -- of the context for an extension.
+  let factory = fromMaybe contextFactory casts
   count <- allocaArray 4 \counts -> do
     checked (c_duckdb_v2_function_bind_get_arg_count info counts (advancePtr counts 1) (advancePtr counts 2) (advancePtr counts 3))
     sum <$> peekArray 4 counts

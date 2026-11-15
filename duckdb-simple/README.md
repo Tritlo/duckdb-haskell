@@ -160,11 +160,23 @@ that can hold it. Bind a `BigNum` to bind a BIGNUM value in each case.
 
 In DuckDB 2.0.0 the casts from BIGNUM to the integer types have defects: some
 fail, and some store a wrong value with no error
-([issue 41](https://github.com/Tritlo/duckdb-haskell/issues/41)). An `Array` of
-`Integer` or `Natural` values takes the element type of its target when that
-type is an integer type or DECIMAL, so DuckDB checks each element. A `BigNum`
-value, and an `Array` of `BigNum` values, still have these defects for an
-integer target.
+([issue 41](https://github.com/Tritlo/duckdb-haskell/issues/41)). An `Array`
+or a list of `Integer` or `Natural` values takes the element type of its target
+when that type is an integer type or DECIMAL, so DuckDB checks each element. A
+`BigNum` value, and an `Array` or a list of `BigNum` values, still have these
+defects for an integer target.
+
+An `IntervalValue` binds as an INTERVAL, and DuckDB keeps its months, days, and
+microseconds. DuckDB compares intervals with 30 days for each month, so
+`INTERVAL 30 DAY = INTERVAL 1 MONTH`. A `TimeWithZone` binds as a TIMETZ with its
+time and its offset in seconds east of UTC (`timeWithZoneOffsetSeconds`).
+DuckDB stores an offset from -15:59:59 to +15:59:59, and a value reads back
+equal to the bound value. A time with digits below one microsecond loses these
+digits, as in SQL text. A `DecimalValue` binds as a DECIMAL with
+its own width and scale. DuckDB casts it to the type of its target: a smaller
+scale rounds half away from zero, and a value that the target cannot hold
+raises an error. An `Array`, a list, or a typed row cannot hold a
+`DecimalValue`, because its column type name has no width and scale.
 
 `query_` and `execute_` parse all input statements before execution. A syntax
 error prevents every statement in that input from running. An execution error
@@ -310,22 +322,35 @@ storeArray conn = do
 storeList :: Connection -> IO [[Int]]
 storeList conn = do
   _ <- execute_ conn "CREATE TABLE lists (vals INTEGER[])"
-  let arr = listArray (0, 2) [1, 2, 3] :: Array Int Int
-  _ <- execute conn "INSERT INTO lists VALUES (?)" (Only arr)
+  _ <- execute conn "INSERT INTO lists VALUES (?)" (Only ([1, 2, 3] :: [Int]))
+  _ <- execute conn "INSERT INTO lists VALUES (?)" (Only ([] :: [Int]))
   fmap fromOnly <$> query_ conn "SELECT vals FROM lists"
 ```
 
-A Haskell list reads a LIST result. Lists have no parameter instance, so bind
-an `Array`. DuckDB casts the array to the LIST column type.
+A Haskell list binds as a LIST parameter and reads a LIST result. Put a list
+parameter in `Only`, because a list as a row is a row of parameters. A
+`String` stays one VARCHAR parameter. An `Array` binds as an ARRAY with the
+size of the value. DuckDB casts a LIST or an ARRAY to the type of a LIST
+column. It casts a LIST to an ARRAY column only when the lengths are equal.
 
-An array parameter with scalar elements takes its element type from the
-column type name of the element. An empty array raises an `SQLError`, because
-a DuckDB ARRAY has at least one element. Use an SQL empty LIST. An array
-of STRUCT values, UNION values, generic records, or arrays takes the type of
-its first element that is not NULL. All other non-NULL elements must have the
-same type, including field names, decimal precision and scale, and nested
+A list or an array parameter with scalar elements takes its element type from
+the column type name of the element. An empty list binds as an empty LIST of
+that type. An empty array raises an `SQLError`, because a DuckDB ARRAY has at
+least one element. Bind an empty list for an empty LIST. A list or an array of
+STRUCT values, UNION values, generic records, lists, or arrays takes the type
+of its first element that is not NULL. All other non-NULL elements must have
+the same type, including field names, decimal precision and scale, and nested
 types. Different types raise an error before DuckDB can cast away fields or
-round values. An empty or all-NULL array of such elements raises an error.
+round values. An empty or all-NULL list or array of such elements raises an
+error.
+
+A `Map` from `Data.Map` binds as a MAP parameter and reads a MAP result. The
+pairs go in ascending key order. The keys and the values follow the element
+rules of a list, and an empty `Map` binds as an empty MAP of its key and value
+types. DuckDB compares two MAP values pair by pair in their order, so
+`WHERE m = ?` finds a stored MAP only when it has the same pairs in ascending
+key order. DuckDB rejects a NULL key and two equal keys, for example two NaN
+keys of a `Map Double`.
 
 ### Infinite dates and timestamps
 
@@ -346,12 +371,17 @@ The ordinary `Day`, `LocalTime`, and `UTCTime` instances reject infinity with
 a conversion error. Use `Maybe Date` to distinguish SQL NULL from infinity.
 Floating-point NaN and infinities remain valid `Float` and `Double` values.
 
-`UTCTime` and `UTCTimestamp` parameters preserve
-nanoseconds when the prepared parameter type is `TIMESTAMPTZ_NS`. Use an
-explicit cast, such as `SELECT ?::TIMESTAMPTZ_NS`, or a column with that type.
-UTC values inside collections, STRUCTs, MAPs, and UNIONs follow their target
-types. An untyped UTC parameter still binds as microsecond TIMESTAMPTZ.
-The library refreshes prepared metadata when it resets or rebinds a statement.
+A `TimeOfDay`, a `LocalTime`, or a `UTCTime` parameter, and an `Unbounded`
+form, keeps its digits below a microsecond for a nanosecond parameter:
+`TIME_NS`, `TIMESTAMP_NS`, or `TIMESTAMPTZ_NS`. Use an explicit cast, such as
+`SELECT ?::TIMESTAMP_NS`, or a column with that type. Each other parameter, and
+a parameter with no known type, gets the microsecond value: the digits below a
+microsecond go away, as for the SQL literal. Only a value with such digits
+reads the parameter type. An explicit cast such as `?::TIMESTAMP_NS` makes a
+nanosecond parameter, so for a `TIMESTAMP` column DuckDB rounds the value to
+the microsecond, where a plain `?` cuts the digits. Values inside collections, STRUCTs, MAPs, and UNIONs follow their
+target types. The library refreshes prepared metadata when it resets or
+rebinds a statement.
 One `executeMany` call reads the parameter types one time. A column type that
 changes during the call does not change how its later rows bind.
 Use separate parameters when one expression requires microseconds and another
@@ -574,7 +604,10 @@ Time and timestamp payloads bind as microsecond types, or as nanosecond types
 when they have sub-microsecond digits. So a `TIMESTAMP_S` result binds back as
 a `TIMESTAMP` when its value fits. Wider timestamp values use milliseconds or
 seconds without losing digits. Lists, arrays, and STRUCT fields bind as
-VARIANT values. MAP and ENUM payloads raise an error. Object parameters reject
+VARIANT values. A VARIANT does not keep a UNION, a MAP, an ENUM, or the CRS of a
+GEOMETRY, so these payloads raise an error at any depth: a VARIANT keeps only
+the member value of a UNION, stores a MAP as a list of key and value objects,
+and stores an ENUM as its text. Object parameters reject
 duplicate keys and keys that contain NUL. An object with only an empty key
 also raises an error because DuckDB treats its STRUCT type as a tuple.
 DuckDB 2.0 permits an empty key with other named keys. You can also bind a plain
@@ -584,7 +617,10 @@ The library uses a separate helper connection for VARIANT decoder metadata.
 It caches the parsed VARIANT metadata statement and the types for VARIANT
 casts. It batches VARIANT
 metadata queries. It constructs VARIANT types directly through the native
-factory. This preserves an active stream on the caller's connection. Low-level
+factory. This preserves an active stream on the caller's connection. The
+helper connection has the settings of the database, not the session settings of
+the caller, so a GLOBAL `max_expression_depth` below 11 makes each VARIANT read
+fail with a Binder Error. Low-level
 `ToDuckValue.toDuckValue` takes a `ValueFactory`, which is the V2 factory
 handle, and `logicalTypeFromRep` takes the same handle.
 `Database.DuckDB.Simple.V2.LogicalRep` has `logicalTypeFromRep`.
@@ -633,13 +669,25 @@ without decoding coordinates. Its `rawGeometryWKB` and `rawGeometryCRS` fields
 own their data. They remain usable after the connection closes. Existing
 `ByteString` result decoding also returns WKB.
 
-`RawGeometry` has no `ToField` instance. Import its bytes explicitly, or put it
-in a composite parameter as `FieldGeometry` (see below):
+A `RawGeometry` parameter binds as a `GEOMETRY` value with the same WKB bytes
+and its own CRS. DuckDB then casts it to the type of the parameter, as it casts
+a `GEOMETRY` value in SQL text. A value without a CRS takes the CRS of the
+target. A target without a CRS removes the CRS of the value, with no error. A
+target with another CRS raises `SQLError`. Use `Maybe RawGeometry` for SQL
+NULL. An `Array`, a list, and a typed row cannot hold a `RawGeometry`, because
+their `GEOMETRY` type would have no CRS. A composite parameter holds it as
+`FieldGeometry` (see below):
 
 ```haskell
 import Database.DuckDB.Simple.Geometry
 
 [Only raw] <- query_ conn "SELECT 'POINT Z (1 2 3)'::GEOMETRY('OGC:CRS84')"
+rows <- query conn "SELECT ?" (Only raw) :: IO [Only RawGeometry]
+```
+
+You can also import the bytes with explicit SQL:
+
+```haskell
 rows <- (case rawGeometryCRS raw of
     Nothing -> query conn
         "SELECT system.main.ST_GeomFromWKB(?)"
@@ -848,6 +896,19 @@ castExample conn = do
     if value > maxBound - 100 then Left "BIGINT overflow" else Right (value + 100)
   query_ conn "SELECT CAST(1::BIGINT AS shifted)::BIGINT" -- [Only 101]
 ```
+
+DuckDB uses a registered cast in place of its built-in cast for the same pair
+of types, on each connection of the database. The library reads GEOMETRY and
+VARIANT values with the built-in casts only, so a cast from GEOMETRY to BLOB
+changes the result of `CAST(g AS BLOB)`, but not a GEOMETRY value that a query
+gives. There is one exception: a GEOMETRY value that a callback of a function of
+an extension reads. An extension has no instance, so these callbacks read with
+the casts of the session. The library uses these built-in casts to bind values:
+BLOB to GEOMETRY, VARCHAR to GEOMETRY, VARCHAR to an ENUM type, and a type to
+VARIANT. Do not register a cast for one of these pairs, with `createCast` or
+with a native cast registration. The library then binds the result of that
+cast. For example, after a cast from VARCHAR to an ENUM type that gives NULL, an
+ENUM value in a STRUCT parameter is NULL, and no error occurs.
 
 `createAggregate` registers an aggregate function as a fold. The result type
 is a result type of `createFunction`.

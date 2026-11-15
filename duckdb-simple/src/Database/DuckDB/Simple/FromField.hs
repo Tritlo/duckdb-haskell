@@ -54,7 +54,6 @@ import Data.Time.Clock (UTCTime (..))
 import Data.Time.LocalTime (
   LocalTime (..),
   TimeOfDay (..),
-  TimeZone (..),
   localTimeToUTC,
   utc,
   utcToLocalTime,
@@ -80,7 +79,8 @@ import Numeric.Natural (Natural)
 -- | Internal representation of a column value.
 -- 'FieldGeometry' contains raw WKB and CRS metadata. A STRUCT, TUPLE, or UNION
 -- parameter binds it as a GEOMETRY with the same CRS. A VARIANT parameter
--- binds it only when it has no CRS. See Note [Raw GEOMETRY parameters] in
+-- binds it only when it has no CRS. A top-level t'RawGeometry' parameter binds
+-- as a GEOMETRY with its own CRS. See Note [Raw GEOMETRY parameters] in
 -- "Database.DuckDB.Simple.ToField".
 data FieldValue
   = FieldNull
@@ -119,7 +119,10 @@ data FieldValue
   | FieldUnion (UnionValue FieldValue)
   deriving (Eq, Show)
 
--- | Exact-width decimal payload plus its declared width and scale.
+-- | Exact-width decimal payload plus its declared width and scale. A parameter
+-- of this type binds as a DECIMAL with this width and scale. An @Array@, a
+-- list, or a typed row cannot hold it, because its column type name has no
+-- width and scale.
 data DecimalValue = DecimalValue
   { decimalWidth :: Word8
   , decimalScale :: Word8
@@ -127,7 +130,9 @@ data DecimalValue = DecimalValue
   }
   deriving (Eq, Show)
 
--- | DuckDB interval payload split into months, days, and microseconds.
+-- | DuckDB interval payload split into months, days, and microseconds. A
+-- parameter of this type binds as an INTERVAL, and DuckDB keeps the three
+-- fields.
 data IntervalValue = IntervalValue
   { intervalMonths :: Int32
   , intervalDays :: Int32
@@ -229,10 +234,17 @@ bsFromBool bits =
     bitsToWord8 :: [Bool] -> Word8
     bitsToWord8 bs = foldl (\acc (b, i) -> if b then setBit acc i else acc) 0 (zip bs [7, 6 .. 0])
 
--- | Time-of-day paired with its associated timezone offset.
+-- | Time of day with its offset from UTC in seconds, as a TIMETZ stores it. A
+-- positive offset is east of UTC: @12:00:00+02@ has the offset 7200. DuckDB
+-- stores an offset from -57599 to 57599 seconds (-15:59:59 to +15:59:59) and the
+-- time in microseconds. A value with such an offset reads back equal to the
+-- bound value. A time with digits below one microsecond loses these digits, as
+-- in SQL text. Use @minutesToTimeZone (fromIntegral offset \`div\` 60)@ and
+-- @fromIntegral (timeZoneMinutes zone) * 60@ to convert to and from a
+-- @Data.Time@ zone.
 data TimeWithZone = TimeWithZone
   { timeWithZoneTime :: TimeOfDay
-  , timeWithZoneZone :: TimeZone
+  , timeWithZoneOffsetSeconds :: Int32
   }
   deriving (Eq, Show)
 

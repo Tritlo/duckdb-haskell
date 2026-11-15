@@ -96,14 +96,13 @@ openCloseCycle = do
   _ <- query_ conn "SELECT 42" :: IO [Only Int64]
   values <- query conn "SELECT ?" (Only (Variant (FieldInt64 42)))
   unless (values == [Only (Variant (FieldInt64 42))]) (fail "wrong VARIANT payload")
-  -- A TIMETZ offset with seconds fails during result materialization.
-  -- The result and connection must still be destroyed.
-  rejected <-
-    try (query_ conn "SELECT {'xs': [i, i + 1, i + 2, i + 3], 'bad': '12:00:00+01:23:45'::TIMETZ} FROM range(100000) t(i)")
-      :: IO (Either SomeException [Only FieldValue])
+  -- The reader of a VARIANT value fails while it reads the chunk. See
+  -- breakVariantReads. The result and connection must still be destroyed.
+  breakVariantReads conn
+  rejected <- try (query_ conn rejectedQuery) :: IO (Either SomeException [Only FieldValue])
   case rejected of
     Left _ -> pure ()
-    Right _ -> fail "expected TIMETZ offset conversion failure"
+    Right _ -> fail "expected the failure of the VARIANT reader"
   close conn
 
 main :: IO ()
@@ -212,13 +211,14 @@ checkOpenClose = do
 -- | Reuse one connection and statement through successful and failed operations.
 checkLongLived :: Int -> IO ()
 checkLongLived batches =
-  withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
+  withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
+    breakVariantReads conn
     withStatement conn "SELECT ?::BIGINT FROM range(10000)" \stmt -> do
       let cycleQuery = do
             rows <- query_ conn "SELECT sum(i)::BIGINT FROM range(10000) t(i)"
             unless (rows == [Only (49995000 :: Int64)]) (fail "wrong query result")
             expectFailure
-              (query_ conn "SELECT {'xs': [i, i + 1, i + 2, i + 3], 'bad': '12:00:00+01:23:45'::TIMETZ} FROM range(10000) t(i)" :: IO [Only FieldValue])
+              (query_ conn "SELECT {'xs': [i, i + 1, i + 2, i + 3], 'bad': 42::BIGINT::VARIANT} FROM range(10000) t(i)" :: IO [Only FieldValue])
             expectFailure (query_ conn "SELECT CAST('bad' AS BIGINT)" :: IO [Only Int64])
             bind stmt [toField (42 :: Int64)]
             nextRow stmt >>= \row -> unless (row == Just (Only (42 :: Int64))) (fail "wrong cursor result")
@@ -238,16 +238,15 @@ checkLongLived batches =
 checkDecodeFailure :: IO ()
 checkDecodeFailure =
   withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
-    let rejected =
-          expectFailure
-            (query_ conn "SELECT {'xs': [i, i + 1, i + 2, i + 3], 'bad': '12:00:00+01:23:45'::TIMETZ} FROM range(100000) t(i)" :: IO [Only FieldValue])
+    breakVariantReads conn
+    let rejected = expectFailure (query_ conn rejectedQuery :: IO [Only FieldValue])
     rejected
     performMajorGC
     before <- readUsage
     forM_ [1 .. cycles] (const rejected)
     performMajorGC
     after <- readUsage
-    reportOptional ("open connection, " <> show cycles <> " decode failures") before after
+    reportOptional ("open connection, " <> show cycles <> " failed VARIANT reads") before after
 
 -- | Check that callback closures and query state are released before close.
 checkCallbacks :: Int -> IO ()
@@ -314,6 +313,21 @@ checkCallbacks batches =
       reportOptional ("open connection, " <> show (n * 100) <> " callback cycles") before after
 
 -- | Require an error without retaining the exception or its native resources.
+-- | Make the reader of a VARIANT result fail on the database of the
+-- connection. The VARIANT reader runs its metadata query on a helper
+-- connection, and that query needs an expression depth of 11. A GLOBAL depth
+-- of 10 thus fails the reader while it reads the chunk. The SESSION depth of
+-- the connection lets its own queries run. No value from SQL fails in a result
+-- decoder, and no user cast changes a reader of the library.
+breakVariantReads :: Connection -> IO ()
+breakVariantReads conn = do
+  void (execute_ conn "SET GLOBAL max_expression_depth = 10")
+  void (execute_ conn "SET SESSION max_expression_depth = 1000")
+
+-- | A query whose result fails in the VARIANT reader after 'breakVariantReads'.
+rejectedQuery :: Query
+rejectedQuery = "SELECT {'xs': [i, i + 1, i + 2, i + 3], 'bad': 42::BIGINT::VARIANT} FROM range(100000) t(i)"
+
 expectFailure :: IO a -> IO ()
 expectFailure action = do
   outcome <- try (void action) :: IO (Either SomeException ())

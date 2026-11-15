@@ -35,11 +35,12 @@ module Database.DuckDB.Simple.Copy.Internal (
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar)
 import Control.Exception (bracket, finally, mask, mask_, onException, throwIO)
 import Control.Monad (forM, forM_, when)
+import Data.Maybe (fromMaybe)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Void (Void)
-import Database.DuckDB.Simple.Callback (attachOpaque, ignoreCallbackExceptions, readCallbackState, transferCallbackState)
+import Database.DuckDB.Simple.Callback (attachOpaque, ignoreCallbackExceptions, readCallbackState, targetCastFactory, transferCallbackState)
 import Database.DuckDB.Simple.FromField (Field (..))
 import Database.DuckDB.Simple.Internal (Connection, withDatabaseHandle)
 import Database.DuckDB.Simple.Materialize (
@@ -117,9 +118,10 @@ registerCopyToFunctionOn
   -> (CopySinkInfo bindState globalState -> [[Field]] -> IO ())
   -> (CopyFinalizeInfo bindState globalState -> IO ())
   -> IO ()
-registerCopyToFunctionOn target name bindFn initFn sinkFn finalizeFn =
+registerCopyToFunctionOn target name bindFn initFn sinkFn finalizeFn = do
+  casts <- targetCastFactory target
   withVariantReader target \readVariant ->
-    registerCopyOn target name (Just (copyToSide readVariant bindFn initFn sinkFn finalizeFn)) Nothing
+    registerCopyOn target name (Just (copyToSide casts readVariant bindFn initFn sinkFn finalizeFn)) Nothing
 
 -- | Check the format name and register the native callbacks of each side.
 registerCopyOn :: RegistrationTarget -> Text -> Maybe CopyToCallbacks -> Maybe CopyFromCallbacks -> IO ()
@@ -147,18 +149,21 @@ withVariantReader target action = case target of
     -- handle.
     readVariant instanceHandle vector =
       bracket (output (c_duckdb_v2_connection_create instanceHandle)) (destroy c_duckdb_v2_connection_destroy) \helper ->
-        bracket (newVariantState helper) destroyVariantState (`prepareVariantReader` vector)
+        withInstanceFactory instanceHandle \casts ->
+          bracket (newVariantState helper casts) destroyVariantState (`prepareVariantReader` vector)
 
--- | The native COPY TO callbacks of the row-oriented functions.
+-- | The native COPY TO callbacks of the row-oriented functions. The first
+-- argument is the factory of 'targetCastFactory'.
 copyToSide
   :: forall bindState globalState
-   . VectorReader
+   . Maybe DuckDBV2FactoryHandle
+  -> VectorReader
   -> (CopyBindInfo -> IO bindState)
   -> (CopyInitInfo bindState -> IO globalState)
   -> (CopySinkInfo bindState globalState -> [[Field]] -> IO ())
   -> (CopyFinalizeInfo bindState globalState -> IO ())
   -> CopyToCallbacks
-copyToSide readVariant bindFn initFn sinkFn finalizeFn =
+copyToSide casts readVariant bindFn initFn sinkFn finalizeFn =
   (copyToCallbacks batch flush)
     { copyToBindCallback = Just bind
     , copyToInitCallback = Just initialize
@@ -181,13 +186,15 @@ copyToSide readVariant bindFn initFn sinkFn finalizeFn =
       path <- output (c_duckdb_v2_copy_to_init_get_file_path info) >>= readText
       global <- initFn (CopyInitInfo state (Text.unpack path))
       transferCallbackState (attachOpaque (c_duckdb_v2_copy_to_init_set_init_data info)) global
+    -- Read GEOMETRY with the factory of 'targetCastFactory', or with the
+    -- factory of the context for an extension.
     batch info context = withContextFactory context $ \factory -> do
       (_, types) <- readCopyBinding (c_duckdb_v2_copy_to_batch_get_bind_data info) :: IO (bindState, [DuckDBV2LogicalTypeHandle])
       rows <-
         bracket
           (output (c_duckdb_v2_copy_to_batch_take_input info))
           (destroy c_duckdb_v2_column_data_collection_destroy)
-          (materializeCollection factory readVariant types)
+          (materializeCollection (fromMaybe factory casts) readVariant types)
       transferCallbackState (attachOpaque (c_duckdb_v2_copy_to_batch_set_batch_data info)) rows
     flush info _ = do
       (state, _) <- readCopyBinding (c_duckdb_v2_copy_to_flush_get_bind_data info)
@@ -235,6 +242,7 @@ copyBindingDestructor :: DuckDBV2OpaqueDestroyFn
 copyBindingDestructor = DuckDBV2OpaqueDestroyFn (castFunPtr copyBindingDestructorAddress)
 
 -- | Copy each scanned chunk before the scan invalidates its borrowed buffers.
+-- The factory makes the chunk and reads GEOMETRY.
 materializeCollection
   :: DuckDBV2FactoryHandle -> VectorReader -> [DuckDBV2LogicalTypeHandle] -> DuckDBV2ColumnDataCollectionHandle -> IO [[Field]]
 materializeCollection factory readVariant types collection =
@@ -363,9 +371,10 @@ registerCopyFunction = registerCopyFunctionOn . ConnectionTarget
 -- extension. The rules of 'registerCopyFunction' apply.
 registerCopyFunctionOn
   :: (TypedRow row) => RegistrationTarget -> Text -> CopyTo bindState globalState -> (CopyFromInfo -> IO [row]) -> IO ()
-registerCopyFunctionOn target name (CopyTo bindFn initFn sinkFn finalizeFn) readRows =
+registerCopyFunctionOn target name (CopyTo bindFn initFn sinkFn finalizeFn) readRows = do
+  casts <- targetCastFactory target
   withVariantReader target \readVariant ->
-    registerCopyOn target name (Just (copyToSide readVariant bindFn initFn sinkFn finalizeFn)) (Just (copyFromSide name readRows))
+    registerCopyOn target name (Just (copyToSide casts readVariant bindFn initFn sinkFn finalizeFn)) (Just (copyFromSide name readRows))
 
 -- | Options supplied to DuckDB's multi-file wrapper.
 data MultiFileOptions = MultiFileOptions

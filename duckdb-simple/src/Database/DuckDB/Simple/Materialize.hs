@@ -92,16 +92,8 @@ rejectRows raise vector = pure \row ->
 -- Note [Vector flatten] and Note [VARIANT decoding] in
 -- "Database.DuckDB.Simple.VariantCodec".
 prepareVariantReader :: VariantCodec.VariantState -> VectorReader
-prepareVariantReader = VariantCodec.prepareVariantDecoder materializePlainValue
-
--- | Decode a value that contains no VARIANT. The VARIANT decoder calls this
--- function with its helper connection. 'materializeValue' needs a factory to
--- create a vector and to cast GEOMETRY. The connection owns the factory, so
--- this function does not destroy it. See Note [VARIANT decoding] in
--- "Database.DuckDB.Simple.VariantCodec".
-materializePlainValue :: DuckDBV2ConnectionHandle -> DuckDBV2ValueHandle -> IO FieldValue
-materializePlainValue connection value = withConnectionFactory connection \factory ->
-  materializeValue (rejectRows (throwIO (userError "duckdb-simple: expected a value without VARIANT"))) factory value
+prepareVariantReader =
+  VariantCodec.prepareVariantDecoder (materializeValue (rejectRows (throwIO (userError "duckdb-simple: expected a value without VARIANT"))))
 
 -- | Copy one value through an owned vector. The caller retains the factory owner.
 -- The first argument reads VARIANT. 'prepareGeometryReader' reads GEOMETRY with
@@ -278,9 +270,60 @@ prepareValueReader readers tree dtype vector dataPtr validity = case dtype of
       valid <- chunkIsRowValid validity (fromIntegral row)
       if valid then wrap <$> decode row else pure FieldNull
 
+{- Note [User casts and the casts of the library]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A cast that a user registers is a cast function of each connection of the
+database, also of the helper connection of the VARIANT codec. DuckDB uses a
+registered cast in place of the built-in cast for the same pair of types. The
+header says: "A connection's or callback's factory casts with that client's
+cast functions and settings". It also says that the factory of an instance
+"supports only the built-in casts, with default settings".
+
+The library runs casts of DuckDB for its own work. These casts use the factory
+of the instance, so a user cast does not change their result:
+
+- prepareGeometryReader casts a GEOMETRY vector to BLOB. A result, the value of
+  an option (getConfigValue), and the default value of an option
+  (getConfigDefaultValue) read a GEOMETRY value with the factory of the
+  instance. The type cache of the connection keeps that factory (typeCacheCasts
+  in "Database.DuckDB.Simple.TypeCache"). The callbacks of a registration on a
+  connection read a GEOMETRY value with the same factory: the value of an option
+  update, the arguments of a pragma or a table function, and the rows of a COPY
+  TO function. The registration takes the factory (targetCastFactory in
+  "Database.DuckDB.Simple.Callback").
+- withObjectChildren and withCast cast VARIANT values to the types of their
+  payloads ("Database.DuckDB.Simple.VariantCodec"). The codec also reads a
+  GEOMETRY payload. It uses the factory of the instance of its helper
+  connection (variantCasts).
+
+The type query of a connection with a custom CRS (readNativeTypes in
+"Database.DuckDB.Simple.TypeCache") has no cast: it binds the empty point as a
+BLOB value.
+
+These casts use the factory of a connection or of a callback context:
+
+- prepareGeometryReader in the callbacks of a registration on an extension. An
+  extension target has no instance, so these callbacks use the factory of the
+  context.
+- rawGeometryDuckValue casts a BLOB value to GEOMETRY, and the ToDuckValue
+  instance of Geometry casts a VARCHAR value to GEOMETRY
+  ("Database.DuckDB.Simple.ToField").
+- enumDuckValue casts a VARCHAR value to an ENUM type, and variantDuckValue
+  casts a value to VARIANT (the same module).
+
+Thus a user cast for one of these pairs replaces the cast that the library
+expects, and the library gives the result of the user cast. For example, after
+a user cast from VARCHAR to an ENUM type that gives NULL, an ENUM value that a
+STRUCT parameter holds is NULL, and no error occurs. A cast that is registered
+for GEOMETRY is not used for a GEOMETRY type that has a CRS.
+-}
+
 -- | Copy the WKB bytes and CRS of every GEOMETRY row in a vector. GEOMETRY has
 -- no committed vector layout, so a native cast to BLOB reads the rows. The
--- reader takes logical rows. See Note [Vector flatten].
+-- reader takes logical rows. See Note [Vector flatten]. The cast uses the
+-- factory that the caller gives. With the factory of the instance, a user cast
+-- from GEOMETRY to BLOB does not replace it. See
+-- Note [User casts and the casts of the library].
 prepareGeometryReader :: DuckDBV2FactoryHandle -> DuckDBV2VectorHandle -> IO (Int -> IO FieldValue)
 prepareGeometryReader factory vector = do
   crs <-

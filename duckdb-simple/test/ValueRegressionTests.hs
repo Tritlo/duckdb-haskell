@@ -24,11 +24,19 @@ import qualified Data.Text as Text
 import Data.Time.Calendar (Day, addDays, fromGregorian)
 import Data.Time.Clock (UTCTime (..))
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
-import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), minutesToTimeZone, utc, utcToLocalTime)
+import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), utc, utcToLocalTime)
 import Data.Word (Word16, Word32, Word8)
 import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple
-import Database.DuckDB.Simple.FromField (BigNum (..), BitString (..), DecimalValue (..), FieldValue (..), TimeWithZone (..), bsFromBool)
+import Database.DuckDB.Simple.FromField (
+  BigNum (..),
+  BitString (..),
+  DecimalValue (..),
+  FieldValue (..),
+  IntervalValue (..),
+  TimeWithZone (..),
+  bsFromBool,
+ )
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..), genericFromFieldValue, genericToStructValue)
 import Database.DuckDB.Simple.Internal (destroyValue, output, withConnectionFactory, withConnectionHandle)
 import Database.DuckDB.Simple.LogicalRep
@@ -420,6 +428,264 @@ valueRegressionTests =
         forM_ [(dtype, second) | dtype <- ["BIGINT[2]", "UBIGINT[2]", "HUGEINT[2]", "DECIMAL(38,0)[2]"], second <- [huge, negate huge]] \(dtype, second) -> do
           SQLError{sqlErrorType} <- insert dtype second
           sqlErrorType @?= Just ErrorInputOutOfRange
+    , testCase "a list binds as a LIST parameter in each SQL form" $ withConnection ":memory:" \conn -> do
+        let ints = [1, 2, 3] :: [Int64]
+            none = [] :: [Int64]
+            count :: (ToRow p) => Query -> p -> IO [Only Int64]
+            count = query conn
+        forM_ [ints, none] \values ->
+          (query conn "SELECT typeof(?), ?" (values, values) :: IO [(Text, [Int64])]) >>= (@?= [("BIGINT[]", values)])
+        _ <- execute_ conn "CREATE TABLE list_value (i BIGINT, v BIGINT[])"
+        _ <- executeMany conn "INSERT INTO list_value VALUES (?, ?)" [(0 :: Int64, ints), (1, none)]
+        (query_ conn "SELECT v FROM list_value ORDER BY i" :: IO [Only [Int64]]) >>= (@?= [Only ints, Only none])
+        count "SELECT count(*) FROM list_value WHERE v = ?" (Only ints) >>= (@?= [Only 1])
+        count "SELECT count(*) FROM list_value WHERE v = ?" (Only none) >>= (@?= [Only 1])
+        -- DuckDB casts a LIST to an ARRAY of the same length only.
+        _ <- execute_ conn "CREATE TABLE array_column (v BIGINT[3])"
+        _ <- execute conn "INSERT INTO array_column VALUES (?)" (Only ints)
+        (query_ conn "SELECT v FROM array_column" :: IO [Only [Int64]]) >>= (@?= [Only ints])
+        count "SELECT count(*) FROM array_column WHERE v = ?" (Only ints) >>= (@?= [Only 1])
+        forM_ [[1, 2], none] \values -> do
+          result <- try (execute conn "INSERT INTO array_column VALUES (?)" (Only values))
+          case result of
+            Left SQLError{sqlErrorMessage, sqlErrorType} -> do
+              assertBool (Text.unpack sqlErrorMessage) ("Conversion Error: Cannot cast list with length " `Text.isPrefixOf` sqlErrorMessage)
+              sqlErrorType @?= Just ErrorTypeConversion
+            Right (_ :: Int) -> assertFailure ("expected the DuckDB length error for " <> show values)
+        (query_ conn "SELECT count(*) FROM array_column" :: IO [Only Int64]) >>= (@?= [Only 1])
+        _ <- execute_ conn "CREATE TABLE searched (v BIGINT)"
+        _ <- execute_ conn "INSERT INTO searched VALUES (1), (2), (5)"
+        forM_
+          [ "SELECT count(*) FROM searched WHERE v = ANY(?)"
+          , "SELECT count(*) FROM searched WHERE v IN (SELECT unnest(?))"
+          , "SELECT count(*) FROM searched WHERE list_contains(?, v)"
+          ]
+          \sql -> do
+            count sql (Only ([1, 5] :: [Int64])) >>= (@?= [Only 2])
+            count sql (Only none) >>= (@?= [Only 0])
+    , testCase "a list binds Maybe, nested, Text, String, and UTC elements" $ withConnection ":memory:" \conn -> do
+        (query conn "SELECT typeof(?), (?)::VARCHAR" ([Just 1, Nothing] :: [Maybe Int64], [Just 1, Nothing] :: [Maybe Int64]) :: IO [(Text, Text)])
+          >>= (@?= [("BIGINT[]", "[1, NULL]")])
+        let nested = [[1, 2], [], [3]] :: [[Int64]]
+        (query conn "SELECT typeof(?), ?" (nested, nested) :: IO [(Text, [[Int64]])]) >>= (@?= [("BIGINT[][]", nested)])
+        -- A String stays one VARCHAR parameter next to a list of Text.
+        let labels = ["a", "b"] :: [Text]
+            label = "ab" :: String
+        (query conn "SELECT typeof(?), ?, typeof(?), ?" (labels, labels, label, label) :: IO [(Text, [Text], Text, String)])
+          >>= (@?= [("VARCHAR[]", labels, "VARCHAR", label)])
+        (query conn "SELECT typeof(?), typeof(?)" (["x"] :: [String], [] :: [String]) :: IO [(Text, Text)]) >>= (@?= [("VARCHAR[]", "VARCHAR[]")])
+        -- A UTC element keeps its nanoseconds for a nanosecond target.
+        let precise = posixSecondsToUTCTime 0.123456789
+        (query conn "SELECT ?::TIMESTAMPTZ_NS[]" (Only [Just precise, Nothing]) :: IO [Only [Maybe UTCTime]])
+          >>= (@?= [Only [Just precise, Nothing]])
+    , testCase "a list of Integer values takes the element type of its target" $ withConnection ":memory:" \conn -> do
+        let insert :: Text -> [Integer] -> IO (Either SQLError Int)
+            insert dtype values = do
+              _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE integer_list (v " <> dtype <> ")"))
+              try (execute conn "INSERT INTO integer_list VALUES (?)" (Only values))
+            stored = query_ conn "SELECT v::VARCHAR FROM integer_list" :: IO [Only Text]
+        insert "UBIGINT[]" [5, 6] >>= either (assertFailure . show) (const (pure ()))
+        stored >>= (@?= [Only "[5, 6]"])
+        insert "UBIGINT[]" [5, -6] >>= \case
+          Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorInputInvalid
+          Right _ -> assertFailure "expected the DuckDB range error for -6"
+        insert "UBIGINT[]" [5, 2 ^ (130 :: Int)] >>= \case
+          Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorInputOutOfRange
+          Right _ -> assertFailure "expected the duckdb-simple range error for 2^130"
+        stored >>= (@?= [])
+        (query conn "SELECT typeof(?)" (Only ([5, 6] :: [Integer])) :: IO [Only Text]) >>= (@?= [Only "BIGNUM[]"])
+    , testCase "a list and an Array with the same elements store the same LIST value" $ withConnection ":memory:" \conn -> do
+        let ints = [1, 2, 3] :: [Int64]
+            arr = listArray (0, 2) ints :: Array Int Int64
+        (query conn "SELECT typeof(?), typeof(?)" (ints, arr) :: IO [(Text, Text)]) >>= (@?= [("BIGINT[]", "BIGINT[3]")])
+        _ <- execute_ conn "CREATE TABLE same_value (i BIGINT, v BIGINT[])"
+        _ <- execute conn "INSERT INTO same_value VALUES (0, ?), (1, ?)" (ints, arr)
+        (query_ conn "SELECT v FROM same_value ORDER BY i" :: IO [Only [Int64]]) >>= (@?= [Only ints, Only ints])
+        (query_ conn "SELECT count(DISTINCT v) FROM same_value" :: IO [Only Int64]) >>= (@?= [Only 1])
+    , testCase "an empty list of composite elements has no element type" $ withConnection ":memory:" \conn -> do
+        let rejected :: (ToField a) => Text -> a -> Assertion
+            rejected typeName value =
+              try (query conn "SELECT ?" (Only value) :: IO [Only FieldValue]) >>= \case
+                Left SQLError{sqlErrorMessage} ->
+                  sqlErrorMessage @?= "duckdb-simple: an empty or all-NULL array of " <> typeName <> " elements has no element type"
+                Right _ -> assertFailure ("expected the element type error for " <> Text.unpack typeName)
+        rejected "STRUCT" ([] :: [StructValue FieldValue])
+        rejected "BIGINT[]" ([] :: [[Int64]])
+        -- An Array of NULL STRUCT values raises the same error.
+        rejected "STRUCT" (listArray (0, 0) [Nothing] :: Array Int (Maybe (StructValue FieldValue)))
+    , testCase "an IntervalValue binds as an INTERVAL and keeps its three fields" $ withConnection ":memory:" \conn -> do
+        let value = IntervalValue 1 2 3
+            negative = IntervalValue (-1) (-2) (-3)
+            month = IntervalValue 1 0 0
+            days30 = IntervalValue 0 30 0
+        forM_ [value, negative] \interval ->
+          (query conn "SELECT typeof(?), ?" (interval, interval) :: IO [(Text, IntervalValue)]) >>= (@?= [("INTERVAL", interval)])
+        _ <- execute_ conn "CREATE TABLE intervals (i BIGINT, v INTERVAL)"
+        _ <- executeMany conn "INSERT INTO intervals VALUES (?, ?)" [(0 :: Int64, days30), (1, month), (2, negative)]
+        (query_ conn "SELECT v FROM intervals ORDER BY i" :: IO [Only IntervalValue]) >>= (@?= map Only [days30, month, negative])
+        -- DuckDB compares intervals with 30 days for each month.
+        (query conn "SELECT count(*) FROM intervals WHERE v = ?" (Only days30) :: IO [Only Int64]) >>= (@?= [Only 2])
+        (query conn "SELECT count(*) FROM intervals WHERE v < ?" (Only (IntervalValue 0 31 0)) :: IO [Only Int64]) >>= (@?= [Only 3])
+        (query conn "SELECT typeof(TIMESTAMP '2026-01-31' + ?), TIMESTAMP '2026-01-31' + ?" (month, month) :: IO [(Text, LocalTime)])
+          >>= (@?= [("TIMESTAMP", LocalTime (fromGregorian 2026 2 28) (TimeOfDay 0 0 0))])
+        (query conn "SELECT ?" (Only (Nothing :: Maybe IntervalValue)) :: IO [Only (Maybe IntervalValue)]) >>= (@?= [Only Nothing])
+        (query conn "SELECT typeof(?), ?" ([value, negative], [value, negative]) :: IO [(Text, [IntervalValue])])
+          >>= (@?= [("INTERVAL[]", [value, negative])])
+        let array = listArray (0, 1) [value, negative] :: Array Int IntervalValue
+        (query conn "SELECT typeof(?), ?" (array, array) :: IO [(Text, [IntervalValue])]) >>= (@?= [("INTERVAL[2]", [value, negative])])
+    , testCase "a TimeWithZone binds as a TIMETZ with its time and offset in seconds" $ withConnection ":memory:" \conn -> do
+        let at hours minutes offset = TimeWithZone (TimeOfDay hours minutes 0) offset
+            value = at 12 34 19800
+            -- The offset +01:00:30.
+            seconds = at 12 0 3630
+            roundTrip time = (query conn "SELECT ?" (Only time) :: IO [Only TimeWithZone]) >>= (@?= [Only time])
+        (query conn "SELECT typeof(?), ?" (value, value) :: IO [(Text, TimeWithZone)]) >>= (@?= [("TIME WITH TIME ZONE", value)])
+        -- An offset with seconds reads, binds, and prints exactly.
+        ( query_ conn "SELECT '12:00:00+01:00:30'::TIMETZ, '12:00:00-15:59:59'::TIMETZ, '24:00:00+15:59:59'::TIMETZ"
+            :: IO [(TimeWithZone, TimeWithZone, TimeWithZone)]
+          )
+          >>= (@?= [(seconds, at 12 0 (-57599), TimeWithZone (TimeOfDay 24 0 0) 57599)])
+        (query conn "SELECT ?::VARCHAR" (Only seconds) :: IO [Only Text]) >>= (@?= [Only "12:00:00+01:00:30"])
+        mapM_
+          roundTrip
+          [seconds, at 12 0 57599, at 12 0 (-57599), TimeWithZone (TimeOfDay 24 0 0) 0, TimeWithZone (TimeOfDay 23 59 59.999999) (-3630)]
+        -- DuckDB stores an offset from -15:59:59 to +15:59:59.
+        forM_ [57600, -57600] \offset ->
+          try (query conn "SELECT ?" (Only (at 12 0 offset)) :: IO [Only TimeWithZone]) >>= \case
+            Left (err :: IOException) ->
+              assertBool
+                (show err)
+                (("duckdb-simple: the TIMETZ offset " <> Text.pack (show offset) <> " seconds is out of range") `Text.isInfixOf` Text.pack (show err))
+            Right rows -> assertFailure ("expected the offset error, got " <> show rows)
+        -- A TIME column removes the offset and keeps the local time.
+        _ <- execute_ conn "CREATE TABLE times (a TIMETZ, b TIME)"
+        _ <- execute conn "INSERT INTO times VALUES (?, ?)" (seconds, seconds)
+        (query_ conn "SELECT a, b FROM times" :: IO [(TimeWithZone, TimeOfDay)]) >>= (@?= [(seconds, TimeOfDay 12 0 0)])
+        -- DuckDB compares the instant first, and then the offset.
+        (query conn "SELECT count(*) FROM times WHERE a = ?" (Only seconds) :: IO [Only Int64]) >>= (@?= [Only 1])
+        (query conn "SELECT count(*) FROM times WHERE a = ?" (Only (at 12 0 3631)) :: IO [Only Int64]) >>= (@?= [Only 0])
+        (query conn "SELECT count(*) FROM times WHERE ? < a" (Only (at 12 0 3631)) :: IO [Only Int64]) >>= (@?= [Only 1])
+        (query conn "SELECT count(*) FROM times WHERE a = ?" (Only (TimeWithZone (TimeOfDay 10 59 30) 0)) :: IO [Only Int64]) >>= (@?= [Only 0])
+        -- The digits below one microsecond go away, as in SQL text.
+        (query conn "SELECT ?" (Only seconds{timeWithZoneTime = TimeOfDay 1 2 3.0000005}) :: IO [Only TimeWithZone])
+          >>= (@?= [Only seconds{timeWithZoneTime = TimeOfDay 1 2 3}])
+        (query conn "SELECT ?" (Only (Nothing :: Maybe TimeWithZone)) :: IO [Only (Maybe TimeWithZone)]) >>= (@?= [Only Nothing])
+        let times = [value, seconds, at 0 0 (-57599)]
+        (query conn "SELECT typeof(?), ?" (times, times) :: IO [(Text, [TimeWithZone])]) >>= (@?= [("TIME WITH TIME ZONE[]", times)])
+        let array = listArray (0, 2) times :: Array Int TimeWithZone
+        (query conn "SELECT typeof(?), ?" (array, array) :: IO [(Text, [TimeWithZone])]) >>= (@?= [("TIME WITH TIME ZONE[3]", times)])
+        let nested = singleField (LogicalTypeScalar LogicalTypeIdTimeTz) (FieldTimeTZ seconds)
+        (query conn "SELECT ?, (?).value::VARCHAR" (nested, nested) :: IO [(StructValue FieldValue, Text)])
+          >>= (@?= [(nested, "12:00:00+01:00:30")])
+    , testCase "a DecimalValue binds as a DECIMAL with its own width and scale" $ withConnection ":memory:" \conn -> do
+        let value = DecimalValue 5 3 2125
+            roundTrip decimal = (query conn "SELECT ?" (Only decimal) :: IO [Only DecimalValue]) >>= (@?= [Only decimal])
+            stored column decimal = do
+              _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE decimals (v " <> column <> ")"))
+              _ <- execute conn "INSERT INTO decimals VALUES (?)" (Only decimal)
+              query_ conn "SELECT v FROM decimals" :: IO [Only DecimalValue]
+        (query conn "SELECT typeof(?), ?" (value, value) :: IO [(Text, DecimalValue)]) >>= (@?= [("DECIMAL(5,3)", value)])
+        -- A column of another width and scale gives its own type. DuckDB rounds
+        -- half away from zero.
+        stored "DECIMAL(4,2)" value >>= (@?= [Only (DecimalValue 4 2 213)])
+        stored "DECIMAL(4,2)" (DecimalValue 5 3 2135) >>= (@?= [Only (DecimalValue 4 2 214)])
+        stored "DECIMAL(4,2)" (DecimalValue 5 3 (-2125)) >>= (@?= [Only (DecimalValue 4 2 (-213))])
+        stored "DECIMAL(10,4)" value >>= (@?= [Only (DecimalValue 10 4 21250)])
+        try (stored "DECIMAL(4,2)" (DecimalValue 8 3 12345678)) >>= \case
+          Left SQLError{sqlErrorMessage, sqlErrorType} -> do
+            assertBool
+              (Text.unpack sqlErrorMessage)
+              ("Casting value \"12345.678\" to type DECIMAL(4,2) failed: value is out of range!" `Text.isInfixOf` sqlErrorMessage)
+            sqlErrorType @?= Just ErrorTypeConversion
+          Right rows -> assertFailure ("expected the DECIMAL range error, got " <> show rows)
+        stored "DECIMAL(3,2)" (DecimalValue 3 2 210) >>= (@?= [Only (DecimalValue 3 2 210)])
+        (query conn "SELECT count(*) FROM decimals WHERE v = ?" (Only (DecimalValue 2 1 21)) :: IO [Only Int64]) >>= (@?= [Only 1])
+        (query conn "SELECT count(*) FROM decimals WHERE v < ?" (Only (DecimalValue 5 2 211)) :: IO [Only Int64]) >>= (@?= [Only 1])
+        (query conn "SELECT typeof(? * 2), ? * 2" (value, value) :: IO [(Text, DecimalValue)]) >>= (@?= [("DECIMAL(15,3)", DecimalValue 15 3 4250)])
+        mapM_
+          roundTrip
+          [ DecimalValue 38 0 (10 ^ (38 :: Int) - 1)
+          , DecimalValue 38 0 (negate (10 ^ (38 :: Int) - 1))
+          , DecimalValue 38 38 1
+          , DecimalValue 2 1 (-15)
+          , DecimalValue 1 0 7
+          ]
+        -- The encoder raises an error for a value that it cannot encode.
+        forM_ [DecimalValue 2 1 100, DecimalValue 39 0 1, DecimalValue 2 3 1, DecimalValue 0 0 0] \decimal ->
+          assertIOError (query conn "SELECT ?" (Only decimal) :: IO [Only DecimalValue])
+        (query conn "SELECT ?" (Only (Nothing :: Maybe DecimalValue)) :: IO [Only (Maybe DecimalValue)]) >>= (@?= [Only Nothing])
+    , testCase "a Map binds as a MAP parameter in each SQL form" $ withConnection ":memory:" \conn -> do
+        let pairs = Map.fromList [("a", 1), ("b", 2)] :: Map.Map Text Int64
+            none = Map.empty :: Map.Map Text Int64
+            rejected :: (ToField a) => Text -> a -> Assertion
+            rejected message value =
+              try (query conn "SELECT ?::VARCHAR" (Only value) :: IO [Only Text]) >>= \case
+                Left SQLError{sqlErrorMessage, sqlErrorType} -> do
+                  sqlErrorMessage @?= message
+                  sqlErrorType @?= Just ErrorInputInvalid
+                Right rows -> assertFailure ("expected " <> Text.unpack message <> ", got " <> show rows)
+        forM_ [pairs, none] \value ->
+          (query conn "SELECT typeof(?), ?" (value, value) :: IO [(Text, Map.Map Text Int64)]) >>= (@?= [("MAP(VARCHAR, BIGINT)", value)])
+        -- DuckDB casts the keys and the values to the types of the column.
+        forM_ ["MAP(VARCHAR, BIGINT)", "MAP(VARCHAR, INTEGER)"] \dtype -> do
+          _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE map_value (i BIGINT, m " <> dtype <> ")"))
+          _ <- executeMany conn "INSERT INTO map_value VALUES (?, ?)" [(0 :: Int64, pairs), (1, none)]
+          (query_ conn "SELECT m FROM map_value ORDER BY i" :: IO [Only (Map.Map Text Int64)])
+            >>= assertEqual (Text.unpack dtype) [Only pairs, Only none]
+        _ <- execute_ conn "CREATE TABLE integer_keys (m MAP(INTEGER, BIGINT))"
+        _ <- execute conn "INSERT INTO integer_keys VALUES (?)" (Only (Map.fromList [("1", 1)] :: Map.Map Text Int64))
+        (query_ conn "SELECT m FROM integer_keys" :: IO [Only (Map.Map Int32 Int64)]) >>= (@?= [Only (Map.fromList [(1, 1)])])
+        try (execute conn "INSERT INTO integer_keys VALUES (?)" (Only pairs)) >>= \case
+          Left SQLError{sqlErrorMessage, sqlErrorType} -> do
+            assertBool (Text.unpack sqlErrorMessage) ("Conversion Error: Could not convert string 'a' to INT32" `Text.isPrefixOf` sqlErrorMessage)
+            sqlErrorType @?= Just ErrorTypeConversion
+          Right (_ :: Int) -> assertFailure "expected the DuckDB key conversion error"
+        -- DuckDB compares two MAP values pair by pair in their order. A map binds
+        -- its pairs in ascending key order.
+        _ <- execute_ conn "CREATE TABLE ordered_maps (m MAP(VARCHAR, BIGINT))"
+        _ <- execute_ conn "INSERT INTO ordered_maps VALUES (MAP {'b': 2, 'a': 1}), (MAP {'a': 1, 'b': 2})"
+        (query conn "SELECT count(*) FROM ordered_maps WHERE m = ?" (Only pairs) :: IO [Only Int64]) >>= (@?= [Only 1])
+        (query_ conn "SELECT m FROM ordered_maps" :: IO [Only (Map.Map Text Int64)]) >>= (@?= [Only pairs, Only pairs])
+        ( query conn "SELECT map_extract(?, 'a'), (?)['a'], map_keys(?), element_at(?, 'b')" (pairs, pairs, pairs, pairs)
+            :: IO [([Int64], Int64, [Text], [Int64])]
+          )
+          >>= (@?= [([1], 1, ["a", "b"], [2])])
+        -- A Haskell map can hold two NaN keys. DuckDB rejects them and a NULL key.
+        let nan = 0 / 0 :: Double
+        rejected "Invalid Input Error: Map keys must be unique." (Map.insert nan 2 (Map.fromList [(nan, 1)]) :: Map.Map Double Int64)
+        rejected "Invalid Input Error: Map keys can not be NULL." (Map.fromList [(Nothing, 1), (Just "a", 2)] :: Map.Map (Maybe Text) Int64)
+    , testCase "a Map binds NULL, nested, Integer, and UTC values" $ withConnection ":memory:" \conn -> do
+        let withNull = Map.fromList [("a", Just 1), ("b", Nothing)] :: Map.Map Text (Maybe Int64)
+            nested = Map.fromList [("a", [1, 2]), ("b", [])] :: Map.Map Text [Int64]
+            pairs = Map.fromList [("a", 1)] :: Map.Map Text Int64
+        (query conn "SELECT typeof(?), ?" (withNull, withNull) :: IO [(Text, Map.Map Text (Maybe Int64))])
+          >>= (@?= [("MAP(VARCHAR, BIGINT)", withNull)])
+        (query conn "SELECT typeof(?), ?" (nested, nested) :: IO [(Text, Map.Map Text [Int64])]) >>= (@?= [("MAP(VARCHAR, BIGINT[])", nested)])
+        (query conn "SELECT ?" (Only (Nothing :: Maybe (Map.Map Text Int64))) :: IO [Only (Maybe (Map.Map Text Int64))]) >>= (@?= [Only Nothing])
+        (query conn "SELECT typeof(?), ?" ([pairs, Map.empty], [pairs, Map.empty]) :: IO [(Text, [Map.Map Text Int64])])
+          >>= (@?= [("MAP(VARCHAR, BIGINT)[]", [pairs, Map.empty])])
+        -- An Integer value takes the value type of its target.
+        let insert :: Map.Map Text Integer -> IO (Either SQLError Int)
+            insert value = do
+              _ <- execute_ conn "CREATE OR REPLACE TABLE unsigned_map (m MAP(VARCHAR, UBIGINT))"
+              try (execute conn "INSERT INTO unsigned_map VALUES (?)" (Only value))
+        insert (Map.fromList [("a", 5), ("b", 6)]) >>= either (assertFailure . show) (const (pure ()))
+        (query_ conn "SELECT m::VARCHAR FROM unsigned_map" :: IO [Only Text]) >>= (@?= [Only "{a=5, b=6}"])
+        insert (Map.fromList [("a", -5)]) >>= \case
+          Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorInputInvalid
+          Right _ -> assertFailure "expected the DuckDB range error for -5"
+        insert (Map.fromList [("a", 2 ^ (130 :: Int))]) >>= \case
+          Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorInputOutOfRange
+          Right _ -> assertFailure "expected the duckdb-simple range error for 2^130"
+        (query conn "SELECT typeof(?)" (Only (Map.fromList [("a", 5)] :: Map.Map Text Integer)) :: IO [Only Text])
+          >>= (@?= [Only "MAP(VARCHAR, BIGNUM)"])
+        -- A UTC value keeps its nanoseconds for a nanosecond target.
+        let times = Map.fromList [("t", posixSecondsToUTCTime 0.123456789)] :: Map.Map Text UTCTime
+        (query conn "SELECT ?::MAP(VARCHAR, TIMESTAMPTZ_NS)" (Only times) :: IO [Only (Map.Map Text UTCTime)]) >>= (@?= [Only times])
+        -- An empty map of nested values has no value type.
+        try (query conn "SELECT ?" (Only (Map.empty :: Map.Map Text [Int64])) :: IO [Only FieldValue]) >>= \case
+          Left SQLError{sqlErrorMessage} -> sqlErrorMessage @?= "duckdb-simple: an empty or all-NULL array of BIGINT[] elements has no element type"
+          Right rows -> assertFailure ("expected the element type error, got " <> show rows)
     , testCase "an array of BigNum values keeps the BIGNUM casts of DuckDB" $ withConnection ":memory:" \conn -> do
         -- DuckDB 2.0.0 casts the BIGNUM -6 to UBIGINT as a wrapped value with no
         -- error. See Note [Integer parameters] in "Database.DuckDB.Simple.ToField".
@@ -628,14 +894,39 @@ valueRegressionTests =
     , testCase "unsupported BIT input fails before native use" $ withConnection ":memory:" \conn ->
         forM_ [BitString 0 BS.empty, BitString 8 (BS.singleton 1)] \bits ->
           assertIOError (query conn "SELECT ?" (Only bits) :: IO [Only BitString])
-    , testCase "TIMETZ second offsets fail without rounding" $ withConnection ":memory:" \conn ->
-        assertIOError (query_ conn "SELECT '12:00:00+01:23:45'::TIMETZ" :: IO [Only TimeWithZone])
-    , testCase "a decode failure in a later chunk releases each chunk" $ withConnection ":memory:" \conn -> do
-        assertIOError
-          ( query_ conn "SELECT CASE WHEN i = 9000 THEN '12:00:00+01:23:45'::TIMETZ ELSE '12:00:00+01:00'::TIMETZ END FROM range(10000) t(i)"
-              :: IO [Only FieldValue]
-          )
+    , testCase "TIMETZ offsets with seconds read without rounding" $ withConnection ":memory:" \conn ->
+        (query_ conn "SELECT '12:00:00+01:23:45'::TIMETZ" :: IO [Only TimeWithZone]) >>= (@?= [Only (TimeWithZone (TimeOfDay 12 0 0) 5025)])
+    , testCase "a failure of the reader of a chunk gives the error of DuckDB and releases each chunk" $ withConnection ":memory:" \conn -> do
+        -- The VARIANT reader runs its metadata query on a helper connection, and
+        -- that query needs an expression depth of 11. A GLOBAL depth of 10 thus
+        -- fails the reader at the bind of that query, and the SESSION depth of
+        -- the caller lets the query of the case run.
+        _ <- execute_ conn "SET GLOBAL max_expression_depth = 10"
+        _ <- execute_ conn "SET SESSION max_expression_depth = 1000"
+        let rows = "SELECT 42::BIGINT::VARIANT FROM range(10000)"
+        try (query_ conn rows :: IO [Only FieldValue]) >>= \case
+          Left SQLError{sqlErrorMessage, sqlErrorType} -> do
+            assertBool (Text.unpack sqlErrorMessage) ("expression depth" `Text.isInfixOf` sqlErrorMessage)
+            sqlErrorType @?= Just ErrorQueryBinder
+          Right result -> assertFailure ("expected the error of the VARIANT reader, got " <> show (length result) <> " rows")
         (query_ conn "SELECT 42" :: IO [Only Int]) >>= (@?= [Only 42])
+        _ <- execute_ conn "SET GLOBAL max_expression_depth = 1000"
+        (length <$> (query_ conn rows :: IO [Only FieldValue])) >>= (@?= 10000)
+    , testCase "a failure of the reader of a later chunk of a stream gives the error of DuckDB" $
+        withEnvironment \environment -> withInstance environment [] \instance' ->
+          withConnectionOn instance' \conn -> withConnectionOn instance' \other -> do
+            _ <- execute_ conn "ATTACH ':memory:' AS probe"
+            _ <- execute_ conn "SET SESSION max_expression_depth = 1000"
+            -- The first chunk reads. Then a GLOBAL depth of 10 fails the
+            -- metadata query of the VARIANT reader for the next chunk. See the
+            -- case before this one.
+            let step count (Only (_ :: FieldValue)) = do
+                  _ <- if count == 0 then execute_ other "SET GLOBAL max_expression_depth = 10" else pure 0
+                  pure (count + 1)
+            try (Streaming.fold_ conn "SELECT 42::BIGINT::VARIANT FROM range(10000)" (0 :: Int) step) >>= \case
+              Left SQLError{sqlErrorMessage} -> assertBool (Text.unpack sqlErrorMessage) ("expression depth" `Text.isInfixOf` sqlErrorMessage)
+              Right count -> assertFailure ("expected the error of the VARIANT reader, got " <> show count <> " rows")
+            (query_ conn "SELECT 42" :: IO [Only Int]) >>= (@?= [Only 42])
     , testCase "ENUM payload index must be in its dictionary" $ withConnection ":memory:" \conn ->
         assertIOError
           (query conn "SELECT ?" (Only (singleField (LogicalTypeEnum (listArray (0, 1) ["a", "b"])) (FieldEnum 2))) :: IO [Only FieldValue])
@@ -654,7 +945,7 @@ valueRegressionTests =
             (query conn "SELECT (?).value::VARCHAR, ?" (struct, struct) :: IO [(Text, StructValue FieldValue)])
               >>= assertEqual (show size <> " " <> show index) [(label index, struct)]
     , testCase "TIMETZ input offset overflow fails before native use" $ withConnection ":memory:" \conn -> do
-        let value = TimeWithZone (TimeOfDay 12 0 0) (minutesToTimeZone maxBound)
+        let value = TimeWithZone (TimeOfDay 12 0 0) maxBound
             struct = singleField (LogicalTypeScalar LogicalTypeIdTimeTz) (FieldTimeTZ value)
         assertIOError (query conn "SELECT ?" (Only struct) :: IO [Only FieldValue])
     , testCase "invalid TIME input returns controlled error" $ withConnection ":memory:" \conn ->

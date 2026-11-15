@@ -16,8 +16,10 @@ module Database.DuckDB.Simple.Config.Internal (
 
 import Control.Exception (bracket, throwIO)
 import Control.Monad (when)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Database.DuckDB.Simple.Callback (targetCastFactory)
 import Database.DuckDB.Simple.FromField (FieldValue)
 import Database.DuckDB.Simple.Materialize (VectorReader, materializeValue, rejectRows)
 import Database.DuckDB.Simple.Native
@@ -52,6 +54,7 @@ registerCustomOptionOn :: RegistrationTarget -> CustomOption -> IO ()
 registerCustomOptionOn target option = do
   when (Text.null (customOptionName option) || Text.any (== '\0') (customOptionName option)) $
     throwInvalidArgument "custom option name must be nonempty and must not contain NUL"
+  casts <- targetCastFactory target
   registerCustomOptionWith
     target
     ( \handle -> withRegistrationFactory target \factory -> do
@@ -69,15 +72,17 @@ registerCustomOptionOn target option = do
           [SettingScopeGlobal, SettingScopeSession]
         checked (c_duckdb_v2_custom_option_set_default_scope handle (settingScopeToNative (customOptionDefaultScope option)))
     )
-    (updateWithValue <$> customOptionUpdate option)
+    (updateWithValue casts <$> customOptionUpdate option)
 
 -- | Copy the new value of an option update. Then give it to the update function.
-updateWithValue :: (FieldValue -> IO ()) -> ContextCallback DuckDBV2CustomOptionUpdateInfoHandle
-updateWithValue update info context = withContextFactory context \factory ->
+-- A GEOMETRY value reads with the factory of 'targetCastFactory', or with the
+-- factory of the context for an extension.
+updateWithValue :: Maybe DuckDBV2FactoryHandle -> (FieldValue -> IO ()) -> ContextCallback DuckDBV2CustomOptionUpdateInfoHandle
+updateWithValue casts update info context = withContextFactory context \factory ->
   bracket
     (output (c_duckdb_v2_custom_option_update_get_value info))
     (destroy c_duckdb_v2_value_destroy)
-    (materializeValue unexpectedVariant factory)
+    (materializeValue unexpectedVariant (fromMaybe factory casts))
     >>= update
 
 -- | Raise an @SQLError@ for a VARIANT value. Configuration reads do not decode VARIANT.

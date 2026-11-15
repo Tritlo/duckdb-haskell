@@ -9,6 +9,7 @@
 module Database.DuckDB.Simple.Callback (
   RegistrationTarget (..),
   withRegistrationFactory,
+  targetCastFactory,
   withTarget,
   Allocator,
   install,
@@ -29,8 +30,9 @@ import Data.IORef (modifyIORef', newIORef, readIORef)
 import qualified Data.Text as Text
 import Data.Void (Void)
 import Database.DuckDB.Simple.CallbackMark (withCallbackMark)
-import Database.DuckDB.Simple.Internal (Connection, withConnectionHandle)
+import Database.DuckDB.Simple.Internal (Connection, withConnectionHandle, withTypeCache)
 import Database.DuckDB.Simple.Native
+import Database.DuckDB.Simple.TypeCache (typeCacheCasts)
 import Foreign.Marshal.Utils (with)
 import Foreign.Ptr (FunPtr, Ptr, castFunPtr, castPtr, freeHaskellFunPtr, nullFunPtr, nullPtr)
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deRefStablePtr, freeStablePtr, newStablePtr)
@@ -49,6 +51,20 @@ withRegistrationFactory :: RegistrationTarget -> (DuckDBV2FactoryHandle -> IO a)
 withRegistrationFactory target action = case target of
   ConnectionTarget connection -> withConnectionHandle connection $ \native -> withConnectionFactory native action
   ExtensionTarget _ context -> withContextFactory context action
+
+-- | The factory for the casts that the library runs in the callbacks of a
+-- target. A connection target gives the factory of its instance. An extension
+-- target gives 'Nothing', because an extension has no instance. A registration
+-- takes the factory one time, and its callbacks keep it. The factory is valid in
+-- each callback, because a callback runs only in a statement on a connection of
+-- the instance. A callback keeps the factory and not the connection, for the
+-- reason that withVariantReader in "Database.DuckDB.Simple.Copy.Internal" gives.
+-- See Note [User casts and the casts of the library] in
+-- "Database.DuckDB.Simple.Materialize".
+targetCastFactory :: RegistrationTarget -> IO (Maybe DuckDBV2FactoryHandle)
+targetCastFactory target = case target of
+  ConnectionTarget connection -> Just <$> withTypeCache connection (pure . typeCacheCasts)
+  ExtensionTarget _ _ -> pure Nothing
 
 -- | Keep the target alive while borrowing its factory and registration builder.
 withTarget

@@ -13,6 +13,7 @@
 module Database.DuckDB.Simple.TypeCache (
   TypeCache,
   typeCacheConnection,
+  typeCacheCasts,
   defaultGeometryCRS,
   createTypeCache,
   destroyTypeCache,
@@ -23,6 +24,7 @@ module Database.DuckDB.Simple.TypeCache (
 import Control.Concurrent.MVar (MVar, modifyMVarMasked, newMVar)
 import Control.Exception (SomeException, bracket, finally, mask, onException, throwIO, try, uninterruptibleMask_)
 import Control.Monad (when)
+import qualified Data.ByteString as BS
 import Data.List (nub)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -40,6 +42,11 @@ import Foreign.Ptr (nullPtr)
 data TypeCache = TypeCache
   { typeCacheConnection :: DuckDBV2ConnectionHandle
   , typeCacheInstance :: DuckDBV2InstanceHandle
+  , typeCacheCasts :: DuckDBV2FactoryHandle
+  -- ^ The factory of the instance. The library runs its own casts with it,
+  --     because it knows only the built-in casts. It is valid for as long as
+  --     the instance is. See Note [User casts and the casts of the library] in
+  --     "Database.DuckDB.Simple.Materialize".
   , typeCacheGeometry :: NativeTypes
   -- ^ The types of the configured CRS names. The map does not change after
   --     'createTypeCache'.
@@ -111,6 +118,7 @@ createTypeCache instance_ connection crss = do
   when (any Text.null crss || any (Text.any (== '\0')) crss) $
     throwIO (userError "duckdb-simple: a GEOMETRY CRS must be nonempty and must not contain NUL")
   let names = nub crss
+  casts <- withInstanceFactory instance_ pure
   direct <- acquireItems (mapM_ destroyLogicalType) [directGeometry connection crs | crs <- names]
   let kept = [(crs, logical) | (crs, Just logical) <- zip names direct]
   flip onException (releaseItems destroyLogicalType (map snd kept)) do
@@ -118,7 +126,7 @@ createTypeCache instance_ connection crss = do
     queried <- readNativeTypes connection [crs | (crs, Nothing) <- zip names direct]
     flip onException (releaseItems destroyLogicalType (nativeOwned queried)) do
       let geometry = NativeTypes (nativeGeometry keptTypes <> nativeGeometry queried) (nativeOwned keptTypes <> nativeOwned queried)
-      TypeCache connection instance_ geometry <$> newMVar Unopened
+      TypeCache connection instance_ casts geometry <$> newMVar Unopened
 
 -- | Construct a GEOMETRY type with a CRS directly. Give 'Nothing' when DuckDB
 -- rejects the name or drops the CRS. The construction raises 'SQLError' in
@@ -157,27 +165,33 @@ cachedLogicalType TypeCache{typeCacheConnection, typeCacheGeometry = NativeTypes
 -- sequence. Do not enter this cache again from the supplied action. See
 -- Note [VARIANT decoding] in "Database.DuckDB.Simple.VariantCodec".
 withVariantState :: TypeCache -> (VariantState -> IO a) -> IO a
-withVariantState TypeCache{typeCacheInstance, typeCacheState} action = mask \restore -> do
+withVariantState TypeCache{typeCacheInstance, typeCacheCasts, typeCacheState} action = mask \restore -> do
   outcome <- modifyMVarMasked typeCacheState \state -> do
     (helper, variant) <- case state of
       Closed -> throwIO (SQLError "duckdb-simple: type cache is closed" Nothing Nothing)
       Open helper variant -> pure (helper, variant)
       Unopened -> do
         helper <- output (c_duckdb_v2_connection_create typeCacheInstance)
-        (,) helper <$> newVariantState helper
+        (,) helper <$> newVariantState helper typeCacheCasts
     result <- try (restore (action variant))
     pure (Open helper variant, result)
   either (throwIO :: SomeException -> IO a) pure outcome
 
 -- | Read the SQL-derived GEOMETRY types of custom CRS names. Run no statement
--- for an empty list. See Note [CRS types of a connection].
+-- for an empty list. See Note [CRS types of a connection]. The statement binds
+-- the empty point as a BLOB value and each name as a VARCHAR value. Each value
+-- has the type of its parameter, so the statement has no cast, and a cast that
+-- a user registers does not run. See
+-- Note [User casts and the casts of the library] in
+-- "Database.DuckDB.Simple.Materialize".
 readNativeTypes :: DuckDBV2ConnectionHandle -> [Text] -> IO NativeTypes
 readNativeTypes _ [] = pure (NativeTypes Map.empty [])
 readNativeTypes connection crss = do
-  let sql = "SELECT " <> Text.intercalate ", " ["system.main.ST_SetCRS('POINT EMPTY'::GEOMETRY, ?)" | _ <- crss]
+  let sql = "SELECT " <> Text.intercalate ", " ["system.main.ST_SetCRS(system.main.ST_GeomFromWKB(?), ?)" | _ <- crss]
       textValue value = withText value (\text -> factoryOutput connection (\factory -> c_duckdb_v2_value_create_varchar factory text))
+      emptyPoint = withBytes emptyPointWKB (\bytes -> factoryOutput connection (\factory -> c_duckdb_v2_value_create_blob factory bytes))
   withSQLStatement connection sql \parsed ->
-    withCreatedValues (map textValue crss) \values -> withArray values \valuePtr ->
+    withCreatedValues (concat [[emptyPoint, textValue crs] | crs <- crss]) \values -> withArray values \valuePtr ->
       bracket
         (output (c_duckdb_v2_statement_execute connection parsed (ConstPtr nullPtr) (ConstPtr valuePtr) (fromIntegral (length values))))
         (destroy c_duckdb_v2_result_destroy)
@@ -186,6 +200,10 @@ readNativeTypes connection crss = do
             when (chunk == nullHandle) $ throwIO (userError "duckdb-simple: the type query returned no row")
             owned <- columnTypes chunk (length crss)
             geometryTypes crss owned `onException` releaseItems destroyLogicalType owned
+
+-- | The WKB of POINT EMPTY: a point with NaN coordinates.
+emptyPointWKB :: BS.ByteString
+emptyPointWKB = BS.pack [1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 248, 127, 0, 0, 0, 0, 0, 0, 248, 127]
 
 -- | Map each configured name, and the CRS text that DuckDB reports for its
 -- type, to the type. Raise an error if a type has no CRS. The caller keeps the

@@ -25,7 +25,9 @@
   `Database.DuckDB.Simple.Function` has `createCast`, `createAggregate`,
   `createTableFunction`, and the row class `TypedRow`. `Database.DuckDB.Simple`
   exports the three functions, `Aggregate`, and `TypedRow`.
-- `createCast` registers a pure Haskell function as an explicit cast.
+- `createCast` registers a pure Haskell function as an explicit cast. A cast
+  for a pair of types whose built-in cast the library uses (see the README)
+  also changes what the library reads and binds.
 - `createAggregate` registers an aggregate function as a fold over Haskell
   values. The record `Aggregate` has the initial state and the step, combine,
   and result functions. DuckDB gives the aggregate callbacks no context, so the
@@ -142,13 +144,24 @@
   `LogicalTypeTuple`.
 - Preserve composite VARCHAR collations with `LogicalTypeCollatedVarchar`.
 - Decode nanosecond timezone timestamps in results and VARIANT values.
-- Preserve nanosecond timezone timestamp precision in VARIANT parameters and
-  parameters whose prepared type requires `TIMESTAMPTZ_NS`. This includes UTC
-  fields in collections, STRUCTs, MAPs, and UNIONs.
+- Preserve the digits below a microsecond of a `TimeOfDay`, a `LocalTime`, and
+  a `UTCTime`, and of their `Unbounded` forms, for a nanosecond parameter
+  (`TIME_NS`, `TIMESTAMP_NS`, or `TIMESTAMPTZ_NS`), also in collections,
+  STRUCTs, MAPs, UNIONs, and VARIANT parameters. Only a value with such digits
+  reads the parameter type. Each other parameter gets the microsecond value,
+  as for the SQL literal. An explicit cast such as `?::TIMESTAMP_NS` makes a
+  nanosecond parameter, so for a `TIMESTAMP` column DuckDB rounds the value to
+  the microsecond, where a plain `?` cuts the digits. Version 0.3 bound the
+  microsecond value for each parameter.
 - Decode VARIANT values through public V2 operations. Object keys use DuckDB's
   lexicographic order.
 - Allow a VARIANT object to contain an empty key with other named keys. Reject
   an object with only an empty key because the C API changes its shape.
+- A `Variant` parameter with a UNION payload, at any depth, raises `SQLError`
+  with the type `ErrorInputInvalid`, because a VARIANT keeps only the member
+  value of a UNION. Version 0.3 bound such a value with no error. The
+  errors for a MAP payload and an ENUM payload give the reason: a VARIANT
+  stores a MAP as a list of key and value objects, and an ENUM as its text.
 - Read GEOMETRY results through a native cast to BLOB. DuckDB 2.0 rejects WKB
   with mixed Z/M member layouts.
 - `ToDuckValue.toDuckValue`, `logicalTypeFromRep`, and `logicalTypeFromRepWith`
@@ -166,11 +179,40 @@
   value without a CRS. One with a CRS raises `SQLError`, because a VARIANT does
   not keep the CRS. Version 0.3 raised an error for each such value, because
   DuckDB 1.5 has no cast from BLOB to GEOMETRY.
-- Empty `Array` parameters raise `SQLError`. Use an SQL empty LIST.
+- Add a parameter instance for `RawGeometry`. It binds as a GEOMETRY with the
+  same WKB bytes and its own CRS, and DuckDB casts it to the type of the
+  parameter as in SQL text: a value without a CRS takes the CRS of the target,
+  a target without a CRS removes the CRS, and a target with another CRS raises
+  `SQLError`. Version 0.3 had only a result instance for `RawGeometry`. An
+  `Array` and a typed row cannot hold a `RawGeometry`.
+- Empty `Array` parameters raise `SQLError`. Bind an empty list for an empty
+  LIST.
+- `TimeWithZone` holds the offset in seconds east of UTC, as a TIMETZ stores
+  it. The field `timeWithZoneZone :: TimeZone` of version 0.3 is now
+  `timeWithZoneOffsetSeconds :: Int32`. A TIMETZ with an offset that has
+  seconds, for example `12:00:00+01:00:30`, now reads. Version 0.3 raised an
+  error for it. Update code that uses the old field. See MIGRATION.md.
+- Add parameter instances for `IntervalValue`, `TimeWithZone`, and
+  `DecimalValue`. An `IntervalValue` binds as an INTERVAL and a `TimeWithZone`
+  as a TIMETZ, also in an `Array`, a list, or a typed row. A `TimeWithZone`
+  reads back equal to the bound value, except that a time loses its digits
+  below one microsecond. An offset outside -15:59:59 to +15:59:59 raises an
+  error. A `DecimalValue` binds as a DECIMAL with its own width and scale. An `Array`, a list, or a typed row
+  cannot hold a `DecimalValue`. Version 0.3 had only result instances for these
+  types.
+- Add parameter instances for `Map`. A `Map` binds as a MAP value with its
+  pairs in ascending key order. The keys and the values follow the element
+  rules of a list, and an empty `Map` binds as an empty MAP of its key and
+  value types. Version 0.3 had only a result instance for `Map`.
+- Add parameter instances for lists. A list binds as a LIST value with the
+  element rules of an `Array`, and an empty list binds as an empty LIST of its
+  element type. A `String` stays one VARCHAR parameter, and a list as a row is
+  still a row of parameters, so a list parameter is `Only [..]`. Version 0.3
+  had no list parameter instance.
 - `executeMany` reads the parameter types one time for each call, not one time
-  for each row. A row with a `UTCTime`, an `Unbounded UTCTime`, an `Array`, or
-  a manual STRUCT, TUPLE, or UNION parameter no longer runs the DuckDB binder
-  again. A column type that changes during the call does not change how the
+  for each row. A row with a time value that has digits below a microsecond,
+  an `Array`, or a manual STRUCT, TUPLE, or UNION parameter no longer runs the
+  DuckDB binder again. A column type that changes during the call does not change how the
   later rows of that call bind.
 - An `Integer` or a `Natural` parameter binds as a HUGEINT value when the value
   is in the HUGEINT range. Before, it bound as a BIGNUM value in each case. In

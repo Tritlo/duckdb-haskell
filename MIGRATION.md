@@ -146,6 +146,30 @@ The SQL workflow stays the same. These changes can affect your code:
 - A conversion error names the types `TIMESTAMPTZ` and `TIMETZ`, in
   `errSQLType` and in the message of the `SQLError`. Version 0.3 gave
   `TIMESTAMP_TZ` and `TIME_TZ`. Change code that matches the old texts.
+- `TimeWithZone` holds the offset as seconds east of UTC. The field
+  `timeWithZoneZone :: TimeZone` is now `timeWithZoneOffsetSeconds :: Int32`.
+  Convert a `TimeZone` with `fromIntegral (timeZoneMinutes zone) * 60`, and
+  convert an offset with `minutesToTimeZone (fromIntegral offset \`div\` 60)`.
+  The second conversion drops the seconds of an offset. A TIMETZ with an offset
+  that has seconds, for example `12:00:00+01:00:30`, now reads. Version 0.3
+  raised an error for it.
+- A `TimeOfDay`, a `LocalTime`, or a `UTCTime` with digits below a microsecond
+  keeps them for a parameter of the type `TIME_NS`, `TIMESTAMP_NS`, or
+  `TIMESTAMPTZ_NS`. Version 0.3 bound the microsecond value for each
+  parameter. Thus an explicit cast to a nanosecond type for a microsecond
+  column now rounds, as the SQL literal does: `?::TIMESTAMP_NS` for a
+  `TIMESTAMP` column, `?::TIME_NS` for a `TIME` column, and `?::TIMESTAMPTZ_NS`
+  for a `TIMESTAMPTZ` column store .123457 for a value with the fraction
+  .123456999, where version 0.3 stored .123456. A plain `?` for such a column
+  still cuts the digits. A value with no such digits binds as in version 0.3.
+  A `LocalTime` or a `UTCTime` outside the range of the nanosecond type (about
+  the years 1677 to 2262) raises an error for a nanosecond parameter, as in
+  version 0.3. The type of that error can differ from version 0.3 for a
+  `UTCTime` with digits below a microsecond, and for a value in a list, an
+  `Array`, a `Map`, a STRUCT, a TUPLE, or a UNION. For a value just above the
+  range, from 2262-04-11 23:47:16.854775807 to 23:47:16.854775999, version 0.3
+  stored the value without its digits below a microsecond. Such a value now
+  raises an error.
 - A value with the declared type SQLNULL must be `FieldNull`. Each other value
   raises a conversion error. Version 0.3 bound it as NULL with no error.
 - `genericToFieldValue` gives the STRUCT without fields (`{}` in DuckDB) for a
@@ -192,7 +216,12 @@ The SQL workflow stays the same. These changes can affect your code:
   `createAggregate`, and `Aggregate` with its fields. These names can clash
   with your own names when you import the module without a list. Hide these
   names in the import, or import the module qualified.
-- Empty `Array` parameters raise `SQLError`. Use an SQL empty LIST.
+- Empty `Array` parameters raise `SQLError`. Bind an empty list for an empty
+  LIST.
+- A list binds as a LIST parameter. Version 0.3 had no list parameter
+  instance, so code bound an `Array` and let DuckDB cast it. That code still
+  works. A `String` stays one VARCHAR parameter, and a list as a row is still
+  a row of parameters, so put a list parameter in `Only`.
 - A composite parameter with a GEOMETRY CRS that DuckDB does not recognize
   raises `SQLError`. Version 0.3 bound it without the CRS. Configure custom CRS
   names through `connectionGeometryCRS`.
@@ -201,7 +230,14 @@ The SQL workflow stays the same. These changes can affect your code:
   the first time a parameter needed one, and did not check that a type kept its
   CRS.
 - DuckDB 2.0 rejects WKB with mixed Z/M member layouts.
+- `RawGeometry` has a parameter instance. It binds as a GEOMETRY with its own
+  CRS. Version 0.3 had only a result instance, so code imported the WKB with
+  `ST_GeomFromWKB(?)` and the CRS with `ST_SetCRS`. That SQL still works.
 - Decoded VARIANT objects list their keys in DuckDB's lexicographic order.
+- A `Variant` parameter with a UNION payload, at any depth, raises `SQLError`
+  with the type `ErrorInputInvalid`, because a VARIANT keeps only the member
+  value of a UNION. Version 0.3 bound such a value with no error. Bind the
+  member value, or bind the UNION value as a UNION parameter.
 
 The typed registrations are new in 0.4. Version 0.3 had no `Registration`,
 `Pragma`, or `Extension` module and no custom options. Its `Copy` module had
@@ -244,8 +280,9 @@ Free strings returned by the CRS accessor with `duckdb_free`.
 Use `Data.Geometry.Geometry` from the published `geometry-simple` package for
 decoded shapes. Use `RawGeometry` for WKB bytes and CRS metadata. The package's
 `Geometry` type has no CRS. It has parameter and result instances.
-`RawGeometry` has a result instance. Import its WKB and CRS with explicit SQL.
-See [the Geometry notes](duckdb-simple/README.md#geometry) for examples and limits.
+In version 0.3, `RawGeometry` had only a result instance, so code imported its
+WKB and CRS with explicit SQL. Version 0.4 adds a parameter instance. See
+[the Geometry notes](duckdb-simple/README.md#geometry) for examples and limits.
 
 `FieldValue` gains `FieldGeometry`, and `LogicalTypeRep` gains
 `LogicalTypeGeometry`. Update exhaustive matches.

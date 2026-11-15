@@ -22,11 +22,11 @@ import qualified Data.Text as Text
 import qualified Data.Vector as V
 import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple
-import Database.DuckDB.Simple.FromField (BitString (..), DecimalValue (..), FieldValue (..), StructValue (..), UnionValue)
+import Database.DuckDB.Simple.FromField (BitString (..), DecimalValue (..), FieldValue (..), StructValue (..), UnionValue (..))
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..))
 import Database.DuckDB.Simple.Geometry (RawGeometry (..), toRawGeometry)
 import Database.DuckDB.Simple.Internal (withConnectionFactory, withConnectionHandle, withStatementHandle)
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..))
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), UnionMemberType (..))
 import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Database.DuckDB.Simple.V2.LogicalRep (destroyLogicalType, logicalTypeFromRep, logicalTypeToRep)
 import Database.DuckDB.Simple.V2.Registration (destroy, output)
@@ -122,13 +122,19 @@ tests =
               | otherwise -> castFloatToWord32 decoded @?= castFloatToWord32 value
             _ -> assertFailure (show actual)
     , testCase "TIMETZ offsets decode like native values" $ withConnection ":memory:" \conn -> do
-        forM_ ["'12:00:00+01:23'::TIMETZ", "'23:59:59.999999-15:59'::TIMETZ", "'00:00:00+00'::TIMETZ"] \sql -> do
-          rows <- query_ conn (Query ("SELECT (" <> sql <> ")::VARIANT, " <> sql <> " FROM range(2)")) :: IO [(Variant, FieldValue)]
-          length rows @?= 2
-          forM_ rows \(Variant actual, native) -> do
-            actual @?= native
-            roundTrip conn native
-        assertFailureIO (query_ conn "SELECT '12:00:00+01:23:45'::TIMETZ::VARIANT" :: IO [Only Variant])
+        forM_
+          [ "'12:00:00+01:23'::TIMETZ"
+          , "'23:59:59.999999-15:59'::TIMETZ"
+          , "'00:00:00+00'::TIMETZ"
+          , "'12:00:00+01:23:45'::TIMETZ"
+          , "'00:00:00-15:59:59'::TIMETZ"
+          ]
+          \sql -> do
+            rows <- query_ conn (Query ("SELECT (" <> sql <> ")::VARIANT, " <> sql <> " FROM range(2)")) :: IO [(Variant, FieldValue)]
+            length rows @?= 2
+            forM_ rows \(Variant actual, native) -> do
+              actual @?= native
+              roundTrip conn native
     , testCase "wide finite timestamp payloads round trip without losing digits" $ withConnection ":memory:" \conn -> do
         void (execute_ conn "CREATE TABLE wide_timestamps (seconds TIMESTAMP_S, millis TIMESTAMP_MS)")
         appendWideTimestamps
@@ -420,6 +426,30 @@ tests =
                 @?= "duckdb-simple: a VARIANT does not keep the CRS of a GEOMETRY, so the GEOMETRY value with the CRS 'OGC:CRS84' cannot bind as a VARIANT"
               sqlErrorType err @?= Just ErrorInputInvalid
             Right _ -> assertFailure "expected a VARIANT CRS error"
+        (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
+    , testCase "UNION, MAP, and ENUM payloads raise an error at each depth" $ withConnection ":memory:" \conn -> do
+        let members =
+              listArray
+                (0, 1)
+                [UnionMemberType "a" (LogicalTypeScalar LogicalTypeIdInteger), UnionMemberType "b" (LogicalTypeScalar LogicalTypeIdVarchar)]
+            depths payload = [payload, FieldList [payload], variantObject [("u", payload)], variantObject [("u", FieldList [payload])]]
+            bindPayload input = try (query conn "SELECT ?" (Only (Variant input)) :: IO [Only Variant])
+        forM_ [FieldInt32 1, FieldNull] \member ->
+          forM_ (depths (FieldUnion (UnionValue 0 "a" member members))) \input ->
+            bindPayload input >>= \result -> case result of
+              Left err -> do
+                sqlErrorType err @?= Just ErrorInputInvalid
+                assertBool (Text.unpack (sqlErrorMessage err)) ("a VARIANT keeps only the member value of a UNION" `Text.isInfixOf` sqlErrorMessage err)
+              Right rows -> assertFailure ("expected the UNION error, got " <> show rows)
+        forM_
+          [ (FieldMap [(FieldText "k", FieldInt32 1)], "a VARIANT stores a MAP as a list of key and value objects")
+          , (FieldEnum 0, "a VARIANT stores an ENUM as its text")
+          ]
+          \(payload, reason) -> forM_ (depths payload) \input -> do
+            result <- try (query conn "SELECT ?" (Only (Variant input)) :: IO [Only Variant])
+            case result of
+              Left (err :: IOException) -> assertBool (show err) (reason `isInfixOf` show err)
+              Right rows -> assertFailure ("expected the " <> reason <> " error, got " <> show rows)
         (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
     , testCase "geometry payload retains empty layout tags and native NaN points" $ withConnection ":memory:" \conn ->
         forM_ ["GEOMETRYCOLLECTION ZM EMPTY", "MULTIPOLYGON M EMPTY", "POINT Z (NaN NaN 7)"] \wkt -> do

@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingVia #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -265,6 +266,175 @@ nanosecondTimeTests =
           sql =
             "SELECT epoch_ns((value.items[1][1]).value), epoch_ns((value.items[1][2]).value) FROM (SELECT ?::STRUCT(items TUPLE(STRUCT(value TIMESTAMPTZ),STRUCT(value TIMESTAMPTZ_NS))[]) AS value)"
       (query conn sql (Only container) :: IO [(Int64, Int64)]) >>= (@?= [(123456000, 123456789)])
+  , testCase "a time value keeps its digits below a microsecond only for a nanosecond parameter" $ withConnection ":memory:" $ \conn -> do
+      _ <- execute_ conn "SET TimeZone='UTC'"
+      let day = fromGregorian 2026 1 2
+          time = TimeOfDay 3 4 5.123456999
+          local = LocalTime day time
+          instant = localTimeToUTC utc local
+          stored :: (ToField a) => Text.Text -> Text.Text -> a -> IO [Only Text.Text]
+          stored column cast value = do
+            _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE stored (v " <> column <> ")"))
+            _ <- execute conn (Query ("INSERT INTO stored VALUES (?" <> cast <> ")")) (Only value)
+            query_ conn "SELECT v::VARCHAR FROM stored"
+          check :: (ToField a) => [(Text.Text, Text.Text, Text.Text)] -> a -> Assertion
+          check rows value = forM_ rows $ \(column, cast, expected) ->
+            stored column cast value >>= assertEqual (Text.unpack (column <> " ?" <> cast)) [Only expected]
+          selected :: (ToField a) => Text.Text -> a -> IO [Only Text.Text]
+          selected sql value = query conn (Query sql) (Only value)
+      check
+        [ ("TIMESTAMP_NS", "", "2026-01-02 03:04:05.123456999")
+        , ("TIMESTAMP", "", "2026-01-02 03:04:05.123456")
+        , ("TIMESTAMP_NS", "::TIMESTAMP_NS", "2026-01-02 03:04:05.123456999")
+        ]
+        local
+      check [("TIMESTAMP_NS", "", "2026-01-02 03:04:05.123456999"), ("TIMESTAMP", "", "2026-01-02 03:04:05.123456")] (Finite local)
+      check [("TIME_NS", "", "03:04:05.123456999"), ("TIME", "", "03:04:05.123456"), ("TIME_NS", "::TIME_NS", "03:04:05.123456999")] time
+      check
+        [ ("TIMESTAMPTZ_NS", "", "2026-01-02 03:04:05.123456999+00")
+        , ("TIMESTAMPTZ", "", "2026-01-02 03:04:05.123456+00")
+        , ("TIMESTAMPTZ_NS", "::TIMESTAMPTZ_NS", "2026-01-02 03:04:05.123456999+00")
+        ]
+        instant
+      check [("TIMESTAMPTZ_NS", "", "2026-01-02 03:04:05.123456999+00"), ("TIMESTAMPTZ", "", "2026-01-02 03:04:05.123456+00")] (Finite instant)
+      -- A parameter with no known type gets the microsecond value.
+      selected "SELECT ?::VARCHAR" local >>= (@?= [Only "2026-01-02 03:04:05.123456"])
+      selected "SELECT ?::VARCHAR" time >>= (@?= [Only "03:04:05.123456"])
+      selected "SELECT ?::VARCHAR" instant >>= (@?= [Only "2026-01-02 03:04:05.123456+00"])
+      -- A comparison with a nanosecond column finds the exact value.
+      void $ execute_ conn "CREATE TABLE precise (v TIMESTAMP_NS, t TIME_NS)"
+      void $ execute_ conn "INSERT INTO precise VALUES ('2026-01-02 03:04:05.123456999', '03:04:05.123456999')"
+      (query conn "SELECT count(*) FROM precise WHERE v = ?" (Only local) :: IO [Only Int64]) >>= (@?= [Only 1])
+      (query conn "SELECT count(*) FROM precise WHERE t = ?" (Only time) :: IO [Only Int64]) >>= (@?= [Only 1])
+  , testCase "an explicit nanosecond cast for a microsecond column rounds as in SQL text" $ withConnection ":memory:" $ \conn -> do
+      -- An explicit cast to a nanosecond type makes a nanosecond parameter. The
+      -- cast of DuckDB from the nanosecond type to the microsecond type rounds.
+      -- A plain parameter for the microsecond column cuts the digits.
+      _ <- execute_ conn "SET TimeZone='UTC'"
+      let local = LocalTime (fromGregorian 2026 1 2) (TimeOfDay 3 4 5.123456999)
+          time = localTimeOfDay local
+          instant = localTimeToUTC utc local
+          stored :: (ToField a) => Text.Text -> Text.Text -> a -> IO [Only Text.Text]
+          stored column cast value = do
+            _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE stored (v " <> column <> ")"))
+            _ <- execute conn (Query ("INSERT INTO stored VALUES (?" <> cast <> ")")) (Only value)
+            query_ conn "SELECT v::VARCHAR FROM stored"
+      stored "TIMESTAMP" "::TIMESTAMP_NS" local >>= (@?= [Only "2026-01-02 03:04:05.123457"])
+      stored "TIMESTAMP" "" local >>= (@?= [Only "2026-01-02 03:04:05.123456"])
+      stored "TIME" "::TIME_NS" time >>= (@?= [Only "03:04:05.123457"])
+      stored "TIME" "" time >>= (@?= [Only "03:04:05.123456"])
+      stored "TIMESTAMPTZ" "::TIMESTAMPTZ_NS" instant >>= (@?= [Only "2026-01-02 03:04:05.123457+00"])
+      stored "TIMESTAMPTZ" "" instant >>= (@?= [Only "2026-01-02 03:04:05.123456+00"])
+      (query conn "SELECT (?::TIMESTAMP_NS + INTERVAL 1 DAY)::VARCHAR" (Only local) :: IO [Only Text.Text])
+        >>= (@?= [Only "2026-01-03 03:04:05.123457"])
+      (query conn "SELECT (? + INTERVAL 1 DAY)::VARCHAR" (Only local) :: IO [Only Text.Text]) >>= (@?= [Only "2026-01-03 03:04:05.123456"])
+  , testCase "nested time values keep their digits below a microsecond only for nanosecond leaves" $ withConnection ":memory:" $ \conn -> do
+      let day = fromGregorian 2026 1 2
+          precise = LocalTime day (TimeOfDay 3 4 5.123456999)
+          coarse = LocalTime day (TimeOfDay 3 4 5.123456)
+          time = TimeOfDay 3 4 5.123456999
+          stored :: (ToField a) => Text.Text -> a -> IO [Only Text.Text]
+          stored column value = do
+            _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE stored (v " <> column <> ")"))
+            _ <- execute conn "INSERT INTO stored VALUES (?)" (Only value)
+            query_ conn "SELECT v::VARCHAR FROM stored"
+          struct value logical =
+            StructValue (listArray (0, 0) [StructField "v" value]) (listArray (0, 0) [StructField "v" logical]) (Map.singleton "v" 0)
+      stored "TIMESTAMP_NS[]" [precise, coarse] >>= (@?= [Only "['2026-01-02 03:04:05.123456999', '2026-01-02 03:04:05.123456']"])
+      stored "TIMESTAMP[]" [precise, coarse] >>= (@?= [Only "['2026-01-02 03:04:05.123456', '2026-01-02 03:04:05.123456']"])
+      stored "TIMESTAMP_NS[2]" (listArray (0, 1) [precise, coarse] :: Array Int LocalTime)
+        >>= (@?= [Only "['2026-01-02 03:04:05.123456999', '2026-01-02 03:04:05.123456']"])
+      stored "TIME_NS[]" [time] >>= (@?= [Only "['03:04:05.123456999']"])
+      stored "TIME[]" [time] >>= (@?= [Only "['03:04:05.123456']"])
+      stored "MAP(VARCHAR, TIMESTAMP_NS)" (Map.fromList [("a" :: Text.Text, precise)]) >>= (@?= [Only "{a='2026-01-02 03:04:05.123456999'}"])
+      stored "MAP(VARCHAR, TIMESTAMP)" (Map.fromList [("a" :: Text.Text, precise)]) >>= (@?= [Only "{a='2026-01-02 03:04:05.123456'}"])
+      let localStruct = struct (FieldTimestamp (Finite precise)) (LogicalTypeScalar LogicalTypeIdTimestamp)
+          timeStruct = struct (FieldTime time) (LogicalTypeScalar LogicalTypeIdTime)
+      stored "STRUCT(v TIMESTAMP_NS)" localStruct >>= (@?= [Only "{'v': '2026-01-02 03:04:05.123456999'}"])
+      stored "STRUCT(v TIMESTAMP)" localStruct >>= (@?= [Only "{'v': '2026-01-02 03:04:05.123456'}"])
+      stored "STRUCT(v TIME_NS)" timeStruct >>= (@?= [Only "{'v': '03:04:05.123456999'}"])
+      stored "STRUCT(v TIME)" timeStruct >>= (@?= [Only "{'v': '03:04:05.123456'}"])
+  , testCase "executeMany binds time rows with and without digits below a microsecond" $ withConnection ":memory:" $ \conn -> do
+      let day = fromGregorian 2026 1 2
+          rows =
+            [ (0 :: Int64, LocalTime day (TimeOfDay 3 4 5.123456999))
+            , (1, LocalTime day (TimeOfDay 3 4 5.123456))
+            , (2, LocalTime day (TimeOfDay 3 4 5.000000001))
+            ]
+      forM_
+        [ ("TIMESTAMP_NS", ["2026-01-02 03:04:05.123456999", "2026-01-02 03:04:05.123456", "2026-01-02 03:04:05.000000001"])
+        , ("TIMESTAMP", ["2026-01-02 03:04:05.123456", "2026-01-02 03:04:05.123456", "2026-01-02 03:04:05"])
+        ]
+        $ \(column, expected) -> do
+          _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE many (i BIGINT, v " <> column <> ")"))
+          _ <- executeMany conn "INSERT INTO many VALUES (?, ?)" rows
+          (query_ conn "SELECT v::VARCHAR FROM many ORDER BY i" :: IO [Only Text.Text]) >>= assertEqual (Text.unpack column) (map Only expected)
+  , testCase "a time value outside the nanosecond range and an infinity for a nanosecond parameter" $ withConnection ":memory:" $ \conn -> do
+      let moment year month day hours minutes seconds = LocalTime (fromGregorian year month day) (TimeOfDay hours minutes seconds)
+          early = moment 1600 1 2 3 4 5.123456999
+          -- DuckDB can cast the microsecond value of this value to TIMESTAMP_NS.
+          edge = moment 2262 4 11 23 47 16.854775900
+          precise = moment 2026 1 2 3 4 5.123456999
+          stamp = FieldTimestamp . Finite
+          timestamp = LogicalTypeScalar LogicalTypeIdTimestamp
+          pair second =
+            StructValue
+              (listArray (0, 1) [StructField "a" (stamp precise), StructField "b" (stamp second)])
+              (listArray (0, 1) [StructField "a" timestamp, StructField "b" timestamp])
+              (Map.fromList [("a", 0), ("b", 1)])
+          tuple = TupleValue (listArray (0, 0) [stamp early]) (listArray (0, 0) [timestamp])
+          union = UnionValue 0 "v" (stamp early) (listArray (0, 0) [UnionMemberType "v" timestamp])
+          insert :: (ToField a) => Text.Text -> a -> IO ()
+          insert column value = do
+            _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE stored (v " <> column <> ")"))
+            void (execute conn "INSERT INTO stored VALUES (?)" (Only value))
+          noRows label = (query_ conn "SELECT count(*) FROM stored" :: IO [Only Int64]) >>= assertEqual label [Only 0]
+          duckdbError expected label action =
+            try action >>= \case
+              Left SQLError{sqlErrorMessage, sqlErrorType} -> do
+                assertEqual label (Just expected) sqlErrorType
+                assertBool label ("Could not convert Timestamp to higher precision" `Text.isInfixOf` sqlErrorMessage)
+                noRows label
+              Right () -> assertFailure (label <> ": expected the cast error of DuckDB")
+          encoderError label action =
+            try action >>= \case
+              Left (err :: IOException) -> do
+                assertBool label ("duckdb-simple: TIMESTAMP value out of finite range" `Text.isInfixOf` Text.pack (show err))
+                noRows label
+              Right () -> assertFailure (label <> ": expected the range error of the encoder")
+      -- DuckDB raises the error when it also cannot cast the microsecond value.
+      forM_ [early, moment 1600 1 2 3 4 5, moment 2262 4 11 23 47 16.854776001, moment 1677 9 21 0 12 43.145224100] $ \value ->
+        duckdbError ErrorTypeConversion (show value) (insert "TIMESTAMP_NS" value)
+      duckdbError ErrorInputInvalid "list" (insert "TIMESTAMP_NS[]" [precise, early])
+      duckdbError ErrorInputInvalid "Array" (insert "TIMESTAMP_NS[2]" (listArray (0, 1) [precise, early] :: Array Int LocalTime))
+      duckdbError ErrorInputInvalid "Map" (insert "MAP(VARCHAR, TIMESTAMP_NS)" (Map.fromList [("a" :: Text.Text, precise), ("b", early)]))
+      duckdbError ErrorTypeConversion "UTCTime with no digits" (insert "TIMESTAMPTZ_NS" (localTimeToUTC utc (moment 1600 1 2 3 4 5)))
+      -- The encoder raises the error when the cast would cut the digits.
+      encoderError "edge" (insert "TIMESTAMP_NS" edge)
+      encoderError "edge list" (insert "TIMESTAMP_NS[]" [precise, edge])
+      encoderError "UTCTime" (insert "TIMESTAMPTZ_NS" (localTimeToUTC utc early))
+      -- A leaf of a STRUCT, TUPLE, or UNION gets the error of the encoder, also in
+      -- TRY_CAST, where a microsecond value would keep the other leaf with its
+      -- digits cut.
+      encoderError "STRUCT" (insert "STRUCT(a TIMESTAMP_NS, b TIMESTAMP_NS)" (pair early))
+      encoderError "STRUCT with no digits" (insert "STRUCT(a TIMESTAMP_NS, b TIMESTAMP_NS)" (pair (moment 1600 1 2 3 4 5)))
+      encoderError "TUPLE" (insert "TUPLE(TIMESTAMP_NS)" tuple)
+      encoderError "UNION" (insert "UNION(v TIMESTAMP_NS)" union)
+      assertIOException
+        (query conn "SELECT TRY_CAST(? AS STRUCT(a TIMESTAMP_NS, b TIMESTAMP_NS))::VARCHAR" (Only (pair early)) :: IO [Only Text.Text])
+      -- In TRY_CAST, DuckDB gives NULL for a parameter that it cannot cast, and
+      -- the constructor of a list raises its error first.
+      (query conn "SELECT TRY_CAST(? AS TIMESTAMP_NS) IS NULL" (Only early) :: IO [Only Bool]) >>= (@?= [Only True])
+      try (query conn "SELECT TRY_CAST(? AS TIMESTAMP_NS[])::VARCHAR" (Only [precise, early]) :: IO [Only Text.Text]) >>= \case
+        Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorInputInvalid
+        Right rows -> assertFailure ("TRY_CAST list: " <> show rows)
+      -- The last values in the range keep their digits.
+      insert "TIMESTAMP_NS[]" [moment 2262 4 11 23 47 16.854775806, moment 1677 9 21 0 12 43.145224500]
+      (query_ conn "SELECT v::VARCHAR FROM stored" :: IO [Only Text.Text])
+        >>= (@?= [Only "['2262-04-11 23:47:16.854775806', '1677-09-21 00:12:43.1452245']"])
+      _ <- execute_ conn "CREATE OR REPLACE TABLE stored (v TIMESTAMP_NS, z TIMESTAMPTZ_NS)"
+      _ <- execute conn "INSERT INTO stored VALUES (?, ?)" (PosInfinity :: LocalTimestamp, NegInfinity :: UTCTimestamp)
+      (query_ conn "SELECT v::VARCHAR, z::VARCHAR FROM stored" :: IO [(Text.Text, Text.Text)]) >>= (@?= [("infinity", "-infinity")])
   , testCase "nanosecond UTC targets reject finite overflow and sentinel collisions" $ withConnection ":memory:" $ \conn -> do
       forM_
         [ toInteger (minBound :: Int64) - 1

@@ -359,6 +359,56 @@ tests =
               (query_ conn "SELECT count(*) FROM stored" :: IO [Only Int64]) >>= (@?= [Only 0])
           (query conn "SELECT ?" (Only (geometryStruct (LogicalTypeScalar LogicalTypeIdGeometry) (FieldGeometry plain))))
             >>= (@?= [Only (geometryStruct (LogicalTypeGeometry Nothing) (FieldGeometry plain))])
+    , testCase "a raw geometry binds as a top-level parameter with its bytes and CRS" $
+        withConnection ":memory:" \conn -> do
+          wkbs <- shapeBytes conn
+          forM_ [("GEOMETRY", Nothing), ("GEOMETRY('OGC:CRS84')", Just "OGC:CRS84")] \(geometryType, crs) -> do
+            let values = [RawGeometry wkb crs | wkb <- wkbs]
+            forM_ values \value ->
+              (query conn "SELECT ?, typeof(?)" (value, value) :: IO [(RawGeometry, Text)]) >>= (@?= [(value, geometryType)])
+            _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE stored (i BIGINT, v " <> geometryType <> ")"))
+            _ <- executeMany conn "INSERT INTO stored VALUES (?, ?)" (zip [0 :: Int64 ..] values)
+            (query_ conn "SELECT v FROM stored ORDER BY i" :: IO [Only RawGeometry]) >>= (@?= map Only values)
+    , testCase "a top-level raw geometry follows the CRS casts of DuckDB" $
+        withConnection ":memory:" \conn -> do
+          [Only raw] <- query_ conn "SELECT 'POINT (1 2)'::GEOMETRY('OGC:CRS84')" :: IO [Only RawGeometry]
+          let plain = raw{rawGeometryCRS = Nothing}
+              other = raw{rawGeometryCRS = Just "OGC:CRS83"}
+              mismatch = "Binder Error: Cannot cast GEOMETRY with CRS 'OGC:CRS83' to GEOMETRY with different CRS 'OGC:CRS84'"
+              store column value = do
+                _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE stored (v " <> column <> ")"))
+                _ <- execute conn "INSERT INTO stored VALUES (?)" (Only value)
+                query_ conn "SELECT v FROM stored" :: IO [Only RawGeometry]
+          -- A value without a CRS takes the CRS of its column.
+          store "GEOMETRY('OGC:CRS84')" plain >>= (@?= [Only raw])
+          -- A column without a CRS removes the CRS of the value.
+          store "GEOMETRY" raw >>= (@?= [Only plain])
+          store "GEOMETRY" other >>= (@?= [Only plain])
+          -- DuckDB does not cast a GEOMETRY to a GEOMETRY with another CRS.
+          _ <- execute_ conn "CREATE OR REPLACE TABLE stored (v GEOMETRY('OGC:CRS84'))"
+          inserted <- try (execute conn "INSERT INTO stored VALUES (?)" (Only other))
+          case inserted of
+            Left err -> do
+              sqlErrorMessage err @?= mismatch
+              sqlErrorType err @?= Just ErrorQueryBinder
+            Right _ -> assertFailure "expected the CRS cast error of DuckDB"
+          (query_ conn "SELECT count(*) FROM stored" :: IO [Only Int64]) >>= (@?= [Only 0])
+          -- A comparison follows the same casts.
+          _ <- execute conn "INSERT INTO stored VALUES (?)" (Only raw)
+          (query conn "SELECT count(*) FROM stored WHERE v = ?" (Only plain) :: IO [Only Int64]) >>= (@?= [Only 1])
+          compared <- try (query conn "SELECT count(*) FROM stored WHERE v = ?" (Only other) :: IO [Only Int64])
+          case compared of
+            Left err -> do
+              sqlErrorMessage err @?= mismatch
+              sqlErrorType err @?= Just ErrorQueryBinder
+            Right rows -> assertFailure ("expected the CRS cast error of DuckDB, got " <> show rows)
+    , testCase "a Maybe RawGeometry parameter binds NULL and a value" $
+        withConnection ":memory:" \conn -> do
+          [Only raw] <- query_ conn "SELECT 'POINT (1 2)'::GEOMETRY('OGC:CRS84')" :: IO [Only RawGeometry]
+          _ <- execute_ conn "CREATE TABLE stored (i BIGINT, v GEOMETRY('OGC:CRS84'))"
+          _ <- executeMany conn "INSERT INTO stored VALUES (?, ?)" [(0 :: Int64, Just raw), (1, Nothing)]
+          (query_ conn "SELECT v FROM stored ORDER BY i" :: IO [Only (Maybe RawGeometry)]) >>= (@?= [Only (Just raw), Only Nothing])
+          (query conn "SELECT ? IS NULL" (Only (Nothing :: Maybe RawGeometry)) :: IO [Only Bool]) >>= (@?= [Only True])
     , testCase "inactive UNION geometry members keep the CRS of their declared type" $
         withConnection ":memory:" \conn -> do
           [Only value] <-
@@ -479,7 +529,7 @@ tests =
           waitForRelease weak (500 :: Int)
     ]
   where
-    crsQuery = "system.main.ST_SetCRS('POINT EMPTY'"
+    crsQuery = "system.main.ST_SetCRS(system.main.ST_GeomFromWKB("
     waitForRelease weak attempts
       | attempts == 0 = assertFailure "the failed open kept a native connection"
       | otherwise = do

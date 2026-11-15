@@ -78,7 +78,10 @@ one open result for each connection, and it rejects a second execution. Thus
 the queries of the decoder run on a helper connection, so that the decode does
 not interrupt the stream. See Note [Connection lock] in
 "Database.DuckDB.Simple.Internal". A materialized result closes before its rows
-are decoded, but it uses the same reader.
+are decoded, but it uses the same reader. The helper connection has the
+settings of the database, not the SESSION settings of the caller. The
+metadata query needs an expression depth of 11, so a GLOBAL
+max_expression_depth below 11 fails each VARIANT read with a Binder Error.
 
 VariantState holds the helper connection, the parsed metadata statement, the
 parsed extraction statement of the last key count, and the cast types. The
@@ -93,8 +96,11 @@ owner of the helper connection destroys the state before the connection.
   target has no instance handle, so its reader raises an error for each
   VARIANT row.
 
-The decoder decodes each value that contains no VARIANT, such as a cast result,
-with the factory of the helper connection (materializePlainValue).
+The decoder casts with the factory of the instance (variantCasts), so a cast
+that a user registers does not change a payload. It decodes each value that
+contains no VARIANT, such as a cast result, with the same factory. See
+Note [User casts and the casts of the library] in
+"Database.DuckDB.Simple.Materialize".
 -}
 
 -- | The helper connection of the VARIANT decoder, and the native objects that
@@ -105,15 +111,18 @@ with the factory of the helper connection (materializePlainValue).
 -- the state from one thread at a time. See Note [VARIANT decoding].
 data VariantState = VariantState
   { variantConnection :: DuckDBV2ConnectionHandle
+  , variantCasts :: DuckDBV2FactoryHandle
+  -- ^ The factory of the instance of the helper connection. The decoder casts
+  --     with it.
   , variantStatement :: IORef (Maybe DuckDBV2SqlStatementHandle)
   , variantExtraction :: IORef (Maybe (Int, DuckDBV2SqlStatementHandle))
   , variantTypes :: CastTypes
   }
 
--- | Make an empty state for a helper connection. This allocates no native
--- object.
-newVariantState :: DuckDBV2ConnectionHandle -> IO VariantState
-newVariantState connection = VariantState connection <$> newIORef Nothing <*> newIORef Nothing <*> newIORef Map.empty
+-- | Make an empty state for a helper connection and the factory of its
+-- instance. This allocates no native object.
+newVariantState :: DuckDBV2ConnectionHandle -> DuckDBV2FactoryHandle -> IO VariantState
+newVariantState connection casts = VariantState connection casts <$> newIORef Nothing <*> newIORef Nothing <*> newIORef Map.empty
 
 -- | Destroy the metadata statement, the extraction statement, and every cached
 -- type. Release every item even if one destructor fails, and raise the first
@@ -135,10 +144,11 @@ destroyVariantState VariantState{variantStatement, variantExtraction, variantTyp
 
 -- | Copy a vector before returning its row reader. The connection of the state
 -- is a dedicated helper connection. It must remain exclusively borrowed until
--- this function returns. The callback decodes a value that contains no VARIANT.
--- Each level batches type and key metadata. See Note [VARIANT decoding].
+-- this function returns. The callback decodes a value that contains no VARIANT,
+-- with the factory that it gets. Each level batches type and key metadata. See
+-- Note [VARIANT decoding].
 prepareVariantDecoder
-  :: (DuckDBV2ConnectionHandle -> DuckDBV2ValueHandle -> IO FieldValue)
+  :: (DuckDBV2FactoryHandle -> DuckDBV2ValueHandle -> IO FieldValue)
   -> VariantState
   -> DuckDBV2VectorHandle
   -> IO (Int -> IO FieldValue)
@@ -159,7 +169,7 @@ data VariantNode
 -- | Decode all siblings together before reconstructing their parent nodes.
 -- See Note [VARIANT decoding].
 decodeValues
-  :: (DuckDBV2ConnectionHandle -> DuckDBV2ValueHandle -> IO FieldValue)
+  :: (DuckDBV2FactoryHandle -> DuckDBV2ValueHandle -> IO FieldValue)
   -> VariantState
   -> [DuckDBV2ValueHandle]
   -> IO [FieldValue]
@@ -186,7 +196,7 @@ decodeValues plain state values = do
           children <- decodeValues plain state (concatMap nodeChildren nodes)
           assemble nodes children
   where
-    connection = variantConnection state
+    casts = variantCasts state
     isNull = (== "VARIANT_NULL")
     isArray = Text.isPrefixOf "ARRAY("
     isObject = Text.isPrefixOf "OBJECT("
@@ -200,12 +210,12 @@ decodeValues plain state values = do
       target <- scalarType tag
       case rows of
         [(index, value)] -> withCast state value target \cast -> do
-          decoded <- plain connection cast
+          decoded <- plain casts cast
           pure [(index, ScalarNode decoded)]
         _ ->
           withVariantList state (map snd rows) \list ->
             withCast state list (target <> "[]") \cast ->
-              plain connection cast >>= \case
+              plain casts cast >>= \case
                 FieldList decoded | length decoded == length rows -> pure (zip (map fst rows) (map ScalarNode decoded))
                 _ -> codecError "scalar cast returned an unexpected value"
 
@@ -250,7 +260,7 @@ withObjectChildren state@VariantState{variantConnection = connection} keys list 
       -- and 'validStructFields' accepts them. Do not relax that predicate.
       withConnectionFactory connection \factory ->
         bracket (logicalTypeFromRep factory structList) destroyLogicalType \logical ->
-          bracket (output (c_duckdb_v2_value_cast factory list logical)) destroyValue action
+          bracket (output (c_duckdb_v2_value_cast (variantCasts state) list logical)) destroyValue action
   | otherwise =
       withConnectionFactory connection \factory ->
         bracket
@@ -294,11 +304,14 @@ assemble (node : rest) children = do
 -- width and scale. It never holds a STRUCT type.
 type CastTypes = IORef (Map.Map Text DuckDBV2LogicalTypeHandle)
 
--- | Borrow the native cast result while copying its payload.
+-- | Borrow the native cast result while copying its payload. The cast uses the
+-- factory of the instance, so a user cast from VARIANT to the type of the
+-- payload does not replace it. See Note [User casts and the casts of the
+-- library] in "Database.DuckDB.Simple.Materialize".
 withCast :: VariantState -> DuckDBV2ValueHandle -> Text -> (DuckDBV2ValueHandle -> IO a) -> IO a
 withCast state value target action = do
   logical <- castType state target
-  bracket (factoryOutput (variantConnection state) (\factory -> c_duckdb_v2_value_cast factory value logical)) destroyValue action
+  bracket (output (c_duckdb_v2_value_cast (variantCasts state) value logical)) destroyValue action
 
 -- | Borrow a type from the cache. Parse the type text on its first use.
 castType :: VariantState -> Text -> IO DuckDBV2LogicalTypeHandle
@@ -358,14 +371,14 @@ parseKept connection sql keep =
 
 -- | Read exact scalar tags and object keys without serializing payloads.
 queryMetadata
-  :: (DuckDBV2ConnectionHandle -> DuckDBV2ValueHandle -> IO FieldValue)
+  :: (DuckDBV2FactoryHandle -> DuckDBV2ValueHandle -> IO FieldValue)
   -> VariantState
   -> [DuckDBV2ValueHandle]
   -> IO [(Text, [Text])]
 queryMetadata plain state values = withVariantList state values \list -> do
   statement <- metadataStatement state
   withStatementValue (variantConnection state) statement [list] \metadata ->
-    plain (variantConnection state) metadata >>= maybe (codecError "metadata query returned an unexpected value") pure . metadataNodes
+    plain (variantCasts state) metadata >>= maybe (codecError "metadata query returned an unexpected value") pure . metadataNodes
 
 -- | Read the tag and the object keys of each metadata node. A NULL key list
 -- gives no keys. Return 'Nothing' for an unexpected shape.

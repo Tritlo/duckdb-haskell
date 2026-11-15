@@ -632,8 +632,8 @@ withCollectionStatement :: Connection -> Query -> [(Text, DuckDBV2ColumnDataColl
 withCollectionStatement conn queryText collections action = withParsedStatements conn queryText \parsed ->
   case parsed of
     [statement] -> bracket (createStatementFromParsedWithCollections conn queryText statement collections) closeStatementState action
-    [] -> withQueryError queryText (throwInvalidArgument "SQL query contains no statement")
-    _ -> withQueryError queryText (throwInvalidArgument "prepared SQL contains more than one statement")
+    [] -> throwInvalidArgument "SQL query contains no statement"
+    _ -> throwInvalidArgument "prepared SQL contains more than one statement"
 
 -- | Read the parameter names in binding order. DuckDB sorts all names again
 -- for each name that it returns. DuckDB rejects a mix of named and numbered

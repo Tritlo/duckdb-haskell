@@ -351,8 +351,8 @@ openStatement :: Connection -> Query -> IO Statement
 openStatement conn queryText = withParsedStatements conn queryText \parsed ->
   case parsed of
     [statement] -> createStatementFromParsed conn queryText statement
-    [] -> withQueryError queryText (throwInvalidArgument (Text.pack "SQL query contains no statement"))
-    _ -> withQueryError queryText (throwInvalidArgument (Text.pack "prepared SQL contains more than one statement"))
+    [] -> throwInvalidArgument (Text.pack "SQL query contains no statement")
+    _ -> throwInvalidArgument (Text.pack "prepared SQL contains more than one statement")
 
 -- | Finalize a prepared statement. The operation is idempotent.
 closeStatement :: Statement -> IO ()

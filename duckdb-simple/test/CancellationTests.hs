@@ -12,11 +12,13 @@ import Control.Concurrent (
   MVar,
   ThreadId,
   forkIOWithUnmask,
+  getNumCapabilities,
   myThreadId,
   newEmptyMVar,
   putMVar,
   readMVar,
   rtsSupportsBoundThreads,
+  setNumCapabilities,
   threadDelay,
   throwTo,
   tryPutMVar,
@@ -26,6 +28,7 @@ import Control.Exception (AsyncException (..), ErrorCall (..), SomeException, br
 import Control.Monad (unless, void, when)
 import Data.IORef (IORef, atomicModifyIORef', atomicWriteIORef, modifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
+import Data.Maybe (isNothing)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple
@@ -189,6 +192,32 @@ callbackLockTests =
           assertBoundError outcome
           assertInnerErrors errors
           assertReusable conn
+    , testCase "callbacks on 4 capabilities that are inside at the same time each fail at the bound" $
+        bracket getNumCapabilities setNumCapabilities \capabilities -> do
+          setNumCapabilities (max 4 capabilities)
+          withBoundedConnections "4" testLockWait \conn _ -> do
+            void (execute_ conn "CREATE TABLE callback_rows AS SELECT i FROM range(1000000) t(i)")
+            inside <- newIORef (0 :: Int)
+            together <- newEmptyMVar
+            successes <- newIORef (0 :: Int)
+            -- The first two calls wait for each other before their statements.
+            -- Thus two callback threads have a mark at the same time, and the
+            -- mark of the second thread must keep the mark of the first thread.
+            let meet = do
+                  count <- atomicModifyIORef' inside (\known -> (known + 1, known + 1))
+                  when (count >= 2) (signal together)
+                  met <- timeout 10000000 (readMVar together)
+                  when (isNothing met) (throwIO (userError "no second callback was inside at the same time"))
+            (threads, errors) <- registerOwnStatement conn do
+              meet
+              void (query_ conn "SELECT 1" :: IO [Only Int64])
+              atomicModifyIORef' successes (\known -> (known + 1, ()))
+            outcome <- boundedOuterCall 30000000 threads (void (query_ conn "SELECT sum(own_statement(i)) FROM callback_rows" :: IO [Only Integer]))
+            assertBoundError outcome
+            assertInnerErrors errors
+            readIORef successes >>= (@?= 0)
+            readIORef inside >>= \count -> assertBool ("callbacks before the error: " <> show count) (count >= 2)
+            assertReusable conn
     , testCase "callbacks on 4 DuckDB threads can share a second connection" $
         withBoundedConnections "4" (Just defaultCallbackLockWait) \conn other -> do
           void (execute_ conn "CREATE TABLE callback_rows AS SELECT i FROM range(1000000) t(i)")
@@ -230,14 +259,19 @@ withBoundedConnections threads bound action =
 -- | Register @own_statement@ on a connection. It runs a statement on the target
 -- connection, records its thread and the error of the statement, and raises the error.
 registerStatementCallback :: Connection -> Connection -> IO (IORef [ThreadId], IORef [SQLError])
-registerStatementCallback conn target = do
+registerStatementCallback conn target = registerOwnStatement conn (void (query_ target "SELECT 1" :: IO [Only Int64]))
+
+-- | Register @own_statement@ on a connection. It runs an action, records its
+-- thread and each 'SQLError' of the action, and raises the error.
+registerOwnStatement :: Connection -> IO () -> IO (IORef [ThreadId], IORef [SQLError])
+registerOwnStatement conn statement = do
   threads <- newIORef []
   errors <- newIORef []
   createFunction conn "own_statement" \(i :: Int64) -> do
     myThreadId >>= \self -> atomicModifyIORef' threads (\known -> (self : known, ()))
-    try (query_ target "SELECT 1" :: IO [Only Int64]) >>= \case
-      Left err -> atomicModifyIORef' errors (\known -> (err : known, ())) >> throwIO err
-      Right _ -> pure i
+    try statement >>= \case
+      Left err -> atomicModifyIORef' errors (\known -> (err : known, ())) >> throwIO (err :: SQLError)
+      Right () -> pure i
   pure (threads, errors)
 
 -- | The stream delivers 500000 rows before DuckDB computes a row that calls the

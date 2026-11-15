@@ -107,6 +107,7 @@ typedRegistrationTests =
     , testCase "table function columns of several types and a record row" testTableTypes
     , testCase "table function with Integer and Natural columns" testTableIntegers
     , testCase "table function with INTERVAL and TIMETZ columns" testTableIntervals
+    , testCase "table function with a MAP column" testTableMaps
     , testCase "table function runs one time for each scan" testTableRuns
     , -- A defect can make the scan run without end. Then the time limit fails
       -- the case. The limit is long, because the suite also runs under Valgrind.
@@ -950,6 +951,15 @@ testTableIntervals = withConnection ":memory:" \conn -> do
   query_ conn "SELECT typeof(duration), typeof(moment) FROM typed_intervals() LIMIT 1"
     >>= (@?= [("INTERVAL" :: Text, "TIME WITH TIME ZONE" :: Text)])
   query_ conn "SELECT duration, moment FROM typed_intervals()" >>= (@?= rows)
+
+-- | Give a MAP column. The pairs go in ascending key order.
+testTableMaps :: Assertion
+testTableMaps = withConnection ":memory:" \conn -> do
+  let rows = map Only [Map.fromList [("b", 2), ("a", 1)], Map.empty :: Map.Map Text Int64]
+  createTableFunction conn "typed_maps" ["pairs"] \() -> pure rows
+  query_ conn "SELECT typeof(pairs), map_keys(pairs) FROM typed_maps()"
+    >>= (@?= [("MAP(VARCHAR, BIGINT)" :: Text, ["a", "b"] :: [Text]), ("MAP(VARCHAR, BIGINT)", [])])
+  query_ conn "SELECT pairs FROM typed_maps()" >>= (@?= rows)
 
 -- | Run the function for each scan. Do not run it at registration or preparation.
 testTableRuns :: Assertion

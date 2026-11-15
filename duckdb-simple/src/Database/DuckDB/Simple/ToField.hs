@@ -36,6 +36,7 @@ import qualified Data.Geometry as G
 import qualified Data.Geometry.WKT as WKT
 import Data.Int (Int16, Int32, Int64, Int8)
 import qualified Data.List as List
+import qualified Data.Map.Strict as Map
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -156,6 +157,11 @@ collectionChildType :: Maybe LogicalTypeRep -> Maybe LogicalTypeRep
 collectionChildType (Just (LogicalTypeList child)) = Just child
 collectionChildType (Just (LogicalTypeArray child _)) = Just child
 collectionChildType _ = Nothing
+
+-- | Read the key type and the value type of a prepared MAP parameter.
+mapPartTypes :: Maybe LogicalTypeRep -> (Maybe LogicalTypeRep, Maybe LogicalTypeRep)
+mapPartTypes (Just (LogicalTypeMap key value)) = (Just key, Just value)
+mapPartTypes _ = (Nothing, Nothing)
 
 -- | Promote only UTC leaves that correspond to nanosecond parameter leaves.
 timestampTypeForTarget :: Maybe LogicalTypeRep -> LogicalTypeRep -> LogicalTypeRep
@@ -333,16 +339,17 @@ integerBinding binds an Integer or a Natural parameter with this rule:
   a BIGNUM column for them. DuckDB casts each HUGEINT value to that BIGNUM
   column with no defect.
 
-- Arrays and lists. DuckDB casts each element of an ARRAY or a LIST value to
-  the declared element type when it builds the value. The DuckDBColumnType of
-  Integer, Natural, and BigNum is BIGNUM. For an ARRAY or LIST target with an
-  integer or DECIMAL element type, sequenceDuckValue declares that element
-  type in place of BIGNUM. Each Integer element is a HUGEINT or a UHUGEINT
-  value, so DuckDB checks the range of the cast of each element. For example,
-  [5, -6] for a UBIGINT[2] column raises an error. An Array or a list of
-  BigNum values also takes the element type of the target, but each element
-  is a BIGNUM value. DuckDB casts each element with the casts from BIGNUM, so
-  the result for BigNum elements does not improve.
+- Arrays, lists, and maps. DuckDB casts each element of an ARRAY or a LIST
+  value, and each key and value of a MAP value, to the declared type when it
+  builds the value. The DuckDBColumnType of Integer, Natural, and BigNum is
+  BIGNUM. For a target with an integer or DECIMAL element type, key type, or
+  value type, withElementType declares that type in place of BIGNUM. Each
+  Integer element is a HUGEINT or a UHUGEINT value, so DuckDB checks the range
+  of the cast of each element. For example, [5, -6] for a UBIGINT[2] column
+  raises an error. An Array or a list of BigNum values also takes the element
+  type of the target, but each element is a BIGNUM value. DuckDB casts each
+  element with the casts from BIGNUM, so the result for BigNum elements does
+  not improve.
 
 Issue 41 of duckdb-haskell tracks the defects.
 -}
@@ -517,6 +524,24 @@ instance {-# OVERLAPPABLE #-} (DuckDBColumnType a, ToField a) => ToField [a] whe
         let childTarget = collectionChildType target
         listDuckValue builder childTarget (\value -> fieldBindingValue (toField value) builder (pure childTarget)) values
 
+-- | Bind a map as a MAP value. The pairs go in ascending key order. The keys
+-- and the values have the element rules of a list. An empty map binds as an
+-- empty MAP of the key type and the value type. DuckDB compares two MAP values
+-- pair by pair in their order.
+instance (DuckDBColumnType k, DuckDBColumnType v, ToField k, ToField v) => ToField (Map.Map k v) where
+  toField pairs =
+    targetValueBinding
+      ("<map size=" <> show (Map.size pairs) <> ">")
+      \builder readTarget -> do
+        (keyTarget, valueTarget) <- mapPartTypes <$> readTarget
+        mapDuckValue
+          builder
+          keyTarget
+          valueTarget
+          (\key -> fieldBindingValue (toField key) builder (pure keyTarget))
+          (\value -> fieldBindingValue (toField value) builder (pure valueTarget))
+          (Map.toAscList pairs)
+
 instance (ToField a) => ToField (Maybe a) where
   toField Nothing = nullBinding "Nothing"
   toField (Just value) =
@@ -636,6 +661,9 @@ instance (DuckDBColumnType a) => DuckDBColumnType (Maybe a) where
 instance (DuckDBColumnType a) => DuckDBColumnType (Array Int a) where
   duckdbColumnTypeFor _ = duckdbColumnTypeFor (Proxy :: Proxy a) <> Text.pack "[]"
 
+instance (DuckDBColumnType k, DuckDBColumnType v) => DuckDBColumnType (Map.Map k v) where
+  duckdbColumnTypeFor _ = Text.pack "MAP(" <> duckdbColumnTypeFor (Proxy :: Proxy k) <> Text.pack ", " <> duckdbColumnTypeFor (Proxy :: Proxy v) <> Text.pack ")"
+
 -- | 'String' keeps its own instance.
 instance {-# OVERLAPPABLE #-} (DuckDBColumnType a) => DuckDBColumnType [a] where
   duckdbColumnTypeFor _ = duckdbColumnTypeFor (Proxy :: Proxy a) <> Text.pack "[]"
@@ -750,7 +778,7 @@ utcTimestampDuckValue factory value =
     >>= (\encoded -> output (c_duckdb_v2_value_create_timestamp_tz factory encoded))
 
 -- | Construct an ARRAY value. An empty array raises 'SQLError'. See
--- 'sequenceDuckValue' for the element type.
+-- 'withElementType' for the element type.
 arrayDuckValue
   :: (DuckDBColumnType a)
   => ValueBuilder
@@ -769,7 +797,7 @@ arrayDuckValue builder target elementValue array = do
   sequenceDuckValue c_duckdb_v2_value_create_array builder target elementValue (elems array)
 
 -- | Construct a LIST value. An empty list is an empty LIST of the element type.
--- See 'sequenceDuckValue' for the element type.
+-- See 'withElementType' for the element type.
 listDuckValue
   :: (DuckDBColumnType a)
   => ValueBuilder
@@ -780,11 +808,7 @@ listDuckValue
 listDuckValue = sequenceDuckValue c_duckdb_v2_value_create_list
 
 -- | Construct a LIST or an ARRAY value with the native constructor. The target
--- is the element type of the parameter. A scalar element type comes from the
--- column type name of the element. When that type is BIGNUM and the target is
--- an integer type or a DECIMAL type, the value takes the target as its element
--- type. See Note [Integer parameters]. Each other element type comes from the
--- first element that is not NULL, and the other elements must have the same
+-- is the element type of the parameter. See 'withElementType' for the element
 -- type.
 sequenceDuckValue
   :: forall a
@@ -802,35 +826,73 @@ sequenceDuckValue
   -> (a -> IO DuckDBV2ValueHandle)
   -> [a]
   -> IO DuckDBV2ValueHandle
-sequenceDuckValue create ValueBuilder{builderFactory = factory, builderType = makeType} target elementValue elements =
+sequenceDuckValue create builder@ValueBuilder{builderFactory = factory} target elementValue elements =
   withCreatedValues (map elementValue elements) \values ->
-    withElementType values \elementType ->
+    withElementType (Proxy :: Proxy a) builder target values \elementType ->
       withArray values \ptr ->
         output (create factory elementType (ConstPtr ptr) (fromIntegral (length values)))
+
+-- | Construct a MAP value from pairs in their order. The targets are the key
+-- type and the value type of the parameter. See 'withElementType' for the key
+-- type and the value type.
+mapDuckValue
+  :: forall k v
+   . (DuckDBColumnType k, DuckDBColumnType v)
+  => ValueBuilder
+  -> Maybe LogicalTypeRep
+  -> Maybe LogicalTypeRep
+  -> (k -> IO DuckDBV2ValueHandle)
+  -> (v -> IO DuckDBV2ValueHandle)
+  -> [(k, v)]
+  -> IO DuckDBV2ValueHandle
+mapDuckValue builder@ValueBuilder{builderFactory = factory} keyTarget valueTarget keyValue valueValue pairs =
+  withCreatedValues (map (keyValue . fst) pairs) \keys ->
+    withCreatedValues (map (valueValue . snd) pairs) \values ->
+      withElementType (Proxy :: Proxy k) builder keyTarget keys \keyType ->
+        withElementType (Proxy :: Proxy v) builder valueTarget values \valueType ->
+          withArray keys \keyPtr -> withArray values \valuePtr ->
+            output (c_duckdb_v2_value_create_map factory keyType valueType (ConstPtr keyPtr) (ConstPtr valuePtr) (fromIntegral (length pairs)))
+
+-- | Give the element type of the values of a LIST, an ARRAY, or one part of a
+-- MAP to the action. The target is the element type of the parameter. A scalar
+-- element type comes from the column type name of @a@. When that type is BIGNUM
+-- and the target is an integer type or a DECIMAL type, the target is the
+-- element type. See Note [Integer parameters]. Each other element type comes
+-- from the first value that is not NULL, and the other values must have the
+-- same type.
+withElementType
+  :: forall a b
+   . (DuckDBColumnType a)
+  => Proxy a
+  -> ValueBuilder
+  -> Maybe LogicalTypeRep
+  -> [DuckDBV2ValueHandle]
+  -> (DuckDBV2LogicalTypeHandle -> IO b)
+  -> IO b
+withElementType proxy ValueBuilder{builderType = makeType} target values action = case duckDBTypeFromName typeName of
+  Just dtype -> bracket (makeType (declaredType dtype)) destroyLogicalType action
+  Nothing -> do
+    -- Keep the values that are not NULL, in list order. The fold keeps a
+    -- constant stack. See Note [Constant stack at safe calls] in
+    -- "Database.DuckDB.Simple.Native".
+    let keep kept value = output (c_duckdb_v2_value_is_null value) >>= \flag -> if flag == 0 then pure (value : kept) else pure kept
+    present <- reverse <$> foldM keep [] values
+    case present of
+      value : rest -> bracket (output (c_duckdb_v2_value_get_logical_type value)) destroyLogicalType \logical -> do
+        expected <- logicalTypeToRep logical
+        forM_ rest \element -> do
+          actual <- bracket (output (c_duckdb_v2_value_get_logical_type element)) destroyLogicalType logicalTypeToRep
+          when (actual /= expected) $ throwIO (userError "duckdb-simple: array elements have different logical types")
+        action logical
+      [] ->
+        throwIO
+          SQLError
+            { sqlErrorMessage = "duckdb-simple: an empty or all-NULL array of " <> typeName <> " elements has no element type"
+            , sqlErrorType = Nothing
+            , sqlErrorQuery = Nothing
+            }
   where
-    typeName = duckdbColumnType (Proxy :: Proxy a)
-    withElementType values action = case duckDBTypeFromName typeName of
-      Just dtype -> bracket (makeType (declaredType dtype)) destroyLogicalType action
-      Nothing -> do
-        -- Keep the values that are not NULL, in list order. The fold keeps a
-        -- constant stack. See Note [Constant stack at safe calls] in
-        -- "Database.DuckDB.Simple.Native".
-        let keep kept value = output (c_duckdb_v2_value_is_null value) >>= \flag -> if flag == 0 then pure (value : kept) else pure kept
-        present <- reverse <$> foldM keep [] values
-        case present of
-          value : rest -> bracket (output (c_duckdb_v2_value_get_logical_type value)) destroyLogicalType \logical -> do
-            expected <- logicalTypeToRep logical
-            forM_ rest \element -> do
-              actual <- bracket (output (c_duckdb_v2_value_get_logical_type element)) destroyLogicalType logicalTypeToRep
-              when (actual /= expected) $ throwIO (userError "duckdb-simple: array elements have different logical types")
-            action logical
-          [] ->
-            throwIO
-              SQLError
-                { sqlErrorMessage = "duckdb-simple: an empty or all-NULL array of " <> typeName <> " elements has no element type"
-                , sqlErrorType = Nothing
-                , sqlErrorQuery = Nothing
-                }
+    typeName = duckdbColumnType proxy
     -- See Note [Integer parameters].
     declaredType LogicalTypeIdBigNum
       | Just rep@(LogicalTypeScalar dtype) <- target, dtype `elem` integerTypes = rep
@@ -1391,6 +1453,11 @@ instance ToDuckValue (UnionValue FieldValue) where
 -- | Construct an array through the supplied factory with the element type of @a@.
 instance (DuckDBColumnType a, ToDuckValue a) => ToDuckValue (Array Int a) where
   toDuckValue factory = arrayDuckValue (plainBuilder factory) Nothing (toDuckValue factory)
+
+-- | Construct a MAP through the supplied factory with the key type of @k@ and
+-- the value type of @v@. The pairs go in ascending key order.
+instance (DuckDBColumnType k, DuckDBColumnType v, ToDuckValue k, ToDuckValue v) => ToDuckValue (Map.Map k v) where
+  toDuckValue factory = mapDuckValue (plainBuilder factory) Nothing Nothing (toDuckValue factory) (toDuckValue factory) . Map.toAscList
 
 -- | Construct a LIST through the supplied factory with the element type of @a@.
 -- 'String' keeps its own instance.

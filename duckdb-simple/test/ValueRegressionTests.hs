@@ -608,6 +608,78 @@ valueRegressionTests =
         forM_ [DecimalValue 2 1 100, DecimalValue 39 0 1, DecimalValue 2 3 1, DecimalValue 0 0 0] \decimal ->
           assertIOError (query conn "SELECT ?" (Only decimal) :: IO [Only DecimalValue])
         (query conn "SELECT ?" (Only (Nothing :: Maybe DecimalValue)) :: IO [Only (Maybe DecimalValue)]) >>= (@?= [Only Nothing])
+    , testCase "a Map binds as a MAP parameter in each SQL form" $ withConnection ":memory:" \conn -> do
+        let pairs = Map.fromList [("a", 1), ("b", 2)] :: Map.Map Text Int64
+            none = Map.empty :: Map.Map Text Int64
+            rejected :: (ToField a) => Text -> a -> Assertion
+            rejected message value =
+              try (query conn "SELECT ?::VARCHAR" (Only value) :: IO [Only Text]) >>= \case
+                Left SQLError{sqlErrorMessage, sqlErrorType} -> do
+                  sqlErrorMessage @?= message
+                  sqlErrorType @?= Just ErrorInputInvalid
+                Right rows -> assertFailure ("expected " <> Text.unpack message <> ", got " <> show rows)
+        forM_ [pairs, none] \value ->
+          (query conn "SELECT typeof(?), ?" (value, value) :: IO [(Text, Map.Map Text Int64)]) >>= (@?= [("MAP(VARCHAR, BIGINT)", value)])
+        -- DuckDB casts the keys and the values to the types of the column.
+        forM_ ["MAP(VARCHAR, BIGINT)", "MAP(VARCHAR, INTEGER)"] \dtype -> do
+          _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE map_value (i BIGINT, m " <> dtype <> ")"))
+          _ <- executeMany conn "INSERT INTO map_value VALUES (?, ?)" [(0 :: Int64, pairs), (1, none)]
+          (query_ conn "SELECT m FROM map_value ORDER BY i" :: IO [Only (Map.Map Text Int64)])
+            >>= assertEqual (Text.unpack dtype) [Only pairs, Only none]
+        _ <- execute_ conn "CREATE TABLE integer_keys (m MAP(INTEGER, BIGINT))"
+        _ <- execute conn "INSERT INTO integer_keys VALUES (?)" (Only (Map.fromList [("1", 1)] :: Map.Map Text Int64))
+        (query_ conn "SELECT m FROM integer_keys" :: IO [Only (Map.Map Int32 Int64)]) >>= (@?= [Only (Map.fromList [(1, 1)])])
+        try (execute conn "INSERT INTO integer_keys VALUES (?)" (Only pairs)) >>= \case
+          Left SQLError{sqlErrorMessage, sqlErrorType} -> do
+            assertBool (Text.unpack sqlErrorMessage) ("Conversion Error: Could not convert string 'a' to INT32" `Text.isPrefixOf` sqlErrorMessage)
+            sqlErrorType @?= Just ErrorTypeConversion
+          Right (_ :: Int) -> assertFailure "expected the DuckDB key conversion error"
+        -- DuckDB compares two MAP values pair by pair in their order. A map binds
+        -- its pairs in ascending key order.
+        _ <- execute_ conn "CREATE TABLE ordered_maps (m MAP(VARCHAR, BIGINT))"
+        _ <- execute_ conn "INSERT INTO ordered_maps VALUES (MAP {'b': 2, 'a': 1}), (MAP {'a': 1, 'b': 2})"
+        (query conn "SELECT count(*) FROM ordered_maps WHERE m = ?" (Only pairs) :: IO [Only Int64]) >>= (@?= [Only 1])
+        (query_ conn "SELECT m FROM ordered_maps" :: IO [Only (Map.Map Text Int64)]) >>= (@?= [Only pairs, Only pairs])
+        ( query conn "SELECT map_extract(?, 'a'), (?)['a'], map_keys(?), element_at(?, 'b')" (pairs, pairs, pairs, pairs)
+            :: IO [([Int64], Int64, [Text], [Int64])]
+          )
+          >>= (@?= [([1], 1, ["a", "b"], [2])])
+        -- A Haskell map can hold two NaN keys. DuckDB rejects them and a NULL key.
+        let nan = 0 / 0 :: Double
+        rejected "Invalid Input Error: Map keys must be unique." (Map.insert nan 2 (Map.fromList [(nan, 1)]) :: Map.Map Double Int64)
+        rejected "Invalid Input Error: Map keys can not be NULL." (Map.fromList [(Nothing, 1), (Just "a", 2)] :: Map.Map (Maybe Text) Int64)
+    , testCase "a Map binds NULL, nested, Integer, and UTC values" $ withConnection ":memory:" \conn -> do
+        let withNull = Map.fromList [("a", Just 1), ("b", Nothing)] :: Map.Map Text (Maybe Int64)
+            nested = Map.fromList [("a", [1, 2]), ("b", [])] :: Map.Map Text [Int64]
+            pairs = Map.fromList [("a", 1)] :: Map.Map Text Int64
+        (query conn "SELECT typeof(?), ?" (withNull, withNull) :: IO [(Text, Map.Map Text (Maybe Int64))])
+          >>= (@?= [("MAP(VARCHAR, BIGINT)", withNull)])
+        (query conn "SELECT typeof(?), ?" (nested, nested) :: IO [(Text, Map.Map Text [Int64])]) >>= (@?= [("MAP(VARCHAR, BIGINT[])", nested)])
+        (query conn "SELECT ?" (Only (Nothing :: Maybe (Map.Map Text Int64))) :: IO [Only (Maybe (Map.Map Text Int64))]) >>= (@?= [Only Nothing])
+        (query conn "SELECT typeof(?), ?" ([pairs, Map.empty], [pairs, Map.empty]) :: IO [(Text, [Map.Map Text Int64])])
+          >>= (@?= [("MAP(VARCHAR, BIGINT)[]", [pairs, Map.empty])])
+        -- An Integer value takes the value type of its target.
+        let insert :: Map.Map Text Integer -> IO (Either SQLError Int)
+            insert value = do
+              _ <- execute_ conn "CREATE OR REPLACE TABLE unsigned_map (m MAP(VARCHAR, UBIGINT))"
+              try (execute conn "INSERT INTO unsigned_map VALUES (?)" (Only value))
+        insert (Map.fromList [("a", 5), ("b", 6)]) >>= either (assertFailure . show) (const (pure ()))
+        (query_ conn "SELECT m::VARCHAR FROM unsigned_map" :: IO [Only Text]) >>= (@?= [Only "{a=5, b=6}"])
+        insert (Map.fromList [("a", -5)]) >>= \case
+          Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorInputInvalid
+          Right _ -> assertFailure "expected the DuckDB range error for -5"
+        insert (Map.fromList [("a", 2 ^ (130 :: Int))]) >>= \case
+          Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorInputOutOfRange
+          Right _ -> assertFailure "expected the duckdb-simple range error for 2^130"
+        (query conn "SELECT typeof(?)" (Only (Map.fromList [("a", 5)] :: Map.Map Text Integer)) :: IO [Only Text])
+          >>= (@?= [Only "MAP(VARCHAR, BIGNUM)"])
+        -- A UTC value keeps its nanoseconds for a nanosecond target.
+        let times = Map.fromList [("t", posixSecondsToUTCTime 0.123456789)] :: Map.Map Text UTCTime
+        (query conn "SELECT ?::MAP(VARCHAR, TIMESTAMPTZ_NS)" (Only times) :: IO [Only (Map.Map Text UTCTime)]) >>= (@?= [Only times])
+        -- An empty map of nested values has no value type.
+        try (query conn "SELECT ?" (Only (Map.empty :: Map.Map Text [Int64])) :: IO [Only FieldValue]) >>= \case
+          Left SQLError{sqlErrorMessage} -> sqlErrorMessage @?= "duckdb-simple: an empty or all-NULL array of BIGINT[] elements has no element type"
+          Right rows -> assertFailure ("expected the element type error, got " <> show rows)
     , testCase "an array of BigNum values keeps the BIGNUM casts of DuckDB" $ withConnection ":memory:" \conn -> do
         -- DuckDB 2.0.0 casts the BIGNUM -6 to UBIGINT as a wrapped value with no
         -- error. See Note [Integer parameters] in "Database.DuckDB.Simple.ToField".

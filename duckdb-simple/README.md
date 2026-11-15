@@ -258,15 +258,18 @@ BIGINT for `Int64`. It also reads another SQL type when it gives the value of
 the cast of DuckDB to the SQL type of the Haskell type, or an error where the
 value does not fit. For example, `Int8` reads a BIGINT that fits in a TINYINT,
 and `Double` reads a DECIMAL with the value of `c::DOUBLE`. A read that needs
-the TimeZone setting of the session, or another text than the cast gives,
-raises the error of an incompatible column: a TIMESTAMP or a DATE as `UTCTime`,
-a TIMESTAMPTZ as `LocalTime`, a FLOAT or a DOUBLE as `Text`, a VARCHAR as
-`ByteString`, and an ENUM as an integer type. Write the cast in SQL for these
-values, for example `c::TIMESTAMP AT TIME ZONE 'UTC'`, `c::VARCHAR`,
-`encode(c)`, or `enum_code(c)::BIGINT`. An ENUM value reads as `Text` or
-`String` with its label, the text of `c::VARCHAR`, and a `FieldEnum` holds the
-index and the label. The Haddock of each `FromField` instance gives the SQL
-types that it reads.
+the TimeZone setting of the session, or another text than the cast gives, raises
+the error of an incompatible column: a TIMESTAMP or a DATE as `UTCTime`, a
+TIMESTAMPTZ as `LocalTime`, a FLOAT or a DOUBLE as `Text`, a VARCHAR as
+`ByteString`, and an ENUM as an integer type. Write the SQL for these values in
+place of the column `c`: `c::TIMESTAMP AT TIME ZONE 'UTC'` for a TIMESTAMP or a
+DATE as `UTCTime` (`c AT TIME ZONE 'UTC'` for a TIMESTAMP_NS),
+`c AT TIME ZONE 'UTC'` for a TIMESTAMPTZ as `LocalTime`, `c::VARCHAR` for a
+FLOAT or a DOUBLE as `Text`, `encode(c)` for a VARCHAR as `ByteString`, and
+`enum_code(c)::BIGINT` for an ENUM as an integer type. An ENUM value reads as
+`Text` or `String` with its label, the text of `c::VARCHAR`, and a `FieldEnum`
+holds the index and the label. The Haddock of each `FromField` instance gives
+the SQL types that it reads.
 
 ## Types
 

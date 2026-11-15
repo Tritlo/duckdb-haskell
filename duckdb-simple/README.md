@@ -894,6 +894,7 @@ success or an exception. The accumulator determines Haskell memory use.
   inspect result shapes before executing a query.
 - `execute` returns the number of affected rows. Use SQL `RETURNING` clauses
   when you need generated identifiers.
+
 ### Cursors and folds
 
 `fold`, `fold_`, and `foldNamed` decode one row at a time from DuckDB's result

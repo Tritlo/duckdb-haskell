@@ -288,10 +288,10 @@
   the digits. A value with no such digits binds as before, with no read of the
   parameter type. These values get the microsecond value: a value outside the
   range of the nanosecond type, an element of a list, an `Array`, or a `Map`
-  for a `VARIANT` parameter, an element of a `VARIANT[]` parameter, and a value
-  of a MAP parameter with `VARIANT` values. A time value in the payload of a
-  `Variant` keeps its digits when it fits the range of the nanosecond type,
-  also as an element of a `FieldList` payload.
+  for a `VARIANT` parameter, and an element of a `VARIANT[]` or a
+  `MAP(..., VARIANT)` parameter. In a `Variant` payload, each time leaf, also
+  an element of a list payload and a field of an object payload, binds with the
+  nanosecond type when it has such digits and fits the range.
 - An empty `Array` and an empty `FieldArray` raise the same `SQLError`, of the
   type `ErrorInputInvalid`.
 - Add a parameter instance for `FieldValue`, so a row read as `[FieldValue]`

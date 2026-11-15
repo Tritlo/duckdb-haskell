@@ -610,11 +610,16 @@ Functions](#user-defined-functions) gives what this means for a `COMMIT`.
 An exception in the callback of `registerCast` in
 `Database.DuckDB.Simple.V2.Registration` fails the cast with an `SQLError` of
 the type `ErrorTypeMismatch`, also an `SQLError` with another type. Its message
-is `Mismatch Type Error: ` and the text of the exception. The type is the same
-for each pair of types, because of a property of DuckDB 2.0.0. DuckDB plans a
-cast between some pairs of types as a cast that cannot fail, also when the cast
-is a registered cast. Examples are a cast to VARCHAR, also from an ENUM, a LIST,
-or a STRUCT, and a widening cast such as INTEGER to BIGINT or FLOAT to DOUBLE.
+is `Mismatch Type Error: ` and the text of the exception. When DuckDB casts a
+constant through the cast while it binds the query, for example the INTEGER
+literal of `range(10)` with a cast from INTEGER to BIGINT, the error has the
+type `ErrorInputInvalid` and the text `Failed to cast value: ` before the text
+of the exception, and the database stays usable. The type `ErrorTypeMismatch`
+is the same for each pair of types, because of a property of DuckDB 2.0.0.
+DuckDB plans a cast between some pairs of types as a cast that cannot fail,
+also when the cast is a registered cast. Examples are a cast to VARCHAR, also
+from an ENUM, a LIST, or a STRUCT, and a widening cast such as INTEGER to
+BIGINT or FLOAT to DOUBLE.
 For such a cast, DuckDB changes an error of the type `ErrorInputInvalid`,
 `ErrorInputOutOfRange`, or `ErrorTypeConversion` to an INTERNAL error. It does
 the same for an error type that it does not map, for example `ErrorApi`. An
@@ -1463,11 +1468,13 @@ import Database.DuckDB.Simple.Registration
 
 The library has no typed cast in this release. A registered cast can give
 wrong rows with no error, because the optimizer of DuckDB 2.0.0 decides from
-the two types of a cast alone whether it can move the cast away from a column,
-for example in a filter, a join, or min and max. The cast function then does
-not run on that column. In runs with DuckDB 2.0.0, a cast from INTEGER to
-BIGINT, and a cast between BIGINT and a custom type with the base type BIGINT,
-gave wrong rows when its function changed the value. `registerCast` in
+the two types of a cast alone whether it can move the cast away from a column
+in a filter or a join. In a run, it also gave min and max from the statistics
+of the column without the cast. The cast function then does not run on that
+column, or, in a comparison of two columns, it runs on one side only. In runs
+with DuckDB 2.0.0, a cast from INTEGER to BIGINT, and a cast between BIGINT and
+a custom type with the base type BIGINT, gave wrong rows when its function
+changed the value. `registerCast` in
 `Database.DuckDB.Simple.V2.Registration` registers a native cast, and its
 Haddock gives the warning. For a conversion that changes the value, register a
 scalar function with `createFunction` (see

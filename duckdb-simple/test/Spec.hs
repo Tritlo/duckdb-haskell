@@ -1389,7 +1389,7 @@ functionsTests =
           createFunction conn "hs_arg_price" (\(Price DecimalValue{decimalInteger}) -> fromIntegral decimalInteger :: Int64)
           query_
             conn
-            "SELECT hs_arg_int8(-3), hs_arg_integer(2::BIGNUM ^ 100), hs_arg_bytes('\\x01\\x02'::BLOB), hs_arg_uuid('00000000-0000-0000-0000-000000000001')"
+            "SELECT hs_arg_int8(-3), hs_arg_integer(1267650600228229401496703205376::HUGEINT), hs_arg_bytes('\\x01\\x02'::BLOB), hs_arg_uuid('00000000-0000-0000-0000-000000000001')"
             >>= (@?= [(-6 :: Int64, Text.pack (show (2 * 2 ^ (100 :: Int) :: Integer)), 2 :: Int, "00000000-0000-0000-0000-000000000001" :: Text.Text)])
           query_
             conn
@@ -1405,7 +1405,7 @@ functionsTests =
             "SELECT function_name, parameter_types::VARCHAR FROM duckdb_functions() WHERE function_name IN ('hs_arg_int8', 'hs_arg_integer', 'hs_arg_record', 'hs_arg_records', 'hs_arg_price') ORDER BY function_name"
             >>= ( @?=
                     [ ("hs_arg_int8" :: Text.Text, "[TINYINT]" :: Text.Text)
-                    , ("hs_arg_integer", "[BIGNUM]")
+                    , ("hs_arg_integer", "[HUGEINT]")
                     , ("hs_arg_price", "['DECIMAL(18,3)']")
                     , ("hs_arg_record", "['STRUCT(vuId BIGINT, vuName VARCHAR)']")
                     , ("hs_arg_records", "['STRUCT(vuId BIGINT, vuName VARCHAR)[]']")
@@ -1460,7 +1460,7 @@ functionsTests =
             , ("hs_res_text", "VARCHAR")
             , ("hs_res_string", "VARCHAR")
             , ("hs_res_io", "SMALLINT")
-            , ("hs_res_integer", "BIGNUM")
+            , ("hs_res_integer", "HUGEINT")
             , ("hs_res_bytes", "BLOB")
             , ("hs_res_uuid", "UUID")
             , ("hs_res_day", "DATE")
@@ -1468,6 +1468,19 @@ functionsTests =
             , ("hs_res_amount", "DECIMAL(18,3)")
             ]
             \(name, expected) -> query_ conn (Query ("SELECT typeof(" <> name <> "())")) >>= (@?= [Only (expected :: Text.Text)])
+          -- An Integer argument or result is HUGEINT, and a Natural one is UHUGEINT.
+          -- DuckDB casts no BIGNUM argument to HUGEINT, and toDuckValue raises an
+          -- error for a result outside the range.
+          createFunction conn "hs_arg_wide" (\(x :: Integer) -> x)
+          assertThrows
+            (query_ conn "SELECT hs_arg_wide('5'::BIGNUM)" :: IO [Only Integer])
+            (Text.isInfixOf "No function matches" . sqlErrorMessage)
+          createFunction conn "hs_res_natural" (2 ^ (127 :: Int) :: Natural)
+          createFunction conn "hs_res_wide" (2 ^ (127 :: Int) :: Integer)
+          query_ conn "SELECT typeof(hs_res_natural()), hs_res_natural()" >>= (@?= [("UHUGEINT" :: Text.Text, 2 ^ (127 :: Int) :: Natural)])
+          assertThrows
+            (query_ conn "SELECT hs_res_wide()" :: IO [Only Integer])
+            (Text.isInfixOf "is outside the range of HUGEINT" . sqlErrorMessage)
           -- DuckDB casts a native result value to the declared type as the SQL cast does.
           createFunction conn "hs_res_rounded" (Amount 1.2345)
           createFunction conn "hs_res_too_large" (Amount 1e20)

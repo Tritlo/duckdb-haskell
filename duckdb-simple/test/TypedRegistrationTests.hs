@@ -811,7 +811,8 @@ testAggregateErrors = withConnection ":memory:" \conn -> do
         :: IO [Only Int64]
     )
   query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
-  -- A negative BIGNUM does not convert to Natural. The error names the argument.
+  -- A Natural argument is UHUGEINT. DuckDB casts a BIGINT to it only with an
+  -- explicit cast, and the cast of a negative value fails.
   createAggregate
     conn
     "typed_natural_sum"
@@ -821,10 +822,11 @@ testAggregateErrors = withConnection ":memory:" \conn -> do
       , aggregateCombine = \a b -> pure (a + b)
       , aggregateResult = pure :: Int64 -> IO Int64
       }
-  query_ conn "SELECT typed_natural_sum(i, i) FROM range(10) t(i)" >>= (@?= [Only (90 :: Int64)])
+  query_ conn "SELECT typed_natural_sum(i, i::UHUGEINT) FROM range(10) t(i)" >>= (@?= [Only (90 :: Int64)])
+  assertSqlError "No function matches" (query_ conn "SELECT typed_natural_sum(i, i) FROM range(10) t(i)" :: IO [Only Int64])
   assertSqlError
-    "typed_natural_sum: cannot convert argument arg1 from BIGNUM to Natural"
-    (query_ conn "SELECT typed_natural_sum(i, i - 5) FROM range(10) t(i)" :: IO [Only Int64])
+    "out of range for the destination type UINT128"
+    (query_ conn "SELECT typed_natural_sum(i, (i - 5)::UHUGEINT) FROM range(10) t(i)" :: IO [Only Int64])
   query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
   createAggregate
     conn
@@ -1121,17 +1123,34 @@ testTableTypes = withConnection ":memory:" \conn -> do
         )
   query_ conn "SELECT count(*) FROM typed_readings(3000) WHERE note IS NULL" >>= (@?= [Only (1500 :: Int64)])
 
--- | Give Integer and Natural columns. The declared column type is BIGNUM. A
--- value in the HUGEINT range is a HUGEINT value, and DuckDB casts it to BIGNUM.
+-- | Give Integer and Natural columns. The declared column type is HUGEINT for
+-- Integer and UHUGEINT for Natural, also for the elements of a list and the
+-- values of a MAP. A value outside that range raises an error.
 testTableIntegers :: Assertion
 testTableIntegers = withConnection ":memory:" \conn -> do
-  let integers = [5, -5, 2 ^ (100 :: Int), 2 ^ (130 :: Int) :: Integer]
+  let integers = [5, -5, 2 ^ (100 :: Int), 2 ^ (127 :: Int) - 1 :: Integer]
   createTableFunction conn "typed_integers" ["v"] \() -> pure (map Only integers)
-  query_ conn "SELECT typeof(v), v FROM typed_integers()" >>= (@?= [("BIGNUM" :: Text, value) | value <- integers])
-  let naturals = [("small" :: Text, 7 :: Natural), ("large", 2 ^ (128 :: Int))]
+  query_ conn "SELECT typeof(v), v FROM typed_integers()" >>= (@?= [("HUGEINT" :: Text, value) | value <- integers])
+  let naturals = [("small" :: Text, 7 :: Natural), ("large", 2 ^ (128 :: Int) - 1)]
   createTableFunction conn "typed_naturals" ["label", "v"] \() -> pure naturals
   query_ conn "SELECT label, typeof(v), v FROM typed_naturals()"
-    >>= (@?= [(label, "BIGNUM" :: Text, value) | (label, value) <- naturals])
+    >>= (@?= [(label, "UHUGEINT" :: Text, value) | (label, value) <- naturals])
+  let nested = [([5, 2 ^ (100 :: Int)], Map.fromList [("a", 2 ^ (127 :: Int) :: Natural)])] :: [([Integer], Map.Map Text Natural)]
+  createTableFunction conn "typed_integer_lists" ["vs", "m"] \() -> pure nested
+  query_ conn "SELECT typeof(vs), typeof(m), vs, m FROM typed_integer_lists()"
+    >>= (@?= [("HUGEINT[]" :: Text, "MAP(VARCHAR, UHUGEINT)" :: Text, vs, m) | (vs, m) <- nested])
+  -- toDuckValue raises an error for a value outside the range. A BIGNUM value
+  -- would reach the HUGEINT column, and DuckDB casts the BIGNUM 2^128 to 0.
+  let outside = "is outside the range of HUGEINT. Use BigNum for a larger value."
+  createTableFunction conn "typed_wide_integer" ["v"] \() -> pure [Only (2 ^ (128 :: Int) :: Integer)]
+  assertSqlError outside (query_ conn "SELECT v FROM typed_wide_integer()" :: IO [Only Integer])
+  createTableFunction conn "typed_wide_list" ["v"] \() -> pure [Only [5, 2 ^ (128 :: Int) :: Integer]]
+  assertSqlError outside (query_ conn "SELECT v FROM typed_wide_list()" :: IO [Only [Integer]])
+  createTableFunction conn "typed_wide_natural" ["v"] \() -> pure [Only (2 ^ (128 :: Int) :: Natural)]
+  assertSqlError "is outside the range of UHUGEINT" (query_ conn "SELECT v FROM typed_wide_natural()" :: IO [Only Natural])
+  -- A BigNum column holds each value.
+  createTableFunction conn "typed_bignums" ["v"] \() -> pure [Only (BigNum (2 ^ (130 :: Int)))]
+  query_ conn "SELECT typeof(v), v FROM typed_bignums()" >>= (@?= [("BIGNUM" :: Text, BigNum (2 ^ (130 :: Int)))])
 
 -- | Give IntervalValue and TimeWithZone columns.
 testTableIntervals :: Assertion
@@ -1455,10 +1474,10 @@ testTableArgumentErrors = withConnection ":memory:" \conn -> do
     "1 column names for 2 result columns"
     (createTableFunction conn "typed_bad_names" ["a"] \() -> pure [(1 :: Int64, 2 :: Int64)])
   assertSqlError "at least one result column" (createTableFunction conn "typed_no_columns" [] \() -> pure [()])
-  -- DuckDB casts the argument to BIGNUM. A negative BIGNUM does not convert to Natural.
+  -- A Natural parameter is UHUGEINT. DuckDB does not cast a negative literal to it.
   createTableFunction conn "typed_natural" ["n"] \(Only (value :: Natural)) -> pure [Only (fromIntegral value :: Int64)]
   query_ conn "SELECT n FROM typed_natural(7)" >>= (@?= [Only (7 :: Int64)])
-  assertSqlError "typed_natural: cannot convert argument arg0" (query_ conn "SELECT n FROM typed_natural(-7)" :: IO [Only Int64])
+  assertSqlError "No function matches" (query_ conn "SELECT n FROM typed_natural(-7)" :: IO [Only Int64])
   assertSqlError "typed_natural: argument arg0 is NULL" (query_ conn "SELECT n FROM typed_natural(NULL)" :: IO [Only Int64])
   createTableFunction conn "typed_variant" ["n"] \(Only (_ :: Variant)) -> pure [Only (1 :: Int64)]
   assertSqlError

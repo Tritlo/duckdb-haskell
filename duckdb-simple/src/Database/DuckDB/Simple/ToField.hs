@@ -406,6 +406,8 @@ why the type has no declaration.
   the registration declares the type. Thus a newtype with its own
   DuckDBColumnType instance gives its own type text, for example
   DECIMAL(18,3).
+- Integer and Natural give HUGEINT and UHUGEINT, but their text is BIGNUM.
+  See Note [Integer parameters].
 - ViaDuckDB gives the structured type of the record or the sum type
   (genericLogicalType in "Database.DuckDB.Simple.Generic"). A type with an
   Array field gives Left: the DuckValue instance of Array declares an ARRAY
@@ -436,7 +438,9 @@ why the type has no declaration.
 A registration raises the Left text as an SQLError before it registers the
 SQL object. For a parameter with no known type, a LIST or a MAP value with no
 element that is not NULL takes its element type from a structured declaration
-(withElementType). See Note [Element types of a list].
+(withElementType). See Note [Element types of a list]. The ToDuckValue
+instances of a list, an Array, and a Map give the structured declaration of
+the element as its target (declaredTarget).
 -}
 
 -- | Types that map to a concrete DuckDB column type when used with @ToField@.
@@ -460,6 +464,14 @@ class DuckDBColumnType a where
   -- ARRAY. See Note [Type declarations].
   duckdbTypeDeclaration :: Proxy a -> Either Text TypeDeclaration
   duckdbTypeDeclaration proxy = Right (TypeExpression (duckdbColumnTypeFor proxy))
+
+-- | The structured declaration of a type, as the target type of an element.
+-- 'Nothing' for a type text or a type with no declaration. See
+-- Note [Type declarations].
+declaredTarget :: (DuckDBColumnType a) => Proxy a -> Maybe LogicalTypeRep
+declaredTarget proxy = case duckdbTypeDeclaration proxy of
+  Right (StructuredType rep) -> Just rep
+  _ -> Nothing
 
 -- | Declare a LIST with the declaration of its element type. See
 -- Note [Type declarations].
@@ -582,19 +594,26 @@ integerBinding binds an Integer or a Natural parameter with this rule:
     for a target with an element type that is not an integer type or a DECIMAL
     type, has BIGNUM elements. A cast that DuckDB adds later can still have
     the defects above.
-  - toDuckValue gives a BIGNUM value for a value outside the HUGEINT range.
-    See the item about toDuckValue.
 
 - toDuckValue. ToDuckValue Integer and ToDuckValue Natural use the same range
   rule (hugeIntInRange): a value from -2^127 to 2^127 - 1 gives a HUGEINT
-  value. toDuckValue has no target type. Thus each other value gives a BIGNUM
-  value, and a cast of it to an integer type can have the defects above. For
-  example, setConfigValue with 2^128 + 5 for a UBIGINT option sets 5. The
-  callers of toDuckValue are setConfigValue, defaultValue, the typed rows of
-  table functions and COPY FROM, and the writer of a scalar function result.
-  The DuckDBColumnType of Integer and Natural stays BIGNUM, so a typed row
-  declares a BIGNUM column for them, and a scalar function declares a BIGNUM
-  result. DuckDB casts each HUGEINT value to that BIGNUM column with no defect.
+  value. A Natural from 2^127 to 2^128 - 1 gives a UHUGEINT value. Each other
+  value raises an SQLError of the type ErrorTypeConversion (outsideRange).
+  toDuckValue has no target type. A BIGNUM value would thus reach a HUGEINT
+  column, and DuckDB 2.0.0 casts the BIGNUM 2^128 to the HUGEINT 0 with no
+  error. The callers of toDuckValue are setConfigValue, defaultValue, the
+  typed rows of table functions and COPY FROM, and the writer of a scalar
+  function result. Use BigNum for a larger value.
+
+- Typed registrations. The DuckDBColumnType text of Integer and Natural stays
+  BIGNUM, the type that holds each value: the element rule of a list
+  parameter and the error texts use it. The declaration is HUGEINT for
+  Integer and UHUGEINT for Natural, as for a field of a generic record (the
+  DuckValue instances in "Database.DuckDB.Simple.Generic"). Thus a column, an
+  argument, and a result of a typed registration have the type of the field.
+  The ToDuckValue instances of a list, an Array, and a Map give the
+  declaration of the element as its target, so a list of Integer values in a
+  typed row has HUGEINT elements. See Note [Type declarations].
 
 - Arrays, lists, and maps. DuckDB casts each element of an ARRAY or a LIST
   value, and each key and value of a MAP value, to the declared type when it
@@ -986,11 +1005,17 @@ instance DuckDBColumnType BigNum where
 instance DuckDBColumnType UUID.UUID where
   duckdbColumnTypeFor _ = "UUID"
 
+-- | The text is BIGNUM, the type that holds each value. A typed registration
+-- declares HUGEINT. See Note [Integer parameters].
 instance DuckDBColumnType Integer where
   duckdbColumnTypeFor _ = "BIGNUM"
+  duckdbTypeDeclaration _ = Right (StructuredType (LogicalTypeScalar LogicalTypeIdHugeInt))
 
+-- | The text is BIGNUM, the type that holds each value. A typed registration
+-- declares UHUGEINT. See Note [Integer parameters].
 instance DuckDBColumnType Natural where
   duckdbColumnTypeFor _ = "BIGNUM"
+  duckdbTypeDeclaration _ = Right (StructuredType (LogicalTypeScalar LogicalTypeIdUHugeInt))
 
 instance DuckDBColumnType Word where
   duckdbColumnTypeFor _ = "UBIGINT"
@@ -1351,9 +1376,7 @@ withElementType proxy builder@ValueBuilder{builderType = makeType} target values
     -- With no target, the structured declaration of a record is the element
     -- type of a list with no element that is not NULL. See
     -- Note [Element types of a list].
-    elementTarget = case (target, duckdbTypeDeclaration proxy) of
-      (Nothing, Right (StructuredType rep)) -> Just rep
-      _ -> target
+    elementTarget = maybe (declaredTarget proxy) Just target
     -- See Note [Integer parameters].
     declaredType LogicalTypeIdBigNum
       | Just rep@(LogicalTypeScalar dtype) <- target, dtype `elem` integerTypes = rep
@@ -1910,16 +1933,28 @@ instance ToDuckValue UUID.UUID where
   toDuckValue = uuidDuckValue
 
 -- | A value from -2^127 to 2^127 - 1 gives a HUGEINT value. Each other value
--- gives a BIGNUM value. See Note [Integer parameters].
+-- raises an error. See Note [Integer parameters].
 instance ToDuckValue Integer where
   toDuckValue factory value = case hugeIntInRange value of
     Just make -> make factory
-    Nothing -> bigNumDuckValue factory (BigNum value)
+    Nothing -> outsideRange "HUGEINT" value
 
--- | A value from 0 to 2^127 - 1 gives a HUGEINT value. Each larger value gives
--- a BIGNUM value. See Note [Integer parameters].
+-- | A value from 0 to 2^127 - 1 gives a HUGEINT value, and a value up to
+-- 2^128 - 1 a UHUGEINT value. Each larger value raises an error. See
+-- Note [Integer parameters].
 instance ToDuckValue Natural where
-  toDuckValue factory = toDuckValue factory . toInteger
+  toDuckValue factory value = case hugeIntInRange (toInteger value) of
+    Just make -> make factory
+    Nothing
+      | toInteger value < 1 `shiftL` 128 -> uhugeIntDuckValue factory (toInteger value)
+      | otherwise -> outsideRange "UHUGEINT" (toInteger value)
+
+-- | Raise the range error of 'toDuckValue' for an 'Integer' or a 'Natural'
+-- outside the declared type. See Note [Integer parameters].
+outsideRange :: Text -> Integer -> IO a
+outsideRange typeName value =
+  throwConversionError
+    ("the value " <> Text.pack (show value) <> " is outside the range of " <> typeName <> ". Use BigNum for a larger value.")
 
 instance ToDuckValue Word where
   toDuckValue factory = uint64DuckValue factory . fromIntegral
@@ -1991,16 +2026,19 @@ instance ToDuckValue (UnionValue FieldValue) where
   toDuckValue = unionValueDuckValue . plainBuilder
 
 -- | Construct an array through the supplied factory with the element type of @a@.
+-- A structured declaration of @a@ is the target of the elements. See
+-- Note [Type declarations].
 instance (DuckDBColumnType a, ToDuckValue a) => ToDuckValue (Array Int a) where
-  toDuckValue factory = arrayDuckValue (plainBuilder factory) Nothing (toDuckValue factory)
+  toDuckValue factory = arrayDuckValue (plainBuilder factory) (declaredTarget (Proxy @a)) (toDuckValue factory)
 
 -- | Construct a MAP through the supplied factory with the key type of @k@ and
--- the value type of @v@. The pairs go in ascending key order.
+-- the value type of @v@. The pairs go in ascending key order. A structured
+-- declaration of a part is its target. See Note [Type declarations].
 instance (DuckDBColumnType k, DuckDBColumnType v, ToDuckValue k, ToDuckValue v) => ToDuckValue (Map.Map k v) where
   toDuckValue factory =
     mapDuckValue
-      (withElementType (Proxy @k) builder Nothing)
-      (withElementType (Proxy @v) builder Nothing)
+      (withElementType (Proxy @k) builder (declaredTarget (Proxy @k)))
+      (withElementType (Proxy @v) builder (declaredTarget (Proxy @v)))
       builder
       (toDuckValue factory)
       (toDuckValue factory)
@@ -2009,9 +2047,10 @@ instance (DuckDBColumnType k, DuckDBColumnType v, ToDuckValue k, ToDuckValue v) 
       builder = plainBuilder factory
 
 -- | Construct a LIST through the supplied factory with the element type of @a@.
--- 'String' keeps its own instance.
+-- 'String' keeps its own instance. A structured declaration of @a@ is the
+-- target of the elements. See Note [Type declarations].
 instance {-# OVERLAPPABLE #-} (DuckDBColumnType a, ToDuckValue a) => ToDuckValue [a] where
-  toDuckValue factory = listDuckValue (plainBuilder factory) Nothing (toDuckValue factory)
+  toDuckValue factory = listDuckValue (plainBuilder factory) (declaredTarget (Proxy @a)) (toDuckValue factory)
 
 instance (ToDuckValue a) => ToDuckValue (Maybe a) where
   toDuckValue factory Nothing = nullDuckValue factory

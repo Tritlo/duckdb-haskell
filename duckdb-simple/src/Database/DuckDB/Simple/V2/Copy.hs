@@ -43,7 +43,16 @@ module Database.DuckDB.Simple.V2.Copy (
 import Control.Monad (when)
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Database.DuckDB.Simple.Callback (Allocator, attachOpaque, guardContext, install, installOptional, withCallbackResources, withTarget)
+import Database.DuckDB.Simple.Callback (
+  Allocator,
+  attachOpaque,
+  guardContext,
+  install,
+  installAll,
+  installOptional,
+  withCallbackResources,
+  withTarget,
+ )
 import Database.DuckDB.Simple.Internal (Connection)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.V2.Registration (ContextCallback, RegistrationTarget (..), getCallbackState, setCallbackState)
@@ -107,7 +116,7 @@ registerCopyFunctionWith target configure to from =
     c_duckdb_v2_extension_register_copy_function
     \function register ->
       withCallbackResources
-        (\allocate -> sequence_ <$> sequence (toInstallers allocate function to <> fromInstallers allocate function from))
+        (\allocate -> installAll (toInstallers allocate function to <> fromInstallers allocate function from))
         (attachOpaque (c_duckdb_v2_copy_function_set_user_data function))
         \installCallbacks -> do
           configure function

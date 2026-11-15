@@ -28,13 +28,17 @@ import Foreign.Marshal.Array (withArray)
 import Foreign.Ptr (nullPtr)
 import Foreign.Storable (peek)
 
--- | Copy a native logical type into a Haskell type tree.
--- The function does not destroy the handle:
+-- | Copy a native logical type into a Haskell type tree. A type with an alias
+-- gives 'LogicalTypeAlias', at each depth. See Note [Type aliases] in
+-- "Database.DuckDB.Simple.LogicalRep". The function does not destroy the
+-- handle:
 --
 -- > bracket (R.output (c_duckdb_v2_vector_get_logical_type vector)) destroyLogicalType logicalTypeToRep
 logicalTypeToRep :: DuckDBV2LogicalTypeHandle -> IO LogicalTypeRep
 logicalTypeToRep logical = do
   dtype <- output (c_duckdb_v2_logical_type_get_id logical)
+  ident <- logicalTypeIdFromNative dtype
+  typeName <- output (c_duckdb_v2_logical_type_get_name logical) >>= readIdentifier
   let parameter index action = alloca \nameSlot ->
         bracket (output (c_duckdb_v2_logical_type_get_param logical index nameSlot)) (destroy c_duckdb_v2_value_destroy) \value -> do
           name <- peek nameSlot >>= readIdentifier
@@ -52,7 +56,7 @@ logicalTypeToRep logical = do
                 rep <- bracket (output (c_duckdb_v2_value_get_type value)) destroyLogicalType logicalTypeToRep
                 pure (make name rep)
             )
-  case dtype of
+  base <- case dtype of
     DuckDBV2LogicalTypeIdGeometry -> do
       size <- count
       LogicalTypeGeometry <$> if size == 0 then pure Nothing else Just <$> string 0
@@ -79,7 +83,8 @@ logicalTypeToRep logical = do
       -- Note [Constant stack at safe calls] in "Database.DuckDB.Simple.Native".
       LogicalTypeEnum . listArray (0, size - 1) . reverse
         <$> foldM (\entries index -> (: entries) <$> string (fromIntegral index)) [] [0 .. size - 1]
-    _ -> LogicalTypeScalar <$> logicalTypeIdFromNative dtype
+    _ -> pure (LogicalTypeScalar ident)
+  pure (if typeName == logicalTypeIdName ident then base else LogicalTypeAlias typeName base)
 
 -- | Construct an owned logical type through a borrowed native factory.
 -- Keep the owner of the factory alive until you destroy the type.

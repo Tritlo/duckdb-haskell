@@ -30,6 +30,7 @@ module Database.DuckDB.Simple.Native (
   LogicalTypeId (..),
   logicalTypeIdToNative,
   logicalTypeIdFromNative,
+  logicalTypeIdName,
   FileFlag (..),
   fileFlagToNative,
   checked,
@@ -848,6 +849,56 @@ logicalTypeIdFromNative = \case
   DuckDBV2LogicalTypeIdVariant -> pure LogicalTypeIdVariant
   DuckDBV2LogicalTypeIdTuple -> pure LogicalTypeIdTuple
   DuckDBV2LogicalTypeId value -> throwUnknownNative "logical type id" value
+
+-- | The name of a type id in DuckDB 2.0.0. duckdb_v2_logical_type_get_name
+-- gives this name for a type with no alias. See Note [Type aliases] in
+-- "Database.DuckDB.Simple.LogicalRep".
+logicalTypeIdName :: LogicalTypeId -> Text
+logicalTypeIdName = \case
+  LogicalTypeIdInvalid -> "INVALID"
+  LogicalTypeIdSQLNull -> "NULL"
+  LogicalTypeIdUnknown -> "UNKNOWN"
+  LogicalTypeIdAny -> "ANY"
+  LogicalTypeIdType -> "TYPE"
+  LogicalTypeIdBoolean -> "BOOLEAN"
+  LogicalTypeIdTinyInt -> "TINYINT"
+  LogicalTypeIdSmallInt -> "SMALLINT"
+  LogicalTypeIdInteger -> "INTEGER"
+  LogicalTypeIdBigInt -> "BIGINT"
+  LogicalTypeIdDate -> "DATE"
+  LogicalTypeIdTime -> "TIME"
+  LogicalTypeIdTimestampSec -> "TIMESTAMP_S"
+  LogicalTypeIdTimestampMs -> "TIMESTAMP_MS"
+  LogicalTypeIdTimestamp -> "TIMESTAMP"
+  LogicalTypeIdTimestampNs -> "TIMESTAMP_NS"
+  LogicalTypeIdDecimal -> "DECIMAL"
+  LogicalTypeIdFloat -> "FLOAT"
+  LogicalTypeIdDouble -> "DOUBLE"
+  LogicalTypeIdVarchar -> "VARCHAR"
+  LogicalTypeIdBlob -> "BLOB"
+  LogicalTypeIdInterval -> "INTERVAL"
+  LogicalTypeIdUTinyInt -> "UTINYINT"
+  LogicalTypeIdUSmallInt -> "USMALLINT"
+  LogicalTypeIdUInteger -> "UINTEGER"
+  LogicalTypeIdUBigInt -> "UBIGINT"
+  LogicalTypeIdTimestampTz -> "TIMESTAMP WITH TIME ZONE"
+  LogicalTypeIdTimestampTzNs -> "TIMESTAMPTZ_NS"
+  LogicalTypeIdTimeTz -> "TIME WITH TIME ZONE"
+  LogicalTypeIdTimeNs -> "TIME_NS"
+  LogicalTypeIdBit -> "BIT"
+  LogicalTypeIdBigNum -> "BIGNUM"
+  LogicalTypeIdUHugeInt -> "UHUGEINT"
+  LogicalTypeIdHugeInt -> "HUGEINT"
+  LogicalTypeIdUUID -> "UUID"
+  LogicalTypeIdGeometry -> "GEOMETRY"
+  LogicalTypeIdStruct -> "STRUCT"
+  LogicalTypeIdList -> "LIST"
+  LogicalTypeIdMap -> "MAP"
+  LogicalTypeIdEnum -> "ENUM"
+  LogicalTypeIdUnion -> "UNION"
+  LogicalTypeIdArray -> "ARRAY"
+  LogicalTypeIdVariant -> "VARIANT"
+  LogicalTypeIdTuple -> "TUPLE"
 
 -- | A behaviour of a file open. The flags are not a bitmask. Each flag in the
 -- list adds one behaviour.

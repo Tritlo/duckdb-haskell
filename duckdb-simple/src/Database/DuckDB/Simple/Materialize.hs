@@ -285,7 +285,7 @@ their result:
 - Reads. prepareGeometryReader casts a GEOMETRY vector to BLOB. A result, the
   value of an option (getConfigValue), and the default value of an option
   (getConfigDefaultValue) read a GEOMETRY value with the factory of the
-  instance. The type cache of the connection keeps that factory (typeCacheCasts
+  instance, and so does queryMetrics. The type cache of the connection keeps that factory (typeCacheCasts
   in "Database.DuckDB.Simple.TypeCache"). The callbacks of a registration on a
   connection read a GEOMETRY value with the same factory: the value of an option
   update, the arguments of a pragma or a table function, and the rows of a COPY
@@ -301,9 +301,10 @@ their result:
   ("Database.DuckDB.Simple.ToField"). Each of them writes the value to a vector
   of the target type with one row, and reads the row (defaultCast). The header
   says that duckdb_v2_vector_set_value casts "through the non-strict default
-  cast". Thus the value does not depend on the factory, and toDuckValue gives
-  the same value with the factory of a connection, of a callback context, or of
-  an instance.
+  cast". Thus the cast does not depend on the factory. The factory still makes
+  the target type, and only the factory of a connection or of a callback
+  context can make a GEOMETRY type with a CRS. See Note [Raw GEOMETRY
+  parameters] in "Database.DuckDB.Simple.ToField".
 - The type query of a connection with a custom CRS (readNativeTypes in
   "Database.DuckDB.Simple.TypeCache") binds the empty point as a BLOB value. Its
   statement has no cast.

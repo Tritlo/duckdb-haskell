@@ -142,9 +142,11 @@ createFunctionWithState conn = createFunctionWithStateOn (ConnectionTarget conn)
 -- instance, which are the built-in casts, and it builds GEOMETRY, ENUM, and
 -- VARIANT values with the default cast of DuckDB. Thus a cast from GEOMETRY to
 -- BLOB changes the result of @CAST(g AS BLOB)@, but not a GEOMETRY value that a
--- query gives. There is one exception: the callbacks of a function that an
--- extension registers read a GEOMETRY value with the casts of the session,
--- because an extension has no instance.
+-- query gives. Two places still use registered casts. The callbacks of a
+-- function that an extension registers read a GEOMETRY value with the casts of
+-- the session, because an extension has no instance. @setConfigValue@ and
+-- @setConfigOption@ in "Database.DuckDB.Simple.Config" cast the value to the
+-- type of the option as SQL @SET@ does.
 createCast :: (FromField a, ToDuckValue b) => Connection -> TypeDeclaration -> TypeDeclaration -> (a -> Either Text b) -> IO ()
 createCast conn = createCastOn (ConnectionTarget conn)
 

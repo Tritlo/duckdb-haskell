@@ -704,8 +704,8 @@ casts. It batches VARIANT
 metadata queries. It constructs VARIANT types directly through the native
 factory. This preserves an active stream on the caller's connection. The
 helper connection has the settings of the database, not the session settings of
-the caller, so a GLOBAL `max_expression_depth` below 11 makes each VARIANT read
-fail with a Binder Error.
+the caller, so a GLOBAL `max_expression_depth` below 11 makes each VARIANT read,
+and each COPY TO of a VARIANT column, fail with a Binder Error.
 
 New DuckDB 2.0 databases use storage format 2.0, which supports VARIANT columns.
 The library does not change an existing database's storage compatibility

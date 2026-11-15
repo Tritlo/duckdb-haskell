@@ -316,7 +316,6 @@ checkCallbacks batches =
       after <- readUsage
       reportOptional ("open connection, " <> show (n * 100) <> " callback cycles") before after
 
--- | Require an error without retaining the exception or its native resources.
 -- | Make the reader of a VARIANT result fail on the database of the
 -- connection. The VARIANT reader runs its metadata query on a helper
 -- connection, and that query needs an expression depth of 11. A GLOBAL depth
@@ -332,6 +331,7 @@ breakVariantReads conn = do
 rejectedQuery :: Query
 rejectedQuery = "SELECT {'xs': [i, i + 1, i + 2, i + 3], 'bad': 42::BIGINT::VARIANT} FROM range(100000) t(i)"
 
+-- | Require an error without retaining the exception or its native resources.
 expectFailure :: IO a -> IO ()
 expectFailure action = do
   outcome <- try (void action) :: IO (Either SomeException ())

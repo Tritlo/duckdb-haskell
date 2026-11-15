@@ -325,6 +325,15 @@
   type, not for `BIGINT`.
 - `duckdbColumnType` gives `VARCHAR` for `Text` and `String`. Earlier versions
   gave `TEXT`.
+- A DECIMAL read as `Double` or `Float`, and a BIGINT read as `Float`, give
+  the value of the cast of DuckDB to DOUBLE or FLOAT. Earlier versions rounded
+  two times, so the value could differ from the cast in the last bit. For
+  example, `2706284552926637.70::DECIMAL(18,2)` read as `2706284552926638.0`,
+  and the cast gives `2706284552926637.5`. For scale 0 and a width of 19 to 38,
+  the cast of DuckDB does not always give the nearest value, and the library
+  gives the value of the cast.
+- A BOOLEAN read as `Text` or `String` gives `true` or `false`, as the cast to
+  VARCHAR does. Earlier versions gave `1` or `0`.
 - Allow session variables to supply omitted named parameters. Too few named
   parameters no longer raise `FormatError`. Too many named parameters still
   raise it.

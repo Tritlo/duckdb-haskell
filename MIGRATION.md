@@ -199,6 +199,11 @@ The SQL workflow stays the same. These changes can affect your code:
   Change code that matches the old texts.
 - `duckdbColumnType` gives `VARCHAR` for `Text` and `String`. Version 0.3 gave
   `TEXT`. Change code that compares this text.
+- A BOOLEAN read as `Text` or `String` gives `true` or `false`. Version 0.3
+  gave `1` or `0`. Read `Bool`, or write `c::INTEGER` in SQL for the old text.
+- A DECIMAL read as `Double` or `Float`, and a BIGINT read as `Float`, give
+  the value of the cast of DuckDB. A value can differ from version 0.3 in the
+  last bit.
 - `TimeWithZone` holds the offset as seconds east of UTC. The field
   `timeWithZoneZone :: TimeZone` is now `timeWithZoneOffsetSeconds :: Int32`.
   Convert a `TimeZone` with `fromIntegral (timeZoneMinutes zone) * 60`, and

@@ -216,12 +216,13 @@ The SQL workflow stays the same. These changes can affect your code:
   `createAggregate`, and `Aggregate` with its fields. These names can clash
   with your own names when you import the module without a list. Hide these
   names in the import, or import the module qualified.
-- Empty `Array` parameters raise `SQLError`. Bind an empty list for an empty
-  LIST.
+- An empty `Array` parameter raises `SQLError`. Version 0.3 bound an empty
+  `Array` of scalar elements. Bind an empty list for an empty LIST.
 - A list binds as a LIST parameter. Version 0.3 had no list parameter
   instance, so code bound an `Array` and let DuckDB cast it. That code still
-  works. A `String` stays one VARCHAR parameter, and a list as a row is still
-  a row of parameters, so put a list parameter in `Only`.
+  works for an `Array` with elements. A `String` stays one VARCHAR parameter,
+  and a list as a row is still a row of parameters, so put a list parameter in
+  `Only`.
 - A composite parameter with a GEOMETRY CRS that DuckDB does not recognize
   raises `SQLError`. Version 0.3 bound it without the CRS. Configure custom CRS
   names through `connectionGeometryCRS`.

@@ -175,8 +175,8 @@
   a target without a CRS removes the CRS, and a target with another CRS raises
   `SQLError`. Version 0.3 had only a result instance for `RawGeometry`. An
   `Array` and a typed row cannot hold a `RawGeometry`.
-- Empty `Array` parameters raise `SQLError`. Bind an empty list for an empty
-  LIST.
+- An empty `Array` parameter raises `SQLError`. Version 0.3 bound an empty
+  `Array` of scalar elements. Bind an empty list for an empty LIST.
 - `TimeWithZone` holds the offset in seconds east of UTC, as a TIMETZ stores
   it. The field `timeWithZoneZone :: TimeZone` of version 0.3 is now
   `timeWithZoneOffsetSeconds :: Int32`. A TIMETZ with an offset that has

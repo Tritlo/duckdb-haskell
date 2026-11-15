@@ -421,12 +421,13 @@ form, keeps its digits below a microsecond for a nanosecond parameter:
 `SELECT ?::TIMESTAMP_NS`, or a column with that type. A `VARIANT` parameter
 also gets the nanosecond value, when the value fits the range of the nanosecond
 type, because a VARIANT holds `TIME_NS`, `TIMESTAMP_NS`, and `TIMESTAMPTZ_NS`
-values. Each other parameter, and a parameter with no known type, gets the
-microsecond value: the digits below a microsecond go away, as for the SQL
-literal. An element of a `VARIANT[]` list or a value of a MAP with `VARIANT`
-values also gets the microsecond value, because one list has one element type
-for all its elements. Only a value with such digits
-reads the parameter type. An explicit cast such as `?::TIMESTAMP_NS` makes a
+values. This holds only for a scalar value: a list, an `Array`, or a `Map` of
+time values for a `VARIANT` parameter binds microsecond elements, and so does
+an element of a `VARIANT[]` list or a value of a MAP with `VARIANT` values,
+because one list has one element type for all its elements. Each other
+parameter, and a parameter with no known type, gets the microsecond value: the
+digits below a microsecond go away, as for the SQL literal. Only a value with
+such digits reads the parameter type. An explicit cast such as `?::TIMESTAMP_NS` makes a
 nanosecond parameter, so for a `TIMESTAMP` column DuckDB rounds the value to
 the microsecond, where a plain `?` cuts the digits. Values inside collections, STRUCTs, MAPs, and UNIONs follow their
 target types. The library refreshes prepared metadata when it resets or
@@ -713,10 +714,11 @@ query conn "SELECT ?"
 
 A scalar payload keeps its native type, such as `TINYINT` or `DECIMAL(4,2)`.
 Time and timestamp payloads bind as microsecond types, or as nanosecond types
-when they have sub-microsecond digits. So a `TIMESTAMP_S` result binds back as
-a `TIMESTAMP` when its value fits. Wider timestamp values use milliseconds or
-seconds without losing digits. Lists, arrays, and STRUCT fields bind as
-VARIANT values. A VARIANT does not keep a UNION, a MAP, an ENUM, or the CRS of a
+when they have sub-microsecond digits and fit the nanosecond range. So a
+`TIMESTAMP_S` result binds back as a `TIMESTAMP` when its value fits. A value
+outside the range of DuckDB raises an `SQLError` of the type
+`ErrorInputOutOfRange`. Lists, arrays, and STRUCT fields bind as VARIANT
+values. A VARIANT does not keep a UNION, a MAP, an ENUM, or the CRS of a
 GEOMETRY, so these payloads raise an error at any depth: a VARIANT keeps only
 the member value of a UNION, stores a MAP as a list of key and value objects,
 and stores an ENUM as its text. Object parameters reject
@@ -903,8 +905,12 @@ type is the `duckdbTypeDeclaration` of the type, as for a typed column. A
 newtype with its own `DuckDBColumnType` text, for example `DECIMAL(18,3)`,
 gives that text. An argument type that is or contains VARIANT raises an error
 at registration, because the argument reader does not read VARIANT. A GEOMETRY
-argument reads as a GEOMETRY result does, also inside a list or a record, in a
-scalar function, in an aggregate, and as the source of a typed cast.
+argument reads, also inside a list or a STRUCT, in a scalar function, in an
+aggregate, and as the source of a typed cast. On a connection, it reads as a
+GEOMETRY result does, so a registered cast does not change it. A function that
+an extension registers reads it with the casts of the session, and an aggregate
+function of an extension refuses a GEOMETRY argument at registration. See
+[Typed registration](#typed-registration).
 
 The SQL type of the result is the `duckdbTypeDeclaration` of the result type:
 an `Int16` result is SMALLINT, and a `Float` result is FLOAT. DuckDB computes
@@ -1037,8 +1043,11 @@ places still use registered casts:
 
 - The callbacks of a function that an extension registers. An extension has no
   instance, so these callbacks read a GEOMETRY value with the casts of the
-  session: the value of an option update, the arguments of a pragma or a table
-  function, and the rows of a COPY TO function.
+  session: the value of an option update, the arguments of a pragma, a scalar
+  function, a typed cast, or a table function, and the rows of a COPY TO
+  function. The update callback of an aggregate function has no context, so an
+  aggregate function of an extension refuses a GEOMETRY argument at
+  registration.
 - `setConfigValue` and `setConfigOption`. DuckDB casts the value to the type of
   the option, as SQL `SET` does.
 
@@ -1069,9 +1078,12 @@ for each aggregate that `createAggregate` registers through the connection.
 The default is `defaultAggregateStripes`, 64. No result depends on the number.
 
 `createTableFunction` registers a table function that gives its rows as a
-list. DuckDB reads only the columns that the query uses, and one column for a
-query such as `SELECT count(*)`. The library does not evaluate the other
-columns of a row, so an exception in such a column does not fail the query.
+list. DuckDB reads only the columns that the query uses, also in `WHERE` and
+`ORDER BY`. For a query that uses no column, such as `SELECT count(*)`, DuckDB
+reads the first column. The library does not evaluate the other columns of a
+row, so an exception in such a column does not fail the query. But the library
+evaluates each row that it writes to its constructor, and this evaluates each
+strict field of the row (a field with `!`, or each field with `StrictData`).
 
 ```haskell
 tableExample :: Connection -> IO [(Int64, Int64)]

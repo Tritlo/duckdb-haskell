@@ -15,9 +15,9 @@
 -- "Database.DuckDB.Simple.Materialize".
 module UserCastTests (userCastTests, geometryArgumentTests) where
 
-import Control.Exception (try)
+import Control.Exception (throwIO, try)
 import Control.Monad (forM_, void)
-import Data.Array (listArray)
+import Data.Array (listArray, (!))
 import qualified Data.ByteString as BS
 import qualified Data.Geometry as G
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
@@ -29,11 +29,12 @@ import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Config as Config
 import qualified Database.DuckDB.Simple.Copy as Copy
-import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..))
+import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), returnError)
 import Database.DuckDB.Simple.Geometry (RawGeometry (..))
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), StructValue (..))
 import Database.DuckDB.Simple.Pragma (PragmaCallback (..), registerPragmaFunction)
 import qualified Database.DuckDB.Simple.Streaming as Streaming
+import Database.DuckDB.Simple.ToField (ToDuckValue (..))
 import qualified Database.DuckDB.Simple.V2.Registration as R
 import Database.DuckDB.Simple.Variant (Variant (..), variantObject)
 import Test.Tasty (TestTree, testGroup)
@@ -211,11 +212,13 @@ geometryArgumentTests =
         createFunction conn "hs_point_x" pointX
         createFunction conn "hs_maybe_x" (fmap pointX :: Maybe G.Geometry -> Maybe Double)
         createFunction conn "hs_count_shapes" (\(shapes :: [G.Geometry]) -> fromIntegral (length shapes) :: Int64)
+        createFunction conn "hs_placed_x" (\(Placed g) -> pointX g)
         calls <- nullCast conn (R.TypeExpression "GEOMETRY") (R.TypeExpression "BLOB")
         query_ conn "SELECT hs_point_x('POINT (1 2)'::GEOMETRY)" >>= (@?= [Only (1 :: Double)])
         query_ conn "SELECT hs_point_x('POINT (3 4)'::GEOMETRY('OGC:CRS84'))" >>= (@?= [Only (3 :: Double)])
         query_ conn "SELECT hs_maybe_x(NULL::GEOMETRY)" >>= (@?= [Only (Nothing :: Maybe Double)])
         query_ conn "SELECT hs_count_shapes(['POINT (1 2)'::GEOMETRY, 'POINT (3 4)'::GEOMETRY])" >>= (@?= [Only (2 :: Int64)])
+        query_ conn "SELECT hs_placed_x({'name': 'a', 'shape': 'POINT (1 2)'::GEOMETRY})" >>= (@?= [Only (1 :: Double)])
         query_ conn "SELECT sum(hs_point_x(('POINT (' || i || ' 0)')::GEOMETRY)) FROM range(5000) t(i)" >>= (@?= [Only (12497500 :: Double)])
         readIORef calls >>= (@?= 0)
         withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = ["local grid"]} \grid -> do
@@ -235,8 +238,18 @@ geometryArgumentTests =
               , aggregateCombine = \a b -> pure (a + b)
               , aggregateResult = pure
               }
+          createAggregate
+            conn
+            "hs_sum_placed_x"
+            Aggregate
+              { aggregateInitial = 0 :: Double
+              , aggregateStep = \sumX (Only (Placed g)) -> pure (sumX + pointX g)
+              , aggregateCombine = \a b -> pure (a + b)
+              , aggregateResult = pure
+              }
           calls <- nullCast conn (R.TypeExpression "GEOMETRY") (R.TypeExpression "BLOB")
           query_ conn "SELECT hs_sum_x(g) FROM shapes" >>= (@?= [Only total])
+          query_ conn "SELECT hs_sum_placed_x({'name': 'p', 'shape': g}) FROM shapes" >>= (@?= [Only total])
           query_ conn "SELECT count(*), sum(s) FROM (SELECT k, hs_sum_x(g) AS s FROM shapes GROUP BY k)" >>= (@?= [(100 :: Int64, total)])
           query_ conn "SELECT DISTINCT hs_sum_x(g) OVER () FROM shapes" >>= (@?= [Only total])
           query_ conn "SELECT hs_sum_x(DISTINCT g) FROM (SELECT g FROM shapes UNION ALL SELECT g FROM shapes)" >>= (@?= [Only total])
@@ -271,6 +284,26 @@ pointX :: G.Geometry -> Double
 pointX = \case
   G.PointGeometry (G.PointXY (G.XY x _)) -> x
   _ -> -1
+
+-- | A STRUCT argument with a GEOMETRY field. A record through ViaDuckDB cannot
+-- hold a Geometry field, because Geometry has no DuckValue instance. Thus the
+-- instances are written here. The reader reads only the field shape.
+newtype Placed = Placed G.Geometry
+
+instance DuckDBColumnType Placed where
+  duckdbColumnTypeFor _ = "STRUCT(name VARCHAR, shape GEOMETRY)"
+
+instance FromField Placed where
+  fromField f = case fieldValue f of
+    FieldStruct struct
+      | Just index <- Map.lookup "shape" (structValueIndex struct) ->
+          Placed <$> fromField f{fieldValue = structFieldValue (structValueFields struct ! index)}
+    _ -> returnError Incompatible f "expected STRUCT(name VARCHAR, shape GEOMETRY)"
+
+-- | An aggregate gets the SQL type of an argument column from this class. The
+-- cases do not write a Placed value.
+instance ToDuckValue Placed where
+  toDuckValue _ _ = throwIO (userError "a Placed value is only an argument")
 
 -- | Register a cast that writes NULL for each row, and give its call count.
 nullCast :: Connection -> R.TypeDeclaration -> R.TypeDeclaration -> IO (IORef Int)

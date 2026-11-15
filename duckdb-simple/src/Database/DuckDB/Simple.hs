@@ -260,7 +260,9 @@ data ConnectionOptions = ConnectionOptions
   --     threads that change the table wait for each other only when they change
   --     the same stripe. No result depends on the number. The default is
   --     'defaultAggregateStripes'. The open rejects a number that is not
-  --     positive.
+  --     positive. The library sets no upper limit. Each bind of each call
+  --     site (a call of the aggregate in a query) makes one IORef for each
+  --     stripe.
   , connectionArrowBatchSize :: Int
   -- ^ The largest number of rows in one Arrow array of an Arrow fold on this
   --     connection ("Database.DuckDB.Simple.Arrow" and

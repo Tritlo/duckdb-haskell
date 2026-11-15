@@ -221,6 +221,12 @@ createAggregateOn target name aggregate = do
             <> " or Maybe of one of them), because the finalize callback has no factory."
             <> " For a newtype over one of these types, derive FunctionResult with deriving newtype."
         )
+  -- See Note [State table stripes]. Evaluate the count before the registration.
+  -- An unevaluated count keeps the target, and thus the connection, reachable
+  -- from the callbacks.
+  stripes <- evaluate case target of
+    ConnectionTarget connection -> connectionStripes connection
+    ExtensionTarget{} -> defaultAggregateStripes
   let parameters =
         [ (parameter (argumentName index) argumentType){parameterKind = DuckDBV2FunctionParameterKindPositionalOnly}
         | (index, argumentType) <- zip [0 ..] argumentTypes
@@ -252,10 +258,6 @@ createAggregateOn target name aggregate = do
         signature
       checked
         (c_duckdb_v2_aggregate_function_set_property function DuckDBV2FunctionPropertyNullHandling DuckDBV2FunctionPropertyNullHandlingSpecial)
-    -- See Note [State table stripes].
-    stripes = case target of
-      ConnectionTarget connection -> connectionStripes connection
-      ExtensionTarget{} -> defaultAggregateStripes
 
 -- | Make a native state the size of one pointer. See
 -- Note [Aggregate state life cycle].

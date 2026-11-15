@@ -107,7 +107,7 @@ import Database.DuckDB.Simple.V2.Registration (TypeDeclaration (..))
 -- its type. An argument type with no declaration, or a type that is or
 -- contains VARIANT, raises an @SQLError@ at registration, because the argument
 -- reader does not read VARIANT. A GEOMETRY argument reads as a GEOMETRY result
--- does, also inside a list or a record, for example as a @Geometry@.
+-- does, also inside a list or a STRUCT, for example as a @Geometry@.
 createFunction :: (Function f) => Connection -> Text -> f -> IO ()
 createFunction conn = createFunctionOn (ConnectionTarget conn)
 
@@ -183,13 +183,16 @@ createCast conn = createCastOn (ConnectionTarget conn)
 -- read the list at the same time. DuckDB stops when the query needs no more rows,
 -- so the list can be long or infinite, for example with @LIMIT@. It reads a full
 -- chunk, and it can read more chunks than the query needs. Thus it can read rows
--- after the @LIMIT@. DuckDB asks only for the columns that the query uses, and
--- for one column when the query uses no column, as in @SELECT count(*)@. The
--- library evaluates only the columns that DuckDB asks for. A column that the
--- query does not use is not evaluated, so an exception in that column does not
--- fail the query. An exception in the function, in the list, in a row, or in a
--- column that the query uses is an SQL error. DuckDB releases the list when the
--- scan ends.
+-- after the @LIMIT@. DuckDB asks only for the columns that the query uses, also
+-- in @WHERE@ and @ORDER BY@. When the query uses no column, as in
+-- @SELECT count(*)@, DuckDB asks for the first column. The library evaluates
+-- only the columns that DuckDB asks for, so an exception in another column does
+-- not fail the query. But the library evaluates each row that it writes to its
+-- constructor, and this evaluates each strict field of the row (a field with
+-- @!@, or each field with @StrictData@). Thus an exception in a strict field
+-- fails the query, also when the query does not use the column. An exception
+-- in the function, in the list, in a row, or in a column that the query uses
+-- is an SQL error. DuckDB releases the list when the scan ends.
 --
 -- > createTableFunction conn "haskell_squares" ["n", "square"] \(Only count) ->
 -- >     pure [(n, n * n) | n <- [0 .. count - 1 :: Int64]]
@@ -214,7 +217,9 @@ createTableFunction conn = createTableFunctionOn (ConnectionTarget conn)
 -- 'createTableFunction'. An argument type that is or contains VARIANT is also
 -- an error at registration, as for 'createFunction'. A GEOMETRY argument reads
 -- as for 'createFunction', also when DuckDB runs the update callback on several
--- threads. The SQL
+-- threads. An aggregate function of an extension refuses a GEOMETRY argument
+-- at registration, because its update callback has no factory to read the
+-- value. The SQL
 -- return type is the
 -- 'Database.DuckDB.Simple.ToField.duckdbTypeDeclaration' of the result type,
 -- for example SMALLINT for 'Data.Int.Int16' and FLOAT for 'Float'. A 'Maybe'

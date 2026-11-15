@@ -48,8 +48,9 @@
   DOUBLE, or VARCHAR.
 - `createTableFunction` registers a Haskell function that gives the rows of a
   table function as a list. DuckDB reads the list one chunk at a time. It reads
-  only the columns that the query uses, and one column for a query such as
-  `SELECT count(*)`. The library does not evaluate the other columns of a row.
+  only the columns that the query uses, and the first column for a query such
+  as `SELECT count(*)`. The library does not evaluate the other columns of a
+  row, but it evaluates each strict field of each row that it writes.
 - `DuckDBColumnType` has the method `duckdbTypeDeclaration`. It gives the SQL
   type that a typed table function and a typed aggregate function declare. A
   record or a sum type gets `ToDuckValue` and a STRUCT or UNION declaration
@@ -61,7 +62,9 @@
   `Map`, or a newtype with its own type text. `FunctionArg` is gone. An
   argument type that is or contains VARIANT raises an error at registration,
   also for `createAggregate`. A GEOMETRY argument reads, also in
-  `createAggregate` and as the source of `createCast`.
+  `createAggregate` and as the source of `createCast`. An aggregate function of
+  an extension refuses a GEOMETRY argument at registration, because its update
+  callback has no factory to read the value.
 - A result of `createFunction` can have each type with `ToDuckValue`. Its SQL
   type is the `duckdbTypeDeclaration` of the type: an `Int16` result is
   SMALLINT, a `Word16` result is USMALLINT, and a `Float` result is FLOAT, in
@@ -284,7 +287,8 @@
   digits, binds with the nanosecond type for a `VARIANT` parameter when it fits
   the range of that type, so the VARIANT keeps the digits. A value with no such
   digits binds as before, with no read of the parameter type. A value outside
-  the range of the nanosecond type, and an element of a `VARIANT` list or map,
+  the range of the nanosecond type, an element of a list, an `Array`, or a
+  `Map` for a `VARIANT` parameter, and an element of a `VARIANT` list or map
   keep the microsecond value. A `Variant` payload follows the same rule.
 - An empty `Array` and an empty `FieldArray` raise the same `SQLError`, of the
   type `ErrorInputInvalid`.

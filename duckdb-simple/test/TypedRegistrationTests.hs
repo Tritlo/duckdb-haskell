@@ -53,6 +53,7 @@ import Database.DuckDB.Simple.Copy (
 import Database.DuckDB.Simple.FromField (BigNum (..), Field (..), FieldValue (..), IntervalValue (..), TimeWithZone (..), bsFromBool)
 import Database.DuckDB.Simple.Function (FunctionResult)
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..))
+import Database.DuckDB.Simple.Internal (Connection (..))
 import Database.DuckDB.Simple.LogicalRep (StructField (..), StructValue (..), TupleValue, UnionValue)
 import Database.DuckDB.Simple.Pragma (PragmaCallback (..), registerPragmaFunction)
 import Database.DuckDB.Simple.Registration (
@@ -131,7 +132,8 @@ typedRegistrationTests =
     , testCase "COPY format on two connections of one database" testCopySharedDatabase
     , testCase "COPY FROM gives the name and the type of each column" testCopyFromColumns
     , testCase "aggregate over one group and over many groups" testAggregateGroups
-    , testCase "aggregate with one state table stripe" testAggregateStripes
+    , testCase "aggregate with other state table stripe counts" testAggregateStripes
+    , testCase "aggregate registration does not keep its connection" testAggregateConnectionRelease
     , testCase "aggregate skips NULL rows and gives the initial result" testAggregateNulls
     , testCase "aggregate arguments, states, and result types" testAggregateTypes
     , testCase "aggregate exceptions fail the query only" testAggregateErrors
@@ -607,7 +609,9 @@ testAggregateGroups = withConnection ":memory:" \conn -> do
   query_ conn "SELECT typed_sum(i), typed_sum(i + 1) FROM range(10) t(i)" >>= (@?= [(45 :: Int64, 55 :: Int64)])
 
 -- | One stripe gives the same results as the default stripes, also with
--- partial states from 4 threads. A stripe count of 0 fails the open.
+-- partial states from 4 threads. More stripes than states give the same
+-- results. A connection with another stripe count calls the aggregate of a
+-- first connection. A stripe count of 0 fails the open.
 testAggregateStripes :: Assertion
 testAggregateStripes = do
   withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionAggregateStripes = 1} \conn -> do
@@ -616,11 +620,34 @@ testAggregateStripes = do
     void (execute_ conn "CREATE TABLE typed_numbers AS SELECT i FROM range(300000) t(i)")
     assertColumnsEqual conn "SELECT typed_sum(i), sum(i)::BIGINT FROM typed_numbers GROUP BY i % 1000"
     assertColumnsEqual conn "SELECT typed_sum(i), sum(i)::BIGINT FROM typed_numbers"
+  withEnvironment \environment -> withInstance environment [] \instance' ->
+    bracket (connectWithOptions instance' defaultConnectionOptions{connectionAggregateStripes = 1000}) close \first ->
+      bracket (connectWithOptions instance' defaultConnectionOptions{connectionAggregateStripes = 1}) close \second -> do
+        createAggregate first "typed_wide_sum" sumAggregate
+        forM_ [first, second] \conn -> do
+          assertColumnsEqual conn "SELECT typed_wide_sum(i), sum(i)::BIGINT FROM range(10) t(i) GROUP BY i % 3"
+          assertColumnsEqual conn "SELECT typed_wide_sum(i), sum(i)::BIGINT FROM range(10) t(i)"
   try (withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionAggregateStripes = 0} (const (pure ()))) >>= \case
     Left (err :: SQLError) -> do
       sqlErrorType err @?= Just ErrorInputInvalid
       assertBool ("unexpected message: " <> show err) ("connectionAggregateStripes" `Text.isInfixOf` sqlErrorMessage err)
     Right () -> assertFailure "a stripe count of 0 opened a connection"
+
+-- | The callbacks of an aggregate do not keep the connection that registered
+-- it. A connection with no close and no query becomes garbage, and its
+-- finalizer closes it. The aggregate still runs on another connection of the
+-- database.
+testAggregateConnectionRelease :: Assertion
+testAggregateConnectionRelease = withEnvironment \environment -> withInstance environment [] \instance' -> do
+  weak <- do
+    conn <- connect instance'
+    createAggregate conn "typed_dropped_sum" sumAggregate
+    mkWeakIORef (connectionState conn) (pure ())
+  performMajorGC
+  performMajorGC
+  deRefWeak weak >>= assertBool "the aggregate keeps the connection that registered it" . isNothing
+  withConnectionOn instance' \other ->
+    query_ other "SELECT typed_dropped_sum(i) FROM range(10) t(i)" >>= (@?= [Only (45 :: Int64)])
 
 -- | Skip the rows with NULL. A group without other rows gives the initial result.
 testAggregateNulls :: Assertion
@@ -1300,8 +1327,10 @@ testTableExceptions = withConnection ":memory:" \conn -> do
   query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
 
 -- | Evaluate only the columns that the query uses. A column that the query does
--- not use can raise an exception, and the query does not fail. SELECT * and
--- count(*) read the rows as before.
+-- not use can raise an exception, and the query does not fail. A column in
+-- WHERE or in ORDER BY is a column that the query uses. SELECT * reads all
+-- columns, and count(*) reads the first column. The row is evaluated with each
+-- strict field.
 testTableProjection :: Assertion
 testTableProjection = withConnection ":memory:" \conn -> do
   createTableFunction conn "typed_pairs" ["n", "failing"] \(Only count) ->
@@ -1311,7 +1340,29 @@ testTableProjection = withConnection ":memory:" \conn -> do
   assertSqlError "typed_pairs: the column fails" (query_ conn "SELECT failing FROM typed_pairs(3000)" :: IO [Only Int64])
   query_ conn "SELECT failing FROM typed_pairs(3)" >>= (@?= map Only [0, 2, 4 :: Int64])
   query_ conn "SELECT * FROM typed_pairs(3)" >>= (@?= ([(0, 0), (1, 2), (2, 4)] :: [(Int64, Int64)]))
-  query_ conn "SELECT count(*) FROM typed_pairs(2000)" >>= (@?= [Only (2000 :: Int64)])
+  query_ conn "SELECT failing, n FROM typed_pairs(3)" >>= (@?= ([(0, 0), (2, 1), (4, 2)] :: [(Int64, Int64)]))
+  assertSqlError "typed_pairs: the column fails" (query_ conn "SELECT failing, n FROM typed_pairs(3000)" :: IO [(Int64, Int64)])
+  query_ conn "SELECT n, n FROM typed_pairs(3000) WHERE n % 1000 = 1" >>= (@?= ([(1, 1), (1001, 1001), (2001, 2001)] :: [(Int64, Int64)]))
+  query_ conn "SELECT failing, failing FROM typed_pairs(3)" >>= (@?= ([(0, 0), (2, 2), (4, 4)] :: [(Int64, Int64)]))
+  query_ conn "SELECT n FROM typed_pairs(3) WHERE failing > 2" >>= (@?= [Only (2 :: Int64)])
+  query_ conn "SELECT n FROM typed_pairs(3) ORDER BY failing DESC" >>= (@?= map Only [2, 1, 0 :: Int64])
+  assertSqlError "typed_pairs: the column fails" (query_ conn "SELECT n FROM typed_pairs(3000) WHERE failing >= 0" :: IO [Only Int64])
+  assertSqlError "typed_pairs: the column fails" (query_ conn "SELECT n FROM typed_pairs(3000) ORDER BY failing" :: IO [Only Int64])
+  query_ conn "SELECT count(*) FROM typed_pairs(3000)" >>= (@?= [Only (3000 :: Int64)])
+  createTableFunction conn "typed_pairs_first" ["failing", "n"] \(Only count) ->
+    pure [(if n == 2500 then error "typed_pairs_first: the column fails" else n * 2, n) | n <- [0 .. count - 1 :: Int64]]
+  assertSqlError "typed_pairs_first: the column fails" (query_ conn "SELECT count(*) FROM typed_pairs_first(3000)" :: IO [Only Int64])
+  query_ conn "SELECT n FROM typed_pairs_first(3000) WHERE n % 1000 = 1" >>= (@?= map Only [1, 1001, 2001 :: Int64])
+  createTableFunction conn "typed_strict_pairs" ["n", "failing"] \(Only count) ->
+    pure [StrictPair n (if n == 2500 then error "typed_strict_pairs: the field fails" else n * 2) | n <- [0 .. count - 1 :: Int64]]
+  query_ conn "SELECT n FROM typed_strict_pairs(3)" >>= (@?= map Only [0, 1, 2 :: Int64])
+  assertSqlError "typed_strict_pairs: the field fails" (query_ conn "SELECT n FROM typed_strict_pairs(3000)" :: IO [Only Int64])
+
+-- | A row type with strict fields.
+data StrictPair = StrictPair !Int64 !Int64
+  deriving (Generic)
+
+instance TypedRow StrictPair
 
 -- | Release the list of each scan after a full scan, after LIMIT, and after an
 -- error. Each call makes a token. The rows that the scan did not read refer to

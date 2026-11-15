@@ -20,8 +20,8 @@ literals.
 ## Shared environments and instances
 
 Use an explicit instance when several connections must share catalogs and
-configuration. Each connection supports one active native stream. Use a separate
-connection for each concurrent worker.
+configuration. Each connection has at most one open native result. Use a
+separate connection for each concurrent worker.
 Wait for child creation and all worker operations to finish before calling
 `closeInstance` or `closeEnvironment`. Closing a parent also closes its children.
 
@@ -858,7 +858,7 @@ holds each of its values.
 - The query functions release their results, prepared statements, and values
   after use, and return a Haskell list of all rows. Folds and cursors decode
   rows incrementally from owned native chunks. The materialized functions of
-  `Database.DuckDB.Simple` drain and close the native cursor before row
+  `Database.DuckDB.Simple` drain and close the native result before row
   callbacks; the streaming functions of `Database.DuckDB.Simple.Streaming` do
   not.
 - `execute`/`query` variants reset statement bindings each run so prepared
@@ -918,8 +918,8 @@ success or an exception. The accumulator determines Haskell memory use.
 chunks. This API materializes the native result before the first row is
 returned. These functions avoid a complete Haskell row list, but native memory
 use still depends on the result size. The materialized functions close the
-native cursor before row delivery. A row callback can run another query on the same
-connection.
+native result before row delivery. A row callback can run another query on the
+same connection.
 
 ```haskell
 import Database.DuckDB.Simple
@@ -961,7 +961,7 @@ The first cursor fetch selects the execution mode. The mode stays until
 `bind`, `bindNamed`, `clearStatementBindings`, or `executeStatement` releases
 the result. Switching between materialized and streaming `nextRow` calls
 retains that mode.
-Keep the connection dedicated to the active stream. Until the stream is
+Keep the connection dedicated to the explicit stream. Until the stream is
 complete, DuckDB rejects other statements on that connection with the
 `ErrorResourceInUse` error of DuckDB. If you close an incomplete stream, DuckDB
 aborts its statement. In autocommit mode, DuckDB rolls back the writes of that
@@ -1007,9 +1007,9 @@ and text columns. It is a test dependency of this repository; applications
 that use it must declare their own dependency on `dataframe-arrow-bridge`.
 
 Arrow export uses V2 Arrow results. The materialized `foldArrow` retains owned
-batches and closes the native cursor before callbacks start. Its memory use
+batches and closes the native result before callbacks start. Its memory use
 depends on the result size. The streaming `foldArrow` delivers each batch while
-the native cursor remains open.
+the native result remains open.
 
 ### VARIANT
 
@@ -1061,7 +1061,7 @@ The library uses a separate helper connection for VARIANT decoder metadata.
 It caches the parsed VARIANT metadata statement and the types for VARIANT
 casts. It batches VARIANT
 metadata queries. It constructs VARIANT types directly through the native
-factory. This preserves an active stream on the caller's connection. The
+factory. This preserves an explicit stream on the caller's connection. The
 helper connection has the settings of the database, not the session settings of
 the caller, so a GLOBAL `max_expression_depth` below 11 makes each VARIANT read,
 and each COPY TO of a VARIANT column, fail with a Binder Error.

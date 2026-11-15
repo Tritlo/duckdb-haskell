@@ -477,11 +477,10 @@ keys, a registration with an argument type that the library cannot read, a
 time of day after 24:00:00, a TIMETZ offset outside -57599 to 57599 seconds, a
 DECIMAL width above 38, and an `Integer` field of a record outside HUGEINT.
 
-A statement in a callback can wait for a lock of the connection that runs the
-callback. After the time limit of `connectionCallbackLockWait`, that statement
-raises an `SQLError` of the type `ErrorResourceInUse`. The statement that runs
-the callback then fails with the error type that DuckDB gives for an error of a
-callback, and its message contains the text of the inner error. A statement on
+A statement in a callback that waits for a lock of the connection longer than
+the time limit of `connectionCallbackLockWait` raises an `SQLError` of the type
+`ErrorResourceInUse` ([User-Defined Functions](#user-defined-functions) gives
+the rule). A statement on
 a connection that streams a result, for example in the step of a fold, also
 gives `ErrorResourceInUse`, and so does a close of an environment that has an
 open instance. Other errors of the library have no type, for example an
@@ -861,11 +860,9 @@ in the application:
   closed.
 - `close`. Wait for all operations on the connection before you close it.
 
-A callback must not execute another query on its active connection or close
-that connection. With the default API, such a query waits for the lock of the
-active query. After the time limit of `connectionCallbackLockWait` (10
-seconds by default), it raises an `SQLError`. See
-[User-Defined Functions](#user-defined-functions) for the rule and its limits.
+A callback must not run a statement on the connection that runs the callback,
+or close that connection: [User-Defined Functions](#user-defined-functions)
+gives the rule, its time limit, and its limits.
 
 Link your executable with `ghc-options: -threaded` to allow prompt cancellation
 of native queries, including Ctrl-C. On cancellation, the library interrupts
@@ -1270,7 +1267,8 @@ as many capabilities as DuckDB has threads, for example with
 `ghc-options: -threaded -rtsopts "-with-rtsopts=-N"`, or set the DuckDB setting
 `threads` to 1.
 
-A callback must not run a statement on the connection that runs the callback.
+A callback must not run a statement on the connection that runs the callback,
+and it must not close that connection.
 Use another connection of the same instance. This rule applies to each
 registered callback, for example of a scalar function, a cast, an aggregate
 function, a table function, a COPY format, a replacement scan, a pragma, or a
@@ -1288,8 +1286,9 @@ That wait has a time limit. `connectionCallbackLockWait` in
 `defaultCallbackLockWait`, 10 seconds, and `Nothing` sets no time limit. When
 the time limit ends, the statement in the callback raises an `SQLError` of the
 type `ErrorResourceInUse`, and its text gives the rule. If the callback does
-not catch the error, DuckDB fails the outer statement with the text of that
-error, and the connection can run the next statement. DuckDB ignores the error
+not catch the error, DuckDB fails the outer statement with the error type that
+DuckDB gives for an error of a callback, and its message contains the text of
+that error. The connection can run the next statement. DuckDB ignores the error
 of a log sink. The time limit applies to each wait of a callback for the lock
 of a connection. It applies also to another connection that a different
 statement uses. If callbacks share a connection that runs slow statements, set

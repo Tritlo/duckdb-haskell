@@ -121,6 +121,7 @@ import Database.DuckDB.Simple.FromField (
   IntervalValue (..),
   ResultError (..),
   TimeWithZone (..),
+  fieldTypeName,
   returnError,
  )
 import Database.DuckDB.Simple.Internal (duckDBTypeToName)
@@ -353,7 +354,7 @@ instance {-# OVERLAPPABLE #-} (DuckValue a) => DuckValue [a] where
   duckFromField = duckFromTypedField (LogicalTypeScalar LogicalTypeIdVariant)
   duckFromTypedField logical (FieldList fvs) = traverse (duckFromTypedField (listElementType logical)) fvs
   duckFromTypedField logical (FieldArray arr) = traverse (duckFromTypedField (listElementType logical)) (elems arr)
-  duckFromTypedField _ other = unexpectedValue "LIST or ARRAY" other
+  duckFromTypedField logical other = unexpectedTypedValue logical "LIST or ARRAY" other
 
 -- | Array values encode as DuckDB ARRAY values. A type has no size, so the
 -- instance declares the size 0. When a generic record binds, the value of an
@@ -375,7 +376,7 @@ instance (DuckValue a) => DuckValue (Array Int a) where
     decoded <- traverse (duckFromTypedField (listElementType logical)) values
     let (low, high) = (0, length decoded - 1)
     pure (listArray (low, high) decoded)
-  duckFromTypedField _ other = unexpectedValue "ARRAY" other
+  duckFromTypedField logical other = unexpectedTypedValue logical "ARRAY" other
 
 -- | Map values encode as DuckDB MAP.
 instance (Ord k, DuckValue k, DuckValue v) => DuckValue (Map.Map k v) where
@@ -396,13 +397,18 @@ instance (Ord k, DuckValue k, DuckValue v) => DuckValue (Map.Map k v) where
         k <- duckFromTypedField keyType kfv
         v <- duckFromTypedField valueType vfv
         pure (k, v)
-  duckFromTypedField _ other = unexpectedValue "MAP" other
+  duckFromTypedField logical other = unexpectedTypedValue logical "MAP" other
 
 -- | The error of a decoder that does not read a value. The text has the form of
 -- each other read error: it names the SQL type of the value, not the value,
 -- because a value can be large.
 unexpectedValue :: String -> FieldValue -> Either String a
 unexpectedValue expected value = Left (displayException (Incompatible (valueTypeName value) Text.empty (Text.pack expected) Text.empty))
+
+-- | The error of a decoder that does not read a value of a place with a SQL
+-- type. It names the type as 'returnError' does.
+unexpectedTypedValue :: LogicalTypeRep -> String -> FieldValue -> Either String a
+unexpectedTypedValue logical expected value = Left (displayException (Incompatible (fieldTypeName logical value) Text.empty (Text.pack expected) Text.empty))
 
 --------------------------------------------------------------------------------
 -- Generic machinery

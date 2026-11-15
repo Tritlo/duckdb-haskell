@@ -96,18 +96,22 @@ timeTests =
           assertConversionError (query_ conn "SELECT 'infinity'::TIMESTAMPTZ" :: IO [Only UTCTime])
           assertConversionError (query_ conn "SELECT 'infinity'::TIMESTAMP" :: IO [Only TimeOfDay])
           (query_ conn "SELECT 42" :: IO [Only Int]) >>= (@?= [Only 42])
-      , testCase "a conversion error gives the DuckDB names TIMESTAMPTZ and TIMETZ" $ withConnection ":memory:" $ \conn -> do
+      , testCase "a conversion error names a time zone type as DuckDB does" $ withConnection ":memory:" $ \conn -> do
           [(timestamp, time)] <- query_ conn "SELECT TIMESTAMPTZ '2000-01-02 03:04:05+00', TIMETZ '03:04:05+00'"
           forM_ [(timestamp, "TIMESTAMPTZ"), (time, "TIMETZ")] $ \(value, name) ->
             case fromField Field{fieldName = "value", fieldIndex = 0, fieldValue = value, fieldType = LogicalTypeScalar LogicalTypeIdVariant} :: Ok Int64 of
               Errors errors -> map (fmap errSQLType . fromException) errors @?= [Just name]
               Ok number -> assertFailure ("expected a conversion error, got " <> show number)
-          -- The message of a query has the same name.
-          forM_ [("SELECT TIMESTAMPTZ '2000-01-02 03:04:05+00'", " has type TIMESTAMPTZ "), ("SELECT TIMETZ '03:04:05+00'", " has type TIMETZ ")] $ \(sql, expected) -> do
-            result <- try (query_ conn sql :: IO [Only Int64])
-            case result of
-              Left SQLError{sqlErrorMessage = message} -> assertBool (Text.unpack message) (expected `Text.isInfixOf` message)
-              Right rows -> assertFailure ("expected a conversion error, got " <> show rows)
+          -- The message of a query names the column type with the text of DuckDB.
+          forM_
+            [ ("SELECT TIMESTAMPTZ '2000-01-02 03:04:05+00'", " has type TIMESTAMP WITH TIME ZONE ")
+            , ("SELECT TIMETZ '03:04:05+00'", " has type TIME WITH TIME ZONE ")
+            ]
+            $ \(sql, expected) -> do
+              result <- try (query_ conn sql :: IO [Only Int64])
+              case result of
+                Left SQLError{sqlErrorMessage = message} -> assertBool (Text.unpack message) (expected `Text.isInfixOf` message)
+                Right rows -> assertFailure ("expected a conversion error, got " <> show rows)
       , testCase "custom FromField receives native infinity" $ withConnection ":memory:" $ \conn ->
           ( query_ conn "SELECT value FROM (VALUES ('-infinity'::DATE), (DATE '2000-01-02'), ('infinity'::DATE)) t(value) ORDER BY value"
               :: IO [Only InfinitySign]

@@ -35,6 +35,7 @@ module Database.DuckDB.Simple.FromField (
   FieldParser,
   FromField (..),
   returnError,
+  fieldTypeName,
 ) where
 
 import Control.Exception (Exception (..), SomeException (..))
@@ -66,7 +67,9 @@ import Database.DuckDB.Simple.LogicalRep (
   TupleValue (..),
   UnionMemberType (..),
   UnionValue (..),
+  aliasBase,
   listElementType,
+  logicalTypeSQL,
   mapEntryTypes,
  )
 import Database.DuckDB.Simple.Ok
@@ -323,7 +326,7 @@ environment closes reads the type.
 data ResultError
   = -- | The SQL and Haskell types are not compatible.
     Incompatible
-      { errSQLType :: Text
+      { errSQLType :: ~Text
       , errSQLField :: Text
       , errHaskellType :: Text
       , errMessage :: Text
@@ -331,7 +334,7 @@ data ResultError
   | -- | A SQL @NULL@ was encountered when the Haskell
     --       type did not permit it.
     UnexpectedNull
-      { errSQLType :: Text
+      { errSQLType :: ~Text
       , errSQLField :: Text
       , errHaskellType :: Text
       , errMessage :: Text
@@ -341,7 +344,7 @@ data ResultError
     --       unexpected low-level error occurred (e.g. mismatch
     --       between metadata and actual data in a row).
     ConversionFailed
-      { errSQLType :: Text
+      { errSQLType :: ~Text
       , errSQLField :: Text
       , errHaskellType :: Text
       , errMessage :: Text
@@ -399,10 +402,10 @@ them.
 The instances do not read a pair whose cast needs data that the decoded value
 does not have, or whose value the library cannot give exactly. A read of such a
 pair raises Incompatible, as for each other pair that an instance does not
-read. The error names the SQL type of the decoded value, which is not always
-the name that typeof gives: a TIMESTAMP_S, TIMESTAMP_MS, or TIMESTAMP_NS value
-is TIMESTAMP, a TIMESTAMPTZ_NS value is TIMESTAMPTZ, a VARIANT value has the
-type of its payload, and the error of a String names Text. These pairs are:
+read. The error names the SQL type of the column in the text of DuckDB
+(fieldTypeName), for example TIMESTAMP_NS or DECIMAL(18,3). For a column of the
+type VARIANT, it names the type of the stored value, and the error of a String
+names Text. The text costs nothing until the error renders. These pairs are:
 
 - UTCTime from TIMESTAMP, TIMESTAMP_S, TIMESTAMP_MS, TIMESTAMP_NS, and DATE, and
   LocalTime from TIMESTAMPTZ and TIMESTAMPTZ_NS. These casts use the TimeZone
@@ -1050,16 +1053,25 @@ boundedFromInteger f@Field{} value
 -- | Helper to construct a ResultError with field context.
 -- based on postgresql-simple's implementation
 returnError :: forall b. (Typeable b) => (Text -> Text -> Text -> Text -> ResultError) -> Field -> Text -> Ok b
-returnError mkError Field{fieldValue, fieldName} msg =
+returnError mkError Field{fieldValue, fieldName, fieldType} msg =
   Errors
     [ SomeException $
         mkError
-          (fieldValueTypeName fieldValue)
+          (fieldTypeName fieldType fieldValue)
           fieldName
           (Text.pack $ show (typeRep (Proxy @b)))
           msg
     ]
 
+-- | The SQL type name of a field in an error: the text of its type, or the type
+-- of the stored value when the type is VARIANT. See
+-- Note [Reads of another SQL type].
+fieldTypeName :: LogicalTypeRep -> FieldValue -> Text
+fieldTypeName logical value = case aliasBase logical of
+  LogicalTypeScalar LogicalTypeIdVariant -> fieldValueTypeName value
+  _ -> logicalTypeSQL logical
+
+-- | The SQL type name of a decoded value.
 fieldValueTypeName :: FieldValue -> Text
 fieldValueTypeName = \case
   FieldNull -> "NULL"

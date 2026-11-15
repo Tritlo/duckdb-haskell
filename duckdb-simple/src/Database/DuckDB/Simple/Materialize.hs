@@ -58,6 +58,7 @@ import Database.DuckDB.Simple.LogicalRep (
   UnionMemberType (..),
   UnionValue (..),
   aliasBase,
+  logicalTypeSQL,
  )
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToBaseRep, logicalTypeToRep)
@@ -584,7 +585,7 @@ prepareStructDecoder readers tree vector = do
     tree >>= \case
       LogicalTypeStruct typeArray -> pure typeArray
       other ->
-        throwInternalError (Text.pack ("expected STRUCT logical type, but saw " <> show other))
+        throwInternalError (Text.pack "expected STRUCT logical type, but saw " <> logicalTypeSQL other)
   let typeList = elems structFields
       count = length typeList
       indexMap =
@@ -635,7 +636,7 @@ prepareUnionDecoder readers tree vector = do
     tree >>= \case
       LogicalTypeUnion members -> pure members
       other ->
-        throwInternalError (Text.pack ("expected UNION logical type, but saw " <> show other))
+        throwInternalError (Text.pack "expected UNION logical type, but saw " <> logicalTypeSQL other)
   let membersList = elems membersArray
       memberCount = length membersList
   -- Child 0 of a UNION vector is the tag, and member j is child j + 1. The tag

@@ -473,18 +473,18 @@ tests =
         -- raises the error of an incompatible column at each depth. The cast in
         -- SQL reads.
         forM_
-          [ ("'a'::ENUM('a', 'b')", "ENUM")
-          , ("MAP {'k': 1}", "MAP")
-          , ("union_value(n := 1)", "UNION")
-          , ("{'b': 1, 'a': 2}", "STRUCT")
-          , ("[1, 2]::INTEGER[2]", "ARRAY")
-          , ("row(1, 'x')", "TUPLE")
-          , ("'POINT (1 2)'::GEOMETRY('OGC:CRS84')", "GEOMETRY")
-          , ("['a'::ENUM('a', 'b')]", "LIST")
-          , ("[{'a': 1}]", "LIST")
-          , ("{'v': 1::VARIANT, 'm': MAP {'k': 1}}", "STRUCT")
-          , ("{'b': 1::VARIANT, 'a': 2::VARIANT}", "STRUCT")
-          , ("{'é': 1::VARIANT, 'z': 2::VARIANT}", "STRUCT")
+          [ ("'a'::ENUM('a', 'b')", "ENUM('a', 'b')")
+          , ("MAP {'k': 1}", "MAP(VARCHAR, INTEGER)")
+          , ("union_value(n := 1)", "UNION(n INTEGER)")
+          , ("{'b': 1, 'a': 2}", "STRUCT(b INTEGER, a INTEGER)")
+          , ("[1, 2]::INTEGER[2]", "INTEGER[2]")
+          , ("row(1, 'x')", "TUPLE(INTEGER, VARCHAR)")
+          , ("'POINT (1 2)'::GEOMETRY('OGC:CRS84')", "GEOMETRY('OGC:CRS84')")
+          , ("['a'::ENUM('a', 'b')]", "ENUM('a', 'b')[]")
+          , ("[{'a': 1}]", "STRUCT(a INTEGER)[]")
+          , ("{'v': 1::VARIANT, 'm': MAP {'k': 1}}", "STRUCT(v VARIANT, m MAP(VARCHAR, INTEGER))")
+          , ("{'b': 1::VARIANT, 'a': 2::VARIANT}", "STRUCT(b VARIANT, a VARIANT)")
+          , ("{'é': 1::VARIANT, 'z': 2::VARIANT}", "STRUCT(\"é\" VARIANT, z VARIANT)")
           ]
           \(expression, sqlName) -> do
             result <- try (query_ conn (Query ("SELECT " <> expression <> " AS c")) :: IO [Only Variant])

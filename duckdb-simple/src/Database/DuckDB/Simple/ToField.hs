@@ -82,6 +82,7 @@ import Database.DuckDB.Simple.LogicalRep (
   TypeDeclaration (..),
   UnionMemberType (..),
   UnionValue (..),
+  logicalTypeSQL,
   structValueTypeRep,
   tupleValueTypeRep,
   unionValueTypeRep,
@@ -1633,7 +1634,7 @@ fieldValueWithTypeDuckValue builder@ValueBuilder{builderFactory = factory, build
   (LogicalTypeUnion _, FieldUnion union)
     | sameBase (unionValueTypeRep union) -> unionValueDuckValue builder union
   (LogicalTypeEnum entries, FieldEnum _ label) -> enumDuckValue factory entries label
-  _ -> typeMismatch (show rep) value
+  _ -> typeMismatch rep value
   where
     -- See Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep".
     sameBase other = withoutAliases rep == withoutAliases other
@@ -1753,8 +1754,11 @@ withIdentifiers names action = do
     throwInvalidArgument "logical type name contains NUL"
   withIdentifierArray names action
 
-typeMismatch :: String -> FieldValue -> IO a
-typeMismatch expected actual = throwInvalidArgument ("cannot encode a value of type " <> valueTypeName actual <> " as " <> Text.pack expected)
+-- | Raise the error of a value that does not fit its declared type. The text
+-- names the type as DuckDB does. See Note [Type texts] in
+-- "Database.DuckDB.Simple.LogicalRep".
+typeMismatch :: LogicalTypeRep -> FieldValue -> IO a
+typeMismatch expected actual = throwInvalidArgument ("cannot encode a value of type " <> valueTypeName actual <> " as " <> logicalTypeSQL expected)
 
 -- | Construct a GEOMETRY value of the declared CRS from a raw geometry. See
 -- Note [Raw GEOMETRY parameters], and Note [User casts and the casts of the library] in

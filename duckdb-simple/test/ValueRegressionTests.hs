@@ -12,6 +12,7 @@
 -- Description : Regression tests for exact values and controlled conversion failures.
 module ValueRegressionTests (main, valueRegressionTests) where
 
+import Control.Applicative ((<|>))
 import Control.Exception (bracket, fromException, try)
 import Control.Monad (forM_)
 import Data.Array (Array, elems, listArray)
@@ -78,6 +79,14 @@ data FieldTypeOf = FieldTypeOf LogicalTypeRep
 
 instance FromField FieldTypeOf where
   fromField Field{fieldType} = Ok (FieldTypeOf fieldType)
+
+-- | An Int64, or else a Text. A read of an ENUM value fails as Int64, and no
+-- one renders that error.
+newtype IntOrText = IntOrText (Either Int64 Text)
+  deriving (Eq, Show)
+
+instance FromField IntOrText where
+  fromField f = IntOrText <$> ((Left <$> fromField f) <|> (Right <$> fromField f))
 
 -- | The text of a native type, from duckdb_v2_logical_type_to_text.
 nativeTypeText :: DuckDBV2LogicalTypeHandle -> IO Text
@@ -590,7 +599,7 @@ valueRegressionTests =
           >>= \case
             Left SQLError{sqlErrorType, sqlErrorMessage} -> do
               sqlErrorType @?= Just ErrorInputInvalid
-              assertBool (Text.unpack sqlErrorMessage) ("cannot encode a value of type INTEGER as " `Text.isInfixOf` sqlErrorMessage)
+              assertBool (Text.unpack sqlErrorMessage) ("cannot encode a value of type INTEGER as BIGINT[]" `Text.isSuffixOf` sqlErrorMessage)
             Right rows -> assertFailure ("expected the encode error, got " <> show rows)
         (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
     , testCase "a declared NULL type binds NULL and rejects a value that is not NULL" $ withConnection ":memory:" \conn -> do
@@ -1361,15 +1370,15 @@ valueRegressionTests =
         refused
           (Proxy @Holder)
           (holder "MAP {'k': 1}" "[4, 5]::INTEGER[2]" "MAP {'k': 6}")
-          "duckdb-simple: field listField: a value has type MAP but expected LIST or ARRAY"
+          "duckdb-simple: field listField: a value has type MAP(VARCHAR, INTEGER) but expected LIST or ARRAY"
         refused
           (Proxy @Holder)
           (holder "[1]" "[4, 5]" "MAP {'k': 6}")
-          "duckdb-simple: field arrayField: a value has type LIST but expected ARRAY"
+          "duckdb-simple: field arrayField: a value has type INTEGER[] but expected ARRAY"
         refused
           (Proxy @Holder)
           (holder "[1]" "[4, 5]::INTEGER[2]" "[6]")
-          "duckdb-simple: field mapField: a value has type LIST but expected MAP"
+          "duckdb-simple: field mapField: a value has type INTEGER[] but expected MAP"
         refused (Proxy @Holder) "SELECT 7" "duckdb-simple: a value has type INTEGER but expected STRUCT for a product type"
         refused (Proxy @Colour) "SELECT {'a': 1}" "duckdb-simple: a value has type STRUCT but expected UNION for a sum type"
         refused
@@ -1386,17 +1395,17 @@ valueRegressionTests =
         -- See Note [Reads of another SQL type] in "Database.DuckDB.Simple.FromField".
         let refusedPairs = do
               forM_ ["TIMESTAMP", "TIMESTAMP_S", "TIMESTAMP_MS", "TIMESTAMP_NS"] \source -> do
-                assertIncompatible conn ("'2024-01-02 03:04:05'::" <> source) () "TIMESTAMP" (Proxy @UTCTime) "UTCTime"
-                assertIncompatible conn ("'2024-01-02 03:04:05'::" <> source) () "TIMESTAMP" (Proxy @(Unbounded UTCTime)) "Unbounded UTCTime"
+                assertIncompatible conn ("'2024-01-02 03:04:05'::" <> source) () source (Proxy @UTCTime) "UTCTime"
+                assertIncompatible conn ("'2024-01-02 03:04:05'::" <> source) () source (Proxy @(Unbounded UTCTime)) "Unbounded UTCTime"
               assertIncompatible conn "DATE '2024-01-02'" () "DATE" (Proxy @UTCTime) "UTCTime"
               assertIncompatible conn "DATE '2024-01-02'" () "DATE" (Proxy @(Unbounded UTCTime)) "Unbounded UTCTime"
-              forM_ ["TIMESTAMPTZ", "TIMESTAMPTZ_NS"] \source -> do
-                assertIncompatible conn ("'2024-01-02 03:04:05+00'::" <> source) () "TIMESTAMPTZ" (Proxy @LocalTime) "LocalTime"
+              forM_ [("TIMESTAMPTZ", "TIMESTAMP WITH TIME ZONE"), ("TIMESTAMPTZ_NS", "TIMESTAMPTZ_NS")] \(source, sqlName) -> do
+                assertIncompatible conn ("'2024-01-02 03:04:05+00'::" <> source) () sqlName (Proxy @LocalTime) "LocalTime"
                 assertIncompatible
                   conn
                   ("'2024-01-02 03:04:05+00'::" <> source)
                   ()
-                  "TIMESTAMPTZ"
+                  sqlName
                   (Proxy @(Unbounded LocalTime))
                   "Unbounded LocalTime"
               forM_ [("FLOAT", "0.01::FLOAT"), ("DOUBLE", "0.01::DOUBLE")] \(sqlName, expression) -> do
@@ -1406,7 +1415,7 @@ valueRegressionTests =
               -- An integer type does not read an ENUM value. The cast of DuckDB
               -- parses the label, and enum_code gives the index.
               let enumAs :: (FromField a, Show a) => Proxy a -> Text -> Assertion
-                  enumAs = assertIncompatible conn "'10'::ENUM('10', '20')" () "ENUM"
+                  enumAs = assertIncompatible conn "'10'::ENUM('10', '20')" () "ENUM('10', '20')"
               enumAs (Proxy @Int8) "Int8"
               enumAs (Proxy @Int16) "Int16"
               enumAs (Proxy @Int32) "Int32"
@@ -1604,7 +1613,7 @@ valueRegressionTests =
               -- The type is the type that DuckDB gives for the type text.
               bracket (R.withText text (R.output . c_duckdb_v2_factory_create_type_from_text factory)) destroyLogicalType \parsed ->
                 R.output (c_duckdb_v2_logical_type_is_equal handle parsed) >>= (@?= 1)
-    , testCase "logicalTypeSQL gives the type text of DuckDB for each kind" $ withConnection ":memory:" \conn -> do
+    , testCase "logicalTypeSQL gives the type text of DuckDB for each kind, and a read error names that text" $ withConnection ":memory:" \conn -> do
         R.registerCustomType conn "money" (StructuredType (LogicalTypeDecimal 9 2))
         keywords <- map fromOnly <$> (query_ conn "SELECT DISTINCT keyword_name FROM duckdb_keywords() ORDER BY 1" :: IO [Only Text])
         let keywordStruct = "STRUCT(" <> Text.intercalate ", " ["\"" <> keyword <> "\" INTEGER" | keyword <- keywords] <> ")"
@@ -1638,6 +1647,10 @@ valueRegressionTests =
                 expected <- nativeTypeText logical
                 rep <- logicalTypeToRep logical
                 assertEqual (Text.unpack (Text.take 80 text)) expected (logicalTypeSQL rep)
+        -- A read error names the column type. Under VARIANT it names the type of
+        -- the stored value.
+        assertIncompatible conn "1.5::DECIMAL(18,3)" () "DECIMAL(18,3)" (Proxy @Text) "Text"
+        assertIncompatible conn "(1.5::DECIMAL(18,3))::VARIANT" () "DECIMAL" (Proxy @Text) "Text"
     , testCase "a user FromField checks the type of a column, an element, a MAP key and value, and a record field" $ withConnection ":memory:" \conn -> do
         query_ conn "SELECT 1.25::DECIMAL(9,2), TIMESTAMP_NS '2024-01-02 03:04:05.123456789', [1, 2, 3]::INTEGER[3], '{\"a\": 1}'::JSON"
           >>= (@?= [(Checked "decimal", Checked "timestamp_ns", Checked "array", Checked "json")])
@@ -1673,6 +1686,10 @@ valueRegressionTests =
         _ <- readLabel
         (labels, withoutType) <- allocation readLabel
         labels @?= [Only "label7"]
+        -- A failed read whose error no one renders converts no type.
+        (alternative, withoutRender) <- allocation (query_ conn "SELECT 'label7'::wide" :: IO [Only IntOrText])
+        alternative @?= [Only (IntOrText (Right "label7"))]
+        assertBool ("the read with a failed alternative allocated " <> show withoutRender <> " bytes") (withoutRender < 1000000)
         [Only (FieldTypeOf logical)] <- query_ conn "SELECT 'label7'::wide"
         (size, conversion) <- allocation case logical of
           LogicalTypeEnum entries -> pure (length (elems entries))

@@ -182,10 +182,11 @@
 - Preserve the digits below a microsecond of a `TimeOfDay`, a `LocalTime`, and
   a `UTCTime`, and of their `Unbounded` forms, for a nanosecond parameter
   (`TIME_NS`, `TIMESTAMP_NS`, or `TIMESTAMPTZ_NS`), also in collections,
-  STRUCTs, MAPs, and UNIONs. A scalar value for a `VARIANT` parameter keeps
-  them when it fits the range of the nanosecond type (see the entry on
-  `VARIANT` parameters below). Only a value with such digits reads the
-  parameter type. Each other parameter gets the microsecond value,
+  STRUCTs, MAPs, and UNIONs. For a `VARIANT` parameter, one such value keeps
+  them when it fits the range of the nanosecond type, but the elements of a
+  list, an `Array`, or a `Map` of such values get the microsecond value (see
+  the entry on `VARIANT` parameters below). Only a value with such digits
+  reads the parameter type. Each other parameter gets the microsecond value,
   as for the SQL literal. An explicit cast such as `?::TIMESTAMP_NS` makes a
   nanosecond parameter, so for a `TIMESTAMP` column DuckDB rounds the value to
   the microsecond, where a plain `?` cuts the digits. Version 0.3 bound the
@@ -284,11 +285,13 @@
   and a `FieldTime`, a `FieldTimestamp`, or a `FieldTimestampTZ` with such
   digits, binds with the nanosecond type for a nanosecond parameter, and for a
   `VARIANT` parameter when it fits the range of that type, so the VARIANT keeps
-  the digits. A value with no such
-  digits binds as before, with no read of the parameter type. A value outside
-  the range of the nanosecond type, an element of a list, an `Array`, or a
-  `Map` for a `VARIANT` parameter, and an element of a `VARIANT` list or map
-  keep the microsecond value. A `Variant` payload follows the same rule.
+  the digits. A value with no such digits binds as before, with no read of the
+  parameter type. These values get the microsecond value: a value outside the
+  range of the nanosecond type, an element of a list, an `Array`, or a `Map`
+  for a `VARIANT` parameter, an element of a `VARIANT[]` parameter, and a value
+  of a MAP parameter with `VARIANT` values. A time value in the payload of a
+  `Variant` keeps its digits when it fits the range of the nanosecond type,
+  also as an element of a `FieldList` payload.
 - An empty `Array` and an empty `FieldArray` raise the same `SQLError`, of the
   type `ErrorInputInvalid`.
 - Add a parameter instance for `FieldValue`, so a row read as `[FieldValue]`

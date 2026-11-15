@@ -614,6 +614,11 @@ extensionRegressionTests =
             -- A size of 0 gives no bytes, also past the end, as in DuckDB.
             FileSystem.readFileHandleAt handle 20 0 >>= (@?= BS.empty)
             FileSystem.readFileHandleAt handle 12 4 >>= (@?= BS.pack [12 .. 15])
+    , testCase "a positioned write checks that its end fits in Int64" $
+        withTemporaryFile \path -> withConnection ":memory:" \conn ->
+          FileSystem.withFileHandle conn path [FileSystem.FileFlagWrite] \handle -> do
+            assertSqlErrorContaining "file write range exceeds Int64 range" $ FileSystem.writeFileHandleAt handle (maxBound - 1) (BS.pack [1, 2])
+            FileSystem.fileHandleSize handle >>= (@?= 0)
     , testCase "file flags of the other file tests create read and write a file" $
         withTemporaryFile \path -> withConnection ":memory:" \conn -> do
           removeFile path

@@ -93,10 +93,12 @@ readFileHandleAt file@(FileHandle handle) offset requested
   where
     size = fromIntegral requested :: Int
 
--- | Write all bytes at an offset without changing the file position.
+-- | Write all bytes at an offset without changing the file position. A range
+-- whose end exceeds the 'Int64' range raises an error.
 writeFileHandleAt :: FileHandle -> Int64 -> BS.ByteString -> IO ()
 writeFileHandleAt (FileHandle handle) offset bytes
   | offset < 0 = fileError "file offset is negative"
+  | toInteger offset + toInteger (BS.length bytes) > toInteger (maxBound :: Int64) = fileError "file write range exceeds Int64 range"
   | otherwise = BS.useAsCStringLen bytes \(ptr, count) ->
       checked (c_duckdb_v2_file_write_at handle (ConstPtr (castPtr ptr)) (fromIntegral count) (fromIntegral offset))
 

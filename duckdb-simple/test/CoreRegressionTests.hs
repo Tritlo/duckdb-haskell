@@ -163,15 +163,24 @@ coreRegressionTests =
         closeStatement stmt
     , testCase "NUL in SQL is rejected" $
         withConnection ":memory:" $ \conn ->
-          assertThrows (query_ conn "SELECT 1\0 + 2" :: IO [Only Int64])
+          assertInputError (query_ conn "SELECT 1\0 + 2" :: IO [Only Int64])
     , testCase "NUL in database path is rejected" $
-        assertThrows (withConnection ":memory:\0suffix" (const (pure ())))
+        assertInputError (withConnection ":memory:\0suffix" (const (pure ())))
     , testCase "NUL in configuration value is rejected" $
-        assertThrows (withConnectionWithConfig ":memory:" [("threads", "1\0suffix")] (const (pure ())))
+        assertInputError (withConnectionWithConfig ":memory:" [("threads", "1\0suffix")] (const (pure ())))
+    , testCase "a column index out of bounds raises the input error with the query" $
+        withConnection ":memory:" $ \conn ->
+          withStatement conn "SELECT 1 AS a" $ \stmt ->
+            forM_ [-1, 1] $ \index -> do
+              assertInputError (columnName stmt index)
+              result <- try (columnName stmt index)
+              case result of
+                Left (err :: SQLError) -> sqlErrorQuery err @?= Just "SELECT 1 AS a"
+                Right name -> assertFailure ("expected the column index error, got " <> show name)
     , testCase "NUL in parameter name is rejected" $
         withConnection ":memory:" $ \conn ->
           withStatement conn "SELECT $value" $ \stmt ->
-            assertThrows (namedParameterIndex stmt "value\0suffix")
+            assertInputError (namedParameterIndex stmt "value\0suffix")
     , testCase "duplicate named bindings are rejected" $
         withConnection ":memory:" $ \conn ->
           withStatement conn "SELECT $foo + $bar" $ \stmt ->
@@ -339,7 +348,9 @@ coreRegressionTests =
             $ \action -> do
               result <- try action
               case result of
-                Left (err :: SQLError) -> assertBool "NUL diagnostic" ("contains NUL" `Text.isInfixOf` sqlErrorMessage err)
+                Left (err :: SQLError) -> do
+                  sqlErrorType err @?= Just ErrorInputInvalid
+                  assertBool "NUL diagnostic" ("contains NUL" `Text.isInfixOf` sqlErrorMessage err)
                 Right () -> assertFailure "expected a NUL error"
           withConnectionOn instance_ $ \conn ->
             query_ conn "SELECT current_database(), count(*) FILTER (WHERE database_name = 'side') FROM duckdb_databases()"
@@ -536,6 +547,16 @@ withConcurrentChildren count acquire release action =
         (failure : _, children) -> mapM_ release children >> throwIO failure
 
 -- | Require an exception without constraining its concrete type.
+-- | Require the error of an input check of the library.
+assertInputError :: IO a -> Assertion
+assertInputError action = do
+  result <- try (void action)
+  case result of
+    Left (err :: SQLError) -> do
+      sqlErrorType err @?= Just ErrorInputInvalid
+      assertBool (Text.unpack (sqlErrorMessage err)) ("duckdb-simple: " `Text.isPrefixOf` sqlErrorMessage err)
+    Right () -> assertFailure "expected the error of an input check"
+
 assertThrows :: IO a -> Assertion
 assertThrows action = do
   result <- try (void action)

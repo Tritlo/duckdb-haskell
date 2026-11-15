@@ -616,8 +616,11 @@ testAggregateStripes = do
     void (execute_ conn "CREATE TABLE typed_numbers AS SELECT i FROM range(300000) t(i)")
     assertColumnsEqual conn "SELECT typed_sum(i), sum(i)::BIGINT FROM typed_numbers GROUP BY i % 1000"
     assertColumnsEqual conn "SELECT typed_sum(i), sum(i)::BIGINT FROM typed_numbers"
-  message <- sqlErrorOf (withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionAggregateStripes = 0} (const (pure ())))
-  assertBool ("unexpected message: " <> Text.unpack message) ("connectionAggregateStripes" `Text.isInfixOf` message)
+  try (withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionAggregateStripes = 0} (const (pure ()))) >>= \case
+    Left (err :: SQLError) -> do
+      sqlErrorType err @?= Just ErrorInputInvalid
+      assertBool ("unexpected message: " <> show err) ("connectionAggregateStripes" `Text.isInfixOf` sqlErrorMessage err)
+    Right () -> assertFailure "a stripe count of 0 opened a connection"
 
 -- | Skip the rows with NULL. A group without other rows gives the initial result.
 testAggregateNulls :: Assertion

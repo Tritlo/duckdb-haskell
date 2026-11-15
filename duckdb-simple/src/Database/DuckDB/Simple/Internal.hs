@@ -49,7 +49,6 @@ module Database.DuckDB.Simple.Internal (
   finalizeChunk,
   connectionClosedError,
   statementClosedError,
-  mkPrepareError,
   keepAlive,
   withInstanceHandle,
   withDatabaseHandle,
@@ -426,7 +425,7 @@ createInstance environment@Environment{environmentState} settings = keepAlive en
       EnvironmentClosed -> throwIO (SQLError "duckdb-simple: environment is closed" Nothing Nothing)
       EnvironmentOpen raw children -> pure (raw, children)
   when (any (\(name, value) -> Text.any (== '\0') name || Text.any (== '\0') value) settings) $
-    throwIO (SQLError "duckdb-simple: configuration contains NUL" Nothing Nothing)
+    throwInvalidArgument "configuration contains NUL"
   let hasWhitelist = any ((`elem` ["allowed_directories", "allowed_paths"]) . Text.toLower . fst) settings
       needsInstance (name, _) = Text.toLower name `elem` runtimeOptions || (hasWhitelist && Text.toLower name == "enable_external_access")
       (deferredSettings, startupSettings) = partition needsInstance settings
@@ -614,7 +613,7 @@ createStatementFromParsedWithCollections parent query parsed collections = withQ
   where
     addCollections statement = forM_ collections \(name, collection, columns) -> do
       when (any (Text.any (== '\0')) (name : columns)) $
-        throwIO (SQLError "duckdb-simple: collection name or column name contains NUL" Nothing (Just query))
+        withQueryError query (throwInvalidArgument "collection name or column name contains NUL")
       withIdentifier name \nativeName -> withIdentifierArray columns \nativeColumns ->
         checked
           ( c_duckdb_v2_statement_add_collection
@@ -633,8 +632,8 @@ withCollectionStatement :: Connection -> Query -> [(Text, DuckDBV2ColumnDataColl
 withCollectionStatement conn queryText collections action = withParsedStatements conn queryText \parsed ->
   case parsed of
     [statement] -> bracket (createStatementFromParsedWithCollections conn queryText statement collections) closeStatementState action
-    [] -> throwIO (mkPrepareError queryText "duckdb-simple: SQL query contains no statement")
-    _ -> throwIO (mkPrepareError queryText "duckdb-simple: prepared SQL contains more than one statement")
+    [] -> withQueryError queryText (throwInvalidArgument "SQL query contains no statement")
+    _ -> withQueryError queryText (throwInvalidArgument "prepared SQL contains more than one statement")
 
 -- | Read the parameter names in binding order. DuckDB sorts all names again
 -- for each name that it returns. DuckDB rejects a mix of named and numbered
@@ -655,15 +654,6 @@ connectionClosedError = SQLError "duckdb-simple: connection is closed" Nothing N
 -- | Error raised when an operation targets a closed statement.
 statementClosedError :: Statement -> SQLError
 statementClosedError Statement{statementQuery} = SQLError "duckdb-simple: statement is closed" Nothing (Just statementQuery)
-
--- | Build an 'SQLError' with a message and its query. It has no native error type.
-mkPrepareError :: Query -> Text -> SQLError
-mkPrepareError queryText msg =
-  SQLError
-    { sqlErrorMessage = msg
-    , sqlErrorType = Nothing
-    , sqlErrorQuery = Just queryText
-    }
 
 -- | Keep a Haskell owner reachable until an action finishes. See
 -- Note [Native handle ownership].
@@ -868,7 +858,7 @@ withQueryError query action = action `catch` \err -> throwIO err{sqlErrorQuery =
 -- | Borrow SQL as a NUL-terminated UTF-8 string.
 withQueryCString :: Query -> (ConstPtr CChar -> IO a) -> IO a
 withQueryCString query@(Query text) action = do
-  when (Text.any (== '\0') text) $ throwIO (SQLError "duckdb-simple: query contains NUL" Nothing (Just query))
+  when (Text.any (== '\0') text) $ withQueryError query (throwInvalidArgument "query contains NUL")
   TextForeign.withCString text (action . ConstPtr)
 
 -- | Copy a UTF-8 C string.
@@ -1062,7 +1052,7 @@ storeBoundValue :: Statement -> DuckDBIdx -> DuckDBV2ValueHandle -> IO ()
 storeBoundValue stmt index value = withStatementHandle stmt \_ -> mask_ do
   let idx = fromIntegral index
   unless (inRange (bounds (statementParameterNames stmt)) idx) $
-    throwIO (SQLError "duckdb-simple: parameter index is out of bounds" Nothing (Just (statementQuery stmt)))
+    withQueryError (statementQuery stmt) (throwInvalidArgument "parameter index is out of bounds")
   previous <- IntMap.lookup idx <$> readIORef (statementBindings stmt)
   mapM_ destroyValue previous
   atomicModifyIORef' (statementBindings stmt) \values -> (IntMap.insert idx value values, ())

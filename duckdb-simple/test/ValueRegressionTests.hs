@@ -1686,7 +1686,10 @@ assertInputError :: IO a -> Assertion
 assertInputError action = do
   result <- try action
   case result of
-    Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorInputInvalid
+    Left SQLError{sqlErrorType, sqlErrorMessage} -> do
+      sqlErrorType @?= Just ErrorInputInvalid
+      -- The prefix shows that a check of the library raised the error, not DuckDB.
+      assertBool (Text.unpack sqlErrorMessage) ("duckdb-simple: " `Text.isPrefixOf` sqlErrorMessage)
     Right _ -> assertFailure "expected an SQLError of the type ErrorInputInvalid"
 
 -- | The field of an ENUM row with the index and the label that DuckDB gives.

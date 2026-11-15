@@ -215,4 +215,4 @@ readArguments name count factory input = do
     Ok params -> pure params
     Errors failures -> throwIO (userError ("duckdb-simple: " <> Text.unpack name <> ": " <> conversionMessage failures))
   where
-    unexpectedVariant = rejectRows (throwIO (userError "duckdb-simple: the type of a table function argument cannot be or contain VARIANT"))
+    unexpectedVariant = rejectRows (throwInvalidArgument "the type of a table function argument cannot be or contain VARIANT")

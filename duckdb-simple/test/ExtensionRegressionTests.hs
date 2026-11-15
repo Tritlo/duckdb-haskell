@@ -336,7 +336,13 @@ extensionRegressionTests =
             assertSqlError $ FileSystem.withFileHandle conn (path <> "\0suffix") [FileSystem.FileFlagRead] (\_ -> pure ())
     , testCase "catalog and config NUL names fail safely" $
         withConnection ":memory:" \conn -> do
-          assertSqlError $ Config.getConfigOption conn "threads\0suffix"
+          -- The NUL check runs before the handler that gives Nothing for an unknown option.
+          nulName <- try (Config.getConfigOption conn "threads\0suffix")
+          case nulName of
+            Left (err :: SQLError) -> do
+              sqlErrorType err @?= Just ErrorInputInvalid
+              sqlErrorMessage err @?= "duckdb-simple: config option name contains NUL"
+            Right value -> assertFailure ("expected the NUL error, got " <> show (fmap Config.configValueText value))
           -- DuckDB reads the name with its length, so it gets the NUL byte and
           -- reports an unknown option. The library rejects the name before
           -- the native call.

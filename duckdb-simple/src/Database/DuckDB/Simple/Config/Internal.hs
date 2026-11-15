@@ -14,7 +14,7 @@ module Database.DuckDB.Simple.Config.Internal (
   registerCustomOptionOn,
 ) where
 
-import Control.Exception (bracket, throwIO)
+import Control.Exception (bracket)
 import Control.Monad (when)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
@@ -93,4 +93,4 @@ updateWithValue casts update info context = withContextFactory context \factory 
 -- option gets its value in a callback. The callback has a context and no
 -- helper connection, so it cannot decode VARIANT.
 unexpectedVariant :: VectorReader
-unexpectedVariant = rejectRows (throwIO (SQLError "duckdb-simple: configuration values must not contain VARIANT" Nothing Nothing))
+unexpectedVariant = rejectRows (throwInvalidArgument "configuration values must not contain VARIANT")

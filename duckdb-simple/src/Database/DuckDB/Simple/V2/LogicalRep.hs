@@ -125,12 +125,8 @@ logicalTypeFromRepWith factory resolve = create
         flip onException (destroyLogicalType logical) do
           count <- output (c_duckdb_v2_logical_type_get_param_count logical)
           when (count == 0) $
-            throwIO
-              ( SQLError
-                  (Text.pack "duckdb-simple: DuckDB did not preserve the requested GEOMETRY CRS; use a recognized identifier or a complete CRS definition")
-                  Nothing
-                  Nothing
-              )
+            throwInvalidArgument
+              (Text.pack "DuckDB did not preserve the requested GEOMETRY CRS; use a recognized identifier or a complete CRS definition")
           pure logical
       LogicalTypeDecimal width scale -> do
         when (width < 1 || width > 38 || scale > width) $

@@ -34,7 +34,7 @@ module Database.DuckDB.Simple.Copy.Internal (
 ) where
 
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar)
-import Control.Exception (bracket, finally, mask, mask_, onException, throwIO)
+import Control.Exception (bracket, finally, mask, mask_, onException)
 import Control.Monad (forM, forM_, when)
 import Data.Maybe (fromMaybe)
 import Data.Proxy (Proxy (..))
@@ -138,7 +138,7 @@ registerCopyOn target name to from = do
 withVariantReader :: RegistrationTarget -> (VectorReader -> IO a) -> IO a
 withVariantReader target action = case target of
   ConnectionTarget connection -> withDatabaseHandle connection (action . readVariant)
-  ExtensionTarget _ _ -> action (rejectRows (throwIO (userError "duckdb-simple: a COPY TO function of an extension cannot read VARIANT")))
+  ExtensionTarget _ _ -> action (rejectRows (throwInvalidArgument "a COPY TO function of an extension cannot read VARIANT"))
   where
     -- Keep the raw instance handle, not the 'Instance' value. DuckDB registers
     -- the COPY function on the database, and it can keep the callbacks until
@@ -320,15 +320,13 @@ copyFromSide name readRows = (copyFromCallbacks bind execute){copyFromInitGlobal
       path <- output (c_duckdb_v2_copy_from_bind_get_file_path info) >>= readText
       count <- output (c_duckdb_v2_copy_from_bind_get_column_count info)
       when (fromIntegral count /= width) $
-        throwIO
-          ( userError
-              ( "duckdb-simple: the table of COPY FROM has "
-                  <> show (fromIntegral count :: Int)
-                  <> " columns, but a row of "
-                  <> Text.unpack name
-                  <> " has "
-                  <> show width
-              )
+        throwInvalidArgument
+          ( "the table of COPY FROM has "
+              <> Text.pack (show (fromIntegral count :: Int))
+              <> " columns, but a row of "
+              <> name
+              <> " has "
+              <> Text.pack (show width)
           )
       let columns = takeWhile (< count) [0 ..]
       names <- forM columns \index -> output (c_duckdb_v2_copy_from_bind_get_column_name info index) >>= readIdentifier

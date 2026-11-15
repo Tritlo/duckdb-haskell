@@ -1546,6 +1546,12 @@ functionsTests =
             assertThrows
               (createFunction conn name (id :: Int64 -> Int64))
               (\err -> sqlErrorType err == Just ErrorInputInvalid && sqlErrorMessage err == "duckdb-simple: invalid scalar function name")
+    , testCase "raises the name error before the state of a closed connection" $ do
+        conn <- open ":memory:"
+        close conn
+        assertThrows
+          (createFunction conn "" (id :: Int64 -> Int64))
+          (\err -> sqlErrorType err == Just ErrorInputInvalid && sqlErrorMessage err == "duckdb-simple: invalid scalar function name")
     , testCase "names the argument that does not convert" $
         withConnection ":memory:" \conn -> do
           createFunction conn "hs_sum" (\(x :: Int64) (y :: Int64) -> x + y)

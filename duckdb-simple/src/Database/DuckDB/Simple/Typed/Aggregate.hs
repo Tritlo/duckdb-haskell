@@ -199,7 +199,9 @@ stateStripe table key = table ! (key `mod` length table)
 -- it. See Note [Type declarations] in
 -- "Database.DuckDB.Simple.ToField". A result type that is not raw also raises an
 -- error at registration, because the finalize callback has no factory. See
--- Note [Result writers] in "Database.DuckDB.Simple.Function.Internal".
+-- Note [Result writers] in "Database.DuckDB.Simple.Function.Internal". The
+-- checks of the name, the arguments, and the result come before the read of
+-- the state of the target, so an input error wins over a closed connection.
 createAggregateOn
   :: forall state args result
    . (FromRow args, TypedRow args, FunctionResult result) => RegistrationTarget -> Text -> Aggregate state args result -> IO ()
@@ -207,9 +209,6 @@ createAggregateOn target name aggregate = do
   when (Text.null name || Text.any (== '\0') name) $
     throwInvalidArgument "aggregate function name must be nonempty and must not contain NUL"
   argumentTypes <- rowDeclarations name ["argument " <> argumentName index | index <- [0 ..]] columnTypes
-  -- The update callback has no context. It reads a GEOMETRY argument with the
-  -- factory of the instance, which only a connection target gives.
-  casts <- targetCastFactory target
   [resultType] <- rowDeclarations name ["result"] [duckdbTypeDeclaration (Proxy @result)]
   toRaw <- case rawResult of
     Just raw -> pure raw
@@ -221,6 +220,10 @@ createAggregateOn target name aggregate = do
             <> " or Maybe of one of them), because the finalize callback has no factory."
             <> " For a newtype over one of these types, derive FunctionResult with deriving newtype."
         )
+  -- The input checks come before the read of the state of the target. The
+  -- update callback has no context. It reads a GEOMETRY argument with the
+  -- factory of the instance, which only a connection target gives.
+  casts <- targetCastFactory target
   -- See Note [State table stripes]. Evaluate the count before the registration.
   -- An unevaluated count keeps the target, and thus the connection, reachable
   -- from the callbacks.

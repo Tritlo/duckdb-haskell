@@ -253,9 +253,8 @@ instance {-# OVERLAPPABLE #-} (FromField a, DuckDBColumnType a, Function r) => F
 
 -- | Register a typed function on a connection or a loading extension.
 createFunctionOn :: forall f. (Function f) => RegistrationTarget -> Text -> f -> IO ()
-createFunctionOn target name fn = do
-  casts <- targetCastFactory target
-  registerScalarFunction target name (Proxy @f) \allocate function ->
+createFunctionOn target name fn =
+  registerScalarFunction target name (Proxy @f) \casts allocate function ->
     [ install
         allocate
         DuckDBV2ScalarFunctionExecCallbackFn
@@ -265,9 +264,8 @@ createFunctionOn target name fn = do
 
 -- | Register a typed function with per-worker state on a connection or extension.
 createFunctionWithStateOn :: forall s f. (Function f) => RegistrationTarget -> Text -> IO s -> (s -> f) -> IO ()
-createFunctionWithStateOn target name initState mkFn = do
-  casts <- targetCastFactory target
-  registerScalarFunction target name (Proxy @f) \allocate function ->
+createFunctionWithStateOn target name initState mkFn =
+  registerScalarFunction target name (Proxy @f) \casts allocate function ->
     [ install
         allocate
         DuckDBV2ScalarFunctionExecCallbackFn
@@ -282,17 +280,26 @@ createFunctionWithStateOn target name initState mkFn = do
 
 -- | Configure a scalar function and transfer its callbacks to DuckDB. An
 -- argument type or a result type with no declaration, or an argument type that
--- is or contains VARIANT, raises an error at registration. The last
--- argument gives the install actions of the callbacks for the builder. Their
--- setters run after the properties. See 'installAll'.
+-- is or contains VARIANT, raises an error at registration. The checks of the
+-- name, the arguments, and the result come before the read of the state of the
+-- target, so an input error wins over a closed connection. The last argument
+-- gives the install actions of the callbacks for the builder, from the factory
+-- of 'targetCastFactory'. Their setters run after the properties. See
+-- 'installAll'.
 registerScalarFunction
-  :: (Function f) => RegistrationTarget -> Text -> Proxy f -> (Allocator -> DuckDBV2ScalarFunctionHandle -> [IO (IO ())]) -> IO ()
+  :: (Function f)
+  => RegistrationTarget
+  -> Text
+  -> Proxy f
+  -> (Maybe DuckDBV2FactoryHandle -> Allocator -> DuckDBV2ScalarFunctionHandle -> [IO (IO ())])
+  -> IO ()
 registerScalarFunction target name proxy installers = do
   when (Text.null name || Text.any (== '\0') name) $
     throwInvalidArgument "invalid scalar function name"
   -- See Note [Type declarations] in "Database.DuckDB.Simple.ToField".
   parameters <- rowDeclarations name ["argument " <> argumentName index | index <- [0 ..]] (argumentTypes proxy)
   [result] <- rowDeclarations name ["result"] [returnType proxy]
+  casts <- targetCastFactory target
   -- withTarget keeps its factory private. Borrow another one for the signature types.
   withRegistrationFactory target \factory ->
     withTarget
@@ -303,7 +310,7 @@ registerScalarFunction target name proxy installers = do
       c_duckdb_v2_extension_register_scalar_function
       \scalarFun register ->
         withCallbackResources
-          (\allocate -> installAll (installers allocate scalarFun))
+          (\allocate -> installAll (installers casts allocate scalarFun))
           (attachOpaque (c_duckdb_v2_scalar_function_set_user_data scalarFun))
           \installCallbacks -> do
             withIdentifier name $ checked . c_duckdb_v2_scalar_function_set_name scalarFun

@@ -288,7 +288,8 @@ text, for example "Conversion Error: " for the code of ErrorTypeConversion, and
   A callback raises during the execution, for example after an INSERT has
   written rows. With the code of such a type, these rows would stay in the
   transaction, and COMMIT would store them. Thus such an error writes the code
-  DuckDBV2ErrorApi and its message, and DuckDB ends the transaction.
+  DuckDBV2ErrorApi and its message. DuckDB then invalidates the explicit
+  transaction, and COMMIT stores none of its rows.
 - ErrorRuntimeInternal and ErrorRuntimeFatal do not pass. For these codes,
   DuckDB 2.0.0 invalidates the database of the outer statement, also when the
   error came from another database. Such an error writes the code

@@ -10,6 +10,7 @@ import Control.Exception (SomeException, try)
 import Control.Monad (forM_, when)
 import Data.Int (Int64)
 import Data.Ratio ((%))
+import qualified Data.Text as Text
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Data.Time.LocalTime (LocalTime, utc, utcToLocalTime)
 import Database.DuckDB.FFI.V2 (
@@ -30,7 +31,7 @@ import Foreign.C.String (withCString)
 import Foreign.C.Types (CChar)
 import Foreign.Ptr (castPtr)
 import Foreign.Storable (pokeElemOff)
-import Test.Tasty.HUnit (Assertion, assertFailure, (@?=))
+import Test.Tasty.HUnit (Assertion, assertBool, assertFailure, (@?=))
 
 {- Note [Capabilities of the tests]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -90,13 +91,18 @@ nativeLocalTime timestamp = utcToLocalTime utc (posixSecondsToUTCTime (fromRatio
       Microseconds raw -> (raw, 1000000)
       Nanoseconds raw -> (raw, 1000000000)
 
--- | Require an 'SQLError' of the given type. The assertion does not read the
--- message.
+-- | Require an 'SQLError' of DuckDB with the given type. An error of
+-- duckdb-simple, whose message starts with "duckdb-simple: ", fails the
+-- assertion, also when it has the same type.
 assertSqlErrorType :: ErrorType -> IO a -> Assertion
 assertSqlErrorType expected action = do
   result <- try action
   case result of
-    Left err -> sqlErrorType err @?= Just expected
+    Left err -> do
+      assertBool
+        ("expected an error of DuckDB, got " <> Text.unpack (sqlErrorMessage err))
+        (not ("duckdb-simple: " `Text.isPrefixOf` sqlErrorMessage err))
+      sqlErrorType err @?= Just expected
     Right _ -> assertFailure ("expected an SQLError of the type " <> show expected)
 
 -- | Supply a constant C string for one native call.

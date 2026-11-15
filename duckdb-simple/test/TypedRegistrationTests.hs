@@ -132,7 +132,7 @@ typedRegistrationTests =
     , testCase "COPY format on two connections of one database" testCopySharedDatabase
     , testCase "COPY FROM gives the name and the type of each column" testCopyFromColumns
     , testCase "aggregate over one group and over many groups" testAggregateGroups
-    , testCase "aggregate with one state table stripe" testAggregateStripes
+    , testCase "aggregate with other state table stripe counts" testAggregateStripes
     , testCase "aggregate registration does not keep its connection" testAggregateConnectionRelease
     , testCase "aggregate skips NULL rows and gives the initial result" testAggregateNulls
     , testCase "aggregate arguments, states, and result types" testAggregateTypes

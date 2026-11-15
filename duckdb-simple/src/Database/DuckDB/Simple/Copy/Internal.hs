@@ -49,6 +49,7 @@ import Database.DuckDB.Simple.Materialize (
   ReadFactory,
   VectorReader,
   callbackReadFactory,
+  lazyTypeRep,
   prepareGeometryReader,
   prepareVariantReader,
   prepareVectorReader,
@@ -283,7 +284,9 @@ materializeChunkRows readers chunk = do
   columnReaders <- forM [0 .. fromIntegral columns - 1] \index -> do
     vector <- output (c_duckdb_v2_data_chunk_get_vector chunk (fromIntegral (index :: Int)))
     readValue <- prepareVectorReader readers vector
-    pure \row -> Field (Text.pack ("column" <> show index)) index <$> readValue row
+    -- See Note [Column types] in "Database.DuckDB.Simple.FromField".
+    columnType <- lazyTypeRep (output (c_duckdb_v2_vector_get_logical_type vector))
+    pure \row -> (\value -> Field (Text.pack ("column" <> show index)) index value columnType) <$> readValue row
   rows <- output (c_duckdb_v2_data_chunk_get_size chunk)
   forM [0 .. fromIntegral rows - 1] \row -> mapM ($ row) columnReaders
 

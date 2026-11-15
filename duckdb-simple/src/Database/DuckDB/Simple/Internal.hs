@@ -422,6 +422,10 @@ data ResultMode = MaterializedResult | StreamingResult deriving (Eq, Show)
 data StatementStreamColumn = StatementStreamColumn
   { statementStreamColumnIndex :: Int
   , statementStreamColumnName :: Text
+  , statementStreamColumnType :: ~LogicalTypeRep
+  -- ^ The lazy type of the column, from the result schema, for
+  -- 'Database.DuckDB.Simple.FromField.fieldType'.
+  -- See Note [Column types] in "Database.DuckDB.Simple.FromField".
   , statementStreamColumnTree :: IORef (Maybe LogicalTypeRep)
   -- ^ The type tree of the column, converted from the vector of the first chunk
   -- that needs it. Each execution makes new columns, so the tree lives for one

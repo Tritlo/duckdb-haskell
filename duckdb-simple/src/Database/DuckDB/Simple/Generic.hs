@@ -160,7 +160,8 @@ class DuckValue a where
 
   default duckFromField :: (FromField a, Show a) => FieldValue -> Either String a
   duckFromField fv =
-    case fromField Field{fieldName = Text.empty, fieldIndex = 0, fieldValue = fv} of
+    -- See Note [Column types] in "Database.DuckDB.Simple.FromField".
+    case fromField Field{fieldName = Text.empty, fieldIndex = 0, fieldValue = fv, fieldType = LogicalTypeScalar LogicalTypeIdVariant} of
       Ok x -> Right x
       Errors errs -> Left (intercalate "; " (map exceptionText errs))
 

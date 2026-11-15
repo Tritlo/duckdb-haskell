@@ -66,6 +66,8 @@ import Database.DuckDB.Simple.LogicalRep (
   TupleValue (..),
   UnionMemberType (..),
   UnionValue (..),
+  listElementType,
+  mapEntryTypes,
  )
 import Database.DuckDB.Simple.Ok
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
@@ -276,8 +278,45 @@ data Field = Field
   { fieldName :: Text
   , fieldIndex :: Int
   , fieldValue :: FieldValue
+  , fieldType :: ~LogicalTypeRep
+  -- ^ The SQL type of the column, or of the element, the key, or the value of a
+  -- LIST, an ARRAY, or a MAP, with each alias. The field is lazy: the library
+  -- reads the type at the first use of this field. VARIANT means that the type
+  -- of the value decides. See Note [Column types].
   }
   deriving (Eq, Show)
+
+{- Note [Column types]
+~~~~~~~~~~~~~~~~~~~~~~
+fieldType gives the SQL type of a Field, with each alias (see
+Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep"). Each place that
+makes a Field gives the type:
+
+- A result column. collectResultColumns in "Database.DuckDB.Simple.Result"
+  keeps the result schema of each execution, and it reads the type of a column
+  from the schema. The fields of the column share one lazy tree.
+- An argument of a callback: a scalar function, an aggregate, a table
+  function, or a pragma. The reader takes the type of the argument vector or
+  value, one time for each call.
+- An element of a LIST or an ARRAY, and a key or a value of a MAP. The type is
+  a pure function of the type of the parent (listElementType, mapEntryTypes).
+- A Field that the library makes from a FieldValue alone, for example in the
+  default duckFromField of DuckValue. The type is VARIANT.
+
+VARIANT means that the type of the stored value decides. Thus the element of a
+VARIANT column also has the type VARIANT.
+
+The tree is lazy. The library converts the type at the first force of
+fieldType, one time, also with two threads. A column whose type no decoder
+forces makes no conversion, so it reads no ENUM dictionary. A ForeignPtr
+(ownedHandle in "Database.DuckDB.Simple.Materialize") owns the result schema,
+or the type of a callback argument, until the conversion of each type that it
+holds. Its C finalizer destroys the handle at a garbage collection, or at the
+exit of the program. Thus a loop of queries that forces no type holds one
+schema for each execution until a garbage collection. The header says that a
+result schema is owned, so a force after the connection, the instance, or the
+environment closes reads the type.
+-}
 
 -- | Exception thrown if conversion from a SQL value to a Haskell
 -- value fails.
@@ -829,7 +868,10 @@ instance {-# OVERLAPPABLE #-} (Typeable a, FromField a) => FromField [a] where
             { fieldName = fieldNameWithIndex idx
             , fieldIndex = fieldIndex f
             , fieldValue = value
+            , fieldType = elementType
             }
+      -- The elements share one thunk of the element type.
+      elementType = listElementType (fieldType f)
       fieldNameWithIndex idx =
         let base = fieldName f
             idxText = Text.pack (show idx)
@@ -851,7 +893,9 @@ instance (Typeable a, FromField a) => FromField (Array Int a) where
             { fieldName = fieldNameWithIndex idx
             , fieldIndex = fieldIndex f
             , fieldValue = arr ! idx
+            , fieldType = elementType
             }
+      elementType = listElementType (fieldType f)
       fieldNameWithIndex idx =
         let idxText = Text.pack (show idx)
         in  fieldName f <> Text.pack "[" <> idxText <> Text.pack "]"
@@ -871,6 +915,7 @@ instance (Ord k, Typeable k, Typeable v, FromField k, FromField v) => FromField 
               { fieldName = fieldName f <> suffix idx ".key"
               , fieldIndex = fieldIndex f
               , fieldValue = keyValue
+              , fieldType = keyType
               }
         value <-
           fromField
@@ -878,8 +923,10 @@ instance (Ord k, Typeable k, Typeable v, FromField k, FromField v) => FromField 
               { fieldName = fieldName f <> suffix idx ".value"
               , fieldIndex = fieldIndex f
               , fieldValue = valValue
+              , fieldType = valueType
               }
         pure (key, value)
+      (keyType, valueType) = mapEntryTypes (fieldType f)
       suffix idx label =
         let idxText = Text.pack (show idx)
         in  Text.pack "[" <> idxText <> Text.pack "]" <> Text.pack label

@@ -71,6 +71,7 @@ import Database.DuckDB.Simple.Generic (
  )
 import qualified Database.DuckDB.Simple.Logging as Logging
 import Database.DuckDB.Simple.LogicalRep (
+  LogicalTypeRep (..),
   StructField (..),
   StructValue (..),
   UnionMemberType (..),
@@ -936,6 +937,7 @@ typeTests =
                 { fieldName = "big"
                 , fieldIndex = 0
                 , fieldValue = FieldBigNum (BigNum original)
+                , fieldType = LogicalTypeScalar LogicalTypeIdBigNum
                 }
         case (fromField bigField :: Ok Integer) of
           Ok result -> assertEqual "FieldBigNum Integer" original result
@@ -947,6 +949,7 @@ typeTests =
                 { fieldName = "big"
                 , fieldIndex = 0
                 , fieldValue = FieldBigNum bigValue
+                , fieldType = LogicalTypeScalar LogicalTypeIdBigNum
                 }
         case (fromField bigField :: Ok Natural) of
           Errors _ -> pure ()

@@ -15,7 +15,7 @@ module Database.DuckDB.Simple.Result (
 ) where
 
 import Control.Exception (bracket, evaluate, finally, mask, mask_, onException, throwIO)
-import Control.Monad (foldM, forM, when, zipWithM)
+import Control.Monad (foldM, forM, when, zipWithM, (>=>))
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Text as Text
@@ -26,6 +26,8 @@ import Database.DuckDB.Simple.Internal
 import Database.DuckDB.Simple.Materialize (
   FallbackReaders (..),
   ReadFactory (..),
+  destroySchemaAddress,
+  ownedHandle,
   prepareGeometryReader,
   prepareVariantReader,
   prepareVectorReaderWith,
@@ -33,8 +35,10 @@ import Database.DuckDB.Simple.Materialize (
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.TypeCache (typeCacheCasts, withVariantState)
 import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
+import Foreign.ForeignPtr (withForeignPtr)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Storable (peek)
+import System.IO.Unsafe (unsafeInterleaveIO)
 
 -- | Fold rows from one statement and release its result on every exit path.
 foldStatementWith :: ResultMode -> RowParser row -> Statement -> a -> (a -> row -> IO a) -> IO a
@@ -261,12 +265,19 @@ collectStreamRows conn query acquire = withQueryError query $
         >>= maybe (throwInternalError (Text.pack "internal error: the owned chunks do not match the chunk fold")) pure
 
 collectResultColumns :: DuckDBV2ResultHandle -> IO [StatementStreamColumn]
-collectResultColumns result = bracket (output (c_duckdb_v2_result_get_schema result)) (destroy c_duckdb_v2_schema_destroy) \schema -> do
-  count <- fromIntegral <$> output (c_duckdb_v2_schema_get_count schema)
-  forM [0 .. count - 1] \idx -> alloca \name -> do
-    _ <- output (c_duckdb_v2_schema_get_field schema (fromIntegral idx) name)
-    columnName <- peek name >>= readIdentifier
-    StatementStreamColumn idx columnName <$> newIORef Nothing <*> newIORef IntMap.empty
+collectResultColumns result = do
+  -- The schema lives as long as a column type that is not converted. See
+  -- Note [Column types] in "Database.DuckDB.Simple.FromField".
+  owner <- ownedHandle destroySchemaAddress (output (c_duckdb_v2_result_get_schema result))
+  let field idx action = withForeignPtr owner \cell ->
+        peek cell >>= \schema -> alloca \name -> do
+          logical <- output (c_duckdb_v2_schema_get_field schema (fromIntegral idx) name)
+          action name logical
+  count <- withForeignPtr owner (peek >=> output . c_duckdb_v2_schema_get_count)
+  forM [0 .. fromIntegral count - 1] \idx -> do
+    columnName <- field idx \name _ -> peek name >>= readIdentifier
+    columnType <- unsafeInterleaveIO (field idx \_ logical -> logicalTypeToRep logical)
+    StatementStreamColumn idx columnName columnType <$> newIORef Nothing <*> newIORef IntMap.empty
 
 buildMaterializedRow :: [StatementStreamColumn] -> [Int -> IO FieldValue] -> Int -> IO [Field]
 buildMaterializedRow columns readers rowIdx =
@@ -280,4 +291,5 @@ buildMaterializedField rowIdx column readValue = do
       { fieldName = statementStreamColumnName column
       , fieldIndex = statementStreamColumnIndex column
       , fieldValue = value
+      , fieldType = statementStreamColumnType column
       }

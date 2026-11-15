@@ -299,7 +299,7 @@ bigEndianInteger (Ptr addr) count = case fromIntegral count of W# size -> intege
 -- text names this type, not the value, because a value can be large. The error
 -- of 'returnError' holds that name.
 valueTypeName :: FieldValue -> Text
-valueTypeName value = case returnError Incompatible (Field Text.empty 0 value) Text.empty :: Ok () of
+valueTypeName value = case returnError Incompatible (Field Text.empty 0 value (LogicalTypeScalar LogicalTypeIdVariant)) Text.empty :: Ok () of
   Errors (err : _) | Just result <- fromException err -> errSQLType result
   _ -> Text.pack "an unknown type"
 

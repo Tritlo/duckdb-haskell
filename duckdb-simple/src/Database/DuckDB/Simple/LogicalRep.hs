@@ -19,6 +19,8 @@ module Database.DuckDB.Simple.LogicalRep (
   TypeDeclaration (..),
   withoutAliases,
   aliasBase,
+  listElementType,
+  mapEntryTypes,
   structValueTypeRep,
   tupleValueTypeRep,
   unionValueTypeRep,
@@ -102,6 +104,23 @@ withoutAliases = \case
 aliasBase :: LogicalTypeRep -> LogicalTypeRep
 aliasBase (LogicalTypeAlias _ base) = aliasBase base
 aliasBase rep = rep
+
+-- | The type of an element of a LIST or an ARRAY, from the type of its parent.
+-- The function looks through an alias. Another parent type gives VARIANT: the
+-- type of each stored value decides. See Note [Column types] in
+-- "Database.DuckDB.Simple.FromField".
+listElementType :: LogicalTypeRep -> LogicalTypeRep
+listElementType parent = case aliasBase parent of
+  LogicalTypeList element -> element
+  LogicalTypeArray element _ -> element
+  _ -> LogicalTypeScalar LogicalTypeIdVariant
+
+-- | The key type and the value type of a MAP, from the type of its parent, as
+-- 'listElementType' gives an element type.
+mapEntryTypes :: LogicalTypeRep -> (LogicalTypeRep, LogicalTypeRep)
+mapEntryTypes parent = case aliasBase parent of
+  LogicalTypeMap key value -> (key, value)
+  _ -> (LogicalTypeScalar LogicalTypeIdVariant, LogicalTypeScalar LogicalTypeIdVariant)
 
 -- | A structured type or a SQL type expression. A 'TypeExpression' with the
 -- name of a type from 'Database.DuckDB.Simple.Registration.registerCustomType'

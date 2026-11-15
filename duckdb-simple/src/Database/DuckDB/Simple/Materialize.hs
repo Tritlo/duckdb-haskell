@@ -22,10 +22,13 @@ module Database.DuckDB.Simple.Materialize (
   TypeTree,
   EnumLabels,
   prepareVectorReaderWith,
+  lazyTypeRep,
+  ownedHandle,
+  destroySchemaAddress,
 ) where
 
-import Control.Exception (bracket)
-import Control.Monad (forM, when)
+import Control.Exception (bracket, mask_)
+import Control.Monad (forM, when, (>=>))
 import Data.Array (Array, bounds, elems, listArray, rangeSize, (!))
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int16, Int32, Int64)
@@ -60,10 +63,12 @@ import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToBaseRep, logicalTypeToRep)
 import qualified Database.DuckDB.Simple.VariantCodec as VariantCodec
 import Foreign.C.ConstPtr (ConstPtr (..))
+import Foreign.ForeignPtr (FinalizerPtr, ForeignPtr, addForeignPtrFinalizer, mallocForeignPtr, withForeignPtr)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr, castPtr, nullPtr)
 import Foreign.Storable (Storable (..), peekElemOff)
 import GHC.Records (getField)
+import System.IO.Unsafe (unsafeInterleaveIO)
 
 -- | Prepare a reader for the rows of a vector. The reader must not outlive the vector.
 type VectorReader = DuckDBV2VectorHandle -> IO (Int -> IO FieldValue)
@@ -189,6 +194,37 @@ prepareVectorReader readers vector = do
   labels <- newIORef IntMap.empty
   -- See Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep".
   prepareVectorReaderWith readers (withVectorType vector logicalTypeToRep) (Just labels) vector
+
+-- | Run an action that gives an owned handle, and give a ForeignPtr to a cell
+-- that holds the handle. The C finalizer destroys the handle at a garbage
+-- collection after the last use of the ForeignPtr, or at the exit of the
+-- program. See Note [Column types] in "Database.DuckDB.Simple.FromField".
+ownedHandle :: (Storable handle) => FinalizerPtr handle -> IO handle -> IO (ForeignPtr handle)
+ownedHandle finalizer create = do
+  owner <- mallocForeignPtr
+  mask_ do
+    handle <- create
+    withForeignPtr owner (`poke` handle)
+    addForeignPtrFinalizer finalizer owner
+  pure owner
+
+-- | Run an action that gives an owned type, and give the type tree of the type,
+-- with each alias. logicalTypeToRep converts the type at the first force of the
+-- tree, one time, also with two threads. See Note [Column types] in
+-- "Database.DuckDB.Simple.FromField".
+lazyTypeRep :: IO DuckDBV2LogicalTypeHandle -> IO LogicalTypeRep
+lazyTypeRep create = do
+  owner <- ownedHandle destroyLogicalTypeAddress create
+  unsafeInterleaveIO (withForeignPtr owner (peek >=> logicalTypeToRep))
+
+-- | The C finalizer of an owned type. The finalizers ignore the result code,
+-- because the destruction of a valid handle does not fail.
+foreign import ccall "&duckdb_v2_logical_type_destroy"
+  destroyLogicalTypeAddress :: FinalizerPtr DuckDBV2LogicalTypeHandle
+
+-- | The C finalizer of an owned schema.
+foreign import ccall "&duckdb_v2_schema_destroy"
+  destroySchemaAddress :: FinalizerPtr DuckDBV2SchemaHandle
 
 -- | The labels of an ENUM type that readers read, by index. 'Nothing' means
 -- that the type tree holds the labels. See Note [ENUM labels].

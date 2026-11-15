@@ -1873,7 +1873,7 @@ valueRegressionTests =
                 Right rows -> assertFailure (Text.unpack value <> " decodes as " <> show rows)
               -- The cause of that error is a ResultError.
               [Only native] <- query_ conn sql :: IO [Only FieldValue]
-              case fromField Field{fieldName = "value", fieldIndex = 0, fieldValue = native} :: Ok a of
+              case fromField Field{fieldName = "value", fieldIndex = 0, fieldValue = native, fieldType = LogicalTypeScalar LogicalTypeIdVariant} :: Ok a of
                 Errors errors ->
                   assertBool ("expected a ResultError, got " <> show errors) (not (null errors) && all isResultError errors)
                 Ok decoded -> assertFailure (Text.unpack value <> " converts to " <> show decoded)

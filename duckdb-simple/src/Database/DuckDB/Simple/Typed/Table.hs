@@ -24,7 +24,7 @@ import qualified Data.Text as Text
 import Database.DuckDB.Simple.Callback (attachOpaque, readCallbackState, targetCastFactory, transferCallbackState)
 import Database.DuckDB.Simple.FromField (Field (..))
 import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow)
-import Database.DuckDB.Simple.Materialize (ReadFactory, callbackReadFactory, materializeValue, rejectRows)
+import Database.DuckDB.Simple.Materialize (ReadFactory, callbackReadFactory, lazyTypeRep, materializeValue, rejectRows)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.Typed (
@@ -222,7 +222,10 @@ readArguments :: (FromRow params) => Text -> Int -> ReadFactory -> DuckDBV2Funct
 readArguments name count factory input = do
   fields <- forM (take count [0 ..]) \index ->
     bracket (output (c_duckdb_v2_function_bind_get_arg_value input (fromIntegral index))) destroyValue \value ->
-      Field (argumentName index) index <$> materializeValue unexpectedVariant factory value
+      -- See Note [Column types] in "Database.DuckDB.Simple.FromField".
+      Field (argumentName index) index
+        <$> materializeValue unexpectedVariant factory value
+        <*> lazyTypeRep (output (c_duckdb_v2_value_get_logical_type value))
   case parseRow fromRow fields of
     Ok params -> pure params
     Errors failures -> throwIO (userError ("duckdb-simple: " <> Text.unpack name <> ": " <> conversionMessage failures))

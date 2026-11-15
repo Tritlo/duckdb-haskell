@@ -25,7 +25,7 @@ import Database.DuckDB.Simple.Callback (targetCastFactory)
 import Database.DuckDB.Simple.FromField (Field (..))
 import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow, rowErrorsToSqlError)
 import Database.DuckDB.Simple.Internal (Connection)
-import Database.DuckDB.Simple.Materialize (callbackReadFactory, materializeValue, rejectRows)
+import Database.DuckDB.Simple.Materialize (callbackReadFactory, lazyTypeRep, materializeValue, rejectRows)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.Typed (checkArgumentType, variantArgumentReason)
@@ -114,10 +114,11 @@ pragmaArguments casts name info context = withContextFactory context \contextFac
   where
     argumentField factory index = do
       argument <- output (c_duckdb_v2_function_bind_get_arg_name info index) >>= readIdentifier
-      value <-
+      -- See Note [Column types] in "Database.DuckDB.Simple.FromField".
+      (value, argumentType) <-
         bracket
           (output (c_duckdb_v2_function_bind_get_arg_value info index))
           (destroy c_duckdb_v2_value_destroy)
-          (materializeValue (noVariant argument) factory)
-      pure (Field argument (fromIntegral index) value)
+          \native -> (,) <$> materializeValue (noVariant argument) factory native <*> lazyTypeRep (output (c_duckdb_v2_value_get_logical_type native))
+      pure (Field argument (fromIntegral index) value argumentType)
     noVariant argument = rejectRows (throwInvalidArgument (Text.intercalate ": " [name, "parameter " <> argument, variantArgumentReason]))

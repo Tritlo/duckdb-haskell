@@ -99,7 +99,7 @@ timeTests =
       , testCase "a conversion error gives the DuckDB names TIMESTAMPTZ and TIMETZ" $ withConnection ":memory:" $ \conn -> do
           [(timestamp, time)] <- query_ conn "SELECT TIMESTAMPTZ '2000-01-02 03:04:05+00', TIMETZ '03:04:05+00'"
           forM_ [(timestamp, "TIMESTAMPTZ"), (time, "TIMETZ")] $ \(value, name) ->
-            case fromField Field{fieldName = "value", fieldIndex = 0, fieldValue = value} :: Ok Int64 of
+            case fromField Field{fieldName = "value", fieldIndex = 0, fieldValue = value, fieldType = LogicalTypeScalar LogicalTypeIdVariant} :: Ok Int64 of
               Errors errors -> map (fmap errSQLType . fromException) errors @?= [Just name]
               Ok number -> assertFailure ("expected a conversion error, got " <> show number)
           -- The message of a query has the same name.

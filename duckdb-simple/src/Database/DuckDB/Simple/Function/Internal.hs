@@ -68,6 +68,7 @@ import Database.DuckDB.Simple.Materialize (
   FallbackReaders (..),
   ReadFactory,
   callbackReadFactory,
+  lazyTypeRep,
   prepareGeometryReader,
   prepareVectorReader,
   rejectRows,
@@ -396,9 +397,10 @@ makeColumnReader factory info columnIndex = do
   let noVariant =
         rejectRows
           (throwInvalidArgument "the type of a scalar function argument cannot be or contain VARIANT")
-  readValue <-
-    output (c_duckdb_v2_scalar_function_exec_get_arg info (fromIntegral columnIndex))
-      >>= prepareVectorReader (FallbackReaders noVariant (prepareGeometryReader factory))
+  vector <- output (c_duckdb_v2_scalar_function_exec_get_arg info (fromIntegral columnIndex))
+  readValue <- prepareVectorReader (FallbackReaders noVariant (prepareGeometryReader factory)) vector
+  -- See Note [Column types] in "Database.DuckDB.Simple.FromField".
+  columnType <- lazyTypeRep (output (c_duckdb_v2_vector_get_logical_type vector))
   let name = Text.pack ("arg" <> show columnIndex)
   pure \rowIdx -> do
     value <- readValue rowIdx
@@ -407,6 +409,7 @@ makeColumnReader factory info columnIndex = do
         { fieldName = name
         , fieldIndex = columnIndex
         , fieldValue = value
+        , fieldType = columnType
         }
 
 -- | Write the results of one call to the result vector. Set the size, then

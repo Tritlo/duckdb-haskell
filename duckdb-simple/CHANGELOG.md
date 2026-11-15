@@ -178,8 +178,9 @@
 - Add a `ToField` instance for `RawGeometry`. It binds as a GEOMETRY with the
   same WKB bytes and its own CRS. DuckDB casts it to the type of the parameter,
   as in SQL text. A value without a CRS takes the CRS of the target. A target
-  without a CRS removes the CRS. A target with another CRS raises `SQLError`. Version 0.3 had only a `FromField` instance for `RawGeometry`. An
-  `Array`, a list, or a typed row cannot hold a `RawGeometry`.
+  without a CRS removes the CRS. A target with another CRS raises `SQLError`.
+  Version 0.3 had only a `FromField` instance for `RawGeometry`. An `Array`, a
+  list, or a typed row cannot hold a `RawGeometry`.
 - An empty `Array` parameter raises `SQLError`. Version 0.3 bound an empty
   `Array` of scalar elements. Bind an empty list for an empty LIST.
 - `TimeWithZone` holds the offset in seconds east of UTC, as a TIMETZ stores
@@ -196,15 +197,15 @@
   error. A `DecimalValue` binds as a DECIMAL with its own width and scale. An
   `Array`, a list, or a typed row cannot hold a `DecimalValue`. Version 0.3
   had only `FromField` instances for these types.
-- Add `ToField` and `ToDuckValue` instances for `Map`. A `Map` binds as a MAP value with its
-  pairs in ascending key order. The keys and the values follow the element
-  rules of a list, and an empty `Map` binds as an empty MAP of its key and
-  value types. Version 0.3 had only a `FromField` instance for `Map`.
-- Add `ToField` and `ToDuckValue` instances for lists. A list binds as a LIST value with the
-  element rules of an `Array`, and an empty list binds as an empty LIST of its
-  element type. A `String` stays one VARCHAR parameter, and a list as a row is
-  still a row of parameters, so a list parameter is `Only [..]`. Version 0.3
-  had no `ToField` instance for lists.
+- Add `ToField` and `ToDuckValue` instances for `Map`. A `Map` binds as a MAP
+  value with its pairs in ascending key order. The keys and the values follow
+  the element rules of a list, and an empty `Map` binds as an empty MAP of its
+  key and value types. Version 0.3 had only a `FromField` instance for `Map`.
+- Add `ToField` and `ToDuckValue` instances for lists. A list binds as a LIST
+  value with the element rules of an `Array`, and an empty list binds as an
+  empty LIST of its element type. A `String` stays one VARCHAR parameter, and a
+  list as a row is still a row of parameters, so a list parameter is
+  `Only [..]`. Version 0.3 had no `ToField` instance for lists.
 - Some parameters bind for the type that DuckDB gives the parameter: a time
   value with digits below a microsecond, an `Array`, a list, a `Map`, a manual
   STRUCT, TUPLE, or UNION value, and an `Integer` or a `Natural` outside the
@@ -213,19 +214,19 @@
   of that call bind.
 - An `Integer` or a `Natural` parameter binds as a HUGEINT value when the value
   is in the HUGEINT range. Before, it bound as a BIGNUM value in each case. In
-  DuckDB 2.0.0 the casts from BIGNUM to the integer types have three defects.
-  A cast to HUGEINT, UHUGEINT, or DECIMAL fails. A cast of a negative value to
-  an unsigned type gives a wrapped value. A cast of a value of 2^128 or more
-  gives the value modulo 2^128. DuckDB checks the range of a HUGEINT value for its target. A
-  value outside the HUGEINT range binds as BIGNUM, or as UHUGEINT for a
-  UHUGEINT parameter that can hold it. For each other integer or DECIMAL
+  DuckDB 2.0.0 the casts from BIGNUM to the integer types have three defects. A
+  cast to HUGEINT, UHUGEINT, or DECIMAL fails. A cast of a negative value to an
+  unsigned type gives a wrapped value. A cast of a value of 2^128 or more gives
+  the value modulo 2^128. DuckDB checks the range of a HUGEINT value for its
+  target. A value outside the HUGEINT range binds as BIGNUM, or as UHUGEINT for
+  a UHUGEINT parameter that can hold it. For each other integer or DECIMAL
   parameter, such a value raises an `SQLError` of the type
   `ErrorInputOutOfRange`. `typeof(?)` is thus HUGEINT for an `Integer` in the
-  HUGEINT range. Bind a `BigNum` to bind a BIGNUM value in each case. An
-  `Array` of `Integer` or `Natural` values takes the element type of its
-  target when that type is an integer type or DECIMAL, so DuckDB checks the
-  range of each element. Before, a negative element for an unsigned array
-  column was stored as a wrapped value.
+  HUGEINT range. Bind a `BigNum` to bind a BIGNUM value in each case. An `Array`
+  of `Integer` or `Natural` values takes the element type of its target when
+  that type is an integer type or DECIMAL, so DuckDB checks the range of each
+  element. Before, a negative element for an unsigned array column was stored as
+  a wrapped value.
 - `toDuckValue` for an `Integer` or a `Natural` gives a HUGEINT value when the
   value is in the HUGEINT range, and a BIGNUM value for each other value.
   Before, it gave a BIGNUM value in each case. DuckDB checks the range when it

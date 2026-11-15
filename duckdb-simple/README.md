@@ -442,9 +442,10 @@ values and logical types within the lifetime of the factory's owner.
 
 - `withConnection` and `withStatement` wrap the open/close lifecycle and guard
   against exceptions; use them whenever possible to avoid leaking C handles.
-- The query helpers release their results, prepared statements, and values
-  after use. Query helpers return a Haskell list of all rows. Folds and cursors decode rows incrementally from owned native chunks.
-  The default mode drains and closes the native cursor before row callbacks.
+- The query helpers release their results, prepared statements, and values after
+  use. Query helpers return a Haskell list of all rows. Folds and cursors decode
+  rows incrementally from owned native chunks. The default mode drains and
+  closes the native cursor before row callbacks.
 - `execute`/`query` variants reset statement bindings each run so prepared
   statements can be reused safely.
 

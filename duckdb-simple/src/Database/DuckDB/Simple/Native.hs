@@ -373,7 +373,7 @@ readText view = Text.decodeUtf8 <$> readBytes view
 valueText :: DuckDBV2ValueHandle -> IO Text
 valueText value = do
   count <- output (c_duckdb_v2_value_to_string value nullPtr 0)
-  when (toInteger count >= toInteger (maxBound :: Int)) $ throwInvalidArgument "value text exceeds Int range"
+  when (toInteger count >= toInteger (maxBound :: Int)) $ throwIO (SQLError "duckdb-simple: value text exceeds Int range" Nothing Nothing)
   allocaBytes (fromIntegral count + 1) $ \buffer -> do
     _ <- output (c_duckdb_v2_value_to_string value buffer (count + 1))
     Text.decodeUtf8 <$> BS.packCStringLen (buffer, fromIntegral count)
@@ -453,9 +453,13 @@ this list.
 quoteIdentifier :: Text -> Text
 quoteIdentifier identifier = "\"" <> Text.replace "\"" "\"\"" identifier <> "\""
 
--- | Raise an error for an invalid library argument.
+-- | Raise the error of an input check: an argument of a library function, or a
+-- parameter value, that the library rejects. The error is an 'SQLError' of the
+-- type 'ErrorInputInvalid' with no query. Each input check of the library uses
+-- this function. An error that is not about an input, for example a state error
+-- or a native failure, does not use it.
 throwInvalidArgument :: Text -> IO a
-throwInvalidArgument message = throwIO (SQLError ("duckdb-simple: " <> message) Nothing Nothing)
+throwInvalidArgument message = throwIO (SQLError ("duckdb-simple: " <> message) (Just ErrorInputInvalid) Nothing)
 
 -- | Borrow a factory while its connection remains alive. Do not destroy it.
 withConnectionFactory :: DuckDBV2ConnectionHandle -> (DuckDBV2FactoryHandle -> IO a) -> IO a

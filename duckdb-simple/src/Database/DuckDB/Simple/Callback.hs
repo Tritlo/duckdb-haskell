@@ -25,7 +25,7 @@ module Database.DuckDB.Simple.Callback (
   attachOpaque,
 ) where
 
-import Control.Exception (SomeException, bracket, catch, displayException, finally, fromException, mask, mask_, onException, try)
+import Control.Exception (SomeException, bracket, catch, displayException, finally, fromException, mask, mask_, onException, throwIO, try)
 import Control.Monad (when)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import qualified Data.Text as Text
@@ -204,7 +204,7 @@ transferCallbackState attach state = mask_ do
 readCallbackState :: (Ptr (Ptr Void) -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO a
 readCallbackState getter = do
   ptr <- output getter
-  when (ptr == nullPtr) $ throwInvalidArgument (Text.pack "callback state is not initialized")
+  when (ptr == nullPtr) $ throwIO (SQLError (Text.pack "duckdb-simple: callback state is not initialized") Nothing Nothing)
   deRefStablePtr (castPtrToStablePtr (castPtr ptr))
 
 -- | Convert callback exceptions to native V2 diagnostics. Mark the thread as a

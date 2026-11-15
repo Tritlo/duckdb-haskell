@@ -10,7 +10,7 @@
 -- Description : Round trips for finite dates and native temporal infinities.
 module TimeTests (timeTests) where
 
-import Control.Exception (IOException, fromException, try)
+import Control.Exception (fromException, try)
 import Control.Monad (forM_, void)
 import Data.Array (Array, listArray)
 import Data.Int (Int64)
@@ -224,9 +224,9 @@ nanosecondTimeTests =
         >>= (@?= [(precise, coarse, [Just precise, Nothing, Just NegInfinity], [precise])])
       let union = UnionValue 0 "Value" (FieldTimestampTZ precise) (listArray (0, 0) [UnionMemberType "Value" utcType])
       (query conn "SELECT union_extract(?::UNION(value TIMESTAMPTZ_NS), 'value')" (Only union) :: IO [Only UTCTimestamp]) >>= (@?= [Only precise])
-      assertIOException
+      assertInputError
         (query conn sql (Only struct{structValueFields = listArray (0, 0) [StructField "wrong" (FieldTimestampTZ precise)]}) :: IO [Only FieldValue])
-      assertIOException (query conn "SELECT ?::UNION(value TIMESTAMPTZ_NS)" (Only union{unionValueLabel = "wrong"}) :: IO [Only FieldValue])
+      assertInputError (query conn "SELECT ?::UNION(value TIMESTAMPTZ_NS)" (Only union{unionValueLabel = "wrong"}) :: IO [Only FieldValue])
   , testCase "nanosecond tuple targets match positional fields" $ withConnection ":memory:" $ \conn -> do
       let precise = Finite (posixSecondsToUTCTime 0.123456789)
           utcType = LogicalTypeScalar LogicalTypeIdTimestampTz
@@ -398,8 +398,9 @@ nanosecondTimeTests =
               Right () -> assertFailure (label <> ": expected the cast error of DuckDB")
           encoderError label action =
             try action >>= \case
-              Left (err :: IOException) -> do
-                assertBool label ("duckdb-simple: TIMESTAMP value out of finite range" `Text.isInfixOf` Text.pack (show err))
+              Left SQLError{sqlErrorType, sqlErrorMessage} -> do
+                assertEqual label (Just ErrorInputInvalid) sqlErrorType
+                assertBool label ("duckdb-simple: TIMESTAMP value out of finite range" `Text.isInfixOf` sqlErrorMessage)
                 noRows label
               Right () -> assertFailure (label <> ": expected the range error of the encoder")
       -- DuckDB raises the error when it also cannot cast the microsecond value.
@@ -420,7 +421,7 @@ nanosecondTimeTests =
       encoderError "STRUCT with no digits" (insert "STRUCT(a TIMESTAMP_NS, b TIMESTAMP_NS)" (pair (moment 1600 1 2 3 4 5)))
       encoderError "TUPLE" (insert "TUPLE(TIMESTAMP_NS)" tuple)
       encoderError "UNION" (insert "UNION(v TIMESTAMP_NS)" union)
-      assertIOException
+      assertInputError
         (query conn "SELECT TRY_CAST(? AS STRUCT(a TIMESTAMP_NS, b TIMESTAMP_NS))::VARCHAR" (Only (pair early)) :: IO [Only Text.Text])
       -- In TRY_CAST, DuckDB gives NULL for a parameter that it cannot cast, and
       -- the constructor of a list raises its error first.
@@ -444,8 +445,8 @@ nanosecondTimeTests =
         ]
         $ \nanos -> do
           let instant = posixSecondsToUTCTime (fromRational (nanos % 1000000000))
-          assertIOException (query conn "SELECT ?::TIMESTAMPTZ_NS" (Only instant) :: IO [Only UTCTime])
-          assertIOException (query conn "SELECT ?::TIMESTAMPTZ_NS" (Only (Finite instant)) :: IO [Only UTCTimestamp])
+          assertInputError (query conn "SELECT ?::TIMESTAMPTZ_NS" (Only instant) :: IO [Only UTCTime])
+          assertInputError (query conn "SELECT ?::TIMESTAMPTZ_NS" (Only (Finite instant)) :: IO [Only UTCTimestamp])
       (query_ conn "SELECT 42" :: IO [Only Int]) >>= (@?= [Only 42])
   , testCase "dates and timestamps at the ends of the range of DuckDB bind, and a value outside raises an error" $ withConnection ":memory:" $ \conn -> do
       -- See Note [Time ranges] in "Database.DuckDB.Simple.ToField".
@@ -525,12 +526,12 @@ nanosecondTimeTests =
   ]
 
 -- | Require a controlled encoding error before native value construction.
-assertIOException :: IO a -> Assertion
-assertIOException action = do
+assertInputError :: IO a -> Assertion
+assertInputError action = do
   result <- try action
   case result of
-    Left (_ :: IOException) -> pure ()
-    Right _ -> assertFailure "expected IOException"
+    Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorInputInvalid
+    Right _ -> assertFailure "expected an SQLError of the type ErrorInputInvalid"
 
 -- | Require a field conversion error, rather than an unrelated exception.
 assertConversionError :: IO a -> Assertion

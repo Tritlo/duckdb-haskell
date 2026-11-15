@@ -204,15 +204,16 @@ target leaf. These parameters read the parameter type for each value.
     for a parameter and ErrorInputInvalid for an element.
   * From 2262-04-11 23:47:16.854775807 to 23:47:16.854775999: DuckDB can cast
     the microsecond value, but the cast cuts the digits with no error. Thus
-    the encoder raises the IOException "duckdb-simple: TIMESTAMP value out of
-    finite range". The low end of the range has no such zone, because the
-    microsecond value is cut toward the earlier time.
-  A UTCTime outside the range of TIMESTAMPTZ_NS gets the IOException of the
-  encoder, but a parameter or an element with no digits below a microsecond
-  binds as a microsecond value and gets the SQLError of DuckDB. Each leaf of a
-  STRUCT, TUPLE, or UNION outside the range gets the IOException of the
-  encoder, because in TRY_CAST DuckDB keeps the other leaves of a microsecond
-  value with their digits cut.
+    the encoder raises the SQLError of the library "duckdb-simple: TIMESTAMP
+    value out of finite range", of the type ErrorInputInvalid. The low end of
+    the range has no such zone, because the microsecond value is cut toward
+    the earlier time.
+  A UTCTime outside the range of TIMESTAMPTZ_NS gets the error of the encoder,
+  but a parameter or an element with no digits below a microsecond binds as a
+  microsecond value and gets the SQLError of DuckDB. Each leaf of a STRUCT,
+  TUPLE, or UNION outside the range gets the error of the encoder, because in
+  TRY_CAST DuckDB keeps the other leaves of a microsecond value with their
+  digits cut.
 -}
 
 -- | Test whether a time of day has digits below one microsecond. See
@@ -830,13 +831,7 @@ instance ToField FieldValue where
 -- | Raise the error for a t'FieldValue' parameter that has no known type. The
 -- argument gives the reason.
 untypedFieldValue :: Text -> IO a
-untypedFieldValue reason =
-  throwIO
-    SQLError
-      { sqlErrorMessage = "duckdb-simple: " <> reason <> ", so the FieldValue cannot bind as a parameter"
-      , sqlErrorType = Just ErrorInputInvalid
-      , sqlErrorQuery = Nothing
-      }
+untypedFieldValue reason = throwInvalidArgument (reason <> ", so the FieldValue cannot bind as a parameter")
 
 -- | Bind the elements of a 'FieldList' or a 'FieldArray' with the element type
 -- that they give. See Note [Element types of a list].
@@ -1079,7 +1074,7 @@ uuidDuckValue factory uuid =
 bitDuckValue :: DuckDBV2FactoryHandle -> BitString -> IO DuckDBV2ValueHandle
 bitDuckValue factory (BitString padding bits) = do
   when (BS.null bits || padding > 7) $
-    throwIO (userError "duckdb-simple: BIT requires nonempty data and padding from 0 to 7")
+    throwInvalidArgument "BIT requires nonempty data and padding from 0 to 7"
   let nativePadding = complement ((1 `shiftL` (8 - fromIntegral padding)) - 1) :: Word8
       payload = BS.cons padding (BS.cons (BS.head bits .|. nativePadding) (BS.tail bits))
   withBytes payload (\bytes -> output (c_duckdb_v2_value_create_bit factory bytes))
@@ -1333,7 +1328,7 @@ structValueDuckValue builder@ValueBuilder{builderFactory = factory} StructValue{
       types = elems structValueTypes
       names = map structFieldName fields
   when (names /= map structFieldName types) $
-    throwIO (userError "duckdb-simple: struct value/type fields mismatch")
+    throwInvalidArgument "struct value/type fields mismatch"
   withCreatedValues
     (zipWith (\field logical -> fieldValueWithTypeDuckValue builder (structFieldValue logical) (structFieldValue field)) fields types)
     \values ->
@@ -1348,7 +1343,7 @@ tupleValueDuckValue builder@ValueBuilder{builderFactory = factory} TupleValue{tu
   let fields = elems tupleValueFields
       types = elems tupleValueTypes
   when (length fields /= length types) $
-    throwIO (userError "duckdb-simple: tuple value/type fields mismatch")
+    throwInvalidArgument "tuple value/type fields mismatch"
   withCreatedValues (zipWith (fieldValueWithTypeDuckValue builder) types fields) \values ->
     withArray values \valuePtr ->
       declaredCompositeValue builder (LogicalTypeTuple tupleValueTypes) $
@@ -1427,9 +1422,9 @@ unionValueDuckValue
 unionValueDuckValue builder@ValueBuilder{builderFactory = factory, builderType = makeType} UnionValue{unionValueIndex, unionValueLabel, unionValuePayload, unionValueMembers} = do
   let members = elems unionValueMembers
       index = fromIntegral unionValueIndex
-  when (index >= length members) $ throwIO (userError "duckdb-simple: union value tag out of range")
+  when (index >= length members) $ throwInvalidArgument "union value tag out of range"
   let UnionMemberType name rep = members !! index
-  when (name /= unionValueLabel) $ throwIO (userError "duckdb-simple: union tag and member name mismatch")
+  when (name /= unionValueLabel) $ throwInvalidArgument "union tag and member name mismatch"
   bracket (makeType (LogicalTypeUnion unionValueMembers)) destroyLogicalType \logical ->
     withOwnedVector factory logical \vector -> do
       checked (c_duckdb_v2_vector_set_size vector 1)
@@ -1519,15 +1514,7 @@ scalarFieldValueDuckValue factory dtype value = case (dtype, value) of
   (LogicalTypeIdHugeInt, FieldHugeInt i) -> hugeIntDuckValue factory i
   (LogicalTypeIdUHugeInt, FieldUHugeInt i) -> uhugeIntDuckValue factory i
   (LogicalTypeIdBigNum, FieldBigNum big) -> bigNumDuckValue factory big
-  _ ->
-    throwIO
-      ( userError
-          ( "duckdb-simple: unsupported scalar conversion for "
-              <> show dtype
-              <> " from "
-              <> show value
-          )
-      )
+  _ -> throwInvalidArgument ("unsupported scalar conversion for " <> duckDBTypeToName dtype <> " from " <> Text.pack (show value))
 
 -- | Construct an ENUM value by the default cast of the label to the ENUM type.
 -- The label of a 'FieldEnum' gives the value, not its index: an index of
@@ -1564,8 +1551,8 @@ uhugeIntDuckValue factory value = integerToUHugeInt value >>= \huge -> with huge
 decimalDuckValue :: DuckDBV2FactoryHandle -> DecimalValue -> IO DuckDBV2ValueHandle
 decimalDuckValue factory DecimalValue{decimalWidth, decimalScale, decimalInteger} = do
   when (decimalWidth < 1 || decimalWidth > 38 || decimalScale > decimalWidth) $
-    throwIO (userError "duckdb-simple: invalid DECIMAL width or scale")
-  when (abs decimalInteger >= 10 ^ decimalWidth) $ throwIO (userError "duckdb-simple: DECIMAL value exceeds declared precision")
+    throwInvalidArgument "invalid DECIMAL width or scale"
+  when (abs decimalInteger >= 10 ^ decimalWidth) $ throwInvalidArgument "DECIMAL value exceeds declared precision"
   huge <- integerToHugeInt decimalInteger
   with huge (\ptr -> output (c_duckdb_v2_value_create_decimal factory (ConstPtr ptr) decimalWidth decimalScale))
 
@@ -1580,13 +1567,8 @@ timeWithZoneDuckValue factory TimeWithZone{timeWithZoneTime, timeWithZoneOffsetS
   micros <- timeOfDayUnits 1000000 timeWithZoneTime
   let offset = toInteger timeWithZoneOffsetSeconds
   when (abs offset > toInteger timeTzMaxOffsetSeconds) $
-    throwIO
-      ( userError
-          ( "duckdb-simple: the TIMETZ offset "
-              <> show offset
-              <> " seconds is out of range; DuckDB stores an offset from -57599 to 57599 seconds"
-          )
-      )
+    throwInvalidArgument
+      ("the TIMETZ offset " <> Text.pack (show offset) <> " seconds is out of range; DuckDB stores an offset from -57599 to 57599 seconds")
   output
     ( c_duckdb_v2_value_create_time_tz
         factory
@@ -1595,23 +1577,23 @@ timeWithZoneDuckValue factory TimeWithZone{timeWithZoneTime, timeWithZoneOffsetS
 
 integerToHugeInt :: Integer -> IO DuckDBV2HugeintT
 integerToHugeInt value = do
-  when (value < negate (1 `shiftL` 127) || value >= 1 `shiftL` 127) $ throwIO (userError "duckdb-simple: HUGEINT value out of range")
+  when (value < negate (1 `shiftL` 127) || value >= 1 `shiftL` 127) $ throwInvalidArgument "HUGEINT value out of range"
   pure (DuckDBV2HugeintT (fromIntegral value) (fromIntegral (value `shiftR` 64)))
 
 integerToUHugeInt :: Integer -> IO DuckDBV2UhugeintT
 integerToUHugeInt value = do
-  when (value < 0 || value >= 1 `shiftL` 128) $ throwIO (userError "duckdb-simple: UHUGEINT value out of range")
+  when (value < 0 || value >= 1 `shiftL` 128) $ throwInvalidArgument "UHUGEINT value out of range"
   pure (DuckDBV2UhugeintT (fromIntegral value) (fromIntegral (value `shiftR` 64)))
 
 -- | Borrow generated identifier views and reject embedded NUL bytes.
 withIdentifiers :: [Text] -> (Ptr DuckDBV2IdentifierT -> IO a) -> IO a
 withIdentifiers names action = do
   when (any (Text.any (== '\0')) names) $
-    throwIO (userError "duckdb-simple: logical type name contains NUL")
+    throwInvalidArgument "logical type name contains NUL"
   withIdentifierArray names action
 
 typeMismatch :: String -> FieldValue -> IO a
-typeMismatch expected actual = throwIO (userError ("duckdb-simple: cannot encode " <> show actual <> " as " <> expected))
+typeMismatch expected actual = throwInvalidArgument ("cannot encode " <> Text.pack (show actual) <> " as " <> Text.pack expected)
 
 -- | Construct a GEOMETRY value of the declared CRS from a raw geometry. See
 -- Note [Raw GEOMETRY parameters]. A user cast from BLOB to GEOMETRY does not
@@ -1620,13 +1602,7 @@ typeMismatch expected actual = throwIO (userError ("duckdb-simple: cannot encode
 rawGeometryDuckValue :: ValueBuilder -> Maybe Text -> RawGeometry -> IO DuckDBV2ValueHandle
 rawGeometryDuckValue ValueBuilder{builderFactory = factory, builderType = makeType} crs RawGeometry{rawGeometryWKB, rawGeometryCRS} = do
   when (rawGeometryCRS /= crs) $
-    throwIO
-      SQLError
-        { sqlErrorMessage =
-            "duckdb-simple: a GEOMETRY value with " <> describeCRS rawGeometryCRS <> " cannot bind as a GEOMETRY with " <> describeCRS crs
-        , sqlErrorType = Just ErrorInputInvalid
-        , sqlErrorQuery = Nothing
-        }
+    throwInvalidArgument ("a GEOMETRY value with " <> describeCRS rawGeometryCRS <> " cannot bind as a GEOMETRY with " <> describeCRS crs)
   bracket (makeType (LogicalTypeGeometry crs)) destroyLogicalType \logical ->
     bracket (blobDuckValue factory rawGeometryWKB) destroyValue \blob ->
       defaultCast factory blob logical
@@ -1736,7 +1712,7 @@ utcTimestampNsDuckValue factory value =
 -- "Database.DuckDB.Simple.Materialize".
 instance ToDuckValue G.Geometry where
   toDuckValue factory geometry = do
-    wkt <- either (throwIO . userError) pure (WKT.encodeWKT geometry)
+    wkt <- either (throwInvalidArgument . Text.pack) pure (WKT.encodeWKT geometry)
     bracket (logicalTypeFromRep factory (LogicalTypeGeometry Nothing)) destroyLogicalType \logical ->
       bracket (textDuckValue factory wkt) destroyValue \value ->
         defaultCast factory value logical
@@ -1791,31 +1767,18 @@ variantPayloadType value = case value of
   FieldStruct structValue@StructValue{structValueTypes} -> do
     let names = map structFieldName (elems structValueTypes)
     when (length names /= length (List.nub names)) $
-      throwIO (userError "duckdb-simple: VARIANT objects need unique keys")
+      throwInvalidArgument "VARIANT objects need unique keys"
     when (not (null names) && all Text.null names) $
-      throwIO (userError "duckdb-simple: DuckDB's C API cannot construct a VARIANT object with only an empty key")
+      throwInvalidArgument "DuckDB's C API cannot construct a VARIANT object with only an empty key"
     let types = fmap (\field -> field{structFieldValue = variant}) structValueTypes
     pure (LogicalTypeStruct types, FieldStruct structValue{structValueTypes = types})
-  FieldUnion{} ->
-    throwIO
-      SQLError
-        { sqlErrorMessage = "duckdb-simple: a VARIANT keeps only the member value of a UNION, so a UNION value cannot bind as a VARIANT"
-        , sqlErrorType = Just ErrorInputInvalid
-        , sqlErrorQuery = Nothing
-        }
+  FieldUnion{} -> throwInvalidArgument "a VARIANT keeps only the member value of a UNION, so a UNION value cannot bind as a VARIANT"
   FieldGeometry RawGeometry{rawGeometryCRS = Just crs} ->
-    throwIO
-      SQLError
-        { sqlErrorMessage =
-            "duckdb-simple: a VARIANT does not keep the CRS of a GEOMETRY, so the GEOMETRY value with the CRS "
-              <> quotedCRS crs
-              <> " cannot bind as a VARIANT"
-        , sqlErrorType = Just ErrorInputInvalid
-        , sqlErrorQuery = Nothing
-        }
+    throwInvalidArgument
+      ("a VARIANT does not keep the CRS of a GEOMETRY, so the GEOMETRY value with the CRS " <> quotedCRS crs <> " cannot bind as a VARIANT")
   FieldGeometry{} -> pure (LogicalTypeGeometry Nothing, value)
-  FieldMap{} -> throwIO (userError "duckdb-simple: a VARIANT stores a MAP as a list of key and value objects, so a MAP value cannot bind as a VARIANT")
-  FieldEnum{} -> throwIO (userError "duckdb-simple: a VARIANT stores an ENUM as its text, so an ENUM value cannot bind as a VARIANT")
+  FieldMap{} -> throwInvalidArgument "a VARIANT stores a MAP as a list of key and value objects, so a MAP value cannot bind as a VARIANT"
+  FieldEnum{} -> throwInvalidArgument "a VARIANT stores an ENUM as its text, so an ENUM value cannot bind as a VARIANT"
   where
     variant = LogicalTypeScalar LogicalTypeIdVariant
     scalar dtype = pure (LogicalTypeScalar dtype, value)
@@ -2058,7 +2021,7 @@ timestampUnits units LocalTime{localDay, localTimeOfDay} =
 checkFiniteRange :: (Integral a) => String -> a -> a -> Integer -> IO ()
 checkFiniteRange label lower upper value =
   unless (inFiniteRange lower upper value) $
-    throwIO (userError ("duckdb-simple: " <> label <> " value out of finite range"))
+    throwInvalidArgument (Text.pack label <> " value out of finite range")
 
 -- | Check storage limits without accepting the two infinity sentinels.
 inFiniteRange :: (Integral a) => a -> a -> Integer -> Bool
@@ -2070,10 +2033,10 @@ timeOfDayUnits :: Integer -> TimeOfDay -> IO Integer
 timeOfDayUnits units tod@(TimeOfDay hours minutes seconds) = do
   when
     (hours < 0 || hours > 24 || minutes < 0 || minutes > 59 || seconds < 0 || seconds >= 61 || (hours == 24 && (minutes /= 0 || seconds /= 0)))
-    $ throwIO (userError "duckdb-simple: invalid time of day")
+    $ throwInvalidArgument "invalid time of day"
   let value = diffTimeToPicoseconds (timeOfDayToTime tod) `div` (1000000000000 `div` units)
   when (value > 86400 * units) $
-    throwIO (userError "duckdb-simple: time of day out of range")
+    throwInvalidArgument "time of day out of range"
   pure value
 
 -- | Transfer a newly constructed value to the statement on success.

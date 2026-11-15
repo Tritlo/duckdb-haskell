@@ -102,7 +102,7 @@ logicalTypeFromRepWith factory resolve = create
     fromText value = withText value (output . c_duckdb_v2_factory_create_type_from_text factory)
     construct dtype names actions = do
       when (any (Text.any (== '\0')) names) $
-        throwIO (userError "duckdb-simple: logical type name contains NUL")
+        throwInvalidArgument (Text.pack "logical type name contains NUL")
       withCreatedValues actions \values ->
         withArray values \valuePtr ->
           if null names
@@ -134,7 +134,7 @@ logicalTypeFromRepWith factory resolve = create
           pure logical
       LogicalTypeDecimal width scale -> do
         when (width < 1 || width > 38 || scale > width) $
-          throwIO (userError "duckdb-simple: invalid DECIMAL width or scale")
+          throwInvalidArgument (Text.pack "invalid DECIMAL width or scale")
         construct
           DuckDBV2LogicalTypeIdDecimal
           []
@@ -142,7 +142,7 @@ logicalTypeFromRepWith factory resolve = create
       LogicalTypeList element -> construct DuckDBV2LogicalTypeIdList [] [boxed element]
       LogicalTypeArray element size -> do
         when (toInteger size > toInteger (maxBound :: Int)) $
-          throwIO (userError "duckdb-simple: ARRAY size exceeds Int range")
+          throwInvalidArgument (Text.pack "ARRAY size exceeds Int range")
         construct DuckDBV2LogicalTypeIdArray [] [boxed element, output (c_duckdb_v2_value_create_bigint factory (fromIntegral size))]
       LogicalTypeMap key value -> construct DuckDBV2LogicalTypeIdMap [] [boxed key, boxed value]
       LogicalTypeStruct fields

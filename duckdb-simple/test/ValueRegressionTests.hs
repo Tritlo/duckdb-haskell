@@ -11,7 +11,7 @@
 -- Description : Regression tests for exact values and controlled conversion failures.
 module ValueRegressionTests (main, valueRegressionTests) where
 
-import Control.Exception (IOException, bracket, fromException, try)
+import Control.Exception (bracket, fromException, try)
 import Control.Monad (forM_)
 import Data.Array (Array, elems, listArray)
 import Data.Bits (shiftR, xor)
@@ -474,8 +474,9 @@ valueRegressionTests =
               singleField (LogicalTypeList (LogicalTypeScalar LogicalTypeIdBigInt)) (FieldList [FieldInt64 1, FieldInt64 2, FieldText "x", FieldInt64 4])
         result <- try (query conn "SELECT ?" (Only struct) :: IO [Only FieldValue])
         case result of
-          Left (err :: IOException) ->
-            assertBool (show err) ("unsupported scalar conversion for LogicalTypeIdBigInt from FieldText \"x\"" `Text.isInfixOf` Text.pack (show err))
+          Left SQLError{sqlErrorType, sqlErrorMessage} -> do
+            sqlErrorType @?= Just ErrorInputInvalid
+            assertBool (Text.unpack sqlErrorMessage) ("unsupported scalar conversion for BIGINT from FieldText \"x\"" `Text.isInfixOf` sqlErrorMessage)
           Right _ -> assertFailure "expected a conversion error for the third element"
         (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
     , testCase "a declared NULL type binds NULL and rejects a value that is not NULL" $ withConnection ":memory:" \conn -> do
@@ -485,8 +486,9 @@ valueRegressionTests =
           >>= (@?= [("STRUCT(\"value\" \"NULL\")", "{'value': NULL}")])
         result <- try (query conn "SELECT ?" (Only (singleField sqlNull (FieldInt32 7))) :: IO [Only FieldValue])
         case result of
-          Left (err :: IOException) ->
-            assertBool (show err) ("unsupported scalar conversion for LogicalTypeIdSQLNull from FieldInt32 7" `Text.isInfixOf` Text.pack (show err))
+          Left SQLError{sqlErrorType, sqlErrorMessage} -> do
+            sqlErrorType @?= Just ErrorInputInvalid
+            assertBool (Text.unpack sqlErrorMessage) ("unsupported scalar conversion for NULL from FieldInt32 7" `Text.isInfixOf` sqlErrorMessage)
           Right _ -> assertFailure "expected a conversion error for a value that is not NULL"
     , testCase "GEOMETRY decodes as well-known binary" $ withConnection ":memory:" \conn -> do
         [Only bytes] <- query_ conn "SELECT 'POINT(1 2)'::GEOMETRY" :: IO [Only BS.ByteString]
@@ -792,10 +794,11 @@ valueRegressionTests =
         -- DuckDB stores an offset from -15:59:59 to +15:59:59.
         forM_ [57600, -57600] \offset ->
           try (query conn "SELECT ?" (Only (at 12 0 offset)) :: IO [Only TimeWithZone]) >>= \case
-            Left (err :: IOException) ->
+            Left SQLError{sqlErrorType, sqlErrorMessage} -> do
+              sqlErrorType @?= Just ErrorInputInvalid
               assertBool
-                (show err)
-                (("duckdb-simple: the TIMETZ offset " <> Text.pack (show offset) <> " seconds is out of range") `Text.isInfixOf` Text.pack (show err))
+                (Text.unpack sqlErrorMessage)
+                (("duckdb-simple: the TIMETZ offset " <> Text.pack (show offset) <> " seconds is out of range") `Text.isInfixOf` sqlErrorMessage)
             Right rows -> assertFailure ("expected the offset error, got " <> show rows)
         -- A TIME column removes the offset and keeps the local time.
         _ <- execute_ conn "CREATE TABLE times (a TIMETZ, b TIME)"
@@ -852,7 +855,7 @@ valueRegressionTests =
           ]
         -- The encoder raises an error for a value that it cannot encode.
         forM_ [DecimalValue 2 1 100, DecimalValue 39 0 1, DecimalValue 2 3 1, DecimalValue 0 0 0] \decimal ->
-          assertIOError (query conn "SELECT ?" (Only decimal) :: IO [Only DecimalValue])
+          assertInputError (query conn "SELECT ?" (Only decimal) :: IO [Only DecimalValue])
         (query conn "SELECT ?" (Only (Nothing :: Maybe DecimalValue)) :: IO [Only (Maybe DecimalValue)]) >>= (@?= [Only Nothing])
     , testCase "a Map binds as a MAP parameter in each SQL form" $ withConnection ":memory:" \conn -> do
         let pairs = Map.fromList [("a", 1), ("b", 2)] :: Map.Map Text Int64
@@ -980,7 +983,7 @@ valueRegressionTests =
               \value -> do
                 let timestamp = utcToLocalTime utc (posixSecondsToUTCTime (fromRational (value % units)))
                     struct = singleField (LogicalTypeScalar dtype) (FieldTimestamp (Finite timestamp))
-                assertIOError (query conn "SELECT ?" (Only struct) :: IO [Only FieldValue])
+                assertInputError (query conn "SELECT ?" (Only struct) :: IO [Only FieldValue])
     , testCase "composite timestamps floor fractional units before the epoch" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
         forM_
           [ (LogicalTypeIdTimestampSec, 1)
@@ -997,7 +1000,8 @@ valueRegressionTests =
         forM_
           [TimeOfDay (-1) 0 0, TimeOfDay 25 0 0, TimeOfDay 0 60 0, TimeOfDay 0 0 (-1), TimeOfDay 24 0 0.000000001, TimeOfDay 23 59 60.000000001]
           \value ->
-            assertIOError (query conn "SELECT ?" (Only (singleField (LogicalTypeScalar LogicalTypeIdTimeNs) (FieldTime value))) :: IO [Only FieldValue])
+            assertInputError
+              (query conn "SELECT ?" (Only (singleField (LogicalTypeScalar LogicalTypeIdTimeNs) (FieldTime value))) :: IO [Only FieldValue])
     , testCase "microsecond timestamps round trip at the ends of the range of DuckDB" $ withConnection ":memory:" \conn -> do
         let local (micros :: Int64) = utcToLocalTime utc (posixSecondsToUTCTime (fromRational (toInteger micros % 1000000)))
         forM_ [-9223372022400000000, -1, 0, maxBound - 1] \value -> do
@@ -1013,9 +1017,9 @@ valueRegressionTests =
     , testCase "out-of-range dates and timestamps fail without abort" $ withConnection ":memory:" \conn -> do
         let hugeDay = fromGregorian 10000000 1 1
             local = LocalTime hugeDay (TimeOfDay 0 0 0)
-        assertIOError (query conn "SELECT ?" (Only hugeDay) :: IO [Only Day])
-        assertIOError (query conn "SELECT ?" (Only local) :: IO [Only LocalTime])
-        assertIOError (query conn "SELECT ?" (Only (UTCTime hugeDay 0)) :: IO [Only UTCTime])
+        assertInputError (query conn "SELECT ?" (Only hugeDay) :: IO [Only Day])
+        assertInputError (query conn "SELECT ?" (Only local) :: IO [Only LocalTime])
+        assertInputError (query conn "SELECT ?" (Only (UTCTime hugeDay 0)) :: IO [Only UTCTime])
     , testCase "dates round trip at the ends of the range of DuckDB" $ withConnection ":memory:" \conn -> do
         forM_ [negate (maxBound :: Int32) + 1, -1, 0, maxBound - 1] \value -> do
           let day = addDays (toInteger value) (fromGregorian 1970 1 1)
@@ -1024,10 +1028,10 @@ valueRegressionTests =
         assertOutsideTimeRange (query conn "SELECT ?" (Only (addDays (toInteger (minBound :: Int32)) (fromGregorian 1970 1 1))) :: IO [Only Day])
     , testCase "input infinity sentinels are rejected" $ withConnection ":memory:" \conn -> do
         forM_ [toInteger (maxBound :: Int32), negate (toInteger (maxBound :: Int32))] \days ->
-          assertIOError (query conn "SELECT ?" (Only (addDays days (fromGregorian 1970 1 1))) :: IO [Only Day])
+          assertInputError (query conn "SELECT ?" (Only (addDays days (fromGregorian 1970 1 1))) :: IO [Only Day])
         forM_ [toInteger (maxBound :: Int64), negate (toInteger (maxBound :: Int64))] \micros -> do
           let value = utcToLocalTime utc (posixSecondsToUTCTime (fromRational (micros % 1000000)))
-          assertIOError (query conn "SELECT ?" (Only value) :: IO [Only LocalTime])
+          assertInputError (query conn "SELECT ?" (Only value) :: IO [Only LocalTime])
     , testCase "UTC binding is TIMESTAMPTZ under a non-UTC zone" $ withConnection ":memory:" \conn -> do
         _ <- execute_ conn "SET TimeZone = 'Pacific/Auckland'"
         let value = UTCTime (fromGregorian 2000 1 2) 12345
@@ -1226,13 +1230,13 @@ valueRegressionTests =
         refusedPairs
     , testCase "invalid DECIMAL width scale and magnitude are rejected" $ withConnection ":memory:" \conn ->
         forM_ [DecimalValue 0 0 0, DecimalValue 39 0 0, DecimalValue 2 3 1, DecimalValue 2 0 100, DecimalValue 2 0 (-100)] \decimal ->
-          assertIOError
+          assertInputError
             ( query conn "SELECT ?" (Only (singleField (LogicalTypeDecimal (decimalWidth decimal) (decimalScale decimal)) (FieldDecimal decimal)))
                 :: IO [Only FieldValue]
             )
     , testCase "nested conversion failure leaves the connection usable" $ withConnection ":memory:" \conn -> do
         let days = listArray (0, 1) [fromGregorian 2000 1 1, fromGregorian 10000000 1 1] :: Array Int Day
-        assertIOError (query conn "SELECT ?" (Only days) :: IO [Only FieldValue])
+        assertInputError (query conn "SELECT ?" (Only days) :: IO [Only FieldValue])
         (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
     , testCase "generic NULL product and payload return Left" $ do
         assertLeft (genericFromFieldValue FieldNull :: Either String NamedRecord)
@@ -1248,7 +1252,16 @@ valueRegressionTests =
     , testCase "union binding rejects inconsistent member name" $ withConnection ":memory:" \conn -> do
         let member = UnionMemberType "right" (LogicalTypeScalar LogicalTypeIdBigInt)
             union = UnionValue 0 "wrong" (FieldInt64 42) (listArray (0, 0) [member])
-        assertIOError (query conn "SELECT ?" (Only union) :: IO [Only FieldValue])
+        assertInputError (query conn "SELECT ?" (Only union) :: IO [Only FieldValue])
+    , testCase "union binding rejects a tag out of range" $ withConnection ":memory:" \conn -> do
+        let member = UnionMemberType "only" (LogicalTypeScalar LogicalTypeIdBigInt)
+            union = UnionValue 1 "only" (FieldInt64 42) (listArray (0, 0) [member])
+        try (query conn "SELECT ?" (Only union) :: IO [Only FieldValue]) >>= \case
+          Left SQLError{sqlErrorType, sqlErrorMessage} -> do
+            sqlErrorType @?= Just ErrorInputInvalid
+            sqlErrorMessage @?= "duckdb-simple: union value tag out of range"
+          Right rows -> assertFailure ("expected the tag error, got " <> show rows)
+        (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
     , testCase "generic records reject wrong names" $ do
         case genericToStructValue (NamedRecord 1 2) of
           Nothing -> assertFailure "missing generic struct"
@@ -1272,7 +1285,7 @@ valueRegressionTests =
         withConnectionHandle conn \native -> withConnectionFactory native \factory ->
           bracket (logicalTypeFromRep factory (tupleValueTypeRep tuple)) destroyLogicalType \logical ->
             logicalTypeToRep logical >>= (@?= tupleValueTypeRep tuple)
-        assertIOError (query conn "SELECT ?" (Only tuple{tupleValueFields = listArray (4, 4) [FieldNull]}) :: IO [Only FieldValue])
+        assertInputError (query conn "SELECT ?" (Only tuple{tupleValueFields = listArray (4, 4) [FieldNull]}) :: IO [Only FieldValue])
     , testCase "filtered tuple cursors retain positional fields" $ withConnection ":memory:" \conn -> do
         rows <- Streaming.fold_ conn "SELECT row(i::BIGINT, 'λ') FROM range(6) t(i) WHERE i % 2 = 1" [] $ \values (Only tuple) ->
           pure (values <> [elems (tupleValueFields tuple)])
@@ -1298,7 +1311,7 @@ valueRegressionTests =
           logicalTypeToRep handle >>= (@?= logical)
     , testCase "logical type names reject embedded NUL" $ withConnection ":memory:" \conn -> withConnectionHandle conn \native -> withConnectionFactory native \factory -> do
         let logical = LogicalTypeStruct (listArray (0, 0) [StructField "before\0after" (LogicalTypeScalar LogicalTypeIdBigInt)])
-        assertIOError (bracket (logicalTypeFromRep factory logical) destroyLogicalType (const (pure ())))
+        assertInputError (bracket (logicalTypeFromRep factory logical) destroyLogicalType (const (pure ())))
     , testCase "invalid native composite constructor returns controlled error" $ withConnection ":memory:" \conn -> do
         let struct =
               singleField
@@ -1313,7 +1326,7 @@ valueRegressionTests =
         (query conn "SELECT bit_count(?), ?" (bits, bits) :: IO [(Int64, BitString)]) >>= (@?= [(2, bits)])
     , testCase "unsupported BIT input fails before native use" $ withConnection ":memory:" \conn ->
         forM_ [BitString 0 BS.empty, BitString 8 (BS.singleton 1)] \bits ->
-          assertIOError (query conn "SELECT ?" (Only bits) :: IO [Only BitString])
+          assertInputError (query conn "SELECT ?" (Only bits) :: IO [Only BitString])
     , testCase "TIMETZ offsets with seconds read without rounding" $ withConnection ":memory:" \conn ->
         (query_ conn "SELECT '12:00:00+01:23:45'::TIMETZ" :: IO [Only TimeWithZone]) >>= (@?= [Only (TimeWithZone (TimeOfDay 12 0 0) 5025)])
     , testCase "a failure of the reader of a chunk gives the error of DuckDB and releases each chunk" $ withConnection ":memory:" \conn -> do
@@ -1365,7 +1378,9 @@ valueRegressionTests =
         withStatement conn sql (readAllRows Streaming.nextRow) >>= check
     , testCase "ENUM payload label must be in its dictionary" $ withConnection ":memory:" \conn ->
         try (query conn "SELECT ?" (Only (singleField (LogicalTypeEnum (listArray (0, 1) ["a", "b"])) (FieldEnum 0 "c"))) :: IO [Only FieldValue]) >>= \case
-          Left SQLError{sqlErrorMessage} -> sqlErrorMessage @?= "duckdb-simple: the ENUM label \"c\" is not in the dictionary of the type"
+          Left SQLError{sqlErrorMessage, sqlErrorType} -> do
+            sqlErrorType @?= Just ErrorInputInvalid
+            sqlErrorMessage @?= "duckdb-simple: the ENUM label \"c\" is not in the dictionary of the type"
           Right rows -> assertFailure ("expected the label error, got " <> show rows)
     , testCase "ENUM payload binds its label, not its index" $ withConnection ":memory:" \conn -> do
         let struct = singleField (LogicalTypeEnum (listArray (0, 2) ["a", "b", "c"])) (FieldEnum 1 "b")
@@ -1388,9 +1403,9 @@ valueRegressionTests =
     , testCase "TIMETZ input offset overflow fails before native use" $ withConnection ":memory:" \conn -> do
         let value = TimeWithZone (TimeOfDay 12 0 0) maxBound
             struct = singleField (LogicalTypeScalar LogicalTypeIdTimeTz) (FieldTimeTZ value)
-        assertIOError (query conn "SELECT ?" (Only struct) :: IO [Only FieldValue])
+        assertInputError (query conn "SELECT ?" (Only struct) :: IO [Only FieldValue])
     , testCase "invalid TIME input returns controlled error" $ withConnection ":memory:" \conn ->
-        assertIOError (query conn "SELECT ?" (Only (TimeOfDay 1000000000 0 0)) :: IO [Only TimeOfDay])
+        assertInputError (query conn "SELECT ?" (Only (TimeOfDay 1000000000 0 0)) :: IO [Only TimeOfDay])
     , testCase "nested types decode the same in each chunk and each read mode" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
         _ <- execute_ conn "CREATE TYPE mood AS ENUM ('calm', 'busy', 'tired')"
         let sql =
@@ -1632,12 +1647,12 @@ singleField logical value =
     (Map.singleton "value" 0)
 
 -- | Assert a controlled input or materialization error.
-assertIOError :: IO a -> Assertion
-assertIOError action = do
+assertInputError :: IO a -> Assertion
+assertInputError action = do
   result <- try action
   case result of
-    Left (_ :: IOException) -> pure ()
-    Right _ -> assertFailure "expected IOException"
+    Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorInputInvalid
+    Right _ -> assertFailure "expected an SQLError of the type ErrorInputInvalid"
 
 -- | The field of an ENUM row with the index and the label that DuckDB gives.
 enumField :: Maybe Int64 -> Maybe Text -> FieldValue

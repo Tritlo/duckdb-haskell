@@ -32,7 +32,8 @@
   result types are the result types of `createFunction`.
 - `createTableFunction` registers a Haskell function that gives the rows of a
   table function as a list. DuckDB reads the list one chunk at a time. It reads
-  all columns of each row, also the columns that the query does not use.
+  only the columns that the query uses, and one column for a query such as
+  `SELECT count(*)`. The library does not evaluate the other columns of a row.
 - `Database.DuckDB.Simple.Registration` has `TypeDeclaration`, `parameter`,
   `defaultValue`, `registerCustomType`, and typed replacement scans.
   `registerReplacementScan` and `registerInstanceReplacementScan` give the

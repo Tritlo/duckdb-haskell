@@ -946,8 +946,9 @@ for each aggregate that `createAggregate` registers through the connection.
 The default is `defaultAggregateStripes`, 64. No result depends on the number.
 
 `createTableFunction` registers a table function that gives its rows as a
-list. DuckDB reads all columns of each row, also the columns that the query
-does not use.
+list. DuckDB reads only the columns that the query uses, and one column for a
+query such as `SELECT count(*)`. The library does not evaluate the other
+columns of a row, so an exception in such a column does not fail the query.
 
 ```haskell
 tableExample :: Connection -> IO [(Int64, Int64)]

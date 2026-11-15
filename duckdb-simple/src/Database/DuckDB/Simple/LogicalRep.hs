@@ -15,6 +15,7 @@ module Database.DuckDB.Simple.LogicalRep (
   UnionValue (..),
   LogicalTypeRep (..),
   LogicalTypeId (..),
+  TypeDeclaration (..),
   structValueTypeRep,
   tupleValueTypeRep,
   unionValueTypeRep,
@@ -39,6 +40,10 @@ data LogicalTypeRep
   | LogicalTypeTuple !(Array Int LogicalTypeRep)
   | LogicalTypeUnion !(Array Int UnionMemberType)
   | LogicalTypeEnum !(Array Int Text)
+  deriving (Eq, Show)
+
+-- | A structured type or a SQL type expression, including a registered alias.
+data TypeDeclaration = StructuredType LogicalTypeRep | TypeExpression Text
   deriving (Eq, Show)
 
 -- | A named field within a STRUCT-like value or type.

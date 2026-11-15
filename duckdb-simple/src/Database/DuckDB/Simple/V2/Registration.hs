@@ -140,15 +140,11 @@ import Database.DuckDB.Simple.Callback (
   withTarget,
  )
 import Database.DuckDB.Simple.Internal (Connection, Instance, withConnectionHandle, withInstanceHandle)
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep)
+import Database.DuckDB.Simple.LogicalRep (TypeDeclaration (..))
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
 import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeFromRep)
 import Foreign.Ptr (Ptr)
-
--- | A structured type or a SQL type expression, including a registered alias.
-data TypeDeclaration = StructuredType LogicalTypeRep | TypeExpression Text
-  deriving (Eq, Show)
 
 -- | Construct an owned native default value through the borrowed factory of
 -- the registration target. Registration releases the value.

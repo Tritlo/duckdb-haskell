@@ -17,6 +17,16 @@
   without the prefix of its type, and `Nothing` for an error of the library.
   Code that builds or matches an `SQLError` by position does not compile. See
   MIGRATION.md.
+- An `SQLError` with a type that leaves a Haskell callback keeps its type. The
+  outer statement fails with that type, and its text has one prefix, for example
+  `Conversion Error: ...` for a failed query in a scalar function. A failed cast
+  gives `ErrorTypeMismatch`. Sixteen types give `ErrorInputInvalid` and the text
+  `Invalid Input Error: ` followed by the message of the exception, as an
+  `SQLError` with no type and each other exception do. The section "Errors" of
+  README.md lists them and the reasons. When an error of a callback fails a
+  statement in an explicit transaction, DuckDB invalidates that transaction, and
+  COMMIT then stores none of its rows, also under the DuckDB setting
+  `SYNTACTIC_ERRORS_DO_NOT_INVALIDATE`.
 - Add shared environments and instances, attachment management, option
   discovery, table descriptions, SQL tokenization, and positioned file I/O.
 - `listConfigFlags` takes a `Connection`, and it lists the options of the
@@ -296,12 +306,11 @@
   query. A date or a timestamp outside the range of DuckDB, and an integer
   outside the range of its parameter type, raise `SQLError` with the type
   `ErrorInputOutOfRange`. A parameter count or a parameter name that does not
-  match the query keeps its `FormatError`. A check in the callback of a scalar
-  function fails the query, as each other exception of a callback does. Version
-  0.3 raised an `IOException` for the checks of parameter values, logical types,
-  and CRS names. The error for a scalar value that does not match its declared
-  type names the SQL type, for example `NULL` in place of
-  `LogicalTypeIdSQLNull`.
+  match the query keeps its `FormatError`. A check in a callback fails the outer
+  statement with the type of the check. Version 0.3 raised an `IOException` for
+  the checks of parameter values, logical types, and CRS names. The error for a
+  scalar value that does not match its declared type names the SQL type, for
+  example `NULL` in place of `LogicalTypeIdSQLNull`.
 - A `TimeOfDay`, a `LocalTime`, or a `UTCTime` with digits below a microsecond,
   and a `FieldTime`, a `FieldTimestamp`, or a `FieldTimestampTZ` with such
   digits, binds with the nanosecond type for a nanosecond parameter, and for a

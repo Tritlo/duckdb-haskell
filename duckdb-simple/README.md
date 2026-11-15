@@ -543,14 +543,40 @@ columns raises an `SQLError` with the text `column index N out of bounds`.
 
 An exception in a Haskell function of a registration, for example of
 `createFunction`, fails the statement that runs the function. That statement
-raises an `SQLError`. Its message contains the text of the exception: the
-message of an `SQLError`, the text of a `userError`, or the `displayException`
-text of another exception. An argument that does not convert gives an
-`SQLError` of the type `ErrorInputInvalid` with a text that names the argument,
-for example `duckdb-simple: argument arg0 is NULL, but Int64 cannot hold NULL`
-for a scalar function. For an aggregate or a table function, the text names the
-function after the prefix, for example `duckdb-simple: tf_int: argument arg0
-...`. DuckDB ignores an exception of a log sink.
+raises an `SQLError`. An `SQLError` with a type keeps its type, and its text
+gets one prefix. For example, a function that runs a failing query on another
+connection fails the outer statement with `ErrorTypeConversion` and the text
+`Conversion Error: ...` of the inner query. A failed cast is the exception: it
+gives `ErrorTypeMismatch` (see below). Each other exception, an `SQLError` with
+no type, and an `SQLError` of one of the 16 types below give `ErrorInputInvalid`
+and the text `Invalid Input Error: ` followed by the message of the exception:
+the message of an `SQLError`, the text of a `userError`, or the
+`displayException` text of another exception. An argument that does not convert
+gives an `SQLError` of the type `ErrorInputInvalid` with a text that names the
+argument, for example
+`duckdb-simple: argument arg0 is NULL, but Int64 cannot hold NULL` for a scalar
+function. For an aggregate or a table function, the text names the function
+after the prefix, for example `duckdb-simple: tf_int: argument arg0 ...`. DuckDB
+ignores an exception of a log sink.
+
+These 16 types do not pass through a callback:
+
+- `ErrorQueryBinder`, `ErrorDatabaseCatalog`, `ErrorResourceConnection`,
+  `ErrorQueryParameterNotAllowed`, `ErrorQueryParser`,
+  `ErrorConfigurationPermission`, and `ErrorResourceInUse`. DuckDB expects these
+  types before the execution of a statement. Under the DuckDB setting
+  `SYNTACTIC_ERRORS_DO_NOT_INVALIDATE`, it does not invalidate an explicit
+  transaction after them, and a callback raises during the execution.
+- `ErrorRuntimeInternal` and `ErrorRuntimeFatal`. DuckDB can invalidate the
+  database after them.
+- `ErrorApi`, `ErrorIOFileNotFound`, `ErrorIOReadFailure`, `ErrorIOEof`,
+  `ErrorInputParameterInvalid`, `ErrorInputMetadataDeferred`, and
+  `ErrorIONetwork`. DuckDB 2.0.0 cannot raise them again with their own type.
+
+When an error of a callback fails a statement in an explicit transaction, DuckDB
+aborts that transaction, also under the setting
+`SYNTACTIC_ERRORS_DO_NOT_INVALIDATE`: [User-Defined
+Functions](#user-defined-functions) gives what this means for a `COMMIT`.
 
 A failed cast of `createCast` gives an `SQLError` of the type
 `ErrorTypeMismatch`. Its message is `Mismatch Type Error: ` and the text of the
@@ -1330,18 +1356,19 @@ fetches, while no fetch holds the lock. Then a statement in the callback on the
 same connection fails at once with the `ErrorResourceInUse` error of DuckDB,
 because the stream has an open result.
 
-That wait has a time limit. `connectionCallbackLockWait` in
-`ConnectionOptions` sets it in microseconds. The default is
-`defaultCallbackLockWait`, 10 seconds, and `Nothing` sets no time limit. When
-the time limit ends, the statement in the callback raises an `SQLError` of the
-type `ErrorResourceInUse`, and its text gives the rule. If the callback does
-not catch the error, DuckDB fails the outer statement with the error type that
-DuckDB gives for an error of a callback, and its message contains the text of
-that error. The connection can run the next statement. DuckDB ignores the error
-of a log sink. The time limit applies to each wait of a callback for the lock
-of a connection. It applies also to another connection that a different
-statement uses. If callbacks share a connection that runs slow statements, set
-a larger time limit or `Nothing` for that connection.
+That wait has a time limit. `connectionCallbackLockWait` in `ConnectionOptions`
+sets it in microseconds. The default is `defaultCallbackLockWait`, 10 seconds,
+and `Nothing` sets no time limit. When the time limit ends, the statement in the
+callback raises an `SQLError` of the type `ErrorResourceInUse`, and its text
+gives the rule. If the callback does not catch the error, the outer statement
+fails with the type `ErrorInputInvalid`, because a callback does not pass the
+type `ErrorResourceInUse` ([Errors](#errors) gives the list; a cast gives
+`ErrorTypeMismatch`), and its message contains the text of that error. The
+connection can run the next statement. DuckDB ignores the error of a log sink.
+The time limit applies to each wait of a callback for the lock of a connection.
+It applies also to another connection that a different statement uses. If
+callbacks share a connection that runs slow statements, set a larger time limit
+or `Nothing` for that connection.
 
 In these cases the time limit does not apply, and a statement in the callback can
 wait and not return:

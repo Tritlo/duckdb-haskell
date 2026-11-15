@@ -108,8 +108,7 @@ data SQLError = SQLError
   -- the message @Conversion Error: Could not convert ...@ has the body
   -- @Could not convert ...@. An error of duckdb-simple has no body. A callback
   -- gives the type and the body of an error back to DuckDB, except for the
-  -- types that Note [Errors that leave a callback] in
-  -- "Database.DuckDB.Simple.Callback" names.
+  -- types that the section /Errors/ of the README lists.
   }
   deriving stock (Eq, Show)
 

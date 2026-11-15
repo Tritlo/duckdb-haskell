@@ -102,6 +102,12 @@ The SQL workflow stays the same. These changes can affect your code:
   `SQLError {sqlErrorMessage = text, sqlErrorType = Nothing, sqlErrorQuery = Nothing, sqlErrorBody = Nothing}`,
   and match only the fields that you need, for example
   `SQLError {sqlErrorType}`.
+- A statement whose callback raises an `SQLError` with a type fails with that
+  type, except a failed cast, which gives `ErrorTypeMismatch`, and the 16 types
+  that the section "Errors" of `duckdb-simple/README.md` lists. Code that
+  expects `ErrorInputInvalid` for such a statement gets the type of the inner
+  error, for example `ErrorTypeConversion` for a failed query in a scalar
+  function.
 - `ToDuckValue.toDuckValue` takes a `ValueFactory` and returns a
   `NativeValue`. `Database.DuckDB.Simple.ToField` exports the two names. They
   are synonyms of the V2 handles `DuckDBV2FactoryHandle` and
@@ -432,8 +438,9 @@ The SQL workflow stays the same. These changes can affect your code:
   `ErrorInputOutOfRange` instead: an integer outside the range of its
   parameter type, and a date or a timestamp outside the range of DuckDB (see
   the entry on that range above). A parameter count or a parameter name that
-  does not match the query raises a `FormatError`. A check in the callback of a
-  scalar function fails the query, as each other exception of a callback does.
+  does not match the query raises a `FormatError`. A check in a callback fails
+  the outer statement with the type of the check (see the entry on a callback
+  that raises an `SQLError`).
 - Version 0.3 raised an `IOException` (a `userError`) for a BIT, DECIMAL, ENUM,
   HUGEINT, UHUGEINT, TIMETZ, time of day, or timestamp value that does not fit
   its type, a STRUCT or UNION value whose fields do not match its types, a

@@ -259,7 +259,8 @@ runCallback writes an exception of a callback into the error slot of DuckDB as
 a code and a text. The statement that runs the callback then fails with an
 error of the type of the code. DuckDB puts the prefix of that type before the
 text, for example "Conversion Error: " for the code of ErrorTypeConversion, and
-"Invalid Input Error: " for DuckDBV2ErrorApi.
+"Invalid Input Error: " for DuckDBV2ErrorApi. The section "Errors" of the README
+lists the types that do not pass for users.
 
 - An SQLError with a type writes the code of its type. The text is the body of
   the error (sqlErrorBody), the text of DuckDB without the prefix. An error of

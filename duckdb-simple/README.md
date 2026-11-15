@@ -1318,6 +1318,16 @@ wait and not return:
 - The statement runs in the flush function of a log sink when DuckDB destroys
   the sink.
 
+A statement in a callback on another connection of the same instance runs in its
+own transaction, also when the outer statement runs in an explicit transaction.
+Thus it does not see the rows that the outer transaction has not committed, and
+a write to a row that the outer transaction changed does not wait: it fails at
+once with the error `TransactionContext Error: Conflict on update!` of DuckDB,
+and the outer statement fails with that text. That failure aborts the outer
+transaction, as each error during the execution of a statement does in DuckDB:
+each later statement in the transaction fails, and a `COMMIT` returns with no
+error but stores no change of the transaction.
+
 A callback that refers to a connection keeps that connection and its instance
 reachable while DuckDB keeps the callback, possibly until the database closes.
 Thus the garbage collector does not close them, and the program must close

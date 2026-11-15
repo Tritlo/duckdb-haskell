@@ -178,7 +178,8 @@ digits below one microsecond loses these digits, as in SQL text. A
 `DecimalValue` binds as a DECIMAL with its own width and scale. DuckDB casts it
 to the type of its target: a smaller scale rounds half away from zero, and a
 value that the target cannot hold raises an error. An `Array`, a list, or a
-typed row of `DecimalValue` does not compile: note 14 of [Types](#types).
+typed row (a row type with `TypedRow`) of `DecimalValue` does not compile: note
+14 of [Types](#types).
 
 `query_` and `execute_` parse all input statements before execution. A syntax
 error prevents every statement in that input from running. An execution error
@@ -1218,7 +1219,8 @@ expressions. The arguments use `FromField`, and the result uses
 give an `IO` action.
 
 An argument type needs `FromField` and `DuckDBColumnType` instances. Its SQL
-type is the `duckdbTypeDeclaration` of the type, as for a typed column. A
+type is the `duckdbTypeDeclaration` of the type, as for a column of a typed
+row. A
 newtype with its own `DuckDBColumnType` text, for example `DECIMAL(18,3)`,
 gives that text. An argument type that is or contains VARIANT raises an error
 at registration, because the argument reader does not read VARIANT. A GEOMETRY

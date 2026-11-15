@@ -649,7 +649,7 @@ instance ToField Day
 -- | Bind a time of day as a TIME, or as a TIME_NS. See
 -- Note [Nanosecond parameters]. A time of exactly 60 seconds (a leap second)
 -- binds as the next second, as @make_time@ of DuckDB gives it: 23:59:60 binds as
--- 24:00:00. A later time, for example 23:59:60.5, raises an @SQLError@. The
+-- 24:00:00. A later time, for example 23:59:60.5, raises an t'SQLError'. The
 -- section \"Errors\" of the README gives its type. See Note [Time ranges].
 instance ToField TimeOfDay where
   toField value =
@@ -662,7 +662,9 @@ instance ToField TimeOfDay where
 -- 'ErrorInputOutOfRange'. For a TIMESTAMP_NS target, a time outside the range
 -- of TIMESTAMP_NS can get another error, also a time outside the range of
 -- DuckDB in a STRUCT, a TUPLE, or a UNION. See Note [Nanosecond parameters]. A
--- leap second binds as the next second. See Note [Time ranges].
+-- time of exactly 60 seconds (a leap second) binds as the next second. A later
+-- time, for example 23:59:60.5, raises an t'SQLError'. The section
+-- \"Errors\" of the README gives its type. See Note [Time ranges].
 instance ToField LocalTime where
   toField value =
     timeValueBinding (show value) (LogicalTypeScalar LogicalTypeIdTimestamp) (FieldTimestamp (Finite value)) \builder -> localTimeDuckValue (builderFactory builder) value
@@ -707,8 +709,8 @@ instance ToField Variant where
 -- an instant outside the range of DuckDB in a STRUCT, a TUPLE, or a UNION, as
 -- for a t'LocalTime'. See Note [Nanosecond parameters]. A leap second of
 -- exactly 60 seconds binds as the next second. A later time in a leap second,
--- for example 60.5 seconds, raises an t'SQLError' of the type
--- 'ErrorInputInvalid'. See Note [Time ranges].
+-- for example 60.5 seconds, raises an t'SQLError'. The section \"Errors\" of
+-- the README gives its type. See Note [Time ranges].
 instance ToField UTCTime where
   toField value =
     timeValueBinding

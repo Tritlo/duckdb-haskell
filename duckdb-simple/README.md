@@ -433,6 +433,13 @@ manualStruct conn = do
   query_ conn "SELECT s, u FROM composite"
 ```
 
+Low-level `ToDuckValue.toDuckValue` takes a `ValueFactory`, which is the V2
+factory handle, and `logicalTypeFromRep` takes the same handle.
+`Database.DuckDB.Simple.V2.LogicalRep` has `logicalTypeFromRep`.
+Get the factory of a connection with `withConnectionHandle` and
+`withConnectionFactory` from `Database.DuckDB.Simple.Internal`. Keep owned
+values and logical types within the lifetime of the factory's owner.
+
 ### Resource Management
 
 - `withConnection` and `withStatement` wrap the open/close lifecycle and guard
@@ -630,17 +637,7 @@ metadata queries. It constructs VARIANT types directly through the native
 factory. This preserves an active stream on the caller's connection. The
 helper connection has the settings of the database, not the session settings of
 the caller, so a GLOBAL `max_expression_depth` below 11 makes each VARIANT read
-fail with a Binder Error. Low-level
-`ToDuckValue.toDuckValue` takes a `ValueFactory`, which is the V2 factory
-handle, and `logicalTypeFromRep` takes the same handle.
-`Database.DuckDB.Simple.V2.LogicalRep` has `logicalTypeFromRep`.
-Get the factory of a connection with `withConnectionHandle` and
-`withConnectionFactory` from `Database.DuckDB.Simple.Internal`. Keep owned
-values and logical types within the lifetime of the factory's owner.
-
-Keep the connection dedicated to the active stream; another query on that
-connection receives a native resource-in-use error. Cancellation interrupts native chunk fetching
-as well as execution.
+fail with a Binder Error.
 
 New DuckDB 2.0 databases use storage format 2.0, which supports VARIANT columns.
 The library does not change an existing database's storage compatibility

@@ -115,15 +115,15 @@ createFunctionWithState conn = createFunctionWithStateOn (ConnectionTarget conn)
 -- >     if value > maxBound - 100 then Left "BIGINT overflow" else Right (value + 100)
 --
 -- DuckDB uses a registered cast in place of its built-in cast for the same
--- pair of types, on each connection of the database. The library reads
--- GEOMETRY and VARIANT values with the built-in casts only, so a cast from
--- GEOMETRY to BLOB or from VARIANT to a type does not change them. There is
--- one exception: a GEOMETRY value that a callback of a function of an
--- extension reads. The library uses these built-in casts to bind values: BLOB
--- to GEOMETRY, VARCHAR to GEOMETRY, VARCHAR to an ENUM type, and a type to
--- VARIANT. Do not register a cast for one of these pairs. The
--- library then reads or binds the result of that cast, and it can give NULL
--- or another value with no error.
+-- pair of types, on each connection of the database. On a connection, a
+-- registered cast does not change a value that the library reads or binds:
+-- the library reads GEOMETRY and VARIANT values with the casts of the
+-- instance, which are the built-in casts, and it builds GEOMETRY, ENUM, and
+-- VARIANT values with the default cast of DuckDB. Thus a cast from GEOMETRY to
+-- BLOB changes the result of @CAST(g AS BLOB)@, but not a GEOMETRY value that a
+-- query gives. There is one exception: the callbacks of a function that an
+-- extension registers read a GEOMETRY value with the casts of the session,
+-- because an extension has no instance.
 createCast :: (FromField a, ToDuckValue b) => Connection -> TypeDeclaration -> TypeDeclaration -> (a -> Either Text b) -> IO ()
 createCast conn = createCastOn (ConnectionTarget conn)
 

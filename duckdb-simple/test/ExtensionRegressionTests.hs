@@ -318,6 +318,14 @@ extensionRegressionTests =
     , testCase "catalog and config NUL names fail safely" $
         withConnection ":memory:" \conn -> do
           assertSqlError $ Config.getConfigOption conn "threads\0suffix"
+          -- DuckDB reads the name with its length, so it gets the NUL byte and
+          -- reports an unknown option. The library rejects the name before
+          -- the native call.
+          let rejectsNul = assertSqlErrorContaining "config option name contains NUL"
+          rejectsNul $ Config.setConfigOption conn Config.SettingScopeSession "threads\0suffix" "1"
+          rejectsNul $ Config.setConfigValue conn Config.SettingScopeSession "threads\0suffix" (1 :: Int64)
+          rejectsNul $ Config.getConfigValue conn "threads\0suffix"
+          rejectsNul $ Config.getConfigDefaultValue conn "threads\0suffix"
           withTransaction conn do
             assertSqlError $ Catalog.catalogTypeName conn "memory\0suffix"
             assertSqlError $ Catalog.lookupCatalogEntry conn "memory" "main\0suffix" "probe" Catalog.CatalogTable

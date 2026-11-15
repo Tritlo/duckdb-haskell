@@ -98,7 +98,7 @@ listInstanceOptions instance_ = withInstanceHandle instance_ \handle -> do
 -- | Read an effective option by its canonical name or an alias.
 getConfigOption :: Connection -> Text -> IO (Maybe ConfigValue)
 getConfigOption conn name = do
-  when (Text.any (== '\0') name) $ throwInvalidArgument "config option name contains NUL"
+  checkOptionName name
   (withConfigOptionValue conn name \value scope -> Just . (`ConfigValue` scope) <$> valueText value)
     `catch` \err ->
       if sqlErrorType err == Just ErrorInputInvalid
@@ -107,10 +107,12 @@ getConfigOption conn name = do
 
 -- | Write an option at its default, global, or session scope.
 setConfigOption :: Connection -> SettingScope -> Text -> Text -> IO ()
-setConfigOption conn scope name value = withConnectionHandle conn \handle -> do
-  config <- output (c_duckdb_v2_connection_get_config handle)
-  withIdentifier name \key -> withText value \setting ->
-    checked (c_duckdb_v2_config_set_option_text config key setting (settingScopeToNative scope))
+setConfigOption conn scope name value = do
+  checkOptionName name
+  withConnectionHandle conn \handle -> do
+    config <- output (c_duckdb_v2_connection_get_config handle)
+    withIdentifier name \key -> withText value \setting ->
+      checked (c_duckdb_v2_config_set_option_text config key setting (settingScopeToNative scope))
 
 -- | Read a typed option value during one action. The action borrows the value.
 withConfigOptionValue :: Connection -> Text -> (DuckDBV2ValueHandle -> SettingScope -> IO a) -> IO a
@@ -124,34 +126,45 @@ withConfigOptionValue conn name action = withConnectionHandle conn \handle -> do
 -- instance. See Note [User casts and the casts of the library] in
 -- "Database.DuckDB.Simple.Materialize".
 getConfigValue :: Connection -> Text -> IO (FieldValue, SettingScope)
-getConfigValue conn name = withConnectionHandle conn \handle -> do
-  config <- output (c_duckdb_v2_connection_get_config handle)
-  withTypeCache conn \cache ->
-    withOptionValue config name \value scope -> do
-      copied <- materializeValue unexpectedVariant (typeCacheCasts cache) value
-      pure (copied, scope)
+getConfigValue conn name = do
+  checkOptionName name
+  withConnectionHandle conn \handle -> do
+    config <- output (c_duckdb_v2_connection_get_config handle)
+    withTypeCache conn \cache ->
+      withOptionValue config name \value scope -> do
+        copied <- materializeValue unexpectedVariant (typeCacheCasts cache) value
+        pure (copied, scope)
 
 -- | Copy the typed static default of an option. An unknown option name raises
 -- 'SQLError'. The function releases all native handles before it returns. A
 -- GEOMETRY value reads as 'getConfigValue' reads it.
 getConfigDefaultValue :: Connection -> Text -> IO FieldValue
-getConfigDefaultValue conn name = withConnectionHandle conn \handle -> do
-  config <- output (c_duckdb_v2_connection_get_config handle)
-  withTypeCache conn \cache ->
-    withIdentifier name \key ->
-      bracket (output (c_duckdb_v2_config_get_option_by_name config key)) (destroy c_duckdb_v2_option_destroy) \option ->
-        bracket
-          (output (c_duckdb_v2_option_get_default_value option))
-          (destroy c_duckdb_v2_value_destroy)
-          (materializeValue unexpectedVariant (typeCacheCasts cache))
+getConfigDefaultValue conn name = do
+  checkOptionName name
+  withConnectionHandle conn \handle -> do
+    config <- output (c_duckdb_v2_connection_get_config handle)
+    withTypeCache conn \cache ->
+      withIdentifier name \key ->
+        bracket (output (c_duckdb_v2_config_get_option_by_name config key)) (destroy c_duckdb_v2_option_destroy) \option ->
+          bracket
+            (output (c_duckdb_v2_option_get_default_value option))
+            (destroy c_duckdb_v2_value_destroy)
+            (materializeValue unexpectedVariant (typeCacheCasts cache))
 
 -- | Set an option from a typed Haskell value. Native code casts it to the option type.
 setConfigValue :: (ToDuckValue a) => Connection -> SettingScope -> Text -> a -> IO ()
-setConfigValue conn scope name value = withConnectionHandle conn \handle -> do
-  config <- output (c_duckdb_v2_connection_get_config handle)
-  withConnectionFactory handle \factory ->
-    bracket (toDuckValue factory value) (destroy c_duckdb_v2_value_destroy) \native ->
-      withIdentifier name \key -> checked (c_duckdb_v2_config_set_option_value config key native (settingScopeToNative scope))
+setConfigValue conn scope name value = do
+  checkOptionName name
+  withConnectionHandle conn \handle -> do
+    config <- output (c_duckdb_v2_connection_get_config handle)
+    withConnectionFactory handle \factory ->
+      bracket (toDuckValue factory value) (destroy c_duckdb_v2_value_destroy) \native ->
+        withIdentifier name \key -> checked (c_duckdb_v2_config_set_option_value config key native (settingScopeToNative scope))
+
+-- | Reject an option name that contains NUL, before a native call. Each
+-- function of this module that takes an option name calls it first.
+checkOptionName :: Text -> IO ()
+checkOptionName name = when (Text.any (== '\0') name) $ throwInvalidArgument "config option name contains NUL"
 
 -- | Copy the options visible through a borrowed config.
 copyOptions :: DuckDBV2ConfigHandle -> IO [ConfigOption]

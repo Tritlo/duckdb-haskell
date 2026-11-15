@@ -1607,10 +1607,29 @@ filter pushdown.
 
 ## Tests
 
-The test suite is built with [tasty](https://hackage.haskell.org/package/tasty)
-and covers connection management, statement lifecycle, parameter binding, and
-query execution.
+The package has five test suites. Each suite tests the library through a
+database.
+
+- `duckdb-simple-test` is the main suite, built with
+  [tasty](https://hackage.haskell.org/package/tasty). It covers connections,
+  statements, parameters, results, streaming, Arrow batches, cancellation,
+  COPY functions, VARIANT and GEOMETRY values, typed registrations, and
+  callbacks.
+- `duckdb-simple-leak-test` counts native threads and resident memory through
+  repeated queries, failures, and cancellation.
+- `duckdb-simple-nonthreaded-test` is linked without `-threaded`. It checks the
+  error for the registration of a callback in such a program.
+- `duckdb-simple-dataframe-test` tests the Arrow export with the dataframe
+  library. It needs the flag `dataframe-tests`.
+- `duckdb-simple-quack-test` tests authenticated local Quack connections. It
+  needs the flag `quack-tests`, and the variables `DUCKDB_HTTPFS_EXTENSION` and
+  `DUCKDB_QUACK_EXTENSION` must name the extension files.
 
 ```
+cabal test all --test-show-details=direct
 cabal test duckdb-simple-test --test-show-details=direct
+cabal test duckdb-simple-dataframe-test -fdataframe-tests
 ```
+
+`cabal test all` runs the first three suites. The file CONTRIBUTING.md of the
+repository gives the rules for new tests and the variables of a test run.

@@ -680,9 +680,10 @@ valueRegressionTests =
           _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE many_values (v " <> dtype <> ")"))
           _ <- executeMany conn "INSERT INTO many_values VALUES (?)" (map Only values)
           (query_ conn "SELECT v FROM many_values ORDER BY rowid" :: IO [Only Integer]) >>= (@?= map Only values)
-    , testCase "an array of Integer values binds BIGNUM elements" $ withConnection ":memory:" \conn ->
-        forM_ [listArray (0, 1) [5, 2 ^ (130 :: Int)], listArray (0, 1) [5, 6]] \(values :: Array Int Integer) ->
-          (query conn "SELECT typeof(?), ?" (values, values) :: IO [(Text, Array Int Integer)]) >>= (@?= [("BIGNUM[2]", values)])
+    , testCase "an array of Integer values takes the type that its elements give" $ withConnection ":memory:" \conn ->
+        -- See Note [Integer parameters] in "Database.DuckDB.Simple.ToField".
+        forM_ [(listArray (0, 1) [5, 2 ^ (130 :: Int)], "BIGNUM[2]"), (listArray (0, 1) [5, 6], "HUGEINT[2]")] \(values :: Array Int Integer, dtype) ->
+          (query conn "SELECT typeof(?), ?" (values, values) :: IO [(Text, Array Int Integer)]) >>= (@?= [(dtype, values)])
     , testCase "an array of Integer values takes the element type of its target" $ withConnection ":memory:" \conn -> do
         let store :: (Show a, ToField a) => Text -> a -> Text -> Assertion
             store dtype value expected = do
@@ -785,7 +786,12 @@ valueRegressionTests =
           Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorTypeConversion
           Right _ -> assertFailure "expected the duckdb-simple range error for 2^130"
         stored >>= (@?= [])
-        (query conn "SELECT typeof(?)" (Only ([5, 6] :: [Integer])) :: IO [Only Text]) >>= (@?= [Only "BIGNUM[]"])
+        -- With no integer target, a list takes the type that its elements give,
+        -- as [5, 6] and [5, 2^130] in SQL. An empty list keeps BIGNUM[].
+        (query conn "SELECT typeof(?)" (Only ([5, 6] :: [Integer])) :: IO [Only Text]) >>= (@?= [Only "HUGEINT[]"])
+        (query conn "SELECT typeof(?)" (Only ([5, 2 ^ (130 :: Int)] :: [Integer])) :: IO [Only Text]) >>= (@?= [Only "BIGNUM[]"])
+        (query conn "SELECT typeof(?)" (Only ([] :: [Integer])) :: IO [Only Text]) >>= (@?= [Only "BIGNUM[]"])
+        (query conn "SELECT typeof(?)" (Only ([Nothing] :: [Maybe Integer])) :: IO [Only Text]) >>= (@?= [Only "\"NULL\"[]"])
     , testCase "a list and an Array with the same elements store the same LIST value" $ withConnection ":memory:" \conn -> do
         let ints = [1, 2, 3] :: [Int64]
             arr = listArray (0, 2) ints :: Array Int Int64
@@ -992,7 +998,7 @@ valueRegressionTests =
           Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorTypeConversion
           Right _ -> assertFailure "expected the duckdb-simple range error for 2^130"
         (query conn "SELECT typeof(?)" (Only (Map.fromList [("a", 5)] :: Map.Map Text Integer)) :: IO [Only Text])
-          >>= (@?= [Only "MAP(VARCHAR, BIGNUM)"])
+          >>= (@?= [Only "MAP(VARCHAR, HUGEINT)"])
         -- A UTC value keeps its nanoseconds for a nanosecond target.
         let times = Map.fromList [("t", posixSecondsToUTCTime 0.123456789)] :: Map.Map Text UTCTime
         (query conn "SELECT ?::MAP(VARCHAR, TIMESTAMPTZ_NS)" (Only times) :: IO [Only (Map.Map Text UTCTime)]) >>= (@?= [Only times])

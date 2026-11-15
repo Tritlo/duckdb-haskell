@@ -645,7 +645,12 @@ integerBinding binds an Integer or a Natural parameter with this rule:
   raises an error. An Array or a list of BigNum values also takes the element
   type of the target, but each element is a BIGNUM value. DuckDB casts each
   element with the casts from BIGNUM, so the result for BigNum elements does
-  not improve.
+  not improve. For each other target, and for a parameter with no known type,
+  a list with elements takes the type that its elements give (withValueType),
+  as a SQL list literal of the same values and as each scalar Integer: [5, 6]
+  gives HUGEINT[], and [5, 2^130] gives BIGNUM[]. An empty list keeps the
+  element type BIGNUM. A list of only NULL elements takes the element type of a
+  known target, and otherwise the type of [NULL].
 
 Issue 41 of duckdb-haskell tracks the defects.
 -}
@@ -1329,7 +1334,9 @@ constructor:
   elements take the element type of the target in place of that type: an
   Integer, a Natural, or a BigNum element for an integer or DECIMAL target (see
   Note [Integer parameters]), and a TimeOfDay, a LocalTime, or a UTCTime
-  element for a nanosecond target (see Note [Nanosecond parameters]).
+  element for a nanosecond target (see Note [Nanosecond parameters]). For each
+  other target, a list of Integer, Natural, or BigNum elements that is not
+  empty takes the type that its elements give, as the elements below do.
 - Each other element, for example a STRUCT, a TUPLE, a UNION, a generic record,
   a list, an array, or a FieldValue, has no type name. withValueType gives its
   type. When each element that is not NULL has the type of the first one, that
@@ -1387,6 +1394,8 @@ withElementType
   -> (DuckDBV2LogicalTypeHandle -> IO b)
   -> IO b
 withElementType proxy builder@ValueBuilder{builderType = makeType} target values action = case duckDBTypeFromName typeName of
+  -- See Note [Integer parameters].
+  Just LogicalTypeIdBigNum | not integerTarget, not (null values) -> withValueType builder target values action
   Just dtype -> do
     checkNanosecondElements (declaredType dtype) values
     bracket (makeType (declaredType dtype)) destroyLogicalType action
@@ -1398,9 +1407,11 @@ withElementType proxy builder@ValueBuilder{builderType = makeType} target values
     -- Note [Element types of a list].
     elementTarget = maybe (declaredTarget proxy) Just target
     -- See Note [Integer parameters].
-    declaredType LogicalTypeIdBigNum
-      | Just rep@(LogicalTypeScalar dtype) <- target, dtype `elem` integerTypes = rep
-      | Just rep@LogicalTypeDecimal{} <- target = rep
+    integerTarget = case target of
+      Just (LogicalTypeScalar dtype) -> dtype `elem` integerTypes
+      Just LogicalTypeDecimal{} -> True
+      _ -> False
+    declaredType LogicalTypeIdBigNum | integerTarget, Just rep <- target = rep
     declaredType dtype = timestampTypeForTarget target (LogicalTypeScalar dtype)
 
 -- | Raise the range error of the library for each TIMESTAMP or TIMESTAMPTZ

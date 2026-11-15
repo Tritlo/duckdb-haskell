@@ -963,13 +963,41 @@ mapDuckValue builder@ValueBuilder{builderFactory = factory} keyTarget valueTarge
           withArray keys \keyPtr -> withArray values \valuePtr ->
             output (c_duckdb_v2_value_create_map factory keyType valueType (ConstPtr keyPtr) (ConstPtr valuePtr) (fromIntegral (length pairs)))
 
+{- Note [Element types of a list]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+withElementType gives the element type of a LIST or an ARRAY value, and the key
+type or the value type of a MAP value, to the native constructor:
+
+- A scalar element type comes from the column type name of the element. Some
+  elements take the element type of the target in place of that type: an
+  Integer, a Natural, or a BigNum element for an integer or DECIMAL target (see
+  Note [Integer parameters]), and a TimeOfDay, a LocalTime, or a UTCTime
+  element for a nanosecond target (see Note [Nanosecond parameters]).
+- Each other element, for example a STRUCT, a TUPLE, a UNION, a generic record,
+  a list, or an array, has no type name. When each element that is not NULL
+  has the type of the first one, that type is the element type.
+- When these types are different, the library names no element type. The
+  native constructor then gives the type of a SQL list literal of the elements
+  (duckdb_v2.h: "The child type is the common type of the elements, resolved by
+  the same rule a SQL list literal follows, and every element is cast to it; a
+  set with no common type surfaces the cast error."). For example, a STRUCT(a
+  INTEGER) and a STRUCT(b INTEGER) give STRUCT(a INTEGER, b INTEGER), with NULL
+  for a field that an element does not have. A BIGINT field and a DOUBLE field
+  give a DOUBLE field, which rounds a large BIGINT, as in SQL.
+- Elements with no common type raise the SQLError of DuckDB. For a STRUCT(a
+  INTEGER) and a STRUCT(a VARCHAR), it is "Cannot combine types" of the type
+  ErrorQueryNotImplemented. The SQL list literal raises a Binder Error for the
+  same elements, but array_value raises the same error as the constructor.
+- The target does not change the type of these elements. In SQL, DuckDB also
+  gives the list literal its type before it casts the list to the type of a
+  column.
+- An empty list or a list with only NULL elements of this kind has no element
+  type, and raises an error.
+-}
+
 -- | Give the element type of the values of a LIST, an ARRAY, or one part of a
--- MAP to the action. The target is the element type of the parameter. A scalar
--- element type comes from the column type name of @a@. When that type is BIGNUM
--- and the target is an integer type or a DECIMAL type, the target is the
--- element type. See Note [Integer parameters]. Each other element type comes
--- from the first value that is not NULL, and the other values must have the
--- same type.
+-- MAP to the action. The target is the element type of the parameter. See
+-- Note [Element types of a list].
 withElementType
   :: forall a b
    . (DuckDBColumnType a)
@@ -990,10 +1018,12 @@ withElementType proxy ValueBuilder{builderType = makeType} target values action 
     case present of
       value : rest -> bracket (output (c_duckdb_v2_value_get_logical_type value)) destroyLogicalType \logical -> do
         expected <- logicalTypeToRep logical
-        forM_ rest \element -> do
-          actual <- bracket (output (c_duckdb_v2_value_get_logical_type element)) destroyLogicalType logicalTypeToRep
-          when (actual /= expected) $ throwIO (userError "duckdb-simple: array elements have different logical types")
-        action logical
+        let sameType same element = do
+              actual <- bracket (output (c_duckdb_v2_value_get_logical_type element)) destroyLogicalType logicalTypeToRep
+              pure $! same && actual == expected
+        same <- foldM sameType True rest
+        -- See Note [Element types of a list].
+        if same then action logical else action nullHandle
       [] ->
         throwIO
           SQLError

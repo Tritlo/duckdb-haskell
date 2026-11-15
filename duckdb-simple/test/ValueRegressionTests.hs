@@ -48,7 +48,6 @@ import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit
-import TestUtils (assertFailureIO)
 
 -- | Native timestamps used to test the full storage range.
 data NativeTimestamp = Seconds Int64 | Milliseconds Int64 | Microseconds Int64 | Nanoseconds Int64
@@ -230,20 +229,96 @@ valueRegressionTests =
         case result of
           Left SQLError{sqlErrorMessage} -> assertBool (Text.unpack sqlErrorMessage) ("duckdb-simple: an empty ARRAY parameter is not possible" `Text.isInfixOf` sqlErrorMessage)
           Right (_ :: [Only Text]) -> assertFailure "expected the empty ARRAY error"
-    , testCase "composite arrays reject schemas that would discard fields or digits" $ withConnection ":memory:" \conn -> do
+    , testCase "composite arrays with different element types take the type of array_value" $ withConnection ":memory:" \conn -> do
         forM_
-          [ ("SELECT {'a': 1::INTEGER}", "SELECT {'a': 2::INTEGER, 'b': 3::INTEGER}")
-          , ("SELECT {'a': 1::INTEGER}", "SELECT {'a': 1.6::DOUBLE}")
-          , ("SELECT {'a': 1.2::DECIMAL(4,1)}", "SELECT {'a': 1.26::DECIMAL(4,2)}")
-          , ("SELECT {'a': [1.2::DECIMAL(4,1)]}", "SELECT {'a': [1.26::DECIMAL(4,2)]}")
+          [ ("{'a': 1::INTEGER}", "{'a': 2::INTEGER, 'b': 3::INTEGER}", "STRUCT(a INTEGER, b INTEGER)[3]")
+          , ("{'a': 1::INTEGER}", "{'a': 1.6::DOUBLE}", "STRUCT(a DOUBLE)[3]")
+          , ("{'a': 1.2::DECIMAL(4,1)}", "{'a': 1.26::DECIMAL(4,2)}", "STRUCT(a DECIMAL(5,2))[3]")
+          , ("{'a': [1.2::DECIMAL(4,1)]}", "{'a': [1.26::DECIMAL(4,2)]}", "STRUCT(a DECIMAL(5,2)[])[3]")
           ]
-          \(firstQuery, secondQuery) -> do
-            [Only first] <- query_ conn firstQuery :: IO [Only (StructValue FieldValue)]
-            [Only second] <- query_ conn secondQuery :: IO [Only (StructValue FieldValue)]
-            forM_ [[Nothing, Just first, Just second], [Just second, Nothing, Just first]] \elements -> do
-              let values = listArray (0 :: Int, 2) elements
-              assertFailureIO (query conn "SELECT ?" (Only values) :: IO [Only FieldValue])
-              withConnectionHandle conn \native -> withConnectionFactory native \factory -> assertFailureIO (bracket (toDuckValue factory values) destroyValue (const (pure ())))
+          \(firstSql, secondSql, typeName) -> do
+            [Only first] <- query_ conn (Query ("SELECT " <> firstSql)) :: IO [Only (StructValue FieldValue)]
+            [Only second] <- query_ conn (Query ("SELECT " <> secondSql)) :: IO [Only (StructValue FieldValue)]
+            forM_
+              [([Nothing, Just first, Just second], ["NULL", firstSql, secondSql]), ([Just second, Nothing, Just first], [secondSql, "NULL", firstSql])]
+              \(elements, sqls) -> do
+                let values = listArray (0 :: Int, 2) elements
+                    literal = "array_value(" <> Text.intercalate ", " sqls <> ")"
+                (query conn (Query ("SELECT typeof(?), ?::VARCHAR, (" <> literal <> ")::VARCHAR")) (values, values) :: IO [(Text, Text, Text)]) >>= \case
+                  [(actualType, text, literalText)] -> do
+                    actualType @?= typeName
+                    text @?= literalText
+                  rows -> assertFailure (show rows)
+                withConnectionHandle conn \native -> withConnectionFactory native \factory -> bracket (toDuckValue factory values) destroyValue (const (pure ()))
+        (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
+    , testCase "a list or an Array of composite elements with different types follows the SQL list literal" $ withConnection ":memory:" \conn -> do
+        let elementOf :: Text -> IO (Maybe (StructValue FieldValue))
+            elementOf "NULL" = pure Nothing
+            elementOf sql = do
+              [Only value] <- query_ conn (Query ("SELECT " <> sql))
+              pure (Just value)
+            sameAs :: (ToField a) => a -> Text -> Text -> IO ()
+            sameAs value literal typeName =
+              (query conn (Query ("SELECT typeof(?), ?::VARCHAR, (" <> literal <> ")::VARCHAR")) (value, value) :: IO [(Text, Text, Text)]) >>= \case
+                [(actualType, text, literalText)] -> do
+                  assertEqual (Text.unpack literal) typeName actualType
+                  assertEqual (Text.unpack literal) literalText text
+                rows -> assertFailure (show rows)
+            duckdbError :: (ToField a) => String -> a -> ErrorType -> Text -> IO ()
+            duckdbError label value errorType part =
+              try (query conn "SELECT ?" (Only value) :: IO [Only FieldValue]) >>= \case
+                Left SQLError{sqlErrorType, sqlErrorMessage} -> do
+                  assertEqual label (Just errorType) sqlErrorType
+                  assertBool (Text.unpack sqlErrorMessage) (part `Text.isInfixOf` sqlErrorMessage)
+                Right rows -> assertFailure (label <> ": " <> show rows)
+        forM_
+          [ (["{'a': 1}", "{'b': 2}"], "STRUCT(a INTEGER, b INTEGER)")
+          , (["{'a': 1::INTEGER}", "{'a': 2::BIGINT}"], "STRUCT(a BIGINT)")
+          , (["{'a': 9007199254740993::BIGINT}", "{'a': 1.5::DOUBLE}"], "STRUCT(a DOUBLE)")
+          , (["{'a': [1::INTEGER]}", "{'a': [2::BIGINT]}"], "STRUCT(a BIGINT[])")
+          , (["{'a': 1}", "NULL"], "STRUCT(a INTEGER)")
+          , (["NULL", "{'a': 1}", "{'b': 2}"], "STRUCT(a INTEGER, b INTEGER)")
+          ]
+          \(sqls, elementType) -> do
+            elements <- mapM elementOf sqls
+            let literal = Text.intercalate ", " sqls
+                count = length elements
+            sameAs elements ("[" <> literal <> "]") (elementType <> "[]")
+            sameAs
+              (listArray (0, count - 1) elements :: Array Int (Maybe (StructValue FieldValue)))
+              ("array_value(" <> literal <> ")")
+              (elementType <> "[" <> Text.pack (show count) <> "]")
+        -- The rule can round, as in SQL.
+        large <- mapM elementOf ["{'a': 9007199254740993::BIGINT}", "{'a': 1.5::DOUBLE}"]
+        (query conn "SELECT ?::VARCHAR" (Only large) :: IO [Only Text]) >>= (@?= [Only "[{'a': 9007199254740992.0}, {'a': 1.5}]"])
+        mismatch <- mapM elementOf ["{'a': 1}", "{'a': 'x'}"]
+        duckdbError "list" mismatch ErrorQueryNotImplemented "Cannot combine types STRUCT(a INTEGER) and STRUCT(a VARCHAR)"
+        duckdbError
+          "Array"
+          (listArray (0, 1) mismatch :: Array Int (Maybe (StructValue FieldValue)))
+          ErrorQueryNotImplemented
+          "Cannot combine types"
+        unions <-
+          mapM
+            (\sql -> query_ conn sql :: IO [Only (UnionValue FieldValue)])
+            ["SELECT union_value(a := 1)::UNION(a INTEGER)", "SELECT union_value(b := 'x')::UNION(b VARCHAR)"]
+        duckdbError "UNION list" (map fromOnly (concat unions)) ErrorTypeConversion "is not present in target union"
+        duckdbError
+          "ARRAY sizes"
+          [listArray (0, 1) [1, 2] :: Array Int Int32, listArray (0, 2) [1, 2, 3]]
+          ErrorInputInvalid
+          "Cannot cast array of size 2 to array of size 3"
+        [Just first, Just second] <- mapM elementOf ["{'a': 1}", "{'b': 2}"]
+        let mapped = Map.fromList [("k1" :: Text, first), ("k2", second)]
+        (query conn "SELECT typeof(?), ?::VARCHAR" (mapped, mapped) :: IO [(Text, Text)])
+          >>= (@?= [("MAP(VARCHAR, STRUCT(a INTEGER, b INTEGER))", "{k1={'a': 1, 'b': NULL}, k2={'a': NULL, 'b': 2}}")])
+        -- The column type does not change the type of the list, as in SQL.
+        _ <- execute_ conn "CREATE TABLE wide (v STRUCT(a BIGINT, b BIGINT)[]); CREATE TABLE named (v STRUCT(a VARCHAR)[])"
+        _ <- execute conn "INSERT INTO wide VALUES (?)" (Only [first, second])
+        (query_ conn "SELECT v::VARCHAR FROM wide" :: IO [Only Text]) >>= (@?= [Only "[{'a': 1, 'b': NULL}, {'a': NULL, 'b': 2}]"])
+        try (execute conn "INSERT INTO named VALUES (?)" (Only mismatch)) >>= \case
+          Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorQueryNotImplemented
+          Right count -> assertFailure ("expected the error of DuckDB, stored " <> show count)
         (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
     , testCase "a LIST parameter fails at an element of the wrong type after earlier elements" $ withConnection ":memory:" \conn -> do
         let struct =

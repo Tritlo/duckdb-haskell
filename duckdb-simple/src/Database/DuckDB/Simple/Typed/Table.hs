@@ -68,6 +68,12 @@ threads scan it" (duckdb_v2_table_function_set_claim_batch_callback in the
 header). Then DuckDB 2.0.0 runs several exec callbacks of the scan of one file
 at the same time. The lock of the MVar gives each row to one call only.
 
+A typed table function declares projection pushdown. DuckDB then asks the exec
+callback for only the columns that the query uses, and for one column when the
+query uses no column, for example in SELECT count(*). writeRows makes the
+values of the requested columns only, so it does not evaluate the other columns
+of a row. The COPY FROM side asks writeRows for all columns.
+
 writeRows evaluates only the spine of the rows that fit in the chunk
 (splitRows). It does not evaluate the other rows. The list that it gives back
 is the list after the written rows, not a reference to the whole list. DuckDB
@@ -91,7 +97,10 @@ createTableFunctionOn target name columns function = do
     throwInvalidArgument (name <> ": " <> count columns <> " column names for " <> count columnTypes <> " result columns")
   casts <- targetCastFactory target
   withRegistrationFactory target \factory ->
-    registerTableFunctionWith target (configure factory) (tableCallbacks (bind casts) execute){tableInitGlobalCallback = Just initialize}
+    registerTableFunctionWith
+      target
+      (configure factory)
+      (tableCallbacks (bind casts) execute){tableInitGlobalCallback = Just initialize, tableProjectionPushdown = True}
   where
     count = Text.pack . show . length
     parameterTypes = rowColumnTypes (Proxy :: Proxy params)
@@ -120,29 +129,42 @@ createTableFunctionOn target name columns function = do
     execute info context = withContextFactory context \factory -> do
       remaining <- readCallbackState (c_duckdb_v2_table_function_exec_get_global_state info) :: IO (MVar [row])
       chunk <- output (c_duckdb_v2_table_function_exec_get_output_chunk info)
+      -- The declared column of each vector. See Note [Row lists of typed scans].
+      requested <- output (c_duckdb_v2_table_function_exec_get_column_count info)
+      selected <- forM (takeWhile (< requested) [0 ..]) \index ->
+        fromIntegral <$> output (c_duckdb_v2_table_function_exec_get_column_index info index)
       -- The lock gives each row to one call only. See
       -- Note [Row lists of typed scans].
-      modifyMVar_ remaining (writeRows factory chunk)
+      modifyMVar_ remaining (writeRows factory chunk selected)
 
 -- | Write the first rows of a list to the vectors of an output chunk. Return
 -- the rows that do not fit in the chunk. The function does not evaluate those
--- rows. The chunk must have one vector for each column of the row, in order. The
--- values come from the borrowed factory. The function destroys each value after
--- it writes it. The size of each vector becomes the number of written rows. An
--- empty list writes no row. In the exec callback of a table function, no row ends
--- the scan. See Note [Row lists of typed scans].
-writeRows :: forall row. (TypedRow row) => DuckDBV2FactoryHandle -> DuckDBV2DataChunkHandle -> [row] -> IO [row]
-writeRows factory chunk rows = do
+-- rows. The list of columns gives the column of the row for each vector of the
+-- chunk, in the order of the vectors. The function makes the values of these
+-- columns only, so it does not evaluate the other columns. The values come from
+-- the borrowed factory. The function destroys each value after it writes it.
+-- The size of each vector becomes the number of written rows. An empty list
+-- writes no row. In the exec callback of a table function, no row ends the
+-- scan. See Note [Row lists of typed scans].
+writeRows :: forall row. (TypedRow row) => DuckDBV2FactoryHandle -> DuckDBV2DataChunkHandle -> [Int] -> [row] -> IO [row]
+writeRows factory chunk columns rows = do
   capacity <- fromIntegral <$> output (c_duckdb_v2_data_chunk_get_capacity chunk)
   vectorCount <- output (c_duckdb_v2_data_chunk_get_vector_count chunk)
   let width = length (rowColumnTypes (Proxy :: Proxy row))
-  when (fromIntegral vectorCount /= width) $
+  when (fromIntegral vectorCount /= length columns || any (\column -> column < 0 || column >= width) columns) $
     throwInvalidArgument
-      ("the output chunk has " <> Text.pack (show vectorCount) <> " vectors for " <> Text.pack (show width) <> " row columns")
+      ( "the output chunk has "
+          <> Text.pack (show vectorCount)
+          <> " vectors for the columns "
+          <> Text.pack (show columns)
+          <> " of a row of "
+          <> Text.pack (show width)
+          <> " columns"
+      )
   case splitRows capacity rows of
     (now, later) -> do
       let size = fromIntegral (length now)
-      vectors <- forM (take width [0 ..]) \index -> do
+      vectors <- forM (take (length columns) [0 ..]) \index -> do
         vector <- output (c_duckdb_v2_data_chunk_get_vector chunk index)
         -- Flatten after the size changes. See Note [Vector flatten] in
         -- "Database.DuckDB.Simple.Materialize".
@@ -151,11 +173,12 @@ writeRows factory chunk rows = do
         pure vector
       -- Use loops with a constant stack. See Note [Constant stack at safe calls]
       -- in "Database.DuckDB.Simple.Native".
-      forM_ (zip [0 ..] now) \(index, row) ->
+      forM_ (zip [0 ..] now) \(index, row) -> do
+        let values = rowColumnValues row
         zipWithM_
           (\vector (ColumnValue make) -> bracket (make factory) destroyValue (checked . c_duckdb_v2_vector_set_value vector index))
           vectors
-          (rowColumnValues row)
+          (map (values !!) columns)
       pure later
 
 -- | Split a list after at most the given number of elements. Evaluate the

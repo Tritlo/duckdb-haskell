@@ -114,6 +114,7 @@ typedRegistrationTests =
       localOption (mkTimeout (10 * 60 * 1000000)) (testCase "table function reads an infinite list with LIMIT" testTableLazy)
     , testCase "table function registration and argument errors" testTableArgumentErrors
     , testCase "table function exceptions become SQL errors" testTableExceptions
+    , testCase "table function evaluates only the columns that the query uses" testTableProjection
     , testCase "table function releases the list of each scan" testTableRelease
     , testCase "multi-file function gives each row of a typed table function one time" testTableMultiFile
     , testCase "COPY format with both directions under one name" testCopyBothDirections
@@ -1035,6 +1036,20 @@ testTableExceptions = withConnection ":memory:" \conn -> do
   query_ conn "SELECT n FROM typed_partial() LIMIT 2" >>= (@?= map Only [0, 1 :: Int64])
   query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
 
+-- | Evaluate only the columns that the query uses. A column that the query does
+-- not use can raise an exception, and the query does not fail. SELECT * and
+-- count(*) read the rows as before.
+testTableProjection :: Assertion
+testTableProjection = withConnection ":memory:" \conn -> do
+  createTableFunction conn "typed_pairs" ["n", "failing"] \(Only count) ->
+    pure [(n, if n == 2500 then error "typed_pairs: the column fails" else n * 2) | n <- [0 .. count - 1 :: Int64]]
+  query_ conn "SELECT n FROM typed_pairs(3000) WHERE n % 1000 = 1" >>= (@?= map Only [1, 1001, 2001 :: Int64])
+  query_ conn "SELECT sum(n)::BIGINT FROM typed_pairs(3000)" >>= (@?= [Only (sum [0 .. 2999 :: Int64])])
+  assertSqlError "typed_pairs: the column fails" (query_ conn "SELECT failing FROM typed_pairs(3000)" :: IO [Only Int64])
+  query_ conn "SELECT failing FROM typed_pairs(3)" >>= (@?= map Only [0, 2, 4 :: Int64])
+  query_ conn "SELECT * FROM typed_pairs(3)" >>= (@?= ([(0, 0), (1, 2), (2, 4)] :: [(Int64, Int64)]))
+  query_ conn "SELECT count(*) FROM typed_pairs(2000)" >>= (@?= [Only (2000 :: Int64)])
+
 -- | Release the list of each scan after a full scan, after LIMIT, and after an
 -- error. Each call makes a token. The rows that the scan did not read refer to
 -- the token. Release the function when the connection closes.
@@ -1234,6 +1249,10 @@ testTableMultiFile = withDirectory \directory -> withConnection ":memory:" \conn
   forM_ [1 :: Int .. 5] \_ ->
     query conn "SELECT value FROM typed_all_numbers(?) ORDER BY value" (Only (Text.pack (directory </> "numbers*.txt")))
       >>= (@?= map Only (concatMap numbers [0 .. 7]))
+  -- count(*) uses no column. The typed table function declares projection
+  -- pushdown, so the multi-file function can run it.
+  query conn "SELECT count(*) FROM typed_all_numbers(?)" (Only (Text.pack (directory </> "numbers*.txt")))
+    >>= (@?= [Only (80000 :: Int64)])
 
 -- | Create and remove a unique directory for the files of a test.
 withDirectory :: (FilePath -> IO a) -> IO a

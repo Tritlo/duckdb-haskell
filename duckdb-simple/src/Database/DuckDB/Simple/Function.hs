@@ -151,9 +151,13 @@ createCast conn = createCastOn (ConnectionTarget conn)
 -- read the list at the same time. DuckDB stops when the query needs no more rows,
 -- so the list can be long or infinite, for example with @LIMIT@. It reads a full
 -- chunk, and it can read more chunks than the query needs. Thus it can read rows
--- after the @LIMIT@. It reads all columns of each row that it reads, also the
--- columns that the query does not use. An exception in the function or in a row
--- is an SQL error. DuckDB releases the list when the scan ends.
+-- after the @LIMIT@. DuckDB asks only for the columns that the query uses, and
+-- for one column when the query uses no column, as in @SELECT count(*)@. The
+-- library evaluates only the columns that DuckDB asks for. A column that the
+-- query does not use is not evaluated, so an exception in that column does not
+-- fail the query. An exception in the function, in the list, in a row, or in a
+-- column that the query uses is an SQL error. DuckDB releases the list when the
+-- scan ends.
 --
 -- > createTableFunction conn "haskell_squares" ["n", "square"] \(Only count) ->
 -- >     pure [(n, n * n) | n <- [0 .. count - 1 :: Int64]]

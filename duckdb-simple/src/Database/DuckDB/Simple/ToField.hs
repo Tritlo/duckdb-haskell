@@ -345,7 +345,9 @@ the reason why the type has no declaration.
   DuckDBColumnType instance gives its own type text, for example
   DECIMAL(18,3).
 - ViaDuckDB gives the structured type of the record or the sum type
-  (genericLogicalType in "Database.DuckDB.Simple.Generic").
+  (genericLogicalType in "Database.DuckDB.Simple.Generic"). A type with an
+  Array field gives Left: the DuckValue instance of Array declares an ARRAY
+  of the size 0, and DuckDB rejects that size.
 - Maybe a has the declaration of a.
 - A list and an Array give a LIST (listDeclaration): the text T[] for the
   element text T, or a structured LIST for a structured element type.

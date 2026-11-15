@@ -700,10 +700,16 @@ instance GFromField' 'False (M1 D meta U1) where
 
 -- | The deriving-via version of @DuckDBColumnType@. The text is the bare name
 -- of the generic logical type, for diagnostics. The declaration is the
--- structured generic logical type. Each field type comes from 'DuckValue'. See
--- Note [Type declarations] in "Database.DuckDB.Simple.ToField".
+-- structured generic logical type. Each field type comes from 'DuckValue'. A
+-- type with an 'Array' field has no declaration, because its ARRAY type has the
+-- size 0. See Note [Type declarations] in "Database.DuckDB.Simple.ToField".
 instance (Generic a, GToField (Rep a)) => DuckDBColumnType (ViaDuckDB a) where
-  duckdbTypeDeclaration _ = Right (StructuredType (genericLogicalType (Proxy :: Proxy a)))
+  duckdbTypeDeclaration _
+    | hasUnsizedArray rep =
+        Left (Text.pack "an Array field has no size, so its ARRAY type has no declaration. Use a list field, which is a LIST.")
+    | otherwise = Right (StructuredType rep)
+    where
+      rep = genericLogicalType (Proxy :: Proxy a)
   duckdbColumnTypeFor _ =
     case genericLogicalType (Proxy :: Proxy a) of
       LogicalTypeStruct{} -> Text.pack "STRUCT"
@@ -726,6 +732,18 @@ instance (Generic a, GToField (Rep a)) => ToField (ViaDuckDB a) where
   toField (ViaDuckDB x) = case gToField (from x) of
     EncodedUnion unionVal -> toField unionVal
     EncodedStruct structVal _ -> toField structVal
+
+-- | Test whether a type is or contains an ARRAY type of the size 0. The
+-- 'DuckValue' instance of 'Array' declares that size.
+hasUnsizedArray :: LogicalTypeRep -> Bool
+hasUnsizedArray = \case
+  LogicalTypeArray child size -> size == 0 || hasUnsizedArray child
+  LogicalTypeList child -> hasUnsizedArray child
+  LogicalTypeMap key value -> hasUnsizedArray key || hasUnsizedArray value
+  LogicalTypeStruct fields -> any (hasUnsizedArray . structFieldValue) (elems fields)
+  LogicalTypeTuple fields -> any hasUnsizedArray (elems fields)
+  LogicalTypeUnion members -> any (hasUnsizedArray . unionMemberType) (elems members)
+  _ -> False
 
 -- | Deriving-via @ToDuckValue@ instance. A sum type gives a UNION value and a
 -- product type a STRUCT value, through the @ToDuckValue@ instances of those

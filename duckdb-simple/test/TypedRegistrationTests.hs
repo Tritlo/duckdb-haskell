@@ -12,7 +12,7 @@ module TypedRegistrationTests (typedRegistrationTests) where
 
 import Control.Exception (SomeException, bracket, displayException, throwIO, try)
 import Control.Monad (forM_, void, when)
-import Data.Array (elems)
+import Data.Array (Array, elems)
 import qualified Data.ByteString as BS
 import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int16, Int32, Int64, Int8)
@@ -1020,6 +1020,11 @@ data Counts = Counts {signed :: Integer, unsigned :: Natural}
   deriving stock (Eq, Show, Generic)
   deriving (DuckDBColumnType, ToDuckValue, ToField, FromField) via (ViaDuckDB Counts)
 
+-- | A record with an Array field. Its ARRAY type has no size.
+newtype Ranked = Ranked {ranks :: Array Int Int64}
+  deriving stock (Generic)
+  deriving (DuckDBColumnType, ToDuckValue) via (ViaDuckDB Ranked)
+
 -- | A newtype with its own type text.
 newtype Price = Price Double
 
@@ -1096,6 +1101,9 @@ testNoDeclaration = withConnection ":memory:" \conn -> do
           , aggregateResult = pure
           }
     )
+  assertSqlError
+    "typed_ranked: column r: an Array field has no size, so its ARRAY type has no declaration. Use a list field"
+    (createTableFunction conn "typed_ranked" ["r"] \() -> pure ([] :: [Only Ranked]))
   assertSqlError
     "typed_priced: column p: a MAP with the type text DECIMAL(18,3) and a structured type has no declaration"
     (createTableFunction conn "typed_priced" ["p"] \() -> pure ([] :: [Only (Map.Map Price Peak)]))

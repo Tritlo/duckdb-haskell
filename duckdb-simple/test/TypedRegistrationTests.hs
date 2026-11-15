@@ -227,7 +227,7 @@ testPragmaDecodeErrors = withConnection ":memory:" \conn -> do
   registerPragmaFunction conn "typed_strict" [amount] (ExecPragma \(Only (_ :: Int64)) -> pure ())
   assertSqlError "cannot decode the arguments of pragma typed_strict: column amount is NULL" (execute_ conn "PRAGMA typed_strict(NULL)")
   assertInputError
-    "typed_variant: parameter value: the type of an argument cannot be or contain VARIANT"
+    "typed_variant: parameter value: the library cannot read a VARIANT value in a callback; declare another type, such as VARCHAR, and cast the value in SQL, for example v::VARCHAR"
     ( registerPragmaFunction
         conn
         "typed_variant"
@@ -246,7 +246,11 @@ testPragmaVariantParameters = withConnection ":memory:" \conn -> do
         registerPragmaFunction conn name [parameter "value" (TypeExpression declaration)] $
           QueryPragma \(Only (_ :: FieldValue)) -> pure "SELECT 1"
   forM_ [("typed_variant_scalar", "VARIANT"), ("typed_variant_list", "VARIANT[]"), ("typed_variant_struct", "STRUCT(v VARIANT)")] \(name, declaration) ->
-    assertInputError (name <> ": parameter value: the type of an argument cannot be or contain VARIANT") (register name declaration)
+    assertInputError
+      ( name
+          <> ": parameter value: the library cannot read a VARIANT value in a callback; declare another type, such as VARCHAR, and cast the value in SQL, for example v::VARCHAR"
+      )
+      (register name declaration)
   register "typed_geometry_parameter" "GEOMETRY"
   query_ conn "PRAGMA typed_geometry_parameter('POINT (1 2)'::GEOMETRY)" >>= (@?= [Only (1 :: Int64)])
   -- The check sees only the declared type. A parameter of the type ANY
@@ -255,7 +259,7 @@ testPragmaVariantParameters = withConnection ":memory:" \conn -> do
     QueryPragma \(Only (_ :: FieldValue)) -> pure "SELECT 1"
   query_ conn "PRAGMA typed_any_parameter(1)" >>= (@?= [Only (1 :: Int64)])
   assertSqlError
-    "the type of a pragma argument cannot be or contain VARIANT"
+    "typed_any_parameter: parameter value: the library cannot read a VARIANT value in a callback; declare another type, such as VARCHAR, and cast the value in SQL, for example v::VARCHAR"
     (query_ conn "PRAGMA typed_any_parameter(1::VARIANT)" :: IO [Only Int64])
 
 -- | Raise the input error of an empty pragma name, also on a closed
@@ -893,7 +897,8 @@ testAggregateResultTypes = withConnection ":memory:" \conn -> do
     "For a newtype over one of these types, derive FunctionResult with deriving newtype."
     (createAggregate conn "typed_years" sumAggregate{aggregateResult = pure . Years . fromIntegral})
   -- The argument reader does not read VARIANT.
-  let unreadable = "argument arg0: the type of an argument cannot be or contain VARIANT"
+  let unreadable =
+        "argument arg0: the library cannot read a VARIANT value in a callback; declare another type, such as VARCHAR, and cast the value in SQL, for example v::VARCHAR"
   assertSqlError
     ("typed_variant_count: " <> unreadable)
     (createAggregate conn "typed_variant_count" countAggregate{aggregateStep = \count (Only (_ :: Variant)) -> pure (count + 1)})
@@ -1519,10 +1524,10 @@ testTableArgumentErrors = withConnection ":memory:" \conn -> do
   -- The argument reader reads no VARIANT, so the registration of such a
   -- parameter type fails.
   assertInputError
-    "typed_variant: parameter arg0: the type of an argument cannot be or contain VARIANT"
+    "typed_variant: parameter arg0: the library cannot read a VARIANT value in a callback; declare another type, such as VARCHAR, and cast the value in SQL, for example v::VARCHAR"
     (createTableFunction conn "typed_variant" ["n"] \(Only (_ :: Variant)) -> pure [Only (1 :: Int64)])
   assertInputError
-    "typed_maybe_variant: parameter arg0: the type of an argument cannot be or contain VARIANT"
+    "typed_maybe_variant: parameter arg0: the library cannot read a VARIANT value in a callback; declare another type, such as VARCHAR, and cast the value in SQL, for example v::VARCHAR"
     (createTableFunction conn "typed_maybe_variant" ["missing"] \(Only (value :: Maybe Variant)) -> pure [Only (isNothing value)])
   query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
 

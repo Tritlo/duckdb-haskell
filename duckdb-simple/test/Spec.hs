@@ -1551,12 +1551,12 @@ functionsTests =
           let rejects expected action = assertThrows action (Text.isInfixOf expected . sqlErrorMessage)
           rejects "hs_bad_struct: argument arg0: StructValue has no static field types" $
             createFunction conn "hs_bad_struct" (\(_ :: StructValue FieldValue) -> True)
-          rejects "hs_bad_variant: argument arg0: the type of an argument cannot be or contain VARIANT" $
+          rejects "hs_bad_variant: argument arg0: the library cannot read a VARIANT value in a callback" $
             createFunction conn "hs_bad_variant" (\(_ :: Variant) -> True)
-          rejects "hs_bad_variants: argument arg1: the type of an argument cannot be or contain VARIANT" $
+          rejects "hs_bad_variants: argument arg1: the library cannot read a VARIANT value in a callback" $
             createFunction conn "hs_bad_variants" (\(_ :: Int64) (_ :: [Maybe Variant]) -> True)
           -- The check visits the value type of a MAP, not only the element type of a LIST.
-          rejects "hs_bad_map: argument arg0: the type of an argument cannot be or contain VARIANT" $
+          rejects "hs_bad_map: argument arg0: the library cannot read a VARIANT value in a callback" $
             createFunction conn "hs_bad_map" (\(_ :: Map.Map Text.Text Variant) -> True)
           rejects "hs_bad_result: result: StructValue has no static field types" $
             createFunction conn "hs_bad_result" (\(_ :: Int64) -> (undefined :: StructValue FieldValue))

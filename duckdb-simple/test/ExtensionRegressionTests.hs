@@ -599,7 +599,9 @@ extensionRegressionTests =
               sqlErrorType err @?= Just ErrorInputInvalid
               assertBool
                 (show err)
-                ("haskell_variant_update: the update function: the type of an argument cannot be or contain VARIANT" `Text.isInfixOf` sqlErrorMessage err)
+                ( "haskell_variant_update: the update function: the library cannot read a VARIANT value in a callback; declare another type, such as VARCHAR, and cast the value in SQL, for example v::VARCHAR"
+                    `Text.isInfixOf` sqlErrorMessage err
+                )
             Right () -> assertFailure "the registration of a VARIANT option with an update function succeeded"
     , testCase "setConfigValue with an Integer or a Natural checks the range of an unsigned option" $
         withConnection ":memory:" \conn -> do

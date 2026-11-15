@@ -28,7 +28,7 @@ import Database.DuckDB.Simple.Internal (Connection)
 import Database.DuckDB.Simple.Materialize (materializeValue, rejectRows)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
-import Database.DuckDB.Simple.Typed (checkArgumentType)
+import Database.DuckDB.Simple.Typed (checkArgumentType, variantArgumentReason)
 import qualified Database.DuckDB.Simple.V2.Pragma as V2
 import Database.DuckDB.Simple.V2.Registration (
   FunctionParameter (..),
@@ -61,9 +61,10 @@ data PragmaCallback args
 -- both cases. When the call omits a parameter, the field has the default value of
 -- the parameter. A NULL argument needs a 'Maybe' field. When the row does not
 -- decode, the call fails with an SQL error that names the pragma. A parameter
--- type that is or contains VARIANT raises an error at registration: the
--- argument reader reads no VARIANT, so only NULL and values that hold only NULL
--- would not fail the call. A GEOMETRY parameter works.
+-- type that is or contains VARIANT is an error at registration, because the
+-- library cannot read a VARIANT value in a callback (see the section /Typed
+-- registration/ of the README). A parameter of the type ANY can get a VARIANT
+-- value, and that call fails with the same error. A GEOMETRY parameter works.
 --
 -- > registerPragmaFunction conn "repeat_answer" [parameter "times" (TypeExpression "BIGINT")] $
 -- >     QueryPragma \(Only (times :: Int64)) -> pure ("SELECT 42 FROM range(" <> Text.pack (show times) <> ")")
@@ -117,6 +118,6 @@ pragmaArguments casts name info context = withContextFactory context \contextFac
         bracket
           (output (c_duckdb_v2_function_bind_get_arg_value info index))
           (destroy c_duckdb_v2_value_destroy)
-          (materializeValue noVariant factory)
+          (materializeValue (noVariant argument) factory)
       pure (Field argument (fromIntegral index) value)
-    noVariant = rejectRows (throwInvalidArgument "the type of a pragma argument cannot be or contain VARIANT")
+    noVariant argument = rejectRows (throwInvalidArgument (Text.intercalate ": " [name, "parameter " <> argument, variantArgumentReason]))

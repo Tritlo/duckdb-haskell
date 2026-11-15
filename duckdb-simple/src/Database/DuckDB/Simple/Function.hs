@@ -110,14 +110,20 @@ import Database.DuckDB.Simple.V2.Registration (TypeDeclaration (..))
 -- Each argument type needs 'Database.DuckDB.Simple.FromField.FromField' and
 -- 'Database.DuckDB.Simple.ToField.DuckDBColumnType' instances. The SQL type of
 -- an argument is the 'Database.DuckDB.Simple.ToField.duckdbTypeDeclaration' of
--- its type. An argument type with no declaration, or a type that is or
--- contains VARIANT, raises an @SQLError@ at registration, because the argument
--- reader does not read VARIANT. A GEOMETRY argument reads as a GEOMETRY result
--- does, also inside a list or a STRUCT, for example as a @Geometry@.
+-- its type. An argument type with no declaration raises an @SQLError@ at
+-- registration. A type that is or contains VARIANT is an error at
+-- registration, because the library cannot read a VARIANT value in a callback
+-- (see the section /Typed registration/ of the README). A GEOMETRY argument
+-- reads as a GEOMETRY result does, also inside a list or a STRUCT, for example
+-- as a @Geometry@.
 createFunction :: (Function f) => Connection -> Text -> f -> IO ()
 createFunction conn = createFunctionOn (ConnectionTarget conn)
 
--- | Register a scalar function with per-worker thread-local state.
+-- | Register a scalar function with per-worker thread-local state. The
+-- arguments have the rules of 'createFunction'. A type that is or contains
+-- VARIANT is an error at registration, because the library cannot read a
+-- VARIANT value in a callback (see the section /Typed registration/ of the
+-- README).
 createFunctionWithState :: (Function f) => Connection -> Text -> IO s -> (s -> f) -> IO ()
 createFunctionWithState conn = createFunctionWithStateOn (ConnectionTarget conn)
 
@@ -130,9 +136,9 @@ createFunctionWithState conn = createFunctionWithStateOn (ConnectionTarget conn)
 -- or a sum type with 'Database.DuckDB.Simple.Generic.ViaDuckDB' instances is a
 -- STRUCT or a UNION column. A type with no declaration, for example
 -- 'Database.DuckDB.Simple.LogicalRep.StructValue', is an error at registration.
--- A parameter type that is or contains VARIANT is also an error at
--- registration: the argument reader reads no VARIANT, so only NULL and values
--- that hold only NULL would not fail the call. A GEOMETRY parameter works.
+-- A parameter type that is or contains VARIANT is an error at registration,
+-- because the library cannot read a VARIANT value in a callback (see the
+-- section /Typed registration/ of the README). A GEOMETRY parameter works.
 --
 -- 'TypedRow' of @params@ gives the parameter types. Use @()@ for no parameter.
 -- The parameters are positional only. DuckDB casts each argument to its
@@ -183,8 +189,9 @@ createTableFunction conn = createTableFunctionOn (ConnectionTarget conn)
 -- type of each argument is the
 -- 'Database.DuckDB.Simple.ToField.duckdbTypeDeclaration' of its column in
 -- 'TypedRow'. A type with no declaration is an error at registration, as for
--- 'createTableFunction'. An argument type that is or contains VARIANT is also
--- an error at registration, as for 'createFunction'. A GEOMETRY argument reads
+-- 'createTableFunction'. A type that is or contains VARIANT is an error at
+-- registration, because the library cannot read a VARIANT value in a callback
+-- (see the section /Typed registration/ of the README). A GEOMETRY argument reads
 -- as for 'createFunction', also when DuckDB runs the update callback on several
 -- threads. An aggregate function of an extension refuses a GEOMETRY argument
 -- at registration, because its update callback has no factory to read the

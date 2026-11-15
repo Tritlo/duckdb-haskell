@@ -1530,23 +1530,16 @@ for an `Array`, records, sum types, and `StructValue`, `TupleValue`, and
 `UnionValue`. An aggregate argument has the VARIANT and GEOMETRY rules of
 [User-Defined Functions](#user-defined-functions).
 
-Each typed registration rejects an argument type that its argument reader
-cannot read. It raises an `SQLError` of the type `ErrorInputInvalid` at
-registration. A callback has no connection, so no argument reader reads
-VARIANT. Thus a type that is or contains VARIANT cannot be an argument of
-`createFunction` or `createAggregate`, a parameter of `createTableFunction` or
+Each typed registration rejects an argument type that its argument reader cannot
+read, with an `SQLError` of the type `ErrorInputInvalid` at registration. A
+callback has no connection, so no argument reader reads VARIANT. Thus a type
+that is or contains VARIANT cannot be an argument of `createFunction` or
+`createAggregate`, a parameter of `createTableFunction` or
 `registerPragmaFunction`, or the type of a custom option with an update
-function. With such a type, only NULL and values that hold only NULL do not
-fail, for example a NULL `Maybe Variant`, an empty `VARIANT[]` list, `[NULL]`,
-or a STRUCT with a NULL VARIANT field. The registration fails, so it cannot get
-these values either. The check sees only the declared type: a pragma parameter
-of the type ANY can get a VARIANT value, and that call fails. A custom option
-without an update function can have such
-a type, and `getConfigValue` reads its value. A GEOMETRY type registers in each
-of these places, with two exceptions. DuckDB rejects a GEOMETRY type with a
-custom CRS name (see the Haddock of `connectionGeometryCRS`). An aggregate
-function that an extension registers refuses a GEOMETRY argument, because its
-callbacks have no factory to read GEOMETRY.
+function, though a later release may read a VARIANT argument. The check sees
+only the declared type: a pragma parameter of the type ANY can get a VARIANT
+value, and that call fails. A custom option without an update function can have
+such a type, and `getConfigValue` reads its value.
 
 `registerReplacementScan` gives the parts of an unknown table name to the
 function. The function can give a SELECT statement that DuckDB reads instead.

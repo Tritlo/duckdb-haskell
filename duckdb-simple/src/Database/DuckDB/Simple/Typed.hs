@@ -21,6 +21,7 @@ module Database.DuckDB.Simple.Typed (
   argumentName,
   rowDeclarations,
   checkArgumentType,
+  variantArgumentReason,
   prepareArgumentReader,
   conversionMessage,
   Replacement (..),
@@ -126,6 +127,14 @@ rowDeclarations name places declarations =
   forM (zip places declarations) \(place, declaration) ->
     either (\reason -> throwInvalidArgument (Text.intercalate (Text.pack ": ") [name, place, reason])) pure declaration
 
+-- | The reason in the error for a VARIANT argument. It names the limit and
+-- what a user can write in its place. 'checkArgumentType' and the reader of a
+-- pragma argument of the type ANY use it.
+variantArgumentReason :: Text
+variantArgumentReason =
+  Text.pack
+    "the library cannot read a VARIANT value in a callback; declare another type, such as VARCHAR, and cast the value in SQL, for example v::VARCHAR"
+
 -- | Raise an error before a registration when the resolved type of an
 -- argument is or contains VARIANT. A callback has no connection, so no argument
 -- reader of a callback reads VARIANT ('prepareArgumentReader', and the readers
@@ -140,7 +149,7 @@ checkArgumentType readsGeometry name place logical = do
   rep <- logicalTypeToRep logical
   let refuse reason = throwInvalidArgument (Text.intercalate (Text.pack ": ") [name, place, reason])
   when (containsType isVariant rep) $
-    refuse (Text.pack "the type of an argument cannot be or contain VARIANT")
+    refuse variantArgumentReason
   when (not readsGeometry && containsType isGeometry rep) $
     refuse (Text.pack "the type of an argument of an aggregate function of an extension cannot be or contain GEOMETRY")
   where

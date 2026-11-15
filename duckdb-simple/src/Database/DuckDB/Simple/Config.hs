@@ -76,7 +76,10 @@ customOption :: Text -> TypeDeclaration -> CustomOption
 customOption name dtype = CustomOption name dtype Nothing "" SettingScopeGlobal [SettingScopeGlobal] Nothing
 
 -- | Register a typed custom option on the connection's database.
--- The update function must not write options.
+-- The update function must not write options. For an option with an update
+-- function, a type that is or contains VARIANT is an error at registration,
+-- because the library cannot read a VARIANT value in a callback (see the
+-- section /Typed registration/ of the README).
 registerCustomOption :: Connection -> CustomOption -> IO ()
 registerCustomOption conn = registerCustomOptionOn (ConnectionTarget conn)
 

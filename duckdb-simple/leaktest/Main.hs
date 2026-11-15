@@ -28,23 +28,26 @@ import Control.Exception (
   fromException,
   try,
  )
-import Control.Monad (forM_, replicateM, replicateM_, unless, void, when)
+import Control.Monad (forM, forM_, replicateM, replicateM_, unless, void, when)
 import qualified Data.ByteString as BS
 import qualified Data.Geometry as G
 import Data.IORef (atomicModifyIORef', atomicWriteIORef, mkWeakIORef, newIORef, readIORef)
 import Data.Int (Int64)
-import Data.List (isPrefixOf)
+import Data.List (isPrefixOf, minimumBy)
+import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, isJust, listToMaybe)
+import Data.Ord (comparing)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple
+import qualified Database.DuckDB.Simple.Arrow as Arrow
 import qualified Database.DuckDB.Simple.Copy as Copy
-import Database.DuckDB.Simple.FromField (DecimalValue (..), FieldValue (..))
+import Database.DuckDB.Simple.FromField (BigNum (..), DecimalValue (..), FieldValue (..), StructValue, UnionValue)
 import Database.DuckDB.Simple.Geometry (RawGeometry (..), fromRawGeometry)
 import qualified Database.DuckDB.Simple.Logging as Logging
 import Database.DuckDB.Simple.Registration (TypeDeclaration (..), registerCustomType)
 import qualified Database.DuckDB.Simple.Streaming as Streaming
-import Database.DuckDB.Simple.Variant (Variant (..))
+import Database.DuckDB.Simple.Variant (Variant (..), variantObject)
 import GHC.Weak.Finalize (getFinalizerExceptionHandler, setFinalizerExceptionHandler)
 import System.Environment (getArgs, lookupEnv)
 import System.Exit (exitFailure)
@@ -174,6 +177,15 @@ checkNewTypes batches =
   withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
     [Only geometry] <- query_ conn "SELECT 'POINT ZM (1 2 3 4)'::GEOMETRY('OGC:CRS84')" :: IO [Only RawGeometry]
     typed <- either fail pure (fromRawGeometry geometry) :: IO G.Geometry
+    -- These values come from DuckDB, so that they have the native types.
+    [Only collated] <- query_ conn "SELECT {'text': 'A' COLLATE nocase, 'items': ['B' COLLATE nocase]}" :: IO [Only (StructValue FieldValue)]
+    [Only union] <- query_ conn "SELECT union_value(t := 'λ')::UNION(n BIGINT, t VARCHAR)" :: IO [Only (UnionValue FieldValue)]
+    let emptyKey = Variant (variantObject [("", FieldWord64 1), ("n", FieldWord64 2)])
+        foldedKeys = Variant (variantObject [("A", FieldWord64 1), ("a", FieldWord64 2), ("b", FieldWord64 3)])
+        -- The encoded value of this number has more than 100 bytes.
+        large = 2 ^ (1000 :: Int) + 12345 :: Integer
+        roundTrip :: (ToField a, FromField a, Eq a) => String -> a -> IO ()
+        roundTrip label value = query conn "SELECT ?" (Only value) >>= \rows -> unless (rows == [Only value]) (fail (label <> " binding failed"))
     let variant = Variant (FieldList [FieldInt64 42, FieldList [FieldNull, FieldText "before\0after"]])
         batch = forM_ [1 .. 100 :: Int] \_ -> do
           rows <-
@@ -187,6 +199,17 @@ checkNewTypes batches =
           expectFailure
             (query conn "SELECT ?" (Only (Variant (FieldList [variantPayload variant, FieldDecimal (DecimalValue 0 0 0)]))) :: IO [Only Variant])
           expectFailure (query conn "SELECT ?" (Only variant) :: IO [Only Int64])
+          -- STRUCT field names cannot be an empty key or two keys that differ
+          -- only in case. Thus these objects use the extraction query. The two
+          -- key counts replace the kept extraction statement.
+          objects <- query_ conn "SELECT json_object('', 1, 'n', 2)::VARIANT, json_object('A', 1, 'a', 2, 'b', 3)::VARIANT"
+          unless (objects == [(emptyKey, foldedKeys)]) (fail "VARIANT object read failed")
+          roundTrip "collated STRUCT" collated
+          roundTrip "UNION" union
+          roundTrip "MAP" (Map.fromList [(1 :: Int64, [10, 11 :: Int64]), (2, [])])
+          roundTrip "LIST" [[1, 2], [3 :: Int64]]
+          query conn "SELECT ?::VARCHAR" (Only (BigNum large)) >>= \text ->
+            unless (text == [Only (show large)]) (fail "BIGNUM binding failed")
     batch
     performMajorGC
     before <- readUsage
@@ -228,6 +251,13 @@ checkLongLived batches =
             nextRow stmt >>= \row -> unless (row == Just (Only (42 :: Int64))) (fail "wrong cursor result")
             clearStatementBindings stmt
             expectFailure (nextRow stmt :: IO (Maybe (Only Int64)))
+            -- Close a statement while its cursor holds the other chunks of a
+            -- materialized result, and then while its cursor holds a native stream.
+            withStatement conn "SELECT i FROM range(100000) t(i)" \cursor -> void (nextRow cursor :: IO (Maybe (Only Int64)))
+            withStatement conn "SELECT i FROM range(100000) t(i)" \cursor -> void (Streaming.nextRow cursor :: IO (Maybe (Only Int64)))
+            -- The step fails at the first batch of a materialized Arrow fold.
+            -- The fold must release each batch that it did not deliver.
+            expectFailure (Arrow.foldArrow_ conn "SELECT i FROM range(100000) t(i)" () (\() _ _ -> fail "step"))
           batch = forM_ [1 .. 100 :: Int] (const cycleQuery)
       batch
       performMajorGC
@@ -340,6 +370,16 @@ expectFailure action = do
     Right () -> fail "expected operation to fail"
 
 -- | Reuse a connection after cancelling native execution and row decoding.
+--
+-- Each batch reports its resident memory and fails if the thread count grew
+-- too much. The rule for the resident memory comes after the last batch. The
+-- resident memory rises in the first batches, and later single samples go up
+-- and down. A leak never returns memory, so it raises each later sample, also
+-- the lowest sample. A single high sample does not raise the lowest sample.
+-- Thus the rule compares the lowest sample of the second half of the batches
+-- with the lowest sample of batch 3 to the half. Batches 1 and 2 are not in the
+-- rule, because the memory can still rise in them. The rule needs at least 6
+-- batches. With fewer batches, the check does not compare the memory.
 checkCancellation :: Int -> IO ()
 checkCancellation batches =
   withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
@@ -415,11 +455,23 @@ checkCancellation batches =
     batch
     performMajorGC
     before <- readUsage
-    forM_ [1 .. batches] \n -> do
+    samples <- forM [1 .. batches] \n -> do
       batch
       performMajorGC
       after <- readUsage
-      reportOptional ("open connection, " <> show (n * 70) <> " cancellation attempts") before after
+      let label = "open connection, " <> show (n * 70) <> " cancellation attempts"
+      case (before, after) of
+        (Just first, Just current) -> reportWith False label first current
+        _ -> reportOptional label before after
+      pure after
+    case sequence samples of
+      Just usages | batches >= 6 -> do
+        let half = batches `div` 2
+            (early, late) = splitAt half usages
+            lowest = minimumBy (comparing usageRssKb)
+            label = "open connection, lowest rss of cancellation batches 3 to " <> show half <> " -> batches " <> show (half + 1) <> " to " <> show batches
+        report label (lowest (drop 2 early)) (lowest late)
+      _ -> pure ()
 
 -- | Report native counters when the operating system provides them.
 reportOptional :: String -> Maybe Usage -> Maybe Usage -> IO ()
@@ -428,8 +480,14 @@ reportOptional label _ _ = putStrLn (label <> ": resource counters unavailable; 
 
 -- | Print both measurements and fail if either one grew too much.
 report :: String -> Usage -> Usage -> IO ()
-report label before after = do
-  checkRss <- (/= Just "0") <$> lookupEnv "DUCKDB_LEAK_RSS_CHECK"
+report = reportWith True
+
+-- | Print both measurements. Fail if the thread count grew too much. If the
+-- first argument is 'True', also fail if the resident memory grew too much.
+reportWith :: Bool -> String -> Usage -> Usage -> IO ()
+reportWith rssRule label before after = do
+  enabled <- (/= Just "0") <$> lookupEnv "DUCKDB_LEAK_RSS_CHECK"
+  let checkRss = enabled && rssRule
   putStrLn label
   putStrLn $
     "threads: "
@@ -447,7 +505,7 @@ report label before after = do
       <> " (slack "
       <> show rssSlackKb
       <> ")"
-  unless checkRss (putStrLn "RSS assertion disabled for native memory instrumentation")
+  unless enabled (putStrLn "RSS assertion disabled for native memory instrumentation")
   when (threadGrowth > threadSlack || (checkRss && rssGrowth > rssSlackKb)) do
     putStrLn ("FAIL: " <> label <> " retains DuckDB resources")
     exitFailure

@@ -89,7 +89,7 @@ import qualified SqlFeatureTests
 import StreamingTests (nativeStreamingTests)
 import System.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import System.IO (hClose, openBinaryTempFile)
-import Test.Tasty (TestTree, defaultMain, testGroup)
+import Test.Tasty (TestTree, Timeout (..), adjustOption, defaultMain, mkTimeout, testGroup)
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck (testProperty, (===))
 import TimeTests (timeTests)
@@ -249,8 +249,15 @@ nonEmptyTextParser f@Field{} =
 instance FromField NonEmptyText where
   fromField = nonEmptyTextParser
 
+-- | Run each case with a time limit of 10 minutes. Thus a deadlock fails its
+-- case, and not the job. The limit is long, because the suite also runs under
+-- Valgrind. The limit cannot stop a thread in a native call. A time limit of
+-- the command line (@--timeout@) replaces this limit.
 main :: IO ()
-main = defaultMain tests
+main = defaultMain (adjustOption limit tests)
+  where
+    limit NoTimeout = mkTimeout (10 * 60 * 1000000)
+    limit given = given
 
 tests :: TestTree
 tests =

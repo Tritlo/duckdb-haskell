@@ -1202,7 +1202,7 @@ valueRegressionTests =
         timePairs
     , testCase "a refused field of a generic record names the field and the two types" $ withConnection ":memory:" \conn -> do
         try (query_ conn "SELECT {'stampedAt': TIMESTAMP '2024-01-02 03:04:05'} AS s" :: IO [Only Stamped]) >>= \case
-          Left SQLError{sqlErrorMessage} -> sqlErrorMessage @?= "field stampedAt: duckdb-simple: a value has type TIMESTAMP but expected UTCTime"
+          Left SQLError{sqlErrorMessage} -> sqlErrorMessage @?= "duckdb-simple: field stampedAt: a value has type TIMESTAMP but expected UTCTime"
           Right rows -> assertFailure ("expected the error of the field, got " <> show rows)
         (query_ conn "SELECT {'stampedAt': TIMESTAMPTZ '2024-01-02 03:04:05+00'} AS s" :: IO [Only Stamped])
           >>= (@?= [Only (Stamped (UTCTime (fromGregorian 2024 1 2) 11045))])
@@ -1243,6 +1243,14 @@ valueRegressionTests =
               enumAs (Proxy :: Proxy Word32) "Word32"
               enumAs (Proxy :: Proxy Word64) "Word64"
               enumAs (Proxy :: Proxy Word) "Word"
+              -- The SQL in place of the refused read: enum_code(c)::BIGINT gives
+              -- the index, and c::INTEGER parses the label.
+              ( query_
+                  conn
+                  "SELECT enum_code(c)::BIGINT, enum_code(c)::BIGINT, enum_code(c)::BIGINT, c::INTEGER FROM (VALUES ('20'::ENUM('10', '20'))) t(c)"
+                  :: IO [(Int8, Word8, Natural, Int32)]
+                )
+                >>= (@?= [(1, 1, 1, 20)])
               -- The SQL in place of each refused read, also for the year 1500,
               -- which a nanosecond value cannot hold.
               forM_ [2024, 1500] \year -> do
@@ -1396,23 +1404,65 @@ valueRegressionTests =
               Left SQLError{sqlErrorMessage} -> assertBool (Text.unpack sqlErrorMessage) ("expression depth" `Text.isInfixOf` sqlErrorMessage)
               Right count -> assertFailure ("expected the error of the VARIANT reader, got " <> show count <> " rows")
             (query_ conn "SELECT 42" :: IO [Only Int]) >>= (@?= [Only 42])
-    , testCase "ENUM labels read as the cast to VARCHAR in each chunk, execution, list, and map key" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
-        -- 5000 rows are three chunks. Each row has another label of a large
-        -- dictionary. See Note [ENUM labels] in "Database.DuckDB.Simple.Materialize".
-        _ <- execute_ conn "CREATE TYPE wide_enum AS ENUM (SELECT 'v' || i FROM range(70000) t(i))"
-        let sql =
-              "SELECT e, [e, NULL], map([coalesce(e, 'v1'::wide_enum)], [i]), e::VARCHAR, [e, NULL]::VARCHAR[] \
-              \FROM (SELECT i, CASE WHEN i % 1000 = 999 THEN NULL ELSE ('v' || ((i * 7) % 70000))::wide_enum END AS e FROM range(5000) t(i))"
-            check :: [(Maybe Text, [Maybe Text], Map.Map Text Int64, Maybe Text, [Maybe Text])] -> Assertion
-            check rows = do
-              length rows @?= 5000
-              forM_ rows \(label, list, keys, cast, castList) -> do
-                label @?= cast
-                list @?= castList
-                Map.keys keys @?= [fromMaybe "v1" cast]
-        forM_ [1 :: Int, 2] \_ ->
-          query_ conn sql >>= check
-        withStatement conn sql (readAllRows Streaming.nextRow) >>= check
+    , testCase "ENUM labels read as the cast to VARCHAR in each chunk, execution, list, and map key" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
+        -- 5000 rows are three chunks. Each row has another label of a
+        -- dictionary of 16-bit or 32-bit indexes. See Note [ENUM labels] in
+        -- "Database.DuckDB.Simple.Materialize".
+        forM_ [300, 70000 :: Int] \size -> do
+          let dtype = "labels_" <> Text.pack (show size)
+              count = Text.pack (show size)
+          _ <- execute_ conn (Query ("CREATE TYPE " <> dtype <> " AS ENUM (SELECT 'v' || i FROM range(" <> count <> ") t(i))"))
+          let sql =
+                Query
+                  ( "SELECT e, [e, NULL], map([coalesce(e, 'v1'::"
+                      <> dtype
+                      <> ")], [i]), e::VARCHAR, [e, NULL]::VARCHAR[] FROM (SELECT i, CASE WHEN i % 1000 = 999 THEN NULL ELSE ('v' || ((i * 7) % "
+                      <> count
+                      <> "))::"
+                      <> dtype
+                      <> " END AS e FROM range(5000) t(i))"
+                  )
+              check :: [(Maybe Text, [Maybe Text], Map.Map Text Int64, Maybe Text, [Maybe Text])] -> Assertion
+              check rows = do
+                length rows @?= 5000
+                forM_ rows \(label, list, keys, cast, castList) -> do
+                  label @?= cast
+                  list @?= castList
+                  Map.keys keys @?= [fromMaybe "v1" cast]
+          forM_ [1 :: Int, 2] \_ ->
+            query_ conn sql >>= check
+          withStatement conn sql (readAllRows Streaming.nextRow) >>= check
+    , testCase "a prepared statement reads the labels of an ENUM type that DROP TYPE and CREATE TYPE replaced" $ withConnection ":memory:" \conn -> do
+        _ <- execute_ conn "CREATE TYPE swapped AS ENUM ('a', 'b')"
+        withStatement conn "SELECT ?::swapped, (?::swapped)::VARCHAR" \stmt -> do
+          let run label = do
+                bind stmt [toField (label :: Text), toField label]
+                readAllRows nextRow stmt
+          run "b" >>= (@?= [(FieldEnum 1 "b", "b" :: Text)])
+          _ <- execute_ conn "DROP TYPE swapped"
+          _ <- execute_ conn "CREATE TYPE swapped AS ENUM ('x', 'y', 'b')"
+          -- Index 1 is 'y' in the new type. A cache of the first execution
+          -- would give 'b'.
+          run "y" >>= (@?= [(FieldEnum 1 "y", "y" :: Text)])
+    , testCase "ENUM members of a UNION and the key and value of a MAP read the labels of their own dictionaries" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
+        _ <- execute_ conn "CREATE TYPE first_labels AS ENUM ('x', 'y'); CREATE TYPE second_labels AS ENUM ('p', 'q', 'r')"
+        -- 3000 rows are two chunks.
+        rows <-
+          query_
+            conn
+            "SELECT CASE WHEN i % 2 = 0 THEN union_value(a := (['x', 'y'])[i % 4 // 2 + 1]::first_labels)::UNION(a first_labels, b second_labels) \
+            \ELSE union_value(b := (['p', 'q', 'r'])[i % 3 + 1]::second_labels)::UNION(a first_labels, b second_labels) END, \
+            \map([(['x', 'y'])[i % 2 + 1]::first_labels], [(['p', 'q', 'r'])[i % 3 + 1]::second_labels]), \
+            \(['x', 'y'])[i % 4 // 2 + 1], (['p', 'q', 'r'])[i % 3 + 1], (['x', 'y'])[i % 2 + 1] \
+            \FROM range(3000) t(i)"
+            :: IO [(UnionValue FieldValue, Map.Map Text Text, Text, Text, Text)]
+        length rows @?= 3000
+        forM_ (zip [0 :: Int ..] rows) \(i, (union, pairs, first, second, key)) -> do
+          unionValuePayload union
+            @?= if even i
+              then FieldEnum (if first == "x" then 0 else 1) first
+              else FieldEnum (if second == "p" then 0 else if second == "q" then 1 else 2) second
+          pairs @?= Map.singleton key second
     , testCase "ENUM payload label must be in its dictionary" $ withConnection ":memory:" \conn ->
         try (query conn "SELECT ?" (Only (singleField (LogicalTypeEnum (listArray (0, 1) ["a", "b"])) (FieldEnum 0 "c"))) :: IO [Only FieldValue]) >>= \case
           Left SQLError{sqlErrorMessage, sqlErrorType} -> do

@@ -262,10 +262,10 @@ raises the error of an incompatible column: a TIMESTAMP or a DATE as `UTCTime`,
 a TIMESTAMPTZ as `LocalTime`, a FLOAT or a DOUBLE as `Text`, a VARCHAR as
 `ByteString`, and an ENUM as an integer type. Write the cast in SQL for these
 values, for example `c::TIMESTAMP AT TIME ZONE 'UTC'`, `c::VARCHAR`,
-`encode(c)`, or `enum_code(c)`. An ENUM value reads as `Text` or `String` with
-its label, the text of `c::VARCHAR`, and a `FieldEnum` holds the index and the
-label. The Haddock of each `FromField` instance gives the SQL types that it
-reads.
+`encode(c)`, or `enum_code(c)::BIGINT`. An ENUM value reads as `Text` or
+`String` with its label, the text of `c::VARCHAR`, and a `FieldEnum` holds the
+index and the label. The Haddock of each `FromField` instance gives the SQL
+types that it reads.
 
 ## Generic Encoding with ViaDuckDB
 
@@ -727,11 +727,16 @@ also raises an error because DuckDB treats its STRUCT type as a tuple.
 DuckDB 2.0 permits an empty key with other named keys. You can also bind a plain
 value and cast it in SQL, as in `?::VARIANT`.
 
-A `Variant` result reads a VARIANT column, and wraps the value of a column of
-another type. A column that holds a UNION, a MAP, an ENUM, or a GEOMETRY with a
-CRS at any depth raises the error of an incompatible column, because the cast
-of DuckDB to VARIANT changes these values. Write `c::VARIANT` in SQL to read
-such a column. A GEOMETRY with no CRS reads.
+A `Variant` result reads a value that a VARIANT can hold: a VARIANT column, or
+a column of another type with the same shape, such as an INTEGER, a LIST, or a
+GEOMETRY with no CRS. A column that holds a UNION, a MAP, an ENUM, an ARRAY, a
+TUPLE, a STRUCT that is not in the form of a VARIANT object (each field of the
+type VARIANT, the keys in ascending order), or a GEOMETRY with a CRS, at any
+depth, raises the error of an incompatible column, because the cast of DuckDB
+to VARIANT changes these values. Write `c::VARIANT` in SQL to read such a
+column. One difference stays, because the reader does not know the type of a
+column: a JSON column reads as its text, as a VARCHAR column does, where
+`c::VARIANT` gives the parsed value.
 
 The library uses a separate helper connection for VARIANT decoder metadata.
 It caches the parsed VARIANT metadata statement and the types for VARIANT
@@ -847,7 +852,8 @@ connection opens, DuckDB constructs a recognized name, such as `OGC:CRS84`, and
 a complete definition directly. For each other name, the library reads the
 type through SQL on the new connection. The connection caches each type, and a
 bind copies it. A name that DuckDB drops, for example a blank name, fails the
-open.
+open. For a custom CRS in a typed registration, see the Haddock of
+`connectionGeometryCRS`.
 
 CRS definitions outside the configured list use direct V2 type construction.
 This requires a recognized identifier or a complete WKT2/PROJJSON definition.
@@ -1101,8 +1107,8 @@ a `Natural` field is UHUGEINT, but an `Integer` column is BIGNUM. The
 registration raises an error for an `Array` field, because its ARRAY type has
 no size. Use a list field. `StructValue`,
 `TupleValue`, and `UnionValue` have no static field types. The registration
-raises an error for them. An aggregate argument that is or contains VARIANT or
-GEOMETRY also raises an error at registration, as for `createFunction`.
+raises an error for them. An aggregate argument has the VARIANT and GEOMETRY
+rules of [User-Defined Functions](#user-defined-functions).
 
 `registerReplacementScan` gives the parts of an unknown table name to the
 function. The function can give a SELECT statement that DuckDB reads instead.

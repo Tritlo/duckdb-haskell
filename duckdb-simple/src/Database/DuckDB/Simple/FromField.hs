@@ -371,11 +371,21 @@ type of its payload, and the error of a String names Text. These pairs are:
 - ByteString from VARCHAR. The cast to BLOB reads escape sequences such as \x41.
   Read a Text, or write encode(c) for the UTF-8 bytes.
 - Each integer type from ENUM. The cast to an integer type parses the label,
-  for example '20' gives 20. Write c::INTEGER for that value, or enum_code(c)
-  for the index.
-- Variant from a value that holds an ENUM, a MAP, a UNION, or a GEOMETRY with
-  a CRS at any depth. The cast to VARIANT gives another value. Write
-  c::VARIANT. A VARIANT column does not decode to these values.
+  for example '20' gives 20. Write c::INTEGER for that value, or
+  enum_code(c)::BIGINT for the index. enum_code gives an unsigned type, which
+  the signed integer types do not read.
+- Variant from a value that a VARIANT cannot hold (variantShape in
+  "Database.DuckDB.Simple.Variant"): a FieldArray, a FieldTuple, a FieldStruct
+  that is not in the form of a VARIANT object (a field of a type other than
+  VARIANT, or keys out of ascending order), a FieldEnum, a FieldMap, a
+  FieldUnion, or a GEOMETRY with a CRS, at any depth. The cast to VARIANT gives
+  another value. Write c::VARIANT. A VARIANT column decodes only to values of
+  the VARIANT shape. FromField does not know the SQL type of a column, so the
+  one known difference stays: a JSON column reads as its text, as a VARCHAR
+  column does, where c::VARIANT gives the parsed value. The bind side
+  (variantPayloadType in "Database.DuckDB.Simple.ToField") accepts more: it
+  binds a FieldArray and a FieldTuple as a VARIANT list, and the fields of each
+  FieldStruct as VARIANT values.
 
 Text and String read the label of an ENUM value, which is the text of the cast
 to VARCHAR. See Note [ENUM labels] in "Database.DuckDB.Simple.Materialize".

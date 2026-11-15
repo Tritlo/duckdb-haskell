@@ -99,8 +99,9 @@ import Control.Monad (unless)
 import Data.Array (Array, elems, listArray)
 import qualified Data.ByteString as BS
 import Data.Int (Int16, Int32, Int64, Int8)
-import Data.List (intercalate)
+import Data.List (intercalate, stripPrefix)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (fromMaybe)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -648,12 +649,14 @@ instance (Selector s, DuckValue a) => GStructDecode (M1 S s (K1 i a)) where
     val <- namedField (selName (undefined :: M1 S s (K1 i a) ())) (duckFromField fv)
     pure (M1 (K1 val), rest)
 
--- | Name the record field in the error of its decoder. A positional field has
--- no name.
+-- | Name the record field in the error of its decoder, after the prefix of the
+-- library. A positional field has no name.
 namedField :: String -> Either String a -> Either String a
 namedField name
   | null name = id
-  | otherwise = either (Left . (("field " <> name <> ": ") <>)) Right
+  | otherwise = either (Left . (("duckdb-simple: field " <> name <> ": ") <>) . withoutPrefix) Right
+  where
+    withoutPrefix message = fromMaybe message (stripPrefix "duckdb-simple: " message)
 
 instance (GStructDecode f) => GStructDecode (M1 C c f) where
   gStructDecodeStruct _ structVal = M1 <$> gStructDecodeStruct (Proxy :: Proxy (f p)) structVal

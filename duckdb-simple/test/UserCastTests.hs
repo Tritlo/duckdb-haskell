@@ -23,6 +23,7 @@ import qualified Data.Geometry as G
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int64)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.FFI.V2
@@ -224,6 +225,17 @@ geometryArgumentTests =
         withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = ["local grid"]} \grid -> do
           createFunction grid "hs_point_x" pointX
           query grid "SELECT hs_point_x(ST_SetCRS(ST_GeomFromWKB(?), 'local grid'))" (Only pointWKB) >>= (@?= [Only (1 :: Double)])
+    , testCase "a typed registration cannot declare a custom CRS of the connection" $
+        withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = ["local grid"]} \grid -> do
+          try
+            (createCast grid (R.StructuredType (LogicalTypeGeometry (Just "local grid"))) (R.TypeExpression "BLOB") \raw -> Right (rawGeometryWKB raw))
+            >>= \case
+              Left SQLError{sqlErrorMessage} ->
+                assertBool (show sqlErrorMessage) ("unrecognized coordinate system 'local grid'" `Text.isInfixOf` sqlErrorMessage)
+              Right () -> assertFailure "expected an error at registration"
+          -- A plain GEOMETRY argument reads the value without its CRS.
+          createFunction grid "hs_crs" (\(PlainGeometry raw) -> fromMaybe "no CRS" (rawGeometryCRS raw) :: Text)
+          query grid "SELECT hs_crs(ST_SetCRS(ST_GeomFromWKB(?), 'local grid'))" (Only pointWKB) >>= (@?= [Only ("no CRS" :: Text)])
     , testCase "a typed aggregate reads a Geometry argument on four threads" $
         withConnectionWithConfig ":memory:" [("threads", "4")] \conn -> do
           _ <-
@@ -304,6 +316,16 @@ instance FromField Placed where
 -- cases do not write a Placed value.
 instance ToDuckValue Placed where
   toDuckValue _ _ = throwIO (userError "a Placed value is only an argument")
+
+-- | A GEOMETRY argument that reads the CRS of the value. RawGeometry has no
+-- DuckDBColumnType instance, so the instances are written here.
+newtype PlainGeometry = PlainGeometry RawGeometry
+
+instance DuckDBColumnType PlainGeometry where
+  duckdbColumnTypeFor _ = "GEOMETRY"
+
+instance FromField PlainGeometry where
+  fromField f = PlainGeometry <$> fromField f
 
 -- | Register a cast that writes NULL for each row, and give its call count.
 nullCast :: Connection -> R.TypeDeclaration -> R.TypeDeclaration -> IO (IORef Int)

@@ -156,6 +156,17 @@ extensionRegressionTests =
           createFunction conn "throw_scalar" (throwIO (userError "scalar callback failure") :: IO Int64)
           assertSqlErrorContaining "scalar callback failure" (query_ conn "SELECT throw_scalar()" :: IO [Only Int64])
           query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+    , testCase "a scalar callback failure gives an SQL error of the type ErrorInputInvalid" $
+        withConnection ":memory:" \conn -> do
+          -- The library gives DuckDB the code DuckDBV2ErrorApi for each
+          -- callback failure. DuckDB 2.0.0 reports that code as an invalid input.
+          createFunction conn "throw_typed_scalar" (throwIO (userError "typed callback failure") :: IO Int64)
+          outcome <- try (query_ conn "SELECT throw_typed_scalar()" :: IO [Only Int64])
+          case outcome of
+            Left (err :: SQLError) -> do
+              sqlErrorType err @?= Just ErrorInputInvalid
+              assertBool (show err) ("typed callback failure" `Text.isInfixOf` sqlErrorMessage err)
+            Right _ -> assertFailure "expected SQL error"
     , testCase "exception rendering cannot escape scalar callback" $
         withConnection ":memory:" \conn -> do
           createFunction conn "throw_bad_display" (throwIO BrokenDisplay :: IO Int64)

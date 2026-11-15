@@ -193,6 +193,7 @@ test-suite duckdb-simple-leak-test
   build-depends:
     base >=4.18 && <5,
     bytestring,
+    containers >=0.6 && <0.9,
     duckdb-simple,
     geometry-simple >=0.1.1.0 && <0.2,
     text,

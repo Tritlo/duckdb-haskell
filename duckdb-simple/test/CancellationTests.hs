@@ -26,6 +26,7 @@ import Control.Exception (AsyncException (..), ErrorCall (..), SomeException, br
 import Control.Monad (unless, void, when)
 import Data.IORef (IORef, atomicModifyIORef', atomicWriteIORef, modifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
+import Data.Maybe (isNothing)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple
@@ -38,12 +39,14 @@ import Database.DuckDB.Simple.Internal (
   runInterruptibleQuery,
   withConnectionHandle,
   withResult,
+  withResultWindow,
  )
 import qualified Database.DuckDB.Simple.Streaming as Streaming
 import GHC.Conc (BlockReason (..), ThreadStatus (..), threadStatus)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
+import TestUtils (raiseCapabilities)
 
 -- | Exercise each native execution entry point and two cancellation races.
 cancellationTests :: TestTree
@@ -141,6 +144,27 @@ cancellationTests =
                  await "callback cancellation did not finish" (readMVar done) >>= assertAsync [UserInterrupt, ThreadKilled]
                  await "second interrupt sender did not finish" (readMVar secondSent) >>= assertSucceeded
                assertReusable conn
+         , testCase "a cancellation in the result window releases the result that the window makes" $
+             withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
+               queued <- newEmptyMVar
+               gate <- newEmptyMVar
+               released <- newIORef []
+               -- The helper thread of the window makes its result only after the
+               -- caller is cancelled. The caller does not return that result, so
+               -- the release action of the window must get it.
+               let action = withResultWindow conn (\result -> modifyIORef' released (result :)) do
+                     signal queued
+                     readMVar gate
+                     pure (7 :: Int)
+               withCaller conn (signal gate) (void action) \caller done -> do
+                 await "result window did not start" (readMVar queued)
+                 (_, sent) <- startCaller (throwTo caller UserInterrupt)
+                 await "interrupt was not delivered" (readMVar sent) >>= assertSucceeded
+                 awaitCleanup caller
+                 signal gate
+                 await "cancelled result window did not finish" (readMVar done) >>= assertAsync [UserInterrupt]
+               readIORef released >>= (@?= [7])
+               assertReusable conn
          ]
 
 -- | A callback that runs a statement on the connection that runs the callback
@@ -181,6 +205,59 @@ callbackLockTests =
           assertInnerErrors errors
           readIORef rows >>= \count -> assertBool "the callback ran before the fold received a row" (count > 0)
           assertReusable conn
+    , testCase "a callback that runs a statement on its own connection in a later Arrow fetch fails at the bound" $
+        withBoundedConnections "1" testLockWait \conn _ -> do
+          (threads, errors) <- registerStatementCallback conn conn
+          batches <- newIORef (0 :: Int)
+          void (execute_ conn "SET streaming_buffer_size = '16KB'")
+          outcome <- boundedOuterCall 30000000 threads $ Streaming.foldArrow_ conn laterFetchQuery () \() _ _ -> modifyIORef' batches (+ 1)
+          assertBoundError outcome
+          assertInnerErrors errors
+          readIORef batches >>= \count -> assertBool "the callback ran before the fold received a batch" (count > 0)
+          assertReusable conn
+    , testCase "a callback that runs a statement on its own connection before the first Arrow batch fails at the bound" $
+        withBoundedConnections "1" testLockWait \conn _ -> do
+          (threads, errors) <- registerStatementCallback conn conn
+          batches <- newIORef (0 :: Int)
+          outcome <-
+            boundedOuterCall 30000000 threads $
+              Streaming.foldArrow_ conn "SELECT own_statement(i) FROM range(3) t(i)" () \() _ _ -> modifyIORef' batches (+ 1)
+          assertBoundError outcome
+          assertInnerErrors errors
+          readIORef batches >>= (@?= 0)
+          assertReusable conn
+    , testCase "a callback that prepares a statement on its own connection fails at the bound" $
+        withBoundedConnections "1" testLockWait \conn _ -> do
+          -- The preparation is the only step of the callback that takes the connection lock.
+          (threads, errors) <- registerOwnStatement conn (withStatement conn "SELECT ?::BIGINT" (\_ -> pure ()))
+          outcome <- boundedOuterCall 30000000 threads (void (query_ conn "SELECT own_statement(i) FROM range(3) t(i)" :: IO [Only Int64]))
+          assertBoundError outcome
+          assertInnerErrors errors
+          assertReusable conn
+    , testCase "a callback that reads the column count of a statement on its own connection fails at the bound" $
+        withBoundedConnections "1" testLockWait \conn _ ->
+          -- The statement has no schemas yet. Thus the column count binds the
+          -- metadata of the statement, and that bind takes the connection lock.
+          withStatement conn "SELECT 1 AS a, 2 AS b" \pending -> do
+            (threads, errors) <- registerOwnStatement conn (void (columnCount pending))
+            outcome <- boundedOuterCall 30000000 threads (void (query_ conn "SELECT own_statement(i) FROM range(3) t(i)" :: IO [Only Int64]))
+            assertBoundError outcome
+            assertInnerErrors errors
+            columnCount pending >>= (@?= 2)
+            assertReusable conn
+    , testCase "a callback statement that fails on a second connection leaves the lock of that connection free" $
+        withBoundedConnections "1" testLockWait \conn other -> do
+          createFunction conn "failing_other" \(i :: Int64) -> do
+            inner <- try (query_ other "SELECT error('inner')" :: IO [Only Int64])
+            case inner of
+              Left (_ :: SQLError) -> pure ()
+              Right _ -> assertFailure "expected the inner error"
+            -- The failed statement held the lock of the second connection.
+            -- The next statement of the callback must get that lock at once.
+            query_ other "SELECT 1" >>= (@?= [Only (1 :: Int64)])
+            pure i
+          query_ conn "SELECT failing_other(i) FROM range(3) t(i)" >>= (@?= map Only [0, 1, 2 :: Int64])
+          timeout 5000000 (query_ other "SELECT 42") >>= (@?= Just [Only (42 :: Int64)])
     , testCase "callbacks on 4 DuckDB threads that run statements on their own connection each fail at the bound" $
         withBoundedConnections "4" testLockWait \conn _ -> do
           void (execute_ conn "CREATE TABLE callback_rows AS SELECT i FROM range(1000000) t(i)")
@@ -189,6 +266,33 @@ callbackLockTests =
           assertBoundError outcome
           assertInnerErrors errors
           assertReusable conn
+    , testCase "callbacks on 4 capabilities that are inside at the same time each fail at the bound" $
+        do
+          -- See Note [Capabilities of the tests] in "TestUtils".
+          raiseCapabilities 4
+          withBoundedConnections "4" testLockWait \conn _ -> do
+            void (execute_ conn "CREATE TABLE callback_rows AS SELECT i FROM range(1000000) t(i)")
+            inside <- newIORef (0 :: Int)
+            together <- newEmptyMVar
+            successes <- newIORef (0 :: Int)
+            -- The first two calls wait for each other before their statements.
+            -- Thus two callback threads have a mark at the same time, and the
+            -- mark of the second thread must keep the mark of the first thread.
+            let meet = do
+                  count <- atomicModifyIORef' inside (\known -> (known + 1, known + 1))
+                  when (count >= 2) (signal together)
+                  met <- timeout 10000000 (readMVar together)
+                  when (isNothing met) (throwIO (userError "no second callback was inside at the same time"))
+            (threads, errors) <- registerOwnStatement conn do
+              meet
+              void (query_ conn "SELECT 1" :: IO [Only Int64])
+              atomicModifyIORef' successes (\known -> (known + 1, ()))
+            outcome <- boundedOuterCall 30000000 threads (void (query_ conn "SELECT sum(own_statement(i)) FROM callback_rows" :: IO [Only Integer]))
+            assertBoundError outcome
+            assertInnerErrors errors
+            readIORef successes >>= (@?= 0)
+            readIORef inside >>= \count -> assertBool ("callbacks before the error: " <> show count) (count >= 2)
+            assertReusable conn
     , testCase "callbacks on 4 DuckDB threads can share a second connection" $
         withBoundedConnections "4" (Just defaultCallbackLockWait) \conn other -> do
           void (execute_ conn "CREATE TABLE callback_rows AS SELECT i FROM range(1000000) t(i)")
@@ -230,14 +334,19 @@ withBoundedConnections threads bound action =
 -- | Register @own_statement@ on a connection. It runs a statement on the target
 -- connection, records its thread and the error of the statement, and raises the error.
 registerStatementCallback :: Connection -> Connection -> IO (IORef [ThreadId], IORef [SQLError])
-registerStatementCallback conn target = do
+registerStatementCallback conn target = registerOwnStatement conn (void (query_ target "SELECT 1" :: IO [Only Int64]))
+
+-- | Register @own_statement@ on a connection. It runs an action, records its
+-- thread and each 'SQLError' of the action, and raises the error.
+registerOwnStatement :: Connection -> IO () -> IO (IORef [ThreadId], IORef [SQLError])
+registerOwnStatement conn statement = do
   threads <- newIORef []
   errors <- newIORef []
   createFunction conn "own_statement" \(i :: Int64) -> do
     myThreadId >>= \self -> atomicModifyIORef' threads (\known -> (self : known, ()))
-    try (query_ target "SELECT 1" :: IO [Only Int64]) >>= \case
-      Left err -> atomicModifyIORef' errors (\known -> (err : known, ())) >> throwIO err
-      Right _ -> pure i
+    try statement >>= \case
+      Left err -> atomicModifyIORef' errors (\known -> (err : known, ())) >> throwIO (err :: SQLError)
+      Right () -> pure i
   pure (threads, errors)
 
 -- | The stream delivers 500000 rows before DuckDB computes a row that calls the

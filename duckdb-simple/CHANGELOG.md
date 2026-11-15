@@ -403,19 +403,25 @@
   label, as the cast to VARCHAR gives it. Earlier versions raised an error. An
   ENUM value read as an integer type raises the error of an incompatible
   column. Earlier versions gave the index, where the cast of DuckDB parses the
-  label. The reader reads each label of a query one time, through the
-  dictionary of the type, and does not cast.
+  label. The reader reads a label through the dictionary of the type and does
+  not cast. A result column reads each label that it needs one time for each
+  execution. The readers of a MAP key or value, of an argument, and of a COPY
+  TO row read the labels again for each vector. A child of a STRUCT, a TUPLE,
+  or a UNION reads the whole dictionary one time for each execution.
 - A `FieldEnum` inside a value of a declared ENUM type binds its label, not its
   index. A label that is not in the dictionary raises `SQLError`.
 - `displayException` of a `ResultError` gives the text of the error, with the
   column and the two types, as the `SQLError` of a column. Earlier versions
   gave the derived `show`. The error of a field of a `ViaDuckDB` record names
   the field, for example
-  `field stampedAt: duckdb-simple: a value has type TIMESTAMP but expected UTCTime`.
-- A `Variant` read of a column that holds an ENUM, a MAP, a UNION, or a
-  GEOMETRY with a CRS at any depth raises the error of an incompatible column.
-  Earlier versions wrapped the value, which DuckDB's cast to VARIANT changes
-  and which a `Variant` parameter does not bind.
+  `duckdb-simple: field stampedAt: a value has type TIMESTAMP but expected UTCTime`.
+- A `Variant` read accepts only a value that a VARIANT can hold. A column that
+  holds an ENUM, a MAP, a UNION, an ARRAY, a TUPLE, a STRUCT that is not in the
+  form of a VARIANT object (each field of the type VARIANT, the keys in
+  ascending order), or a GEOMETRY with a CRS, at any depth, raises the error of
+  an incompatible column. Earlier versions wrapped the value, which DuckDB's cast
+  to VARIANT changes. A JSON column reads as its text, where the cast gives the
+  parsed value.
 - Allow session variables to supply omitted named parameters. Too few named
   parameters no longer raise `FormatError`. Too many named parameters still
   raise it.

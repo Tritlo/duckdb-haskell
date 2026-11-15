@@ -1441,6 +1441,14 @@ functionsTests =
             , ("hs_res_amount", "DECIMAL(18,3)")
             ]
             \(name, expected) -> query_ conn (Query ("SELECT typeof(" <> name <> "())")) >>= (@?= [Only (expected :: Text.Text)])
+          -- DuckDB casts a native result value to the declared type as the SQL cast does.
+          createFunction conn "hs_res_rounded" (Amount 1.2345)
+          createFunction conn "hs_res_too_large" (Amount 1e20)
+          query_ conn "SELECT hs_res_rounded()::VARCHAR, (1.2345::DOUBLE)::DECIMAL(18,3)::VARCHAR"
+            >>= (@?= [("1.235" :: Text.Text, "1.235" :: Text.Text)])
+          assertThrows
+            (query_ conn "SELECT hs_res_too_large()" :: IO [Only Double])
+            (Text.isInfixOf "to DECIMAL(18,3)" . sqlErrorMessage)
           query_ conn "SELECT hs_res_int8(), hs_res_word16(), hs_res_float(), hs_res_string(), hs_res_integer(), hs_res_amount()::DOUBLE"
             >>= (@?= [(1 :: Int8, 1 :: Word16, 1.5 :: Float, "x" :: Text.Text, 2 ^ (100 :: Int) :: Integer, 1.25 :: Double)])
     , testCase "writes nested, record, union, and NULL results" $

@@ -95,7 +95,9 @@ import Database.DuckDB.Simple.V2.Registration (TypeDeclaration (..))
 -- example @f(x)::INTEGER * f(y)@. A 'Bool', an integer of 8 to 64 bits, a
 -- 'Float', a 'Double', a 'Text', or a 'String' result goes to the memory of the
 -- result vector. Each other result type gives a native value for each row
--- through the context of the call.
+-- through the context of the call. DuckDB casts that value to the declared
+-- type, as a SQL @CAST@ does: it rounds a value to the scale of a DECIMAL type
+-- text, and it raises an error for a value that does not fit.
 --
 -- Each argument type needs 'FromField' and
 -- 'Database.DuckDB.Simple.ToField.DuckDBColumnType' instances. The SQL type of

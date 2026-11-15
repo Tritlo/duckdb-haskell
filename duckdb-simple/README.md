@@ -869,7 +869,9 @@ an Out of Range Error when the product does not fit in SMALLINT, as
 first. A `Bool`, an integer of 8 to 64 bits, a `Float`, a `Double`, a `Text`,
 or a `String` result goes to the memory of the result vector. Each other
 result type, for example a record or a list, costs a native value for each
-row.
+row. DuckDB casts such a value to the declared type, as a SQL `CAST` does: it
+rounds a value to the scale of a DECIMAL type text, and it raises an error for
+a value that does not fit.
 
 ```haskell
 {-# LANGUAGE OverloadedStrings #-}

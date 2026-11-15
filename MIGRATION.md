@@ -449,6 +449,17 @@ The SQL workflow stays the same. These changes can affect your code:
   for these errors must catch `SQLError`.
 - The error for a scalar value that does not match its declared type names the
   SQL type, for example `NULL` in place of `LogicalTypeIdSQLNull`.
+- A check of the state of the library, or of a vector, a type, or a value that
+  DuckDB gave, raises an `SQLError` with the type `ErrorRuntimeInternal`. Inside
+  a callback, the statement that runs the callback fails instead, with an
+  `SQLError` of the type `ErrorInputInvalid` and the text "Invalid Input Error:
+  duckdb-simple: ...", because a callback does not pass the type
+  `ErrorRuntimeInternal` (a cast gives `ErrorTypeMismatch`). The use of a closed
+  environment, instance, connection, statement, or type cache, a DuckDB library
+  of another version, and a callback state read with the wrong type are not
+  internal checks; they raise an `SQLError` with no type. Version 0.3 raised an
+  `IOException` (a `userError`) or an `ErrorCall` for the internal checks. Code
+  that catches either for them must catch `SQLError`.
 - A name in `connectionGeometryCRS` that DuckDB drops, for example a blank
   name, fails when the connection opens. Version 0.3 read the configured types
   the first time a parameter needed one, and did not check that a type kept its

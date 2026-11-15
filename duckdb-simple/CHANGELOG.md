@@ -311,6 +311,19 @@
   the checks of parameter values, logical types, and CRS names. The error for a
   scalar value that does not match its declared type names the SQL type, for
   example `NULL` in place of `LogicalTypeIdSQLNull`.
+- A check of the state of the library, or of a vector, a type, or a value that
+  DuckDB gave, raises `SQLError` with the type `ErrorRuntimeInternal`. Such an
+  error means a defect of the library or of DuckDB. When a statement raises it,
+  it has the query of the statement, as each other `SQLError` of a statement
+  has. Inside a callback, the statement that runs the callback fails instead,
+  with an `SQLError` of the type `ErrorInputInvalid` and the text "Invalid Input
+  Error: duckdb-simple: ...", because a callback does not pass the type
+  `ErrorRuntimeInternal` (a cast gives `ErrorTypeMismatch`). The use of a closed
+  environment, instance, connection, statement, or type cache, a DuckDB library
+  of another version, and a callback state read with the wrong type are not
+  internal checks; they raise an `SQLError` with no type. Version 0.3 raised an
+  `IOException` (a `userError`) or an `ErrorCall` for the internal checks, for
+  example for a UNION tag outside the members of a result vector.
 - A `TimeOfDay`, a `LocalTime`, or a `UTCTime` with digits below a microsecond,
   and a `FieldTime`, a `FieldTimestamp`, or a `FieldTimestampTZ` with such
   digits, binds with the nanosecond type for a nanosecond parameter, and for a

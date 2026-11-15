@@ -466,18 +466,23 @@ result type, `createAggregate` raises an error at registration. See
 
 A program can catch these exceptions:
 
-- `SQLError`: an error of DuckDB, an input check of the library, or a result
-  value that does not convert.
+- `SQLError`: an error of DuckDB, an input check of the library, a failed
+  internal check of the library, or a result value that does not convert.
 - `FormatError`: parameters that do not agree with the placeholders of the
   statement.
 - The exception of a cancellation, for example from `timeout`.
 
-A failed check of the state of the library, or of a value that DuckDB gave,
-raises an `IOException` from `userError`, an `SQLError` with no type, or an
-`ErrorCall` for an INVALID, ANY, or UNKNOWN type in a result. Inside a
-callback, such an error reaches the program as the `SQLError` of the statement
-that runs the callback. Such an error is a defect of the library or of DuckDB,
-not an error of the input. Report it.
+A failed check of the state of the library, or of a vector, a type, or a value
+that DuckDB gave, raises an `SQLError` of the type `ErrorRuntimeInternal`. Such
+an error is a defect of the library or of DuckDB, not an error of the input.
+Report it. Inside a callback, the statement that runs the callback fails with
+the type `ErrorInputInvalid` and the text
+`Invalid Input Error: duckdb-simple: ...`, because a callback does not pass the
+type `ErrorRuntimeInternal`; a cast gives `ErrorTypeMismatch` (see the errors of
+a callback below). These errors are not internal checks, and they raise an
+`SQLError` with no type: the use of a closed environment, instance, connection,
+statement, or type cache, a DuckDB library of another version, and a callback
+state read with the wrong type.
 
 `SQLError` has four fields:
 
@@ -485,9 +490,9 @@ not an error of the input. Report it.
   the text of DuckDB, for example `Binder Error: ...`.
 - `sqlErrorType` is the category of the error, as `Just` an `ErrorType`: the
   error code of DuckDB for an error of DuckDB, and the type that the library
-  gives to an input check or to a lock wait. `ErrorType` has one constructor
-  for each error code of the V2 C API, for example `ErrorQueryBinder` and
-  `ErrorTypeConversion`.
+  gives to an input check, to a lock wait, or to a failed internal check.
+  `ErrorType` has one constructor for each error code of the V2 C API, for
+  example `ErrorQueryBinder` and `ErrorTypeConversion`.
 - `sqlErrorQuery` is the SQL text of the statement for an error during its
   preparation or execution, and for a result value that does not convert. It
   is `Nothing` for an error outside a statement, for example when a connection
@@ -510,8 +515,7 @@ the time limit of `connectionCallbackLockWait` raises an `SQLError` of the type
 the rule). A statement on a connection that streams a result, for example in the
 step of a fold of `Database.DuckDB.Simple.Streaming`, also gives
 `ErrorResourceInUse`, and so does a close of an environment while an instance
-that `createInstance` did not create is alive. Other errors of the library have
-no type, for example an operation on a closed connection.
+that `createInstance` did not create is alive.
 
 A result value that its Haskell type does not read raises an `SQLError` with no
 type and with the query. The message describes the first field that fails:

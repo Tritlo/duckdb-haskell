@@ -126,7 +126,10 @@ call site. In DuckDB 2.0.0 a hash table and an ungrouped aggregate each hold a
 copy of the bind data, and each copy shares the holder of the state table
 through a shared pointer (CV2AggregateFunctionData::Copy and CV2UserData). Each
 of them runs the destroy callback on its states before it drops its copy
-(~GroupedAggregateHashTable and ~UngroupedAggregateState). Thus the destructor
+(~GroupedAggregateHashTable and ~UngroupedAggregateState). In a window, the
+same is true for WindowAggregateStates and WindowCustomAggregatorLocalState.
+The naive aggregator and the segment tree use the copy of the window global
+state, and run the destroy callback during the evaluation. Thus the destructor
 runs after the last destroy callback of these owners that gets this bind data.
 
 See Note [State table stripes] for the form of the table.

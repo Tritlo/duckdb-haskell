@@ -596,10 +596,11 @@ data FailingCallback = FailingCallback
   , failingThreads :: Int
   , failingSetup :: FailingContext -> IO ()
   , failingStatement :: FailingContext -> IO ()
-  , failingText :: Maybe Text.Text
-  -- ^ A text of the error of the statement, or 'Nothing' for a statement that
-  --   does not fail, because DuckDB ignores the error of a log sink. The
-  --   callback of such a row must count its calls in 'contextCalls'.
+  , failingError :: Maybe (ErrorType, Text.Text)
+  -- ^ The type and a text of the error of the statement, or 'Nothing' for a
+  --   statement that does not fail, because DuckDB ignores the error of a log
+  --   sink. The callback of such a row must count its calls in
+  --   'contextCalls'.
   }
 
 -- | The connections and the directory of one row of 'failingCallbacks'.
@@ -655,14 +656,14 @@ failingCallbacks = rows <> [row{failingThreads = 4} | row <- firstOfEachKind row
                 (when (x == 3000) (failWith "failing scalar io") >> pure x :: IO Int64)
           )
           (insertRows "SELECT failing_io(i) FROM range(5000) t(i)")
-          (Just "failing scalar io")
+          (Just (ErrorInputInvalid, "failing scalar io"))
       , FailingCallback
           "scalar"
           "scalar function with a pure result"
           1
           (\context -> createFunction (contextConnection context) "failing_pure" \(x :: Int64) -> if x == 3000 then error "failing scalar pure" else x)
           (insertRows "SELECT failing_pure(i) FROM range(5000) t(i)")
-          (Just "failing scalar pure")
+          (Just (ErrorInputInvalid, "failing scalar pure"))
       , FailingCallback
           "stateful scalar"
           "stateful scalar function call"
@@ -672,42 +673,42 @@ failingCallbacks = rows <> [row{failingThreads = 4} | row <- firstOfEachKind row
                 (when (x == 3000) (failWith "failing stateful call") >> pure x :: IO Int64)
           )
           (insertRows "SELECT failing_call(i) FROM range(5000) t(i)")
-          (Just "failing stateful call")
+          (Just (ErrorInputInvalid, "failing stateful call"))
       , FailingCallback
           "stateful scalar"
           "stateful scalar function init"
           1
           (\context -> createFunctionWithState (contextConnection context) "failing_init" (failWith "failing stateful init") \() (x :: Int64) -> x)
           (insertRows "SELECT failing_init(i) FROM range(5000) t(i)")
-          (Just "failing stateful init")
+          (Just (ErrorInputInvalid, "failing stateful init"))
       , FailingCallback
           "aggregate"
           "aggregate update with DISTINCT"
           1
           (\context -> createAggregate (contextConnection context) "failing_distinct" (failingSum (== 3000) False False "failing distinct update"))
           (insertRows "SELECT failing_distinct(DISTINCT i) FROM range(5000) t(i)")
-          (Just "failing distinct update")
+          (Just (ErrorInputInvalid, "failing distinct update"))
       , FailingCallback
           "aggregate"
           "aggregate update with FILTER"
           1
           (\context -> createAggregate (contextConnection context) "failing_filter" (failingSum (== 3000) False False "failing filter update"))
           (insertRows "SELECT failing_filter(i) FILTER (WHERE i >= 0) FROM range(5000) t(i)")
-          (Just "failing filter update")
+          (Just (ErrorInputInvalid, "failing filter update"))
       , FailingCallback
           "aggregate"
           "aggregate update as a WINDOW aggregate"
           1
           (\context -> createAggregate (contextConnection context) "failing_window" (failingSum (== 3000) False False "failing window update"))
           (insertRows "SELECT failing_window(i) OVER (ORDER BY i ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) FROM range(5000) t(i)")
-          (Just "failing window update")
+          (Just (ErrorInputInvalid, "failing window update"))
       , FailingCallback
           "aggregate"
           "aggregate combine of a plain aggregate"
           1
           (\context -> createAggregate (contextConnection context) "failing_combine" (failingSum (const False) True False "failing plain combine"))
           (insertRows "SELECT failing_combine(i) FROM range(5000) t(i)")
-          (Just "failing plain combine")
+          (Just (ErrorInputInvalid, "failing plain combine"))
       , -- A grouped aggregate combines only the partial states of several
         -- threads, and DuckDB scans one row group of 122880 rows with one
         -- thread. Thus this row needs two row groups and 4 threads.
@@ -720,42 +721,42 @@ failingCallbacks = rows <> [row{failingThreads = 4} | row <- firstOfEachKind row
               createAggregate (contextConnection context) "failing_grouped" (failingSum (const False) True False "failing grouped combine")
           )
           (insertRows "SELECT failing_grouped(i) FROM failing_groups GROUP BY i % 1000")
-          (Just "failing grouped combine")
+          (Just (ErrorInputInvalid, "failing grouped combine"))
       , FailingCallback
           "aggregate"
           "aggregate finalize as a WINDOW aggregate"
           1
           (\context -> createAggregate (contextConnection context) "failing_result" (failingSum (const False) False True "failing window finalize"))
           (insertRows "SELECT failing_result(i) OVER (ORDER BY i ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) FROM range(5000) t(i)")
-          (Just "failing window finalize")
+          (Just (ErrorInputInvalid, "failing window finalize"))
       , FailingCallback
           "table function"
           "table function scan after rows, failing column only"
           1
           (\context -> failingPairs (contextConnection context) "failing_later" 3000 "failing scan at row 3000")
           (insertRows "SELECT f FROM failing_later(5000)")
-          (Just "failing scan at row 3000")
+          (Just (ErrorInputInvalid, "failing scan at row 3000"))
       , FailingCallback
           "table function"
           "table function scan after rows, all columns"
           1
           (\context -> failingPairs (contextConnection context) "failing_later" 3000 "failing scan at row 3000")
           (\context -> runIn context "INSERT INTO failing_pairs SELECT * FROM failing_later(5000)")
-          (Just "failing scan at row 3000")
+          (Just (ErrorInputInvalid, "failing scan at row 3000"))
       , FailingCallback
           "table function"
           "table function scan at row 0, failing column only"
           1
           (\context -> failingPairs (contextConnection context) "failing_first" 0 "failing scan at row 0")
           (insertRows "SELECT f FROM failing_first(5000)")
-          (Just "failing scan at row 0")
+          (Just (ErrorInputInvalid, "failing scan at row 0"))
       , FailingCallback
           "table function"
           "table function scan at row 0, all columns"
           1
           (\context -> failingPairs (contextConnection context) "failing_first" 0 "failing scan at row 0")
           (\context -> runIn context "INSERT INTO failing_pairs SELECT * FROM failing_first(5000)")
-          (Just "failing scan at row 0")
+          (Just (ErrorInputInvalid, "failing scan at row 0"))
       , FailingCallback
           "table function"
           "table function init"
@@ -765,7 +766,7 @@ failingCallbacks = rows <> [row{failingThreads = 4} | row <- firstOfEachKind row
                 failWith "failing table init" :: IO [Only Int64]
           )
           (insertRows "SELECT v FROM failing_start(5000)")
-          (Just "failing table init")
+          (Just (ErrorInputInvalid, "failing table init"))
       , -- The bind callback runs no function of the user. A NULL for a
         -- parameter that cannot hold NULL fails there.
         FailingCallback
@@ -774,7 +775,7 @@ failingCallbacks = rows <> [row{failingThreads = 4} | row <- firstOfEachKind row
           1
           (\context -> createTableFunction (contextConnection context) "failing_bind" ["v"] \(Only (count :: Int64)) -> pure [Only count])
           (insertRows "SELECT v FROM failing_bind(NULL::BIGINT)")
-          (Just "failing_bind: argument arg0 is NULL, but Int64 cannot hold NULL")
+          (Just (ErrorInputInvalid, "failing_bind: argument arg0 is NULL, but Int64 cannot hold NULL"))
       , FailingCallback
           "table function"
           "table function init with a failing query on another connection"
@@ -784,7 +785,7 @@ failingCallbacks = rows <> [row{failingThreads = 4} | row <- firstOfEachKind row
                 query_ (contextOther context) "SELECT 'abc'::INTEGER" :: IO [Only Int64]
           )
           (insertRows "SELECT v FROM failing_inner(5000)")
-          (Just "Conversion Error: Could not convert string 'abc' to INT32")
+          (Just (ErrorTypeConversion, "Conversion Error: Could not convert string 'abc' to INT32"))
       , FailingCallback
           "pragma"
           "pragma in the call form"
@@ -797,7 +798,7 @@ failingCallbacks = rows <> [row{failingThreads = 4} | row <- firstOfEachKind row
                 (ExecPragma \(Only (_ :: Int64)) -> failWith "failing pragma call")
           )
           (\context -> runIn context "PRAGMA failing_pragma(1)")
-          (Just "failing pragma call")
+          (Just (ErrorInputInvalid, "failing pragma call"))
       , FailingCallback
           "custom option"
           "custom option update"
@@ -808,7 +809,7 @@ failingCallbacks = rows <> [row{failingThreads = 4} | row <- firstOfEachKind row
                 (Config.customOption "failing_option" (TypeExpression "BIGINT")){Config.customOptionUpdate = Just \_ -> failWith "failing option update"}
           )
           (\context -> runIn context "SET failing_option = 1")
-          (Just "failing option update")
+          (Just (ErrorInputInvalid, "failing option update"))
       , FailingCallback
           "replacement scan"
           "replacement scan on a connection"
@@ -817,7 +818,7 @@ failingCallbacks = rows <> [row{failingThreads = 4} | row <- firstOfEachKind row
               if parts == ["failing_missing"] then failWith "failing replacement scan" else pure Nothing
           )
           (insertRows "SELECT * FROM failing_missing")
-          (Just "failing replacement scan")
+          (Just (ErrorInputInvalid, "failing replacement scan"))
       , FailingCallback
           "replacement scan"
           "replacement scan on an instance"
@@ -826,7 +827,7 @@ failingCallbacks = rows <> [row{failingThreads = 4} | row <- firstOfEachKind row
               if parts == ["failing_missing"] then failWith "failing instance replacement scan" else pure (Nothing :: Maybe Replacement)
           )
           (insertRows "SELECT * FROM failing_missing")
-          (Just "failing instance replacement scan")
+          (Just (ErrorInputInvalid, "failing instance replacement scan"))
       , FailingCallback
           "COPY TO"
           "COPY TO sink after rows"
@@ -853,7 +854,7 @@ failingCallbacks = rows <> [row{failingThreads = 4} | row <- firstOfEachKind row
                     (Only (Text.pack (contextDirectory context </> "out.txt")))
                 )
           )
-          (Just "failing COPY TO sink")
+          (Just (ErrorInputInvalid, "failing COPY TO sink"))
       , FailingCallback
           "COPY FROM"
           "COPY FROM after rows"
@@ -871,7 +872,7 @@ failingCallbacks = rows <> [row{failingThreads = 4} | row <- firstOfEachKind row
                     (Only (Text.pack (contextDirectory context </> "in.txt")))
                 )
           )
-          (Just "failing COPY FROM row")
+          (Just (ErrorInputInvalid, "failing COPY FROM row"))
       , FailingCallback
           "multi-file function"
           "multi-file function at its second file"
@@ -891,7 +892,7 @@ failingCallbacks = rows <> [row{failingThreads = 4} | row <- firstOfEachKind row
                     (Only (Text.pack (contextDirectory context </> "part*.txt")))
                 )
           )
-          (Just "failing second file")
+          (Just (ErrorInputInvalid, "failing second file"))
       , FailingCallback
           "log sink"
           "log sink write"
@@ -939,9 +940,9 @@ runFailingCallback row = bracket createRowDirectory removePathForcibly \director
         void (execute_ conn "BEGIN")
         void (execute_ conn "INSERT INTO failing_marker VALUES (1)")
         outcome <- try (failingStatement row context)
-        case (failingText row, outcome) of
-          (Just text, Left err) -> do
-            assertEqual label (Just ErrorInputInvalid) (sqlErrorType err)
+        case (failingError row, outcome) of
+          (Just (errorType, text), Left err) -> do
+            assertEqual label (Just errorType) (sqlErrorType err)
             assertBool (label <> ": " <> show (sqlErrorMessage err)) (text `Text.isInfixOf` sqlErrorMessage err)
           (Just _, Right ()) -> assertFailure (label <> ": the statement did not fail")
           (Nothing, Left err) -> assertFailure (label <> ": " <> show err)
@@ -950,7 +951,7 @@ runFailingCallback row = bracket createRowDirectory removePathForcibly \director
         void (execute_ conn "COMMIT")
         assertReusable conn
         withConnectionOn instance' assertReusable
-        let marker = maybe 1 (const 0) (failingText row) :: Int64
+        let marker = maybe 1 (const 0) (failingError row) :: Int64
         query_ conn "SELECT (SELECT count(*) FROM failing_rows), (SELECT count(*) FROM failing_pairs), (SELECT count(*) FROM failing_marker)"
           >>= assertEqual (label <> ": rows after COMMIT") [(0 :: Int64, 0 :: Int64, marker)]
         listDirectory directory >>= assertEqual (label <> ": files after the statement") before

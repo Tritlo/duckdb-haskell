@@ -121,6 +121,7 @@ typedRegistrationTests =
     , testCase "pragma arguments with VARIANT types give NULL rows and reject VARIANT values" testPragmaVariantRows
     , testCase "pragma exceptions become SQL errors" testPragmaExceptions
     , testCase "pragma registration checks the name before the state of a closed connection" testPragmaClosedName
+    , testCase "an SQL error in each callback kind keeps its type and one prefix" testCallbackErrorTypes
     , testCase "custom option update accepts and rejects BIGINT values" testOptionUpdate
     , testCase "custom option update gets VARCHAR values and can reject RESET" testOptionText
     , testCase "table function with one parameter over several chunks" testTableSquares
@@ -234,7 +235,13 @@ failingCast :: forall a b. (FromField a, ToDuckValue b) => Proxy a -> Proxy b ->
 failingCast _ _ source target failure conn = createCast conn (TypeExpression source) (TypeExpression target) \(_ :: a) -> case failure of
   FailException -> error "typed cast raised an exception"
   FailTypedError ->
-    throw SQLError{sqlErrorMessage = "typed cast raised a Conversion Error", sqlErrorType = Just ErrorTypeConversion, sqlErrorQuery = Nothing, sqlErrorBody = Nothing}
+    throw
+      SQLError
+        { sqlErrorMessage = "typed cast raised a Conversion Error"
+        , sqlErrorType = Just ErrorTypeConversion
+        , sqlErrorQuery = Nothing
+        , sqlErrorBody = Nothing
+        }
   _ -> Left "typed cast refused the value" :: Either Text b
 
 -- | Register a cast whose argument type is the first type, and which gives the value.
@@ -618,6 +625,88 @@ testPragmaExceptions = withConnection ":memory:" \conn -> do
   registerPragmaFunction conn "typed_exec_failure" [] (ExecPragma \() -> throwIO (userError "typed exec pragma failure"))
   assertSqlError "typed exec pragma failure" (execute_ conn "PRAGMA typed_exec_failure")
   query_ conn "SELECT 43" >>= (@?= [Only (43 :: Int64)])
+
+-- | Give the type and the text of an error in a callback to the outer
+-- statement. The failing statement runs on a connection of another database.
+-- See Note [Errors that leave a callback] in "Database.DuckDB.Simple.Callback".
+testCallbackErrorTypes :: Assertion
+testCallbackErrorTypes = withDirectory \directory -> withConnection ":memory:" \conn -> withConnection ":memory:" \other -> withConnection ":memory:" \third -> do
+  let failing = void (query_ other "SELECT 'abc'::INTEGER" :: IO [Only Int64])
+      run sql = void (query_ conn sql :: IO [[FieldValue]])
+      file = Text.pack (directory </> "rows.txt")
+      conversion = "Conversion Error: Could not convert string 'abc' to INT32"
+  -- The body of a native error is its text without the prefix.
+  try failing >>= \case
+    Left (err :: SQLError) -> ("Conversion Error: " <>) <$> sqlErrorBody err @?= Just (sqlErrorMessage err)
+    Right () -> assertFailure "expected a Conversion Error"
+  writeFile (directory </> "rows.txt") ""
+  createFunction conn "error_scalar" (failing >> pure (0 :: Int64))
+  createFunctionWithState conn "error_state" failing \() -> (0 :: Int64)
+  createAggregate conn "error_update" sumAggregate{aggregateStep = \_ (Only (_ :: Int64)) -> failing >> pure 0}
+  createAggregate conn "error_combine" sumAggregate{aggregateCombine = \_ _ -> failing >> pure 0}
+  createAggregate conn "error_finalize" sumAggregate{aggregateResult = \_ -> failing >> pure (0 :: Int64)}
+  createTableFunction conn "error_init" ["n"] \() -> failing >> pure [Only (1 :: Int64)]
+  createTableFunction conn "error_exec" ["n"] \() -> unsafeInterleaveIO (failing >> pure [Only (1 :: Int64)])
+  registerCustomType conn "error_target" (TypeExpression "BIGINT")
+  createCast conn (TypeExpression "BIGINT") (TypeExpression "error_target") \(value :: Int64) ->
+    unsafePerformIO (failing >> pure (Right value :: Either Text Int64))
+  registerPragmaFunction conn "error_query_pragma" [] (QueryPragma \() -> failing >> pure "SELECT 1")
+  registerPragmaFunction conn "error_exec_pragma" [] (ExecPragma \() -> failing)
+  registerCustomOption conn (customOption "error_option" (TypeExpression "BIGINT")){customOptionUpdate = Just \_ -> failing}
+  registerCopyToFunction conn "error_sink" (\_ -> pure ()) (\_ -> pure ()) (\_ _ -> failing) (\_ -> pure ())
+  registerCopyToFunction conn "error_final" (\_ -> pure ()) (\_ -> pure ()) (\_ _ -> pure ()) (\_ -> failing)
+  registerCopyFromFunction conn "error_from" \_ -> failing >> pure [Only (1 :: Int64)]
+  void (execute_ conn "CREATE TABLE error_rows (value BIGINT)")
+  registerReplacementScan conn \parts -> if parts == ["error_missing"] then failing >> pure Nothing else pure Nothing
+  forM_
+    [ ("scalar function", run "SELECT error_scalar()")
+    , ("state of a scalar function", run "SELECT error_state() FROM range(3)")
+    , ("aggregate update", run "SELECT error_update(i) FROM range(10) t(i)")
+    , ("aggregate combine", run "SELECT error_combine(i) OVER (ORDER BY i ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) FROM range(32) t(i)")
+    , ("aggregate finalize", run "SELECT error_finalize(i) FROM range(10) t(i)")
+    , ("table function init", run "SELECT * FROM error_init()")
+    , ("table function exec", run "SELECT * FROM error_exec()")
+    , ("query pragma", run "PRAGMA error_query_pragma")
+    , ("exec pragma", void (execute_ conn "PRAGMA error_exec_pragma"))
+    , ("option update", void (execute_ conn "SET error_option = 1"))
+    , ("COPY TO sink", void (execute conn "COPY (SELECT 1) TO ? (FORMAT error_sink)" (Only file)))
+    , ("COPY TO finalize", void (execute conn "COPY (SELECT 1) TO ? (FORMAT error_final)" (Only file)))
+    , ("COPY FROM", void (execute conn "COPY error_rows FROM ? (FORMAT error_from)" (Only file)))
+    , ("replacement scan", run "SELECT * FROM error_missing")
+    ]
+    \(label, action) -> assertErrorType label ErrorTypeConversion conversion action
+  -- A cast writes the code of a failed cast and the whole message. See
+  -- Note [The error code of a failed cast] in
+  -- "Database.DuckDB.Simple.V2.Registration".
+  assertErrorType "cast" ErrorTypeMismatch ("Mismatch Type Error: " <> conversion) (run "SELECT CAST(1::BIGINT AS error_target)::BIGINT")
+  -- An error that passes through two callbacks keeps its type.
+  createFunction other "error_middle" (void (query_ third "SELECT 'abc'::INTEGER" :: IO [Only Int64]) >> pure (0 :: Int64))
+  createFunction conn "error_outer" (void (query_ other "SELECT error_middle()" :: IO [Only Int64]) >> pure (0 :: Int64))
+  assertErrorType "two callbacks" ErrorTypeConversion conversion (run "SELECT error_outer()")
+  -- An error of the library keeps its type and gets one prefix.
+  createFunction
+    conn
+    "error_range"
+    (void (query other "SELECT ?::TINYINT" (Only (2 ^ (200 :: Int) :: Integer)) :: IO [Only Int64]) >> pure (0 :: Int64))
+  assertErrorType "an error of the library" ErrorInputOutOfRange "Out of Range Error: duckdb-simple: the value " (run "SELECT error_range()")
+  -- An INTERNAL error does not keep its type, because DuckDB then invalidates
+  -- the database.
+  createFunction
+    conn
+    "error_internal"
+    (throwIO (SQLError "INTERNAL Error: inner" (Just ErrorRuntimeInternal) Nothing (Just "inner")) :: IO Int64)
+  assertErrorType "an INTERNAL error" ErrorInputInvalid "Invalid Input Error: INTERNAL Error: inner" (run "SELECT error_internal()")
+  query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+
+-- | Require an 'SQLError' of the type, with a message that starts with the
+-- text.
+assertErrorType :: String -> ErrorType -> Text -> IO () -> Assertion
+assertErrorType label expected prefix action =
+  try action >>= \case
+    Left (err :: SQLError) -> do
+      assertEqual label (Just expected) (sqlErrorType err)
+      assertBool (label <> ": " <> show (sqlErrorMessage err)) (prefix `Text.isPrefixOf` sqlErrorMessage err)
+    Right () -> assertFailure (label <> ": expected an SQL error")
 
 -- | Accept and reject the values of a BIGINT option from SET, RESET, and
 -- 'setConfigValue'. The function gets each value after the cast to BIGINT. A

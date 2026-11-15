@@ -29,6 +29,8 @@ module Database.DuckDB.Simple.Callback (
 import Control.Exception (SomeException, bracket, catch, displayException, finally, fromException, mask, mask_, onException, throwIO, try)
 import Control.Monad (when)
 import Data.IORef (modifyIORef', newIORef, readIORef)
+import Data.Maybe (fromMaybe)
+import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Void (Void)
 import Database.DuckDB.Simple.CallbackMark (withCallbackMark)
@@ -215,17 +217,23 @@ readCallbackState getter = do
 -- 'Database.DuckDB.Simple.Internal.withConnectionLock' and
 -- Note [Callback marks] in "Database.DuckDB.Simple.CallbackMark". Each DuckDB
 -- callback with user code runs through this function or 'runCallbackWith',
--- except the flush function of a log sink when DuckDB destroys the sink. Each
--- failure gets the native error code Api.
+-- except the flush function of a log sink when DuckDB destroys the sink. See
+-- Note [Errors that leave a callback] for the code and the text of an error.
 runCallback :: Ptr DuckDBV2ErrorInfoHandle -> IO () -> IO ()
-runCallback = runCallbackWith DuckDBV2ErrorApi
+runCallback = runCallbackAs callbackError
 
 -- | 'runCallback' with another native error code for each failure. The code
--- replaces the type of each exception, also the type of an 'SQLError'. A cast
--- callback uses it. See Note [The error code of a failed cast] in
+-- replaces the type of each exception, also the type of an 'SQLError', and the
+-- text is the 'failureText' of the exception. A cast callback uses it. See
+-- Note [The error code of a failed cast] in
 -- "Database.DuckDB.Simple.V2.Registration".
 runCallbackWith :: DuckDBV2Error -> Ptr DuckDBV2ErrorInfoHandle -> IO () -> IO ()
-runCallbackWith code err action = mask \restore -> do
+runCallbackWith code = runCallbackAs \failure -> (code, Text.pack (failureText failure))
+
+-- | Run a callback action. For an exception, write the code and the text that
+-- the first argument gives into the error slot.
+runCallbackAs :: (SomeException -> (DuckDBV2Error, Text)) -> Ptr DuckDBV2ErrorInfoHandle -> IO () -> IO ()
+runCallbackAs describe err action = mask \restore -> do
   outcome <- try (withCallbackMark (restore action))
   case outcome of
     Right () -> pure ()
@@ -238,11 +246,49 @@ runCallbackWith code err action = mask \restore -> do
             if info == nullHandle
               then pure ()
               else do
+                let (code, text) = describe failure
                 c_duckdb_v2_error_info_set_code info code >>= checkCode
                 withText (Text.pack "Haskell callback failed") $ \message ->
                   c_duckdb_v2_error_info_set_text info message >>= checkCode
-                withText (Text.pack (failureText failure)) $ \message ->
+                withText text $ \message ->
                   c_duckdb_v2_error_info_set_text info message >>= checkCode
+
+{- Note [Errors that leave a callback]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+runCallback writes an exception of a callback into the error slot of DuckDB as
+a code and a text. The statement that runs the callback then fails with an
+error of the type of the code. DuckDB puts the prefix of that type before the
+text, for example "Conversion Error: " for the code of ErrorTypeConversion, and
+"Invalid Input Error: " for DuckDBV2ErrorApi.
+
+- An SQLError with a type writes the code of its type. The text is the body of
+  the error (sqlErrorBody), the text of DuckDB without the prefix. An error of
+  duckdb-simple has no body, so the text is its message. Thus the error of a
+  statement in the callback reaches the outer statement with its type and with
+  one prefix. An error that passes through two callbacks keeps its type and
+  its body in the same way.
+- ErrorRuntimeInternal and ErrorRuntimeFatal do not pass. For these codes,
+  DuckDB 2.0.0 invalidates the database of the outer statement, also when the
+  error came from another database. Such an error writes the code
+  DuckDBV2ErrorApi and its message.
+- Each other exception writes the code DuckDBV2ErrorApi and failureText: an
+  SQLError without a type, a userError, or another exception.
+- A cast callback runs through runCallbackWith and not through this rule. It
+  writes the code DuckDBV2ErrorTypeMismatch and failureText for each
+  exception, also for an SQLError with a type. See
+  Note [The error code of a failed cast] in
+  "Database.DuckDB.Simple.V2.Registration".
+-}
+
+-- | The code and the text that a callback writes into its error slot for an
+-- exception. See Note [Errors that leave a callback].
+callbackError :: SomeException -> (DuckDBV2Error, Text)
+callbackError failure = case fromException failure of
+  Just SQLError{sqlErrorType = Just errorType, sqlErrorMessage = message, sqlErrorBody = body}
+    | errorType `notElem` [ErrorRuntimeInternal, ErrorRuntimeFatal]
+    , Just code <- lookup errorType errorTypeCodes ->
+        (code, fromMaybe message body)
+  _ -> (DuckDBV2ErrorApi, Text.pack (failureText failure))
 
 -- | The text of a callback exception in the SQL error. An 'SQLError' gives its
 -- message, and a 'userError' gives its text. Thus the SQL error does not show a

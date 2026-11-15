@@ -1398,13 +1398,27 @@ castExample conn = do
 ```
 
 DuckDB uses a registered cast in place of its built-in cast for the same pair
-of types, on each connection of the database. On a connection, a registered
-cast does not change a value that the library reads or binds. The library reads
-GEOMETRY and VARIANT values with the casts of the instance, which are the
-built-in casts, and it builds GEOMETRY, ENUM, and VARIANT values with the
-default cast of DuckDB. For example, a cast from GEOMETRY to BLOB changes the
-result of `CAST(g AS BLOB)`, but not a GEOMETRY value that a query gives. Two
-places still use registered casts:
+of types, on each connection of the instance, also on a connection that opened
+before the registration. A new instance of the same database file uses the
+built-in cast again. No function removes a registered cast. DuckDB runs the
+registered cast for `CAST` and `TRY_CAST`, and also where it casts the source
+type to the target type by itself. In DuckDB 2.0.0, an INSERT into a column of
+the target type and the DEFAULT of a column run it, also for a pair with no
+built-in cast, for example BIGINT to BLOB. UNION ALL, a list, a CASE
+expression, a CHECK, a comparison, and an operator run it for some pairs and
+expressions and not for others. A registered cast has no implicit cast cost, so
+DuckDB does not convert a function argument from the source type to the target
+type. For example, after a cast from INTEGER to BIGINT, `epoch_ms(c)` for an
+INTEGER column `c` and a function of `createFunction` with an `Int64` argument
+do not bind. Thus a cast between two built-in types changes the behaviour of
+plain SQL on the instance.
+
+On a connection, a registered cast does not change a value that the library
+reads or binds. The library reads GEOMETRY and VARIANT values with the casts of
+the instance, which are the built-in casts, and it builds GEOMETRY, ENUM, and
+VARIANT values with the default cast of DuckDB. For example, a cast from
+GEOMETRY to BLOB changes the result of `CAST(g AS BLOB)`, but not a GEOMETRY
+value that a query gives. Two places still use registered casts:
 
 - The callbacks of a function that an extension registers. An extension has no
   instance, so these callbacks read a GEOMETRY value with the casts of the

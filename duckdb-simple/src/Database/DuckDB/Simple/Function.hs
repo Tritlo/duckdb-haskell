@@ -123,8 +123,13 @@ createFunctionWithState :: (Function f) => Connection -> Text -> IO s -> (s -> f
 createFunctionWithState conn = createFunctionWithStateOn (ConnectionTarget conn)
 
 -- | Register an explicit cast from the source type (the first type) to the
--- target type (the second type). DuckDB uses the cast for @CAST@ and @TRY_CAST@.
--- It does not use the cast implicitly. Register a cast again to replace it.
+-- target type (the second type). DuckDB uses the cast for @CAST@ and @TRY_CAST@
+-- on each connection of the instance, and also for some casts that it makes by
+-- itself, for example for an INSERT into a column of the target type. DuckDB
+-- then does not convert a function argument from the source type to the target
+-- type. Thus a cast between two built-in types changes plain SQL on the
+-- instance. The section /Typed registration/ of the README gives the details.
+-- Register a cast again to replace it.
 --
 -- The function converts one value. 'Right' gives the result. 'Left' gives a
 -- failure message. A NULL value gives NULL. The function does not run for NULL.
@@ -150,7 +155,7 @@ createFunctionWithState conn = createFunctionWithStateOn (ConnectionTarget conn)
 -- >     if value > maxBound - 100 then Left "BIGINT overflow" else Right (value + 100)
 --
 -- DuckDB uses a registered cast in place of its built-in cast for the same
--- pair of types, on each connection of the database. On a connection, a
+-- pair of types, on each connection of the instance. On a connection, a
 -- registered cast does not change a value that the library reads or binds:
 -- the library reads GEOMETRY and VARIANT values with the casts of the
 -- instance, which are the built-in casts, and it builds GEOMETRY, ENUM, and

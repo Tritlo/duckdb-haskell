@@ -98,7 +98,9 @@ timeTests =
           (query_ conn "SELECT 42" :: IO [Only Int]) >>= (@?= [Only 42])
       , testCase "a conversion error names a time zone type as DuckDB does" $ withConnection ":memory:" $ \conn -> do
           [(timestamp, time)] <- query_ conn "SELECT TIMESTAMPTZ '2000-01-02 03:04:05+00', TIMETZ '03:04:05+00'"
-          forM_ [(timestamp, "TIMESTAMPTZ"), (time, "TIMETZ")] $ \(value, name) ->
+          -- A Field of the type VARIANT names the type of its value with the
+          -- text of DuckDB.
+          forM_ [(timestamp, "TIMESTAMP WITH TIME ZONE"), (time, "TIME WITH TIME ZONE")] $ \(value, name) ->
             case fromField Field{fieldName = "value", fieldIndex = 0, fieldValue = value, fieldType = LogicalTypeScalar LogicalTypeIdVariant} :: Ok Int64 of
               Errors errors -> map (fmap errSQLType . fromException) errors @?= [Just name]
               Ok number -> assertFailure ("expected a conversion error, got " <> show number)

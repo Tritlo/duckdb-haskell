@@ -404,8 +404,9 @@ does not have, or whose value the library cannot give exactly. A read of such a
 pair raises Incompatible, as for each other pair that an instance does not
 read. The error names the SQL type of the column in the text of DuckDB
 (fieldTypeName), for example TIMESTAMP_NS or DECIMAL(18,3). For a column of the
-type VARIANT, it names the type of the stored value, and the error of a String
-names Text. The text costs nothing until the error renders. These pairs are:
+type VARIANT, it names the type of the stored value in the same text
+(fieldValueTypeName), and the error of a String names Text. The text costs
+nothing until the error renders. These pairs are:
 
 - UTCTime from TIMESTAMP, TIMESTAMP_S, TIMESTAMP_MS, TIMESTAMP_NS, and DATE, and
   LocalTime from TIMESTAMPTZ and TIMESTAMPTZ_NS. These casts use the TimeZone
@@ -1071,40 +1072,46 @@ fieldTypeName logical value = case aliasBase logical of
   LogicalTypeScalar LogicalTypeIdVariant -> fieldValueTypeName value
   _ -> logicalTypeSQL logical
 
--- | The SQL type name of a decoded value.
+-- | The SQL type name of a decoded value, in the type text of DuckDB
+-- (logicalTypeSQL), for example TIMESTAMP WITH TIME ZONE or DECIMAL(18,3). A
+-- value that does not hold its full type (a LIST, an ARRAY, a MAP, an ENUM, a
+-- STRUCT, a TUPLE, or a UNION) gives the name of its kind. See
+-- Note [Reads of another SQL type].
 fieldValueTypeName :: FieldValue -> Text
 fieldValueTypeName = \case
-  FieldNull -> "NULL"
-  FieldInt8{} -> "TINYINT"
-  FieldInt16{} -> "SMALLINT"
-  FieldInt32{} -> "INTEGER"
-  FieldInt64{} -> "BIGINT"
-  FieldWord8{} -> "UTINYINT"
-  FieldWord16{} -> "USMALLINT"
-  FieldWord32{} -> "UINTEGER"
-  FieldWord64{} -> "UBIGINT"
-  FieldFloat{} -> "FLOAT"
-  FieldDouble{} -> "DOUBLE"
-  FieldText{} -> "VARCHAR"
-  FieldBool{} -> "BOOLEAN"
-  FieldBlob{} -> "BLOB"
-  FieldGeometry{} -> "GEOMETRY"
-  FieldDate{} -> "DATE"
-  FieldTime{} -> "TIME"
-  FieldTimestamp{} -> "TIMESTAMP"
-  FieldInterval{} -> "INTERVAL"
-  FieldHugeInt{} -> "HUGEINT"
-  FieldUHugeInt{} -> "UHUGEINT"
-  FieldDecimal{} -> "DECIMAL"
-  FieldTimestampTZ{} -> "TIMESTAMPTZ"
-  FieldTimeTZ{} -> "TIMETZ"
-  FieldBit{} -> "BIT"
-  FieldBigNum{} -> "BIGNUM"
+  FieldNull -> scalar LogicalTypeIdSQLNull
+  FieldInt8{} -> scalar LogicalTypeIdTinyInt
+  FieldInt16{} -> scalar LogicalTypeIdSmallInt
+  FieldInt32{} -> scalar LogicalTypeIdInteger
+  FieldInt64{} -> scalar LogicalTypeIdBigInt
+  FieldWord8{} -> scalar LogicalTypeIdUTinyInt
+  FieldWord16{} -> scalar LogicalTypeIdUSmallInt
+  FieldWord32{} -> scalar LogicalTypeIdUInteger
+  FieldWord64{} -> scalar LogicalTypeIdUBigInt
+  FieldFloat{} -> scalar LogicalTypeIdFloat
+  FieldDouble{} -> scalar LogicalTypeIdDouble
+  FieldText{} -> scalar LogicalTypeIdVarchar
+  FieldBool{} -> scalar LogicalTypeIdBoolean
+  FieldBlob{} -> scalar LogicalTypeIdBlob
+  FieldGeometry RawGeometry{rawGeometryCRS} -> logicalTypeSQL (LogicalTypeGeometry rawGeometryCRS)
+  FieldDate{} -> scalar LogicalTypeIdDate
+  FieldTime{} -> scalar LogicalTypeIdTime
+  FieldTimestamp{} -> scalar LogicalTypeIdTimestamp
+  FieldInterval{} -> scalar LogicalTypeIdInterval
+  FieldHugeInt{} -> scalar LogicalTypeIdHugeInt
+  FieldUHugeInt{} -> scalar LogicalTypeIdUHugeInt
+  FieldDecimal DecimalValue{decimalWidth, decimalScale} -> logicalTypeSQL (LogicalTypeDecimal decimalWidth decimalScale)
+  FieldTimestampTZ{} -> scalar LogicalTypeIdTimestampTz
+  FieldTimeTZ{} -> scalar LogicalTypeIdTimeTz
+  FieldBit{} -> scalar LogicalTypeIdBit
+  FieldBigNum{} -> scalar LogicalTypeIdBigNum
   FieldEnum{} -> "ENUM"
   FieldArray{} -> "ARRAY"
   FieldList{} -> "LIST"
   FieldMap{} -> "MAP"
-  FieldUUID{} -> "UUID"
+  FieldUUID{} -> scalar LogicalTypeIdUUID
   FieldStruct{} -> "STRUCT"
   FieldTuple{} -> "TUPLE"
   FieldUnion{} -> "UNION"
+  where
+    scalar = logicalTypeSQL . LogicalTypeScalar

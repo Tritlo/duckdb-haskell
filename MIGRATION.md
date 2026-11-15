@@ -321,7 +321,9 @@ The SQL workflow stays the same. These changes can affect your code:
 - The error of an incompatible column names the type of the column in the text
   of DuckDB, for example `has type DECIMAL(18,2)`, `has type TIMESTAMP_NS`, and
   `has type TIMESTAMP WITH TIME ZONE`. For a VARIANT column, it names the type
-  of the stored value. Change code that matches the error texts.
+  of the stored value in the same text. The bind errors name each type in the
+  same text, for example `from a value of type TIMESTAMP WITH TIME ZONE`.
+  Change code that matches the error texts.
 - `TimeWithZone` holds the offset as seconds east of UTC. The field
   `timeWithZoneZone :: TimeZone` is now `timeWithZoneOffsetSeconds :: Int32`.
   Convert a `TimeZone` with `fromIntegral (timeZoneMinutes zone) * 60`, and
@@ -502,7 +504,7 @@ The SQL workflow stays the same. These changes can affect your code:
   and a bad name in `connectionGeometryCRS`. Code that catches `IOException`
   for these errors must catch `SQLError`.
 - The error for a scalar value that does not match its declared type names the
-  SQL type, for example `NULL` in place of `LogicalTypeIdSQLNull`.
+  SQL type, for example `"NULL"` in place of `LogicalTypeIdSQLNull`.
 - A check of the state of the library, or of a vector, a type, or a value that
   DuckDB gave, raises an `SQLError` with the type `ErrorRuntimeInternal`. Inside
   a callback, the statement that runs the callback fails instead, with an

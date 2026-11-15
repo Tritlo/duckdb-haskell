@@ -1679,7 +1679,9 @@ scalarFieldValueDuckValue factory dtype value = case (dtype, value) of
   (LogicalTypeIdHugeInt, FieldHugeInt i) -> hugeIntDuckValue factory i
   (LogicalTypeIdUHugeInt, FieldUHugeInt i) -> uhugeIntDuckValue factory i
   (LogicalTypeIdBigNum, FieldBigNum big) -> bigNumDuckValue factory big
-  _ -> throwInvalidArgument ("unsupported scalar conversion for " <> duckDBTypeToName dtype <> " from a value of type " <> valueTypeName value)
+  _ ->
+    throwInvalidArgument
+      ("unsupported scalar conversion for " <> logicalTypeSQL (LogicalTypeScalar dtype) <> " from a value of type " <> valueTypeName value)
 
 -- | Construct an ENUM value by the default cast of the label to the ENUM type.
 -- The label of a 'FieldEnum' gives the value, not its index: an index of

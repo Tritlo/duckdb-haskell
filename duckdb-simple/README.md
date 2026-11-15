@@ -583,8 +583,10 @@ type and with the query. The message describes the first field that fails:
   for `Null`. TYPE is the type of the column in the text of DuckDB, as
   `typeof` gives it, for example DECIMAL(18,2), TIMESTAMP_NS, TIMESTAMP WITH
   TIME ZONE, ENUM('a', 'b'), INTEGER[], or JSON. `logicalTypeSQL` gives that
-  text. For a VARIANT column, TYPE is the type of the stored value, for example
-  DECIMAL for a DECIMAL(18,2) value. The text costs nothing until the error
+  text. For a VARIANT column, TYPE is the type of the stored value in the same
+  text, for example DOUBLE or TIMESTAMP WITH TIME ZONE. A value that does not
+  hold its full type, for example a LIST or a STRUCT in a VARIANT, gives the
+  name of its kind: LIST or STRUCT. The text costs nothing until the error
   renders.
   HASKELLTYPE is the type of the instance that reads, for example `Text` for
   `String`.

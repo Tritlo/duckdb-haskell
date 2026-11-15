@@ -243,9 +243,11 @@
   each field its type.
 - Read errors name the type of the column with `logicalTypeSQL`, the type
   text of DuckDB, for example DECIMAL(18,2), TIMESTAMP_NS, ENUM('a', 'b'), or
-  JSON. For a VARIANT column, they name the type of the stored value. The bind
-  error `cannot encode a value of type ... as ...` names the declared type in
-  the same text.
+  JSON. For a VARIANT column, they name the type of the stored value in the
+  same text, for example TIMESTAMP WITH TIME ZONE. The bind errors
+  `cannot encode a value of type ... as ...` and
+  `unsupported scalar conversion for ... from a value of type ...` name each
+  type in the same text.
 - Decode nanosecond timezone timestamps in results and VARIANT values.
 - Preserve the digits below a microsecond of a `TimeOfDay`, a `LocalTime`, and
   a `UTCTime`, and of their `Unbounded` forms, for a nanosecond parameter
@@ -367,7 +369,7 @@
   `ErrorTypeConversion` and the text `Conversion Error: duckdb-simple: ...`.
   Version 0.3 raised an `IOException` for the checks of parameter values,
   logical types, and CRS names. The error for a scalar value that does not match
-  its declared type names the SQL type, for example `NULL` in place of
+  its declared type names the SQL type, for example `"NULL"` in place of
   `LogicalTypeIdSQLNull`.
 - A check of the state of the library, or of a vector, a type, or a value that
   DuckDB gave, raises `SQLError` with the type `ErrorRuntimeInternal`. Such an

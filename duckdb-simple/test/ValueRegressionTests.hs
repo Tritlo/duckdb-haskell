@@ -613,7 +613,7 @@ valueRegressionTests =
             sqlErrorType @?= Just ErrorInputInvalid
             assertBool
               (Text.unpack sqlErrorMessage)
-              ("unsupported scalar conversion for NULL from a value of type INTEGER" `Text.isInfixOf` sqlErrorMessage)
+              ("unsupported scalar conversion for \"NULL\" from a value of type INTEGER" `Text.isInfixOf` sqlErrorMessage)
           Right _ -> assertFailure "expected a conversion error for a value that is not NULL"
     , testCase "GEOMETRY decodes as well-known binary" $ withConnection ":memory:" \conn -> do
         [Only bytes] <- query_ conn "SELECT 'POINT(1 2)'::GEOMETRY" :: IO [Only BS.ByteString]
@@ -1648,9 +1648,10 @@ valueRegressionTests =
                 rep <- logicalTypeToRep logical
                 assertEqual (Text.unpack (Text.take 80 text)) expected (logicalTypeSQL rep)
         -- A read error names the column type. Under VARIANT it names the type of
-        -- the stored value.
+        -- the stored value, in the same text.
         assertIncompatible conn "1.5::DECIMAL(18,3)" () "DECIMAL(18,3)" (Proxy @Text) "Text"
-        assertIncompatible conn "(1.5::DECIMAL(18,3))::VARIANT" () "DECIMAL" (Proxy @Text) "Text"
+        assertIncompatible conn "(1.5::DECIMAL(18,3))::VARIANT" () "DECIMAL(18,3)" (Proxy @Text) "Text"
+        assertIncompatible conn "(TIMESTAMPTZ '2024-01-02 03:04:05+00')::VARIANT" () "TIMESTAMP WITH TIME ZONE" (Proxy @Text) "Text"
     , testCase "a user FromField checks the type of a column, an element, a MAP key and value, and a record field" $ withConnection ":memory:" \conn -> do
         query_ conn "SELECT 1.25::DECIMAL(9,2), TIMESTAMP_NS '2024-01-02 03:04:05.123456789', [1, 2, 3]::INTEGER[3], '{\"a\": 1}'::JSON"
           >>= (@?= [(Checked "decimal", Checked "timestamp_ns", Checked "array", Checked "json")])

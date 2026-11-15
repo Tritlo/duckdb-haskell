@@ -62,8 +62,7 @@ import Database.DuckDB.Simple.FromField (
   Field (..),
   FromField (..),
  )
-import Database.DuckDB.Simple.Internal (duckDBTypeToName)
-import Database.DuckDB.Simple.LogicalRep (TypeDeclaration)
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), TypeDeclaration, logicalTypeSQL)
 import Database.DuckDB.Simple.Materialize (
   FallbackReaders (..),
   ReadFactory,
@@ -480,8 +479,8 @@ writeScalarValue factory vector vectorType dataPtr validityPtr idx = \case
       markValid validityPtr idx
       pokeElemOff (castPtr dataPtr) idx value
     expect expected = when (vectorType /= expected) do
-      actualName <- duckDBTypeToName <$> logicalTypeIdFromNative vectorType
-      expectedName <- duckDBTypeToName <$> logicalTypeIdFromNative expected
+      actualName <- logicalTypeSQL . LogicalTypeScalar <$> logicalTypeIdFromNative vectorType
+      expectedName <- logicalTypeSQL . LogicalTypeScalar <$> logicalTypeIdFromNative expected
       throwInternalError ("the result vector has the type " <> actualName <> ", but the result value has the type " <> expectedName)
 
 -- | Write a VARCHAR value at a row of a flat vector without a factory. A value

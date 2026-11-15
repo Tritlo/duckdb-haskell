@@ -4,9 +4,88 @@
 -- Module      : Database.DuckDB.Simple.Extension
 -- Description : Entry point and typed registrations for a loadable Haskell extension.
 --
--- Enable the @extension@ flag of duckdb-ffi and of duckdb-simple. The C entry
--- point calls @duckdb_haskell_extension_load@ with the foreign export of an
--- 'ExtensionEntry'. See @dev/extensions/@ in the repository.
+-- A loadable extension is a shared library that DuckDB loads into its own process with @LOAD@. DuckDB calls the
+-- entry point of the extension one time in each process. A second @LOAD@ of the same name does not call it again.
+-- The entry point registers SQL objects, and DuckDB keeps them in the database after the entry point returns. This
+-- module gives the entry point and the typed registrations of "Database.DuckDB.Simple.Function" and of the other
+-- typed modules for an extension.
+--
+-- An extension needs these items:
+--
+-- - The @extension@ flag of duckdb-ffi and of duckdb-simple. Enable the two flags together. A flag applies to the
+--   complete build plan, so one project cannot build a DuckDB host and an extension. With the flag, the two
+--   packages build only on Linux and macOS.
+-- - A C entry point @NAME_init_c_api_v2@ that calls @duckdb_haskell_extension_load@ with the foreign export of an
+--   'ExtensionEntry' and does nothing else. DuckDB finds the entry point from the file name @NAME.duckdb_extension@.
+-- - The threaded runtime. Link the extension with @-threaded@. Otherwise the load fails with an error.
+--
+-- These steps build, package, and load an extension:
+--
+-- 1. Build the foreign library with Cabal in a project that enables the two flags, as
+--    @dev\/extensions\/cabal.project@ and @dev\/extensions\/example\/duckdb-haskell-extension-example.cabal@ do.
+-- 2. Append the DuckDB metadata to the library with @dev\/extensions\/Pack.hs@, as @dev\/extensions\/PACKAGING.md@
+--    shows.
+-- 3. Load the file with @LOAD@ in a DuckDB 2.0.0 process that accepts unsigned extensions, as
+--    @dev\/extensions\/example\/test\/Main.hs@ does with @duckdb -unsigned@.
+--
+-- The Haskell side of a small extension, from @dev\/extensions\/example\/src\/Demo.hs@:
+--
+-- > {-# LANGUAGE ForeignFunctionInterface #-}
+-- > {-# LANGUAGE OverloadedStrings #-}
+-- >
+-- > module Demo where
+-- >
+-- > import Data.Int (Int64)
+-- > import Data.Text (Text)
+-- > import Database.DuckDB.Simple.Extension (Extension, ExtensionEntry)
+-- > import qualified Database.DuckDB.Simple.Extension as Extension
+-- >
+-- > initialize :: ExtensionEntry
+-- > initialize = Extension.runExtension register
+-- >
+-- > foreign export ccall "duckdb_haskell_demo_register" initialize :: ExtensionEntry
+-- >
+-- > register :: Extension -> IO ()
+-- > register extension = do
+-- >   Extension.createFunction extension "haskell_answer" (42 :: Int64)
+-- >   Extension.createFunction extension "haskell_greet" (("Hello " <>) :: Text -> Text)
+-- >   Extension.registerMacroFunction extension "haskell_table" Extension.MacroFunctionTypeTable [] "SELECT 42::BIGINT AS answer"
+--
+-- The C entry point of the same extension, from @dev\/extensions\/example\/cbits\/entry.c@. The packaged file must
+-- be @haskell_demo.duckdb_extension@:
+--
+-- > #include "duckdb_haskell_extension.h"
+-- >
+-- > extern void duckdb_haskell_demo_register(void *extension, void *context, void *err);
+-- >
+-- > /* DuckDB derives this name from the file name of the packaged extension. */
+-- > DUCKDB_EXTENSION_API void haskell_demo_init_c_api_v2(struct duckdb_v2_extension_input *input) {
+-- >     duckdb_haskell_extension_load(input, duckdb_haskell_demo_register);
+-- > }
+--
+-- The t'Extension' value is valid only while 'runExtension' runs. DuckDB gives a borrowed extension handle and a
+-- borrowed context to the entry point. They are not valid after the entry point returns. Thus do not keep the
+-- t'Extension' value, or the target of 'extensionTarget', in a registered callback or in other state. A registered
+-- function keeps its callback resources after the entry point returns.
+--
+-- The README of the example gives these limits:
+--
+-- - The runtime has one capability (@-N1@). The callbacks of all DuckDB worker threads share it. You cannot change
+--   the runtime options.
+-- - Haskell extensions built with the same GHC share one runtime in the process, and the options of the first
+--   loaded extension apply. Extensions built with different GHC versions in one process are not tested. The runtime
+--   stays until the process ends. Do not call @hs_exit@.
+-- - The process supports one DuckDB implementation.
+-- - The extension loads only into the DuckDB release of the pinned header, 2.0.0.
+-- - In extension mode, duckdb-ffi exposes only "Database.DuckDB.FFI.V2".
+-- - A COPY TO function of an extension cannot read a VARIANT column. A replacement scan of an extension belongs to
+--   the instance, not to one connection.
+-- - The example links the GHC and package libraries dynamically. It loads only on a machine where its run paths
+--   exist.
+--
+-- The complete example is in the directory @dev\/extensions\/example\/@ of the repository
+-- <https://github.com/Tritlo/duckdb-haskell>. Its file @src\/Advanced.hs@ registers the other kinds of SQL objects.
+-- @dev\/extensions\/README.md@ has the commands that build, package, test, and load it.
 module Database.DuckDB.Simple.Extension (
   Extension,
   ExtensionEntry,
@@ -93,11 +172,13 @@ runExtension initialize extension context err =
 extensionTarget :: Extension -> RegistrationTarget
 extensionTarget (Extension extension context) = ExtensionTarget extension context
 
--- | Register a typed Haskell function with the loading DuckDB host.
+-- | Register a typed Haskell function with the loading DuckDB host. The rules
+-- of 'Database.DuckDB.Simple.Function.createFunction' apply.
 createFunction :: (Function f) => Extension -> Text -> f -> IO ()
 createFunction = createFunctionOn . extensionTarget
 
--- | Register a typed function with per-worker state owned by DuckDB.
+-- | Register a typed function with per-worker state owned by DuckDB. The rules
+-- of 'Database.DuckDB.Simple.Function.createFunctionWithState' apply.
 createFunctionWithState :: (Function f) => Extension -> Text -> IO s -> (s -> f) -> IO ()
 createFunctionWithState = createFunctionWithStateOn . extensionTarget
 
@@ -157,12 +238,14 @@ registerMacroFunction extension@(Extension _ context) name kind parameters body 
 registerPragmaFunction :: (FromRow args) => Extension -> Text -> [FunctionParameter] -> PragmaCallback args -> IO ()
 registerPragmaFunction = Pragma.registerPragmaFunctionOn . extensionTarget
 
--- | Register a typed option during extension initialization.
+-- | Register a typed option during extension initialization. The rules of
+-- 'Database.DuckDB.Simple.Config.registerCustomOption' apply.
 registerCustomOption :: Extension -> CustomOption -> IO ()
 registerCustomOption = Config.registerCustomOptionOn . extensionTarget
 
 -- | Register a log sink with callback resources owned by DuckDB.
 -- Callbacks can run concurrently. They must not log or change logging settings.
+-- The rules of 'Database.DuckDB.Simple.Logging.registerLogSink' apply.
 registerLogSink :: Extension -> Text -> (LogEntry -> IO ()) -> IO () -> IO ()
 registerLogSink = Logging.registerLogSinkOn . extensionTarget
 

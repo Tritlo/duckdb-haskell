@@ -3,7 +3,8 @@
 This directory contains a loadable Haskell example for the pinned DuckDB 2.0.0
 release. The example is not part of either Hackage package. The reusable
 `Database.DuckDB.Simple.Extension` helper and extension-mode FFI headers are
-part of the packages.
+part of the packages. The Haddock of that module explains how to write, build,
+package, and load an extension.
 
 ## Design
 

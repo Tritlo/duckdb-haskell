@@ -931,6 +931,15 @@ A typed registration costs more for each row than raw vector access. Use
 `V2.Config` for speed, and for projection and filter pushdown, parallel table
 scans, and scalar functions with a bind callback or variadic parameters.
 
+## Loadable extensions
+
+`Database.DuckDB.Simple.Extension` registers the typed functions of this package
+from a loadable DuckDB extension. Build the extension with the `extension` flag
+of `duckdb-ffi` and of `duckdb-simple`. The Haddock of the module explains how
+to write, build, package, and load an extension. The directory `dev/extensions/`
+of the [repository](https://github.com/Tritlo/duckdb-haskell) has a complete
+example. CI builds and tests it.
+
 ## Tests
 
 The test suite is built with [tasty](https://hackage.haskell.org/package/tasty)

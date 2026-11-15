@@ -108,9 +108,15 @@ data SQLError = SQLError
 instance Exception SQLError
 
 -- | The category of a native DuckDB error. An error that duckdb-simple reports
--- itself has an error type only where one category fits the failure. For
--- example, a callback that waits too long for a connection lock gets
--- 'ErrorResourceInUse'. Each other error of duckdb-simple has no error type.
+-- itself has an error type where one category fits the failure. An input check
+-- raises 'ErrorInputInvalid', or 'ErrorInputOutOfRange' for an integer outside
+-- the range of its parameter type and for a date or a timestamp outside the
+-- range of DuckDB. A callback that waits too long for a connection lock gets
+-- 'ErrorResourceInUse'. These errors of duckdb-simple have no error type: the
+-- use of a closed environment, instance, connection, statement, or type cache,
+-- a loaded DuckDB library of another version, a result value that does not
+-- convert to its Haskell type, and a check of the state of the library or of a
+-- value that DuckDB gave.
 data ErrorType
   = ErrorApi
   | ErrorIOFileNotFound

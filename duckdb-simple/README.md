@@ -615,7 +615,10 @@ The library uses a separate helper connection for VARIANT decoder metadata.
 It caches the parsed VARIANT metadata statement and the types for VARIANT
 casts. It batches VARIANT
 metadata queries. It constructs VARIANT types directly through the native
-factory. This preserves an active stream on the caller's connection. Low-level
+factory. This preserves an active stream on the caller's connection. The
+helper connection has the settings of the database, not the session settings of
+the caller, so a GLOBAL `max_expression_depth` below 11 makes each VARIANT read
+fail with a Binder Error. Low-level
 `ToDuckValue.toDuckValue` takes a `ValueFactory`, which is the V2 factory
 handle, and `logicalTypeFromRep` takes the same handle.
 `Database.DuckDB.Simple.V2.LogicalRep` has `logicalTypeFromRep`.
@@ -892,18 +895,17 @@ castExample conn = do
 ```
 
 DuckDB uses a registered cast in place of its built-in cast for the same pair
-of types, on each connection of the database. The library reads a GEOMETRY
-value with the built-in casts only, so a cast from GEOMETRY to BLOB changes the
-result of `CAST(g AS BLOB)`, but not a GEOMETRY value that a query gives. There
-are two exceptions: a GEOMETRY value in a VARIANT, and a GEOMETRY value that a
-callback of a function of an extension reads. An extension has no instance, so
-these callbacks read with the casts of the session. The library uses these
-built-in casts to read and to bind other values: BLOB to GEOMETRY, VARCHAR to
-GEOMETRY, VARCHAR to an ENUM type, a type to VARIANT, and VARIANT to a type. Do
-not register a cast for one of these pairs, with `createCast` or with a native
-cast registration. The library then reads or binds the result of that cast. For
-example, after a cast from VARIANT to BIGINT that gives NULL, each BIGINT in a
-VARIANT result is NULL, and no error occurs.
+of types, on each connection of the database. The library reads GEOMETRY and
+VARIANT values with the built-in casts only, so a cast from GEOMETRY to BLOB
+changes the result of `CAST(g AS BLOB)`, but not a GEOMETRY value that a query
+gives. There is one exception: a GEOMETRY value that a callback of a function of
+an extension reads. An extension has no instance, so these callbacks read with
+the casts of the session. The library uses these built-in casts to bind values:
+BLOB to GEOMETRY, VARCHAR to GEOMETRY, VARCHAR to an ENUM type, and a type to
+VARIANT. Do not register a cast for one of these pairs, with `createCast` or
+with a native cast registration. The library then binds the result of that
+cast. For example, after a cast from VARCHAR to an ENUM type that gives NULL, an
+ENUM value in a STRUCT parameter is NULL, and no error occurs.
 
 `createAggregate` registers an aggregate function as a fold. The result type
 is a result type of `createFunction`.

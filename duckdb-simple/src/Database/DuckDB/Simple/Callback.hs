@@ -276,6 +276,14 @@ text, for example "Conversion Error: " for the code of ErrorTypeConversion, and
   exception type of ErrorIONetwork has no name (EXCEPTION_MAP in
   exception.cpp), so the outer statement fails with ErrorApi and
   "Invalid Error: ".
+- Under the DuckDB setting SYNTACTIC_ERRORS_DO_NOT_INVALIDATE of
+  default_transaction_invalidation_policy, DuckDB keeps the transaction after
+  an error of seven types (Exception::InvalidatesTransaction in exception.cpp):
+  ErrorQueryBinder, ErrorDatabaseCatalog, ErrorResourceConnection,
+  ErrorQueryParameterNotAllowed, ErrorQueryParser, ErrorConfigurationPermission,
+  and ErrorResourceInUse. When such an error leaves a callback of an INSERT,
+  the rows that the INSERT wrote before the error stay in the transaction, and
+  COMMIT stores them.
 - ErrorRuntimeInternal and ErrorRuntimeFatal do not pass. For these codes,
   DuckDB 2.0.0 invalidates the database of the outer statement, also when the
   error came from another database. Such an error writes the code

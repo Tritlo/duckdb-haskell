@@ -13,7 +13,7 @@
 module TypedRegistrationTests (typedRegistrationTests) where
 
 import Control.Exception (SomeException, bracket, displayException, throw, throwIO, try)
-import Control.Monad (forM_, void, when)
+import Control.Monad (forM, forM_, void, when)
 import Data.Array (Array, elems, listArray)
 import qualified Data.ByteString as BS
 import qualified Data.Geometry as G
@@ -122,6 +122,7 @@ typedRegistrationTests =
     , testCase "pragma exceptions become SQL errors" testPragmaExceptions
     , testCase "pragma registration checks the name before the state of a closed connection" testPragmaClosedName
     , testCase "an SQL error in each callback kind keeps its type and one prefix" testCallbackErrorTypes
+    , testCase "an SQL error of each type in a callback under the syntactic invalidation policy" testCallbackErrorPolicy
     , testCase "custom option update accepts and rejects BIGINT values" testOptionUpdate
     , testCase "custom option update gets VARCHAR values and can reject RESET" testOptionText
     , testCase "table function with one parameter over several chunks" testTableSquares
@@ -697,6 +698,70 @@ testCallbackErrorTypes = withDirectory \directory -> withConnection ":memory:" \
     (throwIO (SQLError "INTERNAL Error: inner" (Just ErrorRuntimeInternal) Nothing (Just "inner")) :: IO Int64)
   assertErrorType "an INTERNAL error" ErrorInputInvalid "Invalid Input Error: INTERNAL Error: inner" (run "SELECT error_internal()")
   query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+
+-- | Raise an 'SQLError' of each type in a scalar function inside an INSERT
+-- that has written rows, in an explicit transaction, under the DuckDB setting
+-- SYNTACTIC_ERRORS_DO_NOT_INVALIDATE. Check the type of the outer error, the
+-- rows of that INSERT after COMMIT, and that the same connection and a new
+-- connection of the database still run a query. See
+-- Note [Errors that leave a callback] in "Database.DuckDB.Simple.Callback".
+testCallbackErrorPolicy :: Assertion
+testCallbackErrorPolicy = do
+  outcomes <- forM [minBound .. maxBound] \errorType -> withEnvironment \environment -> withInstance environment [] \instance' -> do
+    attachDatabase instance' ":memory:" "typed_policy" []
+    setDefaultDatabase instance' "typed_policy"
+    (outerType, rows, same) <- withConnectionOn instance' \conn -> do
+      -- With one thread, the INSERT writes two chunks of 2048 rows before the
+      -- chunk with row 5000 fails.
+      void (execute_ conn "SET threads = 1")
+      void (execute_ conn "SET default_transaction_invalidation_policy = 'SYNTACTIC_ERRORS_DO_NOT_INVALIDATE'")
+      void (execute_ conn "SET current_transaction_invalidation_policy = 'SYNTACTIC_ERRORS_DO_NOT_INVALIDATE'")
+      void (execute_ conn "CREATE TABLE typed_policy_rows (v BIGINT)")
+      createFunction conn "typed_policy_fail" \(i :: Int64) ->
+        if i < 5000
+          then pure i
+          else
+            throwIO
+              SQLError{sqlErrorMessage = "typed failure", sqlErrorType = Just errorType, sqlErrorQuery = Nothing, sqlErrorBody = Just "typed failure"}
+              :: IO Int64
+      void (execute_ conn "BEGIN")
+      void (execute_ conn "INSERT INTO typed_policy_rows VALUES (-1)")
+      outer <- try (execute_ conn "INSERT INTO typed_policy_rows SELECT typed_policy_fail(i) FROM range(10000) t(i)")
+      void (execute_ conn "COMMIT")
+      rows <- query_ conn "SELECT count(*) FROM typed_policy_rows WHERE v >= 0"
+      same <- query_ conn "SELECT 42"
+      pure (either sqlErrorType (const Nothing) (outer :: Either SQLError Int), rows, same)
+    new <- withConnectionOn instance' \other -> query_ other "SELECT 42"
+    pure (errorType, outerType, rows :: [Only Int64], same :: [Only Int64], new :: [Only Int64])
+  let -- DuckDB keeps the transaction for these types under the setting.
+      keepsTransaction =
+        [ ErrorQueryBinder
+        , ErrorDatabaseCatalog
+        , ErrorResourceConnection
+        , ErrorQueryParameterNotAllowed
+        , ErrorQueryParser
+        , ErrorConfigurationPermission
+        , ErrorResourceInUse
+        ]
+      invalidInput =
+        [ ErrorApi
+        , ErrorIOFileNotFound
+        , ErrorIOReadFailure
+        , ErrorIOEof
+        , ErrorInputParameterInvalid
+        , ErrorInputMetadataDeferred
+        , ErrorRuntimeInternal
+        , ErrorRuntimeFatal
+        ]
+      expectedType errorType
+        | errorType `elem` invalidInput = ErrorInputInvalid
+        | errorType == ErrorIONetwork = ErrorApi
+        | otherwise = errorType
+      expectedRows errorType = if errorType `elem` keepsTransaction then 4096 else 0
+  outcomes
+    @?= [ (errorType, Just (expectedType errorType), [Only (expectedRows errorType)], [Only 42], [Only 42])
+        | errorType <- [minBound .. maxBound]
+        ]
 
 -- | Require an 'SQLError' of the type, with a message that starts with the
 -- text.

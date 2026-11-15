@@ -123,6 +123,16 @@ The SQL workflow stays the same. These changes can affect your code:
   before a write. For such an option, version 0.3 with DuckDB 1.5.6 stopped
   the process: DuckDB raised the C++ exception "Calling StringValue::Get on a
   NULL value" in `duckdb_get_varchar`.
+- A date or a timestamp outside the range of DuckDB raises an `SQLError` of the
+  type `ErrorInputOutOfRange` when it binds, also inside a collection, a
+  STRUCT, or a VARIANT. Version 0.3 bound these values: the `Day` at day
+  -2147483648 from the Unix epoch (5877642-06-23 (BC)), and a `LocalTime` or
+  a `UTCTime` from 290309-12-21 (BC) 19:59:05.224192 to 23:59:59.999999,
+  except the -infinity value at 19:59:05.224193. A stored TIMESTAMP of that time makes a cast to VARCHAR raise an INTERNAL
+  error in DuckDB 2.0.0. A VARIANT of a `LocalTime` whose microseconds do not
+  fit in INT64 bound as TIMESTAMP_S or TIMESTAMP_MS. It now raises the
+  `IOException` "TIMESTAMP value out of finite range", as such a `LocalTime`
+  does as a parameter.
 - `listConfigFlags` takes a `Connection`. It lists the options of the
   database of that connection, also its custom options. Version 0.3 listed
   the options of the C API function `duckdb_get_config_flag`, which takes no

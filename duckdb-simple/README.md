@@ -415,6 +415,17 @@ changes during the call does not change how its later rows bind.
 Use separate parameters when one expression requires microseconds and another
 requires nanoseconds.
 
+A `Day` before 5877642-06-25 (BC), and a `LocalTime` or a `UTCTime` before
+290309-12-22 (BC) 00:00:00, raise an `SQLError` of the type
+`ErrorInputOutOfRange` when they bind. `Data.Time` writes these years as
+-5877641 and -290308. The rule holds also inside a collection, a STRUCT, or a
+VARIANT, and for a finite `Unbounded` value. DuckDB does not accept these
+values: its SQL literals reject them, and a stored value can make DuckDB raise
+an INTERNAL error. A TIMESTAMP_S or TIMESTAMP_MS value has the same range at
+both ends. A leap second, a `TimeOfDay` with 60 seconds, binds as the next
+second, as `make_time` and `make_timestamp` of DuckDB give it. The SQL literal
+`'23:59:60'` raises an error.
+
 ### Manual STRUCT, TUPLE, and UNION Handling
 
 SQL tuples, such as `row(42, 'text')`, decode as `TupleValue`. Read their

@@ -42,8 +42,9 @@ variantObject entries =
 
 -- | Reads a value that a VARIANT can hold: the value of a VARIANT column, or a
 -- value of another SQL type with that shape. The shape is a scalar that is not
--- an ENUM, a GEOMETRY with no CRS, a LIST of such values, or a STRUCT whose
--- fields have the type VARIANT and hold such values. A value of another shape
+-- an ENUM, a GEOMETRY with no CRS, a LIST of such values, or a STRUCT in the
+-- form of a VARIANT object: its fields have the type VARIANT and hold such
+-- values, and its keys are in ascending order. A value of another shape
 -- raises 'Incompatible', because the cast of DuckDB to VARIANT gives another
 -- value. Write @c::VARIANT@ in SQL for such a column. The
 -- library does not know the SQL type of a column here, so one difference
@@ -58,10 +59,12 @@ instance FromField Variant where
 
 -- | Whether a VARIANT can hold a decoded value. A VARIANT column decodes only to
 -- these values: a scalar that is not an ENUM, a GEOMETRY with no CRS, a
--- 'FieldList' of such values, and a 'FieldStruct' whose fields have the type
--- VARIANT and hold such values. Each other value has no VARIANT form: a
--- 'FieldArray', a 'FieldTuple', a 'FieldStruct' with a field of another type, a
--- 'FieldEnum', a 'FieldMap', a 'FieldUnion', and a GEOMETRY with a CRS.
+-- 'FieldList' of such values, and a 'FieldStruct' in the form of a VARIANT
+-- object. Such an object has fields of the type VARIANT that hold such values,
+-- and its keys are in ascending order: DuckDB sorts the keys of an object by
+-- their bytes, which is the order of 'Text'. Each other value has no VARIANT
+-- form: a 'FieldArray', a 'FieldTuple', another 'FieldStruct', a 'FieldEnum',
+-- a 'FieldMap', a 'FieldUnion', and a GEOMETRY with a CRS.
 variantShape :: FieldValue -> Bool
 variantShape = \case
   FieldEnum{} -> False
@@ -72,6 +75,8 @@ variantShape = \case
   FieldTuple{} -> False
   FieldList values -> all variantShape values
   FieldStruct StructValue{structValueFields, structValueTypes} ->
-    all ((== LogicalTypeScalar LogicalTypeIdVariant) . structFieldValue) (elems structValueTypes)
-      && all (variantShape . structFieldValue) (elems structValueFields)
+    let names = map structFieldName (elems structValueTypes)
+    in  all ((== LogicalTypeScalar LogicalTypeIdVariant) . structFieldValue) (elems structValueTypes)
+          && and (zipWith (<) names (drop 1 names))
+          && all (variantShape . structFieldValue) (elems structValueFields)
   _ -> True

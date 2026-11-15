@@ -376,7 +376,8 @@ type of its payload, and the error of a String names Text. These pairs are:
   the signed integer types do not read.
 - Variant from a value that a VARIANT cannot hold (variantShape in
   "Database.DuckDB.Simple.Variant"): a FieldArray, a FieldTuple, a FieldStruct
-  with a field of a type other than VARIANT, a FieldEnum, a FieldMap, a
+  that is not in the form of a VARIANT object (a field of a type other than
+  VARIANT, or keys out of ascending order), a FieldEnum, a FieldMap, a
   FieldUnion, or a GEOMETRY with a CRS, at any depth. The cast to VARIANT gives
   another value. Write c::VARIANT. A VARIANT column decodes only to values of
   the VARIANT shape. FromField does not know the SQL type of a column, so a

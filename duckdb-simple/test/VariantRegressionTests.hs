@@ -481,6 +481,7 @@ tests =
           , ("['a'::ENUM('a', 'b')]", "LIST")
           , ("[{'a': 1}]", "LIST")
           , ("{'v': 1::VARIANT, 'm': MAP {'k': 1}}", "STRUCT")
+          , ("{'b': 1::VARIANT, 'a': 2::VARIANT}", "STRUCT")
           ]
           \(expression, sqlName) -> do
             result <- try (query_ conn (Query ("SELECT " <> expression <> " AS c")) :: IO [Only Variant])
@@ -506,11 +507,20 @@ tests =
               )
         -- A value of the VARIANT shape reads: a scalar, a LIST, a VARIANT in a
         -- LIST or in a STRUCT field, and a VARIANT object. Each equals its cast.
-        forM_ ["7::INTEGER", "[1, 2]", "[1::VARIANT, 'x'::VARIANT]", "{'v': 1::VARIANT}", "{'a': [1, 2]}::VARIANT", "'POINT (1 2)'::GEOMETRY"] \expression ->
-          (query_ conn (Query ("SELECT " <> expression <> ", (" <> expression <> ")::VARIANT")) :: IO [(Variant, Variant)])
-            >>= \case
-              [(value, cast)] -> assertEqual (Text.unpack expression) cast value
-              rows -> assertFailure (show rows)
+        forM_
+          [ "7::INTEGER"
+          , "[1, 2]"
+          , "[1::VARIANT, 'x'::VARIANT]"
+          , "{'v': 1::VARIANT}"
+          , "{'a': 1::VARIANT, 'b': 2::VARIANT}"
+          , "{'a': [1, 2]}::VARIANT"
+          , "'POINT (1 2)'::GEOMETRY"
+          ]
+          \expression ->
+            (query_ conn (Query ("SELECT " <> expression <> ", (" <> expression <> ")::VARIANT")) :: IO [(Variant, Variant)])
+              >>= \case
+                [(value, cast)] -> assertEqual (Text.unpack expression) cast value
+                rows -> assertFailure (show rows)
         -- A JSON column decodes as its text, as a VARCHAR does, so it reads as
         -- Variant with its text. The cast gives the parsed value.
         (query_ conn "SELECT '{\"a\": 1}'::JSON, ('{\"a\": 1}'::JSON)::VARIANT" :: IO [(Variant, Variant)])

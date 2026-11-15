@@ -19,6 +19,9 @@
   database of that connection, also its custom options. See MIGRATION.md.
 - `deleteFunction` reads the name with the rules of DuckDB for a qualified
   name, so a part in double quotes can contain a dot. See MIGRATION.md.
+- `ConfigValue.configValueText` is `Maybe Text`, and `Nothing` for an option
+  with a NULL value. Version 0.3 stopped the process for such an option. See
+  MIGRATION.md.
 - Add typed configuration values and defaults, managed log sinks, macro
   registration, function documentation, query metrics, and file path
   operations. Expose table bind metadata for multi-file readers.

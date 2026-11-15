@@ -118,6 +118,11 @@ The SQL workflow stays the same. These changes can affect your code:
 - `ConfigValue.configValueScope` is `SettingScope` instead of
   `Maybe DuckDBConfigOptionScope`. `Database.DuckDB.Simple.Config` exports
   `SettingScope`.
+- `ConfigValue.configValueText` is `Maybe Text` instead of `Text`. It is
+  `Nothing` for an option with a NULL value, for example `enable_profiling`
+  before a write. For such an option, version 0.3 with DuckDB 1.5.6 stopped
+  the process: DuckDB raised the C++ exception "Calling StringValue::Get on a
+  NULL value" in `duckdb_get_varchar`.
 - `listConfigFlags` takes a `Connection`. It lists the options of the
   database of that connection, also its custom options. Version 0.3 listed
   the options of the C API function `duckdb_get_config_flag`, which takes no

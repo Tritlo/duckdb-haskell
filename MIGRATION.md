@@ -204,6 +204,23 @@ The SQL workflow stays the same. These changes can affect your code:
 - A DECIMAL read as `Double` or `Float`, and a BIGINT read as `Float`, give
   the value of the cast of DuckDB. A value can differ from version 0.3 in the
   last bit.
+- A TIMESTAMP, TIMESTAMP_S, TIMESTAMP_MS, or TIMESTAMP_NS read as `UTCTime`
+  raises the error of an incompatible column. Write `c AT TIME ZONE 'UTC'` for
+  the instant that version 0.3 gave, or read `LocalTime`.
+- A DATE read as `UTCTime` raises the error of an incompatible column. Write
+  `c AT TIME ZONE 'UTC'` for midnight in UTC, as version 0.3 gave, or read
+  `Day`.
+- A TIMESTAMPTZ or TIMESTAMPTZ_NS read as `LocalTime` raises the error of an
+  incompatible column. Write `c AT TIME ZONE 'UTC'` for the time in UTC that
+  version 0.3 gave, or read `UTCTime`.
+- The `Unbounded` forms of `UTCTime` and `LocalTime` (`UTCTimestamp` and
+  `LocalTimestamp`) follow the two rules above.
+- A FLOAT or DOUBLE read as `Text` or `String` raises the error of an
+  incompatible column. Read `Double` or `Float`, or write `c::VARCHAR` for the
+  text of DuckDB, for example `0.01`. Version 0.3 gave the text of `show`, for
+  example `1.0e-2`.
+- A VARCHAR read as `ByteString` raises the error of an incompatible column.
+  Read `Text`, or write `encode(c)` for the UTF-8 bytes that version 0.3 gave.
 - `TimeWithZone` holds the offset as seconds east of UTC. The field
   `timeWithZoneZone :: TimeZone` is now `timeWithZoneOffsetSeconds :: Int32`.
   Convert a `TimeZone` with `fromIntegral (timeZoneMinutes zone) * 60`, and

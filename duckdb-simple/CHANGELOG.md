@@ -334,6 +334,20 @@
   gives the value of the cast.
 - A BOOLEAN read as `Text` or `String` gives `true` or `false`, as the cast to
   VARCHAR does. Earlier versions gave `1` or `0`.
+- A `FromField` instance reads another SQL type only when it gives the value
+  of the cast of DuckDB, or an error. The Haddock of each instance gives the
+  SQL types that it reads. MIGRATION.md gives the SQL to write in place of each
+  read that the next three entries remove.
+- A TIMESTAMP, TIMESTAMP_S, TIMESTAMP_MS, TIMESTAMP_NS, or DATE read as
+  `UTCTime`, and a TIMESTAMPTZ or TIMESTAMPTZ_NS read as `LocalTime`, raise the
+  error of an incompatible column, also in the `Unbounded` forms. The casts of
+  DuckDB use the TimeZone setting of the session. Earlier versions used UTC.
+- A FLOAT or DOUBLE read as `Text` or `String` raises the error of an
+  incompatible column. Earlier versions gave the text of `show`, for example
+  `1.0e-2` for 0.01, where the cast gives `0.01`.
+- A VARCHAR read as `ByteString` raises the error of an incompatible column.
+  Earlier versions gave the UTF-8 bytes, where the cast to BLOB reads escape
+  sequences.
 - Allow session variables to supply omitted named parameters. Too few named
   parameters no longer raise `FormatError`. Too many named parameters still
   raise it.

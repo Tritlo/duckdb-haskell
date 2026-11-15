@@ -250,6 +250,18 @@ fetchPeople conn = query_ conn "SELECT id, name FROM person ORDER BY id"
 Helper combinators such as `field`, `fieldWith`, and `numFieldsRemaining` are
 available when a custom instance needs fine-grained control.
 
+A `FromField` instance reads the SQL type of its Haskell type, for example
+BIGINT for `Int64`. It also reads another SQL type when it gives the value of
+the cast of DuckDB to the SQL type of the Haskell type, or an error where the
+value does not fit. For example, `Int8` reads a BIGINT that fits in a TINYINT,
+and `Double` reads a DECIMAL with the value of `c::DOUBLE`. A read that needs
+the TimeZone setting of the session, or another text than the cast gives,
+raises the error of an incompatible column: a TIMESTAMP or a DATE as
+`UTCTime`, a TIMESTAMPTZ as `LocalTime`, a FLOAT or a DOUBLE as `Text`, and a
+VARCHAR as `ByteString`. Write the cast in SQL for these values, for example
+`c AT TIME ZONE 'UTC'`, `c::VARCHAR`, or `encode(c)`. The Haddock of each
+`FromField` instance gives the SQL types that it reads.
+
 ## Generic Encoding with ViaDuckDB
 
 The `Database.DuckDB.Simple.Generic` module provides automatic encoding and

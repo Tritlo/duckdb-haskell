@@ -222,12 +222,11 @@ cast rounds. Thus such a value gets the microsecond value.
     value out of finite range", of the type ErrorInputInvalid. The low end of
     the range has no such zone, because the microsecond value is cut toward
     the earlier time.
-  A UTCTime outside the range of TIMESTAMPTZ_NS gets the error of the encoder,
-  but a parameter or an element with no digits below a microsecond binds as a
-  microsecond value and gets the SQLError of DuckDB. Each leaf of a STRUCT,
-  TUPLE, or UNION outside the range gets the error of the encoder, because in
-  TRY_CAST DuckDB keeps the other leaves of a microsecond value with their
-  digits cut.
+  A UTCTime for a TIMESTAMPTZ_NS parameter, or for the TIMESTAMPTZ_NS elements
+  of an Array, a list, or a Map, is in the same three zones, on its instant in
+  UTC. Each leaf of a STRUCT, TUPLE, or UNION outside the range gets the error
+  of the encoder, because in TRY_CAST DuckDB keeps the other leaves of a
+  microsecond value with their digits cut.
 -}
 
 -- | Test whether a time of day has digits below one microsecond. See
@@ -285,14 +284,17 @@ elementBindingTarget :: Maybe LogicalTypeRep -> Maybe LogicalTypeRep
 elementBindingTarget (Just (LogicalTypeScalar LogicalTypeIdVariant)) = Nothing
 elementBindingTarget target = target
 
--- | Test whether a t'LocalTime' for a TIMESTAMP_NS parameter is outside the
--- range of TIMESTAMP_NS, and DuckDB also cannot cast its microsecond value to
--- TIMESTAMP_NS. See Note [Nanosecond parameters].
+-- | Test whether a t'LocalTime' for a TIMESTAMP_NS parameter, or a t'UTCTime'
+-- for a TIMESTAMPTZ_NS parameter on its instant in UTC, is outside the range of
+-- the nanosecond type, and DuckDB also cannot cast its microsecond value to that
+-- type. See Note [Nanosecond parameters].
 outsideNanosecondRange :: LogicalTypeRep -> FieldValue -> Bool
 outsideNanosecondRange (LogicalTypeScalar LogicalTypeIdTimestampNs) (FieldTimestamp (Finite time)) =
   not (fits (timestampUnits 1000000000 time)) && not (fits (1000 * timestampUnits 1000000 time))
   where
     fits = inFiniteRange (minBound :: Int64) maxBound
+outsideNanosecondRange (LogicalTypeScalar LogicalTypeIdTimestampTzNs) (FieldTimestampTZ (Finite instant)) =
+  outsideNanosecondRange (LogicalTypeScalar LogicalTypeIdTimestampNs) (FieldTimestamp (Finite (utcToLocalTime utc instant)))
 outsideNanosecondRange _ _ = False
 
 -- | Read the element type of a prepared LIST or ARRAY parameter.
@@ -701,7 +703,8 @@ instance ToField Variant where
 -- t'LocalTime' instance, in UTC, raises an t'SQLError' of the type
 -- 'ErrorInputOutOfRange'. For a TIMESTAMPTZ_NS target, an instant outside the
 -- range of TIMESTAMPTZ_NS can get another error, also an instant outside the
--- range of DuckDB. See Note [Nanosecond parameters]. A leap second of exactly
+-- range of DuckDB in a STRUCT, a TUPLE, or a UNION, as for a t'LocalTime'. See
+-- Note [Nanosecond parameters]. A leap second of exactly
 -- 60 seconds binds as the next second. A later time in a leap second, for
 -- example 60.5 seconds, raises an t'SQLError' of the type 'ErrorInputInvalid'.
 -- See Note [Time ranges].

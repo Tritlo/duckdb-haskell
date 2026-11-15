@@ -10,7 +10,9 @@
 --
 -- Rows and Arrow batches use the same decoders and cleanup as the default API.
 -- Cancellation also interrupts native chunk fetching. Prompt interruption requires
--- @-threaded@ and waits for native code and Haskell callbacks to return.
+-- @-threaded@ and waits for native code and Haskell callbacks to return. A
+-- program that registers a callback needs @-threaded@ in each case: see
+-- "Database.DuckDB.Simple.Function".
 --
 -- Serialize connection use for the entire cursor or fold. Another query on the
 -- same connection fails while its stream is active. Call @closeStatement@ or

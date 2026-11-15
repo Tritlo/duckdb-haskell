@@ -152,6 +152,12 @@
   `ErrorResourceInUse` after the time limit. For most callbacks, the outer
   statement then fails. The README gives the cases that the time limit does
   not cover.
+- The README and the module header of `Database.DuckDB.Simple.Function` say that
+  a program that registers a callback must be linked with `-threaded`. DuckDB
+  can call a callback from several threads at the same time, and without
+  `-threaded` such a program can crash. This is not a change of behaviour:
+  version 0.3 needed `-threaded` in the same way, and its README named it only
+  for prompt cancellation.
 - Add `connectionAggregateStripes` to `ConnectionOptions`. It sets the number
   of stripes in the state table of each typed aggregate that `createAggregate`
   registers through the connection. The

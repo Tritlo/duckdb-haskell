@@ -881,11 +881,14 @@ A callback must not run a statement on the connection that runs the callback,
 or close that connection: [User-Defined Functions](#user-defined-functions)
 gives the rule, its time limit, and its limits.
 
-Link your executable with `ghc-options: -threaded` to allow prompt cancellation
-of native queries, including Ctrl-C. On cancellation, the library interrupts
-DuckDB and waits for the native call to return before it releases resources
-and propagates the exception. Cancellation is cooperative: native code and
-Haskell callbacks must return before cleanup can finish.
+Link your executable with `ghc-options: -threaded`. A program that registers a
+callback needs it, because DuckDB can call a callback from several threads at
+the same time: [User-Defined Functions](#user-defined-functions) gives the rule.
+It also allows prompt cancellation of native queries, including Ctrl-C. On
+cancellation, the library interrupts DuckDB and waits for the native call to
+return before it releases resources and propagates the exception. Cancellation
+is cooperative: native code and Haskell callbacks must return before cleanup can
+finish.
 
 Native work that can run for a long time runs in a helper thread, so that an
 asynchronous exception can interrupt it. The materialized functions run the
@@ -1258,14 +1261,23 @@ succeeds. To replace a function, register the name again. `deleteFunction` has a
 GHC `WARNING` pragma, so each use causes a compile-time warning. A build with
 `-Werror` must allow that warning, for example with `-Wno-error=deprecations`.
 
-DuckDB runs callbacks on its own threads. Each call of a callback needs a
-capability of the GHC runtime. With one capability, which is the default, a
-callback from a second DuckDB thread waits until the capability is free, and
-the operating system switches threads for each such call. A query that makes
-many callbacks on several DuckDB threads is then much slower. Give the program
-as many capabilities as DuckDB has threads, for example with
-`ghc-options: -threaded -rtsopts "-with-rtsopts=-N"`, or set the DuckDB setting
-`threads` to 1.
+A program that registers a callback, for example of a scalar function, a cast,
+an aggregate function, a table function, a COPY format, a replacement scan, a
+pragma, or a log sink, must be linked with `ghc-options: -threaded`. DuckDB can
+call a callback from several of its threads at the same time, and the runtime of
+GHC without `-threaded` does not support calls from several operating system
+threads at the same time: such a program can crash. Without `-threaded`, a
+program is safe only when each database that runs callbacks has the DuckDB
+setting `threads` at 1 before a callback runs, and the program never raises it
+later. Then DuckDB calls each callback on the thread of the query.
+
+With `-threaded`, each call of a callback needs a capability of the GHC runtime.
+With one capability, which is the default, a callback from a second DuckDB
+thread waits until the capability is free, and the operating system switches
+threads for each such call. A query that makes many callbacks on several DuckDB
+threads is then much slower. Give the program as many capabilities as DuckDB has
+threads, for example with `ghc-options: -threaded -rtsopts "-with-rtsopts=-N"`,
+or set the DuckDB setting `threads` to 1.
 
 A callback must not run a statement on the connection that runs the callback,
 and it must not close that connection. Use another connection of the same

@@ -11,6 +11,13 @@
 -- table functions and aggregate functions that convert their arguments with
 -- 'FromRow'.
 --
+-- A program that registers a callback must be linked with @-threaded@. DuckDB
+-- can call a callback from several of its threads at the same time, and the
+-- runtime of GHC without @-threaded@ does not support that: the program can
+-- crash. Without @-threaded@, set the DuckDB setting @threads@ to 1 on each
+-- database that runs callbacks, before a callback runs. The section
+-- \"User-Defined Functions\" of the README gives the rule.
+--
 -- A callback must not run a statement on the connection that runs the callback.
 -- Use another connection of the same instance. This rule applies to each
 -- registered callback, for example of a scalar function, a cast, an aggregate

@@ -945,10 +945,10 @@ The first cursor fetch selects the execution mode. The mode stays until
 the result. Switching between default and streaming `nextRow` calls retains
 that mode.
 Keep the connection dedicated to the active stream. Until the stream is
-complete, DuckDB rejects other statements on that connection with a
-`RESOURCE_IN_USE` error. If you close an incomplete stream, DuckDB aborts its
-statement. In autocommit mode, DuckDB rolls back the writes of that statement.
-Cancellation interrupts native chunk fetching as well as execution.
+complete, DuckDB rejects other statements on that connection with the
+`ErrorResourceInUse` error of DuckDB. If you close an incomplete stream, DuckDB
+aborts its statement. In autocommit mode, DuckDB rolls back the writes of that
+statement. Cancellation interrupts native chunk fetching as well as execution.
 
 This module also provides `foldArrow` and `foldArrow_` for streaming Arrow
 batches. They use the same supported Arrow conversion and scoped ownership

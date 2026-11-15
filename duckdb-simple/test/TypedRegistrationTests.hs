@@ -103,7 +103,9 @@ typedRegistrationTests =
     , testCase "cast result of another type than the base type fails" testCastResultType
     , testGroup "a failed cast gives a Mismatch Type error and keeps the database usable" $
         [testCase (castPairName castPair) (testCastFailureCode castPair) | castPair <- castFailurePairs]
-          <> [testCase "a query on another connection fails in the function" testCastFailureQuery]
+          <> [ testCase "a query on another connection fails in the function" testCastFailureQuery
+             , testCase "an SQLError of the type Conversion, Invalid Input, or Out of Range in the function" testCastTypedErrors
+             ]
     , testCase "a COMMIT after a failed cast stores no row" testCastFailureCommit
     , testCase "replacement scan reads the rows of a query" testReplacementQuery
     , testCase "replacement scan that declines gives the unknown table error" testReplacementDecline
@@ -347,6 +349,28 @@ testCastFailureQuery = withEnvironment \environment ->
       Right _ -> assertFailure "a failed query in a cast gave no error"
     query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
     query_ other "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+
+-- | An 'SQLError' of the type Conversion, Invalid Input, or Out of Range from
+-- the function of a cast from BIGINT to VARCHAR gives 'ErrorTypeMismatch', and
+-- the database stays usable. DuckDB plans this cast as a cast that cannot fail.
+-- With the code of the type of the error, DuckDB would raise an INTERNAL error
+-- and invalidate the database. See Note [The error code of a failed cast] in
+-- "Database.DuckDB.Simple.V2.Registration".
+testCastTypedErrors :: Assertion
+testCastTypedErrors = withEnvironment \environment -> forM_ [ErrorTypeConversion, ErrorInputInvalid, ErrorInputOutOfRange] \errorType ->
+  withCastInstance environment \instance' -> withConnectionOn instance' \conn -> do
+    let label = show errorType
+        text = "typed cast raised " <> Text.pack label
+    void (execute_ conn "CREATE TABLE src AS SELECT i::BIGINT AS c FROM range(3000) t(i)")
+    createCast conn (TypeExpression "BIGINT") (TypeExpression "VARCHAR") \(_ :: Int64) ->
+      throw SQLError{sqlErrorMessage = text, sqlErrorType = Just errorType, sqlErrorQuery = Nothing, sqlErrorBody = Just text} :: Either Text Text
+    try (query_ conn "SELECT CAST(c AS VARCHAR) FROM src" :: IO [Only Text]) >>= \case
+      Left (err :: SQLError) -> do
+        assertEqual label (Just ErrorTypeMismatch) (sqlErrorType err)
+        assertBool (label <> ": " <> Text.unpack (sqlErrorMessage err)) (("Mismatch Type Error: " <> text) `Text.isPrefixOf` sqlErrorMessage err)
+      Right _ -> assertFailure (label <> ": expected an SQL error")
+    query_ conn "SELECT 42" >>= assertEqual label [Only (42 :: Int64)]
+    withConnectionOn instance' \other -> query_ other "SELECT 42" >>= assertEqual label [Only (42 :: Int64)]
 
 -- | A COMMIT after a failed cast in an explicit transaction stores no row,
 -- under each transaction invalidation policy. The last cast fails only for the

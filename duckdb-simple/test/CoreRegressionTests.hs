@@ -42,7 +42,7 @@ import System.Mem (performMajorGC)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
-import TestUtils (raiseCapabilities)
+import TestUtils (assertSqlErrorType, raiseCapabilities)
 
 -- | Exercise public operations against an in-memory database.
 coreRegressionTests :: TestTree
@@ -126,10 +126,11 @@ coreRegressionTests =
             bind stmt [toField (7 :: Int64)]
             void (nextRow stmt :: IO (Maybe (Only Int64)))
             clearStatementBindings stmt
-            assertThrows (nextRow stmt :: IO (Maybe (Only Int64)))
+            assertSqlErrorType ErrorInputInvalid (nextRow stmt :: IO (Maybe (Only Int64)))
     , testCase "fetch errors are not EOF" $
         withConnectionWithConfig ":memory:" [("threads", "1")] $ \conn ->
-          assertThrows
+          assertSqlErrorType
+            ErrorInputInvalid
             ( fold_
                 conn
                 "SELECT CASE WHEN i = 5000 THEN error('late failure') ELSE i END FROM range(10000) t(i)"
@@ -147,7 +148,9 @@ coreRegressionTests =
               eager <- query_ conn sql :: IO [Only FieldValue]
               streamed <- reverse <$> fold_ conn sql [] (\acc row -> pure (row : acc))
               streamed @?= eager
-    , testCase "composite cursor failures release the result" $
+    , -- The case of the leak test for a statement that closes with a live cursor
+      -- checks the release of the chunks.
+      testCase "composite fold failures raise their error and leave the connection usable" $
         withConnectionWithConfig ":memory:" [("threads", "1")] $ \conn -> do
           let sql = "SELECT {'n': i, 'values': [i, NULL]} FROM range(5000) t(i)"
           assertThrows (fold_ conn sql () (\() (Only (_ :: Int64)) -> pure ()))
@@ -229,7 +232,7 @@ coreRegressionTests =
     , testCase "materialization reports a late error before the first callback" $
         withConnectionWithConfig ":memory:" [("threads", "1")] $ \conn -> do
           calls <- newIORef (0 :: Int)
-          assertThrows $ fold_ conn "SELECT CASE WHEN i = 5000 THEN error('late failure') ELSE i END FROM range(10000) t(i)" () $ \() (Only (_ :: Int64)) ->
+          assertSqlErrorType ErrorInputInvalid $ fold_ conn "SELECT CASE WHEN i = 5000 THEN error('late failure') ELSE i END FROM range(10000) t(i)" () $ \() (Only (_ :: Int64)) ->
             modifyIORef' calls (+ 1)
           readIORef calls >>= (@?= 0)
     , testCase "a materialized callback can query the same connection" $
@@ -332,9 +335,9 @@ coreRegressionTests =
           detachDatabase instance_ "side"
           withConnectionOn instance_ $ \conn -> do
             query_ conn "SELECT count(*) FROM duckdb_databases() WHERE database_name = 'side'" >>= (@?= [Only (0 :: Int64)])
-            assertThrows (query_ conn "SELECT x FROM side.probe" :: IO [Only Int64])
+            assertSqlErrorType ErrorDatabaseCatalog (query_ conn "SELECT x FROM side.probe" :: IO [Only Int64])
             query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
-          assertThrows (detachDatabase instance_ "side")
+          assertSqlErrorType ErrorInputInvalid (detachDatabase instance_ "side")
     , testCase "NUL in attach options and aliases is rejected" $
         withEnvironment $ \environment -> withInstance environment [] $ \instance_ -> do
           attachDatabase instance_ ":memory:" "shared" []
@@ -382,7 +385,7 @@ coreRegressionTests =
         withConnectionWithConfig ":memory:" [("enable_external_access", "false"), ("allowed_paths", "['/tmp/duckdb-whitelist-probe']")] $ \conn ->
           query conn "SELECT current_setting('enable_external_access'), list_contains(current_setting('allowed_paths'), ?)" (Only path)
             >>= (@?= [(False, True)])
-    , testCase "environment close releases live cursors before their parents" $ do
+    , testCase "environment close releases the live cursors of its connections" $ do
         environment <- createEnvironment
         instance_ <- createInstance environment []
         attachDatabase instance_ ":memory:" "shared" []
@@ -393,6 +396,10 @@ coreRegressionTests =
         replicateM_ 20 (void (openStatement conn "SELECT 42"))
         performMajorGC
         closeEnvironment environment
+        cursor <- readIORef (statementStream stmt)
+        case cursor of
+          StatementStreamActive _ -> assertFailure "the environment close left the cursor of the statement active"
+          _ -> pure ()
         assertThrows (nextRow stmt :: IO (Maybe (Only Int64)))
         assertThrows (query_ conn "SELECT 42" :: IO [Only Int64])
         closeStatement stmt

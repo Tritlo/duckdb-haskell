@@ -198,8 +198,8 @@ The SQL workflow stays the same. These changes can affect your code:
   `Database.DuckDB.Simple.Streaming`. Version 0.3 gave this row only from
   `query`, `query_`, and `queryNamed`. The folds and `nextRow` gave no row.
 - A session variable can supply a named parameter that you omit. DuckDB
-  raises an error when no variable has that name. Only too many named
-  parameters raise `FormatError`.
+  raises an error when no variable has that name. Too few named parameters no
+  longer raise `FormatError`. Too many named parameters still raise it.
 - `deleteFunction` raises `SQLError` for a function made with `createFunction`.
   DuckDB does not permit deletion of functions registered through the C API,
   and version 0.3 ignored that error. Remove the call, or catch the error. The

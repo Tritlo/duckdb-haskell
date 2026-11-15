@@ -208,9 +208,14 @@ can supply omitted named parameters. DuckDB rejects an omitted parameter
 that has no variable value.
 
 `duckdb-simple` raises a `FormatError` before it executes the query in these
-cases: the number of positional parameters does not match the placeholders,
-you supply more named parameters than the statement declares, or you bind named
-arguments to a statement with only positional placeholders.
+cases:
+
+- The number of positional parameters is not the number of placeholders.
+- You bind positional parameters to a statement with named placeholders.
+- You supply more named parameters than the statement declares.
+- You supply a name that the statement does not declare.
+- You supply one parameter two times, for example as `$amount` and `$AMOUNT`.
+- You bind named parameters to a statement with only positional placeholders.
 
 ### Decoding rows
 

@@ -249,8 +249,9 @@
   conversion, give the DuckDB type names `TIMESTAMPTZ` and `TIMETZ`. Earlier
   versions gave `TIMESTAMP_TZ` and `TIME_TZ`, which DuckDB does not accept as
   type names.
-- Allow session variables to supply omitted named parameters. Only too many
-  named parameters raise `FormatError`.
+- Allow session variables to supply omitted named parameters. Too few named
+  parameters no longer raise `FormatError`. Too many named parameters still
+  raise it.
 - Reject duplicate named parameters with DuckDB's ASCII case rules. Keep
   distinct non-ASCII names separate. Preserve sparse numeric parameter names
   such as `$3`.

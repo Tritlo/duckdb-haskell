@@ -146,6 +146,13 @@ The SQL workflow stays the same. These changes can affect your code:
 - A conversion error names the types `TIMESTAMPTZ` and `TIMETZ`, in
   `errSQLType` and in the message of the `SQLError`. Version 0.3 gave
   `TIMESTAMP_TZ` and `TIME_TZ`. Change code that matches the old texts.
+- `TimeWithZone` holds the offset as seconds east of UTC. The field
+  `timeWithZoneZone :: TimeZone` is now `timeWithZoneOffsetSeconds :: Int32`.
+  Convert a `TimeZone` with `fromIntegral (timeZoneMinutes zone) * 60`, and
+  convert an offset with `minutesToTimeZone (fromIntegral offset \`div\` 60)`.
+  The second conversion drops the seconds of an offset. A TIMETZ with an offset
+  that has seconds, for example `12:00:00+01:00:30`, now reads. Version 0.3
+  raised an error for it.
 - A value with the declared type SQLNULL must be `FieldNull`. Each other value
   raises a conversion error. Version 0.3 bound it as NULL with no error.
 - `genericToFieldValue` gives the STRUCT without fields (`{}` in DuckDB) for a

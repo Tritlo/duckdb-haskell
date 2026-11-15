@@ -166,13 +166,17 @@
   `Array` and a typed row cannot hold a `RawGeometry`.
 - Empty `Array` parameters raise `SQLError`. Bind an empty list for an empty
   LIST.
+- `TimeWithZone` holds the offset in seconds east of UTC, as a TIMETZ stores
+  it. The field `timeWithZoneZone :: TimeZone` of version 0.3 is now
+  `timeWithZoneOffsetSeconds :: Int32`. A TIMETZ with an offset that has
+  seconds, for example `12:00:00+01:00:30`, now reads. Version 0.3 raised an
+  error for it. Update code that uses the old field. See MIGRATION.md.
 - Add parameter instances for `IntervalValue`, `TimeWithZone`, and
   `DecimalValue`. An `IntervalValue` binds as an INTERVAL and a `TimeWithZone`
-  as a TIMETZ, also in an `Array`, a list, or a typed row. A TIMETZ stores the
-  time and the offset in minutes, but not the name and the summer flag of the
-  `TimeZone`. Thus a `TimeWithZone` that is read is equal to the bound value
-  only for a zone without a name and a summer flag. A `DecimalValue` binds as a
-  DECIMAL with its own width and scale. An `Array`, a list, or a typed row
+  as a TIMETZ, also in an `Array`, a list, or a typed row. A `TimeWithZone`
+  reads back equal to the bound value, except that a time loses its digits
+  below one microsecond. An offset outside -15:59:59 to +15:59:59 raises an
+  error. A `DecimalValue` binds as a DECIMAL with its own width and scale. An `Array`, a list, or a typed row
   cannot hold a `DecimalValue`. Version 0.3 had only result instances for these
   types.
 - Add parameter instances for `Map`. A `Map` binds as a MAP value with its

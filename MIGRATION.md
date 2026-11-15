@@ -2,11 +2,11 @@
 
 ## DuckDB 2.0
 
-`duckdb-ffi` 2.0 and `duckdb-simple` 0.4 require DuckDB 2.0. Earlier package
+`duckdb-ffi` 2.0 and `duckdb-simple` 1.0 require DuckDB 2.0. Earlier package
 releases remain available for DuckDB 1.5. The retained API in
 `Database.DuckDB.FFI` supports DuckDB 2.0.x releases. The V2 API in
 `Database.DuckDB.FFI.V2` requires exactly DuckDB 2.0.0, because upstream marks
-it as unstable. `duckdb-simple` 0.4 uses the V2 API, so it also requires
+it as unstable. `duckdb-simple` 1.0 uses the V2 API, so it also requires
 exactly DuckDB 2.0.0.
 
 ### duckdb-ffi 1.5 to 2.0
@@ -67,10 +67,13 @@ After an INTERNAL error during the execution of a query, DuckDB invalidates the
 database. A V2 cast can report the code `DUCKDB_V2_ERROR_TYPE_MISMATCH`. The
 section Errors of the duckdb-simple README gives the details.
 
-### duckdb-simple 0.3 to 0.4
+### duckdb-simple 0.3 to 1.0
 
-`duckdb-simple` 0.4 uses the V2 C API for connections, results, conversions,
-and callbacks. Upstream marks that API as unstable, so 0.4 requires exactly
+The version of this release is 1.0.0.0, because the release has many breaking
+changes against 0.3.0.0.
+
+`duckdb-simple` 1.0 uses the V2 C API for connections, results, conversions,
+and callbacks. Upstream marks that API as unstable, so 1.0 requires exactly
 DuckDB 2.0.0. Creating an environment raises `SQLError` for another version.
 The SQL workflow stays the same. These changes can affect your code:
 
@@ -509,7 +512,7 @@ The SQL workflow stays the same. These changes can affect your code:
   value of a UNION. Version 0.3 bound such a value with no error. Bind the
   member value, or bind the UNION value as a UNION parameter.
 
-The typed registrations are new in 0.4. Version 0.3 had no `Registration`
+The typed registrations are new in 1.0. Version 0.3 had no `Registration`
 or `Pragma` module and no custom options. Its `Copy` module had
 only `registerCopyToFunction`. The arguments of that function do not change,
 except for the type of `copyBindColumnTypes` above. See
@@ -553,7 +556,7 @@ Use `Data.Geometry.Geometry` from the published `geometry-simple` package for
 decoded shapes. Use `RawGeometry` for WKB bytes and CRS metadata. The package's
 `Geometry` type has no CRS. It has parameter and result instances.
 In version 0.3, `RawGeometry` had only a `FromField` instance, so code imported
-its WKB and CRS with explicit SQL. Version 0.4 adds a `ToField` instance. See
+its WKB and CRS with explicit SQL. Version 1.0 adds a `ToField` instance. See
 [the Geometry notes](duckdb-simple/README.md#geometry) for examples and limits.
 
 `FieldValue` gains `FieldGeometry`, and `LogicalTypeRep` gains
@@ -593,7 +596,7 @@ add `instance ToField YourType`. The default implementation requires `Show`.
 - Default cursors and folds use DuckDB's supported materialized execution API. They
   decode one Haskell row at a time, but native result memory depends on the
   result size. To request native streaming, import
-  `Database.DuckDB.Simple.Streaming` qualified with `duckdb-simple` 0.4.
+  `Database.DuckDB.Simple.Streaming` qualified with `duckdb-simple` 1.0.
   Earlier releases use `Database.DuckDB.Simple.Deprecated.Streaming` and
   DuckDB's deprecated streaming entry point. The raw bindings remain in duckdb-ffi.
 

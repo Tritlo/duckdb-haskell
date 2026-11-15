@@ -750,6 +750,7 @@ instance (Generic a, GToField (Rep a)) => DuckDBColumnType (ViaDuckDB a) where
       LogicalTypeEnum{} -> Text.pack "ENUM"
       LogicalTypeGeometry{} -> Text.pack "GEOMETRY"
       LogicalTypeCollatedVarchar{} -> Text.pack "VARCHAR"
+      LogicalTypeAlias name _ -> name
 
 -- | Deriving-via @ToField@ instance. A sum type binds as a UNION and a product
 -- type as a STRUCT, through the @ToField@ instances of those values. A product

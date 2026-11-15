@@ -154,6 +154,12 @@ logicalTypeFromRepWith factory resolve = create
         | otherwise -> construct DuckDBV2LogicalTypeIdTuple [] (map boxed (elems fields))
       LogicalTypeUnion members -> construct DuckDBV2LogicalTypeIdUnion (map unionMemberName (elems members)) (map (boxed . unionMemberType) (elems members))
       LogicalTypeEnum entries -> construct DuckDBV2LogicalTypeIdEnum [] (map text (elems entries))
+      -- See Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep".
+      LogicalTypeAlias name base -> do
+        when (Text.any (== '\0') name) $
+          throwInvalidArgument (Text.pack "logical type name contains NUL")
+        bracket (create base) destroyLogicalType \logical ->
+          withIdentifier name (output . c_duckdb_v2_factory_create_type_with_alias factory logical)
 
 -- | Reject a native count that does not fit a Haskell array index.
 word64ToInt :: (Integral a) => a -> IO Int

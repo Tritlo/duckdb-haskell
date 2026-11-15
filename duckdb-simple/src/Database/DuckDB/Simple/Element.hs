@@ -305,11 +305,13 @@ valueTypeName value = case returnError Incompatible (Field Text.empty 0 value) T
 
 -- | Test whether a type is or contains a type that the predicate accepts. The
 -- test visits the element type of a LIST and an ARRAY, the key type and the
--- value type of a MAP, the field types of a STRUCT and a TUPLE, and the member
--- types of a UNION.
+-- value type of a MAP, the field types of a STRUCT and a TUPLE, the member
+-- types of a UNION, and the base type of an alias. See Note [Type aliases] in
+-- "Database.DuckDB.Simple.LogicalRep".
 containsType :: (LogicalTypeRep -> Bool) -> LogicalTypeRep -> Bool
 containsType accepts rep =
   accepts rep || case rep of
+    LogicalTypeAlias _ base -> containsType accepts base
     LogicalTypeList child -> containsType accepts child
     LogicalTypeArray child _ -> containsType accepts child
     LogicalTypeMap key value -> containsType accepts key || containsType accepts value

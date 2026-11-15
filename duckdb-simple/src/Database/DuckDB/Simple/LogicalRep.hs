@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
 -- |
@@ -16,6 +17,7 @@ module Database.DuckDB.Simple.LogicalRep (
   LogicalTypeRep (..),
   LogicalTypeId (..),
   TypeDeclaration (..),
+  withoutAliases,
   structValueTypeRep,
   tupleValueTypeRep,
   unionValueTypeRep,
@@ -27,7 +29,8 @@ import Data.Text (Text)
 import Data.Word (Word16, Word64, Word8)
 import Database.DuckDB.Simple.Native (LogicalTypeId (..))
 
--- | A Haskell description of a DuckDB logical type tree.
+-- | A Haskell description of a DuckDB logical type tree. See
+-- Note [Type aliases] for 'LogicalTypeAlias'.
 data LogicalTypeRep
   = LogicalTypeScalar LogicalTypeId
   | LogicalTypeDecimal !Word8 !Word8
@@ -40,7 +43,49 @@ data LogicalTypeRep
   | LogicalTypeTuple !(Array Int LogicalTypeRep)
   | LogicalTypeUnion !(Array Int UnionMemberType)
   | LogicalTypeEnum !(Array Int Text)
+  | LogicalTypeAlias !Text LogicalTypeRep
   deriving (Eq, Show)
+
+{- Note [Type aliases]
+~~~~~~~~~~~~~~~~~~~~~~
+DuckDB can keep an alias on a type. The type then has the values and the casts
+of its base type, and the type text of DuckDB gives the alias. In DuckDB 2.0.0
+these types have an alias:
+
+- JSON. It is VARCHAR with the alias JSON, also as a child type, for example
+  the element type of JSON[].
+- A type from 'Database.DuckDB.Simple.Registration.registerCustomType'.
+- A type from duckdb_v2_factory_create_type_with_alias.
+
+A column of a type from SQL @CREATE TYPE name AS base@ has the base type and no
+alias. A column of an ENUM type from @CREATE TYPE name AS ENUM (...)@ also has
+no name.
+
+LogicalTypeAlias holds the alias and the base type. logicalTypeToRep in
+"Database.DuckDB.Simple.V2.LogicalRep" makes it at each depth. The V2 API has
+no function that gives only the alias. duckdb_v2_logical_type_get_name gives
+the alias of a type, or the name of the type id for a type with no alias. Thus
+a name that is not the name of the type id (logicalTypeIdName in
+"Database.DuckDB.Simple.Native") is an alias. logicalTypeFromRep writes the
+alias with duckdb_v2_factory_create_type_with_alias.
+
+The base type decides each conversion of the library. Thus the readers of
+vectors and the binding of parameters use withoutAliases. A
+'Database.DuckDB.Simple.Catalog.ColumnDescription' keeps the alias.
+-}
+
+-- | Replace each alias with its base type, at each depth. See
+-- Note [Type aliases].
+withoutAliases :: LogicalTypeRep -> LogicalTypeRep
+withoutAliases = \case
+  LogicalTypeAlias _ base -> withoutAliases base
+  LogicalTypeList child -> LogicalTypeList (withoutAliases child)
+  LogicalTypeArray child size -> LogicalTypeArray (withoutAliases child) size
+  LogicalTypeMap key value -> LogicalTypeMap (withoutAliases key) (withoutAliases value)
+  LogicalTypeStruct fields -> LogicalTypeStruct (fmap (\field -> field{structFieldValue = withoutAliases (structFieldValue field)}) fields)
+  LogicalTypeTuple fields -> LogicalTypeTuple (fmap withoutAliases fields)
+  LogicalTypeUnion members -> LogicalTypeUnion (fmap (\member -> member{unionMemberType = withoutAliases (unionMemberType member)}) members)
+  rep -> rep
 
 -- | A structured type or a SQL type expression. A 'TypeExpression' with the
 -- name of a type from 'Database.DuckDB.Simple.Registration.registerCustomType'

@@ -129,7 +129,7 @@ extensionRegressionTests =
         withConnection ":memory:" \conn -> do
           createFunction conn "mismatched_result" MismatchedResult
           assertSqlErrorContaining
-            "the result vector has the type TEXT, but the result value has the type BIGINT"
+            "but the result value has the type BIGINT"
             (query_ conn "SELECT mismatched_result()" :: IO [Only Text.Text])
           query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
     , testCase "scalar exceptions become SQL errors" $

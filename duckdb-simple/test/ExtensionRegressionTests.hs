@@ -10,12 +10,23 @@
 -- Description : Regression tests for extension callbacks and native handle ownership.
 module ExtensionRegressionTests (main, extensionRegressionTests) where
 
-import Control.Exception (AsyncException (ThreadKilled), ErrorCall, Exception (..), SomeException, bracket, bracket_, finally, throwIO, try)
+import Control.Exception (
+  AsyncException (ThreadKilled),
+  ErrorCall,
+  Exception (..),
+  IOException,
+  SomeException,
+  bracket,
+  bracket_,
+  finally,
+  throwIO,
+  try,
+ )
 import Control.Monad (forM, forM_, replicateM_, void, when)
 import qualified Data.ByteString as BS
 import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, newIORef, readIORef)
 import Data.Int (Int64)
-import Data.List (find, nub, sort)
+import Data.List (find, isInfixOf, nub, sort)
 import Data.Maybe (isNothing)
 import Data.Proxy (Proxy (..))
 import qualified Data.Text as Text
@@ -63,29 +74,32 @@ extensionRegressionTests :: TestTree
 extensionRegressionTests =
   testGroup
     "extension regressions"
-    [ testCase "scalar closed connection cleanup" $ assertReleasedAfter "a scalar function on a closed connection" \token -> do
+    [ -- A registration on a closed connection raises the error before it
+      -- allocates a callback.
+      testCase "scalar registration on a closed connection raises the closed error" do
         conn <- open ":memory:"
         close conn
-        replicateM_ 32 $ assertSqlError $ createFunction conn "closed_scalar" (readIORef token)
-    , testCase "stateful closed connection cleanup" $ assertReleasedAfter "a stateful function on a closed connection" \token -> do
-        conn <- open ":memory:"
-        close conn
-        replicateM_ 32 $ assertSqlError $ createFunctionWithState conn "closed_state" (readIORef token) (id :: Int64 -> Int64)
-    , testCase "COPY closed connection cleanup" $ assertReleasedAfter "a COPY format on a closed connection" \token -> do
+        replicateM_ 32 $ assertSqlErrorContaining "connection is closed" $ createFunction conn "closed_scalar" (1 :: Int64)
+    , testCase "stateful registration on a closed connection raises the closed error" do
         conn <- open ":memory:"
         close conn
         replicateM_ 32
-          $ assertSqlError
-          $ Copy.registerCopyToFunction conn "closed_copy" (\_ -> readIORef token) (\_ -> pure ()) (\_ _ -> pure ()) (\_ -> pure ())
-    , testCase "logging closed connection cleanup" $ assertReleasedAfter "a log storage on a closed connection" \token -> do
+          $ assertSqlErrorContaining "connection is closed"
+          $ createFunctionWithState conn "closed_state" (pure ()) (\() -> (1 :: Int64))
+    , testCase "COPY registration on a closed connection raises the closed error" do
         conn <- open ":memory:"
         close conn
-        replicateM_ 32 $ assertSqlError $ Logging.registerLogStorage conn "closed_log" (\_ -> void (readIORef token))
-    , testCase "scalar replacement registration cleanup" $ assertReleasedAfter "a replaced scalar function" \token ->
+        replicateM_ 32 $ assertSqlErrorContaining "connection is closed" $ registerCopy conn "closed_copy" Nothing
+    , testCase "logging registration on a closed connection raises the closed error" do
+        conn <- open ":memory:"
+        close conn
+        replicateM_ 32 $ assertSqlErrorContaining "connection is closed" $ Logging.registerLogStorage conn "closed_log" (\_ -> pure ())
+    , testCase "scalar replacement releases each replaced callback before the connection closes" $
         withConnection ":memory:" \conn -> do
           createFunction conn "duplicate_scalar" (42 :: Int64)
-          replicateM_ 32 $ createFunction conn "duplicate_scalar" (readIORef token)
-          createFunction conn "duplicate_scalar" (7 :: Int64)
+          assertReleasedAfter "a replaced scalar function" \token -> do
+            replicateM_ 32 $ createFunction conn "duplicate_scalar" (readIORef token)
+            createFunction conn "duplicate_scalar" (7 :: Int64)
           query_ conn "SELECT duplicate_scalar()" >>= (@?= [Only (7 :: Int64)])
     , testCase "scalar deletion refusal keeps function and connection usable" $
         withConnection ":memory:" \conn -> do
@@ -116,22 +130,28 @@ extensionRegressionTests =
           query_ conn "SELECT count(*) FROM duckdb_tables() WHERE table_name = 'kept'" >>= (@?= [Only (1 :: Int64)])
           assertSqlErrorContaining "Unexpected quote" $ deleteFunction conn "a\"b"
           assertSqlErrorContaining "between one and three parts" $ deleteFunction conn "a.b.c.d"
-    , testCase "stateful replacement registration cleanup" $ assertReleasedAfter "a replaced stateful function" \token ->
+    , testCase "stateful replacement releases each replaced callback before the connection closes" $
         withConnection ":memory:" \conn -> do
           createFunctionWithState conn "duplicate_state" (pure ()) (\() -> (42 :: Int64))
-          replicateM_ 32 $ createFunctionWithState conn "duplicate_state" (readIORef token) (id :: Int64 -> Int64)
-          createFunctionWithState conn "duplicate_state" (pure ()) (\() -> (7 :: Int64))
+          assertReleasedAfter "a replaced stateful function" \token -> do
+            replicateM_ 32 $ createFunctionWithState conn "duplicate_state" (readIORef token) (id :: Int64 -> Int64)
+            createFunctionWithState conn "duplicate_state" (pure ()) (\() -> (7 :: Int64))
           query_ conn "SELECT duplicate_state()" >>= (@?= [Only (7 :: Int64)])
-    , testCase "scalar invalid signature registration cleanup" $ assertReleasedAfter "a scalar function with an invalid signature" \token ->
+    , -- DuckDB refuses the type of the argument after the registration
+      -- allocates its callbacks.
+      testCase "scalar registration with an invalid signature releases its callbacks at the failure" $
         withConnection ":memory:" \conn ->
-          replicateM_ 32 $ assertSqlError $ createFunction conn "invalid_scalar" (InvalidSignature token)
-    , testCase "stateful invalid signature registration cleanup" $ assertReleasedAfter "a stateful function with an invalid signature" \token ->
+          assertReleasedAfter "a scalar function with an invalid signature" \token ->
+            replicateM_ 32 $ assertSqlError $ createFunction conn "invalid_scalar" (InvalidSignature token)
+    , testCase "stateful registration with an invalid signature releases its callbacks at the failure" $
         withConnection ":memory:" \conn ->
-          replicateM_ 32 $ assertSqlError $ createFunctionWithState conn "invalid_state" (readIORef token) (\_ -> InvalidSignature token)
-    , testCase "logging duplicate registration cleanup" $ assertReleasedAfter "a rejected log storage" \token ->
+          assertReleasedAfter "a stateful function with an invalid signature" \token ->
+            replicateM_ 32 $ assertSqlError $ createFunctionWithState conn "invalid_state" (readIORef token) (\_ -> InvalidSignature token)
+    , testCase "logging duplicate registration releases each rejected callback at the failure" $
         withConnection ":memory:" \conn -> do
           Logging.registerLogStorage conn "duplicate_log" (\_ -> pure ())
-          replicateM_ 32 $ assertSqlError $ Logging.registerLogStorage conn "duplicate_log" (\_ -> void (readIORef token))
+          assertReleasedAfter "a rejected log storage" \token ->
+            replicateM_ 32 $ assertSqlError $ Logging.registerLogStorage conn "duplicate_log" (\_ -> void (readIORef token))
           query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
     , testCase "empty registration names fail safely" $
         withConnection ":memory:" \conn -> replicateM_ 32 do
@@ -145,12 +165,13 @@ extensionRegressionTests =
           assertSqlError $ createFunctionWithState conn "nul\0state" (pure ()) (\() -> (1 :: Int64))
           assertSqlError $ registerCopy conn "nul\0copy" Nothing
           assertSqlError $ Logging.registerLogStorage conn "nul\0log" (\_ -> pure ())
-    , testCase "partial scalar setup cleanup" $ assertReleasedAfter "a scalar function whose setup fails" \token ->
-        withConnection ":memory:" \conn -> replicateM_ 32 do
-          outcome <- try (createFunction conn "broken_signature" (BrokenSignature token)) :: IO (Either ErrorCall ())
-          case outcome of
-            Left _ -> pure ()
-            Right () -> assertFailure "expected signature exception"
+    , testCase "a scalar registration whose setup fails releases its callbacks at the failure" $
+        withConnection ":memory:" \conn ->
+          assertReleasedAfter "a scalar function whose setup fails" \token -> replicateM_ 32 do
+            outcome <- try (createFunction conn "broken_signature" (BrokenSignature token)) :: IO (Either ErrorCall ())
+            case outcome of
+              Left err -> assertBool (displayException err) ("broken scalar signature" `isInfixOf` displayException err)
+              Right () -> assertFailure "expected signature exception"
     , testCase "a raw result of another type than the result vector is an SQL error" $
         withConnection ":memory:" \conn -> do
           createFunction conn "mismatched_result" MismatchedResult
@@ -338,8 +359,8 @@ extensionRegressionTests =
         withTemporaryFile \path ->
           withConnection ":memory:" \conn -> do
             outcome <- try $ FileSystem.withFileHandle conn path [FileSystem.FileFlagWrite] \_ -> throwIO (userError "file action failure")
-            case outcome :: Either SomeException () of
-              Left _ -> pure ()
+            case outcome of
+              Left (err :: IOException) -> displayException err @?= "user error (file action failure)"
               Right () -> assertFailure "expected file action exception"
             FileSystem.withFileHandle conn path [FileSystem.FileFlagWrite] \handle -> do
               FileSystem.writeFileHandleBytes handle (BS.pack [0, 255]) >>= (@?= 2)

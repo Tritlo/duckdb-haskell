@@ -118,7 +118,7 @@ withConfigOptionValue conn name action = withConnectionHandle conn \handle -> do
   withOptionValue config name action
 
 -- | Copy the effective typed value of an option and the scope of that value.
--- An unknown option name raises 'SQLError'. A VARIANT value gives the value
+-- An unknown option name raises t'SQLError'. A VARIANT value gives the value
 -- that it holds, as in a result. A GEOMETRY value reads with the factory of the
 -- instance. See Note [User casts and the casts of the library] in
 -- "Database.DuckDB.Simple.Materialize". The function releases all native
@@ -134,7 +134,7 @@ getConfigValue conn name = do
         pure (copied, scope)
 
 -- | Copy the typed static default of an option. An unknown option name raises
--- 'SQLError'. A VARIANT value gives the value that it holds, as in a result. A
+-- t'SQLError'. A VARIANT value gives the value that it holds, as in a result. A
 -- GEOMETRY value reads as 'getConfigValue' reads it. The function releases all
 -- native handles before it returns.
 getConfigDefaultValue :: Connection -> Text -> IO FieldValue

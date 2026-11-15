@@ -604,12 +604,18 @@ extensionRegressionTests =
           current >>= (@?= FieldWord64 9)
           Config.setConfigValue conn Config.SettingScopeSession option (11 :: Natural)
           current >>= (@?= FieldWord64 11)
-    , testCase "setConfigValue with an Integer outside the HUGEINT range raises an error" $
+    , testCase "setConfigValue with an Integer or a Natural outside the HUGEINT range raises an error" $
         withConnection ":memory:" \conn -> do
-          -- toDuckValue gives no BIGNUM value for an Integer. See
+          -- toDuckValue gives no BIGNUM value for an Integer or a Natural. See
           -- Note [Integer parameters] in "Database.DuckDB.Simple.ToField".
+          let option = "asof_loop_join_threshold"
           assertSqlErrorContaining "is outside the range of HUGEINT" $
-            Config.setConfigValue conn Config.SettingScopeSession "asof_loop_join_threshold" (2 ^ (128 :: Int) + 5 :: Integer)
+            Config.setConfigValue conn Config.SettingScopeSession option (2 ^ (128 :: Int) + 5 :: Integer)
+          -- A Natural from 2^127 is a UHUGEINT value. DuckDB checks its cast.
+          assertSqlErrorContaining "out of range for the destination type UINT64" $
+            Config.setConfigValue conn Config.SettingScopeSession option (2 ^ (127 :: Int) :: Natural)
+          assertSqlErrorContaining "is outside the range of UHUGEINT" $
+            Config.setConfigValue conn Config.SettingScopeSession option (2 ^ (128 :: Int) + 5 :: Natural)
     , testCase "table descriptions resolve names and copy borrowed column types" $
         withConnection ":memory:" \conn -> do
           void $ execute_ conn "CREATE TABLE \"\955\" (id BIGINT DEFAULT 7, twice BIGINT GENERATED ALWAYS AS (id * 2))"

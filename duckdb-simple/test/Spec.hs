@@ -1469,11 +1469,14 @@ functionsTests =
             ]
             \(name, expected) -> query_ conn (Query ("SELECT typeof(" <> name <> "())")) >>= (@?= [Only (expected :: Text.Text)])
           -- An Integer argument or result is HUGEINT, and a Natural one is UHUGEINT.
-          -- DuckDB casts no BIGNUM argument to HUGEINT, and toDuckValue raises an
-          -- error for a result outside the range.
+          -- DuckDB casts no BIGNUM or UHUGEINT argument to HUGEINT, and
+          -- toDuckValue raises an error for a result outside the range.
           createFunction conn "hs_arg_wide" (\(x :: Integer) -> x)
           assertThrows
             (query_ conn "SELECT hs_arg_wide('5'::BIGNUM)" :: IO [Only Integer])
+            (Text.isInfixOf "No function matches" . sqlErrorMessage)
+          assertThrows
+            (query_ conn "SELECT hs_arg_wide(5::UHUGEINT)" :: IO [Only Integer])
             (Text.isInfixOf "No function matches" . sqlErrorMessage)
           createFunction conn "hs_res_natural" (2 ^ (127 :: Int) :: Natural)
           createFunction conn "hs_res_wide" (2 ^ (127 :: Int) :: Integer)

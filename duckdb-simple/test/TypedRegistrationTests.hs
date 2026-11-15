@@ -1158,6 +1158,8 @@ testTableIntegers = withConnection ":memory:" \conn -> do
         )
   query_ conn "SELECT k, l, n, p::VARCHAR FROM typed_text_maps()"
     >>= (@?= [(keyed, listed, maps, "{7=1.500}" :: Text) | maps <- nestedMaps])
+  -- DuckDB sums a UHUGEINT column as a DOUBLE.
+  query_ conn "SELECT typeof(sum(v)), sum(v) FROM typed_naturals()" >>= (@?= [("DOUBLE" :: Text, 2 ^ (128 :: Int) :: Double)])
   -- toDuckValue raises an error for a value outside the range. A BIGNUM value
   -- would reach the HUGEINT column, and DuckDB casts the BIGNUM 2^128 to 0.
   let outside = "is outside the range of HUGEINT. Use BigNum for a larger value."

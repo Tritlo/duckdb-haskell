@@ -677,7 +677,9 @@ instance FromField Float where
     case fieldValue of
       -- DuckDB casts an integer to FLOAT with static_cast<float>, which
       -- rounds one time to the nearest value, ties to even. int2Float rounds
-      -- in the same way.
+      -- in the same way. As seen in CI, the DuckDB 2.0.0 build for macOS on
+      -- Apple Silicon rounds some BIGINT values above 2^53 two times in its
+      -- cast to FLOAT, and the library gives the nearest value there.
       FieldInt i -> Ok (int2Float (fromIntegral i))
       FieldDecimal value -> Ok (decimalToFloat value)
       _ -> case (fromField field :: Ok Double) of

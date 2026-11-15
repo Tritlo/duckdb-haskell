@@ -465,7 +465,9 @@
   example, `2706284552926637.70::DECIMAL(18,2)` read as `2706284552926638.0`,
   and the cast gives `2706284552926637.5`. For scale 0 and a width of 19 to 38,
   the cast of DuckDB does not always give the nearest value, and the library
-  gives the value of the cast.
+  gives the value of the cast. As seen in CI, the DuckDB 2.0.0 build for macOS
+  on Apple Silicon rounds some BIGINT values above 2^53 two times in its cast
+  to FLOAT, and the library gives the nearest value there.
 - A BOOLEAN read as `Text` or `String` gives `true` or `false`, as the cast to
   VARCHAR does. Earlier versions gave `1` or `0`.
 - A `FromField` instance reads another SQL type only when it gives the value

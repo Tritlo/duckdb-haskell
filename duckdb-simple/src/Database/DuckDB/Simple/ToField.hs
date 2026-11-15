@@ -619,6 +619,11 @@ integerBinding binds an Integer or a Natural parameter with this rule:
   error. The callers of toDuckValue are setConfigValue, defaultValue, the
   typed rows of table functions and COPY FROM, and the writer of a scalar
   function result. Use BigNum for a larger value.
+  The default toField of the ToField class also calls toDuckValue. Thus a
+  newtype over Integer with the default toField raises this error for each
+  parameter value outside the HUGEINT range. An Integer parameter uses the
+  rule of integerBinding above, for example a BIGNUM value for a parameter
+  with no known type. Derive ToField with newtype deriving to keep that rule.
 
 - Typed registrations. The DuckDBColumnType text of Integer and Natural stays
   BIGNUM, the type that holds each value: the element rule of a list

@@ -277,8 +277,8 @@ Each row gives a Haskell type and these facts:
 | `Bool` | BOOLEAN | | BOOLEAN, TINYINT to BIGINT (2) | argument, result |
 | `Int8`, `Int16`, `Int32`, `Int64`, `Int` | TINYINT, SMALLINT, INTEGER, BIGINT, BIGINT | | TINYINT to BIGINT, HUGEINT, UHUGEINT (3) | argument, result |
 | `Word8`, `Word16`, `Word32`, `Word64`, `Word` | UTINYINT, USMALLINT, UINTEGER, UBIGINT, UBIGINT | | each integer type (3) | argument, result |
-| `Integer` | HUGEINT (1) | BIGNUM | each integer type, BIGNUM (3) | argument, result |
-| `Natural` | HUGEINT (1) | BIGNUM | each integer type, BIGNUM (3) | argument, result |
+| `Integer` | HUGEINT (1) | | each integer type, BIGNUM (3) | argument, result |
+| `Natural` | HUGEINT (1) | UHUGEINT (10) | each integer type, BIGNUM (3) | argument, result |
 | `BigNum` | BIGNUM | | BIGNUM | argument, result |
 | `Double` | DOUBLE | | DOUBLE, FLOAT, TINYINT to BIGINT, DECIMAL (4) | argument, result |
 | `Float` | FLOAT | | as `Double` (4) | argument, result |
@@ -394,10 +394,16 @@ Notes:
 10. A record binds as a STRUCT, and a sum type binds as a UNION. A typed
     registration declares the STRUCT or UNION type of a record or a sum type
     that derives `DuckDBColumnType` and `ToDuckValue` via `ViaDuckDB`, also in a
-    list or a MAP. Each field type comes from `DuckValue`: an `Integer` field
-    declares HUGEINT and a `Natural` field declares UHUGEINT, and a value that
-    this type cannot hold raises an error. A bare `Integer` or `Natural`
-    declares BIGNUM. A record with an `Array` field raises an error at
+    list or a MAP. Each field type comes from `DuckValue`. An `Integer` declares
+    HUGEINT and a `Natural` declares UHUGEINT, as a field, a column of a typed
+    row, an argument, and a result. A value that this type cannot hold raises an
+    `SQLError` of the type `ErrorTypeConversion`: use `BigNum`, which declares
+    BIGNUM, for a larger value. DuckDB computes with these types: HUGEINT
+    arithmetic stays HUGEINT and raises an error on overflow. DuckDB casts a
+    non-negative integer literal to a UHUGEINT argument, but no signed column or
+    typed value without an explicit cast. `sum()` over a UHUGEINT column gives a
+    DOUBLE value, and so do UHUGEINT + INTEGER and HUGEINT + UHUGEINT for
+    columns and typed values. A record with an `Array` field raises an error at
     registration, because the record type does not give the size of the
     ARRAY. Use a list field, or a field of a newtype of the `Array` with a
     `DuckValue` instance that gives the size (see note 8). See
@@ -504,10 +510,10 @@ state read with the wrong type.
 An input check of the library raises an `SQLError`. A check for a value outside
 the range of its SQL type gives the type `ErrorTypeConversion`, the type of the
 Conversion Error that DuckDB gives the same value in SQL: an `Integer` that its
-parameter cannot hold, a date or a timestamp outside the range of DATE or
-TIMESTAMP of DuckDB (note 7), a nanosecond timestamp outside its storage, a time
-of day that is not a TIME value, a TIMETZ offset outside -57599 to 57599
-seconds, an `Integer` or `Natural` field of a record outside HUGEINT or
+parameter or its declared type cannot hold, a date or a timestamp outside the
+range of DATE or TIMESTAMP of DuckDB (note 7), a nanosecond timestamp outside
+its storage, a time of day that is not a TIME value, a TIMETZ offset outside
+-57599 to 57599 seconds, an `Integer` or `Natural` field of a record outside HUGEINT or
 UHUGEINT, a `DecimalValue` that its width cannot hold, and an ENUM label that is
 not in the dictionary of a declared ENUM type. Each other input check gives the
 type `ErrorInputInvalid`. This includes a value of the wrong shape or type, also

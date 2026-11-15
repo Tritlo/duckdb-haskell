@@ -343,7 +343,22 @@ The SQL workflow stays the same. These changes can affect your code:
   version 0.3 stored a wrapped value. Bind a `BigNum` for the BIGNUM value of
   version 0.3. `toDuckValue` uses the same rule: an `Integer` or a `Natural`
   in the HUGEINT range gives a HUGEINT value, where version 0.3 gave a BIGNUM
-  value.
+  value. A `Natural` up to 2^128 - 1 gives a UHUGEINT value. Each other value
+  raises an `SQLError` of the type `ErrorTypeConversion`, where version 0.3
+  gave a BIGNUM value. This applies to `setConfigValue`, `defaultValue`, the
+  typed rows of a table function and of COPY FROM, the result of a scalar
+  function, and a parameter of a newtype over `Integer` with the default
+  `toField`. Use `BigNum` for a larger value, and derive `ToField` with newtype
+  deriving to keep the parameter rule of `Integer`.
+- A typed registration declares HUGEINT for an `Integer` and UHUGEINT for a
+  `Natural`: a column of a typed row, an argument, and a result. The column type
+  name (`duckdbColumnTypeFor`, also `duckdbColumnType`) still gives BIGNUM for
+  them, as in version 0.3. DuckDB computes with the declared types. It casts no
+  BIGNUM or UHUGEINT value to a HUGEINT argument. It casts a non-negative
+  integer literal to a UHUGEINT argument, but no signed column or typed value
+  without an explicit cast. `sum()` over a UHUGEINT column gives a DOUBLE value,
+  and so do UHUGEINT + INTEGER and HUGEINT + UHUGEINT for columns and typed
+  values. Use `BigNum` for a BIGNUM column or argument.
 - Each function that reads rows gives one row with one BIGINT column for an
   INSERT, UPDATE, or DELETE without RETURNING: the number of changed rows.
   This applies to `query`, `query_`, `queryNamed`, `fold`, `fold_`,
@@ -438,7 +453,7 @@ The SQL workflow stays the same. These changes can affect your code:
   `ErrorInputInvalid`, except a value outside the range of its SQL type, which
   raises an `SQLError` with the type `ErrorTypeConversion` when it binds, as the
   Conversion Error of DuckDB for the same value in SQL (an integer for its
-  parameter type, a date or a timestamp for the range of DuckDB, a nanosecond
+  parameter type or its declared type, a date or a timestamp for the range of DuckDB, a nanosecond
   timestamp for its storage, a HUGEINT or UHUGEINT field, a TIMETZ offset, a
   time of day that is not a TIME value, a `DecimalValue` for its width, or an
   ENUM label for its dictionary), and a parameter count or a parameter name that

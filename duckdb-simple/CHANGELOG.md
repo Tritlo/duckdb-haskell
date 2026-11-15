@@ -304,7 +304,7 @@
   SQL type raises `SQLError` with the type `ErrorTypeConversion` when it binds,
   the type of the "Conversion Error" that DuckDB raises for the same value in
   SQL: a date or a timestamp outside the range of DuckDB, an integer outside the
-  range of its parameter type, a nanosecond timestamp outside its storage or at
+  range of its parameter type or its declared type, a nanosecond timestamp outside its storage or at
   an infinity value as a STRUCT field, a TUPLE element, a UNION member, or an
   element of a list, an `Array`, or a `Map`, a `FieldHugeInt` or a
   `FieldUHugeInt` outside its type, a TIMETZ offset outside -57599 to 57599
@@ -401,14 +401,20 @@
   element. Before, a negative element for an unsigned array column was stored as
   a wrapped value.
 - `toDuckValue` for an `Integer` or a `Natural` gives a HUGEINT value when the
-  value is in the HUGEINT range, and a BIGNUM value for each other value.
-  Before, it gave a BIGNUM value in each case. DuckDB checks the range when it
-  casts a HUGEINT value. Thus `setConfigValue` with -5 for an unsigned option
-  raises an error, and a default value from `defaultValue` that its parameter
-  cannot hold raises an error at a call that omits the argument. A value
-  outside the HUGEINT range keeps the BIGNUM casts of DuckDB: `setConfigValue`
-  with 2^128 + 5 for an unsigned option sets 5. The column type of an
-  `Integer` or a `Natural` in a typed row stays BIGNUM.
+  value is in the HUGEINT range, and a `Natural` up to 2^128 - 1 gives a
+  UHUGEINT value. Each other value raises an `SQLError` of the type
+  `ErrorTypeConversion`; use `BigNum` for a larger value. Before, it gave a
+  BIGNUM value in each case. DuckDB checks the range when it casts a HUGEINT
+  value. Thus `setConfigValue` with -5 for an unsigned option raises an error,
+  and a default value from `defaultValue` that its parameter cannot hold raises
+  an error at a call that omits the argument. A newtype over `Integer` with the
+  default `toField` binds through `toDuckValue`, so its parameter outside the
+  HUGEINT range also raises this error.
+- An `Integer` declares HUGEINT and a `Natural` declares UHUGEINT as a column of
+  a typed row, an argument, and a result, as for a field of a generic record. A
+  list or a `Map` of them in a typed row has HUGEINT or UHUGEINT elements. The
+  column type name (`duckdbColumnTypeFor`) still gives BIGNUM for them, the type
+  of a parameter that holds each value.
 - A generic record with an `Array` field that has elements binds. The value
   gives the ARRAY size. When no value gives the size, DuckDB rejects the record
   with "ARRAY type size must be at least 1". Examples are an `Array` field with

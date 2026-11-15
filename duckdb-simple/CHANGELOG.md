@@ -15,6 +15,8 @@
   types. `sqlErrorType` is `Maybe ErrorType`. See MIGRATION.md.
 - Add shared environments and instances, attachment management, option
   discovery, table descriptions, SQL tokenization, and positioned file I/O.
+- `listConfigFlags` takes a `Connection`, and it lists the options of the
+  database of that connection, also its custom options. See MIGRATION.md.
 - Add typed configuration values and defaults, managed log sinks, macro
   registration, function documentation, query metrics, and file path
   operations. Expose table bind metadata for multi-file readers.

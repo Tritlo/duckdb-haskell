@@ -118,10 +118,11 @@ The SQL workflow stays the same. These changes can affect your code:
 - `ConfigValue.configValueScope` is `SettingScope` instead of
   `Maybe DuckDBConfigOptionScope`. `Database.DuckDB.Simple.Config` exports
   `SettingScope`.
-- `listConfigFlags` lists the options of a temporary in-memory database.
-  With DuckDB 2.0.0 the list has 201 names, where version 0.3 gave 377. The
-  names that are not in the list are options of extensions that the new
-  database does not load.
+- `listConfigFlags` takes a `Connection`. It lists the options of the
+  database of that connection, also its custom options. Version 0.3 listed
+  the options of the C API function `duckdb_get_config_flag`, which takes no
+  database. For the old call, use `withConnection ":memory:" listConfigFlags`.
+  It lists the options of a new in-memory database.
 - `CatalogEntry.catalogEntryType` and `lookupCatalogEntry` use the new
   `CatalogEntryType`. For example, `DuckDBCatalogEntryTypeTable` becomes
   `CatalogTable`. `DuckDBCatalogEntryTypeCollation` has no replacement, because

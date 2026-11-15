@@ -366,7 +366,10 @@ type, as for `INSERT INTO t VALUES ([])` and `([NULL, NULL])` in SQL. For a
 parameter with no known type, a list of NULL elements gets the type of the SQL
 literal, `"NULL"[]`. An empty list for a parameter with no known type raises an
 error: DuckDB gives the literal `[]` the type `"NULL"[]`, but its native
-constructor gives no type to an empty list.
+constructor gives no type to an empty list. A generic record through
+`ViaDuckDB` has a declared type, so for a parameter with no known type an
+empty list or a list of NULL records gets the STRUCT or UNION type of the
+record.
 
 A `Map` from `Data.Map` binds as a MAP parameter and reads a MAP result. The
 pairs go in ascending key order. The keys and the values follow the element

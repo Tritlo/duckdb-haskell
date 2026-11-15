@@ -282,7 +282,9 @@ The SQL workflow stays the same. These changes can affect your code:
   now raise the `SQLError` of DuckDB. Such an `Array` with only NULL elements
   takes the element type of a parameter with a known type, and otherwise the
   type of `array_value(NULL, ...)`, for example `"NULL"[2]`. Version 0.3 raised
-  an error for it.
+  an error for it. For a parameter with no known type, such an `Array` of
+  generic records through `ViaDuckDB` takes the STRUCT or UNION type of the
+  record.
 - A composite parameter with a GEOMETRY CRS that DuckDB does not recognize
   raises `SQLError`. Version 0.3 bound it without the CRS. Configure custom CRS
   names through `connectionGeometryCRS`.

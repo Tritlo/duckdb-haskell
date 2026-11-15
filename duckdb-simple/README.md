@@ -335,13 +335,14 @@ Notes:
    `ErrorInputOutOfRange`. See [Querying Data](#querying-data).
 2. The value 0 reads as `False`, and each other value reads as `True`.
 3. "Each integer type" is TINYINT to UHUGEINT. A value that the Haskell type
-   cannot hold raises a conversion error, also a negative value for an
-   unsigned type or for `Natural`. An ENUM value does not read as an integer
-   type. Write `enum_code(c)::BIGINT` in SQL for its index, or `c::INTEGER`
-   for the value of its label.
+   cannot hold raises a conversion error of the library, an `SQLError` with no
+   type, also a negative value for an unsigned type or for `Natural`. An ENUM
+   value does not read as an integer type. Write `enum_code(c)::BIGINT` in SQL
+   for its index, or `c::INTEGER` for the value of its label.
 4. A read gives the value of `c::DOUBLE` or `c::FLOAT` of DuckDB, also for a
    DECIMAL, and for a BIGINT read as `Float`. A finite value that `Float`
-   cannot hold raises a conversion error.
+   cannot hold raises a conversion error of the library, an `SQLError` with no
+   type.
 5. A read of another SQL type gives the value of DuckDB's cast, or an error.
    Thus `Text` reads a BOOLEAN as `true` or `false`, and an ENUM as its label.
    `ByteString` reads a BIT or a GEOMETRY as the bytes of `c::BLOB`. `UUID`
@@ -360,8 +361,9 @@ Notes:
 6. "Each timestamp type" is TIMESTAMP_S, TIMESTAMP_MS, TIMESTAMP, and
    TIMESTAMP_NS. TIMESTAMP alone is the type with microseconds. `Day` reads the
    date of a timestamp, and `TimeOfDay` reads its time. A nanosecond type keeps
-   its nanoseconds. An infinite value raises a conversion error for `Day`,
-   `TimeOfDay`, `LocalTime`, and `UTCTime`. The `Unbounded` forms read it.
+   its nanoseconds. An infinite value raises a conversion error of the
+   library, an `SQLError` with no type, for `Day`, `TimeOfDay`, `LocalTime`,
+   and `UTCTime`. The `Unbounded` forms read it.
    `Date`, `LocalTimestamp`, and `UTCTimestamp` from
    `Database.DuckDB.Simple.Time` are the `Unbounded` forms.
 7. A value with digits below a microsecond keeps them for a nanosecond
@@ -504,8 +506,9 @@ type and with the query. The message describes the first field that fails:
 - `duckdb-simple: field FIELD: ` and the error of the value for a field of a
   `ViaDuckDB` record, for example
   `duckdb-simple: field pairValue: a value has type DOUBLE but expected Int64`.
-- A conversion error, for a value that the instance cannot convert: the
-  message of the instance, for example `integer value out of bounds`.
+- A conversion error of the library, for a value that the instance cannot
+  convert: the message of the instance, for example `integer value out of
+  bounds`.
 
 The library makes a `ResultError` for each failure and puts its text in the
 `SQLError`. It does not raise the `ResultError`. A custom `FromField` instance
@@ -697,9 +700,10 @@ infiniteDates :: Connection -> IO [Only Date]
 infiniteDates conn = query conn "SELECT ?::DATE" (Only (PosInfinity :: Date))
 ```
 
-The ordinary `Day`, `LocalTime`, and `UTCTime` instances reject infinity with
-a conversion error. Use `Maybe Date` to distinguish SQL NULL from infinity.
-Floating-point NaN and infinities remain valid `Float` and `Double` values.
+The ordinary `Day`, `LocalTime`, and `UTCTime` instances reject infinity with a
+conversion error of the library, an `SQLError` with no type. Use `Maybe Date` to
+distinguish SQL NULL from infinity. Floating-point NaN and infinities remain
+valid `Float` and `Double` values.
 
 A `TimeOfDay`, a `LocalTime`, or a `UTCTime` parameter, and an `Unbounded`
 form, keeps its digits below a microsecond for a nanosecond parameter:
@@ -736,8 +740,9 @@ gets an error by its position:
 
 - A parameter, or an element of a list, an `Array`, or a `Map`:
   `ErrorInputOutOfRange` for a value outside the range of DuckDB. Each other
-  such value gets the conversion error of DuckDB, of the type
-  `ErrorTypeConversion` for a parameter and `ErrorInputInvalid` for an element.
+  such value gets an error of DuckDB: the Conversion Error of DuckDB, of the
+  type `ErrorTypeConversion`, for a parameter, and its Invalid Input Error, of
+  the type `ErrorInputInvalid`, for an element.
 - A field of a STRUCT, an element of a TUPLE, or a member of a UNION: the
   `ErrorInputInvalid` of the library, "TIMESTAMP value out of finite range",
   also for a value outside the range of DuckDB.

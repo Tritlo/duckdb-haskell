@@ -136,8 +136,9 @@ The SQL workflow stays the same. These changes can affect your code:
 
   - A parameter, or an element of a list, an `Array`, or a `Map`:
     `ErrorInputOutOfRange` for a value outside the range of DuckDB. Each other
-    such value gets the conversion error of DuckDB, of the type
-    `ErrorTypeConversion` for a parameter and `ErrorInputInvalid` for an element.
+    such value gets an error of DuckDB: the Conversion Error of DuckDB, of the
+    type `ErrorTypeConversion`, for a parameter, and its Invalid Input Error, of
+    the type `ErrorInputInvalid`, for an element.
   - A field of a STRUCT, an element of a TUPLE, or a member of a UNION: the
     `ErrorInputInvalid` of the library, "TIMESTAMP value out of finite range",
     also for a value outside the range of DuckDB.

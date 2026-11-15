@@ -59,8 +59,9 @@
 -- >   deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB User)
 --
 -- The derived instances automatically encode/decode via STRUCT/UNION representations.
--- Also derive @ToDuckValue@ to use the type as a column of a typed table function
--- or as an argument of a typed aggregate function.
+-- Also derive @ToDuckValue@ to use the type as a column of a typed table function,
+-- as an argument of a typed aggregate function, or as the result of a scalar
+-- function.
 --
 -- === Extending this module
 --

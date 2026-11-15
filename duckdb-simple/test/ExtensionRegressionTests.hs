@@ -125,6 +125,13 @@ extensionRegressionTests =
           case outcome of
             Left _ -> pure ()
             Right () -> assertFailure "expected signature exception"
+    , testCase "a raw result of another type than the result vector is an SQL error" $
+        withConnection ":memory:" \conn -> do
+          createFunction conn "mismatched_result" MismatchedResult
+          assertSqlErrorContaining
+            "the result vector has the type TEXT, but the result value has the type BIGINT"
+            (query_ conn "SELECT mismatched_result()" :: IO [Only Text.Text])
+          query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
     , testCase "scalar exceptions become SQL errors" $
         withConnection ":memory:" \conn -> do
           createFunction conn "throw_scalar" (throwIO (userError "scalar callback failure") :: IO Int64)
@@ -623,9 +630,18 @@ data BrokenSignature = BrokenSignature
 
 instance Function BrokenSignature where
   argumentTypes _ = [Right (error "broken scalar signature")]
-  returnType _ = error "unused return type"
+  returnType _ = returnType (Proxy :: Proxy Int64)
   isVolatile _ = False
   applyFunction _ _ = error "unused function"
+
+-- | Declare a VARCHAR result, but give a BIGINT value.
+data MismatchedResult = MismatchedResult
+
+instance Function MismatchedResult where
+  argumentTypes _ = []
+  returnType _ = Right (Registration.TypeExpression "VARCHAR")
+  isVolatile _ = True
+  applyFunction fields _ = applyFunction fields (1 :: Int64)
 
 -- | Supply an argument type which DuckDB rejects at registration.
 data InvalidSignature = InvalidSignature

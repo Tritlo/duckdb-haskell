@@ -70,7 +70,9 @@ of duckdb_v2_vector_flat_get_validity_mutable.
   this call allocates the mask on first use, so the pointer is never null. The
   header also says that a raw mask write marks only the rows of this vector,
   and that a NULL STRUCT or ARRAY row needs duckdb_v2_vector_set_null. The
-  writer writes only the scalar types of ScalarType.
+  writer writes a mask bit only for a raw result type. A NULL of each other
+  result type goes through duckdb_v2_vector_set_value. See
+  Note [Result writers] in "Database.DuckDB.Simple.Function.Internal".
 
 The bytes slot. A VARCHAR, BLOB, BIT, or BIGNUM element is a 16-byte
 duckdb_v2_bytes value. The byte length is a uint32_t at byte 0. A value of at
@@ -82,7 +84,8 @@ of struct duckdb_v2_bytes.
 - Read (chunkDecodeBlob). The reader reads the generated fields of the union.
 
 - Write (writeArenaText). The writer needs no factory. It writes the length and
-  the bytes at their offsets. A longer value goes to the arena of the vector.
+  the bytes through the generated field pointers, as the reader reads them. A
+  longer value goes to the arena of the vector.
 
 The storage of a DECIMAL or ENUM element depends on the type (decimalStorage and
 enumStorage). The header of duckdb_v2_vector_get_view gives both mappings.

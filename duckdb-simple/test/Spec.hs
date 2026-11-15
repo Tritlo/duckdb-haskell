@@ -78,6 +78,7 @@ import Database.DuckDB.Simple.LogicalRep (
  )
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.Time (Unbounded (..))
+import Database.DuckDB.Simple.ToField (ToDuckValue (..))
 import Database.DuckDB.Simple.Variant (Variant)
 import ExtensionRegressionTests (extensionRegressionTests)
 import GHC.Generics (Generic)
@@ -130,7 +131,7 @@ data ViaUser = ViaUser
   , vuName :: Text.Text
   }
   deriving stock (Eq, Show, Generic)
-  deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB ViaUser)
+  deriving (DuckDBColumnType, ToDuckValue, ToField, FromField) via (ViaDuckDB ViaUser)
 
 -- | A newtype with its own type text, for a scalar function argument.
 newtype Price = Price DecimalValue
@@ -141,11 +142,20 @@ instance DuckDBColumnType Price where
 instance FromField Price where
   fromField value = Price <$> fromField value
 
+-- | A newtype with its own type text, for a scalar function result.
+newtype Amount = Amount Double
+
+instance DuckDBColumnType Amount where
+  duckdbColumnTypeFor _ = "DECIMAL(18,3)"
+
+instance ToDuckValue Amount where
+  toDuckValue factory (Amount value) = toDuckValue factory value
+
 data ViaShape
   = ViaCircle Double
   | ViaSquare Double
   deriving stock (Eq, Show, Generic)
-  deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB ViaShape)
+  deriving (DuckDBColumnType, ToDuckValue, ToField, FromField) via (ViaDuckDB ViaShape)
 
 -- Edge case test types
 data TwoFieldStruct = TwoFieldStruct Int Text.Text
@@ -1382,6 +1392,109 @@ functionsTests =
                     , ("hs_arg_records", "['STRUCT(vuId BIGINT, vuName VARCHAR)[]']")
                     ]
                 )
+    , testCase "declares the SQL type of each result type" $
+        withConnection ":memory:" \conn -> do
+          createFunction conn "hs_res_bool" True
+          createFunction conn "hs_res_int" (1 :: Int)
+          createFunction conn "hs_res_int8" (1 :: Int8)
+          createFunction conn "hs_res_int16" (1 :: Int16)
+          createFunction conn "hs_res_int32" (1 :: Int32)
+          createFunction conn "hs_res_int64" (1 :: Int64)
+          createFunction conn "hs_res_word" (1 :: Word)
+          createFunction conn "hs_res_word8" (1 :: Word8)
+          createFunction conn "hs_res_word16" (1 :: Word16)
+          createFunction conn "hs_res_word32" (1 :: Word32)
+          createFunction conn "hs_res_word64" (1 :: Word64)
+          createFunction conn "hs_res_float" (1.5 :: Float)
+          createFunction conn "hs_res_double" (1.5 :: Double)
+          createFunction conn "hs_res_text" ("x" :: Text.Text)
+          createFunction conn "hs_res_string" ("x" :: String)
+          createFunction conn "hs_res_io" (pure (1 :: Int16) :: IO Int16)
+          createFunction conn "hs_res_integer" (2 ^ (100 :: Int) :: Integer)
+          createFunction conn "hs_res_bytes" (BS.pack [1, 2])
+          createFunction conn "hs_res_uuid" UUID.nil
+          createFunction conn "hs_res_day" (fromGregorian 2026 11 15)
+          createFunction conn "hs_res_interval" (IntervalValue 1 2 3)
+          createFunction conn "hs_res_amount" (Amount 1.25)
+          forM_
+            [ ("hs_res_bool", "BOOLEAN")
+            , ("hs_res_int", "BIGINT")
+            , ("hs_res_int8", "TINYINT")
+            , ("hs_res_int16", "SMALLINT")
+            , ("hs_res_int32", "INTEGER")
+            , ("hs_res_int64", "BIGINT")
+            , ("hs_res_word", "UBIGINT")
+            , ("hs_res_word8", "UTINYINT")
+            , ("hs_res_word16", "USMALLINT")
+            , ("hs_res_word32", "UINTEGER")
+            , ("hs_res_word64", "UBIGINT")
+            , ("hs_res_float", "FLOAT")
+            , ("hs_res_double", "DOUBLE")
+            , ("hs_res_text", "VARCHAR")
+            , ("hs_res_string", "VARCHAR")
+            , ("hs_res_io", "SMALLINT")
+            , ("hs_res_integer", "BIGNUM")
+            , ("hs_res_bytes", "BLOB")
+            , ("hs_res_uuid", "UUID")
+            , ("hs_res_day", "DATE")
+            , ("hs_res_interval", "INTERVAL")
+            , ("hs_res_amount", "DECIMAL(18,3)")
+            ]
+            \(name, expected) -> query_ conn (Query ("SELECT typeof(" <> name <> "())")) >>= (@?= [Only (expected :: Text.Text)])
+          query_ conn "SELECT hs_res_int8(), hs_res_word16(), hs_res_float(), hs_res_string(), hs_res_integer(), hs_res_amount()::DOUBLE"
+            >>= (@?= [(1 :: Int8, 1 :: Word16, 1.5 :: Float, "x" :: Text.Text, 2 ^ (100 :: Int) :: Integer, 1.25 :: Double)])
+    , testCase "writes nested, record, union, and NULL results" $
+        withConnection ":memory:" \conn -> do
+          createFunction conn "hs_res_user" (\(i :: Int64) -> ViaUser i ("u" <> Text.pack (show i)))
+          createFunction conn "hs_res_maybe_user" (\(i :: Int64) -> if odd i then Nothing else Just (ViaUser i "even"))
+          createFunction conn "hs_res_shape" (\(i :: Int64) -> if even i then ViaCircle (fromIntegral i) else ViaSquare 1)
+          createFunction conn "hs_res_list" (\(i :: Int64) -> [0 .. i])
+          createFunction conn "hs_res_map" (\(i :: Int64) -> Map.fromList [(Text.pack (show i), fromIntegral i :: Int16)])
+          createFunction conn "hs_res_maybe_small" (\(i :: Int64) -> if odd i then Nothing else Just (fromIntegral i :: Int16))
+          query_
+            conn
+            "SELECT typeof(hs_res_user(1)), typeof(hs_res_maybe_user(1)), typeof(hs_res_shape(1)), typeof(hs_res_list(1)), typeof(hs_res_map(1)), typeof(hs_res_maybe_small(1))"
+            >>= ( @?=
+                    [
+                      ( "STRUCT(vuId BIGINT, vuName VARCHAR)" :: Text.Text
+                      , "STRUCT(vuId BIGINT, vuName VARCHAR)" :: Text.Text
+                      , "UNION(ViaCircle STRUCT(field1 DOUBLE), ViaSquare STRUCT(field1 DOUBLE))" :: Text.Text
+                      , "BIGINT[]" :: Text.Text
+                      , "MAP(VARCHAR, SMALLINT)" :: Text.Text
+                      , "SMALLINT" :: Text.Text
+                      )
+                    ]
+                )
+          rows <-
+            query_
+              conn
+              "SELECT hs_res_user(i), hs_res_maybe_user(i), hs_res_shape(i), hs_res_list(i), hs_res_map(i), hs_res_maybe_small(i) FROM range(5) t(i) ORDER BY i"
+          rows
+            @?= [ ( ViaUser i ("u" <> Text.pack (show i))
+                  , if odd i then Nothing else Just (ViaUser i "even")
+                  , if even i then ViaCircle (fromIntegral i) else ViaSquare 1
+                  , [0 .. i]
+                  , Map.fromList [(Text.pack (show i), fromIntegral i :: Int16)]
+                  , if odd i then Nothing else Just (fromIntegral i :: Int16)
+                  )
+                | i <- [0 .. 4 :: Int64]
+                ]
+          -- 5000 rows fill more than one chunk. Each odd row is NULL.
+          query_ conn "SELECT count(*) FILTER (hs_res_maybe_user(i) IS NULL), count(*) FILTER (hs_res_maybe_small(i) IS NULL) FROM range(5000) t(i)"
+            >>= (@?= [(2500 :: Int64, 2500 :: Int64)])
+    , testCase "keeps the SQL type of a narrow result in arithmetic" $
+        withConnection ":memory:" \conn -> do
+          createFunction conn "hs_small" (id :: Int16 -> Int16)
+          createFunction conn "hs_unsigned" (id :: Word16 -> Word16)
+          -- DuckDB computes SMALLINT * SMALLINT as SMALLINT, and USMALLINT - USMALLINT as USMALLINT.
+          assertThrows
+            (query_ conn "SELECT hs_small(30000) * hs_small(30000)" :: IO [Only Int64])
+            (Text.isInfixOf "Overflow in multiplication of INT16" . sqlErrorMessage)
+          assertThrows
+            (query_ conn "SELECT hs_unsigned(1) - hs_unsigned(2)" :: IO [Only Int64])
+            (Text.isInfixOf "Overflow in subtraction of UINT16" . sqlErrorMessage)
+          query_ conn "SELECT hs_small(30000)::INTEGER * hs_small(30000), hs_unsigned(1)::INTEGER - hs_unsigned(2)"
+            >>= (@?= [(900000000 :: Int64, -1 :: Int64)])
     , testCase "rejects an argument type with no declaration, VARIANT, or GEOMETRY at registration" $
         withConnection ":memory:" \conn -> do
           let rejects expected action = assertThrows action (Text.isInfixOf expected . sqlErrorMessage)

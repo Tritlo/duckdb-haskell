@@ -30,11 +30,11 @@ import Data.Void (Void)
 import Database.DuckDB.Simple.Callback (attachOpaque, ignoreCallbackExceptions)
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (FieldNull))
 import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow)
-import Database.DuckDB.Simple.Function.Internal (FunctionResult (..), ScalarType, duckTypeForScalar, prepareResultWriter)
+import Database.DuckDB.Simple.Function.Internal (FunctionResult (..), ScalarValue, prepareResultWriter)
 import Database.DuckDB.Simple.Internal (Connection (..), defaultAggregateStripes)
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (LogicalTypeScalar))
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
+import Database.DuckDB.Simple.ToField (DuckDBColumnType (..))
 import Database.DuckDB.Simple.Typed (TypedRow (..), argumentName, conversionMessage, prepareArgumentReader, rowDeclarations)
 import Database.DuckDB.Simple.V2.Registration (
   AggregateCallbacks (..),
@@ -42,7 +42,6 @@ import Database.DuckDB.Simple.V2.Registration (
   FunctionParameter (..),
   FunctionSignature (..),
   RegistrationTarget (..),
-  TypeDeclaration (..),
   aggregateCallbacks,
   configureFunctionSignature,
   parameter,
@@ -184,8 +183,11 @@ stateStripe :: StateTable -> Int -> IORef IntSet.IntSet
 stateStripe table key = table ! (key `mod` length table)
 
 -- | Register a typed aggregate function on a connection or a loading extension.
--- An argument type with no declaration raises an error at registration. See
--- Note [Type declarations] in "Database.DuckDB.Simple.ToField".
+-- An argument type or a result type with no declaration raises an error at
+-- registration. See Note [Type declarations] in
+-- "Database.DuckDB.Simple.ToField". A result type that is not raw also raises an
+-- error at registration, because the finalize callback has no factory. See
+-- Note [Result writers] in "Database.DuckDB.Simple.Function.Internal".
 createAggregateOn
   :: forall state args result
    . (FromRow args, TypedRow args, FunctionResult result) => RegistrationTarget -> Text -> Aggregate state args result -> IO ()
@@ -193,34 +195,43 @@ createAggregateOn target name aggregate = do
   when (Text.null name || Text.any (== '\0') name) $
     throwInvalidArgument "aggregate function name must be nonempty and must not contain NUL"
   argumentTypes <- rowDeclarations name ["argument " <> argumentName index | index <- [0 ..]] columnTypes
+  resultType <- either (\reason -> throwInvalidArgument (name <> ": result: " <> reason)) pure (duckdbTypeDeclaration (Proxy :: Proxy result))
+  toRaw <- case rawResult of
+    Just raw -> pure raw
+    Nothing ->
+      throwInvalidArgument
+        ( name
+            <> ": result: the result type of an aggregate function must be BOOLEAN, TINYINT to BIGINT, UTINYINT to UBIGINT,"
+            <> " FLOAT, DOUBLE, or VARCHAR (Bool, Int8 to Int64, Int, Word8 to Word64, Word, Float, Double, Text, String,"
+            <> " or Maybe of one of them), because the finalize callback has no factory"
+        )
   let parameters =
         [ (parameter (argumentName index) argumentType){parameterKind = DuckDBV2FunctionParameterKindPositionalOnly}
         | (index, argumentType) <- zip [0 ..] argumentTypes
         ]
-  withRegistrationFactory target \factory -> registerAggregateFunctionWith target (configure parameters factory) callbacks
+      callbacks =
+        ( aggregateCallbacks
+            setStateSize
+            (initializeStates aggregate)
+            (updateStates name aggregate (length columnTypes))
+            (combineStates aggregate)
+            (finalizeStates aggregate toRaw)
+        )
+          { aggregateBindCallback = Just (bindStateTable stripes)
+          , aggregateDestroyCallback = Just destroyStates
+          }
+  withRegistrationFactory target \factory -> registerAggregateFunctionWith target (configure parameters resultType factory) callbacks
   where
     columnTypes = rowColumnTypes (Proxy :: Proxy args)
-    resultType = scalarReturnType (Proxy :: Proxy result)
-    configure parameters factory function = do
+    configure parameters resultType factory function = do
       withIdentifier name (checked . c_duckdb_v2_aggregate_function_set_name function)
       signature <- output (c_duckdb_v2_aggregate_function_get_signature function)
       configureFunctionSignature
         factory
-        (FunctionSignature parameters (Just (StructuredType (LogicalTypeScalar (duckTypeForScalar resultType)))))
+        (FunctionSignature parameters (Just resultType))
         signature
       checked
         (c_duckdb_v2_aggregate_function_set_property function DuckDBV2FunctionPropertyNullHandling DuckDBV2FunctionPropertyNullHandlingSpecial)
-    callbacks =
-      ( aggregateCallbacks
-          setStateSize
-          (initializeStates aggregate)
-          (updateStates name aggregate (length columnTypes))
-          (combineStates aggregate)
-          (finalizeStates aggregate resultType)
-      )
-        { aggregateBindCallback = Just (bindStateTable stripes)
-        , aggregateDestroyCallback = Just destroyStates
-        }
     -- See Note [State table stripes].
     stripes = case target of
       ConnectionTarget connection -> connectionStripes connection
@@ -300,20 +311,20 @@ combineStates Aggregate{aggregateCombine} info = do
     current <- readIORef target
     aggregateCombine current source >>= evaluate >>= writeIORef target
 
--- | Write the result of each state at its row of the result vector. DuckDB does
--- not destroy the states of a finalize call that fails, so release them here.
--- See Note [Aggregate state life cycle].
-finalizeStates
-  :: (FunctionResult result) => Aggregate state args result -> ScalarType -> DuckDBV2AggregateFunctionFinalizeInfoHandle -> IO ()
-finalizeStates Aggregate{aggregateResult} resultType info = do
+-- | Write the result of each state at its row of the result vector, as a raw
+-- value. DuckDB does not destroy the states of a finalize call that fails, so
+-- release them here. See Note [Aggregate state life cycle] and
+-- Note [Result writers] in "Database.DuckDB.Simple.Function.Internal".
+finalizeStates :: Aggregate state args result -> (result -> ScalarValue) -> DuckDBV2AggregateFunctionFinalizeInfoHandle -> IO ()
+finalizeStates Aggregate{aggregateResult} toRaw info = do
   table <- readStateTable (c_duckdb_v2_aggregate_function_finalize_get_bind_data info)
   count <- fromIntegral <$> output (c_duckdb_v2_aggregate_function_finalize_get_state_count info)
   states <- output (c_duckdb_v2_aggregate_function_finalize_get_states info)
   let finalize = do
         offset <- fromIntegral <$> output (c_duckdb_v2_aggregate_function_finalize_get_result_offset info)
-        write <- output (c_duckdb_v2_aggregate_function_finalize_get_result info) >>= prepareResultWriter resultType
+        write <- output (c_duckdb_v2_aggregate_function_finalize_get_result info) >>= prepareResultWriter Nothing
         forM_ [0 .. count - 1] \index ->
-          peekElemOff states index >>= stateCell >>= readIORef >>= aggregateResult >>= toScalarValue >>= write (offset + index)
+          peekElemOff states index >>= stateCell >>= readIORef >>= aggregateResult >>= write (offset + index) . toRaw
   finalize `onException` forM_ [0 .. count - 1] \index -> peekElemOff states index >>= releaseState table
 
 -- | Release each state. See Note [Aggregate state life cycle].

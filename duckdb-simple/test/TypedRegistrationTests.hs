@@ -134,6 +134,7 @@ typedRegistrationTests =
     , testCase "aggregate arguments, states, and result types" testAggregateTypes
     , testCase "aggregate exceptions fail the query only" testAggregateErrors
     , testCase "aggregate as a window function and with modifiers" testAggregateModifiers
+    , testCase "aggregate SMALLINT and FLOAT results, and the limit of the result types" testAggregateResultTypes
     , testCase "aggregate states are released" testAggregateRelease
     ]
 
@@ -723,11 +724,11 @@ testAggregateTypes = withConnection ":memory:" \conn -> do
     >>= (@?= [(True, Just (4 :: Double), 7 :: Word64, 28 :: Int32, "ababababababab" :: Text), (False, Just 0, 1, 0, "ab")])
   query_ conn "SELECT typed_any_odd(i), typed_mean(i::DOUBLE), typed_count(i::INTEGER), typed_label(i::VARCHAR) FROM range(0) t(i)"
     >>= (@?= [(False, Nothing :: Maybe Double, 0 :: Word64, "" :: Text)])
-  -- An Int32 argument is INTEGER, but an Int32 result is BIGINT.
+  -- An Int32 argument and an Int32 result are INTEGER.
   query_
     conn
     "SELECT typeof(typed_any_odd(1)), typeof(typed_mean(1)), typeof(typed_count(1)), typeof(typed_small(1)), typeof(typed_label('x'))"
-    >>= (@?= [("BOOLEAN" :: Text, "DOUBLE" :: Text, "UBIGINT" :: Text, "BIGINT" :: Text, "VARCHAR" :: Text)])
+    >>= (@?= [("BOOLEAN" :: Text, "DOUBLE" :: Text, "UBIGINT" :: Text, "INTEGER" :: Text, "VARCHAR" :: Text)])
   query_
     conn
     "SELECT function_name, parameters::VARCHAR, parameter_types::VARCHAR FROM duckdb_functions() WHERE function_name IN ('typed_small', 'typed_tally') ORDER BY function_name"
@@ -790,6 +791,50 @@ testAggregateErrors = withConnection ":memory:" \conn -> do
   query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
 
 -- | Compare window, DISTINCT, and FILTER uses with the built-in sum. Use ORDER BY in the call.
+-- | Declare the true type of a SMALLINT and a FLOAT result. Write them also in
+-- an ordered window, where the result vector of a finalize call has the size 0.
+-- Reject a result type that is not raw at registration.
+testAggregateResultTypes :: Assertion
+testAggregateResultTypes = withConnection ":memory:" \conn -> do
+  createAggregate
+    conn
+    "typed_small_count"
+    Aggregate
+      { aggregateInitial = 0 :: Int16
+      , aggregateStep = \count (Only (_ :: Int64)) -> pure (count + 1)
+      , aggregateCombine = \a b -> pure (a + b)
+      , aggregateResult = pure
+      }
+  createAggregate
+    conn
+    "typed_float_mean"
+    Aggregate
+      { aggregateInitial = (0, 0 :: Int)
+      , aggregateStep = \(total, count) (Only value) -> pure (total + value, count + 1)
+      , aggregateCombine = \(t1, c1) (t2, c2) -> pure (t1 + t2, c1 + c2)
+      , aggregateResult = \(total, count) -> pure (if count == 0 then Nothing else Just (realToFrac (total / fromIntegral count :: Double) :: Float))
+      }
+  query_ conn "SELECT typeof(typed_small_count(1)), typeof(typed_float_mean(1.0::DOUBLE))" >>= (@?= [("SMALLINT" :: Text, "FLOAT" :: Text)])
+  query_ conn "SELECT min(c), max(c), count(*) FROM (SELECT typed_small_count(i) AS c FROM range(100000) t(i) GROUP BY i % 5000)"
+    >>= (@?= [(20 :: Int16, 20 :: Int16, 5000 :: Int64)])
+  query_
+    conn
+    "SELECT min(c), max(c), count(*) FROM (SELECT typed_small_count(i) OVER (ORDER BY i ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS c FROM range(5000) t(i))"
+    >>= (@?= [(1 :: Int16, 3 :: Int16, 5000 :: Int64)])
+  query_
+    conn
+    "SELECT bool_and(m = CASE WHEN i = 0 THEN 0 ELSE i - 0.5 END), typeof(any_value(m)) FROM (SELECT i, typed_float_mean(i::DOUBLE) OVER (ORDER BY i ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS m FROM range(5000) t(i))"
+    >>= (@?= [(True, "FLOAT" :: Text)])
+  let limit = "result: the result type of an aggregate function must be BOOLEAN, TINYINT to BIGINT, UTINYINT to UBIGINT, FLOAT, DOUBLE, or VARCHAR"
+  assertSqlError
+    ("typed_peak_result: " <> limit)
+    (createAggregate conn "typed_peak_result" sumAggregate{aggregateResult = \total -> pure (Peak "total" (fromIntegral total) "")})
+  assertSqlError
+    ("typed_integer_result: " <> limit)
+    (createAggregate conn "typed_integer_result" sumAggregate{aggregateResult = pure . toInteger})
+  query_ conn "SELECT count(*) FROM duckdb_functions() WHERE function_name IN ('typed_peak_result', 'typed_integer_result')"
+    >>= (@?= [Only (0 :: Int64)])
+
 testAggregateModifiers :: Assertion
 testAggregateModifiers = withConnection ":memory:" \conn -> do
   createAggregate conn "typed_sum" sumAggregate
@@ -1110,13 +1155,16 @@ testNoDeclaration = withConnection ":memory:" \conn -> do
   query_ conn "SELECT count(*) FROM duckdb_functions() WHERE function_name LIKE 'typed\\_%' ESCAPE '\\'" >>= (@?= [Only (0 :: Int64)])
 
 -- | Give an error, and no other value, for a record field outside the range
--- of its declared type, as a parameter and as a column.
+-- of its declared type, as a parameter, as a column, and as a scalar result.
 testRecordFieldRange :: Assertion
 testRecordFieldRange = withConnection ":memory:" \conn -> do
   let largest = Counts (2 ^ (127 :: Int) - 1) (2 ^ (128 :: Int) - 1)
       outside = [(Counts (2 ^ (127 :: Int)) 0, "HUGEINT value out of range"), (Counts 0 (2 ^ (128 :: Int)), "UHUGEINT value out of range")]
       cases = largest : map fst outside
   query conn "SELECT ?" (Only largest) >>= (@?= [Only largest])
+  createFunction conn "typed_counts_result" (\(index :: Int) -> cases !! index)
+  query_ conn "SELECT typeof(typed_counts_result(0)), typed_counts_result(0)"
+    >>= (@?= [("STRUCT(signed HUGEINT, unsigned UHUGEINT)" :: Text, largest)])
   createTableFunction conn "typed_counts" ["c"] \(Only (index :: Int)) -> pure [Only (cases !! index)]
   query_ conn "SELECT typeof(c), c FROM typed_counts(0)" >>= (@?= [("STRUCT(signed HUGEINT, unsigned UHUGEINT)" :: Text, largest)])
   forM_ (zip [1 :: Int ..] outside) \(index, (counts, message)) -> do
@@ -1125,6 +1173,7 @@ testRecordFieldRange = withConnection ":memory:" \conn -> do
       Left (err :: SomeException) -> assertBool (displayException err) (message `Text.isInfixOf` Text.pack (displayException err))
       Right rows -> assertFailure ("expected an error, got " <> show rows)
     assertSqlError message (query_ conn (Query ("SELECT c FROM typed_counts(" <> Text.pack (show index) <> ")")) :: IO [Only Counts])
+    assertSqlError message (query_ conn (Query ("SELECT typed_counts_result(" <> Text.pack (show index) <> ")")) :: IO [Only Counts])
 
 -- | Run the function for each scan. Do not run it at registration or preparation.
 testTableRuns :: Assertion

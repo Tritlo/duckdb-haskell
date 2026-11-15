@@ -44,7 +44,6 @@
 -- Thus the garbage collector does not close them, and the program must close
 -- them.
 module Database.DuckDB.Simple.Function (
-  ScalarType,
   ScalarValue,
   FunctionResult (),
   Function (..),
@@ -68,7 +67,6 @@ import Database.DuckDB.Simple.FromRow (FromRow)
 import Database.DuckDB.Simple.Function.Internal (
   Function (..),
   FunctionResult,
-  ScalarType,
   ScalarValue,
   createFunctionOn,
   createFunctionWithStateOn,
@@ -86,6 +84,18 @@ import Database.DuckDB.Simple.Typed.Table (createTableFunctionOn)
 import Database.DuckDB.Simple.V2.Registration (TypeDeclaration (..))
 
 -- | Register a Haskell function under the supplied name.
+--
+-- The result type needs a 'Database.DuckDB.Simple.ToField.ToDuckValue'
+-- instance, and the SQL type of the result is its
+-- 'Database.DuckDB.Simple.ToField.duckdbTypeDeclaration'. Thus an
+-- 'Data.Int.Int16' result is SMALLINT and a 'Float' result is FLOAT. DuckDB
+-- computes with that type: the product of two SMALLINT values is SMALLINT, so
+-- @f(x) * f(y)@ of an 'Data.Int.Int16' function raises an Out of Range Error
+-- when the product does not fit. Cast a result to a wider type first, for
+-- example @f(x)::INTEGER * f(y)@. A 'Bool', an integer of 8 to 64 bits, a
+-- 'Float', a 'Double', a 'Text', or a 'String' result goes to the memory of the
+-- result vector. Each other result type gives a native value for each row
+-- through the context of the call.
 --
 -- Each argument type needs 'FromField' and
 -- 'Database.DuckDB.Simple.ToField.DuckDBColumnType' instances. The SQL type of
@@ -188,13 +198,19 @@ createTableFunction conn = createTableFunctionOn (ConnectionTarget conn)
 -- type of each argument is the
 -- 'Database.DuckDB.Simple.ToField.duckdbTypeDeclaration' of its column in
 -- 'TypedRow'. A type with no declaration is an error at registration, as for
--- 'createTableFunction'. The SQL return type comes from 'FunctionResult':
--- BIGINT for 'Int', 'Data.Int.Int16', 'Data.Int.Int32', 'Data.Int.Int64',
--- 'Data.Word.Word16', and 'Data.Word.Word32'; UBIGINT for 'Word' and
--- 'Data.Word.Word64'; DOUBLE for 'Double' and 'Float'; BOOLEAN for 'Bool'; and
--- VARCHAR for 'Text' and 'String'. A 'Maybe' result has the SQL type of its
--- value, and 'Nothing' gives NULL. Thus an @Int32@ argument is INTEGER, but an
--- @Int32@ result is BIGINT.
+-- 'createTableFunction'. The SQL return type is the
+-- 'Database.DuckDB.Simple.ToField.duckdbTypeDeclaration' of the result type,
+-- for example SMALLINT for 'Data.Int.Int16' and FLOAT for 'Float'. A 'Maybe'
+-- result has the SQL type of its value, and 'Nothing' gives NULL.
+--
+-- The result type must be BOOLEAN, TINYINT to BIGINT, UTINYINT to UBIGINT,
+-- FLOAT, DOUBLE, or VARCHAR: 'Bool', 'Int', 'Data.Int.Int8' to
+-- 'Data.Int.Int64', 'Word', 'Data.Word.Word8' to 'Data.Word.Word64', 'Float',
+-- 'Double', 'Text', 'String', or 'Maybe' of one of them. Another result type is
+-- an error at registration. The finalize callback of DuckDB has no factory, so
+-- it cannot make a value of another type. The library writes these types to
+-- the memory of the result vector, and it does not use the size of the vector:
+-- in an ordered window, DuckDB gives a result vector of the size 0.
 --
 -- An exception in a function fails the query. DuckDB can run the functions on
 -- more than one thread at one time, but not on the same state. The aggregate

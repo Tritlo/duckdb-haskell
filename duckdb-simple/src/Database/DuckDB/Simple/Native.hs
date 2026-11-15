@@ -111,12 +111,17 @@ instance Exception SQLError
 -- itself has an error type where one category fits the failure. An input check
 -- raises 'ErrorInputInvalid', or 'ErrorInputOutOfRange' for an integer outside
 -- the range of its parameter type and for a date or a timestamp outside the
--- range of DuckDB. A callback that waits too long for a connection lock gets
--- 'ErrorResourceInUse'. These errors of duckdb-simple have no error type: the
--- use of a closed environment, instance, connection, statement, or type cache,
--- a loaded DuckDB library of another version, a result value that does not
--- convert to its Haskell type, and a check of the state of the library or of a
--- value that DuckDB gave.
+-- range of DuckDB. A nanosecond target has exceptions to the range rule (see
+-- Note [Nanosecond parameters] in "Database.DuckDB.Simple.ToField"). A
+-- callback that waits too long for a connection lock gets 'ErrorResourceInUse'.
+-- These errors of duckdb-simple have no error type: the use of a closed
+-- environment, instance, connection, statement, or type cache, a loaded DuckDB
+-- library of another version, and a result value that does not convert to its
+-- Haskell type. A check of the state of the library, or of a vector, a type, or
+-- a value that DuckDB gave, raises one of three exceptions, by the check: an
+-- 'SQLError' with no error type, an @IOException@ (a @userError@), or an
+-- @ErrorCall@. When such a check fails in a callback, the outer statement fails
+-- with an 'SQLError'.
 data ErrorType
   = ErrorApi
   | ErrorIOFileNotFound

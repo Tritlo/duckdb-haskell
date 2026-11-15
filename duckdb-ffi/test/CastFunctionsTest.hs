@@ -5,7 +5,7 @@
 module CastFunctionsTest (tests) where
 
 import Control.Exception (bracket)
-import Control.Monad (when)
+import Control.Monad (forM_, when)
 import Data.Coerce (coerce)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Int (Int32)
@@ -42,20 +42,22 @@ castFunctionOverridesBuiltin =
   testCase "custom cast overrides builtin conversion" $
     withDatabase \db ->
       withConnection db \conn ->
-        withTestCast conn \_ -> do
+        withTestCast conn Nothing \_ -> do
           withResult conn "SELECT CAST(v AS VARCHAR) FROM (VALUES (1), (5)) AS t(v)" \resPtr -> do
             fetchString resPtr 0 0 >>= (@?= "value: 1")
             fetchString resPtr 0 1 >>= (@?= "value: 5")
             errPtr <- c_duckdb_result_error resPtr
             errPtr @?= coerce nullPtr
 
+-- In DuckDB 2.0.0, a failing cast between types that DuckDB plans as infallible, for example INTEGER to VARCHAR,
+-- gives an INTERNAL error and invalidates the database. The V1 API has no way around it, so the target is a custom type.
 castFunctionReportsErrors :: TestTree
 castFunctionReportsErrors =
-  testCase "cast failure surfaces error message" $
+  testCase "a cast failure to a custom type reports the message" $
     withDatabase \db ->
       withConnection db \conn ->
-        withTestCast conn \_ ->
-          withConstCString "SELECT CAST(v AS VARCHAR) FROM (VALUES (-7)) AS t(v)" \sql ->
+        withTestCast conn (Just "checked_text") \_ ->
+          withConstCString "SELECT CAST(v AS checked_text) FROM (VALUES (-7)) AS t(v)" \sql ->
             alloca \resPtr -> do
               state <- c_duckdb_query conn sql resPtr
               state @?= DuckDBError
@@ -64,13 +66,15 @@ castFunctionReportsErrors =
               errMsg <- peekCString (coerce errPtr)
               assertBool "error message should mention negative" ("negative" `isInfixOf` errMsg)
               c_duckdb_destroy_result resPtr
+              -- The connection runs the next statement.
+              withResult conn "SELECT 42" \_ -> pure ()
 
 castFunctionTryMode :: TestTree
 castFunctionTryMode =
   testCase "try_cast produces null rows and reports try mode" $
     withDatabase \db ->
       withConnection db \conn ->
-        withTestCast conn \CastHarness{chLastMode, chExtraSeen} -> do
+        withTestCast conn Nothing \CastHarness{chLastMode, chExtraSeen} -> do
           withResult conn "SELECT TRY_CAST(v AS VARCHAR) FROM (VALUES (2), (-3)) AS t(v)" \resPtr -> do
             fetchString resPtr 0 0 >>= (@?= "value: 2")
             c_duckdb_value_is_null resPtr 0 1 >>= (@?= CBool 1)
@@ -81,8 +85,10 @@ castFunctionTryMode =
 
 -- Harness ------------------------------------------------------------------
 
-withTestCast :: DuckDBConnection -> (CastHarness -> IO a) -> IO a
-withTestCast conn action = do
+-- | Register a cast from INTEGER to VARCHAR, or to a custom type with the given
+-- name and the base type VARCHAR.
+withTestCast :: DuckDBConnection -> Maybe String -> (CastHarness -> IO a) -> IO a
+withTestCast conn targetAlias action = do
   modeRef <- newIORef DuckDBCastNormal
   extraSeenRef <- newIORef False
   prefixStable <- newStablePtr ("value: " :: String)
@@ -91,6 +97,9 @@ withTestCast conn action = do
     withCastFunction \castFun ->
       withLogicalType (c_duckdb_create_logical_type (DuckDBTypeAlias DuckDBTypeInteger)) \sourceType ->
         withLogicalType (c_duckdb_create_logical_type (DuckDBTypeAlias DuckDBTypeVarchar)) \targetType -> do
+          forM_ targetAlias \alias -> do
+            withConstCString alias (c_duckdb_logical_type_set_alias targetType)
+            c_duckdb_register_logical_type conn targetType (coerce nullPtr) >>= (@?= DuckDBSuccess)
           c_duckdb_cast_function_set_source_type castFun sourceType
           c_duckdb_cast_function_set_target_type castFun targetType
           c_duckdb_cast_function_set_implicit_cast_cost castFun 0

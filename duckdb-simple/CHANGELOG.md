@@ -81,7 +81,8 @@
   `fetchResultError`, `throwResultError`, `mkExecuteError`,
   `throwRegistrationError`, `withClientContext`, and `destroyClientContext`.
   `Connection` adds `connectionInstance`, `connectionLock`,
-  `connectionWindow`, and `connectionLockBound`. `ConnectionOpen` has no
+  `connectionWindow`, `connectionLockBound`, `connectionStripes`, and
+  `connectionArrowBatch`. `ConnectionOpen` has no
   `connectionDatabase` and adds `connectionStatements` and
   `connectionReleaseParent`. `Statement` adds `statementArrowResult`,
   `statementBindings`, `statementParameterNames`, and
@@ -110,6 +111,14 @@
   `ErrorResourceInUse` after the time limit. For most callbacks, the outer
   statement then fails. The README gives the cases that the time limit does
   not cover.
+- Add `connectionAggregateStripes` to `ConnectionOptions`. It sets the number
+  of stripes in the state table of a typed aggregate on the connection. The
+  default is `defaultAggregateStripes` (64). The open rejects a number that is
+  not positive. A registration on an extension uses the default.
+- Add `connectionArrowBatchSize` to `ConnectionOptions`. It sets the largest
+  number of rows in one Arrow array of an Arrow fold on the connection. The
+  default is `defaultArrowBatchSize` (2048 rows). As in DuckDB, 0 means 131072.
+  The open rejects a negative value.
 - The library decodes the message of a native error with replacement
   characters. Thus `show` of such an `SQLError` does not raise for a text that
   is not valid UTF-8. Version 0.3 decoded the text with `decodeUtf8`, which

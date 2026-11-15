@@ -564,6 +564,10 @@ schema and array batch. It can read them or pass them to an Arrow consumer
 that releases or moves them. The fold releases any remaining contents on
 success, failure, or cancellation. The consumer owns any contents it moves.
 
+Each array has at most `connectionArrowBatchSize` rows. Set this option in
+`ConnectionOptions`. The default is `defaultArrowBatchSize`, 2048 rows. DuckDB
+can give shorter arrays. As in DuckDB, 0 means 131072.
+
 The original pointers are valid only during the callback. To retain contents,
 a consumer must move the root structs into its own storage and set the source
 release fields to NULL. Moved contents remain valid after the query and
@@ -936,6 +940,12 @@ aggregateExample conn = do
     }
   query_ conn "SELECT haskell_sum(i) FROM range(10) t(i)" -- [Only 45]
 ```
+
+The library keeps the live aggregate states in a table with stripes. Two
+DuckDB threads wait for each other only when they change the same stripe.
+`connectionAggregateStripes` in `ConnectionOptions` sets the number of stripes
+for the aggregates of a connection. The default is `defaultAggregateStripes`,
+64. No result depends on the number.
 
 `createTableFunction` registers a table function that gives its rows as a
 list. DuckDB reads all columns of each row, also the columns that the query

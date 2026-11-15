@@ -1,3 +1,4 @@
+{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -8,9 +9,9 @@ module CoreRegressionTests (coreRegressionTests) where
 
 import Control.Concurrent (forkFinally, newEmptyMVar, putMVar, readMVar, takeMVar, threadDelay)
 import Control.Exception (IOException, SomeException, bracket, finally, throwIO, try)
-import Control.Monad (forM_, replicateM, replicateM_, void)
+import Control.Monad (forM_, replicateM, replicateM_, void, when)
 import Data.Either (partitionEithers)
-import Data.IORef (modifyIORef', newIORef, readIORef)
+import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (isInfixOf)
 import Data.Text (Text)
@@ -18,6 +19,8 @@ import qualified Data.Text as Text
 import qualified Database.DuckDB.FFI.V2 as Raw
 import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Catalog as Catalog
+import qualified Database.DuckDB.Simple.Config as Config
+import qualified Database.DuckDB.Simple.Copy as Copy
 import Database.DuckDB.Simple.FromField (FieldValue)
 import Database.DuckDB.Simple.Internal (
   DuckDBV2ResultHandle (..),
@@ -33,16 +36,26 @@ import Database.DuckDB.Simple.Internal (
   withConnectionHandle,
  )
 import qualified Database.DuckDB.Simple.Internal as Internal
+import qualified Database.DuckDB.Simple.Logging as Logging
+import Database.DuckDB.Simple.Pragma (PragmaCallback (..), registerPragmaFunction)
+import Database.DuckDB.Simple.Registration (
+  Replacement (..),
+  TypeDeclaration (..),
+  parameter,
+  registerInstanceReplacementScan,
+  registerReplacementScan,
+ )
 import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (withArray)
-import System.Directory (canonicalizePath, getTemporaryDirectory, removeFile)
+import System.Directory (canonicalizePath, createDirectory, getTemporaryDirectory, listDirectory, removeFile, removePathForcibly)
+import System.FilePath ((</>))
 import System.IO (hClose, openBinaryTempFile)
 import System.Mem (performMajorGC)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
-import TestUtils (assertInputError, assertSqlErrorType, raiseCapabilities)
+import TestUtils (assertInputError, assertReusable, assertSqlErrorType, raiseCapabilities)
 
 -- | Exercise public operations against an in-memory database.
 coreRegressionTests :: TestTree
@@ -239,6 +252,8 @@ coreRegressionTests =
           case result of
             Left (err :: IOError) -> assertBool "original exception" ("original transaction failure" `isInfixOf` show err)
             Right () -> assertFailure "expected transaction failure"
+    , testCase "a callback exception of each kind fails its statement in a transaction and leaves no rows" $
+        mapM_ runFailingCallback failingCallbacks
     , testCase "materialization reports a late error before the first callback" $
         withConnectionWithConfig ":memory:" [("threads", "1")] $ \conn -> do
           calls <- newIORef (0 :: Int)
@@ -572,3 +587,378 @@ assertThrows action = do
   case result of
     Left (_ :: SomeException) -> pure ()
     Right () -> assertFailure "expected an exception"
+
+-- | A callback of one kind and phase that raises an exception while DuckDB runs
+-- a statement over more than one chunk, and that statement.
+data FailingCallback = FailingCallback
+  { failingKind :: String
+  , failingLabel :: String
+  , failingThreads :: Int
+  , failingSetup :: FailingContext -> IO ()
+  , failingStatement :: FailingContext -> IO ()
+  , failingText :: Maybe Text.Text
+  -- ^ A text of the error of the statement, or 'Nothing' for a statement that
+  --   does not fail, because DuckDB ignores the error of a log sink. The
+  --   callback of such a row must count its calls in 'contextCalls'.
+  }
+
+-- | The connections and the directory of one row of 'failingCallbacks'.
+data FailingContext = FailingContext
+  { contextConnection :: Connection
+  , contextOther :: Connection
+  , contextInstance :: Instance
+  , contextDirectory :: FilePath
+  , contextCalls :: IORef Int
+  }
+
+-- | Run a statement on the connection of the row.
+runIn :: FailingContext -> Query -> IO ()
+runIn context sql = void (execute_ (contextConnection context) sql)
+
+-- | Raise the exception of a row.
+failWith :: String -> IO a
+failWith text = throwIO (userError text)
+
+-- | A sum whose step, combine, or result raises an exception.
+failingSum :: (Int64 -> Bool) -> Bool -> Bool -> String -> Aggregate Int64 (Only Int64) Int64
+failingSum failStep failCombine failResult text =
+  Aggregate
+    { aggregateInitial = 0
+    , aggregateStep = \total (Only value) -> if failStep value then failWith text else pure (total + value)
+    , aggregateCombine = \a b -> if failCombine then failWith text else pure (a + b)
+    , aggregateResult = \total -> if failResult then failWith text else pure total
+    }
+
+-- | A table function of the pairs (n, f) for n from 0 to the count, whose column
+-- f raises an exception at one row.
+failingPairs :: Connection -> Text.Text -> Int64 -> String -> IO ()
+failingPairs conn name row text =
+  createTableFunction conn name ["n", "f"] \(Only count) ->
+    pure [(n, if n == row then error text else n) | n <- [0 .. count - 1 :: Int64]]
+
+-- | Each callback kind and phase in which a function of the user can fail. The
+-- statements run over 5000 rows: two full chunks of 2048 rows come before row
+-- 3000. Each kind runs one time more at 4 threads.
+failingCallbacks :: [FailingCallback]
+failingCallbacks = rows <> [row{failingThreads = 4} | row <- firstOfEachKind rows, failingThreads row == 1]
+  where
+    firstOfEachKind = foldr (\row kept -> row : filter ((/= failingKind row) . failingKind) kept) []
+    insertRows sql context = runIn context ("INSERT INTO failing_rows " <> sql)
+    countCall context = atomicModifyIORef' (contextCalls context) \count -> (count + 1, ())
+    rows =
+      [ FailingCallback
+          "scalar"
+          "scalar function with an IO result"
+          1
+          ( \context ->
+              createFunction (contextConnection context) "failing_io" \(x :: Int64) ->
+                (when (x == 3000) (failWith "failing scalar io") >> pure x :: IO Int64)
+          )
+          (insertRows "SELECT failing_io(i) FROM range(5000) t(i)")
+          (Just "failing scalar io")
+      , FailingCallback
+          "scalar"
+          "scalar function with a pure result"
+          1
+          (\context -> createFunction (contextConnection context) "failing_pure" \(x :: Int64) -> if x == 3000 then error "failing scalar pure" else x)
+          (insertRows "SELECT failing_pure(i) FROM range(5000) t(i)")
+          (Just "failing scalar pure")
+      , FailingCallback
+          "stateful scalar"
+          "stateful scalar function call"
+          1
+          ( \context ->
+              createFunctionWithState (contextConnection context) "failing_call" (pure ()) \() (x :: Int64) ->
+                (when (x == 3000) (failWith "failing stateful call") >> pure x :: IO Int64)
+          )
+          (insertRows "SELECT failing_call(i) FROM range(5000) t(i)")
+          (Just "failing stateful call")
+      , FailingCallback
+          "stateful scalar"
+          "stateful scalar function init"
+          1
+          (\context -> createFunctionWithState (contextConnection context) "failing_init" (failWith "failing stateful init") \() (x :: Int64) -> x)
+          (insertRows "SELECT failing_init(i) FROM range(5000) t(i)")
+          (Just "failing stateful init")
+      , FailingCallback
+          "aggregate"
+          "aggregate update with DISTINCT"
+          1
+          (\context -> createAggregate (contextConnection context) "failing_distinct" (failingSum (== 3000) False False "failing distinct update"))
+          (insertRows "SELECT failing_distinct(DISTINCT i) FROM range(5000) t(i)")
+          (Just "failing distinct update")
+      , FailingCallback
+          "aggregate"
+          "aggregate update with FILTER"
+          1
+          (\context -> createAggregate (contextConnection context) "failing_filter" (failingSum (== 3000) False False "failing filter update"))
+          (insertRows "SELECT failing_filter(i) FILTER (WHERE i >= 0) FROM range(5000) t(i)")
+          (Just "failing filter update")
+      , FailingCallback
+          "aggregate"
+          "aggregate update as a WINDOW aggregate"
+          1
+          (\context -> createAggregate (contextConnection context) "failing_window" (failingSum (== 3000) False False "failing window update"))
+          (insertRows "SELECT failing_window(i) OVER (ORDER BY i ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) FROM range(5000) t(i)")
+          (Just "failing window update")
+      , FailingCallback
+          "aggregate"
+          "aggregate combine of a plain aggregate"
+          1
+          (\context -> createAggregate (contextConnection context) "failing_combine" (failingSum (const False) True False "failing plain combine"))
+          (insertRows "SELECT failing_combine(i) FROM range(5000) t(i)")
+          (Just "failing plain combine")
+      , -- A grouped aggregate combines only the partial states of several
+        -- threads, and DuckDB scans one row group of 122880 rows with one
+        -- thread. Thus this row needs two row groups and 4 threads.
+        FailingCallback
+          "aggregate"
+          "aggregate combine of a grouped aggregate"
+          4
+          ( \context -> do
+              runIn context "CREATE TABLE failing_groups AS SELECT i FROM range(130000) t(i)"
+              createAggregate (contextConnection context) "failing_grouped" (failingSum (const False) True False "failing grouped combine")
+          )
+          (insertRows "SELECT failing_grouped(i) FROM failing_groups GROUP BY i % 1000")
+          (Just "failing grouped combine")
+      , FailingCallback
+          "aggregate"
+          "aggregate finalize as a WINDOW aggregate"
+          1
+          (\context -> createAggregate (contextConnection context) "failing_result" (failingSum (const False) False True "failing window finalize"))
+          (insertRows "SELECT failing_result(i) OVER (ORDER BY i ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) FROM range(5000) t(i)")
+          (Just "failing window finalize")
+      , FailingCallback
+          "table function"
+          "table function scan after rows, failing column only"
+          1
+          (\context -> failingPairs (contextConnection context) "failing_later" 3000 "failing scan at row 3000")
+          (insertRows "SELECT f FROM failing_later(5000)")
+          (Just "failing scan at row 3000")
+      , FailingCallback
+          "table function"
+          "table function scan after rows, all columns"
+          1
+          (\context -> failingPairs (contextConnection context) "failing_later" 3000 "failing scan at row 3000")
+          (\context -> runIn context "INSERT INTO failing_pairs SELECT * FROM failing_later(5000)")
+          (Just "failing scan at row 3000")
+      , FailingCallback
+          "table function"
+          "table function scan at row 0, failing column only"
+          1
+          (\context -> failingPairs (contextConnection context) "failing_first" 0 "failing scan at row 0")
+          (insertRows "SELECT f FROM failing_first(5000)")
+          (Just "failing scan at row 0")
+      , FailingCallback
+          "table function"
+          "table function scan at row 0, all columns"
+          1
+          (\context -> failingPairs (contextConnection context) "failing_first" 0 "failing scan at row 0")
+          (\context -> runIn context "INSERT INTO failing_pairs SELECT * FROM failing_first(5000)")
+          (Just "failing scan at row 0")
+      , FailingCallback
+          "table function"
+          "table function init"
+          1
+          ( \context ->
+              createTableFunction (contextConnection context) "failing_start" ["v"] \(Only (_ :: Int64)) ->
+                failWith "failing table init" :: IO [Only Int64]
+          )
+          (insertRows "SELECT v FROM failing_start(5000)")
+          (Just "failing table init")
+      , -- The bind callback runs no function of the user. A NULL for a
+        -- parameter that cannot hold NULL fails there.
+        FailingCallback
+          "table function"
+          "table function bind"
+          1
+          (\context -> createTableFunction (contextConnection context) "failing_bind" ["v"] \(Only (count :: Int64)) -> pure [Only count])
+          (insertRows "SELECT v FROM failing_bind(NULL::BIGINT)")
+          (Just "failing_bind: argument arg0 is NULL, but Int64 cannot hold NULL")
+      , FailingCallback
+          "table function"
+          "table function init with a failing query on another connection"
+          1
+          ( \context ->
+              createTableFunction (contextConnection context) "failing_inner" ["v"] \(Only (_ :: Int64)) ->
+                query_ (contextOther context) "SELECT 'abc'::INTEGER" :: IO [Only Int64]
+          )
+          (insertRows "SELECT v FROM failing_inner(5000)")
+          (Just "Conversion Error: Could not convert string 'abc' to INT32")
+      , FailingCallback
+          "pragma"
+          "pragma in the call form"
+          1
+          ( \context ->
+              registerPragmaFunction
+                (contextConnection context)
+                "failing_pragma"
+                [parameter "amount" (TypeExpression "BIGINT")]
+                (ExecPragma \(Only (_ :: Int64)) -> failWith "failing pragma call")
+          )
+          (\context -> runIn context "PRAGMA failing_pragma(1)")
+          (Just "failing pragma call")
+      , FailingCallback
+          "custom option"
+          "custom option update"
+          1
+          ( \context ->
+              Config.registerCustomOption
+                (contextConnection context)
+                (Config.customOption "failing_option" (TypeExpression "BIGINT")){Config.customOptionUpdate = Just \_ -> failWith "failing option update"}
+          )
+          (\context -> runIn context "SET failing_option = 1")
+          (Just "failing option update")
+      , FailingCallback
+          "replacement scan"
+          "replacement scan on a connection"
+          1
+          ( \context -> registerReplacementScan (contextConnection context) \parts ->
+              if parts == ["failing_missing"] then failWith "failing replacement scan" else pure Nothing
+          )
+          (insertRows "SELECT * FROM failing_missing")
+          (Just "failing replacement scan")
+      , FailingCallback
+          "replacement scan"
+          "replacement scan on an instance"
+          1
+          ( \context -> registerInstanceReplacementScan (contextInstance context) \parts ->
+              if parts == ["failing_missing"] then failWith "failing instance replacement scan" else pure (Nothing :: Maybe Replacement)
+          )
+          (insertRows "SELECT * FROM failing_missing")
+          (Just "failing instance replacement scan")
+      , FailingCallback
+          "COPY TO"
+          "COPY TO sink after rows"
+          1
+          ( \context -> do
+              written <- newIORef (0 :: Int)
+              Copy.registerCopyToFunction
+                (contextConnection context)
+                "failing_copy"
+                (\_ -> pure ())
+                (\info -> writeFile (Copy.copyInitFilePath info) "" >> pure (Copy.copyInitFilePath info))
+                ( \info chunk -> do
+                    appendFile (Copy.copySinkGlobalState info) (concatMap (const "row\n") chunk)
+                    total <- atomicModifyIORef' written \count -> (count + length chunk, count + length chunk)
+                    when (total > 3000) (failWith "failing COPY TO sink")
+                )
+                (\_ -> pure ())
+          )
+          ( \context ->
+              void
+                ( execute
+                    (contextConnection context)
+                    "COPY (SELECT i FROM range(5000) t(i)) TO ? (FORMAT failing_copy)"
+                    (Only (Text.pack (contextDirectory context </> "out.txt")))
+                )
+          )
+          (Just "failing COPY TO sink")
+      , FailingCallback
+          "COPY FROM"
+          "COPY FROM after rows"
+          1
+          ( \context -> do
+              writeFile (contextDirectory context </> "in.txt") ""
+              Copy.registerCopyFromFunction (contextConnection context) "failing_from" \_ ->
+                pure [Only (if i == 3000 then error "failing COPY FROM row" else i) | i <- [0 .. 4999 :: Int64]]
+          )
+          ( \context ->
+              void
+                ( execute
+                    (contextConnection context)
+                    "COPY failing_rows FROM ? (FORMAT failing_from)"
+                    (Only (Text.pack (contextDirectory context </> "in.txt")))
+                )
+          )
+          (Just "failing COPY FROM row")
+      , FailingCallback
+          "multi-file function"
+          "multi-file function at its second file"
+          1
+          ( \context -> do
+              forM_ [1 :: Int .. 3] \file -> writeFile (contextDirectory context </> ("part" <> show file <> ".txt")) ""
+              createTableFunction (contextConnection context) "failing_single" ["v"] \(Only (path :: Text.Text)) -> do
+                when ("part2.txt" `Text.isSuffixOf` path) (failWith "failing second file")
+                pure [Only i | i <- [0 .. 2999 :: Int64]]
+              Copy.registerMultiFileFunction (contextConnection context) "failing_files" "failing_single" Copy.defaultMultiFileOptions
+          )
+          ( \context ->
+              void
+                ( execute
+                    (contextConnection context)
+                    "INSERT INTO failing_rows SELECT v FROM failing_files(?)"
+                    (Only (Text.pack (contextDirectory context </> "part*.txt")))
+                )
+          )
+          (Just "failing second file")
+      , FailingCallback
+          "log sink"
+          "log sink write"
+          1
+          ( \context -> Logging.registerLogSink (contextConnection context) "failing_log" (\_ -> countCall context >> failWith "failing log write") (pure ())
+          )
+          ( \context -> runIn context "CALL enable_logging(); SET logging_storage = 'failing_log'; SELECT write_log('failing'); SET logging_storage = 'memory'"
+          )
+          Nothing
+      , FailingCallback
+          "log sink"
+          "log sink flush"
+          1
+          ( \context -> Logging.registerLogSink (contextConnection context) "failing_log" (\_ -> pure ()) (countCall context >> failWith "failing log flush")
+          )
+          ( \context -> runIn context "CALL enable_logging(); SET logging_storage = 'failing_log'; SELECT write_log('failing'); SET logging_storage = 'memory'"
+          )
+          Nothing
+      ]
+
+-- | Run one row of 'failingCallbacks' in its own instance and directory, inside
+-- an explicit transaction that has written a marker row. Require the error type
+-- and the text of the callback, then COMMIT, then a usable connection and a
+-- usable new connection of the instance, no row of the statement, no marker
+-- row, and no new file. A log sink row requires no error and a call of the
+-- sink, and keeps the marker. A new connection runs a query before the COMMIT
+-- too. The same connection runs its query only after the COMMIT, because
+-- DuckDB refuses each other statement in a transaction after a failed
+-- statement.
+runFailingCallback :: FailingCallback -> Assertion
+runFailingCallback row = bracket createRowDirectory removePathForcibly \directory ->
+  withEnvironment \environment -> withInstance environment [("threads", Text.pack (show (failingThreads row)))] \instance' ->
+    withConnection ":memory:" \other -> do
+      attachDatabase instance' ":memory:" "failing" []
+      setDefaultDatabase instance' "failing"
+      withConnectionOn instance' \conn -> do
+        calls <- newIORef 0
+        let context = FailingContext conn other instance' directory calls
+            label = failingLabel row <> " at " <> show (failingThreads row) <> " threads"
+        mapM_
+          (void . execute_ conn)
+          ["CREATE TABLE failing_rows (v BIGINT)", "CREATE TABLE failing_pairs (n BIGINT, f BIGINT)", "CREATE TABLE failing_marker (m INTEGER)"]
+        failingSetup row context
+        before <- listDirectory directory
+        void (execute_ conn "BEGIN")
+        void (execute_ conn "INSERT INTO failing_marker VALUES (1)")
+        outcome <- try (failingStatement row context)
+        case (failingText row, outcome) of
+          (Just text, Left err) -> do
+            assertEqual label (Just ErrorInputInvalid) (sqlErrorType err)
+            assertBool (label <> ": " <> show (sqlErrorMessage err)) (text `Text.isInfixOf` sqlErrorMessage err)
+          (Just _, Right ()) -> assertFailure (label <> ": the statement did not fail")
+          (Nothing, Left err) -> assertFailure (label <> ": " <> show err)
+          (Nothing, Right ()) -> readIORef calls >>= assertBool (label <> ": the callback ran") . (> 0)
+        withConnectionOn instance' assertReusable
+        void (execute_ conn "COMMIT")
+        assertReusable conn
+        withConnectionOn instance' assertReusable
+        let marker = maybe 1 (const 0) (failingText row) :: Int64
+        query_ conn "SELECT (SELECT count(*) FROM failing_rows), (SELECT count(*) FROM failing_pairs), (SELECT count(*) FROM failing_marker)"
+          >>= assertEqual (label <> ": rows after COMMIT") [(0 :: Int64, 0 :: Int64, marker)]
+        listDirectory directory >>= assertEqual (label <> ": files after the statement") before
+  where
+    createRowDirectory = do
+      root <- getTemporaryDirectory
+      (path, handle) <- openBinaryTempFile root "duckdb-failing-callback"
+      hClose handle
+      removeFile path
+      createDirectory path
+      pure path

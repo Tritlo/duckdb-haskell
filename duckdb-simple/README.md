@@ -499,10 +499,10 @@ A statement in a callback that waits for a lock of the connection longer than
 the time limit of `connectionCallbackLockWait` raises an `SQLError` of the type
 `ErrorResourceInUse` ([User-Defined Functions](#user-defined-functions) gives
 the rule). A statement on a connection that streams a result, for example in the
-step of a fold, also gives `ErrorResourceInUse`, and so does a close of an
-environment while an instance that `createInstance` did not create is alive.
-Other errors of the library have no type, for example an operation on a closed
-connection.
+step of a fold of `Database.DuckDB.Simple.Streaming`, also gives
+`ErrorResourceInUse`, and so does a close of an environment while an instance
+that `createInstance` did not create is alive. Other errors of the library have
+no type, for example an operation on a closed connection.
 
 A result value that its Haskell type does not read raises an `SQLError` with no
 type and with the query. The message describes the first field that fails:

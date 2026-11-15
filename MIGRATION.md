@@ -233,6 +233,9 @@ The SQL workflow stays the same. These changes can affect your code:
 - `FieldEnum` has a second field, the label: `FieldEnum Word32 Text`. Change
   each pattern and each construction. A `FieldEnum` inside a declared ENUM type
   binds its label.
+- `displayException` of a `ResultError` gives the rendered text of the error,
+  and the error of a field of a `ViaDuckDB` record starts with the field name.
+  Change code that matches the old texts.
 - A `Variant` read of a column that holds an ENUM, a MAP, or a UNION at any
   depth raises the error of an incompatible column. Write `c::VARIANT` in SQL,
   or read `FieldValue` for the decoded value.

@@ -357,6 +357,11 @@
   dictionary of the type, and does not cast.
 - A `FieldEnum` inside a value of a declared ENUM type binds its label, not its
   index. A label that is not in the dictionary raises `SQLError`.
+- `displayException` of a `ResultError` gives the text of the error, with the
+  column and the two types, as the `SQLError` of a column. Earlier versions
+  gave the derived `show`. The error of a field of a `ViaDuckDB` record names
+  the field, for example
+  `field stampedAt: duckdb-simple: a value has type TIMESTAMP but expected UTCTime`.
 - A `Variant` read of a column that holds an ENUM, a MAP, or a UNION at any
   depth raises the error of an incompatible column. Earlier versions wrapped
   the value, which DuckDB's cast to VARIANT changes and which a `Variant`

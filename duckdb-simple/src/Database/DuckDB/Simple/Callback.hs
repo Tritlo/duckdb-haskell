@@ -10,6 +10,7 @@ module Database.DuckDB.Simple.Callback (
   RegistrationTarget (..),
   withRegistrationFactory,
   targetCastFactory,
+  targetConfig,
   withTarget,
   Allocator,
   install,
@@ -26,8 +27,9 @@ module Database.DuckDB.Simple.Callback (
   attachOpaque,
 ) where
 
+import Control.Concurrent (rtsSupportsBoundThreads)
 import Control.Exception (SomeException, bracket, catch, displayException, finally, fromException, mask, mask_, onException, try)
-import Control.Monad (when)
+import Control.Monad (unless, when)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
@@ -37,6 +39,7 @@ import Database.DuckDB.Simple.CallbackMark (withCallbackMark)
 import Database.DuckDB.Simple.Internal (Connection, withConnectionHandle, withTypeCache)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.TypeCache (typeCacheCasts)
+import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Utils (with)
 import Foreign.Ptr (FunPtr, Ptr, castFunPtr, castPtr, freeHaskellFunPtr, nullFunPtr, nullPtr)
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deRefStablePtr, freeStablePtr, newStablePtr)
@@ -72,6 +75,14 @@ targetCastFactory :: RegistrationTarget -> IO (Maybe DuckDBV2FactoryHandle)
 targetCastFactory target = case target of
   ConnectionTarget connection -> Just <$> withTypeCache connection (pure . typeCacheCasts)
   ExtensionTarget _ _ -> pure Nothing
+
+-- | Borrow the config of a registration target: the config of the connection,
+-- or the config of the context of an extension. The handle is valid while the
+-- target is.
+targetConfig :: RegistrationTarget -> IO DuckDBV2ConfigHandle
+targetConfig target = case target of
+  ConnectionTarget connection -> withConnectionHandle connection (output . c_duckdb_v2_connection_get_config)
+  ExtensionTarget _ context -> output (c_duckdb_v2_context_get_config context)
 
 -- | Keep the target alive while borrowing its factory and registration builder.
 withTarget
@@ -160,24 +171,29 @@ in "Database.DuckDB.Simple.Copy.Internal".
 -}
 
 -- | Acquire callbacks and transfer their cleanup to a DuckDB object.
--- The object must be non-null. Its destructor must run after the action. See
--- Note [Callback ownership].
+-- The object must be non-null. Its destructor must run after the action. The
+-- first argument reads the config of the database that runs the callbacks. See
+-- Note [Callback ownership] and Note [Callbacks without the threaded runtime].
 withCallbackResources
-  :: (Allocator -> IO r)
-  -> (Ptr Void -> DuckDBV2OpaqueDestroyFn -> IO ())
-  -> (r -> IO b)
-  -> IO b
-withCallbackResources = withCallbackResourcesFinally (pure ())
-
--- | Run a final action before the callback resources are released.
--- This includes acquisition and registration failure. Contain final-action errors.
-withCallbackResourcesFinally
-  :: IO ()
+  :: IO DuckDBV2ConfigHandle
   -> (Allocator -> IO r)
   -> (Ptr Void -> DuckDBV2OpaqueDestroyFn -> IO ())
   -> (r -> IO b)
   -> IO b
-withCallbackResourcesFinally finalizer acquire attach action = mask \restore -> do
+withCallbackResources config = withCallbackResourcesFinally config (pure ())
+
+-- | Run a final action before the callback resources are released.
+-- This includes acquisition and registration failure. Contain final-action errors.
+-- A registration that acquires a callback checks the runtime before it
+-- registers. See Note [Callbacks without the threaded runtime].
+withCallbackResourcesFinally
+  :: IO DuckDBV2ConfigHandle
+  -> IO ()
+  -> (Allocator -> IO r)
+  -> (Ptr Void -> DuckDBV2OpaqueDestroyFn -> IO ())
+  -> (r -> IO b)
+  -> IO b
+withCallbackResourcesFinally config finalizer acquire attach action = mask \restore -> do
   cleanups <- newIORef []
   let cleanup = ignoreCallbackExceptions finalizer `finally` (readIORef cleanups >>= sequence_)
       allocate make = do
@@ -186,12 +202,62 @@ withCallbackResourcesFinally finalizer acquire attach action = mask \restore -> 
           `onException` freeHaskellFunPtr ptr
         pure ptr
   resources <- acquire allocate `onException` cleanup
+  acquired <- readIORef cleanups
+  unless (null acquired) (requireThreadedRuntime config) `onException` cleanup
   stable <- newStablePtr cleanup `onException` cleanup
   -- A setter that fails has not taken the pointer, so this handler frees it.
   -- See Note [Callback ownership].
   attach (castPtr (castStablePtrToPtr stable)) callbackResourcesDestructor
     `onException` (freeStablePtr stable >> cleanup)
   restore (action resources)
+
+{- Note [Callbacks without the threaded runtime]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+DuckDB calls a callback from its own threads. The GHC runtime without -threaded
+cannot take a call from a foreign thread. The GHC User's Guide says: "In order
+to use the FFI in a multi-threaded setting, you must use the -threaded option."
+A program without -threaded crashed in 20 of 20 runs when a scalar function ran
+over 2,000,000 rows with the setting threads = 4 ("schedule: re-entered
+unsafely", a segmentation fault, or a heap corruption). With threads = 1, or
+with -threaded, it crashed in none of 20 runs.
+
+Thus each registration that acquires a callback calls requireThreadedRuntime
+before it registers (withCallbackResourcesFinally). With the threaded runtime
+the check is one Bool test and no native call. Without it, the check reads the
+setting threads of the database that runs the callbacks (four native calls: the
+config, the option value, its BIGINT, and the release of the value) and raises
+the input error of the library when the setting is above 1. A registration with
+no callback, for example a custom type, a macro, or a custom option with no
+update function, does not check. The setting threads has only the GLOBAL scope
+("cannot be set locally" in DuckDB 2.0.0), so each connection of an instance and
+the instance itself give the same value.
+
+The check cannot see a later change. A statement SET threads = 4 after the
+registration, also on another connection of the instance, raises the count
+again, and the library does not read the SQL text of a statement. The check is
+a guard for the common mistake, not a proof that no callback runs on a second
+thread.
+-}
+
+-- | Raise the input error of the library when the GHC runtime is not threaded
+-- and the database that the config belongs to runs more than one thread. See
+-- Note [Callbacks without the threaded runtime].
+requireThreadedRuntime :: IO DuckDBV2ConfigHandle -> IO ()
+requireThreadedRuntime config = unless rtsSupportsBoundThreads do
+  handle <- config
+  threads <- withIdentifier (Text.pack "threads") \key -> alloca \scope ->
+    bracket
+      (output (\value -> c_duckdb_v2_config_get_option_value handle key value scope))
+      (destroy c_duckdb_v2_value_destroy)
+      (output . c_duckdb_v2_value_get_bigint)
+  when (threads > 1) $
+    throwInvalidArgument
+      ( Text.pack
+          ( "this program is not linked with -threaded, and the database runs "
+              <> show threads
+              <> " threads: link the program with -threaded, or set the DuckDB setting threads to 1 before you register a callback"
+          )
+      )
 
 -- | Transfer one state value to a DuckDB callback state slot.
 -- Use each slot once. See Note [Callback ownership].

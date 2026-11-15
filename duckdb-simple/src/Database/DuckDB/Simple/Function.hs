@@ -14,8 +14,11 @@
 -- can call a callback from several of its threads at the same time, and the
 -- runtime of GHC without @-threaded@ does not support that: the program can
 -- crash. Without @-threaded@, set the DuckDB setting @threads@ to 1 on each
--- database that runs callbacks, before a callback runs. The section
--- \"User-Defined Functions\" of the README gives the rule.
+-- database that runs callbacks, before a callback runs. Without @-threaded@, the
+-- registration of a callback raises an 'Database.DuckDB.Simple.SQLError' of
+-- the type 'Database.DuckDB.Simple.ErrorInputInvalid' when the setting
+-- @threads@ is above 1. The section \"User-Defined Functions\" of the README
+-- gives the rule.
 --
 -- A callback must not run a statement on the connection that runs the callback.
 -- Use another connection of the same instance. This rule applies to each

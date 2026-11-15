@@ -176,9 +176,14 @@
 - The README and the module header of `Database.DuckDB.Simple.Function` say that
   a program that registers a callback must be linked with `-threaded`. DuckDB
   can call a callback from several threads at the same time, and without
-  `-threaded` such a program can crash. This is not a change of behaviour:
-  version 0.3 needed `-threaded` in the same way, and its README named it only
-  for prompt cancellation.
+  `-threaded` such a program can crash. Version 0.3 needed `-threaded` in the
+  same way, and its README named it only for prompt cancellation. A program
+  that is not linked with `-threaded` now gets an `SQLError` of the type
+  `ErrorInputInvalid` when it registers a callback for a database with the
+  DuckDB setting `threads` above 1. The error tells to link the program with
+  `-threaded`, or to set `threads` to 1 before the registration. The library
+  reads the setting at the registration, so a later `SET threads` is not
+  checked. A program linked with `-threaded` has no change.
 - Add `connectionAggregateStripes` to `ConnectionOptions`. It sets the number
   of stripes in the state table of each typed aggregate that `createAggregate`
   registers through the connection. The

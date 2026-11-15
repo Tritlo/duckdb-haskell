@@ -50,6 +50,7 @@ import Database.DuckDB.Simple.Callback (
   install,
   installAll,
   installOptional,
+  targetConfig,
   withCallbackResources,
   withTarget,
  )
@@ -116,6 +117,7 @@ registerCopyFunctionWith target configure to from =
     c_duckdb_v2_extension_register_copy_function
     \function register ->
       withCallbackResources
+        (targetConfig target)
         (\allocate -> installAll (toInstallers allocate function to <> fromInstallers allocate function from))
         (attachOpaque (c_duckdb_v2_copy_function_set_user_data function))
         \installCallbacks -> do

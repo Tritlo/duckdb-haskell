@@ -76,28 +76,48 @@ registerLogStorage conn name write = registerLogSink conn name write (pure ())
 registerLogSink :: Connection -> Text -> (LogEntry -> IO ()) -> IO () -> IO ()
 registerLogSink conn name write flush = withDatabaseHandle conn \instance_ ->
   withInstanceFactory instance_ \factory ->
-    registerSink factory (checked . c_duckdb_v2_instance_register_log_sink instance_) name write flush
+    registerSink
+      (withConnectionHandle conn (output . c_duckdb_v2_connection_get_config))
+      factory
+      (checked . c_duckdb_v2_instance_register_log_sink instance_)
+      name
+      write
+      flush
 
 -- | Register a log sink on an explicitly managed instance. If the registration
 -- fails after the name check, the flush action runs one time.
 registerInstanceLogSink :: Instance -> Text -> (LogEntry -> IO ()) -> IO () -> IO ()
 registerInstanceLogSink instance_ name write flush = withInstanceHandle instance_ \native ->
   withInstanceFactory native \factory ->
-    registerSink factory (checked . c_duckdb_v2_instance_register_log_sink native) name write flush
+    registerSink
+      (output (c_duckdb_v2_instance_get_config native))
+      factory
+      (checked . c_duckdb_v2_instance_register_log_sink native)
+      name
+      write
+      flush
 
 -- | Register a log sink on a connection or a loading extension.
 registerLogSinkOn :: RegistrationTarget -> Text -> (LogEntry -> IO ()) -> IO () -> IO ()
 registerLogSinkOn target name write flush = case target of
   ConnectionTarget conn -> registerLogSink conn name write flush
   ExtensionTarget extension context -> withContextFactory context \factory ->
-    registerSink factory (checked . c_duckdb_v2_extension_register_log_sink extension) name write flush
+    registerSink
+      (output (c_duckdb_v2_context_get_config context))
+      factory
+      (checked . c_duckdb_v2_extension_register_log_sink extension)
+      name
+      write
+      flush
 
 -- | Transfer callback ownership to the native sink and release its builder.
-registerSink :: DuckDBV2FactoryHandle -> (DuckDBV2LogSinkHandle -> IO ()) -> Text -> (LogEntry -> IO ()) -> IO () -> IO ()
-registerSink factory register name write flush = do
+registerSink
+  :: IO DuckDBV2ConfigHandle -> DuckDBV2FactoryHandle -> (DuckDBV2LogSinkHandle -> IO ()) -> Text -> (LogEntry -> IO ()) -> IO () -> IO ()
+registerSink config factory register name write flush = do
   when (Text.null name || Text.any (== '\0') name) $ throwInvalidArgument "log sink name must be nonempty and must not contain NUL"
   bracket (output (c_duckdb_v2_log_sink_create factory)) (destroy c_duckdb_v2_log_sink_destroy) \sink ->
     withCallbackResourcesFinally
+      config
       flush
       ( \allocate ->
           installAll

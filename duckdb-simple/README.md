@@ -1367,7 +1367,11 @@ GHC without `-threaded` does not support calls from several operating system
 threads at the same time: such a program can crash. Without `-threaded`, a
 program is safe only when each database that runs callbacks has the DuckDB
 setting `threads` at 1 before a callback runs, and the program never raises it
-later. Then DuckDB calls each callback on the thread of the query.
+later. Then DuckDB calls each callback on the thread of the query. Without
+`-threaded`, the registration of a callback raises an `SQLError` of the type
+`ErrorInputInvalid` when the database has the setting `threads` above 1 at that
+time. The library cannot see a later `SET threads`, also on another connection
+of the instance, because it does not read the SQL text of a statement.
 
 With `-threaded`, each call of a callback needs a capability of the GHC runtime.
 With one capability, which is the default, a callback from a second DuckDB

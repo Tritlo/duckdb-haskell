@@ -137,6 +137,7 @@ import Database.DuckDB.Simple.Callback (
   readCallbackState,
   runCallback,
   runCallbackWith,
+  targetConfig,
   transferCallbackState,
   withCallbackResources,
   withRegistrationFactory,
@@ -330,6 +331,7 @@ registerScalarFunctionWith target configure callbacks =
     c_duckdb_v2_extension_register_scalar_function
     \function register ->
       withCallbackResources
+        (targetConfig target)
         ( \allocate ->
             installAll
               [ installOptional (scalarResolveTypesCallback callbacks) $ \callback ->
@@ -435,6 +437,7 @@ registerAggregateFunctionWith target configure callbacks =
     c_duckdb_v2_extension_register_aggregate_function
     \function register ->
       withCallbackResources
+        (targetConfig target)
         ( \allocate ->
             installAll
               [ installOptional (aggregateBindCallback callbacks) $ \callback ->
@@ -541,6 +544,7 @@ registerTableFunctionWith target configure callbacks =
     c_duckdb_v2_extension_register_table_function
     \function register ->
       withCallbackResources
+        (targetConfig target)
         ( \allocate ->
             installAll
               [ install
@@ -689,6 +693,7 @@ registerCastWith target configure execute =
     c_duckdb_v2_extension_register_cast_function
     \function register ->
       withCallbackResources
+        (targetConfig target)
         ( \allocate ->
             install
               allocate
@@ -815,7 +820,7 @@ registerReplacementScanOn target callback =
     c_duckdb_v2_replacement_scan_destroy
     c_duckdb_v2_connection_register_replacement_scan
     c_duckdb_v2_extension_register_replacement_scan
-    (configureScan callback)
+    (configureScan (targetConfig target) callback)
 
 -- | Register an instance-wide replacement scan. It is shared by its connections.
 -- Register the scan before a connection runs a query. Registration while another
@@ -824,7 +829,11 @@ registerInstanceReplacementScan :: Instance -> ContextCallback DuckDBV2Replaceme
 registerInstanceReplacementScan instance' callback = withInstanceHandle instance' $ \native ->
   withInstanceFactory native $ \factory ->
     bracket (output (c_duckdb_v2_replacement_scan_create factory)) (destroy c_duckdb_v2_replacement_scan_destroy) $ \scan ->
-      configureScan callback scan (checked (c_duckdb_v2_instance_register_replacement_scan native scan))
+      configureScan
+        (output (c_duckdb_v2_instance_get_config native))
+        callback
+        scan
+        (checked (c_duckdb_v2_instance_register_replacement_scan native scan))
 
 -- | Store Haskell state in a native-owned bind, global, local, or init data slot.
 -- Pass the corresponding native opaque setter. Do not use registration user data.
@@ -895,9 +904,11 @@ configureFunctionSignature factory FunctionSignature{signatureParameters, signat
 
 -- | Set the callback of a replacement scan builder, and then run the
 -- registration action. The user data of the scan releases the callback pointer.
-configureScan :: ContextCallback DuckDBV2ReplacementScanInfoHandle -> DuckDBV2ReplacementScanHandle -> IO () -> IO ()
-configureScan callback scan register =
+configureScan
+  :: IO DuckDBV2ConfigHandle -> ContextCallback DuckDBV2ReplacementScanInfoHandle -> DuckDBV2ReplacementScanHandle -> IO () -> IO ()
+configureScan config callback scan register =
   withCallbackResources
+    config
     ( \allocate ->
         install
           allocate

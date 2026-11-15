@@ -15,7 +15,15 @@ module Database.DuckDB.Simple.V2.Config (
   registerCustomOptionWith,
 ) where
 
-import Database.DuckDB.Simple.Callback (attachOpaque, guardContext, install, installOptional, withCallbackResources, withTarget)
+import Database.DuckDB.Simple.Callback (
+  attachOpaque,
+  guardContext,
+  install,
+  installOptional,
+  targetConfig,
+  withCallbackResources,
+  withTarget,
+ )
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.V2.Registration (ContextCallback, RegistrationTarget (..))
 
@@ -33,6 +41,7 @@ registerCustomOptionWith target configure callback =
     c_duckdb_v2_extension_register_custom_option
     \option register ->
       withCallbackResources
+        (targetConfig target)
         ( \allocate -> installOptional callback \update ->
             install
               allocate

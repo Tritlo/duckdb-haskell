@@ -222,8 +222,9 @@ cases:
 
 ### Decoding rows
 
-A `FromRow` instance is a `RowParser`. Write an instance with `Applicative` or
-`Monad` functions, or derive it with `Generic` for a product type:
+The method `fromRow` of a `FromRow` instance is a `RowParser`. Write it with
+`Applicative` or `Monad` functions, or derive the instance with `Generic` for a
+product type:
 
 ```haskell
 {-# LANGUAGE DeriveAnyClass #-}

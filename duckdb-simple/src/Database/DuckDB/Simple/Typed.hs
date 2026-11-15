@@ -71,9 +71,9 @@ import GHC.Generics
 class TypedRow r where
   -- | The declaration of each column, from 'duckdbTypeDeclaration'. See
   -- Note [Type declarations] in "Database.DuckDB.Simple.ToField".
-  rowColumnTypes :: Proxy r -> [Either Text TypeDeclaration]
-  default rowColumnTypes :: (GTypedRow (Rep r)) => Proxy r -> [Either Text TypeDeclaration]
-  rowColumnTypes _ = gRowColumnTypes (Proxy :: Proxy (Rep r))
+  rowColumnDeclarations :: Proxy r -> [Either Text TypeDeclaration]
+  default rowColumnDeclarations :: (GTypedRow (Rep r)) => Proxy r -> [Either Text TypeDeclaration]
+  rowColumnDeclarations _ = gRowColumnDeclarations (Proxy :: Proxy (Rep r))
 
   -- | The value of each column.
   rowColumnValues :: r -> [ColumnValue]
@@ -86,29 +86,29 @@ newtype ColumnValue = ColumnValue (DuckDBV2FactoryHandle -> IO DuckDBV2ValueHand
 
 -- | The generic implementation of 'TypedRow' for a type with one constructor.
 class GTypedRow f where
-  gRowColumnTypes :: Proxy f -> [Either Text TypeDeclaration]
+  gRowColumnDeclarations :: Proxy f -> [Either Text TypeDeclaration]
   gRowColumnValues :: f p -> [ColumnValue]
 
 instance GTypedRow U1 where
-  gRowColumnTypes _ = []
+  gRowColumnDeclarations _ = []
   gRowColumnValues U1 = []
 
 instance (GTypedRow a) => GTypedRow (M1 i c a) where
-  gRowColumnTypes _ = gRowColumnTypes (Proxy :: Proxy a)
+  gRowColumnDeclarations _ = gRowColumnDeclarations (Proxy :: Proxy a)
   gRowColumnValues (M1 value) = gRowColumnValues value
 
 instance (ToDuckValue a) => GTypedRow (K1 i a) where
-  gRowColumnTypes _ = [duckdbTypeDeclaration (Proxy :: Proxy a)]
+  gRowColumnDeclarations _ = [duckdbTypeDeclaration (Proxy :: Proxy a)]
   gRowColumnValues (K1 value) = [ColumnValue (`toDuckValue` value)]
 
 instance (GTypedRow a, GTypedRow b) => GTypedRow (a :*: b) where
-  gRowColumnTypes _ = gRowColumnTypes (Proxy :: Proxy a) <> gRowColumnTypes (Proxy :: Proxy b)
+  gRowColumnDeclarations _ = gRowColumnDeclarations (Proxy :: Proxy a) <> gRowColumnDeclarations (Proxy :: Proxy b)
   gRowColumnValues (left :*: right) = gRowColumnValues left <> gRowColumnValues right
 
 instance TypedRow ()
 
 instance (ToDuckValue a) => TypedRow (Only a) where
-  rowColumnTypes _ = [duckdbTypeDeclaration (Proxy :: Proxy a)]
+  rowColumnDeclarations _ = [duckdbTypeDeclaration (Proxy :: Proxy a)]
   rowColumnValues (Only value) = [ColumnValue (`toDuckValue` value)]
 
 instance (ToDuckValue a, ToDuckValue b) => TypedRow (a, b)

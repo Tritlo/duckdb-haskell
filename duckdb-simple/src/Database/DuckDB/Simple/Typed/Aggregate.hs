@@ -248,7 +248,7 @@ createAggregateOn target name aggregate = do
     forM_ (zip [0 ..] argumentTypes) \(index, argumentType) -> withTypeDeclaration factory argumentType (checkArgumentType (isJust casts) name index)
     registerAggregateFunctionWith target (configure parameters resultType factory) callbacks
   where
-    columnTypes = rowColumnTypes (Proxy :: Proxy args)
+    columnTypes = rowColumnDeclarations (Proxy :: Proxy args)
     configure parameters resultType factory function = do
       withIdentifier name (checked . c_duckdb_v2_aggregate_function_set_name function)
       signature <- output (c_duckdb_v2_aggregate_function_get_signature function)

@@ -118,8 +118,8 @@ data FieldValue
 
 -- | Exact-width decimal payload plus its declared width and scale. A parameter
 -- of this type binds as a DECIMAL with this width and scale. An @Array@, a
--- list, or a typed row cannot hold it, because its column type name has no
--- width and scale.
+-- list, or a typed row cannot hold it, because it has no @DuckDBColumnType@
+-- instance: one column type cannot give the width and scale of each value.
 data DecimalValue = DecimalValue
   { decimalWidth :: Word8
   , decimalScale :: Word8

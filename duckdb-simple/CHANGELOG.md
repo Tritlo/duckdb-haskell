@@ -243,6 +243,17 @@
   empty LIST of its element type. A `String` stays one VARCHAR parameter, and a
   list as a row is still a row of parameters, so a list parameter is
   `Only [..]`. Version 0.3 had no `ToField` instance for lists.
+- Each input check of the library raises `SQLError` with the type
+  `ErrorInputInvalid` and no query: a parameter value that does not fit its
+  type (for example a `DecimalValue` outside its width, a `BitString` with bad
+  padding, a `UnionValue` with a tag out of range, or a timestamp outside the
+  range of its type), a logical type with a NUL in a name or a bad DECIMAL
+  width, a bad name in `connectionGeometryCRS`, and a bad name or argument of
+  a registration, a catalog lookup, a configuration option, or a log sink.
+  Version 0.3 raised an `IOException` for the checks of parameter values,
+  logical types, and CRS names. The error for a scalar value that does not
+  match its declared type names the SQL type, for example `NULL` in place of
+  `LogicalTypeIdSQLNull`.
 - Add a parameter instance for `FieldValue`, so a row read as `[FieldValue]`
   binds back. A scalar constructor binds as the DuckDB type of the
   constructor, and a `FieldList`, a `FieldArray`, or a `FieldMap` takes the

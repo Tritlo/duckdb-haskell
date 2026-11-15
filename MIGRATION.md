@@ -364,6 +364,15 @@ The SQL workflow stays the same. These changes can affect your code:
   `SQLError`. For example, a STRUCT parameter with a MAP field that has a NULL
   key raises an `SQLError` with the type `ErrorInputInvalid`. Version 0.3
   raised an `IOException`. Catch `SQLError` for these errors.
+- Each input check of the library raises an `SQLError` with the type
+  `ErrorInputInvalid`. Version 0.3 raised an `IOException` (a `userError`) for
+  a BIT, DECIMAL, ENUM, HUGEINT, UHUGEINT, TIMETZ, time of day, or timestamp
+  value that does not fit its type, a STRUCT or UNION value whose fields do not
+  match its types, a VARIANT payload that a VARIANT does not keep, a NUL in a
+  logical type name, and a bad name in `connectionGeometryCRS`. Code that
+  catches `IOException` for these errors must catch `SQLError`. The error for a
+  scalar value that does not match its declared type names the SQL type, for
+  example `NULL` in place of `LogicalTypeIdSQLNull`.
 - A name in `connectionGeometryCRS` that DuckDB drops, for example a blank
   name, fails when the connection opens. Version 0.3 read the configured types
   the first time a parameter needed one, and did not check that a type kept its

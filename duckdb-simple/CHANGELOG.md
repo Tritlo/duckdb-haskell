@@ -131,8 +131,11 @@
   exception. Version 0.3 gave `user error (...)` for a `userError` and the
   Haskell record for an `SQLError`.
   The error of an argument that does not convert names the argument (`arg0`,
-  `arg1`, and so on). It has one form for scalar functions, casts, table
-  functions, and aggregate functions.
+  `arg1`, and so on). Its text has one form for scalar functions, casts, table
+  functions, and aggregate functions, for example
+  `cannot convert argument arg0 from VARCHAR to Int64`. A table function and an
+  aggregate function put their name before it:
+  `duckdb-simple: NAME: cannot convert argument ...`.
 - Add scoped named collection inputs and prepared dynamic PIVOT with a deferred
   output schema. Native expanding statements cannot have parameters.
 - Rename `Database.DuckDB.Simple.Deprecated.Streaming` to

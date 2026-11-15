@@ -68,10 +68,15 @@ header). Then DuckDB 2.0.0 runs several exec callbacks of the scan of one file
 at the same time. The lock of the MVar gives each row to one call only.
 
 A typed table function declares projection pushdown. DuckDB then asks the exec
-callback for only the columns that the query uses, and for one column when the
-query uses no column, for example in SELECT count(*). writeRows makes the
-values of the requested columns only, so it does not evaluate the other columns
-of a row. The COPY FROM side asks writeRows for all columns.
+callback for only the columns that the query uses. When the query uses no
+column, for example in SELECT count(*), DuckDB 2.0.0 asks for the first column:
+the function declares no virtual column, so LogicalGet::GetAnyColumn gives
+column 0 (logical_get.cpp), and CV2TableScanColumns gives column 0 for an empty
+projection (capi_v2_func_table.cpp). writeRows makes the values of the
+requested columns only, so it does not evaluate the other columns of a row. But
+it evaluates each row that it writes to its constructor, and this evaluates
+each strict field of the row. The COPY FROM side asks writeRows for all
+columns.
 
 writeRows evaluates only the spine of the rows that fit in the chunk
 (splitRows). It does not evaluate the other rows. The list that it gives back
@@ -143,11 +148,12 @@ createTableFunctionOn target name columns function = do
 -- the rows that do not fit in the chunk. The function does not evaluate those
 -- rows. The list of columns gives the column of the row for each vector of the
 -- chunk, in the order of the vectors. The function makes the values of these
--- columns only, so it does not evaluate the other columns. The values come from
--- the borrowed factory. The function destroys each value after it writes it.
--- The size of each vector becomes the number of written rows. An empty list
--- writes no row. In the exec callback of a table function, no row ends the
--- scan. See Note [Row lists of typed scans].
+-- columns only, so it does not evaluate the other columns. It evaluates each
+-- written row to its constructor, so it evaluates each strict field of the row.
+-- The values come from the borrowed factory. The function destroys each value
+-- after it writes it. The size of each vector becomes the number of written
+-- rows. An empty list writes no row. In the exec callback of a table function,
+-- no row ends the scan. See Note [Row lists of typed scans].
 writeRows :: forall row. (TypedRow row) => DuckDBV2FactoryHandle -> DuckDBV2DataChunkHandle -> [Int] -> [row] -> IO [row]
 writeRows factory chunk columns rows = do
   capacity <- fromIntegral <$> output (c_duckdb_v2_data_chunk_get_capacity chunk)

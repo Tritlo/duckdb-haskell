@@ -46,8 +46,9 @@
   DOUBLE, or VARCHAR.
 - `createTableFunction` registers a Haskell function that gives the rows of a
   table function as a list. DuckDB reads the list one chunk at a time. It reads
-  only the columns that the query uses, and one column for a query such as
-  `SELECT count(*)`. The library does not evaluate the other columns of a row.
+  only the columns that the query uses, and the first column for a query such
+  as `SELECT count(*)`. The library does not evaluate the other columns of a
+  row, but it evaluates each strict field of each row that it writes.
 - `DuckDBColumnType` has the method `duckdbTypeDeclaration`. It gives the SQL
   type that a typed table function and a typed aggregate function declare. A
   record or a sum type gets `ToDuckValue` and a STRUCT or UNION declaration

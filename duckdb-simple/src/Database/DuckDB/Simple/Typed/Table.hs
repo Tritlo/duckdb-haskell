@@ -58,9 +58,15 @@ TypedRow values. The two use the same callbacks.
   output chunk (writeRows), and puts the other rows back. In the exec callback
   of a table function, a call that writes no row ends the scan.
 
-DuckDB can run exec callbacks of one scan at the same time, for example for a
-multi-file function (registerMultiFileFunction). The lock of the MVar gives
-each row to one call only.
+DuckDB can run exec callbacks of one scan at the same time. For a plain table
+function, the maximum number of threads of a scan "Defaults to 1, a
+single-threaded scan" (duckdb_v2_table_function_init_global_set_max_threads in
+the header), and the typed scans do not change it. But a multi-file function
+(registerMultiFileFunction) over the table function "claims the batches of the
+function itself, so that the rows of a file keep their order also when several
+threads scan it" (duckdb_v2_table_function_set_claim_batch_callback in the
+header). Then DuckDB 2.0.0 runs several exec callbacks of the scan of one file
+at the same time. The lock of the MVar gives each row to one call only.
 
 writeRows evaluates only the spine of the rows that fit in the chunk
 (splitRows). It does not evaluate the other rows. The list that it gives back

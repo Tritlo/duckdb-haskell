@@ -68,6 +68,20 @@ arrowModeTests streaming =
                 pure (count + 1, values : acc)
           assertBool "more than one native batch" (batches > 1)
           concat (reverse chunks) @?= [if i `rem` 3 == 0 then Nothing else Just i | i <- [0 .. 4999]]
+    , testCase "the batch size option sets the rows of each batch" $ do
+        let run options = withConnectionWithOptions ":memory:" options{connectionConfig = [("threads", "1")]} \conn ->
+              foldArrow_ conn "SELECT i::BIGINT AS i FROM range(5) t(i)" (0 :: Int, []) \(count, acc) _ arrayPtr -> do
+                values <- readInt64Batch arrayPtr
+                pure (count + 1, values : acc)
+        (defaultBatches, defaultRows) <- run defaultConnectionOptions
+        (singleBatches, singleRows) <- run defaultConnectionOptions{connectionArrowBatchSize = 1}
+        concat (reverse defaultRows) @?= map Just [0 .. 4]
+        concat (reverse singleRows) @?= concat (reverse defaultRows)
+        (defaultBatches, singleBatches) @?= (1, 5)
+        negative <- try (withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionArrowBatchSize = -1} (const (pure ())))
+        case negative of
+          Left (err :: SQLError) -> assertBool ("unexpected message: " <> show err) ("connectionArrowBatchSize" `Text.isInfixOf` sqlErrorMessage err)
+          Right () -> assertFailure "a negative batch size opened a connection"
     , testCase "empty results retain the initial accumulator" $
         withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
           result <- foldArrow_ conn "SELECT 1::BIGINT WHERE false" (17 :: Int) \_ _ _ -> assertFailure "unexpected batch" >> pure 0

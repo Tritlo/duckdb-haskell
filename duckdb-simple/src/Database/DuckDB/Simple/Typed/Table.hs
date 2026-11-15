@@ -17,10 +17,11 @@ module Database.DuckDB.Simple.Typed.Table (
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar)
 import Control.Exception (bracket, throwIO)
 import Control.Monad (forM, forM_, when, zipWithM_)
+import Data.Maybe (fromMaybe)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Database.DuckDB.Simple.Callback (attachOpaque, readCallbackState, transferCallbackState)
+import Database.DuckDB.Simple.Callback (attachOpaque, readCallbackState, targetCastFactory, transferCallbackState)
 import Database.DuckDB.Simple.FromField (Field (..))
 import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow)
 import Database.DuckDB.Simple.Materialize (materializeValue, rejectRows)
@@ -82,8 +83,9 @@ createTableFunctionOn target name columns function = do
     throwInvalidArgument (name <> ": a table function must have at least one result column")
   when (length columns /= length columnTypes) $
     throwInvalidArgument (name <> ": " <> count columns <> " column names for " <> count columnTypes <> " result columns")
+  casts <- targetCastFactory target
   withRegistrationFactory target \factory ->
-    registerTableFunctionWith target (configure factory) (tableCallbacks bind execute){tableInitGlobalCallback = Just initialize}
+    registerTableFunctionWith target (configure factory) (tableCallbacks (bind casts) execute){tableInitGlobalCallback = Just initialize}
   where
     count = Text.pack . show . length
     parameterTypes = rowColumnTypes (Proxy :: Proxy params)
@@ -97,8 +99,10 @@ createTableFunctionOn target name columns function = do
     configure factory tableFunction = do
       withIdentifier name (checked . c_duckdb_v2_table_function_set_name tableFunction)
       output (c_duckdb_v2_table_function_get_signature tableFunction) >>= configureFunctionSignature factory signature
-    bind input result context = withContextFactory context \factory -> do
-      params <- readArguments name (length parameterTypes) factory input
+    -- Read a GEOMETRY argument with the factory of 'targetCastFactory', or with
+    -- the factory of the context for an extension.
+    bind casts input result context = withContextFactory context \factory -> do
+      params <- readArguments name (length parameterTypes) (fromMaybe factory casts) input
       forM_ (zip columns columnTypes) \(column, dtype) ->
         withTypeDeclaration factory (TypeExpression dtype) \logical ->
           withIdentifier column \identifier -> checked (c_duckdb_v2_table_function_bind_add_result_column result identifier logical)

@@ -115,8 +115,11 @@ createFunctionWithState conn = createFunctionWithStateOn (ConnectionTarget conn)
 -- >     if value > maxBound - 100 then Left "BIGINT overflow" else Right (value + 100)
 --
 -- DuckDB uses a registered cast in place of its built-in cast for the same
--- pair of types, on each connection of the database. The library uses these
--- built-in casts to read and to bind values: GEOMETRY to BLOB, BLOB to
+-- pair of types, on each connection of the database. The library reads a
+-- GEOMETRY value with the built-in casts only, so a cast from GEOMETRY to BLOB
+-- does not change it. There are two exceptions: a GEOMETRY value in a VARIANT,
+-- and a GEOMETRY value that a callback of a function of an extension reads. The
+-- library uses these built-in casts to read and to bind other values: BLOB to
 -- GEOMETRY, VARCHAR to GEOMETRY, VARCHAR to an ENUM type, a type to VARIANT,
 -- and VARIANT to a type. Do not register a cast for one of these pairs. The
 -- library then reads or binds the result of that cast, and it can give NULL

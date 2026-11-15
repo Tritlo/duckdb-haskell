@@ -294,13 +294,17 @@ of the instance, so a user cast does not change their result:
   an option (getConfigValue), and the default value of an option
   (getConfigDefaultValue) read a GEOMETRY value with the factory of the
   instance. The type cache of the connection keeps that factory (typeCacheCasts
-  in "Database.DuckDB.Simple.TypeCache").
+  in "Database.DuckDB.Simple.TypeCache"). The callbacks of a registration on a
+  connection read a GEOMETRY value with the same factory: the value of an option
+  update, the arguments of a pragma or a table function, and the rows of a COPY
+  TO function. The registration takes the factory (targetCastFactory in
+  "Database.DuckDB.Simple.Callback").
 
 These casts use the factory of a connection or of a callback context:
 
-- prepareGeometryReader in the callbacks of a registration: the value of an
-  option update, the arguments of a pragma or a table function, and the rows
-  of a COPY TO function.
+- prepareGeometryReader in the callbacks of a registration on an extension. An
+  extension target has no instance, so these callbacks use the factory of the
+  context.
 - rawGeometryDuckValue casts a BLOB value to GEOMETRY, and the ToDuckValue
   instance of Geometry casts a VARCHAR value to GEOMETRY
   ("Database.DuckDB.Simple.ToField").

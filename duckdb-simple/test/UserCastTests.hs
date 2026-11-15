@@ -12,19 +12,21 @@
 -- "Database.DuckDB.Simple.Materialize".
 module UserCastTests (userCastTests) where
 
-import Control.Monad (forM_)
+import Control.Monad (forM_, void)
 import Data.Array (listArray)
 import qualified Data.ByteString as BS
 import qualified Data.Geometry as G
-import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
+import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Config as Config
-import Database.DuckDB.Simple.FromField (FieldValue (..))
+import qualified Database.DuckDB.Simple.Copy as Copy
+import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..))
 import Database.DuckDB.Simple.Geometry (RawGeometry (..))
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), StructValue (..))
+import Database.DuckDB.Simple.Pragma (PragmaCallback (..), registerPragmaFunction)
 import qualified Database.DuckDB.Simple.Streaming as Streaming
 import qualified Database.DuckDB.Simple.V2.Registration as R
 import Test.Tasty (TestTree, testGroup)
@@ -61,6 +63,44 @@ userCastTests =
           calls <- nullCast conn (R.TypeExpression "GEOMETRY") (R.TypeExpression "BLOB")
           Config.getConfigDefaultValue conn "user_cast_shape" >>= (@?= FieldGeometry point)
           (fst <$> Config.getConfigValue conn "user_cast_shape") >>= (@?= FieldGeometry point)
+          readIORef calls >>= (@?= 0)
+    , testCase "a cast from GEOMETRY to BLOB does not change a GEOMETRY argument of a table function" $
+        withConnection ":memory:" \conn -> do
+          createTableFunction conn "user_cast_shapes" ["same"] \(Only argument) -> pure [Only (argument == Just shape)]
+          calls <- nullCast conn (R.TypeExpression "GEOMETRY") (R.TypeExpression "BLOB")
+          query_ conn "SELECT same FROM user_cast_shapes('POINT (1 2)'::GEOMETRY)" >>= (@?= [Only True])
+          readIORef calls >>= (@?= 0)
+    , testCase "a cast from GEOMETRY to BLOB does not change a GEOMETRY row of a COPY TO function" $
+        withConnection ":memory:" \conn -> do
+          rows <- newIORef []
+          Copy.registerCopyToFunction conn "user_cast_copy" (\_ -> pure ()) (\_ -> pure ()) (\_ batch -> modifyIORef' rows (<> batch)) (\_ -> pure ())
+          calls <- nullCast conn (R.TypeExpression "GEOMETRY") (R.TypeExpression "BLOB")
+          void (execute_ conn "COPY (SELECT 'POINT (1 2)'::GEOMETRY AS g) TO 'unused' (FORMAT user_cast_copy)")
+          (map (map fieldValue) <$> readIORef rows) >>= (@?= [[FieldGeometry point]])
+          readIORef calls >>= (@?= 0)
+    , testCase "a cast from GEOMETRY to BLOB does not change a GEOMETRY argument of a pragma" $
+        withConnection ":memory:" \conn -> do
+          seen <- newIORef Nothing
+          registerPragmaFunction
+            conn
+            "user_cast_pragma"
+            [R.parameter "shape" (R.TypeExpression "GEOMETRY")]
+            (ExecPragma \(Only argument) -> writeIORef seen argument)
+          calls <- nullCast conn (R.TypeExpression "GEOMETRY") (R.TypeExpression "BLOB")
+          void (execute_ conn "PRAGMA user_cast_pragma('POINT (1 2)')")
+          readIORef seen >>= (@?= Just shape)
+          readIORef calls >>= (@?= 0)
+    , testCase "a cast from GEOMETRY to BLOB does not change the value of a GEOMETRY option update" $
+        withConnection ":memory:" \conn -> do
+          seen <- newIORef []
+          Config.registerCustomOption
+            conn
+            (Config.customOption "user_cast_update" (R.TypeExpression "GEOMETRY"))
+              { Config.customOptionUpdate = Just \value -> modifyIORef' seen (value :)
+              }
+          calls <- nullCast conn (R.TypeExpression "GEOMETRY") (R.TypeExpression "BLOB")
+          void (execute_ conn "SET user_cast_update = 'POINT (1 2)'")
+          readIORef seen >>= (@?= [FieldGeometry point])
           readIORef calls >>= (@?= 0)
     ]
 

@@ -1471,8 +1471,10 @@ pragmaExample conn = do
 
 A typed registration costs more for each row than raw vector access. Use
 `Database.DuckDB.Simple.V2.Registration`, `V2.Copy`, `V2.Pragma`, and
-`V2.Config` for speed, and for projection and filter pushdown, parallel table
-scans, and scalar functions with a bind callback or variadic parameters.
+`V2.Config` for speed, and for filter pushdown, parallel table scans, and
+scalar functions with a bind callback or variadic parameters. A typed table
+function has projection pushdown (see `createTableFunction` above), but no
+filter pushdown.
 
 ## Tests
 

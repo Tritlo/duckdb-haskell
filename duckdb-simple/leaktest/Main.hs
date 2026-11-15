@@ -38,6 +38,7 @@ import Data.Maybe (catMaybes, isJust, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple
+import qualified Database.DuckDB.Simple.Arrow as Arrow
 import qualified Database.DuckDB.Simple.Copy as Copy
 import Database.DuckDB.Simple.FromField (DecimalValue (..), FieldValue (..))
 import Database.DuckDB.Simple.Geometry (RawGeometry (..), fromRawGeometry)
@@ -228,6 +229,13 @@ checkLongLived batches =
             nextRow stmt >>= \row -> unless (row == Just (Only (42 :: Int64))) (fail "wrong cursor result")
             clearStatementBindings stmt
             expectFailure (nextRow stmt :: IO (Maybe (Only Int64)))
+            -- Close a statement while its cursor holds the other chunks of a
+            -- materialized result, and then while its cursor holds a native stream.
+            withStatement conn "SELECT i FROM range(100000) t(i)" \cursor -> void (nextRow cursor :: IO (Maybe (Only Int64)))
+            withStatement conn "SELECT i FROM range(100000) t(i)" \cursor -> void (Streaming.nextRow cursor :: IO (Maybe (Only Int64)))
+            -- The step fails at the first batch of a materialized Arrow fold.
+            -- The fold must release each batch that it did not deliver.
+            expectFailure (Arrow.foldArrow_ conn "SELECT i FROM range(100000) t(i)" () (\() _ _ -> fail "step"))
           batch = forM_ [1 .. 100 :: Int] (const cycleQuery)
       batch
       performMajorGC

@@ -36,7 +36,7 @@ module Database.DuckDB.Simple.ToField (
   renderFieldBinding,
 ) where
 
-import Control.Exception (bracket, mask_, onException, throwIO)
+import Control.Exception (bracket, mask_, onException)
 import Control.Monad (foldM, forM_, unless, when)
 import Data.Array (Array, bounds, elems, listArray)
 import Data.Bits (complement, shiftL, shiftR, xor, (.|.))
@@ -167,15 +167,25 @@ Unbounded forms, with this rule:
   binding does not read the parameter type.
 - A value with digits below a microsecond makes the binding read the parameter
   type. A nanosecond parameter (TIME_NS, TIMESTAMP_NS, or TIMESTAMPTZ_NS for
-  the three types) gets a nanosecond value. Each other parameter, and a
-  parameter with no known type, gets the microsecond value. The digits below
-  one microsecond go away, as for the SQL literal.
+  the three types) gets a nanosecond value. A VARIANT parameter also gets a
+  nanosecond value, when the value fits the range of the nanosecond type
+  (fitsNanoseconds). A VARIANT holds TIME_NS, TIMESTAMP_NS, and TIMESTAMPTZ_NS
+  values. A value outside that range, for example in the year 3000, gets the
+  microsecond value, as for a parameter with no known type. The payload of a
+  Variant follows the same rule (variantPayloadType). Each other parameter, and a parameter with no known type, gets the
+  microsecond value. The digits below one microsecond go away, as for the SQL
+  literal.
 - The digits below one nanosecond go away in each case.
 
 A value in an Array, a list, a Map, a STRUCT, a TUPLE, or a UNION parameter
 follows the type of its leaf in the target: timestampTypeForTarget gives a
 nanosecond type to a TIME, TIMESTAMP, or TIMESTAMPTZ leaf of a nanosecond
-target leaf. These parameters read the parameter type for each value.
+target leaf. These parameters read the parameter type for each value. A
+VARIANT leaf does not give a nanosecond type: elementBindingTarget gives an
+element of a VARIANT list or map no target, and timestampTypeForTarget has no
+VARIANT case. One LIST has one element type for all its elements, so a
+nanosecond element would be cast to the microsecond type of the list, and the
+cast rounds. Thus such a value gets the microsecond value.
 
 - Why the binding reads the parameter type only for such digits. A read of the
   parameter type runs the binder of DuckDB. See Note [Statement schemas] in
@@ -204,15 +214,16 @@ target leaf. These parameters read the parameter type for each value.
     for a parameter and ErrorInputInvalid for an element.
   * From 2262-04-11 23:47:16.854775807 to 23:47:16.854775999: DuckDB can cast
     the microsecond value, but the cast cuts the digits with no error. Thus
-    the encoder raises the IOException "duckdb-simple: TIMESTAMP value out of
-    finite range". The low end of the range has no such zone, because the
-    microsecond value is cut toward the earlier time.
-  A UTCTime outside the range of TIMESTAMPTZ_NS gets the IOException of the
-  encoder, but a parameter or an element with no digits below a microsecond
-  binds as a microsecond value and gets the SQLError of DuckDB. Each leaf of a
-  STRUCT, TUPLE, or UNION outside the range gets the IOException of the
-  encoder, because in TRY_CAST DuckDB keeps the other leaves of a microsecond
-  value with their digits cut.
+    the encoder raises the SQLError of the library "duckdb-simple: TIMESTAMP
+    value out of finite range", of the type ErrorInputInvalid. The low end of
+    the range has no such zone, because the microsecond value is cut toward
+    the earlier time.
+  A UTCTime outside the range of TIMESTAMPTZ_NS gets the error of the encoder,
+  but a parameter or an element with no digits below a microsecond binds as a
+  microsecond value and gets the SQLError of DuckDB. Each leaf of a STRUCT,
+  TUPLE, or UNION outside the range gets the error of the encoder, because in
+  TRY_CAST DuckDB keeps the other leaves of a microsecond value with their
+  digits cut.
 -}
 
 -- | Test whether a time of day has digits below one microsecond. See
@@ -239,10 +250,36 @@ temporalValueBinding :: String -> LogicalTypeRep -> FieldValue -> (ValueBuilder 
 temporalValueBinding display source value makeDefault =
   targetValueBinding display \builder readTarget -> do
     target <- readTarget
-    let precise = timestampTypeForTarget target source
+    let precise = case (target, source) of
+          -- A time value with digits below a microsecond for a VARIANT
+          -- parameter. See Note [Nanosecond parameters].
+          (Just (LogicalTypeScalar LogicalTypeIdVariant), LogicalTypeScalar _)
+            | fitsNanoseconds value -> nanosecondType source
+          _ -> timestampTypeForTarget target source
     if precise == source || outsideNanosecondRange precise value
       then makeDefault builder
       else fieldValueWithTypeDuckValue builder precise (valueWithTypeMetadata precise value)
+
+-- | Give the nanosecond type of a TIME, TIMESTAMP, or TIMESTAMPTZ type.
+nanosecondType :: LogicalTypeRep -> LogicalTypeRep
+nanosecondType (LogicalTypeScalar LogicalTypeIdTime) = LogicalTypeScalar LogicalTypeIdTimeNs
+nanosecondType (LogicalTypeScalar LogicalTypeIdTimestamp) = LogicalTypeScalar LogicalTypeIdTimestampNs
+nanosecondType (LogicalTypeScalar LogicalTypeIdTimestampTz) = LogicalTypeScalar LogicalTypeIdTimestampTzNs
+nanosecondType rep = rep
+
+-- | Test whether the nanosecond value of a time value fits the range of its
+-- nanosecond type, with the range test of the encoder. Each time of day fits.
+fitsNanoseconds :: FieldValue -> Bool
+fitsNanoseconds (FieldTimestamp (Finite time)) = inFiniteRange (minBound :: Int64) maxBound (timestampUnits 1000000000 time)
+fitsNanoseconds (FieldTimestampTZ (Finite instant)) = fitsNanoseconds (FieldTimestamp (Finite (utcToLocalTime utc instant)))
+fitsNanoseconds _ = True
+
+-- | Give the target of an element of a LIST, an ARRAY, or a MAP. A VARIANT
+-- element type gives no target, so an element binds as for a parameter with
+-- no known type. See Note [Nanosecond parameters].
+elementBindingTarget :: Maybe LogicalTypeRep -> Maybe LogicalTypeRep
+elementBindingTarget (Just (LogicalTypeScalar LogicalTypeIdVariant)) = Nothing
+elementBindingTarget target = target
 
 -- | Test whether a t'LocalTime' for a TIMESTAMP_NS parameter is outside the
 -- range of TIMESTAMP_NS, and DuckDB also cannot cast its microsecond value to
@@ -545,13 +582,7 @@ integerBinding value = case hugeIntInRange value of
       Just (LogicalTypeDecimal width scale) -> outOfRange ("DECIMAL(" <> Text.pack (show width) <> "," <> Text.pack (show scale) <> ")")
       _ -> bigNumDuckValue factory (BigNum value)
   where
-    outOfRange typeName =
-      throwIO
-        SQLError
-          { sqlErrorMessage = "duckdb-simple: the value " <> Text.pack (show value) <> " is out of range for a parameter of the type " <> typeName
-          , sqlErrorType = Just ErrorInputOutOfRange
-          , sqlErrorQuery = Nothing
-          }
+    outOfRange typeName = throwOutOfRange ("the value " <> Text.pack (show value) <> " is out of range for a parameter of the type " <> typeName)
 
 -- | Construct a HUGEINT value for an integer from -2^127 to 2^127 - 1. Give
 -- Nothing for each other integer. See Note [Integer parameters].
@@ -597,9 +628,9 @@ instance ToField String
 
 instance ToField BitString
 
--- | Bind a day as a DATE. A day before 5877642-06-25 (BC), the year -5877641
--- of "Data.Time", raises an t'SQLError' of the type 'ErrorInputOutOfRange'. See
--- Note [Time ranges].
+-- | Bind a day as a DATE. A day outside the range of DuckDB, from -5877641-06-25
+-- (5877642-06-25 BC) to 5881580-07-10 in the notation of "Data.Time", raises an
+-- t'SQLError' of the type 'ErrorInputOutOfRange'. See Note [Time ranges].
 instance ToField Day
 
 -- | Bind a time of day as a TIME, or as a TIME_NS. See
@@ -610,8 +641,9 @@ instance ToField TimeOfDay where
     timeValueBinding (show value) (LogicalTypeScalar LogicalTypeIdTime) (FieldTime value) \builder -> timeOfDayDuckValue (builderFactory builder) value
 
 -- | Bind a local time as a TIMESTAMP, or as a TIMESTAMP_NS. See
--- Note [Nanosecond parameters]. A time before 290309-12-22 (BC) 00:00:00, the
--- year -290308 of "Data.Time", raises an t'SQLError' of the type
+-- Note [Nanosecond parameters]. A time outside the range of DuckDB, from
+-- -290308-12-22 00:00:00 (290309-12-22 BC) to 294247-01-10 04:00:54.775806 in
+-- the notation of "Data.Time", raises an t'SQLError' of the type
 -- 'ErrorInputOutOfRange'. A leap second binds as the next second. See
 -- Note [Time ranges].
 instance ToField LocalTime where
@@ -652,9 +684,11 @@ instance ToField Variant where
     builderValueBinding (show value) \builder -> variantDuckValue builder (variantPayload value)
 
 -- | Bind an instant as a TIMESTAMPTZ, or as a TIMESTAMPTZ_NS. See
--- Note [Nanosecond parameters]. An instant before 290309-12-22 (BC) 00:00:00
--- UTC raises an t'SQLError' of the type 'ErrorInputOutOfRange'. A leap second
--- binds as the next second. See Note [Time ranges].
+-- Note [Nanosecond parameters]. An instant outside the range of the
+-- t'LocalTime' instance, in UTC, raises an t'SQLError' of the type
+-- 'ErrorInputOutOfRange'. A leap second of exactly 60 seconds binds as the
+-- next second. A later time in a leap second, for example 60.5 seconds, raises
+-- an t'SQLError' of the type 'ErrorInputInvalid'. See Note [Time ranges].
 instance ToField UTCTime where
   toField value =
     timeValueBinding
@@ -717,12 +751,14 @@ instance (DuckDBColumnType a, ToField a) => ToField (Array Int a) where
       \builder readTarget -> do
         target <- readTarget
         let childTarget = collectionChildType target
-        arrayDuckValue builder childTarget (\value -> fieldBindingValue (toField value) builder (pure childTarget)) arr
+        arrayDuckValue builder childTarget (\value -> fieldBindingValue (toField value) builder (pure (elementBindingTarget childTarget))) arr
 
 -- | Bind a list as a LIST value with the element rules of an 'Array'. An empty
--- list binds as an empty LIST of the element type. 'String' keeps its own
--- instance. A list as a row is a row of parameters, so bind a list parameter
--- as @Only [..]@.
+-- list binds as an empty LIST of the element type. When the element type has
+-- no type name, an empty list takes the element type of the parameter, or the
+-- type NULL for a parameter with no known type, as the SQL literal [] does.
+-- See Note [Element types of a list]. 'String' keeps its own instance. A list
+-- as a row is a row of parameters, so bind a list parameter as @Only [..]@.
 instance {-# OVERLAPPABLE #-} (DuckDBColumnType a, ToField a) => ToField [a] where
   toField values =
     targetValueBinding
@@ -730,12 +766,13 @@ instance {-# OVERLAPPABLE #-} (DuckDBColumnType a, ToField a) => ToField [a] whe
       \builder readTarget -> do
         target <- readTarget
         let childTarget = collectionChildType target
-        listDuckValue builder childTarget (\value -> fieldBindingValue (toField value) builder (pure childTarget)) values
+        listDuckValue builder childTarget (\value -> fieldBindingValue (toField value) builder (pure (elementBindingTarget childTarget))) values
 
 -- | Bind a map as a MAP value. The pairs go in ascending key order. The keys
--- and the values have the element rules of a list. An empty map binds as an
--- empty MAP of the key type and the value type. DuckDB compares two MAP values
--- pair by pair in their order.
+-- and the values have the element rules of a list, so an empty map binds as an
+-- empty MAP of the key type and the value type, or with the type NULL for a key
+-- or value type with no type name and no type from the parameter. DuckDB
+-- compares two MAP values pair by pair in their order.
 instance (DuckDBColumnType k, DuckDBColumnType v, ToField k, ToField v) => ToField (Map.Map k v) where
   toField pairs =
     targetValueBinding
@@ -746,8 +783,8 @@ instance (DuckDBColumnType k, DuckDBColumnType v, ToField k, ToField v) => ToFie
           builder
           keyTarget
           valueTarget
-          (\key -> fieldBindingValue (toField key) builder (pure keyTarget))
-          (\value -> fieldBindingValue (toField value) builder (pure valueTarget))
+          (\key -> fieldBindingValue (toField key) builder (pure (elementBindingTarget keyTarget)))
+          (\value -> fieldBindingValue (toField value) builder (pure (elementBindingTarget valueTarget)))
           (Map.toAscList pairs)
 
 -- | Bind a dynamic value, for example one that a query read as a t'FieldValue'.
@@ -764,9 +801,10 @@ instance (DuckDBColumnType k, DuckDBColumnType v, ToField k, ToField v) => ToFie
 -- Some values lose their type:
 --
 -- * A 'FieldTimestamp' binds as a TIMESTAMP, or as a TIMESTAMP_NS when it has
---   digits below a microsecond and the parameter has the type TIMESTAMP_NS,
---   whatever the unit of the column it came from. The
---   same holds for 'FieldTime' and 'FieldTimestampTZ'. See
+--   digits below a microsecond and the parameter has the type TIMESTAMP_NS or
+--   VARIANT, whatever the unit of the column it came from. The same holds for
+--   'FieldTime' and 'FieldTimestampTZ'. In a 'FieldList' or a 'FieldMap' for a
+--   VARIANT parameter, such a value gets the microsecond value. See
 --   Note [Nanosecond parameters].
 -- * A 'FieldText' binds as a VARCHAR with no collation, also when it came from
 --   a JSON value.
@@ -774,17 +812,14 @@ instance (DuckDBColumnType k, DuckDBColumnType v, ToField k, ToField v) => ToFie
 -- * A 'FieldEnum' binds its label as a VARCHAR. DuckDB casts the text to the
 --   ENUM type of a column.
 --
--- A 'FieldList', a 'FieldArray', or a 'FieldMap' with only 'FieldNull' elements
--- takes the element type of the parameter, or the type NULL for a parameter
--- with no known type, as a SQL list literal does. An empty 'FieldList' or
--- 'FieldMap' takes the element type of the parameter.
+-- A 'FieldList', a 'FieldArray', or a 'FieldMap' that is empty or has only
+-- 'FieldNull' elements takes the element type of the parameter, or the type
+-- NULL for a parameter with no known type, as a SQL list literal does.
 --
--- These values raise an 'SQLError' of the type 'ErrorInputInvalid', because no
--- type is known for them: an empty 'FieldList' or 'FieldMap' for a parameter
--- with no known type, and an empty 'FieldArray', because a DuckDB ARRAY has at
--- least one element. Inside a 'FieldStruct', a 'FieldTuple', or a 'FieldUnion',
--- the declared type gives the element type, so such a value binds. A 'FieldEnum'
--- there binds its label to the declared ENUM type.
+-- An empty 'FieldArray' raises an 'SQLError' of the type 'ErrorInputInvalid',
+-- because a DuckDB ARRAY has at least one element. Inside a 'FieldStruct', a
+-- 'FieldTuple', or a 'FieldUnion', a 'FieldEnum' binds its label to the
+-- declared ENUM type.
 --
 -- t'FieldValue' has no 'DuckDBColumnType' and no 'ToDuckValue' instance,
 -- because no one DuckDB type holds each of its values.
@@ -819,24 +854,13 @@ instance ToField FieldValue where
     FieldBigNum v -> toField v
     FieldEnum _ label -> toField label
     FieldArray items
-      | null items -> valueBinding (show value) \_ -> untypedFieldValue "an empty FieldArray has no element, and a DuckDB ARRAY has at least one"
+      | null items -> valueBinding (show value) (const emptyArrayError)
       | otherwise -> fieldValueSequence "FieldArray" c_duckdb_v2_value_create_array (elems items)
     FieldList items -> fieldValueSequence "FieldList" c_duckdb_v2_value_create_list items
     FieldMap pairs -> fieldValueMap pairs
     FieldStruct v -> toField v
     FieldTuple v -> toField v
     FieldUnion v -> toField v
-
--- | Raise the error for a t'FieldValue' parameter that has no known type. The
--- argument gives the reason.
-untypedFieldValue :: Text -> IO a
-untypedFieldValue reason =
-  throwIO
-    SQLError
-      { sqlErrorMessage = "duckdb-simple: " <> reason <> ", so the FieldValue cannot bind as a parameter"
-      , sqlErrorType = Just ErrorInputInvalid
-      , sqlErrorQuery = Nothing
-      }
 
 -- | Bind the elements of a 'FieldList' or a 'FieldArray' with the element type
 -- that they give. See Note [Element types of a list].
@@ -855,10 +879,8 @@ fieldValueSequence
 fieldValueSequence name create items =
   targetValueBinding ("<" <> Text.unpack name <> " length=" <> show (length items) <> ">") \builder@ValueBuilder{builderFactory = factory} readTarget -> do
     childTarget <- collectionChildType <$> readTarget
-    when (null items && null childTarget) $
-      untypedFieldValue ("an empty " <> name <> " has no element type for a parameter with no known type")
-    withCreatedValues (map (\item -> fieldBindingValue (toField item) builder (pure childTarget)) items) \values ->
-      withValueType builder childTarget name values \elementType ->
+    withCreatedValues (map (\item -> fieldBindingValue (toField item) builder (pure (elementBindingTarget childTarget))) items) \values ->
+      withValueType builder childTarget values \elementType ->
         withArray values \ptr ->
           output (create factory elementType (ConstPtr ptr) (fromIntegral (length values)))
 
@@ -868,12 +890,10 @@ fieldValueMap :: [(FieldValue, FieldValue)] -> FieldBinding
 fieldValueMap pairs =
   targetValueBinding ("<FieldMap size=" <> show (length pairs) <> ">") \builder@ValueBuilder{builderFactory = factory} readTarget -> do
     (keyTarget, valueTarget) <- mapPartTypes <$> readTarget
-    when (null pairs && null keyTarget) $
-      untypedFieldValue "an empty FieldMap has no key type and no value type for a parameter with no known type"
-    withCreatedValues (map (\(key, _) -> fieldBindingValue (toField key) builder (pure keyTarget)) pairs) \keys ->
-      withCreatedValues (map (\(_, item) -> fieldBindingValue (toField item) builder (pure valueTarget)) pairs) \values ->
-        withValueType builder keyTarget "FieldMap" keys \keyType ->
-          withValueType builder valueTarget "FieldMap" values \valueType ->
+    withCreatedValues (map (\(key, _) -> fieldBindingValue (toField key) builder (pure (elementBindingTarget keyTarget))) pairs) \keys ->
+      withCreatedValues (map (\(_, item) -> fieldBindingValue (toField item) builder (pure (elementBindingTarget valueTarget))) pairs) \values ->
+        withValueType builder keyTarget keys \keyType ->
+          withValueType builder valueTarget values \valueType ->
             withArray keys \keyPtr -> withArray values \valuePtr ->
               output (c_duckdb_v2_value_create_map factory keyType valueType (ConstPtr keyPtr) (ConstPtr valuePtr) (fromIntegral (length pairs)))
 
@@ -1079,7 +1099,7 @@ uuidDuckValue factory uuid =
 bitDuckValue :: DuckDBV2FactoryHandle -> BitString -> IO DuckDBV2ValueHandle
 bitDuckValue factory (BitString padding bits) = do
   when (BS.null bits || padding > 7) $
-    throwIO (userError "duckdb-simple: BIT requires nonempty data and padding from 0 to 7")
+    throwInvalidArgument "BIT requires nonempty data and padding from 0 to 7"
   let nativePadding = complement ((1 `shiftL` (8 - fromIntegral padding)) - 1) :: Word8
       payload = BS.cons padding (BS.cons (BS.head bits .|. nativePadding) (BS.tail bits))
   withBytes payload (\bytes -> output (c_duckdb_v2_value_create_bit factory bytes))
@@ -1137,14 +1157,15 @@ arrayDuckValue
   -> Array Int a
   -> IO DuckDBV2ValueHandle
 arrayDuckValue builder target elementValue array = do
-  when (null (elems array)) $
-    throwIO
-      ( SQLError
-          "duckdb-simple: an empty ARRAY parameter is not possible, because a DuckDB ARRAY has at least one element; bind an empty list for an empty LIST"
-          Nothing
-          Nothing
-      )
+  when (null (elems array)) emptyArrayError
   sequenceDuckValue c_duckdb_v2_value_create_array builder target elementValue (elems array)
+
+-- | Raise the error for an ARRAY parameter with no element. An 'Array' and a
+-- 'FieldArray' raise this error.
+emptyArrayError :: IO a
+emptyArrayError =
+  throwInvalidArgument
+    "an empty ARRAY parameter is not possible, because a DuckDB ARRAY has at least one element; bind an empty list for an empty LIST"
 
 -- | Construct a LIST value. An empty list is an empty LIST of the element type.
 -- See 'withElementType' for the element type.
@@ -1250,12 +1271,12 @@ constructor:
   element type. The native constructor then gives the type of the SQL list
   literal: "NULL"[] for a LIST, "NULL"[2] for an ARRAY of two NULL elements,
   and MAP(VARCHAR, "NULL") for a MAP of VARCHAR keys and NULL values.
-- An empty list or map for a parameter with no known type raises an error. The
-  SQL literals [] and MAP {} have the types "NULL"[] and MAP("NULL", "NULL"),
-  but the native constructor gives no type to an empty list or map: it raises
-  "cannot resolve the element type of an empty set". An Array with no element
-  raises an error before this point, because a DuckDB ARRAY has at least one
-  element.
+- For a parameter with no known type, an empty list or map of this kind gets
+  the element type NULL. The SQL literals [] and MAP {} have the types
+  "NULL"[] and MAP("NULL", "NULL"). The native constructor gives no type to an
+  empty set (it raises "cannot resolve the element type of an empty set"), so
+  the library names the type NULL itself. An Array with no element raises an
+  error before this point, because a DuckDB ARRAY has at least one element.
 -}
 
 -- | Give the element type of the values of a LIST, an ARRAY, or one part of a
@@ -1272,7 +1293,7 @@ withElementType
   -> IO b
 withElementType proxy builder@ValueBuilder{builderType = makeType} target values action = case duckDBTypeFromName typeName of
   Just dtype -> bracket (makeType (declaredType dtype)) destroyLogicalType action
-  Nothing -> withValueType builder elementTarget typeName values action
+  Nothing -> withValueType builder elementTarget values action
   where
     typeName = duckdbColumnType proxy
     -- With no target, the structured declaration of a record is the element
@@ -1288,10 +1309,9 @@ withElementType proxy builder@ValueBuilder{builderType = makeType} target values
     declaredType dtype = timestampTypeForTarget target (LogicalTypeScalar dtype)
 
 -- | Give the element type that the values give to the action. The target is
--- the element type of the parameter, and the name is the element type in the
--- error for values with no type. See Note [Element types of a list].
-withValueType :: ValueBuilder -> Maybe LogicalTypeRep -> Text -> [DuckDBV2ValueHandle] -> (DuckDBV2LogicalTypeHandle -> IO b) -> IO b
-withValueType ValueBuilder{builderType = makeType} target typeName values action = do
+-- the element type of the parameter. See Note [Element types of a list].
+withValueType :: ValueBuilder -> Maybe LogicalTypeRep -> [DuckDBV2ValueHandle] -> (DuckDBV2LogicalTypeHandle -> IO b) -> IO b
+withValueType ValueBuilder{builderType = makeType} target values action = do
   -- Keep the values that are not NULL, in list order. The fold keeps a
   -- constant stack. See Note [Constant stack at safe calls] in
   -- "Database.DuckDB.Simple.Native".
@@ -1316,14 +1336,7 @@ withValueType ValueBuilder{builderType = makeType} target typeName values action
       Just rep -> bracket (makeType rep) destroyLogicalType action
       Nothing
         | not (null values) -> action nullHandle
-        | otherwise ->
-            throwIO
-              SQLError
-                { sqlErrorMessage =
-                    "duckdb-simple: an empty list or map of " <> typeName <> " elements has no element type for a parameter with no known type"
-                , sqlErrorType = Nothing
-                , sqlErrorQuery = Nothing
-                }
+        | otherwise -> bracket (makeType (LogicalTypeScalar LogicalTypeIdSQLNull)) destroyLogicalType action
 
 -- | Construct named fields. The native call copies the field values.
 structValueDuckValue
@@ -1333,7 +1346,7 @@ structValueDuckValue builder@ValueBuilder{builderFactory = factory} StructValue{
       types = elems structValueTypes
       names = map structFieldName fields
   when (names /= map structFieldName types) $
-    throwIO (userError "duckdb-simple: struct value/type fields mismatch")
+    throwInvalidArgument "struct value/type fields mismatch"
   withCreatedValues
     (zipWith (\field logical -> fieldValueWithTypeDuckValue builder (structFieldValue logical) (structFieldValue field)) fields types)
     \values ->
@@ -1348,7 +1361,7 @@ tupleValueDuckValue builder@ValueBuilder{builderFactory = factory} TupleValue{tu
   let fields = elems tupleValueFields
       types = elems tupleValueTypes
   when (length fields /= length types) $
-    throwIO (userError "duckdb-simple: tuple value/type fields mismatch")
+    throwInvalidArgument "tuple value/type fields mismatch"
   withCreatedValues (zipWith (fieldValueWithTypeDuckValue builder) types fields) \values ->
     withArray values \valuePtr ->
       declaredCompositeValue builder (LogicalTypeTuple tupleValueTypes) $
@@ -1427,9 +1440,9 @@ unionValueDuckValue
 unionValueDuckValue builder@ValueBuilder{builderFactory = factory, builderType = makeType} UnionValue{unionValueIndex, unionValueLabel, unionValuePayload, unionValueMembers} = do
   let members = elems unionValueMembers
       index = fromIntegral unionValueIndex
-  when (index >= length members) $ throwIO (userError "duckdb-simple: union value tag out of range")
+  when (index >= length members) $ throwInvalidArgument "union value tag out of range"
   let UnionMemberType name rep = members !! index
-  when (name /= unionValueLabel) $ throwIO (userError "duckdb-simple: union tag and member name mismatch")
+  when (name /= unionValueLabel) $ throwInvalidArgument "union tag and member name mismatch"
   bracket (makeType (LogicalTypeUnion unionValueMembers)) destroyLogicalType \logical ->
     withOwnedVector factory logical \vector -> do
       checked (c_duckdb_v2_vector_set_size vector 1)
@@ -1519,15 +1532,7 @@ scalarFieldValueDuckValue factory dtype value = case (dtype, value) of
   (LogicalTypeIdHugeInt, FieldHugeInt i) -> hugeIntDuckValue factory i
   (LogicalTypeIdUHugeInt, FieldUHugeInt i) -> uhugeIntDuckValue factory i
   (LogicalTypeIdBigNum, FieldBigNum big) -> bigNumDuckValue factory big
-  _ ->
-    throwIO
-      ( userError
-          ( "duckdb-simple: unsupported scalar conversion for "
-              <> show dtype
-              <> " from "
-              <> show value
-          )
-      )
+  _ -> throwInvalidArgument ("unsupported scalar conversion for " <> duckDBTypeToName dtype <> " from " <> Text.pack (show value))
 
 -- | Construct an ENUM value by the default cast of the label to the ENUM type.
 -- The label of a 'FieldEnum' gives the value, not its index: an index of
@@ -1564,8 +1569,8 @@ uhugeIntDuckValue factory value = integerToUHugeInt value >>= \huge -> with huge
 decimalDuckValue :: DuckDBV2FactoryHandle -> DecimalValue -> IO DuckDBV2ValueHandle
 decimalDuckValue factory DecimalValue{decimalWidth, decimalScale, decimalInteger} = do
   when (decimalWidth < 1 || decimalWidth > 38 || decimalScale > decimalWidth) $
-    throwIO (userError "duckdb-simple: invalid DECIMAL width or scale")
-  when (abs decimalInteger >= 10 ^ decimalWidth) $ throwIO (userError "duckdb-simple: DECIMAL value exceeds declared precision")
+    throwInvalidArgument "invalid DECIMAL width or scale"
+  when (abs decimalInteger >= 10 ^ decimalWidth) $ throwInvalidArgument "DECIMAL value exceeds declared precision"
   huge <- integerToHugeInt decimalInteger
   with huge (\ptr -> output (c_duckdb_v2_value_create_decimal factory (ConstPtr ptr) decimalWidth decimalScale))
 
@@ -1580,13 +1585,8 @@ timeWithZoneDuckValue factory TimeWithZone{timeWithZoneTime, timeWithZoneOffsetS
   micros <- timeOfDayUnits 1000000 timeWithZoneTime
   let offset = toInteger timeWithZoneOffsetSeconds
   when (abs offset > toInteger timeTzMaxOffsetSeconds) $
-    throwIO
-      ( userError
-          ( "duckdb-simple: the TIMETZ offset "
-              <> show offset
-              <> " seconds is out of range; DuckDB stores an offset from -57599 to 57599 seconds"
-          )
-      )
+    throwInvalidArgument
+      ("the TIMETZ offset " <> Text.pack (show offset) <> " seconds is out of range; DuckDB stores an offset from -57599 to 57599 seconds")
   output
     ( c_duckdb_v2_value_create_time_tz
         factory
@@ -1595,23 +1595,23 @@ timeWithZoneDuckValue factory TimeWithZone{timeWithZoneTime, timeWithZoneOffsetS
 
 integerToHugeInt :: Integer -> IO DuckDBV2HugeintT
 integerToHugeInt value = do
-  when (value < negate (1 `shiftL` 127) || value >= 1 `shiftL` 127) $ throwIO (userError "duckdb-simple: HUGEINT value out of range")
+  when (value < negate (1 `shiftL` 127) || value >= 1 `shiftL` 127) $ throwInvalidArgument "HUGEINT value out of range"
   pure (DuckDBV2HugeintT (fromIntegral value) (fromIntegral (value `shiftR` 64)))
 
 integerToUHugeInt :: Integer -> IO DuckDBV2UhugeintT
 integerToUHugeInt value = do
-  when (value < 0 || value >= 1 `shiftL` 128) $ throwIO (userError "duckdb-simple: UHUGEINT value out of range")
+  when (value < 0 || value >= 1 `shiftL` 128) $ throwInvalidArgument "UHUGEINT value out of range"
   pure (DuckDBV2UhugeintT (fromIntegral value) (fromIntegral (value `shiftR` 64)))
 
 -- | Borrow generated identifier views and reject embedded NUL bytes.
 withIdentifiers :: [Text] -> (Ptr DuckDBV2IdentifierT -> IO a) -> IO a
 withIdentifiers names action = do
   when (any (Text.any (== '\0')) names) $
-    throwIO (userError "duckdb-simple: logical type name contains NUL")
+    throwInvalidArgument "logical type name contains NUL"
   withIdentifierArray names action
 
 typeMismatch :: String -> FieldValue -> IO a
-typeMismatch expected actual = throwIO (userError ("duckdb-simple: cannot encode " <> show actual <> " as " <> expected))
+typeMismatch expected actual = throwInvalidArgument ("cannot encode " <> Text.pack (show actual) <> " as " <> Text.pack expected)
 
 -- | Construct a GEOMETRY value of the declared CRS from a raw geometry. See
 -- Note [Raw GEOMETRY parameters]. A user cast from BLOB to GEOMETRY does not
@@ -1620,13 +1620,7 @@ typeMismatch expected actual = throwIO (userError ("duckdb-simple: cannot encode
 rawGeometryDuckValue :: ValueBuilder -> Maybe Text -> RawGeometry -> IO DuckDBV2ValueHandle
 rawGeometryDuckValue ValueBuilder{builderFactory = factory, builderType = makeType} crs RawGeometry{rawGeometryWKB, rawGeometryCRS} = do
   when (rawGeometryCRS /= crs) $
-    throwIO
-      SQLError
-        { sqlErrorMessage =
-            "duckdb-simple: a GEOMETRY value with " <> describeCRS rawGeometryCRS <> " cannot bind as a GEOMETRY with " <> describeCRS crs
-        , sqlErrorType = Just ErrorInputInvalid
-        , sqlErrorQuery = Nothing
-        }
+    throwInvalidArgument ("a GEOMETRY value with " <> describeCRS rawGeometryCRS <> " cannot bind as a GEOMETRY with " <> describeCRS crs)
   bracket (makeType (LogicalTypeGeometry crs)) destroyLogicalType \logical ->
     bracket (blobDuckValue factory rawGeometryWKB) destroyValue \blob ->
       defaultCast factory blob logical
@@ -1736,7 +1730,7 @@ utcTimestampNsDuckValue factory value =
 -- "Database.DuckDB.Simple.Materialize".
 instance ToDuckValue G.Geometry where
   toDuckValue factory geometry = do
-    wkt <- either (throwIO . userError) pure (WKT.encodeWKT geometry)
+    wkt <- either (throwInvalidArgument . Text.pack) pure (WKT.encodeWKT geometry)
     bracket (logicalTypeFromRep factory (LogicalTypeGeometry Nothing)) destroyLogicalType \logical ->
       bracket (textDuckValue factory wkt) destroyValue \value ->
         defaultCast factory value logical
@@ -1745,9 +1739,10 @@ instance ToDuckValue Variant where
   toDuckValue factory = variantDuckValue (plainBuilder factory) . variantPayload
 
 -- | Choose the native type of a VARIANT payload. Containers get VARIANT
--- elements and fields. Time values with sub-microsecond digits use nanosecond
--- types. Wide timestamps use milliseconds or seconds when these preserve the
--- value and fit the native range.
+-- elements and fields. A time value with digits below a microsecond uses the
+-- nanosecond type when it fits the range of that type (fitsNanoseconds). Each
+-- other time value uses the microsecond type, as a VARIANT parameter does. See
+-- Note [Nanosecond parameters].
 -- The C API cannot construct a nonempty object whose keys are all empty.
 -- DuckDB 2.0 treats that STRUCT type as a tuple and casts it to a VARIANT array.
 -- A raw geometry without a CRS uses GEOMETRY. See Note [Raw GEOMETRY parameters].
@@ -1778,7 +1773,7 @@ variantPayloadType value = case value of
     | hasSubMicroseconds time -> scalar LogicalTypeIdTimeNs
     | otherwise -> scalar LogicalTypeIdTime
   FieldTimestamp (Finite LocalTime{localTimeOfDay})
-    | hasSubMicroseconds localTimeOfDay -> scalar LogicalTypeIdTimestampNs
+    | hasSubMicroseconds localTimeOfDay && fitsNanoseconds value -> scalar LogicalTypeIdTimestampNs
   FieldTimestamp{} -> scalar LogicalTypeIdTimestamp
   FieldTimestampTZ instant -> scalar (variantUtcTimestampType instant)
   FieldTimeTZ{} -> scalar LogicalTypeIdTimeTz
@@ -1791,39 +1786,28 @@ variantPayloadType value = case value of
   FieldStruct structValue@StructValue{structValueTypes} -> do
     let names = map structFieldName (elems structValueTypes)
     when (length names /= length (List.nub names)) $
-      throwIO (userError "duckdb-simple: VARIANT objects need unique keys")
+      throwInvalidArgument "VARIANT objects need unique keys"
     when (not (null names) && all Text.null names) $
-      throwIO (userError "duckdb-simple: DuckDB's C API cannot construct a VARIANT object with only an empty key")
+      throwInvalidArgument "DuckDB's C API cannot construct a VARIANT object with only an empty key"
     let types = fmap (\field -> field{structFieldValue = variant}) structValueTypes
     pure (LogicalTypeStruct types, FieldStruct structValue{structValueTypes = types})
-  FieldUnion{} ->
-    throwIO
-      SQLError
-        { sqlErrorMessage = "duckdb-simple: a VARIANT keeps only the member value of a UNION, so a UNION value cannot bind as a VARIANT"
-        , sqlErrorType = Just ErrorInputInvalid
-        , sqlErrorQuery = Nothing
-        }
+  FieldUnion{} -> throwInvalidArgument "a VARIANT keeps only the member value of a UNION, so a UNION value cannot bind as a VARIANT"
   FieldGeometry RawGeometry{rawGeometryCRS = Just crs} ->
-    throwIO
-      SQLError
-        { sqlErrorMessage =
-            "duckdb-simple: a VARIANT does not keep the CRS of a GEOMETRY, so the GEOMETRY value with the CRS "
-              <> quotedCRS crs
-              <> " cannot bind as a VARIANT"
-        , sqlErrorType = Just ErrorInputInvalid
-        , sqlErrorQuery = Nothing
-        }
+    throwInvalidArgument
+      ("a VARIANT does not keep the CRS of a GEOMETRY, so the GEOMETRY value with the CRS " <> quotedCRS crs <> " cannot bind as a VARIANT")
   FieldGeometry{} -> pure (LogicalTypeGeometry Nothing, value)
-  FieldMap{} -> throwIO (userError "duckdb-simple: a VARIANT stores a MAP as a list of key and value objects, so a MAP value cannot bind as a VARIANT")
-  FieldEnum{} -> throwIO (userError "duckdb-simple: a VARIANT stores an ENUM as its text, so an ENUM value cannot bind as a VARIANT")
+  FieldMap{} -> throwInvalidArgument "a VARIANT stores a MAP as a list of key and value objects, so a MAP value cannot bind as a VARIANT"
+  FieldEnum{} -> throwInvalidArgument "a VARIANT stores an ENUM as its text, so an ENUM value cannot bind as a VARIANT"
   where
     variant = LogicalTypeScalar LogicalTypeIdVariant
     scalar dtype = pure (LogicalTypeScalar dtype, value)
 
--- | Choose nanosecond storage for a precise UTC VARIANT payload.
+-- | Choose nanosecond storage for a precise UTC VARIANT payload that fits the
+-- range of TIMESTAMPTZ_NS. See Note [Nanosecond parameters].
 variantUtcTimestampType :: UTCTimestamp -> LogicalTypeId
 variantUtcTimestampType (Finite instant)
-  | hasSubMicroseconds (localTimeOfDay (utcToLocalTime utc instant)) = LogicalTypeIdTimestampTzNs
+  | hasSubMicroseconds (localTimeOfDay (utcToLocalTime utc instant)) && fitsNanoseconds (FieldTimestampTZ (Finite instant)) =
+      LogicalTypeIdTimestampTzNs
 variantUtcTimestampType _ = LogicalTypeIdTimestampTz
 
 instance ToDuckValue Null where
@@ -1958,14 +1942,15 @@ encodeUnbounded _ NegInfinity = pure (negate maxBound)
 encodeUnbounded _ PosInfinity = pure maxBound
 encodeUnbounded encode (Finite value) = encode value
 
--- | Encode finite dates as days from the Unix epoch. A day before
--- 5877642-06-25 (BC) raises an error. See Note [Time ranges].
+-- | Encode finite dates as days from the Unix epoch. A day outside the range
+-- of DuckDB raises an error. See Note [Time ranges].
 encodeDay :: Day -> IO Int32
 encodeDay day = do
   let days = diffDays day (fromGregorian 1970 1 1)
-  checkFiniteRange "DATE" (minBound :: Int32) maxBound days
   when (days < -2147483646) $
-    throwOutsideTimeRange (show day) "below the smallest DATE of DuckDB, 5877642-06-25 (BC)"
+    throwOutsideTimeRange (show day) "below the smallest DATE of DuckDB, -5877641-06-25"
+  when (days > 2147483646) $
+    throwOutsideTimeRange (show day) "above the largest DATE of DuckDB, 5881580-07-10"
   pure (fromInteger days)
 
 -- | Encode a time of day at DuckDB microsecond precision.
@@ -1981,9 +1966,11 @@ encodeLocalTime = encodeTimestampUnits 1000000
 encodeTimestampUnits :: Integer -> LocalTime -> IO Int64
 encodeTimestampUnits units value@LocalTime{localDay, localTimeOfDay} = do
   time <- timeOfDayUnits units localTimeOfDay
-  let total = diffDays localDay (fromGregorian 1970 1 1) * 86400 * units + time
-  checkFiniteRange "TIMESTAMP" (minBound :: Int64) maxBound total
   checkTimestampRange units value
+  let total = diffDays localDay (fromGregorian 1970 1 1) * 86400 * units + time
+  -- Only a nanosecond value reaches this check with a value outside the
+  -- storage or at an infinity value. See Note [Time ranges].
+  checkFiniteRange "TIMESTAMP" (minBound :: Int64) maxBound total
   pure (fromInteger total)
 
 {- Note [Time ranges]
@@ -1992,12 +1979,12 @@ The storage of a DATE and of a TIMESTAMP can hold values that DuckDB 2.0.0
 does not accept. The SQL literal of each type, and the casts to it, reject
 these values:
 
-- DATE: from 5877642-06-25 (BC) to 5881580-07-10, days -2147483646 to
-  2147483646 from the Unix epoch. The INT32 storage also holds day
-  -2147483648.
+- DATE: from -5877641-06-25 (5877642-06-25 BC) to 5881580-07-10, days
+  -2147483646 to 2147483646 from the Unix epoch. The INT32 storage also holds
+  day -2147483648.
 
-- TIMESTAMP, TIMESTAMPTZ, TIMESTAMP_S, and TIMESTAMP_MS: from 290309-12-22
-  (BC) 00:00:00 to 294247-01-10 04:00:54.775806, microseconds
+- TIMESTAMP, TIMESTAMPTZ, TIMESTAMP_S, and TIMESTAMP_MS: from -290308-12-22
+  00:00:00 (290309-12-22 BC) to 294247-01-10 04:00:54.775806, microseconds
   -9223372022400000000 to 2^63 - 2. The INT64 storage of a microsecond value
   also holds about four hours before that start, and the storage of a second
   or a millisecond value holds much more at each end.
@@ -2008,10 +1995,14 @@ invalidates the database. A cast of such a TIMESTAMP to TIMESTAMP_S stores the
 first valid value with no error. A DATE before the range sorts before
 -infinity, and a cast of it to TIMESTAMP fails. Thus encodeDay and
 encodeTimestampUnits raise an SQLError of the type ErrorInputOutOfRange for
-these values (throwOutsideTimeRange). The two infinity values and values
-outside the storage keep the earlier error of checkFiniteRange, so that
-check runs first. A nanosecond value has the range of its INT64 storage, and
-the literal of TIMESTAMP_NS accepts that range, so it gets no check here.
+each finite value outside these ranges (throwOutsideTimeRange), before any
+check of the storage, so a value outside the storage and a value at an
+infinity value get this error too. The text names the value and the end of
+the range in the notation of Data.Time, where the year -5877641 is 5877642 BC.
+A nanosecond value has the range of its INT64 storage, and the literal of
+TIMESTAMP_NS accepts that range, so it gets no check here. checkFiniteRange
+then catches only a nanosecond value outside its storage or at an infinity
+value.
 
 A leap second gets no check. A TimeOfDay with 60 seconds binds as the next
 second, as make_time(23, 59, 60) and make_timestamp(2016, 12, 31, 23, 59, 60)
@@ -2024,7 +2015,7 @@ checkTimestampRange :: Integer -> LocalTime -> IO ()
 checkTimestampRange units value
   | units > 1000000 = pure ()
   | micros < -9223372022400000000 =
-      throwOutsideTimeRange (show value) ("below the smallest " <> name <> " of DuckDB, 290309-12-22 (BC) 00:00:00")
+      throwOutsideTimeRange (show value) ("below the smallest " <> name <> " of DuckDB, -290308-12-22 00:00:00")
   | micros > 9223372036854775806 = throwOutsideTimeRange (show value) ("above the largest " <> name <> " of DuckDB, " <> largest)
   | otherwise = pure ()
   where
@@ -2038,13 +2029,7 @@ checkTimestampRange units value
 -- text names the Haskell value and the end of the range. See
 -- Note [Time ranges].
 throwOutsideTimeRange :: String -> Text -> IO a
-throwOutsideTimeRange value bound =
-  throwIO
-    SQLError
-      { sqlErrorMessage = "duckdb-simple: the value " <> Text.pack value <> " is " <> bound
-      , sqlErrorType = Just ErrorInputOutOfRange
-      , sqlErrorQuery = Nothing
-      }
+throwOutsideTimeRange value bound = throwOutOfRange ("the value " <> Text.pack value <> " is " <> bound)
 
 -- | Count the units from the Unix epoch to a timestamp, with the digits below
 -- one unit cut toward the earlier time. The count does not check the time of
@@ -2058,7 +2043,7 @@ timestampUnits units LocalTime{localDay, localTimeOfDay} =
 checkFiniteRange :: (Integral a) => String -> a -> a -> Integer -> IO ()
 checkFiniteRange label lower upper value =
   unless (inFiniteRange lower upper value) $
-    throwIO (userError ("duckdb-simple: " <> label <> " value out of finite range"))
+    throwInvalidArgument (Text.pack label <> " value out of finite range")
 
 -- | Check storage limits without accepting the two infinity sentinels.
 inFiniteRange :: (Integral a) => a -> a -> Integer -> Bool
@@ -2070,10 +2055,10 @@ timeOfDayUnits :: Integer -> TimeOfDay -> IO Integer
 timeOfDayUnits units tod@(TimeOfDay hours minutes seconds) = do
   when
     (hours < 0 || hours > 24 || minutes < 0 || minutes > 59 || seconds < 0 || seconds >= 61 || (hours == 24 && (minutes /= 0 || seconds /= 0)))
-    $ throwIO (userError "duckdb-simple: invalid time of day")
+    $ throwInvalidArgument "invalid time of day"
   let value = diffTimeToPicoseconds (timeOfDayToTime tod) `div` (1000000000000 `div` units)
   when (value > 86400 * units) $
-    throwIO (userError "duckdb-simple: time of day out of range")
+    throwInvalidArgument "time of day out of range"
   pure value
 
 -- | Transfer a newly constructed value to the statement on success.

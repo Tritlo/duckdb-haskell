@@ -10,13 +10,12 @@
 -- Description : Lossless VARIANT binding and result conversion through the V2 API.
 module VariantRegressionTests (tests) where
 
-import Control.Exception (IOException, SomeException, bracket, displayException, try)
+import Control.Exception (bracket, try)
 import Control.Monad (forM, forM_, void, when)
 import Data.Array (Array, elems, listArray)
 import qualified Data.ByteString as BS
 import qualified Data.Geometry as G
 import Data.Int (Int64)
-import Data.List (isInfixOf)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Vector as V
@@ -149,12 +148,14 @@ tests =
         forM_ rows \(seconds, nativeSeconds, millis, nativeMillis) ->
           forM_ [(seconds, nativeSeconds), (millis, nativeMillis)] \(Variant actual, native) -> do
             actual @?= native
-            -- The microseconds of the value do not fit in INT64. See
+            -- The value is outside the range of TIMESTAMP. See
             -- Note [Time ranges] in "Database.DuckDB.Simple.ToField".
             outcome <- try (query conn "SELECT ?" (Only (Variant actual)) :: IO [Only Variant])
             case outcome of
-              Left (err :: IOException) -> assertBool (show err) ("TIMESTAMP value out of finite range" `isInfixOf` show err)
-              Right bound -> assertFailure ("expected the storage error, got " <> show bound)
+              Left (err :: SQLError) -> do
+                sqlErrorType err @?= Just ErrorInputOutOfRange
+                assertBool (show err) ("TIMESTAMP of DuckDB" `Text.isInfixOf` sqlErrorMessage err)
+              Right bound -> assertFailure ("expected the range error, got " <> show bound)
     , testCase "text and binary values preserve embedded NUL" $ withConnection ":memory:" \conn -> do
         roundTrip conn (FieldText "before\0after íslenska λ 😀")
         roundTrip conn (FieldBlob (BS.pack [0, 1, 127, 128, 255, 0]))
@@ -189,16 +190,20 @@ tests =
         roundTrip
           conn
           (variantObject [("", FieldList [FieldNull, variantObject [("", FieldText "λ"), ("named", FieldInt64 1)]]), ("named", FieldBool True)])
-        sole <- try (query conn "SELECT ?" (Only (Variant (variantObject [("", FieldInt64 42)])))) :: IO (Either SomeException [Only Variant])
+        sole <- try (query conn "SELECT ?" (Only (Variant (variantObject [("", FieldInt64 42)])))) :: IO (Either SQLError [Only Variant])
         case sole of
-          Left err -> assertBool (displayException err) ("only an empty key" `isInfixOf` displayException err)
+          Left err -> do
+            sqlErrorType err @?= Just ErrorInputInvalid
+            assertBool (Text.unpack (sqlErrorMessage err)) ("only an empty key" `Text.isInfixOf` sqlErrorMessage err)
           Right _ -> assertFailure "expected the native constructor limit for an object with only an empty key"
     , testCase "objects with two empty keys fail the unique key check" $ withConnection ":memory:" \conn -> do
         result <-
           try (query conn "SELECT ?" (Only (Variant (variantObject [("", FieldInt64 1), ("", FieldInt64 2)]))))
-            :: IO (Either IOException [Only Variant])
+            :: IO (Either SQLError [Only Variant])
         case result of
-          Left err -> assertBool (displayException err) ("duckdb-simple: VARIANT objects need unique keys" `isInfixOf` displayException err)
+          Left err -> do
+            sqlErrorType err @?= Just ErrorInputInvalid
+            sqlErrorMessage err @?= "duckdb-simple: VARIANT objects need unique keys"
           Right _ -> assertFailure "expected the unique key check to reject two empty keys"
     , testCase "metadata conversion ignores shadowing macros" $ withConnection ":memory:" \conn -> do
         -- The connection keeps the parsed metadata statement of the first decode.
@@ -455,7 +460,9 @@ tests =
           \(payload, reason) -> forM_ (depths payload) \input -> do
             result <- try (query conn "SELECT ?" (Only (Variant input)) :: IO [Only Variant])
             case result of
-              Left (err :: IOException) -> assertBool (show err) (reason `isInfixOf` show err)
+              Left SQLError{sqlErrorType, sqlErrorMessage} -> do
+                sqlErrorType @?= Just ErrorInputInvalid
+                assertBool (Text.unpack sqlErrorMessage) (Text.pack reason `Text.isInfixOf` sqlErrorMessage)
               Right rows -> assertFailure ("expected the " <> reason <> " error, got " <> show rows)
         (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
     , testCase "a column that holds an ENUM, a MAP, a UNION, or a GEOMETRY with a CRS does not read as Variant" $ withConnection ":memory:" \conn -> do

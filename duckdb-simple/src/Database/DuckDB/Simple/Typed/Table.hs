@@ -154,14 +154,18 @@ writeRows factory chunk columns rows = do
   vectorCount <- output (c_duckdb_v2_data_chunk_get_vector_count chunk)
   let width = length (rowColumnTypes (Proxy :: Proxy row))
   when (fromIntegral vectorCount /= length columns || any (\column -> column < 0 || column >= width) columns) $
-    throwInvalidArgument
-      ( "the output chunk has "
-          <> Text.pack (show vectorCount)
-          <> " vectors for the columns "
-          <> Text.pack (show columns)
-          <> " of a row of "
-          <> Text.pack (show width)
-          <> " columns"
+    throwIO
+      ( SQLError
+          ( "duckdb-simple: the output chunk has "
+              <> Text.pack (show vectorCount)
+              <> " vectors for the columns "
+              <> Text.pack (show columns)
+              <> " of a row of "
+              <> Text.pack (show width)
+              <> " columns"
+          )
+          Nothing
+          Nothing
       )
   case splitRows capacity rows of
     (now, later) -> do
@@ -211,4 +215,4 @@ readArguments name count factory input = do
     Ok params -> pure params
     Errors failures -> throwIO (userError ("duckdb-simple: " <> Text.unpack name <> ": " <> conversionMessage failures))
   where
-    unexpectedVariant = rejectRows (throwIO (userError "duckdb-simple: the type of a table function argument cannot be or contain VARIANT"))
+    unexpectedVariant = rejectRows (throwInvalidArgument "the type of a table function argument cannot be or contain VARIANT")

@@ -24,10 +24,12 @@
 - `ConfigValue.configValueText` is `Maybe Text`, and `Nothing` for an option
   with a NULL value. Version 0.3 stopped the process for such an option. See
   MIGRATION.md.
-- A `Day` before 5877642-06-25 (BC), and a `LocalTime` or a `UTCTime` before
-  290309-12-22 (BC) 00:00:00, raise an `SQLError` of the type
-  `ErrorInputOutOfRange` when they bind. Version 0.3 bound them. See
-  MIGRATION.md.
+- A `Day` outside the range of DuckDB, from -5877641-06-25 to 5881580-07-10,
+  and a `LocalTime` or a `UTCTime` outside the range from -290308-12-22
+  00:00:00 to 294247-01-10 04:00:54.775806, in the notation of `Data.Time`,
+  raise an `SQLError` of the type `ErrorInputOutOfRange` when they bind.
+  Version 0.3 bound some of these values and raised an `IOException` for the
+  others. See MIGRATION.md.
 - Add typed configuration values and defaults, managed log sinks, macro
   registration, function documentation, query metrics, and file path
   operations. Expose table bind metadata for multi-file readers.
@@ -253,13 +255,46 @@
   empty LIST of its element type. A `String` stays one VARCHAR parameter, and a
   list as a row is still a row of parameters, so a list parameter is
   `Only [..]`. Version 0.3 had no `ToField` instance for lists.
+- Each input check of the library raises `SQLError` with the type
+  `ErrorInputInvalid`: a parameter value that does not fit its type (for example
+  a `DecimalValue` outside its width, a `BitString` with bad padding, a
+  `UnionValue` with a tag out of range, a nanosecond timestamp outside the
+  storage of its type, or an empty `Array`), a logical type with a NUL in a name
+  or a bad DECIMAL width, a CRS name that DuckDB does not keep, a NUL in a
+  database path, an alias, an attach option, a configuration, a query, or a
+  parameter name, a NUL in a file path, a negative file offset or read size, a
+  file range outside `Int64`, a bad `ConnectionOptions` field, SQL text with no
+  statement or with more than one statement, a parameter index out of bounds, a
+  column index of `columnName` out of bounds, a bad name or argument of a
+  registration, a catalog lookup, a configuration option, or a log sink, the
+  column count of a COPY FROM table, and a VARIANT argument of a typed function,
+  a table function, a pragma, a COPY function, or a custom option. An error
+  about a statement has the query of the statement, and each other error has no
+  query. A date or a timestamp outside the range of DuckDB, and an integer
+  outside the range of its parameter type, raise `SQLError` with the type
+  `ErrorInputOutOfRange`. A parameter count or a parameter name that does not
+  match the query keeps its `FormatError`. A check in the callback of a scalar
+  function fails the query, as each other exception of a callback does. Version
+  0.3 raised an `IOException` for the checks of parameter values, logical types,
+  and CRS names. The error for a scalar value that does not match its declared
+  type names the SQL type, for example `NULL` in place of
+  `LogicalTypeIdSQLNull`.
+- A `TimeOfDay`, a `LocalTime`, or a `UTCTime` with digits below a microsecond,
+  and a `FieldTime`, a `FieldTimestamp`, or a `FieldTimestampTZ` with such
+  digits, binds with the nanosecond type for a `VARIANT` parameter when it fits
+  the range of that type, so the VARIANT keeps the digits. A value with no such
+  digits binds as before, with no read of the parameter type. A value outside
+  the range of the nanosecond type, and an element of a `VARIANT` list or map,
+  keep the microsecond value. A `Variant` payload follows the same rule.
+- An empty `Array` and an empty `FieldArray` raise the same `SQLError`, of the
+  type `ErrorInputInvalid`.
 - Add a parameter instance for `FieldValue`, so a row read as `[FieldValue]`
   binds back. A scalar constructor binds as the DuckDB type of the
   constructor, and a `FieldList`, a `FieldArray`, or a `FieldMap` takes the
   element type that its elements give, with the rule of a SQL list literal.
-  A `FieldEnum` binds its label as a VARCHAR. An empty `FieldArray`, and an
-  empty `FieldList` or `FieldMap` for a parameter with no known type, raise
-  `SQLError` with the type `ErrorInputInvalid`. A `FieldTimestamp`, a `FieldTime`, and a
+  A `FieldEnum` binds its label as a VARCHAR. An empty `FieldArray` raises
+  `SQLError` with the type `ErrorInputInvalid`. A `FieldTimestamp`, a
+  `FieldTime`, and a
   `FieldTimestampTZ` bind with the microsecond type, or with the nanosecond
   type when the value has digits below a microsecond and the parameter has the
   nanosecond type.
@@ -273,10 +308,11 @@
   element type of the parameter when the parameter has a known type, for
   example for an `INSERT` into a typed column, and the type of the SQL list
   literal, such as `"NULL"[]`, when it has none. An empty list or `Map` of such
-  elements takes the element type of a parameter with a known type. Version
-  0.3 raised an error for an `Array` of NULL elements. For a parameter with no
-  known type, such a list of generic records through `ViaDuckDB` takes the
-  STRUCT or UNION type of the record.
+  elements takes the element type of a parameter with a known type. For a
+  parameter with no known type, such a list of generic records through
+  `ViaDuckDB` takes the STRUCT or UNION type of the record, and each other such
+  list or `Map` takes the type NULL, as `[]` and `MAP {}` have. Version 0.3
+  raised an error for an `Array` of NULL elements.
 - Some parameters bind for the type that DuckDB gives the parameter: a time
   value with digits below a microsecond, an `Array`, a list, a `Map`, a manual
   STRUCT, TUPLE, or UNION value, and an `Integer` or a `Natural` outside the

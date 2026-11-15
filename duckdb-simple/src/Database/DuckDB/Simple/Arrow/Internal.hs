@@ -35,24 +35,28 @@ type ArrowBatch = (Ptr ArrowSchema, Ptr ArrowArray)
 foldArrowWith :: (ToRow q) => ResultMode -> Connection -> Query -> q -> a -> (a -> Ptr ArrowSchema -> Ptr ArrowArray -> IO a) -> IO a
 foldArrowWith mode conn queryText params initial step = withStatement conn queryText \stmt -> do
   bind stmt (toRow params)
-  withQueryError queryText $ mask \restore -> do
-    let deliver acc (schema, array) = withStatementHandle stmt \_ -> do
+  mask \restore -> do
+    -- The native calls of the fold attach its query to an error. The step runs
+    -- outside them, so that an error of the step keeps its own query, as in
+    -- the row folds.
+    let native = withQueryError queryText
+        deliver acc (schema, array) = do
+          -- A step that closes the connection stops the later steps.
+          withStatementHandle stmt (\_ -> pure ())
           next <- restore (step acc schema array)
           next `seq` pure next
     case mode of
       StreamingResult ->
         -- Serialize the execution call. The stream stays open after it. See
         -- Note [Connection lock] in "Database.DuckDB.Simple.Internal".
-        bracket (withConnectionLock conn (executePreparedArrowResult stmt)) (const (clearArrowResult stmt)) \result ->
+        bracket (native (withConnectionLock conn (executePreparedArrowResult stmt))) (const (native (clearArrowResult stmt))) \result ->
           -- Recurse outside the handle scope, so that the stack does not grow for each batch.
           -- Each fetch holds the connection lock. The step runs after the
           -- fetch, without the lock.
-          let stream acc = do
-                next <- withStatementHandle stmt \_ ->
-                  withConnectionLock conn (fetchBatch stmt result) >>= \case
-                    Nothing -> pure Nothing
-                    Just batch -> Just <$> (deliver acc batch `finally` releaseBatch batch)
-                maybe (pure acc) stream next
+          let stream acc =
+                withStatementHandle stmt (\_ -> withConnectionLock conn (fetchBatch stmt result)) >>= \case
+                  Nothing -> pure acc
+                  Just batch -> (deliver acc batch `finally` releaseBatch batch) >>= stream
           in  stream initial
       MaterializedResult -> do
         owned <- newIORef []
@@ -71,7 +75,7 @@ foldArrowWith mode conn queryText params initial step = withStatement conn query
           -- Hold the lock until the native result closes. The callbacks run after that.
           -- The batches are in storage that this thread releases. See
           -- Note [Result window] in "Database.DuckDB.Simple.Internal".
-          withResultWindow conn (const (pure ())) (withArrowResult stmt gather)
+          native (withResultWindow conn (const (pure ())) (withArrowResult stmt gather))
           atomicModifyIORef' owned (\batches -> (reverse batches, ()))
           consume initial
 

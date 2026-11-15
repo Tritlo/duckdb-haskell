@@ -116,7 +116,7 @@ no CRS query.
 createTypeCache :: DuckDBV2InstanceHandle -> DuckDBV2ConnectionHandle -> [Text] -> IO TypeCache
 createTypeCache instance_ connection crss = do
   when (any Text.null crss || any (Text.any (== '\0')) crss) $
-    throwIO (userError "duckdb-simple: a GEOMETRY CRS must be nonempty and must not contain NUL")
+    throwInvalidArgument "a GEOMETRY CRS must be nonempty and must not contain NUL"
   let names = nub crss
   casts <- withInstanceFactory instance_ pure
   direct <- acquireItems (mapM_ destroyLogicalType) [directGeometry connection crs | crs <- names]
@@ -213,7 +213,7 @@ geometryTypes :: [Text] -> [DuckDBV2LogicalTypeHandle] -> IO NativeTypes
 geometryTypes crss owned = do
   reported <- mapM logicalTypeToRep owned
   when (any (\rep -> case rep of LogicalTypeGeometry (Just _) -> False; _ -> True) reported) $
-    throwIO (userError "duckdb-simple: the type query did not preserve a configured GEOMETRY CRS")
+    throwInvalidArgument "the type query did not preserve a configured GEOMETRY CRS"
   pure
     NativeTypes
       { nativeGeometry =

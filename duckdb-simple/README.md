@@ -380,10 +380,9 @@ list: DuckDB casts the list to the column type after it gives the list its
 type. A list or an array of such elements that are all NULL, and an empty
 list, take the element type of the parameter when the parameter has a known
 type, as for `INSERT INTO t VALUES ([])` and `([NULL, NULL])` in SQL. For a
-parameter with no known type, a list of NULL elements gets the type of the SQL
-literal, `"NULL"[]`. An empty list for a parameter with no known type raises an
-error: DuckDB gives the literal `[]` the type `"NULL"[]`, but its native
-constructor gives no type to an empty list. A generic record through
+parameter with no known type, an empty list or a list of NULL elements gets
+the type of the SQL literal, `"NULL"[]`, and an empty `Map` of such values gets
+the type NULL for its values, as `MAP {}` does. A generic record through
 `ViaDuckDB` has a declared type, so for a parameter with no known type an
 empty list or a list of NULL records gets the STRUCT or UNION type of the
 record.
@@ -419,9 +418,14 @@ Floating-point NaN and infinities remain valid `Float` and `Double` values.
 A `TimeOfDay`, a `LocalTime`, or a `UTCTime` parameter, and an `Unbounded`
 form, keeps its digits below a microsecond for a nanosecond parameter:
 `TIME_NS`, `TIMESTAMP_NS`, or `TIMESTAMPTZ_NS`. Use an explicit cast, such as
-`SELECT ?::TIMESTAMP_NS`, or a column with that type. Each other parameter, and
-a parameter with no known type, gets the microsecond value: the digits below a
-microsecond go away, as for the SQL literal. Only a value with such digits
+`SELECT ?::TIMESTAMP_NS`, or a column with that type. A `VARIANT` parameter
+also gets the nanosecond value, when the value fits the range of the nanosecond
+type, because a VARIANT holds `TIME_NS`, `TIMESTAMP_NS`, and `TIMESTAMPTZ_NS`
+values. Each other parameter, and a parameter with no known type, gets the
+microsecond value: the digits below a microsecond go away, as for the SQL
+literal. An element of a `VARIANT[]` list or a value of a MAP with `VARIANT`
+values also gets the microsecond value, because one list has one element type
+for all its elements. Only a value with such digits
 reads the parameter type. An explicit cast such as `?::TIMESTAMP_NS` makes a
 nanosecond parameter, so for a `TIMESTAMP` column DuckDB rounds the value to
 the microsecond, where a plain `?` cuts the digits. Values inside collections, STRUCTs, MAPs, and UNIONs follow their
@@ -432,16 +436,19 @@ changes during the call does not change how its later rows bind.
 Use separate parameters when one expression requires microseconds and another
 requires nanoseconds.
 
-A `Day` before 5877642-06-25 (BC), and a `LocalTime` or a `UTCTime` before
-290309-12-22 (BC) 00:00:00, raise an `SQLError` of the type
-`ErrorInputOutOfRange` when they bind. `Data.Time` writes these years as
--5877641 and -290308. The rule holds also inside a collection, a STRUCT, or a
-VARIANT, and for a finite `Unbounded` value. DuckDB does not accept these
-values: its SQL literals reject them, and a stored value can make DuckDB raise
-an INTERNAL error. A TIMESTAMP_S or TIMESTAMP_MS value has the same range at
-both ends. A leap second, a `TimeOfDay` with 60 seconds, binds as the next
-second, as `make_time` and `make_timestamp` of DuckDB give it. The SQL literal
-`'23:59:60'` raises an error.
+A `Day` outside the range of DuckDB, from -5877641-06-25 to 5881580-07-10, and
+a `LocalTime` or a `UTCTime` outside the range from -290308-12-22 00:00:00 to
+294247-01-10 04:00:54.775806, raise an `SQLError` of the type
+`ErrorInputOutOfRange` when they bind. These dates are in the notation of
+`Data.Time`, where the year -5877641 is 5877642 BC and the year -290308 is
+290309 BC. The rule holds also inside a collection, a STRUCT, or a VARIANT,
+and for a finite `Unbounded` value. DuckDB does not accept these values: its
+SQL literals reject them, and a stored value can read as an infinity or make
+DuckDB raise an INTERNAL error. A TIMESTAMP_S or TIMESTAMP_MS value has the
+same range at both ends. A leap second, a `TimeOfDay` with 60 seconds, binds
+as the next second, as `make_time` and `make_timestamp` of DuckDB give it. The
+SQL literal `'23:59:60'` raises an error. A time after 24:00:00, for example
+23:59:60.5, raises an `SQLError` of the type `ErrorInputInvalid`.
 
 ### Manual STRUCT, TUPLE, and UNION Handling
 
@@ -501,25 +508,27 @@ nanoseconds.
 
 Some values bind with another type than the column that they came from. A
 `FieldTimestamp` binds as a `TIMESTAMP`, or as a `TIMESTAMP_NS` when it has
-digits below a microsecond and the parameter has the type `TIMESTAMP_NS` (see
-[Infinite dates and timestamps](#infinite-dates-and-timestamps)). The same
-holds for `FieldTime` and `FieldTimestampTZ`. A `FieldText` binds as a
+digits below a microsecond and the parameter has the type `TIMESTAMP_NS` or
+`VARIANT` (see [Infinite dates and timestamps](#infinite-dates-and-timestamps)).
+The same holds for `FieldTime` and `FieldTimestampTZ`. A `FieldText` binds as a
 `VARCHAR` with no collation, also when it came from a `JSON` value. A value
 from a `VARIANT` column binds as its payload. A `FieldEnum` binds its label as
 a `VARCHAR`. `FieldNull` binds as an untyped NULL. DuckDB casts each of these
-values to the type of a column with no loss.
+values to the type of a column with no loss, with one exception: a time value
+with digits below a microsecond in a `FieldList` or a `FieldMap` for a
+`VARIANT` parameter gets the microsecond value, so a `VARIANT` array of
+`TIMESTAMP_NS` values loses these digits when it binds back. A `VARIANT` object
+reads as a `FieldStruct` with `VARIANT` fields and keeps them.
 
-A `FieldList`, a `FieldArray`, or a `FieldMap` with only `FieldNull` elements
-binds as the SQL list literal does, for example as `"NULL"[]` for a parameter
-with no known type. An empty `FieldList` or `FieldMap` takes the element type
-of a parameter with a known type, and raises an `SQLError` of the type
-`ErrorInputInvalid` for a parameter with no known type. An empty `FieldArray`
-raises the same error, because a DuckDB ARRAY has at least one element. Inside
-a `FieldStruct`, a `FieldTuple`, or a `FieldUnion`, the declared type gives the
-element type, so such a value binds. A `FieldEnum` there binds its label to the
-declared ENUM type, and a label that is not in the dictionary raises an error.
-`FieldValue` has no `DuckDBColumnType` and no `ToDuckValue` instance, because
-no one DuckDB type holds each of its values.
+A `FieldList`, a `FieldArray`, or a `FieldMap` that is empty or has only
+`FieldNull` elements binds as the SQL list literal does: it takes the element
+type of a parameter with a known type, and otherwise the type NULL, as `[]`,
+`[NULL, NULL]`, and `MAP {}` have. An empty `FieldArray` raises an `SQLError`
+of the type `ErrorInputInvalid`, because a DuckDB ARRAY has at least one
+element. Inside a `FieldStruct`, a `FieldTuple`, or a `FieldUnion`, a
+`FieldEnum` binds its label to the declared ENUM type, and a label that is not
+in the dictionary raises an error. `FieldValue` has no `DuckDBColumnType` and
+no `ToDuckValue` instance, because no one DuckDB type holds each of its values.
 
 ### Resource Management
 

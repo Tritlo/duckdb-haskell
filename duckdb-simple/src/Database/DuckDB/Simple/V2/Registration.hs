@@ -117,7 +117,7 @@ module Database.DuckDB.Simple.V2.Registration (
   readIdentifier,
 ) where
 
-import Control.Exception (bracket)
+import Control.Exception (bracket, throwIO)
 import Control.Monad (forM_, when)
 import Data.Dynamic (dynTypeRep, fromDynamic, toDyn)
 import Data.Int (Int64)
@@ -755,8 +755,16 @@ getCallbackState getter = do
   case fromDynamic stored of
     Just value -> pure value
     Nothing ->
-      throwInvalidArgument $
-        "callback state has type " <> Text.pack (show (dynTypeRep stored)) <> ", not " <> Text.pack (show (typeRep (Proxy :: Proxy a)))
+      throwIO
+        ( SQLError
+            ( "duckdb-simple: callback state has type "
+                <> Text.pack (show (dynTypeRep stored))
+                <> ", not "
+                <> Text.pack (show (typeRep (Proxy :: Proxy a)))
+            )
+            Nothing
+            Nothing
+        )
 
 -- | Construct a type through a borrowed factory, borrow it for an action, and
 -- release it on every exit path. The factory can come from a connection or from

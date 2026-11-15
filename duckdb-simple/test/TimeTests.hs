@@ -10,7 +10,7 @@
 -- Description : Round trips for finite dates and native temporal infinities.
 module TimeTests (timeTests) where
 
-import Control.Exception (IOException, fromException, try)
+import Control.Exception (fromException, try)
 import Control.Monad (forM_, void)
 import Data.Array (Array, listArray)
 import Data.Int (Int64)
@@ -224,9 +224,9 @@ nanosecondTimeTests =
         >>= (@?= [(precise, coarse, [Just precise, Nothing, Just NegInfinity], [precise])])
       let union = UnionValue 0 "Value" (FieldTimestampTZ precise) (listArray (0, 0) [UnionMemberType "Value" utcType])
       (query conn "SELECT union_extract(?::UNION(value TIMESTAMPTZ_NS), 'value')" (Only union) :: IO [Only UTCTimestamp]) >>= (@?= [Only precise])
-      assertIOException
+      assertInputError
         (query conn sql (Only struct{structValueFields = listArray (0, 0) [StructField "wrong" (FieldTimestampTZ precise)]}) :: IO [Only FieldValue])
-      assertIOException (query conn "SELECT ?::UNION(value TIMESTAMPTZ_NS)" (Only union{unionValueLabel = "wrong"}) :: IO [Only FieldValue])
+      assertInputError (query conn "SELECT ?::UNION(value TIMESTAMPTZ_NS)" (Only union{unionValueLabel = "wrong"}) :: IO [Only FieldValue])
   , testCase "nanosecond tuple targets match positional fields" $ withConnection ":memory:" $ \conn -> do
       let precise = Finite (posixSecondsToUTCTime 0.123456789)
           utcType = LogicalTypeScalar LogicalTypeIdTimestampTz
@@ -398,8 +398,9 @@ nanosecondTimeTests =
               Right () -> assertFailure (label <> ": expected the cast error of DuckDB")
           encoderError label action =
             try action >>= \case
-              Left (err :: IOException) -> do
-                assertBool label ("duckdb-simple: TIMESTAMP value out of finite range" `Text.isInfixOf` Text.pack (show err))
+              Left SQLError{sqlErrorType, sqlErrorMessage} -> do
+                assertEqual label (Just ErrorInputInvalid) sqlErrorType
+                assertBool label ("duckdb-simple: TIMESTAMP value out of finite range" `Text.isInfixOf` sqlErrorMessage)
                 noRows label
               Right () -> assertFailure (label <> ": expected the range error of the encoder")
       -- DuckDB raises the error when it also cannot cast the microsecond value.
@@ -420,7 +421,7 @@ nanosecondTimeTests =
       encoderError "STRUCT with no digits" (insert "STRUCT(a TIMESTAMP_NS, b TIMESTAMP_NS)" (pair (moment 1600 1 2 3 4 5)))
       encoderError "TUPLE" (insert "TUPLE(TIMESTAMP_NS)" tuple)
       encoderError "UNION" (insert "UNION(v TIMESTAMP_NS)" union)
-      assertIOException
+      assertInputError
         (query conn "SELECT TRY_CAST(? AS STRUCT(a TIMESTAMP_NS, b TIMESTAMP_NS))::VARCHAR" (Only (pair early)) :: IO [Only Text.Text])
       -- In TRY_CAST, DuckDB gives NULL for a parameter that it cannot cast, and
       -- the constructor of a list raises its error first.
@@ -435,6 +436,58 @@ nanosecondTimeTests =
       _ <- execute_ conn "CREATE OR REPLACE TABLE stored (v TIMESTAMP_NS, z TIMESTAMPTZ_NS)"
       _ <- execute conn "INSERT INTO stored VALUES (?, ?)" (PosInfinity :: LocalTimestamp, NegInfinity :: UTCTimestamp)
       (query_ conn "SELECT v::VARCHAR, z::VARCHAR FROM stored" :: IO [(Text.Text, Text.Text)]) >>= (@?= [("infinity", "-infinity")])
+  , testCase "a time value with digits below a microsecond keeps them for a VARIANT parameter" $ withConnection ":memory:" $ \conn -> do
+      _ <- execute_ conn "SET TimeZone = 'UTC'; CREATE TABLE v (x VARIANT); CREATE TABLE l (x VARIANT[])"
+      let day = fromGregorian 2026 1 2
+          tod = TimeOfDay 3 4 5.123456789
+          local = LocalTime day tod
+          early = LocalTime (fromGregorian 1600 1 2) tod
+          stored :: (ToField a) => a -> IO [(Text.Text, Text.Text)]
+          stored value = do
+            _ <- execute_ conn "DELETE FROM v"
+            _ <- execute conn "INSERT INTO v VALUES (?)" (Only value)
+            query_ conn "SELECT variant_typeof(x), x::VARCHAR FROM v"
+      -- A value with such digits gets the nanosecond type.
+      stored tod >>= (@?= [("TIME_NANOS", "03:04:05.123456789")])
+      stored local >>= (@?= [("TIMESTAMP_NANOS", "2026-01-02 03:04:05.123456789")])
+      stored (Finite local) >>= (@?= [("TIMESTAMP_NANOS", "2026-01-02 03:04:05.123456789")])
+      stored (localTimeToUTC utc local) >>= (@?= [("TIMESTAMP_NANOS_TZ", "2026-01-02 03:04:05.123456789+00")])
+      -- A value with no such digits keeps the microsecond type.
+      stored (TimeOfDay 3 4 5.123456) >>= (@?= [("TIME_MICROS", "03:04:05.123456")])
+      stored (LocalTime day (TimeOfDay 3 4 5.123456)) >>= (@?= [("TIMESTAMP_MICROS", "2026-01-02 03:04:05.123456")])
+      -- A value that the nanosecond type cannot hold gets the microsecond value.
+      stored early >>= (@?= [("TIMESTAMP_MICROS", "1600-01-02 03:04:05.123456")])
+      stored (LocalTime (fromGregorian 2262 4 11) (TimeOfDay 23 47 16.854775900)) >>= (@?= [("TIMESTAMP_MICROS", "2262-04-11 23:47:16.854775")])
+      stored (localTimeToUTC utc early) >>= (@?= [("TIMESTAMP_MICROS_TZ", "1600-01-02 03:04:05.123456+00")])
+      -- A value outside the range of TIMESTAMP_NS gets the microsecond value, as
+      -- a parameter with no known type, also as a Variant payload.
+      let far = LocalTime (fromGregorian 3000 1 2) tod
+      (query conn "SELECT ?::VARCHAR" (Only far) :: IO [Only Text.Text]) >>= (@?= [Only "3000-01-02 03:04:05.123456"])
+      stored far >>= (@?= [("TIMESTAMP_MICROS", "3000-01-02 03:04:05.123456")])
+      stored (Variant (FieldTimestamp (Finite far))) >>= (@?= [("TIMESTAMP_MICROS", "3000-01-02 03:04:05.123456")])
+      stored (Variant (FieldTimestampTZ (Finite (localTimeToUTC utc far)))) >>= (@?= [("TIMESTAMP_MICROS_TZ", "3000-01-02 03:04:05.123456+00")])
+      -- A Variant payload and a FieldValue read from a VARIANT keep the digits.
+      stored (Variant (FieldTimestamp (Finite local))) >>= (@?= [("TIMESTAMP_NANOS", "2026-01-02 03:04:05.123456789")])
+      _ <-
+        execute_
+          conn
+          "CREATE TABLE src (i INTEGER, x VARIANT); INSERT INTO src VALUES (1, '03:04:05.123456789'::TIME_NS), (2, '2026-01-02 03:04:05.123456789'::TIMESTAMP_NS), (3, '2026-01-02 03:04:05.123456789+00'::TIMESTAMPTZ_NS)"
+      values <- query_ conn "SELECT i, x FROM src ORDER BY i" :: IO [(Int64, FieldValue)]
+      forM_ values $ \(i, value) -> do
+        _ <- execute_ conn "DELETE FROM v"
+        _ <- execute conn "INSERT INTO v VALUES (?)" (Only value)
+        (query conn "SELECT count(*) FROM src, v WHERE src.i = ? AND src.x IS NOT DISTINCT FROM v.x" (Only i) :: IO [Only Int64])
+          >>= assertEqual (show value) [Only 1]
+      -- A VARIANT object reads as a FieldStruct with VARIANT fields, so its leaves keep the digits.
+      [Only object] <- query_ conn "SELECT {'t': '2026-01-02 03:04:05.123456789'::TIMESTAMP_NS}::VARIANT" :: IO [Only FieldValue]
+      stored object >>= (@?= [("OBJECT(t)", "{'t': '2026-01-02 03:04:05.123456789'}")])
+      -- A VARIANT array reads as a FieldList, whose elements get the microsecond value.
+      [Only array] <- query_ conn "SELECT ['2026-01-02 03:04:05.123456789'::TIMESTAMP_NS]::VARIANT" :: IO [Only FieldValue]
+      stored array >>= (@?= [("ARRAY(1)", "['2026-01-02 03:04:05.123456']")])
+      -- An element of a VARIANT list keeps the microsecond type, as the list has one element type.
+      _ <- execute conn "INSERT INTO l VALUES (?)" (Only [local, LocalTime day (TimeOfDay 3 4 5)])
+      (query_ conn "SELECT variant_typeof(x[1]), x::VARCHAR FROM l" :: IO [(Text.Text, Text.Text)])
+        >>= (@?= [("TIMESTAMP_MICROS", "[2026-01-02 03:04:05.123456, 2026-01-02 03:04:05]")])
   , testCase "nanosecond UTC targets reject finite overflow and sentinel collisions" $ withConnection ":memory:" $ \conn -> do
       forM_
         [ toInteger (minBound :: Int64) - 1
@@ -444,8 +497,8 @@ nanosecondTimeTests =
         ]
         $ \nanos -> do
           let instant = posixSecondsToUTCTime (fromRational (nanos % 1000000000))
-          assertIOException (query conn "SELECT ?::TIMESTAMPTZ_NS" (Only instant) :: IO [Only UTCTime])
-          assertIOException (query conn "SELECT ?::TIMESTAMPTZ_NS" (Only (Finite instant)) :: IO [Only UTCTimestamp])
+          assertInputError (query conn "SELECT ?::TIMESTAMPTZ_NS" (Only instant) :: IO [Only UTCTime])
+          assertInputError (query conn "SELECT ?::TIMESTAMPTZ_NS" (Only (Finite instant)) :: IO [Only UTCTimestamp])
       (query_ conn "SELECT 42" :: IO [Only Int]) >>= (@?= [Only 42])
   , testCase "dates and timestamps at the ends of the range of DuckDB bind, and a value outside raises an error" $ withConnection ":memory:" $ \conn -> do
       -- See Note [Time ranges] in "Database.DuckDB.Simple.ToField".
@@ -453,9 +506,15 @@ nanosecondTimeTests =
           firstDay = addDays (-2147483646) epoch
           -- Day -2147483647 is -infinity, so -2147483648 is the only INT32 day before the range.
           beforeDay = addDays (-2147483648) epoch
+          lastDay = addDays 2147483646 epoch
+          -- Day 2147483647 is infinity.
+          afterDay = addDays 2147483647 epoch
           local units count = utcToLocalTime utc (posixSecondsToUTCTime (fromRational (count % units)))
           firstTime = local 1000000 (-9223372022400000000)
           beforeTime = local 1000000 (-9223372022400000001)
+          lastTime = local 1000000 9223372036854775806
+          -- The microsecond value 2^63 - 1 is infinity.
+          afterTime = local 1000000 9223372036854775807
           structOf logical value =
             StructValue
               (listArray (0, 0) [StructField "a" value])
@@ -476,6 +535,11 @@ nanosecondTimeTests =
             (query_ conn "SELECT count(*) FROM stored" :: IO [Only Int64]) >>= assertEqual (Text.unpack column) [Only 0]
       stored "DATE" firstDay
       rejected "DATE" beforeDay
+      stored "DATE" lastDay
+      rejected "DATE" afterDay
+      -- A value at -infinity, and a value below the storage, get the same error.
+      rejected "DATE" (addDays (-2147483647) epoch)
+      rejected "DATE" (addDays (-3000000000) epoch)
       stored "DATE" (Finite firstDay :: Date)
       rejected "DATE" (Finite beforeDay :: Date)
       stored "DATE[]" [firstDay]
@@ -486,6 +550,10 @@ nanosecondTimeTests =
       rejected "VARIANT" (Variant (FieldDate (Finite beforeDay)))
       stored "TIMESTAMP" firstTime
       rejected "TIMESTAMP" beforeTime
+      stored "TIMESTAMP" lastTime
+      rejected "TIMESTAMP" afterTime
+      rejected "TIMESTAMP" (local 1000000 (-9223372036854775807))
+      rejected "TIMESTAMP" (local 1000000 (-9223372036854775809))
       stored "TIMESTAMP" (Finite firstTime :: LocalTimestamp)
       rejected "TIMESTAMP" (Finite beforeTime :: LocalTimestamp)
       stored "TIMESTAMP[]" [firstTime]
@@ -496,6 +564,8 @@ nanosecondTimeTests =
       rejected "VARIANT" (Variant (FieldTimestamp (Finite beforeTime)))
       stored "TIMESTAMPTZ" (localTimeToUTC utc firstTime)
       rejected "TIMESTAMPTZ" (localTimeToUTC utc beforeTime)
+      stored "TIMESTAMPTZ" (localTimeToUTC utc lastTime)
+      rejected "TIMESTAMPTZ" (localTimeToUTC utc afterTime)
       stored "TIMESTAMPTZ" (Finite (localTimeToUTC utc firstTime) :: UTCTimestamp)
       rejected "TIMESTAMPTZ" (Finite (localTimeToUTC utc beforeTime) :: UTCTimestamp)
       -- A second or a millisecond value has the range of a microsecond value at
@@ -510,6 +580,40 @@ nanosecondTimeTests =
           stored column (at largest)
           rejected column (at (-9223372022400000000 * units `div` 1000000 - 1))
           rejected column (at (largest + 1))
+  , testCase "each bind path checks the range of DuckDB for a date and a timestamp" $ withConnection ":memory:" $ \conn -> do
+      -- See Note [Time ranges] in "Database.DuckDB.Simple.ToField".
+      let epoch = fromGregorian 1970 1 1
+          local micros = utcToLocalTime utc (posixSecondsToUTCTime (fromRational (micros % 1000000)))
+          rejected :: (ToField a) => Text.Text -> String -> Text.Text -> a -> IO ()
+          rejected bound label column value = do
+            _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE stored (v " <> column <> ")"))
+            try (execute conn "INSERT INTO stored VALUES (?)" (Only value)) >>= \case
+              Left SQLError{sqlErrorType, sqlErrorMessage} -> do
+                assertEqual label (Just ErrorInputOutOfRange) sqlErrorType
+                assertBool (label <> ": " <> Text.unpack sqlErrorMessage) (bound `Text.isInfixOf` sqlErrorMessage)
+              Right _ -> assertFailure (label <> ": expected the range error")
+      forM_
+        [ ("below the smallest", addDays (-2147483648) epoch, local (-9223372022400000001))
+        , ("above the largest", addDays 2147483647 epoch, local 9223372036854775807)
+        ]
+        $ \(bound, day, time) -> do
+          forM_ [("DATE", FieldDate (Finite day)), ("TIMESTAMP", FieldTimestamp (Finite time))] $ \(sqlType, value) -> do
+            let label part = Text.unpack (bound <> " " <> sqlType) <> " " <> part
+            rejected bound (label "FieldValue") sqlType value
+            rejected bound (label "FieldValue for a VARIANT") "VARIANT" value
+            rejected bound (label "FieldList") (sqlType <> "[]") (FieldList [FieldNull, value])
+            rejected bound (label "FieldArray") (sqlType <> "[2]") (FieldArray (listArray (0, 1) [FieldNull, value]))
+            rejected bound (label "FieldMap key") ("MAP(" <> sqlType <> ", VARCHAR)") (FieldMap [(value, FieldText "v")])
+            rejected bound (label "FieldMap value") ("MAP(VARCHAR, " <> sqlType <> ")") (FieldMap [(FieldText "k", value)])
+            rejected bound (label "Variant payload in a list") "VARIANT" (Variant (FieldList [value]))
+          let label part = Text.unpack bound <> " " <> part
+          rejected bound (label "list of Maybe Day") "DATE[]" [Nothing, Just day]
+          rejected bound (label "Map key of Day") "MAP(DATE, VARCHAR)" (Map.fromList [(day, "v" :: Text.Text)])
+          rejected bound (label "Map of Day") "MAP(VARCHAR, DATE)" (Map.fromList [("k" :: Text.Text, day)])
+          rejected bound (label "Array of LocalTime") "TIMESTAMP[1]" (listArray (0, 0) [time] :: Array Int LocalTime)
+          rejected bound (label "Map key of LocalTime") "MAP(TIMESTAMP, VARCHAR)" (Map.fromList [(time, "v" :: Text.Text)])
+          rejected bound (label "Map of LocalTime") "MAP(VARCHAR, TIMESTAMP)" (Map.fromList [("k" :: Text.Text, time)])
+          rejected bound (label "LocalTime for a VARIANT") "VARIANT" time
   , testCase "a leap second binds as the next second, as make_time and make_timestamp give it" $ withConnection ":memory:" $ \conn -> do
       let leap = TimeOfDay 23 59 60
           next = LocalTime (fromGregorian 2017 1 1) (TimeOfDay 0 0 0)
@@ -522,15 +626,26 @@ nanosecondTimeTests =
           :: IO [(TimeOfDay, TimeOfDay, LocalTime, LocalTime, TimeWithZone, UTCTime)]
         )
         >>= (@?= [(TimeOfDay 24 0 0, TimeOfDay 24 0 0, next, next, TimeWithZone (TimeOfDay 24 0 0) 0, localTimeToUTC utc next)])
+      -- A TIME_NS value with 60 seconds also binds as the next second.
+      (query conn "SELECT ?::TIME_NS, ?::TIME_NS" (TimeOfDay 23 59 60, TimeOfDay 12 59 60.000000001) :: IO [(TimeOfDay, TimeOfDay)])
+        >>= (@?= [(TimeOfDay 24 0 0, TimeOfDay 13 0 0.000000001)])
+      -- A time after 24:00:00 raises an error, for example 60.5 seconds in the last minute of a day.
+      assertInputError (query conn "SELECT ?" (Only (TimeOfDay 23 59 60.5)) :: IO [Only TimeOfDay])
+      assertInputError (query conn "SELECT ?" (Only (LocalTime (fromGregorian 2016 12 31) (TimeOfDay 23 59 60.5))) :: IO [Only LocalTime])
+      assertInputError (query conn "SELECT ?" (Only (UTCTime (fromGregorian 2016 12 31) 86400.5)) :: IO [Only UTCTime])
+      assertInputError (query conn "SELECT ?::TIME_NS" (Only (TimeOfDay 23 59 60.000000001)) :: IO [Only TimeOfDay])
   ]
 
 -- | Require a controlled encoding error before native value construction.
-assertIOException :: IO a -> Assertion
-assertIOException action = do
+assertInputError :: IO a -> Assertion
+assertInputError action = do
   result <- try action
   case result of
-    Left (_ :: IOException) -> pure ()
-    Right _ -> assertFailure "expected IOException"
+    Left SQLError{sqlErrorType, sqlErrorMessage} -> do
+      sqlErrorType @?= Just ErrorInputInvalid
+      -- The prefix shows that a check of the library raised the error, not DuckDB.
+      assertBool (Text.unpack sqlErrorMessage) ("duckdb-simple: " `Text.isPrefixOf` sqlErrorMessage)
+    Right _ -> assertFailure "expected an SQLError of the type ErrorInputInvalid"
 
 -- | Require a field conversion error, rather than an unrelated exception.
 assertConversionError :: IO a -> Assertion

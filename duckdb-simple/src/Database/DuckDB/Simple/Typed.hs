@@ -179,8 +179,8 @@ containsType accepts rep =
 -- "Database.DuckDB.Simple.Materialize". The reader must not outlive the vector.
 prepareArgumentReader :: Maybe DuckDBV2FactoryHandle -> Int -> DuckDBV2VectorHandle -> IO (Int -> IO Field)
 prepareArgumentReader casts index vector = do
-  let noVariant = rejectRows (throwIO (userError "duckdb-simple: the type of a typed argument cannot be or contain VARIANT"))
-      noGeometry = rejectRows (throwIO (userError "duckdb-simple: a typed argument of this callback cannot be or contain GEOMETRY"))
+  let noVariant = rejectRows (throwInvalidArgument (Text.pack "the type of a typed argument cannot be or contain VARIANT"))
+      noGeometry = rejectRows (throwInvalidArgument (Text.pack "a typed argument of this callback cannot be or contain GEOMETRY"))
   readValue <- prepareVectorReader (FallbackReaders noVariant (maybe noGeometry prepareGeometryReader casts)) vector
   pure \row -> Field (argumentName index) index <$> readValue row
 

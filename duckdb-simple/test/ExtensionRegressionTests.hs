@@ -333,14 +333,21 @@ extensionRegressionTests =
         withConnection ":memory:" \conn -> do
           assertSqlError $ FileSystem.withFileHandle conn "/tmp/duckdb-review-missing-dir/no-file" [FileSystem.FileFlagRead] (\_ -> pure ())
           withTemporaryFile \path ->
-            assertSqlError $ FileSystem.withFileHandle conn (path <> "\0suffix") [FileSystem.FileFlagRead] (\_ -> pure ())
+            assertInputErrorContaining "file path contains NUL" $
+              FileSystem.withFileHandle conn (path <> "\0suffix") [FileSystem.FileFlagRead] (\_ -> pure ())
     , testCase "catalog and config NUL names fail safely" $
         withConnection ":memory:" \conn -> do
-          assertSqlError $ Config.getConfigOption conn "threads\0suffix"
+          -- The NUL check runs before the handler that gives Nothing for an unknown option.
+          nulName <- try (Config.getConfigOption conn "threads\0suffix")
+          case nulName of
+            Left (err :: SQLError) -> do
+              sqlErrorType err @?= Just ErrorInputInvalid
+              sqlErrorMessage err @?= "duckdb-simple: config option name contains NUL"
+            Right value -> assertFailure ("expected the NUL error, got " <> show (fmap Config.configValueText value))
           -- DuckDB reads the name with its length, so it gets the NUL byte and
           -- reports an unknown option. The library rejects the name before
           -- the native call.
-          let rejectsNul = assertSqlErrorContaining "config option name contains NUL"
+          let rejectsNul = assertInputErrorContaining "config option name contains NUL"
           rejectsNul $ Config.setConfigOption conn Config.SettingScopeSession "threads\0suffix" "1"
           rejectsNul $ Config.setConfigValue conn Config.SettingScopeSession "threads\0suffix" (1 :: Int64)
           rejectsNul $ Config.getConfigValue conn "threads\0suffix"
@@ -660,14 +667,14 @@ extensionRegressionTests =
                 assertBool "DuckDB read error" ("Could not read enough bytes" `Text.isInfixOf` sqlErrorMessage err)
               Right bytes -> assertFailure ("expected an IO error, got " <> show bytes)
             -- The library checks only that the end of the range fits in Int64.
-            assertSqlErrorContaining "file read range exceeds Int64 range" $ FileSystem.readFileHandleAt handle maxBound 1
+            assertInputErrorContaining "file read range exceeds Int64 range" $ FileSystem.readFileHandleAt handle maxBound 1
             -- A size of 0 gives no bytes, also past the end, as in DuckDB.
             FileSystem.readFileHandleAt handle 20 0 >>= (@?= BS.empty)
             FileSystem.readFileHandleAt handle 12 4 >>= (@?= BS.pack [12 .. 15])
     , testCase "a positioned write checks that its end fits in Int64" $
         withTemporaryFile \path -> withConnection ":memory:" \conn ->
           FileSystem.withFileHandle conn path [FileSystem.FileFlagWrite] \handle -> do
-            assertSqlErrorContaining "file write range exceeds Int64 range" $ FileSystem.writeFileHandleAt handle (maxBound - 1) (BS.pack [1, 2])
+            assertInputErrorContaining "file write range exceeds Int64 range" $ FileSystem.writeFileHandleAt handle (maxBound - 1) (BS.pack [1, 2])
             FileSystem.fileHandleSize handle >>= (@?= 0)
     , testCase "file flags of the other file tests create read and write a file" $
         withTemporaryFile \path -> withConnection ":memory:" \conn -> do
@@ -773,6 +780,18 @@ assertSqlError :: IO a -> Assertion
 assertSqlError = assertSqlErrorContaining Text.empty
 
 -- | Require a SQL exception which includes the expected message.
+-- | Require the error of an input check of the library, of the type
+-- ErrorInputInvalid, which includes the expected message.
+assertInputErrorContaining :: Text.Text -> IO a -> Assertion
+assertInputErrorContaining expected action = do
+  outcome <- try (void action)
+  case outcome of
+    Left (err :: SQLError) -> do
+      sqlErrorType err @?= Just ErrorInputInvalid
+      assertBool ("expected an input error containing " <> show expected <> ", got " <> show err) $
+        ("duckdb-simple: " `Text.isPrefixOf` sqlErrorMessage err) && expected `Text.isInfixOf` sqlErrorMessage err
+    Right () -> assertFailure "expected the error of an input check"
+
 assertSqlErrorContaining :: Text.Text -> IO a -> Assertion
 assertSqlErrorContaining expected action = do
   outcome <- try (void action)

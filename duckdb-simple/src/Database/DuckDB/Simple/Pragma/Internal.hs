@@ -99,4 +99,4 @@ pragmaArguments casts name info context = withContextFactory context \contextFac
           (destroy c_duckdb_v2_value_destroy)
           (materializeValue noVariant factory)
       pure (Field argument (fromIntegral index) value)
-    noVariant = rejectRows (throwIO (userError "duckdb-simple: the type of a pragma argument cannot be or contain VARIANT"))
+    noVariant = rejectRows (throwInvalidArgument "the type of a pragma argument cannot be or contain VARIANT")

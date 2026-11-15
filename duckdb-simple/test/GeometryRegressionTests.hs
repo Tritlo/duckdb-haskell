@@ -7,7 +7,7 @@
 module GeometryRegressionTests (tests) where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (IOException, bracket, displayException, try)
+import Control.Exception (bracket, try)
 import Control.Monad (forM, forM_, when)
 import Data.Array (Array, elems, listArray)
 import qualified Data.ByteString as BS
@@ -16,7 +16,6 @@ import qualified Data.Geometry.WKB as WKB
 import qualified Data.Geometry.WKT as WKT
 import Data.IORef (mkWeakIORef, newIORef, readIORef)
 import Data.Int (Int64)
-import Data.List (isInfixOf)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust)
 import Data.Text (Text)
@@ -461,11 +460,16 @@ tests =
         withConnectionWithConfig ":memory:" [("ignore_unknown_crs", "true")] \conn -> do
           result <- try (query conn "SELECT ?" (Only (nullShape "local grid"))) :: IO (Either SQLError [Only (StructValue FieldValue)])
           case result of
-            Left err -> assertBool (show err) ("duckdb-simple: DuckDB did not preserve the requested GEOMETRY CRS" `Text.isInfixOf` sqlErrorMessage err)
+            Left err -> do
+              sqlErrorType err @?= Just ErrorInputInvalid
+              assertBool (show err) ("duckdb-simple: DuckDB did not preserve the requested GEOMETRY CRS" `Text.isInfixOf` sqlErrorMessage err)
             Right _ -> assertFailure "expected the unknown CRS to fail"
     , testCase "connection options validate CRS definitions and pass configuration flags" $ do
-        forM_ ["", "OGC:CRS84\0bad", " "] \crs ->
-          assertFailureIO (withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = [crs]} (const (pure ())))
+        forM_ ["", "OGC:CRS84\0bad", " "] \crs -> do
+          result <- try (withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = [crs]} (const (pure ())))
+          case result of
+            Left err -> sqlErrorType err @?= Just ErrorInputInvalid
+            Right () -> assertFailure ("expected the open to fail for " <> show crs)
         let options = defaultConnectionOptions{connectionConfig = [("threads", "1")], connectionGeometryCRS = ["local grid", "OGC:CRS84", "OGC:CRS84"]}
         withConnectionWithOptions ":memory:" options \conn ->
           (query_ conn "SELECT current_setting('threads')" :: IO [Only Int64]) >>= (@?= [Only 1])
@@ -521,7 +525,9 @@ tests =
           -- The open keeps the type of the first name before the second name fails.
           result <- try (connectWithOptions inst defaultConnectionOptions{connectionGeometryCRS = ["OGC:CRS84", " "]})
           case result of
-            Left err -> assertBool (displayException err) ("did not preserve a configured GEOMETRY CRS" `isInfixOf` displayException (err :: IOException))
+            Left err -> do
+              sqlErrorType err @?= Just ErrorInputInvalid
+              assertBool (Text.unpack (sqlErrorMessage err)) ("did not preserve a configured GEOMETRY CRS" `Text.isInfixOf` sqlErrorMessage err)
             Right conn -> close conn >> assertFailure "expected the open to fail"
           -- DuckDB destroys the instance and the function after the last native
           -- connection. A connection that the failed open kept would keep the token.

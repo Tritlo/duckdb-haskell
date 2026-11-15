@@ -166,9 +166,9 @@ attachDatabase instance_ path alias settings = attachCatalog instance_ path alia
 attachCatalog :: Instance -> FilePath -> Text -> [(Text, Text)] -> Bool -> IO ()
 attachCatalog instance_ path alias settings makeDefault = withInstanceHandle instance_ \raw -> do
   when ('\0' `elem` path || Text.any (== '\0') alias) $
-    throwIO (SQLError (Text.pack "duckdb-simple: database path or alias contains NUL") Nothing Nothing)
+    throwInvalidArgument (Text.pack "database path or alias contains NUL")
   when (any (\(key, value) -> Text.any (== '\0') key || Text.any (== '\0') value) settings) $
-    throwIO (SQLError (Text.pack "duckdb-simple: attach option contains NUL") Nothing Nothing)
+    throwInvalidArgument (Text.pack "attach option contains NUL")
   bracket (output (c_duckdb_v2_attach_options_create raw)) (destroy c_duckdb_v2_attach_options_destroy) \options -> do
     forM_ settings \(key, value) -> withIdentifier key \name -> withText value \text ->
       checked (c_duckdb_v2_attach_options_set options name text)
@@ -179,14 +179,14 @@ attachCatalog instance_ path alias settings makeDefault = withInstanceHandle ins
 detachDatabase :: Instance -> Text -> IO ()
 detachDatabase instance_ alias = withInstanceHandle instance_ \raw -> do
   when (Text.any (== '\0') alias) $
-    throwIO (SQLError (Text.pack "duckdb-simple: database alias contains NUL") Nothing Nothing)
+    throwInvalidArgument (Text.pack "database alias contains NUL")
   withIdentifier alias \name -> checked (c_duckdb_v2_instance_detach raw name)
 
 -- | Select the default catalog for new connections to an instance.
 setDefaultDatabase :: Instance -> Text -> IO ()
 setDefaultDatabase instance_ alias = withInstanceHandle instance_ \raw -> do
   when (Text.any (== '\0') alias) $
-    throwIO (SQLError (Text.pack "duckdb-simple: database alias contains NUL") Nothing Nothing)
+    throwInvalidArgument (Text.pack "database alias contains NUL")
   withIdentifier alias \name -> checked (c_duckdb_v2_instance_set_default raw name)
 
 -- | Open a connection to a shared instance.
@@ -200,7 +200,7 @@ connect instance_ = connectWithOptions instance_ defaultConnectionOptions
 connectWithOptions :: Instance -> ConnectionOptions -> IO Connection
 connectWithOptions instance_ ConnectionOptions{connectionConfig, connectionGeometryCRS, connectionCallbackLockWait, connectionAggregateStripes, connectionArrowBatchSize} = mask_ do
   when (any (\(name, value) -> Text.any (== '\0') name || Text.any (== '\0') value) connectionConfig) $
-    throwIO (SQLError (Text.pack "duckdb-simple: configuration contains NUL") Nothing Nothing)
+    throwInvalidArgument (Text.pack "configuration contains NUL")
   callbackLockWait <- checkCallbackLockWait connectionCallbackLockWait
   stripes <- checkAggregateStripes connectionAggregateStripes
   arrowBatch <- checkArrowBatchSize connectionArrowBatchSize
@@ -297,7 +297,7 @@ defaultArrowBatchSize = 2048
 checkCallbackLockWait :: Maybe Int -> IO (Maybe Int)
 checkCallbackLockWait bound = case bound of
   Just micros
-    | micros < 0 -> throwIO (SQLError (Text.pack "duckdb-simple: connectionCallbackLockWait is negative") Nothing Nothing)
+    | micros < 0 -> throwInvalidArgument (Text.pack "connectionCallbackLockWait is negative")
   _ -> evaluate bound
 
 -- | Reject a number of 'connectionAggregateStripes' that is not positive. The
@@ -305,14 +305,14 @@ checkCallbackLockWait bound = case bound of
 -- later registration.
 checkAggregateStripes :: Int -> IO Int
 checkAggregateStripes stripes
-  | stripes <= 0 = throwIO (SQLError (Text.pack "duckdb-simple: connectionAggregateStripes is not positive") Nothing Nothing)
+  | stripes <= 0 = throwInvalidArgument (Text.pack "connectionAggregateStripes is not positive")
   | otherwise = pure stripes
 
 -- | Reject a negative 'connectionArrowBatchSize'. The check evaluates the
 -- field, so an error in the field occurs here and not in a later fold.
 checkArrowBatchSize :: Int -> IO Int
 checkArrowBatchSize size
-  | size < 0 = throwIO (SQLError (Text.pack "duckdb-simple: connectionArrowBatchSize is negative") Nothing Nothing)
+  | size < 0 = throwInvalidArgument (Text.pack "connectionArrowBatchSize is negative")
   | otherwise = pure size
 
 -- | Open a database with a private environment and instance.
@@ -351,8 +351,8 @@ openStatement :: Connection -> Query -> IO Statement
 openStatement conn queryText = withParsedStatements conn queryText \parsed ->
   case parsed of
     [statement] -> createStatementFromParsed conn queryText statement
-    [] -> throwIO (mkPrepareError queryText (Text.pack "duckdb-simple: SQL query contains no statement"))
-    _ -> throwIO (mkPrepareError queryText (Text.pack "duckdb-simple: prepared SQL contains more than one statement"))
+    [] -> throwInvalidArgument (Text.pack "SQL query contains no statement")
+    _ -> throwInvalidArgument (Text.pack "prepared SQL contains more than one statement")
 
 -- | Finalize a prepared statement. The operation is idempotent.
 closeStatement :: Statement -> IO ()
@@ -410,7 +410,7 @@ bindNamed stmt params =
       positions = Map.fromList (zip (map normalizeName (elems (statementParameterNames stmt))) [1 :: Int ..])
       apply (name, binding) = do
         when (Text.any (== '\0') name) $
-          throwIO (mkPrepareError (statementQuery stmt) (Text.pack "duckdb-simple: parameter name contains NUL"))
+          withQueryError (statementQuery stmt) (throwInvalidArgument (Text.pack "parameter name contains NUL"))
         case Map.lookup (normalizeName name) positions of
           Nothing ->
             throwFormatErrorNamed stmt (unknownNameMessage name) bindings
@@ -454,7 +454,7 @@ namedParameterIndex :: Statement -> Text -> IO (Maybe Int)
 namedParameterIndex stmt name = withStatementHandle stmt \_ -> do
   -- The handle is not used. withStatementHandle raises the error for a closed statement or connection.
   when (Text.any (== '\0') name) $
-    throwIO (mkPrepareError (statementQuery stmt) (Text.pack "duckdb-simple: parameter name contains NUL"))
+    withQueryError (statementQuery stmt) (throwInvalidArgument (Text.pack "parameter name contains NUL"))
   pure ((+ 1) <$> findIndex ((== normalizeName name) . normalizeName) (elems (statementParameterNames stmt)))
 
 -- | Retrieve the number of columns produced by the supplied prepared statement.
@@ -466,10 +466,10 @@ columnCount stmt = do
 -- | Look up the zero-based column name of a prepared statement result.
 columnName :: Statement -> Int -> IO Text
 columnName stmt columnIndex
-  | columnIndex < 0 = throwIO (columnIndexError stmt columnIndex Nothing)
+  | columnIndex < 0 = columnIndexError stmt columnIndex Nothing
   | otherwise = do
       total <- columnCount stmt
-      when (columnIndex >= total) $ throwIO (columnIndexError stmt columnIndex (Just total))
+      when (columnIndex >= total) $ columnIndexError stmt columnIndex (Just total)
       (schema, _) <- statementSchemas stmt
       alloca \name -> do
         _ <- output (c_duckdb_v2_schema_get_field schema (fromIntegral columnIndex) name)
@@ -632,11 +632,13 @@ throwFormatErrorNamed stmt message bindings =
     renderNamed (name, binding) =
       Text.unpack name <> " := " <> renderFieldBinding binding
 
-columnIndexError :: Statement -> Int -> Maybe Int -> SQLError
+-- | Raise the error for a column index out of bounds, with the query of the
+-- statement.
+columnIndexError :: Statement -> Int -> Maybe Int -> IO a
 columnIndexError stmt idx total =
   let base =
         Text.concat
-          [ Text.pack "duckdb-simple: column index "
+          [ Text.pack "column index "
           , Text.pack (show idx)
           , Text.pack " out of bounds"
           ]
@@ -650,11 +652,7 @@ columnIndexError stmt idx total =
               , Text.pack (show count)
               , Text.pack ")"
               ]
-  in  SQLError
-        { sqlErrorMessage = message
-        , sqlErrorType = Nothing
-        , sqlErrorQuery = Just (statementQuery stmt)
-        }
+  in  withQueryError (statementQuery stmt) (throwInvalidArgument message)
 
 -- | Use DuckDB's ASCII case rules for parameter names.
 normalizeName :: Text -> Text

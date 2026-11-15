@@ -193,7 +193,10 @@ stateStripe table key = table ! (key `mod` length table)
 
 -- | Register a typed aggregate function on a connection or a loading extension.
 -- An argument type or a result type with no declaration, or an argument type
--- that is or contains VARIANT or GEOMETRY, raises an error at registration. See Note [Type declarations] in
+-- that is or contains VARIANT, raises an error at registration. On a loading
+-- extension, an argument type that is or contains GEOMETRY also raises an
+-- error at registration, because the update callback has no factory to read
+-- it. See Note [Type declarations] in
 -- "Database.DuckDB.Simple.ToField". A result type that is not raw also raises an
 -- error at registration, because the finalize callback has no factory. See
 -- Note [Result writers] in "Database.DuckDB.Simple.Function.Internal".

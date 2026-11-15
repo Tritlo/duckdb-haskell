@@ -206,7 +206,9 @@ callbackLockTests =
     , testCase "the callback lock wait rejects a negative bound and accepts no bound" $ do
         negative <- try (openWithOptions ":memory:" defaultConnectionOptions{connectionCallbackLockWait = Just (-1)})
         case negative of
-          Left (err :: SQLError) -> assertBool ("unexpected message: " <> show err) ("connectionCallbackLockWait" `Text.isInfixOf` sqlErrorMessage err)
+          Left (err :: SQLError) -> do
+            sqlErrorType err @?= Just ErrorInputInvalid
+            assertBool ("unexpected message: " <> show err) ("connectionCallbackLockWait" `Text.isInfixOf` sqlErrorMessage err)
           Right conn -> close conn >> assertFailure "a negative bound opened a connection"
         withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionCallbackLockWait = Nothing} assertReusable
     ]

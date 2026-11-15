@@ -22,9 +22,10 @@
   `Database.DuckDB.Simple.Function` has `createCast`, `createAggregate`,
   `createTableFunction`, and the row class `TypedRow`. `Database.DuckDB.Simple`
   exports the three functions, `Aggregate`, and `TypedRow`.
-- `createCast` registers a pure Haskell function as an explicit cast. A cast
-  for a pair of types whose built-in cast the library uses (see the README)
-  also changes what the library reads and binds.
+- `createCast` registers a pure Haskell function as an explicit cast. A
+  registered cast does not change a value that the library reads or binds on a
+  connection. The exception is a GEOMETRY value that a callback of a function
+  of an extension reads (see the README).
 - `createAggregate` registers an aggregate function as a fold over Haskell
   values. The record `Aggregate` has the initial state and the step, combine,
   and result functions. DuckDB gives the aggregate callbacks no context, so the

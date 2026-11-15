@@ -666,14 +666,14 @@ instance ToField (Unbounded Day)
 
 -- | Bind a local time or an infinity as a TIMESTAMP, or a local time as a
 -- TIMESTAMP_NS. See Note [Nanosecond parameters]. A finite time has the range
--- of the 'LocalTime' instance.
+-- of the t'LocalTime' instance.
 instance ToField (Unbounded LocalTime) where
   toField value =
     timeValueBinding (show value) (LogicalTypeScalar LogicalTypeIdTimestamp) (FieldTimestamp value) \builder -> localTimestampDuckValue (builderFactory builder) value
 
 -- | Bind an instant or an infinity as a TIMESTAMPTZ, or an instant as a
 -- TIMESTAMPTZ_NS. See Note [Nanosecond parameters]. A finite instant has the
--- range of the 'UTCTime' instance.
+-- range of the t'UTCTime' instance.
 instance ToField (Unbounded UTCTime) where
   toField value =
     timeValueBinding

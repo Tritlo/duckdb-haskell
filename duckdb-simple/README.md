@@ -361,10 +361,9 @@ Notes:
    `Date`, `LocalTimestamp`, and `UTCTimestamp` from
    `Database.DuckDB.Simple.Time` are the `Unbounded` forms.
 7. A value with digits below a microsecond keeps them for a nanosecond
-   parameter: TIME_NS, TIMESTAMP_NS, or TIMESTAMPTZ_NS. A `VARIANT` parameter
-   also gets the nanosecond value of a scalar value, when the value fits the
-   range of the nanosecond type. A list, an `Array`, or a `Map` of time values
-   for a `VARIANT` parameter binds microsecond elements. The range of `Day` is
+   parameter, and as a scalar value that fits for a `VARIANT` parameter:
+   [Infinite dates and timestamps](#infinite-dates-and-timestamps) gives the
+   rule. The range of `Day` is
    5877642-06-25 (BC), the year -5877641 of `Data.Time`, to 5881580-07-10. The
    range of `LocalTime` and `UTCTime` is 290309-12-22 (BC) 00:00:00 to
    294247-01-10 04:00:54.775806. A value outside its range raises an `SQLError`
@@ -396,7 +395,9 @@ Notes:
 11. Each constructor binds as its SQL type, with these exceptions:
     - A `FieldEnum` binds its label as a VARCHAR.
     - A `FieldTimestamp` binds as TIMESTAMP, also when it came from another
-      timestamp type. Note 7 gives the rule for digits below a microsecond.
+      timestamp type. [Infinite dates and
+      timestamps](#infinite-dates-and-timestamps) gives the rule for digits
+      below a microsecond.
     - An empty `FieldArray` raises an error.
     - An empty `FieldList` or `FieldMap`, or one with only `FieldNull`
       elements, takes the element type of a parameter with a known type. For a

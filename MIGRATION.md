@@ -234,6 +234,10 @@ The SQL workflow stays the same. These changes can affect your code:
   CRS. Version 0.3 had only a result instance, so code imported the WKB with
   `ST_GeomFromWKB(?)` and the CRS with `ST_SetCRS`. That SQL still works.
 - Decoded VARIANT objects list their keys in DuckDB's lexicographic order.
+- A `Variant` parameter with a UNION payload, at any depth, raises `SQLError`
+  with the type `ErrorInputInvalid`, because a VARIANT keeps only the member
+  value of a UNION. Version 0.3 bound such a value with no error. Bind the
+  member value, or bind the UNION value as a UNION parameter.
 
 The typed registrations are new in 0.4. Version 0.3 had no `Registration`
 or `Pragma` module and no custom options. Its `Copy` module had

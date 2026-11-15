@@ -147,6 +147,11 @@
   lexicographic order.
 - Allow a VARIANT object to contain an empty key with other named keys. Reject
   an object with only an empty key because the C API changes its shape.
+- A `Variant` parameter with a UNION payload, at any depth, raises `SQLError`
+  with the type `ErrorInputInvalid`, because a VARIANT keeps only the member
+  value of a UNION. Version 0.3 bound such a value with no error. The
+  errors for a MAP payload and an ENUM payload give the reason: a VARIANT
+  stores a MAP as a list of key and value objects, and an ENUM as its text.
 - Read GEOMETRY results through a native cast to BLOB. DuckDB 2.0 rejects WKB
   with mixed Z/M member layouts.
 - `ToDuckValue.toDuckValue`, `logicalTypeFromRep`, and `logicalTypeFromRepWith`

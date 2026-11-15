@@ -602,7 +602,10 @@ Time and timestamp payloads bind as microsecond types, or as nanosecond types
 when they have sub-microsecond digits. So a `TIMESTAMP_S` result binds back as
 a `TIMESTAMP` when its value fits. Wider timestamp values use milliseconds or
 seconds without losing digits. Lists, arrays, and STRUCT fields bind as
-VARIANT values. MAP and ENUM payloads raise an error. Object parameters reject
+VARIANT values. A VARIANT does not keep a UNION, a MAP, an ENUM, or the CRS of a
+GEOMETRY, so these payloads raise an error at any depth: a VARIANT keeps only
+the member value of a UNION, stores a MAP as a list of key and value objects,
+and stores an ENUM as its text. Object parameters reject
 duplicate keys and keys that contain NUL. An object with only an empty key
 also raises an error because DuckDB treats its STRUCT type as a tuple.
 DuckDB 2.0 permits an empty key with other named keys. You can also bind a plain

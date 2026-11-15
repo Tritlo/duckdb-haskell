@@ -28,14 +28,15 @@ import Control.Exception (
   fromException,
   try,
  )
-import Control.Monad (forM_, replicateM, replicateM_, unless, void, when)
+import Control.Monad (forM, forM_, replicateM, replicateM_, unless, void, when)
 import qualified Data.ByteString as BS
 import qualified Data.Geometry as G
 import Data.IORef (atomicModifyIORef', atomicWriteIORef, mkWeakIORef, newIORef, readIORef)
 import Data.Int (Int64)
-import Data.List (isPrefixOf)
+import Data.List (isPrefixOf, minimumBy)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, isJust, listToMaybe)
+import Data.Ord (comparing)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple
@@ -369,6 +370,16 @@ expectFailure action = do
     Right () -> fail "expected operation to fail"
 
 -- | Reuse a connection after cancelling native execution and row decoding.
+--
+-- Each batch reports its resident memory and fails if the thread count grew
+-- too much. The rule for the resident memory comes after the last batch. The
+-- resident memory rises in the first batches, and later single samples go up
+-- and down. A leak never returns memory, so it raises each later sample, also
+-- the lowest sample. A single high sample does not raise the lowest sample.
+-- Thus the rule compares the lowest sample of the second half of the batches
+-- with the lowest sample of batch 3 to the half. Batches 1 and 2 are not in the
+-- rule, because the memory can still rise in them. The rule needs at least 6
+-- batches. With fewer batches, the check does not compare the memory.
 checkCancellation :: Int -> IO ()
 checkCancellation batches =
   withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
@@ -444,11 +455,23 @@ checkCancellation batches =
     batch
     performMajorGC
     before <- readUsage
-    forM_ [1 .. batches] \n -> do
+    samples <- forM [1 .. batches] \n -> do
       batch
       performMajorGC
       after <- readUsage
-      reportOptional ("open connection, " <> show (n * 70) <> " cancellation attempts") before after
+      let label = "open connection, " <> show (n * 70) <> " cancellation attempts"
+      case (before, after) of
+        (Just first, Just current) -> reportWith False label first current
+        _ -> reportOptional label before after
+      pure after
+    case sequence samples of
+      Just usages | batches >= 6 -> do
+        let half = batches `div` 2
+            (early, late) = splitAt half usages
+            lowest = minimumBy (comparing usageRssKb)
+            label = "open connection, lowest rss of cancellation batches 3 to " <> show half <> " -> batches " <> show (half + 1) <> " to " <> show batches
+        report label (lowest (drop 2 early)) (lowest late)
+      _ -> pure ()
 
 -- | Report native counters when the operating system provides them.
 reportOptional :: String -> Maybe Usage -> Maybe Usage -> IO ()
@@ -457,8 +480,14 @@ reportOptional label _ _ = putStrLn (label <> ": resource counters unavailable; 
 
 -- | Print both measurements and fail if either one grew too much.
 report :: String -> Usage -> Usage -> IO ()
-report label before after = do
-  checkRss <- (/= Just "0") <$> lookupEnv "DUCKDB_LEAK_RSS_CHECK"
+report = reportWith True
+
+-- | Print both measurements. Fail if the thread count grew too much. If the
+-- first argument is 'True', also fail if the resident memory grew too much.
+reportWith :: Bool -> String -> Usage -> Usage -> IO ()
+reportWith rssRule label before after = do
+  enabled <- (/= Just "0") <$> lookupEnv "DUCKDB_LEAK_RSS_CHECK"
+  let checkRss = enabled && rssRule
   putStrLn label
   putStrLn $
     "threads: "
@@ -476,7 +505,7 @@ report label before after = do
       <> " (slack "
       <> show rssSlackKb
       <> ")"
-  unless checkRss (putStrLn "RSS assertion disabled for native memory instrumentation")
+  unless enabled (putStrLn "RSS assertion disabled for native memory instrumentation")
   when (threadGrowth > threadSlack || (checkRss && rssGrowth > rssSlackKb)) do
     putStrLn ("FAIL: " <> label <> " retains DuckDB resources")
     exitFailure

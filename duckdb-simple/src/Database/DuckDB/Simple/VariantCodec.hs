@@ -96,10 +96,9 @@ owner of the helper connection destroys the state before the connection.
   target has no instance handle, so its reader raises an error for each
   VARIANT row.
 
-The decoder casts with the factory of the instance (variantCasts), so a cast
-that a user registers does not change a payload. It decodes each value that
-contains no VARIANT, such as a cast result, with the same factory. See
-Note [User casts and the casts of the library] in
+The decoder casts with the factory of the instance (variantCasts). It decodes
+each value that contains no VARIANT, such as a cast result, with the same
+factory. See Note [User casts and the casts of the library] in
 "Database.DuckDB.Simple.Materialize".
 -}
 
@@ -305,9 +304,8 @@ assemble (node : rest) children = do
 type CastTypes = IORef (Map.Map Text DuckDBV2LogicalTypeHandle)
 
 -- | Borrow the native cast result while copying its payload. The cast uses the
--- factory of the instance, so a user cast from VARIANT to the type of the
--- payload does not replace it. See Note [User casts and the casts of the
--- library] in "Database.DuckDB.Simple.Materialize".
+-- factory of the instance. See Note [User casts and the casts of the library]
+-- in "Database.DuckDB.Simple.Materialize".
 withCast :: VariantState -> DuckDBV2ValueHandle -> Text -> (DuckDBV2ValueHandle -> IO a) -> IO a
 withCast state value target action = do
   logical <- castType state target

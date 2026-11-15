@@ -1533,8 +1533,8 @@ scalarFieldValueDuckValue factory dtype value = case (dtype, value) of
 -- | Construct an ENUM value by the default cast of the label to the ENUM type.
 -- The label of a 'FieldEnum' gives the value, not its index: an index of
 -- another dictionary would give another label with no error. A label that is
--- not in the dictionary raises an error. A user cast from VARCHAR to that type
--- does not apply. See Note [User casts and the casts of the library] in
+-- not in the dictionary raises an error. See
+-- Note [User casts and the casts of the library] in
 -- "Database.DuckDB.Simple.Materialize".
 enumDuckValue :: DuckDBV2FactoryHandle -> Array Int Text -> Text -> IO DuckDBV2ValueHandle
 enumDuckValue factory entries label = do
@@ -1545,10 +1545,8 @@ enumDuckValue factory entries label = do
       defaultCast factory value logical
 
 -- | Cast a value to a type with the default cast of DuckDB. Write the value to
--- a new vector of the type with one row, and read the row. The header says that
--- duckdb_v2_vector_set_value casts "through the non-strict default cast", so a
--- cast that a user registers does not apply, with each factory. The caller
--- destroys the result. See Note [User casts and the casts of the library] in
+-- a new vector of the type with one row, and read the row. The caller destroys
+-- the result. See Note [User casts and the casts of the library] in
 -- "Database.DuckDB.Simple.Materialize".
 defaultCast :: DuckDBV2FactoryHandle -> DuckDBV2ValueHandle -> DuckDBV2LogicalTypeHandle -> IO DuckDBV2ValueHandle
 defaultCast factory value logical = withOwnedVector factory logical \vector -> do
@@ -1610,8 +1608,7 @@ typeMismatch :: String -> FieldValue -> IO a
 typeMismatch expected actual = throwInvalidArgument ("cannot encode a value of type " <> valueTypeName actual <> " as " <> Text.pack expected)
 
 -- | Construct a GEOMETRY value of the declared CRS from a raw geometry. See
--- Note [Raw GEOMETRY parameters]. A user cast from BLOB to GEOMETRY does not
--- apply. See Note [User casts and the casts of the library] in
+-- Note [Raw GEOMETRY parameters], and Note [User casts and the casts of the library] in
 -- "Database.DuckDB.Simple.Materialize".
 rawGeometryDuckValue :: ValueBuilder -> Maybe Text -> RawGeometry -> IO DuckDBV2ValueHandle
 rawGeometryDuckValue ValueBuilder{builderFactory = factory, builderType = makeType} crs RawGeometry{rawGeometryWKB, rawGeometryCRS} = do
@@ -1704,8 +1701,8 @@ contains with this rule:
   geometry parameter.
 -}
 
--- | Cast the payload to VARIANT with the default cast of DuckDB. A user cast to
--- VARIANT does not apply. See Note [User casts and the casts of the library] in
+-- | Cast the payload to VARIANT with the default cast of DuckDB. See
+-- Note [User casts and the casts of the library] in
 -- "Database.DuckDB.Simple.Materialize".
 variantDuckValue :: ValueBuilder -> FieldValue -> IO DuckDBV2ValueHandle
 variantDuckValue builder@ValueBuilder{builderFactory = factory, builderType = makeType} value = do
@@ -1721,8 +1718,7 @@ utcTimestampNsDuckValue factory value =
     >>= (\encoded -> output (c_duckdb_v2_value_create_timestamp_tz_ns factory encoded))
 
 -- | Cast the WKT text of the shape to GEOMETRY with the default cast of DuckDB.
--- A user cast from VARCHAR to GEOMETRY does not apply. See
--- Note [User casts and the casts of the library] in
+-- See Note [User casts and the casts of the library] in
 -- "Database.DuckDB.Simple.Materialize".
 instance ToDuckValue G.Geometry where
   toDuckValue factory geometry = do

@@ -406,8 +406,7 @@ the same pair changes their result:
 -- | Copy the WKB bytes and CRS of every GEOMETRY row in a vector. GEOMETRY has
 -- no committed vector layout, so a native cast to BLOB reads the rows. The
 -- reader takes logical rows. See Note [Vector flatten]. The cast uses the
--- factory that the caller gives. With the factory of the instance, a user cast
--- from GEOMETRY to BLOB does not replace it. See
+-- factory that the caller gives. See
 -- Note [User casts and the casts of the library].
 prepareGeometryReader :: DuckDBV2FactoryHandle -> DuckDBV2VectorHandle -> IO (Int -> IO FieldValue)
 prepareGeometryReader factory vector = do

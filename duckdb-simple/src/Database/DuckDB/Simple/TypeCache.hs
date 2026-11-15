@@ -43,9 +43,9 @@ data TypeCache = TypeCache
   { typeCacheConnection :: DuckDBV2ConnectionHandle
   , typeCacheInstance :: DuckDBV2InstanceHandle
   , typeCacheCasts :: DuckDBV2FactoryHandle
-  -- ^ The factory of the instance. The library runs its own casts with it,
-  --     because it knows only the built-in casts. It is valid for as long as
-  --     the instance is. See Note [User casts and the casts of the library] in
+  -- ^ The factory of the instance. The library runs its own casts with it.
+  --     It is valid for as long as the instance is. See
+  --     Note [User casts and the casts of the library] in
   --     "Database.DuckDB.Simple.Materialize".
   , typeCacheGeometry :: NativeTypes
   -- ^ The types of the configured CRS names. The map does not change after
@@ -180,8 +180,7 @@ withVariantState TypeCache{typeCacheInstance, typeCacheCasts, typeCacheState} ac
 -- | Read the SQL-derived GEOMETRY types of custom CRS names. Run no statement
 -- for an empty list. See Note [CRS types of a connection]. The statement binds
 -- the empty point as a BLOB value and each name as a VARCHAR value. Each value
--- has the type of its parameter, so the statement has no cast, and a cast that
--- a user registers does not run. See
+-- has the type of its parameter, so the statement has no cast. See
 -- Note [User casts and the casts of the library] in
 -- "Database.DuckDB.Simple.Materialize".
 readNativeTypes :: DuckDBV2ConnectionHandle -> [Text] -> IO NativeTypes

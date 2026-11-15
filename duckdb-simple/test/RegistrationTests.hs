@@ -53,6 +53,7 @@ registrationTests =
     , testCase "aggregate grouped and window execution" testAggregate
     , testCase "table state and typed default parameter" testTable
     , testCase "custom type and normal and try cast" testCast
+    , testCase "a second cast for the same pair of types has no effect" testCastSecond
     , testGroup "a failed cast gives a Mismatch Type error and keeps the database usable" $
         [testCase (castPairName castPair) (testCastFailureCode castPair) | castPair <- castFailurePairs]
           <> [ testCase "a query on another connection fails in the callback" testCastFailureQuery
@@ -462,6 +463,21 @@ withCastDatabase environment castPair action = withCastInstance environment \ins
   void (execute_ conn (Query ("CREATE TABLE dst (x " <> castPairTarget castPair <> ")")))
   registerFailingCast conn castPair
   action instance' conn
+
+-- | A second registration of a cast for the same pair of types returns with no
+-- error, and CAST still runs the callback of the first registration. DuckDB
+-- 2.0.0 keeps the first cast for a pair.
+testCastSecond :: Assertion
+testCastSecond = withConnection ":memory:" \connection -> do
+  R.registerCustomType connection "managed_kept" bigint
+  let shift amount info _ = do
+        count <- R.output (c_duckdb_v2_cast_function_exec_get_row_count info)
+        values <- R.output (c_duckdb_v2_cast_function_exec_get_input info) >>= readIntegers (fromIntegral count)
+        result <- R.output (c_duckdb_v2_cast_function_exec_get_output info)
+        writeIntegers result (map (+ amount) values)
+  R.registerCast connection bigint (R.TypeExpression "managed_kept") Nothing (shift 100)
+  R.registerCast connection bigint (R.TypeExpression "managed_kept") Nothing (shift 200)
+  query_ connection "SELECT CAST(i::BIGINT AS managed_kept)::BIGINT FROM range(3) t(i)" >>= (@?= map Only ([100, 101, 102] :: [Int64]))
 
 replacement :: Int64 -> R.ContextCallback DuckDBV2ReplacementScanInfoHandle
 replacement number info _ =

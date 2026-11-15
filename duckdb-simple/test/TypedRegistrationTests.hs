@@ -89,7 +89,8 @@ typedRegistrationTests :: TestTree
 typedRegistrationTests =
   testGroup
     "typed registration"
-    [ testCase "replacement scan reads the rows of a query" testReplacementQuery
+    [ testCase "a scalar function that changes a value gives the rows of its Haskell result in a filter and a join" testScalarFilterJoin
+    , testCase "replacement scan reads the rows of a query" testReplacementQuery
     , testCase "replacement scan that declines gives the unknown table error" testReplacementDecline
     , testCase "replacement scan gets the name parts as written" testReplacementNames
     , testCase "replacement scan errors fail the query" testReplacementErrors
@@ -475,6 +476,23 @@ testOptionText = withConnection ":memory:" \conn -> do
   void (execute_ conn "SET typed_option_required = 'kept'")
   assertSqlError "typed_option_required must have a value" (execute_ conn "RESET typed_option_required")
   fst <$> getConfigValue conn "typed_option_required" >>= (@?= FieldText "kept")
+
+-- | A scalar function that changes its argument gives the rows of its Haskell
+-- result in a filter, in an equality filter, and in a join condition. A
+-- registered cast between two built-in types can give other rows there, so
+-- the README names a scalar function for such a conversion.
+testScalarFilterJoin :: Assertion
+testScalarFilterJoin = withConnection ":memory:" \conn -> do
+  let bend x = 100 - x * x :: Int64
+      values = [-20 .. 20]
+      targets = [100, 99, 64, 0, -300]
+  createFunction conn "typed_bend" bend
+  void (execute_ conn "CREATE TABLE bend_values AS SELECT i::BIGINT AS c FROM range(-20, 21) t(i)")
+  void (execute_ conn "CREATE TABLE bend_targets AS SELECT d::BIGINT AS d FROM (VALUES (100), (99), (64), (0), (-300)) t(d)")
+  query_ conn "SELECT c FROM bend_values WHERE typed_bend(c) > 50 ORDER BY c" >>= (@?= [Only c | c <- values, bend c > 50])
+  query_ conn "SELECT c FROM bend_values WHERE typed_bend(c) = 100 ORDER BY c" >>= (@?= [Only c | c <- values, bend c == 100])
+  query_ conn "SELECT a.c, u.d FROM bend_values a JOIN bend_targets u ON typed_bend(a.c) = u.d ORDER BY a.c"
+    >>= (@?= [(c, d) | c <- values, d <- targets, bend c == d])
 
 -- | Replace one name with a query. Read the rows under the table name and an alias.
 testReplacementQuery :: Assertion

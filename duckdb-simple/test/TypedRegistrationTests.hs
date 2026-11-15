@@ -1139,6 +1139,25 @@ testTableIntegers = withConnection ":memory:" \conn -> do
   createTableFunction conn "typed_integer_lists" ["vs", "m"] \() -> pure nested
   query_ conn "SELECT typeof(vs), typeof(m), vs, m FROM typed_integer_lists()"
     >>= (@?= [("HUGEINT[]" :: Text, "MAP(VARCHAR, UHUGEINT)" :: Text, vs, m) | (vs, m) <- nested])
+  -- A MAP of a type text and an Integer or a Natural, also in a list, declares
+  -- the text MAP(K, V) with the type text of the other part.
+  let keyed = Map.fromList [([1, 2], 2 ^ (100 :: Int))] :: Map.Map [Int64] Integer
+      listed = Map.fromList [([3], [5, -5])] :: Map.Map [Int64] [Integer]
+      nestedMaps = [[Map.fromList [([4], 2 ^ (127 :: Int))]], []] :: [[Map.Map [Int64] Natural]]
+  createTableFunction conn "typed_text_maps" ["k", "l", "n", "p"] \() ->
+    pure [(keyed, listed, maps, Map.fromList [(7 :: Natural, Price 1.5)]) | maps <- nestedMaps]
+  query_ conn "SELECT DISTINCT typeof(k), typeof(l), typeof(n), typeof(p) FROM typed_text_maps()"
+    >>= ( @?=
+            [
+              ( "MAP(BIGINT[], HUGEINT)" :: Text
+              , "MAP(BIGINT[], HUGEINT[])" :: Text
+              , "MAP(BIGINT[], UHUGEINT)[]" :: Text
+              , "MAP(UHUGEINT, DECIMAL(18,3))" :: Text
+              )
+            ]
+        )
+  query_ conn "SELECT k, l, n, p::VARCHAR FROM typed_text_maps()"
+    >>= (@?= [(keyed, listed, maps, "{7=1.500}" :: Text) | maps <- nestedMaps])
   -- toDuckValue raises an error for a value outside the range. A BIGNUM value
   -- would reach the HUGEINT column, and DuckDB casts the BIGNUM 2^128 to 0.
   let outside = "is outside the range of HUGEINT. Use BigNum for a larger value."

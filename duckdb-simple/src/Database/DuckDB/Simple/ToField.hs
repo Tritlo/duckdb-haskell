@@ -427,8 +427,11 @@ why the type has no declaration.
   another length raises the conversion error of DuckDB when the statement
   runs.
 - A Map gives a MAP (mapDeclaration). Two texts give the text MAP(K, V). In
-  the other cases each part must be a structured type, so the text of a part
-  must be a scalar type name (duckDBTypeFromName). Other text gives Left.
+  the other cases, a structured MAP needs a scalar type name as the text of a
+  part (duckDBTypeFromName). With another text, a structured part that is a
+  scalar type, or a LIST or a MAP of scalar types, gives its text, and the
+  declaration is the text MAP(K, V), for example MAP(INTEGER[], HUGEINT[]).
+  Each other case gives Left.
 - StructValue, TupleValue, and UnionValue give Left. They have no static
   field types. Their text is the bare name STRUCT, TUPLE, or UNION. The bare
   text STRUCT is a valid type, a STRUCT with no fields. That type is also the
@@ -482,9 +485,21 @@ listDeclaration (StructuredType element) = StructuredType (LogicalTypeList eleme
 -- | Declare a MAP with the declarations of its key type and its value type.
 -- See Note [Type declarations].
 mapDeclaration :: TypeDeclaration -> TypeDeclaration -> Either Text TypeDeclaration
-mapDeclaration (TypeExpression key) (TypeExpression value) = Right (TypeExpression ("MAP(" <> key <> ", " <> value <> ")"))
-mapDeclaration key value = StructuredType <$> (LogicalTypeMap <$> structured key <*> structured value)
+mapDeclaration key value = case (key, value) of
+  (TypeExpression keyName, TypeExpression valueName) -> Right (TypeExpression (mapText keyName valueName))
+  _ -> case LogicalTypeMap <$> structured key <*> structured value of
+    Right rep -> Right (StructuredType rep)
+    Left reason -> maybe (Left reason) (Right . TypeExpression) (mapText <$> typeText key <*> typeText value)
   where
+    mapText keyName valueName = "MAP(" <> keyName <> ", " <> valueName <> ")"
+    -- A scalar type, and a LIST or a MAP of such types, has a type text, for
+    -- example HUGEINT[] for a list of Integer values.
+    typeText (TypeExpression text) = Just text
+    typeText (StructuredType rep) = repText rep
+    repText (LogicalTypeScalar dtype) = Just (duckDBTypeToName dtype)
+    repText (LogicalTypeList element) = (<> "[]") <$> repText element
+    repText (LogicalTypeMap keyRep valueRep) = mapText <$> repText keyRep <*> repText valueRep
+    repText _ = Nothing
     structured (StructuredType rep) = Right rep
     structured (TypeExpression text) = case duckDBTypeFromName text of
       Just dtype -> Right (LogicalTypeScalar dtype)

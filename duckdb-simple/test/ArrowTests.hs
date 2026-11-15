@@ -1,6 +1,7 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
@@ -26,6 +27,7 @@ import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.Arrow (releaseArrowArray, releaseArrowSchema)
 import qualified Database.DuckDB.Simple.Arrow as Arrow
+import Database.DuckDB.Simple.FromField (DecimalValue (..))
 import Database.DuckDB.Simple.Internal (peekUtf8CString)
 import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Foreign.C.ConstPtr (ConstPtr (..))
@@ -82,8 +84,29 @@ arrowModeTests streaming =
         (defaultBatches, singleBatches) @?= (1, 5)
         negative <- try (withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionArrowBatchSize = -1} (const (pure ())))
         case negative of
-          Left (err :: SQLError) -> assertBool ("unexpected message: " <> show err) ("connectionArrowBatchSize" `Text.isInfixOf` sqlErrorMessage err)
+          Left (err :: SQLError) -> do
+            sqlErrorType err @?= Just ErrorInputInvalid
+            assertBool ("unexpected message: " <> show err) ("connectionArrowBatchSize" `Text.isInfixOf` sqlErrorMessage err)
           Right () -> assertFailure "a negative batch size opened a connection"
+    , testCase "an error of the step keeps its own query, and a native error of the fold has the fold query" $
+        withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> withConnection ":memory:" \other -> do
+          let failingStep :: IO ()
+              failingStep = void (query other "SELECT ?" (Only (DecimalValue 2 1 100)) :: IO [Only Int64])
+              stepError :: String -> IO a -> IO ()
+              stepError label action =
+                try action >>= \case
+                  Left (err :: SQLError) -> do
+                    assertEqual label (Just ErrorInputInvalid) (sqlErrorType err)
+                    assertEqual label Nothing (sqlErrorQuery err)
+                  Right _ -> assertFailure (label <> ": expected the DECIMAL error")
+          stepError "Arrow.foldArrow" (Arrow.foldArrow conn "SELECT 1" () () \acc _ _ -> failingStep >> pure acc)
+          stepError "Streaming.foldArrow" (Streaming.foldArrow conn "SELECT 1" () () \acc _ _ -> failingStep >> pure acc)
+          stepError "fold" (fold conn "SELECT 1" () () \acc (Only (_ :: Int64)) -> failingStep >> pure acc)
+          stepError "Streaming.fold" (Streaming.fold conn "SELECT 1" () () \acc (Only (_ :: Int64)) -> failingStep >> pure acc)
+          forM_ [("Arrow.foldArrow", Arrow.foldArrow), ("Streaming.foldArrow", Streaming.foldArrow)] \(label, foldBatches) ->
+            try (foldBatches conn "SELECT error('boom')" () () \acc _ _ -> pure acc) >>= \case
+              Left (err :: SQLError) -> assertEqual label (Just "SELECT error('boom')") (sqlErrorQuery err)
+              Right () -> assertFailure (label <> ": expected the error of DuckDB")
     , testCase "empty results retain the initial accumulator" $
         withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
           result <- foldArrow_ conn "SELECT 1::BIGINT WHERE false" (17 :: Int) \_ _ _ -> assertFailure "unexpected batch" >> pure 0

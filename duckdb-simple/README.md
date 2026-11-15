@@ -1,13 +1,13 @@
 # duckdb-simple
 
-`duckdb-simple` provides a high-level Haskell interface to DuckDB inspired by
-the APIs of [`sqlite-simple`](https://hackage.haskell.org/package/sqlite-simple) and
+`duckdb-simple` is a Haskell interface to DuckDB. Its API is like the APIs of
+[`sqlite-simple`](https://hackage.haskell.org/package/sqlite-simple) and
 [`postgresql-simple`](https://hackage.haskell.org/package/postgresql-simple).
-It builds on the low-level bindings exposed by [`duckdb-ffi`](../duckdb-ffi) and
-provides a focused API for opening connections, running queries, binding
-parameters, and decoding typed results—including the full set of DuckDB scalar
-types (signed/unsigned integers, decimals, hugeints, intervals, precise and
-timezone-aware temporals, blobs, enums, bit strings, and bignums).
+It uses the bindings of [`duckdb-ffi`](../duckdb-ffi). It opens connections,
+runs queries, binds parameters, and decodes results into Haskell types. It
+supports the scalar types of DuckDB, for example signed and unsigned integers,
+decimals, HUGEINT and UHUGEINT, intervals, dates, times, and timestamps of each
+precision and with a time zone, blobs, enums, bit strings, and bignums.
 
 The backend uses the generated DuckDB V2 API. Upstream marks the complete V2
 API as unstable: "The C API v2 is not yet stable. Its interface may change in
@@ -131,8 +131,7 @@ main =
 - `Database.DuckDB.Simple.Types` – shared types (`Query`, `Null`, `Only`,
   `(:.)`, `SQLError`).
 - `Database.DuckDB.Simple.Function` – register scalar Haskell functions that
-  can be invoked directly from SQL, and casts, aggregate functions, and table
-  functions.
+  SQL can call, and casts, aggregate functions, and table functions.
 - `Database.DuckDB.Simple.Registration`, `Copy`, `Pragma`, and `Config` –
   register custom types, replacement scans, COPY formats, pragmas, and custom
   options with Haskell values.
@@ -188,9 +187,8 @@ effects must roll back together.
 
 ## Named Parameters
 
-duckdb-simple supports both positional (`?`) and named parameters. Named
-parameters are bound with the `(:=)` helper exported from
-`Database.DuckDB.Simple`.
+duckdb-simple supports both positional (`?`) and named parameters. Bind a
+named parameter with `(:=)` from `Database.DuckDB.Simple`.
 
 ```haskell
 import Database.DuckDB.Simple
@@ -224,8 +222,8 @@ cases:
 
 ### Decoding rows
 
-`FromRow` is powered by a `RowParser`, which means instances can be written in a
-monadic/Applicative style and even derived generically for product types:
+A `FromRow` instance is a `RowParser`. Write an instance with `Applicative` or
+`Monad` functions, or derive it with `Generic` for a product type:
 
 ```haskell
 {-# LANGUAGE DeriveAnyClass #-}
@@ -792,10 +790,10 @@ supported families, construction checks, and codec normalization rules.
 
 ## User-Defined Functions
 
-Scalar Haskell functions can be registered with DuckDB connections and used in
-SQL expressions. Argument and result types reuse the existing `FromField` and
-`FunctionResult` machinery, so `Maybe` values and `IO` actions work out of the
-box.
+Register a scalar Haskell function on a connection, and call it in SQL
+expressions. The arguments use `FromField`, and the result uses
+`FunctionResult`. Thus a function can take and give `Maybe` values, and it can
+give an `IO` action.
 
 ```haskell
 {-# LANGUAGE OverloadedStrings #-}
@@ -911,11 +909,16 @@ changes the result of `CAST(g AS BLOB)`, but not a GEOMETRY value that a query
 gives. There is one exception: a GEOMETRY value that a callback of a function of
 an extension reads. An extension has no instance, so these callbacks read with
 the casts of the session. The library uses these built-in casts to bind values:
-BLOB to GEOMETRY, VARCHAR to GEOMETRY, VARCHAR to an ENUM type, and a type to
-VARIANT. Do not register a cast for one of these pairs, with `createCast` or
-with a native cast registration. The library then binds the result of that
-cast. For example, after a cast from VARCHAR to an ENUM type that gives NULL, an
-ENUM value in a STRUCT parameter is NULL, and no error occurs.
+
+- BLOB to GEOMETRY
+- VARCHAR to GEOMETRY
+- VARCHAR to an ENUM type
+- a type to VARIANT
+
+Do not register a cast for one of these pairs, with `createCast` or with a
+native cast registration. The library then binds the result of that cast. For
+example, after a cast from VARCHAR to an ENUM type that gives NULL, an ENUM
+value in a STRUCT parameter is NULL, and no error occurs.
 
 `createAggregate` registers an aggregate function as a fold. The result type
 is a result type of `createFunction`.

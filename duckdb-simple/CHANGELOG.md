@@ -114,9 +114,10 @@
   `ErrorResourceInUse` after the time limit. For most callbacks, the outer
   statement then fails. The README gives the cases that the time limit does
   not cover.
-- The message of a native error is decoded with replacement characters. A
-  native error text that is not valid UTF-8 does not raise when the error is
-  shown.
+- The library decodes the message of a native error with replacement
+  characters. Thus `show` of such an `SQLError` does not raise for a text that
+  is not valid UTF-8. Version 0.3 decoded the text with `decodeUtf8`, which
+  raises for such a text.
 - While an explicit stream is incomplete, DuckDB rejects other statements on
   its connection. Closing an incomplete stream aborts its statement.
 - Each connection serializes statement preparation, its open native result,
@@ -175,10 +176,9 @@
   not keep the CRS. Version 0.3 raised an error for each such value, because
   DuckDB 1.5 has no cast from BLOB to GEOMETRY.
 - Add a `ToField` instance for `RawGeometry`. It binds as a GEOMETRY with the
-  same WKB bytes and its own CRS, and DuckDB casts it to the type of the
-  parameter as in SQL text: a value without a CRS takes the CRS of the target,
-  a target without a CRS removes the CRS, and a target with another CRS raises
-  `SQLError`. Version 0.3 had only a `FromField` instance for `RawGeometry`. An
+  same WKB bytes and its own CRS. DuckDB casts it to the type of the parameter,
+  as in SQL text. A value without a CRS takes the CRS of the target. A target
+  without a CRS removes the CRS. A target with another CRS raises `SQLError`. Version 0.3 had only a `FromField` instance for `RawGeometry`. An
   `Array`, a list, or a typed row cannot hold a `RawGeometry`.
 - An empty `Array` parameter raises `SQLError`. Version 0.3 bound an empty
   `Array` of scalar elements. Bind an empty list for an empty LIST.
@@ -213,10 +213,10 @@
   of that call bind.
 - An `Integer` or a `Natural` parameter binds as a HUGEINT value when the value
   is in the HUGEINT range. Before, it bound as a BIGNUM value in each case. In
-  DuckDB 2.0.0 the casts from BIGNUM to the integer types have defects: a
-  HUGEINT, UHUGEINT, or DECIMAL target failed, a negative value for an unsigned
-  target was stored as a wrapped value, and a value of 2^128 or more was stored
-  modulo 2^128. DuckDB checks the range of a HUGEINT value for its target. A
+  DuckDB 2.0.0 the casts from BIGNUM to the integer types have three defects.
+  A cast to HUGEINT, UHUGEINT, or DECIMAL fails. A cast of a negative value to
+  an unsigned type gives a wrapped value. A cast of a value of 2^128 or more
+  gives the value modulo 2^128. DuckDB checks the range of a HUGEINT value for its target. A
   value outside the HUGEINT range binds as BIGNUM, or as UHUGEINT for a
   UHUGEINT parameter that can hold it. For each other integer or DECIMAL
   parameter, such a value raises an `SQLError` of the type
@@ -235,11 +235,11 @@
   outside the HUGEINT range keeps the BIGNUM casts of DuckDB: `setConfigValue`
   with 2^128 + 5 for an unsigned option sets 5. The column type of an
   `Integer` or a `Natural` in a typed row stays BIGNUM.
-- A generic record with an `Array` field that has elements can be bound. The
-  value gives the ARRAY size. DuckDB rejects the record when no value gives the
-  size: an `Array` field with the value `Nothing`, an `Array` inside a LIST,
-  ARRAY, or MAP field, and a sum type with an `Array` constructor fail with
-  "ARRAY type size must be at least 1".
+- A generic record with an `Array` field that has elements binds. The value
+  gives the ARRAY size. When no value gives the size, DuckDB rejects the record
+  with "ARRAY type size must be at least 1". Examples are an `Array` field with
+  the value `Nothing`, an `Array` inside a LIST, ARRAY, or MAP field, and a sum
+  type with an `Array` constructor.
 - A product type with no fields has one encoding: the STRUCT without fields,
   which DuckDB shows as `{}`. `genericToFieldValue` gives this STRUCT, as the
   `ViaDuckDB` binding and `genericToStructValue` did before. A constructor with

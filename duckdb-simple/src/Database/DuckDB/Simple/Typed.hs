@@ -28,7 +28,7 @@ module Database.DuckDB.Simple.Typed (
   replacementScanCallback,
 ) where
 
-import Control.Exception (SomeException, bracket, displayException, fromException)
+import Control.Exception (SomeException, bracket, fromException)
 import Control.Monad (forM, when)
 import Data.List (intercalate)
 import Data.Proxy (Proxy (..))
@@ -196,7 +196,7 @@ conversionMessage failures = intercalate "; " (map describe failures)
           <> " to "
           <> Text.unpack (errHaskellType result)
           <> if Text.null (errMessage result) then "" else ": " <> Text.unpack (errMessage result)
-      Nothing -> displayException failure
+      Nothing -> exceptionText failure
 
 -- | What DuckDB reads in place of an unknown table. DuckDB reads the result
 -- under the name of the table, unless the query gives an alias.

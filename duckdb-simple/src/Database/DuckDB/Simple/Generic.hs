@@ -162,7 +162,7 @@ class DuckValue a where
   duckFromField fv =
     case fromField Field{fieldName = Text.empty, fieldIndex = 0, fieldValue = fv} of
       Ok x -> Right x
-      Errors errs -> Left (intercalate "; " (map displayException errs))
+      Errors errs -> Left (intercalate "; " (map exceptionText errs))
 
 instance DuckValue Variant where
   duckToField = variantPayload

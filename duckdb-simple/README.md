@@ -334,9 +334,11 @@ Notes:
    value does not read as an integer type. Write `enum_code(c)::BIGINT` in SQL
    for its index, or `c::INTEGER` for the value of its label.
 4. A read gives the value of `c::DOUBLE` or `c::FLOAT` of DuckDB, also for a
-   DECIMAL, and for a BIGINT read as `Float`. A finite value that `Float`
-   cannot hold raises a conversion error of the library, an `SQLError` with no
-   type.
+   DECIMAL, and for a BIGINT read as `Float`. As seen in CI, the DuckDB 2.0.0
+   build for macOS on Apple Silicon rounds some BIGINT values above 2^53 two
+   times in its cast to FLOAT, and the library gives the nearest value there. A
+   finite value that `Float` cannot hold raises a conversion error of the
+   library, an `SQLError` with no type.
 5. A read of another SQL type gives the value of the cast of DuckDB to the SQL
    type of the Haskell type, or an error where the value does not fit. For
    example, `Int8` reads a BIGINT that fits in a TINYINT, and `Double` reads a

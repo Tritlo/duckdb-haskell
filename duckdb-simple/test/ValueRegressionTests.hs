@@ -1203,7 +1203,21 @@ valueRegressionTests =
               :: IO [(Text, Double, Double, Float, Float)]
           length rows @?= length texts
           [(sqlType, text, value, cast) | (text, value, cast, _, _) <- rows, castDoubleToWord64 value /= castDoubleToWord64 cast] @?= []
-          [(sqlType, text, value, cast) | (text, _, _, value, cast) <- rows, castFloatToWord32 value /= castFloatToWord32 cast] @?= []
+          if sqlType /= "BIGINT"
+            then [(sqlType, text, value, cast) | (text, _, _, value, cast) <- rows, castFloatToWord32 value /= castFloatToWord32 cast] @?= []
+            else do
+              -- CI on macOS (Apple Silicon) showed a cast of DuckDB 2.0.0 from
+              -- BIGINT to FLOAT that rounds two times, through DOUBLE, for some
+              -- values above 2^53: 9007199791611905 gave 9.007199e15, and the
+              -- nearest FLOAT is 9.0072e15. On Linux x86-64 and aarch64 the cast
+              -- gave the nearest value. The read of the library is the nearest
+              -- value on each platform. The cast of DuckDB is one of the two.
+              let integer text = read (Text.unpack text) :: Integer
+                  nearest text = fromRational (toRational (integer text)) :: Float
+                  throughDouble text = realToFrac (fromInteger (integer text) :: Double) :: Float
+                  bits = castFloatToWord32
+              [(text, value) | (text, _, _, value, _) <- rows, bits value /= bits (nearest text)] @?= []
+              [(text, cast) | (text, _, _, _, cast) <- rows, bits cast `notElem` [bits (nearest text), bits (throughDouble text)]] @?= []
     , testCase "a read of another SQL type gives the value of the cast of DuckDB" $ withConnection ":memory:" \conn -> do
         -- Each value reads as the Haskell type, next to its cast to the SQL
         -- type of the Haskell type in the same row. See

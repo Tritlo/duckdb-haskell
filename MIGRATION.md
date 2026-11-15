@@ -252,7 +252,9 @@ The SQL workflow stays the same. These changes can affect your code:
   gave `1` or `0`. Read `Bool`, or write `c::INTEGER` in SQL for the old text.
 - A DECIMAL read as `Double` or `Float`, and a BIGINT read as `Float`, give
   the value of the cast of DuckDB. A value can differ from version 0.3 in the
-  last bit.
+  last bit. As seen in CI, the DuckDB 2.0.0 build for macOS on Apple Silicon
+  rounds some BIGINT values above 2^53 two times in its cast to FLOAT, and the
+  library gives the nearest value there.
 - A TIMESTAMP, TIMESTAMP_S, TIMESTAMP_MS, or TIMESTAMP_NS read as `UTCTime`
   raises the error of an incompatible column. Write
   `c::TIMESTAMP AT TIME ZONE 'UTC'` for the instant that version 0.3 gave, or

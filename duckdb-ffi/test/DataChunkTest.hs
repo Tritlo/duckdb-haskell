@@ -11,9 +11,9 @@ import Data.Coerce (coerce)
 import Data.Int (Int32)
 import Database.DuckDB.FFI
 import Foreign.Marshal.Alloc (alloca)
-import Foreign.Marshal.Array (withArray)
-import Foreign.Ptr (Ptr, nullPtr, plusPtr)
-import Foreign.Storable (peek, poke, sizeOf)
+import Foreign.Marshal.Array (advancePtr, withArray)
+import Foreign.Ptr (Ptr, nullPtr)
+import Foreign.Storable (peek, poke)
 import GHC.Records (getField)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (testCase, (@?=))
@@ -101,5 +101,5 @@ pokeElem base idx = poke (base `plusElem` idx)
 peekElem :: Ptr Int32 -> Int -> IO Int32
 peekElem base idx = peek (base `plusElem` idx)
 
-plusElem :: Ptr a -> Int -> Ptr a
-plusElem base idx = base `plusPtr` (idx * sizeOf (undefined :: Int32))
+plusElem :: Ptr Int32 -> Int -> Ptr Int32
+plusElem = advancePtr

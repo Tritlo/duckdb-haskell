@@ -3,6 +3,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 -- |
 -- Module      : Database.DuckDB.Simple.Typed.Aggregate
@@ -49,7 +50,8 @@ import Database.DuckDB.Simple.V2.Registration (
  )
 import Foreign.Ptr (FunPtr, Ptr, castFunPtr, castPtr, intPtrToPtr, nullPtr, ptrToIntPtr)
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deRefStablePtr, freeStablePtr, newStablePtr)
-import Foreign.Storable (peek, peekElemOff, poke, sizeOf)
+import Foreign.Storable (peek, peekElemOff, poke)
+import HsBindgen.Runtime.Marshal (staticSizeOf)
 
 -- | An aggregate function as a fold. DuckDB keeps one state for each group, or
 -- more than one partial state.
@@ -224,7 +226,7 @@ createAggregateOn target name aggregate = do
 -- | Make a native state the size of one pointer. See
 -- Note [Aggregate state life cycle].
 setStateSize :: DuckDBV2AggregateFunctionSizeInfoHandle -> IO ()
-setStateSize info = checked (c_duckdb_v2_aggregate_function_size_set_state_size info (fromIntegral (sizeOf (nullPtr :: Ptr ()))))
+setStateSize info = checked (c_duckdb_v2_aggregate_function_size_set_state_size info (fromIntegral (staticSizeOf (Proxy @(Ptr ())))))
 
 -- | Make an empty state table and transfer it to the bind data of the call site.
 -- See Note [Aggregate state life cycle].
@@ -252,7 +254,7 @@ initializeStates Aggregate{aggregateInitial} info = do
   table <- readStateTable (c_duckdb_v2_aggregate_function_init_get_bind_data info)
   count <- fromIntegral <$> output (c_duckdb_v2_aggregate_function_init_get_state_count info)
   states <- output (c_duckdb_v2_aggregate_function_init_get_states info)
-  forM_ [0 .. count - 1] \index -> peekElemOff states index >>= \slot -> poke (castPtr slot) (nullPtr :: Ptr ())
+  forM_ [0 .. count - 1] \index -> peekElemOff states index >>= \slot -> poke (castPtr slot) (nullPtr @())
   forM_ [0 .. count - 1] \index -> do
     slot <- peekElemOff states index
     mask_ do
@@ -335,7 +337,7 @@ releaseState :: Maybe StateTable -> Ptr Void -> IO ()
 releaseState table slot = mask_ do
   stable <- peek (castPtr slot) :: IO (StablePtr ())
   unless (castStablePtrToPtr stable == nullPtr) do
-    poke (castPtr slot) (nullPtr :: Ptr ())
+    poke (castPtr slot) (nullPtr @())
     let key = stableKey stable
     owner <- case table of
       Nothing -> pure True

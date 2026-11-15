@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-deprecations #-}
 
 module AggregateFunctionsTest (tests) where
@@ -9,6 +10,7 @@ import Control.Monad (forM_, when)
 import Data.Coerce (coerce)
 import Data.Int (Int32)
 import Data.List (isInfixOf)
+import Data.Proxy (Proxy (..))
 import Data.Void (Void)
 import Data.Word (Word64)
 import Database.DuckDB.FFI
@@ -17,7 +19,8 @@ import Foreign.C.String (peekCString)
 import Foreign.C.Types (CBool (..), CChar)
 import Foreign.Marshal.Alloc (alloca, free, mallocBytes)
 import Foreign.Ptr (Ptr, freeHaskellFunPtr, nullFunPtr, nullPtr)
-import Foreign.Storable (peek, peekElemOff, poke, pokeElemOff, sizeOf)
+import Foreign.Storable (peek, peekElemOff, poke, pokeElemOff)
+import HsBindgen.Runtime.Marshal (staticSizeOf)
 import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, testCase, (@?=))
@@ -149,7 +152,7 @@ initialSumState :: SumState
 initialSumState = SumState 0 0 0
 
 sumStateSize :: Int
-sumStateSize = 3 * sizeOf (undefined :: Int32)
+sumStateSize = 3 * staticSizeOf (Proxy @Int32)
 
 type SumStatePtr = Ptr Int32
 
@@ -181,7 +184,7 @@ defaultAggregateConfig = AggregateConfig 0 0 0 0
 type AggregateConfigPtr = Ptr Int32
 
 aggregateConfigSize :: Int
-aggregateConfigSize = 4 * sizeOf (undefined :: Int32)
+aggregateConfigSize = 4 * staticSizeOf (Proxy @Int32)
 
 writeAggregateConfig :: AggregateConfigPtr -> AggregateConfig -> IO ()
 writeAggregateConfig ptr AggregateConfig{cfgBonus = bonus, cfgFailOnNegative = failNeg, cfgReturnNullCount = returnNulls, cfgNullIfAllInvalid = nullAll} = do
@@ -296,7 +299,7 @@ setupAggregateFunction
     c_duckdb_aggregate_function_set_destructor aggFun destroyFun
 
 stateSizeFun :: DuckDBFunctionInfo -> IO DuckDBIdx
-stateSizeFun _ = pure (fromIntegral (sizeOf (nullPtr :: Ptr ())))
+stateSizeFun _ = pure (fromIntegral (staticSizeOf (Proxy @(Ptr ()))))
 
 initCallback :: DuckDBFunctionInfo -> DuckDBAggregateState -> IO ()
 initCallback _ state = do

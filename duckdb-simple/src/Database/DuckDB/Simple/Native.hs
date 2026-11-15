@@ -3,6 +3,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 -- |
 -- Module      : Database.DuckDB.Simple.Native
@@ -221,7 +222,7 @@ errorTypeFromNative code = lookup code [(native, errorType) | (errorType, native
 
 -- | A null pointer represented by an opaque native handle.
 nullHandle :: (Coercible (Ptr ()) a) => a
-nullHandle = coerce (nullPtr :: Ptr ())
+nullHandle = coerce (nullPtr @())
 
 -- | Check a status from an operation without an error-info output.
 checkCode :: DuckDBV2Error -> IO ()

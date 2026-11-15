@@ -31,10 +31,11 @@ import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (peekCString)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Utils (fillBytes)
-import Foreign.Ptr (FunPtr, Ptr, freeHaskellFunPtr, nullFunPtr, nullPtr)
-import Foreign.Storable (peek, peekElemOff, poke, sizeOf)
+import Foreign.Ptr (Ptr, freeHaskellFunPtr, nullFunPtr, nullPtr)
+import Foreign.Storable (peek, peekElemOff, poke)
 import GHC.Records (getField)
 import HsBindgen.Runtime.HasCField (fromPtr)
+import HsBindgen.Runtime.Marshal (staticSizeOf)
 import HsBindgen.Runtime.Support.FunPtr (fromFunPtr, toFunPtr)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
@@ -103,8 +104,8 @@ arrowModeTests streaming =
           alloca \savedSchema -> alloca \savedArray ->
             bracket_
               ( do
-                  fillBytes savedSchema 0 (sizeOf (undefined :: ArrowSchema))
-                  fillBytes savedArray 0 (sizeOf (undefined :: ArrowArray))
+                  fillBytes savedSchema 0 (staticSizeOf (Proxy @ArrowSchema))
+                  fillBytes savedArray 0 (staticSizeOf (Proxy @ArrowArray))
               )
               (releaseArrowArray savedArray >> releaseArrowSchema savedSchema)
               do
@@ -114,9 +115,9 @@ arrowModeTests streaming =
                     schema <- peek schemaPtr
                     array <- peek arrayPtr
                     poke savedSchema schema
-                    poke (fromPtr (Proxy @"release") (schemaPtr :: Ptr ArrowSchema)) (coerce (nullFunPtr :: FunPtr Void))
+                    poke (fromPtr (Proxy @"release") (schemaPtr :: Ptr ArrowSchema)) (coerce (nullFunPtr @Void))
                     poke savedArray array
-                    poke (fromPtr (Proxy @"release") (arrayPtr :: Ptr ArrowArray)) (coerce (nullFunPtr :: FunPtr Void))
+                    poke (fromPtr (Proxy @"release") (arrayPtr :: Ptr ArrowArray)) (coerce (nullFunPtr @Void))
                 readIORef schemaReleases >>= (@?= 0)
                 readIORef arrayReleases >>= (@?= 0)
                 schema <- peek savedSchema
@@ -237,7 +238,7 @@ readInt64Batch arrayPtr = do
   forM [0 .. fromIntegral ((getField @"length") array) - 1] \row -> do
     let index = fromIntegral ((getField @"offset") child) + row
     valid <-
-      if validity == (coerce (nullPtr :: Ptr Void))
+      if validity == (coerce (nullPtr @Void))
         then pure True
         else do
           byte <- peekElemOff (coerce validity :: Ptr Word8) (index `div` 8)
@@ -269,7 +270,7 @@ withReleaseCounters action = do
         \arrayCallback -> do
           let observe schemaPtr arrayPtr = do
                 schema <- peek schemaPtr
-                assertBool "schema must not have been released" ((getField @"release") schema /= (coerce (nullFunPtr :: FunPtr Void)))
+                assertBool "schema must not have been released" ((getField @"release") schema /= (coerce (nullFunPtr @Void)))
                 when ((getField @"release") schema /= schemaCallback) do
                   modifyIORef' originalSchema (const (Just ((getField @"release") schema)))
                   poke (fromPtr (Proxy @"release") (schemaPtr :: Ptr ArrowSchema)) schemaCallback

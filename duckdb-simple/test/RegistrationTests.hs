@@ -1,6 +1,7 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 -- |
 -- Module      : RegistrationTests
@@ -12,6 +13,7 @@ import Control.Monad (forM, forM_, void, when)
 import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, modifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Data.Maybe (isNothing)
+import Data.Proxy (Proxy (..))
 import qualified Data.Text as Text
 import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple hiding (bind, execute)
@@ -27,7 +29,8 @@ import qualified Database.DuckDB.Simple.V2.Registration as R
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (advancePtr, allocaArray, peekArray)
 import Foreign.Ptr (castPtr, freeHaskellFunPtr, nullPtr)
-import Foreign.Storable (peek, peekElemOff, poke, pokeElemOff, sizeOf)
+import Foreign.Storable (peek, peekElemOff, poke, pokeElemOff)
+import HsBindgen.Runtime.Marshal (staticSizeOf)
 import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
 import System.Mem (performMajorGC)
 import System.Mem.Weak (Weak, deRefWeak)
@@ -216,7 +219,7 @@ testMetrics = withConnection ":memory:" \connection -> do
 sumCallbacks :: R.AggregateCallbacks
 sumCallbacks = R.aggregateCallbacks stateSize initialize update combine finalize
   where
-    stateSize info = R.checked (c_duckdb_v2_aggregate_function_size_set_state_size info (fromIntegral (sizeOf (0 :: Int64))))
+    stateSize info = R.checked (c_duckdb_v2_aggregate_function_size_set_state_size info (fromIntegral (staticSizeOf (Proxy @Int64))))
     initialize info = do
       count <- R.output (c_duckdb_v2_aggregate_function_init_get_state_count info)
       states <- R.output (c_duckdb_v2_aggregate_function_init_get_states info)

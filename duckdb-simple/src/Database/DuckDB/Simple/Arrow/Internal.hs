@@ -2,6 +2,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE TypeApplications #-}
 
 -- |
 -- Module      : Database.DuckDB.Simple.Arrow.Internal
@@ -16,13 +17,15 @@ module Database.DuckDB.Simple.Arrow.Internal (
 import Control.Exception (bracket, finally, mask, mask_, onException)
 import Control.Monad (when)
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
+import Data.Proxy (Proxy (..))
 import Database.DuckDB.Simple (bind, withStatement)
 import Database.DuckDB.Simple.Internal
 import Database.DuckDB.Simple.ToRow (ToRow (..))
 import Foreign.Marshal.Alloc (free, malloc)
 import Foreign.Marshal.Utils (fillBytes)
 import Foreign.Ptr (Ptr, nullFunPtr)
-import Foreign.Storable (peek, sizeOf)
+import Foreign.Storable (peek)
+import HsBindgen.Runtime.Marshal (staticSizeOf)
 import HsBindgen.Runtime.Support.FunPtr (fromFunPtr)
 
 -- | Owned root storage for an Arrow schema and array.
@@ -77,9 +80,9 @@ foldArrowWith mode conn queryText params initial step = withStatement conn query
 fetchBatch :: Statement -> DuckDBV2ArrowResultHandle -> IO (Maybe ArrowBatch)
 fetchBatch stmt result = mask_ do
   schema <- malloc
-  fillBytes schema 0 (sizeOf (undefined :: ArrowSchema))
+  fillBytes schema 0 (staticSizeOf (Proxy @ArrowSchema))
   array <- malloc `onException` free schema
-  fillBytes array 0 (sizeOf (undefined :: ArrowArray))
+  fillBytes array 0 (staticSizeOf (Proxy @ArrowArray))
   let batch = (schema, array)
   exported <- flip onException (releaseBatch batch) do
     runInterruptibleQuery (statementConnection stmt) (checked (c_duckdb_v2_arrow_result_fetch_array result array))

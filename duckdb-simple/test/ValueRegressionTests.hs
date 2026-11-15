@@ -25,13 +25,19 @@ import Data.Ratio ((%))
 import Data.String (fromString)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import Data.Time.Calendar (Day, addDays, fromGregorian)
 import Data.Time.Clock (UTCTime (..))
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), utc, utcToLocalTime)
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
-import Database.DuckDB.FFI.V2 (c_duckdb_v2_factory_create_type_from_text, c_duckdb_v2_logical_type_is_equal)
+import Database.DuckDB.FFI.V2 (
+  DuckDBV2LogicalTypeHandle,
+  c_duckdb_v2_factory_create_type_from_text,
+  c_duckdb_v2_logical_type_is_equal,
+  c_duckdb_v2_logical_type_to_text,
+ )
 import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Catalog as Catalog
 import Database.DuckDB.Simple.FromField (
@@ -54,6 +60,9 @@ import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
 import Database.DuckDB.Simple.V2.LogicalRep (destroyLogicalType, logicalTypeFromRep, logicalTypeToRep)
 import qualified Database.DuckDB.Simple.V2.Registration as R
+import Foreign.Marshal.Alloc (alloca, allocaBytes)
+import Foreign.Ptr (castPtr, nullPtr)
+import Foreign.Storable (peek)
 import GHC.Float (castDoubleToWord64, castFloatToWord32)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
@@ -69,6 +78,15 @@ data FieldTypeOf = FieldTypeOf LogicalTypeRep
 
 instance FromField FieldTypeOf where
   fromField Field{fieldType} = Ok (FieldTypeOf fieldType)
+
+-- | The text of a native type, from duckdb_v2_logical_type_to_text.
+nativeTypeText :: DuckDBV2LogicalTypeHandle -> IO Text
+nativeTypeText logical = alloca \lengthSlot -> do
+  R.checked (c_duckdb_v2_logical_type_to_text logical nullPtr 0 lengthSlot)
+  size <- peek lengthSlot
+  allocaBytes (fromIntegral size + 1) \buffer -> do
+    R.checked (c_duckdb_v2_logical_type_to_text logical buffer (size + 1) lengthSlot)
+    TextEncoding.decodeUtf8 <$> BS.packCStringLen (castPtr buffer, fromIntegral size)
 
 -- | A value whose read checks the column type, as a user instance can: a
 -- DECIMAL with the scale 2, a TIMESTAMP_NS, an ARRAY of three elements, or
@@ -1586,6 +1604,40 @@ valueRegressionTests =
               -- The type is the type that DuckDB gives for the type text.
               bracket (R.withText text (R.output . c_duckdb_v2_factory_create_type_from_text factory)) destroyLogicalType \parsed ->
                 R.output (c_duckdb_v2_logical_type_is_equal handle parsed) >>= (@?= 1)
+    , testCase "logicalTypeSQL gives the type text of DuckDB for each kind" $ withConnection ":memory:" \conn -> do
+        R.registerCustomType conn "money" (StructuredType (LogicalTypeDecimal 9 2))
+        keywords <- map fromOnly <$> (query_ conn "SELECT DISTINCT keyword_name FROM duckdb_keywords() ORDER BY 1" :: IO [Only Text])
+        let keywordStruct = "STRUCT(" <> Text.intercalate ", " ["\"" <> keyword <> "\" INTEGER" | keyword <- keywords] <> ")"
+        withConnectionHandle conn \native -> withConnectionFactory native \factory ->
+          forM_
+            [ "DECIMAL(18,3)"
+            , "TIMESTAMP_NS"
+            , "TIMESTAMPTZ"
+            , "TIMETZ"
+            , "\"NULL\""
+            , "ENUM('sad', 'it''s')"
+            , "BIGINT[]"
+            , "INTEGER[3]"
+            , "INTEGER[3][]"
+            , "MAP(VARCHAR, BIGINT)"
+            , "STRUCT(a INTEGER, B VARCHAR, \"c d\" BIGINT[], \"x\"\"y\" DOUBLE, \"1a\" INTEGER, \"Name\" INTEGER)"
+            , "UNION(n INTEGER, s VARCHAR)"
+            , "TUPLE(INTEGER, VARCHAR)"
+            , "GEOMETRY"
+            , "GEOMETRY('OGC:CRS84')"
+            , "VARCHAR COLLATE nocase"
+            , "VARIANT"
+            , "JSON"
+            , "JSON[]"
+            , "STRUCT(k JSON)"
+            , "money"
+            , keywordStruct
+            ]
+            \text ->
+              bracket (R.withText text (R.output . c_duckdb_v2_factory_create_type_from_text factory)) destroyLogicalType \logical -> do
+                expected <- nativeTypeText logical
+                rep <- logicalTypeToRep logical
+                assertEqual (Text.unpack (Text.take 80 text)) expected (logicalTypeSQL rep)
     , testCase "a user FromField checks the type of a column, an element, a MAP key and value, and a record field" $ withConnection ":memory:" \conn -> do
         query_ conn "SELECT 1.25::DECIMAL(9,2), TIMESTAMP_NS '2024-01-02 03:04:05.123456789', [1, 2, 3]::INTEGER[3], '{\"a\": 1}'::JSON"
           >>= (@?= [(Checked "decimal", Checked "timestamp_ns", Checked "array", Checked "json")])

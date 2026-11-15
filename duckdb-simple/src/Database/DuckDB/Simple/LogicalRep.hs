@@ -1,5 +1,6 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 -- |
 -- Module      : Database.DuckDB.Simple.LogicalRep
@@ -21,16 +22,21 @@ module Database.DuckDB.Simple.LogicalRep (
   aliasBase,
   listElementType,
   mapEntryTypes,
+  logicalTypeSQL,
   structValueTypeRep,
   tupleValueTypeRep,
   unionValueTypeRep,
 ) where
 
-import Data.Array (Array)
+import Data.Array (Array, elems)
+import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
 import Data.Map.Strict (Map)
+import Data.Set (Set)
+import qualified Data.Set as Set
 import Data.Text (Text)
+import qualified Data.Text as Text
 import Data.Word (Word16, Word64, Word8)
-import Database.DuckDB.Simple.Native (LogicalTypeId (..))
+import Database.DuckDB.Simple.Native (LogicalTypeId (..), logicalTypeIdName)
 
 -- | A Haskell description of a DuckDB logical type tree. See
 -- Note [Type aliases] for 'LogicalTypeAlias'.
@@ -121,6 +127,105 @@ mapEntryTypes :: LogicalTypeRep -> (LogicalTypeRep, LogicalTypeRep)
 mapEntryTypes parent = case aliasBase parent of
   LogicalTypeMap key value -> (key, value)
   _ -> (LogicalTypeScalar LogicalTypeIdVariant, LogicalTypeScalar LogicalTypeIdVariant)
+
+{- Note [Type texts]
+~~~~~~~~~~~~~~~~~~~~
+logicalTypeSQL gives the text of a type that duckdb_v2_logical_type_to_text of
+DuckDB 2.0.0 gives, for example DECIMAL(18,3), BIGINT[], INTEGER[3],
+MAP(VARCHAR, BIGINT), ENUM('sad', 'happy'), and GEOMETRY('OGC:CRS84'). An
+alias gives its name, for example JSON. The function is pure, so an error of a
+FromField instance can name the type with no native handle, and the text costs
+nothing until an error renders.
+
+These rules follow LogicalType::ToString of DuckDB 2.0.0:
+
+- A scalar type has the name of its type id (logicalTypeIdName in
+  "Database.DuckDB.Simple.Native"), and SQL NULL is "NULL" in double quotes. A
+  VARCHAR with a collation is VARCHAR: the text has no collation.
+- A label of an ENUM and a CRS are in single quotes, with each single quote
+  doubled.
+- A field name of a STRUCT and a member name of a UNION are in double quotes,
+  with each double quote doubled, when the name needs quotes. A name needs
+  quotes when it has a character that is not an ASCII letter, a digit, or an
+  underscore, when it starts with a digit, or when it is a keyword of DuckDB
+  in any case (KeywordHelper::RequiresQuotes). The keywords are the 502 names
+  of duckdb_keywords() of DuckDB 2.0.0.
+
+A case compares the text with duckdb_v2_logical_type_to_text for one type of
+each kind and for a STRUCT with each keyword as a field name.
+-}
+
+-- | The SQL text of a type, as DuckDB gives it, for example DECIMAL(18,3) or
+-- JSON. See Note [Type texts].
+logicalTypeSQL :: LogicalTypeRep -> Text
+logicalTypeSQL = \case
+  LogicalTypeScalar LogicalTypeIdSQLNull -> "\"NULL\""
+  LogicalTypeScalar ident -> logicalTypeIdName ident
+  LogicalTypeDecimal width scale -> "DECIMAL(" <> number width <> "," <> number scale <> ")"
+  LogicalTypeCollatedVarchar _ -> "VARCHAR"
+  LogicalTypeGeometry Nothing -> "GEOMETRY"
+  LogicalTypeGeometry (Just crs) -> "GEOMETRY(" <> quoted '\'' crs <> ")"
+  LogicalTypeList element -> logicalTypeSQL element <> "[]"
+  LogicalTypeArray element size -> logicalTypeSQL element <> "[" <> number size <> "]"
+  LogicalTypeMap key value -> "MAP(" <> logicalTypeSQL key <> ", " <> logicalTypeSQL value <> ")"
+  LogicalTypeStruct fields -> "STRUCT(" <> commas [identifier name <> " " <> logicalTypeSQL rep | StructField name rep <- elems fields] <> ")"
+  LogicalTypeTuple fields -> "TUPLE(" <> commas (map logicalTypeSQL (elems fields)) <> ")"
+  LogicalTypeUnion members -> "UNION(" <> commas [identifier name <> " " <> logicalTypeSQL rep | UnionMemberType name rep <- elems members] <> ")"
+  LogicalTypeEnum labels -> "ENUM(" <> commas (map (quoted '\'') (elems labels)) <> ")"
+  LogicalTypeAlias name _ -> name
+  where
+    number :: (Show n) => n -> Text
+    number = Text.pack . show
+    commas = Text.intercalate ", "
+    quoted mark text = Text.singleton mark <> Text.replace (Text.singleton mark) (Text.pack [mark, mark]) text <> Text.singleton mark
+    identifier name
+      | needsQuotes name = quoted '"' name
+      | otherwise = name
+    needsQuotes name =
+      not (and (zipWith plain [0 :: Int ..] (Text.unpack name))) || Set.member (Text.toLower name) duckDBKeywords
+    plain index char = isAsciiLower char || isAsciiUpper char || char == '_' || (index > 0 && isDigit char)
+
+-- | The keywords of DuckDB 2.0.0, from duckdb_keywords(). A field name that is
+-- a keyword needs quotes. See Note [Type texts].
+duckDBKeywords :: Set Text
+duckDBKeywords =
+  Set.fromList . Text.words $
+    "abort absolute access action add admin after aggregate all also alter always analyse analyze and anti any \
+    \ approx array as asc asof assertion assignment asymmetric at attach attribute authorization backward before \
+    \ begin between bigint binary bit boolean both by cache call called cascade cascaded case cast catalog centuries \
+    \ century chain char character characteristics check checkpoint class close cluster coalesce collate collation \
+    \ column columns comment comments commit committed compression concurrently configuration conflict connect \
+    \ connection constraint constraints content continue conversion copy cost create cross csv cube current cursor \
+    \ cycle data database day days deallocate dec decade decades decimal declare default defaults deferrable \
+    \ deferred definer delete delimiter delimiters depends desc describe destroy detach dictionary disable discard \
+    \ disconnect distance distinct do document domain double drop each else enable encoding encrypted end enum error \
+    \ escape event exact except exclude excluding exclusive execute exists explain export export_state extension \
+    \ extensions external extract false family fetch filter first float following for force foreign forward freeze \
+    \ from full function functions generated glob global grant granted group grouping grouping_id groups handler \
+    \ having header hold hour hours identity if ignore ilike immediate immutable implicit import in include \
+    \ including increment index indexes inherit inherits initially inline inner inout input insensitive insert \
+    \ install instead int integer intersect interval into invoker is isnull isolation join json key label lambda \
+    \ language large last lateral leading leakproof left level like limit listen load local location lock locked \
+    \ logged macro map mapping match matched materialized maxvalue merge method microsecond microseconds millennia \
+    \ millennium millisecond milliseconds minute minutes minvalue mode month months move name names national natural \
+    \ nchar nearest new next no none not nothing notify notnull nowait null nullif nulls numeric object of off \
+    \ offset oids old on only operator option options or order ordinality others out outer over overlaps overlay \
+    \ overriding owned owner parallel parser partial partition partitioned passing password percent persistent pivot \
+    \ pivot_longer pivot_wider placing plans policy position positional pragma preceding precision prepare prepared \
+    \ preserve primary prior privileges procedural procedure program publication qualify quarter quarters quote \
+    \ range read real reassign recheck recursive ref references referencing refresh register reindex relative \
+    \ release rename repeatable replace replica reset resource resources respect restart restrict returning returns \
+    \ revoke right role rollback rollup row rows rule sample savepoint schema schemas scope scroll search second \
+    \ seconds secret secure security select semi sequence sequences serializable server session set setof sets share \
+    \ show similar similarity simple skip smallint snapshot some sorted source sql stable standalone start statement \
+    \ statistics stdin stdout storage stored strict strip struct subscription substring summarize symmetric sysid \
+    \ system table tables tablesample tablespace target temp template temporary text then ties time timestamp to \
+    \ trailing transaction transform treat trigger trim true truncate trusted try_cast tuple type types unbounded \
+    \ uncommitted unencrypted union unique unknown unlisten unlogged unpack unpivot until update use user using \
+    \ vacuum valid validate validator value values varchar variable variadic varying verbose version view views \
+    \ virtual volatile week weeks when where whitespace window with within without work wrapper write xml \
+    \ xmlattributes xmlconcat xmlelement xmlexists xmlforest xmlnamespaces xmlparse xmlpi xmlroot xmlserialize \
+    \ xmltable year years yes zone"
 
 -- | A structured type or a SQL type expression. A 'TypeExpression' with the
 -- name of a type from 'Database.DuckDB.Simple.Registration.registerCustomType'

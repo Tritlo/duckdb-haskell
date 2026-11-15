@@ -267,6 +267,15 @@ text, for example "Conversion Error: " for the code of ErrorTypeConversion, and
   statement in the callback reaches the outer statement with its type and with
   one prefix. An error that passes through two callbacks keeps its type and
   its body in the same way.
+- DuckDB 2.0.0 cannot raise some codes again with their own type. Six codes
+  have no exception type in the map of the C API (TryGetExceptionTypeFromErrorCode
+  in capi_v2.cpp): the codes of ErrorApi, ErrorIOFileNotFound,
+  ErrorIOReadFailure, ErrorIOEof, ErrorInputParameterInvalid, and
+  ErrorInputMetadataDeferred. DuckDB raises them as Invalid Input, so the outer
+  statement fails with ErrorInputInvalid and "Invalid Input Error: ". The
+  exception type of ErrorIONetwork has no name (EXCEPTION_MAP in
+  exception.cpp), so the outer statement fails with ErrorApi and
+  "Invalid Error: ".
 - ErrorRuntimeInternal and ErrorRuntimeFatal do not pass. For these codes,
   DuckDB 2.0.0 invalidates the database of the outer statement, also when the
   error came from another database. Such an error writes the code

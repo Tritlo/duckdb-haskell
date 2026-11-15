@@ -142,15 +142,103 @@ targetValueBinding display makeValue =
     , fieldBindingDisplay = display
     }
 
--- | Preserve UTC nanoseconds where the prepared parameter requires them.
+{- Note [Nanosecond parameters]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A TimeOfDay, a LocalTime, and a UTCTime hold picoseconds. A TIME, a TIMESTAMP,
+and a TIMESTAMPTZ hold microseconds. TIME_NS, TIMESTAMP_NS, and TIMESTAMPTZ_NS
+hold nanoseconds. timeValueBinding binds these Haskell values, and their
+Unbounded forms, with this rule:
+
+- A value with no digits below a microsecond binds as a microsecond value. The
+  binding does not read the parameter type.
+- A value with digits below a microsecond makes the binding read the parameter
+  type. A nanosecond parameter (TIME_NS, TIMESTAMP_NS, or TIMESTAMPTZ_NS for
+  the three types) gets a nanosecond value. Each other parameter, and a
+  parameter with no known type, gets the microsecond value. The digits below
+  one microsecond go away, as for the SQL literal.
+- The digits below one nanosecond go away in each case.
+
+A value in an Array, a list, a Map, a STRUCT, a TUPLE, or a UNION parameter
+follows the type of its leaf in the target: timestampTypeForTarget gives a
+nanosecond type to a TIME, TIMESTAMP, or TIMESTAMPTZ leaf of a nanosecond
+target leaf. These parameters read the parameter type for each value.
+
+- Why the binding reads the parameter type only for such digits. A read of the
+  parameter type runs the binder of DuckDB. See Note [Statement schemas] in
+  "Database.DuckDB.Simple.Internal". A microsecond value gives the same result
+  for each parameter type, so the read has no use for it.
+
+- Why a microsecond parameter gets the microsecond value. In DuckDB 2.0.0, the
+  SQL literal '03:04:05.123456999'::TIME gives 03:04:05.123456, but a cast from
+  TIME_NS to TIME rounds and gives 03:04:05.123457. The same holds for
+  TIMESTAMP. A nanosecond value would thus change what a microsecond column
+  stores.
+
+- An explicit cast of the parameter to a nanosecond type, as in
+  ?::TIMESTAMP_NS, makes it a nanosecond parameter. DuckDB then rounds when it
+  casts the value to a microsecond type, for example for a TIMESTAMP column or
+  in ?::TIMESTAMP_NS + INTERVAL 1 DAY. A plain parameter for a microsecond
+  type cuts the digits.
+
+- A LocalTime for a TIMESTAMP_NS parameter, or for the TIMESTAMP_NS elements
+  of an Array, a list, or a Map, is in one of three zones:
+  * In the range of TIMESTAMP_NS (about the years 1677 to 2262): no error.
+  * Outside the range, when DuckDB also cannot cast the microsecond value to
+    TIMESTAMP_NS (outsideNanosecondRange): the value binds as a microsecond
+    value, and DuckDB raises its SQLError "Could not convert Timestamp to
+    higher precision" when it casts the value. The type is ErrorTypeConversion
+    for a parameter and ErrorInputInvalid for an element.
+  * From 2262-04-11 23:47:16.854775807 to 23:47:16.854775999: DuckDB can cast
+    the microsecond value, but the cast cuts the digits with no error. Thus
+    the encoder raises the IOException "duckdb-simple: TIMESTAMP value out of
+    finite range". The low end of the range has no such zone, because the
+    microsecond value is cut toward the earlier time.
+  A UTCTime outside the range of TIMESTAMPTZ_NS gets the IOException of the
+  encoder, but a parameter or an element with no digits below a microsecond
+  binds as a microsecond value and gets the SQLError of DuckDB. Each leaf of a
+  STRUCT, TUPLE, or UNION outside the range gets the IOException of the
+  encoder, because in TRY_CAST DuckDB keeps the other leaves of a microsecond
+  value with their digits cut.
+-}
+
+-- | Test whether a time of day has digits below one microsecond. See
+-- Note [Nanosecond parameters].
+hasSubMicroseconds :: TimeOfDay -> Bool
+hasSubMicroseconds time = snd (properFraction (todSec time * 1000000) :: (Integer, Pico)) /= 0
+
+-- | Bind a TIME, TIMESTAMP, or TIMESTAMPTZ value. The source is the microsecond
+-- type of the value, and the last argument makes the microsecond value. See
+-- Note [Nanosecond parameters].
+timeValueBinding :: String -> LogicalTypeRep -> FieldValue -> (ValueBuilder -> IO DuckDBV2ValueHandle) -> FieldBinding
+timeValueBinding display source value makeDefault
+  | subMicroseconds value = temporalValueBinding display source value makeDefault
+  | otherwise = builderValueBinding display makeDefault
+  where
+    subMicroseconds (FieldTime time) = hasSubMicroseconds time
+    subMicroseconds (FieldTimestamp (Finite LocalTime{localTimeOfDay})) = hasSubMicroseconds localTimeOfDay
+    subMicroseconds (FieldTimestampTZ (Finite instant)) = hasSubMicroseconds (localTimeOfDay (utcToLocalTime utc instant))
+    subMicroseconds _ = False
+
+-- | Bind a value with the nanosecond types of the prepared parameter. See
+-- Note [Nanosecond parameters].
 temporalValueBinding :: String -> LogicalTypeRep -> FieldValue -> (ValueBuilder -> IO DuckDBV2ValueHandle) -> FieldBinding
 temporalValueBinding display source value makeDefault =
   targetValueBinding display \builder readTarget -> do
     target <- readTarget
     let precise = timestampTypeForTarget target source
-    if precise == source
+    if precise == source || outsideNanosecondRange precise value
       then makeDefault builder
       else fieldValueWithTypeDuckValue builder precise (valueWithTypeMetadata precise value)
+
+-- | Test whether a t'LocalTime' for a TIMESTAMP_NS parameter is outside the
+-- range of TIMESTAMP_NS, and DuckDB also cannot cast its microsecond value to
+-- TIMESTAMP_NS. See Note [Nanosecond parameters].
+outsideNanosecondRange :: LogicalTypeRep -> FieldValue -> Bool
+outsideNanosecondRange (LogicalTypeScalar LogicalTypeIdTimestampNs) (FieldTimestamp (Finite time)) =
+  not (fits (timestampUnits 1000000000 time)) && not (fits (1000 * timestampUnits 1000000 time))
+  where
+    fits = inFiniteRange (minBound :: Int64) maxBound
+outsideNanosecondRange _ _ = False
 
 -- | Read the element type of a prepared LIST or ARRAY parameter.
 collectionChildType :: Maybe LogicalTypeRep -> Maybe LogicalTypeRep
@@ -163,11 +251,17 @@ mapPartTypes :: Maybe LogicalTypeRep -> (Maybe LogicalTypeRep, Maybe LogicalType
 mapPartTypes (Just (LogicalTypeMap key value)) = (Just key, Just value)
 mapPartTypes _ = (Nothing, Nothing)
 
--- | Promote only UTC leaves that correspond to nanosecond parameter leaves.
+-- | Give a nanosecond type to each TIME, TIMESTAMP, and TIMESTAMPTZ leaf of the
+-- source whose target leaf has that nanosecond type. See
+-- Note [Nanosecond parameters].
 timestampTypeForTarget :: Maybe LogicalTypeRep -> LogicalTypeRep -> LogicalTypeRep
 timestampTypeForTarget target source = case (target, source) of
   (Just (LogicalTypeScalar LogicalTypeIdTimestampTzNs), LogicalTypeScalar LogicalTypeIdTimestampTz) ->
     LogicalTypeScalar LogicalTypeIdTimestampTzNs
+  (Just (LogicalTypeScalar LogicalTypeIdTimestampNs), LogicalTypeScalar LogicalTypeIdTimestamp) ->
+    LogicalTypeScalar LogicalTypeIdTimestampNs
+  (Just (LogicalTypeScalar LogicalTypeIdTimeNs), LogicalTypeScalar LogicalTypeIdTime) ->
+    LogicalTypeScalar LogicalTypeIdTimeNs
   (_, LogicalTypeList child) ->
     maybe source (\expected -> LogicalTypeList (timestampTypeForTarget (Just expected) child)) (collectionChildType target)
   (_, LogicalTypeArray child size) ->
@@ -421,9 +515,17 @@ instance ToField BitString
 
 instance ToField Day
 
-instance ToField TimeOfDay
+-- | Bind a time of day as a TIME, or as a TIME_NS. See
+-- Note [Nanosecond parameters].
+instance ToField TimeOfDay where
+  toField value =
+    timeValueBinding (show value) (LogicalTypeScalar LogicalTypeIdTime) (FieldTime value) \builder -> timeOfDayDuckValue (builderFactory builder) value
 
-instance ToField LocalTime
+-- | Bind a local time as a TIMESTAMP, or as a TIMESTAMP_NS. See
+-- Note [Nanosecond parameters].
+instance ToField LocalTime where
+  toField value =
+    timeValueBinding (show value) (LogicalTypeScalar LogicalTypeIdTimestamp) (FieldTimestamp (Finite value)) \builder -> localTimeDuckValue (builderFactory builder) value
 
 -- | Bind the months, days, and microseconds as an INTERVAL. DuckDB keeps the
 -- three fields.
@@ -457,9 +559,11 @@ instance ToField Variant where
   toField value =
     builderValueBinding (show value) \builder -> variantDuckValue builder (variantPayload value)
 
+-- | Bind an instant as a TIMESTAMPTZ, or as a TIMESTAMPTZ_NS. See
+-- Note [Nanosecond parameters].
 instance ToField UTCTime where
   toField value =
-    temporalValueBinding
+    timeValueBinding
       (show value)
       (LogicalTypeScalar LogicalTypeIdTimestampTz)
       (FieldTimestampTZ (Finite value))
@@ -467,11 +571,17 @@ instance ToField UTCTime where
 
 instance ToField (Unbounded Day)
 
-instance ToField (Unbounded LocalTime)
+-- | Bind a local time or an infinity as a TIMESTAMP, or a local time as a
+-- TIMESTAMP_NS. See Note [Nanosecond parameters].
+instance ToField (Unbounded LocalTime) where
+  toField value =
+    timeValueBinding (show value) (LogicalTypeScalar LogicalTypeIdTimestamp) (FieldTimestamp value) \builder -> localTimestampDuckValue (builderFactory builder) value
 
+-- | Bind an instant or an infinity as a TIMESTAMPTZ, or an instant as a
+-- TIMESTAMPTZ_NS. See Note [Nanosecond parameters].
 instance ToField (Unbounded UTCTime) where
   toField value =
-    temporalValueBinding
+    timeValueBinding
       (show value)
       (LogicalTypeScalar LogicalTypeIdTimestampTz)
       (FieldTimestampTZ value)
@@ -1330,10 +1440,10 @@ variantPayloadType value = case value of
   FieldUUID{} -> scalar LogicalTypeIdUUID
   FieldDate{} -> scalar LogicalTypeIdDate
   FieldTime time
-    | hasNanos time -> scalar LogicalTypeIdTimeNs
+    | hasSubMicroseconds time -> scalar LogicalTypeIdTimeNs
     | otherwise -> scalar LogicalTypeIdTime
   FieldTimestamp (Finite LocalTime{localDay, localTimeOfDay})
-    | hasNanos localTimeOfDay -> scalar LogicalTypeIdTimestampNs
+    | hasSubMicroseconds localTimeOfDay -> scalar LogicalTypeIdTimestampNs
     | inFiniteRange (minBound :: Int64) maxBound micros -> scalar LogicalTypeIdTimestamp
     | micros `rem` 1000 == 0 && inFiniteRange (minBound :: Int64) maxBound (micros `div` 1000) -> scalar LogicalTypeIdTimestampMs
     | micros `rem` 1000000 == 0 && inFiniteRange (minBound :: Int64) maxBound (micros `div` 1000000) -> scalar LogicalTypeIdTimestampSec
@@ -1373,12 +1483,11 @@ variantPayloadType value = case value of
   where
     variant = LogicalTypeScalar LogicalTypeIdVariant
     scalar dtype = pure (LogicalTypeScalar dtype, value)
-    hasNanos time = snd (properFraction (todSec time * 1000000) :: (Integer, Pico)) /= 0
 
 -- | Choose nanosecond storage for a precise UTC VARIANT payload.
 variantUtcTimestampType :: UTCTimestamp -> LogicalTypeId
 variantUtcTimestampType (Finite instant)
-  | snd (properFraction (todSec (localTimeOfDay (utcToLocalTime utc instant)) * 1000000) :: (Integer, Pico)) /= 0 = LogicalTypeIdTimestampTzNs
+  | hasSubMicroseconds (localTimeOfDay (utcToLocalTime utc instant)) = LogicalTypeIdTimestampTzNs
 variantUtcTimestampType _ = LogicalTypeIdTimestampTz
 
 instance ToDuckValue Null where
@@ -1535,6 +1644,14 @@ encodeTimestampUnits units LocalTime{localDay, localTimeOfDay} = do
   let total = diffDays localDay (fromGregorian 1970 1 1) * 86400 * units + time
   checkFiniteRange "TIMESTAMP" (minBound :: Int64) maxBound total
   pure (fromInteger total)
+
+-- | Count the units from the Unix epoch to a timestamp, with the digits below
+-- one unit cut toward the earlier time. The count does not check the time of
+-- day.
+timestampUnits :: Integer -> LocalTime -> Integer
+timestampUnits units LocalTime{localDay, localTimeOfDay} =
+  diffDays localDay (fromGregorian 1970 1 1) * 86400 * units
+    + diffTimeToPicoseconds (timeOfDayToTime localTimeOfDay) `div` (1000000000000 `div` units)
 
 -- | Check storage limits and the two DuckDB infinity sentinels.
 checkFiniteRange :: (Integral a) => String -> a -> a -> Integer -> IO ()

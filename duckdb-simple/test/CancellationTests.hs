@@ -368,14 +368,15 @@ boundedOuterCall micros threads action = do
       assertFailure "the outer call did not return within the test bound"
 
 -- | Require the error of a callback that waited for the bound. The outer
--- statement has the type and the text of the error of the callback. See
+-- statement has the text of the error of the callback and the type
+-- ErrorInputInvalid, because ErrorResourceInUse does not pass. See
 -- Note [Errors that leave a callback] in "Database.DuckDB.Simple.Callback".
 assertBoundError :: Either SomeException () -> Assertion
 assertBoundError = \case
   Left err -> case fromException err of
     Just (failure :: SQLError) -> do
       let message = sqlErrorMessage failure
-      sqlErrorType failure @?= Just ErrorResourceInUse
+      sqlErrorType failure @?= Just ErrorInputInvalid
       assertBool
         ("the rule is missing: " <> show failure)
         ("A callback must not run a statement on the connection that runs the callback" `Text.isInfixOf` message)

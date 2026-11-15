@@ -733,8 +733,7 @@ testCallbackErrorPolicy = do
       pure (either sqlErrorType (const Nothing) (outer :: Either SQLError Int), rows, same)
     new <- withConnectionOn instance' \other -> query_ other "SELECT 42"
     pure (errorType, outerType, rows :: [Only Int64], same :: [Only Int64], new :: [Only Int64])
-  let -- DuckDB keeps the transaction for these types under the setting.
-      keepsTransaction =
+  let invalidInput =
         [ ErrorQueryBinder
         , ErrorDatabaseCatalog
         , ErrorResourceConnection
@@ -742,9 +741,7 @@ testCallbackErrorPolicy = do
         , ErrorQueryParser
         , ErrorConfigurationPermission
         , ErrorResourceInUse
-        ]
-      invalidInput =
-        [ ErrorApi
+        , ErrorApi
         , ErrorIOFileNotFound
         , ErrorIOReadFailure
         , ErrorIOEof
@@ -757,9 +754,8 @@ testCallbackErrorPolicy = do
       expectedType errorType
         | errorType `elem` invalidInput = ErrorInputInvalid
         | otherwise = errorType
-      expectedRows errorType = if errorType `elem` keepsTransaction then 4096 else 0
   outcomes
-    @?= [ (errorType, Just (expectedType errorType), [Only (expectedRows errorType)], [Only 42], [Only 42])
+    @?= [ (errorType, Just (expectedType errorType), [Only 0], [Only 42], [Only 42])
         | errorType <- [minBound .. maxBound]
         ]
 

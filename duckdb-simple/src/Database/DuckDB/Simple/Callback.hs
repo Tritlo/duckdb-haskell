@@ -278,14 +278,17 @@ text, for example "Conversion Error: " for the code of ErrorTypeConversion, and
   with ErrorApi and the prefix "Invalid Error: " of a type with no name. Such
   an error writes the code DuckDBV2ErrorApi and its message, so the outer
   statement fails with ErrorInputInvalid, as for an SQLError without a type.
-- Under the DuckDB setting SYNTACTIC_ERRORS_DO_NOT_INVALIDATE of
+- Seven types do not pass, because DuckDB expects them before the execution
+  of a statement: ErrorQueryBinder, ErrorDatabaseCatalog,
+  ErrorResourceConnection, ErrorQueryParameterNotAllowed, ErrorQueryParser,
+  ErrorConfigurationPermission, and ErrorResourceInUse. Under the DuckDB
+  setting SYNTACTIC_ERRORS_DO_NOT_INVALIDATE of
   default_transaction_invalidation_policy, DuckDB keeps the transaction after
-  an error of seven types (Exception::InvalidatesTransaction in exception.cpp):
-  ErrorQueryBinder, ErrorDatabaseCatalog, ErrorResourceConnection,
-  ErrorQueryParameterNotAllowed, ErrorQueryParser, ErrorConfigurationPermission,
-  and ErrorResourceInUse. When such an error leaves a callback of an INSERT,
-  the rows that the INSERT wrote before the error stay in the transaction, and
-  COMMIT stores them.
+  an error of these types (Exception::InvalidatesTransaction in exception.cpp).
+  A callback raises during the execution, for example after an INSERT has
+  written rows. With the code of such a type, these rows would stay in the
+  transaction, and COMMIT would store them. Thus such an error writes the code
+  DuckDBV2ErrorApi and its message, and DuckDB ends the transaction.
 - ErrorRuntimeInternal and ErrorRuntimeFatal do not pass. For these codes,
   DuckDB 2.0.0 invalidates the database of the outer statement, also when the
   error came from another database. Such an error writes the code
@@ -304,10 +307,24 @@ text, for example "Conversion Error: " for the code of ErrorTypeConversion, and
 callbackError :: SomeException -> (DuckDBV2Error, Text)
 callbackError failure = case fromException failure of
   Just SQLError{sqlErrorType = Just errorType, sqlErrorMessage = message, sqlErrorBody = body}
-    | errorType `notElem` [ErrorIONetwork, ErrorRuntimeInternal, ErrorRuntimeFatal]
+    | errorType `notElem` heldBack
     , Just code <- lookup errorType errorTypeCodes ->
         (code, fromMaybe message body)
   _ -> (DuckDBV2ErrorApi, Text.pack (failureText failure))
+  where
+    -- See Note [Errors that leave a callback].
+    heldBack =
+      [ ErrorQueryBinder
+      , ErrorDatabaseCatalog
+      , ErrorResourceConnection
+      , ErrorQueryParameterNotAllowed
+      , ErrorQueryParser
+      , ErrorConfigurationPermission
+      , ErrorResourceInUse
+      , ErrorIONetwork
+      , ErrorRuntimeInternal
+      , ErrorRuntimeFatal
+      ]
 
 -- | The text of a callback exception in the SQL error. An 'SQLError' gives its
 -- message, and a 'userError' gives its text. Thus the SQL error does not show a

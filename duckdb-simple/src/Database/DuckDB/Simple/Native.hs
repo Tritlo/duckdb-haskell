@@ -107,8 +107,9 @@ data SQLError = SQLError
   -- ^ The text of a native error without the prefix of its type. For example,
   -- the message @Conversion Error: Could not convert ...@ has the body
   -- @Could not convert ...@. An error of duckdb-simple has no body. A callback
-  -- gives the type and the body of an error back to DuckDB. See
-  -- Note [Errors that leave a callback] in "Database.DuckDB.Simple.Callback".
+  -- gives the type and the body of an error back to DuckDB, except for the
+  -- types that Note [Errors that leave a callback] in
+  -- "Database.DuckDB.Simple.Callback" names.
   }
   deriving stock (Eq, Show)
 

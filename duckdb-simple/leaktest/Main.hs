@@ -34,18 +34,19 @@ import qualified Data.Geometry as G
 import Data.IORef (atomicModifyIORef', atomicWriteIORef, mkWeakIORef, newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (isPrefixOf)
+import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes, isJust, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Arrow as Arrow
 import qualified Database.DuckDB.Simple.Copy as Copy
-import Database.DuckDB.Simple.FromField (DecimalValue (..), FieldValue (..))
+import Database.DuckDB.Simple.FromField (BigNum (..), DecimalValue (..), FieldValue (..), StructValue, UnionValue)
 import Database.DuckDB.Simple.Geometry (RawGeometry (..), fromRawGeometry)
 import qualified Database.DuckDB.Simple.Logging as Logging
 import Database.DuckDB.Simple.Registration (TypeDeclaration (..), registerCustomType)
 import qualified Database.DuckDB.Simple.Streaming as Streaming
-import Database.DuckDB.Simple.Variant (Variant (..))
+import Database.DuckDB.Simple.Variant (Variant (..), variantObject)
 import GHC.Weak.Finalize (getFinalizerExceptionHandler, setFinalizerExceptionHandler)
 import System.Environment (getArgs, lookupEnv)
 import System.Exit (exitFailure)
@@ -175,6 +176,15 @@ checkNewTypes batches =
   withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
     [Only geometry] <- query_ conn "SELECT 'POINT ZM (1 2 3 4)'::GEOMETRY('OGC:CRS84')" :: IO [Only RawGeometry]
     typed <- either fail pure (fromRawGeometry geometry) :: IO G.Geometry
+    -- These values come from DuckDB, so that they have the native types.
+    [Only collated] <- query_ conn "SELECT {'text': 'A' COLLATE nocase, 'items': ['B' COLLATE nocase]}" :: IO [Only (StructValue FieldValue)]
+    [Only union] <- query_ conn "SELECT union_value(t := 'λ')::UNION(n BIGINT, t VARCHAR)" :: IO [Only (UnionValue FieldValue)]
+    let emptyKey = Variant (variantObject [("", FieldWord64 1), ("n", FieldWord64 2)])
+        foldedKeys = Variant (variantObject [("A", FieldWord64 1), ("a", FieldWord64 2), ("b", FieldWord64 3)])
+        -- The encoded value of this number has more than 100 bytes.
+        large = 2 ^ (1000 :: Int) + 12345 :: Integer
+        roundTrip :: (ToField a, FromField a, Eq a) => String -> a -> IO ()
+        roundTrip label value = query conn "SELECT ?" (Only value) >>= \rows -> unless (rows == [Only value]) (fail (label <> " binding failed"))
     let variant = Variant (FieldList [FieldInt64 42, FieldList [FieldNull, FieldText "before\0after"]])
         batch = forM_ [1 .. 100 :: Int] \_ -> do
           rows <-
@@ -188,6 +198,17 @@ checkNewTypes batches =
           expectFailure
             (query conn "SELECT ?" (Only (Variant (FieldList [variantPayload variant, FieldDecimal (DecimalValue 0 0 0)]))) :: IO [Only Variant])
           expectFailure (query conn "SELECT ?" (Only variant) :: IO [Only Int64])
+          -- STRUCT field names cannot be an empty key or two keys that differ
+          -- only in case. Thus these objects use the extraction query. The two
+          -- key counts replace the kept extraction statement.
+          objects <- query_ conn "SELECT json_object('', 1, 'n', 2)::VARIANT, json_object('A', 1, 'a', 2, 'b', 3)::VARIANT"
+          unless (objects == [(emptyKey, foldedKeys)]) (fail "VARIANT object read failed")
+          roundTrip "collated STRUCT" collated
+          roundTrip "UNION" union
+          roundTrip "MAP" (Map.fromList [(1 :: Int64, [10, 11 :: Int64]), (2, [])])
+          roundTrip "LIST" [[1, 2], [3 :: Int64]]
+          query conn "SELECT ?::VARCHAR" (Only (BigNum large)) >>= \text ->
+            unless (text == [Only (show large)]) (fail "BIGNUM binding failed")
     batch
     performMajorGC
     before <- readUsage

@@ -53,7 +53,8 @@ use DuckDB's native lexicographic order. Arrays retain element order. Native
 factories construct VARIANT types directly.
 
 GEOMETRY has no committed vector layout. The reader casts each GEOMETRY vector
-to BLOB with the factory of the result's connection and copies the WKB rows.
+to BLOB with the factory of the instance, which has only the built-in casts,
+and copies the WKB rows.
 
 A connection keeps the CRS names in `connectionGeometryCRS` available in
 nested parameters, including typed NULLs and empty collections. When the

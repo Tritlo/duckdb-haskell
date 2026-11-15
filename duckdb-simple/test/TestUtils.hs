@@ -1,17 +1,28 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 -- |
 -- Module      : TestUtils
 -- Description : Assertions that several test modules share.
-module TestUtils (assertFailureIO, withConstCString, writeIntegers) where
+module TestUtils (NativeTimestamp (..), assertFailureIO, filteredQueries, nativeLocalTime, withConstCString, writeIntegers) where
 
 import Control.Exception (SomeException, try)
 import Control.Monad (forM_)
 import Data.Int (Int64)
+import Data.Ratio ((%))
+import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
+import Data.Time.LocalTime (LocalTime, utc, utcToLocalTime)
 import Database.DuckDB.FFI.V2 (
   DuckDBV2VectorHandle,
+  c_duckdb_v2_value_create_timestamp,
+  c_duckdb_v2_value_create_timestamp_ms,
+  c_duckdb_v2_value_create_timestamp_ns,
+  c_duckdb_v2_value_create_timestamp_sec,
   c_duckdb_v2_vector_flatten,
   c_duckdb_v2_vector_get_data_mutable,
   c_duckdb_v2_vector_set_size,
  )
+import Database.DuckDB.Simple (Query)
+import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToDuckValue (..), ToField)
 import Database.DuckDB.Simple.V2.Registration (checked, output)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (withCString)
@@ -28,6 +39,34 @@ assertFailureIO action = do
     Left _ -> pure ()
     Right () -> assertFailure "expected an exception"
 
+-- | A timestamp in the raw unit of one of the four TIMESTAMP types. A
+-- parameter of this type stores the raw value, also one that no Haskell time
+-- type can bind, such as a value of seconds outside the range of microseconds.
+data NativeTimestamp = Seconds Int64 | Milliseconds Int64 | Microseconds Int64 | Nanoseconds Int64
+  deriving (Show)
+
+instance DuckDBColumnType NativeTimestamp where
+  duckdbColumnTypeFor _ = "TIMESTAMP"
+
+instance ToDuckValue NativeTimestamp where
+  toDuckValue factory (Seconds value) = output (c_duckdb_v2_value_create_timestamp_sec factory value)
+  toDuckValue factory (Milliseconds value) = output (c_duckdb_v2_value_create_timestamp_ms factory value)
+  toDuckValue factory (Microseconds value) = output (c_duckdb_v2_value_create_timestamp factory value)
+  toDuckValue factory (Nanoseconds value) = output (c_duckdb_v2_value_create_timestamp_ns factory value)
+
+instance ToField NativeTimestamp
+
+-- | The local time in UTC of a raw timestamp. The computation uses neither
+-- DuckDB nor duckdb-simple.
+nativeLocalTime :: NativeTimestamp -> LocalTime
+nativeLocalTime timestamp = utcToLocalTime utc (posixSecondsToUTCTime (fromRational (toInteger value % units)))
+  where
+    (value, units) = case timestamp of
+      Seconds raw -> (raw, 1)
+      Milliseconds raw -> (raw, 1000)
+      Microseconds raw -> (raw, 1000000)
+      Nanoseconds raw -> (raw, 1000000000)
+
 -- | Supply a constant C string for one native call.
 withConstCString :: String -> (ConstPtr CChar -> IO a) -> IO a
 withConstCString text action = withCString text (action . ConstPtr)
@@ -42,3 +81,13 @@ writeIntegers vector values = do
   checked (c_duckdb_v2_vector_flatten vector)
   raw <- output (c_duckdb_v2_vector_get_data_mutable vector)
   forM_ (zip [0 ..] values) $ \(index, value) -> pokeElemOff (castPtr raw) index value
+
+-- | Filtered queries over more than one chunk, each with the rows that DuckDB
+-- gives. After the filter, most chunks of the second and the third query have
+-- no row.
+filteredQueries :: [(Query, [Int64])]
+filteredQueries =
+  [ ("SELECT i FROM range(100000) t(i) WHERE i < 3 OR i >= 99997", [0, 1, 2, 99997, 99998, 99999])
+  , ("SELECT i FROM range(1000000) t(i) WHERE i % 100000 = 99999", [99999, 199999 .. 999999])
+  , ("SELECT i FROM range(1000000) t(i) WHERE i = 999999", [999999])
+  ]

@@ -16,12 +16,13 @@ module Main (main) where
 import ArrowTests (arrowTests)
 import CancellationTests (callbackLockTests, cancellationTests)
 import Control.Applicative ((<|>))
-import Control.Exception (ErrorCall, Exception, SomeException, displayException, fromException, try)
+import Control.Exception (ErrorCall, Exception, SomeException, bracket, displayException, fromException, try)
 import Control.Monad (forM_, replicateM_, void, when)
 import CopyTests (copyTests)
 import CoreRegressionTests (coreRegressionTests)
 import Data.Array (Array, elems, listArray)
 import qualified Data.ByteString as BS
+import qualified Data.Geometry as G
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.List (sortOn)
@@ -31,7 +32,7 @@ import Data.Proxy (Proxy (..))
 import Data.Ratio ((%))
 import Data.String (fromString)
 import qualified Data.Text as Text
-import Data.Time.Calendar (fromGregorian)
+import Data.Time.Calendar (Day, fromGregorian)
 import Data.Time.Clock (UTCTime (..), secondsToDiffTime)
 import Data.Time.LocalTime (
   LocalTime (..),
@@ -77,6 +78,8 @@ import Database.DuckDB.Simple.LogicalRep (
  )
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.Time (Unbounded (..))
+import Database.DuckDB.Simple.ToField (ToDuckValue (..))
+import Database.DuckDB.Simple.Variant (Variant)
 import ExtensionRegressionTests (extensionRegressionTests)
 import GHC.Generics (Generic)
 import qualified GeometryRegressionTests
@@ -85,9 +88,9 @@ import Properties (roundTripTests)
 import RegistrationTests (registrationTests)
 import qualified SqlFeatureTests
 import StreamingTests (nativeStreamingTests)
-import System.Directory (doesFileExist, removeFile)
+import System.Directory (doesFileExist, getTemporaryDirectory, removeFile)
+import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, defaultMain, testGroup)
-import Test.Tasty.ExpectedFailure (expectFailBecause)
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck (testProperty, (===))
 import TimeTests (timeTests)
@@ -128,13 +131,31 @@ data ViaUser = ViaUser
   , vuName :: Text.Text
   }
   deriving stock (Eq, Show, Generic)
-  deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB ViaUser)
+  deriving (DuckDBColumnType, ToDuckValue, ToField, FromField) via (ViaDuckDB ViaUser)
+
+-- | A newtype with its own type text, for a scalar function argument.
+newtype Price = Price DecimalValue
+
+instance DuckDBColumnType Price where
+  duckdbColumnTypeFor _ = "DECIMAL(18,3)"
+
+instance FromField Price where
+  fromField value = Price <$> fromField value
+
+-- | A newtype with its own type text, for a scalar function result.
+newtype Amount = Amount Double
+
+instance DuckDBColumnType Amount where
+  duckdbColumnTypeFor _ = "DECIMAL(18,3)"
+
+instance ToDuckValue Amount where
+  toDuckValue factory (Amount value) = toDuckValue factory value
 
 data ViaShape
   = ViaCircle Double
   | ViaSquare Double
   deriving stock (Eq, Show, Generic)
-  deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB ViaShape)
+  deriving (DuckDBColumnType, ToDuckValue, ToField, FromField) via (ViaDuckDB ViaShape)
 
 -- Edge case test types
 data TwoFieldStruct = TwoFieldStruct Int Text.Text
@@ -300,11 +321,8 @@ v20Tests =
             case mEntry of
               Nothing -> assertFailure "expected catalog entry"
               Just entry -> Catalog.catalogEntryName entry @?= "catalog_probe"
-    , testCase "file system wrappers round-trip bytes" $ do
-        let path = "/tmp/duckdb-simple-filesystem.bin"
-            payload = BS.pack [0, 1, 2, 3, 255]
-        exists <- doesFileExist path
-        when exists (removeFile path)
+    , testCase "file system wrappers round-trip bytes" $ withTemporaryPath \path -> do
+        let payload = BS.pack [0, 1, 2, 3, 255]
         withConnection ":memory:" \conn -> do
           FileSystem.withFileHandle conn path [FileSystem.FileFlagCreate, FileSystem.FileFlagWrite] \handle -> do
             written <- FileSystem.writeFileHandleBytes handle payload
@@ -317,7 +335,7 @@ v20Tests =
             bytes @?= payload
         removeFile path
     , testCase "copy wrappers receive COPY TO rows" $
-        withConnection ":memory:" \conn -> do
+        withTemporaryPath \path -> withConnection ":memory:" \conn -> do
           capturedRef <- newIORef ([] :: [Int])
           pathRef <- newIORef Nothing
           Copy.registerCopyToFunction
@@ -338,17 +356,18 @@ v20Tests =
                 Copy.copyFinalizeBindState finalizeInfo @?= 1
                 Copy.copyFinalizeGlobalState finalizeInfo @?= 1
             )
-          _ <- execute_ conn "COPY (SELECT * FROM (VALUES (1), (2), (3)) AS t(x)) TO '/tmp/duckdb-simple-copy.out' (FORMAT hs_capture)"
+          _ <- execute conn "COPY (SELECT * FROM (VALUES (1), (2), (3)) AS t(x)) TO ? (FORMAT hs_capture)" (Only (Text.pack path))
           captured <- readIORef capturedRef
           filePath <- readIORef pathRef
           captured @?= [1, 2, 3]
-          filePath @?= Just "/tmp/duckdb-simple-copy.out"
+          filePath @?= Just path
     , testCase "custom log storage registers a native sink" do
-        calls <- newIORef (0 :: Int)
+        entries <- newIORef []
         withConnection ":memory:" \conn -> do
-          Logging.registerLogStorage conn "hs_log_capture" (\_ -> atomicModifyIORef' calls (\n -> (n + 1, ())))
+          Logging.registerLogStorage conn "hs_log_capture" (\entry -> atomicModifyIORef' entries (\values -> (entry : values, ())))
           void $ execute_ conn "CALL enable_logging(); SET logging_storage = 'hs_log_capture'; SELECT write_log('registered')"
-        readIORef calls >>= assertBool "the sink received an entry" . (> 0)
+        -- The sink receives the entry of write_log one time.
+        readIORef entries >>= (@?= ["registered"]) . filter (== "registered") . map Logging.logEntryMessage
     ]
 
 fieldInt :: [Field] -> IO Int
@@ -574,7 +593,6 @@ data DuckDBCastCase = DuckDBCastCase
   { castLabel :: String
   , castExpression :: DuckDBExpression
   , castExpectation :: DuckDBExpectation
-  , castExpectFailureReason :: Maybe String
   }
 
 duckdbTypeCastTests :: TestTree
@@ -583,22 +601,19 @@ duckdbTypeCastTests =
     "duckdb type casts"
     (map buildCase duckdbCastCases)
   where
-    buildCase DuckDBCastCase{castLabel, castExpression, castExpectation, castExpectFailureReason} =
-      let base =
-            testCase castLabel $
-              withConnection ":memory:" \conn -> do
-                let sql =
-                      Query
-                        ( case castExpression of
-                            CastExpression expressionValue expressionType ->
-                              Text.concat ["SELECT CAST(", expressionValue, " AS ", expressionType, ")"]
-                            DirectExpression expressionSQL ->
-                              Text.concat ["SELECT ", expressionSQL]
-                        )
-                result <- try (query_ conn sql) :: IO (Either SomeException [Only FieldValue])
-                runExpectation castLabel castExpectation result
-                maybe (pure ()) assertFailure castExpectFailureReason
-      in  maybe base (`expectFailBecause` base) castExpectFailureReason
+    buildCase DuckDBCastCase{castLabel, castExpression, castExpectation} =
+      testCase castLabel $
+        withConnection ":memory:" \conn -> do
+          let sql =
+                Query
+                  ( case castExpression of
+                      CastExpression expressionValue expressionType ->
+                        Text.concat ["SELECT CAST(", expressionValue, " AS ", expressionType, ")"]
+                      DirectExpression expressionSQL ->
+                        Text.concat ["SELECT ", expressionSQL]
+                  )
+          result <- try (query_ conn sql) :: IO (Either SomeException [Only FieldValue])
+          runExpectation castLabel castExpectation result
 
 runExpectation :: String -> DuckDBExpectation -> Either SomeException [Only FieldValue] -> Assertion
 runExpectation label expectation outcome =
@@ -672,8 +687,7 @@ duckdbCastCases =
   , successCase "UUID" (quoted $ UUID.toText uuid) "UUID" (ExpectEquals (FieldUUID uuid))
   , successCase "BIT" (quoted $ Text.pack $ show bits) "BIT" (ExpectEquals (FieldBit bits))
   , successCase "ARRAY" (quoted "[1,2,3]") "INTEGER[3]" (ExpectEquals (FieldArray arrayElements))
-  , -- This one is broken upstream, instead of a DuckDBTypeTimeNs, we get a DuckDBTypeAlias 0
-    successCase "TIME_NS" (quoted "03:04:05.123456789") "TIME_NS" (ExpectEquals (FieldTime (TimeOfDay 3 4 5.123456789)))
+  , successCase "TIME_NS" (quoted "03:04:05.123456789") "TIME_NS" (ExpectEquals (FieldTime (TimeOfDay 3 4 5.123456789)))
   , successDirect "STRUCT" "{'a': 1, 'b': 2}" (expectStruct structFields)
   , successDirect "UNION" "CAST(union_value(a := 42) AS UNION(a INTEGER, b VARCHAR))" (expectUnion 0 (Text.pack "a") (FieldInt32 42))
   , -- These can never surface from a query, only internally.
@@ -694,21 +708,18 @@ duckdbCastCases =
         { castLabel = label
         , castExpression = CastExpression value ty
         , castExpectation = expectation
-        , castExpectFailureReason = Nothing
         }
     successDirect label expr expectation =
       DuckDBCastCase
         { castLabel = label
         , castExpression = DirectExpression expr
         , castExpectation = expectation
-        , castExpectFailureReason = Nothing
         }
     failCaseOK label value ty expectation =
       DuckDBCastCase
         { castLabel = label
         , castExpression = CastExpression value ty
         , castExpectation = expectation
-        , castExpectFailureReason = Nothing
         }
     expectMapEntries expectedPairs =
       ExpectSatisfies $
@@ -929,9 +940,7 @@ typeTests =
         fromBigNumBytes (toBigNumBytes n) === n
     , testCase "selects BIGNUM values as BigNum" $
         withConnection ":memory:" \conn -> do
-          _ <- execute_ conn "CREATE TABLE bignums (val BIGNUM)"
           rows <- concat <$> mapM (\bv -> query_ conn $ fromString $ "SELECT CAST('" <> show bv <> "' AS BIGNUM)") bigNumValues
-          --  query_ conn "SELECT val FROM bignums ORDER BY rowid" :: IO [Only BigNum]
           assertEqual "BIGNUM results" (fmap (Only . BigNum) bigNumValues) rows
     , testCase "round-trips BIGNUM values through the database" $
         withConnection ":memory:" \conn -> do
@@ -1304,6 +1313,208 @@ functionsTests =
             query_ conn "SELECT hs_optional(x) FROM (VALUES (NULL), (41)) AS t(x)"
               :: IO [Only (Maybe Int64)]
           assertEqual "optional results" [Only Nothing, Only (Just 42)] rows
+    , testCase "keeps the SQL types of the arguments of version 0.3" $
+        withConnection ":memory:" \conn -> do
+          createFunction conn "hs_id_bool" (id :: Bool -> Bool)
+          createFunction conn "hs_id_double" (id :: Double -> Double)
+          createFunction conn "hs_id_float" (id :: Float -> Float)
+          createFunction conn "hs_id_int" (id :: Int -> Int)
+          createFunction conn "hs_id_int16" (id :: Int16 -> Int16)
+          createFunction conn "hs_id_int32" (id :: Int32 -> Int32)
+          createFunction conn "hs_id_int64" (id :: Int64 -> Int64)
+          createFunction conn "hs_id_maybe" (id :: Maybe Word16 -> Maybe Word16)
+          createFunction conn "hs_id_string" (id :: String -> String)
+          createFunction conn "hs_id_text" (id :: Text.Text -> Text.Text)
+          createFunction conn "hs_id_word" (id :: Word -> Word)
+          createFunction conn "hs_id_word16" (id :: Word16 -> Word16)
+          createFunction conn "hs_id_word32" (id :: Word32 -> Word32)
+          createFunction conn "hs_id_word64" (id :: Word64 -> Word64)
+          query_
+            conn
+            "SELECT parameter_types::VARCHAR FROM duckdb_functions() WHERE function_name LIKE 'hs\\_id\\_%' ESCAPE '\\' ORDER BY function_name"
+            >>= ( @?=
+                    map
+                      Only
+                      [ "[BOOLEAN]" :: Text.Text
+                      , "[DOUBLE]"
+                      , "[FLOAT]"
+                      , "[BIGINT]"
+                      , "[SMALLINT]"
+                      , "[INTEGER]"
+                      , "[BIGINT]"
+                      , "[USMALLINT]"
+                      , "[VARCHAR]"
+                      , "[VARCHAR]"
+                      , "[UBIGINT]"
+                      , "[USMALLINT]"
+                      , "[UINTEGER]"
+                      , "[UBIGINT]"
+                      ]
+                )
+    , testCase "takes an argument of each type with FromField and DuckDBColumnType" $
+        withConnection ":memory:" \conn -> do
+          let user = ViaUser 7 "anna"
+          createFunction conn "hs_arg_int8" (\(x :: Int8) -> fromIntegral x * 2 :: Int64)
+          createFunction conn "hs_arg_integer" (\(x :: Integer) -> Text.pack (show (x * 2)))
+          createFunction conn "hs_arg_bytes" (\(x :: BS.ByteString) -> BS.length x)
+          createFunction conn "hs_arg_uuid" UUID.toText
+          createFunction conn "hs_arg_day" (\(x :: Day) -> Text.pack (show x))
+          createFunction conn "hs_arg_local" (\(x :: LocalTime) -> Text.pack (show x))
+          createFunction conn "hs_arg_utc" (\(x :: UTCTime) -> Text.pack (show x))
+          createFunction conn "hs_arg_list" (\(xs :: [Int64]) -> sum xs)
+          createFunction conn "hs_arg_map" (\(pairs :: Map.Map Text.Text Int64) -> sum (Map.elems pairs))
+          createFunction conn "hs_arg_interval" (\(IntervalValue months days micros) -> Text.pack (show (months, days, micros)))
+          createFunction conn "hs_arg_record" (\(ViaUser identifier name) -> name <> Text.pack (show identifier))
+          createFunction conn "hs_arg_records" (\(users :: [ViaUser]) -> length users)
+          createFunction conn "hs_arg_maybe_record" (\(found :: Maybe ViaUser) -> maybe "none" vuName found)
+          createFunction conn "hs_arg_price" (\(Price DecimalValue{decimalInteger}) -> fromIntegral decimalInteger :: Int64)
+          query_
+            conn
+            "SELECT hs_arg_int8(-3), hs_arg_integer(2::BIGNUM ^ 100), hs_arg_bytes('\\x01\\x02'::BLOB), hs_arg_uuid('00000000-0000-0000-0000-000000000001')"
+            >>= (@?= [(-6 :: Int64, Text.pack (show (2 * 2 ^ (100 :: Int) :: Integer)), 2 :: Int, "00000000-0000-0000-0000-000000000001" :: Text.Text)])
+          query_
+            conn
+            "SELECT hs_arg_day(DATE '2026-11-15'), hs_arg_local(TIMESTAMP '2026-11-15 12:34:56'), hs_arg_utc(TIMESTAMPTZ '2026-11-15 12:34:56+00')"
+            >>= (@?= [("2026-11-15" :: Text.Text, "2026-11-15 12:34:56" :: Text.Text, "2026-11-15 12:34:56 UTC" :: Text.Text)])
+          query_ conn "SELECT hs_arg_list([1, 2, 3]), hs_arg_map(MAP {'a': 1, 'b': 2}), hs_arg_interval(INTERVAL '1 month 2 days 3 microseconds')"
+            >>= (@?= [(6 :: Int64, 3 :: Int64, "(1,2,3)" :: Text.Text)])
+          query conn "SELECT hs_arg_record(?), hs_arg_records([?, ?]), hs_arg_maybe_record(?), hs_arg_maybe_record(NULL)" (user, user, user, user)
+            >>= (@?= [("anna7" :: Text.Text, 2 :: Int, "anna" :: Text.Text, "none" :: Text.Text)])
+          query_ conn "SELECT hs_arg_price(1.25)" >>= (@?= [Only (1250 :: Int64)])
+          query_
+            conn
+            "SELECT function_name, parameter_types::VARCHAR FROM duckdb_functions() WHERE function_name IN ('hs_arg_int8', 'hs_arg_integer', 'hs_arg_record', 'hs_arg_records', 'hs_arg_price') ORDER BY function_name"
+            >>= ( @?=
+                    [ ("hs_arg_int8" :: Text.Text, "[TINYINT]" :: Text.Text)
+                    , ("hs_arg_integer", "[BIGNUM]")
+                    , ("hs_arg_price", "['DECIMAL(18,3)']")
+                    , ("hs_arg_record", "['STRUCT(vuId BIGINT, vuName VARCHAR)']")
+                    , ("hs_arg_records", "['STRUCT(vuId BIGINT, vuName VARCHAR)[]']")
+                    ]
+                )
+    , testCase "declares the SQL type of each result type" $
+        withConnection ":memory:" \conn -> do
+          createFunction conn "hs_res_bool" True
+          createFunction conn "hs_res_int" (1 :: Int)
+          createFunction conn "hs_res_int8" (1 :: Int8)
+          createFunction conn "hs_res_int16" (1 :: Int16)
+          createFunction conn "hs_res_int32" (1 :: Int32)
+          createFunction conn "hs_res_int64" (1 :: Int64)
+          createFunction conn "hs_res_word" (1 :: Word)
+          createFunction conn "hs_res_word8" (1 :: Word8)
+          createFunction conn "hs_res_word16" (1 :: Word16)
+          createFunction conn "hs_res_word32" (1 :: Word32)
+          createFunction conn "hs_res_word64" (1 :: Word64)
+          createFunction conn "hs_res_float" (1.5 :: Float)
+          createFunction conn "hs_res_double" (1.5 :: Double)
+          createFunction conn "hs_res_text" ("x" :: Text.Text)
+          createFunction conn "hs_res_string" ("x" :: String)
+          createFunction conn "hs_res_io" (pure (1 :: Int16) :: IO Int16)
+          createFunction conn "hs_res_integer" (2 ^ (100 :: Int) :: Integer)
+          createFunction conn "hs_res_bytes" (BS.pack [1, 2])
+          createFunction conn "hs_res_uuid" UUID.nil
+          createFunction conn "hs_res_day" (fromGregorian 2026 11 15)
+          createFunction conn "hs_res_interval" (IntervalValue 1 2 3)
+          createFunction conn "hs_res_amount" (Amount 1.25)
+          forM_
+            [ ("hs_res_bool", "BOOLEAN")
+            , ("hs_res_int", "BIGINT")
+            , ("hs_res_int8", "TINYINT")
+            , ("hs_res_int16", "SMALLINT")
+            , ("hs_res_int32", "INTEGER")
+            , ("hs_res_int64", "BIGINT")
+            , ("hs_res_word", "UBIGINT")
+            , ("hs_res_word8", "UTINYINT")
+            , ("hs_res_word16", "USMALLINT")
+            , ("hs_res_word32", "UINTEGER")
+            , ("hs_res_word64", "UBIGINT")
+            , ("hs_res_float", "FLOAT")
+            , ("hs_res_double", "DOUBLE")
+            , ("hs_res_text", "VARCHAR")
+            , ("hs_res_string", "VARCHAR")
+            , ("hs_res_io", "SMALLINT")
+            , ("hs_res_integer", "BIGNUM")
+            , ("hs_res_bytes", "BLOB")
+            , ("hs_res_uuid", "UUID")
+            , ("hs_res_day", "DATE")
+            , ("hs_res_interval", "INTERVAL")
+            , ("hs_res_amount", "DECIMAL(18,3)")
+            ]
+            \(name, expected) -> query_ conn (Query ("SELECT typeof(" <> name <> "())")) >>= (@?= [Only (expected :: Text.Text)])
+          -- DuckDB casts a native result value to the declared type as the SQL cast does.
+          createFunction conn "hs_res_rounded" (Amount 1.2345)
+          createFunction conn "hs_res_too_large" (Amount 1e20)
+          query_ conn "SELECT hs_res_rounded()::VARCHAR, (1.2345::DOUBLE)::DECIMAL(18,3)::VARCHAR"
+            >>= (@?= [("1.235" :: Text.Text, "1.235" :: Text.Text)])
+          assertThrows
+            (query_ conn "SELECT hs_res_too_large()" :: IO [Only Double])
+            (Text.isInfixOf "to DECIMAL(18,3)" . sqlErrorMessage)
+          query_ conn "SELECT hs_res_int8(), hs_res_word16(), hs_res_float(), hs_res_string(), hs_res_integer(), hs_res_amount()::DOUBLE"
+            >>= (@?= [(1 :: Int8, 1 :: Word16, 1.5 :: Float, "x" :: Text.Text, 2 ^ (100 :: Int) :: Integer, 1.25 :: Double)])
+    , testCase "writes nested, record, union, and NULL results" $
+        withConnection ":memory:" \conn -> do
+          createFunction conn "hs_res_user" (\(i :: Int64) -> ViaUser i ("u" <> Text.pack (show i)))
+          createFunction conn "hs_res_maybe_user" (\(i :: Int64) -> if odd i then Nothing else Just (ViaUser i "even"))
+          createFunction conn "hs_res_shape" (\(i :: Int64) -> if even i then ViaCircle (fromIntegral i) else ViaSquare 1)
+          createFunction conn "hs_res_list" (\(i :: Int64) -> [0 .. i])
+          createFunction conn "hs_res_map" (\(i :: Int64) -> Map.fromList [(Text.pack (show i), fromIntegral i :: Int16)])
+          createFunction conn "hs_res_maybe_small" (\(i :: Int64) -> if odd i then Nothing else Just (fromIntegral i :: Int16))
+          query_
+            conn
+            "SELECT typeof(hs_res_user(1)), typeof(hs_res_maybe_user(1)), typeof(hs_res_shape(1)), typeof(hs_res_list(1)), typeof(hs_res_map(1)), typeof(hs_res_maybe_small(1))"
+            >>= ( @?=
+                    [
+                      ( "STRUCT(vuId BIGINT, vuName VARCHAR)" :: Text.Text
+                      , "STRUCT(vuId BIGINT, vuName VARCHAR)" :: Text.Text
+                      , "UNION(ViaCircle STRUCT(field1 DOUBLE), ViaSquare STRUCT(field1 DOUBLE))" :: Text.Text
+                      , "BIGINT[]" :: Text.Text
+                      , "MAP(VARCHAR, SMALLINT)" :: Text.Text
+                      , "SMALLINT" :: Text.Text
+                      )
+                    ]
+                )
+          rows <-
+            query_
+              conn
+              "SELECT hs_res_user(i), hs_res_maybe_user(i), hs_res_shape(i), hs_res_list(i), hs_res_map(i), hs_res_maybe_small(i) FROM range(5) t(i) ORDER BY i"
+          rows
+            @?= [ ( ViaUser i ("u" <> Text.pack (show i))
+                  , if odd i then Nothing else Just (ViaUser i "even")
+                  , if even i then ViaCircle (fromIntegral i) else ViaSquare 1
+                  , [0 .. i]
+                  , Map.fromList [(Text.pack (show i), fromIntegral i :: Int16)]
+                  , if odd i then Nothing else Just (fromIntegral i :: Int16)
+                  )
+                | i <- [0 .. 4 :: Int64]
+                ]
+          -- 5000 rows fill more than one chunk. Each odd row is NULL.
+          query_ conn "SELECT count(*) FILTER (hs_res_maybe_user(i) IS NULL), count(*) FILTER (hs_res_maybe_small(i) IS NULL) FROM range(5000) t(i)"
+            >>= (@?= [(2500 :: Int64, 2500 :: Int64)])
+    , testCase "keeps the SQL type of a narrow result in arithmetic" $
+        withConnection ":memory:" \conn -> do
+          createFunction conn "hs_small" (id :: Int16 -> Int16)
+          createFunction conn "hs_unsigned" (id :: Word16 -> Word16)
+          -- DuckDB computes SMALLINT * SMALLINT as SMALLINT, and USMALLINT - USMALLINT as USMALLINT.
+          assertThrows
+            (query_ conn "SELECT hs_small(30000) * hs_small(30000)" :: IO [Only Int64])
+            (Text.isInfixOf "Overflow in multiplication of INT16" . sqlErrorMessage)
+          assertThrows
+            (query_ conn "SELECT hs_unsigned(1) - hs_unsigned(2)" :: IO [Only Int64])
+            (Text.isInfixOf "Overflow in subtraction of UINT16" . sqlErrorMessage)
+          query_ conn "SELECT hs_small(30000)::INTEGER * hs_small(30000), hs_unsigned(1)::INTEGER - hs_unsigned(2)"
+            >>= (@?= [(900000000 :: Int64, -1 :: Int64)])
+    , testCase "rejects an argument type with no declaration, VARIANT, or GEOMETRY at registration" $
+        withConnection ":memory:" \conn -> do
+          let rejects expected action = assertThrows action (Text.isInfixOf expected . sqlErrorMessage)
+          rejects "hs_bad_struct: argument arg0: StructValue has no static field types" $
+            createFunction conn "hs_bad_struct" (\(_ :: StructValue FieldValue) -> True)
+          rejects "hs_bad_variant: argument arg0: the type of an argument cannot be or contain VARIANT or GEOMETRY" $
+            createFunction conn "hs_bad_variant" (\(_ :: Variant) -> True)
+          rejects "hs_bad_variants: argument arg1: the type of an argument cannot be or contain VARIANT or GEOMETRY" $
+            createFunction conn "hs_bad_variants" (\(_ :: Int64) (_ :: [Maybe Variant]) -> True)
+          rejects "hs_bad_geometry: argument arg0: the type of an argument cannot be or contain VARIANT or GEOMETRY" $
+            createFunction conn "hs_bad_geometry" (\(_ :: G.Geometry) -> True)
+          query_ conn "SELECT count(*) FROM duckdb_functions() WHERE function_name LIKE 'hs\\_bad\\_%' ESCAPE '\\'" >>= (@?= [Only (0 :: Int64)])
     , testCase "names the argument that does not convert" $
         withConnection ":memory:" \conn -> do
           createFunction conn "hs_sum" (\(x :: Int64) (y :: Int64) -> x + y)
@@ -1397,3 +1608,17 @@ assertThrowsErrorCall action =
 
 assertThrowsFormatError :: IO a -> (FormatError -> Bool) -> Assertion
 assertThrowsFormatError = assertThrows
+
+-- | Give the action a unique temporary path where no file exists. Remove the
+-- file after the action if the action created it. DuckDB writes a COPY TO
+-- target that exists through a second file, so the path has no file.
+withTemporaryPath :: (FilePath -> IO a) -> IO a
+withTemporaryPath = bracket acquire release
+  where
+    acquire = do
+      directory <- getTemporaryDirectory
+      (path, handle) <- openBinaryTempFile directory "duckdb-simple-spec"
+      hClose handle
+      removeFile path
+      pure path
+    release path = doesFileExist path >>= \exists -> when exists (removeFile path)

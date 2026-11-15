@@ -6,6 +6,14 @@
 --
 -- The callbacks of this module get the borrowed bind info and context of the
 -- call. "Database.DuckDB.Simple.Pragma" has the typed callbacks.
+--
+-- Use this module to read the arguments of a call as native values, to set the documentation of a pragma,
+-- or to register a pragma on an extension target. 'registerPragmaFunctionOn' declares the name and the
+-- parameters. 'registerPragmaFunctionWith' gives the native builder to a configuration action. A pragma has
+-- one callback: a 'QueryPragma' or an 'ExecPragma'.
+--
+-- The example uses the imports and the definitions of the module header of
+-- "Database.DuckDB.Simple.V2.Registration".
 module Database.DuckDB.Simple.V2.Pragma (
   PragmaCallback (..),
   registerPragmaFunctionOn,
@@ -54,6 +62,22 @@ registerPragmaFunctionOn target name parameters callback = do
 -- The action borrows the builder and can set its name, signature, and documentation.
 -- Do not set native callbacks or user data. The library owns the callback pointer.
 -- Use Haskell closures to retain registration data.
+--
+-- The example registers an execution pragma that counts its calls. The configuration action sets the name
+-- and the description of the pragma.
+--
+-- > withConnection ":memory:" \connection -> do
+-- >   calls <- newIORef (0 :: Int)
+-- >   Pragma.registerPragmaFunctionWith
+-- >     (R.ConnectionTarget connection)
+-- >     ( \function -> do
+-- >         R.withIdentifier "managed_exec" (R.checked . c_duckdb_v2_pragma_function_set_name function)
+-- >         docs <- R.output (c_duckdb_v2_pragma_function_get_docs function)
+-- >         Docs.setFunctionDocs docs Docs.defaultFunctionDocs{Docs.functionDescription = Just "Count calls."}
+-- >     )
+-- >     (Pragma.ExecPragma (\_ _ -> modifyIORef' calls (+ 1)))
+-- >   _ <- execute_ connection "PRAGMA managed_exec"
+-- >   readIORef calls >>= print -- 1
 registerPragmaFunctionWith :: RegistrationTarget -> (DuckDBV2PragmaFunctionHandle -> IO ()) -> PragmaCallback -> IO ()
 registerPragmaFunctionWith target configure callback =
   withTarget

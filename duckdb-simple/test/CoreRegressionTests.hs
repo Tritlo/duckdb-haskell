@@ -17,6 +17,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Database.DuckDB.FFI.V2 as Raw
 import Database.DuckDB.Simple
+import qualified Database.DuckDB.Simple.Catalog as Catalog
 import Database.DuckDB.Simple.FromField (FieldValue)
 import Database.DuckDB.Simple.Internal (
   DuckDBV2ResultHandle (..),
@@ -32,6 +33,7 @@ import Database.DuckDB.Simple.Internal (
   withConnectionHandle,
  )
 import qualified Database.DuckDB.Simple.Internal as Internal
+import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (withArray)
 import System.Directory (canonicalizePath, getTemporaryDirectory, removeFile)
@@ -430,6 +432,86 @@ coreRegressionTests =
         createFunction conn "gc_identity" (\(n :: Int64) -> performMajorGC >> pure n)
         rows <- query_ conn "SELECT gc_identity(i) FROM range(10) t(i)"
         rows @?= map Only ([0 .. 9] :: [Int64])
+    , testCase "a prepare of no statement or of two statements raises its error" $ withConnection ":memory:" $ \conn ->
+        forM_
+          [ ("", "duckdb-simple: SQL query contains no statement")
+          , ("-- a comment only", "duckdb-simple: SQL query contains no statement")
+          , ("SELECT 1; SELECT 2", "duckdb-simple: prepared SQL contains more than one statement")
+          ]
+          $ \(sql, message) -> do
+            outcome <- try (openStatement conn (Query sql))
+            case outcome of
+              Left err -> do
+                sqlErrorMessage err @?= message
+                sqlErrorQuery err @?= Just (Query sql)
+              Right stmt -> closeStatement stmt >> assertFailure ("expected an error for " <> show sql)
+    , testCase "named and indexed statement access raises the errors of the library" $
+        withConnection ":memory:" $ \conn -> withStatement conn "SELECT $value AS v" $ \stmt -> do
+          nulName <- try (bindNamed stmt ["value\0x" := (1 :: Int64)])
+          case nulName of
+            Left err -> do
+              sqlErrorMessage err @?= "duckdb-simple: parameter name contains NUL"
+              sqlErrorQuery err @?= Just "SELECT $value AS v"
+            Right () -> assertFailure "expected the NUL error"
+          tooMany <- try (bindNamed stmt ["value" := (1 :: Int64), "other" := (2 :: Int64)])
+          case tooMany of
+            Left err -> formatErrorMessage err @?= "duckdb-simple: SQL query contains 1 named parameter(s), but 2 argument(s) were supplied"
+            Right () -> assertFailure "expected the count error"
+          negativeIndex <- try (columnName stmt (-1))
+          case negativeIndex of
+            Left err -> sqlErrorMessage err @?= "duckdb-simple: column index -1 out of bounds"
+            Right name -> assertFailure ("expected the index error, got " <> show name)
+          -- The statement still works after the errors.
+          bindNamed stmt ["value" := (7 :: Int64)]
+          nextRow stmt >>= (@?= Just (Only (7 :: Int64)))
+    , testCase "connection options with NUL raise an error before the connection opens" $
+        withEnvironment $ \environment -> withInstance environment [] $ \instance_ -> do
+          attachDatabase instance_ ":memory:" "shared" []
+          setDefaultDatabase instance_ "shared"
+          outcome <- try (connectWithOptions instance_ defaultConnectionOptions{connectionConfig = [("threads\0x", "1")]})
+          case outcome of
+            Left err -> sqlErrorMessage err @?= "duckdb-simple: configuration contains NUL"
+            Right conn -> close conn >> assertFailure "expected the NUL error"
+    , testCase "statements without a query result give no row through each read function" $ withConnection ":memory:" $ \conn -> do
+        let prepend rows (Only (value :: Int64)) = pure (value : rows)
+        (query_ conn "CREATE TABLE no_rows_a (x BIGINT)" :: IO [Only Int64]) >>= (@?= [])
+        fold_ conn "CREATE TABLE no_rows_b (x BIGINT)" [] prepend >>= (@?= [])
+        withStatement conn "CREATE TABLE no_rows_c (x BIGINT)" nextRow >>= (@?= (Nothing :: Maybe (Only Int64)))
+        Streaming.fold_ conn "CREATE TABLE no_rows_d (x BIGINT)" [] prepend >>= (@?= [])
+        withStatement conn "CREATE TABLE no_rows_e (x BIGINT)" Streaming.nextRow >>= (@?= (Nothing :: Maybe (Only Int64)))
+        -- DuckDB ran each statement one time.
+        query_ conn "SELECT table_name FROM duckdb_tables() WHERE table_name LIKE 'no_rows_%' ORDER BY table_name"
+          >>= (@?= map Only ["no_rows_a", "no_rows_b", "no_rows_c", "no_rows_d", "no_rows_e" :: Text])
+    , testCase "a rejected runtime option raises the error of DuckDB and leaves the environment closable" $ do
+        environment <- createEnvironment
+        outcome <- try (createInstance environment [("logging_level", "no_such_level")])
+        case outcome of
+          Left err ->
+            assertBool
+              (Text.unpack (sqlErrorMessage err))
+              ("unrecognized value \"no_such_level\" for enum \"LogLevel\"" `Text.isInfixOf` sqlErrorMessage err)
+          Right instance_ -> closeInstance instance_ >> assertFailure "expected the error of DuckDB for logging_level"
+        -- No instance remains, so DuckDB destroys the environment.
+        closeEnvironment environment
+    , testCase "a description of a missing table raises the catalog error of DuckDB" $ withConnection ":memory:" $ \conn -> do
+        outcome <- try (Catalog.describeTable conn "no_such_table")
+        case outcome of
+          Left err -> assertBool (Text.unpack (sqlErrorMessage err)) ("Table with name no_such_table does not exist" `Text.isInfixOf` sqlErrorMessage err)
+          Right description -> assertFailure ("expected the catalog error, got " <> show (Catalog.tableDescriptionName description))
+        query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+    , testCase "an attach in a missing directory raises the IO error of DuckDB" $
+        withEnvironment $ \environment -> withInstance environment [] $ \instance_ -> do
+          outcome <- try (attachDatabase instance_ "/nonexistent-duckdb-simple/attached.db" "missing" [])
+          case outcome of
+            Left err ->
+              assertBool
+                (Text.unpack (sqlErrorMessage err))
+                ("Cannot open file \"/nonexistent-duckdb-simple/attached.db\": No such file or directory" `Text.isInfixOf` sqlErrorMessage err)
+            Right () -> assertFailure "expected the attach error"
+          -- The instance attaches another database after the failure.
+          attachDatabase instance_ ":memory:" "present" []
+          setDefaultDatabase instance_ "present"
+          withConnectionOn instance_ $ \conn -> query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
     ]
   where
     collect acc row = pure (acc <> [row])

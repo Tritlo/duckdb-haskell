@@ -6,19 +6,20 @@
 -- Description : Integration checks for DuckDB 2.0 SQL features.
 module SqlFeatureTests (tests) where
 
-import Control.Exception (bracket)
+import Control.Exception (bracket, try)
 import Control.Monad (forM_, void, when)
 import Data.Array (Array, listArray)
 import Data.Int (Int64)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Data.Time.LocalTime (TimeOfDay (..))
 import Database.DuckDB.Simple
-import Database.DuckDB.Simple.FromField (FieldValue (..))
+import Database.DuckDB.Simple.FromField (FieldValue (..), TimeWithZone (..))
 import Database.DuckDB.Simple.Variant (Variant (..), variantObject)
 import System.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (testCase, (@?=))
+import Test.Tasty.HUnit (Assertion, assertBool, assertFailure, testCase, (@?=))
 import TestUtils (assertFailureIO)
 
 -- | Exercise the public query, binding, cursor, and fold operations.
@@ -137,7 +138,70 @@ tests =
             query conn "SELECT count(*) > 0 FROM parquet_schema(?) WHERE name='typed_value'" (Only (Text.pack parquet)) >>= (@?= [Only True])
             total <- fold conn "SELECT v.n::BIGINT FROM read_parquet(?)" (Only (Text.pack parquet)) (0 :: Int64) \acc (Only value) -> pure (acc + value)
             total @?= 12497500
+    , -- Each case of this group runs the SQL form of a limit that the
+      -- documentation of duckdb-simple states. The case fails when DuckDB lifts
+      -- the limit.
+      testGroup
+        "limits that DuckDB sets"
+        [ testCase "an ARRAY type needs at least one element" $ withConnection ":memory:" \conn ->
+            assertDuckDBError
+              ErrorQueryBinder
+              "Binder Error: ARRAY type size must be at least 1"
+              (query_ conn "SELECT []::INTEGER[0]" :: IO [Only Text])
+        , testCase "a STRUCT for a VARIANT cannot have two equal keys" $ withConnection ":memory:" \conn ->
+            assertDuckDBError
+              ErrorQueryBinder
+              "Binder Error: Duplicate named argument \"a\""
+              (query_ conn "SELECT {'a': 1, 'a': 2}::VARIANT" :: IO [Only Variant])
+        , testCase "a VARIANT does not keep the CRS of a GEOMETRY" $ withConnection ":memory:" \conn ->
+            query_ conn "SELECT typeof('POINT (1 2)'::GEOMETRY('OGC:CRS84')::VARIANT::GEOMETRY), typeof('POINT (1 2)'::GEOMETRY('OGC:CRS84'))"
+              >>= (@?= [("GEOMETRY" :: Text, "GEOMETRY('OGC:CRS84')" :: Text)])
+        , testCase "a BIT value needs at least one bit" $ withConnection ":memory:" \conn -> do
+            assertDuckDBError
+              ErrorTypeConversion
+              "Conversion Error: Cannot cast empty string to BIT"
+              (query_ conn "SELECT bitstring('', 0)" :: IO [Only Text])
+            -- An empty string literal is one zero bit.
+            query_ conn "SELECT ''::BIT::VARCHAR" >>= (@?= [Only ("0" :: Text)])
+        , testCase "a value that is not NULL has no cast to the type NULL" $ withConnection ":memory:" \conn ->
+            assertDuckDBError
+              ErrorTypeConversion
+              "Conversion Error: Unimplemented type for cast (INTEGER -> \"NULL\")"
+              (query_ conn "SELECT 7::\"NULL\"" :: IO [Only Text])
+        , testCase "a TIMETZ offset is at most 15:59:59 in each direction" $ withConnection ":memory:" \conn -> do
+            forM_ ["12:00:00+16:00:00", "12:00:00-16:00:00"] \value ->
+              assertDuckDBError
+                ErrorTypeConversion
+                ("Conversion Error: time field value out of range: \"" <> value <> "\"")
+                (query_ conn (Query ("SELECT '" <> value <> "'::TIMETZ")) :: IO [Only Text])
+            query_ conn "SELECT '12:00:00+15:59:59'::TIMETZ, '12:00:00-15:59:59'::TIMETZ"
+              >>= (@?= [(TimeWithZone (TimeOfDay 12 0 0) 57599, TimeWithZone (TimeOfDay 12 0 0) (-57599))])
+        , testCase "DuckDB has no savepoints" $ withConnection ":memory:" \conn ->
+            assertDuckDBError ErrorQueryParser "Parser Error: syntax error at or near \"SAVEPOINT\"" (execute_ conn "SAVEPOINT a")
+        , testCase "the CRS of a GEOMETRY cast is a constant" $ withConnection ":memory:" \conn ->
+            assertDuckDBError
+              ErrorQueryParser
+              "Parser Error: Expected a constant as type modifier"
+              (withStatement conn "SELECT ?::GEOMETRY(?)" columnCount)
+        , testCase "VARIANT columns need the storage version v1.5.0" $ withFiles \path ->
+            withConnectionWithConfig path [("storage_compatibility_version", "v1.0.0")] \conn ->
+              assertDuckDBError
+                ErrorInputInvalid
+                "Invalid Input Error: VARIANT columns are not supported in storage versions prior to v1.5.0"
+                (execute_ conn "CREATE TABLE old_variant (v VARIANT)")
+        ]
     ]
+
+-- | Require an SQL error whose message starts with the text of DuckDB, and
+-- whose type is the given one.
+assertDuckDBError :: ErrorType -> Text -> IO a -> Assertion
+assertDuckDBError expectedType expected action = do
+  outcome <- try action
+  case outcome of
+    Left err -> do
+      assertBool (Text.unpack (sqlErrorMessage err)) (expected `Text.isPrefixOf` sqlErrorMessage err)
+      sqlErrorType err @?= Just expectedType
+    Right _ -> assertFailure ("expected the DuckDB error " <> Text.unpack expected)
 
 -- | Reserve a database path. Remove the database, WAL, and Parquet file on exit.
 withFiles :: (FilePath -> IO a) -> IO a

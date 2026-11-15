@@ -1097,7 +1097,8 @@ when the statement closes.
   cost: a TimeOfDay, a LocalTime, or a UTCTime (or an Unbounded form) with
   digits below a microsecond (see Note [Nanosecond parameters] in
   "Database.DuckDB.Simple.ToField"), an Array, a list, a Map, a manual STRUCT,
-  TUPLE, or UNION value, and an Integer or a Natural outside the HUGEINT range
+  TUPLE, or UNION value, a FieldList, a FieldArray, or a FieldMap value, and an
+  Integer or a Natural outside the HUGEINT range
   (see Note [Integer parameters] in "Database.DuckDB.Simple.ToField").
 
 - The exception is executeMany. One executeMany call binds many rows on one

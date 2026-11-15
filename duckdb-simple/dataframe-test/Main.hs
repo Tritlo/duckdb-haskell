@@ -22,7 +22,7 @@ import Database.DuckDB.FFI.V2 (ArrowArray (..), ArrowSchema (..))
 import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Arrow as Arrow
 import qualified Database.DuckDB.Simple.Streaming as Streaming
-import Foreign.Ptr (FunPtr, Ptr, castPtr, nullFunPtr)
+import Foreign.Ptr (Ptr, castPtr, nullFunPtr)
 import Foreign.Storable (peek)
 import GHC.Records (getField)
 import Test.Tasty (TestTree, defaultMain, testGroup)
@@ -99,13 +99,13 @@ expectedFrame rows =
 assertLiveSchema :: Ptr ArrowSchema -> Assertion
 assertLiveSchema ptr = do
   schema <- peek ptr
-  assertBool "each batch needs an unreleased schema" ((getField @"release") schema /= (coerce (nullFunPtr :: FunPtr Void)))
+  assertBool "each batch needs an unreleased schema" ((getField @"release") schema /= (coerce (nullFunPtr @Void)))
 
 -- | The DataFrame importer releases both objects after copying their contents.
 assertConsumed :: Ptr ArrowSchema -> Ptr ArrowArray -> Assertion
 assertConsumed schema array = do
-  (getField @"release") <$> peek schema >>= (@?= (coerce (nullFunPtr :: FunPtr Void)))
-  (getField @"release") <$> peek array >>= (@?= (coerce (nullFunPtr :: FunPtr Void)))
+  (getField @"release") <$> peek schema >>= (@?= (coerce (nullFunPtr @Void)))
+  (getField @"release") <$> peek array >>= (@?= (coerce (nullFunPtr @Void)))
 
 -- | Keep native batch ordering deterministic in both execution modes.
 withDb :: (Connection -> IO a) -> IO a

@@ -343,15 +343,35 @@ size of the value. DuckDB casts a LIST or an ARRAY to the type of a LIST
 column. It casts a LIST to an ARRAY column only when the lengths are equal.
 
 A list or an array parameter with scalar elements takes its element type from
-the column type name of the element. An empty list binds as an empty LIST of
-that type. An empty array raises an `SQLError`, because a DuckDB ARRAY has at
-least one element. Bind an empty list for an empty LIST. A list or an array of
-STRUCT values, UNION values, generic records, lists, or arrays takes the type
-of its first element that is not NULL. All other non-NULL elements must have
-the same type, including field names, decimal precision and scale, and nested
-types. Different types raise an error before DuckDB can cast away fields or
-round values. An empty or all-NULL list or array of such elements raises an
-error.
+the column type name of the element. Some elements take the element type of
+the target instead: `Integer`, `Natural`, and `BigNum` elements for an integer
+or DECIMAL element type (see above), and `TimeOfDay`, `LocalTime`, and
+`UTCTime` elements for a nanosecond element type (see
+[Infinite dates and timestamps](#infinite-dates-and-timestamps)). An empty list
+binds as an empty LIST of its element type. An empty array raises an
+`SQLError`, because a DuckDB ARRAY has at least one element. Bind an empty list
+for an empty LIST.
+
+A list or an array of STRUCT values, UNION values, generic records, lists, or
+arrays gets the type that DuckDB gives a SQL list literal of the same elements.
+When the elements that are not NULL have one type, the list has that type.
+When their types are different, DuckDB uses their common type: `{'a': 1}` and
+`{'b': 2}` give `STRUCT(a INTEGER, b INTEGER)[]`, with NULL for a field that an
+element does not have. A `BIGINT` field and a `DOUBLE` field give a `DOUBLE`
+field, so `9007199254740993` becomes `9007199254740992.0`, as in SQL. Elements
+with no common type, such as `{'a': 1}` and `{'a': 'x'}`, raise the `SQLError`
+of DuckDB. The column type of an `INSERT` does not change the type of the
+list: DuckDB casts the list to the column type after it gives the list its
+type. A list or an array of such elements that are all NULL, and an empty
+list, take the element type of the parameter when the parameter has a known
+type, as for `INSERT INTO t VALUES ([])` and `([NULL, NULL])` in SQL. For a
+parameter with no known type, a list of NULL elements gets the type of the SQL
+literal, `"NULL"[]`. An empty list for a parameter with no known type raises an
+error: DuckDB gives the literal `[]` the type `"NULL"[]`, but its native
+constructor gives no type to an empty list. A generic record through
+`ViaDuckDB` has a declared type, so for a parameter with no known type an
+empty list or a list of NULL records gets the STRUCT or UNION type of the
+record.
 
 A `Map` from `Data.Map` binds as a MAP parameter and reads a MAP result. The
 pairs go in ascending key order. The keys and the values follow the element
@@ -440,6 +460,39 @@ factory handle, and `logicalTypeFromRep` takes the same handle.
 Get the factory of a connection with `withConnectionHandle` and
 `withConnectionFactory` from `Database.DuckDB.Simple.Internal`. Keep owned
 values and logical types within the lifetime of the factory's owner.
+
+### FieldValue parameters
+
+A `FieldValue` binds as a parameter, so a row that a query reads as
+`[FieldValue]` binds back as a row. A scalar constructor binds as the DuckDB
+type of the constructor, with the parameter instance of its payload.
+`FieldStruct`, `FieldTuple`, and `FieldUnion` bind with their own types, and
+`FieldGeometry` binds with its CRS. `FieldList`, `FieldArray`, and `FieldMap`
+take the element type that their elements give, with the rule of a SQL list
+literal (see [Arrays and Lists](#arrays-and-lists)). They read the parameter
+type, so that a list read from a `TIME_NS[]` column binds back with its
+nanoseconds.
+
+Some values bind with another type than the column that they came from. A
+`FieldTimestamp` binds as a `TIMESTAMP`, or as a `TIMESTAMP_NS` when it has
+digits below a microsecond and the parameter has the type `TIMESTAMP_NS` (see
+[Infinite dates and timestamps](#infinite-dates-and-timestamps)). The same
+holds for `FieldTime` and `FieldTimestampTZ`. A `FieldText` binds as a
+`VARCHAR` with no collation, also when it came from a `JSON` value. A value
+from a `VARIANT` column binds as its payload. `FieldNull` binds as an untyped
+NULL. DuckDB casts each of these values to the type of a column with no loss.
+
+A `FieldEnum` raises an `SQLError` of the type `ErrorInputInvalid`, because it
+holds only the index of the ENUM value and not its ENUM type. A `FieldList`, a
+`FieldArray`, or a `FieldMap` with only `FieldNull` elements binds as the SQL
+list literal does, for example as `"NULL"[]` for a parameter with no known
+type. An empty `FieldList` or `FieldMap` takes the element type of a parameter
+with a known type, and raises the same error for a parameter with no known
+type. An empty `FieldArray` raises the same error, because a DuckDB ARRAY has at
+least one element. Inside a `FieldStruct`, a `FieldTuple`, or a `FieldUnion`,
+the declared type gives the ENUM type and the element type, so such a value
+binds. `FieldValue` has no `DuckDBColumnType` and no `ToDuckValue`
+instance, because no one DuckDB type holds each of its values.
 
 ### Resource Management
 
@@ -800,8 +853,27 @@ supported families, construction checks, and codec normalization rules.
 
 Register a scalar Haskell function on a connection, and call it in SQL
 expressions. The arguments use `FromField`, and the result uses
-`FunctionResult`. Thus a function can take and give `Maybe` values, and it can
+`ToDuckValue`. Thus a function can take and give `Maybe` values, and it can
 give an `IO` action.
+
+An argument type needs `FromField` and `DuckDBColumnType` instances. Its SQL
+type is the `duckdbTypeDeclaration` of the type, as for a typed column. A
+newtype with its own `DuckDBColumnType` text, for example `DECIMAL(18,3)`,
+gives that text. An argument type that is or contains VARIANT or GEOMETRY
+raises an error at registration, because the argument reader reads neither
+type.
+
+The SQL type of the result is the `duckdbTypeDeclaration` of the result type:
+an `Int16` result is SMALLINT, and a `Float` result is FLOAT. DuckDB computes
+with that type. Thus `hs_small(x) * hs_small(y)` of an `Int16` function raises
+an Out of Range Error when the product does not fit in SMALLINT, as
+`30000::SMALLINT * 30000::SMALLINT` does. Cast the result to a wider type
+first. A `Bool`, an integer of 8 to 64 bits, a `Float`, a `Double`, a `Text`,
+or a `String` result goes to the memory of the result vector. Each other
+result type, for example a record or a list, costs a native value for each
+row. DuckDB casts such a value to the declared type, as a SQL `CAST` does: it
+rounds a value to the scale of a DECIMAL type text, and it raises an error for
+a value that does not fit.
 
 ```haskell
 {-# LANGUAGE OverloadedStrings #-}
@@ -928,7 +1000,12 @@ places still use registered casts:
   the option, as SQL `SET` does.
 
 `createAggregate` registers an aggregate function as a fold. The result type
-is a result type of `createFunction`.
+must be BOOLEAN, TINYINT to BIGINT, UTINYINT to UBIGINT, FLOAT, DOUBLE, or
+VARCHAR, or `Maybe` of one of them. Another result type is an error at
+registration. The finalize callback of DuckDB has no factory to make a value
+of another type, and in an ordered window its result vector has the size 0. A
+newtype over one of these types gets the writer of that type with
+`deriving newtype (FunctionResult)`.
 
 ```haskell
 aggregateExample :: Connection -> IO [Only Int64]
@@ -960,6 +1037,17 @@ tableExample conn = do
     pure [(n, n * n) | n <- [0 .. count - 1 :: Int64]]
   query_ conn "SELECT n, square FROM squares(3)" -- [(0, 0), (1, 1), (2, 4)]
 ```
+
+The type of a column, a parameter, or an aggregate argument comes from
+`duckdbTypeDeclaration`. A record or a sum type that derives `DuckDBColumnType`
+and `ToDuckValue` via `ViaDuckDB` is a STRUCT or a UNION, also in a list or a
+MAP. Each field type comes from `DuckValue`: an `Integer` field is HUGEINT and
+a `Natural` field is UHUGEINT, but an `Integer` column is BIGNUM. The
+registration raises an error for an `Array` field, because its ARRAY type has
+no size. Use a list field. `StructValue`,
+`TupleValue`, and `UnionValue` have no static field types. The registration
+raises an error for them. An aggregate argument that is or contains VARIANT or
+GEOMETRY also raises an error at registration, as for `createFunction`.
 
 `registerReplacementScan` gives the parts of an unknown table name to the
 function. The function can give a SELECT statement that DuckDB reads instead.

@@ -17,6 +17,7 @@ import Data.Bits (testBit)
 import Data.Coerce (coerce)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
+import Data.List (sort)
 import Data.Proxy (Proxy (..))
 import qualified Data.Text as Text
 import Data.Void (Void)
@@ -39,6 +40,7 @@ import HsBindgen.Runtime.Marshal (staticSizeOf)
 import HsBindgen.Runtime.Support.FunPtr (fromFunPtr, toFunPtr)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
+import TestUtils (filteredQueries)
 
 -- | Exercise native results and count their Arrow release callbacks.
 arrowTests :: TestTree
@@ -234,6 +236,13 @@ arrowModeTests streaming =
             readIORef callbacks >>= (@?= 1)
             readIORef schemaReleases >>= (@?= 1)
             readIORef arrayReleases >>= (@?= 1)
+    , testCase "filtered results give each row in the batches" $
+        forM_ ["1", "4"] \threads -> withConnectionWithConfig ":memory:" [("threads", threads)] \conn ->
+          forM_ filteredQueries \(sql, expected) -> do
+            batches <- foldArrow_ conn sql [] \acc _ array -> (: acc) <$> readInt64Batch array
+            let rows = concat (reverse batches)
+            -- With more than one thread, DuckDB can give the rows in another order.
+            assertEqual (Text.unpack threads <> " threads: " <> show sql) (map Just expected) (if threads == "1" then rows else sort rows)
     ]
   where
     foldArrow :: (ToRow q) => Connection -> Query -> q -> a -> (a -> Ptr ArrowSchema -> Ptr ArrowArray -> IO a) -> IO a

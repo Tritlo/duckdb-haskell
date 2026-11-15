@@ -4,6 +4,8 @@
 -- |
 -- Module      : Database.DuckDB.Simple.V2.FunctionDocs
 -- Description : Documentation attached to scalar, aggregate, table, macro, and pragma functions.
+--
+-- The examples use the imports of the module header of "Database.DuckDB.Simple.V2.Registration".
 module Database.DuckDB.Simple.V2.FunctionDocs (
   FunctionDocs (..),
   defaultFunctionDocs,
@@ -15,6 +17,9 @@ import Data.Text (Text)
 import Database.DuckDB.Simple.Native
 
 -- | A description, titled SQL examples, and category names.
+-- Each example is a pair of a title and the SQL text:
+--
+-- > Docs.FunctionDocs (Just "Preserve the input type.") [("Example", "SELECT managed_resolved(42)")] ["test"]
 data FunctionDocs = FunctionDocs
   { functionDescription :: Maybe Text
   , functionExamples :: [(Text, Text)]
@@ -30,6 +35,11 @@ defaultFunctionDocs = FunctionDocs Nothing [] []
 -- Get the handle from the function builder in its configuration action.
 -- The action replaces the description when present and appends examples and categories.
 -- DuckDB copies all text before the action returns.
+-- For example, in the configuration action of
+-- 'Database.DuckDB.Simple.V2.Registration.registerScalarFunctionWith':
+--
+-- > docs <- R.output (c_duckdb_v2_scalar_function_get_docs function)
+-- > Docs.setFunctionDocs docs Docs.defaultFunctionDocs{Docs.functionDescription = Just "Add two BIGINT values."}
 setFunctionDocs :: DuckDBV2FunctionDocsHandle -> FunctionDocs -> IO ()
 setFunctionDocs docs FunctionDocs{functionDescription, functionExamples, functionCategories} = do
   forM_ functionDescription \description ->

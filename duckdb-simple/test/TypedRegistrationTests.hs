@@ -1,5 +1,7 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DerivingVia #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -9,10 +11,11 @@
 -- Description : Integration checks for typed registration through SQL.
 module TypedRegistrationTests (typedRegistrationTests) where
 
-import Control.Exception (bracket, throwIO, try)
+import Control.Exception (SomeException, bracket, displayException, throwIO, try)
 import Control.Monad (forM_, void, when)
-import Data.Array (elems)
+import Data.Array (Array, elems)
 import qualified Data.ByteString as BS
+import qualified Data.Geometry as G
 import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int16, Int32, Int64, Int8)
 import qualified Data.Map.Strict as Map
@@ -49,7 +52,9 @@ import Database.DuckDB.Simple.Copy (
   registerMultiFileFunction,
  )
 import Database.DuckDB.Simple.FromField (BigNum (..), Field (..), FieldValue (..), IntervalValue (..), TimeWithZone (..), bsFromBool)
-import Database.DuckDB.Simple.LogicalRep (StructField (..), StructValue (..))
+import Database.DuckDB.Simple.Function (FunctionResult)
+import Database.DuckDB.Simple.Generic (ViaDuckDB (..))
+import Database.DuckDB.Simple.LogicalRep (StructField (..), StructValue (..), TupleValue, UnionValue)
 import Database.DuckDB.Simple.Pragma (PragmaCallback (..), registerPragmaFunction)
 import Database.DuckDB.Simple.Registration (
   FunctionParameter (..),
@@ -62,7 +67,7 @@ import Database.DuckDB.Simple.Registration (
   registerReplacementScan,
  )
 import Database.DuckDB.Simple.Time (Unbounded (..))
-import Database.DuckDB.Simple.ToField (ToDuckValue)
+import Database.DuckDB.Simple.ToField (ToDuckValue (..))
 import Database.DuckDB.Simple.Variant (Variant)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
@@ -85,6 +90,7 @@ typedRegistrationTests =
     , testCase "cast to custom aliases of DATE and VARCHAR" testCastTypes
     , testCase "cast exceptions and conversion errors fail CAST" testCastErrors
     , testCase "cast to a custom type on each scalar base type" testCastBaseTypes
+    , testCase "cast result of another type than the base type fails" testCastResultType
     , testCase "replacement scan reads the rows of a query" testReplacementQuery
     , testCase "replacement scan that declines gives the unknown table error" testReplacementDecline
     , testCase "replacement scan gets the name parts as written" testReplacementNames
@@ -108,6 +114,9 @@ typedRegistrationTests =
     , testCase "table function with Integer and Natural columns" testTableIntegers
     , testCase "table function with INTERVAL and TIMETZ columns" testTableIntervals
     , testCase "table function with a MAP column" testTableMaps
+    , testCase "table function and aggregate with record, list, map, and union types" testTableRecords
+    , testCase "typed registration rejects a type with no declaration" testNoDeclaration
+    , testCase "record field outside the range of its declared type" testRecordFieldRange
     , testCase "table function runs one time for each scan" testTableRuns
     , -- A defect can make the scan run without end. Then the time limit fails
       -- the case. The limit is long, because the suite also runs under Valgrind.
@@ -121,12 +130,14 @@ typedRegistrationTests =
     , testCase "COPY keeps the first registration of a format name" testCopyFirstRegistration
     , testCase "COPY errors in each function fail only their statement" testCopyErrors
     , testCase "COPY format on two connections of one database" testCopySharedDatabase
+    , testCase "COPY FROM gives the name and the type of each column" testCopyFromColumns
     , testCase "aggregate over one group and over many groups" testAggregateGroups
     , testCase "aggregate with one state table stripe" testAggregateStripes
     , testCase "aggregate skips NULL rows and gives the initial result" testAggregateNulls
     , testCase "aggregate arguments, states, and result types" testAggregateTypes
     , testCase "aggregate exceptions fail the query only" testAggregateErrors
     , testCase "aggregate as a window function and with modifiers" testAggregateModifiers
+    , testCase "aggregate SMALLINT and FLOAT results, and the limit of the result types" testAggregateResultTypes
     , testCase "aggregate states are released" testAggregateRelease
     ]
 
@@ -153,6 +164,26 @@ testCastFailure = withConnection ":memory:" \conn -> do
   query_ conn "SELECT TRY_CAST(v AS typed_positive)::BIGINT FROM (VALUES (0, 1::BIGINT), (1, -2), (2, 3)) t(k, v) ORDER BY k"
     >>= (@?= map Only [Just 1, Nothing, Just (3 :: Int64)])
   query_ conn "SELECT CAST(6::BIGINT AS typed_positive)::BIGINT" >>= (@?= [Only (6 :: Int64)])
+  query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+
+-- | A cast result whose type is not the base type of the custom type fails.
+-- The text of such a value is not a value of the base type, although DuckDB
+-- can cast the text: '7'::BLOB is the byte 7, and '2026-11-12'::TIME is 00:00:00.
+testCastResultType :: Assertion
+testCastResultType = withConnection ":memory:" \conn -> do
+  registerCustomType conn "typed_blob_alias" (TypeExpression "BLOB")
+  createCast conn (TypeExpression "BIGINT") (TypeExpression "typed_blob_alias") \(value :: Int64) -> Right value
+  registerCustomType conn "typed_time_alias" (TypeExpression "TIME")
+  createCast conn (TypeExpression "BIGINT") (TypeExpression "typed_time_alias") \(value :: Int64) ->
+    Right (addDays (fromIntegral value) (fromGregorian 2026 11 12))
+  -- DuckDB has no cast from BIGINT to BLOB, and none from DATE to TIME. Its
+  -- error names the custom type.
+  assertSqlError
+    "Failed to cast value: Unimplemented type for cast (BIGINT -> typed_blob_alias)"
+    (query_ conn "SELECT CAST(7::BIGINT AS typed_blob_alias)" :: IO [Only BS.ByteString])
+  assertSqlError
+    "Failed to cast value: Unimplemented type for cast (DATE -> typed_time_alias)"
+    (query_ conn "SELECT CAST(0::BIGINT AS typed_time_alias)" :: IO [Only TimeOfDay])
   query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
 
 -- | Cast to custom types with the base types DATE and VARCHAR.
@@ -696,11 +727,11 @@ testAggregateTypes = withConnection ":memory:" \conn -> do
     >>= (@?= [(True, Just (4 :: Double), 7 :: Word64, 28 :: Int32, "ababababababab" :: Text), (False, Just 0, 1, 0, "ab")])
   query_ conn "SELECT typed_any_odd(i), typed_mean(i::DOUBLE), typed_count(i::INTEGER), typed_label(i::VARCHAR) FROM range(0) t(i)"
     >>= (@?= [(False, Nothing :: Maybe Double, 0 :: Word64, "" :: Text)])
-  -- An Int32 argument is INTEGER, but an Int32 result is BIGINT.
+  -- An Int32 argument and an Int32 result are INTEGER.
   query_
     conn
     "SELECT typeof(typed_any_odd(1)), typeof(typed_mean(1)), typeof(typed_count(1)), typeof(typed_small(1)), typeof(typed_label('x'))"
-    >>= (@?= [("BOOLEAN" :: Text, "DOUBLE" :: Text, "UBIGINT" :: Text, "BIGINT" :: Text, "VARCHAR" :: Text)])
+    >>= (@?= [("BOOLEAN" :: Text, "DOUBLE" :: Text, "UBIGINT" :: Text, "INTEGER" :: Text, "VARCHAR" :: Text)])
   query_
     conn
     "SELECT function_name, parameters::VARCHAR, parameter_types::VARCHAR FROM duckdb_functions() WHERE function_name IN ('typed_small', 'typed_tally') ORDER BY function_name"
@@ -763,6 +794,96 @@ testAggregateErrors = withConnection ":memory:" \conn -> do
   query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
 
 -- | Compare window, DISTINCT, and FILTER uses with the built-in sum. Use ORDER BY in the call.
+-- | Declare the true type of a SMALLINT and a FLOAT result. Write them also in
+-- an ordered window, where the result vector of a finalize call has the size 0.
+-- Reject a result type that is not raw at registration.
+testAggregateResultTypes :: Assertion
+testAggregateResultTypes = withConnection ":memory:" \conn -> do
+  createAggregate
+    conn
+    "typed_small_count"
+    Aggregate
+      { aggregateInitial = 0 :: Int16
+      , aggregateStep = \count (Only (_ :: Int64)) -> pure (count + 1)
+      , aggregateCombine = \a b -> pure (a + b)
+      , aggregateResult = pure
+      }
+  createAggregate
+    conn
+    "typed_float_mean"
+    Aggregate
+      { aggregateInitial = (0, 0 :: Int)
+      , aggregateStep = \(total, count) (Only value) -> pure (total + value, count + 1)
+      , aggregateCombine = \(t1, c1) (t2, c2) -> pure (t1 + t2, c1 + c2)
+      , aggregateResult = \(total, count) -> pure (if count == 0 then Nothing else Just (realToFrac (total / fromIntegral count :: Double) :: Float))
+      }
+  query_ conn "SELECT typeof(typed_small_count(1)), typeof(typed_float_mean(1.0::DOUBLE))" >>= (@?= [("SMALLINT" :: Text, "FLOAT" :: Text)])
+  query_ conn "SELECT min(c), max(c), count(*) FROM (SELECT typed_small_count(i) AS c FROM range(100000) t(i) GROUP BY i % 5000)"
+    >>= (@?= [(20 :: Int16, 20 :: Int16, 5000 :: Int64)])
+  query_
+    conn
+    "SELECT min(c), max(c), count(*) FROM (SELECT typed_small_count(i) OVER (ORDER BY i ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS c FROM range(5000) t(i))"
+    >>= (@?= [(1 :: Int16, 3 :: Int16, 5000 :: Int64)])
+  query_
+    conn
+    "SELECT bool_and(m = CASE WHEN i = 0 THEN 0 ELSE i - 0.5 END), typeof(any_value(m)) FROM (SELECT i, typed_float_mean(i::DOUBLE) OVER (ORDER BY i ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS m FROM range(5000) t(i))"
+    >>= (@?= [(True, "FLOAT" :: Text)])
+  -- A newtype over a raw type with a derived FunctionResult has the raw writer.
+  createAggregate
+    conn
+    "typed_oldest"
+    Aggregate
+      { aggregateInitial = Age 0
+      , aggregateStep = \oldest (Only value) -> pure (max oldest (Age value))
+      , aggregateCombine = \a b -> pure (max a b)
+      , aggregateResult = pure
+      }
+  query_ conn "SELECT typeof(typed_oldest(1::SMALLINT)), typed_oldest(i::SMALLINT) FROM range(10) t(i)"
+    >>= (@?= [("SMALLINT" :: Text, Age 9)])
+  createFunction conn "typed_age" (Age 5)
+  query_ conn "SELECT typeof(typed_age()), typed_age()" >>= (@?= [("SMALLINT" :: Text, Age 5)])
+  assertSqlError
+    "typed_years: result: the result type of an aggregate function must be BOOLEAN"
+    (createAggregate conn "typed_years" sumAggregate{aggregateResult = pure . Years . fromIntegral})
+  assertSqlError
+    "For a newtype over one of these types, derive FunctionResult with deriving newtype."
+    (createAggregate conn "typed_years" sumAggregate{aggregateResult = pure . Years . fromIntegral})
+  -- The argument reader reads neither VARIANT nor GEOMETRY.
+  let unreadable = "argument arg0: the type of an argument cannot be or contain VARIANT or GEOMETRY"
+  assertSqlError
+    ("typed_variant_count: " <> unreadable)
+    (createAggregate conn "typed_variant_count" countAggregate{aggregateStep = \count (Only (_ :: Variant)) -> pure (count + 1)})
+  assertSqlError
+    ("typed_variants_count: " <> unreadable)
+    (createAggregate conn "typed_variants_count" countAggregate{aggregateStep = \count (Only (_ :: [Maybe Variant])) -> pure (count + 1)})
+  assertSqlError
+    ("typed_geometry_count: " <> unreadable)
+    (createAggregate conn "typed_geometry_count" countAggregate{aggregateStep = \count (Only (_ :: G.Geometry)) -> pure (count + 1)})
+  query_
+    conn
+    "SELECT count(*) FROM duckdb_functions() WHERE function_name IN ('typed_years', 'typed_variant_count', 'typed_variants_count', 'typed_geometry_count')"
+    >>= (@?= [Only (0 :: Int64)])
+  let limit = "result: the result type of an aggregate function must be BOOLEAN, TINYINT to BIGINT, UTINYINT to UBIGINT, FLOAT, DOUBLE, or VARCHAR"
+  assertSqlError
+    ("typed_peak_result: " <> limit)
+    (createAggregate conn "typed_peak_result" sumAggregate{aggregateResult = \total -> pure (Peak "total" (fromIntegral total) "")})
+  assertSqlError
+    ("typed_integer_result: " <> limit)
+    (createAggregate conn "typed_integer_result" sumAggregate{aggregateResult = pure . toInteger})
+  query_ conn "SELECT count(*) FROM duckdb_functions() WHERE function_name IN ('typed_peak_result', 'typed_integer_result')"
+    >>= (@?= [Only (0 :: Int64)])
+
+-- | An aggregate that counts its rows. Change 'aggregateStep' for another
+-- argument type.
+countAggregate :: Aggregate Int64 (Only Int64) Int64
+countAggregate =
+  Aggregate
+    { aggregateInitial = 0
+    , aggregateStep = \count _ -> pure (count + 1)
+    , aggregateCombine = \a b -> pure (a + b)
+    , aggregateResult = pure
+    }
+
 testAggregateModifiers :: Assertion
 testAggregateModifiers = withConnection ":memory:" \conn -> do
   createAggregate conn "typed_sum" sumAggregate
@@ -828,7 +949,8 @@ testAggregateRelease = withConnection ":memory:" \conn -> do
         case (phase, outcome) of
           ("", Left err) -> assertFailure (show err)
           ("", Right _) -> pure ()
-          (_, Left (_ :: SQLError)) -> pure ()
+          (_, Left (err :: SQLError)) ->
+            assertBool (Text.unpack (sqlErrorMessage err)) (Text.pack ("typed_release: " <> phase) `Text.isInfixOf` sqlErrorMessage err)
           (_, Right _) -> assertFailure ("expected an error in " <> Text.unpack (fromQuery sql))
   createAggregate
     conn
@@ -975,6 +1097,148 @@ testTableMaps = withConnection ":memory:" \conn -> do
   query_ conn "SELECT typeof(pairs), map_keys(pairs) FROM typed_maps()"
     >>= (@?= [("MAP(VARCHAR, BIGINT)" :: Text, ["a", "b"] :: [Text]), ("MAP(VARCHAR, BIGINT)", [])])
   query_ conn "SELECT pairs FROM typed_maps()" >>= (@?= rows)
+
+-- | A record for a STRUCT column. A String field is VARCHAR.
+data Peak = Peak {peak :: Text, metres :: Int32, remark :: String}
+  deriving stock (Eq, Show, Generic)
+  deriving (DuckDBColumnType, ToDuckValue, ToField, FromField) via (ViaDuckDB Peak)
+
+-- | A sum type for a UNION column.
+data Weather = Sunny | Rain Double
+  deriving stock (Eq, Show, Generic)
+  deriving (DuckDBColumnType, ToDuckValue, FromField) via (ViaDuckDB Weather)
+
+-- | A record with an Integer field, of the type HUGEINT, and a Natural field,
+-- of the type UHUGEINT.
+data Counts = Counts {signed :: Integer, unsigned :: Natural}
+  deriving stock (Eq, Show, Generic)
+  deriving (DuckDBColumnType, ToDuckValue, ToField, FromField) via (ViaDuckDB Counts)
+
+-- | A record with an Array field. Its ARRAY type has no size.
+newtype Ranked = Ranked {ranks :: Array Int Int64}
+  deriving stock (Generic)
+  deriving (DuckDBColumnType, ToDuckValue) via (ViaDuckDB Ranked)
+
+-- | A newtype over a raw result type. It derives the raw result writer.
+newtype Age = Age Int16
+  deriving newtype (Eq, Ord, Show, DuckDBColumnType, ToDuckValue, FromField, FunctionResult)
+
+-- | A newtype over a raw result type, with the catch-all 'FunctionResult'.
+newtype Years = Years Int16
+  deriving newtype (DuckDBColumnType, ToDuckValue)
+
+-- | A newtype with its own type text.
+newtype Price = Price Double
+
+instance DuckDBColumnType Price where
+  duckdbColumnTypeFor _ = "DECIMAL(18,3)"
+
+instance ToDuckValue Price where
+  toDuckValue factory (Price value) = toDuckValue factory value
+
+-- | Declare record, list, MAP, and UNION columns and a record aggregate
+-- argument from the generic types. An empty list and an empty MAP of records
+-- take the element type from the declaration.
+testTableRecords :: Assertion
+testTableRecords = withConnection ":memory:" \conn -> do
+  let peaks = [Peak "Hekla" 1491 "volcano", Peak "Esja" 914 ""]
+      rows =
+        [(row, peaks, Map.fromList [(peak p, p) | p <- peaks], weather) | (row, weather) <- zip peaks [Sunny, Rain 2.5]]
+          <> [(Peak "Snæfell" 1833 "", [], Map.empty, Rain 0)]
+  createTableFunction conn "typed_peaks" ["peak", "nearby", "by_name", "weather"] \() -> pure rows
+  query_ conn "SELECT typeof(peak), typeof(nearby), typeof(by_name), typeof(weather) FROM typed_peaks() LIMIT 1"
+    >>= ( @?=
+            [
+              ( "STRUCT(peak VARCHAR, metres INTEGER, remark VARCHAR)" :: Text
+              , "STRUCT(peak VARCHAR, metres INTEGER, remark VARCHAR)[]" :: Text
+              , "MAP(VARCHAR, STRUCT(peak VARCHAR, metres INTEGER, remark VARCHAR))" :: Text
+              , "UNION(Sunny STRUCT, Rain STRUCT(field1 DOUBLE))" :: Text
+              )
+            ]
+        )
+  query_ conn "SELECT peak, nearby, by_name, weather FROM typed_peaks()" >>= (@?= rows)
+  createAggregate
+    conn
+    "typed_highest"
+    Aggregate
+      { aggregateInitial = 0
+      , aggregateStep = \highest (Only p) -> pure (max highest (metres p))
+      , aggregateCombine = \a b -> pure (max a b)
+      , aggregateResult = pure :: Int32 -> IO Int32
+      }
+  query_ conn "SELECT typed_highest(peak) FROM typed_peaks()" >>= (@?= [Only (1833 :: Int32)])
+  query_ conn "SELECT parameter_types::VARCHAR FROM duckdb_functions() WHERE function_name = 'typed_highest'"
+    >>= (@?= [Only ("['STRUCT(peak VARCHAR, metres INTEGER, remark VARCHAR)']" :: Text)])
+  query conn "SELECT ?, typeof(?)" ([] :: [Peak], [] :: [Peak])
+    >>= (@?= [([] :: [Peak], "STRUCT(peak VARCHAR, metres INTEGER, remark VARCHAR)[]" :: Text)])
+  -- With no target type, a list of NULL records also takes the declaration.
+  -- With a target type, the empty list and the list of NULL records take the
+  -- target type, as for each element type.
+  query conn "SELECT typeof(?)" (Only [Nothing :: Maybe Peak])
+    >>= (@?= [Only ("STRUCT(peak VARCHAR, metres INTEGER, remark VARCHAR)[]" :: Text)])
+  _ <- execute_ conn "CREATE TABLE typed_short_peaks (ps STRUCT(peak VARCHAR, metres INTEGER)[])"
+  _ <- execute conn "INSERT INTO typed_short_peaks VALUES (?), (?)" ([] :: [Peak], [Nothing :: Maybe Peak])
+  query_ conn "SELECT len(ps) FROM typed_short_peaks ORDER BY len(ps)" >>= (@?= [Only (0 :: Int64), Only 1])
+
+-- | Reject a column, a parameter, or an argument type with no declaration at
+-- registration, also inside a list, and a MAP of a type text and a record.
+testNoDeclaration :: Assertion
+testNoDeclaration = withConnection ":memory:" \conn -> do
+  assertSqlError
+    "typed_struct: column s: StructValue has no static field types"
+    (createTableFunction conn "typed_struct" ["s"] \() -> pure ([] :: [Only (StructValue FieldValue)]))
+  assertSqlError
+    "typed_tuple: column t: TupleValue has no static field types"
+    (createTableFunction conn "typed_tuple" ["t"] \() -> pure ([] :: [Only (TupleValue FieldValue)]))
+  assertSqlError
+    "typed_union: column u: UnionValue has no static field types"
+    (createTableFunction conn "typed_union" ["u"] \() -> pure ([] :: [Only (UnionValue FieldValue)]))
+  assertSqlError
+    "typed_structs: column s: StructValue has no static field types"
+    (createTableFunction conn "typed_structs" ["n", "s"] \() -> pure ([] :: [(Int64, [Maybe (StructValue FieldValue)])]))
+  assertSqlError
+    "typed_struct_parameter: parameter arg0: StructValue has no static field types"
+    (createTableFunction conn "typed_struct_parameter" ["n"] \(Only (_ :: StructValue FieldValue)) -> pure [Only (1 :: Int64)])
+  assertSqlError
+    "typed_struct_count: argument arg0: StructValue has no static field types"
+    ( createAggregate
+        conn
+        "typed_struct_count"
+        Aggregate
+          { aggregateInitial = 0 :: Int64
+          , aggregateStep = \count (Only (_ :: StructValue FieldValue)) -> pure (count + 1)
+          , aggregateCombine = \a b -> pure (a + b)
+          , aggregateResult = pure
+          }
+    )
+  assertSqlError
+    "typed_ranked: column r: an Array field has no size, so its ARRAY type has no declaration. Use a list field"
+    (createTableFunction conn "typed_ranked" ["r"] \() -> pure ([] :: [Only Ranked]))
+  assertSqlError
+    "typed_priced: column p: a MAP with the type text DECIMAL(18,3) and a structured type has no declaration"
+    (createTableFunction conn "typed_priced" ["p"] \() -> pure ([] :: [Only (Map.Map Price Peak)]))
+  query_ conn "SELECT count(*) FROM duckdb_functions() WHERE function_name LIKE 'typed\\_%' ESCAPE '\\'" >>= (@?= [Only (0 :: Int64)])
+
+-- | Give an error, and no other value, for a record field outside the range
+-- of its declared type, as a parameter, as a column, and as a scalar result.
+testRecordFieldRange :: Assertion
+testRecordFieldRange = withConnection ":memory:" \conn -> do
+  let largest = Counts (2 ^ (127 :: Int) - 1) (2 ^ (128 :: Int) - 1)
+      outside = [(Counts (2 ^ (127 :: Int)) 0, "HUGEINT value out of range"), (Counts 0 (2 ^ (128 :: Int)), "UHUGEINT value out of range")]
+      cases = largest : map fst outside
+  query conn "SELECT ?" (Only largest) >>= (@?= [Only largest])
+  createFunction conn "typed_counts_result" (\(index :: Int) -> cases !! index)
+  query_ conn "SELECT typeof(typed_counts_result(0)), typed_counts_result(0)"
+    >>= (@?= [("STRUCT(signed HUGEINT, unsigned UHUGEINT)" :: Text, largest)])
+  createTableFunction conn "typed_counts" ["c"] \(Only (index :: Int)) -> pure [Only (cases !! index)]
+  query_ conn "SELECT typeof(c), c FROM typed_counts(0)" >>= (@?= [("STRUCT(signed HUGEINT, unsigned UHUGEINT)" :: Text, largest)])
+  forM_ (zip [1 :: Int ..] outside) \(index, (counts, message)) -> do
+    outcome <- try (query conn "SELECT ?" (Only counts) :: IO [Only Counts])
+    case outcome of
+      Left (err :: SomeException) -> assertBool (displayException err) (message `Text.isInfixOf` Text.pack (displayException err))
+      Right rows -> assertFailure ("expected an error, got " <> show rows)
+    assertSqlError message (query_ conn (Query ("SELECT c FROM typed_counts(" <> Text.pack (show index) <> ")")) :: IO [Only Counts])
+    assertSqlError message (query_ conn (Query ("SELECT typed_counts_result(" <> Text.pack (show index) <> ")")) :: IO [Only Counts])
 
 -- | Run the function for each scan. Do not run it at registration or preparation.
 testTableRuns :: Assertion
@@ -1149,6 +1413,23 @@ testCopyFirstRegistration = withDirectory \directory -> withConnection ":memory:
     "COPY TO is not supported for FORMAT \"typed_from_only\""
     (execute conn "COPY (SELECT 1) TO ? (FORMAT typed_from_only)" (Only file))
   query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+
+-- | Give the reader of COPY FROM the name and the type of each column, in the
+-- order of the table. DuckDB gives the same names and types.
+testCopyFromColumns :: Assertion
+testCopyFromColumns = withDirectory \directory -> withConnection ":memory:" \conn -> do
+  calls <- newIORef ([] :: [CopyFromInfo])
+  registerCopyFromFunction conn "typed_columns" \info -> do
+    modifyIORef' calls (info :)
+    pure [(7 :: Int64, "seven" :: Text, fromGregorian 2026 11 15)]
+  let file = directory </> "columns.txt"
+  writeFile file ""
+  void (execute_ conn "CREATE TABLE typed_three (a BIGINT, b VARCHAR, c DATE)")
+  void (execute conn "COPY typed_three FROM ? (FORMAT typed_columns)" (Only (Text.pack file)))
+  query_ conn "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'typed_three' ORDER BY ordinal_position"
+    >>= (@?= [("a" :: Text, "BIGINT" :: Text), ("b", "VARCHAR"), ("c", "DATE")])
+  readIORef calls >>= (@?= [CopyFromInfo file ["a", "b", "c"] [LogicalTypeIdBigInt, LogicalTypeIdVarchar, LogicalTypeIdDate]])
+  query_ conn "SELECT a, b, c FROM typed_three" >>= (@?= [(7 :: Int64, "seven" :: Text, fromGregorian 2026 11 15)])
 
 -- | Raise an error in each COPY TO function, in the COPY FROM function, and in
 -- a lazy row after the first chunk. Each error fails its statement. The next

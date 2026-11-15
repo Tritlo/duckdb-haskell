@@ -11,12 +11,14 @@
 -- Description : Regression tests for exact values and controlled conversion failures.
 module ValueRegressionTests (main, valueRegressionTests) where
 
-import Control.Exception (IOException, bracket, try)
+import Control.Exception (IOException, bracket, fromException, try)
 import Control.Monad (forM_)
 import Data.Array (Array, elems, listArray)
 import qualified Data.ByteString as BS
-import Data.Int (Int32, Int64, Int8)
+import Data.Int (Int16, Int32, Int64, Int8)
 import qualified Data.Map.Strict as Map
+import Data.Maybe (isJust)
+import Data.Proxy (Proxy (..))
 import Data.Ratio ((%))
 import Data.String (fromString)
 import Data.Text (Text)
@@ -25,21 +27,22 @@ import Data.Time.Calendar (Day, addDays, fromGregorian)
 import Data.Time.Clock (UTCTime (..))
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), utc, utcToLocalTime)
-import Data.Word (Word16, Word32, Word8)
-import Database.DuckDB.FFI.V2
+import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (
   BigNum (..),
   BitString (..),
   DecimalValue (..),
+  Field (..),
   FieldValue (..),
   IntervalValue (..),
   TimeWithZone (..),
   bsFromBool,
  )
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..), genericFromFieldValue, genericToStructValue)
-import Database.DuckDB.Simple.Internal (destroyValue, output, withConnectionFactory, withConnectionHandle)
+import Database.DuckDB.Simple.Internal (destroyValue, withConnectionFactory, withConnectionHandle)
 import Database.DuckDB.Simple.LogicalRep
+import Database.DuckDB.Simple.Ok (Ok (..))
 import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
@@ -48,22 +51,7 @@ import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit
-import TestUtils (assertFailureIO)
-
--- | Native timestamps used to test the full storage range.
-data NativeTimestamp = Seconds Int64 | Milliseconds Int64 | Microseconds Int64 | Nanoseconds Int64
-  deriving (Show)
-
-instance DuckDBColumnType NativeTimestamp where
-  duckdbColumnTypeFor _ = "TIMESTAMP"
-
-instance ToDuckValue NativeTimestamp where
-  toDuckValue factory (Seconds value) = output (c_duckdb_v2_value_create_timestamp_sec factory value)
-  toDuckValue factory (Milliseconds value) = output (c_duckdb_v2_value_create_timestamp_ms factory value)
-  toDuckValue factory (Microseconds value) = output (c_duckdb_v2_value_create_timestamp factory value)
-  toDuckValue factory (Nanoseconds value) = output (c_duckdb_v2_value_create_timestamp_ns factory value)
-
-instance ToField NativeTimestamp
+import TestUtils (NativeTimestamp (..))
 
 -- | An array element with a ToField instance and no ToDuckValue instance.
 newtype DelegatedInteger = DelegatedInteger Int64
@@ -230,20 +218,245 @@ valueRegressionTests =
         case result of
           Left SQLError{sqlErrorMessage} -> assertBool (Text.unpack sqlErrorMessage) ("duckdb-simple: an empty ARRAY parameter is not possible" `Text.isInfixOf` sqlErrorMessage)
           Right (_ :: [Only Text]) -> assertFailure "expected the empty ARRAY error"
-    , testCase "composite arrays reject schemas that would discard fields or digits" $ withConnection ":memory:" \conn -> do
+    , testCase "composite arrays with different element types take the type of array_value" $ withConnection ":memory:" \conn -> do
         forM_
-          [ ("SELECT {'a': 1::INTEGER}", "SELECT {'a': 2::INTEGER, 'b': 3::INTEGER}")
-          , ("SELECT {'a': 1::INTEGER}", "SELECT {'a': 1.6::DOUBLE}")
-          , ("SELECT {'a': 1.2::DECIMAL(4,1)}", "SELECT {'a': 1.26::DECIMAL(4,2)}")
-          , ("SELECT {'a': [1.2::DECIMAL(4,1)]}", "SELECT {'a': [1.26::DECIMAL(4,2)]}")
+          [ ("{'a': 1::INTEGER}", "{'a': 2::INTEGER, 'b': 3::INTEGER}", "STRUCT(a INTEGER, b INTEGER)[3]")
+          , ("{'a': 1::INTEGER}", "{'a': 1.6::DOUBLE}", "STRUCT(a DOUBLE)[3]")
+          , ("{'a': 1.2::DECIMAL(4,1)}", "{'a': 1.26::DECIMAL(4,2)}", "STRUCT(a DECIMAL(5,2))[3]")
+          , ("{'a': [1.2::DECIMAL(4,1)]}", "{'a': [1.26::DECIMAL(4,2)]}", "STRUCT(a DECIMAL(5,2)[])[3]")
           ]
-          \(firstQuery, secondQuery) -> do
-            [Only first] <- query_ conn firstQuery :: IO [Only (StructValue FieldValue)]
-            [Only second] <- query_ conn secondQuery :: IO [Only (StructValue FieldValue)]
-            forM_ [[Nothing, Just first, Just second], [Just second, Nothing, Just first]] \elements -> do
-              let values = listArray (0 :: Int, 2) elements
-              assertFailureIO (query conn "SELECT ?" (Only values) :: IO [Only FieldValue])
-              withConnectionHandle conn \native -> withConnectionFactory native \factory -> assertFailureIO (bracket (toDuckValue factory values) destroyValue (const (pure ())))
+          \(firstSql, secondSql, typeName) -> do
+            [Only first] <- query_ conn (Query ("SELECT " <> firstSql)) :: IO [Only (StructValue FieldValue)]
+            [Only second] <- query_ conn (Query ("SELECT " <> secondSql)) :: IO [Only (StructValue FieldValue)]
+            forM_
+              [([Nothing, Just first, Just second], ["NULL", firstSql, secondSql]), ([Just second, Nothing, Just first], [secondSql, "NULL", firstSql])]
+              \(elements, sqls) -> do
+                let values = listArray (0 :: Int, 2) elements
+                    literal = "array_value(" <> Text.intercalate ", " sqls <> ")"
+                (query conn (Query ("SELECT typeof(?), ?::VARCHAR, (" <> literal <> ")::VARCHAR")) (values, values) :: IO [(Text, Text, Text)]) >>= \case
+                  [(actualType, text, literalText)] -> do
+                    actualType @?= typeName
+                    text @?= literalText
+                  rows -> assertFailure (show rows)
+                withConnectionHandle conn \native -> withConnectionFactory native \factory -> bracket (toDuckValue factory values) destroyValue (const (pure ()))
+        (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
+    , testCase "a FieldValue binds back as the value that it was read from" $ withConnection ":memory:" \conn -> do
+        -- The third item is the type of the bound value for SELECT ?, when it
+        -- is not the type of the source.
+        forM_
+          [ ("BOOLEAN", "true", Nothing)
+          , ("TINYINT", "-7", Nothing)
+          , ("SMALLINT", "-300", Nothing)
+          , ("INTEGER", "-70000", Nothing)
+          , ("BIGINT", "-9007199254740993", Nothing)
+          , ("UTINYINT", "200", Nothing)
+          , ("USMALLINT", "60000", Nothing)
+          , ("UINTEGER", "4000000000", Nothing)
+          , ("UBIGINT", "18446744073709551615", Nothing)
+          , ("HUGEINT", "-170141183460469231731687303715884105728", Nothing)
+          , ("UHUGEINT", "5", Nothing)
+          , ("UHUGEINT", "340282366920938463463374607431768211455", Nothing)
+          , ("FLOAT", "1.25", Nothing)
+          , ("DOUBLE", "0.1", Nothing)
+          , ("DECIMAL(4,1)", "123.4", Nothing)
+          , ("DECIMAL(18,3)", "123456789012345.678", Nothing)
+          , ("DECIMAL(38,10)", "1234567890123456789012345678.0123456789", Nothing)
+          , ("VARCHAR", "'text'", Nothing)
+          , ("VARCHAR COLLATE NOCASE", "'Text'", Nothing)
+          , ("JSON", "'{\"a\": 1}'", Just "VARCHAR")
+          , ("BLOB", "'\\x00\\xFF'::BLOB", Nothing)
+          , ("UUID", "'00112233-4455-6677-8899-aabbccddeeff'", Nothing)
+          , ("BIT", "'10110'", Nothing)
+          , ("DATE", "'2026-01-02'", Nothing)
+          , ("DATE", "'infinity'", Nothing)
+          , ("TIME", "'03:04:05.123456'", Nothing)
+          , ("TIME_NS", "'03:04:05.123456789'", Just "TIME")
+          , ("TIMETZ", "'03:04:05+01:30:15'", Nothing)
+          , ("TIMESTAMP", "'2026-01-02 03:04:05.123456'", Nothing)
+          , ("TIMESTAMP", "'-infinity'", Nothing)
+          , ("TIMESTAMP_S", "'2026-01-02 03:04:05'", Just "TIMESTAMP")
+          , ("TIMESTAMP_MS", "'2026-01-02 03:04:05.123'", Just "TIMESTAMP")
+          , ("TIMESTAMP_NS", "'2026-01-02 03:04:05.123456789'", Just "TIMESTAMP")
+          , ("TIMESTAMPTZ", "'2026-01-02 03:04:05.123456+00'", Nothing)
+          , ("TIMESTAMPTZ_NS", "'2026-01-02 03:04:05.123456789+00'", Just "TIMESTAMP WITH TIME ZONE")
+          , ("INTERVAL", "INTERVAL '1 month 2 days 3 microseconds'", Nothing)
+          , ("BIGNUM", "'123456789012345678901234567890123456789012345678901234567890'", Nothing)
+          , ("GEOMETRY", "'POINT (1 2)'", Nothing)
+          , ("GEOMETRY('OGC:CRS84')", "'POINT (1 2)'", Nothing)
+          , ("VARIANT", "42::BIGINT", Just "BIGINT")
+          , ("VARIANT", "{'k': 1}", Just "STRUCT(k VARIANT)")
+          , ("INTEGER", "NULL", Just "\"NULL\"")
+          , ("INTEGER[]", "[1, NULL, 3]", Nothing)
+          , ("TIMESTAMP_NS[]", "['2026-01-02 03:04:05.123456789', '2026-01-02 03:04:05']", Just "TIMESTAMP[]")
+          , ("TIME_NS[]", "['03:04:05.123456789', '03:04:05']", Just "TIME[]")
+          , ("TIMESTAMPTZ_NS[]", "['2026-01-02 03:04:05.123456789+00', '2026-01-02 03:04:05+00']", Just "TIMESTAMP WITH TIME ZONE[]")
+          , ("DECIMAL(4,1)[]", "[1.5, 2.5]", Nothing)
+          , ("INTEGER[2]", "[1, 2]", Nothing)
+          , ("VARCHAR[2][]", "[['a', 'b'], ['c', NULL]]", Nothing)
+          , ("MAP(VARCHAR, INTEGER)", "MAP {'a': 1, 'b': NULL}", Nothing)
+          , ("MAP(INTEGER[], STRUCT(x DOUBLE))", "MAP {[1]: {'x': 1.5}}", Nothing)
+          , ("STRUCT(a INTEGER, b VARCHAR)", "{'a': 1, 'b': 'x'}", Nothing)
+          , ("STRUCT(e ENUM('a', 'b'), n INTEGER[])", "{'e': 'b', 'n': []}", Nothing)
+          , ("TUPLE(INTEGER, VARCHAR)", "(1, 'x')", Nothing)
+          , ("UNION(a INTEGER, b VARCHAR)", "union_value(b := 'x')", Nothing)
+          , ("STRUCT(a INTEGER)[]", "[{'a': 1}, NULL]", Nothing)
+          ]
+          \(sqlType, literal, boundType) -> do
+            let source = "(" <> literal <> ")::" <> sqlType
+                label = Text.unpack source
+            [Only value] <- query_ conn (Query ("SELECT " <> source)) :: IO [Only FieldValue]
+            rows <- query conn (Query ("SELECT typeof(?), typeof(" <> source <> "), ? IS NOT DISTINCT FROM " <> source)) (value, value)
+            case (rows, boundType) of
+              ([(actual, expected, same)], Nothing) -> do
+                assertEqual label expected actual
+                assertBool (label <> ": SELECT ? gives another value") same
+              ([(actual, _, _ :: Bool)], Just expected) -> assertEqual label expected (actual :: Text)
+              _ -> assertFailure (label <> ": " <> show rows)
+            _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE back (v " <> sqlType <> ")"))
+            _ <- execute conn "INSERT INTO back VALUES (?)" (Only value)
+            (query_ conn (Query ("SELECT v IS NOT DISTINCT FROM " <> source <> " FROM back")) :: IO [Only Bool]) >>= assertEqual label [Only True]
+        -- A row read as a list of FieldValue binds back as a row.
+        _ <-
+          execute_
+            conn
+            "CREATE TABLE source_row (i INTEGER, t VARCHAR, s STRUCT(a INTEGER), l DOUBLE[]); INSERT INTO source_row VALUES (1, 'x', {'a': 2}, [1.5, NULL]); CREATE TABLE copied AS FROM source_row LIMIT 0"
+        [row] <- query_ conn "SELECT * FROM source_row" :: IO [[FieldValue]]
+        _ <- execute conn "INSERT INTO copied VALUES (?, ?, ?, ?)" row
+        (query_ conn "SELECT (SELECT count(*) FROM copied), (SELECT count(*) FROM (FROM source_row EXCEPT FROM copied))" :: IO [(Int64, Int64)])
+          >>= (@?= [(1, 0)])
+    , testCase "a FieldValue with no known type raises an error" $ withConnection ":memory:" \conn -> do
+        let untyped :: String -> FieldValue -> Text -> IO ()
+            untyped label value part =
+              try (query conn "SELECT ?" (Only value) :: IO [Only FieldValue]) >>= \case
+                Left SQLError{sqlErrorType, sqlErrorMessage} -> do
+                  assertEqual label (Just ErrorInputInvalid) sqlErrorType
+                  assertBool (Text.unpack sqlErrorMessage) (part `Text.isInfixOf` sqlErrorMessage)
+                Right rows -> assertFailure (label <> ": " <> show rows)
+        [Only enum] <- query_ conn "SELECT 'b'::ENUM('a', 'b')" :: IO [Only FieldValue]
+        untyped "ENUM" enum "a FieldEnum holds the index of an ENUM value, but not its ENUM type"
+        untyped "ENUM in a list" (FieldList [enum]) "a FieldEnum holds the index of an ENUM value"
+        untyped "empty list" (FieldList []) "an empty FieldList has no element type for a parameter with no known type"
+        untyped "empty inner list" (FieldList [FieldList [FieldInt32 1], FieldList []]) "an empty FieldList has no element type"
+        untyped "empty array" (FieldArray (listArray (0, -1) [])) "an empty FieldArray has no element, and a DuckDB ARRAY has at least one"
+        untyped "empty map" (FieldMap []) "an empty FieldMap has no key type and no value type for a parameter with no known type"
+        -- NULL elements, and an empty value for a typed parameter, bind as the SQL literal does.
+        forM_
+          [ ("NULL list", FieldList [FieldNull, FieldNull], "\"NULL\"[]", "[NULL, NULL]")
+          , ("NULL array", FieldArray (listArray (0, 1) [FieldNull, FieldNull]), "\"NULL\"[2]", "[NULL, NULL]")
+          , ("NULL map values", FieldMap [(FieldText "a", FieldNull)], "MAP(VARCHAR, \"NULL\")", "{a=NULL}")
+          ]
+          \(label, value, typeName, text) ->
+            (query conn "SELECT typeof(?), ?::VARCHAR" (value, value) :: IO [(Text, Text)]) >>= assertEqual label [(typeName, text)]
+        forM_
+          [ ("STRUCT(a INTEGER)[]", FieldList [], "[]")
+          , ("STRUCT(a INTEGER)[]", FieldList [FieldNull], "[NULL]")
+          , ("INTEGER[][]", FieldList [FieldList [FieldInt32 1], FieldList []], "[[1], []]")
+          , ("MAP(VARCHAR, STRUCT(a INTEGER))", FieldMap [], "{}")
+          , ("MAP(VARCHAR, STRUCT(a INTEGER))", FieldMap [(FieldText "k", FieldNull)], "{k=NULL}")
+          ]
+          \(sqlType, value, text) -> do
+            _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE typed (v " <> sqlType <> ")"))
+            _ <- execute conn "INSERT INTO typed VALUES (?)" (Only value)
+            (query_ conn "SELECT v::VARCHAR FROM typed" :: IO [Only Text]) >>= assertEqual (Text.unpack sqlType) [Only text]
+        (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
+    , testCase "a FieldList of scalar values with different types follows the SQL list literal" $ withConnection ":memory:" \conn -> do
+        forM_
+          [ ([FieldInt32 1, FieldInt64 2], "[1::INTEGER, 2::BIGINT]", "BIGINT[]")
+          , ([FieldInt64 9007199254740993, FieldDouble 1.5], "[9007199254740993::BIGINT, 1.5::DOUBLE]", "DOUBLE[]")
+          , ([FieldList [FieldInt32 1], FieldList [FieldInt64 2]], "[[1::INTEGER], [2::BIGINT]]", "BIGINT[][]")
+          ]
+          \(items, literal, typeName) ->
+            ( query conn (Query ("SELECT typeof(?), ?::VARCHAR, (" <> literal <> ")::VARCHAR")) (FieldList items, FieldList items)
+                :: IO [(Text, Text, Text)]
+            )
+              >>= \case
+                [(actualType, text, literalText)] -> do
+                  assertEqual (Text.unpack literal) typeName actualType
+                  assertEqual (Text.unpack literal) literalText text
+                rows -> assertFailure (show rows)
+        (query conn "SELECT ?::VARCHAR" (Only (FieldList [FieldInt64 9007199254740993, FieldDouble 1.5])) :: IO [Only Text])
+          >>= (@?= [Only "[9007199254740992.0, 1.5]"])
+        [Only mixedVariant] <- query_ conn "SELECT [1::VARIANT, 'x'::VARIANT]::VARIANT" :: IO [Only FieldValue]
+        forM_
+          [ ("scalars", FieldList [FieldInt32 1, FieldText "a"], "Cannot combine types INTEGER and VARCHAR")
+          , ("lists", FieldList [FieldList [FieldInt32 1], FieldList [FieldText "a"]], "Cannot combine types INTEGER[] and VARCHAR[]")
+          , ("array", FieldArray (listArray (0, 1) [FieldInt32 1, FieldText "a"]), "Cannot combine types INTEGER and VARCHAR")
+          , ("VARIANT array", mixedVariant, "Cannot combine types INTEGER and VARCHAR")
+          ]
+          \(label, value, part) ->
+            try (query conn "SELECT ?" (Only value) :: IO [Only FieldValue]) >>= \case
+              Left SQLError{sqlErrorType, sqlErrorMessage} -> do
+                assertEqual label (Just ErrorQueryNotImplemented) sqlErrorType
+                assertBool (Text.unpack sqlErrorMessage) (part `Text.isInfixOf` sqlErrorMessage)
+              Right rows -> assertFailure (label <> ": " <> show rows)
+    , testCase "a list or an Array of composite elements with different types follows the SQL list literal" $ withConnection ":memory:" \conn -> do
+        let elementOf :: Text -> IO (Maybe (StructValue FieldValue))
+            elementOf "NULL" = pure Nothing
+            elementOf sql = do
+              [Only value] <- query_ conn (Query ("SELECT " <> sql))
+              pure (Just value)
+            sameAs :: (ToField a) => a -> Text -> Text -> IO ()
+            sameAs value literal typeName =
+              (query conn (Query ("SELECT typeof(?), ?::VARCHAR, (" <> literal <> ")::VARCHAR")) (value, value) :: IO [(Text, Text, Text)]) >>= \case
+                [(actualType, text, literalText)] -> do
+                  assertEqual (Text.unpack literal) typeName actualType
+                  assertEqual (Text.unpack literal) literalText text
+                rows -> assertFailure (show rows)
+            duckdbError :: (ToField a) => String -> a -> ErrorType -> Text -> IO ()
+            duckdbError label value errorType part =
+              try (query conn "SELECT ?" (Only value) :: IO [Only FieldValue]) >>= \case
+                Left SQLError{sqlErrorType, sqlErrorMessage} -> do
+                  assertEqual label (Just errorType) sqlErrorType
+                  assertBool (Text.unpack sqlErrorMessage) (part `Text.isInfixOf` sqlErrorMessage)
+                Right rows -> assertFailure (label <> ": " <> show rows)
+        forM_
+          [ (["{'a': 1}", "{'b': 2}"], "STRUCT(a INTEGER, b INTEGER)")
+          , (["{'a': 1::INTEGER}", "{'a': 2::BIGINT}"], "STRUCT(a BIGINT)")
+          , (["{'a': 9007199254740993::BIGINT}", "{'a': 1.5::DOUBLE}"], "STRUCT(a DOUBLE)")
+          , (["{'a': [1::INTEGER]}", "{'a': [2::BIGINT]}"], "STRUCT(a BIGINT[])")
+          , (["{'a': 1}", "NULL"], "STRUCT(a INTEGER)")
+          , (["NULL", "{'a': 1}", "{'b': 2}"], "STRUCT(a INTEGER, b INTEGER)")
+          ]
+          \(sqls, elementType) -> do
+            elements <- mapM elementOf sqls
+            let literal = Text.intercalate ", " sqls
+                count = length elements
+            sameAs elements ("[" <> literal <> "]") (elementType <> "[]")
+            sameAs
+              (listArray (0, count - 1) elements :: Array Int (Maybe (StructValue FieldValue)))
+              ("array_value(" <> literal <> ")")
+              (elementType <> "[" <> Text.pack (show count) <> "]")
+        -- The rule can round, as in SQL.
+        large <- mapM elementOf ["{'a': 9007199254740993::BIGINT}", "{'a': 1.5::DOUBLE}"]
+        (query conn "SELECT ?::VARCHAR" (Only large) :: IO [Only Text]) >>= (@?= [Only "[{'a': 9007199254740992.0}, {'a': 1.5}]"])
+        mismatch <- mapM elementOf ["{'a': 1}", "{'a': 'x'}"]
+        duckdbError "list" mismatch ErrorQueryNotImplemented "Cannot combine types STRUCT(a INTEGER) and STRUCT(a VARCHAR)"
+        duckdbError
+          "Array"
+          (listArray (0, 1) mismatch :: Array Int (Maybe (StructValue FieldValue)))
+          ErrorQueryNotImplemented
+          "Cannot combine types"
+        unions <-
+          mapM
+            (\sql -> query_ conn sql :: IO [Only (UnionValue FieldValue)])
+            ["SELECT union_value(a := 1)::UNION(a INTEGER)", "SELECT union_value(b := 'x')::UNION(b VARCHAR)"]
+        duckdbError "UNION list" (map fromOnly (concat unions)) ErrorTypeConversion "is not present in target union"
+        duckdbError
+          "ARRAY sizes"
+          [listArray (0, 1) [1, 2] :: Array Int Int32, listArray (0, 2) [1, 2, 3]]
+          ErrorInputInvalid
+          "Cannot cast array of size 2 to array of size 3"
+        [Just first, Just second] <- mapM elementOf ["{'a': 1}", "{'b': 2}"]
+        let mapped = Map.fromList [("k1" :: Text, first), ("k2", second)]
+        (query conn "SELECT typeof(?), ?::VARCHAR" (mapped, mapped) :: IO [(Text, Text)])
+          >>= (@?= [("MAP(VARCHAR, STRUCT(a INTEGER, b INTEGER))", "{k1={'a': 1, 'b': NULL}, k2={'a': NULL, 'b': 2}}")])
+        -- The column type does not change the type of the list, as in SQL.
+        _ <- execute_ conn "CREATE TABLE wide (v STRUCT(a BIGINT, b BIGINT)[]); CREATE TABLE named (v STRUCT(a VARCHAR)[])"
+        _ <- execute conn "INSERT INTO wide VALUES (?)" (Only [first, second])
+        (query_ conn "SELECT v::VARCHAR FROM wide" :: IO [Only Text]) >>= (@?= [Only "[{'a': 1, 'b': NULL}, {'a': NULL, 'b': 2}]"])
+        try (execute conn "INSERT INTO named VALUES (?)" (Only mismatch)) >>= \case
+          Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorQueryNotImplemented
+          Right count -> assertFailure ("expected the error of DuckDB, stored " <> show count)
         (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
     , testCase "a LIST parameter fails at an element of the wrong type after earlier elements" $ withConnection ":memory:" \conn -> do
         let struct =
@@ -507,12 +720,28 @@ valueRegressionTests =
             rejected typeName value =
               try (query conn "SELECT ?" (Only value) :: IO [Only FieldValue]) >>= \case
                 Left SQLError{sqlErrorMessage} ->
-                  sqlErrorMessage @?= "duckdb-simple: an empty or all-NULL array of " <> typeName <> " elements has no element type"
+                  sqlErrorMessage
+                    @?= "duckdb-simple: an empty list or map of " <> typeName <> " elements has no element type for a parameter with no known type"
                 Right _ -> assertFailure ("expected the element type error for " <> Text.unpack typeName)
         rejected "STRUCT" ([] :: [StructValue FieldValue])
         rejected "BIGINT[]" ([] :: [[Int64]])
-        -- An Array of NULL STRUCT values raises the same error.
-        rejected "STRUCT" (listArray (0, 0) [Nothing] :: Array Int (Maybe (StructValue FieldValue)))
+        -- An Array of NULL STRUCT values gets the type of array_value(NULL).
+        let nullArray = listArray (0, 0) [Nothing] :: Array Int (Maybe (StructValue FieldValue))
+        (query conn "SELECT typeof(?), ?::VARCHAR" (nullArray, nullArray) :: IO [(Text, Text)]) >>= (@?= [("\"NULL\"[1]", "[NULL]")])
+    , testCase "a list of NULL composite elements takes the element type of a typed column" $ withConnection ":memory:" \conn -> do
+        let nulls = [Nothing, Nothing] :: [Maybe (StructValue FieldValue)]
+        _ <- execute_ conn "CREATE TABLE null_list (v STRUCT(a INTEGER)[]); CREATE TABLE null_array (v STRUCT(a INTEGER)[2])"
+        _ <- execute conn "INSERT INTO null_list VALUES (?)" (Only nulls)
+        _ <- execute conn "INSERT INTO null_array VALUES (?)" (Only (listArray (0, 1) nulls :: Array Int (Maybe (StructValue FieldValue))))
+        (query_ conn "SELECT typeof(v), v::VARCHAR FROM null_list UNION ALL SELECT typeof(v), v::VARCHAR FROM null_array" :: IO [(Text, Text)])
+          >>= (@?= [("STRUCT(a INTEGER)[]", "[NULL, NULL]"), ("STRUCT(a INTEGER)[2]", "[NULL, NULL]")])
+        (query conn "SELECT typeof(?::STRUCT(a INTEGER)[])" (Only nulls) :: IO [Only Text]) >>= (@?= [Only "STRUCT(a INTEGER)[]"])
+        -- An empty list takes the element type of a typed column too.
+        _ <- execute_ conn "DELETE FROM null_list"
+        _ <- execute conn "INSERT INTO null_list VALUES (?)" (Only ([] :: [StructValue FieldValue]))
+        (query_ conn "SELECT v::VARCHAR FROM null_list" :: IO [Only Text]) >>= (@?= [Only "[]"])
+        -- With no known type, a list of NULL elements gets the type of the SQL literal [NULL, NULL].
+        (query conn "SELECT typeof(?)" (Only nulls) :: IO [Only Text]) >>= (@?= [Only "\"NULL\"[]"])
     , testCase "an IntervalValue binds as an INTERVAL and keeps its three fields" $ withConnection ":memory:" \conn -> do
         let value = IntervalValue 1 2 3
             negative = IntervalValue (-1) (-2) (-3)
@@ -684,7 +913,8 @@ valueRegressionTests =
         (query conn "SELECT ?::MAP(VARCHAR, TIMESTAMPTZ_NS)" (Only times) :: IO [Only (Map.Map Text UTCTime)]) >>= (@?= [Only times])
         -- An empty map of nested values has no value type.
         try (query conn "SELECT ?" (Only (Map.empty :: Map.Map Text [Int64])) :: IO [Only FieldValue]) >>= \case
-          Left SQLError{sqlErrorMessage} -> sqlErrorMessage @?= "duckdb-simple: an empty or all-NULL array of BIGINT[] elements has no element type"
+          Left SQLError{sqlErrorMessage} ->
+            sqlErrorMessage @?= "duckdb-simple: an empty list or map of BIGINT[] elements has no element type for a parameter with no known type"
           Right rows -> assertFailure ("expected the element type error, got " <> show rows)
     , testCase "an array of BigNum values keeps the BIGNUM casts of DuckDB" $ withConnection ":memory:" \conn -> do
         -- DuckDB 2.0.0 casts the BIGNUM -6 to UBIGINT as a wrapped value with no
@@ -1001,6 +1231,135 @@ valueRegressionTests =
               let struct = singleField (LogicalTypeDecimal (decimalWidth value) (decimalScale value)) (FieldDecimal value)
               bind stmt [toField struct]
               readAllRows next stmt >>= (@?= replicate 3000 (Only struct))
+    , testCase "an Integer outside the HUGEINT range raises the range error for each integer type" $ withConnection ":memory:" \conn -> do
+        -- A BIGNUM value for these types stores a wrong value with no error.
+        -- See Note [Integer parameters] in "Database.DuckDB.Simple.ToField".
+        let huge = 2 ^ (128 :: Int) + 5 :: Integer
+            insert :: Text -> Integer -> IO (Either SQLError Int)
+            insert dtype value = do
+              _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE wide_integer (v " <> dtype <> ")"))
+              result <- try (execute conn "INSERT INTO wide_integer VALUES (?)" (Only value))
+              (query_ conn "SELECT count(*) FROM wide_integer" :: IO [Only Int64]) >>= assertEqual (Text.unpack dtype <> " " <> show value) [Only 0]
+              pure result
+        forM_ ["TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT", "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT", "UHUGEINT"] \dtype -> do
+          -- DuckDB also rejects the value for the type.
+          try (query_ conn (Query ("SELECT '" <> Text.pack (show huge) <> "'::" <> dtype)) :: IO [Only Text]) >>= \case
+            Left SQLError{sqlErrorMessage} ->
+              assertBool (Text.unpack sqlErrorMessage) ("Conversion Error: Could not convert string" `Text.isPrefixOf` sqlErrorMessage)
+            Right rows -> assertFailure ("DuckDB accepts " <> show huge <> " as " <> Text.unpack dtype <> ": " <> show rows)
+          forM_ [huge, negate huge] \value ->
+            insert dtype value >>= \case
+              Left SQLError{sqlErrorMessage, sqlErrorType} -> do
+                sqlErrorType @?= Just ErrorInputOutOfRange
+                sqlErrorMessage @?= "duckdb-simple: the value " <> Text.pack (show value) <> " is out of range for a parameter of the type " <> dtype
+              Right _ -> assertFailure ("expected the duckdb-simple range error for " <> Text.unpack dtype <> " " <> show value)
+        -- An element of an array takes the element type of its target. DuckDB
+        -- then checks the range of each element.
+        forM_ ["UTINYINT[2]", "USMALLINT[2]", "UINTEGER[2]", "UBIGINT[2]"] \dtype -> do
+          _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE wide_integer (v " <> dtype <> ")"))
+          result <- try (execute conn "INSERT INTO wide_integer VALUES (?)" (Only (listArray (0, 1) [5, -6] :: Array Int Integer)))
+          (query_ conn "SELECT count(*) FROM wide_integer" :: IO [Only Int64]) >>= assertEqual (Text.unpack dtype) [Only 0]
+          case result of
+            Left SQLError{sqlErrorMessage, sqlErrorType} -> do
+              assertBool
+                (Text.unpack sqlErrorMessage)
+                ("-6 can't be cast because the value is out of range for the destination type" `Text.isInfixOf` sqlErrorMessage)
+              sqlErrorType @?= Just ErrorInputInvalid
+            Right _ -> assertFailure ("expected the DuckDB range error for " <> Text.unpack dtype)
+    , testCase "DECIMAL columns decode the largest value at each storage boundary" $ withConnection ":memory:" \conn ->
+        -- DuckDB stores a DECIMAL of the width 1 to 4 in 16 bits, 5 to 9 in 32 bits,
+        -- 10 to 18 in 64 bits, and 19 to 38 in 128 bits. The text comes from DuckDB.
+        forM_ [4, 5, 9, 10, 18, 19, 38] \width -> do
+          let largest = 10 ^ width - 1 :: Integer
+              dtype = "DECIMAL(" <> Text.pack (show width) <> ",0)"
+              sql =
+                "SELECT x::"
+                  <> dtype
+                  <> ", x::"
+                  <> dtype
+                  <> "::VARCHAR FROM (VALUES ("
+                  <> Text.pack (show (negate largest))
+                  <> "), (NULL), ("
+                  <> Text.pack (show largest)
+                  <> ")) t(x)"
+          rows <- query_ conn (Query sql) :: IO [(FieldValue, Maybe Text)]
+          assertEqual
+            (Text.unpack dtype)
+            [ (FieldDecimal (DecimalValue width 0 (negate largest)), Just (Text.pack (show (negate largest))))
+            , (FieldNull, Nothing)
+            , (FieldDecimal (DecimalValue width 0 largest), Just (Text.pack (show largest)))
+            ]
+            rows
+    , testCase "ENUM columns decode the last label at each storage boundary" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
+        -- DuckDB stores the index of an ENUM with at most 255 labels in 8 bits, with
+        -- at most 65535 labels in 16 bits, and with more labels in 32 bits.
+        forM_ [255, 256, 65535, 65536 :: Int] \size -> do
+          let dtype = "enum_boundary_" <> Text.pack (show size)
+              lastLabel = "v" <> Text.pack (show (size - 1))
+          _ <- execute_ conn (Query ("CREATE TYPE " <> dtype <> " AS ENUM (SELECT 'v' || i FROM range(" <> Text.pack (show size) <> ") t(i))"))
+          rows <-
+            query_
+              conn
+              ( Query
+                  ( "SELECT x::"
+                      <> dtype
+                      <> ", enum_code(x::"
+                      <> dtype
+                      <> ")::BIGINT, x::"
+                      <> dtype
+                      <> "::VARCHAR FROM (VALUES ('v0'), (NULL), ('"
+                      <> lastLabel
+                      <> "')) t(x)"
+                  )
+              )
+              :: IO [(FieldValue, Maybe Int64, Maybe Text)]
+          -- DuckDB gives the index and the label of each row.
+          assertEqual
+            (Text.unpack dtype)
+            [(Just 0, Just "v0"), (Nothing, Nothing), (Just (fromIntegral (size - 1)), Just lastLabel)]
+            [(index, label) | (_, index, label) <- rows]
+          forM_ rows \(value, index, label) -> assertEqual (Text.unpack dtype) (enumField index label) value
+    , testCase "NULL TUPLE and UNION rows decode as NULL in each chunk" $ withConnection ":memory:" \conn -> do
+        rows <-
+          query_
+            conn
+            "SELECT t, u, t IS NULL, u IS NULL FROM (SELECT CASE WHEN i % 7 = 1 THEN NULL ELSE row(i, 'x') END AS t, CASE WHEN i % 7 = 2 THEN NULL ELSE union_value(n := i)::UNION(n BIGINT, s VARCHAR) END AS u FROM range(3000) r(i))"
+            :: IO [(FieldValue, FieldValue, Bool, Bool)]
+        length rows @?= 3000
+        -- DuckDB gives the NULL rows in the last two columns.
+        forM_ (zip [0 :: Int ..] rows) \(row, (tuple, member, tupleIsNull, memberIsNull)) -> do
+          assertEqual ("TUPLE row " <> show row) tupleIsNull (tuple == FieldNull)
+          assertEqual ("UNION row " <> show row) memberIsNull (member == FieldNull)
+    , testCase "narrowing reads reject the values that DuckDB rejects for the type" $ withConnection ":memory:" \conn -> do
+        let rejects :: forall a. (FromField a, Show a) => Proxy a -> Text -> Text -> Assertion
+            rejects _ value sqlType = do
+              -- DuckDB raises an error for the same cast.
+              try (query_ conn (Query ("SELECT (" <> value <> ")::" <> sqlType)) :: IO [Only Text]) >>= \case
+                Left SQLError{sqlErrorMessage} ->
+                  assertBool
+                    (Text.unpack sqlErrorMessage)
+                    ("can't be cast because the value is out of range for the destination type" `Text.isInfixOf` sqlErrorMessage)
+                Right rows -> assertFailure ("DuckDB accepts " <> Text.unpack value <> " as " <> Text.unpack sqlType <> ": " <> show rows)
+              -- The read raises the conversion error of the query.
+              let sql = Query ("SELECT " <> value)
+              try (query_ conn sql :: IO [Only a]) >>= \case
+                Left SQLError{sqlErrorType, sqlErrorQuery} -> do
+                  assertEqual (Text.unpack value) Nothing sqlErrorType
+                  assertEqual (Text.unpack value) (Just sql) sqlErrorQuery
+                Right rows -> assertFailure (Text.unpack value <> " decodes as " <> show rows)
+              -- The cause of that error is a ResultError.
+              [Only native] <- query_ conn sql :: IO [Only FieldValue]
+              case fromField Field{fieldName = "value", fieldIndex = 0, fieldValue = native} :: Ok a of
+                Errors errors ->
+                  assertBool ("expected a ResultError, got " <> show errors) (not (null errors) && all isResultError errors)
+                Ok decoded -> assertFailure (Text.unpack value <> " converts to " <> show decoded)
+            isResultError failure = isJust (fromException failure :: Maybe ResultError)
+        rejects (Proxy :: Proxy Word64) "-1::BIGINT" "UBIGINT"
+        rejects (Proxy :: Proxy Word) "-1::BIGINT" "UBIGINT"
+        rejects (Proxy :: Proxy Word32) "-1::INTEGER" "UINTEGER"
+        rejects (Proxy :: Proxy Int16) "32768::INTEGER" "SMALLINT"
+        rejects (Proxy :: Proxy Int32) "2147483648::BIGINT" "INTEGER"
+        rejects (Proxy :: Proxy Int64) "1180591620717411303424::HUGEINT" "BIGINT"
     ]
       <> [ testCase ("composite temporal round trip: " <> dtype) $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
              forM_ ("NULL" : map (\value -> "'" <> value <> "'") values) \value ->
@@ -1067,6 +1426,11 @@ assertIOError action = do
   case result of
     Left (_ :: IOException) -> pure ()
     Right _ -> assertFailure "expected IOException"
+
+-- | The field of an ENUM row with the index and the label that DuckDB gives.
+-- The field holds only the index.
+enumField :: Maybe Int64 -> Maybe Text -> FieldValue
+enumField index _ = maybe FieldNull (FieldEnum . fromIntegral) index
 
 -- | Assert a controlled FromField conversion error.
 assertConversionError :: IO a -> Assertion

@@ -6,6 +6,11 @@
 --
 -- The functions of this module give native handles to their actions.
 -- "Database.DuckDB.Simple.Config" has the typed custom options.
+--
+-- Use 'registerCustomOptionWith' when the update callback needs the native update info. With that info, the
+-- callback can replace the new value with @c_duckdb_v2_custom_option_update_set_value@, read the scope of
+-- the write, or find if the update is a RESET. The configuration action sets the name, the type, and the
+-- other properties of the option with the @c_duckdb_v2_custom_option_set_@ functions of @Database.DuckDB.FFI.V2@.
 module Database.DuckDB.Simple.V2.Config (
   registerCustomOptionWith,
 ) where

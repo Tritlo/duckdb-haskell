@@ -30,12 +30,29 @@
   of an extension reads (see the README).
 - `createAggregate` registers an aggregate function as a fold over Haskell
   values. The record `Aggregate` has the initial state and the step, combine,
-  and result functions. DuckDB gives the aggregate callbacks no context, so the
-  result types are the result types of `createFunction`.
+  and result functions. DuckDB gives the finalize callback no factory, so the
+  result type must be BOOLEAN, TINYINT to BIGINT, UTINYINT to UBIGINT, FLOAT,
+  DOUBLE, or VARCHAR.
 - `createTableFunction` registers a Haskell function that gives the rows of a
   table function as a list. DuckDB reads the list one chunk at a time. It reads
   only the columns that the query uses, and one column for a query such as
   `SELECT count(*)`. The library does not evaluate the other columns of a row.
+- `DuckDBColumnType` has the method `duckdbTypeDeclaration`. It gives the SQL
+  type that a typed table function and a typed aggregate function declare. A
+  record or a sum type gets `ToDuckValue` and a STRUCT or UNION declaration
+  through `ViaDuckDB`. `StructValue`, `TupleValue`, and `UnionValue` have no
+  declaration, and the registration raises an error for them.
+  `Database.DuckDB.Simple.LogicalRep` exports `TypeDeclaration`.
+- An argument of `createFunction` can have each type with `FromField` and
+  `DuckDBColumnType`, for example a record through `ViaDuckDB`, a list, a
+  `Map`, or a newtype with its own type text. `FunctionArg` is gone. An
+  argument type that is or contains VARIANT or GEOMETRY raises an error at
+  registration, also for `createAggregate`.
+- A result of `createFunction` can have each type with `ToDuckValue`. Its SQL
+  type is the `duckdbTypeDeclaration` of the type: an `Int16` result is
+  SMALLINT, a `Word16` result is USMALLINT, and a `Float` result is FLOAT, in
+  place of BIGINT and DOUBLE. `ScalarType` is gone, and `FunctionResult` has an
+  instance for each type with `ToDuckValue`.
 - `Database.DuckDB.Simple.Registration` has `TypeDeclaration`, `parameter`,
   `defaultValue`, `registerCustomType`, and typed replacement scans.
   `registerReplacementScan` and `registerInstanceReplacementScan` give the
@@ -224,6 +241,30 @@
   empty LIST of its element type. A `String` stays one VARCHAR parameter, and a
   list as a row is still a row of parameters, so a list parameter is
   `Only [..]`. Version 0.3 had no `ToField` instance for lists.
+- Add a parameter instance for `FieldValue`, so a row read as `[FieldValue]`
+  binds back. A scalar constructor binds as the DuckDB type of the
+  constructor, and a `FieldList`, a `FieldArray`, or a `FieldMap` takes the
+  element type that its elements give, with the rule of a SQL list literal.
+  A `FieldEnum`, an empty `FieldArray`, and an empty `FieldList` or `FieldMap`
+  for a parameter with no known type raise `SQLError` with the type
+  `ErrorInputInvalid`. A `FieldTimestamp`, a `FieldTime`, and a
+  `FieldTimestampTZ` bind with the microsecond type, or with the nanosecond
+  type when the value has digits below a microsecond and the parameter has the
+  nanosecond type.
+- An `Array`, a list, or a `Map` of STRUCT values, UNION values, generic
+  records, lists, or arrays with different element types gets the type that
+  DuckDB gives a SQL list literal of the elements, for example
+  `STRUCT(a INTEGER, b INTEGER)` for `{'a': 1}` and `{'b': 2}`. Elements with
+  no common type raise the `SQLError` of DuckDB. Version 0.3 raised an error
+  for each `Array` with different element types.
+- An `Array`, a list, or a `Map` of such elements that are all NULL takes the
+  element type of the parameter when the parameter has a known type, for
+  example for an `INSERT` into a typed column, and the type of the SQL list
+  literal, such as `"NULL"[]`, when it has none. An empty list or `Map` of such
+  elements takes the element type of a parameter with a known type. Version
+  0.3 raised an error for an `Array` of NULL elements. For a parameter with no
+  known type, such a list of generic records through `ViaDuckDB` takes the
+  STRUCT or UNION type of the record.
 - Some parameters bind for the type that DuckDB gives the parameter: a time
   value with digits below a microsecond, an `Array`, a list, a `Map`, a manual
   STRUCT, TUPLE, or UNION value, and an `Integer` or a `Natural` outside the

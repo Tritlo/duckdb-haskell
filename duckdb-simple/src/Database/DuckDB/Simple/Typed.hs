@@ -19,6 +19,8 @@ module Database.DuckDB.Simple.Typed (
   TypedRow (..),
   ColumnValue (..),
   argumentName,
+  rowDeclarations,
+  checkArgumentType,
   prepareArgumentReader,
   conversionMessage,
   createCastOn,
@@ -36,11 +38,13 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.Element (vectorElementType)
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), FromField (..), ResultError (..))
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), UnionMemberType (..))
 import Database.DuckDB.Simple.Materialize (FallbackReaders (..), prepareVectorReader, rejectRows)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
-import Database.DuckDB.Simple.ToField (ToDuckValue (..), duckdbColumnType)
+import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToDuckValue (..))
 import Database.DuckDB.Simple.Types (Only (..))
+import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
 import Database.DuckDB.Simple.V2.Registration (
   ContextCallback,
   RegistrationTarget,
@@ -63,9 +67,10 @@ import GHC.Generics
 -- of results: each column type needs a 'ToDuckValue' instance, because that
 -- instance gives the SQL type of the column.
 class TypedRow r where
-  -- | The DuckDB type of each column, from 'duckdbColumnType'.
-  rowColumnTypes :: Proxy r -> [Text]
-  default rowColumnTypes :: (GTypedRow (Rep r)) => Proxy r -> [Text]
+  -- | The declaration of each column, from 'duckdbTypeDeclaration'. See
+  -- Note [Type declarations] in "Database.DuckDB.Simple.ToField".
+  rowColumnTypes :: Proxy r -> [Either Text TypeDeclaration]
+  default rowColumnTypes :: (GTypedRow (Rep r)) => Proxy r -> [Either Text TypeDeclaration]
   rowColumnTypes _ = gRowColumnTypes (Proxy :: Proxy (Rep r))
 
   -- | The value of each column.
@@ -79,7 +84,7 @@ newtype ColumnValue = ColumnValue (DuckDBV2FactoryHandle -> IO DuckDBV2ValueHand
 
 -- | The generic implementation of 'TypedRow' for a type with one constructor.
 class GTypedRow f where
-  gRowColumnTypes :: Proxy f -> [Text]
+  gRowColumnTypes :: Proxy f -> [Either Text TypeDeclaration]
   gRowColumnValues :: f p -> [ColumnValue]
 
 instance GTypedRow U1 where
@@ -91,7 +96,7 @@ instance (GTypedRow a) => GTypedRow (M1 i c a) where
   gRowColumnValues (M1 value) = gRowColumnValues value
 
 instance (ToDuckValue a) => GTypedRow (K1 i a) where
-  gRowColumnTypes _ = [duckdbColumnType (Proxy :: Proxy a)]
+  gRowColumnTypes _ = [duckdbTypeDeclaration (Proxy :: Proxy a)]
   gRowColumnValues (K1 value) = [ColumnValue (`toDuckValue` value)]
 
 instance (GTypedRow a, GTypedRow b) => GTypedRow (a :*: b) where
@@ -101,7 +106,7 @@ instance (GTypedRow a, GTypedRow b) => GTypedRow (a :*: b) where
 instance TypedRow ()
 
 instance (ToDuckValue a) => TypedRow (Only a) where
-  rowColumnTypes _ = [duckdbColumnType (Proxy :: Proxy a)]
+  rowColumnTypes _ = [duckdbTypeDeclaration (Proxy :: Proxy a)]
   rowColumnValues (Only value) = [ColumnValue (`toDuckValue` value)]
 
 instance (ToDuckValue a, ToDuckValue b) => TypedRow (a, b)
@@ -119,6 +124,43 @@ instance (ToDuckValue a, ToDuckValue b, ToDuckValue c, ToDuckValue d, ToDuckValu
 -- | The name of the argument at an index, from 0: @arg0@, @arg1@, and so on.
 argumentName :: Int -> Text
 argumentName index = Text.pack ("arg" <> show index)
+
+-- | Give the declaration of each column of a row, or raise the first 'Left' as
+-- an @SQLError@ before a registration. The error names the registration and
+-- the place of the column. The list of places has a name for each column. See
+-- Note [Type declarations] in "Database.DuckDB.Simple.ToField".
+rowDeclarations :: Text -> [Text] -> [Either Text TypeDeclaration] -> IO [TypeDeclaration]
+rowDeclarations name places declarations =
+  forM (zip places declarations) \(place, declaration) ->
+    either (\reason -> throwInvalidArgument (Text.intercalate (Text.pack ": ") [name, place, reason])) pure declaration
+
+-- | Raise an error before a registration when the resolved type of an
+-- argument is or contains VARIANT or GEOMETRY. The argument reader of a scalar
+-- function and of a typed aggregate function reads neither type
+-- ('prepareArgumentReader'). The error names the registration and the index of
+-- the argument.
+checkArgumentType :: Text -> Int -> DuckDBV2LogicalTypeHandle -> IO ()
+checkArgumentType name index logical = do
+  rep <- logicalTypeToRep logical
+  when (hasVariantOrGeometry rep) $
+    throwInvalidArgument
+      ( Text.intercalate
+          (Text.pack ": ")
+          [name, Text.pack "argument " <> argumentName index, Text.pack "the type of an argument cannot be or contain VARIANT or GEOMETRY"]
+      )
+
+-- | Test whether a type is or contains VARIANT or GEOMETRY.
+hasVariantOrGeometry :: LogicalTypeRep -> Bool
+hasVariantOrGeometry = \case
+  LogicalTypeScalar LogicalTypeIdVariant -> True
+  LogicalTypeGeometry _ -> True
+  LogicalTypeList child -> hasVariantOrGeometry child
+  LogicalTypeArray child _ -> hasVariantOrGeometry child
+  LogicalTypeMap key value -> hasVariantOrGeometry key || hasVariantOrGeometry value
+  LogicalTypeStruct fields -> any (hasVariantOrGeometry . structFieldValue) fields
+  LogicalTypeTuple fields -> any hasVariantOrGeometry fields
+  LogicalTypeUnion members -> any (hasVariantOrGeometry . unionMemberType) members
+  _ -> False
 
 -- | Prepare a reader for the rows of an argument vector. The first argument is
 -- the index of the argument, from 0. The reader gives the field of a row, with

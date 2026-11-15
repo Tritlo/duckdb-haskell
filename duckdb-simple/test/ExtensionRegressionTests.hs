@@ -11,11 +11,11 @@
 module ExtensionRegressionTests (main, extensionRegressionTests) where
 
 import Control.Exception (AsyncException (ThreadKilled), ErrorCall, Exception (..), SomeException, bracket, bracket_, finally, throwIO, try)
-import Control.Monad (forM, forM_, replicateM_, void)
+import Control.Monad (forM, forM_, replicateM_, void, when)
 import qualified Data.ByteString as BS
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
-import Data.List (find, sort)
+import Data.List (find, nub, sort)
 import Data.Proxy (Proxy (..))
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
@@ -45,11 +45,11 @@ import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..))
 import qualified Database.DuckDB.Simple.Tokenizer as Tokenizer
 import qualified Database.DuckDB.Simple.V2.Registration as Registration
 import Numeric.Natural (Natural)
-import System.Directory (getHomeDirectory, removeFile)
+import System.Directory (doesFileExist, getHomeDirectory, getTemporaryDirectory, removeFile)
 import System.FilePath (takeDirectory)
 import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, defaultMain, testGroup)
-import Test.Tasty.HUnit (Assertion, assertBool, assertFailure, testCase, (@?=))
+import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase, (@?=))
 
 -- | Run the extension regression tests as a standalone executable.
 main :: IO ()
@@ -125,6 +125,13 @@ extensionRegressionTests =
           case outcome of
             Left _ -> pure ()
             Right () -> assertFailure "expected signature exception"
+    , testCase "a raw result of another type than the result vector is an SQL error" $
+        withConnection ":memory:" \conn -> do
+          createFunction conn "mismatched_result" MismatchedResult
+          assertSqlErrorContaining
+            "but the result value has the type BIGINT"
+            (query_ conn "SELECT mismatched_result()" :: IO [Only Text.Text])
+          query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
     , testCase "scalar exceptions become SQL errors" $
         withConnection ":memory:" \conn -> do
           createFunction conn "throw_scalar" (throwIO (userError "scalar callback failure") :: IO Int64)
@@ -198,19 +205,19 @@ extensionRegressionTests =
           createFunction conn "double_identity" (id :: Double -> Double)
           query_ conn "SELECT double_identity(123.25::DECIMAL(10,2))" >>= (@?= [Only (123.25 :: Double)])
     , testCase "COPY exceptions become SQL errors in every phase" $
-        withConnection ":memory:" \conn ->
+        withMissingFile \path -> withConnection ":memory:" \conn ->
           mapM_
             ( \phase -> do
                 let name = "copy_fail_" <> Text.pack (show phase)
                 registerCopy conn name (Just phase)
                 assertSqlErrorContaining (Text.pack ("copy phase " <> show phase)) $
-                  execute_ conn (Query ("COPY (SELECT 1) TO '/tmp/duckdb-simple-regression-copy' (FORMAT " <> name <> ")"))
+                  execute conn (Query ("COPY (SELECT 1) TO ? (FORMAT " <> name <> ")")) (Only (Text.pack path))
             )
             [0 .. 3]
     , testCase "COPY state is valid across repeated queries" $
-        withConnection ":memory:" \conn -> do
+        withMissingFile \path -> withConnection ":memory:" \conn -> do
           registerCopy conn "copy_repeat" Nothing
-          replicateM_ 32 $ void $ execute_ conn "COPY (SELECT * FROM range(5000)) TO '/tmp/duckdb-simple-regression-copy' (FORMAT copy_repeat)"
+          replicateM_ 32 $ void $ execute conn "COPY (SELECT * FROM range(5000)) TO ? (FORMAT copy_repeat)" (Only (Text.pack path))
     , testCase "log sink callback exceptions cannot fail a query" do
         calls <- newIORef (0 :: Int)
         withConnection ":memory:" \conn -> do
@@ -232,6 +239,8 @@ extensionRegressionTests =
             execute_
               conn
               "CALL enable_logging(); SET logging_storage = 'captured_log'; SELECT write_log('Matti λ', level := 'warning', log_type := 'HaskellTest'); SET logging_storage = 'memory'"
+          -- DuckDB 2.0.0 flushes the sink five times for these statements.
+          readIORef flushes >>= (@?= 5)
         end <- getCurrentTime
         received <- filter ((== "HaskellTest") . Logging.logEntryType) <$> readIORef entries
         map Logging.logEntryMessage received @?= ["Matti λ"]
@@ -244,7 +253,8 @@ extensionRegressionTests =
           ("timestamps " <> show (map Logging.logEntryTimestamp received) <> " are within five minutes of " <> show (start, end))
           (all (maybe False nearClock . Logging.logEntryTimestamp) received)
         assertBool "entry has a connection id" (all ((/= Nothing) . Logging.logEntryConnectionId) received)
-        readIORef flushes >>= assertBool "flush and final cleanup ran" . (>= 2)
+        -- The release flushes the sink one more time.
+        readIORef flushes >>= (@?= 6)
     , testCase "instance log sinks receive connection and instance messages" do
         entries <- newIORef []
         withEnvironment \environment -> withInstance environment [] \instance_ -> do
@@ -264,6 +274,29 @@ extensionRegressionTests =
         map Logging.logEntryMessage (ofType "HaskellInstance") @?= ["from an instance"]
         map Logging.logEntryScope (ofType "HaskellInstance") @?= [Logging.LogScopeDatabase]
         map Logging.logEntryConnectionId (ofType "HaskellInstance") @?= [Nothing]
+    , testCase "log entries carry the connection, transaction, and query ids of DuckDB" do
+        entries <- newIORef []
+        (connectionId, transactionId, queryId) <- withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
+          Logging.registerLogSink conn "id_log" (\entry -> atomicModifyIORef' entries (\values -> (entry : values, ()))) (pure ())
+          void $ execute_ conn "CALL enable_logging(); SET logging_storage = 'id_log'"
+          -- In a transaction, the transaction id and the query id differ.
+          void $ execute_ conn "BEGIN"
+          _ <- query_ conn "SELECT 1" :: IO [Only Int64]
+          rows <-
+            query_
+              conn
+              "SELECT write_log('ids', level := 'warning', log_type := 'HaskellIds'), current_connection_id(), current_transaction_id(), current_query_id()"
+              :: IO [(FieldValue, Word64, Word64, Word64)]
+          void $ execute_ conn "COMMIT; SET logging_storage = 'memory'"
+          case rows of
+            [(_, connection, transaction, queryNumber)] -> pure (connection, transaction, queryNumber)
+            _ -> assertFailure ("expected one row, got " <> show rows)
+        assertEqual "the ids differ" 3 (length (nub [connectionId, transactionId, queryId]))
+        received <- filter ((== "HaskellIds") . Logging.logEntryType) <$> readIORef entries
+        map Logging.logEntryConnectionId received @?= [Just connectionId]
+        map Logging.logEntryTransactionId received @?= [Just transactionId]
+        map Logging.logEntryQueryId received @?= [Just queryId]
+        map Logging.logEntryThreadId received @?= [Nothing]
     , testCase "filesystem action exceptions release handles" $
         withTemporaryFile \path ->
           withConnection ":memory:" \conn -> do
@@ -329,6 +362,16 @@ extensionRegressionTests =
               Config.configOptionSetting option @?= "1"
               Config.configOptionName option @?= "threads"
               assertBool "description is retained" (not (Text.null (Config.configOptionDescription option)))
+    , testCase "listed options give the aliases of DuckDB" $
+        withConnection ":memory:" \conn -> do
+          void $ execute_ conn "SET progress_bar_time = 1234"
+          options <- Config.listConfigOptions conn
+          let option name = find ((== name) . Config.configOptionName) options
+          aliases <- query_ conn "SELECT name, aliases FROM duckdb_settings() WHERE len(aliases) > 0 ORDER BY name" :: IO [(Text.Text, [Text.Text])]
+          assertBool "DuckDB lists options with aliases" (not (null aliases))
+          forM_ aliases \(name, expected) ->
+            assertEqual (Text.unpack name) (Just (sort expected)) (sort . Config.configOptionAliases <$> option name)
+          Config.configOptionSetting <$> option "progress_bar_time" @?= Just "1234"
     , testCase "instance options list global values" $
         withEnvironment \environment -> withInstance environment [("threads", "1")] \instance_ -> do
           options <- Config.listInstanceOptions instance_
@@ -581,34 +624,46 @@ data BrokenDisplay = BrokenDisplay
 instance Exception BrokenDisplay where
   displayException _ = error "broken error rendering"
 
--- | Force a setup exception after scalar callbacks have been acquired.
+-- | Force a setup exception after scalar callbacks have been acquired. The
+-- registration reads the declaration of the argument in the setup.
 data BrokenSignature = BrokenSignature
 
 instance Function BrokenSignature where
-  argumentTypes _ = error "broken scalar signature"
-  returnType _ = error "unused return type"
+  argumentTypes _ = [Right (error "broken scalar signature")]
+  returnType _ = returnType (Proxy :: Proxy Int64)
   isVolatile _ = False
   applyFunction _ _ = error "unused function"
+
+-- | Declare a VARCHAR result, but give a BIGINT value.
+data MismatchedResult = MismatchedResult
+
+instance Function MismatchedResult where
+  argumentTypes _ = []
+  returnType _ = Right (Registration.TypeExpression "VARCHAR")
+  isVolatile _ = True
+  applyFunction fields _ = applyFunction fields (1 :: Int64)
 
 -- | Supply an argument type which DuckDB rejects at registration.
 data InvalidSignature = InvalidSignature
 
 instance Function InvalidSignature where
-  argumentTypes _ = [LogicalTypeIdInvalid]
+  argumentTypes _ = [Right (Registration.TypeExpression "no_such_type")]
   returnType _ = returnType (Proxy :: Proxy Int64)
   isVolatile _ = False
   applyFunction _ _ = error "unregistered function"
 
--- | Register a COPY callback and optionally fail one phase.
+-- | Register a COPY callback and optionally fail one phase. The bind state and
+-- the global state are the column count that DuckDB gives. Each query of this
+-- module has one column.
 registerCopy :: Connection -> Text.Text -> Maybe Int -> IO ()
 registerCopy conn name failingPhase =
   Copy.registerCopyToFunction
     conn
     name
-    (\_ -> failPhase 0)
-    (\info -> (Copy.copyInitBindState info @?= ()) >> failPhase 1)
-    (\info _ -> (Copy.copySinkGlobalState info @?= ()) >> failPhase 2)
-    (\info -> (Copy.copyFinalizeGlobalState info @?= ()) >> failPhase 3)
+    (\info -> failPhase 0 >> pure (length (Copy.copyBindColumnTypes info)))
+    (\info -> (Copy.copyInitBindState info @?= 1) >> failPhase 1 >> pure (Copy.copyInitBindState info))
+    (\info _ -> (Copy.copySinkGlobalState info @?= 1) >> failPhase 2)
+    (\info -> (Copy.copyFinalizeGlobalState info @?= 1) >> failPhase 3)
   where
     failPhase phase =
       if failingPhase == Just phase
@@ -647,6 +702,20 @@ assertFromNative fromNative natives sentinel = do
   values @?= [minBound .. maxBound]
   map show natives @?= map (("DuckDBV2" <>) . show) values
   assertSqlErrorContaining "unknown native" (fromNative sentinel)
+
+-- | Give the action a unique temporary path where no file exists. Remove the
+-- file after the action if the action created it. DuckDB writes a COPY TO
+-- target that exists through a second file, so the path has no file.
+withMissingFile :: (FilePath -> IO a) -> IO a
+withMissingFile = bracket acquire release
+  where
+    acquire = do
+      directory <- getTemporaryDirectory
+      (path, handle) <- openBinaryTempFile directory "duckdb-extension-regression"
+      hClose handle
+      removeFile path
+      pure path
+    release path = doesFileExist path >>= \exists -> when exists (removeFile path)
 
 -- | Remove a temporary file after the action.
 withTemporaryFile :: (FilePath -> IO a) -> IO a

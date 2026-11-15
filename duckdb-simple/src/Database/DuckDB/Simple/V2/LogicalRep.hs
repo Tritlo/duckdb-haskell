@@ -7,6 +7,8 @@
 --
 -- The functions of this module read and create native logical type handles.
 -- "Database.DuckDB.Simple.LogicalRep" has the Haskell type trees.
+--
+-- The examples use the imports of the module header of "Database.DuckDB.Simple.V2.Registration".
 module Database.DuckDB.Simple.V2.LogicalRep (
   logicalTypeToRep,
   logicalTypeFromRep,
@@ -27,6 +29,9 @@ import Foreign.Ptr (nullPtr)
 import Foreign.Storable (peek)
 
 -- | Copy a native logical type into a Haskell type tree.
+-- The function does not destroy the handle:
+--
+-- > bracket (R.output (c_duckdb_v2_vector_get_logical_type vector)) destroyLogicalType logicalTypeToRep
 logicalTypeToRep :: DuckDBV2LogicalTypeHandle -> IO LogicalTypeRep
 logicalTypeToRep logical = do
   dtype <- output (c_duckdb_v2_logical_type_get_id logical)
@@ -80,6 +85,9 @@ logicalTypeToRep logical = do
 -- Keep the owner of the factory alive until you destroy the type.
 -- CRS labels must be recognized by the native type constructor. Use the resolver
 -- in 'logicalTypeFromRepWith' for SQL-derived types with arbitrary CRS labels.
+-- 'Database.DuckDB.Simple.V2.Registration.withTypeDeclaration' constructs the type for an action and then destroys it.
+--
+-- > bracket (logicalTypeFromRep factory (LogicalTypeList (LogicalTypeScalar LogicalTypeIdBigInt))) destroyLogicalType logicalTypeToRep
 logicalTypeFromRep :: DuckDBV2FactoryHandle -> LogicalTypeRep -> IO DuckDBV2LogicalTypeHandle
 logicalTypeFromRep factory = logicalTypeFromRepWith factory (const (pure Nothing))
 

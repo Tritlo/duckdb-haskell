@@ -136,6 +136,9 @@ main =
   register custom types, replacement scans, COPY formats, pragmas, and custom
   options with Haskell values.
 
+The section [Types](#types) gives the SQL type of each Haskell type. The
+section [Errors](#errors) gives the exceptions that a program can catch.
+
 ## Querying Data
 
 ```haskell
@@ -264,6 +267,285 @@ values, for example `c::TIMESTAMP AT TIME ZONE 'UTC'`, `c::VARCHAR`,
 `String` with its label, the text of `c::VARCHAR`, and a `FieldEnum` holds the
 index and the label. The Haddock of each `FromField` instance gives the SQL
 types that it reads.
+
+## Types
+
+Each row gives a Haskell type and these facts:
+
+- Binds as: the SQL type of a parameter of this type.
+- Declared: the SQL type that a typed registration declares, where it is not
+  the type of "Binds as". A typed registration declares these types: a column
+  and a parameter of `createTableFunction`, and an argument and the result of
+  `createAggregate` and of `createFunction`. "none" means that the type has no
+  declaration. `registerCopyFromFunction` declares no type: the table of the
+  COPY FROM statement gives the column types, the row type must have the same
+  number of columns, and DuckDB casts each value of a row to the type of its
+  column.
+- Reads: the SQL types that the `FromField` instance reads.
+- Function: the use of the type in `createFunction`, as an argument, a result,
+  or both. See the paragraph after the notes.
+
+| Haskell type | Binds as | Declared | Reads | Function |
+| --- | --- | --- | --- | --- |
+| `Bool` | BOOLEAN | | BOOLEAN, TINYINT to BIGINT (2) | argument, result |
+| `Int8`, `Int16`, `Int32`, `Int64`, `Int` | TINYINT, SMALLINT, INTEGER, BIGINT, BIGINT | | TINYINT to BIGINT, HUGEINT, UHUGEINT (3) | argument, result |
+| `Word8`, `Word16`, `Word32`, `Word64`, `Word` | UTINYINT, USMALLINT, UINTEGER, UBIGINT, UBIGINT | | each integer type (3) | argument, result |
+| `Integer` | HUGEINT (1) | BIGNUM | each integer type, BIGNUM (3) | argument, result |
+| `Natural` | HUGEINT (1) | BIGNUM | each integer type, BIGNUM (3) | argument, result |
+| `BigNum` | BIGNUM | | BIGNUM | argument, result |
+| `Double` | DOUBLE | | DOUBLE, FLOAT, TINYINT to BIGINT, DECIMAL (4) | argument, result |
+| `Float` | FLOAT | | as `Double` (4) | argument, result |
+| `DecimalValue` | DECIMAL of the value | none | DECIMAL | none |
+| `Text`, `String` | VARCHAR | | VARCHAR, TINYINT to BIGINT, BOOLEAN, ENUM (5) | argument, result |
+| `ByteString` | BLOB | | BLOB, BIT, GEOMETRY (5) | argument, result |
+| `BitString` | BIT | | BIT | argument, result |
+| `UUID` | UUID | | UUID, VARCHAR (5) | argument, result |
+| `Day`, `Unbounded Day` | DATE (7) | | DATE, each timestamp type (6) | argument, result |
+| `TimeOfDay` | TIME (7) | | TIME, TIME_NS, each timestamp type (6) | argument, result |
+| `LocalTime`, `Unbounded LocalTime` | TIMESTAMP (7) | | each timestamp type (6), DATE (5) | argument, result |
+| `UTCTime`, `Unbounded UTCTime` | TIMESTAMPTZ (7) | | TIMESTAMPTZ, TIMESTAMPTZ_NS (5) | argument, result |
+| `TimeWithZone` | TIMETZ | | TIMETZ | argument, result |
+| `IntervalValue` | INTERVAL | | INTERVAL | argument, result |
+| `[a]` | LIST | | LIST, ARRAY | argument, result |
+| `Array Int a` | ARRAY (8) | LIST | ARRAY | result (8) |
+| `Map k v` | MAP | | MAP | argument, result |
+| `StructValue FieldValue` | STRUCT (9) | none | STRUCT | none |
+| `TupleValue FieldValue` | TUPLE (9) | none | TUPLE | none |
+| `UnionValue FieldValue` | UNION (9) | none | UNION | none |
+| `ViaDuckDB a` | STRUCT or UNION (10) | | STRUCT or UNION | argument, result |
+| `Maybe a` | as `a`, or NULL | as `a` | NULL, or as `a` | as `a` |
+| `G.Geometry` | GEOMETRY without a CRS | | GEOMETRY | argument, result |
+| `RawGeometry` | GEOMETRY with its CRS | none | GEOMETRY | none |
+| `Variant` | VARIANT | | VARIANT, and the values that a VARIANT can hold (13) | result |
+| `FieldValue` | the type of its constructor (11) | none | each type | none |
+| `Null` | `"NULL"` (12) | | NULL | argument, result (12) |
+
+Notes:
+
+1. A value from -2^127 to 2^127 - 1 binds as a HUGEINT. A value outside that
+   range binds as a UHUGEINT for a UHUGEINT parameter that can hold it. It
+   binds as a BIGNUM for a parameter that has no integer or DECIMAL type. For
+   each other integer or DECIMAL parameter, it raises an `SQLError` of the type
+   `ErrorInputOutOfRange`. See [Querying Data](#querying-data).
+2. The value 0 reads as `False`, and each other value reads as `True`.
+3. "Each integer type" is TINYINT to UHUGEINT. A value that the Haskell type
+   cannot hold raises a conversion error, also a negative value for an
+   unsigned type or for `Natural`. An ENUM value does not read as an integer
+   type. Write `enum_code(c)::BIGINT` in SQL for its index, or `c::INTEGER`
+   for the value of its label.
+4. A read gives the value of `c::DOUBLE` or `c::FLOAT` of DuckDB, also for a
+   DECIMAL, and for a BIGINT read as `Float`. A finite value that `Float`
+   cannot hold raises a conversion error.
+5. A read of another SQL type gives the value of DuckDB's cast, or an error.
+   Thus `Text` reads a BOOLEAN as `true` or `false`, and an ENUM as its label.
+   `ByteString` reads a BIT or a GEOMETRY as the bytes of `c::BLOB`. `UUID`
+   reads a VARCHAR in the form `a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11`, and
+   another form that the cast reads, for example with braces, raises an error.
+   These reads raise the error of an incompatible column. For each one, write
+   the SQL in the parentheses in place of the column `c`:
+   - `Text` from FLOAT or DOUBLE (`c::VARCHAR`).
+   - `ByteString` from VARCHAR (`encode(c)`).
+   - `LocalTime` from TIMESTAMPTZ or TIMESTAMPTZ_NS (`c AT TIME ZONE 'UTC'`).
+   - `UTCTime` from DATE, TIMESTAMP_S, TIMESTAMP_MS, or TIMESTAMP
+     (`c::TIMESTAMP AT TIME ZONE 'UTC'`), and from TIMESTAMP_NS
+     (`c AT TIME ZONE 'UTC'`).
+
+   The `Unbounded` forms of `LocalTime` and `UTCTime` follow the same rule.
+6. "Each timestamp type" is TIMESTAMP_S, TIMESTAMP_MS, TIMESTAMP, and
+   TIMESTAMP_NS. TIMESTAMP alone is the type with microseconds. `Day` reads the
+   date of a timestamp, and `TimeOfDay` reads its time. A nanosecond type keeps
+   its nanoseconds. An infinite value raises a conversion error for `Day`,
+   `TimeOfDay`, `LocalTime`, and `UTCTime`. The `Unbounded` forms read it.
+   `Date`, `LocalTimestamp`, and `UTCTimestamp` from
+   `Database.DuckDB.Simple.Time` are the `Unbounded` forms.
+7. A value with digits below a microsecond keeps them for a nanosecond
+   parameter: TIME_NS, TIMESTAMP_NS, or TIMESTAMPTZ_NS. A `VARIANT` parameter
+   also gets the nanosecond value of a scalar value, when the value fits the
+   range of the nanosecond type. A list, an `Array`, or a `Map` of time values
+   for a `VARIANT` parameter binds microsecond elements. The range of `Day` is
+   5877642-06-25 (BC), the year -5877641 of `Data.Time`, to 5881580-07-10. The
+   range of `LocalTime` and `UTCTime` is 290309-12-22 (BC) 00:00:00 to
+   294247-01-10 04:00:54.775806. A value outside its range raises an `SQLError`
+   of the type `ErrorInputOutOfRange`. A target of the type TIMESTAMP_NS or
+   TIMESTAMPTZ_NS has a smaller range, about the years 1677 to 2262, and for
+   such a target the error depends on the position of the value. A `TimeOfDay`
+   with 60 seconds binds as the next second, as `make_time` of DuckDB gives it:
+   23:59:60 binds as 24:00:00. A later time, for example 23:59:60.5, raises an
+   `SQLError` of the type `ErrorInputInvalid`. [Infinite dates and
+   timestamps](#infinite-dates-and-timestamps) gives the full rule.
+8. An `Array` binds as an ARRAY with the size of the value. An empty `Array`
+   raises an `SQLError`. A typed registration declares a LIST for an `Array`.
+   Thus an `Array` argument of `createFunction` or `createAggregate`, and an
+   `Array` parameter of `createTableFunction`, get a LIST, which the `Array`
+   instance does not read. Each call with a value that is not NULL raises an
+   `SQLError`. Use a list. The library writes an `Array` result as a LIST.
+9. A STRUCT, TUPLE, or UNION parameter binds with the types of its own fields
+   or members. These values have no static field types, so a typed
+   registration with such a type raises an error. Use a record with
+   `ViaDuckDB`.
+10. A record binds as a STRUCT, and a sum type binds as a UNION. A typed
+    registration declares the STRUCT or UNION type of the record or the sum
+    type. In a record, an `Integer` field declares HUGEINT and a `Natural`
+    field declares UHUGEINT, and a value that this type cannot hold raises an
+    error. A bare `Integer` or `Natural` declares BIGNUM. A record with an
+    `Array` field raises an error at registration, because the
+    record type does not give the size of the ARRAY. See
+    [Generic Encoding with ViaDuckDB](#generic-encoding-with-viaduckdb).
+11. Each constructor binds as its SQL type, with these exceptions:
+    - A `FieldEnum` binds its label as a VARCHAR.
+    - A `FieldTimestamp` binds as TIMESTAMP, also when it came from another
+      timestamp type. Note 7 gives the rule for digits below a microsecond.
+    - An empty `FieldArray` raises an error.
+    - An empty `FieldList` or `FieldMap`, or one with only `FieldNull`
+      elements, takes the element type of a parameter with a known type. For a
+      parameter with no known type, it binds as the SQL literal does: `[]` and
+      `[NULL, NULL]` have the type `"NULL"[]`, and `MAP {}` has the type
+      `MAP("NULL", "NULL")`.
+
+    See [FieldValue parameters](#fieldvalue-parameters).
+12. `typeof` gives `"NULL"`, with the quotes, for a `Null` parameter and for a
+    `Null` declaration. A `Null` argument takes only a NULL value. A call with
+    another value is a Binder Error. A record cannot have a `Null` field.
+13. A `Variant` reads a value of each scalar type other than ENUM, a LIST of
+    such values, and a STRUCT in the form of a VARIANT object: each field of
+    the type VARIANT, the keys in ascending order. At each depth, it refuses an
+    ENUM, an ARRAY, a MAP, a TUPLE, a UNION, another STRUCT, and a GEOMETRY
+    with a CRS, with the error of an incompatible column. Write `c::VARIANT` in
+    SQL to read such a column. A JSON column reads as its text, where
+    `c::VARIANT` gives the parsed value.
+
+A value of a VARIANT column reads as its stored value, so the row of the stored
+type applies. A value in a LIST, ARRAY, MAP, STRUCT, or UNION reads with the
+same rules, and so does a field of a `ViaDuckDB` record. A SQL type that is not
+in "Reads" raises the error of an incompatible column. See [Errors](#errors).
+
+A function of `createFunction` declares the type of "Declared", or else of
+"Binds as", for each argument and for its result. An argument type needs
+`FromField` and a declaration. The registration raises an error for an
+argument type that is or contains VARIANT, and for a type with no
+declaration. A result type needs `ToDuckValue` and a declaration. Some result
+types write each value directly into the data of the result vector: `Bool`, an
+integer of 8 to 64 bits, `Float`, `Double`, `Text`, `String`, `Maybe` of one of
+them, and a newtype that derives `FunctionResult` from one of them. A result of
+`createAggregate` must have one of these types, because DuckDB gives the
+finalize callback no factory. For another result type, `createAggregate` raises
+an error at registration. See [User-Defined Functions](#user-defined-functions).
+
+## Errors
+
+A program can catch these exceptions:
+
+- `SQLError`: an error of DuckDB, an input check of the library, or a result
+  value that does not convert.
+- `FormatError`: parameters that do not agree with the placeholders of the
+  statement.
+- The exception of a cancellation, for example from `timeout`.
+
+A failed check of the state of the library, or of a value that DuckDB gave,
+raises an `IOException` from `userError`, an `SQLError` with no type, or an
+`ErrorCall` for an INVALID, ANY, or UNKNOWN type in a result. Inside a
+callback, such an error reaches the program as the `SQLError` of the statement
+that runs the callback. Such an error is a defect of the library or of DuckDB,
+not an error of the input. Report it.
+
+`SQLError` has three fields:
+
+- `sqlErrorMessage` is the text of the error. For an error of DuckDB, it is
+  the text of DuckDB, for example `Binder Error: ...`.
+- `sqlErrorType` is the category of the error, as `Just` an `ErrorType`: the
+  error code of DuckDB for an error of DuckDB, and the type that the library
+  gives to an input check or to a lock wait. `ErrorType` has one constructor
+  for each error code of the V2 C API, for example `ErrorQueryBinder` and
+  `ErrorTypeConversion`.
+- `sqlErrorQuery` is the SQL text of the statement for an error during its
+  preparation or execution, and for a result value that does not convert. It
+  is `Nothing` for an error outside a statement, for example when a connection
+  opens. An error of a parameter value can also have `Nothing`.
+
+An input check of the library raises an `SQLError`. Two input checks give the
+type `ErrorInputOutOfRange`: an `Integer` that its parameter cannot hold, and a
+date or a timestamp outside the range of DATE or TIMESTAMP of DuckDB (note 7).
+Each other input check gives
+the type `ErrorInputInvalid`. Examples are a VARIANT object with two equal
+keys, a registration with an argument type that the library cannot read, a
+time of day after 24:00:00, a TIMETZ offset outside -57599 to 57599 seconds, a
+DECIMAL width above 38, and an `Integer` field of a record outside HUGEINT.
+
+A statement in a callback can wait for a lock of the connection that runs the
+callback. After the time limit of `connectionCallbackLockWait`, that statement
+raises an `SQLError` of the type `ErrorResourceInUse`. The statement that runs
+the callback then fails with the error type that DuckDB gives for an error of a
+callback, and its message contains the text of the inner error. A statement on
+a connection that streams a result, for example in the step of a fold, also
+gives `ErrorResourceInUse`, and so does a close of an environment that has an
+open instance. Other errors of the library have no type, for example an
+operation on a closed connection.
+
+A result value that its Haskell type does not read raises an `SQLError` with no
+type and with the query. The message describes the first field that fails:
+
+- The error of an incompatible column, for a SQL type that the instance does
+  not read: `duckdb-simple: column NAME has type TYPE but expected HASKELLTYPE`.
+  The message can end with `: ` and a detail, for example `: expected NULL`
+  for `Null`. TYPE is the name of the SQL type without its parameters, for
+  example DECIMAL for a DECIMAL(18,2) and ENUM for each ENUM type. Each
+  timestamp type gives TIMESTAMP, TIMESTAMPTZ_NS gives TIMESTAMPTZ, and TIME_NS
+  gives TIME. For a VARIANT column, TYPE is the type of the stored value.
+  HASKELLTYPE is the type of the instance that reads, for example `Text` for
+  `String`.
+- `duckdb-simple: column NAME is NULL but expected HASKELLTYPE` for NULL in a
+  type without `Maybe`.
+- `duckdb-simple: field FIELD: ` and the error of the value for a field of a
+  `ViaDuckDB` record, for example
+  `duckdb-simple: field pairValue: a value has type DOUBLE but expected Int64`.
+- A conversion error, for a value that the instance cannot convert: the
+  message of the instance, for example `integer value out of bounds`.
+
+The library makes a `ResultError` for each failure and puts its text in the
+`SQLError`. It does not raise the `ResultError`. A custom `FromField` instance
+reports a failure with `returnError` and a constructor of `ResultError`.
+`query` and `query_` raise the error and give no rows. A fold raises it at the
+row that fails. A row type with more or fewer fields than the result has
+columns raises an `SQLError` with the text `column index N out of bounds`.
+
+An exception in a Haskell function of a registration, for example of
+`createFunction`, fails the statement that runs the function. That statement
+raises an `SQLError`. Its message contains the text of the exception: the
+message of an `SQLError`, the text of a `userError`, or the `displayException`
+text of another exception. An argument that does not convert gives an
+`SQLError` of the type `ErrorInputInvalid` with a text that names the argument,
+for example `duckdb-simple: argument arg0 is NULL, but Int64 cannot hold NULL`
+for a scalar function. For an aggregate or a table function, the text names the
+function after the prefix, for example `duckdb-simple: tf_int: argument arg0
+...`. DuckDB ignores an exception of a log sink.
+
+An asynchronous exception, for example from `timeout` or Ctrl-C, cancels a
+running query. The library interrupts DuckDB, waits until the native call
+returns, and raises the same exception again. Catch that exception, not
+`SQLError`. See [Resource Management](#resource-management) for `-threaded`.
+
+`FormatError` has the fields `formatErrorMessage`, `formatErrorQuery`, and
+`formatErrorParams` (the parameter values as text). The library raises it
+before it executes the statement, in the cases that
+[Named Parameters](#named-parameters) lists. A `FormatError` is not an
+`SQLError`, so catch it separately.
+
+This function gives `Nothing` when the table `items` has no column `value`:
+
+```haskell
+import Control.Exception (throwIO, try)
+import Database.DuckDB.Simple
+
+countValues :: Connection -> IO (Maybe Int)
+countValues conn = do
+  result <- try (query_ conn "SELECT count(value) FROM items")
+  case result of
+    Right [Only n] -> pure (Just n)
+    Right _ -> pure Nothing
+    Left err
+      | sqlErrorType err == Just ErrorQueryBinder -> pure Nothing
+      | otherwise -> throwIO err
+```
 
 ## Generic Encoding with ViaDuckDB
 
@@ -435,19 +717,36 @@ changes during the call does not change how its later rows bind.
 Use separate parameters when one expression requires microseconds and another
 requires nanoseconds.
 
-A `Day` outside the range of DuckDB, from -5877641-06-25 to 5881580-07-10, and
-a `LocalTime` or a `UTCTime` outside the range from -290308-12-22 00:00:00 to
-294247-01-10 04:00:54.775806, raise an `SQLError` of the type
-`ErrorInputOutOfRange` when they bind. These dates are in the notation of
-`Data.Time`, where the year -5877641 is 5877642 BC and the year -290308 is
-290309 BC. The rule holds also inside a collection, a STRUCT, or a VARIANT,
-and for a finite `Unbounded` value. DuckDB does not accept these values: its
-SQL literals reject them, and a stored value can read as an infinity or make
-DuckDB raise an INTERNAL error. A TIMESTAMP_S or TIMESTAMP_MS value has the
-same range at both ends. A leap second, a `TimeOfDay` with 60 seconds, binds
-as the next second, as `make_time` and `make_timestamp` of DuckDB give it. The
-SQL literal `'23:59:60'` raises an error. A time after 24:00:00, for example
-23:59:60.5, raises an `SQLError` of the type `ErrorInputInvalid`.
+A date or a timestamp outside the range of DuckDB raises an `SQLError` of the
+type `ErrorInputOutOfRange` when it binds, also as an element of a list, an
+`Array`, or a `Map`, inside a STRUCT, a TUPLE, or a UNION, and in a VARIANT. For
+a `Day`, that range is the range of DATE, from -5877641-06-25 to 5881580-07-10.
+For a `LocalTime` or a `UTCTime` (in UTC), it is the range of TIMESTAMP,
+TIMESTAMPTZ, TIMESTAMP_S, and TIMESTAMP_MS, from -290308-12-22 00:00:00 to
+294247-01-10 04:00:54.775806. The dates are in the notation of `Data.Time`. A
+target of the type TIMESTAMP_NS or TIMESTAMPTZ_NS is different. These types have
+a smaller range, about the years 1677 to 2262, and a value outside that range
+gets an error by its position:
+
+- A parameter, or an element of a list, an `Array`, or a `Map`:
+  `ErrorInputOutOfRange` for a value outside the range of DuckDB. Each other
+  such value gets the conversion error of DuckDB, of the type
+  `ErrorTypeConversion` for a parameter and `ErrorInputInvalid` for an element.
+- A field of a STRUCT, an element of a TUPLE, or a member of a UNION: the
+  `ErrorInputInvalid` of the library, "TIMESTAMP value out of finite range",
+  also for a value outside the range of DuckDB.
+- In each position, a `UTCTime` with digits below a microsecond, and a
+  `LocalTime` from 2262-04-11 23:47:16.854775807 to 23:47:16.854775999, get that
+  `ErrorInputInvalid` of the library.
+
+In the notation of `Data.Time`, the year -5877641 is 5877642 BC and the year
+-290308 is 290309 BC. The rule holds also for a finite `Unbounded` value. DuckDB
+does not accept a value outside its range: its SQL literals reject it, and a
+stored value can read as an infinity or make DuckDB raise an INTERNAL error. A
+leap second, a `TimeOfDay` with 60 seconds, binds as the next second, as
+`make_time` and `make_timestamp` of DuckDB give it. The SQL literal `'23:59:60'`
+raises an error. A time after 24:00:00, for example 23:59:60.5, raises an
+`SQLError` of the type `ErrorInputInvalid`.
 
 ### Manual STRUCT, TUPLE, and UNION Handling
 
@@ -713,15 +1012,19 @@ query conn "SELECT ?"
 A scalar payload keeps its native type, such as `TINYINT` or `DECIMAL(4,2)`.
 Time and timestamp payloads bind as microsecond types, or as nanosecond types
 when they have sub-microsecond digits and fit the nanosecond range. So a
-`TIMESTAMP_S` result binds back as a `TIMESTAMP` when its value fits. A value
-outside the range of DuckDB raises an `SQLError` of the type
-`ErrorInputOutOfRange`. Lists, arrays, and STRUCT fields bind as VARIANT
-values. A VARIANT does not keep a UNION, a MAP, an ENUM, or the CRS of a
-GEOMETRY, so these payloads raise an error at any depth: a VARIANT keeps only
-the member value of a UNION, stores a MAP as a list of key and value objects,
-and stores an ENUM as its text. Object parameters reject
-duplicate keys and keys that contain NUL. An object with only an empty key
-also raises an error because DuckDB treats its STRUCT type as a tuple.
+`TIMESTAMP_S` result binds back as a `TIMESTAMP` when its value fits. Each
+element of a list payload and each field of an object payload follow the same
+rule, so one list payload can hold both types. A Haskell list, an `Array`, or a
+`Map` of time values for a `VARIANT` parameter is not a payload: it binds
+microsecond elements (see [Infinite dates and
+timestamps](#infinite-dates-and-timestamps)). A value outside the range of
+DuckDB raises an `SQLError` of the type `ErrorInputOutOfRange`. Lists, arrays,
+and STRUCT fields bind as VARIANT values. A VARIANT does not keep a UNION, a
+MAP, an ENUM, or the CRS of a GEOMETRY, so these payloads raise an error at any
+depth: a VARIANT keeps only the member value of a UNION, stores a MAP as a list
+of key and value objects, and stores an ENUM as its text. Object parameters
+reject duplicate keys and keys that contain NUL. An object with only an empty
+key also raises an error because DuckDB treats its STRUCT type as a tuple.
 DuckDB 2.0 permits an empty key with other named keys. You can also bind a plain
 value and cast it in SQL, as in `?::VARIANT`.
 

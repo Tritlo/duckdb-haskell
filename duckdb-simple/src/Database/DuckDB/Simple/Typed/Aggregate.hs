@@ -339,9 +339,16 @@ releaseState table slot = mask_ do
       Just keys -> atomicModifyIORef' (stateStripe keys key) \live -> (IntSet.delete key live, IntSet.member key live)
     when owner (freeStablePtr stable)
 
--- | The key of a stable pointer in a state table.
+-- | The key of a stable pointer in a state table, from 'castStablePtrToPtr'
+-- and 'ptrToIntPtr' of base. Base has no single function for the two steps.
+-- 'stableFromKey' is the inverse.
 stableKey :: StablePtr a -> Int
 stableKey = fromIntegral . ptrToIntPtr . castStablePtrToPtr
+
+-- | The stable pointer of a key in a state table, from 'intPtrToPtr' and
+-- 'castPtrToStablePtr' of base. This is the inverse of 'stableKey'.
+stableFromKey :: Int -> StablePtr a
+stableFromKey = castPtrToStablePtr . intPtrToPtr . fromIntegral
 
 -- | Free the stable pointers that remain in a state table, and then the table.
 -- DuckDB calls this when it drops the bind data of a call site. See
@@ -352,7 +359,7 @@ releaseStateTable raw =
   mask_ $ ignoreCallbackExceptions $ unless (raw == nullPtr) do
     let stable = castPtrToStablePtr (castPtr raw) :: StablePtr StateTable
     remaining <- deRefStablePtr stable >>= fmap IntSet.unions . mapM readIORef . elems
-    forM_ (IntSet.toList remaining) (freeStablePtr . castPtrToStablePtr . intPtrToPtr . fromIntegral)
+    forM_ (IntSet.toList remaining) (freeStablePtr . stableFromKey)
       `finally` freeStablePtr stable
 
 foreign export ccall "duckdb_simple_release_aggregate_states"

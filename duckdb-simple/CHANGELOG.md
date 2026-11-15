@@ -9,6 +9,8 @@
   later DuckDB version is outside the dependency bound. Creating an
   environment raises `SQLError` for another library version. Use the earlier
   release with DuckDB 1.5.
+- Require `base` 4.18 or later, that is GHC 9.6 or later. Version 0.3 accepted
+  `base` 4.14.
 - Raw handles, callback handles, and the error codes of raw calls use V2
   types. `sqlErrorType` is `Maybe ErrorType`. See MIGRATION.md.
 - Add shared environments and instances, attachment management, option
@@ -151,6 +153,14 @@
 - `ToDuckValue.toDuckValue`, `logicalTypeFromRep`, and `logicalTypeFromRepWith`
   take a V2 factory. Composite parameters keep GEOMETRY CRS metadata. A CRS
   that DuckDB does not recognize raises `SQLError` instead of being dropped.
+- `logicalTypeFromRep` creates a VARIANT type, and a GEOMETRY type with a CRS
+  that DuckDB recognizes. Version 0.3 raised an error for VARIANT and created
+  GEOMETRY without the CRS.
+- Add a `ToDuckValue` instance for `Variant`. Version 0.3 had none.
+- A composite parameter that the native value constructor rejects raises an
+  `SQLError`. For example, a STRUCT parameter with a MAP field that has a NULL
+  key raises an `SQLError` with the type `ErrorInputInvalid`. Version 0.3
+  raised an `IOException`.
 - A connection constructs each name of `connectionGeometryCRS` directly when it
   opens. It queries a SQL-derived type only for a name that DuckDB does not keep,
   on the new connection, so the default list runs no query. The connection keeps

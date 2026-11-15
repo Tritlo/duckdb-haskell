@@ -430,12 +430,20 @@ A function of `createFunction` declares the type of "Declared", or else of
 `FromField` and a declaration. The registration raises an error for an
 argument type that is or contains VARIANT, and for a type with no
 declaration. A result type needs `ToDuckValue` and a declaration. Some result
-types write each value directly into the data of the result vector: `Bool`, an
-integer of 8 to 64 bits, `Float`, `Double`, `Text`, `String`, `Maybe` of one of
-them, and a newtype that derives `FunctionResult` from one of them. A result of
-`createAggregate` must have one of these types, because DuckDB gives the
-finalize callback no factory. For another result type, `createAggregate` raises
-an error at registration. See [User-Defined Functions](#user-defined-functions).
+types write each value directly into the data of the result vector: `Bool`
+(BOOLEAN), an integer of 8 to 64 bits (TINYINT to BIGINT, UTINYINT to UBIGINT),
+`Float` (FLOAT), `Double` (DOUBLE), `Text` and `String` (VARCHAR), `Maybe` of
+one of them, and a newtype that derives `FunctionResult` from one of them
+(`deriving newtype (FunctionResult)`).
+Each other result type, for example a record or a list, costs a native value
+for each row. DuckDB casts such a value to the declared type, as a SQL `CAST`
+does: it rounds a value to the scale of a DECIMAL type text, and it raises an
+error for a value that does not fit. A result of `createAggregate` must have
+one of the types that write directly, because DuckDB gives the finalize
+callback no factory to make a value of another type, and in an ordered window
+its result vector has the size 0. For another result type, `createAggregate`
+raises an error at registration. See
+[User-Defined Functions](#user-defined-functions).
 
 ## Errors
 
@@ -1229,12 +1237,8 @@ an `Int16` result is SMALLINT, and a `Float` result is FLOAT. DuckDB computes
 with that type. Thus `hs_small(x) * hs_small(y)` of an `Int16` function raises
 an Out of Range Error when the product does not fit in SMALLINT, as
 `30000::SMALLINT * 30000::SMALLINT` does. Cast the result to a wider type
-first. A `Bool`, an integer of 8 to 64 bits, a `Float`, a `Double`, a `Text`,
-or a `String` result goes to the memory of the result vector. Each other
-result type, for example a record or a list, costs a native value for each
-row. DuckDB casts such a value to the declared type, as a SQL `CAST` does: it
-rounds a value to the scale of a DECIMAL type text, and it raises an error for
-a value that does not fit.
+first. Some result types write directly into the result vector, and each other
+result type costs a native value for each row: [Types](#types) gives them.
 
 ```haskell
 {-# LANGUAGE OverloadedStrings #-}
@@ -1365,13 +1369,9 @@ places still use registered casts:
 - `setConfigValue` and `setConfigOption`. DuckDB casts the value to the type of
   the option, as SQL `SET` does.
 
-`createAggregate` registers an aggregate function as a fold. The result type
-must be BOOLEAN, TINYINT to BIGINT, UTINYINT to UBIGINT, FLOAT, DOUBLE, or
-VARCHAR, or `Maybe` of one of them. Another result type is an error at
-registration. The finalize callback of DuckDB has no factory to make a value
-of another type, and in an ordered window its result vector has the size 0. A
-newtype over one of these types gets the writer of that type with
-`deriving newtype (FunctionResult)`.
+`createAggregate` registers an aggregate function as a fold. Its result type
+must be one of the types that write directly into the result vector, or
+`Maybe` of one of them: [Types](#types) gives them and the reason.
 
 ```haskell
 aggregateExample :: Connection -> IO [Only Int64]

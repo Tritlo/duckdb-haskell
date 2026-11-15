@@ -303,7 +303,8 @@ The SQL workflow stays the same. These changes can affect your code:
   and the error of a field of a `ViaDuckDB` record starts with
   `duckdb-simple: field NAME: `.
   The errors of the generic decoders name the SQL type of a value, not the
-  value, for example `a value has type MAP but expected LIST or ARRAY` in place
+  value, for example
+  `a value has type MAP(VARCHAR, BIGINT) but expected LIST or ARRAY` in place
   of `expected LIST, got FieldMap [...]`. The bind errors
   `cannot encode ... as ...` and `unsupported scalar conversion for ... from ...`
   also name the SQL type of the value, for example `from a value of type
@@ -314,8 +315,13 @@ The SQL workflow stays the same. These changes can affect your code:
   form of a VARIANT object (each field of the type VARIANT, the keys in
   ascending order), or a GEOMETRY with a CRS, at any depth, raises the error of
   an incompatible column. Write `c::VARIANT` in SQL, or read `FieldValue` for the
-  decoded value. A JSON column still reads as its text; write `c::VARIANT` for
-  the parsed value.
+  decoded value. A type that is or contains JSON, at any depth, also raises
+  that error, because DuckDB casts JSON to VARIANT by parsing the text. Write
+  `c::VARIANT` for the parsed value.
+- The error of an incompatible column names the type of the column in the text
+  of DuckDB, for example `has type DECIMAL(18,2)`, `has type TIMESTAMP_NS`, and
+  `has type TIMESTAMP WITH TIME ZONE`. For a VARIANT column, it names the type
+  of the stored value. Change code that matches the error texts.
 - `TimeWithZone` holds the offset as seconds east of UTC. The field
   `timeWithZoneZone :: TimeZone` is now `timeWithZoneOffsetSeconds :: Int32`.
   Convert a `TimeZone` with `fromIntegral (timeZoneMinutes zone) * 60`, and

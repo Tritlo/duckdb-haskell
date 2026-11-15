@@ -274,7 +274,8 @@ example JSON. The library converts the type at the first use of `fieldType`,
 one time for each column and execution, so a read that does not use it
 converts no type. A value in a VARIANT has the type VARIANT, and so does a
 `Field` that the library makes from a `FieldValue` alone: then the type of the
-value decides. An instance can check the type:
+value decides. `logicalTypeSQL` gives the type text of DuckDB, for example
+DECIMAL(18,3), for an error text. An instance can check the type:
 
 ```haskell
 newtype Cents = Cents DecimalValue
@@ -475,9 +476,10 @@ Notes:
     refuses an ENUM, an ARRAY, a MAP, a TUPLE, a UNION, another STRUCT, and a
     GEOMETRY with a CRS, with the error of an incompatible column, because the
     cast of DuckDB to VARIANT changes these values. Write `c::VARIANT` in SQL to
-    read such a column. One difference stays, because the reader does not know
-    the type of a column: a JSON column reads as its text, as a VARCHAR column
-    does, where `c::VARIANT` gives the parsed value.
+    read such a column. It also refuses a type that is or contains JSON, at
+    each depth, because DuckDB casts JSON to VARIANT by parsing the text: the
+    error says `DuckDB casts JSON to VARIANT by parsing the text; write
+    c::VARIANT`, and `c::VARIANT` gives the parsed value.
 14. `DecimalValue` and `RawGeometry` have no `DuckDBColumnType` and no
     `ToDuckValue` instance, so an `Array`, a list, or a typed row of either does
     not compile: GHC reports `No instance for 'DuckDBColumnType DecimalValue'`
@@ -578,10 +580,12 @@ type and with the query. The message describes the first field that fails:
 - The error of an incompatible column, for a SQL type that the instance does
   not read: `duckdb-simple: column NAME has type TYPE but expected HASKELLTYPE`.
   The message can end with `: ` and a detail, for example `: expected NULL`
-  for `Null`. TYPE is the name of the SQL type without its parameters, for
-  example DECIMAL for a DECIMAL(18,2) and ENUM for each ENUM type. Each
-  timestamp type gives TIMESTAMP, TIMESTAMPTZ_NS gives TIMESTAMPTZ, and TIME_NS
-  gives TIME. For a VARIANT column, TYPE is the type of the stored value.
+  for `Null`. TYPE is the type of the column in the text of DuckDB, as
+  `typeof` gives it, for example DECIMAL(18,2), TIMESTAMP_NS, TIMESTAMP WITH
+  TIME ZONE, ENUM('a', 'b'), INTEGER[], or JSON. `logicalTypeSQL` gives that
+  text. For a VARIANT column, TYPE is the type of the stored value, for example
+  DECIMAL for a DECIMAL(18,2) value. The text costs nothing until the error
+  renders.
   HASKELLTYPE is the type of the instance that reads, for example `Text` for
   `String`.
 - `duckdb-simple: column NAME is NULL but expected HASKELLTYPE` for NULL in a
@@ -1191,7 +1195,7 @@ DuckDB 2.0 permits an empty key with other named keys. You can also bind a plain
 value and cast it in SQL, as in `?::VARIANT`.
 
 A `Variant` result reads only a value that a VARIANT can hold: note 13 of
-[Types](#types) gives the shapes, and the one difference for a JSON column.
+[Types](#types) gives the shapes, and the refusal of a JSON type.
 
 The library uses a separate helper connection for VARIANT decoder metadata.
 It caches the parsed VARIANT metadata statement and the types for VARIANT

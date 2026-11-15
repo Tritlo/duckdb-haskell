@@ -241,6 +241,11 @@
   default that runs `duckFromField`. `typedFromField` decodes through
   `FromField` with the type, and the generic STRUCT and UNION decoders give
   each field its type.
+- Read errors name the type of the column with `logicalTypeSQL`, the type
+  text of DuckDB, for example DECIMAL(18,2), TIMESTAMP_NS, ENUM('a', 'b'), or
+  JSON. For a VARIANT column, they name the type of the stored value. The bind
+  error `cannot encode a value of type ... as ...` names the declared type in
+  the same text.
 - Decode nanosecond timezone timestamps in results and VARIANT values.
 - Preserve the digits below a microsecond of a `TimeOfDay`, a `LocalTime`, and
   a `UTCTime`, and of their `Unbounded` forms, for a nanosecond parameter
@@ -531,8 +536,9 @@
   `duckdb-simple: field stampedAt: a value has type TIMESTAMP but expected UTCTime`.
 - A list field of a generic record reads an ARRAY, as a top-level list does.
   Earlier versions read only a LIST in a field.
-- The errors of the generic decoders name the SQL type of a value, for example
-  `duckdb-simple: field xs: a value has type MAP but expected LIST or ARRAY`.
+- The errors of the generic decoders name the SQL type of a value, for
+  example
+  `duckdb-simple: field xs: a value has type MAP(VARCHAR, BIGINT) but expected LIST or ARRAY`.
   Earlier versions printed the derived `show` of the whole value.
 - Two bind errors name the SQL type of the value in the same way:
   `cannot encode a value of type INTEGER as ...` and
@@ -543,8 +549,8 @@
   form of a VARIANT object (each field of the type VARIANT, the keys in
   ascending order), or a GEOMETRY with a CRS, at any depth, raises the error of
   an incompatible column. Earlier versions wrapped the value, which DuckDB's cast
-  to VARIANT changes. A JSON column reads as its text, where the cast gives the
-  parsed value.
+  to VARIANT changes. A type that is or contains JSON, at any depth, also raises
+  that error, because DuckDB casts JSON to VARIANT by parsing the text.
 - Allow session variables to supply omitted named parameters. Too few named
   parameters no longer raise `FormatError`. Too many named parameters still
   raise it.

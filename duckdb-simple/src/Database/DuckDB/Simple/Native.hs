@@ -58,6 +58,7 @@ module Database.DuckDB.Simple.Native (
   throwInvalidArgument,
   throwConversionError,
   throwInternalError,
+  exceptionText,
   withConnectionFactory,
   factoryOutput,
   withSQLStatement,
@@ -68,7 +69,7 @@ module Database.DuckDB.Simple.Native (
 ) where
 
 import Control.Applicative ((<|>))
-import Control.Exception (Exception, SomeException, bracket, finally, mask_, onException, throwIO, try)
+import Control.Exception (Exception (..), SomeException (..), bracket, finally, mask_, onException, throwIO, try)
 import Control.Monad (foldM, mfilter, unless, when, (<$!>))
 import qualified Data.ByteString as BS
 import Data.Char (isAsciiUpper, toLower)
@@ -514,6 +515,14 @@ throwConversionError message = throwIO (SQLError ("duckdb-simple: " <> message) 
 -- Note [Internal errors in callbacks].
 throwInternalError :: Text -> IO a
 throwInternalError message = throwIO (SQLError ("duckdb-simple: " <> message) (Just ErrorRuntimeInternal) Nothing Nothing)
+
+-- | The 'displayException' text of the exception in a t'SomeException'. In
+-- base 4.20 (GHC 9.10), the 'displayException' of t'SomeException' adds a
+-- newline and the context of the exception, also when the context is empty.
+-- The text of an error must be the same with each GHC version, so the
+-- library shows the inner exception.
+exceptionText :: SomeException -> String
+exceptionText (SomeException failure) = displayException failure
 
 {- Note [Internal errors in callbacks]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

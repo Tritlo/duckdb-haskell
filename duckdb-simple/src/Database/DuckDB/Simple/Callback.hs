@@ -28,7 +28,7 @@ module Database.DuckDB.Simple.Callback (
 ) where
 
 import Control.Concurrent (rtsSupportsBoundThreads)
-import Control.Exception (SomeException, bracket, catch, displayException, finally, fromException, mask, mask_, onException, try)
+import Control.Exception (SomeException, bracket, catch, finally, fromException, mask, mask_, onException, try)
 import Control.Monad (unless, when)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Maybe (fromMaybe)
@@ -397,12 +397,12 @@ callbackError failure = case fromException failure of
 -- | The text of a callback exception in the SQL error. An 'SQLError' gives its
 -- message, and a 'userError' gives its text. Thus the SQL error does not show a
 -- Haskell record or the words \"user error\". Each other exception gives its
--- 'displayException' text.
+-- 'exceptionText'.
 failureText :: SomeException -> String
 failureText failure
   | Just sqlError <- fromException failure = Text.unpack (sqlErrorMessage sqlError)
   | Just ioError' <- fromException failure, isUserError ioError' = ioeGetErrorString ioError'
-  | otherwise = displayException failure
+  | otherwise = exceptionText failure
 
 -- | Transfer an opaque resource to a checked V2 setter. See
 -- Note [Callback ownership].

@@ -721,6 +721,18 @@ valueRegressionTests =
         rejected "BIGINT[]" ([] :: [[Int64]])
         -- An Array of NULL STRUCT values raises the same error.
         rejected "STRUCT" (listArray (0, 0) [Nothing] :: Array Int (Maybe (StructValue FieldValue)))
+    , testCase "a list of NULL composite elements takes the element type of a typed column" $ withConnection ":memory:" \conn -> do
+        let nulls = [Nothing, Nothing] :: [Maybe (StructValue FieldValue)]
+        _ <- execute_ conn "CREATE TABLE null_list (v STRUCT(a INTEGER)[]); CREATE TABLE null_array (v STRUCT(a INTEGER)[2])"
+        _ <- execute conn "INSERT INTO null_list VALUES (?)" (Only nulls)
+        _ <- execute conn "INSERT INTO null_array VALUES (?)" (Only (listArray (0, 1) nulls :: Array Int (Maybe (StructValue FieldValue))))
+        (query_ conn "SELECT typeof(v), v::VARCHAR FROM null_list UNION ALL SELECT typeof(v), v::VARCHAR FROM null_array" :: IO [(Text, Text)])
+          >>= (@?= [("STRUCT(a INTEGER)[]", "[NULL, NULL]"), ("STRUCT(a INTEGER)[2]", "[NULL, NULL]")])
+        (query conn "SELECT typeof(?::STRUCT(a INTEGER)[])" (Only nulls) :: IO [Only Text]) >>= (@?= [Only "STRUCT(a INTEGER)[]"])
+        -- An empty list has no element type, also for a typed column.
+        try (execute conn "INSERT INTO null_list VALUES (?)" (Only ([] :: [StructValue FieldValue]))) >>= \case
+          Left SQLError{sqlErrorMessage} -> sqlErrorMessage @?= "duckdb-simple: an empty or all-NULL array of STRUCT elements has no element type"
+          Right count -> assertFailure ("expected the element type error, stored " <> show count)
     , testCase "an IntervalValue binds as an INTERVAL and keeps its three fields" $ withConnection ":memory:" \conn -> do
         let value = IntervalValue 1 2 3
             negative = IntervalValue (-1) (-2) (-3)

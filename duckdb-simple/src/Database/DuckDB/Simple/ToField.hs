@@ -1115,8 +1115,11 @@ constructor:
 - The target does not change the type of these elements. In SQL, DuckDB also
   gives the list literal its type before it casts the list to the type of a
   column.
-- An empty list or a list with only NULL elements of this kind has no element
-  type, and raises an error.
+- A list with only NULL elements of this kind takes the element type of the
+  target, when the parameter has a known type. DuckDB casts the list literal
+  [NULL, NULL] to the type of a column in the same way.
+- An empty list, and a list with only NULL elements for a parameter with no
+  known type, have no element type, and raise an error.
 -}
 
 -- | Give the element type of the values of a LIST, an ARRAY, or one part of a
@@ -1166,6 +1169,9 @@ withValueType ValueBuilder{builderType = makeType} target typeName values action
         (True, _) -> action logical
         (False, True) -> bracket (makeType promoted) destroyLogicalType action
         (False, False) -> action nullHandle
+    -- See Note [Element types of a list].
+    []
+      | Just rep <- target, not (null values) -> bracket (makeType rep) destroyLogicalType action
     [] ->
       throwIO
         SQLError

@@ -46,7 +46,6 @@
 module Database.DuckDB.Simple.Function (
   ScalarType,
   ScalarValue,
-  FunctionArg (),
   FunctionResult (),
   Function (..),
   LogicalTypeId (..),
@@ -68,7 +67,6 @@ import Database.DuckDB.Simple.FromField (FromField)
 import Database.DuckDB.Simple.FromRow (FromRow)
 import Database.DuckDB.Simple.Function.Internal (
   Function (..),
-  FunctionArg,
   FunctionResult,
   ScalarType,
   ScalarValue,
@@ -88,6 +86,13 @@ import Database.DuckDB.Simple.Typed.Table (createTableFunctionOn)
 import Database.DuckDB.Simple.V2.Registration (TypeDeclaration (..))
 
 -- | Register a Haskell function under the supplied name.
+--
+-- Each argument type needs 'FromField' and
+-- 'Database.DuckDB.Simple.ToField.DuckDBColumnType' instances. The SQL type of
+-- an argument is the 'Database.DuckDB.Simple.ToField.duckdbTypeDeclaration' of
+-- its type. An argument type with no declaration, or a type that is or
+-- contains VARIANT or GEOMETRY, raises an @SQLError@ at registration. The
+-- argument reader reads neither VARIANT nor GEOMETRY.
 createFunction :: (Function f) => Connection -> Text -> f -> IO ()
 createFunction conn = createFunctionOn (ConnectionTarget conn)
 

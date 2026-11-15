@@ -32,7 +32,6 @@ package duckdb-simple
     "--ignore-link-symbol=Database.DuckDB.Simple.Generic.gLogicalType"
     "--ignore-link-symbol=Database.DuckDB.Simple.Generic.IsSum"
     "--ignore-link-symbol=Database.DuckDB.Simple.Generic.Encoded"
-    "--ignore-link-symbol=Database.DuckDB.Simple.Function.Internal.argumentType"
     "--ignore-link-symbol=Database.DuckDB.Simple.Function.Internal.scalarReturnType"
     "--ignore-link-symbol=Database.DuckDB.Simple.Function.Internal.toScalarValue"
     "--ignore-link-symbol=Database.DuckDB.Simple.TypeCache.TypeCache"

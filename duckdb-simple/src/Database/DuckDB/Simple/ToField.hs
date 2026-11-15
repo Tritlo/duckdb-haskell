@@ -336,9 +336,9 @@ valueWithTypeMetadata logical value = case (logical, value) of
 {- Note [Type declarations]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 duckdbTypeDeclaration gives the SQL type that a typed registration declares for
-a Haskell type: a parameter or a column of a typed table function, and an
-argument of a typed aggregate function. Right gives the declaration. Left gives
-the reason why the type has no declaration.
+a Haskell type: an argument of a scalar function, a parameter or a column of a
+typed table function, and an argument of a typed aggregate function. Right
+gives the declaration. Left gives the reason why the type has no declaration.
 
 - The default is the text of duckdbColumnTypeFor. DuckDB parses the text when
   the registration declares the type. Thus a newtype with its own

@@ -22,6 +22,7 @@ import CopyTests (copyTests)
 import CoreRegressionTests (coreRegressionTests)
 import Data.Array (Array, elems, listArray)
 import qualified Data.ByteString as BS
+import qualified Data.Geometry as G
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.List (sortOn)
@@ -31,7 +32,7 @@ import Data.Proxy (Proxy (..))
 import Data.Ratio ((%))
 import Data.String (fromString)
 import qualified Data.Text as Text
-import Data.Time.Calendar (fromGregorian)
+import Data.Time.Calendar (Day, fromGregorian)
 import Data.Time.Clock (UTCTime (..), secondsToDiffTime)
 import Data.Time.LocalTime (
   LocalTime (..),
@@ -77,6 +78,7 @@ import Database.DuckDB.Simple.LogicalRep (
  )
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.Time (Unbounded (..))
+import Database.DuckDB.Simple.Variant (Variant)
 import ExtensionRegressionTests (extensionRegressionTests)
 import GHC.Generics (Generic)
 import qualified GeometryRegressionTests
@@ -129,6 +131,15 @@ data ViaUser = ViaUser
   }
   deriving stock (Eq, Show, Generic)
   deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB ViaUser)
+
+-- | A newtype with its own type text, for a scalar function argument.
+newtype Price = Price DecimalValue
+
+instance DuckDBColumnType Price where
+  duckdbColumnTypeFor _ = "DECIMAL(18,3)"
+
+instance FromField Price where
+  fromField value = Price <$> fromField value
 
 data ViaShape
   = ViaCircle Double
@@ -1292,6 +1303,97 @@ functionsTests =
             query_ conn "SELECT hs_optional(x) FROM (VALUES (NULL), (41)) AS t(x)"
               :: IO [Only (Maybe Int64)]
           assertEqual "optional results" [Only Nothing, Only (Just 42)] rows
+    , testCase "keeps the SQL types of the arguments of version 0.3" $
+        withConnection ":memory:" \conn -> do
+          createFunction conn "hs_id_bool" (id :: Bool -> Bool)
+          createFunction conn "hs_id_double" (id :: Double -> Double)
+          createFunction conn "hs_id_float" (id :: Float -> Float)
+          createFunction conn "hs_id_int" (id :: Int -> Int)
+          createFunction conn "hs_id_int16" (id :: Int16 -> Int16)
+          createFunction conn "hs_id_int32" (id :: Int32 -> Int32)
+          createFunction conn "hs_id_int64" (id :: Int64 -> Int64)
+          createFunction conn "hs_id_maybe" (id :: Maybe Word16 -> Maybe Word16)
+          createFunction conn "hs_id_string" (id :: String -> String)
+          createFunction conn "hs_id_text" (id :: Text.Text -> Text.Text)
+          createFunction conn "hs_id_word" (id :: Word -> Word)
+          createFunction conn "hs_id_word16" (id :: Word16 -> Word16)
+          createFunction conn "hs_id_word32" (id :: Word32 -> Word32)
+          createFunction conn "hs_id_word64" (id :: Word64 -> Word64)
+          query_
+            conn
+            "SELECT parameter_types::VARCHAR FROM duckdb_functions() WHERE function_name LIKE 'hs\\_id\\_%' ESCAPE '\\' ORDER BY function_name"
+            >>= ( @?=
+                    map
+                      Only
+                      [ "[BOOLEAN]" :: Text.Text
+                      , "[DOUBLE]"
+                      , "[FLOAT]"
+                      , "[BIGINT]"
+                      , "[SMALLINT]"
+                      , "[INTEGER]"
+                      , "[BIGINT]"
+                      , "[USMALLINT]"
+                      , "[VARCHAR]"
+                      , "[VARCHAR]"
+                      , "[UBIGINT]"
+                      , "[USMALLINT]"
+                      , "[UINTEGER]"
+                      , "[UBIGINT]"
+                      ]
+                )
+    , testCase "takes an argument of each type with FromField and DuckDBColumnType" $
+        withConnection ":memory:" \conn -> do
+          let user = ViaUser 7 "anna"
+          createFunction conn "hs_arg_int8" (\(x :: Int8) -> fromIntegral x * 2 :: Int64)
+          createFunction conn "hs_arg_integer" (\(x :: Integer) -> Text.pack (show (x * 2)))
+          createFunction conn "hs_arg_bytes" (\(x :: BS.ByteString) -> BS.length x)
+          createFunction conn "hs_arg_uuid" UUID.toText
+          createFunction conn "hs_arg_day" (\(x :: Day) -> Text.pack (show x))
+          createFunction conn "hs_arg_local" (\(x :: LocalTime) -> Text.pack (show x))
+          createFunction conn "hs_arg_utc" (\(x :: UTCTime) -> Text.pack (show x))
+          createFunction conn "hs_arg_list" (\(xs :: [Int64]) -> sum xs)
+          createFunction conn "hs_arg_map" (\(pairs :: Map.Map Text.Text Int64) -> sum (Map.elems pairs))
+          createFunction conn "hs_arg_interval" (\(IntervalValue months days micros) -> Text.pack (show (months, days, micros)))
+          createFunction conn "hs_arg_record" (\(ViaUser identifier name) -> name <> Text.pack (show identifier))
+          createFunction conn "hs_arg_records" (\(users :: [ViaUser]) -> length users)
+          createFunction conn "hs_arg_maybe_record" (\(found :: Maybe ViaUser) -> maybe "none" vuName found)
+          createFunction conn "hs_arg_price" (\(Price DecimalValue{decimalInteger}) -> fromIntegral decimalInteger :: Int64)
+          query_
+            conn
+            "SELECT hs_arg_int8(-3), hs_arg_integer(2::BIGNUM ^ 100), hs_arg_bytes('\\x01\\x02'::BLOB), hs_arg_uuid('00000000-0000-0000-0000-000000000001')"
+            >>= (@?= [(-6 :: Int64, Text.pack (show (2 * 2 ^ (100 :: Int) :: Integer)), 2 :: Int, "00000000-0000-0000-0000-000000000001" :: Text.Text)])
+          query_
+            conn
+            "SELECT hs_arg_day(DATE '2026-11-15'), hs_arg_local(TIMESTAMP '2026-11-15 12:34:56'), hs_arg_utc(TIMESTAMPTZ '2026-11-15 12:34:56+00')"
+            >>= (@?= [("2026-11-15" :: Text.Text, "2026-11-15 12:34:56" :: Text.Text, "2026-11-15 12:34:56 UTC" :: Text.Text)])
+          query_ conn "SELECT hs_arg_list([1, 2, 3]), hs_arg_map(MAP {'a': 1, 'b': 2}), hs_arg_interval(INTERVAL '1 month 2 days 3 microseconds')"
+            >>= (@?= [(6 :: Int64, 3 :: Int64, "(1,2,3)" :: Text.Text)])
+          query conn "SELECT hs_arg_record(?), hs_arg_records([?, ?]), hs_arg_maybe_record(?), hs_arg_maybe_record(NULL)" (user, user, user, user)
+            >>= (@?= [("anna7" :: Text.Text, 2 :: Int, "anna" :: Text.Text, "none" :: Text.Text)])
+          query_ conn "SELECT hs_arg_price(1.25)" >>= (@?= [Only (1250 :: Int64)])
+          query_
+            conn
+            "SELECT function_name, parameter_types::VARCHAR FROM duckdb_functions() WHERE function_name IN ('hs_arg_int8', 'hs_arg_integer', 'hs_arg_record', 'hs_arg_records', 'hs_arg_price') ORDER BY function_name"
+            >>= ( @?=
+                    [ ("hs_arg_int8" :: Text.Text, "[TINYINT]" :: Text.Text)
+                    , ("hs_arg_integer", "[BIGNUM]")
+                    , ("hs_arg_price", "['DECIMAL(18,3)']")
+                    , ("hs_arg_record", "['STRUCT(vuId BIGINT, vuName VARCHAR)']")
+                    , ("hs_arg_records", "['STRUCT(vuId BIGINT, vuName VARCHAR)[]']")
+                    ]
+                )
+    , testCase "rejects an argument type with no declaration, VARIANT, or GEOMETRY at registration" $
+        withConnection ":memory:" \conn -> do
+          let rejects expected action = assertThrows action (Text.isInfixOf expected . sqlErrorMessage)
+          rejects "hs_bad_struct: argument arg0: StructValue has no static field types" $
+            createFunction conn "hs_bad_struct" (\(_ :: StructValue FieldValue) -> True)
+          rejects "hs_bad_variant: argument arg0: the type of a scalar function argument cannot be or contain VARIANT or GEOMETRY" $
+            createFunction conn "hs_bad_variant" (\(_ :: Variant) -> True)
+          rejects "hs_bad_variants: argument arg1: the type of a scalar function argument cannot be or contain VARIANT or GEOMETRY" $
+            createFunction conn "hs_bad_variants" (\(_ :: Int64) (_ :: [Maybe Variant]) -> True)
+          rejects "hs_bad_geometry: argument arg0: the type of a scalar function argument cannot be or contain VARIANT or GEOMETRY" $
+            createFunction conn "hs_bad_geometry" (\(_ :: G.Geometry) -> True)
+          query_ conn "SELECT count(*) FROM duckdb_functions() WHERE function_name LIKE 'hs\\_bad\\_%' ESCAPE '\\'" >>= (@?= [Only (0 :: Int64)])
     , testCase "names the argument that does not convert" $
         withConnection ":memory:" \conn -> do
           createFunction conn "hs_sum" (\(x :: Int64) (y :: Int64) -> x + y)

@@ -17,7 +17,6 @@
 module Database.DuckDB.Simple.Function.Internal (
   ScalarType,
   ScalarValue,
-  FunctionArg (),
   FunctionResult (..),
   Function (..),
   createFunctionOn,
@@ -54,10 +53,14 @@ import Database.DuckDB.Simple.FromField (
   Field (..),
   FromField (..),
  )
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), TypeDeclaration, UnionMemberType (..))
 import Database.DuckDB.Simple.Materialize (FallbackReaders (..), prepareVectorReader, rejectRows)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
-import Database.DuckDB.Simple.Typed (conversionMessage)
+import Database.DuckDB.Simple.ToField (DuckDBColumnType (..))
+import Database.DuckDB.Simple.Typed (argumentName, conversionMessage, rowDeclarations)
+import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
+import Database.DuckDB.Simple.V2.Registration (withTypeDeclaration)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Array (advancePtr, allocaArray, peekArray)
 import Foreign.Marshal.Utils (copyBytes, fillBytes)
@@ -151,55 +154,9 @@ instance (FunctionResult a) => FunctionResult (Maybe a) where
   toScalarValue Nothing = pure ScalarNull
   toScalarValue (Just value) = toScalarValue value
 
--- | Argument types supported by the scalar function machinery.
-class FunctionArg a where
-  argumentType :: Proxy a -> LogicalTypeId
-
-instance FunctionArg Int where
-  argumentType _ = LogicalTypeIdBigInt
-
-instance FunctionArg Int16 where
-  argumentType _ = LogicalTypeIdSmallInt
-
-instance FunctionArg Int32 where
-  argumentType _ = LogicalTypeIdInteger
-
-instance FunctionArg Int64 where
-  argumentType _ = LogicalTypeIdBigInt
-
-instance FunctionArg Word where
-  argumentType _ = LogicalTypeIdUBigInt
-
-instance FunctionArg Word16 where
-  argumentType _ = LogicalTypeIdUSmallInt
-
-instance FunctionArg Word32 where
-  argumentType _ = LogicalTypeIdUInteger
-
-instance FunctionArg Word64 where
-  argumentType _ = LogicalTypeIdUBigInt
-
-instance FunctionArg Double where
-  argumentType _ = LogicalTypeIdDouble
-
-instance FunctionArg Float where
-  argumentType _ = LogicalTypeIdFloat
-
-instance FunctionArg Bool where
-  argumentType _ = LogicalTypeIdBoolean
-
-instance FunctionArg Text where
-  argumentType _ = LogicalTypeIdVarchar
-
-instance FunctionArg String where
-  argumentType _ = LogicalTypeIdVarchar
-
-instance (FunctionArg a) => FunctionArg (Maybe a) where
-  argumentType _ = argumentType (Proxy :: Proxy a)
-
 -- | Typeclass describing Haskell functions that can be exposed to DuckDB.
 class Function a where
-  argumentTypes :: Proxy a -> [LogicalTypeId]
+  argumentTypes :: Proxy a -> [Either Text TypeDeclaration]
   returnType :: Proxy a -> ScalarType
   isVolatile :: Proxy a -> Bool
   applyFunction :: [Field] -> a -> IO ScalarValue
@@ -218,8 +175,10 @@ instance {-# OVERLAPPING #-} (FunctionResult a) => Function (IO a) where
   applyFunction [] action = action >>= toScalarValue
   applyFunction _ _ = throwIO (functionInvocationError (Text.pack "unexpected arguments supplied"))
 
-instance {-# OVERLAPPABLE #-} (FromField a, FunctionArg a, Function r) => Function (a -> r) where
-  argumentTypes _ = argumentType (Proxy :: Proxy a) : argumentTypes (Proxy :: Proxy r)
+-- | An argument has the SQL type of 'duckdbTypeDeclaration'. See
+-- Note [Type declarations] in "Database.DuckDB.Simple.ToField".
+instance {-# OVERLAPPABLE #-} (FromField a, DuckDBColumnType a, Function r) => Function (a -> r) where
+  argumentTypes _ = duckdbTypeDeclaration (Proxy :: Proxy a) : argumentTypes (Proxy :: Proxy r)
   returnType _ = returnType (Proxy :: Proxy r)
   isVolatile _ = isVolatile (Proxy :: Proxy r)
   applyFunction [] _ =
@@ -249,11 +208,15 @@ createFunctionWithStateOn target name initState mkFn =
         <$> allocate (toFunPtr (DuckDBV2ScalarFunctionInitCallbackFn_Aux (scalarFunctionInitHandler initState)))
     pure ScalarFunctionResources{scalarFunctionExecPtr, scalarFunctionInitPtr = Just initPtr}
 
--- | Configure a scalar function and transfer its callbacks to DuckDB.
+-- | Configure a scalar function and transfer its callbacks to DuckDB. An
+-- argument type with no declaration, or a type that is or contains VARIANT or
+-- GEOMETRY, raises an error at registration.
 registerScalarFunction :: (Function f) => RegistrationTarget -> Text -> Proxy f -> (Allocator -> IO ScalarFunctionResources) -> IO ()
 registerScalarFunction target name proxy acquire = do
   when (Text.null name || Text.any (== '\0') name) $
     throwIO (functionInvocationError "duckdb-simple: invalid scalar function name")
+  -- See Note [Type declarations] in "Database.DuckDB.Simple.ToField".
+  parameters <- rowDeclarations name ["argument " <> argumentName index | index <- [0 ..]] (argumentTypes proxy)
   -- withTarget keeps its factory private. Borrow another one for the signature types.
   withRegistrationFactory target \factory ->
     withTarget
@@ -269,9 +232,13 @@ registerScalarFunction target name proxy acquire = do
           \ScalarFunctionResources{scalarFunctionExecPtr, scalarFunctionInitPtr} -> do
             withIdentifier name $ checked . c_duckdb_v2_scalar_function_set_name scalarFun
             signature <- output (c_duckdb_v2_scalar_function_get_signature scalarFun)
-            forM_ (zip [0 :: Int ..] (argumentTypes proxy)) \(index, dtype) ->
-              withLogicalType factory dtype \logical ->
-                withIdentifier (Text.pack ("arg" <> show index)) \argument ->
+            forM_ (zip [0 :: Int ..] parameters) \(index, dtype) ->
+              withTypeDeclaration factory dtype \logical -> do
+                rep <- logicalTypeToRep logical
+                when (hasVariantOrGeometry rep) $
+                  throwInvalidArgument
+                    (name <> ": argument " <> argumentName index <> ": the type of a scalar function argument cannot be or contain VARIANT or GEOMETRY")
+                withIdentifier (argumentName index) \argument ->
                   checked (c_duckdb_v2_function_signature_add_parameter signature argument logical nullHandle DuckDBV2FunctionParameterKindPositionalOnly)
             withLogicalType factory (duckTypeForScalar (returnType proxy)) $ \logical ->
               checked (c_duckdb_v2_function_signature_set_return_type signature logical)
@@ -283,6 +250,20 @@ registerScalarFunction target name proxy acquire = do
             checked (c_duckdb_v2_scalar_function_set_exec_callback scalarFun scalarFunctionExecPtr)
             forM_ scalarFunctionInitPtr $ checked . c_duckdb_v2_scalar_function_set_init_callback scalarFun
             register
+
+-- | Test whether a type is or contains VARIANT or GEOMETRY. The argument
+-- reader of a scalar function reads neither type (makeColumnReader).
+hasVariantOrGeometry :: LogicalTypeRep -> Bool
+hasVariantOrGeometry = \case
+  LogicalTypeScalar LogicalTypeIdVariant -> True
+  LogicalTypeGeometry _ -> True
+  LogicalTypeList child -> hasVariantOrGeometry child
+  LogicalTypeArray child _ -> hasVariantOrGeometry child
+  LogicalTypeMap key value -> hasVariantOrGeometry key || hasVariantOrGeometry value
+  LogicalTypeStruct fields -> any (hasVariantOrGeometry . structFieldValue) fields
+  LogicalTypeTuple fields -> any hasVariantOrGeometry fields
+  LogicalTypeUnion members -> any (hasVariantOrGeometry . unionMemberType) members
+  _ -> False
 
 -- | Release each owned logical type after the signature copies it.
 withLogicalType :: DuckDBV2FactoryHandle -> LogicalTypeId -> (DuckDBV2LogicalTypeHandle -> IO a) -> IO a

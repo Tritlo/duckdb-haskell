@@ -617,11 +617,12 @@ data BrokenDisplay = BrokenDisplay
 instance Exception BrokenDisplay where
   displayException _ = error "broken error rendering"
 
--- | Force a setup exception after scalar callbacks have been acquired.
+-- | Force a setup exception after scalar callbacks have been acquired. The
+-- registration reads the declaration of the argument in the setup.
 data BrokenSignature = BrokenSignature
 
 instance Function BrokenSignature where
-  argumentTypes _ = error "broken scalar signature"
+  argumentTypes _ = [Right (error "broken scalar signature")]
   returnType _ = error "unused return type"
   isVolatile _ = False
   applyFunction _ _ = error "unused function"
@@ -630,7 +631,7 @@ instance Function BrokenSignature where
 data InvalidSignature = InvalidSignature
 
 instance Function InvalidSignature where
-  argumentTypes _ = [LogicalTypeIdInvalid]
+  argumentTypes _ = [Right (Registration.TypeExpression "no_such_type")]
   returnType _ = returnType (Proxy :: Proxy Int64)
   isVolatile _ = False
   applyFunction _ _ = error "unregistered function"

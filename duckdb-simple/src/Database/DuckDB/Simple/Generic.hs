@@ -94,7 +94,7 @@ module Database.DuckDB.Simple.Generic (
   ViaDuckDB (..),
 ) where
 
-import Control.Exception (displayException, fromException)
+import Control.Exception (displayException)
 import Control.Monad (unless)
 import Data.Array (Array, elems, listArray)
 import qualified Data.ByteString as BS
@@ -111,6 +111,7 @@ import Data.Time.LocalTime (LocalTime, TimeOfDay)
 import Data.Typeable (Typeable)
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
+import Database.DuckDB.Simple.Element (valueTypeName)
 import Database.DuckDB.Simple.FromField (
   Field (..),
   FieldValue (..),
@@ -349,13 +350,6 @@ instance (Ord k, DuckValue k, DuckValue v) => DuckValue (Map.Map k v) where
 -- because a value can be large.
 unexpectedValue :: String -> FieldValue -> Either String a
 unexpectedValue expected value = Left (displayException (Incompatible (valueTypeName value) Text.empty (Text.pack expected) Text.empty))
-
--- | The SQL type name of a decoded value, as each read error gives it. The
--- error of 'returnError' holds that name.
-valueTypeName :: FieldValue -> Text
-valueTypeName value = case returnError Incompatible (Field Text.empty 0 value) Text.empty :: Ok () of
-  Errors (err : _) | Just result <- fromException err -> errSQLType result
-  _ -> Text.pack "an unknown type"
 
 --------------------------------------------------------------------------------
 -- Generic machinery

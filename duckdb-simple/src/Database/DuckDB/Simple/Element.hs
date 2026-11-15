@@ -16,16 +16,19 @@ module Database.DuckDB.Simple.Element (
   duckDBHugeIntToInteger,
   timeTzMaxOffsetSeconds,
   timeTzOffsetBits,
+  valueTypeName,
   vectorElementType,
   withVectorType,
 ) where
 
-import Control.Exception (bracket, throwIO, try)
+import Control.Exception (bracket, fromException, throwIO, try)
 import Data.Bits (clearBit, shiftL, shiftR, testBit, xor, (.&.), (.|.))
 import qualified Data.ByteString as BS
 import Data.Coerce (coerce)
 import Data.Int (Int32, Int64)
 import Data.Ratio ((%))
+import Data.Text (Text)
+import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Time.Calendar (addDays, fromGregorian)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
@@ -36,11 +39,15 @@ import Data.Word (Word64, Word8)
 import Database.DuckDB.Simple.FromField (
   BigNum (..),
   BitString (..),
+  Field (..),
   FieldValue (..),
   IntervalValue (..),
+  ResultError (..),
   TimeWithZone (..),
+  returnError,
  )
 import Database.DuckDB.Simple.Native
+import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Alloc (alloca, allocaBytes)
@@ -285,3 +292,11 @@ decodeBigNum bytes = BS.useAsCStringLen bytes \(raw, len) -> alloca \lengthSlot 
 -- | Read an unsigned big-endian magnitude in linear time.
 bigEndianInteger :: Ptr Word8 -> DuckDBIdx -> IO Integer
 bigEndianInteger (Ptr addr) count = case fromIntegral count of W# size -> integerFromAddr size addr 1#
+
+-- | The SQL type name of a decoded value, as each read error gives it. An error
+-- text names this type, not the value, because a value can be large. The error
+-- of 'returnError' holds that name.
+valueTypeName :: FieldValue -> Text
+valueTypeName value = case returnError Incompatible (Field Text.empty 0 value) Text.empty :: Ok () of
+  Errors (err : _) | Just result <- fromException err -> errSQLType result
+  _ -> Text.pack "an unknown type"

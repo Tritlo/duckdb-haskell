@@ -55,7 +55,7 @@ import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds)
 import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), timeOfDayToTime, utc, utcToLocalTime)
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
-import Database.DuckDB.Simple.Element (timeTzMaxOffsetSeconds, timeTzOffsetBits)
+import Database.DuckDB.Simple.Element (timeTzMaxOffsetSeconds, timeTzOffsetBits, valueTypeName)
 import Database.DuckDB.Simple.FromField (
   BigNum (..),
   BitString (..),
@@ -1542,7 +1542,7 @@ scalarFieldValueDuckValue factory dtype value = case (dtype, value) of
   (LogicalTypeIdHugeInt, FieldHugeInt i) -> hugeIntDuckValue factory i
   (LogicalTypeIdUHugeInt, FieldUHugeInt i) -> uhugeIntDuckValue factory i
   (LogicalTypeIdBigNum, FieldBigNum big) -> bigNumDuckValue factory big
-  _ -> throwInvalidArgument ("unsupported scalar conversion for " <> duckDBTypeToName dtype <> " from " <> Text.pack (show value))
+  _ -> throwInvalidArgument ("unsupported scalar conversion for " <> duckDBTypeToName dtype <> " from a value of type " <> valueTypeName value)
 
 -- | Construct an ENUM value by the default cast of the label to the ENUM type.
 -- The label of a 'FieldEnum' gives the value, not its index: an index of
@@ -1621,7 +1621,7 @@ withIdentifiers names action = do
   withIdentifierArray names action
 
 typeMismatch :: String -> FieldValue -> IO a
-typeMismatch expected actual = throwInvalidArgument ("cannot encode " <> Text.pack (show actual) <> " as " <> Text.pack expected)
+typeMismatch expected actual = throwInvalidArgument ("cannot encode a value of type " <> valueTypeName actual <> " as " <> Text.pack expected)
 
 -- | Construct a GEOMETRY value of the declared CRS from a raw geometry. See
 -- Note [Raw GEOMETRY parameters]. A user cast from BLOB to GEOMETRY does not

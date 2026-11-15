@@ -521,8 +521,18 @@ valueRegressionTests =
         case result of
           Left SQLError{sqlErrorType, sqlErrorMessage} -> do
             sqlErrorType @?= Just ErrorInputInvalid
-            assertBool (Text.unpack sqlErrorMessage) ("unsupported scalar conversion for BIGINT from FieldText \"x\"" `Text.isInfixOf` sqlErrorMessage)
+            assertBool
+              (Text.unpack sqlErrorMessage)
+              ("unsupported scalar conversion for BIGINT from a value of type VARCHAR" `Text.isInfixOf` sqlErrorMessage)
           Right _ -> assertFailure "expected a conversion error for the third element"
+        -- A value of another kind than the declared type names its SQL type.
+        try
+          (query conn "SELECT ?" (Only (singleField (LogicalTypeList (LogicalTypeScalar LogicalTypeIdBigInt)) (FieldInt32 7))) :: IO [Only FieldValue])
+          >>= \case
+            Left SQLError{sqlErrorType, sqlErrorMessage} -> do
+              sqlErrorType @?= Just ErrorInputInvalid
+              assertBool (Text.unpack sqlErrorMessage) ("cannot encode a value of type INTEGER as " `Text.isInfixOf` sqlErrorMessage)
+            Right rows -> assertFailure ("expected the encode error, got " <> show rows)
         (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
     , testCase "a declared NULL type binds NULL and rejects a value that is not NULL" $ withConnection ":memory:" \conn -> do
         let sqlNull = LogicalTypeScalar LogicalTypeIdSQLNull
@@ -533,7 +543,9 @@ valueRegressionTests =
         case result of
           Left SQLError{sqlErrorType, sqlErrorMessage} -> do
             sqlErrorType @?= Just ErrorInputInvalid
-            assertBool (Text.unpack sqlErrorMessage) ("unsupported scalar conversion for NULL from FieldInt32 7" `Text.isInfixOf` sqlErrorMessage)
+            assertBool
+              (Text.unpack sqlErrorMessage)
+              ("unsupported scalar conversion for NULL from a value of type INTEGER" `Text.isInfixOf` sqlErrorMessage)
           Right _ -> assertFailure "expected a conversion error for a value that is not NULL"
     , testCase "GEOMETRY decodes as well-known binary" $ withConnection ":memory:" \conn -> do
         [Only bytes] <- query_ conn "SELECT 'POINT(1 2)'::GEOMETRY" :: IO [Only BS.ByteString]

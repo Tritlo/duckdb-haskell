@@ -458,6 +458,40 @@ tests =
               Left (err :: IOException) -> assertBool (show err) (reason `isInfixOf` show err)
               Right rows -> assertFailure ("expected the " <> reason <> " error, got " <> show rows)
         (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
+    , testCase "a column that holds an ENUM, a MAP, or a UNION does not read as Variant" $ withConnection ":memory:" \conn -> do
+        -- The cast to VARIANT changes these values, so the read raises the
+        -- error of an incompatible column at each depth.
+        forM_
+          [ ("'a'::ENUM('a', 'b')", "ENUM")
+          , ("MAP {'k': 1}", "MAP")
+          , ("union_value(n := 1)", "UNION")
+          , ("['a'::ENUM('a', 'b')]", "LIST")
+          , ("{'m': MAP {'k': 1}}", "STRUCT")
+          , ("[union_value(n := 1)]::UNION(n INTEGER)[1]", "ARRAY")
+          ]
+          \(expression, sqlName) -> do
+            result <- try (query_ conn (Query ("SELECT " <> expression <> " AS c")) :: IO [Only Variant])
+            case result of
+              Left SQLError{sqlErrorMessage} ->
+                sqlErrorMessage
+                  @?= "duckdb-simple: column c has type "
+                    <> sqlName
+                    <> " but expected Variant: the cast to VARIANT changes an ENUM, a MAP, or a UNION; write c::VARIANT"
+              Right rows -> assertFailure ("expected Incompatible for " <> Text.unpack expression <> ", got " <> show rows)
+        -- The cast in SQL gives a VARIANT column, which reads. So does a column
+        -- of another type, and a VARIANT with nested values.
+        ( query_ conn "SELECT ('a'::ENUM('a', 'b'))::VARIANT, (MAP {'k': 1})::VARIANT, 7::INTEGER, {'a': [1, 2]}::VARIANT"
+            :: IO [(Variant, Variant, Variant, Variant)]
+          )
+          >>= ( @?=
+                  [
+                    ( Variant (FieldText "a")
+                    , Variant (FieldList [variantObject [("key", FieldText "k"), ("value", FieldInt32 1)]])
+                    , Variant (FieldInt32 7)
+                    , Variant (variantObject [("a", FieldList [FieldInt32 1, FieldInt32 2])])
+                    )
+                  ]
+              )
     , testCase "geometry payload retains empty layout tags and native NaN points" $ withConnection ":memory:" \conn ->
         forM_ ["GEOMETRYCOLLECTION ZM EMPTY", "MULTIPOLYGON M EMPTY", "POINT Z (NaN NaN 7)"] \wkt -> do
           [Only geometry] <- query conn "SELECT ?::GEOMETRY" (Only (wkt :: Text)) :: IO [Only RawGeometry]

@@ -355,6 +355,9 @@ read. These pairs are:
 - Each integer type from ENUM. The cast to an integer type parses the label,
   for example '20' gives 20. Write c::INTEGER for that value, or enum_code(c)
   for the index.
+- Variant from a value that holds an ENUM, a MAP, or a UNION at any depth. The
+  cast to VARIANT gives another value. Write c::VARIANT. A VARIANT column does
+  not decode to these values.
 
 Text and String read the label of an ENUM value, which is the text of the cast
 to VARCHAR. See Note [ENUM labels] in "Database.DuckDB.Simple.Materialize".

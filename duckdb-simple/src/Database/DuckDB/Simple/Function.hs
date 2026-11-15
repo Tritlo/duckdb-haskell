@@ -4,12 +4,11 @@
 
 -- |
 -- Module      : Database.DuckDB.Simple.Function
--- Description : Register Haskell scalar functions, casts, table functions, and aggregate functions with DuckDB connections.
+-- Description : Register Haskell scalar functions, table functions, and aggregate functions with DuckDB connections.
 --
 -- Register pure and IO scalar functions with the managed argument and result
--- conversions. Register pure casts with the same argument conversion. Register
--- table functions and aggregate functions that convert their arguments with
--- 'FromRow'.
+-- conversions. Register table functions and aggregate functions that convert
+-- their arguments with 'FromRow'.
 --
 -- A program that registers a callback must be linked with @-threaded@. DuckDB
 -- can call a callback from several of its threads at the same time, and the
@@ -59,7 +58,6 @@ module Database.DuckDB.Simple.Function (
   createFunctionWithState,
   deleteFunction,
   TypeDeclaration (..),
-  createCast,
   TypedRow,
   createTableFunction,
   Aggregate (..),
@@ -71,7 +69,6 @@ import Control.Monad (forM)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.Callback (RegistrationTarget (ConnectionTarget))
-import Database.DuckDB.Simple.FromField (FromField)
 import Database.DuckDB.Simple.FromRow (FromRow)
 import Database.DuckDB.Simple.Function.Internal (
   Function (..),
@@ -86,8 +83,7 @@ import Database.DuckDB.Simple.Internal (
   withParsedStatements,
  )
 import Database.DuckDB.Simple.Native
-import Database.DuckDB.Simple.ToField (ToDuckValue)
-import Database.DuckDB.Simple.Typed (TypedRow, createCastOn)
+import Database.DuckDB.Simple.Typed (TypedRow)
 import Database.DuckDB.Simple.Typed.Aggregate (Aggregate (..), createAggregateOn)
 import Database.DuckDB.Simple.Typed.Table (createTableFunctionOn)
 import Database.DuckDB.Simple.V2.Registration (TypeDeclaration (..))
@@ -108,7 +104,7 @@ import Database.DuckDB.Simple.V2.Registration (TypeDeclaration (..))
 -- type, as a SQL @CAST@ does: it rounds a value to the scale of a DECIMAL type
 -- text, and it raises an error for a value that does not fit.
 --
--- Each argument type needs 'FromField' and
+-- Each argument type needs 'Database.DuckDB.Simple.FromField.FromField' and
 -- 'Database.DuckDB.Simple.ToField.DuckDBColumnType' instances. The SQL type of
 -- an argument is the 'Database.DuckDB.Simple.ToField.duckdbTypeDeclaration' of
 -- its type. An argument type with no declaration, or a type that is or
@@ -121,53 +117,6 @@ createFunction conn = createFunctionOn (ConnectionTarget conn)
 -- | Register a scalar function with per-worker thread-local state.
 createFunctionWithState :: (Function f) => Connection -> Text -> IO s -> (s -> f) -> IO ()
 createFunctionWithState conn = createFunctionWithStateOn (ConnectionTarget conn)
-
--- | Register an explicit cast from the source type (the first type) to the
--- target type (the second type). DuckDB uses the cast for @CAST@ and @TRY_CAST@
--- on each connection of the instance, and also for some casts that it makes by
--- itself, for example for an INSERT into a column of the target type. DuckDB
--- then does not convert a function argument from the source type to the target
--- type. Thus a cast between two built-in types changes plain SQL on the
--- instance. The section /Typed registration/ of the README gives the details.
--- Register a cast again to replace it.
---
--- The function converts one value. 'Right' gives the result. 'Left' gives a
--- failure message. A NULL value gives NULL. The function does not run for NULL.
--- A GEOMETRY source reads as a GEOMETRY result does, for example as a
--- @Geometry@ or as a 'Database.DuckDB.Simple.Geometry.RawGeometry' with its
--- CRS. A source that is or contains VARIANT fails the cast for each value that
--- is not NULL.
---
--- A row fails when its value does not convert to @a@, when the function gives
--- 'Left', or when the function or the result conversion raises an exception.
--- @CAST@ then fails with the message of the first failed row and the error type
--- 'ErrorTypeMismatch'. @TRY_CAST@ gives NULL for each failed row and the results
--- for the other rows. @TRY(CAST(...))@ raises the error. The section /Errors/
--- of the README tells why.
---
--- DuckDB casts each result to the target type with its default cast. The target
--- type can be a custom type whose base type is the type of @b@, for example a
--- type from 'Database.DuckDB.Simple.Registration.registerCustomType'. A type
--- from SQL @CREATE TYPE name AS base@ is only another name for the base type,
--- so a cast to it is a cast to the base type. See 'TypeDeclaration'.
---
--- > createCast conn (TypeExpression "BIGINT") (TypeExpression "shifted") \(value :: Int64) ->
--- >     if value > maxBound - 100 then Left "BIGINT overflow" else Right (value + 100)
---
--- DuckDB uses a registered cast in place of its built-in cast for the same
--- pair of types, on each connection of the instance. On a connection, a
--- registered cast does not change a value that the library reads or binds:
--- the library reads GEOMETRY and VARIANT values with the casts of the
--- instance, which are the built-in casts, and it builds GEOMETRY, ENUM, and
--- VARIANT values with the default cast of DuckDB. Thus a cast from GEOMETRY to
--- BLOB changes the result of @CAST(g AS BLOB)@, but not a GEOMETRY value that a
--- query gives. Two places still use registered casts. The callbacks of a
--- function that an extension registers read a GEOMETRY value with the casts of
--- the session, because an extension has no instance. @setConfigValue@ and
--- @setConfigOption@ in "Database.DuckDB.Simple.Config" cast the value to the
--- type of the option as SQL @SET@ does.
-createCast :: (FromField a, ToDuckValue b) => Connection -> TypeDeclaration -> TypeDeclaration -> (a -> Either Text b) -> IO ()
-createCast conn = createCastOn (ConnectionTarget conn)
 
 -- | Register a table function. The function gives the rows of one scan as a
 -- list. The list of names gives the names of the result columns. 'TypedRow' of

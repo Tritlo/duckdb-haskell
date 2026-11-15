@@ -585,11 +585,10 @@ integerBinding binds an Integer or a Natural parameter with this rule:
   value, and a cast of it to an integer type can have the defects above. For
   example, setConfigValue with 2^128 + 5 for a UBIGINT option sets 5. The
   callers of toDuckValue are setConfigValue, defaultValue, the typed rows of
-  table functions and COPY FROM, the writer of a typed cast, and the writer of
-  a scalar function result. The DuckDBColumnType of Integer and Natural stays
-  BIGNUM, so a typed row declares a BIGNUM column for them, and a scalar
-  function declares a BIGNUM result. DuckDB casts each HUGEINT value to that
-  BIGNUM column with no defect.
+  table functions and COPY FROM, and the writer of a scalar function result.
+  The DuckDBColumnType of Integer and Natural stays BIGNUM, so a typed row
+  declares a BIGNUM column for them, and a scalar function declares a BIGNUM
+  result. DuckDB casts each HUGEINT value to that BIGNUM column with no defect.
 
 - Arrays, lists, and maps. DuckDB casts each element of an ARRAY or a LIST
   value, and each key and value of a MAP value, to the declared type when it

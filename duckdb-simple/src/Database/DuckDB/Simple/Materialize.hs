@@ -197,7 +197,7 @@ the view of the vector.
   value vectors from the entry STRUCT and does not flatten that STRUCT itself.
 
 Write. A writer of a callback output vector sets the size of the vector, and
-then flattens the vector (castRows, writeRows, and writeResults). A writer of an
+then flattens the vector (writeRows and writeResults). A writer of an
 owned vector from withOwnedVector does not flatten (materializeValue, and the
 writers of one-row vectors in "Database.DuckDB.Simple.ToField").
 
@@ -355,8 +355,8 @@ their result:
   instance, and so does queryMetrics. The type cache of the connection keeps that factory (typeCacheCasts
   in "Database.DuckDB.Simple.TypeCache"). The callbacks of a registration on a
   connection read a GEOMETRY value with the same factory: the value of an option
-  update, the arguments of a pragma, a scalar function, a typed aggregate, a
-  typed cast, or a table function, and the rows of a COPY TO function. The
+  update, the arguments of a pragma, a scalar function, a typed aggregate, or a
+  table function, and the rows of a COPY TO function. The
   registration takes the factory (targetCastFactory in
   "Database.DuckDB.Simple.Callback").
 - withObjectChildren and withCast cast VARIANT values to the types of their
@@ -392,8 +392,8 @@ the same pair changes their result:
 
 - An extension target has no instance. The callbacks that an extension
   registers read a GEOMETRY value with the factory of the callback context: the
-  value of an option update, the arguments of a pragma, a scalar function, a
-  typed cast, or a table function, and the rows of a COPY TO function. Thus a
+  value of an option update, the arguments of a pragma, a scalar function, or a
+  table function, and the rows of a COPY TO function. Thus a
   user cast from GEOMETRY to BLOB changes a GEOMETRY value that these callbacks
   read. The update callback of an aggregate function has no context, so a
   typed aggregate of an extension refuses a GEOMETRY argument at registration.

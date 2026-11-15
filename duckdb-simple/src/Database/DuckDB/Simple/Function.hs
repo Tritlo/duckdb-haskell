@@ -113,6 +113,14 @@ createFunctionWithState conn = createFunctionWithStateOn (ConnectionTarget conn)
 --
 -- > createCast conn (TypeExpression "BIGINT") (TypeExpression "shifted") \(value :: Int64) ->
 -- >     if value > maxBound - 100 then Left "BIGINT overflow" else Right (value + 100)
+--
+-- DuckDB uses a registered cast in place of its built-in cast for the same
+-- pair of types, on each connection of the database. The library uses these
+-- built-in casts to read and to bind values: GEOMETRY to BLOB, BLOB to
+-- GEOMETRY, VARCHAR to GEOMETRY, VARCHAR to an ENUM type, a type to VARIANT,
+-- and VARIANT to a type. Do not register a cast for one of these pairs. The
+-- library then reads or binds the result of that cast, and it can give NULL
+-- or another value with no error.
 createCast :: (FromField a, ToDuckValue b) => Connection -> TypeDeclaration -> TypeDeclaration -> (a -> Either Text b) -> IO ()
 createCast conn = createCastOn (ConnectionTarget conn)
 

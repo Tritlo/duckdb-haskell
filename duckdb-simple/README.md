@@ -873,6 +873,15 @@ castExample conn = do
   query_ conn "SELECT CAST(1::BIGINT AS shifted)::BIGINT" -- [Only 101]
 ```
 
+DuckDB uses a registered cast in place of its built-in cast for the same pair
+of types, on each connection of the database. The library uses these built-in
+casts to read and to bind values: GEOMETRY to BLOB, BLOB to GEOMETRY, VARCHAR
+to GEOMETRY, VARCHAR to an ENUM type, a type to VARIANT, and VARIANT to a
+type. Do not register a cast for one of these pairs, with `createCast` or with
+a native cast registration. The library then reads or binds the result of that
+cast. For example, after a cast from GEOMETRY to BLOB that gives NULL, each
+GEOMETRY result is NULL, and no error occurs.
+
 `createAggregate` registers an aggregate function as a fold. The result type
 is a result type of `createFunction`.
 

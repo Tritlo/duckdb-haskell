@@ -278,9 +278,45 @@ prepareValueReader readers tree dtype vector dataPtr validity = case dtype of
       valid <- chunkIsRowValid validity (fromIntegral row)
       if valid then wrap <$> decode row else pure FieldNull
 
+{- Note [User casts and the casts of the library]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The library runs casts of DuckDB for its own work:
+
+- prepareGeometryReader casts a GEOMETRY vector to BLOB. Each read of a
+  GEOMETRY value uses it.
+- rawGeometryDuckValue casts a BLOB value to GEOMETRY, and the ToDuckValue
+  instance of Geometry casts a VARCHAR value to GEOMETRY
+  ("Database.DuckDB.Simple.ToField").
+- enumDuckValue casts a VARCHAR value to an ENUM type, and variantDuckValue
+  casts a value to VARIANT (the same module).
+- withObjectChildren and withCast cast VARIANT values to the types of their
+  payloads ("Database.DuckDB.Simple.VariantCodec").
+- readNativeTypes runs a statement that casts a text to GEOMETRY
+  ("Database.DuckDB.Simple.TypeCache").
+
+These casts use the factory of a connection or of a callback context. The
+header says: "A connection's or callback's factory casts with that client's
+cast functions and settings". A cast that a user registers is a cast function
+of each connection of the database, also of the helper connection of the
+VARIANT codec. DuckDB uses a registered cast in place of the built-in cast
+for the same pair of types.
+
+Thus a user cast for one of these pairs replaces the cast that the library
+expects, and the library gives the result of the user cast. For example,
+after a user cast from GEOMETRY to BLOB that gives NULL, each GEOMETRY result
+is NULL, and no error occurs. A cast that is registered for GEOMETRY is not
+used for a GEOMETRY type that has a CRS.
+
+The library does not prevent this. The header says that the factory of an
+instance "supports only the built-in casts, with default settings". The
+readers and the binders do not use that factory.
+-}
+
 -- | Copy the WKB bytes and CRS of every GEOMETRY row in a vector. GEOMETRY has
 -- no committed vector layout, so a native cast to BLOB reads the rows. The
--- reader takes logical rows. See Note [Vector flatten].
+-- reader takes logical rows. See Note [Vector flatten]. A user cast from
+-- GEOMETRY to BLOB replaces this cast. See
+-- Note [User casts and the casts of the library].
 prepareGeometryReader :: DuckDBV2FactoryHandle -> DuckDBV2VectorHandle -> IO (Int -> IO FieldValue)
 prepareGeometryReader factory vector = do
   crs <-

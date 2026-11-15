@@ -170,7 +170,11 @@ withVariantState TypeCache{typeCacheInstance, typeCacheState} action = mask \res
   either (throwIO :: SomeException -> IO a) pure outcome
 
 -- | Read the SQL-derived GEOMETRY types of custom CRS names. Run no statement
--- for an empty list. See Note [CRS types of a connection].
+-- for an empty list. See Note [CRS types of a connection]. The statement casts
+-- a text to GEOMETRY, and a user cast from VARCHAR to GEOMETRY replaces that
+-- cast. See
+-- Note [User casts and the casts of the library] in
+-- "Database.DuckDB.Simple.Materialize".
 readNativeTypes :: DuckDBV2ConnectionHandle -> [Text] -> IO NativeTypes
 readNativeTypes _ [] = pure (NativeTypes Map.empty [])
 readNativeTypes connection crss = do

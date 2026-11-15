@@ -294,7 +294,10 @@ assemble (node : rest) children = do
 -- width and scale. It never holds a STRUCT type.
 type CastTypes = IORef (Map.Map Text DuckDBV2LogicalTypeHandle)
 
--- | Borrow the native cast result while copying its payload.
+-- | Borrow the native cast result while copying its payload. A user cast from
+-- VARIANT to the type of the payload replaces the cast. See
+-- Note [User casts and the casts of the library] in
+-- "Database.DuckDB.Simple.Materialize".
 withCast :: VariantState -> DuckDBV2ValueHandle -> Text -> (DuckDBV2ValueHandle -> IO a) -> IO a
 withCast state value target action = do
   logical <- castType state target

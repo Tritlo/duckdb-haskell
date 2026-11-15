@@ -1004,6 +1004,10 @@ scalarFieldValueDuckValue factory dtype value = case (dtype, value) of
           )
       )
 
+-- | Construct an ENUM value by a cast of the entry text to the ENUM type. A
+-- user cast from VARCHAR to that type replaces the cast. See
+-- Note [User casts and the casts of the library] in
+-- "Database.DuckDB.Simple.Materialize".
 enumDuckValue :: DuckDBV2FactoryHandle -> Array Int Text -> Word32 -> IO DuckDBV2ValueHandle
 enumDuckValue factory entries index = do
   let dictionary = elems entries
@@ -1064,7 +1068,10 @@ typeMismatch :: String -> FieldValue -> IO a
 typeMismatch expected actual = throwIO (userError ("duckdb-simple: cannot encode " <> show actual <> " as " <> expected))
 
 -- | Construct a GEOMETRY value of the declared CRS from a raw geometry. See
--- Note [Raw GEOMETRY parameters].
+-- Note [Raw GEOMETRY parameters]. A user cast from BLOB to GEOMETRY replaces
+-- the cast. See
+-- Note [User casts and the casts of the library] in
+-- "Database.DuckDB.Simple.Materialize".
 rawGeometryDuckValue :: ValueBuilder -> Maybe Text -> RawGeometry -> IO DuckDBV2ValueHandle
 rawGeometryDuckValue ValueBuilder{builderFactory = factory, builderType = makeType} crs RawGeometry{rawGeometryWKB, rawGeometryCRS} = do
   when (rawGeometryCRS /= crs) $
@@ -1161,7 +1168,10 @@ contains with this rule:
   geometry parameter.
 -}
 
--- | Cast the payload to VARIANT through the supplied native factory.
+-- | Cast the payload to VARIANT through the supplied native factory. A user
+-- cast to VARIANT replaces the cast. See
+-- Note [User casts and the casts of the library] in
+-- "Database.DuckDB.Simple.Materialize".
 variantDuckValue :: ValueBuilder -> FieldValue -> IO DuckDBV2ValueHandle
 variantDuckValue builder@ValueBuilder{builderFactory = factory, builderType = makeType} value = do
   (rep, payload) <- variantPayloadType value
@@ -1175,6 +1185,10 @@ utcTimestampNsDuckValue factory value =
   encodeUnbounded (encodeTimestampUnits 1000000000 . utcToLocalTime utc) value
     >>= (\encoded -> output (c_duckdb_v2_value_create_timestamp_tz_ns factory encoded))
 
+-- | Cast the WKT text of the shape to GEOMETRY. A user cast from VARCHAR to
+-- GEOMETRY replaces the cast. See
+-- Note [User casts and the casts of the library] in
+-- "Database.DuckDB.Simple.Materialize".
 instance ToDuckValue G.Geometry where
   toDuckValue factory geometry = do
     wkt <- either (throwIO . userError) pure (WKT.encodeWKT geometry)

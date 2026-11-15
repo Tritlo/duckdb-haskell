@@ -892,13 +892,18 @@ castExample conn = do
 ```
 
 DuckDB uses a registered cast in place of its built-in cast for the same pair
-of types, on each connection of the database. The library uses these built-in
-casts to read and to bind values: GEOMETRY to BLOB, BLOB to GEOMETRY, VARCHAR
-to GEOMETRY, VARCHAR to an ENUM type, a type to VARIANT, and VARIANT to a
-type. Do not register a cast for one of these pairs, with `createCast` or with
-a native cast registration. The library then reads or binds the result of that
-cast. For example, after a cast from GEOMETRY to BLOB that gives NULL, each
-GEOMETRY result is NULL, and no error occurs.
+of types, on each connection of the database. The library reads a GEOMETRY
+value with the built-in casts only, so a cast from GEOMETRY to BLOB changes the
+result of `CAST(g AS BLOB)`, but not a GEOMETRY value that a query gives. There
+are two exceptions: a GEOMETRY value in a VARIANT, and a GEOMETRY value that a
+callback of a function of an extension reads. An extension has no instance, so
+these callbacks read with the casts of the session. The library uses these
+built-in casts to read and to bind other values: BLOB to GEOMETRY, VARCHAR to
+GEOMETRY, VARCHAR to an ENUM type, a type to VARIANT, and VARIANT to a type. Do
+not register a cast for one of these pairs, with `createCast` or with a native
+cast registration. The library then reads or binds the result of that cast. For
+example, after a cast from VARIANT to BIGINT that gives NULL, each BIGINT in a
+VARIANT result is NULL, and no error occurs.
 
 `createAggregate` registers an aggregate function as a fold. The result type
 is a result type of `createFunction`.

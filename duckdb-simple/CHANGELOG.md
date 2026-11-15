@@ -192,11 +192,12 @@
   lexicographic order.
 - Allow a VARIANT object to contain an empty key with other named keys.
   Version 0.3 rejected such an object.
-- A `Variant` parameter with a UNION payload, at any depth, raises `SQLError`
-  with the type `ErrorInputInvalid`, because a VARIANT keeps only the member
-  value of a UNION. Version 0.3 bound such a value with no error. The
-  errors for a MAP payload and an ENUM payload give the reason: a VARIANT
-  stores a MAP as a list of key and value objects, and an ENUM as its text.
+- A `Variant` parameter with a UNION, a MAP, an ENUM, or a GEOMETRY with a CRS
+  in its payload, at any depth, raises `SQLError` with the type
+  `ErrorInputInvalid`. The error gives the reason: a VARIANT keeps only the
+  member value of a UNION, stores a MAP as a list of key and value objects,
+  stores an ENUM as its text, and does not keep the CRS of a GEOMETRY. Version
+  0.3 bound a UNION payload with no error.
 - Read GEOMETRY results through a native cast to BLOB. DuckDB 2.0 rejects WKB
   with mixed Z/M member layouts.
 - `ToDuckValue.toDuckValue`, `logicalTypeFromRep`, and `logicalTypeFromRepWith`

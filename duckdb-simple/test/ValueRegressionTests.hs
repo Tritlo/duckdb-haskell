@@ -314,6 +314,31 @@ valueRegressionTests =
           , ("TUPLE(INTEGER, VARCHAR)", "(1, 'x')", Nothing)
           , ("UNION(a INTEGER, b VARCHAR)", "union_value(b := 'x')", Nothing)
           , ("STRUCT(a INTEGER)[]", "[{'a': 1}, NULL]", Nothing)
+          , ("VARIANT", "'2026-01-02 03:04:05.123456789'::TIMESTAMP_NS", Just "TIMESTAMP")
+          , ("VARIANT", "'03:04:05.123456789'::TIME_NS", Just "TIME")
+          , ("VARIANT", "123.4::DECIMAL(4,1)", Just "DECIMAL(4,1)")
+          , ("VARIANT", "'00112233-4455-6677-8899-aabbccddeeff'::UUID", Just "UUID")
+          , ("VARIANT", "'\\x00\\xFF'::BLOB", Just "BLOB")
+          , ("VARIANT", "'03:04:05+01:30'::TIMETZ", Just "TIME WITH TIME ZONE")
+          , ("VARIANT", "INTERVAL '1 month 2 days 3 microseconds'", Just "INTERVAL")
+          , ("GEOMETRY('OGC:CRS84')[]", "['POINT (1 2)', NULL]", Nothing)
+          , ("STRUCT(g GEOMETRY('OGC:CRS84'))", "{'g': 'POINT (1 2)'}", Nothing)
+          , ("TIMESTAMPTZ", "'infinity'", Nothing)
+          , ("TIME", "'24:00:00'", Nothing)
+          , ("DOUBLE", "'NaN'", Nothing)
+          , ("DOUBLE", "'-Infinity'", Nothing)
+          , ("FLOAT", "'NaN'", Nothing)
+          , ("FLOAT", "'Infinity'", Nothing)
+          , ("UNION(a INTEGER, b VARCHAR)", "union_value(a := NULL::INTEGER)", Nothing)
+          , ("INTEGER[][2]", "[[1, 2], [3]]", Nothing)
+          , ("MAP(STRUCT(k INTEGER), VARCHAR)", "MAP {{'k': 1}: 'a'}", Nothing)
+          , ("MAP(VARCHAR, INTEGER)", "MAP {}", Just "MAP(\"NULL\", \"NULL\")")
+          , ("INTEGER[]", "[]", Just "\"NULL\"[]")
+          , ("INTEGER[]", "[NULL, NULL]", Just "\"NULL\"[]")
+          , ("BIT[]", "['101', '0']", Nothing)
+          , ("TIMETZ[]", "['03:04:05+01:30']", Nothing)
+          , ("UUID[]", "['00112233-4455-6677-8899-aabbccddeeff']", Nothing)
+          , ("TIME_NS[][]", "[['03:04:05.123456789', '03:04:05']]", Just "TIME[][]")
           ]
           \(sqlType, literal, boundType) -> do
             let source = "(" <> literal <> ")::" <> sqlType
@@ -329,6 +354,21 @@ valueRegressionTests =
             _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE back (v " <> sqlType <> ")"))
             _ <- execute conn "INSERT INTO back VALUES (?)" (Only value)
             (query_ conn (Query ("SELECT v IS NOT DISTINCT FROM " <> source <> " FROM back")) :: IO [Only Bool]) >>= assertEqual label [Only True]
+        -- A custom CRS needs the name on the connection, and SQL gives it through ST_SetCRS.
+        withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = ["local grid"]} \custom -> do
+          _ <- execute_ custom "CREATE TABLE shapes AS SELECT ST_SetCRS('POINT (1 2)'::GEOMETRY, 'local grid') AS v"
+          [Only shape] <- query_ custom "SELECT v FROM shapes" :: IO [Only FieldValue]
+          ( query custom "SELECT typeof(?), (SELECT typeof(v) FROM shapes), ? IS NOT DISTINCT FROM (SELECT v FROM shapes)" (shape, shape)
+              :: IO [(Text, Text, Bool)]
+            )
+            >>= \case
+              [(actual, expected, same)] -> do
+                actual @?= expected
+                assertBool "custom CRS: SELECT ? gives another value" same
+              rows -> assertFailure (show rows)
+          _ <- execute custom "INSERT INTO shapes VALUES (?)" (Only shape)
+          (query_ custom "SELECT count(*) FROM shapes WHERE v IS NOT DISTINCT FROM (SELECT v FROM shapes LIMIT 1)" :: IO [Only Int64])
+            >>= (@?= [Only 2])
         -- A row read as a list of FieldValue binds back as a row.
         _ <-
           execute_
@@ -346,7 +386,7 @@ valueRegressionTests =
                   assertEqual label (Just ErrorInputInvalid) sqlErrorType
                   assertBool (Text.unpack sqlErrorMessage) (part `Text.isInfixOf` sqlErrorMessage)
                 Right rows -> assertFailure (label <> ": " <> show rows)
-        untyped "empty array" (FieldArray (listArray (0, -1) [])) "an empty FieldArray has no element, and a DuckDB ARRAY has at least one"
+        untyped "empty array" (FieldArray (listArray (0, -1) [])) "an empty ARRAY parameter is not possible"
         -- Empty values and NULL elements bind as the SQL literal does.
         forM_
           [ ("empty list", FieldList [], "\"NULL\"[]", "[]")

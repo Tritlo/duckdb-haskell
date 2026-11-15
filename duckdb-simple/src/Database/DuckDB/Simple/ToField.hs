@@ -167,15 +167,23 @@ Unbounded forms, with this rule:
   binding does not read the parameter type.
 - A value with digits below a microsecond makes the binding read the parameter
   type. A nanosecond parameter (TIME_NS, TIMESTAMP_NS, or TIMESTAMPTZ_NS for
-  the three types) gets a nanosecond value. Each other parameter, and a
-  parameter with no known type, gets the microsecond value. The digits below
-  one microsecond go away, as for the SQL literal.
+  the three types) gets a nanosecond value. A VARIANT parameter also gets a
+  nanosecond value, when the value fits the range of the nanosecond type
+  (fitsNanoseconds). A VARIANT holds TIME_NS, TIMESTAMP_NS, and TIMESTAMPTZ_NS
+  values. Each other parameter, and a parameter with no known type, gets the
+  microsecond value. The digits below one microsecond go away, as for the SQL
+  literal.
 - The digits below one nanosecond go away in each case.
 
 A value in an Array, a list, a Map, a STRUCT, a TUPLE, or a UNION parameter
 follows the type of its leaf in the target: timestampTypeForTarget gives a
 nanosecond type to a TIME, TIMESTAMP, or TIMESTAMPTZ leaf of a nanosecond
-target leaf. These parameters read the parameter type for each value.
+target leaf. These parameters read the parameter type for each value. A
+VARIANT leaf does not give a nanosecond type: elementBindingTarget gives an
+element of a VARIANT list or map no target, and timestampTypeForTarget has no
+VARIANT case. One LIST has one element type for all its elements, so a
+nanosecond element would be cast to the microsecond type of the list, and the
+cast rounds. Thus such a value gets the microsecond value.
 
 - Why the binding reads the parameter type only for such digits. A read of the
   parameter type runs the binder of DuckDB. See Note [Statement schemas] in
@@ -240,10 +248,36 @@ temporalValueBinding :: String -> LogicalTypeRep -> FieldValue -> (ValueBuilder 
 temporalValueBinding display source value makeDefault =
   targetValueBinding display \builder readTarget -> do
     target <- readTarget
-    let precise = timestampTypeForTarget target source
+    let precise = case (target, source) of
+          -- A time value with digits below a microsecond for a VARIANT
+          -- parameter. See Note [Nanosecond parameters].
+          (Just (LogicalTypeScalar LogicalTypeIdVariant), LogicalTypeScalar _)
+            | fitsNanoseconds value -> nanosecondType source
+          _ -> timestampTypeForTarget target source
     if precise == source || outsideNanosecondRange precise value
       then makeDefault builder
       else fieldValueWithTypeDuckValue builder precise (valueWithTypeMetadata precise value)
+
+-- | Give the nanosecond type of a TIME, TIMESTAMP, or TIMESTAMPTZ type.
+nanosecondType :: LogicalTypeRep -> LogicalTypeRep
+nanosecondType (LogicalTypeScalar LogicalTypeIdTime) = LogicalTypeScalar LogicalTypeIdTimeNs
+nanosecondType (LogicalTypeScalar LogicalTypeIdTimestamp) = LogicalTypeScalar LogicalTypeIdTimestampNs
+nanosecondType (LogicalTypeScalar LogicalTypeIdTimestampTz) = LogicalTypeScalar LogicalTypeIdTimestampTzNs
+nanosecondType rep = rep
+
+-- | Test whether the nanosecond value of a time value fits the range of its
+-- nanosecond type, with the range test of the encoder. Each time of day fits.
+fitsNanoseconds :: FieldValue -> Bool
+fitsNanoseconds (FieldTimestamp (Finite time)) = inFiniteRange (minBound :: Int64) maxBound (timestampUnits 1000000000 time)
+fitsNanoseconds (FieldTimestampTZ (Finite instant)) = fitsNanoseconds (FieldTimestamp (Finite (utcToLocalTime utc instant)))
+fitsNanoseconds _ = True
+
+-- | Give the target of an element of a LIST, an ARRAY, or a MAP. A VARIANT
+-- element type gives no target, so an element binds as for a parameter with
+-- no known type. See Note [Nanosecond parameters].
+elementBindingTarget :: Maybe LogicalTypeRep -> Maybe LogicalTypeRep
+elementBindingTarget (Just (LogicalTypeScalar LogicalTypeIdVariant)) = Nothing
+elementBindingTarget target = target
 
 -- | Test whether a t'LocalTime' for a TIMESTAMP_NS parameter is outside the
 -- range of TIMESTAMP_NS, and DuckDB also cannot cast its microsecond value to
@@ -718,7 +752,7 @@ instance (DuckDBColumnType a, ToField a) => ToField (Array Int a) where
       \builder readTarget -> do
         target <- readTarget
         let childTarget = collectionChildType target
-        arrayDuckValue builder childTarget (\value -> fieldBindingValue (toField value) builder (pure childTarget)) arr
+        arrayDuckValue builder childTarget (\value -> fieldBindingValue (toField value) builder (pure (elementBindingTarget childTarget))) arr
 
 -- | Bind a list as a LIST value with the element rules of an 'Array'. An empty
 -- list binds as an empty LIST of the element type. When the element type has
@@ -733,7 +767,7 @@ instance {-# OVERLAPPABLE #-} (DuckDBColumnType a, ToField a) => ToField [a] whe
       \builder readTarget -> do
         target <- readTarget
         let childTarget = collectionChildType target
-        listDuckValue builder childTarget (\value -> fieldBindingValue (toField value) builder (pure childTarget)) values
+        listDuckValue builder childTarget (\value -> fieldBindingValue (toField value) builder (pure (elementBindingTarget childTarget))) values
 
 -- | Bind a map as a MAP value. The pairs go in ascending key order. The keys
 -- and the values have the element rules of a list, so an empty map binds as an
@@ -750,8 +784,8 @@ instance (DuckDBColumnType k, DuckDBColumnType v, ToField k, ToField v) => ToFie
           builder
           keyTarget
           valueTarget
-          (\key -> fieldBindingValue (toField key) builder (pure keyTarget))
-          (\value -> fieldBindingValue (toField value) builder (pure valueTarget))
+          (\key -> fieldBindingValue (toField key) builder (pure (elementBindingTarget keyTarget)))
+          (\value -> fieldBindingValue (toField value) builder (pure (elementBindingTarget valueTarget)))
           (Map.toAscList pairs)
 
 -- | Bind a dynamic value, for example one that a query read as a t'FieldValue'.
@@ -768,9 +802,10 @@ instance (DuckDBColumnType k, DuckDBColumnType v, ToField k, ToField v) => ToFie
 -- Some values lose their type:
 --
 -- * A 'FieldTimestamp' binds as a TIMESTAMP, or as a TIMESTAMP_NS when it has
---   digits below a microsecond and the parameter has the type TIMESTAMP_NS,
---   whatever the unit of the column it came from. The
---   same holds for 'FieldTime' and 'FieldTimestampTZ'. See
+--   digits below a microsecond and the parameter has the type TIMESTAMP_NS or
+--   VARIANT, whatever the unit of the column it came from. The same holds for
+--   'FieldTime' and 'FieldTimestampTZ'. In a 'FieldList' or a 'FieldMap' for a
+--   VARIANT parameter, such a value gets the microsecond value. See
 --   Note [Nanosecond parameters].
 -- * A 'FieldText' binds as a VARCHAR with no collation, also when it came from
 --   a JSON value.
@@ -820,18 +855,13 @@ instance ToField FieldValue where
     FieldBigNum v -> toField v
     FieldEnum _ label -> toField label
     FieldArray items
-      | null items -> valueBinding (show value) \_ -> untypedFieldValue "an empty FieldArray has no element, and a DuckDB ARRAY has at least one"
+      | null items -> valueBinding (show value) (const emptyArrayError)
       | otherwise -> fieldValueSequence "FieldArray" c_duckdb_v2_value_create_array (elems items)
     FieldList items -> fieldValueSequence "FieldList" c_duckdb_v2_value_create_list items
     FieldMap pairs -> fieldValueMap pairs
     FieldStruct v -> toField v
     FieldTuple v -> toField v
     FieldUnion v -> toField v
-
--- | Raise the error for a t'FieldValue' parameter that has no known type. The
--- argument gives the reason.
-untypedFieldValue :: Text -> IO a
-untypedFieldValue reason = throwInvalidArgument (reason <> ", so the FieldValue cannot bind as a parameter")
 
 -- | Bind the elements of a 'FieldList' or a 'FieldArray' with the element type
 -- that they give. See Note [Element types of a list].
@@ -850,7 +880,7 @@ fieldValueSequence
 fieldValueSequence name create items =
   targetValueBinding ("<" <> Text.unpack name <> " length=" <> show (length items) <> ">") \builder@ValueBuilder{builderFactory = factory} readTarget -> do
     childTarget <- collectionChildType <$> readTarget
-    withCreatedValues (map (\item -> fieldBindingValue (toField item) builder (pure childTarget)) items) \values ->
+    withCreatedValues (map (\item -> fieldBindingValue (toField item) builder (pure (elementBindingTarget childTarget))) items) \values ->
       withValueType builder childTarget values \elementType ->
         withArray values \ptr ->
           output (create factory elementType (ConstPtr ptr) (fromIntegral (length values)))
@@ -861,8 +891,8 @@ fieldValueMap :: [(FieldValue, FieldValue)] -> FieldBinding
 fieldValueMap pairs =
   targetValueBinding ("<FieldMap size=" <> show (length pairs) <> ">") \builder@ValueBuilder{builderFactory = factory} readTarget -> do
     (keyTarget, valueTarget) <- mapPartTypes <$> readTarget
-    withCreatedValues (map (\(key, _) -> fieldBindingValue (toField key) builder (pure keyTarget)) pairs) \keys ->
-      withCreatedValues (map (\(_, item) -> fieldBindingValue (toField item) builder (pure valueTarget)) pairs) \values ->
+    withCreatedValues (map (\(key, _) -> fieldBindingValue (toField key) builder (pure (elementBindingTarget keyTarget))) pairs) \keys ->
+      withCreatedValues (map (\(_, item) -> fieldBindingValue (toField item) builder (pure (elementBindingTarget valueTarget))) pairs) \values ->
         withValueType builder keyTarget keys \keyType ->
           withValueType builder valueTarget values \valueType ->
             withArray keys \keyPtr -> withArray values \valuePtr ->
@@ -1128,14 +1158,15 @@ arrayDuckValue
   -> Array Int a
   -> IO DuckDBV2ValueHandle
 arrayDuckValue builder target elementValue array = do
-  when (null (elems array)) $
-    throwIO
-      ( SQLError
-          "duckdb-simple: an empty ARRAY parameter is not possible, because a DuckDB ARRAY has at least one element; bind an empty list for an empty LIST"
-          Nothing
-          Nothing
-      )
+  when (null (elems array)) emptyArrayError
   sequenceDuckValue c_duckdb_v2_value_create_array builder target elementValue (elems array)
+
+-- | Raise the error for an ARRAY parameter with no element. An 'Array' and a
+-- 'FieldArray' raise this error.
+emptyArrayError :: IO a
+emptyArrayError =
+  throwInvalidArgument
+    "an empty ARRAY parameter is not possible, because a DuckDB ARRAY has at least one element; bind an empty list for an empty LIST"
 
 -- | Construct a LIST value. An empty list is an empty LIST of the element type.
 -- See 'withElementType' for the element type.

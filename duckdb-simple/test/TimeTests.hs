@@ -436,6 +436,51 @@ nanosecondTimeTests =
       _ <- execute_ conn "CREATE OR REPLACE TABLE stored (v TIMESTAMP_NS, z TIMESTAMPTZ_NS)"
       _ <- execute conn "INSERT INTO stored VALUES (?, ?)" (PosInfinity :: LocalTimestamp, NegInfinity :: UTCTimestamp)
       (query_ conn "SELECT v::VARCHAR, z::VARCHAR FROM stored" :: IO [(Text.Text, Text.Text)]) >>= (@?= [("infinity", "-infinity")])
+  , testCase "a time value with digits below a microsecond keeps them for a VARIANT parameter" $ withConnection ":memory:" $ \conn -> do
+      _ <- execute_ conn "SET TimeZone = 'UTC'; CREATE TABLE v (x VARIANT); CREATE TABLE l (x VARIANT[])"
+      let day = fromGregorian 2026 1 2
+          tod = TimeOfDay 3 4 5.123456789
+          local = LocalTime day tod
+          early = LocalTime (fromGregorian 1600 1 2) tod
+          stored :: (ToField a) => a -> IO [(Text.Text, Text.Text)]
+          stored value = do
+            _ <- execute_ conn "DELETE FROM v"
+            _ <- execute conn "INSERT INTO v VALUES (?)" (Only value)
+            query_ conn "SELECT variant_typeof(x), x::VARCHAR FROM v"
+      -- A value with such digits gets the nanosecond type.
+      stored tod >>= (@?= [("TIME_NANOS", "03:04:05.123456789")])
+      stored local >>= (@?= [("TIMESTAMP_NANOS", "2026-01-02 03:04:05.123456789")])
+      stored (Finite local) >>= (@?= [("TIMESTAMP_NANOS", "2026-01-02 03:04:05.123456789")])
+      stored (localTimeToUTC utc local) >>= (@?= [("TIMESTAMP_NANOS_TZ", "2026-01-02 03:04:05.123456789+00")])
+      -- A value with no such digits keeps the microsecond type.
+      stored (TimeOfDay 3 4 5.123456) >>= (@?= [("TIME_MICROS", "03:04:05.123456")])
+      stored (LocalTime day (TimeOfDay 3 4 5.123456)) >>= (@?= [("TIMESTAMP_MICROS", "2026-01-02 03:04:05.123456")])
+      -- A value that the nanosecond type cannot hold gets the microsecond value.
+      stored early >>= (@?= [("TIMESTAMP_MICROS", "1600-01-02 03:04:05.123456")])
+      stored (LocalTime (fromGregorian 2262 4 11) (TimeOfDay 23 47 16.854775900)) >>= (@?= [("TIMESTAMP_MICROS", "2262-04-11 23:47:16.854775")])
+      stored (localTimeToUTC utc early) >>= (@?= [("TIMESTAMP_MICROS_TZ", "1600-01-02 03:04:05.123456+00")])
+      -- A Variant payload and a FieldValue read from a VARIANT keep the digits.
+      stored (Variant (FieldTimestamp (Finite local))) >>= (@?= [("TIMESTAMP_NANOS", "2026-01-02 03:04:05.123456789")])
+      _ <-
+        execute_
+          conn
+          "CREATE TABLE src (i INTEGER, x VARIANT); INSERT INTO src VALUES (1, '03:04:05.123456789'::TIME_NS), (2, '2026-01-02 03:04:05.123456789'::TIMESTAMP_NS), (3, '2026-01-02 03:04:05.123456789+00'::TIMESTAMPTZ_NS)"
+      values <- query_ conn "SELECT i, x FROM src ORDER BY i" :: IO [(Int64, FieldValue)]
+      forM_ values $ \(i, value) -> do
+        _ <- execute_ conn "DELETE FROM v"
+        _ <- execute conn "INSERT INTO v VALUES (?)" (Only value)
+        (query conn "SELECT count(*) FROM src, v WHERE src.i = ? AND src.x IS NOT DISTINCT FROM v.x" (Only i) :: IO [Only Int64])
+          >>= assertEqual (show value) [Only 1]
+      -- A VARIANT object reads as a FieldStruct with VARIANT fields, so its leaves keep the digits.
+      [Only object] <- query_ conn "SELECT {'t': '2026-01-02 03:04:05.123456789'::TIMESTAMP_NS}::VARIANT" :: IO [Only FieldValue]
+      stored object >>= (@?= [("OBJECT(t)", "{'t': '2026-01-02 03:04:05.123456789'}")])
+      -- A VARIANT array reads as a FieldList, whose elements get the microsecond value.
+      [Only array] <- query_ conn "SELECT ['2026-01-02 03:04:05.123456789'::TIMESTAMP_NS]::VARIANT" :: IO [Only FieldValue]
+      stored array >>= (@?= [("ARRAY(1)", "['2026-01-02 03:04:05.123456']")])
+      -- An element of a VARIANT list keeps the microsecond type, as the list has one element type.
+      _ <- execute conn "INSERT INTO l VALUES (?)" (Only [local, LocalTime day (TimeOfDay 3 4 5)])
+      (query_ conn "SELECT variant_typeof(x[1]), x::VARCHAR FROM l" :: IO [(Text.Text, Text.Text)])
+        >>= (@?= [("TIMESTAMP_MICROS", "[2026-01-02 03:04:05.123456, 2026-01-02 03:04:05]")])
   , testCase "nanosecond UTC targets reject finite overflow and sentinel collisions" $ withConnection ":memory:" $ \conn -> do
       forM_
         [ toInteger (minBound :: Int64) - 1

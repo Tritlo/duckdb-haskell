@@ -36,7 +36,7 @@ module Database.DuckDB.Simple.FromField (
   returnError,
 ) where
 
-import Control.Exception (Exception, SomeException (..))
+import Control.Exception (Exception (..), SomeException (..))
 import Data.Array (Array, assocs, bounds, listArray, range, (!))
 import Data.Bits (Bits (..), finiteBitSize)
 import qualified Data.ByteString as BS
@@ -48,15 +48,11 @@ import qualified Data.Map.Strict as Map
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
-import qualified Data.Text.Encoding as TextEncoding
 import Data.Time.Calendar (Day)
 import Data.Time.Clock (UTCTime (..))
 import Data.Time.LocalTime (
   LocalTime (..),
   TimeOfDay (..),
-  localTimeToUTC,
-  utc,
-  utcToLocalTime,
  )
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
@@ -72,7 +68,7 @@ import Database.DuckDB.Simple.LogicalRep (
  )
 import Database.DuckDB.Simple.Ok
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
-import GHC.Float (double2Float, float2Double)
+import GHC.Float (double2Float, float2Double, int2Double, int2Float, rationalToDouble, rationalToFloat, word2Double)
 import GHC.Num.Integer (integerFromWordList)
 import Numeric.Natural (Natural)
 
@@ -110,7 +106,7 @@ data FieldValue
   | FieldTimeTZ TimeWithZone
   | FieldBit BitString
   | FieldBigNum BigNum
-  | FieldEnum Word32
+  | FieldEnum Word32 Text
   | FieldArray (Array Int FieldValue)
   | FieldList [FieldValue]
   | FieldMap [(FieldValue, FieldValue)]
@@ -312,7 +308,22 @@ data ResultError
       }
   deriving (Eq, Show)
 
-instance Exception ResultError
+-- | The text of the error names the column and the two types.
+instance Exception ResultError where
+  displayException = Text.unpack . renderResultError
+
+-- | Render a conversion error. An error without a column name, for example one
+-- of a field of a generic record, names "a value".
+renderResultError :: ResultError -> Text
+renderResultError = \case
+  Incompatible{errSQLType, errSQLField, errHaskellType, errMessage} ->
+    Text.concat ["duckdb-simple: ", subject errSQLField, " has type ", errSQLType, " but expected ", errHaskellType, detail errMessage]
+  UnexpectedNull{errSQLField, errHaskellType, errMessage} ->
+    Text.concat ["duckdb-simple: ", subject errSQLField, " is NULL but expected ", errHaskellType, detail errMessage]
+  ConversionFailed{errMessage} -> errMessage
+  where
+    subject name = if Text.null name then Text.pack "a value" else Text.pack "column " <> name
+    detail message = if Text.null message then Text.empty else Text.pack ": " <> message
 
 -- | Parser used by @FromField@ instances and utilities such as
 -- @Database.DuckDB.Simple.FromRow.fieldWith@. The supplied @Field@ contains
@@ -321,13 +332,62 @@ instance Exception ResultError
 -- conversion fails.
 type FieldParser a = Field -> Ok a
 
--- | Types that can be constructed from a DuckDB column.
+-- | Types that can be constructed from a DuckDB column. Each instance says
+-- which SQL types it reads. See Note [Reads of another SQL type].
 class FromField a where
   fromField :: FieldParser a
 
+{- Note [Reads of another SQL type]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Each FromField instance reads the SQL type of its Haskell type, for example
+BIGINT for Int64 and TIMESTAMP for LocalTime. An instance also reads another
+SQL type only when it gives, for each value, the value of the cast of DuckDB to
+the SQL type of the Haskell type, or an error. For example, Int8 reads the
+BIGINT value 5 as 5, which is the value of 5::BIGINT::TINYINT, and it raises
+ConversionFailed for 300, where the cast raises an error. When the Haskell type
+holds more digits than its SQL type, the comparison is with the cast to the
+narrowest SQL type that holds the value exactly. Thus LocalTime reads a
+TIMESTAMP_NS value with its nanoseconds, as the cast to TIMESTAMP_NS keeps
+them.
+
+The instances do not read a pair whose cast needs data that the decoded value
+does not have, or whose value the library cannot give exactly. A read of such a
+pair raises Incompatible, as for each other pair that an instance does not
+read. The error names the SQL type of the decoded value, which is not always
+the name that typeof gives: a TIMESTAMP_S, TIMESTAMP_MS, or TIMESTAMP_NS value
+is TIMESTAMP, a TIMESTAMPTZ_NS value is TIMESTAMPTZ, a VARIANT value has the
+type of its payload, and the error of a String names Text. These pairs are:
+
+- UTCTime from TIMESTAMP, TIMESTAMP_S, TIMESTAMP_MS, TIMESTAMP_NS, and DATE, and
+  LocalTime from TIMESTAMPTZ and TIMESTAMPTZ_NS. These casts use the TimeZone
+  setting of the session. To read the value as the other type in UTC, write
+  c::TIMESTAMP AT TIME ZONE 'UTC' in SQL for a TIMESTAMP, TIMESTAMP_S,
+  TIMESTAMP_MS, or DATE value, and c AT TIME ZONE 'UTC' for each other type.
+  Without the cast to TIMESTAMP, DuckDB converts a DATE, TIMESTAMP_S, or
+  TIMESTAMP_MS value to nanoseconds, which fails outside the years 1677 to
+  2262. The cast removes the nanoseconds of a TIMESTAMP_NS value.
+- Text and String from FLOAT and DOUBLE. The text of the cast differs from the
+  text of show, for example 0.01 and 1.0e-2. Read a Double, or write c::VARCHAR.
+- ByteString from VARCHAR. The cast to BLOB reads escape sequences such as \x41.
+  Read a Text, or write encode(c) for the UTF-8 bytes.
+- Each integer type from ENUM. The cast to an integer type parses the label,
+  for example '20' gives 20. Write c::INTEGER for that value, or enum_code(c)
+  for the index.
+- Variant from a value that holds an ENUM, a MAP, a UNION, or a GEOMETRY with
+  a CRS at any depth. The cast to VARIANT gives another value. Write
+  c::VARIANT. A VARIANT column does not decode to these values.
+
+Text and String read the label of an ENUM value, which is the text of the cast
+to VARCHAR. See Note [ENUM labels] in "Database.DuckDB.Simple.Materialize".
+
+See Note [DECIMAL as DOUBLE and FLOAT] for the floating-point value of a DECIMAL.
+-}
+
+-- | Reads each SQL type, and does not convert the value.
 instance FromField FieldValue where
   fromField Field{fieldValue} = Ok fieldValue
 
+-- | Reads GEOMETRY, with its CRS.
 instance FromField RawGeometry where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -335,13 +395,15 @@ instance FromField RawGeometry where
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f "expected GEOMETRY"
 
--- | Decode the shape without CRS metadata. Use t'RawGeometry' to retain the CRS.
+-- | Reads GEOMETRY. The shape has no CRS metadata. Use t'RawGeometry' to retain
+-- the CRS.
 instance FromField G.Geometry where
   fromField f@Field{fieldValue} = case fieldValue of
     FieldGeometry raw -> either (returnError ConversionFailed f . Text.pack) pure (fromRawGeometry raw)
     FieldNull -> returnError UnexpectedNull f ""
     _ -> returnError Incompatible f "expected GEOMETRY"
 
+-- | Reads STRUCT.
 instance FromField (StructValue FieldValue) where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -349,6 +411,7 @@ instance FromField (StructValue FieldValue) where
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f "expected STRUCT"
 
+-- | Reads UNION.
 instance FromField (UnionValue FieldValue) where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -356,6 +419,8 @@ instance FromField (UnionValue FieldValue) where
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f "expected UNION"
 
+-- | Reads UUID, and VARCHAR in the form of 36 characters with dashes. Each
+-- other text raises 'ConversionFailed'.
 instance FromField UUID.UUID where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -367,6 +432,7 @@ instance FromField UUID.UUID where
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
+-- | Reads TUPLE.
 instance FromField (TupleValue FieldValue) where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -374,6 +440,8 @@ instance FromField (TupleValue FieldValue) where
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f "expected TUPLE"
 
+-- | Reads BOOLEAN, and TINYINT, SMALLINT, INTEGER, and BIGINT. An integer other
+-- than 0 is True, as in the cast to BOOLEAN.
 instance FromField Bool where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -382,56 +450,62 @@ instance FromField Bool where
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
+-- | Reads TINYINT, SMALLINT, INTEGER, BIGINT, HUGEINT, and UHUGEINT. A value out of
+-- range raises 'ConversionFailed'. It does not read ENUM.
 instance FromField Int8 where
   fromField f@Field{fieldValue} =
     case fieldValue of
       FieldInt i -> boundedIntegral f i
       FieldHugeInt value -> boundedFromInteger f value
       FieldUHugeInt value -> boundedFromInteger f value
-      FieldEnum value -> boundedFromInteger f (fromIntegral value)
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
+-- | Reads BIGINT, TINYINT, SMALLINT, INTEGER, HUGEINT, and UHUGEINT. A value out of
+-- range raises 'ConversionFailed'. It does not read ENUM.
 instance FromField Int64 where
   fromField f@Field{fieldValue} =
     case fieldValue of
       FieldInt i -> Ok i
       FieldHugeInt value -> boundedFromInteger f value
       FieldUHugeInt value -> boundedFromInteger f value
-      FieldEnum value -> Ok (fromIntegral value)
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
+-- | Reads INTEGER, TINYINT, SMALLINT, BIGINT, HUGEINT, and UHUGEINT. A value out of
+-- range raises 'ConversionFailed'. It does not read ENUM.
 instance FromField Int32 where
   fromField f@Field{fieldValue} =
     case fieldValue of
       FieldInt i -> boundedIntegral f i
       FieldHugeInt value -> boundedFromInteger f value
       FieldUHugeInt value -> boundedFromInteger f value
-      FieldEnum value -> boundedFromInteger f (fromIntegral value)
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
+-- | Reads SMALLINT, TINYINT, INTEGER, BIGINT, HUGEINT, and UHUGEINT. A value out of
+-- range raises 'ConversionFailed'. It does not read ENUM.
 instance FromField Int16 where
   fromField f@Field{fieldValue} =
     case fieldValue of
       FieldInt i -> boundedIntegral f i
       FieldHugeInt value -> boundedFromInteger f value
       FieldUHugeInt value -> boundedFromInteger f value
-      FieldEnum value -> boundedFromInteger f (fromIntegral value)
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
+-- | Reads BIGINT, TINYINT, SMALLINT, INTEGER, HUGEINT, and UHUGEINT. A value out of
+-- range raises 'ConversionFailed'. It does not read ENUM.
 instance FromField Int where
   fromField f@Field{fieldValue} =
     case fieldValue of
       FieldInt i -> boundedIntegral f i
       FieldHugeInt value -> boundedFromInteger f value
       FieldUHugeInt value -> boundedFromInteger f value
-      FieldEnum value -> boundedFromInteger f (fromIntegral value)
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
+-- | Reads BIGNUM, TINYINT to BIGINT, UTINYINT to UBIGINT, HUGEINT, and UHUGEINT.
 instance FromField Integer where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -443,6 +517,8 @@ instance FromField Integer where
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
+-- | Reads BIGNUM, TINYINT to BIGINT, UTINYINT to UBIGINT, HUGEINT, and UHUGEINT.
+-- A negative value raises 'ConversionFailed'. It does not read ENUM.
 instance FromField Natural where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -460,10 +536,12 @@ instance FromField Natural where
         if big >= 0
           then Ok $ fromIntegral big
           else returnError ConversionFailed f "negative value cannot be converted to Natural"
-      FieldEnum value -> Ok (fromIntegral value)
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
+-- | Reads UTINYINT to UBIGINT, TINYINT to BIGINT, HUGEINT, and UHUGEINT. A
+-- negative value or a value out of range raises 'ConversionFailed'. It does not
+-- read ENUM.
 instance FromField Word64 where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -477,10 +555,12 @@ instance FromField Word64 where
         | otherwise ->
             returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
       FieldUHugeInt value -> boundedFromInteger f value
-      FieldEnum value -> Ok (fromIntegral value)
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
+-- | Reads UTINYINT to UBIGINT, TINYINT to BIGINT, HUGEINT, and UHUGEINT. A
+-- negative value or a value out of range raises 'ConversionFailed'. It does not
+-- read ENUM.
 instance FromField Word32 where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -494,10 +574,12 @@ instance FromField Word32 where
         | otherwise ->
             returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
       FieldUHugeInt value -> boundedFromInteger f value
-      FieldEnum value -> Ok value
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
+-- | Reads UTINYINT to UBIGINT, TINYINT to BIGINT, HUGEINT, and UHUGEINT. A
+-- negative value or a value out of range raises 'ConversionFailed'. It does not
+-- read ENUM.
 instance FromField Word16 where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -511,10 +593,12 @@ instance FromField Word16 where
         | otherwise ->
             returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
       FieldUHugeInt value -> boundedFromInteger f value
-      FieldEnum value -> boundedFromInteger f (fromIntegral value)
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
+-- | Reads UTINYINT to UBIGINT, TINYINT to BIGINT, HUGEINT, and UHUGEINT. A
+-- negative value or a value out of range raises 'ConversionFailed'. It does not
+-- read ENUM.
 instance FromField Word8 where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -528,10 +612,12 @@ instance FromField Word8 where
         | otherwise ->
             returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
       FieldUHugeInt value -> boundedFromInteger f value
-      FieldEnum value -> boundedFromInteger f (fromIntegral value)
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
+-- | Reads UTINYINT to UBIGINT, TINYINT to BIGINT, HUGEINT, and UHUGEINT. A
+-- negative value or a value out of range raises 'ConversionFailed'. It does not
+-- read ENUM.
 instance FromField Word where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -545,54 +631,147 @@ instance FromField Word where
         | otherwise ->
             returnError ConversionFailed f "negative value cannot be converted to unsigned integer"
       FieldUHugeInt value -> boundedFromInteger f value
-      FieldEnum value -> boundedFromInteger f (fromIntegral value)
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
+-- | Reads DOUBLE, FLOAT, TINYINT to BIGINT, and DECIMAL. A BIGINT above 2^53
+-- rounds as the cast to DOUBLE. See Note [DECIMAL as DOUBLE and FLOAT].
 instance FromField Double where
   fromField f@Field{fieldValue} =
     case fieldValue of
       FieldDouble d -> Ok d
       FieldFloat value -> Ok (float2Double value)
       FieldInt i -> Ok (fromIntegral i)
-      FieldDecimal DecimalValue{decimalInteger, decimalScale} ->
-        Ok (realToFrac decimalInteger / 10 ^ decimalScale)
+      FieldDecimal value -> Ok (decimalToDouble value)
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
+-- | Reads FLOAT, DOUBLE, TINYINT to BIGINT, and DECIMAL. A finite DOUBLE out of
+-- the range of FLOAT raises 'ConversionFailed'. See
+-- Note [DECIMAL as DOUBLE and FLOAT].
 instance FromField Float where
-  fromField field =
-    case (fromField field :: Ok Double) of
-      Errors err -> Errors err
-      Ok d
-        | not (isInfinite d || isNaN d) && isInfinite (double2Float d) ->
-            returnError ConversionFailed field "floating-point value out of bounds"
-        | otherwise -> Ok (double2Float d)
+  fromField field@Field{fieldValue} =
+    case fieldValue of
+      -- DuckDB casts an integer to FLOAT with static_cast<float>, which
+      -- rounds one time to the nearest value, ties to even. int2Float rounds
+      -- in the same way.
+      FieldInt i -> Ok (int2Float (fromIntegral i))
+      FieldDecimal value -> Ok (decimalToFloat value)
+      _ -> case (fromField field :: Ok Double) of
+        Errors err -> Errors err
+        Ok d
+          | not (isInfinite d || isNaN d) && isInfinite (double2Float d) ->
+              returnError ConversionFailed field "floating-point value out of bounds"
+          | otherwise -> Ok (double2Float d)
 
+{- Note [DECIMAL as DOUBLE and FLOAT]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A DECIMAL that a Double or a Float reads gives the value of the cast of DuckDB
+2.0.0 to DOUBLE or FLOAT. The cast is TryCastDecimalToFloatingPoint in
+src/common/operator/cast_operators.cpp of DuckDB. decimalToDouble and
+decimalToFloat use the same three paths:
+
+1. Scale 0 and width 19 to 38. DuckDB stores the value as a HUGEINT and casts
+   it with CastBigintToFloating in src/common/types/hugeint.cpp:
+
+     case -1: result = -REAL_T(NumericLimits<uint64_t>::Maximum() - input.lower) - 1;
+     default: result = REAL_T(input.lower) + REAL_T(input.upper) * (REAL_T(NumericLimits<uint64_t>::Maximum()) + 1);
+
+   The case is the value of input.upper. A FLOAT result is this DOUBLE value
+   cast to float (Hugeint::TryCast for float). hugeIntToDouble copies the
+   formula. The formula rounds more than one time, so it does not always give
+   the nearest value. DuckDB casts -9007199254740994::DECIMAL(19,0) to
+   -9007199254740992.0, and 3356951675583485076575379654993209529::DECIMAL(38,0)
+   to 3.356951675583485e36. The nearest values are -9007199254740994.0 and
+   3.3569516755834854e36. This path exists only to give the value of the cast.
+2. Scale 0 with a width of at most 18, or an integer of at most 2^53 (2^24
+   for FLOAT) with a scale of at most 22 (10 for FLOAT). DuckDB converts the
+   integer to the floating-point type and divides it by the power of ten in
+   that type. Under the limits, the integer and the power of ten are exact in
+   the type, so only the division rounds. With scale 0, the division by 1 is
+   exact, so only the conversion of the integer rounds. Each step rounds one
+   time to the nearest value.
+3. Each other value. DuckDB converts the decimal digits with fast_float, which
+   gives the nearest value.
+
+Thus paths 2 and 3 give the nearest value, with ties to even. In path 2 the
+library does the same steps. With scale 0 and a width of at most 18, the
+integer is an Int64 value, and fromInteger converts it with int2Double or
+int2Float, which round one time as the C++ conversion of int64_t does. In path
+3 the library uses rationalToDouble or rationalToFloat. fromRational uses these
+functions too. They give the nearest value with ties to even, and they do not
+reduce the fraction first.
+
+Path 3 is slower than path 2. It applies to a Double with a scale above 0 when
+the unscaled integer is above 2^53 or the scale is above 22: at scale 2 for an
+absolute value above 9.0e13, and at scale 10 above 9.0e5. It applies to a Float
+with a scale above 0 when the unscaled integer is above 2^24 or the scale is
+above 10.
+-}
+
+-- | The value of the cast of DuckDB from a DECIMAL to DOUBLE.
+-- See Note [DECIMAL as DOUBLE and FLOAT].
+decimalToDouble :: DecimalValue -> Double
+decimalToDouble DecimalValue{decimalWidth, decimalScale, decimalInteger}
+  | decimalScale == 0 && decimalWidth > 18 = hugeIntToDouble decimalInteger
+  | decimalScale == 0 = fromInteger decimalInteger
+  | decimalScale <= 22 && abs decimalInteger <= 9007199254740992 = fromInteger decimalInteger / 10 ^ decimalScale
+  | otherwise = rationalToDouble decimalInteger (10 ^ decimalScale)
+
+-- | The value of the cast of DuckDB from a DECIMAL to FLOAT.
+-- See Note [DECIMAL as DOUBLE and FLOAT].
+decimalToFloat :: DecimalValue -> Float
+decimalToFloat DecimalValue{decimalWidth, decimalScale, decimalInteger}
+  | decimalScale == 0 && decimalWidth > 18 = double2Float (hugeIntToDouble decimalInteger)
+  | decimalScale == 0 = fromInteger decimalInteger
+  | decimalScale <= 10 && abs decimalInteger <= 16777216 = fromInteger decimalInteger / 10 ^ decimalScale
+  | otherwise = rationalToFloat decimalInteger (10 ^ decimalScale)
+
+-- | The cast of DuckDB from a HUGEINT to DOUBLE. It is not always the nearest
+-- value. See Note [DECIMAL as DOUBLE and FLOAT].
+hugeIntToDouble :: Integer -> Double
+hugeIntToDouble value
+  | upper == -1 = negate (word2Double (maxBound - lower)) - 1
+  | otherwise = word2Double lower + int2Double upper * 18446744073709551616
+  where
+    -- The two 64-bit halves of the HUGEINT in two's complement. word2Double
+    -- and int2Double round one time to the nearest value, ties to even, as
+    -- the C++ conversions of uint64_t and int64_t to double do. The C++
+    -- factor is 2^64 after its rounding, so the product is exact. The sum or
+    -- the difference rounds one time, as in C++.
+    upper = fromInteger (value `shiftR` 64) :: Int
+    lower = fromInteger value :: Word
+
+-- | Reads VARCHAR, TINYINT to BIGINT as decimal digits, BOOLEAN as @true@ or
+-- @false@, and the label of an ENUM value. It does not read FLOAT or DOUBLE. See
+-- Note [Reads of another SQL type].
 instance FromField Text where
   fromField f@Field{fieldValue} =
     case fieldValue of
       FieldText t -> Ok t
       FieldInt i -> Ok (Text.pack (show i))
-      FieldFloat value -> Ok (Text.pack (show value))
-      FieldDouble d -> Ok (Text.pack (show d))
-      FieldBool b -> Ok (if b then Text.pack "1" else Text.pack "0")
+      FieldBool b -> Ok (if b then Text.pack "true" else Text.pack "false")
+      FieldEnum _ label -> Ok label
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
+-- | Reads the SQL types that 'Text' reads.
 instance FromField String where
   fromField field = Text.unpack <$> fromField field
 
+-- | Reads BLOB, the WKB bytes of a GEOMETRY, and the data bytes of a BIT, as the
+-- casts to BLOB give them. It does not read VARCHAR. See
+-- Note [Reads of another SQL type].
 instance FromField BS.ByteString where
   fromField f@Field{fieldValue} =
     case fieldValue of
       FieldBlob bs -> Ok bs
       FieldGeometry RawGeometry{rawGeometryWKB} -> Ok rawGeometryWKB
-      FieldText t -> Ok (TextEncoding.encodeUtf8 t)
       FieldBit (BitString _ bits) -> Ok bits
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
+-- | Reads BIT.
 instance FromField BitString where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -600,6 +779,7 @@ instance FromField BitString where
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
+-- | Reads BIGNUM.
 instance FromField BigNum where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -607,6 +787,7 @@ instance FromField BigNum where
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
+-- | Reads LIST and ARRAY. Each element reads as @a@.
 instance {-# OVERLAPPABLE #-} (Typeable a, FromField a) => FromField [a] where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -629,6 +810,7 @@ instance {-# OVERLAPPABLE #-} (Typeable a, FromField a) => FromField [a] where
             idxText = Text.pack (show idx)
         in  base <> Text.pack "[" <> idxText <> Text.pack "]"
 
+-- | Reads ARRAY. Each element reads as @a@.
 instance (Typeable a, FromField a) => FromField (Array Int a) where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -649,6 +831,7 @@ instance (Typeable a, FromField a) => FromField (Array Int a) where
         let idxText = Text.pack (show idx)
         in  fieldName f <> Text.pack "[" <> idxText <> Text.pack "]"
 
+-- | Reads MAP. Each key reads as @k@, and each value reads as @v@.
 instance (Ord k, Typeable k, Typeable v, FromField k, FromField v) => FromField (Map k v) where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -676,6 +859,7 @@ instance (Ord k, Typeable k, Typeable v, FromField k, FromField v) => FromField 
         let idxText = Text.pack (show idx)
         in  Text.pack "[" <> idxText <> Text.pack "]" <> Text.pack label
 
+-- | Reads DECIMAL.
 instance FromField DecimalValue where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -683,6 +867,8 @@ instance FromField DecimalValue where
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
+-- | Reads DATE, and the date of TIMESTAMP, TIMESTAMP_S, TIMESTAMP_MS, and
+-- TIMESTAMP_NS. Infinity raises 'ConversionFailed'.
 instance FromField Day where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -691,6 +877,7 @@ instance FromField Day where
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
+-- | Reads the SQL types that 'Day' reads, also infinity.
 instance FromField (Unbounded Day) where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -699,6 +886,8 @@ instance FromField (Unbounded Day) where
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
+-- | Reads TIME, TIME_NS, and the time of TIMESTAMP, TIMESTAMP_S, TIMESTAMP_MS,
+-- and TIMESTAMP_NS. An infinite TIMESTAMP raises 'ConversionFailed'.
 instance FromField TimeOfDay where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -707,6 +896,7 @@ instance FromField TimeOfDay where
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
+-- | Reads TIMETZ.
 instance FromField TimeWithZone where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -714,28 +904,31 @@ instance FromField TimeWithZone where
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
+-- | Reads TIMESTAMP, TIMESTAMP_S, TIMESTAMP_MS, TIMESTAMP_NS, and DATE at
+-- midnight. It does not read TIMESTAMPTZ. Infinity raises 'ConversionFailed'.
+-- See Note [Reads of another SQL type].
 instance FromField LocalTime where
   fromField f@Field{fieldValue} =
     case fieldValue of
       FieldTimestamp ts -> finiteField f ts
       FieldDate day -> finiteField f ((\value -> LocalTime value midnight) <$> day)
-      FieldTimestampTZ utcTime -> finiteField f (utcToLocalTime utc <$> utcTime)
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
     where
       midnight = TimeOfDay 0 0 0
 
+-- | Reads the SQL types that t'LocalTime' reads, also infinity.
 instance FromField (Unbounded LocalTime) where
   fromField f@Field{fieldValue} =
     case fieldValue of
       FieldTimestamp ts -> Ok ts
       FieldDate day -> Ok ((\value -> LocalTime value midnight) <$> day)
-      FieldTimestampTZ utcTime -> Ok (utcToLocalTime utc <$> utcTime)
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
     where
       midnight = TimeOfDay 0 0 0
 
+-- | Reads INTERVAL.
 instance FromField IntervalValue where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -743,33 +936,29 @@ instance FromField IntervalValue where
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
+-- | Reads TIMESTAMPTZ and TIMESTAMPTZ_NS. It does not read TIMESTAMP or DATE.
+-- Infinity raises 'ConversionFailed'. See Note [Reads of another SQL type].
 instance FromField UTCTime where
   fromField f@Field{fieldValue} =
     case fieldValue of
-      FieldTimestamp ts -> finiteField f (localTimeToUTC utc <$> ts)
       FieldTimestampTZ utcTime -> finiteField f utcTime
-      FieldDate day -> finiteField f ((\value -> localTimeToUTC utc (LocalTime value midnight)) <$> day)
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
-    where
-      midnight = TimeOfDay 0 0 0
 
+-- | Reads the SQL types that t'UTCTime' reads, also infinity.
 instance FromField (Unbounded UTCTime) where
   fromField f@Field{fieldValue} =
     case fieldValue of
-      FieldTimestamp ts -> Ok (localTimeToUTC utc <$> ts)
       FieldTimestampTZ utcTime -> Ok utcTime
-      FieldDate day -> Ok ((\value -> localTimeToUTC utc (LocalTime value midnight)) <$> day)
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
-    where
-      midnight = TimeOfDay 0 0 0
 
 -- | Reject infinity when the requested Haskell type holds only finite values.
 finiteField :: (Typeable a) => Field -> Unbounded a -> Ok a
 finiteField _ (Finite value) = Ok value
 finiteField field _ = returnError ConversionFailed field "infinity requires an Unbounded date or timestamp"
 
+-- | Reads NULL as Nothing, and each other value as @a@.
 instance (FromField a) => FromField (Maybe a) where
   fromField Field{fieldValue = FieldNull} = Ok Nothing
   fromField field = Just <$> fromField field
@@ -802,17 +991,17 @@ returnError mkError Field{fieldValue, fieldName} msg =
 fieldValueTypeName :: FieldValue -> Text
 fieldValueTypeName = \case
   FieldNull -> "NULL"
-  FieldInt8{} -> "INT1"
-  FieldInt16{} -> "INT2"
-  FieldInt32{} -> "INT4"
-  FieldInt64{} -> "INT8"
+  FieldInt8{} -> "TINYINT"
+  FieldInt16{} -> "SMALLINT"
+  FieldInt32{} -> "INTEGER"
+  FieldInt64{} -> "BIGINT"
   FieldWord8{} -> "UTINYINT"
   FieldWord16{} -> "USMALLINT"
   FieldWord32{} -> "UINTEGER"
   FieldWord64{} -> "UBIGINT"
   FieldFloat{} -> "FLOAT"
   FieldDouble{} -> "DOUBLE"
-  FieldText{} -> "TEXT"
+  FieldText{} -> "VARCHAR"
   FieldBool{} -> "BOOLEAN"
   FieldBlob{} -> "BLOB"
   FieldGeometry{} -> "GEOMETRY"

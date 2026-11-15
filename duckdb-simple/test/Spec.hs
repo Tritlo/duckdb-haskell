@@ -674,7 +674,7 @@ duckdbCastCases =
       (quoted "2024-01-02 03:04:05.123456789")
       "TIMESTAMP_NS"
       (ExpectEquals (FieldTimestamp (Finite timestampLocalTimeNanos)))
-  , successCase "ENUM" (quoted "beta") "ENUM('alpha','beta')" (ExpectEquals (FieldEnum 1))
+  , successCase "ENUM" (quoted "beta") "ENUM('alpha','beta')" (ExpectEquals (FieldEnum 1 "beta"))
   , successCase "LIST" (quoted "[1,2,3]") "INTEGER[]" (ExpectEquals (FieldList listElements))
   , successDirect "MAP" "MAP(['a','b'], [1,2])" (expectMapEntries mapPairs)
   , successCase "TIMETZ" (quoted "03:04:05+02:30") "TIME WITH TIME ZONE" (ExpectEquals (FieldTimeTZ timeWithZoneValue))
@@ -856,8 +856,12 @@ typeTests =
           assertEqual "date round-trip" dayVal dRes
           assertEqual "time round-trip" timeVal tRes
           assertEqual "timestamp round-trip" tsVal tsRes
-          [Only utcRes] <- query_ conn "SELECT ts FROM temporals" :: IO [Only UTCTime]
-          assertEqual "timestamp as UTC" (localTimeToUTC utc tsVal) utcRes
+          -- A TIMESTAMP does not read as UTCTime. AT TIME ZONE 'UTC' gives the instant in UTC.
+          [Only utcRes] <- query_ conn "SELECT ts::TIMESTAMP AT TIME ZONE 'UTC' FROM temporals" :: IO [Only UTCTime]
+          assertEqual "timestamp at UTC" (localTimeToUTC utc tsVal) utcRes
+          (try (query_ conn "SELECT ts FROM temporals" :: IO [Only UTCTime])) >>= \case
+            Left SQLError{sqlErrorMessage} -> sqlErrorMessage @?= "duckdb-simple: column ts has type TIMESTAMP but expected UTCTime"
+            Right rows -> assertFailure ("expected Incompatible, got " <> show rows)
     , testCase "round-trips blob payloads" $
         withConnection ":memory:" \conn -> do
           _ <- execute_ conn "CREATE TABLE blobs (payload BLOB)"
@@ -1392,6 +1396,14 @@ functionsTests =
                     , ("hs_arg_records", "['STRUCT(vuId BIGINT, vuName VARCHAR)[]']")
                     ]
                 )
+    , testCase "a UTCTime argument with a TIMESTAMP value gets the cast of DuckDB to TIMESTAMPTZ" $
+        withConnection ":memory:" \conn -> do
+          -- DuckDB casts the argument to the declared TIMESTAMPTZ with the
+          -- TimeZone setting of the session. The function reads that instant.
+          createFunction conn "hs_arg_utc_text" (\(x :: UTCTime) -> Text.pack (show x))
+          _ <- execute_ conn "SET TimeZone = 'Pacific/Auckland'"
+          query_ conn "SELECT hs_arg_utc_text(TIMESTAMP '2024-01-02 03:04:05'), (TIMESTAMP '2024-01-02 03:04:05')::TIMESTAMPTZ"
+            >>= (@?= [("2024-01-01 14:04:05 UTC" :: Text.Text, UTCTime (fromGregorian 2024 1 1) (secondsToDiffTime 50645))])
     , testCase "declares the SQL type of each result type" $
         withConnection ":memory:" \conn -> do
           createFunction conn "hs_res_bool" True

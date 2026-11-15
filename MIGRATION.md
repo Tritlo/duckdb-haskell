@@ -193,6 +193,52 @@ The SQL workflow stays the same. These changes can affect your code:
 - A conversion error names the types `TIMESTAMPTZ` and `TIMETZ`, in
   `errSQLType` and in the message of the `SQLError`. Version 0.3 gave
   `TIMESTAMP_TZ` and `TIME_TZ`. Change code that matches the old texts.
+- A conversion error names the types `TINYINT`, `SMALLINT`, `INTEGER`,
+  `BIGINT`, and `VARCHAR`, in `errSQLType` and in the message of the
+  `SQLError`. Version 0.3 gave `INT1`, `INT2`, `INT4`, `INT8`, and `TEXT`.
+  Change code that matches the old texts.
+- `duckdbColumnType` gives `VARCHAR` for `Text` and `String`. Version 0.3 gave
+  `TEXT`. Change code that compares this text.
+- A BOOLEAN read as `Text` or `String` gives `true` or `false`. Version 0.3
+  gave `1` or `0`. Read `Bool`, or write `c::INTEGER` in SQL for the old text.
+- A DECIMAL read as `Double` or `Float`, and a BIGINT read as `Float`, give
+  the value of the cast of DuckDB. A value can differ from version 0.3 in the
+  last bit.
+- A TIMESTAMP, TIMESTAMP_S, TIMESTAMP_MS, or TIMESTAMP_NS read as `UTCTime`
+  raises the error of an incompatible column. Write
+  `c::TIMESTAMP AT TIME ZONE 'UTC'` for the instant that version 0.3 gave, or
+  read `LocalTime`. For a TIMESTAMP_NS, write `c AT TIME ZONE 'UTC'`, because
+  the cast to TIMESTAMP removes the nanoseconds. Without the cast, DuckDB
+  converts a TIMESTAMP_S or TIMESTAMP_MS value to nanoseconds, which fails
+  outside the years 1677 to 2262.
+- A DATE read as `UTCTime` raises the error of an incompatible column. Write
+  `c::TIMESTAMP AT TIME ZONE 'UTC'` for midnight in UTC, as version 0.3 gave,
+  or read `Day`. Without the cast, the value fails outside the years 1677 to
+  2262.
+- A TIMESTAMPTZ or TIMESTAMPTZ_NS read as `LocalTime` raises the error of an
+  incompatible column. Write `c AT TIME ZONE 'UTC'` for the time in UTC that
+  version 0.3 gave, or read `UTCTime`.
+- The `Unbounded` forms of `UTCTime` and `LocalTime` (`UTCTimestamp` and
+  `LocalTimestamp`) follow the three rules above.
+- A FLOAT or DOUBLE read as `Text` or `String` raises the error of an
+  incompatible column. Read `Double` or `Float`, or write `c::VARCHAR` for the
+  text of DuckDB, for example `0.01`. Version 0.3 gave the text of `show`, for
+  example `1.0e-2`.
+- A VARCHAR read as `ByteString` raises the error of an incompatible column.
+  Read `Text`, or write `encode(c)` for the UTF-8 bytes that version 0.3 gave.
+- An ENUM read as an integer type (`Int`, `Int8` to `Int64`, `Word`, `Word8` to
+  `Word64`, or `Natural`) raises the error of an incompatible column. Write
+  `enum_code(c)` for the index that version 0.3 gave, or `c::INTEGER` for the
+  label as a number. An ENUM now reads as `Text` or `String` with its label.
+- `FieldEnum` has a second field, the label: `FieldEnum Word32 Text`. Change
+  each pattern and each construction. A `FieldEnum` inside a declared ENUM type
+  binds its label.
+- `displayException` of a `ResultError` gives the rendered text of the error,
+  and the error of a field of a `ViaDuckDB` record starts with the field name.
+  Change code that matches the old texts.
+- A `Variant` read of a column that holds an ENUM, a MAP, a UNION, or a
+  GEOMETRY with a CRS at any depth raises the error of an incompatible column.
+  Write `c::VARIANT` in SQL, or read `FieldValue` for the decoded value.
 - `TimeWithZone` holds the offset as seconds east of UTC. The field
   `timeWithZoneZone :: TimeZone` is now `timeWithZoneOffsetSeconds :: Int32`.
   Convert a `TimeZone` with `fromIntegral (timeZoneMinutes zone) * 60`, and

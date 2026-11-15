@@ -99,6 +99,7 @@ import Control.Monad (unless)
 import Data.Array (Array, elems, listArray)
 import qualified Data.ByteString as BS
 import Data.Int (Int16, Int32, Int64, Int8)
+import Data.List (intercalate)
 import qualified Data.Map.Strict as Map
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
@@ -158,7 +159,7 @@ class DuckValue a where
   duckFromField fv =
     case fromField Field{fieldName = Text.empty, fieldIndex = 0, fieldValue = fv} of
       Ok x -> Right x
-      Errors errs -> Left (unlines (map displayException errs))
+      Errors errs -> Left (intercalate "; " (map displayException errs))
 
 instance DuckValue Variant where
   duckToField = variantPayload
@@ -638,14 +639,21 @@ instance (GStructDecode a, GStructDecode b) => GStructDecode (a :*: b) where
 instance (Selector s, DuckValue a) => GStructDecode (M1 S s (K1 i a)) where
   gStructDecodeStruct _ structVal =
     case map structFieldValue (elems (structValueFields structVal)) of
-      [fv] -> M1 . K1 <$> duckFromField fv
+      [fv] -> M1 . K1 <$> namedField (selName (undefined :: M1 S s (K1 i a) ())) (duckFromField fv)
       [] -> Left "duckdb-simple: missing struct field (expected 1, got 0)"
       xs -> Left ("duckdb-simple: expected single field struct, but got " <> show (length xs) <> " fields")
 
   gStructDecodeList _ [] = Left "duckdb-simple: missing struct field (expected field but list is empty)"
   gStructDecodeList _ (fv : rest) = do
-    val <- duckFromField fv
+    val <- namedField (selName (undefined :: M1 S s (K1 i a) ())) (duckFromField fv)
     pure (M1 (K1 val), rest)
+
+-- | Name the record field in the error of its decoder. A positional field has
+-- no name.
+namedField :: String -> Either String a -> Either String a
+namedField name
+  | null name = id
+  | otherwise = either (Left . (("field " <> name <> ": ") <>)) Right
 
 instance (GStructDecode f) => GStructDecode (M1 C c f) where
   gStructDecodeStruct _ structVal = M1 <$> gStructDecodeStruct (Proxy :: Proxy (f p)) structVal
@@ -754,7 +762,8 @@ instance (Generic a, GToField (Rep a)) => ToDuckValue (ViaDuckDB a) where
     EncodedUnion unionVal -> toDuckValue factory unionVal
     EncodedStruct structVal _ -> toDuckValue factory structVal
 
--- | Deriving-via @FromField@ instance. Errors are rewrapped using the existing
+-- | Deriving-via @FromField@ instance. It reads a STRUCT for a product type and
+-- a UNION for a sum type. Errors are rewrapped using the existing
 -- @returnError@ helper so callers receive a proper @ResultError@.
 instance (Generic a, GFromField (Rep a), Typeable a) => FromField (ViaDuckDB a) where
   fromField f@Field{fieldValue} =

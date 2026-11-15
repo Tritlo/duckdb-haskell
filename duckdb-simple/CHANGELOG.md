@@ -257,9 +257,9 @@
   binds back. A scalar constructor binds as the DuckDB type of the
   constructor, and a `FieldList`, a `FieldArray`, or a `FieldMap` takes the
   element type that its elements give, with the rule of a SQL list literal.
-  A `FieldEnum`, an empty `FieldArray`, and an empty `FieldList` or `FieldMap`
-  for a parameter with no known type raise `SQLError` with the type
-  `ErrorInputInvalid`. A `FieldTimestamp`, a `FieldTime`, and a
+  A `FieldEnum` binds its label as a VARCHAR. An empty `FieldArray`, and an
+  empty `FieldList` or `FieldMap` for a parameter with no known type, raise
+  `SQLError` with the type `ErrorInputInvalid`. A `FieldTimestamp`, a `FieldTime`, and a
   `FieldTimestampTZ` bind with the microsecond type, or with the nanosecond
   type when the value has digits below a microsecond and the parameter has the
   nanosecond type.
@@ -328,6 +328,54 @@
   conversion, give the DuckDB type names `TIMESTAMPTZ` and `TIMETZ`. Earlier
   versions gave `TIMESTAMP_TZ` and `TIME_TZ`, which DuckDB does not accept as
   type names.
+- `errSQLType` of a `ResultError`, and the `SQLError` message of a failed
+  conversion, give the type names of DuckDB's `typeof`: `TINYINT`, `SMALLINT`,
+  `INTEGER`, `BIGINT`, and `VARCHAR`. Earlier versions gave `INT1`, `INT2`,
+  `INT4`, `INT8`, and `TEXT`. The errors of DuckDB use `INT8` for the 8-bit
+  type, not for `BIGINT`.
+- `duckdbColumnType` gives `VARCHAR` for `Text` and `String`. Earlier versions
+  gave `TEXT`.
+- A DECIMAL read as `Double` or `Float`, and a BIGINT read as `Float`, give
+  the value of the cast of DuckDB to DOUBLE or FLOAT. Earlier versions rounded
+  two times, so the value could differ from the cast in the last bit. For
+  example, `2706284552926637.70::DECIMAL(18,2)` read as `2706284552926638.0`,
+  and the cast gives `2706284552926637.5`. For scale 0 and a width of 19 to 38,
+  the cast of DuckDB does not always give the nearest value, and the library
+  gives the value of the cast.
+- A BOOLEAN read as `Text` or `String` gives `true` or `false`, as the cast to
+  VARCHAR does. Earlier versions gave `1` or `0`.
+- A `FromField` instance reads another SQL type only when it gives the value
+  of the cast of DuckDB, or an error. The Haddock of each instance gives the
+  SQL types that it reads. MIGRATION.md gives the SQL to write in place of each
+  read that the next three entries remove.
+- A TIMESTAMP, TIMESTAMP_S, TIMESTAMP_MS, TIMESTAMP_NS, or DATE read as
+  `UTCTime`, and a TIMESTAMPTZ or TIMESTAMPTZ_NS read as `LocalTime`, raise the
+  error of an incompatible column, also in the `Unbounded` forms. The casts of
+  DuckDB use the TimeZone setting of the session. Earlier versions used UTC.
+- A FLOAT or DOUBLE read as `Text` or `String` raises the error of an
+  incompatible column. Earlier versions gave the text of `show`, for example
+  `1.0e-2` for 0.01, where the cast gives `0.01`.
+- A VARCHAR read as `ByteString` raises the error of an incompatible column.
+  Earlier versions gave the UTF-8 bytes, where the cast to BLOB reads escape
+  sequences.
+- `FieldEnum` holds the index and the label of an ENUM value:
+  `FieldEnum Word32 Text`. An ENUM value reads as `Text` or `String` with its
+  label, as the cast to VARCHAR gives it. Earlier versions raised an error. An
+  ENUM value read as an integer type raises the error of an incompatible
+  column. Earlier versions gave the index, where the cast of DuckDB parses the
+  label. The reader reads each label of a query one time, through the
+  dictionary of the type, and does not cast.
+- A `FieldEnum` inside a value of a declared ENUM type binds its label, not its
+  index. A label that is not in the dictionary raises `SQLError`.
+- `displayException` of a `ResultError` gives the text of the error, with the
+  column and the two types, as the `SQLError` of a column. Earlier versions
+  gave the derived `show`. The error of a field of a `ViaDuckDB` record names
+  the field, for example
+  `field stampedAt: duckdb-simple: a value has type TIMESTAMP but expected UTCTime`.
+- A `Variant` read of a column that holds an ENUM, a MAP, a UNION, or a
+  GEOMETRY with a CRS at any depth raises the error of an incompatible column.
+  Earlier versions wrapped the value, which DuckDB's cast to VARIANT changes
+  and which a `Variant` parameter does not bind.
 - Allow session variables to supply omitted named parameters. Too few named
   parameters no longer raise `FormatError`. Too many named parameters still
   raise it.

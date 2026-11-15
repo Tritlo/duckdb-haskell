@@ -14,11 +14,12 @@ module ValueRegressionTests (main, valueRegressionTests) where
 import Control.Exception (IOException, bracket, fromException, try)
 import Control.Monad (forM_)
 import Data.Array (Array, elems, listArray)
+import Data.Bits (shiftR, xor)
 import qualified Data.ByteString as BS
 import Data.Int (Int16, Int32, Int64, Int8)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (isJust)
-import Data.Proxy (Proxy (..))
+import Data.Maybe (fromMaybe, isJust)
+import Data.Proxy (Proxy (..), asProxyTypeOf)
 import Data.Ratio ((%))
 import Data.String (fromString)
 import Data.Text (Text)
@@ -27,6 +28,7 @@ import Data.Time.Calendar (Day, addDays, fromGregorian)
 import Data.Time.Clock (UTCTime (..))
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), utc, utcToLocalTime)
+import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (
@@ -47,6 +49,7 @@ import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
 import Database.DuckDB.Simple.V2.LogicalRep (destroyLogicalType, logicalTypeFromRep, logicalTypeToRep)
+import GHC.Float (castDoubleToWord64, castFloatToWord32)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import Test.Tasty (TestTree, defaultMain, testGroup)
@@ -81,6 +84,11 @@ data NamedRecord = NamedRecord {firstValue :: Int64, secondValue :: Int64}
 -- | Sum with a payload to test NULL member handling.
 data NullableSum = EmptyMember | DataMember Int64
   deriving (Eq, Show, Generic)
+
+-- | A generic record with a UTCTime field.
+newtype Stamped = Stamped {stampedAt :: UTCTime}
+  deriving stock (Eq, Show, Generic)
+  deriving (FromField) via (ViaDuckDB Stamped)
 
 -- | A generic record for array parameters.
 data Pair = Pair {pairName :: Text, pairValue :: Int64}
@@ -133,8 +141,12 @@ valueRegressionTests =
     [ testCase "REAL decodes to Float and Double" $ withConnection ":memory:" \conn -> do
         (query_ conn "SELECT 1.25::REAL" :: IO [Only Float]) >>= (@?= [Only 1.25])
         (query_ conn "SELECT 1.25::REAL" :: IO [Only Double]) >>= (@?= [Only 1.25])
-    , testCase "Float parameters still decode as Text" $ withConnection ":memory:" \conn ->
-        (query conn "SELECT ?" (Only (1.25 :: Float)) :: IO [Only Text]) >>= (@?= [Only "1.25"])
+    , testCase "a Float parameter does not read as Text, and its cast to VARCHAR does" $ withConnection ":memory:" \conn -> do
+        assertIncompatible conn "?::FLOAT" (Only (1.25 :: Float)) "FLOAT" (Proxy :: Proxy Text) "Text"
+        (query conn "SELECT ?::VARCHAR" (Only (1.25 :: Float)) :: IO [Only Text]) >>= (@?= [Only "1.25"])
+    , testCase "BOOLEAN read as Text and String gives the cast to VARCHAR" $ withConnection ":memory:" \conn ->
+        (query_ conn "SELECT b, b::VARCHAR, b FROM (VALUES (true), (false)) t(b)" :: IO [(Text, Text, String)])
+          >>= (@?= [("true", "true", "true"), ("false", "false", "false")])
     , testCase "generic nullary UNION constructors round trip through DuckDB" $ withConnection ":memory:" \conn ->
         forM_ [Red, Blue] \colour ->
           (query conn "SELECT ?" (Only colour) :: IO [Only Colour]) >>= (@?= [Only colour])
@@ -297,6 +309,8 @@ valueRegressionTests =
           , ("MAP(INTEGER[], STRUCT(x DOUBLE))", "MAP {[1]: {'x': 1.5}}", Nothing)
           , ("STRUCT(a INTEGER, b VARCHAR)", "{'a': 1, 'b': 'x'}", Nothing)
           , ("STRUCT(e ENUM('a', 'b'), n INTEGER[])", "{'e': 'b', 'n': []}", Nothing)
+          , ("ENUM('a', 'b')", "'b'", Just "VARCHAR")
+          , ("ENUM('a', 'b')[]", "['a', NULL, 'b']", Just "VARCHAR[]")
           , ("TUPLE(INTEGER, VARCHAR)", "(1, 'x')", Nothing)
           , ("UNION(a INTEGER, b VARCHAR)", "union_value(b := 'x')", Nothing)
           , ("STRUCT(a INTEGER)[]", "[{'a': 1}, NULL]", Nothing)
@@ -332,9 +346,6 @@ valueRegressionTests =
                   assertEqual label (Just ErrorInputInvalid) sqlErrorType
                   assertBool (Text.unpack sqlErrorMessage) (part `Text.isInfixOf` sqlErrorMessage)
                 Right rows -> assertFailure (label <> ": " <> show rows)
-        [Only enum] <- query_ conn "SELECT 'b'::ENUM('a', 'b')" :: IO [Only FieldValue]
-        untyped "ENUM" enum "a FieldEnum holds the index of an ENUM value, but not its ENUM type"
-        untyped "ENUM in a list" (FieldList [enum]) "a FieldEnum holds the index of an ENUM value"
         untyped "empty list" (FieldList []) "an empty FieldList has no element type for a parameter with no known type"
         untyped "empty inner list" (FieldList [FieldList [FieldInt32 1], FieldList []]) "an empty FieldList has no element type"
         untyped "empty array" (FieldArray (listArray (0, -1) [])) "an empty FieldArray has no element, and a DuckDB ARRAY has at least one"
@@ -1046,7 +1057,173 @@ valueRegressionTests =
               (Query ("CREATE TYPE " <> dtype <> " AS ENUM (" <> Text.intercalate "," ["'" <> label index <> "'" | index <- [0 .. size - 1]] <> ")"))
           rows <-
             query_ conn (Query ("SELECT x::" <> dtype <> " FROM (VALUES ('v0'), (NULL), ('" <> label (size - 1) <> "')) t(x)")) :: IO [Only FieldValue]
-          rows @?= map Only [FieldEnum 0, FieldNull, FieldEnum (fromIntegral (size - 1))]
+          rows @?= map Only [FieldEnum 0 (label (0 :: Int)), FieldNull, FieldEnum (fromIntegral (size - 1)) (label (size - 1))]
+    , testCase "DECIMAL and BIGINT values read as Double and Float give the casts of DuckDB" $ withConnection ":memory:" \conn -> do
+        -- Each row has the read of v as Double and Float, and the casts of v
+        -- to DOUBLE and FLOAT read at their own types. The value lists are
+        -- fixed. See Note [DECIMAL as DOUBLE and FLOAT] in
+        -- "Database.DuckDB.Simple.FromField". For scale 0 and a width of 19
+        -- to 38, the library copies the cast of DuckDB 2.0.0, which is not
+        -- always the nearest value. If a later DuckDB version changes the
+        -- rounding of that cast, the first assertion fails and shows the new
+        -- values of DuckDB. DuckDB 2.0.0 gives these values. The nearest values
+        -- are -9007199254740994 and 3.3569516755834854e36.
+        query_ conn "SELECT (-9007199254740994)::DECIMAL(19,0)::DOUBLE, 3356951675583485076575379654993209529::DECIMAL(38,0)::DOUBLE"
+          >>= (@?= [(-9007199254740992 :: Double, 3.356951675583485e36 :: Double)])
+        let bigints =
+              filter (\v -> v >= toInteger (minBound :: Int64) && v <= toInteger (maxBound :: Int64)) (toInteger (minBound :: Int64) : decimalIntegers 19)
+            kinds =
+              [ ("DECIMAL(" <> show width <> "," <> show scale <> ")", map (decimalText scale) (decimalIntegers width <> roundingTies width scale))
+              | (width, scale) <- decimalKinds
+              ]
+                <> [("BIGINT", map (Text.pack . show) bigints)]
+        forM_ kinds \(sqlType, texts) -> do
+          rows <-
+            query
+              conn
+              (fromString ("SELECT s, v, v::DOUBLE, v, v::FLOAT FROM (SELECT s, s::" <> sqlType <> " AS v FROM unnest(?::VARCHAR[]) t(s))"))
+              (Only texts)
+              :: IO [(Text, Double, Double, Float, Float)]
+          length rows @?= length texts
+          [(sqlType, text, value, cast) | (text, value, cast, _, _) <- rows, castDoubleToWord64 value /= castDoubleToWord64 cast] @?= []
+          [(sqlType, text, value, cast) | (text, _, _, value, cast) <- rows, castFloatToWord32 value /= castFloatToWord32 cast] @?= []
+    , testCase "a read of another SQL type gives the value of the cast of DuckDB" $ withConnection ":memory:" \conn -> do
+        -- Each value reads as the Haskell type, next to its cast to the SQL
+        -- type of the Haskell type in the same row. See
+        -- Note [Reads of another SQL type] in "Database.DuckDB.Simple.FromField".
+        let signedValues = ["-100", "0", "7", "100"]
+            unsignedValues = ["0", "7", "100"]
+            signedSources = ["TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT"]
+            unsignedSources = ["UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT", "UHUGEINT"]
+            signedTarget :: (FromField a, Eq a, Show a) => Proxy a -> Text -> Assertion
+            signedTarget proxy target = do
+              forM_ signedSources \source -> assertReadsAsCast conn proxy source target signedValues
+              assertReadsAsCast conn proxy "UHUGEINT" target unsignedValues
+            unsignedTarget :: (FromField a, Eq a, Show a) => Proxy a -> Text -> Assertion
+            unsignedTarget proxy target = forM_ (signedSources <> unsignedSources) \source -> assertReadsAsCast conn proxy source target unsignedValues
+            timestamps = ["2024-01-02 03:04:05", "1969-12-31 23:59:59"]
+            timePairs = do
+              forM_ ["TIMESTAMP", "TIMESTAMP_S", "TIMESTAMP_MS", "TIMESTAMP_NS"] \source -> do
+                assertReadsAsCast conn (Proxy :: Proxy Day) source "DATE" timestamps
+                assertReadsAsCast conn (Proxy :: Proxy (Unbounded Day)) source "DATE" timestamps
+              assertReadsAsCast conn (Proxy :: Proxy (Unbounded Day)) "TIMESTAMP" "DATE" ["infinity", "-infinity"]
+              forM_ ["TIMESTAMP", "TIMESTAMP_S", "TIMESTAMP_MS"] \source -> assertReadsAsCast conn (Proxy :: Proxy TimeOfDay) source "TIME" timestamps
+              assertReadsAsCast conn (Proxy :: Proxy TimeOfDay) "TIMESTAMP" "TIME" ["2024-01-02 03:04:05.123456"]
+              assertReadsAsCast
+                conn
+                (Proxy :: Proxy TimeOfDay)
+                "TIMESTAMP_NS"
+                "TIME_NS"
+                ["2024-01-02 03:04:05.123456789", "1969-12-31 23:59:59.999999999"]
+              forM_ [("DATE", ["2024-01-02", "1969-12-31"]), ("TIMESTAMP_S", timestamps), ("TIMESTAMP_MS", timestamps)] \(source, values) -> do
+                assertReadsAsCast conn (Proxy :: Proxy LocalTime) source "TIMESTAMP" values
+                assertReadsAsCast conn (Proxy :: Proxy (Unbounded LocalTime)) source "TIMESTAMP" values
+              assertReadsAsCast conn (Proxy :: Proxy (Unbounded LocalTime)) "DATE" "TIMESTAMP" ["infinity", "-infinity"]
+        signedTarget (Proxy :: Proxy Int8) "TINYINT"
+        signedTarget (Proxy :: Proxy Int16) "SMALLINT"
+        signedTarget (Proxy :: Proxy Int32) "INTEGER"
+        signedTarget (Proxy :: Proxy Int64) "BIGINT"
+        signedTarget (Proxy :: Proxy Int) "BIGINT"
+        signedTarget (Proxy :: Proxy Integer) "BIGNUM"
+        forM_ unsignedSources \source -> assertReadsAsCast conn (Proxy :: Proxy Integer) source "BIGNUM" unsignedValues
+        unsignedTarget (Proxy :: Proxy Natural) "BIGNUM"
+        unsignedTarget (Proxy :: Proxy Word8) "UTINYINT"
+        unsignedTarget (Proxy :: Proxy Word16) "USMALLINT"
+        unsignedTarget (Proxy :: Proxy Word32) "UINTEGER"
+        unsignedTarget (Proxy :: Proxy Word64) "UBIGINT"
+        unsignedTarget (Proxy :: Proxy Word) "UBIGINT"
+        forM_ (take 4 signedSources) \source -> do
+          assertReadsAsCast conn (Proxy :: Proxy Bool) source "BOOLEAN" ["-2", "0", "1", "7"]
+          assertReadsAsCast conn (Proxy :: Proxy Double) source "DOUBLE" signedValues
+          assertReadsAsCast conn (Proxy :: Proxy Float) source "FLOAT" signedValues
+          assertReadsAsCast conn (Proxy :: Proxy Text) source "VARCHAR" signedValues
+          assertReadsAsCast conn (Proxy :: Proxy String) source "VARCHAR" signedValues
+        assertReadsAsCast conn (Proxy :: Proxy Double) "BIGINT" "DOUBLE" ["9007199254740993", "-9223372036854775808"]
+        assertReadsAsCast conn (Proxy :: Proxy Double) "FLOAT" "DOUBLE" ["1.25", "0.1", "-3.5"]
+        assertReadsAsCast conn (Proxy :: Proxy Float) "DOUBLE" "FLOAT" ["1.25", "0.1", "16777217"]
+        assertReadsAsCast conn (Proxy :: Proxy Text) "BOOLEAN" "VARCHAR" ["true", "false"]
+        assertReadsAsCast conn (Proxy :: Proxy String) "BOOLEAN" "VARCHAR" ["true", "false"]
+        assertReadsAsCast conn (Proxy :: Proxy BS.ByteString) "BIT" "BLOB" ["101", "10110011101", "00000000"]
+        assertReadsAsCast conn (Proxy :: Proxy BS.ByteString) "GEOMETRY" "BLOB" ["POINT (1 2)", "LINESTRING (0 0, 1 1)"]
+        assertReadsAsCast
+          conn
+          (Proxy :: Proxy UUID.UUID)
+          "VARCHAR"
+          "UUID"
+          ["00000000-0000-0000-0000-000000000000", "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"]
+        assertReadsAsCast conn (Proxy :: Proxy [Int32]) "INTEGER[3]" "INTEGER[]" ["[1, 2, 3]", "[-1, 2, 0]"]
+        -- An ENUM value reads as its label, the text of the cast to VARCHAR.
+        assertReadsAsCast conn (Proxy :: Proxy Text) "ENUM('10', 'beta')" "VARCHAR" ["10", "beta"]
+        assertReadsAsCast conn (Proxy :: Proxy String) "ENUM('10', 'beta')" "VARCHAR" ["10", "beta"]
+        -- The time pairs do not use the session time zone.
+        timePairs
+        _ <- execute_ conn "SET TimeZone = 'Pacific/Auckland'"
+        timePairs
+    , testCase "a refused field of a generic record names the field and the two types" $ withConnection ":memory:" \conn -> do
+        try (query_ conn "SELECT {'stampedAt': TIMESTAMP '2024-01-02 03:04:05'} AS s" :: IO [Only Stamped]) >>= \case
+          Left SQLError{sqlErrorMessage} -> sqlErrorMessage @?= "field stampedAt: duckdb-simple: a value has type TIMESTAMP but expected UTCTime"
+          Right rows -> assertFailure ("expected the error of the field, got " <> show rows)
+        (query_ conn "SELECT {'stampedAt': TIMESTAMPTZ '2024-01-02 03:04:05+00'} AS s" :: IO [Only Stamped])
+          >>= (@?= [Only (Stamped (UTCTime (fromGregorian 2024 1 2) 11045))])
+    , testCase "a read of another SQL type that needs the time zone or another text raises Incompatible" $ withConnection ":memory:" \conn -> do
+        -- See Note [Reads of another SQL type] in "Database.DuckDB.Simple.FromField".
+        let refusedPairs = do
+              forM_ ["TIMESTAMP", "TIMESTAMP_S", "TIMESTAMP_MS", "TIMESTAMP_NS"] \source -> do
+                assertIncompatible conn ("'2024-01-02 03:04:05'::" <> source) () "TIMESTAMP" (Proxy :: Proxy UTCTime) "UTCTime"
+                assertIncompatible conn ("'2024-01-02 03:04:05'::" <> source) () "TIMESTAMP" (Proxy :: Proxy (Unbounded UTCTime)) "Unbounded UTCTime"
+              assertIncompatible conn "DATE '2024-01-02'" () "DATE" (Proxy :: Proxy UTCTime) "UTCTime"
+              assertIncompatible conn "DATE '2024-01-02'" () "DATE" (Proxy :: Proxy (Unbounded UTCTime)) "Unbounded UTCTime"
+              forM_ ["TIMESTAMPTZ", "TIMESTAMPTZ_NS"] \source -> do
+                assertIncompatible conn ("'2024-01-02 03:04:05+00'::" <> source) () "TIMESTAMPTZ" (Proxy :: Proxy LocalTime) "LocalTime"
+                assertIncompatible
+                  conn
+                  ("'2024-01-02 03:04:05+00'::" <> source)
+                  ()
+                  "TIMESTAMPTZ"
+                  (Proxy :: Proxy (Unbounded LocalTime))
+                  "Unbounded LocalTime"
+              forM_ [("FLOAT", "0.01::FLOAT"), ("DOUBLE", "0.01::DOUBLE")] \(sqlName, expression) -> do
+                assertIncompatible conn expression () sqlName (Proxy :: Proxy Text) "Text"
+                assertIncompatible conn expression () sqlName (Proxy :: Proxy String) "Text"
+              assertIncompatible conn "'a\\x41'::VARCHAR" () "VARCHAR" (Proxy :: Proxy BS.ByteString) "ByteString"
+              -- An integer type does not read an ENUM value. The cast of DuckDB
+              -- parses the label, and enum_code gives the index.
+              let enumAs :: (FromField a, Show a) => Proxy a -> Text -> Assertion
+                  enumAs = assertIncompatible conn "'10'::ENUM('10', '20')" () "ENUM"
+              enumAs (Proxy :: Proxy Int8) "Int8"
+              enumAs (Proxy :: Proxy Int16) "Int16"
+              enumAs (Proxy :: Proxy Int32) "Int32"
+              enumAs (Proxy :: Proxy Int64) "Int64"
+              enumAs (Proxy :: Proxy Int) "Int"
+              enumAs (Proxy :: Proxy Integer) "Integer"
+              enumAs (Proxy :: Proxy Natural) "Natural"
+              enumAs (Proxy :: Proxy Word8) "Word8"
+              enumAs (Proxy :: Proxy Word16) "Word16"
+              enumAs (Proxy :: Proxy Word32) "Word32"
+              enumAs (Proxy :: Proxy Word64) "Word64"
+              enumAs (Proxy :: Proxy Word) "Word"
+              -- The SQL in place of each refused read, also for the year 1500,
+              -- which a nanosecond value cannot hold.
+              forM_ [2024, 1500] \year -> do
+                let day = fromGregorian year 1 2
+                    text = Text.pack (show day)
+                (query_ conn (Query ("SELECT c::TIMESTAMP AT TIME ZONE 'UTC' FROM (VALUES (TIMESTAMP '" <> text <> " 03:04:05')) t(c)")) :: IO [Only UTCTime])
+                  >>= (@?= [Only (UTCTime day 11045)])
+                forM_ ["TIMESTAMP_S", "TIMESTAMP_MS"] \source ->
+                  ( query_ conn (Query ("SELECT c::TIMESTAMP AT TIME ZONE 'UTC' FROM (VALUES ('" <> text <> " 03:04:05'::" <> source <> ")) t(c)"))
+                      :: IO [Only UTCTime]
+                  )
+                    >>= (@?= [Only (UTCTime day 11045)])
+                (query_ conn (Query ("SELECT c::TIMESTAMP AT TIME ZONE 'UTC' FROM (VALUES (DATE '" <> text <> "')) t(c)")) :: IO [Only UTCTime])
+                  >>= (@?= [Only (UTCTime day 0)])
+                (query_ conn (Query ("SELECT c AT TIME ZONE 'UTC' FROM (VALUES (TIMESTAMPTZ '" <> text <> " 03:04:05+00')) t(c)")) :: IO [Only LocalTime])
+                  >>= (@?= [Only (LocalTime day (TimeOfDay 3 4 5))])
+              (query_ conn "SELECT c AT TIME ZONE 'UTC' FROM (VALUES ('2024-01-02 03:04:05.123456789'::TIMESTAMP_NS)) t(c)" :: IO [Only UTCTime])
+                >>= (@?= [Only (UTCTime (fromGregorian 2024 1 2) 11045.123456789)])
+              (query_ conn "SELECT 0.01::DOUBLE::VARCHAR, encode('a\\x41')" :: IO [(Text, BS.ByteString)]) >>= (@?= [("0.01", "a\\x41")])
+        refusedPairs
+        _ <- execute_ conn "SET TimeZone = 'Pacific/Auckland'"
+        refusedPairs
     , testCase "invalid DECIMAL width scale and magnitude are rejected" $ withConnection ":memory:" \conn ->
         forM_ [DecimalValue 0 0 0, DecimalValue 39 0 0, DecimalValue 2 3 1, DecimalValue 2 0 100, DecimalValue 2 0 (-100)] \decimal ->
           assertIOError
@@ -1169,13 +1346,35 @@ valueRegressionTests =
               Left SQLError{sqlErrorMessage} -> assertBool (Text.unpack sqlErrorMessage) ("expression depth" `Text.isInfixOf` sqlErrorMessage)
               Right count -> assertFailure ("expected the error of the VARIANT reader, got " <> show count <> " rows")
             (query_ conn "SELECT 42" :: IO [Only Int]) >>= (@?= [Only 42])
-    , testCase "ENUM payload index must be in its dictionary" $ withConnection ":memory:" \conn ->
-        assertIOError
-          (query conn "SELECT ?" (Only (singleField (LogicalTypeEnum (listArray (0, 1) ["a", "b"])) (FieldEnum 2))) :: IO [Only FieldValue])
-    , testCase "ENUM payload index binds the label of its dictionary" $ withConnection ":memory:" \conn -> do
-        let struct = singleField (LogicalTypeEnum (listArray (0, 2) ["a", "b", "c"])) (FieldEnum 1)
+    , testCase "ENUM labels read as the cast to VARCHAR in each chunk, execution, list, and map key" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
+        -- 5000 rows are three chunks. Each row has another label of a large
+        -- dictionary. See Note [ENUM labels] in "Database.DuckDB.Simple.Materialize".
+        _ <- execute_ conn "CREATE TYPE wide_enum AS ENUM (SELECT 'v' || i FROM range(70000) t(i))"
+        let sql =
+              "SELECT e, [e, NULL], map([coalesce(e, 'v1'::wide_enum)], [i]), e::VARCHAR, [e, NULL]::VARCHAR[] \
+              \FROM (SELECT i, CASE WHEN i % 1000 = 999 THEN NULL ELSE ('v' || ((i * 7) % 70000))::wide_enum END AS e FROM range(5000) t(i))"
+            check :: [(Maybe Text, [Maybe Text], Map.Map Text Int64, Maybe Text, [Maybe Text])] -> Assertion
+            check rows = do
+              length rows @?= 5000
+              forM_ rows \(label, list, keys, cast, castList) -> do
+                label @?= cast
+                list @?= castList
+                Map.keys keys @?= [fromMaybe "v1" cast]
+        forM_ [1 :: Int, 2] \_ ->
+          query_ conn sql >>= check
+        withStatement conn sql (readAllRows Streaming.nextRow) >>= check
+    , testCase "ENUM payload label must be in its dictionary" $ withConnection ":memory:" \conn ->
+        try (query conn "SELECT ?" (Only (singleField (LogicalTypeEnum (listArray (0, 1) ["a", "b"])) (FieldEnum 0 "c"))) :: IO [Only FieldValue]) >>= \case
+          Left SQLError{sqlErrorMessage} -> sqlErrorMessage @?= "duckdb-simple: the ENUM label \"c\" is not in the dictionary of the type"
+          Right rows -> assertFailure ("expected the label error, got " <> show rows)
+    , testCase "ENUM payload binds its label, not its index" $ withConnection ":memory:" \conn -> do
+        let struct = singleField (LogicalTypeEnum (listArray (0, 2) ["a", "b", "c"])) (FieldEnum 1 "b")
         (query conn "SELECT typeof((?).value), (?).value::VARCHAR, ?" (struct, struct, struct) :: IO [(Text, Text, StructValue FieldValue)])
           >>= (@?= [("ENUM('a', 'b', 'c')", "b", struct)])
+        -- The index of another dictionary does not change the value.
+        let other = singleField (LogicalTypeEnum (listArray (0, 2) ["a", "b", "c"])) (FieldEnum 0 "c")
+        (query conn "SELECT (?).value::VARCHAR, ?" (other, other) :: IO [(Text, StructValue FieldValue)])
+          >>= (@?= [("c", singleField (LogicalTypeEnum (listArray (0, 2) ["a", "b", "c"])) (FieldEnum 2 "c"))])
     , testCase "ENUM values of each dictionary size bind their labels" $ withConnection ":memory:" \conn ->
         -- DuckDB stores the index of a dictionary of 200, 300, and 70000 entries
         -- in 8, 16, and 32 bits.
@@ -1183,7 +1382,7 @@ valueRegressionTests =
           let label index = "v" <> Text.pack (show index)
               entries = listArray (0, size - 1) (map label [0 .. size - 1])
           forM_ [0, size - 1] \index -> do
-            let struct = singleField (LogicalTypeEnum entries) (FieldEnum (fromIntegral index))
+            let struct = singleField (LogicalTypeEnum entries) (FieldEnum (fromIntegral index) (label index))
             (query conn "SELECT (?).value::VARCHAR, ?" (struct, struct) :: IO [(Text, StructValue FieldValue)])
               >>= assertEqual (show size <> " " <> show index) [(label index, struct)]
     , testCase "TIMETZ input offset overflow fails before native use" $ withConnection ":memory:" \conn -> do
@@ -1206,9 +1405,10 @@ valueRegressionTests =
             stType = LogicalTypeStruct (listArray (0, 1) [StructField "n" bigint, StructField "e" mood])
             members = listArray (0, 1) [UnionMemberType "d" (LogicalTypeDecimal 9 2), UnionMemberType "s" stType]
             decimal width scale integer = FieldDecimal (DecimalValue width scale integer)
+            moodValue i = FieldEnum (fromIntegral (i `mod` 3)) (["calm", "busy", "tired"] !! fromIntegral (i `mod` 3))
             expected :: Int64 -> [FieldValue]
             expected i =
-              let st = FieldStruct (structOf [("n", FieldInt64 i, bigint), ("e", FieldEnum (fromIntegral (i `mod` 3)), mood)])
+              let st = FieldStruct (structOf [("n", FieldInt64 i, bigint), ("e", moodValue i, mood)])
                   tenths = toInteger (i `mod` 1000)
                   tiers =
                     FieldStruct
@@ -1226,7 +1426,7 @@ valueRegressionTests =
                   , tiers
                   , FieldList [tiers, tiers]
                   , FieldUnion union
-                  , FieldMap [(FieldEnum (fromIntegral (i `mod` 3)), decimal 9 2 (tenths * 10))]
+                  , FieldMap [(moodValue i, decimal 9 2 (tenths * 10))]
                   , decimal 18 3 (toInteger i * 1000)
                   ]
         materialized <- query_ conn sql :: IO [[FieldValue]]
@@ -1440,9 +1640,9 @@ assertIOError action = do
     Right _ -> assertFailure "expected IOException"
 
 -- | The field of an ENUM row with the index and the label that DuckDB gives.
--- The field holds only the index.
 enumField :: Maybe Int64 -> Maybe Text -> FieldValue
-enumField index _ = maybe FieldNull (FieldEnum . fromIntegral) index
+enumField (Just index) (Just label) = FieldEnum (fromIntegral index) label
+enumField _ _ = FieldNull
 
 -- | Require the range error of the library for a date or a timestamp outside
 -- the range of DuckDB. See Note [Time ranges] in "Database.DuckDB.Simple.ToField".
@@ -1461,6 +1661,87 @@ assertConversionError action = do
   case result of
     Left (_ :: SQLError) -> pure ()
     Right _ -> assertFailure "expected ResultError"
+
+-- | The DECIMAL widths and scales of the case on Double and Float reads. They
+-- have each storage type of a DECIMAL, each path of
+-- Note [DECIMAL as DOUBLE and FLOAT] in "Database.DuckDB.Simple.FromField",
+-- and the scales on both sides of the limits 10 and 22 of path 2.
+decimalKinds :: [(Int, Int)]
+decimalKinds =
+  [(4, 0), (4, 2), (4, 4), (9, 0), (9, 2), (9, 5), (9, 9), (18, 0), (18, 2), (18, 6), (18, 12), (18, 18)]
+    <> [(19, 0), (19, 4), (38, 0), (38, 2), (38, 5), (38, 10), (38, 11), (38, 20), (38, 22), (38, 23), (38, 30), (38, 38)]
+
+-- | A fixed sequence of 64-bit words: SplitMix64 with seed 1.
+splitMix64 :: [Word64]
+splitMix64 = map mix (drop 1 (iterate (+ 0x9e3779b97f4a7c15) 1))
+  where
+    mix z0 =
+      let z1 = (z0 `xor` (z0 `shiftR` 30)) * 0xbf58476d1ce4e5b9
+          z2 = (z1 `xor` (z1 `shiftR` 27)) * 0x94d049bb133111eb
+      in  z2 `xor` (z2 `shiftR` 31)
+
+-- | Unscaled integers that a DECIMAL of a width holds, with both signs: zero
+-- and the extremes; two values that DuckDB 2.0.0 does not cast to the nearest
+-- DOUBLE at scale 0; a value that two roundings change at scale 2; values next
+-- to each power of two and next to the DOUBLE and FLOAT midpoints above it; and
+-- 400 values of 'splitMix64' with 1 to width digits.
+decimalIntegers :: Int -> [Integer]
+decimalIntegers width = filter (\v -> abs v <= limit) (special <> near <> spread)
+  where
+    limit = 10 ^ width - 1
+    special = [0, limit, negate limit, -9007199254740994, 270628455292663770, 3356951675583485076575379654993209529]
+    near =
+      [ sign * (2 ^ k + base + delta)
+      | k <- [0 .. 127 :: Int]
+      , base <- 0 : [m * 2 ^ (k - 53) | k >= 53, m <- [1, 3]] <> [m * 2 ^ (k - 24) | k >= 24, m <- [1, 3]]
+      , delta <- [-1, 0, 1]
+      , sign <- [1, -1]
+      ]
+    spread =
+      [ (if odd n then negate else id) ((toInteger high * 2 ^ (64 :: Int) + toInteger low) `mod` (10 ^ (1 + n `mod` width)))
+      | (n, high, low) <- zip3 [0 .. 399 :: Int] (everyOther splitMix64) (everyOther (drop 1 splitMix64))
+      ]
+    everyOther (a : _ : rest) = a : everyOther rest
+    everyOther rest = rest
+
+-- | Unscaled integers of path 3 in Note [DECIMAL as DOUBLE and FLOAT] whose
+-- value is a midpoint of two DOUBLE values (scale 5) or of two FLOAT values
+-- (scale 11), and the integers next to them, with both signs. A midpoint rounds
+-- to the even value.
+roundingTies :: Int -> Int -> [Integer]
+roundingTies 38 5 = [sign * ((2 ^ (100 :: Int) + 2 ^ (47 :: Int)) * 10 ^ (5 :: Int) + delta) | delta <- [-1, 0, 1], sign <- [1, -1]]
+roundingTies 38 11 = [sign * ((2 ^ (60 :: Int) + 2 ^ (36 :: Int)) * 10 ^ (11 :: Int) + delta) | delta <- [-1, 0, 1], sign <- [1, -1]]
+roundingTies _ _ = []
+
+-- | The text of an unscaled DECIMAL integer with a scale.
+decimalText :: Int -> Integer -> Text
+decimalText 0 v = Text.pack (show v)
+decimalText scale v = Text.pack ((if v < 0 then "-" else "") <> whole <> "." <> fraction)
+  where
+    digits = show (abs v)
+    padded = replicate (scale + 1 - length digits) '0' <> digits
+    (whole, fraction) = splitAt (length padded - scale) padded
+
+-- | Assert that each text value, cast to the source type, reads as @a@ with the
+-- value of its cast from the source type to the target type. The target type is
+-- the SQL type of @a@. The two reads are in the same row.
+assertReadsAsCast :: (FromField a, Eq a, Show a) => Connection -> Proxy a -> Text -> Text -> [Text] -> Assertion
+assertReadsAsCast conn proxy source target values = do
+  rows <-
+    query conn (Query ("SELECT v, v::" <> source <> ", v::" <> source <> "::" <> target <> " FROM unnest(?::VARCHAR[]) t(v)")) (Only values)
+  length rows @?= length values
+  forM_ rows \(value, actual, cast) ->
+    assertEqual (Text.unpack ("'" <> value <> "'::" <> source <> " as " <> target)) (cast `asProxyTypeOf` proxy) actual
+
+-- | Assert that a read of an expression as @a@ raises Incompatible with the SQL
+-- type name and the Haskell type name. A String reads through Text, so its
+-- error names Text.
+assertIncompatible :: forall a q. (FromField a, Show a, ToRow q) => Connection -> Text -> q -> Text -> Proxy a -> Text -> Assertion
+assertIncompatible conn expression parameters sqlName _ haskellName =
+  try (query conn (Query ("SELECT " <> expression <> " AS c")) parameters :: IO [Only a]) >>= \case
+    Left SQLError{sqlErrorMessage} ->
+      sqlErrorMessage @?= "duckdb-simple: column c has type " <> sqlName <> " but expected " <> haskellName
+    Right rows -> assertFailure ("expected Incompatible for " <> Text.unpack expression <> ", got " <> show rows)
 
 -- | Assert rejection without forcing a partial generic value.
 assertLeft :: Either String a -> Assertion

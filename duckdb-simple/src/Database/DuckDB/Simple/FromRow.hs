@@ -3,7 +3,6 @@
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeOperators #-}
@@ -29,13 +28,12 @@ module Database.DuckDB.Simple.FromRow (
 ) where
 
 import Control.Applicative (Alternative (..))
-import Control.Exception (Exception, SomeException (SomeException), fromException, toException)
+import Control.Exception (Exception (..), SomeException (SomeException), fromException, toException)
 import Control.Monad (MonadPlus, replicateM)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Reader (ReaderT, ask, runReaderT)
 import Control.Monad.Trans.State.Strict (StateT, get, put, runStateT)
 import Data.Maybe (listToMaybe, mapMaybe)
-import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.FromField
 import Database.DuckDB.Simple.Internal (SQLError (..))
@@ -219,7 +217,7 @@ instance (FromField a) => FromRow [a] where
 resultErrorToSqlError :: Query -> ResultError -> SQLError
 resultErrorToSqlError query err =
   SQLError
-    { sqlErrorMessage = renderError err
+    { sqlErrorMessage = Text.pack (displayException err)
     , sqlErrorType = Nothing
     , sqlErrorQuery = Just query
     }
@@ -249,30 +247,3 @@ rowErrorsToSqlError query errs =
             , sqlErrorType = Nothing
             , sqlErrorQuery = Just query
             }
-
-renderError :: ResultError -> Text
-renderError = \case
-  Incompatible{errSQLType, errSQLField, errHaskellType, errMessage} ->
-    Text.concat
-      [ "duckdb-simple: column "
-      , errSQLField
-      , " has type "
-      , errSQLType
-      , " but expected "
-      , errHaskellType
-      , if Text.null errMessage
-          then ""
-          else ": " <> errMessage
-      ]
-  UnexpectedNull{errHaskellType, errSQLField, errMessage} ->
-    Text.concat
-      [ "duckdb-simple: column "
-      , errSQLField
-      , " is NULL but expected "
-      , errHaskellType
-      , if Text.null errMessage
-          then ""
-          else ": " <> errMessage
-      ]
-  ConversionFailed{errMessage} ->
-    errMessage

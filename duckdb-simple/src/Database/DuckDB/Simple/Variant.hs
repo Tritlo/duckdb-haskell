@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
 -- |
@@ -8,11 +9,13 @@ module Database.DuckDB.Simple.Variant (
   variantObject,
 ) where
 
-import Data.Array (listArray)
+import Data.Array (elems, listArray)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
-import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), FromField (..))
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeId (..), LogicalTypeRep (..), StructField (..), StructValue (..))
+import qualified Data.Text as Text
+import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), FromField (..), ResultError (..), returnError)
+import Database.DuckDB.Simple.Geometry (RawGeometry (..))
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeId (..), LogicalTypeRep (..), StructField (..), StructValue (..), TupleValue (..))
 import Database.DuckDB.Simple.Ok (Ok (..))
 
 -- | A VARIANT value. The payload is a 'FieldValue' with the native type of the
@@ -37,6 +40,29 @@ variantObject entries =
       , structValueIndex = Map.fromList (zip (map fst entries) [0 ..])
       }
 
--- | Wrap a decoded column and retain its native payload types.
+-- | Reads VARIANT, and wraps the decoded value of each other SQL type. A value
+-- that holds an ENUM, a MAP, a UNION, or a GEOMETRY with a CRS at any depth
+-- raises 'Incompatible', because the cast of DuckDB to VARIANT gives another
+-- value: the label as a VARCHAR, a list of key and value objects, the member
+-- value, or the GEOMETRY without its CRS. Write @c::VARIANT@ in SQL for such a
+-- column. A VARIANT column does not decode to these values. See
+-- Note [Reads of another SQL type] in "Database.DuckDB.Simple.FromField".
 instance FromField Variant where
-  fromField Field{fieldValue} = Ok (Variant fieldValue)
+  fromField field@Field{fieldValue}
+    | changedByCast fieldValue =
+        returnError Incompatible field (Text.pack "the cast to VARIANT changes an ENUM, a MAP, a UNION, or a GEOMETRY with a CRS; write c::VARIANT")
+    | otherwise = Ok (Variant fieldValue)
+
+-- | Whether a decoded value holds an ENUM, a MAP, a UNION, or a GEOMETRY with a
+-- CRS at any depth. A VARIANT keeps none of these.
+changedByCast :: FieldValue -> Bool
+changedByCast = \case
+  FieldEnum{} -> True
+  FieldGeometry RawGeometry{rawGeometryCRS = Just _} -> True
+  FieldMap{} -> True
+  FieldUnion{} -> True
+  FieldList values -> any changedByCast values
+  FieldArray values -> any changedByCast (elems values)
+  FieldStruct StructValue{structValueFields} -> any (changedByCast . structFieldValue) (elems structValueFields)
+  FieldTuple TupleValue{tupleValueFields} -> any changedByCast (elems tupleValueFields)
+  _ -> False

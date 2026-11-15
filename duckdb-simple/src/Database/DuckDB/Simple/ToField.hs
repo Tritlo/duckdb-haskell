@@ -771,6 +771,8 @@ instance (DuckDBColumnType k, DuckDBColumnType v, ToField k, ToField v) => ToFie
 -- * A 'FieldText' binds as a VARCHAR with no collation, also when it came from
 --   a JSON value.
 -- * A value that came from a VARIANT binds as its payload.
+-- * A 'FieldEnum' binds its label as a VARCHAR. DuckDB casts the text to the
+--   ENUM type of a column.
 --
 -- A 'FieldList', a 'FieldArray', or a 'FieldMap' with only 'FieldNull' elements
 -- takes the element type of the parameter, or the type NULL for a parameter
@@ -778,11 +780,11 @@ instance (DuckDBColumnType k, DuckDBColumnType v, ToField k, ToField v) => ToFie
 -- 'FieldMap' takes the element type of the parameter.
 --
 -- These values raise an 'SQLError' of the type 'ErrorInputInvalid', because no
--- type is known for them: a 'FieldEnum', which holds only the index of an ENUM
--- value, an empty 'FieldList' or 'FieldMap' for a parameter with no known type,
--- and an empty 'FieldArray', because a DuckDB ARRAY has at least one element.
--- Inside a 'FieldStruct', a 'FieldTuple', or a 'FieldUnion', the declared type
--- gives the ENUM type and the element type, so such a value binds.
+-- type is known for them: an empty 'FieldList' or 'FieldMap' for a parameter
+-- with no known type, and an empty 'FieldArray', because a DuckDB ARRAY has at
+-- least one element. Inside a 'FieldStruct', a 'FieldTuple', or a 'FieldUnion',
+-- the declared type gives the element type, so such a value binds. A 'FieldEnum'
+-- there binds its label to the declared ENUM type.
 --
 -- t'FieldValue' has no 'DuckDBColumnType' and no 'ToDuckValue' instance,
 -- because no one DuckDB type holds each of its values.
@@ -815,7 +817,7 @@ instance ToField FieldValue where
     FieldTimeTZ v -> toField v
     FieldBit v -> toField v
     FieldBigNum v -> toField v
-    FieldEnum{} -> valueBinding (show value) \_ -> untypedFieldValue "a FieldEnum holds the index of an ENUM value, but not its ENUM type"
+    FieldEnum _ label -> toField label
     FieldArray items
       | null items -> valueBinding (show value) \_ -> untypedFieldValue "an empty FieldArray has no element, and a DuckDB ARRAY has at least one"
       | otherwise -> fieldValueSequence "FieldArray" c_duckdb_v2_value_create_array (elems items)
@@ -944,10 +946,10 @@ instance DuckDBColumnType Float where
   duckdbColumnTypeFor _ = "FLOAT"
 
 instance DuckDBColumnType Text where
-  duckdbColumnTypeFor _ = "TEXT"
+  duckdbColumnTypeFor _ = "VARCHAR"
 
 instance DuckDBColumnType String where
-  duckdbColumnTypeFor _ = "TEXT"
+  duckdbColumnTypeFor _ = "VARCHAR"
 
 instance DuckDBColumnType BS.ByteString where
   duckdbColumnTypeFor _ = "BLOB"
@@ -1473,7 +1475,7 @@ fieldValueWithTypeDuckValue builder@ValueBuilder{builderFactory = factory, build
     | rep == tupleValueTypeRep tuple -> tupleValueDuckValue builder tuple
   (LogicalTypeUnion _, FieldUnion union)
     | rep == unionValueTypeRep union -> unionValueDuckValue builder union
-  (LogicalTypeEnum entries, FieldEnum index) -> enumDuckValue factory entries index
+  (LogicalTypeEnum entries, FieldEnum _ label) -> enumDuckValue factory entries label
   _ -> typeMismatch (show rep) value
   where
     sequenceValue create child values = bracket (makeType child) destroyLogicalType \logical ->
@@ -1527,16 +1529,18 @@ scalarFieldValueDuckValue factory dtype value = case (dtype, value) of
           )
       )
 
--- | Construct an ENUM value by the default cast of the entry text to the ENUM
--- type. A user cast from VARCHAR to that type does not apply. See
--- Note [User casts and the casts of the library] in
+-- | Construct an ENUM value by the default cast of the label to the ENUM type.
+-- The label of a 'FieldEnum' gives the value, not its index: an index of
+-- another dictionary would give another label with no error. A label that is
+-- not in the dictionary raises an error. A user cast from VARCHAR to that type
+-- does not apply. See Note [User casts and the casts of the library] in
 -- "Database.DuckDB.Simple.Materialize".
-enumDuckValue :: DuckDBV2FactoryHandle -> Array Int Text -> Word32 -> IO DuckDBV2ValueHandle
-enumDuckValue factory entries index = do
-  let dictionary = elems entries
-  when (toInteger index >= toInteger (length dictionary)) $ throwIO (userError "duckdb-simple: ENUM index out of range")
+enumDuckValue :: DuckDBV2FactoryHandle -> Array Int Text -> Text -> IO DuckDBV2ValueHandle
+enumDuckValue factory entries label = do
+  unless (label `elem` elems entries) $
+    throwInvalidArgument ("the ENUM label " <> Text.pack (show label) <> " is not in the dictionary of the type")
   bracket (logicalTypeFromRep factory (LogicalTypeEnum entries)) destroyLogicalType \logical ->
-    bracket (textDuckValue factory (dictionary !! fromIntegral index)) destroyValue \value ->
+    bracket (textDuckValue factory label) destroyValue \value ->
       defaultCast factory value logical
 
 -- | Cast a value to a type with the default cast of DuckDB. Write the value to

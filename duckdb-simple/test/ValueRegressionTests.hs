@@ -28,7 +28,6 @@ import Data.Time.Clock (UTCTime (..))
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), utc, utcToLocalTime)
 import Data.Word (Word16, Word32, Word64, Word8)
-import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (
   BigNum (..),
@@ -41,7 +40,7 @@ import Database.DuckDB.Simple.FromField (
   bsFromBool,
  )
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..), genericFromFieldValue, genericToStructValue)
-import Database.DuckDB.Simple.Internal (destroyValue, output, withConnectionFactory, withConnectionHandle)
+import Database.DuckDB.Simple.Internal (destroyValue, withConnectionFactory, withConnectionHandle)
 import Database.DuckDB.Simple.LogicalRep
 import Database.DuckDB.Simple.Ok (Ok (..))
 import qualified Database.DuckDB.Simple.Streaming as Streaming
@@ -52,21 +51,7 @@ import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit
-
--- | Native timestamps used to test the full storage range.
-data NativeTimestamp = Seconds Int64 | Milliseconds Int64 | Microseconds Int64 | Nanoseconds Int64
-  deriving (Show)
-
-instance DuckDBColumnType NativeTimestamp where
-  duckdbColumnTypeFor _ = "TIMESTAMP"
-
-instance ToDuckValue NativeTimestamp where
-  toDuckValue factory (Seconds value) = output (c_duckdb_v2_value_create_timestamp_sec factory value)
-  toDuckValue factory (Milliseconds value) = output (c_duckdb_v2_value_create_timestamp_ms factory value)
-  toDuckValue factory (Microseconds value) = output (c_duckdb_v2_value_create_timestamp factory value)
-  toDuckValue factory (Nanoseconds value) = output (c_duckdb_v2_value_create_timestamp_ns factory value)
-
-instance ToField NativeTimestamp
+import TestUtils (NativeTimestamp (..))
 
 -- | An array element with a ToField instance and no ToDuckValue instance.
 newtype DelegatedInteger = DelegatedInteger Int64

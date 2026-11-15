@@ -20,27 +20,22 @@ import Data.List (isInfixOf)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Vector as V
-import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.FromField (BitString (..), DecimalValue (..), FieldValue (..), StructValue (..), UnionValue (..))
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..))
 import Database.DuckDB.Simple.Geometry (RawGeometry (..), toRawGeometry)
-import Database.DuckDB.Simple.Internal (withConnectionFactory, withConnectionHandle, withStatementHandle)
+import Database.DuckDB.Simple.Internal (withConnectionFactory, withConnectionHandle)
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), UnionMemberType (..))
 import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Database.DuckDB.Simple.V2.LogicalRep (destroyLogicalType, logicalTypeFromRep, logicalTypeToRep)
-import Database.DuckDB.Simple.V2.Registration (destroy, output)
 import Database.DuckDB.Simple.Variant
-import Foreign.C.ConstPtr (ConstPtr (..))
-import Foreign.Marshal.Array (withArray)
-import Foreign.Ptr (nullPtr)
 import GHC.Float (castDoubleToWord64, castFloatToWord32, castWord64ToDouble)
 import GHC.Generics (Generic)
 import System.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
-import TestUtils (assertFailureIO)
+import TestUtils (NativeTimestamp (..), assertFailureIO, nativeLocalTime)
 
 -- | A generic record checks the bridge to composite type metadata.
 newtype VariantRecord = VariantRecord {payload :: Variant}
@@ -137,9 +132,16 @@ tests =
               roundTrip conn native
     , testCase "wide finite timestamp payloads round trip without losing digits" $ withConnection ":memory:" \conn -> do
         void (execute_ conn "CREATE TABLE wide_timestamps (seconds TIMESTAMP_S, millis TIMESTAMP_MS)")
-        appendWideTimestamps
-          conn
-          [(30000000000000, 30000000000000001), (-30000000000000, -30000000000000001), (maxBound - 1, maxBound - 1), (minBound, minBound)]
+        let units =
+              [(30000000000000, 30000000000000001), (-30000000000000, -30000000000000001), (maxBound - 1, maxBound - 1), (minBound, minBound)]
+                :: [(Int64, Int64)]
+        void (executeMany conn "INSERT INTO wide_timestamps VALUES (?, ?)" [(Seconds seconds, Milliseconds millis) | (seconds, millis) <- units])
+        -- DuckDB sorts the raw values. A cast of these values to VARCHAR gives an
+        -- internal error in DuckDB 2.0.0, so the case does not read their text.
+        forM_ ["seconds", "millis"] \column ->
+          query_ conn (Query ("SELECT rowid FROM wide_timestamps ORDER BY " <> column)) >>= (@?= map Only [3, 1, 0, 2 :: Int64])
+        query_ conn "SELECT seconds, millis FROM wide_timestamps ORDER BY rowid"
+          >>= (@?= [(nativeLocalTime (Seconds seconds), nativeLocalTime (Milliseconds millis)) | (seconds, millis) <- units])
         rows <-
           query_ conn "SELECT seconds::VARIANT, seconds, millis::VARIANT, millis FROM wide_timestamps"
             :: IO [(Variant, FieldValue, Variant, FieldValue)]
@@ -496,28 +498,6 @@ roundTrip :: Connection -> FieldValue -> Assertion
 roundTrip conn expected =
   (query conn "SELECT typeof(?) AS kind, ? AS value" (Variant expected, Variant expected) :: IO [(Text, Variant)])
     >>= (@?= [("VARIANT", Variant expected)])
-
--- | Insert exact native timestamp units without changing their logical types.
-appendWideTimestamps :: Connection -> [(Int64, Int64)] -> IO ()
-appendWideTimestamps conn rows =
-  withConnectionHandle conn \native ->
-    withStatement conn "INSERT INTO wide_timestamps VALUES (?, ?)" \statement ->
-      withStatementHandle statement \prepared ->
-        forM_ rows \(seconds, millis) ->
-          bracket
-            (withConnectionFactory native (\nativeFactory -> output (c_duckdb_v2_value_create_timestamp_sec nativeFactory (fromIntegral seconds))))
-            (destroy c_duckdb_v2_value_destroy)
-            \secondsValue ->
-              bracket
-                (withConnectionFactory native (\nativeFactory -> output (c_duckdb_v2_value_create_timestamp_ms nativeFactory (fromIntegral millis))))
-                (destroy c_duckdb_v2_value_destroy)
-                \millisValue ->
-                  withArray [secondsValue, millisValue] \values ->
-                    bracket
-                      (output (c_duckdb_v2_prepared_statement_execute prepared (ConstPtr nullPtr) (ConstPtr values) 2))
-                      (destroy c_duckdb_v2_result_destroy)
-                      \result ->
-                        void (output (c_duckdb_v2_result_drain result))
 
 -- | A raw geometry payload has no CRS inside a VARIANT.
 geometryPayload :: BS.ByteString -> Variant

@@ -378,10 +378,9 @@ list: DuckDB casts the list to the column type after it gives the list its
 type. A list or an array of such elements that are all NULL, and an empty
 list, take the element type of the parameter when the parameter has a known
 type, as for `INSERT INTO t VALUES ([])` and `([NULL, NULL])` in SQL. For a
-parameter with no known type, a list of NULL elements gets the type of the SQL
-literal, `"NULL"[]`. An empty list for a parameter with no known type raises an
-error: DuckDB gives the literal `[]` the type `"NULL"[]`, but its native
-constructor gives no type to an empty list. A generic record through
+parameter with no known type, an empty list or a list of NULL elements gets
+the type of the SQL literal, `"NULL"[]`, and an empty `Map` of such values gets
+the type NULL for its values, as `MAP {}` does. A generic record through
 `ViaDuckDB` has a declared type, so for a parameter with no known type an
 empty list or a list of NULL records gets the STRUCT or UNION type of the
 record.
@@ -507,17 +506,15 @@ from a `VARIANT` column binds as its payload. A `FieldEnum` binds its label as
 a `VARCHAR`. `FieldNull` binds as an untyped NULL. DuckDB casts each of these
 values to the type of a column with no loss.
 
-A `FieldList`, a `FieldArray`, or a `FieldMap` with only `FieldNull` elements
-binds as the SQL list literal does, for example as `"NULL"[]` for a parameter
-with no known type. An empty `FieldList` or `FieldMap` takes the element type
-of a parameter with a known type, and raises an `SQLError` of the type
-`ErrorInputInvalid` for a parameter with no known type. An empty `FieldArray`
-raises the same error, because a DuckDB ARRAY has at least one element. Inside
-a `FieldStruct`, a `FieldTuple`, or a `FieldUnion`, the declared type gives the
-element type, so such a value binds. A `FieldEnum` there binds its label to the
-declared ENUM type, and a label that is not in the dictionary raises an error.
-`FieldValue` has no `DuckDBColumnType` and no `ToDuckValue` instance, because
-no one DuckDB type holds each of its values.
+A `FieldList`, a `FieldArray`, or a `FieldMap` that is empty or has only
+`FieldNull` elements binds as the SQL list literal does: it takes the element
+type of a parameter with a known type, and otherwise the type NULL, as `[]`,
+`[NULL, NULL]`, and `MAP {}` have. An empty `FieldArray` raises an `SQLError`
+of the type `ErrorInputInvalid`, because a DuckDB ARRAY has at least one
+element. Inside a `FieldStruct`, a `FieldTuple`, or a `FieldUnion`, a
+`FieldEnum` binds its label to the declared ENUM type, and a label that is not
+in the dictionary raises an error. `FieldValue` has no `DuckDBColumnType` and
+no `ToDuckValue` instance, because no one DuckDB type holds each of its values.
 
 ### Resource Management
 

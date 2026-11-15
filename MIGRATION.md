@@ -131,8 +131,10 @@ The SQL workflow stays the same. These changes can affect your code:
 - `deleteFunction` reads the name with the rules of DuckDB for a qualified
   name, as `describeTable` does. A part in double quotes can contain a dot, so
   `"\"a.b\""` drops the function `a.b`. A quote inside a part without quotes,
-  or more than three parts, now raises `SQLError`. Version 0.3 quoted a part
-  with a quote as it was, and the statement dropped no function.
+  or more than three parts, now raises `SQLError`. Version 0.3 doubled each
+  quote in a part, so `deleteFunction conn "a\"b"` dropped the function
+  `a"b`. Now that call raises `SQLError` ("Unexpected quote"). Write the
+  name as SQL writes it: `"\"a\"\"b\""`.
 - `CatalogEntry.catalogEntryType` and `lookupCatalogEntry` use the new
   `CatalogEntryType`. For example, `DuckDBCatalogEntryTypeTable` becomes
   `CatalogTable`. `DuckDBCatalogEntryTypeCollation` has no replacement. The

@@ -3,7 +3,16 @@
 -- |
 -- Module      : TestUtils
 -- Description : Assertions that several test modules share.
-module TestUtils (NativeTimestamp (..), assertFailureIO, assertSqlErrorType, filteredQueries, nativeLocalTime, raiseCapabilities, withConstCString, writeIntegers) where
+module TestUtils (
+  NativeTimestamp (..),
+  assertFailureIO,
+  assertSqlErrorType,
+  filteredQueries,
+  nativeLocalTime,
+  raiseCapabilities,
+  withConstCString,
+  writeIntegers,
+) where
 
 import Control.Concurrent (getNumCapabilities, setNumCapabilities)
 import Control.Exception (SomeException, try)

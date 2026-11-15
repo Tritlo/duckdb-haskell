@@ -250,8 +250,8 @@ instance FromField NonEmptyText where
   fromField = nonEmptyTextParser
 
 -- | Run each case with a time limit of 10 minutes. Thus a deadlock fails its
--- case, and not the job. The longest case takes about 2 s, and about 65 s
--- under Valgrind. The limit cannot stop a thread in a native call.
+-- case, and not the job. The limit is long, because the suite also runs under
+-- Valgrind. The limit cannot stop a thread in a native call.
 main :: IO ()
 main = defaultMain (localOption (mkTimeout (10 * 60 * 1000000)) tests)
 

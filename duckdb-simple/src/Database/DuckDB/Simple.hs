@@ -605,6 +605,7 @@ withTransaction conn action =
     void (execute_ conn commit) `onException` rollbackAction
     pure result
   where
+    -- See Note [SQL text of the library] in "Database.DuckDB.Simple.Native".
     begin = Query (Text.pack "BEGIN TRANSACTION")
     commit = Query (Text.pack "COMMIT")
     rollback = Query (Text.pack "ROLLBACK")

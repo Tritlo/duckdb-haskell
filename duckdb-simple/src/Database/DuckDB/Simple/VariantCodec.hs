@@ -332,6 +332,7 @@ metadataStatement VariantState{variantConnection = connection, variantStatement}
     Just statement -> pure statement
     Nothing -> mask_ (parseKept connection sql (writeIORef variantStatement . Just))
   where
+    -- See Note [SQL text of the library] in "Database.DuckDB.Simple.Native".
     sql =
       "SELECT system.main.list_transform(?::VARIANT[], lambda value: system.main.struct_pack(tag := system.main.variant_typeof(value), keys := system.main.variant_keys(value))) AS metadata"
 
@@ -354,6 +355,7 @@ extractionStatement VariantState{variantConnection = connection, variantExtracti
         writeIORef variantExtraction (Just (count, statement))
         mapM_ (destroy c_duckdb_v2_sql_statement_destroy . snd) previous
   where
+    -- See Note [SQL text of the library] in "Database.DuckDB.Simple.Native".
     sql =
       "SELECT system.main.list_transform($1::VARIANT[], lambda value: system.main.list_value(" <> Text.intercalate "," extracts <> ")) AS payload"
     extracts = ["system.main.variant_extract(value,$" <> Text.pack (show index) <> "::VARCHAR)" | index <- [2 .. count + 1]]

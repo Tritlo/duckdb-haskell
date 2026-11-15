@@ -239,6 +239,7 @@ createAggregate conn = createAggregateOn (ConnectionTarget conn)
 -- must allow that warning, for example with @-Wno-error=deprecations@.
 deleteFunction :: Connection -> Text -> IO ()
 deleteFunction conn name = do
+  -- See Note [SQL text of the library] in "Database.DuckDB.Simple.Native".
   let dropQuery = Query ("DROP FUNCTION IF EXISTS " <> qualifyIdentifier name)
   withParsedStatements conn dropQuery (mapM_ (executeParsedStatement conn dropQuery))
 {-# WARNING
@@ -248,8 +249,4 @@ deleteFunction conn name = do
 
 -- | Quote each dot-separated part of a function name.
 qualifyIdentifier :: Text -> Text
-qualifyIdentifier = Text.intercalate "." . map quoteIdent . Text.splitOn "."
-
--- | Quote one SQL identifier.
-quoteIdent :: Text -> Text
-quoteIdent ident = "\"" <> Text.replace "\"" "\"\"" ident <> "\""
+qualifyIdentifier = Text.intercalate "." . map quoteIdentifier . Text.splitOn "."

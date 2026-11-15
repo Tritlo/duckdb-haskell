@@ -54,6 +54,7 @@ module Database.DuckDB.Simple.Native (
   withIdentifierArray,
   readIdentifier,
   foldIdentifier,
+  quoteIdentifier,
   throwInvalidArgument,
   withConnectionFactory,
   factoryOutput,
@@ -405,6 +406,51 @@ readIdentifier = readText . coerce
 -- | Fold ASCII letters to lower case, as DuckDB does for identifiers.
 foldIdentifier :: Text -> Text
 foldIdentifier = Text.map (\char -> if isAsciiUpper char then toLower char else char)
+
+{- Note [SQL text of the library]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The library runs some SQL statements of its own. It builds each statement from
+constant text, and it gives each value of a user to DuckDB as a parameter.
+Thus a value of a user cannot change the statement. These are the statements:
+
+- withTransaction in "Database.DuckDB.Simple": BEGIN TRANSACTION, COMMIT, and
+  ROLLBACK. The statements are constant.
+
+- catalogTypeName in "Database.DuckDB.Simple.Catalog": a SELECT from
+  duckdb_databases(). The database name is a parameter.
+
+- lookupCatalogEntry in "Database.DuckDB.Simple.Catalog": a SELECT from a
+  duckdb_*() table function. The module selects the table function and the
+  column from constants. The catalog name, the schema name, and the entry name
+  are parameters.
+
+- readNativeTypes in "Database.DuckDB.Simple.TypeCache": a SELECT with two
+  placeholders for each CRS name of the connection, for the WKB of an empty
+  point and for the name. Each value is a parameter.
+
+- metadataStatement in "Database.DuckDB.Simple.VariantCodec": a constant
+  SELECT. The list of VARIANT values is a parameter.
+
+- extractionStatement in "Database.DuckDB.Simple.VariantCodec": a SELECT with
+  one placeholder for each object key. The library makes the placeholders from
+  the number of keys. The list of VARIANT values and each key are parameters.
+
+- deleteFunction in "Database.DuckDB.Simple.Function": DROP FUNCTION IF EXISTS.
+  This statement is the exception. DROP FUNCTION takes no parameter for the
+  name of the function, so the name goes into the text. quoteIdentifier quotes
+  each part of the name.
+
+quoteIdentifier puts an identifier in double quotes, and it doubles each double
+quote in the identifier. Thus DuckDB reads the identifier as one name, also
+when it contains a quote, a dot, or a semicolon. Use quoteIdentifier for each
+identifier that the library puts into SQL text, and add each new statement to
+this list.
+-}
+
+-- | Put an SQL identifier in double quotes, and double each double quote in
+-- it. See Note [SQL text of the library].
+quoteIdentifier :: Text -> Text
+quoteIdentifier identifier = "\"" <> Text.replace "\"" "\"\"" identifier <> "\""
 
 -- | Raise an error for an invalid library argument.
 throwInvalidArgument :: Text -> IO a

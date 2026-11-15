@@ -65,6 +65,7 @@ data ColumnDescription = ColumnDescription
 catalogTypeName :: Connection -> Text -> IO (Maybe Text)
 catalogTypeName conn name = do
   validateNames [name]
+  -- See Note [SQL text of the library] in "Database.DuckDB.Simple.Native".
   rows <-
     query conn (Query ("SELECT type::VARCHAR FROM system.main.duckdb_databases() WHERE " <> identifierMatches "database_name")) (Only name)
   pure (case rows of Only value : _ -> Just value; [] -> Nothing)
@@ -79,6 +80,7 @@ lookupCatalogEntry conn catalog schema name kind = do
     CatalogIndex -> pure ("duckdb_indexes()", "index_name")
     CatalogSequence -> pure ("duckdb_sequences()", "sequence_name")
     CatalogType -> pure ("duckdb_types()", "type_name")
+  -- See Note [SQL text of the library] in "Database.DuckDB.Simple.Native".
   let sql =
         Query
           ( "SELECT e."

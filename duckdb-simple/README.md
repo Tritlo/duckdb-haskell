@@ -419,12 +419,13 @@ form, keeps its digits below a microsecond for a nanosecond parameter:
 `SELECT ?::TIMESTAMP_NS`, or a column with that type. A `VARIANT` parameter
 also gets the nanosecond value, when the value fits the range of the nanosecond
 type, because a VARIANT holds `TIME_NS`, `TIMESTAMP_NS`, and `TIMESTAMPTZ_NS`
-values. Each other parameter, and a parameter with no known type, gets the
-microsecond value: the digits below a microsecond go away, as for the SQL
-literal. An element of a `VARIANT[]` list or a value of a MAP with `VARIANT`
-values also gets the microsecond value, because one list has one element type
-for all its elements. Only a value with such digits
-reads the parameter type. An explicit cast such as `?::TIMESTAMP_NS` makes a
+values. This holds only for a scalar value: a list, an `Array`, or a `Map` of
+time values for a `VARIANT` parameter binds microsecond elements, and so does
+an element of a `VARIANT[]` list or a value of a MAP with `VARIANT` values,
+because one list has one element type for all its elements. Each other
+parameter, and a parameter with no known type, gets the microsecond value: the
+digits below a microsecond go away, as for the SQL literal. Only a value with
+such digits reads the parameter type. An explicit cast such as `?::TIMESTAMP_NS` makes a
 nanosecond parameter, so for a `TIMESTAMP` column DuckDB rounds the value to
 the microsecond, where a plain `?` cuts the digits. Values inside collections, STRUCTs, MAPs, and UNIONs follow their
 target types. The library refreshes prepared metadata when it resets or
@@ -711,10 +712,11 @@ query conn "SELECT ?"
 
 A scalar payload keeps its native type, such as `TINYINT` or `DECIMAL(4,2)`.
 Time and timestamp payloads bind as microsecond types, or as nanosecond types
-when they have sub-microsecond digits. So a `TIMESTAMP_S` result binds back as
-a `TIMESTAMP` when its value fits. Wider timestamp values use milliseconds or
-seconds without losing digits. Lists, arrays, and STRUCT fields bind as
-VARIANT values. A VARIANT does not keep a UNION, a MAP, an ENUM, or the CRS of a
+when they have sub-microsecond digits and fit the nanosecond range. So a
+`TIMESTAMP_S` result binds back as a `TIMESTAMP` when its value fits. A value
+outside the range of DuckDB raises an `SQLError` of the type
+`ErrorInputOutOfRange`. Lists, arrays, and STRUCT fields bind as VARIANT
+values. A VARIANT does not keep a UNION, a MAP, an ENUM, or the CRS of a
 GEOMETRY, so these payloads raise an error at any depth: a VARIANT keeps only
 the member value of a UNION, stores a MAP as a list of key and value objects,
 and stores an ENUM as its text. Object parameters reject

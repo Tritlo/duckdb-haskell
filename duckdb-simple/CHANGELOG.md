@@ -277,7 +277,8 @@
   digits, binds with the nanosecond type for a `VARIANT` parameter when it fits
   the range of that type, so the VARIANT keeps the digits. A value with no such
   digits binds as before, with no read of the parameter type. A value outside
-  the range of the nanosecond type, and an element of a `VARIANT` list or map,
+  the range of the nanosecond type, an element of a list, an `Array`, or a
+  `Map` for a `VARIANT` parameter, and an element of a `VARIANT` list or map
   keep the microsecond value. A `Variant` payload follows the same rule.
 - An empty `Array` and an empty `FieldArray` raise the same `SQLError`, of the
   type `ErrorInputInvalid`.

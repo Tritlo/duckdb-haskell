@@ -369,7 +369,8 @@ The SQL workflow stays the same. These changes can affect your code:
 - A `TimeOfDay`, a `LocalTime`, or a `UTCTime` with digits below a microsecond
   keeps them for a `VARIANT` parameter: it binds as `TIME_NS`, `TIMESTAMP_NS`,
   or `TIMESTAMPTZ_NS` when it fits the range of that type. Version 0.3 bound
-  the microsecond value. A VARIANT of a
+  the microsecond value. A list, an `Array`, or a `Map` of such values for a
+  `VARIANT` parameter still binds microsecond elements. A VARIANT of a
   nanosecond value is not equal to a VARIANT of the microsecond value, so a row
   that version 0.3 stored in a `VARIANT` column does not match `WHERE x = ?`
   for the same Haskell value with such digits.

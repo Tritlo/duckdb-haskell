@@ -183,7 +183,10 @@ nanosecond type to a TIME, TIMESTAMP, or TIMESTAMPTZ leaf of a nanosecond
 target leaf. These parameters read the parameter type for each value. A
 VARIANT leaf does not give a nanosecond type: elementBindingTarget gives an
 element of a VARIANT list or map no target, and timestampTypeForTarget has no
-VARIANT case. One LIST has one element type for all its elements, so a
+VARIANT case. A list, an Array, or a Map for a VARIANT parameter has no element
+type in the target (collectionChildType and mapPartTypes give Nothing), so its
+time elements also get the microsecond value. One LIST has one element type
+for all its elements, so a
 nanosecond element would be cast to the microsecond type of the list, and the
 cast rounds. Thus such a value gets the microsecond value.
 

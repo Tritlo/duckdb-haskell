@@ -728,7 +728,12 @@ instance GFromField' 'False (M1 D meta U1) where
 instance (Generic a, GToField (Rep a)) => DuckDBColumnType (ViaDuckDB a) where
   duckdbTypeDeclaration _
     | hasUnsizedArray rep =
-        Left (Text.pack "an Array field has no size, so its ARRAY type has no declaration. Use a list field, which is a LIST.")
+        Left
+          ( Text.pack
+              ( "an Array field has no size, so its ARRAY type has no declaration. Use a field of a newtype of the Array"
+                  <> " with a DuckValue instance that gives the size, or a list field, which is a LIST."
+              )
+          )
     | otherwise = Right (StructuredType rep)
     where
       rep = genericLogicalType (Proxy @a)

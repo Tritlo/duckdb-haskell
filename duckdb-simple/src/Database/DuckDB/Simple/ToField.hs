@@ -403,10 +403,21 @@ why the type has no declaration.
 - ViaDuckDB gives the structured type of the record or the sum type
   (genericLogicalType in "Database.DuckDB.Simple.Generic"). A type with an
   Array field gives Left: the DuckValue instance of Array declares an ARRAY
-  of the size 0, and DuckDB rejects that size.
+  of the size 0, and DuckDB rejects that size. A field of a newtype whose
+  DuckValue instance gives the size declares that ARRAY.
 - Maybe a has the declaration of a.
-- A list and an Array give a LIST (listDeclaration): the text T[] for the
-  element text T, or a structured LIST for a structured element type.
+- A list gives a LIST (listDeclaration): the text T[] for the element text T,
+  or a structured LIST for a structured element type.
+- An Array gives Left. A DuckDB ARRAY type has a size, and the Haskell type
+  has none. DuckDB 2.0.0 has no declaration for an ARRAY of each size: it
+  does not parse the type text T[ANY], and it rejects an ARRAY of the size 0
+  ("ARRAY type size must be at least 1"). A newtype of the Array with the
+  type text of one size, for example BIGINT[3], declares that ARRAY. DuckDB
+  then rejects an ARRAY of another size when it binds the call (a Binder
+  Error). It casts a LIST of the same length to the ARRAY with no error,
+  because the cast from LIST to ARRAY is implicit in DuckDB. A LIST of
+  another length raises the conversion error of DuckDB when the statement
+  runs.
 - A Map gives a MAP (mapDeclaration). Two texts give the text MAP(K, V). In
   the other cases each part must be a structured type, so the text of a part
   must be a scalar type name (duckDBTypeFromName). Other text gives Left.
@@ -423,20 +434,24 @@ element that is not NULL takes its element type from a structured declaration
 -}
 
 -- | Types that map to a concrete DuckDB column type when used with @ToField@.
+-- A newtype with its own instance gives its own type text, for example
+-- @BIGINT[3]@ for a newtype of an 'Array' of three 'Int64' values.
+-- See Note [Type declarations].
 class DuckDBColumnType a where
   -- | The DuckDB type text of @a@.
   duckdbColumnTypeFor :: Proxy a -> Text
 
   -- | The SQL type that a typed registration declares for @a@, or the reason
   -- why @a@ has no declaration. The default is the text of
-  -- 'duckdbColumnTypeFor'. An 'Array' gives a LIST, as a list does, and
-  -- 'Database.DuckDB.Simple.FromField.FromField' reads an 'Array' only from an
-  -- ARRAY. Thus an 'Array' argument of
-  -- 'Database.DuckDB.Simple.Function.createFunction',
-  -- 'Database.DuckDB.Simple.Function.createAggregate', or
-  -- 'Database.DuckDB.Simple.Function.createTableFunction', also inside a
-  -- @Maybe@ or a list, fails at each call with a value that is not NULL. Use a
-  -- list for such an argument. See Note [Type declarations].
+  -- 'duckdbColumnTypeFor'. An 'Array' has no declaration, because its type has
+  -- no size. Thus an 'Array' argument or result of
+  -- 'Database.DuckDB.Simple.Function.createFunction' or
+  -- 'Database.DuckDB.Simple.Function.createAggregate', and an 'Array'
+  -- parameter or column of 'Database.DuckDB.Simple.Function.createTableFunction',
+  -- also inside a @Maybe@, a list, or a 'Map.Map', raise an error at
+  -- registration. Use a list for a LIST, or a newtype of the 'Array' whose
+  -- 'duckdbColumnTypeFor' gives the size, for example @BIGINT[3]@, for an
+  -- ARRAY. See Note [Type declarations].
   duckdbTypeDeclaration :: Proxy a -> Either Text TypeDeclaration
   duckdbTypeDeclaration proxy = Right (TypeExpression (duckdbColumnTypeFor proxy))
 
@@ -1045,10 +1060,15 @@ instance (DuckDBColumnType a) => DuckDBColumnType (Maybe a) where
   duckdbColumnTypeFor _ = duckdbColumnTypeFor (Proxy @a)
   duckdbTypeDeclaration _ = duckdbTypeDeclaration (Proxy @a)
 
--- | A LIST of the element type. See Note [Type declarations].
+-- | The type text is the LIST text of the element type. An 'Array' has no
+-- declaration, because its type has no size. See Note [Type declarations].
 instance (DuckDBColumnType a) => DuckDBColumnType (Array Int a) where
   duckdbColumnTypeFor _ = duckdbColumnTypeFor (Proxy @a) <> Text.pack "[]"
-  duckdbTypeDeclaration _ = listDeclaration <$> duckdbTypeDeclaration (Proxy @a)
+  duckdbTypeDeclaration _ =
+    Left
+      ( "an Array has no size, so its ARRAY type has no declaration. Use a newtype of the Array with a DuckDBColumnType"
+          <> " instance that gives the size, for example BIGINT[3], or a list, which is a LIST."
+      )
 
 -- | See Note [Type declarations].
 instance (DuckDBColumnType k, DuckDBColumnType v) => DuckDBColumnType (Map.Map k v) where

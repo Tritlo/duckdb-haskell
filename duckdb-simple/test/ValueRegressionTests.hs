@@ -801,6 +801,13 @@ valueRegressionTests =
                 >>= assertEqual label [("\"NULL\"[]", "[]", "\"NULL\"[]")]
         literal "STRUCT" ([] :: [StructValue FieldValue])
         literal "BIGINT[]" ([] :: [[Int64]])
+        -- An Array of records has no declaration, so an empty list of them,
+        -- and a list of NULL elements, get the type of the SQL literal. See
+        -- Note [Element types of a list] in "Database.DuckDB.Simple.ToField".
+        literal "Array of records" ([] :: [Array Int Pair])
+        (query conn "SELECT typeof(?)" (Only [Nothing :: Maybe (Array Int Pair)]) :: IO [Only Text]) >>= (@?= [Only "\"NULL\"[]"])
+        (query conn "SELECT typeof(?)" (Only (Map.empty :: Map.Map Text (Array Int Pair))) :: IO [Only Text])
+          >>= (@?= [Only "MAP(VARCHAR, \"NULL\")"])
         -- An Array of NULL STRUCT values gets the type of array_value(NULL).
         let nullArray = listArray (0, 0) [Nothing] :: Array Int (Maybe (StructValue FieldValue))
         (query conn "SELECT typeof(?), ?::VARCHAR" (nullArray, nullArray) :: IO [(Text, Text)]) >>= (@?= [("\"NULL\"[1]", "[NULL]")])

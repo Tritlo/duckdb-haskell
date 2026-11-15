@@ -357,6 +357,10 @@
   dictionary of the type, and does not cast.
 - A `FieldEnum` inside a value of a declared ENUM type binds its label, not its
   index. A label that is not in the dictionary raises `SQLError`.
+- A `Variant` read of a column that holds an ENUM, a MAP, or a UNION at any
+  depth raises the error of an incompatible column. Earlier versions wrapped
+  the value, which DuckDB's cast to VARIANT changes and which a `Variant`
+  parameter does not bind.
 - Allow session variables to supply omitted named parameters. Too few named
   parameters no longer raise `FormatError`. Too many named parameters still
   raise it.

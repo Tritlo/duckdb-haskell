@@ -67,7 +67,8 @@ its headers. A rebuild against the same headers does not help.
 
 The example registers typed scalar functions, scalar and table macros, a
 PRAGMA, a typed custom option, and a log sink. They exercise native results,
-batch inputs, NULLs, Unicode text, overflow, and callback errors. The example
+batch inputs, NULLs, Unicode text, a GEOMETRY argument, overflow, and callback
+errors. The example
 also registers an aggregate function, a table function, a custom type with a
 typed cast, a replacement scan, a COPY format with both directions, and a
 multi-file reader. Together, the registrations use all twelve V2 extension

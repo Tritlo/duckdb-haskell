@@ -8,6 +8,7 @@ module Demo where
 
 import qualified Advanced
 import Control.Exception (throwIO)
+import qualified Data.Geometry as G
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Data.Text (Text)
@@ -33,6 +34,7 @@ register extension = do
   Extension.createFunction extension "haskell_answer" (42 :: Int64)
   Extension.createFunction extension "haskell_add_one" addOne
   Extension.createFunction extension "haskell_greet" (("Hello " <>) :: Text -> Text)
+  Extension.createFunction extension "haskell_point_x" pointX
   Extension.createFunction extension "haskell_fail" (throwIO (userError "Haskell callback failure") :: IO Int64)
   Extension.registerMacroFunction
     extension
@@ -50,6 +52,11 @@ register extension = do
   Extension.registerLogSink extension "haskell_sink" (\_ -> atomicModifyIORef' logEntries (\count -> (count + 1, ()))) (pure ())
   Extension.createFunction extension "haskell_log_entries" (readIORef logEntries)
   Advanced.register extension
+
+-- | The X coordinate of a point. NULL and each other shape give NULL.
+pointX :: Maybe G.Geometry -> Maybe Double
+pointX (Just (G.PointGeometry (G.PointXY (G.XY x _)))) = Just x
+pointX _ = Nothing
 
 -- | Increment a BIGINT argument. Keep NULL values and report overflow.
 addOne :: Maybe Int64 -> IO (Maybe Int64)

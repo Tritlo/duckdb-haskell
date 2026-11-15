@@ -74,6 +74,14 @@ tests paths =
           ]
           [["native_batches", "10000", "1", "10000", "50005000"], ["null", "preserved"], ["text", "true"]]
           []
+    , testCase "a GEOMETRY argument: a point and NULL" $
+        checkProcess
+          paths
+          [ "SELECT 'point_x', haskell_point_x('POINT (1 2)'::GEOMETRY);"
+          , "SELECT 'null_x', haskell_point_x(NULL::GEOMETRY) IS NULL;"
+          ]
+          [["point_x", "1.0"], ["null_x", "true"]]
+          []
     , testCase "scalar and table macros" $
         checkProcess
           paths

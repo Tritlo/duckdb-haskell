@@ -131,8 +131,8 @@ createFunctionWithState conn = createFunctionWithStateOn (ConnectionTarget conn)
 -- STRUCT or a UNION column. A type with no declaration, for example
 -- 'Database.DuckDB.Simple.LogicalRep.StructValue', is an error at registration.
 -- A parameter type that is or contains VARIANT is also an error at
--- registration: the argument reader reads no VARIANT, so each value that is
--- not NULL would fail the call. A GEOMETRY parameter works.
+-- registration: the argument reader reads no VARIANT, so only NULL and values
+-- that hold only NULL would not fail the call. A GEOMETRY parameter works.
 --
 -- 'TypedRow' of @params@ gives the parameter types. Use @()@ for no parameter.
 -- The parameters are positional only. DuckDB casts each argument to its

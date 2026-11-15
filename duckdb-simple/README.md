@@ -1536,10 +1536,9 @@ registration. A callback has no connection, so no argument reader reads
 VARIANT. Thus a type that is or contains VARIANT cannot be an argument of
 `createFunction` or `createAggregate`, a parameter of `createTableFunction` or
 `registerPragmaFunction`, or the type of a custom option with an update
-function. With such a type, each value that is
-not NULL fails. Only NULL and values that hold only NULL do not fail, for
-example a NULL `Maybe Variant`, an empty `VARIANT[]` list, `[NULL]`, or a
-STRUCT with a NULL VARIANT field. The registration fails, so it cannot get
+function. With such a type, only NULL and values that hold only NULL do not
+fail, for example a NULL `Maybe Variant`, an empty `VARIANT[]` list, `[NULL]`,
+or a STRUCT with a NULL VARIANT field. The registration fails, so it cannot get
 these values either. A custom option without an update function can have such
 a type, and `getConfigValue` reads its value. A GEOMETRY type registers in each
 of these places, with two exceptions. DuckDB rejects a GEOMETRY type with a

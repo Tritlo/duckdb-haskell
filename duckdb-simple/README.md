@@ -375,7 +375,9 @@ Notes:
    `SQLError` of the type `ErrorInputInvalid`. [Infinite dates and
    timestamps](#infinite-dates-and-timestamps) gives the full rule.
 8. An `Array` binds as an ARRAY with the size of the value. An empty `Array`
-   raises an `SQLError`. A typed registration declares a LIST for an `Array`.
+   raises an `SQLError` of the type `ErrorInputInvalid`, because a DuckDB ARRAY
+   has at least one element; bind an empty list for an empty LIST. A typed
+   registration declares a LIST for an `Array`.
    Thus an `Array` argument of `createFunction` or `createAggregate`, and an
    `Array` parameter of `createTableFunction`, get a LIST, which the `Array`
    instance does not read. Each call with a value that is not NULL raises an
@@ -398,12 +400,13 @@ Notes:
       timestamp type. [Infinite dates and
       timestamps](#infinite-dates-and-timestamps) gives the rule for digits
       below a microsecond.
-    - An empty `FieldArray` raises an error.
-    - An empty `FieldList` or `FieldMap`, or one with only `FieldNull`
-      elements, takes the element type of a parameter with a known type. For a
-      parameter with no known type, it binds as the SQL literal does: `[]` and
-      `[NULL, NULL]` have the type `"NULL"[]`, and `MAP {}` has the type
-      `MAP("NULL", "NULL")`.
+    - An empty `FieldArray` raises an `SQLError` of the type
+      `ErrorInputInvalid`, because a DuckDB ARRAY has at least one element.
+    - An empty `FieldList` or `FieldMap`, and a `FieldList`, a `FieldArray`, or
+      a `FieldMap` with only `FieldNull` elements, bind as the SQL list literal
+      does: they take the element type of a parameter with a known type. For a
+      parameter with no known type, `[]` and `[NULL, NULL]` have the type
+      `"NULL"[]`, and `MAP {}` has the type `MAP("NULL", "NULL")`.
 
     See [FieldValue parameters](#fieldvalue-parameters).
 12. `typeof` gives `"NULL"`, with the quotes, for a `Null` parameter and for a
@@ -647,9 +650,8 @@ the target instead: `Integer`, `Natural`, and `BigNum` elements for an integer
 or DECIMAL element type (see above), and `TimeOfDay`, `LocalTime`, and
 `UTCTime` elements for a nanosecond element type (see
 [Infinite dates and timestamps](#infinite-dates-and-timestamps)). An empty list
-binds as an empty LIST of its element type. An empty array raises an
-`SQLError`, because a DuckDB ARRAY has at least one element. Bind an empty list
-for an empty LIST.
+binds as an empty LIST of its element type. An empty array raises an error:
+note 8 of [Types](#types).
 
 A list or an array of STRUCT values, UNION values, generic records, lists, or
 arrays gets the type that DuckDB gives a SQL list literal of the same elements.
@@ -824,15 +826,12 @@ with digits below a microsecond in a `FieldList` or a `FieldMap` for a
 `TIMESTAMP_NS` values loses these digits when it binds back. A `VARIANT` object
 reads as a `FieldStruct` with `VARIANT` fields and keeps them.
 
-A `FieldList`, a `FieldArray`, or a `FieldMap` that is empty or has only
-`FieldNull` elements binds as the SQL list literal does: it takes the element
-type of a parameter with a known type, and otherwise the type NULL, as `[]`,
-`[NULL, NULL]`, and `MAP {}` have. An empty `FieldArray` raises an `SQLError`
-of the type `ErrorInputInvalid`, because a DuckDB ARRAY has at least one
-element. Inside a `FieldStruct`, a `FieldTuple`, or a `FieldUnion`, a
-`FieldEnum` binds its label to the declared ENUM type, and a label that is not
-in the dictionary raises an error. `FieldValue` has no `DuckDBColumnType` and
-no `ToDuckValue` instance, because no one DuckDB type holds each of its values.
+An empty or all-NULL `FieldList`, `FieldArray`, or `FieldMap` binds as note 11
+of [Types](#types) says. Inside a `FieldStruct`, a `FieldTuple`, or a
+`FieldUnion`, a `FieldEnum` binds its label to the declared ENUM type, and a
+label that is not in the dictionary raises an error. `FieldValue` has no
+`DuckDBColumnType` and no `ToDuckValue` instance, because no one DuckDB type
+holds each of its values.
 
 ### Resource Management
 

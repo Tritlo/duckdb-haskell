@@ -83,8 +83,8 @@ existing convenience behavior.
   collections.
 
 The pinned V2 API does not expose custom file-system registration or
-collation lookup. Fixed ARRAY types with zero elements are
-not supported by this native API. Empty LIST values remain supported.
+collation lookup. DuckDB 2.0 rejects an ARRAY type with zero elements. An
+empty LIST is valid.
 Prepared dynamic PIVOT supports repeated execution with a changing schema. It
 does not support parameters or a cacheable plan. VARIANT decoding uses SQL
 metadata and native casts on a helper connection. A configured custom GEOMETRY

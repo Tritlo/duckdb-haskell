@@ -27,7 +27,6 @@ import Control.Exception (bracket, catch, throwIO)
 import Control.Monad (filterM, forM, when)
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Database.DuckDB.Simple (withConnection)
 import Database.DuckDB.Simple.Config.Internal (CustomOption (..), registerCustomOptionOn)
 import Database.DuckDB.Simple.FromField (FieldValue)
 import Database.DuckDB.Simple.Internal (Connection, Instance, withConnectionHandle, withInstanceHandle, withTypeCache)
@@ -74,13 +73,11 @@ customOption name dtype = CustomOption name dtype Nothing "" SettingScopeGlobal 
 registerCustomOption :: Connection -> CustomOption -> IO ()
 registerCustomOption conn = registerCustomOptionOn (ConnectionTarget conn)
 
--- | List the configuration flags of a new in-memory database. DuckDB 2.0
--- gives its options only from an instance or a connection, so the function opens
--- a temporary connection. The list does not have the options of an extension that
--- the new database does not load. Version 0.3 listed those options also. Use
--- 'listConfigOptions' for the options of a connection that you have.
-listConfigFlags :: IO [ConfigFlag]
-listConfigFlags = withConnection ":memory:" \conn ->
+-- | List the name and the description of each option of the database of the
+-- connection, for example a custom option of the database.
+-- 'listConfigOptions' gives the same options with their values.
+listConfigFlags :: Connection -> IO [ConfigFlag]
+listConfigFlags conn =
   map (\option -> ConfigFlag (configOptionName option) (configOptionDescription option)) <$> listConfigOptions conn
 
 -- | List options with effective values from a live connection.

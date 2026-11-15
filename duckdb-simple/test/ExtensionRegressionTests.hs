@@ -435,6 +435,13 @@ extensionRegressionTests =
           void $ execute_ conn "RESET haskell_limit"
           fmap Config.configValueText <$> Config.getConfigOption conn "haskell_limit" >>= (@?= Just "3")
           assertSqlError $ Config.registerCustomOption conn option
+    , testCase "listConfigFlags lists a custom option of the connection" $
+        withConnection ":memory:" \conn -> do
+          Config.registerCustomOption conn (Config.customOption "haskell_listed" (Registration.TypeExpression "BIGINT"))
+          flags <- Config.listConfigFlags conn
+          options <- Config.listConfigOptions conn
+          assertBool "the custom option is listed" ("haskell_listed" `elem` map Config.configFlagName flags)
+          map Config.configFlagName flags @?= map Config.configOptionName options
     , testCase "typed reads of a VARIANT custom option give the value that it holds" $
         withConnection ":memory:" \conn -> do
           let variantType = Registration.TypeExpression "VARIANT"

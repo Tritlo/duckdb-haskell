@@ -308,7 +308,7 @@ v20Tests =
   testGroup
     "DuckDB 2.0 wrappers"
     [ testCase "lists config flags" $ do
-        flags <- Config.listConfigFlags
+        flags <- withConnection ":memory:" Config.listConfigFlags
         assertBool "expected at least one config flag" (not (null flags))
         assertBool "expected threads flag" (any ((== "threads") . Config.configFlagName) flags)
     , testCase "catalog lookup works inside a transaction" $

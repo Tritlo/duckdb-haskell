@@ -482,6 +482,7 @@ tests =
           , ("[{'a': 1}]", "LIST")
           , ("{'v': 1::VARIANT, 'm': MAP {'k': 1}}", "STRUCT")
           , ("{'b': 1::VARIANT, 'a': 2::VARIANT}", "STRUCT")
+          , ("{'é': 1::VARIANT, 'z': 2::VARIANT}", "STRUCT")
           ]
           \(expression, sqlName) -> do
             result <- try (query_ conn (Query ("SELECT " <> expression <> " AS c")) :: IO [Only Variant])
@@ -506,13 +507,17 @@ tests =
                   ]
               )
         -- A value of the VARIANT shape reads: a scalar, a LIST, a VARIANT in a
-        -- LIST or in a STRUCT field, and a VARIANT object. Each equals its cast.
+        -- LIST or in a STRUCT field, a STRUCT with VARIANT fields and keys in
+        -- byte order, and a VARIANT object whose keys were given out of order.
+        -- Each equals its cast.
         forM_
           [ "7::INTEGER"
           , "[1, 2]"
           , "[1::VARIANT, 'x'::VARIANT]"
           , "{'v': 1::VARIANT}"
           , "{'a': 1::VARIANT, 'b': 2::VARIANT}"
+          , "{'B': 1::VARIANT, 'a': NULL::VARIANT, 'z': 2::VARIANT, 'é': 3::VARIANT}"
+          , "{'é': 3, 'b': 1, 'Z': 2}::VARIANT"
           , "{'a': [1, 2]}::VARIANT"
           , "'POINT (1 2)'::GEOMETRY"
           ]

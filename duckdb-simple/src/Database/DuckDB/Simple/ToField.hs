@@ -228,7 +228,7 @@ would round or raise an error in some of them.
   * From 2262-04-11 23:47:16.854775807 to 23:47:16.854775999: DuckDB can cast
     the microsecond value, but the cast cuts the digits with no error. Thus
     the encoder raises the SQLError of the library "duckdb-simple: TIMESTAMP
-    value out of finite range", of the type ErrorInputInvalid. The low end of
+    value out of finite range", of the type ErrorTypeConversion. The low end of
     the range has no such zone, because the microsecond value is cut toward
     the earlier time.
   A UTCTime for a TIMESTAMPTZ_NS parameter, or for the TIMESTAMPTZ_NS elements
@@ -546,7 +546,7 @@ integerBinding binds an Integer or a Natural parameter with this rule:
 - A value outside this range makes the binding read the parameter type. A
   UHUGEINT parameter that can hold the value gets a UHUGEINT value. Another
   integer parameter (TINYINT to UHUGEINT) or a DECIMAL parameter gets an
-  SQLError with the type ErrorInputOutOfRange. Each other parameter, and a
+  SQLError with the type ErrorTypeConversion. Each other parameter, and a
   parameter with no known type, gets a BIGNUM value.
 
 - Why a HUGEINT. In DuckDB 2.0.0, the casts from BIGNUM to the integer types
@@ -618,7 +618,7 @@ integerBinding value = case hugeIntInRange value of
       Just (LogicalTypeDecimal width scale) -> outOfRange ("DECIMAL(" <> Text.pack (show width) <> "," <> Text.pack (show scale) <> ")")
       _ -> bigNumDuckValue factory (BigNum value)
   where
-    outOfRange typeName = throwOutOfRange ("the value " <> Text.pack (show value) <> " is out of range for a parameter of the type " <> typeName)
+    outOfRange typeName = throwConversionError ("the value " <> Text.pack (show value) <> " is out of range for a parameter of the type " <> typeName)
 
 -- | Construct a HUGEINT value for an integer from -2^127 to 2^127 - 1. Give
 -- Nothing for each other integer. See Note [Integer parameters].
@@ -666,7 +666,7 @@ instance ToField BitString
 
 -- | Bind a day as a DATE. A day outside the range of DuckDB, from -5877641-06-25
 -- (5877642-06-25 BC) to 5881580-07-10 in the notation of "Data.Time", raises an
--- t'SQLError' of the type 'ErrorInputOutOfRange'. See Note [Time ranges].
+-- t'SQLError' of the type 'ErrorTypeConversion'. See Note [Time ranges].
 instance ToField Day
 
 -- | Bind a time of day as a TIME, or as a TIME_NS. See
@@ -682,7 +682,7 @@ instance ToField TimeOfDay where
 -- Note [Nanosecond parameters]. A time outside the range of DuckDB, from
 -- -290308-12-22 00:00:00 (290309-12-22 BC) to 294247-01-10 04:00:54.775806 in
 -- the notation of "Data.Time", raises an t'SQLError' of the type
--- 'ErrorInputOutOfRange'. For a TIMESTAMP_NS target, a time outside the range
+-- 'ErrorTypeConversion'. For a TIMESTAMP_NS target, a time outside the range
 -- of TIMESTAMP_NS can get another error, also a time outside the range of
 -- DuckDB in a STRUCT, a TUPLE, or a UNION. See Note [Nanosecond parameters]. A
 -- time of exactly 60 seconds (a leap second) binds as the next second. A later
@@ -697,14 +697,17 @@ instance ToField LocalTime where
 instance ToField IntervalValue
 
 -- | Bind the time and its offset in seconds as a TIMETZ. An offset outside
--- -57599 to 57599 seconds raises an error. A time with digits below one
+-- -57599 to 57599 seconds raises an t'SQLError' of the type
+-- 'ErrorTypeConversion'. A time with digits below one
 -- microsecond loses these digits, as in SQL text. A leap second binds as the
 -- next second. See Note [Time ranges].
 instance ToField TimeWithZone
 
 -- | Bind the value as a DECIMAL with its own width and scale. DuckDB casts it
--- to the type of the parameter. A width outside 1 to 38, a scale larger than
--- the width, or an integer that the width cannot hold raises an error.
+-- to the type of the parameter. A width outside 1 to 38, or a scale larger than
+-- the width, raises an t'SQLError' of the type 'ErrorInputInvalid'. An integer
+-- that the width cannot hold raises an t'SQLError' of the type
+-- 'ErrorTypeConversion'.
 instance ToField DecimalValue where
   toField value = valueBinding (show value) (`decimalDuckValue` value)
 
@@ -727,7 +730,7 @@ instance ToField Variant where
 
 -- | Bind an instant as a TIMESTAMPTZ, or as a TIMESTAMPTZ_NS. An instant
 -- outside the range of the t'LocalTime' instance, in UTC, raises an
--- t'SQLError' of the type 'ErrorInputOutOfRange'. For a TIMESTAMPTZ_NS target,
+-- t'SQLError' of the type 'ErrorTypeConversion'. For a TIMESTAMPTZ_NS target,
 -- an instant outside the range of TIMESTAMPTZ_NS can get another error, also
 -- an instant outside the range of DuckDB in a STRUCT, a TUPLE, or a UNION, as
 -- for a t'LocalTime'. See Note [Nanosecond parameters]. A leap second of
@@ -1614,7 +1617,7 @@ decimalDuckValue :: DuckDBV2FactoryHandle -> DecimalValue -> IO DuckDBV2ValueHan
 decimalDuckValue factory DecimalValue{decimalWidth, decimalScale, decimalInteger} = do
   when (decimalWidth < 1 || decimalWidth > 38 || decimalScale > decimalWidth) $
     throwInvalidArgument "invalid DECIMAL width or scale"
-  when (abs decimalInteger >= 10 ^ decimalWidth) $ throwInvalidArgument "DECIMAL value exceeds declared precision"
+  when (abs decimalInteger >= 10 ^ decimalWidth) $ throwConversionError "DECIMAL value exceeds declared precision"
   huge <- integerToHugeInt decimalInteger
   with huge (\ptr -> output (c_duckdb_v2_value_create_decimal factory (ConstPtr ptr) decimalWidth decimalScale))
 
@@ -1629,7 +1632,7 @@ timeWithZoneDuckValue factory TimeWithZone{timeWithZoneTime, timeWithZoneOffsetS
   micros <- timeOfDayUnits 1000000 timeWithZoneTime
   let offset = toInteger timeWithZoneOffsetSeconds
   when (abs offset > toInteger timeTzMaxOffsetSeconds) $
-    throwInvalidArgument
+    throwConversionError
       ("the TIMETZ offset " <> Text.pack (show offset) <> " seconds is out of range; DuckDB stores an offset from -57599 to 57599 seconds")
   output
     ( c_duckdb_v2_value_create_time_tz
@@ -1639,12 +1642,12 @@ timeWithZoneDuckValue factory TimeWithZone{timeWithZoneTime, timeWithZoneOffsetS
 
 integerToHugeInt :: Integer -> IO DuckDBV2HugeintT
 integerToHugeInt value = do
-  when (value < negate (1 `shiftL` 127) || value >= 1 `shiftL` 127) $ throwInvalidArgument "HUGEINT value out of range"
+  when (value < negate (1 `shiftL` 127) || value >= 1 `shiftL` 127) $ throwConversionError "HUGEINT value out of range"
   pure (DuckDBV2HugeintT (fromIntegral value) (fromIntegral (value `shiftR` 64)))
 
 integerToUHugeInt :: Integer -> IO DuckDBV2UhugeintT
 integerToUHugeInt value = do
-  when (value < 0 || value >= 1 `shiftL` 128) $ throwInvalidArgument "UHUGEINT value out of range"
+  when (value < 0 || value >= 1 `shiftL` 128) $ throwConversionError "UHUGEINT value out of range"
   pure (DuckDBV2UhugeintT (fromIntegral value) (fromIntegral (value `shiftR` 64)))
 
 -- | Borrow generated identifier views and reject embedded NUL bytes.
@@ -2046,7 +2049,7 @@ such a TIMESTAMP to VARCHAR raises an INTERNAL error, and DuckDB then
 invalidates the database. A cast of such a TIMESTAMP to TIMESTAMP_S stores the
 first valid value with no error. A DATE before the range sorts before
 -infinity, and a cast of it to TIMESTAMP fails. Thus encodeDay and
-encodeTimestampUnits raise an SQLError of the type ErrorInputOutOfRange for
+encodeTimestampUnits raise an SQLError of the type ErrorTypeConversion for
 each finite value outside these ranges (throwOutsideTimeRange), before any
 check of the storage, so a value outside the storage and a value at an
 infinity value get this error too. The text names the value and the end of
@@ -2081,7 +2084,7 @@ checkTimestampRange units value
 -- text names the Haskell value and the end of the range. See
 -- Note [Time ranges].
 throwOutsideTimeRange :: String -> Text -> IO a
-throwOutsideTimeRange value bound = throwOutOfRange ("the value " <> Text.pack value <> " is " <> bound)
+throwOutsideTimeRange value bound = throwConversionError ("the value " <> Text.pack value <> " is " <> bound)
 
 -- | Count the units from the Unix epoch to a timestamp, with the digits below
 -- one unit cut toward the earlier time. The count does not check the time of
@@ -2095,7 +2098,7 @@ timestampUnits units LocalTime{localDay, localTimeOfDay} =
 checkFiniteRange :: (Integral a) => String -> a -> a -> Integer -> IO ()
 checkFiniteRange label lower upper value =
   unless (inFiniteRange lower upper value) $
-    throwInvalidArgument (Text.pack label <> " value out of finite range")
+    throwConversionError (Text.pack label <> " value out of finite range")
 
 -- | Check storage limits without accepting the two infinity sentinels.
 inFiniteRange :: (Integral a) => a -> a -> Integer -> Bool
@@ -2105,12 +2108,15 @@ inFiniteRange lower upper value =
 -- | Validate time components and convert to the requested units per second.
 timeOfDayUnits :: Integer -> TimeOfDay -> IO Integer
 timeOfDayUnits units tod@(TimeOfDay hours minutes seconds) = do
-  when
-    (hours < 0 || hours > 24 || minutes < 0 || minutes > 59 || seconds < 0 || seconds >= 61 || (hours == 24 && (minutes /= 0 || seconds /= 0)))
-    $ throwInvalidArgument "invalid time of day"
+  -- A time of day that is not a TIME value is outside the range of the type: a
+  -- field outside its own range, for example 23:61:00, and a time after
+  -- 24:00:00 with valid fields, for example 24:00:01, 25:00:00, or 23:59:60.5.
+  -- The two texts name the two cases.
+  when (hours < 0 || minutes < 0 || minutes > 59 || seconds < 0 || seconds >= 61) $
+    throwConversionError "invalid time of day"
   let value = diffTimeToPicoseconds (timeOfDayToTime tod) `div` (1000000000000 `div` units)
   when (value > 86400 * units) $
-    throwInvalidArgument "time of day out of range"
+    throwConversionError "time of day out of range"
   pure value
 
 -- | Transfer a newly constructed value to the statement on success.

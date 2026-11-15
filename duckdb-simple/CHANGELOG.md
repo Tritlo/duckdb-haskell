@@ -36,14 +36,13 @@
 - `ConfigValue.configValueText` is `Maybe Text`, and `Nothing` for an option
   with a NULL value. Version 0.3 stopped the process for such an option. See
   MIGRATION.md.
-- A `Day` outside the range of DuckDB, from -5877641-06-25 to 5881580-07-10,
-  and a `LocalTime` or a `UTCTime` outside the range from -290308-12-22
-  00:00:00 to 294247-01-10 04:00:54.775806, in the notation of `Data.Time`,
-  raise an `SQLError` of the type `ErrorInputOutOfRange` when they bind. For a
-  target of the type TIMESTAMP_NS or TIMESTAMPTZ_NS, a value outside the
-  smaller range of that type can get another error, by its position. Version
-  0.3 bound some of these values and raised an `IOException` for the others.
-  See MIGRATION.md.
+- A `Day` outside the range of DuckDB, from -5877641-06-25 to 5881580-07-10, and
+  a `LocalTime` or a `UTCTime` outside the range from -290308-12-22 00:00:00 to
+  294247-01-10 04:00:54.775806, in the notation of `Data.Time`, raise an
+  `SQLError` of the type `ErrorTypeConversion` when they bind. For a target of
+  the type TIMESTAMP_NS or TIMESTAMPTZ_NS, a value outside the smaller range of
+  that type can get another error, by its position. Version 0.3 bound some of
+  these values and raised an `IOException` for the others. See MIGRATION.md.
 - Add typed configuration values and defaults, managed log sinks, macro
   registration, function documentation, query metrics, and file path
   operations. Expose table bind metadata for multi-file readers.
@@ -289,27 +288,44 @@
   `Only [..]`. Version 0.3 had no `ToField` instance for lists.
 - Each input check of the library raises `SQLError` with the type
   `ErrorInputInvalid`: a parameter value that does not fit its type (for example
-  a `DecimalValue` outside its width, a `BitString` with bad padding, a
-  `UnionValue` with a tag out of range, a nanosecond timestamp outside the
-  storage of its type, or an empty `Array`), a logical type with a NUL in a name
-  or a bad DECIMAL width, a CRS name that DuckDB does not keep, a NUL in a
-  database path, an alias, an attach option, a configuration, a query, or a
-  parameter name, a NUL in a file path, a negative file offset or read size, a
-  file range outside `Int64`, a bad `ConnectionOptions` field, SQL text with no
-  statement or with more than one statement, a parameter index out of bounds, a
-  column index of `columnName` out of bounds, a bad name or argument of a
-  registration, a catalog lookup, a configuration option, or a log sink, the
-  column count of a COPY FROM table, and a VARIANT argument of a typed function,
-  a table function, a pragma, a COPY function, or a custom option. An error
-  about a statement has the query of the statement, and each other error has no
-  query. A date or a timestamp outside the range of DuckDB, and an integer
-  outside the range of its parameter type, raise `SQLError` with the type
-  `ErrorInputOutOfRange`. A parameter count or a parameter name that does not
-  match the query keeps its `FormatError`. A check in a callback fails the outer
-  statement with the type of the check. Version 0.3 raised an `IOException` for
-  the checks of parameter values, logical types, and CRS names. The error for a
-  scalar value that does not match its declared type names the SQL type, for
-  example `NULL` in place of `LogicalTypeIdSQLNull`.
+  a `BitString` with bad padding, a `UnionValue` with a tag out of range, or an
+  empty `Array`), a logical type with a NUL in a name or a bad DECIMAL width, a
+  CRS name that DuckDB does not keep, a NUL in a database path, an alias, an
+  attach option, a configuration, a query, or a parameter name, a NUL in a file
+  path, a negative file offset or read size, a file range outside `Int64`, a bad
+  `ConnectionOptions` field, SQL text with no statement or with more than one
+  statement, a parameter index out of bounds, a column index of `columnName` out
+  of bounds, a bad name or argument of a registration, a catalog lookup, a
+  configuration option, or a log sink, the column count of a COPY FROM table,
+  and a VARIANT argument of a typed function, a table function, a pragma, a COPY
+  function, or a custom option. An error about a statement has the query of the
+  statement, and each other error has no query. A value outside the range of its
+  SQL type raises `SQLError` with the type `ErrorTypeConversion` when it binds,
+  the type of the "Conversion Error" that DuckDB raises for the same value in
+  SQL: a date or a timestamp outside the range of DuckDB, an integer outside the
+  range of its parameter type, a nanosecond timestamp outside its storage or at
+  an infinity value as a STRUCT field, a TUPLE element, or a UNION member, a
+  `FieldHugeInt` or a `FieldUHugeInt` outside its type, a TIMETZ offset outside
+  -57599 to 57599 seconds, a time of day that is not a TIME value (a field
+  outside its own range, or a time after 24:00:00), and a `DecimalValue` that
+  its width cannot hold. For such a nanosecond timestamp in the range of DuckDB,
+  for example in the year 2300, DuckDB raises its own error in the other
+  positions: `ErrorTypeConversion` for a TIMESTAMP_NS or TIMESTAMPTZ_NS
+  parameter, and `ErrorInputInvalid` for an element of a list, an `Array`, or a
+  `Map`. A `LocalTime` or a `UTCTime` (in UTC) from 2262-04-11
+  23:47:16.854775807 to 23:47:16.854775999 gets the error of the library in each
+  position. A value of the wrong shape or type keeps `ErrorInputInvalid`, also
+  where DuckDB gives another type for the same input, for example a UNION tag
+  that is not a member, a leaf built from another type, a STRUCT field that does
+  not match its type, or an unknown CRS. A parameter count or a parameter name
+  that does not match the query keeps its `FormatError`. A check in a callback
+  fails the outer statement with the type of the check: such a value as the
+  result of a typed function or a row of a typed table function gives
+  `ErrorTypeConversion` and the text `Conversion Error: duckdb-simple: ...`.
+  Version 0.3 raised an `IOException` for the checks of parameter values,
+  logical types, and CRS names. The error for a scalar value that does not match
+  its declared type names the SQL type, for example `NULL` in place of
+  `LogicalTypeIdSQLNull`.
 - A check of the state of the library, or of a vector, a type, or a value that
   DuckDB gave, raises `SQLError` with the type `ErrorRuntimeInternal`. Such an
   error means a defect of the library or of DuckDB. When a statement raises it,
@@ -377,7 +393,7 @@
   target. A value outside the HUGEINT range binds as BIGNUM, or as UHUGEINT for
   a UHUGEINT parameter that can hold it. For each other integer or DECIMAL
   parameter, such a value raises an `SQLError` of the type
-  `ErrorInputOutOfRange`. `typeof(?)` is thus HUGEINT for an `Integer` in the
+  `ErrorTypeConversion`. `typeof(?)` is thus HUGEINT for an `Integer` in the
   HUGEINT range. Bind a `BigNum` to bind a BIGNUM value in each case. An `Array`
   of `Integer` or `Natural` values takes the element type of its target when
   that type is an integer type or DECIMAL, so DuckDB checks the range of each

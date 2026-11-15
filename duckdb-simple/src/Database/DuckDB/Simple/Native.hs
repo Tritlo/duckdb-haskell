@@ -56,7 +56,7 @@ module Database.DuckDB.Simple.Native (
   foldIdentifier,
   quoteIdentifier,
   throwInvalidArgument,
-  throwOutOfRange,
+  throwConversionError,
   throwInternalError,
   withConnectionFactory,
   factoryOutput,
@@ -117,11 +117,13 @@ instance Exception SQLError
 
 -- | The category of a native DuckDB error. An error that duckdb-simple reports
 -- itself has an error type where one category fits the failure. An input check
--- raises 'ErrorInputInvalid', or 'ErrorInputOutOfRange' for an integer outside
--- the range of its parameter type and for a date or a timestamp outside the
--- range of DuckDB. A nanosecond target has exceptions to the range rule (see
--- Note [Nanosecond parameters] in "Database.DuckDB.Simple.ToField"). A
--- callback that waits too long for a connection lock gets 'ErrorResourceInUse'.
+-- for a value that its SQL type cannot hold raises 'ErrorTypeConversion', as
+-- DuckDB does for the same value in SQL (see 'throwConversionError'). Each
+-- other input check raises 'ErrorInputInvalid', also for a value of the wrong
+-- shape or type (see 'throwInvalidArgument'). For a nanosecond target, DuckDB
+-- can raise the error itself (see Note [Nanosecond parameters] in
+-- "Database.DuckDB.Simple.ToField"). A callback that waits too long for a
+-- connection lock gets 'ErrorResourceInUse'.
 -- These errors of duckdb-simple have no error type: the use of a closed
 -- environment, instance, connection, statement, or type cache, a loaded DuckDB
 -- library of another version, a callback state read with the wrong type, and a
@@ -481,17 +483,28 @@ quoteIdentifier identifier = "\"" <> Text.replace "\"" "\"\"" identifier <> "\""
 
 -- | Raise the error of an input check: an argument of a library function, or a
 -- parameter value, that the library rejects. The error is an 'SQLError' of the
--- type 'ErrorInputInvalid' with no query. Each input check of the library uses
--- this function. An error that is not about an input, for example a state error
--- or a native failure, does not use it.
+-- type 'ErrorInputInvalid' with no query. The checks of arguments use this
+-- function, and so do the checks of a parameter value of the wrong shape or
+-- type, for example a UNION tag that is not a member, a leaf of another type
+-- than its declaration, a STRUCT field that does not match its type, a DECIMAL
+-- width outside 1 to 38, or an empty Array, also where DuckDB gives another
+-- error type for the same input. A value that its SQL type cannot hold uses
+-- 'throwConversionError'. An error that is not about an input, for example a
+-- state error or a native failure, does not use this function.
 throwInvalidArgument :: Text -> IO a
 throwInvalidArgument message = throwIO (SQLError ("duckdb-simple: " <> message) (Just ErrorInputInvalid) Nothing Nothing)
 
--- | Raise the error of an input check for a value outside the range of its
--- type: an 'SQLError' of the type 'ErrorInputOutOfRange' with no query. Each
--- such check of the library uses this function.
-throwOutOfRange :: Text -> IO a
-throwOutOfRange message = throwIO (SQLError ("duckdb-simple: " <> message) (Just ErrorInputOutOfRange) Nothing Nothing)
+-- | Raise the error of an input check for a value that its SQL type cannot
+-- hold. The error is an 'SQLError' of the type 'ErrorTypeConversion' with no
+-- query, as the "Conversion Error" of DuckDB for the same value in SQL, for
+-- example for @300::TINYINT@ or @'25:00:00'::TIME@. These checks use this
+-- function: an integer outside its parameter type, a HUGEINT or UHUGEINT value
+-- outside its type, a DECIMAL value that its width cannot hold, a date or a
+-- timestamp outside the range of DuckDB, a nanosecond timestamp outside its
+-- storage, a TIMETZ offset outside -57599 to 57599 seconds, and a time of day
+-- that is not a TIME value.
+throwConversionError :: Text -> IO a
+throwConversionError message = throwIO (SQLError ("duckdb-simple: " <> message) (Just ErrorTypeConversion) Nothing Nothing)
 
 -- | Raise the error of a check of the state of the library, or of a vector, a
 -- type, or a value that DuckDB gave: an 'SQLError' of the type

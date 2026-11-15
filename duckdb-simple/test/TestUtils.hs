@@ -8,6 +8,7 @@ module TestUtils (
   assertFailureIO,
   assertInputError,
   assertInputErrorContaining,
+  assertRangeError,
   assertReleasedAfter,
   assertReusable,
   assertSqlErrorContaining,
@@ -131,6 +132,18 @@ assertInputErrorContaining expected action = do
       assertBool ("expected an input error containing " <> show expected <> ", got " <> show err) $
         ("duckdb-simple: " `Text.isPrefixOf` sqlErrorMessage err) && expected `Text.isInfixOf` sqlErrorMessage err
     Right () -> assertFailure "expected the error of an input check"
+
+-- | Require the error of a check of the library for a value that its SQL type
+-- cannot hold: an 'SQLError' of the type 'ErrorTypeConversion' whose message
+-- starts with "duckdb-simple: ".
+assertRangeError :: IO a -> Assertion
+assertRangeError action = do
+  result <- try action
+  case result of
+    Left err -> do
+      sqlErrorType err @?= Just ErrorTypeConversion
+      assertBool (Text.unpack (sqlErrorMessage err)) ("duckdb-simple: " `Text.isPrefixOf` sqlErrorMessage err)
+    Right _ -> assertFailure "expected an SQLError of the type ErrorTypeConversion"
 
 -- | Require that the connection runs another query. A case uses it after a
 -- cleanup or an interrupted query, to show that the connection state is released.

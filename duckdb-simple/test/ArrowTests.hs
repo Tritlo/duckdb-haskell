@@ -106,7 +106,7 @@ arrowModeTests streaming =
               stepError label action =
                 try action >>= \case
                   Left (err :: SQLError) -> do
-                    assertEqual label (Just ErrorInputInvalid) (sqlErrorType err)
+                    assertEqual label (Just ErrorTypeConversion) (sqlErrorType err)
                     assertEqual label Nothing (sqlErrorQuery err)
                   Right _ -> assertFailure (label <> ": expected the DECIMAL error")
           stepError "Arrow.foldArrow" (Arrow.foldArrow conn "SELECT 1" () () \acc _ _ -> failingStep >> pure acc)

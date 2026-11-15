@@ -315,7 +315,7 @@ Notes:
    UHUGEINT for a UHUGEINT parameter that can hold it. It binds as a BIGNUM for
    a parameter that has no integer or DECIMAL type. For each other integer or
    DECIMAL parameter, it raises an `SQLError` of the type
-   `ErrorInputOutOfRange`. Bind a `BigNum` to bind a BIGNUM value in each case.
+   `ErrorTypeConversion`. Bind a `BigNum` to bind a BIGNUM value in each case.
    [Querying Data](#querying-data) gives the defects of the casts from BIGNUM
    in DuckDB 2.0.0.
 2. The value 0 reads as `False`, and each other value reads as `True`.
@@ -365,13 +365,14 @@ Notes:
    `Day` is 5877642-06-25 (BC), the year -5877641 of `Data.Time`, to
    5881580-07-10. The range of `LocalTime` and `UTCTime` is 290309-12-22 (BC)
    00:00:00 to 294247-01-10 04:00:54.775806. A value outside its range raises an
-   `SQLError` of the type `ErrorInputOutOfRange`. A target of the type
+   `SQLError` of the type `ErrorTypeConversion`. A target of the type
    TIMESTAMP_NS or TIMESTAMPTZ_NS has a smaller range, about the years 1677 to
    2262, and for such a target the error depends on the position of the value. A
    `TimeOfDay` with 60 seconds binds as the next second, as `make_time` of
    DuckDB gives it: 23:59:60 binds as 24:00:00. A later time, for example
-   23:59:60.5, raises an `SQLError` of the type `ErrorInputInvalid`. [Infinite
-   dates and timestamps](#infinite-dates-and-timestamps) gives the full rule.
+   23:59:60.5, and a field outside its own range, for example 61 minutes, raise
+   an `SQLError` of the type `ErrorTypeConversion`. [Infinite dates and
+   timestamps](#infinite-dates-and-timestamps) gives the full rule.
 8. An `Array` binds as an ARRAY with the size of the value. An empty `Array`
    raises an `SQLError` of the type `ErrorInputInvalid`, because a DuckDB ARRAY
    has at least one element; bind an empty list for an empty LIST. A DuckDB
@@ -500,14 +501,20 @@ state read with the wrong type.
 - `sqlErrorBody` is the text of an error of DuckDB without the prefix of its
   type, and `Nothing` for an error of the library.
 
-An input check of the library raises an `SQLError`. Two input checks give the
-type `ErrorInputOutOfRange`: an `Integer` that its parameter cannot hold, and a
-date or a timestamp outside the range of DATE or TIMESTAMP of DuckDB (note 7).
-Each other input check gives
-the type `ErrorInputInvalid`. Examples are a VARIANT object with two equal
-keys, a registration with an argument type that the library cannot read, a
-time of day after 24:00:00, a TIMETZ offset outside -57599 to 57599 seconds, a
-DECIMAL width above 38, and an `Integer` field of a record outside HUGEINT.
+An input check of the library raises an `SQLError`. A check for a value outside
+the range of its SQL type gives the type `ErrorTypeConversion`, the type of the
+Conversion Error that DuckDB gives the same value in SQL: an `Integer` that its
+parameter cannot hold, a date or a timestamp outside the range of DATE or
+TIMESTAMP of DuckDB (note 7), a nanosecond timestamp outside its storage, a time
+of day that is not a TIME value, a TIMETZ offset outside -57599 to 57599
+seconds, an `Integer` or `Natural` field of a record outside HUGEINT or
+UHUGEINT, and a `DecimalValue` that its width cannot hold. Each other input
+check gives the type `ErrorInputInvalid`. This includes a value of the wrong
+shape or type, also where DuckDB gives another type for the same input, for
+example a UNION tag that is not a member, a leaf built from another type, a
+STRUCT field that does not match its type, or an unknown CRS. Examples are a
+VARIANT object with two equal keys, a registration with an argument type that
+the library cannot read, and a DECIMAL width above 38.
 
 A statement in a callback that waits for a lock of the connection longer than
 the time limit of `connectionCallbackLockWait` raises an `SQLError` of the type
@@ -550,9 +557,11 @@ An exception in a Haskell function of a registration, for example of
 raises an `SQLError`. An `SQLError` with a type keeps its type, and its text
 gets one prefix. For example, a function that runs a failing query on another
 connection fails the outer statement with `ErrorTypeConversion` and the text
-`Conversion Error: ...` of the inner query. A failed cast is the exception: it
-gives `ErrorTypeMismatch` (see below). Each other exception, an `SQLError` with
-no type, and an `SQLError` of one of the 16 types below give `ErrorInputInvalid`
+`Conversion Error: ...` of the inner query, and a check of the library in a
+result, for example a time of day after 24:00:00, keeps its type
+`ErrorTypeConversion`. A failed cast is the exception: it gives
+`ErrorTypeMismatch` (see below). Each other exception, an `SQLError` with no
+type, and an `SQLError` of one of the 16 types below give `ErrorInputInvalid`
 and the text `Invalid Input Error: ` followed by the message of the exception:
 the message of an `SQLError`, the text of a `userError`, or the
 `displayException` text of another exception. An argument that does not convert
@@ -809,27 +818,29 @@ Use separate parameters when one expression requires microseconds and another
 requires nanoseconds.
 
 A date or a timestamp outside the range of DuckDB raises an `SQLError` of the
-type `ErrorInputOutOfRange` when it binds, also as an element of a list, an
+type `ErrorTypeConversion` when it binds, also as an element of a list, an
 `Array`, or a `Map`, inside a STRUCT, a TUPLE, or a UNION, and in a VARIANT. For
 a `Day`, that range is the range of DATE, from -5877641-06-25 to 5881580-07-10.
 For a `LocalTime` or a `UTCTime` (in UTC), it is the range of TIMESTAMP,
 TIMESTAMPTZ, TIMESTAMP_S, and TIMESTAMP_MS, from -290308-12-22 00:00:00 to
 294247-01-10 04:00:54.775806. The dates are in the notation of `Data.Time`. A
 target of the type TIMESTAMP_NS or TIMESTAMPTZ_NS is different. These types have
-a smaller range, about the years 1677 to 2262, and a value outside that range
-gets an error by its position:
+a smaller range, about the years 1677 to 2262. A value outside that range gets
+the type `ErrorTypeConversion` in each position but one: an element in the range
+of DuckDB gets its Invalid Input Error. The error comes from the library or from
+DuckDB by the position of the value:
 
-- A parameter, or an element of a list, an `Array`, or a `Map`:
-  `ErrorInputOutOfRange` for a value outside the range of DuckDB. Each other
-  such value gets an error of DuckDB: the Conversion Error of DuckDB, of the
-  type `ErrorTypeConversion`, for a parameter, and its Invalid Input Error, of
-  the type `ErrorInputInvalid`, for an element.
-- A field of a STRUCT, an element of a TUPLE, or a member of a UNION: the
-  `ErrorInputInvalid` of the library, "TIMESTAMP value out of finite range",
-  also for a value outside the range of DuckDB.
+- A parameter: the error of the library for a value outside the range of DuckDB,
+  and the Conversion Error of DuckDB for each other such value, for example in
+  the year 2300.
+- An element of a list, an `Array`, or a `Map`: the error of the library for a
+  value outside the range of DuckDB, and the Invalid Input Error of DuckDB, of
+  the type `ErrorInputInvalid`, for each other such value.
+- A field of a STRUCT, an element of a TUPLE, or a member of a UNION: the error
+  of the library, "TIMESTAMP value out of finite range", also for a value
+  outside the range of DuckDB.
 - In each position, a `LocalTime` or a `UTCTime` (in UTC) from 2262-04-11
-  23:47:16.854775807 to 23:47:16.854775999 gets that `ErrorInputInvalid` of the
-  library.
+  23:47:16.854775807 to 23:47:16.854775999 gets that error of the library.
 
 In the notation of `Data.Time`, the year -5877641 is 5877642 BC and the year
 -290308 is 290309 BC. The rule holds also for a finite `Unbounded` value. DuckDB
@@ -837,8 +848,10 @@ does not accept a value outside its range: its SQL literals reject it, and a
 stored value can read as an infinity or make DuckDB raise an INTERNAL error. A
 leap second, a `TimeOfDay` with 60 seconds, binds as the next second, as
 `make_time` and `make_timestamp` of DuckDB give it. The SQL literal `'23:59:60'`
-raises an error. A time after 24:00:00, for example 23:59:60.5, raises an
-`SQLError` of the type `ErrorInputInvalid`.
+raises an error. A time after 24:00:00, for example 23:59:60.5, and a field
+outside its own range, for example 61 minutes, raise an `SQLError` of the type
+`ErrorTypeConversion`, also as the result of a typed function or a row of a
+table function.
 
 ### Manual STRUCT, TUPLE, and UNION Handling
 
@@ -1111,7 +1124,7 @@ rule, so one list payload can hold both types. A Haskell list, an `Array`, or a
 `Map` of time values for a `VARIANT` parameter is not a payload: it binds
 microsecond elements (see [Infinite dates and
 timestamps](#infinite-dates-and-timestamps)). A value outside the range of
-DuckDB raises an `SQLError` of the type `ErrorInputOutOfRange`. Lists, arrays,
+DuckDB raises an `SQLError` of the type `ErrorTypeConversion`. Lists, arrays,
 and STRUCT fields bind as VARIANT values. A VARIANT does not keep a UNION, a
 MAP, an ENUM, or the CRS of a GEOMETRY, so these payloads raise an error at any
 depth: a VARIANT keeps only the member value of a UNION, stores a MAP as a list

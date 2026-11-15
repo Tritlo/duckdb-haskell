@@ -345,7 +345,7 @@ testCallbackErrorTypes = withDirectory \directory -> withConnection ":memory:" \
     conn
     "error_range"
     (void (query other "SELECT ?::TINYINT" (Only (2 ^ (200 :: Int) :: Integer)) :: IO [Only Int64]) >> pure (0 :: Int64))
-  assertErrorType "an error of the library" ErrorInputOutOfRange "Out of Range Error: duckdb-simple: the value " (run "SELECT error_range()")
+  assertErrorType "an error of the library" ErrorTypeConversion "Conversion Error: duckdb-simple: the value " (run "SELECT error_range()")
   -- An INTERNAL error does not keep its type, because DuckDB then invalidates
   -- the database.
   createFunction

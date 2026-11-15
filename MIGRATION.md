@@ -146,27 +146,29 @@ The SQL workflow stays the same. These changes can affect your code:
   the process: DuckDB raised the C++ exception "Calling StringValue::Get on a
   NULL value" in `duckdb_get_varchar`.
 - A date or a timestamp outside the range of DuckDB raises an `SQLError` of the
-  type `ErrorInputOutOfRange` when it binds, also as an element of a list, an
+  type `ErrorTypeConversion` when it binds, also as an element of a list, an
   `Array`, or a `Map`, inside a STRUCT, a TUPLE, or a UNION, and in a VARIANT.
   For a `Day`, that range is the range of DATE, from -5877641-06-25 to
   5881580-07-10. For a `LocalTime` or a `UTCTime` (in UTC), it is the range of
   TIMESTAMP, TIMESTAMPTZ, TIMESTAMP_S, and TIMESTAMP_MS, from -290308-12-22
   00:00:00 to 294247-01-10 04:00:54.775806. The dates are in the notation of
   `Data.Time`. A target of the type TIMESTAMP_NS or TIMESTAMPTZ_NS is different.
-  These types have a smaller range, about the years 1677 to 2262, and a value
-  outside that range gets an error by its position:
+  These types have a smaller range, about the years 1677 to 2262. A value
+  outside that range gets the type `ErrorTypeConversion` in each position but
+  one: an element in the range of DuckDB gets its Invalid Input Error. The error
+  comes from the library or from DuckDB by the position of the value:
 
-  - A parameter, or an element of a list, an `Array`, or a `Map`:
-    `ErrorInputOutOfRange` for a value outside the range of DuckDB. Each other
-    such value gets an error of DuckDB: the Conversion Error of DuckDB, of the
-    type `ErrorTypeConversion`, for a parameter, and its Invalid Input Error, of
-    the type `ErrorInputInvalid`, for an element.
+  - A parameter: the error of the library for a value outside the range of
+    DuckDB, and the Conversion Error of DuckDB for each other such value, for
+    example in the year 2300.
+  - An element of a list, an `Array`, or a `Map`: the error of the library for a
+    value outside the range of DuckDB, and the Invalid Input Error of DuckDB, of
+    the type `ErrorInputInvalid`, for each other such value.
   - A field of a STRUCT, an element of a TUPLE, or a member of a UNION: the
-    `ErrorInputInvalid` of the library, "TIMESTAMP value out of finite range",
-    also for a value outside the range of DuckDB.
+    error of the library, "TIMESTAMP value out of finite range", also for a
+    value outside the range of DuckDB.
   - In each position, a `LocalTime` or a `UTCTime` (in UTC) from 2262-04-11
-    23:47:16.854775807 to 23:47:16.854775999 gets that `ErrorInputInvalid` of
-    the library.
+    23:47:16.854775807 to 23:47:16.854775999 gets that error of the library.
 - Version 0.3 raised the `IOException` "DATE value out of finite range" or
   "TIMESTAMP value out of finite range" for a date or a timestamp at an
   infinity value or outside the storage. It bound the other values outside the
@@ -434,13 +436,21 @@ The SQL workflow stays the same. These changes can affect your code:
   that version 0.3 stored in a `VARIANT` column does not match `WHERE x = ?`
   for the same Haskell value with such digits.
 - Each input check of the library raises an `SQLError` with the type
-  `ErrorInputInvalid`. Two checks raise an `SQLError` with the type
-  `ErrorInputOutOfRange` instead: an integer outside the range of its
-  parameter type, and a date or a timestamp outside the range of DuckDB (see
-  the entry on that range above). A parameter count or a parameter name that
-  does not match the query raises a `FormatError`. A check in a callback fails
-  the outer statement with the type of the check (see the entry on a callback
-  that raises an `SQLError`).
+  `ErrorInputInvalid`, except a value outside the range of its SQL type, which
+  raises an `SQLError` with the type `ErrorTypeConversion` when it binds, as the
+  Conversion Error of DuckDB for the same value in SQL (an integer for its
+  parameter type, a date or a timestamp for the range of DuckDB, a nanosecond
+  timestamp for its storage, a HUGEINT or UHUGEINT field, a TIMETZ offset, a
+  time of day that is not a TIME value, or a `DecimalValue` for its width), and
+  a parameter count or a parameter name that does not match the query, which
+  raises a `FormatError`. A value of the wrong shape or type keeps
+  `ErrorInputInvalid`, also where DuckDB gives another type for the same input,
+  for example a UNION tag that is not a member, a leaf built from another type,
+  a STRUCT field that does not match its type, or an unknown CRS. A check in a
+  callback fails the outer statement with the type of the check: such a value as
+  the result of a typed function or a row of a typed table function gives
+  `ErrorTypeConversion` and the text `Conversion Error: duckdb-simple: ...` (see
+  the entry on a callback that raises an `SQLError`).
 - Version 0.3 raised an `IOException` (a `userError`) for a BIT, DECIMAL, ENUM,
   HUGEINT, UHUGEINT, TIMETZ, time of day, or timestamp value that does not fit
   its type, a STRUCT or UNION value whose fields do not match its types, a

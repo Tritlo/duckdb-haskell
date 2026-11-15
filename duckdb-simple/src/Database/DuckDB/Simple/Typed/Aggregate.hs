@@ -154,10 +154,12 @@ two threads change the same IORef only when their keys select the same stripe.
   states, the DuckDB threads of a query with many groups waited for each other.
 
 - The number of stripes. The option connectionAggregateStripes of
-  ConnectionOptions sets the number for the aggregates of a connection. The
-  default is defaultAggregateStripes, 64 stripes. A registration on an
-  extension has no connection options, so it uses the default. The bind
-  callback makes the table with this number (bindStateTable).
+  ConnectionOptions sets the number for each aggregate that createAggregate
+  registers through the connection. The registration keeps the number, also
+  when another connection calls the aggregate. The default is
+  defaultAggregateStripes, 64 stripes. A registration on an extension has no
+  connection options, so it uses the default. The bind callback makes the
+  table with this number (bindStateTable).
 
 - No result depends on the number. It changes only how often two threads use
   the same stripe. A stripe costs one small IORef for each call site.

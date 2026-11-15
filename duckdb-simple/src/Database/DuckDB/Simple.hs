@@ -253,12 +253,14 @@ data ConnectionOptions = ConnectionOptions
   --     "Database.DuckDB.Simple.Function" gives the cases that the bound does
   --     not cover.
   , connectionAggregateStripes :: Int
-  -- ^ The number of stripes in the state table of a typed aggregate function
-  --     ('createAggregate') on this connection. The table holds the live
-  --     aggregate states. Two DuckDB threads that change the table wait for
-  --     each other only when they change the same stripe. No result depends on
-  --     the number. The default is 'defaultAggregateStripes'. The open rejects
-  --     a number that is not positive.
+  -- ^ The number of stripes in the state table of each typed aggregate
+  --     function that 'createAggregate' registers through this connection. The
+  --     registration keeps the number, also when another connection calls the
+  --     aggregate. The table holds the live aggregate states. Two DuckDB
+  --     threads that change the table wait for each other only when they change
+  --     the same stripe. No result depends on the number. The default is
+  --     'defaultAggregateStripes'. The open rejects a number that is not
+  --     positive.
   , connectionArrowBatchSize :: Int
   -- ^ The largest number of rows in one Arrow array of an Arrow fold on this
   --     connection ("Database.DuckDB.Simple.Arrow" and

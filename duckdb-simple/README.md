@@ -944,8 +944,8 @@ aggregateExample conn = do
 The library keeps the live aggregate states in a table with stripes. Two
 DuckDB threads wait for each other only when they change the same stripe.
 `connectionAggregateStripes` in `ConnectionOptions` sets the number of stripes
-for the aggregates of a connection. The default is `defaultAggregateStripes`,
-64. No result depends on the number.
+for each aggregate that `createAggregate` registers through the connection.
+The default is `defaultAggregateStripes`, 64. No result depends on the number.
 
 `createTableFunction` registers a table function that gives its rows as a
 list. DuckDB reads all columns of each row, also the columns that the query

@@ -112,7 +112,8 @@
   statement then fails. The README gives the cases that the time limit does
   not cover.
 - Add `connectionAggregateStripes` to `ConnectionOptions`. It sets the number
-  of stripes in the state table of a typed aggregate on the connection. The
+  of stripes in the state table of each typed aggregate that `createAggregate`
+  registers through the connection. The
   default is `defaultAggregateStripes` (64). The open rejects a number that is
   not positive. A registration on an extension uses the default.
 - Add `connectionArrowBatchSize` to `ConnectionOptions`. It sets the largest

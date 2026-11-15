@@ -90,6 +90,11 @@ newtype Stamped = Stamped {stampedAt :: UTCTime}
   deriving stock (Eq, Show, Generic)
   deriving (FromField) via (ViaDuckDB Stamped)
 
+-- | A generic record with a LIST, an ARRAY, and a MAP field.
+data Holder = Holder {listField :: [Int32], arrayField :: Array Int Int32, mapField :: Map.Map Text Int32}
+  deriving stock (Eq, Show, Generic)
+  deriving (FromField) via (ViaDuckDB Holder)
+
 -- | A generic record for array parameters.
 data Pair = Pair {pairName :: Text, pairValue :: Int64}
   deriving stock (Eq, Show, Generic)
@@ -1200,6 +1205,36 @@ valueRegressionTests =
         timePairs
         _ <- execute_ conn "SET TimeZone = 'Pacific/Auckland'"
         timePairs
+    , testCase "a field of a generic record reads the SQL types of the top-level read" $ withConnection ":memory:" \conn -> do
+        -- See Note [Reads of another SQL type] in "Database.DuckDB.Simple.FromField".
+        [Only column] <- query_ conn "SELECT [1, 2, 3]::INTEGER[3]" :: IO [Only [Int32]]
+        let holder list array map' = "SELECT {'listField': " <> list <> ", 'arrayField': " <> array <> ", 'mapField': " <> map' <> "}"
+        (query_ conn (Query (holder "[1, 2, 3]::INTEGER[3]" "[4, 5]::INTEGER[2]" "MAP {'k': 6}")) :: IO [Only Holder])
+          >>= (@?= [Only (Holder column (listArray (0, 1) [4, 5]) (Map.singleton "k" 6))])
+        -- The error of a value that a decoder does not read names its SQL type.
+        let refused :: forall a. (FromField a, Show a) => Proxy a -> Text -> Text -> Assertion
+            refused _ sql expected =
+              try (query_ conn (Query sql) :: IO [Only a]) >>= \case
+                Left SQLError{sqlErrorMessage} -> sqlErrorMessage @?= expected
+                Right rows -> assertFailure ("expected an error for " <> Text.unpack sql <> ", got " <> show rows)
+        refused
+          (Proxy :: Proxy Holder)
+          (holder "MAP {'k': 1}" "[4, 5]::INTEGER[2]" "MAP {'k': 6}")
+          "duckdb-simple: field listField: a value has type MAP but expected LIST or ARRAY"
+        refused
+          (Proxy :: Proxy Holder)
+          (holder "[1]" "[4, 5]" "MAP {'k': 6}")
+          "duckdb-simple: field arrayField: a value has type LIST but expected ARRAY"
+        refused
+          (Proxy :: Proxy Holder)
+          (holder "[1]" "[4, 5]::INTEGER[2]" "[6]")
+          "duckdb-simple: field mapField: a value has type LIST but expected MAP"
+        refused (Proxy :: Proxy Holder) "SELECT 7" "duckdb-simple: a value has type INTEGER but expected STRUCT for a product type"
+        refused (Proxy :: Proxy Colour) "SELECT {'a': 1}" "duckdb-simple: a value has type STRUCT but expected UNION for a sum type"
+        refused
+          (Proxy :: Proxy Colour)
+          "SELECT union_value(Red := 1)::UNION(Red INTEGER, Blue INTEGER)"
+          "duckdb-simple: a value has type INTEGER but expected STRUCT for a member of a sum type"
     , testCase "a refused field of a generic record names the field and the two types" $ withConnection ":memory:" \conn -> do
         try (query_ conn "SELECT {'stampedAt': TIMESTAMP '2024-01-02 03:04:05'} AS s" :: IO [Only Stamped]) >>= \case
           Left SQLError{sqlErrorMessage} -> sqlErrorMessage @?= "duckdb-simple: field stampedAt: a value has type TIMESTAMP but expected UTCTime"

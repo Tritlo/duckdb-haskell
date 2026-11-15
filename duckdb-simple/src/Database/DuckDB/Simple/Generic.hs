@@ -94,7 +94,7 @@ module Database.DuckDB.Simple.Generic (
   ViaDuckDB (..),
 ) where
 
-import Control.Exception (displayException)
+import Control.Exception (displayException, fromException)
 import Control.Monad (unless)
 import Data.Array (Array, elems, listArray)
 import qualified Data.ByteString as BS
@@ -294,13 +294,15 @@ instance (DuckValue a) => DuckValue (Maybe a) where
   duckFromField FieldNull = Right Nothing
   duckFromField other = Just <$> duckFromField other
 
--- | List values encode as DuckDB LIST (variable-length). 'String' keeps its
--- own instance.
+-- | List values encode as DuckDB LIST (variable-length). A field reads a LIST
+-- and an ARRAY, as the top-level @FromField@ instance of a list does. 'String'
+-- keeps its own instance.
 instance {-# OVERLAPPABLE #-} (DuckValue a) => DuckValue [a] where
   duckToField xs = FieldList (map duckToField xs)
   duckLogicalType _ = LogicalTypeList (duckLogicalType (Proxy :: Proxy a))
   duckFromField (FieldList fvs) = traverse duckFromField fvs
-  duckFromField other = Left ("duckdb-simple: expected LIST, got " <> show other)
+  duckFromField (FieldArray arr) = traverse duckFromField (elems arr)
+  duckFromField other = unexpectedValue "LIST or ARRAY" other
 
 -- | Array values encode as DuckDB ARRAY values. A type has no size, so the
 -- instance declares the size 0. When a generic record binds, the value of an
@@ -321,7 +323,7 @@ instance (DuckValue a) => DuckValue (Array Int a) where
     decoded <- traverse duckFromField values
     let (low, high) = (0, length decoded - 1)
     pure (listArray (low, high) decoded)
-  duckFromField other = Left ("duckdb-simple: expected ARRAY, got " <> show other)
+  duckFromField other = unexpectedValue "ARRAY" other
 
 -- | Map values encode as DuckDB MAP.
 instance (Ord k, DuckValue k, DuckValue v) => DuckValue (Map.Map k v) where
@@ -340,7 +342,20 @@ instance (Ord k, DuckValue k, DuckValue v) => DuckValue (Map.Map k v) where
         k <- duckFromField kfv
         v <- duckFromField vfv
         pure (k, v)
-  duckFromField other = Left ("duckdb-simple: expected MAP, got " <> show other)
+  duckFromField other = unexpectedValue "MAP" other
+
+-- | The error of a decoder that does not read a value. The text has the form of
+-- each other read error: it names the SQL type of the value, not the value,
+-- because a value can be large.
+unexpectedValue :: String -> FieldValue -> Either String a
+unexpectedValue expected value = Left (displayException (Incompatible (valueTypeName value) Text.empty (Text.pack expected) Text.empty))
+
+-- | The SQL type name of a decoded value, as each read error gives it. The
+-- error of 'returnError' holds that name.
+valueTypeName :: FieldValue -> Text
+valueTypeName value = case returnError Incompatible (Field Text.empty 0 value) Text.empty :: Ok () of
+  Errors (err : _) | Just result <- fromException err -> errSQLType result
+  _ -> Text.pack "an unknown type"
 
 --------------------------------------------------------------------------------
 -- Generic machinery
@@ -590,7 +605,7 @@ instance (Constructor c, GStruct f, GStructDecode f) => GSum (M1 C c f) where
           FieldStruct structVal -> do
             ordered <- orderStructFields (gStructTypes (Proxy :: Proxy (f p))) structVal
             M1 <$> gStructDecodeStruct (Proxy :: Proxy (f p)) ordered
-          other -> Left ("duckdb-simple: expected STRUCT payload for union member, got " <> show other)
+          other -> unexpectedValue "STRUCT for a member of a sum type" other
 
 -- | Match decoded fields to their selector names before product decoding.
 orderStructFields :: [FieldComponent LogicalTypeRep] -> StructValue FieldValue -> Either String (StructValue FieldValue)
@@ -685,7 +700,7 @@ instance (GStruct f, GStructDecode f) => GFromField' 'False (M1 D meta (M1 C c f
     FieldStruct sv -> do
       ordered <- orderStructFields (gStructTypes (Proxy :: Proxy (f p))) sv
       M1 . M1 <$> gStructDecodeStruct (Proxy :: Proxy (f p)) ordered
-    other -> Left ("duckdb-simple: expected STRUCT value for product type, got " <> show other)
+    other -> unexpectedValue "STRUCT for a product type" other
 
 instance (GSum f) => GFromField' 'True (M1 D meta f) where
   gFromField' _ = \case
@@ -702,7 +717,7 @@ instance (GSum f) => GFromField' 'True (M1 D meta f) where
       case matching of
         [idx] -> M1 <$> gSumDecode idx (unionValuePayload uv)
         _ -> Left "duckdb-simple: unknown union member name"
-    other -> Left ("duckdb-simple: expected UNION value for sum type, got " <> show other)
+    other -> unexpectedValue "UNION for a sum type" other
 
 instance GFromField' 'False (M1 D meta U1) where
   gFromField' _ _ = Right (M1 U1)

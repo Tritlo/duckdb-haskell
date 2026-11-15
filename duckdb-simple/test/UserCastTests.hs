@@ -29,6 +29,7 @@ import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..),
 import Database.DuckDB.Simple.Pragma (PragmaCallback (..), registerPragmaFunction)
 import qualified Database.DuckDB.Simple.Streaming as Streaming
 import qualified Database.DuckDB.Simple.V2.Registration as R
+import Database.DuckDB.Simple.Variant (Variant (..), variantObject)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
 
@@ -101,6 +102,39 @@ userCastTests =
           calls <- nullCast conn (R.TypeExpression "GEOMETRY") (R.TypeExpression "BLOB")
           void (execute_ conn "SET user_cast_update = 'POINT (1 2)'")
           readIORef seen >>= (@?= [FieldGeometry point])
+          readIORef calls >>= (@?= 0)
+    , testCase "a cast from VARIANT to BIGINT does not change a BIGINT payload of a VARIANT result" $
+        withConnection ":memory:" \conn -> do
+          calls <- nullCast conn (R.TypeExpression "VARIANT") (R.TypeExpression "BIGINT")
+          query_ conn "SELECT 42::BIGINT::VARIANT" >>= (@?= [Only (Variant (FieldInt64 42))])
+          query_ conn "SELECT {'n': 42::BIGINT}::VARIANT" >>= (@?= [Only (Variant (variantObject [("n", FieldInt64 42)]))])
+          query_ conn "SELECT [1, 2]::BIGINT[]::VARIANT" >>= (@?= [Only (Variant (FieldList [FieldInt64 1, FieldInt64 2]))])
+          readIORef calls >>= (@?= 0)
+    , testCase "a cast from GEOMETRY to BLOB does not change a GEOMETRY payload of a VARIANT result" $
+        withConnection ":memory:" \conn -> do
+          calls <- nullCast conn (R.TypeExpression "GEOMETRY") (R.TypeExpression "BLOB")
+          query_ conn "SELECT 'POINT (1 2)'::GEOMETRY::VARIANT" >>= (@?= [Only (Variant (FieldGeometry point))])
+          readIORef calls >>= (@?= 0)
+    , testCase "a cast from a VARIANT list to a STRUCT list does not change a VARIANT object" $
+        withConnection ":memory:" \conn -> do
+          let variant = LogicalTypeScalar LogicalTypeIdVariant
+              objects = LogicalTypeList (LogicalTypeStruct (listArray (0, 0) [StructField "a" variant]))
+          calls <- nullCast conn (R.StructuredType (LogicalTypeList variant)) (R.StructuredType objects)
+          query_ conn "SELECT {'a': 1}::VARIANT" >>= (@?= [Only (Variant (variantObject [("a", FieldInt32 1)]))])
+          readIORef calls >>= (@?= 0)
+    , testCase "a cast from VARIANT to BIGINT does not change a VARIANT row of a COPY TO function" $
+        withConnection ":memory:" \conn -> do
+          rows <- newIORef []
+          Copy.registerCopyToFunction
+            conn
+            "user_cast_variant_copy"
+            (\_ -> pure ())
+            (\_ -> pure ())
+            (\_ batch -> modifyIORef' rows (<> batch))
+            (\_ -> pure ())
+          calls <- nullCast conn (R.TypeExpression "VARIANT") (R.TypeExpression "BIGINT")
+          void (execute_ conn "COPY (SELECT 42::BIGINT::VARIANT AS v) TO 'unused' (FORMAT user_cast_variant_copy)")
+          (map (map fieldValue) <$> readIORef rows) >>= (@?= [[FieldInt64 42]])
           readIORef calls >>= (@?= 0)
     ]
 

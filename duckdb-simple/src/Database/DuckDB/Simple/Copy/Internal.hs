@@ -148,7 +148,8 @@ withVariantReader target action = case target of
     -- handle.
     readVariant instanceHandle vector =
       bracket (output (c_duckdb_v2_connection_create instanceHandle)) (destroy c_duckdb_v2_connection_destroy) \helper ->
-        bracket (newVariantState helper) destroyVariantState (`prepareVariantReader` vector)
+        withInstanceFactory instanceHandle \casts ->
+          bracket (newVariantState helper casts) destroyVariantState (`prepareVariantReader` vector)
 
 -- | The native COPY TO callbacks of the row-oriented functions. The first
 -- argument is the factory of 'targetCastFactory'.

@@ -40,7 +40,6 @@ import Database.DuckDB.Simple.FromField (
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..), genericFromFieldValue, genericToStructValue)
 import Database.DuckDB.Simple.Internal (destroyValue, output, withConnectionFactory, withConnectionHandle)
 import Database.DuckDB.Simple.LogicalRep
-import Database.DuckDB.Simple.Registration (TypeDeclaration (..))
 import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
@@ -897,22 +896,37 @@ valueRegressionTests =
           assertIOError (query conn "SELECT ?" (Only bits) :: IO [Only BitString])
     , testCase "TIMETZ offsets with seconds read without rounding" $ withConnection ":memory:" \conn ->
         (query_ conn "SELECT '12:00:00+01:23:45'::TIMETZ" :: IO [Only TimeWithZone]) >>= (@?= [Only (TimeWithZone (TimeOfDay 12 0 0) 5025)])
-    , testCase "a failure of the reader of a later chunk releases each chunk" $ withConnection ":memory:" \conn -> do
-        -- No value from SQL fails in a result decoder. A user cast from VARIANT
-        -- to BIGINT replaces a cast of the VARIANT reader, and a typed cast
-        -- rejects a VARIANT argument. See Note [User casts and the casts of the
-        -- library] in "Database.DuckDB.Simple.Materialize". This case needs a new
-        -- trigger when the VARIANT reader no longer uses user casts.
-        createCast conn (TypeExpression "VARIANT") (TypeExpression "BIGINT") \(value :: Int64) -> Right value
-        let rows (count :: Int) = Query ("SELECT CASE WHEN i = 9000 THEN 42::BIGINT::VARIANT END FROM range(" <> Text.pack (show count) <> ") t(i)")
-        try (query_ conn (rows 10000) :: IO [Only FieldValue]) >>= \case
+    , testCase "a failure of the reader of a chunk gives the error of DuckDB and releases each chunk" $ withConnection ":memory:" \conn -> do
+        -- The VARIANT reader runs its metadata query on a helper connection, and
+        -- that query needs an expression depth of 11. A GLOBAL depth of 10 thus
+        -- fails the reader at the bind of that query, and the SESSION depth of
+        -- the caller lets the query of the case run.
+        _ <- execute_ conn "SET GLOBAL max_expression_depth = 10"
+        _ <- execute_ conn "SET SESSION max_expression_depth = 1000"
+        let rows = "SELECT 42::BIGINT::VARIANT FROM range(10000)"
+        try (query_ conn rows :: IO [Only FieldValue]) >>= \case
           Left SQLError{sqlErrorMessage, sqlErrorType} -> do
-            assertBool (Text.unpack sqlErrorMessage) ("cannot be or contain VARIANT or GEOMETRY" `Text.isInfixOf` sqlErrorMessage)
-            sqlErrorType @?= Just ErrorInputInvalid
+            assertBool (Text.unpack sqlErrorMessage) ("expression depth" `Text.isInfixOf` sqlErrorMessage)
+            sqlErrorType @?= Just ErrorQueryBinder
           Right result -> assertFailure ("expected the error of the VARIANT reader, got " <> show (length result) <> " rows")
-        -- Rows that are all NULL read, so the failure is in the chunk of row 9000.
-        (length <$> (query_ conn (rows 5000) :: IO [Only FieldValue])) >>= (@?= 5000)
         (query_ conn "SELECT 42" :: IO [Only Int]) >>= (@?= [Only 42])
+        _ <- execute_ conn "SET GLOBAL max_expression_depth = 1000"
+        (length <$> (query_ conn rows :: IO [Only FieldValue])) >>= (@?= 10000)
+    , testCase "a failure of the reader of a later chunk of a stream gives the error of DuckDB" $
+        withEnvironment \environment -> withInstance environment [] \instance' ->
+          withConnectionOn instance' \conn -> withConnectionOn instance' \other -> do
+            _ <- execute_ conn "ATTACH ':memory:' AS probe"
+            _ <- execute_ conn "SET SESSION max_expression_depth = 1000"
+            -- The first chunk reads. Then a GLOBAL depth of 10 fails the
+            -- metadata query of the VARIANT reader for the next chunk. See the
+            -- case before this one.
+            let step count (Only (_ :: FieldValue)) = do
+                  _ <- if count == 0 then execute_ other "SET GLOBAL max_expression_depth = 10" else pure 0
+                  pure (count + 1)
+            try (Streaming.fold_ conn "SELECT 42::BIGINT::VARIANT FROM range(10000)" (0 :: Int) step) >>= \case
+              Left SQLError{sqlErrorMessage} -> assertBool (Text.unpack sqlErrorMessage) ("expression depth" `Text.isInfixOf` sqlErrorMessage)
+              Right count -> assertFailure ("expected the error of the VARIANT reader, got " <> show count <> " rows")
+            (query_ conn "SELECT 42" :: IO [Only Int]) >>= (@?= [Only 42])
     , testCase "ENUM payload index must be in its dictionary" $ withConnection ":memory:" \conn ->
         assertIOError
           (query conn "SELECT ?" (Only (singleField (LogicalTypeEnum (listArray (0, 1) ["a", "b"])) (FieldEnum 2))) :: IO [Only FieldValue])

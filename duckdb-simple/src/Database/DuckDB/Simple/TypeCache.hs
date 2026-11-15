@@ -164,14 +164,14 @@ cachedLogicalType TypeCache{typeCacheConnection, typeCacheGeometry = NativeTypes
 -- sequence. Do not enter this cache again from the supplied action. See
 -- Note [VARIANT decoding] in "Database.DuckDB.Simple.VariantCodec".
 withVariantState :: TypeCache -> (VariantState -> IO a) -> IO a
-withVariantState TypeCache{typeCacheInstance, typeCacheState} action = mask \restore -> do
+withVariantState TypeCache{typeCacheInstance, typeCacheCasts, typeCacheState} action = mask \restore -> do
   outcome <- modifyMVarMasked typeCacheState \state -> do
     (helper, variant) <- case state of
       Closed -> throwIO (SQLError "duckdb-simple: type cache is closed" Nothing Nothing)
       Open helper variant -> pure (helper, variant)
       Unopened -> do
         helper <- output (c_duckdb_v2_connection_create typeCacheInstance)
-        (,) helper <$> newVariantState helper
+        (,) helper <$> newVariantState helper typeCacheCasts
     result <- try (restore (action variant))
     pure (Open helper variant, result)
   either (throwIO :: SomeException -> IO a) pure outcome

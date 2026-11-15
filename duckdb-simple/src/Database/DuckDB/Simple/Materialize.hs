@@ -92,16 +92,8 @@ rejectRows raise vector = pure \row ->
 -- Note [Vector flatten] and Note [VARIANT decoding] in
 -- "Database.DuckDB.Simple.VariantCodec".
 prepareVariantReader :: VariantCodec.VariantState -> VectorReader
-prepareVariantReader = VariantCodec.prepareVariantDecoder materializePlainValue
-
--- | Decode a value that contains no VARIANT. The VARIANT decoder calls this
--- function with its helper connection. 'materializeValue' needs a factory to
--- create a vector and to cast GEOMETRY. The connection owns the factory, so
--- this function does not destroy it. See Note [VARIANT decoding] in
--- "Database.DuckDB.Simple.VariantCodec".
-materializePlainValue :: DuckDBV2ConnectionHandle -> DuckDBV2ValueHandle -> IO FieldValue
-materializePlainValue connection value = withConnectionFactory connection \factory ->
-  materializeValue (rejectRows (throwIO (userError "duckdb-simple: expected a value without VARIANT"))) factory value
+prepareVariantReader =
+  VariantCodec.prepareVariantDecoder (materializeValue (rejectRows (throwIO (userError "duckdb-simple: expected a value without VARIANT"))))
 
 -- | Copy one value through an owned vector. The caller retains the factory owner.
 -- The first argument reads VARIANT. 'prepareGeometryReader' reads GEOMETRY with
@@ -299,6 +291,10 @@ of the instance, so a user cast does not change their result:
   update, the arguments of a pragma or a table function, and the rows of a COPY
   TO function. The registration takes the factory (targetCastFactory in
   "Database.DuckDB.Simple.Callback").
+- withObjectChildren and withCast cast VARIANT values to the types of their
+  payloads ("Database.DuckDB.Simple.VariantCodec"). The codec also reads a
+  GEOMETRY payload. It uses the factory of the instance of its helper
+  connection (variantCasts).
 
 These casts use the factory of a connection or of a callback context:
 
@@ -310,17 +306,14 @@ These casts use the factory of a connection or of a callback context:
   ("Database.DuckDB.Simple.ToField").
 - enumDuckValue casts a VARCHAR value to an ENUM type, and variantDuckValue
   casts a value to VARIANT (the same module).
-- withObjectChildren and withCast cast VARIANT values to the types of their
-  payloads, and the codec reads a GEOMETRY payload with the factory of the
-  helper connection ("Database.DuckDB.Simple.VariantCodec").
 - readNativeTypes runs a statement that casts a text to GEOMETRY
   ("Database.DuckDB.Simple.TypeCache").
 
 Thus a user cast for one of these pairs replaces the cast that the library
 expects, and the library gives the result of the user cast. For example, after
-a user cast from VARIANT to BIGINT that gives NULL, each BIGINT payload of a
-VARIANT result is NULL, and no error occurs. A cast that is registered for
-GEOMETRY is not used for a GEOMETRY type that has a CRS.
+a user cast from VARCHAR to an ENUM type that gives NULL, an ENUM value that a
+STRUCT parameter holds is NULL, and no error occurs. A cast that is registered
+for GEOMETRY is not used for a GEOMETRY type that has a CRS.
 -}
 
 -- | Copy the WKB bytes and CRS of every GEOMETRY row in a vector. GEOMETRY has

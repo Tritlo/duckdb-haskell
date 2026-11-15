@@ -40,7 +40,6 @@ import qualified Database.DuckDB.Simple.Copy as Copy
 import Database.DuckDB.Simple.FromField (DecimalValue (..), FieldValue (..))
 import Database.DuckDB.Simple.Geometry (RawGeometry (..), fromRawGeometry)
 import qualified Database.DuckDB.Simple.Logging as Logging
-import Database.DuckDB.Simple.Registration (TypeDeclaration (..))
 import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Database.DuckDB.Simple.Variant (Variant (..))
 import GHC.Weak.Finalize (getFinalizerExceptionHandler, setFinalizerExceptionHandler)
@@ -314,15 +313,16 @@ checkCallbacks batches =
       reportOptional ("open connection, " <> show (n * 100) <> " callback cycles") before after
 
 -- | Require an error without retaining the exception or its native resources.
--- | Register a cast from VARIANT to BIGINT on the database of the connection.
--- The reader of a VARIANT result then calls this cast for a BIGINT payload,
--- and a typed cast rejects a VARIANT argument. Thus a result with a VARIANT
--- value fails while the chunk is read. No value from SQL fails in a result
--- decoder. See Note [User casts and the casts of the library] in
--- "Database.DuckDB.Simple.Materialize". The checks need a new trigger when the
--- VARIANT reader no longer uses user casts.
+-- | Make the reader of a VARIANT result fail on the database of the
+-- connection. The VARIANT reader runs its metadata query on a helper
+-- connection, and that query needs an expression depth of 11. A GLOBAL depth
+-- of 10 thus fails the reader while it reads the chunk. The SESSION depth of
+-- the connection lets its own queries run. No value from SQL fails in a result
+-- decoder, and no user cast changes a reader of the library.
 breakVariantReads :: Connection -> IO ()
-breakVariantReads conn = createCast conn (TypeExpression "VARIANT") (TypeExpression "BIGINT") \(value :: Int64) -> Right value
+breakVariantReads conn = do
+  void (execute_ conn "SET GLOBAL max_expression_depth = 10")
+  void (execute_ conn "SET SESSION max_expression_depth = 1000")
 
 -- | A query whose result fails in the VARIANT reader after 'breakVariantReads'.
 rejectedQuery :: Query

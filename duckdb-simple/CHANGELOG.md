@@ -28,8 +28,9 @@
   of an extension reads (see the README).
 - `createAggregate` registers an aggregate function as a fold over Haskell
   values. The record `Aggregate` has the initial state and the step, combine,
-  and result functions. DuckDB gives the aggregate callbacks no context, so the
-  result types are the result types of `createFunction`.
+  and result functions. DuckDB gives the finalize callback no factory, so the
+  result type must be BOOLEAN, TINYINT to BIGINT, UTINYINT to UBIGINT, FLOAT,
+  DOUBLE, or VARCHAR.
 - `createTableFunction` registers a Haskell function that gives the rows of a
   table function as a list. DuckDB reads the list one chunk at a time. It reads
   only the columns that the query uses, and one column for a query such as
@@ -45,6 +46,11 @@
   `Map`, or a newtype with its own type text. `FunctionArg` is gone. An
   argument type that is or contains VARIANT or GEOMETRY raises an error at
   registration.
+- A result of `createFunction` can have each type with `ToDuckValue`. Its SQL
+  type is the `duckdbTypeDeclaration` of the type: an `Int16` result is
+  SMALLINT, a `Word16` result is USMALLINT, and a `Float` result is FLOAT, in
+  place of BIGINT and DOUBLE. `ScalarType` is gone, and `FunctionResult` has an
+  instance for each type with `ToDuckValue`.
 - `Database.DuckDB.Simple.Registration` has `TypeDeclaration`, `parameter`,
   `defaultValue`, `registerCustomType`, and typed replacement scans.
   `registerReplacementScan` and `registerInstanceReplacementScan` give the

@@ -247,6 +247,19 @@ The SQL workflow stays the same. These changes can affect your code:
   `[Either Text TypeDeclaration]` in place of `[DuckDBType]`. An argument type
   that is or contains VARIANT or GEOMETRY was a compile error. It is now an
   `SQLError` at registration.
+- A result of `createFunction` has the SQL type of its Haskell type. In
+  version 0.3, an `Int16`, `Int32`, `Word16`, or `Word32` result was BIGINT,
+  and a `Float` result was DOUBLE. Now they are SMALLINT, INTEGER, USMALLINT,
+  UINTEGER, and FLOAT. DuckDB computes with these types, so an expression can
+  now raise an Out of Range Error. For example, `30000::SMALLINT *
+  30000::SMALLINT` raises an error, so `f(x) * f(y)` of an `Int16` function
+  raises an error for `x = y = 30000`, where version 0.3 gave 900000000. For a
+  `Word16` function, `f(1) - f(2)` raises an error, where version 0.3 gave -1.
+  Cast the result to a wider type first, for example `f(x)::INTEGER * f(y)`.
+- `ScalarType` is gone. `Function.returnType` gives
+  `Either Text TypeDeclaration` in place of `ScalarType`. `FunctionResult` has
+  an instance for each type with `ToDuckValue`, so a result can also be, for
+  example, a record through `ViaDuckDB`, a list, a `Map`, or a `UUID`.
 - `Database.DuckDB.Simple` exports new names, for example `connect`,
   `Environment`, `Instance`, `withInstance`, `attachDatabase`, `createCast`,
   `createTableFunction`, `createAggregate`, `Aggregate` with its fields, and

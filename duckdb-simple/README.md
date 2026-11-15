@@ -848,7 +848,7 @@ supported families, construction checks, and codec normalization rules.
 
 Register a scalar Haskell function on a connection, and call it in SQL
 expressions. The arguments use `FromField`, and the result uses
-`FunctionResult`. Thus a function can take and give `Maybe` values, and it can
+`ToDuckValue`. Thus a function can take and give `Maybe` values, and it can
 give an `IO` action.
 
 An argument type needs `FromField` and `DuckDBColumnType` instances. Its SQL
@@ -857,6 +857,16 @@ newtype with its own `DuckDBColumnType` text, for example `DECIMAL(18,3)`,
 gives that text. An argument type that is or contains VARIANT or GEOMETRY
 raises an error at registration, because the argument reader reads neither
 type.
+
+The SQL type of the result is the `duckdbTypeDeclaration` of the result type:
+an `Int16` result is SMALLINT, and a `Float` result is FLOAT. DuckDB computes
+with that type. Thus `hs_small(x) * hs_small(y)` of an `Int16` function raises
+an Out of Range Error when the product does not fit in SMALLINT, as
+`30000::SMALLINT * 30000::SMALLINT` does. Cast the result to a wider type
+first. A `Bool`, an integer of 8 to 64 bits, a `Float`, a `Double`, a `Text`,
+or a `String` result goes to the memory of the result vector. Each other
+result type, for example a record or a list, costs a native value for each
+row.
 
 ```haskell
 {-# LANGUAGE OverloadedStrings #-}
@@ -982,7 +992,10 @@ places still use registered casts:
   the option, as SQL `SET` does.
 
 `createAggregate` registers an aggregate function as a fold. The result type
-is a result type of `createFunction`.
+must be BOOLEAN, TINYINT to BIGINT, UTINYINT to UBIGINT, FLOAT, DOUBLE, or
+VARCHAR, or `Maybe` of one of them. Another result type is an error at
+registration. The finalize callback of DuckDB has no factory to make a value
+of another type, and in an ordered window its result vector has the size 0.
 
 ```haskell
 aggregateExample :: Connection -> IO [Only Int64]

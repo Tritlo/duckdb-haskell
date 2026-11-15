@@ -192,8 +192,8 @@ The SQL workflow stays the same. These changes can affect your code:
   `ConnectionOptions` (10 seconds by default), the query raises an `SQLError`
   of the type `ErrorResourceInUse`. For most callbacks, the outer statement
   then fails. `Nothing` sets no time limit.
-  The time limit applies also to a callback that waits for a second
-  connection.
+  The time limit applies also to a wait for a second connection that another
+  statement uses.
   With more than one DuckDB thread, DuckDB can run a callback of an explicit
   stream between two fetches. Then the query fails at once with the
   `RESOURCE_IN_USE` error of DuckDB. The README gives the cases that the time
@@ -245,7 +245,8 @@ The SQL workflow stays the same. These changes can affect your code:
   `Word64`, or `Natural`) raises the error of an incompatible column. Write
   `enum_code(c)::BIGINT` for the index that version 0.3 gave, or `c::INTEGER`
   for the label as a number. Without the cast, `enum_code` gives an unsigned
-  type, which `Int` and `Int8` to `Int64` do not read. An ENUM now reads as `Text` or `String` with its label.
+  type, which `Int` and `Int8` to `Int64` do not read.
+- An ENUM now reads as `Text` or `String` with its label.
 - `FieldEnum` has a second field, the label: `FieldEnum Word32 Text`. Change
   each pattern and each construction. A `FieldEnum` inside a declared ENUM type
   binds its label.
@@ -418,11 +419,16 @@ The SQL workflow stays the same. These changes can affect your code:
   name, fails when the connection opens. Version 0.3 read the configured types
   the first time a parameter needed one, and did not check that a type kept its
   CRS.
-- DuckDB 2.0 rejects WKB with mixed Z/M member layouts.
+- DuckDB 2.0 rejects a GEOMETRY collection whose members have different Z/M
+  layouts. A `Geometry` or a `RawGeometry` parameter with such a collection
+  raises the Invalid Input Error of DuckDB "Geometry has inconsistent Z/M
+  dimensions". Give each member the same Z and M dimensions, or store the WKB
+  bytes in a BLOB column.
 - `RawGeometry` has a `ToField` instance. It binds as a GEOMETRY with its own
   CRS. Version 0.3 had only a `FromField` instance, so code imported the WKB with
   `ST_GeomFromWKB(?)` and the CRS with `ST_SetCRS`. That SQL still works.
-- Decoded VARIANT objects list their keys in DuckDB's lexicographic order.
+- Decoded VARIANT objects list their keys in ascending order, as DuckDB sorts
+  them.
 - A `Variant` parameter with a UNION payload, at any depth, raises `SQLError`
   with the type `ErrorInputInvalid`, because a VARIANT keeps only the member
   value of a UNION. Version 0.3 bound such a value with no error. Bind the

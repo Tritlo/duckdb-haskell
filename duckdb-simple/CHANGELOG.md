@@ -137,7 +137,7 @@
   aggregate function put their name before it:
   `duckdb-simple: NAME: cannot convert argument ...`.
 - Add scoped named collection inputs and prepared dynamic PIVOT with a deferred
-  output schema. Native expanding statements cannot have parameters.
+  output schema. Prepared dynamic PIVOT cannot have parameters.
 - Rename `Database.DuckDB.Simple.Deprecated.Streaming` to
   `Database.DuckDB.Simple.Streaming`.
 - Export Arrow release helpers from `Database.DuckDB.Simple.Arrow`.

@@ -46,7 +46,7 @@ import GHC.Conc (BlockReason (..), ThreadStatus (..), threadStatus)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
-import TestUtils (raiseCapabilities)
+import TestUtils (assertReusable, raiseCapabilities)
 
 -- | Exercise each native execution entry point and two cancellation races.
 cancellationTests :: TestTree
@@ -456,9 +456,3 @@ assertAsync expected = \case
 -- | Check that an interrupt sender completed normally.
 assertSucceeded :: Either SomeException () -> Assertion
 assertSucceeded = either (assertFailure . show) pure
-
--- | The interrupted native query must have released its connection state.
-assertReusable :: Connection -> Assertion
-assertReusable conn = do
-  rows <- query_ conn "SELECT 42" :: IO [Only Int64]
-  rows @?= [Only 42]

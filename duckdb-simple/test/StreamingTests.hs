@@ -34,7 +34,7 @@ import Database.DuckDB.Simple.Variant (Variant (..), variantObject)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
-import TestUtils (filteredQueries)
+import TestUtils (assertReusable, filteredQueries)
 
 -- | Exercise native streaming, resets, metadata, and cleanup across chunks.
 nativeStreamingTests :: TestTree
@@ -246,9 +246,3 @@ expectSqlError action = do
   case outcome of
     Left err -> pure err
     Right _ -> assertFailure "expected SQLError" >> fail "expected SQLError"
-
--- | Verify that cleanup leaves the connection ready for another query.
-assertReusable :: Connection -> Assertion
-assertReusable conn = do
-  rows <- query_ conn "SELECT 42" :: IO [Only Int64]
-  rows @?= [Only 42]

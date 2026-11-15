@@ -9,6 +9,7 @@ module TestUtils (
   assertInputError,
   assertInputErrorContaining,
   assertReleasedAfter,
+  assertReusable,
   assertSqlErrorContaining,
   assertSqlErrorType,
   filteredQueries,
@@ -38,7 +39,7 @@ import Database.DuckDB.FFI.V2 (
   c_duckdb_v2_vector_get_data_mutable,
   c_duckdb_v2_vector_set_size,
  )
-import Database.DuckDB.Simple (ErrorType (..), Query, SQLError (..))
+import Database.DuckDB.Simple (Connection, ErrorType (..), Only (..), Query, SQLError (..), query_)
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToDuckValue (..), ToField)
 import Database.DuckDB.Simple.V2.Registration (checked, output)
 import Foreign.C.ConstPtr (ConstPtr (..))
@@ -125,6 +126,13 @@ assertInputErrorContaining expected action = do
       assertBool ("expected an input error containing " <> show expected <> ", got " <> show err) $
         ("duckdb-simple: " `Text.isPrefixOf` sqlErrorMessage err) && expected `Text.isInfixOf` sqlErrorMessage err
     Right () -> assertFailure "expected the error of an input check"
+
+-- | Require that the connection runs another query. A case uses it after a
+-- cleanup or an interrupted query, to show that the connection state is released.
+assertReusable :: Connection -> Assertion
+assertReusable conn = do
+  rows <- query_ conn "SELECT 42" :: IO [Only Int64]
+  rows @?= [Only 42]
 
 -- | Require a SQL exception which includes the expected message.
 assertSqlErrorContaining :: Text.Text -> IO a -> Assertion

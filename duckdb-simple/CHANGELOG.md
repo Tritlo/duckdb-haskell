@@ -180,8 +180,10 @@
 - Preserve the digits below a microsecond of a `TimeOfDay`, a `LocalTime`, and
   a `UTCTime`, and of their `Unbounded` forms, for a nanosecond parameter
   (`TIME_NS`, `TIMESTAMP_NS`, or `TIMESTAMPTZ_NS`), also in collections,
-  STRUCTs, MAPs, UNIONs, and VARIANT parameters. Only a value with such digits
-  reads the parameter type. Each other parameter gets the microsecond value,
+  STRUCTs, MAPs, and UNIONs. A scalar value for a `VARIANT` parameter keeps
+  them when it fits the range of the nanosecond type (see the entry on
+  `VARIANT` parameters below). Only a value with such digits reads the
+  parameter type. Each other parameter gets the microsecond value,
   as for the SQL literal. An explicit cast such as `?::TIMESTAMP_NS` makes a
   nanosecond parameter, so for a `TIMESTAMP` column DuckDB rounds the value to
   the microsecond, where a plain `?` cuts the digits. Version 0.3 bound the
@@ -277,8 +279,9 @@
   `LogicalTypeIdSQLNull`.
 - A `TimeOfDay`, a `LocalTime`, or a `UTCTime` with digits below a microsecond,
   and a `FieldTime`, a `FieldTimestamp`, or a `FieldTimestampTZ` with such
-  digits, binds with the nanosecond type for a `VARIANT` parameter when it fits
-  the range of that type, so the VARIANT keeps the digits. A value with no such
+  digits, binds with the nanosecond type for a nanosecond parameter, and for a
+  `VARIANT` parameter when it fits the range of that type, so the VARIANT keeps
+  the digits. A value with no such
   digits binds as before, with no read of the parameter type. A value outside
   the range of the nanosecond type, an element of a list, an `Array`, or a
   `Map` for a `VARIANT` parameter, and an element of a `VARIANT` list or map
@@ -291,10 +294,10 @@
   element type that its elements give, with the rule of a SQL list literal.
   A `FieldEnum` binds its label as a VARCHAR. An empty `FieldArray` raises
   `SQLError` with the type `ErrorInputInvalid`. A `FieldTimestamp`, a
-  `FieldTime`, and a
-  `FieldTimestampTZ` bind with the microsecond type, or with the nanosecond
-  type when the value has digits below a microsecond and the parameter has the
-  nanosecond type.
+  `FieldTime`, and a `FieldTimestampTZ` bind with the microsecond type. A value
+  with digits below a microsecond binds with the nanosecond type for a
+  nanosecond parameter, and for a `VARIANT` parameter when it fits the range of
+  that type.
 - An `Array`, a list, or a `Map` of STRUCT values, UNION values, generic
   records, lists, or arrays with different element types gets the type that
   DuckDB gives a SQL list literal of the elements, for example

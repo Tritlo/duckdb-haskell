@@ -1,5 +1,6 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -9,7 +10,7 @@
 -- Description : Integration checks for typed registration through SQL.
 module TypedRegistrationTests (typedRegistrationTests) where
 
-import Control.Exception (bracket, throwIO, try)
+import Control.Exception (SomeException, bracket, displayException, throwIO, try)
 import Control.Monad (forM_, void, when)
 import Data.Array (elems)
 import qualified Data.ByteString as BS
@@ -49,7 +50,8 @@ import Database.DuckDB.Simple.Copy (
   registerMultiFileFunction,
  )
 import Database.DuckDB.Simple.FromField (BigNum (..), Field (..), FieldValue (..), IntervalValue (..), TimeWithZone (..), bsFromBool)
-import Database.DuckDB.Simple.LogicalRep (StructField (..), StructValue (..))
+import Database.DuckDB.Simple.Generic (ViaDuckDB (..))
+import Database.DuckDB.Simple.LogicalRep (StructField (..), StructValue (..), TupleValue, UnionValue)
 import Database.DuckDB.Simple.Pragma (PragmaCallback (..), registerPragmaFunction)
 import Database.DuckDB.Simple.Registration (
   FunctionParameter (..),
@@ -62,7 +64,7 @@ import Database.DuckDB.Simple.Registration (
   registerReplacementScan,
  )
 import Database.DuckDB.Simple.Time (Unbounded (..))
-import Database.DuckDB.Simple.ToField (ToDuckValue)
+import Database.DuckDB.Simple.ToField (ToDuckValue (..))
 import Database.DuckDB.Simple.Variant (Variant)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
@@ -109,6 +111,9 @@ typedRegistrationTests =
     , testCase "table function with Integer and Natural columns" testTableIntegers
     , testCase "table function with INTERVAL and TIMETZ columns" testTableIntervals
     , testCase "table function with a MAP column" testTableMaps
+    , testCase "table function and aggregate with record, list, map, and union types" testTableRecords
+    , testCase "typed registration rejects a type with no declaration" testNoDeclaration
+    , testCase "record field outside the range of its declared type" testRecordFieldRange
     , testCase "table function runs one time for each scan" testTableRuns
     , -- A defect can make the scan run without end. Then the time limit fails
       -- the case. The limit is long, because the suite also runs under Valgrind.
@@ -998,6 +1003,115 @@ testTableMaps = withConnection ":memory:" \conn -> do
   query_ conn "SELECT typeof(pairs), map_keys(pairs) FROM typed_maps()"
     >>= (@?= [("MAP(VARCHAR, BIGINT)" :: Text, ["a", "b"] :: [Text]), ("MAP(VARCHAR, BIGINT)", [])])
   query_ conn "SELECT pairs FROM typed_maps()" >>= (@?= rows)
+
+-- | A record for a STRUCT column. A String field is VARCHAR.
+data Peak = Peak {peak :: Text, metres :: Int32, remark :: String}
+  deriving stock (Eq, Show, Generic)
+  deriving (DuckDBColumnType, ToDuckValue, FromField) via (ViaDuckDB Peak)
+
+-- | A sum type for a UNION column.
+data Weather = Sunny | Rain Double
+  deriving stock (Eq, Show, Generic)
+  deriving (DuckDBColumnType, ToDuckValue, FromField) via (ViaDuckDB Weather)
+
+-- | A record with an Integer field, of the type HUGEINT, and a Natural field,
+-- of the type UHUGEINT.
+data Counts = Counts {signed :: Integer, unsigned :: Natural}
+  deriving stock (Eq, Show, Generic)
+  deriving (DuckDBColumnType, ToDuckValue, ToField, FromField) via (ViaDuckDB Counts)
+
+-- | A newtype with its own type text.
+newtype Price = Price Double
+
+instance DuckDBColumnType Price where
+  duckdbColumnTypeFor _ = "DECIMAL(18,3)"
+
+instance ToDuckValue Price where
+  toDuckValue factory (Price value) = toDuckValue factory value
+
+-- | Declare record, list, MAP, and UNION columns and a record aggregate
+-- argument from the generic types.
+testTableRecords :: Assertion
+testTableRecords = withConnection ":memory:" \conn -> do
+  let peaks = [Peak "Hekla" 1491 "volcano", Peak "Esja" 914 ""]
+      rows = [(row, peaks, Map.fromList [(peak p, p) | p <- peaks], weather) | (row, weather) <- zip peaks [Sunny, Rain 2.5]]
+  createTableFunction conn "typed_peaks" ["peak", "nearby", "by_name", "weather"] \() -> pure rows
+  query_ conn "SELECT typeof(peak), typeof(nearby), typeof(by_name), typeof(weather) FROM typed_peaks() LIMIT 1"
+    >>= ( @?=
+            [
+              ( "STRUCT(peak VARCHAR, metres INTEGER, remark VARCHAR)" :: Text
+              , "STRUCT(peak VARCHAR, metres INTEGER, remark VARCHAR)[]" :: Text
+              , "MAP(VARCHAR, STRUCT(peak VARCHAR, metres INTEGER, remark VARCHAR))" :: Text
+              , "UNION(Sunny STRUCT, Rain STRUCT(field1 DOUBLE))" :: Text
+              )
+            ]
+        )
+  query_ conn "SELECT peak, nearby, by_name, weather FROM typed_peaks()" >>= (@?= rows)
+  createAggregate
+    conn
+    "typed_highest"
+    Aggregate
+      { aggregateInitial = 0
+      , aggregateStep = \highest (Only p) -> pure (max highest (metres p))
+      , aggregateCombine = \a b -> pure (max a b)
+      , aggregateResult = pure :: Int32 -> IO Int32
+      }
+  query_ conn "SELECT typed_highest(peak) FROM typed_peaks()" >>= (@?= [Only (1491 :: Int32)])
+  query_ conn "SELECT parameter_types::VARCHAR FROM duckdb_functions() WHERE function_name = 'typed_highest'"
+    >>= (@?= [Only ("['STRUCT(peak VARCHAR, metres INTEGER, remark VARCHAR)']" :: Text)])
+
+-- | Reject a column, a parameter, or an argument type with no declaration at
+-- registration, also inside a list, and a MAP of a type text and a record.
+testNoDeclaration :: Assertion
+testNoDeclaration = withConnection ":memory:" \conn -> do
+  assertSqlError
+    "typed_struct: column s: StructValue has no static field types"
+    (createTableFunction conn "typed_struct" ["s"] \() -> pure ([] :: [Only (StructValue FieldValue)]))
+  assertSqlError
+    "typed_tuple: column t: TupleValue has no static field types"
+    (createTableFunction conn "typed_tuple" ["t"] \() -> pure ([] :: [Only (TupleValue FieldValue)]))
+  assertSqlError
+    "typed_union: column u: UnionValue has no static field types"
+    (createTableFunction conn "typed_union" ["u"] \() -> pure ([] :: [Only (UnionValue FieldValue)]))
+  assertSqlError
+    "typed_structs: column s: StructValue has no static field types"
+    (createTableFunction conn "typed_structs" ["n", "s"] \() -> pure ([] :: [(Int64, [Maybe (StructValue FieldValue)])]))
+  assertSqlError
+    "typed_struct_parameter: parameter arg0: StructValue has no static field types"
+    (createTableFunction conn "typed_struct_parameter" ["n"] \(Only (_ :: StructValue FieldValue)) -> pure [Only (1 :: Int64)])
+  assertSqlError
+    "typed_struct_count: argument arg0: StructValue has no static field types"
+    ( createAggregate
+        conn
+        "typed_struct_count"
+        Aggregate
+          { aggregateInitial = 0 :: Int64
+          , aggregateStep = \count (Only (_ :: StructValue FieldValue)) -> pure (count + 1)
+          , aggregateCombine = \a b -> pure (a + b)
+          , aggregateResult = pure
+          }
+    )
+  assertSqlError
+    "typed_priced: column p: a MAP with the type text DECIMAL(18,3) and a structured type has no declaration"
+    (createTableFunction conn "typed_priced" ["p"] \() -> pure ([] :: [Only (Map.Map Price Peak)]))
+  query_ conn "SELECT count(*) FROM duckdb_functions() WHERE function_name LIKE 'typed\\_%' ESCAPE '\\'" >>= (@?= [Only (0 :: Int64)])
+
+-- | Give an error, and no other value, for a record field outside the range
+-- of its declared type, as a parameter and as a column.
+testRecordFieldRange :: Assertion
+testRecordFieldRange = withConnection ":memory:" \conn -> do
+  let largest = Counts (2 ^ (127 :: Int) - 1) (2 ^ (128 :: Int) - 1)
+      outside = [(Counts (2 ^ (127 :: Int)) 0, "HUGEINT value out of range"), (Counts 0 (2 ^ (128 :: Int)), "UHUGEINT value out of range")]
+      cases = largest : map fst outside
+  query conn "SELECT ?" (Only largest) >>= (@?= [Only largest])
+  createTableFunction conn "typed_counts" ["c"] \(Only (index :: Int)) -> pure [Only (cases !! index)]
+  query_ conn "SELECT typeof(c), c FROM typed_counts(0)" >>= (@?= [("STRUCT(signed HUGEINT, unsigned UHUGEINT)" :: Text, largest)])
+  forM_ (zip [1 :: Int ..] outside) \(index, (counts, message)) -> do
+    outcome <- try (query conn "SELECT ?" (Only counts) :: IO [Only Counts])
+    case outcome of
+      Left (err :: SomeException) -> assertBool (displayException err) (message `Text.isInfixOf` Text.pack (displayException err))
+      Right rows -> assertFailure ("expected an error, got " <> show rows)
+    assertSqlError message (query_ conn (Query ("SELECT c FROM typed_counts(" <> Text.pack (show index) <> ")")) :: IO [Only Counts])
 
 -- | Run the function for each scan. Do not run it at registration or preparation.
 testTableRuns :: Assertion

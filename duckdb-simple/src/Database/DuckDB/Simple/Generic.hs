@@ -59,6 +59,8 @@
 -- >   deriving (DuckDBColumnType, ToField, FromField) via (ViaDuckDB User)
 --
 -- The derived instances automatically encode/decode via STRUCT/UNION representations.
+-- Also derive @ToDuckValue@ to use the type as a column of a typed table function
+-- or as an argument of a typed aggregate function.
 --
 -- === Extending this module
 --
@@ -120,13 +122,14 @@ import Database.DuckDB.Simple.LogicalRep (
   LogicalTypeRep (..),
   StructField (..),
   StructValue (..),
+  TypeDeclaration (..),
   UnionMemberType (..),
   UnionValue (..),
  )
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.Time (Unbounded (..))
-import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToField (..))
+import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToDuckValue (..), ToField (..))
 import Database.DuckDB.Simple.Variant (Variant (..))
 import GHC.Generics
 import Numeric.Natural (Natural)
@@ -288,8 +291,9 @@ instance (DuckValue a) => DuckValue (Maybe a) where
   duckFromField FieldNull = Right Nothing
   duckFromField other = Just <$> duckFromField other
 
--- | List values encode as DuckDB LIST (variable-length).
-instance (DuckValue a) => DuckValue [a] where
+-- | List values encode as DuckDB LIST (variable-length). 'String' keeps its
+-- own instance.
+instance {-# OVERLAPPABLE #-} (DuckValue a) => DuckValue [a] where
   duckToField xs = FieldList (map duckToField xs)
   duckLogicalType _ = LogicalTypeList (duckLogicalType (Proxy :: Proxy a))
   duckFromField (FieldList fvs) = traverse duckFromField fvs
@@ -694,10 +698,12 @@ instance GFromField' 'False (M1 D meta U1) where
 --------------------------------------------------------------------------------
 -- ViaDuckDB instances
 
--- | The deriving-via version of @DuckDBColumnType@. We look at the generic
--- logical type and map it back to a textual name.  The textual names are only
--- used for diagnostics (errors and column metadata).
+-- | The deriving-via version of @DuckDBColumnType@. The text is the bare name
+-- of the generic logical type, for diagnostics. The declaration is the
+-- structured generic logical type. Each field type comes from 'DuckValue'. See
+-- Note [Type declarations] in "Database.DuckDB.Simple.ToField".
 instance (Generic a, GToField (Rep a)) => DuckDBColumnType (ViaDuckDB a) where
+  duckdbTypeDeclaration _ = Right (StructuredType (genericLogicalType (Proxy :: Proxy a)))
   duckdbColumnTypeFor _ =
     case genericLogicalType (Proxy :: Proxy a) of
       LogicalTypeStruct{} -> Text.pack "STRUCT"
@@ -720,6 +726,14 @@ instance (Generic a, GToField (Rep a)) => ToField (ViaDuckDB a) where
   toField (ViaDuckDB x) = case gToField (from x) of
     EncodedUnion unionVal -> toField unionVal
     EncodedStruct structVal _ -> toField structVal
+
+-- | Deriving-via @ToDuckValue@ instance. A sum type gives a UNION value and a
+-- product type a STRUCT value, through the @ToDuckValue@ instances of those
+-- values. See Note [Types without fields].
+instance (Generic a, GToField (Rep a)) => ToDuckValue (ViaDuckDB a) where
+  toDuckValue factory (ViaDuckDB x) = case gToField (from x) of
+    EncodedUnion unionVal -> toDuckValue factory unionVal
+    EncodedStruct structVal _ -> toDuckValue factory structVal
 
 -- | Deriving-via @FromField@ instance. Errors are rewrapped using the existing
 -- @returnError@ helper so callers receive a proper @ResultError@.

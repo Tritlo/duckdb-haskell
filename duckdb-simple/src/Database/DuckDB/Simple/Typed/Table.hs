@@ -27,13 +27,12 @@ import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow)
 import Database.DuckDB.Simple.Materialize (materializeValue, rejectRows)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
-import Database.DuckDB.Simple.Typed (ColumnValue (..), TypedRow (..), argumentName, conversionMessage)
+import Database.DuckDB.Simple.Typed (ColumnValue (..), TypedRow (..), argumentName, conversionMessage, rowDeclarations)
 import Database.DuckDB.Simple.V2.Registration (
   FunctionParameter (..),
   FunctionSignature (..),
   RegistrationTarget,
   TableCallbacks (..),
-  TypeDeclaration (..),
   configureFunctionSignature,
   parameter,
   registerTableFunctionWith,
@@ -85,43 +84,46 @@ the query needs no more rows, so the list can be long or infinite.
 -- 'Database.DuckDB.Simple.Function.createTableFunction' gives the rules.
 --
 -- The bind callback converts the arguments and declares the result columns.
--- See Note [Row lists of typed scans].
+-- See Note [Row lists of typed scans]. A parameter type or a column type with
+-- no declaration raises an error at registration. See
+-- Note [Type declarations] in "Database.DuckDB.Simple.ToField".
 createTableFunctionOn
   :: forall params row. (FromRow params, TypedRow params, TypedRow row) => RegistrationTarget -> Text -> [Text] -> (params -> IO [row]) -> IO ()
 createTableFunctionOn target name columns function = do
   when (Text.null name || Text.any (== '\0') name) $
     throwInvalidArgument "table function name must be nonempty and must not contain NUL"
-  when (null columnTypes) $
+  when (null columnDeclarations) $
     throwInvalidArgument (name <> ": a table function must have at least one result column")
-  when (length columns /= length columnTypes) $
-    throwInvalidArgument (name <> ": " <> count columns <> " column names for " <> count columnTypes <> " result columns")
+  when (length columns /= length columnDeclarations) $
+    throwInvalidArgument (name <> ": " <> count columns <> " column names for " <> count columnDeclarations <> " result columns")
+  parameterTypes <- rowDeclarations name ["parameter " <> argumentName index | index <- [0 ..]] (rowColumnTypes (Proxy :: Proxy params))
+  columnTypes <- rowDeclarations name (map ("column " <>) columns) columnDeclarations
   casts <- targetCastFactory target
+  let signature =
+        FunctionSignature
+          [ (parameter (argumentName index) dtype){parameterKind = DuckDBV2FunctionParameterKindPositionalOnly}
+          | (index, dtype) <- zip [0 ..] parameterTypes
+          ]
+          Nothing
+      configure factory tableFunction = do
+        withIdentifier name (checked . c_duckdb_v2_table_function_set_name tableFunction)
+        output (c_duckdb_v2_table_function_get_signature tableFunction) >>= configureFunctionSignature factory signature
+      -- Read a GEOMETRY argument with the factory of 'targetCastFactory', or with
+      -- the factory of the context for an extension.
+      bind input result context = withContextFactory context \factory -> do
+        params <- readArguments name (length parameterTypes) (fromMaybe factory casts) input
+        forM_ (zip columns columnTypes) \(column, dtype) ->
+          withTypeDeclaration factory dtype \logical ->
+            withIdentifier column \identifier -> checked (c_duckdb_v2_table_function_bind_add_result_column result identifier logical)
+        transferCallbackState (attachOpaque (c_duckdb_v2_function_bind_set_bind_data input)) (function params)
   withRegistrationFactory target \factory ->
     registerTableFunctionWith
       target
       (configure factory)
-      (tableCallbacks (bind casts) execute){tableInitGlobalCallback = Just initialize, tableProjectionPushdown = True}
+      (tableCallbacks bind execute){tableInitGlobalCallback = Just initialize, tableProjectionPushdown = True}
   where
     count = Text.pack . show . length
-    parameterTypes = rowColumnTypes (Proxy :: Proxy params)
-    columnTypes = rowColumnTypes (Proxy :: Proxy row)
-    signature =
-      FunctionSignature
-        [ (parameter (argumentName index) (TypeExpression dtype)){parameterKind = DuckDBV2FunctionParameterKindPositionalOnly}
-        | (index, dtype) <- zip [0 ..] parameterTypes
-        ]
-        Nothing
-    configure factory tableFunction = do
-      withIdentifier name (checked . c_duckdb_v2_table_function_set_name tableFunction)
-      output (c_duckdb_v2_table_function_get_signature tableFunction) >>= configureFunctionSignature factory signature
-    -- Read a GEOMETRY argument with the factory of 'targetCastFactory', or with
-    -- the factory of the context for an extension.
-    bind casts input result context = withContextFactory context \factory -> do
-      params <- readArguments name (length parameterTypes) (fromMaybe factory casts) input
-      forM_ (zip columns columnTypes) \(column, dtype) ->
-        withTypeDeclaration factory (TypeExpression dtype) \logical ->
-          withIdentifier column \identifier -> checked (c_duckdb_v2_table_function_bind_add_result_column result identifier logical)
-      transferCallbackState (attachOpaque (c_duckdb_v2_function_bind_set_bind_data input)) (function params)
+    columnDeclarations = rowColumnTypes (Proxy :: Proxy row)
     initialize info _ = do
       scan <- readCallbackState (c_duckdb_v2_table_function_init_global_get_bind_data info)
       remaining <- scan >>= newMVar :: IO (MVar [row])

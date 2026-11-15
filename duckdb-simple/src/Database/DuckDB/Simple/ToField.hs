@@ -13,6 +13,16 @@
 --
 -- The @ToField@ class mirrors the interface provided by @sqlite-simple@ while
 -- delegating to the DuckDB C API under the hood.
+--
+-- A 'ToDuckValue' instance of a new type needs no call of the C API. A newtype
+-- instance uses the instance of the wrapped type, for example
+-- @toDuckValue factory (Age years) = toDuckValue factory years@, and the
+-- newtype also needs a 'DuckDBColumnType' instance. A record or a sum type gets
+-- both instances through 'Database.DuckDB.Simple.Generic.ViaDuckDB':
+--
+-- > data User = User {userId :: Int64, userName :: Text}
+-- >   deriving stock (Generic)
+-- >   deriving (DuckDBColumnType, ToDuckValue) via (ViaDuckDB User)
 module Database.DuckDB.Simple.ToField (
   FieldBinding,
   ToDuckValue (..),
@@ -68,6 +78,7 @@ import Database.DuckDB.Simple.LogicalRep (
   StructField (..),
   StructValue (..),
   TupleValue (..),
+  TypeDeclaration (..),
   UnionMemberType (..),
   UnionValue (..),
   structValueTypeRep,
@@ -322,9 +333,73 @@ valueWithTypeMetadata logical value = case (logical, value) of
     in  FieldUnion union{unionValueMembers = members, unionValuePayload = payload}
   _ -> value
 
+{- Note [Type declarations]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+duckdbTypeDeclaration gives the SQL type that a typed registration declares for
+a Haskell type: a parameter or a column of a typed table function, and an
+argument of a typed aggregate function. Right gives the declaration. Left gives
+the reason why the type has no declaration.
+
+- The default is the text of duckdbColumnTypeFor. DuckDB parses the text when
+  the registration declares the type. Thus a newtype with its own
+  DuckDBColumnType instance gives its own type text, for example
+  DECIMAL(18,3).
+- ViaDuckDB gives the structured type of the record or the sum type
+  (genericLogicalType in "Database.DuckDB.Simple.Generic").
+- Maybe a has the declaration of a.
+- A list and an Array give a LIST (listDeclaration): the text T[] for the
+  element text T, or a structured LIST for a structured element type.
+- A Map gives a MAP (mapDeclaration). Two texts give the text MAP(K, V). In
+  the other cases each part must be a structured type, so the text of a part
+  must be a scalar type name (duckDBTypeFromName). Other text gives Left.
+- StructValue, TupleValue, and UnionValue give Left. They have no static
+  field types. Their text is the bare name STRUCT, TUPLE, or UNION. The bare
+  text STRUCT is a valid type, a STRUCT with no fields. That type is also the
+  type of a record with no fields. Thus a check of the declared type cannot
+  find these three types.
+
+A registration raises the Left text as an SQLError before it registers the
+SQL object.
+-}
+
 -- | Types that map to a concrete DuckDB column type when used with @ToField@.
 class DuckDBColumnType a where
+  -- | The DuckDB type text of @a@.
   duckdbColumnTypeFor :: Proxy a -> Text
+
+  -- | The SQL type that a typed registration declares for @a@, or the reason
+  -- why @a@ has no declaration. The default is the text of
+  -- 'duckdbColumnTypeFor'. See Note [Type declarations].
+  duckdbTypeDeclaration :: Proxy a -> Either Text TypeDeclaration
+  duckdbTypeDeclaration proxy = Right (TypeExpression (duckdbColumnTypeFor proxy))
+
+-- | Declare a LIST with the declaration of its element type. See
+-- Note [Type declarations].
+listDeclaration :: TypeDeclaration -> TypeDeclaration
+listDeclaration (TypeExpression element) = TypeExpression (element <> "[]")
+listDeclaration (StructuredType element) = StructuredType (LogicalTypeList element)
+
+-- | Declare a MAP with the declarations of its key type and its value type.
+-- See Note [Type declarations].
+mapDeclaration :: TypeDeclaration -> TypeDeclaration -> Either Text TypeDeclaration
+mapDeclaration (TypeExpression key) (TypeExpression value) = Right (TypeExpression ("MAP(" <> key <> ", " <> value <> ")"))
+mapDeclaration key value = StructuredType <$> (LogicalTypeMap <$> structured key <*> structured value)
+  where
+    structured (StructuredType rep) = Right rep
+    structured (TypeExpression text) = case duckDBTypeFromName text of
+      Just dtype -> Right (LogicalTypeScalar dtype)
+      Nothing ->
+        Left
+          ( "a MAP with the type text "
+              <> text
+              <> " and a structured type has no declaration. Use a newtype of the Map with its own DuckDBColumnType instance."
+          )
+
+-- | The reason why a type with no static field types has no declaration. See
+-- Note [Type declarations].
+noStaticFieldTypes :: Text -> Text
+noStaticFieldTypes name =
+  name <> " has no static field types. Use a record with ViaDuckDB, or a newtype with its own DuckDBColumnType instance."
 
 -- | Report the DuckDB column type that best matches a given @ToField@ instance.
 duckdbColumnType :: forall a. (DuckDBColumnType a) => Proxy a -> Text
@@ -881,27 +956,42 @@ instance DuckDBColumnType (Unbounded LocalTime) where
 instance DuckDBColumnType (Unbounded UTCTime) where
   duckdbColumnTypeFor _ = "TIMESTAMPTZ"
 
+-- | No declaration. See Note [Type declarations].
 instance DuckDBColumnType (StructValue FieldValue) where
   duckdbColumnTypeFor _ = "STRUCT"
+  duckdbTypeDeclaration _ = Left (noStaticFieldTypes "StructValue")
 
+-- | No declaration. See Note [Type declarations].
 instance DuckDBColumnType (TupleValue FieldValue) where
   duckdbColumnTypeFor _ = "TUPLE"
+  duckdbTypeDeclaration _ = Left (noStaticFieldTypes "TupleValue")
 
+-- | No declaration. See Note [Type declarations].
 instance DuckDBColumnType (UnionValue FieldValue) where
   duckdbColumnTypeFor _ = "UNION"
+  duckdbTypeDeclaration _ = Left (noStaticFieldTypes "UnionValue")
 
 instance (DuckDBColumnType a) => DuckDBColumnType (Maybe a) where
   duckdbColumnTypeFor _ = duckdbColumnTypeFor (Proxy :: Proxy a)
+  duckdbTypeDeclaration _ = duckdbTypeDeclaration (Proxy :: Proxy a)
 
+-- | A LIST of the element type. See Note [Type declarations].
 instance (DuckDBColumnType a) => DuckDBColumnType (Array Int a) where
   duckdbColumnTypeFor _ = duckdbColumnTypeFor (Proxy :: Proxy a) <> Text.pack "[]"
+  duckdbTypeDeclaration _ = listDeclaration <$> duckdbTypeDeclaration (Proxy :: Proxy a)
 
+-- | See Note [Type declarations].
 instance (DuckDBColumnType k, DuckDBColumnType v) => DuckDBColumnType (Map.Map k v) where
   duckdbColumnTypeFor _ = Text.pack "MAP(" <> duckdbColumnTypeFor (Proxy :: Proxy k) <> Text.pack ", " <> duckdbColumnTypeFor (Proxy :: Proxy v) <> Text.pack ")"
+  duckdbTypeDeclaration _ = do
+    key <- duckdbTypeDeclaration (Proxy :: Proxy k)
+    value <- duckdbTypeDeclaration (Proxy :: Proxy v)
+    mapDeclaration key value
 
--- | 'String' keeps its own instance.
+-- | 'String' keeps its own instance. See Note [Type declarations].
 instance {-# OVERLAPPABLE #-} (DuckDBColumnType a) => DuckDBColumnType [a] where
   duckdbColumnTypeFor _ = duckdbColumnTypeFor (Proxy :: Proxy a) <> Text.pack "[]"
+  duckdbTypeDeclaration _ = listDeclaration <$> duckdbTypeDeclaration (Proxy :: Proxy a)
 
 nullBinding :: String -> FieldBinding
 nullBinding repr = valueBinding repr nullDuckValue

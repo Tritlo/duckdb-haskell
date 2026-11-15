@@ -35,7 +35,7 @@ import Database.DuckDB.Simple.Internal (Connection (..), defaultAggregateStripes
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (LogicalTypeScalar))
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
-import Database.DuckDB.Simple.Typed (TypedRow (..), argumentName, conversionMessage, prepareArgumentReader)
+import Database.DuckDB.Simple.Typed (TypedRow (..), argumentName, conversionMessage, prepareArgumentReader, rowDeclarations)
 import Database.DuckDB.Simple.V2.Registration (
   AggregateCallbacks (..),
   BindCallback,
@@ -184,21 +184,24 @@ stateStripe :: StateTable -> Int -> IORef IntSet.IntSet
 stateStripe table key = table ! (key `mod` length table)
 
 -- | Register a typed aggregate function on a connection or a loading extension.
+-- An argument type with no declaration raises an error at registration. See
+-- Note [Type declarations] in "Database.DuckDB.Simple.ToField".
 createAggregateOn
   :: forall state args result
    . (FromRow args, TypedRow args, FunctionResult result) => RegistrationTarget -> Text -> Aggregate state args result -> IO ()
 createAggregateOn target name aggregate = do
   when (Text.null name || Text.any (== '\0') name) $
     throwInvalidArgument "aggregate function name must be nonempty and must not contain NUL"
-  withRegistrationFactory target \factory -> registerAggregateFunctionWith target (configure factory) callbacks
+  argumentTypes <- rowDeclarations name ["argument " <> argumentName index | index <- [0 ..]] columnTypes
+  let parameters =
+        [ (parameter (argumentName index) argumentType){parameterKind = DuckDBV2FunctionParameterKindPositionalOnly}
+        | (index, argumentType) <- zip [0 ..] argumentTypes
+        ]
+  withRegistrationFactory target \factory -> registerAggregateFunctionWith target (configure parameters factory) callbacks
   where
     columnTypes = rowColumnTypes (Proxy :: Proxy args)
     resultType = scalarReturnType (Proxy :: Proxy result)
-    parameters =
-      [ (parameter (argumentName index) (TypeExpression columnType)){parameterKind = DuckDBV2FunctionParameterKindPositionalOnly}
-      | (index, columnType) <- zip [0 ..] columnTypes
-      ]
-    configure factory function = do
+    configure parameters factory function = do
       withIdentifier name (checked . c_duckdb_v2_aggregate_function_set_name function)
       signature <- output (c_duckdb_v2_aggregate_function_get_signature function)
       configureFunctionSignature

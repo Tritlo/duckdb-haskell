@@ -177,12 +177,8 @@ DuckDB stores an offset from -15:59:59 to +15:59:59, that is from -57599 to
 digits below one microsecond loses these digits, as in SQL text. A
 `DecimalValue` binds as a DECIMAL with its own width and scale. DuckDB casts it
 to the type of its target: a smaller scale rounds half away from zero, and a
-value that the target cannot hold raises an error. `DecimalValue` has no
-`DuckDBColumnType` and no `ToDuckValue` instance, because one column type cannot
-give the width and scale of each value. Thus an `Array`, a list, or a typed row
-of `DecimalValue` does not compile: GHC reports
-`No instance for 'DuckDBColumnType DecimalValue'`, or the same for `ToDuckValue`
-in a typed row.
+value that the target cannot hold raises an error. An `Array`, a list, or a
+typed row of `DecimalValue` does not compile: note 14 of [Types](#types).
 
 `query_` and `execute_` parse all input statements before execution. A syntax
 error prevents every statement in that input from running. An execution error
@@ -285,7 +281,7 @@ Each row gives a Haskell type and these facts:
 | `BigNum` | BIGNUM | | BIGNUM | argument, result |
 | `Double` | DOUBLE | | DOUBLE, FLOAT, TINYINT to BIGINT, DECIMAL (4) | argument, result |
 | `Float` | FLOAT | | as `Double` (4) | argument, result |
-| `DecimalValue` | DECIMAL of the value | none | DECIMAL | none |
+| `DecimalValue` | DECIMAL of the value | none (14) | DECIMAL | none |
 | `Text`, `String` | VARCHAR | | VARCHAR, TINYINT to BIGINT, BOOLEAN, ENUM (5) | argument, result |
 | `ByteString` | BLOB | | BLOB, BIT, GEOMETRY (5) | argument, result |
 | `BitString` | BIT | | BIT | argument, result |
@@ -305,7 +301,7 @@ Each row gives a Haskell type and these facts:
 | `ViaDuckDB a` | STRUCT or UNION (10) | | STRUCT or UNION | argument, result |
 | `Maybe a` | as `a`, or NULL | as `a` | NULL, or as `a` | as `a` |
 | `G.Geometry` | GEOMETRY without a CRS | | GEOMETRY | argument, result |
-| `RawGeometry` | GEOMETRY with its CRS | none | GEOMETRY | none |
+| `RawGeometry` | GEOMETRY with its CRS | none (14) | GEOMETRY | none |
 | `Variant` | VARIANT | | VARIANT, and the values that a VARIANT can hold (13) | result |
 | `FieldValue` | the type of its constructor (11) | none | each type | none |
 | `Null` | `"NULL"` (12) | | NULL | argument, result (12) |
@@ -427,6 +423,13 @@ Notes:
     read such a column. One difference stays, because the reader does not know
     the type of a column: a JSON column reads as its text, as a VARCHAR column
     does, where `c::VARIANT` gives the parsed value.
+14. `DecimalValue` and `RawGeometry` have no `DuckDBColumnType` and no
+    `ToDuckValue` instance, so an `Array`, a list, or a typed row of either does
+    not compile: GHC reports `No instance for 'DuckDBColumnType DecimalValue'`,
+    or the same for `ToDuckValue` in a typed row. One column type cannot give
+    the width and scale of each `DecimalValue`. A declared GEOMETRY type has no
+    CRS, so it would remove the CRS of each `RawGeometry`. A composite parameter
+    holds a `RawGeometry` as a `FieldGeometry`.
 
 A value of a VARIANT column reads as its stored value, so the row of the stored
 type applies. A value in a LIST, ARRAY, MAP, STRUCT, or UNION reads with the
@@ -1097,9 +1100,9 @@ and its own CRS. DuckDB then casts it to the type of the parameter, as it casts
 a `GEOMETRY` value in SQL text. A value without a CRS takes the CRS of the
 target. A target without a CRS removes the CRS of the value, with no error. A
 target with another CRS raises `SQLError`. Use `Maybe RawGeometry` for SQL
-NULL. An `Array`, a list, and a typed row cannot hold a `RawGeometry`, because
-their `GEOMETRY` type would have no CRS. A composite parameter holds it as
-`FieldGeometry` (see below):
+NULL. An `Array`, a list, and a typed row cannot hold a `RawGeometry` (note 14
+of [Types](#types)). A composite parameter holds it as `FieldGeometry` (see
+below):
 
 ```haskell
 import Database.DuckDB.Simple.Geometry

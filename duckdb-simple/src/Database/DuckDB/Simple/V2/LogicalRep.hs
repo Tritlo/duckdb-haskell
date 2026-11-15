@@ -11,6 +11,7 @@
 -- The examples use the imports of the module header of "Database.DuckDB.Simple.V2.Registration".
 module Database.DuckDB.Simple.V2.LogicalRep (
   logicalTypeToRep,
+  logicalTypeToBaseRep,
   logicalTypeFromRep,
   logicalTypeFromRepWith,
   destroyLogicalType,
@@ -35,16 +36,27 @@ import Foreign.Storable (peek)
 --
 -- > bracket (R.output (c_duckdb_v2_vector_get_logical_type vector)) destroyLogicalType logicalTypeToRep
 logicalTypeToRep :: DuckDBV2LogicalTypeHandle -> IO LogicalTypeRep
-logicalTypeToRep logical = do
+logicalTypeToRep = convertLogicalType True
+
+-- | Copy a native logical type into a Haskell type tree with no alias, at each
+-- depth. The function reads no type name, so it is the conversion for the
+-- readers and the binding. See Note [Type aliases] in
+-- "Database.DuckDB.Simple.LogicalRep". The function does not destroy the
+-- handle.
+logicalTypeToBaseRep :: DuckDBV2LogicalTypeHandle -> IO LogicalTypeRep
+logicalTypeToBaseRep = convertLogicalType False
+
+-- | Copy a native logical type into a Haskell type tree. With True, read the
+-- name of each type and keep each alias. With False, read no name.
+convertLogicalType :: Bool -> DuckDBV2LogicalTypeHandle -> IO LogicalTypeRep
+convertLogicalType keepAliases logical = do
   dtype <- output (c_duckdb_v2_logical_type_get_id logical)
-  ident <- logicalTypeIdFromNative dtype
-  typeName <- output (c_duckdb_v2_logical_type_get_name logical) >>= readIdentifier
   let parameter index action = alloca \nameSlot ->
         bracket (output (c_duckdb_v2_logical_type_get_param logical index nameSlot)) (destroy c_duckdb_v2_value_destroy) \value -> do
           name <- peek nameSlot >>= readIdentifier
           action name value
       child index = parameter index \_ value ->
-        bracket (output (c_duckdb_v2_value_get_type value)) destroyLogicalType logicalTypeToRep
+        bracket (output (c_duckdb_v2_value_get_type value)) destroyLogicalType (convertLogicalType keepAliases)
       string index = parameter index \_ value -> output (c_duckdb_v2_value_get_varchar value) >>= readText
       count = output (c_duckdb_v2_logical_type_get_param_count logical) >>= word64ToInt
       fields make = do
@@ -53,7 +65,7 @@ logicalTypeToRep logical = do
           <$> forM
             [0 .. size - 1]
             ( \index -> parameter (fromIntegral index) \name value -> do
-                rep <- bracket (output (c_duckdb_v2_value_get_type value)) destroyLogicalType logicalTypeToRep
+                rep <- bracket (output (c_duckdb_v2_value_get_type value)) destroyLogicalType (convertLogicalType keepAliases)
                 pure (make name rep)
             )
   base <- case dtype of
@@ -83,8 +95,13 @@ logicalTypeToRep logical = do
       -- Note [Constant stack at safe calls] in "Database.DuckDB.Simple.Native".
       LogicalTypeEnum . listArray (0, size - 1) . reverse
         <$> foldM (\entries index -> (: entries) <$> string (fromIntegral index)) [] [0 .. size - 1]
-    _ -> pure (LogicalTypeScalar ident)
-  pure (if typeName == logicalTypeIdName ident then base else LogicalTypeAlias typeName base)
+    _ -> LogicalTypeScalar <$> logicalTypeIdFromNative dtype
+  if not keepAliases
+    then pure base
+    else do
+      ident <- logicalTypeIdFromNative dtype
+      typeName <- output (c_duckdb_v2_logical_type_get_name logical) >>= readIdentifier
+      pure (if typeName == logicalTypeIdName ident then base else LogicalTypeAlias typeName base)
 
 -- | Construct an owned logical type through a borrowed native factory.
 -- Keep the owner of the factory alive until you destroy the type.

@@ -70,8 +70,10 @@ a name that is not the name of the type id (logicalTypeIdName in
 alias with duckdb_v2_factory_create_type_with_alias.
 
 The base type decides each conversion of the library. Thus the readers of
-vectors and the binding of parameters use withoutAliases. A
-'Database.DuckDB.Simple.Catalog.ColumnDescription' keeps the alias.
+vectors and the binding of parameters use logicalTypeToBaseRep. It reads no
+type name, so these paths make no native call for an alias. A
+'Database.DuckDB.Simple.Catalog.ColumnDescription' keeps the alias. Compare a
+type with an alias to another type with withoutAliases.
 -}
 
 -- | Replace each alias with its base type, at each depth. See

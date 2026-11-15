@@ -85,13 +85,12 @@ import Database.DuckDB.Simple.LogicalRep (
   structValueTypeRep,
   tupleValueTypeRep,
   unionValueTypeRep,
-  withoutAliases,
  )
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
 import Database.DuckDB.Simple.TypeCache (cachedLogicalType, typeCacheConnection)
 import Database.DuckDB.Simple.Types (Null (..))
-import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeFromRep, logicalTypeToRep)
+import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeFromRep, logicalTypeToBaseRep)
 import Database.DuckDB.Simple.Variant (Variant (..))
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.Types (CDouble (..), CFloat (..))
@@ -1434,7 +1433,7 @@ checkNanosecondElements declared values = case declared of
     check source get value = do
       isNull <- output (c_duckdb_v2_value_is_null value)
       -- See Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep".
-      rep <- bracket (output (c_duckdb_v2_value_get_logical_type value)) destroyLogicalType (fmap withoutAliases . logicalTypeToRep)
+      rep <- bracket (output (c_duckdb_v2_value_get_logical_type value)) destroyLogicalType logicalTypeToBaseRep
       when (isNull == 0 && rep == LogicalTypeScalar source) do
         micros <- output (get value)
         unless (micros == maxBound || micros == negate maxBound) $
@@ -1452,10 +1451,10 @@ withValueType ValueBuilder{builderType = makeType} target values action = do
   case present of
     value : rest -> bracket (output (c_duckdb_v2_value_get_logical_type value)) destroyLogicalType \logical -> do
       -- See Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep".
-      expected <- withoutAliases <$> logicalTypeToRep logical
+      expected <- logicalTypeToBaseRep logical
       let promoted = timestampTypeForTarget target expected
           sameTypes (same, samePromoted) element = do
-            actual <- bracket (output (c_duckdb_v2_value_get_logical_type element)) destroyLogicalType (fmap withoutAliases . logicalTypeToRep)
+            actual <- bracket (output (c_duckdb_v2_value_get_logical_type element)) destroyLogicalType logicalTypeToBaseRep
             let same' = same && actual == expected
                 samePromoted' = samePromoted && timestampTypeForTarget target actual == promoted
             same' `seq` samePromoted' `seq` pure (same', samePromoted')

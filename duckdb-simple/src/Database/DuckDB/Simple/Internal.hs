@@ -108,10 +108,10 @@ import qualified Data.Text.Encoding as Text
 import qualified Data.Text.Foreign as TextForeign
 import Database.DuckDB.Simple.CallbackMark (hasCallbackMark)
 import Database.DuckDB.Simple.FromField (FieldValue)
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep, withoutAliases)
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.TypeCache (TypeCache, createTypeCache, defaultGeometryCRS, destroyTypeCache)
-import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
+import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToBaseRep)
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.C.String (CString)
 import Foreign.C.Types (CChar)
@@ -1231,7 +1231,7 @@ preparedParameterType stmt idx = do
         -- "Database.DuckDB.Simple.LogicalRep".
         if ident == DuckDBV2LogicalTypeIdUnknown || ident == DuckDBV2LogicalTypeIdSQLNull
           then pure Nothing
-          else Just . withoutAliases <$> logicalTypeToRep dtype
+          else Just <$> logicalTypeToBaseRep dtype
 
 -- | Column type names and the logical types that they denote. When a type has
 -- more than one name, 'duckDBTypeToName' gives the first name.

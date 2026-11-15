@@ -149,7 +149,8 @@ The SQL workflow stays the same. These changes can affect your code:
 - `TimeWithZone` holds the offset as seconds east of UTC. The field
   `timeWithZoneZone :: TimeZone` is now `timeWithZoneOffsetSeconds :: Int32`.
   Convert a `TimeZone` with `fromIntegral (timeZoneMinutes zone) * 60`, and
-  convert an offset with `minutesToTimeZone (fromIntegral offset \`div\` 60)`.
+  convert an offset with
+  ``minutesToTimeZone (fromIntegral (offset `quot` 60))``.
   The second conversion drops the seconds of an offset. A TIMETZ with an offset
   that has seconds, for example `12:00:00+01:00:30`, now reads. Version 0.3
   raised an error for it.

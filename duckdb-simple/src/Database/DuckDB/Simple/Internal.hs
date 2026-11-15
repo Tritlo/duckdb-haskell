@@ -108,7 +108,7 @@ import qualified Data.Text.Encoding as Text
 import qualified Data.Text.Foreign as TextForeign
 import Database.DuckDB.Simple.CallbackMark (hasCallbackMark)
 import Database.DuckDB.Simple.FromField (FieldValue)
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep)
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep, withoutAliases)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.TypeCache (TypeCache, createTypeCache, defaultGeometryCRS, destroyTypeCache)
 import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
@@ -1227,9 +1227,11 @@ preparedParameterType stmt idx = do
       alloca \name -> do
         dtype <- output (c_duckdb_v2_schema_get_field schema (idx - 1) name)
         ident <- output (c_duckdb_v2_logical_type_get_id dtype)
+        -- The binding uses the base type. See Note [Type aliases] in
+        -- "Database.DuckDB.Simple.LogicalRep".
         if ident == DuckDBV2LogicalTypeIdUnknown || ident == DuckDBV2LogicalTypeIdSQLNull
           then pure Nothing
-          else Just <$> logicalTypeToRep dtype
+          else Just . withoutAliases <$> logicalTypeToRep dtype
 
 -- | Column type names and the logical types that they denote. When a type has
 -- more than one name, 'duckDBTypeToName' gives the first name.

@@ -85,6 +85,7 @@ import Database.DuckDB.Simple.LogicalRep (
   structValueTypeRep,
   tupleValueTypeRep,
   unionValueTypeRep,
+  withoutAliases,
  )
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
@@ -1432,7 +1433,8 @@ checkNanosecondElements declared values = case declared of
   where
     check source get value = do
       isNull <- output (c_duckdb_v2_value_is_null value)
-      rep <- bracket (output (c_duckdb_v2_value_get_logical_type value)) destroyLogicalType logicalTypeToRep
+      -- See Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep".
+      rep <- bracket (output (c_duckdb_v2_value_get_logical_type value)) destroyLogicalType (fmap withoutAliases . logicalTypeToRep)
       when (isNull == 0 && rep == LogicalTypeScalar source) do
         micros <- output (get value)
         unless (micros == maxBound || micros == negate maxBound) $
@@ -1449,10 +1451,11 @@ withValueType ValueBuilder{builderType = makeType} target values action = do
   present <- reverse <$> foldM keep [] values
   case present of
     value : rest -> bracket (output (c_duckdb_v2_value_get_logical_type value)) destroyLogicalType \logical -> do
-      expected <- logicalTypeToRep logical
+      -- See Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep".
+      expected <- withoutAliases <$> logicalTypeToRep logical
       let promoted = timestampTypeForTarget target expected
           sameTypes (same, samePromoted) element = do
-            actual <- bracket (output (c_duckdb_v2_value_get_logical_type element)) destroyLogicalType logicalTypeToRep
+            actual <- bracket (output (c_duckdb_v2_value_get_logical_type element)) destroyLogicalType (fmap withoutAliases . logicalTypeToRep)
             let same' = same && actual == expected
                 samePromoted' = samePromoted && timestampTypeForTarget target actual == promoted
             same' `seq` samePromoted' `seq` pure (same', samePromoted')
@@ -1600,6 +1603,9 @@ fieldValueWithTypeDuckValue
 fieldValueWithTypeDuckValue ValueBuilder{builderFactory = factory, builderType = makeType} rep FieldNull = bracket (makeType rep) destroyLogicalType \logical ->
   output (c_duckdb_v2_value_create_null factory logical)
 fieldValueWithTypeDuckValue builder@ValueBuilder{builderFactory = factory, builderType = makeType} rep value = case (rep, value) of
+  -- A value of the base type. DuckDB casts it to the alias type. See
+  -- Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep".
+  (LogicalTypeAlias _ base, _) -> fieldValueWithTypeDuckValue builder base value
   (LogicalTypeScalar LogicalTypeIdVariant, _) -> variantDuckValue builder value
   (LogicalTypeScalar dtype, _) -> scalarFieldValueDuckValue factory dtype value
   (LogicalTypeCollatedVarchar _, FieldText text) -> textDuckValue factory text

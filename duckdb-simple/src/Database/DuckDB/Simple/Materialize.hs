@@ -54,6 +54,7 @@ import Database.DuckDB.Simple.LogicalRep (
   TupleValue (..),
   UnionMemberType (..),
   UnionValue (..),
+  withoutAliases,
  )
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
@@ -186,7 +187,8 @@ prepareVectorReader :: FallbackReaders -> DuckDBV2VectorHandle -> IO (Int -> IO 
 prepareVectorReader readers vector = do
   -- The cache of ENUM labels lives as long as this reader. See Note [ENUM labels].
   labels <- newIORef IntMap.empty
-  prepareVectorReaderWith readers (withVectorType vector logicalTypeToRep) (Just labels) vector
+  -- See Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep".
+  prepareVectorReaderWith readers (withVectorType vector (fmap withoutAliases . logicalTypeToRep)) (Just labels) vector
 
 -- | The labels of an ENUM type that readers read, by index. 'Nothing' means
 -- that the type tree holds the labels. See Note [ENUM labels].
@@ -324,8 +326,9 @@ prepareValueReader readers tree labels dtype vector dataPtr validity = case dtyp
   DuckDBV2LogicalTypeIdTuple -> whenValid FieldTuple <$> prepareTupleDecoder readers tree vector
   DuckDBV2LogicalTypeIdUnion -> whenValid FieldUnion <$> prepareUnionDecoder readers tree vector
   DuckDBV2LogicalTypeIdDecimal -> do
+    -- See Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep".
     (width, scale) <-
-      withVectorType vector logicalTypeToRep >>= \case
+      withVectorType vector (fmap withoutAliases . logicalTypeToRep) >>= \case
         LogicalTypeDecimal width scale -> pure (width, scale)
         _ -> throwInternalError (Text.pack "invalid DECIMAL type")
     pure (whenValid (FieldDecimal . DecimalValue width scale) (decimalStorage dataPtr width))
@@ -438,8 +441,9 @@ the same pair changes their result:
 -- Note [User casts and the casts of the library].
 prepareGeometryReader :: ReadFactory -> DuckDBV2VectorHandle -> IO (Int -> IO FieldValue)
 prepareGeometryReader readFactory vector = do
+  -- See Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep".
   crs <-
-    withVectorType vector logicalTypeToRep >>= \case
+    withVectorType vector (fmap withoutAliases . logicalTypeToRep) >>= \case
       LogicalTypeGeometry value -> pure value
       _ -> throwInternalError (Text.pack "invalid GEOMETRY type")
   size <- output (c_duckdb_v2_vector_get_size vector)

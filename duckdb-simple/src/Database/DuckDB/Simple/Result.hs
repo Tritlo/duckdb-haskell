@@ -23,6 +23,7 @@ import Database.DuckDB.Simple.Element (withVectorType)
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue)
 import Database.DuckDB.Simple.FromRow (RowParser, parseRow, rowErrorsToSqlError)
 import Database.DuckDB.Simple.Internal
+import Database.DuckDB.Simple.LogicalRep (withoutAliases)
 import Database.DuckDB.Simple.Materialize (
   FallbackReaders (..),
   ReadFactory (..),
@@ -198,7 +199,8 @@ prepareChunkReaders conn chunk columns = withTypeCache conn \cache -> do
           readIORef statementStreamColumnTree >>= \case
             Just rep -> pure rep
             Nothing -> do
-              rep <- withVectorType vector logicalTypeToRep
+              -- See Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep".
+              rep <- withVectorType vector (fmap withoutAliases . logicalTypeToRep)
               writeIORef statementStreamColumnTree (Just rep)
               pure rep
     prepareVectorReaderWith readers tree (Just statementStreamColumnLabels) vector

@@ -211,7 +211,8 @@ createAggregateOn target name aggregate = do
         ( name
             <> ": result: the result type of an aggregate function must be BOOLEAN, TINYINT to BIGINT, UTINYINT to UBIGINT,"
             <> " FLOAT, DOUBLE, or VARCHAR (Bool, Int8 to Int64, Int, Word8 to Word64, Word, Float, Double, Text, String,"
-            <> " or Maybe of one of them), because the finalize callback has no factory"
+            <> " or Maybe of one of them), because the finalize callback has no factory."
+            <> " For a newtype over one of these types, derive FunctionResult with deriving newtype."
         )
   let parameters =
         [ (parameter (argumentName index) argumentType){parameterKind = DuckDBV2FunctionParameterKindPositionalOnly}

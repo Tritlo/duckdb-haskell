@@ -1000,7 +1000,9 @@ places still use registered casts:
 must be BOOLEAN, TINYINT to BIGINT, UTINYINT to UBIGINT, FLOAT, DOUBLE, or
 VARCHAR, or `Maybe` of one of them. Another result type is an error at
 registration. The finalize callback of DuckDB has no factory to make a value
-of another type, and in an ordered window its result vector has the size 0.
+of another type, and in an ordered window its result vector has the size 0. A
+newtype over one of these types gets the writer of that type with
+`deriving newtype (FunctionResult)`.
 
 ```haskell
 aggregateExample :: Connection -> IO [Only Int64]

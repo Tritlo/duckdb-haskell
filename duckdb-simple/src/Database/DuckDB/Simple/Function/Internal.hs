@@ -124,7 +124,8 @@ data ScalarValue
 
 -- | A result type of a scalar function or of a typed aggregate function. Each
 -- type with a 'ToDuckValue' instance is a result type. Its SQL type is its
--- 'duckdbTypeDeclaration'. See Note [Result writers].
+-- 'duckdbTypeDeclaration'. A newtype over a type with a raw writer gets that
+-- writer with @deriving newtype (FunctionResult)@. See Note [Result writers].
 class (ToDuckValue a) => FunctionResult a where
   -- | The raw value of a result, or 'Nothing' when 'toDuckValue' writes the
   -- result.

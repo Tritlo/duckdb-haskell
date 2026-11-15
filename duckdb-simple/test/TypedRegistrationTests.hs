@@ -1,6 +1,7 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingVia #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -51,6 +52,7 @@ import Database.DuckDB.Simple.Copy (
   registerMultiFileFunction,
  )
 import Database.DuckDB.Simple.FromField (BigNum (..), Field (..), FieldValue (..), IntervalValue (..), TimeWithZone (..), bsFromBool)
+import Database.DuckDB.Simple.Function (FunctionResult)
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..))
 import Database.DuckDB.Simple.LogicalRep (StructField (..), StructValue (..), TupleValue, UnionValue)
 import Database.DuckDB.Simple.Pragma (PragmaCallback (..), registerPragmaFunction)
@@ -826,6 +828,26 @@ testAggregateResultTypes = withConnection ":memory:" \conn -> do
     conn
     "SELECT bool_and(m = CASE WHEN i = 0 THEN 0 ELSE i - 0.5 END), typeof(any_value(m)) FROM (SELECT i, typed_float_mean(i::DOUBLE) OVER (ORDER BY i ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS m FROM range(5000) t(i))"
     >>= (@?= [(True, "FLOAT" :: Text)])
+  -- A newtype over a raw type with a derived FunctionResult has the raw writer.
+  createAggregate
+    conn
+    "typed_oldest"
+    Aggregate
+      { aggregateInitial = Age 0
+      , aggregateStep = \oldest (Only value) -> pure (max oldest (Age value))
+      , aggregateCombine = \a b -> pure (max a b)
+      , aggregateResult = pure
+      }
+  query_ conn "SELECT typeof(typed_oldest(1::SMALLINT)), typed_oldest(i::SMALLINT) FROM range(10) t(i)"
+    >>= (@?= [("SMALLINT" :: Text, Age 9)])
+  createFunction conn "typed_age" (Age 5)
+  query_ conn "SELECT typeof(typed_age()), typed_age()" >>= (@?= [("SMALLINT" :: Text, Age 5)])
+  assertSqlError
+    "typed_years: result: the result type of an aggregate function must be BOOLEAN"
+    (createAggregate conn "typed_years" sumAggregate{aggregateResult = pure . Years . fromIntegral})
+  assertSqlError
+    "For a newtype over one of these types, derive FunctionResult with deriving newtype."
+    (createAggregate conn "typed_years" sumAggregate{aggregateResult = pure . Years . fromIntegral})
   -- The argument reader reads neither VARIANT nor GEOMETRY.
   let unreadable = "argument arg0: the type of an argument cannot be or contain VARIANT or GEOMETRY"
   assertSqlError
@@ -839,7 +861,7 @@ testAggregateResultTypes = withConnection ":memory:" \conn -> do
     (createAggregate conn "typed_geometry_count" countAggregate{aggregateStep = \count (Only (_ :: G.Geometry)) -> pure (count + 1)})
   query_
     conn
-    "SELECT count(*) FROM duckdb_functions() WHERE function_name IN ('typed_variant_count', 'typed_variants_count', 'typed_geometry_count')"
+    "SELECT count(*) FROM duckdb_functions() WHERE function_name IN ('typed_years', 'typed_variant_count', 'typed_variants_count', 'typed_geometry_count')"
     >>= (@?= [Only (0 :: Int64)])
   let limit = "result: the result type of an aggregate function must be BOOLEAN, TINYINT to BIGINT, UTINYINT to UBIGINT, FLOAT, DOUBLE, or VARCHAR"
   assertSqlError
@@ -1096,6 +1118,14 @@ data Counts = Counts {signed :: Integer, unsigned :: Natural}
 newtype Ranked = Ranked {ranks :: Array Int Int64}
   deriving stock (Generic)
   deriving (DuckDBColumnType, ToDuckValue) via (ViaDuckDB Ranked)
+
+-- | A newtype over a raw result type. It derives the raw result writer.
+newtype Age = Age Int16
+  deriving newtype (Eq, Ord, Show, DuckDBColumnType, ToDuckValue, FromField, FunctionResult)
+
+-- | A newtype over a raw result type, with the catch-all 'FunctionResult'.
+newtype Years = Years Int16
+  deriving newtype (DuckDBColumnType, ToDuckValue)
 
 -- | A newtype with its own type text.
 newtype Price = Price Double

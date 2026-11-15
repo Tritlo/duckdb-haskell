@@ -210,8 +210,9 @@ createTableFunction conn = createTableFunctionOn (ConnectionTarget conn)
 -- The result type must be BOOLEAN, TINYINT to BIGINT, UTINYINT to UBIGINT,
 -- FLOAT, DOUBLE, or VARCHAR: 'Bool', 'Int', 'Data.Int.Int8' to
 -- 'Data.Int.Int64', 'Word', 'Data.Word.Word8' to 'Data.Word.Word64', 'Float',
--- 'Double', 'Text', 'String', or 'Maybe' of one of them. Another result type is
--- an error at registration. The finalize callback of DuckDB has no factory, so
+-- 'Double', 'Text', 'String', or 'Maybe' of one of them. A newtype over one of
+-- them gets its writer with @deriving newtype (FunctionResult)@. Another result
+-- type is an error at registration. The finalize callback of DuckDB has no factory, so
 -- it cannot make a value of another type. The library writes these types to
 -- the memory of the result vector, and it does not use the size of the vector:
 -- in an ordered window, DuckDB gives a result vector of the size 0.

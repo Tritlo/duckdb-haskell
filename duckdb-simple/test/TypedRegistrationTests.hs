@@ -53,6 +53,7 @@ import Database.DuckDB.Simple.Copy (
 import Database.DuckDB.Simple.FromField (BigNum (..), Field (..), FieldValue (..), IntervalValue (..), TimeWithZone (..), bsFromBool)
 import Database.DuckDB.Simple.Function (FunctionResult)
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..))
+import Database.DuckDB.Simple.Internal (Connection (..))
 import Database.DuckDB.Simple.LogicalRep (StructField (..), StructValue (..), TupleValue, UnionValue)
 import Database.DuckDB.Simple.Pragma (PragmaCallback (..), registerPragmaFunction)
 import Database.DuckDB.Simple.Registration (
@@ -132,6 +133,7 @@ typedRegistrationTests =
     , testCase "COPY FROM gives the name and the type of each column" testCopyFromColumns
     , testCase "aggregate over one group and over many groups" testAggregateGroups
     , testCase "aggregate with one state table stripe" testAggregateStripes
+    , testCase "aggregate registration does not keep its connection" testAggregateConnectionRelease
     , testCase "aggregate skips NULL rows and gives the initial result" testAggregateNulls
     , testCase "aggregate arguments, states, and result types" testAggregateTypes
     , testCase "aggregate exceptions fail the query only" testAggregateErrors
@@ -621,6 +623,22 @@ testAggregateStripes = do
       sqlErrorType err @?= Just ErrorInputInvalid
       assertBool ("unexpected message: " <> show err) ("connectionAggregateStripes" `Text.isInfixOf` sqlErrorMessage err)
     Right () -> assertFailure "a stripe count of 0 opened a connection"
+
+-- | The callbacks of an aggregate do not keep the connection that registered
+-- it. A connection with no close and no query becomes garbage, and its
+-- finalizer closes it. The aggregate still runs on another connection of the
+-- database.
+testAggregateConnectionRelease :: Assertion
+testAggregateConnectionRelease = withEnvironment \environment -> withInstance environment [] \instance' -> do
+  weak <- do
+    conn <- connect instance'
+    createAggregate conn "typed_dropped_sum" sumAggregate
+    mkWeakIORef (connectionState conn) (pure ())
+  performMajorGC
+  performMajorGC
+  deRefWeak weak >>= assertBool "the aggregate keeps the connection that registered it" . isNothing
+  withConnectionOn instance' \other ->
+    query_ other "SELECT typed_dropped_sum(i) FROM range(10) t(i)" >>= (@?= [Only (45 :: Int64)])
 
 -- | Skip the rows with NULL. A group without other rows gives the initial result.
 testAggregateNulls :: Assertion

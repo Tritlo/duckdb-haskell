@@ -16,7 +16,7 @@ module Main (main) where
 import ArrowTests (arrowTests)
 import CancellationTests (callbackLockTests, cancellationTests)
 import Control.Applicative ((<|>))
-import Control.Exception (ErrorCall, Exception, SomeException, displayException, fromException, try)
+import Control.Exception (ErrorCall, Exception, SomeException, bracket, displayException, fromException, try)
 import Control.Monad (forM_, replicateM_, void, when)
 import CopyTests (copyTests)
 import CoreRegressionTests (coreRegressionTests)
@@ -85,9 +85,9 @@ import Properties (roundTripTests)
 import RegistrationTests (registrationTests)
 import qualified SqlFeatureTests
 import StreamingTests (nativeStreamingTests)
-import System.Directory (doesFileExist, removeFile)
+import System.Directory (doesFileExist, getTemporaryDirectory, removeFile)
+import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, defaultMain, testGroup)
-import Test.Tasty.ExpectedFailure (expectFailBecause)
 import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck (testProperty, (===))
 import TimeTests (timeTests)
@@ -300,11 +300,8 @@ v20Tests =
             case mEntry of
               Nothing -> assertFailure "expected catalog entry"
               Just entry -> Catalog.catalogEntryName entry @?= "catalog_probe"
-    , testCase "file system wrappers round-trip bytes" $ do
-        let path = "/tmp/duckdb-simple-filesystem.bin"
-            payload = BS.pack [0, 1, 2, 3, 255]
-        exists <- doesFileExist path
-        when exists (removeFile path)
+    , testCase "file system wrappers round-trip bytes" $ withTemporaryPath \path -> do
+        let payload = BS.pack [0, 1, 2, 3, 255]
         withConnection ":memory:" \conn -> do
           FileSystem.withFileHandle conn path [FileSystem.FileFlagCreate, FileSystem.FileFlagWrite] \handle -> do
             written <- FileSystem.writeFileHandleBytes handle payload
@@ -317,7 +314,7 @@ v20Tests =
             bytes @?= payload
         removeFile path
     , testCase "copy wrappers receive COPY TO rows" $
-        withConnection ":memory:" \conn -> do
+        withTemporaryPath \path -> withConnection ":memory:" \conn -> do
           capturedRef <- newIORef ([] :: [Int])
           pathRef <- newIORef Nothing
           Copy.registerCopyToFunction
@@ -338,17 +335,18 @@ v20Tests =
                 Copy.copyFinalizeBindState finalizeInfo @?= 1
                 Copy.copyFinalizeGlobalState finalizeInfo @?= 1
             )
-          _ <- execute_ conn "COPY (SELECT * FROM (VALUES (1), (2), (3)) AS t(x)) TO '/tmp/duckdb-simple-copy.out' (FORMAT hs_capture)"
+          _ <- execute conn "COPY (SELECT * FROM (VALUES (1), (2), (3)) AS t(x)) TO ? (FORMAT hs_capture)" (Only (Text.pack path))
           captured <- readIORef capturedRef
           filePath <- readIORef pathRef
           captured @?= [1, 2, 3]
-          filePath @?= Just "/tmp/duckdb-simple-copy.out"
+          filePath @?= Just path
     , testCase "custom log storage registers a native sink" do
-        calls <- newIORef (0 :: Int)
+        entries <- newIORef []
         withConnection ":memory:" \conn -> do
-          Logging.registerLogStorage conn "hs_log_capture" (\_ -> atomicModifyIORef' calls (\n -> (n + 1, ())))
+          Logging.registerLogStorage conn "hs_log_capture" (\entry -> atomicModifyIORef' entries (\values -> (entry : values, ())))
           void $ execute_ conn "CALL enable_logging(); SET logging_storage = 'hs_log_capture'; SELECT write_log('registered')"
-        readIORef calls >>= assertBool "the sink received an entry" . (> 0)
+        -- The sink receives the entry of write_log one time.
+        readIORef entries >>= (@?= ["registered"]) . filter (== "registered") . map Logging.logEntryMessage
     ]
 
 fieldInt :: [Field] -> IO Int
@@ -574,7 +572,6 @@ data DuckDBCastCase = DuckDBCastCase
   { castLabel :: String
   , castExpression :: DuckDBExpression
   , castExpectation :: DuckDBExpectation
-  , castExpectFailureReason :: Maybe String
   }
 
 duckdbTypeCastTests :: TestTree
@@ -583,22 +580,19 @@ duckdbTypeCastTests =
     "duckdb type casts"
     (map buildCase duckdbCastCases)
   where
-    buildCase DuckDBCastCase{castLabel, castExpression, castExpectation, castExpectFailureReason} =
-      let base =
-            testCase castLabel $
-              withConnection ":memory:" \conn -> do
-                let sql =
-                      Query
-                        ( case castExpression of
-                            CastExpression expressionValue expressionType ->
-                              Text.concat ["SELECT CAST(", expressionValue, " AS ", expressionType, ")"]
-                            DirectExpression expressionSQL ->
-                              Text.concat ["SELECT ", expressionSQL]
-                        )
-                result <- try (query_ conn sql) :: IO (Either SomeException [Only FieldValue])
-                runExpectation castLabel castExpectation result
-                maybe (pure ()) assertFailure castExpectFailureReason
-      in  maybe base (`expectFailBecause` base) castExpectFailureReason
+    buildCase DuckDBCastCase{castLabel, castExpression, castExpectation} =
+      testCase castLabel $
+        withConnection ":memory:" \conn -> do
+          let sql =
+                Query
+                  ( case castExpression of
+                      CastExpression expressionValue expressionType ->
+                        Text.concat ["SELECT CAST(", expressionValue, " AS ", expressionType, ")"]
+                      DirectExpression expressionSQL ->
+                        Text.concat ["SELECT ", expressionSQL]
+                  )
+          result <- try (query_ conn sql) :: IO (Either SomeException [Only FieldValue])
+          runExpectation castLabel castExpectation result
 
 runExpectation :: String -> DuckDBExpectation -> Either SomeException [Only FieldValue] -> Assertion
 runExpectation label expectation outcome =
@@ -672,8 +666,7 @@ duckdbCastCases =
   , successCase "UUID" (quoted $ UUID.toText uuid) "UUID" (ExpectEquals (FieldUUID uuid))
   , successCase "BIT" (quoted $ Text.pack $ show bits) "BIT" (ExpectEquals (FieldBit bits))
   , successCase "ARRAY" (quoted "[1,2,3]") "INTEGER[3]" (ExpectEquals (FieldArray arrayElements))
-  , -- This one is broken upstream, instead of a DuckDBTypeTimeNs, we get a DuckDBTypeAlias 0
-    successCase "TIME_NS" (quoted "03:04:05.123456789") "TIME_NS" (ExpectEquals (FieldTime (TimeOfDay 3 4 5.123456789)))
+  , successCase "TIME_NS" (quoted "03:04:05.123456789") "TIME_NS" (ExpectEquals (FieldTime (TimeOfDay 3 4 5.123456789)))
   , successDirect "STRUCT" "{'a': 1, 'b': 2}" (expectStruct structFields)
   , successDirect "UNION" "CAST(union_value(a := 42) AS UNION(a INTEGER, b VARCHAR))" (expectUnion 0 (Text.pack "a") (FieldInt32 42))
   , -- These can never surface from a query, only internally.
@@ -694,21 +687,18 @@ duckdbCastCases =
         { castLabel = label
         , castExpression = CastExpression value ty
         , castExpectation = expectation
-        , castExpectFailureReason = Nothing
         }
     successDirect label expr expectation =
       DuckDBCastCase
         { castLabel = label
         , castExpression = DirectExpression expr
         , castExpectation = expectation
-        , castExpectFailureReason = Nothing
         }
     failCaseOK label value ty expectation =
       DuckDBCastCase
         { castLabel = label
         , castExpression = CastExpression value ty
         , castExpectation = expectation
-        , castExpectFailureReason = Nothing
         }
     expectMapEntries expectedPairs =
       ExpectSatisfies $
@@ -929,9 +919,7 @@ typeTests =
         fromBigNumBytes (toBigNumBytes n) === n
     , testCase "selects BIGNUM values as BigNum" $
         withConnection ":memory:" \conn -> do
-          _ <- execute_ conn "CREATE TABLE bignums (val BIGNUM)"
           rows <- concat <$> mapM (\bv -> query_ conn $ fromString $ "SELECT CAST('" <> show bv <> "' AS BIGNUM)") bigNumValues
-          --  query_ conn "SELECT val FROM bignums ORDER BY rowid" :: IO [Only BigNum]
           assertEqual "BIGNUM results" (fmap (Only . BigNum) bigNumValues) rows
     , testCase "round-trips BIGNUM values through the database" $
         withConnection ":memory:" \conn -> do
@@ -1397,3 +1385,17 @@ assertThrowsErrorCall action =
 
 assertThrowsFormatError :: IO a -> (FormatError -> Bool) -> Assertion
 assertThrowsFormatError = assertThrows
+
+-- | Give the action a unique temporary path where no file exists. Remove the
+-- file after the action if the action created it. DuckDB writes a COPY TO
+-- target that exists through a second file, so the path has no file.
+withTemporaryPath :: (FilePath -> IO a) -> IO a
+withTemporaryPath = bracket acquire release
+  where
+    acquire = do
+      directory <- getTemporaryDirectory
+      (path, handle) <- openBinaryTempFile directory "duckdb-simple-spec"
+      hClose handle
+      removeFile path
+      pure path
+    release path = doesFileExist path >>= \exists -> when exists (removeFile path)

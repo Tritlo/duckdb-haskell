@@ -850,7 +850,8 @@ testAggregateRelease = withConnection ":memory:" \conn -> do
         case (phase, outcome) of
           ("", Left err) -> assertFailure (show err)
           ("", Right _) -> pure ()
-          (_, Left (_ :: SQLError)) -> pure ()
+          (_, Left (err :: SQLError)) ->
+            assertBool (Text.unpack (sqlErrorMessage err)) (Text.pack ("typed_release: " <> phase) `Text.isInfixOf` sqlErrorMessage err)
           (_, Right _) -> assertFailure ("expected an error in " <> Text.unpack (fromQuery sql))
   createAggregate
     conn

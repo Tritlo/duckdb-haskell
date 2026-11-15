@@ -11,7 +11,7 @@
 module ExtensionRegressionTests (main, extensionRegressionTests) where
 
 import Control.Exception (AsyncException (ThreadKilled), ErrorCall, Exception (..), SomeException, bracket, bracket_, finally, throwIO, try)
-import Control.Monad (forM, forM_, replicateM_, void)
+import Control.Monad (forM, forM_, replicateM_, void, when)
 import qualified Data.ByteString as BS
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
@@ -45,7 +45,7 @@ import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..))
 import qualified Database.DuckDB.Simple.Tokenizer as Tokenizer
 import qualified Database.DuckDB.Simple.V2.Registration as Registration
 import Numeric.Natural (Natural)
-import System.Directory (getHomeDirectory, removeFile)
+import System.Directory (doesFileExist, getHomeDirectory, getTemporaryDirectory, removeFile)
 import System.FilePath (takeDirectory)
 import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, defaultMain, testGroup)
@@ -198,19 +198,19 @@ extensionRegressionTests =
           createFunction conn "double_identity" (id :: Double -> Double)
           query_ conn "SELECT double_identity(123.25::DECIMAL(10,2))" >>= (@?= [Only (123.25 :: Double)])
     , testCase "COPY exceptions become SQL errors in every phase" $
-        withConnection ":memory:" \conn ->
+        withMissingFile \path -> withConnection ":memory:" \conn ->
           mapM_
             ( \phase -> do
                 let name = "copy_fail_" <> Text.pack (show phase)
                 registerCopy conn name (Just phase)
                 assertSqlErrorContaining (Text.pack ("copy phase " <> show phase)) $
-                  execute_ conn (Query ("COPY (SELECT 1) TO '/tmp/duckdb-simple-regression-copy' (FORMAT " <> name <> ")"))
+                  execute conn (Query ("COPY (SELECT 1) TO ? (FORMAT " <> name <> ")")) (Only (Text.pack path))
             )
             [0 .. 3]
     , testCase "COPY state is valid across repeated queries" $
-        withConnection ":memory:" \conn -> do
+        withMissingFile \path -> withConnection ":memory:" \conn -> do
           registerCopy conn "copy_repeat" Nothing
-          replicateM_ 32 $ void $ execute_ conn "COPY (SELECT * FROM range(5000)) TO '/tmp/duckdb-simple-regression-copy' (FORMAT copy_repeat)"
+          replicateM_ 32 $ void $ execute conn "COPY (SELECT * FROM range(5000)) TO ? (FORMAT copy_repeat)" (Only (Text.pack path))
     , testCase "log sink callback exceptions cannot fail a query" do
         calls <- newIORef (0 :: Int)
         withConnection ":memory:" \conn -> do
@@ -232,6 +232,8 @@ extensionRegressionTests =
             execute_
               conn
               "CALL enable_logging(); SET logging_storage = 'captured_log'; SELECT write_log('Matti λ', level := 'warning', log_type := 'HaskellTest'); SET logging_storage = 'memory'"
+          -- DuckDB 2.0.0 flushes the sink five times for these statements.
+          readIORef flushes >>= (@?= 5)
         end <- getCurrentTime
         received <- filter ((== "HaskellTest") . Logging.logEntryType) <$> readIORef entries
         map Logging.logEntryMessage received @?= ["Matti λ"]
@@ -244,7 +246,8 @@ extensionRegressionTests =
           ("timestamps " <> show (map Logging.logEntryTimestamp received) <> " are within five minutes of " <> show (start, end))
           (all (maybe False nearClock . Logging.logEntryTimestamp) received)
         assertBool "entry has a connection id" (all ((/= Nothing) . Logging.logEntryConnectionId) received)
-        readIORef flushes >>= assertBool "flush and final cleanup ran" . (>= 2)
+        -- The release flushes the sink one more time.
+        readIORef flushes >>= (@?= 6)
     , testCase "instance log sinks receive connection and instance messages" do
         entries <- newIORef []
         withEnvironment \environment -> withInstance environment [] \instance_ -> do
@@ -632,16 +635,18 @@ instance Function InvalidSignature where
   isVolatile _ = False
   applyFunction _ _ = error "unregistered function"
 
--- | Register a COPY callback and optionally fail one phase.
+-- | Register a COPY callback and optionally fail one phase. The bind state and
+-- the global state are the column count that DuckDB gives. Each query of this
+-- module has one column.
 registerCopy :: Connection -> Text.Text -> Maybe Int -> IO ()
 registerCopy conn name failingPhase =
   Copy.registerCopyToFunction
     conn
     name
-    (\_ -> failPhase 0)
-    (\info -> (Copy.copyInitBindState info @?= ()) >> failPhase 1)
-    (\info _ -> (Copy.copySinkGlobalState info @?= ()) >> failPhase 2)
-    (\info -> (Copy.copyFinalizeGlobalState info @?= ()) >> failPhase 3)
+    (\info -> failPhase 0 >> pure (length (Copy.copyBindColumnTypes info)))
+    (\info -> (Copy.copyInitBindState info @?= 1) >> failPhase 1 >> pure (Copy.copyInitBindState info))
+    (\info _ -> (Copy.copySinkGlobalState info @?= 1) >> failPhase 2)
+    (\info -> (Copy.copyFinalizeGlobalState info @?= 1) >> failPhase 3)
   where
     failPhase phase =
       if failingPhase == Just phase
@@ -680,6 +685,20 @@ assertFromNative fromNative natives sentinel = do
   values @?= [minBound .. maxBound]
   map show natives @?= map (("DuckDBV2" <>) . show) values
   assertSqlErrorContaining "unknown native" (fromNative sentinel)
+
+-- | Give the action a unique temporary path where no file exists. Remove the
+-- file after the action if the action created it. DuckDB writes a COPY TO
+-- target that exists through a second file, so the path has no file.
+withMissingFile :: (FilePath -> IO a) -> IO a
+withMissingFile = bracket acquire release
+  where
+    acquire = do
+      directory <- getTemporaryDirectory
+      (path, handle) <- openBinaryTempFile directory "duckdb-extension-regression"
+      hClose handle
+      removeFile path
+      pure path
+    release path = doesFileExist path >>= \exists -> when exists (removeFile path)
 
 -- | Remove a temporary file after the action.
 withTemporaryFile :: (FilePath -> IO a) -> IO a

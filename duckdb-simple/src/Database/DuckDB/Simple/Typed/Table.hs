@@ -156,6 +156,11 @@ writeRows factory chunk rows = do
 -- spine of the first part only. The second part is the list after those
 -- elements, not a reference to the whole list. See
 -- Note [Row lists of typed scans].
+--
+-- In GHC 9.14.1, 'splitAt' of base gives its second part through a lazy
+-- pattern binding on the pair of each recursive call, so that part is a thunk
+-- on the inner pairs. This function gives the second part as the plain rest of
+-- the list.
 splitRows :: Int -> [a] -> ([a], [a])
 splitRows = go []
   where

@@ -125,14 +125,16 @@ The SQL workflow stays the same. These changes can affect your code:
   NULL value" in `duckdb_get_varchar`.
 - A date or a timestamp outside the range of DuckDB raises an `SQLError` of the
   type `ErrorInputOutOfRange` when it binds, also inside a collection, a
-  STRUCT, or a VARIANT. Version 0.3 bound these values: the `Day` at day
-  -2147483648 from the Unix epoch (5877642-06-23 (BC)), and a `LocalTime` or
-  a `UTCTime` from 290309-12-21 (BC) 19:59:05.224192 to 23:59:59.999999,
-  except the -infinity value at 19:59:05.224193. A stored TIMESTAMP of that time makes a cast to VARCHAR raise an INTERNAL
-  error in DuckDB 2.0.0. A VARIANT of a `LocalTime` whose microseconds do not
-  fit in INT64 bound as TIMESTAMP_S or TIMESTAMP_MS. It now raises the
-  `IOException` "TIMESTAMP value out of finite range", as such a `LocalTime`
-  does as a parameter.
+  STRUCT, or a VARIANT. Version 0.3 raised the `IOException` "DATE value out
+  of finite range" or "TIMESTAMP value out of finite range" for a value at an
+  infinity value or outside the storage, and bound the other values, for
+  example the `Day` at day -2147483648 from the Unix epoch (-5877641-06-23 in
+  the notation of `Data.Time`), and a `LocalTime` or a `UTCTime` from
+  -290308-12-21 19:59:05.224192 to 23:59:59.999999, except the -infinity value
+  at 19:59:05.224193. A stored TIMESTAMP of that time makes a cast to VARCHAR
+  raise an INTERNAL error in DuckDB 2.0.0. A VARIANT of a `LocalTime` whose
+  microseconds do not fit in INT64 bound as TIMESTAMP_S or TIMESTAMP_MS. It
+  now raises the range error, as such a `LocalTime` does as a parameter.
 - `listConfigFlags` takes a `Connection`. It lists the options of the
   database of that connection, also its custom options. Version 0.3 listed
   the options of the C API function `duckdb_get_config_flag`, which takes no
@@ -372,8 +374,9 @@ The SQL workflow stays the same. These changes can affect your code:
   that version 0.3 stored in a `VARIANT` column does not match `WHERE x = ?`
   for the same Haskell value with such digits.
 - Each input check of the library raises an `SQLError` with the type
-  `ErrorInputInvalid`, except a value outside the range of its type, which
-  raises an `SQLError` with the type `ErrorInputOutOfRange`, `FormatError` for a
+  `ErrorInputInvalid`, except an integer outside the range of its parameter
+  type and a date or a timestamp outside the range of DuckDB, which raise an
+  `SQLError` with the type `ErrorInputOutOfRange`, `FormatError` for a
   parameter count or name that does not match the query, and the checks of
   scalar functions, which raise an `SQLError` with no type. Version 0.3 raised
   an `IOException` (a `userError`) for

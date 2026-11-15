@@ -22,10 +22,12 @@
 - `ConfigValue.configValueText` is `Maybe Text`, and `Nothing` for an option
   with a NULL value. Version 0.3 stopped the process for such an option. See
   MIGRATION.md.
-- A `Day` before 5877642-06-25 (BC), and a `LocalTime` or a `UTCTime` before
-  290309-12-22 (BC) 00:00:00, raise an `SQLError` of the type
-  `ErrorInputOutOfRange` when they bind. Version 0.3 bound them. See
-  MIGRATION.md.
+- A `Day` outside the range of DuckDB, from -5877641-06-25 to 5881580-07-10,
+  and a `LocalTime` or a `UTCTime` outside the range from -290308-12-22
+  00:00:00 to 294247-01-10 04:00:54.775806, in the notation of `Data.Time`,
+  raise an `SQLError` of the type `ErrorInputOutOfRange` when they bind.
+  Version 0.3 bound some of these values and raised an `IOException` for the
+  others. See MIGRATION.md.
 - Add typed configuration values and defaults, managed log sinks, macro
   registration, function documentation, query metrics, and file path
   operations. Expose table bind metadata for multi-file readers.
@@ -246,8 +248,8 @@
 - Each input check of the library raises `SQLError` with the type
   `ErrorInputInvalid`: a parameter value that does not fit its type (for
   example a `DecimalValue` outside its width, a `BitString` with bad padding, a
-  `UnionValue` with a tag out of range, a timestamp outside the storage of its
-  type, or an empty `Array`), a logical type with a NUL in a name or a bad
+  `UnionValue` with a tag out of range, a nanosecond timestamp outside the
+  storage of its type, or an empty `Array`), a logical type with a NUL in a name or a bad
   DECIMAL width, a CRS name that DuckDB does not keep, a NUL in a database
   path, an alias, an attach option, a configuration, a query, or a parameter
   name, a NUL in a file path, a negative file offset or read size, a file

@@ -36,7 +36,7 @@ module Database.DuckDB.Simple.FromField (
   returnError,
 ) where
 
-import Control.Exception (Exception, SomeException (..))
+import Control.Exception (Exception (..), SomeException (..))
 import Data.Array (Array, assocs, bounds, listArray, range, (!))
 import Data.Bits (Bits (..), finiteBitSize)
 import qualified Data.ByteString as BS
@@ -308,7 +308,22 @@ data ResultError
       }
   deriving (Eq, Show)
 
-instance Exception ResultError
+-- | The text of the error names the column and the two types.
+instance Exception ResultError where
+  displayException = Text.unpack . renderResultError
+
+-- | Render a conversion error. An error without a column name, for example one
+-- of a field of a generic record, names "a value".
+renderResultError :: ResultError -> Text
+renderResultError = \case
+  Incompatible{errSQLType, errSQLField, errHaskellType, errMessage} ->
+    Text.concat ["duckdb-simple: ", subject errSQLField, " has type ", errSQLType, " but expected ", errHaskellType, detail errMessage]
+  UnexpectedNull{errSQLField, errHaskellType, errMessage} ->
+    Text.concat ["duckdb-simple: ", subject errSQLField, " is NULL but expected ", errHaskellType, detail errMessage]
+  ConversionFailed{errMessage} -> errMessage
+  where
+    subject name = if Text.null name then Text.pack "a value" else Text.pack "column " <> name
+    detail message = if Text.null message then Text.empty else Text.pack ": " <> message
 
 -- | Parser used by @FromField@ instances and utilities such as
 -- @Database.DuckDB.Simple.FromRow.fieldWith@. The supplied @Field@ contains

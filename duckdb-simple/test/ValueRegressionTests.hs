@@ -85,6 +85,11 @@ data NamedRecord = NamedRecord {firstValue :: Int64, secondValue :: Int64}
 data NullableSum = EmptyMember | DataMember Int64
   deriving (Eq, Show, Generic)
 
+-- | A generic record with a UTCTime field.
+newtype Stamped = Stamped {stampedAt :: UTCTime}
+  deriving stock (Eq, Show, Generic)
+  deriving (FromField) via (ViaDuckDB Stamped)
+
 -- | A generic record for array parameters.
 data Pair = Pair {pairName :: Text, pairValue :: Int64}
   deriving stock (Eq, Show, Generic)
@@ -1154,6 +1159,12 @@ valueRegressionTests =
         timePairs
         _ <- execute_ conn "SET TimeZone = 'Pacific/Auckland'"
         timePairs
+    , testCase "a refused field of a generic record names the field and the two types" $ withConnection ":memory:" \conn -> do
+        try (query_ conn "SELECT {'stampedAt': TIMESTAMP '2024-01-02 03:04:05'} AS s" :: IO [Only Stamped]) >>= \case
+          Left SQLError{sqlErrorMessage} -> sqlErrorMessage @?= "field stampedAt: duckdb-simple: a value has type TIMESTAMP but expected UTCTime"
+          Right rows -> assertFailure ("expected the error of the field, got " <> show rows)
+        (query_ conn "SELECT {'stampedAt': TIMESTAMPTZ '2024-01-02 03:04:05+00'} AS s" :: IO [Only Stamped])
+          >>= (@?= [Only (Stamped (UTCTime (fromGregorian 2024 1 2) 11045))])
     , testCase "a read of another SQL type that needs the time zone or another text raises Incompatible" $ withConnection ":memory:" \conn -> do
         -- See Note [Reads of another SQL type] in "Database.DuckDB.Simple.FromField".
         let refusedPairs = do

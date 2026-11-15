@@ -1008,6 +1008,15 @@ tableExample conn = do
   query_ conn "SELECT n, square FROM squares(3)" -- [(0, 0), (1, 1), (2, 4)]
 ```
 
+The type of a column, a parameter, or an aggregate argument comes from
+`duckdbTypeDeclaration`. A record or a sum type that derives `DuckDBColumnType`
+and `ToDuckValue` via `ViaDuckDB` is a STRUCT or a UNION, also in a list or a
+MAP. Each field type comes from `DuckValue`: an `Integer` field is HUGEINT and
+a `Natural` field is UHUGEINT, but an `Integer` column is BIGNUM. DuckDB
+rejects an `Array` field, because its type has no size. `StructValue`,
+`TupleValue`, and `UnionValue` have no static field types. The registration
+raises an error for them.
+
 `registerReplacementScan` gives the parts of an unknown table name to the
 function. The function can give a SELECT statement that DuckDB reads instead.
 

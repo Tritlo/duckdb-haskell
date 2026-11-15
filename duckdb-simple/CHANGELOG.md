@@ -34,6 +34,12 @@
   table function as a list. DuckDB reads the list one chunk at a time. It reads
   only the columns that the query uses, and one column for a query such as
   `SELECT count(*)`. The library does not evaluate the other columns of a row.
+- `DuckDBColumnType` has the method `duckdbTypeDeclaration`. It gives the SQL
+  type that a typed table function and a typed aggregate function declare. A
+  record or a sum type gets `ToDuckValue` and a STRUCT or UNION declaration
+  through `ViaDuckDB`. `StructValue`, `TupleValue`, and `UnionValue` have no
+  declaration, and the registration raises an error for them.
+  `Database.DuckDB.Simple.LogicalRep` exports `TypeDeclaration`.
 - `Database.DuckDB.Simple.Registration` has `TypeDeclaration`, `parameter`,
   `defaultValue`, `registerCustomType`, and typed replacement scans.
   `registerReplacementScan` and `registerInstanceReplacementScan` give the

@@ -131,7 +131,11 @@ createCast conn = createCastOn (ConnectionTarget conn)
 -- list. The list of names gives the names of the result columns. 'TypedRow' of
 -- @row@ gives the column types. A different number of names and columns, or a
 -- row with no column, is an error at registration. A @Maybe@ column gives NULL
--- for 'Nothing'.
+-- for 'Nothing'. The SQL type of each parameter and each column is the
+-- 'Database.DuckDB.Simple.ToField.duckdbTypeDeclaration' of its type. A record
+-- or a sum type with 'Database.DuckDB.Simple.Generic.ViaDuckDB' instances is a
+-- STRUCT or a UNION column. A type with no declaration, for example
+-- 'Database.DuckDB.Simple.LogicalRep.StructValue', is an error at registration.
 --
 -- 'TypedRow' of @params@ gives the parameter types. Use @()@ for no parameter.
 -- The parameters are positional only. DuckDB casts each argument to its
@@ -176,8 +180,10 @@ createTableFunction conn = createTableFunctionOn (ConnectionTarget conn)
 -- 'aggregateInitial'. Each new state is evaluated to weak head normal form.
 --
 -- The arguments decode with 'Database.DuckDB.Simple.FromRow.FromRow'. The SQL
--- type of each argument is the 'Database.DuckDB.Simple.ToField.duckdbColumnType'
--- of its column in 'TypedRow'. The SQL return type comes from 'FunctionResult':
+-- type of each argument is the
+-- 'Database.DuckDB.Simple.ToField.duckdbTypeDeclaration' of its column in
+-- 'TypedRow'. A type with no declaration is an error at registration, as for
+-- 'createTableFunction'. The SQL return type comes from 'FunctionResult':
 -- BIGINT for 'Int', 'Data.Int.Int16', 'Data.Int.Int32', 'Data.Int.Int64',
 -- 'Data.Word.Word16', and 'Data.Word.Word32'; UBIGINT for 'Word' and
 -- 'Data.Word.Word64'; DOUBLE for 'Double' and 'Float'; BOOLEAN for 'Bool'; and

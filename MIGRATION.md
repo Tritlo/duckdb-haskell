@@ -214,7 +214,7 @@ The SQL workflow stays the same. These changes can affect your code:
   incompatible column. Write `c AT TIME ZONE 'UTC'` for the time in UTC that
   version 0.3 gave, or read `UTCTime`.
 - The `Unbounded` forms of `UTCTime` and `LocalTime` (`UTCTimestamp` and
-  `LocalTimestamp`) follow the two rules above.
+  `LocalTimestamp`) follow the three rules above.
 - A FLOAT or DOUBLE read as `Text` or `String` raises the error of an
   incompatible column. Read `Double` or `Float`, or write `c::VARCHAR` for the
   text of DuckDB, for example `0.01`. Version 0.3 gave the text of `show`, for

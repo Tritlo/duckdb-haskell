@@ -1007,7 +1007,7 @@ testTableMaps = withConnection ":memory:" \conn -> do
 -- | A record for a STRUCT column. A String field is VARCHAR.
 data Peak = Peak {peak :: Text, metres :: Int32, remark :: String}
   deriving stock (Eq, Show, Generic)
-  deriving (DuckDBColumnType, ToDuckValue, FromField) via (ViaDuckDB Peak)
+  deriving (DuckDBColumnType, ToDuckValue, ToField, FromField) via (ViaDuckDB Peak)
 
 -- | A sum type for a UNION column.
 data Weather = Sunny | Rain Double
@@ -1030,11 +1030,14 @@ instance ToDuckValue Price where
   toDuckValue factory (Price value) = toDuckValue factory value
 
 -- | Declare record, list, MAP, and UNION columns and a record aggregate
--- argument from the generic types.
+-- argument from the generic types. An empty list and an empty MAP of records
+-- take the element type from the declaration.
 testTableRecords :: Assertion
 testTableRecords = withConnection ":memory:" \conn -> do
   let peaks = [Peak "Hekla" 1491 "volcano", Peak "Esja" 914 ""]
-      rows = [(row, peaks, Map.fromList [(peak p, p) | p <- peaks], weather) | (row, weather) <- zip peaks [Sunny, Rain 2.5]]
+      rows =
+        [(row, peaks, Map.fromList [(peak p, p) | p <- peaks], weather) | (row, weather) <- zip peaks [Sunny, Rain 2.5]]
+          <> [(Peak "Snæfell" 1833 "", [], Map.empty, Rain 0)]
   createTableFunction conn "typed_peaks" ["peak", "nearby", "by_name", "weather"] \() -> pure rows
   query_ conn "SELECT typeof(peak), typeof(nearby), typeof(by_name), typeof(weather) FROM typed_peaks() LIMIT 1"
     >>= ( @?=
@@ -1056,9 +1059,11 @@ testTableRecords = withConnection ":memory:" \conn -> do
       , aggregateCombine = \a b -> pure (max a b)
       , aggregateResult = pure :: Int32 -> IO Int32
       }
-  query_ conn "SELECT typed_highest(peak) FROM typed_peaks()" >>= (@?= [Only (1491 :: Int32)])
+  query_ conn "SELECT typed_highest(peak) FROM typed_peaks()" >>= (@?= [Only (1833 :: Int32)])
   query_ conn "SELECT parameter_types::VARCHAR FROM duckdb_functions() WHERE function_name = 'typed_highest'"
     >>= (@?= [Only ("['STRUCT(peak VARCHAR, metres INTEGER, remark VARCHAR)']" :: Text)])
+  query conn "SELECT ?, typeof(?)" ([] :: [Peak], [] :: [Peak])
+    >>= (@?= [([] :: [Peak], "STRUCT(peak VARCHAR, metres INTEGER, remark VARCHAR)[]" :: Text)])
 
 -- | Reject a column, a parameter, or an argument type with no declaration at
 -- registration, also inside a list, and a MAP of a type text and a record.

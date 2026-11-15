@@ -359,7 +359,9 @@ the reason why the type has no declaration.
   find these three types.
 
 A registration raises the Left text as an SQLError before it registers the
-SQL object.
+SQL object. For a parameter with no known type, a LIST or a MAP value with no
+element that is not NULL takes its element type from a structured declaration
+(withElementType). See Note [Element types of a list].
 -}
 
 -- | Types that map to a concrete DuckDB column type when used with @ToField@.
@@ -1216,6 +1218,11 @@ constructor:
 - A list with no element or only NULL elements of this kind takes the element
   type of the target, when the parameter has a known type. DuckDB casts the
   list literal [] or [NULL, NULL] to the type of a column in the same way.
+- For a parameter with no known type, the element type of a list with no
+  element or only NULL elements is the structured declaration of the element
+  type, when it has one, for example a record through ViaDuckDB (see
+  Note [Type declarations]). The two rules below apply to each other element
+  type.
 - For a parameter with no known type, a list with only NULL elements names no
   element type. The native constructor then gives the type of the SQL list
   literal: "NULL"[] for a LIST, "NULL"[2] for an ARRAY of two NULL elements,
@@ -1242,9 +1249,15 @@ withElementType
   -> IO b
 withElementType proxy builder@ValueBuilder{builderType = makeType} target values action = case duckDBTypeFromName typeName of
   Just dtype -> bracket (makeType (declaredType dtype)) destroyLogicalType action
-  Nothing -> withValueType builder target typeName values action
+  Nothing -> withValueType builder elementTarget typeName values action
   where
     typeName = duckdbColumnType proxy
+    -- With no target, the structured declaration of a record is the element
+    -- type of a list with no element that is not NULL. See
+    -- Note [Element types of a list].
+    elementTarget = case (target, duckdbTypeDeclaration proxy) of
+      (Nothing, Right (StructuredType rep)) -> Just rep
+      _ -> target
     -- See Note [Integer parameters].
     declaredType LogicalTypeIdBigNum
       | Just rep@(LogicalTypeScalar dtype) <- target, dtype `elem` integerTypes = rep

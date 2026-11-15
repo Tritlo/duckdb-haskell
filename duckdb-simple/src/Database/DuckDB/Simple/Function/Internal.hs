@@ -280,12 +280,14 @@ createFunctionWithStateOn target name initState mkFn =
 
 -- | Configure a scalar function and transfer its callbacks to DuckDB. An
 -- argument type or a result type with no declaration, or an argument type that
--- is or contains VARIANT, raises an error at registration. The checks of the
--- name, the arguments, and the result come before the read of the state of the
--- target, so an input error wins over a closed connection. The last argument
--- gives the install actions of the callbacks for the builder, from the factory
--- of 'targetCastFactory'. Their setters run after the properties. See
--- 'installAll'.
+-- is or contains VARIANT, raises an error at registration. The check of the
+-- name and the declarations of the arguments and the result come before the
+-- read of the state of the target, so their input errors win over a closed
+-- connection. The VARIANT check ('checkArgumentType') needs the resolved type
+-- of the argument, so it comes after the read of the state, and a closed
+-- connection wins over it. The last argument gives the install actions of the
+-- callbacks for the builder, from the factory of 'targetCastFactory'. Their
+-- setters run after the properties. See 'installAll'.
 registerScalarFunction
   :: (Function f)
   => RegistrationTarget

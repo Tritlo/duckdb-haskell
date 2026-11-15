@@ -200,8 +200,11 @@ stateStripe table key = table ! (key `mod` length table)
 -- "Database.DuckDB.Simple.ToField". A result type that is not raw also raises an
 -- error at registration, because the finalize callback has no factory. See
 -- Note [Result writers] in "Database.DuckDB.Simple.Function.Internal". The
--- checks of the name, the arguments, and the result come before the read of
--- the state of the target, so an input error wins over a closed connection.
+-- check of the name, the declarations of the arguments and the result, and the
+-- check of a raw result come before the read of the state of the target, so
+-- their input errors win over a closed connection. The VARIANT and GEOMETRY
+-- checks ('checkArgumentType') need the resolved type of the argument, so they
+-- come after the read of the state, and a closed connection wins over them.
 createAggregateOn
   :: forall state args result
    . (FromRow args, TypedRow args, FunctionResult result) => RegistrationTarget -> Text -> Aggregate state args result -> IO ()
@@ -220,9 +223,10 @@ createAggregateOn target name aggregate = do
             <> " or Maybe of one of them), because the finalize callback has no factory."
             <> " For a newtype over one of these types, derive FunctionResult with deriving newtype."
         )
-  -- The input checks come before the read of the state of the target. The
-  -- update callback has no context. It reads a GEOMETRY argument with the
-  -- factory of the instance, which only a connection target gives.
+  -- The input checks that do not need a resolved type come before the read of
+  -- the state of the target. The update callback has no context. It reads a
+  -- GEOMETRY argument with the factory of the instance, which only a
+  -- connection target gives.
   casts <- targetCastFactory target
   -- See Note [State table stripes]. Evaluate the count before the registration.
   -- An unevaluated count keeps the target, and thus the connection, reachable

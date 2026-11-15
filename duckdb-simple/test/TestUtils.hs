@@ -3,7 +3,7 @@
 -- |
 -- Module      : TestUtils
 -- Description : Assertions that several test modules share.
-module TestUtils (NativeTimestamp (..), assertFailureIO, filteredQueries, nativeLocalTime, raiseCapabilities, withConstCString, writeIntegers) where
+module TestUtils (NativeTimestamp (..), assertFailureIO, assertSqlErrorType, filteredQueries, nativeLocalTime, raiseCapabilities, withConstCString, writeIntegers) where
 
 import Control.Concurrent (getNumCapabilities, setNumCapabilities)
 import Control.Exception (SomeException, try)
@@ -22,7 +22,7 @@ import Database.DuckDB.FFI.V2 (
   c_duckdb_v2_vector_get_data_mutable,
   c_duckdb_v2_vector_set_size,
  )
-import Database.DuckDB.Simple (Query)
+import Database.DuckDB.Simple (ErrorType, Query, SQLError (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToDuckValue (..), ToField)
 import Database.DuckDB.Simple.V2.Registration (checked, output)
 import Foreign.C.ConstPtr (ConstPtr (..))
@@ -30,7 +30,7 @@ import Foreign.C.String (withCString)
 import Foreign.C.Types (CChar)
 import Foreign.Ptr (castPtr)
 import Foreign.Storable (pokeElemOff)
-import Test.Tasty.HUnit (Assertion, assertFailure)
+import Test.Tasty.HUnit (Assertion, assertFailure, (@?=))
 
 {- Note [Capabilities of the tests]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -89,6 +89,15 @@ nativeLocalTime timestamp = utcToLocalTime utc (posixSecondsToUTCTime (fromRatio
       Milliseconds raw -> (raw, 1000)
       Microseconds raw -> (raw, 1000000)
       Nanoseconds raw -> (raw, 1000000000)
+
+-- | Require an 'SQLError' of the given type. The assertion does not read the
+-- message.
+assertSqlErrorType :: ErrorType -> IO a -> Assertion
+assertSqlErrorType expected action = do
+  result <- try action
+  case result of
+    Left err -> sqlErrorType err @?= Just expected
+    Right _ -> assertFailure ("expected an SQLError of the type " <> show expected)
 
 -- | Supply a constant C string for one native call.
 withConstCString :: String -> (ConstPtr CChar -> IO a) -> IO a

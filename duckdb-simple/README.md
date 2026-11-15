@@ -1429,9 +1429,9 @@ The library has no typed cast in this release. A registered cast can give
 wrong rows with no error, because the optimizer of DuckDB 2.0.0 decides from
 the two types of a cast alone whether it can move the cast away from a column,
 for example in a filter, a join, or min and max. The cast function then does
-not run on that column. In runs with DuckDB 2.0.0, a cast between INTEGER and
-BIGINT, and between BIGINT and a custom type with the base type BIGINT, gave
-wrong rows when its function changed the value. `registerCast` in
+not run on that column. In runs with DuckDB 2.0.0, a cast from INTEGER to
+BIGINT, and a cast between BIGINT and a custom type with the base type BIGINT,
+gave wrong rows when its function changed the value. `registerCast` in
 `Database.DuckDB.Simple.V2.Registration` registers a native cast, and its
 Haddock gives the warning. For a conversion that changes the value, register a
 scalar function with `createFunction` (see
@@ -1447,9 +1447,9 @@ value that a query gives. Two places still use registered casts:
 - The callbacks of a function that an extension registers. An extension has no
   instance, so these callbacks read a GEOMETRY value with the casts of the
   session: the value of an option update, the arguments of a pragma, a scalar
-  function, or a table function, and the rows of a COPY TO function. The update callback of an aggregate function has no context, so an
-  aggregate function of an extension refuses a GEOMETRY argument at
-  registration.
+  function, or a table function, and the rows of a COPY TO function. The
+  update callback of an aggregate function has no context, so an aggregate
+  function of an extension refuses a GEOMETRY argument at registration.
 - `setConfigValue` and `setConfigOption`. DuckDB casts the value to the type of
   the option, as SQL `SET` does.
 

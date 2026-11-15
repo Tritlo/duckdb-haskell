@@ -633,8 +633,8 @@ registerTableFunctionWith target configure callbacks =
 --   to the type of the column, and compares the column without the cast.
 -- * join_filter_pushdown makes a filter of a join from the values of the other
 --   side through an integral cast.
--- * statistics_propagation decides a comparison, or gives min and max, from
---   the statistics of the column through the cast.
+-- * statistics_propagation gives min and max from the statistics of the
+--   column through the cast.
 --
 -- In runs with DuckDB 2.0.0, a cast from INTEGER to BIGINT, from BIGINT to a
 -- custom type with the base type BIGINT, and from that type to BIGINT, with a

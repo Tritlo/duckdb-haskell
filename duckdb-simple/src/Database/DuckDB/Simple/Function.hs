@@ -128,7 +128,9 @@ createFunctionWithState conn = createFunctionWithStateOn (ConnectionTarget conn)
 --
 -- DuckDB casts each result to the target type with its default cast. The target
 -- type can be a custom type whose base type is the type of @b@, for example a
--- type from 'Database.DuckDB.Simple.Registration.registerCustomType'.
+-- type from 'Database.DuckDB.Simple.Registration.registerCustomType'. A type
+-- from SQL @CREATE TYPE name AS base@ is only another name for the base type,
+-- so a cast to it is a cast to the base type. See 'TypeDeclaration'.
 --
 -- > createCast conn (TypeExpression "BIGINT") (TypeExpression "shifted") \(value :: Int64) ->
 -- >     if value > maxBound - 100 then Left "BIGINT overflow" else Right (value + 100)

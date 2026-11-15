@@ -610,6 +610,9 @@ registerTableFunctionWith target configure callbacks =
 
 -- | Register a cast. Nothing keeps the native explicit-cast cost.
 -- The callback must inspect the native cast mode to implement TRY_CAST behavior.
+-- A target type from SQL @CREATE TYPE name AS base@ is only another name for
+-- the base type, so the cast is a cast to the base type. A type from
+-- 'registerCustomType' keeps its name. See 'TypeDeclaration'.
 --
 -- The source type is the first type, and the target type is the second type. The example registers a cast
 -- from BIGINT to a custom type. The callback adds 100 to each value.

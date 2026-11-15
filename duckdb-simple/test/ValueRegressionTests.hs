@@ -1202,7 +1202,7 @@ valueRegressionTests =
         timePairs
     , testCase "a refused field of a generic record names the field and the two types" $ withConnection ":memory:" \conn -> do
         try (query_ conn "SELECT {'stampedAt': TIMESTAMP '2024-01-02 03:04:05'} AS s" :: IO [Only Stamped]) >>= \case
-          Left SQLError{sqlErrorMessage} -> sqlErrorMessage @?= "field stampedAt: duckdb-simple: a value has type TIMESTAMP but expected UTCTime"
+          Left SQLError{sqlErrorMessage} -> sqlErrorMessage @?= "duckdb-simple: field stampedAt: a value has type TIMESTAMP but expected UTCTime"
           Right rows -> assertFailure ("expected the error of the field, got " <> show rows)
         (query_ conn "SELECT {'stampedAt': TIMESTAMPTZ '2024-01-02 03:04:05+00'} AS s" :: IO [Only Stamped])
           >>= (@?= [Only (Stamped (UTCTime (fromGregorian 2024 1 2) 11045))])

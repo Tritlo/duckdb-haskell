@@ -35,11 +35,14 @@ import Data.IORef (atomicModifyIORef', atomicWriteIORef, mkWeakIORef, newIORef, 
 import Data.Int (Int64)
 import Data.List (isPrefixOf)
 import Data.Maybe (catMaybes, isJust, listToMaybe)
+import Data.Text (Text)
+import qualified Data.Text as Text
 import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Copy as Copy
 import Database.DuckDB.Simple.FromField (DecimalValue (..), FieldValue (..))
 import Database.DuckDB.Simple.Geometry (RawGeometry (..), fromRawGeometry)
 import qualified Database.DuckDB.Simple.Logging as Logging
+import Database.DuckDB.Simple.Registration (TypeDeclaration (..), registerCustomType)
 import qualified Database.DuckDB.Simple.Streaming as Streaming
 import Database.DuckDB.Simple.Variant (Variant (..))
 import GHC.Weak.Finalize (getFinalizerExceptionHandler, setFinalizerExceptionHandler)
@@ -113,8 +116,8 @@ main = do
         [name] -> (name, 10)
         [name, n] | Just count <- readMaybe n, count > 0 -> (name, count)
         _ -> ("invalid", 0)
-  unless (mode `elem` ["all", "open-close", "dropped-handles", "long-lived", "callbacks", "cancel", "decode-failure", "new-types"]) $
-    fail "Expected [all|open-close|dropped-handles|long-lived|callbacks|cancel|decode-failure|new-types] [positive batch count]"
+  unless (mode `elem` ["all", "open-close", "dropped-handles", "long-lived", "callbacks", "cancel", "decode-failure", "new-types", "typed"]) $
+    fail "Expected [all|open-close|dropped-handles|long-lived|callbacks|cancel|decode-failure|new-types|typed] [positive batch count]"
   when (mode `elem` ["all", "open-close"]) checkOpenClose
   when (mode `elem` ["all", "dropped-handles"]) checkDroppedHandles
   when (mode `elem` ["all", "long-lived"]) (checkLongLived batches)
@@ -122,6 +125,7 @@ main = do
   when (mode `elem` ["all", "cancel"]) (checkCancellation batches)
   when (mode == "decode-failure") checkDecodeFailure
   when (mode `elem` ["all", "new-types"]) (checkNewTypes batches)
+  when (mode `elem` ["all", "typed"]) (checkTyped batches)
 
 -- | Drop a connection and one of its statements without closing them. The
 -- statement is younger than the connection, so the collector can run the
@@ -450,3 +454,49 @@ report label before after = do
   where
     threadGrowth = usageThreads after - usageThreads before
     rssGrowth = usageRssKb after - usageRssKb before
+
+-- | Run the typed registrations through the public API on one connection: a
+-- scalar function with VARCHAR and BIGINT results over 5000 rows, a grouped
+-- aggregate with VARCHAR results, a typed table function, and a typed cast.
+-- Each VARCHAR value is longer than 12 bytes, so DuckDB stores it outside the
+-- string slot.
+checkTyped :: Int -> IO ()
+checkTyped batches =
+  withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
+    let label prefix n = Text.pack (prefix <> "-" <> show n <> "-with-a-long-suffix")
+        numbers = [0 .. 4999] :: [Int64]
+        labelLength prefix = sum (map (fromIntegral . Text.length . label prefix) numbers) :: Int64
+        groups = [(group, label "total" (sum [n | n <- numbers, n `mod` 50 == group])) | group <- [0 .. 49]]
+    createFunction conn "leak_text" (label "row" :: Int64 -> Text)
+    createFunction conn "leak_double" ((* 2) :: Int64 -> Int64)
+    createAggregate
+      conn
+      "leak_total"
+      Aggregate
+        { aggregateInitial = 0 :: Int64
+        , aggregateStep = \total (Only n) -> pure (total + n)
+        , aggregateCombine = \a b -> pure (a + b)
+        , aggregateResult = pure . label "total"
+        }
+    createTableFunction conn "leak_rows" ["n", "label"] \(Only count) ->
+      pure [(n, label "row" n) | n <- [0 .. count - 1 :: Int64]]
+    registerCustomType conn "leak_tag" (TypeExpression "VARCHAR")
+    createCast conn (TypeExpression "BIGINT") (TypeExpression "leak_tag") \(n :: Int64) -> Right (label "tag" n)
+    let cycleTyped = do
+          scalar <- query_ conn "SELECT sum(length(leak_text(i)))::BIGINT, sum(leak_double(i))::BIGINT FROM range(5000) t(i)"
+          unless (scalar == [(labelLength "row", 2 * sum numbers)]) (fail "wrong typed scalar result")
+          grouped <- query_ conn "SELECT i % 50 AS g, leak_total(i) FROM range(5000) t(i) GROUP BY g ORDER BY g"
+          unless (grouped == groups) (fail "wrong typed aggregate result")
+          table <- query_ conn "SELECT count(*), sum(n)::BIGINT, sum(length(label))::BIGINT FROM leak_rows(5000)"
+          unless (table == [(5000 :: Int64, sum numbers, labelLength "row")]) (fail "wrong typed table function result")
+          cast <- query_ conn "SELECT sum(length(CAST(i AS leak_tag)::VARCHAR))::BIGINT FROM range(5000) t(i)"
+          unless (cast == [Only (labelLength "tag")]) (fail "wrong typed cast result")
+        batch = forM_ [1 .. 20 :: Int] (const cycleTyped)
+    batch
+    performMajorGC
+    before <- readUsage
+    forM_ [1 .. batches] \n -> do
+      batch
+      performMajorGC
+      after <- readUsage
+      reportOptional ("open connection, " <> show (n * 20) <> " typed registration cycles") before after

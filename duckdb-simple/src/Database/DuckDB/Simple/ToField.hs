@@ -187,9 +187,14 @@ element of a VARIANT list or map no target, and timestampTypeForTarget has no
 VARIANT case. A list, an Array, or a Map for a VARIANT parameter has no element
 type in the target (collectionChildType and mapPartTypes give Nothing), so its
 time elements also get the microsecond value. One LIST has one element type
-for all its elements, so a
-nanosecond element would be cast to the microsecond type of the list, and the
-cast rounds. Thus such a value gets the microsecond value.
+for all its elements. For a Haskell list, an Array, or a Map, withElementType
+declares the microsecond type of the element, for example TIMESTAMP for a
+LocalTime, so a nanosecond element would be cast to that type, and the cast
+rounds. A FieldList or a FieldMap takes the type that its elements give, as the
+SQL list literal does: TIMESTAMP and TIMESTAMP_NS elements give TIMESTAMP_NS[],
+but TIME and TIME_NS elements, and TIMESTAMPTZ and TIMESTAMPTZ_NS elements,
+have no common type, and DuckDB raises an error. Thus such a value gets the
+microsecond value in each of these collections.
 
 - Why the binding reads the parameter type only for such digits. A read of the
   parameter type runs the binder of DuckDB. See Note [Statement schemas] in

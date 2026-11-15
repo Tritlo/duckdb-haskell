@@ -67,14 +67,17 @@ The SQL workflow stays the same. These changes can affect your code:
 - Raw types come from `Database.DuckDB.FFI.V2`. They are distinct from the
   retained API types in `Database.DuckDB.FFI`.
 - `SQLError.sqlErrorType` is `Maybe ErrorType`. `Database.DuckDB.Simple`
-  exports `ErrorType`, which has one constructor for each native error code.
-  For example, `DuckDBErrorConstraint` becomes `ErrorDatabaseConstraint`,
-  `DuckDBErrorCatalog` becomes `ErrorDatabaseCatalog`,
-  `DuckDBErrorBinder` becomes `ErrorQueryBinder`,
+  exports `ErrorType`. It has one constructor for each error code of the V2 C
+  API. The V2 codes are a different set from the codes of version 0.3. Thus
+  some codes of version 0.3 have no one-to-one replacement, for example
+  `DuckDBErrorIO` and `DuckDBErrorInvalid`. Some constructors are new, for
+  example `ErrorResourceInUse` and `ErrorApi`. Other codes have a direct
+  replacement. For example, `DuckDBErrorConstraint` becomes
+  `ErrorDatabaseConstraint`, `DuckDBErrorCatalog` becomes
+  `ErrorDatabaseCatalog`, `DuckDBErrorBinder` becomes `ErrorQueryBinder`,
   `DuckDBErrorConversion` becomes `ErrorTypeConversion`,
   `DuckDBErrorInvalidInput` becomes `ErrorInputInvalid`, and
   `DuckDBErrorInterrupt` becomes `ErrorRuntimeInterrupt`.
-  `ErrorResourceInUse` is new.
 - `ToDuckValue.toDuckValue` takes a `ValueFactory` and returns a
   `NativeValue`. `Database.DuckDB.Simple.ToField` exports the two names. They
   are synonyms of the V2 handles `DuckDBV2FactoryHandle` and

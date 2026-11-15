@@ -1552,6 +1552,15 @@ valueRegressionTests =
         try (query_ conn "SELECT {'value': 'c'}::STRUCT(value ENUM('a', 'b'))" :: IO [Only FieldValue]) >>= \case
           Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorTypeConversion
           Right rows -> assertFailure ("expected the cast error of DuckDB, got " <> show rows)
+        -- A label with a single quote prints as it is, as in the cast error of DuckDB.
+        try
+          (query conn "SELECT ?" (Only (singleField (LogicalTypeEnum (listArray (0, 1) ["a", "b"])) (FieldEnum 0 "it's"))) :: IO [Only FieldValue])
+          >>= \case
+            Left SQLError{sqlErrorMessage} -> sqlErrorMessage @?= "duckdb-simple: the ENUM label 'it's' is not in the dictionary of the type"
+            Right rows -> assertFailure ("expected the label error, got " <> show rows)
+        try (query_ conn "SELECT {'value': 'it''s'}::STRUCT(value ENUM('a', 'b'))" :: IO [Only FieldValue]) >>= \case
+          Left SQLError{sqlErrorMessage} -> Text.takeWhile (/= '\n') sqlErrorMessage @?= "Conversion Error: Could not convert string 'it's' to ENUM('a', 'b')"
+          Right rows -> assertFailure ("expected the cast error of DuckDB, got " <> show rows)
     , testCase "ENUM payload binds its label, not its index" $ withConnection ":memory:" \conn -> do
         let struct = singleField (LogicalTypeEnum (listArray (0, 2) ["a", "b", "c"])) (FieldEnum 1 "b")
         (query conn "SELECT typeof((?).value), (?).value::VARCHAR, ?" (struct, struct, struct) :: IO [(Text, Text, StructValue FieldValue)])

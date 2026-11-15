@@ -222,6 +222,14 @@
 - Decode and bind TUPLE values with `TupleValue`, `FieldTuple`, and
   `LogicalTypeTuple`.
 - Preserve composite VARCHAR collations with `LogicalTypeCollatedVarchar`.
+- Keep the alias of a type with `LogicalTypeAlias`, at each depth. A
+  `ColumnDescription` of a JSON column gives
+  `LogicalTypeAlias "JSON" (LogicalTypeScalar LogicalTypeIdVarchar)`, and a
+  column of a type from `registerCustomType` gives the name of the type.
+  `logicalTypeFromRep` creates the alias type, so a `DuckValue` field of a
+  typed registration can declare JSON. The readers and the binding of parameters use the base type
+  (`withoutAliases`). A column of a type from `CREATE TYPE name AS base` has the
+  base type and no alias.
 - Decode nanosecond timezone timestamps in results and VARIANT values.
 - Preserve the digits below a microsecond of a `TimeOfDay`, a `LocalTime`, and
   a `UTCTime`, and of their `Unbounded` forms, for a nanosecond parameter

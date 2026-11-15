@@ -137,6 +137,11 @@ The SQL workflow stays the same. These changes can affect your code:
 - SQL TUPLE values decode as `FieldTuple` with a `TupleValue`. `LogicalTypeRep`
   adds `LogicalTypeTuple` and `LogicalTypeCollatedVarchar`. Update exhaustive
   matches.
+- `LogicalTypeRep` adds `LogicalTypeAlias`. Update exhaustive matches. The
+  `columnDescriptionType` of a JSON column is
+  `LogicalTypeAlias "JSON" (LogicalTypeScalar LogicalTypeIdVarchar)`, also as a
+  child type, and a column of a type from `registerCustomType` gives the name
+  of the type. Apply `withoutAliases` to compare base types.
 - `LogEntry` has six new fields. Use record syntax to construct or match it.
   `logEntrySeverity` has the type `LogLevel`, and `logEntryScope` has the type
   `LogScope`. `Database.DuckDB.Simple.Logging` exports both types.

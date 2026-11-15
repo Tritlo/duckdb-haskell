@@ -51,7 +51,11 @@ existing convenience behavior.
   options. The update function of a custom option gets the new value as a
   `FieldValue`. `V2.Config` registers custom options with native builders.
 - `Catalog.describeTable` copies resolved names, column types, default flags,
-  generated-column flags, and catalog read-only status.
+  generated-column flags, and catalog read-only status. A column type keeps the
+  alias of DuckDB at each depth as a `LogicalTypeAlias`, for example JSON and
+  the name of a type from `registerCustomType`. A column of a type from
+  `CREATE TYPE name AS base` has the base type, and an ENUM from `CREATE TYPE`
+  has no name.
 - `Tokenizer.tokenize` returns token kinds, UTF-8 byte offsets, token bytes, and
   the native indication of an unterminated final token.
 - `Function` registers scalar, cast, aggregate, and table functions with
@@ -417,7 +421,11 @@ Notes:
     columns and typed values. A record with an `Array` field raises an error at
     registration, because the record type does not give the size of the
     ARRAY. Use a list field, or a field of a newtype of the `Array` with a
-    `DuckValue` instance that gives the size (see note 8). See
+    `DuckValue` instance that gives the size (see note 8). In a typed
+    registration, a `duckLogicalType` that gives a `LogicalTypeAlias`, for
+    example `LogicalTypeAlias "JSON" (LogicalTypeScalar LogicalTypeIdVarchar)`,
+    declares that alias type, and a value of the field reads as its base type.
+    See
     [Generic Encoding with ViaDuckDB](#generic-encoding-with-viaduckdb).
 11. Each constructor binds as its SQL type, with these exceptions:
     - A `FieldEnum` binds its label as a VARCHAR.

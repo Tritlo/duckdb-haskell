@@ -897,7 +897,7 @@ instance FromField LocalTime where
     where
       midnight = TimeOfDay 0 0 0
 
--- | Reads the SQL types that 'LocalTime' reads, also infinity.
+-- | Reads the SQL types that t'LocalTime' reads, also infinity.
 instance FromField (Unbounded LocalTime) where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -925,7 +925,7 @@ instance FromField UTCTime where
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
--- | Reads the SQL types that 'UTCTime' reads, also infinity.
+-- | Reads the SQL types that t'UTCTime' reads, also infinity.
 instance FromField (Unbounded UTCTime) where
   fromField f@Field{fieldValue} =
     case fieldValue of

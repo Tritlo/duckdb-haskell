@@ -55,13 +55,12 @@ import Database.DuckDB.Simple.FromField (
   FromField (..),
  )
 import Database.DuckDB.Simple.Internal (duckDBTypeToName)
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), TypeDeclaration, UnionMemberType (..))
+import Database.DuckDB.Simple.LogicalRep (TypeDeclaration)
 import Database.DuckDB.Simple.Materialize (FallbackReaders (..), prepareVectorReader, rejectRows)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToDuckValue (..))
-import Database.DuckDB.Simple.Typed (argumentName, conversionMessage, rowDeclarations)
-import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
+import Database.DuckDB.Simple.Typed (argumentName, checkArgumentType, conversionMessage, rowDeclarations)
 import Database.DuckDB.Simple.V2.Registration (withTypeDeclaration)
 import Foreign.Marshal.Array (advancePtr, allocaArray, peekArray)
 import Foreign.Marshal.Utils (copyBytes, fillBytes)
@@ -296,10 +295,7 @@ registerScalarFunction target name proxy acquire = do
             signature <- output (c_duckdb_v2_scalar_function_get_signature scalarFun)
             forM_ (zip [0 :: Int ..] parameters) \(index, dtype) ->
               withTypeDeclaration factory dtype \logical -> do
-                rep <- logicalTypeToRep logical
-                when (hasVariantOrGeometry rep) $
-                  throwInvalidArgument
-                    (name <> ": argument " <> argumentName index <> ": the type of a scalar function argument cannot be or contain VARIANT or GEOMETRY")
+                checkArgumentType name index logical
                 withIdentifier (argumentName index) \argument ->
                   checked (c_duckdb_v2_function_signature_add_parameter signature argument logical nullHandle DuckDBV2FunctionParameterKindPositionalOnly)
             withTypeDeclaration factory result $ checked . c_duckdb_v2_function_signature_set_return_type signature
@@ -311,20 +307,6 @@ registerScalarFunction target name proxy acquire = do
             checked (c_duckdb_v2_scalar_function_set_exec_callback scalarFun scalarFunctionExecPtr)
             forM_ scalarFunctionInitPtr $ checked . c_duckdb_v2_scalar_function_set_init_callback scalarFun
             register
-
--- | Test whether a type is or contains VARIANT or GEOMETRY. The argument
--- reader of a scalar function reads neither type (makeColumnReader).
-hasVariantOrGeometry :: LogicalTypeRep -> Bool
-hasVariantOrGeometry = \case
-  LogicalTypeScalar LogicalTypeIdVariant -> True
-  LogicalTypeGeometry _ -> True
-  LogicalTypeList child -> hasVariantOrGeometry child
-  LogicalTypeArray child _ -> hasVariantOrGeometry child
-  LogicalTypeMap key value -> hasVariantOrGeometry key || hasVariantOrGeometry value
-  LogicalTypeStruct fields -> any (hasVariantOrGeometry . structFieldValue) fields
-  LogicalTypeTuple fields -> any hasVariantOrGeometry fields
-  LogicalTypeUnion members -> any (hasVariantOrGeometry . unionMemberType) members
-  _ -> False
 
 scalarFunctionHandler
   :: forall f. (Function f) => f -> DuckDBV2ScalarFunctionExecInfoHandle -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()

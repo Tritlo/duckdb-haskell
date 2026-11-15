@@ -1500,11 +1500,11 @@ functionsTests =
           let rejects expected action = assertThrows action (Text.isInfixOf expected . sqlErrorMessage)
           rejects "hs_bad_struct: argument arg0: StructValue has no static field types" $
             createFunction conn "hs_bad_struct" (\(_ :: StructValue FieldValue) -> True)
-          rejects "hs_bad_variant: argument arg0: the type of a scalar function argument cannot be or contain VARIANT or GEOMETRY" $
+          rejects "hs_bad_variant: argument arg0: the type of an argument cannot be or contain VARIANT or GEOMETRY" $
             createFunction conn "hs_bad_variant" (\(_ :: Variant) -> True)
-          rejects "hs_bad_variants: argument arg1: the type of a scalar function argument cannot be or contain VARIANT or GEOMETRY" $
+          rejects "hs_bad_variants: argument arg1: the type of an argument cannot be or contain VARIANT or GEOMETRY" $
             createFunction conn "hs_bad_variants" (\(_ :: Int64) (_ :: [Maybe Variant]) -> True)
-          rejects "hs_bad_geometry: argument arg0: the type of a scalar function argument cannot be or contain VARIANT or GEOMETRY" $
+          rejects "hs_bad_geometry: argument arg0: the type of an argument cannot be or contain VARIANT or GEOMETRY" $
             createFunction conn "hs_bad_geometry" (\(_ :: G.Geometry) -> True)
           query_ conn "SELECT count(*) FROM duckdb_functions() WHERE function_name LIKE 'hs\\_bad\\_%' ESCAPE '\\'" >>= (@?= [Only (0 :: Int64)])
     , testCase "names the argument that does not convert" $

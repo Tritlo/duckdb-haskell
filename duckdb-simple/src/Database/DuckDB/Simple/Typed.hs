@@ -20,6 +20,7 @@ module Database.DuckDB.Simple.Typed (
   ColumnValue (..),
   argumentName,
   rowDeclarations,
+  checkArgumentType,
   prepareArgumentReader,
   conversionMessage,
   createCastOn,
@@ -37,11 +38,13 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.Element (vectorElementType)
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), FromField (..), ResultError (..))
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), UnionMemberType (..))
 import Database.DuckDB.Simple.Materialize (FallbackReaders (..), prepareVectorReader, rejectRows)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToDuckValue (..))
 import Database.DuckDB.Simple.Types (Only (..))
+import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
 import Database.DuckDB.Simple.V2.Registration (
   ContextCallback,
   RegistrationTarget,
@@ -130,6 +133,34 @@ rowDeclarations :: Text -> [Text] -> [Either Text TypeDeclaration] -> IO [TypeDe
 rowDeclarations name places declarations =
   forM (zip places declarations) \(place, declaration) ->
     either (\reason -> throwInvalidArgument (Text.intercalate (Text.pack ": ") [name, place, reason])) pure declaration
+
+-- | Raise an error before a registration when the resolved type of an
+-- argument is or contains VARIANT or GEOMETRY. The argument reader of a scalar
+-- function and of a typed aggregate function reads neither type
+-- ('prepareArgumentReader'). The error names the registration and the index of
+-- the argument.
+checkArgumentType :: Text -> Int -> DuckDBV2LogicalTypeHandle -> IO ()
+checkArgumentType name index logical = do
+  rep <- logicalTypeToRep logical
+  when (hasVariantOrGeometry rep) $
+    throwInvalidArgument
+      ( Text.intercalate
+          (Text.pack ": ")
+          [name, Text.pack "argument " <> argumentName index, Text.pack "the type of an argument cannot be or contain VARIANT or GEOMETRY"]
+      )
+
+-- | Test whether a type is or contains VARIANT or GEOMETRY.
+hasVariantOrGeometry :: LogicalTypeRep -> Bool
+hasVariantOrGeometry = \case
+  LogicalTypeScalar LogicalTypeIdVariant -> True
+  LogicalTypeGeometry _ -> True
+  LogicalTypeList child -> hasVariantOrGeometry child
+  LogicalTypeArray child _ -> hasVariantOrGeometry child
+  LogicalTypeMap key value -> hasVariantOrGeometry key || hasVariantOrGeometry value
+  LogicalTypeStruct fields -> any (hasVariantOrGeometry . structFieldValue) fields
+  LogicalTypeTuple fields -> any hasVariantOrGeometry fields
+  LogicalTypeUnion members -> any (hasVariantOrGeometry . unionMemberType) members
+  _ -> False
 
 -- | Prepare a reader for the rows of an argument vector. The first argument is
 -- the index of the argument, from 0. The reader gives the field of a row, with

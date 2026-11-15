@@ -198,7 +198,9 @@ createTableFunction conn = createTableFunctionOn (ConnectionTarget conn)
 -- type of each argument is the
 -- 'Database.DuckDB.Simple.ToField.duckdbTypeDeclaration' of its column in
 -- 'TypedRow'. A type with no declaration is an error at registration, as for
--- 'createTableFunction'. The SQL return type is the
+-- 'createTableFunction'. An argument type that is or contains VARIANT or
+-- GEOMETRY is also an error at registration, as for 'createFunction'. The SQL
+-- return type is the
 -- 'Database.DuckDB.Simple.ToField.duckdbTypeDeclaration' of the result type,
 -- for example SMALLINT for 'Data.Int.Int16' and FLOAT for 'Float'. A 'Maybe'
 -- result has the SQL type of its value, and 'Nothing' gives NULL.

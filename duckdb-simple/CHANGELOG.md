@@ -45,7 +45,7 @@
   `DuckDBColumnType`, for example a record through `ViaDuckDB`, a list, a
   `Map`, or a newtype with its own type text. `FunctionArg` is gone. An
   argument type that is or contains VARIANT or GEOMETRY raises an error at
-  registration.
+  registration, also for `createAggregate`.
 - A result of `createFunction` can have each type with `ToDuckValue`. Its SQL
   type is the `duckdbTypeDeclaration` of the type: an `Int16` result is
   SMALLINT, a `Word16` result is USMALLINT, and a `Float` result is FLOAT, in

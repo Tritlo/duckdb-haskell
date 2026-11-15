@@ -35,7 +35,14 @@ import Database.DuckDB.Simple.Internal (Connection (..), defaultAggregateStripes
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..))
-import Database.DuckDB.Simple.Typed (TypedRow (..), argumentName, conversionMessage, prepareArgumentReader, rowDeclarations)
+import Database.DuckDB.Simple.Typed (
+  TypedRow (..),
+  argumentName,
+  checkArgumentType,
+  conversionMessage,
+  prepareArgumentReader,
+  rowDeclarations,
+ )
 import Database.DuckDB.Simple.V2.Registration (
   AggregateCallbacks (..),
   BindCallback,
@@ -47,6 +54,7 @@ import Database.DuckDB.Simple.V2.Registration (
   parameter,
   registerAggregateFunctionWith,
   withRegistrationFactory,
+  withTypeDeclaration,
  )
 import Foreign.Ptr (FunPtr, Ptr, castFunPtr, castPtr, intPtrToPtr, nullPtr, ptrToIntPtr)
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deRefStablePtr, freeStablePtr, newStablePtr)
@@ -183,8 +191,8 @@ stateStripe :: StateTable -> Int -> IORef IntSet.IntSet
 stateStripe table key = table ! (key `mod` length table)
 
 -- | Register a typed aggregate function on a connection or a loading extension.
--- An argument type or a result type with no declaration raises an error at
--- registration. See Note [Type declarations] in
+-- An argument type or a result type with no declaration, or an argument type
+-- that is or contains VARIANT or GEOMETRY, raises an error at registration. See Note [Type declarations] in
 -- "Database.DuckDB.Simple.ToField". A result type that is not raw also raises an
 -- error at registration, because the finalize callback has no factory. See
 -- Note [Result writers] in "Database.DuckDB.Simple.Function.Internal".
@@ -220,7 +228,11 @@ createAggregateOn target name aggregate = do
           { aggregateBindCallback = Just (bindStateTable stripes)
           , aggregateDestroyCallback = Just destroyStates
           }
-  withRegistrationFactory target \factory -> registerAggregateFunctionWith target (configure parameters resultType factory) callbacks
+  withRegistrationFactory target \factory -> do
+    -- The argument reader reads neither VARIANT nor GEOMETRY. Thus reject such
+    -- a type before the registration.
+    forM_ (zip [0 ..] argumentTypes) \(index, argumentType) -> withTypeDeclaration factory argumentType (checkArgumentType name index)
+    registerAggregateFunctionWith target (configure parameters resultType factory) callbacks
   where
     columnTypes = rowColumnTypes (Proxy :: Proxy args)
     configure parameters resultType factory function = do

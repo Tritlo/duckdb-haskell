@@ -14,6 +14,7 @@ import Control.Exception (SomeException, bracket, displayException, throwIO, try
 import Control.Monad (forM_, void, when)
 import Data.Array (Array, elems)
 import qualified Data.ByteString as BS
+import qualified Data.Geometry as G
 import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int16, Int32, Int64, Int8)
 import qualified Data.Map.Strict as Map
@@ -825,6 +826,21 @@ testAggregateResultTypes = withConnection ":memory:" \conn -> do
     conn
     "SELECT bool_and(m = CASE WHEN i = 0 THEN 0 ELSE i - 0.5 END), typeof(any_value(m)) FROM (SELECT i, typed_float_mean(i::DOUBLE) OVER (ORDER BY i ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS m FROM range(5000) t(i))"
     >>= (@?= [(True, "FLOAT" :: Text)])
+  -- The argument reader reads neither VARIANT nor GEOMETRY.
+  let unreadable = "argument arg0: the type of an argument cannot be or contain VARIANT or GEOMETRY"
+  assertSqlError
+    ("typed_variant_count: " <> unreadable)
+    (createAggregate conn "typed_variant_count" countAggregate{aggregateStep = \count (Only (_ :: Variant)) -> pure (count + 1)})
+  assertSqlError
+    ("typed_variants_count: " <> unreadable)
+    (createAggregate conn "typed_variants_count" countAggregate{aggregateStep = \count (Only (_ :: [Maybe Variant])) -> pure (count + 1)})
+  assertSqlError
+    ("typed_geometry_count: " <> unreadable)
+    (createAggregate conn "typed_geometry_count" countAggregate{aggregateStep = \count (Only (_ :: G.Geometry)) -> pure (count + 1)})
+  query_
+    conn
+    "SELECT count(*) FROM duckdb_functions() WHERE function_name IN ('typed_variant_count', 'typed_variants_count', 'typed_geometry_count')"
+    >>= (@?= [Only (0 :: Int64)])
   let limit = "result: the result type of an aggregate function must be BOOLEAN, TINYINT to BIGINT, UTINYINT to UBIGINT, FLOAT, DOUBLE, or VARCHAR"
   assertSqlError
     ("typed_peak_result: " <> limit)
@@ -834,6 +850,17 @@ testAggregateResultTypes = withConnection ":memory:" \conn -> do
     (createAggregate conn "typed_integer_result" sumAggregate{aggregateResult = pure . toInteger})
   query_ conn "SELECT count(*) FROM duckdb_functions() WHERE function_name IN ('typed_peak_result', 'typed_integer_result')"
     >>= (@?= [Only (0 :: Int64)])
+
+-- | An aggregate that counts its rows. Change 'aggregateStep' for another
+-- argument type.
+countAggregate :: Aggregate Int64 (Only Int64) Int64
+countAggregate =
+  Aggregate
+    { aggregateInitial = 0
+    , aggregateStep = \count _ -> pure (count + 1)
+    , aggregateCombine = \a b -> pure (a + b)
+    , aggregateResult = pure
+    }
 
 testAggregateModifiers :: Assertion
 testAggregateModifiers = withConnection ":memory:" \conn -> do

@@ -1038,7 +1038,8 @@ MAP. Each field type comes from `DuckValue`: an `Integer` field is HUGEINT and
 a `Natural` field is UHUGEINT, but an `Integer` column is BIGNUM. DuckDB
 rejects an `Array` field, because its type has no size. `StructValue`,
 `TupleValue`, and `UnionValue` have no static field types. The registration
-raises an error for them.
+raises an error for them. An aggregate argument that is or contains VARIANT or
+GEOMETRY also raises an error at registration, as for `createFunction`.
 
 `registerReplacementScan` gives the parts of an unknown table name to the
 function. The function can give a SELECT statement that DuckDB reads instead.

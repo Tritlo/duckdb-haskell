@@ -109,6 +109,7 @@ typedRegistrationTests =
     , testCase "pragma argument rows that do not decode" testPragmaDecodeErrors
     , testCase "pragma arguments with VARIANT types give NULL rows and reject VARIANT values" testPragmaVariantRows
     , testCase "pragma exceptions become SQL errors" testPragmaExceptions
+    , testCase "pragma registration checks the name before the state of a closed connection" testPragmaClosedName
     , testCase "custom option update accepts and rejects BIGINT values" testOptionUpdate
     , testCase "custom option update gets VARCHAR values and can reject RESET" testOptionText
     , testCase "table function with one parameter over several chunks" testTableSquares
@@ -131,6 +132,7 @@ typedRegistrationTests =
     , testCase "multi-file function gives each row of a typed table function one time" testTableMultiFile
     , testCase "COPY format with both directions under one name" testCopyBothDirections
     , testCase "COPY keeps the first registration of a format name" testCopyFirstRegistration
+    , testCase "COPY TO registration checks the name before the state of a closed connection" testCopyClosedName
     , testCase "COPY errors in each function fail only their statement" testCopyErrors
     , testCase "COPY format on two connections of one database" testCopySharedDatabase
     , testCase "COPY FROM gives the name and the type of each column" testCopyFromColumns
@@ -407,6 +409,16 @@ testPragmaVariantRows = withConnection ":memory:" \conn -> do
   assertSqlError
     "the type of a pragma argument cannot be or contain VARIANT"
     (query_ conn "PRAGMA typed_variant_list([1::VARIANT])" :: IO [Only Int64])
+
+-- | Raise the input error of an empty pragma name, also on a closed
+-- connection. The name check comes before the read of the state of the
+-- connection.
+testPragmaClosedName :: Assertion
+testPragmaClosedName = do
+  closed <- open ":memory:"
+  close closed
+  assertInputErrorContaining "pragma function name must be nonempty" $
+    registerPragmaFunction closed "" [] (QueryPragma \() -> pure "SELECT 1")
 
 -- | Make an SQL error from an exception of each callback kind.
 testPragmaExceptions :: Assertion
@@ -1541,6 +1553,17 @@ testCopySharedDatabase = withDirectory \directory -> withEnvironment \environmen
     void (execute second "COPY typed_shared_rows FROM ? (FORMAT typed_shared_lines)" (Only file))
     void (execute first "COPY typed_shared_rows FROM ? (FORMAT typed_shared_lines)" (Only file))
     query_ first "SELECT value FROM typed_shared_rows ORDER BY rowid" >>= (@?= map (Only . Just) ([0 .. 4] <> [0 .. 4 :: Int64]))
+
+-- | Raise the input error of an empty format name, also on a closed connection.
+-- The name check comes before the read of the state of the connection.
+testCopyClosedName :: Assertion
+testCopyClosedName = do
+  closed <- open ":memory:"
+  close closed
+  assertInputErrorContaining "invalid copy function name" $
+    registerCopyToFunction closed "" (\_ -> pure ()) (\_ -> pure ()) (\_ _ -> pure ()) (\_ -> pure ())
+  assertInputErrorContaining "invalid copy function name" $
+    registerCopyFunction closed "" linesTo (\_ -> pure [Only (1 :: Int64)])
 
 -- | A COPY TO side that writes one BIGINT column as lines. A NULL is an empty line.
 linesTo :: CopyTo () FilePath

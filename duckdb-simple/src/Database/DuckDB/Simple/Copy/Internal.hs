@@ -121,6 +121,7 @@ registerCopyToFunctionOn
   -> (CopyFinalizeInfo bindState globalState -> IO ())
   -> IO ()
 registerCopyToFunctionOn target name bindFn initFn sinkFn finalizeFn = do
+  checkCopyName name
   casts <- targetCastFactory target
   withVariantReader target \readVariant ->
     registerCopyOn target name (Just (copyToSide casts readVariant bindFn initFn sinkFn finalizeFn)) Nothing
@@ -128,8 +129,13 @@ registerCopyToFunctionOn target name bindFn initFn sinkFn finalizeFn = do
 -- | Check the format name and register the native callbacks of each side.
 registerCopyOn :: RegistrationTarget -> Text -> Maybe CopyToCallbacks -> Maybe CopyFromCallbacks -> IO ()
 registerCopyOn target name to from = do
-  when (Text.null name || Text.any (== '\0') name) $ throwInvalidArgument "invalid copy function name"
+  checkCopyName name
   registerCopyFunctionWith target (\function -> withIdentifier name (checked . c_duckdb_v2_copy_function_set_name function)) to from
+
+-- | Raise the input error for a format name that is empty or contains NUL. A
+-- COPY TO side checks the name before the read of the state of the target.
+checkCopyName :: Text -> IO ()
+checkCopyName name = when (Text.null name || Text.any (== '\0') name) $ throwInvalidArgument "invalid copy function name"
 
 -- | Give the VARIANT reader of a registration target to an action. On a
 -- connection, the reader decodes VARIANT through a helper connection of the
@@ -370,6 +376,7 @@ registerCopyFunction = registerCopyFunctionOn . ConnectionTarget
 registerCopyFunctionOn
   :: (TypedRow row) => RegistrationTarget -> Text -> CopyTo bindState globalState -> (CopyFromInfo -> IO [row]) -> IO ()
 registerCopyFunctionOn target name (CopyTo bindFn initFn sinkFn finalizeFn) readRows = do
+  checkCopyName name
   casts <- targetCastFactory target
   withVariantReader target \readVariant ->
     registerCopyOn target name (Just (copyToSide casts readVariant bindFn initFn sinkFn finalizeFn)) (Just (copyFromSide name readRows))

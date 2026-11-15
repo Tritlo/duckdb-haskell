@@ -16,6 +16,7 @@ module Database.DuckDB.Simple.Pragma.Internal (
 ) where
 
 import Control.Exception (bracket, throwIO)
+import Control.Monad (when)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -63,6 +64,10 @@ registerPragmaFunction = registerPragmaFunctionOn . ConnectionTarget
 -- 'registerPragmaFunction' gives the rules for the argument row.
 registerPragmaFunctionOn :: (FromRow args) => RegistrationTarget -> Text -> [FunctionParameter] -> PragmaCallback args -> IO ()
 registerPragmaFunctionOn target name parameters callback = do
+  -- Check the name before the read of the state of the target, as each
+  -- registration does. 'V2.registerPragmaFunctionOn' checks it again.
+  when (Text.null name || Text.any (== '\0') name) $
+    throwInvalidArgument "pragma function name must be nonempty and must not contain NUL"
   casts <- targetCastFactory target
   V2.registerPragmaFunctionOn target name parameters case callback of
     QueryPragma action -> V2.QueryPragma \info context -> pragmaArguments casts name info context >>= action

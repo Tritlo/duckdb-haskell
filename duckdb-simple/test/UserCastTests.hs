@@ -16,7 +16,7 @@
 module UserCastTests (userCastTests, geometryArgumentTests) where
 
 import Control.Exception (throwIO, try)
-import Control.Monad (forM_, void)
+import Control.Monad (void)
 import Data.Array (listArray, (!))
 import qualified Data.ByteString as BS
 import qualified Data.Geometry as G
@@ -26,7 +26,6 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple
 import qualified Database.DuckDB.Simple.Config as Config
 import qualified Database.DuckDB.Simple.Copy as Copy
@@ -40,6 +39,7 @@ import qualified Database.DuckDB.Simple.V2.Registration as R
 import Database.DuckDB.Simple.Variant (Variant (..), variantObject)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
+import TestUtils (writeNullRows)
 
 -- | Check the readers and binders of the library under user casts.
 userCastTests :: TestTree
@@ -347,11 +347,7 @@ nullCast conn source target = do
   calls <- newIORef 0
   R.registerCast conn source target Nothing \info _ -> do
     atomicModifyIORef' calls (\count -> (count + 1, ()))
-    rows <- R.output (c_duckdb_v2_cast_function_exec_get_row_count info)
-    vector <- R.output (c_duckdb_v2_cast_function_exec_get_output info)
-    R.checked (c_duckdb_v2_vector_set_size vector rows)
-    R.checked (c_duckdb_v2_vector_flatten vector)
-    forM_ [0 .. fromIntegral rows - 1 :: Int] \row -> R.checked (c_duckdb_v2_vector_set_null vector (fromIntegral row))
+    writeNullRows info
   pure calls
 
 -- | WKB of POINT (1 2).

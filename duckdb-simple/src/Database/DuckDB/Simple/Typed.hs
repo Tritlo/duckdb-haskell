@@ -149,11 +149,12 @@ checkArgumentType readsGeometry name index logical = do
 
 -- | Prepare a reader for the rows of an argument vector. The second argument is
 -- the index of the argument, from 0. The reader gives the field of a row, with
--- the name from 'argumentName'. A NULL row gives 'FieldNull', also a NULL
--- VARIANT or GEOMETRY row. A row that holds a VARIANT value raises an error. A
--- GEOMETRY value reads with the factory of the first argument, at each depth
--- of the type. Without a factory, a row that holds a GEOMETRY value raises an
--- error. See Note [User casts and the casts of the library] in
+-- the name from 'argumentName'. A NULL row gives
+-- 'Database.DuckDB.Simple.FromField.FieldNull', also a NULL VARIANT or GEOMETRY
+-- row. A row that holds a VARIANT value raises an error. A GEOMETRY value reads
+-- with the factory of the first argument, at each depth of the type. Without a
+-- factory, a row that holds a GEOMETRY value raises an error. See
+-- Note [User casts and the casts of the library] in
 -- "Database.DuckDB.Simple.Materialize". The reader must not outlive the vector.
 prepareArgumentReader :: Maybe DuckDBV2FactoryHandle -> Int -> DuckDBV2VectorHandle -> IO (Int -> IO Field)
 prepareArgumentReader casts index vector = do
@@ -162,8 +163,9 @@ prepareArgumentReader casts index vector = do
   readValue <- prepareVectorReader (FallbackReaders noVariant (maybe noGeometry prepareGeometryReader casts)) vector
   pure \row -> Field (argumentName index) index <$> readValue row
 
--- | Describe the arguments that 'FromField' or @FromRow@ cannot convert. The
--- text names each argument with the name of its field.
+-- | Describe the arguments that 'Database.DuckDB.Simple.FromField.FromField' or
+-- @FromRow@ cannot convert. The text names each argument with the name of its
+-- field.
 conversionMessage :: [SomeException] -> String
 conversionMessage failures = intercalate "; " (map describe failures)
   where

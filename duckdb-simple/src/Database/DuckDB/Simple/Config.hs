@@ -27,14 +27,13 @@ import Control.Exception (bracket, catch, throwIO)
 import Control.Monad (filterM, forM, when)
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Database.DuckDB.Simple (withConnection)
-import Database.DuckDB.Simple.Config.Internal (CustomOption (..), registerCustomOptionOn, unexpectedVariant)
+import Database.DuckDB.Simple.Config.Internal (CustomOption (..), registerCustomOptionOn)
 import Database.DuckDB.Simple.FromField (FieldValue)
 import Database.DuckDB.Simple.Internal (Connection, Instance, withConnectionHandle, withInstanceHandle, withTypeCache)
-import Database.DuckDB.Simple.Materialize (materializeValue)
+import Database.DuckDB.Simple.Materialize (VectorReader, materializeValue, prepareVariantReader)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
-import Database.DuckDB.Simple.TypeCache (typeCacheCasts)
+import Database.DuckDB.Simple.TypeCache (TypeCache, typeCacheCasts, withVariantState)
 import Database.DuckDB.Simple.V2.Registration (RegistrationTarget (..), TypeDeclaration)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Storable (peek)
@@ -47,18 +46,25 @@ data ConfigFlag = ConfigFlag
   deriving (Eq, Show)
 
 -- | An effective option value and the scope that supplied it.
+-- 'configValueText' is 'Nothing' for a NULL value, as 'configOptionSetting'.
 data ConfigValue = ConfigValue
-  { configValueText :: Text
+  { configValueText :: Maybe Text
   , configValueScope :: SettingScope
   }
   deriving (Eq, Show)
 
--- | A copied option descriptor. Native defaults and aliases can be empty.
+-- | A copied option descriptor. The list of aliases can be empty.
+-- 'configOptionSetting' is the effective value. 'Nothing' means a NULL value,
+-- which the @value@ column of @duckdb_settings()@ also gives as NULL.
+-- 'configOptionDefault' is the static default of the declaration. 'Nothing'
+-- means that the declaration has no default. The value after @RESET@ can
+-- differ from the static default: @progress_bar_time@ has no static default,
+-- and DuckDB 2.0.0 gives 2000 after @RESET@.
 data ConfigOption = ConfigOption
   { configOptionName :: Text
   , configOptionDescription :: Text
-  , configOptionSetting :: Text
-  , configOptionDefault :: Text
+  , configOptionSetting :: Maybe Text
+  , configOptionDefault :: Maybe Text
   , configOptionScope :: SettingScope
   , configOptionScopes :: [SettingScope]
   , configOptionAliases :: [Text]
@@ -74,13 +80,11 @@ customOption name dtype = CustomOption name dtype Nothing "" SettingScopeGlobal 
 registerCustomOption :: Connection -> CustomOption -> IO ()
 registerCustomOption conn = registerCustomOptionOn (ConnectionTarget conn)
 
--- | List the configuration flags of a new in-memory database. DuckDB 2.0
--- gives its options only from an instance or a connection, so the function opens
--- a temporary connection. The list does not have the options of an extension that
--- the new database does not load. Version 0.3 listed those options also. Use
--- 'listConfigOptions' for the options of a connection that you have.
-listConfigFlags :: IO [ConfigFlag]
-listConfigFlags = withConnection ":memory:" \conn ->
+-- | List the name and the description of each option of the database of the
+-- connection, for example a custom option of the database.
+-- 'listConfigOptions' gives the same options with their values.
+listConfigFlags :: Connection -> IO [ConfigFlag]
+listConfigFlags conn =
   map (\option -> ConfigFlag (configOptionName option) (configOptionDescription option)) <$> listConfigOptions conn
 
 -- | List options with effective values from a live connection.
@@ -98,8 +102,8 @@ listInstanceOptions instance_ = withInstanceHandle instance_ \handle -> do
 -- | Read an effective option by its canonical name or an alias.
 getConfigOption :: Connection -> Text -> IO (Maybe ConfigValue)
 getConfigOption conn name = do
-  when (Text.any (== '\0') name) $ throwInvalidArgument "config option name contains NUL"
-  (withConfigOptionValue conn name \value scope -> Just . (`ConfigValue` scope) <$> valueText value)
+  checkOptionName name
+  (withConfigOptionValue conn name \value scope -> Just . (`ConfigValue` scope) <$> nullableText value)
     `catch` \err ->
       if sqlErrorType err == Just ErrorInputInvalid
         then pure Nothing
@@ -107,10 +111,12 @@ getConfigOption conn name = do
 
 -- | Write an option at its default, global, or session scope.
 setConfigOption :: Connection -> SettingScope -> Text -> Text -> IO ()
-setConfigOption conn scope name value = withConnectionHandle conn \handle -> do
-  config <- output (c_duckdb_v2_connection_get_config handle)
-  withIdentifier name \key -> withText value \setting ->
-    checked (c_duckdb_v2_config_set_option_text config key setting (settingScopeToNative scope))
+setConfigOption conn scope name value = do
+  checkOptionName name
+  withConnectionHandle conn \handle -> do
+    config <- output (c_duckdb_v2_connection_get_config handle)
+    withIdentifier name \key -> withText value \setting ->
+      checked (c_duckdb_v2_config_set_option_text config key setting (settingScopeToNative scope))
 
 -- | Read a typed option value during one action. The action borrows the value.
 withConfigOptionValue :: Connection -> Text -> (DuckDBV2ValueHandle -> SettingScope -> IO a) -> IO a
@@ -119,39 +125,58 @@ withConfigOptionValue conn name action = withConnectionHandle conn \handle -> do
   withOptionValue config name action
 
 -- | Copy the effective typed value of an option and the scope of that value.
--- An unknown option name raises 'SQLError'. The function releases all native
--- handles before it returns. A GEOMETRY value reads with the factory of the
+-- An unknown option name raises t'SQLError'. A VARIANT value gives the value
+-- that it holds, as in a result. A GEOMETRY value reads with the factory of the
 -- instance. See Note [User casts and the casts of the library] in
--- "Database.DuckDB.Simple.Materialize".
+-- "Database.DuckDB.Simple.Materialize". The function releases all native
+-- handles before it returns.
 getConfigValue :: Connection -> Text -> IO (FieldValue, SettingScope)
-getConfigValue conn name = withConnectionHandle conn \handle -> do
-  config <- output (c_duckdb_v2_connection_get_config handle)
-  withTypeCache conn \cache ->
-    withOptionValue config name \value scope -> do
-      copied <- materializeValue unexpectedVariant (typeCacheCasts cache) value
-      pure (copied, scope)
+getConfigValue conn name = do
+  checkOptionName name
+  withConnectionHandle conn \handle -> do
+    config <- output (c_duckdb_v2_connection_get_config handle)
+    withTypeCache conn \cache ->
+      withOptionValue config name \value scope -> do
+        copied <- materializeValue (readVariant cache) (typeCacheCasts cache) value
+        pure (copied, scope)
 
 -- | Copy the typed static default of an option. An unknown option name raises
--- 'SQLError'. The function releases all native handles before it returns. A
--- GEOMETRY value reads as 'getConfigValue' reads it.
+-- t'SQLError'. A VARIANT value gives the value that it holds, as in a result. A
+-- GEOMETRY value reads as 'getConfigValue' reads it. The function releases all
+-- native handles before it returns.
 getConfigDefaultValue :: Connection -> Text -> IO FieldValue
-getConfigDefaultValue conn name = withConnectionHandle conn \handle -> do
-  config <- output (c_duckdb_v2_connection_get_config handle)
-  withTypeCache conn \cache ->
-    withIdentifier name \key ->
-      bracket (output (c_duckdb_v2_config_get_option_by_name config key)) (destroy c_duckdb_v2_option_destroy) \option ->
-        bracket
-          (output (c_duckdb_v2_option_get_default_value option))
-          (destroy c_duckdb_v2_value_destroy)
-          (materializeValue unexpectedVariant (typeCacheCasts cache))
+getConfigDefaultValue conn name = do
+  checkOptionName name
+  withConnectionHandle conn \handle -> do
+    config <- output (c_duckdb_v2_connection_get_config handle)
+    withTypeCache conn \cache ->
+      withIdentifier name \key ->
+        bracket (output (c_duckdb_v2_config_get_option_by_name config key)) (destroy c_duckdb_v2_option_destroy) \option ->
+          bracket
+            (output (c_duckdb_v2_option_get_default_value option))
+            (destroy c_duckdb_v2_value_destroy)
+            (materializeValue (readVariant cache) (typeCacheCasts cache))
+
+-- | Read a VARIANT value with the helper connection of the type cache, as a
+-- result does. See Note [VARIANT decoding] in
+-- "Database.DuckDB.Simple.VariantCodec".
+readVariant :: TypeCache -> VectorReader
+readVariant cache vector = withVariantState cache (`prepareVariantReader` vector)
 
 -- | Set an option from a typed Haskell value. Native code casts it to the option type.
 setConfigValue :: (ToDuckValue a) => Connection -> SettingScope -> Text -> a -> IO ()
-setConfigValue conn scope name value = withConnectionHandle conn \handle -> do
-  config <- output (c_duckdb_v2_connection_get_config handle)
-  withConnectionFactory handle \factory ->
-    bracket (toDuckValue factory value) (destroy c_duckdb_v2_value_destroy) \native ->
-      withIdentifier name \key -> checked (c_duckdb_v2_config_set_option_value config key native (settingScopeToNative scope))
+setConfigValue conn scope name value = do
+  checkOptionName name
+  withConnectionHandle conn \handle -> do
+    config <- output (c_duckdb_v2_connection_get_config handle)
+    withConnectionFactory handle \factory ->
+      bracket (toDuckValue factory value) (destroy c_duckdb_v2_value_destroy) \native ->
+        withIdentifier name \key -> checked (c_duckdb_v2_config_set_option_value config key native (settingScopeToNative scope))
+
+-- | Reject an option name that contains NUL, before a native call. Each
+-- function of this module that takes an option name calls it first.
+checkOptionName :: Text -> IO ()
+checkOptionName name = when (Text.any (== '\0') name) $ throwInvalidArgument "config option name contains NUL"
 
 -- | Copy the options visible through a borrowed config.
 copyOptions :: DuckDBV2ConfigHandle -> IO [ConfigOption]
@@ -165,8 +190,8 @@ copyOption :: DuckDBV2ConfigHandle -> DuckDBV2OptionHandle -> IO ConfigOption
 copyOption config handle = do
   name <- output (c_duckdb_v2_option_get_name handle) >>= readIdentifier
   description <- output (c_duckdb_v2_option_get_description handle) >>= readText
-  setting <- withOptionValue config name \value _ -> valueText value
-  defaultSetting <- bracket (output (c_duckdb_v2_option_get_default_value handle)) (destroy c_duckdb_v2_value_destroy) valueText
+  setting <- withOptionValue config name \value _ -> nullableText value
+  defaultSetting <- bracket (output (c_duckdb_v2_option_get_default_value handle)) (destroy c_duckdb_v2_value_destroy) nullableText
   scope <- output (c_duckdb_v2_option_get_default_scope handle) >>= settingScopeFromNative
   scopes <-
     filterM
@@ -175,6 +200,12 @@ copyOption config handle = do
   count <- output (c_duckdb_v2_option_get_alias_count handle)
   aliases <- forM (indices count) \index -> output (c_duckdb_v2_option_get_alias handle index) >>= readIdentifier
   pure (ConfigOption name description setting defaultSetting scope scopes aliases)
+
+-- | Copy the text of a value, or 'Nothing' for a NULL value.
+nullableText :: DuckDBV2ValueHandle -> IO (Maybe Text)
+nullableText value = do
+  isNull <- output (c_duckdb_v2_value_is_null value)
+  if isNull /= 0 then pure Nothing else Just <$> valueText value
 
 -- | Release each owned option value after its action.
 withOptionValue :: DuckDBV2ConfigHandle -> Text -> (DuckDBV2ValueHandle -> SettingScope -> IO a) -> IO a

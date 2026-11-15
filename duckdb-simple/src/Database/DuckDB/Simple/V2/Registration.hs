@@ -131,6 +131,7 @@ import Database.DuckDB.Simple.Callback (
   attachOpaque,
   guardContext,
   install,
+  installAll,
   installOptional,
   readCallbackState,
   runCallback,
@@ -328,32 +329,31 @@ registerScalarFunctionWith target configure callbacks =
     \function register ->
       withCallbackResources
         ( \allocate ->
-            sequence_
-              <$> sequence
-                [ installOptional (scalarResolveTypesCallback callbacks) $ \callback ->
-                    install
-                      allocate
-                      DuckDBV2ScalarFunctionResolveTypesCallbackFn
-                      (DuckDBV2ScalarFunctionResolveTypesCallbackFn_Aux (guardBind callback))
-                      (c_duckdb_v2_scalar_function_set_resolve_types_callback function)
-                , installOptional (scalarBindCallback callbacks) $ \callback ->
-                    install
-                      allocate
-                      DuckDBV2ScalarFunctionBindCallbackFn
-                      (DuckDBV2ScalarFunctionBindCallbackFn_Aux (guardBind callback))
-                      (c_duckdb_v2_scalar_function_set_bind_callback function)
-                , installOptional (scalarInitCallback callbacks) $ \callback ->
-                    install
-                      allocate
-                      DuckDBV2ScalarFunctionInitCallbackFn
-                      (DuckDBV2ScalarFunctionInitCallbackFn_Aux (guardContext callback))
-                      (c_duckdb_v2_scalar_function_set_init_callback function)
-                , install
+            installAll
+              [ installOptional (scalarResolveTypesCallback callbacks) $ \callback ->
+                  install
                     allocate
-                    DuckDBV2ScalarFunctionExecCallbackFn
-                    (DuckDBV2ScalarFunctionExecCallbackFn_Aux (guardContext (scalarExecCallback callbacks)))
-                    (c_duckdb_v2_scalar_function_set_exec_callback function)
-                ]
+                    DuckDBV2ScalarFunctionResolveTypesCallbackFn
+                    (DuckDBV2ScalarFunctionResolveTypesCallbackFn_Aux (guardBind callback))
+                    (c_duckdb_v2_scalar_function_set_resolve_types_callback function)
+              , installOptional (scalarBindCallback callbacks) $ \callback ->
+                  install
+                    allocate
+                    DuckDBV2ScalarFunctionBindCallbackFn
+                    (DuckDBV2ScalarFunctionBindCallbackFn_Aux (guardBind callback))
+                    (c_duckdb_v2_scalar_function_set_bind_callback function)
+              , installOptional (scalarInitCallback callbacks) $ \callback ->
+                  install
+                    allocate
+                    DuckDBV2ScalarFunctionInitCallbackFn
+                    (DuckDBV2ScalarFunctionInitCallbackFn_Aux (guardContext callback))
+                    (c_duckdb_v2_scalar_function_set_init_callback function)
+              , install
+                  allocate
+                  DuckDBV2ScalarFunctionExecCallbackFn
+                  (DuckDBV2ScalarFunctionExecCallbackFn_Aux (guardContext (scalarExecCallback callbacks)))
+                  (c_duckdb_v2_scalar_function_set_exec_callback function)
+              ]
         )
         (attachOpaque (c_duckdb_v2_scalar_function_set_user_data function))
         \installCallbacks -> do
@@ -434,46 +434,45 @@ registerAggregateFunctionWith target configure callbacks =
     \function register ->
       withCallbackResources
         ( \allocate ->
-            sequence_
-              <$> sequence
-                [ installOptional (aggregateBindCallback callbacks) $ \callback ->
-                    install
-                      allocate
-                      DuckDBV2AggregateFunctionBindCallbackFn
-                      (DuckDBV2AggregateFunctionBindCallbackFn_Aux (guardBind callback))
-                      (c_duckdb_v2_aggregate_function_set_bind_callback function)
-                , install
+            installAll
+              [ installOptional (aggregateBindCallback callbacks) $ \callback ->
+                  install
                     allocate
-                    DuckDBV2AggregateFunctionSizeCallbackFn
-                    (DuckDBV2AggregateFunctionSizeCallbackFn_Aux (guardCallback (aggregateSizeCallback callbacks)))
-                    (c_duckdb_v2_aggregate_function_set_size_callback function)
-                , install
+                    DuckDBV2AggregateFunctionBindCallbackFn
+                    (DuckDBV2AggregateFunctionBindCallbackFn_Aux (guardBind callback))
+                    (c_duckdb_v2_aggregate_function_set_bind_callback function)
+              , install
+                  allocate
+                  DuckDBV2AggregateFunctionSizeCallbackFn
+                  (DuckDBV2AggregateFunctionSizeCallbackFn_Aux (guardCallback (aggregateSizeCallback callbacks)))
+                  (c_duckdb_v2_aggregate_function_set_size_callback function)
+              , install
+                  allocate
+                  DuckDBV2AggregateFunctionInitCallbackFn
+                  (DuckDBV2AggregateFunctionInitCallbackFn_Aux (guardCallback (aggregateInitCallback callbacks)))
+                  (c_duckdb_v2_aggregate_function_set_init_callback function)
+              , install
+                  allocate
+                  DuckDBV2AggregateFunctionUpdateCallbackFn
+                  (DuckDBV2AggregateFunctionUpdateCallbackFn_Aux (guardCallback (aggregateUpdateCallback callbacks)))
+                  (c_duckdb_v2_aggregate_function_set_update_callback function)
+              , install
+                  allocate
+                  DuckDBV2AggregateFunctionCombineCallbackFn
+                  (DuckDBV2AggregateFunctionCombineCallbackFn_Aux (guardCallback (aggregateCombineCallback callbacks)))
+                  (c_duckdb_v2_aggregate_function_set_combine_callback function)
+              , install
+                  allocate
+                  DuckDBV2AggregateFunctionFinalizeCallbackFn
+                  (DuckDBV2AggregateFunctionFinalizeCallbackFn_Aux (guardCallback (aggregateFinalizeCallback callbacks)))
+                  (c_duckdb_v2_aggregate_function_set_finalize_callback function)
+              , installOptional (aggregateDestroyCallback callbacks) $ \callback ->
+                  install
                     allocate
-                    DuckDBV2AggregateFunctionInitCallbackFn
-                    (DuckDBV2AggregateFunctionInitCallbackFn_Aux (guardCallback (aggregateInitCallback callbacks)))
-                    (c_duckdb_v2_aggregate_function_set_init_callback function)
-                , install
-                    allocate
-                    DuckDBV2AggregateFunctionUpdateCallbackFn
-                    (DuckDBV2AggregateFunctionUpdateCallbackFn_Aux (guardCallback (aggregateUpdateCallback callbacks)))
-                    (c_duckdb_v2_aggregate_function_set_update_callback function)
-                , install
-                    allocate
-                    DuckDBV2AggregateFunctionCombineCallbackFn
-                    (DuckDBV2AggregateFunctionCombineCallbackFn_Aux (guardCallback (aggregateCombineCallback callbacks)))
-                    (c_duckdb_v2_aggregate_function_set_combine_callback function)
-                , install
-                    allocate
-                    DuckDBV2AggregateFunctionFinalizeCallbackFn
-                    (DuckDBV2AggregateFunctionFinalizeCallbackFn_Aux (guardCallback (aggregateFinalizeCallback callbacks)))
-                    (c_duckdb_v2_aggregate_function_set_finalize_callback function)
-                , installOptional (aggregateDestroyCallback callbacks) $ \callback ->
-                    install
-                      allocate
-                      DuckDBV2AggregateFunctionDestroyCallbackFn
-                      (DuckDBV2AggregateFunctionDestroyCallbackFn_Aux (guardCallback callback))
-                      (c_duckdb_v2_aggregate_function_set_destroy_callback function)
-                ]
+                    DuckDBV2AggregateFunctionDestroyCallbackFn
+                    (DuckDBV2AggregateFunctionDestroyCallbackFn_Aux (guardCallback callback))
+                    (c_duckdb_v2_aggregate_function_set_destroy_callback function)
+              ]
         )
         (attachOpaque (c_duckdb_v2_aggregate_function_set_user_data function))
         \installCallbacks -> do
@@ -541,67 +540,66 @@ registerTableFunctionWith target configure callbacks =
     \function register ->
       withCallbackResources
         ( \allocate ->
-            sequence_
-              <$> sequence
-                [ install
+            installAll
+              [ install
+                  allocate
+                  DuckDBV2TableFunctionBindCallbackFn
+                  (DuckDBV2TableFunctionBindCallbackFn_Aux (guardBind (tableBindCallback callbacks)))
+                  (c_duckdb_v2_table_function_set_bind_callback function)
+              , installOptional (tableInitGlobalCallback callbacks) $ \callback ->
+                  install
                     allocate
-                    DuckDBV2TableFunctionBindCallbackFn
-                    (DuckDBV2TableFunctionBindCallbackFn_Aux (guardBind (tableBindCallback callbacks)))
-                    (c_duckdb_v2_table_function_set_bind_callback function)
-                , installOptional (tableInitGlobalCallback callbacks) $ \callback ->
-                    install
-                      allocate
-                      DuckDBV2TableFunctionInitGlobalCallbackFn
-                      (DuckDBV2TableFunctionInitGlobalCallbackFn_Aux (guardContext callback))
-                      (c_duckdb_v2_table_function_set_init_global_callback function)
-                , installOptional (tableInitLocalCallback callbacks) $ \callback ->
-                    install
-                      allocate
-                      DuckDBV2TableFunctionInitLocalCallbackFn
-                      (DuckDBV2TableFunctionInitLocalCallbackFn_Aux (guardContext callback))
-                      (c_duckdb_v2_table_function_set_init_local_callback function)
-                , install
+                    DuckDBV2TableFunctionInitGlobalCallbackFn
+                    (DuckDBV2TableFunctionInitGlobalCallbackFn_Aux (guardContext callback))
+                    (c_duckdb_v2_table_function_set_init_global_callback function)
+              , installOptional (tableInitLocalCallback callbacks) $ \callback ->
+                  install
                     allocate
-                    DuckDBV2TableFunctionExecCallbackFn
-                    (DuckDBV2TableFunctionExecCallbackFn_Aux (guardContext (tableExecCallback callbacks)))
-                    (c_duckdb_v2_table_function_set_exec_callback function)
-                , installOptional (tableProgressCallback callbacks) $ \callback ->
-                    install
-                      allocate
-                      DuckDBV2TableFunctionProgressCallbackFn
-                      (DuckDBV2TableFunctionProgressCallbackFn_Aux (guardContext callback))
-                      (c_duckdb_v2_table_function_set_progress_callback function)
-                , installOptional (tableFilterPushdownCallback callbacks) $ \callback ->
-                    install
-                      allocate
-                      DuckDBV2TableFunctionFilterPushdownCallbackFn
-                      (DuckDBV2TableFunctionFilterPushdownCallbackFn_Aux (guardContext callback))
-                      (c_duckdb_v2_table_function_set_filter_pushdown_callback function)
-                , installOptional (tablePartitionDataCallback callbacks) $ \callback ->
-                    install
-                      allocate
-                      DuckDBV2TableFunctionPartitionDataCallbackFn
-                      (DuckDBV2TableFunctionPartitionDataCallbackFn_Aux (guardContext callback))
-                      (c_duckdb_v2_table_function_set_partition_data_callback function)
-                , installOptional (tablePartitioningCallback callbacks) $ \callback ->
-                    install
-                      allocate
-                      DuckDBV2TableFunctionPartitioningCallbackFn
-                      (DuckDBV2TableFunctionPartitioningCallbackFn_Aux (guardContext callback))
-                      (c_duckdb_v2_table_function_set_partitioning_callback function)
-                , installOptional (tableClaimBatchCallback callbacks) $ \callback ->
-                    install
-                      allocate
-                      DuckDBV2TableFunctionClaimBatchCallbackFn
-                      (DuckDBV2TableFunctionClaimBatchCallbackFn_Aux (guardContext callback))
-                      (c_duckdb_v2_table_function_set_claim_batch_callback function)
-                , installOptional (tableGetBindInfoCallback callbacks) $ \callback ->
-                    install
-                      allocate
-                      DuckDBV2TableFunctionGetBindInfoCallbackFn
-                      (DuckDBV2TableFunctionGetBindInfoCallbackFn_Aux (guardContext callback))
-                      (c_duckdb_v2_table_function_set_get_bind_info_callback function)
-                ]
+                    DuckDBV2TableFunctionInitLocalCallbackFn
+                    (DuckDBV2TableFunctionInitLocalCallbackFn_Aux (guardContext callback))
+                    (c_duckdb_v2_table_function_set_init_local_callback function)
+              , install
+                  allocate
+                  DuckDBV2TableFunctionExecCallbackFn
+                  (DuckDBV2TableFunctionExecCallbackFn_Aux (guardContext (tableExecCallback callbacks)))
+                  (c_duckdb_v2_table_function_set_exec_callback function)
+              , installOptional (tableProgressCallback callbacks) $ \callback ->
+                  install
+                    allocate
+                    DuckDBV2TableFunctionProgressCallbackFn
+                    (DuckDBV2TableFunctionProgressCallbackFn_Aux (guardContext callback))
+                    (c_duckdb_v2_table_function_set_progress_callback function)
+              , installOptional (tableFilterPushdownCallback callbacks) $ \callback ->
+                  install
+                    allocate
+                    DuckDBV2TableFunctionFilterPushdownCallbackFn
+                    (DuckDBV2TableFunctionFilterPushdownCallbackFn_Aux (guardContext callback))
+                    (c_duckdb_v2_table_function_set_filter_pushdown_callback function)
+              , installOptional (tablePartitionDataCallback callbacks) $ \callback ->
+                  install
+                    allocate
+                    DuckDBV2TableFunctionPartitionDataCallbackFn
+                    (DuckDBV2TableFunctionPartitionDataCallbackFn_Aux (guardContext callback))
+                    (c_duckdb_v2_table_function_set_partition_data_callback function)
+              , installOptional (tablePartitioningCallback callbacks) $ \callback ->
+                  install
+                    allocate
+                    DuckDBV2TableFunctionPartitioningCallbackFn
+                    (DuckDBV2TableFunctionPartitioningCallbackFn_Aux (guardContext callback))
+                    (c_duckdb_v2_table_function_set_partitioning_callback function)
+              , installOptional (tableClaimBatchCallback callbacks) $ \callback ->
+                  install
+                    allocate
+                    DuckDBV2TableFunctionClaimBatchCallbackFn
+                    (DuckDBV2TableFunctionClaimBatchCallbackFn_Aux (guardContext callback))
+                    (c_duckdb_v2_table_function_set_claim_batch_callback function)
+              , installOptional (tableGetBindInfoCallback callbacks) $ \callback ->
+                  install
+                    allocate
+                    DuckDBV2TableFunctionGetBindInfoCallbackFn
+                    (DuckDBV2TableFunctionGetBindInfoCallbackFn_Aux (guardContext callback))
+                    (c_duckdb_v2_table_function_set_get_bind_info_callback function)
+              ]
         )
         (attachOpaque (c_duckdb_v2_table_function_set_user_data function))
         \installCallbacks -> do
@@ -612,6 +610,9 @@ registerTableFunctionWith target configure callbacks =
 
 -- | Register a cast. Nothing keeps the native explicit-cast cost.
 -- The callback must inspect the native cast mode to implement TRY_CAST behavior.
+-- A target type from SQL @CREATE TYPE name AS base@ is only another name for
+-- the base type, so the cast is a cast to the base type. A type from
+-- 'registerCustomType' keeps its name. See 'TypeDeclaration'.
 --
 -- The source type is the first type, and the target type is the second type. The example registers a cast
 -- from BIGINT to a custom type. The callback adds 100 to each value.

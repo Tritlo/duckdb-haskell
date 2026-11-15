@@ -23,7 +23,7 @@ module Database.DuckDB.Simple.V2.Pragma (
 import Control.Monad (when)
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Database.DuckDB.Simple.Callback (attachOpaque, runCallback, withCallbackResources, withTarget)
+import Database.DuckDB.Simple.Callback (attachOpaque, guardContext, install, runCallback, withCallbackResources, withTarget)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.V2.Registration (
   ContextCallback,
@@ -33,7 +33,6 @@ import Database.DuckDB.Simple.V2.Registration (
   configureFunctionSignature,
   withRegistrationFactory,
  )
-import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
 
 -- | A query callback returns SQL to run in place of the PRAGMA statement.
 -- An execution callback performs an action and returns no rows. Callback handles
@@ -89,18 +88,25 @@ registerPragmaFunctionWith target configure callback =
     \function register ->
       withCallbackResources
         ( \allocate -> case callback of
-            QueryPragma action -> do
-              pointer <- allocate $ toFunPtr $ DuckDBV2PragmaFunctionQueryCallbackFn_Aux \info result context err ->
-                runCallback err do
-                  sql <- action info context
-                  withText sql (checked . c_duckdb_v2_pragma_function_query_set_query result)
-              pure (checked (c_duckdb_v2_pragma_function_set_query_callback function (DuckDBV2PragmaFunctionQueryCallbackFn pointer)))
-            ExecPragma action -> do
-              pointer <- allocate $ toFunPtr $ DuckDBV2PragmaFunctionExecCallbackFn_Aux \info context err -> runCallback err (action info context)
-              pure (checked (c_duckdb_v2_pragma_function_set_exec_callback function (DuckDBV2PragmaFunctionExecCallbackFn pointer)))
+            QueryPragma action ->
+              install
+                allocate
+                DuckDBV2PragmaFunctionQueryCallbackFn
+                ( DuckDBV2PragmaFunctionQueryCallbackFn_Aux \info result context err ->
+                    runCallback err do
+                      sql <- action info context
+                      withText sql (checked . c_duckdb_v2_pragma_function_query_set_query result)
+                )
+                (c_duckdb_v2_pragma_function_set_query_callback function)
+            ExecPragma action ->
+              install
+                allocate
+                DuckDBV2PragmaFunctionExecCallbackFn
+                (DuckDBV2PragmaFunctionExecCallbackFn_Aux (guardContext action))
+                (c_duckdb_v2_pragma_function_set_exec_callback function)
         )
         (attachOpaque (c_duckdb_v2_pragma_function_set_user_data function))
-        \install -> do
+        \installCallback -> do
           configure function
-          install
+          installCallback
           register

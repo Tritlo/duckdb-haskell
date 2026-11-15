@@ -15,10 +15,9 @@ module Database.DuckDB.Simple.V2.Config (
   registerCustomOptionWith,
 ) where
 
-import Database.DuckDB.Simple.Callback (attachOpaque, runCallback, withCallbackResources, withTarget)
+import Database.DuckDB.Simple.Callback (attachOpaque, guardContext, install, installOptional, withCallbackResources, withTarget)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.V2.Registration (ContextCallback, RegistrationTarget (..))
-import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
 
 -- | Configure and register a custom option with managed callback cleanup.
 -- The configuration action borrows the builder. Do not set user data or callbacks.
@@ -34,14 +33,15 @@ registerCustomOptionWith target configure callback =
     c_duckdb_v2_extension_register_custom_option
     \option register ->
       withCallbackResources
-        ( \allocate -> case callback of
-            Nothing -> pure Nothing
-            Just update ->
-              Just . DuckDBV2CustomOptionUpdateCallbackFn
-                <$> allocate (toFunPtr (DuckDBV2CustomOptionUpdateCallbackFn_Aux (\info context err -> runCallback err (update info context))))
+        ( \allocate -> installOptional callback \update ->
+            install
+              allocate
+              DuckDBV2CustomOptionUpdateCallbackFn
+              (DuckDBV2CustomOptionUpdateCallbackFn_Aux (guardContext update))
+              (c_duckdb_v2_custom_option_set_update_callback option)
         )
         (attachOpaque (c_duckdb_v2_custom_option_set_user_data option))
-        \update -> do
+        \installCallback -> do
           configure option
-          mapM_ (checked . c_duckdb_v2_custom_option_set_update_callback option) update
+          installCallback
           register

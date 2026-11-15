@@ -14,6 +14,7 @@ module Database.DuckDB.Simple.Callback (
   Allocator,
   install,
   installOptional,
+  installAll,
   guardContext,
   withCallbackResources,
   withCallbackResourcesFinally,
@@ -97,6 +98,15 @@ install allocate wrap callback setter = do
 -- | Allocate an optional callback when it is present.
 installOptional :: Maybe a -> (a -> IO (IO ())) -> IO (IO ())
 installOptional value action = maybe (pure (pure ())) action value
+
+-- | Run each install action now, and return one action that runs their setters
+-- in order. A registration has two phases. First the install actions allocate
+-- each function pointer, in the acquire step of 'withCallbackResources', so
+-- that its cleanup frees each pointer. Then the setters run after the
+-- configuration action of the registration, so a callback of the library
+-- replaces a callback that the configuration action set.
+installAll :: [IO (IO ())] -> IO (IO ())
+installAll installers = sequence_ <$> sequence installers
 
 -- | Translate a callback exception through its native error channel.
 guardContext :: (info -> DuckDBV2ContextHandle -> IO ()) -> info -> DuckDBV2ContextHandle -> Ptr DuckDBV2ErrorInfoHandle -> IO ()

@@ -272,21 +272,21 @@ shrinkMaybeInt :: Maybe Int -> [Maybe Int]
 shrinkMaybeInt Nothing = []
 shrinkMaybeInt (Just x) = Nothing : [Just y | y <- shrink x]
 
--- | Choose a day from the finite range of DATE: each 32-bit count of days from
--- the Unix epoch, except the two counts that DuckDB uses for the infinities.
--- The boundaries are the ends of the range and the days next to the epoch.
+-- | Choose a day in the range of DATE that DuckDB accepts: from 5877642-06-25
+-- (BC), which is day -2147483646 from the Unix epoch, to 5881580-07-10, which
+-- is day 2147483646. The library raises an error for a smaller day. See
+-- Note [Time ranges] in "Database.DuckDB.Simple.ToField". The boundaries are
+-- the ends of the range and the days next to the epoch.
 genDay :: Gen Day
-genDay = (`addDays` fromGregorian 1970 1 1) <$> genFiniteCount (toInteger (maxBound :: Int32))
-
--- | Choose a count from minBound to maxBound - 1 of a signed type whose
--- maximum is the argument, except the negated maximum. DuckDB uses the
--- maximum and the negated maximum for the infinities of DATE.
-genFiniteCount :: Integer -> Gen Integer
-genFiniteCount largest =
-  frequency
-    [ (1, elements [negate largest - 1, negate largest + 1, -1, 0, 1, largest - 1])
-    , (3, chooseInteger (negate largest - 1, largest - 1) `suchThat` (/= negate largest))
-    ]
+genDay =
+  (`addDays` fromGregorian 1970 1 1)
+    <$> frequency
+      [ (1, elements [smallest, -1, 0, 1, largest])
+      , (3, chooseInteger (smallest, largest))
+      ]
+  where
+    smallest = -2147483646
+    largest = 2147483646
 
 -- | Choose a count of microseconds from the Unix epoch in the range of TIMESTAMP
 -- that DuckDB states: from 290309-12-22 (BC) 00:00:00, which is

@@ -130,7 +130,7 @@ tests =
             forM_ rows \(Variant actual, native) -> do
               actual @?= native
               roundTrip conn native
-    , testCase "wide finite timestamp payloads round trip without losing digits" $ withConnection ":memory:" \conn -> do
+    , testCase "wide finite timestamp payloads read without losing digits, and do not bind" $ withConnection ":memory:" \conn -> do
         void (execute_ conn "CREATE TABLE wide_timestamps (seconds TIMESTAMP_S, millis TIMESTAMP_MS)")
         let units =
               [(30000000000000, 30000000000000001), (-30000000000000, -30000000000000001), (maxBound - 1, maxBound - 1), (minBound, minBound)]
@@ -149,7 +149,12 @@ tests =
         forM_ rows \(seconds, nativeSeconds, millis, nativeMillis) ->
           forM_ [(seconds, nativeSeconds), (millis, nativeMillis)] \(Variant actual, native) -> do
             actual @?= native
-            roundTrip conn actual
+            -- The microseconds of the value do not fit in INT64. See
+            -- Note [Time ranges] in "Database.DuckDB.Simple.ToField".
+            outcome <- try (query conn "SELECT ?" (Only (Variant actual)) :: IO [Only Variant])
+            case outcome of
+              Left (err :: IOException) -> assertBool (show err) ("TIMESTAMP value out of finite range" `isInfixOf` show err)
+              Right bound -> assertFailure ("expected the storage error, got " <> show bound)
     , testCase "text and binary values preserve embedded NUL" $ withConnection ":memory:" \conn -> do
         roundTrip conn (FieldText "before\0after íslenska λ 😀")
         roundTrip conn (FieldBlob (BS.pack [0, 1, 127, 128, 255, 0]))

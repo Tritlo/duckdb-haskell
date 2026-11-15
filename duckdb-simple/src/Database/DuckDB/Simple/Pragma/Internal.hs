@@ -5,8 +5,9 @@
 -- Module      : Database.DuckDB.Simple.Pragma.Internal
 -- Description : Share the typed PRAGMA registration for connections and extensions.
 --
--- 'registerPragmaFunctionOn' takes a registration target.
--- "Database.DuckDB.Simple.Pragma" gives the connection form.
+-- This module is not exposed: the cabal file lists it in @other-modules@. It
+-- holds the implementation. 'registerPragmaFunctionOn' takes a registration
+-- target. "Database.DuckDB.Simple.Pragma" gives the connection form.
 -- "Database.DuckDB.Simple.Extension" gives the extension form.
 module Database.DuckDB.Simple.Pragma.Internal (
   PragmaCallback (..),

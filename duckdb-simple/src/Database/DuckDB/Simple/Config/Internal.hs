@@ -5,13 +5,13 @@
 -- Module      : Database.DuckDB.Simple.Config.Internal
 -- Description : Share the typed custom option registration for connections and extensions.
 --
--- 'registerCustomOptionOn' takes a registration target.
--- "Database.DuckDB.Simple.Config" gives the connection form.
+-- This module is not exposed: the cabal file lists it in @other-modules@. It
+-- holds the implementation. 'registerCustomOptionOn' takes a registration
+-- target. "Database.DuckDB.Simple.Config" gives the connection form.
 -- "Database.DuckDB.Simple.Extension" gives the extension form.
 module Database.DuckDB.Simple.Config.Internal (
   CustomOption (..),
   registerCustomOptionOn,
-  unexpectedVariant,
 ) where
 
 import Control.Exception (bracket, throwIO)
@@ -38,7 +38,11 @@ import Database.DuckDB.Simple.V2.Registration (
 -- exception in the function rejects the value. The text of the exception is the
 -- SQL error. A RESET gives the default value to the function, or
 -- 'Database.DuckDB.Simple.FromField.FieldNull' for an option without a default.
--- Thus the function must accept the default value.
+-- Thus the function must accept the default value. The callback of DuckDB gets
+-- no connection, so the library cannot decode a VARIANT value in it. Thus, for
+-- an option with an update function, DuckDB rejects a new value that is or
+-- contains a VARIANT value. An option without an update function stores such a
+-- value, and 'Database.DuckDB.Simple.Config.getConfigValue' reads it.
 data CustomOption = CustomOption
   { customOptionName :: !Text
   , customOptionType :: !TypeDeclaration
@@ -85,6 +89,8 @@ updateWithValue casts update info context = withContextFactory context \factory 
     (materializeValue unexpectedVariant (fromMaybe factory casts))
     >>= update
 
--- | Raise an @SQLError@ for a VARIANT value. Configuration reads do not decode VARIANT.
+-- | Raise an @SQLError@ for a VARIANT value. The update function of a custom
+-- option gets its value in a callback. The callback has a context and no
+-- helper connection, so it cannot decode VARIANT.
 unexpectedVariant :: VectorReader
 unexpectedVariant = rejectRows (throwIO (SQLError "duckdb-simple: configuration values must not contain VARIANT" Nothing Nothing))

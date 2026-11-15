@@ -187,6 +187,7 @@ withVariantState TypeCache{typeCacheInstance, typeCacheCasts, typeCacheState} ac
 readNativeTypes :: DuckDBV2ConnectionHandle -> [Text] -> IO NativeTypes
 readNativeTypes _ [] = pure (NativeTypes Map.empty [])
 readNativeTypes connection crss = do
+  -- See Note [SQL text of the library] in "Database.DuckDB.Simple.Native".
   let sql = "SELECT " <> Text.intercalate ", " ["system.main.ST_SetCRS(system.main.ST_GeomFromWKB(?), ?)" | _ <- crss]
       textValue value = withText value (\text -> factoryOutput connection (\factory -> c_duckdb_v2_value_create_varchar factory text))
       emptyPoint = withBytes emptyPointWKB (\bytes -> factoryOutput connection (\factory -> c_duckdb_v2_value_create_blob factory bytes))

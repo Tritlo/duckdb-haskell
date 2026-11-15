@@ -91,6 +91,25 @@ extensionRegressionTests =
         withConnection ":memory:" \conn -> do
           deleteFunction conn "absent_scalar"
           query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+    , testCase "deleteFunction reads the name with the qualified-name rules of DuckDB" $
+        withConnection ":memory:" \conn -> do
+          let macroCount :: Text.Text -> Text.Text -> IO [Only Int64]
+              macroCount schema name = query conn "SELECT count(*) FROM duckdb_functions() WHERE schema_name = ? AND function_name = ?" (schema, name)
+          void $ execute_ conn "CREATE MACRO \"a.b\"(x) AS x + 1; CREATE SCHEMA s; CREATE MACRO s.f(x) AS x; CREATE MACRO s.g(x) AS x"
+          mapM (uncurry macroCount) [("main", "a.b"), ("s", "f"), ("s", "g")] >>= (@?= replicate 3 [Only 1])
+          deleteFunction conn "\"a.b\""
+          macroCount "main" "a.b" >>= (@?= [Only 0])
+          deleteFunction conn "s.f"
+          macroCount "s" "f" >>= (@?= [Only 0])
+          deleteFunction conn "memory.s.g"
+          macroCount "s" "g" >>= (@?= [Only 0])
+          -- The parser rejects a quote inside a part that has no quotes, so no
+          -- statement runs.
+          void $ execute_ conn "CREATE TABLE kept (i INTEGER)"
+          assertSqlErrorContaining "Unexpected quote" $ deleteFunction conn "x\"; DROP TABLE kept; --"
+          query_ conn "SELECT count(*) FROM duckdb_tables() WHERE table_name = 'kept'" >>= (@?= [Only (1 :: Int64)])
+          assertSqlErrorContaining "Unexpected quote" $ deleteFunction conn "a\"b"
+          assertSqlErrorContaining "between one and three parts" $ deleteFunction conn "a.b.c.d"
     , testCase "stateful replacement registration cleanup" $
         withConnection ":memory:" \conn -> do
           createFunctionWithState conn "duplicate_state" (pure ()) (\() -> (42 :: Int64))
@@ -318,6 +337,14 @@ extensionRegressionTests =
     , testCase "catalog and config NUL names fail safely" $
         withConnection ":memory:" \conn -> do
           assertSqlError $ Config.getConfigOption conn "threads\0suffix"
+          -- DuckDB reads the name with its length, so it gets the NUL byte and
+          -- reports an unknown option. The library rejects the name before
+          -- the native call.
+          let rejectsNul = assertSqlErrorContaining "config option name contains NUL"
+          rejectsNul $ Config.setConfigOption conn Config.SettingScopeSession "threads\0suffix" "1"
+          rejectsNul $ Config.setConfigValue conn Config.SettingScopeSession "threads\0suffix" (1 :: Int64)
+          rejectsNul $ Config.getConfigValue conn "threads\0suffix"
+          rejectsNul $ Config.getConfigDefaultValue conn "threads\0suffix"
           withTransaction conn do
             assertSqlError $ Catalog.catalogTypeName conn "memory\0suffix"
             assertSqlError $ Catalog.lookupCatalogEntry conn "memory" "main\0suffix" "probe" Catalog.CatalogTable
@@ -354,12 +381,12 @@ extensionRegressionTests =
         withConnection ":memory:" \conn -> do
           Config.setConfigOption conn Config.SettingScopeGlobal "threads" "1"
           options <- Config.listConfigOptions conn
-          fmap Config.configValueText <$> Config.getConfigOption conn "threads" >>= (@?= Just "1")
+          fmap Config.configValueText <$> Config.getConfigOption conn "threads" >>= (@?= Just (Just "1"))
           close conn
           case find ((== "threads") . Config.configOptionName) options of
             Nothing -> assertFailure "missing threads descriptor"
             Just option -> do
-              Config.configOptionSetting option @?= "1"
+              Config.configOptionSetting option @?= Just "1"
               Config.configOptionName option @?= "threads"
               assertBool "description is retained" (not (Text.null (Config.configOptionDescription option)))
     , testCase "listed options give the aliases of DuckDB" $
@@ -371,11 +398,29 @@ extensionRegressionTests =
           assertBool "DuckDB lists options with aliases" (not (null aliases))
           forM_ aliases \(name, expected) ->
             assertEqual (Text.unpack name) (Just (sort expected)) (sort . Config.configOptionAliases <$> option name)
-          Config.configOptionSetting <$> option "progress_bar_time" @?= Just "1234"
+          Config.configOptionSetting <$> option "progress_bar_time" @?= Just (Just "1234")
+    , testCase "option descriptors give Nothing for a NULL value and a missing default" $
+        withConnection ":memory:" \conn -> do
+          Config.registerCustomOption
+            conn
+            (Config.customOption "haskell_described" (Registration.TypeExpression "BIGINT"))
+              { Config.customOptionDefault = Just (Registration.defaultValue (3 :: Int64))
+              }
+          void $ execute_ conn "RESET progress_bar_time"
+          options <- Config.listConfigOptions conn
+          let described get name = get <$> find ((== name) . Config.configOptionName) options
+          described Config.configOptionDefault "haskell_described" @?= Just (Just "3")
+          -- progress_bar_time has no static default. After RESET its value is 2000.
+          described Config.configOptionDefault "progress_bar_time" @?= Just Nothing
+          described Config.configOptionSetting "progress_bar_time" @?= Just (Just "2000")
+          -- enable_profiling has a NULL value until a write.
+          described Config.configOptionSetting "enable_profiling" @?= Just Nothing
+          -- getConfigOption shows the NULL value in the same way.
+          fmap Config.configValueText <$> Config.getConfigOption conn "enable_profiling" >>= (@?= Just Nothing)
     , testCase "instance options list global values" $
         withEnvironment \environment -> withInstance environment [("threads", "1")] \instance_ -> do
           options <- Config.listInstanceOptions instance_
-          fmap Config.configOptionSetting (find ((== "threads") . Config.configOptionName) options) @?= Just "1"
+          fmap Config.configOptionSetting (find ((== "threads") . Config.configOptionName) options) @?= Just (Just "1")
     , testCase "connection options set a session option on one connection only" $
         withEnvironment \environment -> withInstance environment [] \instance_ -> do
           attachDatabase instance_ ":memory:" "shared" []
@@ -390,7 +435,7 @@ extensionRegressionTests =
         withConnection ":memory:" \conn -> do
           Config.setConfigOption conn Config.SettingScopeGlobal "threads" "1"
           forM_ ["threads", "THREADS", "worker_threads", "WORKER_THREADS"] \name ->
-            fmap Config.configValueText <$> Config.getConfigOption conn name >>= (@?= Just "1")
+            fmap Config.configValueText <$> Config.getConfigOption conn name >>= (@?= Just (Just "1"))
           Config.getConfigOption conn "NO_SUCH_CONFIG_OPTION" >>= (@?= Nothing)
           close conn
           assertSqlError $ Config.getConfigOption conn "threads"
@@ -425,8 +470,31 @@ extensionRegressionTests =
           Config.getConfigValue conn "haskell_limit" >>= (@?= (FieldInt64 7, Config.SettingScopeSession))
           assertSqlErrorContaining "limit must be nonnegative" $ Config.setConfigValue conn Config.SettingScopeSession "haskell_limit" (-1 :: Int64)
           void $ execute_ conn "RESET haskell_limit"
-          fmap Config.configValueText <$> Config.getConfigOption conn "haskell_limit" >>= (@?= Just "3")
+          fmap Config.configValueText <$> Config.getConfigOption conn "haskell_limit" >>= (@?= Just (Just "3"))
           assertSqlError $ Config.registerCustomOption conn option
+    , testCase "listConfigFlags lists a custom option of the connection" $
+        withConnection ":memory:" \conn -> do
+          Config.registerCustomOption conn (Config.customOption "haskell_listed" (Registration.TypeExpression "BIGINT"))
+          flags <- Config.listConfigFlags conn
+          options <- Config.listConfigOptions conn
+          assertBool "the custom option is listed" ("haskell_listed" `elem` map Config.configFlagName flags)
+          map Config.configFlagName flags @?= map Config.configOptionName options
+    , testCase "typed reads of a VARIANT custom option give the value that it holds" $
+        withConnection ":memory:" \conn -> do
+          let variantType = Registration.TypeExpression "VARIANT"
+          Config.registerCustomOption
+            conn
+            (Config.customOption "haskell_variant" variantType){Config.customOptionDefault = Just (Registration.defaultValue (5 :: Int64))}
+          Config.getConfigDefaultValue conn "haskell_variant" >>= (@?= FieldInt64 5)
+          Config.setConfigValue conn Config.SettingScopeGlobal "haskell_variant" (7 :: Int64)
+          Config.getConfigValue conn "haskell_variant" >>= (@?= (FieldInt64 7, Config.SettingScopeGlobal))
+          -- A nested value gives the value of the same VARIANT in a result.
+          void $ execute_ conn "SET haskell_variant = {'a': 1, 'b': [1, 2]}"
+          [Only expected] <- query_ conn "SELECT {'a': 1, 'b': [1, 2]}::VARIANT" :: IO [Only FieldValue]
+          fst <$> Config.getConfigValue conn "haskell_variant" >>= (@?= expected)
+          -- The update callback gets no connection, so it rejects a VARIANT value.
+          Config.registerCustomOption conn (Config.customOption "haskell_variant_update" variantType){Config.customOptionUpdate = Just \_ -> pure ()}
+          assertSqlErrorContaining "configuration values must not contain VARIANT" $ execute_ conn "SET haskell_variant_update = 1"
     , testCase "setConfigValue with an Integer or a Natural checks the range of an unsigned option" $
         withConnection ":memory:" \conn -> do
           -- DuckDB 2.0.0 gives asof_loop_join_threshold the type UBIGINT.
@@ -571,6 +639,36 @@ extensionRegressionTests =
             FileSystem.fileHandleTell handle >>= (@?= 1)
             FileSystem.fileHandleSeek handle 0
             FileSystem.readFileHandleChunk handle 8 >>= (@?= BS.pack [8, 9, 3, 4])
+    , testCase "file reads shorter than the file give the requested bytes" $
+        withTemporaryFile \path -> withConnection ":memory:" \conn -> do
+          let bytes = BS.pack [0 .. 15]
+          BS.writeFile path bytes
+          FileSystem.withFileHandle conn path [FileSystem.FileFlagRead] \handle -> do
+            FileSystem.readFileHandleChunk handle 4 >>= (@?= BS.take 4 bytes)
+            FileSystem.fileHandleTell handle >>= (@?= 4)
+            FileSystem.readFileHandleAt handle 8 4 >>= (@?= BS.take 4 (BS.drop 8 bytes))
+            -- A chunk read gives the bytes that remain after the position.
+            FileSystem.readFileHandleChunk handle 100 >>= (@?= BS.drop 4 bytes)
+    , testCase "a positioned read past the end gives the error of DuckDB" $
+        withTemporaryFile \path -> withConnection ":memory:" \conn -> do
+          BS.writeFile path (BS.pack [0 .. 15])
+          FileSystem.withFileHandle conn path [FileSystem.FileFlagRead] \handle -> do
+            outcome <- try (FileSystem.readFileHandleAt handle 14 4)
+            case outcome of
+              Left (err :: SQLError) -> do
+                sqlErrorType err @?= Just ErrorIOGeneral
+                assertBool "DuckDB read error" ("Could not read enough bytes" `Text.isInfixOf` sqlErrorMessage err)
+              Right bytes -> assertFailure ("expected an IO error, got " <> show bytes)
+            -- The library checks only that the end of the range fits in Int64.
+            assertSqlErrorContaining "file read range exceeds Int64 range" $ FileSystem.readFileHandleAt handle maxBound 1
+            -- A size of 0 gives no bytes, also past the end, as in DuckDB.
+            FileSystem.readFileHandleAt handle 20 0 >>= (@?= BS.empty)
+            FileSystem.readFileHandleAt handle 12 4 >>= (@?= BS.pack [12 .. 15])
+    , testCase "a positioned write checks that its end fits in Int64" $
+        withTemporaryFile \path -> withConnection ":memory:" \conn ->
+          FileSystem.withFileHandle conn path [FileSystem.FileFlagWrite] \handle -> do
+            assertSqlErrorContaining "file write range exceeds Int64 range" $ FileSystem.writeFileHandleAt handle (maxBound - 1) (BS.pack [1, 2])
+            FileSystem.fileHandleSize handle >>= (@?= 0)
     , testCase "file flags of the other file tests create read and write a file" $
         withTemporaryFile \path -> withConnection ":memory:" \conn -> do
           removeFile path

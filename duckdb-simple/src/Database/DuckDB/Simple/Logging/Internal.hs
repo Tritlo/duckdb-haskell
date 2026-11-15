@@ -7,7 +7,8 @@
 -- Module      : Database.DuckDB.Simple.Logging.Internal
 -- Description : Share the log sink registration for connections and extensions.
 --
--- 'registerLogSinkOn' takes a registration target.
+-- This module is not exposed: the cabal file lists it in @other-modules@. It
+-- holds the implementation. 'registerLogSinkOn' takes a registration target.
 -- "Database.DuckDB.Simple.Logging" gives the connection and instance forms.
 -- "Database.DuckDB.Simple.Extension" gives the extension form.
 module Database.DuckDB.Simple.Logging.Internal (
@@ -30,7 +31,14 @@ import qualified Data.Text as Text
 import Data.Time.Clock (UTCTime)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Data.Word (Word64)
-import Database.DuckDB.Simple.Callback (RegistrationTarget (..), attachOpaque, runCallback, withCallbackResourcesFinally)
+import Database.DuckDB.Simple.Callback (
+  RegistrationTarget (..),
+  attachOpaque,
+  install,
+  installAll,
+  runCallback,
+  withCallbackResourcesFinally,
+ )
 import Database.DuckDB.Simple.Internal (Connection, Instance, withConnectionHandle, withDatabaseHandle, withInstanceHandle)
 import Database.DuckDB.Simple.Native
 import Foreign.C.ConstPtr (ConstPtr (..))
@@ -38,7 +46,6 @@ import Foreign.C.Types (CBool)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (Ptr)
 import Foreign.Storable (peek)
-import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
 
 -- | A copied log event. Native context identifiers are absent outside their scope.
 data LogEntry = LogEntry
@@ -91,26 +98,35 @@ registerSink factory register name write flush = do
   bracket (output (c_duckdb_v2_log_sink_create factory)) (destroy c_duckdb_v2_log_sink_destroy) \sink ->
     withCallbackResourcesFinally
       flush
-      ( \allocate -> do
-          writer <- allocate $ toFunPtr $ DuckDBV2LogSinkWriteCallbackFn_Aux \info _ timestamp level scope (ConstPtr kind) (ConstPtr message) err -> runCallback err do
-            category <- peek kind >>= readText
-            body <- peek message >>= readText
-            connection <- optionalId (c_duckdb_v2_log_sink_write_info_get_connection_id info)
-            transaction <- optionalId (c_duckdb_v2_log_sink_write_info_get_transaction_id info)
-            query <- optionalId (c_duckdb_v2_log_sink_write_info_get_query_id info)
-            thread <- optionalId (c_duckdb_v2_log_sink_write_info_get_thread_id info)
-            severity <- logLevelFromNative level
-            origin <- logScopeFromNative scope
-            let time = posixSecondsToUTCTime (fromRational (toInteger timestamp % 1000000))
-            write (LogEntry (Just time) (levelName severity) category body severity origin connection transaction query thread)
-          flusher <- allocate $ toFunPtr $ DuckDBV2LogSinkFlushCallbackFn_Aux \_ _ err -> runCallback err flush
-          pure (DuckDBV2LogSinkWriteCallbackFn writer, DuckDBV2LogSinkFlushCallbackFn flusher)
+      ( \allocate ->
+          installAll
+            [ install
+                allocate
+                DuckDBV2LogSinkWriteCallbackFn
+                ( DuckDBV2LogSinkWriteCallbackFn_Aux \info _ timestamp level scope (ConstPtr kind) (ConstPtr message) err -> runCallback err do
+                    category <- peek kind >>= readText
+                    body <- peek message >>= readText
+                    connection <- optionalId (c_duckdb_v2_log_sink_write_info_get_connection_id info)
+                    transaction <- optionalId (c_duckdb_v2_log_sink_write_info_get_transaction_id info)
+                    query <- optionalId (c_duckdb_v2_log_sink_write_info_get_query_id info)
+                    thread <- optionalId (c_duckdb_v2_log_sink_write_info_get_thread_id info)
+                    severity <- logLevelFromNative level
+                    origin <- logScopeFromNative scope
+                    let time = posixSecondsToUTCTime (fromRational (toInteger timestamp % 1000000))
+                    write (LogEntry (Just time) (levelName severity) category body severity origin connection transaction query thread)
+                )
+                (c_duckdb_v2_log_sink_set_write_callback sink)
+            , install
+                allocate
+                DuckDBV2LogSinkFlushCallbackFn
+                (DuckDBV2LogSinkFlushCallbackFn_Aux \_ _ err -> runCallback err flush)
+                (c_duckdb_v2_log_sink_set_flush_callback sink)
+            ]
       )
       (attachOpaque (c_duckdb_v2_log_sink_set_user_data sink))
-      \(writer, flusher) -> do
+      \installCallbacks -> do
         withIdentifier name $ checked . c_duckdb_v2_log_sink_set_name sink
-        checked (c_duckdb_v2_log_sink_set_write_callback sink writer)
-        checked (c_duckdb_v2_log_sink_set_flush_callback sink flusher)
+        installCallbacks
         register sink
 
 -- | Copy an optional identifier from a borrowed log-entry context.

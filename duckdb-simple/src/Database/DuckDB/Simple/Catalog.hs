@@ -4,6 +4,14 @@
 -- |
 -- Module      : Database.DuckDB.Simple.Catalog
 -- Description : Catalog inspection through V2 queries and native table descriptions.
+--
+-- 'catalogTypeName' and 'lookupCatalogEntry' run SQL on the V2 connection.
+-- The SQL reads the @duckdb_*()@ table functions, which are the metadata
+-- interface of DuckDB. The C API V2 of DuckDB 2.0.0 has no call that looks up
+-- a catalog entry. The old C API has such calls, but it has no supported way
+-- to use a V2 connection. In a reply of 2026-10-20 to an extension author,
+-- DuckDB wrote: "we'll add a catalog access interface eventually"
+-- (<https://github.com/duckdb/duckdb/discussions/27525 DuckDB discussion 27525>).
 module Database.DuckDB.Simple.Catalog (
   CatalogEntryType (..),
   CatalogEntry (..),
@@ -24,8 +32,9 @@ import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
 
--- | Entry kinds that DuckDB exposes through catalog metadata. V2 metadata
--- cannot look up collations.
+-- | Entry kinds that DuckDB exposes through catalog metadata. There is no
+-- collation kind: @pragma_collations()@ gives the name of each collation, but
+-- not its catalog and its schema.
 data CatalogEntryType = CatalogTable | CatalogView | CatalogIndex | CatalogSequence | CatalogType
   deriving (Eq, Ord, Show, Read)
 
@@ -53,10 +62,13 @@ data ColumnDescription = ColumnDescription
   }
   deriving (Eq, Show)
 
--- | Read the backend type of an attached database.
+-- | Read the backend type of an attached database, for example @duckdb@.
+-- DuckDB gives a type for each attached database, so the result is 'Nothing'
+-- only for a name that no attached database has.
 catalogTypeName :: Connection -> Text -> IO (Maybe Text)
 catalogTypeName conn name = do
   validateNames [name]
+  -- See Note [SQL text of the library] in "Database.DuckDB.Simple.Native".
   rows <-
     query conn (Query ("SELECT type::VARCHAR FROM system.main.duckdb_databases() WHERE " <> identifierMatches "database_name")) (Only name)
   pure (case rows of Only value : _ -> Just value; [] -> Nothing)
@@ -71,6 +83,7 @@ lookupCatalogEntry conn catalog schema name kind = do
     CatalogIndex -> pure ("duckdb_indexes()", "index_name")
     CatalogSequence -> pure ("duckdb_sequences()", "sequence_name")
     CatalogType -> pure ("duckdb_types()", "type_name")
+  -- See Note [SQL text of the library] in "Database.DuckDB.Simple.Native".
   let sql =
         Query
           ( "SELECT e."

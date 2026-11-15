@@ -17,6 +17,17 @@
   Enable the `extension` flags of both packages. See `dev/extensions/`.
 - Add shared environments and instances, attachment management, option
   discovery, table descriptions, SQL tokenization, and positioned file I/O.
+- `listConfigFlags` takes a `Connection`, and it lists the options of the
+  database of that connection, also its custom options. See MIGRATION.md.
+- `deleteFunction` reads the name with the rules of DuckDB for a qualified
+  name, so a part in double quotes can contain a dot. See MIGRATION.md.
+- `ConfigValue.configValueText` is `Maybe Text`, and `Nothing` for an option
+  with a NULL value. Version 0.3 stopped the process for such an option. See
+  MIGRATION.md.
+- A `Day` before 5877642-06-25 (BC), and a `LocalTime` or a `UTCTime` before
+  290309-12-22 (BC) 00:00:00, raise an `SQLError` of the type
+  `ErrorInputOutOfRange` when they bind. Version 0.3 bound them. See
+  MIGRATION.md.
 - Add typed configuration values and defaults, managed log sinks, macro
   registration, function documentation, query metrics, and file path
   operations. Expose table bind metadata for multi-file readers.

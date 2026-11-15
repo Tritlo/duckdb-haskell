@@ -594,16 +594,23 @@ instance ToField String
 
 instance ToField BitString
 
+-- | Bind a day as a DATE. A day before 5877642-06-25 (BC), the year -5877641
+-- of "Data.Time", raises an t'SQLError' of the type 'ErrorInputOutOfRange'. See
+-- Note [Time ranges].
 instance ToField Day
 
 -- | Bind a time of day as a TIME, or as a TIME_NS. See
--- Note [Nanosecond parameters].
+-- Note [Nanosecond parameters]. A time with 60 seconds (a leap second) binds as
+-- the next second, as @make_time@ of DuckDB gives it. See Note [Time ranges].
 instance ToField TimeOfDay where
   toField value =
     timeValueBinding (show value) (LogicalTypeScalar LogicalTypeIdTime) (FieldTime value) \builder -> timeOfDayDuckValue (builderFactory builder) value
 
 -- | Bind a local time as a TIMESTAMP, or as a TIMESTAMP_NS. See
--- Note [Nanosecond parameters].
+-- Note [Nanosecond parameters]. A time before 290309-12-22 (BC) 00:00:00, the
+-- year -290308 of "Data.Time", raises an t'SQLError' of the type
+-- 'ErrorInputOutOfRange'. A leap second binds as the next second. See
+-- Note [Time ranges].
 instance ToField LocalTime where
   toField value =
     timeValueBinding (show value) (LogicalTypeScalar LogicalTypeIdTimestamp) (FieldTimestamp (Finite value)) \builder -> localTimeDuckValue (builderFactory builder) value
@@ -614,7 +621,8 @@ instance ToField IntervalValue
 
 -- | Bind the time and its offset in seconds as a TIMETZ. An offset outside
 -- -57599 to 57599 seconds raises an error. A time with digits below one
--- microsecond loses these digits, as in SQL text.
+-- microsecond loses these digits, as in SQL text. A leap second binds as the
+-- next second. See Note [Time ranges].
 instance ToField TimeWithZone
 
 -- | Bind the value as a DECIMAL with its own width and scale. DuckDB casts it
@@ -641,7 +649,9 @@ instance ToField Variant where
     builderValueBinding (show value) \builder -> variantDuckValue builder (variantPayload value)
 
 -- | Bind an instant as a TIMESTAMPTZ, or as a TIMESTAMPTZ_NS. See
--- Note [Nanosecond parameters].
+-- Note [Nanosecond parameters]. An instant before 290309-12-22 (BC) 00:00:00
+-- UTC raises an t'SQLError' of the type 'ErrorInputOutOfRange'. A leap second
+-- binds as the next second. See Note [Time ranges].
 instance ToField UTCTime where
   toField value =
     timeValueBinding
@@ -650,16 +660,20 @@ instance ToField UTCTime where
       (FieldTimestampTZ (Finite value))
       (\builder -> utcTimeDuckValue (builderFactory builder) value)
 
+-- | Bind a day or an infinity as a DATE. A finite day has the range of the
+-- 'Day' instance.
 instance ToField (Unbounded Day)
 
 -- | Bind a local time or an infinity as a TIMESTAMP, or a local time as a
--- TIMESTAMP_NS. See Note [Nanosecond parameters].
+-- TIMESTAMP_NS. See Note [Nanosecond parameters]. A finite time has the range
+-- of the t'LocalTime' instance.
 instance ToField (Unbounded LocalTime) where
   toField value =
     timeValueBinding (show value) (LogicalTypeScalar LogicalTypeIdTimestamp) (FieldTimestamp value) \builder -> localTimestampDuckValue (builderFactory builder) value
 
 -- | Bind an instant or an infinity as a TIMESTAMPTZ, or an instant as a
--- TIMESTAMPTZ_NS. See Note [Nanosecond parameters].
+-- TIMESTAMPTZ_NS. See Note [Nanosecond parameters]. A finite instant has the
+-- range of the t'UTCTime' instance.
 instance ToField (Unbounded UTCTime) where
   toField value =
     timeValueBinding
@@ -1751,13 +1765,8 @@ variantPayloadType value = case value of
   FieldTime time
     | hasSubMicroseconds time -> scalar LogicalTypeIdTimeNs
     | otherwise -> scalar LogicalTypeIdTime
-  FieldTimestamp (Finite LocalTime{localDay, localTimeOfDay})
+  FieldTimestamp (Finite LocalTime{localTimeOfDay})
     | hasSubMicroseconds localTimeOfDay -> scalar LogicalTypeIdTimestampNs
-    | inFiniteRange (minBound :: Int64) maxBound micros -> scalar LogicalTypeIdTimestamp
-    | micros `rem` 1000 == 0 && inFiniteRange (minBound :: Int64) maxBound (micros `div` 1000) -> scalar LogicalTypeIdTimestampMs
-    | micros `rem` 1000000 == 0 && inFiniteRange (minBound :: Int64) maxBound (micros `div` 1000000) -> scalar LogicalTypeIdTimestampSec
-    where
-      micros = diffDays localDay (fromGregorian 1970 1 1) * 86400 * 1000000 + diffTimeToPicoseconds (timeOfDayToTime localTimeOfDay) `div` 1000000
   FieldTimestamp{} -> scalar LogicalTypeIdTimestamp
   FieldTimestampTZ instant -> scalar (variantUtcTimestampType instant)
   FieldTimeTZ{} -> scalar LogicalTypeIdTimeTz
@@ -1937,11 +1946,14 @@ encodeUnbounded _ NegInfinity = pure (negate maxBound)
 encodeUnbounded _ PosInfinity = pure maxBound
 encodeUnbounded encode (Finite value) = encode value
 
--- | Encode finite dates as days from the Unix epoch.
+-- | Encode finite dates as days from the Unix epoch. A day before
+-- 5877642-06-25 (BC) raises an error. See Note [Time ranges].
 encodeDay :: Day -> IO Int32
 encodeDay day = do
   let days = diffDays day (fromGregorian 1970 1 1)
   checkFiniteRange "DATE" (minBound :: Int32) maxBound days
+  when (days < -2147483646) $
+    throwOutsideTimeRange (show day) "below the smallest DATE of DuckDB, 5877642-06-25 (BC)"
   pure (fromInteger days)
 
 -- | Encode a time of day at DuckDB microsecond precision.
@@ -1953,12 +1965,74 @@ encodeLocalTime :: LocalTime -> IO Int64
 encodeLocalTime = encodeTimestampUnits 1000000
 
 -- | Encode finite timestamps in the requested number of units per second.
+-- See Note [Time ranges].
 encodeTimestampUnits :: Integer -> LocalTime -> IO Int64
-encodeTimestampUnits units LocalTime{localDay, localTimeOfDay} = do
+encodeTimestampUnits units value@LocalTime{localDay, localTimeOfDay} = do
   time <- timeOfDayUnits units localTimeOfDay
   let total = diffDays localDay (fromGregorian 1970 1 1) * 86400 * units + time
   checkFiniteRange "TIMESTAMP" (minBound :: Int64) maxBound total
+  checkTimestampRange units value
   pure (fromInteger total)
+
+{- Note [Time ranges]
+~~~~~~~~~~~~~~~~~~~~~
+The storage of a DATE and of a TIMESTAMP can hold values that DuckDB 2.0.0
+does not accept. The SQL literal of each type, and the casts to it, reject
+these values:
+
+- DATE: from 5877642-06-25 (BC) to 5881580-07-10, days -2147483646 to
+  2147483646 from the Unix epoch. The INT32 storage also holds day
+  -2147483648.
+
+- TIMESTAMP, TIMESTAMPTZ, TIMESTAMP_S, and TIMESTAMP_MS: from 290309-12-22
+  (BC) 00:00:00 to 294247-01-10 04:00:54.775806, microseconds
+  -9223372022400000000 to 2^63 - 2. The INT64 storage of a microsecond value
+  also holds about four hours before that start, and the storage of a second
+  or a millisecond value holds much more at each end.
+
+A value outside these ranges breaks ordinary SQL in DuckDB 2.0.0. A cast of
+such a TIMESTAMP to VARCHAR raises an INTERNAL error, and DuckDB then
+invalidates the database. A cast of such a TIMESTAMP to TIMESTAMP_S stores the
+first valid value with no error. A DATE before the range sorts before
+-infinity, and a cast of it to TIMESTAMP fails. Thus encodeDay and
+encodeTimestampUnits raise an SQLError of the type ErrorInputOutOfRange for
+these values (throwOutsideTimeRange). The two infinity values and values
+outside the storage keep the earlier error of checkFiniteRange, so that
+check runs first. A nanosecond value has the range of its INT64 storage, and
+the literal of TIMESTAMP_NS accepts that range, so it gets no check here.
+
+A leap second gets no check. A TimeOfDay with 60 seconds binds as the next
+second, as make_time(23, 59, 60) and make_timestamp(2016, 12, 31, 23, 59, 60)
+of DuckDB give it. The SQL literal '23:59:60' raises an error.
+-}
+
+-- | Reject a second, millisecond, or microsecond timestamp outside the range
+-- of DuckDB. See Note [Time ranges].
+checkTimestampRange :: Integer -> LocalTime -> IO ()
+checkTimestampRange units value
+  | units > 1000000 = pure ()
+  | micros < -9223372022400000000 =
+      throwOutsideTimeRange (show value) ("below the smallest " <> name <> " of DuckDB, 290309-12-22 (BC) 00:00:00")
+  | micros > 9223372036854775806 = throwOutsideTimeRange (show value) ("above the largest " <> name <> " of DuckDB, " <> largest)
+  | otherwise = pure ()
+  where
+    micros = timestampUnits 1000000 value
+    (name, largest) = case units of
+      1 -> ("TIMESTAMP_S", "294247-01-10 04:00:54")
+      1000 -> ("TIMESTAMP_MS", "294247-01-10 04:00:54.775")
+      _ -> ("TIMESTAMP", "294247-01-10 04:00:54.775806")
+
+-- | Raise the error for a date or a timestamp outside the range of DuckDB. The
+-- text names the Haskell value and the end of the range. See
+-- Note [Time ranges].
+throwOutsideTimeRange :: String -> Text -> IO a
+throwOutsideTimeRange value bound =
+  throwIO
+    SQLError
+      { sqlErrorMessage = "duckdb-simple: the value " <> Text.pack value <> " is " <> bound
+      , sqlErrorType = Just ErrorInputOutOfRange
+      , sqlErrorQuery = Nothing
+      }
 
 -- | Count the units from the Unix epoch to a timestamp, with the digits below
 -- one unit cut toward the earlier time. The count does not check the time of

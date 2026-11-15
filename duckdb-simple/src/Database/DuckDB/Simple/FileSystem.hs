@@ -25,7 +25,9 @@ module Database.DuckDB.Simple.FileSystem (
 ) where
 
 import Control.Exception (bracket, throwIO)
+import Control.Monad (when)
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Internal as BSI
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import qualified Data.Text as Text
@@ -33,7 +35,6 @@ import Database.DuckDB.Simple.Callback (runCallback)
 import Database.DuckDB.Simple.Internal (Connection, withConnectionHandle)
 import Database.DuckDB.Simple.Native
 import Foreign.C.ConstPtr (ConstPtr (..), unConstPtr)
-import Foreign.Marshal.Alloc (allocaBytes)
 import Foreign.Ptr (castPtr, freeHaskellFunPtr, nullPtr)
 import Foreign.Storable (peek)
 import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
@@ -52,36 +53,50 @@ withFileHandle conn path flags action
         withText (Text.pack path) \name ->
           bracket (output (c_duckdb_v2_file_system_open fs name options)) (destroy c_duckdb_v2_file_destroy) (action . FileHandle)
 
--- | Read up to the requested byte count and advance the file position.
+-- | Read up to the requested byte count and advance the file position. The
+-- buffer and the size that the native call gets come from one value. A count
+-- above that size raises an error. The library cannot check that the native
+-- call writes no more than that size: the header of DuckDB states it as the
+-- contract of the call.
 readFileHandleChunk :: FileHandle -> Int64 -> IO BS.ByteString
 readFileHandleChunk (FileHandle handle) requested
   | requested <= 0 = pure BS.empty
   | toInteger requested > toInteger (maxBound :: Int) = fileError "file read size exceeds Int range"
-  | otherwise = allocaBytes (fromIntegral requested) \buffer -> do
-      count <- output (c_duckdb_v2_file_read handle (castPtr buffer) (fromIntegral requested))
-      if toInteger count > toInteger requested
-        then fileError "native file read exceeds buffer size"
-        else BS.packCStringLen (castPtr buffer, fromIntegral count)
+  | otherwise = BSI.createAndTrim size \buffer -> do
+      count <- output (c_duckdb_v2_file_read handle (castPtr buffer) (fromIntegral size))
+      when (toInteger count > toInteger size) $ fileError "native file read exceeds buffer size"
+      pure (fromIntegral count)
+  where
+    size = fromIntegral requested :: Int
 
 -- | Write bytes and return the byte count. Advance the file position.
 writeFileHandleBytes :: FileHandle -> BS.ByteString -> IO Int64
 writeFileHandleBytes (FileHandle handle) bytes = BS.useAsCStringLen bytes \(ptr, count) ->
   fromIntegral <$> output (c_duckdb_v2_file_write handle (ConstPtr (castPtr ptr)) (fromIntegral count))
 
--- | Read exactly the requested bytes without changing the file position.
+-- | Read exactly the requested bytes without changing the file position. A
+-- range whose end exceeds the 'Int64' range raises an error before the native
+-- call. DuckDB checks the range against the size of the file, and a read past
+-- the end raises the error of DuckDB. The function allocates the buffer before
+-- that check. The buffer and the size that the native call gets come from one
+-- value. The library cannot check that the native call writes no more than
+-- that size: the header of DuckDB states it as the contract of the call.
 readFileHandleAt :: FileHandle -> Int64 -> Int64 -> IO BS.ByteString
 readFileHandleAt (FileHandle handle) offset requested
   | offset < 0 = fileError "file offset is negative"
   | requested < 0 = fileError "file read size is negative"
   | toInteger requested > toInteger (maxBound :: Int) = fileError "file read size exceeds Int range"
-  | otherwise = allocaBytes (fromIntegral requested) \buffer -> do
-      checked (c_duckdb_v2_file_read_at handle (castPtr buffer) (fromIntegral requested) (fromIntegral offset))
-      BS.packCStringLen (castPtr buffer, fromIntegral requested)
+  | toInteger offset + toInteger requested > toInteger (maxBound :: Int64) = fileError "file read range exceeds Int64 range"
+  | otherwise = BSI.create size \buffer -> checked (c_duckdb_v2_file_read_at handle (castPtr buffer) (fromIntegral size) (fromIntegral offset))
+  where
+    size = fromIntegral requested :: Int
 
--- | Write all bytes at an offset without changing the file position.
+-- | Write all bytes at an offset without changing the file position. A range
+-- whose end exceeds the 'Int64' range raises an error.
 writeFileHandleAt :: FileHandle -> Int64 -> BS.ByteString -> IO ()
 writeFileHandleAt (FileHandle handle) offset bytes
   | offset < 0 = fileError "file offset is negative"
+  | toInteger offset + toInteger (BS.length bytes) > toInteger (maxBound :: Int64) = fileError "file write range exceeds Int64 range"
   | otherwise = BS.useAsCStringLen bytes \(ptr, count) ->
       checked (c_duckdb_v2_file_write_at handle (ConstPtr (castPtr ptr)) (fromIntegral count) (fromIntegral offset))
 

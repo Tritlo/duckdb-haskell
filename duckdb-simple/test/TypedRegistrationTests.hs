@@ -85,6 +85,7 @@ typedRegistrationTests =
     , testCase "cast to custom aliases of DATE and VARCHAR" testCastTypes
     , testCase "cast exceptions and conversion errors fail CAST" testCastErrors
     , testCase "cast to a custom type on each scalar base type" testCastBaseTypes
+    , testCase "cast result of another type than the base type fails" testCastResultType
     , testCase "replacement scan reads the rows of a query" testReplacementQuery
     , testCase "replacement scan that declines gives the unknown table error" testReplacementDecline
     , testCase "replacement scan gets the name parts as written" testReplacementNames
@@ -121,6 +122,7 @@ typedRegistrationTests =
     , testCase "COPY keeps the first registration of a format name" testCopyFirstRegistration
     , testCase "COPY errors in each function fail only their statement" testCopyErrors
     , testCase "COPY format on two connections of one database" testCopySharedDatabase
+    , testCase "COPY FROM gives the name and the type of each column" testCopyFromColumns
     , testCase "aggregate over one group and over many groups" testAggregateGroups
     , testCase "aggregate with one state table stripe" testAggregateStripes
     , testCase "aggregate skips NULL rows and gives the initial result" testAggregateNulls
@@ -153,6 +155,26 @@ testCastFailure = withConnection ":memory:" \conn -> do
   query_ conn "SELECT TRY_CAST(v AS typed_positive)::BIGINT FROM (VALUES (0, 1::BIGINT), (1, -2), (2, 3)) t(k, v) ORDER BY k"
     >>= (@?= map Only [Just 1, Nothing, Just (3 :: Int64)])
   query_ conn "SELECT CAST(6::BIGINT AS typed_positive)::BIGINT" >>= (@?= [Only (6 :: Int64)])
+  query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+
+-- | A cast result whose type is not the base type of the custom type fails.
+-- The text of such a value is not a value of the base type, although DuckDB
+-- can cast the text: '7'::BLOB is the byte 7, and '2026-11-12'::TIME is 00:00:00.
+testCastResultType :: Assertion
+testCastResultType = withConnection ":memory:" \conn -> do
+  registerCustomType conn "typed_blob_alias" (TypeExpression "BLOB")
+  createCast conn (TypeExpression "BIGINT") (TypeExpression "typed_blob_alias") \(value :: Int64) -> Right value
+  registerCustomType conn "typed_time_alias" (TypeExpression "TIME")
+  createCast conn (TypeExpression "BIGINT") (TypeExpression "typed_time_alias") \(value :: Int64) ->
+    Right (addDays (fromIntegral value) (fromGregorian 2026 11 12))
+  -- DuckDB has no cast from BIGINT to BLOB, and none from DATE to TIME. Its
+  -- error names the custom type.
+  assertSqlError
+    "Failed to cast value: Unimplemented type for cast (BIGINT -> typed_blob_alias)"
+    (query_ conn "SELECT CAST(7::BIGINT AS typed_blob_alias)" :: IO [Only BS.ByteString])
+  assertSqlError
+    "Failed to cast value: Unimplemented type for cast (DATE -> typed_time_alias)"
+    (query_ conn "SELECT CAST(0::BIGINT AS typed_time_alias)" :: IO [Only TimeOfDay])
   query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
 
 -- | Cast to custom types with the base types DATE and VARCHAR.
@@ -1149,6 +1171,23 @@ testCopyFirstRegistration = withDirectory \directory -> withConnection ":memory:
     "COPY TO is not supported for FORMAT \"typed_from_only\""
     (execute conn "COPY (SELECT 1) TO ? (FORMAT typed_from_only)" (Only file))
   query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+
+-- | Give the reader of COPY FROM the name and the type of each column, in the
+-- order of the table. DuckDB gives the same names and types.
+testCopyFromColumns :: Assertion
+testCopyFromColumns = withDirectory \directory -> withConnection ":memory:" \conn -> do
+  calls <- newIORef ([] :: [CopyFromInfo])
+  registerCopyFromFunction conn "typed_columns" \info -> do
+    modifyIORef' calls (info :)
+    pure [(7 :: Int64, "seven" :: Text, fromGregorian 2026 11 15)]
+  let file = directory </> "columns.txt"
+  writeFile file ""
+  void (execute_ conn "CREATE TABLE typed_three (a BIGINT, b VARCHAR, c DATE)")
+  void (execute conn "COPY typed_three FROM ? (FORMAT typed_columns)" (Only (Text.pack file)))
+  query_ conn "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'typed_three' ORDER BY ordinal_position"
+    >>= (@?= [("a" :: Text, "BIGINT" :: Text), ("b", "VARCHAR"), ("c", "DATE")])
+  readIORef calls >>= (@?= [CopyFromInfo file ["a", "b", "c"] [LogicalTypeIdBigInt, LogicalTypeIdVarchar, LogicalTypeIdDate]])
+  query_ conn "SELECT a, b, c FROM typed_three" >>= (@?= [(7 :: Int64, "seven" :: Text, fromGregorian 2026 11 15)])
 
 -- | Raise an error in each COPY TO function, in the COPY FROM function, and in
 -- a lazy row after the first chunk. Each error fails its statement. The next

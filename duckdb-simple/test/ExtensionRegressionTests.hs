@@ -15,7 +15,7 @@ import Control.Monad (forM, forM_, replicateM_, void)
 import qualified Data.ByteString as BS
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
-import Data.List (find, sort)
+import Data.List (find, nub, sort)
 import Data.Proxy (Proxy (..))
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
@@ -49,7 +49,7 @@ import System.Directory (getHomeDirectory, removeFile)
 import System.FilePath (takeDirectory)
 import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, defaultMain, testGroup)
-import Test.Tasty.HUnit (Assertion, assertBool, assertFailure, testCase, (@?=))
+import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase, (@?=))
 
 -- | Run the extension regression tests as a standalone executable.
 main :: IO ()
@@ -264,6 +264,29 @@ extensionRegressionTests =
         map Logging.logEntryMessage (ofType "HaskellInstance") @?= ["from an instance"]
         map Logging.logEntryScope (ofType "HaskellInstance") @?= [Logging.LogScopeDatabase]
         map Logging.logEntryConnectionId (ofType "HaskellInstance") @?= [Nothing]
+    , testCase "log entries carry the connection, transaction, and query ids of DuckDB" do
+        entries <- newIORef []
+        (connectionId, transactionId, queryId) <- withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
+          Logging.registerLogSink conn "id_log" (\entry -> atomicModifyIORef' entries (\values -> (entry : values, ()))) (pure ())
+          void $ execute_ conn "CALL enable_logging(); SET logging_storage = 'id_log'"
+          -- In a transaction, the transaction id and the query id differ.
+          void $ execute_ conn "BEGIN"
+          _ <- query_ conn "SELECT 1" :: IO [Only Int64]
+          rows <-
+            query_
+              conn
+              "SELECT write_log('ids', level := 'warning', log_type := 'HaskellIds'), current_connection_id(), current_transaction_id(), current_query_id()"
+              :: IO [(FieldValue, Word64, Word64, Word64)]
+          void $ execute_ conn "COMMIT; SET logging_storage = 'memory'"
+          case rows of
+            [(_, connection, transaction, queryNumber)] -> pure (connection, transaction, queryNumber)
+            _ -> assertFailure ("expected one row, got " <> show rows)
+        assertEqual "the ids differ" 3 (length (nub [connectionId, transactionId, queryId]))
+        received <- filter ((== "HaskellIds") . Logging.logEntryType) <$> readIORef entries
+        map Logging.logEntryConnectionId received @?= [Just connectionId]
+        map Logging.logEntryTransactionId received @?= [Just transactionId]
+        map Logging.logEntryQueryId received @?= [Just queryId]
+        map Logging.logEntryThreadId received @?= [Nothing]
     , testCase "filesystem action exceptions release handles" $
         withTemporaryFile \path ->
           withConnection ":memory:" \conn -> do
@@ -329,6 +352,16 @@ extensionRegressionTests =
               Config.configOptionSetting option @?= "1"
               Config.configOptionName option @?= "threads"
               assertBool "description is retained" (not (Text.null (Config.configOptionDescription option)))
+    , testCase "listed options give the aliases of DuckDB" $
+        withConnection ":memory:" \conn -> do
+          void $ execute_ conn "SET progress_bar_time = 1234"
+          options <- Config.listConfigOptions conn
+          let option name = find ((== name) . Config.configOptionName) options
+          aliases <- query_ conn "SELECT name, aliases FROM duckdb_settings() WHERE len(aliases) > 0 ORDER BY name" :: IO [(Text.Text, [Text.Text])]
+          assertBool "DuckDB lists options with aliases" (not (null aliases))
+          forM_ aliases \(name, expected) ->
+            assertEqual (Text.unpack name) (Just (sort expected)) (sort . Config.configOptionAliases <$> option name)
+          Config.configOptionSetting <$> option "progress_bar_time" @?= Just "1234"
     , testCase "instance options list global values" $
         withEnvironment \environment -> withInstance environment [("threads", "1")] \instance_ -> do
           options <- Config.listInstanceOptions instance_

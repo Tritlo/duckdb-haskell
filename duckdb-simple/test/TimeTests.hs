@@ -651,5 +651,7 @@ assertEmptyArrayUnavailable :: IO a -> Assertion
 assertEmptyArrayUnavailable action = do
   result <- try action
   case result of
-    Left SQLError{sqlErrorMessage = message} -> assertBool "must identify empty ARRAY" ("empty ARRAY" `Text.isInfixOf` message)
+    Left SQLError{sqlErrorMessage = message, sqlErrorType} -> do
+      assertBool "must identify empty ARRAY" ("empty ARRAY" `Text.isInfixOf` message)
+      sqlErrorType @?= Just ErrorInputInvalid
     Right _ -> assertFailure "expected the empty ARRAY error"

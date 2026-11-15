@@ -233,7 +233,9 @@ valueRegressionTests =
     , testCase "empty arrays of record elements raise the empty ARRAY error" $ withConnection ":memory:" \conn -> do
         result <- try (query conn "SELECT ?" (Only (listArray (0, -1) [] :: Array Int Pair)))
         case result of
-          Left SQLError{sqlErrorMessage} -> assertBool (Text.unpack sqlErrorMessage) ("duckdb-simple: an empty ARRAY parameter is not possible" `Text.isInfixOf` sqlErrorMessage)
+          Left SQLError{sqlErrorMessage, sqlErrorType} -> do
+            assertBool (Text.unpack sqlErrorMessage) ("duckdb-simple: an empty ARRAY parameter is not possible" `Text.isInfixOf` sqlErrorMessage)
+            sqlErrorType @?= Just ErrorInputInvalid
           Right (_ :: [Only Text]) -> assertFailure "expected the empty ARRAY error"
     , testCase "composite arrays with different element types take the type of array_value" $ withConnection ":memory:" \conn -> do
         forM_

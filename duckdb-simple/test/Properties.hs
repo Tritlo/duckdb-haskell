@@ -4,6 +4,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 -- |
 -- Module      : Properties
@@ -108,36 +109,36 @@ roundTripProperty getConn _ value =
 
 specs :: [SomeRoundTrip]
 specs =
-  [ SomeRoundTrip "Null" (Proxy :: Proxy Null) (pure Null) shrinkNone
-  , SomeRoundTrip "Bool" (Proxy :: Proxy Bool) (arbitrary :: Gen Bool) shrink
-  , SomeRoundTrip "Int" (Proxy :: Proxy Int) genBounded shrink
-  , SomeRoundTrip "Int8" (Proxy :: Proxy Int8) genBounded shrink
-  , SomeRoundTrip "Int16" (Proxy :: Proxy Int16) genBounded shrink
-  , SomeRoundTrip "Int32" (Proxy :: Proxy Int32) genBounded shrink
-  , SomeRoundTrip "Int64" (Proxy :: Proxy Int64) genBounded shrink
-  , SomeRoundTrip "Integer" (Proxy :: Proxy Integer) genInteger shrink
-  , SomeRoundTrip "BigNum" (Proxy :: Proxy BigNum) genBigNum shrinkBigNum
-  , SomeRoundTrip "Natural" (Proxy :: Proxy Natural) genNatural shrinkNatural
-  , SomeRoundTrip "Word" (Proxy :: Proxy Word) genBounded shrink
-  , SomeRoundTrip "Word8" (Proxy :: Proxy Word8) genBounded shrink
-  , SomeRoundTrip "Word16" (Proxy :: Proxy Word16) genBounded shrink
-  , SomeRoundTrip "Word32" (Proxy :: Proxy Word32) genBounded shrink
-  , SomeRoundTrip "Word64" (Proxy :: Proxy Word64) genBounded shrink
-  , SomeRoundTrip "Float" (Proxy :: Proxy Float) genFiniteFloat shrink
-  , SomeRoundTrip "Double" (Proxy :: Proxy Double) genFiniteDouble shrink
-  , SomeRoundTrip "String" (Proxy :: Proxy String) genString shrinkString
-  , SomeRoundTrip "Text" (Proxy :: Proxy Text.Text) genText shrinkText
-  , SomeRoundTrip "ByteString" (Proxy :: Proxy BS.ByteString) genByteString shrinkByteString
-  , SomeRoundTrip "BitString" (Proxy :: Proxy BitString) genBitString shrinkBitString
-  , SomeRoundTrip "UUID" (Proxy :: Proxy UUID) genUUID shrinkNone
-  , SomeRoundTrip "Day" (Proxy :: Proxy Day) genDay shrinkDay
-  , SomeRoundTrip "TimeOfDay" (Proxy :: Proxy TimeOfDay) genTimeOfDay shrinkTimeOfDay
-  , SomeRoundTrip "LocalTime" (Proxy :: Proxy LocalTime) genLocalTime shrinkLocalTime
-  , SomeRoundTrip "UTCTime" (Proxy :: Proxy UTCTime) genUTCTime shrinkUTCTime
-  , SomeRoundTrip "Maybe Int" (Proxy :: Proxy (Maybe Int)) genMaybeInt shrinkMaybeInt
-  , SomeRoundTrip "nonempty Array Int Int" (Proxy :: Proxy (Array Int Int)) genIntArray shrinkIntArray
-  , SomeRoundTrip "StructValue FieldValue" (Proxy :: Proxy (StructValue FieldValue)) genStructValue shrinkStructValue
-  , SomeRoundTrip "UnionValue FieldValue" (Proxy :: Proxy (UnionValue FieldValue)) genUnionValue shrinkNone
+  [ SomeRoundTrip "Null" (Proxy @Null) (pure Null) shrinkNone
+  , SomeRoundTrip "Bool" (Proxy @Bool) (arbitrary :: Gen Bool) shrink
+  , SomeRoundTrip "Int" (Proxy @Int) genBounded shrink
+  , SomeRoundTrip "Int8" (Proxy @Int8) genBounded shrink
+  , SomeRoundTrip "Int16" (Proxy @Int16) genBounded shrink
+  , SomeRoundTrip "Int32" (Proxy @Int32) genBounded shrink
+  , SomeRoundTrip "Int64" (Proxy @Int64) genBounded shrink
+  , SomeRoundTrip "Integer" (Proxy @Integer) genInteger shrink
+  , SomeRoundTrip "BigNum" (Proxy @BigNum) genBigNum shrinkBigNum
+  , SomeRoundTrip "Natural" (Proxy @Natural) genNatural shrinkNatural
+  , SomeRoundTrip "Word" (Proxy @Word) genBounded shrink
+  , SomeRoundTrip "Word8" (Proxy @Word8) genBounded shrink
+  , SomeRoundTrip "Word16" (Proxy @Word16) genBounded shrink
+  , SomeRoundTrip "Word32" (Proxy @Word32) genBounded shrink
+  , SomeRoundTrip "Word64" (Proxy @Word64) genBounded shrink
+  , SomeRoundTrip "Float" (Proxy @Float) genFiniteFloat shrink
+  , SomeRoundTrip "Double" (Proxy @Double) genFiniteDouble shrink
+  , SomeRoundTrip "String" (Proxy @String) genString shrinkString
+  , SomeRoundTrip "Text" (Proxy @Text.Text) genText shrinkText
+  , SomeRoundTrip "ByteString" (Proxy @BS.ByteString) genByteString shrinkByteString
+  , SomeRoundTrip "BitString" (Proxy @BitString) genBitString shrinkBitString
+  , SomeRoundTrip "UUID" (Proxy @UUID) genUUID shrinkNone
+  , SomeRoundTrip "Day" (Proxy @Day) genDay shrinkDay
+  , SomeRoundTrip "TimeOfDay" (Proxy @TimeOfDay) genTimeOfDay shrinkTimeOfDay
+  , SomeRoundTrip "LocalTime" (Proxy @LocalTime) genLocalTime shrinkLocalTime
+  , SomeRoundTrip "UTCTime" (Proxy @UTCTime) genUTCTime shrinkUTCTime
+  , SomeRoundTrip "Maybe Int" (Proxy @(Maybe Int)) genMaybeInt shrinkMaybeInt
+  , SomeRoundTrip "nonempty Array Int Int" (Proxy @(Array Int Int)) genIntArray shrinkIntArray
+  , SomeRoundTrip "StructValue FieldValue" (Proxy @(StructValue FieldValue)) genStructValue shrinkStructValue
+  , SomeRoundTrip "UnionValue FieldValue" (Proxy @(UnionValue FieldValue)) genUnionValue shrinkNone
   ]
 
 shrinkNone :: a -> [a]

@@ -357,9 +357,8 @@ withOwnedVector factory logicalType action =
 -- vector of the type with the given number of rows (withOwnedVector). For each
 -- row, the writer gives a borrowed value to its second argument, and
 -- duckdb_v2_vector_set_value writes the value to the row. The header says that
--- this call casts "through the non-strict default cast", so a cast that a user
--- registers does not apply, with each factory. Then the action reads the
--- vector. See Note [User casts and the casts of the library] in
+-- this call casts "through the non-strict default cast". Then the action reads
+-- the vector. See Note [User casts and the casts of the library] in
 -- "Database.DuckDB.Simple.Materialize".
 withDefaultCastVector
   :: DuckDBV2FactoryHandle

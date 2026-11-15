@@ -3,6 +3,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 
 -- |
@@ -37,9 +38,9 @@ import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.Callback (targetCastFactory)
-import Database.DuckDB.Simple.Element (vectorElementType)
+import Database.DuckDB.Simple.Element (containsType, vectorElementType)
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), FromField (..), ResultError (..))
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..), StructField (..), UnionMemberType (..))
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..))
 import Database.DuckDB.Simple.Materialize (
   FallbackReaders (..),
   ReadFactory,
@@ -77,9 +78,9 @@ import GHC.Generics
 class TypedRow r where
   -- | The declaration of each column, from 'duckdbTypeDeclaration'. See
   -- Note [Type declarations] in "Database.DuckDB.Simple.ToField".
-  rowColumnTypes :: Proxy r -> [Either Text TypeDeclaration]
-  default rowColumnTypes :: (GTypedRow (Rep r)) => Proxy r -> [Either Text TypeDeclaration]
-  rowColumnTypes _ = gRowColumnTypes (Proxy :: Proxy (Rep r))
+  rowColumnDeclarations :: Proxy r -> [Either Text TypeDeclaration]
+  default rowColumnDeclarations :: (GTypedRow (Rep r)) => Proxy r -> [Either Text TypeDeclaration]
+  rowColumnDeclarations _ = gRowColumnDeclarations (Proxy @(Rep r))
 
   -- | The value of each column.
   rowColumnValues :: r -> [ColumnValue]
@@ -92,29 +93,29 @@ newtype ColumnValue = ColumnValue (DuckDBV2FactoryHandle -> IO DuckDBV2ValueHand
 
 -- | The generic implementation of 'TypedRow' for a type with one constructor.
 class GTypedRow f where
-  gRowColumnTypes :: Proxy f -> [Either Text TypeDeclaration]
+  gRowColumnDeclarations :: Proxy f -> [Either Text TypeDeclaration]
   gRowColumnValues :: f p -> [ColumnValue]
 
 instance GTypedRow U1 where
-  gRowColumnTypes _ = []
+  gRowColumnDeclarations _ = []
   gRowColumnValues U1 = []
 
 instance (GTypedRow a) => GTypedRow (M1 i c a) where
-  gRowColumnTypes _ = gRowColumnTypes (Proxy :: Proxy a)
+  gRowColumnDeclarations _ = gRowColumnDeclarations (Proxy @a)
   gRowColumnValues (M1 value) = gRowColumnValues value
 
 instance (ToDuckValue a) => GTypedRow (K1 i a) where
-  gRowColumnTypes _ = [duckdbTypeDeclaration (Proxy :: Proxy a)]
+  gRowColumnDeclarations _ = [duckdbTypeDeclaration (Proxy @a)]
   gRowColumnValues (K1 value) = [ColumnValue (`toDuckValue` value)]
 
 instance (GTypedRow a, GTypedRow b) => GTypedRow (a :*: b) where
-  gRowColumnTypes _ = gRowColumnTypes (Proxy :: Proxy a) <> gRowColumnTypes (Proxy :: Proxy b)
+  gRowColumnDeclarations _ = gRowColumnDeclarations (Proxy @a) <> gRowColumnDeclarations (Proxy @b)
   gRowColumnValues (left :*: right) = gRowColumnValues left <> gRowColumnValues right
 
 instance TypedRow ()
 
 instance (ToDuckValue a) => TypedRow (Only a) where
-  rowColumnTypes _ = [duckdbTypeDeclaration (Proxy :: Proxy a)]
+  rowColumnDeclarations _ = [duckdbTypeDeclaration (Proxy @a)]
   rowColumnValues (Only value) = [ColumnValue (`toDuckValue` value)]
 
 instance (ToDuckValue a, ToDuckValue b) => TypedRow (a, b)
@@ -162,18 +163,6 @@ checkArgumentType readsGeometry name index logical = do
     isGeometry = \case
       LogicalTypeGeometry _ -> True
       _ -> False
-
--- | Test whether a type is or contains a type that the predicate accepts.
-containsType :: (LogicalTypeRep -> Bool) -> LogicalTypeRep -> Bool
-containsType accepts rep =
-  accepts rep || case rep of
-    LogicalTypeList child -> containsType accepts child
-    LogicalTypeArray child _ -> containsType accepts child
-    LogicalTypeMap key value -> containsType accepts key || containsType accepts value
-    LogicalTypeStruct fields -> any (containsType accepts . structFieldValue) fields
-    LogicalTypeTuple fields -> any (containsType accepts) fields
-    LogicalTypeUnion members -> any (containsType accepts . unionMemberType) members
-    _ -> False
 
 -- | Prepare a reader for the rows of an argument vector. The second argument is
 -- the index of the argument, from 0. The reader gives the field of a row, with
@@ -223,9 +212,7 @@ createCastOn target source destination convert = do
 
 -- | Convert the rows of one cast call. Write each row before an error leaves
 -- the callback, because TRY_CAST keeps the output and ignores the error. A failed
--- row gets NULL. Then raise the error of the first failed row. A GEOMETRY
--- argument reads with the factory of 'targetCastFactory', or with the factory
--- of the context for an extension.
+-- row gets NULL. Then raise the error of the first failed row.
 castRows
   :: (FromField a, ToDuckValue b)
   => Maybe DuckDBV2FactoryHandle -> (a -> Either Text b) -> DuckDBV2CastFunctionExecInfoHandle -> DuckDBV2ContextHandle -> IO ()

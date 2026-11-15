@@ -6,6 +6,7 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StrictData #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE ViewPatterns #-}
 
 -- |
@@ -389,6 +390,11 @@ type of its payload, and the error of a String names Text. These pairs are:
 
 Text and String read the label of an ENUM value, which is the text of the cast
 to VARCHAR. See Note [ENUM labels] in "Database.DuckDB.Simple.Materialize".
+
+The rule holds at each depth. A field of a generic record reads the SQL types
+that the FromField instance of its type reads: a scalar field uses that
+instance, and a list field reads a LIST and an ARRAY (the DuckValue instances
+in "Database.DuckDB.Simple.Generic").
 
 See Note [DECIMAL as DOUBLE and FLOAT] for the floating-point value of a DECIMAL.
 -}
@@ -994,7 +1000,7 @@ returnError mkError Field{fieldValue, fieldName} msg =
         mkError
           (fieldValueTypeName fieldValue)
           fieldName
-          (Text.pack $ show (typeRep (Proxy :: Proxy b)))
+          (Text.pack $ show (typeRep (Proxy @b)))
           msg
     ]
 

@@ -35,7 +35,7 @@ import System.Mem (performMajorGC)
 import System.Mem.Weak (deRefWeak)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
-import TestUtils (assertFailureIO)
+import TestUtils (assertFailureIO, assertSqlErrorType)
 
 -- | Check native construction, metadata, nesting, and streaming.
 tests :: TestTree
@@ -105,7 +105,7 @@ tests =
               accepted = nested !! 15
               rejected = nested !! 16
           (query conn "SELECT ?" (Only accepted)) >>= (@?= [Only accepted])
-          assertFailureIO (query conn "SELECT ?" (Only rejected) :: IO [Only G.Geometry])
+          assertSqlErrorType ErrorInputInvalid (query conn "SELECT ?" (Only rejected) :: IO [Only G.Geometry])
           (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
     , testCase "decoded native shapes round trip through parameters and WKB" $
         withConnection ":memory:" \conn ->
@@ -189,7 +189,7 @@ tests =
           raw <- either assertFailure pure (toRawGeometry geometry)
           fromRawGeometry raw @?= Right geometry
           (fromRawGeometry raw >>= toRawGeometry) @?= Right raw
-          assertFailureIO (query conn "SELECT ?" (Only geometry) :: IO [Only G.Geometry])
+          assertSqlErrorType ErrorInputInvalid (query conn "SELECT ?" (Only geometry) :: IO [Only G.Geometry])
           assertMixedLayoutFailure ErrorInputInvalid (importRaw conn raw)
           assertMixedLayoutFailure
             ErrorInputInvalid
@@ -490,7 +490,9 @@ tests =
         ]
     , testCase "invalid binary import leaves the connection usable" $
         withConnection ":memory:" \conn -> do
-          assertFailureIO (query conn "SELECT system.main.ST_GeomFromWKB(?)" (Only (BS.pack [1, 1, 0, 0, 0])) :: IO [Only RawGeometry])
+          assertSqlErrorType
+            ErrorInputInvalid
+            (query conn "SELECT system.main.ST_GeomFromWKB(?)" (Only (BS.pack [1, 1, 0, 0, 0])) :: IO [Only RawGeometry])
           (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
     , testCase "configured recognized, custom, and complete CRS names bind with their CRS" $ do
         let names = ["OGC:CRS84", "local' íslenska λ", localGridWKT2]

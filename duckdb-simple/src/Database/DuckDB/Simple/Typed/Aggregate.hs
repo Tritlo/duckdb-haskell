@@ -211,7 +211,7 @@ createAggregateOn target name aggregate = do
   -- The update callback has no context. It reads a GEOMETRY argument with the
   -- factory of the instance, which only a connection target gives.
   casts <- targetCastFactory target
-  resultType <- either (\reason -> throwInvalidArgument (name <> ": result: " <> reason)) pure (duckdbTypeDeclaration (Proxy :: Proxy result))
+  [resultType] <- rowDeclarations name ["result"] [duckdbTypeDeclaration (Proxy @result)]
   toRaw <- case rawResult of
     Just raw -> pure raw
     Nothing ->
@@ -249,7 +249,7 @@ createAggregateOn target name aggregate = do
     forM_ (zip [0 ..] argumentTypes) \(index, argumentType) -> withTypeDeclaration factory argumentType (checkArgumentType (isJust casts) name index)
     registerAggregateFunctionWith target (configure parameters resultType factory) callbacks
   where
-    columnTypes = rowColumnTypes (Proxy :: Proxy args)
+    columnTypes = rowColumnDeclarations (Proxy @args)
     configure parameters resultType factory function = do
       withIdentifier name (checked . c_duckdb_v2_aggregate_function_set_name function)
       signature <- output (c_duckdb_v2_aggregate_function_get_signature function)

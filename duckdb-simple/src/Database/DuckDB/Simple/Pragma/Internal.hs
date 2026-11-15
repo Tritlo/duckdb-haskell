@@ -73,8 +73,6 @@ registerPragmaFunctionOn target name parameters callback = do
 pragmaArguments
   :: (FromRow args) => Maybe DuckDBV2FactoryHandle -> Text -> DuckDBV2FunctionBindInfoHandle -> DuckDBV2ContextHandle -> IO args
 pragmaArguments casts name info context = withContextFactory context \contextFactory -> do
-  -- Read GEOMETRY with the factory of 'targetCastFactory', or with the factory
-  -- of the context for an extension.
   let factory = callbackReadFactory casts contextFactory
   count <- allocaArray 4 \counts -> do
     checked (c_duckdb_v2_function_bind_get_arg_count info counts (advancePtr counts 1) (advancePtr counts 2) (advancePtr counts 3))

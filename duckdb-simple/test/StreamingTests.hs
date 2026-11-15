@@ -147,9 +147,22 @@ nativeStreamingTests =
     , testCase "row decode failure exhausts and releases the cursor" $ withDb \conn -> do
         withStatement conn "SELECT {'n': i} FROM range(5000) t(i)" \stmt -> do
           void $ expectSqlError (Streaming.nextRow stmt :: IO (Maybe (Only Int64)))
+          cursor <- readIORef (statementStream stmt)
+          case cursor of
+            StatementStreamExhausted -> pure ()
+            _ -> assertFailure "expected an exhausted cursor after the decode failure"
           Streaming.nextRow stmt >>= (@?= (Nothing :: Maybe (Only Int64)))
         assertReusable conn
-    , testCase "fold callback failure releases the active chunk" $ withDb \conn -> do
+        -- DuckDB refuses each other query of the connection while a native stream
+        -- runs. A query that works while the statement is open shows that the
+        -- failure released the native result. The large result keeps the stream
+        -- running after the first chunk.
+        withStatement conn "SELECT {'n': i} FROM range(1000000) t(i)" \stmt -> do
+          void $ expectSqlError (Streaming.nextRow stmt :: IO (Maybe (Only Int64)))
+          assertReusable conn
+    , -- The case of the leak test for a statement that closes with a live cursor
+      -- checks the release of the chunks.
+      testCase "a failing step of a streaming fold raises its error and leaves the connection usable" $ withDb \conn -> do
         outcome <- try $ Streaming.fold_ conn "SELECT {'n': i, 'list': [i, NULL]} FROM range(5000) t(i)" (0 :: Int) \count (Only (_ :: FieldValue)) ->
           if count == 2050 then throwIO (userError "stream step failure") else pure (count + 1)
         case outcome of

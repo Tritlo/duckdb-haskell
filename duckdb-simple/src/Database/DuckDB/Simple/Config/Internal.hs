@@ -78,8 +78,6 @@ registerCustomOptionOn target option = do
     (updateWithValue casts <$> customOptionUpdate option)
 
 -- | Copy the new value of an option update. Then give it to the update function.
--- A GEOMETRY value reads with the factory of 'targetCastFactory', or with the
--- factory of the context for an extension.
 updateWithValue :: Maybe DuckDBV2FactoryHandle -> (FieldValue -> IO ()) -> ContextCallback DuckDBV2CustomOptionUpdateInfoHandle
 updateWithValue casts update info context = withContextFactory context \factory ->
   bracket

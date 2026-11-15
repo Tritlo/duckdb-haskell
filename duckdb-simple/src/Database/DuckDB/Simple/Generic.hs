@@ -8,6 +8,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
@@ -111,6 +112,7 @@ import Data.Time.LocalTime (LocalTime, TimeOfDay)
 import Data.Typeable (Typeable)
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
+import Database.DuckDB.Simple.Element (containsType, valueTypeName)
 import Database.DuckDB.Simple.FromField (
   Field (..),
   FieldValue (..),
@@ -290,17 +292,19 @@ instance DuckValue TimeWithZone where
 instance (DuckValue a) => DuckValue (Maybe a) where
   duckToField (Just x) = duckToField x
   duckToField Nothing = FieldNull
-  duckLogicalType _ = duckLogicalType (Proxy :: Proxy a)
+  duckLogicalType _ = duckLogicalType (Proxy @a)
   duckFromField FieldNull = Right Nothing
   duckFromField other = Just <$> duckFromField other
 
--- | List values encode as DuckDB LIST (variable-length). 'String' keeps its
--- own instance.
+-- | List values encode as DuckDB LIST (variable-length). A field reads a LIST
+-- and an ARRAY, as the top-level @FromField@ instance of a list does. 'String'
+-- keeps its own instance.
 instance {-# OVERLAPPABLE #-} (DuckValue a) => DuckValue [a] where
   duckToField xs = FieldList (map duckToField xs)
-  duckLogicalType _ = LogicalTypeList (duckLogicalType (Proxy :: Proxy a))
+  duckLogicalType _ = LogicalTypeList (duckLogicalType (Proxy @a))
   duckFromField (FieldList fvs) = traverse duckFromField fvs
-  duckFromField other = Left ("duckdb-simple: expected LIST, got " <> show other)
+  duckFromField (FieldArray arr) = traverse duckFromField (elems arr)
+  duckFromField other = unexpectedValue "LIST or ARRAY" other
 
 -- | Array values encode as DuckDB ARRAY values. A type has no size, so the
 -- instance declares the size 0. When a generic record binds, the value of an
@@ -315,13 +319,13 @@ instance (DuckValue a) => DuckValue (Array Int a) where
     let values = elems arr
         (low, high) = (0, length values - 1)
     in  FieldArray (listArray (low, high) (map duckToField values))
-  duckLogicalType _ = LogicalTypeArray (duckLogicalType (Proxy :: Proxy a)) 0
+  duckLogicalType _ = LogicalTypeArray (duckLogicalType (Proxy @a)) 0
   duckFromField (FieldArray arr) = do
     let values = elems arr
     decoded <- traverse duckFromField values
     let (low, high) = (0, length decoded - 1)
     pure (listArray (low, high) decoded)
-  duckFromField other = Left ("duckdb-simple: expected ARRAY, got " <> show other)
+  duckFromField other = unexpectedValue "ARRAY" other
 
 -- | Map values encode as DuckDB MAP.
 instance (Ord k, DuckValue k, DuckValue v) => DuckValue (Map.Map k v) where
@@ -330,8 +334,8 @@ instance (Ord k, DuckValue k, DuckValue v) => DuckValue (Map.Map k v) where
     in  FieldMap [(duckToField k, duckToField v) | (k, v) <- pairs]
   duckLogicalType _ =
     LogicalTypeMap
-      (duckLogicalType (Proxy :: Proxy k))
-      (duckLogicalType (Proxy :: Proxy v))
+      (duckLogicalType (Proxy @k))
+      (duckLogicalType (Proxy @v))
   duckFromField (FieldMap pairs) = do
     decodedPairs <- traverse decodePair pairs
     pure (Map.fromList decodedPairs)
@@ -340,7 +344,13 @@ instance (Ord k, DuckValue k, DuckValue v) => DuckValue (Map.Map k v) where
         k <- duckFromField kfv
         v <- duckFromField vfv
         pure (k, v)
-  duckFromField other = Left ("duckdb-simple: expected MAP, got " <> show other)
+  duckFromField other = unexpectedValue "MAP" other
+
+-- | The error of a decoder that does not read a value. The text has the form of
+-- each other read error: it names the SQL type of the value, not the value,
+-- because a value can be large.
+unexpectedValue :: String -> FieldValue -> Either String a
+unexpectedValue expected value = Left (displayException (Incompatible (valueTypeName value) Text.empty (Text.pack expected) Text.empty))
 
 --------------------------------------------------------------------------------
 -- Generic machinery
@@ -364,7 +374,7 @@ genericToFieldValue = encodedValue . gToField . from
 
 -- | Extract the logical DuckDB type corresponding to a Haskell value.
 genericLogicalType :: forall a. (Generic a, GToField (Rep a)) => Proxy a -> LogicalTypeRep
-genericLogicalType _ = gLogicalType (Proxy :: Proxy (Rep a ()))
+genericLogicalType _ = gLogicalType (Proxy @(Rep a ()))
 
 -- | Decode a DuckDB @FieldValue@ back into a Haskell value using its generic representation.
 genericFromFieldValue :: forall a. (Generic a, GFromField (Rep a)) => FieldValue -> Either String a
@@ -405,8 +415,8 @@ class GToField f where
   gLogicalType :: Proxy (f p) -> LogicalTypeRep
 
 instance (GToField' (IsSum f) f) => GToField f where
-  gToField = gToField' (Proxy :: Proxy (IsSum f))
-  gLogicalType _ = gLogicalType' (Proxy :: Proxy (IsSum f)) (Proxy :: Proxy f)
+  gToField = gToField' (Proxy @(IsSum f))
+  gLogicalType _ = gLogicalType' (Proxy @(IsSum f)) (Proxy @f)
 
 -- | Helper class that splits the product and sum handling using the @IsSum@
 -- type family. We specialise on products (@'False@) and sums (@'True@) to keep
@@ -439,7 +449,7 @@ this value as {}. The value is not NULL.
 instance (GStruct f) => GToField' 'False (M1 D meta (M1 C c f)) where
   gToField' _ (M1 (M1 inner)) =
     let comps = gStructValues inner
-        typeComps = gStructTypes (Proxy :: Proxy (f p))
+        typeComps = gStructTypes (Proxy @(f _))
         names = resolveNames (zip progIndices (map fcName comps))
         valueArray = listArrayFrom names (map fcValue comps)
         typeArray = listArrayFrom names (map fcValue typeComps)
@@ -454,7 +464,7 @@ instance (GStruct f) => GToField' 'False (M1 D meta (M1 C c f)) where
     where
       progIndices = [0 :: Int ..]
   gLogicalType' _ _ =
-    let typeComps = gStructTypes (Proxy :: Proxy (f p))
+    let typeComps = gStructTypes (Proxy @(f _))
         names = resolveNames (zip [0 :: Int ..] (map fcName typeComps))
         typeArray = listArrayFrom names (map fcValue typeComps)
     in  LogicalTypeStruct typeArray
@@ -464,7 +474,7 @@ instance (GStruct f) => GToField' 'False (M1 D meta (M1 C c f)) where
 -- | Sum encoding: multi-constructor datatypes become UNION values.
 instance (GSum f) => GToField' 'True (M1 D meta f) where
   gToField' _ (M1 value) =
-    let members = gSumMembers (Proxy :: Proxy (f p))
+    let members = gSumMembers (Proxy @(f _))
         membersArray = listArray (0, length members - 1) members
         (idx, payload) = gSumEncode value
         label = unionMemberName (members !! idx)
@@ -476,7 +486,7 @@ instance (GSum f) => GToField' 'True (M1 D meta f) where
             , unionValueMembers = membersArray
             }
   gLogicalType' _ _ =
-    let members = gSumMembers (Proxy :: Proxy (f p))
+    let members = gSumMembers (Proxy @(f _))
         membersArray = listArray (0, length members - 1) members
     in  LogicalTypeUnion membersArray
 
@@ -517,7 +527,7 @@ instance GStruct U1 where
 
 instance (GStruct a, GStruct b) => GStruct (a :*: b) where
   gStructValues (a :*: b) = gStructValues a ++ gStructValues b
-  gStructTypes _ = gStructTypes (Proxy :: Proxy (a p)) ++ gStructTypes (Proxy :: Proxy (b p))
+  gStructTypes _ = gStructTypes (Proxy @(a _)) ++ gStructTypes (Proxy @(b _))
 
 instance (Selector s, DuckValue a) => GStruct (M1 S s (K1 i a)) where
   gStructValues m@(M1 (K1 x)) =
@@ -526,11 +536,11 @@ instance (Selector s, DuckValue a) => GStruct (M1 S s (K1 i a)) where
   gStructTypes _ =
     let raw = selName (undefined :: M1 S s (K1 i a) ())
         name = toMaybe raw
-    in  [FieldComponent name (duckLogicalType (Proxy :: Proxy a))]
+    in  [FieldComponent name (duckLogicalType (Proxy @a))]
 
 instance (GStruct f) => GStruct (M1 C c f) where
   gStructValues (M1 x) = gStructValues x
-  gStructTypes _ = gStructTypes (Proxy :: Proxy (f p))
+  gStructTypes _ = gStructTypes (Proxy @(f _))
 
 toMaybe :: String -> Maybe Text
 toMaybe name
@@ -549,14 +559,14 @@ class GSum f where
   gSumDecode :: Int -> FieldValue -> Either String (f p)
 
 instance (GSum a, GSum b) => GSum (a :+: b) where
-  gSumMembers _ = gSumMembers (Proxy :: Proxy (a p)) ++ gSumMembers (Proxy :: Proxy (b p))
+  gSumMembers _ = gSumMembers (Proxy @(a _)) ++ gSumMembers (Proxy @(b _))
   gSumEncode (L1 x) = gSumEncode x
   gSumEncode (R1 x) =
-    let leftCount = length (gSumMembers (Proxy :: Proxy (a p)))
+    let leftCount = length (gSumMembers (Proxy @(a _)))
         (idx, payload) = gSumEncode x
     in  (idx + leftCount, payload)
   gSumDecode idx payload =
-    let leftCount = length (gSumMembers (Proxy :: Proxy (a p)))
+    let leftCount = length (gSumMembers (Proxy @(a _)))
     in  if idx < leftCount
           then L1 <$> gSumDecode idx payload
           else R1 <$> gSumDecode (idx - leftCount) payload
@@ -566,7 +576,7 @@ instance (Constructor c, GStruct f, GStructDecode f) => GSum (M1 C c f) where
     [ UnionMemberType
         { unionMemberName = Text.pack (conName (undefined :: M1 C c f p))
         , unionMemberType =
-            let typeComps = gStructTypes (Proxy :: Proxy (f p))
+            let typeComps = gStructTypes (Proxy @(f _))
                 names = resolveNames (zip [0 :: Int ..] (map fcName typeComps))
             in  LogicalTypeStruct (listArrayFrom names (map fcValue typeComps))
         }
@@ -575,7 +585,7 @@ instance (Constructor c, GStruct f, GStructDecode f) => GSum (M1 C c f) where
   -- See Note [Types without fields].
   gSumEncode (M1 x) =
     let comps = gStructValues x
-        typeComps = gStructTypes (Proxy :: Proxy (f p))
+        typeComps = gStructTypes (Proxy @(f _))
         names = resolveNames (zip [0 :: Int ..] (map fcName comps))
         valueArray = listArrayFrom names (map fcValue comps)
         typeArray = listArrayFrom names (map fcValue typeComps)
@@ -586,11 +596,11 @@ instance (Constructor c, GStruct f, GStructDecode f) => GSum (M1 C c f) where
     | otherwise =
         case payload of
           -- Version 0.3 wrote this payload. See Note [Types without fields].
-          FieldNull -> M1 . fst <$> gStructDecodeList (Proxy :: Proxy (f p)) []
+          FieldNull -> M1 . fst <$> gStructDecodeList (Proxy @(f _)) []
           FieldStruct structVal -> do
-            ordered <- orderStructFields (gStructTypes (Proxy :: Proxy (f p))) structVal
-            M1 <$> gStructDecodeStruct (Proxy :: Proxy (f p)) ordered
-          other -> Left ("duckdb-simple: expected STRUCT payload for union member, got " <> show other)
+            ordered <- orderStructFields (gStructTypes (Proxy @(f _))) structVal
+            M1 <$> gStructDecodeStruct (Proxy @(f _)) ordered
+          other -> unexpectedValue "STRUCT for a member of a sum type" other
 
 -- | Match decoded fields to their selector names before product decoding.
 orderStructFields :: [FieldComponent LogicalTypeRep] -> StructValue FieldValue -> Either String (StructValue FieldValue)
@@ -627,14 +637,14 @@ instance GStructDecode U1 where
 instance (GStructDecode a, GStructDecode b) => GStructDecode (a :*: b) where
   gStructDecodeStruct _ structVal = do
     let values = map structFieldValue (elems (structValueFields structVal))
-    (leftVal, rest) <- gStructDecodeList (Proxy :: Proxy (a p)) values
-    (rightVal, rest') <- gStructDecodeList (Proxy :: Proxy (b p)) rest
+    (leftVal, rest) <- gStructDecodeList (Proxy @(a _)) values
+    (rightVal, rest') <- gStructDecodeList (Proxy @(b _)) rest
     unless (null rest') $
       Left ("duckdb-simple: extra " <> show (length rest') <> " field(s) when decoding struct (too many fields provided)")
     pure (leftVal :*: rightVal)
   gStructDecodeList _ xs = do
-    (leftVal, rest) <- gStructDecodeList (Proxy :: Proxy (a p)) xs
-    (rightVal, rest') <- gStructDecodeList (Proxy :: Proxy (b p)) rest
+    (leftVal, rest) <- gStructDecodeList (Proxy @(a _)) xs
+    (rightVal, rest') <- gStructDecodeList (Proxy @(b _)) rest
     pure (leftVal :*: rightVal, rest')
 
 instance (Selector s, DuckValue a) => GStructDecode (M1 S s (K1 i a)) where
@@ -659,9 +669,9 @@ namedField name
     withoutPrefix message = fromMaybe message (stripPrefix "duckdb-simple: " message)
 
 instance (GStructDecode f) => GStructDecode (M1 C c f) where
-  gStructDecodeStruct _ structVal = M1 <$> gStructDecodeStruct (Proxy :: Proxy (f p)) structVal
+  gStructDecodeStruct _ structVal = M1 <$> gStructDecodeStruct (Proxy @(f _)) structVal
   gStructDecodeList _ values = do
-    (inner, rest) <- gStructDecodeList (Proxy :: Proxy (f p)) values
+    (inner, rest) <- gStructDecodeList (Proxy @(f _)) values
     pure (M1 inner, rest)
 
 --------------------------------------------------------------------------------
@@ -673,7 +683,7 @@ class GFromField f where
   gFromField :: FieldValue -> Either String (f p)
 
 instance (GFromField' (IsSum f) f) => GFromField f where
-  gFromField = gFromField' (Proxy :: Proxy (IsSum f))
+  gFromField = gFromField' (Proxy @(IsSum f))
 
 class GFromField' (isSum :: Bool) f where
   gFromField' :: Proxy isSum -> FieldValue -> Either String (f p)
@@ -681,11 +691,11 @@ class GFromField' (isSum :: Bool) f where
 instance (GStruct f, GStructDecode f) => GFromField' 'False (M1 D meta (M1 C c f)) where
   gFromField' _ = \case
     -- Version 0.3 wrote this value. See Note [Types without fields].
-    FieldNull -> M1 . M1 . fst <$> gStructDecodeList (Proxy :: Proxy (f p)) []
+    FieldNull -> M1 . M1 . fst <$> gStructDecodeList (Proxy @(f _)) []
     FieldStruct sv -> do
-      ordered <- orderStructFields (gStructTypes (Proxy :: Proxy (f p))) sv
-      M1 . M1 <$> gStructDecodeStruct (Proxy :: Proxy (f p)) ordered
-    other -> Left ("duckdb-simple: expected STRUCT value for product type, got " <> show other)
+      ordered <- orderStructFields (gStructTypes (Proxy @(f _))) sv
+      M1 . M1 <$> gStructDecodeStruct (Proxy @(f _)) ordered
+    other -> unexpectedValue "STRUCT for a product type" other
 
 instance (GSum f) => GFromField' 'True (M1 D meta f) where
   gFromField' _ = \case
@@ -696,13 +706,13 @@ instance (GSum f) => GFromField' 'True (M1 D meta f) where
         Left "duckdb-simple: union tag out of range"
       unless (unionMemberName (actualMembers !! actualIndex) == unionValueLabel uv) $
         Left "duckdb-simple: union tag and member name mismatch"
-      let members = gSumMembers (Proxy :: Proxy (f p))
+      let members = gSumMembers (Proxy @(f _))
           indexed = zip [0 ..] members
           matching = [idx | (idx, member) <- indexed, unionMemberName member == unionValueLabel uv]
       case matching of
         [idx] -> M1 <$> gSumDecode idx (unionValuePayload uv)
         _ -> Left "duckdb-simple: unknown union member name"
-    other -> Left ("duckdb-simple: expected UNION value for sum type, got " <> show other)
+    other -> unexpectedValue "UNION for a sum type" other
 
 instance GFromField' 'False (M1 D meta U1) where
   gFromField' _ _ = Right (M1 U1)
@@ -721,9 +731,9 @@ instance (Generic a, GToField (Rep a)) => DuckDBColumnType (ViaDuckDB a) where
         Left (Text.pack "an Array field has no size, so its ARRAY type has no declaration. Use a list field, which is a LIST.")
     | otherwise = Right (StructuredType rep)
     where
-      rep = genericLogicalType (Proxy :: Proxy a)
+      rep = genericLogicalType (Proxy @a)
   duckdbColumnTypeFor _ =
-    case genericLogicalType (Proxy :: Proxy a) of
+    case genericLogicalType (Proxy @a) of
       LogicalTypeStruct{} -> Text.pack "STRUCT"
       LogicalTypeTuple{} -> Text.pack "TUPLE"
       LogicalTypeUnion{} -> Text.pack "UNION"
@@ -748,13 +758,8 @@ instance (Generic a, GToField (Rep a)) => ToField (ViaDuckDB a) where
 -- | Test whether a type is or contains an ARRAY type of the size 0. The
 -- 'DuckValue' instance of 'Array' declares that size.
 hasUnsizedArray :: LogicalTypeRep -> Bool
-hasUnsizedArray = \case
-  LogicalTypeArray child size -> size == 0 || hasUnsizedArray child
-  LogicalTypeList child -> hasUnsizedArray child
-  LogicalTypeMap key value -> hasUnsizedArray key || hasUnsizedArray value
-  LogicalTypeStruct fields -> any (hasUnsizedArray . structFieldValue) (elems fields)
-  LogicalTypeTuple fields -> any hasUnsizedArray (elems fields)
-  LogicalTypeUnion members -> any (hasUnsizedArray . unionMemberType) (elems members)
+hasUnsizedArray = containsType \case
+  LogicalTypeArray _ size -> size == 0
   _ -> False
 
 -- | Deriving-via @ToDuckValue@ instance. A sum type gives a UNION value and a

@@ -6,6 +6,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 -- |
 -- Module      : Database.DuckDB.Simple.ToField
@@ -55,7 +56,7 @@ import Data.Time.Clock (UTCTime (..), diffTimeToPicoseconds)
 import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..), timeOfDayToTime, utc, utcToLocalTime)
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
-import Database.DuckDB.Simple.Element (timeTzMaxOffsetSeconds, timeTzOffsetBits)
+import Database.DuckDB.Simple.Element (containsType, timeTzMaxOffsetSeconds, timeTzOffsetBits, valueTypeName)
 import Database.DuckDB.Simple.FromField (
   BigNum (..),
   BitString (..),
@@ -790,9 +791,9 @@ instance (DuckDBColumnType k, DuckDBColumnType v, ToField k, ToField v) => ToFie
       \builder readTarget -> do
         (keyTarget, valueTarget) <- mapPartTypes <$> readTarget
         mapDuckValue
+          (withElementType (Proxy @k) builder keyTarget)
+          (withElementType (Proxy @v) builder valueTarget)
           builder
-          keyTarget
-          valueTarget
           (\key -> fieldBindingValue (toField key) builder (pure (elementBindingTarget keyTarget)))
           (\value -> fieldBindingValue (toField value) builder (pure (elementBindingTarget valueTarget)))
           (Map.toAscList pairs)
@@ -887,25 +888,19 @@ fieldValueSequence
   -> [FieldValue]
   -> FieldBinding
 fieldValueSequence name create items =
-  targetValueBinding ("<" <> Text.unpack name <> " length=" <> show (length items) <> ">") \builder@ValueBuilder{builderFactory = factory} readTarget -> do
+  targetValueBinding ("<" <> Text.unpack name <> " length=" <> show (length items) <> ">") \builder readTarget -> do
     childTarget <- collectionChildType <$> readTarget
-    withCreatedValues (map (\item -> fieldBindingValue (toField item) builder (pure (elementBindingTarget childTarget))) items) \values ->
-      withValueType builder childTarget values \elementType ->
-        withArray values \ptr ->
-          output (create factory elementType (ConstPtr ptr) (fromIntegral (length values)))
+    let element item = fieldBindingValue (toField item) builder (pure (elementBindingTarget childTarget))
+    sequenceDuckValue (withValueType builder childTarget) create builder element items
 
 -- | Bind the pairs of a 'FieldMap' in their order, with the key type and the
 -- value type that they give. See Note [Element types of a list].
 fieldValueMap :: [(FieldValue, FieldValue)] -> FieldBinding
 fieldValueMap pairs =
-  targetValueBinding ("<FieldMap size=" <> show (length pairs) <> ">") \builder@ValueBuilder{builderFactory = factory} readTarget -> do
+  targetValueBinding ("<FieldMap size=" <> show (length pairs) <> ">") \builder readTarget -> do
     (keyTarget, valueTarget) <- mapPartTypes <$> readTarget
-    withCreatedValues (map (\(key, _) -> fieldBindingValue (toField key) builder (pure (elementBindingTarget keyTarget))) pairs) \keys ->
-      withCreatedValues (map (\(_, item) -> fieldBindingValue (toField item) builder (pure (elementBindingTarget valueTarget))) pairs) \values ->
-        withValueType builder keyTarget keys \keyType ->
-          withValueType builder valueTarget values \valueType ->
-            withArray keys \keyPtr -> withArray values \valuePtr ->
-              output (c_duckdb_v2_value_create_map factory keyType valueType (ConstPtr keyPtr) (ConstPtr valuePtr) (fromIntegral (length pairs)))
+    let part target item = fieldBindingValue (toField item) builder (pure (elementBindingTarget target))
+    mapDuckValue (withValueType builder keyTarget) (withValueType builder valueTarget) builder (part keyTarget) (part valueTarget) pairs
 
 instance (ToField a) => ToField (Maybe a) where
   toField Nothing = nullBinding "Nothing"
@@ -1027,26 +1022,26 @@ instance DuckDBColumnType (UnionValue FieldValue) where
   duckdbTypeDeclaration _ = Left (noStaticFieldTypes "UnionValue")
 
 instance (DuckDBColumnType a) => DuckDBColumnType (Maybe a) where
-  duckdbColumnTypeFor _ = duckdbColumnTypeFor (Proxy :: Proxy a)
-  duckdbTypeDeclaration _ = duckdbTypeDeclaration (Proxy :: Proxy a)
+  duckdbColumnTypeFor _ = duckdbColumnTypeFor (Proxy @a)
+  duckdbTypeDeclaration _ = duckdbTypeDeclaration (Proxy @a)
 
 -- | A LIST of the element type. See Note [Type declarations].
 instance (DuckDBColumnType a) => DuckDBColumnType (Array Int a) where
-  duckdbColumnTypeFor _ = duckdbColumnTypeFor (Proxy :: Proxy a) <> Text.pack "[]"
-  duckdbTypeDeclaration _ = listDeclaration <$> duckdbTypeDeclaration (Proxy :: Proxy a)
+  duckdbColumnTypeFor _ = duckdbColumnTypeFor (Proxy @a) <> Text.pack "[]"
+  duckdbTypeDeclaration _ = listDeclaration <$> duckdbTypeDeclaration (Proxy @a)
 
 -- | See Note [Type declarations].
 instance (DuckDBColumnType k, DuckDBColumnType v) => DuckDBColumnType (Map.Map k v) where
-  duckdbColumnTypeFor _ = Text.pack "MAP(" <> duckdbColumnTypeFor (Proxy :: Proxy k) <> Text.pack ", " <> duckdbColumnTypeFor (Proxy :: Proxy v) <> Text.pack ")"
+  duckdbColumnTypeFor _ = Text.pack "MAP(" <> duckdbColumnTypeFor (Proxy @k) <> Text.pack ", " <> duckdbColumnTypeFor (Proxy @v) <> Text.pack ")"
   duckdbTypeDeclaration _ = do
-    key <- duckdbTypeDeclaration (Proxy :: Proxy k)
-    value <- duckdbTypeDeclaration (Proxy :: Proxy v)
+    key <- duckdbTypeDeclaration (Proxy @k)
+    value <- duckdbTypeDeclaration (Proxy @v)
     mapDeclaration key value
 
 -- | 'String' keeps its own instance. See Note [Type declarations].
 instance {-# OVERLAPPABLE #-} (DuckDBColumnType a) => DuckDBColumnType [a] where
-  duckdbColumnTypeFor _ = duckdbColumnTypeFor (Proxy :: Proxy a) <> Text.pack "[]"
-  duckdbTypeDeclaration _ = listDeclaration <$> duckdbTypeDeclaration (Proxy :: Proxy a)
+  duckdbColumnTypeFor _ = duckdbColumnTypeFor (Proxy @a) <> Text.pack "[]"
+  duckdbTypeDeclaration _ = listDeclaration <$> duckdbTypeDeclaration (Proxy @a)
 
 nullBinding :: String -> FieldBinding
 nullBinding repr = valueBinding repr nullDuckValue
@@ -1160,7 +1155,8 @@ utcTimestampDuckValue factory value =
 -- | Construct an ARRAY value. An empty array raises 'SQLError'. See
 -- 'withElementType' for the element type.
 arrayDuckValue
-  :: (DuckDBColumnType a)
+  :: forall a
+   . (DuckDBColumnType a)
   => ValueBuilder
   -> Maybe LogicalTypeRep
   -> (a -> IO DuckDBV2ValueHandle)
@@ -1168,7 +1164,7 @@ arrayDuckValue
   -> IO DuckDBV2ValueHandle
 arrayDuckValue builder target elementValue array = do
   when (null (elems array)) emptyArrayError
-  sequenceDuckValue c_duckdb_v2_value_create_array builder target elementValue (elems array)
+  sequenceDuckValue (withElementType (Proxy @a) builder target) c_duckdb_v2_value_create_array builder elementValue (elems array)
 
 -- | Raise the error for an ARRAY parameter with no element. An 'Array' and a
 -- 'FieldArray' raise this error.
@@ -1180,21 +1176,21 @@ emptyArrayError =
 -- | Construct a LIST value. An empty list is an empty LIST of the element type.
 -- See 'withElementType' for the element type.
 listDuckValue
-  :: (DuckDBColumnType a)
+  :: forall a
+   . (DuckDBColumnType a)
   => ValueBuilder
   -> Maybe LogicalTypeRep
   -> (a -> IO DuckDBV2ValueHandle)
   -> [a]
   -> IO DuckDBV2ValueHandle
-listDuckValue = sequenceDuckValue c_duckdb_v2_value_create_list
+listDuckValue builder target = sequenceDuckValue (withElementType (Proxy @a) builder target) c_duckdb_v2_value_create_list builder
 
--- | Construct a LIST or an ARRAY value with the native constructor. The target
--- is the element type of the parameter. See 'withElementType' for the element
--- type.
+-- | Construct a LIST or an ARRAY value with the native constructor. The first
+-- argument gives the element type of the values to its action:
+-- 'withElementType' for a Haskell element type, or 'withValueType'.
 sequenceDuckValue
-  :: forall a
-   . (DuckDBColumnType a)
-  => ( DuckDBV2FactoryHandle
+  :: ([DuckDBV2ValueHandle] -> (DuckDBV2LogicalTypeHandle -> IO DuckDBV2ValueHandle) -> IO DuckDBV2ValueHandle)
+  -> ( DuckDBV2FactoryHandle
        -> DuckDBV2LogicalTypeHandle
        -> ConstPtr DuckDBV2ValueHandle
        -> DuckDBIdx
@@ -1203,34 +1199,30 @@ sequenceDuckValue
        -> IO DuckDBV2Error
      )
   -> ValueBuilder
-  -> Maybe LogicalTypeRep
   -> (a -> IO DuckDBV2ValueHandle)
   -> [a]
   -> IO DuckDBV2ValueHandle
-sequenceDuckValue create builder@ValueBuilder{builderFactory = factory} target elementValue elements =
+sequenceDuckValue withType create ValueBuilder{builderFactory = factory} elementValue elements =
   withCreatedValues (map elementValue elements) \values ->
-    withElementType (Proxy :: Proxy a) builder target values \elementType ->
+    withType values \elementType ->
       withArray values \ptr ->
         output (create factory elementType (ConstPtr ptr) (fromIntegral (length values)))
 
--- | Construct a MAP value from pairs in their order. The targets are the key
--- type and the value type of the parameter. See 'withElementType' for the key
--- type and the value type.
+-- | Construct a MAP value from pairs in their order. The first two arguments
+-- give the key type and the value type, as for 'sequenceDuckValue'.
 mapDuckValue
-  :: forall k v
-   . (DuckDBColumnType k, DuckDBColumnType v)
-  => ValueBuilder
-  -> Maybe LogicalTypeRep
-  -> Maybe LogicalTypeRep
+  :: ([DuckDBV2ValueHandle] -> (DuckDBV2LogicalTypeHandle -> IO DuckDBV2ValueHandle) -> IO DuckDBV2ValueHandle)
+  -> ([DuckDBV2ValueHandle] -> (DuckDBV2LogicalTypeHandle -> IO DuckDBV2ValueHandle) -> IO DuckDBV2ValueHandle)
+  -> ValueBuilder
   -> (k -> IO DuckDBV2ValueHandle)
   -> (v -> IO DuckDBV2ValueHandle)
   -> [(k, v)]
   -> IO DuckDBV2ValueHandle
-mapDuckValue builder@ValueBuilder{builderFactory = factory} keyTarget valueTarget keyValue valueValue pairs =
+mapDuckValue withKeyType withMapValueType ValueBuilder{builderFactory = factory} keyValue valueValue pairs =
   withCreatedValues (map (keyValue . fst) pairs) \keys ->
     withCreatedValues (map (valueValue . snd) pairs) \values ->
-      withElementType (Proxy :: Proxy k) builder keyTarget keys \keyType ->
-        withElementType (Proxy :: Proxy v) builder valueTarget values \valueType ->
+      withKeyType keys \keyType ->
+        withMapValueType values \valueType ->
           withArray keys \keyPtr -> withArray values \valuePtr ->
             output (c_duckdb_v2_value_create_map factory keyType valueType (ConstPtr keyPtr) (ConstPtr valuePtr) (fromIntegral (length pairs)))
 
@@ -1393,15 +1385,10 @@ declaredCompositeValue ValueBuilder{builderFactory = factory, builderType = make
 
 -- | Test whether a type tree contains a VARCHAR collation.
 hasCollation :: LogicalTypeRep -> Bool
-hasCollation rep = case rep of
-  LogicalTypeCollatedVarchar _ -> True
-  LogicalTypeList child -> hasCollation child
-  LogicalTypeArray child _ -> hasCollation child
-  LogicalTypeMap key value -> hasCollation key || hasCollation value
-  LogicalTypeStruct fields -> any (hasCollation . structFieldValue) (elems fields)
-  LogicalTypeTuple fields -> any hasCollation (elems fields)
-  LogicalTypeUnion members -> any (hasCollation . unionMemberType) (elems members)
-  _ -> False
+hasCollation = containsType isCollated
+  where
+    isCollated (LogicalTypeCollatedVarchar _) = True
+    isCollated _ = False
 
 {- Note [UNION values]
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -1542,13 +1529,13 @@ scalarFieldValueDuckValue factory dtype value = case (dtype, value) of
   (LogicalTypeIdHugeInt, FieldHugeInt i) -> hugeIntDuckValue factory i
   (LogicalTypeIdUHugeInt, FieldUHugeInt i) -> uhugeIntDuckValue factory i
   (LogicalTypeIdBigNum, FieldBigNum big) -> bigNumDuckValue factory big
-  _ -> throwInvalidArgument ("unsupported scalar conversion for " <> duckDBTypeToName dtype <> " from " <> Text.pack (show value))
+  _ -> throwInvalidArgument ("unsupported scalar conversion for " <> duckDBTypeToName dtype <> " from a value of type " <> valueTypeName value)
 
 -- | Construct an ENUM value by the default cast of the label to the ENUM type.
 -- The label of a 'FieldEnum' gives the value, not its index: an index of
 -- another dictionary would give another label with no error. A label that is
--- not in the dictionary raises an error. A user cast from VARCHAR to that type
--- does not apply. See Note [User casts and the casts of the library] in
+-- not in the dictionary raises an error. See
+-- Note [User casts and the casts of the library] in
 -- "Database.DuckDB.Simple.Materialize".
 enumDuckValue :: DuckDBV2FactoryHandle -> Array Int Text -> Text -> IO DuckDBV2ValueHandle
 enumDuckValue factory entries label = do
@@ -1559,7 +1546,9 @@ enumDuckValue factory entries label = do
       defaultCast factory value logical
 
 -- | Cast a value to a type with the default cast of DuckDB
--- ('withDefaultCastVector' with one row). The caller destroys the result.
+-- ('withDefaultCastVector' with one row). The caller destroys the result. See
+-- Note [User casts and the casts of the library] in
+-- "Database.DuckDB.Simple.Materialize".
 defaultCast :: DuckDBV2FactoryHandle -> DuckDBV2ValueHandle -> DuckDBV2LogicalTypeHandle -> IO DuckDBV2ValueHandle
 defaultCast factory value logical =
   withDefaultCastVector factory logical 1 (\_ write -> write value) \vector -> output (c_duckdb_v2_vector_get_value vector 0)
@@ -1615,11 +1604,10 @@ withIdentifiers names action = do
   withIdentifierArray names action
 
 typeMismatch :: String -> FieldValue -> IO a
-typeMismatch expected actual = throwInvalidArgument ("cannot encode " <> Text.pack (show actual) <> " as " <> Text.pack expected)
+typeMismatch expected actual = throwInvalidArgument ("cannot encode a value of type " <> valueTypeName actual <> " as " <> Text.pack expected)
 
 -- | Construct a GEOMETRY value of the declared CRS from a raw geometry. See
--- Note [Raw GEOMETRY parameters]. A user cast from BLOB to GEOMETRY does not
--- apply. See Note [User casts and the casts of the library] in
+-- Note [Raw GEOMETRY parameters], and Note [User casts and the casts of the library] in
 -- "Database.DuckDB.Simple.Materialize".
 rawGeometryDuckValue :: ValueBuilder -> Maybe Text -> RawGeometry -> IO DuckDBV2ValueHandle
 rawGeometryDuckValue ValueBuilder{builderFactory = factory, builderType = makeType} crs RawGeometry{rawGeometryWKB, rawGeometryCRS} = do
@@ -1712,8 +1700,8 @@ contains with this rule:
   geometry parameter.
 -}
 
--- | Cast the payload to VARIANT with the default cast of DuckDB. A user cast to
--- VARIANT does not apply. See Note [User casts and the casts of the library] in
+-- | Cast the payload to VARIANT with the default cast of DuckDB. See
+-- Note [User casts and the casts of the library] in
 -- "Database.DuckDB.Simple.Materialize".
 variantDuckValue :: ValueBuilder -> FieldValue -> IO DuckDBV2ValueHandle
 variantDuckValue builder@ValueBuilder{builderFactory = factory, builderType = makeType} value = do
@@ -1729,8 +1717,7 @@ utcTimestampNsDuckValue factory value =
     >>= (\encoded -> output (c_duckdb_v2_value_create_timestamp_tz_ns factory encoded))
 
 -- | Cast the WKT text of the shape to GEOMETRY with the default cast of DuckDB.
--- A user cast from VARCHAR to GEOMETRY does not apply. See
--- Note [User casts and the casts of the library] in
+-- See Note [User casts and the casts of the library] in
 -- "Database.DuckDB.Simple.Materialize".
 instance ToDuckValue G.Geometry where
   toDuckValue factory geometry = do
@@ -1929,7 +1916,16 @@ instance (DuckDBColumnType a, ToDuckValue a) => ToDuckValue (Array Int a) where
 -- | Construct a MAP through the supplied factory with the key type of @k@ and
 -- the value type of @v@. The pairs go in ascending key order.
 instance (DuckDBColumnType k, DuckDBColumnType v, ToDuckValue k, ToDuckValue v) => ToDuckValue (Map.Map k v) where
-  toDuckValue factory = mapDuckValue (plainBuilder factory) Nothing Nothing (toDuckValue factory) (toDuckValue factory) . Map.toAscList
+  toDuckValue factory =
+    mapDuckValue
+      (withElementType (Proxy @k) builder Nothing)
+      (withElementType (Proxy @v) builder Nothing)
+      builder
+      (toDuckValue factory)
+      (toDuckValue factory)
+      . Map.toAscList
+    where
+      builder = plainBuilder factory
 
 -- | Construct a LIST through the supplied factory with the element type of @a@.
 -- 'String' keeps its own instance.
@@ -1968,10 +1964,11 @@ encodeLocalTime = encodeTimestampUnits 1000000
 -- | Encode finite timestamps in the requested number of units per second.
 -- See Note [Time ranges].
 encodeTimestampUnits :: Integer -> LocalTime -> IO Int64
-encodeTimestampUnits units value@LocalTime{localDay, localTimeOfDay} = do
-  time <- timeOfDayUnits units localTimeOfDay
+encodeTimestampUnits units value@LocalTime{localTimeOfDay} = do
+  -- timeOfDayUnits checks the time of day.
+  _ <- timeOfDayUnits units localTimeOfDay
   checkTimestampRange units value
-  let total = diffDays localDay (fromGregorian 1970 1 1) * 86400 * units + time
+  let total = timestampUnits units value
   -- Only a nanosecond value reaches this check with a value outside the
   -- storage or at an infinity value. See Note [Time ranges].
   checkFiniteRange "TIMESTAMP" (minBound :: Int64) maxBound total

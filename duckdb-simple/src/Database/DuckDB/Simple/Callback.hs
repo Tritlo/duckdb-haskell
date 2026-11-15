@@ -55,7 +55,8 @@ withRegistrationFactory target action = case target of
 
 -- | The factory for the casts that the library runs in the callbacks of a
 -- target. A connection target gives the factory of its instance. An extension
--- target gives 'Nothing', because an extension has no instance. A registration
+-- target gives 'Nothing', because an extension has no instance. A callback with
+-- a context then reads GEOMETRY with the factory of the context. A registration
 -- takes the factory one time, and its callbacks keep it. The factory is valid
 -- until the instance handle is destroyed. The library destroys that handle only
 -- after it closes each child of the instance (Note [Native handle ownership] in

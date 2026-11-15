@@ -36,7 +36,7 @@ import System.Mem (performMajorGC)
 import System.Mem.Weak (Weak, deRefWeak)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertFailure, testCase, (@?=))
-import TestUtils (writeIntegers)
+import TestUtils (assertSqlErrorContaining, writeIntegers)
 
 -- | Check registration, callback errors, typed signatures, and resource release.
 registrationTests :: TestTree
@@ -439,12 +439,9 @@ failedRegistration connection = do
     Right () -> assertFailure "duplicate parameter names must fail"
   pure reference
 
+-- | Require an 'SQLError' with the message of a failed managed callback.
 assertSqlError :: IO a -> Assertion
-assertSqlError action = do
-  outcome <- try (void action)
-  case outcome of
-    Left (err :: SQLError) -> assertBool "callback diagnostic" ("managed callback failure" `Text.isInfixOf` sqlErrorMessage err)
-    Right () -> assertFailure "expected SQL error"
+assertSqlError = assertSqlErrorContaining "managed callback failure"
 
 readIntegers :: Int -> DuckDBV2VectorHandle -> IO [Int64]
 readIntegers count vector = do

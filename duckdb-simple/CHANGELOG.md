@@ -414,6 +414,15 @@
   gave the derived `show`. The error of a field of a `ViaDuckDB` record names
   the field, for example
   `duckdb-simple: field stampedAt: a value has type TIMESTAMP but expected UTCTime`.
+- A list field of a generic record reads an ARRAY, as a top-level list does.
+  Earlier versions read only a LIST in a field.
+- The errors of the generic decoders name the SQL type of a value, for example
+  `duckdb-simple: field xs: a value has type MAP but expected LIST or ARRAY`.
+  Earlier versions printed the derived `show` of the whole value.
+- Two bind errors name the SQL type of the value in the same way:
+  `cannot encode a value of type INTEGER as ...` and
+  `unsupported scalar conversion for BIGINT from a value of type VARCHAR`.
+  Earlier versions printed the derived `show` of the whole `FieldValue`.
 - A `Variant` read accepts only a value that a VARIANT can hold. A column that
   holds an ENUM, a MAP, a UNION, an ARRAY, a TUPLE, a STRUCT that is not in the
   form of a VARIANT object (each field of the type VARIANT, the keys in

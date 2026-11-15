@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 -- The tests call deleteFunction on purpose, so its warning does not apply.
 {-# OPTIONS_GHC -Wno-deprecations #-}
 
@@ -10,12 +11,23 @@
 -- Description : Regression tests for extension callbacks and native handle ownership.
 module ExtensionRegressionTests (main, extensionRegressionTests) where
 
-import Control.Exception (AsyncException (ThreadKilled), ErrorCall, Exception (..), SomeException, bracket, bracket_, finally, throwIO, try)
+import Control.Exception (
+  AsyncException (ThreadKilled),
+  ErrorCall,
+  Exception (..),
+  IOException,
+  SomeException,
+  bracket,
+  bracket_,
+  finally,
+  throwIO,
+  try,
+ )
 import Control.Monad (forM, forM_, replicateM_, void, when)
 import qualified Data.ByteString as BS
-import Data.IORef (atomicModifyIORef', newIORef, readIORef)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
-import Data.List (find, nub, sort)
+import Data.List (find, isInfixOf, nub, sort)
 import Data.Proxy (Proxy (..))
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
@@ -50,6 +62,7 @@ import System.FilePath (takeDirectory)
 import System.IO (hClose, openBinaryTempFile)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase, (@?=))
+import TestUtils (assertInputErrorContaining, assertReleasedAfter, assertSqlErrorContaining)
 
 -- | Run the extension regression tests as a standalone executable.
 main :: IO ()
@@ -60,26 +73,32 @@ extensionRegressionTests :: TestTree
 extensionRegressionTests =
   testGroup
     "extension regressions"
-    [ testCase "scalar closed connection cleanup" do
+    [ -- A registration on a closed connection raises the error before it
+      -- allocates a callback.
+      testCase "scalar registration on a closed connection raises the closed error" do
         conn <- open ":memory:"
         close conn
-        replicateM_ 32 $ assertSqlError $ createFunction conn "closed_scalar" (1 :: Int64)
-    , testCase "stateful closed connection cleanup" do
+        replicateM_ 32 $ assertSqlErrorContaining "connection is closed" $ createFunction conn "closed_scalar" (1 :: Int64)
+    , testCase "stateful registration on a closed connection raises the closed error" do
         conn <- open ":memory:"
         close conn
-        replicateM_ 32 $ assertSqlError $ createFunctionWithState conn "closed_state" (pure ()) (\() -> (1 :: Int64))
-    , testCase "COPY closed connection cleanup" do
+        replicateM_ 32
+          $ assertSqlErrorContaining "connection is closed"
+          $ createFunctionWithState conn "closed_state" (pure ()) (\() -> (1 :: Int64))
+    , testCase "COPY registration on a closed connection raises the closed error" do
         conn <- open ":memory:"
         close conn
-        replicateM_ 32 $ assertSqlError $ registerCopy conn "closed_copy" Nothing
-    , testCase "logging closed connection cleanup" do
+        replicateM_ 32 $ assertSqlErrorContaining "connection is closed" $ registerCopy conn "closed_copy" Nothing
+    , testCase "logging registration on a closed connection raises the closed error" do
         conn <- open ":memory:"
         close conn
-        replicateM_ 32 $ assertSqlError $ Logging.registerLogStorage conn "closed_log" (\_ -> pure ())
-    , testCase "scalar replacement registration cleanup" $
+        replicateM_ 32 $ assertSqlErrorContaining "connection is closed" $ Logging.registerLogStorage conn "closed_log" (\_ -> pure ())
+    , testCase "scalar replacement releases each replaced callback before the connection closes" $
         withConnection ":memory:" \conn -> do
           createFunction conn "duplicate_scalar" (42 :: Int64)
-          replicateM_ 32 $ createFunction conn "duplicate_scalar" (7 :: Int64)
+          assertReleasedAfter "a replaced scalar function" \token -> do
+            replicateM_ 32 $ createFunction conn "duplicate_scalar" (readIORef token)
+            createFunction conn "duplicate_scalar" (7 :: Int64)
           query_ conn "SELECT duplicate_scalar()" >>= (@?= [Only (7 :: Int64)])
     , testCase "scalar deletion refusal keeps function and connection usable" $
         withConnection ":memory:" \conn -> do
@@ -110,21 +129,28 @@ extensionRegressionTests =
           query_ conn "SELECT count(*) FROM duckdb_tables() WHERE table_name = 'kept'" >>= (@?= [Only (1 :: Int64)])
           assertSqlErrorContaining "Unexpected quote" $ deleteFunction conn "a\"b"
           assertSqlErrorContaining "between one and three parts" $ deleteFunction conn "a.b.c.d"
-    , testCase "stateful replacement registration cleanup" $
+    , testCase "stateful replacement releases each replaced callback before the connection closes" $
         withConnection ":memory:" \conn -> do
           createFunctionWithState conn "duplicate_state" (pure ()) (\() -> (42 :: Int64))
-          replicateM_ 32 $ createFunctionWithState conn "duplicate_state" (pure ()) (\() -> (7 :: Int64))
+          assertReleasedAfter "a replaced stateful function" \token -> do
+            replicateM_ 32 $ createFunctionWithState conn "duplicate_state" (readIORef token) (id :: Int64 -> Int64)
+            createFunctionWithState conn "duplicate_state" (pure ()) (\() -> (7 :: Int64))
           query_ conn "SELECT duplicate_state()" >>= (@?= [Only (7 :: Int64)])
-    , testCase "scalar invalid signature registration cleanup" $
+    , -- DuckDB refuses the type of the argument after the registration
+      -- allocates its callbacks.
+      testCase "scalar registration with an invalid signature releases its callbacks at the failure" $
         withConnection ":memory:" \conn ->
-          replicateM_ 32 $ assertSqlError $ createFunction conn "invalid_scalar" InvalidSignature
-    , testCase "stateful invalid signature registration cleanup" $
+          assertReleasedAfter "a scalar function with an invalid signature" \token ->
+            replicateM_ 32 $ assertSqlError $ createFunction conn "invalid_scalar" (InvalidSignature token)
+    , testCase "stateful registration with an invalid signature releases its callbacks at the failure" $
         withConnection ":memory:" \conn ->
-          replicateM_ 32 $ assertSqlError $ createFunctionWithState conn "invalid_state" (pure ()) (\() -> InvalidSignature)
-    , testCase "logging duplicate registration cleanup" $
+          assertReleasedAfter "a stateful function with an invalid signature" \token ->
+            replicateM_ 32 $ assertSqlError $ createFunctionWithState conn "invalid_state" (readIORef token) (\_ -> InvalidSignature token)
+    , testCase "logging duplicate registration releases each rejected callback at the failure" $
         withConnection ":memory:" \conn -> do
           Logging.registerLogStorage conn "duplicate_log" (\_ -> pure ())
-          replicateM_ 32 $ assertSqlError $ Logging.registerLogStorage conn "duplicate_log" (\_ -> pure ())
+          assertReleasedAfter "a rejected log storage" \token ->
+            replicateM_ 32 $ assertSqlError $ Logging.registerLogStorage conn "duplicate_log" (\_ -> void (readIORef token))
           query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
     , testCase "empty registration names fail safely" $
         withConnection ":memory:" \conn -> replicateM_ 32 do
@@ -138,12 +164,15 @@ extensionRegressionTests =
           assertSqlError $ createFunctionWithState conn "nul\0state" (pure ()) (\() -> (1 :: Int64))
           assertSqlError $ registerCopy conn "nul\0copy" Nothing
           assertSqlError $ Logging.registerLogStorage conn "nul\0log" (\_ -> pure ())
-    , testCase "partial scalar setup cleanup" $
-        withConnection ":memory:" \conn -> replicateM_ 32 do
-          outcome <- try (createFunction conn "broken_signature" BrokenSignature) :: IO (Either ErrorCall ())
-          case outcome of
-            Left _ -> pure ()
-            Right () -> assertFailure "expected signature exception"
+    , testCase "a scalar registration whose setup fails releases its callbacks at the failure" $
+        -- The registration forces the argument declaration after it acquires the callbacks.
+        -- If a change forces the declaration before the acquisition, this check cannot fail.
+        withConnection ":memory:" \conn ->
+          assertReleasedAfter "a scalar function whose setup fails" \token -> replicateM_ 32 do
+            outcome <- try (createFunction conn "broken_signature" (BrokenSignature token)) :: IO (Either ErrorCall ())
+            case outcome of
+              Left err -> assertBool (displayException err) ("broken scalar signature" `isInfixOf` displayException err)
+              Right () -> assertFailure "expected signature exception"
     , testCase "a raw result of another type than the result vector is an SQL error" $
         withConnection ":memory:" \conn -> do
           createFunction conn "mismatched_result" MismatchedResult
@@ -327,12 +356,12 @@ extensionRegressionTests =
         map Logging.logEntryTransactionId received @?= [Just transactionId]
         map Logging.logEntryQueryId received @?= [Just queryId]
         map Logging.logEntryThreadId received @?= [Nothing]
-    , testCase "filesystem action exceptions release handles" $
+    , testCase "filesystem action exceptions propagate and the file opens again" $
         withTemporaryFile \path ->
           withConnection ":memory:" \conn -> do
             outcome <- try $ FileSystem.withFileHandle conn path [FileSystem.FileFlagWrite] \_ -> throwIO (userError "file action failure")
-            case outcome :: Either SomeException () of
-              Left _ -> pure ()
+            case outcome of
+              Left (err :: IOException) -> displayException err @?= "user error (file action failure)"
               Right () -> assertFailure "expected file action exception"
             FileSystem.withFileHandle conn path [FileSystem.FileFlagWrite] \handle -> do
               FileSystem.writeFileHandleBytes handle (BS.pack [0, 255]) >>= (@?= 2)
@@ -741,12 +770,13 @@ instance Exception BrokenDisplay where
   displayException _ = error "broken error rendering"
 
 -- | Force a setup exception after scalar callbacks have been acquired. The
--- registration reads the declaration of the argument in the setup.
-data BrokenSignature = BrokenSignature
+-- registration reads the declaration of the argument in the setup. The token
+-- lets a case check the release of the value.
+newtype BrokenSignature = BrokenSignature (IORef Int64)
 
 instance Function BrokenSignature where
   argumentTypes _ = [Right (error "broken scalar signature")]
-  returnType _ = returnType (Proxy :: Proxy Int64)
+  returnType _ = returnType (Proxy @Int64)
   isVolatile _ = False
   applyFunction _ _ = error "unused function"
 
@@ -759,12 +789,13 @@ instance Function MismatchedResult where
   isVolatile _ = True
   applyFunction fields _ = applyFunction fields (1 :: Int64)
 
--- | Supply an argument type which DuckDB rejects at registration.
-data InvalidSignature = InvalidSignature
+-- | Supply an argument type which DuckDB rejects at registration. The token
+-- lets a case check the release of the value.
+newtype InvalidSignature = InvalidSignature (IORef Int64)
 
 instance Function InvalidSignature where
   argumentTypes _ = [Right (Registration.TypeExpression "no_such_type")]
-  returnType _ = returnType (Proxy :: Proxy Int64)
+  returnType _ = returnType (Proxy @Int64)
   isVolatile _ = False
   applyFunction _ _ = error "unregistered function"
 
@@ -789,28 +820,6 @@ registerCopy conn name failingPhase =
 -- | Require a controlled SQL exception.
 assertSqlError :: IO a -> Assertion
 assertSqlError = assertSqlErrorContaining Text.empty
-
--- | Require a SQL exception which includes the expected message.
--- | Require the error of an input check of the library, of the type
--- ErrorInputInvalid, which includes the expected message.
-assertInputErrorContaining :: Text.Text -> IO a -> Assertion
-assertInputErrorContaining expected action = do
-  outcome <- try (void action)
-  case outcome of
-    Left (err :: SQLError) -> do
-      sqlErrorType err @?= Just ErrorInputInvalid
-      assertBool ("expected an input error containing " <> show expected <> ", got " <> show err) $
-        ("duckdb-simple: " `Text.isPrefixOf` sqlErrorMessage err) && expected `Text.isInfixOf` sqlErrorMessage err
-    Right () -> assertFailure "expected the error of an input check"
-
-assertSqlErrorContaining :: Text.Text -> IO a -> Assertion
-assertSqlErrorContaining expected action = do
-  outcome <- try (void action)
-  case outcome of
-    Left (err :: SQLError) ->
-      assertBool ("expected SQL error containing " <> show expected <> ", got " <> show err) $
-        expected `Text.isInfixOf` sqlErrorMessage err
-    Right () -> assertFailure "expected SQL error"
 
 -- | Convert each value to its native value and back. The native value must have
 -- the pattern name of the value. The native sentinel must raise 'SQLError'.

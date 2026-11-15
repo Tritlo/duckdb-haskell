@@ -1,6 +1,7 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 -- |
 -- Module      : Database.DuckDB.Simple.Typed.Table
@@ -100,7 +101,8 @@ createTableFunctionOn target name columns function = do
     throwInvalidArgument (name <> ": a table function must have at least one result column")
   when (length columns /= length columnDeclarations) $
     throwInvalidArgument (name <> ": " <> count columns <> " column names for " <> count columnDeclarations <> " result columns")
-  parameterTypes <- rowDeclarations name ["parameter " <> argumentName index | index <- [0 ..]] (rowColumnTypes (Proxy :: Proxy params))
+  parameterTypes <-
+    rowDeclarations name ["parameter " <> argumentName index | index <- [0 ..]] (rowColumnDeclarations (Proxy @params))
   columnTypes <- rowDeclarations name (map ("column " <>) columns) columnDeclarations
   casts <- targetCastFactory target
   let signature =
@@ -112,8 +114,6 @@ createTableFunctionOn target name columns function = do
       configure factory tableFunction = do
         withIdentifier name (checked . c_duckdb_v2_table_function_set_name tableFunction)
         output (c_duckdb_v2_table_function_get_signature tableFunction) >>= configureFunctionSignature factory signature
-      -- Read a GEOMETRY argument with the factory of 'targetCastFactory', or with
-      -- the factory of the context for an extension.
       bind input result context = withContextFactory context \factory -> do
         params <- readArguments name (length parameterTypes) (callbackReadFactory casts factory) input
         forM_ (zip columns columnTypes) \(column, dtype) ->
@@ -127,7 +127,7 @@ createTableFunctionOn target name columns function = do
       (tableCallbacks bind execute){tableInitGlobalCallback = Just initialize, tableProjectionPushdown = True}
   where
     count = Text.pack . show . length
-    columnDeclarations = rowColumnTypes (Proxy :: Proxy row)
+    columnDeclarations = rowColumnDeclarations (Proxy @row)
     initialize info _ = do
       scan <- readCallbackState (c_duckdb_v2_table_function_init_global_get_bind_data info)
       remaining <- scan >>= newMVar :: IO (MVar [row])
@@ -157,7 +157,7 @@ writeRows :: forall row. (TypedRow row) => DuckDBV2FactoryHandle -> DuckDBV2Data
 writeRows factory chunk columns rows = do
   capacity <- fromIntegral <$> output (c_duckdb_v2_data_chunk_get_capacity chunk)
   vectorCount <- output (c_duckdb_v2_data_chunk_get_vector_count chunk)
-  let width = length (rowColumnTypes (Proxy :: Proxy row))
+  let width = length (rowColumnDeclarations (Proxy @row))
   when (fromIntegral vectorCount /= length columns || any (\column -> column < 0 || column >= width) columns) $
     throwIO
       ( SQLError

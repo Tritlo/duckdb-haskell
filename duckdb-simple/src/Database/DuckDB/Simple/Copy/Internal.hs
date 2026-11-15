@@ -3,6 +3,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 -- |
 -- Module      : Database.DuckDB.Simple.Copy.Internal
@@ -189,8 +190,6 @@ copyToSide casts readVariant bindFn initFn sinkFn finalizeFn =
       path <- output (c_duckdb_v2_copy_to_init_get_file_path info) >>= readText
       global <- initFn (CopyInitInfo state (Text.unpack path))
       transferCallbackState (attachOpaque (c_duckdb_v2_copy_to_init_set_init_data info)) global
-    -- Read GEOMETRY with the factory of 'targetCastFactory', or with the
-    -- factory of the context for an extension.
     batch info context = withContextFactory context $ \factory -> do
       (_, types) <- readCopyBinding (c_duckdb_v2_copy_to_batch_get_bind_data info) :: IO (bindState, [DuckDBV2LogicalTypeHandle])
       rows <-
@@ -317,7 +316,7 @@ registerCopyFromFunctionOn target name readRows = registerCopyOn target name Not
 copyFromSide :: forall row. (TypedRow row) => Text -> (CopyFromInfo -> IO [row]) -> CopyFromCallbacks
 copyFromSide name readRows = (copyFromCallbacks bind execute){copyFromInitGlobalCallback = Just initialize}
   where
-    width = length (rowColumnTypes (Proxy :: Proxy row))
+    width = length (rowColumnDeclarations (Proxy @row))
     bind info _ = do
       path <- output (c_duckdb_v2_copy_from_bind_get_file_path info) >>= readText
       count <- output (c_duckdb_v2_copy_from_bind_get_column_count info)

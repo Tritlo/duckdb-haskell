@@ -5,6 +5,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 -- |
 -- Module      : TypedRegistrationTests
@@ -80,6 +81,7 @@ import System.Mem (performMajorGC)
 import System.Mem.Weak (Weak, deRefWeak)
 import Test.Tasty (TestTree, localOption, mkTimeout, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase, (@?=))
+import TestUtils (assertReleasedAfter)
 
 -- | Check the typed registrations through SQL.
 typedRegistrationTests :: TestTree
@@ -143,7 +145,7 @@ typedRegistrationTests =
     , testCase "aggregate states are released" testAggregateRelease
     , testGroup
         "the callback closure of each registration kind is released when its database closes"
-        [testCase kind (testClosureRelease use) | (kind, use) <- closureKinds]
+        [testCase kind (assertReleasedAfter kind use) | (kind, use) <- closureKinds]
     ]
 
 -- | Cast BIGINT values and NULLs to a custom type over more than one chunk.
@@ -473,7 +475,7 @@ testOptionText = withConnection ":memory:" \conn -> do
 roundTrip :: forall a. (ToDuckValue a, FromField a, Eq a, Show a) => Connection -> Text -> [a] -> Assertion
 roundTrip conn label values = do
   let name = "typed_base_" <> label
-  registerCustomType conn name (TypeExpression (duckdbColumnType (Proxy :: Proxy a)))
+  registerCustomType conn name (TypeExpression (duckdbColumnType (Proxy @a)))
   createCast conn (TypeExpression "BIGINT") (TypeExpression name) \(row :: Int64) -> Right (values !! fromIntegral row)
   rows <- query_ conn (Query ("SELECT CAST(i AS " <> name <> ") FROM range(" <> Text.pack (show (length values)) <> ") t(i) ORDER BY i"))
   assertEqual (Text.unpack name) values (map fromOnly rows)
@@ -826,7 +828,6 @@ testAggregateErrors = withConnection ":memory:" \conn -> do
   assertSqlError "typed_lazy_result: 0" (query_ conn "SELECT typed_lazy_result(i) FROM range(1) t(i)" :: IO [Only Int64])
   query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
 
--- | Compare window, DISTINCT, and FILTER uses with the built-in sum. Use ORDER BY in the call.
 -- | Declare the true type of a SMALLINT and a FLOAT result. Write them also in
 -- an ordered window, where the result vector of a finalize call has the size 0.
 -- Reject a result type that is not raw at registration.
@@ -914,6 +915,7 @@ countAggregate =
     , aggregateResult = pure
     }
 
+-- | Compare window, DISTINCT, and FILTER uses with the built-in sum. Use ORDER BY in the call.
 testAggregateModifiers :: Assertion
 testAggregateModifiers = withConnection ":memory:" \conn -> do
   createAggregate conn "typed_sum" sumAggregate
@@ -1600,20 +1602,6 @@ withDirectory = bracket create removePathForcibly
       removeFile path
       createDirectory path
       pure path
-
--- | Run an action with a new token. The action registers a callback that reads
--- the token, runs the callback, and closes the database. Then no value may keep
--- the token.
-testClosureRelease :: (IORef Int64 -> IO ()) -> Assertion
-testClosureRelease use = do
-  weak <- do
-    token <- newIORef 1
-    weak <- mkWeakIORef token (pure ())
-    use token
-    pure weak
-  performMajorGC
-  performMajorGC
-  deRefWeak weak >>= assertBool "a value keeps the callback closure after the database closes" . isNothing
 
 -- | The registration kinds that have no other check of the release of their
 -- callback closure. Each action registers one callback that reads the token,

@@ -7,7 +7,7 @@
 module CoreRegressionTests (coreRegressionTests) where
 
 import Control.Concurrent (forkFinally, newEmptyMVar, putMVar, readMVar, takeMVar, threadDelay)
-import Control.Exception (SomeException, bracket, finally, throwIO, try)
+import Control.Exception (IOException, SomeException, bracket, finally, throwIO, try)
 import Control.Monad (forM_, replicateM, replicateM_, void)
 import Data.Either (partitionEithers)
 import Data.IORef (modifyIORef', newIORef, readIORef)
@@ -42,7 +42,7 @@ import System.Mem (performMajorGC)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
-import TestUtils (raiseCapabilities)
+import TestUtils (assertInputError, assertSqlErrorType, raiseCapabilities)
 
 -- | Exercise public operations against an in-memory database.
 coreRegressionTests :: TestTree
@@ -126,10 +126,11 @@ coreRegressionTests =
             bind stmt [toField (7 :: Int64)]
             void (nextRow stmt :: IO (Maybe (Only Int64)))
             clearStatementBindings stmt
-            assertThrows (nextRow stmt :: IO (Maybe (Only Int64)))
+            assertSqlErrorType ErrorInputInvalid (nextRow stmt :: IO (Maybe (Only Int64)))
     , testCase "fetch errors are not EOF" $
         withConnectionWithConfig ":memory:" [("threads", "1")] $ \conn ->
-          assertThrows
+          assertSqlErrorType
+            ErrorInputInvalid
             ( fold_
                 conn
                 "SELECT CASE WHEN i = 5000 THEN error('late failure') ELSE i END FROM range(10000) t(i)"
@@ -147,12 +148,24 @@ coreRegressionTests =
               eager <- query_ conn sql :: IO [Only FieldValue]
               streamed <- reverse <$> fold_ conn sql [] (\acc row -> pure (row : acc))
               streamed @?= eager
-    , testCase "composite cursor failures release the result" $
+    , -- The case of the leak test for a statement that closes with a live cursor
+      -- checks the release of the chunks.
+      testCase "composite fold failures raise their error and leave the connection usable" $
         withConnectionWithConfig ":memory:" [("threads", "1")] $ \conn -> do
           let sql = "SELECT {'n': i, 'values': [i, NULL]} FROM range(5000) t(i)"
-          assertThrows (fold_ conn sql () (\() (Only (_ :: Int64)) -> pure ()))
-          assertThrows $ fold_ conn sql (0 :: Int) $ \n (Only (_ :: FieldValue)) ->
+          -- A STRUCT does not convert to Int64. The conversion error names the
+          -- Haskell type and the query.
+          conversion <- try (fold_ conn sql () (\() (Only (_ :: Int64)) -> pure ()))
+          case conversion of
+            Left err -> do
+              assertBool (Text.unpack (sqlErrorMessage err)) ("Int64" `Text.isInfixOf` sqlErrorMessage err)
+              sqlErrorQuery err @?= Just sql
+            Right () -> assertFailure "expected the conversion error"
+          stepFailure <- try $ fold_ conn sql (0 :: Int) $ \n (Only (_ :: FieldValue)) ->
             if n == 2050 then throwIO (userError "composite fold failure") else pure (n + 1)
+          case stepFailure of
+            Left (err :: IOException) -> show err @?= "user error (composite fold failure)"
+            Right count -> assertFailure ("expected the step failure, got " <> show count)
           query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
     , testCase "closed connection rejects active cursor reads" $ do
         conn <- open ":memory:"
@@ -229,7 +242,7 @@ coreRegressionTests =
     , testCase "materialization reports a late error before the first callback" $
         withConnectionWithConfig ":memory:" [("threads", "1")] $ \conn -> do
           calls <- newIORef (0 :: Int)
-          assertThrows $ fold_ conn "SELECT CASE WHEN i = 5000 THEN error('late failure') ELSE i END FROM range(10000) t(i)" () $ \() (Only (_ :: Int64)) ->
+          assertSqlErrorType ErrorInputInvalid $ fold_ conn "SELECT CASE WHEN i = 5000 THEN error('late failure') ELSE i END FROM range(10000) t(i)" () $ \() (Only (_ :: Int64)) ->
             modifyIORef' calls (+ 1)
           readIORef calls >>= (@?= 0)
     , testCase "a materialized callback can query the same connection" $
@@ -332,9 +345,11 @@ coreRegressionTests =
           detachDatabase instance_ "side"
           withConnectionOn instance_ $ \conn -> do
             query_ conn "SELECT count(*) FROM duckdb_databases() WHERE database_name = 'side'" >>= (@?= [Only (0 :: Int64)])
-            assertThrows (query_ conn "SELECT x FROM side.probe" :: IO [Only Int64])
+            assertSqlErrorType ErrorDatabaseCatalog (query_ conn "SELECT x FROM side.probe" :: IO [Only Int64])
             query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
-          assertThrows (detachDatabase instance_ "side")
+          -- The native detach call gives this type. The SQL statement DETACH gives
+          -- a Binder Error.
+          assertSqlErrorType ErrorInputInvalid (detachDatabase instance_ "side")
     , testCase "NUL in attach options and aliases is rejected" $
         withEnvironment $ \environment -> withInstance environment [] $ \instance_ -> do
           attachDatabase instance_ ":memory:" "shared" []
@@ -382,7 +397,7 @@ coreRegressionTests =
         withConnectionWithConfig ":memory:" [("enable_external_access", "false"), ("allowed_paths", "['/tmp/duckdb-whitelist-probe']")] $ \conn ->
           query conn "SELECT current_setting('enable_external_access'), list_contains(current_setting('allowed_paths'), ?)" (Only path)
             >>= (@?= [(False, True)])
-    , testCase "environment close releases live cursors before their parents" $ do
+    , testCase "environment close ends the live cursors of its connections" $ do
         environment <- createEnvironment
         instance_ <- createInstance environment []
         attachDatabase instance_ ":memory:" "shared" []
@@ -393,6 +408,10 @@ coreRegressionTests =
         replicateM_ 20 (void (openStatement conn "SELECT 42"))
         performMajorGC
         closeEnvironment environment
+        cursor <- readIORef (statementStream stmt)
+        case cursor of
+          StatementStreamActive _ -> assertFailure "the environment close left the cursor of the statement active"
+          _ -> pure ()
         assertThrows (nextRow stmt :: IO (Maybe (Only Int64)))
         assertThrows (query_ conn "SELECT 42" :: IO [Only Int64])
         closeStatement stmt
@@ -547,16 +566,6 @@ withConcurrentChildren count acquire release action =
         (failure : _, children) -> mapM_ release children >> throwIO failure
 
 -- | Require an exception without constraining its concrete type.
--- | Require the error of an input check of the library.
-assertInputError :: IO a -> Assertion
-assertInputError action = do
-  result <- try (void action)
-  case result of
-    Left (err :: SQLError) -> do
-      sqlErrorType err @?= Just ErrorInputInvalid
-      assertBool (Text.unpack (sqlErrorMessage err)) ("duckdb-simple: " `Text.isPrefixOf` sqlErrorMessage err)
-    Right () -> assertFailure "expected the error of an input check"
-
 assertThrows :: IO a -> Assertion
 assertThrows action = do
   result <- try (void action)

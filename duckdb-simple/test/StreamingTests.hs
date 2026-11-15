@@ -10,14 +10,18 @@ module StreamingTests (nativeStreamingTests) where
 import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (IOException, throwIO, try)
 import Control.Monad (forM_, replicateM_, void, when)
+import qualified Data.ByteString as BS
+import qualified Data.ByteString.Builder as Builder
+import qualified Data.ByteString.Lazy as BL
 import Data.IORef (atomicWriteIORef, newIORef, readIORef, writeIORef)
 import Data.Int (Int64)
-import Data.List (isInfixOf)
+import Data.List (isInfixOf, sort, sortOn)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Database.DuckDB.FFI as Retained (c_duckdb_vector_size)
 import Database.DuckDB.Simple
-import Database.DuckDB.Simple.FromField (FieldValue)
+import Database.DuckDB.Simple.FromField (FieldValue (..))
+import Database.DuckDB.Simple.Geometry (RawGeometry (..))
 import Database.DuckDB.Simple.Internal (
   DuckDBV2ResultHandle (..),
   Statement (statementStream),
@@ -26,9 +30,11 @@ import Database.DuckDB.Simple.Internal (
   nullHandle,
  )
 import qualified Database.DuckDB.Simple.Streaming as Streaming
+import Database.DuckDB.Simple.Variant (Variant (..), variantObject)
 import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit
+import TestUtils (filteredQueries)
 
 -- | Exercise native streaming, resets, metadata, and cleanup across chunks.
 nativeStreamingTests :: TestTree
@@ -171,7 +177,50 @@ nativeStreamingTests =
           readFrom (1 :: Int64) >>= (@?= 1000000)
         finished @?= Just ()
         assertReusable conn
+    , testCase "filtered results give each row through each read function" $
+        forM_ ["1", "4"] \threads -> withConnectionWithConfig ":memory:" [("threads", threads)] \conn ->
+          forM_ filteredQueries \(sql, expected) ->
+            forM_ readFunctions \(name, readRows) -> do
+              rows <- map fromOnly <$> readRows conn sql
+              -- With more than one thread, DuckDB can give the rows in another order.
+              assertEqual (name <> " with " <> Text.unpack threads <> " threads: " <> show sql) expected (if threads == "1" then rows else sort rows)
+    , testCase "filtered and joined VARIANT and GEOMETRY columns give the value of their row" $ withDb \conn -> do
+        -- A filter or the probe side of a hash join can give a vector with a
+        -- selection. Each row holds its own key, so a value of another row fails.
+        void $
+          execute_ conn "CREATE TABLE shaped AS SELECT i, {'n': i}::VARIANT AS v, ('POINT (' || i || ' 0)')::GEOMETRY AS g FROM range(5000) t(i)"
+        forM_
+          [ ("SELECT i, v, g FROM shaped WHERE i % 3 = 1", [1, 4 .. 4999])
+          , ("SELECT a.i, a.v, a.g FROM shaped a JOIN (SELECT j FROM range(0, 5000, 7) t(j)) b ON a.i = b.j", [0, 7 .. 4999])
+          ]
+          \(sql, keys) ->
+            forM_ readFunctions \(name, readRows) -> do
+              rows <- readRows conn sql
+              assertEqual
+                (name <> ": " <> show sql)
+                [(key, Variant (variantObject [("n", FieldInt64 key)]), pointWkb key) | key <- keys]
+                (sortOn (\(key, _, _) -> key) [(key, value, rawGeometryWKB geometry) | (key, value, geometry) <- rows])
     ]
+
+-- | Read the rows of a query with each read function of the library.
+readFunctions :: (FromRow row) => [(String, Connection -> Query -> IO [row])]
+readFunctions =
+  [ ("query_", query_)
+  , ("fold_", \conn sql -> reverse <$> fold_ conn sql [] (\rows row -> pure (row : rows)))
+  , ("nextRow", \conn sql -> withStatement conn sql (readEach nextRow))
+  , ("Streaming.fold_", \conn sql -> reverse <$> Streaming.fold_ conn sql [] (\rows row -> pure (row : rows)))
+  , ("Streaming.nextRow", \conn sql -> withStatement conn sql (readEach Streaming.nextRow))
+  ]
+  where
+    readEach :: (Statement -> IO (Maybe row)) -> Statement -> IO [row]
+    readEach next stmt = go []
+      where
+        go rows = next stmt >>= maybe (pure (reverse rows)) (\row -> go (row : rows))
+
+-- | The WKB of the point (x, 0) in the little-endian byte order. DuckDB 2.0.0
+-- gives the same bytes for 'POINT (x 0)'::GEOMETRY::BLOB.
+pointWkb :: Int64 -> BS.ByteString
+pointWkb x = BL.toStrict (Builder.toLazyByteString (Builder.word8 1 <> Builder.word32LE 1 <> Builder.doubleLE (fromIntegral x) <> Builder.doubleLE 0))
 
 -- | Run each case with one native worker so row order is stable.
 withDb :: (Connection -> IO a) -> IO a

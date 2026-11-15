@@ -459,6 +459,13 @@ nanosecondTimeTests =
       stored early >>= (@?= [("TIMESTAMP_MICROS", "1600-01-02 03:04:05.123456")])
       stored (LocalTime (fromGregorian 2262 4 11) (TimeOfDay 23 47 16.854775900)) >>= (@?= [("TIMESTAMP_MICROS", "2262-04-11 23:47:16.854775")])
       stored (localTimeToUTC utc early) >>= (@?= [("TIMESTAMP_MICROS_TZ", "1600-01-02 03:04:05.123456+00")])
+      -- A value outside the range of TIMESTAMP_NS gets the microsecond value, as
+      -- a parameter with no known type, also as a Variant payload.
+      let far = LocalTime (fromGregorian 3000 1 2) tod
+      (query conn "SELECT ?::VARCHAR" (Only far) :: IO [Only Text.Text]) >>= (@?= [Only "3000-01-02 03:04:05.123456"])
+      stored far >>= (@?= [("TIMESTAMP_MICROS", "3000-01-02 03:04:05.123456")])
+      stored (Variant (FieldTimestamp (Finite far))) >>= (@?= [("TIMESTAMP_MICROS", "3000-01-02 03:04:05.123456")])
+      stored (Variant (FieldTimestampTZ (Finite (localTimeToUTC utc far)))) >>= (@?= [("TIMESTAMP_MICROS_TZ", "3000-01-02 03:04:05.123456+00")])
       -- A Variant payload and a FieldValue read from a VARIANT keep the digits.
       stored (Variant (FieldTimestamp (Finite local))) >>= (@?= [("TIMESTAMP_NANOS", "2026-01-02 03:04:05.123456789")])
       _ <-
@@ -556,6 +563,31 @@ nanosecondTimeTests =
           stored column (at largest)
           rejected column (at (-9223372022400000000 * units `div` 1000000 - 1))
           rejected column (at (largest + 1))
+  , testCase "each bind path checks the range of DuckDB for a date and a timestamp" $ withConnection ":memory:" $ \conn -> do
+      -- See Note [Time ranges] in "Database.DuckDB.Simple.ToField".
+      let beforeDay = addDays (-2147483648) (fromGregorian 1970 1 1)
+          beforeTime = utcToLocalTime utc (posixSecondsToUTCTime (fromRational ((-9223372022400000001) % 1000000)))
+          rejected :: (ToField a) => String -> Text.Text -> a -> IO ()
+          rejected label column value = do
+            _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE stored (v " <> column <> ")"))
+            try (execute conn "INSERT INTO stored VALUES (?)" (Only value)) >>= \case
+              Left SQLError{sqlErrorType, sqlErrorMessage} -> do
+                assertEqual label (Just ErrorInputOutOfRange) sqlErrorType
+                assertBool (label <> ": " <> Text.unpack sqlErrorMessage) ("below the smallest" `Text.isInfixOf` sqlErrorMessage)
+              Right _ -> assertFailure (label <> ": expected the range error")
+      forM_ [("DATE", FieldDate (Finite beforeDay)), ("TIMESTAMP", FieldTimestamp (Finite beforeTime))] $ \(sqlType, value) -> do
+        let label part = Text.unpack sqlType <> " " <> part
+        rejected (label "FieldValue") sqlType value
+        rejected (label "FieldValue for a VARIANT") "VARIANT" value
+        rejected (label "FieldList") (sqlType <> "[]") (FieldList [FieldNull, value])
+        rejected (label "FieldArray") (sqlType <> "[2]") (FieldArray (listArray (0, 1) [FieldNull, value]))
+        rejected (label "FieldMap value") ("MAP(VARCHAR, " <> sqlType <> ")") (FieldMap [(FieldText "k", value)])
+        rejected (label "Variant payload in a list") "VARIANT" (Variant (FieldList [value]))
+      rejected "list of Maybe Day" "DATE[]" [Nothing, Just beforeDay]
+      rejected "Map of Day" "MAP(VARCHAR, DATE)" (Map.fromList [("k" :: Text.Text, beforeDay)])
+      rejected "Array of LocalTime" "TIMESTAMP[1]" (listArray (0, 0) [beforeTime] :: Array Int LocalTime)
+      rejected "Map of LocalTime" "MAP(VARCHAR, TIMESTAMP)" (Map.fromList [("k" :: Text.Text, beforeTime)])
+      rejected "LocalTime for a VARIANT" "VARIANT" beforeTime
   , testCase "a leap second binds as the next second, as make_time and make_timestamp give it" $ withConnection ":memory:" $ \conn -> do
       let leap = TimeOfDay 23 59 60
           next = LocalTime (fromGregorian 2017 1 1) (TimeOfDay 0 0 0)

@@ -170,7 +170,9 @@ Unbounded forms, with this rule:
   the three types) gets a nanosecond value. A VARIANT parameter also gets a
   nanosecond value, when the value fits the range of the nanosecond type
   (fitsNanoseconds). A VARIANT holds TIME_NS, TIMESTAMP_NS, and TIMESTAMPTZ_NS
-  values. Each other parameter, and a parameter with no known type, gets the
+  values. A value outside that range, for example in the year 3000, gets the
+  microsecond value, as for a parameter with no known type. The payload of a
+  Variant follows the same rule (variantPayloadType). Each other parameter, and a parameter with no known type, gets the
   microsecond value. The digits below one microsecond go away, as for the SQL
   literal.
 - The digits below one nanosecond go away in each case.
@@ -1734,9 +1736,10 @@ instance ToDuckValue Variant where
   toDuckValue factory = variantDuckValue (plainBuilder factory) . variantPayload
 
 -- | Choose the native type of a VARIANT payload. Containers get VARIANT
--- elements and fields. Time values with sub-microsecond digits use nanosecond
--- types. Wide timestamps use milliseconds or seconds when these preserve the
--- value and fit the native range.
+-- elements and fields. A time value with digits below a microsecond uses the
+-- nanosecond type when it fits the range of that type (fitsNanoseconds). Each
+-- other time value uses the microsecond type, as a VARIANT parameter does. See
+-- Note [Nanosecond parameters].
 -- The C API cannot construct a nonempty object whose keys are all empty.
 -- DuckDB 2.0 treats that STRUCT type as a tuple and casts it to a VARIANT array.
 -- A raw geometry without a CRS uses GEOMETRY. See Note [Raw GEOMETRY parameters].
@@ -1767,7 +1770,7 @@ variantPayloadType value = case value of
     | hasSubMicroseconds time -> scalar LogicalTypeIdTimeNs
     | otherwise -> scalar LogicalTypeIdTime
   FieldTimestamp (Finite LocalTime{localTimeOfDay})
-    | hasSubMicroseconds localTimeOfDay -> scalar LogicalTypeIdTimestampNs
+    | hasSubMicroseconds localTimeOfDay && fitsNanoseconds value -> scalar LogicalTypeIdTimestampNs
   FieldTimestamp{} -> scalar LogicalTypeIdTimestamp
   FieldTimestampTZ instant -> scalar (variantUtcTimestampType instant)
   FieldTimeTZ{} -> scalar LogicalTypeIdTimeTz
@@ -1796,10 +1799,12 @@ variantPayloadType value = case value of
     variant = LogicalTypeScalar LogicalTypeIdVariant
     scalar dtype = pure (LogicalTypeScalar dtype, value)
 
--- | Choose nanosecond storage for a precise UTC VARIANT payload.
+-- | Choose nanosecond storage for a precise UTC VARIANT payload that fits the
+-- range of TIMESTAMPTZ_NS. See Note [Nanosecond parameters].
 variantUtcTimestampType :: UTCTimestamp -> LogicalTypeId
 variantUtcTimestampType (Finite instant)
-  | hasSubMicroseconds (localTimeOfDay (utcToLocalTime utc instant)) = LogicalTypeIdTimestampTzNs
+  | hasSubMicroseconds (localTimeOfDay (utcToLocalTime utc instant)) && fitsNanoseconds (FieldTimestampTZ (Finite instant)) =
+      LogicalTypeIdTimestampTzNs
 variantUtcTimestampType _ = LogicalTypeIdTimestampTz
 
 instance ToDuckValue Null where

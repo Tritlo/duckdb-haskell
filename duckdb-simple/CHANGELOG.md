@@ -81,8 +81,8 @@
   `Database.DuckDB.Simple.LogicalRep` exports `TypeDeclaration`.
 - An argument of `createFunction` can have each type with `FromField` and
   `DuckDBColumnType`, for example a record through `ViaDuckDB`, a list, a `Map`,
-  or a newtype with its own type text. `FunctionArg` is gone. An argument type
-  that is or contains VARIANT raises an `SQLError` of the type
+  or a newtype with its own column type name. `FunctionArg` is gone. An
+  argument type that is or contains VARIANT raises an `SQLError` of the type
   `ErrorInputInvalid` at registration, because no argument reader reads VARIANT,
   also for `createAggregate`, for a parameter of `createTableFunction` and of
   `registerPragmaFunction`, and for a custom option with an update function. A

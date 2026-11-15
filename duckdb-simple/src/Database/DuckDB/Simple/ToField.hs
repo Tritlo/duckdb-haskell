@@ -753,8 +753,10 @@ instance ToField IntervalValue
 -- | Bind the time and its offset in seconds as a TIMETZ. An offset outside
 -- -57599 to 57599 seconds raises an t'SQLError' of the type
 -- 'ErrorTypeConversion'. A time with digits below one
--- microsecond loses these digits, as in SQL text. A leap second binds as the
--- next second. See Note [Time ranges].
+-- microsecond loses these digits, as in SQL text. A time of exactly 60 seconds
+-- (a leap second) binds as the next second. A later time, for example
+-- 23:59:60.5, raises an t'SQLError'. The section \"Errors\" of the README gives
+-- its type. See Note [Time ranges].
 instance ToField TimeWithZone
 
 -- | Bind the value as a DECIMAL with its own width and scale. DuckDB casts it

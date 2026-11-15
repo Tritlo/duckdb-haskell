@@ -381,7 +381,7 @@ extensionRegressionTests =
         withConnection ":memory:" \conn -> do
           Config.setConfigOption conn Config.SettingScopeGlobal "threads" "1"
           options <- Config.listConfigOptions conn
-          fmap Config.configValueText <$> Config.getConfigOption conn "threads" >>= (@?= Just "1")
+          fmap Config.configValueText <$> Config.getConfigOption conn "threads" >>= (@?= Just (Just "1"))
           close conn
           case find ((== "threads") . Config.configOptionName) options of
             Nothing -> assertFailure "missing threads descriptor"
@@ -415,6 +415,8 @@ extensionRegressionTests =
           described Config.configOptionSetting "progress_bar_time" @?= Just (Just "2000")
           -- enable_profiling has a NULL value until a write.
           described Config.configOptionSetting "enable_profiling" @?= Just Nothing
+          -- getConfigOption shows the NULL value in the same way.
+          fmap Config.configValueText <$> Config.getConfigOption conn "enable_profiling" >>= (@?= Just Nothing)
     , testCase "instance options list global values" $
         withEnvironment \environment -> withInstance environment [("threads", "1")] \instance_ -> do
           options <- Config.listInstanceOptions instance_
@@ -433,7 +435,7 @@ extensionRegressionTests =
         withConnection ":memory:" \conn -> do
           Config.setConfigOption conn Config.SettingScopeGlobal "threads" "1"
           forM_ ["threads", "THREADS", "worker_threads", "WORKER_THREADS"] \name ->
-            fmap Config.configValueText <$> Config.getConfigOption conn name >>= (@?= Just "1")
+            fmap Config.configValueText <$> Config.getConfigOption conn name >>= (@?= Just (Just "1"))
           Config.getConfigOption conn "NO_SUCH_CONFIG_OPTION" >>= (@?= Nothing)
           close conn
           assertSqlError $ Config.getConfigOption conn "threads"
@@ -468,7 +470,7 @@ extensionRegressionTests =
           Config.getConfigValue conn "haskell_limit" >>= (@?= (FieldInt64 7, Config.SettingScopeSession))
           assertSqlErrorContaining "limit must be nonnegative" $ Config.setConfigValue conn Config.SettingScopeSession "haskell_limit" (-1 :: Int64)
           void $ execute_ conn "RESET haskell_limit"
-          fmap Config.configValueText <$> Config.getConfigOption conn "haskell_limit" >>= (@?= Just "3")
+          fmap Config.configValueText <$> Config.getConfigOption conn "haskell_limit" >>= (@?= Just (Just "3"))
           assertSqlError $ Config.registerCustomOption conn option
     , testCase "listConfigFlags lists a custom option of the connection" $
         withConnection ":memory:" \conn -> do

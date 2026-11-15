@@ -46,8 +46,9 @@ data ConfigFlag = ConfigFlag
   deriving (Eq, Show)
 
 -- | An effective option value and the scope that supplied it.
+-- 'configValueText' is 'Nothing' for a NULL value, as 'configOptionSetting'.
 data ConfigValue = ConfigValue
-  { configValueText :: Text
+  { configValueText :: Maybe Text
   , configValueScope :: SettingScope
   }
   deriving (Eq, Show)
@@ -102,7 +103,7 @@ listInstanceOptions instance_ = withInstanceHandle instance_ \handle -> do
 getConfigOption :: Connection -> Text -> IO (Maybe ConfigValue)
 getConfigOption conn name = do
   checkOptionName name
-  (withConfigOptionValue conn name \value scope -> Just . (`ConfigValue` scope) <$> valueText value)
+  (withConfigOptionValue conn name \value scope -> Just . (`ConfigValue` scope) <$> nullableText value)
     `catch` \err ->
       if sqlErrorType err == Just ErrorInputInvalid
         then pure Nothing

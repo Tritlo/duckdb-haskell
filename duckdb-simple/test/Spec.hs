@@ -300,7 +300,7 @@ connectionTests =
         close conn
         case mValue of
           Nothing -> assertFailure "expected threads config value"
-          Just value -> Config.configValueText value @?= "1"
+          Just value -> Config.configValueText value @?= Just "1"
     ]
 
 v20Tests :: TestTree

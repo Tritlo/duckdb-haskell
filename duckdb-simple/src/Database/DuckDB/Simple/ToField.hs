@@ -36,7 +36,7 @@ module Database.DuckDB.Simple.ToField (
   renderFieldBinding,
 ) where
 
-import Control.Exception (bracket, mask_, onException, throwIO)
+import Control.Exception (bracket, mask_, onException)
 import Control.Monad (foldM, forM_, unless, when)
 import Data.Array (Array, bounds, elems, listArray)
 import Data.Bits (complement, shiftL, shiftR, xor, (.|.))
@@ -580,13 +580,7 @@ integerBinding value = case hugeIntInRange value of
       Just (LogicalTypeDecimal width scale) -> outOfRange ("DECIMAL(" <> Text.pack (show width) <> "," <> Text.pack (show scale) <> ")")
       _ -> bigNumDuckValue factory (BigNum value)
   where
-    outOfRange typeName =
-      throwIO
-        SQLError
-          { sqlErrorMessage = "duckdb-simple: the value " <> Text.pack (show value) <> " is out of range for a parameter of the type " <> typeName
-          , sqlErrorType = Just ErrorInputOutOfRange
-          , sqlErrorQuery = Nothing
-          }
+    outOfRange typeName = throwOutOfRange ("the value " <> Text.pack (show value) <> " is out of range for a parameter of the type " <> typeName)
 
 -- | Construct a HUGEINT value for an integer from -2^127 to 2^127 - 1. Give
 -- Nothing for each other integer. See Note [Integer parameters].
@@ -2020,13 +2014,7 @@ checkTimestampRange units value
 -- text names the Haskell value and the end of the range. See
 -- Note [Time ranges].
 throwOutsideTimeRange :: String -> Text -> IO a
-throwOutsideTimeRange value bound =
-  throwIO
-    SQLError
-      { sqlErrorMessage = "duckdb-simple: the value " <> Text.pack value <> " is " <> bound
-      , sqlErrorType = Just ErrorInputOutOfRange
-      , sqlErrorQuery = Nothing
-      }
+throwOutsideTimeRange value bound = throwOutOfRange ("the value " <> Text.pack value <> " is " <> bound)
 
 -- | Count the units from the Unix epoch to a timestamp, with the digits below
 -- one unit cut toward the earlier time. The count does not check the time of

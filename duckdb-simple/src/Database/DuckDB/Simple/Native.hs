@@ -56,6 +56,7 @@ module Database.DuckDB.Simple.Native (
   foldIdentifier,
   quoteIdentifier,
   throwInvalidArgument,
+  throwOutOfRange,
   withConnectionFactory,
   factoryOutput,
   withSQLStatement,
@@ -460,6 +461,12 @@ quoteIdentifier identifier = "\"" <> Text.replace "\"" "\"\"" identifier <> "\""
 -- or a native failure, does not use it.
 throwInvalidArgument :: Text -> IO a
 throwInvalidArgument message = throwIO (SQLError ("duckdb-simple: " <> message) (Just ErrorInputInvalid) Nothing)
+
+-- | Raise the error of an input check for a value outside the range of its
+-- type: an 'SQLError' of the type 'ErrorInputOutOfRange' with no query. Each
+-- such check of the library uses this function.
+throwOutOfRange :: Text -> IO a
+throwOutOfRange message = throwIO (SQLError ("duckdb-simple: " <> message) (Just ErrorInputOutOfRange) Nothing)
 
 -- | Borrow a factory while its connection remains alive. Do not destroy it.
 withConnectionFactory :: DuckDBV2ConnectionHandle -> (DuckDBV2FactoryHandle -> IO a) -> IO a

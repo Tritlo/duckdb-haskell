@@ -56,9 +56,11 @@ withRegistrationFactory target action = case target of
 -- | The factory for the casts that the library runs in the callbacks of a
 -- target. A connection target gives the factory of its instance. An extension
 -- target gives 'Nothing', because an extension has no instance. A registration
--- takes the factory one time, and its callbacks keep it. The factory is valid in
--- each callback, because a callback runs only in a statement on a connection of
--- the instance. A callback keeps the factory and not the connection, for the
+-- takes the factory one time, and its callbacks keep it. The factory is valid
+-- until the instance handle is destroyed. The library destroys that handle only
+-- after it closes each child of the instance (Note [Native handle ownership] in
+-- "Database.DuckDB.Simple.Internal"), and a callback runs only in a statement on
+-- a connection of the instance. A callback keeps the factory and not the connection, for the
 -- reason that withVariantReader in "Database.DuckDB.Simple.Copy.Internal" gives.
 -- See Note [User casts and the casts of the library] in
 -- "Database.DuckDB.Simple.Materialize".

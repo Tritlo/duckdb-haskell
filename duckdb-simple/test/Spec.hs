@@ -22,7 +22,6 @@ import CopyTests (copyTests)
 import CoreRegressionTests (coreRegressionTests)
 import Data.Array (Array, elems, listArray)
 import qualified Data.ByteString as BS
-import qualified Data.Geometry as G
 import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int16, Int32, Int64, Int8)
 import Data.List (sortOn)
@@ -95,7 +94,7 @@ import Test.Tasty.HUnit
 import Test.Tasty.QuickCheck (testProperty, (===))
 import TimeTests (timeTests)
 import TypedRegistrationTests (typedRegistrationTests)
-import UserCastTests (userCastTests)
+import UserCastTests (geometryArgumentTests, userCastTests)
 import ValueRegressionTests (valueRegressionTests)
 import qualified VariantRegressionTests
 
@@ -270,6 +269,7 @@ tests =
     , GeometryRegressionTests.tests
     , VariantRegressionTests.tests
     , userCastTests
+    , geometryArgumentTests
     , valueRegressionTests
     , timeTests
     , SqlFeatureTests.tests
@@ -1503,17 +1503,15 @@ functionsTests =
             (Text.isInfixOf "Overflow in subtraction of UINT16" . sqlErrorMessage)
           query_ conn "SELECT hs_small(30000)::INTEGER * hs_small(30000), hs_unsigned(1)::INTEGER - hs_unsigned(2)"
             >>= (@?= [(900000000 :: Int64, -1 :: Int64)])
-    , testCase "rejects an argument type with no declaration, VARIANT, or GEOMETRY at registration" $
+    , testCase "rejects an argument type with no declaration or with VARIANT at registration" $
         withConnection ":memory:" \conn -> do
           let rejects expected action = assertThrows action (Text.isInfixOf expected . sqlErrorMessage)
           rejects "hs_bad_struct: argument arg0: StructValue has no static field types" $
             createFunction conn "hs_bad_struct" (\(_ :: StructValue FieldValue) -> True)
-          rejects "hs_bad_variant: argument arg0: the type of an argument cannot be or contain VARIANT or GEOMETRY" $
+          rejects "hs_bad_variant: argument arg0: the type of an argument cannot be or contain VARIANT" $
             createFunction conn "hs_bad_variant" (\(_ :: Variant) -> True)
-          rejects "hs_bad_variants: argument arg1: the type of an argument cannot be or contain VARIANT or GEOMETRY" $
+          rejects "hs_bad_variants: argument arg1: the type of an argument cannot be or contain VARIANT" $
             createFunction conn "hs_bad_variants" (\(_ :: Int64) (_ :: [Maybe Variant]) -> True)
-          rejects "hs_bad_geometry: argument arg0: the type of an argument cannot be or contain VARIANT or GEOMETRY" $
-            createFunction conn "hs_bad_geometry" (\(_ :: G.Geometry) -> True)
           query_ conn "SELECT count(*) FROM duckdb_functions() WHERE function_name LIKE 'hs\\_bad\\_%' ESCAPE '\\'" >>= (@?= [Only (0 :: Int64)])
     , testCase "names the argument that does not convert" $
         withConnection ":memory:" \conn -> do

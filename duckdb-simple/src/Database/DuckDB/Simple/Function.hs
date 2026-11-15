@@ -105,8 +105,9 @@ import Database.DuckDB.Simple.V2.Registration (TypeDeclaration (..))
 -- 'Database.DuckDB.Simple.ToField.DuckDBColumnType' instances. The SQL type of
 -- an argument is the 'Database.DuckDB.Simple.ToField.duckdbTypeDeclaration' of
 -- its type. An argument type with no declaration, or a type that is or
--- contains VARIANT or GEOMETRY, raises an @SQLError@ at registration. The
--- argument reader reads neither VARIANT nor GEOMETRY.
+-- contains VARIANT, raises an @SQLError@ at registration, because the argument
+-- reader does not read VARIANT. A GEOMETRY argument reads as a GEOMETRY result
+-- does, also inside a list or a record, for example as a @Geometry@.
 createFunction :: (Function f) => Connection -> Text -> f -> IO ()
 createFunction conn = createFunctionOn (ConnectionTarget conn)
 
@@ -120,6 +121,10 @@ createFunctionWithState conn = createFunctionWithStateOn (ConnectionTarget conn)
 --
 -- The function converts one value. 'Right' gives the result. 'Left' gives a
 -- failure message. A NULL value gives NULL. The function does not run for NULL.
+-- A GEOMETRY source reads as a GEOMETRY result does, for example as a
+-- @Geometry@ or as a 'Database.DuckDB.Simple.Geometry.RawGeometry' with its
+-- CRS. A source that is or contains VARIANT fails the cast for each value that
+-- is not NULL.
 --
 -- A row fails when its value does not convert to @a@, when the function gives
 -- 'Left', or when the function or the result conversion raises an exception.
@@ -142,9 +147,11 @@ createFunctionWithState conn = createFunctionWithStateOn (ConnectionTarget conn)
 -- instance, which are the built-in casts, and it builds GEOMETRY, ENUM, and
 -- VARIANT values with the default cast of DuckDB. Thus a cast from GEOMETRY to
 -- BLOB changes the result of @CAST(g AS BLOB)@, but not a GEOMETRY value that a
--- query gives. There is one exception: the callbacks of a function that an
--- extension registers read a GEOMETRY value with the casts of the session,
--- because an extension has no instance.
+-- query gives. Two places still use registered casts. The callbacks of a
+-- function that an extension registers read a GEOMETRY value with the casts of
+-- the session, because an extension has no instance. @setConfigValue@ and
+-- @setConfigOption@ in "Database.DuckDB.Simple.Config" cast the value to the
+-- type of the option as SQL @SET@ does.
 createCast :: (FromField a, ToDuckValue b) => Connection -> TypeDeclaration -> TypeDeclaration -> (a -> Either Text b) -> IO ()
 createCast conn = createCastOn (ConnectionTarget conn)
 
@@ -204,8 +211,10 @@ createTableFunction conn = createTableFunctionOn (ConnectionTarget conn)
 -- type of each argument is the
 -- 'Database.DuckDB.Simple.ToField.duckdbTypeDeclaration' of its column in
 -- 'TypedRow'. A type with no declaration is an error at registration, as for
--- 'createTableFunction'. An argument type that is or contains VARIANT or
--- GEOMETRY is also an error at registration, as for 'createFunction'. The SQL
+-- 'createTableFunction'. An argument type that is or contains VARIANT is also
+-- an error at registration, as for 'createFunction'. A GEOMETRY argument reads
+-- as for 'createFunction', also when DuckDB runs the update callback on several
+-- threads. The SQL
 -- return type is the
 -- 'Database.DuckDB.Simple.ToField.duckdbTypeDeclaration' of the result type,
 -- for example SMALLINT for 'Data.Int.Int16' and FLOAT for 'Float'. A 'Maybe'

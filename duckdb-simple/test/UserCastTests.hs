@@ -2,6 +2,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 -- |
 -- Module      : UserCastTests
@@ -12,7 +13,7 @@
 -- the same pair of types. The value must be correct, and the user cast must
 -- not run. See Note [User casts and the casts of the library] in
 -- "Database.DuckDB.Simple.Materialize".
-module UserCastTests (userCastTests) where
+module UserCastTests (userCastTests, geometryArgumentTests) where
 
 import Control.Exception (try)
 import Control.Monad (forM_, void)
@@ -20,6 +21,7 @@ import Data.Array (listArray)
 import qualified Data.ByteString as BS
 import qualified Data.Geometry as G
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
+import Data.Int (Int64)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -197,6 +199,78 @@ userCastTests =
               assertBool (show sqlErrorMessage) ("Could not convert BLOB to GEOMETRY" `Text.isInfixOf` sqlErrorMessage)
             Right rows -> assertFailure ("expected an error, got " <> show rows)
     ]
+
+-- | Check the GEOMETRY arguments of a scalar function, a typed aggregate, and
+-- a typed cast. Each case also registers a cast from GEOMETRY to BLOB that
+-- writes NULL, and that cast must not run.
+geometryArgumentTests :: TestTree
+geometryArgumentTests =
+  testGroup
+    "geometry arguments"
+    [ testCase "a scalar function reads a Geometry argument" $ withConnection ":memory:" \conn -> do
+        createFunction conn "hs_point_x" pointX
+        createFunction conn "hs_maybe_x" (fmap pointX :: Maybe G.Geometry -> Maybe Double)
+        createFunction conn "hs_count_shapes" (\(shapes :: [G.Geometry]) -> fromIntegral (length shapes) :: Int64)
+        calls <- nullCast conn (R.TypeExpression "GEOMETRY") (R.TypeExpression "BLOB")
+        query_ conn "SELECT hs_point_x('POINT (1 2)'::GEOMETRY)" >>= (@?= [Only (1 :: Double)])
+        query_ conn "SELECT hs_point_x('POINT (3 4)'::GEOMETRY('OGC:CRS84'))" >>= (@?= [Only (3 :: Double)])
+        query_ conn "SELECT hs_maybe_x(NULL::GEOMETRY)" >>= (@?= [Only (Nothing :: Maybe Double)])
+        query_ conn "SELECT hs_count_shapes(['POINT (1 2)'::GEOMETRY, 'POINT (3 4)'::GEOMETRY])" >>= (@?= [Only (2 :: Int64)])
+        query_ conn "SELECT sum(hs_point_x(('POINT (' || i || ' 0)')::GEOMETRY)) FROM range(5000) t(i)" >>= (@?= [Only (12497500 :: Double)])
+        readIORef calls >>= (@?= 0)
+        withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = ["local grid"]} \grid -> do
+          createFunction grid "hs_point_x" pointX
+          query grid "SELECT hs_point_x(ST_SetCRS(ST_GeomFromWKB(?), 'local grid'))" (Only pointWKB) >>= (@?= [Only (1 :: Double)])
+    , testCase "a typed aggregate reads a Geometry argument on four threads" $
+        withConnectionWithConfig ":memory:" [("threads", "4")] \conn -> do
+          _ <-
+            execute_ conn "CREATE TABLE shapes AS SELECT i % 100 AS k, ('POINT (' || i || ' ' || (i + 1) || ')')::GEOMETRY AS g FROM range(200000) t(i)"
+          let total = 19999900000 :: Double
+          createAggregate
+            conn
+            "hs_sum_x"
+            Aggregate
+              { aggregateInitial = 0 :: Double
+              , aggregateStep = \sumX (Only g) -> pure (sumX + pointX g)
+              , aggregateCombine = \a b -> pure (a + b)
+              , aggregateResult = pure
+              }
+          calls <- nullCast conn (R.TypeExpression "GEOMETRY") (R.TypeExpression "BLOB")
+          query_ conn "SELECT hs_sum_x(g) FROM shapes" >>= (@?= [Only total])
+          query_ conn "SELECT count(*), sum(s) FROM (SELECT k, hs_sum_x(g) AS s FROM shapes GROUP BY k)" >>= (@?= [(100 :: Int64, total)])
+          query_ conn "SELECT DISTINCT hs_sum_x(g) OVER () FROM shapes" >>= (@?= [Only total])
+          query_ conn "SELECT hs_sum_x(DISTINCT g) FROM (SELECT g FROM shapes UNION ALL SELECT g FROM shapes)" >>= (@?= [Only total])
+          query_ conn "SELECT hs_sum_x(g) FROM (VALUES (NULL::GEOMETRY), ('POINT (5 6)'::GEOMETRY)) t(g)" >>= (@?= [Only (5 :: Double)])
+          query_ conn "SELECT hs_sum_x('POINT (7 8)'::GEOMETRY('OGC:CRS84'))" >>= (@?= [Only (7 :: Double)])
+          readIORef calls >>= (@?= 0)
+    , testCase "a typed cast reads a GEOMETRY source as a Geometry and as a RawGeometry" $ withConnection ":memory:" \conn -> do
+        R.registerCustomType conn "point_x" (R.TypeExpression "DOUBLE")
+        createCast conn (R.TypeExpression "GEOMETRY") (R.TypeExpression "point_x") \g -> Right (pointX g)
+        R.registerCustomType conn "wkb_size" (R.TypeExpression "BIGINT")
+        createCast conn (R.StructuredType (LogicalTypeGeometry (Just "OGC:CRS84"))) (R.TypeExpression "wkb_size") \raw ->
+          if rawGeometryCRS raw == Just "OGC:CRS84" then Right (fromIntegral (BS.length (rawGeometryWKB raw)) :: Int64) else Left "no CRS"
+        calls <- nullCast conn (R.TypeExpression "GEOMETRY") (R.TypeExpression "BLOB")
+        query_ conn "SELECT CAST('POINT (1 2)'::GEOMETRY AS point_x)::DOUBLE" >>= (@?= [Only (1 :: Double)])
+        query_ conn "SELECT CAST(NULL::GEOMETRY AS point_x)::DOUBLE" >>= (@?= [Only (Nothing :: Maybe Double)])
+        query_ conn "SELECT CAST('POINT (1 2)'::GEOMETRY('OGC:CRS84') AS wkb_size)::BIGINT" >>= (@?= [Only (21 :: Int64)])
+        query_ conn "SELECT sum(CAST(('POINT (' || i || ' 0)')::GEOMETRY AS point_x)::DOUBLE) FROM range(5000) t(i)"
+          >>= (@?= [Only (12497500 :: Double)])
+        readIORef calls >>= (@?= 0)
+    , testCase "a typed cast from GEOMETRY to BLOB reads its argument and does not run itself" $ withConnection ":memory:" \conn -> do
+        createCast conn (R.TypeExpression "GEOMETRY") (R.TypeExpression "BLOB") \raw -> Right (rawGeometryWKB raw <> "x")
+        query_ conn "SELECT CAST('POINT (1 2)'::GEOMETRY AS BLOB)" >>= (@?= [Only (pointWKB <> "x")])
+        -- The reader of a GEOMETRY result does not use the cast.
+        query_ conn "SELECT 'POINT (1 2)'::GEOMETRY" >>= (@?= [Only point])
+    , testCase "a typed cast from VARCHAR to GEOMETRY that gives a Geometry does not run itself" $ withConnection ":memory:" \conn -> do
+        createCast conn (R.TypeExpression "VARCHAR") (R.TypeExpression "GEOMETRY") \(_ :: Text) -> Right shape
+        query_ conn "SELECT ST_AsText('any text'::VARCHAR::GEOMETRY)" >>= (@?= [Only ("POINT (1 2)" :: Text)])
+    ]
+
+-- | The x coordinate of a point, or -1 for another shape.
+pointX :: G.Geometry -> Double
+pointX = \case
+  G.PointGeometry (G.PointXY (G.XY x _)) -> x
+  _ -> -1
 
 -- | Register a cast that writes NULL for each row, and give its call count.
 nullCast :: Connection -> R.TypeDeclaration -> R.TypeDeclaration -> IO (IORef Int)

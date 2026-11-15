@@ -1158,7 +1158,6 @@ valueRegressionTests =
     , testCase "a failure of the reader of a later chunk of a stream gives the error of DuckDB" $
         withEnvironment \environment -> withInstance environment [] \instance' ->
           withConnectionOn instance' \conn -> withConnectionOn instance' \other -> do
-            _ <- execute_ conn "ATTACH ':memory:' AS probe"
             _ <- execute_ conn "SET SESSION max_expression_depth = 1000"
             -- The first chunk reads. Then a GLOBAL depth of 10 fails the
             -- metadata query of the VARIANT reader for the next chunk. See the

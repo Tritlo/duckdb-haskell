@@ -164,6 +164,15 @@
   `Array` and a typed row cannot hold a `RawGeometry`.
 - Empty `Array` parameters raise `SQLError`. Bind an empty list for an empty
   LIST.
+- Add parameter instances for `IntervalValue`, `TimeWithZone`, and
+  `DecimalValue`. An `IntervalValue` binds as an INTERVAL and a `TimeWithZone`
+  as a TIMETZ, also in an `Array`, a list, or a typed row. A TIMETZ stores the
+  time and the offset in minutes, but not the name and the summer flag of the
+  `TimeZone`. Thus a `TimeWithZone` that is read is equal to the bound value
+  only for a zone without a name and a summer flag. A `DecimalValue` binds as a
+  DECIMAL with its own width and scale. An `Array`, a list, or a typed row
+  cannot hold a `DecimalValue`. Version 0.3 had only result instances for these
+  types.
 - Add parameter instances for lists. A list binds as a LIST value with the
   element rules of an `Array`, and an empty list binds as an empty LIST of its
   element type. A `String` stays one VARCHAR parameter, and a list as a row is

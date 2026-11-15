@@ -164,6 +164,16 @@ when that type is an integer type or DECIMAL, so DuckDB checks each element. A
 `BigNum` value, and an `Array` or a list of `BigNum` values, still have these
 defects for an integer target.
 
+An `IntervalValue` binds as an INTERVAL, and DuckDB keeps its months, days, and
+microseconds. A `TimeWithZone` binds as a TIMETZ. DuckDB stores the time and the
+offset in minutes, but not the name and the summer flag of the `TimeZone`, so a
+value that is read is equal to the bound value only for a zone without them. DuckDB compares intervals with 30 days for each month, so
+`INTERVAL 30 DAY = INTERVAL 1 MONTH`. A `DecimalValue` binds as a DECIMAL with
+its own width and scale. DuckDB casts it to the type of its target: a smaller
+scale rounds half away from zero, and a value that the target cannot hold
+raises an error. An `Array`, a list, or a typed row cannot hold a
+`DecimalValue`, because its column type name has no width and scale.
+
 `query_` and `execute_` parse all input statements before execution. A syntax
 error prevents every statement in that input from running. An execution error
 can leave effects from earlier statements. Use `withTransaction` when those

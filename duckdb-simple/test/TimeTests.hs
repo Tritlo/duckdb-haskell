@@ -506,9 +506,15 @@ nanosecondTimeTests =
           firstDay = addDays (-2147483646) epoch
           -- Day -2147483647 is -infinity, so -2147483648 is the only INT32 day before the range.
           beforeDay = addDays (-2147483648) epoch
+          lastDay = addDays 2147483646 epoch
+          -- Day 2147483647 is infinity.
+          afterDay = addDays 2147483647 epoch
           local units count = utcToLocalTime utc (posixSecondsToUTCTime (fromRational (count % units)))
           firstTime = local 1000000 (-9223372022400000000)
           beforeTime = local 1000000 (-9223372022400000001)
+          lastTime = local 1000000 9223372036854775806
+          -- The microsecond value 2^63 - 1 is infinity.
+          afterTime = local 1000000 9223372036854775807
           structOf logical value =
             StructValue
               (listArray (0, 0) [StructField "a" value])
@@ -529,6 +535,11 @@ nanosecondTimeTests =
             (query_ conn "SELECT count(*) FROM stored" :: IO [Only Int64]) >>= assertEqual (Text.unpack column) [Only 0]
       stored "DATE" firstDay
       rejected "DATE" beforeDay
+      stored "DATE" lastDay
+      rejected "DATE" afterDay
+      -- A value at -infinity, and a value below the storage, get the same error.
+      rejected "DATE" (addDays (-2147483647) epoch)
+      rejected "DATE" (addDays (-3000000000) epoch)
       stored "DATE" (Finite firstDay :: Date)
       rejected "DATE" (Finite beforeDay :: Date)
       stored "DATE[]" [firstDay]
@@ -539,6 +550,10 @@ nanosecondTimeTests =
       rejected "VARIANT" (Variant (FieldDate (Finite beforeDay)))
       stored "TIMESTAMP" firstTime
       rejected "TIMESTAMP" beforeTime
+      stored "TIMESTAMP" lastTime
+      rejected "TIMESTAMP" afterTime
+      rejected "TIMESTAMP" (local 1000000 (-9223372036854775807))
+      rejected "TIMESTAMP" (local 1000000 (-9223372036854775809))
       stored "TIMESTAMP" (Finite firstTime :: LocalTimestamp)
       rejected "TIMESTAMP" (Finite beforeTime :: LocalTimestamp)
       stored "TIMESTAMP[]" [firstTime]
@@ -549,6 +564,8 @@ nanosecondTimeTests =
       rejected "VARIANT" (Variant (FieldTimestamp (Finite beforeTime)))
       stored "TIMESTAMPTZ" (localTimeToUTC utc firstTime)
       rejected "TIMESTAMPTZ" (localTimeToUTC utc beforeTime)
+      stored "TIMESTAMPTZ" (localTimeToUTC utc lastTime)
+      rejected "TIMESTAMPTZ" (localTimeToUTC utc afterTime)
       stored "TIMESTAMPTZ" (Finite (localTimeToUTC utc firstTime) :: UTCTimestamp)
       rejected "TIMESTAMPTZ" (Finite (localTimeToUTC utc beforeTime) :: UTCTimestamp)
       -- A second or a millisecond value has the range of a microsecond value at
@@ -565,29 +582,38 @@ nanosecondTimeTests =
           rejected column (at (largest + 1))
   , testCase "each bind path checks the range of DuckDB for a date and a timestamp" $ withConnection ":memory:" $ \conn -> do
       -- See Note [Time ranges] in "Database.DuckDB.Simple.ToField".
-      let beforeDay = addDays (-2147483648) (fromGregorian 1970 1 1)
-          beforeTime = utcToLocalTime utc (posixSecondsToUTCTime (fromRational ((-9223372022400000001) % 1000000)))
-          rejected :: (ToField a) => String -> Text.Text -> a -> IO ()
-          rejected label column value = do
+      let epoch = fromGregorian 1970 1 1
+          local micros = utcToLocalTime utc (posixSecondsToUTCTime (fromRational (micros % 1000000)))
+          rejected :: (ToField a) => Text.Text -> String -> Text.Text -> a -> IO ()
+          rejected bound label column value = do
             _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE stored (v " <> column <> ")"))
             try (execute conn "INSERT INTO stored VALUES (?)" (Only value)) >>= \case
               Left SQLError{sqlErrorType, sqlErrorMessage} -> do
                 assertEqual label (Just ErrorInputOutOfRange) sqlErrorType
-                assertBool (label <> ": " <> Text.unpack sqlErrorMessage) ("below the smallest" `Text.isInfixOf` sqlErrorMessage)
+                assertBool (label <> ": " <> Text.unpack sqlErrorMessage) (bound `Text.isInfixOf` sqlErrorMessage)
               Right _ -> assertFailure (label <> ": expected the range error")
-      forM_ [("DATE", FieldDate (Finite beforeDay)), ("TIMESTAMP", FieldTimestamp (Finite beforeTime))] $ \(sqlType, value) -> do
-        let label part = Text.unpack sqlType <> " " <> part
-        rejected (label "FieldValue") sqlType value
-        rejected (label "FieldValue for a VARIANT") "VARIANT" value
-        rejected (label "FieldList") (sqlType <> "[]") (FieldList [FieldNull, value])
-        rejected (label "FieldArray") (sqlType <> "[2]") (FieldArray (listArray (0, 1) [FieldNull, value]))
-        rejected (label "FieldMap value") ("MAP(VARCHAR, " <> sqlType <> ")") (FieldMap [(FieldText "k", value)])
-        rejected (label "Variant payload in a list") "VARIANT" (Variant (FieldList [value]))
-      rejected "list of Maybe Day" "DATE[]" [Nothing, Just beforeDay]
-      rejected "Map of Day" "MAP(VARCHAR, DATE)" (Map.fromList [("k" :: Text.Text, beforeDay)])
-      rejected "Array of LocalTime" "TIMESTAMP[1]" (listArray (0, 0) [beforeTime] :: Array Int LocalTime)
-      rejected "Map of LocalTime" "MAP(VARCHAR, TIMESTAMP)" (Map.fromList [("k" :: Text.Text, beforeTime)])
-      rejected "LocalTime for a VARIANT" "VARIANT" beforeTime
+      forM_
+        [ ("below the smallest", addDays (-2147483648) epoch, local (-9223372022400000001))
+        , ("above the largest", addDays 2147483647 epoch, local 9223372036854775807)
+        ]
+        $ \(bound, day, time) -> do
+          forM_ [("DATE", FieldDate (Finite day)), ("TIMESTAMP", FieldTimestamp (Finite time))] $ \(sqlType, value) -> do
+            let label part = Text.unpack (bound <> " " <> sqlType) <> " " <> part
+            rejected bound (label "FieldValue") sqlType value
+            rejected bound (label "FieldValue for a VARIANT") "VARIANT" value
+            rejected bound (label "FieldList") (sqlType <> "[]") (FieldList [FieldNull, value])
+            rejected bound (label "FieldArray") (sqlType <> "[2]") (FieldArray (listArray (0, 1) [FieldNull, value]))
+            rejected bound (label "FieldMap key") ("MAP(" <> sqlType <> ", VARCHAR)") (FieldMap [(value, FieldText "v")])
+            rejected bound (label "FieldMap value") ("MAP(VARCHAR, " <> sqlType <> ")") (FieldMap [(FieldText "k", value)])
+            rejected bound (label "Variant payload in a list") "VARIANT" (Variant (FieldList [value]))
+          let label part = Text.unpack bound <> " " <> part
+          rejected bound (label "list of Maybe Day") "DATE[]" [Nothing, Just day]
+          rejected bound (label "Map key of Day") "MAP(DATE, VARCHAR)" (Map.fromList [(day, "v" :: Text.Text)])
+          rejected bound (label "Map of Day") "MAP(VARCHAR, DATE)" (Map.fromList [("k" :: Text.Text, day)])
+          rejected bound (label "Array of LocalTime") "TIMESTAMP[1]" (listArray (0, 0) [time] :: Array Int LocalTime)
+          rejected bound (label "Map key of LocalTime") "MAP(TIMESTAMP, VARCHAR)" (Map.fromList [(time, "v" :: Text.Text)])
+          rejected bound (label "Map of LocalTime") "MAP(VARCHAR, TIMESTAMP)" (Map.fromList [("k" :: Text.Text, time)])
+          rejected bound (label "LocalTime for a VARIANT") "VARIANT" time
   , testCase "a leap second binds as the next second, as make_time and make_timestamp give it" $ withConnection ":memory:" $ \conn -> do
       let leap = TimeOfDay 23 59 60
           next = LocalTime (fromGregorian 2017 1 1) (TimeOfDay 0 0 0)
@@ -600,6 +626,14 @@ nanosecondTimeTests =
           :: IO [(TimeOfDay, TimeOfDay, LocalTime, LocalTime, TimeWithZone, UTCTime)]
         )
         >>= (@?= [(TimeOfDay 24 0 0, TimeOfDay 24 0 0, next, next, TimeWithZone (TimeOfDay 24 0 0) 0, localTimeToUTC utc next)])
+      -- A TIME_NS value with 60 seconds also binds as the next second.
+      (query conn "SELECT ?::TIME_NS, ?::TIME_NS" (TimeOfDay 23 59 60, TimeOfDay 12 59 60.000000001) :: IO [(TimeOfDay, TimeOfDay)])
+        >>= (@?= [(TimeOfDay 24 0 0, TimeOfDay 13 0 0.000000001)])
+      -- A time after 24:00:00 raises an error, for example 60.5 seconds in the last minute of a day.
+      assertInputError (query conn "SELECT ?" (Only (TimeOfDay 23 59 60.5)) :: IO [Only TimeOfDay])
+      assertInputError (query conn "SELECT ?" (Only (LocalTime (fromGregorian 2016 12 31) (TimeOfDay 23 59 60.5))) :: IO [Only LocalTime])
+      assertInputError (query conn "SELECT ?" (Only (UTCTime (fromGregorian 2016 12 31) 86400.5)) :: IO [Only UTCTime])
+      assertInputError (query conn "SELECT ?::TIME_NS" (Only (TimeOfDay 23 59 60.000000001)) :: IO [Only TimeOfDay])
   ]
 
 -- | Require a controlled encoding error before native value construction.

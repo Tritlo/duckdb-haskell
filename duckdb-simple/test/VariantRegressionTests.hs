@@ -148,14 +148,14 @@ tests =
         forM_ rows \(seconds, nativeSeconds, millis, nativeMillis) ->
           forM_ [(seconds, nativeSeconds), (millis, nativeMillis)] \(Variant actual, native) -> do
             actual @?= native
-            -- The microseconds of the value do not fit in INT64. See
+            -- The value is outside the range of TIMESTAMP. See
             -- Note [Time ranges] in "Database.DuckDB.Simple.ToField".
             outcome <- try (query conn "SELECT ?" (Only (Variant actual)) :: IO [Only Variant])
             case outcome of
               Left (err :: SQLError) -> do
-                sqlErrorType err @?= Just ErrorInputInvalid
-                assertBool (show err) ("TIMESTAMP value out of finite range" `Text.isInfixOf` sqlErrorMessage err)
-              Right bound -> assertFailure ("expected the storage error, got " <> show bound)
+                sqlErrorType err @?= Just ErrorInputOutOfRange
+                assertBool (show err) ("TIMESTAMP of DuckDB" `Text.isInfixOf` sqlErrorMessage err)
+              Right bound -> assertFailure ("expected the range error, got " <> show bound)
     , testCase "text and binary values preserve embedded NUL" $ withConnection ":memory:" \conn -> do
         roundTrip conn (FieldText "before\0after íslenska λ 😀")
         roundTrip conn (FieldBlob (BS.pack [0, 1, 127, 128, 255, 0]))

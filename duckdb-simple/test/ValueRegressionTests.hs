@@ -1002,13 +1002,15 @@ valueRegressionTests =
               _ <- execute_ conn "DROP TABLE native_timestamp"
               pure ()
     , testCase "composite timestamps reject infinity and storage overflow" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
+        -- Only a nanosecond value has the range of its storage. See
+        -- Note [Time ranges] in "Database.DuckDB.Simple.ToField".
         forM_
-          [ (LogicalTypeIdTimestampSec, 1)
-          , (LogicalTypeIdTimestampMs, 1000)
-          , (LogicalTypeIdTimestamp, 1000000)
-          , (LogicalTypeIdTimestampNs, 1000000000)
+          [ (LogicalTypeIdTimestampSec, 1, assertOutsideTimeRange)
+          , (LogicalTypeIdTimestampMs, 1000, assertOutsideTimeRange)
+          , (LogicalTypeIdTimestamp, 1000000, assertOutsideTimeRange)
+          , (LogicalTypeIdTimestampNs, 1000000000, assertInputError)
           ]
-          \(dtype, units) ->
+          \(dtype, units, rejected) ->
             forM_
               [ toInteger (minBound :: Int64) - 1
               , negate (toInteger (maxBound :: Int64))
@@ -1018,7 +1020,7 @@ valueRegressionTests =
               \value -> do
                 let timestamp = utcToLocalTime utc (posixSecondsToUTCTime (fromRational (value % units)))
                     struct = singleField (LogicalTypeScalar dtype) (FieldTimestamp (Finite timestamp))
-                assertInputError (query conn "SELECT ?" (Only struct) :: IO [Only FieldValue])
+                rejected (query conn "SELECT ?" (Only struct) :: IO [Only FieldValue])
     , testCase "composite timestamps floor fractional units before the epoch" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
         forM_
           [ (LogicalTypeIdTimestampSec, 1)
@@ -1052,9 +1054,9 @@ valueRegressionTests =
     , testCase "out-of-range dates and timestamps fail without abort" $ withConnection ":memory:" \conn -> do
         let hugeDay = fromGregorian 10000000 1 1
             local = LocalTime hugeDay (TimeOfDay 0 0 0)
-        assertInputError (query conn "SELECT ?" (Only hugeDay) :: IO [Only Day])
-        assertInputError (query conn "SELECT ?" (Only local) :: IO [Only LocalTime])
-        assertInputError (query conn "SELECT ?" (Only (UTCTime hugeDay 0)) :: IO [Only UTCTime])
+        assertOutsideTimeRange (query conn "SELECT ?" (Only hugeDay) :: IO [Only Day])
+        assertOutsideTimeRange (query conn "SELECT ?" (Only local) :: IO [Only LocalTime])
+        assertOutsideTimeRange (query conn "SELECT ?" (Only (UTCTime hugeDay 0)) :: IO [Only UTCTime])
     , testCase "dates round trip at the ends of the range of DuckDB" $ withConnection ":memory:" \conn -> do
         forM_ [negate (maxBound :: Int32) + 1, -1, 0, maxBound - 1] \value -> do
           let day = addDays (toInteger value) (fromGregorian 1970 1 1)
@@ -1063,10 +1065,10 @@ valueRegressionTests =
         assertOutsideTimeRange (query conn "SELECT ?" (Only (addDays (toInteger (minBound :: Int32)) (fromGregorian 1970 1 1))) :: IO [Only Day])
     , testCase "input infinity sentinels are rejected" $ withConnection ":memory:" \conn -> do
         forM_ [toInteger (maxBound :: Int32), negate (toInteger (maxBound :: Int32))] \days ->
-          assertInputError (query conn "SELECT ?" (Only (addDays days (fromGregorian 1970 1 1))) :: IO [Only Day])
+          assertOutsideTimeRange (query conn "SELECT ?" (Only (addDays days (fromGregorian 1970 1 1))) :: IO [Only Day])
         forM_ [toInteger (maxBound :: Int64), negate (toInteger (maxBound :: Int64))] \micros -> do
           let value = utcToLocalTime utc (posixSecondsToUTCTime (fromRational (micros % 1000000)))
-          assertInputError (query conn "SELECT ?" (Only value) :: IO [Only LocalTime])
+          assertOutsideTimeRange (query conn "SELECT ?" (Only value) :: IO [Only LocalTime])
     , testCase "UTC binding is TIMESTAMPTZ under a non-UTC zone" $ withConnection ":memory:" \conn -> do
         _ <- execute_ conn "SET TimeZone = 'Pacific/Auckland'"
         let value = UTCTime (fromGregorian 2000 1 2) 12345
@@ -1271,7 +1273,7 @@ valueRegressionTests =
             )
     , testCase "nested conversion failure leaves the connection usable" $ withConnection ":memory:" \conn -> do
         let days = listArray (0, 1) [fromGregorian 2000 1 1, fromGregorian 10000000 1 1] :: Array Int Day
-        assertInputError (query conn "SELECT ?" (Only days) :: IO [Only FieldValue])
+        assertOutsideTimeRange (query conn "SELECT ?" (Only days) :: IO [Only FieldValue])
         (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
     , testCase "generic NULL product and payload return Left" $ do
         assertLeft (genericFromFieldValue FieldNull :: Either String NamedRecord)

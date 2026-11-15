@@ -31,6 +31,7 @@ import Database.DuckDB.Simple.Callback (attachOpaque, ignoreCallbackExceptions)
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (FieldNull))
 import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow)
 import Database.DuckDB.Simple.Function.Internal (FunctionResult (..), ScalarType, duckTypeForScalar, prepareResultWriter)
+import Database.DuckDB.Simple.Internal (Connection (..), defaultAggregateStripes)
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (LogicalTypeScalar))
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
@@ -40,7 +41,7 @@ import Database.DuckDB.Simple.V2.Registration (
   BindCallback,
   FunctionParameter (..),
   FunctionSignature (..),
-  RegistrationTarget,
+  RegistrationTarget (..),
   TypeDeclaration (..),
   aggregateCallbacks,
   configureFunctionSignature,
@@ -144,48 +145,41 @@ state adds its key, and each release removes it. DuckDB makes and releases
 states on several threads at the same time.
 
 A stripe is one part of the table: an IORef with a set of keys. The table is an
-array of stateTableStripes stripes, and the key of a state selects its stripe
-(stateStripe). Thus two threads change the same IORef only when their keys
-select the same stripe.
+array of stripes, and the key of a state selects its stripe (stateStripe). Thus
+two threads change the same IORef only when their keys select the same stripe.
 
 - Why the table has stripes. A change uses atomicModifyIORef', which stores a
   value that is not evaluated. If the runtime stops a thread during that
   evaluation, each thread that needs the value waits. With one IORef for all
-  states, the DuckDB threads of a query with many groups waited for each other
-  for most of the run time.
+  states, the DuckDB threads of a query with many groups waited for each other.
 
-- Why the number is 64. It is larger than the number of DuckDB threads on most
-  machines, so few threads share a stripe. A stripe costs one small IORef for
-  each call site. No result depends on the number: it changes only how often
-  two threads use the same stripe.
+- The number of stripes. The option connectionAggregateStripes of
+  ConnectionOptions sets the number for the aggregates of a connection. The
+  default is defaultAggregateStripes, 64 stripes. A registration on an
+  extension has no connection options, so it uses the default. The bind
+  callback makes the table with this number (bindStateTable).
 
-- Why the number is not an option. No measured query needed another value, and
-  an option for each registration would be one more thing that a user must
-  know.
+- No result depends on the number. It changes only how often two threads use
+  the same stripe. A stripe costs one small IORef for each call site.
 
 The destructor of the table reads all stripes (releaseStateTable).
 -}
 
 -- | The live states of one call site, as the keys of their stable pointers.
--- The table has 'stateTableStripes' stripes, and 'stateStripe' gives the stripe
--- of a key. See Note [State table stripes].
+-- 'stateStripe' gives the stripe of a key. See Note [State table stripes].
 --
 -- With the table, the library frees the states that DuckDB 2.0.0 does not
 -- destroy. See Note [Aggregate state life cycle].
 type StateTable = Array Int (IORef IntSet.IntSet)
 
--- | The number of stripes in a state table. See Note [State table stripes].
-stateTableStripes :: Int
-stateTableStripes = 64
-
 -- | The stripe that holds a key. In GHC 9.14 the key of a stable pointer is
 -- one more than its index in the stable pointer table of the runtime
 -- (@rts\/include\/rts\/StablePtr.h@). Thus consecutive keys go to different
--- stripes. The table is correct for each distribution of the keys. The
--- distribution changes only how often two threads use the same stripe. See
--- Note [State table stripes].
+-- stripes when the table has more than one stripe. The table is correct for
+-- each distribution of the keys. The distribution changes only how often two
+-- threads use the same stripe. See Note [State table stripes].
 stateStripe :: StateTable -> Int -> IORef IntSet.IntSet
-stateStripe table key = table ! (key `mod` stateTableStripes)
+stateStripe table key = table ! (key `mod` length table)
 
 -- | Register a typed aggregate function on a connection or a loading extension.
 createAggregateOn
@@ -219,22 +213,27 @@ createAggregateOn target name aggregate = do
           (combineStates aggregate)
           (finalizeStates aggregate resultType)
       )
-        { aggregateBindCallback = Just bindStateTable
+        { aggregateBindCallback = Just (bindStateTable stripes)
         , aggregateDestroyCallback = Just destroyStates
         }
+    -- See Note [State table stripes].
+    stripes = case target of
+      ConnectionTarget connection -> connectionStripes connection
+      ExtensionTarget{} -> defaultAggregateStripes
 
 -- | Make a native state the size of one pointer. See
 -- Note [Aggregate state life cycle].
 setStateSize :: DuckDBV2AggregateFunctionSizeInfoHandle -> IO ()
 setStateSize info = checked (c_duckdb_v2_aggregate_function_size_set_state_size info (fromIntegral (staticSizeOf (Proxy @(Ptr ())))))
 
--- | Make an empty state table and transfer it to the bind data of the call site.
--- See Note [Aggregate state life cycle].
-bindStateTable :: BindCallback DuckDBV2AggregateFunctionBindInfoHandle
-bindStateTable input _ _ = mask_ do
-  stripes <- mapM (const (newIORef IntSet.empty)) [1 .. stateTableStripes]
+-- | Make an empty state table with the given number of stripes and transfer it
+-- to the bind data of the call site. See Note [Aggregate state life cycle] and
+-- Note [State table stripes].
+bindStateTable :: Int -> BindCallback DuckDBV2AggregateFunctionBindInfoHandle
+bindStateTable count input _ _ = mask_ do
+  stripes <- mapM (const (newIORef IntSet.empty)) [1 .. count]
   -- Build the array here, so that no callback thread evaluates it.
-  table <- evaluate (listArray (0, stateTableStripes - 1) stripes :: StateTable)
+  table <- evaluate (listArray (0, count - 1) stripes :: StateTable)
   stable <- newStablePtr table
   attachOpaque (c_duckdb_v2_function_bind_set_bind_data input) (castPtr (castStablePtrToPtr stable)) stateTableDestructor
     `onException` freeStablePtr stable

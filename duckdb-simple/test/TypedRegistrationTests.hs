@@ -121,6 +121,7 @@ typedRegistrationTests =
     , testCase "COPY errors in each function fail only their statement" testCopyErrors
     , testCase "COPY format on two connections of one database" testCopySharedDatabase
     , testCase "aggregate over one group and over many groups" testAggregateGroups
+    , testCase "aggregate with one state table stripe" testAggregateStripes
     , testCase "aggregate skips NULL rows and gives the initial result" testAggregateNulls
     , testCase "aggregate arguments, states, and result types" testAggregateTypes
     , testCase "aggregate exceptions fail the query only" testAggregateErrors
@@ -573,6 +574,19 @@ testAggregateGroups = withConnection ":memory:" \conn -> do
   assertColumnsEqual conn "SELECT typed_sum(i), sum(i)::BIGINT FROM typed_numbers"
   readIORef combines >>= \count -> assertBool ("combine calls: " <> show count) (count > 0)
   query_ conn "SELECT typed_sum(i), typed_sum(i + 1) FROM range(10) t(i)" >>= (@?= [(45 :: Int64, 55 :: Int64)])
+
+-- | One stripe gives the same results as the default stripes, also with
+-- partial states from 4 threads. A stripe count of 0 fails the open.
+testAggregateStripes :: Assertion
+testAggregateStripes = do
+  withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionAggregateStripes = 1} \conn -> do
+    createAggregate conn "typed_sum" sumAggregate
+    void (execute_ conn "SET threads = 4")
+    void (execute_ conn "CREATE TABLE typed_numbers AS SELECT i FROM range(300000) t(i)")
+    assertColumnsEqual conn "SELECT typed_sum(i), sum(i)::BIGINT FROM typed_numbers GROUP BY i % 1000"
+    assertColumnsEqual conn "SELECT typed_sum(i), sum(i)::BIGINT FROM typed_numbers"
+  message <- sqlErrorOf (withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionAggregateStripes = 0} (const (pure ())))
+  assertBool ("unexpected message: " <> Text.unpack message) ("connectionAggregateStripes" `Text.isInfixOf` message)
 
 -- | Skip the rows with NULL. A group without other rows gives the initial result.
 testAggregateNulls :: Assertion

@@ -64,8 +64,16 @@ and callbacks. Upstream marks that API as unstable, so 0.4 requires exactly
 DuckDB 2.0.0. Creating an environment raises `SQLError` for another version.
 The SQL workflow stays the same. These changes can affect your code:
 
+- The package requires `base` 4.18 or later, that is GHC 9.6 or later.
+  Version 0.3 accepted `base` 4.14.
 - Raw types come from `Database.DuckDB.FFI.V2`. They are distinct from the
   retained API types in `Database.DuckDB.FFI`.
+- `Database.DuckDB.Simple.Internal` uses the V2 handles, and some of its
+  functions take other arguments. `withResult` and `executePreparedResult` take
+  a `Statement`. `fetchResultChunk` takes no `ResultMode`.
+  `runInterruptibleQuery` runs an action of each result type.
+  `withDatabaseHandle` gives the native instance handle. The changelog lists
+  the removed names and the new record fields.
 - `SQLError.sqlErrorType` is `Maybe ErrorType`. `Database.DuckDB.Simple`
   exports `ErrorType`. It has one constructor for each error code of the V2 C
   API. The V2 codes are a different set from the codes of version 0.3. Thus
@@ -147,6 +155,12 @@ The SQL workflow stays the same. These changes can affect your code:
   stream between two fetches. Then the query fails at once with the
   `RESOURCE_IN_USE` error of DuckDB. The README gives the cases that the bound
   does not cover.
+- `ConnectionOptions` has new fields, for example `connectionCallbackLockWait`.
+  Code that builds the record with only the fields of version 0.3 gets a
+  warning from GHC. The program then fails with a missing-field error when the
+  library reads such a field. Build options as a record update of
+  `defaultConnectionOptions`, for example
+  `defaultConnectionOptions {connectionGeometryCRS = ["OGC:CRS84"]}`.
 - `query_` and `execute_` parse all statements before they run any. A syntax
   error stops earlier statements in the same input from running.
 - A conversion error names the types `TIMESTAMPTZ` and `TIMETZ`, in
@@ -219,6 +233,11 @@ The SQL workflow stays the same. These changes can affect your code:
   and to the callbacks of `registerCopyToFunction`. For a `userError`, version
   0.3 gave `user error (...)`. For an `SQLError`, it gave the `Show` text of
   the record. Update code that compares the text of these errors.
+- The error of an argument that does not convert names the argument `arg0`,
+  `arg1`, and so on, with numbers from 0. For example, the text contains
+  `argument arg1 is NULL, but Int64 cannot hold NULL`. Version 0.3 gave
+  `unable to convert argument #2: ...`, with numbers from 1. Update code that
+  compares these texts.
 - `Database.DuckDB.Simple` exports new names, for example `connect`,
   `Environment`, `Instance`, `withInstance`, `attachDatabase`, `createCast`,
   `createTableFunction`, `createAggregate`, `Aggregate` with its fields, and
@@ -236,6 +255,10 @@ The SQL workflow stays the same. These changes can affect your code:
 - A composite parameter with a GEOMETRY CRS that DuckDB does not recognize
   raises `SQLError`. Version 0.3 bound it without the CRS. Configure custom CRS
   names through `connectionGeometryCRS`.
+- A composite parameter that the native value constructor rejects raises an
+  `SQLError`. For example, a STRUCT parameter with a MAP field that has a NULL
+  key raises an `SQLError` with the type `ErrorInputInvalid`. Version 0.3
+  raised an `IOException`. Catch `SQLError` for these errors.
 - A name in `connectionGeometryCRS` that DuckDB drops, for example a blank
   name, fails when the connection opens. Version 0.3 read the configured types
   the first time a parameter needed one, and did not check that a type kept its

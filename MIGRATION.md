@@ -371,7 +371,10 @@ The SQL workflow stays the same. These changes can affect your code:
   that version 0.3 stored in a `VARIANT` column does not match `WHERE x = ?`
   for the same Haskell value with such digits.
 - Each input check of the library raises an `SQLError` with the type
-  `ErrorInputInvalid`. Version 0.3 raised an `IOException` (a `userError`) for
+  `ErrorInputInvalid`, except `FormatError` for a parameter count or name that
+  does not match the query, and the checks of
+  `Database.DuckDB.Simple.FileSystem` and of scalar functions, which raise an
+  `SQLError` with no type. Version 0.3 raised an `IOException` (a `userError`) for
   a BIT, DECIMAL, ENUM, HUGEINT, UHUGEINT, TIMETZ, time of day, or timestamp
   value that does not fit its type, a STRUCT or UNION value whose fields do not
   match its types, a VARIANT payload that a VARIANT does not keep, a NUL in a

@@ -374,7 +374,7 @@ stateCell :: Ptr Void -> IO (IORef state)
 stateCell slot = do
   stable <- peek (castPtr slot)
   when (castStablePtrToPtr stable == nullPtr) $
-    throwIO (userError "duckdb-simple: the aggregate state was released")
+    throwInternalError "the aggregate state was released"
   deRefStablePtr stable
 
 -- | Release the Haskell state of a native state, and set the native state to

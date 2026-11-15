@@ -21,7 +21,7 @@ module Database.DuckDB.Simple.Materialize (
   prepareVectorReaderWith,
 ) where
 
-import Control.Exception (bracket, throwIO)
+import Control.Exception (bracket)
 import Control.Monad (forM, when)
 import Data.Array (Array, bounds, elems, listArray, rangeSize, (!))
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
@@ -95,7 +95,7 @@ rejectRows raise vector = pure \row ->
 -- "Database.DuckDB.Simple.VariantCodec".
 prepareVariantReader :: VariantCodec.VariantState -> VectorReader
 prepareVariantReader =
-  VariantCodec.prepareVariantDecoder (materializeValue (rejectRows (throwIO (userError "duckdb-simple: expected a value without VARIANT"))))
+  VariantCodec.prepareVariantDecoder (materializeValue (rejectRows (throwInternalError (Text.pack "expected a value without VARIANT"))))
 
 -- | Copy one value through an owned vector. The caller retains the factory owner.
 -- The first argument reads VARIANT. 'prepareGeometryReader' reads GEOMETRY with
@@ -246,7 +246,7 @@ prepareVectorReaderWith readers tree labels vector = do
   readValue <- prepareValueReader readers tree labels dtype vector dataPtr validity
   pure \row -> do
     when (row < 0 || fromIntegral row >= getField @"count" view) $
-      throwIO (userError "duckdb-simple: vector row index out of range")
+      throwInternalError (Text.pack "vector row index out of range")
     physical <- if selection == nullPtr then pure row else fromIntegral <$> peekElemOff selection row
     readValue physical
 
@@ -302,7 +302,7 @@ prepareValueReader readers tree labels dtype vector dataPtr validity = case dtyp
     (width, scale) <-
       withVectorType vector logicalTypeToRep >>= \case
         LogicalTypeDecimal width scale -> pure (width, scale)
-        _ -> throwIO (userError "duckdb-simple: invalid DECIMAL type")
+        _ -> throwInternalError (Text.pack "invalid DECIMAL type")
     pure (whenValid (FieldDecimal . DecimalValue width scale) (decimalStorage dataPtr width))
   DuckDBV2LogicalTypeIdEnum -> do
     -- See Note [ENUM labels].
@@ -312,10 +312,10 @@ prepareValueReader readers tree labels dtype vector dataPtr validity = case dtyp
       Nothing ->
         tree >>= \case
           LogicalTypeEnum entries | toInteger (rangeSize (bounds entries)) == toInteger count -> pure (pure . (entries !) . fromIntegral)
-          _ -> throwIO (userError "duckdb-simple: invalid ENUM type")
+          _ -> throwInternalError (Text.pack "invalid ENUM type")
     let readEnum row = do
           index <- enumStorage dataPtr count row
-          when (toInteger index >= toInteger count) $ throwIO (userError "duckdb-simple: ENUM index out of range")
+          when (toInteger index >= toInteger count) $ throwInternalError (Text.pack "ENUM index out of range")
           FieldEnum index <$> label index
     pure (whenValid id readEnum)
   DuckDBV2LogicalTypeIdSQLNull -> pure \_ -> pure FieldNull
@@ -413,7 +413,7 @@ prepareGeometryReader factory vector = do
   crs <-
     withVectorType vector logicalTypeToRep >>= \case
       LogicalTypeGeometry value -> pure value
-      _ -> throwIO (userError "duckdb-simple: invalid GEOMETRY type")
+      _ -> throwInternalError (Text.pack "invalid GEOMETRY type")
   count <- fromIntegral <$> output (c_duckdb_v2_vector_get_size vector)
   blobs <-
     bracket
@@ -422,14 +422,14 @@ prepareGeometryReader factory vector = do
       \blob ->
         withOwnedVector factory blob \target -> do
           checked (c_duckdb_v2_vector_cast factory vector target DuckDBV2CastModeNormal nullPtr nullPtr)
-          let notBlob = rejectRows (throwIO (userError "duckdb-simple: expected a BLOB vector"))
+          let notBlob = rejectRows (throwInternalError (Text.pack "expected a BLOB vector"))
           readBlob <- prepareVectorReader (FallbackReaders notBlob notBlob) target
           forM [0 .. count - 1] readBlob
   let rows = listArray (0, count - 1) blobs :: Array Int FieldValue
   pure \row -> case rows ! row of
     FieldBlob bytes -> pure (FieldGeometry (RawGeometry bytes crs))
     FieldNull -> pure FieldNull
-    _ -> throwIO (userError "duckdb-simple: GEOMETRY cast did not produce a BLOB")
+    _ -> throwInternalError (Text.pack "GEOMETRY cast did not produce a BLOB")
 
 -- | Read a DECIMAL. DuckDB stores it in the smallest integer type for its width.
 -- See Note [Vector memory layouts] in "Database.DuckDB.Simple.Element".
@@ -504,12 +504,7 @@ prepareStructDecoder readers tree vector = do
     tree >>= \case
       LogicalTypeStruct typeArray -> pure typeArray
       other ->
-        throwIO
-          ( userError
-              ( "duckdb-simple: expected STRUCT logical type, but saw "
-                  <> show other
-              )
-          )
+        throwInternalError (Text.pack ("expected STRUCT logical type, but saw " <> show other))
   let typeList = elems structFields
       count = length typeList
       indexMap =
@@ -540,7 +535,7 @@ prepareTupleDecoder readers tree vector = do
   types <-
     tree >>= \case
       LogicalTypeTuple fields -> pure fields
-      _ -> throwIO (userError "duckdb-simple: invalid TUPLE type")
+      _ -> throwInternalError (Text.pack "invalid TUPLE type")
   let typeList = elems types
       count = length typeList
   checkChildCount "TUPLE" vector count
@@ -560,12 +555,7 @@ prepareUnionDecoder readers tree vector = do
     tree >>= \case
       LogicalTypeUnion members -> pure members
       other ->
-        throwIO
-          ( userError
-              ( "duckdb-simple: expected UNION logical type, but saw "
-                  <> show other
-              )
-          )
+        throwInternalError (Text.pack ("expected UNION logical type, but saw " <> show other))
   let membersList = elems membersArray
       memberCount = length membersList
   -- Child 0 of a UNION vector is the tag, and member j is child j + 1. The tag
@@ -588,7 +578,7 @@ prepareUnionDecoder readers tree vector = do
   pure \rowIdx -> do
     memberIdx <- readTag rowIdx >>= unionTagIndex
     when (memberIdx < 0 || memberIdx >= memberCount) $
-      throwIO (userError "duckdb-simple: union tag out of range")
+      throwInternalError (Text.pack "union tag out of range")
     payload <- (memberReaders !! memberIdx) rowIdx
     pure
       UnionValue
@@ -606,34 +596,29 @@ unionTagIndex = \case
   FieldWord32 tagWord ->
     if tagWord <= fromIntegral (maxBound :: Word16)
       then pure (fromIntegral tagWord)
-      else throwIO (userError "duckdb-simple: union tag exceeds Word16 range")
+      else throwInternalError (Text.pack "union tag exceeds Word16 range")
   FieldWord64 tagWord ->
     if tagWord <= fromIntegral (maxBound :: Word16)
       then pure (fromIntegral tagWord)
-      else throwIO (userError "duckdb-simple: union tag exceeds Word16 range")
+      else throwInternalError (Text.pack "union tag exceeds Word16 range")
   FieldInt8 tagInt
     | tagInt >= 0 -> pure (fromIntegral tagInt)
-    | otherwise -> throwIO (userError "duckdb-simple: union tag negative")
+    | otherwise -> throwInternalError (Text.pack "union tag negative")
   FieldInt16 tagInt
     | tagInt >= 0 -> pure (fromIntegral tagInt)
-    | otherwise -> throwIO (userError "duckdb-simple: union tag negative")
+    | otherwise -> throwInternalError (Text.pack "union tag negative")
   FieldInt32 tagInt
     | tagInt >= 0 && tagInt <= fromIntegral (maxBound :: Word16) -> pure (fromIntegral tagInt)
-    | tagInt < 0 -> throwIO (userError "duckdb-simple: union tag negative")
-    | otherwise -> throwIO (userError "duckdb-simple: union tag exceeds Word16 range")
+    | tagInt < 0 -> throwInternalError (Text.pack "union tag negative")
+    | otherwise -> throwInternalError (Text.pack "union tag exceeds Word16 range")
   FieldInt64 tagInt
     | tagInt >= 0 && tagInt <= fromIntegral (maxBound :: Word16) -> pure (fromIntegral tagInt)
-    | tagInt < 0 -> throwIO (userError "duckdb-simple: union tag negative")
-    | otherwise -> throwIO (userError "duckdb-simple: union tag exceeds Word16 range")
+    | tagInt < 0 -> throwInternalError (Text.pack "union tag negative")
+    | otherwise -> throwInternalError (Text.pack "union tag exceeds Word16 range")
   FieldNull ->
-    throwIO (userError "duckdb-simple: encountered NULL union tag")
+    throwInternalError (Text.pack "encountered NULL union tag")
   other ->
-    throwIO
-      ( userError
-          ( "duckdb-simple: unexpected union tag value "
-              <> show other
-          )
-      )
+    throwInternalError (Text.pack ("unexpected union tag value " <> show other))
 
 listEntryBounds :: Text -> DuckDBV2ListEntry -> IO (Int, Int)
 listEntryBounds context (DuckDBV2ListEntry offset lenRaw) = do
@@ -642,7 +627,7 @@ listEntryBounds context (DuckDBV2ListEntry offset lenRaw) = do
   let maxInt = toInteger (maxBound :: Int)
       upperBound = toInteger base + toInteger len - 1
   when (len > 0 && upperBound > maxInt) $
-    throwIO (userError ("duckdb-simple: " <> Text.unpack context <> " bounds exceed Int range"))
+    throwInternalError (context <> Text.pack " bounds exceed Int range")
   pure (base, len)
 
 ensureWithinIntRange :: Text -> Word64 -> IO Int
@@ -651,7 +636,7 @@ ensureWithinIntRange context value =
       limit = toInteger (maxBound :: Int)
   in  if actual <= limit
         then pure (fromInteger actual)
-        else throwIO (userError ("duckdb-simple: " <> Text.unpack context <> " exceeds Int range"))
+        else throwInternalError (context <> Text.pack " exceeds Int range")
 
 -- | Take the element tree from the tree of a LIST or ARRAY. The action runs the
 -- action of the parent only when the element reader needs its tree. See
@@ -661,7 +646,7 @@ elementTree tree =
   tree >>= \case
     LogicalTypeList element -> pure element
     LogicalTypeArray element _ -> pure element
-    _ -> throwIO (userError "duckdb-simple: invalid LIST or ARRAY type")
+    _ -> throwInternalError (Text.pack "invalid LIST or ARRAY type")
 
 -- | Raise an error when the type tree of a STRUCT, TUPLE, or UNION vector gives
 -- another child count than the vector has. The tree can come from the type of a
@@ -670,8 +655,8 @@ checkChildCount :: String -> DuckDBV2VectorHandle -> Int -> IO ()
 checkChildCount kind vector expected = do
   actual <- output (c_duckdb_v2_vector_get_child_count vector)
   when (toInteger actual /= toInteger expected) $
-    throwIO
-      (userError ("duckdb-simple: invalid " <> kind <> " type: the type has " <> show expected <> " children, but the vector has " <> show actual))
+    throwInternalError
+      (Text.pack ("invalid " <> kind <> " type: the type has " <> show expected <> " children, but the vector has " <> show actual))
 
 -- | Borrow a nested vector from its parent chunk.
 vectorChild :: DuckDBV2VectorHandle -> DuckDBIdx -> IO DuckDBV2VectorHandle

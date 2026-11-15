@@ -18,6 +18,7 @@ import Control.Exception (bracket, evaluate, finally, mask, mask_, onException, 
 import Control.Monad (foldM, forM, when, zipWithM)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.IntMap.Strict as IntMap
+import qualified Data.Text as Text
 import Database.DuckDB.Simple.Element (withVectorType)
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue)
 import Database.DuckDB.Simple.FromRow (RowParser, parseRow, rowErrorsToSqlError)
@@ -250,7 +251,7 @@ collectStreamRows conn query acquire = withQueryError query $
     -- destroys each chunk in it.
     takeChunk pending expected =
       atomicModifyIORef' pending (\case chunk : rest | chunk == expected -> (rest, Just chunk); chunks -> (chunks, Nothing))
-        >>= maybe (throwIO (userError "duckdb-simple: internal error: the owned chunks do not match the chunk fold")) pure
+        >>= maybe (throwInternalError (Text.pack "internal error: the owned chunks do not match the chunk fold")) pure
 
 collectResultColumns :: DuckDBV2ResultHandle -> IO [StatementStreamColumn]
 collectResultColumns result = bracket (output (c_duckdb_v2_result_get_schema result)) (destroy c_duckdb_v2_schema_destroy) \schema -> do

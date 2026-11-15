@@ -57,6 +57,7 @@ module Database.DuckDB.Simple.Native (
   quoteIdentifier,
   throwInvalidArgument,
   throwOutOfRange,
+  throwInternalError,
   withConnectionFactory,
   factoryOutput,
   withSQLStatement,
@@ -492,6 +493,28 @@ throwInvalidArgument message = throwIO (SQLError ("duckdb-simple: " <> message) 
 -- such check of the library uses this function.
 throwOutOfRange :: Text -> IO a
 throwOutOfRange message = throwIO (SQLError ("duckdb-simple: " <> message) (Just ErrorInputOutOfRange) Nothing Nothing)
+
+-- | Raise the error of a check of the state of the library, or of a vector, a
+-- type, or a value that DuckDB gave: an 'SQLError' of the type
+-- 'ErrorRuntimeInternal' with no query. Such an error means a defect of the
+-- library or of DuckDB, not a defect of an input. See
+-- Note [Internal errors in callbacks].
+throwInternalError :: Text -> IO a
+throwInternalError message = throwIO (SQLError ("duckdb-simple: " <> message) (Just ErrorRuntimeInternal) Nothing Nothing)
+
+{- Note [Internal errors in callbacks]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+throwInternalError can raise its SQLError inside a DuckDB callback, for
+example in a decoder check of an argument vector or in a state check of an
+aggregate. runCallback in "Database.DuckDB.Simple.Callback" writes the code
+of the type of an SQLError into the error slot of a callback, but it holds
+back ErrorRuntimeInternal and ErrorRuntimeFatal and writes the code
+DuckDBV2ErrorApi and the message for them. See
+Note [Errors that leave a callback] in "Database.DuckDB.Simple.Callback". The
+type ErrorRuntimeInternal, and ErrorRuntimeFatal, must never go into the error
+slot of a callback, because DuckDB 2.0.0 then invalidates the database, and
+each later statement raises "FATAL Error: ... database has been invalidated".
+-}
 
 -- | Borrow a factory while its connection remains alive. Do not destroy it.
 withConnectionFactory :: DuckDBV2ConnectionHandle -> (DuckDBV2FactoryHandle -> IO a) -> IO a

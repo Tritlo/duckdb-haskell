@@ -51,6 +51,7 @@ import Database.DuckDB.Simple.Internal (
   macroFunctionTypeToNative,
   settingScopeFromNative,
   settingScopeToNative,
+  throwInternalError,
   tokenTypeFromNative,
  )
 import qualified Database.DuckDB.Simple.Logging as Logging
@@ -219,6 +220,32 @@ extensionRegressionTests =
               sqlErrorType err @?= Just ErrorInputInvalid
               assertBool (show err) ("typed callback failure" `Text.isInfixOf` sqlErrorMessage err)
             Right _ -> assertFailure "expected SQL error"
+    , testCase "an internal error of the library in a callback leaves the database usable" $
+        withConnection ":memory:" \conn -> do
+          -- See Note [Internal errors in callbacks] in "Database.DuckDB.Simple.Native".
+          createFunction conn "throw_internal" (throwInternalError "internal callback failure" :: IO Int64)
+          createAggregate
+            conn
+            "internal_step"
+            Aggregate
+              { aggregateInitial = 0 :: Int64
+              , aggregateStep = \_ (Only (_ :: Int64)) -> throwInternalError "internal step failure"
+              , aggregateCombine = \a b -> pure (a + b)
+              , aggregateResult = pure
+              }
+          forM_
+            [ ("SELECT throw_internal()", "internal callback failure")
+            , ("SELECT internal_step(i) FROM range(3) t(i)", "internal step failure") :: (Text.Text, Text.Text)
+            ]
+            \(sql, text) -> do
+              result <- try (query_ conn (Query sql) :: IO [Only Int64])
+              case result of
+                Left err -> do
+                  assertBool (show err) (text `Text.isInfixOf` sqlErrorMessage err)
+                  -- runCallback holds back ErrorRuntimeInternal.
+                  sqlErrorType err @?= Just ErrorInputInvalid
+                Right rows -> assertFailure (Text.unpack sql <> ": expected the error of the callback, got " <> show rows)
+              query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
     , testCase "exception rendering cannot escape scalar callback" $
         withConnection ":memory:" \conn -> do
           createFunction conn "throw_bad_display" (throwIO BrokenDisplay :: IO Int64)

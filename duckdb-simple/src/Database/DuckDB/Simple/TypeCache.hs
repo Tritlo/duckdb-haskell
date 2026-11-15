@@ -197,7 +197,7 @@ readNativeTypes connection crss = do
         (destroy c_duckdb_v2_result_destroy)
         \result ->
           bracket (output (c_duckdb_v2_result_fetch_chunk result)) (destroy c_duckdb_v2_data_chunk_destroy) \chunk -> do
-            when (chunk == nullHandle) $ throwIO (userError "duckdb-simple: the type query returned no row")
+            when (chunk == nullHandle) $ throwInternalError "the type query returned no row"
             owned <- columnTypes chunk (length crss)
             geometryTypes crss owned `onException` releaseItems destroyLogicalType owned
 

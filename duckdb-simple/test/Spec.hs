@@ -17,7 +17,7 @@ module Main (main) where
 import ArrowTests (arrowTests)
 import CancellationTests (callbackLockTests, cancellationTests)
 import Control.Applicative ((<|>))
-import Control.Exception (ErrorCall, Exception, SomeException, bracket, displayException, fromException, try)
+import Control.Exception (ErrorCall, Exception, SomeException, bracket, displayException, fromException, throwIO, try)
 import Control.Monad (forM_, replicateM_, void, when)
 import CopyTests (copyTests)
 import CoreRegressionTests (coreRegressionTests)
@@ -1557,6 +1557,17 @@ functionsTests =
         assertThrows
           (createFunction conn "" (id :: Int64 -> Int64))
           (\err -> sqlErrorType err == Just ErrorInputInvalid && sqlErrorMessage err == "duckdb-simple: invalid scalar function name")
+    , testCase "a failing call with constant arguments fails as with column arguments" $
+        withConnection ":memory:" \conn -> do
+          createFunction conn "hs_fail_negative" (\(x :: Int64) -> (if x < 0 then throwIO (userError "negative") else pure x) :: IO Int64)
+          let failsWith expected action = assertThrows action (\err -> sqlErrorType err == Just ErrorInputInvalid && expected `Text.isInfixOf` sqlErrorMessage err)
+          failsWith "negative" (query_ conn "SELECT hs_fail_negative(-1)" :: IO [Only Int64])
+          failsWith "negative" (query_ conn "SELECT hs_fail_negative(i - 1) FROM range(3) t(i)" :: IO [Only Int64])
+          failsWith
+            "duckdb-simple: argument arg0 is NULL, but Int64 cannot hold NULL"
+            (query_ conn "SELECT hs_fail_negative(NULL::BIGINT)" :: IO [Only Int64])
+          -- A failing constant in a CASE branch that is not taken does not raise.
+          query_ conn "SELECT CASE WHEN i > 5 THEN hs_fail_negative(-1) ELSE i END FROM range(3) t(i)" >>= (@?= map Only [0, 1, 2 :: Int64])
     , testCase "names the argument that does not convert" $
         withConnection ":memory:" \conn -> do
           createFunction conn "hs_sum" (\(x :: Int64) (y :: Int64) -> x + y)

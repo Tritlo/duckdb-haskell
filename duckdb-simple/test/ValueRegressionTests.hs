@@ -594,6 +594,12 @@ valueRegressionTests =
         assertConversionError (query_ conn "SELECT 256::USMALLINT" :: IO [Only Word8])
         assertConversionError (query_ conn "SELECT 65536::UINTEGER" :: IO [Only Word16])
         assertConversionError (query_ conn "SELECT 4294967296::UBIGINT" :: IO [Only Word32])
+    , testCase "a parameter for a column of an alias type follows the base type" $ withConnection ":memory:" \conn -> do
+        _ <- execute_ conn "CREATE TYPE tsns AS TIMESTAMP_NS; CREATE TYPE wide AS UHUGEINT; CREATE TABLE aliased (t tsns, w wide)"
+        let precise = LocalTime (fromGregorian 2024 1 2) (TimeOfDay 3 4 5.123456789)
+        _ <- execute conn "INSERT INTO aliased VALUES (?, ?)" (precise, 2 ^ (127 :: Int) + 5 :: Integer)
+        (query_ conn "SELECT t::VARCHAR, w::VARCHAR FROM aliased" :: IO [(Text, Text)])
+          >>= (@?= [("2024-01-02 03:04:05.123456789", "170141183460469231731687303715884105733")])
     , testCase "Integer and Natural parameters store exact values for each numeric target" $ withConnection ":memory:" \conn -> do
         let store :: (Show a, ToField a) => Text -> a -> Text -> Assertion
             store dtype value expected = do

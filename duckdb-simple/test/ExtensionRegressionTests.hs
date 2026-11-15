@@ -25,9 +25,10 @@ import Control.Exception (
  )
 import Control.Monad (forM, forM_, replicateM_, void, when)
 import qualified Data.ByteString as BS
-import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
+import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (find, isInfixOf, nub, sort)
+import Data.Maybe (isJust)
 import Data.Proxy (Proxy (..))
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
@@ -60,9 +61,11 @@ import Numeric.Natural (Natural)
 import System.Directory (doesFileExist, getHomeDirectory, getTemporaryDirectory, removeFile)
 import System.FilePath (takeDirectory)
 import System.IO (hClose, openBinaryTempFile)
+import System.Mem (performMajorGC)
+import System.Mem.Weak (deRefWeak)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase, (@?=))
-import TestUtils (assertInputErrorContaining, assertReleasedAfter, assertSqlErrorContaining)
+import TestUtils (assertInputErrorContaining, assertReleasedAfter, assertSqlErrorContaining, assertSqlErrorType)
 
 -- | Run the extension regression tests as a standalone executable.
 main :: IO ()
@@ -100,6 +103,26 @@ extensionRegressionTests =
             replicateM_ 32 $ createFunction conn "duplicate_scalar" (readIORef token)
             createFunction conn "duplicate_scalar" (7 :: Int64)
           query_ conn "SELECT duplicate_scalar()" >>= (@?= [Only (7 :: Int64)])
+    , testCase "a scalar function of a rolled-back transaction is gone and releases its callback" $
+        withConnection ":memory:" \conn -> do
+          assertReleasedAfter "a rolled-back scalar function" \token -> do
+            _ <- execute_ conn "BEGIN TRANSACTION"
+            createFunction conn "rolled_scalar" (\(x :: Int64) -> (+ x) <$> readIORef token)
+            query_ conn "SELECT rolled_scalar(1)" >>= (@?= [Only (2 :: Int64)])
+            void (execute_ conn "ROLLBACK")
+          assertSqlErrorType ErrorDatabaseCatalog (query_ conn "SELECT rolled_scalar(1)" :: IO [Only Int64])
+          createFunction conn "rolled_scalar" (\(x :: Int64) -> x + 100)
+          query_ conn "SELECT rolled_scalar(1)" >>= (@?= [Only (101 :: Int64)])
+          -- A registration that stays keeps its callback.
+          kept <- do
+            token <- newIORef (1 :: Int64)
+            weak <- mkWeakIORef token (pure ())
+            createFunction conn "kept_scalar" (\(x :: Int64) -> (+ x) <$> readIORef token)
+            pure weak
+          performMajorGC
+          performMajorGC
+          deRefWeak kept >>= assertBool "a registration that stays keeps its callback" . isJust
+          query_ conn "SELECT kept_scalar(1)" >>= (@?= [Only (2 :: Int64)])
     , testCase "scalar deletion refusal keeps function and connection usable" $
         withConnection ":memory:" \conn -> do
           createFunction conn "retained_scalar" (42 :: Int64)

@@ -225,6 +225,20 @@ geometryArgumentTests =
         withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = ["local grid"]} \grid -> do
           createFunction grid "hs_point_x" pointX
           query grid "SELECT hs_point_x(ST_SetCRS(ST_GeomFromWKB(?), 'local grid'))" (Only pointWKB) >>= (@?= [Only (1 :: Double)])
+    , testCase "a scalar function reads its arguments through a selection and from a constant vector" $ withConnection ":memory:" \conn -> do
+        createFunction conn "hs_point_x" pointX
+        createFunction conn "hs_maybe_x" (fmap pointX :: Maybe G.Geometry -> Maybe Double)
+        createFunction conn "hs_count_shapes" (\(shapes :: [G.Geometry]) -> fromIntegral (length shapes) :: Int64)
+        _ <- execute_ conn "CREATE TABLE selected AS SELECT i, ('POINT (' || i || ' 2)')::GEOMETRY AS g FROM range(3000) t(i)"
+        let kept = [i | i <- [0 .. 2999 :: Int64], i `mod` 7 == 0]
+        -- A WHERE filter gives the function a DICTIONARY vector.
+        query_ conn "SELECT count(*), count(DISTINCT hs_point_x(g)), sum(hs_point_x(g)) FROM selected WHERE i % 7 = 0"
+          >>= (@?= [(fromIntegral (length kept) :: Int64, fromIntegral (length kept) :: Int64, fromIntegral (sum kept) :: Double)])
+        query_ conn "SELECT sum(hs_count_shapes([g, g])) FROM selected WHERE i % 7 = 0" >>= (@?= [Only (2 * fromIntegral (length kept) :: Int64)])
+        query_ conn "SELECT count(hs_maybe_x(CASE WHEN i = 7 THEN NULL ELSE g END)) FROM selected WHERE i % 7 = 0"
+          >>= (@?= [Only (fromIntegral (length kept) - 1 :: Int64)])
+        -- A constant argument over FROM gives the function a CONSTANT vector.
+        query_ conn "SELECT hs_point_x('POINT (7 8)'::GEOMETRY) FROM range(3)" >>= (@?= replicate 3 (Only (7 :: Double)))
     , testCase "a typed registration cannot declare a custom CRS of the connection" $
         withConnectionWithOptions ":memory:" defaultConnectionOptions{connectionGeometryCRS = ["local grid"]} \grid -> do
           try

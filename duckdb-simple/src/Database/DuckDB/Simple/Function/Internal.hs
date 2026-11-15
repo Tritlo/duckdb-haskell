@@ -47,6 +47,8 @@ import Database.DuckDB.Simple.Callback (
   Allocator,
   RegistrationTarget,
   attachOpaque,
+  install,
+  installAll,
   runCallback,
   transferCallbackState,
   withCallbackResources,
@@ -73,12 +75,6 @@ import Foreign.StablePtr (StablePtr, castPtrToStablePtr, deRefStablePtr)
 import Foreign.Storable (Storable, peekElemOff, poke, pokeElemOff)
 import GHC.Records (getField)
 import HsBindgen.Runtime.Marshal (staticSizeOf)
-import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
-
-data ScalarFunctionResources = ScalarFunctionResources
-  { scalarFunctionExecPtr :: DuckDBV2ScalarFunctionExecCallbackFn
-  , scalarFunctionInitPtr :: Maybe DuckDBV2ScalarFunctionInitCallbackFn
-  }
 
 {- Note [Result writers]
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -256,28 +252,38 @@ instance {-# OVERLAPPABLE #-} (FromField a, DuckDBColumnType a, Function r) => F
 -- | Register a typed function on a connection or a loading extension.
 createFunctionOn :: forall f. (Function f) => RegistrationTarget -> Text -> f -> IO ()
 createFunctionOn target name fn =
-  registerScalarFunction target name (Proxy :: Proxy f) \allocate -> do
-    scalarFunctionExecPtr <-
-      DuckDBV2ScalarFunctionExecCallbackFn <$> allocate (toFunPtr (DuckDBV2ScalarFunctionExecCallbackFn_Aux (scalarFunctionHandler fn)))
-    pure ScalarFunctionResources{scalarFunctionExecPtr, scalarFunctionInitPtr = Nothing}
+  registerScalarFunction target name (Proxy :: Proxy f) \allocate function ->
+    [ install
+        allocate
+        DuckDBV2ScalarFunctionExecCallbackFn
+        (DuckDBV2ScalarFunctionExecCallbackFn_Aux (scalarFunctionHandler fn))
+        (c_duckdb_v2_scalar_function_set_exec_callback function)
+    ]
 
 -- | Register a typed function with per-worker state on a connection or extension.
 createFunctionWithStateOn :: forall s f. (Function f) => RegistrationTarget -> Text -> IO s -> (s -> f) -> IO ()
 createFunctionWithStateOn target name initState mkFn =
-  registerScalarFunction target name (Proxy :: Proxy f) \allocate -> do
-    scalarFunctionExecPtr <-
-      DuckDBV2ScalarFunctionExecCallbackFn
-        <$> allocate (toFunPtr (DuckDBV2ScalarFunctionExecCallbackFn_Aux (scalarFunctionHandlerWithState mkFn)))
-    initPtr <-
-      DuckDBV2ScalarFunctionInitCallbackFn
-        <$> allocate (toFunPtr (DuckDBV2ScalarFunctionInitCallbackFn_Aux (scalarFunctionInitHandler initState)))
-    pure ScalarFunctionResources{scalarFunctionExecPtr, scalarFunctionInitPtr = Just initPtr}
+  registerScalarFunction target name (Proxy :: Proxy f) \allocate function ->
+    [ install
+        allocate
+        DuckDBV2ScalarFunctionExecCallbackFn
+        (DuckDBV2ScalarFunctionExecCallbackFn_Aux (scalarFunctionHandlerWithState mkFn))
+        (c_duckdb_v2_scalar_function_set_exec_callback function)
+    , install
+        allocate
+        DuckDBV2ScalarFunctionInitCallbackFn
+        (DuckDBV2ScalarFunctionInitCallbackFn_Aux (scalarFunctionInitHandler initState))
+        (c_duckdb_v2_scalar_function_set_init_callback function)
+    ]
 
 -- | Configure a scalar function and transfer its callbacks to DuckDB. An
 -- argument type or a result type with no declaration, or an argument type that
--- is or contains VARIANT or GEOMETRY, raises an error at registration.
-registerScalarFunction :: (Function f) => RegistrationTarget -> Text -> Proxy f -> (Allocator -> IO ScalarFunctionResources) -> IO ()
-registerScalarFunction target name proxy acquire = do
+-- is or contains VARIANT or GEOMETRY, raises an error at registration. The last
+-- argument gives the install actions of the callbacks for the builder. Their
+-- setters run after the properties. See 'installAll'.
+registerScalarFunction
+  :: (Function f) => RegistrationTarget -> Text -> Proxy f -> (Allocator -> DuckDBV2ScalarFunctionHandle -> [IO (IO ())]) -> IO ()
+registerScalarFunction target name proxy installers = do
   when (Text.null name || Text.any (== '\0') name) $
     throwIO (functionInvocationError "duckdb-simple: invalid scalar function name")
   -- See Note [Type declarations] in "Database.DuckDB.Simple.ToField".
@@ -293,9 +299,9 @@ registerScalarFunction target name proxy acquire = do
       c_duckdb_v2_extension_register_scalar_function
       \scalarFun register ->
         withCallbackResources
-          acquire
+          (\allocate -> installAll (installers allocate scalarFun))
           (attachOpaque (c_duckdb_v2_scalar_function_set_user_data scalarFun))
-          \ScalarFunctionResources{scalarFunctionExecPtr, scalarFunctionInitPtr} -> do
+          \installCallbacks -> do
             withIdentifier name $ checked . c_duckdb_v2_scalar_function_set_name scalarFun
             signature <- output (c_duckdb_v2_scalar_function_get_signature scalarFun)
             forM_ (zip [0 :: Int ..] parameters) \(index, dtype) ->
@@ -309,8 +315,7 @@ registerScalarFunction target name proxy acquire = do
             checked
               (c_duckdb_v2_scalar_function_set_property scalarFun DuckDBV2FunctionPropertyNullHandling DuckDBV2FunctionPropertyNullHandlingSpecial)
             checked (c_duckdb_v2_scalar_function_set_property scalarFun DuckDBV2FunctionPropertyFallibility DuckDBV2FunctionPropertyFallibilityFallible)
-            checked (c_duckdb_v2_scalar_function_set_exec_callback scalarFun scalarFunctionExecPtr)
-            forM_ scalarFunctionInitPtr $ checked . c_duckdb_v2_scalar_function_set_init_callback scalarFun
+            installCallbacks
             register
 
 scalarFunctionHandler

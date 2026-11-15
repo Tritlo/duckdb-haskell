@@ -977,8 +977,8 @@ DuckDB 2.0.0 and not taken:
   the cast of that UNION to the full UNION. It gives the correct value for
   two members of one type. It fails for a member that is a UNION with a
   member name of the outer UNION ("The cast is ambiguous"), and for a STRUCT
-  member whose first field is a UTINYINT, which DuckDB reads as the tag of a
-  UNION.
+  member with exactly two fields, a UTINYINT and a VARCHAR field with the
+  name of the member, which DuckDB reads as the STRUCT form of the UNION.
 - The cast of a STRUCT with a UTINYINT tag field and one field for each
   member. It gives the correct value in each of these cases. The header does
   not document this cast.

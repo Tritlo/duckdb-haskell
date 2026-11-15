@@ -42,7 +42,14 @@ data LogicalTypeRep
   | LogicalTypeEnum !(Array Int Text)
   deriving (Eq, Show)
 
--- | A structured type or a SQL type expression, including a registered alias.
+-- | A structured type or a SQL type expression. An expression can name a type
+-- from 'Database.DuckDB.Simple.Registration.registerCustomType'. The type then
+-- keeps that name as its alias, so a cast to it is a cast to the custom type.
+-- An expression can also name a type from SQL @CREATE TYPE@. That type is the
+-- base type without the name, so a cast to it is a cast to the base type. The
+-- header of DuckDB 2.0.0 says that no catalog type name is kept, but DuckDB
+-- 2.0.0 keeps the name of a type from
+-- 'Database.DuckDB.Simple.Registration.registerCustomType'.
 data TypeDeclaration = StructuredType LogicalTypeRep | TypeExpression Text
   deriving (Eq, Show)
 

@@ -1393,7 +1393,9 @@ DuckDB 2.0.0 and not taken:
   sanctioned way to build UNION and ENUM values". DuckDB chooses the member
   by the type of the value. Thus the cast is ambiguous when two members have
   the same type, as in a generic sum type whose constructors have equal
-  fields.
+  fields, and for a member that is a UNION with a member name of the outer
+  UNION. With the factory of a connection or of a callback context, the cast
+  also runs the casts that a user registers.
 - The cast of the member value to a UNION with only that member, and then
   the cast of that UNION to the full UNION. It gives the correct value for
   two members of one type. It fails for a member that is a UNION with a
@@ -1402,7 +1404,10 @@ DuckDB 2.0.0 and not taken:
   name of the member, which DuckDB reads as the STRUCT form of the UNION.
 - The cast of a STRUCT with a UTINYINT tag field and one field for each
   member. It gives the correct value in each of these cases. The header does
-  not document this cast.
+  not document this cast. Written to a one-row vector of the UNION type with
+  the default cast, as defaultCast does, it runs no cast that a user
+  registers, but it takes about 27 to 51 percent more native instructions for
+  each value than the vector route (two members and 255 members).
 
 The vector route gives the correct value in each of these cases, and it keeps
 the tag of the value. Each route depends on one fact that the header does not

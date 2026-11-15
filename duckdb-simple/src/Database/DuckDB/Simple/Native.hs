@@ -68,10 +68,11 @@ module Database.DuckDB.Simple.Native (
 
 import Control.Applicative ((<|>))
 import Control.Exception (Exception, SomeException, bracket, finally, mask_, onException, throwIO, try)
-import Control.Monad (foldM, unless, when, (<$!>))
+import Control.Monad (foldM, mfilter, unless, when, (<$!>))
 import qualified Data.ByteString as BS
 import Data.Char (isAsciiUpper, toLower)
 import Data.Coerce (Coercible, coerce)
+import Data.Maybe (fromMaybe)
 import Data.String (IsString (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -102,6 +103,10 @@ data SQLError = SQLError
   { sqlErrorMessage :: Text
   , sqlErrorType :: Maybe ErrorType
   , sqlErrorQuery :: Maybe Query
+  , sqlErrorBody :: Maybe Text
+  -- ^ The text of a native error without the prefix of its type. For example,
+  -- the message @Conversion Error: Could not convert ...@ has the body
+  -- @Could not convert ...@. An error of duckdb-simple has no body.
   }
   deriving stock (Eq, Show)
 
@@ -245,11 +250,12 @@ nullHandle = coerce (nullPtr @())
 checkCode :: DuckDBV2Error -> IO ()
 checkCode code =
   unless (code == DuckDBV2ErrorNone) $
-    throwIO (SQLError (Text.pack (show code)) (errorTypeFromNative code) Nothing)
+    throwIO (SQLError (Text.pack (show code)) (errorTypeFromNative code) Nothing Nothing)
 
--- | Copy a native diagnostic and release its error-info handle. Decode the
--- error text with replacement characters, so that a native text that is not
--- valid UTF-8 cannot raise when the error is shown.
+-- | Copy a native diagnostic and release its error-info handle. The message is
+-- the text of the diagnostic, and the body is its text without the prefix (see
+-- 'sqlErrorBody'). Decode the error text with replacement characters, so that
+-- a native text that is not valid UTF-8 cannot raise when the error is shown.
 checked :: (Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO ()
 checked action = mask_ $ alloca $ \slot -> do
   poke slot nullHandle
@@ -261,15 +267,16 @@ checked action = mask_ $ alloca $ \slot -> do
     code <- action slot
     unless (code == DuckDBV2ErrorNone) $ do
       info <- peek slot
-      message <-
-        if info == nullHandle
-          then pure (Text.pack (show code))
-          else alloca $ \view -> do
-            rc <- c_duckdb_v2_error_info_get_text info view
-            if rc == DuckDBV2ErrorNone
-              then Text.decodeUtf8With lenientDecode <$> (peek view >>= readBytes)
-              else pure (Text.pack (show code))
-      throwIO (SQLError message (errorTypeFromNative code) Nothing)
+      let readInfo getText
+            | info == nullHandle = pure Nothing
+            | otherwise = alloca $ \view -> do
+                rc <- getText info view
+                if rc == DuckDBV2ErrorNone
+                  then Just . Text.decodeUtf8With lenientDecode <$> (peek view >>= readBytes)
+                  else pure Nothing
+      message <- fromMaybe (Text.pack (show code)) <$> readInfo c_duckdb_v2_error_info_get_text
+      body <- readInfo c_duckdb_v2_error_info_get_raw_text
+      throwIO (SQLError message (errorTypeFromNative code) Nothing (mfilter (not . Text.null) body))
 
 -- | Read one checked native output. Initialize its storage before the call.
 output :: forall a. (Storable a) => (Ptr a -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO a
@@ -389,7 +396,8 @@ readText view = Text.decodeUtf8 <$> readBytes view
 valueText :: DuckDBV2ValueHandle -> IO Text
 valueText value = do
   count <- output (c_duckdb_v2_value_to_string value nullPtr 0)
-  when (toInteger count >= toInteger (maxBound :: Int)) $ throwIO (SQLError "duckdb-simple: value text exceeds Int range" Nothing Nothing)
+  when (toInteger count >= toInteger (maxBound :: Int)) $
+    throwIO (SQLError "duckdb-simple: value text exceeds Int range" Nothing Nothing Nothing)
   allocaBytes (fromIntegral count + 1) $ \buffer -> do
     _ <- output (c_duckdb_v2_value_to_string value buffer (count + 1))
     Text.decodeUtf8 <$> BS.packCStringLen (buffer, fromIntegral count)
@@ -475,13 +483,13 @@ quoteIdentifier identifier = "\"" <> Text.replace "\"" "\"\"" identifier <> "\""
 -- this function. An error that is not about an input, for example a state error
 -- or a native failure, does not use it.
 throwInvalidArgument :: Text -> IO a
-throwInvalidArgument message = throwIO (SQLError ("duckdb-simple: " <> message) (Just ErrorInputInvalid) Nothing)
+throwInvalidArgument message = throwIO (SQLError ("duckdb-simple: " <> message) (Just ErrorInputInvalid) Nothing Nothing)
 
 -- | Raise the error of an input check for a value outside the range of its
 -- type: an 'SQLError' of the type 'ErrorInputOutOfRange' with no query. Each
 -- such check of the library uses this function.
 throwOutOfRange :: Text -> IO a
-throwOutOfRange message = throwIO (SQLError ("duckdb-simple: " <> message) (Just ErrorInputOutOfRange) Nothing)
+throwOutOfRange message = throwIO (SQLError ("duckdb-simple: " <> message) (Just ErrorInputOutOfRange) Nothing Nothing)
 
 -- | Borrow a factory while its connection remains alive. Do not destroy it.
 withConnectionFactory :: DuckDBV2ConnectionHandle -> (DuckDBV2FactoryHandle -> IO a) -> IO a
@@ -804,4 +812,4 @@ fileFlagToNative = \case
 
 -- | Raise 'SQLError' for a native enum value that has no Haskell constructor.
 throwUnknownNative :: Text -> CUInt -> IO a
-throwUnknownNative kind value = throwIO (SQLError ("duckdb-simple: unknown native " <> kind <> " " <> Text.pack (show value)) Nothing Nothing)
+throwUnknownNative kind value = throwIO (SQLError ("duckdb-simple: unknown native " <> kind <> " " <> Text.pack (show value)) Nothing Nothing Nothing)

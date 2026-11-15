@@ -467,4 +467,4 @@ releaseNode = releaseItems destroyValue . nodeChildren
 
 -- | Report a metadata or payload mismatch before decoding a native value.
 codecError :: Text -> IO a
-codecError message = throwIO (SQLError ("duckdb-simple: VARIANT: " <> message) Nothing Nothing)
+codecError message = throwIO (SQLError ("duckdb-simple: VARIANT: " <> message) Nothing Nothing Nothing)

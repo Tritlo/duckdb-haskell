@@ -234,7 +234,7 @@ failingCast :: forall a b. (FromField a, ToDuckValue b) => Proxy a -> Proxy b ->
 failingCast _ _ source target failure conn = createCast conn (TypeExpression source) (TypeExpression target) \(_ :: a) -> case failure of
   FailException -> error "typed cast raised an exception"
   FailTypedError ->
-    throw SQLError{sqlErrorMessage = "typed cast raised a Conversion Error", sqlErrorType = Just ErrorTypeConversion, sqlErrorQuery = Nothing}
+    throw SQLError{sqlErrorMessage = "typed cast raised a Conversion Error", sqlErrorType = Just ErrorTypeConversion, sqlErrorQuery = Nothing, sqlErrorBody = Nothing}
   _ -> Left "typed cast refused the value" :: Either Text b
 
 -- | Register a cast whose argument type is the first type, and which gives the value.

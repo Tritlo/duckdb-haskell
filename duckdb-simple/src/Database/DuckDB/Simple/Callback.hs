@@ -206,7 +206,7 @@ transferCallbackState attach state = mask_ do
 readCallbackState :: (Ptr (Ptr Void) -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO a
 readCallbackState getter = do
   ptr <- output getter
-  when (ptr == nullPtr) $ throwIO (SQLError (Text.pack "duckdb-simple: callback state is not initialized") Nothing Nothing)
+  when (ptr == nullPtr) $ throwIO (SQLError (Text.pack "duckdb-simple: callback state is not initialized") Nothing Nothing Nothing)
   deRefStablePtr (castPtrToStablePtr (castPtr ptr))
 
 -- | Convert callback exceptions to native V2 diagnostics. Mark the thread as a

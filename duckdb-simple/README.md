@@ -479,7 +479,7 @@ callback, such an error reaches the program as the `SQLError` of the statement
 that runs the callback. Such an error is a defect of the library or of DuckDB,
 not an error of the input. Report it.
 
-`SQLError` has three fields:
+`SQLError` has four fields:
 
 - `sqlErrorMessage` is the text of the error. For an error of DuckDB, it is
   the text of DuckDB, for example `Binder Error: ...`.
@@ -492,6 +492,8 @@ not an error of the input. Report it.
   preparation or execution, and for a result value that does not convert. It
   is `Nothing` for an error outside a statement, for example when a connection
   opens. An error of a parameter value can also have `Nothing`.
+- `sqlErrorBody` is the text of an error of DuckDB without the prefix of its
+  type, and `Nothing` for an error of the library.
 
 An input check of the library raises an `SQLError`. Two input checks give the
 type `ErrorInputOutOfRange`: an `Integer` that its parameter cannot hold, and a

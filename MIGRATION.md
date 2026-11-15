@@ -96,6 +96,12 @@ The SQL workflow stays the same. These changes can affect your code:
   `DuckDBErrorConversion` becomes `ErrorTypeConversion`,
   `DuckDBErrorInvalidInput` becomes `ErrorInputInvalid`, and
   `DuckDBErrorInterrupt` becomes `ErrorRuntimeInterrupt`.
+- `SQLError` has a fourth field, `sqlErrorBody :: Maybe Text`. Code that builds
+  an `SQLError` with positional arguments, or matches it by position, gets a
+  compile error. Use record syntax, for example
+  `SQLError {sqlErrorMessage = text, sqlErrorType = Nothing, sqlErrorQuery = Nothing, sqlErrorBody = Nothing}`,
+  and match only the fields that you need, for example
+  `SQLError {sqlErrorType}`.
 - `ToDuckValue.toDuckValue` takes a `ValueFactory` and returns a
   `NativeValue`. `Database.DuckDB.Simple.ToField` exports the two names. They
   are synonyms of the V2 handles `DuckDBV2FactoryHandle` and

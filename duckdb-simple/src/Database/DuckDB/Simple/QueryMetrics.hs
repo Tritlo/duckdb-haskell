@@ -55,7 +55,7 @@ queryMetrics connection = withConnectionHandle connection \native ->
       root <- output (c_duckdb_v2_query_metrics_get_root snapshot)
       copyNode (materializeValue unexpectedVariant (typeCacheCasts cache)) root
   where
-    unexpectedVariant = rejectRows (throwIO (SQLError "duckdb-simple: query metrics must be numeric" Nothing Nothing))
+    unexpectedVariant = rejectRows (throwIO (SQLError "duckdb-simple: query metrics must be numeric" Nothing Nothing Nothing))
     copyNode readValue node = do
       name <- output (c_duckdb_v2_query_metrics_node_get_name node) >>= readText
       metricCount <- output (c_duckdb_v2_query_metrics_node_get_metric_count node)

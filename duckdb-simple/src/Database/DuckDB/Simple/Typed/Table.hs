@@ -172,6 +172,7 @@ writeRows factory chunk columns rows = do
           )
           Nothing
           Nothing
+          Nothing
       )
   case splitRows capacity rows of
     (now, later) -> do

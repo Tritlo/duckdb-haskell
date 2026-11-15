@@ -531,4 +531,5 @@ functionInvocationError message =
     { sqlErrorMessage = message
     , sqlErrorType = Nothing
     , sqlErrorQuery = Nothing
+    , sqlErrorBody = Nothing
     }

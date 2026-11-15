@@ -192,4 +192,4 @@ checkedPosition value
 -- | Raise the error for a value of the native file system that the library
 -- cannot use. It is not an input check, so it has no error type.
 fileError :: Text.Text -> IO a
-fileError message = throwIO (SQLError ("duckdb-simple: " <> message) Nothing Nothing)
+fileError message = throwIO (SQLError ("duckdb-simple: " <> message) Nothing Nothing Nothing)

@@ -13,6 +13,10 @@
   `base` 4.14.
 - Raw handles, callback handles, and the error codes of raw calls use V2
   types. `sqlErrorType` is `Maybe ErrorType`. See MIGRATION.md.
+- `SQLError` has a fourth field, `sqlErrorBody`: the text of a native error
+  without the prefix of its type, and `Nothing` for an error of the library.
+  Code that builds or matches an `SQLError` by position does not compile. See
+  MIGRATION.md.
 - Add shared environments and instances, attachment management, option
   discovery, table descriptions, SQL tokenization, and positioned file I/O.
 - `listConfigFlags` takes a `Connection`, and it lists the options of the

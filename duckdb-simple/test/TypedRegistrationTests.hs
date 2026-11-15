@@ -54,6 +54,7 @@ import Database.DuckDB.Simple.FromField (BigNum (..), Field (..), FieldValue (..
 import Database.DuckDB.Simple.Function (FunctionResult)
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..))
 import Database.DuckDB.Simple.Internal (Connection (..))
+import qualified Database.DuckDB.Simple.Logging as Logging
 import Database.DuckDB.Simple.LogicalRep (StructField (..), StructValue (..), TupleValue, UnionValue)
 import Database.DuckDB.Simple.Pragma (PragmaCallback (..), registerPragmaFunction)
 import Database.DuckDB.Simple.Registration (
@@ -74,7 +75,7 @@ import Numeric.Natural (Natural)
 import System.Directory (createDirectory, getTemporaryDirectory, removeFile, removePathForcibly)
 import System.FilePath ((</>))
 import System.IO (hClose, openTempFile)
-import System.IO.Unsafe (unsafeInterleaveIO)
+import System.IO.Unsafe (unsafeInterleaveIO, unsafePerformIO)
 import System.Mem (performMajorGC)
 import System.Mem.Weak (Weak, deRefWeak)
 import Test.Tasty (TestTree, localOption, mkTimeout, testGroup)
@@ -140,6 +141,9 @@ typedRegistrationTests =
     , testCase "aggregate as a window function and with modifiers" testAggregateModifiers
     , testCase "aggregate SMALLINT and FLOAT results, and the limit of the result types" testAggregateResultTypes
     , testCase "aggregate states are released" testAggregateRelease
+    , testGroup
+        "the callback closure of each registration kind is released when its database closes"
+        [testCase kind (testClosureRelease use) | (kind, use) <- closureKinds]
     ]
 
 -- | Cast BIGINT values and NULLs to a custom type over more than one chunk.
@@ -1596,3 +1600,93 @@ withDirectory = bracket create removePathForcibly
       removeFile path
       createDirectory path
       pure path
+
+-- | Run an action with a new token. The action registers a callback that reads
+-- the token, runs the callback, and closes the database. Then no value may keep
+-- the token.
+testClosureRelease :: (IORef Int64 -> IO ()) -> Assertion
+testClosureRelease use = do
+  weak <- do
+    token <- newIORef 1
+    weak <- mkWeakIORef token (pure ())
+    use token
+    pure weak
+  performMajorGC
+  performMajorGC
+  deRefWeak weak >>= assertBool "a value keeps the callback closure after the database closes" . isNothing
+
+-- | The registration kinds that have no other check of the release of their
+-- callback closure. Each action registers one callback that reads the token,
+-- runs the callback one time, and closes the database.
+closureKinds :: [(String, IORef Int64 -> IO ())]
+closureKinds =
+  [
+    ( "typed aggregate"
+    , \token -> withConnection ":memory:" \conn -> do
+        createAggregate
+          conn
+          "closure_sum"
+          sumAggregate{aggregateStep = \total (Only value) -> (\factor -> total + factor * value) <$> readIORef token}
+        query_ conn "SELECT closure_sum(i) FROM range(10) t(i)" >>= (@?= [Only (45 :: Int64)])
+    )
+  ,
+    ( "typed cast"
+    , \token -> withConnection ":memory:" \conn -> do
+        registerCustomType conn "closure_type" (TypeExpression "BIGINT")
+        -- A cast is pure. The cast reads the token in each call, so its closure keeps the token.
+        createCast conn (TypeExpression "BIGINT") (TypeExpression "closure_type") \(value :: Int64) ->
+          Right (unsafePerformIO ((+ value) <$> readIORef token))
+        query_ conn "SELECT CAST(41::BIGINT AS closure_type)::BIGINT" >>= (@?= [Only (42 :: Int64)])
+    )
+  ,
+    ( "connection replacement scan"
+    , \token -> withConnection ":memory:" \conn -> do
+        registerReplacementScan conn (closureScan token)
+        query_ conn "SELECT value FROM closure_table" >>= (@?= [Only (42 :: Int64)])
+    )
+  ,
+    ( "instance replacement scan"
+    , \token -> withEnvironment \environment -> withInstance environment [] \instance' -> do
+        registerInstanceReplacementScan instance' (closureScan token)
+        withConnectionOn instance' \conn -> query_ conn "SELECT value FROM closure_table" >>= (@?= [Only (42 :: Int64)])
+    )
+  ,
+    ( "custom option update"
+    , \token -> withConnection ":memory:" \conn -> do
+        registerCustomOption conn (customOption "closure_option" (TypeExpression "BIGINT")){customOptionUpdate = Just \_ -> void (readIORef token)}
+        void (execute_ conn "SET closure_option = 5")
+    )
+  ,
+    ( "COPY format"
+    , \token -> withConnection ":memory:" \conn -> do
+        let use = void (readIORef token)
+        registerCopyFunction
+          conn
+          "closure_copy"
+          CopyTo{copyToBind = const use, copyToInit = const use, copyToSink = \_ _ -> use, copyToFinalize = const use}
+          (\_ -> use >> pure [Only (42 :: Int64)])
+        void (execute_ conn "COPY (SELECT 1::BIGINT) TO 'unused' (FORMAT closure_copy)")
+        void (execute_ conn "CREATE TABLE closure_rows (value BIGINT)")
+        void (execute_ conn "COPY closure_rows FROM 'unused' (FORMAT closure_copy)")
+        query_ conn "SELECT value FROM closure_rows" >>= (@?= [Only (42 :: Int64)])
+    )
+  ,
+    ( "typed pragma"
+    , \token -> withConnection ":memory:" \conn -> do
+        registerPragmaFunction conn "closure_pragma" [] (ExecPragma \() -> void (readIORef token))
+        void (execute_ conn "PRAGMA closure_pragma")
+    )
+  ,
+    ( "log sink"
+    , \token -> withConnection ":memory:" \conn -> do
+        Logging.registerLogSink conn "closure_log" (\_ -> void (readIORef token)) (void (readIORef token))
+        void
+          (execute_ conn "CALL enable_logging(); SET logging_storage = 'closure_log'; SELECT write_log('closure'); SET logging_storage = 'memory'")
+    )
+  ]
+
+-- | A replacement scan that reads the token and replaces @closure_table@.
+closureScan :: IORef Int64 -> [Text] -> IO (Maybe Replacement)
+closureScan token parts = do
+  void (readIORef token)
+  pure (if parts == ["closure_table"] then Just (ReplaceWithQuery "SELECT 42::BIGINT AS value") else Nothing)

@@ -420,12 +420,18 @@ statementTests =
             openStatement conn "THIS IS NOT VALID SQL"
     , testCase "withStatement closes the statement automatically" $
         withConnection ":memory:" \conn -> do
-          result <- withStatement conn "SELECT 1" \_ -> pure ("done" :: String)
+          (result, stmt) <- withStatement conn "SELECT 1" \stmt -> pure ("done" :: String, stmt)
           assertEqual "withStatement result" "done" result
+          -- A read of the closed statement raises an error.
+          assertThrowsSQLError (nextRow stmt :: IO (Maybe (Only Int)))
     , testCase "withStatement closes statements even when the action fails" $
         withConnection ":memory:" \conn -> do
+          used <- newIORef Nothing
           assertThrowsErrorCall $
-            withStatement conn "SELECT 1" (\_ -> error "boom" :: IO ())
+            withStatement conn "SELECT 1" (\stmt -> atomicModifyIORef' used (const (Just stmt, ())) >> error "boom" :: IO ())
+          -- A read of the closed statement raises an error.
+          readIORef used
+            >>= maybe (assertFailure "the action did not run") (\closed -> assertThrowsSQLError (nextRow closed :: IO (Maybe (Only Int))))
           stmt <- openStatement conn "SELECT 1"
           closeStatement stmt
     , testCase "execute returns affected row count" $
@@ -449,11 +455,12 @@ statementTests =
             bind stmt [toField (5 :: Int), toField ("hi" :: String)]
             changed <- executeStatement stmt
             assertEqual "rows affected" 1 changed
-    , testCase "executeMany reuses prepared statements" $
+    , testCase "executeMany inserts each row and gives the total count" $
         withConnection ":memory:" \conn -> do
           _ <- execute_ conn "CREATE TABLE params_many (a INTEGER, b TEXT)"
           total <- executeMany conn "INSERT INTO params_many VALUES (?, ?)" [(1 :: Int, "x" :: String), (2 :: Int, "y" :: String)]
           assertEqual "rows affected" 2 total
+          query_ conn "SELECT a, b FROM params_many ORDER BY a" >>= (@?= [(1 :: Int, "x" :: String), (2, "y")])
     , testCase "executeNamed binds named parameters" $
         withConnection ":memory:" \conn -> do
           _ <- execute_ conn "CREATE TABLE named_params (a INTEGER, b TEXT)"

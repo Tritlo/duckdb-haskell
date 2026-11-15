@@ -1525,6 +1525,12 @@ functionsTests =
           rejects "hs_bad_variants: argument arg1: the type of an argument cannot be or contain VARIANT" $
             createFunction conn "hs_bad_variants" (\(_ :: Int64) (_ :: [Maybe Variant]) -> True)
           query_ conn "SELECT count(*) FROM duckdb_functions() WHERE function_name LIKE 'hs\\_bad\\_%' ESCAPE '\\'" >>= (@?= [Only (0 :: Int64)])
+    , testCase "rejects an empty name or a name with NUL at registration" $
+        withConnection ":memory:" \conn ->
+          forM_ ["", "hs_bad\0name"] \name ->
+            assertThrows
+              (createFunction conn name (id :: Int64 -> Int64))
+              (\err -> sqlErrorType err == Just ErrorInputInvalid && sqlErrorMessage err == "duckdb-simple: invalid scalar function name")
     , testCase "names the argument that does not convert" $
         withConnection ":memory:" \conn -> do
           createFunction conn "hs_sum" (\(x :: Int64) (y :: Int64) -> x + y)

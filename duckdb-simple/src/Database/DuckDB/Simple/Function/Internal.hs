@@ -289,7 +289,7 @@ registerScalarFunction
   :: (Function f) => RegistrationTarget -> Text -> Proxy f -> (Allocator -> DuckDBV2ScalarFunctionHandle -> [IO (IO ())]) -> IO ()
 registerScalarFunction target name proxy installers = do
   when (Text.null name || Text.any (== '\0') name) $
-    throwIO (functionInvocationError "duckdb-simple: invalid scalar function name")
+    throwInvalidArgument "invalid scalar function name"
   -- See Note [Type declarations] in "Database.DuckDB.Simple.ToField".
   parameters <- rowDeclarations name ["argument " <> argumentName index | index <- [0 ..]] (argumentTypes proxy)
   result <- either (\reason -> throwInvalidArgument (name <> ": result: " <> reason)) pure (returnType proxy)
@@ -383,7 +383,7 @@ makeColumnReader :: DuckDBV2FactoryHandle -> DuckDBV2ScalarFunctionExecInfoHandl
 makeColumnReader factory info columnIndex = do
   let noVariant =
         rejectRows
-          (throwIO (functionInvocationError "duckdb-simple: the type of a scalar function argument cannot be or contain VARIANT"))
+          (throwInvalidArgument "the type of a scalar function argument cannot be or contain VARIANT")
   readValue <-
     output (c_duckdb_v2_scalar_function_exec_get_arg info (fromIntegral columnIndex))
       >>= prepareVectorReader (FallbackReaders noVariant (prepareGeometryReader factory))

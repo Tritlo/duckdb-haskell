@@ -7,8 +7,10 @@
 -- Module      : Database.DuckDB.Simple.V2.Registration
 -- Description : Advanced V2 registration with Haskell callbacks.
 --
--- The library owns the callback pointers. DuckDB releases them when it releases
--- the registered object. Callback info and context handles are borrowed and must
+-- The library allocates the callback pointers. It gives their cleanup to DuckDB in the user data of the
+-- native object. DuckDB runs the cleanup when it releases the object. See Note [Callback ownership] in
+-- "Database.DuckDB.Simple.Callback".
+-- Callback info and context handles are borrowed and must
 -- not escape the callback. Use @Database.DuckDB.FFI.V2@ operations with 'checked'
 -- and 'output' in callbacks.
 --
@@ -19,6 +21,55 @@
 --
 -- The pinned V2 API has no custom file-system registration API. Use
 -- @Database.DuckDB.Simple.Logging@ for managed log-sink registration.
+--
+-- Use this module when the typed functions of "Database.DuckDB.Simple.Function" cannot express a
+-- registration. This module adds named-only and variadic parameters, parameter defaults, a return type that
+-- a callback resolves, function properties, function documentation, and callbacks that read and write
+-- native vectors. A registration has three parts: the parameters from 'parameter', a record of callbacks
+-- from 'scalarCallbacks', 'aggregateCallbacks', or 'tableCallbacks', and a call of
+-- 'registerScalarFunction', 'registerAggregateFunction', or 'registerTableFunction'. The functions with the
+-- suffix @With@ give the native builder to a configuration action and accept an extension target.
+--
+-- The examples of the V2 modules use the extensions @BlockArguments@ and @OverloadedStrings@, and these
+-- imports:
+--
+-- > import Control.Exception (bracket)
+-- > import Control.Monad (forM, forM_)
+-- > import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
+-- > import Data.Int (Int64)
+-- > import qualified Data.Text as Text
+-- > import Database.DuckDB.FFI.V2
+-- > import Database.DuckDB.Simple hiding (bind, execute)
+-- > import qualified Database.DuckDB.Simple.Logging as Logging
+-- > import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..))
+-- > import qualified Database.DuckDB.Simple.V2.Copy as V2Copy
+-- > import qualified Database.DuckDB.Simple.V2.FunctionDocs as Docs
+-- > import qualified Database.DuckDB.Simple.V2.Logging as V2Logging
+-- > import Database.DuckDB.Simple.V2.LogicalRep (destroyLogicalType, logicalTypeFromRep, logicalTypeToRep)
+-- > import qualified Database.DuckDB.Simple.V2.Pragma as Pragma
+-- > import qualified Database.DuckDB.Simple.V2.Registration as R
+-- > import Foreign.C.ConstPtr (ConstPtr (..))
+-- > import Foreign.Ptr (castPtr)
+-- > import Foreign.Storable (peek, peekElemOff, poke, pokeElemOff, sizeOf)
+--
+-- The examples also use these definitions. The helpers read and write the rows of a BIGINT vector. Each
+-- helper flattens the vector before it reads or writes the data. Then each row has its own slot in the data.
+--
+-- > bigint :: R.TypeDeclaration
+-- > bigint = R.StructuredType (LogicalTypeScalar LogicalTypeIdBigInt)
+-- >
+-- > readIntegers :: Int -> DuckDBV2VectorHandle -> IO [Int64]
+-- > readIntegers count vector = do
+-- >   R.checked (c_duckdb_v2_vector_flatten vector)
+-- >   raw <- R.output (c_duckdb_v2_vector_get_data_mutable vector)
+-- >   mapM (peekElemOff (castPtr raw)) [0 .. count - 1]
+-- >
+-- > writeIntegers :: DuckDBV2VectorHandle -> [Int64] -> IO ()
+-- > writeIntegers vector values = do
+-- >   R.checked (c_duckdb_v2_vector_set_size vector (fromIntegral (length values)))
+-- >   R.checked (c_duckdb_v2_vector_flatten vector)
+-- >   raw <- R.output (c_duckdb_v2_vector_get_data_mutable vector)
+-- >   forM_ (zip [0 ..] values) \(index, value) -> pokeElemOff (castPtr raw) index value
 module Database.DuckDB.Simple.V2.Registration (
   RegistrationTarget (..),
   withRegistrationFactory,
@@ -101,6 +152,8 @@ data TypeDeclaration = StructuredType LogicalTypeRep | TypeExpression Text
 
 -- | Construct an owned native default value through the borrowed factory of
 -- the registration target. Registration releases the value.
+--
+-- > R.DefaultValue (\factory -> R.output (c_duckdb_v2_value_create_bigint factory 35))
 newtype DefaultValue = DefaultValue (DuckDBV2FactoryHandle -> IO DuckDBV2ValueHandle)
 
 -- | Use a typed Haskell value as a default. It works on a connection target and
@@ -117,6 +170,10 @@ data FunctionParameter = FunctionParameter
   }
 
 -- | Declare a required parameter accepted by position or by name.
+-- Change a field to add a default or to use another parameter kind:
+--
+-- > (R.parameter "count" bigint){R.parameterDefault = Just (R.defaultValue (3 :: Int64))}
+-- > (R.parameter "right" bigint){R.parameterKind = DuckDBV2FunctionParameterKindNamedOnly}
 parameter :: Text -> TypeDeclaration -> FunctionParameter
 parameter name dtype = FunctionParameter name dtype Nothing DuckDBV2FunctionParameterKindStandard
 
@@ -199,6 +256,33 @@ tableCallbacks bind execute = TableCallbacks bind Nothing Nothing execute Nothin
 
 -- | Register an advanced scalar function on the connection's database.
 -- Set an ANY return type only when the resolve-types callback supplies a concrete type.
+--
+-- The example registers a function with two BIGINT parameters. Each parameter has a default, and the second
+-- parameter is named-only. The exec callback adds the two arguments of each row.
+--
+-- > scalarSum :: R.ContextCallback DuckDBV2ScalarFunctionExecInfoHandle
+-- > scalarSum info _ = do
+-- >   count <- R.output (c_duckdb_v2_scalar_function_exec_get_row_count info)
+-- >   columns <- forM [0, 1 :: Int] \index ->
+-- >     R.output (c_duckdb_v2_scalar_function_exec_get_arg info (fromIntegral index)) >>= readIntegers (fromIntegral count)
+-- >   vector <- R.output (c_duckdb_v2_scalar_function_exec_get_result info)
+-- >   writeIntegers vector [sum [column !! row | column <- columns] | row <- [0 .. fromIntegral count - 1]]
+-- >
+-- > withConnection ":memory:" \connection -> do
+-- >   let left = (R.parameter "left" bigint){R.parameterDefault = Just (R.defaultValue (7 :: Int64))}
+-- >       right =
+-- >         (R.parameter "right" bigint)
+-- >           { R.parameterDefault = Just (R.defaultValue (35 :: Int64))
+-- >           , R.parameterKind = DuckDBV2FunctionParameterKindNamedOnly
+-- >           }
+-- >   R.registerScalarFunction
+-- >     connection
+-- >     "managed_default"
+-- >     (R.FunctionSignature [left, right] (Just bigint))
+-- >     []
+-- >     (R.scalarCallbacks scalarSum)
+-- >   rows <- query_ connection "SELECT managed_default(), managed_default(right := 5, left := 3)"
+-- >   print (rows :: [(Int64, Int64)]) -- [(42,8)]
 registerScalarFunction :: Connection -> Text -> FunctionSignature -> FunctionProperties -> ScalarCallbacks -> IO ()
 registerScalarFunction connection name signature properties callbacks = do
   validateName name
@@ -214,6 +298,29 @@ registerScalarFunction connection name signature properties callbacks = do
 
 -- | Configure and register a managed scalar function on a connection or extension.
 -- The configuration action borrows the builder. Do not set callbacks or user data.
+--
+-- The example sets the name, the signature, and the description of the function. It uses @scalarSum@ from
+-- the example of 'registerScalarFunction'. 'withRegistrationFactory' gives the factory for the types of the
+-- signature.
+--
+-- > withConnection ":memory:" \connection -> do
+-- >   let target = R.ConnectionTarget connection
+-- >   R.withRegistrationFactory target \factory ->
+-- >     R.registerScalarFunctionWith
+-- >       target
+-- >       ( \function -> do
+-- >           R.withIdentifier "managed_target_default" (R.checked . c_duckdb_v2_scalar_function_set_name function)
+-- >           signature <- R.output (c_duckdb_v2_scalar_function_get_signature function)
+-- >           R.configureFunctionSignature
+-- >             factory
+-- >             (R.FunctionSignature [R.parameter "left" bigint, R.parameter "right" bigint] (Just bigint))
+-- >             signature
+-- >           docs <- R.output (c_duckdb_v2_scalar_function_get_docs function)
+-- >           Docs.setFunctionDocs docs Docs.defaultFunctionDocs{Docs.functionDescription = Just "Add two BIGINT values."}
+-- >       )
+-- >       (R.scalarCallbacks scalarSum)
+-- >   rows <- query_ connection "SELECT description FROM duckdb_functions() WHERE function_name = 'managed_target_default'"
+-- >   print (map fromOnly rows :: [Text.Text]) -- ["Add two BIGINT values."]
 registerScalarFunctionWith :: RegistrationTarget -> (DuckDBV2ScalarFunctionHandle -> IO ()) -> ScalarCallbacks -> IO ()
 registerScalarFunctionWith target configure callbacks =
   withTarget
@@ -261,6 +368,50 @@ registerScalarFunctionWith target configure callbacks =
 
 -- | Register an aggregate function on the connection's database.
 -- State memory and its size follow the native V2 aggregate contract.
+--
+-- The example registers a sum of BIGINT values. The state of a group is one 'Int64' in native memory. The
+-- size callback gives the size of the state. The other callbacks read and write the state with @peek@ and
+-- @poke@. The finalize callback writes each total at the result offset of the result vector.
+--
+-- > sumCallbacks :: R.AggregateCallbacks
+-- > sumCallbacks = R.aggregateCallbacks stateSize initialize update combine finalize
+-- >   where
+-- >     stateSize info = R.checked (c_duckdb_v2_aggregate_function_size_set_state_size info (fromIntegral (sizeOf (0 :: Int64))))
+-- >     initialize info = do
+-- >       count <- R.output (c_duckdb_v2_aggregate_function_init_get_state_count info)
+-- >       states <- R.output (c_duckdb_v2_aggregate_function_init_get_states info)
+-- >       forM_ [0 .. fromIntegral count - 1] \index -> peekElemOff states index >>= \state -> poke (castPtr state) (0 :: Int64)
+-- >     update info = do
+-- >       count <- R.output (c_duckdb_v2_aggregate_function_update_get_row_count info)
+-- >       states <- R.output (c_duckdb_v2_aggregate_function_update_get_states info)
+-- >       values <- R.output (c_duckdb_v2_aggregate_function_update_get_arg info 0) >>= readIntegers (fromIntegral count)
+-- >       forM_ (zip [0 ..] values) \(index, value) -> do
+-- >         state <- castPtr <$> peekElemOff states index
+-- >         total <- peek state
+-- >         poke state (total + value :: Int64)
+-- >     combine info = do
+-- >       count <- R.output (c_duckdb_v2_aggregate_function_combine_get_state_count info)
+-- >       sources <- R.output (c_duckdb_v2_aggregate_function_combine_get_sources info)
+-- >       targets <- R.output (c_duckdb_v2_aggregate_function_combine_get_targets info)
+-- >       forM_ [0 .. fromIntegral count - 1] \index -> do
+-- >         source <- peekElemOff sources index >>= peek . castPtr
+-- >         target <- castPtr <$> peekElemOff targets index
+-- >         total <- peek target
+-- >         poke target (total + source :: Int64)
+-- >     finalize info = do
+-- >       count <- R.output (c_duckdb_v2_aggregate_function_finalize_get_state_count info)
+-- >       states <- R.output (c_duckdb_v2_aggregate_function_finalize_get_states info)
+-- >       offset <- R.output (c_duckdb_v2_aggregate_function_finalize_get_result_offset info)
+-- >       result <- R.output (c_duckdb_v2_aggregate_function_finalize_get_result info)
+-- >       raw <- R.output (c_duckdb_v2_vector_get_data_mutable result)
+-- >       forM_ [0 .. fromIntegral count - 1] \index -> do
+-- >         total <- peekElemOff states index >>= peek . castPtr
+-- >         pokeElemOff (castPtr raw) (fromIntegral offset + index) (total :: Int64)
+-- >
+-- > withConnection ":memory:" \connection -> do
+-- >   R.registerAggregateFunction connection "managed_sum" (R.FunctionSignature [R.parameter "value" bigint] (Just bigint)) [] sumCallbacks
+-- >   rows <- query_ connection "SELECT managed_sum(i::BIGINT) FROM range(12) t(i) GROUP BY i % 3 ORDER BY i % 3"
+-- >   print (map fromOnly rows :: [Int64]) -- [18,22,26]
 registerAggregateFunction :: Connection -> Text -> FunctionSignature -> FunctionProperties -> AggregateCallbacks -> IO ()
 registerAggregateFunction connection name signature properties callbacks = do
   validateName name
@@ -337,6 +488,38 @@ registerAggregateFunctionWith target configure callbacks =
           register
 
 -- | Register a table function. Its bind callback declares the result columns.
+--
+-- The example registers a table function with one BIGINT parameter. The bind callback stores the argument as
+-- bind data and declares the result column. The 'tableInitGlobalCallback' callback copies the bind data into
+-- a global state. The exec callback takes the state one time. Thus the first chunk has the rows and the
+-- next chunk is empty. An empty chunk ends the scan.
+--
+-- > tableDefinition :: R.TableCallbacks
+-- > tableDefinition = (R.tableCallbacks bind execute){R.tableInitGlobalCallback = Just initialize}
+-- >   where
+-- >     bind input result context = do
+-- >       amount <- bracket (R.output (c_duckdb_v2_function_bind_get_arg_value input 0)) (R.destroy c_duckdb_v2_value_destroy) \value ->
+-- >         R.output (c_duckdb_v2_value_get_bigint value)
+-- >       R.setCallbackState (c_duckdb_v2_function_bind_set_bind_data input) (amount :: Int64)
+-- >       factory <- R.output (c_duckdb_v2_context_get_factory context)
+-- >       R.withTypeDeclaration factory bigint \dtype ->
+-- >         R.withIdentifier "amount" \name -> R.checked (c_duckdb_v2_table_function_bind_add_result_column result name dtype)
+-- >     initialize info _ = do
+-- >       amount <- R.getCallbackState (c_duckdb_v2_table_function_init_global_get_bind_data info)
+-- >       state <- newIORef (Just (amount :: Int64))
+-- >       R.setCallbackState (c_duckdb_v2_table_function_init_global_set_global_state info) state
+-- >     execute info _ = do
+-- >       state <- R.getCallbackState (c_duckdb_v2_table_function_exec_get_global_state info) :: IO (IORef (Maybe Int64))
+-- >       amount <- atomicModifyIORef' state (\value -> (Nothing, value))
+-- >       chunk <- R.output (c_duckdb_v2_table_function_exec_get_output_chunk info)
+-- >       vector <- R.output (c_duckdb_v2_data_chunk_get_vector chunk 0)
+-- >       writeIntegers vector (maybe [] (\count -> [42 .. 41 + count]) amount)
+-- >
+-- > withConnection ":memory:" \connection -> do
+-- >   let count = (R.parameter "count" bigint){R.parameterDefault = Just (R.defaultValue (3 :: Int64))}
+-- >   R.registerTableFunction connection "managed_scan" [count] tableDefinition
+-- >   rows <- query_ connection "SELECT amount FROM managed_scan()"
+-- >   print (map fromOnly rows :: [Int64]) -- [42,43,44]
 registerTableFunction :: Connection -> Text -> [FunctionParameter] -> TableCallbacks -> IO ()
 registerTableFunction connection name parameters callbacks = do
   validateName name
@@ -433,6 +616,19 @@ registerTableFunctionWith target configure callbacks =
 
 -- | Register a cast. Nothing keeps the native explicit-cast cost.
 -- The callback must inspect the native cast mode to implement TRY_CAST behavior.
+--
+-- The source type is the first type, and the target type is the second type. The example registers a cast
+-- from BIGINT to a custom type. The callback adds 100 to each value.
+--
+-- > withConnection ":memory:" \connection -> do
+-- >   R.registerCustomType connection "managed_shifted" bigint
+-- >   R.registerCast connection bigint (R.TypeExpression "managed_shifted") Nothing \info _ -> do
+-- >     count <- R.output (c_duckdb_v2_cast_function_exec_get_row_count info)
+-- >     values <- R.output (c_duckdb_v2_cast_function_exec_get_input info) >>= readIntegers (fromIntegral count)
+-- >     result <- R.output (c_duckdb_v2_cast_function_exec_get_output info)
+-- >     writeIntegers result (map (+ 100) values)
+-- >   rows <- query_ connection "SELECT CAST(i::BIGINT AS managed_shifted)::BIGINT FROM range(3) t(i)"
+-- >   print (map fromOnly rows :: [Int64]) -- [100,101,102]
 registerCast
   :: Connection -> TypeDeclaration -> TypeDeclaration -> Maybe Int64 -> ContextCallback DuckDBV2CastFunctionExecInfoHandle -> IO ()
 registerCast connection source target implicitCost execute =
@@ -546,12 +742,16 @@ registerInstanceReplacementScan instance' callback = withInstanceHandle instance
 -- a pointer that it replaces. See Note [Callback ownership] in
 -- "Database.DuckDB.Simple.Callback". Store an @IORef@ or another mutable state
 -- cell when the callback must change its state.
+--
+-- > R.setCallbackState (c_duckdb_v2_function_bind_set_bind_data input) (amount :: Int64)
 setCallbackState :: (Typeable a) => (Ptr DuckDBV2Opaque -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> a -> IO ()
 setCallbackState setter = transferCallbackState (attachOpaque setter) . toDyn
 
 -- | Read state previously stored with 'setCallbackState'.
 -- Pass the corresponding native pointer getter. A missing state or a state of
 -- another type raises an error.
+--
+-- > amount <- R.getCallbackState (c_duckdb_v2_table_function_init_global_get_bind_data info) :: IO Int64
 getCallbackState :: forall a. (Typeable a) => (Ptr (Ptr Void) -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO a
 getCallbackState getter = do
   stored <- readCallbackState getter
@@ -564,6 +764,8 @@ getCallbackState getter = do
 -- | Construct a type through a borrowed factory, borrow it for an action, and
 -- release it on every exit path. The factory can come from a connection or from
 -- an extension context.
+--
+-- > R.withTypeDeclaration factory bigint $ R.checked . c_duckdb_v2_cast_function_set_source_type function
 withTypeDeclaration :: DuckDBV2FactoryHandle -> TypeDeclaration -> (DuckDBV2LogicalTypeHandle -> IO a) -> IO a
 withTypeDeclaration factory declaration = bracket acquire (destroy c_duckdb_v2_logical_type_destroy)
   where
@@ -574,6 +776,10 @@ withTypeDeclaration factory declaration = bracket acquire (destroy c_duckdb_v2_l
 -- | Add parameters and an optional return type to a borrowed native signature.
 -- Types and defaults use the borrowed factory. The factory can come from a
 -- connection or from an extension context.
+-- Get the signature from the builder:
+--
+-- > R.output (c_duckdb_v2_scalar_function_get_signature function)
+-- >   >>= R.configureFunctionSignature factory (R.FunctionSignature [R.parameter "value" bigint] (Just bigint))
 configureFunctionSignature :: DuckDBV2FactoryHandle -> FunctionSignature -> DuckDBV2FunctionSignatureHandle -> IO ()
 configureFunctionSignature factory FunctionSignature{signatureParameters, signatureReturnType} signature = do
   forM_ signatureParameters $ \FunctionParameter{parameterName, parameterType, parameterDefault, parameterKind} ->

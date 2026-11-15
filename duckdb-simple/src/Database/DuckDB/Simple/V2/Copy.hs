@@ -14,6 +14,16 @@
 -- Destroy a collection acquired with @copy_to_batch_take_input@ after use.
 -- Multi-file functions use the callbacks of a registered single-file table
 -- function.
+--
+-- Use this module when the row-oriented functions of "Database.DuckDB.Simple.Copy" are not sufficient, for
+-- example to get a batch as a native column data collection, to set the batch size, or to give the
+-- statistics for @RETURN_STATS@. Make a record of callbacks with 'copyToCallbacks' or 'copyFromCallbacks'.
+-- Then register it with 'registerCopyToCallbacks' or 'registerCopyFromCallbacks', or register both sides
+-- with 'registerCopyFunction'. 'registerMultiFileFunctionWith' adds file lists, globs, and hive partitions to
+-- a registered single-file table function.
+--
+-- The examples use the imports and the definitions of the module header of
+-- "Database.DuckDB.Simple.V2.Registration".
 module Database.DuckDB.Simple.V2.Copy (
   CopyToCallbacks (..),
   copyToCallbacks,
@@ -66,7 +76,9 @@ data CopyFromCallbacks = CopyFromCallbacks
 copyFromCallbacks :: ContextCallback DuckDBV2CopyFromBindInfoHandle -> ContextCallback DuckDBV2CopyFromExecInfoHandle -> CopyFromCallbacks
 copyFromCallbacks bind execute = CopyFromCallbacks bind Nothing Nothing execute Nothing
 
--- | Register either direction or both. DuckDB owns the allocated callbacks.
+-- | Register either direction or both. The library allocates the callback pointers. It gives their cleanup
+-- to DuckDB in the user data of the native object. DuckDB runs the cleanup when it releases the object. See
+-- Note [Callback ownership] in "Database.DuckDB.Simple.Callback".
 registerCopyFunction :: Connection -> Text -> Maybe CopyToCallbacks -> Maybe CopyFromCallbacks -> IO ()
 registerCopyFunction connection name to from = do
   when (Text.null name || Text.any (== '\0') name) $ throwInvalidArgument "invalid copy function name"
@@ -77,6 +89,13 @@ registerCopyFunction connection name to from = do
     from
 
 -- | Register COPY callbacks on a connection or a borrowed extension target.
+-- The configuration action sets the name of the format:
+--
+-- > V2Copy.registerCopyFunctionWith
+-- >   target
+-- >   (\function -> R.withIdentifier "managed_output" (R.checked . c_duckdb_v2_copy_function_set_name function))
+-- >   (Just callbacks)
+-- >   Nothing
 registerCopyFunctionWith
   :: RegistrationTarget -> (DuckDBV2CopyFunctionHandle -> IO ()) -> Maybe CopyToCallbacks -> Maybe CopyFromCallbacks -> IO ()
 registerCopyFunctionWith target configure to from =
@@ -96,6 +115,34 @@ registerCopyFunctionWith target configure to from =
           register
 
 -- | Register the advanced COPY TO callback interface.
+--
+-- The example registers the format @managed_output@, which counts the rows. The init callback makes the
+-- output file and stores a counter as init data. The batch callback takes the rows of a batch and stores
+-- their count as batch data. The flush callback adds that count to the counter. The example does not write
+-- the rows. A format that writes rows converts them in the batch callback and writes them in the flush
+-- callback.
+--
+-- > withConnection ":memory:" \connection -> do
+-- >   total <- newIORef (0 :: DuckDBIdx)
+-- >   let initialize info _ = do
+-- >         path <- R.output (c_duckdb_v2_copy_to_init_get_file_path info) >>= R.readText
+-- >         writeFile (Text.unpack path) ""
+-- >         R.setCallbackState (c_duckdb_v2_copy_to_init_set_init_data info) total
+-- >       batch info _ = do
+-- >         count <-
+-- >           bracket
+-- >             (R.output (c_duckdb_v2_copy_to_batch_take_input info))
+-- >             (R.destroy c_duckdb_v2_column_data_collection_destroy)
+-- >             (R.output . c_duckdb_v2_column_data_collection_row_count)
+-- >         R.setCallbackState (c_duckdb_v2_copy_to_batch_set_batch_data info) count
+-- >       flush info _ = do
+-- >         count <- R.getCallbackState (c_duckdb_v2_copy_to_flush_get_batch_data info) :: IO DuckDBIdx
+-- >         state <- R.getCallbackState (c_duckdb_v2_copy_to_flush_get_init_data info) :: IO (IORef DuckDBIdx)
+-- >         atomicModifyIORef' state (\n -> (n + count, ()))
+-- >       callbacks = (V2Copy.copyToCallbacks batch flush){V2Copy.copyToInitCallback = Just initialize}
+-- >   V2Copy.registerCopyToCallbacks connection "managed_output" callbacks
+-- >   _ <- execute_ connection "COPY (SELECT i FROM range(5000) t(i)) TO 'numbers.out' (FORMAT managed_output)"
+-- >   readIORef total >>= print -- DuckDBIdx {unwrap = 5000}
 registerCopyToCallbacks :: Connection -> Text -> CopyToCallbacks -> IO ()
 registerCopyToCallbacks connection name callbacks = registerCopyFunction connection name (Just callbacks) Nothing
 
@@ -184,6 +231,44 @@ fromInstallers allocate function (Just callbacks) =
   ]
 
 -- | Configure a multi-file wrapper on a connection or borrowed extension target.
+-- 'Database.DuckDB.Simple.Copy.registerMultiFileFunction' sets the same fields without a native handle.
+--
+-- The example registers the table function @managed_single@, which reads the integer in one file. Then it
+-- registers the multi-file function @managed_files@, which calls @managed_single@ for each file. The
+-- configuration action sets the two names. DuckDB can run the exec callback of the single-file function on
+-- more than one thread for one scan. Thus the exec callback takes its state with @atomicModifyIORef\'@.
+--
+-- > withConnection ":memory:" \connection -> do
+-- >   let bind input result context = do
+-- >         path <- bracket (R.output (c_duckdb_v2_function_bind_get_arg_value input 0)) (R.destroy c_duckdb_v2_value_destroy) \value ->
+-- >           R.output (c_duckdb_v2_value_get_varchar value) >>= R.readText
+-- >         value <- read <$> readFile (Text.unpack path) :: IO Int64
+-- >         R.setCallbackState (c_duckdb_v2_function_bind_set_bind_data input) value
+-- >         factory <- R.output (c_duckdb_v2_context_get_factory context)
+-- >         R.withTypeDeclaration factory bigint \dtype ->
+-- >           R.withIdentifier "value" \name -> R.checked (c_duckdb_v2_table_function_bind_add_result_column result name dtype)
+-- >       initialize info _ = do
+-- >         value <- R.getCallbackState (c_duckdb_v2_table_function_init_global_get_bind_data info)
+-- >         state <- newIORef (Just (value :: Int64))
+-- >         R.setCallbackState (c_duckdb_v2_table_function_init_global_set_global_state info) state
+-- >       executeRows info _ = do
+-- >         state <- R.getCallbackState (c_duckdb_v2_table_function_exec_get_global_state info) :: IO (IORef (Maybe Int64))
+-- >         value <- atomicModifyIORef' state (\previous -> (Nothing, previous))
+-- >         chunk <- R.output (c_duckdb_v2_table_function_exec_get_output_chunk info)
+-- >         vector <- R.output (c_duckdb_v2_data_chunk_get_vector chunk 0)
+-- >         writeIntegers vector (maybe [] pure value)
+-- >   R.registerTableFunction
+-- >     connection
+-- >     "managed_single"
+-- >     [R.parameter "path" (R.TypeExpression "VARCHAR")]
+-- >     (R.tableCallbacks bind executeRows){R.tableInitGlobalCallback = Just initialize}
+-- >   V2Copy.registerMultiFileFunctionWith (R.ConnectionTarget connection) \function -> do
+-- >     R.withText "managed_files" \(ConstPtr view) -> R.checked (c_duckdb_v2_multi_file_function_set_name function view)
+-- >     R.withText "managed_single" \(ConstPtr view) -> R.checked (c_duckdb_v2_multi_file_function_set_single_file_function function view)
+-- >   writeFile "first.mock" "7"
+-- >   writeFile "second.mock" "11"
+-- >   rows <- query_ connection "SELECT value FROM managed_files('*.mock') ORDER BY value"
+-- >   print (map fromOnly rows :: [Int64]) -- [7,11]
 registerMultiFileFunctionWith :: RegistrationTarget -> (DuckDBV2MultiFileFunctionHandle -> IO ()) -> IO ()
 registerMultiFileFunctionWith target configure =
   withTarget

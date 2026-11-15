@@ -1162,13 +1162,25 @@ testTableIntegers = withConnection ":memory:" \conn -> do
   query_ conn "SELECT typeof(sum(v)), sum(v) FROM typed_naturals()" >>= (@?= [("DOUBLE" :: Text, 2 ^ (128 :: Int) :: Double)])
   -- toDuckValue raises an error for a value outside the range. A BIGNUM value
   -- would reach the HUGEINT column, and DuckDB casts the BIGNUM 2^128 to 0.
-  let outside = "is outside the range of HUGEINT. Use BigNum for a larger value."
+  let outside typeName = "Conversion Error: duckdb-simple: the value 340282366920938463463374607431768211456 is outside the range of " <> typeName
   createTableFunction conn "typed_wide_integer" ["v"] \() -> pure [Only (2 ^ (128 :: Int) :: Integer)]
-  assertSqlError outside (query_ conn "SELECT v FROM typed_wide_integer()" :: IO [Only Integer])
+  assertErrorType
+    "Integer"
+    ErrorTypeConversion
+    (outside "HUGEINT")
+    (void (query_ conn "SELECT v FROM typed_wide_integer()" :: IO [Only Integer]))
   createTableFunction conn "typed_wide_list" ["v"] \() -> pure [Only [5, 2 ^ (128 :: Int) :: Integer]]
-  assertSqlError outside (query_ conn "SELECT v FROM typed_wide_list()" :: IO [Only [Integer]])
+  assertErrorType
+    "Integer list"
+    ErrorTypeConversion
+    (outside "HUGEINT")
+    (void (query_ conn "SELECT v FROM typed_wide_list()" :: IO [Only [Integer]]))
   createTableFunction conn "typed_wide_natural" ["v"] \() -> pure [Only (2 ^ (128 :: Int) :: Natural)]
-  assertSqlError "is outside the range of UHUGEINT" (query_ conn "SELECT v FROM typed_wide_natural()" :: IO [Only Natural])
+  assertErrorType
+    "Natural"
+    ErrorTypeConversion
+    (outside "UHUGEINT")
+    (void (query_ conn "SELECT v FROM typed_wide_natural()" :: IO [Only Natural]))
   -- A BigNum column holds each value.
   createTableFunction conn "typed_bignums" ["v"] \() -> pure [Only (BigNum (2 ^ (130 :: Int)))]
   query_ conn "SELECT typeof(v), v FROM typed_bignums()" >>= (@?= [("BIGNUM" :: Text, BigNum (2 ^ (130 :: Int)))])

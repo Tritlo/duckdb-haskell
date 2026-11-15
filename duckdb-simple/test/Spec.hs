@@ -1483,7 +1483,7 @@ functionsTests =
           query_ conn "SELECT typeof(hs_res_natural()), hs_res_natural()" >>= (@?= [("UHUGEINT" :: Text.Text, 2 ^ (127 :: Int) :: Natural)])
           assertThrows
             (query_ conn "SELECT hs_res_wide()" :: IO [Only Integer])
-            (Text.isInfixOf "is outside the range of HUGEINT" . sqlErrorMessage)
+            (\err -> sqlErrorType err == Just ErrorTypeConversion && Text.isInfixOf "is outside the range of HUGEINT" (sqlErrorMessage err))
           -- DuckDB casts a native result value to the declared type as the SQL cast does.
           createFunction conn "hs_res_rounded" (Amount 1.2345)
           createFunction conn "hs_res_too_large" (Amount 1e20)

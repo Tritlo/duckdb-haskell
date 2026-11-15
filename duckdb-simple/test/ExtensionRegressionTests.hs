@@ -66,7 +66,7 @@ import System.Mem (performMajorGC)
 import System.Mem.Weak (deRefWeak)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase, (@?=))
-import TestUtils (assertInputErrorContaining, assertReleasedAfter, assertSqlErrorContaining, assertSqlErrorType)
+import TestUtils (assertInputErrorContaining, assertRangeError, assertReleasedAfter, assertSqlErrorContaining, assertSqlErrorType)
 
 -- | Run the extension regression tests as a standalone executable.
 main :: IO ()
@@ -609,12 +609,12 @@ extensionRegressionTests =
           -- toDuckValue gives no BIGNUM value for an Integer or a Natural. See
           -- Note [Integer parameters] in "Database.DuckDB.Simple.ToField".
           let option = "asof_loop_join_threshold"
-          assertSqlErrorContaining "is outside the range of HUGEINT" $
+          assertRangeError $
             Config.setConfigValue conn Config.SettingScopeSession option (2 ^ (128 :: Int) + 5 :: Integer)
           -- A Natural from 2^127 is a UHUGEINT value. DuckDB checks its cast.
           assertSqlErrorContaining "out of range for the destination type UINT64" $
             Config.setConfigValue conn Config.SettingScopeSession option (2 ^ (127 :: Int) :: Natural)
-          assertSqlErrorContaining "is outside the range of UHUGEINT" $
+          assertRangeError $
             Config.setConfigValue conn Config.SettingScopeSession option (2 ^ (128 :: Int) + 5 :: Natural)
     , testCase "table descriptions resolve names and copy borrowed column types" $
         withConnection ":memory:" \conn -> do

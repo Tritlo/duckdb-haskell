@@ -101,7 +101,9 @@ typedRegistrationTests =
     , testCase "cast exceptions and conversion errors fail CAST" testCastErrors
     , testCase "cast to a custom type on each scalar base type" testCastBaseTypes
     , testCase "cast result of another type than the base type fails" testCastResultType
-    , testCase "a failed cast gives a Mismatch Type error and keeps the database usable" testCastFailureCode
+    , testGroup "a failed cast gives a Mismatch Type error and keeps the database usable" $
+        [testCase (castPairName castPair) (testCastFailureCode castPair) | castPair <- castFailurePairs]
+          <> [testCase "a query on another connection fails in the function" testCastFailureQuery]
     , testCase "a COMMIT after a failed cast stores no row" testCastFailureCommit
     , testCase "replacement scan reads the rows of a query" testReplacementQuery
     , testCase "replacement scan that declines gives the unknown table error" testReplacementDecline
@@ -284,17 +286,17 @@ castFailurePairs =
         , castPairRegister = \failure -> register failure source target failure
         }
 
--- | Fail a cast in each way, in a constant, in a column of 3000 rows, in an
--- INSERT with the assignment cast, and in an INSERT with CAST. DuckDB plans a
--- cast of most pairs as a cast that cannot fail. Each failure gives
+-- | Fail a cast of a pair in each way, in a constant, in a column of 3000 rows,
+-- in an INSERT with the assignment cast, and in an INSERT with CAST. DuckDB
+-- plans a cast of most pairs as a cast that cannot fail. Each failure gives
 -- 'ErrorTypeMismatch' with the text of the failure. Each connection of the
 -- database runs a query after the failure. TRY_CAST gives NULL, and TRY(CAST)
 -- raises the error. The type of an error from the function does not change
 -- the type of the cast error. See Note [The error code of a failed cast] in
 -- "Database.DuckDB.Simple.V2.Registration".
-testCastFailureCode :: Assertion
-testCastFailureCode = withEnvironment \environment -> do
-  forM_ castFailurePairs \castPair -> forM_ [FailLeft, FailException, FailTypedError, FailNoConversion] \failure ->
+testCastFailureCode :: CastPair -> Assertion
+testCastFailureCode castPair = withEnvironment \environment ->
+  forM_ [FailLeft, FailException, FailTypedError, FailNoConversion] \failure ->
     forM_ ["constant", "column", "INSERT", "INSERT with CAST"] \form -> withCastDatabase environment castPair failure \instance' conn -> do
       let target = castPairTarget castPair
           constant = fst (castPairValues castPair failure)
@@ -316,8 +318,17 @@ testCastFailureCode = withEnvironment \environment -> do
         try (query_ conn (Query ("SELECT TRY(CAST(" <> constant <> " AS " <> target <> "))")) :: IO [Only FieldValue]) >>= \case
           Left (err :: SQLError) -> assertEqual label (Just ErrorTypeMismatch) (sqlErrorType err)
           Right _ -> assertFailure (label <> ": TRY(CAST) gave no error")
-  -- A query on another connection fails in the function with the type
-  -- Conversion. The cast error has the type of each cast error.
+  where
+    failureText = \case
+      FailLeft -> "typed cast refused the value"
+      FailException -> "typed cast raised an exception"
+      FailTypedError -> "typed cast raised a Conversion Error"
+      FailNoConversion -> "argument arg0"
+
+-- | A query on another connection fails in the function of a cast with the type
+-- Conversion. The cast error has the type of each cast error.
+testCastFailureQuery :: Assertion
+testCastFailureQuery = withEnvironment \environment ->
   withCastInstance environment \instance' -> withConnectionOn instance' \conn -> withConnectionOn instance' \other -> do
     createCast conn (TypeExpression "BIGINT") (TypeExpression "VARCHAR") \(_ :: Int64) ->
       unsafePerformIO (query_ other "SELECT 'abc'::INTEGER" :: IO [Only Int32]) `seq` Right ("x" :: Text)
@@ -328,12 +339,6 @@ testCastFailureCode = withEnvironment \environment -> do
       Right _ -> assertFailure "a failed query in a cast gave no error"
     query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
     query_ other "SELECT 42" >>= (@?= [Only (42 :: Int64)])
-  where
-    failureText = \case
-      FailLeft -> "typed cast refused the value"
-      FailException -> "typed cast raised an exception"
-      FailTypedError -> "typed cast raised a Conversion Error"
-      FailNoConversion -> "argument arg0"
 
 -- | A COMMIT after a failed cast in an explicit transaction stores no row,
 -- under each transaction invalidation policy. The last cast fails only for the

@@ -478,8 +478,8 @@ Haskell callbacks must return before cleanup can finish.
 Native work that can run for a long time runs in a helper thread, so that an
 asynchronous exception can interrupt it. The default query functions run the
 native calls of one result in one helper thread. A bound thread, such as the
-main thread, changes operating system threads to wait for a helper thread. A
-small query then takes about 1.2 to 1.3 times as long as from an unbound
+main thread, changes operating system threads to wait for a helper thread.
+Thus a small query takes longer from a bound thread than from an unbound
 thread. Run code with many small queries in a thread made with `forkIO`, or
 wrap the main action in `Control.Concurrent.runInUnboundThread`.
 

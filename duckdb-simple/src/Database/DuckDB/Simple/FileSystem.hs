@@ -24,7 +24,7 @@ module Database.DuckDB.Simple.FileSystem (
   removePath,
 ) where
 
-import Control.Exception (bracket, throwIO)
+import Control.Exception (bracket)
 import Control.Monad (when)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Internal as BSI
@@ -64,7 +64,7 @@ readFileHandleChunk (FileHandle handle) requested
   | toInteger requested > toInteger (maxBound :: Int) = throwInvalidArgument "file read size exceeds Int range"
   | otherwise = BSI.createAndTrim size \buffer -> do
       count <- output (c_duckdb_v2_file_read handle (castPtr buffer) (fromIntegral size))
-      when (toInteger count > toInteger size) $ fileError "native file read exceeds buffer size"
+      when (toInteger count > toInteger size) $ throwInternalError "native file read exceeds buffer size"
       pure (fromIntegral count)
   where
     size = fromIntegral requested :: Int
@@ -186,10 +186,5 @@ withPath conn path action
 -- | Check the public signed range before converting a native byte position.
 checkedPosition :: DuckDBIdx -> IO Int64
 checkedPosition value
-  | toInteger value > toInteger (maxBound :: Int64) = fileError "file position exceeds Int64 range"
+  | toInteger value > toInteger (maxBound :: Int64) = throwInternalError "file position exceeds Int64 range"
   | otherwise = pure (fromIntegral value)
-
--- | Raise the error for a value of the native file system that the library
--- cannot use. It is not an input check, so it has no error type.
-fileError :: Text.Text -> IO a
-fileError message = throwIO (SQLError ("duckdb-simple: " <> message) Nothing Nothing Nothing)

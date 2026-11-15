@@ -160,19 +160,14 @@ writeRows factory chunk columns rows = do
   vectorCount <- output (c_duckdb_v2_data_chunk_get_vector_count chunk)
   let width = length (rowColumnDeclarations (Proxy @row))
   when (fromIntegral vectorCount /= length columns || any (\column -> column < 0 || column >= width) columns) $
-    throwIO
-      ( SQLError
-          ( "duckdb-simple: the output chunk has "
-              <> Text.pack (show vectorCount)
-              <> " vectors for the columns "
-              <> Text.pack (show columns)
-              <> " of a row of "
-              <> Text.pack (show width)
-              <> " columns"
-          )
-          Nothing
-          Nothing
-          Nothing
+    throwInternalError
+      ( "the output chunk has "
+          <> Text.pack (show vectorCount)
+          <> " vectors for the columns "
+          <> Text.pack (show columns)
+          <> " of a row of "
+          <> Text.pack (show width)
+          <> " columns"
       )
   case splitRows capacity rows of
     (now, later) -> do

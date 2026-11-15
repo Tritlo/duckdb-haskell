@@ -399,8 +399,7 @@ readText view = Text.decodeUtf8 <$> readBytes view
 valueText :: DuckDBV2ValueHandle -> IO Text
 valueText value = do
   count <- output (c_duckdb_v2_value_to_string value nullPtr 0)
-  when (toInteger count >= toInteger (maxBound :: Int)) $
-    throwIO (SQLError "duckdb-simple: value text exceeds Int range" Nothing Nothing Nothing)
+  when (toInteger count >= toInteger (maxBound :: Int)) $ throwInternalError "value text exceeds Int range"
   allocaBytes (fromIntegral count + 1) $ \buffer -> do
     _ <- output (c_duckdb_v2_value_to_string value buffer (count + 1))
     Text.decodeUtf8 <$> BS.packCStringLen (buffer, fromIntegral count)
@@ -837,4 +836,4 @@ fileFlagToNative = \case
 
 -- | Raise 'SQLError' for a native enum value that has no Haskell constructor.
 throwUnknownNative :: Text -> CUInt -> IO a
-throwUnknownNative kind value = throwIO (SQLError ("duckdb-simple: unknown native " <> kind <> " " <> Text.pack (show value)) Nothing Nothing Nothing)
+throwUnknownNative kind value = throwInternalError ("unknown native " <> kind <> " " <> Text.pack (show value))

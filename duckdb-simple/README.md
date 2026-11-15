@@ -551,22 +551,24 @@ type, also of an `SQLError` with another type. An exception in the callback of
 The type is the same for each pair of types, because of a property of DuckDB
 2.0.0. DuckDB plans a cast between some pairs of types as a cast that cannot
 fail, also when the cast is a registered cast. Examples are a cast to VARCHAR,
-a widening cast such as INTEGER to BIGINT or FLOAT to DOUBLE, and a cast from
-an ENUM, a LIST, or a STRUCT to VARCHAR. For such a cast, DuckDB changes an
-error of the type `ErrorInputInvalid`, `ErrorInputOutOfRange`, or
-`ErrorTypeConversion` to an INTERNAL error. It does the same for an error type
-that it does not map, for example `ErrorApi`. An INTERNAL error during the
-execution of a query invalidates the database. Then each statement on each
-connection of the database fails until a new instance opens the database. An
-error of the type `ErrorTypeMismatch` keeps the database usable, and it aborts
-an explicit transaction. `TRY_CAST` gives NULL for a failed row.
-`TRY(CAST(...))` raises the error, because `TRY` catches only the types
-`ErrorInputInvalid`, `ErrorInputOutOfRange`, and `ErrorTypeConversion`. DuckDB
-still plans such a cast as one that cannot fail. In DuckDB 2.0.0, a filter that
-excludes a row before the cast, for example `WHERE c < 2500 AND CAST(c AS
-VARCHAR) <> 'x'`, does not run the cast for that row. A cast that a program
-registers with the native API of `duckdb-ffi` also gets the INTERNAL error for
-such a pair and such an error type. A V2 cast can report the code
+also from an ENUM, a LIST, or a STRUCT, and a widening cast such as INTEGER to
+BIGINT or FLOAT to DOUBLE. For such a cast, DuckDB changes an error of the type
+`ErrorInputInvalid`, `ErrorInputOutOfRange`, or `ErrorTypeConversion` to an
+INTERNAL error. It does the same for an error type that it does not map, for
+example `ErrorApi`. An INTERNAL error during the execution of a query
+invalidates the database. Then each statement on each connection of the
+database fails until a new instance opens the database. An error of the type
+`ErrorTypeMismatch` keeps the database usable, and it aborts an explicit
+transaction. `TRY_CAST` gives NULL for a failed row. `TRY(CAST(...))` raises
+the error, because `TRY` catches only the types `ErrorInputInvalid`,
+`ErrorInputOutOfRange`, and `ErrorTypeConversion`. DuckDB still plans such a
+cast as one that cannot fail, so it can run the cast for a row that another
+condition of the query excludes, for example in `WHERE c < 2500 AND CAST(c AS
+VARCHAR) <> 'x'`. In DuckDB 2.0.0, only a guard in a CASE expression, for
+example `CASE WHEN d <> 0 THEN CAST(c AS VARCHAR) <> 'x' ELSE false END`, kept
+the cast from the excluded rows. A cast that a program registers with the
+native API of `duckdb-ffi` also gets the INTERNAL error for such a pair and
+such an error type. A V2 cast can report the code
 `DUCKDB_V2_ERROR_TYPE_MISMATCH` in their place.
 
 An asynchronous exception, for example from `timeout` or Ctrl-C, cancels a

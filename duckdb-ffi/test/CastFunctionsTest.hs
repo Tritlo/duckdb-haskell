@@ -50,7 +50,7 @@ castFunctionOverridesBuiltin =
             errPtr @?= coerce nullPtr
 
 -- In DuckDB 2.0.0, a failing cast between types that DuckDB plans as infallible, for example INTEGER to VARCHAR,
--- gives an INTERNAL error and invalidates the database. The V1 API has no way around it, so the target is a custom type.
+-- gives an INTERNAL error and invalidates the database. The V1 API cannot choose the error type, so the target is a custom type.
 castFunctionReportsErrors :: TestTree
 castFunctionReportsErrors =
   testCase "a cast failure to a custom type reports the message" $

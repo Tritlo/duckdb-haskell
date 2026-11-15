@@ -58,12 +58,14 @@ resources, keep callbacks alive for their required lifetime, and catch
 exceptions inside callbacks.
 
 DuckDB 2.0.0 plans a cast between some pairs of types as a cast that cannot
-fail, also a registered cast, for example a cast from INTEGER to VARCHAR. A
-registered cast of the V1 API or the V2 API that reports an error for such a
-pair gives an INTERNAL error, and during the execution of a query DuckDB then
-invalidates the database. The V1 API cannot choose the type of the error. A V2
-cast can report the code `DUCKDB_V2_ERROR_TYPE_MISMATCH`. The section Errors
-of the duckdb-simple README gives the details.
+fail, also a registered cast, for example a cast from INTEGER to VARCHAR. A V1
+cast that reports an error for such a pair gives an INTERNAL error, because the
+V1 API cannot choose the type of the error. A V2 cast gives an INTERNAL error
+for such a pair when it reports an Invalid Input, Out of Range, or Conversion
+code, or a code that DuckDB does not map, for example `DUCKDB_V2_ERROR_API`.
+After an INTERNAL error during the execution of a query, DuckDB invalidates the
+database. A V2 cast can report the code `DUCKDB_V2_ERROR_TYPE_MISMATCH`. The
+section Errors of the duckdb-simple README gives the details.
 
 ### duckdb-simple 0.3 to 0.4
 

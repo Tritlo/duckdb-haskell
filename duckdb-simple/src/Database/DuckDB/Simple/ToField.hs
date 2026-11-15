@@ -1416,8 +1416,9 @@ instance ToDuckValue Variant where
 -- value and fit the native range.
 -- The C API cannot construct a nonempty object whose keys are all empty.
 -- DuckDB 2.0 treats that STRUCT type as a tuple and casts it to a VARIANT array.
--- A raw geometry without a CRS uses GEOMETRY. A raw geometry with a CRS raises
--- an error. See Note [Raw GEOMETRY parameters].
+-- A raw geometry without a CRS uses GEOMETRY. See Note [Raw GEOMETRY parameters].
+-- A VARIANT does not keep a UNION, a MAP, an ENUM, or the CRS of a geometry, so
+-- each of these payloads raises an error, at each depth.
 variantPayloadType :: FieldValue -> IO (LogicalTypeRep, FieldValue)
 variantPayloadType value = case value of
   FieldNull -> pure (variant, value)
@@ -1466,7 +1467,13 @@ variantPayloadType value = case value of
       throwIO (userError "duckdb-simple: DuckDB's C API cannot construct a VARIANT object with only an empty key")
     let types = fmap (\field -> field{structFieldValue = variant}) structValueTypes
     pure (LogicalTypeStruct types, FieldStruct structValue{structValueTypes = types})
-  FieldUnion unionValue -> pure (unionValueTypeRep unionValue, value)
+  FieldUnion{} ->
+    throwIO
+      SQLError
+        { sqlErrorMessage = "duckdb-simple: a VARIANT keeps only the member value of a UNION, so a UNION value cannot bind as a VARIANT"
+        , sqlErrorType = Just ErrorInputInvalid
+        , sqlErrorQuery = Nothing
+        }
   FieldGeometry RawGeometry{rawGeometryCRS = Just crs} ->
     throwIO
       SQLError
@@ -1478,8 +1485,8 @@ variantPayloadType value = case value of
         , sqlErrorQuery = Nothing
         }
   FieldGeometry{} -> pure (LogicalTypeGeometry Nothing, value)
-  FieldMap{} -> throwIO (userError "duckdb-simple: VARIANT payloads cannot contain MAP values")
-  FieldEnum{} -> throwIO (userError "duckdb-simple: VARIANT payloads cannot contain ENUM values")
+  FieldMap{} -> throwIO (userError "duckdb-simple: a VARIANT stores a MAP as a list of key and value objects, so a MAP value cannot bind as a VARIANT")
+  FieldEnum{} -> throwIO (userError "duckdb-simple: a VARIANT stores an ENUM as its text, so an ENUM value cannot bind as a VARIANT")
   where
     variant = LogicalTypeScalar LogicalTypeIdVariant
     scalar dtype = pure (LogicalTypeScalar dtype, value)

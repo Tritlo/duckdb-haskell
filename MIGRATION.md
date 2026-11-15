@@ -237,7 +237,8 @@ The SQL workflow stays the same. These changes can affect your code:
   each pattern and each construction. A `FieldEnum` inside a declared ENUM type
   binds its label.
 - `displayException` of a `ResultError` gives the rendered text of the error,
-  and the error of a field of a `ViaDuckDB` record starts with the field name.
+  and the error of a field of a `ViaDuckDB` record starts with
+  `duckdb-simple: field NAME: `.
   The errors of the generic decoders name the SQL type of a value, not the
   value, for example `a value has type MAP but expected LIST or ARRAY` in place
   of `expected LIST, got FieldMap [...]`. The bind errors

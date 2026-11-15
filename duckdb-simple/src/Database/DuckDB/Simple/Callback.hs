@@ -272,10 +272,12 @@ text, for example "Conversion Error: " for the code of ErrorTypeConversion, and
   in capi_v2.cpp): the codes of ErrorApi, ErrorIOFileNotFound,
   ErrorIOReadFailure, ErrorIOEof, ErrorInputParameterInvalid, and
   ErrorInputMetadataDeferred. DuckDB raises them as Invalid Input, so the outer
-  statement fails with ErrorInputInvalid and "Invalid Input Error: ". The
-  exception type of ErrorIONetwork has no name (EXCEPTION_MAP in
-  exception.cpp), so the outer statement fails with ErrorApi and
-  "Invalid Error: ".
+  statement fails with ErrorInputInvalid and "Invalid Input Error: ".
+- ErrorIONetwork does not pass. Its exception type has no name in DuckDB 2.0.0
+  (EXCEPTION_MAP in exception.cpp), so with its code the outer statement fails
+  with ErrorApi and the prefix "Invalid Error: " of a type with no name. Such
+  an error writes the code DuckDBV2ErrorApi and its message, so the outer
+  statement fails with ErrorInputInvalid, as for an SQLError without a type.
 - Under the DuckDB setting SYNTACTIC_ERRORS_DO_NOT_INVALIDATE of
   default_transaction_invalidation_policy, DuckDB keeps the transaction after
   an error of seven types (Exception::InvalidatesTransaction in exception.cpp):
@@ -302,7 +304,7 @@ text, for example "Conversion Error: " for the code of ErrorTypeConversion, and
 callbackError :: SomeException -> (DuckDBV2Error, Text)
 callbackError failure = case fromException failure of
   Just SQLError{sqlErrorType = Just errorType, sqlErrorMessage = message, sqlErrorBody = body}
-    | errorType `notElem` [ErrorRuntimeInternal, ErrorRuntimeFatal]
+    | errorType `notElem` [ErrorIONetwork, ErrorRuntimeInternal, ErrorRuntimeFatal]
     , Just code <- lookup errorType errorTypeCodes ->
         (code, fromMaybe message body)
   _ -> (DuckDBV2ErrorApi, Text.pack (failureText failure))

@@ -750,12 +750,12 @@ testCallbackErrorPolicy = do
         , ErrorIOEof
         , ErrorInputParameterInvalid
         , ErrorInputMetadataDeferred
+        , ErrorIONetwork
         , ErrorRuntimeInternal
         , ErrorRuntimeFatal
         ]
       expectedType errorType
         | errorType `elem` invalidInput = ErrorInputInvalid
-        | errorType == ErrorIONetwork = ErrorApi
         | otherwise = errorType
       expectedRows errorType = if errorType `elem` keepsTransaction then 4096 else 0
   outcomes

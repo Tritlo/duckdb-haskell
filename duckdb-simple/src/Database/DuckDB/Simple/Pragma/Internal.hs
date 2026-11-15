@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- |
@@ -27,8 +28,14 @@ import Database.DuckDB.Simple.Internal (Connection)
 import Database.DuckDB.Simple.Materialize (materializeValue, rejectRows)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
+import Database.DuckDB.Simple.Typed (checkArgumentType)
 import qualified Database.DuckDB.Simple.V2.Pragma as V2
-import Database.DuckDB.Simple.V2.Registration (FunctionParameter, RegistrationTarget (..))
+import Database.DuckDB.Simple.V2.Registration (
+  FunctionParameter (..),
+  RegistrationTarget (..),
+  withRegistrationFactory,
+  withTypeDeclaration,
+ )
 import Foreign.Marshal.Array (advancePtr, allocaArray, peekArray)
 
 -- | The callback of a pragma. The argument @args@ is the row of the
@@ -68,6 +75,13 @@ registerPragmaFunctionOn target name parameters callback = do
   -- registration does. 'V2.registerPragmaFunctionOn' checks it again.
   when (Text.null name || Text.any (== '\0') name) $
     throwInvalidArgument "pragma function name must be nonempty and must not contain NUL"
+  -- The argument reader reads no VARIANT. Thus reject such a type before the
+  -- registration.
+  withRegistrationFactory target \factory ->
+    mapM_
+      ( \FunctionParameter{parameterName, parameterType} -> withTypeDeclaration factory parameterType (checkArgumentType True name ("parameter " <> parameterName))
+      )
+      parameters
   casts <- targetCastFactory target
   V2.registerPragmaFunctionOn target name parameters case callback of
     QueryPragma action -> V2.QueryPragma \info context -> pragmaArguments casts name info context >>= action

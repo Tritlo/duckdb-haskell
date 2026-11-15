@@ -127,16 +127,18 @@ rowDeclarations name places declarations =
     either (\reason -> throwInvalidArgument (Text.intercalate (Text.pack ": ") [name, place, reason])) pure declaration
 
 -- | Raise an error before a registration when the resolved type of an
--- argument is or contains VARIANT. The argument readers of a scalar function
--- and of a typed aggregate function do not read VARIANT
--- ('prepareArgumentReader'). When the first argument is False, also raise the
--- error for a type that is or contains GEOMETRY: the callbacks of an aggregate
--- function of an extension have no factory to read it. The error names the
--- registration and the index of the argument.
-checkArgumentType :: Bool -> Text -> Int -> DuckDBV2LogicalTypeHandle -> IO ()
-checkArgumentType readsGeometry name index logical = do
+-- argument is or contains VARIANT. A callback has no connection, so no argument
+-- reader of a callback reads VARIANT ('prepareArgumentReader', and the readers
+-- of a table function, a pragma, and the update function of a custom option).
+-- Without this check the registration succeeds, a NULL value works, and each
+-- value that is not NULL fails the query. When the first argument is False,
+-- also raise the error for a type that is or contains GEOMETRY: the callbacks
+-- of an aggregate function of an extension have no factory to read it. The
+-- error names the registration and the place of the argument.
+checkArgumentType :: Bool -> Text -> Text -> DuckDBV2LogicalTypeHandle -> IO ()
+checkArgumentType readsGeometry name place logical = do
   rep <- logicalTypeToRep logical
-  let refuse reason = throwInvalidArgument (Text.intercalate (Text.pack ": ") [name, Text.pack "argument " <> argumentName index, reason])
+  let refuse reason = throwInvalidArgument (Text.intercalate (Text.pack ": ") [name, place, reason])
   when (containsType isVariant rep) $
     refuse (Text.pack "the type of an argument cannot be or contain VARIANT")
   when (not readsGeometry && containsType isGeometry rep) $

@@ -28,7 +28,14 @@ import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow)
 import Database.DuckDB.Simple.Materialize (materializeValue, rejectRows)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
-import Database.DuckDB.Simple.Typed (ColumnValue (..), TypedRow (..), argumentName, conversionMessage, rowDeclarations)
+import Database.DuckDB.Simple.Typed (
+  ColumnValue (..),
+  TypedRow (..),
+  argumentName,
+  checkArgumentType,
+  conversionMessage,
+  rowDeclarations,
+ )
 import Database.DuckDB.Simple.V2.Registration (
   FunctionParameter (..),
   FunctionSignature (..),
@@ -121,7 +128,11 @@ createTableFunctionOn target name columns function = do
           withTypeDeclaration factory dtype \logical ->
             withIdentifier column \identifier -> checked (c_duckdb_v2_table_function_bind_add_result_column result identifier logical)
         transferCallbackState (attachOpaque (c_duckdb_v2_function_bind_set_bind_data input)) (function params)
-  withRegistrationFactory target \factory ->
+  withRegistrationFactory target \factory -> do
+    -- The argument reader reads no VARIANT. Thus reject such a type before the
+    -- registration.
+    forM_ (zip [0 ..] parameterTypes) \(index, dtype) ->
+      withTypeDeclaration factory dtype (checkArgumentType True name ("parameter " <> argumentName index))
     registerTableFunctionWith
       target
       (configure factory)

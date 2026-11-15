@@ -253,7 +253,8 @@ createAggregateOn target name aggregate = do
   withRegistrationFactory target \factory -> do
     -- The argument reader does not read VARIANT, and it reads GEOMETRY only with
     -- a factory. Thus reject such a type before the registration.
-    forM_ (zip [0 ..] argumentTypes) \(index, argumentType) -> withTypeDeclaration factory argumentType (checkArgumentType (isJust casts) name index)
+    forM_ (zip [0 ..] argumentTypes) \(index, argumentType) ->
+      withTypeDeclaration factory argumentType (checkArgumentType (isJust casts) name ("argument " <> argumentName index))
     registerAggregateFunctionWith target (configure parameters resultType factory) callbacks
   where
     columnTypes = rowColumnDeclarations (Proxy @args)

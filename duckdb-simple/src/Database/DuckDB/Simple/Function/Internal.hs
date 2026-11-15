@@ -321,7 +321,7 @@ registerScalarFunction target name proxy installers = do
             signature <- output (c_duckdb_v2_scalar_function_get_signature scalarFun)
             forM_ (zip [0 :: Int ..] parameters) \(index, dtype) ->
               withTypeDeclaration factory dtype \logical -> do
-                checkArgumentType True name index logical
+                checkArgumentType True name ("argument " <> argumentName index) logical
                 withIdentifier (argumentName index) \argument ->
                   checked (c_duckdb_v2_function_signature_add_parameter signature argument logical nullHandle DuckDBV2FunctionParameterKindPositionalOnly)
             withTypeDeclaration factory result $ checked . c_duckdb_v2_function_signature_set_return_type signature

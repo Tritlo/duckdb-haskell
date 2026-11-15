@@ -589,9 +589,18 @@ extensionRegressionTests =
           void $ execute_ conn "SET haskell_variant = {'a': 1, 'b': [1, 2]}"
           [Only expected] <- query_ conn "SELECT {'a': 1, 'b': [1, 2]}::VARIANT" :: IO [Only FieldValue]
           fst <$> Config.getConfigValue conn "haskell_variant" >>= (@?= expected)
-          -- The update callback gets no connection, so it rejects a VARIANT value.
-          Config.registerCustomOption conn (Config.customOption "haskell_variant_update" variantType){Config.customOptionUpdate = Just \_ -> pure ()}
-          assertSqlErrorContaining "configuration values must not contain VARIANT" $ execute_ conn "SET haskell_variant_update = 1"
+          -- The update callback gets no connection, so it cannot read a VARIANT
+          -- value, and the registration of such an option fails.
+          refused <-
+            try
+              (Config.registerCustomOption conn (Config.customOption "haskell_variant_update" variantType){Config.customOptionUpdate = Just \_ -> pure ()})
+          case refused of
+            Left (err :: SQLError) -> do
+              sqlErrorType err @?= Just ErrorInputInvalid
+              assertBool
+                (show err)
+                ("haskell_variant_update: the update function: the type of an argument cannot be or contain VARIANT" `Text.isInfixOf` sqlErrorMessage err)
+            Right () -> assertFailure "the registration of a VARIANT option with an update function succeeded"
     , testCase "setConfigValue with an Integer or a Natural checks the range of an unsigned option" $
         withConnection ":memory:" \conn -> do
           -- DuckDB 2.0.0 gives asof_loop_join_threshold the type UBIGINT.

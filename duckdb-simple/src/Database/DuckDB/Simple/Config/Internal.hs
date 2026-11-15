@@ -16,13 +16,14 @@ module Database.DuckDB.Simple.Config.Internal (
 
 import Control.Exception (bracket)
 import Control.Monad (when)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.Callback (targetCastFactory)
 import Database.DuckDB.Simple.FromField (FieldValue)
 import Database.DuckDB.Simple.Materialize (VectorReader, materializeValue, rejectRows)
 import Database.DuckDB.Simple.Native
+import Database.DuckDB.Simple.Typed (checkArgumentType)
 import Database.DuckDB.Simple.V2.Config (registerCustomOptionWith)
 import Database.DuckDB.Simple.V2.Registration (
   ContextCallback,
@@ -58,6 +59,11 @@ registerCustomOptionOn :: RegistrationTarget -> CustomOption -> IO ()
 registerCustomOptionOn target option = do
   when (Text.null (customOptionName option) || Text.any (== '\0') (customOptionName option)) $
     throwInvalidArgument "custom option name must be nonempty and must not contain NUL"
+  -- The update function reads no VARIANT. Thus reject such a type before the
+  -- registration.
+  when (isJust (customOptionUpdate option)) $
+    withRegistrationFactory target \factory ->
+      withTypeDeclaration factory (customOptionType option) (checkArgumentType True (customOptionName option) "the update function")
   casts <- targetCastFactory target
   registerCustomOptionWith
     target

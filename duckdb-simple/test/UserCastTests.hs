@@ -202,9 +202,9 @@ userCastTests =
             Right rows -> assertFailure ("expected an error, got " <> show rows)
     ]
 
--- | Check the GEOMETRY arguments of a scalar function, a typed aggregate, and
--- a typed cast. Each case also registers a cast from GEOMETRY to BLOB that
--- writes NULL, and that cast must not run.
+-- | Check the GEOMETRY arguments of a scalar function and a typed aggregate.
+-- Each case also registers a cast from GEOMETRY to BLOB that writes NULL, and
+-- that cast must not run.
 geometryArgumentTests :: TestTree
 geometryArgumentTests =
   testGroup

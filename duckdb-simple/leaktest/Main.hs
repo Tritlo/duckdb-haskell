@@ -517,7 +517,8 @@ reportWith rssRule label before after = do
 
 -- | Run the typed registrations through the public API on one connection: a
 -- scalar function with VARCHAR and BIGINT results over 5000 rows, a grouped
--- aggregate with VARCHAR results, a typed table function, and a typed cast.
+-- aggregate with VARCHAR results, a typed table function, and a cast that
+-- fails.
 -- Each VARCHAR value is longer than 12 bytes, so DuckDB stores it outside the
 -- string slot.
 checkTyped :: Int -> IO ()

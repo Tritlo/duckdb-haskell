@@ -403,9 +403,10 @@ Notes:
    cast, and a LIST of another length raises an `SQLError` when the statement
    runs.
 9. A STRUCT, TUPLE, or UNION parameter binds with the types of its own fields
-   or members. These values have no static field types, so a typed
-   registration with such a type raises an error. Use a record with
-   `ViaDuckDB`.
+   or members. These types keep an alias, so a value that a query reads from a
+   `STRUCT(k JSON)` column binds as `STRUCT(k JSON)`. These values have no
+   static field types, so a typed registration with such a type raises an
+   error. Use a record with `ViaDuckDB`.
 10. A record binds as a STRUCT, and a sum type binds as a UNION. A typed
     registration declares the STRUCT or UNION type of a record or a sum type
     that derives `DuckDBColumnType` and `ToDuckValue` via `ViaDuckDB`, also in a
@@ -421,11 +422,11 @@ Notes:
     columns and typed values. A record with an `Array` field raises an error at
     registration, because the record type does not give the size of the
     ARRAY. Use a list field, or a field of a newtype of the `Array` with a
-    `DuckValue` instance that gives the size (see note 8). In a typed
-    registration, a `duckLogicalType` that gives a `LogicalTypeAlias`, for
-    example `LogicalTypeAlias "JSON" (LogicalTypeScalar LogicalTypeIdVarchar)`,
-    declares that alias type, and a value of the field reads as its base type.
-    See
+    `DuckValue` instance that gives the size (see note 8). A `duckLogicalType`
+    that gives a `LogicalTypeAlias`, for example
+    `LogicalTypeAlias "JSON" (LogicalTypeScalar LogicalTypeIdVarchar)`, declares
+    that alias type in a typed registration and in a parameter, and a value of
+    the field reads as its base type. See
     [Generic Encoding with ViaDuckDB](#generic-encoding-with-viaduckdb).
 11. Each constructor binds as its SQL type, with these exceptions:
     - A `FieldEnum` binds its label as a VARCHAR.

@@ -1331,8 +1331,8 @@ testTableRecords = withConnection ":memory:" \conn -> do
   query_ conn "SELECT len(ps) FROM typed_short_peaks ORDER BY len(ps)" >>= (@?= [Only (0 :: Int64), Only 1])
 
 -- | A record field of an alias type declares the alias in the STRUCT type of a
--- table function column, and in the element type of a list parameter of NULL
--- records. A value of the field reads as its base type.
+-- table function column. A record parameter, a list of records, and a list of
+-- NULL records have the same type. A value of the field reads as its base type.
 testAliasDeclaration :: Assertion
 testAliasDeclaration = withConnection ":memory:" \conn -> do
   let docs = [Doc 1 (JsonText "{\"a\": 1}"), Doc 2 (JsonText "[2]")]
@@ -1340,8 +1340,10 @@ testAliasDeclaration = withConnection ":memory:" \conn -> do
   query_ conn "SELECT typeof(doc), typeof(doc.body) FROM typed_docs() LIMIT 1"
     >>= (@?= [("STRUCT(serial BIGINT, body JSON)" :: Text, "JSON" :: Text)])
   query_ conn "SELECT doc FROM typed_docs()" >>= (@?= map Only docs)
-  query conn "SELECT typeof(?)" (Only [Nothing :: Maybe Doc])
-    >>= (@?= [Only ("STRUCT(serial BIGINT, body JSON)[]" :: Text)])
+  query conn "SELECT typeof(?), typeof(?), typeof(?)" (Doc 3 (JsonText "{}"), docs, [Nothing :: Maybe Doc])
+    >>= ( @?=
+            [("STRUCT(serial BIGINT, body JSON)" :: Text, "STRUCT(serial BIGINT, body JSON)[]" :: Text, "STRUCT(serial BIGINT, body JSON)[]" :: Text)]
+        )
 
 -- | Reject a column, a parameter, or an argument type with no declaration at
 -- registration, also inside a list, and a MAP of a type text and a record.

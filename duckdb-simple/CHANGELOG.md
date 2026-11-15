@@ -226,9 +226,11 @@
   `ColumnDescription` of a JSON column gives
   `LogicalTypeAlias "JSON" (LogicalTypeScalar LogicalTypeIdVarchar)`, and a
   column of a type from `registerCustomType` gives the name of the type.
-  `logicalTypeFromRep` creates the alias type, so a `DuckValue` field of a
-  typed registration can declare JSON. The readers and the binding of parameters use the base type
-  (`withoutAliases`). A column of a type from `CREATE TYPE name AS base` has the
+  `logicalTypeFromRep` creates the alias type, so a `DuckValue` field can
+  declare JSON in a typed registration and in a parameter. The type fields of
+  a STRUCT, TUPLE, or UNION value keep the alias, so a value that a query reads
+  binds again with its type. The readers and the binding of parameters convert
+  with the base type. A column of a type from `CREATE TYPE name AS base` has the
   base type and no alias.
 - Decode nanosecond timezone timestamps in results and VARIANT values.
 - Preserve the digits below a microsecond of a `TimeOfDay`, a `LocalTime`, and

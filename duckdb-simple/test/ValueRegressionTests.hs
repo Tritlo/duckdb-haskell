@@ -1497,11 +1497,14 @@ valueRegressionTests =
         _ <- execute_ conn "INSERT INTO aliased VALUES ('{\"a\": 1}', ['[1]'], {'k': '2', 'js': ['[3]'], 'm': MAP {'y': '4'}}, MAP {'x': '3'})"
         query_ conn "SELECT j, js, m FROM aliased"
           >>= (@?= [("{\"a\": 1}" :: Text, ["[1]"] :: [Text], Map.fromList [("x" :: Text, "3" :: Text)])])
-        -- The type fields of a STRUCT value keep the alias.
+        -- The type fields of a STRUCT value keep the alias, so the value binds
+        -- again with its type.
         [Only struct] <- query_ conn "SELECT s FROM aliased" :: IO [Only (StructValue FieldValue)]
         structValueTypeRep struct @?= structType
         map structFieldValue (elems (structValueFields struct))
           @?= [FieldText "2", FieldList [FieldText "[3]"], FieldMap [(FieldText "y", FieldText "4")]]
+        query conn "SELECT typeof(?), ?" (struct, struct)
+          >>= (@?= [("STRUCT(k JSON, js JSON[], m MAP(VARCHAR, JSON))" :: Text, struct)])
     , testCase "a column of a type from CREATE TYPE has the base type and no name" $ withConnection ":memory:" \conn -> do
         _ <- execute_ conn "CREATE TYPE meters AS BIGINT"
         _ <- execute_ conn "CREATE TYPE mood AS ENUM ('sad', 'happy')"

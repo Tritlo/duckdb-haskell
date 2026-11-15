@@ -1501,25 +1501,28 @@ tupleValueDuckValue builder@ValueBuilder{builderFactory = factory} TupleValue{tu
         output (c_duckdb_v2_value_create_tuple factory (ConstPtr valuePtr) (fromIntegral (length values)))
 
 -- | Preserve declared field types through an owned vector. Scalar VARCHAR
--- values do not retain collations, but their enclosing composite type does.
+-- values do not retain collations, and a value of an alias type is a value of
+-- its base type, but their enclosing composite type keeps both. See
+-- Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep".
 declaredCompositeValue
   :: ValueBuilder
   -> LogicalTypeRep
   -> IO DuckDBV2ValueHandle
   -> IO DuckDBV2ValueHandle
-declaredCompositeValue _ rep create | not (hasCollation rep) = create
+declaredCompositeValue _ rep create | not (needsDeclaredType rep) = create
 declaredCompositeValue ValueBuilder{builderFactory = factory, builderType = makeType} rep create = bracket create destroyValue \value ->
   bracket (makeType rep) destroyLogicalType \logical -> withOwnedVector factory logical \vector -> do
     checked (c_duckdb_v2_vector_set_size vector 1)
     checked (c_duckdb_v2_vector_set_value vector 0 value)
     output (c_duckdb_v2_vector_get_value vector 0)
 
--- | Test whether a type tree contains a VARCHAR collation.
-hasCollation :: LogicalTypeRep -> Bool
-hasCollation = containsType isCollated
+-- | Test whether a type tree contains a VARCHAR collation or an alias.
+needsDeclaredType :: LogicalTypeRep -> Bool
+needsDeclaredType = containsType declared
   where
-    isCollated (LogicalTypeCollatedVarchar _) = True
-    isCollated _ = False
+    declared (LogicalTypeCollatedVarchar _) = True
+    declared LogicalTypeAlias{} = True
+    declared _ = False
 
 {- Note [UNION values]
 ~~~~~~~~~~~~~~~~~~~~~~

@@ -205,11 +205,16 @@ The SQL workflow stays the same. These changes can affect your code:
   the value of the cast of DuckDB. A value can differ from version 0.3 in the
   last bit.
 - A TIMESTAMP, TIMESTAMP_S, TIMESTAMP_MS, or TIMESTAMP_NS read as `UTCTime`
-  raises the error of an incompatible column. Write `c AT TIME ZONE 'UTC'` for
-  the instant that version 0.3 gave, or read `LocalTime`.
+  raises the error of an incompatible column. Write
+  `c::TIMESTAMP AT TIME ZONE 'UTC'` for the instant that version 0.3 gave, or
+  read `LocalTime`. For a TIMESTAMP_NS, write `c AT TIME ZONE 'UTC'`, because
+  the cast to TIMESTAMP removes the nanoseconds. Without the cast, DuckDB
+  converts a TIMESTAMP_S or TIMESTAMP_MS value to nanoseconds, which fails
+  outside the years 1677 to 2262.
 - A DATE read as `UTCTime` raises the error of an incompatible column. Write
-  `c AT TIME ZONE 'UTC'` for midnight in UTC, as version 0.3 gave, or read
-  `Day`.
+  `c::TIMESTAMP AT TIME ZONE 'UTC'` for midnight in UTC, as version 0.3 gave,
+  or read `Day`. Without the cast, the value fails outside the years 1677 to
+  2262.
 - A TIMESTAMPTZ or TIMESTAMPTZ_NS read as `LocalTime` raises the error of an
   incompatible column. Write `c AT TIME ZONE 'UTC'` for the time in UTC that
   version 0.3 gave, or read `UTCTime`.

@@ -259,10 +259,11 @@ the TimeZone setting of the session, or another text than the cast gives,
 raises the error of an incompatible column: a TIMESTAMP or a DATE as `UTCTime`,
 a TIMESTAMPTZ as `LocalTime`, a FLOAT or a DOUBLE as `Text`, a VARCHAR as
 `ByteString`, and an ENUM as an integer type. Write the cast in SQL for these
-values, for example `c AT TIME ZONE 'UTC'`, `c::VARCHAR`, `encode(c)`, or
-`enum_code(c)`. An ENUM value reads as `Text` or `String` with its label, the
-text of `c::VARCHAR`, and a `FieldEnum` holds the index and the label. The
-Haddock of each `FromField` instance gives the SQL types that it reads.
+values, for example `c::TIMESTAMP AT TIME ZONE 'UTC'`, `c::VARCHAR`,
+`encode(c)`, or `enum_code(c)`. An ENUM value reads as `Text` or `String` with
+its label, the text of `c::VARCHAR`, and a `FieldEnum` holds the index and the
+label. The Haddock of each `FromField` instance gives the SQL types that it
+reads.
 
 ## Generic Encoding with ViaDuckDB
 

@@ -857,7 +857,7 @@ typeTests =
           assertEqual "time round-trip" timeVal tRes
           assertEqual "timestamp round-trip" tsVal tsRes
           -- A TIMESTAMP does not read as UTCTime. AT TIME ZONE 'UTC' gives the instant in UTC.
-          [Only utcRes] <- query_ conn "SELECT ts AT TIME ZONE 'UTC' FROM temporals" :: IO [Only UTCTime]
+          [Only utcRes] <- query_ conn "SELECT ts::TIMESTAMP AT TIME ZONE 'UTC' FROM temporals" :: IO [Only UTCTime]
           assertEqual "timestamp at UTC" (localTimeToUTC utc tsVal) utcRes
           (try (query_ conn "SELECT ts FROM temporals" :: IO [Only UTCTime])) >>= \case
             Left SQLError{sqlErrorMessage} -> sqlErrorMessage @?= "duckdb-simple: column ts has type TIMESTAMP but expected UTCTime"

@@ -1191,11 +1191,24 @@ valueRegressionTests =
               enumAs (Proxy :: Proxy Word32) "Word32"
               enumAs (Proxy :: Proxy Word64) "Word64"
               enumAs (Proxy :: Proxy Word) "Word"
-              -- The SQL in place of each refused read.
-              (query_ conn "SELECT TIMESTAMP '2024-01-02 03:04:05' AT TIME ZONE 'UTC', DATE '2024-01-02' AT TIME ZONE 'UTC'" :: IO [(UTCTime, UTCTime)])
-                >>= (@?= [(UTCTime (fromGregorian 2024 1 2) 11045, UTCTime (fromGregorian 2024 1 2) 0)])
-              (query_ conn "SELECT TIMESTAMPTZ '2024-01-02 03:04:05+00' AT TIME ZONE 'UTC'" :: IO [Only LocalTime])
-                >>= (@?= [Only (LocalTime (fromGregorian 2024 1 2) (TimeOfDay 3 4 5))])
+              -- The SQL in place of each refused read, also for the year 1500,
+              -- which a nanosecond value cannot hold.
+              forM_ [2024, 1500] \year -> do
+                let day = fromGregorian year 1 2
+                    text = Text.pack (show day)
+                (query_ conn (Query ("SELECT c::TIMESTAMP AT TIME ZONE 'UTC' FROM (VALUES (TIMESTAMP '" <> text <> " 03:04:05')) t(c)")) :: IO [Only UTCTime])
+                  >>= (@?= [Only (UTCTime day 11045)])
+                forM_ ["TIMESTAMP_S", "TIMESTAMP_MS"] \source ->
+                  ( query_ conn (Query ("SELECT c::TIMESTAMP AT TIME ZONE 'UTC' FROM (VALUES ('" <> text <> " 03:04:05'::" <> source <> ")) t(c)"))
+                      :: IO [Only UTCTime]
+                  )
+                    >>= (@?= [Only (UTCTime day 11045)])
+                (query_ conn (Query ("SELECT c::TIMESTAMP AT TIME ZONE 'UTC' FROM (VALUES (DATE '" <> text <> "')) t(c)")) :: IO [Only UTCTime])
+                  >>= (@?= [Only (UTCTime day 0)])
+                (query_ conn (Query ("SELECT c AT TIME ZONE 'UTC' FROM (VALUES (TIMESTAMPTZ '" <> text <> " 03:04:05+00')) t(c)")) :: IO [Only LocalTime])
+                  >>= (@?= [Only (LocalTime day (TimeOfDay 3 4 5))])
+              (query_ conn "SELECT c AT TIME ZONE 'UTC' FROM (VALUES ('2024-01-02 03:04:05.123456789'::TIMESTAMP_NS)) t(c)" :: IO [Only UTCTime])
+                >>= (@?= [Only (UTCTime (fromGregorian 2024 1 2) 11045.123456789)])
               (query_ conn "SELECT 0.01::DOUBLE::VARCHAR, encode('a\\x41')" :: IO [(Text, BS.ByteString)]) >>= (@?= [("0.01", "a\\x41")])
         refusedPairs
         _ <- execute_ conn "SET TimeZone = 'Pacific/Auckland'"

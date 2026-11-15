@@ -25,9 +25,11 @@
 - A `Day` outside the range of DuckDB, from -5877641-06-25 to 5881580-07-10,
   and a `LocalTime` or a `UTCTime` outside the range from -290308-12-22
   00:00:00 to 294247-01-10 04:00:54.775806, in the notation of `Data.Time`,
-  raise an `SQLError` of the type `ErrorInputOutOfRange` when they bind.
-  Version 0.3 bound some of these values and raised an `IOException` for the
-  others. See MIGRATION.md.
+  raise an `SQLError` of the type `ErrorInputOutOfRange` when they bind. For a
+  target of the type TIMESTAMP_NS or TIMESTAMPTZ_NS, a value outside the
+  smaller range of that type can get another error, by its position. Version
+  0.3 bound some of these values and raised an `IOException` for the others.
+  See MIGRATION.md.
 - Add typed configuration values and defaults, managed log sinks, macro
   registration, function documentation, query metrics, and file path
   operations. Expose table bind metadata for multi-file readers.

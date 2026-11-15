@@ -655,8 +655,10 @@ instance ToField TimeOfDay where
 -- Note [Nanosecond parameters]. A time outside the range of DuckDB, from
 -- -290308-12-22 00:00:00 (290309-12-22 BC) to 294247-01-10 04:00:54.775806 in
 -- the notation of "Data.Time", raises an t'SQLError' of the type
--- 'ErrorInputOutOfRange'. A leap second binds as the next second. See
--- Note [Time ranges].
+-- 'ErrorInputOutOfRange'. For a TIMESTAMP_NS target, a time outside the range
+-- of TIMESTAMP_NS can get another error, also a time outside the range of
+-- DuckDB in a STRUCT, a TUPLE, or a UNION. See Note [Nanosecond parameters]. A
+-- leap second binds as the next second. See Note [Time ranges].
 instance ToField LocalTime where
   toField value =
     timeValueBinding (show value) (LogicalTypeScalar LogicalTypeIdTimestamp) (FieldTimestamp (Finite value)) \builder -> localTimeDuckValue (builderFactory builder) value
@@ -697,9 +699,12 @@ instance ToField Variant where
 -- | Bind an instant as a TIMESTAMPTZ, or as a TIMESTAMPTZ_NS. See
 -- Note [Nanosecond parameters]. An instant outside the range of the
 -- t'LocalTime' instance, in UTC, raises an t'SQLError' of the type
--- 'ErrorInputOutOfRange'. A leap second of exactly 60 seconds binds as the
--- next second. A later time in a leap second, for example 60.5 seconds, raises
--- an t'SQLError' of the type 'ErrorInputInvalid'. See Note [Time ranges].
+-- 'ErrorInputOutOfRange'. For a TIMESTAMPTZ_NS target, an instant outside the
+-- range of TIMESTAMPTZ_NS can get another error, also an instant outside the
+-- range of DuckDB. See Note [Nanosecond parameters]. A leap second of exactly
+-- 60 seconds binds as the next second. A later time in a leap second, for
+-- example 60.5 seconds, raises an t'SQLError' of the type 'ErrorInputInvalid'.
+-- See Note [Time ranges].
 instance ToField UTCTime where
   toField value =
     timeValueBinding

@@ -124,19 +124,26 @@ The SQL workflow stays the same. These changes can affect your code:
   the process: DuckDB raised the C++ exception "Calling StringValue::Get on a
   NULL value" in `duckdb_get_varchar`.
 - A date or a timestamp outside the range of DuckDB raises an `SQLError` of the
-  type `ErrorInputOutOfRange` when it binds, also inside a collection, a
-  STRUCT, or a VARIANT. For a `Day`, that range is the range of DATE, from
-  -5877641-06-25 to 5881580-07-10. For a `LocalTime` or a `UTCTime` (in UTC),
-  it is the range of TIMESTAMP, TIMESTAMPTZ, TIMESTAMP_S, and TIMESTAMP_MS,
-  from -290308-12-22 00:00:00 to 294247-01-10 04:00:54.775806. The dates are
-  in the notation of `Data.Time`. TIMESTAMP_NS and TIMESTAMPTZ_NS have a
-  smaller range, about the years 1677 to 2262. For a parameter of such a
-  nanosecond type, a value in the range of DuckDB but outside the smaller range
-  gets another error: the conversion error of DuckDB, of the type
-  `ErrorTypeConversion` for a parameter and `ErrorInputInvalid` for an element.
-  A value with digits below a microsecond can instead get the
-  `ErrorInputInvalid` of the library: a `UTCTime`, and a `LocalTime` from
-  2262-04-11 23:47:16.854775807 to 23:47:16.854775999.
+  type `ErrorInputOutOfRange` when it binds, also as an element of a list, an
+  `Array`, or a `Map`, inside a STRUCT, a TUPLE, or a UNION, and in a VARIANT.
+  For a `Day`, that range is the range of DATE, from -5877641-06-25 to
+  5881580-07-10. For a `LocalTime` or a `UTCTime` (in UTC), it is the range of
+  TIMESTAMP, TIMESTAMPTZ, TIMESTAMP_S, and TIMESTAMP_MS, from -290308-12-22
+  00:00:00 to 294247-01-10 04:00:54.775806. The dates are in the notation of
+  `Data.Time`. A target of the type TIMESTAMP_NS or TIMESTAMPTZ_NS is different.
+  These types have a smaller range, about the years 1677 to 2262, and a value
+  outside that range gets an error by its position:
+
+  - A parameter, or an element of a list, an `Array`, or a `Map`:
+    `ErrorInputOutOfRange` for a value outside the range of DuckDB. Each other
+    such value gets the conversion error of DuckDB, of the type
+    `ErrorTypeConversion` for a parameter and `ErrorInputInvalid` for an element.
+  - A field of a STRUCT, an element of a TUPLE, or a member of a UNION: the
+    `ErrorInputInvalid` of the library, "TIMESTAMP value out of finite range",
+    also for a value outside the range of DuckDB.
+  - In each position, a `UTCTime` with digits below a microsecond, and a
+    `LocalTime` from 2262-04-11 23:47:16.854775807 to 23:47:16.854775999, get
+    that `ErrorInputInvalid` of the library.
 - Version 0.3 raised the `IOException` "DATE value out of finite range" or
   "TIMESTAMP value out of finite range" for a date or a timestamp at an
   infinity value or outside the storage. It bound the other values outside the

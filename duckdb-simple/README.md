@@ -414,13 +414,17 @@ Notes:
 12. `typeof` gives `"NULL"`, with the quotes, for a `Null` parameter and for a
     `Null` declaration. A `Null` argument takes only a NULL value. A call with
     another value is a Binder Error. A record cannot have a `Null` field.
-13. A `Variant` reads a value of each scalar type other than ENUM, a LIST of
-    such values, and a STRUCT in the form of a VARIANT object: each field of
-    the type VARIANT, the keys in ascending order. At each depth, it refuses an
-    ENUM, an ARRAY, a MAP, a TUPLE, a UNION, another STRUCT, and a GEOMETRY
-    with a CRS, with the error of an incompatible column. Write `c::VARIANT` in
-    SQL to read such a column. A JSON column reads as its text, where
-    `c::VARIANT` gives the parsed value.
+13. A `Variant` reads a value that a VARIANT can hold: a VARIANT column, or a
+    column of another type with the same shape. That is a value of each scalar
+    type other than ENUM, for example an INTEGER or a GEOMETRY with no CRS, a
+    LIST of such values, and a STRUCT in the form of a VARIANT object: each
+    field of the type VARIANT, the keys in ascending order. At each depth, it
+    refuses an ENUM, an ARRAY, a MAP, a TUPLE, a UNION, another STRUCT, and a
+    GEOMETRY with a CRS, with the error of an incompatible column, because the
+    cast of DuckDB to VARIANT changes these values. Write `c::VARIANT` in SQL to
+    read such a column. One difference stays, because the reader does not know
+    the type of a column: a JSON column reads as its text, as a VARCHAR column
+    does, where `c::VARIANT` gives the parsed value.
 
 A value of a VARIANT column reads as its stored value, so the row of the stored
 type applies. A value in a LIST, ARRAY, MAP, STRUCT, or UNION reads with the
@@ -1043,16 +1047,8 @@ key also raises an error because DuckDB treats its STRUCT type as a tuple.
 DuckDB 2.0 permits an empty key with other named keys. You can also bind a plain
 value and cast it in SQL, as in `?::VARIANT`.
 
-A `Variant` result reads a value that a VARIANT can hold: a VARIANT column, or
-a column of another type with the same shape, such as an INTEGER, a LIST, or a
-GEOMETRY with no CRS. A column that holds a UNION, a MAP, an ENUM, an ARRAY, a
-TUPLE, a STRUCT that is not in the form of a VARIANT object (each field of the
-type VARIANT, the keys in ascending order), or a GEOMETRY with a CRS, at any
-depth, raises the error of an incompatible column, because the cast of DuckDB
-to VARIANT changes these values. Write `c::VARIANT` in SQL to read such a
-column. One difference stays, because the reader does not know the type of a
-column: a JSON column reads as its text, as a VARCHAR column does, where
-`c::VARIANT` gives the parsed value.
+A `Variant` result reads only a value that a VARIANT can hold: note 13 of
+[Types](#types) gives the shapes, and the one difference for a JSON column.
 
 The library uses a separate helper connection for VARIANT decoder metadata.
 It caches the parsed VARIANT metadata statement and the types for VARIANT

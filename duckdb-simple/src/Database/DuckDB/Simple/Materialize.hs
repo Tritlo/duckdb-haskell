@@ -54,9 +54,10 @@ import Database.DuckDB.Simple.LogicalRep (
   TupleValue (..),
   UnionMemberType (..),
   UnionValue (..),
+  aliasBase,
  )
 import Database.DuckDB.Simple.Native
-import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToBaseRep)
+import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToBaseRep, logicalTypeToRep)
 import qualified Database.DuckDB.Simple.VariantCodec as VariantCodec
 import Foreign.C.ConstPtr (ConstPtr (..))
 import Foreign.Marshal.Alloc (alloca)
@@ -187,7 +188,7 @@ prepareVectorReader readers vector = do
   -- The cache of ENUM labels lives as long as this reader. See Note [ENUM labels].
   labels <- newIORef IntMap.empty
   -- See Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep".
-  prepareVectorReaderWith readers (withVectorType vector logicalTypeToBaseRep) (Just labels) vector
+  prepareVectorReaderWith readers (withVectorType vector logicalTypeToRep) (Just labels) vector
 
 -- | The labels of an ENUM type that readers read, by index. 'Nothing' means
 -- that the type tree holds the labels. See Note [ENUM labels].
@@ -269,7 +270,8 @@ prepareVectorReaderWith readers tree labels vector = do
   let ConstPtr dataPtr = getField @"data'" view
       ConstPtr validity = getField @"validity" view
       ConstPtr selection = getField @"sel" view
-  readValue <- prepareValueReader readers tree labels dtype vector dataPtr validity
+  -- See Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep".
+  readValue <- prepareValueReader readers (aliasBase <$> tree) labels dtype vector dataPtr validity
   pure \row -> do
     when (row < 0 || fromIntegral row >= getField @"count" view) $
       throwInternalError (Text.pack "vector row index out of range")

@@ -15,7 +15,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), FromField (..), ResultError (..), returnError)
 import Database.DuckDB.Simple.Geometry (RawGeometry (..))
-import Database.DuckDB.Simple.LogicalRep (LogicalTypeId (..), LogicalTypeRep (..), StructField (..), StructValue (..))
+import Database.DuckDB.Simple.LogicalRep (LogicalTypeId (..), LogicalTypeRep (..), StructField (..), StructValue (..), withoutAliases)
 import Database.DuckDB.Simple.Ok (Ok (..))
 
 -- | A VARIANT value. The payload is a 'FieldValue' with the native type of the
@@ -78,7 +78,7 @@ variantShape = \case
   FieldList values -> all variantShape values
   FieldStruct StructValue{structValueFields, structValueTypes} ->
     let names = map structFieldName (elems structValueTypes)
-    in  all ((== LogicalTypeScalar LogicalTypeIdVariant) . structFieldValue) (elems structValueTypes)
+    in  all ((== LogicalTypeScalar LogicalTypeIdVariant) . withoutAliases . structFieldValue) (elems structValueTypes)
           && and (zipWith (<) names (drop 1 names))
           && all (variantShape . structFieldValue) (elems structValueFields)
   _ -> True

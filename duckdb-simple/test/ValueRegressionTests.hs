@@ -1486,21 +1486,22 @@ valueRegressionTests =
           logicalTypeToRep handle >>= (@?= logical)
     , testCase "a column type keeps the alias JSON at each depth, and reads as its base type" $ withConnection ":memory:" \conn -> do
         let json = LogicalTypeAlias "JSON" (LogicalTypeScalar LogicalTypeIdVarchar)
-        _ <- execute_ conn "CREATE TABLE aliased (j JSON, js JSON[], s STRUCT(k JSON), m MAP(VARCHAR, JSON))"
+            varchar = LogicalTypeScalar LogicalTypeIdVarchar
+            structType =
+              LogicalTypeStruct
+                (listArray (0, 2) [StructField "k" json, StructField "js" (LogicalTypeList json), StructField "m" (LogicalTypeMap varchar json)])
+        _ <- execute_ conn "CREATE TABLE aliased (j JSON, js JSON[], s STRUCT(k JSON, js JSON[], m MAP(VARCHAR, JSON)), m MAP(VARCHAR, JSON))"
         description <- Catalog.describeTable conn "aliased"
         map Catalog.columnDescriptionType (Catalog.tableDescriptionColumns description)
-          @?= [ json
-              , LogicalTypeList json
-              , LogicalTypeStruct (listArray (0, 0) [StructField "k" json])
-              , LogicalTypeMap (LogicalTypeScalar LogicalTypeIdVarchar) json
-              ]
-        _ <- execute_ conn "INSERT INTO aliased VALUES ('{\"a\": 1}', ['[1]'], {'k': '2'}, MAP {'x': '3'})"
+          @?= [json, LogicalTypeList json, structType, LogicalTypeMap varchar json]
+        _ <- execute_ conn "INSERT INTO aliased VALUES ('{\"a\": 1}', ['[1]'], {'k': '2', 'js': ['[3]'], 'm': MAP {'y': '4'}}, MAP {'x': '3'})"
         query_ conn "SELECT j, js, m FROM aliased"
           >>= (@?= [("{\"a\": 1}" :: Text, ["[1]"] :: [Text], Map.fromList [("x" :: Text, "3" :: Text)])])
-        -- The value of a STRUCT holds the base types of its fields.
+        -- The type fields of a STRUCT value keep the alias.
         [Only struct] <- query_ conn "SELECT s FROM aliased" :: IO [Only (StructValue FieldValue)]
-        map structFieldValue (elems (structValueTypes struct)) @?= [LogicalTypeScalar LogicalTypeIdVarchar]
-        map structFieldValue (elems (structValueFields struct)) @?= [FieldText "2"]
+        structValueTypeRep struct @?= structType
+        map structFieldValue (elems (structValueFields struct))
+          @?= [FieldText "2", FieldList [FieldText "[3]"], FieldMap [(FieldText "y", FieldText "4")]]
     , testCase "a column of a type from CREATE TYPE has the base type and no name" $ withConnection ":memory:" \conn -> do
         _ <- execute_ conn "CREATE TYPE meters AS BIGINT"
         _ <- execute_ conn "CREATE TYPE mood AS ENUM ('sad', 'happy')"

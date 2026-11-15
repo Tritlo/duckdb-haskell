@@ -18,6 +18,7 @@ module Database.DuckDB.Simple.LogicalRep (
   LogicalTypeId (..),
   TypeDeclaration (..),
   withoutAliases,
+  aliasBase,
   structValueTypeRep,
   tupleValueTypeRep,
   unionValueTypeRep,
@@ -69,11 +70,18 @@ a name that is not the name of the type id (logicalTypeIdName in
 "Database.DuckDB.Simple.Native") is an alias. logicalTypeFromRep writes the
 alias with duckdb_v2_factory_create_type_with_alias.
 
-The base type decides each conversion of the library. Thus the readers of
-vectors and the binding of parameters use logicalTypeToBaseRep. It reads no
-type name, so these paths make no native call for an alias. A
-'Database.DuckDB.Simple.Catalog.ColumnDescription' keeps the alias. Compare a
-type with an alias to another type with withoutAliases.
+The base type decides each conversion of the library. Thus the binding of
+parameters, and the readers of a DECIMAL and a GEOMETRY, use
+logicalTypeToBaseRep. It reads no type name, so these paths make no native call
+for an alias. These places keep the alias:
+
+- A 'Database.DuckDB.Simple.Catalog.ColumnDescription'.
+- The type fields of a STRUCT, TUPLE, or UNION value that a reader gives. The
+  reader of a vector takes its tree from logicalTypeToRep, and it decides with
+  aliasBase. Thus a value that the library reads and binds again keeps its
+  type, for example STRUCT(k JSON).
+
+Compare a type with an alias to another type with withoutAliases.
 -}
 
 -- | Replace each alias with its base type, at each depth. See
@@ -88,6 +96,12 @@ withoutAliases = \case
   LogicalTypeTuple fields -> LogicalTypeTuple (fmap withoutAliases fields)
   LogicalTypeUnion members -> LogicalTypeUnion (fmap (\member -> member{unionMemberType = withoutAliases (unionMemberType member)}) members)
   rep -> rep
+
+-- | Remove the aliases at the top of a type. The child types keep their
+-- aliases. See Note [Type aliases].
+aliasBase :: LogicalTypeRep -> LogicalTypeRep
+aliasBase (LogicalTypeAlias _ base) = aliasBase base
+aliasBase rep = rep
 
 -- | A structured type or a SQL type expression. A 'TypeExpression' with the
 -- name of a type from 'Database.DuckDB.Simple.Registration.registerCustomType'

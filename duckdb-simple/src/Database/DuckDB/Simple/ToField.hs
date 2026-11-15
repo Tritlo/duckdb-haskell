@@ -85,6 +85,7 @@ import Database.DuckDB.Simple.LogicalRep (
   structValueTypeRep,
   tupleValueTypeRep,
   unionValueTypeRep,
+  withoutAliases,
  )
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Time (Date, LocalTimestamp, UTCTimestamp, Unbounded (..))
@@ -1623,14 +1624,16 @@ fieldValueWithTypeDuckValue builder@ValueBuilder{builderFactory = factory, build
             withArray keys \keyPtr -> withArray values \valuePtr ->
               output (c_duckdb_v2_value_create_map factory keyType valueType (ConstPtr keyPtr) (ConstPtr valuePtr) (fromIntegral (length pairs)))
   (LogicalTypeStruct _, FieldStruct struct)
-    | rep == structValueTypeRep struct -> structValueDuckValue builder struct
+    | sameBase (structValueTypeRep struct) -> structValueDuckValue builder struct
   (LogicalTypeTuple _, FieldTuple tuple)
-    | rep == tupleValueTypeRep tuple -> tupleValueDuckValue builder tuple
+    | sameBase (tupleValueTypeRep tuple) -> tupleValueDuckValue builder tuple
   (LogicalTypeUnion _, FieldUnion union)
-    | rep == unionValueTypeRep union -> unionValueDuckValue builder union
+    | sameBase (unionValueTypeRep union) -> unionValueDuckValue builder union
   (LogicalTypeEnum entries, FieldEnum _ label) -> enumDuckValue factory entries label
   _ -> typeMismatch (show rep) value
   where
+    -- See Note [Type aliases] in "Database.DuckDB.Simple.LogicalRep".
+    sameBase other = withoutAliases rep == withoutAliases other
     sequenceValue create child values = bracket (makeType child) destroyLogicalType \logical ->
       withCreatedValues (map (fieldValueWithTypeDuckValue builder child) values) \native -> withArray native \ptr ->
         output (create factory logical (ConstPtr ptr) (fromIntegral (length native)))

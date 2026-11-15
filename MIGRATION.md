@@ -86,7 +86,8 @@ The SQL workflow stays the same. These changes can affect your code:
   `withConnectionFactory` from `Database.DuckDB.Simple.Internal`. Create and
   destroy the value inside `withConnectionHandle`. `withConnectionFactory`
   does not keep the connection alive. Registration code gets the factory of
-  its target from `withRegistrationFactory`.
+  its target from `withRegistrationFactory` in
+  `Database.DuckDB.Simple.V2.Registration`.
 - `logicalTypeFromRepWith` takes the factory, and its resolver returns
   `Maybe` a native type. `Nothing` selects the default construction.
 - `logicalTypeToRep`, `logicalTypeFromRep`, `logicalTypeFromRepWith`, and
@@ -114,7 +115,9 @@ The SQL workflow stays the same. These changes can affect your code:
   names that are not in the list are options of extensions that the new
   database does not load.
 - `CatalogEntry.catalogEntryType` and `lookupCatalogEntry` use the new
-  `CatalogEntryType`. V2 metadata cannot look up collations.
+  `CatalogEntryType`. For example, `DuckDBCatalogEntryTypeTable` becomes
+  `CatalogTable`. `DuckDBCatalogEntryTypeCollation` has no replacement, because
+  V2 metadata cannot look up collations.
 - `withFileHandle` takes `[FileFlag]` instead of `[DuckDBFileFlag]`. It gives
   its action an opaque `FileHandle` instead of `DuckDBFileHandle`, and the
   other handle functions take `FileHandle`.

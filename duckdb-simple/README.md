@@ -35,6 +35,8 @@ withEnvironment $ \environment ->
 ```
 
 Closing an environment closes its instances, connections, and statements.
+DuckDB can keep alive an instance that `createInstance` did not create. Then
+`closeEnvironment` raises an `SQLError` and keeps the environment open.
 Closing an instance closes its connections and statements. Each close operation
 is idempotent. `open` and `withConnection` create private parents and retain their
 existing convenience behavior.
@@ -430,9 +432,8 @@ manualStruct conn = do
 
 - `withConnection` and `withStatement` wrap the open/close lifecycle and guard
   against exceptions; use them whenever possible to avoid leaking C handles.
-- All intermediate DuckDB objects (results, prepared statements, values) are
-  released immediately after use. Query helpers return a Haskell list of all
-  rows. Folds and cursors decode rows incrementally from owned native chunks.
+- The query helpers release their results, prepared statements, and values
+  after use. Query helpers return a Haskell list of all rows. Folds and cursors decode rows incrementally from owned native chunks.
   The default mode drains and closes the native cursor before row callbacks.
 - `execute`/`query` variants reset statement bindings each run so prepared
   statements can be reused safely.

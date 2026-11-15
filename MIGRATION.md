@@ -146,15 +146,16 @@ The SQL workflow stays the same. These changes can affect your code:
   connection wait for each other in the default query functions. Serialize a
   transaction, a shared `Statement`, and an explicit stream in the
   application. A callback that queries its active connection waits for this
-  lock. After the bound of `connectionCallbackLockWait` in `ConnectionOptions`
-  (10 seconds by default), the query raises an `SQLError` of the type
-  `ErrorResourceInUse`. For most callbacks, the outer statement then fails.
-  `Nothing` sets no bound.
-  The bound applies also to a callback that waits for a second connection.
+  lock. After the time limit of `connectionCallbackLockWait` in
+  `ConnectionOptions` (10 seconds by default), the query raises an `SQLError`
+  of the type `ErrorResourceInUse`. For most callbacks, the outer statement
+  then fails. `Nothing` sets no time limit.
+  The time limit applies also to a callback that waits for a second
+  connection.
   With more than one DuckDB thread, DuckDB can run a callback of an explicit
   stream between two fetches. Then the query fails at once with the
-  `RESOURCE_IN_USE` error of DuckDB. The README gives the cases that the bound
-  does not cover.
+  `RESOURCE_IN_USE` error of DuckDB. The README gives the cases that the time
+  limit does not cover.
 - `ConnectionOptions` has new fields, for example `connectionCallbackLockWait`.
   Code that builds the record with only the fields of version 0.3 gets a
   warning from GHC. The program then fails with a missing-field error when the

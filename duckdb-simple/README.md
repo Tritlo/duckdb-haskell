@@ -467,8 +467,8 @@ in the application:
 
 A callback must not execute another query on its active connection or close
 that connection. With the default API, such a query waits for the lock of the
-active query. After the bound of `connectionCallbackLockWait` (10 seconds by
-default), it raises an `SQLError`. See
+active query. After the time limit of `connectionCallbackLockWait` (10
+seconds by default), it raises an `SQLError`. See
 [User-Defined Functions](#user-defined-functions) for the rule and its limits.
 
 Link your executable with `ghc-options: -threaded` to allow prompt cancellation
@@ -841,18 +841,19 @@ lock. Then a statement in the callback on the same connection fails at once
 with the `ErrorResourceInUse` error of DuckDB, because the stream has an open
 result.
 
-That wait has a bound. `connectionCallbackLockWait` in `ConnectionOptions`
-sets it in microseconds. The default is `defaultCallbackLockWait`, 10 seconds,
-and `Nothing` sets no bound. When the bound ends, the statement in the callback
-raises an `SQLError` of the type `ErrorResourceInUse`, and its text gives the
-rule. If the callback does not catch the error, DuckDB fails the outer
-statement with the text of that error, and the connection can run the next
-statement. DuckDB ignores the error of a log sink. The bound applies to each wait of a
-callback for the lock of a connection. It applies also to another connection
-that a different statement uses. If callbacks share a connection that runs slow
-statements, set a larger bound or `Nothing` for that connection.
+That wait has a time limit. `connectionCallbackLockWait` in
+`ConnectionOptions` sets it in microseconds. The default is
+`defaultCallbackLockWait`, 10 seconds, and `Nothing` sets no time limit. When
+the time limit ends, the statement in the callback raises an `SQLError` of the
+type `ErrorResourceInUse`, and its text gives the rule. If the callback does
+not catch the error, DuckDB fails the outer statement with the text of that
+error, and the connection can run the next statement. DuckDB ignores the error
+of a log sink. The time limit applies to each wait of a callback for the lock
+of a connection. It applies also to another connection that a different
+statement uses. If callbacks share a connection that runs slow statements, set
+a larger time limit or `Nothing` for that connection.
 
-In these cases the bound does not apply, and a statement in the callback can
+In these cases the time limit does not apply, and a statement in the callback can
 wait and not return:
 
 - DuckDB runs the callback during a call that does not hold the lock of the

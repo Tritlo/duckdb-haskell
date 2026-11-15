@@ -106,13 +106,14 @@
   query on the same connection. The README of version 0.3 forbade a query on
   the active connection in a callback.
 - A DuckDB callback that waits for the lock of a connection waits at most the
-  bound of that connection. Add `connectionCallbackLockWait` to
+  time limit of that connection. Add `connectionCallbackLockWait` to
   `ConnectionOptions`, in microseconds, with the default
-  `defaultCallbackLockWait` (10 seconds). `Nothing` sets no bound, and the open
-  rejects a negative bound. A statement of a callback on the connection that
-  runs the callback thus raises an `SQLError` of the type `ErrorResourceInUse`
-  after the bound. For most callbacks, the outer statement then fails. The
-  README gives the cases that the bound does not cover.
+  `defaultCallbackLockWait` (10 seconds). `Nothing` sets no time limit, and the
+  open rejects a negative time limit. A statement of a callback on the
+  connection that runs the callback thus raises an `SQLError` of the type
+  `ErrorResourceInUse` after the time limit. For most callbacks, the outer
+  statement then fails. The README gives the cases that the time limit does
+  not cover.
 - The message of a native error is decoded with replacement characters. A
   native error text that is not valid UTF-8 does not raise when the error is
   shown.

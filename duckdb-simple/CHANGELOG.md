@@ -175,6 +175,10 @@
   DECIMAL with its own width and scale. An `Array`, a list, or a typed row
   cannot hold a `DecimalValue`. Version 0.3 had only result instances for these
   types.
+- Add parameter instances for `Map`. A `Map` binds as a MAP value with its
+  pairs in ascending key order. The keys and the values follow the element
+  rules of a list, and an empty `Map` binds as an empty MAP of its key and
+  value types. Version 0.3 had only a result instance for `Map`.
 - Add parameter instances for lists. A list binds as a LIST value with the
   element rules of an `Array`, and an empty list binds as an empty LIST of its
   element type. A `String` stays one VARCHAR parameter, and a list as a row is

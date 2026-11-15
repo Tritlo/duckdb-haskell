@@ -340,6 +340,14 @@ types. Different types raise an error before DuckDB can cast away fields or
 round values. An empty or all-NULL list or array of such elements raises an
 error.
 
+A `Map` from `Data.Map` binds as a MAP parameter and reads a MAP result. The
+pairs go in ascending key order. The keys and the values follow the element
+rules of a list, and an empty `Map` binds as an empty MAP of its key and value
+types. DuckDB compares two MAP values pair by pair in their order, so
+`WHERE m = ?` finds a stored MAP only when it has the same pairs in ascending
+key order. DuckDB rejects a NULL key and two equal keys, for example two NaN
+keys of a `Map Double`.
+
 ### Infinite dates and timestamps
 
 Use `Database.DuckDB.Simple.Time` when a column can contain temporal infinity.

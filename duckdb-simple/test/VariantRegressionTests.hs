@@ -468,6 +468,27 @@ tests =
                 assertBool (Text.unpack sqlErrorMessage) (Text.pack reason `Text.isInfixOf` sqlErrorMessage)
               Right rows -> assertFailure ("expected the " <> reason <> " error, got " <> show rows)
         (query_ conn "SELECT 42" :: IO [Only Int64]) >>= (@?= [Only 42])
+    , testCase "a Variant read of a JSON type raises an error at each depth, and the cast reads the parsed value" $ withConnection ":memory:" \conn -> do
+        let refused column expression sqlName =
+              try (query_ conn (Query ("SELECT " <> expression <> " AS " <> column)) :: IO [Only Variant]) >>= \case
+                Left SQLError{sqlErrorMessage} ->
+                  sqlErrorMessage
+                    @?= "duckdb-simple: column "
+                      <> column
+                      <> " has type "
+                      <> sqlName
+                      <> " but expected Variant: DuckDB casts JSON to VARIANT by parsing the text; write "
+                      <> column
+                      <> "::VARIANT"
+                Right rows -> assertFailure ("expected Incompatible for " <> Text.unpack expression <> ", got " <> show rows)
+        refused "j" "'{\"a\": 1}'::JSON" "JSON"
+        refused "l" "['{\"a\": 1}']::JSON[]" "JSON[]"
+        refused "s" "{'k': '{\"a\": 1}'::JSON}" "STRUCT(k JSON)"
+        refused "m" "MAP {'k': '{\"a\": 1}'::JSON}" "MAP(VARCHAR, JSON)"
+        (query_ conn "SELECT j::VARIANT FROM (SELECT '{\"a\": 1}'::JSON AS j)" :: IO [Only Variant])
+          >>= (@?= [Only (Variant (variantObject [("a", FieldWord64 1)]))])
+        (query_ conn "SELECT l::VARIANT FROM (SELECT ['{\"a\": 1}']::JSON[] AS l)" :: IO [Only Variant])
+          >>= (@?= [Only (Variant (FieldList [variantObject [("a", FieldWord64 1)]]))])
     , testCase "a Variant reads only a value that a VARIANT can hold" $ withConnection ":memory:" \conn -> do
         -- The cast to VARIANT changes a value of another shape, so the read
         -- raises the error of an incompatible column at each depth. The cast in
@@ -528,10 +549,6 @@ tests =
               >>= \case
                 [(value, cast)] -> assertEqual (Text.unpack expression) cast value
                 rows -> assertFailure (show rows)
-        -- A JSON column decodes as its text, as a VARCHAR does, so it reads as
-        -- Variant with its text. The cast gives the parsed value.
-        (query_ conn "SELECT '{\"a\": 1}'::JSON, ('{\"a\": 1}'::JSON)::VARIANT" :: IO [(Variant, Variant)])
-          >>= (@?= [(Variant (FieldText "{\"a\": 1}"), Variant (variantObject [("a", FieldWord64 1)]))])
         -- The cast of a GEOMETRY with a CRS drops the CRS.
         [(withCrs, wkb)] <-
           query_ conn "SELECT ('POINT (1 2)'::GEOMETRY('OGC:CRS84'))::VARIANT, ST_AsWKB('POINT (1 2)'::GEOMETRY)" :: IO [(Variant, BS.ByteString)]

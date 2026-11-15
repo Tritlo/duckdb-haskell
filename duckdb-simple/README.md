@@ -158,11 +158,11 @@ that can hold it. Bind a `BigNum` to bind a BIGNUM value in each case.
 
 In DuckDB 2.0.0 the casts from BIGNUM to the integer types have defects: some
 fail, and some store a wrong value with no error
-([issue 41](https://github.com/Tritlo/duckdb-haskell/issues/41)). An `Array` of
-`Integer` or `Natural` values takes the element type of its target when that
-type is an integer type or DECIMAL, so DuckDB checks each element. A `BigNum`
-value, and an `Array` of `BigNum` values, still have these defects for an
-integer target.
+([issue 41](https://github.com/Tritlo/duckdb-haskell/issues/41)). An `Array`
+or a list of `Integer` or `Natural` values takes the element type of its target
+when that type is an integer type or DECIMAL, so DuckDB checks each element. A
+`BigNum` value, and an `Array` or a list of `BigNum` values, still have these
+defects for an integer target.
 
 `query_` and `execute_` parse all input statements before execution. A syntax
 error prevents every statement in that input from running. An execution error
@@ -308,22 +308,27 @@ storeArray conn = do
 storeList :: Connection -> IO [[Int]]
 storeList conn = do
   _ <- execute_ conn "CREATE TABLE lists (vals INTEGER[])"
-  let arr = listArray (0, 2) [1, 2, 3] :: Array Int Int
-  _ <- execute conn "INSERT INTO lists VALUES (?)" (Only arr)
+  _ <- execute conn "INSERT INTO lists VALUES (?)" (Only ([1, 2, 3] :: [Int]))
+  _ <- execute conn "INSERT INTO lists VALUES (?)" (Only ([] :: [Int]))
   fmap fromOnly <$> query_ conn "SELECT vals FROM lists"
 ```
 
-A Haskell list reads a LIST result. Lists have no parameter instance, so bind
-an `Array`. DuckDB casts the array to the LIST column type.
+A Haskell list binds as a LIST parameter and reads a LIST result. Put a list
+parameter in `Only`, because a list as a row is a row of parameters. A
+`String` stays one VARCHAR parameter. An `Array` binds as an ARRAY with the
+size of the value. DuckDB casts a LIST or an ARRAY to the type of a LIST
+column. It casts a LIST to an ARRAY column only when the lengths are equal.
 
-An array parameter with scalar elements takes its element type from the
-column type name of the element. An empty array raises an `SQLError`, because
-a DuckDB ARRAY has at least one element. Use an SQL empty LIST. An array
-of STRUCT values, UNION values, generic records, or arrays takes the type of
-its first element that is not NULL. All other non-NULL elements must have the
-same type, including field names, decimal precision and scale, and nested
+A list or an array parameter with scalar elements takes its element type from
+the column type name of the element. An empty list binds as an empty LIST of
+that type. An empty array raises an `SQLError`, because a DuckDB ARRAY has at
+least one element. Bind an empty list for an empty LIST. A list or an array of
+STRUCT values, UNION values, generic records, lists, or arrays takes the type
+of its first element that is not NULL. All other non-NULL elements must have
+the same type, including field names, decimal precision and scale, and nested
 types. Different types raise an error before DuckDB can cast away fields or
-round values. An empty or all-NULL array of such elements raises an error.
+round values. An empty or all-NULL list or array of such elements raises an
+error.
 
 ### Infinite dates and timestamps
 
@@ -636,8 +641,8 @@ and its own CRS. DuckDB then casts it to the type of the parameter, as it casts
 a `GEOMETRY` value in SQL text. A value without a CRS takes the CRS of the
 target. A target without a CRS removes the CRS of the value, with no error. A
 target with another CRS raises `SQLError`. Use `Maybe RawGeometry` for SQL
-NULL. An `Array` and a typed row cannot hold a `RawGeometry`, because their
-`GEOMETRY` type would have no CRS. A composite parameter holds it as
+NULL. An `Array`, a list, and a typed row cannot hold a `RawGeometry`, because
+their `GEOMETRY` type would have no CRS. A composite parameter holds it as
 `FieldGeometry` (see below):
 
 ```haskell

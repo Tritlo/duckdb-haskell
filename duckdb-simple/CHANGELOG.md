@@ -162,7 +162,13 @@
   a target without a CRS removes the CRS, and a target with another CRS raises
   `SQLError`. Version 0.3 had only a result instance for `RawGeometry`. An
   `Array` and a typed row cannot hold a `RawGeometry`.
-- Empty `Array` parameters raise `SQLError`. Use an SQL empty LIST.
+- Empty `Array` parameters raise `SQLError`. Bind an empty list for an empty
+  LIST.
+- Add parameter instances for lists. A list binds as a LIST value with the
+  element rules of an `Array`, and an empty list binds as an empty LIST of its
+  element type. A `String` stays one VARCHAR parameter, and a list as a row is
+  still a row of parameters, so a list parameter is `Only [..]`. Version 0.3
+  had no list parameter instance.
 - `executeMany` reads the parameter types one time for each call, not one time
   for each row. A row with a `UTCTime`, an `Unbounded UTCTime`, an `Array`, or
   a manual STRUCT, TUPLE, or UNION parameter no longer runs the DuckDB binder

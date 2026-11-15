@@ -420,6 +420,91 @@ valueRegressionTests =
         forM_ [(dtype, second) | dtype <- ["BIGINT[2]", "UBIGINT[2]", "HUGEINT[2]", "DECIMAL(38,0)[2]"], second <- [huge, negate huge]] \(dtype, second) -> do
           SQLError{sqlErrorType} <- insert dtype second
           sqlErrorType @?= Just ErrorInputOutOfRange
+    , testCase "a list binds as a LIST parameter in each SQL form" $ withConnection ":memory:" \conn -> do
+        let ints = [1, 2, 3] :: [Int64]
+            none = [] :: [Int64]
+            count :: (ToRow p) => Query -> p -> IO [Only Int64]
+            count = query conn
+        forM_ [ints, none] \values ->
+          (query conn "SELECT typeof(?), ?" (values, values) :: IO [(Text, [Int64])]) >>= (@?= [("BIGINT[]", values)])
+        _ <- execute_ conn "CREATE TABLE list_value (i BIGINT, v BIGINT[])"
+        _ <- executeMany conn "INSERT INTO list_value VALUES (?, ?)" [(0 :: Int64, ints), (1, none)]
+        (query_ conn "SELECT v FROM list_value ORDER BY i" :: IO [Only [Int64]]) >>= (@?= [Only ints, Only none])
+        count "SELECT count(*) FROM list_value WHERE v = ?" (Only ints) >>= (@?= [Only 1])
+        count "SELECT count(*) FROM list_value WHERE v = ?" (Only none) >>= (@?= [Only 1])
+        -- DuckDB casts a LIST to an ARRAY of the same length only.
+        _ <- execute_ conn "CREATE TABLE array_column (v BIGINT[3])"
+        _ <- execute conn "INSERT INTO array_column VALUES (?)" (Only ints)
+        (query_ conn "SELECT v FROM array_column" :: IO [Only [Int64]]) >>= (@?= [Only ints])
+        count "SELECT count(*) FROM array_column WHERE v = ?" (Only ints) >>= (@?= [Only 1])
+        forM_ [[1, 2], none] \values -> do
+          result <- try (execute conn "INSERT INTO array_column VALUES (?)" (Only values))
+          case result of
+            Left SQLError{sqlErrorMessage, sqlErrorType} -> do
+              assertBool (Text.unpack sqlErrorMessage) ("Conversion Error: Cannot cast list with length " `Text.isPrefixOf` sqlErrorMessage)
+              sqlErrorType @?= Just ErrorTypeConversion
+            Right (_ :: Int) -> assertFailure ("expected the DuckDB length error for " <> show values)
+        (query_ conn "SELECT count(*) FROM array_column" :: IO [Only Int64]) >>= (@?= [Only 1])
+        _ <- execute_ conn "CREATE TABLE searched (v BIGINT)"
+        _ <- execute_ conn "INSERT INTO searched VALUES (1), (2), (5)"
+        forM_
+          [ "SELECT count(*) FROM searched WHERE v = ANY(?)"
+          , "SELECT count(*) FROM searched WHERE v IN (SELECT unnest(?))"
+          , "SELECT count(*) FROM searched WHERE list_contains(?, v)"
+          ]
+          \sql -> do
+            count sql (Only ([1, 5] :: [Int64])) >>= (@?= [Only 2])
+            count sql (Only none) >>= (@?= [Only 0])
+    , testCase "a list binds Maybe, nested, Text, String, and UTC elements" $ withConnection ":memory:" \conn -> do
+        (query conn "SELECT typeof(?), (?)::VARCHAR" ([Just 1, Nothing] :: [Maybe Int64], [Just 1, Nothing] :: [Maybe Int64]) :: IO [(Text, Text)])
+          >>= (@?= [("BIGINT[]", "[1, NULL]")])
+        let nested = [[1, 2], [], [3]] :: [[Int64]]
+        (query conn "SELECT typeof(?), ?" (nested, nested) :: IO [(Text, [[Int64]])]) >>= (@?= [("BIGINT[][]", nested)])
+        -- A String stays one VARCHAR parameter next to a list of Text.
+        let labels = ["a", "b"] :: [Text]
+            label = "ab" :: String
+        (query conn "SELECT typeof(?), ?, typeof(?), ?" (labels, labels, label, label) :: IO [(Text, [Text], Text, String)])
+          >>= (@?= [("VARCHAR[]", labels, "VARCHAR", label)])
+        (query conn "SELECT typeof(?), typeof(?)" (["x"] :: [String], [] :: [String]) :: IO [(Text, Text)]) >>= (@?= [("VARCHAR[]", "VARCHAR[]")])
+        -- A UTC element keeps its nanoseconds for a nanosecond target.
+        let precise = posixSecondsToUTCTime 0.123456789
+        (query conn "SELECT ?::TIMESTAMPTZ_NS[]" (Only [Just precise, Nothing]) :: IO [Only [Maybe UTCTime]])
+          >>= (@?= [Only [Just precise, Nothing]])
+    , testCase "a list of Integer values takes the element type of its target" $ withConnection ":memory:" \conn -> do
+        let insert :: Text -> [Integer] -> IO (Either SQLError Int)
+            insert dtype values = do
+              _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE integer_list (v " <> dtype <> ")"))
+              try (execute conn "INSERT INTO integer_list VALUES (?)" (Only values))
+            stored = query_ conn "SELECT v::VARCHAR FROM integer_list" :: IO [Only Text]
+        insert "UBIGINT[]" [5, 6] >>= either (assertFailure . show) (const (pure ()))
+        stored >>= (@?= [Only "[5, 6]"])
+        insert "UBIGINT[]" [5, -6] >>= \case
+          Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorInputInvalid
+          Right _ -> assertFailure "expected the DuckDB range error for -6"
+        insert "UBIGINT[]" [5, 2 ^ (130 :: Int)] >>= \case
+          Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorInputOutOfRange
+          Right _ -> assertFailure "expected the duckdb-simple range error for 2^130"
+        stored >>= (@?= [])
+        (query conn "SELECT typeof(?)" (Only ([5, 6] :: [Integer])) :: IO [Only Text]) >>= (@?= [Only "BIGNUM[]"])
+    , testCase "a list and an Array with the same elements store the same LIST value" $ withConnection ":memory:" \conn -> do
+        let ints = [1, 2, 3] :: [Int64]
+            arr = listArray (0, 2) ints :: Array Int Int64
+        (query conn "SELECT typeof(?), typeof(?)" (ints, arr) :: IO [(Text, Text)]) >>= (@?= [("BIGINT[]", "BIGINT[3]")])
+        _ <- execute_ conn "CREATE TABLE same_value (i BIGINT, v BIGINT[])"
+        _ <- execute conn "INSERT INTO same_value VALUES (0, ?), (1, ?)" (ints, arr)
+        (query_ conn "SELECT v FROM same_value ORDER BY i" :: IO [Only [Int64]]) >>= (@?= [Only ints, Only ints])
+        (query_ conn "SELECT count(DISTINCT v) FROM same_value" :: IO [Only Int64]) >>= (@?= [Only 1])
+    , testCase "an empty list of composite elements has no element type" $ withConnection ":memory:" \conn -> do
+        let rejected :: (ToField a) => Text -> a -> Assertion
+            rejected typeName value =
+              try (query conn "SELECT ?" (Only value) :: IO [Only FieldValue]) >>= \case
+                Left SQLError{sqlErrorMessage} ->
+                  sqlErrorMessage @?= "duckdb-simple: an empty or all-NULL array of " <> typeName <> " elements has no element type"
+                Right _ -> assertFailure ("expected the element type error for " <> Text.unpack typeName)
+        rejected "STRUCT" ([] :: [StructValue FieldValue])
+        rejected "BIGINT[]" ([] :: [[Int64]])
+        -- An Array of NULL STRUCT values raises the same error.
+        rejected "STRUCT" (listArray (0, 0) [Nothing] :: Array Int (Maybe (StructValue FieldValue)))
     , testCase "an array of BigNum values keeps the BIGNUM casts of DuckDB" $ withConnection ":memory:" \conn -> do
         -- DuckDB 2.0.0 casts the BIGNUM -6 to UBIGINT as a wrapped value with no
         -- error. See Note [Integer parameters] in "Database.DuckDB.Simple.ToField".

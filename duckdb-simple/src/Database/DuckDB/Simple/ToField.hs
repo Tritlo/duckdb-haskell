@@ -315,8 +315,8 @@ integerBinding binds an Integer or a Natural parameter with this rule:
     in SELECT ?, binds as a BIGNUM. A cast that DuckDB adds later can still
     have the defects above.
   - A BigNum always binds as a BIGNUM.
-  - An Array of Integer values for a target with no known type, or for a
-    target with an element type that is not an integer type or a DECIMAL
+  - An Array or a list of Integer values for a target with no known type, or
+    for a target with an element type that is not an integer type or a DECIMAL
     type, has BIGNUM elements. A cast that DuckDB adds later can still have
     the defects above.
   - toDuckValue gives a BIGNUM value for a value outside the HUGEINT range.
@@ -333,16 +333,16 @@ integerBinding binds an Integer or a Natural parameter with this rule:
   a BIGNUM column for them. DuckDB casts each HUGEINT value to that BIGNUM
   column with no defect.
 
-- Arrays. DuckDB casts each element of an array to the declared element type
-  when it builds the array. The DuckDBColumnType of Integer, Natural, and
-  BigNum is BIGNUM. For an ARRAY or LIST target with an integer or DECIMAL
-  element type, arrayDuckValue declares that element type in place of BIGNUM.
-  Each Integer element is a HUGEINT or a UHUGEINT value, so DuckDB checks the
-  range of the cast of each element. For example, [5, -6] for a UBIGINT[2]
-  column raises an error. An Array of BigNum values also takes the element
-  type of the target, but each element is a BIGNUM value. DuckDB casts each
-  element with the casts from BIGNUM, so the result for an Array of BigNum
-  values does not improve.
+- Arrays and lists. DuckDB casts each element of an ARRAY or a LIST value to
+  the declared element type when it builds the value. The DuckDBColumnType of
+  Integer, Natural, and BigNum is BIGNUM. For an ARRAY or LIST target with an
+  integer or DECIMAL element type, sequenceDuckValue declares that element
+  type in place of BIGNUM. Each Integer element is a HUGEINT or a UHUGEINT
+  value, so DuckDB checks the range of the cast of each element. For example,
+  [5, -6] for a UBIGINT[2] column raises an error. An Array or a list of
+  BigNum values also takes the element type of the target, but each element
+  is a BIGNUM value. DuckDB casts each element with the casts from BIGNUM, so
+  the result for BigNum elements does not improve.
 
 Issue 41 of duckdb-haskell tracks the defects.
 -}
@@ -489,6 +489,19 @@ instance (DuckDBColumnType a, ToField a) => ToField (Array Int a) where
         let childTarget = collectionChildType target
         arrayDuckValue builder childTarget (\value -> fieldBindingValue (toField value) builder (pure childTarget)) arr
 
+-- | Bind a list as a LIST value with the element rules of an 'Array'. An empty
+-- list binds as an empty LIST of the element type. 'String' keeps its own
+-- instance. A list as a row is a row of parameters, so bind a list parameter
+-- as @Only [..]@.
+instance {-# OVERLAPPABLE #-} (DuckDBColumnType a, ToField a) => ToField [a] where
+  toField values =
+    targetValueBinding
+      ("<list length=" <> show (length values) <> ">")
+      \builder readTarget -> do
+        target <- readTarget
+        let childTarget = collectionChildType target
+        listDuckValue builder childTarget (\value -> fieldBindingValue (toField value) builder (pure childTarget)) values
+
 instance (ToField a) => ToField (Maybe a) where
   toField Nothing = nullBinding "Nothing"
   toField (Just value) =
@@ -602,6 +615,10 @@ instance (DuckDBColumnType a) => DuckDBColumnType (Maybe a) where
 instance (DuckDBColumnType a) => DuckDBColumnType (Array Int a) where
   duckdbColumnTypeFor _ = duckdbColumnTypeFor (Proxy :: Proxy a) <> Text.pack "[]"
 
+-- | 'String' keeps its own instance.
+instance {-# OVERLAPPABLE #-} (DuckDBColumnType a) => DuckDBColumnType [a] where
+  duckdbColumnTypeFor _ = duckdbColumnTypeFor (Proxy :: Proxy a) <> Text.pack "[]"
+
 nullBinding :: String -> FieldBinding
 nullBinding repr = valueBinding repr nullDuckValue
 
@@ -711,30 +728,64 @@ utcTimestampDuckValue factory value =
   encodeUnbounded (encodeTimestampUnits 1000000 . utcToLocalTime utc) value
     >>= (\encoded -> output (c_duckdb_v2_value_create_timestamp_tz factory encoded))
 
--- | Construct an ARRAY value. An empty array raises 'SQLError'. The target is
--- the element type of the parameter. When the declared element type is BIGNUM
--- and the target is an integer type or a DECIMAL type, the array takes the
--- target as its element type. See Note [Integer parameters].
+-- | Construct an ARRAY value. An empty array raises 'SQLError'. See
+-- 'sequenceDuckValue' for the element type.
 arrayDuckValue
-  :: forall a
-   . (DuckDBColumnType a)
+  :: (DuckDBColumnType a)
   => ValueBuilder
   -> Maybe LogicalTypeRep
   -> (a -> IO DuckDBV2ValueHandle)
   -> Array Int a
   -> IO DuckDBV2ValueHandle
-arrayDuckValue ValueBuilder{builderFactory = factory, builderType = makeType} target elementValue array = do
+arrayDuckValue builder target elementValue array = do
   when (null (elems array)) $
     throwIO
       ( SQLError
-          "duckdb-simple: an empty ARRAY parameter is not possible, because a DuckDB ARRAY has at least one element; use an explicit SQL empty LIST"
+          "duckdb-simple: an empty ARRAY parameter is not possible, because a DuckDB ARRAY has at least one element; bind an empty list for an empty LIST"
           Nothing
           Nothing
       )
-  withCreatedValues (map elementValue (elems array)) \values ->
+  sequenceDuckValue c_duckdb_v2_value_create_array builder target elementValue (elems array)
+
+-- | Construct a LIST value. An empty list is an empty LIST of the element type.
+-- See 'sequenceDuckValue' for the element type.
+listDuckValue
+  :: (DuckDBColumnType a)
+  => ValueBuilder
+  -> Maybe LogicalTypeRep
+  -> (a -> IO DuckDBV2ValueHandle)
+  -> [a]
+  -> IO DuckDBV2ValueHandle
+listDuckValue = sequenceDuckValue c_duckdb_v2_value_create_list
+
+-- | Construct a LIST or an ARRAY value with the native constructor. The target
+-- is the element type of the parameter. A scalar element type comes from the
+-- column type name of the element. When that type is BIGNUM and the target is
+-- an integer type or a DECIMAL type, the value takes the target as its element
+-- type. See Note [Integer parameters]. Each other element type comes from the
+-- first element that is not NULL, and the other elements must have the same
+-- type.
+sequenceDuckValue
+  :: forall a
+   . (DuckDBColumnType a)
+  => ( DuckDBV2FactoryHandle
+       -> DuckDBV2LogicalTypeHandle
+       -> ConstPtr DuckDBV2ValueHandle
+       -> DuckDBIdx
+       -> Ptr DuckDBV2ValueHandle
+       -> Ptr DuckDBV2ErrorInfoHandle
+       -> IO DuckDBV2Error
+     )
+  -> ValueBuilder
+  -> Maybe LogicalTypeRep
+  -> (a -> IO DuckDBV2ValueHandle)
+  -> [a]
+  -> IO DuckDBV2ValueHandle
+sequenceDuckValue create ValueBuilder{builderFactory = factory, builderType = makeType} target elementValue elements =
+  withCreatedValues (map elementValue elements) \values ->
     withElementType values \elementType ->
       withArray values \ptr ->
-        output (c_duckdb_v2_value_create_array factory elementType (ConstPtr ptr) (fromIntegral (length values)))
+        output (create factory elementType (ConstPtr ptr) (fromIntegral (length values)))
   where
     typeName = duckdbColumnType (Proxy :: Proxy a)
     withElementType values action = case duckDBTypeFromName typeName of
@@ -1033,7 +1084,7 @@ value in SQL text:
   same rule.
 
 RawGeometry has no DuckDBColumnType instance and no ToDuckValue instance.
-Thus an Array of raw geometries and a typed row cannot hold one. Their
+Thus an Array or a list of raw geometries and a typed row cannot hold one. Their
 declared element type or column type would be GEOMETRY without a CRS, and
 DuckDB would remove the CRS of each value.
 
@@ -1299,6 +1350,11 @@ instance ToDuckValue (UnionValue FieldValue) where
 -- | Construct an array through the supplied factory with the element type of @a@.
 instance (DuckDBColumnType a, ToDuckValue a) => ToDuckValue (Array Int a) where
   toDuckValue factory = arrayDuckValue (plainBuilder factory) Nothing (toDuckValue factory)
+
+-- | Construct a LIST through the supplied factory with the element type of @a@.
+-- 'String' keeps its own instance.
+instance {-# OVERLAPPABLE #-} (DuckDBColumnType a, ToDuckValue a) => ToDuckValue [a] where
+  toDuckValue factory = listDuckValue (plainBuilder factory) Nothing (toDuckValue factory)
 
 instance (ToDuckValue a) => ToDuckValue (Maybe a) where
   toDuckValue factory Nothing = nullDuckValue factory

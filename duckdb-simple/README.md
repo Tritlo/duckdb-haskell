@@ -157,8 +157,8 @@ The execution helpers return the number of affected rows (`Int`) so callers can
 assert on data changes when needed.
 
 An `Integer` or a `Natural` parameter binds as a HUGEINT, a UHUGEINT, or a
-BIGNUM value, by its size and by the type of its target: note 1 of
-[Types](#types) gives the rule.
+BIGNUM value, or raises an error, by its size and by the type of its target:
+note 1 of [Types](#types) gives the rule.
 
 In DuckDB 2.0.0 the casts from BIGNUM to the integer types have defects: some
 fail, and some store a wrong value with no error
@@ -359,19 +359,19 @@ Notes:
    NULL from infinity. `Date`, `LocalTimestamp`, and `UTCTimestamp` from
    `Database.DuckDB.Simple.Time` are the `Unbounded` forms.
 7. A value with digits below a microsecond keeps them for a nanosecond
-   parameter, and as a scalar value that fits for a `VARIANT` parameter:
-   [Infinite dates and timestamps](#infinite-dates-and-timestamps) gives the
-   rule. The range of `Day` is 5877642-06-25 (BC), the year -5877641 of
-   `Data.Time`, to 5881580-07-10. The range of `LocalTime` and `UTCTime` is
-   290309-12-22 (BC) 00:00:00 to 294247-01-10 04:00:54.775806. A value outside
-   its range raises an `SQLError` of the type `ErrorInputOutOfRange`. A target
-   of the type TIMESTAMP_NS or TIMESTAMPTZ_NS has a smaller range, about the
-   years 1677 to 2262, and for such a target the error depends on the position
-   of the value. A `TimeOfDay` with 60 seconds binds as the next second, as
-   `make_time` of DuckDB gives it: 23:59:60 binds as 24:00:00. A later time, for
-   example 23:59:60.5, raises an `SQLError` of the type `ErrorInputInvalid`.
-   [Infinite dates and timestamps](#infinite-dates-and-timestamps) gives the
-   full rule.
+   parameter, and as a scalar value that fits the range of the nanosecond type
+   for a `VARIANT` parameter: [Infinite dates and
+   timestamps](#infinite-dates-and-timestamps) gives the rule. The range of
+   `Day` is 5877642-06-25 (BC), the year -5877641 of `Data.Time`, to
+   5881580-07-10. The range of `LocalTime` and `UTCTime` is 290309-12-22 (BC)
+   00:00:00 to 294247-01-10 04:00:54.775806. A value outside its range raises an
+   `SQLError` of the type `ErrorInputOutOfRange`. A target of the type
+   TIMESTAMP_NS or TIMESTAMPTZ_NS has a smaller range, about the years 1677 to
+   2262, and for such a target the error depends on the position of the value. A
+   `TimeOfDay` with 60 seconds binds as the next second, as `make_time` of
+   DuckDB gives it: 23:59:60 binds as 24:00:00. A later time, for example
+   23:59:60.5, raises an `SQLError` of the type `ErrorInputInvalid`. [Infinite
+   dates and timestamps](#infinite-dates-and-timestamps) gives the full rule.
 8. An `Array` binds as an ARRAY with the size of the value. An empty `Array`
    raises an `SQLError` of the type `ErrorInputInvalid`, because a DuckDB ARRAY
    has at least one element; bind an empty list for an empty LIST. A typed
@@ -425,11 +425,11 @@ Notes:
     does, where `c::VARIANT` gives the parsed value.
 14. `DecimalValue` and `RawGeometry` have no `DuckDBColumnType` and no
     `ToDuckValue` instance, so an `Array`, a list, or a typed row of either does
-    not compile: GHC reports `No instance for 'DuckDBColumnType DecimalValue'`,
-    or the same for `ToDuckValue` in a typed row. One column type cannot give
-    the width and scale of each `DecimalValue`. A declared GEOMETRY type has no
-    CRS, so it would remove the CRS of each `RawGeometry`. A composite parameter
-    holds a `RawGeometry` as a `FieldGeometry`.
+    not compile: GHC reports `No instance for 'DuckDBColumnType DecimalValue'`
+    (or `RawGeometry`), or the same for `ToDuckValue` in a typed row. One column
+    type cannot give the width and scale of each `DecimalValue`. A declared
+    GEOMETRY type has no CRS, so it would remove the CRS of each `RawGeometry`.
+    A composite parameter holds a `RawGeometry` as a `FieldGeometry`.
 
 A value of a VARIANT column reads as its stored value, so the row of the stored
 type applies. A value in a LIST, ARRAY, MAP, STRUCT, or UNION reads with the
@@ -841,12 +841,11 @@ with digits below a microsecond in a `FieldList` or a `FieldMap` for a
 `TIMESTAMP_NS` values loses these digits when it binds back. A `VARIANT` object
 reads as a `FieldStruct` with `VARIANT` fields and keeps them.
 
-An empty or all-NULL `FieldList`, `FieldArray`, or `FieldMap` binds as note 11
-of [Types](#types) says. Inside a `FieldStruct`, a `FieldTuple`, or a
-`FieldUnion`, a `FieldEnum` binds its label to the declared ENUM type, and a
-label that is not in the dictionary raises an error. `FieldValue` has no
-`DuckDBColumnType` and no `ToDuckValue` instance, because no one DuckDB type
-holds each of its values.
+An empty or all-NULL `FieldList`, `FieldArray`, or `FieldMap` follows note 11 of
+[Types](#types). Inside a `FieldStruct`, a `FieldTuple`, or a `FieldUnion`, a
+`FieldEnum` binds its label to the declared ENUM type, and a label that is not
+in the dictionary raises an error. `FieldValue` has no `DuckDBColumnType` and no
+`ToDuckValue` instance, because no one DuckDB type holds each of its values.
 
 ### Resource Management
 
@@ -1365,8 +1364,8 @@ places still use registered casts:
   the option, as SQL `SET` does.
 
 `createAggregate` registers an aggregate function as a fold. Its result type
-must be one of the types that write directly into the result vector, or
-`Maybe` of one of them: [Types](#types) gives them and the reason.
+must be one of the types that write directly into the result vector:
+[Types](#types) gives them and the reason.
 
 ```haskell
 aggregateExample :: Connection -> IO [Only Int64]
@@ -1403,7 +1402,7 @@ tableExample conn = do
 ```
 
 The type of a column, a parameter, or an aggregate argument comes from
-`duckdbTypeDeclaration`: notes 9 and 10 of [Types](#types) give the types of
+`duckdbTypeDeclaration`: notes 9 and 10 of [Types](#types) give the rule for
 records, sum types, and `StructValue`, `TupleValue`, and `UnionValue`. An
 aggregate argument has the VARIANT and GEOMETRY rules of [User-Defined
 Functions](#user-defined-functions).

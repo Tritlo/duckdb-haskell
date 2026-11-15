@@ -226,7 +226,7 @@ instance {-# OVERLAPPABLE #-} (FunctionResult a) => Function a where
   returnType _ = duckdbTypeDeclaration (Proxy @a)
   isVolatile _ = False
   applyFunction [] value = pure (scalarValue value)
-  applyFunction _ _ = throwIO (functionInvocationError (Text.pack "unexpected arguments supplied"))
+  applyFunction _ _ = throwInternalError (Text.pack "unexpected arguments supplied")
 
 -- | An 'IO' action that gives a result: a function with no argument. It is
 -- volatile, so DuckDB runs the action one time for each row.
@@ -235,7 +235,7 @@ instance {-# OVERLAPPING #-} (FunctionResult a) => Function (IO a) where
   returnType _ = duckdbTypeDeclaration (Proxy @a)
   isVolatile _ = True
   applyFunction [] action = scalarValue <$> action
-  applyFunction _ _ = throwIO (functionInvocationError (Text.pack "unexpected arguments supplied"))
+  applyFunction _ _ = throwInternalError (Text.pack "unexpected arguments supplied")
 
 -- | A function of one more argument. The argument has the SQL type of
 -- 'duckdbTypeDeclaration'. The function is volatile when its result is
@@ -245,7 +245,7 @@ instance {-# OVERLAPPABLE #-} (FromField a, DuckDBColumnType a, Function r) => F
   returnType _ = returnType (Proxy @r)
   isVolatile _ = isVolatile (Proxy @r)
   applyFunction [] _ =
-    throwIO (functionInvocationError (Text.pack "insufficient arguments supplied"))
+    throwInternalError (Text.pack "insufficient arguments supplied")
   applyFunction (field : rest) fn =
     case fromField field of
       Errors err -> throwIO (argumentConversionError err)
@@ -346,10 +346,7 @@ executeScalarFunction casts fn info context = withContextFactory context \contex
     checked (c_duckdb_v2_scalar_function_exec_get_arg_count info counts (advancePtr counts 1) (advancePtr counts 2) (advancePtr counts 3))
     fromIntegral . sum <$> peekArray 4 counts
   when (columnCount /= expected) $
-    throwIO
-      ( functionInvocationError
-          (Text.pack ("duckdb-simple: function expected " <> show expected <> " arguments but received " <> show columnCount))
-      )
+    throwInternalError (Text.pack ("function expected " <> show expected <> " arguments but received " <> show columnCount))
   rawRowCount <- output (c_duckdb_v2_scalar_function_exec_get_row_count info)
   let rowCount = fromIntegral rawRowCount :: Int
   readers <- mapM (makeColumnReader (fromMaybe contextFactory casts) info) [0 .. expected - 1]
@@ -370,7 +367,7 @@ scalarFunctionHandlerWithState
 scalarFunctionHandlerWithState casts mkFn info context err = runCallback err do
   statePtr <- output (c_duckdb_v2_scalar_function_exec_get_init_data info)
   when (statePtr == nullPtr) $
-    throwIO (functionInvocationError "duckdb-simple: scalar function state was not initialised")
+    throwInternalError "scalar function state was not initialised"
   -- The cast has no type check, and it is safe. createFunctionWithStateOn has
   -- one signature for initState :: IO s and mkFn :: s -> f. Thus the init
   -- callback stores a StablePtr of the same type s that this cast gives.
@@ -433,7 +430,7 @@ prepareResultWriter :: Maybe DuckDBV2FactoryHandle -> DuckDBV2VectorHandle -> IO
 prepareResultWriter factory vector = do
   kind <- output (c_duckdb_v2_vector_get_vector_type vector)
   when (kind /= DuckDBV2VectorTypeFlat) $
-    throwIO (functionInvocationError (Text.pack ("duckdb-simple: the result vector is not flat: " <> show kind)))
+    throwInternalError (Text.pack ("the result vector is not flat: " <> show kind))
   vectorType <- vectorElementType vector
   dataPtr <- output (c_duckdb_v2_vector_get_data_mutable vector)
   validityPtr <- output (c_duckdb_v2_vector_flat_get_validity_mutable vector)
@@ -464,7 +461,7 @@ writeScalarValue factory vector vectorType dataPtr validityPtr idx = \case
     writeArenaText vector dataPtr idx text
   ScalarNative make -> case factory of
     Just valueFactory -> bracket (make valueFactory) destroyValue (checked . c_duckdb_v2_vector_set_value vector (fromIntegral idx))
-    Nothing -> throwIO (functionInvocationError "duckdb-simple: the result writer has no factory for a value of this result type")
+    Nothing -> throwInternalError "the result writer has no factory for a value of this result type"
   where
     raw :: (Storable s) => DuckDBV2LogicalTypeId -> s -> IO ()
     raw expected value = do
@@ -474,10 +471,7 @@ writeScalarValue factory vector vectorType dataPtr validityPtr idx = \case
     expect expected = when (vectorType /= expected) do
       actualName <- duckDBTypeToName <$> logicalTypeIdFromNative vectorType
       expectedName <- duckDBTypeToName <$> logicalTypeIdFromNative expected
-      throwIO
-        ( functionInvocationError
-            ("duckdb-simple: the result vector has the type " <> actualName <> ", but the result value has the type " <> expectedName)
-        )
+      throwInternalError ("the result vector has the type " <> actualName <> ", but the result value has the type " <> expectedName)
 
 -- | Write a VARCHAR value at a row of a flat vector without a factory. A value
 -- of more than @DUCKDB_V2_BYTES_INLINE_LENGTH@ (12) bytes goes to the arena of

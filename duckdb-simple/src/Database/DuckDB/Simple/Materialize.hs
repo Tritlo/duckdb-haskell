@@ -382,9 +382,9 @@ duckdb_v2_vector_set_value "the only way to write a cell". For an ENUM, the
 header calls a cast of a VARCHAR to an enum type with duckdb_v2_value_cast "the
 sanctioned way to build UNION and ENUM values", and that cast includes
 "registered custom casts". enumDuckValue does not use that cast, on purpose.
-The library builds an ENUM value from a dictionary index, and a user cast from
-VARCHAR to the ENUM type must not change that value. A UNION value is built
-through a vector for another reason. See Note [UNION values] in
+The library builds an ENUM value from the label of a FieldEnum, and a user
+cast from VARCHAR to the ENUM type must not change that value. A UNION value
+is built through a vector for another reason. See Note [UNION values] in
 "Database.DuckDB.Simple.ToField".
 
 These casts still use the cast functions of the session, so a user cast for

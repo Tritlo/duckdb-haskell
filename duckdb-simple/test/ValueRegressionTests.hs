@@ -1435,13 +1435,15 @@ valueRegressionTests =
     , testCase "a prepared statement reads the labels of an ENUM type that DROP TYPE and CREATE TYPE replaced" $ withConnection ":memory:" \conn -> do
         _ <- execute_ conn "CREATE TYPE swapped AS ENUM ('a', 'b')"
         withStatement conn "SELECT ?::swapped, (?::swapped)::VARCHAR" \stmt -> do
-          let run = do
-                bind stmt [toField ("b" :: Text), toField ("b" :: Text)]
+          let run label = do
+                bind stmt [toField (label :: Text), toField label]
                 readAllRows nextRow stmt
-          run >>= (@?= [(FieldEnum 1 "b", "b" :: Text)])
+          run "b" >>= (@?= [(FieldEnum 1 "b", "b" :: Text)])
           _ <- execute_ conn "DROP TYPE swapped"
           _ <- execute_ conn "CREATE TYPE swapped AS ENUM ('x', 'y', 'b')"
-          run >>= (@?= [(FieldEnum 2 "b", "b" :: Text)])
+          -- Index 1 is 'y' in the new type. A cache of the first execution
+          -- would give 'b'.
+          run "y" >>= (@?= [(FieldEnum 1 "y", "y" :: Text)])
     , testCase "ENUM members of a UNION and the key and value of a MAP read the labels of their own dictionaries" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
         _ <- execute_ conn "CREATE TYPE first_labels AS ENUM ('x', 'y'); CREATE TYPE second_labels AS ENUM ('p', 'q', 'r')"
         -- 3000 rows are two chunks.

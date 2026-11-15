@@ -1523,7 +1523,7 @@ valueRegressionTests =
         try (query conn "SELECT ?" (Only (singleField (LogicalTypeEnum (listArray (0, 1) ["a", "b"])) (FieldEnum 0 "c"))) :: IO [Only FieldValue]) >>= \case
           Left SQLError{sqlErrorMessage, sqlErrorType} -> do
             sqlErrorType @?= Just ErrorInputInvalid
-            sqlErrorMessage @?= "duckdb-simple: the ENUM label \"c\" is not in the dictionary of the type"
+            sqlErrorMessage @?= "duckdb-simple: the ENUM label 'c' is not in the dictionary of the type"
           Right rows -> assertFailure ("expected the label error, got " <> show rows)
     , testCase "ENUM payload binds its label, not its index" $ withConnection ":memory:" \conn -> do
         let struct = singleField (LogicalTypeEnum (listArray (0, 2) ["a", "b", "c"])) (FieldEnum 1 "b")

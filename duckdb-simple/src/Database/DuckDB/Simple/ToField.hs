@@ -1566,7 +1566,7 @@ scalarFieldValueDuckValue factory dtype value = case (dtype, value) of
 enumDuckValue :: DuckDBV2FactoryHandle -> Array Int Text -> Text -> IO DuckDBV2ValueHandle
 enumDuckValue factory entries label = do
   unless (label `elem` elems entries) $
-    throwInvalidArgument ("the ENUM label " <> Text.pack (show label) <> " is not in the dictionary of the type")
+    throwInvalidArgument ("the ENUM label '" <> label <> "' is not in the dictionary of the type")
   bracket (logicalTypeFromRep factory (LogicalTypeEnum entries)) destroyLogicalType \logical ->
     bracket (textDuckValue factory label) destroyValue \value ->
       defaultCast factory value logical

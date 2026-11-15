@@ -1396,6 +1396,14 @@ functionsTests =
                     , ("hs_arg_records", "['STRUCT(vuId BIGINT, vuName VARCHAR)[]']")
                     ]
                 )
+    , testCase "a UTCTime argument with a TIMESTAMP value gets the cast of DuckDB to TIMESTAMPTZ" $
+        withConnection ":memory:" \conn -> do
+          -- DuckDB casts the argument to the declared TIMESTAMPTZ with the
+          -- TimeZone setting of the session. The function reads that instant.
+          createFunction conn "hs_arg_utc_text" (\(x :: UTCTime) -> Text.pack (show x))
+          _ <- execute_ conn "SET TimeZone = 'Pacific/Auckland'"
+          query_ conn "SELECT hs_arg_utc_text(TIMESTAMP '2024-01-02 03:04:05'), (TIMESTAMP '2024-01-02 03:04:05')::TIMESTAMPTZ"
+            >>= (@?= [("2024-01-01 14:04:05 UTC" :: Text.Text, UTCTime (fromGregorian 2024 1 1) (secondsToDiffTime 50645))])
     , testCase "declares the SQL type of each result type" $
         withConnection ":memory:" \conn -> do
           createFunction conn "hs_res_bool" True

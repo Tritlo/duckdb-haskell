@@ -213,10 +213,13 @@ The SQL workflow stays the same. These changes can affect your code:
   and to the callbacks of `registerCopyToFunction`. For a `userError`, version
   0.3 gave `user error (...)`. For an `SQLError`, it gave the `Show` text of
   the record. Update code that compares the text of these errors.
-- `Database.DuckDB.Simple` also exports `createCast`, `createTableFunction`,
-  `createAggregate`, and `Aggregate` with its fields. These names can clash
-  with your own names when you import the module without a list. Hide these
-  names in the import, or import the module qualified.
+- `Database.DuckDB.Simple` exports new names, for example `connect`,
+  `Environment`, `Instance`, `withInstance`, `attachDatabase`, `createCast`,
+  `createTableFunction`, `createAggregate`, `Aggregate` with its fields, and
+  `TypedRow`. It also exports `ErrorType` and `LogicalTypeId` with their
+  constructors. These names can clash with your own names when you import the
+  module without a list. Hide these names in the import, or import the module
+  qualified.
 - An empty `Array` parameter raises `SQLError`. Version 0.3 bound an empty
   `Array` of scalar elements. Bind an empty list for an empty LIST.
 - A list binds as a LIST parameter. Version 0.3 had no list parameter

@@ -20,7 +20,7 @@ import qualified Data.Text as Text
 import Data.Time (Day, LocalTime (..), TimeOfDay (..), UTCTime (..), addDays, fromGregorian, localTimeToUTC, utc, utcToLocalTime)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Database.DuckDB.Simple
-import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), returnError)
+import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), TimeWithZone (..), returnError)
 import Database.DuckDB.Simple.Generic (ViaDuckDB (..))
 import Database.DuckDB.Simple.LogicalRep (
   LogicalTypeRep (..),
@@ -510,6 +510,18 @@ nanosecondTimeTests =
           stored column (at largest)
           rejected column (at (-9223372022400000000 * units `div` 1000000 - 1))
           rejected column (at (largest + 1))
+  , testCase "a leap second binds as the next second, as make_time and make_timestamp give it" $ withConnection ":memory:" $ \conn -> do
+      let leap = TimeOfDay 23 59 60
+          next = LocalTime (fromGregorian 2017 1 1) (TimeOfDay 0 0 0)
+      -- The SQL literal '23:59:60' raises an error. See Note [Time ranges] in
+      -- "Database.DuckDB.Simple.ToField".
+      ( query
+          conn
+          "SELECT ?, make_time(23, 59, 60), ?, make_timestamp(2016, 12, 31, 23, 59, 60), ?, ?"
+          (leap, LocalTime (fromGregorian 2016 12 31) leap, TimeWithZone leap 0, UTCTime (fromGregorian 2016 12 31) 86400)
+          :: IO [(TimeOfDay, TimeOfDay, LocalTime, LocalTime, TimeWithZone, UTCTime)]
+        )
+        >>= (@?= [(TimeOfDay 24 0 0, TimeOfDay 24 0 0, next, next, TimeWithZone (TimeOfDay 24 0 0) 0, localTimeToUTC utc next)])
   ]
 
 -- | Require a controlled encoding error before native value construction.

@@ -600,7 +600,8 @@ instance ToField BitString
 instance ToField Day
 
 -- | Bind a time of day as a TIME, or as a TIME_NS. See
--- Note [Nanosecond parameters].
+-- Note [Nanosecond parameters]. A time with 60 seconds (a leap second) binds as
+-- the next second, as @make_time@ of DuckDB gives it. See Note [Time ranges].
 instance ToField TimeOfDay where
   toField value =
     timeValueBinding (show value) (LogicalTypeScalar LogicalTypeIdTime) (FieldTime value) \builder -> timeOfDayDuckValue (builderFactory builder) value
@@ -608,7 +609,8 @@ instance ToField TimeOfDay where
 -- | Bind a local time as a TIMESTAMP, or as a TIMESTAMP_NS. See
 -- Note [Nanosecond parameters]. A time before 290309-12-22 (BC) 00:00:00, the
 -- year -290308 of "Data.Time", raises an t'SQLError' of the type
--- 'ErrorInputOutOfRange'. See Note [Time ranges].
+-- 'ErrorInputOutOfRange'. A leap second binds as the next second. See
+-- Note [Time ranges].
 instance ToField LocalTime where
   toField value =
     timeValueBinding (show value) (LogicalTypeScalar LogicalTypeIdTimestamp) (FieldTimestamp (Finite value)) \builder -> localTimeDuckValue (builderFactory builder) value
@@ -619,7 +621,8 @@ instance ToField IntervalValue
 
 -- | Bind the time and its offset in seconds as a TIMETZ. An offset outside
 -- -57599 to 57599 seconds raises an error. A time with digits below one
--- microsecond loses these digits, as in SQL text.
+-- microsecond loses these digits, as in SQL text. A leap second binds as the
+-- next second. See Note [Time ranges].
 instance ToField TimeWithZone
 
 -- | Bind the value as a DECIMAL with its own width and scale. DuckDB casts it
@@ -647,8 +650,8 @@ instance ToField Variant where
 
 -- | Bind an instant as a TIMESTAMPTZ, or as a TIMESTAMPTZ_NS. See
 -- Note [Nanosecond parameters]. An instant before 290309-12-22 (BC) 00:00:00
--- UTC raises an t'SQLError' of the type 'ErrorInputOutOfRange'. See
--- Note [Time ranges].
+-- UTC raises an t'SQLError' of the type 'ErrorInputOutOfRange'. A leap second
+-- binds as the next second. See Note [Time ranges].
 instance ToField UTCTime where
   toField value =
     timeValueBinding
@@ -1997,6 +2000,10 @@ these values (throwOutsideTimeRange). The two infinity values and values
 outside the storage keep the earlier error of checkFiniteRange, so that
 check runs first. A nanosecond value has the range of its INT64 storage, and
 the literal of TIMESTAMP_NS accepts that range, so it gets no check here.
+
+A leap second gets no check. A TimeOfDay with 60 seconds binds as the next
+second, as make_time(23, 59, 60) and make_timestamp(2016, 12, 31, 23, 59, 60)
+of DuckDB give it. The SQL literal '23:59:60' raises an error.
 -}
 
 -- | Reject a second, millisecond, or microsecond timestamp outside the range

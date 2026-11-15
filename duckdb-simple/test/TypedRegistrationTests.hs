@@ -1483,6 +1483,9 @@ testNoDeclaration = withConnection ":memory:" \conn -> do
     ("typed_array_map: argument arg0: " <> unsized)
     (createFunction conn "typed_array_map" \(_ :: Map.Map Text (Array Int Int64)) -> True)
   assertSqlError
+    ("typed_array_key: argument arg0: " <> unsized)
+    (createFunction conn "typed_array_key" \(_ :: Map.Map (Array Int Int64) Text) -> True)
+  assertSqlError
     ("typed_array_result: result: " <> unsized)
     (createFunction conn "typed_array_result" \(x :: Int64) -> listArray (0, 0) [x] :: Array Int Int64)
   assertSqlError

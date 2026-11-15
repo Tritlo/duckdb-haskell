@@ -14,53 +14,43 @@
 -- borrowed vector as fields with the names from 'argumentName'.
 -- 'conversionMessage' describes the arguments that do not convert. 'TypedRow'
 -- gives the column types and the column values of a row. The module also
--- registers typed casts on a connection or on a loading extension. It converts a
--- typed replacement function to a native replacement scan callback.
+-- converts a typed replacement function to a native replacement scan callback.
 module Database.DuckDB.Simple.Typed (
   TypedRow (..),
   ColumnValue (..),
   argumentName,
   rowDeclarations,
   checkArgumentType,
+  variantArgumentReason,
   prepareArgumentReader,
   conversionMessage,
-  createCastOn,
   Replacement (..),
   replacementScanCallback,
 ) where
 
-import Control.Applicative ((<|>))
-import Control.Exception (SomeException, bracket, catch, displayException, fromException, throwIO, try)
-import Control.Monad (forM, forM_, when)
-import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
+import Control.Exception (SomeException, bracket, displayException, fromException)
+import Control.Monad (forM, when)
 import Data.List (intercalate)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Database.DuckDB.Simple.Callback (targetCastFactory)
-import Database.DuckDB.Simple.Element (containsType, vectorElementType)
-import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..), FromField (..), ResultError (..))
+import Database.DuckDB.Simple.Element (containsType)
+import Database.DuckDB.Simple.FromField (Field (..), ResultError (..))
 import Database.DuckDB.Simple.LogicalRep (LogicalTypeRep (..))
 import Database.DuckDB.Simple.Materialize (
   FallbackReaders (..),
   ReadFactory,
-  callbackReadFactory,
   prepareGeometryReader,
   prepareVectorReader,
   rejectRows,
  )
 import Database.DuckDB.Simple.Native
-import Database.DuckDB.Simple.Ok (Ok (..))
 import Database.DuckDB.Simple.ToField (DuckDBColumnType (..), ToDuckValue (..))
 import Database.DuckDB.Simple.Types (Only (..))
 import Database.DuckDB.Simple.V2.LogicalRep (logicalTypeToRep)
 import Database.DuckDB.Simple.V2.Registration (
   ContextCallback,
-  RegistrationTarget,
   TypeDeclaration,
-  registerCastWith,
-  withRegistrationFactory,
-  withTypeDeclaration,
  )
 import GHC.Generics
 
@@ -143,19 +133,29 @@ rowDeclarations name places declarations =
   forM (zip places declarations) \(place, declaration) ->
     either (\reason -> throwInvalidArgument (Text.intercalate (Text.pack ": ") [name, place, reason])) pure declaration
 
+-- | The reason in the error for a VARIANT argument. It names the limit and
+-- what a user can write in its place. 'checkArgumentType' and the reader of a
+-- pragma argument of the type ANY use it.
+variantArgumentReason :: Text
+variantArgumentReason =
+  Text.pack
+    "the library cannot read a VARIANT value in a callback; declare another type, such as VARCHAR, and cast the value in SQL, for example v::VARCHAR"
+
 -- | Raise an error before a registration when the resolved type of an
--- argument is or contains VARIANT. The argument readers of a scalar function
--- and of a typed aggregate function do not read VARIANT
--- ('prepareArgumentReader'). When the first argument is False, also raise the
--- error for a type that is or contains GEOMETRY: the callbacks of an aggregate
--- function of an extension have no factory to read it. The error names the
--- registration and the index of the argument.
-checkArgumentType :: Bool -> Text -> Int -> DuckDBV2LogicalTypeHandle -> IO ()
-checkArgumentType readsGeometry name index logical = do
+-- argument is or contains VARIANT. A callback has no connection, so no argument
+-- reader of a callback reads VARIANT ('prepareArgumentReader', and the readers
+-- of a table function, a pragma, and the update function of a custom option).
+-- Without this check the registration succeeds, a NULL value works, and each
+-- value that is not NULL fails the query. When the first argument is False,
+-- also raise the error for a type that is or contains GEOMETRY: the callbacks
+-- of an aggregate function of an extension have no factory to read it. The
+-- error names the registration and the place of the argument.
+checkArgumentType :: Bool -> Text -> Text -> DuckDBV2LogicalTypeHandle -> IO ()
+checkArgumentType readsGeometry name place logical = do
   rep <- logicalTypeToRep logical
-  let refuse reason = throwInvalidArgument (Text.intercalate (Text.pack ": ") [name, Text.pack "argument " <> argumentName index, reason])
+  let refuse reason = throwInvalidArgument (Text.intercalate (Text.pack ": ") [name, place, reason])
   when (containsType isVariant rep) $
-    refuse (Text.pack "the type of an argument cannot be or contain VARIANT")
+    refuse variantArgumentReason
   when (not readsGeometry && containsType isGeometry rep) $
     refuse (Text.pack "the type of an argument of an aggregate function of an extension cannot be or contain GEOMETRY")
   where
@@ -166,11 +166,12 @@ checkArgumentType readsGeometry name index logical = do
 
 -- | Prepare a reader for the rows of an argument vector. The second argument is
 -- the index of the argument, from 0. The reader gives the field of a row, with
--- the name from 'argumentName'. A NULL row gives 'FieldNull', also a NULL
--- VARIANT or GEOMETRY row. A row that holds a VARIANT value raises an error. A
--- GEOMETRY value reads with the factory of the first argument, at each depth
--- of the type. Without a factory, a row that holds a GEOMETRY value raises an
--- error. See Note [User casts and the casts of the library] in
+-- the name from 'argumentName'. A NULL row gives
+-- 'Database.DuckDB.Simple.FromField.FieldNull', also a NULL VARIANT or GEOMETRY
+-- row. A row that holds a VARIANT value raises an error. A GEOMETRY value reads
+-- with the factory of the first argument, at each depth of the type. Without a
+-- factory, a row that holds a GEOMETRY value raises an error. See
+-- Note [User casts and the casts of the library] in
 -- "Database.DuckDB.Simple.Materialize". The reader must not outlive the vector.
 prepareArgumentReader :: Maybe ReadFactory -> Int -> DuckDBV2VectorHandle -> IO (Int -> IO Field)
 prepareArgumentReader casts index vector = do
@@ -179,8 +180,9 @@ prepareArgumentReader casts index vector = do
   readValue <- prepareVectorReader (FallbackReaders noVariant (maybe noGeometry prepareGeometryReader casts)) vector
   pure \row -> Field (argumentName index) index <$> readValue row
 
--- | Describe the arguments that 'FromField' or @FromRow@ cannot convert. The
--- text names each argument with the name of its field.
+-- | Describe the arguments that 'Database.DuckDB.Simple.FromField.FromField' or
+-- @FromRow@ cannot convert. The text names each argument with the name of its
+-- field.
 conversionMessage :: [SomeException] -> String
 conversionMessage failures = intercalate "; " (map describe failures)
   where
@@ -195,87 +197,6 @@ conversionMessage failures = intercalate "; " (map describe failures)
           <> Text.unpack (errHaskellType result)
           <> if Text.null (errMessage result) then "" else ": " <> Text.unpack (errMessage result)
       Nothing -> displayException failure
-
--- | Register an explicit typed cast on a connection or a loading extension.
--- 'Database.DuckDB.Simple.Function.createCast' gives the rules for the rows.
-createCastOn :: (FromField a, ToDuckValue b) => RegistrationTarget -> TypeDeclaration -> TypeDeclaration -> (a -> Either Text b) -> IO ()
-createCastOn target source destination convert = do
-  casts <- targetCastFactory target
-  withRegistrationFactory target \factory ->
-    registerCastWith
-      target
-      ( \function -> do
-          withTypeDeclaration factory source $ checked . c_duckdb_v2_cast_function_set_source_type function
-          withTypeDeclaration factory destination $ checked . c_duckdb_v2_cast_function_set_target_type function
-      )
-      (castRows casts convert)
-
--- | Convert the rows of one cast call. Write each row before an error leaves
--- the callback, because TRY_CAST keeps the output and ignores the error. A failed
--- row gets NULL. Then raise the error of the first failed row.
-castRows
-  :: (FromField a, ToDuckValue b)
-  => Maybe DuckDBV2FactoryHandle -> (a -> Either Text b) -> DuckDBV2CastFunctionExecInfoHandle -> DuckDBV2ContextHandle -> IO ()
-castRows casts convert info context = withContextFactory context \factory -> do
-  count <- fromIntegral <$> output (c_duckdb_v2_cast_function_exec_get_row_count info)
-  readArgument <-
-    output (c_duckdb_v2_cast_function_exec_get_input info) >>= prepareArgumentReader (Just (callbackReadFactory casts factory)) 0
-  vector <- output (c_duckdb_v2_cast_function_exec_get_output info)
-  -- Flatten after the size changes. See Note [Vector flatten] in
-  -- "Database.DuckDB.Simple.Materialize".
-  checked (c_duckdb_v2_vector_set_size vector (fromIntegral count))
-  checked (c_duckdb_v2_vector_flatten vector)
-  vectorType <- vectorElementType vector
-  useText <- newIORef False
-  let setNull row = checked (c_duckdb_v2_vector_set_null vector (fromIntegral row))
-      castRow row =
-        readArgument row >>= \case
-          Field{fieldValue = FieldNull} -> setNull row
-          field -> case fromField field of
-            Errors failures -> throwIO (userError ("duckdb-simple: " <> conversionMessage failures))
-            Ok value -> either (throwIO . userError . Text.unpack) (writeCastValue factory useText vectorType vector row) (convert value)
-  -- Use a loop with a constant stack. See Note [Constant stack at safe calls] in
-  -- "Database.DuckDB.Simple.Native".
-  firstFailure <- newIORef Nothing
-  forM_ [0 .. count - 1] \row ->
-    -- Catch each exception, also an asynchronous one, and write NULL to the
-    -- failed row. For a try cast, the header of
-    -- duckdb_v2_cast_function_exec_get_mode says that "the engine discards
-    -- the error and keeps whatever the callback left in the output". Thus
-    -- the callback must write each row of the output vector before it
-    -- returns.
-    try (castRow row) >>= \case
-      Right () -> pure ()
-      Left (failure :: SomeException) -> do
-        setNull row
-        modifyIORef' firstFailure (<|> Just failure)
-  readIORef firstFailure >>= mapM_ throwIO
-
--- | Write one value of a cast result. DuckDB casts the value to the type of
--- the vector with its default cast. DuckDB 2.0.0 has no default cast from a
--- BIGNUM, BIT, BLOB, DATE, TIME, TIMESTAMP, TIMESTAMPTZ, or UUID value to a custom
--- type with the same base type. It casts VARCHAR to such a type. When the default
--- cast fails for a value of the base type of the vector, write the text of the
--- value. That text comes from the default cast to VARCHAR, which does not read
--- the settings of the session. The flag then selects the text for the subsequent
--- values of the call, because each failed write costs one native error.
-writeCastValue
-  :: (ToDuckValue b) => DuckDBV2FactoryHandle -> IORef Bool -> DuckDBV2LogicalTypeId -> DuckDBV2VectorHandle -> Int -> b -> IO ()
-writeCastValue factory useText vectorType vector row value =
-  bracket (toDuckValue factory value) destroyValue \native ->
-    readIORef useText >>= \case
-      True -> do
-        -- A NULL value has no text. DuckDB writes it without a cast.
-        isNull <- output (c_duckdb_v2_value_is_null native)
-        if isNull /= 0 then write native else writeText native
-      False ->
-        write native `catch` \(failure :: SQLError) -> do
-          valueType <- bracket (output (c_duckdb_v2_value_get_logical_type native)) destroyLogicalType (output . c_duckdb_v2_logical_type_get_id)
-          when (valueType /= vectorType) $ throwIO failure
-          try (writeText native) >>= either (\(_ :: SQLError) -> throwIO failure) (\() -> writeIORef useText True)
-  where
-    write = checked . c_duckdb_v2_vector_set_value vector (fromIntegral row)
-    writeText native = valueText native >>= \text -> bracket (toDuckValue factory text) destroyValue write
 
 -- | What DuckDB reads in place of an unknown table. DuckDB reads the result
 -- under the name of the table, unless the query gives an alias.

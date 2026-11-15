@@ -220,6 +220,7 @@ resultErrorToSqlError query err =
     { sqlErrorMessage = Text.pack (displayException err)
     , sqlErrorType = Nothing
     , sqlErrorQuery = Just query
+    , sqlErrorBody = Nothing
     }
 
 -- | Collapse parser failure diagnostics into an @SQLError@ while preserving the query.
@@ -239,6 +240,7 @@ rowErrorsToSqlError query errs =
                   ]
             , sqlErrorType = Nothing
             , sqlErrorQuery = Just query
+            , sqlErrorBody = Nothing
             }
         Nothing ->
           SQLError
@@ -246,4 +248,5 @@ rowErrorsToSqlError query errs =
                 Text.pack $ "duckdb-simple: row-parsing failed:" <> show errs
             , sqlErrorType = Nothing
             , sqlErrorQuery = Just query
+            , sqlErrorBody = Nothing
             }

@@ -1,6 +1,6 @@
 cabal-version: 3.4
 name: duckdb-simple
-version: 0.4.0.0
+version: 1.0.0.0
 license: MPL-2.0
 license-file: LICENSE
 author: Matthias Pall Gissurarson
@@ -196,6 +196,17 @@ test-suite duckdb-simple-leak-test
     containers >=0.6 && <0.9,
     duckdb-simple,
     geometry-simple >=0.1.1.0 && <0.2,
+    text,
+
+-- This suite has no -threaded. It checks the guard for such a program.
+test-suite duckdb-simple-nonthreaded-test
+  type: exitcode-stdio-1.0
+  hs-source-dirs: nonthreaded-test
+  main-is: Main.hs
+  default-language: Haskell2010
+  build-depends:
+    base >=4.18 && <5,
+    duckdb-simple,
     text,
 
 test-suite duckdb-simple-dataframe-test

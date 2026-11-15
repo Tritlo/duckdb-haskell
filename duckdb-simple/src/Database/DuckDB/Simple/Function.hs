@@ -4,12 +4,21 @@
 
 -- |
 -- Module      : Database.DuckDB.Simple.Function
--- Description : Register Haskell scalar functions, casts, table functions, and aggregate functions with DuckDB connections.
+-- Description : Register Haskell scalar functions, table functions, and aggregate functions with DuckDB connections.
 --
 -- Register pure and IO scalar functions with the managed argument and result
--- conversions. Register pure casts with the same argument conversion. Register
--- table functions and aggregate functions that convert their arguments with
--- 'FromRow'.
+-- conversions. Register table functions and aggregate functions that convert
+-- their arguments with 'FromRow'.
+--
+-- A program that registers a callback must be linked with @-threaded@. DuckDB
+-- can call a callback from several of its threads at the same time, and the
+-- runtime of GHC without @-threaded@ does not support that: the program can
+-- crash. Without @-threaded@, set the DuckDB setting @threads@ to 1 on each
+-- database that runs callbacks, before a callback runs. Without @-threaded@, the
+-- registration of a callback raises an 'Database.DuckDB.Simple.SQLError' of
+-- the type 'Database.DuckDB.Simple.ErrorInputInvalid' when the setting
+-- @threads@ is above 1. The section \"User-Defined Functions\" of the README
+-- gives the rule.
 --
 -- A callback must not run a statement on the connection that runs the callback.
 -- Use another connection of the same instance. This rule applies to each
@@ -52,7 +61,6 @@ module Database.DuckDB.Simple.Function (
   createFunctionWithState,
   deleteFunction,
   TypeDeclaration (..),
-  createCast,
   TypedRow,
   createTableFunction,
   Aggregate (..),
@@ -64,7 +72,6 @@ import Control.Monad (forM)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.Simple.Callback (RegistrationTarget (ConnectionTarget))
-import Database.DuckDB.Simple.FromField (FromField)
 import Database.DuckDB.Simple.FromRow (FromRow)
 import Database.DuckDB.Simple.Function.Internal (
   Function (..),
@@ -79,8 +86,7 @@ import Database.DuckDB.Simple.Internal (
   withParsedStatements,
  )
 import Database.DuckDB.Simple.Native
-import Database.DuckDB.Simple.ToField (ToDuckValue)
-import Database.DuckDB.Simple.Typed (TypedRow, createCastOn)
+import Database.DuckDB.Simple.Typed (TypedRow)
 import Database.DuckDB.Simple.Typed.Aggregate (Aggregate (..), createAggregateOn)
 import Database.DuckDB.Simple.Typed.Table (createTableFunctionOn)
 import Database.DuckDB.Simple.V2.Registration (TypeDeclaration (..))
@@ -101,57 +107,25 @@ import Database.DuckDB.Simple.V2.Registration (TypeDeclaration (..))
 -- type, as a SQL @CAST@ does: it rounds a value to the scale of a DECIMAL type
 -- text, and it raises an error for a value that does not fit.
 --
--- Each argument type needs 'FromField' and
+-- Each argument type needs 'Database.DuckDB.Simple.FromField.FromField' and
 -- 'Database.DuckDB.Simple.ToField.DuckDBColumnType' instances. The SQL type of
 -- an argument is the 'Database.DuckDB.Simple.ToField.duckdbTypeDeclaration' of
--- its type. An argument type with no declaration, or a type that is or
--- contains VARIANT, raises an @SQLError@ at registration, because the argument
--- reader does not read VARIANT. A GEOMETRY argument reads as a GEOMETRY result
--- does, also inside a list or a STRUCT, for example as a @Geometry@.
+-- its type. An argument type with no declaration raises an @SQLError@ at
+-- registration. A type that is or contains VARIANT is an error at
+-- registration, because the library cannot read a VARIANT value in a callback
+-- (see the section /Typed registration/ of the README). A GEOMETRY argument
+-- reads as a GEOMETRY result does, also inside a list or a STRUCT, for example
+-- as a @Geometry@.
 createFunction :: (Function f) => Connection -> Text -> f -> IO ()
 createFunction conn = createFunctionOn (ConnectionTarget conn)
 
--- | Register a scalar function with per-worker thread-local state.
+-- | Register a scalar function with per-worker thread-local state. The
+-- arguments have the rules of 'createFunction'. A type that is or contains
+-- VARIANT is an error at registration, because the library cannot read a
+-- VARIANT value in a callback (see the section /Typed registration/ of the
+-- README).
 createFunctionWithState :: (Function f) => Connection -> Text -> IO s -> (s -> f) -> IO ()
 createFunctionWithState conn = createFunctionWithStateOn (ConnectionTarget conn)
-
--- | Register an explicit cast from the source type (the first type) to the
--- target type (the second type). DuckDB uses the cast for @CAST@ and @TRY_CAST@.
--- It does not use the cast implicitly. Register a cast again to replace it.
---
--- The function converts one value. 'Right' gives the result. 'Left' gives a
--- failure message. A NULL value gives NULL. The function does not run for NULL.
--- A GEOMETRY source reads as a GEOMETRY result does, for example as a
--- @Geometry@ or as a 'Database.DuckDB.Simple.Geometry.RawGeometry' with its
--- CRS. A source that is or contains VARIANT fails the cast for each value that
--- is not NULL.
---
--- A row fails when its value does not convert to @a@, when the function gives
--- 'Left', or when the function or the result conversion raises an exception.
--- @CAST@ then fails with the message of the first failed row. @TRY_CAST@ gives
--- NULL for each failed row and the results for the other rows.
---
--- DuckDB casts each result to the target type with its default cast. The target
--- type can be a custom type whose base type is the type of @b@, for example a
--- type from 'Database.DuckDB.Simple.Registration.registerCustomType'. A type
--- from SQL @CREATE TYPE name AS base@ is only another name for the base type,
--- so a cast to it is a cast to the base type. See 'TypeDeclaration'.
---
--- > createCast conn (TypeExpression "BIGINT") (TypeExpression "shifted") \(value :: Int64) ->
--- >     if value > maxBound - 100 then Left "BIGINT overflow" else Right (value + 100)
---
--- DuckDB uses a registered cast in place of its built-in cast for the same
--- pair of types, on each connection of the database. A registered cast does
--- not change a value that the library reads or binds, on a connection and in
--- the callbacks of an extension: the library reads GEOMETRY and VARIANT values
--- with the built-in casts, and it builds GEOMETRY, ENUM, and VARIANT values
--- with the default cast of DuckDB. Thus a cast from GEOMETRY to BLOB changes
--- the result of @CAST(g AS BLOB)@, but not a GEOMETRY value that a query gives
--- or that a callback reads. Only @setConfigValue@ and @setConfigOption@ in
--- "Database.DuckDB.Simple.Config" use registered casts: they cast the value to
--- the type of the option as SQL @SET@ does.
-createCast :: (FromField a, ToDuckValue b) => Connection -> TypeDeclaration -> TypeDeclaration -> (a -> Either Text b) -> IO ()
-createCast conn = createCastOn (ConnectionTarget conn)
 
 -- | Register a table function. The function gives the rows of one scan as a
 -- list. The list of names gives the names of the result columns. 'TypedRow' of
@@ -162,6 +136,9 @@ createCast conn = createCastOn (ConnectionTarget conn)
 -- or a sum type with 'Database.DuckDB.Simple.Generic.ViaDuckDB' instances is a
 -- STRUCT or a UNION column. A type with no declaration, for example
 -- 'Database.DuckDB.Simple.LogicalRep.StructValue', is an error at registration.
+-- A parameter type that is or contains VARIANT is an error at registration,
+-- because the library cannot read a VARIANT value in a callback (see the
+-- section /Typed registration/ of the README). A GEOMETRY parameter works.
 --
 -- 'TypedRow' of @params@ gives the parameter types. Use @()@ for no parameter.
 -- The parameters are positional only. DuckDB casts each argument to its
@@ -212,8 +189,9 @@ createTableFunction conn = createTableFunctionOn (ConnectionTarget conn)
 -- type of each argument is the
 -- 'Database.DuckDB.Simple.ToField.duckdbTypeDeclaration' of its column in
 -- 'TypedRow'. A type with no declaration is an error at registration, as for
--- 'createTableFunction'. An argument type that is or contains VARIANT is also
--- an error at registration, as for 'createFunction'. A GEOMETRY argument reads
+-- 'createTableFunction'. A type that is or contains VARIANT is an error at
+-- registration, because the library cannot read a VARIANT value in a callback
+-- (see the section /Typed registration/ of the README). A GEOMETRY argument reads
 -- as for 'createFunction', also when DuckDB runs the update callback on several
 -- threads. An aggregate function of an extension refuses a GEOMETRY argument
 -- at registration, because its update callback has no factory to read the

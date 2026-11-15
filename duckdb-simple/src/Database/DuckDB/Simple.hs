@@ -92,13 +92,12 @@ module Database.DuckDB.Simple (
   Only (..),
   (:.) (..),
 
-  -- * User-defined scalar functions and casts
+  -- * User-defined scalar functions
   Function (..),
   LogicalTypeId (..),
   createFunction,
   createFunctionWithState,
   deleteFunction,
-  createCast,
 
   -- * User-defined table functions
   TypedRow,
@@ -125,7 +124,6 @@ import Database.DuckDB.Simple.Function (
   Function (..),
   TypedRow,
   createAggregate,
-  createCast,
   createFunction,
   createFunctionWithState,
   createTableFunction,

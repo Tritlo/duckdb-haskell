@@ -74,17 +74,14 @@ tests paths =
           ]
           [["native_batches", "10000", "1", "10000", "50005000"], ["null", "preserved"], ["text", "true"]]
           []
-    , testCase "a GEOMETRY argument and a user cast from GEOMETRY to BLOB" $
-        -- The cast of the extension appends one byte. A GEOMETRY argument reads the
-        -- bytes of the built-in cast.
+    , testCase "a GEOMETRY argument" $
         checkProcess
           paths
-          [ "SELECT 'cast_blob', octet_length(b), right(hex(b), 2) FROM (SELECT CAST('POINT (1 2)'::GEOMETRY AS BLOB) AS b);"
-          , "SELECT 'point_x', haskell_point_x('POINT (1 2)'::GEOMETRY);"
+          [ "SELECT 'point_x', haskell_point_x('POINT (1 2)'::GEOMETRY);"
           , "SELECT 'null_x', haskell_point_x(NULL::GEOMETRY) IS NULL;"
           , "SELECT 'rows_x', count(*), sum(haskell_point_x(('POINT (' || i || ' 0)')::GEOMETRY)) FROM range(5000) AS t(i);"
           ]
-          [["cast_blob", "22", "78"], ["point_x", "1.0"], ["null_x", "true"], ["rows_x", "5000", "12497500.0"]]
+          [["point_x", "1.0"], ["null_x", "true"], ["rows_x", "5000", "12497500.0"]]
           []
     , testCase "scalar and table macros" $
         checkProcess
@@ -137,24 +134,15 @@ tests paths =
               <> [["chunks", "3000", "8995500500", "2999"]]
           )
           []
-    , testCase "cast to the custom type" $
-        checkProcess
-          paths
-          [ "SELECT 'cast', CAST(i AS haskell_shifted)::BIGINT FROM range(3) AS t(i);"
-          , "SELECT 'try_cast', TRY_CAST(7::BIGINT AS haskell_shifted)::BIGINT;"
-          , "SELECT 'null_cast', CAST(NULL::BIGINT AS haskell_shifted) IS NULL;"
-          ]
-          [["cast", "100"], ["cast", "101"], ["cast", "102"], ["try_cast", "107"], ["null_cast", "true"]]
-          []
     , testCase "column of the custom type" $
         checkProcess
           paths
-          [ "CREATE TABLE shifted (value haskell_shifted);"
-          , "INSERT INTO shifted VALUES (CAST(1::BIGINT AS haskell_shifted)), (NULL);"
-          , "INSERT INTO shifted SELECT 2::BIGINT;"
-          , "SELECT 'column', typeof(value), value FROM shifted;"
+          [ "CREATE TABLE amounts (value haskell_amount);"
+          , "INSERT INTO amounts VALUES (1::BIGINT), (NULL);"
+          , "INSERT INTO amounts SELECT 2::BIGINT;"
+          , "SELECT 'column', typeof(value), value FROM amounts;"
           ]
-          [["column", "haskell_shifted", "101"], ["column", "haskell_shifted", "NULL"], ["column", "haskell_shifted", "102"]]
+          [["column", "haskell_amount", "1"], ["column", "haskell_amount", "NULL"], ["column", "haskell_amount", "2"]]
           []
     , testCase "replacement scan" $
         checkProcess
@@ -215,7 +203,7 @@ tests paths =
           ]
           [["fresh_process", "42"], ["after_callback_error", "42"], ["after_overflow_error", "42"]]
           ["Haskell callback failure", "Haskell BIGINT overflow"]
-    , testCase "callback errors in the aggregate, table function, cast, and replacement scan" $
+    , testCase "callback errors in the aggregate, table function, and replacement scan" $
         checkProcess
           paths
           [ "SELECT haskell_sum(v) FROM (VALUES (9223372036854775807), (1)) AS t(v);"
@@ -227,24 +215,17 @@ tests paths =
           , "SELECT 'after_combine_error', 42;"
           , "SELECT * FROM haskell_squares(-1);"
           , "SELECT 'after_bind_error', 42;"
-          , "SELECT CAST(9223372036854775800::BIGINT AS haskell_shifted);"
-          , "SELECT 'after_cast_error', 42;"
-          , "SELECT 'try_cast_overflow', TRY_CAST(v AS haskell_shifted)::BIGINT FROM (VALUES (1), (9223372036854775800)) AS t(v);"
           , "SELECT * FROM haskell_reserved;"
           , "SELECT 'after_replacement_error', 42;"
           ]
           [ ["after_update_error", "42"]
           , ["after_combine_error", "42"]
           , ["after_bind_error", "42"]
-          , ["after_cast_error", "42"]
-          , ["try_cast_overflow", "101"]
-          , ["try_cast_overflow", "NULL"]
           , ["after_replacement_error", "42"]
           ]
           [ "haskell_sum: BIGINT overflow in 9223372036854775807 + 1"
           , "haskell_sum: BIGINT overflow in 9223372036854775807 + 2"
           , "haskell_squares: the count is negative: -1"
-          , "haskell_shifted: BIGINT overflow in 9223372036854775800 + 100"
           , "haskell_reserved: the table name is reserved"
           ]
     , testCase "callback errors for files with a bad line" $ withDirectory $ \directory -> do

@@ -27,7 +27,14 @@ import Database.DuckDB.Simple.FromRow (FromRow (..), parseRow)
 import Database.DuckDB.Simple.Materialize (ReadFactory, callbackReadFactory, materializeValue, rejectRows)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Ok (Ok (..))
-import Database.DuckDB.Simple.Typed (ColumnValue (..), TypedRow (..), argumentName, conversionMessage, rowDeclarations)
+import Database.DuckDB.Simple.Typed (
+  ColumnValue (..),
+  TypedRow (..),
+  argumentName,
+  checkArgumentType,
+  conversionMessage,
+  rowDeclarations,
+ )
 import Database.DuckDB.Simple.V2.Registration (
   FunctionParameter (..),
   FunctionSignature (..),
@@ -120,7 +127,11 @@ createTableFunctionOn target name columns function = do
           withTypeDeclaration factory dtype \logical ->
             withIdentifier column \identifier -> checked (c_duckdb_v2_table_function_bind_add_result_column result identifier logical)
         transferCallbackState (attachOpaque (c_duckdb_v2_function_bind_set_bind_data input)) (function params)
-  withRegistrationFactory target \factory ->
+  withRegistrationFactory target \factory -> do
+    -- The argument reader reads no VARIANT. Thus reject such a type before the
+    -- registration.
+    forM_ (zip [0 ..] parameterTypes) \(index, dtype) ->
+      withTypeDeclaration factory dtype (checkArgumentType True name ("parameter " <> argumentName index))
     registerTableFunctionWith
       target
       (configure factory)
@@ -159,18 +170,14 @@ writeRows factory chunk columns rows = do
   vectorCount <- output (c_duckdb_v2_data_chunk_get_vector_count chunk)
   let width = length (rowColumnDeclarations (Proxy @row))
   when (fromIntegral vectorCount /= length columns || any (\column -> column < 0 || column >= width) columns) $
-    throwIO
-      ( SQLError
-          ( "duckdb-simple: the output chunk has "
-              <> Text.pack (show vectorCount)
-              <> " vectors for the columns "
-              <> Text.pack (show columns)
-              <> " of a row of "
-              <> Text.pack (show width)
-              <> " columns"
-          )
-          Nothing
-          Nothing
+    throwInternalError
+      ( "the output chunk has "
+          <> Text.pack (show vectorCount)
+          <> " vectors for the columns "
+          <> Text.pack (show columns)
+          <> " of a row of "
+          <> Text.pack (show width)
+          <> " columns"
       )
   case splitRows capacity rows of
     (now, later) -> do

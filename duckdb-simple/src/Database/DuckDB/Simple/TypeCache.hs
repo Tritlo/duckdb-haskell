@@ -168,7 +168,7 @@ withVariantState :: TypeCache -> (VariantState -> IO a) -> IO a
 withVariantState TypeCache{typeCacheInstance, typeCacheCasts, typeCacheState} action = mask \restore -> do
   outcome <- modifyMVarMasked typeCacheState \state -> do
     (helper, variant) <- case state of
-      Closed -> throwIO (SQLError "duckdb-simple: type cache is closed" Nothing Nothing)
+      Closed -> throwIO (SQLError "duckdb-simple: type cache is closed" Nothing Nothing Nothing)
       Open helper variant -> pure (helper, variant)
       Unopened -> do
         helper <- output (c_duckdb_v2_connection_create typeCacheInstance)
@@ -197,7 +197,7 @@ readNativeTypes connection crss = do
         (destroy c_duckdb_v2_result_destroy)
         \result ->
           bracket (output (c_duckdb_v2_result_fetch_chunk result)) (destroy c_duckdb_v2_data_chunk_destroy) \chunk -> do
-            when (chunk == nullHandle) $ throwIO (userError "duckdb-simple: the type query returned no row")
+            when (chunk == nullHandle) $ throwInternalError "the type query returned no row"
             owned <- columnTypes chunk (length crss)
             geometryTypes crss owned `onException` releaseItems destroyLogicalType owned
 

@@ -1,4 +1,5 @@
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
@@ -14,6 +15,7 @@ import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, modifyIORef', newIORe
 import Data.Int (Int64)
 import Data.Maybe (isNothing)
 import Data.Proxy (Proxy (..))
+import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.DuckDB.FFI.V2
 import Database.DuckDB.Simple hiding (bind, execute)
@@ -35,8 +37,8 @@ import HsBindgen.Runtime.Support.FunPtr (toFunPtr)
 import System.Mem (performMajorGC)
 import System.Mem.Weak (Weak, deRefWeak)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (Assertion, assertBool, assertFailure, testCase, (@?=))
-import TestUtils (assertSqlErrorContaining, writeIntegers)
+import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase, (@?=))
+import TestUtils (assertSqlErrorContaining, writeIntegers, writeNullRows)
 
 -- | Check registration, callback errors, typed signatures, and resource release.
 registrationTests :: TestTree
@@ -51,6 +53,13 @@ registrationTests =
     , testCase "aggregate grouped and window execution" testAggregate
     , testCase "table state and typed default parameter" testTable
     , testCase "custom type and normal and try cast" testCast
+    , testCase "a second cast for the same pair of types has no effect" testCastSecond
+    , testGroup "a failed cast gives a Mismatch Type error and keeps the database usable" $
+        [testCase (castPairName castPair) (testCastFailureCode castPair) | castPair <- castFailurePairs]
+          <> [ testCase "a query on another connection fails in the callback" testCastFailureQuery
+             , testCase "an SQLError of the type Conversion, Invalid Input, or Out of Range in the callback" testCastTypedErrors
+             ]
+    , testCase "a COMMIT after a failed cast stores no row" testCastFailureCommit
     , testCase "connection scans precede instance scans" testReplacement
     , testCase "callback contexts write log entries" testContextLog
     , testCase "callback failures become SQL errors" testErrors
@@ -307,6 +316,168 @@ testCast = withConnection ":memory:" \connection -> do
   seen <- readIORef modes
   assertBool "normal cast" (DuckDBV2CastModeNormal `elem` seen)
   assertBool "try cast" (DuckDBV2CastModeTry `elem` seen)
+
+-- | A pair of types for 'testCastFailureCode': the setup, the source type, the
+-- target type, a constant of the source type, and a column of the source type
+-- over @i@. DuckDB plans a cast of the first two pairs as a cast that cannot
+-- fail.
+data CastPair = CastPair
+  { castPairName :: String
+  , castPairSetup :: Connection -> IO ()
+  , castPairSource :: R.TypeDeclaration
+  , castPairTarget :: Text
+  , castPairConstant :: Text
+  , castPairColumn :: Text
+  }
+
+-- | The pairs of 'testCastFailureCode' and 'testCastFailureCommit'.
+castFailurePairs :: [CastPair]
+castFailurePairs =
+  [ CastPair "BIGINT to VARCHAR" (\_ -> pure ()) bigint "VARCHAR" "1::BIGINT" "i::BIGINT"
+  , CastPair "INTEGER to BIGINT" (\_ -> pure ()) (R.TypeExpression "INTEGER") "BIGINT" "1::INTEGER" "i::INTEGER"
+  , CastPair "BIGINT to a custom type" (\conn -> R.registerCustomType conn "cast_target" bigint) bigint "cast_target" "1::BIGINT" "i::BIGINT"
+  ]
+
+-- | Register a cast of the pair that writes NULL to each row and then raises
+-- an exception with the text 'castFailure'.
+registerFailingCast :: Connection -> CastPair -> IO ()
+registerFailingCast conn castPair =
+  R.registerCast conn (castPairSource castPair) (R.TypeExpression (castPairTarget castPair)) Nothing \info _ ->
+    writeNullRows info >> throwIO (userError castFailure)
+
+-- | The text of the exception of 'registerFailingCast'.
+castFailure :: String
+castFailure = "the cast refused the value"
+
+-- | Fail a cast of a pair in a constant, in a column of 3000 rows, in an INSERT
+-- with the assignment cast, and in an INSERT with CAST. Each failure gives
+-- 'ErrorTypeMismatch' with the text of the exception. Each connection of the
+-- database runs a query after the failure. TRY_CAST gives the NULL that the
+-- callback wrote, and TRY(CAST) raises the error. See
+-- Note [The error code of a failed cast] in "Database.DuckDB.Simple.V2.Registration".
+testCastFailureCode :: CastPair -> Assertion
+testCastFailureCode castPair = withEnvironment \environment ->
+  forM_ ["constant", "column", "INSERT", "INSERT with CAST"] \form -> withCastDatabase environment castPair \instance' conn -> do
+    let target = castPairTarget castPair
+        constant = castPairConstant castPair
+        label = castPairName castPair <> ", " <> form
+        statement = case form of
+          "constant" -> "SELECT CAST(" <> constant <> " AS " <> target <> ")"
+          "column" -> "SELECT CAST(c AS " <> target <> ") FROM src"
+          "INSERT" -> "INSERT INTO dst SELECT c FROM src"
+          _ -> "INSERT INTO dst SELECT CAST(c AS " <> target <> ") FROM src"
+    assertMismatch label (Text.pack castFailure) (void (query_ conn (Query statement) :: IO [Only FieldValue]))
+    query_ conn "SELECT 42" >>= assertEqual label [Only (42 :: Int64)]
+    withConnectionOn instance' \other -> query_ other "SELECT 42" >>= assertEqual label [Only (42 :: Int64)]
+    when (form == "constant") do
+      query_ conn (Query ("SELECT TRY_CAST(" <> constant <> " AS " <> target <> ") IS NULL")) >>= assertEqual label [Only True]
+      assertMismatch
+        label
+        (Text.pack castFailure)
+        (void (query_ conn (Query ("SELECT TRY(CAST(" <> constant <> " AS " <> target <> "))")) :: IO [Only FieldValue]))
+
+-- | A query on another connection fails in the callback of a cast with the
+-- type Conversion. The cast error has the type of each cast error.
+testCastFailureQuery :: Assertion
+testCastFailureQuery = withEnvironment \environment ->
+  withCastInstance environment \instance' -> withConnectionOn instance' \conn -> withConnectionOn instance' \other -> do
+    R.registerCast conn bigint (R.TypeExpression "VARCHAR") Nothing \_ _ ->
+      void (query_ other "SELECT 'abc'::INTEGER" :: IO [Only Int64])
+    assertMismatch
+      "query"
+      "Could not convert string 'abc' to INT32"
+      (void (query_ conn "SELECT CAST(i AS VARCHAR) FROM range(10) t(i)" :: IO [Only Text]))
+    query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+    query_ other "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+
+-- | An 'SQLError' of the type Conversion, Invalid Input, or Out of Range from
+-- the callback of a cast from BIGINT to VARCHAR gives 'ErrorTypeMismatch', and
+-- the database stays usable. DuckDB plans this cast as a cast that cannot fail.
+-- With the code of the type of the error, DuckDB would raise an INTERNAL error
+-- and invalidate the database. See Note [The error code of a failed cast] in
+-- "Database.DuckDB.Simple.V2.Registration".
+testCastTypedErrors :: Assertion
+testCastTypedErrors = withEnvironment \environment -> forM_ [ErrorTypeConversion, ErrorInputInvalid, ErrorInputOutOfRange] \errorType ->
+  withCastInstance environment \instance' -> withConnectionOn instance' \conn -> do
+    let label = show errorType
+        text = "the cast raised " <> Text.pack label
+    void (execute_ conn "CREATE TABLE src AS SELECT i::BIGINT AS c FROM range(3000) t(i)")
+    R.registerCast conn bigint (R.TypeExpression "VARCHAR") Nothing \_ _ ->
+      throwIO SQLError{sqlErrorMessage = text, sqlErrorType = Just errorType, sqlErrorQuery = Nothing, sqlErrorBody = Just text}
+    assertMismatch label text (void (query_ conn "SELECT CAST(c AS VARCHAR) FROM src" :: IO [Only Text]))
+    query_ conn "SELECT 42" >>= assertEqual label [Only (42 :: Int64)]
+    withConnectionOn instance' \other -> query_ other "SELECT 42" >>= assertEqual label [Only (42 :: Int64)]
+
+-- | A COMMIT after a failed cast in an explicit transaction stores no row,
+-- under each transaction invalidation policy. The last cast fails only in its
+-- fifth call, the last chunk of 10000 rows, so that the INSERT writes rows
+-- before the failure.
+testCastFailureCommit :: Assertion
+testCastFailureCommit = withEnvironment \environment -> forM_ [Nothing, Just "SYNTACTIC_ERRORS_DO_NOT_INVALIDATE"] \policy -> do
+  let commitAfter label instance' conn failing = do
+        forM_ (policy :: Maybe Text) \name -> forM_ ["default", "current"] \scope ->
+          execute_ conn (Query ("SET " <> scope <> "_transaction_invalidation_policy = '" <> name <> "'"))
+        void (execute_ conn "CREATE TABLE marker (m INTEGER)")
+        void (execute_ conn "BEGIN TRANSACTION")
+        void (execute_ conn "INSERT INTO marker VALUES (1)")
+        assertMismatch label (Text.pack castFailure) (void (execute_ conn failing))
+        void (try (execute_ conn "COMMIT") :: IO (Either SQLError Int))
+        withConnectionOn instance' \other ->
+          query_ other "SELECT (SELECT count(*) FROM marker) + (SELECT count(*) FROM dst)"
+            >>= assertEqual (label <> ", " <> show policy) [Only (0 :: Int64)]
+  forM_ castFailurePairs \castPair -> withCastDatabase environment castPair \instance' conn ->
+    commitAfter (castPairName castPair) instance' conn (Query ("INSERT INTO dst SELECT CAST(c AS " <> castPairTarget castPair <> ") FROM src"))
+  withCastInstance environment \instance' -> withConnectionOn instance' \conn -> do
+    void (execute_ conn "CREATE TABLE src AS SELECT i::BIGINT AS c FROM range(10000) t(i)")
+    void (execute_ conn "CREATE TABLE dst (x VARCHAR)")
+    calls <- newIORef (0 :: Int)
+    R.registerCast conn bigint (R.TypeExpression "VARCHAR") Nothing \info _ -> do
+      writeNullRows info
+      call <- atomicModifyIORef' calls \count -> (count + 1, count + 1)
+      when (call >= 5) (throwIO (userError castFailure))
+    commitAfter "BIGINT to VARCHAR over 10000 rows" instance' conn "INSERT INTO dst SELECT CAST(c AS VARCHAR) FROM src"
+
+-- | Require an 'SQLError' of the type 'ErrorTypeMismatch' whose message
+-- contains the text.
+assertMismatch :: String -> Text -> IO () -> Assertion
+assertMismatch label text action =
+  try action >>= \case
+    Left (err :: SQLError) -> do
+      assertEqual label (Just ErrorTypeMismatch) (sqlErrorType err)
+      assertBool (label <> ": " <> Text.unpack (sqlErrorMessage err)) (text `Text.isInfixOf` sqlErrorMessage err)
+    Right () -> assertFailure (label <> ": expected an SQL error")
+
+-- | Run an action with a new instance that has an in-memory database.
+withCastInstance :: Environment -> (Instance -> IO a) -> IO a
+withCastInstance environment action = withInstance environment [] \instance' -> do
+  attachDatabase instance' ":memory:" "cast_failure" []
+  setDefaultDatabase instance' "cast_failure"
+  action instance'
+
+-- | Run an action with a new instance, the tables src and dst of a pair, and
+-- the failing cast of the pair.
+withCastDatabase :: Environment -> CastPair -> (Instance -> Connection -> IO a) -> IO a
+withCastDatabase environment castPair action = withCastInstance environment \instance' -> withConnectionOn instance' \conn -> do
+  castPairSetup castPair conn
+  void (execute_ conn (Query ("CREATE TABLE src AS SELECT " <> castPairColumn castPair <> " AS c FROM range(3000) t(i)")))
+  void (execute_ conn (Query ("CREATE TABLE dst (x " <> castPairTarget castPair <> ")")))
+  registerFailingCast conn castPair
+  action instance' conn
+
+-- | A second registration of a cast for the same pair of types returns with no
+-- error, and CAST still runs the callback of the first registration. DuckDB
+-- 2.0.0 keeps the first cast for a pair.
+testCastSecond :: Assertion
+testCastSecond = withConnection ":memory:" \connection -> do
+  R.registerCustomType connection "managed_kept" bigint
+  let shift amount info _ = do
+        count <- R.output (c_duckdb_v2_cast_function_exec_get_row_count info)
+        values <- R.output (c_duckdb_v2_cast_function_exec_get_input info) >>= readIntegers (fromIntegral count)
+        result <- R.output (c_duckdb_v2_cast_function_exec_get_output info)
+        writeIntegers result (map (+ amount) values)
+  R.registerCast connection bigint (R.TypeExpression "managed_kept") Nothing (shift 100)
+  R.registerCast connection bigint (R.TypeExpression "managed_kept") Nothing (shift 200)
+  query_ connection "SELECT CAST(i::BIGINT AS managed_kept)::BIGINT FROM range(3) t(i)" >>= (@?= map Only ([100, 101, 102] :: [Int64]))
 
 replacement :: Int64 -> R.ContextCallback DuckDBV2ReplacementScanInfoHandle
 replacement number info _ =

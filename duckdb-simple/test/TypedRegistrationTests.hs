@@ -13,23 +13,18 @@
 module TypedRegistrationTests (typedRegistrationTests) where
 
 import Control.Exception (SomeException, bracket, displayException, throwIO, try)
-import Control.Monad (forM_, void, when)
-import Data.Array (Array, elems)
-import qualified Data.ByteString as BS
+import Control.Monad (forM, forM_, void, when)
+import Data.Array (Array, elems, listArray)
 import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, modifyIORef', newIORef, readIORef, writeIORef)
-import Data.Int (Int16, Int32, Int64, Int8)
+import Data.Int (Int16, Int32, Int64)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (isJust, isNothing, mapMaybe)
-import Data.Proxy (Proxy (..))
+import Data.Maybe (isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
-import Data.Time (UTCTime (..))
 import Data.Time.Calendar (Day, addDays, fromGregorian)
-import Data.Time.Format (defaultTimeLocale, parseTimeM)
-import Data.Time.LocalTime (LocalTime (..), TimeOfDay (..))
-import qualified Data.UUID as UUID
-import Data.Word (Word16, Word32, Word64, Word8)
+import Data.Time.LocalTime (TimeOfDay (..))
+import Data.Word (Word64)
 import Database.DuckDB.Simple
 import Database.DuckDB.Simple.Config (
   CustomOption (..),
@@ -51,12 +46,17 @@ import Database.DuckDB.Simple.Copy (
   registerCopyToFunction,
   registerMultiFileFunction,
  )
-import Database.DuckDB.Simple.FromField (BigNum (..), Field (..), FieldValue (..), IntervalValue (..), TimeWithZone (..), bsFromBool)
+import Database.DuckDB.Simple.FromField (BigNum (..), Field (..), FieldValue (..), IntervalValue (..), TimeWithZone (..))
 import Database.DuckDB.Simple.Function (FunctionResult)
-import Database.DuckDB.Simple.Generic (ViaDuckDB (..))
+import Database.DuckDB.Simple.Generic (DuckValue (..), ViaDuckDB (..))
 import Database.DuckDB.Simple.Internal (Connection (..))
 import qualified Database.DuckDB.Simple.Logging as Logging
-import Database.DuckDB.Simple.LogicalRep (StructField (..), StructValue (..), TupleValue, UnionValue)
+import Database.DuckDB.Simple.LogicalRep (
+  LogicalTypeRep (..),
+  StructValue (..),
+  TupleValue,
+  UnionValue,
+ )
 import Database.DuckDB.Simple.Pragma (PragmaCallback (..), registerPragmaFunction)
 import Database.DuckDB.Simple.Registration (
   FunctionParameter (..),
@@ -68,32 +68,27 @@ import Database.DuckDB.Simple.Registration (
   registerInstanceReplacementScan,
   registerReplacementScan,
  )
-import Database.DuckDB.Simple.Time (Unbounded (..))
 import Database.DuckDB.Simple.ToField (ToDuckValue (..))
+import qualified Database.DuckDB.Simple.V2.Registration as R
 import Database.DuckDB.Simple.Variant (Variant)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import System.Directory (createDirectory, getTemporaryDirectory, removeFile, removePathForcibly)
 import System.FilePath ((</>))
 import System.IO (hClose, openTempFile)
-import System.IO.Unsafe (unsafeInterleaveIO, unsafePerformIO)
+import System.IO.Unsafe (unsafeInterleaveIO)
 import System.Mem (performMajorGC)
 import System.Mem.Weak (Weak, deRefWeak)
 import Test.Tasty (TestTree, localOption, mkTimeout, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase, (@?=))
-import TestUtils (assertReleasedAfter)
+import TestUtils (assertInputErrorContaining, assertReleasedAfter, writeNullRows)
 
 -- | Check the typed registrations through SQL.
 typedRegistrationTests :: TestTree
 typedRegistrationTests =
   testGroup
     "typed registration"
-    [ testCase "cast from BIGINT to a custom type over several chunks" testCastChunks
-    , testCase "cast failure fails CAST and gives NULL in TRY_CAST" testCastFailure
-    , testCase "cast to custom aliases of DATE and VARCHAR" testCastTypes
-    , testCase "cast exceptions and conversion errors fail CAST" testCastErrors
-    , testCase "cast to a custom type on each scalar base type" testCastBaseTypes
-    , testCase "cast result of another type than the base type fails" testCastResultType
+    [ testCase "a scalar function that changes a value gives the rows of its Haskell result in a filter and a join" testScalarFilterJoin
     , testCase "replacement scan reads the rows of a query" testReplacementQuery
     , testCase "replacement scan that declines gives the unknown table error" testReplacementDecline
     , testCase "replacement scan gets the name parts as written" testReplacementNames
@@ -107,8 +102,11 @@ typedRegistrationTests =
     , testCase "pragma row has the order of the declaration" testPragmaRow
     , testCase "exec pragma counts its calls" testPragmaExec
     , testCase "pragma argument rows that do not decode" testPragmaDecodeErrors
-    , testCase "pragma arguments with VARIANT types give NULL rows and reject VARIANT values" testPragmaVariantRows
+    , testCase "pragma parameters whose types contain VARIANT fail at registration" testPragmaVariantParameters
     , testCase "pragma exceptions become SQL errors" testPragmaExceptions
+    , testCase "pragma registration checks the name before the state of a closed connection" testPragmaClosedName
+    , testCase "an SQL error in each callback kind keeps its type and one prefix" testCallbackErrorTypes
+    , testCase "an SQL error of each type in a callback under the syntactic invalidation policy" testCallbackErrorPolicy
     , testCase "custom option update accepts and rejects BIGINT values" testOptionUpdate
     , testCase "custom option update gets VARCHAR values and can reject RESET" testOptionText
     , testCase "table function with one parameter over several chunks" testTableSquares
@@ -119,6 +117,7 @@ typedRegistrationTests =
     , testCase "table function with a MAP column" testTableMaps
     , testCase "table function and aggregate with record, list, map, and union types" testTableRecords
     , testCase "typed registration rejects a type with no declaration" testNoDeclaration
+    , testCase "a newtype with a sized ARRAY type text declares an ARRAY in each position" testSizedArray
     , testCase "record field outside the range of its declared type" testRecordFieldRange
     , testCase "table function runs one time for each scan" testTableRuns
     , -- A defect can make the scan run without end. Then the time limit fails
@@ -131,6 +130,7 @@ typedRegistrationTests =
     , testCase "multi-file function gives each row of a typed table function one time" testTableMultiFile
     , testCase "COPY format with both directions under one name" testCopyBothDirections
     , testCase "COPY keeps the first registration of a format name" testCopyFirstRegistration
+    , testCase "COPY TO registration checks the name before the state of a closed connection" testCopyClosedName
     , testCase "COPY errors in each function fail only their statement" testCopyErrors
     , testCase "COPY format on two connections of one database" testCopySharedDatabase
     , testCase "COPY FROM gives the name and the type of each column" testCopyFromColumns
@@ -147,151 +147,6 @@ typedRegistrationTests =
         "the callback closure of each registration kind is released when its database closes"
         [testCase kind (assertReleasedAfter kind use) | (kind, use) <- closureKinds]
     ]
-
--- | Cast BIGINT values and NULLs to a custom type over more than one chunk.
-testCastChunks :: Assertion
-testCastChunks = withConnection ":memory:" \conn -> do
-  registerCustomType conn "typed_shifted" (TypeExpression "BIGINT")
-  createCast conn (TypeExpression "BIGINT") (TypeExpression "typed_shifted") \(value :: Int64) -> Right (value + 100)
-  query_ conn "SELECT CAST(i AS typed_shifted)::BIGINT FROM range(3) t(i) ORDER BY i" >>= (@?= map Only [100, 101, 102 :: Int64])
-  query_ conn "SELECT typeof(CAST(1::BIGINT AS typed_shifted))" >>= (@?= [Only ("typed_shifted" :: Text)])
-  query_ conn "SELECT CAST(NULL::BIGINT AS typed_shifted)::BIGINT" >>= (@?= [Only (Nothing :: Maybe Int64)])
-  -- A chunk has at most 2048 rows. Thus 3000 rows need more than one cast call.
-  rows <- query_ conn "SELECT CAST(CASE WHEN i % 1000 = 7 THEN NULL ELSE i END AS typed_shifted)::BIGINT FROM range(3000) t(i) ORDER BY i"
-  rows @?= [Only (if i `mod` 1000 == 7 then Nothing else Just (i + 100)) | i <- [0 .. 2999 :: Int64]]
-
--- | Fail CAST with a Left message. TRY_CAST gives NULL for that row only.
-testCastFailure :: Assertion
-testCastFailure = withConnection ":memory:" \conn -> do
-  registerCustomType conn "typed_positive" (TypeExpression "BIGINT")
-  createCast conn (TypeExpression "BIGINT") (TypeExpression "typed_positive") \(value :: Int64) ->
-    if value > 0 then Right value else Left ("typed_positive: " <> Text.pack (show value) <> " is not positive")
-  query_ conn "SELECT CAST(5::BIGINT AS typed_positive)::BIGINT" >>= (@?= [Only (5 :: Int64)])
-  assertSqlError "typed_positive: -5 is not positive" (query_ conn "SELECT CAST(-5::BIGINT AS typed_positive)::BIGINT" :: IO [Only Int64])
-  query_ conn "SELECT TRY_CAST(v AS typed_positive)::BIGINT FROM (VALUES (0, 1::BIGINT), (1, -2), (2, 3)) t(k, v) ORDER BY k"
-    >>= (@?= map Only [Just 1, Nothing, Just (3 :: Int64)])
-  query_ conn "SELECT CAST(6::BIGINT AS typed_positive)::BIGINT" >>= (@?= [Only (6 :: Int64)])
-  query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
-
--- | A cast result whose type is not the base type of the custom type fails.
--- The text of such a value is not a value of the base type, although DuckDB
--- can cast the text: '7'::BLOB is the byte 7, and '2026-11-12'::TIME is 00:00:00.
-testCastResultType :: Assertion
-testCastResultType = withConnection ":memory:" \conn -> do
-  registerCustomType conn "typed_blob_alias" (TypeExpression "BLOB")
-  createCast conn (TypeExpression "BIGINT") (TypeExpression "typed_blob_alias") \(value :: Int64) -> Right value
-  registerCustomType conn "typed_time_alias" (TypeExpression "TIME")
-  createCast conn (TypeExpression "BIGINT") (TypeExpression "typed_time_alias") \(value :: Int64) ->
-    Right (addDays (fromIntegral value) (fromGregorian 2026 11 12))
-  -- DuckDB has no cast from BIGINT to BLOB, and none from DATE to TIME. Its
-  -- error names the custom type.
-  assertSqlError
-    "Failed to cast value: Unimplemented type for cast (BIGINT -> typed_blob_alias)"
-    (query_ conn "SELECT CAST(7::BIGINT AS typed_blob_alias)" :: IO [Only BS.ByteString])
-  assertSqlError
-    "Failed to cast value: Unimplemented type for cast (DATE -> typed_time_alias)"
-    (query_ conn "SELECT CAST(0::BIGINT AS typed_time_alias)" :: IO [Only TimeOfDay])
-  query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
-
--- | Cast to custom types with the base types DATE and VARCHAR.
-testCastTypes :: Assertion
-testCastTypes = withConnection ":memory:" \conn -> do
-  registerCustomType conn "typed_day" (TypeExpression "DATE")
-  createCast conn (TypeExpression "VARCHAR") (TypeExpression "typed_day") \(text :: Text) ->
-    maybe
-      (Left ("typed_day: " <> text <> " is not a date"))
-      Right
-      (parseTimeM False defaultTimeLocale "%d.%m.%Y" (Text.unpack text) :: Maybe Day)
-  -- DuckDB 2.0.0 has no cast from a custom type to its base type DATE. Read the custom type.
-  query_ conn "SELECT CAST(v AS typed_day) FROM (VALUES (0, '12.11.2026'), (1, NULL), (2, '29.02.2000')) t(k, v) ORDER BY k"
-    >>= (@?= map Only [Just (fromGregorian 2026 11 12), Nothing, Just (fromGregorian 2000 2 29)])
-  query_ conn "SELECT typeof(CAST('1.1.2000'::VARCHAR AS typed_day))" >>= (@?= [Only ("typed_day" :: Text)])
-  -- A function result of Nothing gives NULL for a value that is not NULL.
-  createCast conn (TypeExpression "BIGINT") (TypeExpression "typed_day") \(value :: Int64) ->
-    Right (if value < 0 then Nothing else Just (addDays (fromIntegral value) (fromGregorian 2000 1 1)))
-  query_ conn "SELECT CAST(v AS typed_day) FROM (VALUES (0, 1::BIGINT), (1, -1)) t(k, v) ORDER BY k"
-    >>= (@?= map Only [Just (fromGregorian 2000 1 2), Nothing])
-  registerCustomType conn "typed_label" (TypeExpression "VARCHAR")
-  createCast conn (TypeExpression "BIGINT") (TypeExpression "typed_label") \(value :: Int64) -> Right ("liður " <> Text.pack (show value))
-  query_ conn "SELECT CAST(i AS typed_label)::VARCHAR FROM range(2) t(i) ORDER BY i" >>= (@?= map Only ["liður 0", "liður 1" :: Text])
-  query_ conn "SELECT typeof(CAST(1::BIGINT AS typed_label))" >>= (@?= [Only ("typed_label" :: Text)])
-
--- | Fail CAST with an exception and with arguments that do not convert.
-testCastErrors :: Assertion
-testCastErrors = withConnection ":memory:" \conn -> do
-  registerCustomType conn "typed_partial" (TypeExpression "BIGINT")
-  createCast conn (TypeExpression "BIGINT") (TypeExpression "typed_partial") \(value :: Int64) ->
-    if value == 13 then error "typed_partial: 13 raises an exception" else Right value
-  query_ conn "SELECT CAST(12::BIGINT AS typed_partial)::BIGINT" >>= (@?= [Only (12 :: Int64)])
-  assertSqlError "typed_partial: 13 raises an exception" (query_ conn "SELECT CAST(13::BIGINT AS typed_partial)::BIGINT" :: IO [Only Int64])
-  -- BIGINT 5 converts to Int8. BIGINT 300 does not.
-  registerCustomType conn "typed_small" (TypeExpression "BIGINT")
-  createCast conn (TypeExpression "BIGINT") (TypeExpression "typed_small") \(value :: Int8) -> Right (fromIntegral value :: Int64)
-  query_ conn "SELECT CAST(5::BIGINT AS typed_small)::BIGINT" >>= (@?= [Only (5 :: Int64)])
-  assertSqlError
-    "cannot convert argument arg0 from BIGINT to Int8"
-    (query_ conn "SELECT CAST(300::BIGINT AS typed_small)::BIGINT" :: IO [Only Int64])
-  -- A VARCHAR value does not convert to Int64. The function does not get NULL.
-  registerCustomType conn "typed_number" (TypeExpression "BIGINT")
-  createCast conn (TypeExpression "VARCHAR") (TypeExpression "typed_number") \(value :: Int64) -> Right value
-  query_ conn "SELECT CAST(NULL::VARCHAR AS typed_number)::BIGINT" >>= (@?= [Only (Nothing :: Maybe Int64)])
-  assertSqlError
-    "cannot convert argument arg0 from VARCHAR to Int64"
-    (query_ conn "SELECT CAST('7'::VARCHAR AS typed_number)::BIGINT" :: IO [Only Int64])
-  -- A typed argument cannot be a VARIANT value. A NULL VARIANT row gives NULL.
-  registerCustomType conn "typed_from_variant" (TypeExpression "BIGINT")
-  createCast conn (TypeExpression "VARIANT") (TypeExpression "typed_from_variant") \(value :: Int64) -> Right value
-  assertSqlError
-    "the type of a typed argument cannot be or contain VARIANT"
-    (query_ conn "SELECT CAST(1::VARIANT AS typed_from_variant)::BIGINT" :: IO [Only Int64])
-  query_ conn "SELECT CAST(v AS typed_from_variant)::BIGINT FROM (VALUES (NULL::VARIANT)) t(v)"
-    >>= (@?= [Only (Nothing :: Maybe Int64)])
-  -- TRY_CAST gives NULL for these failed rows.
-  query_ conn "SELECT TRY_CAST(13::BIGINT AS typed_partial)::BIGINT, TRY_CAST('7'::VARCHAR AS typed_number)::BIGINT"
-    >>= (@?= [(Nothing :: Maybe Int64, Nothing :: Maybe Int64)])
-  query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
-
--- | Cast to a custom type on each scalar base type and read the same values.
-testCastBaseTypes :: Assertion
-testCastBaseTypes = withConnection ":memory:" \conn -> do
-  -- The text of a TIMESTAMPTZ value depends on the time zone of the session.
-  _ <- execute_ conn "SET TimeZone = 'Pacific/Auckland'"
-  let day = fromGregorian 2026 11 12
-      time = TimeOfDay 23 59 59.000001
-      instant = UTCTime day 86399.999999
-  roundTrip conn "bool" [True, False]
-  roundTrip conn "int8" [minBound, 0, maxBound :: Int8]
-  roundTrip conn "int16" [minBound, 0, maxBound :: Int16]
-  roundTrip conn "int32" [minBound, 0, maxBound :: Int32]
-  roundTrip conn "int64" [minBound, 0, maxBound :: Int64]
-  roundTrip conn "int" [minBound, 0, maxBound :: Int]
-  roundTrip conn "word8" [0, maxBound :: Word8]
-  roundTrip conn "word16" [0, maxBound :: Word16]
-  roundTrip conn "word32" [0, maxBound :: Word32]
-  roundTrip conn "word64" [0, maxBound :: Word64]
-  roundTrip conn "word" [0, maxBound :: Word]
-  roundTrip conn "integer" [-(2 ^ (127 :: Int)), 0, 2 ^ (127 :: Int) - 1 :: Integer]
-  roundTrip conn "natural" [0, 2 ^ (128 :: Int) - 1 :: Natural]
-  roundTrip conn "bignum" [BigNum (-(10 ^ (40 :: Int))), 0, BigNum (10 ^ (40 :: Int))]
-  roundTrip conn "double" [-0.1, 0, 1 / 3 :: Double]
-  roundTrip conn "float" [-0.1, 0, 1 / 3 :: Float]
-  roundTrip conn "text" ["", "liður \\ ' \" \\x00" :: Text]
-  roundTrip conn "blob" [BS.empty, BS.pack [0x00, 0xFF, 0x5C, 0x27, 0x22, 0x78, 0x41], BS.pack [0 .. 255]]
-  roundTrip conn "bit" [bsFromBool [True], bsFromBool [True, False, False, True, False, True, True, False, True]]
-  roundTrip
-    conn
-    "uuid"
-    ( mapMaybe
-        UUID.fromString
-        ["00000000-0000-0000-0000-000000000000", "123e4567-e89b-12d3-a456-426614174000", "ffffffff-ffff-ffff-ffff-ffffffffffff"]
-    )
-  roundTrip conn "day" [fromGregorian 1 1 1, day, fromGregorian 9999 12 31]
-  roundTrip conn "time" [TimeOfDay 0 0 0, time]
-  roundTrip conn "local" [LocalTime (fromGregorian 1600 2 29) time, LocalTime day time]
-  roundTrip conn "utc" [UTCTime (fromGregorian 1600 2 29) 0.000001, instant]
-  roundTrip conn "unbounded_day" [NegInfinity, Finite day, PosInfinity]
-  roundTrip conn "unbounded_local" [NegInfinity, Finite (LocalTime day time), PosInfinity]
-  roundTrip conn "unbounded_utc" [NegInfinity, Finite instant, PosInfinity]
 
 -- | Run the SQL of a query pragma without a parameter.
 testPragmaNoParameter :: Assertion
@@ -371,42 +226,51 @@ testPragmaDecodeErrors = withConnection ":memory:" \conn -> do
   assertSqlError "cannot decode the arguments of pragma typed_size" (query_ conn "PRAGMA typed_size(1)" :: IO [Only Int64])
   registerPragmaFunction conn "typed_strict" [amount] (ExecPragma \(Only (_ :: Int64)) -> pure ())
   assertSqlError "cannot decode the arguments of pragma typed_strict: column amount is NULL" (execute_ conn "PRAGMA typed_strict(NULL)")
-  registerPragmaFunction
-    conn
-    "typed_variant"
-    [parameter "value" (TypeExpression "VARIANT")]
-    (QueryPragma \(Only (_ :: Variant)) -> pure "SELECT 1")
-  assertSqlError
-    "the type of a pragma argument cannot be or contain VARIANT"
-    (query_ conn "PRAGMA typed_variant(1::VARIANT)" :: IO [Only Int64])
+  assertInputError
+    "typed_variant: parameter value: the library cannot read a VARIANT value in a callback; declare another type, such as VARCHAR, and cast the value in SQL, for example v::VARCHAR"
+    ( registerPragmaFunction
+        conn
+        "typed_variant"
+        [parameter "value" (TypeExpression "VARIANT")]
+        (QueryPragma \(Only (_ :: Variant)) -> pure "SELECT 1")
+    )
   query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
 
--- | Decode a pragma argument whose type contains VARIANT when no row of the
--- argument holds a VARIANT value: an empty VARIANT list, a NULL STRUCT, and NULL
--- VARIANT rows. A row that holds a VARIANT value raises the error of the pragma
--- argument.
-testPragmaVariantRows :: Assertion
-testPragmaVariantRows = withConnection ":memory:" \conn -> do
-  seen <- newIORef FieldNull
+-- | Reject a pragma parameter whose type is or contains VARIANT at
+-- registration, because the argument reader reads no VARIANT. A GEOMETRY
+-- parameter registers, because the reader reads GEOMETRY. A parameter of the
+-- type ANY registers, and a VARIANT value fails the call.
+testPragmaVariantParameters :: Assertion
+testPragmaVariantParameters = withConnection ":memory:" \conn -> do
   let register name declaration =
         registerPragmaFunction conn name [parameter "value" (TypeExpression declaration)] $
-          QueryPragma \(Only value) -> writeIORef seen value >> pure "SELECT 1"
-      decoded sql = do
-        query_ conn sql >>= (@?= [Only (1 :: Int64)])
-        readIORef seen
-  register "typed_variant_scalar" "VARIANT"
-  register "typed_variant_list" "VARIANT[]"
-  register "typed_variant_struct" "STRUCT(v VARIANT)"
-  decoded "PRAGMA typed_variant_scalar(NULL::VARIANT)" >>= (@?= FieldNull)
-  decoded "PRAGMA typed_variant_list([]::VARIANT[])" >>= (@?= FieldList [])
-  decoded "PRAGMA typed_variant_list([NULL]::VARIANT[])" >>= (@?= FieldList [FieldNull])
-  decoded "PRAGMA typed_variant_struct(NULL::STRUCT(v VARIANT))" >>= (@?= FieldNull)
-  decoded "PRAGMA typed_variant_struct({'v': NULL}::STRUCT(v VARIANT))" >>= \case
-    FieldStruct struct -> map structFieldValue (elems (structValueFields struct)) @?= [FieldNull]
-    other -> assertFailure ("expected a STRUCT value, got " <> show other)
+          QueryPragma \(Only (_ :: FieldValue)) -> pure "SELECT 1"
+  forM_ [("typed_variant_scalar", "VARIANT"), ("typed_variant_list", "VARIANT[]"), ("typed_variant_struct", "STRUCT(v VARIANT)")] \(name, declaration) ->
+    assertInputError
+      ( name
+          <> ": parameter value: the library cannot read a VARIANT value in a callback; declare another type, such as VARCHAR, and cast the value in SQL, for example v::VARCHAR"
+      )
+      (register name declaration)
+  register "typed_geometry_parameter" "GEOMETRY"
+  query_ conn "PRAGMA typed_geometry_parameter('POINT (1 2)'::GEOMETRY)" >>= (@?= [Only (1 :: Int64)])
+  -- The check sees only the declared type. A parameter of the type ANY
+  -- registers, and a VARIANT value fails the call.
+  registerPragmaFunction conn "typed_any_parameter" [parameter "value" (StructuredType (LogicalTypeScalar LogicalTypeIdAny))] $
+    QueryPragma \(Only (_ :: FieldValue)) -> pure "SELECT 1"
+  query_ conn "PRAGMA typed_any_parameter(1)" >>= (@?= [Only (1 :: Int64)])
   assertSqlError
-    "the type of a pragma argument cannot be or contain VARIANT"
-    (query_ conn "PRAGMA typed_variant_list([1::VARIANT])" :: IO [Only Int64])
+    "typed_any_parameter: parameter value: the library cannot read a VARIANT value in a callback; declare another type, such as VARCHAR, and cast the value in SQL, for example v::VARCHAR"
+    (query_ conn "PRAGMA typed_any_parameter(1::VARIANT)" :: IO [Only Int64])
+
+-- | Raise the input error of an empty pragma name, also on a closed
+-- connection. The name check comes before the read of the state of the
+-- connection.
+testPragmaClosedName :: Assertion
+testPragmaClosedName = do
+  closed <- open ":memory:"
+  close closed
+  assertInputErrorContaining "pragma function name must be nonempty" $
+    registerPragmaFunction closed "" [] (QueryPragma \() -> pure "SELECT 1")
 
 -- | Make an SQL error from an exception of each callback kind.
 testPragmaExceptions :: Assertion
@@ -417,6 +281,147 @@ testPragmaExceptions = withConnection ":memory:" \conn -> do
   registerPragmaFunction conn "typed_exec_failure" [] (ExecPragma \() -> throwIO (userError "typed exec pragma failure"))
   assertSqlError "typed exec pragma failure" (execute_ conn "PRAGMA typed_exec_failure")
   query_ conn "SELECT 43" >>= (@?= [Only (43 :: Int64)])
+
+-- | Give the type and the text of an error in a callback to the outer
+-- statement. The failing statement runs on a connection of another database.
+-- See Note [Errors that leave a callback] in "Database.DuckDB.Simple.Callback".
+testCallbackErrorTypes :: Assertion
+testCallbackErrorTypes = withDirectory \directory -> withConnection ":memory:" \conn -> withConnection ":memory:" \other -> withConnection ":memory:" \third -> do
+  let failing = void (query_ other "SELECT 'abc'::INTEGER" :: IO [Only Int64])
+      run sql = void (query_ conn sql :: IO [[FieldValue]])
+      file = Text.pack (directory </> "rows.txt")
+      conversion = "Conversion Error: Could not convert string 'abc' to INT32"
+  -- The body of a native error is its text without the prefix.
+  try failing >>= \case
+    Left (err :: SQLError) -> ("Conversion Error: " <>) <$> sqlErrorBody err @?= Just (sqlErrorMessage err)
+    Right () -> assertFailure "expected a Conversion Error"
+  writeFile (directory </> "rows.txt") ""
+  createFunction conn "error_scalar" (failing >> pure (0 :: Int64))
+  createFunctionWithState conn "error_state" failing \() -> (0 :: Int64)
+  createAggregate conn "error_update" sumAggregate{aggregateStep = \_ (Only (_ :: Int64)) -> failing >> pure 0}
+  createAggregate conn "error_combine" sumAggregate{aggregateCombine = \_ _ -> failing >> pure 0}
+  createAggregate conn "error_finalize" sumAggregate{aggregateResult = \_ -> failing >> pure (0 :: Int64)}
+  createTableFunction conn "error_init" ["n"] \() -> failing >> pure [Only (1 :: Int64)]
+  createTableFunction conn "error_exec" ["n"] \() -> unsafeInterleaveIO (failing >> pure [Only (1 :: Int64)])
+  registerCustomType conn "error_target" (TypeExpression "BIGINT")
+  R.registerCast conn (TypeExpression "BIGINT") (TypeExpression "error_target") Nothing \_ _ -> failing
+  registerPragmaFunction conn "error_query_pragma" [] (QueryPragma \() -> failing >> pure "SELECT 1")
+  registerPragmaFunction conn "error_exec_pragma" [] (ExecPragma \() -> failing)
+  registerCustomOption conn (customOption "error_option" (TypeExpression "BIGINT")){customOptionUpdate = Just \_ -> failing}
+  registerCopyToFunction conn "error_sink" (\_ -> pure ()) (\_ -> pure ()) (\_ _ -> failing) (\_ -> pure ())
+  registerCopyToFunction conn "error_final" (\_ -> pure ()) (\_ -> pure ()) (\_ _ -> pure ()) (\_ -> failing)
+  registerCopyFromFunction conn "error_from" \_ -> failing >> pure [Only (1 :: Int64)]
+  void (execute_ conn "CREATE TABLE error_rows (value BIGINT)")
+  registerReplacementScan conn \parts -> if parts == ["error_missing"] then failing >> pure Nothing else pure Nothing
+  forM_
+    [ ("scalar function", run "SELECT error_scalar()")
+    , ("state of a scalar function", run "SELECT error_state() FROM range(3)")
+    , ("aggregate update", run "SELECT error_update(i) FROM range(10) t(i)")
+    , ("aggregate combine", run "SELECT error_combine(i) OVER (ORDER BY i ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) FROM range(32) t(i)")
+    , ("aggregate finalize", run "SELECT error_finalize(i) FROM range(10) t(i)")
+    , ("table function init", run "SELECT * FROM error_init()")
+    , ("table function exec", run "SELECT * FROM error_exec()")
+    , ("query pragma", run "PRAGMA error_query_pragma")
+    , ("exec pragma", void (execute_ conn "PRAGMA error_exec_pragma"))
+    , ("option update", void (execute_ conn "SET error_option = 1"))
+    , ("COPY TO sink", void (execute conn "COPY (SELECT 1) TO ? (FORMAT error_sink)" (Only file)))
+    , ("COPY TO finalize", void (execute conn "COPY (SELECT 1) TO ? (FORMAT error_final)" (Only file)))
+    , ("COPY FROM", void (execute conn "COPY error_rows FROM ? (FORMAT error_from)" (Only file)))
+    , ("replacement scan", run "SELECT * FROM error_missing")
+    ]
+    \(label, action) -> assertErrorType label ErrorTypeConversion conversion action
+  -- A cast writes the code of a failed cast and the whole message. See
+  -- Note [The error code of a failed cast] in
+  -- "Database.DuckDB.Simple.V2.Registration".
+  assertErrorType "cast" ErrorTypeMismatch ("Mismatch Type Error: " <> conversion) (run "SELECT CAST(1::BIGINT AS error_target)::BIGINT")
+  -- An error that passes through two callbacks keeps its type.
+  createFunction other "error_middle" (void (query_ third "SELECT 'abc'::INTEGER" :: IO [Only Int64]) >> pure (0 :: Int64))
+  createFunction conn "error_outer" (void (query_ other "SELECT error_middle()" :: IO [Only Int64]) >> pure (0 :: Int64))
+  assertErrorType "two callbacks" ErrorTypeConversion conversion (run "SELECT error_outer()")
+  -- An error of the library keeps its type and gets one prefix.
+  createFunction
+    conn
+    "error_range"
+    (void (query other "SELECT ?::TINYINT" (Only (2 ^ (200 :: Int) :: Integer)) :: IO [Only Int64]) >> pure (0 :: Int64))
+  assertErrorType "an error of the library" ErrorTypeConversion "Conversion Error: duckdb-simple: the value " (run "SELECT error_range()")
+  -- An INTERNAL error does not keep its type, because DuckDB then invalidates
+  -- the database.
+  createFunction
+    conn
+    "error_internal"
+    (throwIO (SQLError "INTERNAL Error: inner" (Just ErrorRuntimeInternal) Nothing (Just "inner")) :: IO Int64)
+  assertErrorType "an INTERNAL error" ErrorInputInvalid "Invalid Input Error: INTERNAL Error: inner" (run "SELECT error_internal()")
+  query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
+
+-- | Raise an 'SQLError' of each type in a scalar function inside an INSERT
+-- that has written rows, in an explicit transaction, under the DuckDB setting
+-- SYNTACTIC_ERRORS_DO_NOT_INVALIDATE. Check the type of the outer error, the
+-- rows of that INSERT after COMMIT, and that the same connection and a new
+-- connection of the database still run a query. See
+-- Note [Errors that leave a callback] in "Database.DuckDB.Simple.Callback".
+testCallbackErrorPolicy :: Assertion
+testCallbackErrorPolicy = do
+  outcomes <- forM [minBound .. maxBound] \errorType -> withEnvironment \environment -> withInstance environment [] \instance' -> do
+    attachDatabase instance' ":memory:" "typed_policy" []
+    setDefaultDatabase instance' "typed_policy"
+    (outerType, rows, same) <- withConnectionOn instance' \conn -> do
+      -- With one thread, the INSERT writes two chunks of 2048 rows before the
+      -- chunk with row 5000 fails.
+      void (execute_ conn "SET threads = 1")
+      void (execute_ conn "SET default_transaction_invalidation_policy = 'SYNTACTIC_ERRORS_DO_NOT_INVALIDATE'")
+      void (execute_ conn "SET current_transaction_invalidation_policy = 'SYNTACTIC_ERRORS_DO_NOT_INVALIDATE'")
+      void (execute_ conn "CREATE TABLE typed_policy_rows (v BIGINT)")
+      createFunction conn "typed_policy_fail" \(i :: Int64) ->
+        if i < 5000
+          then pure i
+          else
+            throwIO
+              SQLError{sqlErrorMessage = "typed failure", sqlErrorType = Just errorType, sqlErrorQuery = Nothing, sqlErrorBody = Just "typed failure"}
+              :: IO Int64
+      void (execute_ conn "BEGIN")
+      void (execute_ conn "INSERT INTO typed_policy_rows VALUES (-1)")
+      outer <- try (execute_ conn "INSERT INTO typed_policy_rows SELECT typed_policy_fail(i) FROM range(10000) t(i)")
+      void (execute_ conn "COMMIT")
+      rows <- query_ conn "SELECT count(*) FROM typed_policy_rows WHERE v >= 0"
+      same <- query_ conn "SELECT 42"
+      pure (either sqlErrorType (const Nothing) (outer :: Either SQLError Int), rows, same)
+    new <- withConnectionOn instance' \other -> query_ other "SELECT 42"
+    pure (errorType, outerType, rows :: [Only Int64], same :: [Only Int64], new :: [Only Int64])
+  let invalidInput =
+        [ ErrorQueryBinder
+        , ErrorDatabaseCatalog
+        , ErrorResourceConnection
+        , ErrorQueryParameterNotAllowed
+        , ErrorQueryParser
+        , ErrorConfigurationPermission
+        , ErrorResourceInUse
+        , ErrorApi
+        , ErrorIOFileNotFound
+        , ErrorIOReadFailure
+        , ErrorIOEof
+        , ErrorInputParameterInvalid
+        , ErrorInputMetadataDeferred
+        , ErrorIONetwork
+        , ErrorRuntimeInternal
+        , ErrorRuntimeFatal
+        ]
+      expectedType errorType
+        | errorType `elem` invalidInput = ErrorInputInvalid
+        | otherwise = errorType
+  outcomes
+    @?= [ (errorType, Just (expectedType errorType), [Only 0], [Only 42], [Only 42])
+        | errorType <- [minBound .. maxBound]
+        ]
+
+-- | Require an 'SQLError' of the type, with a message that starts with the
+-- text.
+assertErrorType :: String -> ErrorType -> Text -> IO () -> Assertion
+assertErrorType label expected prefix action =
+  try action >>= \case
+    Left (err :: SQLError) -> do
+      assertEqual label (Just expected) (sqlErrorType err)
+      assertBool (label <> ": " <> show (sqlErrorMessage err)) (prefix `Text.isPrefixOf` sqlErrorMessage err)
+    Right () -> assertFailure (label <> ": expected an SQL error")
 
 -- | Accept and reject the values of a BIGINT option from SET, RESET, and
 -- 'setConfigValue'. The function gets each value after the cast to BIGINT. A
@@ -470,15 +475,22 @@ testOptionText = withConnection ":memory:" \conn -> do
   assertSqlError "typed_option_required must have a value" (execute_ conn "RESET typed_option_required")
   fst <$> getConfigValue conn "typed_option_required" >>= (@?= FieldText "kept")
 
--- | Register a custom type on the column type of the values. Cast a row number
--- to each value. Require the same values from the custom type.
-roundTrip :: forall a. (ToDuckValue a, FromField a, Eq a, Show a) => Connection -> Text -> [a] -> Assertion
-roundTrip conn label values = do
-  let name = "typed_base_" <> label
-  registerCustomType conn name (TypeExpression (duckdbColumnType (Proxy @a)))
-  createCast conn (TypeExpression "BIGINT") (TypeExpression name) \(row :: Int64) -> Right (values !! fromIntegral row)
-  rows <- query_ conn (Query ("SELECT CAST(i AS " <> name <> ") FROM range(" <> Text.pack (show (length values)) <> ") t(i) ORDER BY i"))
-  assertEqual (Text.unpack name) values (map fromOnly rows)
+-- | A scalar function that changes its argument gives the rows of its Haskell
+-- result in a filter, in an equality filter, and in a join condition. A
+-- registered cast between two built-in types can give other rows there, so
+-- the README names a scalar function for such a conversion.
+testScalarFilterJoin :: Assertion
+testScalarFilterJoin = withConnection ":memory:" \conn -> do
+  let bend x = 100 - x * x :: Int64
+      values = [-20 .. 20]
+      targets = [100, 99, 64, 0, -300]
+  createFunction conn "typed_bend" bend
+  void (execute_ conn "CREATE TABLE bend_values AS SELECT i::BIGINT AS c FROM range(-20, 21) t(i)")
+  void (execute_ conn "CREATE TABLE bend_targets AS SELECT d::BIGINT AS d FROM (VALUES (100), (99), (64), (0), (-300)) t(d)")
+  query_ conn "SELECT c FROM bend_values WHERE typed_bend(c) > 50 ORDER BY c" >>= (@?= [Only c | c <- values, bend c > 50])
+  query_ conn "SELECT c FROM bend_values WHERE typed_bend(c) = 100 ORDER BY c" >>= (@?= [Only c | c <- values, bend c == 100])
+  query_ conn "SELECT a.c, u.d FROM bend_values a JOIN bend_targets u ON typed_bend(a.c) = u.d ORDER BY a.c"
+    >>= (@?= [(c, d) | c <- values, d <- targets, bend c == d])
 
 -- | Replace one name with a query. Read the rows under the table name and an alias.
 testReplacementQuery :: Assertion
@@ -797,7 +809,8 @@ testAggregateErrors = withConnection ":memory:" \conn -> do
         :: IO [Only Int64]
     )
   query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
-  -- A negative BIGNUM does not convert to Natural. The error names the argument.
+  -- A Natural argument is UHUGEINT. DuckDB casts a BIGINT to it only with an
+  -- explicit cast, and the cast of a negative value fails.
   createAggregate
     conn
     "typed_natural_sum"
@@ -807,10 +820,11 @@ testAggregateErrors = withConnection ":memory:" \conn -> do
       , aggregateCombine = \a b -> pure (a + b)
       , aggregateResult = pure :: Int64 -> IO Int64
       }
-  query_ conn "SELECT typed_natural_sum(i, i) FROM range(10) t(i)" >>= (@?= [Only (90 :: Int64)])
+  query_ conn "SELECT typed_natural_sum(i, i::UHUGEINT) FROM range(10) t(i)" >>= (@?= [Only (90 :: Int64)])
+  assertSqlError "No function matches" (query_ conn "SELECT typed_natural_sum(i, i) FROM range(10) t(i)" :: IO [Only Int64])
   assertSqlError
-    "typed_natural_sum: cannot convert argument arg1 from BIGNUM to Natural"
-    (query_ conn "SELECT typed_natural_sum(i, i - 5) FROM range(10) t(i)" :: IO [Only Int64])
+    "out of range for the destination type UINT128"
+    (query_ conn "SELECT typed_natural_sum(i, (i - 5)::UHUGEINT) FROM range(10) t(i)" :: IO [Only Int64])
   query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
   createAggregate
     conn
@@ -883,7 +897,8 @@ testAggregateResultTypes = withConnection ":memory:" \conn -> do
     "For a newtype over one of these types, derive FunctionResult with deriving newtype."
     (createAggregate conn "typed_years" sumAggregate{aggregateResult = pure . Years . fromIntegral})
   -- The argument reader does not read VARIANT.
-  let unreadable = "argument arg0: the type of an argument cannot be or contain VARIANT"
+  let unreadable =
+        "argument arg0: the library cannot read a VARIANT value in a callback; declare another type, such as VARCHAR, and cast the value in SQL, for example v::VARCHAR"
   assertSqlError
     ("typed_variant_count: " <> unreadable)
     (createAggregate conn "typed_variant_count" countAggregate{aggregateStep = \count (Only (_ :: Variant)) -> pure (count + 1)})
@@ -903,6 +918,16 @@ testAggregateResultTypes = withConnection ":memory:" \conn -> do
     (createAggregate conn "typed_integer_result" sumAggregate{aggregateResult = pure . toInteger})
   query_ conn "SELECT count(*) FROM duckdb_functions() WHERE function_name IN ('typed_peak_result', 'typed_integer_result')"
     >>= (@?= [Only (0 :: Int64)])
+  assertSqlError
+    "typed_struct_result: result: StructValue has no static field types"
+    (createAggregate conn "typed_struct_result" sumAggregate{aggregateResult = \_ -> pure (undefined :: StructValue FieldValue)})
+  assertInputErrorContaining "aggregate function name must be nonempty" (createAggregate conn "" sumAggregate)
+  -- The result check comes before the state of the connection.
+  closed <- open ":memory:"
+  close closed
+  assertSqlError
+    ("typed_closed_result: " <> limit)
+    (createAggregate closed "typed_closed_result" sumAggregate{aggregateResult = pure . toInteger})
 
 -- | An aggregate that counts its rows. Change 'aggregateStep' for another
 -- argument type.
@@ -1038,6 +1063,16 @@ assertSqlError expected action = do
       assertBool (Text.unpack message) (not (any (`Text.isInfixOf` message) ["user error", "SQLError {"]))
     Right _ -> assertFailure "expected an SQL error"
 
+-- | Require an 'SQLError' of the type 'ErrorInputInvalid' with a message that
+-- contains the text: the error of an input check of the library.
+assertInputError :: Text -> IO a -> Assertion
+assertInputError expected action =
+  try action >>= \case
+    Left (err :: SQLError) -> do
+      sqlErrorType err @?= Just ErrorInputInvalid
+      assertBool (Text.unpack (sqlErrorMessage err)) (expected `Text.isInfixOf` sqlErrorMessage err)
+    Right _ -> assertFailure ("expected an SQL error with " <> Text.unpack expected)
+
 -- | Read one column, both columns, and more than one chunk of the example.
 testTableSquares :: Assertion
 testTableSquares = withConnection ":memory:" \conn -> do
@@ -1097,17 +1132,67 @@ testTableTypes = withConnection ":memory:" \conn -> do
         )
   query_ conn "SELECT count(*) FROM typed_readings(3000) WHERE note IS NULL" >>= (@?= [Only (1500 :: Int64)])
 
--- | Give Integer and Natural columns. The declared column type is BIGNUM. A
--- value in the HUGEINT range is a HUGEINT value, and DuckDB casts it to BIGNUM.
+-- | Give Integer and Natural columns. The declared column type is HUGEINT for
+-- Integer and UHUGEINT for Natural, also for the elements of a list and the
+-- values of a MAP. A value outside that range raises an error.
 testTableIntegers :: Assertion
 testTableIntegers = withConnection ":memory:" \conn -> do
-  let integers = [5, -5, 2 ^ (100 :: Int), 2 ^ (130 :: Int) :: Integer]
+  let integers = [5, -5, 2 ^ (100 :: Int), 2 ^ (127 :: Int) - 1 :: Integer]
   createTableFunction conn "typed_integers" ["v"] \() -> pure (map Only integers)
-  query_ conn "SELECT typeof(v), v FROM typed_integers()" >>= (@?= [("BIGNUM" :: Text, value) | value <- integers])
-  let naturals = [("small" :: Text, 7 :: Natural), ("large", 2 ^ (128 :: Int))]
+  query_ conn "SELECT typeof(v), v FROM typed_integers()" >>= (@?= [("HUGEINT" :: Text, value) | value <- integers])
+  let naturals = [("small" :: Text, 7 :: Natural), ("large", 2 ^ (128 :: Int) - 1)]
   createTableFunction conn "typed_naturals" ["label", "v"] \() -> pure naturals
   query_ conn "SELECT label, typeof(v), v FROM typed_naturals()"
-    >>= (@?= [(label, "BIGNUM" :: Text, value) | (label, value) <- naturals])
+    >>= (@?= [(label, "UHUGEINT" :: Text, value) | (label, value) <- naturals])
+  let nested = [([5, 2 ^ (100 :: Int)], Map.fromList [("a", 2 ^ (127 :: Int) :: Natural)])] :: [([Integer], Map.Map Text Natural)]
+  createTableFunction conn "typed_integer_lists" ["vs", "m"] \() -> pure nested
+  query_ conn "SELECT typeof(vs), typeof(m), vs, m FROM typed_integer_lists()"
+    >>= (@?= [("HUGEINT[]" :: Text, "MAP(VARCHAR, UHUGEINT)" :: Text, vs, m) | (vs, m) <- nested])
+  -- A MAP of a type text and an Integer or a Natural, also in a list, declares
+  -- the text MAP(K, V) with the type text of the other part.
+  let keyed = Map.fromList [([1, 2], 2 ^ (100 :: Int))] :: Map.Map [Int64] Integer
+      listed = Map.fromList [([3], [5, -5])] :: Map.Map [Int64] [Integer]
+      nestedMaps = [[Map.fromList [([4], 2 ^ (127 :: Int))]], []] :: [[Map.Map [Int64] Natural]]
+  createTableFunction conn "typed_text_maps" ["k", "l", "n", "p"] \() ->
+    pure [(keyed, listed, maps, Map.fromList [(7 :: Natural, Price 1.5)]) | maps <- nestedMaps]
+  query_ conn "SELECT DISTINCT typeof(k), typeof(l), typeof(n), typeof(p) FROM typed_text_maps()"
+    >>= ( @?=
+            [
+              ( "MAP(BIGINT[], HUGEINT)" :: Text
+              , "MAP(BIGINT[], HUGEINT[])" :: Text
+              , "MAP(BIGINT[], UHUGEINT)[]" :: Text
+              , "MAP(UHUGEINT, DECIMAL(18,3))" :: Text
+              )
+            ]
+        )
+  query_ conn "SELECT k, l, n, p::VARCHAR FROM typed_text_maps()"
+    >>= (@?= [(keyed, listed, maps, "{7=1.500}" :: Text) | maps <- nestedMaps])
+  -- DuckDB sums a UHUGEINT column as a DOUBLE.
+  query_ conn "SELECT typeof(sum(v)), sum(v) FROM typed_naturals()" >>= (@?= [("DOUBLE" :: Text, 2 ^ (128 :: Int) :: Double)])
+  -- toDuckValue raises an error for a value outside the range. A BIGNUM value
+  -- would reach the HUGEINT column, and DuckDB casts the BIGNUM 2^128 to 0.
+  let outside typeName = "Conversion Error: duckdb-simple: the value 340282366920938463463374607431768211456 is outside the range of " <> typeName
+  createTableFunction conn "typed_wide_integer" ["v"] \() -> pure [Only (2 ^ (128 :: Int) :: Integer)]
+  assertErrorType
+    "Integer"
+    ErrorTypeConversion
+    (outside "HUGEINT")
+    (void (query_ conn "SELECT v FROM typed_wide_integer()" :: IO [Only Integer]))
+  createTableFunction conn "typed_wide_list" ["v"] \() -> pure [Only [5, 2 ^ (128 :: Int) :: Integer]]
+  assertErrorType
+    "Integer list"
+    ErrorTypeConversion
+    (outside "HUGEINT")
+    (void (query_ conn "SELECT v FROM typed_wide_list()" :: IO [Only [Integer]]))
+  createTableFunction conn "typed_wide_natural" ["v"] \() -> pure [Only (2 ^ (128 :: Int) :: Natural)]
+  assertErrorType
+    "Natural"
+    ErrorTypeConversion
+    (outside "UHUGEINT")
+    (void (query_ conn "SELECT v FROM typed_wide_natural()" :: IO [Only Natural]))
+  -- A BigNum column holds each value.
+  createTableFunction conn "typed_bignums" ["v"] \() -> pure [Only (BigNum (2 ^ (130 :: Int)))]
+  query_ conn "SELECT typeof(v), v FROM typed_bignums()" >>= (@?= [("BIGNUM" :: Text, BigNum (2 ^ (130 :: Int)))])
 
 -- | Give IntervalValue and TimeWithZone columns.
 testTableIntervals :: Assertion
@@ -1150,6 +1235,24 @@ data Counts = Counts {signed :: Integer, unsigned :: Natural}
 newtype Ranked = Ranked {ranks :: Array Int Int64}
   deriving stock (Generic)
   deriving (DuckDBColumnType, ToDuckValue) via (ViaDuckDB Ranked)
+
+-- | An Array of three BIGINT values. Its type text gives the size.
+newtype Triple = Triple (Array Int Int64)
+  deriving newtype (Eq, Show, FromField, ToField, ToDuckValue)
+
+instance DuckDBColumnType Triple where
+  duckdbColumnTypeFor _ = "BIGINT[3]"
+
+-- | A record field gives its size through the DuckValue instance.
+instance DuckValue Triple where
+  duckToField (Triple values) = duckToField values
+  duckFromField = fmap Triple . duckFromField
+  duckLogicalType _ = LogicalTypeArray (LogicalTypeScalar LogicalTypeIdBigInt) 3
+
+-- | A record with a field of a sized ARRAY type.
+newtype Boxed = Boxed {boxed :: Triple}
+  deriving stock (Generic)
+  deriving (DuckDBColumnType, ToDuckValue, FromField) via (ViaDuckDB Boxed)
 
 -- | A newtype over a raw result type. It derives the raw result writer.
 newtype Age = Age Int16
@@ -1244,12 +1347,120 @@ testNoDeclaration = withConnection ":memory:" \conn -> do
           }
     )
   assertSqlError
-    "typed_ranked: column r: an Array field has no size, so its ARRAY type has no declaration. Use a list field"
+    "typed_ranked: column r: an Array field has no size, so its ARRAY type has no declaration. Use a field of a newtype"
     (createTableFunction conn "typed_ranked" ["r"] \() -> pure ([] :: [Only Ranked]))
+  -- A bare Array has no declaration in each position, also inside a Maybe, a
+  -- list, or a Map.
+  let unsized = "an Array has no size, so its ARRAY type has no declaration. Use a newtype of the Array"
+  assertSqlError
+    ("typed_array_argument: argument arg0: " <> unsized)
+    (createFunction conn "typed_array_argument" \(_ :: Array Int Int64) -> True)
+  assertSqlError
+    ("typed_array_nested: argument arg0: " <> unsized)
+    (createFunction conn "typed_array_nested" \(_ :: Maybe [Array Int Int64]) -> True)
+  assertSqlError
+    ("typed_array_map: argument arg0: " <> unsized)
+    (createFunction conn "typed_array_map" \(_ :: Map.Map Text (Array Int Int64)) -> True)
+  assertSqlError
+    ("typed_array_key: argument arg0: " <> unsized)
+    (createFunction conn "typed_array_key" \(_ :: Map.Map (Array Int Int64) Text) -> True)
+  assertSqlError
+    ("typed_array_result: result: " <> unsized)
+    (createFunction conn "typed_array_result" \(x :: Int64) -> listArray (0, 0) [x] :: Array Int Int64)
+  assertSqlError
+    ("typed_array_count: argument arg0: " <> unsized)
+    ( createAggregate
+        conn
+        "typed_array_count"
+        Aggregate
+          { aggregateInitial = 0 :: Int64
+          , aggregateStep = \count (Only (_ :: Array Int Int64)) -> pure (count + 1)
+          , aggregateCombine = \a b -> pure (a + b)
+          , aggregateResult = pure
+          }
+    )
+  assertSqlError
+    ("typed_array_parameter: parameter arg0: " <> unsized)
+    (createTableFunction conn "typed_array_parameter" ["n"] \(Only (_ :: Array Int Int64)) -> pure [Only (1 :: Int64)])
+  assertSqlError
+    ("typed_array_column: column a: " <> unsized)
+    (createTableFunction conn "typed_array_column" ["a"] \() -> pure ([] :: [Only (Array Int Int64)]))
   assertSqlError
     "typed_priced: column p: a MAP with the type text DECIMAL(18,3) and a structured type has no declaration"
     (createTableFunction conn "typed_priced" ["p"] \() -> pure ([] :: [Only (Map.Map Price Peak)]))
   query_ conn "SELECT count(*) FROM duckdb_functions() WHERE function_name LIKE 'typed\\_%' ESCAPE '\\'" >>= (@?= [Only (0 :: Int64)])
+
+-- | Use a newtype with a sized ARRAY type text in each position. DuckDB
+-- rejects an ARRAY of another size when it binds the call, casts a LIST of
+-- the same length to the ARRAY, and rejects a LIST of another length when the
+-- statement runs. See Note [Type declarations] in
+-- "Database.DuckDB.Simple.ToField".
+testSizedArray :: Assertion
+testSizedArray = withConnection ":memory:" \conn -> do
+  let total (Triple values) = sum (elems values)
+      triple x = Triple (listArray (0, 2) [x, x, x])
+  createFunction conn "sized_argument" total
+  createFunction conn "sized_maybe" (maybe (-1) total :: Maybe Triple -> Int64)
+  createFunction conn "sized_list" (sum . map total :: [Triple] -> Int64)
+  createFunction conn "sized_record" \(Boxed values) -> total values
+  createAggregate
+    conn
+    "sized_aggregate"
+    Aggregate
+      { aggregateInitial = 0 :: Int64
+      , aggregateStep = \sum' (Only values) -> pure (sum' + total values)
+      , aggregateCombine = \a b -> pure (a + b)
+      , aggregateResult = pure
+      }
+  createTableFunction conn "sized_table" ["total"] \(Only values) -> pure [Only (total values)]
+  -- The third part is the type of the error for a LIST of another length.
+  -- DuckDB casts the parameter of a table function as a constant value, and
+  -- that cast raises ErrorInputInvalid "Failed to cast value".
+  let positions :: [(String, Text -> Text, ErrorType)]
+      positions =
+        [ ("scalar argument", \v -> "SELECT sized_argument(" <> v <> ")", ErrorTypeConversion)
+        , ("Maybe argument", \v -> "SELECT sized_maybe(" <> v <> ")", ErrorTypeConversion)
+        , ("list argument", \v -> "SELECT sized_list([" <> v <> "])", ErrorTypeConversion)
+        , ("record field", \v -> "SELECT sized_record({'boxed': " <> v <> "})", ErrorTypeConversion)
+        , ("aggregate argument", \v -> "SELECT sized_aggregate(" <> v <> ")", ErrorTypeConversion)
+        , ("table function parameter", \v -> "SELECT * FROM sized_table(" <> v <> ")", ErrorInputInvalid)
+        ]
+      values :: ErrorType -> [(String, Text, Either (ErrorType, Text) Int64)]
+      values lengthError =
+        [ ("ARRAY of 3", "[1, 2, 3]::BIGINT[3]", Right 6)
+        , ("ARRAY of 4", "[1, 2, 3, 4]::BIGINT[4]", Left (ErrorQueryBinder, "No function matches"))
+        , ("LIST of 3", "[1, 2, 3]", Right 6)
+        , ("LIST of 2", "[1, 2]", Left (lengthError, "Cannot cast list with length 2 to array with length 3"))
+        ]
+      check :: String -> IO [Only Int64] -> Either (ErrorType, Text) Int64 -> Assertion
+      check name action expected = do
+        outcome <- try action
+        case (outcome, expected) of
+          (Right rows, Right value) -> assertEqual name [Only value] rows
+          (Left err, Left (errorType, text)) -> do
+            assertEqual (name <> ": " <> Text.unpack (sqlErrorMessage err)) (Just errorType) (sqlErrorType err)
+            assertBool (name <> ": " <> Text.unpack (sqlErrorMessage err)) (text `Text.isInfixOf` sqlErrorMessage err)
+          (Right rows, Left _) -> assertFailure (name <> ": expected an error, got " <> show rows)
+          (Left (err :: SQLError), Right _) -> assertFailure (name <> ": " <> show err)
+  forM_ positions \(position, sql, lengthError) -> forM_ (values lengthError) \(label, value, expected) ->
+    check (position <> ", " <> label) (query_ conn (Query (sql value))) expected
+  -- A bound Array binds as an ARRAY of its own size.
+  check "bound Array of 3" (query conn "SELECT sized_argument(?)" (Only (listArray (0, 2) [1, 2, 3] :: Array Int Int64))) (Right 6)
+  check
+    "bound Array of 4"
+    (query conn "SELECT sized_argument(?)" (Only (listArray (0, 3) [1, 2, 3, 4] :: Array Int Int64)))
+    (Left (ErrorQueryBinder, "No function matches"))
+  -- A result and a column of a table function are ARRAY values of the size.
+  createFunction conn "sized_result" triple
+  createTableFunction conn "sized_rows" ["t"] \(Only (x :: Int64)) -> pure [Only (triple x)]
+  query_ conn "SELECT typeof(sized_result(1)), sized_result(1)::VARCHAR" >>= (@?= [("BIGINT[3]" :: Text, "[1, 1, 1]" :: Text)])
+  query_ conn "SELECT typeof(t), t::VARCHAR FROM sized_rows(2)" >>= (@?= [("BIGINT[3]" :: Text, "[2, 2, 2]" :: Text)])
+  -- A result of another size raises the cast error of DuckDB when the function runs.
+  createFunction conn "sized_wrong_result" \(x :: Int64) -> Triple (listArray (0, 3) [x, x, x, x])
+  check
+    "result of 4"
+    (query_ conn "SELECT len(sized_wrong_result(1))")
+    (Left (ErrorInputInvalid, "Cannot cast array of size 4 to array of size 3"))
 
 -- | Give an error, and no other value, for a record field outside the range
 -- of its declared type, as a parameter, as a column, and as a scalar result.
@@ -1305,17 +1516,19 @@ testTableArgumentErrors = withConnection ":memory:" \conn -> do
     "1 column names for 2 result columns"
     (createTableFunction conn "typed_bad_names" ["a"] \() -> pure [(1 :: Int64, 2 :: Int64)])
   assertSqlError "at least one result column" (createTableFunction conn "typed_no_columns" [] \() -> pure [()])
-  -- DuckDB casts the argument to BIGNUM. A negative BIGNUM does not convert to Natural.
+  -- A Natural parameter is UHUGEINT. DuckDB does not cast a negative literal to it.
   createTableFunction conn "typed_natural" ["n"] \(Only (value :: Natural)) -> pure [Only (fromIntegral value :: Int64)]
   query_ conn "SELECT n FROM typed_natural(7)" >>= (@?= [Only (7 :: Int64)])
-  assertSqlError "typed_natural: cannot convert argument arg0" (query_ conn "SELECT n FROM typed_natural(-7)" :: IO [Only Int64])
+  assertSqlError "No function matches" (query_ conn "SELECT n FROM typed_natural(-7)" :: IO [Only Int64])
   assertSqlError "typed_natural: argument arg0 is NULL" (query_ conn "SELECT n FROM typed_natural(NULL)" :: IO [Only Int64])
-  createTableFunction conn "typed_variant" ["n"] \(Only (_ :: Variant)) -> pure [Only (1 :: Int64)]
-  assertSqlError
-    "the type of a table function argument cannot be or contain VARIANT"
-    (query_ conn "SELECT n FROM typed_variant(1::VARIANT)" :: IO [Only Int64])
-  createTableFunction conn "typed_maybe_variant" ["missing"] \(Only (value :: Maybe Variant)) -> pure [Only (isNothing value)]
-  query_ conn "SELECT missing FROM typed_maybe_variant(NULL::VARIANT)" >>= (@?= [Only True])
+  -- The argument reader reads no VARIANT, so the registration of such a
+  -- parameter type fails.
+  assertInputError
+    "typed_variant: parameter arg0: the library cannot read a VARIANT value in a callback; declare another type, such as VARCHAR, and cast the value in SQL, for example v::VARCHAR"
+    (createTableFunction conn "typed_variant" ["n"] \(Only (_ :: Variant)) -> pure [Only (1 :: Int64)])
+  assertInputError
+    "typed_maybe_variant: parameter arg0: the library cannot read a VARIANT value in a callback; declare another type, such as VARCHAR, and cast the value in SQL, for example v::VARCHAR"
+    (createTableFunction conn "typed_maybe_variant" ["missing"] \(Only (value :: Maybe Variant)) -> pure [Only (isNothing value)])
   query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
 
 -- | Fail a query with an exception in the function and in a row of the second chunk.
@@ -1532,6 +1745,17 @@ testCopySharedDatabase = withDirectory \directory -> withEnvironment \environmen
     void (execute first "COPY typed_shared_rows FROM ? (FORMAT typed_shared_lines)" (Only file))
     query_ first "SELECT value FROM typed_shared_rows ORDER BY rowid" >>= (@?= map (Only . Just) ([0 .. 4] <> [0 .. 4 :: Int64]))
 
+-- | Raise the input error of an empty format name, also on a closed connection.
+-- The name check comes before the read of the state of the connection.
+testCopyClosedName :: Assertion
+testCopyClosedName = do
+  closed <- open ":memory:"
+  close closed
+  assertInputErrorContaining "invalid copy function name" $
+    registerCopyToFunction closed "" (\_ -> pure ()) (\_ -> pure ()) (\_ _ -> pure ()) (\_ -> pure ())
+  assertInputErrorContaining "invalid copy function name" $
+    registerCopyFunction closed "" linesTo (\_ -> pure [Only (1 :: Int64)])
+
 -- | A COPY TO side that writes one BIGINT column as lines. A NULL is an empty line.
 linesTo :: CopyTo () FilePath
 linesTo =
@@ -1618,13 +1842,13 @@ closureKinds =
         query_ conn "SELECT closure_sum(i) FROM range(10) t(i)" >>= (@?= [Only (45 :: Int64)])
     )
   ,
-    ( "typed cast"
+    ( "cast"
     , \token -> withConnection ":memory:" \conn -> do
         registerCustomType conn "closure_type" (TypeExpression "BIGINT")
-        -- A cast is pure. The cast reads the token in each call, so its closure keeps the token.
-        createCast conn (TypeExpression "BIGINT") (TypeExpression "closure_type") \(value :: Int64) ->
-          Right (unsafePerformIO ((+ value) <$> readIORef token))
-        query_ conn "SELECT CAST(41::BIGINT AS closure_type)::BIGINT" >>= (@?= [Only (42 :: Int64)])
+        -- The callback reads the token in each call, so its closure keeps the token.
+        R.registerCast conn (TypeExpression "BIGINT") (TypeExpression "closure_type") Nothing \info _ ->
+          readIORef token >> writeNullRows info
+        query_ conn "SELECT CAST(41::BIGINT AS closure_type) IS NULL" >>= (@?= [Only True])
     )
   ,
     ( "connection replacement scan"

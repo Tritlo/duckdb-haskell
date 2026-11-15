@@ -200,7 +200,13 @@ stateStripe table key = table ! (key `mod` length table)
 -- it. See Note [Type declarations] in
 -- "Database.DuckDB.Simple.ToField". A result type that is not raw also raises an
 -- error at registration, because the finalize callback has no factory. See
--- Note [Result writers] in "Database.DuckDB.Simple.Function.Internal".
+-- Note [Result writers] in "Database.DuckDB.Simple.Function.Internal". The
+-- check of the name, the declarations of the arguments and the result, and the
+-- check of a raw result come before the read of the state of the target, so
+-- their input errors win over a closed connection. The VARIANT and GEOMETRY
+-- checks ('checkArgumentType') need the resolved type of the argument, so they
+-- come after the read of the state. Thus a closed connection wins over the
+-- VARIANT check. The GEOMETRY check applies only to a loading extension.
 createAggregateOn
   :: forall state args result
    . (FromRow args, TypedRow args, FunctionResult result) => RegistrationTarget -> Text -> Aggregate state args result -> IO ()
@@ -208,9 +214,6 @@ createAggregateOn target name aggregate = do
   when (Text.null name || Text.any (== '\0') name) $
     throwInvalidArgument "aggregate function name must be nonempty and must not contain NUL"
   argumentTypes <- rowDeclarations name ["argument " <> argumentName index | index <- [0 ..]] columnTypes
-  -- The update callback has no context. It reads a GEOMETRY argument with the
-  -- factory of the instance, which only a connection target gives.
-  casts <- targetCastFactory target
   [resultType] <- rowDeclarations name ["result"] [duckdbTypeDeclaration (Proxy @result)]
   toRaw <- case rawResult of
     Just raw -> pure raw
@@ -222,6 +225,11 @@ createAggregateOn target name aggregate = do
             <> " or Maybe of one of them), because the finalize callback has no factory."
             <> " For a newtype over one of these types, derive FunctionResult with deriving newtype."
         )
+  -- The input checks that do not need a resolved type come before the read of
+  -- the state of the target. The update callback has no context. It reads a
+  -- GEOMETRY argument with the factory of the instance, which only a
+  -- connection target gives.
+  casts <- targetCastFactory target
   -- See Note [State table stripes]. Evaluate the count before the registration.
   -- An unevaluated count keeps the target, and thus the connection, reachable
   -- from the callbacks.
@@ -246,7 +254,8 @@ createAggregateOn target name aggregate = do
   withRegistrationFactory target \factory -> do
     -- The argument reader does not read VARIANT, and it reads GEOMETRY only with
     -- a factory. Thus reject such a type before the registration.
-    forM_ (zip [0 ..] argumentTypes) \(index, argumentType) -> withTypeDeclaration factory argumentType (checkArgumentType (isJust casts) name index)
+    forM_ (zip [0 ..] argumentTypes) \(index, argumentType) ->
+      withTypeDeclaration factory argumentType (checkArgumentType (isJust casts) name ("argument " <> argumentName index))
     registerAggregateFunctionWith target (configure parameters resultType factory) callbacks
   where
     columnTypes = rowColumnDeclarations (Proxy @args)
@@ -369,7 +378,7 @@ stateCell :: Ptr Void -> IO (IORef state)
 stateCell slot = do
   stable <- peek (castPtr slot)
   when (castStablePtrToPtr stable == nullPtr) $
-    throwIO (userError "duckdb-simple: the aggregate state was released")
+    throwInternalError "the aggregate state was released"
   deRefStablePtr stable
 
 -- | Release the Haskell state of a native state, and set the native state to

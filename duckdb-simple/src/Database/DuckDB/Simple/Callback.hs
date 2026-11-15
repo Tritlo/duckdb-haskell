@@ -10,6 +10,7 @@ module Database.DuckDB.Simple.Callback (
   RegistrationTarget (..),
   withRegistrationFactory,
   targetCastFactory,
+  targetConfig,
   withTarget,
   Allocator,
   install,
@@ -21,19 +22,24 @@ module Database.DuckDB.Simple.Callback (
   transferCallbackState,
   readCallbackState,
   runCallback,
+  runCallbackWith,
   ignoreCallbackExceptions,
   attachOpaque,
 ) where
 
-import Control.Exception (SomeException, bracket, catch, displayException, finally, fromException, mask, mask_, onException, throwIO, try)
-import Control.Monad (when)
+import Control.Concurrent (rtsSupportsBoundThreads)
+import Control.Exception (SomeException, bracket, catch, displayException, finally, fromException, mask, mask_, onException, try)
+import Control.Monad (unless, when)
 import Data.IORef (modifyIORef', newIORef, readIORef)
+import Data.Maybe (fromMaybe)
+import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Void (Void)
 import Database.DuckDB.Simple.CallbackMark (withCallbackMark)
 import Database.DuckDB.Simple.Internal (Connection, withConnectionHandle, withTypeCache)
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.TypeCache (typeCacheCasts)
+import Foreign.Marshal.Alloc (alloca)
 import Foreign.Marshal.Utils (with)
 import Foreign.Ptr (FunPtr, Ptr, castFunPtr, castPtr, freeHaskellFunPtr, nullFunPtr, nullPtr)
 import Foreign.StablePtr (StablePtr, castPtrToStablePtr, castStablePtrToPtr, deRefStablePtr, freeStablePtr, newStablePtr)
@@ -69,6 +75,14 @@ targetCastFactory :: RegistrationTarget -> IO (Maybe DuckDBV2FactoryHandle)
 targetCastFactory target = case target of
   ConnectionTarget connection -> Just <$> withTypeCache connection (pure . typeCacheCasts)
   ExtensionTarget _ _ -> pure Nothing
+
+-- | Borrow the config of a registration target: the config of the connection,
+-- or the config of the context of an extension. The handle is valid while the
+-- target is.
+targetConfig :: RegistrationTarget -> IO DuckDBV2ConfigHandle
+targetConfig target = case target of
+  ConnectionTarget connection -> withConnectionHandle connection (output . c_duckdb_v2_connection_get_config)
+  ExtensionTarget _ context -> output (c_duckdb_v2_context_get_config context)
 
 -- | Keep the target alive while borrowing its factory and registration builder.
 withTarget
@@ -157,24 +171,29 @@ in "Database.DuckDB.Simple.Copy.Internal".
 -}
 
 -- | Acquire callbacks and transfer their cleanup to a DuckDB object.
--- The object must be non-null. Its destructor must run after the action. See
--- Note [Callback ownership].
+-- The object must be non-null. Its destructor must run after the action. The
+-- first argument reads the config of the database that runs the callbacks. See
+-- Note [Callback ownership] and Note [Callbacks without the threaded runtime].
 withCallbackResources
-  :: (Allocator -> IO r)
-  -> (Ptr Void -> DuckDBV2OpaqueDestroyFn -> IO ())
-  -> (r -> IO b)
-  -> IO b
-withCallbackResources = withCallbackResourcesFinally (pure ())
-
--- | Run a final action before the callback resources are released.
--- This includes acquisition and registration failure. Contain final-action errors.
-withCallbackResourcesFinally
-  :: IO ()
+  :: IO DuckDBV2ConfigHandle
   -> (Allocator -> IO r)
   -> (Ptr Void -> DuckDBV2OpaqueDestroyFn -> IO ())
   -> (r -> IO b)
   -> IO b
-withCallbackResourcesFinally finalizer acquire attach action = mask \restore -> do
+withCallbackResources config = withCallbackResourcesFinally config (pure ())
+
+-- | Run a final action before the callback resources are released.
+-- This includes acquisition and registration failure. Contain final-action errors.
+-- A registration that acquires a callback checks the runtime before it
+-- registers. See Note [Callbacks without the threaded runtime].
+withCallbackResourcesFinally
+  :: IO DuckDBV2ConfigHandle
+  -> IO ()
+  -> (Allocator -> IO r)
+  -> (Ptr Void -> DuckDBV2OpaqueDestroyFn -> IO ())
+  -> (r -> IO b)
+  -> IO b
+withCallbackResourcesFinally config finalizer acquire attach action = mask \restore -> do
   cleanups <- newIORef []
   let cleanup = ignoreCallbackExceptions finalizer `finally` (readIORef cleanups >>= sequence_)
       allocate make = do
@@ -183,12 +202,62 @@ withCallbackResourcesFinally finalizer acquire attach action = mask \restore -> 
           `onException` freeHaskellFunPtr ptr
         pure ptr
   resources <- acquire allocate `onException` cleanup
+  acquired <- readIORef cleanups
+  unless (null acquired) (requireThreadedRuntime config) `onException` cleanup
   stable <- newStablePtr cleanup `onException` cleanup
   -- A setter that fails has not taken the pointer, so this handler frees it.
   -- See Note [Callback ownership].
   attach (castPtr (castStablePtrToPtr stable)) callbackResourcesDestructor
     `onException` (freeStablePtr stable >> cleanup)
   restore (action resources)
+
+{- Note [Callbacks without the threaded runtime]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+DuckDB calls a callback from its own threads. The GHC runtime without -threaded
+cannot take a call from a foreign thread. The GHC User's Guide says: "In order
+to use the FFI in a multi-threaded setting, you must use the -threaded option."
+A program without -threaded crashed in 20 of 20 runs when a scalar function ran
+over 2,000,000 rows with the setting threads = 4 ("schedule: re-entered
+unsafely", a segmentation fault, or a heap corruption). With threads = 1, or
+with -threaded, it crashed in none of 20 runs.
+
+Thus each registration that acquires a callback calls requireThreadedRuntime
+before it registers (withCallbackResourcesFinally). With the threaded runtime
+the check is one Bool test and no native call. Without it, the check reads the
+setting threads of the database that runs the callbacks (four native calls: the
+config, the option value, its BIGINT, and the release of the value) and raises
+the input error of the library when the setting is above 1. A registration with
+no callback, for example a custom type, a macro, or a custom option with no
+update function, does not check. The setting threads has only the GLOBAL scope
+("cannot be set locally" in DuckDB 2.0.0), so each connection of an instance and
+the instance itself give the same value.
+
+The check cannot see a later change. A statement SET threads = 4 after the
+registration, also on another connection of the instance, raises the count
+again, and the library does not read the SQL text of a statement. The check is
+a guard for the common mistake, not a proof that no callback runs on a second
+thread.
+-}
+
+-- | Raise the input error of the library when the GHC runtime is not threaded
+-- and the database that the config belongs to runs more than one thread. See
+-- Note [Callbacks without the threaded runtime].
+requireThreadedRuntime :: IO DuckDBV2ConfigHandle -> IO ()
+requireThreadedRuntime config = unless rtsSupportsBoundThreads do
+  handle <- config
+  threads <- withIdentifier (Text.pack "threads") \key -> alloca \scope ->
+    bracket
+      (output (\value -> c_duckdb_v2_config_get_option_value handle key value scope))
+      (destroy c_duckdb_v2_value_destroy)
+      (output . c_duckdb_v2_value_get_bigint)
+  when (threads > 1) $
+    throwInvalidArgument
+      ( Text.pack
+          ( "this program is not linked with -threaded, and the database runs "
+              <> show threads
+              <> " threads: link the program with -threaded, or set the DuckDB setting threads to 1 before you register a callback"
+          )
+      )
 
 -- | Transfer one state value to a DuckDB callback state slot.
 -- Use each slot once. See Note [Callback ownership].
@@ -205,7 +274,7 @@ transferCallbackState attach state = mask_ do
 readCallbackState :: (Ptr (Ptr Void) -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO a
 readCallbackState getter = do
   ptr <- output getter
-  when (ptr == nullPtr) $ throwIO (SQLError (Text.pack "duckdb-simple: callback state is not initialized") Nothing Nothing)
+  when (ptr == nullPtr) $ throwInternalError (Text.pack "callback state is not initialized")
   deRefStablePtr (castPtrToStablePtr (castPtr ptr))
 
 -- | Convert callback exceptions to native V2 diagnostics. Mark the thread as a
@@ -213,10 +282,24 @@ readCallbackState getter = do
 -- waits for a connection lock have the bound of the connection. See
 -- 'Database.DuckDB.Simple.Internal.withConnectionLock' and
 -- Note [Callback marks] in "Database.DuckDB.Simple.CallbackMark". Each DuckDB
--- callback with user code runs through this function, except the flush function
--- of a log sink when DuckDB destroys the sink.
+-- callback with user code runs through this function or 'runCallbackWith',
+-- except the flush function of a log sink when DuckDB destroys the sink. See
+-- Note [Errors that leave a callback] for the code and the text of an error.
 runCallback :: Ptr DuckDBV2ErrorInfoHandle -> IO () -> IO ()
-runCallback err action = mask \restore -> do
+runCallback = runCallbackAs callbackError
+
+-- | 'runCallback' with another native error code for each failure. The code
+-- replaces the type of each exception, also the type of an 'SQLError', and the
+-- text is the 'failureText' of the exception. A cast callback uses it. See
+-- Note [The error code of a failed cast] in
+-- "Database.DuckDB.Simple.V2.Registration".
+runCallbackWith :: DuckDBV2Error -> Ptr DuckDBV2ErrorInfoHandle -> IO () -> IO ()
+runCallbackWith code = runCallbackAs \failure -> (code, Text.pack (failureText failure))
+
+-- | Run a callback action. For an exception, write the code and the text that
+-- the first argument gives into the error slot.
+runCallbackAs :: (SomeException -> (DuckDBV2Error, Text)) -> Ptr DuckDBV2ErrorInfoHandle -> IO () -> IO ()
+runCallbackAs describe err action = mask \restore -> do
   outcome <- try (withCallbackMark (restore action))
   case outcome of
     Right () -> pure ()
@@ -229,11 +312,87 @@ runCallback err action = mask \restore -> do
             if info == nullHandle
               then pure ()
               else do
-                c_duckdb_v2_error_info_set_code info DuckDBV2ErrorApi >>= checkCode
+                let (code, text) = describe failure
+                c_duckdb_v2_error_info_set_code info code >>= checkCode
                 withText (Text.pack "Haskell callback failed") $ \message ->
                   c_duckdb_v2_error_info_set_text info message >>= checkCode
-                withText (Text.pack (failureText failure)) $ \message ->
+                withText text $ \message ->
                   c_duckdb_v2_error_info_set_text info message >>= checkCode
+
+{- Note [Errors that leave a callback]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+runCallback writes an exception of a callback into the error slot of DuckDB as
+a code and a text. The statement that runs the callback then fails with an
+error of the type of the code. DuckDB puts the prefix of that type before the
+text, for example "Conversion Error: " for the code of ErrorTypeConversion, and
+"Invalid Input Error: " for DuckDBV2ErrorApi. The section "Errors" of the README
+lists the types that do not pass for users.
+
+- An SQLError with a type writes the code of its type. The text is the body of
+  the error (sqlErrorBody), the text of DuckDB without the prefix. An error of
+  duckdb-simple has no body, so the text is its message. Thus the error of a
+  statement in the callback reaches the outer statement with its type and with
+  one prefix. An error that passes through two callbacks keeps its type and
+  its body in the same way.
+- DuckDB 2.0.0 cannot raise some codes again with their own type. Six codes
+  have no exception type in the map of the C API (TryGetExceptionTypeFromErrorCode
+  in capi_v2.cpp): the codes of ErrorApi, ErrorIOFileNotFound,
+  ErrorIOReadFailure, ErrorIOEof, ErrorInputParameterInvalid, and
+  ErrorInputMetadataDeferred. DuckDB raises them as Invalid Input, so the outer
+  statement fails with ErrorInputInvalid and "Invalid Input Error: ".
+- ErrorIONetwork does not pass. Its exception type has no name in DuckDB 2.0.0
+  (EXCEPTION_MAP in exception.cpp), so with its code the outer statement fails
+  with ErrorApi and the prefix "Invalid Error: " of a type with no name. Such
+  an error writes the code DuckDBV2ErrorApi and its message, so the outer
+  statement fails with ErrorInputInvalid, as for an SQLError without a type.
+- Seven types do not pass, because DuckDB expects them before the execution
+  of a statement: ErrorQueryBinder, ErrorDatabaseCatalog,
+  ErrorResourceConnection, ErrorQueryParameterNotAllowed, ErrorQueryParser,
+  ErrorConfigurationPermission, and ErrorResourceInUse. Under the DuckDB
+  setting SYNTACTIC_ERRORS_DO_NOT_INVALIDATE of
+  default_transaction_invalidation_policy, DuckDB keeps the transaction after
+  an error of these types (Exception::InvalidatesTransaction in exception.cpp).
+  A callback raises during the execution, for example after an INSERT has
+  written rows. With the code of such a type, these rows would stay in the
+  transaction, and COMMIT would store them. Thus such an error writes the code
+  DuckDBV2ErrorApi and its message. DuckDB then invalidates the explicit
+  transaction, and COMMIT stores none of its rows.
+- ErrorRuntimeInternal and ErrorRuntimeFatal do not pass. For these codes,
+  DuckDB 2.0.0 invalidates the database of the outer statement, also when the
+  error came from another database. Such an error writes the code
+  DuckDBV2ErrorApi and its message.
+- Each other exception writes the code DuckDBV2ErrorApi and failureText: an
+  SQLError without a type, a userError, or another exception.
+- A cast callback runs through runCallbackWith and not through this rule. It
+  writes the code DuckDBV2ErrorTypeMismatch and failureText for each
+  exception, also for an SQLError with a type. See
+  Note [The error code of a failed cast] in
+  "Database.DuckDB.Simple.V2.Registration".
+-}
+
+-- | The code and the text that a callback writes into its error slot for an
+-- exception. See Note [Errors that leave a callback].
+callbackError :: SomeException -> (DuckDBV2Error, Text)
+callbackError failure = case fromException failure of
+  Just SQLError{sqlErrorType = Just errorType, sqlErrorMessage = message, sqlErrorBody = body}
+    | errorType `notElem` heldBack
+    , Just code <- lookup errorType errorTypeCodes ->
+        (code, fromMaybe message body)
+  _ -> (DuckDBV2ErrorApi, Text.pack (failureText failure))
+  where
+    -- See Note [Errors that leave a callback].
+    heldBack =
+      [ ErrorQueryBinder
+      , ErrorDatabaseCatalog
+      , ErrorResourceConnection
+      , ErrorQueryParameterNotAllowed
+      , ErrorQueryParser
+      , ErrorConfigurationPermission
+      , ErrorResourceInUse
+      , ErrorIONetwork
+      , ErrorRuntimeInternal
+      , ErrorRuntimeFatal
+      ]
 
 -- | The text of a callback exception in the SQL error. An 'SQLError' gives its
 -- message, and a 'userError' gives its text. Thus the SQL error does not show a

@@ -25,9 +25,10 @@ import Control.Exception (
  )
 import Control.Monad (forM, forM_, replicateM_, void, when)
 import qualified Data.ByteString as BS
-import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
+import Data.IORef (IORef, atomicModifyIORef', mkWeakIORef, newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (find, isInfixOf, nub, sort)
+import Data.Maybe (isJust)
 import Data.Proxy (Proxy (..))
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
@@ -50,6 +51,7 @@ import Database.DuckDB.Simple.Internal (
   macroFunctionTypeToNative,
   settingScopeFromNative,
   settingScopeToNative,
+  throwInternalError,
   tokenTypeFromNative,
  )
 import qualified Database.DuckDB.Simple.Logging as Logging
@@ -60,9 +62,11 @@ import Numeric.Natural (Natural)
 import System.Directory (doesFileExist, getHomeDirectory, getTemporaryDirectory, removeFile)
 import System.FilePath (takeDirectory)
 import System.IO (hClose, openBinaryTempFile)
+import System.Mem (performMajorGC)
+import System.Mem.Weak (deRefWeak)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, assertFailure, testCase, (@?=))
-import TestUtils (assertInputErrorContaining, assertReleasedAfter, assertSqlErrorContaining)
+import TestUtils (assertInputErrorContaining, assertRangeError, assertReleasedAfter, assertSqlErrorContaining, assertSqlErrorType)
 
 -- | Run the extension regression tests as a standalone executable.
 main :: IO ()
@@ -100,6 +104,26 @@ extensionRegressionTests =
             replicateM_ 32 $ createFunction conn "duplicate_scalar" (readIORef token)
             createFunction conn "duplicate_scalar" (7 :: Int64)
           query_ conn "SELECT duplicate_scalar()" >>= (@?= [Only (7 :: Int64)])
+    , testCase "a scalar function of a rolled-back transaction is gone and releases its callback" $
+        withConnection ":memory:" \conn -> do
+          assertReleasedAfter "a rolled-back scalar function" \token -> do
+            _ <- execute_ conn "BEGIN TRANSACTION"
+            createFunction conn "rolled_scalar" (\(x :: Int64) -> (+ x) <$> readIORef token)
+            query_ conn "SELECT rolled_scalar(1)" >>= (@?= [Only (2 :: Int64)])
+            void (execute_ conn "ROLLBACK")
+          assertSqlErrorType ErrorDatabaseCatalog (query_ conn "SELECT rolled_scalar(1)" :: IO [Only Int64])
+          createFunction conn "rolled_scalar" (\(x :: Int64) -> x + 100)
+          query_ conn "SELECT rolled_scalar(1)" >>= (@?= [Only (101 :: Int64)])
+          -- A registration that stays keeps its callback.
+          kept <- do
+            token <- newIORef (1 :: Int64)
+            weak <- mkWeakIORef token (pure ())
+            createFunction conn "kept_scalar" (\(x :: Int64) -> (+ x) <$> readIORef token)
+            pure weak
+          performMajorGC
+          performMajorGC
+          deRefWeak kept >>= assertBool "a registration that stays keeps its callback" . isJust
+          query_ conn "SELECT kept_scalar(1)" >>= (@?= [Only (2 :: Int64)])
     , testCase "scalar deletion refusal keeps function and connection usable" $
         withConnection ":memory:" \conn -> do
           createFunction conn "retained_scalar" (42 :: Int64)
@@ -196,6 +220,32 @@ extensionRegressionTests =
               sqlErrorType err @?= Just ErrorInputInvalid
               assertBool (show err) ("typed callback failure" `Text.isInfixOf` sqlErrorMessage err)
             Right _ -> assertFailure "expected SQL error"
+    , testCase "an internal error of the library in a callback leaves the database usable" $
+        withConnection ":memory:" \conn -> do
+          -- See Note [Internal errors in callbacks] in "Database.DuckDB.Simple.Native".
+          createFunction conn "throw_internal" (throwInternalError "internal callback failure" :: IO Int64)
+          createAggregate
+            conn
+            "internal_step"
+            Aggregate
+              { aggregateInitial = 0 :: Int64
+              , aggregateStep = \_ (Only (_ :: Int64)) -> throwInternalError "internal step failure"
+              , aggregateCombine = \a b -> pure (a + b)
+              , aggregateResult = pure
+              }
+          forM_
+            [ ("SELECT throw_internal()", "internal callback failure")
+            , ("SELECT internal_step(i) FROM range(3) t(i)", "internal step failure") :: (Text.Text, Text.Text)
+            ]
+            \(sql, text) -> do
+              result <- try (query_ conn (Query sql) :: IO [Only Int64])
+              case result of
+                Left err -> do
+                  assertBool (show err) (text `Text.isInfixOf` sqlErrorMessage err)
+                  -- runCallback holds back ErrorRuntimeInternal.
+                  sqlErrorType err @?= Just ErrorInputInvalid
+                Right rows -> assertFailure (Text.unpack sql <> ": expected the error of the callback, got " <> show rows)
+              query_ conn "SELECT 42" >>= (@?= [Only (42 :: Int64)])
     , testCase "exception rendering cannot escape scalar callback" $
         withConnection ":memory:" \conn -> do
           createFunction conn "throw_bad_display" (throwIO BrokenDisplay :: IO Int64)
@@ -539,9 +589,20 @@ extensionRegressionTests =
           void $ execute_ conn "SET haskell_variant = {'a': 1, 'b': [1, 2]}"
           [Only expected] <- query_ conn "SELECT {'a': 1, 'b': [1, 2]}::VARIANT" :: IO [Only FieldValue]
           fst <$> Config.getConfigValue conn "haskell_variant" >>= (@?= expected)
-          -- The update callback gets no connection, so it rejects a VARIANT value.
-          Config.registerCustomOption conn (Config.customOption "haskell_variant_update" variantType){Config.customOptionUpdate = Just \_ -> pure ()}
-          assertSqlErrorContaining "configuration values must not contain VARIANT" $ execute_ conn "SET haskell_variant_update = 1"
+          -- The update callback gets no connection, so it cannot read a VARIANT
+          -- value, and the registration of such an option fails.
+          refused <-
+            try
+              (Config.registerCustomOption conn (Config.customOption "haskell_variant_update" variantType){Config.customOptionUpdate = Just \_ -> pure ()})
+          case refused of
+            Left (err :: SQLError) -> do
+              sqlErrorType err @?= Just ErrorInputInvalid
+              assertBool
+                (show err)
+                ( "haskell_variant_update: the update function: the library cannot read a VARIANT value in a callback; declare another type, such as VARCHAR, and cast the value in SQL, for example v::VARCHAR"
+                    `Text.isInfixOf` sqlErrorMessage err
+                )
+            Right () -> assertFailure "the registration of a VARIANT option with an update function succeeded"
     , testCase "setConfigValue with an Integer or a Natural checks the range of an unsigned option" $
         withConnection ":memory:" \conn -> do
           -- DuckDB 2.0.0 gives asof_loop_join_threshold the type UBIGINT.
@@ -554,13 +615,18 @@ extensionRegressionTests =
           current >>= (@?= FieldWord64 9)
           Config.setConfigValue conn Config.SettingScopeSession option (11 :: Natural)
           current >>= (@?= FieldWord64 11)
-    , testCase "setConfigValue with an Integer outside the HUGEINT range keeps the BIGNUM casts of DuckDB" $
+    , testCase "setConfigValue with an Integer or a Natural outside the HUGEINT range raises an error" $
         withConnection ":memory:" \conn -> do
-          -- The value is a BIGNUM value. DuckDB 2.0.0 reduces it modulo 2^128
-          -- and gives no error. See Note [Integer parameters] in
-          -- "Database.DuckDB.Simple.ToField".
-          Config.setConfigValue conn Config.SettingScopeSession "asof_loop_join_threshold" (2 ^ (128 :: Int) + 5 :: Integer)
-          fst <$> Config.getConfigValue conn "asof_loop_join_threshold" >>= (@?= FieldWord64 5)
+          -- toDuckValue gives no BIGNUM value for an Integer or a Natural. See
+          -- Note [Integer parameters] in "Database.DuckDB.Simple.ToField".
+          let option = "asof_loop_join_threshold"
+          assertRangeError $
+            Config.setConfigValue conn Config.SettingScopeSession option (2 ^ (128 :: Int) + 5 :: Integer)
+          -- A Natural from 2^127 is a UHUGEINT value. DuckDB checks its cast.
+          assertSqlErrorContaining "out of range for the destination type UINT64" $
+            Config.setConfigValue conn Config.SettingScopeSession option (2 ^ (127 :: Int) :: Natural)
+          assertRangeError $
+            Config.setConfigValue conn Config.SettingScopeSession option (2 ^ (128 :: Int) + 5 :: Natural)
     , testCase "table descriptions resolve names and copy borrowed column types" $
         withConnection ":memory:" \conn -> do
           void $ execute_ conn "CREATE TABLE \"\955\" (id BIGINT DEFAULT 7, twice BIGINT GENERATED ALWAYS AS (id * 2))"
@@ -708,6 +774,9 @@ extensionRegressionTests =
               Right bytes -> assertFailure ("expected an IO error, got " <> show bytes)
             -- The library checks only that the end of the range fits in Int64.
             assertInputErrorContaining "file read range exceeds Int64 range" $ FileSystem.readFileHandleAt handle maxBound 1
+            assertInputErrorContaining "file offset is negative" $ FileSystem.readFileHandleAt handle (-1) 1
+            assertInputErrorContaining "file read size is negative" $ FileSystem.readFileHandleAt handle 0 (-1)
+            assertInputErrorContaining "file offset is negative" $ FileSystem.fileHandleSeek handle (-1)
             -- A size of 0 gives no bytes, also past the end, as in DuckDB.
             FileSystem.readFileHandleAt handle 20 0 >>= (@?= BS.empty)
             FileSystem.readFileHandleAt handle 12 4 >>= (@?= BS.pack [12 .. 15])
@@ -715,6 +784,7 @@ extensionRegressionTests =
         withTemporaryFile \path -> withConnection ":memory:" \conn ->
           FileSystem.withFileHandle conn path [FileSystem.FileFlagWrite] \handle -> do
             assertInputErrorContaining "file write range exceeds Int64 range" $ FileSystem.writeFileHandleAt handle (maxBound - 1) (BS.pack [1, 2])
+            assertInputErrorContaining "file offset is negative" $ FileSystem.writeFileHandleAt handle (-1) (BS.pack [1])
             FileSystem.fileHandleSize handle >>= (@?= 0)
     , testCase "file flags of the other file tests create read and write a file" $
         withTemporaryFile \path -> withConnection ":memory:" \conn -> do

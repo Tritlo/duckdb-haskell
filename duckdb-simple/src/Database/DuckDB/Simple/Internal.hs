@@ -379,7 +379,8 @@ checkLibraryVersion :: IO ()
 checkLibraryVersion = do
   actual <- output c_duckdb_v2_library_version >>= readText
   unless (actual == expected) $
-    throwIO (SQLError ("duckdb-simple: the V2 API requires DuckDB " <> expected <> ", but the loaded library is " <> actual) Nothing Nothing)
+    throwIO
+      (SQLError ("duckdb-simple: the V2 API requires DuckDB " <> expected <> ", but the loaded library is " <> actual) Nothing Nothing Nothing)
   where
     expected = Text.pack ('v' : intercalate "." (map show [dUCKDB_V2_API_VERSION_MAJOR, dUCKDB_V2_API_VERSION_MINOR, dUCKDB_V2_API_VERSION_PATCH]))
 
@@ -422,7 +423,7 @@ createInstance :: Environment -> [(Text, Text)] -> IO Instance
 createInstance environment@Environment{environmentState} settings = keepAlive environment $ mask_ do
   (rawEnvironment, children) <-
     readIORef environmentState >>= \case
-      EnvironmentClosed -> throwIO (SQLError "duckdb-simple: environment is closed" Nothing Nothing)
+      EnvironmentClosed -> throwIO (SQLError "duckdb-simple: environment is closed" Nothing Nothing Nothing)
       EnvironmentOpen raw children -> pure (raw, children)
   when (any (\(name, value) -> Text.any (== '\0') name || Text.any (== '\0') value) settings) $
     throwInvalidArgument "configuration contains NUL"
@@ -479,7 +480,7 @@ createConnection :: Instance -> [Text] -> Maybe Int -> Int -> Int -> IO () -> IO
 createConnection parent@Instance{instanceState} crss callbackLockWait stripes arrowBatch releaseParent = keepAlive parent $ mask_ do
   (rawInstance, children) <-
     readIORef instanceState >>= \case
-      InstanceClosed -> throwIO (SQLError "duckdb-simple: instance is closed" Nothing Nothing)
+      InstanceClosed -> throwIO (SQLError "duckdb-simple: instance is closed" Nothing Nothing Nothing)
       InstanceOpen raw children -> pure (raw, children)
   raw <- output (c_duckdb_v2_connection_create rawInstance)
   -- See Note [CRS types of a connection] in "Database.DuckDB.Simple.TypeCache".
@@ -649,11 +650,11 @@ parameterNames statement count = do
 
 -- | Error raised when an operation targets a closed connection.
 connectionClosedError :: SQLError
-connectionClosedError = SQLError "duckdb-simple: connection is closed" Nothing Nothing
+connectionClosedError = SQLError "duckdb-simple: connection is closed" Nothing Nothing Nothing
 
 -- | Error raised when an operation targets a closed statement.
 statementClosedError :: Statement -> SQLError
-statementClosedError Statement{statementQuery} = SQLError "duckdb-simple: statement is closed" Nothing (Just statementQuery)
+statementClosedError Statement{statementQuery} = SQLError "duckdb-simple: statement is closed" Nothing (Just statementQuery) Nothing
 
 -- | Keep a Haskell owner reachable until an action finishes. See
 -- Note [Native handle ownership].
@@ -665,7 +666,7 @@ withInstanceHandle :: Instance -> (DuckDBV2InstanceHandle -> IO a) -> IO a
 withInstanceHandle owner@Instance{instanceState} action =
   keepAlive owner $
     readIORef instanceState >>= \case
-      InstanceClosed -> throwIO (SQLError "duckdb-simple: instance is closed" Nothing Nothing)
+      InstanceClosed -> throwIO (SQLError "duckdb-simple: instance is closed" Nothing Nothing Nothing)
       InstanceOpen raw _ -> action raw
 
 -- | Borrow the instance that owns a live connection.
@@ -776,6 +777,7 @@ callbackLockWaitError micros =
         )
     )
     (Just ErrorResourceInUse)
+    Nothing
     Nothing
   where
     (whole, fraction) = micros `quotRem` 1000000

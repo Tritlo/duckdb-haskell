@@ -26,6 +26,7 @@ import Control.Exception (
   evaluate,
   finally,
   fromException,
+  throwIO,
   try,
  )
 import Control.Monad (forM, forM_, replicateM, replicateM_, unless, void, when)
@@ -47,6 +48,7 @@ import Database.DuckDB.Simple.Geometry (RawGeometry (..), fromRawGeometry)
 import qualified Database.DuckDB.Simple.Logging as Logging
 import Database.DuckDB.Simple.Registration (TypeDeclaration (..), registerCustomType)
 import qualified Database.DuckDB.Simple.Streaming as Streaming
+import qualified Database.DuckDB.Simple.V2.Registration as R
 import Database.DuckDB.Simple.Variant (Variant (..), variantObject)
 import GHC.Weak.Finalize (getFinalizerExceptionHandler, setFinalizerExceptionHandler)
 import System.Environment (getArgs, lookupEnv)
@@ -515,7 +517,8 @@ reportWith rssRule label before after = do
 
 -- | Run the typed registrations through the public API on one connection: a
 -- scalar function with VARCHAR and BIGINT results over 5000 rows, a grouped
--- aggregate with VARCHAR results, a typed table function, and a typed cast.
+-- aggregate with VARCHAR results, a typed table function, and a cast that
+-- fails.
 -- Each VARCHAR value is longer than 12 bytes, so DuckDB stores it outside the
 -- string slot.
 checkTyped :: Int -> IO ()
@@ -539,7 +542,8 @@ checkTyped batches =
     createTableFunction conn "leak_rows" ["n", "label"] \(Only count) ->
       pure [(n, label "row" n) | n <- [0 .. count - 1 :: Int64]]
     registerCustomType conn "leak_tag" (TypeExpression "VARCHAR")
-    createCast conn (TypeExpression "BIGINT") (TypeExpression "leak_tag") \(n :: Int64) -> Right (label "tag" n)
+    -- Each cycle fails the cast, so that the error path of the callback runs.
+    R.registerCast conn (TypeExpression "BIGINT") (TypeExpression "leak_tag") Nothing \_ _ -> throwIO (userError "leak cast refused the value")
     let cycleTyped = do
           scalar <- query_ conn "SELECT sum(length(leak_text(i)))::BIGINT, sum(leak_double(i))::BIGINT FROM range(5000) t(i)"
           unless (scalar == [(labelLength "row", 2 * sum numbers)]) (fail "wrong typed scalar result")
@@ -547,8 +551,10 @@ checkTyped batches =
           unless (grouped == groups) (fail "wrong typed aggregate result")
           table <- query_ conn "SELECT count(*), sum(n)::BIGINT, sum(length(label))::BIGINT FROM leak_rows(5000)"
           unless (table == [(5000 :: Int64, sum numbers, labelLength "row")]) (fail "wrong typed table function result")
-          cast <- query_ conn "SELECT sum(length(CAST(i AS leak_tag)::VARCHAR))::BIGINT FROM range(5000) t(i)"
-          unless (cast == [Only (labelLength "tag")]) (fail "wrong typed cast result")
+          cast <- try (query_ conn "SELECT CAST(i AS leak_tag) FROM range(5000) t(i)" :: IO [Only Text])
+          case cast of
+            Left (err :: SQLError) | sqlErrorType err == Just ErrorTypeMismatch -> pure ()
+            _ -> fail "wrong cast result"
         batch = forM_ [1 .. 20 :: Int] (const cycleTyped)
     batch
     performMajorGC

@@ -181,11 +181,11 @@ decodeElement dtype dataPtr rowIdx = case dtype of
     bytes <- chunkDecodeBlob dataPtr index
     FieldBigNum . BigNum <$> decodeBigNum bytes
   DuckDBV2LogicalTypeIdInvalid ->
-    error "duckdb-simple: INVALID type in eager result"
+    throwInternalError (Text.pack "INVALID type in eager result")
   DuckDBV2LogicalTypeIdAny ->
-    error "duckdb-simple: ANY columns should not appear in results"
+    throwInternalError (Text.pack "ANY columns should not appear in results")
   other ->
-    error ("duckdb-simple: UNKNOWN type in eager result: " <> show other)
+    throwInternalError (Text.pack ("UNKNOWN type in eager result: " <> show other))
   where
     index = fromIntegral rowIdx :: DuckDBIdx
 

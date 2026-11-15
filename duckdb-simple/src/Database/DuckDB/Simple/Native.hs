@@ -57,7 +57,8 @@ module Database.DuckDB.Simple.Native (
   foldIdentifier,
   quoteIdentifier,
   throwInvalidArgument,
-  throwOutOfRange,
+  throwConversionError,
+  throwInternalError,
   withConnectionFactory,
   factoryOutput,
   withSQLStatement,
@@ -69,10 +70,11 @@ module Database.DuckDB.Simple.Native (
 
 import Control.Applicative ((<|>))
 import Control.Exception (Exception, SomeException, bracket, finally, mask_, onException, throwIO, try)
-import Control.Monad (foldM, forM_, unless, when, (<$!>))
+import Control.Monad (foldM, forM_, mfilter, unless, when, (<$!>))
 import qualified Data.ByteString as BS
 import Data.Char (isAsciiUpper, toLower)
 import Data.Coerce (Coercible, coerce)
+import Data.Maybe (fromMaybe)
 import Data.String (IsString (..))
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -103,15 +105,38 @@ data SQLError = SQLError
   { sqlErrorMessage :: Text
   , sqlErrorType :: Maybe ErrorType
   , sqlErrorQuery :: Maybe Query
+  , sqlErrorBody :: Maybe Text
+  -- ^ The text of a native error without the prefix of its type. For example,
+  -- the message @Conversion Error: Could not convert ...@ has the body
+  -- @Could not convert ...@. An error of duckdb-simple has no body. A callback
+  -- gives the type and the body of an error back to DuckDB, except for the
+  -- types that the section /Errors/ of the README lists.
   }
   deriving stock (Eq, Show)
 
 instance Exception SQLError
 
 -- | The category of a native DuckDB error. An error that duckdb-simple reports
--- itself has an error type only where one category fits the failure. For
--- example, a callback that waits too long for a connection lock gets
--- 'ErrorResourceInUse'. Each other error of duckdb-simple has no error type.
+-- itself has an error type where one category fits the failure. An input check
+-- for a value that its SQL type cannot hold raises 'ErrorTypeConversion', as
+-- DuckDB does for the same value in SQL (see 'throwConversionError'). Each
+-- other input check raises 'ErrorInputInvalid', also for a value of the wrong
+-- shape or type (see 'throwInvalidArgument'). For a nanosecond target, DuckDB
+-- can raise the error itself (see Note [Nanosecond parameters] in
+-- "Database.DuckDB.Simple.ToField"). A callback that waits too long for a
+-- connection lock gets 'ErrorResourceInUse'.
+-- These errors of duckdb-simple have no error type: the use of a closed
+-- environment, instance, connection, statement, or type cache, a loaded DuckDB
+-- library of another version, a callback state read with the wrong type, and a
+-- result value that does not convert to its Haskell type.
+--
+-- A failed check of the state of the library, or of a vector, a type, or a
+-- value that DuckDB gave, raises an 'SQLError' of the type
+-- 'ErrorRuntimeInternal'. Such an error is a defect of the library or of
+-- DuckDB, not an error of the input. Report it. Inside a callback, the
+-- statement that runs the callback fails with 'ErrorInputInvalid', because a
+-- callback does not pass 'ErrorRuntimeInternal' (a cast gives
+-- 'ErrorTypeMismatch'). See Note [Internal errors in callbacks].
 data ErrorType
   = ErrorApi
   | ErrorIOFileNotFound
@@ -231,11 +256,12 @@ nullHandle = coerce (nullPtr @())
 checkCode :: DuckDBV2Error -> IO ()
 checkCode code =
   unless (code == DuckDBV2ErrorNone) $
-    throwIO (SQLError (Text.pack (show code)) (errorTypeFromNative code) Nothing)
+    throwIO (SQLError (Text.pack (show code)) (errorTypeFromNative code) Nothing Nothing)
 
--- | Copy a native diagnostic and release its error-info handle. Decode the
--- error text with replacement characters, so that a native text that is not
--- valid UTF-8 cannot raise when the error is shown.
+-- | Copy a native diagnostic and release its error-info handle. The message is
+-- the text of the diagnostic, and the body is its text without the prefix (see
+-- 'sqlErrorBody'). Decode the error text with replacement characters, so that
+-- a native text that is not valid UTF-8 cannot raise when the error is shown.
 checked :: (Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO ()
 checked action = mask_ $ alloca $ \slot -> do
   poke slot nullHandle
@@ -247,15 +273,16 @@ checked action = mask_ $ alloca $ \slot -> do
     code <- action slot
     unless (code == DuckDBV2ErrorNone) $ do
       info <- peek slot
-      message <-
-        if info == nullHandle
-          then pure (Text.pack (show code))
-          else alloca $ \view -> do
-            rc <- c_duckdb_v2_error_info_get_text info view
-            if rc == DuckDBV2ErrorNone
-              then Text.decodeUtf8With lenientDecode <$> (peek view >>= readBytes)
-              else pure (Text.pack (show code))
-      throwIO (SQLError message (errorTypeFromNative code) Nothing)
+      let readInfo getText
+            | info == nullHandle = pure Nothing
+            | otherwise = alloca $ \view -> do
+                rc <- getText info view
+                if rc == DuckDBV2ErrorNone
+                  then Just . Text.decodeUtf8With lenientDecode <$> (peek view >>= readBytes)
+                  else pure Nothing
+      message <- fromMaybe (Text.pack (show code)) <$> readInfo c_duckdb_v2_error_info_get_text
+      body <- readInfo c_duckdb_v2_error_info_get_raw_text
+      throwIO (SQLError message (errorTypeFromNative code) Nothing (mfilter (not . Text.null) body))
 
 -- | Read one checked native output. Initialize its storage before the call.
 output :: forall a. (Storable a) => (Ptr a -> Ptr DuckDBV2ErrorInfoHandle -> IO DuckDBV2Error) -> IO a
@@ -395,7 +422,7 @@ readText view = Text.decodeUtf8 <$> readBytes view
 valueText :: DuckDBV2ValueHandle -> IO Text
 valueText value = do
   count <- output (c_duckdb_v2_value_to_string value nullPtr 0)
-  when (toInteger count >= toInteger (maxBound :: Int)) $ throwIO (SQLError "duckdb-simple: value text exceeds Int range" Nothing Nothing)
+  when (toInteger count >= toInteger (maxBound :: Int)) $ throwInternalError "value text exceeds Int range"
   allocaBytes (fromIntegral count + 1) $ \buffer -> do
     _ <- output (c_duckdb_v2_value_to_string value buffer (count + 1))
     Text.decodeUtf8 <$> BS.packCStringLen (buffer, fromIntegral count)
@@ -477,17 +504,55 @@ quoteIdentifier identifier = "\"" <> Text.replace "\"" "\"\"" identifier <> "\""
 
 -- | Raise the error of an input check: an argument of a library function, or a
 -- parameter value, that the library rejects. The error is an 'SQLError' of the
--- type 'ErrorInputInvalid' with no query. Each input check of the library uses
--- this function. An error that is not about an input, for example a state error
--- or a native failure, does not use it.
+-- type 'ErrorInputInvalid' with no query. The checks of arguments use this
+-- function, and so do the checks of a parameter value of the wrong shape or
+-- type, for example a UNION tag that is not a member, a leaf of another type
+-- than its declaration, a STRUCT field that does not match its type, a DECIMAL
+-- width outside 1 to 38, or an empty Array, also where DuckDB gives another
+-- error type for the same input. A value that its SQL type cannot hold uses
+-- 'throwConversionError'. An error that is not about an input, for example a
+-- state error or a native failure, does not use this function.
 throwInvalidArgument :: Text -> IO a
-throwInvalidArgument message = throwIO (SQLError ("duckdb-simple: " <> message) (Just ErrorInputInvalid) Nothing)
+throwInvalidArgument message = throwIO (SQLError ("duckdb-simple: " <> message) (Just ErrorInputInvalid) Nothing Nothing)
 
--- | Raise the error of an input check for a value outside the range of its
--- type: an 'SQLError' of the type 'ErrorInputOutOfRange' with no query. Each
--- such check of the library uses this function.
-throwOutOfRange :: Text -> IO a
-throwOutOfRange message = throwIO (SQLError ("duckdb-simple: " <> message) (Just ErrorInputOutOfRange) Nothing)
+-- | Raise the error of an input check for a value that its SQL type cannot
+-- hold. The error is an 'SQLError' of the type 'ErrorTypeConversion' with no
+-- query, as the "Conversion Error" of DuckDB for the same value in SQL, for
+-- example for @300::TINYINT@, @'25:00:00'::TIME@, or @\'x\'::ENUM(\'a\', \'b\')@.
+-- These checks use this function: an integer outside its parameter type or
+-- its declared type, a HUGEINT or UHUGEINT value outside its type, a DECIMAL
+-- value that its width cannot hold, a date or a timestamp outside the range of
+-- DuckDB, a nanosecond timestamp outside its storage, a TIMETZ offset outside
+-- -57599 to 57599 seconds, a time of day that is not a TIME value, and an ENUM
+-- label that is not in the dictionary of its type.
+throwConversionError :: Text -> IO a
+throwConversionError message = throwIO (SQLError ("duckdb-simple: " <> message) (Just ErrorTypeConversion) Nothing Nothing)
+
+-- | Raise the error of a check of the state of the library, or of a vector, a
+-- type, or a value that DuckDB gave: an 'SQLError' of the type
+-- 'ErrorRuntimeInternal' with no query. Such an error means a defect of the
+-- library or of DuckDB, not a defect of an input. See
+-- Note [Internal errors in callbacks].
+throwInternalError :: Text -> IO a
+throwInternalError message = throwIO (SQLError ("duckdb-simple: " <> message) (Just ErrorRuntimeInternal) Nothing Nothing)
+
+{- Note [Internal errors in callbacks]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+throwInternalError can raise its SQLError inside a DuckDB callback, for
+example in a decoder check of an argument vector or in a state check of an
+aggregate. runCallback in "Database.DuckDB.Simple.Callback" writes the code
+of the type of an SQLError into the error slot of a callback, but it holds
+back ErrorRuntimeInternal and ErrorRuntimeFatal and writes the code
+DuckDBV2ErrorApi and the message for them. See
+Note [Errors that leave a callback] in "Database.DuckDB.Simple.Callback". The
+type ErrorRuntimeInternal, and ErrorRuntimeFatal, must never go into the error
+slot of a callback, because DuckDB 2.0.0 then invalidates the database, and
+each later statement raises "FATAL Error: ... database has been invalidated".
+This holds for a callback at execution time, for example a scalar function, a
+table function, a cast, or COPY FROM; at bind time, for example in a
+replacement scan or a query pragma, the database stays usable. The rule holds
+for each callback, so that it errs on the safe side.
+-}
 
 -- | Borrow a factory while its connection remains alive. Do not destroy it.
 withConnectionFactory :: DuckDBV2ConnectionHandle -> (DuckDBV2FactoryHandle -> IO a) -> IO a
@@ -810,4 +875,4 @@ fileFlagToNative = \case
 
 -- | Raise 'SQLError' for a native enum value that has no Haskell constructor.
 throwUnknownNative :: Text -> CUInt -> IO a
-throwUnknownNative kind value = throwIO (SQLError ("duckdb-simple: unknown native " <> kind <> " " <> Text.pack (show value)) Nothing Nothing)
+throwUnknownNative kind value = throwInternalError ("unknown native " <> kind <> " " <> Text.pack (show value))

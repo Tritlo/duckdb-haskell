@@ -93,7 +93,6 @@ module Database.DuckDB.Simple.Extension (
   extensionTarget,
   createFunction,
   createFunctionWithState,
-  createCast,
   registerReplacementScan,
   registerCustomType,
   registerMultiFileFunction,
@@ -124,7 +123,7 @@ import Database.DuckDB.Simple.Copy.Internal (
   registerMultiFileFunctionOn,
  )
 import qualified Database.DuckDB.Simple.Copy.Internal as Copy
-import Database.DuckDB.Simple.FromField (Field, FromField)
+import Database.DuckDB.Simple.FromField (Field)
 import Database.DuckDB.Simple.FromRow (FromRow)
 import Database.DuckDB.Simple.Function.Internal (Function, FunctionResult, createFunctionOn, createFunctionWithStateOn)
 import Database.DuckDB.Simple.Logging.Internal (LogEntry)
@@ -132,8 +131,7 @@ import qualified Database.DuckDB.Simple.Logging.Internal as Logging
 import Database.DuckDB.Simple.Native
 import Database.DuckDB.Simple.Pragma.Internal (PragmaCallback)
 import qualified Database.DuckDB.Simple.Pragma.Internal as Pragma
-import Database.DuckDB.Simple.ToField (ToDuckValue)
-import Database.DuckDB.Simple.Typed (Replacement, TypedRow, createCastOn, replacementScanCallback)
+import Database.DuckDB.Simple.Typed (Replacement, TypedRow, replacementScanCallback)
 import Database.DuckDB.Simple.Typed.Aggregate (Aggregate, createAggregateOn)
 import Database.DuckDB.Simple.Typed.Table (createTableFunctionOn)
 import Database.DuckDB.Simple.V2.Registration (
@@ -181,11 +179,6 @@ createFunction = createFunctionOn . extensionTarget
 -- of 'Database.DuckDB.Simple.Function.createFunctionWithState' apply.
 createFunctionWithState :: (Function f) => Extension -> Text -> IO s -> (s -> f) -> IO ()
 createFunctionWithState = createFunctionWithStateOn . extensionTarget
-
--- | Register an explicit typed cast with the loading DuckDB host. The rules of
--- 'Database.DuckDB.Simple.Function.createCast' apply.
-createCast :: (FromField a, ToDuckValue b) => Extension -> TypeDeclaration -> TypeDeclaration -> (a -> Either Text b) -> IO ()
-createCast = createCastOn . extensionTarget
 
 -- | Register a replacement scan with the loading DuckDB host. The scan belongs
 -- to the instance. Each connection of the instance uses it until the instance

@@ -16,7 +16,7 @@ module Database.DuckDB.Simple.V2.LogicalRep (
   destroyLogicalType,
 ) where
 
-import Control.Exception (bracket, mask_, onException, throwIO)
+import Control.Exception (bracket, mask_, onException)
 import Control.Monad (foldM, forM, when)
 import Data.Array (elems, listArray)
 import qualified Data.Text as Text
@@ -159,4 +159,4 @@ logicalTypeFromRepWith factory resolve = create
 word64ToInt :: (Integral a) => a -> IO Int
 word64ToInt value
   | toInteger value <= toInteger (maxBound :: Int) = pure (fromIntegral value)
-  | otherwise = throwIO (userError "duckdb-simple: logical type parameter count exceeds Int range")
+  | otherwise = throwInternalError (Text.pack "logical type parameter count exceeds Int range")

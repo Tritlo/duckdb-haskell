@@ -20,8 +20,8 @@ literals.
 ## Shared environments and instances
 
 Use an explicit instance when several connections must share catalogs and
-configuration. Each connection supports one active native stream. Use a separate
-connection for each concurrent worker.
+configuration. Each connection has at most one open native result. Use a
+separate connection for each concurrent worker.
 Wait for child creation and all worker operations to finish before calling
 `closeInstance` or `closeEnvironment`. Closing a parent also closes its children.
 
@@ -89,16 +89,17 @@ existing convenience behavior.
   table inputs for one scoped prepared-statement action. The caller retains the
   collections.
 
-The pinned V2 API does not expose custom file-system registration or
-collation lookup. DuckDB 2.0 rejects an ARRAY type with zero elements. An
-empty LIST is valid.
-Prepared dynamic PIVOT supports repeated execution with a changing schema. It
-does not support parameters or a cacheable plan. VARIANT decoding uses SQL
-metadata and native casts on a helper connection. A configured custom GEOMETRY
-CRS name uses one SQL query when the connection opens.
-GEOMETRY results use a native cast to BLOB.
-Native GEOMETRY collections require the same Z/M dimensions on every member,
-including empty members. The standalone WKB codec retains mixed layouts.
+The pinned V2 API does not expose custom file-system registration or collation
+lookup. DuckDB 2.0 rejects an ARRAY type with zero elements. An empty LIST is
+valid. The direct `query_` and `execute_` paths support statements that expand
+during parsing, including dynamic PIVOT. Prepared dynamic PIVOT supports
+repeated execution with a changing schema. It does not support parameters or a
+cacheable plan. Read its schema after execution starts. VARIANT decoding uses
+SQL metadata and native casts on a helper connection. A configured custom
+GEOMETRY CRS name uses one SQL query when the connection opens. GEOMETRY results
+use a native cast to BLOB. Native GEOMETRY collections require the same Z/M
+dimensions on every member, including empty members. The standalone WKB codec
+retains mixed layouts.
 
 ## Getting Started
 
@@ -138,6 +139,9 @@ main =
   register custom types, replacement scans, COPY formats, pragmas, and custom
   options with Haskell values.
 
+The section [Types](#types) gives the SQL type of each Haskell type. The
+section [Errors](#errors) gives the exceptions that a program can catch.
+
 ## Querying Data
 
 ```haskell
@@ -154,13 +158,9 @@ fetchNames conn = do
 The execution helpers return the number of affected rows (`Int`) so callers can
 assert on data changes when needed.
 
-An `Integer` or a `Natural` parameter binds as a HUGEINT value when the value is
-in the HUGEINT range (-2^127 to 2^127 - 1). DuckDB then checks that the value
-fits its target. For example, a negative value for an unsigned column raises an
-error. A value outside the HUGEINT range binds as a BIGNUM value. If the
-parameter has an integer type or a DECIMAL type, such a value raises an
-`SQLError` of the type `ErrorInputOutOfRange`, except for a UHUGEINT parameter
-that can hold it. Bind a `BigNum` to bind a BIGNUM value in each case.
+An `Integer` or a `Natural` parameter binds as a HUGEINT, a UHUGEINT, or a
+BIGNUM value, or raises an error, by its size and by the type of its target:
+note 1 of [Types](#types) gives the rule.
 
 In DuckDB 2.0.0 the casts from BIGNUM to the integer types have defects: some
 fail, and some store a wrong value with no error
@@ -168,19 +168,27 @@ fail, and some store a wrong value with no error
 or a list of `Integer` or `Natural` values takes the element type of its target
 when that type is an integer type or DECIMAL, so DuckDB checks each element. A
 `BigNum` value, and an `Array` or a list of `BigNum` values, still have these
-defects for an integer target.
+defects for an integer target. For each other target, and for a parameter with
+no known type, an `Array`, a list, or a `Map` of `Integer` or `Natural` values
+takes the type that its elements give, as a scalar `Integer` and a SQL list
+literal of the HUGEINT and BIGNUM values do: `[1, 2^64]` binds as `HUGEINT[]`,
+and `[1, 2^200]` as `BIGNUM[]`. An empty list and a list of only NULL elements
+get the type `"NULL"[]`, as `[]` and `[NULL]` in SQL, because an `Integer` has
+no fixed SQL type. The rule follows the column type name BIGNUM, so an all-NULL
+list of `BigNum` values with no target also gets `"NULL"[]`.
 
 An `IntervalValue` binds as an INTERVAL, and DuckDB keeps its months, days, and
 microseconds. DuckDB compares intervals with 30 days for each month, so
-`INTERVAL 30 DAY = INTERVAL 1 MONTH`. A `TimeWithZone` binds as a TIMETZ with its
-time and its offset in seconds east of UTC (`timeWithZoneOffsetSeconds`).
-DuckDB stores an offset from -15:59:59 to +15:59:59, and a value reads back
-equal to the bound value. A time with digits below one microsecond loses these
-digits, as in SQL text. A `DecimalValue` binds as a DECIMAL with
-its own width and scale. DuckDB casts it to the type of its target: a smaller
-scale rounds half away from zero, and a value that the target cannot hold
-raises an error. An `Array`, a list, or a typed row cannot hold a
-`DecimalValue`, because its column type name has no width and scale.
+`INTERVAL 30 DAY = INTERVAL 1 MONTH`. A `TimeWithZone` binds as a TIMETZ with
+its time and its offset in seconds east of UTC (`timeWithZoneOffsetSeconds`).
+DuckDB stores an offset from -15:59:59 to +15:59:59, that is from -57599 to
+57599 seconds, and a value reads back equal to the bound value. A time with
+digits below one microsecond loses these digits, as in SQL text. A
+`DecimalValue` binds as a DECIMAL with its own width and scale. DuckDB casts it
+to the type of its target: a smaller scale rounds half away from zero, and a
+value that the target cannot hold raises an error. An `Array`, a list, or a
+typed row (a row type with `TypedRow`) of `DecimalValue` does not compile: note
+14 of [Types](#types).
 
 `query_` and `execute_` parse all input statements before execution. A syntax
 error prevents every statement in that input from running. An execution error
@@ -253,19 +261,408 @@ Helper combinators such as `field`, `fieldWith`, and `numFieldsRemaining` are
 available when a custom instance needs fine-grained control.
 
 A `FromField` instance reads the SQL type of its Haskell type, for example
-BIGINT for `Int64`. It also reads another SQL type when it gives the value of
-the cast of DuckDB to the SQL type of the Haskell type, or an error where the
-value does not fit. For example, `Int8` reads a BIGINT that fits in a TINYINT,
-and `Double` reads a DECIMAL with the value of `c::DOUBLE`. A read that needs
-the TimeZone setting of the session, or another text than the cast gives,
-raises the error of an incompatible column: a TIMESTAMP or a DATE as `UTCTime`,
-a TIMESTAMPTZ as `LocalTime`, a FLOAT or a DOUBLE as `Text`, a VARCHAR as
-`ByteString`, and an ENUM as an integer type. Write the cast in SQL for these
-values, for example `c::TIMESTAMP AT TIME ZONE 'UTC'`, `c::VARCHAR`,
-`encode(c)`, or `enum_code(c)::BIGINT`. An ENUM value reads as `Text` or
-`String` with its label, the text of `c::VARCHAR`, and a `FieldEnum` holds the
-index and the label. The Haddock of each `FromField` instance gives the SQL
-types that it reads.
+BIGINT for `Int64`, and other SQL types with the value of DuckDB's cast: the
+column "Reads" and notes 3 to 5 of [Types](#types) give them.
+
+## Types
+
+Each row gives a Haskell type and these facts:
+
+- Binds as: the SQL type of a parameter of this type.
+- Declared: the SQL type that a typed registration declares, where it is not
+  the type of "Binds as". A typed registration declares these types: a column
+  and a parameter of `createTableFunction`, and an argument and the result of
+  `createAggregate` and of `createFunction`. "none" means that the type has no
+  declaration. `registerCopyFromFunction` declares no type: the table of the
+  COPY FROM statement gives the column types, the row type must have the same
+  number of columns, and DuckDB casts each value of a row to the type of its
+  column.
+- Reads: the SQL types that the `FromField` instance reads.
+- Function: the use of the type in `createFunction`, as an argument, a result,
+  or both. See the paragraph after the notes.
+
+| Haskell type | Binds as | Declared | Reads | Function |
+| --- | --- | --- | --- | --- |
+| `Bool` | BOOLEAN | | BOOLEAN, TINYINT to BIGINT (2) | argument, result |
+| `Int8`, `Int16`, `Int32`, `Int64`, `Int` | TINYINT, SMALLINT, INTEGER, BIGINT, BIGINT | | TINYINT to BIGINT, HUGEINT, UHUGEINT (3) | argument, result |
+| `Word8`, `Word16`, `Word32`, `Word64`, `Word` | UTINYINT, USMALLINT, UINTEGER, UBIGINT, UBIGINT | | each integer type (3) | argument, result |
+| `Integer` | HUGEINT (1) | | each integer type, BIGNUM (3) | argument, result |
+| `Natural` | HUGEINT (1) | UHUGEINT (10) | each integer type, BIGNUM (3) | argument, result |
+| `BigNum` | BIGNUM | | BIGNUM | argument, result |
+| `Double` | DOUBLE | | DOUBLE, FLOAT, TINYINT to BIGINT, DECIMAL (4) | argument, result |
+| `Float` | FLOAT | | as `Double` (4) | argument, result |
+| `DecimalValue` | DECIMAL of the value | none (14) | DECIMAL | none |
+| `Text`, `String` | VARCHAR | | VARCHAR, TINYINT to BIGINT, BOOLEAN, ENUM (5) | argument, result |
+| `ByteString` | BLOB | | BLOB, BIT, GEOMETRY (5) | argument, result |
+| `BitString` | BIT | | BIT | argument, result |
+| `UUID` | UUID | | UUID, VARCHAR (5) | argument, result |
+| `Day`, `Unbounded Day` | DATE (7) | | DATE, each timestamp type (6) | argument, result |
+| `TimeOfDay` | TIME (7) | | TIME, TIME_NS, each timestamp type (6) | argument, result |
+| `LocalTime`, `Unbounded LocalTime` | TIMESTAMP (7) | | each timestamp type (6), DATE (5) | argument, result |
+| `UTCTime`, `Unbounded UTCTime` | TIMESTAMPTZ (7) | | TIMESTAMPTZ, TIMESTAMPTZ_NS (5) | argument, result |
+| `TimeWithZone` | TIMETZ | | TIMETZ | argument, result |
+| `IntervalValue` | INTERVAL | | INTERVAL | argument, result |
+| `[a]` | LIST | | LIST, ARRAY | argument, result |
+| `Array Int a` | ARRAY (8) | none (8) | ARRAY | none (8) |
+| `Map k v` | MAP | | MAP | argument, result |
+| `StructValue FieldValue` | STRUCT (9) | none | STRUCT | none |
+| `TupleValue FieldValue` | TUPLE (9) | none | TUPLE | none |
+| `UnionValue FieldValue` | UNION (9) | none | UNION | none |
+| `ViaDuckDB a` | STRUCT or UNION (10) | | STRUCT or UNION | argument, result |
+| `Maybe a` | as `a`, or NULL | as `a` | NULL, or as `a` | as `a` |
+| `G.Geometry` | GEOMETRY without a CRS | | GEOMETRY | argument, result |
+| `RawGeometry` | GEOMETRY with its CRS | none (14) | GEOMETRY | none |
+| `Variant` | VARIANT | | VARIANT, and the values that a VARIANT can hold (13) | result |
+| `FieldValue` | the type of its constructor (11) | none | each type | none |
+| `Null` | `"NULL"` (12) | | NULL | argument, result (12) |
+
+Notes:
+
+1. A value from -2^127 to 2^127 - 1 binds as a HUGEINT. DuckDB then checks that
+   the value fits its target: for example, a negative value for an unsigned
+   column raises an error. A value outside that range binds as a UHUGEINT for a
+   UHUGEINT parameter that can hold it. It binds as a BIGNUM for a parameter
+   that has no integer or DECIMAL type. For each other integer or DECIMAL
+   parameter, it raises an `SQLError` of the type `ErrorTypeConversion`. Bind a
+   `BigNum` to bind a BIGNUM value in each case. [Querying Data](#querying-data)
+   gives the defects of the casts from BIGNUM in DuckDB 2.0.0, and the rule for
+   a list, an `Array`, or a `Map` of `Integer` values.
+2. The value 0 reads as `False`, and each other value reads as `True`.
+3. "Each integer type" is TINYINT to UHUGEINT. A value that the Haskell type
+   cannot hold raises a conversion error of the library, an `SQLError` with no
+   type, also a negative value for an unsigned type or for `Natural`. An ENUM
+   value does not read as an integer type. Write `enum_code(c)::BIGINT` in SQL
+   for its index, or `c::INTEGER` for the value of its label.
+4. A read gives the value of `c::DOUBLE` or `c::FLOAT` of DuckDB, also for a
+   DECIMAL, and for a BIGINT read as `Float`. A finite value that `Float`
+   cannot hold raises a conversion error of the library, an `SQLError` with no
+   type.
+5. A read of another SQL type gives the value of the cast of DuckDB to the SQL
+   type of the Haskell type, or an error where the value does not fit. For
+   example, `Int8` reads a BIGINT that fits in a TINYINT, and `Double` reads a
+   DECIMAL with the value of `c::DOUBLE`. Thus `Text` reads a BOOLEAN as `true`
+   or `false`, and `Text` and `String` read an ENUM as its label, the text of
+   `c::VARCHAR`; a `FieldEnum` holds the index and the label. `ByteString` reads
+   a BIT or a GEOMETRY as the bytes of `c::BLOB`. `UUID` reads a VARCHAR in the
+   form `a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11`, and another form that the cast
+   reads, for example with braces, raises an error. A read that needs the
+   TimeZone setting of the session, or another text than the cast gives, raises
+   the error of an incompatible column. For each such read, write the SQL in the
+   parentheses in place of the column `c` (note 3 gives the SQL for an ENUM read
+   as an integer type):
+   - `Text` from FLOAT or DOUBLE (`c::VARCHAR`).
+   - `ByteString` from VARCHAR (`encode(c)`).
+   - `LocalTime` from TIMESTAMPTZ or TIMESTAMPTZ_NS (`c AT TIME ZONE 'UTC'`).
+   - `UTCTime` from DATE, TIMESTAMP_S, TIMESTAMP_MS, or TIMESTAMP
+     (`c::TIMESTAMP AT TIME ZONE 'UTC'`), and from TIMESTAMP_NS
+     (`c AT TIME ZONE 'UTC'`).
+
+   The `Unbounded` forms of `LocalTime` and `UTCTime` follow the same rule. The
+   Haddock of each `FromField` instance gives the SQL types that it reads.
+6. "Each timestamp type" is TIMESTAMP_S, TIMESTAMP_MS, TIMESTAMP, and
+   TIMESTAMP_NS. TIMESTAMP alone is the type with microseconds. `Day` reads the
+   date of a timestamp, and `TimeOfDay` reads its time. A nanosecond type keeps
+   its nanoseconds. An infinite value raises a conversion error of the library,
+   an `SQLError` with no type, for `Day`, `TimeOfDay`, `LocalTime`, and
+   `UTCTime`. The `Unbounded` forms read it. Use `Maybe Date` to distinguish SQL
+   NULL from infinity. `Date`, `LocalTimestamp`, and `UTCTimestamp` from
+   `Database.DuckDB.Simple.Time` are the `Unbounded` forms.
+7. A value with digits below a microsecond keeps them for a nanosecond
+   parameter, and as a scalar value that fits the range of the nanosecond type
+   for a `VARIANT` parameter: [Infinite dates and
+   timestamps](#infinite-dates-and-timestamps) gives the rule. The range of
+   `Day` is 5877642-06-25 (BC), the year -5877641 of `Data.Time`, to
+   5881580-07-10. The range of `LocalTime` and `UTCTime` is 290309-12-22 (BC)
+   00:00:00 to 294247-01-10 04:00:54.775806. A value outside its range raises an
+   `SQLError` of the type `ErrorTypeConversion`. A target of the type
+   TIMESTAMP_NS or TIMESTAMPTZ_NS has a smaller range, about the years 1677 to
+   2262, and a value outside it gets the same type in each position. A
+   `TimeOfDay` with 60 seconds binds as the next second, as `make_time` of
+   DuckDB gives it: 23:59:60 binds as 24:00:00. A later time, for example
+   23:59:60.5, and a field outside its own range, for example 61 minutes, raise
+   an `SQLError` of the type `ErrorTypeConversion`. [Infinite dates and
+   timestamps](#infinite-dates-and-timestamps) gives the full rule.
+8. An `Array` binds as an ARRAY with the size of the value. An empty `Array`
+   raises an `SQLError` of the type `ErrorInputInvalid`, because a DuckDB ARRAY
+   has at least one element; bind an empty list for an empty LIST. A DuckDB
+   ARRAY type has a size, and the Haskell type has none, so a typed registration
+   has no declaration for an `Array`. An `Array` argument or result of
+   `createFunction` or `createAggregate`, and an `Array` parameter or column of
+   `createTableFunction`, raise an `SQLError` of the type `ErrorInputInvalid` at
+   registration, also inside a `Maybe`, a list, or a `Map`. Use a list for a
+   LIST. For an ARRAY, use a newtype of the `Array` with its own column type
+   name (`duckdbColumnTypeFor`) that gives the size, for example `BIGINT[3]`.
+   DuckDB then rejects an ARRAY of another size when it binds the call. It casts
+   a LIST of the same length to the ARRAY with no error, by its own implicit
+   cast, and a LIST of another length raises an `SQLError` when the statement
+   runs.
+9. A STRUCT, TUPLE, or UNION parameter binds with the types of its own fields
+   or members. These values have no static field types, so a typed
+   registration with such a type raises an error. Use a record with
+   `ViaDuckDB`.
+10. A record binds as a STRUCT, and a sum type binds as a UNION. A typed
+    registration declares the STRUCT or UNION type of a record or a sum type
+    that derives `DuckDBColumnType` and `ToDuckValue` via `ViaDuckDB`, also in a
+    list or a MAP. Each field type comes from `DuckValue`. An `Integer` declares
+    HUGEINT and a `Natural` declares UHUGEINT, as a field, a column of a typed
+    row, an argument, and a result. A value that this type cannot hold raises an
+    `SQLError` of the type `ErrorTypeConversion`: use `BigNum`, which declares
+    BIGNUM, for a larger value. DuckDB computes with these types: HUGEINT
+    arithmetic stays HUGEINT and raises an error on overflow. DuckDB casts a
+    non-negative integer literal to a UHUGEINT argument, but no signed column or
+    typed value without an explicit cast. `sum()` over a UHUGEINT column gives a
+    DOUBLE value, and so do UHUGEINT + INTEGER and HUGEINT + UHUGEINT for
+    columns and typed values. A record with an `Array` field raises an error at
+    registration, because the record type does not give the size of the
+    ARRAY. Use a list field, or a field of a newtype of the `Array` with a
+    `DuckValue` instance that gives the size (see note 8). See
+    [Generic Encoding with ViaDuckDB](#generic-encoding-with-viaduckdb).
+11. Each constructor binds as its SQL type, with these exceptions:
+    - A `FieldEnum` binds its label as a VARCHAR.
+    - A `FieldTimestamp` binds as TIMESTAMP, also when it came from another
+      timestamp type. [Infinite dates and
+      timestamps](#infinite-dates-and-timestamps) gives the rule for digits
+      below a microsecond.
+    - An empty `FieldArray` raises an `SQLError` of the type
+      `ErrorInputInvalid`, because a DuckDB ARRAY has at least one element.
+    - An empty `FieldList` or `FieldMap`, and a `FieldList`, a `FieldArray`, or
+      a `FieldMap` with only `FieldNull` elements, bind as the SQL list literal
+      does: they take the element type of a parameter with a known type. For a
+      parameter with no known type, `[]` and `[NULL, NULL]` have the type
+      `"NULL"[]`, and `MAP {}` has the type `MAP("NULL", "NULL")`.
+
+    See [FieldValue parameters](#fieldvalue-parameters).
+12. `typeof` gives `"NULL"`, with the quotes, for a `Null` parameter and for a
+    `Null` declaration. A `Null` argument takes only a NULL value. A call with
+    another value is a Binder Error. A record cannot have a `Null` field.
+13. A `Variant` reads a value that a VARIANT can hold: a VARIANT column, or a
+    column of another type with the same shape. That is a value of each scalar
+    type other than ENUM, for example an INTEGER or a GEOMETRY with no CRS, a
+    LIST of such values, and a STRUCT in the form of a VARIANT object: each
+    field of the type VARIANT, the keys in ascending order. At each depth, it
+    refuses an ENUM, an ARRAY, a MAP, a TUPLE, a UNION, another STRUCT, and a
+    GEOMETRY with a CRS, with the error of an incompatible column, because the
+    cast of DuckDB to VARIANT changes these values. Write `c::VARIANT` in SQL to
+    read such a column. One difference stays, because the reader does not know
+    the type of a column: a JSON column reads as its text, as a VARCHAR column
+    does, where `c::VARIANT` gives the parsed value.
+14. `DecimalValue` and `RawGeometry` have no `DuckDBColumnType` and no
+    `ToDuckValue` instance, so an `Array`, a list, or a typed row of either does
+    not compile: GHC reports `No instance for 'DuckDBColumnType DecimalValue'`
+    (or `RawGeometry`), or the same for `ToDuckValue` in a typed row. One column
+    type cannot give the width and scale of each `DecimalValue`. A declared
+    GEOMETRY type has no CRS, so it would remove the CRS of each `RawGeometry`.
+    A composite parameter holds a `RawGeometry` as a `FieldGeometry`.
+
+A value of a VARIANT column reads as its stored value, so the row of the stored
+type applies. A value in a LIST, ARRAY, MAP, STRUCT, or UNION reads with the
+same rules, and so does a field of a `ViaDuckDB` record. A SQL type that is not
+in "Reads" raises the error of an incompatible column. See [Errors](#errors).
+
+A function of `createFunction` declares the type of "Declared", or else of
+"Binds as", for each argument and for its result. An argument type needs
+`FromField` and a declaration. The registration raises an error for an argument
+type that is or contains VARIANT, and for a type with no declaration. A result
+type needs `ToDuckValue` and a declaration. Some result types write each value
+directly into the data of the result vector: `Bool` (BOOLEAN), an integer of 8
+to 64 bits (TINYINT to BIGINT, UTINYINT to UBIGINT), `Float` (FLOAT), `Double`
+(DOUBLE), `Text` and `String` (VARCHAR), `Maybe` of one of them, and a newtype
+that derives `FunctionResult` from one of them
+(`deriving newtype (FunctionResult)`). Each other result type, for example a
+record or a list, costs a native value for each row. DuckDB casts such a value
+to the declared type, as a SQL `CAST` does: it rounds a value to the scale of a
+DECIMAL type text, and it raises an error for a value that does not fit. A
+result of `createAggregate` must have one of the types that write directly,
+because DuckDB gives the finalize callback no factory to make a value of another
+type, and in an ordered window its result vector has the size 0. For another
+result type, `createAggregate` raises an error at registration. See
+[User-Defined Functions](#user-defined-functions).
+
+## Errors
+
+A program can catch these exceptions:
+
+- `SQLError`: an error of DuckDB, an input check of the library, a failed
+  internal check of the library, or a result value that does not convert.
+- `FormatError`: parameters that do not agree with the placeholders of the
+  statement.
+- The exception of a cancellation, for example from `timeout`.
+
+A failed check of the state of the library, or of a vector, a type, or a value
+that DuckDB gave, raises an `SQLError` of the type `ErrorRuntimeInternal`. Such
+an error is a defect of the library or of DuckDB, not an error of the input.
+Report it. Inside a callback, the statement that runs the callback fails with
+the type `ErrorInputInvalid` and the text
+`Invalid Input Error: duckdb-simple: ...`, because a callback does not pass the
+type `ErrorRuntimeInternal`; a cast gives `ErrorTypeMismatch` (see the errors of
+a callback below). These errors are not internal checks, and they raise an
+`SQLError` with no type: the use of a closed environment, instance, connection,
+statement, or type cache, a DuckDB library of another version, and a callback
+state read with the wrong type.
+
+`SQLError` has four fields:
+
+- `sqlErrorMessage` is the text of the error. For an error of DuckDB, it is
+  the text of DuckDB, for example `Binder Error: ...`.
+- `sqlErrorType` is the category of the error, as `Just` an `ErrorType`: the
+  error code of DuckDB for an error of DuckDB, and the type that the library
+  gives to an input check, to a lock wait, or to a failed internal check.
+  `ErrorType` has one constructor for each error code of the V2 C API, for
+  example `ErrorQueryBinder` and `ErrorTypeConversion`.
+- `sqlErrorQuery` is the SQL text of the statement for an error during its
+  preparation or execution, and for a result value that does not convert. It
+  is `Nothing` for an error outside a statement, for example when a connection
+  opens. An error of a parameter value can also have `Nothing`.
+- `sqlErrorBody` is the text of an error of DuckDB without the prefix of its
+  type, and `Nothing` for an error of the library.
+
+An input check of the library raises an `SQLError`. A check for a value outside
+the range of its SQL type gives the type `ErrorTypeConversion`, the type of the
+Conversion Error that DuckDB gives the same value in SQL: an `Integer` that its
+parameter or its declared type cannot hold, a date or a timestamp outside the
+range of DATE or TIMESTAMP of DuckDB (note 7), a nanosecond timestamp outside
+its storage, a time of day that is not a TIME value, a TIMETZ offset outside
+-57599 to 57599 seconds, an `Integer` or `Natural` field of a record outside HUGEINT or
+UHUGEINT, a `DecimalValue` that its width cannot hold, and an ENUM label that is
+not in the dictionary of a declared ENUM type. Each other input check gives the
+type `ErrorInputInvalid`. This includes a value of the wrong shape or type, also
+where DuckDB gives another type for the same input, for example a UNION tag that
+is not a member, a leaf built from another type, a STRUCT field that does not
+match its type, or an unknown CRS. Examples are a VARIANT object with two equal
+keys, a registration with an argument type that the library cannot read, and a
+DECIMAL width above 38.
+
+A statement in a callback that waits for a lock of the connection longer than
+the time limit of `connectionCallbackLockWait` raises an `SQLError` of the type
+`ErrorResourceInUse` ([User-Defined Functions](#user-defined-functions) gives
+the rule). A statement on a connection that streams a result, for example in the
+step of a fold of `Database.DuckDB.Simple.Streaming`, also gives
+`ErrorResourceInUse`, and so does a close of an environment while an instance
+that `createInstance` did not create is alive.
+
+A result value that its Haskell type does not read raises an `SQLError` with no
+type and with the query. The message describes the first field that fails:
+
+- The error of an incompatible column, for a SQL type that the instance does
+  not read: `duckdb-simple: column NAME has type TYPE but expected HASKELLTYPE`.
+  The message can end with `: ` and a detail, for example `: expected NULL`
+  for `Null`. TYPE is the name of the SQL type without its parameters, for
+  example DECIMAL for a DECIMAL(18,2) and ENUM for each ENUM type. Each
+  timestamp type gives TIMESTAMP, TIMESTAMPTZ_NS gives TIMESTAMPTZ, and TIME_NS
+  gives TIME. For a VARIANT column, TYPE is the type of the stored value.
+  HASKELLTYPE is the type of the instance that reads, for example `Text` for
+  `String`.
+- `duckdb-simple: column NAME is NULL but expected HASKELLTYPE` for NULL in a
+  type without `Maybe`.
+- `duckdb-simple: field FIELD: ` and the error of the value for a field of a
+  `ViaDuckDB` record, for example
+  `duckdb-simple: field pairValue: a value has type DOUBLE but expected Int64`.
+- A conversion error of the library, for a value that the instance cannot
+  convert: the message of the instance, for example `integer value out of
+  bounds`.
+
+The library makes a `ResultError` for each failure and puts its text in the
+`SQLError`. It does not raise the `ResultError`. A custom `FromField` instance
+reports a failure with `returnError` and a constructor of `ResultError`.
+`query` and `query_` raise the error and give no rows. A fold raises it at the
+row that fails. A row type with more or fewer fields than the result has
+columns raises an `SQLError` with the text `column index N out of bounds`.
+
+An exception in a Haskell function of a registration, for example of
+`createFunction`, fails the statement that runs the function. That statement
+raises an `SQLError`. An `SQLError` with a type keeps its type, and its text
+gets one prefix. For example, a function that runs a failing query on another
+connection fails the outer statement with `ErrorTypeConversion` and the text
+`Conversion Error: ...` of the inner query, and a check of the library in a
+result, for example a time of day after 24:00:00, keeps its type
+`ErrorTypeConversion`. A failed cast is the exception: it gives
+`ErrorTypeMismatch` (see below). Each other exception, an `SQLError` with no
+type, and an `SQLError` of one of the 16 types below give `ErrorInputInvalid`
+and the text `Invalid Input Error: ` followed by the message of the exception:
+the message of an `SQLError`, the text of a `userError`, or the
+`displayException` text of another exception. An argument that does not convert
+gives an `SQLError` of the type `ErrorInputInvalid` with a text that names the
+argument, for example
+`duckdb-simple: argument arg0 is NULL, but Int64 cannot hold NULL` for a scalar
+function. For an aggregate or a table function, the text names the function
+after the prefix, for example `duckdb-simple: tf_int: argument arg0 ...`. DuckDB
+ignores an exception of a log sink.
+
+These 16 types do not pass through a callback:
+
+- `ErrorQueryBinder`, `ErrorDatabaseCatalog`, `ErrorResourceConnection`,
+  `ErrorQueryParameterNotAllowed`, `ErrorQueryParser`,
+  `ErrorConfigurationPermission`, and `ErrorResourceInUse`. DuckDB expects these
+  types before the execution of a statement. Under the DuckDB setting
+  `SYNTACTIC_ERRORS_DO_NOT_INVALIDATE`, it does not invalidate an explicit
+  transaction after them, and a callback raises during the execution.
+- `ErrorRuntimeInternal` and `ErrorRuntimeFatal`. DuckDB can invalidate the
+  database after them.
+- `ErrorApi`, `ErrorIOFileNotFound`, `ErrorIOReadFailure`, `ErrorIOEof`,
+  `ErrorInputParameterInvalid`, `ErrorInputMetadataDeferred`, and
+  `ErrorIONetwork`. DuckDB 2.0.0 cannot raise them again with their own type.
+
+When an error of a callback fails a statement in an explicit transaction, DuckDB
+aborts that transaction, also under the setting
+`SYNTACTIC_ERRORS_DO_NOT_INVALIDATE`: [User-Defined
+Functions](#user-defined-functions) gives what this means for a `COMMIT`.
+
+An exception in the callback of `registerCast` in
+`Database.DuckDB.Simple.V2.Registration` fails the cast with an `SQLError` of
+the type `ErrorTypeMismatch`, also an `SQLError` with another type. Its message
+is `Mismatch Type Error: ` and the text of the exception. The type is the same
+for each pair of types, because of a property of DuckDB 2.0.0. DuckDB plans a
+cast between some pairs of types as a cast that cannot fail, also when the cast
+is a registered cast. Examples are a cast to VARCHAR, also from an ENUM, a LIST,
+or a STRUCT, and a widening cast such as INTEGER to BIGINT or FLOAT to DOUBLE.
+For such a cast, DuckDB changes an error of the type `ErrorInputInvalid`,
+`ErrorInputOutOfRange`, or `ErrorTypeConversion` to an INTERNAL error. It does
+the same for an error type that it does not map, for example `ErrorApi`. An
+INTERNAL error during the execution of a query invalidates the database. Then
+each statement on each connection of the database fails until a new instance
+opens the database. An error of the type `ErrorTypeMismatch` keeps the database
+usable, and it aborts an explicit transaction. In `TRY_CAST`, DuckDB discards
+the error and keeps the rows that the callback wrote, so the callback must write
+each row, for example NULL for a failed row. `TRY(CAST(...))` raises the error,
+because `TRY` catches only the types `ErrorInputInvalid`,
+`ErrorInputOutOfRange`, and `ErrorTypeConversion`. DuckDB still plans such a
+cast as one that cannot fail, so it can run the cast for a row that another
+condition of the query excludes, for example in
+`WHERE c < 2500 AND CAST(c AS VARCHAR) <> 'x'`. In DuckDB 2.0.0, only a guard in
+a CASE expression, for example
+`CASE WHEN d <> 0 THEN CAST(c AS VARCHAR) <> 'x' ELSE false END`, kept the cast
+from the excluded rows. A cast that a program registers with the native API of
+`duckdb-ffi` also gets the INTERNAL error for such a pair and such an error
+type. A V2 cast can report the code `DUCKDB_V2_ERROR_TYPE_MISMATCH` in their
+place.
+
+An asynchronous exception, for example from `timeout` or Ctrl-C, cancels a
+running query. The library interrupts DuckDB, waits until the native call
+returns, and raises the same exception again. Catch that exception, not
+`SQLError`. See [Resource Management](#resource-management) for `-threaded`.
+
+`FormatError` has the fields `formatErrorMessage`, `formatErrorQuery`, and
+`formatErrorParams` (the parameter values as text). The library raises it
+before it executes the statement, in the cases that
+[Named Parameters](#named-parameters) lists. A `FormatError` is not an
+`SQLError`, so catch it separately.
+
+This function gives `Nothing` when the table `items` has no column `value`:
+
+```haskell
+import Control.Exception (throwIO, try)
+import Database.DuckDB.Simple
+
+countValues :: Connection -> IO (Maybe Int)
+countValues conn = do
+  result <- try (query_ conn "SELECT count(value) FROM items")
+  case result of
+    Right [Only n] -> pure (Just n)
+    Right _ -> pure Nothing
+    Left err
+      | sqlErrorType err == Just ErrorQueryBinder -> pure Nothing
+      | otherwise -> throwIO err
+```
 
 ## Generic Encoding with ViaDuckDB
 
@@ -358,14 +755,15 @@ size of the value. DuckDB casts a LIST or an ARRAY to the type of a LIST
 column. It casts a LIST to an ARRAY column only when the lengths are equal.
 
 A list or an array parameter with scalar elements takes its element type from
-the column type name of the element. Some elements take the element type of
-the target instead: `Integer`, `Natural`, and `BigNum` elements for an integer
-or DECIMAL element type (see above), and `TimeOfDay`, `LocalTime`, and
-`UTCTime` elements for a nanosecond element type (see
-[Infinite dates and timestamps](#infinite-dates-and-timestamps)). An empty list
-binds as an empty LIST of its element type. An empty array raises an
-`SQLError`, because a DuckDB ARRAY has at least one element. Bind an empty list
-for an empty LIST.
+the column type name (`duckdbColumnTypeFor`) of the element. Some elements take
+the element type of the target instead: `Integer`, `Natural`, and `BigNum`
+elements for an integer or DECIMAL element type, and otherwise the type of their
+values (see above), and `TimeOfDay`, `LocalTime`, and `UTCTime` elements for a
+nanosecond element type (see [Infinite dates and
+timestamps](#infinite-dates-and-timestamps)). An empty list binds as an empty
+LIST of its element type, except an empty list of `Integer` or `Natural` values
+with no integer or DECIMAL target (see above). An empty array raises an error:
+note 8 of [Types](#types).
 
 A list or an array of STRUCT values, UNION values, generic records, lists, or
 arrays gets the type that DuckDB gives a SQL list literal of the same elements.
@@ -411,9 +809,9 @@ infiniteDates :: Connection -> IO [Only Date]
 infiniteDates conn = query conn "SELECT ?::DATE" (Only (PosInfinity :: Date))
 ```
 
-The ordinary `Day`, `LocalTime`, and `UTCTime` instances reject infinity with
-a conversion error. Use `Maybe Date` to distinguish SQL NULL from infinity.
-Floating-point NaN and infinities remain valid `Float` and `Double` values.
+The ordinary `Day`, `LocalTime`, and `UTCTime` instances reject infinity: note 6
+of [Types](#types). Floating-point NaN and infinities remain valid `Float` and
+`Double` values.
 
 A `TimeOfDay`, a `LocalTime`, or a `UTCTime` parameter, and an `Unbounded`
 form, keeps its digits below a microsecond for a nanosecond parameter:
@@ -437,19 +835,40 @@ changes during the call does not change how its later rows bind.
 Use separate parameters when one expression requires microseconds and another
 requires nanoseconds.
 
-A `Day` outside the range of DuckDB, from -5877641-06-25 to 5881580-07-10, and
-a `LocalTime` or a `UTCTime` outside the range from -290308-12-22 00:00:00 to
-294247-01-10 04:00:54.775806, raise an `SQLError` of the type
-`ErrorInputOutOfRange` when they bind. These dates are in the notation of
-`Data.Time`, where the year -5877641 is 5877642 BC and the year -290308 is
-290309 BC. The rule holds also inside a collection, a STRUCT, or a VARIANT,
-and for a finite `Unbounded` value. DuckDB does not accept these values: its
-SQL literals reject them, and a stored value can read as an infinity or make
-DuckDB raise an INTERNAL error. A TIMESTAMP_S or TIMESTAMP_MS value has the
-same range at both ends. A leap second, a `TimeOfDay` with 60 seconds, binds
-as the next second, as `make_time` and `make_timestamp` of DuckDB give it. The
-SQL literal `'23:59:60'` raises an error. A time after 24:00:00, for example
-23:59:60.5, raises an `SQLError` of the type `ErrorInputInvalid`.
+A date or a timestamp outside the range of DuckDB raises an `SQLError` of the
+type `ErrorTypeConversion` when it binds, also as an element of a list, an
+`Array`, or a `Map`, inside a STRUCT, a TUPLE, or a UNION, and in a VARIANT. For
+a `Day`, that range is the range of DATE, from -5877641-06-25 to 5881580-07-10.
+For a `LocalTime` or a `UTCTime` (in UTC), it is the range of TIMESTAMP,
+TIMESTAMPTZ, TIMESTAMP_S, and TIMESTAMP_MS, from -290308-12-22 00:00:00 to
+294247-01-10 04:00:54.775806. The dates are in the notation of `Data.Time`. A
+target of the type TIMESTAMP_NS or TIMESTAMPTZ_NS is different. These types have
+a smaller range, about the years 1677 to 2262. A value outside that range also
+gets the type `ErrorTypeConversion`, in each position. The error comes from the
+library or from DuckDB by the position of the value:
+
+- A parameter: the error of the library for a value outside the range of DuckDB,
+  and the Conversion Error of DuckDB for each other such value, for example in
+  the year 2300.
+- An element of a list, an `Array`, or a `Map`: the error of the library. For a
+  value in the range of DuckDB, its text is "TIMESTAMP value out of finite
+  range".
+- A field of a STRUCT, an element of a TUPLE, or a member of a UNION: the error
+  of the library, "TIMESTAMP value out of finite range", also for a value
+  outside the range of DuckDB.
+- In each position, a `LocalTime` or a `UTCTime` (in UTC) from 2262-04-11
+  23:47:16.854775807 to 23:47:16.854775999 gets that error of the library.
+
+In the notation of `Data.Time`, the year -5877641 is 5877642 BC and the year
+-290308 is 290309 BC. The rule holds also for a finite `Unbounded` value. DuckDB
+does not accept a value outside its range: its SQL literals reject it, and a
+stored value can read as an infinity or make DuckDB raise an INTERNAL error. A
+leap second, a `TimeOfDay` with 60 seconds, binds as the next second, as
+`make_time` and `make_timestamp` of DuckDB give it. The SQL literal `'23:59:60'`
+raises an error. A time after 24:00:00, for example 23:59:60.5, and a field
+outside its own range, for example 61 minutes, raise an `SQLError` of the type
+`ErrorTypeConversion`, also as the result of a typed function or a row of a
+table function.
 
 ### Manual STRUCT, TUPLE, and UNION Handling
 
@@ -521,33 +940,34 @@ with digits below a microsecond in a `FieldList` or a `FieldMap` for a
 `TIMESTAMP_NS` values loses these digits when it binds back. A `VARIANT` object
 reads as a `FieldStruct` with `VARIANT` fields and keeps them.
 
-A `FieldList`, a `FieldArray`, or a `FieldMap` that is empty or has only
-`FieldNull` elements binds as the SQL list literal does: it takes the element
-type of a parameter with a known type, and otherwise the type NULL, as `[]`,
-`[NULL, NULL]`, and `MAP {}` have. An empty `FieldArray` raises an `SQLError`
-of the type `ErrorInputInvalid`, because a DuckDB ARRAY has at least one
-element. Inside a `FieldStruct`, a `FieldTuple`, or a `FieldUnion`, a
+An empty or all-NULL `FieldList`, `FieldArray`, or `FieldMap` follows note 11 of
+[Types](#types). Inside a `FieldStruct`, a `FieldTuple`, or a `FieldUnion`, a
 `FieldEnum` binds its label to the declared ENUM type, and a label that is not
-in the dictionary raises an error. `FieldValue` has no `DuckDBColumnType` and
+in the dictionary raises an `SQLError` of the type `ErrorTypeConversion`, as the
+cast of DuckDB gives for that label. `FieldValue` has no `DuckDBColumnType` and
 no `ToDuckValue` instance, because no one DuckDB type holds each of its values.
 
 ### Resource Management
 
 - `withConnection` and `withStatement` wrap the open/close lifecycle and guard
   against exceptions; use them whenever possible to avoid leaking C handles.
-- The query helpers release their results, prepared statements, and values after
-  use. Query helpers return a Haskell list of all rows. Folds and cursors decode
-  rows incrementally from owned native chunks. The default mode drains and
-  closes the native cursor before row callbacks.
+- The query functions release their results, prepared statements, and values
+  after use, and return a Haskell list of all rows. Folds and cursors decode
+  rows incrementally from owned native chunks. The materialized functions of
+  `Database.DuckDB.Simple` drain and close the native result before row
+  callbacks; the streaming functions of `Database.DuckDB.Simple.Streaming` do
+  not.
 - `execute`/`query` variants reset statement bindings each run so prepared
   statements can be reused safely.
 
-For concurrent workers, use a separate connection per worker. Threads can
-also share one connection. DuckDB permits one open result for each connection,
-so each connection has a lock. `query`, `execute`, the default folds, and
-statement preparation hold this lock until their native result closes. A call
-from another thread waits. The lock does not cover these cases. Serialize them
-in the application:
+For concurrent workers, use a separate connection per worker. Threads can also
+share one connection. DuckDB permits one open result for each connection, so
+each connection has a lock. `query`, `execute`, and the materialized folds hold
+this lock from the execution of a statement until its native result closes.
+Statement preparation holds it only while DuckDB prepares the statement, and the
+metadata bind of a statement only while DuckDB binds it. A call from another
+thread waits. The lock does not cover these cases. Serialize them in the
+application:
 
 - A transaction. Statements of other threads run inside it.
 - One `Statement` that two threads use.
@@ -557,20 +977,21 @@ in the application:
   closed.
 - `close`. Wait for all operations on the connection before you close it.
 
-A callback must not execute another query on its active connection or close
-that connection. With the default API, such a query waits for the lock of the
-active query. After the time limit of `connectionCallbackLockWait` (10
-seconds by default), it raises an `SQLError`. See
-[User-Defined Functions](#user-defined-functions) for the rule and its limits.
+A callback must not run a statement on the connection that runs the callback,
+or close that connection: [User-Defined Functions](#user-defined-functions)
+gives the rule, its time limit, and its limits.
 
-Link your executable with `ghc-options: -threaded` to allow prompt cancellation
-of native queries, including Ctrl-C. On cancellation, the library interrupts
-DuckDB and waits for the native call to return before it releases resources
-and propagates the exception. Cancellation is cooperative: native code and
-Haskell callbacks must return before cleanup can finish.
+Link your executable with `ghc-options: -threaded`. A program that registers a
+callback needs it, because DuckDB can call a callback from several threads at
+the same time: [User-Defined Functions](#user-defined-functions) gives the rule.
+It also allows prompt cancellation of native queries, including Ctrl-C. On
+cancellation, the library interrupts DuckDB and waits for the native call to
+return before it releases resources and propagates the exception. Cancellation
+is cooperative: native code and Haskell callbacks must return before cleanup can
+finish.
 
 Native work that can run for a long time runs in a helper thread, so that an
-asynchronous exception can interrupt it. The default query functions run the
+asynchronous exception can interrupt it. The materialized functions run the
 native calls of one result in one helper thread. A bound thread, such as the
 main thread, changes operating system threads to wait for a helper thread.
 Thus a small query takes longer from a bound thread than from an unbound
@@ -589,14 +1010,15 @@ success or an exception. The accumulator determines Haskell memory use.
   inspect result shapes before executing a query.
 - `execute` returns the number of affected rows. Use SQL `RETURNING` clauses
   when you need generated identifiers.
+
 ### Cursors and folds
 
 `fold`, `fold_`, and `foldNamed` decode one row at a time from DuckDB's result
 chunks. This API materializes the native result before the first row is
 returned. These functions avoid a complete Haskell row list, but native memory
-use still depends on the result size. The default interface closes the native
-cursor before row delivery. A row callback can run another query on the same
-connection.
+use still depends on the result size. The materialized functions close the
+native result before row delivery. A row callback can run another query on the
+same connection.
 
 ```haskell
 import Database.DuckDB.Simple
@@ -610,9 +1032,9 @@ sumValues conn =
 For manual cursor-style iteration, use `nextRow`/`nextRowWith` on an open
 `Statement` to pull rows one at a time and decide when to stop.
 
-Cursors support the same column types as eager queries, including STRUCT
+Cursors support the same column types as the query functions, including STRUCT
 and UNION values with nested collections and NULLs. GEOMETRY and VARIANT work
-with eager queries, cursors, and folds.
+with the query functions, cursors, and folds.
 
 #### Optional native streaming
 
@@ -634,15 +1056,14 @@ This module uses V2 execution and incremental chunk fetching. DuckDB can still
 materialize some queries. Streaming does not bound the memory used by query
 operators.
 
-The first cursor fetch selects the execution mode. The mode stays until
-`bind`, `bindNamed`, `clearStatementBindings`, or `executeStatement` releases
-the result. Switching between default and streaming `nextRow` calls retains
-that mode.
-Keep the connection dedicated to the active stream. Until the stream is
-complete, DuckDB rejects other statements on that connection with a
-`RESOURCE_IN_USE` error. If you close an incomplete stream, DuckDB aborts its
-statement. In autocommit mode, DuckDB rolls back the writes of that statement.
-Cancellation interrupts native chunk fetching as well as execution.
+The first cursor fetch selects the execution mode. The mode stays until `bind`,
+`bindNamed`, `clearStatementBindings`, or `executeStatement` releases the
+result. Switching between materialized and streaming `nextRow` calls retains
+that mode. Keep the connection dedicated to the explicit stream. Until the
+stream is complete, DuckDB rejects other statements on that connection with the
+`ErrorResourceInUse` error of DuckDB. If you close an incomplete stream, DuckDB
+aborts its statement. In autocommit mode, DuckDB rolls back the writes of that
+statement. Cancellation interrupts native chunk fetching as well as execution.
 
 This module also provides `foldArrow` and `foldArrow_` for streaming Arrow
 batches. They use the same supported Arrow conversion and scoped ownership
@@ -683,10 +1104,10 @@ The bridge currently imports signed 32-bit and 64-bit integers, Float, Double,
 and text columns. It is a test dependency of this repository; applications
 that use it must declare their own dependency on `dataframe-arrow-bridge`.
 
-Arrow export uses V2 Arrow results. The default interface retains owned batches
-and closes the native cursor before callbacks start. Its memory use depends on
-the result size. The streaming interface delivers each batch while the native
-cursor remains open.
+Arrow export uses V2 Arrow results. The materialized `foldArrow` retains owned
+batches and closes the native result before callbacks start. Its memory use
+depends on the result size. The streaming `foldArrow` delivers each batch while
+the native result remains open.
 
 ### VARIANT
 
@@ -715,34 +1136,30 @@ query conn "SELECT ?"
 A scalar payload keeps its native type, such as `TINYINT` or `DECIMAL(4,2)`.
 Time and timestamp payloads bind as microsecond types, or as nanosecond types
 when they have sub-microsecond digits and fit the nanosecond range. So a
-`TIMESTAMP_S` result binds back as a `TIMESTAMP` when its value fits. A value
-outside the range of DuckDB raises an `SQLError` of the type
-`ErrorInputOutOfRange`. Lists, arrays, and STRUCT fields bind as VARIANT
-values. A VARIANT does not keep a UNION, a MAP, an ENUM, or the CRS of a
-GEOMETRY, so these payloads raise an error at any depth: a VARIANT keeps only
-the member value of a UNION, stores a MAP as a list of key and value objects,
-and stores an ENUM as its text. Object parameters reject
-duplicate keys and keys that contain NUL. An object with only an empty key
-also raises an error because DuckDB treats its STRUCT type as a tuple.
+`TIMESTAMP_S` result binds back as a `TIMESTAMP` when its value fits. Each
+element of a list payload and each field of an object payload follow the same
+rule, so one list payload can hold both types. A Haskell list, an `Array`, or a
+`Map` of time values for a `VARIANT` parameter is not a payload: it binds
+microsecond elements (see [Infinite dates and
+timestamps](#infinite-dates-and-timestamps)). A value outside the range of
+DuckDB raises an `SQLError` of the type `ErrorTypeConversion`. Lists, arrays,
+and STRUCT fields bind as VARIANT values. A VARIANT does not keep a UNION, a
+MAP, an ENUM, or the CRS of a GEOMETRY, so these payloads raise an error at any
+depth: a VARIANT keeps only the member value of a UNION, stores a MAP as a list
+of key and value objects, and stores an ENUM as its text. Object parameters
+reject duplicate keys and keys that contain NUL. An object with only an empty
+key also raises an error because DuckDB treats its STRUCT type as a tuple.
 DuckDB 2.0 permits an empty key with other named keys. You can also bind a plain
 value and cast it in SQL, as in `?::VARIANT`.
 
-A `Variant` result reads a value that a VARIANT can hold: a VARIANT column, or
-a column of another type with the same shape, such as an INTEGER, a LIST, or a
-GEOMETRY with no CRS. A column that holds a UNION, a MAP, an ENUM, an ARRAY, a
-TUPLE, a STRUCT that is not in the form of a VARIANT object (each field of the
-type VARIANT, the keys in ascending order), or a GEOMETRY with a CRS, at any
-depth, raises the error of an incompatible column, because the cast of DuckDB
-to VARIANT changes these values. Write `c::VARIANT` in SQL to read such a
-column. One difference stays, because the reader does not know the type of a
-column: a JSON column reads as its text, as a VARCHAR column does, where
-`c::VARIANT` gives the parsed value.
+A `Variant` result reads only a value that a VARIANT can hold: note 13 of
+[Types](#types) gives the shapes, and the one difference for a JSON column.
 
 The library uses a separate helper connection for VARIANT decoder metadata.
 It caches the parsed VARIANT metadata statement and the types for VARIANT
 casts. It batches VARIANT
 metadata queries. It constructs VARIANT types directly through the native
-factory. This preserves an active stream on the caller's connection. The
+factory. This preserves an explicit stream on the caller's connection. The
 helper connection has the settings of the database, not the session settings of
 the caller, so a GLOBAL `max_expression_depth` below 11 makes each VARIANT read,
 and each COPY TO of a VARIANT column, fail with a Binder Error.
@@ -750,11 +1167,6 @@ and each COPY TO of a VARIANT column, fail with a Binder Error.
 New DuckDB 2.0 databases use storage format 2.0, which supports VARIANT columns.
 The library does not change an existing database's storage compatibility
 setting. VARIANT columns require storage format `v1.5.0` or later.
-
-The direct `query_` and `execute_` paths support statements that expand during
-parsing, including dynamic PIVOT. Prepared dynamic PIVOT also supports repeated
-execution and schema changes. It cannot have parameters or require a cacheable
-plan. Read its schema after execution starts.
 
 ### GEOMETRY
 
@@ -789,9 +1201,9 @@ and its own CRS. DuckDB then casts it to the type of the parameter, as it casts
 a `GEOMETRY` value in SQL text. A value without a CRS takes the CRS of the
 target. A target without a CRS removes the CRS of the value, with no error. A
 target with another CRS raises `SQLError`. Use `Maybe RawGeometry` for SQL
-NULL. An `Array`, a list, and a typed row cannot hold a `RawGeometry`, because
-their `GEOMETRY` type would have no CRS. A composite parameter holds it as
-`FieldGeometry` (see below):
+NULL. An `Array`, a list, and a typed row cannot hold a `RawGeometry` (note 14
+of [Types](#types)). A composite parameter holds it as `FieldGeometry` (see
+below):
 
 ```haskell
 import Database.DuckDB.Simple.Geometry
@@ -881,7 +1293,8 @@ supported families, construction checks, and codec normalization rules.
 ### Feature Coverage
 
 - Connections, prepared statements, positional/named parameter binding.
-- High-level execution (`execute*`) and eager queries (`query*`, `queryNamed`).
+- High-level execution (`execute*`) and the query functions (`query*`,
+  `queryNamed`).
 - Cursor and fold helpers (`fold`, `foldNamed`, `fold_`, `nextRow`) that decode
   native result chunks one row at a time.
 - Comprehensive scalar type support: signed/unsigned integers, HUGEINT/UHUGEINT,
@@ -894,8 +1307,8 @@ supported families, construction checks, and codec normalization rules.
 - Row decoding via `FromField`/`FromRow`, with generic deriving for product types.
 - User-defined scalar functions backed by Haskell functions (including IO and
   nullable arguments).
-- Typed casts, aggregate functions, table functions, replacement scans, COPY
-  formats, and pragmas. See [Typed registration](#typed-registration).
+- Aggregate functions, table functions, replacement scans, COPY formats, and
+  pragmas. See [Typed registration](#typed-registration).
 - Transaction helpers (`withTransaction`) and metadata accessors (`columnCount`,
   `columnName`).
 
@@ -907,27 +1320,24 @@ expressions. The arguments use `FromField`, and the result uses
 give an `IO` action.
 
 An argument type needs `FromField` and `DuckDBColumnType` instances. Its SQL
-type is the `duckdbTypeDeclaration` of the type, as for a typed column. A
-newtype with its own `DuckDBColumnType` text, for example `DECIMAL(18,3)`,
-gives that text. An argument type that is or contains VARIANT raises an error
-at registration, because the argument reader does not read VARIANT. A GEOMETRY
-argument reads as a GEOMETRY result does, also inside a list or a STRUCT, in a
-scalar function, in an aggregate, and as the source of a typed cast. A
-registered cast does not change it. See [Typed registration](#typed-registration).
+type is the `duckdbTypeDeclaration` of the type, as for a column of a typed row.
+A newtype with its own column type name (`duckdbColumnTypeFor`), for example
+`DECIMAL(18,3)`, gives that text. An argument type that is or contains VARIANT
+raises an error at registration, because the argument reader does not read
+VARIANT. A GEOMETRY argument reads as a GEOMETRY result does, also inside a list
+or a STRUCT, in a scalar function and in an aggregate. A registered cast does
+not change it, on a connection and in a function that an extension registers.
 An aggregate function of an extension refuses a GEOMETRY argument at
-registration, because its update callback has no factory to read the value.
+registration, because its update callback has no factory to read the value. See
+[Typed registration](#typed-registration).
 
 The SQL type of the result is the `duckdbTypeDeclaration` of the result type:
 an `Int16` result is SMALLINT, and a `Float` result is FLOAT. DuckDB computes
 with that type. Thus `hs_small(x) * hs_small(y)` of an `Int16` function raises
 an Out of Range Error when the product does not fit in SMALLINT, as
 `30000::SMALLINT * 30000::SMALLINT` does. Cast the result to a wider type
-first. A `Bool`, an integer of 8 to 64 bits, a `Float`, a `Double`, a `Text`,
-or a `String` result goes to the memory of the result vector. Each other
-result type, for example a record or a list, costs a native value for each
-row. DuckDB casts such a value to the declared type, as a SQL `CAST` does: it
-rounds a value to the scale of a DECIMAL type text, and it raises an error for
-a value that does not fit.
+first. Some result types write directly into the result vector, and each other
+result type costs a native value for each row: [Types](#types) gives them.
 
 ```haskell
 {-# LANGUAGE OverloadedStrings #-}
@@ -942,48 +1352,63 @@ registerAndUse conn = do
   query_ conn "SELECT hs_times_two(21)"
 ```
 
-Exceptions raised while the function executes become `SQLError` values.
-`deleteFunction` issues a `DROP FUNCTION IF EXISTS` statement and reports native
-errors. DuckDB registers C API scalar functions as internal entries and rejects
-their deletion. The function remains registered after this `SQLError`.
-Deleting an absent name succeeds. To replace a function, register the name
-again. `deleteFunction` has a GHC `WARNING` pragma, so each use causes a
-compile-time warning. A build with `-Werror` must allow that warning, for
-example with `-Wno-error=deprecations`.
+An exception of the function fails the statement with an `SQLError`:
+[Errors](#errors) gives its text. `deleteFunction` issues a
+`DROP FUNCTION IF EXISTS` statement and reports native errors. DuckDB registers
+C API scalar functions as internal entries and rejects their deletion. The
+function remains registered after this `SQLError`. Deleting an absent name
+succeeds. To replace a function, register the name again. `deleteFunction` has a
+GHC `WARNING` pragma, so each use causes a compile-time warning. A build with
+`-Werror` must allow that warning, for example with `-Wno-error=deprecations`.
 
-DuckDB runs callbacks on its own threads. Each call of a callback needs a
-capability of the GHC runtime. With one capability, which is the default, a
-callback from a second DuckDB thread waits until the capability is free, and
-the operating system switches threads for each such call. A query that makes
-many callbacks on several DuckDB threads is then much slower. Give the program
-as many capabilities as DuckDB has threads, for example with
-`ghc-options: -threaded -rtsopts "-with-rtsopts=-N"`, or set the DuckDB setting
-`threads` to 1.
+A program that registers a callback, for example of a scalar function, a cast,
+an aggregate function, a table function, a COPY format, a replacement scan, a
+pragma, or a log sink, must be linked with `ghc-options: -threaded`. DuckDB can
+call a callback from several of its threads at the same time, and the runtime of
+GHC without `-threaded` does not support calls from several operating system
+threads at the same time: such a program can crash. Without `-threaded`, a
+program is safe only when each database that runs callbacks has the DuckDB
+setting `threads` at 1 before a callback runs, and the program never raises it
+later. Then DuckDB calls each callback on the thread of the query. Without
+`-threaded`, the registration of a callback raises an `SQLError` of the type
+`ErrorInputInvalid` when the database has the setting `threads` above 1 at that
+time. The library cannot see a later `SET threads`, also on another connection
+of the instance, because it does not read the SQL text of a statement.
 
-A callback must not run a statement on the connection that runs the callback.
-Use another connection of the same instance. This rule applies to each
-registered callback, for example of a scalar function, a cast, an aggregate
-function, a table function, a COPY format, a replacement scan, a pragma, or a
-log sink. `query`, `execute`, the default folds, statement preparation, and
-each fetch of an explicit stream hold the lock of the connection while DuckDB
-runs these callbacks. The lock is not reentrant, so a statement in the callback
-waits for the lock. With more than one DuckDB thread, DuckDB can also run a
-callback of an explicit stream between two fetches, while no fetch holds the
-lock. Then a statement in the callback on the same connection fails at once
-with the `ErrorResourceInUse` error of DuckDB, because the stream has an open
-result.
+With `-threaded`, each call of a callback needs a capability of the GHC runtime.
+With one capability, which is the default, a callback from a second DuckDB
+thread waits until the capability is free, and the operating system switches
+threads for each such call. A query that makes many callbacks on several DuckDB
+threads is then much slower. Give the program as many capabilities as DuckDB has
+threads, for example with `ghc-options: -threaded -rtsopts "-with-rtsopts=-N"`,
+or set the DuckDB setting `threads` to 1.
 
-That wait has a time limit. `connectionCallbackLockWait` in
-`ConnectionOptions` sets it in microseconds. The default is
-`defaultCallbackLockWait`, 10 seconds, and `Nothing` sets no time limit. When
-the time limit ends, the statement in the callback raises an `SQLError` of the
-type `ErrorResourceInUse`, and its text gives the rule. If the callback does
-not catch the error, DuckDB fails the outer statement with the text of that
-error, and the connection can run the next statement. DuckDB ignores the error
-of a log sink. The time limit applies to each wait of a callback for the lock
-of a connection. It applies also to another connection that a different
-statement uses. If callbacks share a connection that runs slow statements, set
-a larger time limit or `Nothing` for that connection.
+A callback must not run a statement on the connection that runs the callback,
+and it must not close that connection. Use another connection of the same
+instance. This rule applies to each registered callback, for example of a scalar
+function, a cast, an aggregate function, a table function, a COPY format, a
+replacement scan, a pragma, or a log sink. `query`, `execute`, the materialized
+folds, statement preparation, and each fetch of an explicit stream hold the lock
+of the connection while DuckDB runs these callbacks. The lock is not reentrant,
+so a statement in the callback waits for the lock. With more than one DuckDB
+thread, DuckDB can also run a callback of an explicit stream between two
+fetches, while no fetch holds the lock. Then a statement in the callback on the
+same connection fails at once with the `ErrorResourceInUse` error of DuckDB,
+because the stream has an open result.
+
+That wait has a time limit. `connectionCallbackLockWait` in `ConnectionOptions`
+sets it in microseconds. The default is `defaultCallbackLockWait`, 10 seconds,
+and `Nothing` sets no time limit. When the time limit ends, the statement in the
+callback raises an `SQLError` of the type `ErrorResourceInUse`, and its text
+gives the rule. If the callback does not catch the error, the outer statement
+fails with the type `ErrorInputInvalid`, because a callback does not pass the
+type `ErrorResourceInUse` ([Errors](#errors) gives the list; a cast gives
+`ErrorTypeMismatch`), and its message contains the text of that error. The
+connection can run the next statement. DuckDB ignores the error of a log sink.
+The time limit applies to each wait of a callback for the lock of a connection.
+It applies also to another connection that a different statement uses. If
+callbacks share a connection that runs slow statements, set a larger time limit
+or `Nothing` for that connection.
 
 In these cases the time limit does not apply, and a statement in the callback can
 wait and not return:
@@ -997,6 +1422,16 @@ wait and not return:
 - The statement runs in the flush function of a log sink when DuckDB destroys
   the sink.
 
+A statement in a callback on another connection of the same instance runs in its
+own transaction, also when the outer statement runs in an explicit transaction.
+Thus it does not see the rows that the outer transaction has not committed, and
+a write to a row that the outer transaction changed does not wait: it fails at
+once with the error `TransactionContext Error: Conflict on update!` of DuckDB,
+and the outer statement fails with that text. That failure aborts the outer
+transaction, as each error during the execution of a statement does in DuckDB:
+each later statement in the transaction fails, and a `COMMIT` returns with no
+error but stores no change of the transaction.
+
 A callback that refers to a connection keeps that connection and its instance
 reachable while DuckDB keeps the callback, possibly until the database closes.
 Thus the garbage collector does not close them, and the program must close
@@ -1006,9 +1441,9 @@ them.
 
 These functions register SQL objects with Haskell values. Their signatures have
 no native handle. `Database.DuckDB.Simple.Extension` has the same functions for
-a loadable extension. An exception in a Haskell function gives an SQL error
-with the message of the exception. `TRY_CAST` gives NULL instead. The examples
-use these imports:
+a loadable extension. An exception in a Haskell function gives an SQL error with
+the message of the exception (see [Errors](#errors)). The examples use these
+imports:
 
 ```haskell
 {-# LANGUAGE BlockArguments #-}
@@ -1026,35 +1461,30 @@ import Database.DuckDB.Simple.Pragma (PragmaCallback (..), registerPragmaFunctio
 import Database.DuckDB.Simple.Registration
 ```
 
-`createCast` registers an explicit cast. `Left` fails the cast with a message.
+The library has no typed cast in this release. A registered cast can give
+wrong rows with no error, because the optimizer of DuckDB 2.0.0 decides from
+the two types of a cast alone whether it can move the cast away from a column,
+for example in a filter, a join, or min and max. The cast function then does
+not run on that column. In runs with DuckDB 2.0.0, a cast from INTEGER to
+BIGINT, and a cast between BIGINT and a custom type with the base type BIGINT,
+gave wrong rows when its function changed the value. `registerCast` in
+`Database.DuckDB.Simple.V2.Registration` registers a native cast, and its
+Haddock gives the warning. For a conversion that changes the value, register a
+scalar function with `createFunction` (see
+[User-Defined Functions](#user-defined-functions)).
 
-```haskell
-castExample :: Connection -> IO [Only Int64]
-castExample conn = do
-  registerCustomType conn "shifted" (TypeExpression "BIGINT")
-  createCast conn (TypeExpression "BIGINT") (TypeExpression "shifted") \(value :: Int64) ->
-    if value > maxBound - 100 then Left "BIGINT overflow" else Right (value + 100)
-  query_ conn "SELECT CAST(1::BIGINT AS shifted)::BIGINT" -- [Only 101]
-```
+A registered cast does not change a value that the library reads or binds, on
+a connection and in the callbacks of an extension. The library reads GEOMETRY
+and VARIANT values with the built-in casts, and it builds GEOMETRY, ENUM, and
+VARIANT values with the default cast of DuckDB. For example, a cast from
+GEOMETRY to BLOB changes the result of `CAST(g AS BLOB)`, but not a GEOMETRY
+value that a query gives or that a callback reads. Only `setConfigValue` and
+`setConfigOption` use registered casts: DuckDB casts the value to the type of
+the option, as SQL `SET` does.
 
-DuckDB uses a registered cast in place of its built-in cast for the same pair
-of types, on each connection of the database. A registered cast does not change
-a value that the library reads or binds, on a connection and in the callbacks
-of an extension. The library reads GEOMETRY and VARIANT values with the
-built-in casts, and it builds GEOMETRY, ENUM, and VARIANT values with the
-default cast of DuckDB. For example, a cast from GEOMETRY to BLOB changes the
-result of `CAST(g AS BLOB)`, but not a GEOMETRY value that a query gives or
-that a callback reads. Only `setConfigValue` and `setConfigOption` use
-registered casts: DuckDB casts the value to the type of the option, as SQL
-`SET` does.
-
-`createAggregate` registers an aggregate function as a fold. The result type
-must be BOOLEAN, TINYINT to BIGINT, UTINYINT to UBIGINT, FLOAT, DOUBLE, or
-VARCHAR, or `Maybe` of one of them. Another result type is an error at
-registration. The finalize callback of DuckDB has no factory to make a value
-of another type, and in an ordered window its result vector has the size 0. A
-newtype over one of these types gets the writer of that type with
-`deriving newtype (FunctionResult)`.
+`createAggregate` registers an aggregate function as a fold. Its result type
+must be one of the types that write directly into the result vector:
+[Types](#types) gives them and the reason.
 
 ```haskell
 aggregateExample :: Connection -> IO [Only Int64]
@@ -1091,15 +1521,21 @@ tableExample conn = do
 ```
 
 The type of a column, a parameter, or an aggregate argument comes from
-`duckdbTypeDeclaration`. A record or a sum type that derives `DuckDBColumnType`
-and `ToDuckValue` via `ViaDuckDB` is a STRUCT or a UNION, also in a list or a
-MAP. Each field type comes from `DuckValue`: an `Integer` field is HUGEINT and
-a `Natural` field is UHUGEINT, but an `Integer` column is BIGNUM. The
-registration raises an error for an `Array` field, because its ARRAY type has
-no size. Use a list field. `StructValue`,
-`TupleValue`, and `UnionValue` have no static field types. The registration
-raises an error for them. An aggregate argument has the VARIANT and GEOMETRY
-rules of [User-Defined Functions](#user-defined-functions).
+`duckdbTypeDeclaration`: notes 8, 9, and 10 of [Types](#types) give the rule
+for an `Array`, records, sum types, and `StructValue`, `TupleValue`, and
+`UnionValue`. An aggregate argument has the VARIANT and GEOMETRY rules of
+[User-Defined Functions](#user-defined-functions).
+
+Each typed registration rejects an argument type that its argument reader cannot
+read, with an `SQLError` of the type `ErrorInputInvalid` at registration. A
+callback has no connection, so no argument reader reads VARIANT. Thus a type
+that is or contains VARIANT cannot be an argument of `createFunction` or
+`createAggregate`, a parameter of `createTableFunction` or
+`registerPragmaFunction`, or the type of a custom option with an update
+function. A later release may read a VARIANT argument. The check sees only the
+declared type: a pragma parameter of the type ANY can get a VARIANT value, and
+that call fails. A custom option without an update function can have such a
+type, and `getConfigValue` reads its value.
 
 `registerReplacementScan` gives the parts of an unknown table name to the
 function. The function can give a SELECT statement that DuckDB reads instead.
@@ -1153,8 +1589,10 @@ pragmaExample conn = do
 
 A typed registration costs more for each row than raw vector access. Use
 `Database.DuckDB.Simple.V2.Registration`, `V2.Copy`, `V2.Pragma`, and
-`V2.Config` for speed, and for projection and filter pushdown, parallel table
-scans, and scalar functions with a bind callback or variadic parameters.
+`V2.Config` for speed, and for filter pushdown, parallel table scans, and
+scalar functions with a bind callback or variadic parameters. A typed table
+function has projection pushdown (see `createTableFunction` above), but no
+filter pushdown.
 
 ## Loadable extensions
 

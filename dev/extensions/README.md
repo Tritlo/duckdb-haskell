@@ -42,8 +42,8 @@ are not tested. If the RTS cannot start, the process ends.
 `Extension.runExtension` passes an opaque `Extension` to the registration action.
 `Extension.createFunction` and `Extension.createFunctionWithState` use the same
 typed argument and result conversions as the connection API. `Extension` also
-has the typed registrations of the connection API: `createCast`,
-`createAggregate`, `createTableFunction`, `registerReplacementScan`,
+has the typed registrations of the connection API: `createAggregate`,
+`createTableFunction`, `registerReplacementScan`,
 `registerCustomType`, `registerMultiFileFunction`, `registerCopyToFunction`,
 `registerCopyFromFunction`, and `registerCopyFunction`. These functions take
 the `Extension` value. A COPY TO function of an extension cannot read a VARIANT
@@ -69,10 +69,10 @@ The example registers typed scalar functions, scalar and table macros, a
 PRAGMA, a typed custom option, and a log sink. They exercise native results,
 batch inputs, NULLs, Unicode text, a GEOMETRY argument, overflow, and callback
 errors. The example
-also registers an aggregate function, a table function, a custom type with a
-typed cast, a typed cast from GEOMETRY to BLOB, a replacement scan, a COPY format with both directions, and a
-multi-file reader. Together, the registrations use all twelve V2 extension
-registration calls. The entrypoint is
+also registers an aggregate function, a table function, a custom type, a
+replacement scan, a COPY format with both directions, and a multi-file reader.
+Together, the registrations use eleven of the twelve V2 extension registration
+calls: the example registers no cast, because this release has no typed cast. The entrypoint is
 `haskell_demo_init_c_api_v2`. DuckDB derives the entrypoint name from the
 file name, so the packaged file must be `haskell_demo.duckdb_extension`.
 

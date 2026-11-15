@@ -12,7 +12,7 @@ module Database.DuckDB.Simple.QueryMetrics (
   queryMetrics,
 ) where
 
-import Control.Exception (bracket, throwIO)
+import Control.Exception (bracket)
 import Control.Monad (forM, when)
 import Data.Text (Text)
 import Database.DuckDB.Simple.FromField (FieldValue)
@@ -55,7 +55,7 @@ queryMetrics connection = withConnectionHandle connection \native ->
       root <- output (c_duckdb_v2_query_metrics_get_root snapshot)
       copyNode (materializeValue unexpectedVariant (InstanceFactory (typeCacheCasts cache))) root
   where
-    unexpectedVariant = rejectRows (throwIO (SQLError "duckdb-simple: query metrics must be numeric" Nothing Nothing))
+    unexpectedVariant = rejectRows (throwInternalError "query metrics must be numeric")
     copyNode readValue node = do
       name <- output (c_duckdb_v2_query_metrics_node_get_name node) >>= readText
       metricCount <- output (c_duckdb_v2_query_metrics_node_get_metric_count node)

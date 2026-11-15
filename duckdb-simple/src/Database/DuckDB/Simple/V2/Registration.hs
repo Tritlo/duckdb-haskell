@@ -136,6 +136,8 @@ import Database.DuckDB.Simple.Callback (
   installOptional,
   readCallbackState,
   runCallback,
+  runCallbackWith,
+  targetConfig,
   transferCallbackState,
   withCallbackResources,
   withRegistrationFactory,
@@ -329,6 +331,7 @@ registerScalarFunctionWith target configure callbacks =
     c_duckdb_v2_extension_register_scalar_function
     \function register ->
       withCallbackResources
+        (targetConfig target)
         ( \allocate ->
             installAll
               [ installOptional (scalarResolveTypesCallback callbacks) $ \callback ->
@@ -434,6 +437,7 @@ registerAggregateFunctionWith target configure callbacks =
     c_duckdb_v2_extension_register_aggregate_function
     \function register ->
       withCallbackResources
+        (targetConfig target)
         ( \allocate ->
             installAll
               [ installOptional (aggregateBindCallback callbacks) $ \callback ->
@@ -540,6 +544,7 @@ registerTableFunctionWith target configure callbacks =
     c_duckdb_v2_extension_register_table_function
     \function register ->
       withCallbackResources
+        (targetConfig target)
         ( \allocate ->
             installAll
               [ install
@@ -611,22 +616,53 @@ registerTableFunctionWith target configure callbacks =
 
 -- | Register a cast. Nothing keeps the native explicit-cast cost.
 -- The callback must inspect the native cast mode to implement TRY_CAST behavior.
+-- An exception in the callback fails the cast with the error type
+-- 'ErrorTypeMismatch', whatever the type of the exception. With another error
+-- code, DuckDB can invalidate the database. See the section /Errors/ of the
+-- README and Note [The error code of a failed cast].
 -- A target type from SQL @CREATE TYPE name AS base@ is only another name for
 -- the base type, so the cast is a cast to the base type. A type from
 -- 'registerCustomType' keeps its name. See 'TypeDeclaration'.
 --
+-- The cast replaces the cast of DuckDB for the pair of types on each
+-- connection of the instance. A second registration of the same pair returns
+-- with no error and has no effect, because DuckDB keeps the first cast.
+--
+-- Warning: DuckDB does not always run the callback. Three rules of the
+-- optimizer of DuckDB 2.0.0 use the two types of a cast and not the cast
+-- function:
+--
+-- * expression_rewriter (ComparisonSimplificationRule, with
+--   BoundCastExpression::CastIsInvertible) casts the constant of a comparison
+--   to the type of the column, and compares the column without the cast.
+-- * join_filter_pushdown makes a filter of a join from the values of the other
+--   side through an integral cast.
+-- * statistics_propagation gives min and max from the statistics of the
+--   column through the cast.
+--
+-- In runs with DuckDB 2.0.0, a cast from INTEGER to BIGINT, from BIGINT to a
+-- custom type with the base type BIGINT, and from that type to BIGINT, with a
+-- callback that changes the value, gave wrong rows and no error. This occurred
+-- in a filter, a filter with a parameter, IN, BETWEEN, a comparison of two
+-- columns, a join, and min and max. The callback did not run on the column. A
+-- cast with VARCHAR or BLOB on one side gave the rows of the callback in each
+-- of these runs, with 10 and with 300000 rows. With a cast from INTEGER to
+-- BIGINT, DuckDB also converts each INTEGER literal that must be a BIGINT
+-- through the cast: @range(10)@ gave no row, and @LIMIT 5@ gave 10 rows. Use a
+-- scalar function for a conversion that changes the value.
+--
 -- The source type is the first type, and the target type is the second type. The example registers a cast
--- from BIGINT to a custom type. The callback adds 100 to each value.
+-- from BIGINT to a custom type. The callback copies each value.
 --
 -- > withConnection ":memory:" \connection -> do
--- >   R.registerCustomType connection "managed_shifted" bigint
--- >   R.registerCast connection bigint (R.TypeExpression "managed_shifted") Nothing \info _ -> do
+-- >   R.registerCustomType connection "managed_copy" bigint
+-- >   R.registerCast connection bigint (R.TypeExpression "managed_copy") Nothing \info _ -> do
 -- >     count <- R.output (c_duckdb_v2_cast_function_exec_get_row_count info)
 -- >     values <- R.output (c_duckdb_v2_cast_function_exec_get_input info) >>= readIntegers (fromIntegral count)
 -- >     result <- R.output (c_duckdb_v2_cast_function_exec_get_output info)
--- >     writeIntegers result (map (+ 100) values)
--- >   rows <- query_ connection "SELECT CAST(i::BIGINT AS managed_shifted)::BIGINT FROM range(3) t(i)"
--- >   print (map fromOnly rows :: [Int64]) -- [100,101,102]
+-- >     writeIntegers result values
+-- >   rows <- query_ connection "SELECT CAST(i::BIGINT AS managed_copy)::BIGINT FROM range(3) t(i)"
+-- >   print (map fromOnly rows :: [Int64]) -- [0,1,2]
 registerCast
   :: Connection -> TypeDeclaration -> TypeDeclaration -> Maybe Int64 -> ContextCallback DuckDBV2CastFunctionExecInfoHandle -> IO ()
 registerCast connection source target implicitCost execute =
@@ -642,6 +678,10 @@ registerCast connection source target implicitCost execute =
 
 -- | Configure and register a managed cast on a connection or extension.
 -- The configuration action borrows the builder. Do not set callbacks or user data.
+-- An exception in the callback fails the cast with the error type
+-- 'ErrorTypeMismatch', whatever the type of the exception. With another error
+-- code, DuckDB can invalidate the database. See the section /Errors/ of the
+-- README and Note [The error code of a failed cast].
 registerCastWith
   :: RegistrationTarget -> (DuckDBV2CastFunctionHandle -> IO ()) -> ContextCallback DuckDBV2CastFunctionExecInfoHandle -> IO ()
 registerCastWith target configure execute =
@@ -653,11 +693,12 @@ registerCastWith target configure execute =
     c_duckdb_v2_extension_register_cast_function
     \function register ->
       withCallbackResources
+        (targetConfig target)
         ( \allocate ->
             install
               allocate
               DuckDBV2CastFunctionExecCallbackFn
-              (DuckDBV2CastFunctionExecCallbackFn_Aux (guardContext execute))
+              (DuckDBV2CastFunctionExecCallbackFn_Aux \info context err -> runCallbackWith DuckDBV2ErrorTypeMismatch err (execute info context))
               (c_duckdb_v2_cast_function_set_exec_callback function)
         )
         (attachOpaque (c_duckdb_v2_cast_function_set_user_data function))
@@ -665,6 +706,64 @@ registerCastWith target configure execute =
           configure function
           installCallback
           register
+
+{- Note [The error code of a failed cast]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+DuckDB 2.0.0 runs each cast as its scalar function "__cast". It marks this
+function as fallible only from the source type and the target type
+(CreateCastExpression in src/function/scalar/operator/cast.cpp, lines 174 to
+190, and BoundCastExpression::CastCanThrow in
+src/planner/expression/bound_cast_expression.cpp, lines 337 to 396). It does
+not examine a registered cast. Thus DuckDB marks a cast to VARCHAR, a widening
+cast such as INTEGER to BIGINT or FLOAT to DOUBLE, and a cast from an ENUM, a
+LIST, or a STRUCT to VARCHAR as a function that cannot fail. The cast builder
+of the C API has no property that changes this.
+
+A function that cannot fail must not raise an Invalid Input, Out of Range, or
+Conversion error. DuckDB changes such an error to an INTERNAL error
+(ThrowNonFallibleFunctionError in src/function/scalar_function.cpp, lines 17
+to 25). A code with no exception type, for example Api, becomes an Invalid
+Input error first. An INTERNAL error during the execution of a query
+invalidates the database (FailQueryInternal in
+src/main/client_context_execution.cpp, lines 439 to 443). Then each statement
+on each connection of the database fails until the database opens again. The
+header says for DUCKDB_V2_CAST_MODE_NORMAL: "A conversion failure reported
+through the error slot aborts the query." DuckDB does not keep this sentence.
+
+Thus each cast callback of the library writes the code
+DUCKDB_V2_ERROR_TYPE_MISMATCH for each failure (runCallbackWith in
+"Database.DuckDB.Simple.Callback"). The code of a cast does not depend on the
+exception. It replaces the type of each 'SQLError' from the callback, also the
+type Conversion of a failed query in the callback. Thus a change of the code
+of runCallback does not change the code of a cast. DuckDB rethrows an error of
+this type with no change. The statement fails with "Mismatch Type Error: " and
+the text of the failure. An explicit transaction is aborted under each
+transaction invalidation policy. The code is the same for a cast that DuckDB
+marks as fallible.
+
+The 49 codes of 'ErrorType' give these results in the column form and in an
+explicit transaction:
+
+- 30 codes, ErrorTypeMismatch included, keep their type and the database, and
+  abort an explicit transaction under each policy.
+- 7 codes keep an explicit transaction open under the policy
+  SYNTACTIC_ERRORS_DO_NOT_INVALIDATE: ErrorQueryBinder, ErrorDatabaseCatalog,
+  ErrorResourceConnection, ErrorQueryParameterNotAllowed, ErrorQueryParser,
+  ErrorConfigurationPermission, and ErrorResourceInUse.
+- 11 codes invalidate the database. ErrorApi, ErrorIOFileNotFound,
+  ErrorIOReadFailure, ErrorIOEof, ErrorInputInvalid,
+  ErrorInputParameterInvalid, ErrorInputOutOfRange,
+  ErrorInputMetadataDeferred, ErrorTypeConversion, and ErrorRuntimeInternal
+  give an INTERNAL error. ErrorRuntimeFatal gives a FATAL error.
+- ErrorIONetwork keeps the database, but the error has the type ErrorApi.
+
+Do not replace the code without a run of each code in the column form and in
+an explicit transaction under each policy.
+
+In DUCKDB_V2_CAST_MODE_TRY, DuckDB discards the error, so TRY_CAST gives NULL
+for a failed row. TRY(...) catches only the Invalid Input, Out of Range, and
+Conversion errors, so TRY(CAST(...)) raises the error of a failed cast.
+-}
 
 -- | Register a custom type with a native base type. Casts are registered separately.
 registerCustomType :: Connection -> Text -> TypeDeclaration -> IO ()
@@ -721,7 +820,7 @@ registerReplacementScanOn target callback =
     c_duckdb_v2_replacement_scan_destroy
     c_duckdb_v2_connection_register_replacement_scan
     c_duckdb_v2_extension_register_replacement_scan
-    (configureScan callback)
+    (configureScan (targetConfig target) callback)
 
 -- | Register an instance-wide replacement scan. It is shared by its connections.
 -- Register the scan before a connection runs a query. Registration while another
@@ -730,7 +829,11 @@ registerInstanceReplacementScan :: Instance -> ContextCallback DuckDBV2Replaceme
 registerInstanceReplacementScan instance' callback = withInstanceHandle instance' $ \native ->
   withInstanceFactory native $ \factory ->
     bracket (output (c_duckdb_v2_replacement_scan_create factory)) (destroy c_duckdb_v2_replacement_scan_destroy) $ \scan ->
-      configureScan callback scan (checked (c_duckdb_v2_instance_register_replacement_scan native scan))
+      configureScan
+        (output (c_duckdb_v2_instance_get_config native))
+        callback
+        scan
+        (checked (c_duckdb_v2_instance_register_replacement_scan native scan))
 
 -- | Store Haskell state in a native-owned bind, global, local, or init data slot.
 -- Pass the corresponding native opaque setter. Do not use registration user data.
@@ -763,6 +866,7 @@ getCallbackState getter = do
                 <> ", not "
                 <> Text.pack (show (typeRep (Proxy @a)))
             )
+            Nothing
             Nothing
             Nothing
         )
@@ -800,9 +904,11 @@ configureFunctionSignature factory FunctionSignature{signatureParameters, signat
 
 -- | Set the callback of a replacement scan builder, and then run the
 -- registration action. The user data of the scan releases the callback pointer.
-configureScan :: ContextCallback DuckDBV2ReplacementScanInfoHandle -> DuckDBV2ReplacementScanHandle -> IO () -> IO ()
-configureScan callback scan register =
+configureScan
+  :: IO DuckDBV2ConfigHandle -> ContextCallback DuckDBV2ReplacementScanInfoHandle -> DuckDBV2ReplacementScanHandle -> IO () -> IO ()
+configureScan config callback scan register =
   withCallbackResources
+    config
     ( \allocate ->
         install
           allocate

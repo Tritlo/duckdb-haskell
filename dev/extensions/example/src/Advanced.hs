@@ -22,18 +22,15 @@ import qualified Database.DuckDB.Simple.Copy as Copy
 import Database.DuckDB.Simple.Extension (Extension)
 import qualified Database.DuckDB.Simple.Extension as Extension
 import Database.DuckDB.Simple.FromField (Field (..), FieldValue (..))
-import Database.DuckDB.Simple.Geometry (RawGeometry (..))
 import Database.DuckDB.Simple.Registration (Replacement (..), TypeDeclaration (..))
 
--- | Register an aggregate, a table function, a custom type and its cast, a cast
--- from GEOMETRY to BLOB, a replacement scan, a COPY format, and a multi-file
--- reader.
+-- | Register an aggregate, a table function, a custom type, a replacement scan,
+-- a COPY format, and a multi-file reader.
 register :: Extension -> IO ()
 register extension = do
   registerSum extension
   registerSquares extension
-  registerShifted extension
-  registerGeometryBlob extension
+  Extension.registerCustomType extension "haskell_amount" (TypeExpression "BIGINT")
   Extension.registerReplacementScan extension replaceMissing
   registerLines extension
   registerLineFiles extension
@@ -60,23 +57,6 @@ registerSquares extension =
   Extension.createTableFunction extension "haskell_squares" ["n", "square"] \(Only count) -> do
     when (count < 0) $ throwIO (userError ("haskell_squares: the count is negative: " <> show count))
     pure [(n, n * n) | n <- [0 .. count - 1 :: Int64]]
-
--- | Register the custom type @haskell_shifted@ with the base type BIGINT. Then
--- register a typed cast from BIGINT to @haskell_shifted@ that adds 100. An
--- overflow fails CAST. TRY_CAST gives NULL for the overflow.
-registerShifted :: Extension -> IO ()
-registerShifted extension = do
-  Extension.registerCustomType extension "haskell_shifted" (TypeExpression "BIGINT")
-  Extension.createCast extension (TypeExpression "BIGINT") (TypeExpression "haskell_shifted") \value ->
-    maybe (Left ("haskell_shifted: BIGINT overflow in " <> Text.pack (show value) <> " + 100")) Right (addBigInt value 100)
-
--- | Register a typed cast from GEOMETRY to BLOB that appends the byte @x@ to the
--- WKB bytes. The cast replaces the built-in cast for @CAST(g AS BLOB)@. It does
--- not change a GEOMETRY value that the library reads, for example an argument
--- of @haskell_point_x@.
-registerGeometryBlob :: Extension -> IO ()
-registerGeometryBlob extension =
-  Extension.createCast extension (TypeExpression "GEOMETRY") (TypeExpression "BLOB") \raw -> Right (rawGeometryWKB raw <> "x")
 
 -- | Replace the unknown table @haskell_missing@ with a query. Reject the
 -- reserved name @haskell_reserved@. Ignore all other names.

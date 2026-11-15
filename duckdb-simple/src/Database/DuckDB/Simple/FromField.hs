@@ -118,8 +118,8 @@ data FieldValue
 
 -- | Exact-width decimal payload plus its declared width and scale. A parameter
 -- of this type binds as a DECIMAL with this width and scale. An @Array@, a
--- list, or a typed row cannot hold it, because its column type name has no
--- width and scale.
+-- list, or a typed row cannot hold it, because it has no @DuckDBColumnType@
+-- instance: one column type cannot give the width and scale of each value.
 data DecimalValue = DecimalValue
   { decimalWidth :: Word8
   , decimalScale :: Word8
@@ -335,6 +335,12 @@ type FieldParser a = Field -> Ok a
 
 -- | Types that can be constructed from a DuckDB column. Each instance says
 -- which SQL types it reads. See Note [Reads of another SQL type].
+--
+-- An instance that cannot read a value fails with a 'ResultError', for example
+-- 'ConversionFailed' or 'Incompatible'. The library does not raise the
+-- 'ResultError'. It puts the text of the 'ResultError' into the @SQLError@
+-- that the statement raises. The section \"Errors\" of the README gives the
+-- type of that @SQLError@.
 class FromField a where
   fromField :: FieldParser a
 
@@ -366,7 +372,7 @@ type of its payload, and the error of a String names Text. These pairs are:
   TIMESTAMP_MS, or DATE value, and c AT TIME ZONE 'UTC' for each other type.
   Without the cast to TIMESTAMP, DuckDB converts a DATE, TIMESTAMP_S, or
   TIMESTAMP_MS value to nanoseconds, which fails outside the years 1677 to
-  2262. The cast removes the nanoseconds of a TIMESTAMP_NS value.
+  2262. The cast rounds a TIMESTAMP_NS value to the microsecond.
 - Text and String from FLOAT and DOUBLE. The text of the cast differs from the
   text of show, for example 0.01 and 1.0e-2. Read a Double, or write c::VARCHAR.
 - ByteString from VARCHAR. The cast to BLOB reads escape sequences such as \x41.
@@ -436,7 +442,7 @@ instance FromField (UnionValue FieldValue) where
       _ -> returnError Incompatible f "expected UNION"
 
 -- | Reads UUID, and VARCHAR in the form of 36 characters with dashes. Each
--- other text raises 'ConversionFailed'.
+-- other text fails with 'ConversionFailed'.
 instance FromField UUID.UUID where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -466,8 +472,8 @@ instance FromField Bool where
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
--- | Reads TINYINT, SMALLINT, INTEGER, BIGINT, HUGEINT, and UHUGEINT. A value out of
--- range raises 'ConversionFailed'. It does not read ENUM.
+-- | Reads TINYINT, SMALLINT, INTEGER, BIGINT, HUGEINT, and UHUGEINT. A value
+-- out of range fails with 'ConversionFailed'. It does not read ENUM.
 instance FromField Int8 where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -477,8 +483,8 @@ instance FromField Int8 where
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
--- | Reads BIGINT, TINYINT, SMALLINT, INTEGER, HUGEINT, and UHUGEINT. A value out of
--- range raises 'ConversionFailed'. It does not read ENUM.
+-- | Reads BIGINT, TINYINT, SMALLINT, INTEGER, HUGEINT, and UHUGEINT. A value
+-- out of range fails with 'ConversionFailed'. It does not read ENUM.
 instance FromField Int64 where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -488,8 +494,8 @@ instance FromField Int64 where
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
--- | Reads INTEGER, TINYINT, SMALLINT, BIGINT, HUGEINT, and UHUGEINT. A value out of
--- range raises 'ConversionFailed'. It does not read ENUM.
+-- | Reads INTEGER, TINYINT, SMALLINT, BIGINT, HUGEINT, and UHUGEINT. A value
+-- out of range fails with 'ConversionFailed'. It does not read ENUM.
 instance FromField Int32 where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -499,8 +505,8 @@ instance FromField Int32 where
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
--- | Reads SMALLINT, TINYINT, INTEGER, BIGINT, HUGEINT, and UHUGEINT. A value out of
--- range raises 'ConversionFailed'. It does not read ENUM.
+-- | Reads SMALLINT, TINYINT, INTEGER, BIGINT, HUGEINT, and UHUGEINT. A value
+-- out of range fails with 'ConversionFailed'. It does not read ENUM.
 instance FromField Int16 where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -510,8 +516,8 @@ instance FromField Int16 where
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
--- | Reads BIGINT, TINYINT, SMALLINT, INTEGER, HUGEINT, and UHUGEINT. A value out of
--- range raises 'ConversionFailed'. It does not read ENUM.
+-- | Reads BIGINT, TINYINT, SMALLINT, INTEGER, HUGEINT, and UHUGEINT. A value
+-- out of range fails with 'ConversionFailed'. It does not read ENUM.
 instance FromField Int where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -533,8 +539,9 @@ instance FromField Integer where
       FieldNull -> returnError UnexpectedNull f ""
       _ -> returnError Incompatible f ""
 
--- | Reads BIGNUM, TINYINT to BIGINT, UTINYINT to UBIGINT, HUGEINT, and UHUGEINT.
--- A negative value raises 'ConversionFailed'. It does not read ENUM.
+-- | Reads BIGNUM, TINYINT to BIGINT, UTINYINT to UBIGINT, HUGEINT, and
+-- UHUGEINT. A negative value fails with 'ConversionFailed'. It does not read
+-- ENUM.
 instance FromField Natural where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -556,8 +563,8 @@ instance FromField Natural where
       _ -> returnError Incompatible f ""
 
 -- | Reads UTINYINT to UBIGINT, TINYINT to BIGINT, HUGEINT, and UHUGEINT. A
--- negative value or a value out of range raises 'ConversionFailed'. It does not
--- read ENUM.
+-- negative value or a value out of range fails with 'ConversionFailed'. It does
+-- not read ENUM.
 instance FromField Word64 where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -575,8 +582,8 @@ instance FromField Word64 where
       _ -> returnError Incompatible f ""
 
 -- | Reads UTINYINT to UBIGINT, TINYINT to BIGINT, HUGEINT, and UHUGEINT. A
--- negative value or a value out of range raises 'ConversionFailed'. It does not
--- read ENUM.
+-- negative value or a value out of range fails with 'ConversionFailed'. It does
+-- not read ENUM.
 instance FromField Word32 where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -594,8 +601,8 @@ instance FromField Word32 where
       _ -> returnError Incompatible f ""
 
 -- | Reads UTINYINT to UBIGINT, TINYINT to BIGINT, HUGEINT, and UHUGEINT. A
--- negative value or a value out of range raises 'ConversionFailed'. It does not
--- read ENUM.
+-- negative value or a value out of range fails with 'ConversionFailed'. It does
+-- not read ENUM.
 instance FromField Word16 where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -613,8 +620,8 @@ instance FromField Word16 where
       _ -> returnError Incompatible f ""
 
 -- | Reads UTINYINT to UBIGINT, TINYINT to BIGINT, HUGEINT, and UHUGEINT. A
--- negative value or a value out of range raises 'ConversionFailed'. It does not
--- read ENUM.
+-- negative value or a value out of range fails with 'ConversionFailed'. It does
+-- not read ENUM.
 instance FromField Word8 where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -632,8 +639,8 @@ instance FromField Word8 where
       _ -> returnError Incompatible f ""
 
 -- | Reads UTINYINT to UBIGINT, TINYINT to BIGINT, HUGEINT, and UHUGEINT. A
--- negative value or a value out of range raises 'ConversionFailed'. It does not
--- read ENUM.
+-- negative value or a value out of range fails with 'ConversionFailed'. It does
+-- not read ENUM.
 instance FromField Word where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -663,7 +670,7 @@ instance FromField Double where
       _ -> returnError Incompatible f ""
 
 -- | Reads FLOAT, DOUBLE, TINYINT to BIGINT, and DECIMAL. A finite DOUBLE out of
--- the range of FLOAT raises 'ConversionFailed'. See
+-- the range of FLOAT fails with 'ConversionFailed'. See
 -- Note [DECIMAL as DOUBLE and FLOAT].
 instance FromField Float where
   fromField field@Field{fieldValue} =
@@ -884,7 +891,7 @@ instance FromField DecimalValue where
       _ -> returnError Incompatible f ""
 
 -- | Reads DATE, and the date of TIMESTAMP, TIMESTAMP_S, TIMESTAMP_MS, and
--- TIMESTAMP_NS. Infinity raises 'ConversionFailed'.
+-- TIMESTAMP_NS. Infinity fails with 'ConversionFailed'.
 instance FromField Day where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -903,7 +910,7 @@ instance FromField (Unbounded Day) where
       _ -> returnError Incompatible f ""
 
 -- | Reads TIME, TIME_NS, and the time of TIMESTAMP, TIMESTAMP_S, TIMESTAMP_MS,
--- and TIMESTAMP_NS. An infinite TIMESTAMP raises 'ConversionFailed'.
+-- and TIMESTAMP_NS. An infinite TIMESTAMP fails with 'ConversionFailed'.
 instance FromField TimeOfDay where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -921,8 +928,8 @@ instance FromField TimeWithZone where
       _ -> returnError Incompatible f ""
 
 -- | Reads TIMESTAMP, TIMESTAMP_S, TIMESTAMP_MS, TIMESTAMP_NS, and DATE at
--- midnight. It does not read TIMESTAMPTZ. Infinity raises 'ConversionFailed'.
--- See Note [Reads of another SQL type].
+-- midnight. It does not read TIMESTAMPTZ. Infinity fails with
+-- 'ConversionFailed'. See Note [Reads of another SQL type].
 instance FromField LocalTime where
   fromField f@Field{fieldValue} =
     case fieldValue of
@@ -953,7 +960,7 @@ instance FromField IntervalValue where
       _ -> returnError Incompatible f ""
 
 -- | Reads TIMESTAMPTZ and TIMESTAMPTZ_NS. It does not read TIMESTAMP or DATE.
--- Infinity raises 'ConversionFailed'. See Note [Reads of another SQL type].
+-- Infinity fails with 'ConversionFailed'. See Note [Reads of another SQL type].
 instance FromField UTCTime where
   fromField f@Field{fieldValue} =
     case fieldValue of

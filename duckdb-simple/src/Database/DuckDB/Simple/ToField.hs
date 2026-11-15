@@ -187,9 +187,18 @@ element of a VARIANT list or map no target, and timestampTypeForTarget has no
 VARIANT case. A list, an Array, or a Map for a VARIANT parameter has no element
 type in the target (collectionChildType and mapPartTypes give Nothing), so its
 time elements also get the microsecond value. One LIST has one element type
-for all its elements, so a
-nanosecond element would be cast to the microsecond type of the list, and the
-cast rounds. Thus such a value gets the microsecond value.
+for all its elements. For a Haskell list, an Array, or a Map of TimeOfDay,
+LocalTime, or UTCTime values, withElementType declares the microsecond type of
+the element, for example TIMESTAMP for a LocalTime, so a nanosecond element
+would be cast to that type, and the cast rounds. A FieldList or a FieldMap
+takes the type that its elements give, as the SQL list literal does
+(withValueType). TIME and TIME_NS elements, and
+TIMESTAMPTZ and TIMESTAMPTZ_NS elements, have no common type, and DuckDB raises
+an error. TIMESTAMP and TIMESTAMP_NS elements give TIMESTAMP_NS[], but an
+element outside the range of TIMESTAMP_NS stays a TIMESTAMP (fitsNanoseconds),
+and DuckDB cannot cast that element to TIMESTAMP_NS. Thus a time element gets
+the microsecond value in each of these collections, because a nanosecond value
+would round or raise an error in some of them.
 
 - Why the binding reads the parameter type only for such digits. A read of the
   parameter type runs the binder of DuckDB. See Note [Statement schemas] in
@@ -213,21 +222,26 @@ cast rounds. Thus such a value gets the microsecond value.
   * In the range of TIMESTAMP_NS (about the years 1677 to 2262): no error.
   * Outside the range, when DuckDB also cannot cast the microsecond value to
     TIMESTAMP_NS (outsideNanosecondRange): the value binds as a microsecond
-    value, and DuckDB raises its SQLError "Could not convert Timestamp to
-    higher precision" when it casts the value. The type is ErrorTypeConversion
-    for a parameter and ErrorInputInvalid for an element.
+    value. For a parameter, DuckDB raises its SQLError "Could not convert
+    Timestamp to higher precision", of the type ErrorTypeConversion, when it
+    casts the value. For an element, the native constructor of the LIST, the
+    ARRAY, or the MAP casts each element when the value binds, and it would
+    raise the ErrorInputInvalid "Failed to cast value". Before that cast,
+    checkNanosecondElements raises the SQLError of the library "duckdb-simple:
+    TIMESTAMP value out of finite range", of the type ErrorTypeConversion, for
+    each element that the cast cannot hold. Thus the element gets the type of
+    a parameter, and no element gets an error that the cast does not raise.
   * From 2262-04-11 23:47:16.854775807 to 23:47:16.854775999: DuckDB can cast
     the microsecond value, but the cast cuts the digits with no error. Thus
     the encoder raises the SQLError of the library "duckdb-simple: TIMESTAMP
-    value out of finite range", of the type ErrorInputInvalid. The low end of
+    value out of finite range", of the type ErrorTypeConversion. The low end of
     the range has no such zone, because the microsecond value is cut toward
     the earlier time.
-  A UTCTime outside the range of TIMESTAMPTZ_NS gets the error of the encoder,
-  but a parameter or an element with no digits below a microsecond binds as a
-  microsecond value and gets the SQLError of DuckDB. Each leaf of a STRUCT,
-  TUPLE, or UNION outside the range gets the error of the encoder, because in
-  TRY_CAST DuckDB keeps the other leaves of a microsecond value with their
-  digits cut.
+  A UTCTime for a TIMESTAMPTZ_NS parameter, or for the TIMESTAMPTZ_NS elements
+  of an Array, a list, or a Map, is in the same three zones, on its instant in
+  UTC. Each leaf of a STRUCT, TUPLE, or UNION outside the range gets the error
+  of the encoder, because in TRY_CAST DuckDB keeps the other leaves of a
+  microsecond value with their digits cut.
 -}
 
 -- | Test whether a time of day has digits below one microsecond. See
@@ -285,14 +299,17 @@ elementBindingTarget :: Maybe LogicalTypeRep -> Maybe LogicalTypeRep
 elementBindingTarget (Just (LogicalTypeScalar LogicalTypeIdVariant)) = Nothing
 elementBindingTarget target = target
 
--- | Test whether a t'LocalTime' for a TIMESTAMP_NS parameter is outside the
--- range of TIMESTAMP_NS, and DuckDB also cannot cast its microsecond value to
--- TIMESTAMP_NS. See Note [Nanosecond parameters].
+-- | Test whether a t'LocalTime' for a TIMESTAMP_NS parameter, or a t'UTCTime'
+-- for a TIMESTAMPTZ_NS parameter on its instant in UTC, is outside the range of
+-- the nanosecond type, and DuckDB also cannot cast its microsecond value to that
+-- type. See Note [Nanosecond parameters].
 outsideNanosecondRange :: LogicalTypeRep -> FieldValue -> Bool
 outsideNanosecondRange (LogicalTypeScalar LogicalTypeIdTimestampNs) (FieldTimestamp (Finite time)) =
   not (fits (timestampUnits 1000000000 time)) && not (fits (1000 * timestampUnits 1000000 time))
   where
     fits = inFiniteRange (minBound :: Int64) maxBound
+outsideNanosecondRange (LogicalTypeScalar LogicalTypeIdTimestampTzNs) (FieldTimestampTZ (Finite instant)) =
+  outsideNanosecondRange (LogicalTypeScalar LogicalTypeIdTimestampNs) (FieldTimestamp (Finite (utcToLocalTime utc instant)))
 outsideNanosecondRange _ _ = False
 
 -- | Read the element type of a prepared LIST or ARRAY parameter.
@@ -389,16 +406,32 @@ why the type has no declaration.
   the registration declares the type. Thus a newtype with its own
   DuckDBColumnType instance gives its own type text, for example
   DECIMAL(18,3).
+- Integer and Natural give HUGEINT and UHUGEINT, but their text is BIGNUM.
+  See Note [Integer parameters].
 - ViaDuckDB gives the structured type of the record or the sum type
   (genericLogicalType in "Database.DuckDB.Simple.Generic"). A type with an
   Array field gives Left: the DuckValue instance of Array declares an ARRAY
-  of the size 0, and DuckDB rejects that size.
+  of the size 0, and DuckDB rejects that size. A field of a newtype whose
+  DuckValue instance gives the size declares that ARRAY.
 - Maybe a has the declaration of a.
-- A list and an Array give a LIST (listDeclaration): the text T[] for the
-  element text T, or a structured LIST for a structured element type.
+- A list gives a LIST (listDeclaration): the text T[] for the element text T,
+  or a structured LIST for a structured element type.
+- An Array gives Left. A DuckDB ARRAY type has a size, and the Haskell type
+  has none. DuckDB 2.0.0 has no declaration for an ARRAY of each size: it
+  does not parse the type text T[ANY], and it rejects an ARRAY of the size 0
+  ("ARRAY type size must be at least 1"). A newtype of the Array with the
+  type text of one size, for example BIGINT[3], declares that ARRAY. DuckDB
+  then rejects an ARRAY of another size when it binds the call (a Binder
+  Error). It casts a LIST of the same length to the ARRAY with no error,
+  because the cast from LIST to ARRAY is implicit in DuckDB. A LIST of
+  another length raises the conversion error of DuckDB when the statement
+  runs.
 - A Map gives a MAP (mapDeclaration). Two texts give the text MAP(K, V). In
-  the other cases each part must be a structured type, so the text of a part
-  must be a scalar type name (duckDBTypeFromName). Other text gives Left.
+  the other cases, a structured MAP needs a scalar type name as the text of a
+  part (duckDBTypeFromName). With another text, a structured part that is a
+  scalar type, or a LIST or a MAP of scalar types, gives its text, and the
+  declaration is the text MAP(K, V), for example MAP(INTEGER[], HUGEINT[]).
+  Each other case gives Left.
 - StructValue, TupleValue, and UnionValue give Left. They have no static
   field types. Their text is the bare name STRUCT, TUPLE, or UNION. The bare
   text STRUCT is a valid type, a STRUCT with no fields. That type is also the
@@ -408,26 +441,40 @@ why the type has no declaration.
 A registration raises the Left text as an SQLError before it registers the
 SQL object. For a parameter with no known type, a LIST or a MAP value with no
 element that is not NULL takes its element type from a structured declaration
-(withElementType). See Note [Element types of a list].
+(withElementType). See Note [Element types of a list]. The ToDuckValue
+instances of a list, an Array, and a Map give the structured declaration of
+the element as its target (declaredTarget).
 -}
 
 -- | Types that map to a concrete DuckDB column type when used with @ToField@.
+-- A newtype with its own instance gives its own type text, for example
+-- @BIGINT[3]@ for a newtype of an 'Array' of three 'Int64' values.
+-- See Note [Type declarations].
 class DuckDBColumnType a where
   -- | The DuckDB type text of @a@.
   duckdbColumnTypeFor :: Proxy a -> Text
 
   -- | The SQL type that a typed registration declares for @a@, or the reason
   -- why @a@ has no declaration. The default is the text of
-  -- 'duckdbColumnTypeFor'. An 'Array' gives a LIST, as a list does, and
-  -- 'Database.DuckDB.Simple.FromField.FromField' reads an 'Array' only from an
-  -- ARRAY. Thus an 'Array' argument of
-  -- 'Database.DuckDB.Simple.Function.createFunction',
-  -- 'Database.DuckDB.Simple.Function.createAggregate', or
-  -- 'Database.DuckDB.Simple.Function.createTableFunction', also inside a
-  -- @Maybe@ or a list, fails at each call with a value that is not NULL. Use a
-  -- list for such an argument. See Note [Type declarations].
+  -- 'duckdbColumnTypeFor'. An 'Array' has no declaration, because its type has
+  -- no size. Thus an 'Array' argument or result of
+  -- 'Database.DuckDB.Simple.Function.createFunction' or
+  -- 'Database.DuckDB.Simple.Function.createAggregate', and an 'Array'
+  -- parameter or column of 'Database.DuckDB.Simple.Function.createTableFunction',
+  -- also inside a @Maybe@, a list, or a 'Map.Map', raise an error at
+  -- registration. Use a list for a LIST, or a newtype of the 'Array' whose
+  -- 'duckdbColumnTypeFor' gives the size, for example @BIGINT[3]@, for an
+  -- ARRAY. See Note [Type declarations].
   duckdbTypeDeclaration :: Proxy a -> Either Text TypeDeclaration
   duckdbTypeDeclaration proxy = Right (TypeExpression (duckdbColumnTypeFor proxy))
+
+-- | The structured declaration of a type, as the target type of an element.
+-- 'Nothing' for a type text or a type with no declaration. See
+-- Note [Type declarations].
+declaredTarget :: (DuckDBColumnType a) => Proxy a -> Maybe LogicalTypeRep
+declaredTarget proxy = case duckdbTypeDeclaration proxy of
+  Right (StructuredType rep) -> Just rep
+  _ -> Nothing
 
 -- | Declare a LIST with the declaration of its element type. See
 -- Note [Type declarations].
@@ -438,9 +485,21 @@ listDeclaration (StructuredType element) = StructuredType (LogicalTypeList eleme
 -- | Declare a MAP with the declarations of its key type and its value type.
 -- See Note [Type declarations].
 mapDeclaration :: TypeDeclaration -> TypeDeclaration -> Either Text TypeDeclaration
-mapDeclaration (TypeExpression key) (TypeExpression value) = Right (TypeExpression ("MAP(" <> key <> ", " <> value <> ")"))
-mapDeclaration key value = StructuredType <$> (LogicalTypeMap <$> structured key <*> structured value)
+mapDeclaration key value = case (key, value) of
+  (TypeExpression keyName, TypeExpression valueName) -> Right (TypeExpression (mapText keyName valueName))
+  _ -> case LogicalTypeMap <$> structured key <*> structured value of
+    Right rep -> Right (StructuredType rep)
+    Left reason -> maybe (Left reason) (Right . TypeExpression) (mapText <$> typeText key <*> typeText value)
   where
+    mapText keyName valueName = "MAP(" <> keyName <> ", " <> valueName <> ")"
+    -- A scalar type, and a LIST or a MAP of such types, has a type text, for
+    -- example HUGEINT[] for a list of Integer values.
+    typeText (TypeExpression text) = Just text
+    typeText (StructuredType rep) = repText rep
+    repText (LogicalTypeScalar dtype) = Just (duckDBTypeToName dtype)
+    repText (LogicalTypeList element) = (<> "[]") <$> repText element
+    repText (LogicalTypeMap keyRep valueRep) = mapText <$> repText keyRep <*> repText valueRep
+    repText _ = Nothing
     structured (StructuredType rep) = Right rep
     structured (TypeExpression text) = case duckDBTypeFromName text of
       Just dtype -> Right (LogicalTypeScalar dtype)
@@ -520,7 +579,7 @@ integerBinding binds an Integer or a Natural parameter with this rule:
 - A value outside this range makes the binding read the parameter type. A
   UHUGEINT parameter that can hold the value gets a UHUGEINT value. Another
   integer parameter (TINYINT to UHUGEINT) or a DECIMAL parameter gets an
-  SQLError with the type ErrorInputOutOfRange. Each other parameter, and a
+  SQLError with the type ErrorTypeConversion. Each other parameter, and a
   parameter with no known type, gets a BIGNUM value.
 
 - Why a HUGEINT. In DuckDB 2.0.0, the casts from BIGNUM to the integer types
@@ -550,20 +609,31 @@ integerBinding binds an Integer or a Natural parameter with this rule:
     for a target with an element type that is not an integer type or a DECIMAL
     type, has BIGNUM elements. A cast that DuckDB adds later can still have
     the defects above.
-  - toDuckValue gives a BIGNUM value for a value outside the HUGEINT range.
-    See the item about toDuckValue.
 
 - toDuckValue. ToDuckValue Integer and ToDuckValue Natural use the same range
   rule (hugeIntInRange): a value from -2^127 to 2^127 - 1 gives a HUGEINT
-  value. toDuckValue has no target type. Thus each other value gives a BIGNUM
-  value, and a cast of it to an integer type can have the defects above. For
-  example, setConfigValue with 2^128 + 5 for a UBIGINT option sets 5. The
-  callers of toDuckValue are setConfigValue, defaultValue, the typed rows of
-  table functions and COPY FROM, the writer of a typed cast, and the writer of
-  a scalar function result. The DuckDBColumnType of Integer and Natural stays
-  BIGNUM, so a typed row declares a BIGNUM column for them, and a scalar
-  function declares a BIGNUM result. DuckDB casts each HUGEINT value to that
-  BIGNUM column with no defect.
+  value. A Natural from 2^127 to 2^128 - 1 gives a UHUGEINT value. Each other
+  value raises an SQLError of the type ErrorTypeConversion (outsideRange).
+  toDuckValue has no target type. A BIGNUM value would thus reach a HUGEINT
+  column, and DuckDB 2.0.0 casts the BIGNUM 2^128 to the HUGEINT 0 with no
+  error. The callers of toDuckValue are setConfigValue, defaultValue, the
+  typed rows of table functions and COPY FROM, and the writer of a scalar
+  function result. Use BigNum for a larger value.
+  The default toField of the ToField class also calls toDuckValue. Thus a
+  newtype over Integer with the default toField raises this error for each
+  parameter value outside the HUGEINT range. An Integer parameter uses the
+  rule of integerBinding above, for example a BIGNUM value for a parameter
+  with no known type. Derive ToField with newtype deriving to keep that rule.
+
+- Typed registrations. The DuckDBColumnType text of Integer and Natural stays
+  BIGNUM, the type that holds each value: the element rule of a list
+  parameter and the error texts use it. The declaration is HUGEINT for
+  Integer and UHUGEINT for Natural, as for a field of a generic record (the
+  DuckValue instances in "Database.DuckDB.Simple.Generic"). Thus a column, an
+  argument, and a result of a typed registration have the type of the field.
+  The ToDuckValue instances of a list, an Array, and a Map give the
+  declaration of the element as its target, so a list of Integer values in a
+  typed row has HUGEINT elements. See Note [Type declarations].
 
 - Arrays, lists, and maps. DuckDB casts each element of an ARRAY or a LIST
   value, and each key and value of a MAP value, to the declared type when it
@@ -575,7 +645,16 @@ integerBinding binds an Integer or a Natural parameter with this rule:
   raises an error. An Array or a list of BigNum values also takes the element
   type of the target, but each element is a BIGNUM value. DuckDB casts each
   element with the casts from BIGNUM, so the result for BigNum elements does
-  not improve.
+  not improve. For each other target, and for a parameter with no known type,
+  a list takes the type that its elements give (withValueType), as each scalar
+  Integer and as a SQL list literal of the HUGEINT and BIGNUM values: [1, 2^64]
+  gives HUGEINT[], and [5, 2^130] gives BIGNUM[]. An Integer has no fixed SQL
+  type, so a list with no element, or with only NULL elements, takes the
+  element type of a known target, and otherwise the type NULL, as [] and
+  [NULL] in SQL. The test is on the column type name BIGNUM, so the rule also
+  holds for BigNum elements and for each type whose column type name is
+  BIGNUM, for example a newtype that derives its instances through Integer. A
+  BigNum element is a BIGNUM value in each case.
 
 Issue 41 of duckdb-haskell tracks the defects.
 -}
@@ -593,7 +672,7 @@ integerBinding value = case hugeIntInRange value of
       Just (LogicalTypeDecimal width scale) -> outOfRange ("DECIMAL(" <> Text.pack (show width) <> "," <> Text.pack (show scale) <> ")")
       _ -> bigNumDuckValue factory (BigNum value)
   where
-    outOfRange typeName = throwOutOfRange ("the value " <> Text.pack (show value) <> " is out of range for a parameter of the type " <> typeName)
+    outOfRange typeName = throwConversionError ("the value " <> Text.pack (show value) <> " is out of range for a parameter of the type " <> typeName)
 
 -- | Construct a HUGEINT value for an integer from -2^127 to 2^127 - 1. Give
 -- Nothing for each other integer. See Note [Integer parameters].
@@ -641,12 +720,14 @@ instance ToField BitString
 
 -- | Bind a day as a DATE. A day outside the range of DuckDB, from -5877641-06-25
 -- (5877642-06-25 BC) to 5881580-07-10 in the notation of "Data.Time", raises an
--- t'SQLError' of the type 'ErrorInputOutOfRange'. See Note [Time ranges].
+-- t'SQLError' of the type 'ErrorTypeConversion'. See Note [Time ranges].
 instance ToField Day
 
 -- | Bind a time of day as a TIME, or as a TIME_NS. See
--- Note [Nanosecond parameters]. A time with 60 seconds (a leap second) binds as
--- the next second, as @make_time@ of DuckDB gives it. See Note [Time ranges].
+-- Note [Nanosecond parameters]. A time of exactly 60 seconds (a leap second)
+-- binds as the next second, as @make_time@ of DuckDB gives it: 23:59:60 binds as
+-- 24:00:00. A later time, for example 23:59:60.5, raises an t'SQLError'. The
+-- section \"Errors\" of the README gives its type. See Note [Time ranges].
 instance ToField TimeOfDay where
   toField value =
     timeValueBinding (show value) (LogicalTypeScalar LogicalTypeIdTime) (FieldTime value) \builder -> timeOfDayDuckValue (builderFactory builder) value
@@ -655,8 +736,12 @@ instance ToField TimeOfDay where
 -- Note [Nanosecond parameters]. A time outside the range of DuckDB, from
 -- -290308-12-22 00:00:00 (290309-12-22 BC) to 294247-01-10 04:00:54.775806 in
 -- the notation of "Data.Time", raises an t'SQLError' of the type
--- 'ErrorInputOutOfRange'. A leap second binds as the next second. See
--- Note [Time ranges].
+-- 'ErrorTypeConversion'. For a TIMESTAMP_NS target, a time outside the range
+-- of TIMESTAMP_NS can get another error, also a time outside the range of
+-- DuckDB in a STRUCT, a TUPLE, or a UNION. See Note [Nanosecond parameters]. A
+-- time of exactly 60 seconds (a leap second) binds as the next second. A later
+-- time, for example 23:59:60.5, raises an t'SQLError'. The section
+-- \"Errors\" of the README gives its type. See Note [Time ranges].
 instance ToField LocalTime where
   toField value =
     timeValueBinding (show value) (LogicalTypeScalar LogicalTypeIdTimestamp) (FieldTimestamp (Finite value)) \builder -> localTimeDuckValue (builderFactory builder) value
@@ -666,14 +751,19 @@ instance ToField LocalTime where
 instance ToField IntervalValue
 
 -- | Bind the time and its offset in seconds as a TIMETZ. An offset outside
--- -57599 to 57599 seconds raises an error. A time with digits below one
--- microsecond loses these digits, as in SQL text. A leap second binds as the
--- next second. See Note [Time ranges].
+-- -57599 to 57599 seconds raises an t'SQLError' of the type
+-- 'ErrorTypeConversion'. A time with digits below one
+-- microsecond loses these digits, as in SQL text. A time of exactly 60 seconds
+-- (a leap second) binds as the next second. A later time, for example
+-- 23:59:60.5, raises an t'SQLError'. The section \"Errors\" of the README gives
+-- its type. See Note [Time ranges].
 instance ToField TimeWithZone
 
 -- | Bind the value as a DECIMAL with its own width and scale. DuckDB casts it
--- to the type of the parameter. A width outside 1 to 38, a scale larger than
--- the width, or an integer that the width cannot hold raises an error.
+-- to the type of the parameter. A width outside 1 to 38, or a scale larger than
+-- the width, raises an t'SQLError' of the type 'ErrorInputInvalid'. An integer
+-- that the width cannot hold raises an t'SQLError' of the type
+-- 'ErrorTypeConversion'.
 instance ToField DecimalValue where
   toField value = valueBinding (show value) (`decimalDuckValue` value)
 
@@ -694,12 +784,15 @@ instance ToField Variant where
   toField value =
     builderValueBinding (show value) \builder -> variantDuckValue builder (variantPayload value)
 
--- | Bind an instant as a TIMESTAMPTZ, or as a TIMESTAMPTZ_NS. See
--- Note [Nanosecond parameters]. An instant outside the range of the
--- t'LocalTime' instance, in UTC, raises an t'SQLError' of the type
--- 'ErrorInputOutOfRange'. A leap second of exactly 60 seconds binds as the
--- next second. A later time in a leap second, for example 60.5 seconds, raises
--- an t'SQLError' of the type 'ErrorInputInvalid'. See Note [Time ranges].
+-- | Bind an instant as a TIMESTAMPTZ, or as a TIMESTAMPTZ_NS. An instant
+-- outside the range of the t'LocalTime' instance, in UTC, raises an
+-- t'SQLError' of the type 'ErrorTypeConversion'. For a TIMESTAMPTZ_NS target,
+-- an instant outside the range of TIMESTAMPTZ_NS can get another error, also
+-- an instant outside the range of DuckDB in a STRUCT, a TUPLE, or a UNION, as
+-- for a t'LocalTime'. See Note [Nanosecond parameters]. A leap second of
+-- exactly 60 seconds binds as the next second. A later time in a leap second,
+-- for example 60.5 seconds, raises an t'SQLError'. The section \"Errors\" of
+-- the README gives its type. See Note [Time ranges].
 instance ToField UTCTime where
   toField value =
     timeValueBinding
@@ -943,11 +1036,17 @@ instance DuckDBColumnType BigNum where
 instance DuckDBColumnType UUID.UUID where
   duckdbColumnTypeFor _ = "UUID"
 
+-- | The text is BIGNUM, the type that holds each value. A typed registration
+-- declares HUGEINT. See Note [Integer parameters].
 instance DuckDBColumnType Integer where
   duckdbColumnTypeFor _ = "BIGNUM"
+  duckdbTypeDeclaration _ = Right (StructuredType (LogicalTypeScalar LogicalTypeIdHugeInt))
 
+-- | The text is BIGNUM, the type that holds each value. A typed registration
+-- declares UHUGEINT. See Note [Integer parameters].
 instance DuckDBColumnType Natural where
   duckdbColumnTypeFor _ = "BIGNUM"
+  duckdbTypeDeclaration _ = Right (StructuredType (LogicalTypeScalar LogicalTypeIdUHugeInt))
 
 instance DuckDBColumnType Word where
   duckdbColumnTypeFor _ = "UBIGINT"
@@ -1025,10 +1124,15 @@ instance (DuckDBColumnType a) => DuckDBColumnType (Maybe a) where
   duckdbColumnTypeFor _ = duckdbColumnTypeFor (Proxy @a)
   duckdbTypeDeclaration _ = duckdbTypeDeclaration (Proxy @a)
 
--- | A LIST of the element type. See Note [Type declarations].
+-- | The type text is the LIST text of the element type. An 'Array' has no
+-- declaration, because its type has no size. See Note [Type declarations].
 instance (DuckDBColumnType a) => DuckDBColumnType (Array Int a) where
   duckdbColumnTypeFor _ = duckdbColumnTypeFor (Proxy @a) <> Text.pack "[]"
-  duckdbTypeDeclaration _ = listDeclaration <$> duckdbTypeDeclaration (Proxy @a)
+  duckdbTypeDeclaration _ =
+    Left
+      ( "an Array has no size, so its ARRAY type has no declaration. Use a newtype of the Array with a DuckDBColumnType"
+          <> " instance that gives the size, for example BIGINT[3], or a list, which is a LIST."
+      )
 
 -- | See Note [Type declarations].
 instance (DuckDBColumnType k, DuckDBColumnType v) => DuckDBColumnType (Map.Map k v) where
@@ -1236,7 +1340,9 @@ constructor:
   elements take the element type of the target in place of that type: an
   Integer, a Natural, or a BigNum element for an integer or DECIMAL target (see
   Note [Integer parameters]), and a TimeOfDay, a LocalTime, or a UTCTime
-  element for a nanosecond target (see Note [Nanosecond parameters]).
+  element for a nanosecond target (see Note [Nanosecond parameters]). For each
+  other target, a list of Integer, Natural, or BigNum elements that is not
+  empty takes the type that its elements give, as the elements below do.
 - Each other element, for example a STRUCT, a TUPLE, a UNION, a generic record,
   a list, an array, or a FieldValue, has no type name. withValueType gives its
   type. When each element that is not NULL has the type of the first one, that
@@ -1294,21 +1400,43 @@ withElementType
   -> (DuckDBV2LogicalTypeHandle -> IO b)
   -> IO b
 withElementType proxy builder@ValueBuilder{builderType = makeType} target values action = case duckDBTypeFromName typeName of
-  Just dtype -> bracket (makeType (declaredType dtype)) destroyLogicalType action
+  -- See Note [Integer parameters].
+  Just LogicalTypeIdBigNum | not integerTarget -> withValueType builder target values action
+  Just dtype -> do
+    checkNanosecondElements (declaredType dtype) values
+    bracket (makeType (declaredType dtype)) destroyLogicalType action
   Nothing -> withValueType builder elementTarget values action
   where
     typeName = duckdbColumnType proxy
     -- With no target, the structured declaration of a record is the element
     -- type of a list with no element that is not NULL. See
     -- Note [Element types of a list].
-    elementTarget = case (target, duckdbTypeDeclaration proxy) of
-      (Nothing, Right (StructuredType rep)) -> Just rep
-      _ -> target
+    elementTarget = maybe (declaredTarget proxy) Just target
     -- See Note [Integer parameters].
-    declaredType LogicalTypeIdBigNum
-      | Just rep@(LogicalTypeScalar dtype) <- target, dtype `elem` integerTypes = rep
-      | Just rep@LogicalTypeDecimal{} <- target = rep
+    integerTarget = case target of
+      Just (LogicalTypeScalar dtype) -> dtype `elem` integerTypes
+      Just LogicalTypeDecimal{} -> True
+      _ -> False
+    declaredType LogicalTypeIdBigNum | integerTarget, Just rep <- target = rep
     declaredType dtype = timestampTypeForTarget target (LogicalTypeScalar dtype)
+
+-- | Raise the range error of the library for each TIMESTAMP or TIMESTAMPTZ
+-- element that a TIMESTAMP_NS or TIMESTAMPTZ_NS element type cannot hold, before
+-- the native constructor casts the element. An infinity value and a NULL value
+-- pass, as in the cast. See Note [Nanosecond parameters].
+checkNanosecondElements :: LogicalTypeRep -> [DuckDBV2ValueHandle] -> IO ()
+checkNanosecondElements declared values = case declared of
+  LogicalTypeScalar LogicalTypeIdTimestampNs -> forM_ values (check LogicalTypeIdTimestamp c_duckdb_v2_value_get_timestamp)
+  LogicalTypeScalar LogicalTypeIdTimestampTzNs -> forM_ values (check LogicalTypeIdTimestampTz c_duckdb_v2_value_get_timestamp_tz)
+  _ -> pure ()
+  where
+    check source get value = do
+      isNull <- output (c_duckdb_v2_value_is_null value)
+      rep <- bracket (output (c_duckdb_v2_value_get_logical_type value)) destroyLogicalType logicalTypeToRep
+      when (isNull == 0 && rep == LogicalTypeScalar source) do
+        micros <- output (get value)
+        unless (micros == maxBound || micros == negate maxBound) $
+          checkFiniteRange "TIMESTAMP" (minBound :: Int64) maxBound (1000 * toInteger micros)
 
 -- | Give the element type that the values give to the action. The target is
 -- the element type of the parameter. See Note [Element types of a list].
@@ -1392,42 +1520,52 @@ hasCollation = containsType isCollated
 
 {- Note [UNION values]
 ~~~~~~~~~~~~~~~~~~~~~~
-unionValueDuckValue builds a UNION value through a vector with one row. It
-writes the tag and the member into the child vectors, and reads the row as a
-value. The header documents the layout and the write: the children of a UNION
-vector are "[0] = the tag with [1..N] = the members", and a write of a value
-to a vector uses "the non-strict default cast". The write needs FLAT child
-vectors. In DuckDB 2.0.0 the children of a new vector are FLAT, but the header
-does not say this. See Note [Vector flatten] in
+unionValueDuckValue builds a UNION value through a vector with one row (route
+(a) below). It writes the tag and the member into the child vectors, and reads
+the row as a value. The header documents the layout and the write: the children
+of a UNION vector are "[0] = the tag with [1..N] = the members", and a write of
+a value to a vector uses "the non-strict default cast". The write needs FLAT
+child vectors. In DuckDB 2.0.0 the children of a new vector are FLAT, but the
+header does not say this. See Note [Vector flatten] in
 "Database.DuckDB.Simple.Materialize".
 
-V2 has no constructor for a UNION value. These cast routes were run with
-DuckDB 2.0.0 and not taken:
+V2 has no constructor for a UNION value. A run with DuckDB 2.0.0 tried four
+routes in eight cases: two BIGINT members with the tag of the first member, and
+with the tag of the second member; a NULL payload of two BIGINT members; 255
+INTEGER members; a member that is a UNION with a member name of the outer UNION;
+a STRUCT member with a UTINYINT field and a VARCHAR field with the name of the
+member; a collated VARCHAR member; and a GEOMETRY('OGC:CRS84') member.
 
-- The cast of the member value to the UNION type. The header calls it "the
-  sanctioned way to build UNION and ENUM values". DuckDB chooses the member
-  by the type of the value. Thus the cast is ambiguous when two members have
-  the same type, as in a generic sum type whose constructors have equal
-  fields, and for a member that is a UNION with a member name of the outer
-  UNION. With the factory of a connection or of a callback context, the cast
-  also runs the casts that a user registers.
-- The cast of the member value to a UNION with only that member, and then
-  the cast of that UNION to the full UNION. It gives the correct value for
-  two members of one type. It fails for a member that is a UNION with a
-  member name of the outer UNION ("The cast is ambiguous"), and for a STRUCT
-  member with exactly two fields, a UTINYINT and a VARCHAR field with the
-  name of the member, which DuckDB reads as the STRUCT form of the UNION.
-- The cast of a STRUCT with a UTINYINT tag field and one field for each
-  member. It gives the correct value in each of these cases. The header does
-  not document this cast. Written to a one-row vector of the UNION type with
-  the default cast, as defaultCast does, it runs no cast that a user
-  registers, but it takes about 27 to 51 percent more native instructions for
-  each value than the vector route (two members and 255 members).
+- (a) The vector route. It gives the correct value in each of the eight cases,
+  and it runs no cast that a user registers.
+- (b) The cast of a STRUCT with a UTINYINT tag field and one field for each
+  member, written to a one-row vector of the UNION type with the default cast,
+  as defaultCast does. It gives the correct value in each of the eight cases,
+  and it runs no cast that a user registers. The header does not document this
+  cast. It takes about 27 to 51 percent more native instructions for each value
+  than (a) (two members and 255 members).
+- (c) The cast of the member value to the UNION type. The header calls it "the
+  sanctioned way to build UNION and ENUM values". DuckDB chooses the member by
+  the type of the value. Thus the cast is ambiguous when two members have the
+  same type, as in a generic sum type whose constructors have equal fields, and
+  for a member that is a UNION with a member name of the outer UNION. It fails
+  in the first five cases. With the factory of a connection or of a callback
+  context, the cast also runs the casts that a user registers.
+- (c1) The cast of the member value to a UNION with only that member, and then
+  the cast of that UNION to the full UNION. It gives the correct value for two
+  members of one type. It fails for a member that is a UNION with a member name
+  of the outer UNION ("The cast is ambiguous"), and for the STRUCT member, which
+  DuckDB reads as the STRUCT form of the UNION.
 
-The vector route gives the correct value in each of these cases, and it keeps
-the tag of the value. Each route depends on one fact that the header does not
-state: the vector route on the FLAT child vectors, and the last cast route on
-the cast of a STRUCT to a UNION.
+Thus (a) is correct in each case, it uses the layout and the write that the
+header documents, and it costs less than (b). DuckDB does not document two
+facts: that the children of a new vector are FLAT, which (a) needs, and the cast
+of a STRUCT to a UNION, which (b) needs. If a later DuckDB gives a new vector
+other children, (a) can write a wrong value or fail. These cases bind a UNION
+value and compare the value that DuckDB gives back, so they show such a change:
+"a UNION value binds the member of its tag up to the member limit of DuckDB" and
+"UNION NULL payload retains its member type" in ValueRegressionTests.hs, and
+"round-trips struct and union parameters" in Spec.hs.
 -}
 
 -- | Build one UNION row through its tag and member vectors. See
@@ -1534,13 +1672,14 @@ scalarFieldValueDuckValue factory dtype value = case (dtype, value) of
 -- | Construct an ENUM value by the default cast of the label to the ENUM type.
 -- The label of a 'FieldEnum' gives the value, not its index: an index of
 -- another dictionary would give another label with no error. A label that is
--- not in the dictionary raises an error. See
+-- not in the dictionary raises an 'SQLError' of the type 'ErrorTypeConversion',
+-- as the cast of DuckDB from VARCHAR does. See
 -- Note [User casts and the casts of the library] in
 -- "Database.DuckDB.Simple.Materialize".
 enumDuckValue :: DuckDBV2FactoryHandle -> Array Int Text -> Text -> IO DuckDBV2ValueHandle
 enumDuckValue factory entries label = do
   unless (label `elem` elems entries) $
-    throwInvalidArgument ("the ENUM label " <> Text.pack (show label) <> " is not in the dictionary of the type")
+    throwConversionError ("the ENUM label '" <> label <> "' is not in the dictionary of the type")
   bracket (logicalTypeFromRep factory (LogicalTypeEnum entries)) destroyLogicalType \logical ->
     bracket (textDuckValue factory label) destroyValue \value ->
       defaultCast factory value logical
@@ -1563,7 +1702,7 @@ decimalDuckValue :: DuckDBV2FactoryHandle -> DecimalValue -> IO DuckDBV2ValueHan
 decimalDuckValue factory DecimalValue{decimalWidth, decimalScale, decimalInteger} = do
   when (decimalWidth < 1 || decimalWidth > 38 || decimalScale > decimalWidth) $
     throwInvalidArgument "invalid DECIMAL width or scale"
-  when (abs decimalInteger >= 10 ^ decimalWidth) $ throwInvalidArgument "DECIMAL value exceeds declared precision"
+  when (abs decimalInteger >= 10 ^ decimalWidth) $ throwConversionError "DECIMAL value exceeds declared precision"
   huge <- integerToHugeInt decimalInteger
   with huge (\ptr -> output (c_duckdb_v2_value_create_decimal factory (ConstPtr ptr) decimalWidth decimalScale))
 
@@ -1578,7 +1717,7 @@ timeWithZoneDuckValue factory TimeWithZone{timeWithZoneTime, timeWithZoneOffsetS
   micros <- timeOfDayUnits 1000000 timeWithZoneTime
   let offset = toInteger timeWithZoneOffsetSeconds
   when (abs offset > toInteger timeTzMaxOffsetSeconds) $
-    throwInvalidArgument
+    throwConversionError
       ("the TIMETZ offset " <> Text.pack (show offset) <> " seconds is out of range; DuckDB stores an offset from -57599 to 57599 seconds")
   output
     ( c_duckdb_v2_value_create_time_tz
@@ -1588,12 +1727,12 @@ timeWithZoneDuckValue factory TimeWithZone{timeWithZoneTime, timeWithZoneOffsetS
 
 integerToHugeInt :: Integer -> IO DuckDBV2HugeintT
 integerToHugeInt value = do
-  when (value < negate (1 `shiftL` 127) || value >= 1 `shiftL` 127) $ throwInvalidArgument "HUGEINT value out of range"
+  when (value < negate (1 `shiftL` 127) || value >= 1 `shiftL` 127) $ throwConversionError "HUGEINT value out of range"
   pure (DuckDBV2HugeintT (fromIntegral value) (fromIntegral (value `shiftR` 64)))
 
 integerToUHugeInt :: Integer -> IO DuckDBV2UhugeintT
 integerToUHugeInt value = do
-  when (value < 0 || value >= 1 `shiftL` 128) $ throwInvalidArgument "UHUGEINT value out of range"
+  when (value < 0 || value >= 1 `shiftL` 128) $ throwConversionError "UHUGEINT value out of range"
   pure (DuckDBV2UhugeintT (fromIntegral value) (fromIntegral (value `shiftR` 64)))
 
 -- | Borrow generated identifier views and reject embedded NUL bytes.
@@ -1829,16 +1968,28 @@ instance ToDuckValue UUID.UUID where
   toDuckValue = uuidDuckValue
 
 -- | A value from -2^127 to 2^127 - 1 gives a HUGEINT value. Each other value
--- gives a BIGNUM value. See Note [Integer parameters].
+-- raises an error. See Note [Integer parameters].
 instance ToDuckValue Integer where
   toDuckValue factory value = case hugeIntInRange value of
     Just make -> make factory
-    Nothing -> bigNumDuckValue factory (BigNum value)
+    Nothing -> outsideRange "HUGEINT" value
 
--- | A value from 0 to 2^127 - 1 gives a HUGEINT value. Each larger value gives
--- a BIGNUM value. See Note [Integer parameters].
+-- | A value from 0 to 2^127 - 1 gives a HUGEINT value, and a value up to
+-- 2^128 - 1 a UHUGEINT value. Each larger value raises an error. See
+-- Note [Integer parameters].
 instance ToDuckValue Natural where
-  toDuckValue factory = toDuckValue factory . toInteger
+  toDuckValue factory value = case hugeIntInRange (toInteger value) of
+    Just make -> make factory
+    Nothing
+      | toInteger value < 1 `shiftL` 128 -> uhugeIntDuckValue factory (toInteger value)
+      | otherwise -> outsideRange "UHUGEINT" (toInteger value)
+
+-- | Raise the range error of 'toDuckValue' for an 'Integer' or a 'Natural'
+-- outside the declared type. See Note [Integer parameters].
+outsideRange :: Text -> Integer -> IO a
+outsideRange typeName value =
+  throwConversionError
+    ("the value " <> Text.pack (show value) <> " is outside the range of " <> typeName <> ". Use BigNum for a larger value.")
 
 instance ToDuckValue Word where
   toDuckValue factory = uint64DuckValue factory . fromIntegral
@@ -1910,16 +2061,19 @@ instance ToDuckValue (UnionValue FieldValue) where
   toDuckValue = unionValueDuckValue . plainBuilder
 
 -- | Construct an array through the supplied factory with the element type of @a@.
+-- A structured declaration of @a@ is the target of the elements. See
+-- Note [Type declarations].
 instance (DuckDBColumnType a, ToDuckValue a) => ToDuckValue (Array Int a) where
-  toDuckValue factory = arrayDuckValue (plainBuilder factory) Nothing (toDuckValue factory)
+  toDuckValue factory = arrayDuckValue (plainBuilder factory) (declaredTarget (Proxy @a)) (toDuckValue factory)
 
 -- | Construct a MAP through the supplied factory with the key type of @k@ and
--- the value type of @v@. The pairs go in ascending key order.
+-- the value type of @v@. The pairs go in ascending key order. A structured
+-- declaration of a part is its target. See Note [Type declarations].
 instance (DuckDBColumnType k, DuckDBColumnType v, ToDuckValue k, ToDuckValue v) => ToDuckValue (Map.Map k v) where
   toDuckValue factory =
     mapDuckValue
-      (withElementType (Proxy @k) builder Nothing)
-      (withElementType (Proxy @v) builder Nothing)
+      (withElementType (Proxy @k) builder (declaredTarget (Proxy @k)))
+      (withElementType (Proxy @v) builder (declaredTarget (Proxy @v)))
       builder
       (toDuckValue factory)
       (toDuckValue factory)
@@ -1928,9 +2082,10 @@ instance (DuckDBColumnType k, DuckDBColumnType v, ToDuckValue k, ToDuckValue v) 
       builder = plainBuilder factory
 
 -- | Construct a LIST through the supplied factory with the element type of @a@.
--- 'String' keeps its own instance.
+-- 'String' keeps its own instance. A structured declaration of @a@ is the
+-- target of the elements. See Note [Type declarations].
 instance {-# OVERLAPPABLE #-} (DuckDBColumnType a, ToDuckValue a) => ToDuckValue [a] where
-  toDuckValue factory = listDuckValue (plainBuilder factory) Nothing (toDuckValue factory)
+  toDuckValue factory = listDuckValue (plainBuilder factory) (declaredTarget (Proxy @a)) (toDuckValue factory)
 
 instance (ToDuckValue a) => ToDuckValue (Maybe a) where
   toDuckValue factory Nothing = nullDuckValue factory
@@ -1995,7 +2150,7 @@ such a TIMESTAMP to VARCHAR raises an INTERNAL error, and DuckDB then
 invalidates the database. A cast of such a TIMESTAMP to TIMESTAMP_S stores the
 first valid value with no error. A DATE before the range sorts before
 -infinity, and a cast of it to TIMESTAMP fails. Thus encodeDay and
-encodeTimestampUnits raise an SQLError of the type ErrorInputOutOfRange for
+encodeTimestampUnits raise an SQLError of the type ErrorTypeConversion for
 each finite value outside these ranges (throwOutsideTimeRange), before any
 check of the storage, so a value outside the storage and a value at an
 infinity value get this error too. The text names the value and the end of
@@ -2030,7 +2185,7 @@ checkTimestampRange units value
 -- text names the Haskell value and the end of the range. See
 -- Note [Time ranges].
 throwOutsideTimeRange :: String -> Text -> IO a
-throwOutsideTimeRange value bound = throwOutOfRange ("the value " <> Text.pack value <> " is " <> bound)
+throwOutsideTimeRange value bound = throwConversionError ("the value " <> Text.pack value <> " is " <> bound)
 
 -- | Count the units from the Unix epoch to a timestamp, with the digits below
 -- one unit cut toward the earlier time. The count does not check the time of
@@ -2044,7 +2199,7 @@ timestampUnits units LocalTime{localDay, localTimeOfDay} =
 checkFiniteRange :: (Integral a) => String -> a -> a -> Integer -> IO ()
 checkFiniteRange label lower upper value =
   unless (inFiniteRange lower upper value) $
-    throwInvalidArgument (Text.pack label <> " value out of finite range")
+    throwConversionError (Text.pack label <> " value out of finite range")
 
 -- | Check storage limits without accepting the two infinity sentinels.
 inFiniteRange :: (Integral a) => a -> a -> Integer -> Bool
@@ -2054,12 +2209,15 @@ inFiniteRange lower upper value =
 -- | Validate time components and convert to the requested units per second.
 timeOfDayUnits :: Integer -> TimeOfDay -> IO Integer
 timeOfDayUnits units tod@(TimeOfDay hours minutes seconds) = do
-  when
-    (hours < 0 || hours > 24 || minutes < 0 || minutes > 59 || seconds < 0 || seconds >= 61 || (hours == 24 && (minutes /= 0 || seconds /= 0)))
-    $ throwInvalidArgument "invalid time of day"
+  -- A time of day that is not a TIME value is outside the range of the type: a
+  -- field outside its own range, for example 23:61:00, and a time after
+  -- 24:00:00 with valid fields, for example 24:00:01, 25:00:00, or 23:59:60.5.
+  -- The two texts name the two cases.
+  when (hours < 0 || minutes < 0 || minutes > 59 || seconds < 0 || seconds >= 61) $
+    throwConversionError "invalid time of day"
   let value = diffTimeToPicoseconds (timeOfDayToTime tod) `div` (1000000000000 `div` units)
   when (value > 86400 * units) $
-    throwInvalidArgument "time of day out of range"
+    throwConversionError "time of day out of range"
   pure value
 
 -- | Transfer a newly constructed value to the statement on success.

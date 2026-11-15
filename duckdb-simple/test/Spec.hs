@@ -17,7 +17,7 @@ module Main (main) where
 import ArrowTests (arrowTests)
 import CancellationTests (callbackLockTests, cancellationTests)
 import Control.Applicative ((<|>))
-import Control.Exception (ErrorCall, Exception, SomeException, bracket, displayException, fromException, try)
+import Control.Exception (ErrorCall, Exception, SomeException, bracket, displayException, fromException, throwIO, try)
 import Control.Monad (forM_, replicateM_, void, when)
 import CopyTests (copyTests)
 import CoreRegressionTests (coreRegressionTests)
@@ -1389,7 +1389,7 @@ functionsTests =
           createFunction conn "hs_arg_price" (\(Price DecimalValue{decimalInteger}) -> fromIntegral decimalInteger :: Int64)
           query_
             conn
-            "SELECT hs_arg_int8(-3), hs_arg_integer(2::BIGNUM ^ 100), hs_arg_bytes('\\x01\\x02'::BLOB), hs_arg_uuid('00000000-0000-0000-0000-000000000001')"
+            "SELECT hs_arg_int8(-3), hs_arg_integer(1267650600228229401496703205376::HUGEINT), hs_arg_bytes('\\x01\\x02'::BLOB), hs_arg_uuid('00000000-0000-0000-0000-000000000001')"
             >>= (@?= [(-6 :: Int64, Text.pack (show (2 * 2 ^ (100 :: Int) :: Integer)), 2 :: Int, "00000000-0000-0000-0000-000000000001" :: Text.Text)])
           query_
             conn
@@ -1405,7 +1405,7 @@ functionsTests =
             "SELECT function_name, parameter_types::VARCHAR FROM duckdb_functions() WHERE function_name IN ('hs_arg_int8', 'hs_arg_integer', 'hs_arg_record', 'hs_arg_records', 'hs_arg_price') ORDER BY function_name"
             >>= ( @?=
                     [ ("hs_arg_int8" :: Text.Text, "[TINYINT]" :: Text.Text)
-                    , ("hs_arg_integer", "[BIGNUM]")
+                    , ("hs_arg_integer", "[HUGEINT]")
                     , ("hs_arg_price", "['DECIMAL(18,3)']")
                     , ("hs_arg_record", "['STRUCT(vuId BIGINT, vuName VARCHAR)']")
                     , ("hs_arg_records", "['STRUCT(vuId BIGINT, vuName VARCHAR)[]']")
@@ -1460,7 +1460,7 @@ functionsTests =
             , ("hs_res_text", "VARCHAR")
             , ("hs_res_string", "VARCHAR")
             , ("hs_res_io", "SMALLINT")
-            , ("hs_res_integer", "BIGNUM")
+            , ("hs_res_integer", "HUGEINT")
             , ("hs_res_bytes", "BLOB")
             , ("hs_res_uuid", "UUID")
             , ("hs_res_day", "DATE")
@@ -1468,6 +1468,22 @@ functionsTests =
             , ("hs_res_amount", "DECIMAL(18,3)")
             ]
             \(name, expected) -> query_ conn (Query ("SELECT typeof(" <> name <> "())")) >>= (@?= [Only (expected :: Text.Text)])
+          -- An Integer argument or result is HUGEINT, and a Natural one is UHUGEINT.
+          -- DuckDB casts no BIGNUM or UHUGEINT argument to HUGEINT, and
+          -- toDuckValue raises an error for a result outside the range.
+          createFunction conn "hs_arg_wide" (\(x :: Integer) -> x)
+          assertThrows
+            (query_ conn "SELECT hs_arg_wide('5'::BIGNUM)" :: IO [Only Integer])
+            (Text.isInfixOf "No function matches" . sqlErrorMessage)
+          assertThrows
+            (query_ conn "SELECT hs_arg_wide(5::UHUGEINT)" :: IO [Only Integer])
+            (Text.isInfixOf "No function matches" . sqlErrorMessage)
+          createFunction conn "hs_res_natural" (2 ^ (127 :: Int) :: Natural)
+          createFunction conn "hs_res_wide" (2 ^ (127 :: Int) :: Integer)
+          query_ conn "SELECT typeof(hs_res_natural()), hs_res_natural()" >>= (@?= [("UHUGEINT" :: Text.Text, 2 ^ (127 :: Int) :: Natural)])
+          assertThrows
+            (query_ conn "SELECT hs_res_wide()" :: IO [Only Integer])
+            (\err -> sqlErrorType err == Just ErrorTypeConversion && Text.isInfixOf "is outside the range of HUGEINT" (sqlErrorMessage err))
           -- DuckDB casts a native result value to the declared type as the SQL cast does.
           createFunction conn "hs_res_rounded" (Amount 1.2345)
           createFunction conn "hs_res_too_large" (Amount 1e20)
@@ -1535,10 +1551,15 @@ functionsTests =
           let rejects expected action = assertThrows action (Text.isInfixOf expected . sqlErrorMessage)
           rejects "hs_bad_struct: argument arg0: StructValue has no static field types" $
             createFunction conn "hs_bad_struct" (\(_ :: StructValue FieldValue) -> True)
-          rejects "hs_bad_variant: argument arg0: the type of an argument cannot be or contain VARIANT" $
+          rejects "hs_bad_variant: argument arg0: the library cannot read a VARIANT value in a callback" $
             createFunction conn "hs_bad_variant" (\(_ :: Variant) -> True)
-          rejects "hs_bad_variants: argument arg1: the type of an argument cannot be or contain VARIANT" $
+          rejects "hs_bad_variants: argument arg1: the library cannot read a VARIANT value in a callback" $
             createFunction conn "hs_bad_variants" (\(_ :: Int64) (_ :: [Maybe Variant]) -> True)
+          -- The check visits the value type of a MAP, not only the element type of a LIST.
+          rejects "hs_bad_map: argument arg0: the library cannot read a VARIANT value in a callback" $
+            createFunction conn "hs_bad_map" (\(_ :: Map.Map Text.Text Variant) -> True)
+          rejects "hs_bad_result: result: StructValue has no static field types" $
+            createFunction conn "hs_bad_result" (\(_ :: Int64) -> (undefined :: StructValue FieldValue))
           query_ conn "SELECT count(*) FROM duckdb_functions() WHERE function_name LIKE 'hs\\_bad\\_%' ESCAPE '\\'" >>= (@?= [Only (0 :: Int64)])
     , testCase "rejects an empty name or a name with NUL at registration" $
         withConnection ":memory:" \conn ->
@@ -1546,6 +1567,23 @@ functionsTests =
             assertThrows
               (createFunction conn name (id :: Int64 -> Int64))
               (\err -> sqlErrorType err == Just ErrorInputInvalid && sqlErrorMessage err == "duckdb-simple: invalid scalar function name")
+    , testCase "raises the name error before the state of a closed connection" $ do
+        conn <- open ":memory:"
+        close conn
+        assertThrows
+          (createFunction conn "" (id :: Int64 -> Int64))
+          (\err -> sqlErrorType err == Just ErrorInputInvalid && sqlErrorMessage err == "duckdb-simple: invalid scalar function name")
+    , testCase "a failing call with constant arguments fails as with column arguments" $
+        withConnection ":memory:" \conn -> do
+          createFunction conn "hs_fail_negative" (\(x :: Int64) -> (if x < 0 then throwIO (userError "negative") else pure x) :: IO Int64)
+          let failsWith expected action = assertThrows action (\err -> sqlErrorType err == Just ErrorInputInvalid && expected `Text.isInfixOf` sqlErrorMessage err)
+          failsWith "negative" (query_ conn "SELECT hs_fail_negative(-1)" :: IO [Only Int64])
+          failsWith "negative" (query_ conn "SELECT hs_fail_negative(i - 1) FROM range(3) t(i)" :: IO [Only Int64])
+          failsWith
+            "duckdb-simple: argument arg0 is NULL, but Int64 cannot hold NULL"
+            (query_ conn "SELECT hs_fail_negative(NULL::BIGINT)" :: IO [Only Int64])
+          -- A failing constant in a CASE branch that is not taken does not raise.
+          query_ conn "SELECT CASE WHEN i > 5 THEN hs_fail_negative(-1) ELSE i END FROM range(3) t(i)" >>= (@?= map Only [0, 1, 2 :: Int64])
     , testCase "names the argument that does not convert" $
         withConnection ":memory:" \conn -> do
           createFunction conn "hs_sum" (\(x :: Int64) (y :: Int64) -> x + y)

@@ -55,7 +55,7 @@ import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit
-import TestUtils (NativeTimestamp (..), assertInputError)
+import TestUtils (NativeTimestamp (..), assertInputError, assertRangeError)
 
 -- | An array element with a ToField instance and no ToDuckValue instance.
 newtype DelegatedInteger = DelegatedInteger Int64
@@ -594,6 +594,12 @@ valueRegressionTests =
         assertConversionError (query_ conn "SELECT 256::USMALLINT" :: IO [Only Word8])
         assertConversionError (query_ conn "SELECT 65536::UINTEGER" :: IO [Only Word16])
         assertConversionError (query_ conn "SELECT 4294967296::UBIGINT" :: IO [Only Word32])
+    , testCase "a parameter for a column of an alias type follows the base type" $ withConnection ":memory:" \conn -> do
+        _ <- execute_ conn "CREATE TYPE tsns AS TIMESTAMP_NS; CREATE TYPE wide AS UHUGEINT; CREATE TABLE aliased (t tsns, w wide)"
+        let precise = LocalTime (fromGregorian 2024 1 2) (TimeOfDay 3 4 5.123456789)
+        _ <- execute conn "INSERT INTO aliased VALUES (?, ?)" (precise, 2 ^ (127 :: Int) + 5 :: Integer)
+        (query_ conn "SELECT t::VARCHAR, w::VARCHAR FROM aliased" :: IO [(Text, Text)])
+          >>= (@?= [("2024-01-02 03:04:05.123456789", "170141183460469231731687303715884105733")])
     , testCase "Integer and Natural parameters store exact values for each numeric target" $ withConnection ":memory:" \conn -> do
         let store :: (Show a, ToField a) => Text -> a -> Text -> Assertion
             store dtype value expected = do
@@ -649,12 +655,12 @@ valueRegressionTests =
           \(dtype, value) ->
             insert dtype value >>= \case
               Left SQLError{sqlErrorMessage, sqlErrorType} -> do
-                sqlErrorType @?= Just ErrorInputOutOfRange
+                sqlErrorType @?= Just ErrorTypeConversion
                 sqlErrorMessage @?= "duckdb-simple: the value " <> Text.pack (show value) <> " is out of range for a parameter of the type " <> dtype
               Right _ -> assertFailure ("expected the duckdb-simple range error for " <> Text.unpack dtype <> " " <> show value)
         insertValue "BIGINT" (2 ^ (128 :: Int) + 5 :: Natural) >>= \case
           Left SQLError{sqlErrorMessage, sqlErrorType} -> do
-            sqlErrorType @?= Just ErrorInputOutOfRange
+            sqlErrorType @?= Just ErrorTypeConversion
             sqlErrorMessage @?= "duckdb-simple: the value 340282366920938463463374607431768211461 is out of range for a parameter of the type BIGINT"
           Right _ -> assertFailure "expected the duckdb-simple range error for a Natural BIGINT value"
         _ <- execute_ conn "CREATE TABLE wrapped_value (v UBIGINT)"
@@ -674,9 +680,10 @@ valueRegressionTests =
           _ <- execute_ conn (Query ("CREATE OR REPLACE TABLE many_values (v " <> dtype <> ")"))
           _ <- executeMany conn "INSERT INTO many_values VALUES (?)" (map Only values)
           (query_ conn "SELECT v FROM many_values ORDER BY rowid" :: IO [Only Integer]) >>= (@?= map Only values)
-    , testCase "an array of Integer values binds BIGNUM elements" $ withConnection ":memory:" \conn ->
-        forM_ [listArray (0, 1) [5, 2 ^ (130 :: Int)], listArray (0, 1) [5, 6]] \(values :: Array Int Integer) ->
-          (query conn "SELECT typeof(?), ?" (values, values) :: IO [(Text, Array Int Integer)]) >>= (@?= [("BIGNUM[2]", values)])
+    , testCase "an array of Integer values takes the type that its elements give" $ withConnection ":memory:" \conn ->
+        -- See Note [Integer parameters] in "Database.DuckDB.Simple.ToField".
+        forM_ [(listArray (0, 1) [5, 2 ^ (130 :: Int)], "BIGNUM[2]"), (listArray (0, 1) [5, 6], "HUGEINT[2]")] \(values :: Array Int Integer, dtype) ->
+          (query conn "SELECT typeof(?), ?" (values, values) :: IO [(Text, Array Int Integer)]) >>= (@?= [(dtype, values)])
     , testCase "an array of Integer values takes the element type of its target" $ withConnection ":memory:" \conn -> do
         let store :: (Show a, ToField a) => Text -> a -> Text -> Assertion
             store dtype value expected = do
@@ -713,7 +720,7 @@ valueRegressionTests =
         -- duckdb-simple checks the range of an element outside the HUGEINT range.
         forM_ [(dtype, second) | dtype <- ["BIGINT[2]", "UBIGINT[2]", "HUGEINT[2]", "DECIMAL(38,0)[2]"], second <- [huge, negate huge]] \(dtype, second) -> do
           SQLError{sqlErrorType} <- insert dtype second
-          sqlErrorType @?= Just ErrorInputOutOfRange
+          sqlErrorType @?= Just ErrorTypeConversion
     , testCase "a list binds as a LIST parameter in each SQL form" $ withConnection ":memory:" \conn -> do
         let ints = [1, 2, 3] :: [Int64]
             none = [] :: [Int64]
@@ -776,10 +783,43 @@ valueRegressionTests =
           Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorInputInvalid
           Right _ -> assertFailure "expected the DuckDB range error for -6"
         insert "UBIGINT[]" [5, 2 ^ (130 :: Int)] >>= \case
-          Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorInputOutOfRange
+          Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorTypeConversion
           Right _ -> assertFailure "expected the duckdb-simple range error for 2^130"
         stored >>= (@?= [])
-        (query conn "SELECT typeof(?)" (Only ([5, 6] :: [Integer])) :: IO [Only Text]) >>= (@?= [Only "BIGNUM[]"])
+        -- With no integer target, a list takes the type that its elements give,
+        -- as a SQL list literal of the HUGEINT and BIGNUM values. A list with
+        -- no element, or with only NULL elements, gets the type NULL. See
+        -- Note [Integer parameters] in "Database.DuckDB.Simple.ToField".
+        let typeOf :: (ToField a) => a -> IO [Only Text]
+            typeOf value = query conn "SELECT typeof(?)" (Only value)
+        typeOf ([5, 6] :: [Integer]) >>= (@?= [Only "HUGEINT[]"])
+        typeOf ([5, 2 ^ (130 :: Int)] :: [Integer]) >>= (@?= [Only "BIGNUM[]"])
+        typeOf ([] :: [Integer]) >>= (@?= [Only "\"NULL\"[]"])
+        typeOf ([Nothing] :: [Maybe Integer]) >>= (@?= [Only "\"NULL\"[]"])
+        typeOf ([5, 2 ^ (64 :: Int)] :: [Natural]) >>= (@?= [Only "HUGEINT[]"])
+        typeOf (Map.fromList [(5, "a")] :: Map.Map Integer Text) >>= (@?= [Only "MAP(HUGEINT, VARCHAR)"])
+        typeOf ([[1], []] :: [[Integer]]) >>= (@?= [Only "HUGEINT[][]"])
+        typeOf ([[]] :: [[Integer]]) >>= (@?= [Only "\"NULL\"[][]"])
+        -- BigNum has the same column type name. Its elements are BIGNUM values.
+        typeOf [BigNum 5, BigNum 6] >>= (@?= [Only "BIGNUM[]"])
+        typeOf ([Nothing] :: [Maybe BigNum]) >>= (@?= [Only "\"NULL\"[]"])
+        -- An empty list for an integer target takes the element type of the target.
+        _ <- execute_ conn "CREATE OR REPLACE TABLE empty_integers (v INTEGER[])"
+        _ <- execute conn "INSERT INTO empty_integers VALUES (?)" (Only ([] :: [Integer]))
+        (query_ conn "SELECT typeof(v), v::VARCHAR FROM empty_integers" :: IO [(Text, Text)]) >>= (@?= [("INTEGER[]", "[]")])
+        -- In a VARIANT, the elements keep the HUGEINT values, so a cast to an
+        -- unsigned type checks their range. A BIGNUM element gave
+        -- 18446744073709551611 for -5 with no error.
+        let variantCast :: (ToField a) => String -> a -> Text -> Assertion
+            variantCast label value target = do
+              _ <- execute_ conn "CREATE OR REPLACE TABLE variant_integers (v VARIANT)"
+              _ <- execute conn "INSERT INTO variant_integers VALUES (?)" (Only value)
+              try (query_ conn (Query ("SELECT (v::" <> target <> ")::VARCHAR FROM variant_integers")) :: IO [Only Text]) >>= \case
+                Left SQLError{sqlErrorType} -> assertEqual label (Just ErrorTypeConversion) sqlErrorType
+                Right rows -> assertFailure (label <> ": expected the error of the cast, got " <> show rows)
+        variantCast "[-5]" ([-5] :: [Integer]) "UBIGINT[]"
+        variantCast "Map {a: -5}" (Map.fromList [("a", -5)] :: Map.Map Text Integer) "MAP(VARCHAR, UBIGINT)"
+        variantCast "[[-5], []]" ([[-5], []] :: [[Integer]]) "UBIGINT[][]"
     , testCase "a list and an Array with the same elements store the same LIST value" $ withConnection ":memory:" \conn -> do
         let ints = [1, 2, 3] :: [Int64]
             arr = listArray (0, 2) ints :: Array Int Int64
@@ -795,6 +835,13 @@ valueRegressionTests =
                 >>= assertEqual label [("\"NULL\"[]", "[]", "\"NULL\"[]")]
         literal "STRUCT" ([] :: [StructValue FieldValue])
         literal "BIGINT[]" ([] :: [[Int64]])
+        -- An Array of records has no declaration, so an empty list of them,
+        -- and a list of NULL elements, get the type of the SQL literal. See
+        -- Note [Element types of a list] in "Database.DuckDB.Simple.ToField".
+        literal "Array of records" ([] :: [Array Int Pair])
+        (query conn "SELECT typeof(?)" (Only [Nothing :: Maybe (Array Int Pair)]) :: IO [Only Text]) >>= (@?= [Only "\"NULL\"[]"])
+        (query conn "SELECT typeof(?)" (Only (Map.empty :: Map.Map Text (Array Int Pair))) :: IO [Only Text])
+          >>= (@?= [Only "MAP(VARCHAR, \"NULL\")"])
         -- An Array of NULL STRUCT values gets the type of array_value(NULL).
         let nullArray = listArray (0, 0) [Nothing] :: Array Int (Maybe (StructValue FieldValue))
         (query conn "SELECT typeof(?), ?::VARCHAR" (nullArray, nullArray) :: IO [(Text, Text)]) >>= (@?= [("\"NULL\"[1]", "[NULL]")])
@@ -852,7 +899,7 @@ valueRegressionTests =
         forM_ [57600, -57600] \offset ->
           try (query conn "SELECT ?" (Only (at 12 0 offset)) :: IO [Only TimeWithZone]) >>= \case
             Left SQLError{sqlErrorType, sqlErrorMessage} -> do
-              sqlErrorType @?= Just ErrorInputInvalid
+              sqlErrorType @?= Just ErrorTypeConversion
               assertBool
                 (Text.unpack sqlErrorMessage)
                 (("duckdb-simple: the TIMETZ offset " <> Text.pack (show offset) <> " seconds is out of range") `Text.isInfixOf` sqlErrorMessage)
@@ -911,7 +958,8 @@ valueRegressionTests =
           , DecimalValue 1 0 7
           ]
         -- The encoder raises an error for a value that it cannot encode.
-        forM_ [DecimalValue 2 1 100, DecimalValue 39 0 1, DecimalValue 2 3 1, DecimalValue 0 0 0] \decimal ->
+        assertRangeError (query conn "SELECT ?" (Only (DecimalValue 2 1 100)) :: IO [Only DecimalValue])
+        forM_ [DecimalValue 39 0 1, DecimalValue 2 3 1, DecimalValue 0 0 0] \decimal ->
           assertInputError (query conn "SELECT ?" (Only decimal) :: IO [Only DecimalValue])
         (query conn "SELECT ?" (Only (Nothing :: Maybe DecimalValue)) :: IO [Only (Maybe DecimalValue)]) >>= (@?= [Only Nothing])
     , testCase "a Map binds as a MAP parameter in each SQL form" $ withConnection ":memory:" \conn -> do
@@ -975,10 +1023,10 @@ valueRegressionTests =
           Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorInputInvalid
           Right _ -> assertFailure "expected the DuckDB range error for -5"
         insert (Map.fromList [("a", 2 ^ (130 :: Int))]) >>= \case
-          Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorInputOutOfRange
+          Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorTypeConversion
           Right _ -> assertFailure "expected the duckdb-simple range error for 2^130"
         (query conn "SELECT typeof(?)" (Only (Map.fromList [("a", 5)] :: Map.Map Text Integer)) :: IO [Only Text])
-          >>= (@?= [Only "MAP(VARCHAR, BIGNUM)"])
+          >>= (@?= [Only "MAP(VARCHAR, HUGEINT)"])
         -- A UTC value keeps its nanoseconds for a nanosecond target.
         let times = Map.fromList [("t", posixSecondsToUTCTime 0.123456789)] :: Map.Map Text UTCTime
         (query conn "SELECT ?::MAP(VARCHAR, TIMESTAMPTZ_NS)" (Only times) :: IO [Only (Map.Map Text UTCTime)]) >>= (@?= [Only times])
@@ -1028,7 +1076,7 @@ valueRegressionTests =
           [ (LogicalTypeIdTimestampSec, 1, assertOutsideTimeRange)
           , (LogicalTypeIdTimestampMs, 1000, assertOutsideTimeRange)
           , (LogicalTypeIdTimestamp, 1000000, assertOutsideTimeRange)
-          , (LogicalTypeIdTimestampNs, 1000000000, assertInputError)
+          , (LogicalTypeIdTimestampNs, 1000000000, assertRangeError)
           ]
           \(dtype, units, rejected) ->
             forM_
@@ -1054,10 +1102,18 @@ valueRegressionTests =
                 struct = singleField (LogicalTypeScalar dtype) (FieldTimestamp (Finite timestamp))
             (query conn "SELECT (?).value" (Only struct) :: IO [Only LocalTime]) >>= (@?= [Only expected])
     , testCase "composite TIME_NS rejects invalid clock components" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn ->
+        -- A field outside its own range and a time with valid fields after
+        -- 24:00:00 are both outside the range of TIME_NS.
         forM_
-          [TimeOfDay (-1) 0 0, TimeOfDay 25 0 0, TimeOfDay 0 60 0, TimeOfDay 0 0 (-1), TimeOfDay 24 0 0.000000001, TimeOfDay 23 59 60.000000001]
+          [ TimeOfDay (-1) 0 0
+          , TimeOfDay 0 60 0
+          , TimeOfDay 0 0 (-1)
+          , TimeOfDay 25 0 0
+          , TimeOfDay 24 0 0.000000001
+          , TimeOfDay 23 59 60.000000001
+          ]
           \value ->
-            assertInputError
+            assertRangeError
               (query conn "SELECT ?" (Only (singleField (LogicalTypeScalar LogicalTypeIdTimeNs) (FieldTime value))) :: IO [Only FieldValue])
     , testCase "microsecond timestamps round trip at the ends of the range of DuckDB" $ withConnection ":memory:" \conn -> do
         let local (micros :: Int64) = utcToLocalTime utc (posixSecondsToUTCTime (fromRational (toInteger micros % 1000000)))
@@ -1324,11 +1380,18 @@ valueRegressionTests =
         _ <- execute_ conn "SET TimeZone = 'Pacific/Auckland'"
         refusedPairs
     , testCase "invalid DECIMAL width scale and magnitude are rejected" $ withConnection ":memory:" \conn ->
-        forM_ [DecimalValue 0 0 0, DecimalValue 39 0 0, DecimalValue 2 3 1, DecimalValue 2 0 100, DecimalValue 2 0 (-100)] \decimal ->
-          assertInputError
-            ( query conn "SELECT ?" (Only (singleField (LogicalTypeDecimal (decimalWidth decimal) (decimalScale decimal)) (FieldDecimal decimal)))
-                :: IO [Only FieldValue]
-            )
+        forM_
+          [ (DecimalValue 0 0 0, assertInputError)
+          , (DecimalValue 39 0 0, assertInputError)
+          , (DecimalValue 2 3 1, assertInputError)
+          , (DecimalValue 2 0 100, assertRangeError)
+          , (DecimalValue 2 0 (-100), assertRangeError)
+          ]
+          \(decimal, rejected) ->
+            rejected
+              ( query conn "SELECT ?" (Only (singleField (LogicalTypeDecimal (decimalWidth decimal) (decimalScale decimal)) (FieldDecimal decimal)))
+                  :: IO [Only FieldValue]
+              )
     , testCase "nested conversion failure leaves the connection usable" $ withConnection ":memory:" \conn -> do
         let days = listArray (0, 1) [fromGregorian 2000 1 1, fromGregorian 10000000 1 1] :: Array Int Day
         assertOutsideTimeRange (query conn "SELECT ?" (Only days) :: IO [Only FieldValue])
@@ -1513,12 +1576,25 @@ valueRegressionTests =
               then FieldEnum (if first == "x" then 0 else 1) first
               else FieldEnum (if second == "p" then 0 else if second == "q" then 1 else 2) second
           pairs @?= Map.singleton key second
-    , testCase "ENUM payload label must be in its dictionary" $ withConnection ":memory:" \conn ->
+    , testCase "ENUM payload label must be in its dictionary" $ withConnection ":memory:" \conn -> do
         try (query conn "SELECT ?" (Only (singleField (LogicalTypeEnum (listArray (0, 1) ["a", "b"])) (FieldEnum 0 "c"))) :: IO [Only FieldValue]) >>= \case
           Left SQLError{sqlErrorMessage, sqlErrorType} -> do
-            sqlErrorType @?= Just ErrorInputInvalid
-            sqlErrorMessage @?= "duckdb-simple: the ENUM label \"c\" is not in the dictionary of the type"
+            sqlErrorType @?= Just ErrorTypeConversion
+            sqlErrorMessage @?= "duckdb-simple: the ENUM label 'c' is not in the dictionary of the type"
           Right rows -> assertFailure ("expected the label error, got " <> show rows)
+        -- DuckDB gives the same type for the same label in SQL.
+        try (query_ conn "SELECT {'value': 'c'}::STRUCT(value ENUM('a', 'b'))" :: IO [Only FieldValue]) >>= \case
+          Left SQLError{sqlErrorType} -> sqlErrorType @?= Just ErrorTypeConversion
+          Right rows -> assertFailure ("expected the cast error of DuckDB, got " <> show rows)
+        -- A label with a single quote prints as it is, as in the cast error of DuckDB.
+        try
+          (query conn "SELECT ?" (Only (singleField (LogicalTypeEnum (listArray (0, 1) ["a", "b"])) (FieldEnum 0 "it's"))) :: IO [Only FieldValue])
+          >>= \case
+            Left SQLError{sqlErrorMessage} -> sqlErrorMessage @?= "duckdb-simple: the ENUM label 'it's' is not in the dictionary of the type"
+            Right rows -> assertFailure ("expected the label error, got " <> show rows)
+        try (query_ conn "SELECT {'value': 'it''s'}::STRUCT(value ENUM('a', 'b'))" :: IO [Only FieldValue]) >>= \case
+          Left SQLError{sqlErrorMessage} -> Text.takeWhile (/= '\n') sqlErrorMessage @?= "Conversion Error: Could not convert string 'it's' to ENUM('a', 'b')"
+          Right rows -> assertFailure ("expected the cast error of DuckDB, got " <> show rows)
     , testCase "ENUM payload binds its label, not its index" $ withConnection ":memory:" \conn -> do
         let struct = singleField (LogicalTypeEnum (listArray (0, 2) ["a", "b", "c"])) (FieldEnum 1 "b")
         (query conn "SELECT typeof((?).value), (?).value::VARCHAR, ?" (struct, struct, struct) :: IO [(Text, Text, StructValue FieldValue)])
@@ -1540,9 +1616,9 @@ valueRegressionTests =
     , testCase "TIMETZ input offset overflow fails before native use" $ withConnection ":memory:" \conn -> do
         let value = TimeWithZone (TimeOfDay 12 0 0) maxBound
             struct = singleField (LogicalTypeScalar LogicalTypeIdTimeTz) (FieldTimeTZ value)
-        assertInputError (query conn "SELECT ?" (Only struct) :: IO [Only FieldValue])
+        assertRangeError (query conn "SELECT ?" (Only struct) :: IO [Only FieldValue])
     , testCase "invalid TIME input returns controlled error" $ withConnection ":memory:" \conn ->
-        assertInputError (query conn "SELECT ?" (Only (TimeOfDay 1000000000 0 0)) :: IO [Only TimeOfDay])
+        assertRangeError (query conn "SELECT ?" (Only (TimeOfDay 1000000000 0 0)) :: IO [Only TimeOfDay])
     , testCase "nested types decode the same in each chunk and each read mode" $ withConnectionWithConfig ":memory:" [("threads", "1")] \conn -> do
         _ <- execute_ conn "CREATE TYPE mood AS ENUM ('calm', 'busy', 'tired')"
         let sql =
@@ -1614,7 +1690,7 @@ valueRegressionTests =
           forM_ [huge, negate huge] \value ->
             insert dtype value >>= \case
               Left SQLError{sqlErrorMessage, sqlErrorType} -> do
-                sqlErrorType @?= Just ErrorInputOutOfRange
+                sqlErrorType @?= Just ErrorTypeConversion
                 sqlErrorMessage @?= "duckdb-simple: the value " <> Text.pack (show value) <> " is out of range for a parameter of the type " <> dtype
               Right _ -> assertFailure ("expected the duckdb-simple range error for " <> Text.unpack dtype <> " " <> show value)
         -- An element of an array takes the element type of its target. DuckDB
@@ -1794,7 +1870,7 @@ assertOutsideTimeRange :: IO a -> Assertion
 assertOutsideTimeRange action =
   try action >>= \case
     Left SQLError{sqlErrorMessage, sqlErrorType} -> do
-      sqlErrorType @?= Just ErrorInputOutOfRange
+      sqlErrorType @?= Just ErrorTypeConversion
       assertBool (Text.unpack sqlErrorMessage) ("of DuckDB" `Text.isInfixOf` sqlErrorMessage)
     Right _ -> assertFailure "expected the range error of the library"
 

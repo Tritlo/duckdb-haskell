@@ -44,12 +44,12 @@ variantObject entries =
 -- value of another SQL type with that shape. The shape is a scalar that is not
 -- an ENUM, a GEOMETRY with no CRS, a LIST of such values, or a STRUCT in the
 -- form of a VARIANT object: its fields have the type VARIANT and hold such
--- values, and its keys are in ascending order. A value of another shape
--- raises 'Incompatible', because the cast of DuckDB to VARIANT gives another
--- value. Write @c::VARIANT@ in SQL for such a column. The
--- library does not know the SQL type of a column here, so one difference
--- stays: a JSON column reads as its text, as a VARCHAR column does, but
--- @c::VARIANT@ gives the parsed value. See Note [Reads of another SQL type] in
+-- values, and its keys are in ascending order. A value of another shape fails
+-- with 'Incompatible', because the cast of DuckDB to VARIANT gives another
+-- value. Write @c::VARIANT@ in SQL for such a column. The library does not know
+-- the SQL type of a column here, so one difference stays: a JSON column reads
+-- as its text, as a VARCHAR column does, but @c::VARIANT@ gives the parsed
+-- value. See Note [Reads of another SQL type] in
 -- "Database.DuckDB.Simple.FromField".
 instance FromField Variant where
   fromField field@Field{fieldValue}

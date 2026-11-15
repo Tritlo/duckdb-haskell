@@ -8,6 +8,7 @@ module TestUtils (
   assertFailureIO,
   assertInputError,
   assertInputErrorContaining,
+  assertRangeError,
   assertReleasedAfter,
   assertReusable,
   assertSqlErrorContaining,
@@ -17,6 +18,7 @@ module TestUtils (
   raiseCapabilities,
   withConstCString,
   writeIntegers,
+  writeNullRows,
 ) where
 
 import Control.Concurrent (getNumCapabilities, setNumCapabilities)
@@ -30,13 +32,17 @@ import qualified Data.Text as Text
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Data.Time.LocalTime (LocalTime, utc, utcToLocalTime)
 import Database.DuckDB.FFI.V2 (
+  DuckDBV2CastFunctionExecInfoHandle,
   DuckDBV2VectorHandle,
+  c_duckdb_v2_cast_function_exec_get_output,
+  c_duckdb_v2_cast_function_exec_get_row_count,
   c_duckdb_v2_value_create_timestamp,
   c_duckdb_v2_value_create_timestamp_ms,
   c_duckdb_v2_value_create_timestamp_ns,
   c_duckdb_v2_value_create_timestamp_sec,
   c_duckdb_v2_vector_flatten,
   c_duckdb_v2_vector_get_data_mutable,
+  c_duckdb_v2_vector_set_null,
   c_duckdb_v2_vector_set_size,
  )
 import Database.DuckDB.Simple (Connection, ErrorType (..), Only (..), Query, SQLError (..), query_)
@@ -127,6 +133,18 @@ assertInputErrorContaining expected action = do
         ("duckdb-simple: " `Text.isPrefixOf` sqlErrorMessage err) && expected `Text.isInfixOf` sqlErrorMessage err
     Right () -> assertFailure "expected the error of an input check"
 
+-- | Require the error of a check of the library for a value that its SQL type
+-- cannot hold: an 'SQLError' of the type 'ErrorTypeConversion' whose message
+-- starts with "duckdb-simple: ".
+assertRangeError :: IO a -> Assertion
+assertRangeError action = do
+  result <- try action
+  case result of
+    Left err -> do
+      sqlErrorType err @?= Just ErrorTypeConversion
+      assertBool (Text.unpack (sqlErrorMessage err)) ("duckdb-simple: " `Text.isPrefixOf` sqlErrorMessage err)
+    Right _ -> assertFailure "expected an SQLError of the type ErrorTypeConversion"
+
 -- | Require that the connection runs another query. A case uses it after a
 -- cleanup or an interrupted query, to show that the connection state is released.
 assertReusable :: Connection -> Assertion
@@ -186,6 +204,16 @@ writeIntegers vector values = do
   checked (c_duckdb_v2_vector_flatten vector)
   raw <- output (c_duckdb_v2_vector_get_data_mutable vector)
   forM_ (zip [0 ..] values) $ \(index, value) -> pokeElemOff (castPtr raw) index value
+
+-- | Write NULL to each row of the output vector of a cast call. The function
+-- reads no input row.
+writeNullRows :: DuckDBV2CastFunctionExecInfoHandle -> IO ()
+writeNullRows info = do
+  rows <- output (c_duckdb_v2_cast_function_exec_get_row_count info)
+  vector <- output (c_duckdb_v2_cast_function_exec_get_output info)
+  checked (c_duckdb_v2_vector_set_size vector rows)
+  checked (c_duckdb_v2_vector_flatten vector)
+  forM_ [0 .. fromIntegral rows - 1 :: Int] $ \row -> checked (c_duckdb_v2_vector_set_null vector (fromIntegral row))
 
 -- | Filtered queries over more than one chunk, each with the rows that DuckDB
 -- gives. After the filter, most chunks of the second and the third query have

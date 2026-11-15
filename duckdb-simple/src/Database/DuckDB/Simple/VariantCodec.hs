@@ -15,7 +15,7 @@ module Database.DuckDB.Simple.VariantCodec (
   prepareVariantDecoder,
 ) where
 
-import Control.Exception (bracket, evaluate, mask_, throwIO)
+import Control.Exception (bracket, evaluate, mask_)
 import Control.Monad (forM, unless)
 import Data.Array (elems, listArray, (!))
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
@@ -467,4 +467,4 @@ releaseNode = releaseItems destroyValue . nodeChildren
 
 -- | Report a metadata or payload mismatch before decoding a native value.
 codecError :: Text -> IO a
-codecError message = throwIO (SQLError ("duckdb-simple: VARIANT: " <> message) Nothing Nothing)
+codecError message = throwInternalError ("VARIANT: " <> message)

@@ -51,6 +51,7 @@ import Database.DuckDB.Simple.Callback (
   installAll,
   runCallback,
   targetCastFactory,
+  targetConfig,
   transferCallbackState,
   withCallbackResources,
   withRegistrationFactory,
@@ -232,7 +233,7 @@ instance {-# OVERLAPPABLE #-} (FunctionResult a) => Function a where
   returnType _ = duckdbTypeDeclaration (Proxy @a)
   isVolatile _ = False
   applyFunction [] value = pure (scalarValue value)
-  applyFunction _ _ = throwIO (functionInvocationError (Text.pack "unexpected arguments supplied"))
+  applyFunction _ _ = throwInternalError (Text.pack "unexpected arguments supplied")
 
 -- | An 'IO' action that gives a result: a function with no argument. It is
 -- volatile, so DuckDB runs the action one time for each row.
@@ -241,7 +242,7 @@ instance {-# OVERLAPPING #-} (FunctionResult a) => Function (IO a) where
   returnType _ = duckdbTypeDeclaration (Proxy @a)
   isVolatile _ = True
   applyFunction [] action = scalarValue <$> action
-  applyFunction _ _ = throwIO (functionInvocationError (Text.pack "unexpected arguments supplied"))
+  applyFunction _ _ = throwInternalError (Text.pack "unexpected arguments supplied")
 
 -- | A function of one more argument. The argument has the SQL type of
 -- 'duckdbTypeDeclaration'. The function is volatile when its result is
@@ -251,7 +252,7 @@ instance {-# OVERLAPPABLE #-} (FromField a, DuckDBColumnType a, Function r) => F
   returnType _ = returnType (Proxy @r)
   isVolatile _ = isVolatile (Proxy @r)
   applyFunction [] _ =
-    throwIO (functionInvocationError (Text.pack "insufficient arguments supplied"))
+    throwInternalError (Text.pack "insufficient arguments supplied")
   applyFunction (field : rest) fn =
     case fromField field of
       Errors err -> throwIO (argumentConversionError err)
@@ -259,9 +260,8 @@ instance {-# OVERLAPPABLE #-} (FromField a, DuckDBColumnType a, Function r) => F
 
 -- | Register a typed function on a connection or a loading extension.
 createFunctionOn :: forall f. (Function f) => RegistrationTarget -> Text -> f -> IO ()
-createFunctionOn target name fn = do
-  casts <- targetCastFactory target
-  registerScalarFunction target name (Proxy @f) \allocate function ->
+createFunctionOn target name fn =
+  registerScalarFunction target name (Proxy @f) \casts allocate function ->
     [ install
         allocate
         DuckDBV2ScalarFunctionExecCallbackFn
@@ -271,9 +271,8 @@ createFunctionOn target name fn = do
 
 -- | Register a typed function with per-worker state on a connection or extension.
 createFunctionWithStateOn :: forall s f. (Function f) => RegistrationTarget -> Text -> IO s -> (s -> f) -> IO ()
-createFunctionWithStateOn target name initState mkFn = do
-  casts <- targetCastFactory target
-  registerScalarFunction target name (Proxy @f) \allocate function ->
+createFunctionWithStateOn target name initState mkFn =
+  registerScalarFunction target name (Proxy @f) \casts allocate function ->
     [ install
         allocate
         DuckDBV2ScalarFunctionExecCallbackFn
@@ -288,17 +287,28 @@ createFunctionWithStateOn target name initState mkFn = do
 
 -- | Configure a scalar function and transfer its callbacks to DuckDB. An
 -- argument type or a result type with no declaration, or an argument type that
--- is or contains VARIANT, raises an error at registration. The last
--- argument gives the install actions of the callbacks for the builder. Their
+-- is or contains VARIANT, raises an error at registration. The check of the
+-- name and the declarations of the arguments and the result come before the
+-- read of the state of the target, so their input errors win over a closed
+-- connection. The VARIANT check ('checkArgumentType') needs the resolved type
+-- of the argument, so it comes after the read of the state, and a closed
+-- connection wins over it. The last argument gives the install actions of the
+-- callbacks for the builder, from the factory of 'targetCastFactory'. Their
 -- setters run after the properties. See 'installAll'.
 registerScalarFunction
-  :: (Function f) => RegistrationTarget -> Text -> Proxy f -> (Allocator -> DuckDBV2ScalarFunctionHandle -> [IO (IO ())]) -> IO ()
+  :: (Function f)
+  => RegistrationTarget
+  -> Text
+  -> Proxy f
+  -> (Maybe DuckDBV2FactoryHandle -> Allocator -> DuckDBV2ScalarFunctionHandle -> [IO (IO ())])
+  -> IO ()
 registerScalarFunction target name proxy installers = do
   when (Text.null name || Text.any (== '\0') name) $
     throwInvalidArgument "invalid scalar function name"
   -- See Note [Type declarations] in "Database.DuckDB.Simple.ToField".
   parameters <- rowDeclarations name ["argument " <> argumentName index | index <- [0 ..]] (argumentTypes proxy)
   [result] <- rowDeclarations name ["result"] [returnType proxy]
+  casts <- targetCastFactory target
   -- withTarget keeps its factory private. Borrow another one for the signature types.
   withRegistrationFactory target \factory ->
     withTarget
@@ -309,14 +319,15 @@ registerScalarFunction target name proxy installers = do
       c_duckdb_v2_extension_register_scalar_function
       \scalarFun register ->
         withCallbackResources
-          (\allocate -> installAll (installers allocate scalarFun))
+          (targetConfig target)
+          (\allocate -> installAll (installers casts allocate scalarFun))
           (attachOpaque (c_duckdb_v2_scalar_function_set_user_data scalarFun))
           \installCallbacks -> do
             withIdentifier name $ checked . c_duckdb_v2_scalar_function_set_name scalarFun
             signature <- output (c_duckdb_v2_scalar_function_get_signature scalarFun)
             forM_ (zip [0 :: Int ..] parameters) \(index, dtype) ->
               withTypeDeclaration factory dtype \logical -> do
-                checkArgumentType True name index logical
+                checkArgumentType True name ("argument " <> argumentName index) logical
                 withIdentifier (argumentName index) \argument ->
                   checked (c_duckdb_v2_function_signature_add_parameter signature argument logical nullHandle DuckDBV2FunctionParameterKindPositionalOnly)
             withTypeDeclaration factory result $ checked . c_duckdb_v2_function_signature_set_return_type signature
@@ -343,10 +354,7 @@ executeScalarFunction casts fn info context = withContextFactory context \contex
     checked (c_duckdb_v2_scalar_function_exec_get_arg_count info counts (advancePtr counts 1) (advancePtr counts 2) (advancePtr counts 3))
     fromIntegral . sum <$> peekArray 4 counts
   when (columnCount /= expected) $
-    throwIO
-      ( functionInvocationError
-          (Text.pack ("duckdb-simple: function expected " <> show expected <> " arguments but received " <> show columnCount))
-      )
+    throwInternalError (Text.pack ("function expected " <> show expected <> " arguments but received " <> show columnCount))
   rawRowCount <- output (c_duckdb_v2_scalar_function_exec_get_row_count info)
   let rowCount = fromIntegral rawRowCount :: Int
   readers <- mapM (makeColumnReader (callbackReadFactory casts contextFactory) info) [0 .. expected - 1]
@@ -367,7 +375,7 @@ scalarFunctionHandlerWithState
 scalarFunctionHandlerWithState casts mkFn info context err = runCallback err do
   statePtr <- output (c_duckdb_v2_scalar_function_exec_get_init_data info)
   when (statePtr == nullPtr) $
-    throwIO (functionInvocationError "duckdb-simple: scalar function state was not initialised")
+    throwInternalError "scalar function state was not initialised"
   -- The cast has no type check, and it is safe. createFunctionWithStateOn has
   -- one signature for initState :: IO s and mkFn :: s -> f. Thus the init
   -- callback stores a StablePtr of the same type s that this cast gives.
@@ -430,7 +438,7 @@ prepareResultWriter :: Maybe DuckDBV2FactoryHandle -> DuckDBV2VectorHandle -> IO
 prepareResultWriter factory vector = do
   kind <- output (c_duckdb_v2_vector_get_vector_type vector)
   when (kind /= DuckDBV2VectorTypeFlat) $
-    throwIO (functionInvocationError (Text.pack ("duckdb-simple: the result vector is not flat: " <> show kind)))
+    throwInternalError (Text.pack ("the result vector is not flat: " <> show kind))
   vectorType <- vectorElementType vector
   dataPtr <- output (c_duckdb_v2_vector_get_data_mutable vector)
   validityPtr <- output (c_duckdb_v2_vector_flat_get_validity_mutable vector)
@@ -461,7 +469,7 @@ writeScalarValue factory vector vectorType dataPtr validityPtr idx = \case
     writeArenaText vector dataPtr idx text
   ScalarNative make -> case factory of
     Just valueFactory -> bracket (make valueFactory) destroyValue (checked . c_duckdb_v2_vector_set_value vector (fromIntegral idx))
-    Nothing -> throwIO (functionInvocationError "duckdb-simple: the result writer has no factory for a value of this result type")
+    Nothing -> throwInternalError "the result writer has no factory for a value of this result type"
   where
     raw :: (Storable s) => DuckDBV2LogicalTypeId -> s -> IO ()
     raw expected value = do
@@ -471,10 +479,7 @@ writeScalarValue factory vector vectorType dataPtr validityPtr idx = \case
     expect expected = when (vectorType /= expected) do
       actualName <- duckDBTypeToName <$> logicalTypeIdFromNative vectorType
       expectedName <- duckDBTypeToName <$> logicalTypeIdFromNative expected
-      throwIO
-        ( functionInvocationError
-            ("duckdb-simple: the result vector has the type " <> actualName <> ", but the result value has the type " <> expectedName)
-        )
+      throwInternalError ("the result vector has the type " <> actualName <> ", but the result value has the type " <> expectedName)
 
 -- | Write a VARCHAR value at a row of a flat vector without a factory. A value
 -- of more than @DUCKDB_V2_BYTES_INLINE_LENGTH@ (12) bytes goes to the arena of
@@ -528,4 +533,5 @@ functionInvocationError message =
     { sqlErrorMessage = message
     , sqlErrorType = Nothing
     , sqlErrorQuery = Nothing
+    , sqlErrorBody = Nothing
     }

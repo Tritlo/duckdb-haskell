@@ -841,9 +841,11 @@ no `ToDuckValue` instance, because no one DuckDB type holds each of its values.
 
 For concurrent workers, use a separate connection per worker. Threads can
 also share one connection. DuckDB permits one open result for each connection,
-so each connection has a lock. `query`, `execute`, the default folds, and
-statement preparation hold this lock until their native result closes. A call
-from another thread waits. The lock does not cover these cases. Serialize them
+so each connection has a lock. `query`, `execute`, and the default folds hold
+this lock from the execution of a statement until its native result closes.
+Statement preparation holds it only while DuckDB prepares the statement, and
+the metadata bind of a statement only while DuckDB binds it. A call from
+another thread waits. The lock does not cover these cases. Serialize them
 in the application:
 
 - A transaction. Statements of other threads run inside it.

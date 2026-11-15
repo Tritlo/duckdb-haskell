@@ -15,7 +15,7 @@ module Database.DuckDB.Simple.Result (
 ) where
 
 import Control.Exception (bracket, evaluate, finally, mask, mask_, onException, throwIO)
-import Control.Monad (foldM, forM, when, zipWithM, (>=>))
+import Control.Monad (foldM, forM, when, zipWithM)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Text as Text
@@ -269,15 +269,21 @@ collectResultColumns result = do
   -- The schema lives as long as a column type that is not converted. See
   -- Note [Column types] in "Database.DuckDB.Simple.FromField".
   owner <- ownedHandle destroySchemaAddress (output (c_duckdb_v2_result_get_schema result))
-  let field idx action = withForeignPtr owner \cell ->
-        peek cell >>= \schema -> alloca \name -> do
-          logical <- output (c_duckdb_v2_schema_get_field schema (fromIntegral idx) name)
-          action name logical
-  count <- withForeignPtr owner (peek >=> output . c_duckdb_v2_schema_get_count)
-  forM [0 .. fromIntegral count - 1] \idx -> do
-    columnName <- field idx \name _ -> peek name >>= readIdentifier
-    columnType <- unsafeInterleaveIO (field idx \_ logical -> logicalTypeToRep logical)
-    StatementStreamColumn idx columnName columnType <$> newIORef Nothing <*> newIORef IntMap.empty
+  let columnType idx = withForeignPtr owner \cell ->
+        peek cell >>= \schema -> alloca \name ->
+          output (c_duckdb_v2_schema_get_field schema (fromIntegral idx) name) >>= logicalTypeToRep
+  -- One withForeignPtr holds the schema for the loop. With a deeper stack
+  -- here, the helper thread of each query (Note [Interruptible native calls]
+  -- in "Database.DuckDB.Simple.Internal") grew past its first stack chunk and
+  -- allocated a new chunk of 32 KB.
+  withForeignPtr owner \cell -> do
+    schema <- peek cell
+    count <- fromIntegral <$> output (c_duckdb_v2_schema_get_count schema)
+    forM [0 .. count - 1] \idx -> alloca \name -> do
+      _ <- output (c_duckdb_v2_schema_get_field schema (fromIntegral idx) name)
+      columnName <- peek name >>= readIdentifier
+      lazyType <- unsafeInterleaveIO (columnType idx)
+      StatementStreamColumn idx columnName lazyType <$> newIORef Nothing <*> newIORef IntMap.empty
 
 buildMaterializedRow :: [StatementStreamColumn] -> [Int -> IO FieldValue] -> Int -> IO [Field]
 buildMaterializedRow columns readers rowIdx =

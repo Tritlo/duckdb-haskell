@@ -605,12 +605,18 @@ extensionRegressionTests =
             FileSystem.readFileHandleAt handle 8 4 >>= (@?= BS.take 4 (BS.drop 8 bytes))
             -- A chunk read gives the bytes that remain after the position.
             FileSystem.readFileHandleChunk handle 100 >>= (@?= BS.drop 4 bytes)
-    , testCase "positioned reads check the range against the file size" $
+    , testCase "a positioned read past the end gives the error of DuckDB" $
         withTemporaryFile \path -> withConnection ":memory:" \conn -> do
           BS.writeFile path (BS.pack [0 .. 15])
           FileSystem.withFileHandle conn path [FileSystem.FileFlagRead] \handle -> do
-            assertSqlErrorContaining "file read range exceeds the file size" $ FileSystem.readFileHandleAt handle 14 4
-            assertSqlErrorContaining "file read range exceeds the file size" $ FileSystem.readFileHandleAt handle maxBound 1
+            outcome <- try (FileSystem.readFileHandleAt handle 14 4)
+            case outcome of
+              Left (err :: SQLError) -> do
+                sqlErrorType err @?= Just ErrorIOGeneral
+                assertBool "DuckDB read error" ("Could not read enough bytes" `Text.isInfixOf` sqlErrorMessage err)
+              Right bytes -> assertFailure ("expected an IO error, got " <> show bytes)
+            -- The library checks only that the end of the range fits in Int64.
+            assertSqlErrorContaining "file read range exceeds Int64 range" $ FileSystem.readFileHandleAt handle maxBound 1
             -- A size of 0 gives no bytes, also past the end, as in DuckDB.
             FileSystem.readFileHandleAt handle 20 0 >>= (@?= BS.empty)
             FileSystem.readFileHandleAt handle 12 4 >>= (@?= BS.pack [12 .. 15])

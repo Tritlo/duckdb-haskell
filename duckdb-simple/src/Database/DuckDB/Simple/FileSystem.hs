@@ -75,21 +75,19 @@ writeFileHandleBytes (FileHandle handle) bytes = BS.useAsCStringLen bytes \(ptr,
   fromIntegral <$> output (c_duckdb_v2_file_write handle (ConstPtr (castPtr ptr)) (fromIntegral count))
 
 -- | Read exactly the requested bytes without changing the file position. A
--- range past the end of the file raises an error before the buffer is
--- allocated. A size of 0 gives no bytes at each offset, as in DuckDB. The
--- buffer and the size that the native call gets come from one value. The
--- library cannot check that the native call writes no more than that size: the
--- header of DuckDB states it as the contract of the call.
+-- range whose end exceeds the 'Int64' range raises an error before the native
+-- call. DuckDB checks the range against the size of the file, and a read past
+-- the end raises the error of DuckDB. The function allocates the buffer before
+-- that check. The buffer and the size that the native call gets come from one
+-- value. The library cannot check that the native call writes no more than
+-- that size: the header of DuckDB states it as the contract of the call.
 readFileHandleAt :: FileHandle -> Int64 -> Int64 -> IO BS.ByteString
-readFileHandleAt file@(FileHandle handle) offset requested
+readFileHandleAt (FileHandle handle) offset requested
   | offset < 0 = fileError "file offset is negative"
   | requested < 0 = fileError "file read size is negative"
   | toInteger requested > toInteger (maxBound :: Int) = fileError "file read size exceeds Int range"
-  | otherwise = do
-      fileSize <- fileHandleSize file
-      when (requested > 0 && toInteger offset + toInteger requested > toInteger fileSize) $
-        fileError "file read range exceeds the file size"
-      BSI.create size \buffer -> checked (c_duckdb_v2_file_read_at handle (castPtr buffer) (fromIntegral size) (fromIntegral offset))
+  | toInteger offset + toInteger requested > toInteger (maxBound :: Int64) = fileError "file read range exceeds Int64 range"
+  | otherwise = BSI.create size \buffer -> checked (c_duckdb_v2_file_read_at handle (castPtr buffer) (fromIntegral size) (fromIntegral offset))
   where
     size = fromIntegral requested :: Int
 

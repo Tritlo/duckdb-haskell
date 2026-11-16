@@ -31,6 +31,8 @@ module Database.DuckDB.Simple.FromField (
   DecimalValue (..),
   IntervalValue (..),
   TimeWithZone (..),
+  timeWithZone,
+  timeWithZoneZone,
   ResultError (..),
   FieldParser,
   FromField (..),
@@ -54,6 +56,9 @@ import Data.Time.Clock (UTCTime (..))
 import Data.Time.LocalTime (
   LocalTime (..),
   TimeOfDay (..),
+  TimeZone,
+  minutesToTimeZone,
+  timeZoneMinutes,
  )
 import qualified Data.UUID as UUID
 import Data.Word (Word16, Word32, Word64, Word8)
@@ -236,14 +241,26 @@ bsFromBool bits =
 -- stores an offset from -57599 to 57599 seconds (-15:59:59 to +15:59:59) and the
 -- time in microseconds. A value with such an offset reads back equal to the
 -- bound value. A time with digits below one microsecond loses these digits, as
--- in SQL text. Use @minutesToTimeZone (fromIntegral (offset \`quot\` 60))@ and
--- @fromIntegral (timeZoneMinutes zone) * 60@ to convert to and from a
--- @Data.Time@ zone. The first conversion drops the seconds of an offset.
+-- in SQL text. 'timeWithZone' makes a value from a "Data.Time" zone, and
+-- 'timeWithZoneZone' gives the zone of a value.
 data TimeWithZone = TimeWithZone
   { timeWithZoneTime :: TimeOfDay
   , timeWithZoneOffsetSeconds :: Int32
   }
   deriving (Eq, Show)
+
+-- | Make a t'TimeWithZone' from a time of day and a "Data.Time" zone. The offset
+-- is the minutes of the zone times 60. DuckDB does not store the name and the
+-- summer flag of a zone, so the value does not keep them.
+timeWithZone :: TimeOfDay -> TimeZone -> TimeWithZone
+timeWithZone time zone = TimeWithZone time (fromIntegral (timeZoneMinutes zone) * 60)
+
+-- | Give the "Data.Time" zone of the offset of a t'TimeWithZone'. A 'TimeZone'
+-- holds whole minutes, so the seconds of an offset are dropped: the offset
+-- 3630 seconds of @12:00:00+01:00:30@ gives the zone @+0100@. The zone has no
+-- name.
+timeWithZoneZone :: TimeWithZone -> TimeZone
+timeWithZoneZone value = minutesToTimeZone (fromIntegral (timeWithZoneOffsetSeconds value `quot` 60))
 
 -- | Match signed values without narrowing to the machine word size.
 pattern FieldInt :: Int64 -> FieldValue

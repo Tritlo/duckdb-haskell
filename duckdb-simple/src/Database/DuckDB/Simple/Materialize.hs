@@ -22,7 +22,7 @@ module Database.DuckDB.Simple.Materialize (
 ) where
 
 import Control.Exception (bracket)
-import Control.Monad (forM, when)
+import Control.Monad (foldM, forM, when)
 import Data.Array (Array, bounds, elems, listArray, rangeSize, (!))
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Int (Int16, Int32, Int64)
@@ -453,6 +453,7 @@ enumStorage dataPtr count rowIdx
 -- vector. Parameter 1 of an ARRAY type is the size, as 'logicalTypeToRep' reads
 -- it. The decoder does not convert the element type. The element reader takes
 -- its tree from the tree of the ARRAY. See Note [Type trees].
+-- See Note [Constant stack at safe calls] in "Database.DuckDB.Simple.Native".
 prepareArrayDecoder :: FallbackReaders -> TypeTree -> EnumLabels -> DuckDBV2VectorHandle -> IO (Int -> IO (Array Int FieldValue))
 prepareArrayDecoder readers tree labels vector = do
   size <- withVectorType vector \logical -> alloca \name ->
@@ -461,18 +462,19 @@ prepareArrayDecoder readers tree labels vector = do
   readChild <- vectorChild vector 0 >>= prepareVectorReaderWith readers (elementTree tree) labels
   pure \rowIdx -> do
     let baseIdx = rowIdx * arraySize
-    values <- forM [0 .. arraySize - 1] \delta -> readChild (baseIdx + delta)
+    values <- reverse <$> foldM (\values delta -> (: values) <$> readChild (baseIdx + delta)) [] [0 .. arraySize - 1]
     pure (listArray (0, arraySize - 1) values)
 
 -- | Prepare the element reader once for a LIST vector. The element reader
 -- takes its tree from the tree of the LIST. See Note [Type trees].
+-- See Note [Constant stack at safe calls] in "Database.DuckDB.Simple.Native".
 prepareListDecoder :: FallbackReaders -> TypeTree -> EnumLabels -> DuckDBV2VectorHandle -> Ptr Void -> IO (Int -> IO [FieldValue])
 prepareListDecoder readers tree labels vector dataPtr = do
   readChild <- vectorChild vector 0 >>= prepareVectorReaderWith readers (elementTree tree) labels
   pure \rowIdx -> do
     entry <- peekElemOff (castPtr dataPtr :: Ptr DuckDBV2ListEntry) rowIdx
     (baseIdx, len) <- listEntryBounds (Text.pack "list") entry
-    forM [0 .. len - 1] \delta -> readChild (baseIdx + delta)
+    reverse <$> foldM (\values delta -> (: values) <$> readChild (baseIdx + delta)) [] [0 .. len - 1]
 
 -- | Prepare the key reader and the value reader once for a MAP vector. The
 -- decoder gives them no type tree. Each converts the type of its own vector when
@@ -481,6 +483,7 @@ prepareListDecoder readers tree labels vector dataPtr = do
 -- convert the key type, for example the dictionary of a large ENUM. The
 -- decoder does not flatten the entry STRUCT. See Note [Vector flatten] and
 -- Note [Type trees].
+-- See Note [Constant stack at safe calls] in "Database.DuckDB.Simple.Native".
 prepareMapDecoder :: FallbackReaders -> DuckDBV2VectorHandle -> Ptr Void -> IO (Int -> IO [(FieldValue, FieldValue)])
 prepareMapDecoder readers vector dataPtr = do
   entries <- vectorChild vector 0
@@ -489,11 +492,16 @@ prepareMapDecoder readers vector dataPtr = do
   pure \rowIdx -> do
     entry <- peekElemOff (castPtr dataPtr :: Ptr DuckDBV2ListEntry) rowIdx
     (baseIdx, len) <- listEntryBounds (Text.pack "map") entry
-    forM [0 .. len - 1] \delta -> do
-      let childIdx = baseIdx + delta
-      keyValue <- readKey childIdx
-      valueValue <- readValue childIdx
-      pure (keyValue, valueValue)
+    reverse
+      <$> foldM
+        ( \pairs delta -> do
+            let childIdx = baseIdx + delta
+            keyValue <- readKey childIdx
+            valueValue <- readValue childIdx
+            pure ((keyValue, valueValue) : pairs)
+        )
+        []
+        [0 .. len - 1]
 
 -- | Read the STRUCT type and prepare a reader for each child once for a vector.
 -- The decoder reads a valid row. It must not outlive its chunk. See

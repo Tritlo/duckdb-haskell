@@ -307,9 +307,7 @@ destroyLogicalType = destroy c_duckdb_v2_logical_type_destroy
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Each c_duckdb_v2 binding is a safe foreign call. At a safe call, the GHC
 runtime (threadPaused) reads the frames of the current stack chunk. A loop that
-keeps a frame for each element thus makes each native call slower as the list
-grows. A loop that keeps a frame for each row makes each native call slower as
-the number of rows grows.
+keeps a frame for each element or row adds those retained frames to this work.
 
 Thus a loop whose steps make native calls keeps a constant stack. The rule
 applies to a loop over the rows of a chunk, over the chunks of a result, and
@@ -323,7 +321,9 @@ The code uses these forms:
   "Database.DuckDB.Simple.Typed.Table").
 
 - foldM with an accumulator. A fold can keep one value, as the first error in
-  releaseItems.
+  releaseItems. The LIST, ARRAY, and MAP readers in
+  "Database.DuckDB.Simple.Materialize" prepend each element and then reverse
+  the list. They read elements in order, so the first failing read stays first.
 
 - A tail-recursive loop with an accumulator. acquireItems puts each item in
   front of the list, and then reverses the list. Its exception handler covers
@@ -336,9 +336,8 @@ The code uses these forms:
 These loops keep a frame for each element, and they stay as they are, because
 the list is short in practice or the operation is rare:
 
-- The element loops of a LIST, ARRAY, or MAP value in
-  "Database.DuckDB.Simple.Materialize", and the row loop of materializeChunkRows
-  in "Database.DuckDB.Simple.Copy.Internal". Only a BIGNUM element, the first
+- The row loop of materializeChunkRows in
+  "Database.DuckDB.Simple.Copy.Internal". Only a BIGNUM element, the first
   row of a UNION member, and a rejectRows reader make a native call for each
   row there.
 

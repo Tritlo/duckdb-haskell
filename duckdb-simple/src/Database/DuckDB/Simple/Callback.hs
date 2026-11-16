@@ -321,46 +321,53 @@ runCallbackAs describe err action = mask \restore -> do
 
 {- Note [Errors that leave a callback]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+An SQLError with a type leaves a callback with its own type, except for the ten
+types of typesWithoutOwnCode. An SQLError of one of these ten types leaves the
+callback as a plain Invalid Input error, because DuckDB would do something
+wrong or unsafe with its own code. There are three groups:
+
+- Seven types keep a transaction open: ErrorQueryBinder, ErrorDatabaseCatalog,
+  ErrorResourceConnection, ErrorQueryParameterNotAllowed, ErrorQueryParser,
+  ErrorConfigurationPermission, and ErrorResourceInUse. DuckDB expects these
+  types before the execution of a statement. Under the DuckDB setting
+  SYNTACTIC_ERRORS_DO_NOT_INVALIDATE of default_transaction_invalidation_policy,
+  DuckDB keeps the transaction after an error of these types
+  (Exception::InvalidatesTransaction in exception.cpp). A callback raises during
+  the execution, for example after an INSERT has written rows. With the code of
+  such a type, these rows would stay in the transaction, and COMMIT would store
+  them. With DuckDBV2ErrorApi, DuckDB invalidates the explicit transaction, and
+  COMMIT stores none of its rows.
+- ErrorRuntimeInternal and ErrorRuntimeFatal invalidate the database. For these
+  codes, DuckDB 2.0.0 invalidates the database of the outer statement, also
+  when the error came from another database.
+- ErrorIONetwork has no name. Its exception type has no name in DuckDB 2.0.0
+  (EXCEPTION_MAP in exception.cpp). With its code, the outer statement fails
+  with ErrorApi and the prefix "Invalid Error: " of a type with no name. With
+  DuckDBV2ErrorApi, it fails with ErrorInputInvalid, as for an SQLError without
+  a type.
+
+The section "Errors" of the README lists these types for users.
+
 runCallback writes an exception of a callback into the error slot of DuckDB as
 a code and a text. The statement that runs the callback then fails with an
 error of the type of the code. DuckDB puts the prefix of that type before the
 text, for example "Conversion Error: " for the code of ErrorTypeConversion, and
-"Invalid Input Error: " for DuckDBV2ErrorApi. The section "Errors" of the README
-lists the types that do not pass for users.
+"Invalid Input Error: " for DuckDBV2ErrorApi.
 
-- An SQLError with a type writes the code of its type. The text is the body of
-  the error (sqlErrorBody), the text of DuckDB without the prefix. An error of
-  duckdb-simple has no body, so the text is its message. Thus the error of a
-  statement in the callback reaches the outer statement with its type and with
-  one prefix. An error that passes through two callbacks keeps its type and
-  its body in the same way.
+- An SQLError with another type writes the code of its type. The text is the
+  body of the error (sqlErrorBody), the text of DuckDB without the prefix. An
+  error of duckdb-simple has no body, so the text is its message. Thus the error
+  of a statement in the callback reaches the outer statement with its type and
+  with one prefix. An error that passes through two callbacks keeps its type
+  and its body in the same way.
+- An SQLError of a type of typesWithoutOwnCode writes the code DuckDBV2ErrorApi
+  and its message.
 - DuckDB 2.0.0 cannot raise some codes again with their own type. Six codes
   have no exception type in the map of the C API (TryGetExceptionTypeFromErrorCode
   in capi_v2.cpp): the codes of ErrorApi, ErrorIOFileNotFound,
   ErrorIOReadFailure, ErrorIOEof, ErrorInputParameterInvalid, and
   ErrorInputMetadataDeferred. DuckDB raises them as Invalid Input, so the outer
   statement fails with ErrorInputInvalid and "Invalid Input Error: ".
-- ErrorIONetwork does not pass. Its exception type has no name in DuckDB 2.0.0
-  (EXCEPTION_MAP in exception.cpp), so with its code the outer statement fails
-  with ErrorApi and the prefix "Invalid Error: " of a type with no name. Such
-  an error writes the code DuckDBV2ErrorApi and its message, so the outer
-  statement fails with ErrorInputInvalid, as for an SQLError without a type.
-- Seven types do not pass, because DuckDB expects them before the execution
-  of a statement: ErrorQueryBinder, ErrorDatabaseCatalog,
-  ErrorResourceConnection, ErrorQueryParameterNotAllowed, ErrorQueryParser,
-  ErrorConfigurationPermission, and ErrorResourceInUse. Under the DuckDB
-  setting SYNTACTIC_ERRORS_DO_NOT_INVALIDATE of
-  default_transaction_invalidation_policy, DuckDB keeps the transaction after
-  an error of these types (Exception::InvalidatesTransaction in exception.cpp).
-  A callback raises during the execution, for example after an INSERT has
-  written rows. With the code of such a type, these rows would stay in the
-  transaction, and COMMIT would store them. Thus such an error writes the code
-  DuckDBV2ErrorApi and its message. DuckDB then invalidates the explicit
-  transaction, and COMMIT stores none of its rows.
-- ErrorRuntimeInternal and ErrorRuntimeFatal do not pass. For these codes,
-  DuckDB 2.0.0 invalidates the database of the outer statement, also when the
-  error came from another database. Such an error writes the code
-  DuckDBV2ErrorApi and its message.
 - Each other exception writes the code DuckDBV2ErrorApi and failureText: an
   SQLError without a type, a userError, or another exception.
 - A cast callback runs through runCallbackWith and not through this rule. It
@@ -375,24 +382,28 @@ lists the types that do not pass for users.
 callbackError :: SomeException -> (DuckDBV2Error, Text)
 callbackError failure = case fromException failure of
   Just SQLError{sqlErrorType = Just errorType, sqlErrorMessage = message, sqlErrorBody = body}
-    | errorType `notElem` heldBack
+    | errorType `notElem` typesWithoutOwnCode
     , Just code <- lookup errorType errorTypeCodes ->
         (code, fromMaybe message body)
   _ -> (DuckDBV2ErrorApi, Text.pack (failureText failure))
-  where
-    -- See Note [Errors that leave a callback].
-    heldBack =
-      [ ErrorQueryBinder
-      , ErrorDatabaseCatalog
-      , ErrorResourceConnection
-      , ErrorQueryParameterNotAllowed
-      , ErrorQueryParser
-      , ErrorConfigurationPermission
-      , ErrorResourceInUse
-      , ErrorIONetwork
-      , ErrorRuntimeInternal
-      , ErrorRuntimeFatal
-      ]
+
+-- | The error types whose own code a callback must not write. An 'SQLError' of
+-- one of these types leaves the callback as a plain Invalid Input error,
+-- because DuckDB would do something wrong or unsafe with its own code.
+-- Note [Errors that leave a callback] gives the reason for each type.
+typesWithoutOwnCode :: [ErrorType]
+typesWithoutOwnCode =
+  [ ErrorQueryBinder
+  , ErrorDatabaseCatalog
+  , ErrorResourceConnection
+  , ErrorQueryParameterNotAllowed
+  , ErrorQueryParser
+  , ErrorConfigurationPermission
+  , ErrorResourceInUse
+  , ErrorIONetwork
+  , ErrorRuntimeInternal
+  , ErrorRuntimeFatal
+  ]
 
 -- | The text of a callback exception in the SQL error. An 'SQLError' gives its
 -- message, and a 'userError' gives its text. Thus the SQL error does not show a

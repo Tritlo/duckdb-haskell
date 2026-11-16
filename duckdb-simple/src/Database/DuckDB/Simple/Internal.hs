@@ -285,7 +285,7 @@ data ConnectionOptions = ConnectionOptions
   -- ^ The longest time in microseconds that a DuckDB callback waits for the
   --     lock of this connection. A statement of a callback on the connection
   --     that runs the callback waits for this lock. After the bound, the
-  --     statement raises an 'SQLError' of the type 'ErrorResourceInUse'. For
+  --     statement raises an t'SQLError' of the type 'ErrorResourceInUse'. For
   --     most callbacks, the outer statement then fails. The bound applies
   --     also to a callback that uses this connection while another statement
   --     runs on it. 'Nothing' sets no bound. The default is
@@ -477,7 +477,7 @@ checkLibraryVersion = do
 -- Wait for child creation and all descendant operations to finish before closing.
 -- DuckDB refuses to destroy the environment while an instance is alive that
 -- 'createInstance' did not create. In this case, this function closes the
--- instances from 'createInstance' and their connections, raises an 'SQLError'
+-- instances from 'createInstance' and their connections, raises an t'SQLError'
 -- with the type 'ErrorResourceInUse', and keeps the environment open.
 -- Destroy the other instance, then close the environment again.
 -- After a successful close, a second close has no effect.
@@ -826,7 +826,7 @@ Note [Callback marks] in "Database.DuckDB.Simple.CallbackMark".
 -- | Run an action with the lock of the connection. The lock is not reentrant.
 -- Do not run a function of the user, such as the step of a fold, in the
 -- action. A thread with a callback mark waits for the lock at most the bound
--- of the connection ('connectionCallbackLockWait'), and then raises an 'SQLError' of
+-- of the connection ('connectionCallbackLockWait'), and then raises an t'SQLError' of
 -- the type 'ErrorResourceInUse'. Each other thread waits without a bound. See
 -- Note [Connection lock], and Note [Callback marks] in
 -- "Database.DuckDB.Simple.CallbackMark".
@@ -916,8 +916,8 @@ The action holds the connection lock. Thus no step function runs in the action.
 -}
 
 -- | Run the native calls of one result in one helper thread, and hold the
--- connection lock. The first argument releases the result of the action when
--- the caller is cancelled after the helper thread has made that result. Do not
+-- connection lock. The release action runs when the caller is cancelled after
+-- the helper thread has made its result. Do not
 -- run a function of the user in the action. See Note [Result window].
 withResultWindow :: Connection -> (a -> IO ()) -> IO a -> IO a
 withResultWindow conn@Connection{connectionWindow} release action =
@@ -996,7 +996,7 @@ A call from the helper thread of the result window runs the work directly,
 without a new helper thread. See Note [Result window].
 -}
 
--- | Run native work with cancellation and wait for it before releasing inputs.
+-- | Run native work with cancellation. Wait for the work before releasing inputs.
 -- The work must keep its native results in storage that the caller releases.
 -- See Note [Interruptible native calls].
 runInterruptibleQuery :: Connection -> IO a -> IO a

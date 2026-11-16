@@ -15,7 +15,7 @@
 -- runtime of GHC without @-threaded@ does not support that: the program can
 -- crash. Without @-threaded@, set the DuckDB setting @threads@ to 1 on each
 -- database that runs callbacks, before a callback runs. Without @-threaded@, the
--- registration of a callback raises an 'Database.DuckDB.Simple.SQLError' of
+-- registration of a callback raises an t'Database.DuckDB.Simple.SQLError' of
 -- the type 'Database.DuckDB.Simple.ErrorInputInvalid' when the setting
 -- @threads@ is above 1. The section \"User-Defined Functions\" of the README
 -- gives the rule.
@@ -36,7 +36,7 @@
 --
 -- The wait has the bound 'Database.DuckDB.Simple.connectionCallbackLockWait' of
 -- the connection: 10 seconds by default, and no bound for 'Nothing'. After the
--- bound, the statement raises an 'Database.DuckDB.Simple.SQLError' of the type
+-- bound, the statement raises an t'Database.DuckDB.Simple.SQLError' of the type
 -- 'Database.DuckDB.Simple.ErrorResourceInUse'. For most callbacks, the outer
 -- statement then fails. DuckDB ignores the error of a log sink. The bound
 -- applies to each wait of a callback for a connection lock, also for a second
@@ -195,8 +195,7 @@ createTableFunction conn = createTableFunctionOn (ConnectionTarget conn)
 -- as for 'createFunction', also when DuckDB runs the update callback on several
 -- threads. An aggregate function of an extension refuses a GEOMETRY argument
 -- at registration, because its update callback has no factory to read the
--- value. The SQL
--- return type is the
+-- value. The SQL return type is the
 -- 'Database.DuckDB.Simple.ToField.duckdbTypeDeclaration' of the result type,
 -- for example SMALLINT for 'Data.Int.Int16' and FLOAT for 'Float'. A 'Maybe'
 -- result has the SQL type of its value, and 'Nothing' gives NULL.
@@ -206,10 +205,10 @@ createTableFunction conn = createTableFunctionOn (ConnectionTarget conn)
 -- 'Data.Int.Int64', 'Word', 'Data.Word.Word8' to 'Data.Word.Word64', 'Float',
 -- 'Double', 'Text', 'String', or 'Maybe' of one of them. A newtype over one of
 -- them gets its writer with @deriving newtype (FunctionResult)@. Another result
--- type is an error at registration. The finalize callback of DuckDB has no factory, so
--- it cannot make a value of another type. The library writes these types to
--- the memory of the result vector, and it does not use the size of the vector:
--- in an ordered window, DuckDB gives a result vector of the size 0.
+-- type is an error at registration. The finalize callback of DuckDB has no
+-- factory, so it cannot make a value of another type. The library writes these
+-- types to the memory of the result vector. It does not use the size of the
+-- vector: in an ordered window, DuckDB gives a result vector of the size 0.
 --
 -- An exception in a function fails the query. DuckDB can run the functions on
 -- more than one thread at one time, but not on the same state. The aggregate
@@ -227,7 +226,7 @@ createAggregate conn = createAggregateOn (ConnectionTarget conn)
 
 -- | Run @DROP FUNCTION IF EXISTS@ and report native errors.
 -- DuckDB does not permit deletion of functions registered through the C API.
--- For a function from 'createFunction', this call raises 'SQLError' and the
+-- For a function from 'createFunction', this call raises t'SQLError' and the
 -- function stays registered. Register the name again to replace the function.
 -- GHC reports a warning at each use of this function. A build with @-Werror@
 -- must allow that warning, for example with @-Wno-error=deprecations@.

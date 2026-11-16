@@ -56,23 +56,23 @@ GEOMETRY has no committed vector layout. The reader casts each GEOMETRY vector
 to BLOB with the factory of the instance, which has only the built-in casts,
 and copies the WKB rows.
 
-A connection keeps the CRS names in `connectionGeometryCRS` available in
+A connection makes the CRS names in `connectionGeometryCRS` available to
 nested parameters, including typed NULLs and empty collections. When the
-connection opens, it constructs each name directly. DuckDB keeps a recognized
-name and a complete definition. For each other name, the connection reads a
+connection opens, it constructs each name directly. DuckDB keeps recognized
+names and complete definitions. For each other name, the connection reads a
 SQL-derived type with `ST_SetCRS` before the caller can run a statement. The
 connection caches each type, and a bind copies it. A default connection runs no
-query. Helper queries for VARIANT
-do not interrupt the caller's active stream. The backend does not read private
-payload layouts or convert handles between the retained and V2 APIs.
+query. Helper queries for VARIANT do not interrupt the caller's active stream.
+The backend does not read private payload layouts or convert handles between
+the retained and V2 APIs.
 
 `Database.DuckDB.Simple.Streaming` provides V2 row and Arrow streaming. The
 advanced opaque equality callback remains available through the raw API.
 
 ## Native limitations
 
-These are limits of the pinned native API. They are not missing generated
-bindings. The migration uses the current API. It does not add native symbols.
+The pinned native API has these limits. The generated bindings expose the
+available API. They do not add native symbols.
 
 - Prepared expanding statements, including dynamic PIVOT, cannot have parameters
   or require a cacheable plan. Their schema becomes available during execution.
@@ -80,8 +80,8 @@ bindings. The migration uses the current API. It does not add native symbols.
 - V2 cannot register a custom file system. Native log-sink registration is
   available. Log callbacks can run concurrently and must not log or change the
   logging configuration. Native logging contains and discards callback errors.
-- DuckDB 2.0 rejects an ARRAY type with zero elements, also in SQL. Empty LIST
-  values remain supported. The binding must not change one type into the other.
+- DuckDB 2.0 rejects an ARRAY type with zero elements, including in SQL. Empty
+  LIST values remain supported. The binding must not change one type into the other.
 - Native GEOMETRY collections require one Z/M layout for all members, including
   empty members. Mixed-layout WKB remains valid for the standalone codec, but
   native import raises `SQLError`. Do not promote or remove coordinates.

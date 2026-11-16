@@ -4,7 +4,7 @@
 --
 -- This module has the declarations that typed registrations share. It also
 -- registers custom types and replacement scans on a connection or an instance.
--- Its signatures have no native handle. A 'FunctionParameter' from 'parameter' is
+-- Its signatures have no native handle. A t'FunctionParameter' from 'parameter' is
 -- a required parameter. The V2 module has the field for the other parameter
 -- kinds. "Database.DuckDB.Simple.V2.Registration" has the registrations with
 -- native callbacks.

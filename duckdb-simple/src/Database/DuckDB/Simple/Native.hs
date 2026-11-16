@@ -131,7 +131,7 @@ instance Exception SQLError
 -- result value that does not convert to its Haskell type.
 --
 -- A failed check of the state of the library, or of a vector, a type, or a
--- value that DuckDB gave, raises an 'SQLError' of the type
+-- value that DuckDB gave, raises an t'SQLError' of the type
 -- 'ErrorRuntimeInternal'. Such an error is a defect of the library or of
 -- DuckDB, not an error of the input. Report it. Inside a callback, the
 -- statement that runs the callback fails with 'ErrorInputInvalid', because a
@@ -483,7 +483,7 @@ quoteIdentifier :: Text -> Text
 quoteIdentifier identifier = "\"" <> Text.replace "\"" "\"\"" identifier <> "\""
 
 -- | Raise the error of an input check: an argument of a library function, or a
--- parameter value, that the library rejects. The error is an 'SQLError' of the
+-- parameter value, that the library rejects. The error is an t'SQLError' of the
 -- type 'ErrorInputInvalid' with no query. The checks of arguments use this
 -- function, and so do the checks of a parameter value of the wrong shape or
 -- type, for example a UNION tag that is not a member, a leaf of another type
@@ -496,7 +496,7 @@ throwInvalidArgument :: Text -> IO a
 throwInvalidArgument message = throwIO (SQLError ("duckdb-simple: " <> message) (Just ErrorInputInvalid) Nothing Nothing)
 
 -- | Raise the error of an input check for a value that its SQL type cannot
--- hold. The error is an 'SQLError' of the type 'ErrorTypeConversion' with no
+-- hold. The error is an t'SQLError' of the type 'ErrorTypeConversion' with no
 -- query, as the "Conversion Error" of DuckDB for the same value in SQL, for
 -- example for @300::TINYINT@, @'25:00:00'::TIME@, or @\'x\'::ENUM(\'a\', \'b\')@.
 -- These checks use this function: an integer outside its parameter type or
@@ -509,7 +509,7 @@ throwConversionError :: Text -> IO a
 throwConversionError message = throwIO (SQLError ("duckdb-simple: " <> message) (Just ErrorTypeConversion) Nothing Nothing)
 
 -- | Raise the error of a check of the state of the library, or of a vector, a
--- type, or a value that DuckDB gave: an 'SQLError' of the type
+-- type, or a value that DuckDB gave: an t'SQLError' of the type
 -- 'ErrorRuntimeInternal' with no query. Such an error means a defect of the
 -- library or of DuckDB, not a defect of an input. See
 -- Note [Internal errors in callbacks].
@@ -538,8 +538,8 @@ slot of a callback, because DuckDB 2.0.0 then invalidates the database, and
 each later statement raises "FATAL Error: ... database has been invalidated".
 This holds for a callback at execution time, for example a scalar function, a
 table function, a cast, or COPY FROM; at bind time, for example in a
-replacement scan or a query pragma, the database stays usable. The rule holds
-for each callback, so that it errs on the safe side.
+replacement scan or a query pragma, the database stays usable. The rule
+applies at bind time too.
 -}
 
 -- | Borrow a factory while its connection remains alive. Do not destroy it.
@@ -589,7 +589,7 @@ settingScopeToNative = \case
   SettingScopeGlobal -> DuckDBV2SettingScopeGlobal
   SettingScopeSession -> DuckDBV2SettingScopeSession
 
--- | Convert a native setting scope. An unknown value raises 'SQLError'.
+-- | Convert a native setting scope. An unknown value raises t'SQLError'.
 settingScopeFromNative :: DuckDBV2SettingScope -> IO SettingScope
 settingScopeFromNative = \case
   DuckDBV2SettingScopeDefault -> pure SettingScopeDefault
@@ -617,7 +617,7 @@ logLevelToNative = \case
   LogLevelError -> DuckDBV2LogLevelError
   LogLevelFatal -> DuckDBV2LogLevelFatal
 
--- | Convert a native log level. An unknown value raises 'SQLError'.
+-- | Convert a native log level. An unknown value raises t'SQLError'.
 logLevelFromNative :: DuckDBV2LogLevel -> IO LogLevel
 logLevelFromNative = \case
   DuckDBV2LogLevelTrace -> pure LogLevelTrace
@@ -635,7 +635,7 @@ data LogScope
   | LogScopeThread
   deriving (Eq, Ord, Show, Read, Enum, Bounded)
 
--- | Convert a native log scope. An unknown value raises 'SQLError'.
+-- | Convert a native log scope. An unknown value raises t'SQLError'.
 logScopeFromNative :: DuckDBV2LogScope -> IO LogScope
 logScopeFromNative = \case
   DuckDBV2LogScopeDatabase -> pure LogScopeDatabase
@@ -656,7 +656,7 @@ data TokenType
   | TokenTypeEndOfInput
   deriving (Eq, Ord, Show, Read, Enum, Bounded)
 
--- | Convert a native token type. An unknown value raises 'SQLError'.
+-- | Convert a native token type. An unknown value raises t'SQLError'.
 tokenTypeFromNative :: DuckDBV2TokenType -> IO TokenType
 tokenTypeFromNative = \case
   DuckDBV2TokenTypeInvalid -> pure TokenTypeInvalid
@@ -779,7 +779,7 @@ logicalTypeIdToNative = \case
   LogicalTypeIdVariant -> DuckDBV2LogicalTypeIdVariant
   LogicalTypeIdTuple -> DuckDBV2LogicalTypeIdTuple
 
--- | Convert a native logical type id. An unknown value raises 'SQLError'.
+-- | Convert a native logical type id. An unknown value raises t'SQLError'.
 logicalTypeIdFromNative :: DuckDBV2LogicalTypeId -> IO LogicalTypeId
 logicalTypeIdFromNative = \case
   DuckDBV2LogicalTypeIdInvalid -> pure LogicalTypeIdInvalid
@@ -861,6 +861,6 @@ fileFlagToNative = \case
   FileFlagParallelAccess -> DuckDBV2FileFlagParallelAccess
   FileFlagExternalFileCache -> DuckDBV2FileFlagExternalFileCache
 
--- | Raise 'SQLError' for a native enum value that has no Haskell constructor.
+-- | Raise t'SQLError' for a native enum value that has no Haskell constructor.
 throwUnknownNative :: Text -> CUInt -> IO a
 throwUnknownNative kind value = throwInternalError ("unknown native " <> kind <> " " <> Text.pack (show value))

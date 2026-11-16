@@ -14,9 +14,9 @@
 -- Module      : Database.DuckDB.Simple.Function.Internal
 -- Description : Share typed scalar registration for connections and extensions.
 --
--- This module is not exposed: the cabal file lists it in @other-modules@. It
--- holds the implementation, and "Database.DuckDB.Simple.Function" exports the
--- forms for a connection. The forms that take a registration target,
+-- The cabal file lists this hidden module in @other-modules@.
+-- "Database.DuckDB.Simple.Function" exports the forms for a connection.
+-- The forms that take a registration target,
 -- 'createFunctionOn' and 'createFunctionWithStateOn', are for the module of
 -- the loadable extensions. Both forms use the same argument conversion, result
 -- conversion, and callback resources.

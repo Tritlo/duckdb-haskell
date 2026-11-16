@@ -220,7 +220,7 @@ open path = openWithConfig path []
 openWithConfig :: FilePath -> [(Text, Text)] -> IO Connection
 openWithConfig path settings = openWithOptions path defaultConnectionOptions{connectionConfig = settings}
 
--- | Check the fields of 'ConnectionOptions' and give the record with the
+-- | Check the fields of t'ConnectionOptions' and give the record with the
 -- checked fields. The fields are lazy, so an error in a field occurs here and
 -- not in a later use. Each open calls this before it creates a native handle.
 checkConnectionOptions :: ConnectionOptions -> IO ConnectionOptions
@@ -236,7 +236,7 @@ checkConnectionOptions options@ConnectionOptions{connectionCallbackLockWait, con
       }
 
 -- | Evaluate the bound of 'connectionCallbackLockWait' and reject a negative
--- bound. The fields of 'ConnectionOptions' are lazy, so an error in the field
+-- bound. The fields of t'ConnectionOptions' are lazy, so an error in the field
 -- occurs here and not in a later wait.
 checkCallbackLockWait :: Maybe Int -> IO (Maybe Int)
 checkCallbackLockWait bound = case bound of

@@ -17,10 +17,9 @@ The pure geometry types and codecs are maintained in
 ## Design principle
 
 The motto of `duckdb-simple` is "least surprise". The library does not add
-hidden behavior. One input gives the same result in each function that accepts
-it, and a function gives the result that DuckDB gives. When two functions treat
-one input in different ways, make them the same, unless a documented reason
-requires the difference.
+hidden behavior. Functions that accept the same input must give the same result
+as DuckDB. When two functions treat an input differently, make them consistent
+unless a documented reason requires the difference.
 
 ## Testing guidelines
 
@@ -54,12 +53,12 @@ cabal test all --test-show-details=direct
 cabal run duckdb-simple-leak-test -- all 100
 ```
 
-The last command runs the phases of the mode `all` with 100 batches: 32
+The last command runs the `all` mode with 100 batches: 32
 open/close cycles, the dropped-handles check, 10,000 query cycles, 10,000
 callback cycles, 7,000 cancellation attempts, 10,000 cycles of VARIANT,
 GEOMETRY, and other composite values, and 2,000 typed registration cycles.
 The sustained phases keep one connection open.
-The normal leak test uses 10 batches, so each phase with batches runs one tenth
+The normal leak test uses 10 batches, so each batched phase runs one tenth
 of those counts. Native RSS and thread checks require Linux `/proc`.
 Callback collection and functional checks also run on other systems.
 

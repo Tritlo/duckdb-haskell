@@ -169,12 +169,11 @@ type EnumLabels = Maybe (IORef (IntMap.IntMap Text))
 
 {- Note [Vector flatten]
 ~~~~~~~~~~~~~~~~~~~~~~~~
-A flatten changes a vector to the FLAT representation in place. The reader of
-prepareVectorReaderWith flattens each vector before it reads the view. A writer
-of a callback output vector flattens the vector before it writes rows.
+vector_flatten changes a vector to the FLAT representation in place. A reader
+flattens each vector before it reads the view. A writer of a callback output
+vector flattens the vector before it writes rows.
 
-Read (prepareVectorReaderWith). The reader flattens each vector, and then reads
-the view of the vector.
+Read (prepareVectorReaderWith).
 
 - The header of duckdb_v2_vector_get_view says: "Rejects VECTOR_TYPE_OTHER;
   call vector_flatten first." The flatten also changes a CONSTANT or DICTIONARY
@@ -352,9 +351,10 @@ their result:
 - Reads. prepareGeometryReader casts a GEOMETRY vector to BLOB. A result, the
   value of an option (getConfigValue), and the default value of an option
   (getConfigDefaultValue) read a GEOMETRY value with the factory of the
-  instance, and so does queryMetrics. The type cache of the connection keeps that factory (typeCacheCasts
-  in "Database.DuckDB.Simple.TypeCache"). The callbacks of a registration on a
-  connection read a GEOMETRY value with the same factory: the value of an option
+  instance, and so does queryMetrics. The type cache of the connection keeps
+  that factory (typeCacheCasts in "Database.DuckDB.Simple.TypeCache"). The
+  callbacks of a registration on a connection read a GEOMETRY value with the
+  same factory: the value of an option
   update, the arguments of a pragma, a scalar function, a typed aggregate, or a
   table function, and the rows of a COPY TO function. The
   registration takes the factory (targetCastFactory in
@@ -638,8 +638,8 @@ ensureWithinIntRange context value =
         then pure (fromInteger actual)
         else throwInternalError (context <> Text.pack " exceeds Int range")
 
--- | Take the element tree from the tree of a LIST or ARRAY. The action runs the
--- action of the parent only when the element reader needs its tree. See
+-- | Take the element tree from the tree of a LIST or ARRAY. Read the parent
+-- tree only when the element reader needs its tree. See
 -- Note [Type trees].
 elementTree :: TypeTree -> TypeTree
 elementTree tree =

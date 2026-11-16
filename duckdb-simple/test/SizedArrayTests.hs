@@ -14,7 +14,7 @@ module SizedArrayTests (sizedArrayTests) where
 
 import Control.Exception (try)
 import Control.Monad (forM_)
-import Data.Array (listArray)
+import Data.Array (bounds, elems, listArray, (!))
 import Data.Foldable (toList)
 import Data.Int (Int32, Int64, Int8)
 import qualified Data.Map.Strict as Map
@@ -66,10 +66,23 @@ sizedArrayTests =
         let values = fromJust (sizedArrayFromList @3 [1, 2, 3 :: Int64])
         toList values @?= [1, 2, 3]
         sizedArrayFromList @3 [1, 2 :: Int64] @?= Nothing
+        -- An Array with any bounds gives the bounds (0, n - 1) and the same
+        -- elements. An Array of another count gives Nothing.
+        let shifted = listArray (5, 7) [1, 2, 3 :: Int64]
+            fromShifted = fromJust (sizedArray @3 shifted)
+        bounds (sizedArrayToArray fromShifted) @?= (0, 2)
+        elems (sizedArrayToArray fromShifted) @?= elems shifted
+        fromShifted @?= values
+        show values @?= "SizedArray (array (0,2) [(0,1),(1,2),(2,3)])"
+        sizedArray @3 (listArray (0, 1) [1, 2 :: Int64]) @?= Nothing
         query conn "SELECT typeof(?), ?" (values, values) >>= (@?= [("BIGINT[3]" :: Text.Text, values)])
         _ <- execute_ conn "CREATE TABLE stored (v BIGINT[3])"
         _ <- execute conn "INSERT INTO stored VALUES (?)" (Only values)
-        query_ conn "SELECT v FROM stored" >>= (@?= [Only values])
+        [Only stored] <- query_ conn "SELECT v FROM stored"
+        stored @?= values
+        -- A value that is read has the bounds (0, n - 1).
+        bounds (sizedArrayToArray stored) @?= (0, 2)
+        sizedArrayToArray stored ! 1 @?= (2 :: Int64)
         -- A LIST of three elements reads, as the cast to BIGINT[3] does.
         query_ conn "SELECT [1, 2, 3]::BIGINT[]" >>= (@?= [Only values])
     , testCase "a SizedArray raises an error for an ARRAY or a LIST of another length" $ withConnection ":memory:" \conn -> do
